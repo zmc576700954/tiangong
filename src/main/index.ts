@@ -1,0 +1,209 @@
+import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { registerIpcHandlers } from './ipc-handlers'
+import { initDatabase } from './database'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+// 窗口管理器
+class WindowManager {
+  private windows = new Map<number, BrowserWindow>()
+  private windowId = 0
+
+  createWindow(): BrowserWindow {
+    this.windowId++
+    const id = this.windowId
+
+    const win = new BrowserWindow({
+      width: 1400,
+      height: 900,
+      minWidth: 960,
+      minHeight: 640,
+      title: 'BizGraph',
+      webPreferences: {
+        preload: path.join(__dirname, '../preload/index.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false,
+      },
+    })
+
+    this.windows.set(id, win)
+
+    // 加载应用
+    if (process.env.VITE_DEV_SERVER_URL) {
+      win.loadURL(process.env.VITE_DEV_SERVER_URL)
+      win.webContents.openDevTools()
+
+      // 开发模式下 Vite server 可能还没就绪，添加重试逻辑
+      win.webContents.on('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
+        console.log(`Failed to load ${validatedURL}, retrying in 500ms...`)
+        setTimeout(() => {
+          if (process.env.VITE_DEV_SERVER_URL) {
+            win?.loadURL(process.env.VITE_DEV_SERVER_URL)
+          }
+        }, 500)
+      })
+    } else {
+      win.loadFile(path.join(__dirname, '../../dist/index.html'))
+    }
+
+    win.on('closed', () => {
+      this.windows.delete(id)
+    })
+
+    return win
+  }
+
+  getAllWindows(): BrowserWindow[] {
+    return Array.from(this.windows.values())
+  }
+}
+
+const windowManager = new WindowManager()
+
+// Application menu template
+function buildMenu(): Menu {
+  const isMac = process.platform === 'darwin'
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    // File menu
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => {
+            windowManager.createWindow()
+          },
+        },
+        { type: 'separator' },
+        {
+          label: 'Close Window',
+          accelerator: isMac ? 'Cmd+W' : 'Ctrl+W',
+          click: (_, focusedWindow) => {
+            focusedWindow?.close()
+          },
+        },
+        ...(isMac
+          ? []
+          : [
+              { type: 'separator' as const },
+              {
+                label: 'Exit',
+                accelerator: 'Alt+F4',
+                click: () => {
+                  app.quit()
+                },
+              },
+            ]),
+      ],
+    },
+    // Edit menu
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', label: 'Undo' },
+        { role: 'redo', label: 'Redo' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cut' },
+        { role: 'copy', label: 'Copy' },
+        { role: 'paste', label: 'Paste' },
+        { role: 'selectAll', label: 'Select All' },
+      ],
+    },
+    // View menu
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload', label: 'Reload' },
+        { role: 'forceReload', label: 'Force Reload' },
+        { role: 'toggleDevTools', label: 'Developer Tools' },
+        { type: 'separator' },
+        { role: 'resetZoom', label: 'Reset Zoom' },
+        { role: 'zoomIn', label: 'Zoom In' },
+        { role: 'zoomOut', label: 'Zoom Out' },
+        { type: 'separator' },
+        { role: 'togglefullscreen', label: 'Fullscreen' },
+      ],
+    },
+    // Window menu
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize', label: 'Minimize' },
+        ...(isMac
+          ? [
+              { role: 'zoom', label: 'Zoom' } as const,
+              { type: 'separator' as const },
+              { role: 'front', label: 'Bring All to Front' } as const,
+            ]
+          : [{ role: 'close', label: 'Close' } as const]),
+      ],
+    },
+    // Help menu
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'About BizGraph',
+          click: () => {
+            const focused = BrowserWindow.getFocusedWindow()
+            if (focused) {
+              focused.webContents.executeJavaScript(`
+                alert('BizGraph v0.1.0\\nOpen Source Agent CLI Desktop Orchestrator')
+              `)
+            }
+          },
+        },
+      ],
+    },
+  ]
+
+  if (isMac) {
+    template.unshift({
+      label: 'BizGraph',
+      submenu: [
+        { role: 'about', label: 'About BizGraph' },
+        { type: 'separator' },
+        { role: 'services', label: 'Services' },
+        { type: 'separator' },
+        { role: 'hide', label: 'Hide BizGraph' },
+        { role: 'hideOthers', label: 'Hide Others' },
+        { role: 'unhide', label: 'Show All' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Quit BizGraph' },
+      ],
+    })
+  }
+
+  return Menu.buildFromTemplate(template)
+}
+
+app.whenReady().then(async () => {
+  // Initialize database
+  await initDatabase()
+
+  // Register IPC handlers
+  registerIpcHandlers()
+
+  // Set application menu
+  Menu.setApplicationMenu(buildMenu())
+
+  // Create first window
+  windowManager.createWindow()
+
+  app.on('activate', () => {
+    if (windowManager.getAllWindows().length === 0) {
+      windowManager.createWindow()
+    }
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
