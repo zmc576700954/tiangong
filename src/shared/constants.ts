@@ -79,6 +79,14 @@ export const GRAPH_TYPE_LABELS: Record<string, string> = {
   dev: '开发场景',
 }
 
+/** 边类型选项（用于画布和属性面板统一） */
+export const EDGE_TYPE_OPTIONS: { type: 'default' | 'success' | 'failure' | 'condition'; label: string; color: string; description: string }[] = [
+  { type: 'default', label: '默认流程', color: '#94a3b8', description: '标准流程连接' },
+  { type: 'success', label: '成功分支', color: '#22c55e', description: '成功后的流程分支' },
+  { type: 'failure', label: '失败分支', color: '#ef4444', description: '失败后的异常分支' },
+  { type: 'condition', label: '条件分支', color: '#f59e0b', description: '条件判断分支' },
+]
+
 /** 支持的 Agent 适配器列表 */
 
 /** 支持的 Agent 适配器列表 */

@@ -6,6 +6,33 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 
+/** 清理环境变量，防止敏感信息泄露给子进程 */
+function buildSafeEnv(): NodeJS.ProcessEnv {
+  const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
+  const allowedKeys = new Set([
+    'PATH', 'Path', 'PATHEXT',
+    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'TMPDIR', 'TMP', 'TEMP',
+    'SHELL', 'COMSPEC', 'TERM',
+    'LANG', 'LC_ALL', 'LC_CTYPE',
+    'USER', 'USERNAME', 'LOGNAME',
+    'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME',
+    'SSH_AUTH_SOCK', 'GNOME_KEYRING_CONTROL',
+    'DISPLAY', 'WAYLAND_DISPLAY',
+    'CLICOLOR', 'FORCE_COLOR', 'NO_COLOR',
+  ])
+
+  const safeEnv: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue
+    if (blockedPrefixes.some((p) => key.startsWith(p))) continue
+    if (allowedKeys.has(key) || !/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
+      safeEnv[key] = value
+    }
+  }
+  return safeEnv
+}
+
 export interface McpTool {
   name: string
   description?: string
@@ -47,7 +74,7 @@ export class McpClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       this.proc = spawn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: buildSafeEnv(),
       })
 
       this.proc.stdout?.on('data', (data: Buffer) => {
@@ -161,6 +188,27 @@ export class McpClient extends EventEmitter {
 
       const line = JSON.stringify(message) + '\n'
       this.proc.stdin?.write(line)
+
+      // 30 秒超时防护
+      const timeout = setTimeout(() => {
+        if (this.pending.has(id)) {
+          this.pending.delete(id)
+          reject(new Error(`MCP call timeout: ${method}`))
+        }
+      }, 30000)
+
+      // 包装 resolve/reject 以清除超时
+      const original = this.pending.get(id)!
+      this.pending.set(id, {
+        resolve: (v: unknown) => {
+          clearTimeout(timeout)
+          original.resolve(v)
+        },
+        reject: (e: Error) => {
+          clearTimeout(timeout)
+          original.reject(e)
+        },
+      })
     })
   }
 

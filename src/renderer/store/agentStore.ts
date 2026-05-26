@@ -9,6 +9,8 @@ interface AgentSessionState {
   outputs: AgentOutput[]
   startTime: number
   endTime?: number
+  /** 是否 fallback 到 mcp adapter */
+  fallback?: boolean
 }
 
 interface AgentState {
@@ -30,19 +32,20 @@ export const useAgentStore = create<AgentState>((set) => ({
   currentSessionId: null,
 
   loadAdapters: async () => {
-    const adapters = await window.electronAPI['agent:listAdapters']() as { name: string; version: string; installed: boolean }[]
+    const adapters = await window.electronAPI['agent:listAdapters']()
     set({ adapters })
   },
 
   startSession: async (adapterName, config, nodeId) => {
-    const result = await window.electronAPI['agent:startSession'](adapterName, config) as { sessionId: string }
+    const result = await window.electronAPI['agent:startSession'](adapterName, config)
     const session: AgentSessionState = {
       id: result.sessionId,
-      adapterName,
+      adapterName: result.fallback ? 'mcp' : adapterName,
       nodeId,
       status: 'running',
       outputs: [],
       startTime: Date.now(),
+      fallback: result.fallback,
     }
     set((state) => ({
       sessions: [...state.sessions, session],

@@ -43,10 +43,17 @@ export class GitAgent {
 
   /**
    * 提交变更
+   * @param files 指定要提交的文件路径数组，为空则提交所有变更
    */
-  async commit(path: string, message: string): Promise<void> {
+  async commit(path: string, message: string, files?: string[]): Promise<void> {
     const git = this.getGit(path)
-    await git.add('.')
+    if (files && files.length > 0) {
+      for (const file of files) {
+        await git.add(file)
+      }
+    } else {
+      await git.add('.')
+    }
     await git.commit(message)
   }
 
@@ -64,7 +71,8 @@ export class GitAgent {
       await git.addTag(tagName)
       const log = await git.log({ maxCount: 1 })
       return log.latest?.hash
-    } catch {
+    } catch (err) {
+      console.warn(`[GitAgent] Failed to create snapshot tag:`, err)
       return undefined
     }
   }
@@ -86,7 +94,8 @@ export class GitAgent {
       const git = this.getGit(path)
       await git.status()
       return true
-    } catch {
+    } catch (err) {
+      console.warn(`[GitAgent] Not a valid git repo at ${path}:`, err)
       return false
     }
   }

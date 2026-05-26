@@ -1,15 +1,17 @@
 /**
- * OpenCode 适配器
- * 通过 stdin/stdout 与 OpenCode CLI 非交互式模式通信
+ * OpenCode 适配器（单次执行模式）
+ *
+ * OpenCode CLI 是单次执行工具：启动、处理 prompt、输出结果、退出。
+ * 每次 sendCommand() 启动新进程，传入完整 prompt。
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { exec } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { BaseAdapter } from './base'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
 export class OpenCodeAdapter extends BaseAdapter {
   readonly name = 'opencode'
@@ -17,7 +19,7 @@ export class OpenCodeAdapter extends BaseAdapter {
 
   async checkInstalled(): Promise<boolean> {
     try {
-      await execAsync('opencode --version')
+      await execFileAsync('opencode', ['--version'])
       return true
     } catch {
       return false
@@ -25,117 +27,33 @@ export class OpenCodeAdapter extends BaseAdapter {
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const sessionId = `opencode-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-
-    // OpenCode CLI 参数（根据实际 CLI 文档调整）
-    const args = []
-
-    // 注入范围上下文
-    const scopePrompt = this.buildScopePrompt(config)
-
-    const proc = spawn('opencode', args, {
-      cwd: config.workingDirectory,
-      env: {
-        ...process.env,
-        BIZGRAPH_SESSION_ID: sessionId,
-        BIZGRAPH_CONTEXT: JSON.stringify(config),
-      },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
+    const sessionId = `opencode-${randomUUID().replace(/-/g, '')}`
     const session: AgentSession = {
       id: sessionId,
-      process: proc,
       adapterName: this.name,
       config,
       startTime: Date.now(),
     }
-
     this.registerSession(session)
-    this.attachOutputHandlers(session)
-
-    // 发送初始提示
-    if (proc.stdin && !proc.stdin.writableEnded) {
-      proc.stdin.write(scopePrompt + '\n')
-    }
-
     return session
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const proc = session.process
-    if (!proc.stdin || proc.stdin.writableEnded) {
-      throw new Error('OpenCode process stdin is not writable')
-    }
+    const scopePrompt = this.buildScopePrompt(session.config)
+    const commandPrompt = this.buildCommandPrompt(command)
+    const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
-    const prompt = this.buildCommandPrompt(command)
-    proc.stdin.write(prompt + '\n')
-  }
+    const args: string[] = [
+      '--',
+      fullPrompt.replace(/^-/gm, '\\-'),
+    ]
 
-  protected async doTerminate(session: AgentSession): Promise<void> {
-    const proc = session.process
-    if (!proc.killed) {
-      proc.kill('SIGTERM')
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          if (!proc.killed) {
-            proc.kill('SIGKILL')
-          }
-          resolve()
-        }, 5000)
-        proc.on('exit', () => {
-          clearTimeout(timeout)
-          resolve()
-        })
-      })
-    }
-  }
-
-  private attachOutputHandlers(session: AgentSession): void {
-    const { process: proc } = session
-
-    proc.stdout?.on('data', (data: Buffer) => {
-      const text = data.toString('utf-8')
-      this.emitOutput({
-        type: 'stdout',
-        data: text,
-        timestamp: Date.now(),
-      })
+    const proc = spawn('opencode', args, {
+      cwd: session.config.workingDirectory,
+      env: this.buildSafeEnv(),
+      stdio: ['pipe', 'pipe', 'pipe'],
     })
 
-    proc.stderr?.on('data', (data: Buffer) => {
-      this.emitOutput({
-        type: 'stderr',
-        data: data.toString('utf-8'),
-        timestamp: Date.now(),
-      })
-    })
-
-    proc.on('exit', (code) => {
-      this.emitOutput({
-        type: 'complete',
-        data: `OpenCode exited with code ${code ?? 'unknown'}`,
-        timestamp: Date.now(),
-      })
-    })
-
-    proc.on('error', (err) => {
-      this.emitOutput({
-        type: 'error',
-        data: err.message,
-        timestamp: Date.now(),
-      })
-    })
-  }
-
-  private buildCommandPrompt(command: AgentCommand): string {
-    const typeLabels: Record<string, string> = {
-      implement: '请实现以下功能',
-      fix_bug: '请修复以下 Bug',
-      refactor: '请重构以下代码',
-      add_test: '请为以下功能添加测试',
-    }
-
-    return `${typeLabels[command.type] ?? '请完成以下任务'}：\n${command.description}`
+    await this.runOneShot(proc, { parseFileChanges: false })
   }
 }

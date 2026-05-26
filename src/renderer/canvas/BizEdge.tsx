@@ -18,6 +18,19 @@ const edgeTypeConfig: Record<EdgeType, { color: string; label: string }> = {
   condition: { color: '#f59e0b', label: '条件' },
 }
 
+const VALID_EDGE_TYPES: EdgeType[] = ['default', 'success', 'failure', 'condition']
+
+interface BizEdgeData {
+  edgeType?: EdgeType
+}
+
+function isBizEdgeData(data: unknown): data is BizEdgeData {
+  if (!data || typeof data !== 'object') return false
+  const d = data as Record<string, unknown>
+  if (d.edgeType === undefined) return true
+  return typeof d.edgeType === 'string' && VALID_EDGE_TYPES.includes(d.edgeType as EdgeType)
+}
+
 export function BizEdge({
   id,
   sourceX,
@@ -37,7 +50,8 @@ export function BizEdge({
   const [editLabel, setEditLabel] = useState(labelText)
   const [isHover, setIsHover] = useState(false)
 
-  const edgeType = (data?.edgeType as EdgeType) || 'default'
+  const edgeData = isBizEdgeData(data) ? data : {}
+  const edgeType: EdgeType = edgeData.edgeType ?? 'default'
   const config = edgeTypeConfig[edgeType]
 
   const [edgePath, labelX, labelY] = getBezierPath({

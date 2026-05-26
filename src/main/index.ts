@@ -1,8 +1,8 @@
-import { app, BrowserWindow, ipcMain, Menu } from 'electron'
+import { app, BrowserWindow, Menu, dialog } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerIpcHandlers } from './ipc-handlers'
-import { initDatabase } from './database'
+import { registerIpcHandlers, agentManager } from './ipc-handlers'
+import { initDatabase, closeDatabase } from './database'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -25,7 +25,7 @@ class WindowManager {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
       },
     })
 
@@ -150,12 +150,12 @@ function buildMenu(): Menu {
         {
           label: 'About BizGraph',
           click: () => {
-            const focused = BrowserWindow.getFocusedWindow()
-            if (focused) {
-              focused.webContents.executeJavaScript(`
-                alert('BizGraph v0.1.0\\nOpen Source Agent CLI Desktop Orchestrator')
-              `)
-            }
+            dialog.showMessageBox({
+              type: 'info',
+              title: 'About BizGraph',
+              message: 'BizGraph v0.1.0',
+              detail: 'Open Source Agent CLI Desktop Orchestrator',
+            })
           },
         },
       ],
@@ -206,4 +206,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
   }
+})
+
+app.on('before-quit', async () => {
+  // 清理 Agent 输出监听器，防止内存泄漏
+  agentManager.destroy()
+  await closeDatabase()
 })

@@ -4,44 +4,21 @@
  * 存储路径：userData/settings.json
  */
 
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { execSync } from 'node:child_process'
+import { spawnSync, spawn } from 'node:child_process'
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import type {
+  CliToolConfig,
+  ApiKeyConfig,
+  McpServerConfig,
+  BizGraphSettings,
+} from '@shared/types'
+import { BizGraphError, ErrorCode } from './errors'
 
-// ============================================
-// 配置类型定义
-// ============================================
-
-export interface CliToolConfig {
-  name: string
-  npmPackage: string
-  command: string
-  installed: boolean
-  version?: string
-  path?: string
-}
-
-export interface ApiKeyConfig {
-  provider: 'anthropic' | 'openai' | 'deepseek' | 'gemini'
-  key: string
-  baseUrl?: string
-}
-
-export interface McpServerConfig {
-  name: string
-  command: string
-  args: string[]
-  enabled: boolean
-}
-
-export interface BizGraphSettings {
-  version: number
-  cliTools: CliToolConfig[]
-  apiKeys: ApiKeyConfig[]
-  defaultModel?: string
-  mcpServers: McpServerConfig[]
-}
+// Re-export types for backward compatibility
+export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings }
 
 const DEFAULT_SETTINGS: BizGraphSettings = {
   version: 1,
@@ -83,6 +60,86 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
 }
 
+// ============================================
+// API Key 加密
+// ============================================
+
+const API_KEY_PREFIX_ENC = 'enc:'
+const API_KEY_PREFIX_FALLBACK = 'fbk:'
+
+/** 当 safeStorage 不可用时，使用基于用户数据路径的密钥进行 AES 加密 */
+function getFallbackKey(): Buffer {
+  const salt = 'bizgraph-fallback-salt-v1'
+  return scryptSync(app.getPath('userData'), salt, 32)
+}
+
+function encryptFallback(plain: string): string {
+  const key = getFallbackKey()
+  const iv = randomBytes(16)
+  const cipher = createCipheriv('aes-256-cbc', key, iv)
+  const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
+  return `${API_KEY_PREFIX_FALLBACK}${iv.toString('base64')}:${encrypted.toString('base64')}`
+}
+
+function decryptFallback(encrypted: string): string {
+  const payload = encrypted.slice(API_KEY_PREFIX_FALLBACK.length)
+  const [ivB64, dataB64] = payload.split(':')
+  if (!ivB64 || !dataB64) throw new BizGraphError('Invalid fallback encrypted format', ErrorCode.SETTINGS_INVALID_FORMAT)
+  const key = getFallbackKey()
+  const iv = Buffer.from(ivB64, 'base64')
+  if (iv.length !== 16) {
+    throw new BizGraphError('Invalid IV length: AES-256-CBC requires 16 bytes', ErrorCode.SETTINGS_INVALID_FORMAT)
+  }
+  const encryptedData = Buffer.from(dataB64, 'base64')
+  const decipher = createDecipheriv('aes-256-cbc', key, iv)
+  const decrypted = Buffer.concat([decipher.update(encryptedData), decipher.final()])
+  return decrypted.toString('utf8')
+}
+
+function encryptApiKey(key: string): string {
+  if (!safeStorage.isEncryptionAvailable()) {
+    return encryptFallback(key)
+  }
+  const encrypted = safeStorage.encryptString(key)
+  return `${API_KEY_PREFIX_ENC}${encrypted.toString('base64')}`
+}
+
+function decryptApiKey(encrypted: string): string {
+  if (encrypted.startsWith(API_KEY_PREFIX_ENC)) {
+    const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
+    return safeStorage.decryptString(buf)
+  }
+  if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
+    return decryptFallback(encrypted)
+  }
+  // 向后兼容：旧版本的 plain: 前缀（base64，不安全但需兼容）
+  if (encrypted.startsWith('plain:')) {
+    return Buffer.from(encrypted.slice(6), 'base64').toString('utf-8')
+  }
+  // 向后兼容：未加密的明文
+  return encrypted
+}
+
+function encryptSettings(settings: BizGraphSettings): BizGraphSettings {
+  return {
+    ...settings,
+    apiKeys: settings.apiKeys.map((k) => ({
+      ...k,
+      key: encryptApiKey(k.key),
+    })),
+  }
+}
+
+function decryptSettings(settings: BizGraphSettings): BizGraphSettings {
+  return {
+    ...settings,
+    apiKeys: settings.apiKeys.map((k) => ({
+      ...k,
+      key: decryptApiKey(k.key),
+    })),
+  }
+}
+
 const SETTINGS_FILENAME = 'settings.json'
 
 let cachedSettings: BizGraphSettings | null = null
@@ -102,7 +159,8 @@ export async function readSettings(): Promise<BizGraphSettings> {
   try {
     const raw = await fs.readFile(settingsPath, 'utf-8')
     const parsed = JSON.parse(raw) as BizGraphSettings
-    cachedSettings = mergeSettings(DEFAULT_SETTINGS, parsed)
+    const merged = mergeSettings(DEFAULT_SETTINGS, parsed)
+    cachedSettings = decryptSettings(merged)
     return cachedSettings
   } catch {
     cachedSettings = { ...DEFAULT_SETTINGS }
@@ -113,7 +171,8 @@ export async function readSettings(): Promise<BizGraphSettings> {
 export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   cachedSettings = settings
   const settingsPath = await getSettingsPath()
-  await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+  const encrypted = encryptSettings(settings)
+  await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
 }
 
 function mergeSettings(
@@ -154,21 +213,27 @@ export async function detectCliTool(name: string): Promise<{
   const tool = settings.cliTools.find((t) => t.name === name)
   if (!tool) return { installed: false }
   try {
-    const result = execSync(`${tool.command} --version`, {
+    const result = spawnSync(tool.command, ['--version'], {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'ignore'],
     })
-    const version = result.trim().split(/\r?\n/)[0]
+    if (result.error || result.status !== 0) return { installed: false }
+    const version = (result.stdout ?? '').trim().split(/\r?\n/)[0]
     let cmdPath: string | undefined
     try {
-      cmdPath = execSync(
-        process.platform === 'win32' ? `where ${tool.command}` : `which ${tool.command}`,
-        { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'ignore'] },
-      )
-        .trim()
-        .split(/\r?\n/)[0]
-    } catch {}
+      const whichCmd = process.platform === 'win32' ? 'where' : 'which'
+      const whichResult = spawnSync(whichCmd, [tool.command], {
+        encoding: 'utf-8',
+        timeout: 3000,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      })
+      if (!whichResult.error && whichResult.status === 0) {
+        cmdPath = (whichResult.stdout ?? '').trim().split(/\r?\n/)[0]
+      }
+    } catch (err) {
+      console.warn(`[BizGraph] Failed to find path for ${tool.command}:`, err)
+    }
     return { installed: true, version, path: cmdPath }
   } catch {
     return { installed: false }
@@ -195,25 +260,51 @@ export async function installCliTool(name: string): Promise<{
   const settings = await readSettings()
   const tool = settings.cliTools.find((t) => t.name === name)
   if (!tool) return { success: false, message: `Unknown tool: ${name}` }
-  try {
-    execSync(`npm install -g ${tool.npmPackage}`, {
+
+  return new Promise((resolve) => {
+    const proc = spawn('npm', ['install', '-g', tool.npmPackage], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
     })
-    const detected = await detectCliTool(name)
-    const idx = settings.cliTools.findIndex((t) => t.name === name)
-    settings.cliTools[idx] = { ...tool, ...detected }
-    await writeSettings(settings)
-    return {
-      success: detected.installed,
-      message: detected.installed
-        ? `${tool.name} installed successfully (${detected.version})`
-        : `Install command ran but tool not detected`,
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { success: false, message: `Install failed: ${msg}` }
-  }
+
+    let stdout = ''
+    let stderr = ''
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString()
+    })
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString()
+    })
+
+    proc.on('error', (err: Error) => {
+      resolve({ success: false, message: `Install failed: ${err.message}` })
+    })
+
+    proc.on('close', async (code: number | null) => {
+      if (code !== 0) {
+        resolve({ success: false, message: `Install failed: ${stderr.slice(0, 500)}` })
+        return
+      }
+
+      try {
+        const detected = await detectCliTool(name)
+        const idx = settings.cliTools.findIndex((t) => t.name === name)
+        settings.cliTools[idx] = { ...tool, ...detected }
+        await writeSettings(settings)
+        resolve({
+          success: detected.installed,
+          message: detected.installed
+            ? `${tool.name} installed successfully (${detected.version})`
+            : `Install command ran but tool not detected`,
+        })
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        resolve({ success: false, message: `Install failed: ${msg}` })
+      }
+    })
+  })
 }
 
 // ============================================

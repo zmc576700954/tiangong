@@ -42,28 +42,23 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   selectedEdgeId: null,
 
   loadGraphs: async () => {
-    const graphs = await window.electronAPI['graph:list']() as Graph[]
+    const graphs = await window.electronAPI['graph:list']()
     set({ graphs })
   },
 
   loadGraph: async (graphId: string) => {
-    const result = await window.electronAPI['graph:get'](graphId) as { graph: Graph; nodes: GraphNode[]; edges: GraphEdge[] } | null
+    const result = await window.electronAPI['graph:get'](graphId)
     if (result) {
       set({
         nodes: result.nodes,
         edges: result.edges,
+        bugs: result.bugs,
       })
-      const allBugs: BugNode[] = []
-      for (const node of result.nodes) {
-        const nodeBugs = await window.electronAPI['bug:listByNode'](node.id) as BugNode[]
-        allBugs.push(...nodeBugs)
-      }
-      set({ bugs: allBugs })
     }
   },
 
   createGraph: async (name, type) => {
-    const graph = await window.electronAPI['graph:create']({ name, type }) as Graph
+    const graph = await window.electronAPI['graph:create']({ name, type })
     set((state) => ({ graphs: [graph, ...state.graphs] }))
     return graph
   },
@@ -86,13 +81,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   createNode: async (data) => {
-    const node = await window.electronAPI['node:create'](data) as GraphNode
+    const node = await window.electronAPI['node:create'](data)
     set((state) => ({ nodes: [...state.nodes, node] }))
     return node
   },
 
   updateNode: async (id, data) => {
-    const updated = await window.electronAPI['node:update'](id, data) as GraphNode
+    const updated = await window.electronAPI['node:update'](id, data)
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? updated : n)),
     }))
@@ -112,13 +107,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   createEdge: async (data) => {
-    const edge = await window.electronAPI['edge:create'](data) as GraphEdge
+    const edge = await window.electronAPI['edge:create'](data)
     set((state) => ({ edges: [...state.edges, edge] }))
     return edge
   },
 
   updateEdge: async (id, data) => {
-    const updated = await window.electronAPI['edge:update'](id, data) as GraphEdge
+    const updated = await window.electronAPI['edge:update'](id, data)
     set((state) => ({
       edges: state.edges.map((e) => (e.id === id ? updated : e)),
     }))
@@ -137,13 +132,13 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   createBug: async (data) => {
-    const bug = await window.electronAPI['bug:create'](data) as BugNode
+    const bug = await window.electronAPI['bug:create'](data)
     set((state) => ({ bugs: [...state.bugs, bug] }))
     return bug
   },
 
   updateBug: async (id, data) => {
-    const updated = await window.electronAPI['bug:update'](id, data) as BugNode
+    const updated = await window.electronAPI['bug:update'](id, data)
     set((state) => ({
       bugs: state.bugs.map((b) => (b.id === id ? updated : b)),
     }))

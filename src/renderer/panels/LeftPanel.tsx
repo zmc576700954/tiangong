@@ -65,7 +65,7 @@ export function LeftPanel() {
 
   const loadDirectory = useCallback(async (dirPath: string): Promise<FileEntry[]> => {
     if (!ipc) return []
-    const rawEntries = await ipc['fs:readDir'](dirPath) as { name: string; isDirectory: boolean }[]
+    const rawEntries = await ipc['fs:readDir'](dirPath)
     const sorted = rawEntries
       .filter((e: { name: string }) => !e.name.startsWith('.') && e.name !== 'node_modules')
       .sort((a: { isDirectory: boolean }, b: { isDirectory: boolean }) => {
@@ -102,7 +102,7 @@ export function LeftPanel() {
   const handleOpenDirectory = useCallback(async () => {
     if (!ipc) return
     try {
-      const dirPath = await ipc['dialog:openDirectory']() as string | null
+      const dirPath = await ipc['dialog:openDirectory']()
       if (!dirPath) return
       const exists = projects.some((p) => p.path === dirPath)
       if (exists) {
@@ -154,7 +154,7 @@ export function LeftPanel() {
       const result = await ipc['graph:initFromProject']({
         projectPath: project.path,
         projectName: project.name,
-      }) as { onlineGraph: { id: string }; devGraph: { id: string } }
+      })
 
       const { setCurrentGraph } = useGraphStore.getState()
       setCurrentGraph(result.onlineGraph.id)

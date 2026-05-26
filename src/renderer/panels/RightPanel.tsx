@@ -427,15 +427,22 @@ function EditableTextArea({
     setLocalValue(value)
   }, [value])
 
+  // Debounce save: only trigger onSave 500ms after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (localValue !== value) {
+        onSave(localValue)
+      }
+    }, 500)
+    return () => clearTimeout(timer)
+  }, [localValue, onSave, value])
+
   return (
     <div className="space-y-1.5">
       <label className="text-xs font-medium text-muted-foreground">{label}</label>
       <textarea
         value={localValue}
-        onChange={(e) => {
-          setLocalValue(e.target.value)
-          onSave(e.target.value)
-        }}
+        onChange={(e) => setLocalValue(e.target.value)}
         placeholder={placeholder}
         className="w-full px-2 py-1.5 text-sm border rounded-md bg-background resize-none"
         rows={rows}
@@ -913,11 +920,11 @@ function EdgeEditor({
   const sourceNode = nodes.find((n) => n.id === edge.source)
   const targetNode = nodes.find((n) => n.id === edge.target)
 
-  const edgeTypeOptions: { value: import('@shared/types').EdgeType; label: string; color: string }[] = [
-    { value: 'default', label: '默认流程', color: '#94a3b8' },
-    { value: 'success', label: '成功分支', color: '#22c55e' },
-    { value: 'failure', label: '失败分支', color: '#ef4444' },
-    { value: 'condition', label: '条件分支', color: '#f59e0b' },
+  const edgeTypeOptions = [
+    { value: 'default' as const, label: '默认流程', color: '#94a3b8' },
+    { value: 'success' as const, label: '成功分支', color: '#22c55e' },
+    { value: 'failure' as const, label: '失败分支', color: '#ef4444' },
+    { value: 'condition' as const, label: '条件分支', color: '#f59e0b' },
   ]
 
   return (

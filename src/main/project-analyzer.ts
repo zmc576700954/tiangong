@@ -106,7 +106,6 @@ export class ProjectAnalyzer {
 
       // 3. 该模块下的所有流程 - 垂直堆叠
       const processCount = module.processes.length
-      const processTotalHeight = (processCount - 1) * this.config.processSpacingY
       const processBaseY = this.config.processYStart
 
       for (let j = 0; j < processCount; j++) {
@@ -218,7 +217,7 @@ export class ProjectAnalyzer {
 
 export function computeOptimalLayout(
   scanResult: ProjectScanResult,
-  canvasWidth: number = 1400,
+  _canvasWidth: number = 1400,
 ): LayoutConfig {
   const moduleCount = scanResult.modules.length
   const maxProcesses = Math.max(

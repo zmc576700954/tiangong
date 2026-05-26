@@ -28,6 +28,7 @@ export function SettingsPanel() {
   const [loading, setLoading] = useState(true)
   const [installing, setInstalling] = useState<string | null>(null)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
   useEffect(() => {
     loadSettings()
@@ -36,7 +37,7 @@ export function SettingsPanel() {
   const loadSettings = async () => {
     if (!ipc) return
     try {
-      const data = await ipc['settings:read']() as BizGraphSettings
+      const data = await ipc['settings:read']()
       setSettings(data)
       const keys: Record<string, string> = {}
       for (const k of data.apiKeys) {
@@ -54,7 +55,7 @@ export function SettingsPanel() {
     if (!ipc) return
     setLoading(true)
     try {
-      const updated = await ipc['settings:refreshCli']() as CliToolConfig[]
+      const updated = await ipc['settings:refreshCli']()
       setSettings((prev) => prev ? { ...prev, cliTools: updated } : null)
     } finally {
       setLoading(false)
@@ -65,8 +66,9 @@ export function SettingsPanel() {
     if (!ipc) return
     setInstalling(name)
     try {
-      const result = await ipc['settings:installCli'](name) as { success: boolean; message: string }
-      alert(result.message)
+      const result = await ipc['settings:installCli'](name)
+      setToast({ message: result.message, type: result.success ? 'success' : 'error' })
+      setTimeout(() => setToast(null), 4000)
       if (result.success) await refreshCli()
     } finally {
       setInstalling(null)
@@ -88,7 +90,17 @@ export function SettingsPanel() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-3 space-y-5">
+    <div className="h-full overflow-y-auto p-3 space-y-5 relative">
+      {/* Toast 通知 */}
+      {toast && (
+        <div className={`absolute top-3 left-3 right-3 z-50 px-3 py-2 rounded-md text-xs shadow-lg border ${
+          toast.type === 'success'
+            ? 'bg-green-50 text-green-700 border-green-200'
+            : 'bg-red-50 text-red-700 border-red-200'
+        }`}>
+          {toast.message}
+        </div>
+      )}
       <section>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">

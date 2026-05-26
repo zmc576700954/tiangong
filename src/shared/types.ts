@@ -3,7 +3,9 @@
  * 共享于主进程与渲染进程之间
  */
 
-import type { ChildProcess } from 'node:child_process'
+// Note: Do NOT import Node.js-specific types here.
+// This file is shared between main and renderer processes.
+// ChildProcess and other Node.js runtime objects must not appear in serializable types.
 
 // ============================================
 // 节点相关类型
@@ -174,10 +176,11 @@ export interface AgentOutput {
   changeType?: 'add' | 'modify' | 'delete'
 }
 
-/** Agent 会话 */
+/** Agent 会话（可序列化，不含 Node.js 运行时对象） */
 export interface AgentSession {
   id: string
-  process: ChildProcess
+  /** 进程 PID（运行时通过适配器内部 Map 关联到真实进程） */
+  pid?: number
   adapterName: string
   config: AgentSessionConfig
   startTime: number
@@ -202,6 +205,9 @@ export interface AgentAdapter {
   /** 监听输出流 */
   onOutput(handler: (output: AgentOutput) => void): void
 
+  /** 移除输出流监听 */
+  offOutput(handler: (output: AgentOutput) => void): void
+
   /** 终止会话 */
   terminateSession(sessionId: string): Promise<void>
 }
@@ -210,12 +216,12 @@ export interface AgentAdapter {
 // 范围守卫类型
 // ============================================
 
+/** 沙箱（可序列化，不含运行时对象） */
 export interface Sandbox {
   id: string
   workingDir: string
   backupDir: string
   allowedFiles: string[]
-  watcher?: unknown
 }
 
 export interface ValidationResult {
@@ -312,7 +318,7 @@ export interface IpcApi {
   // 图操作
   'graph:create': (data: { name: string; type: GraphType }) => Promise<Graph>
   'graph:list': () => Promise<Graph[]>
-  'graph:get': (id: string) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[] } | null>
+  'graph:get': (id: string) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>
 
   // 节点操作
@@ -333,7 +339,7 @@ export interface IpcApi {
 
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>
-  'agent:startSession': (adapterName: string, config: AgentSessionConfig) => Promise<{ sessionId: string }>
+  'agent:startSession': (adapterName: string, config: AgentSessionConfig) => Promise<{ sessionId: string; fallback?: boolean }>
   'agent:sendCommand': (sessionId: string, command: AgentCommand) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
