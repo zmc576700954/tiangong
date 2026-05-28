@@ -1,23 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Bot, Server, RefreshCw, Download, Check, AlertCircle } from 'lucide-react'
 import { cn } from '../lib/utils'
-
-interface CliToolConfig {
-  name: string
-  npmPackage: string
-  command: string
-  installed: boolean
-  version?: string
-  path?: string
-}
-
-interface BizGraphSettings {
-  version: number
-  cliTools: CliToolConfig[]
-  apiKeys: { provider: string; key: string; baseUrl?: string }[]
-  defaultModel?: string
-  mcpServers: { name: string; command: string; args: string[]; enabled: boolean }[]
-}
+import type { BizGraphSettings } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -79,6 +63,8 @@ export function SettingsPanel() {
     if (!ipc) return
     const key = apiKeys[provider]
     await ipc['settings:setApiKey'](provider, key)
+    // C-2-FIX: 保存后立即清除本地明文 state，减少敏感信息驻留时间
+    setApiKeys((prev) => ({ ...prev, [provider]: '' }))
   }
 
   if (loading) {

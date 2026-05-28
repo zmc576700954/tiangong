@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
@@ -17,7 +18,6 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
-import { useAgentStore } from '../store/agentStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, EdgeType, NodeStatus } from '@shared/types'
 import { BizEdge, getEdgeMarkerEnd } from './BizEdge'
@@ -30,6 +30,14 @@ interface GraphCanvasProps {
 }
 
 export function GraphCanvas({ graphId }: GraphCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <GraphCanvasInner graphId={graphId} />
+    </ReactFlowProvider>
+  )
+}
+
+function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // PERFORMANCE: 使用细粒度选择器，避免订阅整个 store 导致的不必要重渲染
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
@@ -43,17 +51,18 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
   const deleteNode = useGraphStore((state) => state.deleteNode)
   const deleteEdge = useGraphStore((state) => state.deleteEdge)
   const updateNode = useGraphStore((state) => state.updateNode)
-  const sessions = useAgentStore((state) => state.sessions)
+  const bugs = useGraphStore((state) => state.bugs)
+
   const { screenToFlowPosition } = useReactFlow()
 
-  // PERFORMANCE: 预计算每个节点的 bugCount，避免每次渲染 O(n²) 的 filter
+  // I-4-FIX: 从 bugs 数组统计每个节点的实际 Bug 数量（而非 Agent 会话数）
   const bugCountMap = useMemo(() => {
     const map = new Map<string, number>()
-    for (const s of sessions) {
-      map.set(s.nodeId, (map.get(s.nodeId) ?? 0) + 1)
+    for (const bug of bugs) {
+      map.set(bug.nodeId, (map.get(bug.nodeId) ?? 0) + 1)
     }
     return map
-  }, [sessions])
+  }, [bugs])
 
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<Node>([])
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -228,12 +237,18 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
     (event: React.MouseEvent, nodeId: string) => {
       event.preventDefault()
       event.stopPropagation()
-      const pos = clampMenuPosition(event.clientX, event.clientY, 176, 240)
-      setNodeContextMenu({ nodeId, x: pos.x, y: pos.y })
+      const padding = 8
+      const menuWidth = 176
+      const menuHeight = 240
+      const maxX = window.innerWidth - menuWidth - padding
+      const maxY = window.innerHeight - menuHeight - padding
+      const x = Math.max(padding, Math.min(event.clientX, maxX))
+      const y = Math.max(padding, Math.min(event.clientY, maxY))
+      setNodeContextMenu({ nodeId, x, y })
       setShowNodeMenu(false)
       setShowEdgeTypeMenu(false)
     },
-    [clampMenuPosition],
+    [], // 纯函数计算，无外部依赖
   )
 
   useCanvasKeyboard({
@@ -247,7 +262,8 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
     },
   })
 
-  const handleCreateNode = async (type: NodeType) => {
+  // W-2-FIX: 使用 useCallback 稳定化，避免 CanvasOverlay 不必要重渲染
+  const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
     await createNode({
       type,
@@ -259,7 +275,7 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
       acceptanceCriteria: [],
     })
     setShowNodeMenu(false)
-  }
+  }, [screenToFlowPosition, menuPosition, createNode, graphId])
 
   const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
     await updateNode(nodeId, { status })
@@ -280,7 +296,8 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
       />
     ),
   }), [handleNodeContextMenu])
-  const edgeTypes = { bizEdge: BizEdge }
+  // W-1-FIX: 稳定化 edgeTypes，避免每次渲染创建新引用导致 ReactFlow 重渲染
+  const edgeTypes = useMemo(() => ({ bizEdge: BizEdge }), [])
 
   const isEmpty = graphNodes.length === 0
 

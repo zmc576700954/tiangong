@@ -112,12 +112,17 @@ function decryptApiKey(encrypted: string): string {
   if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
     return decryptFallback(encrypted)
   }
-  // 向后兼容：旧版本的 plain: 前缀（base64，不安全但需兼容）
-  if (encrypted.startsWith('plain:')) {
-    return Buffer.from(encrypted.slice(6), 'base64').toString('utf-8')
-  }
-  // 向后兼容：未加密的明文
-  return encrypted
+  // 安全迁移：旧版 plain: 前缀或裸明文 Key 不再直接返回
+  // 记录警告并返回空字符串，强制用户重新设置 API Key
+  console.warn('[BizGraph] Refusing to decrypt unencrypted API key. Please re-enter your API key in Settings.')
+  return ''
+}
+
+/**
+ * 检测 API Key 是否为旧版未加密格式，需要迁移
+ */
+export function needsMigration(encrypted: string): boolean {
+  return !encrypted.startsWith(API_KEY_PREFIX_ENC) && !encrypted.startsWith(API_KEY_PREFIX_FALLBACK) && encrypted !== ''
 }
 
 function encryptSettings(settings: BizGraphSettings): BizGraphSettings {
@@ -261,10 +266,24 @@ export async function installCliTool(name: string): Promise<{
   const tool = settings.cliTools.find((t) => t.name === name)
   if (!tool) return { success: false, message: `Unknown tool: ${name}` }
 
+  // W3-FIX: 检测 npm 是否可用
+  const npmCheck = spawnSync('npm', ['--version'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+    stdio: ['pipe', 'pipe', 'ignore'],
+  })
+  if (npmCheck.error || npmCheck.status !== 0) {
+    return {
+      success: false,
+      message: 'npm is not installed or not in PATH. Please install Node.js first: https://nodejs.org/',
+    }
+  }
+
   return new Promise((resolve) => {
     const proc = spawn('npm', ['install', '-g', tool.npmPackage], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
+      shell: process.platform === 'win32', // Windows 上需要 shell 来找到 npm
     })
 
     let stdout = ''
@@ -279,12 +298,30 @@ export async function installCliTool(name: string): Promise<{
     })
 
     proc.on('error', (err: Error) => {
-      resolve({ success: false, message: `Install failed: ${err.message}` })
+      // W3-FIX: 检测权限错误并提供提示
+      const code = (err as NodeJS.ErrnoException).code
+      if (code === 'EACCES') {
+        resolve({
+          success: false,
+          message: `Permission denied. Try: sudo npm install -g ${tool.npmPackage} (macOS/Linux) or run as Administrator (Windows)`,
+        })
+      } else {
+        resolve({ success: false, message: `Install failed: ${err.message}` })
+      }
     })
 
     proc.on('close', async (code: number | null) => {
       if (code !== 0) {
-        resolve({ success: false, message: `Install failed: ${stderr.slice(0, 500)}` })
+        const combined = stderr + stdout
+        // W3-FIX: 检测常见权限错误信息
+        if (combined.includes('EACCES') || combined.includes('permission denied') || combined.includes('Operation not permitted')) {
+          resolve({
+            success: false,
+            message: `Permission denied. Try: sudo npm install -g ${tool.npmPackage} (macOS/Linux) or run as Administrator (Windows)`,
+          })
+        } else {
+          resolve({ success: false, message: `Install failed: ${stderr.slice(0, 500)}` })
+        }
         return
       }
 

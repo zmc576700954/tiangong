@@ -468,7 +468,7 @@ function RulesEditor({
   const handleAdd = () => {
     if (!newTitle.trim()) return
     const rule: BusinessRule = {
-      id: `rule-${Date.now()}`,
+      id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: newTitle.trim(),
       description: '',
       condition: newCondition.trim(),

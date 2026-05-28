@@ -33,6 +33,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'bug:create',
   'bug:update',
   'bug:delete',
+  'bug:listByNode',
 
   // Agent operations
   'agent:listAdapters',
@@ -42,6 +43,7 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // File system — 仅暴露只读目录浏览
   'fs:readDir',
+  'fs:registerProjectPaths',
 
   // Dialog
   'dialog:openDirectory',

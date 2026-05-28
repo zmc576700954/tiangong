@@ -15,8 +15,8 @@
 import { spawn, execFile } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomUUID } from 'node:crypto'
 import { BaseAdapter } from './base'
+import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
 
@@ -36,7 +36,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const sessionId = `claude-${randomUUID().replace(/-/g, '')}`
+    const sessionId = generateId('claude')
     const session: AgentSession = {
       id: sessionId,
       adapterName: this.name,

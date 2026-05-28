@@ -348,6 +348,7 @@ export interface IpcApi {
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
   'fs:readFile': (path: string) => Promise<string>
   'fs:writeFile': (path: string, content: string) => Promise<void>
+  'fs:registerProjectPaths': (paths: string[]) => Promise<void>
 
   // Git 操作
   'git:status': (path: string) => Promise<{ modified: string[]; untracked: string[] }>

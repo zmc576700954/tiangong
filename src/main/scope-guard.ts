@@ -5,11 +5,11 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
 import chokidar from 'chokidar'
 import type { FSWatcher } from 'chokidar'
 import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/types'
 import { ScopeGuardError, ErrorCode } from './errors'
+import { generateId } from './shared/env'
 
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
   return allowedFiles.map((file) => {
@@ -35,7 +35,7 @@ export class ScopeGuard {
     allowedFiles: string[],
     workingDir: string,
   ): Promise<Sandbox> {
-    const sandboxId = `sandbox-${randomUUID().replace(/-/g, '')}`
+    const sandboxId = generateId('sandbox')
     const backupDir = path.join(workingDir, '.bizgraph', 'backups', sandboxId)
 
     await fs.mkdir(backupDir, { recursive: true })

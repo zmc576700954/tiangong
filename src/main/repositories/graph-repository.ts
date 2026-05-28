@@ -5,11 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { Graph, GraphNode, GraphEdge, BugNode, GraphType } from '@shared/types'
-import { randomUUID } from 'node:crypto'
-
-function generateId(prefix: string): string {
-  return `${prefix}-${randomUUID().replace(/-/g, '')}`
-}
+import { generateId } from '../shared/env'
 
 function rowStr(row: Record<string, unknown>, key: string): string {
   const val = row[key]

@@ -37,7 +37,11 @@ export async function readConfigs(projectPath: string): Promise<ProjectConfigs> 
     try {
       const raw = await fs.readFile(path.join(projectPath, filename), 'utf-8')
       return parser(raw)
-    } catch (err) {
+    } catch (err: unknown) {
+      // ENOENT 是预期行为（项目可能不使用该技术栈），不输出日志
+      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null
+      }
       console.warn(`[ProjectScanner] Failed to read ${filename}:`, err)
       return null
     }

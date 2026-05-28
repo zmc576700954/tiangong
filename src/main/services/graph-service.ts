@@ -8,11 +8,7 @@ import type { Graph, GraphType, ProjectScanResult } from '@shared/types'
 import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
 import { ProjectAnalyzer, computeOptimalLayout, type ProjectGraphResult } from '../project-analyzer'
-import { randomUUID } from 'node:crypto'
-
-function generateId(prefix: string): string {
-  return `${prefix}-${randomUUID().replace(/-/g, '')}`
-}
+import { generateId } from '../shared/env'
 
 export interface InitFromProjectResult {
   onlineGraph: Graph

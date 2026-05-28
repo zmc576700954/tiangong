@@ -7,8 +7,8 @@
 
 import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { randomUUID } from 'node:crypto'
 import { BaseAdapter } from './base'
+import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 
 const execFileAsync = promisify(execFile)
@@ -27,7 +27,7 @@ export class OpenCodeAdapter extends BaseAdapter {
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const sessionId = `opencode-${randomUUID().replace(/-/g, '')}`
+    const sessionId = generateId('opencode')
     const session: AgentSession = {
       id: sessionId,
       adapterName: this.name,

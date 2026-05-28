@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import type { AgentOutput, AgentSessionConfig, AgentCommand } from '@shared/types'
 
+/** 单个会话的输出上限，防止长时间运行导致内存膨胀 */
+const MAX_OUTPUTS_PER_SESSION = 1000
+
 interface AgentSessionState {
   id: string
   adapterName: string
@@ -75,7 +78,7 @@ export const useAgentStore = create<AgentState>((set) => ({
         s.id === sessionId
           ? {
               ...s,
-              outputs: [...s.outputs, output],
+              outputs: [...s.outputs, output].slice(-MAX_OUTPUTS_PER_SESSION),
               status: output.type === 'error' ? 'error' : s.status,
             }
           : s,

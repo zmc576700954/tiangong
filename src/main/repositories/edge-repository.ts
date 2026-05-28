@@ -5,11 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { GraphEdge } from '@shared/types'
-import { randomUUID } from 'node:crypto'
-
-function generateId(prefix: string): string {
-  return `${prefix}-${randomUUID().replace(/-/g, '')}`
-}
+import { generateId } from '../shared/env'
 
 export class EdgeRepository {
   constructor(private db: Client) {}

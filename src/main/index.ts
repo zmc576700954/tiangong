@@ -36,9 +36,16 @@ class WindowManager {
       win.loadURL(process.env.VITE_DEV_SERVER_URL)
       win.webContents.openDevTools()
 
-      // 开发模式下 Vite server 可能还没就绪，添加重试逻辑
+      // 开发模式下 Vite server 可能还没就绪，添加重试逻辑（最多 10 次）
+      let loadRetries = 0
+      const MAX_LOAD_RETRIES = 10
       win.webContents.on('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
-        console.log(`Failed to load ${validatedURL}, retrying in 500ms...`)
+        loadRetries++
+        if (loadRetries > MAX_LOAD_RETRIES) {
+          console.error(`Failed to load ${validatedURL} after ${MAX_LOAD_RETRIES} retries, giving up.`)
+          return
+        }
+        console.log(`Failed to load ${validatedURL}, retrying in 500ms... (${loadRetries}/${MAX_LOAD_RETRIES})`)
         setTimeout(() => {
           if (process.env.VITE_DEV_SERVER_URL) {
             win?.loadURL(process.env.VITE_DEV_SERVER_URL)

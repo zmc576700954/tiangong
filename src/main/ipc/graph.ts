@@ -80,8 +80,5 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle): voi
     return bugRepo.listByNode(nodeId)
   })
 
-  // ---------- 从项目初始化图 ----------
-  typedHandle('graph:initFromProject', async (_, data) => {
-    return graphService.initFromProject(data)
-  })
+  // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册
 }

@@ -3,7 +3,7 @@
  * 组装并注册所有领域 IPC handlers
  */
 
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, ipcMain } from 'electron'
 import path from 'node:path'
 import { getClient } from './database'
 import { ClaudeCodeAdapter } from './adapters/claude-code'
@@ -61,7 +61,10 @@ broadcaster.onBroadcast((adapterName, output) => {
 export function registerIpcHandlers(): void {
   const db = getClient()
   const graphService = new GraphService(db)
-  const typedHandle = createTypedHandle()
+  const typedHandle = createTypedHandle(ipcMain)
+
+  // ---------- 会话级允许路径（渲染进程 localStorage 中保存的项目路径） ----------
+  const sessionAllowedPaths = new Set<string>()
 
   // ---------- 路径安全校验 ----------
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
@@ -112,6 +115,11 @@ export function registerIpcHandlers(): void {
       console.warn('[IPC] Failed to load project paths for path validation:', err)
     }
 
+    // 会话级允许路径（渲染进程 localStorage 保存的项目路径）
+    for (const p of sessionAllowedPaths) {
+      allowedRoots.push(path.resolve(p))
+    }
+
     // 3. 检查是否在允许路径下
     for (const root of allowedRoots) {
       const normalizedRoot = path.resolve(root)
@@ -135,4 +143,14 @@ export function registerIpcHandlers(): void {
   registerProjectHandlers(db, typedHandle)
   registerSettingsHandlers(typedHandle)
   registerDialogHandlers(typedHandle)
+
+  // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
+  typedHandle('fs:registerProjectPaths', async (_, paths: unknown) => {
+    if (!Array.isArray(paths)) return
+    for (const p of paths) {
+      if (typeof p === 'string' && p.trim()) {
+        sessionAllowedPaths.add(path.resolve(p))
+      }
+    }
+  })
 }

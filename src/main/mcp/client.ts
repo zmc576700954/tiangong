@@ -5,33 +5,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-
-/** 清理环境变量，防止敏感信息泄露给子进程 */
-function buildSafeEnv(): NodeJS.ProcessEnv {
-  const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
-  const allowedKeys = new Set([
-    'PATH', 'Path', 'PATHEXT',
-    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
-    'TMPDIR', 'TMP', 'TEMP',
-    'SHELL', 'COMSPEC', 'TERM',
-    'LANG', 'LC_ALL', 'LC_CTYPE',
-    'USER', 'USERNAME', 'LOGNAME',
-    'APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME',
-    'SSH_AUTH_SOCK', 'GNOME_KEYRING_CONTROL',
-    'DISPLAY', 'WAYLAND_DISPLAY',
-    'CLICOLOR', 'FORCE_COLOR', 'NO_COLOR',
-  ])
-
-  const safeEnv: NodeJS.ProcessEnv = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined) continue
-    if (blockedPrefixes.some((p) => key.startsWith(p))) continue
-    if (allowedKeys.has(key) || !/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
-      safeEnv[key] = value
-    }
-  }
-  return safeEnv
-}
+import { buildSafeEnv } from '../shared/env'
 
 export interface McpTool {
   name: string
@@ -72,6 +46,10 @@ export class McpClient extends EventEmitter {
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
+      const connectTimeout = setTimeout(() => {
+        reject(new Error('MCP connect timeout: process did not respond to initialize handshake within 10s'))
+      }, 10000)
+
       this.proc = spawn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: buildSafeEnv(),
@@ -86,16 +64,22 @@ export class McpClient extends EventEmitter {
       })
 
       this.proc.on('error', (err) => {
+        clearTimeout(connectTimeout)
         reject(new Error(`MCP process error: ${err.message}`))
       })
 
       this.proc.on('exit', (code) => {
+        clearTimeout(connectTimeout)
         this.emit('exit', code)
         this.rejectAll(new Error(`MCP process exited with code ${code ?? 'unknown'}`))
       })
 
-      // Send initialize handshake after a short delay to ensure process is ready
-      setTimeout(async () => {
+      // 基于响应的握手：等待进程 stdout 产生数据后再发送 initialize，
+      // 而非硬编码延迟。若 2 秒内无输出则直接尝试（某些服务器不输出启动信息）。
+      let handshakeStarted = false
+      const startHandshake = async () => {
+        if (handshakeStarted) return
+        handshakeStarted = true
         try {
           await this.call('initialize', {
             protocolVersion: '2024-11-05',
@@ -105,11 +89,26 @@ export class McpClient extends EventEmitter {
           this.initialized = true
           await this.listTools()
           await this.listResources()
+          clearTimeout(connectTimeout)
           resolve()
         } catch (err) {
+          clearTimeout(connectTimeout)
           reject(err)
         }
-      }, 500)
+      }
+
+      // 策略1：等待进程首次输出数据（说明进程已就绪）
+      const onDataOnce = () => {
+        this.proc?.stdout?.off('data', onDataOnce)
+        startHandshake()
+      }
+      this.proc.stdout?.on('data', onDataOnce)
+
+      // 策略2：若 2 秒内无输出，直接尝试握手（兼容无启动输出的服务器）
+      setTimeout(() => {
+        this.proc?.stdout?.off('data', onDataOnce)
+        startHandshake()
+      }, 2000)
     })
   }
 

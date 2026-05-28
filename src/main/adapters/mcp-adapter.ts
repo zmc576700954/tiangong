@@ -3,22 +3,112 @@
  *
  * When CLI agents (Claude Code, Codex, OpenCode) are not installed,
  * this adapter acts as a fallback using:
- * 1. Direct LLM API calls (Anthropic, OpenAI, DeepSeek)
+ * 1. Direct LLM API calls (Anthropic, OpenAI, DeepSeek, Gemini)
  * 2. Optional MCP servers for enhanced tool use
  *
  * Reference: cc-switch unified configuration pattern
  */
 
-import { randomUUID } from 'node:crypto'
 import { BaseAdapter } from './base'
 import { McpClient } from '../mcp/client'
-import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import { generateId } from '../shared/env'
+import type { AgentSession, AgentSessionConfig, AgentCommand, ApiKeyConfig } from '@shared/types'
 import { readSettings } from '../settings'
 import { AdapterError } from '../errors'
 
 interface LlmMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+}
+
+// ============================================
+// Provider 配置（抽象 LLM 调用差异）
+// ============================================
+
+interface ProviderConfig {
+  defaultModel: string
+  buildUrl: (baseUrl: string | undefined, key: string, model: string) => string
+  buildHeaders: (key: string, baseUrl: string | undefined) => Record<string, string>
+  buildBody: (messages: LlmMessage[], model: string) => unknown
+  extractContent: (data: unknown) => string
+}
+
+const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
+  anthropic: {
+    defaultModel: 'claude-3-5-sonnet-20241022',
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/v1/messages` : 'https://api.anthropic.com/v1/messages',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+    }),
+    buildBody: (messages, model) => {
+      const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
+      const userMsgs = messages.filter((m) => m.role !== 'system')
+      return {
+        model,
+        max_tokens: 4096,
+        system: systemMsg,
+        messages: userMsgs.map((m) => ({ role: m.role, content: m.content })),
+      }
+    },
+    extractContent: (data: unknown) => {
+      const d = data as { content?: { type: string; text?: string }[] }
+      return d.content?.find((c) => c.type === 'text')?.text ?? ''
+    },
+  },
+  openai: {
+    defaultModel: 'gpt-4o',
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.openai.com/v1/chat/completions',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    }),
+    buildBody: (messages, model) => ({ model, messages }),
+    extractContent: (data: unknown) => {
+      const d = data as { choices?: { message?: { content?: string } }[] }
+      return d.choices?.[0]?.message?.content ?? ''
+    },
+  },
+  deepseek: {
+    defaultModel: 'deepseek-chat',
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.deepseek.com/v1/chat/completions',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    }),
+    buildBody: (messages, model) => ({ model, messages }),
+    extractContent: (data: unknown) => {
+      const d = data as { choices?: { message?: { content?: string } }[] }
+      return d.choices?.[0]?.message?.content ?? ''
+    },
+  },
+  gemini: {
+    defaultModel: 'gemini-1.5-flash',
+    buildUrl: (baseUrl, key, model) => baseUrl
+      ? `${baseUrl}/models/${model}:generateContent`
+      : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+    buildHeaders: (key, baseUrl) => ({
+      'Content-Type': 'application/json',
+      ...(baseUrl ? { 'x-goog-api-key': key } : {}),
+    }),
+    buildBody: (messages, model) => {
+      const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
+      const userMsgs = messages.filter((m) => m.role !== 'system')
+      const contents = userMsgs.map((m) => ({
+        role: m.role === 'user' ? 'user' : 'model',
+        parts: [{ text: m.content }],
+      }))
+      return {
+        systemInstruction: systemMsg ? { parts: [{ text: systemMsg }] } : undefined,
+        contents,
+      }
+    },
+    extractContent: (data: unknown) => {
+      const d = data as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+      return d.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    },
+  },
 }
 
 export class McpAdapter extends BaseAdapter {
@@ -38,7 +128,7 @@ export class McpAdapter extends BaseAdapter {
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const sessionId = `mcp-${randomUUID().replace(/-/g, '')}`
+    const sessionId = generateId('mcp')
 
     // Connect to enabled MCP servers
     const settings = await readSettings()
@@ -90,7 +180,9 @@ export class McpAdapter extends BaseAdapter {
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: unknown): Promise<void> {
     const settings = await readSettings()
-    const apiKey = settings.apiKeys[0]
+
+    // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
+    const apiKey = this.resolveApiKey(settings.apiKeys, settings.defaultModel)
 
     if (!apiKey) {
       this.emitOutput({
@@ -122,12 +214,18 @@ export class McpAdapter extends BaseAdapter {
       ? `${systemPrompt}\n\n## Available MCP Tools\n${toolDescriptions}`
       : systemPrompt
 
-    // Call LLM API
+    // Call LLM API via unified provider config
     try {
-      const response = await this.callLlm(apiKey.provider, apiKey.key, apiKey.baseUrl, [
-        { role: 'system', content: enhancedSystem },
-        { role: 'user', content: userPrompt },
-      ])
+      const response = await this.callLlmUnified(
+        apiKey.provider,
+        apiKey.key,
+        apiKey.baseUrl,
+        [
+          { role: 'system', content: enhancedSystem },
+          { role: 'user', content: userPrompt },
+        ],
+        settings.defaultModel,
+      )
 
       this.emitOutput({
         type: 'stdout',
@@ -150,6 +248,35 @@ export class McpAdapter extends BaseAdapter {
     }
   }
 
+  /**
+   * 根据 provider 匹配 API Key，而非盲目取第一个
+   * 如果 settings.defaultModel 包含 provider 名称线索，优先匹配对应的 Key
+   */
+  private resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): ApiKeyConfig | undefined {
+    // 优先级1：根据 defaultModel 名称推断 provider
+    if (defaultModel) {
+      if (defaultModel.includes('claude') || defaultModel.includes('sonnet') || defaultModel.includes('opus')) {
+        const found = apiKeys.find((k) => k.provider === 'anthropic')
+        if (found) return found
+      }
+      if (defaultModel.includes('gpt') || defaultModel.includes('o1') || defaultModel.includes('o3') || defaultModel.includes('o4')) {
+        const found = apiKeys.find((k) => k.provider === 'openai')
+        if (found) return found
+      }
+      if (defaultModel.includes('deepseek')) {
+        const found = apiKeys.find((k) => k.provider === 'deepseek')
+        if (found) return found
+      }
+      if (defaultModel.includes('gemini')) {
+        const found = apiKeys.find((k) => k.provider === 'gemini')
+        if (found) return found
+      }
+    }
+
+    // 优先级2：返回第一个有对应 provider config 的 Key
+    return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined)
+  }
+
   protected async doTerminate(session: AgentSession, _proc?: unknown): Promise<void> {
     // Disconnect MCP clients for this session only
     const clients = this.mcpClients.get(session.id) ?? []
@@ -168,6 +295,10 @@ export class McpAdapter extends BaseAdapter {
       timestamp: Date.now(),
     })
   }
+
+  // ============================================
+  // 统一 LLM 调用（消除四份重复代码）
+  // ============================================
 
   /**
    * 带超时的 fetch 请求封装
@@ -193,156 +324,38 @@ export class McpAdapter extends BaseAdapter {
     }
   }
 
-  private async callLlm(
+  /**
+   * 统一的 LLM API 调用：根据 ProviderConfig 自动适配
+   */
+  private async callLlmUnified(
     provider: string,
     key: string,
     baseUrl: string | undefined,
     messages: LlmMessage[],
-  ): Promise<string> {
-    const settings = await readSettings()
-    const defaultModel = settings.defaultModel
-    switch (provider) {
-      case 'anthropic':
-        return this.callAnthropic(key, baseUrl, messages, defaultModel)
-      case 'openai':
-        return this.callOpenAi(key, baseUrl, messages, defaultModel)
-      case 'deepseek':
-        return this.callDeepSeek(key, baseUrl, messages, defaultModel)
-      case 'gemini':
-        return this.callGemini(key, baseUrl, messages, defaultModel)
-      default:
-        throw new AdapterError(`Unsupported provider: ${provider}`, this.name)
-    }
-  }
-
-  private async callAnthropic(
-    key: string,
-    baseUrl: string | undefined,
-    messages: LlmMessage[],
     defaultModel?: string,
   ): Promise<string> {
-    const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
-    const userMsgs = messages.filter((m) => m.role !== 'system')
+    const config = PROVIDER_CONFIGS[provider]
+    if (!config) {
+      throw new AdapterError(`Unsupported provider: ${provider}`, this.name)
+    }
 
-    const url = baseUrl ? `${baseUrl}/v1/messages` : 'https://api.anthropic.com/v1/messages'
+    const model = defaultModel ?? config.defaultModel
+    const url = config.buildUrl(baseUrl, key, model)
+    const headers = config.buildHeaders(key, baseUrl)
+    const body = config.buildBody(messages, model)
+
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': key,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: defaultModel ?? 'claude-3-5-sonnet-20241022',
-        max_tokens: 4096,
-        system: systemMsg,
-        messages: userMsgs.map((m) => ({ role: m.role, content: m.content })),
-      }),
+      headers,
+      body: JSON.stringify(body),
     })
 
     if (!res.ok) {
       const text = await res.text()
-      throw new AdapterError(`Anthropic API error ${res.status}: ${text}`, this.name)
+      throw new AdapterError(`${provider} API error ${res.status}: ${text}`, this.name)
     }
 
-    const data = (await res.json()) as { content?: { type: string; text?: string }[] }
-    return data.content?.find((c) => c.type === 'text')?.text ?? ''
-  }
-
-  private async callOpenAi(
-    key: string,
-    baseUrl: string | undefined,
-    messages: LlmMessage[],
-    defaultModel?: string,
-  ): Promise<string> {
-    const url = baseUrl ? `${baseUrl}/chat/completions` : 'https://api.openai.com/v1/chat/completions'
-    const res = await this.fetchWithTimeout(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: defaultModel ?? 'gpt-4o',
-        messages,
-      }),
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new AdapterError(`OpenAI API error ${res.status}: ${text}`, this.name)
-    }
-
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-
-  private async callDeepSeek(
-    key: string,
-    baseUrl: string | undefined,
-    messages: LlmMessage[],
-    defaultModel?: string,
-  ): Promise<string> {
-    const url = baseUrl ? `${baseUrl}/chat/completions` : 'https://api.deepseek.com/v1/chat/completions'
-    const res = await this.fetchWithTimeout(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
-        model: defaultModel ?? 'deepseek-chat',
-        messages,
-      }),
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new AdapterError(`DeepSeek API error ${res.status}: ${text}`, this.name)
-    }
-
-    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
-    return data.choices?.[0]?.message?.content ?? ''
-  }
-
-  private async callGemini(
-    key: string,
-    baseUrl: string | undefined,
-    messages: LlmMessage[],
-    defaultModel?: string,
-  ): Promise<string> {
-    const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
-    const userMsgs = messages.filter((m) => m.role !== 'system')
-    const contents = userMsgs.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content }],
-    }))
-
-    const modelName = defaultModel ?? 'gemini-1.5-flash'
-    const url = baseUrl
-      ? `${baseUrl}/models/${modelName}:generateContent`
-      : `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${key}`
-
-    const res = await this.fetchWithTimeout(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(baseUrl ? { 'x-goog-api-key': key } : {}),
-      },
-      body: JSON.stringify({
-        systemInstruction: systemMsg ? { parts: [{ text: systemMsg }] } : undefined,
-        contents,
-      }),
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new AdapterError(`Gemini API error ${res.status}: ${text}`, this.name)
-    }
-
-    const data = (await res.json()) as {
-      candidates?: { content?: { parts?: { text?: string }[] } }[]
-    }
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+    const data = await res.json()
+    return config.extractContent(data)
   }
 }

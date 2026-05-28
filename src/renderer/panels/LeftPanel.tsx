@@ -84,6 +84,8 @@ export function LeftPanel() {
 
   const addProject = useCallback(async (dirPath: string) => {
     const name = dirPath.split(/[\\/]/).pop() || dirPath
+    // 注册路径到主进程后再读取目录
+    await ipc?.['fs:registerProjectPaths']([dirPath])
     const entries = await loadDirectory(dirPath)
     const newProject: ProjectDir = {
       id: `proj-${Date.now()}`,
@@ -134,13 +136,16 @@ export function LeftPanel() {
   useEffect(() => {
     const savedPaths = loadSavedProjects()
     if (savedPaths.length > 0) {
-      Promise.all(
-        savedPaths.map(async (dirPath: string) => {
-          const name = dirPath.split(/[\\/]/).pop() || dirPath
-          const entries = await loadDirectory(dirPath)
-          return { id: `proj-${dirPath}`, name, path: dirPath, entries, expanded: false }
-        })
-      ).then((loaded) => setProjects(loaded))
+      // 先将 localStorage 保存的项目路径注册到主进程，避免路径校验拒绝
+      ipc?.['fs:registerProjectPaths'](savedPaths).then(() =>
+        Promise.all(
+          savedPaths.map(async (dirPath: string) => {
+            const name = dirPath.split(/[\\/]/).pop() || dirPath
+            const entries = await loadDirectory(dirPath)
+            return { id: `proj-${dirPath}`, name, path: dirPath, entries, expanded: false }
+          })
+        ).then((loaded) => setProjects(loaded))
+      )
     }
   }, [loadDirectory])
 

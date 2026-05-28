@@ -154,16 +154,43 @@ async function rebuildTableIfNeeded(
   }
 
   if (hasAllColumns) {
-    // Schema is compatible — check for leftover backup table from a previous failed rebuild
-    const backupCheck = await db.execute({
-      sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-      args: [tempTable],
+    // Schema columns match — but CHECK constraints may have changed.
+    // Read the existing CREATE TABLE SQL and compare CHECK clauses with the expected one.
+    const existingSqlResult = await db.execute({
+      sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+      args: [tableName],
     })
-    if (backupCheck.rows.length > 0) {
-      console.log(`[BizGraph] Found leftover backup ${tempTable}, restoring data...`)
-      await restoreFromBackup(db, tableName, tempTable)
+    const existingSql = (existingSqlResult.rows[0]?.sql as string) ?? ''
+
+    // Extract CHECK(...) clauses from both SQLs and compare
+    const extractChecks = (sql: string) => {
+      const checks: string[] = []
+      const re = /CHECK\s*\(([^)]+)\)/gi
+      let m: RegExpExecArray | null
+      while ((m = re.exec(sql)) !== null) {
+        checks.push(m[1].replace(/\s+/g, ' ').trim().toLowerCase())
+      }
+      return checks.sort()
     }
-    return
+
+    const existingChecks = extractChecks(existingSql).join('||')
+    const expectedChecks = extractChecks(createSql).join('||')
+
+    if (existingChecks === expectedChecks) {
+      // Schema and constraints are compatible — check for leftover backup table
+      const backupCheck = await db.execute({
+        sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        args: [tempTable],
+      })
+      if (backupCheck.rows.length > 0) {
+        console.log(`[BizGraph] Found leftover backup ${tempTable}, restoring data...`)
+        await restoreFromBackup(db, tableName, tempTable)
+      }
+      return
+    }
+
+    // CHECK constraints differ — need rebuild
+    console.log(`[BizGraph] Table ${tableName} CHECK constraints changed, rebuilding...`)
   }
 
   // Missing columns, need to rebuild table — 使用事务保护
