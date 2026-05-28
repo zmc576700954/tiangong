@@ -75,8 +75,6 @@ export class GraphService {
 
       await this.db.execute('COMMIT')
       committed = true
-    } catch (err) {
-      throw err
     } finally {
       if (!committed) {
         await this.db.execute('ROLLBACK').catch(() => {})
@@ -170,8 +168,8 @@ export class GraphService {
       if (sourceId && targetId) {
         const edgeId = generateId('edge')
         await this.db.execute({
-          sql: 'INSERT INTO edges (id, source, target, label, graph_id) VALUES (?, ?, ?, ?, ?)',
-          args: [edgeId, sourceId, targetId, edgeData.label ?? null, graphId],
+          sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id) VALUES (?, ?, ?, ?, ?, ?)',
+          args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId],
         })
       }
     }

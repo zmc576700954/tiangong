@@ -100,7 +100,7 @@ export function parseToml(content: string): Record<string, unknown> {
       // 多行字符串 """ ... """
       if (valueStr.startsWith('"""')) {
         const parts: string[] = []
-        let first = valueStr.slice(3)
+        const first = valueStr.slice(3)
         if (first.endsWith('"""')) {
           valueStr = first.slice(0, -3)
         } else {

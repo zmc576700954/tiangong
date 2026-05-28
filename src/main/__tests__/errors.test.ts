@@ -3,7 +3,6 @@ import {
   BizGraphError,
   DatabaseError,
   IpcError,
-  AgentError,
   SessionNotFoundError,
   AdapterError,
   ScopeGuardError,

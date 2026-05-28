@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   Terminal,
   Bot,
@@ -749,6 +749,94 @@ function CriteriaEditor({
   )
 }
 
+// ==================== Agent Prompt Templates ====================
+
+function generatePromptTemplate(
+  commandType: AgentCommand['type'],
+  node: GraphNode | undefined,
+): string {
+  if (!node) return ''
+
+  const lines: string[] = []
+
+  switch (commandType) {
+    case 'implement':
+      lines.push(`## 开发任务：${node.title}`)
+      lines.push('')
+      if (node.description) {
+        lines.push(`### 需求描述`)
+        lines.push(node.description)
+        lines.push('')
+      }
+      if (node.acceptanceCriteria && node.acceptanceCriteria.length > 0) {
+        lines.push(`### 验收标准`)
+        node.acceptanceCriteria.forEach((c, i) => {
+          lines.push(`${i + 1}. ${c}`)
+        })
+        lines.push('')
+      }
+      if (node.rules && node.rules.length > 0) {
+        lines.push(`### 业务规则`)
+        node.rules.forEach((r) => {
+          lines.push(`- ${r.title}${r.condition ? `（条件：${r.condition}）` : ''}${r.action ? ` → ${r.action}` : ''}`)
+        })
+        lines.push('')
+      }
+      lines.push('### 请按以上要求完成功能实现')
+      break
+
+    case 'fix_bug':
+      lines.push(`## 修复 Bug：${node.title}`)
+      lines.push('')
+      lines.push(`### 问题描述`)
+      lines.push(node.description ?? '（请在此补充 Bug 的具体描述）')
+      lines.push('')
+      if (node.acceptanceCriteria && node.acceptanceCriteria.length > 0) {
+        lines.push(`### 修复要求`)
+        node.acceptanceCriteria.forEach((c, i) => {
+          lines.push(`${i + 1}. ${c}`)
+        })
+        lines.push('')
+      }
+      lines.push('### 请定位问题根因并修复，同时确保不引入新问题')
+      break
+
+    case 'refactor':
+      lines.push(`## 重构任务：${node.title}`)
+      lines.push('')
+      if (node.description) {
+        lines.push(`### 当前问题`)
+        lines.push(node.description)
+        lines.push('')
+      }
+      lines.push('### 重构目标')
+      lines.push('（请在此补充重构的具体目标和约束）')
+      lines.push('')
+      lines.push('### 请在保持现有功能不变的前提下完成重构')
+      break
+
+    case 'add_test':
+      lines.push(`## 添加测试：${node.title}`)
+      lines.push('')
+      if (node.description) {
+        lines.push(`### 功能说明`)
+        lines.push(node.description)
+        lines.push('')
+      }
+      if (node.acceptanceCriteria && node.acceptanceCriteria.length > 0) {
+        lines.push(`### 测试应覆盖的验收标准`)
+        node.acceptanceCriteria.forEach((c, i) => {
+          lines.push(`${i + 1}. ${c}`)
+        })
+        lines.push('')
+      }
+      lines.push('### 请为该功能编写完整的单元测试和集成测试')
+      break
+  }
+
+  return lines.join('\n')
+}
+
 // ==================== Agent Panel ====================
 
 function AgentPanel({
@@ -757,7 +845,7 @@ function AgentPanel({
   currentSessionId,
   selectedNode,
   currentSession,
-  onStartAgent,
+  onStartAgent: _onStartAgent,
   onSendCommand,
   onSelectSession,
 }: {
@@ -770,136 +858,386 @@ function AgentPanel({
   onSendCommand: (type: AgentCommand['type']) => void
   onSelectSession: (id: string | null) => void
 }) {
+  const { nodes } = useGraphStore()
+  const [promptText, setPromptText] = useState('')
+  const [selectedAdapter, setSelectedAdapter] = useState<string>('')
+  const [showTaskBoard, setShowTaskBoard] = useState(false)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+
+  // 当选择节点变化时，重置 prompt
+  useEffect(() => {
+    setPromptText('')
+  }, [selectedNode?.id])
+
+  // 默认选择第一个已安装的适配器
+  useEffect(() => {
+    const installed = adapters.filter((a) => a.installed)
+    if (installed.length > 0 && !selectedAdapter) {
+      setSelectedAdapter(installed[0].name)
+    }
+  }, [adapters, selectedAdapter])
+
+  const installedAdapters = adapters.filter((a) => a.installed)
+  const hasRunningSession = currentSession?.status === 'running'
+
+  /** 点击快捷按钮：生成模板并填入输入框 */
+  const handleQuickAction = (type: AgentCommand['type']) => {
+    const template = generatePromptTemplate(type, selectedNode)
+    setPromptText(template)
+    // 聚焦输入框，方便用户修改
+    setTimeout(() => promptRef.current?.focus(), 50)
+  }
+
+  /** 启动 Agent 并发送自定义 prompt */
+  const handleStartWithPrompt = async () => {
+    if (!selectedAdapter || !selectedNode) return
+
+    // 如果没有自定义 prompt，生成默认的
+    const finalPrompt = promptText.trim() || generatePromptTemplate('implement', selectedNode)
+
+    // 启动会话
+    const config: AgentSessionConfig = {
+      workingDirectory: '',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: selectedNode.title,
+      acceptanceCriteria: selectedNode.acceptanceCriteria ?? [],
+    }
+
+    const sessionId = await useAgentStore
+      .getState()
+      .startSession(selectedAdapter, config, selectedNode.id)
+
+    // 发送自定义 prompt 作为第一条命令
+    const command: AgentCommand = {
+      type: 'implement',
+      description: finalPrompt,
+      targetNodeId: selectedNode.id,
+    }
+    await useAgentStore.getState().sendCommand(sessionId, command)
+
+    setPromptText('')
+    setShowTaskBoard(true)
+  }
+
+  /** 给运行中的会话发送带 prompt 的命令 */
+  const handleSendWithPrompt = async (type: AgentCommand['type']) => {
+    if (!currentSessionId || !selectedNode) return
+
+    const finalPrompt = promptText.trim() || generatePromptTemplate(type, selectedNode)
+    const command: AgentCommand = {
+      type,
+      description: finalPrompt,
+      targetNodeId: selectedNode.id,
+    }
+    await useAgentStore.getState().sendCommand(currentSessionId, command)
+    setPromptText('')
+  }
+
   return (
-    <div className="flex-1 overflow-y-auto">
-      {/* Installed Agents */}
-      <div className="p-3 border-b">
-        <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-          Agent Adapters
-        </h3>
-        <div className="space-y-1.5">
-          {adapters.map((adapter) => (
-            <div
-              key={adapter.name}
-              className="flex items-center justify-between px-2 py-1.5 rounded-md text-sm"
-            >
-              <div className="flex items-center gap-2">
-                <Bot className="w-3.5 h-3.5" />
-                <span>{adapter.name}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
+    <div className="flex flex-col h-full">
+      {/* 任务看板切换 */}
+      {sessions.length > 0 && (
+        <div className="border-b flex-shrink-0">
+          <button
+            onClick={() => setShowTaskBoard(!showTaskBoard)}
+            className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/50 transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <Activity className="w-3.5 h-3.5 text-muted-foreground" />
+              <span className="text-xs font-medium text-muted-foreground">任务看板</span>
+              <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
+                {sessions.length}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              {sessions.filter((s) => s.status === 'running').length > 0 && (
+                <span className="text-[10px] bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <Activity className="w-2.5 h-2.5 animate-pulse" />
+                  {sessions.filter((s) => s.status === 'running').length} 运行中
+                </span>
+              )}
+              <span className="text-xs text-muted-foreground">
+                {showTaskBoard ? '▲' : '▼'}
+              </span>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {/* 任务看板 */}
+      {showTaskBoard && sessions.length > 0 && (
+        <div className="border-b max-h-48 overflow-y-auto flex-shrink-0">
+          <div className="p-2 space-y-1">
+            {/* 按状态分组：运行中优先 */}
+            {[...sessions]
+              .sort((a, b) => {
+                const order: Record<string, number> = { running: 0, error: 1, completed: 2 }
+                return (order[a.status] ?? 3) - (order[b.status] ?? 3)
+              })
+              .map((session) => {
+                const node = nodes.find((n) => n.id === session.nodeId)
+                const isSelected = currentSessionId === session.id
+                return (
+                  <button
+                    key={session.id}
+                    onClick={() => onSelectSession(session.id)}
+                    className={cn(
+                      'w-full text-left px-2.5 py-2 rounded-md text-sm transition-colors border',
+                      isSelected
+                        ? 'bg-primary/5 border-primary/30 text-primary'
+                        : 'border-transparent hover:bg-muted/50',
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <div className={cn(
+                          'w-2 h-2 rounded-full flex-shrink-0',
+                          session.status === 'running' ? 'bg-yellow-400 animate-pulse' :
+                          session.status === 'completed' ? 'bg-green-400' :
+                          'bg-red-400',
+                        )} />
+                        <span className="font-medium truncate text-xs">
+                          {node?.title ?? session.nodeId}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <span className="text-[10px] text-muted-foreground px-1.5 py-0.5 bg-muted rounded">
+                          {session.adapterName}
+                        </span>
+                        <StatusBadge status={session.status} />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between mt-1 ml-4">
+                      <span className="text-[10px] text-muted-foreground">
+                        {formatDate(new Date(session.startTime))}
+                      </span>
+                      {session.outputs.length > 0 && (
+                        <span className="text-[10px] text-muted-foreground">
+                          {session.outputs.length} 条输出
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                )
+              })}
+          </div>
+        </div>
+      )}
+
+      <div className="flex-1 overflow-y-auto">
+        {/* Agent 选择器（紧凑） */}
+        <div className="p-3 border-b">
+          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+            Agent
+          </h3>
+          {installedAdapters.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {installedAdapters.map((adapter) => (
+                <button
+                  key={adapter.name}
+                  onClick={() => setSelectedAdapter(adapter.name)}
                   className={cn(
-                    'text-xs px-1.5 py-0.5 rounded-full',
-                    adapter.installed
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-muted text-muted-foreground',
+                    'flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-md border transition-colors',
+                    selectedAdapter === adapter.name
+                      ? 'border-primary bg-primary/5 text-primary'
+                      : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
                   )}
                 >
-                  {adapter.installed ? 'Installed' : 'Not installed'}
-                </span>
-                {adapter.installed && selectedNode && (
-                  <button
-                    onClick={() => onStartAgent(adapter.name)}
-                    className="text-xs px-2 py-0.5 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors"
-                  >
-                    Start
-                  </button>
-                )}
-              </div>
+                  <Bot className="w-3 h-3" />
+                  {adapter.name}
+                </button>
+              ))}
             </div>
-          ))}
+          ) : adapters.length > 0 ? (
+            <div className="text-xs text-muted-foreground text-center py-2">
+              没有已安装的 Agent，请前往设置安装
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground text-center py-2">
+              检测中...
+            </div>
+          )}
         </div>
-        {adapters.length === 0 && (
-          <div className="text-xs text-muted-foreground text-center py-2">
-            Detecting agents...
+
+        {/* 快捷操作按钮 */}
+        {selectedNode && (
+          <div className="p-3 border-b">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+              快捷指令
+            </h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(
+                [
+                  { type: 'implement' as const, label: '开发功能', icon: Code2, color: 'text-blue-600' },
+                  { type: 'fix_bug' as const, label: '修复 Bug', icon: Shield, color: 'text-red-600' },
+                  { type: 'refactor' as const, label: '重构优化', icon: GitBranch, color: 'text-purple-600' },
+                  { type: 'add_test' as const, label: '添加测试', icon: Check, color: 'text-green-600' },
+                ]
+              ).map(({ type, label, icon: Icon, color }) => (
+                <button
+                  key={type}
+                  onClick={() => handleQuickAction(type)}
+                  disabled={hasRunningSession && !currentSessionId}
+                  className={cn(
+                    'flex items-center gap-1.5 px-2.5 py-2 text-xs rounded-md border border-border',
+                    'hover:bg-muted/50 transition-colors text-left',
+                    'disabled:opacity-50 disabled:cursor-not-allowed',
+                  )}
+                >
+                  <Icon className={cn('w-3.5 h-3.5', color)} />
+                  {label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1.5">
+              点击快捷指令生成 Prompt 模板，可在下方修改后再发送
+            </p>
+          </div>
+        )}
+
+        {/* Prompt 输入区 */}
+        {selectedNode && (
+          <div className="p-3 border-b">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Prompt
+              </h3>
+              {promptText && (
+                <button
+                  onClick={() => setPromptText('')}
+                  className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  清空
+                </button>
+              )}
+            </div>
+            <textarea
+              ref={promptRef}
+              value={promptText}
+              onChange={(e) => setPromptText(e.target.value)}
+              placeholder={
+                selectedNode
+                  ? `输入自定义指令，或点击上方快捷指令生成模板...\n\n当前节点：${selectedNode.title}`
+                  : '请先在画布中选择一个节点'
+              }
+              className="w-full px-2.5 py-2 text-xs border rounded-md bg-background resize-none font-mono leading-relaxed"
+              rows={8}
+            />
+
+            {/* 发送按钮 */}
+            <div className="mt-2">
+              {hasRunningSession && currentSessionId ? (
+                <button
+                  onClick={() => handleSendWithPrompt('implement')}
+                  disabled={!promptText.trim()}
+                  className={cn(
+                    'w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-md transition-colors',
+                    promptText.trim()
+                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                      : 'bg-muted text-muted-foreground cursor-not-allowed',
+                  )}
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                  发送到当前会话
+                </button>
+              ) : (
+                <button
+                  onClick={handleStartWithPrompt}
+                  disabled={!selectedAdapter || !selectedNode}
+                  className={cn(
+                    'w-full flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-md transition-colors',
+                    selectedAdapter && selectedNode
+                      ? 'bg-primary text-primary-foreground hover:bg-primary/90'
+                      : 'bg-muted text-muted-foreground cursor-not-allowed',
+                  )}
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  启动 Agent
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 运行中会话的快捷命令 */}
+        {hasRunningSession && currentSessionId && (
+          <div className="p-3 border-b">
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+              快速发送
+            </h3>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(
+                [
+                  'implement',
+                  'fix_bug',
+                  'refactor',
+                  'add_test',
+                ] as AgentCommand['type'][]
+              ).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => onSendCommand(type)}
+                  className="px-2 py-1.5 text-xs bg-secondary rounded-md hover:bg-secondary/80 transition-colors"
+                >
+                  {AGENT_COMMAND_LABELS[type]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 无节点选中时的提示 */}
+        {!selectedNode && sessions.length === 0 && (
+          <div className="text-center text-muted-foreground text-sm py-12 px-4">
+            <Bot className="w-8 h-8 mx-auto mb-2 opacity-50" />
+            <p>在画布中选择一个功能点节点</p>
+            <p className="text-xs mt-1">即可开始创建 Agent 任务</p>
+          </div>
+        )}
+
+        {/* 无节点选中但有会话时的提示 */}
+        {!selectedNode && sessions.length > 0 && (
+          <div className="text-center text-muted-foreground text-xs py-6 px-4">
+            选择一个节点以创建新的 Agent 任务
+          </div>
+        )}
+
+        {/* 当前会话输出日志 */}
+        {currentSession && currentSession.outputs.length > 0 && (
+          <div className="p-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                输出日志
+              </h3>
+              <span className="text-[10px] text-muted-foreground">
+                {currentSession.outputs.length} 条
+              </span>
+            </div>
+            <div className="bg-muted/50 rounded-md p-2 font-mono text-xs space-y-1 max-h-64 overflow-y-auto">
+              {currentSession.outputs.map((output, i) => (
+                <div
+                  key={i}
+                  className={cn(
+                    'whitespace-pre-wrap break-all',
+                    output.type === 'error' && 'text-destructive',
+                    output.type === 'file_change' && 'text-green-600',
+                    output.type === 'complete' && 'text-blue-600',
+                  )}
+                >
+                  <span className="text-muted-foreground opacity-50 mr-1">
+                    [{output.type}]
+                  </span>
+                  {output.data}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>
-
-      {/* Session list */}
-      {sessions.length > 0 && (
-        <div className="p-3 border-b">
-          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-            Sessions
-          </h3>
-          <div className="space-y-1">
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                onClick={() => onSelectSession(session.id)}
-                className={cn(
-                  'w-full text-left px-2 py-1.5 rounded-md text-sm transition-colors',
-                  currentSessionId === session.id
-                    ? 'bg-primary/10 text-primary'
-                    : 'hover:bg-muted',
-                )}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="truncate">{session.adapterName}</span>
-                  <StatusBadge status={session.status} />
-                </div>
-                <div className="text-xs text-muted-foreground mt-0.5">
-                  {formatDate(new Date(session.startTime))}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Command panel */}
-      {currentSession && currentSession.status === 'running' && (
-        <div className="p-3 border-b">
-          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-            Send Command
-          </h3>
-          <div className="grid grid-cols-2 gap-1.5">
-            {(
-              [
-                'implement',
-                'fix_bug',
-                'refactor',
-                'add_test',
-              ] as AgentCommand['type'][]
-            ).map((type) => (
-              <button
-                key={type}
-                onClick={() => onSendCommand(type)}
-                className="px-2 py-1.5 text-xs bg-secondary rounded-md hover:bg-secondary/80 transition-colors"
-              >
-                {AGENT_COMMAND_LABELS[type]}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Output logs */}
-      {currentSession && currentSession.outputs.length > 0 && (
-        <div className="p-3">
-          <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-            Output Logs
-          </h3>
-          <div className="bg-muted/50 rounded-md p-2 font-mono text-xs space-y-1 max-h-64 overflow-y-auto">
-            {currentSession.outputs.map((output, i) => (
-              <div
-                key={i}
-                className={cn(
-                  'whitespace-pre-wrap break-all',
-                  output.type === 'error' && 'text-destructive',
-                  output.type === 'file_change' && 'text-green-600',
-                )}
-              >
-                <span className="text-muted-foreground opacity-50 mr-1">
-                  [{output.type}]
-                </span>
-                {output.data}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }

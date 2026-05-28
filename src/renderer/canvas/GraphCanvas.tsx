@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -19,11 +19,19 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
+// 浏览器端 ID 生成（不依赖 node:crypto）
+function generateId(prefix: string): string {
+  return `${prefix}-${crypto.randomUUID().replace(/-/g, '')}`
+}
 import type { GraphNode, NodeType, EdgeType, NodeStatus } from '@shared/types'
-import { BizEdge, getEdgeMarkerEnd } from './BizEdge'
+import { BizEdge } from './BizEdge'
+import { getEdgeMarkerEnd } from './edge-utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
 import { useCanvasKeyboard } from './hooks/useCanvasKeyboard'
+
+/** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
+const edgeTypes = { bizEdge: BizEdge }
 
 interface GraphCanvasProps {
   graphId: string
@@ -37,8 +45,18 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
   )
 }
 
+/** 沿 DOM 向上查找 ReactFlow 节点包裹层的 data-id */
+function findNodeIdFromDom(el: EventTarget | null): string | null {
+  let node: HTMLElement | null = el as HTMLElement | null
+  while (node) {
+    const id = node.getAttribute('data-id')
+    if (id) return id
+    node = node.parentElement
+  }
+  return null
+}
+
 function GraphCanvasInner({ graphId }: GraphCanvasProps) {
-  // PERFORMANCE: 使用细粒度选择器，避免订阅整个 store 导致的不必要重渲染
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
   const loadGraph = useGraphStore((state) => state.loadGraph)
@@ -55,7 +73,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const { screenToFlowPosition } = useReactFlow()
 
-  // I-4-FIX: 从 bugs 数组统计每个节点的实际 Bug 数量（而非 Agent 会话数）
   const bugCountMap = useMemo(() => {
     const map = new Map<string, number>()
     for (const bug of bugs) {
@@ -67,6 +84,47 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<Node>([])
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
 
+  // ────────────────────────────────────────────────────────────────
+  // 节点位置持久化：拦截 onNodesChange 中的拖拽结束事件，
+  // 防抖保存位置到数据库，避免频繁 IPC 调用
+  // ────────────────────────────────────────────────────────────────
+  const pendingPositionUpdates = useRef<Map<string, { x: number; y: number }>>(new Map())
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const flushPositionUpdates = useCallback(() => {
+    const updates = pendingPositionUpdates.current
+    if (updates.size === 0) return
+    const store = useGraphStore.getState()
+    updates.forEach((position, nodeId) => {
+      store.updateNode(nodeId, { position }).catch((err) => {
+        console.error('[GraphCanvas] Failed to persist node position:', err)
+      })
+    })
+    pendingPositionUpdates.current = new Map()
+  }, [])
+
+  const handleNodesChange = useCallback(
+    (changes: Parameters<typeof onNodesChange>[0]) => {
+      // 先让 ReactFlow 更新视觉状态
+      onNodesChange(changes)
+
+      // 检测拖拽相关的 position 变化
+      for (const change of changes) {
+        if (change.type === 'position' && change.position && !change.dragging) {
+          // 拖拽结束时记录待保存的位置
+          pendingPositionUpdates.current.set(change.id, { ...change.position })
+        }
+      }
+
+      // 防抖：300ms 内没有新的位置变化则批量保存
+      if (pendingPositionUpdates.current.size > 0) {
+        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+        debounceTimerRef.current = setTimeout(flushPositionUpdates, 300)
+      }
+    },
+    [onNodesChange, flushPositionUpdates],
+  )
+
   const [showNodeMenu, setShowNodeMenu] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
 
@@ -76,11 +134,38 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
+  // 连线模式：记录源节点 ID
+  const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null)
+
   const [zoomLevel, setZoomLevel] = useState(1)
+
+  // ────────────────────────────────────────────────────────────────
+  // 使用 ref 保存最新值，避免 DOM 事件回调中的闭包陈旧问题
+  // ────────────────────────────────────────────────────────────────
+  const connectingSourceIdRef = useRef<string | null>(null)
+  const graphEdgesRef = useRef(graphEdges)
+  useEffect(() => { connectingSourceIdRef.current = connectingSourceId }, [connectingSourceId])
+  useEffect(() => { graphEdgesRef.current = graphEdges }, [graphEdges])
 
   useEffect(() => {
     loadGraph(graphId)
+    // 切换图时清空待保存的位置队列
+    pendingPositionUpdates.current = new Map()
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current)
+      debounceTimerRef.current = null
+    }
   }, [graphId, loadGraph])
+
+  // 组件卸载时刷入最后的位置更新
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+        flushPositionUpdates()
+      }
+    }
+  }, [flushPositionUpdates])
 
   useOnViewportChange({
     onChange: (viewport) => setZoomLevel(viewport.zoom),
@@ -95,7 +180,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         ...node,
         bugCount: bugCountMap.get(node.id) ?? 0,
       },
-      selected: node.id === selectedNodeId,
+      selected: node.id === selectedNodeId || node.id === connectingSourceId,
     }))
 
     const flowEdges: Edge[] = graphEdges.map((edge) => {
@@ -119,7 +204,62 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
     setRfNodes(flowNodes)
     setRfEdges(flowEdges)
-  }, [graphNodes, graphEdges, selectedNodeId, selectedEdgeId, bugCountMap, setRfNodes, setRfEdges])
+  }, [graphNodes, graphEdges, selectedNodeId, selectedEdgeId, bugCountMap, connectingSourceId, setRfNodes, setRfEdges])
+
+  // ────────────────────────────────────────────────────────────────
+  // 核心修复：在 capture 阶段拦截点击，通过 data-id 检测目标节点
+  // 完全绕过 ReactFlow 的合成事件系统，确保连线模式下点击可靠触发
+  // ────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    function handleCaptureClick(e: MouseEvent) {
+      const srcId = connectingSourceIdRef.current
+      if (!srcId) return
+
+      const targetNodeId = findNodeIdFromDom(e.target)
+      if (!targetNodeId || targetNodeId === srcId) return
+
+      // 阻止事件继续传播，防止 onPaneClick 清除连线状态
+      e.stopPropagation()
+      e.preventDefault()
+
+      const edges = graphEdgesRef.current
+      const exists = edges.some(
+        (ed) => ed.source === srcId && ed.target === targetNodeId,
+      )
+
+      if (!exists) {
+        const edgeId = generateId('edge')
+        const newEdge: Edge = {
+          id: edgeId,
+          source: srcId,
+          target: targetNodeId,
+          type: 'bizEdge',
+          data: { edgeType: 'default' as const },
+          markerEnd: getEdgeMarkerEnd('default'),
+          style: { stroke: '#94a3b8', strokeWidth: 2 },
+        }
+        setRfEdges((eds) => [...eds, newEdge])
+
+        // 异步持久化到数据库
+        createEdge({
+          source: srcId,
+          target: targetNodeId,
+          label: '',
+          graphId,
+          edgeType: 'default',
+        }).catch((err) => {
+          console.error('[GraphCanvas] Failed to persist edge:', err)
+        })
+      }
+
+      setConnectingSourceId(null)
+      connectingSourceIdRef.current = null
+    }
+
+    // 使用 capture 阶段：在 ReactFlow 和冒泡之前拦截
+    document.addEventListener('click', handleCaptureClick, { capture: true })
+    return () => document.removeEventListener('click', handleCaptureClick, { capture: true })
+  }, [createEdge, graphId, setRfEdges])
 
   const validateConnection = useCallback((connection: Connection): boolean => {
     if (!connection.source || !connection.target) return false
@@ -186,8 +326,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     [pendingConnection, createEdge, graphId, setRfEdges],
   )
 
+  /**
+   * onNodeClick：仅处理正常模式下的节点选中
+   * 连线模式已在 capture 阶段由 document click 监听器处理
+   */
   const onNodeClick = useCallback(
-    (_: unknown, node: Node) => {
+    (_event: unknown, node: Node) => {
+      if (connectingSourceIdRef.current) return
       selectNode(node.id)
       setNodeContextMenu(null)
     },
@@ -201,6 +346,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     [selectEdge],
   )
 
+  const handleCancelConnect = useCallback(() => {
+    setConnectingSourceId(null)
+    connectingSourceIdRef.current = null
+  }, [])
+
   const onPaneClick = useCallback(() => {
     selectNode(null)
     selectEdge(null)
@@ -208,9 +358,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setShowEdgeTypeMenu(false)
     setPendingConnection(null)
     setNodeContextMenu(null)
+    // 点击空白处取消连线模式
+    setConnectingSourceId(null)
+    connectingSourceIdRef.current = null
   }, [selectNode, selectEdge])
 
-  /** 计算不超出视口的菜单位置 */
   const clampMenuPosition = useCallback((x: number, y: number, menuWidth = 160, menuHeight = 140) => {
     const padding = 8
     const maxX = window.innerWidth - menuWidth - padding
@@ -239,7 +391,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       event.stopPropagation()
       const padding = 8
       const menuWidth = 176
-      const menuHeight = 240
+      const menuHeight = 280
       const maxX = window.innerWidth - menuWidth - padding
       const maxY = window.innerHeight - menuHeight - padding
       const x = Math.max(padding, Math.min(event.clientX, maxX))
@@ -248,7 +400,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       setShowNodeMenu(false)
       setShowEdgeTypeMenu(false)
     },
-    [], // 纯函数计算，无外部依赖
+    [],
   )
 
   useCanvasKeyboard({
@@ -260,15 +412,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       selectNode(null)
       selectEdge(null)
     },
+    isConnecting: !!connectingSourceId,
+    onCancelConnect: handleCancelConnect,
   })
 
-  // W-2-FIX: 使用 useCallback 稳定化，避免 CanvasOverlay 不必要重渲染
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
     await createNode({
       type,
       status: 'draft',
-      title: `New ${NODE_TYPE_LABELS[type]}`,
+      title: `新建${NODE_TYPE_LABELS[type]}`,
       graphId,
       graphType: 'online',
       position,
@@ -276,6 +429,34 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     })
     setShowNodeMenu(false)
   }, [screenToFlowPosition, menuPosition, createNode, graphId])
+
+  const handleAddChild = useCallback(async (parentId: string, childType: NodeType) => {
+    const parent = graphNodes.find((n) => n.id === parentId)
+    const offsetX = parent ? 280 : 100
+    const offsetY = parent ? 60 : 60
+    const position = parent
+      ? { x: parent.position.x + offsetX, y: parent.position.y + offsetY }
+      : screenToFlowPosition({ x: 400, y: 300 })
+
+    await createNode({
+      type: childType,
+      status: 'draft',
+      title: `新建${NODE_TYPE_LABELS[childType]}`,
+      graphId,
+      graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
+      parentId,
+      position,
+      acceptanceCriteria: [],
+    })
+    setNodeContextMenu(null)
+  }, [graphNodes, createNode, graphId, screenToFlowPosition])
+
+  /** 进入连线模式（由右键菜单触发） */
+  const handleStartConnect = useCallback((sourceId: string) => {
+    setConnectingSourceId(sourceId)
+    connectingSourceIdRef.current = sourceId
+    setNodeContextMenu(null)
+  }, [])
 
   const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
     await updateNode(nodeId, { status })
@@ -296,8 +477,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       />
     ),
   }), [handleNodeContextMenu])
-  // W-1-FIX: 稳定化 edgeTypes，避免每次渲染创建新引用导致 ReactFlow 重渲染
-  const edgeTypes = useMemo(() => ({ bizEdge: BizEdge }), [])
 
   const isEmpty = graphNodes.length === 0
 
@@ -306,7 +485,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
-        onNodesChange={onNodesChange}
+        onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeClick={onNodeClick}
@@ -339,14 +518,31 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           className="!bg-background/80 !border-border !rounded-lg !shadow-sm"
         />
 
-        {/* 缩放级别指示器 */}
         <Panel position="bottom-left" className="m-2">
           <div className="bg-background/90 backdrop-blur border rounded-lg shadow-sm px-2 py-1 text-[10px] text-muted-foreground font-mono">
             {Math.round(zoomLevel * 100)}%
           </div>
         </Panel>
 
-        {(selectedNodeId || selectedEdgeId) && (
+        {connectingSourceId && (
+          <Panel position="top-center" className="m-2">
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg shadow-sm px-4 py-2 text-sm text-blue-700">
+              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+              <span>连线模式：点击目标节点完成连线</span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  handleCancelConnect()
+                }}
+                className="ml-2 px-2 py-0.5 text-xs bg-white border border-blue-300 rounded hover:bg-blue-100 transition-colors"
+              >
+                取消 (Esc)
+              </button>
+            </div>
+          </Panel>
+        )}
+
+        {(selectedNodeId || selectedEdgeId) && !connectingSourceId && (
           <Panel position="bottom-center" className="m-2">
             <div className="flex items-center gap-2 bg-background/90 backdrop-blur border rounded-lg shadow-sm px-3 py-1.5 text-xs text-muted-foreground">
               <span>{selectedNodeId ? '按 Delete 删除节点' : '按 Delete 删除连接线'}</span>
@@ -384,6 +580,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onNodeStatusChange={handleNodeStatusChange}
         onNodeDelete={handleNodeDelete}
         onCloseNodeContextMenu={() => setNodeContextMenu(null)}
+        onAddChild={handleAddChild}
+        onStartConnect={handleStartConnect}
       />
     </div>
   )

@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ScopeGuard } from '../scope-guard'
-import type { AgentSessionConfig } from '@shared/types'
 
 // Mock fs and chokidar
 vi.mock('node:fs/promises', () => ({

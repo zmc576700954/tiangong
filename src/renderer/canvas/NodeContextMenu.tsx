@@ -1,7 +1,8 @@
 import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
-import type { GraphNode, NodeStatus } from '@shared/types'
-import { Pencil, Trash2 } from 'lucide-react'
+import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
+import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
+import { Pencil, Trash2, Plus, Link } from 'lucide-react'
 
 interface NodeContextMenuProps {
   nodeId: string
@@ -11,6 +12,8 @@ interface NodeContextMenuProps {
   onStatusChange: (nodeId: string, status: NodeStatus) => void
   onDelete: (nodeId: string) => void
   onClose: () => void
+  onAddChild: (parentId: string, childType: NodeType) => void
+  onStartConnect: (sourceId: string) => void
 }
 
 const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
@@ -22,6 +25,22 @@ const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
   { value: 'published', label: '已发布', color: '#22c55e' },
 ]
 
+/** 根据父节点类型推断适合创建的子节点类型 */
+function getChildTypeOptions(parentType: NodeType): NodeType[] {
+  switch (parentType) {
+    case 'module':
+      return ['process', 'feature']
+    case 'process':
+      return ['feature', 'bug']
+    case 'feature':
+      return ['bug']
+    case 'bug':
+      return []
+    default:
+      return ['feature']
+  }
+}
+
 export function NodeContextMenu({
   nodeId,
   x,
@@ -30,9 +49,10 @@ export function NodeContextMenu({
   onStatusChange,
   onDelete,
   onClose,
+  onAddChild,
+  onStartConnect,
 }: NodeContextMenuProps) {
   const node = nodes.find((n) => n.id === nodeId)
-  if (!node) return null
 
   // 使用 ref 避免每次渲染重新绑定事件监听器
   const onCloseRef = useRef(onClose)
@@ -44,36 +64,77 @@ export function NodeContextMenu({
     return () => window.removeEventListener('click', handleClick)
   }, [])
 
+  if (!node) return null
+
+  const childTypeOptions = getChildTypeOptions(node.type)
+
   return (
     <div
-      className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-44"
+      className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-52"
       style={{ left: x, top: y }}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
         <Pencil className="w-3 h-3" />
-        {node.title}
+        <span className="truncate">{node.title}</span>
       </div>
 
-      <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">状态</div>
-      <div className="px-2 pb-1 grid grid-cols-3 gap-1">
-        {statusOptions.map((opt) => (
-          <button
-            key={opt.value}
-            onClick={() => onStatusChange(nodeId, opt.value)}
-            className={cn(
-              'px-1.5 py-1 text-[10px] rounded border transition-colors',
-              node.status === opt.value
-                ? 'border-transparent text-white'
-                : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
-            )}
-            style={node.status === opt.value ? { backgroundColor: opt.color } : undefined}
-          >
-            {opt.label}
-          </button>
-        ))}
+      {/* 添加子节点 */}
+      {childTypeOptions.length > 0 && (
+        <>
+          <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider flex items-center gap-1">
+            <Plus className="w-2.5 h-2.5" />
+            添加子节点
+          </div>
+          <div className="px-2 pb-1 flex flex-wrap gap-1">
+            {childTypeOptions.map((type) => (
+              <button
+                key={type}
+                onClick={() => onAddChild(nodeId, type)}
+                className="px-2 py-1 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors flex items-center gap-1"
+              >
+                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: NODE_TYPE_COLORS[type] }} />
+                {NODE_TYPE_LABELS[type]}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* 添加连接 */}
+      <div className="px-2 pb-1">
+        <button
+          onClick={() => onStartConnect(nodeId)}
+          className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+        >
+          <Link className="w-3 h-3" />
+          添加关联连线
+        </button>
       </div>
 
+      {/* 状态切换 */}
+      <div className="border-t mt-1 pt-1">
+        <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">状态</div>
+        <div className="px-2 pb-1 grid grid-cols-3 gap-1">
+          {statusOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => onStatusChange(nodeId, opt.value)}
+              className={cn(
+                'px-1.5 py-1 text-[10px] rounded border transition-colors',
+                node.status === opt.value
+                  ? 'border-transparent text-white'
+                  : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
+              )}
+              style={node.status === opt.value ? { backgroundColor: opt.color } : undefined}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 删除节点 */}
       <div className="border-t mt-1 pt-1">
         <button
           onClick={() => onDelete(nodeId)}

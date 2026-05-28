@@ -112,9 +112,21 @@ function decryptApiKey(encrypted: string): string {
   if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
     return decryptFallback(encrypted)
   }
-  // 安全迁移：旧版 plain: 前缀或裸明文 Key 不再直接返回
-  // 记录警告并返回空字符串，强制用户重新设置 API Key
-  console.warn('[BizGraph] Refusing to decrypt unencrypted API key. Please re-enter your API key in Settings.')
+  // 向后兼容：旧版 plain: 前缀（base64 编码的明文）
+  if (encrypted.startsWith('plain:')) {
+    try {
+      return Buffer.from(encrypted.slice('plain:'.length), 'base64').toString('utf8')
+    } catch {
+      console.warn('[BizGraph] Failed to decode plain: prefixed API key')
+      return ''
+    }
+  }
+  // 向后兼容：裸明文 Key（旧版本直接存储）
+  // 标记为需要迁移，但暂不阻断使用
+  if (encrypted.length > 0) {
+    console.warn('[BizGraph] Unencrypted API key detected. It will be re-encrypted on next save.')
+    return encrypted
+  }
   return ''
 }
 

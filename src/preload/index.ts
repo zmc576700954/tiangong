@@ -41,8 +41,17 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:sendCommand',
   'agent:terminateSession',
 
-  // File system — 仅暴露只读目录浏览
+  // 文件系统 — 只读 + 文件操作
   'fs:readDir',
+  'fs:readDirDetail',
+  'fs:createFile',
+  'fs:createDir',
+  'fs:delete',
+  'fs:rename',
+  'fs:move',
+  'fs:copy',
+  'fs:exists',
+  'fs:stat',
   'fs:registerProjectPaths',
 
   // Dialog

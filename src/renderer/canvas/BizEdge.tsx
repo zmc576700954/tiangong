@@ -10,26 +10,10 @@ import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import type { EdgeType } from '@shared/types'
 import { X, Check, Pencil } from 'lucide-react'
+import { edgeTypeConfig } from './edge-utils'
 
-const edgeTypeConfig: Record<EdgeType, { color: string; label: string }> = {
-  default: { color: '#94a3b8', label: '默认' },
-  success: { color: '#22c55e', label: '成功' },
-  failure: { color: '#ef4444', label: '失败' },
-  condition: { color: '#f59e0b', label: '条件' },
-}
-
-const VALID_EDGE_TYPES: EdgeType[] = ['default', 'success', 'failure', 'condition']
-
-interface BizEdgeData {
-  edgeType?: EdgeType
-}
-
-function isBizEdgeData(data: unknown): data is BizEdgeData {
-  if (!data || typeof data !== 'object') return false
-  const d = data as Record<string, unknown>
-  if (d.edgeType === undefined) return true
-  return typeof d.edgeType === 'string' && VALID_EDGE_TYPES.includes(d.edgeType as EdgeType)
-}
+/** 自定义边类型：携带 edgeType 信息 */
+type BizEdgeType = Edge<{ edgeType?: EdgeType }, 'bizEdge'>
 
 export function BizEdge({
   id,
@@ -43,15 +27,14 @@ export function BizEdge({
   label,
   selected,
   markerEnd,
-}: EdgeProps) {
+}: EdgeProps<BizEdgeType>) {
   const { updateEdge } = useGraphStore()
   const [isEditing, setIsEditing] = useState(false)
   const labelText = typeof label === 'string' ? label : ''
   const [editLabel, setEditLabel] = useState(labelText)
   const [isHover, setIsHover] = useState(false)
 
-  const edgeData = isBizEdgeData(data) ? data : {}
-  const edgeType: EdgeType = edgeData.edgeType ?? 'default'
+  const edgeType: EdgeType = data?.edgeType ?? 'default'
   const config = edgeTypeConfig[edgeType]
 
   const [edgePath, labelX, labelY] = getBezierPath({
@@ -181,18 +164,4 @@ export function BizEdge({
       </EdgeLabelRenderer>
     </>
   )
-}
-
-export function createMarkerEnd(color: string): Edge['markerEnd'] {
-  return {
-    type: 'arrowclosed',
-    width: 12,
-    height: 12,
-    color,
-  }
-}
-
-export function getEdgeMarkerEnd(edgeType: EdgeType | undefined): Edge['markerEnd'] {
-  const color = edgeTypeConfig[edgeType || 'default'].color
-  return createMarkerEnd(color)
 }

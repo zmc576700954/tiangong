@@ -379,7 +379,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   protected parseFileChanges(text: string): void {
     const EXAMPLE_MARKERS = /\b(e\.g\.|for example|such as|like this|similar to)\b/gi
-    const FILE_PATTERN = /(?:edit|modify|update|create|add|delete|remove)\s+(?:file\s+)?[`'"]?([\w\/\\\-.]+\.(?:ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml))[`'"]?/gi
+    const FILE_PATTERN = /(?:edit|modify|update|create|add|delete|remove)\s+(?:file\s+)?[`'"]?([\w/\\.-]+\.(?:ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml))[`'"]?/gi
 
     const lines = text.split('\n')
     let inCodeBlock = false

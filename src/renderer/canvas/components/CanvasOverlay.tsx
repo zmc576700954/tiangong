@@ -18,6 +18,8 @@ interface CanvasOverlayProps {
   onNodeStatusChange: (nodeId: string, status: NodeStatus) => void
   onNodeDelete: (nodeId: string) => void
   onCloseNodeContextMenu: () => void
+  onAddChild: (parentId: string, childType: NodeType) => void
+  onStartConnect: (sourceId: string) => void
 }
 
 export function CanvasOverlay({
@@ -34,6 +36,8 @@ export function CanvasOverlay({
   onNodeStatusChange,
   onNodeDelete,
   onCloseNodeContextMenu,
+  onAddChild,
+  onStartConnect,
 }: CanvasOverlayProps) {
   return (
     <>
@@ -68,7 +72,7 @@ export function CanvasOverlay({
           className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-40"
           style={{ left: menuPosition.x, top: menuPosition.y }}
         >
-          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">Add node</div>
+          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">添加节点</div>
           {(['module', 'process', 'feature', 'bug'] satisfies NodeType[]).map((type) => (
             <button
               key={type}
@@ -126,6 +130,8 @@ export function CanvasOverlay({
           onStatusChange={onNodeStatusChange}
           onDelete={onNodeDelete}
           onClose={onCloseNodeContextMenu}
+          onAddChild={onAddChild}
+          onStartConnect={onStartConnect}
         />
       )}
     </>

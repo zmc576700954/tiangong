@@ -311,7 +311,7 @@ describe('BaseAdapter - Session Lifecycle', () => {
       downstreamContext: '',
     }
 
-    const session = await adapter.startSession(config)
+    await adapter.startSession(config)
     const proc = adapter.getMockProcess()
     expect(proc).toBeDefined()
 

@@ -346,8 +346,17 @@ export interface IpcApi {
 
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
+  'fs:readDirDetail': (path: string) => Promise<{ name: string; path: string; isDirectory: boolean; size: number; mtimeMs: number }[]>
   'fs:readFile': (path: string) => Promise<string>
   'fs:writeFile': (path: string, content: string) => Promise<void>
+  'fs:createFile': (filePath: string) => Promise<{ path: string; name: string }>
+  'fs:createDir': (dirPath: string) => Promise<{ path: string; name: string }>
+  'fs:delete': (targetPath: string, recursive?: boolean) => Promise<{ deleted: string }>
+  'fs:rename': (oldPath: string, newName: string) => Promise<{ oldPath: string; newPath: string; newName: string }>
+  'fs:move': (sourcePath: string, destDir: string) => Promise<{ sourcePath: string; destPath: string; name: string }>
+  'fs:copy': (sourcePath: string, destDir: string) => Promise<{ sourcePath: string; destPath: string; name: string }>
+  'fs:exists': (targetPath: string) => Promise<boolean>
+  'fs:stat': (targetPath: string) => Promise<{ isDirectory: boolean; isFile: boolean; size: number; mtimeMs: number; ctimeMs: number }>
   'fs:registerProjectPaths': (paths: string[]) => Promise<void>
 
   // Git 操作
@@ -377,6 +386,40 @@ export interface IpcApi {
   'settings:refreshCli': () => Promise<CliToolConfig[]>
   'settings:installCli': (name: string) => Promise<{ success: boolean; message: string }>
   'settings:setApiKey': (provider: string, key: string, baseUrl?: string | null) => Promise<void>
+}
+
+// ============================================
+// Settings types
+// ============================================
+
+export interface CliToolConfig {
+  name: string
+  npmPackage: string
+  command: string
+  installed: boolean
+  version?: string
+  path?: string
+}
+
+export interface ApiKeyConfig {
+  provider: 'anthropic' | 'openai' | 'deepseek' | 'gemini'
+  key: string
+  baseUrl?: string
+}
+
+export interface McpServerConfig {
+  name: string
+  command: string
+  args: string[]
+  enabled: boolean
+}
+
+export interface BizGraphSettings {
+  version: number
+  cliTools: CliToolConfig[]
+  apiKeys: ApiKeyConfig[]
+  defaultModel?: string
+  mcpServers: McpServerConfig[]
 }
 
 // ============================================

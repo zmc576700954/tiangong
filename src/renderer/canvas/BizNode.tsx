@@ -1,3 +1,4 @@
+import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode } from '@shared/types'
@@ -22,11 +23,36 @@ export function BizNodeComponent({
   return (
     <div
       className={cn(
-        'px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
+        'group px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
         statusClass,
       )}
       onContextMenu={onContextMenu}
     >
+      {/* Target handles: top + left (连线入端) */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-top-[5px] transition-all"
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="left"
+        className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-left-[5px] transition-all"
+      />
+      {/* Source handles: bottom + right (连线出端) */}
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-bottom-[5px] transition-all"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-right-[5px] transition-all"
+      />
+
       <div className="flex items-center gap-1.5 mb-1">
         <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: typeColor }} />
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">

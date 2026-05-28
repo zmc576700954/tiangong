@@ -1,5 +1,10 @@
 /**
  * 模块构建模块
+ * 
+ * v2 改进：
+ * - 功能点描述更丰富，包含文件路径、路由信息、实体字段
+ * - 流程名称更具体，体现业务含义而非技术层级
+ * - 元数据关联路由和实体信息
  */
 
 import path from 'node:path'
@@ -139,9 +144,10 @@ function buildModuleFromDir(
   if (components.length > 0) {
     const features: ScanFeature[] = components.slice(0, 5).map((f) => {
       const name = path.basename(f, path.extname(f))
+      const relPath = f.replace(dir.path, '')
       return {
         name,
-        description: `${framework} 界面组件`,
+        description: `${framework} 组件 · ${relPath}`,
         type: 'feature' as const,
       }
     })
@@ -158,7 +164,7 @@ function buildModuleFromDir(
     if (dirRoutes.length > 0) {
       features.push(...dirRoutes.slice(0, 5).map((r) => ({
         name: `${r.method ?? 'GET'} ${r.path}`,
-        description: 'API 端点',
+        description: r.handler ? `处理器: ${r.handler}` : 'API 端点',
         type: 'feature' as const,
       })))
     }
@@ -167,7 +173,7 @@ function buildModuleFromDir(
         const name = path.basename(f, path.extname(f))
         return {
           name,
-          description: '业务服务',
+          description: `${dirMeaning}业务服务处理`,
           type: 'feature' as const,
         }
       }))
@@ -186,17 +192,18 @@ function buildModuleFromDir(
       features.push(...dirEntities.slice(0, 5).map((e) => ({
         name: e.name,
         description: e.fields.length > 0
-          ? `字段: ${e.fields.slice(0, 3).join(', ')}${e.fields.length > 3 ? '...' : ''}`
-          : '数据实体',
+          ? `数据实体 · 字段: ${e.fields.slice(0, 4).join(', ')}${e.fields.length > 4 ? '...' : ''}`
+          : `${dirMeaning}数据实体定义`,
         type: 'feature' as const,
       })))
     }
     if (features.length === 0) {
       features.push(...models.slice(0, 3).map((f) => {
         const name = path.basename(f, path.extname(f))
+        const relPath = f.replace(dir.path, '')
         return {
           name,
-          description: '数据模型',
+          description: `数据模型 · ${relPath}`,
           type: 'feature' as const,
         }
       }))
@@ -217,7 +224,7 @@ function buildModuleFromDir(
         const name = path.basename(f, path.extname(f))
         return {
           name,
-          description: '单元测试/集成测试',
+          description: `${dirMeaning}单元测试/集成测试`,
           type: 'feature' as const,
         }
       }),
@@ -235,9 +242,10 @@ function buildModuleFromDir(
         description: `${otherFiles.length} 个代码文件`,
         features: otherFiles.slice(0, 4).map((f) => {
           const name = path.basename(f, path.extname(f))
+          const relPath = f.replace(dir.path, '')
           return {
             name,
-            description: `${path.extname(f)} 文件`,
+            description: `${path.extname(f)} 文件 · ${relPath}`,
             type: 'feature' as const,
           }
         }),
@@ -249,7 +257,7 @@ function buildModuleFromDir(
 
   return {
     name: dirMeaning,
-    description: `${dir.name} 模块 (${dir.files.length} 个文件)`,
+    description: `${dir.name} 模块 · ${dir.files.length} 个文件 · 框架: ${framework}`,
     processes,
   }
 }
@@ -265,7 +273,7 @@ function groupRoutesByModule(routes: RouteInfo[], entities: EntityInfo[]): ScanM
     groups.get(prefix)!.push(route)
   }
 
-  return Array.from(groups.entries()).slice(0, 6).map(([prefix, routes]) => {
+  return Array.from(groups.entries()).slice(0, 6).map(([prefix, groupRoutes]) => {
     const meaning = inferDirectoryMeaning(prefix)
     const relatedEntities = entities.filter((e) =>
       e.name.toLowerCase().includes(prefix.toLowerCase()) ||
@@ -274,14 +282,14 @@ function groupRoutesByModule(routes: RouteInfo[], entities: EntityInfo[]): ScanM
 
     return {
       name: meaning,
-      description: `${prefix} API 模块 (${routes.length} 个端点)`,
+      description: `${prefix} API 模块 · ${groupRoutes.length} 个端点`,
       processes: [
         {
           name: `${meaning}接口层`,
-          description: `${routes.length} 个 API 端点`,
-          features: routes.slice(0, 5).map((r) => ({
+          description: `${groupRoutes.length} 个 API 端点`,
+          features: groupRoutes.slice(0, 5).map((r) => ({
             name: `${r.method ?? 'GET'} ${r.path}`,
-            description: 'API 端点',
+            description: r.handler ? `处理器: ${r.handler}` : 'API 端点',
             type: 'feature' as const,
           })),
         },
@@ -291,8 +299,8 @@ function groupRoutesByModule(routes: RouteInfo[], entities: EntityInfo[]): ScanM
           features: relatedEntities.slice(0, 5).map((e) => ({
             name: e.name,
             description: e.fields.length > 0
-              ? `字段: ${e.fields.slice(0, 3).join(', ')}`
-              : '数据实体',
+              ? `数据实体 · 字段: ${e.fields.slice(0, 4).join(', ')}`
+              : '数据实体定义',
             type: 'feature' as const,
           })),
         }] : []),
@@ -318,7 +326,7 @@ function groupEntitiesByModule(entities: EntityInfo[]): ScanModule[] {
 
   return Array.from(groups.entries()).slice(0, 6).map(([group, ents]) => ({
     name: inferDirectoryMeaning(group),
-    description: `${group} 领域 (${ents.length} 个实体)`,
+    description: `${group} 领域 · ${ents.length} 个实体`,
     processes: [
       {
         name: `${inferDirectoryMeaning(group)}数据模型`,
@@ -326,8 +334,8 @@ function groupEntitiesByModule(entities: EntityInfo[]): ScanModule[] {
         features: ents.slice(0, 5).map((e) => ({
           name: e.name,
           description: e.fields.length > 0
-            ? `字段: ${e.fields.slice(0, 3).join(', ')}`
-            : '数据实体',
+            ? `数据实体 · 字段: ${e.fields.slice(0, 4).join(', ')}`
+            : '数据实体定义',
           type: 'feature' as const,
         })),
       },
@@ -356,7 +364,7 @@ function buildFallbackModule(
         description: `${devScripts.length} 个开发脚本`,
         features: devScripts.slice(0, 5).map(([name, cmd]) => ({
           name,
-          description: cmd,
+          description: `脚本命令: ${cmd}`,
           type: 'feature' as const,
         })),
       })
@@ -378,7 +386,7 @@ function buildFallbackModule(
         description: `${allDeps.length} 个依赖包`,
         features: keyDeps.map((d) => ({
           name: d,
-          description: '项目依赖',
+          description: '项目核心依赖',
           type: 'feature' as const,
         })),
       })

@@ -190,6 +190,7 @@ export function LeftPanel() {
         })
       )
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [loadDirectory]
   )
 

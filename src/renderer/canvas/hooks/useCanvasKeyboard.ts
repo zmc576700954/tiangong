@@ -6,6 +6,9 @@ interface UseCanvasKeyboardOptions {
   onDeleteNode: (id: string) => void
   onDeleteEdge: (id: string) => void
   onDeselect: () => void
+  /** 连线模式下按 Esc 取消 */
+  isConnecting?: boolean
+  onCancelConnect?: () => void
 }
 
 export function useCanvasKeyboard({
@@ -14,10 +17,24 @@ export function useCanvasKeyboard({
   onDeleteNode,
   onDeleteEdge,
   onDeselect,
+  isConnecting,
+  onCancelConnect,
 }: UseCanvasKeyboardOptions) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Esc 取消连线模式或取消选中
+      if (e.key === 'Escape') {
+        if (isConnecting && onCancelConnect) {
+          onCancelConnect()
+        } else {
+          onDeselect()
+        }
+        return
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        // 连线模式下不响应删除键
+        if (isConnecting) return
         if (selectedNodeId) {
           onDeleteNode(selectedNodeId)
           onDeselect()
@@ -29,5 +46,5 @@ export function useCanvasKeyboard({
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNodeId, selectedEdgeId, onDeleteNode, onDeleteEdge, onDeselect])
+  }, [selectedNodeId, selectedEdgeId, onDeleteNode, onDeleteEdge, onDeselect, isConnecting, onCancelConnect])
 }

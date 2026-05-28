@@ -43,8 +43,9 @@ export interface ProtocolCommandPayload {
 }
 
 /** ping 类型载荷 */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface ProtocolPingPayload {
-  /** 空载荷 */
+  // 空载荷
 }
 
 /** 输出消息（CLI -> 主进程） */

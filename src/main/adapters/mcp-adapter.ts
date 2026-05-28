@@ -92,7 +92,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
       'Content-Type': 'application/json',
       ...(baseUrl ? { 'x-goog-api-key': key } : {}),
     }),
-    buildBody: (messages, model) => {
+    buildBody: (messages, _model) => {
       const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
       const userMsgs = messages.filter((m) => m.role !== 'system')
       const contents = userMsgs.map((m) => ({
