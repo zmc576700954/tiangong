@@ -185,6 +185,14 @@ export interface ContextRef {
   label: string
 }
 
+/** 文件搜索结果（用于 @ 提及文件） */
+export interface FileSearchResult {
+  name: string
+  path: string
+  relativePath: string
+  isDirectory: boolean
+}
+
 /** 工具调用块（嵌入 Agent 消息中） */
 export interface ToolCallBlock {
   type: 'file_edit' | 'diff' | 'terminal' | 'file_create'
@@ -418,6 +426,7 @@ export interface IpcApi {
   'fs:exists': (targetPath: string) => Promise<boolean>
   'fs:stat': (targetPath: string) => Promise<{ isDirectory: boolean; isFile: boolean; size: number; mtimeMs: number; ctimeMs: number }>
   'fs:registerProjectPaths': (paths: string[]) => Promise<void>
+  'fs:searchFiles': (dirPath: string, query: string, limit?: number) => Promise<FileSearchResult[]>
 
   // Git 操作
   'git:status': (path: string) => Promise<{ modified: string[]; untracked: string[] }>
