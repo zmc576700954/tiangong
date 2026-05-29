@@ -38,6 +38,8 @@ interface AgentState {
   selectThread: (id: string | null) => void
   updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error') => void
   markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
+  stopCurrentSession: (threadId: string) => Promise<void>
+  retryMessage: (threadId: string, agentMessageId: string) => Promise<void>
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -231,5 +233,44 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           : t,
       ),
     }))
+  },
+
+  stopCurrentSession: async (threadId) => {
+    const thread = get().threads.find((t) => t.id === threadId)
+    if (!thread?.sessionId) return
+
+    await get().terminateSession(thread.sessionId)
+
+    // Mark the last streaming agent message as aborted
+    const lastStreaming = [...thread.messages].reverse().find((m) => m.role === 'agent' && m.status === 'streaming')
+    if (lastStreaming) {
+      get().markMessageStatus(threadId, lastStreaming.id, 'aborted')
+    }
+
+    get().updateThreadStatus(threadId, 'idle')
+  },
+
+  retryMessage: async (threadId, agentMessageId) => {
+    const thread = get().threads.find((t) => t.id === threadId)
+    if (!thread) return
+
+    const agentIdx = thread.messages.findIndex((m) => m.id === agentMessageId)
+    if (agentIdx < 0) return
+
+    // Find the preceding user message
+    const precedingUser = [...thread.messages.slice(0, agentIdx)].reverse().find((m) => m.role === 'user')
+    if (!precedingUser) return
+
+    // Remove the target agent message and everything after it
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? { ...t, messages: t.messages.slice(0, agentIdx) }
+          : t,
+      ),
+    }))
+
+    // Resend using the original user message content and context
+    await get().sendMessage(threadId, precedingUser.content, precedingUser.contextRefs)
   },
 }))
