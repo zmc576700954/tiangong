@@ -7,9 +7,10 @@ interface ChatMessageListProps {
   messages: ChatMessage[]
   isRunning: boolean
   adapterName?: string
+  onRetry?: (messageId: string) => void
 }
 
-export function ChatMessageList({ messages, isRunning, adapterName }: ChatMessageListProps) {
+export function ChatMessageList({ messages, isRunning, adapterName, onRetry }: ChatMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -33,7 +34,7 @@ export function ChatMessageList({ messages, isRunning, adapterName }: ChatMessag
   return (
     <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
       {messages.map((msg) => (
-        <ChatBubble key={msg.id} message={msg} />
+        <ChatBubble key={msg.id} message={msg} onRetry={onRetry} />
       ))}
       {isRunning && <RunningIndicator adapterName={adapterName} />}
       <div ref={bottomRef} />
