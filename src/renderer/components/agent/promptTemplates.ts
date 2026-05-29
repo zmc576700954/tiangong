@@ -1,4 +1,19 @@
 import type { GraphNode } from '@shared/types'
+import { Code2, Shield, GitBranch, Check } from 'lucide-react'
+
+export interface SlashCommand {
+  name: string
+  label: string
+  description: string
+  icon: React.ComponentType<{ className?: string }>
+}
+
+export const SLASH_COMMANDS: SlashCommand[] = [
+  { name: '/implement', label: 'Implement', description: 'Implement a feature from node requirements', icon: Code2 },
+  { name: '/fix', label: 'Fix Bug', description: 'Fix a bug with context from node', icon: Shield },
+  { name: '/refactor', label: 'Refactor', description: 'Refactor with constraints from node', icon: GitBranch },
+  { name: '/test', label: 'Add Tests', description: 'Add tests based on acceptance criteria', icon: Check },
+]
 
 const SLASH_TO_COMMAND: Record<string, string> = {
   '/implement': 'implement',

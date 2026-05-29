@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Send } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { SlashCommandMenu, type SlashCommand } from './SlashCommandMenu'
+import { SlashCommandMenu } from './SlashCommandMenu'
+import type { SlashCommand } from './promptTemplates'
 import { MentionSearchPopup } from './MentionSearchPopup'
 import type { ContextRef } from '@shared/types'
 
