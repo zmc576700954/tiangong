@@ -53,6 +53,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'fs:exists',
   'fs:stat',
   'fs:registerProjectPaths',
+  'fs:searchFiles',
 
   // Dialog
   'dialog:openDirectory',
