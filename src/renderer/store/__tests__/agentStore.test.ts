@@ -5,6 +5,7 @@ vi.stubGlobal('window', {
   electronAPI: {
     'agent:startSession': vi.fn().mockResolvedValue({ sessionId: 's1' }),
     'agent:sendCommand': vi.fn().mockResolvedValue(undefined),
+    'agent:resolveAndSendCommand': vi.fn().mockResolvedValue(undefined),
     'agent:listAdapters': vi.fn().mockResolvedValue([]),
     'agent:terminateSession': vi.fn().mockResolvedValue(undefined),
     onAgentOutput: vi.fn(),

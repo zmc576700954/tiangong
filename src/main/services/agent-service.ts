@@ -25,7 +25,7 @@ export class AgentService {
     sessionId: string,
     command: AgentCommand,
     contextRefs: import('@shared/types').ContextRef[],
-    nodeIds: string[],
+    _nodeIds: string[],
   ): Promise<void> {
     return this.agentManager.resolveAndSendCommand(sessionId, command, contextRefs)
   }
