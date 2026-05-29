@@ -11,6 +11,7 @@ import type {
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
+  ResolvedContext,
 } from '@shared/types'
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
 import type { ProtocolInputMessage } from './json-protocol'
@@ -469,7 +470,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 将 AgentSessionConfig 转换为自然语言约束说明
    * @protected
    */
-  protected buildScopePrompt(config: AgentSessionConfig): string {
+  protected buildScopePrompt(config: AgentSessionConfig, resolvedContexts?: ResolvedContext[]): string {
     const lines: string[] = []
 
     lines.push(`# 业务节点：${config.nodeTitle}`)
@@ -524,6 +525,16 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       for (const bug of config.bugContext) {
         lines.push(`### ${bug.title} [${bug.severity}]`)
         lines.push(bug.description)
+        lines.push('')
+      }
+    }
+
+    // 注入已解析的上下文
+    if (resolvedContexts && resolvedContexts.length > 0) {
+      lines.push('## 附加上下文')
+      for (const ctx of resolvedContexts) {
+        lines.push(`### ${ctx.label} (${ctx.type})`)
+        lines.push(ctx.content)
         lines.push('')
       }
     }

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Readable, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { BaseAdapter } from '../adapters/base'
-import type { AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, AgentOutput, ResolvedContext } from '@shared/types'
 
 // Create a concrete adapter for testing
 class TestAdapter extends BaseAdapter {
@@ -57,8 +57,8 @@ class TestAdapter extends BaseAdapter {
     return outputs
   }
 
-  public testBuildScopePrompt(config: AgentSessionConfig): string {
-    return this.buildScopePrompt(config)
+  public testBuildScopePrompt(config: AgentSessionConfig, resolvedContexts?: ResolvedContext[]): string {
+    return this.buildScopePrompt(config, resolvedContexts)
   }
 
   public testBuildSafeEnv(): NodeJS.ProcessEnv {
@@ -332,5 +332,88 @@ describe('BaseAdapter - Session Lifecycle', () => {
 
   it('should not throw when removing non-existent listener', () => {
     expect(() => adapter.offOutput(() => {})).not.toThrow()
+  })
+})
+
+describe('buildScopePrompt with resolved contexts', () => {
+  let adapter: TestAdapter
+
+  beforeEach(() => {
+    adapter = new TestAdapter()
+  })
+
+  afterEach(() => {
+    adapter.cleanup()
+  })
+
+  it('appends resolved contexts to scope prompt', () => {
+    const config: AgentSessionConfig = {
+      workingDirectory: '/test',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: 'Test Node',
+      acceptanceCriteria: [],
+    }
+
+    const resolved: ResolvedContext[] = [
+      {
+        type: 'node',
+        id: 'n1',
+        label: 'Login',
+        content: '节点: Login (feature)\n描述: Login flow',
+        tokenEstimate: 10,
+      },
+      {
+        type: 'file',
+        id: '/src/auth.ts',
+        label: 'auth.ts',
+        content: 'export function login() {}',
+        tokenEstimate: 5,
+      },
+    ]
+
+    const prompt = adapter.testBuildScopePrompt(config, resolved)
+
+    expect(prompt).toContain('# 业务节点：Test Node')
+    expect(prompt).toContain('## 附加上下文')
+    expect(prompt).toContain('### Login (node)')
+    expect(prompt).toContain('Login flow')
+    expect(prompt).toContain('### auth.ts (file)')
+    expect(prompt).toContain('export function login')
+  })
+
+  it('does not add context section when resolved is empty', () => {
+    const config: AgentSessionConfig = {
+      workingDirectory: '/test',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: 'Test Node',
+      acceptanceCriteria: [],
+    }
+
+    const prompt = adapter.testBuildScopePrompt(config, [])
+    expect(prompt).not.toContain('## 附加上下文')
+  })
+
+  it('does not add context section when resolved is undefined', () => {
+    const config: AgentSessionConfig = {
+      workingDirectory: '/test',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: 'Test Node',
+      acceptanceCriteria: [],
+    }
+
+    const prompt = adapter.testBuildScopePrompt(config)
+    expect(prompt).not.toContain('## 附加上下文')
   })
 })
