@@ -16,7 +16,7 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
