@@ -275,4 +275,27 @@ describe('agentStore threads', () => {
 
     expect(useAgentStore.getState().threads[0].status).toBe('idle')
   })
+
+  it('sendMessage records sessionId on thread after successful start', async () => {
+    vi.mocked(window.electronAPI['agent:startSession']).mockResolvedValueOnce({ sessionId: 'sess-abc' })
+    const threadId = useAgentStore.getState().createThread('claude-code')
+    await useAgentStore.getState().sendMessage(threadId, 'Hello')
+    const thread = useAgentStore.getState().threads.find((t) => t.id === threadId)!
+    expect(thread.sessionId).toBe('sess-abc')
+    expect(thread.messages[0].status).toBe('pending')
+  })
+
+  it('sendMessage creates an error message on session start failure', async () => {
+    vi.mocked(window.electronAPI['agent:startSession']).mockRejectedValueOnce(new Error('spawn ENOENT'))
+    const threadId = useAgentStore.getState().createThread('claude-code')
+    await useAgentStore.getState().sendMessage(threadId, 'Hello')
+    const thread = useAgentStore.getState().threads.find((t) => t.id === threadId)!
+    expect(thread.status).toBe('error')
+    expect(thread.messages).toHaveLength(2)
+    const errMsg = thread.messages[1]
+    expect(errMsg.role).toBe('agent')
+    expect(errMsg.status).toBe('error')
+    expect(errMsg.error?.code).toBe('SESSION_START_FAILED')
+    expect(errMsg.error?.raw).toContain('ENOENT')
+  })
 })

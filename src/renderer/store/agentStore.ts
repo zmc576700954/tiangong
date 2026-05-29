@@ -132,6 +132,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       content,
       timestamp: Date.now(),
       contextRefs,
+      status: 'pending',
     }
     set((state) => ({
       threads: state.threads.map((t) =>
@@ -163,18 +164,34 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     try {
       const result = await window.electronAPI['agent:startSession'](thread.adapterName, config)
+
+      // Record sessionId on thread so stopCurrentSession can find it
+      set((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === threadId ? { ...t, sessionId: result.sessionId } : t,
+        ),
+      }))
+
       const command: AgentCommand = {
         type: 'implement',
         description: content,
         targetNodeId: thread.nodeBound ?? '',
       }
       await window.electronAPI['agent:sendCommand'](result.sessionId, command)
-    } catch {
-      set((state) => ({
-        threads: state.threads.map((t) =>
-          t.id === threadId ? { ...t, status: 'error' as const } : t,
-        ),
-      }))
+    } catch (err) {
+      get().appendChatMessage(threadId, {
+        id: generateId('msg'),
+        role: 'agent',
+        content: '',
+        timestamp: Date.now(),
+        status: 'error',
+        error: {
+          code: 'SESSION_START_FAILED',
+          message: '无法启动 Agent 会话，请检查适配器是否可用。',
+          raw: String(err),
+        },
+      })
+      get().updateThreadStatus(threadId, 'error')
     }
   },
 
