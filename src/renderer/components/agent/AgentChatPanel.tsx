@@ -193,14 +193,20 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // Consume pendingContextRef from file tree right-click
   useEffect(() => {
-    if (pendingContextRef) {
-      setAttachedContexts((prev) => {
-        if (prev.some((c) => c.id === pendingContextRef.id)) return prev
-        return [...prev, pendingContextRef]
-      })
-      setPendingContextRef(null)
+    if (!pendingContextRef) return
+
+    setAttachedContexts((prev) => {
+      if (prev.some((c) => c.id === pendingContextRef.id)) return prev
+      return [...prev, pendingContextRef]
+    })
+
+    // Auto-create a thread if none exists — ContextBar only renders when currentThread is set
+    if (!currentThreadId && selectedAdapter) {
+      createThread(selectedAdapter, selectedNode?.id)
     }
-  }, [pendingContextRef, setPendingContextRef])
+
+    setPendingContextRef(null)
+  }, [pendingContextRef, setPendingContextRef, currentThreadId, selectedAdapter, createThread, selectedNode])
 
   const handleNewThread = () => {
     if (!selectedAdapter) return
