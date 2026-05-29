@@ -67,6 +67,7 @@ describe('agentStore threads', () => {
       role: 'user',
       content: 'Hello',
       timestamp: Date.now(),
+      status: 'pending',
     })
     expect(useAgentStore.getState().threads[0].messages).toHaveLength(1)
     expect(useAgentStore.getState().threads[0].messages[0].content).toBe('Hello')
@@ -113,5 +114,74 @@ describe('agentStore threads', () => {
     expect(useAgentStore.getState().threads[0].status).toBe('running')
     useAgentStore.getState().updateThreadStatus(id, 'idle')
     expect(useAgentStore.getState().threads[0].status).toBe('idle')
+  })
+
+  it('appendChatMessage sets status to pending for user messages', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    useAgentStore.getState().appendChatMessage(id, {
+      id: 'msg-user',
+      role: 'user',
+      content: 'Hello',
+      timestamp: Date.now(),
+      status: 'pending',
+    })
+    expect(useAgentStore.getState().threads[0].messages[0].status).toBe('pending')
+  })
+
+  it('appendChatMessage sets status to streaming for agent messages', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    useAgentStore.getState().appendChatMessage(id, {
+      id: 'msg-agent',
+      role: 'agent',
+      content: 'Response',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+    expect(useAgentStore.getState().threads[0].messages[0].status).toBe('streaming')
+  })
+
+  it('markMessageStatus updates a specific message status', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    useAgentStore.getState().appendChatMessage(id, {
+      id: 'msg-1',
+      role: 'agent',
+      content: 'Hello',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+    useAgentStore.getState().markMessageStatus(id, 'msg-1', 'success')
+    expect(useAgentStore.getState().threads[0].messages[0].status).toBe('success')
+  })
+
+  it('markMessageStatus sets error with MessageError object', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    useAgentStore.getState().appendChatMessage(id, {
+      id: 'msg-err',
+      role: 'agent',
+      content: '',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+    useAgentStore.getState().markMessageStatus(id, 'msg-err', 'error', {
+      code: 'AGENT_CRASH',
+      message: 'Process crashed',
+    })
+    const msg = useAgentStore.getState().threads[0].messages[0]
+    expect(msg.status).toBe('error')
+    expect(msg.error?.code).toBe('AGENT_CRASH')
+    expect(msg.error?.message).toBe('Process crashed')
+  })
+
+  it('markMessageStatus is a no-op for non-existent message', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    useAgentStore.getState().appendChatMessage(id, {
+      id: 'msg-1',
+      role: 'agent',
+      content: 'Hello',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+    useAgentStore.getState().markMessageStatus(id, 'non-existent', 'error')
+    expect(useAgentStore.getState().threads[0].messages[0].status).toBe('streaming')
   })
 })

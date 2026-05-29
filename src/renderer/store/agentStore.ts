@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError } from '@shared/types'
 import { generateId } from '../lib/utils'
 
 /** 单个会话的输出上限，防止长时间运行导致内存膨胀 */
@@ -31,12 +31,13 @@ interface AgentState {
   appendOutput: (sessionId: string, output: AgentOutput) => void
   selectSession: (id: string | null) => void
   createThread: (adapterName: string, nodeBound?: string) => string
-  sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[]) => Promise<void>
+  sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
   appendChatMessage: (threadId: string, message: ChatMessage) => void
   renameThread: (threadId: string, title: string) => void
   deleteThread: (threadId: string) => void
   selectThread: (id: string | null) => void
   updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error') => void
+  markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -122,7 +123,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     return id
   },
 
-  sendMessage: async (threadId, content, contextRefs) => {
+  sendMessage: async (threadId, content, contextRefs, sessionConfig) => {
     const userMessage: ChatMessage = {
       id: generateId('msg'),
       role: 'user',
@@ -146,7 +147,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const thread = get().threads.find((t) => t.id === threadId)
     if (!thread) return
 
-    const config: AgentSessionConfig = {
+    // 使用传入的完整配置，或构建空壳 fallback
+    const config: AgentSessionConfig = sessionConfig ?? {
       workingDirectory: '',
       allowedFiles: [],
       forbiddenFiles: [],
@@ -210,6 +212,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set((state) => ({
       threads: state.threads.map((t) =>
         t.id === threadId ? { ...t, status } : t,
+      ),
+    }))
+  },
+
+  markMessageStatus: (threadId, messageId, status, error) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? {
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, status, ...(error ? { error } : { error: undefined }) }
+                  : m,
+              ),
+            }
+          : t,
       ),
     }))
   },
