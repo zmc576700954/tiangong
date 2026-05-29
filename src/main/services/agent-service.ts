@@ -21,6 +21,15 @@ export class AgentService {
     return this.agentManager.sendCommand(sessionId, command)
   }
 
+  async resolveAndSendCommand(
+    sessionId: string,
+    command: AgentCommand,
+    contextRefs: import('@shared/types').ContextRef[],
+    nodeIds: string[],
+  ): Promise<void> {
+    return this.agentManager.resolveAndSendCommand(sessionId, command, contextRefs)
+  }
+
   async terminateSession(sessionId: string): Promise<void> {
     return this.agentManager.terminateSession(sessionId)
   }

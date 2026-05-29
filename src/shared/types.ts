@@ -422,6 +422,7 @@ export interface IpcApi {
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>
   'agent:startSession': (adapterName: string, config: AgentSessionConfig) => Promise<{ sessionId: string; fallback?: boolean }>
   'agent:sendCommand': (sessionId: string, command: AgentCommand) => Promise<void>
+  'agent:resolveAndSendCommand': (sessionId: string, command: AgentCommand, contextRefs: ContextRef[], nodeIds: string[]) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
 

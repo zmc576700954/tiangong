@@ -19,6 +19,10 @@ export function registerAgentHandlers(agentService: AgentService, typedHandle: T
     return agentService.sendCommand(sessionId, command)
   })
 
+  typedHandle('agent:resolveAndSendCommand', async (_, sessionId, command, contextRefs, nodeIds) => {
+    return agentService.resolveAndSendCommand(sessionId, command, contextRefs, nodeIds)
+  })
+
   typedHandle('agent:terminateSession', async (_, sessionId) => {
     return agentService.terminateSession(sessionId)
   })
