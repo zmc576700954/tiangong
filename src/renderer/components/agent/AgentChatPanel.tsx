@@ -39,6 +39,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const currentThread = threads.find((t) => t.id === currentThreadId)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
+  const edges = useGraphStore((s) => s.edges)
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
 
   useEffect(() => {
@@ -106,7 +107,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     }
 
     if (content.startsWith('/')) {
-      const template = generatePromptTemplate(content.trim(), selectedNode)
+      const template = generatePromptTemplate(content.trim(), selectedNode, nodes, edges)
       if (template) {
         await sendMessage(threadId, template, contextRefs)
         return
