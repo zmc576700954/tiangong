@@ -6,8 +6,59 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { TypedHandle } from './utils'
+import type { FileSearchResult } from '@shared/types'
 
 export type ValidateFsPath = (targetPath: string, operation: 'read' | 'write') => Promise<string>
+
+const SKIP_DIRS = new Set([
+  'node_modules', '.git', '.next', 'dist', 'build',
+  '__pycache__', '.DS_Store', '.vscode', '.idea',
+  'coverage', '.cache', '.turbo',
+])
+
+export async function searchFilesRecursive(
+  dirPath: string,
+  query: string,
+  limit: number = 20,
+): Promise<FileSearchResult[]> {
+  if (!query) return []
+  const results: FileSearchResult[] = []
+  const q = query.toLowerCase()
+
+  async function walk(dir: string) {
+    if (results.length >= limit) return
+    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch {
+      return // 跳过无权限目录
+    }
+
+    for (const entry of entries) {
+      if (results.length >= limit) return
+      if (SKIP_DIRS.has(entry.name)) continue
+
+      const fullPath = path.join(dir, entry.name)
+      const relativePath = path.relative(dirPath, fullPath)
+
+      if (entry.name.toLowerCase().includes(q)) {
+        results.push({
+          name: entry.name,
+          path: fullPath,
+          relativePath,
+          isDirectory: entry.isDirectory(),
+        })
+      }
+
+      if (entry.isDirectory()) {
+        await walk(fullPath)
+      }
+    }
+  }
+
+  await walk(dirPath)
+  return results
+}
 
 export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: TypedHandle): void {
   // ---- 只读 ----
@@ -178,5 +229,11 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
       mtimeMs: stat.mtimeMs,
       ctimeMs: stat.ctimeMs,
     }
+  })
+
+  /** 递归搜索文件（用于 @ 提及文件） */
+  typedHandle('fs:searchFiles', async (_, dirPath, query, limit) => {
+    const validPath = await validateFsPath(dirPath, 'read')
+    return searchFilesRecursive(validPath, query, limit)
   })
 }
