@@ -228,8 +228,13 @@ export const useFileTreeStore = create<FileTreeState>()(
         if (proj) {
           const node = findNodeByPath(proj.root, path)
           if (node && node.isDirectory && node.children && node.children.length === 0) {
-            loadChildrenForNode(node, get().expandedPaths).then(() => {
-              set((s) => { /* trigger re-render */ void s })
+            loadChildrenForNode(node.path, true, get().expandedPaths).then((children) => {
+              set((s) => {
+                const p = s.projects.find((pp) => pp.id === proj.id)
+                if (p) {
+                  findAndUpdateNode(p.root, node.path, (n) => { n.children = children })
+                }
+              })
             })
           }
         }
@@ -594,15 +599,16 @@ async function loadTreeRecursive(
   return { name, path: dirPath, isDirectory: true, children }
 }
 
-/** 为已展开但子节点为空的目录加载子节点 */
+/** 为已展开但子节点为空的目录加载子节点，返回子节点数组（不直接修改 node） */
 async function loadChildrenForNode(
-  node: TreeNode,
+  nodePath: string,
+  nodeIsDirectory: boolean,
   expandedPaths: Set<string>,
-): Promise<void> {
-  if (!node.isDirectory || !ipc) return
+): Promise<TreeNode[]> {
+  if (!nodeIsDirectory || !ipc) return []
 
   try {
-    const entries = await ipc['fs:readDirDetail'](node.path)
+    const entries = await ipc['fs:readDirDetail'](nodePath)
     const filtered = entries
       .filter((e) => !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '__pycache__')
       .sort((a, b) => {
@@ -611,7 +617,7 @@ async function loadChildrenForNode(
         return a.name.localeCompare(b.name)
       })
 
-    node.children = await Promise.all(
+    return await Promise.all(
       filtered.map(async (entry) => {
         if (entry.isDirectory && expandedPaths.has(entry.path)) {
           const childNode: TreeNode = {
@@ -622,7 +628,7 @@ async function loadChildrenForNode(
             size: entry.size,
             mtimeMs: entry.mtimeMs,
           }
-          await loadChildrenForNode(childNode, expandedPaths)
+          childNode.children = await loadChildrenForNode(entry.path, true, expandedPaths)
           return childNode
         }
         return {
@@ -636,7 +642,7 @@ async function loadChildrenForNode(
       }),
     )
   } catch {
-    // 忽略
+    return []
   }
 }
 
@@ -665,6 +671,25 @@ function findNodeByPath(root: TreeNode | null, targetPath: string): TreeNode | n
     }
   }
   return null
+}
+
+/** 查找节点并就地修改（用于 immer set 回调中） */
+function findAndUpdateNode(
+  root: TreeNode | null,
+  targetPath: string,
+  updater: (node: TreeNode) => void,
+): boolean {
+  if (!root) return false
+  if (root.path === targetPath) {
+    updater(root)
+    return true
+  }
+  if (root.children) {
+    for (const child of root.children) {
+      if (findAndUpdateNode(child, targetPath, updater)) return true
+    }
+  }
+  return false
 }
 
 /** 将树扁平化为可见节点列表（用于键盘导航、范围选择） */

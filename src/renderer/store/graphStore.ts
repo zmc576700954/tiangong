@@ -18,6 +18,7 @@ interface GraphState {
   setCurrentGraph: (id: string | null) => void
 
   createNode: (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
+  createNodeBatch: (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   updateNode: (id: string, data: Partial<GraphNode>) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   selectNode: (id: string | null) => void
@@ -84,6 +85,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const node = await window.electronAPI['node:create'](data)
     set((state) => ({ nodes: [...state.nodes, node] }))
     return node
+  },
+
+  createNodeBatch: async (nodesData) => {
+    const created: GraphNode[] = []
+    for (const data of nodesData) {
+      const node = await window.electronAPI['node:create'](data)
+      created.push(node)
+    }
+    set((state) => ({ nodes: [...state.nodes, ...created] }))
+    return created
   },
 
   updateNode: async (id, data) => {

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useAgentStore } from '../store/agentStore'
 import { useGraphStore } from '../store/graphStore'
+import { useAppStore } from '../store/appStore'
 import { cn, formatDate } from '../lib/utils'
 import {
   AGENT_COMMAND_LABELS,
@@ -58,6 +59,15 @@ export function RightPanel() {
 
   const [activeTab, setActiveTab] = useState<'node' | 'agent'>('node')
 
+  const activeRightPanel = useAppStore((s) => s.activeRightPanel)
+
+  // Sync external tab switching from appStore (e.g., from file tree context menu)
+  useEffect(() => {
+    if (activeRightPanel === 'agent' && activeTab !== 'agent') {
+      setActiveTab('agent')
+    }
+  }, [activeRightPanel, activeTab])
+
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI) {
       loadAdapters()
@@ -87,7 +97,7 @@ export function RightPanel() {
     if (!selectedNode) return
 
     const config: AgentSessionConfig = {
-      workingDirectory: '',
+      workingDirectory: useAppStore.getState().agentWorkingDirectory || '',
       allowedFiles: [],
       forbiddenFiles: [],
       invariantRules: [],
@@ -897,7 +907,7 @@ function AgentPanel({
 
     // 启动会话
     const config: AgentSessionConfig = {
-      workingDirectory: '',
+      workingDirectory: useAppStore.getState().agentWorkingDirectory || '',
       allowedFiles: [],
       forbiddenFiles: [],
       invariantRules: [],
