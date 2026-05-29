@@ -263,6 +263,8 @@ export interface AgentSession {
   adapterName: string
   config: AgentSessionConfig
   startTime: number
+  /** 运行时注入的已解析上下文（不持久化） */
+  resolvedContexts?: ResolvedContext[]
 }
 
 /** Agent 适配器接口 */

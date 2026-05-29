@@ -136,6 +136,16 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * 设置会话的已解析上下文（外部调用，用于在 sendCommand 前注入上下文）
+   */
+  setResolvedContexts(sessionId: string, resolvedContexts: import('@shared/types').ResolvedContext[]): void {
+    const session = this.sessions.get(sessionId)
+    if (session) {
+      session.resolvedContexts = resolvedContexts
+    }
+  }
+
+  /**
    * 向所有监听器发送输出
    * @protected
    */

@@ -39,13 +39,13 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePrompt(session.config)
+    const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
+    const constraintSuffix = this.buildConstraintSuffix(session.config)
     const commandPrompt = this.buildCommandPrompt(command)
-    const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
+    const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`
 
     const args = [
-      '-a', 'auto-edit',
-      '--approval-mode', 'auto-edit',
+      '--approval-mode', 'full-auto',
       '-m', 'gpt-4o',
       '--',
       fullPrompt.replace(/^-/gm, '\\-'),
@@ -58,5 +58,21 @@ export class CodexAdapter extends BaseAdapter {
     })
 
     await this.runOneShot(proc)
+  }
+
+  /**
+   * 构建强制约束后缀
+   * 在白名单模式下追加明确的禁止指令，增强 prompt 约束力
+   */
+  private buildConstraintSuffix(config: AgentSessionConfig): string {
+    if (config.allowedFiles.length === 0) return ''
+
+    return [
+      '## ⚠️ 强制约束',
+      `- 只能修改白名单中的文件：${config.allowedFiles.join(', ')}`,
+      '- 禁止使用 Bash 命令修改白名单外的文件（如 mv、cp、sed、echo 重定向等）',
+      '- 如果需要修改白名单外的文件，先向用户说明原因并请求授权',
+      '',
+    ].join('\n')
   }
 }

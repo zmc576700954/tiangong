@@ -48,7 +48,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePrompt(session.config)
+    const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
     const commandPrompt = this.buildCommandPrompt(command)
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 

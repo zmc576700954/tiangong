@@ -11,14 +11,19 @@ import type {
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
+  ContextRef,
+  ResolvedContext,
+  GraphNode,
 } from '@shared/types'
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterError, SessionNotFoundError } from '../errors'
+import { ContextResolver } from '../context-resolver'
 
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
+  private contextResolver = new ContextResolver()
 
   constructor(
     private registry: AdapterRegistry,
@@ -105,6 +110,34 @@ export class AgentManager {
       throw new SessionNotFoundError(sessionId)
     }
     await adapter.sendCommand(sessionId, command)
+  }
+
+  /**
+   * 解析上下文并发送指令
+   * 在发送前将 ContextRef[] 解析为 ResolvedContext[]，
+   * 注入到 adapter 的 scope prompt 中。
+   */
+  async resolveAndSendCommand(
+    sessionId: string,
+    command: AgentCommand,
+    contextRefs?: ContextRef[],
+    nodes?: GraphNode[],
+  ): Promise<void> {
+    let resolvedContexts: ResolvedContext[] = []
+
+    if (contextRefs && contextRefs.length > 0) {
+      resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
+        nodes: nodes ?? [],
+      })
+    }
+
+    // Store resolved contexts on the session so adapter can access them
+    const adapter = this.router.resolve(sessionId)
+    if (adapter && resolvedContexts.length > 0) {
+      adapter.setResolvedContexts(sessionId, resolvedContexts)
+    }
+
+    await this.sendCommand(sessionId, command)
   }
 
   async terminateSession(sessionId: string): Promise<void> {
