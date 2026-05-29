@@ -174,6 +174,8 @@ export interface AgentOutput {
   filePath?: string
   /** 如果是 file_change，记录变更类型 */
   changeType?: 'add' | 'modify' | 'delete'
+  /** 错误分类码 */
+  errorCode?: string
 }
 
 /** 上下文引用（节点或文件） */
@@ -192,6 +194,21 @@ export interface ToolCallBlock {
   accepted?: boolean
 }
 
+/** 消息状态 */
+export type MessageStatus =
+  | 'pending'     // 用户消息刚发出，等待 agent 响应
+  | 'streaming'   // agent 正在输出
+  | 'success'     // agent 正常完成
+  | 'error'       // 出错
+  | 'aborted'     // 用户主动终止
+
+/** 消息错误信息 */
+export interface MessageError {
+  code: string       // 错误码，如 AGENT_CRASH、SESSION_START_FAILED 等
+  message: string    // 用户可读的错误描述
+  raw?: string       // 原始错误数据（可选，用于调试）
+}
+
 /** 聊天消息 */
 export interface ChatMessage {
   id: string
@@ -201,6 +218,9 @@ export interface ChatMessage {
   adapterName?: string
   toolCalls?: ToolCallBlock[]
   contextRefs?: ContextRef[]
+  status: MessageStatus
+  error?: MessageError
+  sessionId?: string
 }
 
 /** Agent 会话线程 */
@@ -213,6 +233,7 @@ export interface AgentThread {
   status: 'idle' | 'running' | 'error'
   createdAt: number
   nodeBound?: string
+  sessionId?: string
 }
 
 /** Agent 会话（可序列化，不含 Node.js 运行时对象） */

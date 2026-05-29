@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { Send } from 'lucide-react'
+import { Send, Square } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import type { SlashCommand } from './promptTemplates'
@@ -8,12 +8,14 @@ import type { ContextRef } from '@shared/types'
 
 interface ChatInputProps {
   onSend: (content: string, contextRefs: ContextRef[]) => void
+  onStop?: () => void
   onMentionAdd?: (ref: ContextRef) => void
   disabled?: boolean
+  isRunning?: boolean
   attachedContexts: ContextRef[]
 }
 
-export function ChatInput({ onSend, onMentionAdd, disabled, attachedContexts }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [showSlash, setShowSlash] = useState(false)
   const [showMention, setShowMention] = useState(false)
@@ -104,7 +106,7 @@ export function ChatInput({ onSend, onMentionAdd, disabled, attachedContexts }: 
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           placeholder="Type a message, / for commands, @ to add context..."
-          disabled={disabled}
+          disabled={disabled && !isRunning}
           rows={1}
           className={cn(
             'flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg resize-none',
@@ -112,18 +114,28 @@ export function ChatInput({ onSend, onMentionAdd, disabled, attachedContexts }: 
             'disabled:opacity-50 disabled:cursor-not-allowed',
           )}
         />
-        <button
-          onClick={handleSend}
-          disabled={!value.trim() || disabled}
-          className={cn(
-            'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
-            value.trim() && !disabled
-              ? 'bg-green-600 text-white hover:bg-green-700'
-              : 'bg-muted text-muted-foreground cursor-not-allowed',
-          )}
-        >
-          <Send className="w-3.5 h-3.5" />
-        </button>
+        {isRunning ? (
+          <button
+            onClick={onStop}
+            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700"
+            title="Stop"
+          >
+            <Square className="w-3.5 h-3.5" />
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!value.trim() || disabled}
+            className={cn(
+              'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
+              value.trim() && !disabled
+                ? 'bg-green-600 text-white hover:bg-green-700'
+                : 'bg-muted text-muted-foreground cursor-not-allowed',
+            )}
+          >
+            <Send className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
       <div className="flex justify-between mt-1.5">
         <span className="text-[9px] text-muted-foreground/50">Shift+Enter for newline</span>
