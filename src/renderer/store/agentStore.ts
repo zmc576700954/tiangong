@@ -177,7 +177,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         description: content,
         targetNodeId: thread.nodeBound ?? '',
       }
-      await window.electronAPI['agent:sendCommand'](result.sessionId, command)
+
+      // Use resolveAndSendCommand if contextRefs exist, otherwise fall back to sendCommand
+      if (contextRefs && contextRefs.length > 0) {
+        const nodeIds = contextRefs.filter((r) => r.type === 'node').map((r) => r.id)
+        await window.electronAPI['agent:resolveAndSendCommand'](
+          result.sessionId,
+          command,
+          contextRefs,
+          nodeIds,
+        )
+      } else {
+        await window.electronAPI['agent:sendCommand'](result.sessionId, command)
+      }
     } catch (err) {
       get().appendChatMessage(threadId, {
         id: generateId('msg'),
