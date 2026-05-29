@@ -183,6 +183,17 @@ export interface ContextRef {
   type: 'node' | 'file'
   id: string
   label: string
+  /** 上下文来源 */
+  source?: 'user-attach' | 'right-click' | 'mention' | 'auto-scope'
+}
+
+/** 已解析的上下文（含实际内容，用于注入 prompt） */
+export interface ResolvedContext {
+  type: 'node' | 'file'
+  id: string
+  label: string
+  content: string
+  tokenEstimate: number
 }
 
 /** 文件搜索结果（用于 @ 提及文件） */
