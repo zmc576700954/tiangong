@@ -176,6 +176,45 @@ export interface AgentOutput {
   changeType?: 'add' | 'modify' | 'delete'
 }
 
+/** 上下文引用（节点或文件） */
+export interface ContextRef {
+  type: 'node' | 'file'
+  id: string
+  label: string
+}
+
+/** 工具调用块（嵌入 Agent 消息中） */
+export interface ToolCallBlock {
+  type: 'file_edit' | 'diff' | 'terminal' | 'file_create'
+  filePath?: string
+  content: string
+  status: 'running' | 'done' | 'error'
+  accepted?: boolean
+}
+
+/** 聊天消息 */
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'agent'
+  content: string
+  timestamp: number
+  adapterName?: string
+  toolCalls?: ToolCallBlock[]
+  contextRefs?: ContextRef[]
+}
+
+/** Agent 会话线程 */
+export interface AgentThread {
+  id: string
+  title: string
+  adapterName: string
+  messages: ChatMessage[]
+  contextRefs: ContextRef[]
+  status: 'idle' | 'running' | 'error'
+  createdAt: number
+  nodeBound?: string
+}
+
 /** Agent 会话（可序列化，不含 Node.js 运行时对象） */
 export interface AgentSession {
   id: string
