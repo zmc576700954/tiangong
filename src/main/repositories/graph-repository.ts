@@ -99,6 +99,7 @@ export class GraphRepository {
         label: rowOptStr(row, 'label'),
         graphId: rowStr(row, 'graph_id'),
         edgeType: rowOptStr(row, 'edge_type') as GraphEdge['edgeType'],
+        content: row.content ? JSON.parse(rowStr(row, 'content')) : undefined,
       })),
       bugs: bugsResult.rows.map((row) => ({
         id: rowStr(row, 'id'),
