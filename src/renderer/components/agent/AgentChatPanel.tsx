@@ -58,14 +58,31 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     if (typeof window !== 'undefined' && window.electronAPI?.onAgentOutput) {
       const cleanup = window.electronAPI.onAgentOutput((_sessionId, output) => {
         useAgentStore.getState().appendOutput(_sessionId, output)
-        if (currentThreadId) {
-          appendChatMessage(currentThreadId, {
-            id: `output-${output.timestamp}`,
-            role: 'agent',
-            content: output.data,
-            timestamp: output.timestamp,
-            adapterName: currentThread?.adapterName,
-          })
+
+        // System signals: update thread status, don't create chat bubbles
+        if (output.type === 'complete' || output.type === 'error') {
+          if (currentThreadId) {
+            useAgentStore.getState().updateThreadStatus(
+              currentThreadId,
+              output.type === 'error' ? 'error' : 'idle',
+            )
+          }
+          return
+        }
+
+        // Only stdout and file_change produce visible chat messages
+        if (output.type === 'stdout' || output.type === 'file_change') {
+          const text = output.data.trim()
+          if (!text) return
+          if (currentThreadId) {
+            appendChatMessage(currentThreadId, {
+              id: `output-${output.timestamp}`,
+              role: 'agent',
+              content: text,
+              timestamp: output.timestamp,
+              adapterName: currentThread?.adapterName,
+            })
+          }
         }
       })
       return cleanup

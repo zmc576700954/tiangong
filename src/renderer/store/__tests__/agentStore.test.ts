@@ -97,4 +97,21 @@ describe('agentStore threads', () => {
     await useAgentStore.getState().sendMessage(id, longMessage)
     expect(useAgentStore.getState().threads[0].title).toHaveLength(30)
   })
+
+  it('updateThreadStatus transitions thread status', () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    expect(useAgentStore.getState().threads[0].status).toBe('idle')
+    useAgentStore.getState().updateThreadStatus(id, 'running')
+    expect(useAgentStore.getState().threads[0].status).toBe('running')
+    useAgentStore.getState().updateThreadStatus(id, 'idle')
+    expect(useAgentStore.getState().threads[0].status).toBe('idle')
+  })
+
+  it('updateThreadStatus to idle unblocks the input', async () => {
+    const id = useAgentStore.getState().createThread('claude-code')
+    await useAgentStore.getState().sendMessage(id, 'Hello')
+    expect(useAgentStore.getState().threads[0].status).toBe('running')
+    useAgentStore.getState().updateThreadStatus(id, 'idle')
+    expect(useAgentStore.getState().threads[0].status).toBe('idle')
+  })
 })

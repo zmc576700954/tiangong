@@ -36,6 +36,7 @@ interface AgentState {
   renameThread: (threadId: string, title: string) => void
   deleteThread: (threadId: string) => void
   selectThread: (id: string | null) => void
+  updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error') => void
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -203,5 +204,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   selectThread: (id) => {
     set({ currentThreadId: id })
+  },
+
+  updateThreadStatus: (threadId, status) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId ? { ...t, status } : t,
+      ),
+    }))
   },
 }))
