@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef } from '@shared/types'
+import { generateId } from '../lib/utils'
 
 /** 单个会话的输出上限，防止长时间运行导致内存膨胀 */
 const MAX_OUTPUTS_PER_SESSION = 1000
@@ -20,6 +21,8 @@ interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
   sessions: AgentSessionState[]
   currentSessionId: string | null
+  threads: AgentThread[]
+  currentThreadId: string | null
 
   loadAdapters: () => Promise<void>
   startSession: (adapterName: string, config: AgentSessionConfig, nodeId: string) => Promise<string>
@@ -27,9 +30,15 @@ interface AgentState {
   terminateSession: (sessionId: string) => Promise<void>
   appendOutput: (sessionId: string, output: AgentOutput) => void
   selectSession: (id: string | null) => void
+  createThread: (adapterName: string, nodeBound?: string) => string
+  sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[]) => Promise<void>
+  appendChatMessage: (threadId: string, message: ChatMessage) => void
+  renameThread: (threadId: string, title: string) => void
+  deleteThread: (threadId: string) => void
+  selectThread: (id: string | null) => void
 }
 
-export const useAgentStore = create<AgentState>((set) => ({
+export const useAgentStore = create<AgentState>((set, get) => ({
   adapters: [],
   sessions: [],
   currentSessionId: null,
@@ -88,5 +97,111 @@ export const useAgentStore = create<AgentState>((set) => ({
 
   selectSession: (id) => {
     set({ currentSessionId: id })
+  },
+
+  threads: [],
+  currentThreadId: null,
+
+  createThread: (adapterName, nodeBound) => {
+    const id = generateId('thread')
+    const thread: AgentThread = {
+      id,
+      title: 'New Thread',
+      adapterName,
+      messages: [],
+      contextRefs: [],
+      status: 'idle',
+      createdAt: Date.now(),
+      nodeBound,
+    }
+    set((state) => ({
+      threads: [...state.threads, thread],
+      currentThreadId: id,
+    }))
+    return id
+  },
+
+  sendMessage: async (threadId, content, contextRefs) => {
+    const userMessage: ChatMessage = {
+      id: generateId('msg'),
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+      contextRefs,
+    }
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? {
+              ...t,
+              messages: [...t.messages, userMessage],
+              title: t.title === 'New Thread' ? content.slice(0, 30) : t.title,
+              status: 'running' as const,
+            }
+          : t,
+      ),
+    }))
+
+    const thread = get().threads.find((t) => t.id === threadId)
+    if (!thread) return
+
+    const config: AgentSessionConfig = {
+      workingDirectory: '',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: thread.nodeBound ?? '',
+      acceptanceCriteria: [],
+    }
+
+    try {
+      const result = await window.electronAPI['agent:startSession'](thread.adapterName, config)
+      const command: AgentCommand = {
+        type: 'implement',
+        description: content,
+        targetNodeId: thread.nodeBound ?? '',
+      }
+      await window.electronAPI['agent:sendCommand'](result.sessionId, command)
+    } catch {
+      set((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === threadId ? { ...t, status: 'error' as const } : t,
+        ),
+      }))
+    }
+  },
+
+  appendChatMessage: (threadId, message) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? { ...t, messages: [...t.messages, message] }
+          : t,
+      ),
+    }))
+  },
+
+  renameThread: (threadId, title) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId ? { ...t, title } : t,
+      ),
+    }))
+  },
+
+  deleteThread: (threadId) => {
+    set((state) => ({
+      threads: state.threads.filter((t) => t.id !== threadId),
+      currentThreadId:
+        state.currentThreadId === threadId
+          ? state.threads.find((t) => t.id !== threadId)?.id ?? null
+          : state.currentThreadId,
+    }))
+  },
+
+  selectThread: (id) => {
+    set({ currentThreadId: id })
   },
 }))
