@@ -13,9 +13,10 @@ interface ChatInputProps {
   disabled?: boolean
   isRunning?: boolean
   attachedContexts: ContextRef[]
+  projectPath?: string
 }
 
-export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [showSlash, setShowSlash] = useState(false)
   const [showMention, setShowMention] = useState(false)
@@ -52,7 +53,12 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
   }, [onSend, attachedContexts])
 
   const handleMentionSelect = useCallback((ref: ContextRef) => {
-    setValue((v) => v.replace(/@\w*$/, ''))
+    // Insert @label text into input for file references
+    if (ref.type === 'file') {
+      setValue((v) => v.replace(/@\w*$/, `@${ref.label} `))
+    } else {
+      setValue((v) => v.replace(/@\w*$/, ''))
+    }
     setShowMention(false)
     if (onMentionAdd) onMentionAdd(ref)
   }, [onMentionAdd])
@@ -97,6 +103,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           onSelect={handleMentionSelect}
           onClose={() => setShowMention(false)}
           excludeIds={attachedContexts.filter((c) => c.type === 'node').map((c) => c.id)}
+          projectPath={projectPath}
         />
       )}
       <div className="flex gap-2 items-end">
