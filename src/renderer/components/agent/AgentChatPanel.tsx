@@ -267,6 +267,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       if (prev.some((c) => c.id === ref.id)) return prev
       return [...prev, ref]
     })
+    // Auto-create thread if none exists, so ContextBar is visible and send works
+    if (!currentThreadId && selectedAdapter) {
+      createThread(selectedAdapter, selectedNode?.id)
+    }
   }
 
   const handleRemoveContext = (id: string) => {
@@ -311,22 +315,20 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         />
       )}
 
-      {currentThread && (
-        <div className="relative">
-          <ContextBar
-            contexts={attachedContexts}
-            onRemove={handleRemoveContext}
-            onAdd={() => setShowContextPicker((v) => !v)}
+      <div className="relative">
+        <ContextBar
+          contexts={attachedContexts}
+          onRemove={handleRemoveContext}
+          onAdd={() => setShowContextPicker((v) => !v)}
+        />
+        {showContextPicker && (
+          <ContextPickerPopup
+            onSelect={handleContextPickerSelect}
+            onClose={() => setShowContextPicker(false)}
+            excludeIds={attachedContexts.filter((c) => c.type === 'node').map((c) => c.id)}
           />
-          {showContextPicker && (
-            <ContextPickerPopup
-              onSelect={handleContextPickerSelect}
-              onClose={() => setShowContextPicker(false)}
-              excludeIds={attachedContexts.filter((c) => c.type === 'node').map((c) => c.id)}
-            />
-          )}
-        </div>
-      )}
+        )}
+      </div>
 
       {!currentThread && threads.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-center px-6">
