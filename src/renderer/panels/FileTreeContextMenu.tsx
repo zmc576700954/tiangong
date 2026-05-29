@@ -41,6 +41,7 @@ export function FileTreeContextMenu() {
 
   const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
   const setAgentWorkingDirectory = useAppStore((s) => s.setAgentWorkingDirectory)
+  const setPendingContextRef = useAppStore((s) => s.setPendingContextRef)
 
   const [loadingAction, setLoadingAction] = useState<string | null>(null)
   const [showTypePicker, setShowTypePicker] = useState(false)
@@ -114,6 +115,11 @@ export function FileTreeContextMenu() {
 
   const handleAgentInput = () => {
     setAgentWorkingDirectory(contextMenuPath)
+    setPendingContextRef({
+      type: 'file',
+      id: contextMenuPath,
+      label: nodeName,
+    })
     setActiveRightPanel('agent')
     setContextMenu(null)
   }
