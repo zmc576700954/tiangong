@@ -96,6 +96,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     if (!session) {
       return
     }
+    // SDK 适配器钩子：在基类清理前关闭 SDK query 对象
+    this.doCloseQuery(sessionId)
     const proc = this.processes.get(sessionId)
     await this.doTerminate(session, proc)
     // TG-009: 清理事件监听器，防止内存泄漏
@@ -110,6 +112,15 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       data: 'Session terminated by user',
       timestamp: Date.now(),
     })
+  }
+
+  /**
+   * SDK 适配器钩子：关闭 SDK query 对象
+   * 子类重写此方法以清理 SDK 资源（如 query.close()）
+   * @protected
+   */
+  protected doCloseQuery(_sessionId: string): void {
+    // 默认空实现，SDK 适配器重写
   }
 
   /**
@@ -246,11 +257,20 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onExit = (code: number | null) => {
-      this.emitOutput({
-        type: 'complete',
-        data: `${this.name} exited with code ${code ?? 'unknown'}`,
-        timestamp: Date.now(),
-      })
+      if (code !== null && code !== 0) {
+        this.emitOutput({
+          type: 'error',
+          data: `${this.name} exited with code ${code}`,
+          timestamp: Date.now(),
+          errorCode: 'AGENT_CRASH',
+        })
+      } else {
+        this.emitOutput({
+          type: 'complete',
+          data: `${this.name} exited with code ${code ?? 'unknown'}`,
+          timestamp: Date.now(),
+        })
+      }
     }
 
     const onError = (err: Error) => {
@@ -258,6 +278,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         type: 'error',
         data: err.message,
         timestamp: Date.now(),
+        errorCode: 'AGENT_CRASH',
       })
     }
 
