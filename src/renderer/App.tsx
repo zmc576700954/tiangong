@@ -52,6 +52,7 @@ function App() {
   const [rightPanelWidth, setRightPanelWidth] = useState(320)
   const [isResizingLeft, setIsResizingLeft] = useState(false)
   const [isResizingRight, setIsResizingRight] = useState(false)
+  const [expandedAgent, setExpandedAgent] = useState(false)
 
   const { graphs, currentGraphId, loadGraphs } = useGraphStore()
 
@@ -127,8 +128,17 @@ function App() {
         />
 
         {/* 右侧 Agent 面板 */}
-        <div style={{ width: rightPanelWidth, minWidth: rightPanelWidth }} className="flex-shrink-0">
-          <RightPanel />
+        <div
+          style={{
+            width: expandedAgent ? 480 : rightPanelWidth,
+            minWidth: expandedAgent ? 480 : rightPanelWidth,
+          }}
+          className="flex-shrink-0"
+        >
+          <RightPanel
+            expandedAgent={expandedAgent}
+            onToggleExpand={() => setExpandedAgent(!expandedAgent)}
+          />
         </div>
       </div>
     </ErrorBoundary>
