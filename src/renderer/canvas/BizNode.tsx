@@ -17,8 +17,53 @@ export function BizNodeComponent({
   selected: _selected,
   onContextMenu,
 }: BizNodeProps) {
-  const statusClass = getNodeStatusClass(data.status)
   const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
+  const isProject = data.type === 'project'
+
+  if (isProject) {
+    return (
+      <div
+        className="group px-6 py-4 rounded-xl border-2 min-w-[180px] shadow-md cursor-default"
+        style={{
+          borderColor: typeColor,
+          background: `linear-gradient(135deg, ${typeColor}08, ${typeColor}15)`,
+        }}
+        onContextMenu={onContextMenu}
+      >
+        <Handle
+          type="target"
+          position={Position.Top}
+          className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-top-[5px] transition-all"
+        />
+        <Handle
+          type="target"
+          position={Position.Left}
+          id="left"
+          className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-left-[5px] transition-all"
+        />
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-bottom-[5px] transition-all"
+        />
+        <Handle
+          type="source"
+          position={Position.Right}
+          id="right"
+          className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-right-[5px] transition-all"
+        />
+        <div className="flex items-center gap-1.5 mb-1">
+          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: typeColor }} />
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+            {NODE_TYPE_LABELS[data.type]}
+          </span>
+        </div>
+        <div className="font-bold text-lg truncate">{data.title}</div>
+      </div>
+    )
+  }
+
+  const statusClass = getNodeStatusClass(data.status)
 
   return (
     <div
