@@ -241,7 +241,7 @@ async function migrate(): Promise<void> {
   await rebuildTableIfNeeded(db, 'nodes', `
     CREATE TABLE nodes (
       id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('module', 'process', 'feature', 'bug')),
+      type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug')),
       status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
       title TEXT NOT NULL,
       description TEXT,
@@ -266,7 +266,8 @@ async function migrate(): Promise<void> {
       source TEXT NOT NULL,
       target TEXT NOT NULL,
       label TEXT,
-      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition')),
+      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
+      content TEXT,
       graph_id TEXT NOT NULL
     )
   `, ['id', 'source', 'target', 'graph_id'])
