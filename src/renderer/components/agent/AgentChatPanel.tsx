@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Bot } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useGraphStore } from '../../store/graphStore'
+import { useAppStore } from '../../store/appStore'
 import { ChatHeader } from './ChatHeader'
 import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
@@ -47,6 +48,14 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
+
+  const pendingContextRef = useAppStore((s) => s.pendingContextRef)
+  const setPendingContextRef = useAppStore((s) => s.setPendingContextRef)
+
+  const graphs = useGraphStore((s) => s.graphs)
+  const currentGraphId = useGraphStore((s) => s.currentGraphId)
+  const currentGraph = graphs.find((g) => g.id === currentGraphId)
+  const projectPath = currentGraph?.projectPath
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI) {
@@ -182,6 +191,17 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     streamingMsgIdRef.current = null
   }, [currentThreadId])
 
+  // Consume pendingContextRef from file tree right-click
+  useEffect(() => {
+    if (pendingContextRef) {
+      setAttachedContexts((prev) => {
+        if (prev.some((c) => c.id === pendingContextRef.id)) return prev
+        return [...prev, pendingContextRef]
+      })
+      setPendingContextRef(null)
+    }
+  }, [pendingContextRef, setPendingContextRef])
+
   const handleNewThread = () => {
     if (!selectedAdapter) return
     createThread(selectedAdapter, selectedNode?.id)
@@ -199,12 +219,9 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     }
 
     // 从当前选中节点构建完整的会话配置
-    const graphs = useGraphStore.getState().graphs
-    const currentGraphId = useGraphStore.getState().currentGraphId
-    const currentGraph = graphs.find((g) => g.id === currentGraphId)
     const sessionConfig: AgentSessionConfig = {
       workingDirectory: currentGraph?.projectPath ?? '',
-      allowedFiles: [],
+      allowedFiles: contextRefs.filter((r) => r.type === 'file').map((r) => r.id),
       forbiddenFiles: [],
       invariantRules: selectedNode?.rules?.map((r) => r.title) ?? [],
       upstreamContext: '',
@@ -333,6 +350,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         disabled={!!isRunning}
         isRunning={!!isRunning}
         attachedContexts={attachedContexts}
+        projectPath={projectPath}
       />
     </div>
   )
