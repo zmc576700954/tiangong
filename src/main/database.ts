@@ -254,6 +254,10 @@ async function migrate(): Promise<void> {
       owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
       position_x REAL NOT NULL,
       position_y REAL NOT NULL,
+      content TEXT,
+      community_summary TEXT,
+      community_level INTEGER,
+      context_refs TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -267,7 +271,10 @@ async function migrate(): Promise<void> {
       target TEXT NOT NULL,
       label TEXT,
       edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition')),
-      graph_id TEXT NOT NULL
+      graph_id TEXT NOT NULL,
+      description TEXT,
+      data_flow TEXT,
+      strength REAL
     )
   `, ['id', 'source', 'target', 'graph_id'])
 
@@ -314,6 +321,38 @@ async function migrate(): Promise<void> {
     )
   `, ['id', 'session_id', 'adapter_name', 'node_id', 'graph_id', 'command', 'outputs', 'result', 'duration', 'created_at'])
 
+  // Chat threads table
+  await rebuildTableIfNeeded(db, 'chat_threads', `
+    CREATE TABLE chat_threads (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      adapter_name TEXT NOT NULL,
+      node_id TEXT,
+      graph_id TEXT,
+      session_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `, ['id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id', 'status', 'created_at', 'updated_at'])
+
+  // Chat messages table
+  await rebuildTableIfNeeded(db, 'chat_messages', `
+    CREATE TABLE chat_messages (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+      content TEXT NOT NULL,
+      adapter_name TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'error', 'pending', 'streaming', 'aborted')),
+      error TEXT,
+      session_id TEXT,
+      context_refs TEXT,
+      tool_calls TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `, ['id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error', 'session_id', 'context_refs', 'tool_calls', 'created_at'])
+
   // Create indexes
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
@@ -322,4 +361,24 @@ async function migrate(): Promise<void> {
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_graph_id ON bug_nodes(graph_id)`)
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_snapshots_graph_id ON snapshots(graph_id)`)
   await db.execute(`CREATE INDEX IF NOT EXISTS idx_agent_logs_session_id ON agent_logs(session_id)`)
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_node_id ON chat_threads(node_id)`)
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_graph_id ON chat_threads(graph_id)`)
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`)
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
+
+  // Incremental migration: add new columns for MindMap Agent (safe if already exist)
+  const addColumnSafe = async (table: string, column: string, type: string) => {
+    try {
+      await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+    } catch {
+      // Column already exists, ignore
+    }
+  }
+  await addColumnSafe('nodes', 'content', 'TEXT')
+  await addColumnSafe('nodes', 'community_summary', 'TEXT')
+  await addColumnSafe('nodes', 'community_level', 'INTEGER')
+  await addColumnSafe('edges', 'description', 'TEXT')
+  await addColumnSafe('edges', 'data_flow', 'TEXT')
+  await addColumnSafe('edges', 'strength', 'REAL')
 }
