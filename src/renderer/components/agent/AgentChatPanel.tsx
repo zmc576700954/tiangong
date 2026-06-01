@@ -10,6 +10,7 @@ import { ChatInput } from './ChatInput'
 import { TerminalView } from './TerminalView'
 import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
+import { HistorySidebar } from './HistorySidebar'
 import type { ContextRef, AgentSessionConfig, AgentOutput } from '@shared/types'
 import { generateId } from '../../lib/utils'
 
@@ -36,6 +37,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>('chat')
   const [showThreadList, setShowThreadList] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [showContextPicker, setShowContextPicker] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState('')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
@@ -339,6 +341,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onToggleThreads={() => setShowThreadList(!showThreadList)}
         onToggleView={setViewMode}
         onToggleExpand={onToggleExpand}
+        onOpenHistory={() => setShowHistory(true)}
       />
 
       {showThreadList && (
@@ -381,6 +384,20 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         <>
           {/* Message area with flex-1 */}
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+            {/* Resume banner */}
+            {currentThread?.sessionId && currentThread?.adapterName === 'claude-code' && currentThread?.status === 'idle' && (
+              <div className="px-3 py-2 bg-blue-50 dark:bg-blue-950 text-sm flex items-center justify-between border-b border-blue-200 dark:border-blue-800 flex-shrink-0">
+                <span className="text-blue-700 dark:text-blue-300 text-xs">This session can be continued</span>
+                <button
+                  onClick={() => {
+                    useAgentStore.getState().updateThreadStatus(currentThread.id, 'running')
+                  }}
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
+                >
+                  Resume
+                </button>
+              </div>
+            )}
             {viewMode === 'chat' ? (
               <ChatMessageList
                 messages={currentThread?.messages ?? []}
@@ -419,6 +436,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         initialPrompt={pendingPromptRef.current}
         onPromptConsumed={() => { pendingPromptRef.current = null }}
       />
+
+      <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare } from 'lucide-react'
+import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
 interface ChatHeaderProps {
@@ -14,6 +14,7 @@ interface ChatHeaderProps {
   onToggleView: (mode: 'chat' | 'terminal') => void
   onToggleExpand: () => void
   onOpenCli?: () => void
+  onOpenHistory?: () => void
 }
 
 export function ChatHeader({
@@ -28,6 +29,7 @@ export function ChatHeader({
   onToggleView,
   onToggleExpand,
   onOpenCli,
+  onOpenHistory,
 }: ChatHeaderProps) {
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
   const installedAdapters = adapters.filter((a) => a.installed)
@@ -82,6 +84,15 @@ export function ChatHeader({
         >
           <List className="w-3.5 h-3.5" />
         </button>
+        {onOpenHistory && (
+          <button
+            onClick={onOpenHistory}
+            className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground"
+            title="History"
+          >
+            <Clock className="w-3.5 h-3.5" />
+          </button>
+        )}
         {onOpenCli && (
           <button
             onClick={onOpenCli}
