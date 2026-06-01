@@ -50,6 +50,22 @@ export interface NodeMetadata {
   entities?: { name: string; fields?: string; description?: string }[]
 }
 
+/** 节点详细内容（图谱内部存储，不直接展示在画布） */
+export interface NodeContent {
+  /** 完整业务描述 */
+  fullDescription: string
+  /** 业务规则列表 */
+  businessRules?: BusinessRule[]
+  /** 验收标准 */
+  acceptanceCriteria?: string[]
+  /** 实现要点 */
+  implementationNotes?: string[]
+  /** 关联文件路径 */
+  relatedFiles?: string[]
+  /** 关键函数/类签名 */
+  codeSignatures?: string[]
+}
+
 /** 节点数据 */
 export interface GraphNode {
   id: string
@@ -68,6 +84,14 @@ export interface GraphNode {
   rules?: BusinessRule[]
   /** 元数据（API/服务/实体） */
   metadata?: NodeMetadata
+  /** 节点详细内容（图谱内部存储） */
+  content?: NodeContent
+  /** 预计算的社区摘要 */
+  communitySummary?: string
+  /** 所属社区层级 0=项目级 1=模块级 2=流程级 */
+  communityLevel?: number
+  /** 节点关联的上下文（文件/文本/其他节点） */
+  contextRefs?: ContextRef[]
   /** 节点所有者角色 */
   ownerRole?: 'product' | 'developer' | 'tester'
   /** 在画布上的位置 */
@@ -86,6 +110,12 @@ export interface GraphEdge {
   graphId: string
   /** 边类型（用于流程逻辑可视化） */
   edgeType?: EdgeType
+  /** 关系业务描述（如"用户下单后触发库存扣减"） */
+  description?: string
+  /** 数据流向描述（如"传递 orderId, amount"） */
+  dataFlow?: string
+  /** 关系强度 0-1（影响检索排序） */
+  strength?: number
 }
 
 /** 图定义 */
@@ -144,6 +174,8 @@ export interface AgentSessionConfig {
   acceptanceCriteria: string[]
   /** 如果是修复 Bug，传入 Bug 详情 */
   bugContext?: BugContext[]
+  /** Claude Code 会话续接 ID，非空时 spawn 命令加 --resume */
+  resumeSessionId?: string
 }
 
 export interface BugContext {
@@ -178,11 +210,13 @@ export interface AgentOutput {
   errorCode?: string
 }
 
-/** 上下文引用（节点或文件） */
+/** 上下文引用（节点、文件或自由文本） */
 export interface ContextRef {
-  type: 'node' | 'file'
+  type: 'node' | 'file' | 'text'
   id: string
   label: string
+  /** 文本类型的内容（type='text' 时必填） */
+  content?: string
   /** 上下文来源 */
   source?: 'user-attach' | 'right-click' | 'mention' | 'auto-scope'
 }
@@ -392,6 +426,79 @@ export interface ProjectScanResult {
 }
 
 // ============================================
+// MindMap Agent 相关类型
+// ============================================
+
+/** 社区摘要（GraphRAG 分层摘要） */
+export interface CommunitySummary {
+  id: string
+  graphId: string
+  /** 社区层级：0=项目级, 1=模块级, 2=流程级 */
+  level: number
+  /** 包含的节点 ID */
+  nodeIds: string[]
+  /** 社区标题（如"用户管理域"） */
+  title: string
+  /** 社区摘要 */
+  summary: string
+  /** 关键发现列表（用于 map-reduce） */
+  keyFindings: string[]
+}
+
+/** 节点深化结果 */
+export interface NodeEnrichment {
+  /** 深化的业务描述 */
+  description: string
+  /** 验收标准 */
+  acceptanceCriteria?: string[]
+  /** 业务规则 */
+  businessRules?: BusinessRule[]
+  /** 元数据 */
+  metadata?: NodeMetadata
+  /** 关联文件路径 */
+  relatedFiles?: string[]
+  /** 实现要点 */
+  implementationHints?: string[]
+  /** 关键函数/类签名 */
+  codeSignatures?: string[]
+}
+
+/** 精炼历史记录 */
+export interface RefinementRecord {
+  timestamp: string
+  scope: 'project' | 'module' | 'node'
+  targetId?: string
+  before: string
+  after: string
+  userFeedback?: string
+  reason: string
+}
+
+/** 项目记忆 */
+export interface ProjectMemory {
+  projectId: string
+  projectPath: string
+  /** 已识别的业务域 */
+  businessDomains: string[]
+  /** 架构模式（如"Electron三层架构"） */
+  architecturePattern: string
+  /** 核心用户流程 */
+  coreUserFlows: string[]
+  /** 技术约束 */
+  techConstraints: string[]
+  /** 精炼历史 */
+  refinements: RefinementRecord[]
+  /** 从精炼中学习的偏好 */
+  preferences: {
+    granularity: 'coarse' | 'medium' | 'fine'
+    namingStyle: 'business' | 'technical' | 'mixed'
+    maxModules: number
+    avoidPatterns: string[]
+  }
+  updatedAt: string
+}
+
+// ============================================
 // IPC 通信类型
 // ============================================
 
@@ -406,6 +513,7 @@ export interface IpcApi {
   'node:create': (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
   'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode>
   'node:delete': (id: string) => Promise<boolean>
+  'node:batchUpdatePositions': (updates: Array<{ id: string; x: number; y: number }>) => Promise<boolean>
 
   // 边操作
   'edge:create': (data: Omit<GraphEdge, 'id'>) => Promise<GraphEdge>
@@ -425,6 +533,18 @@ export interface IpcApi {
   'agent:resolveAndSendCommand': (sessionId: string, command: AgentCommand, contextRefs: ContextRef[], nodeIds: string[]) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
+
+  // Chat 会话记录
+  'thread:list': (filters?: { nodeId?: string; graphId?: string }) => Promise<AgentThread[]>
+  'thread:load': (threadId: string) => Promise<AgentThread | null>
+  'thread:create': (data: { adapterName: string; nodeId?: string; graphId?: string }) => Promise<AgentThread>
+  'thread:update': (threadId: string, data: { title?: string; status?: string; sessionId?: string }) => Promise<void>
+  'thread:delete': (threadId: string) => Promise<void>
+  'thread:search': (query: string) => Promise<AgentThread[]>
+
+  'message:list': (threadId: string) => Promise<ChatMessage[]>
+  'message:save': (threadId: string, message: ChatMessage) => Promise<void>
+  'message:saveBatch': (threadId: string, messages: ChatMessage[]) => Promise<void>
 
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
@@ -469,6 +589,13 @@ export interface IpcApi {
   'settings:refreshCli': () => Promise<CliToolConfig[]>
   'settings:installCli': (name: string) => Promise<{ success: boolean; message: string }>
   'settings:setApiKey': (provider: string, key: string, baseUrl?: string | null) => Promise<void>
+
+  // MindMap Agent 操作
+  'mindmap:generate': (projectPath: string) => Promise<ScanModule[]>
+  'mindmap:generateModule': (projectPath: string, parentNodeId: string, parentNodeTitle: string, parentNodeType: NodeType) => Promise<{ childType: NodeType; children: Array<{ title: string; description?: string }> }>
+  'mindmap:enrichNode': (projectPath: string, nodeId: string, nodeType: NodeType, nodeTitle: string, relatedFiles?: string[], contextRefs?: ContextRef[]) => Promise<NodeEnrichment>
+  'mindmap:refine': (projectPath: string, scope: 'project' | 'module' | 'node', targetId: string, feedback: string) => Promise<ScanModule[] | ScanModule | NodeEnrichment>
+  'mindmap:buildDevPrompt': (nodeId: string, nodeTitle: string, nodeType: NodeType, taskType: 'feature' | 'bugfix' | 'refactor', graphId: string, contextRefs?: ContextRef[]) => Promise<string>
 }
 
 // ============================================
