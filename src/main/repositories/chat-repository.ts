@@ -4,7 +4,6 @@
  */
 
 import type { Client } from '@libsql/client'
-import type { ChatMessage, AgentThread } from '@shared/types'
 
 export interface ChatThreadRow {
   id: string
