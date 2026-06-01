@@ -52,9 +52,15 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     const commandPrompt = this.buildCommandPrompt(command)
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
+    // 构建 CLI 参数
+    const args = ['-p', '--verbose', '--model', 'sonnet']
+    if (session.config.resumeSessionId) {
+      args.push('--resume', session.config.resumeSessionId)
+    }
+
     // SECURITY-P0: 通过 stdin 传入 prompt，不经过命令行参数
     // 避免用户输入内容被 shell/CLI 解析为选项或特殊字符
-    const proc = spawn('claude', ['-p', '--verbose'], {
+    const proc = spawn('claude', args, {
       cwd: session.config.workingDirectory,
       env: this.buildSafeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
