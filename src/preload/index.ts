@@ -23,6 +23,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'node:create',
   'node:update',
   'node:delete',
+  'node:batchUpdatePositions',
 
   // Edge operations
   'edge:create',
@@ -39,7 +40,19 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:listAdapters',
   'agent:startSession',
   'agent:sendCommand',
+  'agent:resolveAndSendCommand',
   'agent:terminateSession',
+
+  // Chat 会话记录
+  'thread:list',
+  'thread:load',
+  'thread:create',
+  'thread:update',
+  'thread:delete',
+  'thread:search',
+  'message:list',
+  'message:save',
+  'message:saveBatch',
 
   // 文件系统 — 只读 + 文件操作
   'fs:readDir',
@@ -60,6 +73,13 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // Project scanning
   'graph:initFromProject',
+
+  // MindMap Agent
+  'mindmap:generate',
+  'mindmap:generateModule',
+  'mindmap:enrichNode',
+  'mindmap:refine',
+  'mindmap:buildDevPrompt',
 
   // Settings
   'settings:read',
@@ -88,6 +108,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.off('agent:onOutput', handler)
   },
 
+  // Session started event (for sessionId persistence)
+  onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => {
+    const handler = (_: unknown, threadId: string, sessionId: string) => {
+      callback(threadId, sessionId)
+    }
+    ipcRenderer.on('agent:onSessionStarted', handler)
+    return () => ipcRenderer.off('agent:onSessionStarted', handler)
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -99,6 +128,7 @@ declare global {
   interface Window {
     electronAPI: ExposedApi & {
       onAgentOutput: (callback: (sessionId: string, output: AgentOutput) => void) => () => void
+      onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       platform: string
     }
   }
