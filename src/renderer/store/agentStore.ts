@@ -40,6 +40,13 @@ interface AgentState {
   markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
   stopCurrentSession: (threadId: string) => Promise<void>
   retryMessage: (threadId: string, agentMessageId: string) => Promise<void>
+
+  // 持久化相关
+  loadThreads: (filters?: { nodeId?: string; graphId?: string }) => Promise<void>
+  loadMessages: (threadId: string) => Promise<void>
+  persistMessage: (threadId: string, message: ChatMessage) => Promise<void>
+  persistThreadMessages: (threadId: string) => Promise<void>
+  hydrateOnStart: () => Promise<void>
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -122,6 +129,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       threads: [...state.threads, thread],
       currentThreadId: id,
     }))
+    // 异步持久化到 DB
+    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).catch((err) => {
+      console.error('[agentStore] Failed to persist new thread:', err)
+    })
     return id
   },
 
@@ -147,6 +158,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       ),
     }))
 
+    // 持久化用户消息到 DB
+    get().persistMessage(threadId, userMessage)
+
     const thread = get().threads.find((t) => t.id === threadId)
     if (!thread) return
 
@@ -162,6 +176,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       acceptanceCriteria: [],
     }
 
+    // 续接：如果 thread 有 sessionId 且 adapter 是 claude-code，注入 resumeSessionId
+    if (thread.sessionId && thread.adapterName === 'claude-code') {
+      config.resumeSessionId = thread.sessionId
+    }
+
     try {
       const result = await window.electronAPI['agent:startSession'](thread.adapterName, config)
 
@@ -171,6 +190,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           t.id === threadId ? { ...t, sessionId: result.sessionId } : t,
         ),
       }))
+
+      // 持久化 sessionId 到 DB
+      window.electronAPI['thread:update'](threadId, { sessionId: result.sessionId }).catch(console.error)
 
       const command: AgentCommand = {
         type: 'implement',
@@ -223,6 +245,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         t.id === threadId ? { ...t, title } : t,
       ),
     }))
+    window.electronAPI['thread:update'](threadId, { title }).catch(console.error)
   },
 
   deleteThread: (threadId) => {
@@ -233,6 +256,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ? state.threads.find((t) => t.id !== threadId)?.id ?? null
           : state.currentThreadId,
     }))
+    window.electronAPI['thread:delete'](threadId).catch(console.error)
   },
 
   selectThread: (id) => {
@@ -301,5 +325,51 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     // Resend using the original user message content and context
     await get().sendMessage(threadId, precedingUser.content, precedingUser.contextRefs)
+  },
+
+  // ==================== 持久化 ====================
+
+  loadThreads: async (filters) => {
+    const threads = await window.electronAPI['thread:list'](filters)
+    set({ threads })
+  },
+
+  loadMessages: async (threadId) => {
+    const thread = await window.electronAPI['thread:load'](threadId)
+    if (!thread) return
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId ? thread : t,
+      ),
+    }))
+  },
+
+  persistMessage: async (threadId, message) => {
+    try {
+      await window.electronAPI['message:save'](threadId, message)
+    } catch (err) {
+      console.error('[agentStore] Failed to persist message:', err)
+    }
+  },
+
+  persistThreadMessages: async (threadId) => {
+    const thread = get().threads.find((t) => t.id === threadId)
+    if (!thread) return
+    try {
+      await window.electronAPI['message:saveBatch'](threadId, thread.messages)
+    } catch (err) {
+      console.error('[agentStore] Failed to persist thread messages:', err)
+    }
+  },
+
+  hydrateOnStart: async () => {
+    try {
+      const threads = await window.electronAPI['thread:list']()
+      if (threads.length > 0) {
+        set({ threads, currentThreadId: threads[0].id })
+      }
+    } catch (err) {
+      console.error('[agentStore] Failed to hydrate threads:', err)
+    }
   },
 }))

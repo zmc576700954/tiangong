@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Bot } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useGraphStore } from '../../store/graphStore'
@@ -11,7 +11,6 @@ import { TerminalView } from './TerminalView'
 import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import type { ContextRef, AgentSessionConfig, AgentOutput } from '@shared/types'
-import { generatePromptTemplate } from './promptTemplates'
 import { generateId } from '../../lib/utils'
 
 interface AgentChatPanelProps {
@@ -43,6 +42,36 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // Track the current streaming agent message ID within this render cycle
   const streamingMsgIdRef = useRef<string | null>(null)
+
+  // Resize state for message area / input area split
+  const [inputAreaHeight, setInputAreaHeight] = useState(120)
+  const [isResizingChat, setIsResizingChat] = useState(false)
+  const [hasResized, setHasResized] = useState(false)
+  const chatContainerRef = useRef<HTMLDivElement>(null)
+
+  const handleResizeChat = useCallback((e: MouseEvent) => {
+    if (!chatContainerRef.current) return
+    const rect = chatContainerRef.current.getBoundingClientRect()
+    const totalHeight = rect.height
+    const bottomY = rect.bottom
+    // Input area can occupy up to 70% of total chat height
+    const maxInputHeight = Math.floor(totalHeight * 0.7)
+    const newInputHeight = Math.max(60, Math.min(maxInputHeight, bottomY - e.clientY))
+    setInputAreaHeight(newInputHeight)
+    setHasResized(true)
+  }, [])
+
+  useEffect(() => {
+    if (!isResizingChat) return
+    const onMove = (e: MouseEvent) => handleResizeChat(e)
+    const onUp = () => setIsResizingChat(false)
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [isResizingChat, handleResizeChat])
 
   const currentThread = threads.find((t) => t.id === currentThreadId)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
@@ -114,6 +143,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             streamingMsgIdRef.current = null
           }
           store.updateThreadStatus(tid, 'idle')
+          // complete 时批量持久化所有消息到 DB
+          useAgentStore.getState().persistThreadMessages(tid)
           return
         }
 
@@ -208,6 +239,20 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     setPendingContextRef(null)
   }, [pendingContextRef, setPendingContextRef, currentThreadId, selectedAdapter, createThread, selectedNode])
 
+  // Consume pendingPrompt from mindmap dev prompt generation
+  const pendingPrompt = useAppStore((s) => s.pendingPrompt)
+  const setPendingPrompt = useAppStore((s) => s.setPendingPrompt)
+  const pendingPromptRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    if (!pendingPrompt) return
+    pendingPromptRef.current = pendingPrompt
+    setPendingPrompt(null)
+    if (!currentThreadId && selectedAdapter) {
+      createThread(selectedAdapter, selectedNode?.id)
+    }
+  }, [pendingPrompt, setPendingPrompt, currentThreadId, selectedAdapter, createThread, selectedNode])
+
   const handleNewThread = () => {
     if (!selectedAdapter) return
     createThread(selectedAdapter, selectedNode?.id)
@@ -234,14 +279,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       downstreamContext: '',
       nodeTitle: selectedNode?.title ?? '',
       acceptanceCriteria: selectedNode?.acceptanceCriteria ?? [],
-    }
-
-    if (content.startsWith('/')) {
-      const template = generatePromptTemplate(content.trim(), selectedNode)
-      if (template) {
-        await sendMessage(threadId, template, contextRefs, sessionConfig)
-        return
-      }
     }
 
     streamingMsgIdRef.current = null
@@ -290,7 +327,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const isRunning = currentThread?.status === 'running'
 
   return (
-    <div className="h-full flex flex-col relative">
+    <div className="h-full flex flex-col relative" ref={chatContainerRef}>
       <ChatHeader
         adapterName={selectedAdapter}
         adapters={adapters}
@@ -340,15 +377,33 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             </p>
           </div>
         </div>
-      ) : viewMode === 'chat' ? (
-        <ChatMessageList
-          messages={currentThread?.messages ?? []}
-          isRunning={!!isRunning}
-          adapterName={currentThread?.adapterName}
-          onRetry={handleRetry}
-        />
       ) : (
-        <TerminalView outputs={rawOutputs} />
+        <>
+          {/* Message area with flex-1 */}
+          <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+            {viewMode === 'chat' ? (
+              <ChatMessageList
+                messages={currentThread?.messages ?? []}
+                isRunning={!!isRunning}
+                adapterName={currentThread?.adapterName}
+                onRetry={handleRetry}
+              />
+            ) : (
+              <TerminalView outputs={rawOutputs} />
+            )}
+          </div>
+
+          {/* Resize handle */}
+          <div
+            className="h-1.5 cursor-row-resize hover:bg-primary/30 transition-colors flex-shrink-0 flex items-center justify-center"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              setIsResizingChat(true)
+            }}
+          >
+            <div className="w-8 h-0.5 rounded-full bg-border" />
+          </div>
+        </>
       )}
 
       <ChatInput
@@ -359,6 +414,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         isRunning={!!isRunning}
         attachedContexts={attachedContexts}
         projectPath={projectPath}
+        selectedNode={selectedNode}
+        containerHeight={hasResized ? inputAreaHeight : undefined}
+        initialPrompt={pendingPromptRef.current}
+        onPromptConsumed={() => { pendingPromptRef.current = null }}
       />
     </div>
   )

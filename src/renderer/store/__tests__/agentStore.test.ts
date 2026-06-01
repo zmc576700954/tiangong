@@ -8,7 +8,17 @@ vi.stubGlobal('window', {
     'agent:resolveAndSendCommand': vi.fn().mockResolvedValue(undefined),
     'agent:listAdapters': vi.fn().mockResolvedValue([]),
     'agent:terminateSession': vi.fn().mockResolvedValue(undefined),
+    'thread:list': vi.fn().mockResolvedValue([]),
+    'thread:load': vi.fn().mockResolvedValue(null),
+    'thread:create': vi.fn().mockResolvedValue({ id: 'thread-1', title: 'New Thread', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: Date.now() }),
+    'thread:update': vi.fn().mockResolvedValue(undefined),
+    'thread:delete': vi.fn().mockResolvedValue(undefined),
+    'thread:search': vi.fn().mockResolvedValue([]),
+    'message:list': vi.fn().mockResolvedValue([]),
+    'message:save': vi.fn().mockResolvedValue(undefined),
+    'message:saveBatch': vi.fn().mockResolvedValue(undefined),
     onAgentOutput: vi.fn(),
+    onSessionStarted: vi.fn(),
   },
 })
 
