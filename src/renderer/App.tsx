@@ -4,6 +4,7 @@ import { RightPanel } from './panels/RightPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
 import { GraphTabs } from './components/GraphTabs'
 import { useGraphStore } from './store/graphStore'
+import { useAgentStore } from './store/agentStore'
 
 // 全局错误边界
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error?: Error }> {
@@ -58,6 +59,8 @@ function App() {
 
   useEffect(() => {
     loadGraphs()
+    // 启动时从 DB 恢复 agent 聊天记录
+    useAgentStore.getState().hydrateOnStart()
   }, [loadGraphs])
 
   // 拖拽调整面板宽度
@@ -89,7 +92,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <div className="flex h-screen w-screen bg-background overflow-hidden select-none">
+      <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* 左侧目录树 */}
         <div style={{ width: leftPanelWidth, minWidth: leftPanelWidth }} className="flex-shrink-0">
           <LeftPanel />
@@ -97,7 +100,7 @@ function App() {
 
         {/* 左侧分割线 */}
         <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0"
+          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
           onMouseDown={() => setIsResizingLeft(true)}
         />
 
@@ -123,7 +126,7 @@ function App() {
 
         {/* 右侧分割线 */}
         <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0"
+          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
           onMouseDown={() => setIsResizingRight(true)}
         />
 
