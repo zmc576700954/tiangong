@@ -27,6 +27,9 @@ import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
+import { registerMindmapHandlers } from './ipc/mindmap'
+import { registerChatHandlers } from './ipc/chat'
+import { ChatService } from './services/chat-service'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
@@ -60,7 +63,8 @@ broadcaster.onBroadcast((adapterName, output) => {
 
 export function registerIpcHandlers(): void {
   const db = getClient()
-  const graphService = new GraphService(db)
+  const graphService = new GraphService(db, agentManager)
+  const chatService = new ChatService(db)
   const typedHandle = createTypedHandle(ipcMain)
 
   // ---------- 会话级允许路径（渲染进程 localStorage 中保存的项目路径） ----------
@@ -140,9 +144,11 @@ export function registerIpcHandlers(): void {
   registerAgentHandlers(agentService, typedHandle)
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
-  registerProjectHandlers(db, typedHandle)
+  registerProjectHandlers(db, typedHandle, agentManager)
   registerSettingsHandlers(typedHandle)
   registerDialogHandlers(typedHandle)
+  registerMindmapHandlers(typedHandle, agentManager)
+  registerChatHandlers(chatService, typedHandle)
 
   // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
   typedHandle('fs:registerProjectPaths', async (_, paths: unknown) => {
