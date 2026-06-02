@@ -46,15 +46,20 @@ BizGraph is a three-process Electron app:
 
 ### Key Architectural Layers
 
-**Agent Adapters** (`src/main/adapters/`) — The primary extension point. Each adapter (claude-code, codex, opencode, mcp-adapter) extends `BaseAdapter` and implements four methods: `checkInstalled()`, `startSession()`, `doSendCommand()`, `doTerminate()`. Adapters are registered in `AdapterRegistry` and managed by `AgentManager` → `SessionRouter` → `OutputBroadcaster`.
+**Agent Adapters** (`src/main/adapters/`) — The primary extension point. Each adapter (claude-code, codex, opencode, mcp-adapter) extends `BaseAdapter` and implements `checkInstalled()`, `startSession()`, `doSendCommand()`, `doTerminate()`. Adapters are registered in `AdapterRegistry` and managed by `AgentManager` → `SessionRouter` → `OutputBroadcaster`.
 
-**Scope Guard** (`src/main/scope-guard.ts`) — Enforces file change boundaries at the OS level. Before an Agent session starts, it backs up allowed files and starts a chokidar watcher. Out-of-bounds writes trigger automatic rollback. Validates that allowed files don't escape the working directory (path traversal protection).
+- **Session model**: All CLI adapters use a one-shot process model — each command spawns a new child process. ClaudeCode adapter supports multi-turn continuity via `--resume <sessionId>`, which tells the CLI to reload prior conversation context. Codex and OpenCode have no resume mechanism.
+- **MCP auto-fallback**: When a requested CLI adapter is not installed, `AgentManager` automatically falls back to `McpAdapter` (API-based, no CLI required).
+- **NDJSON protocol**: `JsonProtocolHandler` (`src/main/adapters/json-protocol.ts`) provides optional structured stdin/stdout communication with handshake detection. Used for parsing Agent output into typed `AgentOutput` events.
+- **Chat system**: Separate from agent sessions. `chat_threads` and `chat_messages` DB tables persist conversation history. The `chat` IPC module (`src/main/ipc/chat.ts`) handles thread management and SSE streaming. `AgentChatPanel` in the renderer renders messages with streaming support.
 
-**IPC Handlers** (`src/main/ipc-handlers.ts`) — Central assembly point that instantiates all services (AdapterRegistry, SessionRouter, OutputBroadcaster, AgentManager, AgentService, GraphService) and registers domain-specific handlers split across `src/main/ipc/*.ts` (agent, graph, fs, git, project, settings, dialog). The `registerIpcHandlers()` function is the main entry. Path security validation blocks access to system directories.
+**Scope Guard** (`src/main/scope-guard.ts`) — Enforces file change boundaries at the OS level. Before an Agent session starts, it backs up allowed files and starts a chokidar watcher. Out-of-bounds writes trigger automatic rollback. Validates that allowed files don't escape the working directory (path traversal protection). **Note: ScopeGuard is implemented but not yet wired into the Agent execution flow** — it needs to be integrated before it can actually enforce boundaries during Agent sessions.
 
-**Database** (`src/main/database.ts`) — LibSQL (SQLite superset) stored in the user's app data directory. Schema is defined inline in `migrate()` with `rebuildTableIfNeeded()` for non-destructive migrations. Tables: graphs, nodes, edges, bug_nodes, snapshots, agent_logs.
+**IPC Handlers** (`src/main/ipc-handlers.ts`) — Central assembly point that instantiates all services and registers domain-specific handlers split across `src/main/ipc/*.ts`. Nine handler groups: agent, graph, mindmap, chat, fs, git, project, settings, dialog. The `registerIpcHandlers()` function is the main entry. Path security validation blocks access to system directories.
 
-**Dual Graph Model** — Each project has exactly two graphs: `online` (the product/business blueprint) and `dev` (a developer working copy derived from the online graph). Nodes form a hierarchy: module → process → feature/bug.
+**Database** (`src/main/database.ts`) — LibSQL (SQLite superset) stored in the user's app data directory. Schema is defined inline in `migrate()` with `rebuildTableIfNeeded()` for non-destructive migrations. Eight tables: graphs, nodes, edges, bug_nodes, snapshots, agent_logs, chat_threads, chat_messages.
+
+**Dual Graph Model** — Each project has exactly two graphs: `online` (the product/business blueprint) and `dev` (a developer working copy derived from the online graph). Nodes form a hierarchy: module → process → feature/bug. Bug nodes have severity levels (low/medium/high/critical) and status (open/fixed/verified); the `pruned` terminal state from the original design is not yet implemented, and there is no state transition enforcement. Placeholder node status exists and dev-graph feature nodes are auto-set to placeholder on init, but the "start development" derive flow (placeholder → developing) is not yet implemented.
 
 **Project Scanner** (`src/main/project-scanner/`) — Analyzes a project directory to auto-generate an initial mind map. Detects frameworks, parses routes and entities, and builds module/process/feature structures.
 
