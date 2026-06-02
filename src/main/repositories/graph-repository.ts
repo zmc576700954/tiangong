@@ -116,17 +116,12 @@ export class GraphRepository {
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.execute('BEGIN TRANSACTION')
-    try {
-      await this.db.execute({ sql: 'DELETE FROM edges WHERE graph_id = ?', args: [id] })
-      await this.db.execute({ sql: 'DELETE FROM nodes WHERE graph_id = ?', args: [id] })
-      await this.db.execute({ sql: 'DELETE FROM bug_nodes WHERE graph_id = ?', args: [id] })
-      await this.db.execute({ sql: 'DELETE FROM graphs WHERE id = ?', args: [id] })
-      await this.db.execute('COMMIT')
-    } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
-      throw err
-    }
+    await this.db.batch([
+      { sql: 'DELETE FROM edges WHERE graph_id = ?', args: [id] },
+      { sql: 'DELETE FROM nodes WHERE graph_id = ?', args: [id] },
+      { sql: 'DELETE FROM bug_nodes WHERE graph_id = ?', args: [id] },
+      { sql: 'DELETE FROM graphs WHERE id = ?', args: [id] },
+    ], 'write')
   }
 
   async getProjectPaths(): Promise<string[]> {

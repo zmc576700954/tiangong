@@ -28,4 +28,9 @@ export class SessionRouter {
   getAdapterName(sessionId: string): string | undefined {
     return this.sessionToAdapter.get(sessionId)
   }
+
+  /** 返回所有活跃会话 ID */
+  getActiveSessionIds(): string[] {
+    return Array.from(this.sessionToAdapter.keys())
+  }
 }

@@ -67,6 +67,16 @@ export class AgentManager {
     // 注意：registry/router/broadcaster 的生命周期由调用方管理
   }
 
+  /**
+   * 终止所有活跃会话并释放资源（进程退出时调用）
+   */
+  async terminateAllSessions(): Promise<void> {
+    const sessionIds = this.router.getActiveSessionIds()
+    await Promise.allSettled(
+      sessionIds.map((id) => this.terminateSession(id)),
+    )
+  }
+
   getAdapter(name: string): AgentAdapter | undefined {
     return this.registry.get(name)
   }

@@ -65,4 +65,22 @@ export class EdgeRepository {
   async delete(id: string): Promise<void> {
     await this.db.execute({ sql: 'DELETE FROM edges WHERE id = ?', args: [id] })
   }
+
+  async listByGraph(graphId: string): Promise<GraphEdge[]> {
+    const result = await this.db.execute({
+      sql: 'SELECT * FROM edges WHERE graph_id = ?',
+      args: [graphId],
+    })
+    return result.rows.map((row) => ({
+      id: row.id as string,
+      source: row.source as string,
+      target: row.target as string,
+      label: row.label as string | undefined,
+      graphId: row.graph_id as string,
+      edgeType: row.edge_type as GraphEdge['edgeType'],
+      description: row.description as string | undefined,
+      dataFlow: row.data_flow as string | undefined,
+      strength: row.strength as number | undefined,
+    })) as GraphEdge[]
+  }
 }

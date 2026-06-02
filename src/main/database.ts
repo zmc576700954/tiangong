@@ -11,6 +11,7 @@ import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 
 let client: Client | null = null
+let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 
 /** 验证 SQLite 标识符是否合法（防止 SQL 注入） */
 export function isValidIdentifier(name: string): boolean {
@@ -38,14 +39,33 @@ export async function initDatabase(): Promise<Client> {
 
   // 启用 WAL 模式提升并发读性能
   await client.execute('PRAGMA journal_mode = WAL')
+  // 设置 WAL 自动 checkpoint 阈略（Pages），防止 WAL 文件无限增长
+  await client.execute('PRAGMA wal_autocheckpoint = 1000')
 
   await migrate()
+
+  // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
+  keepaliveTimer = setInterval(() => {
+    if (!client) return
+    client.execute('PRAGMA wal_checkpoint(PASSIVE)').catch((err) => {
+      console.warn('[BizGraph] WAL checkpoint failed:', err)
+    })
+  }, 5 * 60 * 1000)
+  // 不阻止进程退出
+  if (keepaliveTimer.unref) keepaliveTimer.unref()
+
   return client
 }
 
 /** 关闭数据库连接 */
 export async function closeDatabase(): Promise<void> {
+  if (keepaliveTimer) {
+    clearInterval(keepaliveTimer)
+    keepaliveTimer = null
+  }
   if (client) {
+    // 最终 WAL checkpoint，确保所有数据落盘
+    await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => {})
     await client.execute('PRAGMA optimize')
     // 如果客户端支持显式 close，优先调用以释放底层资源
     if (typeof (client as any).close === 'function') {

@@ -39,6 +39,22 @@ export async function sendPromptViaAgent(
     let settled = false
     const startTime = Date.now()
 
+    // 超时保护
+    const timeoutMs = options?.timeoutMs ?? 300_000
+    const timeoutId = setTimeout(() => {
+      if (!settled) {
+        settled = true
+        agentManager.removeOutputListener(handler)
+        agentManager.terminateSession(sessionId).catch(() => {})
+        if (chunks.length > 0) {
+          console.log('[sendPromptViaAgent] 超时但有部分输出，使用已收到的内容')
+          resolve(chunks.join('\n'))
+        } else {
+          reject(new Error(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`))
+        }
+      }
+    }, timeoutMs)
+
     const handler = (output: AgentOutput) => {
       if (output.type === 'stdout' || output.type === 'file_change') {
         chunks.push(output.data)
@@ -46,6 +62,7 @@ export async function sendPromptViaAgent(
       if (output.type === 'complete') {
         if (!settled) {
           settled = true
+          clearTimeout(timeoutId)
           agentManager.removeOutputListener(handler)
           console.log(`[sendPromptViaAgent] 完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
           resolve(chunks.join('\n'))
@@ -54,6 +71,7 @@ export async function sendPromptViaAgent(
       if (output.type === 'error') {
         if (!settled) {
           settled = true
+          clearTimeout(timeoutId)
           agentManager.removeOutputListener(handler)
           reject(new Error(output.data || 'Agent error'))
         }
@@ -69,25 +87,10 @@ export async function sendPromptViaAgent(
     }).catch((err) => {
       if (!settled) {
         settled = true
+        clearTimeout(timeoutId)
         agentManager.removeOutputListener(handler)
         reject(err)
       }
     })
-
-    // 超时保护
-    const timeoutMs = options?.timeoutMs ?? 300_000
-    setTimeout(() => {
-      if (!settled) {
-        settled = true
-        agentManager.removeOutputListener(handler)
-        agentManager.terminateSession(sessionId).catch(() => {})
-        if (chunks.length > 0) {
-          console.log('[sendPromptViaAgent] 超时但有部分输出，使用已收到的内容')
-          resolve(chunks.join('\n'))
-        } else {
-          reject(new Error(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`))
-        }
-      }
-    }, timeoutMs)
   })
 }

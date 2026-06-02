@@ -4,14 +4,13 @@
  */
 
 import type { Client } from '@libsql/client'
-import { GraphService } from '../services/graph-service'
+import type { GraphService } from '../services/graph-service'
 import { NodeRepository } from '../repositories/node-repository'
 import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import type { TypedHandle } from './utils'
 
-export function registerGraphHandlers(db: Client, typedHandle: TypedHandle): void {
-  const graphService = new GraphService(db)
+export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, graphService: GraphService): void {
   const nodeRepo = new NodeRepository(db)
   const edgeRepo = new EdgeRepository(db)
   const bugRepo = new BugRepository(db)

@@ -117,22 +117,14 @@ export class NodeRepository {
     })
   }
 
-  /** 批量更新节点位置（单次 SQL 事务，避免逐条 IPC 的频率限制） */
+  /** 批量更新节点位置（LibSQL batch API，单次事务提交） */
   async batchUpdatePositions(updates: Array<{ id: string; x: number; y: number }>): Promise<void> {
     if (updates.length === 0) return
     const now = new Date().toISOString()
-    await this.db.execute('BEGIN TRANSACTION')
-    try {
-      for (const { id, x, y } of updates) {
-        await this.db.execute({
-          sql: 'UPDATE nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ?',
-          args: [x, y, now, id],
-        })
-      }
-      await this.db.execute('COMMIT')
-    } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
-      throw err
-    }
+    const statements = updates.map(({ id, x, y }) => ({
+      sql: 'UPDATE nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ?',
+      args: [x, y, now, id],
+    }))
+    await this.db.batch(statements, 'write')
   }
 }

@@ -142,11 +142,11 @@ export function registerIpcHandlers(): void {
   }
 
   // ---------- 注册各领域 handlers ----------
-  registerGraphHandlers(db, typedHandle)
+  registerGraphHandlers(db, typedHandle, graphService)
   registerAgentHandlers(agentService, typedHandle)
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
-  registerProjectHandlers(db, typedHandle, agentManager)
+  registerProjectHandlers(typedHandle, graphService)
   registerSettingsHandlers(typedHandle)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager)
