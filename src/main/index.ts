@@ -215,10 +215,20 @@ app.on('window-all-closed', () => {
   }
 })
 
-app.on('before-quit', async () => {
-  // 终止所有活跃会话（清理 MCP 连接、子进程等）
-  await agentManager.terminateAllSessions()
-  // 清理 Agent 输出监听器，防止内存泄漏
-  agentManager.destroy()
-  await closeDatabase()
+let isQuitting = false
+
+app.on('before-quit', async (event) => {
+  if (isQuitting) return
+  isQuitting = true
+  event.preventDefault()
+  try {
+    // 终止所有活跃会话（清理 MCP 连接、子进程等）
+    await agentManager.terminateAllSessions()
+    // 清理 Agent 输出监听器，防止内存泄漏
+    agentManager.destroy()
+    await closeDatabase()
+  } catch (err) {
+    console.error('Cleanup error during quit:', err)
+  }
+  app.quit()
 })

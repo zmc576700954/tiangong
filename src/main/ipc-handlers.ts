@@ -156,8 +156,12 @@ export function registerIpcHandlers(): void {
   typedHandle('fs:registerProjectPaths', async (_, paths: unknown) => {
     if (!Array.isArray(paths)) return
     for (const p of paths) {
-      if (typeof p === 'string' && p.trim()) {
-        sessionAllowedPaths.add(path.resolve(p))
+      if (typeof p !== 'string' || !p.trim()) continue
+      try {
+        const validatedPath = await validateFsPath(p.trim(), 'read')
+        sessionAllowedPaths.add(validatedPath)
+      } catch {
+        // 跳过无效路径
       }
     }
   })

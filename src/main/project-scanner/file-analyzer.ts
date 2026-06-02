@@ -96,7 +96,14 @@ export async function analyzeKeyFiles(
     if (keyFiles.includes(ext) || purpose !== 'other') {
       await semaphore.acquire()
       try {
-        const content = await fs.readFile(path.join(projectPath, relPath), 'utf-8')
+        const fullPath = path.resolve(projectPath, relPath)
+        // 验证文件路径在项目目录内，防止路径遍历
+        const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
+        if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
+          console.warn(`[ProjectScanner] Path traversal detected: ${relPath}`)
+          return
+        }
+        const content = await fs.readFile(fullPath, 'utf-8')
         if (content.length > 50000) return // 跳过超大文件
         analyses.push({
           filePath: relPath,

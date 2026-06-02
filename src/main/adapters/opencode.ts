@@ -56,6 +56,7 @@ export class OpenCodeAdapter extends BaseAdapter {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
+    this.processes.set(session.id, proc)
     await this.runOneShot(proc, { parseFileChanges: false })
   }
 

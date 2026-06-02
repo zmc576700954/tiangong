@@ -37,6 +37,12 @@ import { AlignHorizontalDistributeCenter } from 'lucide-react'
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
 
+/** nodeTypes 定义在组件外部，避免每次渲染重建 */
+function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number }; selected?: boolean }) {
+  return <BizNodeComponent id={id} data={data} selected={selected} />
+}
+const nodeTypes = { bizNode: BizNodeWrapper }
+
 interface GraphCanvasProps {
   graphId: string
 }
@@ -395,7 +401,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   )
 
   const handleNodeContextMenu = useCallback(
-    (event: React.MouseEvent, nodeId: string) => {
+    (event: React.MouseEvent, node: Node) => {
       event.preventDefault()
       event.stopPropagation()
       const padding = 8
@@ -405,7 +411,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const maxY = window.innerHeight - menuHeight - padding
       const x = Math.max(padding, Math.min(event.clientX, maxX))
       const y = Math.max(padding, Math.min(event.clientY, maxY))
-      setNodeContextMenu({ nodeId, x, y })
+      setNodeContextMenu({ nodeId: node.id, x, y })
       setShowNodeMenu(false)
       setShowEdgeTypeMenu(false)
     },
@@ -588,14 +594,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [graphNodes, projectPath, graphId])
 
-  const nodeTypes = useMemo(() => ({
-    bizNode: (props: { id: string; data: GraphNode & { bugCount: number }; selected?: boolean }) => (
-      <BizNodeComponent
-        {...props}
-        onContextMenu={(e) => handleNodeContextMenu(e, props.id)}
-      />
-    ),
-  }), [handleNodeContextMenu])
 
   const isEmpty = graphNodes.length === 0
 
@@ -611,6 +609,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
+        onNodeContextMenu={handleNodeContextMenu}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView

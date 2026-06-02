@@ -390,7 +390,11 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 <span className="text-blue-700 dark:text-blue-300 text-xs">This session can be continued</span>
                 <button
                   onClick={() => {
-                    useAgentStore.getState().updateThreadStatus(currentThread.id, 'running')
+                    // 恢复会话：重新发送最后一条用户消息以触发 Agent 续接
+                    const lastUserMsg = currentThread.messages.filter((m) => m.role === 'user').pop()
+                    if (lastUserMsg) {
+                      sendMessage(currentThread.id, lastUserMsg.content)
+                    }
                   }}
                   className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
                 >

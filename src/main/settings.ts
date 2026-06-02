@@ -97,17 +97,25 @@ function decryptFallback(encrypted: string): string {
 }
 
 function encryptApiKey(key: string): string {
-  if (!safeStorage.isEncryptionAvailable()) {
-    return encryptFallback(key)
+  if (safeStorage.isEncryptionAvailable()) {
+    try {
+      const encrypted = safeStorage.encryptString(key)
+      return `${API_KEY_PREFIX_ENC}${encrypted.toString('base64')}`
+    } catch {
+      // safeStorage 在部分 Linux 环境下可能失败，回退到 fallback
+    }
   }
-  const encrypted = safeStorage.encryptString(key)
-  return `${API_KEY_PREFIX_ENC}${encrypted.toString('base64')}`
+  return encryptFallback(key)
 }
 
 function decryptApiKey(encrypted: string): string {
   if (encrypted.startsWith(API_KEY_PREFIX_ENC)) {
-    const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
-    return safeStorage.decryptString(buf)
+    try {
+      const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
+      return safeStorage.decryptString(buf)
+    } catch {
+      // safeStorage 解密失败，尝试 fallback（可能是从其他机器迁移的数据）
+    }
   }
   if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
     return decryptFallback(encrypted)
@@ -270,6 +278,11 @@ export async function refreshAllCliStatus(): Promise<CliToolConfig[]> {
   return updated
 }
 
+function validateNpmPackageName(pkg: string): boolean {
+  // npm 包名格式验证：防命令注入
+  return /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/.test(pkg)
+}
+
 export async function installCliTool(name: string): Promise<{
   success: boolean
   message: string
@@ -278,11 +291,16 @@ export async function installCliTool(name: string): Promise<{
   const tool = settings.cliTools.find((t) => t.name === name)
   if (!tool) return { success: false, message: `Unknown tool: ${name}` }
 
+  if (!validateNpmPackageName(tool.npmPackage)) {
+    return { success: false, message: `Invalid package name: ${tool.npmPackage}` }
+  }
+
   // W3-FIX: 检测 npm 是否可用
   const npmCheck = spawnSync('npm', ['--version'], {
     encoding: 'utf-8',
     timeout: 5000,
     stdio: ['pipe', 'pipe', 'ignore'],
+    shell: process.platform === 'win32',
   })
   if (npmCheck.error || npmCheck.status !== 0) {
     return {
@@ -295,7 +313,7 @@ export async function installCliTool(name: string): Promise<{
     const proc = spawn('npm', ['install', '-g', tool.npmPackage], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
-      shell: process.platform === 'win32', // Windows 上需要 shell 来找到 npm
+      shell: process.platform === 'win32', // Windows 上需要 shell 来找到 npm.cmd
     })
 
     let stdout = ''

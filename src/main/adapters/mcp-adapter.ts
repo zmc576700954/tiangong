@@ -85,12 +85,12 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
   },
   gemini: {
     defaultModel: 'gemini-1.5-flash',
-    buildUrl: (baseUrl, key, model) => baseUrl
+    buildUrl: (baseUrl, _key, model) => baseUrl
       ? `${baseUrl}/models/${model}:generateContent`
-      : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-    buildHeaders: (key, baseUrl) => ({
+      : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    buildHeaders: (key, _baseUrl) => ({
       'Content-Type': 'application/json',
-      ...(baseUrl ? { 'x-goog-api-key': key } : {}),
+      'x-goog-api-key': key,
     }),
     buildBody: (messages, _model) => {
       const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''

@@ -183,12 +183,25 @@ async function rebuildTableIfNeeded(
     const existingSql = (existingSqlResult.rows[0]?.sql as string) ?? ''
 
     // Extract CHECK(...) clauses from both SQLs and compare
+    // 使用计数器处理嵌套括号，替代正则的 [^)] 匹配
     const extractChecks = (sql: string) => {
       const checks: string[] = []
-      const re = /CHECK\s*\(([^)]+)\)/gi
-      let m: RegExpExecArray | null
-      while ((m = re.exec(sql)) !== null) {
-        checks.push(m[1].replace(/\s+/g, ' ').trim().toLowerCase())
+      const lowerSql = sql.toLowerCase()
+      let i = 0
+      while (i < lowerSql.length) {
+        const idx = lowerSql.indexOf('check(', i)
+        if (idx === -1) break
+        let depth = 1
+        let j = idx + 6 // 'check('.length
+        while (j < sql.length && depth > 0) {
+          if (sql[j] === '(') depth++
+          else if (sql[j] === ')') depth--
+          j++
+        }
+        if (depth === 0) {
+          checks.push(sql.slice(idx + 6, j - 1).replace(/\s+/g, ' ').trim().toLowerCase())
+        }
+        i = j
       }
       return checks.sort()
     }
@@ -389,10 +402,18 @@ async function migrate(): Promise<void> {
 
   // Incremental migration: add new columns for MindMap Agent (safe if already exist)
   const addColumnSafe = async (table: string, column: string, type: string) => {
+    if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
+      throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
+    }
+    const safeType = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'].includes(type.toUpperCase()) ? type.toUpperCase() : 'TEXT'
     try {
-      await db.execute(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
-    } catch {
-      // Column already exists, ignore
+      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('duplicate column') || msg.includes('already exists')) {
+        return // 列已存在，安全忽略
+      }
+      throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
     }
   }
   await addColumnSafe('nodes', 'content', 'TEXT')

@@ -20,11 +20,14 @@ import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterError, SessionNotFoundError } from '../errors'
 import { ContextResolver } from '../context-resolver'
+import { ScopeGuard } from '../scope-guard'
 
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
+  private scopeGuard = new ScopeGuard()
+  private sandboxes = new Map<string, { id: string }>()
 
   constructor(
     private registry: AdapterRegistry,
@@ -111,6 +114,16 @@ export class AgentManager {
     }
 
     const session = await adapter.startSession(config)
+
+    // ScopeGuard: 启动文件变更边界保护
+    if (config.allowedFiles.length > 0) {
+      const scopeSandbox = await this.scopeGuard.prepareSandbox(
+        config.allowedFiles,
+        config.workingDirectory,
+      )
+      this.sandboxes.set(session.id, scopeSandbox)
+    }
+
     this.router.bind(session.id, adapterName)
     return { sessionId: session.id }
   }
@@ -156,6 +169,17 @@ export class AgentManager {
     if (!adapter) return
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
+
+    // ScopeGuard: 清理沙箱
+    const sandbox = this.sandboxes.get(sessionId)
+    if (sandbox) {
+      try {
+        await this.scopeGuard.commitChanges(sandbox)
+      } catch {
+        // 沙箱可能已被自动回滚清理，忽略错误
+      }
+      this.sandboxes.delete(sessionId)
+    }
   }
 
   /**

@@ -80,20 +80,20 @@ describe('ContextResolver', () => {
   it('resolves file ref by reading file content', async () => {
     vi.mocked(readFile).mockResolvedValue('const x = 1\nconsole.log(x)')
 
-    const refs: ContextRef[] = [{ type: 'file', id: '/src/main.ts', label: 'main.ts' }]
-    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
+    const refs: ContextRef[] = [{ type: 'file', id: 'src/main.ts', label: 'main.ts' }]
+    const result = await resolver.resolve(refs, 8000, {})
 
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('file')
     expect(result[0].content).toContain('const x = 1')
-    expect(readFile).toHaveBeenCalledWith('/src/main.ts', 'utf-8')
+    expect(readFile).toHaveBeenCalledWith(expect.stringContaining('main.ts'), 'utf-8')
   })
 
   it('handles file read errors gracefully', async () => {
     vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'))
 
-    const refs: ContextRef[] = [{ type: 'file', id: '/missing.ts', label: 'missing.ts' }]
-    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
+    const refs: ContextRef[] = [{ type: 'file', id: 'missing.ts', label: 'missing.ts' }]
+    const result = await resolver.resolve(refs, 8000, {})
 
     expect(result).toHaveLength(1)
     expect(result[0].content).toContain('无法读取')
@@ -103,8 +103,8 @@ describe('ContextResolver', () => {
     const bigContent = 'x'.repeat(40000) // ~10000 tokens
     vi.mocked(readFile).mockResolvedValue(bigContent)
 
-    const refs: ContextRef[] = [{ type: 'file', id: '/big.ts', label: 'big.ts' }]
-    const result = await resolver.resolve(refs, 500, { basePath: '/project' }) // 500 tokens budget
+    const refs: ContextRef[] = [{ type: 'file', id: 'big.ts', label: 'big.ts' }]
+    const result = await resolver.resolve(refs, 500, {}) // 500 tokens budget
 
     expect(result[0].tokenEstimate).toBeLessThanOrEqual(600) // budget + marker overhead
     expect(result[0].content.length).toBeLessThan(bigContent.length)
@@ -129,11 +129,11 @@ describe('ContextResolver', () => {
     ]
 
     const refs: ContextRef[] = [
-      { type: 'file', id: '/a.ts', label: 'a.ts' },
+      { type: 'file', id: 'a.ts', label: 'a.ts' },
       { type: 'node', id: 'node_1', label: 'Important' },
     ]
 
-    const result = await resolver.resolve(refs, 8000, { nodes, basePath: '/project' })
+    const result = await resolver.resolve(refs, 8000, { nodes })
     expect(result).toHaveLength(2)
     // Node should be first (higher priority)
     expect(result[0].type).toBe('node')

@@ -15,8 +15,8 @@ export default defineConfig({
         },
         vite: {
           build: {
-            sourcemap: true,
-            minify: false,
+            sourcemap: process.env.NODE_ENV !== 'production',
+            minify: process.env.NODE_ENV === 'production',
             outDir: 'dist-electron/main',
             rollupOptions: {
               external: ['electron', '@libsql/client'],

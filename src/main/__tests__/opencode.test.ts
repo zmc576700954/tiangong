@@ -73,7 +73,7 @@ describe('OpenCodeAdapter', () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
     expect(session.adapterName).toBe('opencode')
-    expect(session.config).toBe(config)
+    expect(session.config).toEqual(config)
     expect(session.id).toMatch(/^opencode-/)
   })
 

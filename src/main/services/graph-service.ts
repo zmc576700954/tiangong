@@ -23,6 +23,7 @@ export interface InitFromProjectResult {
 
 export class GraphService {
   private graphRepo: GraphRepository
+  private cachedProjectPaths: string[] | null = null
   constructor(
     private db: Client,
     private agentManager?: AgentManager,
@@ -30,8 +31,14 @@ export class GraphService {
     this.graphRepo = new GraphRepository(db)
   }
 
+  private invalidateProjectPathsCache(): void {
+    this.cachedProjectPaths = null
+  }
+
   async createGraph(data: { name: string; type: GraphType }): Promise<Graph> {
-    return this.graphRepo.create(data)
+    const result = await this.graphRepo.create(data)
+    this.invalidateProjectPathsCache()
+    return result
   }
 
   async listGraphs(): Promise<Graph[]> {
@@ -43,7 +50,8 @@ export class GraphService {
   }
 
   async deleteGraph(id: string): Promise<void> {
-    return this.graphRepo.delete(id)
+    await this.graphRepo.delete(id)
+    this.invalidateProjectPathsCache()
   }
 
   async initFromProject(data: { projectPath: string; projectName: string }): Promise<InitFromProjectResult> {
@@ -121,6 +129,8 @@ export class GraphService {
         await this.db.execute('ROLLBACK').catch(() => {})
       }
     }
+
+    this.invalidateProjectPathsCache()
 
     return {
       onlineGraph: {
@@ -221,6 +231,9 @@ export class GraphService {
   }
 
   async getProjectPaths(): Promise<string[]> {
-    return this.graphRepo.getProjectPaths()
+    if (this.cachedProjectPaths === null) {
+      this.cachedProjectPaths = await this.graphRepo.getProjectPaths()
+    }
+    return this.cachedProjectPaths
   }
 }

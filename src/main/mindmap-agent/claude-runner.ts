@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import { randomUUID } from 'node:crypto'
 
 export interface ClaudeRunOptions {
   cwd: string
@@ -25,21 +26,26 @@ export interface ClaudeRunResult {
   timedOut: boolean
 }
 
+const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku', 'sonnet-4', 'claude-sonnet-4-6'])
+
 export async function runClaude(prompt: string, options: ClaudeRunOptions): Promise<ClaudeRunResult> {
   const { cwd, timeoutMs = 300_000, outputFormat = 'text', model = 'sonnet' } = options
 
-  // 写入临时文件
-  const tmpFile = path.join(os.tmpdir(), `bizgraph-prompt-${Date.now()}.txt`)
+  // 验证参数，防止注入
+  const safeModel = ALLOWED_MODELS.has(model) ? model : 'sonnet'
+  const safeFormat = outputFormat === 'json' ? 'json' : 'text'
+
+  // 使用不可预测的临时文件名
+  const tmpFile = path.join(os.tmpdir(), `bizgraph-prompt-${randomUUID().replace(/-/g, '')}.txt`)
   fs.writeFileSync(tmpFile, prompt, 'utf-8')
 
-  const args = ['-p', '--model', model]
-  if (outputFormat === 'json') {
+  const args = ['-p', '--model', safeModel]
+  if (safeFormat === 'json') {
     args.push('--output-format', 'json')
   }
 
-  // 构建 shell 命令: claude -p --model sonnet < tmpFile
-  const isWin = process.platform === 'win32'
-  const claudeCmd = `claude ${args.join(' ')} < "${tmpFile}"`
+  // 通过文件描述符重定向 stdin，避免 shell 字符串拼接
+  const stdinFd = fs.openSync(tmpFile, 'r')
 
   return new Promise((resolve) => {
     let stdout = ''
@@ -47,18 +53,12 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
     let timedOut = false
     let cleanedUp = false
 
-    const proc = isWin
-      ? spawn('cmd', ['/c', claudeCmd], {
-          cwd,
-          env: process.env,
-          shell: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
-      : spawn('sh', ['-c', claudeCmd], {
-          cwd,
-          env: process.env,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
+    const proc = spawn('claude', args, {
+      cwd,
+      env: process.env,
+      shell: false,
+      stdio: [stdinFd, 'pipe', 'pipe'],
+    })
 
     const timer = setTimeout(() => {
       timedOut = true
@@ -76,6 +76,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
       cleanedUp = true
       clearTimeout(timer)
       clearInterval(progressTimer)
+      try { fs.closeSync(stdinFd) } catch { /* ignore */ }
       try { fs.unlinkSync(tmpFile) } catch { /* ignore */ }
     }
 

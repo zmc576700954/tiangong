@@ -211,7 +211,8 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   /** 检查路径是否存在 */
   typedHandle('fs:exists', async (_, targetPath) => {
     try {
-      await fs.access(targetPath)
+      const validPath = await validateFsPath(targetPath, 'read')
+      await fs.access(validPath)
       return true
     } catch {
       return false

@@ -55,6 +55,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
 
       {/* 新建图按钮 */}
       <button
+        data-testid="new-graph-btn"
         onClick={() => setShowNewDialog(true)}
         className="flex items-center gap-1 px-2 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-background/50 transition-colors"
       >
@@ -66,6 +67,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
         <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-background border rounded-lg shadow-lg p-4 z-50 w-80">
           <h3 className="font-medium mb-3">新建图</h3>
           <input
+            data-testid="graph-name-input"
             type="text"
             placeholder="图名称"
             value={newGraphName}
@@ -106,6 +108,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
               取消
             </button>
             <button
+              data-testid="create-graph-btn"
               onClick={handleCreate}
               className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
             >

@@ -17,6 +17,30 @@ import { AdapterError } from '../errors'
 
 type QueryFn = typeof import('@anthropic-ai/claude-agent-sdk').query
 
+function isAssistantMessage(msg: unknown): msg is {
+  content?: Array<{ type: string; text?: string }>
+} {
+  if (typeof msg !== 'object' || msg === null) return false
+  const m = msg as Record<string, unknown>
+  if (!Array.isArray(m.content)) return false
+  return m.content.every(
+    (c) =>
+      typeof c === 'object' &&
+      c !== null &&
+      typeof (c as Record<string, unknown>).type === 'string',
+  )
+}
+
+function isResultMessage(msg: unknown): msg is {
+  is_error: boolean
+  result?: string
+  errors?: string[]
+} {
+  if (typeof msg !== 'object' || msg === null) return false
+  const m = msg as Record<string, unknown>
+  return typeof m.is_error === 'boolean'
+}
+
 export class ClaudeCodeAdapter extends BaseAdapter {
   readonly name = 'claude-code'
   readonly version = '2.0.0'
@@ -49,7 +73,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     const session: AgentSession = {
       id: sessionId,
       adapterName: this.name,
-      config,
+      config: structuredClone(config),
       startTime: Date.now(),
     }
     this.registerSession(session)
@@ -86,12 +110,17 @@ export class ClaudeCodeAdapter extends BaseAdapter {
               {
                 matcher: 'Edit|Write',
                 hooks: [
-                  async (input) => {
-                    const hookInput = input as {
-                      tool_name?: string
-                      tool_input?: { file_path?: string }
-                    }
-                    const filePath = hookInput.tool_input?.file_path
+                  async (input: unknown) => {
+                    const hookInput =
+                      typeof input === 'object' && input !== null
+                        ? (input as Record<string, unknown>)
+                        : {}
+                    const toolInput =
+                      typeof hookInput.tool_input === 'object' && hookInput.tool_input !== null
+                        ? (hookInput.tool_input as Record<string, unknown>)
+                        : {}
+                    const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined
+                    const toolName = typeof hookInput.tool_name === 'string' ? hookInput.tool_name : undefined
                     if (filePath) {
                       const isCreate = hookInput.tool_name === 'Write'
                       this.emitOutput({
@@ -121,11 +150,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         }
 
         if (message.type === 'assistant') {
-          const betaMsg = message.message as {
-            content?: Array<{ type: string; text?: string }>
-          }
-          if (betaMsg?.content) {
-            for (const block of betaMsg.content) {
+          if (isAssistantMessage(message.message)) {
+            for (const block of message.message.content ?? []) {
               if (block.type === 'text' && block.text) {
                 this.emitOutput({
                   type: 'stdout',
@@ -139,26 +165,25 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         }
 
         if (message.type === 'result') {
-          const result = message as {
-            is_error: boolean
-            result?: string
-            errors?: string[]
-            total_cost_usd?: number
-          }
-          if (result.is_error) {
-            const errorText = result.errors?.join('\n') ?? result.result ?? 'Agent execution failed'
-            this.emitOutput({
-              type: 'error',
-              data: errorText,
-              timestamp: Date.now(),
-              errorCode: 'AGENT_CRASH',
-            })
-          } else {
-            this.emitOutput({
-              type: 'complete',
-              data: result.result ?? 'Completed',
-              timestamp: Date.now(),
-            })
+          if (isResultMessage(message)) {
+            if (message.is_error) {
+              const errorText =
+                (Array.isArray(message.errors) ? message.errors.join('\n') : undefined) ??
+                (typeof message.result === 'string' ? message.result : undefined) ??
+                'Agent execution failed'
+              this.emitOutput({
+                type: 'error',
+                data: errorText,
+                timestamp: Date.now(),
+                errorCode: 'AGENT_CRASH',
+              })
+            } else {
+              this.emitOutput({
+                type: 'complete',
+                data: typeof message.result === 'string' ? message.result : 'Completed',
+                timestamp: Date.now(),
+              })
+            }
           }
         }
       }

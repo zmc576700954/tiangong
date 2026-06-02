@@ -265,7 +265,7 @@ export interface MessageError {
 /** 聊天消息 */
 export interface ChatMessage {
   id: string
-  role: 'user' | 'agent'
+  role: 'user' | 'agent' | 'system'
   content: string
   timestamp: number
   adapterName?: string
@@ -596,40 +596,6 @@ export interface IpcApi {
   'mindmap:enrichNode': (projectPath: string, nodeId: string, nodeType: NodeType, nodeTitle: string, relatedFiles?: string[], contextRefs?: ContextRef[]) => Promise<NodeEnrichment>
   'mindmap:refine': (projectPath: string, scope: 'project' | 'module' | 'node', targetId: string, feedback: string) => Promise<ScanModule[] | ScanModule | NodeEnrichment>
   'mindmap:buildDevPrompt': (nodeId: string, nodeTitle: string, nodeType: NodeType, taskType: 'feature' | 'bugfix' | 'refactor', graphId: string, contextRefs?: ContextRef[]) => Promise<string>
-}
-
-// ============================================
-// Settings types
-// ============================================
-
-export interface CliToolConfig {
-  name: string
-  npmPackage: string
-  command: string
-  installed: boolean
-  version?: string
-  path?: string
-}
-
-export interface ApiKeyConfig {
-  provider: 'anthropic' | 'openai' | 'deepseek' | 'gemini'
-  key: string
-  baseUrl?: string
-}
-
-export interface McpServerConfig {
-  name: string
-  command: string
-  args: string[]
-  enabled: boolean
-}
-
-export interface BizGraphSettings {
-  version: number
-  cliTools: CliToolConfig[]
-  apiKeys: ApiKeyConfig[]
-  defaultModel?: string
-  mcpServers: McpServerConfig[]
 }
 
 // ============================================

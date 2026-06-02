@@ -61,7 +61,7 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
     expect(session.adapterName).toBe('claude-code')
-    expect(session.config).toBe(config)
+    expect(session.config).toEqual(config)
     expect(session.id).toMatch(/^claude-/)
   })
 

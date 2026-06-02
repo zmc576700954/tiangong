@@ -11,6 +11,7 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { ContextRef, ResolvedContext, GraphNode } from '@shared/types'
 
 /** 每个 token 约 4 个字符（中英混合估算） */
@@ -34,9 +35,10 @@ export function estimateTokens(text: string): number {
  * 截断文本到指定 token 预算
  */
 export function truncateToBudget(text: string, maxTokens: number): string {
-  const maxChars = maxTokens * CHARS_PER_TOKEN
+  // 预留 1 个 token 给截断后缀，避免溢出预算
+  const maxChars = (maxTokens - 1) * CHARS_PER_TOKEN
   if (text.length <= maxChars) return text
-  return text.slice(0, maxChars) + '\n\n[truncated]'
+  return text.slice(0, Math.max(0, maxChars)) + '\n\n[truncated]'
 }
 
 export interface ResolveOptions {
@@ -72,9 +74,14 @@ export class ContextResolver {
     for (const ref of sorted) {
       if (remaining <= 0) break
 
-      const rawContent = ref.type === 'node'
-        ? this.resolveNode(ref, options.nodes ?? [])
-        : await this.resolveFile(ref)
+      let rawContent = ''
+      if (ref.type === 'node') {
+        rawContent = this.resolveNode(ref, options.nodes ?? [])
+      } else if (ref.type === 'file') {
+        rawContent = await this.resolveFile(ref, options.basePath)
+      } else if (ref.type === 'text') {
+        rawContent = this.resolveText(ref)
+      }
 
       const content = truncateToBudget(rawContent, remaining)
       const tokenEstimate = estimateTokens(content)
@@ -133,9 +140,19 @@ export class ContextResolver {
     return lines.join('\n')
   }
 
-  private async resolveFile(ref: ContextRef): Promise<string> {
+  private async resolveFile(ref: ContextRef, basePath?: string): Promise<string> {
+    // 路径安全检查：防止路径遍历
+    const resolvedPath = path.resolve(ref.id)
+    if (basePath) {
+      const resolvedBase = path.resolve(basePath)
+      const relative = path.relative(resolvedBase, resolvedPath)
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        return `[路径越界: ${ref.label} (${ref.id})]`
+      }
+    }
+
     try {
-      const content = await readFile(ref.id, 'utf-8')
+      const content = await readFile(resolvedPath, 'utf-8')
       const lines = content.split('\n')
 
       if (lines.length > MAX_FILE_LINES) {
@@ -151,5 +168,9 @@ export class ContextResolver {
     } catch {
       return `[无法读取文件: ${ref.label} (${ref.id})]`
     }
+  }
+
+  private resolveText(ref: ContextRef): string {
+    return ref.content ?? `[无文本内容: ${ref.label}]`
   }
 }

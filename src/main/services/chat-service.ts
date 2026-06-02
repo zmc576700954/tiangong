@@ -136,7 +136,7 @@ export class ChatService {
   private rowToMessage(row: ChatMessageRow): ChatMessage {
     return {
       id: row.id,
-      role: row.role === 'assistant' ? 'agent' : row.role as ChatMessage['role'],
+      role: (row.role === 'assistant' ? 'agent' : row.role) as ChatMessage['role'],
       content: row.content,
       timestamp: row.created_at,
       adapterName: row.adapter_name || undefined,

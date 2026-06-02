@@ -95,10 +95,13 @@ export class ScopeGuard {
     const allowedSet = new Set(sanitizedFiles)
 
     const onFileEvent = async (eventPath: string) => {
-      const resolved = path.resolve(eventPath)
+      // 使用 sandbox 的 workingDir 解析路径，避免相对路径被解析到 process.cwd()
+      const sandbox = this.sandboxes.get(sandboxId)
+      const resolved = sandbox
+        ? path.resolve(sandbox.workingDir, eventPath)
+        : path.resolve(eventPath)
       if (!allowedSet.has(resolved)) {
         console.warn(`[ScopeGuard] Out-of-bounds write detected: ${eventPath}`)
-        const sandbox = this.sandboxes.get(sandboxId)
         if (sandbox) {
           try {
             await this.rollback(sandbox)
@@ -161,24 +164,32 @@ export class ScopeGuard {
    * 强制回滚到备份状态
    */
   async rollback(sandbox: Sandbox): Promise<void> {
-    // 从备份恢复文件
-    const backupEntries = await fs.readdir(sandbox.backupDir, {
-      recursive: true,
-      withFileTypes: true,
-    })
-
-    for (const entry of backupEntries) {
-      if (entry.isFile()) {
-        const relativePath = path.relative(sandbox.backupDir, path.join(entry.parentPath, entry.name))
-        const backupPath = path.join(sandbox.backupDir, relativePath)
-        const targetPath = path.join(sandbox.workingDir, relativePath)
-
-        try {
-          const content = await fs.readFile(backupPath, 'utf-8')
-          await fs.writeFile(targetPath, content, 'utf-8')
-        } catch (err) {
-          console.warn(`Failed to rollback ${relativePath}:`, err)
+    // 兼容地遍历备份目录（避免依赖 Node 20.11+ 的 Dirent.parentPath）
+    const listFiles = async (dir: string): Promise<string[]> => {
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+      const files: string[] = []
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          files.push(...(await listFiles(fullPath)))
+        } else {
+          files.push(fullPath)
         }
+      }
+      return files
+    }
+
+    const backupFiles = await listFiles(sandbox.backupDir)
+
+    for (const backupPath of backupFiles) {
+      const relativePath = path.relative(sandbox.backupDir, backupPath)
+      const targetPath = path.join(sandbox.workingDir, relativePath)
+
+      try {
+        const content = await fs.readFile(backupPath, 'utf-8')
+        await fs.writeFile(targetPath, content, 'utf-8')
+      } catch (err) {
+        console.warn(`Failed to rollback ${relativePath}:`, err)
       }
     }
 
