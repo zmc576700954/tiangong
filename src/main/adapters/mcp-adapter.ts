@@ -256,28 +256,28 @@ export class McpAdapter extends BaseAdapter {
     // 优先级1：根据 defaultModel 名称推断 provider
     if (defaultModel) {
       if (defaultModel.includes('claude') || defaultModel.includes('sonnet') || defaultModel.includes('opus')) {
-        const found = apiKeys.find((k) => k.provider === 'anthropic')
+        const found = apiKeys.find((k) => k.provider === 'anthropic' && k.key.length > 0)
         if (found) return found
       }
       if (defaultModel.includes('gpt') || defaultModel.includes('o1') || defaultModel.includes('o3') || defaultModel.includes('o4')) {
-        const found = apiKeys.find((k) => k.provider === 'openai')
+        const found = apiKeys.find((k) => k.provider === 'openai' && k.key.length > 0)
         if (found) return found
       }
       if (defaultModel.includes('deepseek')) {
-        const found = apiKeys.find((k) => k.provider === 'deepseek')
+        const found = apiKeys.find((k) => k.provider === 'deepseek' && k.key.length > 0)
         if (found) return found
       }
       if (defaultModel.includes('gemini')) {
-        const found = apiKeys.find((k) => k.provider === 'gemini')
+        const found = apiKeys.find((k) => k.provider === 'gemini' && k.key.length > 0)
         if (found) return found
       }
     }
 
-    // 优先级2：返回第一个有对应 provider config 的 Key
-    return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined)
+    // 优先级2：返回第一个有对应 provider config 且 key 非空的 Key
+    return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
   }
 
-  protected async doTerminate(session: AgentSession, _proc?: unknown): Promise<void> {
+  protected async doTerminate(session: AgentSession, proc?: unknown): Promise<void> {
     // Disconnect MCP clients for this session only
     const clients = this.mcpClients.get(session.id) ?? []
     for (const client of clients) {
@@ -294,6 +294,8 @@ export class McpAdapter extends BaseAdapter {
       data: 'MCP session terminated',
       timestamp: Date.now(),
     })
+
+    await super.doTerminate(session, proc as ChildProcess)
   }
 
   // ============================================

@@ -104,7 +104,6 @@ export class GraphService {
     const onlineGraphId = generateId('graph-online')
     const devGraphId = generateId('graph-dev')
 
-    let committed = false
     await this.db.execute('BEGIN TRANSACTION')
     try {
       // 创建 online 图（产品蓝图）
@@ -123,11 +122,9 @@ export class GraphService {
       await this.createNodes(devGraphId, 'dev', graphResult, now)
 
       await this.db.execute('COMMIT')
-      committed = true
-    } finally {
-      if (!committed) {
-        await this.db.execute('ROLLBACK').catch(() => {})
-      }
+    } catch (err) {
+      await this.db.execute('ROLLBACK').catch(() => {})
+      throw err
     }
 
     this.invalidateProjectPathsCache()

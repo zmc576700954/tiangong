@@ -386,11 +386,16 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
   return settings.apiKeys.find((k) => k.provider === provider)?.key
 }
 
+const ALLOWED_PROVIDERS: ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']
+
 export async function setApiKey(
   provider: string,
   key: string,
   baseUrl?: string,
 ): Promise<void> {
+  if (!ALLOWED_PROVIDERS.includes(provider as ApiKeyConfig['provider'])) {
+    throw new Error(`Invalid provider: ${provider}. Allowed: ${ALLOWED_PROVIDERS.join(', ')}`)
+  }
   const settings = await readSettings()
   const idx = settings.apiKeys.findIndex((k) => k.provider === provider)
   if (idx >= 0) {
