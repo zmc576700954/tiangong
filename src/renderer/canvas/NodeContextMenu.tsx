@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
-import { Pencil, Trash2, Plus, Link } from 'lucide-react'
+import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2 } from 'lucide-react'
 
 interface NodeContextMenuProps {
   nodeId: string
@@ -14,6 +14,10 @@ interface NodeContextMenuProps {
   onClose: () => void
   onAddChild: (parentId: string, childType: NodeType) => void
   onStartConnect: (sourceId: string) => void
+  onEnrichNode?: (nodeId: string) => void
+  onStartDev?: (nodeId: string) => void
+  onAddContext?: (nodeId: string) => void
+  onGenerateChildren?: (nodeId: string) => void
 }
 
 const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
@@ -51,6 +55,10 @@ export function NodeContextMenu({
   onClose,
   onAddChild,
   onStartConnect,
+  onEnrichNode,
+  onStartDev,
+  onAddContext,
+  onGenerateChildren,
 }: NodeContextMenuProps) {
   const node = nodes.find((n) => n.id === nodeId)
 
@@ -97,6 +105,15 @@ export function NodeContextMenu({
                 {NODE_TYPE_LABELS[type]}
               </button>
             ))}
+            {onGenerateChildren && (node.type === 'module' || node.type === 'process') && (
+              <button
+                onClick={() => { onGenerateChildren(nodeId); onClose() }}
+                className="px-2 py-1 text-[10px] rounded border border-dashed border-primary/40 text-primary hover:bg-primary/10 transition-colors flex items-center gap-1"
+              >
+                <Wand2 className="w-2.5 h-2.5" />
+                AI 生成
+              </button>
+            )}
           </div>
         </>
       )}
@@ -110,6 +127,47 @@ export function NodeContextMenu({
           <Link className="w-3 h-3" />
           添加关联连线
         </button>
+      </div>
+
+      {/* 添加上下文 */}
+      {onAddContext && (
+        <div className="px-2 pb-1">
+          <button
+            onClick={() => { onAddContext(nodeId); onClose() }}
+            className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+          >
+            <Paperclip className="w-3 h-3" />
+            添加上下文
+          </button>
+        </div>
+      )}
+
+      {/* AI 操作 */}
+      <div className="border-t mt-1 pt-1">
+        <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider flex items-center gap-1">
+          <Sparkles className="w-2.5 h-2.5" />
+          AI 操作
+        </div>
+        <div className="px-2 pb-1 space-y-0.5">
+          {onEnrichNode && (
+            <button
+              onClick={() => { onEnrichNode(nodeId); onClose() }}
+              className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <Sparkles className="w-3 h-3" />
+              AI 补充详情
+            </button>
+          )}
+          {onStartDev && (
+            <button
+              onClick={() => { onStartDev(nodeId); onClose() }}
+              className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <Play className="w-3 h-3" />
+              生成开发 Prompt
+            </button>
+          )}
+        </div>
       </div>
 
       {/* 状态切换 */}

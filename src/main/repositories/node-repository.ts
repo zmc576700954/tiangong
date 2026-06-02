@@ -18,8 +18,8 @@ export class NodeRepository {
       sql: `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        position_x, position_y, context_refs, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         id,
         data.type,
@@ -35,6 +35,7 @@ export class NodeRepository {
         data.ownerRole ?? null,
         data.position.x,
         data.position.y,
+        data.contextRefs ? JSON.stringify(data.contextRefs) : null,
         now,
         now,
       ],
@@ -57,6 +58,7 @@ export class NodeRepository {
     if (data.parentId !== undefined) { updates.push('parent_id = ?'); args.push(data.parentId) }
     if (data.rules !== undefined) { updates.push('rules = ?'); args.push(JSON.stringify(data.rules)) }
     if (data.metadata !== undefined) { updates.push('metadata = ?'); args.push(JSON.stringify(data.metadata)) }
+    if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
     if (data.ownerRole !== undefined) { updates.push('owner_role = ?'); args.push(data.ownerRole) }
     if (data.position !== undefined) { updates.push('position_x = ?, position_y = ?'); args.push(data.position.x, data.position.y) }
 
@@ -87,6 +89,7 @@ export class NodeRepository {
       parentId: row.parent_id as string | undefined,
       rules: row.rules ? JSON.parse(row.rules as string) : undefined,
       metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
+      contextRefs: row.context_refs ? JSON.parse(row.context_refs as string) : undefined,
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
       createdAt: row.created_at as string,
@@ -112,5 +115,24 @@ export class NodeRepository {
       sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
       args: [parentId, nodeId],
     })
+  }
+
+  /** 批量更新节点位置（单次 SQL 事务，避免逐条 IPC 的频率限制） */
+  async batchUpdatePositions(updates: Array<{ id: string; x: number; y: number }>): Promise<void> {
+    if (updates.length === 0) return
+    const now = new Date().toISOString()
+    await this.db.execute('BEGIN TRANSACTION')
+    try {
+      for (const { id, x, y } of updates) {
+        await this.db.execute({
+          sql: 'UPDATE nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ?',
+          args: [x, y, now, id],
+        })
+      }
+      await this.db.execute('COMMIT')
+    } catch (err) {
+      await this.db.execute('ROLLBACK').catch(() => {})
+      throw err
+    }
   }
 }

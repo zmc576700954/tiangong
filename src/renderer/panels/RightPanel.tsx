@@ -14,6 +14,8 @@ import {
   ArrowRight,
   GitBranch,
   Terminal,
+  FileText,
+  Type,
 } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
@@ -54,13 +56,16 @@ export function RightPanel({
   const [activeTab, setActiveTab] = useState<'node' | 'agent'>('node')
 
   const activeRightPanel = useAppStore((s) => s.activeRightPanel)
+  const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
 
   // Sync external tab switching from appStore (e.g., from file tree context menu)
   useEffect(() => {
     if (activeRightPanel === 'agent' && activeTab !== 'agent') {
       setActiveTab('agent')
+      // Reset store signal so it doesn't keep overriding manual tab clicks
+      setActiveRightPanel('node')
     }
-  }, [activeRightPanel, activeTab])
+  }, [activeRightPanel, activeTab, setActiveRightPanel])
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId)
@@ -196,6 +201,28 @@ function NodeEditor({
         placeholder="Enter node description..."
         rows={3}
       />
+
+      {/* Context refs display */}
+      {node.contextRefs && node.contextRefs.length > 0 && (
+        <div className="space-y-1.5">
+          <label className="text-xs font-medium text-muted-foreground">关联上下文</label>
+          <div className="flex flex-wrap gap-1">
+            {node.contextRefs.map((ctx) => (
+              <span
+                key={ctx.id}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] bg-muted rounded-full"
+              >
+                {ctx.type === 'file' ? (
+                  <FileText className="w-2.5 h-2.5 text-blue-500" />
+                ) : ctx.type === 'text' ? (
+                  <Type className="w-2.5 h-2.5 text-amber-500" />
+                ) : null}
+                <span className="max-w-[120px] truncate">{ctx.label}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Module node: child nodes list */}
       {node.type === 'module' && childNodes.length > 0 && (

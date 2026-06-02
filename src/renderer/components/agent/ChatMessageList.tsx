@@ -13,9 +13,13 @@ interface ChatMessageListProps {
 export function ChatMessageList({ messages, isRunning, adapterName, onRetry }: ChatMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
+  // Compute a content signature so we also scroll on streaming content growth
+  const lastContent = messages.length > 0 ? messages[messages.length - 1].content : ''
+  const contentSig = `${messages.length}:${lastContent.length}:${isRunning ? 1 : 0}`
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages.length, isRunning])
+  }, [contentSig])
 
   if (messages.length === 0) {
     return (
@@ -32,7 +36,7 @@ export function ChatMessageList({ messages, isRunning, adapterName, onRetry }: C
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
+    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 select-text">
       {messages.map((msg) => (
         <ChatBubble key={msg.id} message={msg} onRetry={onRetry} />
       ))}

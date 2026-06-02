@@ -87,6 +87,7 @@ export class GraphRepository {
         parentId: rowOptStr(row, 'parent_id'),
         rules: row.rules ? JSON.parse(rowStr(row, 'rules')) : undefined,
         metadata: row.metadata ? JSON.parse(rowStr(row, 'metadata')) : undefined,
+        contextRefs: row.context_refs ? JSON.parse(rowStr(row, 'context_refs')) : undefined,
         ownerRole: rowOptStr(row, 'owner_role') as GraphNode['ownerRole'],
         position: { x: rowNum(row, 'position_x'), y: rowNum(row, 'position_y') },
         createdAt: rowStr(row, 'created_at'),

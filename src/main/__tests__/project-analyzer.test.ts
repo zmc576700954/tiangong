@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { ProjectAnalyzer, computeOptimalLayout } from '../project-analyzer'
+import { ProjectAnalyzer } from '../project-analyzer'
 import type { ProjectScanResult } from '@shared/types'
 
 const sampleScanResult: ProjectScanResult = {
@@ -136,15 +136,39 @@ describe('ProjectAnalyzer', () => {
   })
 })
 
-describe('computeOptimalLayout', () => {
-  it('should adjust spacing based on module count', () => {
-    const layout = computeOptimalLayout(sampleScanResult)
-    expect(layout.moduleSpacingX).toBe(340) // 2 modules <= 3
-    expect(layout.centerX).toBeGreaterThanOrEqual(400)
+describe('dagre layout', () => {
+  it('should produce non-overlapping positions', () => {
+    const analyzer = new ProjectAnalyzer()
+    const result = analyzer.analyze(sampleScanResult)
+
+    // 简单碰撞检测：任意两个节点的中心点距离应大于最小间距
+    const centers = result.nodes.map((n) => ({
+      x: n.position.x + 80, // 粗估半宽
+      y: n.position.y + 35,  // 粗估半高
+    }))
+
+    for (let i = 0; i < centers.length; i++) {
+      for (let j = i + 1; j < centers.length; j++) {
+        const dx = Math.abs(centers[i].x - centers[j].x)
+        const dy = Math.abs(centers[i].y - centers[j].y)
+        // dagre 保证同层节点有 nodesep 间距，不同层有 ranksep 间距
+        // 这里只验证不会完全重叠（dx 和 dy 不能同时很小）
+        const overlaps = dx < 10 && dy < 10
+        expect(overlaps).toBe(false)
+      }
+    }
   })
 
-  it('should position features on the right', () => {
-    const layout = computeOptimalLayout(sampleScanResult)
-    expect(layout.featureX).toBeGreaterThanOrEqual(1000)
+  it('should position root node to the left of modules', () => {
+    const analyzer = new ProjectAnalyzer()
+    const result = analyzer.analyze(sampleScanResult)
+
+    const root = result.nodes.find((n) => n.tempId === 'root')
+    const modules = result.nodes.filter((n) => n.type === 'module' && n.tempId !== 'root')
+
+    expect(root).toBeDefined()
+    for (const mod of modules) {
+      expect(root!.position.x).toBeLessThan(mod.position.x)
+    }
   })
 })

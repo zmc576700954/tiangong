@@ -20,6 +20,10 @@ interface CanvasOverlayProps {
   onCloseNodeContextMenu: () => void
   onAddChild: (parentId: string, childType: NodeType) => void
   onStartConnect: (sourceId: string) => void
+  onEnrichNode?: (nodeId: string) => void
+  onStartDev?: (nodeId: string) => void
+  onAddContext?: (nodeId: string) => void
+  onGenerateChildren?: (nodeId: string) => void
 }
 
 export function CanvasOverlay({
@@ -38,6 +42,10 @@ export function CanvasOverlay({
   onCloseNodeContextMenu,
   onAddChild,
   onStartConnect,
+  onEnrichNode,
+  onStartDev,
+  onAddContext,
+  onGenerateChildren,
 }: CanvasOverlayProps) {
   return (
     <>
@@ -132,6 +140,10 @@ export function CanvasOverlay({
           onClose={onCloseNodeContextMenu}
           onAddChild={onAddChild}
           onStartConnect={onStartConnect}
+          onEnrichNode={onEnrichNode}
+          onStartDev={onStartDev}
+          onAddContext={onAddContext}
+          onGenerateChildren={onGenerateChildren}
         />
       )}
     </>

@@ -51,7 +51,7 @@ export function ToolCallRenderer({ block }: { block: ToolCallBlock }) {
         )}
       </button>
       {expanded && (
-        <div className="p-2.5 bg-background font-mono text-[11px] leading-relaxed overflow-x-auto max-h-48 overflow-y-auto">
+        <div className="p-2.5 bg-background font-mono text-[11px] leading-relaxed overflow-x-auto max-h-48 overflow-y-auto select-text">
           {block.content.split('\n').map((line, i) => (
             <div key={i} className={getLineClass(line, block.type)}>
               <span className="text-muted-foreground/40 select-none w-6 inline-block text-right mr-2">

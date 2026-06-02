@@ -3,7 +3,9 @@ import { Send, Square } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import type { SlashCommand } from './promptTemplates'
+import { generatePromptTemplate } from './promptTemplates'
 import { MentionSearchPopup } from './MentionSearchPopup'
+import type { GraphNode } from '@shared/types'
 import type { ContextRef } from '@shared/types'
 
 interface ChatInputProps {
@@ -14,15 +16,29 @@ interface ChatInputProps {
   isRunning?: boolean
   attachedContexts: ContextRef[]
   projectPath?: string
+  selectedNode?: GraphNode
+  /** Fixed container height set by the resize handle. Undefined = auto-size. */
+  containerHeight?: number
+  initialPrompt?: string | null
+  onPromptConsumed?: () => void
 }
 
-export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath, selectedNode, containerHeight, initialPrompt, onPromptConsumed }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [showSlash, setShowSlash] = useState(false)
   const [showMention, setShowMention] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
   const [mentionFilter, setMentionFilter] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Consume initialPrompt (e.g., from mindmap dev prompt generation)
+  useEffect(() => {
+    if (initialPrompt) {
+      setValue(initialPrompt)
+      onPromptConsumed?.()
+      setTimeout(() => textareaRef.current?.focus(), 0)
+    }
+  }, [initialPrompt, onPromptConsumed])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value
@@ -47,10 +63,18 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
   }
 
   const handleSlashSelect = useCallback((cmd: SlashCommand) => {
-    setValue((v) => v.replace(/\/\w*$/, ''))
+    const template = generatePromptTemplate(cmd.name, selectedNode)
+    if (template) {
+      // Show generated template in input for user to review/edit before sending
+      setValue(template)
+    } else {
+      // No node selected — insert command hint as starting point
+      setValue(`${cmd.name} `)
+    }
     setShowSlash(false)
-    onSend(cmd.name, attachedContexts)
-  }, [onSend, attachedContexts])
+    // Focus the textarea so the user can immediately edit
+    setTimeout(() => textareaRef.current?.focus(), 0)
+  }, [selectedNode])
 
   const handleMentionSelect = useCallback((ref: ContextRef) => {
     // Insert @label text into input for file references
@@ -84,12 +108,20 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
     const el = textareaRef.current
     if (el) {
       el.style.height = 'auto'
-      el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+      // When containerHeight is set, the textarea fills via CSS flex; cap at scrollHeight
+      if (!containerHeight) {
+        el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+      } else {
+        el.style.height = '100%'
+      }
     }
-  }, [value])
+  }, [value, containerHeight])
 
   return (
-    <div className="border-t border-border p-2.5 relative flex-shrink-0">
+    <div
+      className="border-t border-border relative flex-shrink-0 flex flex-col"
+      style={containerHeight ? { height: containerHeight, padding: '8px 10px' } : { padding: '10px' }}
+    >
       {showSlash && (
         <SlashCommandMenu
           filter={slashFilter}
@@ -106,7 +138,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           projectPath={projectPath}
         />
       )}
-      <div className="flex gap-2 items-end">
+      <div className={cn('flex gap-2 items-end', containerHeight ? 'flex-1 min-h-0' : '')}>
         <textarea
           ref={textareaRef}
           value={value}
@@ -119,12 +151,13 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
             'flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg resize-none',
             'placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring',
             'disabled:opacity-50 disabled:cursor-not-allowed',
+            containerHeight ? 'h-full overflow-y-auto' : '',
           )}
         />
         {isRunning ? (
           <button
             onClick={onStop}
-            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700"
+            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700 self-end"
             title="Stop"
           >
             <Square className="w-3.5 h-3.5" />
@@ -134,7 +167,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
             onClick={handleSend}
             disabled={!value.trim() || disabled}
             className={cn(
-              'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors',
+              'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors self-end',
               value.trim() && !disabled
                 ? 'bg-green-600 text-white hover:bg-green-700'
                 : 'bg-muted text-muted-foreground cursor-not-allowed',
@@ -144,7 +177,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           </button>
         )}
       </div>
-      <div className="flex justify-between mt-1.5">
+      <div className="flex justify-between mt-1.5 flex-shrink-0">
         <span className="text-[9px] text-muted-foreground/50">Shift+Enter for newline</span>
       </div>
     </div>

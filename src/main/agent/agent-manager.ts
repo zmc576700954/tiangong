@@ -23,6 +23,7 @@ import { ContextResolver } from '../context-resolver'
 
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
+  private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
 
   constructor(
@@ -145,5 +146,26 @@ export class AgentManager {
     if (!adapter) return
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
+  }
+
+  /**
+   * 添加全局输出监听器（用于 MindMapAgent 等内部组件收集输出）
+   */
+  addOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = (_adapterName: string, output: AgentOutput) => handler(output)
+    // 存储包装后的 handler 以便移除
+    this.outputListeners.set(handler, wrapped)
+    this.broadcaster.onBroadcast(wrapped)
+  }
+
+  /**
+   * 移除全局输出监听器
+   */
+  removeOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = this.outputListeners.get(handler)
+    if (wrapped) {
+      this.broadcaster.offBroadcast(wrapped)
+      this.outputListeners.delete(handler)
+    }
   }
 }

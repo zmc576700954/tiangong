@@ -4,11 +4,16 @@
  */
 
 import type { Client } from '@libsql/client'
-import type { Graph, GraphType, ProjectScanResult } from '@shared/types'
+import type { Graph, GraphType, ProjectScanResult, ScanModule } from '@shared/types'
+import type { AgentManager } from '../agent/agent-manager'
 import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
-import { ProjectAnalyzer, computeOptimalLayout, type ProjectGraphResult } from '../project-analyzer'
+import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
 import { generateId } from '../shared/env'
+import { MindMapAgent } from '../mindmap-agent'
+import { collectContext } from '../mindmap-agent/context-collector'
+import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
+import { sendPromptViaAgent } from '../agent/send-and-wait'
 
 export interface InitFromProjectResult {
   onlineGraph: Graph
@@ -18,7 +23,10 @@ export interface InitFromProjectResult {
 
 export class GraphService {
   private graphRepo: GraphRepository
-  constructor(private db: Client) {
+  constructor(
+    private db: Client,
+    private agentManager?: AgentManager,
+  ) {
     this.graphRepo = new GraphRepository(db)
   }
 
@@ -42,14 +50,47 @@ export class GraphService {
     const { projectPath, projectName } = data
     const now = new Date().toISOString()
 
-    // 1. 扫描项目（事务外：纯计算/IO 操作）
+    // 1. L1/L2 扫描（始终执行，作为 AI 的上下文输入）
     const scanner = new ProjectScanner()
     const scanResult = await scanner.scan(projectPath)
 
-    // 2. 分析生成节点和边（事务外：纯计算操作）
-    const layout = computeOptimalLayout(scanResult)
-    const analyzer = new ProjectAnalyzer(layout)
-    const graphResult = analyzer.analyze(scanResult)
+    // 2. L3 AI 增强：通过 AgentManager 生成业务语义化的模块
+    let modules: ScanModule[] = scanResult.modules
+    if (this.agentManager) {
+      try {
+        const context = await collectContext(projectPath, projectName, scanResult.framework)
+        const prompt = buildGlobalPrompt(context)
+        console.log(`[GraphService] Prompt 已生成, 长度: ${prompt.length}`)
+
+        const rawOutput = await sendPromptViaAgent(this.agentManager, projectPath, prompt, {
+          nodeTitle: '思维导图生成',
+          timeoutMs: 300_000,
+        })
+
+        const agent = new MindMapAgent(projectPath)
+        const aiModules = agent.parseGenerationResult(rawOutput)
+        if (aiModules.length > 0) {
+          modules = aiModules
+          console.log(`[GraphService] MindMapAgent 生成 ${aiModules.length} 个业务模块`)
+        } else {
+          console.log('[GraphService] MindMapAgent 返回空结果，使用原 scanner 输出')
+        }
+      } catch (err) {
+        console.warn('[GraphService] MindMapAgent 失败，降级使用原 scanner:', err)
+      }
+    } else {
+      console.log('[GraphService] AgentManager 不可用，跳过 AI 增强')
+    }
+
+    // 3. 用模块列表替换 scanResult 的 modules（后续分析基于此）
+    const enrichedScanResult: ProjectScanResult = {
+      ...scanResult,
+      modules,
+    }
+
+    // 4. 分析生成节点和边（dagre 布局在 analyzer 内部完成）
+    const analyzer = new ProjectAnalyzer()
+    const graphResult = analyzer.analyze(enrichedScanResult)
 
     // 3. 创建图和节点（事务保护，确保数据一致性）
     const onlineGraphId = generateId('graph-online')
@@ -98,7 +139,7 @@ export class GraphService {
         createdAt: now,
         updatedAt: now,
       },
-      modules: scanResult.modules,
+      modules: enrichedScanResult.modules,
     }
   }
 
@@ -124,8 +165,9 @@ export class GraphService {
         sql: `INSERT INTO nodes (
           id, type, status, title, description, acceptance_criteria,
           graph_id, graph_type, parent_id, rules, metadata, owner_role,
-          position_x, position_y, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          position_x, position_y, content, community_summary, community_level,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           nodeId,
           nodeData.type,
@@ -141,6 +183,9 @@ export class GraphService {
           nodeData.ownerRole ?? null,
           nodeData.position.x,
           nodeData.position.y + (graphType === 'dev' ? 20 : 0),
+          nodeData.content ? JSON.stringify(nodeData.content) : null,
+          nodeData.communitySummary ?? null,
+          nodeData.communityLevel ?? null,
           now,
           now,
         ],
@@ -168,8 +213,8 @@ export class GraphService {
       if (sourceId && targetId) {
         const edgeId = generateId('edge')
         await this.db.execute({
-          sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id) VALUES (?, ?, ?, ?, ?, ?)',
-          args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId],
+          sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null, edgeData.dataFlow ?? null, edgeData.strength ?? null],
         })
       }
     }

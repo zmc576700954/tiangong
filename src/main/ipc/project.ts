@@ -8,6 +8,7 @@ import type { Client } from '@libsql/client'
 import { ProjectScanner } from '../project-scanner'
 import { GraphService } from '../services/graph-service'
 import { IpcError, ErrorCode } from '../errors'
+import type { AgentManager } from '../agent/agent-manager'
 import type { TypedHandle } from './utils'
 
 /** 校验项目路径安全性：拒绝路径遍历和系统关键目录 */
@@ -49,8 +50,8 @@ function validateProjectPath(projectPath: string): string {
   return normalized
 }
 
-export function registerProjectHandlers(db: Client, typedHandle: TypedHandle): void {
-  const graphService = new GraphService(db)
+export function registerProjectHandlers(db: Client, typedHandle: TypedHandle, agentManager?: AgentManager): void {
+  const graphService = new GraphService(db, agentManager)
 
   typedHandle('project:scan', async (_, projectPath) => {
     const validatedPath = validateProjectPath(projectPath)

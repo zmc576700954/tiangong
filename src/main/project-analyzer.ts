@@ -1,58 +1,28 @@
 /**
  * 项目分析转换层
  * 将 ProjectScanResult 转换为 BizGraph 的节点和边
- * 提供自动布局算法
- *
- * 布局策略：从左到右的树状展开
- * 根(左上) → 模块(中左) → 流程(中右) → 功能点(右)
- *
- * v2 改进：
- * - 边附带 edgeType，默认为 'default'
- * - 自动检测模块间依赖关系，生成跨模块连线
- * - 节点元数据填充 API/服务/实体信息
- * - 流程节点名称包含模块前缀以便区分
+ * 使用 dagre 自动计算层级布局，避免节点重叠
  */
 
+import dagre from '@dagrejs/dagre'
 import type {
   GraphNode,
   GraphEdge,
   ProjectScanResult,
   ScanModule,
   NodeMetadata,
+  NodeType,
 } from '@shared/types'
 
 // ============================================
-// 布局配置
+// 节点尺寸配置（与 renderer 端 layout.ts 保持一致）
 // ============================================
 
-export interface LayoutConfig {
-  /** 画布中心 X */
-  centerX: number
-  /** 根节点 Y */
-  rootY: number
-  /** 模块层级 Y */
-  moduleY: number
-  /** 流程层级 Y 起始 */
-  processYStart: number
-  /** 功能点层级 X */
-  featureX: number
-  /** 模块之间水平间距 */
-  moduleSpacingX: number
-  /** 流程之间垂直间距 */
-  processSpacingY: number
-  /** 功能点之间垂直间距 */
-  featureSpacingY: number
-}
-
-const DEFAULT_LAYOUT: LayoutConfig = {
-  centerX: 600,
-  rootY: 60,
-  moduleY: 220,
-  processYStart: 200,
-  featureX: 1100,
-  moduleSpacingX: 320,
-  processSpacingY: 120,
-  featureSpacingY: 70,
+const NODE_SIZES: Record<NodeType, { width: number; height: number }> = {
+  module:  { width: 200, height: 80 },
+  process: { width: 180, height: 70 },
+  feature: { width: 160, height: 60 },
+  bug:     { width: 160, height: 60 },
 }
 
 // ============================================
@@ -68,31 +38,17 @@ export interface ProjectGraphResult {
 }
 
 export class ProjectAnalyzer {
-  private config: LayoutConfig
-
-  constructor(config: Partial<LayoutConfig> = {}) {
-    this.config = { ...DEFAULT_LAYOUT, ...config }
-  }
-
   analyze(scanResult: ProjectScanResult): ProjectGraphResult {
     const nodes: ProjectGraphResult['nodes'] = []
     const edges: ProjectGraphResult['edges'] = []
 
-    // 1. 根节点
+    // 1. 构建节点和边（先用占位 position，后面由 dagre 统一计算）
     const rootNode = this.createRootNode(scanResult)
     nodes.push(rootNode)
 
-    // 2. 模块节点 - 水平展开
-    const moduleCount = scanResult.modules.length
-    const moduleTotalWidth = (moduleCount - 1) * this.config.moduleSpacingX
-    const moduleBaseX = this.config.centerX - moduleTotalWidth / 2
-
-    for (let i = 0; i < moduleCount; i++) {
+    for (let i = 0; i < scanResult.modules.length; i++) {
       const module = scanResult.modules[i]
-      const moduleX = moduleBaseX + i * this.config.moduleSpacingX
       const moduleTempId = `module-${i}`
-
-      // 构建模块元数据：汇总该模块下所有流程的功能点信息
       const moduleMetadata = this.buildModuleMetadata(module)
 
       nodes.push({
@@ -103,13 +59,12 @@ export class ProjectAnalyzer {
         description: module.description,
         graphId: '',
         graphType: 'online',
-        position: { x: moduleX, y: this.config.moduleY },
+        position: { x: 0, y: 0 }, // dagre 会覆盖
         metadata: moduleMetadata,
         acceptanceCriteria: [],
         ownerRole: 'product',
       })
 
-      // 根节点 → 模块 边
       edges.push({
         sourceTempId: rootNode.tempId,
         targetTempId: moduleTempId,
@@ -118,21 +73,12 @@ export class ProjectAnalyzer {
         graphId: '',
       })
 
-      // 3. 该模块下的所有流程 - 垂直堆叠
-      const processCount = module.processes.length
-      const processBaseY = this.config.processYStart
-
-      for (let j = 0; j < processCount; j++) {
+      for (let j = 0; j < module.processes.length; j++) {
         const process = module.processes[j]
-        const processY = processBaseY + j * this.config.processSpacingY
         const processTempId = `${moduleTempId}-process-${j}`
-
-        // 流程名称包含模块前缀以便在全局视图中区分
-        const processTitle = processCount > 1
+        const processTitle = module.processes.length > 1
           ? `${module.name} · ${process.name}`
           : process.name
-
-        // 构建流程元数据：汇总该流程下的功能点详情
         const processMetadata = this.buildProcessMetadata(process)
 
         nodes.push({
@@ -143,14 +89,13 @@ export class ProjectAnalyzer {
           description: process.description,
           graphId: '',
           graphType: 'online',
-          position: { x: moduleX + 260, y: processY },
+          position: { x: 0, y: 0 },
           metadata: processMetadata,
           acceptanceCriteria: [],
           parentTempId: moduleTempId,
           ownerRole: 'product',
         })
 
-        // 模块 → 流程 边
         edges.push({
           sourceTempId: moduleTempId,
           targetTempId: processTempId,
@@ -159,14 +104,8 @@ export class ProjectAnalyzer {
           graphId: '',
         })
 
-        // 4. 该流程下的功能点 - 在最右侧垂直展开
-        const featureCount = process.features.length
-        const featureTotalHeight = (featureCount - 1) * this.config.featureSpacingY
-        const featureBaseY = processY - featureTotalHeight / 2
-
-        for (let k = 0; k < featureCount; k++) {
+        for (let k = 0; k < process.features.length; k++) {
           const feature = process.features[k]
-          const featureY = featureBaseY + k * this.config.featureSpacingY
           const featureTempId = `${processTempId}-feature-${k}`
 
           nodes.push({
@@ -177,14 +116,13 @@ export class ProjectAnalyzer {
             description: feature.description,
             graphId: '',
             graphType: 'dev',
-            position: { x: this.config.featureX, y: featureY },
+            position: { x: 0, y: 0 },
             metadata: {},
             acceptanceCriteria: [],
             parentTempId: processTempId,
             ownerRole: 'developer',
           })
 
-          // 流程 → 功能点 边
           edges.push({
             sourceTempId: processTempId,
             targetTempId: featureTempId,
@@ -196,9 +134,12 @@ export class ProjectAnalyzer {
       }
     }
 
-    // 5. 检测模块间依赖关系，生成跨模块连线
+    // 2. 检测模块间依赖关系
     const crossEdges = this.detectModuleDependencies(scanResult, nodes)
     edges.push(...crossEdges)
+
+    // 3. 使用 dagre 计算布局
+    this.applyDagreLayout(nodes, edges)
 
     return {
       projectName: scanResult.projectName,
@@ -206,6 +147,81 @@ export class ProjectAnalyzer {
       framework: scanResult.framework,
       nodes,
       edges,
+    }
+  }
+
+  /**
+   * 根据标题长度估算节点宽度
+   */
+  private estimateWidth(node: ProjectGraphResult['nodes'][number]): number {
+    const base = NODE_SIZES[node.type] ?? NODE_SIZES.feature
+    const title = node.title ?? ''
+    const cjkCount = (title.match(/[一-鿿]/g) || []).length
+    const otherCount = title.length - cjkCount
+    const textWidth = cjkCount * 14 + otherCount * 8 + 32
+    return Math.max(base.width, Math.min(200, textWidth))
+  }
+
+  /**
+   * 使用 dagre 计算所有节点的坐标（LR 方向）
+   */
+  private applyDagreLayout(
+    nodes: ProjectGraphResult['nodes'],
+    edges: ProjectGraphResult['edges'],
+  ): void {
+    const g = new dagre.graphlib.Graph()
+    g.setGraph({ rankdir: 'LR', nodesep: 120, ranksep: 280, edgesep: 30, marginx: 60, marginy: 60 })
+    g.setDefaultEdgeLabel(() => ({}))
+
+    for (const node of nodes) {
+      const width = this.estimateWidth(node)
+      const height = (NODE_SIZES[node.type] ?? NODE_SIZES.feature).height
+      g.setNode(node.tempId, { width, height })
+    }
+
+    for (const edge of edges) {
+      g.setEdge(edge.sourceTempId, edge.targetTempId)
+    }
+
+    dagre.layout(g)
+
+    const nodeMap = new Map<string, ProjectGraphResult['nodes'][number]>()
+    for (const node of nodes) {
+      const dagreNode = g.node(node.tempId)
+      if (!dagreNode) continue
+      const width = this.estimateWidth(node)
+      const height = (NODE_SIZES[node.type] ?? NODE_SIZES.feature).height
+      node.position = {
+        x: dagreNode.x - width / 2,
+        y: dagreNode.y - height / 2,
+      }
+      nodeMap.set(node.tempId, node)
+    }
+
+    // 按边顺序修正子节点垂直排列，消除连线交叉
+    const childrenByParent = new Map<string, string[]>()
+    for (const edge of edges) {
+      if (!childrenByParent.has(edge.sourceTempId)) {
+        childrenByParent.set(edge.sourceTempId, [])
+      }
+      childrenByParent.get(edge.sourceTempId)!.push(edge.targetTempId)
+    }
+
+    for (const [, childIds] of childrenByParent) {
+      if (childIds.length <= 1) continue
+      const children = childIds.map((id) => nodeMap.get(id)).filter(Boolean) as typeof nodes
+      if (children.length <= 1) continue
+
+      const ys = children.map((n) => n.position.y)
+      const height = (NODE_SIZES[children[0].type] ?? NODE_SIZES.feature).height
+      const groupMinY = Math.min(...ys)
+
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i]
+        const idx = childIds.indexOf(child.tempId)
+        if (idx < 0) continue
+        child.position = { ...child.position, y: groupMinY + idx * (height + 120) }
+      }
     }
   }
 
@@ -406,7 +422,7 @@ export class ProjectAnalyzer {
       description,
       graphId: '',
       graphType: 'online',
-      position: { x: this.config.centerX, y: this.config.rootY },
+      position: { x: 0, y: 0 }, // dagre 会覆盖
       metadata,
       acceptanceCriteria: [],
       ownerRole: 'product',
@@ -414,44 +430,4 @@ export class ProjectAnalyzer {
   }
 }
 
-// ============================================
-// 辅助函数：根据节点数量动态调整布局
-// ============================================
-
-export function computeOptimalLayout(
-  scanResult: ProjectScanResult,
-  _canvasWidth: number = 1400,
-): LayoutConfig {
-  const moduleCount = scanResult.modules.length
-  const maxProcesses = Math.max(
-    1,
-    ...scanResult.modules.map((m) => m.processes.length),
-  )
-  const maxFeatures = Math.max(
-    1,
-    ...scanResult.modules.flatMap((m) => m.processes.map((p) => p.features.length)),
-  )
-
-  // 根据模块数量调整
-  const moduleSpacingX = moduleCount <= 3 ? 340 : moduleCount <= 6 ? 280 : 240
-  const moduleTotalWidth = (moduleCount - 1) * moduleSpacingX
-  const centerX = Math.max(400, moduleTotalWidth / 2 + 200)
-
-  // 功能点在最右侧，根据流程数量调整起始位置
-  const processSpacingY = maxProcesses <= 2 ? 140 : maxProcesses <= 5 ? 120 : 100
-  const featureSpacingY = maxFeatures <= 3 ? 80 : maxFeatures <= 6 ? 65 : 55
-
-  // 确保功能点在最右侧有足够的空间
-  const featureX = Math.max(1000, centerX + 600)
-
-  return {
-    centerX,
-    rootY: 60,
-    moduleY: 220,
-    processYStart: 180,
-    featureX,
-    moduleSpacingX,
-    processSpacingY,
-    featureSpacingY,
-  }
-}
+// computeOptimalLayout 已移除，布局由 dagre 在 ProjectAnalyzer.analyze() 内部完成

@@ -20,6 +20,7 @@ interface GraphState {
   createNode: (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
   createNodeBatch: (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   updateNode: (id: string, data: Partial<GraphNode>) => Promise<void>
+  batchUpdatePositions: (updates: Array<{ id: string; x: number; y: number }>) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   selectNode: (id: string | null) => void
 
@@ -101,6 +102,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     const updated = await window.electronAPI['node:update'](id, data)
     set((state) => ({
       nodes: state.nodes.map((n) => (n.id === id ? updated : n)),
+    }))
+  },
+
+  batchUpdatePositions: async (updates) => {
+    await window.electronAPI['node:batchUpdatePositions'](updates)
+    set((state) => ({
+      nodes: state.nodes.map((n) => {
+        const u = updates.find((u) => u.id === n.id)
+        return u ? { ...n, position: { x: u.x, y: u.y } } : n
+      }),
     }))
   },
 

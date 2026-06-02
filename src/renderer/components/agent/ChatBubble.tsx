@@ -17,7 +17,19 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
   const [showRawError, setShowRawError] = useState(false)
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(message.content)
+    try {
+      await navigator.clipboard.writeText(message.content)
+    } catch {
+      // Fallback for Electron where clipboard API may require focus
+      const textarea = document.createElement('textarea')
+      textarea.value = message.content
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -49,7 +61,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
         </div>
         <div
           className={cn(
-            'rounded-lg px-3 py-2 text-sm leading-relaxed',
+            'rounded-lg px-3 py-2 text-sm leading-relaxed select-text',
             isUser
               ? 'bg-blue-500/10 border border-blue-500/20'
               : isError
@@ -73,7 +85,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
                     {showRawError ? '隐藏原始错误' : '查看原始错误'}
                   </button>
                   {showRawError && (
-                    <pre className="mt-1 p-2 text-[10px] bg-red-950/30 rounded overflow-x-auto text-red-300">
+                    <pre className="mt-1 p-2 text-[10px] bg-red-950/30 rounded overflow-x-auto text-red-300 select-text">
                       {message.error.raw}
                     </pre>
                   )}
@@ -101,9 +113,9 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
           </div>
         )}
 
-        {/* Action bar — visible on hover for agent messages */}
+        {/* Action bar — visible for agent messages with content */}
         {!isUser && (message.content || isError) && (
-          <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <div className="flex items-center gap-1 mt-1">
             <button
               onClick={handleCopy}
               className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"

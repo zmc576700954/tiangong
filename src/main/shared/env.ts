@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto'
  */
 export function buildSafeEnv(): NodeJS.ProcessEnv {
   const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
+  const allowedPrefixes = ['CLAUDE_CODE_', 'CLAUDE_', 'ANTHROPIC_']
   const allowedKeys = new Set([
     'PATH', 'Path', 'PATHEXT',
     'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
@@ -47,12 +48,15 @@ export function buildSafeEnv(): NodeJS.ProcessEnv {
     'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG',
     // CI / build
     'CI', 'BUILD_NUMBER', 'BUILD_ID',
+    // Anthropic / Claude CLI
+    'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY',
   ])
 
   const safeEnv: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     if (blockedPrefixes.some((p) => key.startsWith(p))) continue
+    if (allowedPrefixes.some((p) => key.startsWith(p))) { safeEnv[key] = value; continue }
     if (allowedKeys.has(key) || !/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
       safeEnv[key] = value
     }

@@ -1,18 +1,25 @@
 /**
  * 输出广播器
  * 职责：解耦适配器输出与具体的广播目标（如 BrowserWindow）
+ * 支持多个监听器（AgentChat UI + MindMapAgent 等内部组件）
  */
 
 import type { AgentOutput } from '@shared/types'
 
 export class OutputBroadcaster {
-  private handler?: (adapterName: string, output: AgentOutput) => void
+  private handlers = new Set<(adapterName: string, output: AgentOutput) => void>()
 
   onBroadcast(handler: (adapterName: string, output: AgentOutput) => void): void {
-    this.handler = handler
+    this.handlers.add(handler)
+  }
+
+  offBroadcast(handler: (adapterName: string, output: AgentOutput) => void): void {
+    this.handlers.delete(handler)
   }
 
   broadcast(adapterName: string, output: AgentOutput): void {
-    this.handler?.(adapterName, output)
+    for (const handler of this.handlers) {
+      handler(adapterName, output)
+    }
   }
 }

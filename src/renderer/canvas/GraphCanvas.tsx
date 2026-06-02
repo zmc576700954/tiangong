@@ -18,6 +18,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
+import { useAppStore } from '../store/appStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 // 浏览器端 ID 生成（不依赖 node:crypto）
 function generateId(prefix: string): string {
@@ -28,7 +29,10 @@ import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd } from './edge-utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
+import { NodeContextPopover } from './NodeContextPopover'
 import { useCanvasKeyboard } from './hooks/useCanvasKeyboard'
+import { useAutoLayout } from './hooks/useAutoLayout'
+import { AlignHorizontalDistributeCenter } from 'lucide-react'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -70,6 +74,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const deleteEdge = useGraphStore((state) => state.deleteEdge)
   const updateNode = useGraphStore((state) => state.updateNode)
   const bugs = useGraphStore((state) => state.bugs)
+  const graphs = useGraphStore((state) => state.graphs)
+  const currentGraph = graphs.find((g) => g.id === graphId)
+  const projectPath = currentGraph?.projectPath
 
   const { screenToFlowPosition } = useReactFlow()
 
@@ -133,6 +140,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [edgeMenuPosition, setEdgeMenuPosition] = useState({ x: 0, y: 0 })
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+
+  const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
   // 连线模式：记录源节点 ID
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null)
@@ -416,6 +425,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     onCancelConnect: handleCancelConnect,
   })
 
+  const { applyLayout } = useAutoLayout()
+  const hasAppliedInitialLayout = useRef(false)
+
+  // 首次加载图时自动应用 dagre 布局
+  useEffect(() => {
+    if (graphNodes.length > 0 && !hasAppliedInitialLayout.current) {
+      hasAppliedInitialLayout.current = true
+      // 延迟一帧让 ReactFlow 先完成首次渲染
+      requestAnimationFrame(() => applyLayout())
+    }
+  }, [graphNodes.length, applyLayout])
+
+  // 切换图时重置标记
+  useEffect(() => {
+    hasAppliedInitialLayout.current = false
+  }, [graphId])
+
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
     await createNode({
@@ -458,6 +484,57 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setNodeContextMenu(null)
   }, [])
 
+  /** 打开上下文编辑弹窗 */
+  const handleAddContext = useCallback((nodeId: string) => {
+    setContextPopover({ nodeId, x: Math.round(window.innerWidth / 2 - 144), y: Math.round(window.innerHeight / 3) })
+    setNodeContextMenu(null)
+  }, [])
+
+  /** 保存节点上下文 */
+  const handleSaveContext = useCallback(async (nodeId: string, contexts: import('@shared/types').ContextRef[]) => {
+    try {
+      await updateNode(nodeId, { contextRefs: contexts })
+    } catch (err) {
+      console.error('[GraphCanvas] Failed to save context:', err)
+    }
+    setContextPopover(null)
+  }, [updateNode])
+
+  /** AI 生成子节点 */
+  const handleGenerateChildren = useCallback(async (nodeId: string) => {
+    const node = graphNodes.find((n) => n.id === nodeId)
+    if (!node || !projectPath) return
+
+    setNodeContextMenu(null)
+    try {
+      const result = await window.electronAPI['mindmap:generateModule'](
+        projectPath, nodeId, node.title, node.type,
+      )
+      if (result && result.children.length > 0) {
+        const parent = graphNodes.find((n) => n.id === nodeId)
+        const baseX = parent ? parent.position.x + 280 : 100
+        const baseY = parent ? parent.position.y : 0
+
+        for (let i = 0; i < result.children.length; i++) {
+          const child = result.children[i]
+          await createNode({
+            type: result.childType,
+            status: 'draft',
+            title: child.title,
+            description: child.description,
+            graphId,
+            graphType: result.childType === 'feature' ? 'dev' : 'online',
+            parentId: nodeId,
+            position: { x: baseX, y: baseY + i * 80 },
+            acceptanceCriteria: [],
+          })
+        }
+      }
+    } catch (err) {
+      console.error('[GraphCanvas] generateChildren failed:', err)
+    }
+  }, [graphNodes, projectPath, createNode, graphId])
+
   const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
     await updateNode(nodeId, { status })
     setNodeContextMenu(null)
@@ -468,6 +545,48 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     selectNode(null)
     setNodeContextMenu(null)
   }
+
+  /** AI 补充节点详情 */
+  const handleEnrichNode = useCallback(async (nodeId: string) => {
+    const node = graphNodes.find((n) => n.id === nodeId)
+    if (!node || !projectPath) return
+
+    setNodeContextMenu(null)
+    try {
+      const result = await window.electronAPI['mindmap:enrichNode'](
+        projectPath, nodeId, node.type, node.title, undefined, node.contextRefs,
+      )
+      if (result) {
+        await updateNode(nodeId, {
+          description: result.description,
+          acceptanceCriteria: result.acceptanceCriteria,
+          rules: result.businessRules,
+          metadata: result.metadata,
+        })
+      }
+    } catch (err) {
+      console.error('[GraphCanvas] enrichNode failed:', err instanceof Error ? err.message : err)
+    }
+  }, [graphNodes, projectPath, updateNode])
+
+  /** 生成开发 Prompt 并填入 AgentChat 输入框 */
+  const handleStartDev = useCallback(async (nodeId: string) => {
+    const node = graphNodes.find((n) => n.id === nodeId)
+    if (!node || !projectPath) return
+
+    setNodeContextMenu(null)
+    try {
+      const prompt = await window.electronAPI['mindmap:buildDevPrompt'](
+        nodeId, node.title, node.type, 'feature', graphId ?? '', node.contextRefs,
+      )
+      if (prompt) {
+        useAppStore.getState().setPendingPrompt(prompt)
+        useAppStore.getState().setActiveRightPanel('agent')
+      }
+    } catch (err) {
+      console.error('[GraphCanvas] startDev failed:', err)
+    }
+  }, [graphNodes, projectPath, graphId])
 
   const nodeTypes = useMemo(() => ({
     bizNode: (props: { id: string; data: GraphNode & { bugCount: number }; selected?: boolean }) => (
@@ -516,12 +635,25 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           nodeColor={(node) => NODE_TYPE_COLORS[(node.data as unknown as GraphNode).type] ?? '#94a3b8'}
           maskColor="rgba(0, 0, 0, 0.1)"
           className="!bg-background/80 !border-border !rounded-lg !shadow-sm"
+          pannable
+          zoomable
         />
 
         <Panel position="bottom-left" className="m-2">
           <div className="bg-background/90 backdrop-blur border rounded-lg shadow-sm px-2 py-1 text-[10px] text-muted-foreground font-mono">
             {Math.round(zoomLevel * 100)}%
           </div>
+        </Panel>
+
+        <Panel position="top-right" className="m-2">
+          <button
+            onClick={applyLayout}
+            className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-sm px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+            title="整理布局"
+          >
+            <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
+            整理布局
+          </button>
         </Panel>
 
         {connectingSourceId && (
@@ -582,7 +714,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onCloseNodeContextMenu={() => setNodeContextMenu(null)}
         onAddChild={handleAddChild}
         onStartConnect={handleStartConnect}
+        onEnrichNode={handleEnrichNode}
+        onStartDev={handleStartDev}
+        onAddContext={handleAddContext}
+        onGenerateChildren={handleGenerateChildren}
       />
+
+      {contextPopover && (
+        <NodeContextPopover
+          x={contextPopover.x}
+          y={contextPopover.y}
+          existingContexts={graphNodes.find((n) => n.id === contextPopover.nodeId)?.contextRefs ?? []}
+          projectPath={projectPath}
+          onSave={(contexts) => handleSaveContext(contextPopover.nodeId, contexts)}
+          onClose={() => setContextPopover(null)}
+        />
+      )}
     </div>
   )
 }

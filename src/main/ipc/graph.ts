@@ -48,6 +48,11 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle): voi
     return true
   })
 
+  typedHandle('node:batchUpdatePositions', async (_, updates) => {
+    await nodeRepo.batchUpdatePositions(updates as Array<{ id: string; x: number; y: number }>)
+    return true
+  })
+
   // ---------- 边操作 ----------
   typedHandle('edge:create', async (_, data) => {
     return edgeRepo.create(data)

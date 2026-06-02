@@ -1,0 +1,27 @@
+{
+  "projectId": "",
+  "projectPath": "D:\\xiangmu\\TianGong",
+  "businessDomains": [
+    "业务蓝图设计",
+    "智能体任务编排",
+    "变更安全守卫",
+    "项目智能分析",
+    "缺陷闭环追踪"
+  ],
+  "architecturePattern": "",
+  "coreUserFlows": [],
+  "techConstraints": [],
+  "refinements": [],
+  "preferences": {
+    "granularity": "medium",
+    "namingStyle": "business",
+    "maxModules": 6,
+    "avoidPatterns": [
+      "npm scripts 作为功能点",
+      "技术栈依赖作为模块",
+      "开发工具作为业务功能",
+      "目录名称直接作为模块名"
+    ]
+  },
+  "updatedAt": "2026-06-01T09:30:40.307Z"
+}
