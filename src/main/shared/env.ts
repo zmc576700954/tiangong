@@ -12,7 +12,8 @@ import { randomUUID } from 'node:crypto'
  */
 export function buildSafeEnv(): NodeJS.ProcessEnv {
   const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
-  const allowedPrefixes = ['CLAUDE_CODE_', 'CLAUDE_', 'ANTHROPIC_']
+  // 精确前缀：避免 CLAUDE_ 过宽匹配未来可能添加的敏感变量
+  const allowedPrefixes = ['CLAUDE_CODE_', 'ANTHROPIC_']
   const allowedKeys = new Set([
     'PATH', 'Path', 'PATHEXT',
     'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',

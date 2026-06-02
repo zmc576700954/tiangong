@@ -21,6 +21,6 @@
       "@shared/*": ["src/shared/*"]
     }
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts", "src/preload/**/*.ts"],
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/shared/**/*.ts", "src/preload/**/*.ts", "tests/**/*.ts"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

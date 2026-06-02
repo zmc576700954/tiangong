@@ -19,7 +19,11 @@ export class OutputBroadcaster {
 
   broadcast(adapterName: string, output: AgentOutput): void {
     for (const handler of this.handlers) {
-      handler(adapterName, output)
+      try {
+        handler(adapterName, output)
+      } catch (err) {
+        console.error('[OutputBroadcaster] handler error:', err)
+      }
     }
   }
 }

@@ -140,9 +140,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   setResolvedContexts(sessionId: string, resolvedContexts: import('@shared/types').ResolvedContext[]): void {
     const session = this.sessions.get(sessionId)
-    if (session) {
-      session.resolvedContexts = resolvedContexts
+    if (!session) {
+      throw new SessionNotFoundError(sessionId)
     }
+    session.resolvedContexts = resolvedContexts
   }
 
   /**

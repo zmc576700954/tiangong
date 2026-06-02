@@ -314,11 +314,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const precedingUser = [...thread.messages.slice(0, agentIdx)].reverse().find((m) => m.role === 'user')
     if (!precedingUser) return
 
-    // Remove the target agent message and everything after it
+    // Remove the target agent message and everything after it, and clear stale sessionId
     set((state) => ({
       threads: state.threads.map((t) =>
         t.id === threadId
-          ? { ...t, messages: t.messages.slice(0, agentIdx) }
+          ? { ...t, messages: t.messages.slice(0, agentIdx), sessionId: undefined }
           : t,
       ),
     }))

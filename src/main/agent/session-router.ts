@@ -5,6 +5,7 @@
 
 import type { AgentAdapter } from '@shared/types'
 import { AdapterRegistry } from './adapter-registry'
+import { SessionNotFoundError, AdapterError } from '../errors'
 
 export class SessionRouter {
   private sessionToAdapter = new Map<string, string>()
@@ -19,10 +20,16 @@ export class SessionRouter {
     this.sessionToAdapter.delete(sessionId)
   }
 
-  resolve(sessionId: string): AgentAdapter | undefined {
+  resolve(sessionId: string): AgentAdapter {
     const adapterName = this.sessionToAdapter.get(sessionId)
-    if (!adapterName) return undefined
-    return this.registry.get(adapterName)
+    if (!adapterName) {
+      throw new SessionNotFoundError(sessionId)
+    }
+    const adapter = this.registry.get(adapterName)
+    if (!adapter) {
+      throw new AdapterError(`Adapter ${adapterName} not found for session ${sessionId}`)
+    }
+    return adapter
   }
 
   getAdapterName(sessionId: string): string | undefined {

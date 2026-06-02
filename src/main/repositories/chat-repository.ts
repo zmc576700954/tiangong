@@ -176,25 +176,17 @@ export class ChatRepository {
     createdAt: number
   }>): Promise<void> {
     if (messages.length === 0) return
-    await this.db.execute('BEGIN TRANSACTION')
-    try {
-      for (const msg of messages) {
-        await this.db.execute({
-          sql: `INSERT OR REPLACE INTO chat_messages
-                (id, thread_id, role, content, adapter_name, status, error, session_id, context_refs, tool_calls, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            msg.id, msg.threadId, msg.role, msg.content, msg.adapterName,
-            msg.status, msg.error ?? null, msg.sessionId ?? null,
-            msg.contextRefs ?? null, msg.toolCalls ?? null, msg.createdAt,
-          ],
-        })
-      }
-      await this.db.execute('COMMIT')
-    } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
-      throw err
-    }
+    const stmts = messages.map((msg) => ({
+      sql: `INSERT OR REPLACE INTO chat_messages
+            (id, thread_id, role, content, adapter_name, status, error, session_id, context_refs, tool_calls, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        msg.id, msg.threadId, msg.role, msg.content, msg.adapterName,
+        msg.status, msg.error ?? null, msg.sessionId ?? null,
+        msg.contextRefs ?? null, msg.toolCalls ?? null, msg.createdAt,
+      ],
+    }))
+    await this.db.batch(stmts)
   }
 
   async listMessages(threadId: string): Promise<ChatMessageRow[]> {

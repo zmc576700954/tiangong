@@ -70,11 +70,8 @@ export function RightPanel({
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId)
 
-  useEffect(() => {
-    if (selectedNode || selectedEdge) {
-      setActiveTab('node')
-    }
-  }, [selectedNode, selectedEdge])
+  // 注意：不再自动切换 tab。用户选择节点后，需要手动点击 'node' tab 查看详情。
+  // 这避免覆盖用户的显式 tab 选择。
 
   return (
     <div className="h-full flex flex-col border-l bg-background">

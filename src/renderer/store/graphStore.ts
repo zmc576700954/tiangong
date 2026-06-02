@@ -89,11 +89,9 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   createNodeBatch: async (nodesData) => {
-    const created: GraphNode[] = []
-    for (const data of nodesData) {
-      const node = await window.electronAPI['node:create'](data)
-      created.push(node)
-    }
+    const created = await Promise.all(
+      nodesData.map((data) => window.electronAPI['node:create'](data)),
+    )
     set((state) => ({ nodes: [...state.nodes, ...created] }))
     return created
   },

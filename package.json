@@ -6,6 +6,9 @@
   "author": "BizGraph Team",
   "license": "MIT",
   "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",

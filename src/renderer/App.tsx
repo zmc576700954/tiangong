@@ -55,7 +55,9 @@ function App() {
   const [isResizingRight, setIsResizingRight] = useState(false)
   const [expandedAgent, setExpandedAgent] = useState(false)
 
-  const { graphs, currentGraphId, loadGraphs } = useGraphStore()
+  const graphs = useGraphStore((s) => s.graphs)
+  const currentGraphId = useGraphStore((s) => s.currentGraphId)
+  const loadGraphs = useGraphStore((s) => s.loadGraphs)
 
   useEffect(() => {
     loadGraphs()

@@ -68,9 +68,12 @@ const API_KEY_PREFIX_ENC = 'enc:'
 const API_KEY_PREFIX_FALLBACK = 'fbk:'
 
 /** 当 safeStorage 不可用时，使用基于用户数据路径的密钥进行 AES 加密 */
+let cachedFallbackKey: Buffer | null = null
 function getFallbackKey(): Buffer {
+  if (cachedFallbackKey) return cachedFallbackKey
   const salt = 'bizgraph-fallback-salt-v1'
-  return scryptSync(app.getPath('userData'), salt, 32)
+  cachedFallbackKey = scryptSync(app.getPath('userData'), salt, 32)
+  return cachedFallbackKey
 }
 
 function encryptFallback(plain: string): string {
@@ -194,10 +197,10 @@ export async function readSettings(): Promise<BizGraphSettings> {
 }
 
 export async function writeSettings(settings: BizGraphSettings): Promise<void> {
-  cachedSettings = settings
   const settingsPath = await getSettingsPath()
   const encrypted = encryptSettings(settings)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
+  cachedSettings = settings
 }
 
 function mergeSettings(
