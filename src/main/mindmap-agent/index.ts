@@ -178,12 +178,14 @@ export class MindMapAgent {
       console.log('[MindMapAgent] 解析到', modules.length, '个模块')
 
       if (modules.length > 0) {
-        // 写入记忆
-        updateDomains(
+        // 异步更新记忆，不阻塞结果返回
+        void updateDomains(
           this.projectPath,
           modules.map((m) => m.name),
           '',
-        ).catch(() => {})
+        ).catch((err) => {
+          console.warn('[MindMapAgent] updateDomains failed:', err)
+        })
       }
 
       return modules

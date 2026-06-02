@@ -61,8 +61,8 @@ export class ScopeGuard {
     const watchPaths: string[] = []
     const watchedDirs = new Set<string>()
 
+    // 只监控目录，避免同时监控文件和目录导致重复事件
     for (const filePath of sanitizedFiles) {
-      watchPaths.push(filePath)
       const dir = path.dirname(filePath)
       if (!watchedDirs.has(dir)) {
         watchedDirs.add(dir)
