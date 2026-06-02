@@ -410,7 +410,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * - 要求文件路径包含目录分隔符（排除单文件名如 "test"）
    * @protected
    */
+  // 快速预检查：输出中是否包含文件扩展名，避免超大输出浪费正则计算
+  private static readonly FILE_EXT_QUICK_CHECK = /\.(ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml)\b/
+  private static readonly MAX_PARSE_LENGTH = 50_000
+
   protected parseFileChanges(text: string): void {
+    if (text.length > BaseAdapter.MAX_PARSE_LENGTH) return
+    if (!BaseAdapter.FILE_EXT_QUICK_CHECK.test(text)) return
+
     const EXAMPLE_MARKERS = /\b(e\.g\.|for example|such as|like this|similar to)\b/gi
     const FILE_PATTERN = /(?:edit|modify|update|create|add|delete|remove)\s+(?:file\s+)?[`'"]?([\w/\\.-]+\.(?:ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml))[`'"]?/gi
 

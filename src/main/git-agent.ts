@@ -8,12 +8,18 @@ import type { GraphSnapshot } from '@shared/types'
 
 export class GitAgent {
   private gitInstances = new Map<string, SimpleGit>()
+  private readonly MAX_GIT_CACHE = 10
 
   private getGit(path: string): SimpleGit {
     let git = this.gitInstances.get(path)
     if (!git) {
       git = simpleGit(path)
       this.gitInstances.set(path, git)
+      // LRU 清理：超出上限时移除最旧的实例
+      if (this.gitInstances.size > this.MAX_GIT_CACHE) {
+        const firstKey = this.gitInstances.keys().next().value
+        if (firstKey) this.gitInstances.delete(firstKey)
+      }
     }
     return git
   }
