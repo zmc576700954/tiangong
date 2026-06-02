@@ -45,8 +45,9 @@ export class OpenCodeAdapter extends BaseAdapter {
     const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`
 
     const args: string[] = [
-      '--',
-      fullPrompt.replace(/^-/gm, '\\-'),
+      '-p',
+      fullPrompt,
+      '-q',
     ]
 
     const proc = spawn('opencode', args, {

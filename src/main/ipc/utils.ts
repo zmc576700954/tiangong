@@ -1,7 +1,8 @@
 /**
- * IPC Utilities — 类型安全的 IPC 注册、频率限制
+ * IPC Utilities — 类型安全的 IPC 注册、频率限制、路径安全校验
  */
 
+import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { IpcError, ErrorCode } from '../errors'
 
@@ -69,6 +70,68 @@ export type TypedHandle = <K extends string>(
   channel: K,
   handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>,
 ) => void
+
+/**
+ * 校验项目路径安全性：拒绝路径遍历和系统关键目录
+ *
+ * 用于所有接受 projectPath 的 IPC 处理器，防止渲染进程
+ * 通过 IPC 读取/写入系统关键目录。
+ */
+export function validateProjectPath(projectPath: string): string {
+  const resolved = path.resolve(projectPath)
+  const normalized = path.normalize(resolved)
+
+  // 拒绝系统关键目录
+  const blockedPrefixes = process.platform === 'win32'
+    ? [
+        path.resolve(process.env.SystemRoot || 'C:\\Windows'),
+        path.resolve('C:\\Program Files'),
+        path.resolve('C:\\Program Files (x86)'),
+      ]
+    : [
+        '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
+        '/opt', '/sys', '/proc', '/dev',
+      ]
+
+  const sep = path.sep
+  for (const blocked of blockedPrefixes) {
+    const normalizedBlocked = path.normalize(blocked)
+    const isBlocked = process.platform === 'win32'
+      ? normalized.toLowerCase().startsWith(normalizedBlocked.toLowerCase() + sep) ||
+        normalized.toLowerCase() === normalizedBlocked.toLowerCase()
+      : normalized.startsWith(normalizedBlocked + sep) || normalized === normalizedBlocked
+    if (isBlocked) {
+      throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
+    }
+  }
+
+  // 确保路径不是 root 或 home 目录本身（只允许子目录）
+  if (process.platform !== 'win32') {
+    if (normalized === '/' || normalized === '/root' || normalized === process.env.HOME) {
+      throw new IpcError('Access denied: cannot access root or home directory, please select a project subdirectory', ErrorCode.IPC_ACCESS_DENIED)
+    }
+  }
+
+  return normalized
+}
+
+/**
+ * 校验文件路径是否在项目目录内，防止路径遍历
+ *
+ * 用于校验从渲染进程传入的相对路径（如 relatedFiles），
+ * 确保解析后的绝对路径不会逃逸出项目目录。
+ */
+export function isPathWithinProject(filePath: string, projectPath: string): boolean {
+  const resolvedProject = path.resolve(projectPath)
+  const resolvedFile = path.resolve(projectPath, filePath)
+  const sep = path.sep
+
+  if (process.platform === 'win32') {
+    return resolvedFile.toLowerCase().startsWith(resolvedProject.toLowerCase() + sep) ||
+           resolvedFile.toLowerCase() === resolvedProject.toLowerCase()
+  }
+  return resolvedFile.startsWith(resolvedProject + sep) || resolvedFile === resolvedProject
+}
 
 export function createTypedHandle(
   ipcMain: Electron.IpcMain,

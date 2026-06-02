@@ -1,32 +1,28 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { AgentSessionConfig, AgentCommand } from '@shared/types'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 
-// Mock child_process before importing adapter
-const mockExecFile = vi.fn()
-const mockProc = {
-  stdout: { on: vi.fn(), off: vi.fn() },
-  stderr: { on: vi.fn(), off: vi.fn() },
-  stdin: { write: vi.fn() },
-  on: vi.fn(),
-  once: vi.fn(),
-  off: vi.fn(),
-  kill: vi.fn(),
-  killed: false,
-}
-const mockSpawn = vi.fn(() => mockProc)
-
-vi.mock('node:child_process', () => ({
-  spawn: (...args: unknown[]) => mockSpawn(...args),
-  execFile: (...args: unknown[]) => mockExecFile(...args),
-}))
-
-vi.mock('node:util', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:util')>()
-  return {
-    ...actual,
-    promisify: (fn: unknown) => fn,
-  }
+// Mock Codex SDK
+const mockRun = vi.fn().mockResolvedValue({
+  items: [{ type: 'agent_message', id: 'msg-1', text: 'Task completed' }],
+  finalResponse: 'All done',
+  usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0 },
 })
+const mockThreadId = 'thread-abc-123'
+const mockThread = {
+  run: mockRun,
+  get id() { return mockThreadId },
+}
+const mockStartThread = vi.fn(() => mockThread)
+const mockResumeThread = vi.fn(() => mockThread)
+
+class MockCodex {
+  startThread = mockStartThread
+  resumeThread = mockResumeThread
+}
+
+vi.mock('@openai/codex-sdk', () => ({
+  Codex: MockCodex,
+}))
 
 import { CodexAdapter } from '../adapters/codex'
 
@@ -46,132 +42,154 @@ function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig
 
 const command: AgentCommand = { type: 'implement', description: 'Add login form', targetNodeId: 'n1' }
 
-describe('CodexAdapter', () => {
+describe('CodexAdapter (SDK)', () => {
   let adapter: CodexAdapter
+  const outputs: AgentOutput[] = []
 
   beforeEach(() => {
     vi.clearAllMocks()
+    outputs.length = 0
     adapter = new CodexAdapter()
+    adapter.onOutput((o) => outputs.push(o))
+  })
+
+  afterEach(() => {
+    adapter.removeAllListeners('output')
   })
 
   it('should report name and version', () => {
     expect(adapter.name).toBe('codex')
-    expect(adapter.version).toBe('1.0.0')
+    expect(adapter.version).toBe('2.0.0')
   })
 
-  it('checkInstalled returns true when codex --version succeeds', async () => {
-    mockExecFile.mockResolvedValue({ stdout: '0.1.0\n', stderr: '' })
+  it('checkInstalled returns true when SDK is available', async () => {
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('codex', ['--version'])
-  })
-
-  it('checkInstalled returns false when codex not found', async () => {
-    mockExecFile.mockRejectedValue(new Error('not found'))
-    expect(await adapter.checkInstalled()).toBe(false)
   })
 
   it('startSession creates a session with correct adapter name', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
     expect(session.adapterName).toBe('codex')
-    expect(session.config).toBe(config)
     expect(session.id).toMatch(/^codex-/)
   })
 
-  it('doSendCommand spawns codex with correct args', async () => {
-    const config = makeConfig({ workingDirectory: '/my/project' })
-    const session = await adapter.startSession(config)
-
-    // Make runOneShot resolve immediately by simulating exit
-    mockSpawn.mockImplementationOnce(() => {
-      const proc = {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('done'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-      return proc
-    })
-
-    await adapter.sendCommand(session.id, command)
-
-    expect(mockSpawn).toHaveBeenCalledWith(
-      'codex',
-      ['--approval-mode', 'full-auto', '-m', 'gpt-4o', '--', expect.any(String)],
-      expect.objectContaining({ cwd: '/my/project' }),
-    )
-  })
-
-  it('prompt includes scope, constraint suffix, and command', async () => {
+  it('doSendCommand creates Codex instance and calls startThread', async () => {
     const config = makeConfig({
       nodeTitle: 'Auth Module',
-      allowedFiles: ['src/auth.ts', 'src/login.ts'],
+      allowedFiles: ['src/auth.ts'],
     })
     const session = await adapter.startSession(config)
 
-    let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
-      capturedPrompt = args[args.length - 1]
-      const proc = {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-      return proc
-    })
-
     await adapter.sendCommand(session.id, command)
 
-    expect(capturedPrompt).toContain('业务节点：Auth Module')
-    expect(capturedPrompt).toContain('⚠️ 强制约束')
-    expect(capturedPrompt).toContain('src/auth.ts')
-    expect(capturedPrompt).toContain('Add login form')
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ workingDirectory: '/project', sandboxMode: 'workspace-write' }),
+    )
+    expect(mockRun).toHaveBeenCalledTimes(1)
+
+    const promptArg = mockRun.mock.calls[0][0] as string
+    expect(promptArg).toContain('业务节点：Auth Module')
+    expect(promptArg).toContain('src/auth.ts')
+    expect(promptArg).toContain('Add login form')
   })
 
-  it('constraint suffix omitted when allowedFiles is empty', async () => {
-    const config = makeConfig({ allowedFiles: [] })
-    const session = await adapter.startSession(config)
-
-    let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
-      capturedPrompt = args[args.length - 1]
-      return {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-    })
-
-    await adapter.sendCommand(session.id, command)
-
-    expect(capturedPrompt).not.toContain('⚠️ 强制约束')
-  })
-
-  it('terminateSession closes the session', async () => {
+  it('doSendCommand emits agent messages as stdout', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
 
-    // Should not throw
+    await adapter.sendCommand(session.id, command)
+
+    const stdoutOutputs = outputs.filter((o) => o.type === 'stdout')
+    expect(stdoutOutputs.length).toBeGreaterThan(0)
+    expect(stdoutOutputs.some((o) => o.data.includes('Task completed'))).toBe(true)
+    expect(stdoutOutputs.some((o) => o.data.includes('All done'))).toBe(true)
+  })
+
+  it('doSendCommand emits complete on success', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+
+    const completeOutputs = outputs.filter((o) => o.type === 'complete')
+    expect(completeOutputs.length).toBe(1)
+  })
+
+  it('doSendCommand captures thread ID for resume', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(session.config.resumeSessionId).toBe('thread-abc-123')
+  })
+
+  it('doSendCommand emits file_change for file_change items', async () => {
+    mockRun.mockResolvedValueOnce({
+      items: [{
+        type: 'file_change',
+        id: 'fc-1',
+        changes: [
+          { path: 'src/auth.ts', kind: 'update' },
+          { path: 'src/new.ts', kind: 'add' },
+        ],
+        status: 'completed',
+      }],
+      finalResponse: 'Files changed',
+      usage: null,
+    })
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+
+    const fileChangeOutputs = outputs.filter((o) => o.type === 'file_change')
+    expect(fileChangeOutputs.length).toBe(2)
+    expect(fileChangeOutputs[0].filePath).toBe('src/auth.ts')
+    expect(fileChangeOutputs[0].changeType).toBe('modify')
+    expect(fileChangeOutputs[1].filePath).toBe('src/new.ts')
+    expect(fileChangeOutputs[1].changeType).toBe('add')
+  })
+
+  it('doSendCommand uses resumeThread when resumeSessionId is set', async () => {
+    const config = makeConfig({ resumeSessionId: 'thread-existing' })
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockResumeThread).toHaveBeenCalledWith('thread-existing', expect.anything())
+    expect(mockStartThread).not.toHaveBeenCalled()
+  })
+
+  it('doSendCommand emits error on SDK failure', async () => {
+    mockRun.mockRejectedValueOnce(new Error('API rate limit'))
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+
+    const errorOutputs = outputs.filter((o) => o.type === 'error')
+    expect(errorOutputs.length).toBe(1)
+    expect(errorOutputs[0].data).toContain('rate limit')
+  })
+
+  it('reuses thread for same session (multi-turn)', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    await adapter.sendCommand(session.id, command)
+    await adapter.sendCommand(session.id, { ...command, description: 'Now add tests' })
+
+    expect(mockStartThread).toHaveBeenCalledTimes(1)
+    expect(mockRun).toHaveBeenCalledTimes(2)
+  })
+
+  it('terminateSession cleans up thread', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    await adapter.sendCommand(session.id, command)
     await adapter.terminateSession(session.id)
   })
 })

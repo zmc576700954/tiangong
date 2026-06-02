@@ -7,6 +7,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { isPathWithinProject } from '../../ipc/utils'
 import type { NodeType } from '@shared/types'
 
 export interface DirectRetrievalResult {
@@ -35,9 +36,12 @@ export async function directRetrieve(
   let usedTokens = 0
   const fileContents: Array<{ path: string; content: string }> = []
 
-  // 读取关联文件
+  // 读取关联文件（校验路径不逃逸项目目录）
   for (const relFile of relatedFiles.slice(0, 10)) {
     if (usedTokens >= TOKEN_BUDGET) break
+
+    // 安全校验：确保解析后的路径在项目目录内
+    if (!isPathWithinProject(relFile, projectPath)) continue
 
     const fullPath = path.resolve(projectPath, relFile)
     try {

@@ -5,7 +5,6 @@ const mockExecFile = vi.fn()
 const mockProc = {
   stdout: { on: vi.fn(), off: vi.fn() },
   stderr: { on: vi.fn(), off: vi.fn() },
-  stdin: { write: vi.fn() },
   on: vi.fn(),
   once: vi.fn(),
   off: vi.fn(),
@@ -21,13 +20,10 @@ vi.mock('node:child_process', () => ({
 
 vi.mock('node:util', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:util')>()
-  return {
-    ...actual,
-    promisify: (fn: unknown) => fn,
-  }
+  return { ...actual, promisify: (fn: unknown) => fn }
 })
 
-import { OpenCodeAdapter } from '../adapters/opencode'
+import { CursorAdapter } from '../adapters/cursor'
 
 function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig {
   return {
@@ -43,41 +39,40 @@ function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig
   }
 }
 
-const command: AgentCommand = { type: 'fix_bug', description: 'Fix crash on save', targetNodeId: 'n1' }
+const command: AgentCommand = { type: 'implement', description: 'Add login form', targetNodeId: 'n1' }
 
-describe('OpenCodeAdapter', () => {
-  let adapter: OpenCodeAdapter
+describe('CursorAdapter', () => {
+  let adapter: CursorAdapter
 
   beforeEach(() => {
     vi.clearAllMocks()
-    adapter = new OpenCodeAdapter()
+    adapter = new CursorAdapter()
   })
 
   it('should report name and version', () => {
-    expect(adapter.name).toBe('opencode')
+    expect(adapter.name).toBe('cursor')
     expect(adapter.version).toBe('1.0.0')
   })
 
-  it('checkInstalled returns true when opencode --version succeeds', async () => {
-    mockExecFile.mockResolvedValue({ stdout: '0.2.0\n', stderr: '' })
+  it('checkInstalled returns true when cursor agent --version succeeds', async () => {
+    mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('opencode', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('cursor', ['agent', '--version'])
   })
 
-  it('checkInstalled returns false when opencode not found', async () => {
-    mockExecFile.mockRejectedValue(new Error('command not found'))
+  it('checkInstalled returns false when cursor not found', async () => {
+    mockExecFile.mockRejectedValue(new Error('not found'))
     expect(await adapter.checkInstalled()).toBe(false)
   })
 
   it('startSession creates a session with correct adapter name', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
-    expect(session.adapterName).toBe('opencode')
-    expect(session.config).toBe(config)
-    expect(session.id).toMatch(/^opencode-/)
+    expect(session.adapterName).toBe('cursor')
+    expect(session.id).toMatch(/^cursor-/)
   })
 
-  it('doSendCommand spawns opencode with correct args', async () => {
+  it('doSendCommand spawns cursor agent with -p flag', async () => {
     const config = makeConfig({ workingDirectory: '/my/project' })
     const session = await adapter.startSession(config)
 
@@ -97,53 +92,48 @@ describe('OpenCodeAdapter', () => {
     await adapter.sendCommand(session.id, command)
 
     expect(mockSpawn).toHaveBeenCalledWith(
-      'opencode',
-      ['-p', expect.any(String), '-q'],
+      'cursor',
+      ['agent', '-p', expect.stringContaining('Add login form')],
       expect.objectContaining({ cwd: '/my/project' }),
     )
   })
 
-  it('prompt includes scope, constraint suffix, and command', async () => {
-    const config = makeConfig({
-      nodeTitle: 'Storage Module',
-      allowedFiles: ['src/storage.ts'],
-      forbiddenFiles: ['src/legacy.ts'],
-    })
+  it('doSendCommand includes --resume when resumeSessionId is set', async () => {
+    const config = makeConfig({ resumeSessionId: 'prev-session' })
     const session = await adapter.startSession(config)
 
-    let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
-      capturedPrompt = args[1] // args are ['-p', prompt, '-q']
-      return {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-    })
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn(),
+      once: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      off: vi.fn(),
+    }))
 
     await adapter.sendCommand(session.id, command)
 
-    expect(capturedPrompt).toContain('业务节点：Storage Module')
-    expect(capturedPrompt).toContain('⚠️ 强制约束')
-    expect(capturedPrompt).toContain('src/storage.ts')
-    expect(capturedPrompt).toContain('禁止修改的文件（黑名单）')
-    expect(capturedPrompt).toContain('Fix crash on save')
+    expect(mockSpawn).toHaveBeenCalledWith(
+      'cursor',
+      expect.arrayContaining(['--resume', 'prev-session']),
+      expect.anything(),
+    )
   })
 
-  it('constraint suffix omitted when allowedFiles is empty', async () => {
-    const config = makeConfig({ allowedFiles: [] })
+  it('doSendCommand includes scope prompt in command', async () => {
+    const config = makeConfig({
+      nodeTitle: 'Payment Module',
+      acceptanceCriteria: ['Handle refunds'],
+    })
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
     mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
-      capturedPrompt = args[1] // args are ['-p', prompt, '-q']
+      capturedPrompt = args[2] // args are ['agent', '-p', prompt, ...]
       return {
         ...mockProc,
         stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
@@ -160,7 +150,9 @@ describe('OpenCodeAdapter', () => {
 
     await adapter.sendCommand(session.id, command)
 
-    expect(capturedPrompt).not.toContain('⚠️ 强制约束')
+    expect(capturedPrompt).toContain('业务节点：Payment Module')
+    expect(capturedPrompt).toContain('Handle refunds')
+    expect(capturedPrompt).toContain('Add login form')
   })
 
   it('terminateSession closes the session', async () => {

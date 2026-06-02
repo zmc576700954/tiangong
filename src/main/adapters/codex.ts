@@ -1,29 +1,43 @@
 /**
- * Codex CLI 适配器（单次执行模式）
+ * Codex 适配器（SDK 模式）
  *
- * Codex CLI 是单次执行工具：启动、处理 prompt、输出结果、退出。
- * 每次 sendCommand() 启动新进程，传入完整 prompt。
+ * 使用 @openai/codex-sdk 替代 spawn('codex') 子进程调用。
+ * SDK 提供线程模型（startThread/resumeThread）和结构化结果。
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import { AdapterError } from '../errors'
 
-const execFileAsync = promisify(execFile)
+type CodexConstructor = typeof import('@openai/codex-sdk').Codex
 
 export class CodexAdapter extends BaseAdapter {
   readonly name = 'codex'
-  readonly version = '1.0.0'
+  readonly version = '2.0.0'
+
+  private CodexClass: CodexConstructor | null = null
+  private sdkLoadAttempted = false
+  private threads = new Map<string, ReturnType<InstanceType<CodexConstructor>['startThread']>>()
+  private threadIds = new Map<string, string>()
+
+  private async loadSdk(): Promise<CodexConstructor | null> {
+    if (this.sdkLoadAttempted) return this.CodexClass
+    this.sdkLoadAttempted = true
+
+    try {
+      const mod = await import('@openai/codex-sdk')
+      this.CodexClass = mod.Codex
+      return this.CodexClass
+    } catch {
+      console.warn('[CodexAdapter] @openai/codex-sdk not installed')
+      return null
+    }
+  }
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('codex', ['--version'])
-      return true
-    } catch {
-      return false
-    }
+    const cls = await this.loadSdk()
+    return cls !== null
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
@@ -39,40 +53,95 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
+    const CodexClass = await this.loadSdk()
+    if (!CodexClass) {
+      throw new AdapterError('Codex SDK not installed. Run: npm install @openai/codex-sdk', this.name)
+    }
+
     const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
-    const constraintSuffix = this.buildConstraintSuffix(session.config)
     const commandPrompt = this.buildCommandPrompt(command)
-    const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`
+    const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
-    const args = [
-      '--approval-mode', 'full-auto',
-      '-m', 'gpt-4o',
-      '--',
-      fullPrompt.replace(/^-/gm, '\\-'),
-    ]
+    try {
+      const codex = new CodexClass({
+        env: this.buildSafeEnv() as Record<string, string>,
+      })
 
-    const proc = spawn('codex', args, {
-      cwd: session.config.workingDirectory,
-      env: this.buildSafeEnv(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
+      const isResume = session.config.resumeSessionId != null
+      let thread = this.threads.get(session.id)
 
-    await this.runOneShot(proc)
+      if (!thread) {
+        if (isResume && session.config.resumeSessionId) {
+          thread = codex.resumeThread(session.config.resumeSessionId, {
+            workingDirectory: session.config.workingDirectory,
+            sandboxMode: 'workspace-write',
+          })
+        } else {
+          thread = codex.startThread({
+            workingDirectory: session.config.workingDirectory,
+            sandboxMode: 'workspace-write',
+          })
+        }
+        this.threads.set(session.id, thread)
+      }
+
+      const result = await thread.run(fullPrompt)
+
+      // 保存 thread ID 用于后续续接
+      const threadId = thread.id
+      if (threadId) {
+        this.threadIds.set(session.id, threadId)
+        session.config.resumeSessionId = threadId
+      }
+
+      // 输出 agent 消息
+      for (const item of result.items) {
+        if (item.type === 'agent_message' && item.text) {
+          this.emitOutput({
+            type: 'stdout',
+            data: item.text,
+            timestamp: Date.now(),
+          })
+        }
+        if (item.type === 'file_change') {
+          for (const change of item.changes) {
+            this.emitOutput({
+              type: 'file_change',
+              data: `${change.kind}: ${change.path}`,
+              timestamp: Date.now(),
+              filePath: change.path,
+              changeType: change.kind === 'add' ? 'add' : change.kind === 'delete' ? 'delete' : 'modify',
+            })
+          }
+        }
+      }
+
+      if (result.finalResponse) {
+        this.emitOutput({
+          type: 'stdout',
+          data: result.finalResponse,
+          timestamp: Date.now(),
+        })
+      }
+
+      this.emitOutput({
+        type: 'complete',
+        data: 'Codex session completed',
+        timestamp: Date.now(),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      this.emitOutput({
+        type: 'error',
+        data: `Codex SDK error: ${msg}`,
+        timestamp: Date.now(),
+        errorCode: 'AGENT_CRASH',
+      })
+    }
   }
 
-  /**
-   * 构建强制约束后缀
-   * 在白名单模式下追加明确的禁止指令，增强 prompt 约束力
-   */
-  private buildConstraintSuffix(config: AgentSessionConfig): string {
-    if (config.allowedFiles.length === 0) return ''
-
-    return [
-      '## ⚠️ 强制约束',
-      `- 只能修改白名单中的文件：${config.allowedFiles.join(', ')}`,
-      '- 禁止使用 Bash 命令修改白名单外的文件（如 mv、cp、sed、echo 重定向等）',
-      '- 如果需要修改白名单外的文件，先向用户说明原因并请求授权',
-      '',
-    ].join('\n')
+  protected doCloseQuery(sessionId: string): void {
+    this.threads.delete(sessionId)
+    this.threadIds.delete(sessionId)
   }
 }

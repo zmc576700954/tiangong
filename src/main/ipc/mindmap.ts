@@ -16,6 +16,7 @@ import { directRetrieve } from '../mindmap-agent/retrieval/direct'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
 import { extractJson } from '../mindmap-agent/claude-runner'
 import { validateEnrichment } from '../mindmap-agent/schema-validator'
+import { validateProjectPath } from './utils'
 import type { TypedHandle } from './utils'
 import type { NodeType, GraphNode, ContextRef } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
@@ -32,21 +33,22 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
    * 5. 解析并返回 ScanModule[]
    */
   typedHandle('mindmap:generate', async (_, projectPath: string) => {
-    const projectName = projectPath.split(/[/\\]/).pop() || 'Project'
+    const validatedPath = validateProjectPath(projectPath)
+    const projectName = validatedPath.split(/[/\\]/).pop() || 'Project'
 
     // 1. 生成 prompt（本地计算）
-    const context = await collectContext(projectPath, projectName, '')
+    const context = await collectContext(validatedPath, projectName, '')
     const prompt = buildGlobalPrompt(context)
     console.log(`[MindMap] Prompt 已生成, 长度: ${prompt.length}`)
 
     // 2. 通过 AgentManager 发送 prompt 并收集结果（输出实时显示在 AgentChat）
-    const result = await sendPromptViaAgent(agentManager, projectPath, prompt, {
+    const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: '思维导图生成',
     })
     console.log(`[MindMap] 收到结果, 长度: ${result.length}`)
 
     // 3. 解析结果
-    const agent = new MindMapAgent(projectPath)
+    const agent = new MindMapAgent(validatedPath)
     return agent.parseGenerationResult(result)
   })
 
@@ -62,6 +64,8 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     relatedFiles?: string[],
     contextRefs?: ContextRef[],
   ) => {
+    const validatedPath = validateProjectPath(projectPath)
+
     let contextBlock = ''
     if (contextRefs && contextRefs.length > 0) {
       const textContexts = contextRefs.filter((c) => c.type === 'text' && c.content)
@@ -74,10 +78,10 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
       }
     }
 
-    const retrieved = await directRetrieve(projectPath, nodeTitle, nodeType, relatedFiles || [])
+    const retrieved = await directRetrieve(validatedPath, nodeTitle, nodeType, relatedFiles || [])
     const prompt = buildEnrichmentPromptLocal(nodeTitle, nodeType, retrieved.nodeContent || '') + contextBlock
 
-    const result = await sendPromptViaAgent(agentManager, projectPath, prompt, {
+    const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: `补充详情: ${nodeTitle}`,
       timeoutMs: 120_000,
     })
