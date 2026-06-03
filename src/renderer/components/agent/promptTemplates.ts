@@ -1,5 +1,6 @@
-import type { GraphNode } from '@shared/types'
+import type { GraphNode, GraphEdge } from '@shared/types'
 import { Code2, Shield, GitBranch, Check } from 'lucide-react'
+import { collectFileAssociations, collectCrossModuleConstraints } from '../../canvas/agent-context-builder'
 
 export interface SlashCommand {
   name: string
@@ -25,6 +26,8 @@ const SLASH_TO_COMMAND: Record<string, string> = {
 export function generatePromptTemplate(
   slashCommand: string,
   node: GraphNode | undefined,
+  allNodes?: GraphNode[],
+  allEdges?: GraphEdge[],
 ): string | null {
   const commandType = SLASH_TO_COMMAND[slashCommand]
   if (!commandType) return null
@@ -105,6 +108,26 @@ export function generatePromptTemplate(
       }
       lines.push('### 请为该功能编写完整的单元测试和集成测试')
       break
+  }
+
+  // Append file associations and cross-module constraints
+  if (allNodes && allEdges) {
+    const fileAssocs = collectFileAssociations(node.id, allNodes)
+    if (fileAssocs.length > 0) {
+      lines.push('### 关联文件')
+      fileAssocs.forEach((a) => {
+        const suffix = a.type === 'method' && a.methodName ? ` (方法: ${a.methodName})` : a.type === 'directory' ? ' (目录)' : ''
+        lines.push(`- ${a.path}${suffix}`)
+      })
+      lines.push('')
+    }
+
+    const constraints = collectCrossModuleConstraints(node.id, allEdges, allNodes)
+    if (constraints.length > 0) {
+      lines.push('### 跨模块业务约束')
+      constraints.forEach((c) => lines.push(`- ${c}`))
+      lines.push('')
+    }
   }
 
   return lines.join('\n')

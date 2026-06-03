@@ -1,7 +1,8 @@
+import { useState } from 'react'
 import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch } from 'lucide-react'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
 import type { Connection } from '@xyflow/react'
-import type { GraphNode, NodeType, EdgeType, NodeStatus } from '@shared/types'
+import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
 import { NodeContextMenu } from '../NodeContextMenu'
 
 interface CanvasOverlayProps {
@@ -12,7 +13,7 @@ interface CanvasOverlayProps {
   showEdgeTypeMenu: boolean
   edgeMenuPosition: { x: number; y: number }
   pendingConnection: Connection | null
-  onCreateEdge: (type: EdgeType) => void
+  onCreateEdge: (type: EdgeType, content?: EdgeContent) => void
   nodeContextMenu: { nodeId: string; x: number; y: number } | null
   nodes: GraphNode[]
   onNodeStatusChange: (nodeId: string, status: NodeStatus) => void
@@ -47,6 +48,14 @@ export function CanvasOverlay({
   onAddContext,
   onGenerateChildren,
 }: CanvasOverlayProps) {
+  const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
+  const [edgeCondition, setEdgeCondition] = useState('')
+  const [edgeNote, setEdgeNote] = useState('')
+
+  const canvasNodeTypes: NodeType[] = hasProjectNode
+    ? ['module', 'process', 'feature', 'bug']
+    : ['project', 'module', 'process', 'feature', 'bug']
+
   return (
     <>
       {/* 空白画布引导 */}
@@ -81,7 +90,7 @@ export function CanvasOverlay({
           style={{ left: menuPosition.x, top: menuPosition.y }}
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">添加节点</div>
-          {(['module', 'process', 'feature', 'bug'] satisfies NodeType[]).map((type) => (
+          {canvasNodeTypes.map((type) => (
             <button
               key={type}
               onClick={() => onCreateNode(type)}
@@ -97,7 +106,7 @@ export function CanvasOverlay({
       {/* 边类型选择菜单 */}
       {showEdgeTypeMenu && pendingConnection && (
         <div
-          className="absolute z-50 bg-background border rounded-lg shadow-lg py-2 w-48"
+          className="absolute z-50 bg-background border rounded-lg shadow-lg py-2 w-56"
           style={{ left: edgeMenuPosition.x, top: edgeMenuPosition.y }}
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
@@ -107,7 +116,16 @@ export function CanvasOverlay({
           {EDGE_TYPE_OPTIONS.map((opt) => (
             <button
               key={opt.type}
-              onClick={() => onCreateEdge(opt.type)}
+              onClick={() => {
+                if (opt.type === 'business-flow') {
+                  setSelectedEdgeType('business-flow')
+                } else {
+                  onCreateEdge(opt.type)
+                  setSelectedEdgeType(null)
+                  setEdgeCondition('')
+                  setEdgeNote('')
+                }
+              }}
               className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <div
@@ -116,15 +134,49 @@ export function CanvasOverlay({
               />
               <div className="flex flex-col">
                 <span>{opt.label}</span>
-                <span className="text-[10px] text-muted-foreground">
-                  {opt.type === 'default' && '标准流程连接'}
-                  {opt.type === 'success' && '成功后的流程分支'}
-                  {opt.type === 'failure' && '失败后的异常分支'}
-                  {opt.type === 'condition' && '条件判断分支'}
-                </span>
+                <span className="text-[10px] text-muted-foreground">{opt.description}</span>
               </div>
             </button>
           ))}
+          {selectedEdgeType === 'business-flow' && (
+            <div className="px-3 pt-2 pb-1 border-t mt-1 space-y-2">
+              <div>
+                <label className="text-[10px] text-muted-foreground">判断条件</label>
+                <input
+                  type="text"
+                  value={edgeCondition}
+                  onChange={(e) => setEdgeCondition(e.target.value)}
+                  placeholder="如：退款申请通过"
+                  className="w-full mt-0.5 px-2 py-1 text-xs border rounded bg-background"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-muted-foreground">备注说明</label>
+                <textarea
+                  value={edgeNote}
+                  onChange={(e) => setEdgeNote(e.target.value)}
+                  placeholder="如：需同步回滚库存"
+                  rows={2}
+                  className="w-full mt-0.5 px-2 py-1 text-xs border rounded bg-background resize-none"
+                />
+              </div>
+              <button
+                onClick={() => {
+                  const content: EdgeContent = {
+                    ...(edgeCondition.trim() && { condition: edgeCondition.trim() }),
+                    ...(edgeNote.trim() && { note: edgeNote.trim() }),
+                  }
+                  onCreateEdge('business-flow', Object.keys(content).length > 0 ? content : undefined)
+                  setSelectedEdgeType(null)
+                  setEdgeCondition('')
+                  setEdgeNote('')
+                }}
+                className="w-full py-1.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
+              >
+                确认创建
+              </button>
+            </div>
+          )}
         </div>
       )}
 

@@ -36,6 +36,7 @@ export const NODE_STATUS_LABELS: Record<string, string> = {
 
 /** 思维导图中显示的节点类型标签 */
 export const NODE_TYPE_LABELS: Record<string, string> = {
+  project: '项目',
   module: '业务模块',
   process: '业务流程',
   feature: '功能点',
@@ -44,6 +45,7 @@ export const NODE_TYPE_LABELS: Record<string, string> = {
 
 /** 节点类型颜色 */
 export const NODE_TYPE_COLORS: Record<string, string> = {
+  project: '#6366f1',
   module: '#3b82f6',
   process: '#8b5cf6',
   feature: '#22c55e',
@@ -52,6 +54,7 @@ export const NODE_TYPE_COLORS: Record<string, string> = {
 
 /** 思维导图中可创建的节点类型 */
 export const CANVAS_NODE_TYPES = [
+  { type: 'project', label: '项目', color: '#6366f1' },
   { type: 'module', label: '业务模块', color: '#3b82f6' },
   { type: 'process', label: '业务流程', color: '#8b5cf6' },
   { type: 'feature', label: '功能点', color: '#22c55e' },
@@ -79,12 +82,15 @@ export const GRAPH_TYPE_LABELS: Record<string, string> = {
   dev: '开发场景',
 }
 
+import type { EdgeType } from './types'
+
 /** 边类型选项（用于画布和属性面板统一） */
-export const EDGE_TYPE_OPTIONS: { type: 'default' | 'success' | 'failure' | 'condition'; label: string; color: string; description: string }[] = [
+export const EDGE_TYPE_OPTIONS: { type: EdgeType; label: string; color: string; description: string }[] = [
   { type: 'default', label: '默认流程', color: '#94a3b8', description: '标准流程连接' },
   { type: 'success', label: '成功分支', color: '#22c55e', description: '成功后的流程分支' },
   { type: 'failure', label: '失败分支', color: '#ef4444', description: '失败后的异常分支' },
   { type: 'condition', label: '条件分支', color: '#f59e0b', description: '条件判断分支' },
+  { type: 'business-flow', label: '业务流程', color: '#3b82f6', description: '跨模块业务关联' },
 ]
 
 /** 支持的 Agent 适配器列表 */

@@ -24,9 +24,9 @@ import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 function generateId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID().replace(/-/g, '')}`
 }
-import type { GraphNode, NodeType, EdgeType, NodeStatus } from '@shared/types'
+import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
 import { BizEdge } from './BizEdge'
-import { getEdgeMarkerEnd } from './edge-utils'
+import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
 import { NodeContextPopover } from './NodeContextPopover'
@@ -172,6 +172,28 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [graphId, loadGraph])
 
+  // 自动创建 project 根节点
+  useEffect(() => {
+    if (graphNodes.length === 0) return
+    const hasProject = graphNodes.some((n) => n.type === 'project')
+    if (!hasProject) {
+      const graphs = useGraphStore.getState().graphs
+      const currentGraph = graphs.find((g) => g.id === graphId)
+      const title = currentGraph?.name ?? '项目'
+      createNode({
+        type: 'project',
+        status: 'confirmed',
+        title,
+        graphId,
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        acceptanceCriteria: [],
+      }).catch((err) => {
+        console.error('[GraphCanvas] Failed to create project node:', err)
+      })
+    }
+  }, [graphNodes, graphId, createNode])
+
   // 组件卸载时刷入最后的位置更新
   useEffect(() => {
     return () => {
@@ -196,23 +218,30 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         bugCount: bugCountMap.get(node.id) ?? 0,
       },
       selected: node.id === selectedNodeId || node.id === connectingSourceId,
+      draggable: node.type !== 'project',
     }))
 
     const flowEdges: Edge[] = graphEdges.map((edge) => {
       const edgeType = edge.edgeType || 'default'
+      const config = edgeTypeConfig[edgeType]
+      const displayLabel = edge.content?.condition
+        ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
+        : edge.label
+
       return {
         id: edge.id,
         source: edge.source,
         target: edge.target,
-        label: edge.label,
+        label: displayLabel,
         type: 'bizEdge',
-        data: { edgeType },
+        data: { edgeType, content: edge.content },
         markerEnd: getEdgeMarkerEnd(edgeType),
         selected: edge.id === selectedEdgeId,
-        animated: edgeType === 'failure',
+        animated: edgeType === 'failure' || edgeType === 'business-flow',
         style: {
-          stroke: edgeType === 'success' ? '#22c55e' : edgeType === 'failure' ? '#ef4444' : edgeType === 'condition' ? '#f59e0b' : '#94a3b8',
+          stroke: config.color,
           strokeWidth: edge.id === selectedEdgeId ? 3 : 2,
+          strokeDasharray: config.strokeDasharray,
         },
       }
     })
@@ -305,14 +334,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   )
 
   const handleCreateEdge = useCallback(
-    async (edgeType: EdgeType) => {
+    async (edgeType: EdgeType, content?: EdgeContent) => {
       if (!pendingConnection?.source || !pendingConnection?.target) return
+      const config = edgeTypeConfig[edgeType]
       const edge = await createEdge({
         source: pendingConnection.source,
         target: pendingConnection.target,
         label: '',
         graphId,
         edgeType,
+        content,
       })
       setRfEdges((eds) =>
         addEdge(
@@ -321,15 +352,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             id: edge.id,
             label: edge.label,
             type: 'bizEdge',
-            data: { edgeType },
+            data: { edgeType, content },
             markerEnd: getEdgeMarkerEnd(edgeType),
-            animated: edgeType === 'failure',
+            animated: edgeType === 'failure' || edgeType === 'business-flow',
             style: {
-              stroke:
-                edgeType === 'success' ? '#22c55e'
-                  : edgeType === 'failure' ? '#ef4444'
-                    : edgeType === 'condition' ? '#f59e0b'
-                      : '#94a3b8',
+              stroke: config.color,
+              strokeDasharray: config.strokeDasharray,
             },
           } satisfies Edge,
           eds,
@@ -547,6 +575,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }
 
   const handleNodeDelete = async (nodeId: string) => {
+    const node = graphNodes.find((n) => n.id === nodeId)
+    if (node?.type === 'project') return
     await deleteNode(nodeId)
     selectNode(null)
     setNodeContextMenu(null)

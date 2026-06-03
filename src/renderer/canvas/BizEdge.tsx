@@ -8,12 +8,12 @@ import {
 import { useCallback, useState } from 'react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
-import type { EdgeType } from '@shared/types'
+import type { EdgeType, EdgeContent } from '@shared/types'
 import { X, Check, Pencil } from 'lucide-react'
 import { edgeTypeConfig } from './edge-utils'
 
-/** 自定义边类型：携带 edgeType 信息 */
-type BizEdgeType = Edge<{ edgeType?: EdgeType }, 'bizEdge'>
+/** 自定义边类型：携带 edgeType 和 content 信息 */
+type BizEdgeType = Edge<{ edgeType?: EdgeType; content?: EdgeContent }, 'bizEdge'>
 
 export function BizEdge({
   id,
@@ -35,6 +35,8 @@ export function BizEdge({
   const [isHover, setIsHover] = useState(false)
 
   const edgeType: EdgeType = data?.edgeType ?? 'default'
+  const content = data?.content
+  const isBusinessFlow = edgeType === 'business-flow'
   const config = edgeTypeConfig[edgeType]
 
   const [edgePath, labelX, labelY] = getBezierPath({
@@ -91,9 +93,11 @@ export function BizEdge({
         <div
           className={cn(
             'nodrag nopan pointer-events-auto flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium shadow-sm transition-all',
-            selected
+            isBusinessFlow
               ? 'border-blue-300 bg-blue-50 text-blue-700'
-              : 'border-slate-200 bg-white text-slate-600',
+              : selected
+                ? 'border-blue-300 bg-blue-50 text-blue-700'
+                : 'border-slate-200 bg-white text-slate-600',
           )}
           style={{
             position: 'absolute',
@@ -101,6 +105,7 @@ export function BizEdge({
           }}
           onMouseEnter={() => setIsHover(true)}
           onMouseLeave={() => setIsHover(false)}
+          title={content?.note || undefined}
         >
           {isEditing ? (
             <>

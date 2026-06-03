@@ -23,6 +23,7 @@ export type NodeStatus =
 
 /** 思维导图中显示的节点类型 */
 export type NodeType =
+  | 'project'      // 项目根节点
   | 'module'       // 业务模块
   | 'process'      // 业务流程
   | 'feature'      // 功能点（仅开发场景）
@@ -32,7 +33,7 @@ export type NodeType =
 export type GraphType = 'online' | 'dev'
 
 /** 边类型 */
-export type EdgeType = 'default' | 'success' | 'failure' | 'condition'
+export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow'
 
 /** 业务规则（作为流程节点的属性） */
 export interface BusinessRule {
@@ -43,11 +44,20 @@ export interface BusinessRule {
   action: string      // 执行动作
 }
 
+/** 文件/方法关联 */
+export interface FileAssociation {
+  path: string
+  type: 'file' | 'directory' | 'method'
+  methodName?: string
+  description?: string
+}
+
 /** 节点元数据（API/服务/实体） */
 export interface NodeMetadata {
   apis?: { name: string; method?: string; path?: string; description?: string }[]
   services?: { name: string; description?: string }[]
   entities?: { name: string; fields?: string; description?: string }[]
+  fileAssociations?: FileAssociation[]
 }
 
 /** 节点详细内容（图谱内部存储，不直接展示在画布） */
@@ -99,6 +109,12 @@ export interface GraphNode {
   /** 创建/更新时间 */
   createdAt: string
   updatedAt: string
+}
+
+/** 边的业务内容 */
+export interface EdgeContent {
+  condition?: string
+  note?: string
 }
 
 /** 边（连接） */

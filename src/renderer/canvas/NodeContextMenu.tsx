@@ -32,8 +32,10 @@ const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
 /** 根据父节点类型推断适合创建的子节点类型 */
 function getChildTypeOptions(parentType: NodeType): NodeType[] {
   switch (parentType) {
+    case 'project':
+      return ['module']
     case 'module':
-      return ['process', 'feature']
+      return ['process', 'feature', 'bug']
     case 'process':
       return ['feature', 'bug']
     case 'feature':
@@ -171,37 +173,41 @@ export function NodeContextMenu({
       </div>
 
       {/* 状态切换 */}
-      <div className="border-t mt-1 pt-1">
-        <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">状态</div>
-        <div className="px-2 pb-1 grid grid-cols-3 gap-1">
-          {statusOptions.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => onStatusChange(nodeId, opt.value)}
-              className={cn(
-                'px-1.5 py-1 text-[10px] rounded border transition-colors',
-                node.status === opt.value
-                  ? 'border-transparent text-white'
-                  : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
-              )}
-              style={node.status === opt.value ? { backgroundColor: opt.color } : undefined}
-            >
-              {opt.label}
-            </button>
-          ))}
+      {node.type !== 'project' && (
+        <div className="border-t mt-1 pt-1">
+          <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">状态</div>
+          <div className="px-2 pb-1 grid grid-cols-3 gap-1">
+            {statusOptions.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => onStatusChange(nodeId, opt.value)}
+                className={cn(
+                  'px-1.5 py-1 text-[10px] rounded border transition-colors',
+                  node.status === opt.value
+                    ? 'border-transparent text-white'
+                    : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
+                )}
+                style={node.status === opt.value ? { backgroundColor: opt.color } : undefined}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 删除节点 */}
-      <div className="border-t mt-1 pt-1">
-        <button
-          onClick={() => onDelete(nodeId)}
-          className="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-          删除节点
-        </button>
-      </div>
+      {node.type !== 'project' && (
+        <div className="border-t mt-1 pt-1">
+          <button
+            onClick={() => onDelete(nodeId)}
+            className="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            删除节点
+          </button>
+        </div>
+      )}
     </div>
   )
 }
