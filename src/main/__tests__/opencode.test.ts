@@ -12,11 +12,11 @@ const mockProc = {
   kill: vi.fn(),
   killed: false,
 }
-const mockSpawn = vi.fn(() => mockProc)
+const mockSpawn = vi.fn((_cmd: string, _args: readonly string[], _options: object) => mockProc)
 
 vi.mock('node:child_process', () => ({
-  spawn: (...args: unknown[]) => mockSpawn(...args),
-  execFile: (...args: unknown[]) => mockExecFile(...args),
+  spawn: (...args: [string, readonly string[], object]) => mockSpawn(...args),
+  execFile: (...args: [string, readonly string[]]) => mockExecFile(...args),
 }))
 
 vi.mock('node:util', async (importOriginal) => {
@@ -112,7 +112,7 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
+    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
       capturedPrompt = args[1] // args are ['-p', prompt, '-q']
       return {
         ...mockProc,
@@ -142,7 +142,7 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: string[]) => {
+    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
       capturedPrompt = args[1] // args are ['-p', prompt, '-q']
       return {
         ...mockProc,

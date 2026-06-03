@@ -52,9 +52,11 @@ class WindowManager {
           }
         }, 500)
       }
+      // @ts-expect-error Electron type definitions don't include did-fail-load on webContents
       win.webContents.on('did-fail-load', handleDidFailLoad)
 
       win.on('closed', () => {
+        // @ts-expect-error Electron type definitions don't include did-fail-load on webContents
         win.webContents.off('did-fail-load', handleDidFailLoad)
         this.windows.delete(id)
       })

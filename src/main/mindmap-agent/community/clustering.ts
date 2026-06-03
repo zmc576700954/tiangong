@@ -7,9 +7,9 @@
 
 import path from 'node:path'
 import type { CommunitySummary, ScanModule } from '@shared/types'
-import { generateId } from '../shared/env'
+import { generateId } from '../../shared/env'
 
-interface CommunityCluster {
+export interface CommunityCluster {
   id: string
   title: string
   nodeIds: string[]

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import path from 'node:path'
+import type { Dirent } from 'node:fs'
 
 // Mock fs/promises
 vi.mock('node:fs/promises', () => ({
@@ -14,8 +15,19 @@ import { searchFilesRecursive } from '../ipc/fs'
 
 const mockedReaddir = vi.mocked(fs.readdir)
 
-function makeDirent(name: string, isDir: boolean) {
-  return { name, isDirectory: () => isDir, isFile: () => !isDir }
+function makeDirent(name: string, isDir: boolean): Dirent {
+  return {
+    name,
+    isDirectory: () => isDir,
+    isFile: () => !isDir,
+    isBlockDevice: () => false,
+    isCharacterDevice: () => false,
+    isSymbolicLink: () => false,
+    isFIFO: () => false,
+    isSocket: () => false,
+    parentPath: '/project',
+    path: '/project',
+  } as Dirent
 }
 
 describe('searchFilesRecursive', () => {
@@ -28,12 +40,12 @@ describe('searchFilesRecursive', () => {
     mockedReaddir.mockResolvedValueOnce([
       makeDirent('src', true),
       makeDirent('README.md', false),
-    ] as Awaited<ReturnType<typeof fs.readdir>>)
+    ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
 
     // /project/src has App.tsx
     mockedReaddir.mockResolvedValueOnce([
       makeDirent('App.tsx', false),
-    ] as Awaited<ReturnType<typeof fs.readdir>>)
+    ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
 
     const results = await searchFilesRecursive('/project', 'app', 20)
     expect(results).toHaveLength(1)
@@ -47,7 +59,7 @@ describe('searchFilesRecursive', () => {
       makeDirent('node_modules', true),
       makeDirent('.git', true),
       makeDirent('index.ts', false),
-    ] as Awaited<ReturnType<typeof fs.readdir>>)
+    ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
 
     const results = await searchFilesRecursive('/project', 'index', 20)
     expect(results).toHaveLength(1)
@@ -61,7 +73,7 @@ describe('searchFilesRecursive', () => {
       makeDirent('a.ts', false),
       makeDirent('b.ts', false),
       makeDirent('c.ts', false),
-    ] as Awaited<ReturnType<typeof fs.readdir>>)
+    ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
 
     const results = await searchFilesRecursive('/project', '.ts', 2)
     expect(results).toHaveLength(2)
@@ -75,7 +87,7 @@ describe('searchFilesRecursive', () => {
   it('should be case insensitive', async () => {
     mockedReaddir.mockResolvedValueOnce([
       makeDirent('README.md', false),
-    ] as Awaited<ReturnType<typeof fs.readdir>>)
+    ] as unknown as Awaited<ReturnType<typeof fs.readdir>>)
 
     const results = await searchFilesRecursive('/project', 'readme', 20)
     expect(results).toHaveLength(1)

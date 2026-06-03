@@ -64,7 +64,7 @@ export class ContextResolver {
 
     // 按优先级排序：node > file
     const sorted = [...refs].sort((a, b) => {
-      const priority = { node: 0, file: 1 }
+      const priority = { node: 0, file: 1, text: 2 }
       return (priority[a.type] ?? 2) - (priority[b.type] ?? 2)
     })
 

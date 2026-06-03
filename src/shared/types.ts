@@ -223,7 +223,7 @@ export interface ContextRef {
 
 /** 已解析的上下文（含实际内容，用于注入 prompt） */
 export interface ResolvedContext {
-  type: 'node' | 'file'
+  type: 'node' | 'file' | 'text'
   id: string
   label: string
   content: string
