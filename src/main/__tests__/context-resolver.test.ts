@@ -81,7 +81,7 @@ describe('ContextResolver', () => {
     vi.mocked(readFile).mockResolvedValue('const x = 1\nconsole.log(x)')
 
     const refs: ContextRef[] = [{ type: 'file', id: 'src/main.ts', label: 'main.ts' }]
-    const result = await resolver.resolve(refs, 8000, {})
+    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
 
     expect(result).toHaveLength(1)
     expect(result[0].type).toBe('file')
@@ -93,7 +93,7 @@ describe('ContextResolver', () => {
     vi.mocked(readFile).mockRejectedValue(new Error('ENOENT'))
 
     const refs: ContextRef[] = [{ type: 'file', id: 'missing.ts', label: 'missing.ts' }]
-    const result = await resolver.resolve(refs, 8000, {})
+    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
 
     expect(result).toHaveLength(1)
     expect(result[0].content).toContain('无法读取')
@@ -104,10 +104,29 @@ describe('ContextResolver', () => {
     vi.mocked(readFile).mockResolvedValue(bigContent)
 
     const refs: ContextRef[] = [{ type: 'file', id: 'big.ts', label: 'big.ts' }]
-    const result = await resolver.resolve(refs, 500, {}) // 500 tokens budget
+    const result = await resolver.resolve(refs, 500, { basePath: '/project' }) // 500 tokens budget
 
     expect(result[0].tokenEstimate).toBeLessThanOrEqual(600) // budget + marker overhead
     expect(result[0].content.length).toBeLessThan(bigContent.length)
+  })
+
+  it('rejects file refs without basePath', async () => {
+    const refs: ContextRef[] = [{ type: 'file', id: 'src/main.ts', label: 'main.ts' }]
+    const result = await resolver.resolve(refs, 8000, {})
+
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toContain('未提供基础路径')
+  })
+
+  it('rejects absolute file paths', async () => {
+    vi.mocked(readFile).mockResolvedValue('secret')
+
+    const refs: ContextRef[] = [{ type: 'file', id: '/etc/passwd', label: 'passwd' }]
+    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
+
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toContain('路径越界')
+    expect(readFile).not.toHaveBeenCalled()
   })
 
   it('skips unknown node id gracefully', async () => {
@@ -133,7 +152,7 @@ describe('ContextResolver', () => {
       { type: 'node', id: 'node_1', label: 'Important' },
     ]
 
-    const result = await resolver.resolve(refs, 8000, { nodes })
+    const result = await resolver.resolve(refs, 8000, { nodes, basePath: '/project' })
     expect(result).toHaveLength(2)
     // Node should be first (higher priority)
     expect(result[0].type).toBe('node')

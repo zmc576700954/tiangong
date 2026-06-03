@@ -141,14 +141,21 @@ export class ContextResolver {
   }
 
   private async resolveFile(ref: ContextRef, basePath?: string): Promise<string> {
-    // 路径安全检查：防止路径遍历
-    const resolvedPath = path.resolve(ref.id)
-    if (basePath) {
-      const resolvedBase = path.resolve(basePath)
-      const relative = path.relative(resolvedBase, resolvedPath)
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
-        return `[路径越界: ${ref.label} (${ref.id})]`
-      }
+    // 必须提供 basePath 才能读取文件，防止无限制的文件系统访问
+    if (!basePath) {
+      return `[无法读取文件: 未提供基础路径 (${ref.label})]`
+    }
+
+    // 拒绝绝对路径的引用（必须通过相对路径指定）
+    if (path.isAbsolute(ref.id)) {
+      return `[路径越界: ${ref.label} (${ref.id})]`
+    }
+
+    const resolvedPath = path.resolve(basePath, ref.id)
+    const resolvedBase = path.resolve(basePath)
+    const relative = path.relative(resolvedBase, resolvedPath)
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      return `[路径越界: ${ref.label} (${ref.id})]`
     }
 
     try {

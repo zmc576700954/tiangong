@@ -52,17 +52,14 @@ export class AgentManager {
 
   private attachAdapterOutput(adapter: AgentAdapter): void {
     const handler = (output: AgentOutput) => {
-      // 查找该适配器当前活跃的 session，使用用户请求的原始适配器名广播
-      // 这样 MCP fallback 时前端显示的是 'claude-code' 而非 'mcp'
-      for (const sessionId of this.router.getActiveSessionIds()) {
-        const actualAdapterName = this.router.getAdapterName(sessionId)
-        if (actualAdapterName === adapter.name) {
-          const broadcastName = this.broadcastNames.get(sessionId) ?? adapter.name
-          this.broadcaster.broadcast(broadcastName, output)
-          return
-        }
+      // 从输出中解析关联的 sessionId（BaseAdapter 通过 WeakMap 关联）
+      const sessionId = adapter.resolveOutputSession?.(output)
+      if (sessionId) {
+        const broadcastName = this.broadcastNames.get(sessionId) ?? adapter.name
+        this.broadcaster.broadcast(broadcastName, output)
+        return
       }
-      // 无匹配 session（如内部组件输出），使用适配器本名广播
+      // 无 sessionId 关联的输出（如旧代码或内部组件输出），使用适配器本名广播
       this.broadcaster.broadcast(adapter.name, output)
     }
     this.outputHandlers.set(adapter.name, handler)
@@ -179,6 +176,7 @@ export class AgentManager {
     if (contextRefs && contextRefs.length > 0) {
       resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
         nodes: nodes ?? [],
+        basePath: config.workingDirectory,
       })
     }
 

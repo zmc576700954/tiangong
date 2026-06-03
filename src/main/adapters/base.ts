@@ -36,6 +36,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected processes = new Map<string, ChildProcess>()
   protected sessionCleanups = new Map<string, () => void>()
   protected protocolHandlers = new Map<string, JsonProtocolHandler>()
+  /** 输出到 session 的映射（用于 AgentManager 精准广播） */
+  private outputSessionMap = new WeakMap<AgentOutput, string>()
+  /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
+  private outputSessionStack: string[] = []
 
   constructor() {
     super()
@@ -72,7 +76,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       throw new SessionNotFoundError(sessionId)
     }
     const proc = this.processes.get(sessionId)
-    await this.doSendCommand(session, command, proc)
+    this.pushOutputSession(sessionId)
+    try {
+      await this.doSendCommand(session, command, proc)
+    } finally {
+      this.popOutputSession()
+    }
   }
 
   /**
@@ -97,22 +106,27 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     if (!session) {
       return
     }
-    // SDK 适配器钩子：在基类清理前关闭 SDK query 对象
-    this.doCloseQuery(sessionId)
-    const proc = this.processes.get(sessionId)
-    await this.doTerminate(session, proc)
-    // TG-009: 清理事件监听器，防止内存泄漏
-    this.sessionCleanups.get(sessionId)?.()
-    this.sessionCleanups.delete(sessionId)
-    // 清理协议处理器
-    this.disposeProtocolHandler(sessionId)
-    this.sessions.delete(sessionId)
-    this.processes.delete(sessionId)
-    this.emit('output', {
-      type: 'complete',
-      data: 'Session terminated by user',
-      timestamp: Date.now(),
-    })
+    this.pushOutputSession(sessionId)
+    try {
+      // SDK 适配器钩子：在基类清理前关闭 SDK query 对象
+      this.doCloseQuery(sessionId)
+      const proc = this.processes.get(sessionId)
+      await this.doTerminate(session, proc)
+      // TG-009: 清理事件监听器，防止内存泄漏
+      this.sessionCleanups.get(sessionId)?.()
+      this.sessionCleanups.delete(sessionId)
+      // 清理协议处理器
+      this.disposeProtocolHandler(sessionId)
+      this.sessions.delete(sessionId)
+      this.processes.delete(sessionId)
+      this.emitOutput({
+        type: 'complete',
+        data: 'Session terminated by user',
+        timestamp: Date.now(),
+      })
+    } finally {
+      this.popOutputSession()
+    }
   }
 
   /**
@@ -148,10 +162,30 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
   /**
    * 向所有监听器发送输出
+   * 自动关联当前输出上下文栈顶的 sessionId（如果存在）
    * @protected
    */
   protected emitOutput(output: AgentOutput): void {
+    const sessionId = this.outputSessionStack[this.outputSessionStack.length - 1]
+    if (sessionId) {
+      this.outputSessionMap.set(output, sessionId)
+    }
     this.emit('output', output)
+  }
+
+  /**
+   * 解析输出关联的 sessionId（供 AgentManager 精准广播）
+   */
+  resolveOutputSession(output: AgentOutput): string | undefined {
+    return this.outputSessionMap.get(output)
+  }
+
+  private pushOutputSession(sessionId: string): void {
+    this.outputSessionStack.push(sessionId)
+  }
+
+  private popOutputSession(): void {
+    this.outputSessionStack.pop()
   }
 
   // ============================================
@@ -239,10 +273,19 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   // ============================================
 
   /**
+   * 为指定 session 发送输出（直接关联 sessionId，不依赖上下文栈）
+   * @protected
+   */
+  private emitOutputForSession(sessionId: string, output: AgentOutput): void {
+    this.outputSessionMap.set(output, sessionId)
+    this.emit('output', output)
+  }
+
+  /**
    * 创建标准输出处理器（供 attachOutputHandlers 和 runOneShot 复用）
    * @protected
    */
-  protected createOutputHandlers(options?: { parseFileChanges?: boolean }): {
+  protected createOutputHandlers(sessionId: string, options?: { parseFileChanges?: boolean }): {
     onStdout: (data: Buffer) => void
     onStderr: (data: Buffer) => void
     onExit: (code: number | null) => void
@@ -250,7 +293,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   } {
     const onStdout = (data: Buffer) => {
       const text = data.toString('utf-8')
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'stdout',
         data: text,
         timestamp: Date.now(),
@@ -261,7 +304,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onStderr = (data: Buffer) => {
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'stderr',
         data: data.toString('utf-8'),
         timestamp: Date.now(),
@@ -270,14 +313,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
     const onExit = (code: number | null) => {
       if (code !== null && code !== 0) {
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'error',
           data: `${this.name} exited with code ${code}`,
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
       } else {
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'complete',
           data: `${this.name} exited with code ${code ?? 'unknown'}`,
           timestamp: Date.now(),
@@ -286,7 +329,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onError = (err: Error) => {
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'error',
         data: err.message,
         timestamp: Date.now(),
@@ -307,7 +350,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const proc = this.processes.get(session.id)
     if (!proc) return () => {}
 
-    const { onStdout, onStderr, onExit, onError } = this.createOutputHandlers(options)
+    const { onStdout, onStderr, onExit, onError } = this.createOutputHandlers(session.id, options)
 
     proc.stdout?.on('data', onStdout)
     proc.stderr?.on('data', onStderr)
@@ -331,10 +374,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   protected async runOneShot(
     proc: ChildProcess,
+    sessionId: string,
     options?: { parseFileChanges?: boolean },
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const { onStdout, onStderr, onExit: baseOnExit, onError: baseOnError } = this.createOutputHandlers(options)
+      const { onStdout, onStderr, onExit: baseOnExit, onError: baseOnError } = this.createOutputHandlers(sessionId, options)
 
       const onExit = (code: number | null) => {
         baseOnExit(code)

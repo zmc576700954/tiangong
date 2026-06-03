@@ -330,6 +330,9 @@ export interface AgentAdapter {
 
   /** 终止会话 */
   terminateSession(sessionId: string): Promise<void>
+
+  /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
+  resolveOutputSession?(output: AgentOutput): string | undefined
 }
 
 // ============================================

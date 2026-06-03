@@ -295,8 +295,8 @@ export class ScopeGuard {
       }
     }
 
-    // 3. 清理空目录
-    await this.cleanupEmptyDirs(sandbox.workingDir)
+    // 3. 清理空目录（保留工作目录本身）
+    await this.cleanupEmptyDirs(sandbox.workingDir, sandbox.workingDir)
 
     // 4. 释放沙箱资源
     await this.cleanupSandbox(sandbox)
@@ -493,8 +493,10 @@ export class ScopeGuard {
 
   /**
    * 清理空目录（从下往上）
+   * @param dir - 要清理的目录
+   * @param preserveRoot - 保留的根目录（不会删除此目录本身）
    */
-  private async cleanupEmptyDirs(dir: string): Promise<void> {
+  private async cleanupEmptyDirs(dir: string, preserveRoot?: string): Promise<void> {
     let entries: Awaited<ReturnType<typeof fs.readdir>>
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
@@ -506,7 +508,7 @@ export class ScopeGuard {
       if (entry.isDirectory()) {
         const subDir = path.join(dir, entry.name)
         if (!shouldIgnorePath(subDir)) {
-          await this.cleanupEmptyDirs(subDir)
+          await this.cleanupEmptyDirs(subDir, preserveRoot)
         }
       }
     }
@@ -514,7 +516,7 @@ export class ScopeGuard {
     // 重新读取，看是否变为空目录
     try {
       const remaining = await fs.readdir(dir)
-      if (remaining.length === 0 && dir !== this.sandboxes.get(Array.from(this.sandboxes.keys())[0] ?? '')?.workingDir) {
+      if (remaining.length === 0 && dir !== preserveRoot) {
         await fs.rmdir(dir)
       }
     } catch {
