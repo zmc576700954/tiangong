@@ -299,6 +299,11 @@ export interface AgentSession {
   startTime: number
   /** 运行时注入的已解析上下文（不持久化） */
   resolvedContexts?: ResolvedContext[]
+  /** Fallback 信息：当请求适配器未安装，回退到 MCP 时记录 */
+  fallbackInfo?: {
+    originalAdapter: string
+    fallbackReason: string
+  }
 }
 
 /** Agent 适配器接口 */

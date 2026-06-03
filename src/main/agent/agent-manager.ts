@@ -109,7 +109,11 @@ export class AgentManager {
       if (mcp && (await mcp.checkInstalled())) {
         console.warn(`[AgentManager] Adapter ${adapterName} not installed, falling back to MCP`)
         const session = await mcp.startSession(config)
-        this.router.bind(session.id, mcp.name)
+        session.fallbackInfo = {
+          originalAdapter: adapterName,
+          fallbackReason: `${adapterName} not installed`,
+        }
+        this.router.bind(session.id, mcp.name, adapterName)
         return { sessionId: session.id, fallback: true }
       }
       throw new AdapterError(

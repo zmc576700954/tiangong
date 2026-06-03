@@ -44,6 +44,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     // 2. 通过 AgentManager 发送 prompt 并收集结果（输出实时显示在 AgentChat）
     const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: '思维导图生成',
+      adapterName: 'mindmap-internal',
     })
     console.log(`[MindMap] 收到结果, 长度: ${result.length}`)
 
@@ -84,6 +85,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: `补充详情: ${nodeTitle}`,
       timeoutMs: 120_000,
+      adapterName: 'mindmap-internal',
     })
 
     return validateEnrichment(extractJson(result))
@@ -99,7 +101,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     targetId: string,
     feedback: string,
   ) => {
-    const agent = new MindMapAgent(projectPath)
+    const agent = new MindMapAgent(projectPath, agentManager)
     const result = await agent.refine(scope, targetId, feedback)
     return result
   })
@@ -178,6 +180,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     const result = await sendPromptViaAgent(agentManager, projectPath, prompt, {
       nodeTitle: `AI 生成子节点: ${parentNodeTitle}`,
       timeoutMs: 60_000,
+      adapterName: 'mindmap-internal',
     })
 
     const parsed = extractJson(result)

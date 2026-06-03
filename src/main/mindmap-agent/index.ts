@@ -19,14 +19,18 @@ import { classifyComplexity } from './complexity-classifier'
 import { directRetrieve } from './retrieval/direct'
 import { buildGlobalPrompt } from './retrieval/global'
 import { buildDevPrompt } from './synthesis/prompt-builder'
+import { sendPromptViaAgent } from '../agent/send-and-wait'
 import type { ScanModule, NodeType, GraphNode, GraphEdge } from '@shared/types'
 import type { TaskType } from './synthesis/prompt-templates'
+import type { AgentManager } from '../agent/agent-manager'
 
 export class MindMapAgent {
   private projectPath: string
+  private agentManager?: AgentManager
 
-  constructor(projectPath: string) {
+  constructor(projectPath: string, agentManager?: AgentManager) {
     this.projectPath = projectPath
+    this.agentManager = agentManager
   }
 
   // ========================================
@@ -39,18 +43,29 @@ export class MindMapAgent {
       const prompt = buildGlobalPrompt(context)
 
       console.log('[MindMapAgent] 开始生成，prompt 长度:', prompt.length)
-      const result = await runClaude(prompt, {
-        cwd: this.projectPath,
-        timeoutMs: 120_000,
-        outputFormat: 'text',
-      })
-      console.log('[MindMapAgent] Claude 返回，exitCode:', result.exitCode, 'timedOut:', result.timedOut, 'stdout 长度:', result.stdout.length)
 
-      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-        throw new Error(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`)
+      let stdout: string
+      if (this.agentManager) {
+        stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+          nodeTitle: `生成思维导图: ${projectName}`,
+          timeoutMs: 120_000,
+          adapterName: 'mindmap-internal',
+        })
+      } else {
+        const result = await runClaude(prompt, {
+          cwd: this.projectPath,
+          timeoutMs: 120_000,
+          outputFormat: 'text',
+        })
+        if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+          throw new Error(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`)
+        }
+        stdout = result.stdout
       }
 
-      const parsed = extractJson(result.stdout)
+      console.log('[MindMapAgent] Claude 返回，stdout 长度:', stdout.length)
+
+      const parsed = extractJson(stdout)
       const modules = validateModules(parsed)
       console.log('[MindMapAgent] 解析到', modules.length, '个模块')
 
@@ -82,12 +97,22 @@ export class MindMapAgent {
       const memory = await readMemory(this.projectPath)
       const prompt = buildModuleGenerationPrompt(moduleDir, context.directoryTree, memory.preferences)
 
-      const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
-      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-        throw new Error('Claude 调用失败')
+      let stdout: string
+      if (this.agentManager) {
+        stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+          nodeTitle: `生成模块: ${moduleDir}`,
+          timeoutMs: 60_000,
+          adapterName: 'mindmap-internal',
+        })
+      } else {
+        const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
+        if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+          throw new Error('Claude 调用失败')
+        }
+        stdout = result.stdout
       }
 
-      const parsed = extractJson(result.stdout)
+      const parsed = extractJson(stdout)
       return validateModules(parsed)[0] || null
     } catch (err) {
       console.error('[MindMapAgent] generateModule failed:', err)
@@ -107,18 +132,28 @@ export class MindMapAgent {
     const retrieved = await directRetrieve(this.projectPath, nodeTitle, nodeType, relatedFiles)
     const prompt = buildEnrichmentPrompt(nodeTitle, nodeType, retrieved.nodeContent)
 
-    const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
-    if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-      throw new Error(
-        `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
-        (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
-      )
+    let stdout: string
+    if (this.agentManager) {
+      stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+        nodeTitle: `深化节点: ${nodeTitle}`,
+        timeoutMs: 60_000,
+        adapterName: 'mindmap-internal',
+      })
+    } else {
+      const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
+      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+        throw new Error(
+          `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
+          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
+        )
+      }
+      stdout = result.stdout
     }
 
-    const parsed = extractJson(result.stdout)
+    const parsed = extractJson(stdout)
     const enrichment = validateEnrichment(parsed)
     if (!enrichment) {
-      throw new Error(`Claude 输出校验失败: ${result.stdout.substring(0, 300)}`)
+      throw new Error(`Claude 输出校验失败: ${stdout.substring(0, 300)}`)
     }
 
     return enrichment
@@ -138,15 +173,25 @@ export class MindMapAgent {
     classifyComplexity(feedback, memory.businessDomains)
     const prompt = buildRefinementPrompt(scope, targetId, feedback, _allModules, memory)
 
-    const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
-    if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-      throw new Error(
-        `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
-        (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
-      )
+    let stdout: string
+    if (this.agentManager) {
+      stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+        nodeTitle: `精炼: ${targetId}`,
+        timeoutMs: 60_000,
+        adapterName: 'mindmap-internal',
+      })
+    } else {
+      const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
+      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+        throw new Error(
+          `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
+          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
+        )
+      }
+      stdout = result.stdout
     }
 
-    const parsed = extractJson(result.stdout)
+    const parsed = extractJson(stdout)
     let output: ScanModule[] | ScanModule | ValidatedEnrichment | null = null
     if (scope === 'project') output = validateModules(parsed)
     else if (scope === 'module') output = validateModules(parsed)[0] || null

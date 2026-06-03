@@ -11,6 +11,7 @@ import { CodexAdapter } from './adapters/codex'
 import { OpenCodeAdapter } from './adapters/opencode'
 import { McpAdapter } from './adapters/mcp-adapter'
 import { CursorAdapter } from './adapters/cursor'
+import { MindMapAdapter } from './adapters/mindmap-adapter'
 import { GitAgent } from './git-agent'
 import { AdapterRegistry } from './agent/adapter-registry'
 import { SessionRouter } from './agent/session-router'
@@ -43,6 +44,7 @@ registry.register(new CodexAdapter())
 registry.register(new OpenCodeAdapter())
 registry.register(new McpAdapter())
 registry.register(new CursorAdapter())
+registry.register(new MindMapAdapter())
 
 const router = new SessionRouter(registry)
 const broadcaster = new OutputBroadcaster()

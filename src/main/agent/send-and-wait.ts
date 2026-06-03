@@ -19,6 +19,7 @@ export async function sendPromptViaAgent(
   options?: {
     nodeTitle?: string
     timeoutMs?: number
+    adapterName?: string
   },
 ): Promise<string> {
   const config: AgentSessionConfig = {
@@ -32,7 +33,8 @@ export async function sendPromptViaAgent(
     acceptanceCriteria: [],
   }
 
-  const { sessionId } = await agentManager.startSession('claude-code', config)
+  const adapterName = options?.adapterName ?? 'claude-code'
+  const { sessionId } = await agentManager.startSession(adapterName, config)
 
   return new Promise((resolve, reject) => {
     const chunks: string[] = []

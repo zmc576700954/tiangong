@@ -111,11 +111,16 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
   },
 }
 
+/** MCP 会话空闲超时时间（30 分钟） */
+const MCP_SESSION_TIMEOUT_MS = 30 * 60 * 1000
+
 export class McpAdapter extends BaseAdapter {
   readonly name = 'mcp'
   readonly version = '1.0.0'
 
   private mcpClients = new Map<string, McpClient[]>()
+  /** 会话空闲超时定时器：sessionId → timeoutId */
+  private sessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   async checkInstalled(): Promise<boolean> {
     // MCP adapter is "installed" if at least one API key is configured
@@ -156,6 +161,13 @@ export class McpAdapter extends BaseAdapter {
     }
 
     this.mcpClients.set(sessionId, sessionClients)
+
+    // 设置会话空闲超时定时器，防止连接泄露
+    const timer = setTimeout(() => {
+      console.warn(`[McpAdapter] Session ${sessionId} idle timeout, cleaning up...`)
+      this.cleanupSession(sessionId)
+    }, MCP_SESSION_TIMEOUT_MS)
+    this.sessionTimers.set(sessionId, timer)
 
     // Build scope prompt
     const scopePrompt = this.buildScopePrompt(config)
@@ -278,16 +290,14 @@ export class McpAdapter extends BaseAdapter {
   }
 
   protected async doTerminate(session: AgentSession, _proc?: unknown): Promise<void> {
-    // Disconnect MCP clients for this session only
-    const clients = this.mcpClients.get(session.id) ?? []
-    for (const client of clients) {
-      try {
-        await client.disconnect()
-      } catch (err) {
-        console.warn(`[McpAdapter] Failed to disconnect MCP client:`, err)
-      }
+    // 清理超时定时器
+    const timer = this.sessionTimers.get(session.id)
+    if (timer) {
+      clearTimeout(timer)
+      this.sessionTimers.delete(session.id)
     }
-    this.mcpClients.delete(session.id)
+
+    this.cleanupSession(session.id)
 
     this.emitOutput({
       type: 'complete',
@@ -297,6 +307,34 @@ export class McpAdapter extends BaseAdapter {
 
     // MCP adapter does not use child processes, pass undefined for proc
     await super.doTerminate(session, undefined)
+  }
+
+  /**
+   * 清理会话资源（MCP 连接 + 定时器）
+   */
+  private cleanupSession(sessionId: string): void {
+    // 清理超时定时器
+    const timer = this.sessionTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.sessionTimers.delete(sessionId)
+    }
+
+    // 断开 MCP 连接
+    const clients = this.mcpClients.get(sessionId) ?? []
+    for (const client of clients) {
+      try {
+        client.disconnect().catch(() => {
+          // 忽略断开错误
+        })
+      } catch {
+        // 同步错误也忽略
+      }
+    }
+    this.mcpClients.delete(sessionId)
+
+    // 清理 session 注册
+    this.sessions.delete(sessionId)
   }
 
   // ============================================

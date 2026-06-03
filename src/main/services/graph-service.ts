@@ -73,9 +73,10 @@ export class GraphService {
         const rawOutput = await sendPromptViaAgent(this.agentManager, projectPath, prompt, {
           nodeTitle: '思维导图生成',
           timeoutMs: 300_000,
+          adapterName: 'mindmap-internal',
         })
 
-        const agent = new MindMapAgent(projectPath)
+        const agent = new MindMapAgent(projectPath, this.agentManager)
         const aiModules = agent.parseGenerationResult(rawOutput)
         if (aiModules.length > 0) {
           modules = aiModules
