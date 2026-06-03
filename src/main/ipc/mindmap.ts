@@ -183,7 +183,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
       adapterName: 'mindmap-internal',
     })
 
-    const parsed = extractJson(result)
+    const parsed = extractJson(result) as Record<string, unknown>
     if (!parsed || !Array.isArray(parsed.children)) {
       throw new Error('AI 返回格式错误')
     }

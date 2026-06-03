@@ -68,7 +68,7 @@ function checkRateLimit(channel: string, webContentsId: number): void {
  */
 export type TypedHandle = <K extends string>(
   channel: K,
-  handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<unknown>,
+  handler: (event: IpcMainInvokeEvent, ...args: any[]) => Promise<any>,
 ) => void
 
 /**

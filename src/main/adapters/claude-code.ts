@@ -166,10 +166,11 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
         if (message.type === 'result') {
           if (isResultMessage(message)) {
-            if (message.is_error) {
+            const resultMsg = message as any
+            if (resultMsg.is_error) {
               const errorText =
-                (Array.isArray(message.errors) ? message.errors.join('\n') : undefined) ??
-                (typeof message.result === 'string' ? message.result : undefined) ??
+                (Array.isArray(resultMsg.errors) ? resultMsg.errors.join('\n') : undefined) ??
+                (typeof resultMsg.result === 'string' ? resultMsg.result : undefined) ??
                 'Agent execution failed'
               this.emitOutput({
                 type: 'error',
@@ -180,7 +181,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             } else {
               this.emitOutput({
                 type: 'complete',
-                data: typeof message.result === 'string' ? message.result : 'Completed',
+                data: typeof resultMsg.result === 'string' ? resultMsg.result : 'Completed',
                 timestamp: Date.now(),
               })
             }
