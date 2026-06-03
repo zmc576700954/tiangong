@@ -72,7 +72,29 @@ export function registerIpcHandlers(): void {
   const typedHandle = createTypedHandle(ipcMain)
 
   // ---------- 会话级允许路径（渲染进程 localStorage 中保存的项目路径） ----------
+  /** 最大允许的会话路径数量，防止内存无限增长 */
+  const MAX_SESSION_ALLOWED_PATHS = 50
   const sessionAllowedPaths = new Set<string>()
+
+  /**
+   * 添加路径到会话允许列表，带大小限制（LRU 策略）。
+   * 当超过上限时移除最早添加的路径。
+   */
+  function addSessionAllowedPath(validatedPath: string): void {
+    if (sessionAllowedPaths.has(validatedPath)) {
+      // 已存在则移到最新（删除后重新添加）
+      sessionAllowedPaths.delete(validatedPath)
+    }
+    sessionAllowedPaths.add(validatedPath)
+
+    // 超出限制时移除最早的条目
+    while (sessionAllowedPaths.size > MAX_SESSION_ALLOWED_PATHS) {
+      const first = sessionAllowedPaths.values().next().value
+      if (first !== undefined) {
+        sessionAllowedPaths.delete(first)
+      }
+    }
+  }
 
   // ---------- 路径安全校验 ----------
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
@@ -161,7 +183,7 @@ export function registerIpcHandlers(): void {
       if (typeof p !== 'string' || !p.trim()) continue
       try {
         const validatedPath = await validateFsPath(p.trim(), 'read')
-        sessionAllowedPaths.add(validatedPath)
+        addSessionAllowedPath(validatedPath)
       } catch {
         // 跳过无效路径
       }

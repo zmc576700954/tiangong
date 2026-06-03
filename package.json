@@ -32,7 +32,6 @@
     "chokidar": "^4.0.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
-    "drizzle-orm": "^0.40.0",
     "electron-updater": "^6.3.0",
     "immer": "^10.1.0",
     "lucide-react": "^0.483.0",
