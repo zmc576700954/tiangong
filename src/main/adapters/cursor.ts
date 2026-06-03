@@ -56,6 +56,6 @@ export class CursorAdapter extends BaseAdapter {
     })
 
     this.processes.set(session.id, proc)
-    await this.runOneShot(proc)
+    await this.runOneShot(proc, session.id)
   }
 }

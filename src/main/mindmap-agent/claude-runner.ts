@@ -81,11 +81,11 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
       fs.promises.unlink(tmpFile).catch(() => { /* ignore */ })
     }
 
-    proc.stdout.on('data', (chunk: Buffer) => {
+    proc.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString()
     })
 
-    proc.stderr.on('data', (chunk: Buffer) => {
+    proc.stderr?.on('data', (chunk: Buffer) => {
       stderr += chunk.toString()
     })
 

@@ -73,7 +73,7 @@ export class ChatRepository {
 
   async listThreads(filters?: { nodeId?: string; graphId?: string; status?: string }): Promise<ChatThreadRow[]> {
     let sql = 'SELECT * FROM chat_threads WHERE 1=1'
-    const args: unknown[] = []
+    const args: (string | null)[] = []
 
     if (filters?.nodeId) {
       sql += ' AND node_id = ?'
@@ -95,7 +95,7 @@ export class ChatRepository {
 
   async updateThread(id: string, data: { title?: string; status?: string; sessionId?: string; updatedAt?: number }): Promise<void> {
     const sets: string[] = []
-    const args: unknown[] = []
+    const args: (string | number | null)[] = []
 
     if (data.title !== undefined) { sets.push('title = ?'); args.push(data.title) }
     if (data.status !== undefined) { sets.push('status = ?'); args.push(data.status) }
@@ -112,15 +112,10 @@ export class ChatRepository {
   }
 
   async deleteThread(id: string): Promise<void> {
-    await this.db.execute('BEGIN TRANSACTION')
-    try {
-      await this.db.execute({ sql: 'DELETE FROM chat_messages WHERE thread_id = ?', args: [id] })
-      await this.db.execute({ sql: 'DELETE FROM chat_threads WHERE id = ?', args: [id] })
-      await this.db.execute('COMMIT')
-    } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
-      throw err
-    }
+    await this.db.batch([
+      { sql: 'DELETE FROM chat_messages WHERE thread_id = ?', args: [id] },
+      { sql: 'DELETE FROM chat_threads WHERE id = ?', args: [id] },
+    ], 'write')
   }
 
   async searchThreads(query: string): Promise<ChatThreadRow[]> {

@@ -180,8 +180,8 @@ describe('AgentManager', () => {
       expect(router.getActiveSessionIds()).not.toContain(sessionId)
     })
 
-    it('should throw SessionNotFoundError for unknown session', async () => {
-      await expect(manager.terminateSession('nonexistent')).rejects.toThrow(SessionNotFoundError)
+    it('should be no-op for already cleaned up session', async () => {
+      await expect(manager.terminateSession('nonexistent')).resolves.not.toThrow()
     })
   })
 
@@ -189,8 +189,8 @@ describe('AgentManager', () => {
     it('should terminate all active sessions', async () => {
       const adapter = new TestAdapter()
       manager.registerAdapter(adapter)
-      const s1 = await manager.startSession('test-adapter', mockConfig())
-      const s2 = await manager.startSession('test-adapter', mockConfig({ nodeTitle: 'Node 2' }))
+      await manager.startSession('test-adapter', mockConfig())
+      await manager.startSession('test-adapter', mockConfig({ nodeTitle: 'Node 2' }))
 
       await manager.terminateAllSessions()
 

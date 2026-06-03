@@ -57,7 +57,7 @@ export class OpenCodeAdapter extends BaseAdapter {
     })
 
     this.processes.set(session.id, proc)
-    await this.runOneShot(proc, { parseFileChanges: false })
+    await this.runOneShot(proc, session.id, { parseFileChanges: false })
   }
 
   /**

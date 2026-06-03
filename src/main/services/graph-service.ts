@@ -105,26 +105,26 @@ export class GraphService {
     const onlineGraphId = generateId('graph-online')
     const devGraphId = generateId('graph-dev')
 
-    await this.db.execute('BEGIN TRANSACTION')
+    const tx = await this.db.transaction('write')
     try {
       // 创建 online 图（产品蓝图）
-      await this.db.execute({
+      await tx.execute({
         sql: 'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
         args: [onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now],
       })
 
       // 创建 dev 图（开发场景）
-      await this.db.execute({
+      await tx.execute({
         sql: 'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
         args: [devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now],
       })
 
-      await this.createNodes(onlineGraphId, 'online', graphResult, now)
-      await this.createNodes(devGraphId, 'dev', graphResult, now)
+      await this.createNodes(onlineGraphId, 'online', graphResult, now, tx)
+      await this.createNodes(devGraphId, 'dev', graphResult, now, tx)
 
-      await this.db.execute('COMMIT')
+      await tx.commit()
     } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
+      await tx.rollback()
       throw err
     }
 
@@ -156,6 +156,7 @@ export class GraphService {
     graphType: 'online' | 'dev',
     graphResult: ProjectGraphResult,
     now: string,
+    executor: Pick<Client, 'execute'> = this.db,
   ): Promise<void> {
     const tempIdMap = new Map<string, string>()
 
@@ -169,7 +170,7 @@ export class GraphService {
         ? 'placeholder'
         : nodeData.status
 
-      await this.db.execute({
+      await executor.execute({
         sql: `INSERT INTO nodes (
           id, type, status, title, description, acceptance_criteria,
           graph_id, graph_type, parent_id, rules, metadata, owner_role,
@@ -206,7 +207,7 @@ export class GraphService {
         const nodeId = tempIdMap.get(nodeData.tempId)
         const parentId = tempIdMap.get(nodeData.parentTempId)
         if (nodeId && parentId) {
-          await this.db.execute({
+          await executor.execute({
             sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
             args: [parentId, nodeId],
           })
@@ -220,7 +221,7 @@ export class GraphService {
       const targetId = tempIdMap.get(edgeData.targetTempId)
       if (sourceId && targetId) {
         const edgeId = generateId('edge')
-        await this.db.execute({
+        await executor.execute({
           sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null, edgeData.dataFlow ?? null, edgeData.strength ?? null],
         })

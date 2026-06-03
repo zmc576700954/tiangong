@@ -29,7 +29,7 @@ export class AgentManager {
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
-  private sandboxes = new Map<string, { id: string }>()
+  private sandboxes = new Map<string, import('@shared/types').Sandbox>()
   /** sessionId → broadcastName（用户请求的原始适配器名，用于 fallback 时显示） */
   private broadcastNames = new Map<string, string>()
   /** sessionId → config（用于 resolveAndSendCommand 获取 workingDirectory） */
@@ -81,7 +81,8 @@ export class AgentManager {
       }
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
-    adapter.on('sessionEnded', sessionEndedHandler)
+    // BaseAdapter 继承 EventEmitter，提供 on/off；AgentAdapter 接口不包含这些方法
+    ;(adapter as any).on('sessionEnded', sessionEndedHandler)
   }
 
   /**
@@ -117,7 +118,7 @@ export class AgentManager {
     for (const [name, handler] of this.sessionEndedHandlers) {
       const adapter = this.registry.get(name)
       if (adapter) {
-        adapter.off('sessionEnded', handler)
+        ;(adapter as any).off('sessionEnded', handler)
       }
     }
     this.outputHandlers.clear()
@@ -237,15 +238,27 @@ export class AgentManager {
     // Store resolved contexts on the session so adapter can access them
     const adapter = this.router.resolve(sessionId)
     if (adapter && resolvedContexts.length > 0) {
-      adapter.setResolvedContexts(sessionId, resolvedContexts)
+      // BaseAdapter 提供 setResolvedContexts；AgentAdapter 接口不包含此方法
+      ;(adapter as any).setResolvedContexts?.(sessionId, resolvedContexts)
     }
 
     await this.sendCommand(sessionId, command)
   }
 
   async terminateSession(sessionId: string): Promise<void> {
-    const adapter = this.router.resolve(sessionId)
-    if (!adapter) return
+    let adapter: AgentAdapter | undefined
+    try {
+      adapter = this.router.resolve(sessionId)
+    } catch (err) {
+      if (err instanceof SessionNotFoundError) {
+        // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
+        // 确保残留资源也被清除
+        this.cleanupSessionResources(sessionId)
+        return
+      }
+      throw err
+    }
+
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
 

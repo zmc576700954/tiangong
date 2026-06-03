@@ -99,7 +99,7 @@ export class ChatService {
     await this.repo.saveMessages(messages.map((m) => ({
       id: m.id,
       threadId,
-      role: m.role === 'agent' ? 'assistant' : m.role,
+      role: m.role,
       content: m.content,
       adapterName: m.adapterName ?? '',
       status: m.status,

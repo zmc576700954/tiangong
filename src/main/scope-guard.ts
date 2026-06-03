@@ -9,6 +9,7 @@
  */
 
 import fs from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import chokidar from 'chokidar'
 import type { FSWatcher } from 'chokidar'
@@ -386,7 +387,7 @@ export class ScopeGuard {
   }
 
   private async captureFileSnapshotRecursive(dir: string, snapshot: Map<string, FileSnapshotEntry>): Promise<void> {
-    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {
@@ -514,7 +515,7 @@ export class ScopeGuard {
    * @param preserveRoot - 保留的根目录（不会删除此目录本身）
    */
   private async cleanupEmptyDirs(dir: string, preserveRoot?: string): Promise<void> {
-    let entries: Awaited<ReturnType<typeof fs.readdir>>
+    let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {

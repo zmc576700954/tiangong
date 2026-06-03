@@ -34,7 +34,7 @@ export interface ProjectGraphResult {
   projectPath: string
   framework: string
   nodes: Array<Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'> & { tempId: string; parentTempId?: string }>
-  edges: Array<{ sourceTempId: string; targetTempId: string; label?: string; edgeType?: GraphEdge['edgeType']; graphId: string }>
+  edges: Array<{ sourceTempId: string; targetTempId: string; label?: string; edgeType?: GraphEdge['edgeType']; graphId: string; description?: string; dataFlow?: string; strength?: number }>
 }
 
 export class ProjectAnalyzer {

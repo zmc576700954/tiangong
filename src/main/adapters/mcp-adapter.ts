@@ -139,7 +139,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     },
     parseResponse: (data: unknown) => {
       const d = data as {
-        content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>>
+        content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>
         stop_reason?: string
       }
       const textParts: string[] = []
@@ -210,7 +210,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
             }>
           }
           finish_reason?: string
-        }>>
+        }>
       }
       const msg = d.choices?.[0]?.message
       const toolCalls: UnifiedToolCall[] = []
