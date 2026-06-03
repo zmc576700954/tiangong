@@ -53,13 +53,20 @@ export class GraphRepository {
     }))
   }
 
-  async get(id: string): Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null> {
+  async get(
+    id: string,
+    options?: { nodeLimit?: number; edgeLimit?: number; bugLimit?: number },
+  ): Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null> {
+    const nodeLimit = options?.nodeLimit ?? 5000
+    const edgeLimit = options?.edgeLimit ?? 5000
+    const bugLimit = options?.bugLimit ?? 1000
+
     // PERFORMANCE: 并行执行无依赖关系的查询，减少总等待时间
     const [graphResult, nodesResult, edgesResult, bugsResult] = await Promise.all([
       this.db.execute({ sql: 'SELECT * FROM graphs WHERE id = ?', args: [id] }),
-      this.db.execute({ sql: 'SELECT * FROM nodes WHERE graph_id = ?', args: [id] }),
-      this.db.execute({ sql: 'SELECT * FROM edges WHERE graph_id = ?', args: [id] }),
-      this.db.execute({ sql: 'SELECT * FROM bug_nodes WHERE graph_id = ? ORDER BY created_at DESC', args: [id] }),
+      this.db.execute({ sql: 'SELECT * FROM nodes WHERE graph_id = ? LIMIT ?', args: [id, nodeLimit] }),
+      this.db.execute({ sql: 'SELECT * FROM edges WHERE graph_id = ? LIMIT ?', args: [id, edgeLimit] }),
+      this.db.execute({ sql: 'SELECT * FROM bug_nodes WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?', args: [id, bugLimit] }),
     ])
 
     if (graphResult.rows.length === 0) return null

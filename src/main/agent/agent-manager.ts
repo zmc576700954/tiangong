@@ -22,6 +22,8 @@ import { AdapterError, SessionNotFoundError } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 
+type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
+
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
@@ -30,6 +32,12 @@ export class AgentManager {
   private sandboxes = new Map<string, { id: string }>()
   /** sessionId → broadcastName（用户请求的原始适配器名，用于 fallback 时显示） */
   private broadcastNames = new Map<string, string>()
+  /** sessionId → config（用于 resolveAndSendCommand 获取 workingDirectory） */
+  private sessionConfigs = new Map<string, AgentSessionConfig>()
+  /** sessionId → 适配器名称（用于进程异常退出时定位适配器） */
+  private sessionAdapterNames = new Map<string, string>()
+  /** sessionEnded 事件处理器（按适配器存储以便清理） */
+  private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
 
   constructor(
     private registry: AdapterRegistry,
@@ -64,6 +72,36 @@ export class AgentManager {
     }
     this.outputHandlers.set(adapter.name, handler)
     adapter.onOutput(handler)
+
+    // 监听 session 异常结束事件，自动清理沙箱等资源
+    const sessionEndedHandler: SessionEndedHandler = (sessionId, reason) => {
+      if (reason === 'crash' || reason === 'error') {
+        console.warn(`[AgentManager] Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
+        this.cleanupSessionResources(sessionId)
+      }
+    }
+    this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
+    adapter.on('sessionEnded', sessionEndedHandler)
+  }
+
+  /**
+   * 清理指定 session 的所有资源（沙箱、路由、广播名等）
+   */
+  private cleanupSessionResources(sessionId: string): void {
+    // ScopeGuard: 异常退出时回滚沙箱
+    const sandbox = this.sandboxes.get(sessionId)
+    if (sandbox) {
+      this.scopeGuard.rollback(sandbox).catch((err) => {
+        console.error(`[AgentManager] Failed to rollback sandbox for session ${sessionId}:`, err)
+      })
+      this.sandboxes.delete(sessionId)
+    }
+
+    // 清理路由和广播映射
+    this.router.unbind(sessionId)
+    this.broadcastNames.delete(sessionId)
+    this.sessionConfigs.delete(sessionId)
+    this.sessionAdapterNames.delete(sessionId)
   }
 
   /**
@@ -76,8 +114,17 @@ export class AgentManager {
         adapter.offOutput(handler)
       }
     }
+    for (const [name, handler] of this.sessionEndedHandlers) {
+      const adapter = this.registry.get(name)
+      if (adapter) {
+        adapter.off('sessionEnded', handler)
+      }
+    }
     this.outputHandlers.clear()
+    this.sessionEndedHandlers.clear()
     this.broadcastNames.clear()
+    this.sessionConfigs.clear()
+    this.sessionAdapterNames.clear()
     // 注意：registry/router/broadcaster 的生命周期由调用方管理
   }
 
@@ -125,6 +172,9 @@ export class AgentManager {
           originalAdapter: adapterName,
           fallbackReason: `${adapterName} not installed`,
         }
+        this.broadcastNames.set(session.id, adapterName)
+        this.sessionConfigs.set(session.id, config)
+        this.sessionAdapterNames.set(session.id, adapterName)
         this.router.bind(session.id, mcp.name, adapterName)
         return { sessionId: session.id, fallback: true }
       }
@@ -138,6 +188,9 @@ export class AgentManager {
 
     // 保存用户请求的原始适配器名，用于输出广播（支持 fallback 显示）
     this.broadcastNames.set(session.id, adapterName)
+    // 保存 session 配置和适配器名，用于后续上下文解析和异常清理
+    this.sessionConfigs.set(session.id, config)
+    this.sessionAdapterNames.set(session.id, adapterName)
 
     // ScopeGuard: 启动文件变更边界保护
     if (config.allowedFiles.length > 0) {
@@ -174,9 +227,10 @@ export class AgentManager {
     let resolvedContexts: ResolvedContext[] = []
 
     if (contextRefs && contextRefs.length > 0) {
+      const sessionConfig = this.sessionConfigs.get(sessionId)
       resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
         nodes: nodes ?? [],
-        basePath: config.workingDirectory,
+        basePath: sessionConfig?.workingDirectory,
       })
     }
 
@@ -197,6 +251,8 @@ export class AgentManager {
 
     // 清理 broadcastName 映射
     this.broadcastNames.delete(sessionId)
+    this.sessionConfigs.delete(sessionId)
+    this.sessionAdapterNames.delete(sessionId)
 
     // ScopeGuard: 执行后验证并清理沙箱
     const sandbox = this.sandboxes.get(sessionId)

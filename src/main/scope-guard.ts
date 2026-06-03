@@ -62,11 +62,13 @@ export class ScopeGuard {
   private scanTimers = new Map<string, ReturnType<typeof setInterval>>()
   /** 初始文件系统快照：用于执行后对比验证 */
   private initialSnapshots = new Map<string, Map<string, FileSnapshotEntry>>()
+  /** 每个 sandbox 监控的目录集合（用于执行后验证时复用相同扫描范围） */
+  private sandboxWatchDirs = new Map<string, Set<string>>()
 
   /**
    * 准备沙箱环境
    * 1. 备份所有 allowedFiles
-   * 2. 创建初始文件系统快照
+   * 2. 创建初始文件系统快照（仅扫描白名单相关目录）
    * 3. 启动文件系统监控（chokidar + 定时扫描）
    */
   async prepareSandbox(allowedFiles: string[], workingDir: string): Promise<Sandbox> {
@@ -91,9 +93,18 @@ export class ScopeGuard {
       }
     }
 
-    // 创建初始文件系统快照（用于执行后验证）
-    const initialSnapshot = await this.captureFileSnapshot(workingDir)
+    // 创建初始文件系统快照（仅扫描白名单文件所在目录，避免全目录递归）
+    const watchDirs = new Set<string>()
+    for (const filePath of sanitizedFiles) {
+      watchDirs.add(path.dirname(filePath))
+    }
+    // 若白名单为空则退化为监控工作目录本身
+    if (watchDirs.size === 0) {
+      watchDirs.add(workingDir)
+    }
+    const initialSnapshot = await this.captureFileSnapshot(watchDirs)
     this.initialSnapshots.set(sandboxId, initialSnapshot)
+    this.sandboxWatchDirs.set(sandboxId, watchDirs)
 
     // 启动文件监控 — 仅监控 allowedFiles 及其父目录
     const watchPaths: string[] = []
@@ -178,7 +189,10 @@ export class ScopeGuard {
       return { compliant: true, outOfBoundsFiles: [], validFiles: [], shouldRollback: false }
     }
 
-    const currentSnapshot = await this.captureFileSnapshot(sandbox.workingDir)
+    const watchDirs = this.sandboxWatchDirs.get(sandbox.id)
+    const currentSnapshot = watchDirs
+      ? await this.captureFileSnapshot(watchDirs)
+      : await this.captureFileSnapshot(new Set([sandbox.workingDir]))
     const allowedSet = new Set(sandbox.allowedFiles)
     const outOfBoundsFiles: string[] = []
     const validFiles: string[] = []
@@ -333,8 +347,9 @@ export class ScopeGuard {
     // 停止定时扫描
     this.stopActiveScanning(sandbox.id)
 
-    // 释放快照
+    // 释放快照和监控目录记录
     this.initialSnapshots.delete(sandbox.id)
+    this.sandboxWatchDirs.delete(sandbox.id)
 
     // 停止文件监控
     const watcher = this.watchers.get(sandbox.id)
@@ -359,12 +374,14 @@ export class ScopeGuard {
 
   /**
    * 捕获文件系统快照
-   * 递归扫描目录，记录每个文件的 mtimeMs 和 size
+   * 扫描指定目录集合，记录每个文件的 mtimeMs 和 size
    * 不保存文件内容，防止内存溢出
    */
-  private async captureFileSnapshot(dir: string): Promise<Map<string, FileSnapshotEntry>> {
+  private async captureFileSnapshot(dirs: Set<string>): Promise<Map<string, FileSnapshotEntry>> {
     const snapshot = new Map<string, FileSnapshotEntry>()
-    await this.captureFileSnapshotRecursive(dir, snapshot)
+    for (const dir of dirs) {
+      await this.captureFileSnapshotRecursive(dir, snapshot)
+    }
     return snapshot
   }
 

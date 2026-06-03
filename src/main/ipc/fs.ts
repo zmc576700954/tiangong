@@ -76,8 +76,26 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     return fs.readFile(validPath, 'utf-8')
   })
 
+  /** 危险路径模式：禁止写入系统/隐藏目录 */
+  const DANGEROUS_PATH_PATTERNS = [
+    /[\\/]node_modules[\\/]/i,
+    /[\\/]\.git[\\/]/i,
+    /[\\/]\.bizgraph[\\/]/i,
+    /[\\/]\.next[\\/]/i,
+    /[\\/]dist[\\/]/i,
+    /[\\/]dist-electron[\\/]/i,
+    /[\\/]release[\\/]/i,
+  ]
+
+  function isDangerousPath(filePath: string): boolean {
+    return DANGEROUS_PATH_PATTERNS.some((pattern) => pattern.test(filePath))
+  }
+
   typedHandle('fs:writeFile', async (_, filePath, content) => {
     const validPath = await validateFsPath(filePath, 'write')
+    if (isDangerousPath(validPath)) {
+      throw new Error(`Write rejected: cannot write to protected directory: ${path.basename(validPath)}`)
+    }
     await fs.mkdir(path.dirname(validPath), { recursive: true })
     await fs.writeFile(validPath, content, 'utf-8')
   })

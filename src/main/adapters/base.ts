@@ -326,6 +326,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           timestamp: Date.now(),
         })
       }
+      // 通知外部监听者 session 已结束（用于 AgentManager 清理沙箱等资源）
+      this.emit('sessionEnded', sessionId, code === null ? 'error' : code === 0 ? 'success' : 'crash')
     }
 
     const onError = (err: Error) => {
@@ -335,6 +337,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
+      // 通知外部监听者 session 因错误结束
+      this.emit('sessionEnded', sessionId, 'error')
     }
 
     return { onStdout, onStderr, onExit, onError }

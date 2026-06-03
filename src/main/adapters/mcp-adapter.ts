@@ -114,6 +114,54 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
 /** MCP 会话空闲超时时间（30 分钟） */
 const MCP_SESSION_TIMEOUT_MS = 30 * 60 * 1000
 
+/** API 调用频率限制：每 10 秒最多 3 次，每分钟最多 10 次 */
+const API_RATE_LIMIT_SHORT_WINDOW_MS = 10_000
+const API_RATE_LIMIT_SHORT_MAX = 3
+const API_RATE_LIMIT_LONG_WINDOW_MS = 60_000
+const API_RATE_LIMIT_LONG_MAX = 10
+
+interface ApiRateLimitEntry {
+  timestamps: number[]
+}
+
+class ApiRateLimiter {
+  private entries = new Map<string, ApiRateLimitEntry>()
+
+  check(sessionId: string): { allowed: boolean; retryAfterMs?: number } {
+    const now = Date.now()
+    const entry = this.entries.get(sessionId) ?? { timestamps: [] }
+
+    // 清理过期的记录
+    entry.timestamps = entry.timestamps.filter(
+      (t) => now - t < API_RATE_LIMIT_LONG_WINDOW_MS,
+    )
+
+    // 检查长窗口限制（1 分钟）
+    if (entry.timestamps.length >= API_RATE_LIMIT_LONG_MAX) {
+      const oldest = entry.timestamps[0]
+      return { allowed: false, retryAfterMs: API_RATE_LIMIT_LONG_WINDOW_MS - (now - oldest) }
+    }
+
+    // 检查短窗口限制（10 秒）
+    const shortWindowTimestamps = entry.timestamps.filter(
+      (t) => now - t < API_RATE_LIMIT_SHORT_WINDOW_MS,
+    )
+    if (shortWindowTimestamps.length >= API_RATE_LIMIT_SHORT_MAX) {
+      const oldest = shortWindowTimestamps[0]
+      return { allowed: false, retryAfterMs: API_RATE_LIMIT_SHORT_WINDOW_MS - (now - oldest) }
+    }
+
+    // 记录本次调用
+    entry.timestamps.push(now)
+    this.entries.set(sessionId, entry)
+    return { allowed: true }
+  }
+
+  cleanup(sessionId: string): void {
+    this.entries.delete(sessionId)
+  }
+}
+
 export class McpAdapter extends BaseAdapter {
   readonly name = 'mcp'
   readonly version = '1.0.0'
@@ -121,6 +169,7 @@ export class McpAdapter extends BaseAdapter {
   private mcpClients = new Map<string, McpClient[]>()
   /** 会话空闲超时定时器：sessionId → timeoutId */
   private sessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private apiRateLimiter = new ApiRateLimiter()
 
   async checkInstalled(): Promise<boolean> {
     // MCP adapter is "installed" if at least one API key is configured
@@ -228,6 +277,18 @@ export class McpAdapter extends BaseAdapter {
 
     // Call LLM API via unified provider config
     try {
+      // 检查 API 调用频率限制
+      const rateCheck = this.apiRateLimiter.check(session.id)
+      if (!rateCheck.allowed) {
+        const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
+        this.emitOutput({
+          type: 'error',
+          data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
+          timestamp: Date.now(),
+        })
+        return
+      }
+
       const response = await this.callLlmUnified(
         apiKey.provider,
         apiKey.key,
@@ -335,6 +396,9 @@ export class McpAdapter extends BaseAdapter {
 
     // 清理 session 注册
     this.sessions.delete(sessionId)
+
+    // 清理 API 频率限制记录
+    this.apiRateLimiter.cleanup(sessionId)
   }
 
   // ============================================

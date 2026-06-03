@@ -38,7 +38,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
 
   // 使用不可预测的临时文件名
   const tmpFile = path.join(os.tmpdir(), `bizgraph-prompt-${randomUUID().replace(/-/g, '')}.txt`)
-  fs.writeFileSync(tmpFile, prompt, 'utf-8')
+  await fs.promises.writeFile(tmpFile, prompt, 'utf-8')
 
   const args = ['-p', '--model', safeModel]
   if (safeFormat === 'json') {
@@ -78,7 +78,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
       clearTimeout(timer)
       clearInterval(progressTimer)
       try { fs.closeSync(stdinFd) } catch { /* ignore */ }
-      try { fs.unlinkSync(tmpFile) } catch { /* ignore */ }
+      fs.promises.unlink(tmpFile).catch(() => { /* ignore */ })
     }
 
     proc.stdout.on('data', (chunk: Buffer) => {
