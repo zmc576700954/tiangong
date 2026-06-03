@@ -8,7 +8,7 @@ export default tseslint.config(
   { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts'],
+    files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.node,

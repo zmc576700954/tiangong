@@ -3,7 +3,7 @@
  * 处理 Agent 相关业务逻辑（当前为简单转发）
  */
 
-import type { AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, ContextRef } from '@shared/types'
 import { AgentManager } from '../agent/agent-manager'
 
 export class AgentService {
@@ -24,7 +24,7 @@ export class AgentService {
   async resolveAndSendCommand(
     sessionId: string,
     command: AgentCommand,
-    contextRefs: import('@shared/types').ContextRef[],
+    contextRefs: ContextRef[],
     _nodeIds: string[],
   ): Promise<void> {
     return this.agentManager.resolveAndSendCommand(sessionId, command, contextRefs)

@@ -18,7 +18,7 @@ import type {
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
-import { AdapterError, SessionNotFoundError } from '../errors'
+import { AdapterError, SessionNotFoundError, ScopeGuardError } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 
@@ -81,8 +81,7 @@ export class AgentManager {
       }
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
-    // BaseAdapter 继承 EventEmitter，提供 on/off；AgentAdapter 接口不包含这些方法
-    ;(adapter as any).on('sessionEnded', sessionEndedHandler)
+    adapter.on('sessionEnded', sessionEndedHandler)
   }
 
   /**
@@ -118,7 +117,7 @@ export class AgentManager {
     for (const [name, handler] of this.sessionEndedHandlers) {
       const adapter = this.registry.get(name)
       if (adapter) {
-        ;(adapter as any).off('sessionEnded', handler)
+        adapter.off('sessionEnded', handler)
       }
     }
     this.outputHandlers.clear()
@@ -238,8 +237,7 @@ export class AgentManager {
     // Store resolved contexts on the session so adapter can access them
     const adapter = this.router.resolve(sessionId)
     if (adapter && resolvedContexts.length > 0) {
-      // BaseAdapter 提供 setResolvedContexts；AgentAdapter 接口不包含此方法
-      ;(adapter as any).setResolvedContexts?.(sessionId, resolvedContexts)
+      adapter.setResolvedContexts(sessionId, resolvedContexts)
     }
 
     await this.sendCommand(sessionId, command)
@@ -269,18 +267,24 @@ export class AgentManager {
 
     // ScopeGuard: 执行后验证并清理沙箱
     const sandbox = this.sandboxes.get(sessionId)
+    let scopeGuardError: Error | undefined
     if (sandbox) {
       try {
         await this.scopeGuard.commitChanges(sandbox)
       } catch (err) {
-        if (err instanceof Error && err.name === 'ScopeGuardError') {
+        if (err instanceof ScopeGuardError) {
           // 验证失败（越界写入），错误已包含在 commitChanges 的日志中
-          // 向上传播，让调用者知道回滚已执行
           console.error(`[AgentManager] ScopeGuard validation failed for session ${sessionId}:`, err.message)
+          scopeGuardError = err
+        } else if (err instanceof Error) {
+          console.error(`[AgentManager] ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
         }
-        // 其他错误（如沙箱已被自动回滚清理）忽略
+      } finally {
+        this.sandboxes.delete(sessionId)
       }
-      this.sandboxes.delete(sessionId)
+    }
+    if (scopeGuardError) {
+      throw scopeGuardError
     }
   }
 

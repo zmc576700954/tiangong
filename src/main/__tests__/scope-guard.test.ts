@@ -617,4 +617,85 @@ describe('ScopeGuard', () => {
       expect(violations).toHaveLength(0)
     })
   })
+
+  // ==========================================
+  // scanLocks — 并发锁
+  // ==========================================
+  describe('scanLocks', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('should prevent concurrent scans via scanLocks', async () => {
+      vi.useFakeTimers()
+      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+
+      addDir(WORKING_DIR, ['src'])
+      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts'])
+      addFile(authPath, 'original', 1000)
+
+      const sandbox = await guard.prepareSandbox(['src/auth.ts'], WORKING_DIR)
+
+      // Mock scan to never resolve (simulates a stuck scan)
+      const scanSpy = vi.spyOn(guard as any, 'scanDirectoriesForViolations').mockImplementation(() => new Promise(() => {}))
+
+      // @ts-expect-error accessing private method
+      guard.startActiveScanning(sandbox.id, new Set([authPath]))
+
+      // First interval triggers, scan starts but never completes
+      await vi.advanceTimersByTimeAsync(500)
+      // @ts-expect-error accessing private field
+      expect(guard.scanLocks.has(sandbox.id)).toBe(true)
+
+      // Second and third intervals trigger while scan is running — both should be skipped
+      await vi.advanceTimersByTimeAsync(500)
+      await vi.advanceTimersByTimeAsync(500)
+      expect(scanSpy).toHaveBeenCalledTimes(1)
+      // @ts-expect-error accessing private field
+      expect(guard.scanLocks.has(sandbox.id)).toBe(true)
+
+      // Cleanup
+      // @ts-expect-error accessing private method
+      guard.stopActiveScanning(sandbox.id)
+    })
+
+    it('should release lock when sandbox is removed during scan', async () => {
+      vi.useFakeTimers()
+      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+
+      addDir(WORKING_DIR, ['src'])
+      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts'])
+      addFile(authPath, 'original', 1000)
+
+      const sandbox = await guard.prepareSandbox(['src/auth.ts'], WORKING_DIR)
+
+      // Make scan slow so we can remove sandbox while it's running
+      vi.spyOn(guard as any, 'scanDirectoriesForViolations').mockImplementation(async () => {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        return []
+      })
+
+      // @ts-expect-error accessing private method
+      guard.startActiveScanning(sandbox.id, new Set([authPath]))
+
+      // Start the scan (sets lock)
+      await vi.advanceTimersByTimeAsync(500)
+      // @ts-expect-error accessing private field
+      expect(guard.scanLocks.has(sandbox.id)).toBe(true)
+
+      // Remove sandbox mid-scan
+      // @ts-expect-error accessing private field
+      guard.sandboxes.delete(sandbox.id)
+
+      // Let the scan callback finish
+      await vi.advanceTimersByTimeAsync(1000)
+      // Lock should be cleaned up
+      // @ts-expect-error accessing private field
+      expect(guard.scanLocks.has(sandbox.id)).toBe(false)
+
+      // Cleanup
+      // @ts-expect-error accessing private method
+      guard.stopActiveScanning(sandbox.id)
+    })
+  })
 })

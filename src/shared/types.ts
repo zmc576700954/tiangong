@@ -351,6 +351,15 @@ export interface AgentAdapter {
 
   /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
   resolveOutputSession?(output: AgentOutput): string | undefined
+
+  /** 设置会话的已解析上下文（供 AgentManager 注入上下文） */
+  setResolvedContexts(sessionId: string, contexts: ResolvedContext[]): void
+
+  /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
+  on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
+
+  /** 移除会话结束事件监听 */
+  off(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
 }
 
 // ============================================
@@ -578,7 +587,6 @@ export interface IpcApi {
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
   'fs:readDirDetail': (path: string) => Promise<{ name: string; path: string; isDirectory: boolean; size: number; mtimeMs: number }[]>
   'fs:readFile': (path: string) => Promise<string>
-  'fs:writeFile': (path: string, content: string) => Promise<void>
   'fs:createFile': (filePath: string) => Promise<{ path: string; name: string }>
   'fs:createDir': (dirPath: string) => Promise<{ path: string; name: string }>
   'fs:delete': (targetPath: string, recursive?: boolean) => Promise<{ deleted: string }>

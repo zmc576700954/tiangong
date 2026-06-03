@@ -1,0 +1,380 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 48c9fed..65db15a 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -53,7 +53,7 @@ BizGraph is a three-process Electron app:
+ - **NDJSON protocol**: `JsonProtocolHandler` (`src/main/adapters/json-protocol.ts`) provides optional structured stdin/stdout communication with handshake detection. Used for parsing Agent output into typed `AgentOutput` events.
+ - **Chat system**: Separate from agent sessions. `chat_threads` and `chat_messages` DB tables persist conversation history. The `chat` IPC module (`src/main/ipc/chat.ts`) handles thread management and SSE streaming. `AgentChatPanel` in the renderer renders messages with streaming support.
+ 
+-**Scope Guard** (`src/main/scope-guard.ts`) — Enforces file change boundaries at the OS level. Before an Agent session starts, it backs up allowed files and starts a chokidar watcher. Out-of-bounds writes trigger automatic rollback. Validates that allowed files don't escape the working directory (path traversal protection). **Note: ScopeGuard is implemented but not yet wired into the Agent execution flow** — it needs to be integrated before it can actually enforce boundaries during Agent sessions.
++**Scope Guard** (`src/main/scope-guard.ts`) — Enforces file change boundaries at the OS level. Before an Agent session starts, it backs up allowed files and starts a chokidar watcher. Out-of-bounds writes trigger automatic rollback. Validates that allowed files don't escape the working directory (path traversal protection). **Integrated into Agent execution flow**: `AgentManager.startSession()` prepares the sandbox, `terminateSession()` runs post-execution validation via `commitChanges()`, and abnormal process exits trigger automatic rollback via `cleanupSessionResources()`.
+ 
+ **IPC Handlers** (`src/main/ipc-handlers.ts`) — Central assembly point that instantiates all services and registers domain-specific handlers split across `src/main/ipc/*.ts`. Nine handler groups: agent, graph, mindmap, chat, fs, git, project, settings, dialog. The `registerIpcHandlers()` function is the main entry. Path security validation blocks access to system directories.
+ 
+diff --git a/eslint.config.mjs b/eslint.config.mjs
+index 0e18735..559b553 100644
+--- a/eslint.config.mjs
++++ b/eslint.config.mjs
+@@ -8,7 +8,7 @@ export default tseslint.config(
+   { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**'] },
+   {
+     extends: [js.configs.recommended, ...tseslint.configs.recommended],
+-    files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts'],
++    files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],
+     languageOptions: {
+       ecmaVersion: 2022,
+       globals: globals.node,
+diff --git a/src/main/__tests__/scope-guard.test.ts b/src/main/__tests__/scope-guard.test.ts
+index da1f1a6..a8067f1 100644
+--- a/src/main/__tests__/scope-guard.test.ts
++++ b/src/main/__tests__/scope-guard.test.ts
+@@ -617,4 +617,83 @@ describe('ScopeGuard', () => {
+       expect(violations).toHaveLength(0)
+     })
+   })
++
++  // ==========================================
++  // scanLocks — 并发锁
++  // ==========================================
++  describe('scanLocks', () => {
++    it('should prevent concurrent scans via scanLocks', async () => {
++      vi.useFakeTimers()
++      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
++
++      addDir(WORKING_DIR, ['src'])
++      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts'])
++      addFile(authPath, 'original', 1000)
++
++      const sandbox = await guard.prepareSandbox(['src/auth.ts'], WORKING_DIR)
++
++      // Mock scan to never resolve (simulates a stuck scan)
++      const scanSpy = vi.spyOn(guard as any, 'scanDirectoriesForViolations').mockImplementation(() => new Promise(() => {}))
++
++      // @ts-expect-error accessing private method
++      guard.startActiveScanning(sandbox.id, new Set([authPath]))
++
++      // First interval triggers, scan starts but never completes
++      await vi.advanceTimersByTimeAsync(500)
++      // @ts-expect-error accessing private field
++      expect(guard.scanLocks.get(sandbox.id)).toBe(true)
++
++      // Second and third intervals trigger while scan is running — both should be skipped
++      await vi.advanceTimersByTimeAsync(500)
++      await vi.advanceTimersByTimeAsync(500)
++      expect(scanSpy).toHaveBeenCalledTimes(1)
++      // @ts-expect-error accessing private field
++      expect(guard.scanLocks.get(sandbox.id)).toBe(true)
++
++      // Cleanup
++      // @ts-expect-error accessing private method
++      guard.stopActiveScanning(sandbox.id)
++      vi.useRealTimers()
++    })
++
++    it('should release lock when sandbox is removed during scan', async () => {
++      vi.useFakeTimers()
++      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
++
++      addDir(WORKING_DIR, ['src'])
++      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts'])
++      addFile(authPath, 'original', 1000)
++
++      const sandbox = await guard.prepareSandbox(['src/auth.ts'], WORKING_DIR)
++
++      // Make scan slow so we can remove sandbox while it's running
++      vi.spyOn(guard as any, 'scanDirectoriesForViolations').mockImplementation(async () => {
++        await new Promise(resolve => setTimeout(resolve, 1000))
++        return []
++      })
++
++      // @ts-expect-error accessing private method
++      guard.startActiveScanning(sandbox.id, new Set([authPath]))
++
++      // Start the scan (sets lock)
++      await vi.advanceTimersByTimeAsync(500)
++      // @ts-expect-error accessing private field
++      expect(guard.scanLocks.get(sandbox.id)).toBe(true)
++
++      // Remove sandbox mid-scan
++      // @ts-expect-error accessing private field
++      guard.sandboxes.delete(sandbox.id)
++
++      // Let the scan callback finish
++      await vi.advanceTimersByTimeAsync(1000)
++      // Lock should be cleaned up
++      // @ts-expect-error accessing private field
++      expect(guard.scanLocks.has(sandbox.id)).toBe(false)
++
++      // Cleanup
++      // @ts-expect-error accessing private method
++      guard.stopActiveScanning(sandbox.id)
++      vi.useRealTimers()
++    })
++  })
+ })
+diff --git a/src/main/adapters/claude-code.ts b/src/main/adapters/claude-code.ts
+index a835ee5..56f79df 100644
+--- a/src/main/adapters/claude-code.ts
++++ b/src/main/adapters/claude-code.ts
+@@ -166,11 +166,10 @@ export class ClaudeCodeAdapter extends BaseAdapter {
+ 
+         if (message.type === 'result') {
+           if (isResultMessage(message)) {
+-            const resultMsg = message as any
+-            if (resultMsg.is_error) {
++            if (message.is_error) {
+               const errorText =
+-                (Array.isArray(resultMsg.errors) ? resultMsg.errors.join('\n') : undefined) ??
+-                (typeof resultMsg.result === 'string' ? resultMsg.result : undefined) ??
++                (Array.isArray(message.errors) ? message.errors.join('\n') : undefined) ??
++                (typeof message.result === 'string' ? message.result : undefined) ??
+                 'Agent execution failed'
+               this.emitOutput({
+                 type: 'error',
+@@ -181,7 +180,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
+             } else {
+               this.emitOutput({
+                 type: 'complete',
+-                data: typeof resultMsg.result === 'string' ? resultMsg.result : 'Completed',
++                data: typeof message.result === 'string' ? message.result : 'Completed',
+                 timestamp: Date.now(),
+               })
+             }
+diff --git a/src/main/agent/agent-manager.ts b/src/main/agent/agent-manager.ts
+index 1b76b64..ee2c736 100644
+--- a/src/main/agent/agent-manager.ts
++++ b/src/main/agent/agent-manager.ts
+@@ -18,7 +18,7 @@ import type {
+ import { AdapterRegistry } from './adapter-registry'
+ import { SessionRouter } from './session-router'
+ import { OutputBroadcaster } from './output-broadcaster'
+-import { AdapterError, SessionNotFoundError } from '../errors'
++import { AdapterError, SessionNotFoundError, ScopeGuardError } from '../errors'
+ import { ContextResolver } from '../context-resolver'
+ import { ScopeGuard } from '../scope-guard'
+ 
+@@ -81,8 +81,7 @@ export class AgentManager {
+       }
+     }
+     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
+-    // BaseAdapter 继承 EventEmitter，提供 on/off；AgentAdapter 接口不包含这些方法
+-    ;(adapter as any).on('sessionEnded', sessionEndedHandler)
++    adapter.on?.('sessionEnded', sessionEndedHandler)
+   }
+ 
+   /**
+@@ -118,7 +117,7 @@ export class AgentManager {
+     for (const [name, handler] of this.sessionEndedHandlers) {
+       const adapter = this.registry.get(name)
+       if (adapter) {
+-        ;(adapter as any).off('sessionEnded', handler)
++        adapter.off?.('sessionEnded', handler)
+       }
+     }
+     this.outputHandlers.clear()
+@@ -238,8 +237,7 @@ export class AgentManager {
+     // Store resolved contexts on the session so adapter can access them
+     const adapter = this.router.resolve(sessionId)
+     if (adapter && resolvedContexts.length > 0) {
+-      // BaseAdapter 提供 setResolvedContexts；AgentAdapter 接口不包含此方法
+-      ;(adapter as any).setResolvedContexts?.(sessionId, resolvedContexts)
++      adapter.setResolvedContexts?.(sessionId, resolvedContexts)
+     }
+ 
+     await this.sendCommand(sessionId, command)
+@@ -269,18 +267,23 @@ export class AgentManager {
+ 
+     // ScopeGuard: 执行后验证并清理沙箱
+     const sandbox = this.sandboxes.get(sessionId)
++    let scopeGuardError: Error | undefined
+     if (sandbox) {
+       try {
+         await this.scopeGuard.commitChanges(sandbox)
+       } catch (err) {
+-        if (err instanceof Error && err.name === 'ScopeGuardError') {
++        if (err instanceof ScopeGuardError) {
+           // 验证失败（越界写入），错误已包含在 commitChanges 的日志中
+-          // 向上传播，让调用者知道回滚已执行
+           console.error(`[AgentManager] ScopeGuard validation failed for session ${sessionId}:`, err.message)
++          scopeGuardError = err
+         }
+         // 其他错误（如沙箱已被自动回滚清理）忽略
++      } finally {
++        this.sandboxes.delete(sessionId)
+       }
+-      this.sandboxes.delete(sessionId)
++    }
++    if (scopeGuardError) {
++      throw scopeGuardError
+     }
+   }
+ 
+diff --git a/src/main/ipc/fs.ts b/src/main/ipc/fs.ts
+index e051852..f3d8715 100644
+--- a/src/main/ipc/fs.ts
++++ b/src/main/ipc/fs.ts
+@@ -76,30 +76,6 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle:
+     return fs.readFile(validPath, 'utf-8')
+   })
+ 
+-  /** 危险路径模式：禁止写入系统/隐藏目录 */
+-  const DANGEROUS_PATH_PATTERNS = [
+-    /[\\/]node_modules[\\/]/i,
+-    /[\\/]\.git[\\/]/i,
+-    /[\\/]\.bizgraph[\\/]/i,
+-    /[\\/]\.next[\\/]/i,
+-    /[\\/]dist[\\/]/i,
+-    /[\\/]dist-electron[\\/]/i,
+-    /[\\/]release[\\/]/i,
+-  ]
+-
+-  function isDangerousPath(filePath: string): boolean {
+-    return DANGEROUS_PATH_PATTERNS.some((pattern) => pattern.test(filePath))
+-  }
+-
+-  typedHandle('fs:writeFile', async (_, filePath, content) => {
+-    const validPath = await validateFsPath(filePath, 'write')
+-    if (isDangerousPath(validPath)) {
+-      throw new Error(`Write rejected: cannot write to protected directory: ${path.basename(validPath)}`)
+-    }
+-    await fs.mkdir(path.dirname(validPath), { recursive: true })
+-    await fs.writeFile(validPath, content, 'utf-8')
+-  })
+-
+   // ---- 文件/目录操作 ----
+ 
+   /** 读取目录，返回含完整路径、大小、修改时间的信息 */
+diff --git a/src/main/scope-guard.ts b/src/main/scope-guard.ts
+index cf4953c..b1b0e0e 100644
+--- a/src/main/scope-guard.ts
++++ b/src/main/scope-guard.ts
+@@ -65,6 +65,8 @@ export class ScopeGuard {
+   private initialSnapshots = new Map<string, Map<string, FileSnapshotEntry>>()
+   /** 每个 sandbox 监控的目录集合（用于执行后验证时复用相同扫描范围） */
+   private sandboxWatchDirs = new Map<string, Set<string>>()
++  /** 扫描并发锁：防止 setInterval 回调重叠执行 */
++  private scanLocks = new Map<string, boolean>()
+ 
+   /**
+    * 准备沙箱环境
+@@ -428,8 +430,13 @@ export class ScopeGuard {
+     }
+ 
+     const timer = setInterval(async () => {
++      // 防止并发扫描（上一次扫描未完成时跳过本次）
++      if (this.scanLocks.get(sandboxId)) return
++      this.scanLocks.set(sandboxId, true)
++
+       const sandbox = this.sandboxes.get(sandboxId)
+       if (!sandbox) {
++        this.scanLocks.delete(sandboxId)
+         this.stopActiveScanning(sandboxId)
+         return
+       }
+@@ -442,6 +449,8 @@ export class ScopeGuard {
+         }
+       } catch (err) {
+         console.error(`[ScopeGuard] Active scan error:`, err)
++      } finally {
++        this.scanLocks.delete(sandboxId)
+       }
+     }, ACTIVE_SCAN_INTERVAL_MS)
+ 
+@@ -457,6 +466,7 @@ export class ScopeGuard {
+       clearInterval(timer)
+       this.scanTimers.delete(sandboxId)
+     }
++    this.scanLocks.delete(sandboxId)
+   }
+ 
+   /**
+diff --git a/src/main/services/agent-service.ts b/src/main/services/agent-service.ts
+index b88d7e7..853a22a 100644
+--- a/src/main/services/agent-service.ts
++++ b/src/main/services/agent-service.ts
+@@ -3,7 +3,7 @@
+  * 处理 Agent 相关业务逻辑（当前为简单转发）
+  */
+ 
+-import type { AgentSessionConfig, AgentCommand } from '@shared/types'
++import type { AgentSessionConfig, AgentCommand, ContextRef } from '@shared/types'
+ import { AgentManager } from '../agent/agent-manager'
+ 
+ export class AgentService {
+@@ -24,7 +24,7 @@ export class AgentService {
+   async resolveAndSendCommand(
+     sessionId: string,
+     command: AgentCommand,
+-    contextRefs: import('@shared/types').ContextRef[],
++    contextRefs: ContextRef[],
+     _nodeIds: string[],
+   ): Promise<void> {
+     return this.agentManager.resolveAndSendCommand(sessionId, command, contextRefs)
+diff --git a/src/preload/index.ts b/src/preload/index.ts
+index dd5010b..faf3ff4 100644
+--- a/src/preload/index.ts
++++ b/src/preload/index.ts
+@@ -4,7 +4,7 @@
+  *
+  * 安全设计（TG-008）：
+  * - 仅暴露渲染进程实际需要的 IPC 通道
+- * - fs:writeFile 等危险操作不暴露，由主进程内部代理执行
++ * - 文件写入操作通过 Agent 适配器代理执行，不直接暴露给渲染进程
+  * - 路径验证、频率限制在 main 进程中完成
+  */
+ 
+diff --git a/src/renderer/canvas/GraphCanvas.tsx b/src/renderer/canvas/GraphCanvas.tsx
+index 8391af9..742c723 100644
+--- a/src/renderer/canvas/GraphCanvas.tsx
++++ b/src/renderer/canvas/GraphCanvas.tsx
+@@ -503,18 +503,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
+     }
+   }, [graphNodes, projectPath, createNode, graphId])
+ 
+-  const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
++  const handleNodeStatusChange = useCallback(async (nodeId: string, status: NodeStatus) => {
+     await updateNode(nodeId, { status })
+     setNodeContextMenu(null)
+-  }
++  }, [updateNode])
+ 
+-  const handleNodeDelete = async (nodeId: string) => {
++  const handleNodeDelete = useCallback(async (nodeId: string) => {
+     const node = graphNodes.find((n) => n.id === nodeId)
+     if (node?.type === 'project') return
+     await deleteNode(nodeId)
+     selectNode(null)
+     setNodeContextMenu(null)
+-  }
++  }, [graphNodes, deleteNode, selectNode])
+ 
+   /** AI 补充节点详情 */
+   const handleEnrichNode = useCallback(async (nodeId: string) => {
+diff --git a/src/shared/types.ts b/src/shared/types.ts
+index 2dc0d18..6c6e526 100644
+--- a/src/shared/types.ts
++++ b/src/shared/types.ts
+@@ -351,6 +351,15 @@ export interface AgentAdapter {
+ 
+   /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
+   resolveOutputSession?(output: AgentOutput): string | undefined
++
++  /** 设置会话的已解析上下文（供 AgentManager 注入上下文） */
++  setResolvedContexts?(sessionId: string, contexts: ResolvedContext[]): void
++
++  /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
++  on?(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
++
++  /** 移除会话结束事件监听 */
++  off?(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
+ }
+ 
+ // ============================================
+@@ -578,7 +587,6 @@ export interface IpcApi {
+   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
+   'fs:readDirDetail': (path: string) => Promise<{ name: string; path: string; isDirectory: boolean; size: number; mtimeMs: number }[]>
+   'fs:readFile': (path: string) => Promise<string>
+-  'fs:writeFile': (path: string, content: string) => Promise<void>
+   'fs:createFile': (filePath: string) => Promise<{ path: string; name: string }>
+   'fs:createDir': (dirPath: string) => Promise<{ path: string; name: string }>
+   'fs:delete': (targetPath: string, recursive?: boolean) => Promise<{ deleted: string }>

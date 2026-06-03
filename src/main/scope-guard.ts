@@ -65,6 +65,8 @@ export class ScopeGuard {
   private initialSnapshots = new Map<string, Map<string, FileSnapshotEntry>>()
   /** 每个 sandbox 监控的目录集合（用于执行后验证时复用相同扫描范围） */
   private sandboxWatchDirs = new Map<string, Set<string>>()
+  /** 扫描并发锁：防止 setInterval 回调重叠执行 */
+  private scanLocks = new Set<string>()
 
   /**
    * 准备沙箱环境
@@ -428,8 +430,19 @@ export class ScopeGuard {
     }
 
     const timer = setInterval(async () => {
+      // 防止并发扫描（上一次扫描未完成时跳过本次）
+      if (this.scanLocks.has(sandboxId)) return
+      this.scanLocks.add(sandboxId)
+
+      // 修复：若 timer 已被 stopActiveScanning 清除，则放弃本次扫描
+      if (this.scanTimers.get(sandboxId) !== timer) {
+        this.scanLocks.delete(sandboxId)
+        return
+      }
+
       const sandbox = this.sandboxes.get(sandboxId)
       if (!sandbox) {
+        this.scanLocks.delete(sandboxId)
         this.stopActiveScanning(sandboxId)
         return
       }
@@ -442,6 +455,8 @@ export class ScopeGuard {
         }
       } catch (err) {
         console.error(`[ScopeGuard] Active scan error:`, err)
+      } finally {
+        this.scanLocks.delete(sandboxId)
       }
     }, ACTIVE_SCAN_INTERVAL_MS)
 
@@ -457,6 +472,7 @@ export class ScopeGuard {
       clearInterval(timer)
       this.scanTimers.delete(sandboxId)
     }
+    this.scanLocks.delete(sandboxId)
   }
 
   /**

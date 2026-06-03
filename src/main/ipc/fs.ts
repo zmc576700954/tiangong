@@ -61,6 +61,23 @@ export async function searchFilesRecursive(
 }
 
 export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: TypedHandle): void {
+  /** 危险路径模式：禁止写入系统/隐藏目录 */
+  const DANGEROUS_PATH_PATTERNS = [
+    /[\\/]node_modules[\\/]/i,
+    /[\\/]\.git[\\/]/i,
+    /[\\/]\.bizgraph[\\/]/i,
+    /[\\/]\.next[\\/]/i,
+    /[\\/]dist[\\/]/i,
+    /[\\/]dist-electron[\\/]/i,
+    /[\\/]release[\\/]/i,
+  ]
+
+  function assertNotDangerous(filePath: string): void {
+    if (DANGEROUS_PATH_PATTERNS.some((pattern) => pattern.test(filePath))) {
+      throw new Error(`Write rejected: cannot write to protected directory: ${path.basename(filePath)}`)
+    }
+  }
+
   // ---- 只读 ----
   typedHandle('fs:readDir', async (_, dirPath) => {
     const validPath = await validateFsPath(dirPath, 'read')
@@ -74,30 +91,6 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   typedHandle('fs:readFile', async (_, filePath) => {
     const validPath = await validateFsPath(filePath, 'read')
     return fs.readFile(validPath, 'utf-8')
-  })
-
-  /** 危险路径模式：禁止写入系统/隐藏目录 */
-  const DANGEROUS_PATH_PATTERNS = [
-    /[\\/]node_modules[\\/]/i,
-    /[\\/]\.git[\\/]/i,
-    /[\\/]\.bizgraph[\\/]/i,
-    /[\\/]\.next[\\/]/i,
-    /[\\/]dist[\\/]/i,
-    /[\\/]dist-electron[\\/]/i,
-    /[\\/]release[\\/]/i,
-  ]
-
-  function isDangerousPath(filePath: string): boolean {
-    return DANGEROUS_PATH_PATTERNS.some((pattern) => pattern.test(filePath))
-  }
-
-  typedHandle('fs:writeFile', async (_, filePath, content) => {
-    const validPath = await validateFsPath(filePath, 'write')
-    if (isDangerousPath(validPath)) {
-      throw new Error(`Write rejected: cannot write to protected directory: ${path.basename(validPath)}`)
-    }
-    await fs.mkdir(path.dirname(validPath), { recursive: true })
-    await fs.writeFile(validPath, content, 'utf-8')
   })
 
   // ---- 文件/目录操作 ----
@@ -135,6 +128,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   /** 创建文件 */
   typedHandle('fs:createFile', async (_, filePath) => {
     const validPath = await validateFsPath(filePath, 'write')
+    assertNotDangerous(validPath)
     await fs.mkdir(path.dirname(validPath), { recursive: true })
     // 仅在文件不存在时创建，不覆盖
     try {
@@ -151,6 +145,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   /** 创建目录 */
   typedHandle('fs:createDir', async (_, dirPath) => {
     const validPath = await validateFsPath(dirPath, 'write')
+    assertNotDangerous(validPath)
     await fs.mkdir(validPath, { recursive: true })
     return { path: validPath, name: path.basename(validPath) }
   })
@@ -158,6 +153,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   /** 删除文件或目录 */
   typedHandle('fs:delete', async (_, targetPath, recursive = false) => {
     const validPath = await validateFsPath(targetPath, 'write')
+    assertNotDangerous(validPath)
     const stat = await fs.stat(validPath)
     if (stat.isDirectory()) {
       await fs.rm(validPath, { recursive: !!recursive, force: true })
@@ -170,9 +166,11 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   /** 重命名 */
   typedHandle('fs:rename', async (_, oldPath, newName) => {
     const validOldPath = await validateFsPath(oldPath, 'write')
+    assertNotDangerous(validOldPath)
     const parentDir = path.dirname(validOldPath)
     const newPath = path.join(parentDir, newName)
     const validNewPath = await validateFsPath(newPath, 'write')
+    assertNotDangerous(validNewPath)
 
     // 检查目标是否已存在
     try {
@@ -193,6 +191,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     const fileName = path.basename(validSource)
     const destPath = path.join(validDestDir, fileName)
     const validDestPath = await validateFsPath(destPath, 'write')
+    assertNotDangerous(validDestPath)
 
     // 检查目标是否已存在
     try {
@@ -213,6 +212,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     const fileName = path.basename(validSource)
     const destPath = path.join(validDestDir, fileName)
     const validDestPath = await validateFsPath(destPath, 'write')
+    assertNotDangerous(validDestPath)
 
     // 检查目标是否已存在
     try {
