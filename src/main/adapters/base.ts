@@ -205,6 +205,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const handler = new JsonProtocolHandler(proc)
     this.protocolHandlers.set(session.id, handler)
 
+    // 缓存 sessionId，消除协议回调对上下文栈的依赖
+    const sessionId = session.id
+
     if (options?.autoEnable) {
       handler.enable()
     }
@@ -213,13 +216,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     handler.onMessage((msg) => {
       const output = protocolMessageToAgentOutput(msg)
       if (output) {
-        this.emitOutput(output)
+        this.emitOutputForSession(sessionId, output)
       }
     })
 
     // 协议解析错误时降级为原始 stdout
     handler.onError((_err, rawLine) => {
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'stdout',
         data: rawLine,
         timestamp: Date.now(),
