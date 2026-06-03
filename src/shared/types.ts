@@ -352,6 +352,8 @@ export interface ValidationResult {
   validFiles: string[]
   /** 是否需要回滚 */
   shouldRollback: boolean
+  /** 新增文件列表（用于回滚时删除） */
+  newFiles?: string[]
 }
 
 // ============================================

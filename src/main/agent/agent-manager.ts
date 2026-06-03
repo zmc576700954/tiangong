@@ -179,13 +179,18 @@ export class AgentManager {
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
 
-    // ScopeGuard: 清理沙箱
+    // ScopeGuard: 执行后验证并清理沙箱
     const sandbox = this.sandboxes.get(sessionId)
     if (sandbox) {
       try {
         await this.scopeGuard.commitChanges(sandbox)
-      } catch {
-        // 沙箱可能已被自动回滚清理，忽略错误
+      } catch (err) {
+        if (err instanceof Error && err.name === 'ScopeGuardError') {
+          // 验证失败（越界写入），错误已包含在 commitChanges 的日志中
+          // 向上传播，让调用者知道回滚已执行
+          console.error(`[AgentManager] ScopeGuard validation failed for session ${sessionId}:`, err.message)
+        }
+        // 其他错误（如沙箱已被自动回滚清理）忽略
       }
       this.sandboxes.delete(sessionId)
     }
