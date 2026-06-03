@@ -82,7 +82,7 @@ export class ChatService {
     await this.repo.saveMessage({
       id: message.id,
       threadId,
-      role: message.role === 'agent' ? 'assistant' : message.role,
+      role: message.role,
       content: message.content,
       adapterName: message.adapterName ?? '',
       status: message.status,
@@ -136,7 +136,7 @@ export class ChatService {
   private rowToMessage(row: ChatMessageRow): ChatMessage {
     return {
       id: row.id,
-      role: (row.role === 'assistant' ? 'agent' : row.role) as ChatMessage['role'],
+      role: row.role as ChatMessage['role'],
       content: row.content,
       timestamp: row.created_at,
       adapterName: row.adapter_name || undefined,

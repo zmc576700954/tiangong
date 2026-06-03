@@ -39,7 +39,7 @@ class WindowManager {
       // 开发模式下 Vite server 可能还没就绪，添加重试逻辑（最多 10 次）
       let loadRetries = 0
       const MAX_LOAD_RETRIES = 10
-      win.webContents.on('did-fail-load', (_event, _errorCode, _errorDescription, validatedURL) => {
+      const handleDidFailLoad = (_event: Event, _errorCode: number, _errorDescription: string, validatedURL: string) => {
         loadRetries++
         if (loadRetries > MAX_LOAD_RETRIES) {
           console.error(`Failed to load ${validatedURL} after ${MAX_LOAD_RETRIES} retries, giving up.`)
@@ -51,14 +51,19 @@ class WindowManager {
             win?.loadURL(process.env.VITE_DEV_SERVER_URL)
           }
         }, 500)
+      }
+      win.webContents.on('did-fail-load', handleDidFailLoad)
+
+      win.on('closed', () => {
+        win.webContents.off('did-fail-load', handleDidFailLoad)
+        this.windows.delete(id)
       })
     } else {
       win.loadFile(path.join(__dirname, '../../dist/index.html'))
+      win.on('closed', () => {
+        this.windows.delete(id)
+      })
     }
-
-    win.on('closed', () => {
-      this.windows.delete(id)
-    })
 
     return win
   }

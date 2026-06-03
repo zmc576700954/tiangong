@@ -277,7 +277,7 @@ export class McpAdapter extends BaseAdapter {
     return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
   }
 
-  protected async doTerminate(session: AgentSession, proc?: unknown): Promise<void> {
+  protected async doTerminate(session: AgentSession, _proc?: unknown): Promise<void> {
     // Disconnect MCP clients for this session only
     const clients = this.mcpClients.get(session.id) ?? []
     for (const client of clients) {
@@ -295,7 +295,8 @@ export class McpAdapter extends BaseAdapter {
       timestamp: Date.now(),
     })
 
-    await super.doTerminate(session, proc as ChildProcess)
+    // MCP adapter does not use child processes, pass undefined for proc
+    await super.doTerminate(session, undefined)
   }
 
   // ============================================

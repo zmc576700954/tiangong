@@ -57,6 +57,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   // 文件系统 — 只读 + 文件操作
   'fs:readDir',
   'fs:readDirDetail',
+  'fs:readFile',
   'fs:createFile',
   'fs:createDir',
   'fs:delete',

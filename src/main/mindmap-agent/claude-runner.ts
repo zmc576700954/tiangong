@@ -11,6 +11,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
+import { buildSafeEnv } from '../shared/env'
 
 export interface ClaudeRunOptions {
   cwd: string
@@ -55,7 +56,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
 
     const proc = spawn('claude', args, {
       cwd,
-      env: process.env,
+      env: buildSafeEnv(),
       shell: false,
       stdio: [stdinFd, 'pipe', 'pipe'],
     })

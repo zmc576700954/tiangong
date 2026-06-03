@@ -374,7 +374,7 @@ async function migrate(): Promise<void> {
     CREATE TABLE chat_messages (
       id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL,
-      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+      role TEXT NOT NULL CHECK(role IN ('user', 'agent', 'system')),
       content TEXT NOT NULL,
       adapter_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'error', 'pending', 'streaming', 'aborted')),

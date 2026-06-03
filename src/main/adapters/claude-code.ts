@@ -122,7 +122,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                     const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined
                     const toolName = typeof hookInput.tool_name === 'string' ? hookInput.tool_name : undefined
                     if (filePath) {
-                      const isCreate = hookInput.tool_name === 'Write'
+                      const isCreate = toolName === 'Write'
                       this.emitOutput({
                         type: 'file_change',
                         data: `${isCreate ? 'create' : 'modify'}: ${filePath}`,
