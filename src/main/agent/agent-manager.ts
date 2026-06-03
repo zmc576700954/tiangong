@@ -28,6 +28,8 @@ export class AgentManager {
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
   private sandboxes = new Map<string, { id: string }>()
+  /** sessionId → broadcastName（用户请求的原始适配器名，用于 fallback 时显示） */
+  private broadcastNames = new Map<string, string>()
 
   constructor(
     private registry: AdapterRegistry,
@@ -50,6 +52,17 @@ export class AgentManager {
 
   private attachAdapterOutput(adapter: AgentAdapter): void {
     const handler = (output: AgentOutput) => {
+      // 查找该适配器当前活跃的 session，使用用户请求的原始适配器名广播
+      // 这样 MCP fallback 时前端显示的是 'claude-code' 而非 'mcp'
+      for (const sessionId of this.router.getActiveSessionIds()) {
+        const actualAdapterName = this.router.getAdapterName(sessionId)
+        if (actualAdapterName === adapter.name) {
+          const broadcastName = this.broadcastNames.get(sessionId) ?? adapter.name
+          this.broadcaster.broadcast(broadcastName, output)
+          return
+        }
+      }
+      // 无匹配 session（如内部组件输出），使用适配器本名广播
       this.broadcaster.broadcast(adapter.name, output)
     }
     this.outputHandlers.set(adapter.name, handler)
@@ -67,6 +80,7 @@ export class AgentManager {
       }
     }
     this.outputHandlers.clear()
+    this.broadcastNames.clear()
     // 注意：registry/router/broadcaster 的生命周期由调用方管理
   }
 
@@ -78,6 +92,7 @@ export class AgentManager {
     await Promise.allSettled(
       sessionIds.map((id) => this.terminateSession(id)),
     )
+    this.broadcastNames.clear()
   }
 
   getAdapter(name: string): AgentAdapter | undefined {
@@ -123,6 +138,9 @@ export class AgentManager {
     }
 
     const session = await adapter.startSession(config)
+
+    // 保存用户请求的原始适配器名，用于输出广播（支持 fallback 显示）
+    this.broadcastNames.set(session.id, adapterName)
 
     // ScopeGuard: 启动文件变更边界保护
     if (config.allowedFiles.length > 0) {
@@ -178,6 +196,9 @@ export class AgentManager {
     if (!adapter) return
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
+
+    // 清理 broadcastName 映射
+    this.broadcastNames.delete(sessionId)
 
     // ScopeGuard: 执行后验证并清理沙箱
     const sandbox = this.sandboxes.get(sessionId)
