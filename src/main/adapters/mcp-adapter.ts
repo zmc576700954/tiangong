@@ -16,75 +16,233 @@ import type { AgentSession, AgentSessionConfig, AgentCommand, ApiKeyConfig } fro
 import { readSettings } from '../settings'
 import { AdapterError } from '../errors'
 
-interface LlmMessage {
-  role: 'system' | 'user' | 'assistant'
+// ============================================
+// Tool Use 类型定义
+// ============================================
+
+/** 通用 Tool 格式（与 MCP McpTool 对应） */
+interface UnifiedTool {
+  name: string
+  description?: string
+  inputSchema?: Record<string, unknown>
+}
+
+/** LLM 请求调用的 tool */
+interface UnifiedToolCall {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+}
+
+/** Tool 执行结果 */
+interface ToolResult {
+  toolCallId: string
   content: string
+  isError?: boolean
+}
+
+/** 支持 Tool Use 的 LLM 消息格式 */
+interface RichLlmMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string
+  toolCalls?: UnifiedToolCall[]
+  toolResults?: ToolResult[]
+}
+
+/** LLM 结构化响应 */
+interface LlmResponse {
+  text: string
+  toolCalls: UnifiedToolCall[]
+  stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'other'
 }
 
 // ============================================
-// Provider 配置（抽象 LLM 调用差异）
+// Provider 配置（抽象 LLM 调用差异 + Tool Use）
 // ============================================
 
 interface ProviderConfig {
   defaultModel: string
+  /** 是否支持结构化 tool use */
+  supportsTools: boolean
   buildUrl: (baseUrl: string | undefined, key: string, model: string) => string
   buildHeaders: (key: string, baseUrl: string | undefined) => Record<string, string>
-  buildBody: (messages: LlmMessage[], model: string) => unknown
-  extractContent: (data: unknown) => string
+  /** 构建请求体（支持可选 tools） */
+  buildBody: (messages: RichLlmMessage[], model: string, tools?: UnifiedTool[]) => unknown
+  /** 解析响应为结构化格式 */
+  parseResponse: (data: unknown) => LlmResponse
 }
 
 const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
   anthropic: {
     defaultModel: 'claude-3-5-sonnet-20241022',
+    supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/v1/messages` : 'https://api.anthropic.com/v1/messages',
     buildHeaders: (key) => ({
       'Content-Type': 'application/json',
       'x-api-key': key,
       'anthropic-version': '2023-06-01',
     }),
-    buildBody: (messages, model) => {
+    buildBody: (messages, model, tools) => {
       const systemMsg = messages.find((m) => m.role === 'system')?.content ?? ''
-      const userMsgs = messages.filter((m) => m.role !== 'system')
-      return {
+      const anthropicMessages = messages
+        .filter((m) => m.role !== 'system')
+        .map((m) => {
+          // 普通文本消息
+          if (!m.toolCalls && !m.toolResults) {
+            return { role: m.role, content: m.content }
+          }
+          // assistant 的 tool_use 消息
+          if (m.toolCalls) {
+            const content: Array<Record<string, unknown>> = []
+            if (m.content) {
+              content.push({ type: 'text', text: m.content })
+            }
+            for (const tc of m.toolCalls) {
+              content.push({
+                type: 'tool_use',
+                id: tc.id,
+                name: tc.name,
+                input: tc.arguments,
+              })
+            }
+            return { role: 'assistant', content }
+          }
+          // user 的 tool_result 消息
+          if (m.toolResults) {
+            return {
+              role: 'user',
+              content: m.toolResults.map((tr) => ({
+                type: 'tool_result',
+                tool_use_id: tr.toolCallId,
+                content: tr.content,
+                is_error: tr.isError ?? false,
+              })),
+            }
+          }
+          return { role: m.role, content: m.content }
+        })
+
+      const body: Record<string, unknown> = {
         model,
         max_tokens: 4096,
         system: systemMsg,
-        messages: userMsgs.map((m) => ({ role: m.role, content: m.content })),
+        messages: anthropicMessages,
       }
+      if (tools && tools.length > 0) {
+        body.tools = tools.map((t) => ({
+          name: t.name,
+          description: t.description ?? 'No description',
+          input_schema: t.inputSchema ?? { type: 'object', properties: {} },
+        }))
+      }
+      return body
     },
-    extractContent: (data: unknown) => {
-      const d = data as { content?: { type: string; text?: string }[] }
-      return d.content?.find((c) => c.type === 'text')?.text ?? ''
+    parseResponse: (data: unknown) => {
+      const d = data as {
+        content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>>
+        stop_reason?: string
+      }
+      const textParts: string[] = []
+      const toolCalls: UnifiedToolCall[] = []
+      for (const block of d.content ?? []) {
+        if (block.type === 'text' && block.text) {
+          textParts.push(block.text)
+        } else if (block.type === 'tool_use' && block.id && block.name) {
+          toolCalls.push({ id: block.id, name: block.name, arguments: block.input ?? {} })
+        }
+      }
+      return {
+        text: textParts.join('\n'),
+        toolCalls,
+        stopReason: d.stop_reason === 'tool_use' ? 'tool_use' : 'end_turn',
+      }
     },
   },
   openai: {
     defaultModel: 'gpt-4o',
+    supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.openai.com/v1/chat/completions',
     buildHeaders: (key) => ({
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     }),
-    buildBody: (messages, model) => ({ model, messages }),
-    extractContent: (data: unknown) => {
-      const d = data as { choices?: { message?: { content?: string } }[] }
-      return d.choices?.[0]?.message?.content ?? ''
+    buildBody: (messages, model, tools) => {
+      const openaiMessages = messages.map((m) => {
+        if (m.role === 'tool') {
+          return { role: 'tool', tool_call_id: m.toolResults?.[0]?.toolCallId ?? '', content: m.content }
+        }
+        if (m.toolCalls) {
+          return {
+            role: 'assistant',
+            content: m.content || null,
+            tool_calls: m.toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function',
+              function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+            })),
+          }
+        }
+        return { role: m.role, content: m.content }
+      })
+
+      const body: Record<string, unknown> = { model, messages: openaiMessages }
+      if (tools && tools.length > 0) {
+        body.tools = tools.map((t) => ({
+          type: 'function',
+          function: {
+            name: t.name,
+            description: t.description ?? 'No description',
+            parameters: t.inputSchema ?? { type: 'object', properties: {} },
+          },
+        }))
+        body.tool_choice = 'auto'
+      }
+      return body
+    },
+    parseResponse: (data: unknown) => {
+      const d = data as {
+        choices?: Array<{
+          message?: {
+            content?: string | null
+            tool_calls?: Array<{
+              id: string
+              function: { name: string; arguments: string }
+            }>
+          }
+          finish_reason?: string
+        }>>
+      }
+      const msg = d.choices?.[0]?.message
+      const toolCalls: UnifiedToolCall[] = []
+      for (const tc of msg?.tool_calls ?? []) {
+        try {
+          toolCalls.push({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments) })
+        } catch {
+          toolCalls.push({ id: tc.id, name: tc.function.name, arguments: {} })
+        }
+      }
+      return {
+        text: msg?.content ?? '',
+        toolCalls,
+        stopReason: d.choices?.[0]?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+      }
     },
   },
   deepseek: {
     defaultModel: 'deepseek-chat',
+    supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.deepseek.com/v1/chat/completions',
     buildHeaders: (key) => ({
       'Content-Type': 'application/json',
       Authorization: `Bearer ${key}`,
     }),
-    buildBody: (messages, model) => ({ model, messages }),
-    extractContent: (data: unknown) => {
-      const d = data as { choices?: { message?: { content?: string } }[] }
-      return d.choices?.[0]?.message?.content ?? ''
-    },
+    // DeepSeek 兼容 OpenAI 格式
+    buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
+    parseResponse: (data: unknown) => PROVIDER_CONFIGS.openai.parseResponse(data),
   },
   gemini: {
     defaultModel: 'gemini-1.5-flash',
+    supportsTools: false,
     buildUrl: (baseUrl, _key, model) => baseUrl
       ? `${baseUrl}/models/${model}:generateContent`
       : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -104,9 +262,13 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
         contents,
       }
     },
-    extractContent: (data: unknown) => {
+    parseResponse: (data: unknown) => {
       const d = data as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
-      return d.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
+      return {
+        text: d.candidates?.[0]?.content?.parts?.[0]?.text ?? '',
+        toolCalls: [],
+        stopReason: 'end_turn' as const,
+      }
     },
   },
 }
@@ -264,16 +426,11 @@ export class McpAdapter extends BaseAdapter {
     const userPrompt = `${typeLabels[command.type] ?? 'Please complete the task'}:\n${command.description}`
     const systemPrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
 
-    // Gather MCP tool descriptions
+    // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []
-    const toolDescriptions = clients
-      .flatMap((c) => c.getTools())
-      .map((t) => `- ${t.name}: ${t.description ?? 'No description'}`)
-      .join('\n')
-
-    const enhancedSystem = toolDescriptions
-      ? `${systemPrompt}\n\n## Available MCP Tools\n${toolDescriptions}`
-      : systemPrompt
+    const mcpTools = clients.flatMap((c) => c.getTools())
+    const providerConfig = PROVIDER_CONFIGS[apiKey.provider]
+    const supportsTools = providerConfig?.supportsTools ?? false
 
     // Call LLM API via unified provider config
     try {
@@ -289,22 +446,55 @@ export class McpAdapter extends BaseAdapter {
         return
       }
 
-      const response = await this.callLlmUnified(
-        apiKey.provider,
-        apiKey.key,
-        apiKey.baseUrl,
-        [
-          { role: 'system', content: enhancedSystem },
-          { role: 'user', content: userPrompt },
-        ],
-        settings.defaultModel,
-      )
+      let responseText: string
 
-      this.emitOutput({
-        type: 'stdout',
-        data: response,
-        timestamp: Date.now(),
-      })
+      if (supportsTools && mcpTools.length > 0) {
+        // 结构化 Tool Use 模式（Anthropic / OpenAI / DeepSeek）
+        const tools: UnifiedTool[] = mcpTools.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        }))
+
+        const messages: RichLlmMessage[] = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ]
+
+        responseText = await this.executeToolUseLoop(
+          session,
+          apiKey,
+          messages,
+          tools,
+          clients,
+          settings.defaultModel,
+        )
+      } else {
+        // 纯文本模式（Gemini 或不支持 tools 时）
+        const toolDescriptions = mcpTools
+          .map((t) => `- ${t.name}: ${t.description ?? 'No description'}`)
+          .join('\n')
+        const enhancedSystem = toolDescriptions
+          ? `${systemPrompt}\n\n## Available MCP Tools\n${toolDescriptions}`
+          : systemPrompt
+
+        responseText = await this.callLlmUnified(
+          apiKey.provider,
+          apiKey.key,
+          apiKey.baseUrl,
+          [
+            { role: 'system', content: enhancedSystem },
+            { role: 'user', content: userPrompt },
+          ],
+          settings.defaultModel,
+        )
+
+        this.emitOutput({
+          type: 'stdout',
+          data: responseText,
+          timestamp: Date.now(),
+        })
+      }
 
       this.emitOutput({
         type: 'complete',
@@ -430,15 +620,16 @@ export class McpAdapter extends BaseAdapter {
   }
 
   /**
-   * 统一的 LLM API 调用：根据 ProviderConfig 自动适配
+   * 统一的 LLM API 调用：返回结构化响应（支持 Tool Use）
    */
-  private async callLlmUnified(
+  private async callLlmWithToolSupport(
     provider: string,
     key: string,
     baseUrl: string | undefined,
-    messages: LlmMessage[],
+    messages: RichLlmMessage[],
+    tools?: UnifiedTool[],
     defaultModel?: string,
-  ): Promise<string> {
+  ): Promise<LlmResponse> {
     const config = PROVIDER_CONFIGS[provider]
     if (!config) {
       throw new AdapterError(`Unsupported provider: ${provider}`, this.name)
@@ -447,7 +638,7 @@ export class McpAdapter extends BaseAdapter {
     const model = defaultModel ?? config.defaultModel
     const url = config.buildUrl(baseUrl, key, model)
     const headers = config.buildHeaders(key, baseUrl)
-    const body = config.buildBody(messages, model)
+    const body = config.buildBody(messages, model, tools)
 
     const res = await this.fetchWithTimeout(url, {
       method: 'POST',
@@ -461,6 +652,129 @@ export class McpAdapter extends BaseAdapter {
     }
 
     const data = await res.json()
-    return config.extractContent(data)
+    return config.parseResponse(data)
+  }
+
+  /**
+   * 向后兼容：纯文本 LLM 调用（无 Tool Use）
+   */
+  private async callLlmUnified(
+    provider: string,
+    key: string,
+    baseUrl: string | undefined,
+    messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    defaultModel?: string,
+  ): Promise<string> {
+    const richMessages: RichLlmMessage[] = messages.map((m) => ({ ...m }))
+    const response = await this.callLlmWithToolSupport(provider, key, baseUrl, richMessages, undefined, defaultModel)
+    return response.text
+  }
+
+  // ============================================
+  // Tool Use 闭环执行
+  // ============================================
+
+  /**
+   * 执行 Tool Use 循环：LLM → Tool Call → Tool Result → LLM → ...
+   * @returns 最终文本响应
+   */
+  private async executeToolUseLoop(
+    session: AgentSession,
+    apiKey: ApiKeyConfig,
+    messages: RichLlmMessage[],
+    tools: UnifiedTool[],
+    clients: McpClient[],
+    defaultModel?: string,
+  ): Promise<string> {
+    const MAX_TOOL_ITERATIONS = 10
+    let iterations = 0
+
+    while (iterations < MAX_TOOL_ITERATIONS) {
+      iterations++
+
+      // 检查频率限制
+      const rateCheck = this.apiRateLimiter.check(session.id)
+      if (!rateCheck.allowed) {
+        const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
+        throw new AdapterError(`API rate limit exceeded. Wait ${retrySec}s.`, this.name)
+      }
+
+      const response = await this.callLlmWithToolSupport(
+        apiKey.provider,
+        apiKey.key,
+        apiKey.baseUrl,
+        messages,
+        tools,
+        defaultModel,
+      )
+
+      // 发送 LLM 的文本输出（如果有）
+      if (response.text) {
+        this.emitOutput({
+          type: 'stdout',
+          data: response.text,
+          timestamp: Date.now(),
+        })
+      }
+
+      // 如果没有 tool calls，循环结束
+      if (response.stopReason !== 'tool_use' || response.toolCalls.length === 0) {
+        return response.text
+      }
+
+      // 执行 tool calls
+      const toolResults: ToolResult[] = []
+      for (const toolCall of response.toolCalls) {
+        const result = await this.executeMcpTool(clients, toolCall)
+        toolResults.push(result)
+
+        // 输出 tool 执行信息
+        const statusIcon = result.isError ? '❌' : '✅'
+        this.emitOutput({
+          type: 'stdout',
+          data: `${statusIcon} Tool: ${toolCall.name}\n${result.content.substring(0, 500)}`,
+          timestamp: Date.now(),
+        })
+      }
+
+      // 将 tool results 加入对话历史
+      messages.push({
+        role: 'assistant',
+        content: response.text,
+        toolCalls: response.toolCalls,
+      })
+      messages.push({
+        role: 'user',
+        content: '',
+        toolResults: toolResults,
+      })
+    }
+
+    return '[Max tool iterations reached]'
+  }
+
+  /**
+   * 通过 MCP Client 执行单个 tool call
+   */
+  private async executeMcpTool(
+    clients: McpClient[],
+    toolCall: UnifiedToolCall,
+  ): Promise<ToolResult> {
+    for (const client of clients) {
+      const availableTools = client.getTools()
+      if (availableTools.some((t) => t.name === toolCall.name)) {
+        try {
+          const result = await client.callTool(toolCall.name, toolCall.arguments)
+          return {
+            toolCallId: toolCall.id,
+            content: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          return { toolCallId: toolCall.id, content: `Tool error: ${msg}`, isError: true }
+        }
+      }
+    }
+    return { toolCallId: toolCall.id, content: `Tool not found: ${toolCall.name}`, isError: true }
   }
 }
