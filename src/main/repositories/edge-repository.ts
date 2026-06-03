@@ -8,6 +8,15 @@ import type { GraphEdge } from '@shared/types'
 import { generateId } from '../shared/env'
 
 function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
+  let content: GraphEdge['content']
+  if (row.content) {
+    try {
+      content = JSON.parse(row.content as string)
+    } catch {
+      console.warn('[EdgeRepository] Failed to parse edge content:', row.content)
+      content = undefined
+    }
+  }
   return {
     id: row.id as string,
     source: row.source as string,
@@ -15,7 +24,7 @@ function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
     label: row.label as string | undefined,
     graphId: row.graph_id as string,
     edgeType: row.edge_type as GraphEdge['edgeType'],
-    content: row.content ? JSON.parse(row.content as string) : undefined,
+    content,
   }
 }
 
@@ -61,7 +70,11 @@ export class EdgeRepository {
     }
 
     const result = await this.db.execute({ sql: 'SELECT * FROM edges WHERE id = ?', args: [id] })
-    return parseEdgeRow(result.rows[0])
+    const row = result.rows[0]
+    if (!row) {
+      throw new Error(`Edge not found: ${id}`)
+    }
+    return parseEdgeRow(row)
   }
 
   async delete(id: string): Promise<void> {
@@ -73,16 +86,6 @@ export class EdgeRepository {
       sql: 'SELECT * FROM edges WHERE graph_id = ?',
       args: [graphId],
     })
-    return result.rows.map((row) => ({
-      id: row.id as string,
-      source: row.source as string,
-      target: row.target as string,
-      label: row.label as string | undefined,
-      graphId: row.graph_id as string,
-      edgeType: row.edge_type as GraphEdge['edgeType'],
-      description: row.description as string | undefined,
-      dataFlow: row.data_flow as string | undefined,
-      strength: row.strength as number | undefined,
-    })) as GraphEdge[]
+    return result.rows.map((row) => parseEdgeRow(row))
   }
 }

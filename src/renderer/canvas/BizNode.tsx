@@ -33,6 +33,7 @@ export function BizNodeComponent({
         <Handle
           type="target"
           position={Position.Top}
+          id="top"
           className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-top-[5px] transition-all"
         />
         <Handle
@@ -44,6 +45,7 @@ export function BizNodeComponent({
         <Handle
           type="source"
           position={Position.Bottom}
+          id="bottom"
           className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-bottom-[5px] transition-all"
         />
         <Handle

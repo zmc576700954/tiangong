@@ -78,7 +78,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const currentThread = threads.find((t) => t.id === currentThreadId)
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
-  const edges = useGraphStore((s) => s.edges)
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
 
   const pendingContextRef = useAppStore((s) => s.pendingContextRef)

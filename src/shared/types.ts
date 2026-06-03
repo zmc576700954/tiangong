@@ -132,6 +132,8 @@ export interface GraphEdge {
   dataFlow?: string
   /** 关系强度 0-1（影响检索排序） */
   strength?: number
+  /** 边业务内容（条件、备注等） */
+  content?: EdgeContent
 }
 
 /** 图定义 */

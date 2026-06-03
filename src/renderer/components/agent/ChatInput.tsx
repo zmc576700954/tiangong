@@ -7,6 +7,7 @@ import { generatePromptTemplate } from './promptTemplates'
 import { MentionSearchPopup } from './MentionSearchPopup'
 import type { GraphNode } from '@shared/types'
 import type { ContextRef } from '@shared/types'
+import { useGraphStore } from '../../store/graphStore'
 
 interface ChatInputProps {
   onSend: (content: string, contextRefs: ContextRef[]) => void
@@ -63,7 +64,9 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
   }
 
   const handleSlashSelect = useCallback((cmd: SlashCommand) => {
-    const template = generatePromptTemplate(cmd.name, selectedNode)
+    const allNodes = useGraphStore.getState().nodes
+    const allEdges = useGraphStore.getState().edges
+    const template = generatePromptTemplate(cmd.name, selectedNode, allNodes, allEdges)
     if (template) {
       // Show generated template in input for user to review/edit before sending
       setValue(template)

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch } from 'lucide-react'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
 import type { Connection } from '@xyflow/react'
@@ -25,6 +25,7 @@ interface CanvasOverlayProps {
   onStartDev?: (nodeId: string) => void
   onAddContext?: (nodeId: string) => void
   onGenerateChildren?: (nodeId: string) => void
+  hasProjectNode: boolean
 }
 
 export function CanvasOverlay({
@@ -47,10 +48,20 @@ export function CanvasOverlay({
   onStartDev,
   onAddContext,
   onGenerateChildren,
+  hasProjectNode,
 }: CanvasOverlayProps) {
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
   const [edgeNote, setEdgeNote] = useState('')
+
+  // 边类型菜单关闭时重置表单状态
+  useEffect(() => {
+    if (!showEdgeTypeMenu) {
+      setSelectedEdgeType(null)
+      setEdgeCondition('')
+      setEdgeNote('')
+    }
+  }, [showEdgeTypeMenu])
 
   const canvasNodeTypes: NodeType[] = hasProjectNode
     ? ['module', 'process', 'feature', 'bug']

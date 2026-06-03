@@ -35,7 +35,7 @@ function getChildTypeOptions(parentType: NodeType): NodeType[] {
     case 'project':
       return ['module']
     case 'module':
-      return ['process', 'feature', 'bug']
+      return ['process', 'feature']
     case 'process':
       return ['feature', 'bug']
     case 'feature':

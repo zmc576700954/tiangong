@@ -275,13 +275,15 @@ function NodeEditor({
             Implement with Agent
           </button>
         )}
-        <button
-          onClick={onDelete}
-          className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-destructive border border-destructive/30 rounded-md hover:bg-destructive/10 transition-colors"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-          Delete node
-        </button>
+        {node.type !== 'project' && (
+          <button
+            onClick={onDelete}
+            className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-destructive border border-destructive/30 rounded-md hover:bg-destructive/10 transition-colors"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete node
+          </button>
+        )}
       </div>
     </div>
   )
@@ -831,11 +833,13 @@ function EdgeEditor({
               <input
                 type="text"
                 value={edge.content?.condition || ''}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const condition = e.target.value || undefined
                   onUpdate({
-                    content: { ...edge.content, condition: e.target.value || undefined },
+                    label: condition,
+                    content: { ...edge.content, condition },
                   })
-                }
+                }}
                 placeholder="如：库存 > 0"
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
               />
@@ -874,7 +878,7 @@ function EdgeEditor({
 
 // ==================== File Associations Editor ====================
 
-function FileAssociationsEditor({
+export function FileAssociationsEditor({
   associations,
   onUpdate,
 }: {
