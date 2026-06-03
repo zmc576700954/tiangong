@@ -35,6 +35,7 @@ interface GraphState {
 }
 
 export const useGraphStore = create<GraphState>((set, get) => ({
+  // ─────────────── State ───────────────
   graphs: [],
   currentGraphId: null,
   nodes: [],
@@ -43,6 +44,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   selectedNodeId: null,
   selectedEdgeId: null,
 
+  // ─────────────── Graph Operations ───────────────
   loadGraphs: async () => {
     const graphs = await window.electronAPI['graph:list']()
     set({ graphs })
@@ -82,6 +84,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     }
   },
 
+  // ─────────────── Node Operations ───────────────
   createNode: async (data) => {
     const node = await window.electronAPI['node:create'](data)
     set((state) => ({ nodes: [...state.nodes, node] }))
@@ -126,6 +129,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({ selectedNodeId: id, selectedEdgeId: null })
   },
 
+  // ─────────────── Edge Operations ───────────────
   createEdge: async (data) => {
     const edge = await window.electronAPI['edge:create'](data)
     set((state) => ({ edges: [...state.edges, edge] }))
@@ -151,6 +155,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set({ selectedEdgeId: id, selectedNodeId: null })
   },
 
+  // ─────────────── Bug Operations ───────────────
   createBug: async (data) => {
     const bug = await window.electronAPI['bug:create'](data)
     set((state) => ({ bugs: [...state.bugs, bug] }))

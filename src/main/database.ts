@@ -303,8 +303,9 @@ async function migrate(): Promise<void> {
       source TEXT NOT NULL,
       target TEXT NOT NULL,
       label TEXT,
-      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition')),
+      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
       graph_id TEXT NOT NULL,
+      content TEXT,
       description TEXT,
       data_flow TEXT,
       strength REAL
@@ -419,6 +420,7 @@ async function migrate(): Promise<void> {
   await addColumnSafe('nodes', 'content', 'TEXT')
   await addColumnSafe('nodes', 'community_summary', 'TEXT')
   await addColumnSafe('nodes', 'community_level', 'INTEGER')
+  await addColumnSafe('edges', 'content', 'TEXT')
   await addColumnSafe('edges', 'description', 'TEXT')
   await addColumnSafe('edges', 'data_flow', 'TEXT')
   await addColumnSafe('edges', 'strength', 'REAL')
