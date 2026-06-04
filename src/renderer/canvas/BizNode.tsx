@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
@@ -11,7 +12,7 @@ interface BizNodeProps {
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
-export function BizNodeComponent({
+export const BizNodeComponent = memo(function BizNodeComponent({
   id: _id,
   data,
   selected,
@@ -121,4 +122,4 @@ export function BizNodeComponent({
       </div>
     </div>
   )
-}
+})

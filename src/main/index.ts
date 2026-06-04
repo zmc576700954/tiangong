@@ -228,12 +228,27 @@ app.on('before-quit', async (event) => {
   if (isQuitting) return
   isQuitting = true
   event.preventDefault()
+
+  // 5 秒超时保护，防止子进程挂起导致应用无法退出
+  const cleanupWithTimeout = Promise.race([
+    (async () => {
+      try {
+        await agentManager.terminateAllSessions()
+      } catch (err) {
+        console.error('Failed to terminate sessions:', err)
+      }
+      agentManager.destroy()
+      try {
+        await closeDatabase()
+      } catch (err) {
+        console.error('Failed to close database:', err)
+      }
+    })(),
+    new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+  ])
+
   try {
-    // 终止所有活跃会话（清理 MCP 连接、子进程等）
-    await agentManager.terminateAllSessions()
-    // 清理 Agent 输出监听器，防止内存泄漏
-    agentManager.destroy()
-    await closeDatabase()
+    await cleanupWithTimeout
   } catch (err) {
     console.error('Cleanup error during quit:', err)
   }

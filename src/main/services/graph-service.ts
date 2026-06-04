@@ -4,7 +4,7 @@
  */
 
 import type { Client } from '@libsql/client'
-import type { Graph, GraphType, ProjectScanResult, ScanModule } from '@shared/types'
+import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
 import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
@@ -14,6 +14,8 @@ import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
 import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
+
+const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
 
 export interface InitFromProjectResult {
   onlineGraph: Graph
@@ -162,6 +164,12 @@ export class GraphService {
 
     // 第一轮：创建所有节点，记录 tempId -> realId 映射
     for (const nodeData of graphResult.nodes) {
+      // 校验 AI 生成的 type 值，非法值降级为 'feature'
+      if (!VALID_NODE_TYPES.includes(nodeData.type)) {
+        console.warn(`[GraphService] Invalid node type "${nodeData.type}", falling back to "feature"`)
+        nodeData.type = 'feature'
+      }
+
       const nodeId = generateId('node')
       tempIdMap.set(nodeData.tempId, nodeId)
 
@@ -225,6 +233,8 @@ export class GraphService {
           sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null, edgeData.dataFlow ?? null, edgeData.strength ?? null],
         })
+      } else {
+        console.warn(`[GraphService] Edge dropped: sourceTempId="${edgeData.sourceTempId}" or targetTempId="${edgeData.targetTempId}" not found in tempIdMap`)
       }
     }
   }

@@ -130,12 +130,9 @@ async function restoreFromBackup(
     await db.execute(`DROP TABLE ${safeIdentifier(tempTable)}`)
     console.log(`[BizGraph] Restored ${tableName} data from backup`)
   } catch (restoreErr) {
-    console.warn(`[BizGraph] Failed to restore ${tableName} data:`, restoreErr)
-    try {
-      await db.execute(`DROP TABLE IF EXISTS ${safeIdentifier(tempTable)}`)
-    } catch (cleanupErr) {
-      console.warn(`[BizGraph] Failed to cleanup backup table ${tempTable}:`, cleanupErr)
-    }
+    // 不删除备份表，让异常向上传播，使外层 SAVEPOINT ROLLBACK 保留原始数据
+    console.error(`[BizGraph] Failed to restore ${tableName} data, will rollback:`, restoreErr)
+    throw restoreErr
   }
 }
 

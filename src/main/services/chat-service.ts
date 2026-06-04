@@ -7,6 +7,7 @@ import type { Client } from '@libsql/client'
 import type { ChatMessage, AgentThread } from '@shared/types'
 import { ChatRepository, type ChatThreadRow, type ChatMessageRow } from '../repositories/chat-repository'
 import { generateId } from '../shared/env'
+import { safeJsonParse } from '../shared/db-utils'
 
 export class ChatService {
   private repo: ChatRepository
@@ -149,12 +150,3 @@ export class ChatService {
   }
 }
 
-/** 安全解析 JSON 字段，解析失败返回 undefined */
-function safeJsonParse<T = unknown>(value: string | null | undefined): T | undefined {
-  if (!value) return undefined
-  try {
-    return JSON.parse(value) as T
-  } catch {
-    return undefined
-  }
-}

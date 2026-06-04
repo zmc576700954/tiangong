@@ -61,10 +61,16 @@ export function useConnectionMode({
 }: UseConnectionModeOptions): ConnectionModeState {
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null)
   const connectingSourceIdRef = useRef<string | null>(null)
+  const graphEdgesRef = useRef(graphEdges)
 
   useEffect(() => {
     connectingSourceIdRef.current = connectingSourceId
   }, [connectingSourceId])
+
+  // 保持 graphEdgesRef 始终指向最新值
+  useEffect(() => {
+    graphEdgesRef.current = graphEdges
+  }, [graphEdges])
 
   /**
    * 在 document capture 阶段拦截点击。
@@ -82,7 +88,7 @@ export function useConnectionMode({
       e.stopPropagation()
       e.preventDefault()
 
-      const exists = graphEdges.some(
+      const exists = graphEdgesRef.current.some(
         (ed) => ed.source === srcId && ed.target === targetNodeId,
       )
 
@@ -117,7 +123,7 @@ export function useConnectionMode({
 
     document.addEventListener('click', handleCaptureClick, { capture: true })
     return () => document.removeEventListener('click', handleCaptureClick, { capture: true })
-  }, [createEdge, graphId, setRfEdges, graphEdges])
+  }, [createEdge, graphId, setRfEdges])
 
   const startConnect = useCallback((sourceId: string) => {
     setConnectingSourceId(sourceId)

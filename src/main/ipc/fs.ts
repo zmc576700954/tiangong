@@ -173,7 +173,15 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     assertNotDangerous(validOldPath)
     const parentDir = path.dirname(validOldPath)
     const newPath = path.join(parentDir, newName)
-    const validNewPath = await vWrite(newPath)
+
+    // 确保新路径不逃逸出父目录（防止路径遍历）
+    const resolvedParent = path.resolve(parentDir)
+    const resolvedNew = path.resolve(newPath)
+    if (!resolvedNew.startsWith(resolvedParent + path.sep) && resolvedNew !== resolvedParent) {
+      throw new IpcError('Rename target escapes parent directory', ErrorCode.IPC_ACCESS_DENIED)
+    }
+
+    const validNewPath = await vWrite(resolvedNew)
     assertNotDangerous(validNewPath)
 
     // 检查目标是否已存在

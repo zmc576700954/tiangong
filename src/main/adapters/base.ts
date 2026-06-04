@@ -79,6 +79,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     this.pushOutputSession(sessionId)
     try {
       await this.doSendCommand(session, command, proc)
+      // SDK 适配器的 doSendCommand 完成后发射 sessionEnded，
+      // 确保 AgentManager 能清理沙箱等资源（ChildProcess 适配器会多发一次，无害）
+      this.emit('sessionEnded', sessionId, 'success')
+    } catch (err) {
+      this.emit('sessionEnded', sessionId, 'error')
+      throw err
     } finally {
       this.popOutputSession()
     }
@@ -112,19 +118,25 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       this.doCloseQuery(sessionId)
       const proc = this.processes.get(sessionId)
       await this.doTerminate(session, proc)
-      // TG-009: 清理事件监听器，防止内存泄漏
-      this.sessionCleanups.get(sessionId)?.()
-      this.sessionCleanups.delete(sessionId)
-      // 清理协议处理器
-      this.disposeProtocolHandler(sessionId)
-      this.sessions.delete(sessionId)
-      this.processes.delete(sessionId)
-      this.emitOutput({
-        type: 'complete',
-        data: 'Session terminated by user',
-        timestamp: Date.now(),
-      })
+    } catch (err) {
+      // doTerminate 可能失败（进程已无法终止），记录但不阻塞后续清理
+      console.error(`[BaseAdapter] doTerminate failed for session ${sessionId}:`, err)
     } finally {
+      // 无论 doTerminate 是否成功，都执行清理
+      try {
+        this.sessionCleanups.get(sessionId)?.()
+        this.sessionCleanups.delete(sessionId)
+        this.disposeProtocolHandler(sessionId)
+        this.sessions.delete(sessionId)
+        this.processes.delete(sessionId)
+        this.emitOutput({
+          type: 'complete',
+          data: 'Session terminated by user',
+          timestamp: Date.now(),
+        })
+      } catch (cleanupErr) {
+        console.error(`[BaseAdapter] Cleanup failed for session ${sessionId}:`, cleanupErr)
+      }
       this.popOutputSession()
     }
   }
@@ -220,8 +232,15 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       }
     })
 
-    // 协议解析错误时降级为原始 stdout
-    handler.onError((_err, rawLine) => {
+    // 协议解析错误时降级为原始 stdout；致命错误（如 buffer 溢出）时终止 session
+    handler.onError((err, rawLine) => {
+      if (err.message.startsWith('BUFFER_OVERFLOW')) {
+        console.error(`[BaseAdapter] Protocol buffer overflow for session ${sessionId}, terminating`)
+        this.terminateSession(sessionId).catch((e) => {
+          console.error(`[BaseAdapter] Failed to terminate session ${sessionId} after buffer overflow:`, e)
+        })
+        return
+      }
       this.emitOutputForSession(sessionId, {
         type: 'stdout',
         data: rawLine,

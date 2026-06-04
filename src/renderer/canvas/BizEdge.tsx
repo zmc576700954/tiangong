@@ -5,7 +5,7 @@ import {
   type EdgeProps,
   type Edge,
 } from '@xyflow/react'
-import { useCallback, useState } from 'react'
+import { useCallback, useState, memo } from 'react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import type { EdgeType, EdgeContent } from '@shared/types'
@@ -15,7 +15,7 @@ import { edgeTypeConfig } from './edge-utils'
 /** 自定义边类型：携带 edgeType 和 content 信息 */
 type BizEdgeType = Edge<{ edgeType?: EdgeType; content?: EdgeContent }, 'bizEdge'>
 
-export function BizEdge({
+export const BizEdge = memo(function BizEdge({
   id,
   sourceX,
   sourceY,
@@ -28,7 +28,7 @@ export function BizEdge({
   selected,
   markerEnd,
 }: EdgeProps<BizEdgeType>) {
-  const { updateEdge } = useGraphStore()
+  const updateEdge = useGraphStore((s) => s.updateEdge)
   const [isEditing, setIsEditing] = useState(false)
   const labelText = typeof label === 'string' ? label : ''
   const [editLabel, setEditLabel] = useState(labelText)
@@ -169,4 +169,4 @@ export function BizEdge({
       </EdgeLabelRenderer>
     </>
   )
-}
+})

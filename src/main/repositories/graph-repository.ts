@@ -6,6 +6,7 @@
 import type { Client } from '@libsql/client'
 import type { Graph, GraphNode, GraphEdge, BugNode, GraphType } from '@shared/types'
 import { generateId } from '../shared/env'
+import { safeJsonParse } from '../shared/db-utils'
 
 function rowStr(row: Record<string, unknown>, key: string): string {
   const val = row[key]
@@ -88,16 +89,16 @@ export class GraphRepository {
         status: rowStr(row, 'status') as GraphNode['status'],
         title: rowStr(row, 'title'),
         description: rowOptStr(row, 'description'),
-        acceptanceCriteria: row.acceptance_criteria ? JSON.parse(rowStr(row, 'acceptance_criteria')) : undefined,
+        acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(rowOptStr(row, 'acceptance_criteria'), 'acceptance_criteria'),
         graphId: rowStr(row, 'graph_id'),
         graphType: rowStr(row, 'graph_type') as GraphNode['graphType'],
         parentId: rowOptStr(row, 'parent_id'),
-        rules: row.rules ? JSON.parse(rowStr(row, 'rules')) : undefined,
-        metadata: row.metadata ? JSON.parse(rowStr(row, 'metadata')) : undefined,
-        content: row.content ? JSON.parse(rowStr(row, 'content')) : undefined,
+        rules: safeJsonParse(rowOptStr(row, 'rules'), 'rules'),
+        metadata: safeJsonParse(rowOptStr(row, 'metadata'), 'metadata'),
+        content: safeJsonParse(rowOptStr(row, 'content'), 'content'),
         communitySummary: rowOptStr(row, 'community_summary'),
         communityLevel: typeof row.community_level === 'number' ? row.community_level : undefined,
-        contextRefs: row.context_refs ? JSON.parse(rowStr(row, 'context_refs')) : undefined,
+        contextRefs: safeJsonParse<GraphNode['contextRefs']>(rowOptStr(row, 'context_refs'), 'context_refs'),
         ownerRole: rowOptStr(row, 'owner_role') as GraphNode['ownerRole'],
         position: { x: rowNum(row, 'position_x'), y: rowNum(row, 'position_y') },
         createdAt: rowStr(row, 'created_at'),
@@ -133,6 +134,8 @@ export class GraphRepository {
       { sql: 'DELETE FROM edges WHERE graph_id = ?', args: [id] },
       { sql: 'DELETE FROM nodes WHERE graph_id = ?', args: [id] },
       { sql: 'DELETE FROM bug_nodes WHERE graph_id = ?', args: [id] },
+      { sql: 'DELETE FROM snapshots WHERE graph_id = ?', args: [id] },
+      { sql: 'DELETE FROM agent_logs WHERE graph_id = ?', args: [id] },
       { sql: 'DELETE FROM graphs WHERE id = ?', args: [id] },
     ], 'write')
   }

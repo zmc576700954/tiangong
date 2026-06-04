@@ -6,6 +6,7 @@
 import type { Client } from '@libsql/client'
 import type { GraphNode } from '@shared/types'
 import { generateId } from '../shared/env'
+import { safeJsonParse } from '../shared/db-utils'
 
 export class NodeRepository {
   constructor(private db: Client) {}
@@ -77,19 +78,22 @@ export class NodeRepository {
     })
 
     const row = result.rows[0]
+    if (!row) {
+      throw new Error(`Node not found: ${id}`)
+    }
     return {
       id: row.id as string,
       type: row.type as GraphNode['type'],
       status: row.status as GraphNode['status'],
       title: row.title as string,
       description: row.description as string | undefined,
-      acceptanceCriteria: row.acceptance_criteria ? JSON.parse(row.acceptance_criteria as string) : undefined,
+      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, 'acceptance_criteria'),
       graphId: row.graph_id as string,
       graphType: row.graph_type as GraphNode['graphType'],
       parentId: row.parent_id as string | undefined,
-      rules: row.rules ? JSON.parse(row.rules as string) : undefined,
-      metadata: row.metadata ? JSON.parse(row.metadata as string) : undefined,
-      contextRefs: row.context_refs ? JSON.parse(row.context_refs as string) : undefined,
+      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, 'rules'),
+      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, 'metadata'),
+      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, 'context_refs'),
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
       createdAt: row.created_at as string,

@@ -376,7 +376,7 @@ export class McpAdapter extends BaseAdapter {
     // 设置会话空闲超时定时器，防止连接泄露
     const timer = setTimeout(() => {
       console.warn(`[McpAdapter] Session ${sessionId} idle timeout, cleaning up...`)
-      this.cleanupSession(sessionId)
+      this.terminateSession(sessionId).catch(() => {})
     }, MCP_SESSION_TIMEOUT_MS)
     this.sessionTimers.set(sessionId, timer)
 
@@ -549,12 +549,6 @@ export class McpAdapter extends BaseAdapter {
     }
 
     this.cleanupSession(session.id)
-
-    this.emitOutput({
-      type: 'complete',
-      data: 'MCP session terminated',
-      timestamp: Date.now(),
-    })
 
     // MCP adapter does not use child processes, pass undefined for proc
     await super.doTerminate(session, undefined)

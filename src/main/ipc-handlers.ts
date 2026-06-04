@@ -5,6 +5,7 @@
 
 import { BrowserWindow, app, ipcMain } from 'electron'
 import path from 'node:path'
+import fs from 'node:fs/promises'
 import { getClient } from './database'
 import { ClaudeCodeAdapter } from './adapters/claude-code'
 import { CodexAdapter } from './adapters/codex'
@@ -112,7 +113,13 @@ export function registerIpcHandlers(): void {
   // ---------- 路径安全校验 ----------
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
     const { senderId } = getIpcContext()
-    const resolved = path.resolve(targetPath)
+    // 解析符号链接获取真实路径，文件不存在时回退到 path.resolve
+    let resolved: string
+    try {
+      resolved = await fs.realpath(targetPath)
+    } catch {
+      resolved = path.resolve(targetPath)
+    }
     const normalized = path.normalize(resolved)
 
     // 1. 拒绝系统关键目录
@@ -146,7 +153,6 @@ export function registerIpcHandlers(): void {
 
     if (operation === 'read') {
       allowedRoots.push(path.resolve(app.getPath('desktop')))
-      allowedRoots.push(path.resolve(app.getPath('home')))
     }
 
     try {

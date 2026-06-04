@@ -119,7 +119,9 @@ export class ChatRepository {
   }
 
   async searchThreads(query: string): Promise<ChatThreadRow[]> {
-    const like = `%${query}%`
+    // 转义 SQL LIKE 特殊字符（%, _, [），防止通配符注入
+    const escaped = query.replace(/[%_[]/g, (ch) => `[${ch}]`)
+    const like = `%${escaped}%`
     const result = await this.db.execute({
       sql: `SELECT DISTINCT t.* FROM chat_threads t
             LEFT JOIN chat_messages m ON m.thread_id = t.id

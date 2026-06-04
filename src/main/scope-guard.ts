@@ -156,6 +156,11 @@ export class ScopeGuard {
       interval: isWsl || isNetworkFs ? 500 : undefined,
     })
 
+    // 允许进程退出时不被 watcher 阻塞
+    if (typeof watcher.unref === 'function') {
+      watcher.unref()
+    }
+
     const allowedSet = new Set(sanitizedFiles)
 
     // chokidar 事件处理器（第一层：快速响应）
