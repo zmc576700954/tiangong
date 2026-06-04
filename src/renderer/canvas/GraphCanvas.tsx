@@ -7,10 +7,8 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  addEdge,
   useReactFlow,
   useOnViewportChange,
-  type Connection,
   type Edge,
   type Node,
   Panel,
@@ -18,9 +16,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
-import { useAppStore } from '../store/appStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
-import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
+import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { BizNodeComponent } from './BizNode'
@@ -29,6 +26,9 @@ import { NodeContextPopover } from './NodeContextPopover'
 import { useCanvasKeyboard } from './hooks/useCanvasKeyboard'
 import { useAutoLayout } from './hooks/useAutoLayout'
 import { useConnectionMode } from './hooks/useConnectionMode'
+import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
+import { useNodeOperations } from './hooks/useNodeOperations'
+import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { AlignHorizontalDistributeCenter } from 'lucide-react'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
@@ -84,52 +84,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
 
   // ────────────────────────────────────────────────────────────────
-  // 节点位置持久化：拦截 onNodesChange 中的拖拽结束事件，
-  // 防抖保存位置到数据库，避免频繁 IPC 调用
+  // 节点位置持久化 Hook（防抖保存拖拽位置到数据库）
   // ────────────────────────────────────────────────────────────────
-  const pendingPositionUpdates = useRef<Map<string, { x: number; y: number }>>(new Map())
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const flushPositionUpdates = useCallback(() => {
-    const updates = pendingPositionUpdates.current
-    if (updates.size === 0) return
-    const store = useGraphStore.getState()
-    updates.forEach((position, nodeId) => {
-      store.updateNode(nodeId, { position }).catch((err) => {
-        console.error('[GraphCanvas] Failed to persist node position:', err)
-      })
-    })
-    pendingPositionUpdates.current = new Map()
-  }, [])
+  const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
 
   const handleNodesChange = useCallback(
     (changes: Parameters<typeof onNodesChange>[0]) => {
-      // 先让 ReactFlow 更新视觉状态
       onNodesChange(changes)
-
-      // 检测拖拽相关的 position 变化
-      for (const change of changes) {
-        if (change.type === 'position' && change.position && !change.dragging) {
-          // 拖拽结束时记录待保存的位置
-          pendingPositionUpdates.current.set(change.id, { ...change.position })
-        }
-      }
-
-      // 防抖：300ms 内没有新的位置变化则批量保存
-      if (pendingPositionUpdates.current.size > 0) {
-        if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
-        debounceTimerRef.current = setTimeout(flushPositionUpdates, 300)
-      }
+      onPositionChange(changes)
     },
-    [onNodesChange, flushPositionUpdates],
+    [onNodesChange, onPositionChange],
   )
 
   const [showNodeMenu, setShowNodeMenu] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
-
-  const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
-  const [showEdgeTypeMenu, setShowEdgeTypeMenu] = useState(false)
-  const [edgeMenuPosition, setEdgeMenuPosition] = useState({ x: 0, y: 0 })
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -148,27 +116,40 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   } = useConnectionMode({ graphEdges, createEdge, graphId, setRfEdges })
 
   // ────────────────────────────────────────────────────────────────
-  // 使用 ref 保存最新值，避免 DOM 事件回调中的闭包陈旧问题
+  // 边创建流程 Hook
   // ────────────────────────────────────────────────────────────────
-  const graphEdgesRef = useRef(graphEdges)
-  useEffect(() => { graphEdgesRef.current = graphEdges }, [graphEdges])
+  const {
+    pendingConnection,
+    showEdgeTypeMenu,
+    edgeMenuPosition,
+    onConnect,
+    handleCreateEdge,
+    cancelPendingConnection,
+  } = useEdgeConnection(graphId)
 
+  // ────────────────────────────────────────────────────────────────
+  // 节点业务操作 Hook
+  // ────────────────────────────────────────────────────────────────
+  const {
+    handleAddChild,
+    handleGenerateChildren,
+    handleEnrichNode,
+    handleStartDev,
+  } = useNodeOperations(graphId, projectPath)
+
+  // ────────────────────────────────────────────────────────────────
+  // 图加载
+  // ────────────────────────────────────────────────────────────────
   useEffect(() => {
     loadGraph(graphId)
-    // 切换图时清空待保存的位置队列
-    pendingPositionUpdates.current = new Map()
-    if (debounceTimerRef.current) {
-      clearTimeout(debounceTimerRef.current)
-      debounceTimerRef.current = null
-    }
   }, [graphId, loadGraph])
 
-  // 自动创建 project 根节点（使用 ref 防止竞态重复创建）
-  const creatingProjectRef = useRef(false)
+  // 自动创建 project 根节点（基于 graphId 防止竞态重复创建）
+  const creatingProjectForGraph = useRef<string | null>(null)
   useEffect(() => {
     const hasProject = graphNodes.some((n) => n.type === 'project')
-    if (!hasProject && !creatingProjectRef.current) {
-      creatingProjectRef.current = true
+    if (!hasProject && creatingProjectForGraph.current !== graphId) {
+      creatingProjectForGraph.current = graphId
       const currentGraph = graphs.find((g) => g.id === graphId)
       const title = currentGraph?.name ?? '项目'
       const graphType = currentGraph?.type ?? 'online'
@@ -185,20 +166,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           console.error('[GraphCanvas] Failed to create project node:', err)
         })
         .finally(() => {
-          creatingProjectRef.current = false
+          // 不清除标记 — 该 graph 已尝试过创建，失败也不重试
         })
     }
   }, [graphNodes, graphId, createNode, graphs])
-
-  // 组件卸载时刷入最后的位置更新
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current)
-        flushPositionUpdates()
-      }
-    }
-  }, [flushPositionUpdates])
 
   useOnViewportChange({
     onChange: (viewport) => setZoomLevel(viewport.zoom),
@@ -246,70 +217,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setRfEdges(flowEdges)
   }, [graphNodes, graphEdges, selectedNodeId, selectedEdgeId, bugCountMap, connectingSourceId, setRfNodes, setRfEdges])
 
-  const validateConnection = useCallback((connection: Connection): boolean => {
-    if (!connection.source || !connection.target) return false
-    if (connection.source === connection.target) return false
-    const existingEdge = graphEdges.find(
-      (e) => e.source === connection.source && e.target === connection.target,
-    )
-    if (existingEdge) return false
-    return true
-  }, [graphEdges])
-
-  const onConnect = useCallback(
-    (connection: Connection) => {
-      if (!validateConnection(connection)) return
-      if (connection.source && connection.target) {
-        const sourceNode = graphNodes.find((n) => n.id === connection.source)
-        const targetNode = graphNodes.find((n) => n.id === connection.target)
-        if (sourceNode && targetNode) {
-          const midX = (sourceNode.position.x + targetNode.position.x) / 2 + 100
-          const midY = (sourceNode.position.y + targetNode.position.y) / 2
-          setEdgeMenuPosition({ x: midX, y: midY })
-        }
-      }
-      setPendingConnection(connection)
-      setShowEdgeTypeMenu(true)
-    },
-    [validateConnection, graphNodes],
-  )
-
-  const handleCreateEdge = useCallback(
-    async (edgeType: EdgeType, content?: EdgeContent) => {
-      if (!pendingConnection?.source || !pendingConnection?.target) return
-      const config = edgeTypeConfig[edgeType]
-      const edge = await createEdge({
-        source: pendingConnection.source,
-        target: pendingConnection.target,
-        label: content?.condition || '',
-        graphId,
-        edgeType,
-        content,
-      })
-      setRfEdges((eds) =>
-        addEdge(
-          {
-            ...pendingConnection,
-            id: edge.id,
-            label: edge.label,
-            type: 'bizEdge',
-            data: { edgeType, content },
-            markerEnd: getEdgeMarkerEnd(edgeType),
-            animated: edgeType === 'failure' || edgeType === 'business-flow',
-            style: {
-              stroke: config.color,
-              strokeDasharray: config.strokeDasharray,
-            },
-          } satisfies Edge,
-          eds,
-        ),
-      )
-      setPendingConnection(null)
-      setShowEdgeTypeMenu(false)
-    },
-    [pendingConnection, createEdge, graphId, setRfEdges],
-  )
-
   /**
    * onNodeClick：仅处理正常模式下的节点选中
    * 连线模式已在 capture 阶段由 useConnectionMode 处理
@@ -334,12 +241,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     selectNode(null)
     selectEdge(null)
     setShowNodeMenu(false)
-    setShowEdgeTypeMenu(false)
-    setPendingConnection(null)
+    cancelPendingConnection()
     setNodeContextMenu(null)
     // 点击空白处取消连线模式
     cancelConnect()
-  }, [selectNode, selectEdge, cancelConnect])
+  }, [selectNode, selectEdge, cancelPendingConnection, cancelConnect])
 
   const clampMenuPosition = useCallback((x: number, y: number, menuWidth = 160, menuHeight = 140) => {
     const padding = 8
@@ -376,9 +282,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const y = Math.max(padding, Math.min(event.clientY, maxY))
       setNodeContextMenu({ nodeId: node.id, x, y })
       setShowNodeMenu(false)
-      setShowEdgeTypeMenu(false)
+      cancelPendingConnection()
     },
-    [],
+    [cancelPendingConnection],
   )
 
   useCanvasKeyboard({
@@ -409,6 +315,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // 切换图时重置标记
   useEffect(() => {
     hasAppliedInitialLayout.current = false
+    creatingProjectForGraph.current = null
   }, [graphId])
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
@@ -424,27 +331,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     })
     setShowNodeMenu(false)
   }, [screenToFlowPosition, menuPosition, createNode, graphId])
-
-  const handleAddChild = useCallback(async (parentId: string, childType: NodeType) => {
-    const parent = graphNodes.find((n) => n.id === parentId)
-    const offsetX = parent ? 280 : 100
-    const offsetY = parent ? 60 : 60
-    const position = parent
-      ? { x: parent.position.x + offsetX, y: parent.position.y + offsetY }
-      : screenToFlowPosition({ x: 400, y: 300 })
-
-    await createNode({
-      type: childType,
-      status: 'draft',
-      title: `新建${NODE_TYPE_LABELS[childType]}`,
-      graphId,
-      graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
-      parentId,
-      position,
-      acceptanceCriteria: [],
-    })
-    setNodeContextMenu(null)
-  }, [graphNodes, createNode, graphId, screenToFlowPosition])
 
   /** 进入连线模式（由右键菜单触发） */
   const handleStartConnect = useCallback((sourceId: string) => {
@@ -468,41 +354,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setContextPopover(null)
   }, [updateNode])
 
-  /** AI 生成子节点 */
-  const handleGenerateChildren = useCallback(async (nodeId: string) => {
-    const node = graphNodes.find((n) => n.id === nodeId)
-    if (!node || !projectPath) return
-
-    setNodeContextMenu(null)
-    try {
-      const result = await window.electronAPI['mindmap:generateModule'](
-        projectPath, nodeId, node.title, node.type,
-      )
-      if (result && result.children.length > 0) {
-        const parent = graphNodes.find((n) => n.id === nodeId)
-        const baseX = parent ? parent.position.x + 280 : 100
-        const baseY = parent ? parent.position.y : 0
-
-        for (let i = 0; i < result.children.length; i++) {
-          const child = result.children[i]
-          await createNode({
-            type: result.childType,
-            status: 'draft',
-            title: child.title,
-            description: child.description,
-            graphId,
-            graphType: result.childType === 'feature' ? 'dev' : 'online',
-            parentId: nodeId,
-            position: { x: baseX, y: baseY + i * 80 },
-            acceptanceCriteria: [],
-          })
-        }
-      }
-    } catch (err) {
-      console.error('[GraphCanvas] generateChildren failed:', err)
-    }
-  }, [graphNodes, projectPath, createNode, graphId])
-
   const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
     await updateNode(nodeId, { status })
     setNodeContextMenu(null)
@@ -515,49 +366,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     selectNode(null)
     setNodeContextMenu(null)
   }
-
-  /** AI 补充节点详情 */
-  const handleEnrichNode = useCallback(async (nodeId: string) => {
-    const node = graphNodes.find((n) => n.id === nodeId)
-    if (!node || !projectPath) return
-
-    setNodeContextMenu(null)
-    try {
-      const result = await window.electronAPI['mindmap:enrichNode'](
-        projectPath, nodeId, node.type, node.title, undefined, node.contextRefs,
-      )
-      if (result) {
-        await updateNode(nodeId, {
-          description: result.description,
-          acceptanceCriteria: result.acceptanceCriteria,
-          rules: result.businessRules,
-          metadata: result.metadata,
-        })
-      }
-    } catch (err) {
-      console.error('[GraphCanvas] enrichNode failed:', err instanceof Error ? err.message : err)
-    }
-  }, [graphNodes, projectPath, updateNode])
-
-  /** 生成开发 Prompt 并填入 AgentChat 输入框 */
-  const handleStartDev = useCallback(async (nodeId: string) => {
-    const node = graphNodes.find((n) => n.id === nodeId)
-    if (!node || !projectPath) return
-
-    setNodeContextMenu(null)
-    try {
-      const prompt = await window.electronAPI['mindmap:buildDevPrompt'](
-        nodeId, node.title, node.type, 'feature', graphId ?? '', node.contextRefs,
-      )
-      if (prompt) {
-        useAppStore.getState().setPendingPrompt(prompt)
-        useAppStore.getState().setActiveRightPanel('agent')
-      }
-    } catch (err) {
-      console.error('[GraphCanvas] startDev failed:', err)
-    }
-  }, [graphNodes, projectPath, graphId])
-
 
   const isEmpty = graphNodes.length === 0
   const hasProjectNode = graphNodes.some((n) => n.type === 'project')
