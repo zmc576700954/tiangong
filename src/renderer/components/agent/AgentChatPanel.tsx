@@ -24,7 +24,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     adapters,
     threads,
     currentThreadId,
-    sessions,
+    threadOutputs,
     loadAdapters,
     createThread,
     sendMessage,
@@ -104,16 +104,16 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI?.onAgentOutput) {
       const cleanup = window.electronAPI.onAgentOutput((_sessionId: string, output: AgentOutput) => {
-        useAgentStore.getState().appendOutput(_sessionId, output)
-        const tid = useAgentStore.getState().currentThreadId
-        if (!tid) return
-
+        // 通过 sessionId 找到对应的 thread，记录输出
         const store = useAgentStore.getState()
-        const thread = store.threads.find((t) => t.id === tid)
-        const adapterName = thread?.adapterName
+        const ownerThread = store.findThreadBySessionId(_sessionId)
+        if (!ownerThread) return
+        const tid = ownerThread.id
+        const adapterName = ownerThread.adapterName
+
+        store.appendOutput(tid, output)
 
         if (output.type === 'error') {
-          // If there's a current streaming message, mark it as error
           if (streamingMsgIdRef.current) {
             store.markMessageStatus(tid, streamingMsgIdRef.current, 'error', {
               code: output.errorCode ?? 'UNKNOWN',
@@ -121,7 +121,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             })
             streamingMsgIdRef.current = null
           } else {
-            // No streaming message — create a new error message
             store.appendChatMessage(tid, {
               id: generateId('msg'),
               role: 'agent',
@@ -145,7 +144,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             streamingMsgIdRef.current = null
           }
           store.updateThreadStatus(tid, 'idle')
-          // complete 时批量持久化所有消息到 DB
           useAgentStore.getState().persistThreadMessages(tid)
           return
         }
@@ -155,7 +153,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           if (!text) return
 
           if (!streamingMsgIdRef.current) {
-            // Create a new streaming agent message
             const msgId = `output-${output.timestamp}`
             streamingMsgIdRef.current = msgId
             store.appendChatMessage(tid, {
@@ -167,7 +164,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
               status: 'streaming',
             })
           } else {
-            // Append content to existing streaming message
             const thread = useAgentStore.getState().threads.find((t) => t.id === tid)
             const existingMsg = thread?.messages.find((m) => m.id === streamingMsgIdRef.current)
             if (existingMsg) {
@@ -192,7 +188,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         }
 
         if (output.type === 'stderr') {
-          // Append stderr to current streaming message as warning text
           if (streamingMsgIdRef.current) {
             const thread = useAgentStore.getState().threads.find((t) => t.id === tid)
             const existingMsg = thread?.messages.find((m) => m.id === streamingMsgIdRef.current)
@@ -324,8 +319,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     setShowContextPicker(false)
   }
 
-  const currentSession = sessions.find((s) => s.status === 'running')
-  const rawOutputs = currentSession?.outputs ?? []
+  const rawOutputs = currentThread ? (threadOutputs.get(currentThread.id) ?? []) : []
   const isRunning = currentThread?.status === 'running'
 
   return (

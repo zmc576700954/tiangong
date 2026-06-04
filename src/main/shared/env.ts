@@ -58,9 +58,8 @@ export function buildSafeEnv(): NodeJS.ProcessEnv {
     if (value === undefined) continue
     if (blockedPrefixes.some((p) => key.startsWith(p))) continue
     if (allowedPrefixes.some((p) => key.startsWith(p))) { safeEnv[key] = value; continue }
-    if (allowedKeys.has(key) || !/^[A-Z_][A-Z0-9_]*$/i.test(key)) {
-      safeEnv[key] = value
-    }
+    if (allowedKeys.has(key)) { safeEnv[key] = value; continue }
+    // 未在白名单中的变量不传递给子进程
   }
   return safeEnv
 }

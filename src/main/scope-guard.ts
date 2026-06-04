@@ -19,6 +19,11 @@ import { generateId } from './shared/env'
 
 /** 定时扫描间隔（毫秒） */
 const ACTIVE_SCAN_INTERVAL_MS = 500
+/** 递归扫描最大深度 */
+const MAX_SCAN_DEPTH = 3
+
+/** 越界检测回调类型 */
+export type ScopeGuardViolationHandler = (sandboxId: string, violations: string[]) => void
 /** 执行后验证时忽略的文件/目录模式 */
 const IGNORED_PATTERNS = [
   /node_modules/,
@@ -67,6 +72,22 @@ export class ScopeGuard {
   private sandboxWatchDirs = new Map<string, Set<string>>()
   /** 扫描并发锁：防止 setInterval 回调重叠执行 */
   private scanLocks = new Set<string>()
+  /** 越界事件处理器（通知上层终止 Agent session） */
+  private violationHandlers: ScopeGuardViolationHandler[] = []
+
+  /** 注册越界事件处理器 */
+  onViolation(handler: ScopeGuardViolationHandler): void {
+    this.violationHandlers.push(handler)
+  }
+
+  /** 通知所有越界事件处理器 */
+  private notifyViolation(sandboxId: string, violations: string[]): void {
+    for (const handler of this.violationHandlers) {
+      try { handler(sandboxId, violations) } catch (err) {
+        console.error('[ScopeGuard] violation handler error:', err)
+      }
+    }
+  }
 
   /**
    * 准备沙箱环境
@@ -146,13 +167,7 @@ export class ScopeGuard {
 
       if (!allowedSet.has(resolved)) {
         console.warn(`[ScopeGuard] Out-of-bounds write detected by watcher: ${eventPath}`)
-        if (sandbox) {
-          try {
-            await this.rollback(sandbox)
-          } catch (err) {
-            console.error(`[ScopeGuard] Rollback failed for ${sandboxId}:`, err)
-          }
-        }
+        this.notifyViolation(sandboxId, [resolved])
       }
     }
 
@@ -451,7 +466,7 @@ export class ScopeGuard {
         const violations = await this.scanDirectoriesForViolations(dirsToScan, allowedSet)
         if (violations.length > 0) {
           console.warn(`[ScopeGuard] Active scan found violations:`, violations)
-          await this.rollback(sandbox)
+          this.notifyViolation(sandboxId, violations)
         }
       } catch (err) {
         console.error(`[ScopeGuard] Active scan error:`, err)
@@ -476,32 +491,46 @@ export class ScopeGuard {
   }
 
   /**
-   * 扫描指定目录，检测越界文件
-   * 只扫描白名单文件所在的目录，避免递归整个项目
+   * 扫描指定目录，检测越界文件（递归版，带深度限制）
    */
   private async scanDirectoriesForViolations(
     dirs: Set<string>,
     allowedSet: Set<string>,
   ): Promise<string[]> {
     const violations: string[] = []
-
     for (const dir of dirs) {
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true })
-        for (const entry of entries) {
-          if (!entry.isFile()) continue
-          const fullPath = path.join(dir, entry.name)
-          if (shouldIgnorePath(fullPath)) continue
+      await this.scanDirRecursive(dir, allowedSet, violations, 0)
+    }
+    return violations
+  }
+
+  /**
+   * 递归扫描目录，检测不在白名单中的文件
+   */
+  private async scanDirRecursive(
+    dir: string,
+    allowedSet: Set<string>,
+    violations: string[],
+    depth: number,
+  ): Promise<void> {
+    if (depth > MAX_SCAN_DEPTH) return
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isFile() && !entry.isDirectory()) continue
+        const fullPath = path.join(dir, entry.name)
+        if (shouldIgnorePath(fullPath)) continue
+        if (entry.isFile()) {
           if (!allowedSet.has(fullPath)) {
             violations.push(fullPath)
           }
+        } else if (entry.isDirectory()) {
+          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1)
         }
-      } catch {
-        // 忽略无权限目录
       }
+    } catch {
+      // 忽略无权限目录
     }
-
-    return violations
   }
 
   // ============================================

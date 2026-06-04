@@ -18,6 +18,17 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+  test-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -34,8 +45,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  test:
+  test-e2e:
     runs-on: ubuntu-latest
+    needs: [build]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -44,4 +56,7 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npx playwright install --with-deps
-      - run: npm run test:e2e
+      - name: Run E2E tests (with virtual display)
+        uses: coactions/setup-xvfb@v1
+        with:
+          run: npm run test:e2e

@@ -9,6 +9,10 @@ import { NodeRepository } from '../repositories/node-repository'
 import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import type { TypedHandle } from './utils'
+import type { NodeType } from '@shared/types'
+import { IpcError, ErrorCode } from '../errors'
+
+const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
 
 export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, graphService: GraphService): void {
   const nodeRepo = new NodeRepository(db)
@@ -35,6 +39,9 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
 
   // ---------- 节点操作 ----------
   typedHandle('node:create', async (_, data) => {
+    if (!VALID_NODE_TYPES.includes(data.type)) {
+      throw new IpcError(`Invalid node type: ${data.type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
     return nodeRepo.create(data)
   })
 

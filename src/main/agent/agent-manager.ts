@@ -48,6 +48,21 @@ export class AgentManager {
     for (const adapter of this.registry.list()) {
       this.attachAdapterOutput(adapter)
     }
+
+    // 注册 ScopeGuard 越界回调：检测到越界写入时自动终止对应 session
+    this.scopeGuard.onViolation(async (sandboxId, violations) => {
+      console.error(`[AgentManager] Scope violation detected:`, violations)
+      for (const [sessionId, sandbox] of this.sandboxes) {
+        if (sandbox.id === sandboxId) {
+          try {
+            await this.terminateSession(sessionId)
+          } catch {
+            // 已终止或终止失败，忽略
+          }
+          break
+        }
+      }
+    })
   }
 
   /**

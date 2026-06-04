@@ -171,6 +171,8 @@ function decryptSettings(settings: BizGraphSettings): BizGraphSettings {
 const SETTINGS_FILENAME = 'settings.json'
 
 let cachedSettings: BizGraphSettings | null = null
+let cachedAt = 0
+const CACHE_TTL_MS = 30_000
 
 // ============================================
 // 配置读写
@@ -182,16 +184,18 @@ export async function getSettingsPath(): Promise<string> {
 }
 
 export async function readSettings(): Promise<BizGraphSettings> {
-  if (cachedSettings) return cachedSettings
+  if (cachedSettings && Date.now() - cachedAt < CACHE_TTL_MS) return cachedSettings
   const settingsPath = await getSettingsPath()
   try {
     const raw = await fs.readFile(settingsPath, 'utf-8')
     const parsed = JSON.parse(raw) as BizGraphSettings
     const merged = mergeSettings(DEFAULT_SETTINGS, parsed)
     cachedSettings = decryptSettings(merged)
+    cachedAt = Date.now()
     return cachedSettings
   } catch {
     cachedSettings = { ...DEFAULT_SETTINGS }
+    cachedAt = Date.now()
     return cachedSettings
   }
 }
@@ -394,7 +398,7 @@ export async function setApiKey(
   baseUrl?: string,
 ): Promise<void> {
   if (!ALLOWED_PROVIDERS.includes(provider as ApiKeyConfig['provider'])) {
-    throw new Error(`Invalid provider: ${provider}. Allowed: ${ALLOWED_PROVIDERS.join(', ')}`)
+    throw new BizGraphError(`Invalid provider: ${provider}. Allowed: ${ALLOWED_PROVIDERS.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
   }
   const settings = await readSettings()
   const idx = settings.apiKeys.findIndex((k) => k.provider === provider)

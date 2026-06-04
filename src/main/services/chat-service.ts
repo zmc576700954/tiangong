@@ -141,10 +141,20 @@ export class ChatService {
       timestamp: row.created_at,
       adapterName: row.adapter_name || undefined,
       status: row.status as ChatMessage['status'],
-      error: row.error ? JSON.parse(row.error) : undefined,
+      error: safeJsonParse(row.error),
       sessionId: row.session_id ?? undefined,
-      contextRefs: row.context_refs ? JSON.parse(row.context_refs) : undefined,
-      toolCalls: row.tool_calls ? JSON.parse(row.tool_calls) : undefined,
+      contextRefs: safeJsonParse(row.context_refs),
+      toolCalls: safeJsonParse(row.tool_calls),
     }
+  }
+}
+
+/** 安全解析 JSON 字段，解析失败返回 undefined */
+function safeJsonParse<T = unknown>(value: string | null | undefined): T | undefined {
+  if (!value) return undefined
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return undefined
   }
 }

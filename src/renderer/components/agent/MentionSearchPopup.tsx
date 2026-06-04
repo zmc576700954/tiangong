@@ -41,7 +41,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
     debounceRef.current = setTimeout(async () => {
       try {
         const results = await window.electronAPI['fs:searchFiles'](projectPath, filter, 12)
-        setFileResults(results.filter((r) => !r.isDirectory && !excludeIds.includes(r.path)))
+        setFileResults(results.filter((r) => !r.isDirectory && !excludeIds.includes(r.relativePath)))
       } catch {
         setFileResults([])
       } finally {
@@ -57,7 +57,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
     ? nodeResults
     : fileResults.map((f) => ({
         type: 'file' as const,
-        id: f.path,
+        id: f.relativePath,
         label: f.relativePath,
       }))
 

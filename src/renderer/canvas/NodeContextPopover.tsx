@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, FileText, Type, Search, Plus } from 'lucide-react'
-import type { ContextRef } from '@shared/types'
+import type { ContextRef, FileSearchResult } from '@shared/types'
 
 interface NodeContextPopoverProps {
   x: number
@@ -15,7 +15,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
   const [contexts, setContexts] = useState<ContextRef[]>(existingContexts)
   const [mode, setMode] = useState<'file' | 'text'>('file')
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<{ name: string; path: string }[]>([])
+  const [searchResults, setSearchResults] = useState<FileSearchResult[]>([])
   const [textValue, setTextValue] = useState('')
   const [textLabel, setTextLabel] = useState('')
   const [isSearching, setIsSearching] = useState(false)
@@ -51,9 +51,8 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
     return () => clearTimeout(timer)
   }, [searchQuery, mode, projectPath])
 
-  const addFileContext = (file: { name: string; path: string }) => {
-    const id = `ctx-file-${Date.now()}`
-    const ref: ContextRef = { type: 'file', id, label: file.name, source: 'user-attach' }
+  const addFileContext = (file: FileSearchResult) => {
+    const ref: ContextRef = { type: 'file', id: file.relativePath, label: file.name, source: 'user-attach' }
     if (!contexts.some((c) => c.type === 'file' && c.label === file.name)) {
       setContexts([...contexts, ref])
     }
@@ -132,13 +131,13 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
             {isSearching && <div className="text-[10px] text-muted-foreground px-2">搜索中...</div>}
             {searchResults.map((file) => (
               <button
-                key={file.path}
+                key={file.relativePath}
                 onClick={() => addFileContext(file)}
                 className="w-full text-left px-2 py-1 text-xs rounded hover:bg-muted flex items-center gap-1.5 transition-colors"
               >
                 <FileText className="w-3 h-3 text-muted-foreground flex-shrink-0" />
                 <span className="truncate">{file.name}</span>
-                <span className="text-[9px] text-muted-foreground truncate ml-auto">{file.path}</span>
+                <span className="text-[9px] text-muted-foreground truncate ml-auto">{file.relativePath}</span>
               </button>
             ))}
           </div>

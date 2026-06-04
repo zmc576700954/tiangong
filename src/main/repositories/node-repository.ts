@@ -98,16 +98,8 @@ export class NodeRepository {
   }
 
   async delete(id: string): Promise<void> {
-    await this.db.execute('BEGIN TRANSACTION')
-    try {
-      await this.db.execute({ sql: 'DELETE FROM edges WHERE source = ? OR target = ?', args: [id, id] })
-      await this.db.execute({ sql: 'DELETE FROM bug_nodes WHERE node_id = ?', args: [id] })
-      await this.db.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] })
-      await this.db.execute('COMMIT')
-    } catch (err) {
-      await this.db.execute('ROLLBACK').catch(() => {})
-      throw err
-    }
+    // 外键 ON DELETE CASCADE 会自动删除关联的 edges 和 bug_nodes
+    await this.db.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] })
   }
 
   async updateParentId(nodeId: string, parentId: string | null): Promise<void> {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAgentStore } from '../agentStore'
+import { useGraphStore } from '../graphStore'
 
 vi.stubGlobal('window', {
   electronAPI: {
@@ -27,9 +28,16 @@ describe('agentStore threads', () => {
     useAgentStore.setState({
       threads: [],
       currentThreadId: null,
-      sessions: [],
-      currentSessionId: null,
+      threadOutputs: new Map(),
       adapters: [],
+    })
+    // 设置一个带 projectPath 的图，使 sendMessage 的 fallback config 有效
+    useGraphStore.setState({
+      graphs: [{ id: 'g1', name: 'Test', type: 'online', projectPath: '/project', createdAt: '', updatedAt: '' }],
+      currentGraphId: 'g1',
+      nodes: [],
+      edges: [],
+      bugs: [],
     })
   })
 
@@ -198,19 +206,8 @@ describe('agentStore threads', () => {
 
   it('stopCurrentSession terminates session and marks streaming message as aborted', async () => {
     const threadId = useAgentStore.getState().createThread('claude-code')
-    // Simulate an active session
-    useAgentStore.setState({
-      sessions: [{
-        id: 'sess-1',
-        adapterName: 'claude-code',
-        nodeId: 'node-1',
-        status: 'running',
-        outputs: [],
-        startTime: Date.now(),
-      }],
-    })
     useAgentStore.getState().updateThreadStatus(threadId, 'running')
-    // Record sessionId on thread
+    // Record sessionId on thread (simulates an active session)
     useAgentStore.setState({
       threads: useAgentStore.getState().threads.map((t) =>
         t.id === threadId ? { ...t, sessionId: 'sess-1' } : t,
@@ -230,6 +227,7 @@ describe('agentStore threads', () => {
 
     const thread = useAgentStore.getState().threads.find((t) => t.id === threadId)!
     expect(thread.status).toBe('idle')
+    expect(thread.sessionId).toBeUndefined()
     expect(thread.messages[0].status).toBe('aborted')
     expect(thread.messages[0].content).toBe('partial output')
   })

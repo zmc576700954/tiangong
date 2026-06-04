@@ -251,7 +251,6 @@ export interface ResolvedContext {
 /** 文件搜索结果（用于 @ 提及文件） */
 export interface FileSearchResult {
   name: string
-  path: string
   relativePath: string
   isDirectory: boolean
 }

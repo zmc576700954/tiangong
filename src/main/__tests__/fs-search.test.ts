@@ -51,7 +51,6 @@ describe('searchFilesRecursive', () => {
     expect(results).toHaveLength(1)
     expect(results[0].name).toBe('App.tsx')
     expect(results[0].relativePath).toBe(path.join('src', 'App.tsx'))
-    expect(results[0].path).toBe(path.join('/project', 'src', 'App.tsx'))
   })
 
   it('should skip node_modules and .git', async () => {

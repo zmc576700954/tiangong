@@ -14,7 +14,7 @@ interface BizNodeProps {
 export function BizNodeComponent({
   id: _id,
   data,
-  selected: _selected,
+  selected,
   onContextMenu,
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
@@ -25,8 +25,9 @@ export function BizNodeComponent({
       <div
         className="group px-6 py-4 rounded-xl border-2 min-w-[180px] shadow-md cursor-default"
         style={{
-          borderColor: typeColor,
+          borderColor: selected ? '#3b82f6' : typeColor,
           background: `linear-gradient(135deg, ${typeColor}08, ${typeColor}15)`,
+          boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.3)' : undefined,
         }}
         onContextMenu={onContextMenu}
       >
@@ -72,7 +73,9 @@ export function BizNodeComponent({
       className={cn(
         'group px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
         statusClass,
+        selected && 'ring-2 ring-blue-400 ring-offset-1',
       )}
+      style={selected ? { borderColor: '#3b82f6' } : undefined}
       onContextMenu={onContextMenu}
     >
       {/* Target handles: top + left (连线入端) */}

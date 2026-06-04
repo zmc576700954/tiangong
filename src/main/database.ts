@@ -39,6 +39,8 @@ export async function initDatabase(): Promise<Client> {
 
   // 启用 WAL 模式提升并发读性能
   await client.execute('PRAGMA journal_mode = WAL')
+  // 启用外键约束
+  await client.execute('PRAGMA foreign_keys = ON')
   // 设置 WAL 自动 checkpoint 阈略（Pages），防止 WAL 文件无限增长
   await client.execute('PRAGMA wal_autocheckpoint = 1000')
 
@@ -68,8 +70,8 @@ export async function closeDatabase(): Promise<void> {
     await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => {})
     await client.execute('PRAGMA optimize')
     // 如果客户端支持显式 close，优先调用以释放底层资源
-    if (typeof (client as any).close === 'function') {
-      await (client as any).close()
+    if ('close' in client && typeof (client as { close: unknown }).close === 'function') {
+      await (client as { close: () => Promise<void> }).close()
     }
     client = null
   }
@@ -257,7 +259,8 @@ async function rebuildTableIfNeeded(
 
 async function migrate(): Promise<void> {
   const db = getClient()
-
+  await db.execute('SAVEPOINT migrate_sp')
+  try {
   // Graphs table (dual graph model: online / dev)
   await rebuildTableIfNeeded(db, 'graphs', `
     CREATE TABLE graphs (
@@ -300,8 +303,8 @@ async function migrate(): Promise<void> {
   await rebuildTableIfNeeded(db, 'edges', `
     CREATE TABLE edges (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      target TEXT NOT NULL,
+      source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       label TEXT,
       edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
       graph_id TEXT NOT NULL,
@@ -320,7 +323,7 @@ async function migrate(): Promise<void> {
       description TEXT NOT NULL,
       severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
       status TEXT NOT NULL CHECK(status IN ('open', 'fixed', 'verified')),
-      node_id TEXT NOT NULL,
+      node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       graph_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -374,7 +377,7 @@ async function migrate(): Promise<void> {
   await rebuildTableIfNeeded(db, 'chat_messages', `
     CREATE TABLE chat_messages (
       id TEXT PRIMARY KEY,
-      thread_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK(role IN ('user', 'agent', 'system')),
       content TEXT NOT NULL,
       adapter_name TEXT NOT NULL,
@@ -406,7 +409,11 @@ async function migrate(): Promise<void> {
     if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
       throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
-    const safeType = ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'].includes(type.toUpperCase()) ? type.toUpperCase() : 'TEXT'
+    const ALLOWED_TYPES = new Set(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'])
+    if (!ALLOWED_TYPES.has(type.toUpperCase())) {
+      throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
+    }
+    const safeType = type.toUpperCase()
     try {
       await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
     } catch (err: unknown) {
@@ -424,4 +431,10 @@ async function migrate(): Promise<void> {
   await addColumnSafe('edges', 'description', 'TEXT')
   await addColumnSafe('edges', 'data_flow', 'TEXT')
   await addColumnSafe('edges', 'strength', 'REAL')
+
+    await db.execute('RELEASE migrate_sp')
+  } catch (err) {
+    await db.execute('ROLLBACK TO migrate_sp').catch(() => {})
+    throw err
+  }
 }
