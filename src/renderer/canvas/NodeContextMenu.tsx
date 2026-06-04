@@ -124,6 +124,7 @@ export function NodeContextMenu({
       <div className="px-2 pb-1">
         <button
           onClick={() => onStartConnect(nodeId)}
+          data-testid="node-menu-connect"
           className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
         >
           <Link className="w-3 h-3" />
@@ -154,6 +155,7 @@ export function NodeContextMenu({
           {onEnrichNode && (
             <button
               onClick={() => { onEnrichNode(nodeId); onClose() }}
+              data-testid="node-menu-enrich"
               className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
             >
               <Sparkles className="w-3 h-3" />
@@ -201,6 +203,7 @@ export function NodeContextMenu({
         <div className="border-t mt-1 pt-1">
           <button
             onClick={() => onDelete(nodeId)}
+            data-testid="node-menu-delete"
             className="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
           >
             <Trash2 className="w-3.5 h-3.5" />

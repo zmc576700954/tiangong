@@ -371,7 +371,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const hasProjectNode = graphNodes.some((n) => n.type === 'project')
 
   return (
-    <div className="w-full h-full relative">
+    <div className="w-full h-full relative" data-testid="graph-canvas">
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}

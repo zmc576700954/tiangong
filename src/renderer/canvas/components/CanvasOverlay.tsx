@@ -71,7 +71,7 @@ export function CanvasOverlay({
     <>
       {/* 空白画布引导 */}
       {isEmpty && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" data-testid="empty-canvas">
           <div className="text-center space-y-4 opacity-60">
             <div className="w-16 h-16 mx-auto rounded-2xl bg-muted flex items-center justify-center">
               <MapIcon className="w-8 h-8 text-muted-foreground" />
@@ -105,6 +105,7 @@ export function CanvasOverlay({
             <button
               key={type}
               onClick={() => onCreateNode(type)}
+              data-testid={`canvas-menu-create-${type}`}
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: NODE_TYPE_COLORS[type] }} />
@@ -118,6 +119,7 @@ export function CanvasOverlay({
       {showEdgeTypeMenu && pendingConnection && (
         <div
           className="absolute z-50 bg-background border rounded-lg shadow-lg py-2 w-56"
+          data-testid="edge-type-menu"
           style={{ left: edgeMenuPosition.x, top: edgeMenuPosition.y }}
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
@@ -137,6 +139,7 @@ export function CanvasOverlay({
                   setEdgeNote('')
                 }
               }}
+              data-testid={`edge-type-${opt.type}`}
               className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <div
