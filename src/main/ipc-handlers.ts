@@ -17,7 +17,6 @@ import { AdapterRegistry } from './agent/adapter-registry'
 import { SessionRouter } from './agent/session-router'
 import { OutputBroadcaster } from './agent/output-broadcaster'
 import { AgentManager } from './agent/agent-manager'
-import { AgentService } from './services/agent-service'
 import { GraphService } from './services/graph-service'
 import { IpcError, ErrorCode } from './errors'
 
@@ -31,6 +30,7 @@ import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
 import { registerChatHandlers } from './ipc/chat'
+import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
 import type { ValidateFsPath } from './ipc/fs'
 
@@ -49,7 +49,6 @@ registry.register(new MindMapAdapter())
 const router = new SessionRouter(registry)
 const broadcaster = new OutputBroadcaster()
 const agentManager = new AgentManager(registry, router, broadcaster)
-const agentService = new AgentService(agentManager)
 const gitAgent = new GitAgent()
 
 export { agentManager }
@@ -71,33 +70,48 @@ export function registerIpcHandlers(): void {
   const chatService = new ChatService(db)
   const typedHandle = createTypedHandle(ipcMain)
 
-  // ---------- 会话级允许路径（渲染进程 localStorage 中保存的项目路径） ----------
+  // ---------- 会话级允许路径（按窗口隔离） ----------
   /** 最大允许的会话路径数量，防止内存无限增长 */
   const MAX_SESSION_ALLOWED_PATHS = 50
-  const sessionAllowedPaths = new Set<string>()
+  const sessionPathsByWindow = new Map<number, Set<string>>()
 
   /**
-   * 添加路径到会话允许列表，带大小限制（LRU 策略）。
-   * 当超过上限时移除最早添加的路径。
+   * 添加路径到指定窗口的会话允许列表，带大小限制（LRU 策略）。
    */
-  function addSessionAllowedPath(validatedPath: string): void {
-    if (sessionAllowedPaths.has(validatedPath)) {
-      // 已存在则移到最新（删除后重新添加）
-      sessionAllowedPaths.delete(validatedPath)
+  function addSessionAllowedPath(webContentsId: number, validatedPath: string): void {
+    let paths = sessionPathsByWindow.get(webContentsId)
+    if (!paths) {
+      paths = new Set()
+      sessionPathsByWindow.set(webContentsId, paths)
     }
-    sessionAllowedPaths.add(validatedPath)
+    if (paths.has(validatedPath)) {
+      paths.delete(validatedPath)
+    }
+    paths.add(validatedPath)
 
-    // 超出限制时移除最早的条目
-    while (sessionAllowedPaths.size > MAX_SESSION_ALLOWED_PATHS) {
-      const first = sessionAllowedPaths.values().next().value
+    while (paths.size > MAX_SESSION_ALLOWED_PATHS) {
+      const first = paths.values().next().value
       if (first !== undefined) {
-        sessionAllowedPaths.delete(first)
+        paths.delete(first)
       }
     }
   }
 
+  /** 获取指定窗口的所有允许路径 */
+  function getSessionAllowedPaths(webContentsId: number): Set<string> {
+    return sessionPathsByWindow.get(webContentsId) ?? new Set()
+  }
+
+  // 窗口关闭时自动清理对应路径集
+  app.on('browser-window-created', (_event, win) => {
+    win.on('closed', () => {
+      sessionPathsByWindow.delete(win.webContents.id)
+    })
+  })
+
   // ---------- 路径安全校验 ----------
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
+    const { senderId } = getIpcContext()
     const resolved = path.resolve(targetPath)
     const normalized = path.normalize(resolved)
 
@@ -145,8 +159,8 @@ export function registerIpcHandlers(): void {
       console.warn('[IPC] Failed to load project paths for path validation:', err)
     }
 
-    // 会话级允许路径（渲染进程 localStorage 保存的项目路径）
-    for (const p of sessionAllowedPaths) {
+    // 会话级允许路径（按窗口隔离）
+    for (const p of getSessionAllowedPaths(senderId)) {
       allowedRoots.push(path.resolve(p))
     }
 
@@ -167,7 +181,7 @@ export function registerIpcHandlers(): void {
 
   // ---------- 注册各领域 handlers ----------
   registerGraphHandlers(db, typedHandle, graphService)
-  registerAgentHandlers(agentService, typedHandle)
+  registerAgentHandlers(agentManager, typedHandle)
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService)
@@ -177,13 +191,14 @@ export function registerIpcHandlers(): void {
   registerChatHandlers(chatService, typedHandle)
 
   // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
-  typedHandle('fs:registerProjectPaths', async (_, paths: unknown) => {
+  typedHandle('fs:registerProjectPaths', async (event, paths: unknown) => {
     if (!Array.isArray(paths)) return
+    const { senderId } = getIpcContext()
     for (const p of paths) {
       if (typeof p !== 'string' || !p.trim()) continue
       try {
         const validatedPath = await validateFsPath(p.trim(), 'read')
-        addSessionAllowedPath(validatedPath)
+        addSessionAllowedPath(senderId, validatedPath)
       } catch {
         // 跳过无效路径
       }

@@ -5,6 +5,7 @@
 import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { IpcError, ErrorCode } from '../errors'
+import { ipcContext } from './context'
 
 /** 单个频率限制条目 */
 interface RateLimitEntry {
@@ -140,7 +141,9 @@ export function createTypedHandle(
     ipcMain.handle(channel, async (event, ...args) => {
       try {
         checkRateLimit(channel, event.sender.id)
-        return await handler(event, ...args)
+        return await ipcContext.run({ senderId: event.sender.id }, () =>
+          handler(event, ...args),
+        )
       } catch (err) {
         if (err instanceof IpcError) throw err
         throw new IpcError(
