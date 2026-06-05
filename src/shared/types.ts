@@ -634,6 +634,10 @@ export interface IpcApi {
   'mindmap:enrichNode': (projectPath: string, nodeId: string, nodeType: NodeType, nodeTitle: string, relatedFiles?: string[], contextRefs?: ContextRef[]) => Promise<NodeEnrichment>
   'mindmap:refine': (projectPath: string, scope: 'project' | 'module' | 'node', targetId: string, feedback: string) => Promise<ScanModule[] | ScanModule | NodeEnrichment>
   'mindmap:buildDevPrompt': (nodeId: string, nodeTitle: string, nodeType: NodeType, taskType: 'feature' | 'bugfix' | 'refactor', graphId: string, contextRefs?: ContextRef[]) => Promise<string>
+
+  // ScopeGuard 操作
+  'scopeGuard:rollbackFile': (sessionId: string, filePath: string) => Promise<boolean>
+  'scopeGuard:commitSession': (sessionId: string) => Promise<ValidationResult>
 }
 
 // ============================================

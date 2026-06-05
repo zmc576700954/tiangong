@@ -87,6 +87,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   'settings:refreshCli',
   'settings:installCli',
   'settings:setApiKey',
+
+  // ScopeGuard
+  'scopeGuard:rollbackFile',
+  'scopeGuard:commitSession',
 ]
 
 // Build IPC API object

@@ -342,6 +342,31 @@ export class ScopeGuard {
   }
 
   /**
+   * 回滚单个文件到备份状态
+   */
+  async rollbackFile(sandbox: Sandbox, filePath: string): Promise<boolean> {
+    const relativePath = path.relative(sandbox.workingDir, filePath)
+    const backupPath = path.join(sandbox.backupDir, relativePath)
+
+    try {
+      const content = await fs.readFile(backupPath, 'utf-8')
+      await fs.writeFile(filePath, content, 'utf-8')
+      console.log(`[ScopeGuard] Rolled back file: ${relativePath}`)
+      return true
+    } catch {
+      // File may not have existed before (new file) — delete it
+      try {
+        await fs.unlink(filePath)
+        console.log(`[ScopeGuard] Deleted new file: ${relativePath}`)
+        return true
+      } catch {
+        console.warn(`[ScopeGuard] Failed to rollback ${relativePath}`)
+        return false
+      }
+    }
+  }
+
+  /**
    * 提交变更（确认合规后调用）
    * 执行后验证通过后调用
    */
