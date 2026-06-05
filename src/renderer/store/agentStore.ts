@@ -36,6 +36,7 @@ interface AgentState {
   persistMessage: (threadId: string, message: ChatMessage) => Promise<void>
   persistThreadMessages: (threadId: string) => Promise<void>
   hydrateOnStart: () => Promise<void>
+  listenForStatusChanges: () => () => void
 }
 
 export const useAgentStore = create<AgentState>((set, get) => ({
@@ -159,6 +160,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       upstreamContext: '',
       downstreamContext: '',
       nodeTitle: thread.nodeBound ?? '',
+      nodeId: thread.nodeBound,
       acceptanceCriteria: [],
     }
 
@@ -415,5 +417,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       console.error('[agentStore] Failed to hydrate threads:', err)
     }
+  },
+
+  listenForStatusChanges: () => {
+    if (typeof window === 'undefined' || !window.electronAPI?.onAgentStatusChange) return () => {}
+    const cleanup = window.electronAPI.onAgentStatusChange(
+      (_sessionId: string, nodeId: string, status: string) => {
+        useGraphStore.getState().updateNode(nodeId, { status: status as any })
+      },
+    )
+    return cleanup
   },
 }))

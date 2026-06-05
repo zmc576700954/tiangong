@@ -109,6 +109,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.off('agent:onOutput', handler)
   },
 
+  // Agent status change event listener
+  onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, sessionId: string, nodeId: string, status: string) =>
+      callback(sessionId, nodeId, status)
+    ipcRenderer.on('agent:onStatusChange', handler)
+    return () => { ipcRenderer.removeListener('agent:onStatusChange', handler) }
+  },
+
   // Session started event (for sessionId persistence)
   onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => {
     const handler = (_: unknown, threadId: string, sessionId: string) => {
@@ -129,6 +137,7 @@ declare global {
   interface Window {
     electronAPI: ExposedApi & {
       onAgentOutput: (callback: (sessionId: string, output: AgentOutput) => void) => () => void
+      onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => () => void
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       platform: string
     }

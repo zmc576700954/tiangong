@@ -61,6 +61,12 @@ broadcaster.onBroadcast((adapterName, output) => {
   }
 })
 
+agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+  }
+})
+
 // ============================================
 // IPC 处理器注册
 // ============================================

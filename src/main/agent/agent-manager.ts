@@ -38,6 +38,7 @@ export class AgentManager {
   private sessionAdapterNames = new Map<string, string>()
   /** sessionEnded 事件处理器（按适配器存储以便清理） */
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
+  private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
 
   constructor(
     private registry: AdapterRegistry,
@@ -154,6 +155,18 @@ export class AgentManager {
     this.broadcastNames.clear()
   }
 
+  setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
+    this.statusChangeCallback = cb
+  }
+
+  getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
+    return this.sandboxes.get(sessionId)
+  }
+
+  get scopeGuardInstance(): import('../scope-guard').ScopeGuard {
+    return this.scopeGuard
+  }
+
   getAdapter(name: string): AgentAdapter | undefined {
     return this.registry.get(name)
   }
@@ -217,6 +230,10 @@ export class AgentManager {
     }
 
     this.router.bind(session.id, adapterName)
+    // Emit status change: node → developing
+    if (config.nodeId) {
+      this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
+    }
     return { sessionId: session.id }
   }
 
@@ -286,6 +303,11 @@ export class AgentManager {
     if (sandbox) {
       try {
         await this.scopeGuard.commitChanges(sandbox)
+        // Emit status change: node → testing
+        const config = this.sessionConfigs.get(sessionId)
+        if (config?.nodeId) {
+          this.statusChangeCallback?.(sessionId, config.nodeId, 'testing')
+        }
       } catch (err) {
         if (err instanceof ScopeGuardError) {
           // 验证失败（越界写入），错误已包含在 commitChanges 的日志中

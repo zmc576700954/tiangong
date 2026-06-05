@@ -251,6 +251,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     streamingMsgIdRef.current = null
   }, [currentThreadId])
 
+  // Listen for agent status changes to sync node status
+  useEffect(() => {
+    const cleanup = useAgentStore.getState().listenForStatusChanges()
+    return cleanup
+  }, [])
+
   // Consume pendingContextRef from file tree right-click
   useEffect(() => {
     if (!pendingContextRef) return
@@ -307,6 +313,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       upstreamContext: '',
       downstreamContext: '',
       nodeTitle: selectedNode?.title ?? '',
+      nodeId: selectedNode?.id,
       acceptanceCriteria: selectedNode?.acceptanceCriteria ?? [],
     }
 

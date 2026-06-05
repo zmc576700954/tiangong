@@ -194,6 +194,8 @@ export interface AgentSessionConfig {
   bugContext?: BugContext[]
   /** Claude Code 会话续接 ID，非空时 spawn 命令加 --resume */
   resumeSessionId?: string
+  /** 关联的节点 ID（用于状态同步） */
+  nodeId?: string
 }
 
 export interface BugContext {
@@ -617,6 +619,7 @@ export interface IpcApi {
 
   // 事件监听
   'agent:onOutput': (sessionId: string, output: AgentOutput) => void
+  'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
 
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
