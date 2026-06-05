@@ -148,7 +148,39 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           return
         }
 
-        if (output.type === 'stdout' || output.type === 'file_change') {
+        if (output.type === 'file_change') {
+          const filePath = output.filePath
+          if (!filePath) return
+
+          // Ensure streaming message exists
+          if (!streamingMsgIdRef.current) {
+            const msgId = `output-${output.timestamp}`
+            streamingMsgIdRef.current = msgId
+            store.appendChatMessage(tid, {
+              id: msgId,
+              role: 'agent',
+              content: '',
+              timestamp: output.timestamp,
+              adapterName,
+              status: 'streaming',
+              toolCalls: [],
+            })
+          }
+
+          // Construct ToolCallBlock from file_change output
+          const toolCall: import('@shared/types').ToolCallBlock = {
+            type: output.changeType === 'add' ? 'file_create' : 'file_edit',
+            filePath,
+            content: output.data,
+            status: 'done',
+          }
+
+          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
+          store.updateThreadStatus(tid, 'running')
+          return
+        }
+
+        if (output.type === 'stdout') {
           const text = output.data.trim()
           if (!text) return
 
