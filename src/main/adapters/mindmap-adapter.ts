@@ -53,6 +53,7 @@ export class MindMapAdapter extends BaseAdapter {
       ? `${scopePrompt}\n\n---\n\n${command.description}`
       : command.description
 
+    let sessionEnded = false
     try {
       // 使用 BaseAdapter 的输出处理器模式，解析文件变更
       this.emitOutput({
@@ -75,6 +76,7 @@ export class MindMapAdapter extends BaseAdapter {
           errorCode: 'TIMEOUT',
         })
         this.emit('sessionEnded', session.id, 'error')
+        sessionEnded = true
         return
       }
 
@@ -87,6 +89,7 @@ export class MindMapAdapter extends BaseAdapter {
           errorCode: 'AGENT_CRASH',
         })
         this.emit('sessionEnded', session.id, 'crash')
+        sessionEnded = true
         return
       }
 
@@ -105,6 +108,7 @@ export class MindMapAdapter extends BaseAdapter {
         timestamp: Date.now(),
       })
       this.emit('sessionEnded', session.id, 'success')
+      sessionEnded = true
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -114,6 +118,17 @@ export class MindMapAdapter extends BaseAdapter {
         errorCode: 'AGENT_CRASH',
       })
       this.emit('sessionEnded', session.id, 'error')
+      sessionEnded = true
+    } finally {
+      if (!sessionEnded) {
+        this.emitOutput({
+          type: 'error',
+          data: 'MindMap 适配器异常退出（未预期的代码路径）',
+          timestamp: Date.now(),
+          errorCode: 'AGENT_CRASH',
+        })
+        this.emit('sessionEnded', session.id, 'error')
+      }
     }
   }
 }

@@ -547,7 +547,9 @@ export class McpAdapter extends BaseAdapter {
 
   protected async doTerminate(_session: AgentSession, _proc?: unknown): Promise<void> {
     this.cleanupMcpResources(_session.id)
-    // 基类 doTerminate 在 proc 为 undefined 时直接 return，无需调用
+    // MCP 适配器不在 this.processes 中注册进程（startSession 不传 proc 给 registerSession），
+    // 因此 proc 始终为 undefined。显式调用 super 以确保基类未来增加清理逻辑时不被跳过。
+    await super.doTerminate(_session, undefined)
   }
 
   /**
