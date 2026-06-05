@@ -88,9 +88,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       threads: [...state.threads, thread],
       currentThreadId: id,
     }))
-    // 异步持久化到 DB
+    // 异步持久化到 DB，失败时标记 thread 状态提醒用户
     window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).catch((err) => {
       console.error('[agentStore] Failed to persist new thread:', err)
+      set((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === id ? { ...t, status: 'error' as const } : t,
+        ),
+      }))
     })
     return id
   },
@@ -176,8 +181,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ),
         }))
 
-        // 持久化 sessionId 到 DB
-        window.electronAPI['thread:update'](threadId, { sessionId }).catch(console.error)
+        // 持久化 sessionId 到 DB（失败时 warn，retry 机制可容忍）
+        window.electronAPI['thread:update'](threadId, { sessionId }).catch((err) => {
+          console.warn('[agentStore] Failed to persist sessionId, retry may lose continuity:', err)
+        })
       }
 
       const command: AgentCommand = {
@@ -226,15 +233,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   renameThread: (threadId, title) => {
+    const prevTitle = get().threads.find((t) => t.id === threadId)?.title
     set((state) => ({
       threads: state.threads.map((t) =>
         t.id === threadId ? { ...t, title } : t,
       ),
     }))
-    window.electronAPI['thread:update'](threadId, { title }).catch(console.error)
+    window.electronAPI['thread:update'](threadId, { title }).catch((err) => {
+      console.error('[agentStore] Failed to persist thread rename:', err)
+      if (prevTitle) {
+        set((state) => ({
+          threads: state.threads.map((t) =>
+            t.id === threadId ? { ...t, title: prevTitle } : t,
+          ),
+        }))
+      }
+    })
   },
 
-  deleteThread: (threadId) => {
+  deleteThread: async (threadId) => {
+    try {
+      await window.electronAPI['thread:delete'](threadId)
+    } catch (err) {
+      console.error('[agentStore] Failed to delete thread from DB:', err)
+    }
+    // 无论 DB 是否成功都从 UI 移除（避免阻塞用户操作）
     set((state) => ({
       threads: state.threads.filter((t) => t.id !== threadId),
       currentThreadId:
@@ -242,7 +265,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ? state.threads.find((t) => t.id !== threadId)?.id ?? null
           : state.currentThreadId,
     }))
-    window.electronAPI['thread:delete'](threadId).catch(console.error)
   },
 
   selectThread: (id) => {

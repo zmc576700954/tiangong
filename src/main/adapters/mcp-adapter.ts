@@ -57,6 +57,77 @@ interface LlmResponse {
 }
 
 // ============================================
+// Response Parsers（独立导出，便于单元测试）
+// ============================================
+
+/** 解析 Anthropic Messages API 响应 */
+export function parseAnthropicResponse(data: unknown): LlmResponse {
+  const d = data as Record<string, unknown>
+  if (!d || !Array.isArray(d.content)) {
+    throw new AdapterError('Anthropic API returned unexpected response shape', 'mcp')
+  }
+  const content = d.content as Array<Record<string, unknown>>
+  const stopReason = d.stop_reason as string | undefined
+  const textParts: string[] = []
+  const toolCalls: UnifiedToolCall[] = []
+  for (const block of content) {
+    if (block.type === 'text' && typeof block.text === 'string') {
+      textParts.push(block.text)
+    } else if (block.type === 'tool_use' && typeof block.id === 'string' && typeof block.name === 'string') {
+      toolCalls.push({ id: block.id, name: block.name, arguments: (block.input as Record<string, unknown>) ?? {} })
+    }
+  }
+  return {
+    text: textParts.join('\n'),
+    toolCalls,
+    stopReason: stopReason === 'tool_use' ? 'tool_use' : 'end_turn',
+  }
+}
+
+/** 解析 OpenAI Chat Completions API 响应 */
+export function parseOpenAiResponse(data: unknown): LlmResponse {
+  const d = data as Record<string, unknown>
+  if (!d || !Array.isArray(d.choices)) {
+    throw new AdapterError('OpenAI API returned unexpected response shape', 'mcp')
+  }
+  const choices = d.choices as Array<Record<string, unknown>>
+  const msg = (choices[0]?.message ?? {}) as Record<string, unknown>
+  const toolCallsRaw = (msg.tool_calls ?? []) as Array<Record<string, unknown>>
+  const toolCalls: UnifiedToolCall[] = []
+  for (const tc of toolCallsRaw) {
+    if (typeof tc.id !== 'string') continue
+    const fn = (tc.function ?? {}) as Record<string, unknown>
+    const name = typeof fn.name === 'string' ? fn.name : ''
+    let args: Record<string, unknown> = {}
+    if (typeof fn.arguments === 'string') {
+      try { args = JSON.parse(fn.arguments) } catch { /* keep empty */ }
+    }
+    if (name) toolCalls.push({ id: tc.id, name, arguments: args })
+  }
+  return {
+    text: typeof msg.content === 'string' ? msg.content : '',
+    toolCalls,
+    stopReason: choices[0]?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+  }
+}
+
+/** 解析 Gemini GenerateContent API 响应 */
+export function parseGeminiResponse(data: unknown): LlmResponse {
+  const d = data as Record<string, unknown>
+  if (!d) {
+    throw new AdapterError('Gemini API returned empty response', 'mcp')
+  }
+  const candidates = d.candidates as Array<Record<string, unknown>> | undefined
+  const parts = (candidates?.[0]?.content as Record<string, unknown> | undefined)?.parts as Array<Record<string, unknown>> | undefined
+  const text = typeof parts?.[0]?.text === 'string' ? parts[0].text : ''
+  return {
+    text,
+    toolCalls: [],
+    stopReason: 'end_turn' as const,
+  }
+}
+
+// ============================================
 // Provider 配置（抽象 LLM 调用差异 + Tool Use）
 // ============================================
 
@@ -137,26 +208,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
       }
       return body
     },
-    parseResponse: (data: unknown) => {
-      const d = data as {
-        content?: Array<{ type: string; text?: string; id?: string; name?: string; input?: Record<string, unknown> }>
-        stop_reason?: string
-      }
-      const textParts: string[] = []
-      const toolCalls: UnifiedToolCall[] = []
-      for (const block of d.content ?? []) {
-        if (block.type === 'text' && block.text) {
-          textParts.push(block.text)
-        } else if (block.type === 'tool_use' && block.id && block.name) {
-          toolCalls.push({ id: block.id, name: block.name, arguments: block.input ?? {} })
-        }
-      }
-      return {
-        text: textParts.join('\n'),
-        toolCalls,
-        stopReason: d.stop_reason === 'tool_use' ? 'tool_use' : 'end_turn',
-      }
-    },
+    parseResponse: parseAnthropicResponse,
   },
   openai: {
     defaultModel: 'gpt-4o',
@@ -199,34 +251,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
       }
       return body
     },
-    parseResponse: (data: unknown) => {
-      const d = data as {
-        choices?: Array<{
-          message?: {
-            content?: string | null
-            tool_calls?: Array<{
-              id: string
-              function: { name: string; arguments: string }
-            }>
-          }
-          finish_reason?: string
-        }>
-      }
-      const msg = d.choices?.[0]?.message
-      const toolCalls: UnifiedToolCall[] = []
-      for (const tc of msg?.tool_calls ?? []) {
-        try {
-          toolCalls.push({ id: tc.id, name: tc.function.name, arguments: JSON.parse(tc.function.arguments) })
-        } catch {
-          toolCalls.push({ id: tc.id, name: tc.function.name, arguments: {} })
-        }
-      }
-      return {
-        text: msg?.content ?? '',
-        toolCalls,
-        stopReason: d.choices?.[0]?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
-      }
-    },
+    parseResponse: parseOpenAiResponse,
   },
   deepseek: {
     defaultModel: 'deepseek-chat',
@@ -238,7 +263,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     }),
     // DeepSeek 兼容 OpenAI 格式
     buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
-    parseResponse: (data: unknown) => PROVIDER_CONFIGS.openai.parseResponse(data),
+    parseResponse: parseOpenAiResponse,
   },
   gemini: {
     defaultModel: 'gemini-1.5-flash',
@@ -265,16 +290,12 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
         contents,
       }
     },
-    parseResponse: (data: unknown) => {
-      const d = data as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
-      return {
-        text: d.candidates?.[0]?.content?.parts?.[0]?.text ?? '',
-        toolCalls: [],
-        stopReason: 'end_turn' as const,
-      }
-    },
+    parseResponse: parseGeminiResponse,
   },
 }
+
+/** Tool Result 传回 LLM 的最大字符数，防止单个结果撑爆上下文窗口 */
+const MAX_TOOL_RESULT_CHARS = 8000
 
 /** MCP 会话空闲超时时间（30 分钟） */
 const MCP_SESSION_TIMEOUT_MS = 30 * 60 * 1000
@@ -289,7 +310,7 @@ interface ApiRateLimitEntry {
   timestamps: number[]
 }
 
-class ApiRateLimiter {
+export class ApiRateLimiter {
   private entries = new Map<string, ApiRateLimitEntry>()
 
   check(sessionId: string): { allowed: boolean; retryAfterMs?: number } {
@@ -325,6 +346,32 @@ class ApiRateLimiter {
   cleanup(sessionId: string): void {
     this.entries.delete(sessionId)
   }
+}
+
+/**
+ * 根据 provider 匹配 API Key（独立函数，便于单元测试）
+ * 使用前缀匹配而非 includes，减少误匹配风险
+ */
+export function resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): ApiKeyConfig | undefined {
+  // 优先级1：根据 defaultModel 名称推断 provider（使用前缀/精确匹配）
+  if (defaultModel) {
+    const model = defaultModel.toLowerCase()
+    const providerMatchers: Array<{ provider: string; test: (m: string) => boolean }> = [
+      { provider: 'anthropic', test: (m) => m.startsWith('claude') },
+      { provider: 'openai', test: (m) => m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') },
+      { provider: 'deepseek', test: (m) => m.startsWith('deepseek') },
+      { provider: 'gemini', test: (m) => m.startsWith('gemini') },
+    ]
+    for (const { provider, test } of providerMatchers) {
+      if (test(model)) {
+        const found = apiKeys.find((k) => k.provider === provider && k.key.length > 0)
+        if (found) return found
+      }
+    }
+  }
+
+  // 优先级2：返回第一个有对应 provider config 且 key 非空的 Key
+  return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
 }
 
 export class McpAdapter extends BaseAdapter {
@@ -517,32 +564,10 @@ export class McpAdapter extends BaseAdapter {
   }
 
   /**
-   * 根据 provider 匹配 API Key，而非盲目取第一个
-   * 如果 settings.defaultModel 包含 provider 名称线索，优先匹配对应的 Key
+   * 根据 provider 匹配 API Key（委托给独立导出函数）
    */
   private resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): ApiKeyConfig | undefined {
-    // 优先级1：根据 defaultModel 名称推断 provider
-    if (defaultModel) {
-      if (defaultModel.includes('claude') || defaultModel.includes('sonnet') || defaultModel.includes('opus')) {
-        const found = apiKeys.find((k) => k.provider === 'anthropic' && k.key.length > 0)
-        if (found) return found
-      }
-      if (defaultModel.includes('gpt') || defaultModel.includes('o1') || defaultModel.includes('o3') || defaultModel.includes('o4')) {
-        const found = apiKeys.find((k) => k.provider === 'openai' && k.key.length > 0)
-        if (found) return found
-      }
-      if (defaultModel.includes('deepseek')) {
-        const found = apiKeys.find((k) => k.provider === 'deepseek' && k.key.length > 0)
-        if (found) return found
-      }
-      if (defaultModel.includes('gemini')) {
-        const found = apiKeys.find((k) => k.provider === 'gemini' && k.key.length > 0)
-        if (found) return found
-      }
-    }
-
-    // 优先级2：返回第一个有对应 provider config 且 key 非空的 Key
-    return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
+    return resolveApiKey(apiKeys, defaultModel)
   }
 
   protected async doTerminate(_session: AgentSession, _proc?: unknown): Promise<void> {
@@ -722,7 +747,15 @@ export class McpAdapter extends BaseAdapter {
         })
       }
 
-      // 将 tool results 加入对话历史
+      // 将 tool results 加入对话历史（截断过大内容防撑爆上下文）
+      const truncatedRoute: ToolResult[] = toolResults.map((tr) => {
+        if (tr.content.length <= MAX_TOOL_RESULT_CHARS) return tr
+        return {
+          ...tr,
+          content: tr.content.substring(0, MAX_TOOL_RESULT_CHARS)
+            + `\n\n[Truncated: original ${tr.content.length} chars]`,
+        }
+      })
       messages.push({
         role: 'assistant',
         content: response.text,
@@ -731,7 +764,7 @@ export class McpAdapter extends BaseAdapter {
       messages.push({
         role: 'user',
         content: '',
-        toolResults: toolResults,
+        toolResults: truncatedRoute,
       })
     }
 

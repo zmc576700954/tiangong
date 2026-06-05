@@ -63,19 +63,19 @@ describe('agentStore threads', () => {
     expect(useAgentStore.getState().threads[0].title).toBe('Login Feature')
   })
 
-  it('deleteThread removes thread and selects next', () => {
+  it('deleteThread removes thread and selects next', async () => {
     const id1 = useAgentStore.getState().createThread('claude-code')
     const id2 = useAgentStore.getState().createThread('codex')
-    useAgentStore.getState().deleteThread(id1)
+    await useAgentStore.getState().deleteThread(id1)
     const state = useAgentStore.getState()
     expect(state.threads).toHaveLength(1)
     expect(state.threads[0].id).toBe(id2)
     expect(state.currentThreadId).toBe(id2)
   })
 
-  it('deleteThread clears currentThreadId when no threads remain', () => {
+  it('deleteThread clears currentThreadId when no threads remain', async () => {
     const id = useAgentStore.getState().createThread('claude-code')
-    useAgentStore.getState().deleteThread(id)
+    await useAgentStore.getState().deleteThread(id)
     expect(useAgentStore.getState().currentThreadId).toBeNull()
   })
 
