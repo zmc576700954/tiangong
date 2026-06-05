@@ -1,9 +1,11 @@
-import { memo } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode } from '@shared/types'
-import { Bug } from 'lucide-react'
+import { Bug, Loader2, AlertTriangle, Check } from 'lucide-react'
+import { useAgentStore } from '../store/agentStore'
+import { ChangeSummaryBadge } from './ChangeSummaryBadge'
 
 interface BizNodeProps {
   id: string
@@ -20,6 +22,29 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
   const isProject = data.type === 'project'
+
+  // Agent activity state
+  const agentThread = useAgentStore((s) =>
+    s.threads.find((t) => t.nodeBound === data.id)
+  )
+  const agentStatus = agentThread?.status
+  const isAgentRunning = agentStatus === 'running'
+  const isAgentError = agentStatus === 'error'
+  const isAgentCompleted = agentStatus === 'idle' && !!agentThread?.sessionId
+
+  // Fade-out for completed state
+  const [showCompleted, setShowCompleted] = useState(false)
+  useEffect(() => {
+    if (isAgentCompleted) {
+      setShowCompleted(true)
+      const timer = setTimeout(() => setShowCompleted(false), 3000)
+      return () => clearTimeout(timer)
+    }
+    setShowCompleted(false)
+  }, [isAgentCompleted])
+
+  const threadOutputs = useAgentStore((s) => s.threadOutputs)
+  const agentOutputs = agentThread ? (threadOutputs.get(agentThread.id) ?? []) : []
 
   if (isProject) {
     return (
@@ -72,9 +97,12 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   return (
     <div
       className={cn(
-        'group px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
+        'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
         statusClass,
         selected && 'ring-2 ring-blue-400 ring-offset-1',
+        isAgentRunning && 'border-orange-400 animate-pulse',
+        isAgentError && 'border-red-400',
+        showCompleted && 'border-green-400',
       )}
       style={selected ? { borderColor: '#3b82f6' } : undefined}
       onContextMenu={onContextMenu}
@@ -120,6 +148,24 @@ export const BizNodeComponent = memo(function BizNodeComponent({
           </div>
         )}
       </div>
+
+      {/* Agent activity badge */}
+      {(isAgentRunning || isAgentError || showCompleted) && (
+        <div className={cn(
+          'absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center shadow-sm',
+          isAgentRunning && 'bg-orange-400',
+          isAgentError && 'bg-red-400',
+          showCompleted && 'bg-green-400',
+        )}>
+          {isAgentRunning && <Loader2 className="w-3 h-3 text-white animate-spin" />}
+          {isAgentError && <AlertTriangle className="w-3 h-3 text-white" />}
+          {showCompleted && <Check className="w-3 h-3 text-white" />}
+        </div>
+      )}
+
+      {agentOutputs.length > 0 && (
+        <ChangeSummaryBadge outputs={agentOutputs} />
+      )}
     </div>
   )
 })
