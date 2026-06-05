@@ -537,6 +537,26 @@ export interface ProjectMemory {
 }
 
 // ============================================
+// Verification types
+// ============================================
+
+/** Verification result for a single acceptance criterion */
+export interface VerificationResult {
+  criterion: string
+  passed: boolean
+  justification: string
+}
+
+/** Verification report for a node */
+export interface VerificationReport {
+  nodeId: string
+  results: VerificationResult[]
+  passedCount: number
+  totalCount: number
+  timestamp: number
+}
+
+// ============================================
 // IPC 通信类型
 // ============================================
 
@@ -571,6 +591,12 @@ export interface IpcApi {
   'agent:resolveAndSendCommand': (sessionId: string, command: AgentCommand, contextRefs: ContextRef[], nodeIds: string[]) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
+  'agent:verify': (params: {
+    nodeId: string
+    acceptanceCriteria: string[]
+    messages: ChatMessage[]
+    fileChanges: AgentOutput[]
+  }) => Promise<VerificationReport>
 
   // Chat 会话记录
   'thread:list': (filters?: { nodeId?: string; graphId?: string }) => Promise<AgentThread[]>

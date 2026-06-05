@@ -12,7 +12,8 @@ import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { DiffReviewPanel } from './DiffReviewPanel'
-import type { ContextRef, AgentSessionConfig, AgentOutput } from '@shared/types'
+import { VerificationPanel } from './VerificationPanel'
+import type { ContextRef, AgentSessionConfig, AgentOutput, VerificationReport } from '@shared/types'
 import { generateId } from '../../lib/utils'
 
 interface AgentChatPanelProps {
@@ -44,6 +45,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
   const [showDiffReview, setShowDiffReview] = useState(false)
   const [committing, setCommitting] = useState(false)
+  const [showVerification, setShowVerification] = useState(false)
+  const [verificationReport, setVerificationReport] = useState<VerificationReport | null>(null)
+  const [verifying, setVerifying] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
 
   // Track the current streaming agent message ID within this render cycle
   const streamingMsgIdRef = useRef<string | null>(null)
@@ -527,11 +532,64 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                     }
                     useAgentStore.getState().updateThreadStatus(currentThread.id, 'reviewed')
                     setShowDiffReview(false)
+
+                    // Auto-trigger verification if node has acceptance criteria
+                    if (selectedNode?.acceptanceCriteria && selectedNode.acceptanceCriteria.length > 0) {
+                      setShowVerification(true)
+                      setVerifying(true)
+                      try {
+                        const report = await window.electronAPI['agent:verify']({
+                          nodeId: selectedNode.id,
+                          acceptanceCriteria: selectedNode.acceptanceCriteria,
+                          messages: currentThread.messages,
+                          fileChanges: rawOutputs.filter((o) => o.type === 'file_change'),
+                        })
+                        setVerificationReport(report)
+                      } catch (err) {
+                        console.error('[Verification] Failed:', err)
+                      } finally {
+                        setVerifying(false)
+                      }
+                    }
                   } catch (err) {
                     console.error('[DiffReview] Commit failed:', err)
                   } finally {
                     setCommitting(false)
                   }
+                }}
+              />
+            </div>
+          )}
+
+          {/* Verification Panel */}
+          {showVerification && (
+            <div className="flex-shrink-0 px-3 py-2">
+              <VerificationPanel
+                report={verificationReport}
+                loading={verifying}
+                currentRetry={retryCount}
+                onRetryFailed={async () => {
+                  if (!verificationReport) return
+                  const failedResults = verificationReport.results.filter((r) => !r.passed)
+                  setRetryCount((c) => c + 1)
+                  setVerifying(true)
+                  // Build retry prompt from failed criteria
+                  const retryPrompt = `Fix the following unmet criteria:\n${failedResults.map((r, i) => `${i + 1}. ${r.criterion}\n   Issue: ${r.justification}`).join('\n')}`
+                  // Send via handleSend
+                  handleSend(retryPrompt, attachedContexts)
+                  setVerifying(false)
+                }}
+                onMarkComplete={() => {
+                  if (selectedNode) {
+                    useGraphStore.getState().updateNode(selectedNode.id, { status: 'review' })
+                  }
+                  setShowVerification(false)
+                  setVerificationReport(null)
+                  setRetryCount(0)
+                }}
+                onBackToEdit={() => {
+                  setShowVerification(false)
+                  setVerificationReport(null)
                 }}
               />
             </div>

@@ -42,6 +42,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:sendCommand',
   'agent:resolveAndSendCommand',
   'agent:terminateSession',
+  'agent:verify',
 
   // Chat 会话记录
   'thread:list',
