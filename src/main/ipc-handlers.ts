@@ -21,7 +21,7 @@ import { AgentManager } from './agent/agent-manager'
 import { GraphService } from './services/graph-service'
 import { IpcError, ErrorCode } from './errors'
 
-import { createTypedHandle } from './ipc/utils'
+import { createTypedHandle, isBlockedSystemPath } from './ipc/utils'
 import { registerGraphHandlers } from './ipc/graph'
 import { registerAgentHandlers } from './ipc/agent'
 import { registerFsHandlers } from './ipc/fs'
@@ -123,30 +123,12 @@ export function registerIpcHandlers(): void {
     const normalized = path.normalize(resolved)
 
     // 1. 拒绝系统关键目录
-    const blockedPrefixes = process.platform === 'win32'
-      ? [
-          path.resolve(process.env.SystemRoot || 'C:\\Windows'),
-          path.resolve('C:\\Program Files'),
-          path.resolve('C:\\Program Files (x86)'),
-        ]
-      : [
-          '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
-          '/opt', '/sys', '/proc', '/dev',
-        ]
-
-    const sep = path.sep
-    for (const blocked of blockedPrefixes) {
-      const normalizedBlocked = path.normalize(blocked)
-      const isBlocked = process.platform === 'win32'
-        ? normalized.toLowerCase().startsWith(normalizedBlocked.toLowerCase() + sep) ||
-          normalized.toLowerCase() === normalizedBlocked.toLowerCase()
-        : normalized.startsWith(normalizedBlocked + sep) || normalized === normalizedBlocked
-      if (isBlocked) {
-        throw new IpcError(`Access denied: cannot ${operation} system directory`, ErrorCode.IPC_ACCESS_DENIED)
-      }
+    if (isBlockedSystemPath(normalized)) {
+      throw new IpcError(`Access denied: cannot ${operation} system directory`, ErrorCode.IPC_ACCESS_DENIED)
     }
 
     // 2. 构建允许的路径根目录
+    const sep = path.sep
     const allowedRoots: string[] = []
     allowedRoots.push(path.resolve(app.getPath('userData')))
     allowedRoots.push(path.resolve(app.getPath('temp')))

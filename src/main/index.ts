@@ -223,11 +223,14 @@ app.on('window-all-closed', () => {
 })
 
 let isQuitting = false
+let cleanupDone = false
 
 app.on('before-quit', async (event) => {
-  if (isQuitting) return
-  isQuitting = true
+  if (cleanupDone) return
   event.preventDefault()
+
+  if (isQuitting) return // cleanup 已在进行中，阻止退出直到完成
+  isQuitting = true
 
   // 5 秒超时保护，防止子进程挂起导致应用无法退出
   const cleanupWithTimeout = Promise.race([
@@ -252,5 +255,6 @@ app.on('before-quit', async (event) => {
   } catch (err) {
     console.error('Cleanup error during quit:', err)
   }
+  cleanupDone = true
   app.quit()
 })

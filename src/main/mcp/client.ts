@@ -98,17 +98,16 @@ export class McpClient extends EventEmitter {
       }
 
       // 策略1：等待进程首次输出数据（说明进程已就绪）
+      const fallbackTimer = setTimeout(() => {
+        this.proc?.stdout?.off('data', onDataOnce)
+        startHandshake()
+      }, 2000)
       const onDataOnce = () => {
+        clearTimeout(fallbackTimer)
         this.proc?.stdout?.off('data', onDataOnce)
         startHandshake()
       }
       this.proc.stdout?.on('data', onDataOnce)
-
-      // 策略2：若 2 秒内无输出，直接尝试握手（兼容无启动输出的服务器）
-      setTimeout(() => {
-        this.proc?.stdout?.off('data', onDataOnce)
-        startHandshake()
-      }, 2000)
     })
   }
 
@@ -183,12 +182,7 @@ export class McpClient extends EventEmitter {
         params,
       }
 
-      this.pending.set(id, { resolve, reject })
-
-      const line = JSON.stringify(message) + '\n'
-      this.proc.stdin?.write(line)
-
-      // 30 秒超时防护
+      // 先创建带超时清理的 handler，再一次性存入 pending，避免竞态
       const timeout = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id)
@@ -196,18 +190,19 @@ export class McpClient extends EventEmitter {
         }
       }, 30000)
 
-      // 包装 resolve/reject 以清除超时
-      const original = this.pending.get(id)!
       this.pending.set(id, {
         resolve: (v: unknown) => {
           clearTimeout(timeout)
-          original.resolve(v)
+          resolve(v)
         },
         reject: (e: Error) => {
           clearTimeout(timeout)
-          original.reject(e)
+          reject(e)
         },
       })
+
+      const line = JSON.stringify(message) + '\n'
+      this.proc.stdin?.write(line)
     })
   }
 
@@ -244,9 +239,9 @@ export class McpClient extends EventEmitter {
   }
 
   private rejectAll(err: Error): void {
-    for (const [id, { reject }] of this.pending) {
+    for (const { reject } of this.pending.values()) {
       reject(err)
-      this.pending.delete(id)
     }
+    this.pending.clear()
   }
 }

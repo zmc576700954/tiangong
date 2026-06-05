@@ -243,9 +243,12 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
   gemini: {
     defaultModel: 'gemini-1.5-flash',
     supportsTools: false,
-    buildUrl: (baseUrl, _key, model) => baseUrl
-      ? `${baseUrl}/models/${model}:generateContent`
-      : `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    buildUrl: (baseUrl, _key, model) => {
+      const safeModel = encodeURIComponent(model)
+      return baseUrl
+        ? `${baseUrl}/models/${safeModel}:generateContent`
+        : `https://generativelanguage.googleapis.com/v1beta/models/${safeModel}:generateContent`
+    },
     buildHeaders: (key, _baseUrl) => ({
       'Content-Type': 'application/json',
       'x-goog-api-key': key,
@@ -501,6 +504,7 @@ export class McpAdapter extends BaseAdapter {
         data: 'MCP session completed',
         timestamp: Date.now(),
       })
+      this.emit('sessionEnded', session.id, 'success')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -508,6 +512,7 @@ export class McpAdapter extends BaseAdapter {
         data: `LLM API error: ${msg}`,
         timestamp: Date.now(),
       })
+      this.emit('sessionEnded', session.id, 'error')
     }
   }
 
@@ -540,48 +545,32 @@ export class McpAdapter extends BaseAdapter {
     return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
   }
 
-  protected async doTerminate(session: AgentSession, _proc?: unknown): Promise<void> {
-    // 清理超时定时器
-    const timer = this.sessionTimers.get(session.id)
-    if (timer) {
-      clearTimeout(timer)
-      this.sessionTimers.delete(session.id)
-    }
-
-    this.cleanupSession(session.id)
-
-    // MCP adapter does not use child processes, pass undefined for proc
-    await super.doTerminate(session, undefined)
+  protected async doTerminate(_session: AgentSession, _proc?: unknown): Promise<void> {
+    this.cleanupMcpResources(_session.id)
+    // 基类 doTerminate 在 proc 为 undefined 时直接 return，无需调用
   }
 
   /**
-   * 清理会话资源（MCP 连接 + 定时器）
+   * 清理 MCP 专属资源（连接、定时器、频率限制记录）
+   * 不清理 sessions/processes 等基类管理的状态
    */
-  private cleanupSession(sessionId: string): void {
-    // 清理超时定时器
+  private cleanupMcpResources(sessionId: string): void {
     const timer = this.sessionTimers.get(sessionId)
     if (timer) {
       clearTimeout(timer)
       this.sessionTimers.delete(sessionId)
     }
 
-    // 断开 MCP 连接
     const clients = this.mcpClients.get(sessionId) ?? []
     for (const client of clients) {
       try {
-        client.disconnect().catch(() => {
-          // 忽略断开错误
-        })
+        client.disconnect().catch(() => {})
       } catch {
         // 同步错误也忽略
       }
     }
     this.mcpClients.delete(sessionId)
 
-    // 清理 session 注册
-    this.sessions.delete(sessionId)
-
-    // 清理 API 频率限制记录
     this.apiRateLimiter.cleanup(sessionId)
   }
 

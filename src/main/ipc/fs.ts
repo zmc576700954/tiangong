@@ -134,15 +134,15 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     const validPath = await vWrite(filePath)
     assertNotDangerous(validPath)
     await fs.mkdir(path.dirname(validPath), { recursive: true })
-    // 仅在文件不存在时创建，不覆盖
+    // 使用 wx flag 原子性创建文件，避免 TOCTOU 竞态
     try {
-      await fs.access(validPath)
-      throw new Error(`File already exists: ${path.basename(validPath)}`)
+      await fs.writeFile(validPath, '', { encoding: 'utf-8', flag: 'wx' })
     } catch (err: unknown) {
-      if (err instanceof Error && err.message.startsWith('File already exists')) throw err
-      // 文件不存在，可以创建
+      if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'EEXIST') {
+        throw new IpcError(`File already exists: ${path.basename(validPath)}`, ErrorCode.IPC_HANDLER_ERROR)
+      }
+      throw err
     }
-    await fs.writeFile(validPath, '', 'utf-8')
     return { path: validPath, name: path.basename(validPath) }
   })
 

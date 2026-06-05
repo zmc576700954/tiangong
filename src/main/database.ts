@@ -68,7 +68,7 @@ export async function closeDatabase(): Promise<void> {
   if (client) {
     // 最终 WAL checkpoint，确保所有数据落盘
     await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => {})
-    await client.execute('PRAGMA optimize')
+    await client.execute('PRAGMA optimize').catch(() => {})
     // 如果客户端支持显式 close，优先调用以释放底层资源
     if ('close' in client && typeof (client as { close: unknown }).close === 'function') {
       await (client as { close: () => Promise<void> }).close()
@@ -258,121 +258,121 @@ async function migrate(): Promise<void> {
   const db = getClient()
   await db.execute('SAVEPOINT migrate_sp')
   try {
-  // Graphs table (dual graph model: online / dev)
-  await rebuildTableIfNeeded(db, 'graphs', `
-    CREATE TABLE graphs (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL CHECK(type IN ('online', 'dev')),
-      project_path TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `, ['id', 'name', 'type', 'created_at', 'updated_at'])
+    // Graphs table (dual graph model: online / dev)
+    await rebuildTableIfNeeded(db, 'graphs', `
+      CREATE TABLE graphs (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('online', 'dev')),
+        project_path TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `, ['id', 'name', 'type', 'created_at', 'updated_at'])
 
-  // Nodes table
-  await rebuildTableIfNeeded(db, 'nodes', `
-    CREATE TABLE nodes (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug')),
-      status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
-      title TEXT NOT NULL,
-      description TEXT,
-      acceptance_criteria TEXT,
-      graph_id TEXT NOT NULL,
-      graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
-      parent_id TEXT,
-      rules TEXT,
-      metadata TEXT,
-      owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
-      position_x REAL NOT NULL,
-      position_y REAL NOT NULL,
-      content TEXT,
-      community_summary TEXT,
-      community_level INTEGER,
-      context_refs TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `, ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at'])
+    // Nodes table
+    await rebuildTableIfNeeded(db, 'nodes', `
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug')),
+        status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
+        title TEXT NOT NULL,
+        description TEXT,
+        acceptance_criteria TEXT,
+        graph_id TEXT NOT NULL,
+        graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
+        parent_id TEXT,
+        rules TEXT,
+        metadata TEXT,
+        owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
+        position_x REAL NOT NULL,
+        position_y REAL NOT NULL,
+        content TEXT,
+        community_summary TEXT,
+        community_level INTEGER,
+        context_refs TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `, ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at'])
 
-  // Edges table
-  await rebuildTableIfNeeded(db, 'edges', `
-    CREATE TABLE edges (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      label TEXT,
-      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
-      graph_id TEXT NOT NULL,
-      content TEXT,
-      description TEXT,
-      data_flow TEXT,
-      strength REAL
-    )
-  `, ['id', 'source', 'target', 'graph_id'])
+    // Edges table
+    await rebuildTableIfNeeded(db, 'edges', `
+      CREATE TABLE edges (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        label TEXT,
+        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
+        graph_id TEXT NOT NULL,
+        content TEXT,
+        description TEXT,
+        data_flow TEXT,
+        strength REAL
+      )
+    `, ['id', 'source', 'target', 'graph_id'])
 
-  // Bug nodes table
-  await rebuildTableIfNeeded(db, 'bug_nodes', `
-    CREATE TABLE bug_nodes (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT NOT NULL,
-      severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
-      status TEXT NOT NULL CHECK(status IN ('open', 'fixed', 'verified')),
-      node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-      graph_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `, ['id', 'title', 'description', 'severity', 'status', 'node_id', 'graph_id', 'created_at', 'updated_at'])
+    // Bug nodes table
+    await rebuildTableIfNeeded(db, 'bug_nodes', `
+      CREATE TABLE bug_nodes (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
+        status TEXT NOT NULL CHECK(status IN ('open', 'fixed', 'verified')),
+        node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        graph_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `, ['id', 'title', 'description', 'severity', 'status', 'node_id', 'graph_id', 'created_at', 'updated_at'])
 
-  // Snapshots table
-  await rebuildTableIfNeeded(db, 'snapshots', `
-    CREATE TABLE snapshots (
-      id TEXT PRIMARY KEY,
-      graph_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      data TEXT NOT NULL,
-      git_commit TEXT,
-      created_at TEXT NOT NULL
-    )
-  `, ['id', 'graph_id', 'name', 'data', 'created_at'])
+    // Snapshots table
+    await rebuildTableIfNeeded(db, 'snapshots', `
+      CREATE TABLE snapshots (
+        id TEXT PRIMARY KEY,
+        graph_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        data TEXT NOT NULL,
+        git_commit TEXT,
+        created_at TEXT NOT NULL
+      )
+    `, ['id', 'graph_id', 'name', 'data', 'created_at'])
 
-  // Agent logs table
-  await rebuildTableIfNeeded(db, 'agent_logs', `
-    CREATE TABLE agent_logs (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      adapter_name TEXT NOT NULL,
-      node_id TEXT NOT NULL,
-      graph_id TEXT NOT NULL,
-      command TEXT NOT NULL,
-      outputs TEXT NOT NULL,
-      result TEXT NOT NULL CHECK(result IN ('success', 'failure', 'cancelled')),
-      duration INTEGER NOT NULL,
-      created_at TEXT NOT NULL
-    )
-  `, ['id', 'session_id', 'adapter_name', 'node_id', 'graph_id', 'command', 'outputs', 'result', 'duration', 'created_at'])
+    // Agent logs table
+    await rebuildTableIfNeeded(db, 'agent_logs', `
+      CREATE TABLE agent_logs (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        adapter_name TEXT NOT NULL,
+        node_id TEXT NOT NULL,
+        graph_id TEXT NOT NULL,
+        command TEXT NOT NULL,
+        outputs TEXT NOT NULL,
+        result TEXT NOT NULL CHECK(result IN ('success', 'failure', 'cancelled')),
+        duration INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `, ['id', 'session_id', 'adapter_name', 'node_id', 'graph_id', 'command', 'outputs', 'result', 'duration', 'created_at'])
 
-  // Chat threads table
-  await rebuildTableIfNeeded(db, 'chat_threads', `
-    CREATE TABLE chat_threads (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      adapter_name TEXT NOT NULL,
-      node_id TEXT,
-      graph_id TEXT,
-      session_id TEXT,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )
-  `, ['id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id', 'status', 'created_at', 'updated_at'])
+    // Chat threads table
+    await rebuildTableIfNeeded(db, 'chat_threads', `
+      CREATE TABLE chat_threads (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        adapter_name TEXT NOT NULL,
+        node_id TEXT,
+        graph_id TEXT,
+        session_id TEXT,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `, ['id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id', 'status', 'created_at', 'updated_at'])
 
-  // Chat messages table
-  await rebuildTableIfNeeded(db, 'chat_messages', `
-    CREATE TABLE chat_messages (
+    // Chat messages table
+    await rebuildTableIfNeeded(db, 'chat_messages', `
+      CREATE TABLE chat_messages (
       id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
       role TEXT NOT NULL CHECK(role IN ('user', 'agent', 'system')),
@@ -385,49 +385,49 @@ async function migrate(): Promise<void> {
       tool_calls TEXT,
       created_at INTEGER NOT NULL
     )
-  `, ['id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error', 'session_id', 'context_refs', 'tool_calls', 'created_at'])
+    `, ['id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error', 'session_id', 'context_refs', 'tool_calls', 'created_at'])
 
-  // Create indexes
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_edges_graph_id ON edges(graph_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_node_id ON bug_nodes(node_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_graph_id ON bug_nodes(graph_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_snapshots_graph_id ON snapshots(graph_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_agent_logs_session_id ON agent_logs(session_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_node_id ON chat_threads(node_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_graph_id ON chat_threads(graph_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
-  await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
+    // Create indexes
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_edges_graph_id ON edges(graph_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_node_id ON bug_nodes(node_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_graph_id ON bug_nodes(graph_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_snapshots_graph_id ON snapshots(graph_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_agent_logs_session_id ON agent_logs(session_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_node_id ON chat_threads(node_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_graph_id ON chat_threads(graph_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
 
-  // Incremental migration: add new columns for MindMap Agent (safe if already exist)
-  const addColumnSafe = async (table: string, column: string, type: string) => {
-    if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
-      throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
-    }
-    const ALLOWED_TYPES = new Set(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'])
-    if (!ALLOWED_TYPES.has(type.toUpperCase())) {
-      throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
-    }
-    const safeType = type.toUpperCase()
-    try {
-      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (msg.includes('duplicate column') || msg.includes('already exists')) {
-        return // 列已存在，安全忽略
+    // Incremental migration: add new columns for MindMap Agent (safe if already exist)
+    const addColumnSafe = async (table: string, column: string, type: string) => {
+      if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
+        throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
       }
-      throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
+      const ALLOWED_TYPES = new Set(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'])
+      if (!ALLOWED_TYPES.has(type.toUpperCase())) {
+        throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
+      }
+      const safeType = type.toUpperCase()
+      try {
+        await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (msg.includes('duplicate column') || msg.includes('already exists')) {
+          return // 列已存在，安全忽略
+        }
+        throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
+      }
     }
-  }
-  await addColumnSafe('nodes', 'content', 'TEXT')
-  await addColumnSafe('nodes', 'community_summary', 'TEXT')
-  await addColumnSafe('nodes', 'community_level', 'INTEGER')
-  await addColumnSafe('edges', 'content', 'TEXT')
-  await addColumnSafe('edges', 'description', 'TEXT')
-  await addColumnSafe('edges', 'data_flow', 'TEXT')
-  await addColumnSafe('edges', 'strength', 'REAL')
+    await addColumnSafe('nodes', 'content', 'TEXT')
+    await addColumnSafe('nodes', 'community_summary', 'TEXT')
+    await addColumnSafe('nodes', 'community_level', 'INTEGER')
+    await addColumnSafe('edges', 'content', 'TEXT')
+    await addColumnSafe('edges', 'description', 'TEXT')
+    await addColumnSafe('edges', 'data_flow', 'TEXT')
+    await addColumnSafe('edges', 'strength', 'REAL')
 
     await db.execute('RELEASE migrate_sp')
   } catch (err) {

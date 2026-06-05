@@ -73,16 +73,10 @@ export type TypedHandle = <K extends string>(
 ) => void
 
 /**
- * 校验项目路径安全性：拒绝路径遍历和系统关键目录
- *
- * 用于所有接受 projectPath 的 IPC 处理器，防止渲染进程
- * 通过 IPC 读取/写入系统关键目录。
+ * 拒绝系统关键目录（Windows/Linux 通用）
+ * 返回 true 表示路径在被阻止的系统目录下
  */
-export function validateProjectPath(projectPath: string): string {
-  const resolved = path.resolve(projectPath)
-  const normalized = path.normalize(resolved)
-
-  // 拒绝系统关键目录
+export function isBlockedSystemPath(normalizedPath: string): boolean {
   const blockedPrefixes = process.platform === 'win32'
     ? [
         path.resolve(process.env.SystemRoot || 'C:\\Windows'),
@@ -98,12 +92,26 @@ export function validateProjectPath(projectPath: string): string {
   for (const blocked of blockedPrefixes) {
     const normalizedBlocked = path.normalize(blocked)
     const isBlocked = process.platform === 'win32'
-      ? normalized.toLowerCase().startsWith(normalizedBlocked.toLowerCase() + sep) ||
-        normalized.toLowerCase() === normalizedBlocked.toLowerCase()
-      : normalized.startsWith(normalizedBlocked + sep) || normalized === normalizedBlocked
-    if (isBlocked) {
-      throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
-    }
+      ? normalizedPath.toLowerCase().startsWith(normalizedBlocked.toLowerCase() + sep) ||
+        normalizedPath.toLowerCase() === normalizedBlocked.toLowerCase()
+      : normalizedPath.startsWith(normalizedBlocked + sep) || normalizedPath === normalizedBlocked
+    if (isBlocked) return true
+  }
+  return false
+}
+
+/**
+ * 校验项目路径安全性：拒绝路径遍历和系统关键目录
+ *
+ * 用于所有接受 projectPath 的 IPC 处理器，防止渲染进程
+ * 通过 IPC 读取/写入系统关键目录。
+ */
+export function validateProjectPath(projectPath: string): string {
+  const resolved = path.resolve(projectPath)
+  const normalized = path.normalize(resolved)
+
+  if (isBlockedSystemPath(normalized)) {
+    throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
   }
 
   // 确保路径不是 root 或 home 目录本身（只允许子目录）

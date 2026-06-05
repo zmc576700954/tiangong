@@ -79,12 +79,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     this.pushOutputSession(sessionId)
     try {
       await this.doSendCommand(session, command, proc)
-      // SDK 适配器的 doSendCommand 完成后发射 sessionEnded，
-      // 确保 AgentManager 能清理沙箱等资源（ChildProcess 适配器会多发一次，无害）
-      this.emit('sessionEnded', sessionId, 'success')
-    } catch (err) {
-      this.emit('sessionEnded', sessionId, 'error')
-      throw err
+      // sessionEnded 由各适配器自行发射（CLI 适配器通过 onExit/onError，SDK 适配器在 doSendCommand 内部）
     } finally {
       this.popOutputSession()
     }

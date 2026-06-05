@@ -74,6 +74,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'TIMEOUT',
         })
+        this.emit('sessionEnded', session.id, 'error')
         return
       }
 
@@ -85,6 +86,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
+        this.emit('sessionEnded', session.id, 'crash')
         return
       }
 
@@ -102,6 +104,7 @@ export class MindMapAdapter extends BaseAdapter {
         data: 'MindMap 生成完成',
         timestamp: Date.now(),
       })
+      this.emit('sessionEnded', session.id, 'success')
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -110,6 +113,7 @@ export class MindMapAdapter extends BaseAdapter {
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
+      this.emit('sessionEnded', session.id, 'error')
     }
   }
 }
