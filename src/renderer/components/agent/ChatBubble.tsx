@@ -1,3 +1,7 @@
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useState } from 'react'
 import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -96,12 +100,67 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
 
           {/* Message content */}
           {message.content ? (
-            <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            isUser ? (
+              <div className="whitespace-pre-wrap break-words">{message.content}</div>
+            ) : (
+              <div className="prose prose-sm dark:prose-invert max-w-none break-words
+                prose-headings:mt-2 prose-headings:mb-1 prose-p:my-1
+                prose-ul:my-1 prose-ol:my-1 prose-li:my-0
+                prose-pre:my-2 prose-pre:p-0 prose-code:before:content-none prose-code:after:content-none">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    code({ className, children, ...props }) {
+                      const match = /language-(\w+)/.exec(className || '')
+                      const codeStr = String(children).replace(/\n$/, '')
+                      const isBlock = codeStr.includes('\n') || !!match
+                      if (isBlock) {
+                        return (
+                          <div className="relative group">
+                            <SyntaxHighlighter
+                              style={oneDark}
+                              language={match?.[1] ?? 'text'}
+                              PreTag="div"
+                              customStyle={{ margin: 0, borderRadius: '0.375rem', fontSize: '11px' }}
+                            >
+                              {codeStr}
+                            </SyntaxHighlighter>
+                            <button
+                              onClick={() => navigator.clipboard?.writeText(codeStr)}
+                              className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] bg-muted/80 rounded
+                                opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        )
+                      }
+                      return (
+                        <code className="bg-muted/50 px-1 py-0.5 rounded text-[11px]" {...props}>
+                          {children}
+                        </code>
+                      )
+                    },
+                  }}
+                />
+              </div>
+            )
           ) : null}
 
           {/* Tool calls */}
           {message.toolCalls?.map((block, i) => (
-            <ToolCallRenderer key={i} block={block} />
+            <ToolCallRenderer
+              key={i}
+              block={block}
+              onAccept={() => {
+                // Stub: Phase 3 will wire this to DiffReviewPanel
+                console.log('[ToolCall] Accept:', block.filePath)
+              }}
+              onReject={() => {
+                // Stub: Phase 3 will wire this to ScopeGuard rollback
+                console.log('[ToolCall] Reject:', block.filePath)
+              }}
+            />
           ))}
         </div>
 
@@ -141,13 +200,23 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
   )
 }
 
-export function RunningIndicator({ adapterName }: { adapterName?: string }) {
+export function RunningIndicator({
+  adapterName,
+  currentOperation,
+}: {
+  adapterName?: string
+  currentOperation?: string
+}) {
   return (
     <div className="flex gap-2 items-center py-1">
       <div className="w-5 h-5 rounded-full bg-purple-500/20 flex items-center justify-center">
         <Loader2 className="w-3 h-3 text-purple-400 animate-spin" />
       </div>
-      <span className="text-xs text-amber-400">{adapterName ?? 'Agent'} is working...</span>
+      <span className="text-xs text-amber-400">
+        {currentOperation
+          ? `${adapterName ?? 'Agent'} ${currentOperation}`
+          : `${adapterName ?? 'Agent'} is working...`}
+      </span>
     </div>
   )
 }
