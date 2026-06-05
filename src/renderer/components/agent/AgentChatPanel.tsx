@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Bot } from 'lucide-react'
+import { Bot, GitBranch } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
@@ -11,6 +11,7 @@ import { TerminalView } from './TerminalView'
 import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
+import { DiffReviewPanel } from './DiffReviewPanel'
 import type { ContextRef, AgentSessionConfig, AgentOutput } from '@shared/types'
 import { generateId } from '../../lib/utils'
 
@@ -41,6 +42,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showContextPicker, setShowContextPicker] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState('')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
+  const [showDiffReview, setShowDiffReview] = useState(false)
+  const [committing, setCommitting] = useState(false)
 
   // Track the current streaming agent message ID within this render cycle
   const streamingMsgIdRef = useRef<string | null>(null)
@@ -446,6 +449,93 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
               <TerminalView outputs={rawOutputs} />
             )}
           </div>
+
+          {/* Review Changes button */}
+          {currentThread?.status === 'idle' &&
+            rawOutputs.some((o) => o.type === 'file_change') &&
+            !showDiffReview && (
+              <div className="px-3 py-2 flex-shrink-0">
+                <button
+                  onClick={() => setShowDiffReview(true)}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600/10 border border-blue-600/30
+                    rounded-lg text-sm text-blue-400 hover:bg-blue-600/20 transition-colors"
+                >
+                  <GitBranch className="w-4 h-4" />
+                  Review Changes
+                </button>
+              </div>
+          )}
+
+          {/* Diff Review Panel */}
+          {showDiffReview && currentThread && (
+            <div className="flex-shrink-0 px-3 py-2">
+              <DiffReviewPanel
+                toolCalls={
+                  currentThread.messages
+                    .filter((m) => m.role === 'agent')
+                    .flatMap((m) => m.toolCalls ?? [])
+                }
+                sessionId={currentThread.sessionId}
+                committing={committing}
+                onAcceptFile={(index) => {
+                  const allToolCalls = currentThread.messages
+                    .filter((m) => m.role === 'agent')
+                    .flatMap((m) => m.toolCalls ?? [])
+                  const tc = allToolCalls[index]
+                  if (tc) tc.accepted = true
+                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
+                }}
+                onRejectFile={async (index, filePath) => {
+                  const allToolCalls = currentThread.messages
+                    .filter((m) => m.role === 'agent')
+                    .flatMap((m) => m.toolCalls ?? [])
+                  const tc = allToolCalls[index]
+                  if (tc) tc.accepted = false
+                  if (currentThread.sessionId) {
+                    try {
+                      await window.electronAPI['scopeGuard:rollbackFile'](currentThread.sessionId, filePath)
+                    } catch (err) {
+                      console.error('[DiffReview] Failed to rollback file:', err)
+                    }
+                  }
+                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
+                }}
+                onAcceptAll={() => {
+                  currentThread.messages
+                    .filter((m) => m.role === 'agent')
+                    .forEach((m) => m.toolCalls?.forEach((tc) => { tc.accepted = true }))
+                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
+                }}
+                onRejectAll={async () => {
+                  currentThread.messages
+                    .filter((m) => m.role === 'agent')
+                    .forEach((m) => m.toolCalls?.forEach((tc) => { tc.accepted = false }))
+                  if (currentThread.sessionId) {
+                    try {
+                      await window.electronAPI['scopeGuard:commitSession'](currentThread.sessionId)
+                    } catch (err) {
+                      console.error('[DiffReview] Failed to reject all:', err)
+                    }
+                  }
+                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
+                }}
+                onCommit={async () => {
+                  setCommitting(true)
+                  try {
+                    if (currentThread.sessionId) {
+                      await window.electronAPI['scopeGuard:commitSession'](currentThread.sessionId)
+                    }
+                    useAgentStore.getState().updateThreadStatus(currentThread.id, 'reviewed')
+                    setShowDiffReview(false)
+                  } catch (err) {
+                    console.error('[DiffReview] Commit failed:', err)
+                  } finally {
+                    setCommitting(false)
+                  }
+                }}
+              />
+            </div>
+          )}
 
           {/* Resize handle */}
           <div
