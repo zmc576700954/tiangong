@@ -23,7 +23,7 @@ interface AgentState {
   renameThread: (threadId: string, title: string) => void
   deleteThread: (threadId: string) => void
   selectThread: (id: string | null) => void
-  updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error') => void
+  updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error' | 'reviewed') => void
   markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
   stopCurrentSession: (threadId: string) => Promise<void>
   retryMessage: (threadId: string, agentMessageId: string) => Promise<void>

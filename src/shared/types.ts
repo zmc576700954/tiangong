@@ -300,7 +300,7 @@ export interface AgentThread {
   adapterName: string
   messages: ChatMessage[]
   contextRefs: ContextRef[]
-  status: 'idle' | 'running' | 'error'
+  status: 'idle' | 'running' | 'error' | 'reviewed'
   createdAt: number
   nodeBound?: string
   sessionId?: string
