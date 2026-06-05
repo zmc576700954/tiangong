@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
 
@@ -16,6 +16,7 @@ interface AgentState {
   loadAdapters: () => Promise<void>
   sendCommand: (sessionId: string, command: AgentCommand) => Promise<void>
   appendOutput: (threadId: string, output: AgentOutput) => void
+  appendToolCall: (threadId: string, messageId: string, toolCall: ToolCallBlock) => void
   getOutputs: (threadId: string) => AgentOutput[]
   createThread: (adapterName: string, nodeBound?: string) => string
   sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
@@ -66,6 +67,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           : state.threads,
       }
     })
+  },
+
+  appendToolCall: (threadId, messageId, toolCall) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? {
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, toolCalls: [...(m.toolCalls ?? []), toolCall] }
+                  : m,
+              ),
+            }
+          : t,
+      ),
+    }))
   },
 
   getOutputs: (threadId) => {
