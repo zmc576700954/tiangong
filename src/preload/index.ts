@@ -103,6 +103,12 @@ const exposedChannels: (keyof IpcApi)[] = [
   'scopeGuard:rollbackFile',
   'scopeGuard:commitSession',
   'scopeGuard:rollbackSession',
+
+  // Code Intelligence
+  'codeIntel:indexProject',
+  'codeIntel:querySymbols',
+  'codeIntel:getRelatedFiles',
+  'codeIntel:generatePlan',
 ]
 
 // Build IPC API object

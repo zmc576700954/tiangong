@@ -358,6 +358,9 @@ export interface AgentAdapter {
   /** 设置会话的已解析上下文（供 AgentManager 注入上下文） */
   setResolvedContexts(sessionId: string, contexts: ResolvedContext[]): void
 
+  /** 设置会话的智能代码上下文（供 AgentManager 注入代码分析结果） */
+  setCodeContext(sessionId: string, codeContext: string): void
+
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
   on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
 
@@ -675,6 +678,12 @@ export interface IpcApi {
   'mindmap:refine': (projectPath: string, scope: 'project' | 'module' | 'node', targetId: string, feedback: string) => Promise<ScanModule[] | ScanModule | NodeEnrichment>
   'mindmap:buildDevPrompt': (nodeId: string, nodeTitle: string, nodeType: NodeType, taskType: 'feature' | 'bugfix' | 'refactor', graphId: string, contextRefs?: ContextRef[]) => Promise<string>
 
+  // 代码智能操作
+  'codeIntel:indexProject': (projectPath: string) => Promise<{ filesIndexed: number; symbolsFound: number; importsFound: number }>
+  'codeIntel:querySymbols': (name: string, options?: { kind?: SymbolKind; fuzzy?: boolean; limit?: number }) => Promise<SymbolQueryResult[]>
+  'codeIntel:getRelatedFiles': (filePath: string, depth?: number) => Promise<Array<{ filePath: string; distance: number }>>
+  'codeIntel:generatePlan': (userQuery: string) => Promise<CodeIntelExecutionPlan>
+
   // ScopeGuard 操作
   'scopeGuard:rollbackFile': (sessionId: string, filePath: string) => Promise<boolean>
   'scopeGuard:commitSession': (sessionId: string) => Promise<ValidationResult>
@@ -786,4 +795,19 @@ export interface SymbolQueryResult {
   symbol: SymbolInfo
   score: number // 匹配得分
   matchedBy: 'exact' | 'fuzzy' | 'semantic' | 'path'
+}
+
+/** 代码智能执行计划 */
+export interface CodeIntelExecutionPlan {
+  intent: string
+  steps: Array<{
+    id: string
+    action: 'read' | 'modify' | 'create' | 'test' | 'verify'
+    target: string
+    description: string
+    dependencies: string[]
+  }>
+  estimatedComplexity: 'simple' | 'moderate' | 'complex'
+  requiresNewFiles: boolean
+  affectedSymbols: string[]
 }

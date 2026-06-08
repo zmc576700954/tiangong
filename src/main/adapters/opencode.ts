@@ -39,7 +39,7 @@ export class OpenCodeAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
+    const scopePrompt = this.buildScopePromptForSession(session)
     const constraintSuffix = this.buildConstraintSuffix(session.config)
     const commandPrompt = this.buildCommandPrompt(command)
     const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`

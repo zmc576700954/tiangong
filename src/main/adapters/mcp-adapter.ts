@@ -477,7 +477,7 @@ export class McpAdapter extends BaseAdapter {
     }
 
     const userPrompt = `${typeLabels[command.type] ?? 'Please complete the task'}:\n${command.description}`
-    const systemPrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
+    const systemPrompt = this.buildScopePromptForSession(session)
 
     // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []

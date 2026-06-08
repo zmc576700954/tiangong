@@ -92,7 +92,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       )
     }
 
-    const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
+    const scopePrompt = this.buildScopePromptForSession(session)
     const commandPrompt = this.buildCommandPrompt(command)
 
     const abortController = new AbortController()

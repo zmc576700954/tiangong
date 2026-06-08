@@ -48,7 +48,7 @@ export class MindMapAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePrompt(session.config, session.resolvedContexts)
+    const scopePrompt = this.buildScopePromptForSession(session)
     const fullPrompt = scopePrompt
       ? `${scopePrompt}\n\n---\n\n${command.description}`
       : command.description

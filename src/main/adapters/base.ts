@@ -170,6 +170,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * 设置会话的智能代码上下文（外部调用，用于注入代码分析结果）
+   */
+  setCodeContext(sessionId: string, codeContext: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new SessionNotFoundError(sessionId)
+    }
+    session.codeContext = codeContext
+  }
+
+  /**
    * 向所有监听器发送输出
    * 自动关联当前输出上下文栈顶的 sessionId（如果存在）
    * @protected
@@ -553,7 +564,21 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 将 AgentSessionConfig 转换为自然语言约束说明
    * @protected
    */
-  protected buildScopePrompt(config: AgentSessionConfig, resolvedContexts?: ResolvedContext[]): string {
+  /**
+   * 便捷方法：从 session 中自动提取 codeContext 并构建 scope prompt
+   */
+  protected buildScopePromptForSession(
+    session: AgentSession,
+    resolvedContexts?: ResolvedContext[],
+  ): string {
+    return this.buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext)
+  }
+
+  protected buildScopePrompt(
+    config: AgentSessionConfig,
+    resolvedContexts?: ResolvedContext[],
+    codeContext?: string,
+  ): string {
     const lines: string[] = []
 
     lines.push(`# 业务节点：${config.nodeTitle}`)
@@ -610,6 +635,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         lines.push(bug.description)
         lines.push('')
       }
+    }
+
+    // 注入智能代码上下文
+    if (codeContext) {
+      lines.push(codeContext)
+      lines.push('')
     }
 
     // 注入已解析的上下文
