@@ -2,11 +2,48 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'
 import type { ChatMessage } from '@shared/types'
+
+/** Module-level component to avoid re-creation on every render (prevents code block remounting) */
+function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { className?: string }) {
+  const match = /language-(\w+)/.exec(className || '')
+  const codeStr = String(children).replace(/\n$/, '')
+  const isBlock = codeStr.includes('\n') || !!match
+  const handleCopy = useCallback(() => {
+    navigator.clipboard?.writeText(codeStr).catch(() => {})
+  }, [codeStr])
+
+  if (isBlock) {
+    return (
+      <div className="relative group">
+        <SyntaxHighlighter
+          style={oneDark}
+          language={match?.[1] ?? 'text'}
+          PreTag="div"
+          customStyle={{ margin: 0, borderRadius: '0.375rem', fontSize: '11px' }}
+        >
+          {codeStr}
+        </SyntaxHighlighter>
+        <button
+          onClick={handleCopy}
+          className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] bg-muted/80 rounded
+            opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
+        >
+          Copy
+        </button>
+      </div>
+    )
+  }
+  return (
+    <code className="bg-muted/50 px-1 py-0.5 rounded text-[11px]" {...props}>
+      {children}
+    </code>
+  )
+}
 
 interface ChatBubbleProps {
   message: ChatMessage
@@ -21,19 +58,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
   const [showRawError, setShowRawError] = useState(false)
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(message.content)
-    } catch {
-      // Fallback for Electron where clipboard API may require focus
-      const textarea = document.createElement('textarea')
-      textarea.value = message.content
-      textarea.style.position = 'fixed'
-      textarea.style.opacity = '0'
-      document.body.appendChild(textarea)
-      textarea.select()
-      document.execCommand('copy')
-      document.body.removeChild(textarea)
-    }
+    await navigator.clipboard.writeText(message.content)
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }
@@ -109,39 +134,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
                 prose-pre:my-2 prose-pre:p-0 prose-code:before:content-none prose-code:after:content-none">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  components={{
-                    code({ className, children, ...props }) {
-                      const match = /language-(\w+)/.exec(className || '')
-                      const codeStr = String(children).replace(/\n$/, '')
-                      const isBlock = codeStr.includes('\n') || !!match
-                      if (isBlock) {
-                        return (
-                          <div className="relative group">
-                            <SyntaxHighlighter
-                              style={oneDark}
-                              language={match?.[1] ?? 'text'}
-                              PreTag="div"
-                              customStyle={{ margin: 0, borderRadius: '0.375rem', fontSize: '11px' }}
-                            >
-                              {codeStr}
-                            </SyntaxHighlighter>
-                            <button
-                              onClick={() => navigator.clipboard?.writeText(codeStr)}
-                              className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] bg-muted/80 rounded
-                                opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                        )
-                      }
-                      return (
-                        <code className="bg-muted/50 px-1 py-0.5 rounded text-[11px]" {...props}>
-                          {children}
-                        </code>
-                      )
-                    },
-                  }}
+                  components={{ code: CodeBlock }}
                 />
               </div>
             )
@@ -152,14 +145,6 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
             <ToolCallRenderer
               key={i}
               block={block}
-              onAccept={() => {
-                // Stub: Phase 3 will wire this to DiffReviewPanel
-                console.log('[ToolCall] Accept:', block.filePath)
-              }}
-              onReject={() => {
-                // Stub: Phase 3 will wire this to ScopeGuard rollback
-                console.log('[ToolCall] Reject:', block.filePath)
-              }}
             />
           ))}
         </div>

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
 
@@ -16,7 +16,12 @@ interface AgentState {
   loadAdapters: () => Promise<void>
   sendCommand: (sessionId: string, command: AgentCommand) => Promise<void>
   appendOutput: (threadId: string, output: AgentOutput) => void
+  appendToStreamingMessage: (threadId: string, messageId: string, content: string) => void
+  clearThreadOutputs: (threadId: string) => void
+  trimInactiveThreadOutputs: (activeThreadId: string) => void
   appendToolCall: (threadId: string, messageId: string, toolCall: ToolCallBlock) => void
+  updateToolCallAccepted: (threadId: string, messageIndex: number, toolCallIndex: number, accepted: boolean) => void
+  updateAllToolCallsAccepted: (threadId: string, accepted: boolean) => void
   getOutputs: (threadId: string) => AgentOutput[]
   createThread: (adapterName: string, nodeBound?: string) => string
   sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
@@ -70,6 +75,47 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })
   },
 
+  appendToStreamingMessage: (threadId, messageId, content) => {
+    set((state) => ({
+      threads: state.threads.map((t) =>
+        t.id === threadId
+          ? {
+              ...t,
+              messages: t.messages.map((m) =>
+                m.id === messageId
+                  ? { ...m, content: m.content + content }
+                  : m,
+              ),
+            }
+          : t,
+      ),
+    }))
+  },
+
+  clearThreadOutputs: (threadId) => {
+    set((state) => {
+      if (!state.threadOutputs.has(threadId)) return state
+      const newMap = new Map(state.threadOutputs)
+      newMap.delete(threadId)
+      return { threadOutputs: newMap }
+    })
+  },
+
+  trimInactiveThreadOutputs: (activeThreadId) => {
+    const TRIM_TO = 100
+    set((state) => {
+      let changed = false
+      const newMap = new Map(state.threadOutputs)
+      for (const [tid, outputs] of newMap) {
+        if (tid !== activeThreadId && outputs.length > TRIM_TO) {
+          newMap.set(tid, outputs.slice(-TRIM_TO))
+          changed = true
+        }
+      }
+      return changed ? { threadOutputs: newMap } : state
+    })
+  },
+
   appendToolCall: (threadId, messageId, toolCall) => {
     set((state) => ({
       threads: state.threads.map((t) =>
@@ -84,6 +130,44 @@ export const useAgentStore = create<AgentState>((set, get) => ({
             }
           : t,
       ),
+    }))
+  },
+
+  updateToolCallAccepted: (threadId, messageIndex, toolCallIndex, accepted) => {
+    set((state) => ({
+      threads: state.threads.map((t) => {
+        if (t.id !== threadId) return t
+        const agentMessages = t.messages.filter((m) => m.role === 'agent')
+        const targetMsg = agentMessages[messageIndex]
+        if (!targetMsg) return t
+        return {
+          ...t,
+          messages: t.messages.map((m) => {
+            if (m.id !== targetMsg.id) return m
+            return {
+              ...m,
+              toolCalls: m.toolCalls?.map((tc, i) =>
+                i === toolCallIndex ? { ...tc, accepted } : tc,
+              ),
+            }
+          }),
+        }
+      }),
+    }))
+  },
+
+  updateAllToolCallsAccepted: (threadId, accepted) => {
+    set((state) => ({
+      threads: state.threads.map((t) => {
+        if (t.id !== threadId) return t
+        return {
+          ...t,
+          messages: t.messages.map((m) => ({
+            ...m,
+            toolCalls: m.toolCalls?.map((tc) => ({ ...tc, accepted })),
+          })),
+        }
+      }),
     }))
   },
 
@@ -289,6 +373,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   selectThread: (id) => {
     set({ currentThreadId: id })
+    if (id) get().trimInactiveThreadOutputs(id)
   },
 
   updateThreadStatus: (threadId, status) => {
@@ -334,6 +419,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         t.id === threadId ? { ...t, sessionId: undefined, status: 'idle' as const } : t,
       ),
     }))
+    get().clearThreadOutputs(threadId)
   },
 
   retryMessage: async (threadId, agentMessageId) => {
@@ -421,9 +507,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   listenForStatusChanges: () => {
     if (typeof window === 'undefined' || !window.electronAPI?.onAgentStatusChange) return () => {}
+    const VALID_STATUSES: NodeStatus[] = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder']
     const cleanup = window.electronAPI.onAgentStatusChange(
       (_sessionId: string, nodeId: string, status: string) => {
-        useGraphStore.getState().updateNode(nodeId, { status: status as any })
+        if (VALID_STATUSES.includes(status as NodeStatus)) {
+          useGraphStore.getState().updateNode(nodeId, { status: status as NodeStatus })
+        }
       },
     )
     return cleanup

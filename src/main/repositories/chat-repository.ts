@@ -3,7 +3,7 @@
  * 负责 chat_threads 和 chat_messages 的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type { Client, Row } from '@libsql/client'
 
 export interface ChatThreadRow {
   id: string
@@ -29,6 +29,38 @@ export interface ChatMessageRow {
   context_refs: string | null
   tool_calls: string | null
   created_at: number
+}
+
+/** Cast a libsql Row to a ChatThreadRow with runtime field validation */
+function toChatThreadRow(row: Row): ChatThreadRow {
+  return {
+    id: String(row.id ?? ''),
+    title: String(row.title ?? ''),
+    adapter_name: String(row.adapter_name ?? ''),
+    node_id: row.node_id != null ? String(row.node_id) : null,
+    graph_id: row.graph_id != null ? String(row.graph_id) : null,
+    session_id: row.session_id != null ? String(row.session_id) : null,
+    status: String(row.status ?? ''),
+    created_at: Number(row.created_at ?? 0),
+    updated_at: Number(row.updated_at ?? 0),
+  }
+}
+
+/** Cast a libsql Row to a ChatMessageRow with runtime field validation */
+function toChatMessageRow(row: Row): ChatMessageRow {
+  return {
+    id: String(row.id ?? ''),
+    thread_id: String(row.thread_id ?? ''),
+    role: String(row.role ?? ''),
+    content: String(row.content ?? ''),
+    adapter_name: String(row.adapter_name ?? ''),
+    status: String(row.status ?? ''),
+    error: row.error != null ? String(row.error) : null,
+    session_id: row.session_id != null ? String(row.session_id) : null,
+    context_refs: row.context_refs != null ? String(row.context_refs) : null,
+    tool_calls: row.tool_calls != null ? String(row.tool_calls) : null,
+    created_at: Number(row.created_at ?? 0),
+  }
 }
 
 export class ChatRepository {
@@ -68,11 +100,11 @@ export class ChatRepository {
       sql: 'SELECT * FROM chat_threads WHERE id = ?',
       args: [id],
     })
-    return (result.rows[0] as unknown as ChatThreadRow) ?? null
+    return (result.rows[0] ? toChatThreadRow(result.rows[0]) : null)
   }
 
   async listThreads(filters?: { nodeId?: string; graphId?: string; status?: string }): Promise<ChatThreadRow[]> {
-    let sql = 'SELECT * FROM chat_threads WHERE 1=1'
+    let sql = 'SELECT id, title, adapter_name, node_id, graph_id, session_id, status, created_at, updated_at FROM chat_threads WHERE 1=1'
     const args: (string | null)[] = []
 
     if (filters?.nodeId) {
@@ -90,7 +122,7 @@ export class ChatRepository {
 
     sql += ' ORDER BY updated_at DESC'
     const result = await this.db.execute({ sql, args })
-    return result.rows as unknown as ChatThreadRow[]
+    return result.rows.map(toChatThreadRow)
   }
 
   async updateThread(id: string, data: { title?: string; status?: string; sessionId?: string; updatedAt?: number }): Promise<void> {
@@ -129,7 +161,7 @@ export class ChatRepository {
             ORDER BY t.updated_at DESC`,
       args: [like, like],
     })
-    return result.rows as unknown as ChatThreadRow[]
+    return result.rows.map(toChatThreadRow)
   }
 
   // ==================== Message CRUD ====================
@@ -191,7 +223,7 @@ export class ChatRepository {
       sql: 'SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC',
       args: [threadId],
     })
-    return result.rows as unknown as ChatMessageRow[]
+    return result.rows.map(toChatMessageRow)
   }
 
   async deleteMessagesByThread(threadId: string): Promise<void> {

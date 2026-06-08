@@ -27,4 +27,12 @@ export function registerScopeGuardHandlers(
     }
     return scopeGuard.commitChanges(sandbox)
   })
+
+  typedHandle('scopeGuard:rollbackSession', async (_, sessionId: string) => {
+    const sandbox = agentManager.getSandbox(sessionId)
+    if (!sandbox) {
+      throw new Error(`No sandbox found for session ${sessionId}`)
+    }
+    await scopeGuard.rollback(sandbox)
+  })
 }

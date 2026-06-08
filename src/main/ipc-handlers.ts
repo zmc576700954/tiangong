@@ -195,8 +195,9 @@ export function registerIpcHandlers(): void {
       try {
         const validatedPath = await validateFsPath(p.trim(), 'read')
         addSessionAllowedPath(senderId, validatedPath)
-      } catch {
-        // 跳过无效路径
+        console.info(`[IPC] fs:registerProjectPaths: allowed path=${validatedPath} sender=${senderId}`)
+      } catch (err) {
+        console.warn(`[IPC] fs:registerProjectPaths: rejected path=${p.trim()} sender=${senderId} reason=${err instanceof Error ? err.message : err}`)
       }
     }
   })

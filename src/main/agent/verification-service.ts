@@ -52,20 +52,29 @@ export class VerificationService {
   ): VerificationResult[] {
     const results: VerificationResult[] = []
 
+    // Single-pass: extract all CRITERION_N: PASS/FAIL matches
+    const criterionRegex = /CRITERION_(\d+):\s*(PASS|FAIL)/gi
+    const passMap = new Map<number, boolean>()
+    let match: RegExpExecArray | null
+    while ((match = criterionRegex.exec(response)) !== null) {
+      const num = parseInt(match[1], 10)
+      passMap.set(num, match[2].toUpperCase() === 'PASS')
+    }
+
+    // Single-pass: extract all JUSTIFICATION_N: ... matches
+    const justRegex = /JUSTIFICATION_(\d+):\s*(.+?)(?=\n(?:CRITERION_|JUSTIFICATION_)|$)/gis
+    const justMap = new Map<number, string>()
+    while ((match = justRegex.exec(response)) !== null) {
+      const num = parseInt(match[1], 10)
+      justMap.set(num, match[2].trim())
+    }
+
     for (let i = 0; i < acceptanceCriteria.length; i++) {
       const n = i + 1
-      const passPattern = new RegExp(`CRITERION_${n}:\\s*PASS`, 'i')
-      const failPattern = new RegExp(`CRITERION_${n}:\\s*FAIL`, 'i')
-      const justificationPattern = new RegExp(`JUSTIFICATION_${n}:\\s*(.+?)(?=\\nCRITERION_|$)`, 'is')
-
-      const passed = passPattern.test(response)
-      const failed = failPattern.test(response)
-      const justificationMatch = response.match(justificationPattern)
-
       results.push({
         criterion: acceptanceCriteria[i],
-        passed: passed && !failed,
-        justification: justificationMatch?.[1]?.trim() ?? 'No justification provided',
+        passed: passMap.get(n) ?? false,
+        justification: justMap.get(n) ?? 'No justification provided',
       })
     }
 

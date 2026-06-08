@@ -92,6 +92,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   // ScopeGuard
   'scopeGuard:rollbackFile',
   'scopeGuard:commitSession',
+  'scopeGuard:rollbackSession',
 ]
 
 // Build IPC API object

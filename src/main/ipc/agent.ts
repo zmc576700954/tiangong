@@ -35,7 +35,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
   })
 
   typedHandle('agent:verify', async (_, params) => {
-    const { nodeId, acceptanceCriteria, messages, fileChanges } = params
+    const { nodeId, acceptanceCriteria, messages, fileChanges, workingDirectory } = params
     const prompt = verificationService.buildVerificationPrompt(nodeId, acceptanceCriteria, messages, fileChanges)
 
     // Use available adapter for verification (lightweight, no CLI needed)
@@ -46,7 +46,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     }
 
     const config = {
-      workingDirectory: '',
+      workingDirectory: workingDirectory ?? '',
       allowedFiles: [],
       forbiddenFiles: [],
       invariantRules: [],
@@ -59,39 +59,48 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
 
     const { sessionId } = await agentManager.startSession(installed.name, config)
 
-    // Collect response
-    const response = await new Promise<string>((resolve) => {
-      let collected = ''
-      const handler = (output: import('@shared/types').AgentOutput) => {
-        if (output.type === 'stdout') collected += output.data
-        if (output.type === 'complete' || output.type === 'error') {
+    try {
+      // Collect response
+      const response = await new Promise<string>((resolve) => {
+        let collected = ''
+        const handler = (output: import('@shared/types').AgentOutput) => {
+          if (output.type === 'stdout') collected += output.data
+          if (output.type === 'complete' || output.type === 'error') {
+            agentManager.removeOutputListener(handler)
+            resolve(collected)
+          }
+        }
+        agentManager.addOutputListener(handler)
+
+        agentManager.sendCommand(sessionId, {
+          type: 'implement',
+          description: prompt,
+          targetNodeId: nodeId,
+        }).catch(() => resolve(collected))
+
+        // Timeout after 60s
+        setTimeout(() => {
           agentManager.removeOutputListener(handler)
           resolve(collected)
-        }
+        }, 60000)
+      })
+
+      const results = verificationService.parseVerificationResponse(response, acceptanceCriteria)
+
+      return {
+        nodeId,
+        results,
+        passedCount: results.filter((r) => r.passed).length,
+        totalCount: results.length,
+        timestamp: Date.now(),
       }
-      agentManager.addOutputListener(handler)
-
-      agentManager.sendCommand(sessionId, {
-        type: 'implement',
-        description: prompt,
-        targetNodeId: nodeId,
-      }).catch(() => resolve(collected))
-
-      // Timeout after 60s
-      setTimeout(() => {
-        agentManager.removeOutputListener(handler)
-        resolve(collected)
-      }, 60000)
-    })
-
-    const results = verificationService.parseVerificationResponse(response, acceptanceCriteria)
-
-    return {
-      nodeId,
-      results,
-      passedCount: results.filter((r) => r.passed).length,
-      totalCount: results.length,
-      timestamp: Date.now(),
+    } finally {
+      // Always terminate the verification session to prevent resource leaks
+      try {
+        await agentManager.terminateSession(sessionId)
+      } catch {
+        // Session may already be terminated
+      }
     }
   })
 }

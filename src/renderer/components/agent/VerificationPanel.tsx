@@ -10,6 +10,7 @@ interface VerificationPanelProps {
   onBackToEdit: () => void
   maxRetries?: number
   currentRetry?: number
+  error?: string | null
 }
 
 export function VerificationPanel({
@@ -20,12 +21,33 @@ export function VerificationPanel({
   onBackToEdit,
   maxRetries = 2,
   currentRetry = 0,
+  error,
 }: VerificationPanelProps) {
   if (loading) {
     return (
       <div className="border border-border rounded-lg p-6 bg-background flex flex-col items-center gap-3">
         <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
         <span className="text-sm text-muted-foreground">Verifying acceptance criteria...</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="border border-red-500/30 rounded-lg p-4 bg-red-500/5 flex flex-col gap-3">
+        <div className="flex items-center gap-2 text-red-400 text-sm">
+          <XCircle className="w-4 h-4 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+        <div className="flex items-center justify-end gap-1.5">
+          <button
+            onClick={onBackToEdit}
+            className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <ArrowLeft className="w-3 h-3" />
+            Back to Edit
+          </button>
+        </div>
       </div>
     )
   }

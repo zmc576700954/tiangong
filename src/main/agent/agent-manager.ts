@@ -24,18 +24,19 @@ import { ScopeGuard } from '../scope-guard'
 
 type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
 
+interface SessionState {
+  config: AgentSessionConfig
+  broadcastName: string
+  adapterName: string
+  sandbox?: import('@shared/types').Sandbox
+}
+
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
-  private sandboxes = new Map<string, import('@shared/types').Sandbox>()
-  /** sessionId → broadcastName（用户请求的原始适配器名，用于 fallback 时显示） */
-  private broadcastNames = new Map<string, string>()
-  /** sessionId → config（用于 resolveAndSendCommand 获取 workingDirectory） */
-  private sessionConfigs = new Map<string, AgentSessionConfig>()
-  /** sessionId → 适配器名称（用于进程异常退出时定位适配器） */
-  private sessionAdapterNames = new Map<string, string>()
+  private sessionStates = new Map<string, SessionState>()
   /** sessionEnded 事件处理器（按适配器存储以便清理） */
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
@@ -53,8 +54,8 @@ export class AgentManager {
     // 注册 ScopeGuard 越界回调：检测到越界写入时自动终止对应 session
     this.scopeGuard.onViolation(async (sandboxId, violations) => {
       console.error(`[AgentManager] Scope violation detected:`, violations)
-      for (const [sessionId, sandbox] of this.sandboxes) {
-        if (sandbox.id === sandboxId) {
+      for (const [sessionId, state] of this.sessionStates) {
+        if (state.sandbox?.id === sandboxId) {
           try {
             await this.terminateSession(sessionId)
           } catch {
@@ -76,14 +77,12 @@ export class AgentManager {
 
   private attachAdapterOutput(adapter: AgentAdapter): void {
     const handler = (output: AgentOutput) => {
-      // 从输出中解析关联的 sessionId（BaseAdapter 通过 WeakMap 关联）
       const sessionId = adapter.resolveOutputSession?.(output)
       if (sessionId) {
-        const broadcastName = this.broadcastNames.get(sessionId) ?? adapter.name
+        const broadcastName = this.sessionStates.get(sessionId)?.broadcastName ?? adapter.name
         this.broadcaster.broadcast(broadcastName, output)
         return
       }
-      // 无 sessionId 关联的输出（如旧代码或内部组件输出），使用适配器本名广播
       this.broadcaster.broadcast(adapter.name, output)
     }
     this.outputHandlers.set(adapter.name, handler)
@@ -104,20 +103,17 @@ export class AgentManager {
    * 清理指定 session 的所有资源（沙箱、路由、广播名等）
    */
   private cleanupSessionResources(sessionId: string): void {
+    const state = this.sessionStates.get(sessionId)
+
     // ScopeGuard: 异常退出时回滚沙箱
-    const sandbox = this.sandboxes.get(sessionId)
-    if (sandbox) {
-      this.scopeGuard.rollback(sandbox).catch((err) => {
+    if (state?.sandbox) {
+      this.scopeGuard.rollback(state.sandbox).catch((err) => {
         console.error(`[AgentManager] Failed to rollback sandbox for session ${sessionId}:`, err)
       })
-      this.sandboxes.delete(sessionId)
     }
 
-    // 清理路由和广播映射
+    this.sessionStates.delete(sessionId)
     this.router.unbind(sessionId)
-    this.broadcastNames.delete(sessionId)
-    this.sessionConfigs.delete(sessionId)
-    this.sessionAdapterNames.delete(sessionId)
   }
 
   /**
@@ -138,10 +134,7 @@ export class AgentManager {
     }
     this.outputHandlers.clear()
     this.sessionEndedHandlers.clear()
-    this.broadcastNames.clear()
-    this.sessionConfigs.clear()
-    this.sessionAdapterNames.clear()
-    // 注意：registry/router/broadcaster 的生命周期由调用方管理
+    this.sessionStates.clear()
   }
 
   /**
@@ -152,7 +145,7 @@ export class AgentManager {
     await Promise.allSettled(
       sessionIds.map((id) => this.terminateSession(id)),
     )
-    this.broadcastNames.clear()
+    this.sessionStates.clear()
   }
 
   setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
@@ -160,7 +153,7 @@ export class AgentManager {
   }
 
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
-    return this.sandboxes.get(sessionId)
+    return this.sessionStates.get(sessionId)?.sandbox
   }
 
   get scopeGuardInstance(): import('../scope-guard').ScopeGuard {
@@ -200,9 +193,11 @@ export class AgentManager {
           originalAdapter: adapterName,
           fallbackReason: `${adapterName} not installed`,
         }
-        this.broadcastNames.set(session.id, adapterName)
-        this.sessionConfigs.set(session.id, config)
-        this.sessionAdapterNames.set(session.id, adapterName)
+        this.sessionStates.set(session.id, {
+          config,
+          broadcastName: adapterName,
+          adapterName,
+        })
         this.router.bind(session.id, mcp.name, adapterName)
         return { sessionId: session.id, fallback: true }
       }
@@ -214,20 +209,20 @@ export class AgentManager {
 
     const session = await adapter.startSession(config)
 
-    // 保存用户请求的原始适配器名，用于输出广播（支持 fallback 显示）
-    this.broadcastNames.set(session.id, adapterName)
-    // 保存 session 配置和适配器名，用于后续上下文解析和异常清理
-    this.sessionConfigs.set(session.id, config)
-    this.sessionAdapterNames.set(session.id, adapterName)
-
-    // ScopeGuard: 启动文件变更边界保护
+    let sandbox: import('@shared/types').Sandbox | undefined
     if (config.allowedFiles.length > 0) {
-      const scopeSandbox = await this.scopeGuard.prepareSandbox(
+      sandbox = await this.scopeGuard.prepareSandbox(
         config.allowedFiles,
         config.workingDirectory,
       )
-      this.sandboxes.set(session.id, scopeSandbox)
     }
+
+    this.sessionStates.set(session.id, {
+      config,
+      broadcastName: adapterName,
+      adapterName,
+      sandbox,
+    })
 
     this.router.bind(session.id, adapterName)
     // Emit status change: node → developing
@@ -259,7 +254,7 @@ export class AgentManager {
     let resolvedContexts: ResolvedContext[] = []
 
     if (contextRefs && contextRefs.length > 0) {
-      const sessionConfig = this.sessionConfigs.get(sessionId)
+      const sessionConfig = this.sessionStates.get(sessionId)?.config
       resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
         nodes: nodes ?? [],
         basePath: sessionConfig?.workingDirectory,
@@ -292,32 +287,28 @@ export class AgentManager {
     await adapter.terminateSession(sessionId)
     this.router.unbind(sessionId)
 
-    // 清理 broadcastName 映射
-    this.broadcastNames.delete(sessionId)
-    this.sessionConfigs.delete(sessionId)
-    this.sessionAdapterNames.delete(sessionId)
+    // 保存 nodeId 用于后续状态变更（delete 前提取，避免 config 被清除后无法读取）
+    const state = this.sessionStates.get(sessionId)
+    const nodeId = state?.config.nodeId
+    const sandbox = state?.sandbox
+
+    this.sessionStates.delete(sessionId)
 
     // ScopeGuard: 执行后验证并清理沙箱
-    const sandbox = this.sandboxes.get(sessionId)
     let scopeGuardError: Error | undefined
     if (sandbox) {
       try {
         await this.scopeGuard.commitChanges(sandbox)
-        // Emit status change: node → testing
-        const config = this.sessionConfigs.get(sessionId)
-        if (config?.nodeId) {
-          this.statusChangeCallback?.(sessionId, config.nodeId, 'testing')
+        if (nodeId) {
+          this.statusChangeCallback?.(sessionId, nodeId, 'testing')
         }
       } catch (err) {
         if (err instanceof ScopeGuardError) {
-          // 验证失败（越界写入），错误已包含在 commitChanges 的日志中
           console.error(`[AgentManager] ScopeGuard validation failed for session ${sessionId}:`, err.message)
           scopeGuardError = err
         } else if (err instanceof Error) {
           console.error(`[AgentManager] ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
         }
-      } finally {
-        this.sandboxes.delete(sessionId)
       }
     }
     if (scopeGuardError) {

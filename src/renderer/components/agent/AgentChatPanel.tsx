@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Bot, GitBranch } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
+import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
+import { useVerificationFlow } from '../../hooks/useVerificationFlow'
+import { useDiffReview } from '../../hooks/useDiffReview'
 import { ChatHeader } from './ChatHeader'
 import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
@@ -13,8 +16,7 @@ import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { DiffReviewPanel } from './DiffReviewPanel'
 import { VerificationPanel } from './VerificationPanel'
-import type { ContextRef, AgentSessionConfig, AgentOutput, VerificationReport } from '@shared/types'
-import { generateId } from '../../lib/utils'
+import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
 interface AgentChatPanelProps {
   expanded: boolean
@@ -43,18 +45,60 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showContextPicker, setShowContextPicker] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState('')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
-  const [showDiffReview, setShowDiffReview] = useState(false)
-  const [committing, setCommitting] = useState(false)
-  const [showVerification, setShowVerification] = useState(false)
-  const [verificationReport, setVerificationReport] = useState<VerificationReport | null>(null)
-  const [verifying, setVerifying] = useState(false)
-  const [retryCount, setRetryCount] = useState(0)
 
-  // Track the current streaming agent message ID within this render cycle
-  const streamingMsgIdRef = useRef<string | null>(null)
+  // Derived data — must be declared before useVerificationFlow
+  const currentThread = threads.find((t) => t.id === currentThreadId)
+
+  const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
+  const nodes = useGraphStore((s) => s.nodes)
+  const selectedNode = nodes.find((n) => n.id === selectedNodeId)
+
+  const graphs = useGraphStore((s) => s.graphs)
+  const currentGraphId = useGraphStore((s) => s.currentGraphId)
+  const currentGraph = graphs.find((g) => g.id === currentGraphId)
+  const projectPath = currentGraph?.projectPath
+
+  const rawOutputs = useMemo(
+    () => (currentThread ? (threadOutputs.get(currentThread.id) ?? []) : []),
+    [currentThread, threadOutputs],
+  )
+
+  // Hooks for separated concerns
+  const streamingMsgIdRef = useAgentOutputListener(currentThreadId)
+  const {
+    showVerification,
+    verificationReport,
+    verifying,
+    verifyError,
+    retryCount,
+    pendingRetryRef,
+    setRetryCount,
+    startVerification,
+    resetVerification,
+  } = useVerificationFlow(
+    currentThread,
+    selectedNode,
+    rawOutputs,
+    projectPath,
+  )
+  const {
+    showDiffReview,
+    committing,
+    commitError,
+    setShowDiffReview,
+    setCommitting,
+    setCommitError,
+    handleAcceptFile,
+    handleRejectFile,
+    handleAcceptAll,
+    handleRejectAll,
+  } = useDiffReview()
 
   // Resize state for message area / input area split
-  const [inputAreaHeight, setInputAreaHeight] = useState(120)
+  const [inputAreaHeight, setInputAreaHeight] = useState(() => {
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('agentChatInputHeight') : null
+    return saved ? parseInt(saved, 10) : 120
+  })
   const [isResizingChat, setIsResizingChat] = useState(false)
   const [hasResized, setHasResized] = useState(false)
   const chatContainerRef = useRef<HTMLDivElement>(null)
@@ -64,11 +108,11 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     const rect = chatContainerRef.current.getBoundingClientRect()
     const totalHeight = rect.height
     const bottomY = rect.bottom
-    // Input area can occupy up to 70% of total chat height
     const maxInputHeight = Math.floor(totalHeight * 0.7)
     const newInputHeight = Math.max(60, Math.min(maxInputHeight, bottomY - e.clientY))
     setInputAreaHeight(newInputHeight)
     setHasResized(true)
+    localStorage.setItem('agentChatInputHeight', String(newInputHeight))
   }, [])
 
   useEffect(() => {
@@ -83,18 +127,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     }
   }, [isResizingChat, handleResizeChat])
 
-  const currentThread = threads.find((t) => t.id === currentThreadId)
-  const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
-  const nodes = useGraphStore((s) => s.nodes)
-  const selectedNode = nodes.find((n) => n.id === selectedNodeId)
-
   const pendingContextRef = useAppStore((s) => s.pendingContextRef)
   const setPendingContextRef = useAppStore((s) => s.setPendingContextRef)
-
-  const graphs = useGraphStore((s) => s.graphs)
-  const currentGraphId = useGraphStore((s) => s.currentGraphId)
-  const currentGraph = graphs.find((g) => g.id === currentGraphId)
-  const projectPath = currentGraph?.projectPath
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.electronAPI) {
@@ -108,156 +142,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       setSelectedAdapter(installed[0].name)
     }
   }, [adapters, selectedAdapter])
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.electronAPI?.onAgentOutput) {
-      const cleanup = window.electronAPI.onAgentOutput((_sessionId: string, output: AgentOutput) => {
-        // 通过 sessionId 找到对应的 thread，记录输出
-        const store = useAgentStore.getState()
-        const ownerThread = store.findThreadBySessionId(_sessionId)
-        if (!ownerThread) return
-        const tid = ownerThread.id
-        const adapterName = ownerThread.adapterName
-
-        store.appendOutput(tid, output)
-
-        if (output.type === 'error') {
-          if (streamingMsgIdRef.current) {
-            store.markMessageStatus(tid, streamingMsgIdRef.current, 'error', {
-              code: output.errorCode ?? 'UNKNOWN',
-              message: output.data || 'Agent 异常退出',
-            })
-            streamingMsgIdRef.current = null
-          } else {
-            store.appendChatMessage(tid, {
-              id: generateId('msg'),
-              role: 'agent',
-              content: '',
-              timestamp: output.timestamp,
-              adapterName,
-              status: 'error',
-              error: {
-                code: output.errorCode ?? 'UNKNOWN',
-                message: output.data || 'Agent 异常退出',
-              },
-            })
-          }
-          store.updateThreadStatus(tid, 'error')
-          return
-        }
-
-        if (output.type === 'complete') {
-          if (streamingMsgIdRef.current) {
-            store.markMessageStatus(tid, streamingMsgIdRef.current, 'success')
-            streamingMsgIdRef.current = null
-          }
-          store.updateThreadStatus(tid, 'idle')
-          useAgentStore.getState().persistThreadMessages(tid)
-          return
-        }
-
-        if (output.type === 'file_change') {
-          const filePath = output.filePath
-          if (!filePath) return
-
-          // Ensure streaming message exists
-          if (!streamingMsgIdRef.current) {
-            const msgId = `output-${output.timestamp}`
-            streamingMsgIdRef.current = msgId
-            store.appendChatMessage(tid, {
-              id: msgId,
-              role: 'agent',
-              content: '',
-              timestamp: output.timestamp,
-              adapterName,
-              status: 'streaming',
-              toolCalls: [],
-            })
-          }
-
-          // Construct ToolCallBlock from file_change output
-          const toolCall: import('@shared/types').ToolCallBlock = {
-            type: output.changeType === 'add' ? 'file_create' : 'file_edit',
-            filePath,
-            content: output.data,
-            status: 'done',
-          }
-
-          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
-          store.updateThreadStatus(tid, 'running')
-          return
-        }
-
-        if (output.type === 'stdout') {
-          const text = output.data.trim()
-          if (!text) return
-
-          if (!streamingMsgIdRef.current) {
-            const msgId = `output-${output.timestamp}`
-            streamingMsgIdRef.current = msgId
-            store.appendChatMessage(tid, {
-              id: msgId,
-              role: 'agent',
-              content: text,
-              timestamp: output.timestamp,
-              adapterName,
-              status: 'streaming',
-            })
-          } else {
-            const thread = useAgentStore.getState().threads.find((t) => t.id === tid)
-            const existingMsg = thread?.messages.find((m) => m.id === streamingMsgIdRef.current)
-            if (existingMsg) {
-              useAgentStore.setState({
-                threads: useAgentStore.getState().threads.map((t) =>
-                  t.id === tid
-                    ? {
-                        ...t,
-                        messages: t.messages.map((m) =>
-                          m.id === streamingMsgIdRef.current
-                            ? { ...m, content: m.content + '\n' + text }
-                            : m,
-                        ),
-                      }
-                    : t,
-                ),
-              })
-            }
-          }
-          store.updateThreadStatus(tid, 'running')
-          return
-        }
-
-        if (output.type === 'stderr') {
-          if (streamingMsgIdRef.current) {
-            const thread = useAgentStore.getState().threads.find((t) => t.id === tid)
-            const existingMsg = thread?.messages.find((m) => m.id === streamingMsgIdRef.current)
-            if (existingMsg) {
-              useAgentStore.setState({
-                threads: useAgentStore.getState().threads.map((t) =>
-                  t.id === tid
-                    ? {
-                        ...t,
-                        messages: t.messages.map((m) =>
-                          m.id === streamingMsgIdRef.current
-                            ? { ...m, content: m.content + '\n[stderr] ' + output.data.trim() }
-                            : m,
-                        ),
-                      }
-                    : t,
-                ),
-              })
-            }
-          }
-        }
-      })
-      return cleanup
-    }
-  }, [currentThreadId])
-
-  // Reset streaming ref when thread changes
-  useEffect(() => {
-    streamingMsgIdRef.current = null
-  }, [currentThreadId])
 
   // Listen for agent status changes to sync node status
   useEffect(() => {
@@ -274,7 +158,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       return [...prev, pendingContextRef]
     })
 
-    // Auto-create a thread if none exists — ContextBar only renders when currentThread is set
     if (!currentThreadId && selectedAdapter) {
       createThread(selectedAdapter, selectedNode?.id)
     }
@@ -312,7 +195,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       threadId = createThread(selectedAdapter, selectedNode?.id)
     }
 
-    // 从当前选中节点构建完整的会话配置
     const sessionConfig: AgentSessionConfig = {
       workingDirectory: currentGraph?.projectPath ?? '',
       allowedFiles: contextRefs.filter((r) => r.type === 'file').map((r) => r.id),
@@ -348,7 +230,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       if (prev.some((c) => c.id === ref.id)) return prev
       return [...prev, ref]
     })
-    // Auto-create thread if none exists, so ContextBar is visible and send works
     if (!currentThreadId && selectedAdapter) {
       createThread(selectedAdapter, selectedNode?.id)
     }
@@ -366,8 +247,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     setShowContextPicker(false)
   }
 
-  const rawOutputs = currentThread ? (threadOutputs.get(currentThread.id) ?? []) : []
   const isRunning = currentThread?.status === 'running'
+
+  const currentOperation = useMemo(() => {
+    const fileChanges = rawOutputs.filter((o) => o.type === 'file_change')
+    const last = fileChanges[fileChanges.length - 1]
+    return last?.filePath ? `is editing ${last.filePath}` : undefined
+  }, [rawOutputs])
 
   return (
     <div className="h-full flex flex-col relative" ref={chatContainerRef}>
@@ -431,7 +317,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 <span className="text-blue-700 dark:text-blue-300 text-xs">This session can be continued</span>
                 <button
                   onClick={() => {
-                    // 恢复会话：重新发送最后一条用户消息以触发 Agent 续接
                     const lastUserMsg = currentThread.messages.filter((m) => m.role === 'user').pop()
                     if (lastUserMsg) {
                       sendMessage(currentThread.id, lastUserMsg.content)
@@ -449,6 +334,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 isRunning={!!isRunning}
                 adapterName={currentThread?.adapterName}
                 onRetry={handleRetry}
+                currentOperation={currentOperation}
               />
             ) : (
               <TerminalView outputs={rawOutputs} />
@@ -474,6 +360,11 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           {/* Diff Review Panel */}
           {showDiffReview && currentThread && (
             <div className="flex-shrink-0 px-3 py-2">
+              {commitError && (
+                <div className="mb-2 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
+                  {commitError}
+                </div>
+              )}
               <DiffReviewPanel
                 toolCalls={
                   currentThread.messages
@@ -482,50 +373,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 }
                 sessionId={currentThread.sessionId}
                 committing={committing}
-                onAcceptFile={(index) => {
-                  const allToolCalls = currentThread.messages
-                    .filter((m) => m.role === 'agent')
-                    .flatMap((m) => m.toolCalls ?? [])
-                  const tc = allToolCalls[index]
-                  if (tc) tc.accepted = true
-                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
-                }}
-                onRejectFile={async (index, filePath) => {
-                  const allToolCalls = currentThread.messages
-                    .filter((m) => m.role === 'agent')
-                    .flatMap((m) => m.toolCalls ?? [])
-                  const tc = allToolCalls[index]
-                  if (tc) tc.accepted = false
-                  if (currentThread.sessionId) {
-                    try {
-                      await window.electronAPI['scopeGuard:rollbackFile'](currentThread.sessionId, filePath)
-                    } catch (err) {
-                      console.error('[DiffReview] Failed to rollback file:', err)
-                    }
-                  }
-                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
-                }}
-                onAcceptAll={() => {
-                  currentThread.messages
-                    .filter((m) => m.role === 'agent')
-                    .forEach((m) => m.toolCalls?.forEach((tc) => { tc.accepted = true }))
-                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
-                }}
-                onRejectAll={async () => {
-                  currentThread.messages
-                    .filter((m) => m.role === 'agent')
-                    .forEach((m) => m.toolCalls?.forEach((tc) => { tc.accepted = false }))
-                  if (currentThread.sessionId) {
-                    try {
-                      await window.electronAPI['scopeGuard:commitSession'](currentThread.sessionId)
-                    } catch (err) {
-                      console.error('[DiffReview] Failed to reject all:', err)
-                    }
-                  }
-                  useAgentStore.setState({ threads: [...useAgentStore.getState().threads] })
-                }}
+                onAcceptFile={(index) => handleAcceptFile(currentThread.id, 0, index)}
+                onRejectFile={(index, filePath) => handleRejectFile(currentThread.id, 0, index, filePath, currentThread.sessionId)}
+                onAcceptAll={() => handleAcceptAll(currentThread.id)}
+                onRejectAll={() => handleRejectAll(currentThread.id, currentThread.sessionId)}
                 onCommit={async () => {
                   setCommitting(true)
+                  setCommitError(null)
                   try {
                     if (currentThread.sessionId) {
                       await window.electronAPI['scopeGuard:commitSession'](currentThread.sessionId)
@@ -533,26 +387,19 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                     useAgentStore.getState().updateThreadStatus(currentThread.id, 'reviewed')
                     setShowDiffReview(false)
 
-                    // Auto-trigger verification if node has acceptance criteria
                     if (selectedNode?.acceptanceCriteria && selectedNode.acceptanceCriteria.length > 0) {
-                      setShowVerification(true)
-                      setVerifying(true)
-                      try {
-                        const report = await window.electronAPI['agent:verify']({
-                          nodeId: selectedNode.id,
-                          acceptanceCriteria: selectedNode.acceptanceCriteria,
-                          messages: currentThread.messages,
-                          fileChanges: rawOutputs.filter((o) => o.type === 'file_change'),
-                        })
-                        setVerificationReport(report)
-                      } catch (err) {
-                        console.error('[Verification] Failed:', err)
-                      } finally {
-                        setVerifying(false)
-                      }
+                      await startVerification({
+                        nodeId: selectedNode.id,
+                        acceptanceCriteria: selectedNode.acceptanceCriteria,
+                        messages: currentThread.messages,
+                        fileChanges: rawOutputs.filter((o) => o.type === 'file_change'),
+                        workingDirectory: projectPath ?? '',
+                      })
                     }
                   } catch (err) {
+                    const msg = err instanceof Error ? err.message : 'Commit failed'
                     console.error('[DiffReview] Commit failed:', err)
+                    setCommitError(msg)
                   } finally {
                     setCommitting(false)
                   }
@@ -568,29 +415,25 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 report={verificationReport}
                 loading={verifying}
                 currentRetry={retryCount}
-                onRetryFailed={async () => {
+                error={verifyError}
+                onRetryFailed={() => {
                   if (!verificationReport) return
                   const failedResults = verificationReport.results.filter((r) => !r.passed)
                   setRetryCount((c) => c + 1)
-                  setVerifying(true)
-                  // Build retry prompt from failed criteria
                   const retryPrompt = `Fix the following unmet criteria:\n${failedResults.map((r, i) => `${i + 1}. ${r.criterion}\n   Issue: ${r.justification}`).join('\n')}`
-                  // Send via handleSend
+                  pendingRetryRef.current = true
+                  resetVerification()
                   handleSend(retryPrompt, attachedContexts)
-                  setVerifying(false)
                 }}
                 onMarkComplete={() => {
                   if (selectedNode) {
                     useGraphStore.getState().updateNode(selectedNode.id, { status: 'review' })
                   }
-                  setShowVerification(false)
-                  setVerificationReport(null)
+                  resetVerification()
                   setRetryCount(0)
+                  pendingRetryRef.current = false
                 }}
-                onBackToEdit={() => {
-                  setShowVerification(false)
-                  setVerificationReport(null)
-                }}
+                onBackToEdit={resetVerification}
               />
             </div>
           )}

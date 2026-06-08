@@ -23,14 +23,18 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
   const isProject = data.type === 'project'
 
-  // Agent activity state
-  const agentThread = useAgentStore((s) =>
-    s.threads.find((t) => t.nodeBound === data.id)
-  )
-  const agentStatus = agentThread?.status
+  // Agent activity state — single selector to avoid 3× threads.find() per node
+  const agentThreadInfo = useAgentStore((s) => {
+    const t = s.threads.find((t) => t.nodeBound === data.id)
+    return t ? { id: t.id, status: t.status, sessionId: t.sessionId } : undefined
+  })
+  const agentThreadId = agentThreadInfo?.id
+  const agentStatus = agentThreadInfo?.status
+  const agentSessionId = agentThreadInfo?.sessionId
+
   const isAgentRunning = agentStatus === 'running'
   const isAgentError = agentStatus === 'error'
-  const isAgentCompleted = agentStatus === 'idle' && !!agentThread?.sessionId
+  const isAgentCompleted = agentStatus === 'idle' && !!agentSessionId
 
   // Fade-out for completed state
   const [showCompleted, setShowCompleted] = useState(false)
@@ -43,8 +47,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
     setShowCompleted(false)
   }, [isAgentCompleted])
 
-  const threadOutputs = useAgentStore((s) => s.threadOutputs)
-  const agentOutputs = agentThread ? (threadOutputs.get(agentThread.id) ?? []) : []
+  // Select only this thread's outputs (not the entire Map)
+  const agentOutputs = useAgentStore((s) => {
+    if (!agentThreadId) return []
+    return s.threadOutputs.get(agentThreadId) ?? []
+  })
 
   if (isProject) {
     return (

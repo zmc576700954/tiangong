@@ -23,6 +23,9 @@ const MAX_FILE_LINES = 100
 /** 文件内容最大字符数 */
 const MAX_FILE_CHARS = 16000
 
+/** TTL 缓存有效期（毫秒） */
+const FILE_CACHE_TTL = 10000
+
 /**
  * 粗估文本的 token 数
  */
@@ -49,6 +52,8 @@ export interface ResolveOptions {
 }
 
 export class ContextResolver {
+  private fileCache = new Map<string, { content: string; timestamp: number }>()
+
   /**
    * 解析 ContextRef[] 为 ResolvedContext[]
    * @param refs - 上下文引用列表
@@ -159,19 +164,27 @@ export class ContextResolver {
     }
 
     try {
+      // Check TTL cache first
+      const cached = this.fileCache.get(resolvedPath)
+      if (cached && Date.now() - cached.timestamp < FILE_CACHE_TTL) {
+        return cached.content
+      }
+
       const content = await readFile(resolvedPath, 'utf-8')
       const lines = content.split('\n')
 
+      let result: string
       if (lines.length > MAX_FILE_LINES) {
         const truncated = lines.slice(0, MAX_FILE_LINES).join('\n')
-        return `${truncated}\n\n[文件共 ${lines.length} 行，仅显示前 ${MAX_FILE_LINES} 行]`
+        result = `${truncated}\n\n[文件共 ${lines.length} 行，仅显示前 ${MAX_FILE_LINES} 行]`
+      } else if (content.length > MAX_FILE_CHARS) {
+        result = content.slice(0, MAX_FILE_CHARS) + `\n\n[文件内容过长，已截断]`
+      } else {
+        result = content
       }
 
-      if (content.length > MAX_FILE_CHARS) {
-        return content.slice(0, MAX_FILE_CHARS) + `\n\n[文件内容过长，已截断]`
-      }
-
-      return content
+      this.fileCache.set(resolvedPath, { content: result, timestamp: Date.now() })
+      return result
     } catch {
       return `[无法读取文件: ${ref.label} (${ref.id})]`
     }

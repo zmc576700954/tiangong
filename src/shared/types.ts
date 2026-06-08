@@ -596,6 +596,7 @@ export interface IpcApi {
     acceptanceCriteria: string[]
     messages: ChatMessage[]
     fileChanges: AgentOutput[]
+    workingDirectory?: string
   }) => Promise<VerificationReport>
 
   // Chat 会话记录
@@ -664,6 +665,7 @@ export interface IpcApi {
   // ScopeGuard 操作
   'scopeGuard:rollbackFile': (sessionId: string, filePath: string) => Promise<boolean>
   'scopeGuard:commitSession': (sessionId: string) => Promise<ValidationResult>
+  'scopeGuard:rollbackSession': (sessionId: string) => Promise<void>
 }
 
 // ============================================

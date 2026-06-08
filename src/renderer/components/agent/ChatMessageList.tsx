@@ -8,9 +8,10 @@ interface ChatMessageListProps {
   isRunning: boolean
   adapterName?: string
   onRetry?: (messageId: string) => void
+  currentOperation?: string
 }
 
-export function ChatMessageList({ messages, isRunning, adapterName, onRetry }: ChatMessageListProps) {
+export function ChatMessageList({ messages, isRunning, adapterName, onRetry, currentOperation }: ChatMessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Compute a content signature so we also scroll on streaming content growth
@@ -40,7 +41,7 @@ export function ChatMessageList({ messages, isRunning, adapterName, onRetry }: C
       {messages.map((msg) => (
         <ChatBubble key={msg.id} message={msg} onRetry={onRetry} />
       ))}
-      {isRunning && <RunningIndicator adapterName={adapterName} />}
+      {isRunning && <RunningIndicator adapterName={adapterName} currentOperation={currentOperation} />}
       <div ref={bottomRef} />
     </div>
   )
