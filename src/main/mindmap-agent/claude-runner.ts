@@ -12,6 +12,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { buildSafeEnv } from '../shared/env'
+import { AgentError, ErrorCode } from '../errors'
 
 export interface ClaudeRunOptions {
   cwd: string
@@ -123,5 +124,5 @@ export function extractJson(raw: string): unknown {
     try { return JSON.parse(raw.substring(jsonStart, jsonEnd + 1)) } catch { /* give up */ }
   }
 
-  throw new Error('Failed to extract JSON from Claude output')
+  throw new AgentError('Failed to extract JSON from Claude output', ErrorCode.AGENT_PROCESS_ERROR)
 }

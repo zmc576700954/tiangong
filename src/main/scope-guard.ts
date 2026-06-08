@@ -16,6 +16,9 @@ import type { FSWatcher } from 'chokidar'
 import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/types'
 import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('ScopeGuard')
 
 /** 定时扫描间隔（毫秒） */
 const ACTIVE_SCAN_INTERVAL_MS = 500
@@ -84,7 +87,7 @@ export class ScopeGuard {
   private notifyViolation(sandboxId: string, violations: string[]): void {
     for (const handler of this.violationHandlers) {
       try { handler(sandboxId, violations) } catch (err) {
-        console.error('[ScopeGuard] violation handler error:', err)
+        logger.error('violation handler error:', err)
       }
     }
   }
@@ -171,7 +174,7 @@ export class ScopeGuard {
       if (shouldIgnorePath(resolved)) return
 
       if (!allowedSet.has(resolved)) {
-        console.warn(`[ScopeGuard] Out-of-bounds write detected by watcher: ${eventPath}`)
+        logger.warn(`Out-of-bounds write detected by watcher: ${eventPath}`)
         this.notifyViolation(sandboxId, [resolved])
       }
     }
@@ -208,7 +211,7 @@ export class ScopeGuard {
   async postExecutionValidation(sandbox: Sandbox): Promise<ValidationResult> {
     const initialSnapshot = this.initialSnapshots.get(sandbox.id)
     if (!initialSnapshot) {
-      console.warn('[ScopeGuard] No initial snapshot found, skipping post-execution validation')
+      logger.warn('No initial snapshot found, skipping post-execution validation')
       return { compliant: true, outOfBoundsFiles: [], validFiles: [], shouldRollback: false }
     }
 
@@ -259,11 +262,11 @@ export class ScopeGuard {
     }
 
     if (!result.compliant) {
-      console.warn(
-        `[ScopeGuard] Post-execution validation failed: ${outOfBoundsFiles.length} out-of-bounds files detected`,
+      logger.warn(
+        `Post-execution validation failed: ${outOfBoundsFiles.length} out-of-bounds files detected`,
       )
     } else {
-      console.log('[ScopeGuard] Post-execution validation passed')
+      logger.info('Post-execution validation passed')
     }
 
     return result
@@ -304,7 +307,7 @@ export class ScopeGuard {
    * 4. 释放沙箱资源
    */
   async rollback(sandbox: Sandbox, validationResult?: ValidationResult): Promise<void> {
-    console.log(`[ScopeGuard] Rolling back sandbox ${sandbox.id}...`)
+    logger.info(`Rolling back sandbox ${sandbox.id}...`)
 
     // 1. 恢复备份文件
     const backupFiles = await this.listFilesRecursive(sandbox.backupDir)
@@ -315,9 +318,9 @@ export class ScopeGuard {
       try {
         const content = await fs.readFile(backupPath, 'utf-8')
         await fs.writeFile(targetPath, content, 'utf-8')
-        console.log(`[ScopeGuard] Restored: ${relativePath}`)
+        logger.info(`Restored: ${relativePath}`)
       } catch (err) {
-        console.warn(`[ScopeGuard] Failed to restore ${relativePath}:`, err)
+        logger.warn(`Failed to restore ${relativePath}:`, err)
       }
     }
 
@@ -326,9 +329,9 @@ export class ScopeGuard {
     for (const filePath of filesToDelete) {
       try {
         await fs.unlink(filePath)
-        console.log(`[ScopeGuard] Deleted out-of-bounds new file: ${filePath}`)
+        logger.info(`Deleted out-of-bounds new file: ${filePath}`)
       } catch (err) {
-        console.warn(`[ScopeGuard] Failed to delete ${filePath}:`, err)
+        logger.warn(`Failed to delete ${filePath}:`, err)
       }
     }
 
@@ -338,7 +341,7 @@ export class ScopeGuard {
     // 4. 释放沙箱资源
     await this.cleanupSandbox(sandbox)
 
-    console.log(`[ScopeGuard] Rollback completed for sandbox ${sandbox.id}`)
+    logger.info(`Rollback completed for sandbox ${sandbox.id}`)
   }
 
   /**
@@ -351,16 +354,16 @@ export class ScopeGuard {
     try {
       const content = await fs.readFile(backupPath, 'utf-8')
       await fs.writeFile(filePath, content, 'utf-8')
-      console.log(`[ScopeGuard] Rolled back file: ${relativePath}`)
+      logger.info(`Rolled back file: ${relativePath}`)
       return true
     } catch {
       // File may not have existed before (new file) — delete it
       try {
         await fs.unlink(filePath)
-        console.log(`[ScopeGuard] Deleted new file: ${relativePath}`)
+        logger.info(`Deleted new file: ${relativePath}`)
         return true
       } catch {
-        console.warn(`[ScopeGuard] Failed to rollback ${relativePath}`)
+        logger.warn(`Failed to rollback ${relativePath}`)
         return false
       }
     }
@@ -375,7 +378,7 @@ export class ScopeGuard {
     const validation = await this.postExecutionValidation(sandbox)
 
     if (!validation.compliant) {
-      console.warn('[ScopeGuard] Commit rejected: post-execution validation failed, rolling back...')
+      logger.warn('Commit rejected: post-execution validation failed, rolling back...')
       await this.rollback(sandbox, validation)
       throw new ScopeGuardError(
         `Commit rejected: ${validation.outOfBoundsFiles.length} out-of-bounds files detected: ${validation.outOfBoundsFiles.join(', ')}`,
@@ -495,11 +498,11 @@ export class ScopeGuard {
       try {
         const violations = await this.scanDirectoriesForViolations(dirsToScan, allowedSet)
         if (violations.length > 0) {
-          console.warn(`[ScopeGuard] Active scan found violations:`, violations)
+          logger.warn('Active scan found violations:', violations)
           this.notifyViolation(sandboxId, violations)
         }
       } catch (err) {
-        console.error(`[ScopeGuard] Active scan error:`, err)
+        logger.error('Active scan error:', err)
       } finally {
         this.scanLocks.delete(sandboxId)
       }

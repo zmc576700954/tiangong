@@ -5,6 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { GraphEdge } from '@shared/types'
+import { DatabaseError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
 
 function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
@@ -24,6 +25,9 @@ function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
     label: row.label as string | undefined,
     graphId: row.graph_id as string,
     edgeType: row.edge_type as GraphEdge['edgeType'],
+    description: row.description as string | undefined,
+    dataFlow: row.data_flow as string | undefined,
+    strength: typeof row.strength === 'number' ? row.strength : undefined,
     content,
   }
 }
@@ -35,7 +39,7 @@ export class EdgeRepository {
     const id = generateId('edge')
 
     await this.db.execute({
-      sql: 'INSERT INTO edges (id, source, target, label, edge_type, content, graph_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      sql: 'INSERT INTO edges (id, source, target, label, edge_type, content, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       args: [
         id,
         data.source,
@@ -44,6 +48,9 @@ export class EdgeRepository {
         data.edgeType ?? null,
         data.content ? JSON.stringify(data.content) : null,
         data.graphId,
+        data.description ?? null,
+        data.dataFlow ?? null,
+        data.strength ?? null,
       ],
     })
 
@@ -52,7 +59,7 @@ export class EdgeRepository {
 
   async update(id: string, data: Partial<GraphEdge>): Promise<GraphEdge> {
     const updates: string[] = []
-    const args: (string | null)[] = []
+    const args: (string | number | null)[] = []
 
     if (data.label !== undefined) { updates.push('label = ?'); args.push(data.label) }
     if (data.edgeType !== undefined) { updates.push('edge_type = ?'); args.push(data.edgeType) }
@@ -60,6 +67,9 @@ export class EdgeRepository {
       updates.push('content = ?')
       args.push(data.content ? JSON.stringify(data.content) : null)
     }
+    if (data.description !== undefined) { updates.push('description = ?'); args.push(data.description ?? null) }
+    if (data.dataFlow !== undefined) { updates.push('data_flow = ?'); args.push(data.dataFlow ?? null) }
+    if (data.strength !== undefined) { updates.push('strength = ?'); args.push(data.strength ?? null) }
 
     if (updates.length > 0) {
       args.push(id)
@@ -72,7 +82,7 @@ export class EdgeRepository {
     const result = await this.db.execute({ sql: 'SELECT * FROM edges WHERE id = ?', args: [id] })
     const row = result.rows[0]
     if (!row) {
-      throw new Error(`Edge not found: ${id}`)
+      throw new DatabaseError(`Edge not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
     }
     return parseEdgeRow(row)
   }

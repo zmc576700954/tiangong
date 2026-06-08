@@ -11,6 +11,15 @@ import { IpcError, ErrorCode } from '../errors'
 
 export type ValidateFsPath = (targetPath: string, operation: 'read' | 'write') => Promise<string>
 
+async function throwIfExists(filePath: string, name: string): Promise<void> {
+  try {
+    await fs.access(filePath)
+    throw new IpcError(`Already exists: ${name}`, ErrorCode.IPC_HANDLER_ERROR)
+  } catch (err: unknown) {
+    if (err instanceof IpcError && err.message.startsWith('Already exists')) throw err
+  }
+}
+
 const SKIP_DIRS = new Set([
   'node_modules', '.git', '.next', 'dist', 'build',
   '__pycache__', '.DS_Store', '.vscode', '.idea',
@@ -185,12 +194,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     assertNotDangerous(validNewPath)
 
     // 检查目标是否已存在
-    try {
-      await fs.access(validNewPath)
-      throw new Error(`Already exists: ${newName}`)
-    } catch (err: unknown) {
-      if (err instanceof Error && err.message.startsWith('Already exists')) throw err
-    }
+    await throwIfExists(validNewPath, newName)
 
     await fs.rename(validOldPath, validNewPath)
     return { oldPath: validOldPath, newPath: validNewPath, newName }
@@ -206,12 +210,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     assertNotDangerous(validDestPath)
 
     // 检查目标是否已存在
-    try {
-      await fs.access(validDestPath)
-      throw new Error(`Already exists: ${fileName}`)
-    } catch (err: unknown) {
-      if (err instanceof Error && err.message.startsWith('Already exists')) throw err
-    }
+    await throwIfExists(validDestPath, fileName)
 
     await fs.rename(validSource, validDestPath)
     return { sourcePath: validSource, destPath: validDestPath, name: fileName }
@@ -227,12 +226,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     assertNotDangerous(validDestPath)
 
     // 检查目标是否已存在
-    try {
-      await fs.access(validDestPath)
-      throw new Error(`Already exists: ${fileName}`)
-    } catch (err: unknown) {
-      if (err instanceof Error && err.message.startsWith('Already exists')) throw err
-    }
+    await throwIfExists(validDestPath, fileName)
 
     await fs.cp(validSource, validDestPath, { recursive: true })
     return { sourcePath: validSource, destPath: validDestPath, name: fileName }

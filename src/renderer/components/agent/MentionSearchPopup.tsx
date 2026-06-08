@@ -19,7 +19,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
   const [tab, setTab] = useState<Tab>('nodes')
   const [fileResults, setFileResults] = useState<FileSearchResult[]>([])
   const [fileLoading, setFileLoading] = useState(false)
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>()
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // --- Node results (existing logic) ---
   const nodes = useGraphStore((s) => s.nodes)

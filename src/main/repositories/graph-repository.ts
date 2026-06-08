@@ -114,6 +114,7 @@ export class GraphRepository {
         description: rowOptStr(row, 'description'),
         dataFlow: rowOptStr(row, 'data_flow'),
         strength: typeof row.strength === 'number' ? row.strength : undefined,
+        content: safeJsonParse<GraphEdge['content']>(rowOptStr(row, 'content'), 'edge-content'),
       })),
       bugs: bugsResult.rows.map((row) => ({
         id: rowStr(row, 'id'),

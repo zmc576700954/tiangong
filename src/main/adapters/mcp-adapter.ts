@@ -426,7 +426,9 @@ export class McpAdapter extends BaseAdapter {
     // 设置会话空闲超时定时器，防止连接泄露
     const timer = setTimeout(() => {
       console.warn(`[McpAdapter] Session ${sessionId} idle timeout, cleaning up...`)
-      this.terminateSession(sessionId).catch(() => {})
+      this.terminateSession(sessionId).catch((err) => {
+        console.warn('[McpAdapter] Failed to terminate session on idle timeout:', err)
+      })
     }, MCP_SESSION_TIMEOUT_MS)
     this.sessionTimers.set(sessionId, timer)
 
@@ -591,9 +593,11 @@ export class McpAdapter extends BaseAdapter {
     const clients = this.mcpClients.get(sessionId) ?? []
     for (const client of clients) {
       try {
-        client.disconnect().catch(() => {})
-      } catch {
-        // 同步错误也忽略
+        client.disconnect().catch((err) => {
+          console.warn('[McpAdapter] Failed to disconnect MCP client:', err)
+        })
+      } catch (err) {
+        console.warn('[McpAdapter] Error during session cleanup:', err)
       }
     }
     this.mcpClients.delete(sessionId)

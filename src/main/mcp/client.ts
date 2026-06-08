@@ -6,6 +6,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { buildSafeEnv } from '../shared/env'
+import { AgentError, ErrorCode } from '../errors'
 
 export interface McpTool {
   name: string
@@ -47,7 +48,7 @@ export class McpClient extends EventEmitter {
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       const connectTimeout = setTimeout(() => {
-        reject(new Error('MCP connect timeout: process did not respond to initialize handshake within 10s'))
+        reject(new AgentError('MCP connect timeout: process did not respond to initialize handshake within 10s', ErrorCode.AGENT_ADAPTER_ERROR))
       }, 10000)
 
       this.proc = spawn(this.command, this.args, {
@@ -65,13 +66,13 @@ export class McpClient extends EventEmitter {
 
       this.proc.on('error', (err) => {
         clearTimeout(connectTimeout)
-        reject(new Error(`MCP process error: ${err.message}`))
+        reject(new AgentError(`MCP process error: ${err.message}`, ErrorCode.AGENT_ADAPTER_ERROR))
       })
 
       this.proc.on('exit', (code) => {
         clearTimeout(connectTimeout)
         this.emit('exit', code)
-        this.rejectAll(new Error(`MCP process exited with code ${code ?? 'unknown'}`))
+        this.rejectAll(new AgentError(`MCP process exited with code ${code ?? 'unknown'}`, ErrorCode.AGENT_ADAPTER_ERROR))
       })
 
       // 基于响应的握手：等待进程 stdout 产生数据后再发送 initialize，
@@ -170,7 +171,7 @@ export class McpClient extends EventEmitter {
   private call(method: string, params: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
       if (!this.proc || this.proc.killed) {
-        reject(new Error('MCP process not running'))
+        reject(new AgentError('MCP process not running', ErrorCode.AGENT_ADAPTER_ERROR))
         return
       }
 
@@ -186,7 +187,7 @@ export class McpClient extends EventEmitter {
       const timeout = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id)
-          reject(new Error(`MCP call timeout: ${method}`))
+          reject(new AgentError(`MCP call timeout: ${method}`, ErrorCode.AGENT_ADAPTER_ERROR))
         }
       }, 30000)
 
@@ -227,7 +228,7 @@ export class McpClient extends EventEmitter {
       const { resolve, reject } = this.pending.get(msg.id)!
       this.pending.delete(msg.id)
       if (msg.error) {
-        reject(new Error(msg.error.message))
+        reject(new AgentError(msg.error.message, ErrorCode.AGENT_ADAPTER_ERROR))
       } else {
         resolve(msg.result)
       }

@@ -20,9 +20,13 @@ import { directRetrieve } from './retrieval/direct'
 import { buildGlobalPrompt } from './retrieval/global'
 import { buildDevPrompt } from './synthesis/prompt-builder'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
+import { AgentError, ErrorCode } from '../errors'
+import { createLogger } from '../shared/logger'
 import type { ScanModule, NodeType, GraphNode, GraphEdge } from '@shared/types'
 import type { TaskType } from './synthesis/prompt-templates'
 import type { AgentManager } from '../agent/agent-manager'
+
+const logger = createLogger('MindMapAgent')
 
 export class MindMapAgent {
   private projectPath: string
@@ -42,7 +46,7 @@ export class MindMapAgent {
       const context = await collectContext(this.projectPath, projectName, framework)
       const prompt = buildGlobalPrompt(context)
 
-      console.log('[MindMapAgent] 开始生成，prompt 长度:', prompt.length)
+      logger.info('开始生成，prompt 长度:', prompt.length)
 
       let stdout: string
       if (this.agentManager) {
@@ -58,19 +62,19 @@ export class MindMapAgent {
           outputFormat: 'text',
         })
         if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-          throw new Error(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`)
+          throw new AgentError(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`, ErrorCode.AGENT_PROCESS_ERROR)
         }
         stdout = result.stdout
       }
 
-      console.log('[MindMapAgent] Claude 返回，stdout 长度:', stdout.length)
+      logger.info('Claude 返回，stdout 长度:', stdout.length)
 
       const parsed = extractJson(stdout)
       const modules = validateModules(parsed)
-      console.log('[MindMapAgent] 解析到', modules.length, '个模块')
+      logger.info('解析到', modules.length, '个模块')
 
       if (modules.length === 0) {
-        throw new Error('未返回有效模块')
+        throw new AgentError('未返回有效模块', ErrorCode.AGENT_PROCESS_ERROR)
       }
 
       // 写入记忆
@@ -82,7 +86,7 @@ export class MindMapAgent {
 
       return modules
     } catch (err) {
-      console.error('[MindMapAgent] generateFull failed:', err)
+      logger.error('generateFull failed:', err)
       return []
     }
   }
@@ -107,7 +111,7 @@ export class MindMapAgent {
       } else {
         const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
         if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-          throw new Error('Claude 调用失败')
+          throw new AgentError('Claude 调用失败', ErrorCode.AGENT_PROCESS_ERROR)
         }
         stdout = result.stdout
       }
@@ -115,7 +119,7 @@ export class MindMapAgent {
       const parsed = extractJson(stdout)
       return validateModules(parsed)[0] || null
     } catch (err) {
-      console.error('[MindMapAgent] generateModule failed:', err)
+      logger.error('generateModule failed:', err)
       return null
     }
   }
@@ -142,9 +146,10 @@ export class MindMapAgent {
     } else {
       const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
       if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-        throw new Error(
+        throw new AgentError(
           `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
-          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
+          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : ''),
+          ErrorCode.AGENT_PROCESS_ERROR
         )
       }
       stdout = result.stdout
@@ -153,7 +158,7 @@ export class MindMapAgent {
     const parsed = extractJson(stdout)
     const enrichment = validateEnrichment(parsed)
     if (!enrichment) {
-      throw new Error(`Claude 输出校验失败: ${stdout.substring(0, 300)}`)
+      throw new AgentError(`Claude 输出校验失败: ${stdout.substring(0, 300)}`, ErrorCode.AGENT_PROCESS_ERROR)
     }
 
     return enrichment
@@ -183,9 +188,10 @@ export class MindMapAgent {
     } else {
       const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
       if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-        throw new Error(
+        throw new AgentError(
           `Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut}` +
-          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : '')
+          (result.stderr ? ` stderr=${result.stderr.substring(0, 300)}` : ''),
+          ErrorCode.AGENT_PROCESS_ERROR
         )
       }
       stdout = result.stdout
@@ -220,7 +226,7 @@ export class MindMapAgent {
     try {
       const parsed = extractJson(rawOutput)
       const modules = validateModules(parsed)
-      console.log('[MindMapAgent] 解析到', modules.length, '个模块')
+      logger.info('解析到', modules.length, '个模块')
 
       if (modules.length > 0) {
         // 异步更新记忆，不阻塞结果返回
@@ -229,13 +235,13 @@ export class MindMapAgent {
           modules.map((m) => m.name),
           '',
         ).catch((err) => {
-          console.warn('[MindMapAgent] updateDomains failed:', err)
+          logger.warn('updateDomains failed:', err)
         })
       }
 
       return modules
     } catch (err) {
-      console.error('[MindMapAgent] parseGenerationResult failed:', err)
+      logger.error('parseGenerationResult failed:', err)
       return []
     }
   }

@@ -10,7 +10,7 @@
  * - 拖拽
  */
 
-import React from 'react'
+import { useEffect, type RefObject } from 'react'
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 
@@ -732,10 +732,10 @@ function containsMatch(node: TreeNode, query: string): boolean {
 
 // ---- Keyboard Shortcut Hook ----
 
-export function useFileTreeKeyboard(panelRef: React.RefObject<HTMLDivElement | null>) {
+export function useFileTreeKeyboard(panelRef: RefObject<HTMLDivElement | null>) {
   const store = useFileTreeStore
 
-  React.useEffect(() => {
+  useEffect(() => {
     const el = panelRef.current
     if (!el) return
 

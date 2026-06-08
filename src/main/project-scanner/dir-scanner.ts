@@ -4,6 +4,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { ScopeGuardError, ErrorCode } from '../errors'
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -38,7 +39,7 @@ function validateProjectPath(projectPath: string): void {
         resolved.toLowerCase() === normBlocked.toLowerCase()
       : resolved.startsWith(normBlocked + sep) || resolved === normBlocked
     if (isBlocked) {
-      throw new Error(`Invalid project path: ${projectPath} is a system directory`)
+      throw new ScopeGuardError(`Invalid project path: ${projectPath} is a system directory`, ErrorCode.SCOPE_PATH_TRAVERSAL)
     }
   }
 }

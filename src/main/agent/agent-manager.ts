@@ -21,6 +21,9 @@ import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterError, SessionNotFoundError, ScopeGuardError } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('AgentManager')
 
 type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
 
@@ -53,13 +56,13 @@ export class AgentManager {
 
     // 注册 ScopeGuard 越界回调：检测到越界写入时自动终止对应 session
     this.scopeGuard.onViolation(async (sandboxId, violations) => {
-      console.error(`[AgentManager] Scope violation detected:`, violations)
+      logger.error('Scope violation detected:', violations)
       for (const [sessionId, state] of this.sessionStates) {
         if (state.sandbox?.id === sandboxId) {
           try {
             await this.terminateSession(sessionId)
-          } catch {
-            // 已终止或终止失败，忽略
+          } catch (err) {
+            logger.warn('Failed to terminate session during scope violation cleanup:', err)
           }
           break
         }
@@ -91,7 +94,7 @@ export class AgentManager {
     // 监听 session 异常结束事件，自动清理沙箱等资源
     const sessionEndedHandler: SessionEndedHandler = (sessionId, reason) => {
       if (reason === 'crash' || reason === 'error') {
-        console.warn(`[AgentManager] Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
+        logger.warn(`Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
         this.cleanupSessionResources(sessionId)
       }
     }
@@ -108,7 +111,7 @@ export class AgentManager {
     // ScopeGuard: 异常退出时回滚沙箱
     if (state?.sandbox) {
       this.scopeGuard.rollback(state.sandbox).catch((err) => {
-        console.error(`[AgentManager] Failed to rollback sandbox for session ${sessionId}:`, err)
+        logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
       })
     }
 
@@ -187,7 +190,7 @@ export class AgentManager {
     if (!isInstalled) {
       const mcp = this.registry.get('mcp')
       if (mcp && (await mcp.checkInstalled())) {
-        console.warn(`[AgentManager] Adapter ${adapterName} not installed, falling back to MCP`)
+        logger.warn(`Adapter ${adapterName} not installed, falling back to MCP`)
         const session = await mcp.startSession(config)
         session.fallbackInfo = {
           originalAdapter: adapterName,
@@ -304,10 +307,10 @@ export class AgentManager {
         }
       } catch (err) {
         if (err instanceof ScopeGuardError) {
-          console.error(`[AgentManager] ScopeGuard validation failed for session ${sessionId}:`, err.message)
+          logger.error(`ScopeGuard validation failed for session ${sessionId}:`, err.message)
           scopeGuardError = err
         } else if (err instanceof Error) {
-          console.error(`[AgentManager] ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
+          logger.error(`ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
         }
       }
     }

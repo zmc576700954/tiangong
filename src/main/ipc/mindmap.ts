@@ -20,6 +20,7 @@ import { validateProjectPath } from './utils'
 import type { TypedHandle } from './utils'
 import type { NodeType, GraphNode, ContextRef } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
+import { IpcError, ErrorCode } from '../errors'
 
 export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: AgentManager): void {
   /**
@@ -185,7 +186,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
 
     const parsed = extractJson(result) as Record<string, unknown>
     if (!parsed || !Array.isArray(parsed.children)) {
-      throw new Error('AI 返回格式错误')
+      throw new IpcError('AI 返回格式错误', ErrorCode.IPC_HANDLER_ERROR)
     }
 
     return {

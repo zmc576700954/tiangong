@@ -10,6 +10,7 @@ import { runClaude } from '../claude-runner'
 import { extractJson } from '../claude-runner'
 import { collectContext } from '../context-collector'
 import type { MindMapContext } from '../context-collector'
+import { AgentError, ErrorCode } from '../../errors'
 
 export interface GlobalRetrievalResult {
   /** AI 生成的模块列表 */
@@ -43,7 +44,7 @@ export async function globalRetrieve(
   })
 
   if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-    throw new Error(`Claude 调用失败: ${result.stderr || 'timeout'}`)
+    throw new AgentError(`Claude 调用失败: ${result.stderr || 'timeout'}`, ErrorCode.AGENT_PROCESS_ERROR)
   }
 
   // 4. 解析 JSON 输出

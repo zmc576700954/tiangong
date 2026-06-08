@@ -9,6 +9,9 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('Database')
 
 let client: Client | null = null
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
@@ -50,7 +53,7 @@ export async function initDatabase(): Promise<Client> {
   keepaliveTimer = setInterval(() => {
     if (!client) return
     client.execute('PRAGMA wal_checkpoint(PASSIVE)').catch((err) => {
-      console.warn('[BizGraph] WAL checkpoint failed:', err)
+      logger.warn('WAL checkpoint failed:', err)
     })
   }, 5 * 60 * 1000)
   // 不阻止进程退出
@@ -128,10 +131,10 @@ async function restoreFromBackup(
 
     // Drop backup table
     await db.execute(`DROP TABLE ${safeIdentifier(tempTable)}`)
-    console.log(`[BizGraph] Restored ${tableName} data from backup`)
+    logger.info(`Restored ${tableName} data from backup`)
   } catch (restoreErr) {
     // 不删除备份表，让异常向上传播，使外层 SAVEPOINT ROLLBACK 保留原始数据
-    console.error(`[BizGraph] Failed to restore ${tableName} data, will rollback:`, restoreErr)
+    logger.error(`Failed to restore ${tableName} data, will rollback:`, restoreErr)
     throw restoreErr
   }
 }
@@ -215,18 +218,18 @@ async function rebuildTableIfNeeded(
         args: [tempTable],
       })
       if (backupCheck.rows.length > 0) {
-        console.log(`[BizGraph] Found leftover backup ${tempTable}, restoring data...`)
+        logger.info(`Found leftover backup ${tempTable}, restoring data...`)
         await restoreFromBackup(db, tableName, tempTable)
       }
       return
     }
 
     // CHECK constraints differ — need rebuild
-    console.log(`[BizGraph] Table ${tableName} CHECK constraints changed, rebuilding...`)
+    logger.info(`Table ${tableName} CHECK constraints changed, rebuilding...`)
   }
 
   // Missing columns, need to rebuild table — 使用事务保护
-  console.log(`[BizGraph] Table ${tableName} schema outdated, rebuilding...`)
+  logger.info(`Table ${tableName} schema outdated, rebuilding...`)
 
   // P0-9: 使用 SAVEPOINT 替代 BEGIN，避免嵌套事务崩溃
   await db.execute('SAVEPOINT rebuild_sp')
@@ -245,10 +248,10 @@ async function rebuildTableIfNeeded(
     await restoreFromBackup(db, tableName, tempTable)
 
     await db.execute('RELEASE rebuild_sp')
-    console.log(`[BizGraph] Table ${tableName} rebuilt successfully`)
+    logger.info(`Table ${tableName} rebuilt successfully`)
   } catch (err) {
     await db.execute('ROLLBACK TO rebuild_sp').catch((rollbackErr) => {
-      console.error(`[BizGraph] Rollback failed for ${tableName}:`, rollbackErr)
+      logger.error(`Rollback failed for ${tableName}:`, rollbackErr)
     })
     throw err
   }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, type RefObject, type Dispatch, type SetStateAction } from 'react'
 import type { AgentOutput, VerificationReport, ChatMessage } from '@shared/types'
 
 interface VerificationFlowReturn {
@@ -7,12 +7,12 @@ interface VerificationFlowReturn {
   verifying: boolean
   verifyError: string | null
   retryCount: number
-  pendingRetryRef: React.MutableRefObject<boolean>
+  pendingRetryRef: RefObject<boolean>
   setShowVerification: (v: boolean) => void
   setVerificationReport: (r: VerificationReport | null) => void
   setVerifying: (v: boolean) => void
   setVerifyError: (e: string | null) => void
-  setRetryCount: React.Dispatch<React.SetStateAction<number>>
+  setRetryCount: Dispatch<SetStateAction<number>>
   startVerification: (params: {
     nodeId: string
     acceptanceCriteria: string[]

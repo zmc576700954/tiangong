@@ -6,6 +6,7 @@
 import type { AgentManager } from '../agent/agent-manager'
 import { VerificationService } from '../agent/verification-service'
 import type { TypedHandle } from './utils'
+import { AgentError, ErrorCode } from '../errors'
 
 export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle): void {
   const verificationService = new VerificationService()
@@ -42,7 +43,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     const adapters = await agentManager.listAdapters()
     const installed = adapters.find((a) => a.installed)
     if (!installed) {
-      throw new Error('No agent adapter available for verification')
+      throw new AgentError('No agent adapter available for verification', ErrorCode.AGENT_ADAPTER_NOT_FOUND)
     }
 
     const config = {

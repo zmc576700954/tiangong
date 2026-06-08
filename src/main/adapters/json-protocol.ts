@@ -15,6 +15,7 @@
 
 import type { ChildProcess } from 'node:child_process'
 import type { AgentOutput } from '@shared/types'
+import { AdapterError, ErrorCode } from '../errors'
 
 // ============================================
 // 协议消息类型
@@ -288,7 +289,7 @@ export class JsonProtocolHandler {
         // 通知 errorHandlers，让上层适配器能感知并终止 session
         for (const handler of this.errorHandlers) {
           try {
-            handler(new Error('BUFFER_OVERFLOW: stdout buffer exceeded 10MB limit'), '')
+            handler(new AdapterError('BUFFER_OVERFLOW: stdout buffer exceeded 10MB limit', ErrorCode.AGENT_ADAPTER_ERROR), '')
           } catch (err) {
             console.error('[JsonProtocol] buffer overflow handler error:', err)
           }
@@ -324,7 +325,7 @@ export class JsonProtocolHandler {
         // 不是合法 JSON 行，通知错误处理器
         for (const handler of this.errorHandlers) {
           try {
-            handler(new Error('Invalid JSON line'), line)
+            handler(new AdapterError('Invalid JSON line', ErrorCode.AGENT_ADAPTER_ERROR), line)
           } catch (err) {
             console.error('[JsonProtocol] error handler error:', err)
           }

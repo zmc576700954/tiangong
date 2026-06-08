@@ -14,6 +14,9 @@ import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
 import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('GraphService')
 
 const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
 
@@ -70,7 +73,7 @@ export class GraphService {
       try {
         const context = await collectContext(projectPath, projectName, scanResult.framework)
         const prompt = buildGlobalPrompt(context)
-        console.log(`[GraphService] Prompt 已生成, 长度: ${prompt.length}`)
+        logger.info(`Prompt 已生成, 长度: ${prompt.length}`)
 
         const rawOutput = await sendPromptViaAgent(this.agentManager, projectPath, prompt, {
           nodeTitle: '思维导图生成',
@@ -82,15 +85,15 @@ export class GraphService {
         const aiModules = agent.parseGenerationResult(rawOutput)
         if (aiModules.length > 0) {
           modules = aiModules
-          console.log(`[GraphService] MindMapAgent 生成 ${aiModules.length} 个业务模块`)
+          logger.info(`MindMapAgent 生成 ${aiModules.length} 个业务模块`)
         } else {
-          console.log('[GraphService] MindMapAgent 返回空结果，使用原 scanner 输出')
+          logger.info('MindMapAgent 返回空结果，使用原 scanner 输出')
         }
       } catch (err) {
-        console.warn('[GraphService] MindMapAgent 失败，降级使用原 scanner:', err)
+        logger.warn('MindMapAgent 失败，降级使用原 scanner:', err)
       }
     } else {
-      console.log('[GraphService] AgentManager 不可用，跳过 AI 增强')
+      logger.info('AgentManager 不可用，跳过 AI 增强')
     }
 
     // 3. 用模块列表替换 scanResult 的 modules（后续分析基于此）
@@ -166,7 +169,7 @@ export class GraphService {
     for (const nodeData of graphResult.nodes) {
       // 校验 AI 生成的 type 值，非法值降级为 'feature'
       if (!VALID_NODE_TYPES.includes(nodeData.type)) {
-        console.warn(`[GraphService] Invalid node type "${nodeData.type}", falling back to "feature"`)
+        logger.warn(`Invalid node type "${nodeData.type}", falling back to "feature"`)
         nodeData.type = 'feature'
       }
 
@@ -234,7 +237,7 @@ export class GraphService {
           args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null, edgeData.dataFlow ?? null, edgeData.strength ?? null],
         })
       } else {
-        console.warn(`[GraphService] Edge dropped: sourceTempId="${edgeData.sourceTempId}" or targetTempId="${edgeData.targetTempId}" not found in tempIdMap`)
+        logger.warn(`Edge dropped: sourceTempId="${edgeData.sourceTempId}" or targetTempId="${edgeData.targetTempId}" not found in tempIdMap`)
       }
     }
   }

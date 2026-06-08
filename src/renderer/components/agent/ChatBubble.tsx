@@ -14,7 +14,9 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   const codeStr = String(children).replace(/\n$/, '')
   const isBlock = codeStr.includes('\n') || !!match
   const handleCopy = useCallback(() => {
-    navigator.clipboard?.writeText(codeStr).catch(() => {})
+    navigator.clipboard?.writeText(codeStr).catch((err) => {
+      console.warn('[ChatBubble] Failed to copy code to clipboard:', err)
+    })
   }, [codeStr])
 
   if (isBlock) {

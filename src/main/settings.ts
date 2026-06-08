@@ -16,6 +16,9 @@ import type {
   BizGraphSettings,
 } from '@shared/types'
 import { BizGraphError, ErrorCode } from './errors'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('Settings')
 
 // Re-export types for backward compatibility
 export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings }
@@ -104,7 +107,8 @@ function encryptApiKey(key: string): string {
     try {
       const encrypted = safeStorage.encryptString(key)
       return `${API_KEY_PREFIX_ENC}${encrypted.toString('base64')}`
-    } catch {
+    } catch (err) {
+      logger.warn('safeStorage encryption failed, using fallback:', err)
       // safeStorage 在部分 Linux 环境下可能失败，回退到 fallback
     }
   }
@@ -116,7 +120,8 @@ function decryptApiKey(encrypted: string): string {
     try {
       const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
       return safeStorage.decryptString(buf)
-    } catch {
+    } catch (err) {
+      logger.warn('safeStorage decryption failed, trying fallback:', err)
       // safeStorage 解密失败，尝试 fallback（可能是从其他机器迁移的数据）
     }
   }
@@ -127,15 +132,15 @@ function decryptApiKey(encrypted: string): string {
   if (encrypted.startsWith('plain:')) {
     try {
       return Buffer.from(encrypted.slice('plain:'.length), 'base64').toString('utf8')
-    } catch {
-      console.warn('[BizGraph] Failed to decode plain: prefixed API key')
+    } catch (err) {
+      logger.warn('Failed to decode plain: prefixed API key:', err)
       return ''
     }
   }
   // 向后兼容：裸明文 Key（旧版本直接存储）
   // 标记为需要迁移，但暂不阻断使用
   if (encrypted.length > 0) {
-    console.warn('[BizGraph] Unencrypted API key detected. It will be re-encrypted on next save.')
+    logger.warn('Unencrypted API key detected. It will be re-encrypted on next save.')
     return encrypted
   }
   return ''
@@ -193,7 +198,8 @@ export async function readSettings(): Promise<BizGraphSettings> {
     cachedSettings = decryptSettings(merged)
     cachedAt = Date.now()
     return cachedSettings
-  } catch {
+  } catch (err) {
+    logger.warn('Failed to read settings file, using defaults:', err)
     cachedSettings = { ...DEFAULT_SETTINGS }
     cachedAt = Date.now()
     return cachedSettings
@@ -264,10 +270,11 @@ export async function detectCliTool(name: string): Promise<{
         cmdPath = (whichResult.stdout ?? '').trim().split(/\r?\n/)[0]
       }
     } catch (err) {
-      console.warn(`[BizGraph] Failed to find path for ${tool.command}:`, err)
+      logger.warn(`Failed to find path for ${tool.command}:`, err)
     }
     return { installed: true, version, path: cmdPath }
-  } catch {
+  } catch (err) {
+    logger.warn(`Failed to detect CLI tool ${name}:`, err)
     return { installed: false }
   }
 }

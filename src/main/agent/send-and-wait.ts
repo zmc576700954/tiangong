@@ -7,6 +7,7 @@
 
 import type { AgentOutput, AgentSessionConfig } from '@shared/types'
 import type { AgentManager } from './agent-manager'
+import { AgentError, ErrorCode } from '../errors'
 
 /**
  * 创建会话、发送 prompt、收集全部输出
@@ -47,12 +48,14 @@ export async function sendPromptViaAgent(
       if (!settled) {
         settled = true
         agentManager.removeOutputListener(handler)
-        agentManager.terminateSession(sessionId).catch(() => {})
+        agentManager.terminateSession(sessionId).catch((err) => {
+          console.warn('[sendPromptViaAgent] Failed to terminate session on timeout:', err)
+        })
         if (chunks.length > 0) {
           console.log('[sendPromptViaAgent] 超时但有部分输出，使用已收到的内容')
           resolve(chunks.join('\n'))
         } else {
-          reject(new Error(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`))
+          reject(new AgentError(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`, ErrorCode.AGENT_PROCESS_ERROR))
         }
       }
     }, timeoutMs)
@@ -75,7 +78,7 @@ export async function sendPromptViaAgent(
           settled = true
           clearTimeout(timeoutId)
           agentManager.removeOutputListener(handler)
-          reject(new Error(output.data || 'Agent error'))
+          reject(new AgentError(output.data || 'Agent error', ErrorCode.AGENT_PROCESS_ERROR))
         }
       }
     }

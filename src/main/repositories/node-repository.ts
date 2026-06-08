@@ -7,6 +7,7 @@ import type { Client } from '@libsql/client'
 import type { GraphNode } from '@shared/types'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
+import { DatabaseError, ErrorCode } from '../errors'
 
 export class NodeRepository {
   constructor(private db: Client) {}
@@ -79,7 +80,7 @@ export class NodeRepository {
 
     const row = result.rows[0]
     if (!row) {
-      throw new Error(`Node not found: ${id}`)
+      throw new DatabaseError(`Node not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
     }
     return {
       id: row.id as string,
