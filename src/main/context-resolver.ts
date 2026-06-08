@@ -14,8 +14,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { ContextRef, ResolvedContext, GraphNode } from '@shared/types'
 
-/** 每个 token 约 4 个字符（中英混合估算） */
-const CHARS_PER_TOKEN = 4
+import { estimateTokens } from './shared/token-utils'
 
 /** 文件内容最大读取行数 */
 const MAX_FILE_LINES = 100
@@ -27,21 +26,14 @@ const MAX_FILE_CHARS = 16000
 const FILE_CACHE_TTL = 10000
 
 /**
- * 粗估文本的 token 数
- */
-export function estimateTokens(text: string): number {
-  if (!text) return 0
-  return Math.ceil(text.length / CHARS_PER_TOKEN)
-}
-
-/**
- * 截断文本到指定 token 预算
+ * 截断文本到指定 token 预算（CJK 感知）
  */
 export function truncateToBudget(text: string, maxTokens: number): string {
-  // 预留 1 个 token 给截断后缀，避免溢出预算
-  const maxChars = (maxTokens - 1) * CHARS_PER_TOKEN
-  if (text.length <= maxChars) return text
-  return text.slice(0, Math.max(0, maxChars)) + '\n\n[truncated]'
+  const estimated = estimateTokens(text)
+  if (estimated <= maxTokens) return text
+  const ratio = maxTokens / estimated
+  const charBudget = Math.floor(text.length * ratio * 0.9) // 留 10% 余量
+  return text.slice(0, charBudget) + '\n\n[truncated]'
 }
 
 export interface ResolveOptions {

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ContextResolver, estimateTokens, truncateToBudget } from '../context-resolver'
+import { ContextResolver, truncateToBudget } from '../context-resolver'
+import { estimateTokens } from '../shared/token-utils'
 import type { ContextRef, GraphNode } from '@shared/types'
 
 // Mock fs/promises
@@ -156,5 +157,102 @@ describe('ContextResolver', () => {
     expect(result).toHaveLength(2)
     // Node should be first (higher priority)
     expect(result[0].type).toBe('node')
+  })
+
+  it('resolves text ref directly from content field', async () => {
+    const refs: ContextRef[] = [
+      { type: 'text', id: 't1', label: 'User Note', content: 'Important context from user' },
+    ]
+    const result = await resolver.resolve(refs, 8000)
+
+    expect(result).toHaveLength(1)
+    expect(result[0].type).toBe('text')
+    expect(result[0].content).toBe('Important context from user')
+    expect(result[0].label).toBe('User Note')
+  })
+
+  it('handles text ref with missing content', async () => {
+    const refs: ContextRef[] = [{ type: 'text', id: 't2', label: 'Empty Note' }]
+    const result = await resolver.resolve(refs, 8000)
+
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toContain('无文本内容')
+  })
+
+  it('uses TTL cache for repeated file reads', async () => {
+    vi.mocked(readFile).mockResolvedValue('cached content')
+
+    const refs: ContextRef[] = [{ type: 'file', id: 'cached.ts', label: 'cached.ts' }]
+    await resolver.resolve(refs, 8000, { basePath: '/project' })
+    await resolver.resolve(refs, 8000, { basePath: '/project' })
+
+    // readFile should only be called once due to TTL cache
+    expect(readFile).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects path traversal via relative path escaping', async () => {
+    vi.mocked(readFile).mockResolvedValue('secret')
+
+    const refs: ContextRef[] = [{ type: 'file', id: '../../../etc/passwd', label: 'passwd' }]
+    const result = await resolver.resolve(refs, 8000, { basePath: '/project/src' })
+
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toContain('路径越界')
+    expect(readFile).not.toHaveBeenCalled()
+  })
+
+  it('stops resolving when token budget is exhausted', async () => {
+    const nodes: GraphNode[] = [
+      {
+        id: 'n1', type: 'feature', status: 'draft', title: 'Big Node',
+        description: 'A'.repeat(1000), graphId: 'g1', graphType: 'online',
+        position: { x: 0, y: 0 }, createdAt: '', updatedAt: '',
+      },
+      {
+        id: 'n2', type: 'feature', status: 'draft', title: 'Skipped Node',
+        description: 'Should not be resolved', graphId: 'g1', graphType: 'online',
+        position: { x: 0, y: 0 }, createdAt: '', updatedAt: '',
+      },
+    ]
+
+    const refs: ContextRef[] = [
+      { type: 'node', id: 'n1', label: 'Big Node' },
+      { type: 'node', id: 'n2', label: 'Skipped Node' },
+    ]
+
+    // Budget of 50 tokens (~200 chars) should fit first node but not second
+    const result = await resolver.resolve(refs, 50, { nodes })
+    expect(result).toHaveLength(1)
+    expect(result[0].id).toBe('n1')
+  })
+
+  it('resolves node with full metadata (rules, APIs, services, entities)', async () => {
+    const nodes: GraphNode[] = [
+      {
+        id: 'n-rich', type: 'process', status: 'confirmed', title: 'Order Process',
+        description: 'Handles order lifecycle',
+        graphId: 'g1', graphType: 'online',
+        rules: [
+          { id: 'r1', title: 'Stock Check', description: 'Verify stock', condition: 'order placed', action: 'check inventory' },
+        ],
+        acceptanceCriteria: ['Order completes within 24h'],
+        metadata: {
+          apis: [{ name: 'createOrder', method: 'POST', path: '/api/orders' }],
+          services: [{ name: 'OrderService' }],
+          entities: [{ name: 'Order', fields: 'id, status, amount' }],
+        },
+        position: { x: 0, y: 0 }, createdAt: '', updatedAt: '',
+      },
+    ]
+
+    const refs: ContextRef[] = [{ type: 'node', id: 'n-rich', label: 'Order Process' }]
+    const result = await resolver.resolve(refs, 8000, { nodes })
+
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toContain('Stock Check')
+    expect(result[0].content).toContain('Order completes within 24h')
+    expect(result[0].content).toContain('createOrder')
+    expect(result[0].content).toContain('OrderService')
+    expect(result[0].content).toContain('Order')
   })
 })

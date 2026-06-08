@@ -16,12 +16,7 @@ export interface DirectRetrievalResult {
   tokenEstimate: number
 }
 
-/** Token 粗估 */
-function estimateTokens(text: string): number {
-  const cjk = (text.match(/[一-鿿]/g) || []).length
-  const other = text.length - cjk
-  return Math.ceil(cjk / 1.5 + other / 4)
-}
+import { estimateTokens } from '../../../shared/token-utils'
 
 /**
  * 直接检索节点关联内容

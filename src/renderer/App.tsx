@@ -5,6 +5,7 @@ import { GraphCanvas } from './canvas/GraphCanvas'
 import { GraphTabs } from './components/GraphTabs'
 import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
+import { useResizablePanel } from './hooks/useResizablePanel'
 
 // 全局错误边界
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error?: Error }> {
@@ -49,10 +50,20 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boole
 }
 
 function App() {
-  const [leftPanelWidth, setLeftPanelWidth] = useState(240)
-  const [rightPanelWidth, setRightPanelWidth] = useState(320)
-  const [isResizingLeft, setIsResizingLeft] = useState(false)
-  const [isResizingRight, setIsResizingRight] = useState(false)
+  const leftPanel = useResizablePanel({
+    initialWidth: 240,
+    minWidth: 180,
+    maxWidth: 400,
+    direction: 'left',
+  })
+
+  const rightPanel = useResizablePanel({
+    initialWidth: 320,
+    minWidth: 240,
+    maxWidth: 500,
+    direction: 'right',
+  })
+
   const [expandedAgent, setExpandedAgent] = useState(false)
 
   const graphs = useGraphStore((s) => s.graphs)
@@ -65,45 +76,23 @@ function App() {
     useAgentStore.getState().hydrateOnStart()
   }, [loadGraphs])
 
-  // 拖拽调整面板宽度
+  // 同步展开模式到右侧面板固定宽度
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (isResizingLeft) {
-        setLeftPanelWidth(Math.max(180, Math.min(400, e.clientX)))
-      }
-      if (isResizingRight) {
-        setRightPanelWidth(Math.max(240, Math.min(500, window.innerWidth - e.clientX)))
-      }
-    }
-
-    const handleMouseUp = () => {
-      setIsResizingLeft(false)
-      setIsResizingRight(false)
-    }
-
-    if (isResizingLeft || isResizingRight) {
-      window.addEventListener('mousemove', handleMouseMove)
-      window.addEventListener('mouseup', handleMouseUp)
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [isResizingLeft, isResizingRight])
+    rightPanel.setFixedWidth(expandedAgent ? 480 : null)
+  }, [expandedAgent])
 
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* 左侧目录树 */}
-        <div style={{ width: leftPanelWidth, minWidth: leftPanelWidth }} className="flex-shrink-0">
+        <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="flex-shrink-0">
           <LeftPanel />
         </div>
 
         {/* 左侧分割线 */}
         <div
           className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
-          onMouseDown={() => setIsResizingLeft(true)}
+          onMouseDown={leftPanel.startResize}
         />
 
         {/* 中间画布区域 */}
@@ -129,14 +118,14 @@ function App() {
         {/* 右侧分割线 */}
         <div
           className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
-          onMouseDown={() => setIsResizingRight(true)}
+          onMouseDown={rightPanel.startResize}
         />
 
         {/* 右侧 Agent 面板 */}
         <div
           style={{
-            width: expandedAgent ? 480 : rightPanelWidth,
-            minWidth: expandedAgent ? 480 : rightPanelWidth,
+            width: rightPanel.width,
+            minWidth: rightPanel.width,
           }}
           className="flex-shrink-0"
         >

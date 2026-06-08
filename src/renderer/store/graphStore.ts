@@ -14,14 +14,17 @@ async function optimisticCreate<T extends { id: string }>(
   onSettle: (updated: T[]) => void,
 ): Promise<T> {
   const optimisticId = optimisticItem.id
-  onSettle([...items, optimisticItem])
+  const optimisticList = [...items, optimisticItem]
+  onSettle(optimisticList)
 
   try {
     const serverItem = await ipcCall()
-    onSettle(items.map((item) => (item.id === optimisticId ? serverItem : item)))
+    // 替换乐观项为服务端返回的真实项
+    onSettle(optimisticList.map((item) => (item.id === optimisticId ? serverItem : item)))
     return serverItem
   } catch (err) {
-    onSettle(items.filter((item) => item.id !== optimisticId))
+    // 回滚：移除乐观项
+    onSettle(items)
     throw err
   }
 }

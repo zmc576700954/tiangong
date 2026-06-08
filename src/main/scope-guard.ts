@@ -413,7 +413,7 @@ export class ScopeGuard {
     try {
       await fs.rm(sandbox.backupDir, { recursive: true, force: true })
     } catch (err) {
-      this.logger.warn(`Failed to delete backup directory ${sandbox.backupDir}:`, err)
+      logger.warn(`Failed to delete backup directory ${sandbox.backupDir}:`, err)
     }
 
     this.sandboxes.delete(sandbox.id)
@@ -431,12 +431,13 @@ export class ScopeGuard {
   private async captureFileSnapshot(dirs: Set<string>): Promise<Map<string, FileSnapshotEntry>> {
     const snapshot = new Map<string, FileSnapshotEntry>()
     for (const dir of dirs) {
-      await this.captureFileSnapshotRecursive(dir, snapshot)
+      await this.captureFileSnapshotRecursive(dir, snapshot, 0)
     }
     return snapshot
   }
 
-  private async captureFileSnapshotRecursive(dir: string, snapshot: Map<string, FileSnapshotEntry>): Promise<void> {
+  private async captureFileSnapshotRecursive(dir: string, snapshot: Map<string, FileSnapshotEntry>, depth: number): Promise<void> {
+    if (depth > MAX_SCAN_DEPTH) return
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
@@ -450,7 +451,7 @@ export class ScopeGuard {
       if (shouldIgnorePath(fullPath)) continue
 
       if (entry.isDirectory()) {
-        await this.captureFileSnapshotRecursive(fullPath, snapshot)
+        await this.captureFileSnapshotRecursive(fullPath, snapshot, depth + 1)
       } else if (entry.isFile()) {
         try {
           const stat = await fs.stat(fullPath)

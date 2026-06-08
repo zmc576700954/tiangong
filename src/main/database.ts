@@ -371,7 +371,7 @@ async function migrate(): Promise<void> {
         node_id TEXT,
         graph_id TEXT,
         session_id TEXT,
-        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+        status TEXT NOT NULL DEFAULT 'idle' CHECK(status IN ('idle', 'running', 'error', 'reviewed', 'active', 'archived')),
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )

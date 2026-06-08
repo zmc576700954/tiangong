@@ -29,13 +29,7 @@ export interface MindMapContext {
   keyFileSnippets: string
 }
 
-/** Token 粗估：1 token ≈ 4 字符（中文约 2 字符） */
-function estimateTokens(text: string): number {
-  // 混合中英文的粗估
-  const cjk = (text.match(/[一-鿿]/g) || []).length
-  const other = text.length - cjk
-  return Math.ceil(cjk / 1.5 + other / 4)
-}
+import { estimateTokens } from '../../shared/token-utils'
 
 /** 截断到 token 预算 */
 function truncateToBudget(text: string, maxTokens: number): string {

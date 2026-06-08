@@ -127,7 +127,7 @@ export class GraphService {
     const analyzer = new ProjectAnalyzer()
     const graphResult = analyzer.analyze(enrichedScanResult)
 
-    // 3. 创建图和节点（事务保护，确保数据一致性）
+    // 5. 创建图和节点（事务保护，确保数据一致性）
     const onlineGraphId = generateId('graph-online')
     const devGraphId = generateId('graph-dev')
 

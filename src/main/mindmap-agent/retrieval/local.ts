@@ -17,12 +17,7 @@ export interface LocalRetrievalResult {
   tokenEstimate: number
 }
 
-/** Token 粗估 */
-function estimateTokens(text: string): number {
-  const cjk = (text.match(/[一-鿿]/g) || []).length
-  const other = text.length - cjk
-  return Math.ceil(cjk / 1.5 + other / 4)
-}
+import { estimateTokens } from '../../../shared/token-utils'
 
 /**
  * 单模块检索：加载目标模块完整内容 + 邻居摘要
