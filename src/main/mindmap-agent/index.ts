@@ -19,10 +19,12 @@ import { classifyComplexity } from './complexity-classifier'
 import { directRetrieve } from './retrieval/direct'
 import { buildGlobalPrompt } from './retrieval/global'
 import { buildDevPrompt } from './synthesis/prompt-builder'
+import { clusterCommunities, toCommunitySummary } from './community/clustering'
+import { mapReduceSummarize } from './community/summarizer'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
-import type { ScanModule, NodeType, GraphNode, GraphEdge } from '@shared/types'
+import type { ScanModule, NodeType, GraphNode, GraphEdge, CommunitySummary } from '@shared/types'
 import type { TaskType } from './synthesis/prompt-templates'
 import type { AgentManager } from '../agent/agent-manager'
 
@@ -31,10 +33,16 @@ const logger = createLogger('MindMapAgent')
 export class MindMapAgent {
   private projectPath: string
   private agentManager?: AgentManager
+  private lastCommunitySummaries: CommunitySummary[] = []
 
   constructor(projectPath: string, agentManager?: AgentManager) {
     this.projectPath = projectPath
     this.agentManager = agentManager
+  }
+
+  /** 获取最近一次 generateFull 产生的社区摘要 */
+  getCommunitySummaries(): CommunitySummary[] {
+    return this.lastCommunitySummaries
   }
 
   // ========================================
@@ -77,6 +85,22 @@ export class MindMapAgent {
         throw new AgentError('未返回有效模块', ErrorCode.AGENT_PROCESS_ERROR)
       }
 
+      // 社区聚类与摘要
+      let communitySummaries: CommunitySummary[] = []
+      try {
+        const clusters = await clusterCommunities(this.projectPath, modules)
+        const summaryMap = await mapReduceSummarize(modules, this.projectPath, projectName)
+        communitySummaries = clusters
+          .map(cluster => {
+            const summary = summaryMap.get(cluster.title) ?? summaryMap.get('__project__') ?? ''
+            return toCommunitySummary(cluster, summary)
+          })
+        this.lastCommunitySummaries = communitySummaries
+        logger.info(`Generated ${communitySummaries.length} community summaries`)
+      } catch (err) {
+        logger.warn('Community summarization failed, continuing without:', err)
+      }
+
       // 写入记忆
       await updateDomains(
         this.projectPath,
@@ -95,7 +119,7 @@ export class MindMapAgent {
   // 单模块生成
   // ========================================
 
-  async generateModule(moduleDir: string, _allModules: ScanModule[] = []): Promise<ScanModule | null> {
+  async generateModule(moduleDir: string): Promise<ScanModule | null> {
     try {
       const context = await collectContext(this.projectPath, moduleDir, '')
       const memory = await readMemory(this.projectPath)
@@ -134,7 +158,16 @@ export class MindMapAgent {
     relatedFiles: string[] = [],
   ): Promise<ValidatedEnrichment | null> {
     const retrieved = await directRetrieve(this.projectPath, nodeTitle, nodeType, relatedFiles)
-    const prompt = buildEnrichmentPrompt(nodeTitle, nodeType, retrieved.nodeContent)
+
+    // 注入社区摘要上下文
+    const communityContext = this.lastCommunitySummaries.length > 0
+      ? '\n\n## 社区上下文\n' + this.lastCommunitySummaries
+        .map(s => `### ${s.title} (L${s.level})\n${s.summary}`)
+        .join('\n\n')
+      : ''
+    const enrichedContent = retrieved.nodeContent + communityContext
+
+    const prompt = buildEnrichmentPrompt(nodeTitle, nodeType, enrichedContent)
 
     let stdout: string
     if (this.agentManager) {

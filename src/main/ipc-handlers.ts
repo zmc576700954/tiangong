@@ -19,7 +19,12 @@ import { SessionRouter } from './agent/session-router'
 import { OutputBroadcaster } from './agent/output-broadcaster'
 import { AgentManager } from './agent/agent-manager'
 import { GraphService } from './services/graph-service'
+import { AgentLogRepository } from './repositories/agent-log-repository'
+import { SnapshotRepository } from './repositories/snapshot-repository'
+import { createLogger } from './shared/logger'
 import { IpcError, ErrorCode } from './errors'
+
+const logger = createLogger('IPC')
 
 import { createTypedHandle, isBlockedSystemPath } from './ipc/utils'
 import { registerGraphHandlers } from './ipc/graph'
@@ -68,6 +73,31 @@ agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
   }
 })
 
+// Agent 日志持久化回调（延迟注册，需要 db client）
+let agentLogRepo: AgentLogRepository | null = null
+
+function setupAgentLogPersistence(): void {
+  if (agentLogRepo) return
+  const db = getClient()
+  agentLogRepo = new AgentLogRepository(db)
+
+  agentManager.setOnSessionComplete((sessionId, adapterName, nodeId, result, duration) => {
+    agentLogRepo!.create({
+      sessionId,
+      adapterName,
+      nodeId,
+      graphId: '',
+      command: { type: 'implement', description: '', targetNodeId: nodeId },
+      outputs: [],
+      result,
+      duration,
+    }).catch((err) => {
+      const logger = createLogger('AgentLog')
+      logger.warn('Failed to write agent log:', err)
+    })
+  })
+}
+
 // ============================================
 // IPC 处理器注册
 // ============================================
@@ -76,6 +106,7 @@ export function registerIpcHandlers(): void {
   const db = getClient()
   const graphService = new GraphService(db, agentManager)
   const chatService = new ChatService(db)
+  setupAgentLogPersistence()
   const typedHandle = createTypedHandle(ipcMain)
 
   // ---------- 会话级允许路径（按窗口隔离） ----------
@@ -151,7 +182,7 @@ export function registerIpcHandlers(): void {
       }
     } catch (err) {
       // 数据库可能未就绪，记录日志但不阻塞路径校验
-      console.warn('[IPC] Failed to load project paths for path validation:', err)
+      logger.warn('Failed to load project paths for path validation:', err)
     }
 
     // 会话级允许路径（按窗口隔离）
@@ -175,8 +206,9 @@ export function registerIpcHandlers(): void {
   }
 
   // ---------- 注册各领域 handlers ----------
-  registerGraphHandlers(db, typedHandle, graphService)
-  registerAgentHandlers(agentManager, typedHandle)
+  const snapshotRepo = new SnapshotRepository(db)
+  registerGraphHandlers(db, typedHandle, graphService, snapshotRepo)
+  registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined)
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService)
@@ -195,9 +227,9 @@ export function registerIpcHandlers(): void {
       try {
         const validatedPath = await validateFsPath(p.trim(), 'read')
         addSessionAllowedPath(senderId, validatedPath)
-        console.info(`[IPC] fs:registerProjectPaths: allowed path=${validatedPath} sender=${senderId}`)
+        logger.info(`fs:registerProjectPaths: allowed path=${validatedPath} sender=${senderId}`)
       } catch (err) {
-        console.warn(`[IPC] fs:registerProjectPaths: rejected path=${p.trim()} sender=${senderId} reason=${err instanceof Error ? err.message : err}`)
+        logger.warn(`fs:registerProjectPaths: rejected path=${p.trim()} sender=${senderId} reason=${err instanceof Error ? err.message : err}`)
       }
     }
   })

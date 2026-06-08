@@ -22,6 +22,7 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // Node operations
   'node:create',
+  'node:createBatch',
   'node:update',
   'node:delete',
   'node:batchUpdatePositions',
@@ -37,6 +38,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   'bug:delete',
   'bug:listByNode',
 
+  'snapshot:create',
+  'snapshot:list',
+  'snapshot:load',
+  'snapshot:delete',
+
   // Agent operations
   'agent:listAdapters',
   'agent:startSession',
@@ -44,6 +50,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:resolveAndSendCommand',
   'agent:terminateSession',
   'agent:verify',
+
+  'agent:getLogsByNode',
+  'agent:getLogsByGraph',
 
   // Chat 会话记录
   'thread:list',

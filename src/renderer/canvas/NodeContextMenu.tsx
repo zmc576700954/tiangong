@@ -21,6 +21,7 @@ interface NodeContextMenuProps {
 }
 
 const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
+  { value: 'placeholder', label: '占位', color: '#64748b' },
   { value: 'draft', label: '草稿', color: '#94a3b8' },
   { value: 'confirmed', label: '已确认', color: '#3b82f6' },
   { value: 'developing', label: '开发中', color: '#f59e0b' },

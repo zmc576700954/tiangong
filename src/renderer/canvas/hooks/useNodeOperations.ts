@@ -94,6 +94,11 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     if (!node || !projectPath) return
 
     try {
+      // placeholder 节点自动切换到 developing 状态
+      if (node.status === 'placeholder') {
+        await updateNode(nodeId, { status: 'developing' })
+      }
+
       const prompt = await window.electronAPI['mindmap:buildDevPrompt'](
         nodeId, node.title, node.type, 'feature', graphId ?? '', node.contextRefs,
       )
@@ -104,7 +109,7 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     } catch (err) {
       console.error('[useNodeOperations] startDev failed:', err)
     }
-  }, [graphNodes, projectPath, graphId])
+  }, [graphNodes, projectPath, graphId, updateNode])
 
   return {
     handleAddChild,

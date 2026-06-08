@@ -28,7 +28,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   }
 
   return (
-    <div className="h-10 border-b flex items-center bg-muted/30 px-2 gap-1 flex-shrink-0">
+    <div className="h-10 border-b flex items-center bg-muted/30 px-2 gap-1 shrink-0">
       {graphs.map((graph) => (
         <div
           key={graph.id}
@@ -36,7 +36,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
           className={cn(
             'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm cursor-pointer transition-colors group',
             currentGraphId === graph.id
-              ? 'bg-background text-foreground shadow-sm'
+              ? 'bg-background text-foreground shadow-xs'
               : 'text-muted-foreground hover:text-foreground hover:bg-background/50',
           )}
         >

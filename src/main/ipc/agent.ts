@@ -5,10 +5,11 @@
 
 import type { AgentManager } from '../agent/agent-manager'
 import { VerificationService } from '../agent/verification-service'
+import { AgentLogRepository } from '../repositories/agent-log-repository'
 import type { TypedHandle } from './utils'
 import { AgentError, ErrorCode } from '../errors'
 
-export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle): void {
+export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle, agentLogRepo?: AgentLogRepository): void {
   const verificationService = new VerificationService()
 
   typedHandle('agent:checkInstalled', async (_, adapterName) => {
@@ -103,5 +104,14 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
         // Session may already be terminated
       }
     }
+  // ---------- Agent 日志查询 ----------
+  typedHandle('agent:getLogsByNode', async (_, nodeId: string) => {
+    if (!agentLogRepo) return []
+    return agentLogRepo.listByNode(nodeId)
+  })
+
+  typedHandle('agent:getLogsByGraph', async (_, graphId: string) => {
+    if (!agentLogRepo) return []
+    return agentLogRepo.listByGraph(graphId)
   })
 }

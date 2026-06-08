@@ -8,6 +8,9 @@ import type { GraphEdge } from '@shared/types'
 import { assertEdgeType } from '@shared/type-guards'
 import { DatabaseError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('EdgeRepo')
 
 function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
   let content: GraphEdge['content']
@@ -15,7 +18,7 @@ function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
     try {
       content = JSON.parse(row.content as string)
     } catch {
-      console.warn('[EdgeRepository] Failed to parse edge content:', row.content)
+      logger.warn('Failed to parse edge content:', row.content)
       content = undefined
     }
   }

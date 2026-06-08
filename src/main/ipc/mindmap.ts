@@ -21,6 +21,9 @@ import type { TypedHandle } from './utils'
 import type { NodeType, GraphNode, ContextRef } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
 import { IpcError, ErrorCode } from '../errors'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('MindMap')
 
 export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: AgentManager): void {
   /**
@@ -40,14 +43,14 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     // 1. 生成 prompt（本地计算）
     const context = await collectContext(validatedPath, projectName, '')
     const prompt = buildGlobalPrompt(context)
-    console.log(`[MindMap] Prompt 已生成, 长度: ${prompt.length}`)
+    logger.info(`Prompt 已生成, 长度: ${prompt.length}`)
 
     // 2. 通过 AgentManager 发送 prompt 并收集结果（输出实时显示在 AgentChat）
     const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: '思维导图生成',
       adapterName: 'mindmap-internal',
     })
-    console.log(`[MindMap] 收到结果, 长度: ${result.length}`)
+    logger.info(`收到结果, 长度: ${result.length}`)
 
     // 3. 解析结果
     const agent = new MindMapAgent(validatedPath)

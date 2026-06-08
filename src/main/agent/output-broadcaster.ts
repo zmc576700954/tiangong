@@ -5,6 +5,9 @@
  */
 
 import type { AgentOutput } from '@shared/types'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('OutputBroadcaster')
 
 export class OutputBroadcaster {
   private handlers = new Set<(adapterName: string, output: AgentOutput) => void>()
@@ -22,7 +25,7 @@ export class OutputBroadcaster {
       try {
         handler(adapterName, output)
       } catch (err) {
-        console.error('[OutputBroadcaster] handler error:', err)
+        logger.error('handler error:', err)
       }
     }
   }

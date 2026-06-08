@@ -92,7 +92,7 @@ export const BizEdge = memo(function BizEdge({
       <EdgeLabelRenderer>
         <div
           className={cn(
-            'nodrag nopan pointer-events-auto flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium shadow-sm transition-all',
+            'nodrag nopan pointer-events-auto flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium shadow-xs transition-all',
             isBusinessFlow
               ? 'border-blue-300 bg-blue-50 text-blue-700'
               : selected
@@ -129,7 +129,7 @@ export const BizEdge = memo(function BizEdge({
           ) : (
             <>
               <div
-                className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                className="w-1.5 h-1.5 rounded-full shrink-0"
                 style={{ backgroundColor: config.color }}
               />
               <span className="truncate max-w-[100px]">
@@ -153,7 +153,7 @@ export const BizEdge = memo(function BizEdge({
 
         {selected && (
           <button
-            className="nodrag nopan pointer-events-auto flex items-center justify-center w-5 h-5 rounded-full bg-white border border-red-200 text-red-500 shadow-sm hover:bg-red-50 transition-colors"
+            className="nodrag nopan pointer-events-auto flex items-center justify-center w-5 h-5 rounded-full bg-white border border-red-200 text-red-500 shadow-xs hover:bg-red-50 transition-colors"
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY + 18}px)`,

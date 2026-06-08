@@ -99,7 +99,7 @@ export function DiffReviewPanel({
             <div className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/30 transition-colors">
               <button
                 onClick={() => setExpandedFile(expandedFile === i ? null : i)}
-                className="flex-shrink-0"
+                className="shrink-0"
               >
                 {expandedFile === i
                   ? <ChevronDown className="w-3 h-3 text-muted-foreground" />

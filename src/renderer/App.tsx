@@ -85,13 +85,13 @@ function App() {
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* 左侧目录树 */}
-        <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="flex-shrink-0">
+        <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
           <LeftPanel />
         </div>
 
         {/* 左侧分割线 */}
         <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
+          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors shrink-0 select-none"
           onMouseDown={leftPanel.startResize}
         />
 
@@ -117,7 +117,7 @@ function App() {
 
         {/* 右侧分割线 */}
         <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors flex-shrink-0 select-none"
+          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors shrink-0 select-none"
           onMouseDown={rightPanel.startResize}
         />
 
@@ -127,7 +127,7 @@ function App() {
             width: rightPanel.width,
             minWidth: rightPanel.width,
           }}
-          className="flex-shrink-0"
+          className="shrink-0"
         >
           <RightPanel
             expandedAgent={expandedAgent}

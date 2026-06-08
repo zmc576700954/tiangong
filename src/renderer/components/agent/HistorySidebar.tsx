@@ -92,7 +92,7 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <MessageSquare className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                  <MessageSquare className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-xs font-medium truncate">{t.title}</div>
                     <div className="flex items-center gap-2 mt-0.5">

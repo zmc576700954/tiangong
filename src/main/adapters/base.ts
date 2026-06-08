@@ -17,6 +17,7 @@ import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protoc
 import type { ProtocolInputMessage } from './json-protocol'
 import { SessionNotFoundError } from '../errors'
 import { buildSafeEnv } from '../shared/env'
+import { createLogger } from '../shared/logger'
 
 /**
  * Agent 适配器抽象基类
@@ -36,6 +37,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected processes = new Map<string, ChildProcess>()
   protected sessionCleanups = new Map<string, () => void>()
   protected protocolHandlers = new Map<string, JsonProtocolHandler>()
+  protected logger = createLogger('BaseAdapter')
   /** 输出到 session 的映射（用于 AgentManager 精准广播） */
   private outputSessionMap = new WeakMap<AgentOutput, string>()
   /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
@@ -115,7 +117,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       await this.doTerminate(session, proc)
     } catch (err) {
       // doTerminate 可能失败（进程已无法终止），记录但不阻塞后续清理
-      console.error(`[BaseAdapter] doTerminate failed for session ${sessionId}:`, err)
+      this.logger.error(`doTerminate failed for session ${sessionId}:`, err)
     } finally {
       // 无论 doTerminate 是否成功，都执行清理
       try {
@@ -130,7 +132,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           timestamp: Date.now(),
         })
       } catch (cleanupErr) {
-        console.error(`[BaseAdapter] Cleanup failed for session ${sessionId}:`, cleanupErr)
+        this.logger.error(`Cleanup failed for session ${sessionId}:`, cleanupErr)
       }
       this.popOutputSession()
     }
@@ -230,9 +232,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     // 协议解析错误时降级为原始 stdout；致命错误（如 buffer 溢出）时终止 session
     handler.onError((err, rawLine) => {
       if (err.message.startsWith('BUFFER_OVERFLOW')) {
-        console.error(`[BaseAdapter] Protocol buffer overflow for session ${sessionId}, terminating`)
+        this.logger.error(`Protocol buffer overflow for session ${sessionId}, terminating`)
         this.terminateSession(sessionId).catch((e) => {
-          console.error(`[BaseAdapter] Failed to terminate session ${sessionId} after buffer overflow:`, e)
+          this.logger.error(`Failed to terminate session ${sessionId} after buffer overflow:`, e)
         })
         return
       }
@@ -523,8 +525,6 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           changeType,
         })
       }
-      // 重置正则 lastIndex，避免跨行状态污染
-      FILE_PATTERN.lastIndex = 0
     }
   }
 

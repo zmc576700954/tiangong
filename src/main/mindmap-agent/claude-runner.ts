@@ -12,6 +12,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { buildSafeEnv } from '../shared/env'
+import { createLogger } from '../shared/logger'
 import { AgentError, ErrorCode } from '../errors'
 
 export interface ClaudeRunOptions {
@@ -29,6 +30,8 @@ export interface ClaudeRunResult {
 }
 
 const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku', 'sonnet-4', 'claude-sonnet-4-6'])
+
+const logger = createLogger('ClaudeRunner')
 
 export async function runClaude(prompt: string, options: ClaudeRunOptions): Promise<ClaudeRunResult> {
   const { cwd, timeoutMs = 300_000, outputFormat = 'text', model = 'sonnet' } = options
@@ -69,7 +72,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
 
     // 进度日志：每 15 秒输出一次状态
     const progressTimer = setInterval(() => {
-      console.log(`[ClaudeRunner] 运行中... 已收到 ${stdout.length} 字节, 已等待 ${Math.round((Date.now() - startTime) / 1000)}s`)
+      logger.info(`运行中... 已收到 ${stdout.length} 字节, 已等待 ${Math.round((Date.now() - startTime) / 1000)}s`)
     }, 15_000)
     const startTime = Date.now()
 

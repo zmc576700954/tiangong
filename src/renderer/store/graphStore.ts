@@ -136,8 +136,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   createNodeBatch: async (nodesData) => {
-    const optimisticIds = nodesData.map(() => generateId('node'))
     const now = new Date().toISOString()
+    const optimisticIds = nodesData.map(() => generateId('node'))
     const optimisticNodes: GraphNode[] = nodesData.map((data, i) => ({
       ...data,
       id: optimisticIds[i],
@@ -148,9 +148,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     set((state) => ({ nodes: [...state.nodes, ...optimisticNodes] }))
 
     try {
-      const created = await Promise.all(
-        nodesData.map((data) => window.electronAPI['node:create'](data)),
-      )
+      const created = await window.electronAPI['node:createBatch'](nodesData)
       set((state) => ({
         nodes: state.nodes.map((n) => {
           const idx = optimisticIds.indexOf(n.id)

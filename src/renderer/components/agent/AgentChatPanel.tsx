@@ -313,7 +313,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
             {/* Resume banner */}
             {currentThread?.sessionId && currentThread?.adapterName === 'claude-code' && currentThread?.status === 'idle' && (
-              <div className="px-3 py-2 bg-blue-50 dark:bg-blue-950 text-sm flex items-center justify-between border-b border-blue-200 dark:border-blue-800 flex-shrink-0">
+              <div className="px-3 py-2 bg-blue-50 dark:bg-blue-950 text-sm flex items-center justify-between border-b border-blue-200 dark:border-blue-800 shrink-0">
                 <span className="text-blue-700 dark:text-blue-300 text-xs">This session can be continued</span>
                 <button
                   onClick={() => {
@@ -345,7 +345,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           {currentThread?.status === 'idle' &&
             rawOutputs.some((o) => o.type === 'file_change') &&
             !showDiffReview && (
-              <div className="px-3 py-2 flex-shrink-0">
+              <div className="px-3 py-2 shrink-0">
                 <button
                   onClick={() => setShowDiffReview(true)}
                   className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-blue-600/10 border border-blue-600/30
@@ -359,7 +359,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
           {/* Diff Review Panel */}
           {showDiffReview && currentThread && (
-            <div className="flex-shrink-0 px-3 py-2">
+            <div className="shrink-0 px-3 py-2">
               {commitError && (
                 <div className="mb-2 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-400">
                   {commitError}
@@ -410,7 +410,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
           {/* Verification Panel */}
           {showVerification && (
-            <div className="flex-shrink-0 px-3 py-2">
+            <div className="shrink-0 px-3 py-2">
               <VerificationPanel
                 report={verificationReport}
                 loading={verifying}
@@ -440,7 +440,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
           {/* Resize handle */}
           <div
-            className="h-1.5 cursor-row-resize hover:bg-primary/30 transition-colors flex-shrink-0 flex items-center justify-center"
+            className="h-1.5 cursor-row-resize hover:bg-primary/30 transition-colors shrink-0 flex items-center justify-center"
             onMouseDown={(e) => {
               e.preventDefault()
               setIsResizingChat(true)

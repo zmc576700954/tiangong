@@ -35,7 +35,7 @@ export function ChatHeader({
   const installedAdapters = adapters.filter((a) => a.installed)
 
   return (
-    <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-muted/30 flex-shrink-0">
+    <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-muted/30 shrink-0">
       <div className="flex items-center gap-2 min-w-0">
         <div className="relative">
           <button

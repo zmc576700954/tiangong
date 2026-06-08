@@ -89,7 +89,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
           className="!w-2.5 !h-2.5 !bg-background !border-2 !border-muted-foreground/30 group-hover:!border-primary group-hover:!bg-primary/20 !-right-[5px] transition-all"
         />
         <div className="flex items-center gap-1.5 mb-1">
-          <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: typeColor }} />
+          <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
             {NODE_TYPE_LABELS[data.type]}
           </span>
@@ -104,7 +104,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   return (
     <div
       className={cn(
-        'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-sm transition-all hover:shadow-md cursor-pointer',
+        'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-xs transition-all hover:shadow-md cursor-pointer',
         statusClass,
         selected && 'ring-2 ring-blue-400 ring-offset-1',
         isAgentRunning && 'border-orange-400 animate-pulse',
@@ -140,7 +140,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       />
 
       <div className="flex items-center gap-1.5 mb-1">
-        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: typeColor }} />
+        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
         <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
           {NODE_TYPE_LABELS[data.type]}
         </span>
@@ -159,7 +159,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       {/* Agent activity badge */}
       {(isAgentRunning || isAgentError || showCompleted) && (
         <div className={cn(
-          'absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center shadow-sm',
+          'absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center shadow-xs',
           isAgentRunning && 'bg-orange-400',
           isAgentError && 'bg-red-400',
           showCompleted && 'bg-green-400',

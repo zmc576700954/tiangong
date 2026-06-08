@@ -6,6 +6,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { FileAnalysis } from './types'
 import { Semaphore } from './types'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('ProjectScanner')
 
 const LANGUAGE_MAP: Record<string, string> = {
   '.ts': 'TypeScript', '.tsx': 'TypeScript/React',
@@ -100,7 +103,7 @@ export async function analyzeKeyFiles(
         // 验证文件路径在项目目录内，防止路径遍历
         const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
         if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
-          console.warn(`[ProjectScanner] Path traversal detected: ${relPath}`)
+          logger.warn(`Path traversal detected: ${relPath}`)
           return
         }
         const content = await fs.readFile(fullPath, 'utf-8')
@@ -112,7 +115,7 @@ export async function analyzeKeyFiles(
           purpose,
         })
       } catch (err) {
-        console.warn(`[ProjectScanner] Failed to read ${relPath}:`, err)
+        logger.warn(`Failed to read ${relPath}:`, err)
       } finally {
         semaphore.release()
       }

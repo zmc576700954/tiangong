@@ -3,6 +3,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerIpcHandlers, agentManager } from './ipc-handlers'
 import { initDatabase, closeDatabase } from './database'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('Main')
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -42,10 +45,10 @@ class WindowManager {
       const handleDidFailLoad = (_event: Event, _errorCode: number, _errorDescription: string, validatedURL: string) => {
         loadRetries++
         if (loadRetries > MAX_LOAD_RETRIES) {
-          console.error(`Failed to load ${validatedURL} after ${MAX_LOAD_RETRIES} retries, giving up.`)
+          logger.error(`Failed to load ${validatedURL} after ${MAX_LOAD_RETRIES} retries, giving up.`)
           return
         }
-        console.log(`Failed to load ${validatedURL}, retrying in 500ms... (${loadRetries}/${MAX_LOAD_RETRIES})`)
+        logger.info(`Failed to load ${validatedURL}, retrying in 500ms... (${loadRetries}/${MAX_LOAD_RETRIES})`)
         setTimeout(() => {
           if (process.env.VITE_DEV_SERVER_URL) {
             win?.loadURL(process.env.VITE_DEV_SERVER_URL)
@@ -238,13 +241,13 @@ app.on('before-quit', async (event) => {
       try {
         await agentManager.terminateAllSessions()
       } catch (err) {
-        console.error('Failed to terminate sessions:', err)
+        logger.error('Failed to terminate sessions:', err)
       }
       agentManager.destroy()
       try {
         await closeDatabase()
       } catch (err) {
-        console.error('Failed to close database:', err)
+        logger.error('Failed to close database:', err)
       }
     })(),
     new Promise<void>((resolve) => setTimeout(resolve, 5000)),
@@ -253,7 +256,7 @@ app.on('before-quit', async (event) => {
   try {
     await cleanupWithTimeout
   } catch (err) {
-    console.error('Cleanup error during quit:', err)
+    logger.error('Cleanup error during quit:', err)
   }
   cleanupDone = true
   app.quit()

@@ -8,6 +8,9 @@
 import type { AgentOutput, AgentSessionConfig } from '@shared/types'
 import type { AgentManager } from './agent-manager'
 import { AgentError, ErrorCode } from '../errors'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('sendPromptViaAgent')
 
 /**
  * 创建会话、发送 prompt、收集全部输出
@@ -49,10 +52,10 @@ export async function sendPromptViaAgent(
         settled = true
         agentManager.removeOutputListener(handler)
         agentManager.terminateSession(sessionId).catch((err) => {
-          console.warn('[sendPromptViaAgent] Failed to terminate session on timeout:', err)
+          logger.warn('Failed to terminate session on timeout:', err)
         })
         if (chunks.length > 0) {
-          console.log('[sendPromptViaAgent] 超时但有部分输出，使用已收到的内容')
+          logger.info('超时但有部分输出，使用已收到的内容')
           resolve(chunks.join('\n'))
         } else {
           reject(new AgentError(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`, ErrorCode.AGENT_PROCESS_ERROR))
@@ -69,7 +72,7 @@ export async function sendPromptViaAgent(
           settled = true
           clearTimeout(timeoutId)
           agentManager.removeOutputListener(handler)
-          console.log(`[sendPromptViaAgent] 完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
+          logger.info(`完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
           resolve(chunks.join('\n'))
         }
       }

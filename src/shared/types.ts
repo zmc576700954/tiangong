@@ -318,6 +318,8 @@ export interface AgentSession {
   startTime: number
   /** 运行时注入的已解析上下文（不持久化） */
   resolvedContexts?: ResolvedContext[]
+  /** 智能代码上下文（由 SmartContextResolver 生成，不持久化） */
+  codeContext?: string
   /** Fallback 信息：当请求适配器未安装，回退到 MCP 时记录 */
   fallbackInfo?: {
     originalAdapter: string
@@ -570,6 +572,7 @@ export interface IpcApi {
 
   // 节点操作
   'node:create': (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
+  'node:createBatch': (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode>
   'node:delete': (id: string) => Promise<boolean>
   'node:batchUpdatePositions': (updates: Array<{ id: string; x: number; y: number }>) => Promise<boolean>
@@ -585,6 +588,12 @@ export interface IpcApi {
   'bug:delete': (id: string) => Promise<boolean>
   'bug:listByNode': (nodeId: string) => Promise<BugNode[]>
 
+  // 快照操作
+  'snapshot:create': (graphId: string, name: string) => Promise<GraphSnapshot>
+  'snapshot:list': (graphId: string) => Promise<Omit<GraphSnapshot, 'data'>[]>
+  'snapshot:load': (id: string) => Promise<GraphSnapshot | null>
+  'snapshot:delete': (id: string) => Promise<boolean>
+
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>
   'agent:startSession': (adapterName: string, config: AgentSessionConfig) => Promise<{ sessionId: string; fallback?: boolean }>
@@ -599,6 +608,9 @@ export interface IpcApi {
     fileChanges: AgentOutput[]
     workingDirectory?: string
   }) => Promise<VerificationReport>
+
+  'agent:getLogsByNode': (nodeId: string) => Promise<AgentLog[]>
+  'agent:getLogsByGraph': (graphId: string) => Promise<AgentLog[]>
 
   // Chat 会话记录
   'thread:list': (filters?: { nodeId?: string; graphId?: string }) => Promise<AgentThread[]>
@@ -713,3 +725,65 @@ export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
 export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
+
+// ============================================
+// 代码智能（Code Intelligence）类型
+// ============================================
+
+/** 代码符号类型 */
+export type SymbolKind =
+  | 'class'
+  | 'interface'
+  | 'type_alias'
+  | 'enum'
+  | 'function'
+  | 'method'
+  | 'property'
+  | 'variable'
+  | 'constant'
+  | 'import'
+  | 'export'
+  | 'namespace'
+  | 'decorator'
+
+/** 单个代码符号的定义信息 */
+export interface SymbolInfo {
+  id: string // 全局唯一标识
+  name: string // 符号名称（如 UserService）
+  kind: SymbolKind
+  filePath: string // 绝对路径
+  line: number // 定义起始行（1-based）
+  column: number // 定义起始列
+  endLine?: number // 定义结束行
+  endColumn?: number // 定义结束列
+  signature?: string // 函数/方法签名文本
+  jsDoc?: string // JSDoc/注释文本
+  parentId?: string // 父符号 ID（如类中的方法）
+  isExported: boolean
+  sourceCode?: string // 符号的完整源码
+}
+
+/** Import/Export 关系边 */
+export interface ImportEdge {
+  fromFile: string // 导入方文件绝对路径
+  toFile: string // 导出方文件绝对路径
+  importedNames: string[] // 导入的符号名列表
+  isDefaultImport: boolean
+  line: number
+}
+
+/** 符号引用关系 */
+export interface SymbolReference {
+  symbolId: string
+  filePath: string
+  line: number
+  column: number
+  isDefinition: boolean // true=定义处, false=引用处
+}
+
+/** 符号索引查询结果 */
+export interface SymbolQueryResult {
+  symbol: SymbolInfo
+  score: number // 匹配得分
+  matchedBy: 'exact' | 'fuzzy' | 'semantic' | 'path'
+}

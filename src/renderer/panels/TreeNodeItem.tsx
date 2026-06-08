@@ -77,16 +77,16 @@ export const TreeNodeItem = memo(function TreeNodeItem({
       >
         {node.isDirectory ? (
           isExpanded ? (
-            <ChevronDown className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+            <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
           ) : (
-            <ChevronRight className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+            <ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
           )
         ) : (
-          <span className="w-3 flex-shrink-0" />
+          <span className="w-3 shrink-0" />
         )}
         <Icon
           className={cn(
-            'w-3.5 h-3.5 flex-shrink-0',
+            'w-3.5 h-3.5 shrink-0',
             node.isDirectory ? 'text-primary' : 'text-muted-foreground',
           )}
         />

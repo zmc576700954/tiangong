@@ -5,6 +5,9 @@
 
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git'
 import type { GraphSnapshot } from '@shared/types'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('GitAgent')
 
 export class GitAgent {
   private gitInstances = new Map<string, SimpleGit>()
@@ -78,7 +81,7 @@ export class GitAgent {
       const log = await git.log({ maxCount: 1 })
       return log.latest?.hash
     } catch (err) {
-      console.warn(`[GitAgent] Failed to create snapshot tag:`, err)
+      logger.warn('Failed to create snapshot tag:', err)
       return undefined
     }
   }
@@ -101,7 +104,7 @@ export class GitAgent {
       await git.status()
       return true
     } catch (err) {
-      console.warn(`[GitAgent] Not a valid git repo at ${path}:`, err)
+      logger.warn(`Not a valid git repo at ${path}:`, err)
       return false
     }
   }

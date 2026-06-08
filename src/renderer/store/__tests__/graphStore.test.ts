@@ -13,7 +13,7 @@ vi.stubGlobal('window', {
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',
     })),
-    'graph:derive': vi.fn().mockImplementation((sourceId: string, name?: string) => ({
+    'graph:derive': vi.fn().mockImplementation((_sourceId: string, name?: string) => ({
       id: 'graph-derived-id',
       name: name ?? 'Derived',
       type: 'dev',
@@ -78,7 +78,7 @@ describe('graphStore', () => {
   describe('Graph Operations', () => {
     it('loadGraphs fetches and sets graphs', async () => {
       const mockGraphs = [
-        { id: 'g1', name: 'Test', type: 'online', createdAt: '', updatedAt: '' },
+        { id: 'g1', name: 'Test', type: 'online' as const, createdAt: '', updatedAt: '' },
       ]
       vi.mocked(window.electronAPI['graph:list']).mockResolvedValueOnce(mockGraphs)
       await useGraphStore.getState().loadGraphs()

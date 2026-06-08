@@ -21,6 +21,8 @@ import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterError, SessionNotFoundError, ScopeGuardError } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
+import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
+import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('AgentManager')
@@ -31,6 +33,7 @@ interface SessionState {
   config: AgentSessionConfig
   broadcastName: string
   adapterName: string
+  startTime: number
   sandbox?: import('@shared/types').Sandbox
 }
 
@@ -39,10 +42,12 @@ export class AgentManager {
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
+  private smartContextResolver?: SmartContextResolver
   private sessionStates = new Map<string, SessionState>()
   /** sessionEnded 事件处理器（按适配器存储以便清理） */
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
+  private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
 
   constructor(
     private registry: AdapterRegistry,
@@ -155,6 +160,17 @@ export class AgentManager {
     this.statusChangeCallback = cb
   }
 
+  setOnSessionComplete(handler: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void): void {
+    this.onSessionComplete = handler
+  }
+
+  /**
+   * 注入代码智能依赖
+   */
+  setSymbolIndex(symbolIndex: SymbolIndex): void {
+    this.smartContextResolver = new SmartContextResolver(symbolIndex)
+  }
+
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
     return this.sessionStates.get(sessionId)?.sandbox
   }
@@ -200,6 +216,7 @@ export class AgentManager {
           config,
           broadcastName: adapterName,
           adapterName,
+          startTime: session.startTime,
         })
         this.router.bind(session.id, mcp.name, adapterName)
         return { sessionId: session.id, fallback: true }
@@ -224,6 +241,7 @@ export class AgentManager {
       config,
       broadcastName: adapterName,
       adapterName,
+      startTime: session.startTime,
       sandbox,
     })
 
@@ -255,22 +273,100 @@ export class AgentManager {
     nodes?: GraphNode[],
   ): Promise<void> {
     let resolvedContexts: ResolvedContext[] = []
+    const sessionConfig = this.sessionStates.get(sessionId)?.config
 
     if (contextRefs && contextRefs.length > 0) {
-      const sessionConfig = this.sessionStates.get(sessionId)?.config
       resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
         nodes: nodes ?? [],
         basePath: sessionConfig?.workingDirectory,
       })
     }
 
+    // 【智能代码上下文解析】从用户命令中提取实体并查找相关代码
+    let codeContext: string | undefined
+    if (this.smartContextResolver && sessionConfig?.workingDirectory) {
+      try {
+        const ctx = await this.smartContextResolver.resolve({
+          userQuery: typeof command === 'string' ? command : command.description,
+          projectPath: sessionConfig.workingDirectory,
+          nodes: nodes ?? [],
+          maxSymbols: 15,
+          maxFiles: 8,
+          dependencyDepth: 2,
+        })
+        if (ctx.primarySymbols.length > 0 || ctx.relatedFiles.length > 0) {
+          codeContext = this.formatCodeContext(ctx)
+        }
+      } catch (err) {
+        logger.warn('Smart context resolution failed:', err)
+      }
+    }
+
     // Store resolved contexts on the session so adapter can access them
     const adapter = this.router.resolve(sessionId)
-    if (adapter && resolvedContexts.length > 0) {
-      adapter.setResolvedContexts(sessionId, resolvedContexts)
+    if (adapter) {
+      if (resolvedContexts.length > 0) {
+        adapter.setResolvedContexts(sessionId, resolvedContexts)
+      }
+      if (codeContext) {
+        adapter.setCodeContext(sessionId, codeContext)
+      }
     }
 
     await this.sendCommand(sessionId, command)
+  }
+
+  /**
+   * 将 ResolvedCodeContext 格式化为 prompt 字符串
+   */
+  private formatCodeContext(ctx: import('../code-intelligence/smart-context-resolver').ResolvedCodeContext): string {
+    const lines: string[] = ['# 代码上下文']
+
+    if (ctx.summary) {
+      lines.push(`## 分析摘要\n${ctx.summary}`)
+    }
+
+    if (ctx.primarySymbols.length > 0) {
+      lines.push('## 核心代码')
+      for (const result of ctx.primarySymbols) {
+        const { symbol, score, matchedBy } = result
+        lines.push(`### ${symbol.name} (${symbol.kind}, 匹配度: ${(score * 100).toFixed(0)}%, ${matchedBy})`)
+        if (symbol.signature) lines.push(`- 签名: ${symbol.signature}`)
+        lines.push(`- 位置: ${symbol.filePath}:${symbol.line}`)
+        if (symbol.sourceCode) {
+          lines.push('```typescript')
+          lines.push(symbol.sourceCode)
+          lines.push('```')
+        }
+      }
+    }
+
+    if (ctx.relatedSymbols.length > 0) {
+      lines.push('## 相关代码')
+      for (const result of ctx.relatedSymbols.slice(0, 10)) {
+        const { symbol, score } = result
+        lines.push(`- ${symbol.name} (${symbol.kind}): ${symbol.filePath}:${symbol.line} (得分: ${(score * 100).toFixed(0)}%)`)
+      }
+    }
+
+    if (ctx.relatedFiles.length > 0) {
+      lines.push('## 相关文件')
+      for (const file of ctx.relatedFiles) {
+        lines.push(`### ${file.filePath} (${file.reason})`)
+        lines.push('```typescript')
+        lines.push(file.content.slice(0, 3000))
+        lines.push('```')
+      }
+    }
+
+    if (ctx.importGraph.length > 0) {
+      lines.push('## 文件依赖关系')
+      for (const edge of ctx.importGraph) {
+        lines.push(`${edge.from} -> ${edge.to}`)
+      }
+    }
+
+    return lines.join('\n')
   }
 
   async terminateSession(sessionId: string): Promise<void> {
@@ -313,6 +409,11 @@ export class AgentManager {
           logger.error(`ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
         }
       }
+    }
+    // Agent 日志：记录会话完成
+    if (this.onSessionComplete && state) {
+      const result = scopeGuardError ? 'failure' : 'success'
+      this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)
     }
     if (scopeGuardError) {
       throw scopeGuardError

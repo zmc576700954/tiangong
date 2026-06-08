@@ -160,7 +160,7 @@ export function SettingsPanel() {
           ))}
         </div>
         <div className="mt-2 flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
-          <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+          <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
           <span>
             API keys are stored locally in settings.json. They are used as fallback when CLI tools are unavailable.
           </span>

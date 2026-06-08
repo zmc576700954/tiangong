@@ -119,7 +119,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
         {mode === 'file' ? (
           <div className="space-y-1.5">
             <div className="flex items-center gap-1.5 px-2 py-1 border rounded bg-background">
-              <Search className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+              <Search className="w-3 h-3 text-muted-foreground shrink-0" />
               <input
                 type="text"
                 value={searchQuery}
@@ -135,7 +135,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
                 onClick={() => addFileContext(file)}
                 className="w-full text-left px-2 py-1 text-xs rounded hover:bg-muted flex items-center gap-1.5 transition-colors"
               >
-                <FileText className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
                 <span className="truncate">{file.name}</span>
                 <span className="text-[9px] text-muted-foreground truncate ml-auto">{file.relativePath}</span>
               </button>
@@ -175,11 +175,11 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
             {contexts.map((ctx) => (
               <div key={ctx.id} className="flex items-center gap-1.5 px-2 py-1 text-xs bg-muted/50 rounded group">
                 {ctx.type === 'file' ? (
-                  <FileText className="w-3 h-3 text-blue-500 flex-shrink-0" />
+                  <FileText className="w-3 h-3 text-blue-500 shrink-0" />
                 ) : ctx.type === 'text' ? (
-                  <Type className="w-3 h-3 text-amber-500 flex-shrink-0" />
+                  <Type className="w-3 h-3 text-amber-500 shrink-0" />
                 ) : (
-                  <FileText className="w-3 h-3 text-muted-foreground flex-shrink-0" />
+                  <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
                 )}
                 <span className="truncate flex-1">{ctx.label}</span>
                 <button

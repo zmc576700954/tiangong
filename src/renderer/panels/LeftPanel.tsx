@@ -10,7 +10,7 @@ import {
 import { cn } from '../lib/utils'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
-import { useFileTreeKeyboard } from '../store/fileTreeStore'
+import { useFileTreeKeyboard } from '../store/fileTreeUtils'
 import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
@@ -138,7 +138,7 @@ export function LeftPanel() {
       onDrop={handleDrop}
     >
       {/* Header */}
-      <div className="h-10 border-b flex items-center justify-between px-3 flex-shrink-0">
+      <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
         <span className="text-sm font-semibold">Projects</span>
         <div className="flex items-center gap-1">
           <button
@@ -205,7 +205,7 @@ export function LeftPanel() {
                       </svg>
                     )}
                   </button>
-                  <Sparkles className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                  <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
                   <span className="text-sm font-medium truncate flex-1">{project.name}</span>
                   <button
                     onClick={() => handleScanProject(project.id)}
@@ -248,7 +248,7 @@ export function LeftPanel() {
       {/* Settings Overlay */}
       {showSettings && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur flex flex-col">
-          <div className="h-10 border-b flex items-center justify-between px-3 flex-shrink-0">
+          <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
             <div className="flex items-center gap-2">
               <Settings className="w-4 h-4 text-muted-foreground" />
               <span className="text-sm font-medium">Settings</span>

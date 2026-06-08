@@ -149,12 +149,12 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
               )}
             >
               {item.type === 'node' ? (
-                <Circle className="w-3 h-3 text-blue-400 flex-shrink-0" />
+                <Circle className="w-3 h-3 text-blue-400 shrink-0" />
               ) : (
-                <FileText className="w-3 h-3 text-green-400 flex-shrink-0" />
+                <FileText className="w-3 h-3 text-green-400 shrink-0" />
               )}
               <span className="text-xs truncate">{item.label}</span>
-              <span className="text-[10px] text-muted-foreground ml-auto flex-shrink-0">
+              <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
                 {item.type}
               </span>
             </button>

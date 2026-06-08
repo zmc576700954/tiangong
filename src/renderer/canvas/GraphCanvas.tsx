@@ -406,13 +406,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         <MiniMap
           nodeColor={(node) => NODE_TYPE_COLORS[(node.data as unknown as GraphNode).type] ?? '#94a3b8'}
           maskColor="rgba(0, 0, 0, 0.1)"
-          className="!bg-background/80 !border-border !rounded-lg !shadow-sm"
+          className="!bg-background/80 !border-border !rounded-lg !shadow-xs"
           pannable
           zoomable
         />
 
         <Panel position="bottom-left" className="m-2">
-          <div className="bg-background/90 backdrop-blur border rounded-lg shadow-sm px-2 py-1 text-[10px] text-muted-foreground font-mono">
+          <div className="bg-background/90 backdrop-blur border rounded-lg shadow-xs px-2 py-1 text-[10px] text-muted-foreground font-mono">
             {Math.round(zoomLevel * 100)}%
           </div>
         </Panel>
@@ -420,7 +420,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         <Panel position="top-right" className="m-2">
           <button
             onClick={applyLayout}
-            className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-sm px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+            className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
             title="整理布局"
           >
             <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
@@ -430,7 +430,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
         {connectingSourceId && (
           <Panel position="top-center" className="m-2">
-            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg shadow-sm px-4 py-2 text-sm text-blue-700">
+            <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg shadow-xs px-4 py-2 text-sm text-blue-700">
               <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
               <span>连线模式：点击目标节点完成连线</span>
               <button
@@ -448,7 +448,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
         {(selectedNodeId || selectedEdgeId) && !connectingSourceId && (
           <Panel position="bottom-center" className="m-2">
-            <div className="flex items-center gap-2 bg-background/90 backdrop-blur border rounded-lg shadow-sm px-3 py-1.5 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-muted-foreground">
               <span>{selectedNodeId ? '按 Delete 删除节点' : '按 Delete 删除连接线'}</span>
               <span className="text-border">|</span>
               <button

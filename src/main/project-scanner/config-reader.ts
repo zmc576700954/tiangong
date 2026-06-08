@@ -4,6 +4,9 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('ProjectScanner')
 
 export interface ProjectConfigs {
   packageJson: Record<string, unknown> | null
@@ -42,7 +45,7 @@ export async function readConfigs(projectPath: string): Promise<ProjectConfigs> 
       if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
         return null
       }
-      console.warn(`[ProjectScanner] Failed to read ${filename}:`, err)
+      logger.warn(`Failed to read ${filename}:`, err)
       return null
     }
   }

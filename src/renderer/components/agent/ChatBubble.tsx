@@ -73,7 +73,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
     <div className="group flex gap-2 items-start">
       <div
         className={cn(
-          'w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 text-[10px] font-semibold',
+          'w-5 h-5 rounded-full flex items-center justify-center shrink-0 text-[10px] font-semibold',
           isUser
             ? 'bg-blue-500/20 text-blue-400'
             : isError

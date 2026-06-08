@@ -122,7 +122,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
 
   return (
     <div
-      className="border-t border-border relative flex-shrink-0 flex flex-col"
+      className="border-t border-border relative shrink-0 flex flex-col"
       style={containerHeight ? { height: containerHeight, padding: '8px 10px' } : { padding: '10px' }}
     >
       {showSlash && (
@@ -160,7 +160,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
         {isRunning ? (
           <button
             onClick={onStop}
-            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700 self-end"
+            className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700 self-end"
             title="Stop"
           >
             <Square className="w-3.5 h-3.5" />
@@ -170,7 +170,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
             onClick={handleSend}
             disabled={!value.trim() || disabled}
             className={cn(
-              'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors self-end',
+              'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors self-end',
               value.trim() && !disabled
                 ? 'bg-green-600 text-white hover:bg-green-700'
                 : 'bg-muted text-muted-foreground cursor-not-allowed',
@@ -180,7 +180,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           </button>
         )}
       </div>
-      <div className="flex justify-between mt-1.5 flex-shrink-0">
+      <div className="flex justify-between mt-1.5 shrink-0">
         <span className="text-[9px] text-muted-foreground/50">Shift+Enter for newline</span>
       </div>
     </div>

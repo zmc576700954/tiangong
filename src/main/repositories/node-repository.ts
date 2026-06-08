@@ -48,6 +48,47 @@ export class NodeRepository {
     return { ...data, id, createdAt: now, updatedAt: now }
   }
 
+  /** 批量创建节点（LibSQL batch API，单次事务提交） */
+  async createBatch(nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]): Promise<GraphNode[]> {
+    if (nodesData.length === 0) return []
+    const now = new Date().toISOString()
+    const created: GraphNode[] = []
+
+    const statements = nodesData.map((data) => {
+      const id = generateId('node')
+      created.push({ ...data, id, createdAt: now, updatedAt: now })
+      return {
+        sql: `INSERT INTO nodes (
+          id, type, status, title, description, acceptance_criteria,
+          graph_id, graph_type, parent_id, rules, metadata, owner_role,
+          position_x, position_y, context_refs, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          id,
+          data.type,
+          data.status,
+          data.title,
+          data.description ?? null,
+          data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
+          data.graphId,
+          data.graphType,
+          data.parentId ?? null,
+          data.rules ? JSON.stringify(data.rules) : null,
+          data.metadata ? JSON.stringify(data.metadata) : null,
+          data.ownerRole ?? null,
+          data.position.x,
+          data.position.y,
+          data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+          now,
+          now,
+        ],
+      }
+    })
+
+    await this.db.batch(statements, 'write')
+    return created
+  }
+
   async update(id: string, data: Partial<GraphNode>): Promise<GraphNode> {
     const now = new Date().toISOString()
 

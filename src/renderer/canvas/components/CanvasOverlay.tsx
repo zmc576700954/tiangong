@@ -143,7 +143,7 @@ export function CanvasOverlay({
               className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <div
-                className="w-3 h-3 rounded-full flex-shrink-0 border"
+                className="w-3 h-3 rounded-full shrink-0 border"
                 style={{ backgroundColor: opt.color, borderColor: opt.color }}
               />
               <div className="flex flex-col">

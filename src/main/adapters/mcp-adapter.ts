@@ -12,6 +12,7 @@
 import { BaseAdapter } from './base'
 import { McpClient } from '../mcp/client'
 import { generateId } from '../shared/env'
+import type { ChildProcess } from 'node:child_process'
 import type { AgentSession, AgentSessionConfig, AgentCommand, ApiKeyConfig } from '@shared/types'
 import { readSettings } from '../settings'
 import { AdapterError } from '../errors'
@@ -425,9 +426,9 @@ export class McpAdapter extends BaseAdapter {
 
     // 设置会话空闲超时定时器，防止连接泄露
     const timer = setTimeout(() => {
-      console.warn(`[McpAdapter] Session ${sessionId} idle timeout, cleaning up...`)
+      this.logger.warn(`Session ${sessionId} idle timeout, cleaning up...`)
       this.terminateSession(sessionId).catch((err) => {
-        console.warn('[McpAdapter] Failed to terminate session on idle timeout:', err)
+        this.logger.warn('Failed to terminate session on idle timeout:', err)
       })
     }, MCP_SESSION_TIMEOUT_MS)
     this.sessionTimers.set(sessionId, timer)
@@ -453,7 +454,7 @@ export class McpAdapter extends BaseAdapter {
     return session
   }
 
-  protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: unknown): Promise<void> {
+  protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: ChildProcess): Promise<void> {
     const settings = await readSettings()
 
     // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
@@ -572,7 +573,7 @@ export class McpAdapter extends BaseAdapter {
     return resolveApiKey(apiKeys, defaultModel)
   }
 
-  protected async doTerminate(_session: AgentSession, _proc?: unknown): Promise<void> {
+  protected async doTerminate(_session: AgentSession, _proc?: ChildProcess): Promise<void> {
     this.cleanupMcpResources(_session.id)
     // MCP 适配器不在 this.processes 中注册进程（startSession 不传 proc 给 registerSession），
     // 因此 proc 始终为 undefined。显式调用 super 以确保基类未来增加清理逻辑时不被跳过。
@@ -594,10 +595,10 @@ export class McpAdapter extends BaseAdapter {
     for (const client of clients) {
       try {
         client.disconnect().catch((err) => {
-          console.warn('[McpAdapter] Failed to disconnect MCP client:', err)
+          this.logger.warn('Failed to disconnect MCP client:', err)
         })
       } catch (err) {
-        console.warn('[McpAdapter] Error during session cleanup:', err)
+        this.logger.warn('Error during session cleanup:', err)
       }
     }
     this.mcpClients.delete(sessionId)
