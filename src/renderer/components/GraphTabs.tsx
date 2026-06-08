@@ -14,11 +14,16 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newGraphName, setNewGraphName] = useState('')
   const [newGraphType, setNewGraphType] = useState<'online' | 'dev'>('online')
+  const [deriveFromGraphId, setDeriveFromGraphId] = useState<string | null>(null)
+
+  const onlineGraphs = graphs.filter(g => g.type === 'online')
 
   const handleCreate = async () => {
     if (!newGraphName.trim()) return
-    await createGraph(newGraphName.trim(), newGraphType)
+    const sourceId = newGraphType === 'dev' && deriveFromGraphId ? deriveFromGraphId : undefined
+    await createGraph(newGraphName.trim(), newGraphType, sourceId)
     setNewGraphName('')
+    setDeriveFromGraphId(null)
     setShowNewDialog(false)
   }
 
@@ -100,6 +105,21 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
               Dev
             </button>
           </div>
+          {newGraphType === 'dev' && onlineGraphs.length > 0 && (
+            <div className="mb-3">
+              <label className="text-xs text-muted-foreground mb-1 block">从在线图派生</label>
+              <select
+                value={deriveFromGraphId ?? ''}
+                onChange={(e) => setDeriveFromGraphId(e.target.value || null)}
+                className="w-full px-3 py-2 border rounded-md text-sm bg-background"
+              >
+                <option value="">空白图</option>
+                {onlineGraphs.map(g => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex justify-end gap-2">
             <button
               onClick={() => setShowNewDialog(false)}

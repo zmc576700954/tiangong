@@ -4,8 +4,8 @@
  *
  * 安全设计（TG-008）：
  * - 仅暴露渲染进程实际需要的 IPC 通道
- * - 文件写入操作通过 Agent 适配器代理执行，不直接暴露给渲染进程
- * - 路径验证、频率限制在 main 进程中完成
+ * - 文件操作通过 IPC 通道暴露给渲染进程，路径验证和频率限制在 main 进程中完成
+ * - 敏感操作（如 Agent 执行范围外的文件修改）由 ScopeGuard 在 main 进程层拦截
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
@@ -18,6 +18,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'graph:list',
   'graph:get',
   'graph:delete',
+  'graph:derive',
 
   // Node operations
   'node:create',

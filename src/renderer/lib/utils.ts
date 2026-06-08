@@ -9,10 +9,10 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
- * 生成唯一 ID
+ * 生成唯一 ID（使用 crypto.randomUUID 保证低碰撞概率）
  */
 export function generateId(prefix: string): string {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  return `${prefix}-${crypto.randomUUID().replace(/-/g, '')}`
 }
 
 /**

@@ -37,7 +37,7 @@ export async function searchFilesRecursive(
 
   async function walk(dir: string) {
     if (results.length >= limit) return
-    let entries: any[]
+    let entries: fs.Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {

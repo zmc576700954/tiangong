@@ -9,10 +9,10 @@ import { NodeRepository } from '../repositories/node-repository'
 import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import type { TypedHandle } from './utils'
-import type { NodeType } from '@shared/types'
+import type { GraphNode, BugNode } from '@shared/types'
+import { validateNodeTransition, validateBugTransition } from '@shared/state-machine'
+import { VALID_NODE_TYPES } from '../services/graph-service'
 import { IpcError, ErrorCode } from '../errors'
-
-const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
 
 export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, graphService: GraphService): void {
   const nodeRepo = new NodeRepository(db)
@@ -37,6 +37,10 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     return true
   })
 
+  typedHandle('graph:derive', async (_, sourceGraphId: string, name?: string) => {
+    return graphService.deriveGraph(sourceGraphId, name)
+  })
+
   // ---------- 节点操作 ----------
   typedHandle('node:create', async (_, data) => {
     if (!VALID_NODE_TYPES.includes(data.type)) {
@@ -45,7 +49,13 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     return nodeRepo.create(data)
   })
 
-  typedHandle('node:update', async (_, id, data) => {
+  typedHandle('node:update', async (_, id: string, data: Partial<GraphNode>) => {
+    if (data.status !== undefined) {
+      const currentStatus = await nodeRepo.getStatus(id)
+      if (currentStatus !== null && currentStatus !== data.status) {
+        validateNodeTransition(currentStatus, data.status)
+      }
+    }
     return nodeRepo.update(id, data)
   })
 
@@ -78,7 +88,13 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     return bugRepo.create(data)
   })
 
-  typedHandle('bug:update', async (_, id, data) => {
+  typedHandle('bug:update', async (_, id: string, data: Partial<BugNode>) => {
+    if (data.status !== undefined) {
+      const currentStatus = await bugRepo.getStatus(id)
+      if (currentStatus !== null && currentStatus !== data.status) {
+        validateBugTransition(currentStatus, data.status)
+      }
+    }
     return bugRepo.update(id, data)
   })
 

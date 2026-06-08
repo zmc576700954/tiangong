@@ -18,7 +18,7 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('GraphService')
 
-const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
+export const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
 
 export interface InitFromProjectResult {
   onlineGraph: Graph
@@ -44,6 +44,27 @@ export class GraphService {
     const result = await this.graphRepo.create(data)
     this.invalidateProjectPathsCache()
     return result
+  }
+
+  /** 从已有在线图派生开发图 */
+  async deriveGraph(sourceGraphId: string, name?: string): Promise<Graph> {
+    const sourceData = await this.graphRepo.get(sourceGraphId)
+    if (!sourceData) {
+      throw new Error(`Source graph not found: ${sourceGraphId}`)
+    }
+    if (sourceData.graph.type !== 'online') {
+      throw new Error('Can only derive dev graph from an online graph')
+    }
+
+    const devGraph = await this.graphRepo.create({
+      name: name ?? `${sourceData.graph.name} - 开发场景`,
+      type: 'dev',
+      projectPath: sourceData.graph.projectPath,
+    })
+
+    await this.graphRepo.cloneGraphNodes(sourceGraphId, devGraph.id, 'dev')
+    this.invalidateProjectPathsCache()
+    return devGraph
   }
 
   async listGraphs(): Promise<Graph[]> {

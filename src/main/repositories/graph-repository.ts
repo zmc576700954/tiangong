@@ -5,6 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { Graph, GraphNode, GraphEdge, BugNode, GraphType } from '@shared/types'
+import { assertGraphType, assertNodeType, assertNodeStatus, assertEdgeType, assertBugSeverity, assertBugStatus } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 
@@ -47,7 +48,7 @@ export class GraphRepository {
     return result.rows.map((row) => ({
       id: rowStr(row, 'id'),
       name: rowStr(row, 'name'),
-      type: rowStr(row, 'type') as GraphType,
+      type: assertGraphType(rowStr(row, 'type')),
       projectPath: rowOptStr(row, 'project_path'),
       createdAt: rowStr(row, 'created_at'),
       updatedAt: rowStr(row, 'updated_at'),
@@ -85,13 +86,13 @@ export class GraphRepository {
       },
       nodes: nodesResult.rows.map((row) => ({
         id: rowStr(row, 'id'),
-        type: rowStr(row, 'type') as GraphNode['type'],
-        status: rowStr(row, 'status') as GraphNode['status'],
+        type: assertNodeType(rowStr(row, 'type')),
+        status: assertNodeStatus(rowStr(row, 'status')),
         title: rowStr(row, 'title'),
         description: rowOptStr(row, 'description'),
         acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(rowOptStr(row, 'acceptance_criteria'), 'acceptance_criteria'),
         graphId: rowStr(row, 'graph_id'),
-        graphType: rowStr(row, 'graph_type') as GraphNode['graphType'],
+        graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
         parentId: rowOptStr(row, 'parent_id'),
         rules: safeJsonParse(rowOptStr(row, 'rules'), 'rules'),
         metadata: safeJsonParse(rowOptStr(row, 'metadata'), 'metadata'),
@@ -110,7 +111,10 @@ export class GraphRepository {
         target: rowStr(row, 'target'),
         label: rowOptStr(row, 'label'),
         graphId: rowStr(row, 'graph_id'),
-        edgeType: rowOptStr(row, 'edge_type') as GraphEdge['edgeType'],
+        edgeType: ((): GraphEdge['edgeType'] => {
+          const raw = rowOptStr(row, 'edge_type')
+          return raw ? assertEdgeType(raw) : undefined
+        })(),
         description: rowOptStr(row, 'description'),
         dataFlow: rowOptStr(row, 'data_flow'),
         strength: typeof row.strength === 'number' ? row.strength : undefined,
@@ -120,8 +124,8 @@ export class GraphRepository {
         id: rowStr(row, 'id'),
         title: rowStr(row, 'title'),
         description: rowStr(row, 'description'),
-        severity: rowStr(row, 'severity') as BugNode['severity'],
-        status: rowStr(row, 'status') as BugNode['status'],
+        severity: assertBugSeverity(rowStr(row, 'severity')),
+        status: assertBugStatus(rowStr(row, 'status')),
         nodeId: rowStr(row, 'node_id'),
         graphId: rowStr(row, 'graph_id'),
         createdAt: rowStr(row, 'created_at'),
@@ -148,5 +152,85 @@ export class GraphRepository {
     return result.rows
       .map((row) => row.project_path as string | null)
       .filter((p): p is string => p !== null && p !== undefined)
+  }
+
+  /** 克隆在线图的所有节点和边到开发图 */
+  async cloneGraphNodes(sourceGraphId: string, targetGraphId: string, targetGraphType: GraphType): Promise<void> {
+    const nodes = await this.db.execute({
+      sql: 'SELECT * FROM nodes WHERE graph_id = ?',
+      args: [sourceGraphId],
+    })
+
+    // 原始 ID → 新 ID 映射
+    const idMap = new Map<string, string>()
+
+    // Pass 1: 插入节点（parent_id 暂时保留原值）
+    for (const row of nodes.rows) {
+      const originalId = rowStr(row, 'id')
+      const newId = generateId('node')
+      idMap.set(originalId, newId)
+
+      const nodeType = assertNodeType(rowStr(row, 'type'))
+      const rawStatus = rowStr(row, 'status')
+      const status = nodeType === 'feature' && targetGraphType === 'dev'
+        ? 'placeholder'
+        : assertNodeStatus(rawStatus)
+
+      await this.db.execute({
+        sql: `INSERT INTO nodes (
+          id, type, status, title, description, acceptance_criteria,
+          graph_id, graph_type, parent_id, rules, metadata, owner_role,
+          position_x, position_y, context_refs, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          newId, nodeType, status, rowStr(row, 'title'),
+          rowOptStr(row, 'description'),
+          row['acceptance_criteria'],
+          targetGraphId, assertGraphType(targetGraphType),
+          row['parent_id'],
+          row['rules'], row['metadata'], row['owner_role'],
+          rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
+          row['context_refs'],
+          rowStr(row, 'created_at'), new Date().toISOString(),
+        ],
+      })
+    }
+
+    // Pass 2: 更新 parent_id 映射
+    for (const [oldId, newId] of idMap) {
+      const row = nodes.rows.find(r => rowStr(r, 'id') === oldId)
+      if (!row) continue
+      const oldParentId = rowOptStr(row, 'parent_id')
+      if (oldParentId && idMap.has(oldParentId)) {
+        await this.db.execute({
+          sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
+          args: [idMap.get(oldParentId)!, newId],
+        })
+      }
+    }
+
+    // Pass 3: 复制边（使用 ID 映射）
+    const edges = await this.db.execute({
+      sql: 'SELECT * FROM edges WHERE graph_id = ?',
+      args: [sourceGraphId],
+    })
+
+    for (const row of edges.rows) {
+      const newSourceId = idMap.get(rowStr(row, 'source'))
+      const newTargetId = idMap.get(rowStr(row, 'target'))
+      if (!newSourceId || !newTargetId) continue
+
+      const newId = generateId('edge')
+      await this.db.execute({
+        sql: `INSERT INTO edges (
+          id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          newId, newSourceId, newTargetId,
+          rowOptStr(row, 'label'), row['edge_type'], row['content'],
+          targetGraphId, row['description'], row['data_flow'], row['strength'],
+        ],
+      })
+    }
   }
 }

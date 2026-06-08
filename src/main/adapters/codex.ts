@@ -9,12 +9,15 @@ import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
+import { createLogger } from '../shared/logger'
 
 type CodexConstructor = typeof import('@openai/codex-sdk').Codex
 
 export class CodexAdapter extends BaseAdapter {
   readonly name = 'codex'
   readonly version = '2.0.0'
+
+  private logger = createLogger('CodexAdapter')
 
   private CodexClass: CodexConstructor | null = null
   private sdkLoadAttempted = false
@@ -30,7 +33,7 @@ export class CodexAdapter extends BaseAdapter {
       this.CodexClass = mod.Codex
       return this.CodexClass
     } catch {
-      console.warn('[CodexAdapter] @openai/codex-sdk not installed')
+      this.logger.warn('@openai/codex-sdk not installed')
       return null
     }
   }

@@ -566,6 +566,7 @@ export interface IpcApi {
   'graph:list': () => Promise<Graph[]>
   'graph:get': (id: string) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>
+  'graph:derive': (sourceGraphId: string, name?: string) => Promise<Graph>
 
   // 节点操作
   'node:create': (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
@@ -701,3 +702,14 @@ export interface BizGraphSettings {
   defaultModel?: string
   mcpServers: McpServerConfig[]
 }
+
+// ============================================
+// 运行时类型校验常量（供 type-guards.ts 复用）
+// ============================================
+
+export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
+export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug'] as const
+export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
+export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow'] as const
+export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
+export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const

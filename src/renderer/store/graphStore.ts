@@ -2,6 +2,34 @@ import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode } from '@shared/types'
 import { generateId } from '../lib/utils'
 
+// ============================================
+// 乐观更新辅助函数
+// ============================================
+
+/** 乐观创建：添加临时项 → IPC 调用 → 确认/回滚 */
+async function optimisticCreate<T extends { id: string }>(
+  items: T[],
+  optimisticItem: T,
+  ipcCall: () => Promise<T>,
+  onSettle: (updated: T[]) => void,
+): Promise<T> {
+  const optimisticId = optimisticItem.id
+  onSettle([...items, optimisticItem])
+
+  try {
+    const serverItem = await ipcCall()
+    onSettle(items.map((item) => (item.id === optimisticId ? serverItem : item)))
+    return serverItem
+  } catch (err) {
+    onSettle(items.filter((item) => item.id !== optimisticId))
+    throw err
+  }
+}
+
+// ============================================
+// Store 定义
+// ============================================
+
 interface GraphState {
   graphs: Graph[]
   currentGraphId: string | null
@@ -62,7 +90,12 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     }
   },
 
-  createGraph: async (name, type) => {
+  createGraph: async (name, type, sourceGraphId) => {
+    if (sourceGraphId) {
+      const graph = await window.electronAPI['graph:derive'](sourceGraphId, name)
+      set((state) => ({ graphs: [graph, ...state.graphs] }))
+      return graph
+    }
     const graph = await window.electronAPI['graph:create']({ name, type })
     set((state) => ({ graphs: [graph, ...state.graphs] }))
     return graph
@@ -89,33 +122,25 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   createNode: async (data) => {
     const optimisticId = generateId('node')
     const now = new Date().toISOString()
-    const optimisticNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now } as GraphNode
+    const optimisticNode: GraphNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now }
 
-    set((state) => ({ nodes: [...state.nodes, optimisticNode] }))
-
-    try {
-      const node = await window.electronAPI['node:create'](data)
-      set((state) => ({
-        nodes: state.nodes.map((n) => (n.id === optimisticId ? node : n)),
-      }))
-      return node
-    } catch (err) {
-      set((state) => ({
-        nodes: state.nodes.filter((n) => n.id !== optimisticId),
-      }))
-      throw err
-    }
+    return optimisticCreate(
+      get().nodes,
+      optimisticNode,
+      () => window.electronAPI['node:create'](data),
+      (nodes) => set({ nodes }),
+    )
   },
 
   createNodeBatch: async (nodesData) => {
     const optimisticIds = nodesData.map(() => generateId('node'))
     const now = new Date().toISOString()
-    const optimisticNodes = nodesData.map((data, i) => ({
+    const optimisticNodes: GraphNode[] = nodesData.map((data, i) => ({
       ...data,
       id: optimisticIds[i],
       createdAt: now,
       updatedAt: now,
-    })) as GraphNode[]
+    }))
 
     set((state) => ({ nodes: [...state.nodes, ...optimisticNodes] }))
 
@@ -208,22 +233,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   // ─────────────── Edge Operations (乐观更新) ───────────────
   createEdge: async (data) => {
     const optimisticId = generateId('edge')
-    const optimisticEdge = { ...data, id: optimisticId } as GraphEdge
+    const optimisticEdge: GraphEdge = { ...data, id: optimisticId }
 
-    set((state) => ({ edges: [...state.edges, optimisticEdge] }))
-
-    try {
-      const edge = await window.electronAPI['edge:create'](data)
-      set((state) => ({
-        edges: state.edges.map((e) => (e.id === optimisticId ? edge : e)),
-      }))
-      return edge
-    } catch (err) {
-      set((state) => ({
-        edges: state.edges.filter((e) => e.id !== optimisticId),
-      }))
-      throw err
-    }
+    return optimisticCreate(
+      get().edges,
+      optimisticEdge,
+      () => window.electronAPI['edge:create'](data),
+      (edges) => set({ edges }),
+    )
   },
 
   updateEdge: async (id, data) => {
@@ -272,22 +289,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   createBug: async (data) => {
     const optimisticId = generateId('bug')
     const now = new Date().toISOString()
-    const optimisticBug = { ...data, id: optimisticId, createdAt: now, updatedAt: now } as BugNode
+    const optimisticBug: BugNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now }
 
-    set((state) => ({ bugs: [...state.bugs, optimisticBug] }))
-
-    try {
-      const bug = await window.electronAPI['bug:create'](data)
-      set((state) => ({
-        bugs: state.bugs.map((b) => (b.id === optimisticId ? bug : b)),
-      }))
-      return bug
-    } catch (err) {
-      set((state) => ({
-        bugs: state.bugs.filter((b) => b.id !== optimisticId),
-      }))
-      throw err
-    }
+    return optimisticCreate(
+      get().bugs,
+      optimisticBug,
+      () => window.electronAPI['bug:create'](data),
+      (bugs) => set({ bugs }),
+    )
   },
 
   updateBug: async (id, data) => {

@@ -94,8 +94,6 @@ export const EDGE_TYPE_OPTIONS: { type: EdgeType; label: string; color: string; 
 ]
 
 /** 支持的 Agent 适配器列表 */
-
-/** 支持的 Agent 适配器列表 */
 export const SUPPORTED_AGENTS = [
   { name: 'claude-code', displayName: 'Claude Code', npmPackage: '@anthropic-ai/claude-code' },
   { name: 'codex', displayName: 'Codex CLI', npmPackage: '@openai/codex' },

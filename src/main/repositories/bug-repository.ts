@@ -5,6 +5,8 @@
 
 import type { Client } from '@libsql/client'
 import type { BugNode } from '@shared/types'
+import type { BugStatus } from '@shared/types'
+import { assertBugSeverity, assertBugStatus } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 
 export class BugRepository {
@@ -52,8 +54,8 @@ export class BugRepository {
       id: row.id as string,
       title: row.title as string,
       description: row.description as string,
-      severity: row.severity as BugNode['severity'],
-      status: row.status as BugNode['status'],
+      severity: assertBugSeverity(row.severity as string),
+      status: assertBugStatus(row.status as string),
       nodeId: row.node_id as string,
       graphId: row.graph_id as string,
       createdAt: row.created_at as string,
@@ -63,6 +65,14 @@ export class BugRepository {
 
   async delete(id: string): Promise<void> {
     await this.db.execute({ sql: 'DELETE FROM bug_nodes WHERE id = ?', args: [id] })
+  }
+
+  /** 查询 Bug 当前状态（用于状态转换校验） */
+  async getStatus(id: string): Promise<BugStatus | null> {
+    const result = await this.db.execute({ sql: 'SELECT status FROM bug_nodes WHERE id = ?', args: [id] })
+    const row = result.rows[0]
+    if (!row) return null
+    return assertBugStatus(row.status as string)
   }
 
   async listByNode(nodeId: string): Promise<BugNode[]> {
@@ -75,8 +85,8 @@ export class BugRepository {
       id: row.id as string,
       title: row.title as string,
       description: row.description as string,
-      severity: row.severity as BugNode['severity'],
-      status: row.status as BugNode['status'],
+      severity: assertBugSeverity(row.severity as string),
+      status: assertBugStatus(row.status as string),
       nodeId: row.node_id as string,
       graphId: row.graph_id as string,
       createdAt: row.created_at as string,

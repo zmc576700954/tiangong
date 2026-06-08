@@ -70,8 +70,12 @@ export async function closeDatabase(): Promise<void> {
   }
   if (client) {
     // 最终 WAL checkpoint，确保所有数据落盘
-    await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch(() => {})
-    await client.execute('PRAGMA optimize').catch(() => {})
+    await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch((err) => {
+      logger.warn('Final WAL checkpoint failed during close:', err)
+    })
+    await client.execute('PRAGMA optimize').catch((err) => {
+      logger.warn('PRAGMA optimize failed during close:', err)
+    })
     // 如果客户端支持显式 close，优先调用以释放底层资源
     if ('close' in client && typeof (client as { close: unknown }).close === 'function') {
       await (client as { close: () => Promise<void> }).close()
@@ -434,7 +438,7 @@ async function migrate(): Promise<void> {
 
     await db.execute('RELEASE migrate_sp')
   } catch (err) {
-    await db.execute('ROLLBACK TO migrate_sp').catch(() => {})
+    await db.execute('ROLLBACK TO migrate_sp').catch((err) => { logger.warn('ROLLBACK TO migrate_sp failed:', err) })
     throw err
   }
 }

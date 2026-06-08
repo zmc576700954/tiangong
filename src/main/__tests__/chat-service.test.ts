@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ChatService } from '../services/chat-service'
 import type { ChatRepository, ChatThreadRow, ChatMessageRow } from '../repositories/chat-repository'

@@ -115,7 +115,7 @@ export function LeftPanel() {
       for (const item of items) {
         const entry = item.webkitGetAsEntry?.()
         if (entry?.isDirectory) {
-          const path = e.dataTransfer.getData('text/plain') || (entry as any).path
+          const path = e.dataTransfer.getData('text/plain') || (entry as { path?: string }).path
           if (path) await addProject(path)
         }
       }

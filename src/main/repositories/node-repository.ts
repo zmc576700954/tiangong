@@ -5,6 +5,8 @@
 
 import type { Client } from '@libsql/client'
 import type { GraphNode } from '@shared/types'
+import type { NodeStatus } from '@shared/types'
+import { assertNodeType, assertNodeStatus, assertGraphType } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 import { DatabaseError, ErrorCode } from '../errors'
@@ -84,13 +86,13 @@ export class NodeRepository {
     }
     return {
       id: row.id as string,
-      type: row.type as GraphNode['type'],
-      status: row.status as GraphNode['status'],
+      type: assertNodeType(row.type as string),
+      status: assertNodeStatus(row.status as string),
       title: row.title as string,
       description: row.description as string | undefined,
       acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, 'acceptance_criteria'),
       graphId: row.graph_id as string,
-      graphType: row.graph_type as GraphNode['graphType'],
+      graphType: assertGraphType(row.graph_type as string, 'graphType'),
       parentId: row.parent_id as string | undefined,
       rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, 'rules'),
       metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, 'metadata'),
@@ -105,6 +107,14 @@ export class NodeRepository {
   async delete(id: string): Promise<void> {
     // 外键 ON DELETE CASCADE 会自动删除关联的 edges 和 bug_nodes
     await this.db.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] })
+  }
+
+  /** 查询节点当前状态（用于状态转换校验） */
+  async getStatus(id: string): Promise<NodeStatus | null> {
+    const result = await this.db.execute({ sql: 'SELECT status FROM nodes WHERE id = ?', args: [id] })
+    const row = result.rows[0]
+    if (!row) return null
+    return assertNodeStatus(row.status as string)
   }
 
   async updateParentId(nodeId: string, parentId: string | null): Promise<void> {

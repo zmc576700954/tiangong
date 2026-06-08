@@ -15,6 +15,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
+    // 路径别名：@/ → renderer, @main/ → main, @shared/ → shared
+    // 当前代码统一使用相对路径，别名保留供未来重构使用
     "paths": {
       "@/*": ["src/renderer/*"],
       "@main/*": ["src/main/*"],

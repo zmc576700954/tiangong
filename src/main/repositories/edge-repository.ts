@@ -5,6 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { GraphEdge } from '@shared/types'
+import { assertEdgeType } from '@shared/type-guards'
 import { DatabaseError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
 
@@ -24,7 +25,7 @@ function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
     target: row.target as string,
     label: row.label as string | undefined,
     graphId: row.graph_id as string,
-    edgeType: row.edge_type as GraphEdge['edgeType'],
+    edgeType: row.edge_type ? assertEdgeType(row.edge_type as string) : undefined,
     description: row.description as string | undefined,
     dataFlow: row.data_flow as string | undefined,
     strength: typeof row.strength === 'number' ? row.strength : undefined,

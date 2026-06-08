@@ -412,8 +412,8 @@ export class ScopeGuard {
     // 删除备份目录
     try {
       await fs.rm(sandbox.backupDir, { recursive: true, force: true })
-    } catch {
-      // 忽略删除错误
+    } catch (err) {
+      this.logger.warn(`Failed to delete backup directory ${sandbox.backupDir}:`, err)
     }
 
     this.sandboxes.delete(sandbox.id)

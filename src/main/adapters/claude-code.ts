@@ -14,6 +14,7 @@ import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
+import { createLogger } from '../shared/logger'
 
 type QueryFn = typeof import('@anthropic-ai/claude-agent-sdk').query
 
@@ -45,6 +46,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   readonly name = 'claude-code'
   readonly version = '2.0.0'
 
+  private logger = createLogger('ClaudeCodeAdapter')
+
   private sdkQuery: QueryFn | null = null
   private sdkLoadAttempted = false
   private activeQueries = new Map<string, { abort: () => void }>()
@@ -58,7 +61,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       this.sdkQuery = mod.query
       return this.sdkQuery
     } catch {
-      console.warn('[ClaudeCodeAdapter] @anthropic-ai/claude-agent-sdk not installed')
+      this.logger.warn('@anthropic-ai/claude-agent-sdk not installed')
       return null
     }
   }

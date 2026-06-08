@@ -69,6 +69,7 @@ function checkRateLimit(channel: string, webContentsId: number): void {
  */
 export type TypedHandle = <K extends string>(
   channel: K,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (event: IpcMainInvokeEvent, ...args: any[]) => Promise<any>,
 ) => void
 

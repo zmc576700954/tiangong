@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ScopeGuard } from '../scope-guard'
 import type { Dirent } from 'node:fs'
