@@ -4,7 +4,7 @@
  */
 
 import type { ResolvedCodeContext } from './smart-context-resolver'
-import type { AgentSessionConfig } from '@shared/types'
+import type { AgentSessionConfig, SymbolQueryResult } from '@shared/types'
 
 export interface PromptAssemblyOptions {
   sessionConfig: AgentSessionConfig

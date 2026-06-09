@@ -51,7 +51,7 @@ export class EntityExtractor {
     const seen = new Set<string>()
 
     // 1. 提取大驼峰命名（类名、接口名等）
-    const pascalPattern = /\b[A-Z][a-zA-Z0-9]*(?:[A-Z][a-zA-Z0-9]*)+\b/g
+    const pascalPattern = /\b[A-Z][a-zA-Z0-9]*(?:[A-Z][a-zA-Z0-9]*)*\b/g
     let match: RegExpExecArray | null
     while ((match = pascalPattern.exec(input)) !== null) {
       const name = match[0]
@@ -138,7 +138,7 @@ export class EntityExtractor {
     }
 
     // 5. 尝试提取 "X 的 Y 方法" 模式
-    const methodPattern = /([一-龥\w]+)[的\s]+(\w+)[\s]*(?:方法|函数|method|function)/gi
+    const methodPattern = /([\u4e00-\u9fff\w]+)[的\s]+(\w+)[\s]*(?:方法|函数|method|function)/gi
     while ((match = methodPattern.exec(input)) !== null) {
       const className = match[1]
       const methodName = match[2]

@@ -18,6 +18,22 @@ import { extractRoutes } from './route-parser'
 import { extractEntities } from './entity-parser'
 import { buildModules } from './module-builder'
 
+/** 从 package.json 提取统一格式的元数据 */
+function mapPackageJson(
+  pkg: Record<string, unknown> | undefined | null,
+  fallbackName: string,
+) {
+  if (!pkg) return null
+  return {
+    name: (pkg.name as string) ?? fallbackName,
+    description: (pkg.description as string) ?? '',
+    version: (pkg.version as string) ?? '0.0.0',
+    scripts: pkg.scripts as Record<string, string> | undefined,
+    dependencies: Object.keys((pkg.dependencies as Record<string, string>) ?? {}),
+    devDependencies: Object.keys((pkg.devDependencies as Record<string, string>) ?? {}),
+  }
+}
+
 export class ProjectScanner {
   /**
    * 扫描项目目录（主入口）
@@ -47,16 +63,7 @@ export class ProjectScanner {
     const modules = buildModules(
       projectName,
       framework,
-      configs.packageJson
-        ? {
-            name: (configs.packageJson.name as string) ?? projectName,
-            description: (configs.packageJson.description as string) ?? '',
-            version: (configs.packageJson.version as string) ?? '0.0.0',
-            scripts: configs.packageJson.scripts as Record<string, string> | undefined,
-            dependencies: Object.keys((configs.packageJson.dependencies as Record<string, string>) ?? {}),
-            devDependencies: Object.keys((configs.packageJson.devDependencies as Record<string, string>) ?? {}),
-          }
-        : null,
+      mapPackageJson(configs.packageJson, projectName),
       structure,
       fileAnalyses,
       routes,
@@ -67,16 +74,7 @@ export class ProjectScanner {
       projectName,
       projectPath,
       framework,
-      packageJson: configs.packageJson
-        ? {
-            name: (configs.packageJson.name as string) ?? projectName,
-            description: (configs.packageJson.description as string) ?? '',
-            version: (configs.packageJson.version as string) ?? '0.0.0',
-            scripts: configs.packageJson.scripts as Record<string, string> | undefined,
-            dependencies: Object.keys((configs.packageJson.dependencies as Record<string, string>) ?? {}),
-            devDependencies: Object.keys((configs.packageJson.devDependencies as Record<string, string>) ?? {}),
-          }
-        : null,
+      packageJson: mapPackageJson(configs.packageJson, projectName),
       modules,
     }
   }

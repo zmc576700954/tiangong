@@ -140,7 +140,10 @@ export function parseToml(content: string): Record<string, unknown> {
               }
               return s
             })
-          valueStr = arr as unknown as string
+          const target = currentSection ? (result[currentSection] as Record<string, unknown>) : result
+          target[key] = arr
+          i++
+          continue
         } catch {
           // keep raw string
         }

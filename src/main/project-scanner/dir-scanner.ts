@@ -19,6 +19,11 @@ const IGNORED_DIRS = new Set([
   'venv',
 ])
 
+/** 最大扫描深度 */
+const MAX_SCAN_DEPTH = 4
+/** 目录递归深度限制（略小于最大扫描深度，避免过深递归） */
+const MAX_RECURSE_DEPTH = 3
+
 function validateProjectPath(projectPath: string): void {
   const resolved = path.resolve(projectPath)
   const blockedPrefixes = process.platform === 'win32'
@@ -51,7 +56,7 @@ export async function scanDirectory(projectPath: string): Promise<string[]> {
   const visited = new Set<string>()
 
   const scan = async (dir: string, depth: number) => {
-    if (depth > 4) return
+    if (depth > MAX_SCAN_DEPTH) return
 
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true })
@@ -67,7 +72,7 @@ export async function scanDirectory(projectPath: string): Promise<string[]> {
 
         if (entry.isDirectory()) {
           structure.push(relPath + '/')
-          if (depth < 3) {
+          if (depth < MAX_RECURSE_DEPTH) {
             await scan(fullPath, depth + 1)
           }
         } else {

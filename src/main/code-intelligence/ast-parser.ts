@@ -15,6 +15,8 @@ export interface ParseResult {
 
 export class AstParser {
   private compilerOptions: ts.CompilerOptions
+  /** 路径别名映射，如 { '@shared': 'src/shared', '@main': 'src/main' } */
+  private aliasMap: Map<string, string>
 
   constructor(compilerOptions?: ts.CompilerOptions) {
     this.compilerOptions = compilerOptions ?? {
@@ -25,6 +27,18 @@ export class AstParser {
       checkJs: false,
       noEmit: true,
       skipLibCheck: true,
+    }
+    // 从 compilerOptions.paths 提取路径别名映射
+    this.aliasMap = new Map()
+    if (this.compilerOptions.paths && this.compilerOptions.baseUrl) {
+      for (const [alias, targets] of Object.entries(this.compilerOptions.paths)) {
+        if (Array.isArray(targets) && targets.length > 0) {
+          // 将 `@shared/*` 转换为 `@shared`
+          const aliasKey = alias.replace(/\/\*$/, '')
+          const targetDir = targets[0].replace(/\/\*$/, '')
+          this.aliasMap.set(aliasKey, targetDir)
+        }
+      }
     }
   }
 
@@ -166,10 +180,24 @@ export class AstParser {
       }
     }
 
-    // 将相对路径解析为绝对路径（简化版，实际需要基于项目根目录解析）
-    const resolvedPath = moduleSpecifier.startsWith('.')
-      ? new URL(moduleSpecifier, `file://${filePath}`).pathname
-      : moduleSpecifier // 外部模块保留原样
+    // 将相对路径解析为绝对路径，支持路径别名
+    let resolvedPath = moduleSpecifier // 默认保留原样（外部模块）
+    if (moduleSpecifier.startsWith('.')) {
+      resolvedPath = new URL(moduleSpecifier, `file://${filePath}`).pathname
+    } else {
+      // 尝试匹配路径别名（如 @shared/types → src/shared/types）
+      let aliasResolved = false
+      for (const [alias, targetDir] of this.aliasMap) {
+        if (moduleSpecifier.startsWith(alias + '/') || moduleSpecifier === alias) {
+          resolvedPath = moduleSpecifier.replace(alias, targetDir)
+          aliasResolved = true
+          break
+        }
+      }
+      if (!aliasResolved) {
+        resolvedPath = moduleSpecifier
+      }
+    }
 
     const { line } = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart())
 
@@ -218,9 +246,10 @@ export class AstParser {
   }
 
   private extractJsDoc(node: ts.Node): string | undefined {
-    const jsDoc = (node as ts.JSDocContainer & ts.Node).jsDoc
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const jsDoc = (node as any).jsDoc as ts.JSDoc[] | undefined
     if (jsDoc && jsDoc.length > 0) {
-      return jsDoc.map((doc) => doc.getText()).join('\n')
+      return jsDoc.map((doc: ts.JSDoc) => doc.getText()).join('\n')
     }
     return undefined
   }
@@ -230,6 +259,7 @@ export class AstParser {
     if (filePath.endsWith('.jsx')) return ts.ScriptKind.JSX
     if (filePath.endsWith('.ts')) return ts.ScriptKind.TS
     if (filePath.endsWith('.js')) return ts.ScriptKind.JS
-    return ts.ScriptKind.TS
+    if (filePath.endsWith('.json')) return ts.ScriptKind.JSON
+    return ts.ScriptKind.Unknown
   }
 }

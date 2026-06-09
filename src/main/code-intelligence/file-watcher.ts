@@ -27,6 +27,9 @@ export class CodeFileWatcher {
   private watcher?: chokidar.FSWatcher
   private indexer: ProjectIndexer
   private options: FileWatcherOptions
+  /** 防抖定时器：避免短时间内重复触发索引更新 */
+  private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly DEBOUNCE_MS = 300
 
   constructor(options: FileWatcherOptions) {
     this.options = options
@@ -50,7 +53,7 @@ export class CodeFileWatcher {
     })
 
     this.watcher.on('add', async (filePath) => {
-      try {
+      this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
         const result = await this.indexer.reindexFile(absolutePath)
         this.options.onIndexUpdate?.({
@@ -58,13 +61,11 @@ export class CodeFileWatcher {
           filePath: absolutePath,
           symbolsFound: result.symbolsFound,
         })
-      } catch (err) {
-        console.warn(`Failed to index added file ${filePath}:`, err)
-      }
+      })
     })
 
     this.watcher.on('change', async (filePath) => {
-      try {
+      this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
         const result = await this.indexer.reindexFile(absolutePath)
         this.options.onIndexUpdate?.({
@@ -72,24 +73,41 @@ export class CodeFileWatcher {
           filePath: absolutePath,
           symbolsFound: result.symbolsFound,
         })
-      } catch (err) {
-        console.warn(`Failed to reindex changed file ${filePath}:`, err)
-      }
+      })
     })
 
-    this.watcher.on('unlink', async (filePath) => {
-      try {
+    this.watcher.on('unlink', (filePath) => {
+      this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
-        // 从索引中移除
-        await (this.indexer as unknown as { symbolIndex: SymbolIndex }).symbolIndex.clearFile(absolutePath)
+        await this.indexer.clearFileIndex(absolutePath)
         this.options.onIndexUpdate?.({ type: 'unlink', filePath: absolutePath, symbolsFound: 0 })
-      } catch (err) {
-        console.warn(`Failed to remove unlinked file ${filePath} from index:`, err)
-      }
+      })
     })
   }
 
   async stop(): Promise<void> {
+    // 清除所有防抖定时器
+    for (const timer of this.debounceTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.debounceTimers.clear()
     await this.watcher?.close()
+  }
+
+  /** 防抖包装：同一文件的短时间内多次事件只执行最后一次 */
+  private debouncedHandle(filePath: string, handler: () => Promise<void>): void {
+    const existing = this.debounceTimers.get(filePath)
+    if (existing) clearTimeout(existing)
+
+    const timer = setTimeout(async () => {
+      this.debounceTimers.delete(filePath)
+      try {
+        await handler()
+      } catch (err) {
+        console.warn(`File watcher error for ${filePath}:`, err)
+      }
+    }, this.DEBOUNCE_MS)
+
+    this.debounceTimers.set(filePath, timer)
   }
 }

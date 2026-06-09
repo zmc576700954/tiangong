@@ -31,6 +31,10 @@ export const ErrorCode = {
 
   // 配置
   SETTINGS_INVALID_FORMAT: 'SETTINGS_INVALID_FORMAT',
+
+  // Git
+  GIT_NOT_A_REPO: 'GIT_NOT_A_REPO',
+  GIT_OPERATION_FAILED: 'GIT_OPERATION_FAILED',
 } as const
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -105,5 +109,17 @@ export class ScopeGuardError extends BizGraphError {
     super(message, code)
     this.name = 'ScopeGuardError'
     Object.setPrototypeOf(this, ScopeGuardError.prototype)
+  }
+}
+
+/** Git 操作错误 */
+export class GitError extends BizGraphError {
+  readonly repoPath?: string
+
+  constructor(message: string, repoPath?: string, code: ErrorCodeType = ErrorCode.GIT_OPERATION_FAILED) {
+    super(message, code)
+    this.name = 'GitError'
+    this.repoPath = repoPath
+    Object.setPrototypeOf(this, GitError.prototype)
   }
 }

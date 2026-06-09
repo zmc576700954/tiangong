@@ -73,42 +73,56 @@ export class SymbolIndex {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_ref_file ON symbol_refs(file_path)`)
   }
 
-  /** 批量插入符号 */
+  /** 批量插入符号（使用 SAVEPOINT 事务包裹提升性能） */
   async insertSymbols(symbols: SymbolInfo[]): Promise<void> {
     if (symbols.length === 0) return
     const db = this.db()
 
-    for (const s of symbols) {
-      await db.execute({
-        sql: `
-          INSERT OR REPLACE INTO symbols
-          (id, name, kind, file_path, line, column, end_line, end_column, signature, js_doc, parent_id, is_exported, source_code)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        args: [
-          s.id, s.name, s.kind, s.filePath, s.line, s.column,
-          s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
-          s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
-          s.sourceCode ?? null,
-        ],
-      })
+    await db.execute('SAVEPOINT insert_symbols')
+    try {
+      for (const s of symbols) {
+        await db.execute({
+          sql: `
+            INSERT OR REPLACE INTO symbols
+            (id, name, kind, file_path, line, column, end_line, end_column, signature, js_doc, parent_id, is_exported, source_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          args: [
+            s.id, s.name, s.kind, s.filePath, s.line, s.column,
+            s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
+            s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
+            s.sourceCode ?? null,
+          ],
+        })
+      }
+      await db.execute('RELEASE SAVEPOINT insert_symbols')
+    } catch (err) {
+      await db.execute('ROLLBACK TO SAVEPOINT insert_symbols')
+      throw err
     }
   }
 
-  /** 批量插入 import 边 */
+  /** 批量插入 import 边（使用 SAVEPOINT 事务包裹提升性能） */
   async insertImportEdges(edges: ImportEdge[]): Promise<void> {
     if (edges.length === 0) return
     const db = this.db()
 
-    for (const e of edges) {
-      await db.execute({
-        sql: `
-          INSERT OR REPLACE INTO import_edges
-          (from_file, to_file, imported_names, is_default, line)
-          VALUES (?, ?, ?, ?, ?)
-        `,
-        args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line],
-      })
+    await db.execute('SAVEPOINT insert_edges')
+    try {
+      for (const e of edges) {
+        await db.execute({
+          sql: `
+            INSERT OR REPLACE INTO import_edges
+            (from_file, to_file, imported_names, is_default, line)
+            VALUES (?, ?, ?, ?, ?)
+          `,
+          args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line],
+        })
+      }
+      await db.execute('RELEASE SAVEPOINT insert_edges')
+    } catch (err) {
+      await db.execute('ROLLBACK TO SAVEPOINT insert_edges')
+      throw err
     }
   }
 

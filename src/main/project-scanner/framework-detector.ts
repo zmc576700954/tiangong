@@ -119,7 +119,13 @@ function detectNodeFramework(pkg: Record<string, unknown>): string {
   if (deps['remix'] || deps['@remix-run/react']) return 'Remix'
   if (deps['sveltekit'] || deps['@sveltejs/kit']) return 'SvelteKit'
   if (deps['astro']) return 'Astro'
-  if (deps['electron']) return 'Electron + React'
+  if (deps['electron']) {
+    if (deps['vue']) return 'Electron + Vue'
+    if (deps['@angular/core']) return 'Electron + Angular'
+    if (deps['svelte']) return 'Electron + Svelte'
+    if (deps['react']) return 'Electron + React'
+    return 'Electron'
+  }
   if (deps['react'] && deps['react-dom']) {
     if (deps['react-native']) return 'React Native'
     if (deps['expo']) return 'Expo'
@@ -144,16 +150,12 @@ function detectNodeFramework(pkg: Record<string, unknown>): string {
 }
 
 function detectByDirectory(configs: ProjectConfigs): string {
-  const pkg = configs.packageJson
-  if (!pkg) return 'Generic'
-
-  const names = Object.keys(pkg).filter((k) => k !== 'dependencies' && k !== 'devDependencies')
-  if (names.includes('Cargo.toml')) return 'Rust'
-  if (names.includes('go.mod')) return 'Go'
-  if (names.some((n) => n.endsWith('.csproj'))) return '.NET / C#'
-  if (names.some((n) => n.endsWith('.sln'))) return '.NET / C#'
-  if (names.includes('mix.exs')) return 'Elixir'
-  if (names.includes('rebar.config')) return 'Erlang'
-  if (names.includes('Package.swift')) return 'Swift'
+  // 通过配置文件的存在性推断语言框架
+  if (configs.cargoToml) return 'Rust'
+  if (configs.goMod) return 'Go'
+  if (configs.gemfile) return 'Ruby'
+  if (configs.composerJson) return 'PHP'
+  if (configs.pyprojectToml || configs.requirementsTxt) return 'Python'
+  if (configs.pomXml || configs.gradleBuild) return 'Java'
   return 'Generic'
 }

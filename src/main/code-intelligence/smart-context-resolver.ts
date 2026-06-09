@@ -4,7 +4,7 @@
  */
 
 import * as path from 'node:path'
-import * as fs from 'node:fs'
+import { readFile as readFs } from 'node:fs/promises'
 import type { SymbolInfo, SymbolQueryResult, GraphNode } from '@shared/types'
 import { SymbolIndex } from './symbol-index'
 import { EntityExtractor, type ExtractionResult } from './entity-extractor'
@@ -146,7 +146,7 @@ export class SmartContextResolver {
         processedFiles.add(filePath)
 
         // 读取文件内容（智能截断，优先读取导出符号）
-        const content = this.readFileWithSmartTruncation(filePath, projectPath)
+        const content = await this.readFileWithSmartTruncation(filePath, projectPath)
 
         // 从相关文件中提取高价值符号（导出的类/接口/函数）
         const fileSymbols = (await this.symbolIndex.getSymbolsByFile(filePath))
@@ -175,11 +175,10 @@ export class SmartContextResolver {
     return { relatedSymbols, relatedFiles }
   }
 
-  private readFileWithSmartTruncation(filePath: string, projectPath: string): string {
+  private async readFileWithSmartTruncation(filePath: string, projectPath: string): Promise<string> {
     try {
       const fullPath = filePath.startsWith('/') ? filePath : path.join(projectPath, filePath)
-      if (!fs.existsSync(fullPath)) return ''
-      const content = fs.readFileSync(fullPath, 'utf-8')
+      const content = await readFs(fullPath, 'utf-8')
 
       // 策略：如果文件不大，返回全部；如果很大，优先返回导出符号的定义部分
       if (content.length < 8000) return content

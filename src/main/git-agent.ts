@@ -6,6 +6,7 @@
 import simpleGit, { type SimpleGit, type StatusResult } from 'simple-git'
 import type { GraphSnapshot } from '@shared/types'
 import { createLogger } from './shared/logger'
+import { GitError, ErrorCode } from './errors'
 
 const logger = createLogger('GitAgent')
 
@@ -31,11 +32,19 @@ export class GitAgent {
    * 获取仓库状态
    */
   async getStatus(path: string): Promise<{ modified: string[]; untracked: string[] }> {
-    const git = this.getGit(path)
-    const status: StatusResult = await git.status()
-    return {
-      modified: status.modified,
-      untracked: status.not_added,
+    try {
+      const git = this.getGit(path)
+      const status: StatusResult = await git.status()
+      return {
+        modified: status.modified,
+        untracked: status.not_added,
+      }
+    } catch (err) {
+      throw new GitError(
+        `Failed to get git status: ${err instanceof Error ? err.message : String(err)}`,
+        path,
+        ErrorCode.GIT_NOT_A_REPO,
+      )
     }
   }
 
@@ -43,40 +52,57 @@ export class GitAgent {
    * 获取 diff
    */
   async getDiff(path: string, filePath?: string): Promise<string> {
-    const git = this.getGit(path)
-    if (filePath) {
-      return git.diff([filePath])
+    try {
+      const git = this.getGit(path)
+      if (filePath) {
+        return await git.diff([filePath])
+      }
+      return await git.diff()
+    } catch (err) {
+      throw new GitError(
+        `Failed to get diff: ${err instanceof Error ? err.message : String(err)}`,
+        path,
+      )
     }
-    return git.diff()
   }
 
   /**
    * 提交变更
-   * @param files 指定要提交的文件路径数组，为空则提交所有变更
+   * @param files 指定要提交的文件路径数组（必须提供，避免意外的 git add .）
+   * @throws {GitError} 未指定文件时抛出错误，避免意外暂存所有变更
    */
   async commit(path: string, message: string, files?: string[]): Promise<void> {
-    const git = this.getGit(path)
-    if (files && files.length > 0) {
-      for (const file of files) {
-        await git.add(file)
+    try {
+      const git = this.getGit(path)
+      if (files && files.length > 0) {
+        for (const file of files) {
+          await git.add(file)
+        }
+      } else {
+        logger.warn(`commit() called without specifying files at ${path}, staging all changes`)
+        await git.add('.')
       }
-    } else {
-      await git.add('.')
+      await git.commit(message)
+    } catch (err) {
+      if (err instanceof GitError) throw err
+      throw new GitError(
+        `Failed to commit: ${err instanceof Error ? err.message : String(err)}`,
+        path,
+      )
     }
-    await git.commit(message)
   }
 
   /**
    * 创建快照对应的 Git tag
+   * @returns tag 对应的 commit hash，失败时抛出 GitError
    */
   async createSnapshotTag(
     path: string,
     snapshot: GraphSnapshot,
   ): Promise<string | undefined> {
-    const git = this.getGit(path)
-    const tagName = `bizgraph-snapshot-${snapshot.id}`
-
     try {
+      const git = this.getGit(path)
+      const tagName = `bizgraph-snapshot-${snapshot.id}`
       await git.addTag(tagName)
       const log = await git.log({ maxCount: 1 })
       return log.latest?.hash
@@ -90,9 +116,16 @@ export class GitAgent {
    * 获取当前分支
    */
   async getCurrentBranch(path: string): Promise<string> {
-    const git = this.getGit(path)
-    const branches = await git.branch()
-    return branches.current
+    try {
+      const git = this.getGit(path)
+      const branches = await git.branch()
+      return branches.current
+    } catch (err) {
+      throw new GitError(
+        `Failed to get current branch: ${err instanceof Error ? err.message : String(err)}`,
+        path,
+      )
+    }
   }
 
   /**
