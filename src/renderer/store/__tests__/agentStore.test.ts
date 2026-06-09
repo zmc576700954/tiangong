@@ -4,7 +4,7 @@ import { useGraphStore } from '../graphStore'
 
 vi.stubGlobal('window', {
   electronAPI: {
-    'agent:startSession': vi.fn().mockResolvedValue({ sessionId: 's1' }),
+    'agent:startSession': vi.fn().mockResolvedValue({ sessionId: 's1', adapterUsed: 'claude-code', fallbackHistory: [{ adapter: 'claude-code', reason: '', success: true }] }),
     'agent:sendCommand': vi.fn().mockResolvedValue(undefined),
     'agent:resolveAndSendCommand': vi.fn().mockResolvedValue(undefined),
     'agent:listAdapters': vi.fn().mockResolvedValue([]),
@@ -18,6 +18,8 @@ vi.stubGlobal('window', {
     'message:list': vi.fn().mockResolvedValue([]),
     'message:save': vi.fn().mockResolvedValue(undefined),
     'message:saveBatch': vi.fn().mockResolvedValue(undefined),
+    'settings:getAdapterPreferences': vi.fn().mockResolvedValue({ defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }),
+    'settings:setAdapterPreferences': vi.fn().mockResolvedValue(undefined),
     onAgentOutput: vi.fn(),
     onSessionStarted: vi.fn(),
   },
@@ -28,8 +30,10 @@ describe('agentStore threads', () => {
     useAgentStore.setState({
       threads: [],
       currentThreadId: null,
-      threadOutputs: new Map(),
+      threadOutputs: {},
       adapters: [],
+      lastFallbackHistory: [],
+      adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
     })
     // 设置一个带 projectPath 的图，使 sendMessage 的 fallback config 有效
     useGraphStore.setState({
@@ -286,7 +290,7 @@ describe('agentStore threads', () => {
   })
 
   it('sendMessage records sessionId on thread after successful start', async () => {
-    vi.mocked(window.electronAPI['agent:startSession']).mockResolvedValueOnce({ sessionId: 'sess-abc' })
+    vi.mocked(window.electronAPI['agent:startSession']).mockResolvedValueOnce({ sessionId: 'sess-abc', adapterUsed: 'claude-code', fallbackHistory: [{ adapter: 'claude-code', reason: '', success: true }] })
     const threadId = useAgentStore.getState().createThread('claude-code')
     await useAgentStore.getState().sendMessage(threadId, 'Hello')
     const thread = useAgentStore.getState().threads.find((t) => t.id === threadId)!
@@ -306,5 +310,15 @@ describe('agentStore threads', () => {
     expect(errMsg.status).toBe('error')
     expect(errMsg.error?.code).toBe('SESSION_START_FAILED')
     expect(errMsg.error?.raw).toContain('ENOENT')
+  })
+
+  it('sendMessage with auto adapter passes null to startSession', async () => {
+    vi.mocked(window.electronAPI['agent:startSession']).mockResolvedValueOnce({ sessionId: 'sess-auto', adapterUsed: 'mcp', fallback: true, fallbackHistory: [{ adapter: 'claude-code', reason: 'claude-code not installed', success: false }, { adapter: 'mcp', reason: '', success: true }] })
+    const threadId = useAgentStore.getState().createThread('auto')
+    await useAgentStore.getState().sendMessage(threadId, 'Hello')
+    // Verify startSession was called with null (auto mode)
+    expect(window.electronAPI['agent:startSession']).toHaveBeenCalledWith(null, expect.anything())
+    // Verify fallback history was recorded
+    expect(useAgentStore.getState().lastFallbackHistory).toHaveLength(2)
   })
 })

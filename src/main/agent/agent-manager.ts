@@ -20,7 +20,8 @@ import type {
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
-import { AdapterError, SessionNotFoundError, ScopeGuardError } from '../errors'
+import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError } from '../errors'
+import { ErrorCode } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
@@ -48,6 +49,8 @@ export interface StartSessionResult {
 }
 
 export class AgentManager {
+  /** 最大并发会话数，防止会话无限创建导致资源泄漏 */
+  private readonly MAX_SESSIONS = 100
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
@@ -62,6 +65,8 @@ export class AgentManager {
   private sessionOutputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   /** sessionId → broadcastName 映射（由 startSession 设置，与 broadcaster 的广播名一致） */
   private sessionBroadcastNames = new Map<string, string>()
+  /** sessionId → 该会话注册的输出监听 handler 集合（用于 cleanupSessionResources 自动清理） */
+  private sessionOutputListenerIndex = new Map<string, Set<(output: AgentOutput) => void>>()
   /** 适配器偏好加载器（延迟注入，避免循环依赖） */
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
 
@@ -130,7 +135,7 @@ export class AgentManager {
   }
 
   /**
-   * 清理指定 session 的所有资源（沙箱、路由、广播名等）
+   * 清理指定 session 的所有资源（沙箱、路由、广播名、输出监听器等）
    */
   private cleanupSessionResources(sessionId: string): void {
     const state = this.sessionStates.get(sessionId)
@@ -142,9 +147,35 @@ export class AgentManager {
       })
     }
 
+    // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
+    const listeners = this.sessionOutputListenerIndex.get(sessionId)
+    if (listeners) {
+      for (const handler of listeners) {
+        const wrapped = this.sessionOutputListeners.get(handler)
+        if (wrapped) {
+          this.broadcaster.offBroadcast(wrapped)
+          this.sessionOutputListeners.delete(handler)
+        }
+      }
+      this.sessionOutputListenerIndex.delete(sessionId)
+    }
+
     this.sessionStates.delete(sessionId)
     this.sessionBroadcastNames.delete(sessionId)
     this.router.unbind(sessionId)
+  }
+
+  /**
+   * 输出诊断日志，用于监控内存使用情况
+   * 可在 destroy() 前或定时调用
+   */
+  logDiagnostics(): void {
+    logger.info('AgentManager diagnostics', {
+      activeSessions: this.sessionStates.size,
+      outputHandlers: this.outputHandlers.size,
+      sessionBroadcastNames: this.sessionBroadcastNames.size,
+      sessionOutputListenerIndex: this.sessionOutputListenerIndex.size,
+    })
   }
 
   /**
@@ -174,6 +205,9 @@ export class AgentManager {
       this.broadcaster.offBroadcast(wrapped)
     }
     this.sessionOutputListeners.clear()
+    this.sessionOutputListenerIndex.clear()
+    // 清理 ScopeGuard 所有定时器和 watcher
+    this.scopeGuard.destroy()
   }
 
   /**
@@ -213,6 +247,13 @@ export class AgentManager {
     return this.sessionStates.get(sessionId)?.sandbox
   }
 
+  /**
+   * 获取所有活跃会话 ID
+   */
+  getActiveSessionIds(): string[] {
+    return this.router.getActiveSessionIds()
+  }
+
   get scopeGuardInstance(): import('../scope-guard').ScopeGuard {
     return this.scopeGuard
   }
@@ -249,6 +290,12 @@ export class AgentManager {
     })
 
     const fallbackHistory: AdapterFallbackAttempt[] = []
+
+    // 检查会话上限，防止无限创建
+    if (this.sessionStates.size >= this.MAX_SESSIONS) {
+      logger.error(`Maximum session limit (${this.MAX_SESSIONS}) reached, cannot create new session`)
+      throw new AgentError('Maximum concurrent sessions exceeded', ErrorCode.AGENT_SESSION_LIMIT)
+    }
 
     for (const candidate of uniqueChain) {
       const adapter = this.registry.get(candidate)
@@ -307,7 +354,7 @@ export class AgentManager {
 
         return {
           sessionId: session.id,
-          fallback: isFallback,
+          fallback: isFallback || undefined,
           adapterUsed: candidate,
           fallbackHistory,
         }
@@ -550,6 +597,13 @@ export class AgentManager {
       }
     }
     this.sessionOutputListeners.set(handler, wrapped)
+    // 记录 handler → sessionId 映射，以便 cleanupSessionResources 时自动清理
+    let indexSet = this.sessionOutputListenerIndex.get(sessionId)
+    if (!indexSet) {
+      indexSet = new Set()
+      this.sessionOutputListenerIndex.set(sessionId, indexSet)
+    }
+    indexSet.add(handler)
     this.broadcaster.onBroadcast(wrapped)
   }
 
@@ -561,6 +615,13 @@ export class AgentManager {
     if (wrapped) {
       this.broadcaster.offBroadcast(wrapped)
       this.sessionOutputListeners.delete(handler)
+      // 同步清理 sessionOutputListenerIndex 中的引用
+      for (const [, handlers] of this.sessionOutputListenerIndex) {
+        if (handlers.delete(handler) && handlers.size === 0) {
+          // Set 为空时保留条目无意义，但 sessionId 可能后续还会 addSessionOutputListener，
+          // 因此不主动 delete 整个 Set，避免频繁创建/销毁
+        }
+      }
     }
   }
 }

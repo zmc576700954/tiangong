@@ -14,11 +14,14 @@
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import { createLogger } from '../shared/logger'
 import { runClaude } from '../mindmap-agent/claude-runner'
 
 export class MindMapAdapter extends BaseAdapter {
   readonly name = 'mindmap-internal'
   readonly version = '1.0.0'
+
+  protected logger = createLogger('MindMapAdapter')
 
   async checkInstalled(): Promise<boolean> {
     try {
@@ -31,6 +34,7 @@ export class MindMapAdapter extends BaseAdapter {
       })
       return result.status === 0
     } catch {
+      this.logger.warn('claude CLI not found')
       return false
     }
   }

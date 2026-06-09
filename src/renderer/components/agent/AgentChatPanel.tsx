@@ -60,8 +60,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const projectPath = currentGraph?.projectPath
 
   const rawOutputs = useMemo(
-    () => (currentThread ? (threadOutputs.get(currentThread.id) ?? []) : []),
-    [currentThread, threadOutputs],
+    () => (currentThread ? (threadOutputs[currentThread.id] ?? []) : []),
+    [currentThread?.id, threadOutputs],
   )
 
   // Hooks for separated concerns

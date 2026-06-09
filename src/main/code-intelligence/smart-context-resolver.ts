@@ -1,6 +1,10 @@
 /**
  * 智能上下文解析器
  * 从用户查询出发，通过符号索引和依赖图找到最相关的代码上下文
+ *
+ * 优化策略：
+ * - TTL 缓存：5秒内相同请求直接返回缓存结果
+ * - 并行化：同类型实体并行查询、依赖图批量并行扩展、导入关系并行获取
  */
 
 import * as path from 'node:path'
@@ -31,6 +35,12 @@ export interface ResolvedCodeContext {
   summary: string // 上下文摘要
 }
 
+/** 缓存条目 */
+interface CacheEntry {
+  timestamp: number
+  result: ResolvedCodeContext
+}
+
 /**
  * 智能上下文解析器
  * 从用户查询出发，通过符号索引和依赖图找到最相关的代码上下文
@@ -38,6 +48,11 @@ export interface ResolvedCodeContext {
 export class SmartContextResolver {
   private symbolIndex: SymbolIndex
   private entityExtractor: EntityExtractor
+
+  /** 带 TTL 的上下文缓存（Map 保持插入顺序，用于 LRU 淘汰） */
+  private contextCache = new Map<string, CacheEntry>()
+  private readonly CACHE_TTL = 5000 // 5秒缓存
+  private readonly MAX_CACHE_SIZE = 50 // 最大缓存条目数
 
   constructor(symbolIndex: SymbolIndex) {
     this.symbolIndex = symbolIndex
@@ -48,15 +63,22 @@ export class SmartContextResolver {
    * 解析用户查询，返回智能组装的代码上下文
    */
   async resolve(options: SmartContextOptions): Promise<ResolvedCodeContext> {
+    // 缓存检查
+    const cacheKey = this.buildCacheKey(options)
+    const cached = this.contextCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      return cached.result
+    }
+
     const extraction = this.entityExtractor.extract(options.userQuery)
     const maxSymbols = options.maxSymbols ?? 20
     const maxFiles = options.maxFiles ?? 10
     const depth = options.dependencyDepth ?? 2
 
-    // 阶段 1: 基于提取的实体查找符号
+    // 阶段 1: 基于提取的实体查找符号（内部并行化）
     const primarySymbols = await this.findSymbolsFromEntities(extraction, maxSymbols)
 
-    // 阶段 2: 沿依赖图扩展
+    // 阶段 2: 沿依赖图扩展（内部并行化）
     const { relatedSymbols, relatedFiles } = await this.expandByDependencyGraph(
       primarySymbols,
       maxSymbols - primarySymbols.length,
@@ -65,14 +87,52 @@ export class SmartContextResolver {
       options.projectPath
     )
 
-    // 阶段 3: 构建依赖图摘要
-    const importGraph = await this.buildImportGraphSnippet(primarySymbols, relatedSymbols)
+    // 阶段 3 + 阶段 4 互相独立，并行执行
+    const [importGraph, summary] = await Promise.all([
+      this.buildImportGraphSnippet(primarySymbols, relatedSymbols),
+      Promise.resolve(this.buildContextSummary(extraction, primarySymbols, relatedSymbols)),
+    ])
 
-    // 阶段 4: 生成上下文摘要
-    const summary = this.buildContextSummary(extraction, primarySymbols, relatedSymbols)
+    const result: ResolvedCodeContext = { primarySymbols, relatedSymbols, relatedFiles, importGraph, summary }
 
-    return { primarySymbols, relatedSymbols, relatedFiles, importGraph, summary }
+    // 写入缓存
+    this.setCache(cacheKey, result)
+
+    return result
   }
+
+  // ─── 缓存相关方法 ───────────────────────────────────────
+
+  private buildCacheKey(options: SmartContextOptions): string {
+    return JSON.stringify({ query: options.userQuery, scope: options.projectPath, nodes: options.nodes?.map((n) => n.id) })
+  }
+
+  private setCache(key: string, result: ResolvedCodeContext): void {
+    // 先清理过期条目
+    if (this.contextCache.size >= this.MAX_CACHE_SIZE) {
+      this.evictExpiredEntries()
+      // 如果清理后仍然满，按 LRU（插入序）淘汰最旧条目
+      if (this.contextCache.size >= this.MAX_CACHE_SIZE) {
+        const oldestKey = this.contextCache.keys().next().value
+        if (oldestKey !== undefined) {
+          this.contextCache.delete(oldestKey)
+        }
+      }
+    }
+    this.contextCache.set(key, { timestamp: Date.now(), result })
+  }
+
+  /** 清理所有过期缓存条目 */
+  private evictExpiredEntries(): void {
+    const now = Date.now()
+    for (const [key, entry] of this.contextCache) {
+      if (now - entry.timestamp >= this.CACHE_TTL) {
+        this.contextCache.delete(key)
+      }
+    }
+  }
+
+  // ─── 阶段 1: 符号查找（同类型实体并行查询） ─────────────
 
   private async findSymbolsFromEntities(extraction: ExtractionResult, limit: number): Promise<SymbolQueryResult[]> {
     const results: SymbolQueryResult[] = []
@@ -84,42 +144,52 @@ export class SmartContextResolver {
     ]
 
     for (const type of priorityOrder) {
-      const entitiesOfType = extraction.entities.filter((e) => e.type === type)
-      for (const entity of entitiesOfType) {
-        if (results.length >= limit) break
+      if (results.length >= limit) break
 
-        if (type === 'file') {
-          // 文件路径类型的实体：获取该文件的所有导出符号
-          const fileSymbols = (await this.symbolIndex.getSymbolsByFile(entity.name))
-            .filter((s) => s.isExported)
-            .map((s) => ({ symbol: s, score: entity.confidence, matchedBy: 'path' as const }))
-          for (const fs of fileSymbols) {
-            if (!seen.has(fs.symbol.id)) {
-              seen.add(fs.symbol.id)
-              results.push(fs)
-            }
+      const entitiesOfType = extraction.entities.filter((e) => e.type === type)
+      if (entitiesOfType.length === 0) continue
+
+      // 同一类型内的实体并行查询，减少串行等待
+      const queryResults = await Promise.all(
+        entitiesOfType.map((entity) => {
+          if (type === 'file') {
+            // 文件路径类型的实体：获取该文件的所有导出符号
+            return this.symbolIndex.getSymbolsByFile(entity.name)
+              .then((symbols) => symbols
+                .filter((s) => s.isExported)
+                .map((s) => ({ symbol: s, score: entity.confidence, matchedBy: 'path' as const }))
+              )
+          } else {
+            // 其他类型：按名称查询符号
+            const kind =
+              type === 'method' ? 'method'
+              : type === 'function' ? 'function'
+              : type === 'interface' ? 'interface'
+              : type === 'class' ? 'class'
+              : undefined
+            return this.symbolIndex.querySymbols(entity.name, { kind, limit: 5 })
+              .then((found) => found.map((f) => ({ ...f, score: f.score * entity.confidence })))
           }
-        } else {
-          // 其他类型：按名称查询符号
-          const kind =
-            type === 'method' ? 'method'
-            : type === 'function' ? 'function'
-            : type === 'interface' ? 'interface'
-            : type === 'class' ? 'class'
-            : undefined
-          const found = await this.symbolIndex.querySymbols(entity.name, { kind, limit: 5 })
-          for (const f of found) {
-            if (!seen.has(f.symbol.id)) {
-              seen.add(f.symbol.id)
-              results.push({ ...f, score: f.score * entity.confidence })
-            }
+        })
+      )
+
+      // 合并结果，去重
+      for (const entityResults of queryResults) {
+        for (const r of entityResults) {
+          if (results.length >= limit) break
+          if (!seen.has(r.symbol.id)) {
+            seen.add(r.symbol.id)
+            results.push(r)
           }
         }
+        if (results.length >= limit) break
       }
     }
 
     return results.sort((a, b) => b.score - a.score)
   }
+
+  // ─── 阶段 2: 依赖图扩展（批量并行） ────────────────────
 
   private async expandByDependencyGraph(
     primarySymbols: SymbolQueryResult[],
@@ -133,47 +203,77 @@ export class SmartContextResolver {
     const processedFiles = new Set<string>()
     const seenSymbolIds = new Set(primarySymbols.map((s) => s.symbol.id))
 
-    for (const primary of primarySymbols) {
-      if (processedFiles.has(primary.symbol.filePath)) continue
-      processedFiles.add(primary.symbol.filePath)
+    // 收集主符号的唯一文件路径
+    const uniqueFiles = [...new Set(primarySymbols.map((s) => s.symbol.filePath))]
+    // 先将所有主文件标记为已处理，避免重复
+    for (const f of uniqueFiles) {
+      processedFiles.add(f)
+    }
 
-      // 获取依赖图中的相关文件
-      const relatedFilePaths = await this.symbolIndex.getRelatedFiles(primary.symbol.filePath, depth)
+    // 批量并行获取所有主文件的相关文件
+    const relatedFilesMaps = await Promise.all(
+      uniqueFiles.map(async (filePath) => ({
+        filePath,
+        related: await this.symbolIndex.getRelatedFiles(filePath, depth),
+      }))
+    )
 
-      for (const [filePath, distance] of relatedFilePaths.entries()) {
-        if (processedFiles.size >= fileLimit) break
-        if (processedFiles.has(filePath)) continue
-        processedFiles.add(filePath)
-
-        // 读取文件内容（智能截断，优先读取导出符号）
-        const content = await this.readFileWithSmartTruncation(filePath, projectPath)
-
-        // 从相关文件中提取高价值符号（导出的类/接口/函数）
-        const fileSymbols = (await this.symbolIndex.getSymbolsByFile(filePath))
-          .filter((s) => s.isExported && !seenSymbolIds.has(s.id))
-          .slice(0, 3) // 每个相关文件最多取 3 个导出符号
-
-        for (const s of fileSymbols) {
-          if (relatedSymbols.length >= symbolLimit) break
-          seenSymbolIds.add(s.id)
-          relatedSymbols.push({
-            symbol: s,
-            score: Math.max(0.3, 1 - distance * 0.3), // 距离越远得分越低
-            matchedBy: distance === 1 ? 'exact' : 'fuzzy',
-          })
+    // 合并去重相关文件，按距离排序（近优先）
+    const allRelatedEntries: Array<{ filePath: string; distance: number; primaryFilePath: string }> = []
+    for (const { filePath: primaryFilePath, related } of relatedFilesMaps) {
+      for (const [filePath, distance] of related.entries()) {
+        if (!processedFiles.has(filePath)) {
+          allRelatedEntries.push({ filePath, distance, primaryFilePath })
         }
+      }
+    }
+    allRelatedEntries.sort((a, b) => a.distance - b.distance)
 
-        relatedFiles.push({
-          filePath,
-          distance,
-          reason: `被 ${path.basename(primary.symbol.filePath)} ${distance === 1 ? '直接' : '间接'}引用`,
-          content,
+    // 取前 fileLimit 个相关文件
+    const selectedEntries = allRelatedEntries.slice(0, fileLimit)
+    for (const entry of selectedEntries) {
+      processedFiles.add(entry.filePath)
+    }
+
+    // 并行读取文件内容 + 提取符号
+    const fileResults = await Promise.all(
+      selectedEntries.map(async (entry) => {
+        const [content, fileSymbols] = await Promise.all([
+          this.readFileWithSmartTruncation(entry.filePath, projectPath),
+          this.symbolIndex.getSymbolsByFile(entry.filePath),
+        ])
+        return { ...entry, content, fileSymbols }
+      })
+    )
+
+    // 顺序处理结果以保持语义一致
+    for (const entry of fileResults) {
+      const exportedSymbols = entry.fileSymbols
+        .filter((s) => s.isExported && !seenSymbolIds.has(s.id))
+        .slice(0, 3) // 每个相关文件最多取 3 个导出符号
+
+      for (const s of exportedSymbols) {
+        if (relatedSymbols.length >= symbolLimit) break
+        seenSymbolIds.add(s.id)
+        relatedSymbols.push({
+          symbol: s,
+          score: Math.max(0.3, 1 - entry.distance * 0.3), // 距离越远得分越低
+          matchedBy: entry.distance === 1 ? 'exact' : 'fuzzy',
         })
       }
+
+      relatedFiles.push({
+        filePath: entry.filePath,
+        distance: entry.distance,
+        reason: `被 ${path.basename(entry.primaryFilePath)} ${entry.distance === 1 ? '直接' : '间接'}引用`,
+        content: entry.content,
+      })
     }
 
     return { relatedSymbols, relatedFiles }
   }
+
+  // ─── 文件读取（智能截断） ──────────────────────────────
 
   private async readFileWithSmartTruncation(filePath: string, projectPath: string): Promise<string> {
     try {
@@ -230,17 +330,26 @@ export class SmartContextResolver {
     }
   }
 
+  // ─── 阶段 3: 依赖图摘要（并行获取导入关系） ────────────
+
   private async buildImportGraphSnippet(
     primarySymbols: SymbolQueryResult[],
     relatedSymbols: SymbolQueryResult[]
   ): Promise<Array<{ from: string; to: string }>> {
     const edges = new Set<string>()
-    const allFiles = new Set([...primarySymbols, ...relatedSymbols].map((s) => s.symbol.filePath))
+    const allFiles = [...new Set([...primarySymbols, ...relatedSymbols].map((s) => s.symbol.filePath))]
 
-    for (const file of allFiles) {
-      const imports = await this.symbolIndex.getImports(file)
+    // 并行获取所有文件的导入关系
+    const importResults = await Promise.all(
+      allFiles.map(async (file) => ({
+        file,
+        imports: await this.symbolIndex.getImports(file),
+      }))
+    )
+
+    for (const { imports } of importResults) {
       for (const imp of imports) {
-        if (allFiles.has(imp.toFile)) {
+        if (allFiles.includes(imp.toFile)) {
           edges.add(`${imp.fromFile} -> ${imp.toFile}`)
         }
       }
@@ -251,6 +360,8 @@ export class SmartContextResolver {
       return { from: path.basename(from), to: path.basename(to) }
     })
   }
+
+  // ─── 阶段 4: 上下文摘要 ───────────────────────────────
 
   private buildContextSummary(
     extraction: ExtractionResult,

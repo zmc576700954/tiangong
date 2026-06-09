@@ -8,6 +8,9 @@ import { VerificationService } from '../agent/verification-service'
 import { AgentLogRepository } from '../repositories/agent-log-repository'
 import type { TypedHandle } from './utils'
 import { AgentError, ErrorCode } from '../errors'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('AgentIPC')
 
 export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle, agentLogRepo?: AgentLogRepository): void {
   const verificationService = new VerificationService()
@@ -79,7 +82,9 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
           type: 'implement',
           description: prompt,
           targetNodeId: nodeId,
-        }).catch(() => {
+        }).catch((err) => {
+          const reason = err instanceof Error ? err.message : String(err)
+          logger.warn(`Verification sendCommand failed for session ${sessionId}: ${reason}`)
           agentManager.removeSessionOutputListener(handler)
           resolve(collected)
         })
@@ -104,8 +109,10 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
       // Always terminate the verification session to prevent resource leaks
       try {
         await agentManager.terminateSession(sessionId)
-      } catch {
+      } catch (err) {
         // Session may already be terminated
+        const reason = err instanceof Error ? err.message : String(err)
+        logger.warn(`Failed to terminate verification session ${sessionId}: ${reason}`)
       }
     }
   })
@@ -119,5 +126,22 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
   typedHandle('agent:getLogsByGraph', async (_, graphId: string) => {
     if (!agentLogRepo) return []
     return agentLogRepo.listByGraph(graphId)
+  })
+
+  // ---------- 批量关闭会话 ----------
+  typedHandle('agent:closeAllSessions', async () => {
+    const errors: Array<{ sessionId: string; error: string }> = []
+    for (const sessionId of agentManager.getActiveSessionIds()) {
+      try {
+        await agentManager.terminateSession(sessionId)
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        logger.warn(`Failed to terminate session ${sessionId}: ${reason}`)
+        errors.push({ sessionId, error: reason })
+      }
+    }
+    if (errors.length > 0) {
+      logger.error(`${errors.length} sessions failed to close`, errors)
+    }
   })
 }

@@ -10,6 +10,7 @@ import { promisify } from 'node:util'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import { createLogger } from '../shared/logger'
 
 const execFileAsync = promisify(execFile)
 
@@ -17,11 +18,14 @@ export class CursorAdapter extends BaseAdapter {
   readonly name = 'cursor'
   readonly version = '1.0.0'
 
+  protected logger = createLogger('CursorAdapter')
+
   async checkInstalled(): Promise<boolean> {
     try {
       await execFileAsync('cursor', ['agent', '--version'])
       return true
     } catch {
+      this.logger.warn('cursor CLI not found')
       return false
     }
   }

@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import {
   Trash2,
-  Plus,
   X,
   ArrowRight,
   GitBranch,

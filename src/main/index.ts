@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerIpcHandlers, agentManager } from './ipc-handlers'
 import { initDatabase, closeDatabase } from './database'
+import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
 
 const logger = createLogger('Main')
@@ -244,6 +245,8 @@ app.on('before-quit', async (event) => {
         logger.error('Failed to terminate sessions:', err)
       }
       agentManager.destroy()
+      // 停止 IPC 频率限制清理定时器
+      stopCleanup()
       try {
         await closeDatabase()
       } catch (err) {

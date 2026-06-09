@@ -40,8 +40,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected sessionCleanups = new Map<string, () => void>()
   protected protocolHandlers = new Map<string, JsonProtocolHandler>()
   protected logger = createLogger('BaseAdapter')
+  /** outputSessionMap 最大条目数，防止极端场景下内存无限增长 */
+  private readonly MAX_OUTPUT_MAP_SIZE = 10000
   /** 输出到 session 的映射（用于 AgentManager 精准广播） */
-  private outputSessionMap = new WeakMap<AgentOutput, string>()
+  private outputSessionMap = new Map<AgentOutput, string>()
   /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
   private outputSessionStack: string[] = []
 
@@ -128,6 +130,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.disposeProtocolHandler(sessionId)
         this.sessions.delete(sessionId)
         this.processes.delete(sessionId)
+        // 清理 outputSessionMap 中属于该 session 的条目，防止 Map 内存泄漏
+        for (const [output, sid] of this.outputSessionMap) {
+          if (sid === sessionId) {
+            this.outputSessionMap.delete(output)
+          }
+        }
         this.emitOutput({
           type: 'complete',
           data: 'Session terminated by user',
@@ -190,6 +198,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected emitOutput(output: AgentOutput): void {
     const sessionId = this.outputSessionStack[this.outputSessionStack.length - 1]
     if (sessionId) {
+      this.ensureOutputMapCapacity()
       this.outputSessionMap.set(output, sessionId)
     }
     this.emit('output', output)
@@ -309,8 +318,23 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * @protected
    */
   private emitOutputForSession(sessionId: string, output: AgentOutput): void {
+    this.ensureOutputMapCapacity()
     this.outputSessionMap.set(output, sessionId)
     this.emit('output', output)
+  }
+
+  /**
+   * 确保 outputSessionMap 不超过最大条目限制
+   * 超限时淘汰最早插入的条目（Map 保持插入顺序）
+   */
+  private ensureOutputMapCapacity(): void {
+    if (this.outputSessionMap.size >= this.MAX_OUTPUT_MAP_SIZE) {
+      const firstKey = this.outputSessionMap.keys().next().value
+      if (firstKey) {
+        this.outputSessionMap.delete(firstKey)
+        this.logger.warn(`outputSessionMap exceeded ${this.MAX_OUTPUT_MAP_SIZE} entries, evicting oldest`)
+      }
+    }
   }
 
   /**

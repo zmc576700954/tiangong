@@ -41,6 +41,14 @@ function startCleanup(): void {
   }
 }
 
+/** 停止定期清理定时器（应用退出时调用，防止定时器泄漏） */
+export function stopCleanup(): void {
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer)
+    cleanupTimer = null
+  }
+}
+
 // 启动清理定时器
 startCleanup()
 

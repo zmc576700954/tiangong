@@ -6,12 +6,59 @@ import { useGraphStore } from './graphStore'
 /** 单个 thread 的输出上限，防止长时间运行导致内存膨胀 */
 const MAX_OUTPUTS_PER_THREAD = 1000
 
+/** 批处理缓冲区 - 不在 store state 中，避免触发渲染 */
+let outputBuffer: Array<{ threadId: string; output: AgentOutput }> = []
+let flushScheduled = false
+const BATCH_INTERVAL = 16 // ~1 frame at 60fps
+
+/** 将缓冲区中的输出批量写入 store，合并为一次状态更新 */
+function flushOutputBuffer() {
+  flushScheduled = false
+  if (outputBuffer.length === 0) return
+
+  const batch = outputBuffer
+  outputBuffer = []
+
+  useAgentStore.setState((state) => {
+    const newOutputs = { ...state.threadOutputs }
+    let threads = state.threads
+    const errorThreadIds = new Set<string>()
+
+    for (const { threadId, output } of batch) {
+      const existing = newOutputs[threadId] ?? []
+      newOutputs[threadId] = [...existing, output].slice(-MAX_OUTPUTS_PER_THREAD)
+      if (output.type === 'error') {
+        errorThreadIds.add(threadId)
+      }
+    }
+
+    if (errorThreadIds.size > 0) {
+      threads = threads.map((t) =>
+        errorThreadIds.has(t.id) ? { ...t, status: 'error' as const } : t,
+      )
+    }
+
+    return { threadOutputs: newOutputs, threads }
+  })
+}
+
+/** 调度一次 flush（如果尚未调度） */
+function scheduleFlush() {
+  if (flushScheduled) return
+  flushScheduled = true
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(flushOutputBuffer)
+  } else {
+    setTimeout(flushOutputBuffer, BATCH_INTERVAL)
+  }
+}
+
 interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
   threads: AgentThread[]
   currentThreadId: string | null
   /** 每个 thread 的 agent 原始输出（用于 TerminalView） */
-  threadOutputs: Map<string, AgentOutput[]>
+  threadOutputs: Record<string, AgentOutput[]>
   /** 适配器偏好配置 */
   adapterPreferences: AdapterPreferences
   /** 最近一次 startSession 的回退历史（用于 UI 展示） */
@@ -54,7 +101,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   adapters: [],
   threads: [],
   currentThreadId: null,
-  threadOutputs: new Map(),
+  threadOutputs: {},
   adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
   lastFallbackHistory: [],
 
@@ -86,19 +133,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   appendOutput: (threadId, output) => {
-    set((state) => {
-      const existing = state.threadOutputs.get(threadId) ?? []
-      const updated = [...existing, output].slice(-MAX_OUTPUTS_PER_THREAD)
-      const newMap = new Map(state.threadOutputs)
-      newMap.set(threadId, updated)
-      return {
-        threadOutputs: newMap,
-        // 如果是 error 输出，同时更新 thread status
-        threads: output.type === 'error'
-          ? state.threads.map((t) => t.id === threadId ? { ...t, status: 'error' as const } : t)
-          : state.threads,
-      }
-    })
+    // 对 error 类型输出立即 flush，确保错误状态不延迟显示
+    if (output.type === 'error') {
+      outputBuffer.push({ threadId, output })
+      flushOutputBuffer()
+      return
+    }
+    outputBuffer.push({ threadId, output })
+    scheduleFlush()
   },
 
   appendToStreamingMessage: (threadId, messageId, content) => {
@@ -119,11 +161,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   clearThreadOutputs: (threadId) => {
+    // 同时清理缓冲区中对应 thread 的条目
+    outputBuffer = outputBuffer.filter((entry) => entry.threadId !== threadId)
     set((state) => {
-      if (!state.threadOutputs.has(threadId)) return state
-      const newMap = new Map(state.threadOutputs)
-      newMap.delete(threadId)
-      return { threadOutputs: newMap }
+      if (!(threadId in state.threadOutputs)) return state
+      const { [threadId]: _removed, ...rest } = state.threadOutputs
+      return { threadOutputs: rest }
     })
   },
 
@@ -131,14 +174,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const TRIM_TO = 100
     set((state) => {
       let changed = false
-      const newMap = new Map(state.threadOutputs)
-      for (const [tid, outputs] of newMap) {
+      const updated: Record<string, AgentOutput[]> = {}
+      for (const [tid, outputs] of Object.entries(state.threadOutputs)) {
         if (tid !== activeThreadId && outputs.length > TRIM_TO) {
-          newMap.set(tid, outputs.slice(-TRIM_TO))
+          updated[tid] = outputs.slice(-TRIM_TO)
           changed = true
         }
       }
-      return changed ? { threadOutputs: newMap } : state
+      return changed
+        ? { threadOutputs: { ...state.threadOutputs, ...updated } }
+        : state
     })
   },
 
@@ -198,7 +243,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   getOutputs: (threadId) => {
-    return get().threadOutputs.get(threadId) ?? []
+    return get().threadOutputs[threadId] ?? []
   },
 
   createThread: (adapterName, nodeBound) => {

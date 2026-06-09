@@ -8,15 +8,14 @@ import { BaseAdapter } from '../adapters/base'
 import type { AgentSession, AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 import { SessionNotFoundError, AdapterError } from '../errors'
 
-// Minimal test adapter
+// Minimal test adapter — name configurable
 class TestAdapter extends BaseAdapter {
-  readonly name = 'test-adapter'
+  readonly name: string
   readonly version = '1.0.0'
   private mockProc = {
     kill: vi.fn(),
     killed: false,
     once: vi.fn((event: string, cb: (...args: any[]) => void) => {
-      // Store callback so tests can trigger it
       ;(this.mockProc as any)._callbacks = (this.mockProc as any)._callbacks || {}
       ;(this.mockProc as any)._callbacks[event] = cb
     }),
@@ -26,13 +25,18 @@ class TestAdapter extends BaseAdapter {
     stderr: { on: vi.fn(), off: vi.fn() },
   } as any
 
+  constructor(name = 'test-adapter') {
+    super()
+    this.name = name
+  }
+
   async checkInstalled(): Promise<boolean> {
     return true
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
     const session: AgentSession = {
-      id: `test-${Date.now()}`,
+      id: `${this.name}-${Date.now()}`,
       adapterName: this.name,
       config,
       startTime: Date.now(),
@@ -42,16 +46,14 @@ class TestAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(): Promise<void> {
-    // Simulate output
     this.emitOutput({
       type: 'stdout',
-      data: 'test output',
+      data: `${this.name} output`,
       timestamp: Date.now(),
     })
   }
 
   protected async doTerminate(): Promise<void> {
-    // Immediately resolve to avoid timeout in tests
     const cb = this.mockProc._callbacks?.exit
     if (cb) cb()
     this.mockProc.killed = true
@@ -59,31 +61,6 @@ class TestAdapter extends BaseAdapter {
 
   public simulateCrash(sessionId: string): void {
     this.emit('sessionEnded', sessionId, 'crash')
-  }
-}
-
-/** MCP fallback 适配器（AgentManager 硬编码查找名为 'mcp' 的适配器做 fallback） */
-class FallbackAdapter extends BaseAdapter {
-  readonly name = 'mcp'
-  readonly version = '1.0.0'
-
-  async checkInstalled(): Promise<boolean> {
-    return true
-  }
-
-  async startSession(config: AgentSessionConfig): Promise<AgentSession> {
-    const session: AgentSession = {
-      id: `mcp-${Date.now()}`,
-      adapterName: this.name,
-      config,
-      startTime: Date.now(),
-    }
-    this.registerSession(session)
-    return session
-  }
-
-  protected async doSendCommand(): Promise<void> {
-    this.emitOutput({ type: 'stdout', data: 'mcp output', timestamp: Date.now() })
   }
 }
 
@@ -117,46 +94,146 @@ describe('AgentManager', () => {
   })
 
   describe('startSession', () => {
-    it('should start a session successfully', async () => {
-      const adapter = new TestAdapter()
+    it('should start a session successfully with specified adapter', async () => {
+      const adapter = new TestAdapter('claude-code')
       manager.registerAdapter(adapter)
 
-      const result = await manager.startSession('test-adapter', mockConfig())
+      const result = await manager.startSession('claude-code', mockConfig())
 
       expect(result.sessionId).toBeDefined()
-      expect(result.fallback).toBeUndefined()
+      expect(result.fallback).toBeFalsy()
+      expect(result.adapterUsed).toBe('claude-code')
+      expect(result.fallbackHistory).toHaveLength(1)
+      expect(result.fallbackHistory[0]).toEqual({ adapter: 'claude-code', reason: '', success: true })
       expect(router.getActiveSessionIds()).toContain(result.sessionId)
     })
 
-    it('should throw when adapter not found', async () => {
-      await expect(manager.startSession('nonexistent', mockConfig())).rejects.toThrow(AdapterError)
+    it('should throw when all adapters in the chain fail', async () => {
+      const adapter = new TestAdapter('claude-code')
+      vi.spyOn(adapter, 'checkInstalled').mockResolvedValue(false)
+      manager.registerAdapter(adapter)
+
+      await expect(manager.startSession('claude-code', mockConfig())).rejects.toThrow(AdapterError)
     })
 
-    it('should fallback to mcp adapter when primary not installed', async () => {
-      const primary = new TestAdapter()
-      const fallback = new FallbackAdapter()
+    it('should fallback through the preference chain when primary not installed', async () => {
+      const primary = new TestAdapter('claude-code')
+      const secondary = new TestAdapter('codex')
+      const tertiary = new TestAdapter('mcp')
+      vi.spyOn(primary, 'checkInstalled').mockResolvedValue(false)
+      // codex also not installed
+      vi.spyOn(secondary, 'checkInstalled').mockResolvedValue(false)
+      manager.registerAdapter(primary)
+      manager.registerAdapter(secondary)
+      manager.registerAdapter(tertiary)
+
+      // Set preferences so fallback order includes codex and mcp
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['codex', 'mcp'],
+      }))
+
+      const result = await manager.startSession('claude-code', mockConfig())
+
+      expect(result.fallback).toBe(true)
+      expect(result.adapterUsed).toBe('mcp')
+      expect(result.fallbackHistory).toHaveLength(3)
+      expect(result.fallbackHistory[0]).toEqual({ adapter: 'claude-code', reason: 'claude-code not installed', success: false })
+      expect(result.fallbackHistory[1]).toEqual({ adapter: 'codex', reason: 'codex not installed', success: false })
+      expect(result.fallbackHistory[2]).toEqual({ adapter: 'mcp', reason: '', success: true })
+    })
+
+    it('should fallback when adapter startSession throws', async () => {
+      const primary = new TestAdapter('claude-code')
+      const fallback = new TestAdapter('mcp')
+      vi.spyOn(primary, 'startSession').mockRejectedValue(new Error('spawn ENOENT'))
+      manager.registerAdapter(primary)
+      manager.registerAdapter(fallback)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['mcp'],
+      }))
+
+      const result = await manager.startSession('claude-code', mockConfig())
+
+      expect(result.fallback).toBe(true)
+      expect(result.adapterUsed).toBe('mcp')
+      expect(result.fallbackHistory.length).toBeGreaterThan(1)
+    })
+
+    it('should use default adapter when adapterName is null', async () => {
+      const adapter = new TestAdapter('codex')
+      manager.registerAdapter(adapter)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'codex',
+        fallbackOrder: ['mcp'],
+      }))
+
+      const result = await manager.startSession(null, mockConfig())
+
+      expect(result.sessionId).toBeDefined()
+      expect(result.adapterUsed).toBe('codex')
+      expect(result.fallback).toBeFalsy()
+    })
+
+    it('should fallback from default adapter when using null adapterName', async () => {
+      const primary = new TestAdapter('claude-code')
+      const fallback = new TestAdapter('mcp')
       vi.spyOn(primary, 'checkInstalled').mockResolvedValue(false)
       manager.registerAdapter(primary)
       manager.registerAdapter(fallback)
 
-      const result = await manager.startSession('test-adapter', mockConfig())
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['mcp'],
+      }))
+
+      const result = await manager.startSession(null, mockConfig())
 
       expect(result.fallback).toBe(true)
-      expect(router.getActiveSessionIds()).toContain(result.sessionId)
+      expect(result.adapterUsed).toBe('mcp')
     })
 
-    it('should throw when adapter not installed and no fallback', async () => {
-      const adapter = new TestAdapter()
-      vi.spyOn(adapter, 'checkInstalled').mockResolvedValue(false)
+    it('should skip unregistered adapters in fallback chain', async () => {
+      const mcp = new TestAdapter('mcp')
+      manager.registerAdapter(mcp)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',  // not registered
+        fallbackOrder: ['codex', 'mcp'], // codex also not registered
+      }))
+
+      const result = await manager.startSession(null, mockConfig())
+
+      expect(result.adapterUsed).toBe('mcp')
+      expect(result.fallbackHistory).toHaveLength(3)
+      expect(result.fallbackHistory[0].success).toBe(false)
+      expect(result.fallbackHistory[1].success).toBe(false)
+      expect(result.fallbackHistory[2].success).toBe(true)
+    })
+
+    it('should deduplicate adapters in the chain', async () => {
+      const adapter = new TestAdapter('claude-code')
       manager.registerAdapter(adapter)
 
-      await expect(manager.startSession('test-adapter', mockConfig())).rejects.toThrow(AdapterError)
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['claude-code', 'mcp'], // claude-code appears twice
+      }))
+
+      const result = await manager.startSession(null, mockConfig())
+
+      // Should only try claude-code once
+      expect(result.adapterUsed).toBe('claude-code')
+      expect(result.fallbackHistory).toHaveLength(1)
     })
   })
 
   describe('sendCommand', () => {
     it('should send command to active session', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
 
@@ -172,7 +249,7 @@ describe('AgentManager', () => {
 
   describe('terminateSession', () => {
     it('should terminate session and clean up resources', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
 
@@ -188,7 +265,7 @@ describe('AgentManager', () => {
 
   describe('terminateAllSessions', () => {
     it('should terminate all active sessions', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       await manager.startSession('test-adapter', mockConfig())
       await manager.startSession('test-adapter', mockConfig({ nodeTitle: 'Node 2' }))
@@ -201,7 +278,7 @@ describe('AgentManager', () => {
 
   describe('broadcast routing', () => {
     it('should broadcast output with correct broadcast name', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
 
@@ -217,13 +294,18 @@ describe('AgentManager', () => {
     })
 
     it('should use original adapter name for fallback sessions', async () => {
-      const primary = new TestAdapter()
-      const fallback = new FallbackAdapter()
+      const primary = new TestAdapter('claude-code')
+      const fallback = new TestAdapter('mcp')
       vi.spyOn(primary, 'checkInstalled').mockResolvedValue(false)
       manager.registerAdapter(primary)
       manager.registerAdapter(fallback)
 
-      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['mcp'],
+      }))
+
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
 
       const outputs: Array<{ name: string; output: AgentOutput }> = []
       broadcaster.onBroadcast((name, output) => {
@@ -233,13 +315,13 @@ describe('AgentManager', () => {
       await manager.sendCommand(sessionId, { type: 'implement', description: 'test', targetNodeId: 'n1' })
 
       expect(outputs.length).toBeGreaterThan(0)
-      expect(outputs[0].name).toBe('test-adapter') // 显示原始适配器名而非 fallback
+      expect(outputs[0].name).toBe('claude-code') // 显示原始适配器名而非 fallback
     })
   })
 
   describe('sessionEnded event handling', () => {
     it('should clean up resources when session crashes', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
 
@@ -253,7 +335,7 @@ describe('AgentManager', () => {
 
   describe('listAdapters', () => {
     it('should return adapter list with installation status', async () => {
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
 
       const adapters = await manager.listAdapters()
@@ -271,7 +353,7 @@ describe('AgentManager', () => {
       manager.removeOutputListener(handler)
 
       // After removal, handler should not be called
-      const adapter = new TestAdapter()
+      const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       // No error should occur
     })

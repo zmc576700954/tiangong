@@ -439,7 +439,7 @@ export class McpAdapter extends BaseAdapter {
     const session: AgentSession = {
       id: sessionId,
       adapterName: this.name,
-      config,
+      config: structuredClone(config),
       startTime: Date.now(),
     }
 

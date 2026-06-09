@@ -429,6 +429,39 @@ export class ScopeGuard {
     this.sandboxes.delete(sandbox.id)
   }
 
+  /**
+   * 销毁所有沙箱资源（应用退出时调用，防止定时器和 watcher 泄漏）
+   *
+   * 依次清理：
+   * 1. 所有定时扫描器（scanTimers）
+   * 2. 所有文件监控器（watchers）
+   * 3. 所有内部状态 Map
+   */
+  destroy(): void {
+    // 1. 清理所有定时扫描器
+    for (const [, timer] of this.scanTimers) {
+      clearTimeout(timer)
+    }
+    this.scanTimers.clear()
+
+    // 2. 清理所有文件监控器
+    for (const [, watcher] of this.watchers) {
+      watcher.close().catch((err) => {
+        logger.warn('Failed to close watcher during destroy:', err)
+      })
+    }
+    this.watchers.clear()
+
+    // 3. 清理所有内部状态 Map
+    this.scanLocks.clear()
+    this.scanIntervals.clear()
+    this.scanCleanCounts.clear()
+    this.initialSnapshots.clear()
+    this.sandboxWatchDirs.clear()
+    this.sandboxes.clear()
+    this.violationHandlers.length = 0
+  }
+
   // ============================================
   // 文件系统快照（用于执行后验证）
   // ============================================

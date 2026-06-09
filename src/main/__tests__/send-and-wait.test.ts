@@ -15,6 +15,13 @@ function createMockAgentManager(): AgentManager & { __emitOutput: (output: Agent
       const idx = listeners.indexOf(handler)
       if (idx >= 0) listeners.splice(idx, 1)
     }),
+    addSessionOutputListener: vi.fn().mockImplementation((_sessionId: string, handler: (output: AgentOutput) => void) => {
+      listeners.push(handler)
+    }),
+    removeSessionOutputListener: vi.fn().mockImplementation((handler: (output: AgentOutput) => void) => {
+      const idx = listeners.indexOf(handler)
+      if (idx >= 0) listeners.splice(idx, 1)
+    }),
     terminateSession: vi.fn().mockResolvedValue(undefined),
     // Helper: emit output to all listeners
     __emitOutput(output: AgentOutput) {
@@ -50,7 +57,7 @@ describe('sendPromptViaAgent', () => {
       workingDirectory: '/project',
       nodeTitle: '思维导图生成',
     }))
-    expect(manager.removeOutputListener).toHaveBeenCalled()
+    expect(manager.removeSessionOutputListener).toHaveBeenCalled()
   })
 
   it('file_change 类型也被收集', async () => {

@@ -50,7 +50,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   // Select only this thread's outputs (not the entire Map)
   const agentOutputs = useAgentStore((s) => {
     if (!agentThreadId) return []
-    return s.threadOutputs.get(agentThreadId) ?? []
+    return s.threadOutputs[agentThreadId] ?? []
   })
 
   if (isProject) {

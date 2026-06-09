@@ -15,14 +15,12 @@ import { immer } from 'zustand/middleware/immer'
 import {
   type TreeNode,
   path,
-  pathDirname,
   loadTreeRecursive,
   loadChildrenForNode,
   collectAllDirPaths,
   findNodeByPath,
   findAndUpdateNode,
   flattenVisible,
-  findNodeInStoreProjects,
 } from './fileTreeUtils'
 
 export type { TreeNode } from './fileTreeUtils'
