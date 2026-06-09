@@ -9,7 +9,7 @@
 
 import * as path from 'node:path'
 import { readFile as readFs } from 'node:fs/promises'
-import type { SymbolInfo, SymbolQueryResult, GraphNode } from '@shared/types'
+import type { SymbolQueryResult, GraphNode } from '@shared/types'
 import { SymbolIndex } from './symbol-index'
 import { EntityExtractor, type ExtractionResult } from './entity-extractor'
 

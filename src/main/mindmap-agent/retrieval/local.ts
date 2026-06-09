@@ -17,7 +17,7 @@ export interface LocalRetrievalResult {
   tokenEstimate: number
 }
 
-import { estimateTokens } from '../../../shared/token-utils'
+import { estimateTokens } from '../../shared/token-utils'
 
 /**
  * 单模块检索：加载目标模块完整内容 + 邻居摘要

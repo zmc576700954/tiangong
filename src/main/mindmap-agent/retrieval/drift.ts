@@ -18,7 +18,7 @@ export interface DriftRetrievalResult {
   tokenEstimate: number
 }
 
-import { estimateTokens } from '../../../shared/token-utils'
+import { estimateTokens } from '../../shared/token-utils'
 
 /**
  * DRIFT 渐进式检索

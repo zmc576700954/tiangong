@@ -19,6 +19,7 @@ import type {
 // ============================================
 
 const NODE_SIZES: Record<NodeType, { width: number; height: number }> = {
+  project: { width: 220, height: 90 },
   module:  { width: 200, height: 80 },
   process: { width: 180, height: 70 },
   feature: { width: 160, height: 60 },

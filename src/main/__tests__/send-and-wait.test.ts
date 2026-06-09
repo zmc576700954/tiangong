@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
-import type { AgentOutput, AgentSessionConfig } from '@shared/types'
+import type { AgentOutput } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
 
 function createMockAgentManager(): AgentManager & { __emitOutput: (output: AgentOutput) => void } {

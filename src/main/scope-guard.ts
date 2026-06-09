@@ -29,12 +29,25 @@ const ACTIVE_SCAN_BACKOFF_FACTOR = 1.5
 /** 连续无违规达到此次数时开始退避 */
 const ACTIVE_SCAN_BACKOFF_THRESHOLD = 3
 /** 递归扫描最大深度 */
-const MAX_SCAN_DEPTH = 3
+const MAX_SCAN_DEPTH = 5
+/** 单个快照最大文件条目数 */
+const MAX_SNAPSHOT_ENTRIES = 5_000
+/** 所有 sandbox 快照总条目上限，防止多 sandbox 并存时内存爆炸 */
+const MAX_TOTAL_SNAPSHOT_ENTRIES = 20_000
 
 /** 越界检测回调类型 */
 export type ScopeGuardViolationHandler = (sandboxId: string, violations: string[]) => void
-/** 执行后验证时忽略的文件/目录模式 */
+/**
+ * 执行后验证时忽略的文件/目录模式
+ *
+ * 覆盖范围：
+ * 1. 构建产物与依赖目录（node_modules, dist, build 等）
+ * 2. 编辑器临时文件（vim .swp/.swo、VSCode .tmp、JetBrains ___jb_*___）
+ * 3. OS 元数据文件（.DS_Store、Thumbs.db、desktop.ini）
+ * 4. 编辑器配置目录（.idea、.vscode）
+ */
 const IGNORED_PATTERNS = [
+  // 构建产物与依赖
   /node_modules/,
   /\.git/,
   /\.bizgraph/,
@@ -43,6 +56,19 @@ const IGNORED_PATTERNS = [
   /release/,
   /\.next/,
   /build/,
+  // 编辑器临时文件 — 防止越界检测误报
+  /\.swp$/,
+  /\.swo$/,
+  /___jb_\w+___$/,
+  /~$/,
+  /\.tmp$/,
+  // OS 元数据文件
+  /\.DS_Store$/,
+  /Thumbs\.db$/,
+  /desktop\.ini$/,
+  // 编辑器配置目录
+  /\.idea/,
+  /\.vscode/,
 ]
 
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
@@ -87,6 +113,9 @@ export class ScopeGuard {
   private scanCleanCounts = new Map<string, number>()
   /** 越界事件处理器（通知上层终止 Agent session） */
   private violationHandlers: ScopeGuardViolationHandler[] = []
+
+  /** 所有 sandbox 快照总条目数（实时跟踪，用于全局内存保护） */
+  private totalSnapshotEntries = 0
 
   /** 注册越界事件处理器 */
   onViolation(handler: ScopeGuardViolationHandler): void {
@@ -139,6 +168,8 @@ export class ScopeGuard {
     watchDirs.add(workingDir)
     const initialSnapshot = await this.captureFileSnapshot(watchDirs)
     this.initialSnapshots.set(sandboxId, initialSnapshot)
+    this.totalSnapshotEntries += initialSnapshot.size
+    this.evictSnapshotsIfNeeded()
     this.sandboxWatchDirs.set(sandboxId, watchDirs)
 
     // 启动文件监控 — 白名单文件父目录 + 工作目录（消除监控盲区）
@@ -172,8 +203,9 @@ export class ScopeGuard {
     })
 
     // 允许进程退出时不被 watcher 阻塞
-    if (typeof watcher.unref === 'function') {
-      watcher.unref()
+    const watcherWithUnref = watcher as unknown as { unref?: () => void }
+    if (typeof watcherWithUnref.unref === 'function') {
+      watcherWithUnref.unref()
     }
 
     const allowedSet = new Set(sanitizedFiles)
@@ -279,6 +311,12 @@ export class ScopeGuard {
       )
     } else {
       logger.info('Post-execution validation passed')
+    }
+
+    // 验证完成后立即释放初始快照内存（rollback/commit 不再需要初始快照）
+    if (initialSnapshot) {
+      this.totalSnapshotEntries -= initialSnapshot.size
+      this.initialSnapshots.delete(sandbox.id)
     }
 
     return result
@@ -411,6 +449,10 @@ export class ScopeGuard {
     this.stopActiveScanning(sandbox.id)
 
     // 释放快照和监控目录记录
+    const snapshot = this.initialSnapshots.get(sandbox.id)
+    if (snapshot) {
+      this.totalSnapshotEntries -= snapshot.size
+    }
     this.initialSnapshots.delete(sandbox.id)
     this.sandboxWatchDirs.delete(sandbox.id)
 
@@ -459,9 +501,34 @@ export class ScopeGuard {
     this.scanIntervals.clear()
     this.scanCleanCounts.clear()
     this.initialSnapshots.clear()
+    this.totalSnapshotEntries = 0
     this.sandboxWatchDirs.clear()
     this.sandboxes.clear()
     this.violationHandlers.length = 0
+  }
+
+  // ============================================
+  // 快照内存管理（全局 LRU 淘汰）
+  // ============================================
+
+  /**
+   * 当全局快照总条目超限时，淘汰最早创建的 sandbox 快照
+   * 使用 Map 的插入顺序作为 LRU 近似（最早创建的 sandbox 最先被淘汰）
+   */
+  private evictSnapshotsIfNeeded(): void {
+    if (this.totalSnapshotEntries <= MAX_TOTAL_SNAPSHOT_ENTRIES) return
+
+    const iterator = this.initialSnapshots.keys()
+    while (this.totalSnapshotEntries > MAX_TOTAL_SNAPSHOT_ENTRIES) {
+      const { value: oldestId, done } = iterator.next()
+      if (done) break
+      const snapshot = this.initialSnapshots.get(oldestId)
+      if (snapshot) {
+        this.totalSnapshotEntries -= snapshot.size
+        this.initialSnapshots.delete(oldestId)
+        logger.warn(`Evicted snapshot for sandbox ${oldestId} (${snapshot.size} entries) due to memory pressure`)
+      }
+    }
   }
 
   // ============================================
@@ -483,6 +550,11 @@ export class ScopeGuard {
 
   private async captureFileSnapshotRecursive(dir: string, snapshot: Map<string, FileSnapshotEntry>, depth: number): Promise<void> {
     if (depth > MAX_SCAN_DEPTH) return
+    if (snapshot.size >= MAX_SNAPSHOT_ENTRIES) {
+      logger.warn(`Snapshot entry limit (${MAX_SNAPSHOT_ENTRIES}) reached, truncating scan at ${dir}`)
+      return
+    }
+
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
@@ -490,22 +562,43 @@ export class ScopeGuard {
       return // 跳过无权限目录
     }
 
+    // 并行处理子目录和文件，减少大型目录的扫描时间
+    const subDirs: string[] = []
+    const files: string[] = []
+
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name)
-
       if (shouldIgnorePath(fullPath)) continue
 
       if (entry.isDirectory()) {
-        await this.captureFileSnapshotRecursive(fullPath, snapshot, depth + 1)
+        subDirs.push(fullPath)
       } else if (entry.isFile()) {
-        try {
-          const stat = await fs.stat(fullPath)
-          snapshot.set(fullPath, { mtimeMs: stat.mtimeMs, size: stat.size })
-        } catch {
-          // 忽略无法 stat 的文件
-        }
+        files.push(fullPath)
       }
     }
+
+    // 并行收集所有文件 stat
+    const fileStats = await Promise.all(
+      files.map(async (filePath) => {
+        try {
+          const stat = await fs.stat(filePath)
+          return { filePath, stat }
+        } catch {
+          return null
+        }
+      }),
+    )
+
+    for (const result of fileStats) {
+      if (result && snapshot.size < MAX_SNAPSHOT_ENTRIES) {
+        snapshot.set(result.filePath, { mtimeMs: result.stat.mtimeMs, size: result.stat.size })
+      }
+    }
+
+    // 并行递归扫描子目录
+    await Promise.all(
+      subDirs.map((subDir) => this.captureFileSnapshotRecursive(subDir, snapshot, depth + 1)),
+    )
   }
 
   // ============================================

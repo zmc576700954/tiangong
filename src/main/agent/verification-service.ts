@@ -7,7 +7,7 @@ import type { ChatMessage, AgentOutput, VerificationResult } from '@shared/types
 
 export class VerificationService {
   buildVerificationPrompt(
-    nodeId: string,
+    _nodeId: string,
     acceptanceCriteria: string[],
     messages: ChatMessage[],
     fileChanges: AgentOutput[],

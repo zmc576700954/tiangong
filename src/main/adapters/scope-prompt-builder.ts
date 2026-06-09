@@ -7,17 +7,20 @@
  */
 
 import type { AgentSessionConfig, ResolvedContext } from '@shared/types'
+import type { ProjectMemory } from '@shared/types'
 
 /**
  * 构建范围约束提示词
  * @param config - 会话配置
  * @param resolvedContexts - 已解析的上下文列表
  * @param codeContext - 智能代码上下文
+ * @param memory - 项目记忆（可选，用于注入用户偏好）
  */
 export function buildScopePrompt(
   config: AgentSessionConfig,
   resolvedContexts?: ResolvedContext[],
   codeContext?: string,
+  memory?: ProjectMemory,
 ): string {
   const lines: string[] = []
 
@@ -91,6 +94,26 @@ export function buildScopePrompt(
       lines.push(ctx.content)
       lines.push('')
     }
+  }
+
+  // 注入项目记忆偏好，使 Agent 行为与用户偏好一致
+  if (memory) {
+    lines.push('## 项目偏好')
+    lines.push(`- 命名风格：${memory.preferences.namingStyle === 'business' ? '使用业务语言' : memory.preferences.namingStyle === 'technical' ? '使用技术术语' : '业务与技术结合'}`)
+    lines.push(`- 模块粒度：${memory.preferences.granularity === 'fine' ? '倾向于细粒度拆分' : memory.preferences.granularity === 'coarse' ? '倾向于粗粒度合并' : '中等粒度'}`)
+    if (memory.preferences.maxModules) {
+      lines.push(`- 建议模块数：不超过 ${memory.preferences.maxModules} 个`)
+    }
+    if (memory.preferences.avoidPatterns.length > 0) {
+      lines.push(`- 应避免：${memory.preferences.avoidPatterns.join('、')}`)
+    }
+    if (memory.coreUserFlows.length > 0) {
+      lines.push(`- 核心流程：${memory.coreUserFlows.join('、')}`)
+    }
+    if (memory.techConstraints.length > 0) {
+      lines.push(`- 技术约束：${memory.techConstraints.join('、')}`)
+    }
+    lines.push('')
   }
 
   return lines.join('\n')

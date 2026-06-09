@@ -16,6 +16,7 @@ import type {
   GraphNode,
   AdapterFallbackAttempt,
   AdapterPreferences,
+  ProjectMemory,
 } from '@shared/types'
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
@@ -25,6 +26,7 @@ import { ErrorCode } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
+import { readMemory } from '../mindmap-agent/memory'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
 
@@ -162,34 +164,37 @@ export class AgentManager {
     if (this.cleanupInProgress.has(sessionId)) return
     this.cleanupInProgress.add(sessionId)
 
-    const state = this.sessionStates.get(sessionId)
+    try {
+      const state = this.sessionStates.get(sessionId)
 
-    // ScopeGuard: 异常退出时回滚沙箱
-    if (state?.sandbox) {
-      this.sandboxSessionIndex.delete(state.sandbox.id)
-      this.scopeGuard.rollback(state.sandbox).catch((err) => {
-        logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
-      })
-    }
-
-    // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
-    const listeners = this.sessionOutputListenerIndex.get(sessionId)
-    if (listeners) {
-      for (const handler of listeners) {
-        const wrapped = this.sessionOutputListeners.get(handler)
-        if (wrapped) {
-          this.broadcaster.offBroadcast(wrapped)
-          this.sessionOutputListeners.delete(handler)
-        }
+      // ScopeGuard: 异常退出时回滚沙箱
+      if (state?.sandbox) {
+        this.sandboxSessionIndex.delete(state.sandbox.id)
+        this.scopeGuard.rollback(state.sandbox).catch((err) => {
+          logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
+        })
       }
-      this.sessionOutputListenerIndex.delete(sessionId)
-    }
 
-    this.sessionStates.delete(sessionId)
-    this.sessionBroadcastNames.delete(sessionId)
-    this.router.unbind(sessionId)
-    // 释放互斥锁
-    this.cleanupInProgress.delete(sessionId)
+      // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
+      const listeners = this.sessionOutputListenerIndex.get(sessionId)
+      if (listeners) {
+        for (const handler of listeners) {
+          const wrapped = this.sessionOutputListeners.get(handler)
+          if (wrapped) {
+            this.broadcaster.offBroadcast(wrapped)
+            this.sessionOutputListeners.delete(handler)
+          }
+        }
+        this.sessionOutputListenerIndex.delete(sessionId)
+      }
+
+      this.sessionStates.delete(sessionId)
+      this.sessionBroadcastNames.delete(sessionId)
+      this.router.unbind(sessionId)
+    } finally {
+      // 释放互斥锁：确保即使清理过程中抛异常也不会死锁
+      this.cleanupInProgress.delete(sessionId)
+    }
   }
 
   /**
@@ -354,7 +359,7 @@ export class AgentManager {
     // 确定回退链：首选适配器 + 回退顺序
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
-    const fallbackChain = [primary, ...preferences.fallbackOrder.filter((a) => a !== primary)]
+    const fallbackChain = [primary, ...preferences.fallbackOrder.filter((a: string) => a !== primary)]
 
     // 去重
     const seen = new Set<string>()
@@ -485,8 +490,8 @@ export class AgentManager {
   ): Promise<void> {
     const sessionConfig = this.sessionStates.get(sessionId)?.config
 
-    // 并行执行上下文解析和智能代码解析（两者互不依赖）
-    const [resolvedContexts, codeContext] = await Promise.all([
+    // 并行执行上下文解析、智能代码解析、项目记忆加载（三者互不依赖）
+    const [resolvedContexts, codeContext, memoryContext] = await Promise.all([
       // 标准上下文解析
       (contextRefs && contextRefs.length > 0)
         ? this.contextResolver.resolve(contextRefs, 8000, {
@@ -513,6 +518,15 @@ export class AgentManager {
             return undefined
           })
         : Promise.resolve(undefined as string | undefined),
+      // 项目记忆上下文（从 .bizgraph/memory.json 加载）
+      sessionConfig?.workingDirectory
+        ? readMemory(sessionConfig.workingDirectory).then((mem) => {
+            return this.formatMemoryContext(mem)
+          }).catch((err) => {
+            logger.debug('Project memory load skipped:', err)
+            return undefined
+          })
+        : Promise.resolve(undefined as string | undefined),
     ])
 
     // Store resolved contexts on the session so adapter can access them
@@ -524,9 +538,50 @@ export class AgentManager {
       if (codeContext) {
         adapter.setCodeContext(sessionId, codeContext)
       }
+      if (memoryContext) {
+        adapter.setCodeContext(sessionId, (adapter as any).sessions?.get(sessionId)?.codeContext
+          ? (adapter as any).sessions.get(sessionId).codeContext + '\n\n' + memoryContext
+          : memoryContext)
+      }
     }
 
     await this.sendCommand(sessionId, command)
+  }
+
+  /**
+   * 将项目记忆格式化为 prompt 字符串
+   */
+  private formatMemoryContext(memory: ProjectMemory): string | undefined {
+    // 仅当记忆包含实质性内容时才注入
+    const hasContent = memory.businessDomains.length > 0
+      || memory.architecturePattern
+      || memory.coreUserFlows.length > 0
+      || memory.techConstraints.length > 0
+    if (!hasContent) return undefined
+
+    const lines: string[] = ['# 项目记忆']
+
+    if (memory.businessDomains.length > 0) {
+      lines.push(`## 业务域\n${memory.businessDomains.join(', ')}`)
+    }
+    if (memory.architecturePattern) {
+      lines.push(`## 架构模式\n${memory.architecturePattern}`)
+    }
+    if (memory.coreUserFlows.length > 0) {
+      lines.push(`## 核心用户流程\n${memory.coreUserFlows.map((f: string) => `- ${f}`).join('\n')}`)
+    }
+    if (memory.techConstraints.length > 0) {
+      lines.push(`## 技术约束\n${memory.techConstraints.map((c: string) => `- ${c}`).join('\n')}`)
+    }
+    if (memory.preferences) {
+      const prefs = memory.preferences
+      lines.push(`## 用户偏好\n- 命名风格: ${prefs.namingStyle}\n- 粒度: ${prefs.granularity}\n- 最大模块数: ${prefs.maxModules}`)
+      if (prefs.avoidPatterns.length > 0) {
+        lines.push(`- 避免模式: ${prefs.avoidPatterns.join(', ')}`)
+      }
+    }
+
+    return lines.join('\n')
   }
 
   /**

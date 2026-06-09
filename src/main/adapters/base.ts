@@ -44,6 +44,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private outputSessionMap = new WeakMap<AgentOutput, string>()
   /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
   private outputSessionStack: string[] = []
+  /** 会话输出缓冲区：为不支持 resume 的适配器收集历史输出，用于生成上下文摘要 */
+  private sessionOutputBuffers = new Map<string, string[]>()
+  /** 单会话输出条数上限，防止内存无限增长 */
+  private static readonly MAX_OUTPUT_BUFFER_SIZE = 200
 
   constructor() {
     super()
@@ -123,6 +127,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     } finally {
       // 无论 doTerminate 是否成功，都执行清理
       try {
+        // 生成会话上下文摘要（供不支持原生 resume 的适配器使用）
+        this.buildAndStoreSummary(sessionId)
         this.sessionCleanups.get(sessionId)?.()
         this.sessionCleanups.delete(sessionId)
         this.disposeProtocolHandler(sessionId)
@@ -136,6 +142,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         })
       } catch (cleanupErr) {
         this.logger.error(`Cleanup failed for session ${sessionId}:`, cleanupErr)
+      } finally {
+        // 清理输出缓冲区，防止内存泄漏
+        this.sessionOutputBuffers.delete(sessionId)
       }
       this.popOutputSession()
     }
@@ -186,12 +195,26 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /**
    * 向所有监听器发送输出
    * 自动关联当前输出上下文栈顶的 sessionId（如果存在）
+   * 同时收集 stdout/complete 到输出缓冲区，用于生成会话摘要
    * @protected
    */
   protected emitOutput(output: AgentOutput): void {
     const sessionId = this.outputSessionStack[this.outputSessionStack.length - 1]
     if (sessionId) {
       this.outputSessionMap.set(output, sessionId)
+      // 收集 stdout/complete 到缓冲区，用于后续生成上下文摘要
+      if (output.type === 'stdout' || output.type === 'complete') {
+        let buffer = this.sessionOutputBuffers.get(sessionId)
+        if (!buffer) {
+          buffer = []
+          this.sessionOutputBuffers.set(sessionId, buffer)
+        }
+        buffer.push(output.data)
+        // 限制缓冲区大小，防止内存无限增长
+        if (buffer.length > BaseAdapter.MAX_OUTPUT_BUFFER_SIZE) {
+          buffer.splice(0, buffer.length - BaseAdapter.MAX_OUTPUT_BUFFER_SIZE)
+        }
+      }
     }
     this.emit('output', output)
   }
@@ -510,7 +533,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     session: AgentSession,
     resolvedContexts?: ResolvedContext[],
   ): string {
-    return buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext)
+    const parts: string[] = []
+
+    // 注入前序会话摘要（为不支持原生 resume 的适配器提供伪连续性）
+    if (session.config.contextSummary) {
+      parts.push(session.config.contextSummary)
+      parts.push('') // 空行分隔
+    }
+
+    parts.push(buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext))
+
+    return parts.join('\n')
   }
 
   protected buildScopePrompt(
@@ -519,5 +552,76 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     codeContext?: string,
   ): string {
     return buildScopePrompt(config, resolvedContexts, codeContext)
+  }
+
+  // ============================================
+  // 会话摘要（为不支持原生 resume 的适配器提供伪连续性）
+  // ============================================
+
+  /**
+   * 从输出缓冲区生成会话上下文摘要，并存储到 session.config
+   * 提取关键信息：完成的任务、修改的文件、遇到的错误
+   */
+  private buildAndStoreSummary(sessionId: string): void {
+    const buffer = this.sessionOutputBuffers.get(sessionId)
+    if (!buffer || buffer.length === 0) return
+
+    const session = this.sessions.get(sessionId)
+    if (!session) return
+
+    // 提取文件变更信息
+    const fileChanges: string[] = []
+    const errors: string[] = []
+    const completions: string[] = []
+
+    for (const output of buffer) {
+      // 简单启发式提取文件变更
+      const fileMatches = output.match(/(?:create|modify|delete|add|write|edit)[ed]?\s*[:：]?\s*(\S+\.\w+)/gi)
+      if (fileMatches) {
+        fileChanges.push(...fileMatches.map((m) => m.trim()).filter((m) => m.length < 200))
+      }
+      // 提取错误
+      if (output.toLowerCase().includes('error') || output.toLowerCase().includes('失败')) {
+        const lines = output.split('\n').filter((l) => l.length > 10 && l.length < 300)
+        errors.push(...lines.slice(0, 3))
+      }
+      // 提取完成语句
+      if (output.toLowerCase().includes('complete') || output.toLowerCase().includes('完成')) {
+        completions.push(output.trim().substring(0, 200))
+      }
+    }
+
+    const lines: string[] = ['## 前序会话摘要']
+
+    if (completions.length > 0) {
+      lines.push('已完成的任务：')
+      for (const c of completions.slice(0, 3)) {
+        lines.push(`- ${c}`)
+      }
+    }
+
+    if (fileChanges.length > 0) {
+      lines.push('\n已修改的文件：')
+      const uniqueChanges = [...new Set(fileChanges)].slice(0, 10)
+      for (const f of uniqueChanges) {
+        lines.push(`- ${f}`)
+      }
+    }
+
+    if (errors.length > 0) {
+      lines.push('\n遇到的问题：')
+      for (const e of [...new Set(errors)].slice(0, 3)) {
+        lines.push(`- ${e}`)
+      }
+    }
+
+    // 限制摘要长度，避免污染 context window
+    let summary = lines.join('\n')
+    if (summary.length > 2000) {
+      summary = summary.substring(0, 2000) + '\n\n[摘要已截断]'
+    }
+
+    session.config.contextSummary = summary
+    this.logger.debug(`Built context summary for session ${sessionId}: ${summary.length} chars`)
   }
 }

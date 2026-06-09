@@ -140,6 +140,118 @@ export function EdgeEditor({
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background resize-none"
               />
             </div>
+
+            {/* Trigger */}
+            <div>
+              <label className="text-[10px] text-muted-foreground">触发方式</label>
+              <select
+                value={edge.content?.trigger || 'auto'}
+                onChange={(e) =>
+                  onUpdate({
+                    content: {
+                      ...edge.content,
+                      trigger: e.target.value as 'auto' | 'manual' | 'scheduled',
+                    },
+                  })
+                }
+                className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
+              >
+                <option value="auto">自动 (auto)</option>
+                <option value="manual">手动 (manual)</option>
+                <option value="scheduled">定时 (scheduled)</option>
+              </select>
+            </div>
+
+            {/* Guard */}
+            <div>
+              <label className="text-[10px] text-muted-foreground">守卫表达式</label>
+              <input
+                type="text"
+                value={edge.content?.guard || ''}
+                onChange={(e) =>
+                  onUpdate({
+                    content: {
+                      ...edge.content,
+                      guard: e.target.value || undefined,
+                    },
+                  })
+                }
+                placeholder="守卫表达式，如 user.role === 'admin'"
+                className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
+              />
+            </div>
+
+            {/* Timeout */}
+            <div>
+              <label className="text-[10px] text-muted-foreground">超时时间 (ms)</label>
+              <input
+                type="number"
+                value={edge.content?.timeout ?? ''}
+                onChange={(e) => {
+                  const val = e.target.value
+                  onUpdate({
+                    content: {
+                      ...edge.content,
+                      timeout: val === '' ? undefined : Number(val),
+                    },
+                  })
+                }}
+                placeholder="3000"
+                min={0}
+                className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
+              />
+            </div>
+
+            {/* Retry */}
+            <div className="space-y-1.5">
+              <label className="text-[10px] text-muted-foreground">重试配置</label>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <label className="text-[10px] text-muted-foreground">最大次数</label>
+                  <input
+                    type="number"
+                    value={edge.content?.retry?.max ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      onUpdate({
+                        content: {
+                          ...edge.content,
+                          retry: {
+                            max: val === '' ? 0 : Number(val),
+                            delay: edge.content?.retry?.delay ?? 0,
+                          },
+                        },
+                      })
+                    }}
+                    placeholder="3"
+                    min={0}
+                    className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10px] text-muted-foreground">间隔 (ms)</label>
+                  <input
+                    type="number"
+                    value={edge.content?.retry?.delay ?? ''}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      onUpdate({
+                        content: {
+                          ...edge.content,
+                          retry: {
+                            max: edge.content?.retry?.max ?? 0,
+                            delay: val === '' ? 0 : Number(val),
+                          },
+                        },
+                      })
+                    }}
+                    placeholder="1000"
+                    min={0}
+                    className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

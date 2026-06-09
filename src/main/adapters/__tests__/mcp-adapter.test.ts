@@ -187,10 +187,10 @@ describe('parseGeminiResponse', () => {
 
 describe('resolveApiKey', () => {
   const keys: ApiKeyConfig[] = [
-    { provider: 'anthropic', key: 'sk-ant-123', label: 'Main' },
-    { provider: 'openai', key: 'sk-oai-456', label: 'GPT' },
-    { provider: 'deepseek', key: 'sk-ds-789', label: 'DS' },
-    { provider: 'gemini', key: 'gem-key-000', label: 'Gem' },
+    { provider: 'anthropic', key: 'sk-ant-123' },
+    { provider: 'openai', key: 'sk-oai-456' },
+    { provider: 'deepseek', key: 'sk-ds-789' },
+    { provider: 'gemini', key: 'gem-key-000' },
   ]
 
   it('根据 claude 模型匹配 anthropic key', () => {
@@ -227,8 +227,8 @@ describe('resolveApiKey', () => {
 
   it('key 为空字符串时跳过', () => {
     const emptyKeys: ApiKeyConfig[] = [
-      { provider: 'anthropic', key: '', label: 'Empty' },
-      { provider: 'openai', key: 'sk-valid', label: 'Valid' },
+      { provider: 'anthropic', key: '' },
+      { provider: 'openai', key: 'sk-valid' },
     ]
     const result = resolveApiKey(emptyKeys, 'claude-3-5-sonnet-20241022')
     // anthropic key 为空，跳过；回退到 openai
@@ -237,7 +237,7 @@ describe('resolveApiKey', () => {
 
   it('全部 key 为空时返回 undefined', () => {
     const emptyKeys: ApiKeyConfig[] = [
-      { provider: 'anthropic', key: '', label: 'Empty' },
+      { provider: 'anthropic', key: '' },
     ]
     expect(resolveApiKey(emptyKeys, 'claude-3-5-sonnet')).toBeUndefined()
   })

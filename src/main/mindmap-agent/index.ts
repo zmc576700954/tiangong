@@ -12,7 +12,7 @@
  */
 
 import { runClaude, extractJson } from './claude-runner'
-import { readMemory, updateDomains, addRefinement } from './memory'
+import { readMemory, updateDomains, addRefinement, recommendInitialDomains, contributeToGlobalKnowledge } from './memory'
 import { validateModules, validateEnrichment, type ValidatedEnrichment } from './schema-validator'
 import { collectContext } from './context-collector'
 import { classifyComplexity } from './complexity-classifier'
@@ -51,8 +51,9 @@ export class MindMapAgent {
 
   async generateFull(projectName: string, framework: string): Promise<ScanModule[]> {
     try {
+      const recommendedDomains = await recommendInitialDomains(this.projectPath, framework)
       const context = await collectContext(this.projectPath, projectName, framework)
-      const prompt = buildGlobalPrompt(context)
+      const prompt = buildGlobalPrompt(context, recommendedDomains)
 
       logger.info('开始生成，prompt 长度:', prompt.length)
 
@@ -107,6 +108,11 @@ export class MindMapAgent {
         modules.map((m) => m.name),
         context.memory.architecturePattern || `${projectName} 项目`,
       )
+
+      // 异步贡献到全局知识库
+      void contributeToGlobalKnowledge(this.projectPath).catch((err) => {
+        logger.warn('contributeToGlobalKnowledge failed:', err)
+      })
 
       return modules
     } catch (err) {

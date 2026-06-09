@@ -6,9 +6,10 @@ import type { ContextRef, GraphNode } from '@shared/types'
 // Mock fs/promises
 vi.mock('node:fs/promises', () => ({
   readFile: vi.fn(),
+  stat: vi.fn(),
 }))
 
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 
 describe('estimateTokens', () => {
   it('estimates ~4 chars per token for mixed content', () => {
@@ -41,6 +42,8 @@ describe('ContextResolver', () => {
   beforeEach(() => {
     resolver = new ContextResolver()
     vi.clearAllMocks()
+    // Default stat mock for mtime validation
+    vi.mocked(stat).mockResolvedValue({ mtimeMs: 1000 } as any)
   })
 
   it('returns empty array for empty refs', async () => {
@@ -80,6 +83,7 @@ describe('ContextResolver', () => {
 
   it('resolves file ref by reading file content', async () => {
     vi.mocked(readFile).mockResolvedValue('const x = 1\nconsole.log(x)')
+    vi.mocked(stat).mockResolvedValue({ mtimeMs: 1000 } as any)
 
     const refs: ContextRef[] = [{ type: 'file', id: 'src/main.ts', label: 'main.ts' }]
     const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
@@ -181,6 +185,7 @@ describe('ContextResolver', () => {
 
   it('uses TTL cache for repeated file reads', async () => {
     vi.mocked(readFile).mockResolvedValue('cached content')
+    vi.mocked(stat).mockResolvedValue({ mtimeMs: 1000 } as any)
 
     const refs: ContextRef[] = [{ type: 'file', id: 'cached.ts', label: 'cached.ts' }]
     await resolver.resolve(refs, 8000, { basePath: '/project' })
@@ -188,6 +193,8 @@ describe('ContextResolver', () => {
 
     // readFile should only be called once due to TTL cache
     expect(readFile).toHaveBeenCalledTimes(1)
+    // stat may be called for mtime validation on cache hit
+    expect(stat).toHaveBeenCalled()
   })
 
   it('rejects path traversal via relative path escaping', async () => {

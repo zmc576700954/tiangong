@@ -11,7 +11,7 @@ import { BugRepository } from '../repositories/bug-repository'
 import { SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
 import type { GraphNode, BugNode } from '@shared/types'
-import { validateNodeTransition, validateBugTransition } from '@shared/state-machine'
+import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { IpcError, ErrorCode } from '../errors'
 
@@ -63,7 +63,7 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     if (data.status !== undefined) {
       const currentStatus = await nodeRepo.getStatus(id)
       if (currentStatus !== null && currentStatus !== data.status) {
-        validateNodeTransition(currentStatus, data.status)
+        validateTransition(currentStatus, data.status)
       }
     }
     return nodeRepo.update(id, data)

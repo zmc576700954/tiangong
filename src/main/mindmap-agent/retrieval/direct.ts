@@ -16,7 +16,7 @@ export interface DirectRetrievalResult {
   tokenEstimate: number
 }
 
-import { estimateTokens } from '../../../shared/token-utils'
+import { estimateTokens } from '../../shared/token-utils'
 
 /**
  * 直接检索节点关联内容

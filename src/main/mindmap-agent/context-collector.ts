@@ -29,7 +29,7 @@ export interface MindMapContext {
   keyFileSnippets: string
 }
 
-import { estimateTokens } from '../../shared/token-utils'
+import { estimateTokens } from '../shared/token-utils'
 
 /** 截断到 token 预算 */
 function truncateToBudget(text: string, maxTokens: number): string {

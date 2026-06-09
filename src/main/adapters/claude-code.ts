@@ -32,21 +32,12 @@ function isAssistantMessage(msg: unknown): msg is {
   )
 }
 
-function isResultMessage(msg: unknown): msg is {
-  is_error: boolean
-  result?: string
-  errors?: string[]
-} {
-  if (typeof msg !== 'object' || msg === null) return false
-  const m = msg as Record<string, unknown>
-  return typeof m.is_error === 'boolean'
-}
 
 export class ClaudeCodeAdapter extends BaseAdapter {
   readonly name = 'claude-code'
   readonly version = '2.0.0'
 
-  private logger = createLogger('ClaudeCodeAdapter')
+  protected logger = createLogger('ClaudeCodeAdapter')
 
   private sdkQuery: QueryFn | null = null
   private sdkLoadAttempted = false
@@ -168,25 +159,22 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         }
 
         if (message.type === 'result') {
-          if (isResultMessage(message)) {
-            if (message.is_error) {
-              const errorText =
-                (Array.isArray(message.errors) ? message.errors.join('\n') : undefined) ??
-                (typeof message.result === 'string' ? message.result : undefined) ??
-                'Agent execution failed'
-              this.emitOutput({
-                type: 'error',
-                data: errorText,
-                timestamp: Date.now(),
-                errorCode: 'AGENT_CRASH',
-              })
-            } else {
-              this.emitOutput({
-                type: 'complete',
-                data: typeof message.result === 'string' ? message.result : 'Completed',
-                timestamp: Date.now(),
-              })
-            }
+          if (message.subtype === 'success') {
+            this.emitOutput({
+              type: 'complete',
+              data: message.result || 'Completed',
+              timestamp: Date.now(),
+            })
+          } else {
+            const errorText =
+              (message.errors.length > 0 ? message.errors.join('\n') : undefined) ??
+              'Agent execution failed'
+            this.emitOutput({
+              type: 'error',
+              data: errorText,
+              timestamp: Date.now(),
+              errorCode: 'AGENT_CRASH',
+            })
           }
         }
       }

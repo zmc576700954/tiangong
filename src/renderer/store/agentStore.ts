@@ -2,56 +2,8 @@ import { create } from 'zustand'
 import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus, AdapterPreferences, AdapterFallbackAttempt } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
-
-/** 单个 thread 的输出上限，防止长时间运行导致内存膨胀 */
-const MAX_OUTPUTS_PER_THREAD = 1000
-
-/** 批处理缓冲区 - 不在 store state 中，避免触发渲染 */
-let outputBuffer: Array<{ threadId: string; output: AgentOutput }> = []
-let flushScheduled = false
-const BATCH_INTERVAL = 16 // ~1 frame at 60fps
-
-/** 将缓冲区中的输出批量写入 store，合并为一次状态更新 */
-function flushOutputBuffer() {
-  flushScheduled = false
-  if (outputBuffer.length === 0) return
-
-  const batch = outputBuffer
-  outputBuffer = []
-
-  useAgentStore.setState((state) => {
-    const newOutputs = { ...state.threadOutputs }
-    let threads = state.threads
-    const errorThreadIds = new Set<string>()
-
-    for (const { threadId, output } of batch) {
-      const existing = newOutputs[threadId] ?? []
-      newOutputs[threadId] = [...existing, output].slice(-MAX_OUTPUTS_PER_THREAD)
-      if (output.type === 'error') {
-        errorThreadIds.add(threadId)
-      }
-    }
-
-    if (errorThreadIds.size > 0) {
-      threads = threads.map((t) =>
-        errorThreadIds.has(t.id) ? { ...t, status: 'error' as const } : t,
-      )
-    }
-
-    return { threadOutputs: newOutputs, threads }
-  })
-}
-
-/** 调度一次 flush（如果尚未调度） */
-function scheduleFlush() {
-  if (flushScheduled) return
-  flushScheduled = true
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(flushOutputBuffer)
-  } else {
-    setTimeout(flushOutputBuffer, BATCH_INTERVAL)
-  }
-}
+import { useAgentOutputStore } from './agentOutputStore'
+import { eventBus, Events } from './eventBus'
 
 interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
@@ -133,14 +85,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   appendOutput: (threadId, output) => {
-    // 对 error 类型输出立即 flush，确保错误状态不延迟显示
+    // 委托给专用 outputStore 管理内存预算和批处理
+    useAgentOutputStore.getState().appendOutput(threadId, output)
+    // error 类型同时更新 thread 状态
     if (output.type === 'error') {
-      outputBuffer.push({ threadId, output })
-      flushOutputBuffer()
-      return
+      set((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === threadId ? { ...t, status: 'error' as const } : t,
+        ),
+      }))
     }
-    outputBuffer.push({ threadId, output })
-    scheduleFlush()
   },
 
   appendToStreamingMessage: (threadId, messageId, content) => {
@@ -161,30 +115,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   clearThreadOutputs: (threadId) => {
-    // 同时清理缓冲区中对应 thread 的条目
-    outputBuffer = outputBuffer.filter((entry) => entry.threadId !== threadId)
-    set((state) => {
-      if (!(threadId in state.threadOutputs)) return state
-      const { [threadId]: _removed, ...rest } = state.threadOutputs
-      return { threadOutputs: rest }
-    })
+    useAgentOutputStore.getState().clearThreadOutputs(threadId)
   },
 
   trimInactiveThreadOutputs: (activeThreadId) => {
-    const TRIM_TO = 100
-    set((state) => {
-      let changed = false
-      const updated: Record<string, AgentOutput[]> = {}
-      for (const [tid, outputs] of Object.entries(state.threadOutputs)) {
-        if (tid !== activeThreadId && outputs.length > TRIM_TO) {
-          updated[tid] = outputs.slice(-TRIM_TO)
-          changed = true
-        }
-      }
-      return changed
-        ? { threadOutputs: { ...state.threadOutputs, ...updated } }
-        : state
-    })
+    useAgentOutputStore.getState().trimInactiveThreadOutputs(activeThreadId)
   },
 
   appendToolCall: (threadId, messageId, toolCall) => {
@@ -243,7 +178,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   getOutputs: (threadId) => {
-    return get().threadOutputs[threadId] ?? []
+    return useAgentOutputStore.getState().getOutputs(threadId)
   },
 
   createThread: (adapterName, nodeBound) => {
@@ -332,8 +267,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       return
     }
 
-    // 续接：如果 thread 有 sessionId 且 adapter 是 claude-code，注入 resumeSessionId
-    if (thread.sessionId && thread.adapterName === 'claude-code') {
+    // 续接：如果 thread 有 sessionId，注入 resumeSessionId（适配器自行决定是否支持）
+    if (thread.sessionId) {
       config.resumeSessionId = thread.sessionId
     }
 
@@ -369,8 +304,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         })
       }
 
+      // BUG 节点自动映射为 fix_bug 命令类型
+      const boundNode = thread.nodeBound
+        ? useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
+        : undefined
+      const commandType: AgentCommand['type'] = boundNode?.type === 'bug' ? 'fix_bug' : 'implement'
+
       const command: AgentCommand = {
-        type: 'implement',
+        type: commandType,
         description: content,
         targetNodeId: thread.nodeBound ?? '',
       }
@@ -591,10 +532,16 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     const cleanup = window.electronAPI.onAgentStatusChange(
       (_sessionId: string, nodeId: string, status: string) => {
         if (VALID_STATUSES.includes(status as NodeStatus)) {
-          useGraphStore.getState().updateNode(nodeId, { status: status as NodeStatus })
+          // 通过事件总线解耦，不再直接调用 graphStore
+          eventBus.emit(Events.AGENT_STATUS_CHANGE, nodeId, status as NodeStatus)
         }
       },
     )
     return cleanup
   },
 }))
+
+// 订阅 outputStore 变化，同步 threadOutputs 到 agentStore（保持向后兼容）
+useAgentOutputStore.subscribe((state) => {
+  useAgentStore.setState({ threadOutputs: state.threadOutputs })
+})

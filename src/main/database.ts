@@ -78,7 +78,7 @@ export async function closeDatabase(): Promise<void> {
     })
     // 如果客户端支持显式 close，优先调用以释放底层资源
     if ('close' in client && typeof (client as { close: unknown }).close === 'function') {
-      await (client as { close: () => Promise<void> }).close()
+      await (client as unknown as { close: () => Promise<void> }).close()
     }
     client = null
   }

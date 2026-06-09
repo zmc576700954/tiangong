@@ -5,7 +5,9 @@
 
 import type { Client } from '@libsql/client'
 import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule } from '@shared/types'
+import { nodeTypeRegistry } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
+import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
 import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
@@ -29,11 +31,17 @@ export interface InitFromProjectResult {
 export class GraphService {
   private graphRepo: GraphRepository
   private cachedProjectPaths: string[] | null = null
+  private symbolIndex?: SymbolIndex
   constructor(
     private db: Client,
     private agentManager?: AgentManager,
   ) {
     this.graphRepo = new GraphRepository(db)
+  }
+
+  /** 注入 SymbolIndex（由 ipc-handlers 初始化后调用） */
+  setSymbolIndex(symbolIndex: SymbolIndex): void {
+    this.symbolIndex = symbolIndex
   }
 
   private invalidateProjectPathsCache(): void {
@@ -188,8 +196,8 @@ export class GraphService {
 
     // 第一轮：创建所有节点，记录 tempId -> realId 映射
     for (const nodeData of graphResult.nodes) {
-      // 校验 AI 生成的 type 值，非法值降级为 'feature'
-      if (!VALID_NODE_TYPES.includes(nodeData.type)) {
+      // 校验 AI 生成的 type 值，非法值降级为 'feature'（同时支持注册表扩展类型）
+      if (!VALID_NODE_TYPES.includes(nodeData.type) && !nodeTypeRegistry.has(nodeData.type)) {
         logger.warn(`Invalid node type "${nodeData.type}", falling back to "feature"`)
         nodeData.type = 'feature'
       }
@@ -268,5 +276,92 @@ export class GraphService {
       this.cachedProjectPaths = await this.graphRepo.getProjectPaths()
     }
     return this.cachedProjectPaths
+  }
+
+  /**
+   * 基于代码 import 关系自动建议边
+   * 扫描图中节点的 fileAssociations，查询 SymbolIndex 中的 import 关系，
+   * 返回可以创建的边建议列表。
+   */
+  async suggestEdges(graphId: string): Promise<Array<{
+    sourceId: string
+    targetId: string
+    label: string
+    edgeType: 'default'
+    description: string
+    dataFlow: string
+    strength: number
+  }>> {
+    if (!this.symbolIndex) {
+      logger.warn('suggestEdges: SymbolIndex not available')
+      return []
+    }
+
+    // 获取图中所有带 fileAssociations 的节点
+    const result = await this.db.execute({
+      sql: 'SELECT id, metadata FROM nodes WHERE graph_id = ? AND metadata IS NOT NULL',
+      args: [graphId],
+    })
+
+    // 构建 filePath → nodeId 映射
+    const fileToNode = new Map<string, string>()
+    const nodeFiles = new Map<string, string[]>()
+
+    for (const row of result.rows) {
+      const nodeId = String((row as Record<string, unknown>).id)
+      const metadataStr = String((row as Record<string, unknown>).metadata)
+      try {
+        const metadata = JSON.parse(metadataStr)
+        const files = metadata.fileAssociations?.map((f: { path: string }) => f.path) ?? []
+        nodeFiles.set(nodeId, files)
+        for (const file of files) {
+          fileToNode.set(file, nodeId)
+        }
+      } catch {
+        // 忽略无效 metadata
+      }
+    }
+
+    // 查询已存在的边，避免重复建议
+    const existingEdges = await this.db.execute({
+      sql: 'SELECT source, target FROM edges WHERE graph_id = ?',
+      args: [graphId],
+    })
+    const edgeSet = new Set(existingEdges.rows.map((r) => {
+      const row = r as Record<string, unknown>
+      return `${String(row.source)}->${String(row.target)}`
+    }))
+
+    // 遍历每个节点的关联文件，查询 import 关系
+    const suggestions: Array<{
+      sourceId: string; targetId: string; label: string;
+      edgeType: 'default'; description: string; dataFlow: string; strength: number
+    }> = []
+
+    for (const [nodeId, files] of nodeFiles) {
+      for (const file of files) {
+        const imports = await this.symbolIndex.getImports(file)
+        for (const imp of imports) {
+          const targetNodeId = fileToNode.get(imp.toFile)
+          if (!targetNodeId || targetNodeId === nodeId) continue
+          const key = `${nodeId}->${targetNodeId}`
+          if (edgeSet.has(key)) continue
+          edgeSet.add(key) // 去重
+
+          suggestions.push({
+            sourceId: nodeId,
+            targetId: targetNodeId,
+            label: 'import',
+            edgeType: 'default' as const,
+            description: `${file.split('/').pop()} imports from ${imp.toFile.split('/').pop()}`,
+            dataFlow: imp.importedNames.join(', '),
+            strength: Math.min(imp.importedNames.length * 0.2, 1.0),
+          })
+        }
+      }
+    }
+
+    logger.info(`suggestEdges: found ${suggestions.length} edge suggestions for graph ${graphId}`)
+    return suggestions
   }
 }

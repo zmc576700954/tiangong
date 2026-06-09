@@ -4,6 +4,7 @@
  */
 
 import fs from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import type { TypedHandle } from './utils'
 import type { FileSearchResult } from '@shared/types'
@@ -37,7 +38,7 @@ export async function searchFilesRecursive(
 
   async function walk(dir: string) {
     if (results.length >= limit) return
-    let entries: fs.Dirent[]
+    let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch {
@@ -92,7 +93,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   const vWrite = (targetPath: string) => validateFsPath(targetPath, 'write')
 
   // ---- 只读 ----
-  typedHandle('fs:readDir', async (event, dirPath) => {
+  typedHandle('fs:readDir', async (_event, dirPath) => {
     const validPath = await vRead(dirPath)
     const entries = await fs.readdir(validPath, { withFileTypes: true })
     return entries.map((entry) => ({
@@ -101,7 +102,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     }))
   })
 
-  typedHandle('fs:readFile', async (event, filePath) => {
+  typedHandle('fs:readFile', async (_event, filePath) => {
     const validPath = await vRead(filePath)
     return fs.readFile(validPath, 'utf-8')
   })
@@ -109,7 +110,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   // ---- 文件/目录操作 ----
 
   /** 读取目录，返回含完整路径、大小、修改时间的信息 */
-  typedHandle('fs:readDirDetail', async (event, dirPath) => {
+  typedHandle('fs:readDirDetail', async (_event, dirPath) => {
     const validPath = await vRead(dirPath)
     const entries = await fs.readdir(validPath, { withFileTypes: true })
     const results = await Promise.all(
@@ -139,7 +140,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 创建文件 */
-  typedHandle('fs:createFile', async (event, filePath) => {
+  typedHandle('fs:createFile', async (_event, filePath) => {
     const validPath = await vWrite(filePath)
     assertNotDangerous(validPath)
     await fs.mkdir(path.dirname(validPath), { recursive: true })
@@ -156,7 +157,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 创建目录 */
-  typedHandle('fs:createDir', async (event, dirPath) => {
+  typedHandle('fs:createDir', async (_event, dirPath) => {
     const validPath = await vWrite(dirPath)
     assertNotDangerous(validPath)
     await fs.mkdir(validPath, { recursive: true })
@@ -164,7 +165,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 删除文件或目录 */
-  typedHandle('fs:delete', async (event, targetPath, recursive = false) => {
+  typedHandle('fs:delete', async (_event, targetPath, recursive = false) => {
     const validPath = await vWrite(targetPath)
     assertNotDangerous(validPath)
     const stat = await fs.stat(validPath)
@@ -177,7 +178,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 重命名 */
-  typedHandle('fs:rename', async (event, oldPath, newName) => {
+  typedHandle('fs:rename', async (_event, oldPath, newName) => {
     const validOldPath = await vWrite(oldPath)
     assertNotDangerous(validOldPath)
     const parentDir = path.dirname(validOldPath)
@@ -201,7 +202,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 移动文件/目录 */
-  typedHandle('fs:move', async (event, sourcePath, destDir) => {
+  typedHandle('fs:move', async (_event, sourcePath, destDir) => {
     const validSource = await vWrite(sourcePath)
     const validDestDir = await vWrite(destDir)
     const fileName = path.basename(validSource)
@@ -217,7 +218,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 复制文件/目录 */
-  typedHandle('fs:copy', async (event, sourcePath, destDir) => {
+  typedHandle('fs:copy', async (_event, sourcePath, destDir) => {
     const validSource = await vRead(sourcePath)
     const validDestDir = await vWrite(destDir)
     const fileName = path.basename(validSource)
@@ -233,7 +234,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 检查路径是否存在 */
-  typedHandle('fs:exists', async (event, targetPath) => {
+  typedHandle('fs:exists', async (_event, targetPath) => {
     try {
       const validPath = await vRead(targetPath)
       await fs.access(validPath)
@@ -244,7 +245,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 获取文件/目录 stat 信息 */
-  typedHandle('fs:stat', async (event, targetPath) => {
+  typedHandle('fs:stat', async (_event, targetPath) => {
     const validPath = await vRead(targetPath)
     const stat = await fs.stat(validPath)
     return {
@@ -257,7 +258,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   })
 
   /** 递归搜索文件（用于 @ 提及文件） */
-  typedHandle('fs:searchFiles', async (event, dirPath, query, limit) => {
+  typedHandle('fs:searchFiles', async (_event, dirPath, query, limit) => {
     const validPath = await vRead(dirPath)
     return searchFilesRecursive(validPath, query, limit)
   })

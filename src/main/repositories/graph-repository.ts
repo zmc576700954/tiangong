@@ -184,7 +184,7 @@ export class GraphRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           newId, nodeType, status, rowStr(row, 'title'),
-          rowOptStr(row, 'description'),
+          rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
           targetGraphId, assertGraphType(targetGraphType),
           row['parent_id'],
@@ -227,7 +227,7 @@ export class GraphRepository {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           newId, newSourceId, newTargetId,
-          rowOptStr(row, 'label'), row['edge_type'], row['content'],
+          rowOptStr(row, 'label') ?? null, row['edge_type'], row['content'],
           targetGraphId, row['description'], row['data_flow'], row['strength'],
         ],
       })

@@ -1,76 +1,78 @@
 import { describe, it, expect } from 'vitest'
-import { canTransitionNode, canTransitionBug, validateNodeTransition, validateBugTransition } from '../state-machine'
+import { canTransition, validateTransition, getAllowedTransitions, findTransitionPath, InvalidStateTransitionError } from '../state-machine'
 
-describe('Node state machine', () => {
+describe('canTransition', () => {
   it('allows draft → confirmed', () => {
-    expect(canTransitionNode('draft', 'confirmed')).toBe(true)
+    expect(canTransition('draft', 'confirmed')).toBe(true)
   })
 
   it('allows confirmed → developing', () => {
-    expect(canTransitionNode('confirmed', 'developing')).toBe(true)
-  })
-
-  it('allows placeholder → developing', () => {
-    expect(canTransitionNode('placeholder', 'developing')).toBe(true)
+    expect(canTransition('confirmed', 'developing')).toBe(true)
   })
 
   it('allows developing → testing', () => {
-    expect(canTransitionNode('developing', 'testing')).toBe(true)
+    expect(canTransition('developing', 'testing')).toBe(true)
   })
 
   it('allows testing → review', () => {
-    expect(canTransitionNode('testing', 'review')).toBe(true)
+    expect(canTransition('testing', 'review')).toBe(true)
   })
 
   it('allows review → published', () => {
-    expect(canTransitionNode('review', 'published')).toBe(true)
+    expect(canTransition('review', 'published')).toBe(true)
   })
 
-  it('allows reverse transitions for corrections', () => {
-    expect(canTransitionNode('published', 'review')).toBe(true)
-    expect(canTransitionNode('review', 'testing')).toBe(true)
-    expect(canTransitionNode('testing', 'developing')).toBe(true)
+  it('blocks illegal transition: published → developing', () => {
+    expect(canTransition('published', 'developing')).toBe(false)
   })
 
-  it('disallows draft → published (skip)', () => {
-    expect(canTransitionNode('draft', 'published')).toBe(false)
+  it('blocks illegal transition: draft → published', () => {
+    expect(canTransition('draft', 'published')).toBe(false)
   })
 
-  it('disallows draft → testing (skip)', () => {
-    expect(canTransitionNode('draft', 'testing')).toBe(false)
+  it('allows same state (no-op)', () => {
+    expect(canTransition('confirmed', 'confirmed')).toBe(true)
   })
 
-  it('validateNodeTransition throws on invalid transition', () => {
-    expect(() => validateNodeTransition('draft', 'published')).toThrow('Invalid node status transition')
+  it('allows placeholder → draft', () => {
+    expect(canTransition('placeholder', 'draft')).toBe(true)
   })
 
-  it('validateNodeTransition does not throw on valid transition', () => {
-    expect(() => validateNodeTransition('draft', 'confirmed')).not.toThrow()
+  it('allows placeholder → confirmed', () => {
+    expect(canTransition('placeholder', 'confirmed')).toBe(true)
   })
 })
 
-describe('Bug state machine', () => {
-  it('allows open → fixed', () => {
-    expect(canTransitionBug('open', 'fixed')).toBe(true)
+describe('validateTransition', () => {
+  it('throws on illegal transition', () => {
+    expect(() => validateTransition('draft', 'published', 'node-1')).toThrow(InvalidStateTransitionError)
   })
 
-  it('allows fixed → verified', () => {
-    expect(canTransitionBug('fixed', 'verified')).toBe(true)
+  it('does not throw on legal transition', () => {
+    expect(() => validateTransition('draft', 'confirmed')).not.toThrow()
+  })
+})
+
+describe('getAllowedTransitions', () => {
+  it('returns correct transitions from confirmed', () => {
+    const transitions = getAllowedTransitions('confirmed')
+    expect(transitions).toContain('developing')
+    expect(transitions).toContain('draft')
+    expect(transitions).toContain('placeholder')
+    expect(transitions).not.toContain('published')
+  })
+})
+
+describe('findTransitionPath', () => {
+  it('returns direct path for legal direct transition', () => {
+    expect(findTransitionPath('draft', 'confirmed')).toEqual(['draft', 'confirmed'])
   })
 
-  it('allows fixed → open (regression)', () => {
-    expect(canTransitionBug('fixed', 'open')).toBe(true)
-  })
-
-  it('allows verified → open (regression)', () => {
-    expect(canTransitionBug('verified', 'open')).toBe(true)
-  })
-
-  it('disallows open → verified (skip)', () => {
-    expect(canTransitionBug('open', 'verified')).toBe(false)
-  })
-
-  it('validateBugTransition throws on invalid transition', () => {
-    expect(() => validateBugTransition('open', 'verified')).toThrow('Invalid bug status transition')
+  it('returns multi-step path when indirect', () => {
+    const path = findTransitionPath('published', 'draft')
+    expect(path).not.toBeNull()
+    expect(path!.length).toBeGreaterThan(2)
+    expect(path![0]).toBe('published')
+    expect(path![path!.length - 1]).toBe('draft')
   })
 })

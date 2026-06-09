@@ -22,11 +22,13 @@ export type {
   ScanFeature, ScanProcess, ScanModule, PackageJsonInfo, ProjectScanResult,
   CommunitySummary, NodeEnrichment, RefinementRecord, ProjectMemory,
   ContextRef,
+  NodeTypeConfig,
 } from './types/graph'
 
 export {
   NODE_STATUS_VALUES, NODE_TYPE_VALUES, GRAPH_TYPE_VALUES,
   EDGE_TYPE_VALUES, BUG_SEVERITY_VALUES, BUG_STATUS_VALUES,
+  nodeTypeRegistry,
 } from './types/graph'
 
 export type {
@@ -44,6 +46,13 @@ export type {
   SymbolKind, SymbolInfo, ImportEdge, SymbolReference, SymbolQueryResult,
   CodeIntelExecutionPlan,
 } from './types/agent'
+
+export type {
+  // Swarm domain
+  SwarmTaskType, SwarmTaskStatus, SwarmTask,
+  SwarmStrategy, SwarmConfig,
+  SwarmExecutionResult,
+} from './types/swarm'
 
 export type {
   // IPC domain

@@ -10,7 +10,7 @@
  * - 文件内容截取前 N 行，而非全量读取
  */
 
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import type { ContextRef, ResolvedContext, GraphNode } from '@shared/types'
 
@@ -47,12 +47,12 @@ export interface ResolveOptions {
 }
 
 export class ContextResolver {
-  private fileCache = new Map<string, { content: string; timestamp: number }>()
+  private fileCache = new Map<string, { content: string; timestamp: number; mtime: number }>()
 
   /**
    * 向缓存添加条目，超过大小时淘汰最早条目
    */
-  private addToCache(key: string, value: { content: string; timestamp: number }): void {
+  private addToCache(key: string, value: { content: string; timestamp: number; mtime: number }): void {
     // 删除旧条目以保证新条目在末尾（FIFO 顺序）
     if (this.fileCache.has(key)) {
       this.fileCache.delete(key)
@@ -82,7 +82,7 @@ export class ContextResolver {
 
     // 按优先级排序：node > file
     const sorted = [...refs].sort((a, b) => {
-      const priority = { node: 0, file: 1, text: 2 }
+      const priority: Record<string, number> = { node: 0, file: 1, text: 2 }
       return (priority[a.type] ?? 2) - (priority[b.type] ?? 2)
     })
 
@@ -183,13 +183,26 @@ export class ContextResolver {
     }
 
     try {
-      // Check TTL cache first
+      // Check TTL cache first, then verify mtime to detect actual file changes
       const cached = this.fileCache.get(resolvedPath)
       if (cached && Date.now() - cached.timestamp < FILE_CACHE_TTL) {
-        return cached.content
+        try {
+          const fileStat = await stat(resolvedPath)
+          const mtimeMs = fileStat.mtimeMs
+          if (mtimeMs === cached.mtime) {
+            return cached.content
+          }
+          // mtime 变化，文件已修改，失效缓存继续读取
+        } catch {
+          // stat 失败，回退到 TTL 缓存
+          return cached.content
+        }
       }
 
-      const content = await readFile(resolvedPath, 'utf-8')
+      const [content, fileStat] = await Promise.all([
+        readFile(resolvedPath, 'utf-8'),
+        stat(resolvedPath),
+      ])
       const lines = content.split('\n')
 
       let result: string
@@ -202,7 +215,7 @@ export class ContextResolver {
         result = content
       }
 
-      this.addToCache(resolvedPath, { content: result, timestamp: Date.now() })
+      this.addToCache(resolvedPath, { content: result, timestamp: Date.now(), mtime: fileStat.mtimeMs })
       return result
     } catch {
       return `[无法读取文件: ${ref.label} (${ref.id})]`

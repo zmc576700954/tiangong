@@ -6,6 +6,7 @@ const mockFs = vi.hoisted(() => ({
   readFile: vi.fn(),
   writeFile: vi.fn(),
   mkdir: vi.fn(),
+  rename: vi.fn(),
 }))
 
 vi.mock('node:fs/promises', () => ({
@@ -13,6 +14,7 @@ vi.mock('node:fs/promises', () => ({
   readFile: (...args: unknown[]) => mockFs.readFile(...args),
   writeFile: (...args: unknown[]) => mockFs.writeFile(...args),
   mkdir: (...args: unknown[]) => mockFs.mkdir(...args),
+  rename: (...args: unknown[]) => mockFs.rename(...args),
 }))
 
 describe('memory', () => {
@@ -20,6 +22,7 @@ describe('memory', () => {
     vi.clearAllMocks()
     mockFs.mkdir.mockResolvedValue(undefined)
     mockFs.writeFile.mockResolvedValue(undefined)
+    mockFs.rename.mockResolvedValue(undefined)
   })
 
   // ==================== readMemory ====================
@@ -100,10 +103,11 @@ describe('memory', () => {
       await writeMemory('/project', memory)
       expect(mockFs.mkdir).toHaveBeenCalledWith(expect.stringContaining('.bizgraph'), { recursive: true })
       expect(mockFs.writeFile).toHaveBeenCalledWith(
-        expect.stringContaining('memory.json'),
+        expect.stringContaining('memory.json.tmp'),
         expect.stringContaining('"projectId": "p1"'),
         'utf-8',
       )
+      expect(mockFs.rename).toHaveBeenCalled()
     })
 
     it('更新 updatedAt 时间戳', async () => {

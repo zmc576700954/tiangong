@@ -43,21 +43,27 @@ import { ChatService } from './services/chat-service'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
-// 全局实例组装（依赖注入）
+// 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
 // ============================================
 
-const registry = new AdapterRegistry()
-registry.register(new ClaudeCodeAdapter())
-registry.register(new CodexAdapter())
-registry.register(new OpenCodeAdapter())
-registry.register(new McpAdapter())
-registry.register(new CursorAdapter())
-registry.register(new MindMapAdapter())
+function createCoreDependencies() {
+  const registry = new AdapterRegistry()
+  registry.register(new ClaudeCodeAdapter())
+  registry.register(new CodexAdapter())
+  registry.register(new OpenCodeAdapter())
+  registry.register(new McpAdapter())
+  registry.register(new CursorAdapter())
+  registry.register(new MindMapAdapter())
 
-const router = new SessionRouter(registry)
-const broadcaster = new OutputBroadcaster()
-const agentManager = new AgentManager(registry, router, broadcaster)
-const gitAgent = new GitAgent()
+  const router = new SessionRouter(registry)
+  const broadcaster = new OutputBroadcaster()
+  const agentManager = new AgentManager(registry, router, broadcaster)
+  const gitAgent = new GitAgent()
+
+  return { registry, router, broadcaster, agentManager, gitAgent }
+}
+
+const { broadcaster, agentManager, gitAgent } = createCoreDependencies()
 
 export { agentManager }
 
@@ -240,13 +246,14 @@ export async function registerIpcHandlers(): Promise<void> {
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
   registerCodeIntelHandlers(ipcMain)
 
-  // 初始化代码智能（符号索引 + 注入到 AgentManager）
+  // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {
     await initCodeIntelligence()
     const symbolIndex = getSymbolIndex()
     if (symbolIndex) {
       agentManager.setSymbolIndex(symbolIndex)
-      logger.info('AgentManager connected to SymbolIndex')
+      graphService.setSymbolIndex(symbolIndex)
+      logger.info('AgentManager and GraphService connected to SymbolIndex')
     }
   } catch (err) {
     logger.warn('Failed to initialize code intelligence:', err)
@@ -259,7 +266,7 @@ export async function registerIpcHandlers(): Promise<void> {
   })
 
   // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
-  typedHandle('fs:registerProjectPaths', async (event, paths: unknown) => {
+  typedHandle('fs:registerProjectPaths', async (_event, paths: unknown) => {
     if (!Array.isArray(paths)) return
     const { senderId } = getIpcContext()
     for (const p of paths) {

@@ -387,6 +387,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         edgeTypes={edgeTypes}
         fitView
         attributionPosition="bottom-left"
+        // 性能优化：仅渲染视口内的节点和边，减少大型图谱的 DOM 负担
+        onlyRenderVisibleElements
+        elevateNodesOnSelect
         defaultEdgeOptions={{
           type: 'bizEdge',
           markerEnd: {

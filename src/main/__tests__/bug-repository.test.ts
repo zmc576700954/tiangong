@@ -16,7 +16,7 @@ function createMockDb(): Client {
 }
 
 function mockRows(rows: Record<string, unknown>[]): ResultSet {
-  return { rows: rows as unknown as Row[], columns: [], rowsAffected: 0, lastInsertRowid: 0n }
+  return { rows: rows as unknown as Row[], columns: [], columnTypes: [], rowsAffected: 0, lastInsertRowid: 0n, toJSON: () => ({}) }
 }
 
 describe('BugRepository', () => {

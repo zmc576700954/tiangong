@@ -62,7 +62,7 @@ export async function globalRetrieve(
 /**
  * 构建全项目分析 prompt
  */
-export function buildGlobalPrompt(context: MindMapContext): string {
+export function buildGlobalPrompt(context: MindMapContext, recommendedDomains: string[] = []): string {
   const preferences = context.memory.preferences
   const avoidList = preferences.avoidPatterns.map((p) => `- ${p}`).join('\n')
 
@@ -80,6 +80,7 @@ ${avoidList}
 8. 如果项目是工具型/库型项目，模块应按"能力域"划分
 
 ${context.memory.businessDomains.length > 0 ? `\n## 已知业务域（来自之前分析）\n${context.memory.businessDomains.join(', ')}` : ''}
+${recommendedDomains.length > 0 ? `\n## 推荐业务域（来自全局知识库）\n${recommendedDomains.join(', ')}` : ''}
 ${context.memory.refinements.length > 0 ? `\n## 用户偏好（从精炼历史学习）\n- 粒度偏好：${preferences.granularity}\n- 命名风格：${preferences.namingStyle}` : ''}
 
 ## 项目信息

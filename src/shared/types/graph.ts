@@ -124,8 +124,12 @@ export interface GraphNode {
 
 /** 边的业务内容 */
 export interface EdgeContent {
-  condition?: string
-  note?: string
+  condition?: string    // 判断条件（如 "库存 > 0"）
+  note?: string         // 业务备注（如 "退款时需同步回滚库存"）
+  trigger?: 'auto' | 'manual' | 'scheduled'  // 触发方式
+  guard?: string        // 守卫表达式（轻量级 DSL，如 "user.role === 'admin'"）
+  timeout?: number      // 超时（毫秒）
+  retry?: { max: number; delay: number }      // 重试策略
 }
 
 /** 边（连接） */
@@ -319,3 +323,84 @@ export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
 export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
+
+// ============================================
+// 节点类型注册表（支持动态扩展节点类型）
+// ============================================
+
+/** 节点类型配置（用于注册新节点类型） */
+export interface NodeTypeConfig {
+  type: string
+  label: string
+  /** 节点图标标识（用于 UI 渲染） */
+  icon?: string
+  /** 默认状态 */
+  defaultStatus?: NodeStatus
+  /** 允许作为父节点的类型 */
+  allowedParentTypes?: string[]
+  /** 允许作为子节点的类型 */
+  allowedChildTypes?: string[]
+  /** 节点描述模板 */
+  descriptionTemplate?: string
+}
+
+/**
+ * 节点类型注册表
+ * 支持动态注册新节点类型，无需修改硬编码常量。
+ * 默认注册项目内置类型，业务方可通过 register() 扩展。
+ */
+class NodeTypeRegistry {
+  private types = new Map<string, NodeTypeConfig>()
+
+  constructor() {
+    // 注册内置类型
+    const builtin: NodeTypeConfig[] = [
+      { type: 'project', label: '项目根节点', defaultStatus: 'confirmed', allowedChildTypes: ['module'] },
+      { type: 'module', label: '业务模块', defaultStatus: 'draft', allowedParentTypes: ['project'], allowedChildTypes: ['process'] },
+      { type: 'process', label: '业务流程', defaultStatus: 'draft', allowedParentTypes: ['module'], allowedChildTypes: ['feature', 'bug'] },
+      { type: 'feature', label: '功能点', defaultStatus: 'placeholder', allowedParentTypes: ['process'] },
+      { type: 'bug', label: 'BUG点', defaultStatus: 'draft', allowedParentTypes: ['process'] },
+    ]
+    for (const config of builtin) {
+      this.types.set(config.type, config)
+    }
+  }
+
+  /** 注册新节点类型（覆盖同名旧类型） */
+  register(config: NodeTypeConfig): void {
+    this.types.set(config.type, config)
+  }
+
+  /** 获取节点类型配置 */
+  get(type: string): NodeTypeConfig | undefined {
+    return this.types.get(type)
+  }
+
+  /** 获取所有已注册的类型名称 */
+  listTypes(): string[] {
+    return Array.from(this.types.keys())
+  }
+
+  /** 获取所有已注册配置 */
+  listConfigs(): NodeTypeConfig[] {
+    return Array.from(this.types.values())
+  }
+
+  /** 检查类型是否已注册 */
+  has(type: string): boolean {
+    return this.types.has(type)
+  }
+
+  /** 校验节点父子关系是否合法 */
+  validateParentChild(parentType: string, childType: string): boolean {
+    const parent = this.types.get(parentType)
+    const child = this.types.get(childType)
+    if (!parent || !child) return false
+    if (parent.allowedChildTypes && !parent.allowedChildTypes.includes(childType)) return false
+    if (child.allowedParentTypes && !child.allowedParentTypes.includes(parentType)) return false
+    return true
+  }
+}
+
+/** 全局单例节点类型注册表 */
+export const nodeTypeRegistry = new NodeTypeRegistry()

@@ -17,7 +17,7 @@ export class CodexAdapter extends BaseAdapter {
   readonly name = 'codex'
   readonly version = '2.0.0'
 
-  private logger = createLogger('CodexAdapter')
+  protected override logger = createLogger('CodexAdapter')
 
   private CodexClass: CodexConstructor | null = null
   private sdkLoadAttempted = false

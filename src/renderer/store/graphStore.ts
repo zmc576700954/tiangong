@@ -1,6 +1,8 @@
 import { create } from 'zustand'
-import type { Graph, GraphNode, GraphEdge, BugNode } from '@shared/types'
+import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus } from '@shared/types'
 import { generateId } from '../lib/utils'
+import { eventBus, Events } from './eventBus'
+import { canTransition } from '@shared/state-machine'
 
 // ============================================
 // 乐观更新辅助函数
@@ -66,7 +68,13 @@ interface GraphState {
   deleteBug: (id: string) => Promise<void>
 }
 
-export const useGraphStore = create<GraphState>((set, get) => ({
+export const useGraphStore = create<GraphState>((set, get) => {
+  // 监听 Agent 状态变更事件（解耦 agentStore → graphStore 的直接引用）
+  eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId: string, status: NodeStatus) => {
+    get().updateNode(nodeId, { status })
+  })
+
+  return {
   // ─────────────── State ───────────────
   graphs: [],
   currentGraphId: null,
@@ -167,6 +175,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   updateNode: async (id, data) => {
     const prevNode = get().nodes.find((n) => n.id === id)
     if (!prevNode) return
+
+    // 状态机校验：如果更新包含 status，验证转换是否合法
+    if (data.status && data.status !== prevNode.status) {
+      if (!canTransition(prevNode.status, data.status)) {
+        const err = new Error(
+          `非法状态转换: "${prevNode.status}" → "${data.status}" 不被允许`,
+        )
+        eventBus.emit(Events.NODE_STATUS_REJECTED, id, prevNode.status, data.status, err.message)
+        throw err
+      }
+    }
 
     // 乐观更新
     set((state) => ({
@@ -336,4 +355,5 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       throw err
     }
   },
-}))
+  }
+})

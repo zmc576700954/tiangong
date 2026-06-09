@@ -29,6 +29,8 @@ export interface AgentSessionConfig {
   acceptanceCriteria: string[]
   /** 如果是修复 Bug，传入 Bug 详情 */
   bugContext?: BugContext[]
+  /** 前序会话的上下文摘要（用于不支持原生 resume 的适配器实现伪连续性） */
+  contextSummary?: string
   /** Claude Code 会话续接 ID，非空时 spawn 命令加 --resume */
   resumeSessionId?: string
   /** 关联的节点 ID（用于状态同步） */

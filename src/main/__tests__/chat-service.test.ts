@@ -4,8 +4,9 @@ import { ChatService } from '../services/chat-service'
 import type { ChatRepository, ChatThreadRow, ChatMessageRow } from '../repositories/chat-repository'
 import type { ChatMessage } from '@shared/types'
 
-// Mock ChatRepository
-const mockRepo = {
+// Mock ChatRepository — 保留 vi.fn() 的 Mock 类型，避免 as unknown as 丢失 mockResolvedValue
+type MockChatRepository = { [K in keyof ChatRepository]: ReturnType<typeof vi.fn> }
+const mockRepo: MockChatRepository = {
   createThread: vi.fn(),
   getThread: vi.fn(),
   listThreads: vi.fn(),
@@ -15,7 +16,8 @@ const mockRepo = {
   saveMessage: vi.fn(),
   saveMessages: vi.fn(),
   listMessages: vi.fn(),
-} as unknown as ChatRepository
+  deleteMessagesByThread: vi.fn(),
+}
 
 // Mock generateId to return predictable IDs
 vi.mock('../shared/env', () => ({
@@ -33,8 +35,7 @@ describe('ChatService', () => {
     vi.clearAllMocks()
     // ChatService 构造函数创建 repo，我们通过 prototype 替换它
     service = new ChatService({} as any)
-    // @ts-expect-error 替换私有 repo
-    service['repo'] = mockRepo
+    service['repo'] = mockRepo as unknown as ChatRepository
   })
 
   // ==================== Thread Operations ====================
@@ -276,7 +277,7 @@ describe('ChatService', () => {
         role: 'user',
         content: 'Hello',
         timestamp: MOCK_NOW,
-        status: 'complete',
+        status: 'success',
       }
 
       await service.saveMessage('thread-123', message)
@@ -287,7 +288,7 @@ describe('ChatService', () => {
           threadId: 'thread-123',
           role: 'user',
           content: 'Hello',
-          status: 'complete',
+          status: 'success',
         }),
       )
       expect(mockRepo.updateThread).toHaveBeenCalledWith('thread-123', { updatedAt: MOCK_NOW })
@@ -299,7 +300,7 @@ describe('ChatService', () => {
 
       const message: ChatMessage = {
         id: 'msg-1',
-        role: 'assistant',
+        role: 'agent',
         content: 'Error occurred',
         timestamp: MOCK_NOW,
         status: 'error',
@@ -321,8 +322,8 @@ describe('ChatService', () => {
       mockRepo.updateThread.mockResolvedValue(undefined)
 
       const messages: ChatMessage[] = [
-        { id: 'msg-1', role: 'user', content: 'Hi', timestamp: MOCK_NOW, status: 'complete' },
-        { id: 'msg-2', role: 'assistant', content: 'Hello', timestamp: MOCK_NOW, status: 'complete' },
+        { id: 'msg-1', role: 'user', content: 'Hi', timestamp: MOCK_NOW, status: 'success' },
+        { id: 'msg-2', role: 'agent', content: 'Hello', timestamp: MOCK_NOW, status: 'success' },
       ]
 
       await service.saveMessages('thread-123', messages)
@@ -330,7 +331,7 @@ describe('ChatService', () => {
       expect(mockRepo.saveMessages).toHaveBeenCalledWith(
         expect.arrayContaining([
           expect.objectContaining({ id: 'msg-1', role: 'user' }),
-          expect.objectContaining({ id: 'msg-2', role: 'assistant' }),
+          expect.objectContaining({ id: 'msg-2', role: 'agent' }),
         ]),
       )
       expect(mockRepo.updateThread).toHaveBeenCalledWith('thread-123', { updatedAt: MOCK_NOW })
@@ -343,10 +344,10 @@ describe('ChatService', () => {
         {
           id: 'msg-1',
           thread_id: 'thread-123',
-          role: 'assistant',
+          role: 'agent',
           content: 'Result',
           adapter_name: 'claude',
-          status: 'complete',
+          status: 'success',
           error: null,
           session_id: 'session-1',
           context_refs: JSON.stringify([{ type: 'node', id: 'n1' }]),
@@ -359,7 +360,7 @@ describe('ChatService', () => {
       const result = await service.listMessages('thread-123')
 
       expect(result).toHaveLength(1)
-      expect(result[0].role).toBe('assistant')
+      expect(result[0].role).toBe('agent')
       expect(result[0].sessionId).toBe('session-1')
       expect(result[0].contextRefs).toEqual([{ type: 'node', id: 'n1' }])
     })
@@ -372,7 +373,7 @@ describe('ChatService', () => {
           role: 'user',
           content: 'Hello',
           adapter_name: '',
-          status: 'complete',
+          status: 'success',
           error: null,
           session_id: null,
           context_refs: null,
