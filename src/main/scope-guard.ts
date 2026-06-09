@@ -20,8 +20,14 @@ import { createLogger } from './shared/logger'
 
 const logger = createLogger('ScopeGuard')
 
-/** 定时扫描间隔（毫秒） */
+/** 定时扫描初始间隔（毫秒） */
 const ACTIVE_SCAN_INTERVAL_MS = 500
+/** 定时扫描最大间隔（毫秒），无违规时退避上限 */
+const ACTIVE_SCAN_MAX_INTERVAL_MS = 5000
+/** 扫描退避系数，每次无违规时乘以此值 */
+const ACTIVE_SCAN_BACKOFF_FACTOR = 1.5
+/** 连续无违规达到此次数时开始退避 */
+const ACTIVE_SCAN_BACKOFF_THRESHOLD = 3
 /** 递归扫描最大深度 */
 const MAX_SCAN_DEPTH = 3
 
@@ -68,13 +74,17 @@ export class ScopeGuard {
   private sandboxes = new Map<string, Sandbox>()
   private watchers = new Map<string, FSWatcher>()
   /** 定时主动扫描器：补充 chokidar 的异步延迟 */
-  private scanTimers = new Map<string, ReturnType<typeof setInterval>>()
+  private scanTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** 初始文件系统快照：用于执行后对比验证 */
   private initialSnapshots = new Map<string, Map<string, FileSnapshotEntry>>()
   /** 每个 sandbox 监控的目录集合（用于执行后验证时复用相同扫描范围） */
   private sandboxWatchDirs = new Map<string, Set<string>>()
-  /** 扫描并发锁：防止 setInterval 回调重叠执行 */
+  /** 扫描并发锁：防止 setTimeout 回调重叠执行 */
   private scanLocks = new Set<string>()
+  /** 每个 sandbox 的当前扫描间隔（自适应退避） */
+  private scanIntervals = new Map<string, number>()
+  /** 每个 sandbox 连续无违规扫描次数 */
+  private scanCleanCounts = new Map<string, number>()
   /** 越界事件处理器（通知上层终止 Agent session） */
   private violationHandlers: ScopeGuardViolationHandler[] = []
 
@@ -469,7 +479,7 @@ export class ScopeGuard {
 
   /**
    * 启动定时主动扫描
-   * 每 500ms 扫描一次白名单目录，补充 chokidar 的异步延迟
+   * 使用 setTimeout 替代 setInterval，支持自适应间隔（无违规时逐步退避）
    */
   private startActiveScanning(sandboxId: string, allowedSet: Set<string>): void {
     // 收集需要扫描的目录（白名单文件所在的目录）
@@ -478,13 +488,31 @@ export class ScopeGuard {
       dirsToScan.add(path.dirname(filePath))
     }
 
-    const timer = setInterval(async () => {
+    this.scanIntervals.set(sandboxId, ACTIVE_SCAN_INTERVAL_MS)
+    this.scanCleanCounts.set(sandboxId, 0)
+    this.scheduleNextScan(sandboxId, dirsToScan, allowedSet, ACTIVE_SCAN_INTERVAL_MS)
+  }
+
+  /**
+   * 调度下一次扫描（自适应间隔）
+   */
+  private scheduleNextScan(
+    sandboxId: string,
+    dirsToScan: Set<string>,
+    allowedSet: Set<string>,
+    delayMs: number,
+  ): void {
+    const timer = setTimeout(async () => {
       // 防止并发扫描（上一次扫描未完成时跳过本次）
-      if (this.scanLocks.has(sandboxId)) return
+      if (this.scanLocks.has(sandboxId)) {
+        // 重新调度下一次
+        this.scheduleNextScan(sandboxId, dirsToScan, allowedSet, delayMs)
+        return
+      }
       this.scanLocks.add(sandboxId)
 
       // 修复：若 timer 已被 stopActiveScanning 清除，则放弃本次扫描
-      if (this.scanTimers.get(sandboxId) !== timer) {
+      if (!this.scanTimers.has(sandboxId)) {
         this.scanLocks.delete(sandboxId)
         return
       }
@@ -501,13 +529,34 @@ export class ScopeGuard {
         if (violations.length > 0) {
           logger.warn('Active scan found violations:', violations)
           this.notifyViolation(sandboxId, violations)
+          // 发现违规：重置间隔
+          this.scanCleanCounts.set(sandboxId, 0)
+          this.scanIntervals.set(sandboxId, ACTIVE_SCAN_INTERVAL_MS)
+        } else {
+          // 无违规：逐步退避间隔
+          const cleanCount = (this.scanCleanCounts.get(sandboxId) ?? 0) + 1
+          this.scanCleanCounts.set(sandboxId, cleanCount)
+          if (cleanCount >= ACTIVE_SCAN_BACKOFF_THRESHOLD) {
+            const currentInterval = this.scanIntervals.get(sandboxId) ?? ACTIVE_SCAN_INTERVAL_MS
+            const nextInterval = Math.min(
+              Math.round(currentInterval * ACTIVE_SCAN_BACKOFF_FACTOR),
+              ACTIVE_SCAN_MAX_INTERVAL_MS,
+            )
+            this.scanIntervals.set(sandboxId, nextInterval)
+          }
         }
       } catch (err) {
         logger.error('Active scan error:', err)
       } finally {
         this.scanLocks.delete(sandboxId)
       }
-    }, ACTIVE_SCAN_INTERVAL_MS)
+
+      // 调度下一次扫描（使用当前间隔）
+      const nextDelay = this.scanIntervals.get(sandboxId) ?? ACTIVE_SCAN_INTERVAL_MS
+      if (this.scanTimers.has(sandboxId)) {
+        this.scheduleNextScan(sandboxId, dirsToScan, allowedSet, nextDelay)
+      }
+    }, delayMs)
 
     this.scanTimers.set(sandboxId, timer)
   }
@@ -518,10 +567,12 @@ export class ScopeGuard {
   private stopActiveScanning(sandboxId: string): void {
     const timer = this.scanTimers.get(sandboxId)
     if (timer) {
-      clearInterval(timer)
+      clearTimeout(timer)
       this.scanTimers.delete(sandboxId)
     }
     this.scanLocks.delete(sandboxId)
+    this.scanIntervals.delete(sandboxId)
+    this.scanCleanCounts.delete(sandboxId)
   }
 
   /**

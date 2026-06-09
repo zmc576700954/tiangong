@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock } from 'lucide-react'
+import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock, Zap } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import type { AdapterFallbackAttempt } from '@shared/types'
 
 interface ChatHeaderProps {
   adapterName: string
@@ -8,6 +9,7 @@ interface ChatHeaderProps {
   threadTitle: string
   viewMode: 'chat' | 'terminal'
   expanded: boolean
+  fallbackHistory?: AdapterFallbackAttempt[]
   onSelectAdapter: (name: string) => void
   onNewThread: () => void
   onToggleThreads: () => void
@@ -23,6 +25,7 @@ export function ChatHeader({
   threadTitle,
   viewMode,
   expanded,
+  fallbackHistory,
   onSelectAdapter,
   onNewThread,
   onToggleThreads,
@@ -34,6 +37,13 @@ export function ChatHeader({
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
   const installedAdapters = adapters.filter((a) => a.installed)
 
+  // 回退指示器：显示从哪个适配器回退到了哪个
+  const fallbackInfo = fallbackHistory && fallbackHistory.length > 1
+    ? fallbackHistory.filter((f) => !f.success).map((f) => f.adapter).join(' → ') +
+      ' → ' +
+      fallbackHistory.find((f) => f.success)?.adapter
+    : null
+
   return (
     <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-muted/30 shrink-0">
       <div className="flex items-center gap-2 min-w-0">
@@ -42,12 +52,28 @@ export function ChatHeader({
             onClick={() => setShowAdapterMenu(!showAdapterMenu)}
             className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md hover:bg-muted transition-colors"
           >
-            <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-            <span className="truncate max-w-[80px]">{adapterName || 'Select Agent'}</span>
+            {adapterName === 'auto' ? (
+              <Zap className="w-3 h-3 text-amber-400" />
+            ) : (
+              <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+            )}
+            <span className="truncate max-w-[80px]">{adapterName === 'auto' ? 'Auto' : adapterName || 'Select Agent'}</span>
             <ChevronDown className="w-3 h-3 text-muted-foreground" />
           </button>
           {showAdapterMenu && (
             <div className="absolute top-full left-0 mt-1 bg-background border border-border rounded-lg shadow-lg z-50 overflow-hidden min-w-[140px]">
+              {/* Auto 选项 */}
+              <button
+                onClick={() => { onSelectAdapter('auto'); setShowAdapterMenu(false) }}
+                className={cn(
+                  'w-full flex items-center gap-2 px-2.5 py-2 text-xs hover:bg-muted transition-colors text-left',
+                  adapterName === 'auto' && 'bg-muted',
+                )}
+              >
+                <Zap className="w-3 h-3 text-amber-400" />
+                Auto
+                <span className="text-[10px] text-muted-foreground ml-auto">default</span>
+              </button>
               {installedAdapters.map((a) => (
                 <button
                   key={a.name}
@@ -64,6 +90,12 @@ export function ChatHeader({
             </div>
           )}
         </div>
+        {/* 回退指示器 */}
+        {fallbackInfo && (
+          <span className="text-[10px] text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded" title={fallbackInfo}>
+            {fallbackInfo}
+          </span>
+        )}
         <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
           {threadTitle}
         </span>

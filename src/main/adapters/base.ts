@@ -18,6 +18,8 @@ import type { ProtocolInputMessage } from './json-protocol'
 import { SessionNotFoundError } from '../errors'
 import { buildSafeEnv } from '../shared/env'
 import { createLogger } from '../shared/logger'
+import { parseFileChanges } from './file-change-parser'
+import { buildScopePrompt } from './scope-prompt-builder'
 
 /**
  * Agent 适配器抽象基类
@@ -479,75 +481,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
   /**
    * 解析输出中的文件变更信息
-   * 例如："I'll edit src/services/RefundService.ts"
-   *
-   * 带上下文校验，减少误报：
-   * - 排除 Markdown 代码块内的内容
-   * - 排除示例/讨论语气（e.g., for example, such as）
-   * - 排除列表项和引用块
-   * - 要求文件路径包含目录分隔符（排除单文件名如 "test"）
+   * 委托给 file-change-parser 模块处理
    * @protected
    */
-  // 快速预检查：输出中是否包含文件扩展名，避免超大输出浪费正则计算
-  private static readonly FILE_EXT_QUICK_CHECK = /\.(ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml)\b/
-  private static readonly MAX_PARSE_LENGTH = 50_000
-
   protected parseFileChanges(text: string): void {
-    if (text.length > BaseAdapter.MAX_PARSE_LENGTH) return
-    if (!BaseAdapter.FILE_EXT_QUICK_CHECK.test(text)) return
-
-    const EXAMPLE_MARKERS = /\b(e\.g\.|for example|such as|like this|similar to)\b/gi
-    const FILE_PATTERN = /(?:edit|modify|update|create|add|delete|remove)\s+(?:file\s+)?[`'"]?([\w/\\.-]+\.(?:ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml))[`'"]?/gi
-
-    const lines = text.split('\n')
-    let inCodeBlock = false
-
-    for (const line of lines) {
-      FILE_PATTERN.lastIndex = 0
-      const trimmed = line.trim()
-
-      // 跳过 Markdown 代码块边界和内部行
-      if (trimmed.startsWith('```')) {
-        inCodeBlock = !inCodeBlock
-        continue
-      }
-      if (inCodeBlock) continue
-
-      // 跳过列表项、引用块、表格行
-      if (/^[-*+>]\s/.test(trimmed)) continue
-      if (/^\|/.test(trimmed)) continue
-
-      // 跳过示例/讨论语气
-      if (EXAMPLE_MARKERS.test(trimmed)) continue
-
-      // 逐行匹配，避免跨行误匹配
-      let match: RegExpExecArray | null
-      while ((match = FILE_PATTERN.exec(trimmed)) !== null) {
-        const filePath = match[1]
-        // 要求路径包含目录分隔符，排除孤立文件名
-        if (!filePath.includes('/') && !filePath.includes('\\')) continue
-
-        const changeType = this.inferChangeType(match[0])
-        this.emitOutput({
-          type: 'file_change',
-          data: `${changeType}: ${filePath}`,
-          timestamp: Date.now(),
-          filePath,
-          changeType,
-        })
-      }
-    }
-  }
-
-  /**
-   * 根据动作文本推断变更类型
-   * @protected
-   */
-  protected inferChangeType(actionText: string): 'add' | 'modify' | 'delete' {
-    const lower = actionText.toLowerCase()
-    if (lower.includes('create') || lower.includes('add')) return 'add'
-    if (lower.includes('delete') || lower.includes('remove')) return 'delete'
-    return 'modify'
+    parseFileChanges(text, (output) => this.emitOutput(output))
   }
 
   /**
@@ -561,7 +499,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
   /**
    * 生成范围约束提示词
-   * 将 AgentSessionConfig 转换为自然语言约束说明
+   * 委托给 scope-prompt-builder 模块处理
    * @protected
    */
   /**
@@ -571,7 +509,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     session: AgentSession,
     resolvedContexts?: ResolvedContext[],
   ): string {
-    return this.buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext)
+    return buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext)
   }
 
   protected buildScopePrompt(
@@ -579,80 +517,6 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     resolvedContexts?: ResolvedContext[],
     codeContext?: string,
   ): string {
-    const lines: string[] = []
-
-    lines.push(`# 业务节点：${config.nodeTitle}`)
-    lines.push('')
-
-    if (config.acceptanceCriteria.length > 0) {
-      lines.push('## 验收标准')
-      for (const criteria of config.acceptanceCriteria) {
-        lines.push(`- ${criteria}`)
-      }
-      lines.push('')
-    }
-
-    if (config.allowedFiles.length > 0) {
-      lines.push('## 允许修改的文件（白名单）')
-      for (const file of config.allowedFiles) {
-        lines.push(`- ${file}`)
-      }
-      lines.push('')
-    }
-
-    if (config.forbiddenFiles.length > 0) {
-      lines.push('## 禁止修改的文件（黑名单）')
-      for (const file of config.forbiddenFiles) {
-        lines.push(`- ${file}`)
-      }
-      lines.push('')
-    }
-
-    if (config.invariantRules.length > 0) {
-      lines.push('## 业务不变量')
-      for (const rule of config.invariantRules) {
-        lines.push(`- ${rule}`)
-      }
-      lines.push('')
-    }
-
-    if (config.upstreamContext) {
-      lines.push('## 上游契约')
-      lines.push(config.upstreamContext)
-      lines.push('')
-    }
-
-    if (config.downstreamContext) {
-      lines.push('## 下游契约')
-      lines.push(config.downstreamContext)
-      lines.push('')
-    }
-
-    if (config.bugContext && config.bugContext.length > 0) {
-      lines.push('## 待修复 Bug')
-      for (const bug of config.bugContext) {
-        lines.push(`### ${bug.title} [${bug.severity}]`)
-        lines.push(bug.description)
-        lines.push('')
-      }
-    }
-
-    // 注入智能代码上下文
-    if (codeContext) {
-      lines.push(codeContext)
-      lines.push('')
-    }
-
-    // 注入已解析的上下文
-    if (resolvedContexts && resolvedContexts.length > 0) {
-      lines.push('## 附加上下文')
-      for (const ctx of resolvedContexts) {
-        lines.push(`### ${ctx.label} (${ctx.type})`)
-        lines.push(ctx.content)
-        lines.push('')
-      }
-    }
-
-    return lines.join('\n')
+    return buildScopePrompt(config, resolvedContexts, codeContext)
   }
 }

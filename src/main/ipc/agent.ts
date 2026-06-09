@@ -17,6 +17,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
   })
 
   typedHandle('agent:startSession', async (_, adapterName, config) => {
+    // adapterName 为 null 时触发自动回退链
     return agentManager.startSession(adapterName, config)
   })
 
@@ -62,27 +63,30 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     const { sessionId } = await agentManager.startSession(installed.name, config)
 
     try {
-      // Collect response
+      // Collect response — 使用会话级输出监听器，仅接收目标 session 的输出
       const response = await new Promise<string>((resolve) => {
         let collected = ''
         const handler = (output: import('@shared/types').AgentOutput) => {
           if (output.type === 'stdout') collected += output.data
           if (output.type === 'complete' || output.type === 'error') {
-            agentManager.removeOutputListener(handler)
+            agentManager.removeSessionOutputListener(handler)
             resolve(collected)
           }
         }
-        agentManager.addOutputListener(handler)
+        agentManager.addSessionOutputListener(sessionId, handler)
 
         agentManager.sendCommand(sessionId, {
           type: 'implement',
           description: prompt,
           targetNodeId: nodeId,
-        }).catch(() => resolve(collected))
+        }).catch(() => {
+          agentManager.removeSessionOutputListener(handler)
+          resolve(collected)
+        })
 
         // Timeout after 60s
         setTimeout(() => {
-          agentManager.removeOutputListener(handler)
+          agentManager.removeSessionOutputListener(handler)
           resolve(collected)
         }, 60000)
       })
@@ -104,6 +108,8 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
         // Session may already be terminated
       }
     }
+  })
+
   // ---------- Agent 日志查询 ----------
   typedHandle('agent:getLogsByNode', async (_, nodeId: string) => {
     if (!agentLogRepo) return []

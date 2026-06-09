@@ -14,6 +14,8 @@ import type {
   ContextRef,
   ResolvedContext,
   GraphNode,
+  AdapterFallbackAttempt,
+  AdapterPreferences,
 } from '@shared/types'
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
@@ -37,6 +39,14 @@ interface SessionState {
   sandbox?: import('@shared/types').Sandbox
 }
 
+/** startSessionWithFallback 返回值 */
+export interface StartSessionResult {
+  sessionId: string
+  fallback?: boolean
+  adapterUsed: string
+  fallbackHistory: AdapterFallbackAttempt[]
+}
+
 export class AgentManager {
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
@@ -48,6 +58,12 @@ export class AgentManager {
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
   private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
+  /** 会话级输出监听器：按 broadcastName 过滤，防止跨会话输出污染 */
+  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
+  /** sessionId → broadcastName 映射（由 startSession 设置，与 broadcaster 的广播名一致） */
+  private sessionBroadcastNames = new Map<string, string>()
+  /** 适配器偏好加载器（延迟注入，避免循环依赖） */
+  private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
 
   constructor(
     private registry: AdapterRegistry,
@@ -58,6 +74,12 @@ export class AgentManager {
     for (const adapter of this.registry.list()) {
       this.attachAdapterOutput(adapter)
     }
+
+    // 注册 TTL 过期回调：孤立会话超时时自动清理沙箱等资源
+    this.router.onTtlExpired((sessionId) => {
+      logger.warn(`Session ${sessionId} TTL expired, cleaning up resources`)
+      this.cleanupSessionResources(sessionId)
+    })
 
     // 注册 ScopeGuard 越界回调：检测到越界写入时自动终止对应 session
     this.scopeGuard.onViolation(async (sandboxId, violations) => {
@@ -121,6 +143,7 @@ export class AgentManager {
     }
 
     this.sessionStates.delete(sessionId)
+    this.sessionBroadcastNames.delete(sessionId)
     this.router.unbind(sessionId)
   }
 
@@ -143,6 +166,14 @@ export class AgentManager {
     this.outputHandlers.clear()
     this.sessionEndedHandlers.clear()
     this.sessionStates.clear()
+    this.sessionBroadcastNames.clear()
+    // 停止 SessionRouter 的 TTL 检查
+    this.router.stopTtlCheck()
+    // 清理所有会话级输出监听器
+    for (const wrapped of this.sessionOutputListeners.values()) {
+      this.broadcaster.offBroadcast(wrapped)
+    }
+    this.sessionOutputListeners.clear()
   }
 
   /**
@@ -171,6 +202,13 @@ export class AgentManager {
     this.smartContextResolver = new SmartContextResolver(symbolIndex)
   }
 
+  /**
+   * 注入适配器偏好加载器（避免循环依赖：settings → ipc-handlers → AgentManager → settings）
+   */
+  setAdapterPreferencesLoader(loader: () => Promise<AdapterPreferences>): void {
+    this.adapterPreferencesLoader = loader
+  }
+
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
     return this.sessionStates.get(sessionId)?.sandbox
   }
@@ -194,63 +232,112 @@ export class AgentManager {
   }
 
   async startSession(
-    adapterName: string,
+    adapterName: string | null,
     config: AgentSessionConfig,
-  ): Promise<{ sessionId: string; fallback?: boolean }> {
-    const adapter = this.registry.get(adapterName)
-    if (!adapter) {
-      throw new AdapterError(`Adapter ${adapterName} not found`, adapterName)
-    }
+  ): Promise<StartSessionResult> {
+    // 确定回退链：首选适配器 + 回退顺序
+    const preferences = await this.loadAdapterPreferences()
+    const primary = adapterName ?? preferences.defaultAdapter
+    const fallbackChain = [primary, ...preferences.fallbackOrder.filter((a) => a !== primary)]
 
-    const isInstalled = await adapter.checkInstalled()
-    if (!isInstalled) {
-      const mcp = this.registry.get('mcp')
-      if (mcp && (await mcp.checkInstalled())) {
-        logger.warn(`Adapter ${adapterName} not installed, falling back to MCP`)
-        const session = await mcp.startSession(config)
-        session.fallbackInfo = {
-          originalAdapter: adapterName,
-          fallbackReason: `${adapterName} not installed`,
-        }
-        this.sessionStates.set(session.id, {
-          config,
-          broadcastName: adapterName,
-          adapterName,
-          startTime: session.startTime,
-        })
-        this.router.bind(session.id, mcp.name, adapterName)
-        return { sessionId: session.id, fallback: true }
-      }
-      throw new AdapterError(
-        `Adapter ${adapterName} is not installed and MCP fallback is not available`,
-        adapterName,
-      )
-    }
-
-    const session = await adapter.startSession(config)
-
-    let sandbox: import('@shared/types').Sandbox | undefined
-    if (config.allowedFiles.length > 0) {
-      sandbox = await this.scopeGuard.prepareSandbox(
-        config.allowedFiles,
-        config.workingDirectory,
-      )
-    }
-
-    this.sessionStates.set(session.id, {
-      config,
-      broadcastName: adapterName,
-      adapterName,
-      startTime: session.startTime,
-      sandbox,
+    // 去重
+    const seen = new Set<string>()
+    const uniqueChain = fallbackChain.filter((a) => {
+      if (seen.has(a)) return false
+      seen.add(a)
+      return true
     })
 
-    this.router.bind(session.id, adapterName)
-    // Emit status change: node → developing
-    if (config.nodeId) {
-      this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
+    const fallbackHistory: AdapterFallbackAttempt[] = []
+
+    for (const candidate of uniqueChain) {
+      const adapter = this.registry.get(candidate)
+      if (!adapter) {
+        fallbackHistory.push({ adapter: candidate, reason: `Adapter ${candidate} not registered`, success: false })
+        logger.warn(`Adapter ${candidate} not registered, trying next...`)
+        continue
+      }
+
+      const isInstalled = await adapter.checkInstalled()
+      if (!isInstalled) {
+        fallbackHistory.push({ adapter: candidate, reason: `${candidate} not installed`, success: false })
+        logger.warn(`Adapter ${candidate} not installed, trying next...`)
+        continue
+      }
+
+      try {
+        const session = await adapter.startSession(config)
+
+        let sandbox: import('@shared/types').Sandbox | undefined
+        if (config.allowedFiles.length > 0) {
+          sandbox = await this.scopeGuard.prepareSandbox(
+            config.allowedFiles,
+            config.workingDirectory,
+          )
+        }
+
+        fallbackHistory.push({ adapter: candidate, reason: '', success: true })
+
+        const isFallback = candidate !== primary
+        const broadcastName = isFallback ? primary : candidate
+
+        this.sessionStates.set(session.id, {
+          config,
+          broadcastName,
+          adapterName: candidate,
+          startTime: session.startTime,
+          sandbox,
+        })
+        this.sessionBroadcastNames.set(session.id, broadcastName)
+
+        // fallback 时路由记录实际适配器名
+        this.router.bind(session.id, candidate, isFallback ? primary : undefined)
+
+        // 如果是 fallback，在 session 上记录 fallbackInfo（保持向后兼容）
+        if (isFallback) {
+          session.fallbackInfo = {
+            originalAdapter: primary,
+            fallbackReason: `${primary} not available, using ${candidate}`,
+          }
+        }
+
+        if (config.nodeId) {
+          this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
+        }
+
+        return {
+          sessionId: session.id,
+          fallback: isFallback,
+          adapterUsed: candidate,
+          fallbackHistory,
+        }
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        fallbackHistory.push({ adapter: candidate, reason: `startSession failed: ${reason}`, success: false })
+        logger.warn(`Adapter ${candidate} startSession failed: ${reason}, trying next...`)
+        continue
+      }
     }
-    return { sessionId: session.id }
+
+    // 所有适配器都失败
+    throw new AdapterError(
+      `No adapter available. Tried: ${uniqueChain.join(', ')}. Details: ${fallbackHistory.map((f) => `${f.adapter} (${f.reason})`).join('; ')}`,
+      primary,
+    )
+  }
+
+  /**
+   * 加载适配器偏好配置（通过注入的 loader，避免循环依赖）
+   */
+  private async loadAdapterPreferences(): Promise<AdapterPreferences> {
+    if (this.adapterPreferencesLoader) {
+      try {
+        return await this.adapterPreferencesLoader()
+      } catch (err) {
+        logger.warn('Failed to load adapter preferences, using defaults:', err)
+      }
+    }
+    return { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }
   }
 
   async sendCommand(sessionId: string, command: AgentCommand): Promise<void> {
@@ -272,35 +359,37 @@ export class AgentManager {
     contextRefs?: ContextRef[],
     nodes?: GraphNode[],
   ): Promise<void> {
-    let resolvedContexts: ResolvedContext[] = []
     const sessionConfig = this.sessionStates.get(sessionId)?.config
 
-    if (contextRefs && contextRefs.length > 0) {
-      resolvedContexts = await this.contextResolver.resolve(contextRefs, 8000, {
-        nodes: nodes ?? [],
-        basePath: sessionConfig?.workingDirectory,
-      })
-    }
-
-    // 【智能代码上下文解析】从用户命令中提取实体并查找相关代码
-    let codeContext: string | undefined
-    if (this.smartContextResolver && sessionConfig?.workingDirectory) {
-      try {
-        const ctx = await this.smartContextResolver.resolve({
-          userQuery: typeof command === 'string' ? command : command.description,
-          projectPath: sessionConfig.workingDirectory,
-          nodes: nodes ?? [],
-          maxSymbols: 15,
-          maxFiles: 8,
-          dependencyDepth: 2,
-        })
-        if (ctx.primarySymbols.length > 0 || ctx.relatedFiles.length > 0) {
-          codeContext = this.formatCodeContext(ctx)
-        }
-      } catch (err) {
-        logger.warn('Smart context resolution failed:', err)
-      }
-    }
+    // 并行执行上下文解析和智能代码解析（两者互不依赖）
+    const [resolvedContexts, codeContext] = await Promise.all([
+      // 标准上下文解析
+      (contextRefs && contextRefs.length > 0)
+        ? this.contextResolver.resolve(contextRefs, 8000, {
+            nodes: nodes ?? [],
+            basePath: sessionConfig?.workingDirectory,
+          })
+        : Promise.resolve([] as ResolvedContext[]),
+      // 智能代码上下文解析
+      (this.smartContextResolver && sessionConfig?.workingDirectory)
+        ? this.smartContextResolver.resolve({
+            userQuery: typeof command === 'string' ? command : command.description,
+            projectPath: sessionConfig.workingDirectory,
+            nodes: nodes ?? [],
+            maxSymbols: 15,
+            maxFiles: 8,
+            dependencyDepth: 2,
+          }).then((ctx) => {
+            if (ctx.primarySymbols.length > 0 || ctx.relatedFiles.length > 0) {
+              return this.formatCodeContext(ctx)
+            }
+            return undefined
+          }).catch((err) => {
+            logger.warn('Smart context resolution failed:', err)
+            return undefined
+          })
+        : Promise.resolve(undefined as string | undefined),
+    ])
 
     // Store resolved contexts on the session so adapter can access them
     const adapter = this.router.resolve(sessionId)
@@ -383,18 +472,22 @@ export class AgentManager {
       throw err
     }
 
-    await adapter.terminateSession(sessionId)
-    this.router.unbind(sessionId)
-
-    // 保存 nodeId 用于后续状态变更（delete 前提取，避免 config 被清除后无法读取）
+    // 提前提取 nodeId 和 sandbox（在 finally 之前，避免 config 被清除后无法读取）
     const state = this.sessionStates.get(sessionId)
     const nodeId = state?.config.nodeId
     const sandbox = state?.sandbox
 
-    this.sessionStates.delete(sessionId)
+    let scopeGuardError: Error | undefined
+    try {
+      await adapter.terminateSession(sessionId)
+    } finally {
+      // 无论 terminateSession 是否成功，都确保清理路由和状态
+      this.router.unbind(sessionId)
+      this.sessionStates.delete(sessionId)
+      this.sessionBroadcastNames.delete(sessionId)
+    }
 
     // ScopeGuard: 执行后验证并清理沙箱
-    let scopeGuardError: Error | undefined
     if (sandbox) {
       try {
         await this.scopeGuard.commitChanges(sandbox)
@@ -438,6 +531,36 @@ export class AgentManager {
     if (wrapped) {
       this.broadcaster.offBroadcast(wrapped)
       this.outputListeners.delete(handler)
+    }
+  }
+
+  /**
+   * 添加会话级输出监听器（仅接收指定 session 的输出）
+   * 通过 broadcastName 过滤，防止跨会话输出污染
+   */
+  addSessionOutputListener(sessionId: string, handler: (output: AgentOutput) => void): void {
+    const broadcastName = this.sessionBroadcastNames.get(sessionId)
+    if (!broadcastName) {
+      logger.warn(`addSessionOutputListener: no broadcast name for session ${sessionId}`)
+      return
+    }
+    const wrapped = (name: string, output: AgentOutput) => {
+      if (name === broadcastName) {
+        handler(output)
+      }
+    }
+    this.sessionOutputListeners.set(handler, wrapped)
+    this.broadcaster.onBroadcast(wrapped)
+  }
+
+  /**
+   * 移除会话级输出监听器
+   */
+  removeSessionOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = this.sessionOutputListeners.get(handler)
+    if (wrapped) {
+      this.broadcaster.offBroadcast(wrapped)
+      this.sessionOutputListeners.delete(handler)
     }
   }
 }

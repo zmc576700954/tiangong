@@ -103,7 +103,7 @@ function setupAgentLogPersistence(): void {
 // IPC 处理器注册
 // ============================================
 
-export function registerIpcHandlers(): void {
+export async function registerIpcHandlers(): Promise<void> {
   const db = getClient()
   const graphService = new GraphService(db, agentManager)
   const chatService = new ChatService(db)
@@ -150,15 +150,35 @@ export function registerIpcHandlers(): void {
   })
 
   // ---------- 路径安全校验 ----------
-  const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
-    const { senderId } = getIpcContext()
-    // 解析符号链接获取真实路径，文件不存在时回退到 path.resolve
+  /** realpath 缓存：减少高频文件操作时的系统调用开销（TTL 10秒，最大 500 条） */
+  const realpathCache = new Map<string, { resolved: string; timestamp: number }>()
+  const REALPATH_CACHE_TTL = 10_000
+  const REALPATH_CACHE_MAX = 500
+
+  async function cachedRealpath(targetPath: string): Promise<string> {
+    const cached = realpathCache.get(targetPath)
+    if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
+      return cached.resolved
+    }
     let resolved: string
     try {
       resolved = await fs.realpath(targetPath)
     } catch {
       resolved = path.resolve(targetPath)
     }
+    // LRU 淘汰：超过大小时删除最早条目
+    if (realpathCache.size >= REALPATH_CACHE_MAX) {
+      const oldest = realpathCache.keys().next().value
+      if (oldest !== undefined) realpathCache.delete(oldest)
+    }
+    realpathCache.set(targetPath, { resolved, timestamp: Date.now() })
+    return resolved
+  }
+
+  const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
+    const { senderId } = getIpcContext()
+    // 解析符号链接获取真实路径（带缓存），文件不存在时回退到 path.resolve
+    const resolved = await cachedRealpath(targetPath)
     const normalized = path.normalize(resolved)
 
     // 1. 拒绝系统关键目录
@@ -231,6 +251,12 @@ export function registerIpcHandlers(): void {
   } catch (err) {
     logger.warn('Failed to initialize code intelligence:', err)
   }
+
+  // 注入适配器偏好加载器（延迟加载 settings，避免循环依赖）
+  agentManager.setAdapterPreferencesLoader(async () => {
+    const { getAdapterPreferences } = await import('./settings')
+    return getAdapterPreferences()
+  })
 
   // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
   typedHandle('fs:registerProjectPaths', async (event, paths: unknown) => {

@@ -66,11 +66,14 @@ function checkRateLimit(channel: string, webContentsId: number): void {
  *
  * - 自动捕获异常并转换为 IpcError
  * - 自动频率限制
+ *
+ * 支持泛型参数指定：typedHandle<[string, number]>('channel', async (event, name, count) => ...)
+ * 默认 Args 为 any[] 以兼容现有代码，新代码建议使用具体类型
  */
-export type TypedHandle = <K extends string>(
-  channel: K,
+export type TypedHandle = <Args extends unknown[] = any[]>(
+  channel: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (event: IpcMainInvokeEvent, ...args: any[]) => Promise<any>,
+  handler: (event: IpcMainInvokeEvent, ...args: any[] & Args) => Promise<any>,
 ) => void
 
 /**
@@ -146,8 +149,13 @@ export function isPathWithinProject(filePath: string, projectPath: string): bool
 export function createTypedHandle(
   ipcMain: Electron.IpcMain,
 ): TypedHandle {
-  return (channel, handler) => {
-    ipcMain.handle(channel, async (event, ...args) => {
+  return (
+    channel: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    handler: (event: IpcMainInvokeEvent, ...args: any[]) => Promise<any>,
+  ) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: any[]) => {
       try {
         checkRateLimit(channel, event.sender.id)
         return await ipcContext.run({ senderId: event.sender.id }, () =>

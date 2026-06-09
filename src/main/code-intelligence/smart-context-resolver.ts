@@ -177,7 +177,8 @@ export class SmartContextResolver {
 
   private async readFileWithSmartTruncation(filePath: string, projectPath: string): Promise<string> {
     try {
-      const fullPath = filePath.startsWith('/') ? filePath : path.join(projectPath, filePath)
+      // 使用 path.isAbsolute 代替 startsWith('/')，兼容 Windows 绝对路径（如 C:\...）
+      const fullPath = path.isAbsolute(filePath) ? filePath : path.join(projectPath, filePath)
       const content = await readFs(fullPath, 'utf-8')
 
       // 策略：如果文件不大，返回全部；如果很大，优先返回导出符号的定义部分

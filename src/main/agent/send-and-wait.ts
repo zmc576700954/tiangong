@@ -50,7 +50,7 @@ export async function sendPromptViaAgent(
     const timeoutId = setTimeout(() => {
       if (!settled) {
         settled = true
-        agentManager.removeOutputListener(handler)
+        agentManager.removeSessionOutputListener(handler)
         agentManager.terminateSession(sessionId).catch((err) => {
           logger.warn('Failed to terminate session on timeout:', err)
         })
@@ -63,6 +63,7 @@ export async function sendPromptViaAgent(
       }
     }, timeoutMs)
 
+    // 使用会话级输出监听器，仅接收目标 session 的输出，防止跨会话污染
     const handler = (output: AgentOutput) => {
       if (output.type === 'stdout' || output.type === 'file_change') {
         chunks.push(output.data)
@@ -71,7 +72,7 @@ export async function sendPromptViaAgent(
         if (!settled) {
           settled = true
           clearTimeout(timeoutId)
-          agentManager.removeOutputListener(handler)
+          agentManager.removeSessionOutputListener(handler)
           logger.info(`完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
           resolve(chunks.join('\n'))
         }
@@ -80,13 +81,13 @@ export async function sendPromptViaAgent(
         if (!settled) {
           settled = true
           clearTimeout(timeoutId)
-          agentManager.removeOutputListener(handler)
+          agentManager.removeSessionOutputListener(handler)
           reject(new AgentError(output.data || 'Agent error', ErrorCode.AGENT_PROCESS_ERROR))
         }
       }
     }
 
-    agentManager.addOutputListener(handler)
+    agentManager.addSessionOutputListener(sessionId, handler)
 
     agentManager.sendCommand(sessionId, {
       type: 'implement',
@@ -96,7 +97,7 @@ export async function sendPromptViaAgent(
       if (!settled) {
         settled = true
         clearTimeout(timeoutId)
-        agentManager.removeOutputListener(handler)
+        agentManager.removeSessionOutputListener(handler)
         reject(err)
       }
     })

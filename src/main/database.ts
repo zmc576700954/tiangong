@@ -261,8 +261,33 @@ async function rebuildTableIfNeeded(
   }
 }
 
+/** 当前 Schema 版本号，每次迁移时递增 */
+const CURRENT_SCHEMA_VERSION = 1
+
 async function migrate(): Promise<void> {
   const db = getClient()
+
+  // 创建 schema_version 表（如果不存在）
+  await db.execute(`
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER NOT NULL
+    )
+  `)
+
+  // 读取当前版本号
+  const versionResult = await db.execute('SELECT version FROM schema_version LIMIT 1')
+  const currentVersion = versionResult.rows.length > 0
+    ? (versionResult.rows[0].version as number)
+    : 0
+
+  if (currentVersion >= CURRENT_SCHEMA_VERSION) {
+    // Schema 已是最新，仅执行增量列迁移（安全幂等）
+    await runIncrementalMigrations(db)
+    return
+  }
+
+  logger.info(`Migrating schema from v${currentVersion} to v${CURRENT_SCHEMA_VERSION}...`)
+
   await db.execute('SAVEPOINT migrate_sp')
   try {
     // Graphs table (dual graph model: online / dev)
@@ -408,37 +433,51 @@ async function migrate(): Promise<void> {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
 
-    // Incremental migration: add new columns for MindMap Agent (safe if already exist)
-    const addColumnSafe = async (table: string, column: string, type: string) => {
-      if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
-        throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
-      }
-      const ALLOWED_TYPES = new Set(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'])
-      if (!ALLOWED_TYPES.has(type.toUpperCase())) {
-        throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
-      }
-      const safeType = type.toUpperCase()
-      try {
-        await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err)
-        if (msg.includes('duplicate column') || msg.includes('already exists')) {
-          return // 列已存在，安全忽略
-        }
-        throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
-      }
-    }
-    await addColumnSafe('nodes', 'content', 'TEXT')
-    await addColumnSafe('nodes', 'community_summary', 'TEXT')
-    await addColumnSafe('nodes', 'community_level', 'INTEGER')
-    await addColumnSafe('edges', 'content', 'TEXT')
-    await addColumnSafe('edges', 'description', 'TEXT')
-    await addColumnSafe('edges', 'data_flow', 'TEXT')
-    await addColumnSafe('edges', 'strength', 'REAL')
+    await runIncrementalMigrations(db)
+
+    // 更新版本号
+    await db.execute('DELETE FROM schema_version')
+    await db.execute({
+      sql: 'INSERT INTO schema_version (version) VALUES (?)',
+      args: [CURRENT_SCHEMA_VERSION],
+    })
 
     await db.execute('RELEASE migrate_sp')
+    logger.info(`Schema migrated to v${CURRENT_SCHEMA_VERSION}`)
   } catch (err) {
     await db.execute('ROLLBACK TO migrate_sp').catch((err) => { logger.warn('ROLLBACK TO migrate_sp failed:', err) })
     throw err
   }
+}
+
+/**
+ * 增量迁移：安全添加新列（幂等操作，可重复执行）
+ */
+async function runIncrementalMigrations(db: Client): Promise<void> {
+  const addColumnSafe = async (table: string, column: string, type: string) => {
+    if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
+      throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
+    }
+    const ALLOWED_TYPES = new Set(['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'])
+    if (!ALLOWED_TYPES.has(type.toUpperCase())) {
+      throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
+    }
+    const safeType = type.toUpperCase()
+    try {
+      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('duplicate column') || msg.includes('already exists')) {
+        return // 列已存在，安全忽略
+      }
+      throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
+    }
+  }
+  await addColumnSafe('nodes', 'content', 'TEXT')
+  await addColumnSafe('nodes', 'community_summary', 'TEXT')
+  await addColumnSafe('nodes', 'community_level', 'INTEGER')
+  await addColumnSafe('edges', 'content', 'TEXT')
+  await addColumnSafe('edges', 'description', 'TEXT')
+  await addColumnSafe('edges', 'data_flow', 'TEXT')
+  await addColumnSafe('edges', 'strength', 'REAL')
 }

@@ -204,7 +204,7 @@ app.whenReady().then(async () => {
   await initDatabase()
 
   // Register IPC handlers
-  registerIpcHandlers()
+  await registerIpcHandlers()
 
   // Set application menu
   Menu.setApplicationMenu(buildMenu())

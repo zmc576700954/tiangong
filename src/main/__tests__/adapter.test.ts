@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Readable, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { BaseAdapter } from '../adapters/base'
+import { inferChangeType } from '../adapters/file-change-parser'
 import type { AgentSessionConfig, AgentCommand, AgentOutput, ResolvedContext } from '@shared/types'
 
 // Create a concrete adapter for testing
@@ -66,7 +67,7 @@ class TestAdapter extends BaseAdapter {
   }
 
   public testInferChangeType(text: string): 'add' | 'modify' | 'delete' {
-    return this.inferChangeType(text)
+    return inferChangeType(text)
   }
 
   // Clean up EventEmitter listeners

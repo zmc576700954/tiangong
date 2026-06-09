@@ -25,6 +25,9 @@ const MAX_FILE_CHARS = 16000
 /** TTL 缓存有效期（毫秒） */
 const FILE_CACHE_TTL = 10000
 
+/** 缓存最大条目数，超出时淘汰最早条目（FIFO） */
+const FILE_CACHE_MAX_SIZE = 200
+
 /**
  * 截断文本到指定 token 预算（CJK 感知）
  */
@@ -47,6 +50,24 @@ export class ContextResolver {
   private fileCache = new Map<string, { content: string; timestamp: number }>()
 
   /**
+   * 向缓存添加条目，超过大小时淘汰最早条目
+   */
+  private addToCache(key: string, value: { content: string; timestamp: number }): void {
+    // 删除旧条目以保证新条目在末尾（FIFO 顺序）
+    if (this.fileCache.has(key)) {
+      this.fileCache.delete(key)
+    }
+    // 超过大小时删除最早条目
+    if (this.fileCache.size >= FILE_CACHE_MAX_SIZE) {
+      const oldestKey = this.fileCache.keys().next().value
+      if (oldestKey !== undefined) {
+        this.fileCache.delete(oldestKey)
+      }
+    }
+    this.fileCache.set(key, value)
+  }
+
+  /**
    * 解析 ContextRef[] 为 ResolvedContext[]
    * @param refs - 上下文引用列表
    * @param budget - token 预算上限
@@ -65,28 +86,34 @@ export class ContextResolver {
       return (priority[a.type] ?? 2) - (priority[b.type] ?? 2)
     })
 
+    // 阶段1: 并行解析所有 ref 的原始内容（node/text 同步，file 异步读取）
+    const rawContents = await Promise.all(
+      sorted.map(async (ref) => {
+        if (ref.type === 'node') {
+          return this.resolveNode(ref, options.nodes ?? [])
+        } else if (ref.type === 'file') {
+          return this.resolveFile(ref, options.basePath)
+        } else if (ref.type === 'text') {
+          return this.resolveText(ref)
+        }
+        return ''
+      }),
+    )
+
+    // 阶段2: 串行应用 token 预算截断（保证优先级顺序）
     const results: ResolvedContext[] = []
     let remaining = budget
 
-    for (const ref of sorted) {
+    for (let i = 0; i < sorted.length; i++) {
       if (remaining <= 0) break
 
-      let rawContent = ''
-      if (ref.type === 'node') {
-        rawContent = this.resolveNode(ref, options.nodes ?? [])
-      } else if (ref.type === 'file') {
-        rawContent = await this.resolveFile(ref, options.basePath)
-      } else if (ref.type === 'text') {
-        rawContent = this.resolveText(ref)
-      }
-
-      const content = truncateToBudget(rawContent, remaining)
+      const content = truncateToBudget(rawContents[i], remaining)
       const tokenEstimate = estimateTokens(content)
 
       results.push({
-        type: ref.type,
-        id: ref.id,
-        label: ref.label,
+        type: sorted[i].type,
+        id: sorted[i].id,
+        label: sorted[i].label,
         content,
         tokenEstimate,
       })
@@ -175,7 +202,7 @@ export class ContextResolver {
         result = content
       }
 
-      this.fileCache.set(resolvedPath, { content: result, timestamp: Date.now() })
+      this.addToCache(resolvedPath, { content: result, timestamp: Date.now() })
       return result
     } catch {
       return `[无法读取文件: ${ref.label} (${ref.id})]`

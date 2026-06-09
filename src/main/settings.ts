@@ -14,6 +14,7 @@ import type {
   ApiKeyConfig,
   McpServerConfig,
   BizGraphSettings,
+  AdapterPreferences,
 } from '@shared/types'
 import { BizGraphError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
@@ -21,7 +22,12 @@ import { createLogger } from './shared/logger'
 const logger = createLogger('Settings')
 
 // Re-export types for backward compatibility
-export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings }
+export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences }
+
+const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
+  defaultAdapter: 'claude-code',
+  fallbackOrder: ['codex', 'opencode', 'mcp'],
+}
 
 const DEFAULT_SETTINGS: BizGraphSettings = {
   version: 1,
@@ -61,6 +67,7 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
       enabled: true,
     },
   ],
+  adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
 }
 
 // ============================================
@@ -223,6 +230,7 @@ function mergeSettings(
     apiKeys: saved.apiKeys ?? defaults.apiKeys,
     defaultModel: saved.defaultModel ?? defaults.defaultModel,
     mcpServers: saved.mcpServers ?? defaults.mcpServers,
+    adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
   }
 }
 
@@ -430,6 +438,30 @@ export async function updateMcpServer(
     settings.mcpServers[idx] = server
   } else {
     settings.mcpServers.push(server)
+  }
+  await writeSettings(settings)
+}
+
+// ============================================
+// 适配器偏好管理
+// ============================================
+
+export async function getAdapterPreferences(): Promise<AdapterPreferences> {
+  const settings = await readSettings()
+  return settings.adapterPreferences ?? DEFAULT_ADAPTER_PREFERENCES
+}
+
+export async function setAdapterPreferences(prefs: AdapterPreferences): Promise<void> {
+  if (!prefs.defaultAdapter || typeof prefs.defaultAdapter !== 'string') {
+    throw new BizGraphError('defaultAdapter is required', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  if (!Array.isArray(prefs.fallbackOrder)) {
+    throw new BizGraphError('fallbackOrder must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  const settings = await readSettings()
+  settings.adapterPreferences = {
+    defaultAdapter: prefs.defaultAdapter,
+    fallbackOrder: prefs.fallbackOrder,
   }
   await writeSettings(settings)
 }

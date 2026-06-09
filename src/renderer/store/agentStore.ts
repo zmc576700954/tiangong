@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus, AdapterPreferences, AdapterFallbackAttempt } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
 
@@ -12,8 +12,14 @@ interface AgentState {
   currentThreadId: string | null
   /** 每个 thread 的 agent 原始输出（用于 TerminalView） */
   threadOutputs: Map<string, AgentOutput[]>
+  /** 适配器偏好配置 */
+  adapterPreferences: AdapterPreferences
+  /** 最近一次 startSession 的回退历史（用于 UI 展示） */
+  lastFallbackHistory: AdapterFallbackAttempt[]
 
   loadAdapters: () => Promise<void>
+  loadAdapterPreferences: () => Promise<void>
+  setAdapterPreferences: (prefs: AdapterPreferences) => Promise<void>
   sendCommand: (sessionId: string, command: AgentCommand) => Promise<void>
   appendOutput: (threadId: string, output: AgentOutput) => void
   appendToStreamingMessage: (threadId: string, messageId: string, content: string) => void
@@ -49,10 +55,30 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   threads: [],
   currentThreadId: null,
   threadOutputs: new Map(),
+  adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
+  lastFallbackHistory: [],
 
   loadAdapters: async () => {
     const adapters = await window.electronAPI['agent:listAdapters']()
     set({ adapters })
+  },
+
+  loadAdapterPreferences: async () => {
+    try {
+      const prefs = await window.electronAPI['settings:getAdapterPreferences']()
+      set({ adapterPreferences: prefs })
+    } catch (err) {
+      console.error('[agentStore] Failed to load adapter preferences:', err)
+    }
+  },
+
+  setAdapterPreferences: async (prefs) => {
+    try {
+      await window.electronAPI['settings:setAdapterPreferences'](prefs)
+      set({ adapterPreferences: prefs })
+    } catch (err) {
+      console.error('[agentStore] Failed to save adapter preferences:', err)
+    }
   },
 
   sendCommand: async (sessionId, command) => {
@@ -275,8 +301,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         sessionId = existingSessionId
       } else {
         // 首次发送，创建 session
-        const result = await window.electronAPI['agent:startSession'](thread.adapterName, config)
+        // adapterName 为 'auto' 时传 null，触发主进程自动回退链
+        const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
+        const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
         sessionId = result.sessionId
+
+        // 记录回退历史
+        if (result.fallbackHistory && result.fallbackHistory.length > 1) {
+          set({ lastFallbackHistory: result.fallbackHistory })
+        }
 
         // 绑定 sessionId 到 thread
         set((state) => ({
@@ -503,6 +536,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       console.error('[agentStore] Failed to hydrate threads:', err)
     }
+    // 加载适配器偏好
+    get().loadAdapterPreferences()
   },
 
   listenForStatusChanges: () => {

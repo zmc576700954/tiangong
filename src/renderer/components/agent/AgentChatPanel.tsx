@@ -29,6 +29,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     threads,
     currentThreadId,
     threadOutputs,
+    lastFallbackHistory,
     loadAdapters,
     createThread,
     sendMessage,
@@ -43,7 +44,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showThreadList, setShowThreadList] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showContextPicker, setShowContextPicker] = useState(false)
-  const [selectedAdapter, setSelectedAdapter] = useState('')
+  const [selectedAdapter, setSelectedAdapter] = useState('auto')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
 
   // Derived data — must be declared before useVerificationFlow
@@ -139,7 +140,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   useEffect(() => {
     const installed = adapters.filter((a) => a.installed)
     if (installed.length > 0 && !selectedAdapter) {
-      setSelectedAdapter(installed[0].name)
+      setSelectedAdapter('auto')
     }
   }, [adapters, selectedAdapter])
 
@@ -263,6 +264,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         threadTitle={currentThread?.title ?? 'New Thread'}
         viewMode={viewMode}
         expanded={expanded}
+        fallbackHistory={lastFallbackHistory}
         onSelectAdapter={setSelectedAdapter}
         onNewThread={handleNewThread}
         onToggleThreads={() => setShowThreadList(!showThreadList)}

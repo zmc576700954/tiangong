@@ -195,8 +195,7 @@ export function FileTreeContextMenu() {
         acceptanceCriteria: [],
       }
 
-      const adapterName = adapters[0].name
-      const result = await window.electronAPI['agent:startSession'](adapterName, config)
+      const result = await window.electronAPI['agent:startSession'](null, config)
 
       const prompt = `分析 ${contextMenuPath} 的代码结构，生成业务模块/流程/功能点的节点层级。返回 JSON 格式：{"modules":[{"title":"模块名","description":"描述","processes":[{"title":"流程名","description":"描述","features":["功能点名"]}]}]}`
 

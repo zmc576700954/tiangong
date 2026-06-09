@@ -4,11 +4,17 @@
  */
 
 import type { AgentAdapter } from '@shared/types'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('AdapterRegistry')
 
 export class AdapterRegistry {
   private adapters = new Map<string, AgentAdapter>()
 
   register(adapter: AgentAdapter): void {
+    if (this.adapters.has(adapter.name)) {
+      logger.warn(`Adapter '${adapter.name}' is already registered, overwriting with new instance`)
+    }
     this.adapters.set(adapter.name, adapter)
   }
 
