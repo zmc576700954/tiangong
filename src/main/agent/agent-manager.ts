@@ -30,6 +30,9 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('AgentManager')
 
+/** 健康检查间隔：每 10 分钟输出一次诊断日志 */
+const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+
 type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
 
 interface SessionState {
@@ -67,6 +70,12 @@ export class AgentManager {
   private sessionBroadcastNames = new Map<string, string>()
   /** sessionId → 该会话注册的输出监听 handler 集合（用于 cleanupSessionResources 自动清理） */
   private sessionOutputListenerIndex = new Map<string, Set<(output: AgentOutput) => void>>()
+  /** sandboxId → sessionId 反向索引（O(1) 查找越界会话，避免线性扫描） */
+  private sandboxSessionIndex = new Map<string, string>()
+  /** 清理互斥锁：防止 terminateSession 和 cleanupSessionResources 并发导致双重清理 */
+  private cleanupInProgress = new Set<string>()
+  /** 健康检查定时器（定期输出诊断日志，监控内存与资源状态） */
+  private healthCheckTimer: ReturnType<typeof setInterval> | null = null
   /** 适配器偏好加载器（延迟注入，避免循环依赖） */
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
 
@@ -86,18 +95,28 @@ export class AgentManager {
       this.cleanupSessionResources(sessionId)
     })
 
-    // 注册 ScopeGuard 越界回调：检测到越界写入时自动终止对应 session
+    // 注册 ScopeGuard 越界回调：通过反向索引 O(1) 定位对应 session 并自动终止
+    this.bindScopeGuardViolationHandler()
+
+    // 启动定期健康检查（每 10 分钟输出诊断日志）
+    this.startHealthCheck()
+  }
+
+  /**
+   * 绑定 ScopeGuard 越界事件处理器（抽取为独立方法，便于注入新实例时重新绑定）
+   */
+  private bindScopeGuardViolationHandler(): void {
     this.scopeGuard.onViolation(async (sandboxId, violations) => {
       logger.error('Scope violation detected:', violations)
-      for (const [sessionId, state] of this.sessionStates) {
-        if (state.sandbox?.id === sandboxId) {
-          try {
-            await this.terminateSession(sessionId)
-          } catch (err) {
-            logger.warn('Failed to terminate session during scope violation cleanup:', err)
-          }
-          break
-        }
+      const sessionId = this.sandboxSessionIndex.get(sandboxId)
+      if (!sessionId) {
+        logger.warn(`No session found for sandbox ${sandboxId}, skipping termination`)
+        return
+      }
+      try {
+        await this.terminateSession(sessionId)
+      } catch (err) {
+        logger.warn('Failed to terminate session during scope violation cleanup:', err)
       }
     })
   }
@@ -136,12 +155,18 @@ export class AgentManager {
 
   /**
    * 清理指定 session 的所有资源（沙箱、路由、广播名、输出监听器等）
+   * 通过 cleanupInProgress 互斥锁防止与 terminateSession 并发导致双重清理
    */
   private cleanupSessionResources(sessionId: string): void {
+    // 互斥检查：若已在清理中，跳过
+    if (this.cleanupInProgress.has(sessionId)) return
+    this.cleanupInProgress.add(sessionId)
+
     const state = this.sessionStates.get(sessionId)
 
     // ScopeGuard: 异常退出时回滚沙箱
     if (state?.sandbox) {
+      this.sandboxSessionIndex.delete(state.sandbox.id)
       this.scopeGuard.rollback(state.sandbox).catch((err) => {
         logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
       })
@@ -163,6 +188,8 @@ export class AgentManager {
     this.sessionStates.delete(sessionId)
     this.sessionBroadcastNames.delete(sessionId)
     this.router.unbind(sessionId)
+    // 释放互斥锁
+    this.cleanupInProgress.delete(sessionId)
   }
 
   /**
@@ -175,7 +202,34 @@ export class AgentManager {
       outputHandlers: this.outputHandlers.size,
       sessionBroadcastNames: this.sessionBroadcastNames.size,
       sessionOutputListenerIndex: this.sessionOutputListenerIndex.size,
+      sandboxSessionIndex: this.sandboxSessionIndex.size,
+      cleanupInProgress: this.cleanupInProgress.size,
     })
+  }
+
+  /**
+   * 启动定期健康检查（每 HEALTH_CHECK_INTERVAL_MS 输出诊断日志）
+   * 用于长期运行时监控内存占用和资源泄漏
+   */
+  private startHealthCheck(): void {
+    if (this.healthCheckTimer) return
+    this.healthCheckTimer = setInterval(() => {
+      this.logDiagnostics()
+    }, HEALTH_CHECK_INTERVAL_MS)
+    // 不阻止进程退出
+    if (this.healthCheckTimer && typeof this.healthCheckTimer === 'object' && 'unref' in this.healthCheckTimer) {
+      (this.healthCheckTimer as ReturnType<typeof setInterval> & { unref(): void }).unref()
+    }
+  }
+
+  /**
+   * 停止健康检查定时器
+   */
+  private stopHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer)
+      this.healthCheckTimer = null
+    }
   }
 
   /**
@@ -198,6 +252,7 @@ export class AgentManager {
     this.sessionEndedHandlers.clear()
     this.sessionStates.clear()
     this.sessionBroadcastNames.clear()
+    this.sandboxSessionIndex.clear()
     // 停止 SessionRouter 的 TTL 检查
     this.router.stopTtlCheck()
     // 清理所有会话级输出监听器
@@ -206,6 +261,9 @@ export class AgentManager {
     }
     this.sessionOutputListeners.clear()
     this.sessionOutputListenerIndex.clear()
+    this.cleanupInProgress.clear()
+    // 停止健康检查定时器
+    this.stopHealthCheck()
     // 清理 ScopeGuard 所有定时器和 watcher
     this.scopeGuard.destroy()
   }
@@ -227,6 +285,23 @@ export class AgentManager {
 
   setOnSessionComplete(handler: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void): void {
     this.onSessionComplete = handler
+  }
+
+  /**
+   * 注入 ScopeGuard 实例（替换默认实例，重新绑定越界处理器）
+   */
+  setScopeGuard(scopeGuard: ScopeGuard): void {
+    // 销毁旧实例的定时器和 watcher
+    this.scopeGuard.destroy()
+    this.scopeGuard = scopeGuard
+    this.bindScopeGuardViolationHandler()
+  }
+
+  /**
+   * 注入 ContextResolver 实例（替换默认实例）
+   */
+  setContextResolver(contextResolver: ContextResolver): void {
+    this.contextResolver = contextResolver
   }
 
   /**
@@ -321,6 +396,8 @@ export class AgentManager {
             config.allowedFiles,
             config.workingDirectory,
           )
+          // 维护 sandboxId → sessionId 反向索引
+          this.sandboxSessionIndex.set(sandbox.id, session.id)
         }
 
         fallbackHistory.push({ adapter: candidate, reason: '', success: true })
@@ -506,6 +583,14 @@ export class AgentManager {
   }
 
   async terminateSession(sessionId: string): Promise<void> {
+    // 互斥检查：若 cleanupSessionResources 已在清理，直接返回
+    if (this.cleanupInProgress.has(sessionId)) {
+      logger.info(`Session ${sessionId} already being cleaned up, skipping terminateSession`)
+      return
+    }
+    // 标记清理中，防止后续 sessionEnded 事件触发 cleanupSessionResources 并发清理
+    this.cleanupInProgress.add(sessionId)
+
     let adapter: AgentAdapter | undefined
     try {
       adapter = this.router.resolve(sessionId)
@@ -532,6 +617,12 @@ export class AgentManager {
       this.router.unbind(sessionId)
       this.sessionStates.delete(sessionId)
       this.sessionBroadcastNames.delete(sessionId)
+      // 清理 sandboxId → sessionId 反向索引
+      if (sandbox) {
+        this.sandboxSessionIndex.delete(sandbox.id)
+      }
+      // 释放互斥锁
+      this.cleanupInProgress.delete(sessionId)
     }
 
     // ScopeGuard: 执行后验证并清理沙箱

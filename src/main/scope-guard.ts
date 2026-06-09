@@ -130,22 +130,24 @@ export class ScopeGuard {
       }
     }
 
-    // 创建初始文件系统快照（仅扫描白名单文件所在目录，避免全目录递归）
+    // 创建初始文件系统快照（白名单文件所在目录 + 工作目录本身，消除监控盲区）
     const watchDirs = new Set<string>()
     for (const filePath of sanitizedFiles) {
       watchDirs.add(path.dirname(filePath))
     }
-    // 若白名单为空则退化为监控工作目录本身
-    if (watchDirs.size === 0) {
-      watchDirs.add(workingDir)
-    }
+    // 始终纳入工作目录，确保项目范围内所有文件变更可被检测
+    watchDirs.add(workingDir)
     const initialSnapshot = await this.captureFileSnapshot(watchDirs)
     this.initialSnapshots.set(sandboxId, initialSnapshot)
     this.sandboxWatchDirs.set(sandboxId, watchDirs)
 
-    // 启动文件监控 — 仅监控 allowedFiles 及其父目录
+    // 启动文件监控 — 白名单文件父目录 + 工作目录（消除监控盲区）
     const watchPaths: string[] = []
     const watchedDirs = new Set<string>()
+
+    // 始终监控工作目录本身，覆盖白名单目录之外的项目文件
+    watchedDirs.add(workingDir)
+    watchPaths.push(workingDir)
 
     for (const filePath of sanitizedFiles) {
       const dir = path.dirname(filePath)
@@ -155,7 +157,7 @@ export class ScopeGuard {
       }
     }
 
-    const watcherPaths = watchPaths.length > 0 ? watchPaths : workingDir
+    const watcherPaths = watchPaths
 
     // P2-7A: WSL/网络 FS 检测，自动启用 usePolling
     const isWsl = process.platform === 'linux' && process.env.WSL_DISTRO_NAME !== undefined
@@ -193,7 +195,7 @@ export class ScopeGuard {
     watcher.on('add', onFileEvent)
 
     // 启动定时主动扫描（第二层：补充 chokidar 延迟）
-    this.startActiveScanning(sandboxId, allowedSet)
+    this.startActiveScanning(sandboxId, allowedSet, workingDir)
 
     const sandbox: Sandbox = {
       id: sandboxId,
@@ -514,12 +516,14 @@ export class ScopeGuard {
    * 启动定时主动扫描
    * 使用 setTimeout 替代 setInterval，支持自适应间隔（无违规时逐步退避）
    */
-  private startActiveScanning(sandboxId: string, allowedSet: Set<string>): void {
-    // 收集需要扫描的目录（白名单文件所在的目录）
+  private startActiveScanning(sandboxId: string, allowedSet: Set<string>, workingDir: string): void {
+    // 收集需要扫描的目录（白名单文件所在目录 + 工作目录本身，消除监控盲区）
     const dirsToScan = new Set<string>()
     for (const filePath of allowedSet) {
       dirsToScan.add(path.dirname(filePath))
     }
+    // 始终扫描工作目录，确保项目范围内的越界文件可被检测
+    dirsToScan.add(workingDir)
 
     this.scanIntervals.set(sandboxId, ACTIVE_SCAN_INTERVAL_MS)
     this.scanCleanCounts.set(sandboxId, 0)
