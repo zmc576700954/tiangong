@@ -45,6 +45,12 @@ export type {
   AdapterFallbackAttempt, AdapterPreferences,
   SymbolKind, SymbolInfo, ImportEdge, SymbolReference, SymbolQueryResult,
   CodeIntelExecutionPlan,
+  MemoryKind, MemoryItem, ContextLayer, LayeredContext,
+  TokenEconomics, AgentMode, AgentModeConfig, OutputHealth,
+} from './types/agent'
+
+export {
+  DEFAULT_MODE_CONFIGS,
 } from './types/agent'
 
 export type {

@@ -325,8 +325,61 @@ export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as cons
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
 
 // ============================================
+// 节点状态转换
+// ============================================
+
+/** 状态转换规则 */
+export interface NodeStatusTransition {
+  /** 起始状态 */
+  from: NodeStatus
+  /** 目标状态 */
+  to: NodeStatus
+  /** 是否允许自动转换 */
+  auto?: boolean
+  /** 转换条件描述 */
+  condition?: string
+}
+
+/** 各节点类型允许的状态转换矩阵 */
+export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> = {
+  project: [
+    { from: 'draft', to: 'confirmed' },
+  ],
+  module: [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'developing' },
+  ],
+  process: [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'developing' },
+  ],
+  feature: [
+    { from: 'placeholder', to: 'developing' },
+    { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'published' },
+  ],
+  bug: [
+    { from: 'draft', to: 'developing' },
+    { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'published' },
+  ],
+}
+
+// ============================================
 // 节点类型注册表（支持动态扩展节点类型）
 // ============================================
+
+/** 节点类型行为钩子 */
+export interface NodeTypeBehavior {
+  /** 节点创建时触发 */
+  onCreate?: (node: GraphNode) => void | Promise<void>
+  /** 节点删除时触发 */
+  onDelete?: (nodeId: string) => void | Promise<void>
+  /** 节点状态变更时触发 */
+  onStatusChange?: (nodeId: string, from: NodeStatus, to: NodeStatus) => void | Promise<void>
+}
 
 /** 节点类型配置（用于注册新节点类型） */
 export interface NodeTypeConfig {
@@ -342,6 +395,8 @@ export interface NodeTypeConfig {
   allowedChildTypes?: string[]
   /** 节点描述模板 */
   descriptionTemplate?: string
+  /** 行为钩子（可选） */
+  behavior?: NodeTypeBehavior
 }
 
 /**
@@ -399,6 +454,35 @@ class NodeTypeRegistry {
     if (parent.allowedChildTypes && !parent.allowedChildTypes.includes(childType)) return false
     if (child.allowedParentTypes && !child.allowedParentTypes.includes(parentType)) return false
     return true
+  }
+
+  /**
+   * 校验状态转换是否合法
+   * @param nodeType 节点类型
+   * @param from 当前状态
+   * @param to 目标状态
+   * @returns 是否允许转换
+   */
+  validateStatusTransition(nodeType: NodeType, from: NodeStatus, to: NodeStatus): boolean {
+    // 相同状态始终允许
+    if (from === to) return true
+    const transitions = NODE_STATUS_TRANSITIONS[nodeType]
+    if (!transitions) return false
+    return transitions.some((t) => t.from === from && t.to === to)
+  }
+
+  /** 获取节点类型的行为钩子 */
+  getBehavior(type: string): NodeTypeBehavior | undefined {
+    return this.types.get(type)?.behavior
+  }
+
+  /** 挂载行为钩子到指定节点类型 */
+  attachBehavior(type: string, behavior: Partial<NodeTypeBehavior>): void {
+    const config = this.types.get(type)
+    if (!config) {
+      throw new Error(`Cannot attach behavior to unknown node type: ${type}`)
+    }
+    config.behavior = { ...config.behavior, ...behavior }
   }
 }
 

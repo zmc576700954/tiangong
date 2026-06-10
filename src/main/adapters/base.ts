@@ -48,6 +48,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private sessionOutputBuffers = new Map<string, string[]>()
   /** 单会话输出条数上限，防止内存无限增长 */
   private static readonly MAX_OUTPUT_BUFFER_SIZE = 200
+  /** 会话级进程守护定时器：超时自动 kill，防止子进程泄漏 */
+  private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** 默认会话超时时间（30 分钟） */
+  private static readonly DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000
+  /** SIGKILL 保底超时（SIGTERM 后等待时间） */
+  private static readonly SIGKILL_GRACE_PERIOD_MS = 5000
 
   constructor() {
     super()
@@ -134,6 +140,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.disposeProtocolHandler(sessionId)
         this.sessions.delete(sessionId)
         this.processes.delete(sessionId)
+        // 清理进程守护定时器
+        this.clearSessionKillTimer(sessionId)
         // outputSessionMap 使用 WeakMap，无需手动清理（GC 自动回收无引用的 AgentOutput）
         this.emitOutput({
           type: 'complete',
@@ -167,7 +175,52 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     this.sessions.set(session.id, session)
     if (proc) {
       this.processes.set(session.id, proc)
+      this.startSessionKillTimer(session.id, proc)
     }
+  }
+
+  /**
+   * 启动会话级进程守护定时器：超时自动 kill，防止子进程泄漏
+   * @protected
+   */
+  protected startSessionKillTimer(sessionId: string, proc: ChildProcess, timeoutMs?: number): void {
+    this.clearSessionKillTimer(sessionId)
+    const timer = setTimeout(() => {
+      if (!proc.killed) {
+        this.logger.warn(`Session ${sessionId} exceeded timeout (${timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS}ms), force killing`)
+        // 先尝试 SIGTERM，再保底 SIGKILL
+        this.forceKillProcess(proc)
+      }
+    }, timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS)
+    this.sessionKillTimers.set(sessionId, timer)
+  }
+
+  /**
+   * 清理会话级进程守护定时器
+   * @protected
+   */
+  protected clearSessionKillTimer(sessionId: string): void {
+    const timer = this.sessionKillTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.sessionKillTimers.delete(sessionId)
+    }
+  }
+
+  /**
+   * 强制终止进程：SIGTERM → 等待 → SIGKILL 保底
+   * @protected
+   */
+  protected forceKillProcess(proc: ChildProcess, gracePeriodMs = BaseAdapter.SIGKILL_GRACE_PERIOD_MS): void {
+    if (proc.killed) return
+    const timeout = setTimeout(() => {
+      if (!proc.killed) {
+        this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, sending SIGKILL`)
+        proc.kill('SIGKILL')
+      }
+    }, gracePeriodMs)
+    proc.once('exit', () => clearTimeout(timeout))
+    proc.kill('SIGTERM')
   }
 
   /**
@@ -190,6 +243,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       throw new SessionNotFoundError(sessionId)
     }
     session.codeContext = codeContext
+  }
+
+  /**
+   * 设置会话的项目记忆上下文（外部调用，用于注入项目记忆）
+   */
+  setMemoryContext(sessionId: string, memoryContext: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new SessionNotFoundError(sessionId)
+    }
+    session.memoryContext = memoryContext
   }
 
   /**
@@ -468,7 +532,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
   /**
    * 终止 Agent 进程的默认实现
-   * 先发送 SIGTERM，5 秒后未退出则发送 SIGKILL
+   * 先发送 SIGTERM，5 秒后未退出则发送 SIGKILL 保底
    * @protected
    */
   protected async doTerminate(_session: AgentSession, proc?: ChildProcess): Promise<void> {
@@ -477,9 +541,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       // P0-11: 先注册 exit 监听器，再调用 kill，避免竞态条件
       const timeout = setTimeout(() => {
         if (!proc.killed) {
+          this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, sending SIGKILL`)
           proc.kill('SIGKILL')
         }
-      }, 5000)
+      }, BaseAdapter.SIGKILL_GRACE_PERIOD_MS)
       proc.once('exit', () => {
         clearTimeout(timeout)
         resolve()
@@ -542,6 +607,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     parts.push(buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext))
+
+    // 注入项目记忆上下文（与代码上下文分离）
+    if (session.memoryContext) {
+      parts.push('')
+      parts.push(session.memoryContext)
+    }
 
     return parts.join('\n')
   }

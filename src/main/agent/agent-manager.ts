@@ -10,6 +10,7 @@ import type {
   AgentAdapter,
   AgentSessionConfig,
   AgentCommand,
+  AgentCommandType,
   AgentOutput,
   ContextRef,
   ResolvedContext,
@@ -21,12 +22,16 @@ import type {
 import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
+import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError } from '../errors'
 import { ErrorCode } from '../errors'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
 import { readMemory } from '../mindmap-agent/memory'
+import { MemoryExtractor, MemoryStore } from '../memory'
+import { getModeManager } from './mode-manager'
+import type { ModeManager } from './mode-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
 
@@ -34,6 +39,10 @@ const logger = createLogger('AgentManager')
 
 /** 健康检查间隔：每 10 分钟输出一次诊断日志 */
 const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+/** RSS 内存警告阈值（MB），超过时触发警告和会话清理 */
+const RSS_WARNING_THRESHOLD_MB = 2048
+/** RSS 内存危险阈值（MB），超过时强制清理最老会话 */
+const RSS_CRITICAL_THRESHOLD_MB = 3072
 
 type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
 
@@ -43,6 +52,8 @@ interface SessionState {
   adapterName: string
   startTime: number
   sandbox?: import('@shared/types').Sandbox
+  /** 最后一次发送的指令类型（用于记忆提取的语义区分） */
+  lastCommandType?: AgentCommandType
 }
 
 /** startSessionWithFallback 返回值 */
@@ -55,7 +66,7 @@ export interface StartSessionResult {
 
 export class AgentManager {
   /** 最大并发会话数，防止会话无限创建导致资源泄漏 */
-  private readonly MAX_SESSIONS = 100
+  private MAX_SESSIONS = this.calculateMaxSessions()
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
   private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
   private contextResolver = new ContextResolver()
@@ -80,6 +91,42 @@ export class AgentManager {
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null
   /** 适配器偏好加载器（延迟注入，避免循环依赖） */
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
+  /** 适配器健康监控 */
+  private healthMonitor = new AdapterHealthMonitor()
+  /** 会话记忆系统（借鉴 claude-mem，Phase 1）—— 懒初始化以避免数据库未启动时报错 */
+  private _memoryExtractor?: MemoryExtractor
+  private _memoryStore?: MemoryStore
+  private get memoryExtractor(): MemoryExtractor {
+    if (!this._memoryExtractor) this._memoryExtractor = new MemoryExtractor()
+    return this._memoryExtractor
+  }
+  private get memoryStore(): MemoryStore {
+    if (!this._memoryStore) this._memoryStore = new MemoryStore()
+    return this._memoryStore
+  }
+  /** 会话输出缓冲区：sessionId → AgentOutput[]（用于记忆提取） */
+  private sessionOutputBuffers = new Map<string, AgentOutput[]>()
+  /** 模式管理器（懒初始化，与 MemoryStore 模式一致） */
+  private _modeManager?: ModeManager
+  private get modeManager(): ModeManager {
+    if (!this._modeManager) this._modeManager = getModeManager()
+    return this._modeManager
+  }
+
+  /**
+   * 基于系统资源动态计算最大会话数
+   * 公式：根据系统总内存计算，每会话预留约 20MB，最小 20，最大 200
+   */
+  private calculateMaxSessions(): number {
+    try {
+      const totalMemMB = require('node:os').totalmem() / 1024 / 1024
+      // 每会话预留 20MB，预留 50% 内存给系统和其他进程
+      const calculated = Math.floor((totalMemMB * 0.5) / 20)
+      return Math.max(20, Math.min(200, calculated))
+    } catch {
+      return 100 // 回退默认值
+    }
+  }
 
   constructor(
     private registry: AdapterRegistry,
@@ -190,6 +237,7 @@ export class AgentManager {
 
       this.sessionStates.delete(sessionId)
       this.sessionBroadcastNames.delete(sessionId)
+      this.sessionOutputBuffers.delete(sessionId)
       this.router.unbind(sessionId)
     } finally {
       // 释放互斥锁：确保即使清理过程中抛异常也不会死锁
@@ -198,10 +246,53 @@ export class AgentManager {
   }
 
   /**
+   * 获取进程内存统计信息
+   */
+  getMemoryStats(): { rssMB: number; heapTotalMB: number; heapUsedMB: number; externalMB: number } {
+    const usage = process.memoryUsage()
+    return {
+      rssMB: Math.round(usage.rss / 1024 / 1024),
+      heapTotalMB: Math.round(usage.heapTotal / 1024 / 1024),
+      heapUsedMB: Math.round(usage.heapUsed / 1024 / 1024),
+      externalMB: Math.round(usage.external / 1024 / 1024),
+    }
+  }
+
+  /**
+   * 检查内存使用，超过阈值时触发警告和会话清理
+   */
+  private checkMemoryPressure(): void {
+    const stats = this.getMemoryStats()
+    if (stats.rssMB > RSS_CRITICAL_THRESHOLD_MB) {
+      logger.error(`CRITICAL: RSS ${stats.rssMB}MB exceeds critical threshold (${RSS_CRITICAL_THRESHOLD_MB}MB), force cleaning oldest sessions`)
+      this.cleanupOldestSessions(5)
+    } else if (stats.rssMB > RSS_WARNING_THRESHOLD_MB) {
+      logger.warn(`WARNING: RSS ${stats.rssMB}MB exceeds warning threshold (${RSS_WARNING_THRESHOLD_MB}MB), consider reducing active sessions`)
+      this.cleanupOldestSessions(2)
+    }
+  }
+
+  /**
+   * 清理最老的 N 个会话（按开始时间排序）
+   */
+  private cleanupOldestSessions(count: number): void {
+    const sorted = Array.from(this.sessionStates.entries())
+      .sort((a, b) => a[1].startTime - b[1].startTime)
+      .slice(0, count)
+    for (const [sessionId] of sorted) {
+      logger.info(`Memory pressure cleanup: terminating session ${sessionId}`)
+      this.terminateSession(sessionId).catch((err) => {
+        logger.warn(`Failed to terminate session ${sessionId} during memory cleanup:`, err)
+      })
+    }
+  }
+
+  /**
    * 输出诊断日志，用于监控内存使用情况
    * 可在 destroy() 前或定时调用
    */
   logDiagnostics(): void {
+    const mem = this.getMemoryStats()
     logger.info('AgentManager diagnostics', {
       activeSessions: this.sessionStates.size,
       outputHandlers: this.outputHandlers.size,
@@ -209,6 +300,7 @@ export class AgentManager {
       sessionOutputListenerIndex: this.sessionOutputListenerIndex.size,
       sandboxSessionIndex: this.sandboxSessionIndex.size,
       cleanupInProgress: this.cleanupInProgress.size,
+      memory: mem,
     })
   }
 
@@ -220,6 +312,11 @@ export class AgentManager {
     if (this.healthCheckTimer) return
     this.healthCheckTimer = setInterval(() => {
       this.logDiagnostics()
+      this.checkMemoryPressure()
+      // 定期清理过期低置信度记忆（借鉴 claude-mem 的自动清理策略）
+      this.memoryStore.pruneStale(90).catch((err) => {
+        logger.warn('Memory pruneStale failed:', err)
+      })
     }, HEALTH_CHECK_INTERVAL_MS)
     // 不阻止进程退出
     if (this.healthCheckTimer && typeof this.healthCheckTimer === 'object' && 'unref' in this.healthCheckTimer) {
@@ -338,6 +435,20 @@ export class AgentManager {
     return this.scopeGuard
   }
 
+  /**
+   * 获取指定适配器的健康评分
+   */
+  getAdapterHealth(adapterName: string): AdapterHealthScore | undefined {
+    return this.healthMonitor.getHealth(adapterName)
+  }
+
+  /**
+   * 获取所有适配器的健康评分
+   */
+  getAllAdapterHealth(): AdapterHealthScore[] {
+    return this.healthMonitor.getAllHealth()
+  }
+
   getAdapter(name: string): AgentAdapter | undefined {
     return this.registry.get(name)
   }
@@ -392,6 +503,7 @@ export class AgentManager {
         continue
       }
 
+      const startTime = Date.now()
       try {
         const session = await adapter.startSession(config)
 
@@ -406,6 +518,9 @@ export class AgentManager {
         }
 
         fallbackHistory.push({ adapter: candidate, reason: '', success: true })
+
+        // 记录成功调用到健康监控
+        this.healthMonitor.recordCall(candidate, true, Date.now() - startTime)
 
         const isFallback = candidate !== primary
         const broadcastName = isFallback ? primary : candidate
@@ -434,6 +549,20 @@ export class AgentManager {
           this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
         }
 
+        // MEM-01: 初始化会话输出缓冲（用于记忆提取）
+        const sessionOutputs: AgentOutput[] = []
+        this.sessionOutputBuffers.set(session.id, sessionOutputs)
+        this.addSessionOutputListener(session.id, (output) => {
+          // 只收集有实质内容的输出（保护内存）
+          if (output.type === 'stdout' || output.type === 'stderr' || output.type === 'file_change' || output.type === 'complete') {
+            sessionOutputs.push(output)
+            // 限制缓冲区大小，防止内存无限增长
+            if (sessionOutputs.length > 500) {
+              sessionOutputs.splice(0, sessionOutputs.length - 500)
+            }
+          }
+        })
+
         return {
           sessionId: session.id,
           fallback: isFallback || undefined,
@@ -443,6 +572,8 @@ export class AgentManager {
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err)
         fallbackHistory.push({ adapter: candidate, reason: `startSession failed: ${reason}`, success: false })
+        // 记录失败调用到健康监控
+        this.healthMonitor.recordCall(candidate, false, Date.now() - startTime, reason)
         logger.warn(`Adapter ${candidate} startSession failed: ${reason}, trying next...`)
         continue
       }
@@ -474,6 +605,11 @@ export class AgentManager {
     if (!adapter) {
       throw new SessionNotFoundError(sessionId)
     }
+    // 记录指令类型，供 terminateSession 中的记忆提取器使用
+    const state = this.sessionStates.get(sessionId)
+    if (state) {
+      state.lastCommandType = command.type
+    }
     await adapter.sendCommand(sessionId, command)
   }
 
@@ -490,8 +626,8 @@ export class AgentManager {
   ): Promise<void> {
     const sessionConfig = this.sessionStates.get(sessionId)?.config
 
-    // 并行执行上下文解析、智能代码解析、项目记忆加载（三者互不依赖）
-    const [resolvedContexts, codeContext, memoryContext] = await Promise.all([
+    // 并行执行上下文解析、智能代码解析、项目记忆加载、会话历史记忆（四者互不依赖）
+    const [resolvedContexts, codeContext, memoryContext, sessionHistoryContext] = await Promise.all([
       // 标准上下文解析
       (contextRefs && contextRefs.length > 0)
         ? this.contextResolver.resolve(contextRefs, 8000, {
@@ -527,6 +663,14 @@ export class AgentManager {
             return undefined
           })
         : Promise.resolve(undefined as string | undefined),
+      // MEM-03: 会话历史记忆（从 MemoryStore 加载，借鉴 claude-mem 的渐进式上下文注入）
+      sessionConfig?.workingDirectory
+        ? this.formatSessionHistoryContext(
+            sessionConfig.workingDirectory,
+            sessionConfig.nodeId,
+            sessionId,
+          )
+        : Promise.resolve(undefined as string | undefined),
     ])
 
     // Store resolved contexts on the session so adapter can access them
@@ -538,10 +682,15 @@ export class AgentManager {
       if (codeContext) {
         adapter.setCodeContext(sessionId, codeContext)
       }
-      if (memoryContext) {
-        adapter.setCodeContext(sessionId, (adapter as any).sessions?.get(sessionId)?.codeContext
-          ? (adapter as any).sessions.get(sessionId).codeContext + '\n\n' + memoryContext
-          : memoryContext)
+      // 合并项目记忆与会话历史记忆，统一注入 Agent 上下文
+      const modeContext = sessionConfig?.workingDirectory
+        ? this.modeManager.formatModePromptSection(sessionConfig.workingDirectory)
+        : undefined
+      const combinedMemory = [memoryContext, sessionHistoryContext, modeContext]
+        .filter((s): s is string => typeof s === 'string' && s.length > 0)
+        .join('\n\n')
+      if (combinedMemory) {
+        adapter.setMemoryContext(sessionId, combinedMemory)
       }
     }
 
@@ -578,6 +727,39 @@ export class AgentManager {
       lines.push(`## 用户偏好\n- 命名风格: ${prefs.namingStyle}\n- 粒度: ${prefs.granularity}\n- 最大模块数: ${prefs.maxModules}`)
       if (prefs.avoidPatterns.length > 0) {
         lines.push(`- 避免模式: ${prefs.avoidPatterns.join(', ')}`)
+      }
+    }
+
+    return lines.join('\n')
+  }
+
+  /**
+   * 将会话历史记忆格式化为 prompt 字符串（借鉴 claude-mem 的渐进式上下文注入）
+   * 注入最近的调查/修复记录，帮助 Agent 了解项目历史和避免重复工作
+   */
+  private async formatSessionHistoryContext(
+    workingDirectory: string,
+    nodeId?: string,
+    _currentSessionId?: string,
+  ): Promise<string | undefined> {
+    const recent = await this.memoryStore.getRecent({
+      projectId: workingDirectory,
+      nodeId,
+      limit: 5,
+    })
+    if (recent.length === 0) return undefined
+
+    const lines: string[] = ['# 会话历史记忆（自动注入）']
+    for (const item of recent) {
+      lines.push(this.memoryStore.toCompactSummary(item))
+    }
+
+    // 注入跨适配器记忆（让 Agent B 复用 Agent A 的发现）
+    const crossAdapter = await this.memoryStore.getCrossAdapter(workingDirectory, '', 3)
+    if (crossAdapter.length > 0) {
+      lines.push('\n## 其他 Agent 的发现')
+      for (const item of crossAdapter) {
+        lines.push(`[${item.adapter_name}] ${this.memoryStore.toCompactSummary(item)}`)
       }
     }
 
@@ -696,7 +878,43 @@ export class AgentManager {
         }
       }
     }
-    // Agent 日志：记录会话完成
+
+    // MEM-02: 提取并存储会话记忆（借鉴 claude-mem，Phase 1）
+    if (state) {
+      try {
+        const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+        // 提取结构化记忆
+        const memories = this.memoryExtractor.extract(sessionId, outputs, {
+          projectId: state.config.workingDirectory,
+          nodeId: state.config.nodeId,
+          adapterName: state.adapterName,
+          commandDescription: state.config.nodeTitle,
+          commandType: state.lastCommandType,
+        })
+        // MODE-01: 按当前模式过滤记忆类型（不同模式关注不同记忆）
+        const modeCtx = state.config.workingDirectory
+          ? this.modeManager.resolvePromptContext(state.config.workingDirectory)
+          : null
+        const filtered = modeCtx
+          ? memories.filter((m) => modeCtx.memoryTypes.includes(m.kind))
+          : memories
+        // 持久化存储
+        if (filtered.length > 0) {
+          this.memoryStore.storeMany(filtered).catch((err) => {
+            logger.warn(`Memory storage failed for session ${sessionId}:`, err)
+          })
+          const skipped = memories.length - filtered.length
+          logger.info(`Stored ${filtered.length} memories for session ${sessionId}${skipped > 0 ? ` (${skipped} filtered by mode)` : ''}`)
+        }
+      } catch (err) {
+        logger.warn(`Memory extraction failed for session ${sessionId}:`, err)
+      } finally {
+        // 清理输出缓冲区，防止内存泄漏
+        this.sessionOutputBuffers.delete(sessionId)
+      }
+    }
+
+    // Agent 日志：记录会话完成（附 Token 经济学指标）
     if (this.onSessionComplete && state) {
       const result = scopeGuardError ? 'failure' : 'success'
       this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)

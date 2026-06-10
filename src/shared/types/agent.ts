@@ -148,6 +148,8 @@ export interface AgentSession {
   resolvedContexts?: ResolvedContext[]
   /** 智能代码上下文（由 SmartContextResolver 生成，不持久化） */
   codeContext?: string
+  /** 项目记忆上下文（从 .bizgraph/memory.json 加载，不持久化） */
+  memoryContext?: string
   /** Fallback 信息：当请求适配器未安装，回退到 MCP 时记录 */
   fallbackInfo?: {
     originalAdapter: string
@@ -188,6 +190,9 @@ export interface AgentAdapter {
 
   /** 设置会话的智能代码上下文（供 AgentManager 注入代码分析结果） */
   setCodeContext(sessionId: string, codeContext: string): void
+
+  /** 设置会话的项目记忆上下文（供 AgentManager 注入项目记忆） */
+  setMemoryContext(sessionId: string, memoryContext: string): void
 
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
   on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
@@ -237,7 +242,137 @@ export interface AgentLog {
   /** 执行耗时（毫秒） */
   duration: number
   createdAt: string
+  /** Token 经济学追踪（新增，借鉴 claude-mem） */
+  tokenEconomics?: TokenEconomics
 }
+
+// ============================================
+// Agent 会话记忆（借鉴 claude-mem 设计）
+// ============================================
+
+/** 记忆类型 —— 借鉴 claude-mem 的 observation_types 但适配 BizGraph 场景 */
+export type MemoryKind =
+  | 'investigation'    // 调查记录
+  | 'fix'              // 修复记录
+  | 'review_finding'   // 审查发现
+  | 'decision'         // 架构/修复决策
+  | 'pattern'          // 发现的代码模式
+  | 'lesson'           // 学到的经验教训
+
+/** 单条记忆 —— 对应 claude-mem 的 observation */
+export interface MemoryItem {
+  id: number
+  session_id: string           // agent_sessions.id
+  kind: MemoryKind
+  project_id: string           // graphs.id
+  node_id: string | null       // 关联的思维导图节点
+  title: string                // 一句话摘要（L1 层）
+  narrative: string            // 详细叙述
+  facts: string[]              // 结构化事实列表
+  concepts: string[]           // 概念标签（problem-solution, how-it-works 等）
+  files_read: string[]         // 读取的文件
+  files_modified: string[]     // 修改的文件
+  adapter_name: string         // claude-code / codex / opencode
+  token_cost: number           // 消耗的 token 数
+  confidence: number           // 置信度 0-1
+  created_at: string           // ISO 时间戳
+}
+
+/** 上下文层级 —— 借鉴 claude-mem 的渐进式披露 */
+export interface ContextLayer {
+  /** 1 = 最紧凑, 4 = 最完整 */
+  level: 1 | 2 | 3 | 4
+  label: string
+  content: string
+  estimatedTokens: number
+}
+
+/** 分层上下文包 */
+export interface LayeredContext {
+  layers: ContextLayer[]
+}
+
+/** Token 经济学指标 —— 借鉴 claude-mem 的 discovery_tokens vs read_tokens */
+export interface TokenEconomics {
+  /** 原始工作消耗的 token（LLM 实际调用） */
+  discoveryTokens: number
+  /** 压缩后上下文消耗的 token（注入到下游的） */
+  readTokens: number
+  /** 压缩节省的 token */
+  savings: number
+  /** 节省百分比 */
+  savingsPct: number
+}
+
+/** Agent 工作模式 —— 借鉴 claude-mem 的 Mode 系统 */
+export type AgentMode =
+  | 'general'
+  | 'security'       // 安全审计模式
+  | 'performance'    // 性能优化模式
+  | 'refactor'       // 重构模式
+
+/** Agent 模式配置 —— 影响 SubAgent 的关注点和行为 */
+export interface AgentModeConfig {
+  name: AgentMode
+  description: string
+  /** 影响 Investigator 的关注点 */
+  investigationFocus: string[]
+  /** 影响 Reviewer 的扫描规则 */
+  reviewPriorities: string[]
+  /** 影响 Fixer 的安全级别 */
+  fixSafety: 'strict' | 'standard' | 'aggressive'
+  /** 追加到 Agent system prompt 的后缀 */
+  systemPromptSuffix: string
+  /** 该模式下值得记录的记忆类型 */
+  memoryTypes: MemoryKind[]
+}
+
+/** 默认模式配置 —— 各模式的关注点和行为预设（Phase 2 ModeManager 将读取这些配置） */
+export const DEFAULT_MODE_CONFIGS: Record<AgentMode, AgentModeConfig> = {
+  general: {
+    name: 'general',
+    description: '通用开发模式：均衡关注功能实现、代码质量和可维护性',
+    investigationFocus: ['代码结构', '依赖关系', '现有测试', '最近变更'],
+    reviewPriorities: ['功能正确性', '代码风格', '错误处理', '测试覆盖'],
+    fixSafety: 'standard',
+    systemPromptSuffix: 'Focus on balanced code quality: correctness, readability, and maintainability.',
+    memoryTypes: ['fix', 'investigation', 'pattern', 'lesson'],
+  },
+  security: {
+    name: 'security',
+    description: '安全审计模式：重点扫描注入、认证、授权、敏感数据泄露等安全问题',
+    investigationFocus: ['输入验证', '认证流程', '授权逻辑', '敏感数据处理', '依赖漏洞'],
+    reviewPriorities: ['注入攻击', 'XSS/CSRF', '认证绕过', '敏感数据泄露', '不安全配置'],
+    fixSafety: 'strict',
+    systemPromptSuffix: 'CRITICAL: Focus on security vulnerabilities. Do NOT modify business logic unless it has a security impact. All changes must be minimal and reversible.',
+    memoryTypes: ['fix', 'investigation', 'lesson'],
+  },
+  performance: {
+    name: 'performance',
+    description: '性能优化模式：关注瓶颈识别、算法优化、缓存策略、资源使用',
+    investigationFocus: ['热点路径', '内存分配', 'IO 操作', '数据库查询', '缓存命中率'],
+    reviewPriorities: ['算法复杂度', '内存泄漏', '不必要的 IO', 'N+1 查询', '大对象分配'],
+    fixSafety: 'aggressive',
+    systemPromptSuffix: 'Focus on measurable performance improvements. Prefer algorithmic optimizations over micro-optimizations. Add benchmarks when possible.',
+    memoryTypes: ['investigation', 'pattern', 'fix'],
+  },
+  refactor: {
+    name: 'refactor',
+    description: '重构模式：关注代码结构改进、消除技术债务、提升可测试性',
+    investigationFocus: ['代码异味', '循环依赖', '过长函数', '重复代码', '测试缺口'],
+    reviewPriorities: ['单一职责', '接口隔离', '依赖方向', '可测试性', '向后兼容'],
+    fixSafety: 'standard',
+    systemPromptSuffix: 'Focus on structural improvements without changing external behavior. Keep changes small and incremental. Ensure existing tests still pass.',
+    memoryTypes: ['pattern', 'decision', 'fix', 'lesson'],
+  },
+}
+
+/** 输出健康状态 —— 借鉴 claude-mem 的输出分类器 */
+export type OutputHealth =
+  | 'valid'       // 正常输出，可解析
+  | 'truncated'   // 输出被截断
+  | 'poisoned'    // 上下文耗尽信号
+  | 'empty';      // 空白/仅空白
 
 // ============================================
 // Verification types

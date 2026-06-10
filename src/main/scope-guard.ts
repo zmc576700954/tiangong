@@ -11,6 +11,7 @@
 import fs from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import chokidar from 'chokidar'
 import type { FSWatcher } from 'chokidar'
 import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/types'
@@ -46,16 +47,19 @@ export type ScopeGuardViolationHandler = (sandboxId: string, violations: string[
  * 3. OS 元数据文件（.DS_Store、Thumbs.db、desktop.ini）
  * 4. 编辑器配置目录（.idea、.vscode）
  */
+/** 快照内容哈希采样大小（前 N 字节） */
+const CONTENT_HASH_SAMPLE_SIZE = 1024
+
 const IGNORED_PATTERNS = [
-  // 构建产物与依赖
-  /node_modules/,
-  /\.git/,
-  /\.bizgraph/,
-  /dist/,
-  /dist-electron/,
-  /release/,
-  /\.next/,
-  /build/,
+  // 构建产物与依赖 — 使用路径分隔符或边界锚定，避免误匹配（如 /dist/ 匹配 my-dist-folder）
+  /[\\/]node_modules[\\/]/,
+  /[\\/]\.git[\\/]/,
+  /[\\/]\.bizgraph[\\/]/,
+  /[\\/]dist[\\/]/,
+  /[\\/]dist-electron[\\/]/,
+  /[\\/]release[\\/]/,
+  /[\\/]\.next[\\/]/,
+  /[\\/]build[\\/]/,
   // 编辑器临时文件 — 防止越界检测误报
   /\.swp$/,
   /\.swo$/,
@@ -67,8 +71,8 @@ const IGNORED_PATTERNS = [
   /Thumbs\.db$/,
   /desktop\.ini$/,
   // 编辑器配置目录
-  /\.idea/,
-  /\.vscode/,
+  /[\\/]\.idea([\\/]|$)/,
+  /[\\/]\.vscode([\\/]|$)/,
 ]
 
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
@@ -90,10 +94,41 @@ function shouldIgnorePath(filePath: string): boolean {
   return IGNORED_PATTERNS.some((pattern) => pattern.test(filePath))
 }
 
+/**
+ * 计算文件内容哈希（快速采样）
+ * 读取文件前 CONTENT_HASH_SAMPLE_SIZE 字节，使用 xxhash-like 快速哈希
+ * 对于小文件读取全部内容，大文件只采样前 N 字节 + 文件大小作为混合输入
+ */
+async function computeContentHash(filePath: string, fileSize: number): Promise<string> {
+  try {
+    const sampleSize = Math.min(fileSize, CONTENT_HASH_SAMPLE_SIZE)
+    if (sampleSize === 0) return '0'
+
+    const fd = await fs.open(filePath, 'r')
+    try {
+      const buffer = Buffer.alloc(sampleSize)
+      await fd.read(buffer, 0, sampleSize, 0)
+      // 混合文件大小与内容采样，防止仅大小相同但内容不同的碰撞
+      // 使用 SHA-256 混合采样内容 + 文件大小，取前 16 字符作为短哈希
+      const hash = crypto.createHash('sha256')
+      hash.update(buffer)
+      hash.update(Buffer.from(fileSize.toString()))
+      return hash.digest('hex').substring(0, 16)
+    } finally {
+      await fd.close()
+    }
+  } catch {
+    // 无法读取时回退到大小+时间戳的近似哈希
+    return `${fileSize}:${Date.now()}`
+  }
+}
+
 /** 文件系统快照项 */
 interface FileSnapshotEntry {
   mtimeMs: number
   size: number
+  /** 内容哈希（前 1KB 采样），用于检测文件内容是否真正变更 */
+  contentHash: string
 }
 
 export class ScopeGuard {
@@ -280,8 +315,12 @@ export class ScopeGuard {
           outOfBoundsFiles.push(filePath)
           newFiles.push(filePath)
         }
-      } else if (initialInfo.mtimeMs !== currentInfo.mtimeMs || initialInfo.size !== currentInfo.size) {
-        // 已存在文件被修改
+      } else if (
+        initialInfo.mtimeMs !== currentInfo.mtimeMs ||
+        initialInfo.size !== currentInfo.size ||
+        initialInfo.contentHash !== currentInfo.contentHash
+      ) {
+        // 已存在文件被修改（mtime/size 任一变化，或内容哈希不一致时触发深度检查）
         if (allowedSet.has(filePath)) {
           validFiles.push(filePath)
         } else {
@@ -591,7 +630,12 @@ export class ScopeGuard {
 
     for (const result of fileStats) {
       if (result && snapshot.size < MAX_SNAPSHOT_ENTRIES) {
-        snapshot.set(result.filePath, { mtimeMs: result.stat.mtimeMs, size: result.stat.size })
+        const contentHash = await computeContentHash(result.filePath, result.stat.size)
+        snapshot.set(result.filePath, {
+          mtimeMs: result.stat.mtimeMs,
+          size: result.stat.size,
+          contentHash,
+        })
       }
     }
 

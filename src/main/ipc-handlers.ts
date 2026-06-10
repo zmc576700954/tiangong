@@ -38,6 +38,8 @@ import { registerMindmapHandlers } from './ipc/mindmap'
 import { registerChatHandlers } from './ipc/chat'
 import { registerScopeGuardHandlers } from './ipc/scope-guard'
 import { registerCodeIntelHandlers, initCodeIntelligence, getSymbolIndex } from './ipc/code-intelligence'
+import { registerMemoryHandlers } from './ipc/memory'
+import { registerModeHandlers } from './ipc/mode'
 import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
 import type { ValidateFsPath } from './ipc/fs'
@@ -245,6 +247,8 @@ export async function registerIpcHandlers(): Promise<void> {
   registerChatHandlers(chatService, typedHandle)
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
   registerCodeIntelHandlers(ipcMain)
+  registerMemoryHandlers(typedHandle)
+  registerModeHandlers(typedHandle)
 
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {

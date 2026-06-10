@@ -6,6 +6,7 @@ import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { IpcError, ErrorCode } from '../errors'
 import { ipcContext } from './context'
+import type { IpcMiddlewarePipeline } from './middleware'
 
 /** 单个频率限制条目 */
 interface RateLimitEntry {
@@ -156,6 +157,7 @@ export function isPathWithinProject(filePath: string, projectPath: string): bool
 
 export function createTypedHandle(
   ipcMain: Electron.IpcMain,
+  pipeline?: IpcMiddlewarePipeline,
 ): TypedHandle {
   return (
     channel: string,
@@ -166,6 +168,12 @@ export function createTypedHandle(
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, ...args: any[]) => {
       try {
         checkRateLimit(channel, event.sender.id)
+        if (pipeline) {
+          return await pipeline.execute(
+            { channel, event, args, startTime: Date.now() },
+            async () => ipcContext.run({ senderId: event.sender.id }, () => handler(event, ...args)),
+          )
+        }
         return await ipcContext.run({ senderId: event.sender.id }, () =>
           handler(event, ...args),
         )

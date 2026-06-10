@@ -13,6 +13,7 @@ import type {
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
+  AgentMode, AgentModeConfig,
 } from './agent'
 
 // ============================================
@@ -139,6 +140,21 @@ export interface IpcApi {
   'codeIntel:querySymbols': (name: string, options?: { kind?: SymbolKind; fuzzy?: boolean; limit?: number }) => Promise<SymbolQueryResult[]>
   'codeIntel:getRelatedFiles': (filePath: string, depth?: number) => Promise<Array<{ filePath: string; distance: number }>>
   'codeIntel:generatePlan': (userQuery: string) => Promise<CodeIntelExecutionPlan>
+
+  // Memory 记忆操作
+  'memory:search': (query: string, options?: { projectId?: string; kind?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
+  'memory:getRecent': (options?: { projectId?: string; nodeId?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
+  'memory:getByNode': (nodeId: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
+  'memory:getBySession': (sessionId: string) => Promise<import('./agent').MemoryItem[]>
+  'memory:getStats': (projectId?: string) => Promise<Array<{ kind: string; count: number }>>
+  'memory:getCrossAdapter': (projectId: string, excludeAdapter: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
+  'memory:delete': (sessionId: string) => Promise<number>
+  'memory:prune': (daysThreshold?: number) => Promise<number>
+
+  // Agent 模式管理
+  'mode:getCurrent': (projectId: string) => Promise<AgentMode>
+  'mode:setCurrent': (projectId: string, mode: AgentMode) => Promise<void>
+  'mode:getAvailable': () => Promise<AgentModeConfig[]>
 
   // ScopeGuard 操作
   'scopeGuard:rollbackFile': (sessionId: string, filePath: string) => Promise<boolean>

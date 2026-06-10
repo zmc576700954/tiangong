@@ -15,20 +15,39 @@ const logger = createLogger('ProjectMemory')
 const MEMORY_DIR = '.bizgraph'
 const MEMORY_FILE = 'memory.json'
 
+/** 写入锁超时时间（毫秒） */
+const WRITE_LOCK_TIMEOUT_MS = 30_000
+
 /** 按项目路径隔离的写入互斥锁，防止并发写导致数据丢失 */
 const writeLocks = new Map<string, Promise<void>>()
 
+/** 记忆版本号：用于乐观锁，防止多窗口并发写入导致数据丢失 */
+const memoryVersions = new Map<string, number>()
+
 /**
  * 串行化写入操作：同一项目的写入操作按序执行，避免并发读写丢失数据
+ * 增加超时保护：超过 WRITE_LOCK_TIMEOUT_MS 自动释放，防止永久挂起
  */
 function withWriteLock<T>(projectPath: string, fn: () => Promise<T>): Promise<T> {
   const prev = writeLocks.get(projectPath) ?? Promise.resolve()
   let release!: () => void
-  const next = new Promise<void>((resolve) => { release = resolve })
+  let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+  const next = new Promise<void>((resolve, reject) => {
+    release = resolve
+    // 超时保护：30 秒后强制释放锁
+    timeoutId = setTimeout(() => {
+      logger.warn(`Write lock timeout for ${projectPath}, forcing release`)
+      reject(new Error(`Write lock timeout after ${WRITE_LOCK_TIMEOUT_MS}ms`))
+    }, WRITE_LOCK_TIMEOUT_MS)
+  })
+
   // 将当前锁链存储到 Map，后续写入等待前一个完成
   const chain = prev.then(() => next).catch(() => next)
   writeLocks.set(projectPath, chain)
+
   return prev.then(() => fn()).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId)
     release()
     // 延迟到下一个 microtask 检查：若锁链仍指向当前 chain，说明无后续写入
     queueMicrotask(() => {
@@ -65,37 +84,76 @@ function createDefaultMemory(projectPath: string): ProjectMemory {
   }
 }
 
+/** 从内存对象中读取版本号（内部乐观锁字段） */
+function getMemoryVersion(memory: ProjectMemory): number {
+  return (memory as unknown as Record<string, unknown>).__version as number ?? 0
+}
+
+/** 设置内存对象的版本号 */
+function setMemoryVersion(memory: ProjectMemory, version: number): void {
+  (memory as unknown as Record<string, unknown>).__version = version
+}
+
 function memoryPath(projectPath: string): string {
   return path.join(projectPath, MEMORY_DIR, MEMORY_FILE)
 }
 
 /**
  * 读取项目记忆，不存在则返回默认值
+ * 自动附加内部版本号用于乐观锁
  */
 export async function readMemory(projectPath: string): Promise<ProjectMemory> {
   try {
     const raw = await fs.readFile(memoryPath(projectPath), 'utf-8')
     const parsed = JSON.parse(raw) as ProjectMemory
     // 合并默认值（防止旧文件缺少新字段）
-    return {
+    const memory = {
       ...createDefaultMemory(projectPath),
       ...parsed,
       preferences: { ...DEFAULT_PREFERENCES, ...parsed.preferences },
     }
+    // 读取磁盘版本号并附加到内存对象
+    const diskVersion = memoryVersions.get(projectPath) ?? 0
+    setMemoryVersion(memory, diskVersion)
+    return memory
   } catch {
     return createDefaultMemory(projectPath)
   }
 }
 
 /**
+ * 乐观锁冲突错误
+ */
+export class OptimisticLockError extends Error {
+  constructor(expectedVersion: number, actualVersion: number) {
+    super(`Optimistic lock failed: expected version ${expectedVersion}, but actual is ${actualVersion}`)
+    this.name = 'OptimisticLockError'
+  }
+}
+
+/**
  * 写入项目记忆（原子写入：先写临时文件再 rename，防止写入中断导致损坏）
  * 通过 withWriteLock 串行化同一项目的并发写入
+ * 支持乐观锁：若传入的 memory 带有版本号，会与磁盘当前版本比较，不一致时拒绝写入
  */
 export function writeMemory(projectPath: string, memory: ProjectMemory): Promise<void> {
   return withWriteLock(projectPath, async () => {
+    // 乐观锁检查：若 memory 带有版本号，验证是否与磁盘一致
+    const expectedVersion = getMemoryVersion(memory)
+    const currentVersion = memoryVersions.get(projectPath) ?? 0
+    if (expectedVersion !== 0 && expectedVersion !== currentVersion) {
+      throw new OptimisticLockError(expectedVersion, currentVersion)
+    }
+
     const dir = path.join(projectPath, MEMORY_DIR)
     await fs.mkdir(dir, { recursive: true })
     memory.updatedAt = new Date().toISOString()
+
+    // 版本号自增
+    const nextVersion = currentVersion + 1
+    memoryVersions.set(projectPath, nextVersion)
+    setMemoryVersion(memory, nextVersion)
+
     const tmpPath = memoryPath(projectPath) + '.tmp'
     await fs.writeFile(tmpPath, JSON.stringify(memory, null, 2), 'utf-8')
     await fs.rename(tmpPath, memoryPath(projectPath))

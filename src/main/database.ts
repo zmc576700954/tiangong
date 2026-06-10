@@ -262,7 +262,7 @@ async function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 1
+const CURRENT_SCHEMA_VERSION = 2
 
 async function migrate(): Promise<void> {
   const db = getClient()
@@ -419,6 +419,27 @@ async function migrate(): Promise<void> {
     )
     `, ['id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error', 'session_id', 'context_refs', 'tool_calls', 'created_at'])
 
+    // Memory items table (Phase 1: 会话记忆层, FTS5 全文搜索)
+    await rebuildTableIfNeeded(db, 'memory_items', `
+      CREATE TABLE memory_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK(kind IN ('investigation', 'fix', 'review_finding', 'decision', 'pattern', 'lesson')),
+        project_id TEXT NOT NULL DEFAULT '',
+        node_id TEXT,
+        title TEXT NOT NULL,
+        narrative TEXT NOT NULL DEFAULT '',
+        facts TEXT NOT NULL DEFAULT '[]',
+        concepts TEXT NOT NULL DEFAULT '[]',
+        files_read TEXT NOT NULL DEFAULT '[]',
+        files_modified TEXT NOT NULL DEFAULT '[]',
+        adapter_name TEXT NOT NULL DEFAULT '',
+        token_cost INTEGER DEFAULT 0,
+        confidence REAL DEFAULT 0.0,
+        created_at TEXT NOT NULL
+      )
+    `, ['id', 'session_id', 'kind', 'project_id', 'title', 'narrative', 'created_at'])
+
     // Create indexes
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
@@ -432,6 +453,12 @@ async function migrate(): Promise<void> {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_session_id ON memory_items(session_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_kind ON memory_items(kind)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_node ON memory_items(node_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at DESC)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_adapter ON memory_items(project_id, adapter_name)`)
 
     await runIncrementalMigrations(db)
 
