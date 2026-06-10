@@ -77,7 +77,7 @@ export class EntityExtractor {
     }
 
     // 2. 提取文件路径模式（如 src/user/service.ts）
-    const filePattern = /\b(?:[\w\-]+\/)+[\w\-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt)\b/g
+    const filePattern = /\b(?:[\w-]+\/)+[\w-]+\.(?:ts|tsx|js|jsx|py|go|rs|java|kt)\b/g
     while ((match = filePattern.exec(input)) !== null) {
       const name = match[0]
       if (seen.has(name)) continue

@@ -145,10 +145,14 @@ export interface IpcApi {
   'memory:search': (query: string, options?: { projectId?: string; kind?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
   'memory:getRecent': (options?: { projectId?: string; nodeId?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
   'memory:getByNode': (nodeId: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
-  'memory:getBySession': (sessionId: string) => Promise<import('./agent').MemoryItem[]>
+  'memory:getBySession': (sessionId: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
   'memory:getStats': (projectId?: string) => Promise<Array<{ kind: string; count: number }>>
   'memory:getCrossAdapter': (projectId: string, excludeAdapter: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
-  'memory:delete': (sessionId: string) => Promise<number>
+  /**
+   * 删除会话记忆。必须同时提供 projectId 作为授权范围，
+   * 防止仅凭 sessionId 跨项目删除——与 main 侧 deleteBySessionScoped 对齐。
+   */
+  'memory:delete': (sessionId: string, projectId: string) => Promise<number>
   'memory:prune': (daysThreshold?: number) => Promise<number>
 
   // Agent 模式管理

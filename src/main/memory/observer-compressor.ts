@@ -153,10 +153,14 @@ export class ObserverCompressor {
 
     // 检查是否达到压缩阈值
     if (this.state.bufferTokens >= this.config.compressThresholdTokens) {
-      // 检查最小压缩间隔
-      const now = Date.now()
-      if (this.state.lastCompressAt) {
+      // 二级阈值：超过 4 倍阈值即视为严重堆积，绕过 cooldown 强制压缩
+      // 防止 cooldown 期间 stdout 高速涌入导致 buffer 无限增长 → OOM
+      const hardCap = this.config.compressThresholdTokens * 4
+      const overHardCap = this.state.bufferTokens >= hardCap
+
+      if (!overHardCap && this.state.lastCompressAt) {
         const lastTime = new Date(this.state.lastCompressAt).getTime()
+        const now = Date.now()
         if (now - lastTime < this.config.minCompressIntervalMs) {
           return null // 距离上次压缩太近，跳过
         }
@@ -319,9 +323,16 @@ export class ObserverCompressor {
     const inputTokens = this.state.bufferTokens
 
     // 1. 保留尾部上下文（保持连续性）
-    const retentionChars = Math.floor(buffer.length * this.config.bufferRetentionRatio)
-    const tail = buffer.slice(-retentionChars)
-    const mainText = buffer.slice(0, -retentionChars)
+    //
+    // 三种边界要 clamp，缺一不可：
+    //   - retentionChars === 0      : slice(-0) 返回整个 buffer
+    //   - retentionChars >= buffer.length : tail = 整个 buffer, mainText = '' → 触发无限压缩
+    //   - bufferRetentionRatio 配错为 >=1 时 floor 也可能等于 buffer.length
+    // 通过 clamp 到 [0, buffer.length - 1]，保证 mainText 至少有 1 个字符被消费。
+    const rawRetention = Math.floor(buffer.length * this.config.bufferRetentionRatio)
+    const retentionChars = Math.max(0, Math.min(rawRetention, buffer.length - 1))
+    const tail = retentionChars > 0 ? buffer.slice(-retentionChars) : ''
+    const mainText = retentionChars > 0 ? buffer.slice(0, -retentionChars) : buffer
 
     // 2. 提取摘要
     const summary = this._extractSummary(mainText)
@@ -396,7 +407,7 @@ export class ObserverCompressor {
     const scored = paragraphs.map((p) => {
       let score = 0
       if (/\d+/.test(p) || /error|fail|exception/i.test(p)) score += 3
-      if (/[\/\\][\w.-]+\.[a-z]{2,5}/i.test(p)) score += 2
+      if (/[/\\][\w.-]+\.[a-z]{2,5}/i.test(p)) score += 2
       if (/(?:decided|chose|selected|architecture|design pattern)/i.test(p)) score += 2
       if (/(?:done|complete|success|finished|✓|✅)/i.test(p)) score += 1
       if (p.length < 20) score -= 2

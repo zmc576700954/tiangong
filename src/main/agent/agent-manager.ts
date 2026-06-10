@@ -34,6 +34,7 @@ import { getModeManager } from './mode-manager'
 import type { ModeManager } from './mode-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
+import os from 'node:os'
 
 const logger = createLogger('AgentManager')
 
@@ -119,7 +120,7 @@ export class AgentManager {
    */
   private calculateMaxSessions(): number {
     try {
-      const totalMemMB = require('node:os').totalmem() / 1024 / 1024
+      const totalMemMB = os.totalmem() / 1024 / 1024
       // 每会话预留 20MB，预留 50% 内存给系统和其他进程
       const calculated = Math.floor((totalMemMB * 0.5) / 20)
       return Math.max(20, Math.min(200, calculated))
@@ -212,37 +213,48 @@ export class AgentManager {
     this.cleanupInProgress.add(sessionId)
 
     try {
-      const state = this.sessionStates.get(sessionId)
-
-      // ScopeGuard: 异常退出时回滚沙箱
-      if (state?.sandbox) {
-        this.sandboxSessionIndex.delete(state.sandbox.id)
-        this.scopeGuard.rollback(state.sandbox).catch((err) => {
-          logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
-        })
-      }
-
-      // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
-      const listeners = this.sessionOutputListenerIndex.get(sessionId)
-      if (listeners) {
-        for (const handler of listeners) {
-          const wrapped = this.sessionOutputListeners.get(handler)
-          if (wrapped) {
-            this.broadcaster.offBroadcast(wrapped)
-            this.sessionOutputListeners.delete(handler)
-          }
-        }
-        this.sessionOutputListenerIndex.delete(sessionId)
-      }
-
-      this.sessionStates.delete(sessionId)
-      this.sessionBroadcastNames.delete(sessionId)
-      this.sessionOutputBuffers.delete(sessionId)
-      this.router.unbind(sessionId)
+      this._doCleanupSessionResources(sessionId)
     } finally {
       // 释放互斥锁：确保即使清理过程中抛异常也不会死锁
       this.cleanupInProgress.delete(sessionId)
     }
+  }
+
+  /**
+   * 实际执行资源清理（不获取/释放 cleanupInProgress 锁）
+   *
+   * 抽取为独立方法以便调用方（如 terminateSession 的 SessionNotFoundError 分支）
+   * 在已经持有锁的情况下直接调用，避免重入 cleanupSessionResources 时
+   * 被锁检查 short-circuit 跳过而导致残留资源未被释放。
+   */
+  private _doCleanupSessionResources(sessionId: string): void {
+    const state = this.sessionStates.get(sessionId)
+
+    // ScopeGuard: 异常退出时回滚沙箱
+    if (state?.sandbox) {
+      this.sandboxSessionIndex.delete(state.sandbox.id)
+      this.scopeGuard.rollback(state.sandbox).catch((err) => {
+        logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
+      })
+    }
+
+    // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
+    const listeners = this.sessionOutputListenerIndex.get(sessionId)
+    if (listeners) {
+      for (const handler of listeners) {
+        const wrapped = this.sessionOutputListeners.get(handler)
+        if (wrapped) {
+          this.broadcaster.offBroadcast(wrapped)
+          this.sessionOutputListeners.delete(handler)
+        }
+      }
+      this.sessionOutputListenerIndex.delete(sessionId)
+    }
+
+    this.sessionStates.delete(sessionId)
+    this.sessionBroadcastNames.delete(sessionId)
+    this.sessionOutputBuffers.delete(sessionId)
+    this.router.unbind(sessionId)
   }
 
   /**
@@ -606,11 +618,24 @@ export class AgentManager {
       throw new SessionNotFoundError(sessionId)
     }
     // 记录指令类型，供 terminateSession 中的记忆提取器使用
+    // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
+    //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
+    //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
     const state = this.sessionStates.get(sessionId)
+    const prevCommandType = state?.lastCommandType
     if (state) {
       state.lastCommandType = command.type
     }
-    await adapter.sendCommand(sessionId, command)
+    try {
+      await adapter.sendCommand(sessionId, command)
+    } catch (err) {
+      // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
+      // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
+      if (state && state.lastCommandType === command.type) {
+        state.lastCommandType = prevCommandType
+      }
+      throw err
+    }
   }
 
   /**
@@ -828,63 +853,84 @@ export class AgentManager {
     // 标记清理中，防止后续 sessionEnded 事件触发 cleanupSessionResources 并发清理
     this.cleanupInProgress.add(sessionId)
 
+    // 阶段划分：
+    //   阶段 A（持锁）—— adapter.terminate + Map 状态清理 + ScopeGuard 提交
+    //     这些必须排他执行，避免 sessionEnded('crash') 事件重入 cleanupSessionResources
+    //     与正在迭代 sessionStates/sandboxSessionIndex 的代码冲突。
+    //   阶段 B（释放锁后）—— 记忆抽取/存储 + onSessionComplete 回调
+    //     这些只依赖阶段 A 抓拍的局部变量，不再触碰共享 Map；
+    //     不持锁可避免 LibSQL 慢写时把 crash 事件吞掉。
     let adapter: AgentAdapter | undefined
-    try {
-      adapter = this.router.resolve(sessionId)
-    } catch (err) {
-      if (err instanceof SessionNotFoundError) {
-        // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
-        // 确保残留资源也被清除
-        this.cleanupSessionResources(sessionId)
-        return
-      }
-      throw err
-    }
-
-    // 提前提取 nodeId 和 sandbox（在 finally 之前，避免 config 被清除后无法读取）
-    const state = this.sessionStates.get(sessionId)
-    const nodeId = state?.config.nodeId
-    const sandbox = state?.sandbox
-
+    let state: SessionState | undefined
+    let nodeId: string | undefined
+    let sandbox: SessionState['sandbox']
+    let outputsForMemory: AgentOutput[] = []
     let scopeGuardError: Error | undefined
+
     try {
-      await adapter.terminateSession(sessionId)
-    } finally {
-      // 无论 terminateSession 是否成功，都确保清理路由和状态
-      this.router.unbind(sessionId)
-      this.sessionStates.delete(sessionId)
-      this.sessionBroadcastNames.delete(sessionId)
-      // 清理 sandboxId → sessionId 反向索引
-      if (sandbox) {
-        this.sandboxSessionIndex.delete(sandbox.id)
+      try {
+        adapter = this.router.resolve(sessionId)
+      } catch (err) {
+        if (err instanceof SessionNotFoundError) {
+          // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
+          // 我们已经持有 cleanupInProgress 锁，直接调用 _doCleanupSessionResources，
+          // 避免 cleanupSessionResources 的锁检查 short-circuit 导致残留状态未被释放。
+          this._doCleanupSessionResources(sessionId)
+          return
+        }
+        throw err
       }
-      // 释放互斥锁
+
+      // 提前提取 nodeId 和 sandbox（在状态被清除前读取）
+      state = this.sessionStates.get(sessionId)
+      nodeId = state?.config.nodeId
+      sandbox = state?.sandbox
+      // 抓拍 outputs，后续阶段 B 不再访问 sessionOutputBuffers
+      outputsForMemory = this.sessionOutputBuffers.get(sessionId) ?? []
+
+      try {
+        await adapter.terminateSession(sessionId)
+      } finally {
+        // 无论 terminateSession 是否成功，都确保清理路由和状态
+        this.router.unbind(sessionId)
+        this.sessionStates.delete(sessionId)
+        this.sessionBroadcastNames.delete(sessionId)
+        this.sessionOutputBuffers.delete(sessionId)
+        // 清理 sandboxId → sessionId 反向索引
+        if (sandbox) {
+          this.sandboxSessionIndex.delete(sandbox.id)
+        }
+      }
+
+      // ScopeGuard: 执行后验证并清理沙箱（仍在锁内，避免与异常退出回滚冲突）
+      if (sandbox) {
+        try {
+          await this.scopeGuard.commitChanges(sandbox)
+          if (nodeId) {
+            this.statusChangeCallback?.(sessionId, nodeId, 'testing')
+          }
+        } catch (err) {
+          if (err instanceof ScopeGuardError) {
+            logger.error(`ScopeGuard validation failed for session ${sessionId}:`, err.message)
+            scopeGuardError = err
+          } else if (err instanceof Error) {
+            logger.error(`ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
+          }
+        }
+      }
+    } finally {
+      // 阶段 A 完成（共享 Map 已清理干净），尽早释放清理互斥锁，
+      // 让随后到达的 sessionEnded('crash') 事件可以正常触发 cleanupSessionResources。
+      // 阶段 B 的记忆抽取/持久化不再访问共享 Map，因此可安全脱锁执行。
       this.cleanupInProgress.delete(sessionId)
     }
 
-    // ScopeGuard: 执行后验证并清理沙箱
-    if (sandbox) {
-      try {
-        await this.scopeGuard.commitChanges(sandbox)
-        if (nodeId) {
-          this.statusChangeCallback?.(sessionId, nodeId, 'testing')
-        }
-      } catch (err) {
-        if (err instanceof ScopeGuardError) {
-          logger.error(`ScopeGuard validation failed for session ${sessionId}:`, err.message)
-          scopeGuardError = err
-        } else if (err instanceof Error) {
-          logger.error(`ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
-        }
-      }
-    }
-
+    // 阶段 B：记忆抽取与持久化（不持锁）
     // MEM-02: 提取并存储会话记忆（借鉴 claude-mem，Phase 1）
     if (state) {
       try {
-        const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
         // 提取结构化记忆
-        const memories = this.memoryExtractor.extract(sessionId, outputs, {
+        const memories = this.memoryExtractor.extract(sessionId, outputsForMemory, {
           projectId: state.config.workingDirectory,
           nodeId: state.config.nodeId,
           adapterName: state.adapterName,
@@ -898,19 +944,18 @@ export class AgentManager {
         const filtered = modeCtx
           ? memories.filter((m) => modeCtx.memoryTypes.includes(m.kind))
           : memories
-        // 持久化存储
+        // 持久化存储（await 确保失败被 try/catch 捕获，避免 unhandled rejection）
         if (filtered.length > 0) {
-          this.memoryStore.storeMany(filtered).catch((err) => {
+          try {
+            await this.memoryStore.storeMany(filtered)
+            const skipped = memories.length - filtered.length
+            logger.info(`Stored ${filtered.length} memories for session ${sessionId}${skipped > 0 ? ` (${skipped} filtered by mode)` : ''}`)
+          } catch (err) {
             logger.warn(`Memory storage failed for session ${sessionId}:`, err)
-          })
-          const skipped = memories.length - filtered.length
-          logger.info(`Stored ${filtered.length} memories for session ${sessionId}${skipped > 0 ? ` (${skipped} filtered by mode)` : ''}`)
+          }
         }
       } catch (err) {
         logger.warn(`Memory extraction failed for session ${sessionId}:`, err)
-      } finally {
-        // 清理输出缓冲区，防止内存泄漏
-        this.sessionOutputBuffers.delete(sessionId)
       }
     }
 

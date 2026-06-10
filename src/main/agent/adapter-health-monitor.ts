@@ -32,8 +32,8 @@ export interface AdapterHealthScore {
   successRate: number
   /** 平均响应时间 */
   avgResponseTimeMs: number
-  /** 状态：healthy | degraded | unhealthy */
-  status: 'healthy' | 'degraded' | 'unhealthy'
+  /** 状态：healthy | degraded | unhealthy | unknown（零调用样本） */
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
   /** 原始指标 */
   metrics: AdapterHealthMetrics
 }
@@ -98,12 +98,27 @@ export class AdapterHealthMonitor {
 
   /**
    * 获取指定适配器的健康评分
+   *
+   * 零调用适配器视为 "unknown"（healthScore=undefined-like 但返回 status='unknown'）
+   * 避免在 getHealthiestAdapter 中把"从没用过的"排在历史可靠适配器之前。
    */
   getHealth(adapterName: string): AdapterHealthScore | undefined {
     const m = this.metrics.get(adapterName)
     if (!m) return undefined
 
-    const successRate = m.totalCalls > 0 ? (m.successCalls / m.totalCalls) * 100 : 100
+    // 无调用样本时不报告 100%，标记为 unknown 让上层路由不要优先选择它
+    if (m.totalCalls === 0) {
+      return {
+        adapterName,
+        healthScore: 0,
+        successRate: 0,
+        avgResponseTimeMs: 0,
+        status: 'unknown',
+        metrics: { ...m },
+      }
+    }
+
+    const successRate = (m.successCalls / m.totalCalls) * 100
     const responseTimeScore = this.calculateResponseTimeScore(m.avgResponseTimeMs)
 
     // 综合评分：成功率 70% + 响应时间 30%
@@ -139,23 +154,32 @@ export class AdapterHealthMonitor {
 
   /**
    * 获取最健康的适配器（用于智能路由）
+   *
+   * 过滤掉 unknown（零调用样本）适配器，避免历史可靠适配器被"从没用过的"挤掉。
+   * 若所有候选都是 unknown，返回第一个 unknown 让上层有可用选择。
    */
   getHealthiestAdapter(adapterNames: string[]): string | undefined {
-    const scores = adapterNames
+    const all = adapterNames
       .map((name) => this.getHealth(name))
       .filter((h): h is AdapterHealthScore => h !== undefined)
 
-    if (scores.length === 0) return undefined
+    if (all.length === 0) return undefined
 
-    // 按健康评分降序排列，优先选择健康的适配器
-    scores.sort((a, b) => b.healthScore - a.healthScore)
-
-    // 如果最高分的适配器状态不是 healthy，记录警告
-    if (scores[0].status !== 'healthy') {
-      logger.warn(`No healthy adapter available, best option is ${scores[0].adapterName} with score ${scores[0].healthScore}`)
+    const measured = all.filter((h) => h.status !== 'unknown')
+    if (measured.length === 0) {
+      // 全部都是零调用，返回名义上第一个
+      return all[0].adapterName
     }
 
-    return scores[0].adapterName
+    // 按健康评分降序排列，优先选择健康的适配器
+    measured.sort((a, b) => b.healthScore - a.healthScore)
+
+    // 如果最高分的适配器状态不是 healthy，记录警告
+    if (measured[0].status !== 'healthy') {
+      logger.warn(`No healthy adapter available, best option is ${measured[0].adapterName} with score ${measured[0].healthScore}`)
+    }
+
+    return measured[0].adapterName
   }
 
   /**

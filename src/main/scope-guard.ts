@@ -35,6 +35,47 @@ const MAX_SCAN_DEPTH = 5
 const MAX_SNAPSHOT_ENTRIES = 5_000
 /** 所有 sandbox 快照总条目上限，防止多 sandbox 并存时内存爆炸 */
 const MAX_TOTAL_SNAPSHOT_ENTRIES = 20_000
+/** 文件哈希并发上限：防止快照阶段瞬间打开过多 fd 触发 EMFILE */
+const HASH_CONCURRENCY = 32
+
+/**
+ * 简单的并发信号量
+ * 同时执行 limit 个任务，其余排队等待
+ *
+ * 实现要点（避免超 limit 的竞态）：
+ *   - 旧版在 finally 里先 `active--` 再唤醒 waiter，但下一个 microtask 可能
+ *     有新的 run() 调用看到 active<limit 通过门禁并 active++，之后被唤醒的
+ *     waiter 再 active++，导致瞬时并发达到 limit+1。
+ *   - 新版采用 slot-transfer：释放时若有 waiter，直接把 slot 交给它（active 不减），
+ *     waiter 也不再二次自增；只有队列空时才 active--。
+ */
+class Semaphore {
+  private active = 0
+  private queue: Array<() => void> = []
+  constructor(private readonly limit: number) {}
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => this.queue.push(resolve))
+      // 唤醒路径：slot 已由 release 端转交，active 计数无需再加
+    } else {
+      this.active++
+    }
+    try {
+      return await fn()
+    } finally {
+      const next = this.queue.shift()
+      if (next) {
+        // 把当前 slot 转交给下一个 waiter，active 维持不变
+        next()
+      } else {
+        this.active--
+      }
+    }
+  }
+}
+
+const hashSemaphore = new Semaphore(HASH_CONCURRENCY)
 
 /** 越界检测回调类型 */
 export type ScopeGuardViolationHandler = (sandboxId: string, violations: string[]) => void
@@ -98,29 +139,36 @@ function shouldIgnorePath(filePath: string): boolean {
  * 计算文件内容哈希（快速采样）
  * 读取文件前 CONTENT_HASH_SAMPLE_SIZE 字节，使用 xxhash-like 快速哈希
  * 对于小文件读取全部内容，大文件只采样前 N 字节 + 文件大小作为混合输入
+ *
+ * fallback 哈希策略：
+ *   绝对不能包含 Date.now()/Math.random() 之类的时变量，
+ *   否则同一文件两次快照永远不一致 → 全部被误判为修改 → 错误触发回滚。
+ *   失败时返回一个稳定的 "unhashable:size" 标识：两次快照若都失败仍能匹配；
+ *   一边成功一边失败会判为不一致，这正是希望的行为（fd 压力下宁可重做扫描也不要静默通过）。
  */
 async function computeContentHash(filePath: string, fileSize: number): Promise<string> {
-  try {
-    const sampleSize = Math.min(fileSize, CONTENT_HASH_SAMPLE_SIZE)
-    if (sampleSize === 0) return '0'
-
-    const fd = await fs.open(filePath, 'r')
+  return hashSemaphore.run(async () => {
     try {
-      const buffer = Buffer.alloc(sampleSize)
-      await fd.read(buffer, 0, sampleSize, 0)
-      // 混合文件大小与内容采样，防止仅大小相同但内容不同的碰撞
-      // 使用 SHA-256 混合采样内容 + 文件大小，取前 16 字符作为短哈希
-      const hash = crypto.createHash('sha256')
-      hash.update(buffer)
-      hash.update(Buffer.from(fileSize.toString()))
-      return hash.digest('hex').substring(0, 16)
-    } finally {
-      await fd.close()
+      const sampleSize = Math.min(fileSize, CONTENT_HASH_SAMPLE_SIZE)
+      if (sampleSize === 0) return '0'
+
+      const fd = await fs.open(filePath, 'r')
+      try {
+        const buffer = Buffer.alloc(sampleSize)
+        await fd.read(buffer, 0, sampleSize, 0)
+        // 混合文件大小与内容采样，防止仅大小相同但内容不同的碰撞
+        const hash = crypto.createHash('sha256')
+        hash.update(buffer)
+        hash.update(Buffer.from(fileSize.toString()))
+        return hash.digest('hex').substring(0, 16)
+      } finally {
+        await fd.close()
+      }
+    } catch {
+      // 无法读取时返回稳定的占位哈希——不含时间戳，避免每次都被判为变化
+      return `unhashable:${fileSize}`
     }
-  } catch {
-    // 无法读取时回退到大小+时间戳的近似哈希
-    return `${fileSize}:${Date.now()}`
-  }
+  })
 }
 
 /** 文件系统快照项 */

@@ -26,29 +26,39 @@ const memoryVersions = new Map<string, number>()
 
 /**
  * 串行化写入操作：同一项目的写入操作按序执行，避免并发读写丢失数据
- * 增加超时保护：超过 WRITE_LOCK_TIMEOUT_MS 自动释放，防止永久挂起
+ *
+ * 设计取舍：
+ *   - 旧版在 30s 后 resolve `next` 让下一个 writer 进入，但当前 fn 仍可能在跑，
+ *     导致两个 fn 并发对同一 .tmp 文件进行 writeFile + rename，Windows 上会
+ *     遭遇 EPERM 或先写被后写覆盖。
+ *   - 新版彻底放弃"超时强制释放"语义——超时只打 warn 作为可观测信号，
+ *     不破坏锁链。fs 操作正常情况下不会卡 30s；若真出现，宁可阻塞后续写入
+ *     让问题浮现，也不允许并发覆盖损坏 memory.json。
+ *   - 锁链对 prev 的 reject 包容推进，避免前一个 writer 抛错时让后续全部 reject。
  */
 function withWriteLock<T>(projectPath: string, fn: () => Promise<T>): Promise<T> {
   const prev = writeLocks.get(projectPath) ?? Promise.resolve()
-  let release!: () => void
-  let timeoutId: ReturnType<typeof setTimeout> | undefined
 
-  const next = new Promise<void>((resolve, reject) => {
-    release = resolve
-    // 超时保护：30 秒后强制释放锁
-    timeoutId = setTimeout(() => {
-      logger.warn(`Write lock timeout for ${projectPath}, forcing release`)
-      reject(new Error(`Write lock timeout after ${WRITE_LOCK_TIMEOUT_MS}ms`))
-    }, WRITE_LOCK_TIMEOUT_MS)
-  })
-
-  // 将当前锁链存储到 Map，后续写入等待前一个完成
-  const chain = prev.then(() => next).catch(() => next)
+  // 当前写入的执行链路：先等 prev 自然完成（无论成败），再执行 fn
+  const current = prev.then(() => fn(), () => fn())
+  // 锁链：覆盖到下一个 writer，无论 fn 成败均 resolve，避免污染后续 .then
+  const chain = current.then(
+    () => undefined,
+    () => undefined,
+  )
   writeLocks.set(projectPath, chain)
 
-  return prev.then(() => fn()).finally(() => {
-    if (timeoutId) clearTimeout(timeoutId)
-    release()
+  // 超时仅作为诊断信号：记录长时间持锁，便于排查死锁，但不强制释放。
+  const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
+    logger.warn(`Write lock for ${projectPath} has been held for >${WRITE_LOCK_TIMEOUT_MS}ms; later writers will queue until it completes`)
+  }, WRITE_LOCK_TIMEOUT_MS)
+  const timerWithUnref = timeoutId as unknown as { unref?: () => void }
+  if (typeof timerWithUnref.unref === 'function') {
+    timerWithUnref.unref()
+  }
+
+  return current.finally(() => {
+    clearTimeout(timeoutId)
     // 延迟到下一个 microtask 检查：若锁链仍指向当前 chain，说明无后续写入
     queueMicrotask(() => {
       if (writeLocks.get(projectPath) === chain) {
@@ -100,7 +110,12 @@ function memoryPath(projectPath: string): string {
 
 /**
  * 读取项目记忆，不存在则返回默认值
- * 自动附加内部版本号用于乐观锁
+ * 版本号直接从磁盘 JSON 的 `__version` 字段读取——
+ * 仅靠内存 Map 会在主进程重启后丢失版本，导致后续 CAS 失效。
+ *
+ * 注意：本函数不会主动写入 memoryVersions，避免 mock/测试场景下
+ * 上一次写入残留的内存版本污染下一次读取。
+ * memoryVersions 仅在 writeMemory 内部更新，作为同进程内的快路径。
  */
 export async function readMemory(projectPath: string): Promise<ProjectMemory> {
   try {
@@ -112,8 +127,11 @@ export async function readMemory(projectPath: string): Promise<ProjectMemory> {
       ...parsed,
       preferences: { ...DEFAULT_PREFERENCES, ...parsed.preferences },
     }
-    // 读取磁盘版本号并附加到内存对象
-    const diskVersion = memoryVersions.get(projectPath) ?? 0
+    // 仅在磁盘上有显式 __version 时附加版本号；缺失视为 0（不参与 CAS）
+    const persistedVersion = (parsed as unknown as Record<string, unknown>).__version
+    const diskVersion = typeof persistedVersion === 'number' && Number.isFinite(persistedVersion)
+      ? persistedVersion
+      : 0
     setMemoryVersion(memory, diskVersion)
     return memory
   } catch {
@@ -134,13 +152,23 @@ export class OptimisticLockError extends Error {
 /**
  * 写入项目记忆（原子写入：先写临时文件再 rename，防止写入中断导致损坏）
  * 通过 withWriteLock 串行化同一项目的并发写入
- * 支持乐观锁：若传入的 memory 带有版本号，会与磁盘当前版本比较，不一致时拒绝写入
+ * 支持乐观锁：以磁盘 __version 为准比较；未传入版本号视为不参与 CAS
  */
 export function writeMemory(projectPath: string, memory: ProjectMemory): Promise<void> {
   return withWriteLock(projectPath, async () => {
-    // 乐观锁检查：若 memory 带有版本号，验证是否与磁盘一致
+    // 重新从磁盘读取当前版本——内存 Map 在进程重启或多窗口场景下可能与磁盘不一致
     const expectedVersion = getMemoryVersion(memory)
-    const currentVersion = memoryVersions.get(projectPath) ?? 0
+    let currentVersion = 0
+    try {
+      const raw = await fs.readFile(memoryPath(projectPath), 'utf-8')
+      const onDisk = JSON.parse(raw) as Record<string, unknown>
+      const v = onDisk.__version
+      if (typeof v === 'number' && Number.isFinite(v)) currentVersion = v
+    } catch {
+      // 文件不存在或解析失败：currentVersion 保持 0（首次写入场景）
+      currentVersion = 0
+    }
+
     if (expectedVersion !== 0 && expectedVersion !== currentVersion) {
       throw new OptimisticLockError(expectedVersion, currentVersion)
     }
@@ -149,7 +177,7 @@ export function writeMemory(projectPath: string, memory: ProjectMemory): Promise
     await fs.mkdir(dir, { recursive: true })
     memory.updatedAt = new Date().toISOString()
 
-    // 版本号自增
+    // 版本号自增并同步到内存与磁盘
     const nextVersion = currentVersion + 1
     memoryVersions.set(projectPath, nextVersion)
     setMemoryVersion(memory, nextVersion)

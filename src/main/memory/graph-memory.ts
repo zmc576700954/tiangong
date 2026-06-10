@@ -233,8 +233,12 @@ export class GraphMemory {
   /**
    * 从记忆 ID 开始图遍历（BFS）
    *
-   * @param memoryId - 起始记忆 ID
-   * @param options - 遍历选项
+   * 性能优化：
+   *   - 旧实现对 BFS 每个节点都对全量 allRecent 调用 inferRelations，
+   *     复杂度 O(depth × levelSize × N × pairwise)，N=200 时主进程可阻塞数秒。
+   *   - 新实现一次性预计算所有候选记忆之间的边，按 sourceId/targetId 建索引，
+   *     BFS 只查表，复杂度退化为 O(N²) 一次 + O(visited × avg_degree) 遍历。
+   *   - 同时用 edgeKey Set 去重，避免同一对节点多种关系重复入图。
    */
   async traverse(
     memoryId: number,
@@ -251,45 +255,79 @@ export class GraphMemory {
       return null
     }
 
-    const root = this.wrapNode(rootMemory)
+    // 一次性预计算：对每个 memory 调用 inferRelations，按 source/target 建索引
+    // inferRelations(a, allRecent) 返回 a 与候选池中其他记忆推断出的边集合
+    //
+    // 对称关系（如 relates_to / contradicts）会从两端被分别推断出来——
+    // A 处理时产生 (A,relates_to,B)，B 处理时产生 (B,relates_to,A)——
+    // 仅按 `${source}→${rel}→${target}` 作 key 无法去重，会让 BFS 看到双倍边。
+    // 通过 SYMMETRIC_RELATIONS 集合识别对称类型，把 sourceId/targetId 排序后再入 key。
+    const SYMMETRIC_RELATIONS = new Set<MemoryRelationType>(['relates_to', 'contradicts'])
+    const outgoingIndex = new Map<number, MemoryEdge[]>()
+    const incomingIndex = new Map<number, MemoryEdge[]>()
+    const seenEdge = new Set<string>()
+
+    for (const mem of allRecent) {
+      const edges = this.inferRelations(mem, allRecent)
+      for (const edge of edges) {
+        const key = SYMMETRIC_RELATIONS.has(edge.relation)
+          ? `${Math.min(edge.sourceId, edge.targetId)}↔${edge.relation}↔${Math.max(edge.sourceId, edge.targetId)}`
+          : `${edge.sourceId}→${edge.relation}→${edge.targetId}`
+        if (seenEdge.has(key)) continue
+        seenEdge.add(key)
+        if (!outgoingIndex.has(edge.sourceId)) outgoingIndex.set(edge.sourceId, [])
+        outgoingIndex.get(edge.sourceId)!.push(edge)
+        if (!incomingIndex.has(edge.targetId)) incomingIndex.set(edge.targetId, [])
+        incomingIndex.get(edge.targetId)!.push(edge)
+      }
+    }
+
+    const nodeCache = new Map<number, MemoryNode>()
+    const getNode = (mem: typeof rootMemory): MemoryNode => {
+      let n = nodeCache.get(mem.id)
+      if (!n) {
+        n = this.wrapNode(mem)
+        nodeCache.set(mem.id, n)
+      }
+      return n
+    }
+
+    const root = getNode(rootMemory)
     const visited = new Set<number>([memoryId])
     const paths: MemoryNode[][] = [[root]]
     let totalEdges = 0
 
-    // BFS 遍历
     let currentLevel = [root]
     for (let d = 0; d < depth; d++) {
       const nextLevel: MemoryNode[] = []
 
       for (const node of currentLevel) {
-        // 推断与其他记忆的关系
-        const relations = this.inferRelations(node.memory, allRecent)
+        // 仅遍历方向正确的邻居（区分出边/入边，不再把所有边视作双向）
+        const outEdges = outgoingIndex.get(node.memory.id) ?? []
+        const inEdges = incomingIndex.get(node.memory.id) ?? []
 
-        for (const edge of relations) {
-          // 应用关系过滤器
+        for (const edge of outEdges) {
           if (relationFilter && !relationFilter.includes(edge.relation)) continue
+          const targetMemory = allRecent.find((m) => m.id === edge.targetId)
+          if (!targetMemory || visited.has(edge.targetId)) continue
+          visited.add(edge.targetId)
+          const targetNode = getNode(targetMemory)
+          node.outgoingEdges.push(edge)
+          targetNode.incomingEdges.push(edge)
+          totalEdges++
+          nextLevel.push(targetNode)
+        }
 
-          const targetId = edge.targetId === node.memory.id
-            ? edge.sourceId
-            : edge.targetId
-          const targetMemory = allRecent.find((m) => m.id === targetId)
-
-          if (targetMemory && !visited.has(targetId)) {
-            visited.add(targetId)
-            const targetNode = this.wrapNode(targetMemory)
-
-            // 添加边到节点
-            if (edge.sourceId === node.memory.id) {
-              node.outgoingEdges.push(edge)
-              targetNode.incomingEdges.push(edge)
-            } else {
-              targetNode.outgoingEdges.push(edge)
-              node.incomingEdges.push(edge)
-            }
-
-            totalEdges++
-            nextLevel.push(targetNode)
-          }
+        for (const edge of inEdges) {
+          if (relationFilter && !relationFilter.includes(edge.relation)) continue
+          const sourceMemory = allRecent.find((m) => m.id === edge.sourceId)
+          if (!sourceMemory || visited.has(edge.sourceId)) continue
+          visited.add(edge.sourceId)
+          const sourceNode = getNode(sourceMemory)
+          sourceNode.outgoingEdges.push(edge)
+          node.incomingEdges.push(edge)
+          totalEdges++
+          nextLevel.push(sourceNode)
         }
       }
 

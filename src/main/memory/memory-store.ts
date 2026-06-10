@@ -21,15 +21,36 @@ const FTS_TABLE = 'memory_fts'
 
 export class MemoryStore {
   private db: Client
+  /** FTS5 初始化状态：'pending' 表示在尝试中，'ready' 已就绪，'failed' 失败可重试 */
+  private ftsState: 'pending' | 'ready' | 'failed' = 'pending'
+  private ftsInitPromise: Promise<void> | null = null
 
   /**
    * @param db - 可选：注入数据库客户端（测试用），不传则从全局单例获取
    */
   constructor(db?: Client) {
     this.db = db ?? getClient()
-    this._ensureFts().catch((err) => {
-      logger.warn('FTS5 setup skipped (may be unsupported):', err)
-    })
+    this._initFts()
+  }
+
+  /** 触发 FTS 初始化；失败标记 failed，下次 ensureFtsReady() 可重试 */
+  private _initFts(): void {
+    this.ftsState = 'pending'
+    this.ftsInitPromise = this._ensureFts()
+      .then(() => { this.ftsState = 'ready' })
+      .catch((err) => {
+        this.ftsState = 'failed'
+        logger.warn('FTS5 setup failed (will retry on next search):', err)
+      })
+  }
+
+  /** 等待 FTS 就绪；如果之前失败则重试一次 */
+  private async ensureFtsReady(): Promise<void> {
+    if (this.ftsState === 'ready') return
+    if (this.ftsState === 'failed') {
+      this._initFts()
+    }
+    if (this.ftsInitPromise) await this.ftsInitPromise
   }
 
   /**
@@ -142,6 +163,8 @@ export class MemoryStore {
    * @returns 新记忆的 ID
    */
   async store(item: Omit<MemoryItem, 'id'>): Promise<number> {
+    // 等待 FTS 就绪：trigger 未建时插入会让该行无法被全文检索命中
+    await this.ensureFtsReady()
     const result = await this.db.execute({
       sql: `INSERT INTO memory_items
         (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
@@ -164,18 +187,71 @@ export class MemoryStore {
         item.created_at,
       ],
     })
-    return Number(result.lastInsertRowid)
+    return this._safeRowId(result.lastInsertRowid)
   }
 
   /**
-   * 批量存储多条记忆
+   * 批量存储多条记忆（事务化）
+   *
+   * 使用 LibSQL 的 batch() API 在单个事务中执行所有 INSERT：
+   * - 中途失败整体回滚，FTS 触发器的索引行也一并回滚
+   * - 兼容 :memory: 数据库（不依赖 transaction('write') 的连接独占）
+   * 失败时抛出，调用方决定是否重试或降级。
    */
   async storeMany(items: Omit<MemoryItem, 'id'>[]): Promise<number[]> {
-    const ids: number[] = []
-    for (const item of items) {
-      ids.push(await this.store(item))
+    if (items.length === 0) return []
+
+    // 等待 FTS 就绪：构造函数中的 _initFts 可能未完成，提前插入会绕过
+    // memory_fts_ai 触发器，导致这些行永远不进入 FTS 索引。
+    await this.ensureFtsReady()
+
+    const statements = items.map((item) => ({
+      sql: `INSERT INTO memory_items
+        (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
+         files_read, files_modified, adapter_name, token_cost, confidence, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        item.session_id,
+        item.kind,
+        item.project_id,
+        item.node_id ?? null,
+        item.title,
+        item.narrative,
+        JSON.stringify(item.facts),
+        JSON.stringify(item.concepts),
+        JSON.stringify(item.files_read),
+        JSON.stringify(item.files_modified),
+        item.adapter_name,
+        item.token_cost,
+        item.confidence,
+        item.created_at,
+      ] as (string | number | null)[],
+    }))
+
+    // batch 默认在 "deferred" 事务模式下执行；任一语句失败整批回滚
+    const results = await this.db.batch(statements, 'deferred')
+    return results.map((r) => this._safeRowId(r.lastInsertRowid))
+  }
+
+  /**
+   * 将 LibSQL 的 lastInsertRowid（bigint | number | string）安全转换为 number。
+   *
+   * SQLite ROWID 上限是 2^63-1，远超 Number.MAX_SAFE_INTEGER (2^53-1)；
+   * 直接 Number(bigint) 会在 ~9e15 处静默丢失精度，让后续按 id 关联的查询
+   * 命中错误的行。这里显式校验并在越界时抛错，让上层尽早发现而非静默错乱。
+   */
+  private _safeRowId(raw: unknown): number {
+    if (typeof raw === 'bigint') {
+      if (raw > BigInt(Number.MAX_SAFE_INTEGER) || raw < BigInt(Number.MIN_SAFE_INTEGER)) {
+        throw new Error(`memory_items.id ${raw} exceeds Number.MAX_SAFE_INTEGER; refusing to lose precision`)
+      }
+      return Number(raw)
     }
-    return ids
+    const n = Number(raw)
+    if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
+      throw new Error(`Invalid lastInsertRowid: ${String(raw)}`)
+    }
+    return n
   }
 
   /**
@@ -189,6 +265,8 @@ export class MemoryStore {
       limit?: number
     },
   ): Promise<MemoryItem[]> {
+    // 确保 FTS 已就绪（首次启动期/初始化失败后会自动重试一次）
+    await this.ensureFtsReady()
     const limit = options?.limit ?? 20
     try {
       const conditions: string[] = []
@@ -285,11 +363,13 @@ export class MemoryStore {
 
   /**
    * 获取指定会话的所有记忆
+   * @param sessionId 会话 ID
+   * @param limit 最大返回条数，默认 500（防止单次 IPC 拉取过大）
    */
-  async getBySession(sessionId: string): Promise<MemoryItem[]> {
+  async getBySession(sessionId: string, limit = 500): Promise<MemoryItem[]> {
     const rows = await this.db.execute({
-      sql: 'SELECT * FROM memory_items WHERE session_id = ? ORDER BY created_at DESC',
-      args: [sessionId],
+      sql: 'SELECT * FROM memory_items WHERE session_id = ? ORDER BY created_at DESC LIMIT ?',
+      args: [sessionId, limit],
     })
     return rows.rows.map((r) => this._rowToItem(r as unknown as Record<string, unknown>))
   }
@@ -316,8 +396,15 @@ export class MemoryStore {
    */
   async getByConcept(concept: string, options?: { projectId?: string; limit?: number }): Promise<MemoryItem[]> {
     const limit = options?.limit ?? 20
-    const conditions: string[] = ['concepts LIKE ?']
-    const args: (string | number)[] = [`%"${concept}"%`]
+    // LIKE 转义：concept 可能包含 % _ \ "，未转义会被当作通配符或破坏 JSON 引号匹配。
+    // 用 \ 作为 escape 字符并在 LIKE 子句中声明 ESCAPE '\'。
+    const escapedConcept = concept
+      .replace(/\\/g, '\\\\')
+      .replace(/%/g, '\\%')
+      .replace(/_/g, '\\_')
+      .replace(/"/g, '\\"')
+    const conditions: string[] = ['concepts LIKE ? ESCAPE \'\\\'']
+    const args: (string | number)[] = [`%"${escapedConcept}"%`]
 
     if (options?.projectId) {
       conditions.push('project_id = ?')
@@ -353,6 +440,21 @@ export class MemoryStore {
     const result = await this.db.execute({
       sql: 'DELETE FROM memory_items WHERE session_id = ?',
       args: [sessionId],
+    })
+    return result.rowsAffected
+  }
+
+  /**
+   * 删除指定会话的记忆（带 projectId 授权校验）
+   *
+   * 与 deleteBySession 的差异：必须同时匹配 session_id 与 project_id 才会删除，
+   * 防止未授权调用方仅凭 sessionId 删除其他项目的会话记忆。
+   * IPC 入口（memory:delete）只暴露此方法。
+   */
+  async deleteBySessionScoped(sessionId: string, projectId: string): Promise<number> {
+    const result = await this.db.execute({
+      sql: 'DELETE FROM memory_items WHERE session_id = ? AND project_id = ?',
+      args: [sessionId, projectId],
     })
     return result.rowsAffected
   }

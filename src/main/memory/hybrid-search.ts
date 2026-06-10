@@ -110,7 +110,12 @@ function buildKeywordVector(tokens: string[]): Map<string, number> {
     freq.set(t, (freq.get(t) ?? 0) + 1)
   }
   // 归一化：除以最大频率
-  const maxFreq = Math.max(...freq.values())
+  // 用循环求 max 而非 Math.max(...freq.values())——后者在大向量（~125k+ 项）时
+  // 会因 spread 参数数量超限抛 RangeError: Maximum call stack size exceeded
+  let maxFreq = 0
+  for (const v of freq.values()) {
+    if (v > maxFreq) maxFreq = v
+  }
   if (maxFreq > 0) {
     for (const [k, v] of freq) {
       freq.set(k, v / maxFreq)
@@ -231,9 +236,11 @@ export class HybridSearchEngine {
     })
 
     // 4. 排序和过滤
+    // 注意：includeLowConfidence 默认 false（与字段语义一致）——
+    // 旧实现 `!== false || ...` 在 undefined 时短路为 true，导致默认收录低置信度记忆。
     const filtered = ranked
       .filter((r) => r.score >= scoreThreshold)
-      .filter((r) => options?.includeLowConfidence !== false || r.item.confidence >= 0.3)
+      .filter((r) => options?.includeLowConfidence === true || r.item.confidence >= 0.3)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
 

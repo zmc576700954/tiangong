@@ -21,6 +21,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { AgentOutput } from '@shared/types'
 import { createLogger } from '../shared/logger'
+import { isPathWithinProject } from '../ipc/utils'
 
 const logger = createLogger('HallucinationChecker')
 
@@ -205,10 +206,12 @@ export class HallucinationChecker {
     const claims: SuspiciousClaim[] = []
 
     // 提取所有文件路径
+    // 第三条要求路径必须包含 / 或 \ 一次以上，避免 "at index.ts" 这类
+    // 单段词汇被误认成项目内文件，进而触发批量 fs.lstat 浪费 fd
     const filePatterns = [
       /(?:modif(?:y|ied)|change(?:d)?|edit(?:ed)?|wrote?|creat(?:e|ed)|add(?:ed)?)\s*[:：]\s*([^\s\n]{3,300}\.\w{2,10})/gi,
       /(?:file|文件)\s*[:：]\s*([^\s\n]{3,300}\.\w{2,10})/gi,
-      /(?:in|at)\s+([\w./-]{3,300}\.\w{2,10})(?:\s*[:：])?/gi,
+      /(?:in|at)\s+([\w./\\-]{3,300}[\\/][\w./\\-]{1,300}\.\w{2,10})(?:\s*[:：])?/gi,
     ]
 
     const filePaths = new Set<string>()
@@ -228,11 +231,24 @@ export class HallucinationChecker {
 
     for (const fp of toCheck) {
       try {
+        // 安全校验：使用统一的项目内路径校验工具，避免 startsWith 字符串前缀绕过
+        if (!isPathWithinProject(fp, workingDirectory)) continue
         const resolved = path.resolve(workingDirectory, fp)
-        // 安全校验：确保路径在 workingDirectory 下
-        if (!resolved.startsWith(path.resolve(workingDirectory))) continue
 
-        await fs.access(resolved)
+        // 三段检查：
+        //   1. lstat 拿到原始节点信息（不解引用 symlink）；
+        //   2. 若是 symlink，realpath 解析目标，要求目标仍在项目内，
+        //      避免顺着 symlink 越权检查或被指向外部路径绕过；
+        //   3. 对解析后的真实路径再做一次 stat，验证目标存在——
+        //      旧实现的 lstat 在 symlink 存在但目标缺失时也会成功，从而漏报。
+        const lstat = await fs.lstat(resolved)
+        if (lstat.isSymbolicLink()) {
+          const realPath = await fs.realpath(resolved)
+          if (!isPathWithinProject(realPath, workingDirectory)) {
+            continue // 指向项目外，按"不可信"忽略而非误报
+          }
+          await fs.stat(realPath) // 若 target 不存在会抛 ENOENT，落到 catch
+        }
       } catch {
         const offset = fullText.indexOf(fp)
         claims.push({
@@ -436,17 +452,8 @@ export class HallucinationChecker {
         const claim = match[0]
         const offset = match.index
 
-        // 如果输出内容不足（< 1000 字符）但使用绝对化语言
-        if (!hasSubstantialContent) {
-          claims.push({
-            claim,
-            type: 'overconfident',
-            severity: 'low',
-            evidence: 'Absolute language used with limited output context',
-            offset,
-          })
-        }
-        // 如果无文件变更但使用绝对化语言声称修改
+        // 互斥分支：优先报告"无文件变更"——证据更强；其次报告"输出量不足"。
+        // 旧实现两个 if 都会触发同一 claim，导致重复入队、风险分被错误抬高。
         if (!hasFileChanges) {
           const context = fullText.substring(Math.max(0, offset - 50), offset + 100)
           if (/modif|change|fix|implement|creat/i.test(context)) {
@@ -457,7 +464,17 @@ export class HallucinationChecker {
               evidence: 'Overconfident claim about changes but no file modifications detected',
               offset,
             })
+            continue
           }
+        }
+        if (!hasSubstantialContent) {
+          claims.push({
+            claim,
+            type: 'overconfident',
+            severity: 'low',
+            evidence: 'Absolute language used with limited output context',
+            offset,
+          })
         }
       }
     }

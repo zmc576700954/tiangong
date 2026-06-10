@@ -81,6 +81,34 @@ const DEFAULT_CONFIG: WaterlineSyncConfig = {
   maxFixes: 50,
 }
 
+/**
+ * 判断 fix 标题是否真正解决 issue
+ *
+ * 旧实现 `fixTitle.toLowerCase().includes(issue.toLowerCase())` 会让短词 issue（如 "bug"）
+ * 被任意含该词的 fix 误关。
+ *
+ * 改进策略（兼顾合理短词与抗误关）：
+ *   1. 归一化后完全相等 → 命中。
+ *   2. issue 长度 < 3 的极短串（"a"/"x"/"#"）禁止子串匹配，几乎一定是噪音。
+ *   3. 其余按"完整词"匹配：issue 在 fix 标题中作为独立词出现（前后是分隔符
+ *      或字符串边界），这样 "CSRF"/"OOM"/"JWT" 等真实短词缩写可被正常关联，
+ *      但不会把 "Fix unrelated job in build" 误判为修了 "bug"。
+ */
+function isFixingIssue(fixTitle: string, issue: string): boolean {
+  const f = fixTitle.toLowerCase().trim()
+  const i = issue.toLowerCase().trim()
+  if (f.length === 0 || i.length === 0) return false
+  if (f === i) return true
+  if (i.length < 3) return false  // 过短关键词不允许子串匹配
+  // 词边界匹配：issue 在 fix 标题中作为独立词出现
+  const idx = f.indexOf(i)
+  if (idx < 0) return false
+  const boundary = /[\s\-:：,，.。()（）/\\]/
+  const before = idx === 0 ? ' ' : f[idx - 1]
+  const after = idx + i.length === f.length ? ' ' : f[idx + i.length]
+  return boundary.test(before) && boundary.test(after)
+}
+
 // ============================================
 // WaterlineSync 主类
 // ============================================
@@ -133,10 +161,9 @@ export class WaterlineSync {
         }
       } else if (mem.kind === 'fix') {
         this._appendIfNew(wl.fixedIssues, mem.title, this.config.maxFixes)
-        // 从开放问题中移除
-        wl.openIssues = wl.openIssues.filter(
-          (issue) => !mem.title.toLowerCase().includes(issue.toLowerCase()),
-        )
+        // 从开放问题中移除：要求 fix 标题与 issue 完全等于或起始包含 issue 全词，
+        // 避免短词（如 "bug"）误关任意含 "bug" 的开放问题。
+        wl.openIssues = wl.openIssues.filter((issue) => !isFixingIssue(mem.title, issue))
       } else if (mem.kind === 'review_finding') {
         wl.openIssues.push(mem.title)
       } else if (mem.kind === 'lesson') {
@@ -150,8 +177,11 @@ export class WaterlineSync {
         }
       }
 
-      // 累计 token
-      wl.totalTokens += mem.token_cost
+      // 累计 token（防 NaN：缺失或非有限值视为 0）
+      const cost = mem.token_cost
+      if (typeof cost === 'number' && Number.isFinite(cost)) {
+        wl.totalTokens += cost
+      }
     }
 
     // 限制列表大小
