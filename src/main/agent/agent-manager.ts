@@ -230,11 +230,12 @@ export class AgentManager {
   private _doCleanupSessionResources(sessionId: string): void {
     const state = this.sessionStates.get(sessionId)
 
-    // ScopeGuard: 异常退出时回滚沙箱
+    // ScopeGuard: 异常退出时回滚沙箱（带重试机制，防止临时文件系统错误导致资源泄漏）
     if (state?.sandbox) {
-      this.sandboxSessionIndex.delete(state.sandbox.id)
-      this.scopeGuard.rollback(state.sandbox).catch((err) => {
-        logger.error(`Failed to rollback sandbox for session ${sessionId}:`, err)
+      const sandbox = state.sandbox
+      this.sandboxSessionIndex.delete(sandbox.id)
+      this.rollbackWithRetry(sessionId, sandbox, 2).catch((err: unknown) => {
+        logger.error(`Failed to rollback sandbox for session ${sessionId} after retries:`, err)
       })
     }
 
@@ -255,6 +256,37 @@ export class AgentManager {
     this.sessionBroadcastNames.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
     this.router.unbind(sessionId)
+  }
+
+  /**
+   * 带回滚重试的沙箱回滚操作
+   * 当回滚因临时性文件系统错误失败时，按指数退避重试，
+   * 防止因资源未释放导致的后续会话异常。
+   */
+  private async rollbackWithRetry(
+    sessionId: string,
+    sandbox: import('@shared/types').Sandbox,
+    maxRetries: number,
+  ): Promise<void> {
+    let lastError: unknown
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await this.scopeGuard.rollback(sandbox)
+        if (attempt > 0) {
+          logger.info(`Sandbox rollback succeeded on retry ${attempt} for session ${sessionId}`)
+        }
+        return
+      } catch (err: unknown) {
+        lastError = err
+        const errMsg = err instanceof Error ? err.message : String(err)
+        logger.warn(`Sandbox rollback attempt ${attempt + 1}/${maxRetries + 1} failed for session ${sessionId}: ${errMsg}`)
+        if (attempt < maxRetries) {
+          // 指数退避：100ms, 200ms, 400ms...
+          await new Promise<void>((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)))
+        }
+      }
+    }
+    throw lastError
   }
 
   /**

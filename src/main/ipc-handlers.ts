@@ -172,7 +172,17 @@ export async function registerIpcHandlers(): Promise<void> {
     try {
       resolved = await fs.realpath(targetPath)
     } catch {
-      resolved = path.resolve(targetPath)
+      // 文件不存在时，解析父目录的真实路径再拼接文件名，
+      // 防止攻击者通过符号链接父目录绕过路径校验
+      const parentDir = path.dirname(targetPath)
+      const fileName = path.basename(targetPath)
+      try {
+        const resolvedParent = await fs.realpath(parentDir)
+        resolved = path.join(resolvedParent, fileName)
+      } catch {
+        // 父目录也不存在（全新路径），回退到 path.resolve
+        resolved = path.resolve(targetPath)
+      }
     }
     // LRU 淘汰：超过大小时删除最早条目
     if (realpathCache.size >= REALPATH_CACHE_MAX) {

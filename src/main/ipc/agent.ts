@@ -69,11 +69,18 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
       // Collect response — 使用会话级输出监听器，仅接收目标 session 的输出
       const response = await new Promise<string>((resolve) => {
         let collected = ''
+        let settled = false
+        const settle = (value: string) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeoutId)
+          agentManager.removeSessionOutputListener(handler)
+          resolve(value)
+        }
         const handler = (output: import('@shared/types').AgentOutput) => {
           if (output.type === 'stdout') collected += output.data
           if (output.type === 'complete' || output.type === 'error') {
-            agentManager.removeSessionOutputListener(handler)
-            resolve(collected)
+            settle(collected)
           }
         }
         agentManager.addSessionOutputListener(sessionId, handler)
@@ -85,14 +92,12 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
         }).catch((err) => {
           const reason = err instanceof Error ? err.message : String(err)
           logger.warn(`Verification sendCommand failed for session ${sessionId}: ${reason}`)
-          agentManager.removeSessionOutputListener(handler)
-          resolve(collected)
+          settle(collected)
         })
 
-        // Timeout after 60s
-        setTimeout(() => {
-          agentManager.removeSessionOutputListener(handler)
-          resolve(collected)
+        // Timeout after 60s — 通过 settle 确保 timer 被清理
+        const timeoutId = setTimeout(() => {
+          settle(collected)
         }, 60000)
       })
 

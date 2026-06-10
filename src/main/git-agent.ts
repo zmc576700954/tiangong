@@ -74,13 +74,15 @@ export class GitAgent {
   async commit(path: string, message: string, files?: string[]): Promise<void> {
     try {
       const git = this.getGit(path)
-      if (files && files.length > 0) {
-        for (const file of files) {
-          await git.add(file)
-        }
-      } else {
-        logger.warn(`commit() called without specifying files at ${path}, staging all changes`)
-        await git.add('.')
+      if (!files || files.length === 0) {
+        throw new GitError(
+          'commit() requires explicit files list to avoid accidentally staging sensitive files',
+          path,
+          ErrorCode.GIT_OPERATION_FAILED,
+        )
+      }
+      for (const file of files) {
+        await git.add(file)
       }
       await git.commit(message)
     } catch (err) {

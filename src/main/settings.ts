@@ -186,6 +186,47 @@ let cachedSettings: BizGraphSettings | null = null
 let cachedAt = 0
 const CACHE_TTL_MS = 30_000
 
+/**
+ * 轻量级 JSON 结构验证：确保解析后的对象符合 BizGraphSettings 基本结构，
+ * 防止恶意或损坏的配置文件导致运行时异常。
+ */
+function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings> {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return false
+  const obj = data as Record<string, unknown>
+  // version 必须是数字
+  if (obj.version !== undefined && typeof obj.version !== 'number') return false
+  // cliTools 必须是数组
+  if (obj.cliTools !== undefined && !Array.isArray(obj.cliTools)) return false
+  // apiKeys 必须是数组，且每个元素必须有 provider 和 key 字段
+  if (obj.apiKeys !== undefined) {
+    if (!Array.isArray(obj.apiKeys)) return false
+    for (const item of obj.apiKeys) {
+      if (item === null || typeof item !== 'object') return false
+      const k = item as Record<string, unknown>
+      if (typeof k.provider !== 'string' || typeof k.key !== 'string') return false
+    }
+  }
+  // defaultModel 必须是字符串
+  if (obj.defaultModel !== undefined && typeof obj.defaultModel !== 'string') return false
+  // mcpServers 必须是数组
+  if (obj.mcpServers !== undefined) {
+    if (!Array.isArray(obj.mcpServers)) return false
+    for (const item of obj.mcpServers) {
+      if (item === null || typeof item !== 'object') return false
+      const s = item as Record<string, unknown>
+      if (typeof s.name !== 'string' || typeof s.command !== 'string') return false
+    }
+  }
+  // adapterPreferences 必须是对象
+  if (obj.adapterPreferences !== undefined) {
+    if (obj.adapterPreferences === null || typeof obj.adapterPreferences !== 'object' || Array.isArray(obj.adapterPreferences)) return false
+    const prefs = obj.adapterPreferences as Record<string, unknown>
+    if (prefs.defaultAdapter !== undefined && typeof prefs.defaultAdapter !== 'string') return false
+    if (prefs.fallbackOrder !== undefined && !Array.isArray(prefs.fallbackOrder)) return false
+  }
+  return true
+}
+
 // ============================================
 // 配置读写
 // ============================================
@@ -200,7 +241,14 @@ export async function readSettings(): Promise<BizGraphSettings> {
   const settingsPath = await getSettingsPath()
   try {
     const raw = await fs.readFile(settingsPath, 'utf-8')
-    const parsed = JSON.parse(raw) as BizGraphSettings
+    const parsed = JSON.parse(raw) as unknown
+    // 验证 JSON 结构合法性，防止恶意或损坏的配置导致运行时异常
+    if (!validateSettingsShape(parsed)) {
+      logger.warn('Settings file has invalid structure, using defaults')
+      cachedSettings = { ...DEFAULT_SETTINGS }
+      cachedAt = Date.now()
+      return cachedSettings
+    }
     const merged = mergeSettings(DEFAULT_SETTINGS, parsed)
     cachedSettings = decryptSettings(merged)
     cachedAt = Date.now()

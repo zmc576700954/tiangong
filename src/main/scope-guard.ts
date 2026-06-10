@@ -485,18 +485,37 @@ export class ScopeGuard {
    * 回滚单个文件到备份状态
    */
   async rollbackFile(sandbox: Sandbox, filePath: string): Promise<boolean> {
-    const relativePath = path.relative(sandbox.workingDir, filePath)
+    // 安全校验：确保 filePath 在沙箱工作目录内，防止路径遍历攻击
+    const resolvedPath = path.resolve(filePath)
+    const resolvedWorkingDir = path.resolve(sandbox.workingDir)
+    const sep = path.sep
+    const isWithinSandbox = process.platform === 'win32'
+      ? resolvedPath.toLowerCase().startsWith(resolvedWorkingDir.toLowerCase() + sep) ||
+        resolvedPath.toLowerCase() === resolvedWorkingDir.toLowerCase()
+      : resolvedPath.startsWith(resolvedWorkingDir + sep) || resolvedPath === resolvedWorkingDir
+    if (!isWithinSandbox) {
+      logger.warn(`rollbackFile rejected: ${filePath} is outside sandbox working directory ${sandbox.workingDir}`)
+      return false
+    }
+
+    const relativePath = path.relative(sandbox.workingDir, resolvedPath)
+    // 二次检查：relative 不应逃逸
+    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+      logger.warn(`rollbackFile rejected: path traversal detected for ${filePath}`)
+      return false
+    }
+
     const backupPath = path.join(sandbox.backupDir, relativePath)
 
     try {
       const content = await fs.readFile(backupPath, 'utf-8')
-      await fs.writeFile(filePath, content, 'utf-8')
+      await fs.writeFile(resolvedPath, content, 'utf-8')
       logger.info(`Rolled back file: ${relativePath}`)
       return true
     } catch {
       // File may not have existed before (new file) — delete it
       try {
-        await fs.unlink(filePath)
+        await fs.unlink(resolvedPath)
         logger.info(`Deleted new file: ${relativePath}`)
         return true
       } catch {
@@ -747,7 +766,7 @@ export class ScopeGuard {
       }
 
       try {
-        const violations = await this.scanDirectoriesForViolations(dirsToScan, allowedSet)
+        const violations = await this.scanDirectoriesForViolations(dirsToScan, allowedSet, sandboxId)
         if (violations.length > 0) {
           logger.warn('Active scan found violations:', violations)
           this.notifyViolation(sandboxId, violations)
@@ -803,10 +822,13 @@ export class ScopeGuard {
   private async scanDirectoriesForViolations(
     dirs: Set<string>,
     allowedSet: Set<string>,
+    sandboxId?: string,
   ): Promise<string[]> {
+    // 获取初始快照，用于区分“新增文件”和“已有文件”，避免误报
+    const initialSnapshot = sandboxId ? this.initialSnapshots.get(sandboxId) : undefined
     const violations: string[] = []
     for (const dir of dirs) {
-      await this.scanDirRecursive(dir, allowedSet, violations, 0)
+      await this.scanDirRecursive(dir, allowedSet, violations, 0, initialSnapshot)
     }
     return violations
   }
@@ -819,6 +841,7 @@ export class ScopeGuard {
     allowedSet: Set<string>,
     violations: string[],
     depth: number,
+    initialSnapshot?: Map<string, FileSnapshotEntry>,
   ): Promise<void> {
     if (depth > MAX_SCAN_DEPTH) return
     try {
@@ -829,10 +852,14 @@ export class ScopeGuard {
         if (shouldIgnorePath(fullPath)) continue
         if (entry.isFile()) {
           if (!allowedSet.has(fullPath)) {
-            violations.push(fullPath)
+            // 只有当文件不在初始快照中时，才视为越界（新增文件）
+            // 避免将已有但未列入白名单的文件误报为越界
+            if (!initialSnapshot || !initialSnapshot.has(fullPath)) {
+              violations.push(fullPath)
+            }
           }
         } else if (entry.isDirectory()) {
-          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1)
+          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1, initialSnapshot)
         }
       }
     } catch {

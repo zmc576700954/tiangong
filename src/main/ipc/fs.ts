@@ -168,8 +168,12 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
   typedHandle('fs:delete', async (_event, targetPath, recursive = false) => {
     const validPath = await vWrite(targetPath)
     assertNotDangerous(validPath)
-    const stat = await fs.stat(validPath)
-    if (stat.isDirectory()) {
+    // 使用 lstat 而非 stat，以检测符号链接，防止 TOCTOU 竞态
+    const lstat = await fs.lstat(validPath)
+    if (lstat.isSymbolicLink()) {
+      throw new IpcError('Delete rejected: symbolic links are not allowed', ErrorCode.IPC_ACCESS_DENIED)
+    }
+    if (lstat.isDirectory()) {
       await fs.rm(validPath, { recursive: !!recursive, force: true })
     } else {
       await fs.unlink(validPath)
