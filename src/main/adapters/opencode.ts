@@ -48,17 +48,17 @@ export class OpenCodeAdapter extends BaseAdapter {
     const commandPrompt = this.buildCommandPrompt(command)
     const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`
 
-    const args: string[] = [
-      '-p',
-      fullPrompt,
-      '-q',
-    ]
+    const args: string[] = ['-q']
 
     const proc = spawn('opencode', args, {
       cwd: session.config.workingDirectory,
       env: this.buildSafeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
+
+    // 通过 stdin 传入 prompt，避免超出 OS 命令行长度限制
+    proc.stdin.write(fullPrompt)
+    proc.stdin.end()
 
     this.processes.set(session.id, proc)
     await this.runOneShot(proc, session.id, { parseFileChanges: false })

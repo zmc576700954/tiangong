@@ -184,18 +184,18 @@ export class ContextResolver {
 
     try {
       // Check TTL cache first, then verify mtime to detect actual file changes
+      // 缓存存储完整文件内容，截断在返回前执行，确保不同预算的请求都能得到正确结果
       const cached = this.fileCache.get(resolvedPath)
       if (cached && Date.now() - cached.timestamp < FILE_CACHE_TTL) {
         try {
           const fileStat = await stat(resolvedPath)
-          const mtimeMs = fileStat.mtimeMs
-          if (mtimeMs === cached.mtime) {
-            return cached.content
+          if (fileStat.mtimeMs === cached.mtime) {
+            return this.truncateContent(cached.content)
           }
           // mtime 变化，文件已修改，失效缓存继续读取
         } catch {
           // stat 失败，回退到 TTL 缓存
-          return cached.content
+          return this.truncateContent(cached.content)
         }
       }
 
@@ -203,23 +203,26 @@ export class ContextResolver {
         readFile(resolvedPath, 'utf-8'),
         stat(resolvedPath),
       ])
-      const lines = content.split('\n')
 
-      let result: string
-      if (lines.length > MAX_FILE_LINES) {
-        const truncated = lines.slice(0, MAX_FILE_LINES).join('\n')
-        result = `${truncated}\n\n[文件共 ${lines.length} 行，仅显示前 ${MAX_FILE_LINES} 行]`
-      } else if (content.length > MAX_FILE_CHARS) {
-        result = content.slice(0, MAX_FILE_CHARS) + `\n\n[文件内容过长，已截断]`
-      } else {
-        result = content
-      }
-
-      this.addToCache(resolvedPath, { content: result, timestamp: Date.now(), mtime: fileStat.mtimeMs })
-      return result
+      // 缓存完整内容（非截断），确保后续请求可以按不同预算截断
+      this.addToCache(resolvedPath, { content, timestamp: Date.now(), mtime: fileStat.mtimeMs })
+      return this.truncateContent(content)
     } catch {
       return `[无法读取文件: ${ref.label} (${ref.id})]`
     }
+  }
+
+  /** 截断文件内容到可显示范围 */
+  private truncateContent(content: string): string {
+    const lines = content.split('\n')
+    if (lines.length > MAX_FILE_LINES) {
+      const truncated = lines.slice(0, MAX_FILE_LINES).join('\n')
+      return `${truncated}\n\n[文件共 ${lines.length} 行，仅显示前 ${MAX_FILE_LINES} 行]`
+    }
+    if (content.length > MAX_FILE_CHARS) {
+      return content.slice(0, MAX_FILE_CHARS) + `\n\n[文件内容过长，已截断]`
+    }
+    return content
   }
 
   private resolveText(ref: ContextRef): string {

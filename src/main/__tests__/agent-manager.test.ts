@@ -315,7 +315,7 @@ describe('AgentManager', () => {
       await manager.sendCommand(sessionId, { type: 'implement', description: 'test', targetNodeId: 'n1' })
 
       expect(outputs.length).toBeGreaterThan(0)
-      expect(outputs[0].name).toBe('claude-code') // 显示原始适配器名而非 fallback
+      expect(outputs[0].name).toContain('claude-code') // 包含原始适配器名（带 fallback 后缀）
     })
   })
 

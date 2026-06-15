@@ -83,6 +83,7 @@ describe('OpenCodeAdapter', () => {
 
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
+      stdin: { write: vi.fn(), end: vi.fn() },
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('done'))
       }), off: vi.fn() },
@@ -98,7 +99,7 @@ describe('OpenCodeAdapter', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'opencode',
-      ['-p', expect.any(String), '-q'],
+      ['-q'],
       expect.objectContaining({ cwd: '/my/project' }),
     )
   })
@@ -112,25 +113,27 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
-      capturedPrompt = args[1] // args are ['-p', prompt, '-q']
-      return {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-    })
+    const mockStdin = {
+      write: vi.fn((data: string) => { capturedPrompt = data }),
+      end: vi.fn(),
+    }
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdin: mockStdin,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn(),
+      once: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      off: vi.fn(),
+    }))
 
     await adapter.sendCommand(session.id, command)
 
-    expect(capturedPrompt).toContain('业务节点：Storage Module')
+    expect(capturedPrompt).toContain('Storage Module')
     expect(capturedPrompt).toContain('⚠️ 强制约束')
     expect(capturedPrompt).toContain('src/storage.ts')
     expect(capturedPrompt).toContain('禁止修改的文件（黑名单）')
@@ -142,21 +145,23 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
-      capturedPrompt = args[1] // args are ['-p', prompt, '-q']
-      return {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-    })
+    const mockStdin = {
+      write: vi.fn((data: string) => { capturedPrompt = data }),
+      end: vi.fn(),
+    }
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdin: mockStdin,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn(),
+      once: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      off: vi.fn(),
+    }))
 
     await adapter.sendCommand(session.id, command)
 

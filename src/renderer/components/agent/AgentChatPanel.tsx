@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Bot, GitBranch } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
+import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
@@ -24,21 +25,19 @@ interface AgentChatPanelProps {
 }
 
 export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps) {
-  const {
-    adapters,
-    threads,
-    currentThreadId,
-    threadOutputs,
-    lastFallbackHistory,
-    loadAdapters,
-    createThread,
-    sendMessage,
-    stopCurrentSession,
-    retryMessage,
-    renameThread,
-    deleteThread,
-    selectThread,
-  } = useAgentStore()
+  const adapters = useAgentStore((s) => s.adapters)
+  const threads = useAgentStore((s) => s.threads)
+  const currentThreadId = useAgentStore((s) => s.currentThreadId)
+  const threadOutputs = useAgentOutputStore((s) => s.threadOutputs)
+  const lastFallbackHistory = useAgentStore((s) => s.lastFallbackHistory)
+  const loadAdapters = useAgentStore((s) => s.loadAdapters)
+  const createThread = useAgentStore((s) => s.createThread)
+  const sendMessage = useAgentStore((s) => s.sendMessage)
+  const stopCurrentSession = useAgentStore((s) => s.stopCurrentSession)
+  const retryMessage = useAgentStore((s) => s.retryMessage)
+  const renameThread = useAgentStore((s) => s.renameThread)
+  const deleteThread = useAgentStore((s) => s.deleteThread)
+  const selectThread = useAgentStore((s) => s.selectThread)
 
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>('chat')
   const [showThreadList, setShowThreadList] = useState(false)

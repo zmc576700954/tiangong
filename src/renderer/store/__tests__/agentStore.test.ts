@@ -30,7 +30,6 @@ describe('agentStore threads', () => {
     useAgentStore.setState({
       threads: [],
       currentThreadId: null,
-      threadOutputs: {},
       adapters: [],
       lastFallbackHistory: [],
       adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },

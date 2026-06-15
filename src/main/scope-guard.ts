@@ -12,12 +12,29 @@ import fs from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import os from 'node:os'
 import chokidar from 'chokidar'
 import type { FSWatcher } from 'chokidar'
 import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/types'
 import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
+
+/** 获取临时目录路径（可在测试中 mock） */
+let _getTempDir: () => string = () => {
+  // 动态 import electron 避免测试时未安装
+  try {
+    const { app } = require('electron')
+    return app.getPath('temp')
+  } catch {
+    return os.tmpdir()
+  }
+}
+
+/** 测试时注入临时目录获取函数 */
+export function setTempDirGetter(fn: () => string): void {
+  _getTempDir = fn
+}
 
 const logger = createLogger('ScopeGuard')
 
@@ -222,7 +239,7 @@ export class ScopeGuard {
    */
   async prepareSandbox(allowedFiles: string[], workingDir: string): Promise<Sandbox> {
     const sandboxId = generateId('sandbox')
-    const backupDir = path.join(workingDir, '.bizgraph', 'backups', sandboxId)
+    const backupDir = path.join(_getTempDir(), 'bizgraph-backups', sandboxId)
 
     await fs.mkdir(backupDir, { recursive: true })
 
@@ -235,8 +252,8 @@ export class ScopeGuard {
       const backupPath = path.join(backupDir, relativePath)
       await fs.mkdir(path.dirname(backupPath), { recursive: true })
       try {
-        const content = await fs.readFile(srcPath, 'utf-8')
-        await fs.writeFile(backupPath, content, 'utf-8')
+        const content = await fs.readFile(srcPath)
+        await fs.writeFile(backupPath, content)
       } catch {
         // 文件可能不存在（新建文件），忽略错误
       }
@@ -338,8 +355,8 @@ export class ScopeGuard {
   async postExecutionValidation(sandbox: Sandbox): Promise<ValidationResult> {
     const initialSnapshot = this.initialSnapshots.get(sandbox.id)
     if (!initialSnapshot) {
-      logger.warn('No initial snapshot found, skipping post-execution validation')
-      return { compliant: true, outOfBoundsFiles: [], validFiles: [], shouldRollback: false }
+      logger.error('Initial snapshot evicted — cannot validate, forcing rollback')
+      return { compliant: false, outOfBoundsFiles: [], validFiles: [], shouldRollback: true }
     }
 
     const watchDirs = this.sandboxWatchDirs.get(sandbox.id)
@@ -453,8 +470,8 @@ export class ScopeGuard {
       const targetPath = path.join(sandbox.workingDir, relativePath)
 
       try {
-        const content = await fs.readFile(backupPath, 'utf-8')
-        await fs.writeFile(targetPath, content, 'utf-8')
+        const content = await fs.readFile(backupPath)
+        await fs.writeFile(targetPath, content)
         logger.info(`Restored: ${relativePath}`)
       } catch (err) {
         logger.warn(`Failed to restore ${relativePath}:`, err)
@@ -508,8 +525,8 @@ export class ScopeGuard {
     const backupPath = path.join(sandbox.backupDir, relativePath)
 
     try {
-      const content = await fs.readFile(backupPath, 'utf-8')
-      await fs.writeFile(resolvedPath, content, 'utf-8')
+      const content = await fs.readFile(backupPath)
+      await fs.writeFile(resolvedPath, content)
       logger.info(`Rolled back file: ${relativePath}`)
       return true
     } catch {

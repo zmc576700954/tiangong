@@ -192,15 +192,15 @@ describe('BaseAdapter - Scope Prompt', () => {
 
     const prompt = adapter.testBuildScopePrompt(config)
 
-    expect(prompt).toContain('业务节点：Auth Module')
+    expect(prompt).toContain('<node-title>Auth Module</node-title>')
     expect(prompt).toContain('## 验收标准')
-    expect(prompt).toContain('- User can login')
+    expect(prompt).toContain('<criteria>User can login</criteria>')
     expect(prompt).toContain('## 允许修改的文件（白名单）')
     expect(prompt).toContain('- src/auth.ts')
     expect(prompt).toContain('## 禁止修改的文件（黑名单）')
     expect(prompt).toContain('- src/payment.ts')
     expect(prompt).toContain('## 业务不变量')
-    expect(prompt).toContain('- Must use JWT')
+    expect(prompt).toContain('<invariant>Must use JWT</invariant>')
     expect(prompt).toContain('## 上游契约')
     expect(prompt).toContain('## 下游契约')
     expect(prompt).toContain('## 待修复 Bug')
@@ -221,7 +221,7 @@ describe('BaseAdapter - Scope Prompt', () => {
 
     const prompt = adapter.testBuildScopePrompt(config)
 
-    expect(prompt).toContain('业务节点：Simple Node')
+    expect(prompt).toContain('<node-title>Simple Node</node-title>')
     expect(prompt).not.toContain('验收标准')
     expect(prompt).not.toContain('白名单')
     expect(prompt).not.toContain('黑名单')
@@ -378,7 +378,7 @@ describe('buildScopePrompt with resolved contexts', () => {
 
     const prompt = adapter.testBuildScopePrompt(config, resolved)
 
-    expect(prompt).toContain('# 业务节点：Test Node')
+    expect(prompt).toContain('# 业务节点：<node-title>Test Node</node-title>')
     expect(prompt).toContain('## 附加上下文')
     expect(prompt).toContain('### Login (node)')
     expect(prompt).toContain('Login flow')

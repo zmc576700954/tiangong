@@ -77,28 +77,38 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
 const API_KEY_PREFIX_ENC = 'enc:'
 const API_KEY_PREFIX_FALLBACK = 'fbk:'
 
-/** 当 safeStorage 不可用时，使用基于用户数据路径的密钥进行 AES 加密 */
+/** 当 safeStorage 不可用时，使用基于随机盐 + 机器标识的密钥进行 AES 加密 */
 let cachedFallbackKey: Buffer | null = null
-function getFallbackKey(): Buffer {
+async function getFallbackKey(): Promise<Buffer> {
   if (cachedFallbackKey) return cachedFallbackKey
-  const salt = 'bizgraph-fallback-salt-v1'
-  cachedFallbackKey = scryptSync(app.getPath('userData'), salt, 32)
+  const saltPath = path.join(app.getPath('userData'), '.bizgraph-salt')
+  let salt: Buffer
+  try {
+    salt = await fs.readFile(saltPath)
+    if (salt.length < 16) throw new Error('salt too short')
+  } catch {
+    salt = randomBytes(32)
+    await fs.writeFile(saltPath, salt)
+  }
+  // 密钥派生：userData 路径 + 随机盐，确保每台安装有唯一密钥
+  const keyMaterial = app.getPath('userData') + ':' + salt.toString('base64')
+  cachedFallbackKey = scryptSync(keyMaterial, salt, 32)
   return cachedFallbackKey
 }
 
-function encryptFallback(plain: string): string {
-  const key = getFallbackKey()
+async function encryptFallback(plain: string): Promise<string> {
+  const key = await getFallbackKey()
   const iv = randomBytes(16)
   const cipher = createCipheriv('aes-256-cbc', key, iv)
   const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
   return `${API_KEY_PREFIX_FALLBACK}${iv.toString('base64')}:${encrypted.toString('base64')}`
 }
 
-function decryptFallback(encrypted: string): string {
+async function decryptFallback(encrypted: string): Promise<string> {
   const payload = encrypted.slice(API_KEY_PREFIX_FALLBACK.length)
   const [ivB64, dataB64] = payload.split(':')
   if (!ivB64 || !dataB64) throw new BizGraphError('Invalid fallback encrypted format', ErrorCode.SETTINGS_INVALID_FORMAT)
-  const key = getFallbackKey()
+  const key = await getFallbackKey()
   const iv = Buffer.from(ivB64, 'base64')
   if (iv.length !== 16) {
     throw new BizGraphError('Invalid IV length: AES-256-CBC requires 16 bytes', ErrorCode.SETTINGS_INVALID_FORMAT)
@@ -109,7 +119,7 @@ function decryptFallback(encrypted: string): string {
   return decrypted.toString('utf8')
 }
 
-function encryptApiKey(key: string): string {
+async function encryptApiKey(key: string): Promise<string> {
   if (safeStorage.isEncryptionAvailable()) {
     try {
       const encrypted = safeStorage.encryptString(key)
@@ -122,7 +132,7 @@ function encryptApiKey(key: string): string {
   return encryptFallback(key)
 }
 
-function decryptApiKey(encrypted: string): string {
+async function decryptApiKey(encrypted: string): Promise<string> {
   if (encrypted.startsWith(API_KEY_PREFIX_ENC)) {
     try {
       const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
@@ -160,23 +170,23 @@ export function needsMigration(encrypted: string): boolean {
   return !encrypted.startsWith(API_KEY_PREFIX_ENC) && !encrypted.startsWith(API_KEY_PREFIX_FALLBACK) && encrypted !== ''
 }
 
-function encryptSettings(settings: BizGraphSettings): BizGraphSettings {
+async function encryptSettings(settings: BizGraphSettings): Promise<BizGraphSettings> {
   return {
     ...settings,
-    apiKeys: settings.apiKeys.map((k) => ({
+    apiKeys: await Promise.all(settings.apiKeys.map(async (k) => ({
       ...k,
-      key: encryptApiKey(k.key),
-    })),
+      key: await encryptApiKey(k.key),
+    }))),
   }
 }
 
-function decryptSettings(settings: BizGraphSettings): BizGraphSettings {
+async function decryptSettings(settings: BizGraphSettings): Promise<BizGraphSettings> {
   return {
     ...settings,
-    apiKeys: settings.apiKeys.map((k) => ({
+    apiKeys: await Promise.all(settings.apiKeys.map(async (k) => ({
       ...k,
-      key: decryptApiKey(k.key),
-    })),
+      key: await decryptApiKey(k.key),
+    }))),
   }
 }
 
@@ -250,7 +260,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
       return cachedSettings
     }
     const merged = mergeSettings(DEFAULT_SETTINGS, parsed)
-    cachedSettings = decryptSettings(merged)
+    cachedSettings = await decryptSettings(merged)
     cachedAt = Date.now()
     return cachedSettings
   } catch (err) {
@@ -263,7 +273,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
 
 export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   const settingsPath = await getSettingsPath()
-  const encrypted = encryptSettings(settings)
+  const encrypted = await encryptSettings(settings)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
   cachedSettings = settings
 }
@@ -447,6 +457,12 @@ export async function installCliTool(name: string): Promise<{
 // ============================================
 // API Key 管理
 // ============================================
+
+/** 遮蔽 API Key，仅保留前4位和后4位，中间用 **** 替代 */
+export function maskApiKey(key: string): string {
+  if (key.length <= 8) return '****'
+  return key.slice(0, 4) + '****' + key.slice(-4)
+}
 
 export async function getApiKey(provider: string): Promise<string | undefined> {
   const settings = await readSettings()

@@ -90,12 +90,14 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     this.activeQueries.set(session.id, { abort: () => abortController.abort() })
 
     try {
+      const { readSettings } = await import('../settings')
+      const settings = await readSettings()
       const queryIter = query({
         prompt: commandPrompt,
         options: {
           systemPrompt: scopePrompt,
           cwd: session.config.workingDirectory,
-          model: 'sonnet',
+          model: settings.defaultModel || 'sonnet',
           env: this.buildSafeEnv(),
           permissionMode: 'acceptEdits',
           ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),

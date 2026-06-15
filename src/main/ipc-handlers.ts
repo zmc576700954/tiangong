@@ -210,10 +210,6 @@ export async function registerIpcHandlers(): Promise<void> {
     allowedRoots.push(path.resolve(app.getPath('userData')))
     allowedRoots.push(path.resolve(app.getPath('temp')))
 
-    if (operation === 'read') {
-      allowedRoots.push(path.resolve(app.getPath('desktop')))
-    }
-
     try {
       const projectPaths = await graphService.getProjectPaths()
       for (const projectPath of projectPaths) {

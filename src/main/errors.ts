@@ -51,6 +51,15 @@ export class BizGraphError extends Error {
     // 修复原型链（TypeScript 继承 Error 时的已知问题）
     Object.setPrototypeOf(this, BizGraphError.prototype)
   }
+
+  /** 序列化为普通对象，确保自定义属性能通过 Electron IPC 传输 */
+  toJSON(): Record<string, unknown> {
+    return {
+      name: this.name,
+      message: this.message,
+      code: this.code,
+    }
+  }
 }
 
 /** 数据库相关错误 */
@@ -90,6 +99,10 @@ export class SessionNotFoundError extends AgentError {
     this.sessionId = sessionId
     Object.setPrototypeOf(this, SessionNotFoundError.prototype)
   }
+
+  toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), sessionId: this.sessionId }
+  }
 }
 
 /** 适配器操作失败 */
@@ -101,6 +114,10 @@ export class AdapterError extends AgentError {
     this.name = 'AdapterError'
     this.adapterName = adapterName
     Object.setPrototypeOf(this, AdapterError.prototype)
+  }
+
+  toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), adapterName: this.adapterName }
   }
 }
 
@@ -122,5 +139,9 @@ export class GitError extends BizGraphError {
     this.name = 'GitError'
     this.repoPath = repoPath
     Object.setPrototypeOf(this, GitError.prototype)
+  }
+
+  toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), repoPath: this.repoPath }
   }
 }

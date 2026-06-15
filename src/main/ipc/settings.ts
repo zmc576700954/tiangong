@@ -7,8 +7,16 @@ import type { TypedHandle } from './utils'
 
 export function registerSettingsHandlers(typedHandle: TypedHandle): void {
   typedHandle('settings:read', async () => {
-    const { readSettings } = await import('../settings')
-    return readSettings()
+    const { readSettings, maskApiKey } = await import('../settings')
+    const settings = await readSettings()
+    // 渲染进程不持有完整 API Key，返回遮蔽版本
+    return {
+      ...settings,
+      apiKeys: settings.apiKeys.map((k) => ({
+        ...k,
+        key: k.key ? maskApiKey(k.key) : '',
+      })),
+    }
   })
 
   typedHandle('settings:write', async (_, settings) => {

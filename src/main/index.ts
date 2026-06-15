@@ -201,6 +201,13 @@ function buildMenu(): Menu {
 }
 
 app.whenReady().then(async () => {
+  // Validate state machine consistency before anything else
+  const { validateTransitionConsistency } = await import('@shared/state-machine')
+  const inconsistencies = validateTransitionConsistency()
+  if (inconsistencies > 0) {
+    logger.error(`State machine has ${inconsistencies} inconsistencies between TRANSITION_RULES and NODE_STATUS_TRANSITIONS`)
+  }
+
   // Initialize database
   await initDatabase()
 

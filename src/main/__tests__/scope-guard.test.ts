@@ -258,7 +258,7 @@ describe('ScopeGuard', () => {
       const sandbox = await guard.prepareSandbox([], WORKING_DIR)
 
       expect(sandbox.allowedFiles).toHaveLength(0)
-      expect(sandbox.backupDir).toContain('.bizgraph')
+      expect(sandbox.backupDir).toContain('bizgraph-backups')
     })
   })
 
@@ -394,9 +394,9 @@ describe('ScopeGuard', () => {
       const newGuard = new ScopeGuard()
       const result = await newGuard.postExecutionValidation(sandbox)
 
-      expect(result.compliant).toBe(true)
+      expect(result.compliant).toBe(false)
       expect(result.outOfBoundsFiles).toHaveLength(0)
-      expect(result.shouldRollback).toBe(false)
+      expect(result.shouldRollback).toBe(true)
     })
   })
 
@@ -458,7 +458,7 @@ describe('ScopeGuard', () => {
 
       // Backup dir should be removed
       expect(fs.default.rm).toHaveBeenCalledWith(
-        expect.stringContaining('.bizgraph'),
+        expect.stringContaining('bizgraph-backups'),
         expect.objectContaining({ recursive: true, force: true }),
       )
 

@@ -230,6 +230,21 @@ export class AgentManager {
   private _doCleanupSessionResources(sessionId: string): void {
     const state = this.sessionStates.get(sessionId)
 
+    // 终止 adapter 会话（防止子进程泄漏）
+    try {
+      const adapterName = this.router.getAdapterName(sessionId)
+      if (adapterName) {
+        const adapter = this.adapterRegistry.get(adapterName)
+        if (adapter) {
+          adapter.terminateSession(sessionId).catch((err: unknown) => {
+            logger.warn(`Failed to terminate adapter session ${sessionId}:`, err)
+          })
+        }
+      }
+    } catch {
+      // 路由条目可能已不存在，忽略
+    }
+
     // ScopeGuard: 异常退出时回滚沙箱（带重试机制，防止临时文件系统错误导致资源泄漏）
     if (state?.sandbox) {
       const sandbox = state.sandbox
@@ -567,7 +582,7 @@ export class AgentManager {
         this.healthMonitor.recordCall(candidate, true, Date.now() - startTime)
 
         const isFallback = candidate !== primary
-        const broadcastName = isFallback ? primary : candidate
+        const broadcastName = isFallback ? `${primary}-fallback-${session.id.slice(-6)}` : candidate
 
         this.sessionStates.set(session.id, {
           config,

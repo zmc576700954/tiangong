@@ -210,7 +210,7 @@ export function LeftPanel() {
                   <button
                     onClick={() => handleScanProject(project.id)}
                     disabled={scanningId === project.id}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-primary/10 text-primary transition-opacity"
+                    className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-primary/10 text-primary transition-opacity"
                     title="Generate mind map"
                   >
                     {scanningId === project.id ? (
@@ -221,7 +221,7 @@ export function LeftPanel() {
                   </button>
                   <button
                     onClick={() => removeProject(project.id)}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-destructive/10 text-destructive transition-opacity"
+                    className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-destructive/10 text-destructive transition-opacity"
                     title="Remove"
                   >
                     <X className="w-3 h-3" />

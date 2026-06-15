@@ -72,12 +72,13 @@ describe('CursorAdapter', () => {
     expect(session.id).toMatch(/^cursor-/)
   })
 
-  it('doSendCommand spawns cursor agent with -p flag', async () => {
+  it('doSendCommand spawns cursor agent without -p flag (uses stdin)', async () => {
     const config = makeConfig({ workingDirectory: '/my/project' })
     const session = await adapter.startSession(config)
 
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
+      stdin: { write: vi.fn(), end: vi.fn() },
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('done'))
       }), off: vi.fn() },
@@ -93,7 +94,7 @@ describe('CursorAdapter', () => {
 
     expect(mockSpawn).toHaveBeenCalledWith(
       'cursor',
-      ['agent', '-p', expect.stringContaining('Add login form')],
+      ['agent'],
       expect.objectContaining({ cwd: '/my/project' }),
     )
   })
@@ -104,6 +105,7 @@ describe('CursorAdapter', () => {
 
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
+      stdin: { write: vi.fn(), end: vi.fn() },
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('ok'))
       }), off: vi.fn() },
@@ -124,7 +126,7 @@ describe('CursorAdapter', () => {
     )
   })
 
-  it('doSendCommand includes scope prompt in command', async () => {
+  it('doSendCommand includes scope prompt via stdin', async () => {
     const config = makeConfig({
       nodeTitle: 'Payment Module',
       acceptanceCriteria: ['Handle refunds'],
@@ -132,25 +134,27 @@ describe('CursorAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
-      capturedPrompt = args[2] // args are ['agent', '-p', prompt, ...]
-      return {
-        ...mockProc,
-        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') cb(Buffer.from('ok'))
-        }), off: vi.fn() },
-        stderr: { on: vi.fn(), off: vi.fn() },
-        on: vi.fn(),
-        once: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'exit') cb(0)
-        }),
-        off: vi.fn(),
-      }
-    })
+    const mockStdin = {
+      write: vi.fn((data: string) => { capturedPrompt = data }),
+      end: vi.fn(),
+    }
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdin: mockStdin,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn(),
+      once: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      off: vi.fn(),
+    }))
 
     await adapter.sendCommand(session.id, command)
 
-    expect(capturedPrompt).toContain('业务节点：Payment Module')
+    expect(capturedPrompt).toContain('Payment Module')
     expect(capturedPrompt).toContain('Handle refunds')
     expect(capturedPrompt).toContain('Add login form')
   })

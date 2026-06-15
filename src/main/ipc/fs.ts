@@ -31,13 +31,14 @@ export async function searchFilesRecursive(
   dirPath: string,
   query: string,
   limit: number = 20,
+  maxDepth: number = 10,
 ): Promise<FileSearchResult[]> {
   if (!query) return []
   const results: FileSearchResult[] = []
   const q = query.toLowerCase()
 
-  async function walk(dir: string) {
-    if (results.length >= limit) return
+  async function walk(dir: string, depth: number) {
+    if (results.length >= limit || depth > maxDepth) return
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
@@ -61,29 +62,37 @@ export async function searchFilesRecursive(
       }
 
       if (entry.isDirectory()) {
-        await walk(fullPath)
+        await walk(fullPath, depth + 1)
       }
     }
   }
 
-  await walk(dirPath)
+  await walk(dirPath, 0)
   return results
 }
 
 export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: TypedHandle): void {
-  /** 危险路径模式：禁止写入系统/隐藏目录 */
+  /** 危险路径模式：禁止写入系统/隐藏目录（同时匹配目录路径本身和子路径） */
   const DANGEROUS_PATH_PATTERNS = [
-    /[\\/]node_modules[\\/]/i,
-    /[\\/]\.git[\\/]/i,
-    /[\\/]\.bizgraph[\\/]/i,
-    /[\\/]\.next[\\/]/i,
-    /[\\/]dist[\\/]/i,
-    /[\\/]dist-electron[\\/]/i,
-    /[\\/]release[\\/]/i,
+    /[\\/]node_modules([\\/]|$)/i,
+    /[\\/]\.git([\\/]|$)/i,
+    /[\\/]\.bizgraph([\\/]|$)/i,
+    /[\\/]\.next([\\/]|$)/i,
+    /[\\/]dist([\\/]|$)/i,
+    /[\\/]dist-electron([\\/]|$)/i,
+    /[\\/]release([\\/]|$)/i,
   ]
+
+  /** 危险目录名（用于 basename 匹配） */
+  const DANGEROUS_DIR_NAMES = new Set([
+    'node_modules', '.git', '.bizgraph', '.next', 'dist', 'dist-electron', 'release',
+  ])
 
   function assertNotDangerous(filePath: string): void {
     if (DANGEROUS_PATH_PATTERNS.some((pattern) => pattern.test(filePath))) {
+      throw new IpcError(`Write rejected: cannot write to protected directory: ${path.basename(filePath)}`, ErrorCode.IPC_ACCESS_DENIED)
+    }
+    if (DANGEROUS_DIR_NAMES.has(path.basename(filePath))) {
       throw new IpcError(`Write rejected: cannot write to protected directory: ${path.basename(filePath)}`, ErrorCode.IPC_ACCESS_DENIED)
     }
   }

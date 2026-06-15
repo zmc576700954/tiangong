@@ -8,6 +8,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }))
 
+// Mock settings to provide defaultModel
+vi.mock('../settings', () => ({
+  readSettings: vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] }),
+}))
+
 import { ClaudeCodeAdapter } from '../adapters/claude-code'
 
 function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig {
@@ -83,9 +88,9 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1)
     const callArgs = mockQuery.mock.calls[0][0] as { prompt: string; options: Record<string, unknown> }
     expect(callArgs.prompt).toContain('Add login form')
-    expect(callArgs.options.systemPrompt).toContain('业务节点：Auth Module')
+    expect(callArgs.options.systemPrompt).toContain('<node-title>Auth Module</node-title>')
     expect(callArgs.options.systemPrompt).toContain('src/auth.ts')
-    expect(callArgs.options.systemPrompt).toContain('Users can login')
+    expect(callArgs.options.systemPrompt).toContain('<criteria>Users can login</criteria>')
     expect(callArgs.options.cwd).toBe('/project')
 
     const completeOutputs = outputs.filter((o) => o.type === 'complete')

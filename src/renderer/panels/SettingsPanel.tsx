@@ -12,6 +12,7 @@ export function SettingsPanel() {
   const [loading, setLoading] = useState(true)
   const [installing, setInstalling] = useState<string | null>(null)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
+  const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
 
   useEffect(() => {
@@ -24,10 +25,13 @@ export function SettingsPanel() {
       const data = await ipc['settings:read']()
       setSettings(data)
       const keys: Record<string, string> = {}
+      const masked: Record<string, string> = {}
       for (const k of data.apiKeys) {
-        keys[k.provider] = k.key
+        keys[k.provider] = ''
+        masked[k.provider] = k.key || ''
       }
       setApiKeys(keys)
+      setMaskedKeys(masked)
     } catch (err) {
       console.error('Failed to load settings:', err)
     } finally {
@@ -146,7 +150,7 @@ export function SettingsPanel() {
                   type="password"
                   value={apiKeys[provider] || ''}
                   onChange={(e) => setApiKeys((prev) => ({ ...prev, [provider]: e.target.value }))}
-                  placeholder="Enter API key..."
+                  placeholder={maskedKeys[provider] ? `Current: ${maskedKeys[provider]}` : 'Enter API key...'}
                   className="flex-1 px-2 py-1.5 text-xs border rounded bg-background"
                 />
                 <button

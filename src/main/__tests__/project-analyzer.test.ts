@@ -60,7 +60,7 @@ describe('ProjectAnalyzer', () => {
     const root = result.nodes.find((n) => n.tempId === 'root')
     expect(root).toBeDefined()
     expect(root!.title).toBe('TestProject')
-    expect(root!.type).toBe('module')
+    expect(root!.type).toBe('project')
   })
 
   it('should create module nodes', () => {

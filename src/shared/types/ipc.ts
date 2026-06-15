@@ -100,7 +100,7 @@ export interface IpcApi {
   // Git 操作
   'git:status': (path: string) => Promise<{ modified: string[]; untracked: string[] }>
   'git:diff': (path: string) => Promise<string>
-  'git:commit': (path: string, message: string) => Promise<void>
+  'git:commit': (path: string, message: string, files: string[]) => Promise<void>
 
   // Dialog 操作
   'dialog:openDirectory': () => Promise<string | null>

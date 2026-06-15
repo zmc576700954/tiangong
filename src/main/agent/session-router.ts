@@ -89,11 +89,21 @@ export class SessionRouter {
     if (!entry) {
       throw new SessionNotFoundError(sessionId)
     }
+    // 刷新活跃时间戳，防止活跃会话被 TTL 误杀
+    entry.timestamp = Date.now()
     const adapter = this.registry.get(entry.adapterName)
     if (!adapter) {
       throw new AdapterError(`Adapter ${entry.adapterName} not found for session ${sessionId}`)
     }
     return adapter
+  }
+
+  /** 刷新会话活跃时间戳（供 sendCommand 等操作调用） */
+  touch(sessionId: string): void {
+    const entry = this.sessionToAdapter.get(sessionId)
+    if (entry) {
+      entry.timestamp = Date.now()
+    }
   }
 
   getAdapterName(sessionId: string): string | undefined {

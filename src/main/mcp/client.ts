@@ -5,8 +5,27 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import path from 'node:path'
 import { buildSafeEnv } from '../shared/env'
 import { AgentError, ErrorCode } from '../errors'
+
+/** MCP 服务器允许执行的命令白名单 */
+const ALLOWED_MCP_COMMANDS = new Set([
+  'npx', 'node', 'python', 'python3', 'uvx', 'deno', 'bun',
+  'pnpm', 'yarn', 'pip', 'pipx', 'uv',
+])
+
+function validateMcpCommand(command: string): void {
+  const basename = path.basename(command)
+  // 允许白名单中的命令名（不含路径分隔符，即系统 PATH 查找）
+  if (ALLOWED_MCP_COMMANDS.has(basename) && !command.includes(path.sep)) return
+  // 允许 node_modules/.bin/ 下的命令
+  if (command.includes('node_modules')) return
+  throw new AgentError(
+    `MCP command not allowed: "${command}". Only common package managers and runtimes are permitted: ${[...ALLOWED_MCP_COMMANDS].join(', ')}`,
+    ErrorCode.AGENT_ADAPTER_ERROR,
+  )
+}
 
 export interface McpTool {
   name: string
@@ -46,6 +65,7 @@ export class McpClient extends EventEmitter {
   }
 
   async connect(): Promise<void> {
+    validateMcpCommand(this.command)
     return new Promise((resolve, reject) => {
       const connectTimeout = setTimeout(() => {
         reject(new AgentError('MCP connect timeout: process did not respond to initialize handshake within 10s', ErrorCode.AGENT_ADAPTER_ERROR))

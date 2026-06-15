@@ -2,6 +2,8 @@
  * BizGraph 常量定义
  */
 
+import type { NodeStatus, NodeType, BugSeverity, BugStatus, GraphType } from './types'
+
 /** 应用信息 */
 export const APP_NAME = 'BizGraph'
 export const APP_VERSION = '0.1.0'
@@ -13,7 +15,7 @@ export const DB_FILENAME = 'bizgraph.db'
 export const IPC_CHANNEL_PREFIX = 'bizgraph'
 
 /** 节点状态颜色映射（对应 Tailwind 配置） */
-export const NODE_STATUS_COLORS: Record<string, string> = {
+export const NODE_STATUS_COLORS: Record<NodeStatus, string> = {
   draft: '#94a3b8',
   confirmed: '#3b82f6',
   developing: '#f59e0b',
@@ -24,7 +26,7 @@ export const NODE_STATUS_COLORS: Record<string, string> = {
 }
 
 /** 节点状态标签 */
-export const NODE_STATUS_LABELS: Record<string, string> = {
+export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
   draft: '草稿',
   confirmed: '已确认',
   developing: '开发中',
@@ -35,7 +37,7 @@ export const NODE_STATUS_LABELS: Record<string, string> = {
 }
 
 /** 思维导图中显示的节点类型标签 */
-export const NODE_TYPE_LABELS: Record<string, string> = {
+export const NODE_TYPE_LABELS: Record<NodeType, string> = {
   project: '项目',
   module: '业务模块',
   process: '业务流程',
@@ -44,7 +46,7 @@ export const NODE_TYPE_LABELS: Record<string, string> = {
 }
 
 /** 节点类型颜色 */
-export const NODE_TYPE_COLORS: Record<string, string> = {
+export const NODE_TYPE_COLORS: Record<NodeType, string> = {
   project: '#6366f1',
   module: '#3b82f6',
   process: '#8b5cf6',
@@ -62,7 +64,7 @@ export const CANVAS_NODE_TYPES = [
 ] as const
 
 /** Bug 严重级别标签 */
-export const BUG_SEVERITY_LABELS: Record<string, string> = {
+export const BUG_SEVERITY_LABELS: Record<BugSeverity, string> = {
   low: '低',
   medium: '中',
   high: '高',
@@ -70,14 +72,14 @@ export const BUG_SEVERITY_LABELS: Record<string, string> = {
 }
 
 /** Bug 状态标签 */
-export const BUG_STATUS_LABELS: Record<string, string> = {
+export const BUG_STATUS_LABELS: Record<BugStatus, string> = {
   open: '未修复',
   fixed: '已修复',
   verified: '已验证',
 }
 
 /** 图类型标签 */
-export const GRAPH_TYPE_LABELS: Record<string, string> = {
+export const GRAPH_TYPE_LABELS: Record<GraphType, string> = {
   online: '已上线场景',
   dev: '开发场景',
 }

@@ -138,16 +138,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.sessionCleanups.get(sessionId)?.()
         this.sessionCleanups.delete(sessionId)
         this.disposeProtocolHandler(sessionId)
-        this.sessions.delete(sessionId)
-        this.processes.delete(sessionId)
-        // 清理进程守护定时器
-        this.clearSessionKillTimer(sessionId)
-        // outputSessionMap 使用 WeakMap，无需手动清理（GC 自动回收无引用的 AgentOutput）
+        // 先发出 complete 事件（此时 session 仍存在，消费者可查找）
         this.emitOutput({
           type: 'complete',
           data: 'Session terminated by user',
           timestamp: Date.now(),
         })
+        // 清理进程守护定时器
+        this.clearSessionKillTimer(sessionId)
+        // outputSessionMap 使用 WeakMap，无需手动清理（GC 自动回收无引用的 AgentOutput）
+        this.sessions.delete(sessionId)
+        this.processes.delete(sessionId)
       } catch (cleanupErr) {
         this.logger.error(`Cleanup failed for session ${sessionId}:`, cleanupErr)
       } finally {
@@ -215,12 +216,20 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     if (proc.killed) return
     const timeout = setTimeout(() => {
       if (!proc.killed) {
-        this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, sending SIGKILL`)
-        proc.kill('SIGKILL')
+        this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, force killing`)
+        if (process.platform === 'win32') {
+          proc.kill()
+        } else {
+          proc.kill('SIGKILL')
+        }
       }
     }, gracePeriodMs)
     proc.once('exit', () => clearTimeout(timeout))
-    proc.kill('SIGTERM')
+    if (process.platform === 'win32') {
+      proc.kill()
+    } else {
+      proc.kill('SIGTERM')
+    }
   }
 
   /**
@@ -538,18 +547,21 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected async doTerminate(_session: AgentSession, proc?: ChildProcess): Promise<void> {
     if (!proc || proc.killed) return
     return new Promise<void>((resolve) => {
-      // P0-11: 先注册 exit 监听器，再调用 kill，避免竞态条件
       const timeout = setTimeout(() => {
         if (!proc.killed) {
-          this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, sending SIGKILL`)
-          proc.kill('SIGKILL')
+          this.logger.warn(`Process ${proc.pid} did not exit after signal, force killing`)
+          proc.kill()
         }
       }, BaseAdapter.SIGKILL_GRACE_PERIOD_MS)
       proc.once('exit', () => {
         clearTimeout(timeout)
         resolve()
       })
-      proc.kill('SIGTERM')
+      if (process.platform === 'win32') {
+        proc.kill()
+      } else {
+        proc.kill('SIGTERM')
+      }
     })
   }
 

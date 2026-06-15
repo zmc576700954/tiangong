@@ -7,30 +7,37 @@
  */
 
 import type { AgentSessionConfig, ResolvedContext } from '@shared/types'
-import type { ProjectMemory } from '@shared/types'
+
+const MAX_USER_INPUT_LENGTH = 500
+
+/** 基本的用户输入清理：截断长度 + 移除明显的 prompt injection 模式 */
+function sanitizeUserInput(input: string): string {
+  let sanitized = input.slice(0, MAX_USER_INPUT_LENGTH)
+  // 移除常见的 prompt injection 指令
+  sanitized = sanitized.replace(/ignore\s+(all\s+)?(previous|above|prior)\s+(instructions|rules|constraints)/gi, '[filtered]')
+  return sanitized
+}
 
 /**
  * 构建范围约束提示词
  * @param config - 会话配置
  * @param resolvedContexts - 已解析的上下文列表
  * @param codeContext - 智能代码上下文
- * @param memory - 项目记忆（可选，用于注入用户偏好）
  */
 export function buildScopePrompt(
   config: AgentSessionConfig,
   resolvedContexts?: ResolvedContext[],
   codeContext?: string,
-  memory?: ProjectMemory,
 ): string {
   const lines: string[] = []
 
-  lines.push(`# 业务节点：${config.nodeTitle}`)
+  lines.push(`# 业务节点：<node-title>${sanitizeUserInput(config.nodeTitle)}</node-title>`)
   lines.push('')
 
   if (config.acceptanceCriteria.length > 0) {
     lines.push('## 验收标准')
     for (const criteria of config.acceptanceCriteria) {
-      lines.push(`- ${criteria}`)
+      lines.push(`- <criteria>${sanitizeUserInput(criteria)}</criteria>`)
     }
     lines.push('')
   }
@@ -54,7 +61,7 @@ export function buildScopePrompt(
   if (config.invariantRules.length > 0) {
     lines.push('## 业务不变量')
     for (const rule of config.invariantRules) {
-      lines.push(`- ${rule}`)
+      lines.push(`- <invariant>${sanitizeUserInput(rule)}</invariant>`)
     }
     lines.push('')
   }
@@ -74,7 +81,7 @@ export function buildScopePrompt(
   if (config.bugContext && config.bugContext.length > 0) {
     lines.push('## 待修复 Bug')
     for (const bug of config.bugContext) {
-      lines.push(`### ${bug.title} [${bug.severity}]`)
+      lines.push(`### ${sanitizeUserInput(bug.title)} [${bug.severity}]`)
       lines.push(bug.description)
       lines.push('')
     }
@@ -94,26 +101,6 @@ export function buildScopePrompt(
       lines.push(ctx.content)
       lines.push('')
     }
-  }
-
-  // 注入项目记忆偏好，使 Agent 行为与用户偏好一致
-  if (memory) {
-    lines.push('## 项目偏好')
-    lines.push(`- 命名风格：${memory.preferences.namingStyle === 'business' ? '使用业务语言' : memory.preferences.namingStyle === 'technical' ? '使用技术术语' : '业务与技术结合'}`)
-    lines.push(`- 模块粒度：${memory.preferences.granularity === 'fine' ? '倾向于细粒度拆分' : memory.preferences.granularity === 'coarse' ? '倾向于粗粒度合并' : '中等粒度'}`)
-    if (memory.preferences.maxModules) {
-      lines.push(`- 建议模块数：不超过 ${memory.preferences.maxModules} 个`)
-    }
-    if (memory.preferences.avoidPatterns.length > 0) {
-      lines.push(`- 应避免：${memory.preferences.avoidPatterns.join('、')}`)
-    }
-    if (memory.coreUserFlows.length > 0) {
-      lines.push(`- 核心流程：${memory.coreUserFlows.join('、')}`)
-    }
-    if (memory.techConstraints.length > 0) {
-      lines.push(`- 技术约束：${memory.techConstraints.join('、')}`)
-    }
-    lines.push('')
   }
 
   return lines.join('\n')

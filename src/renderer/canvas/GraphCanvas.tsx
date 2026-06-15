@@ -175,47 +175,60 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     onChange: (viewport) => setZoomLevel(viewport.zoom),
   })
 
-  useEffect(() => {
-    const flowNodes: Node[] = graphNodes.map((node) => ({
-      id: node.id,
-      type: 'bizNode',
-      position: node.position,
-      data: {
-        ...node,
-        bugCount: bugCountMap.get(node.id) ?? 0,
+  const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => ({
+    id: node.id,
+    type: 'bizNode',
+    position: node.position,
+    data: {
+      ...node,
+      bugCount: bugCountMap.get(node.id) ?? 0,
+    },
+    draggable: node.type !== 'project',
+  })), [graphNodes, bugCountMap])
+
+  const baseFlowEdges: Edge[] = useMemo(() => graphEdges.map((edge) => {
+    const edgeType = edge.edgeType || 'default'
+    const config = edgeTypeConfig[edgeType]
+    const displayLabel = edge.content?.condition
+      ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
+      : edge.label
+
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: displayLabel,
+      type: 'bizEdge',
+      data: { edgeType, content: edge.content },
+      markerEnd: getEdgeMarkerEnd(edgeType),
+      animated: edgeType === 'failure' || edgeType === 'business-flow',
+      style: {
+        stroke: config.color,
+        strokeWidth: 2,
+        strokeDasharray: config.strokeDasharray,
       },
-      selected: node.id === selectedNodeId || node.id === connectingSourceId,
-      draggable: node.type !== 'project',
-    }))
+    }
+  }), [graphEdges])
 
-    const flowEdges: Edge[] = graphEdges.map((edge) => {
-      const edgeType = edge.edgeType || 'default'
-      const config = edgeTypeConfig[edgeType]
-      const displayLabel = edge.content?.condition
-        ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
-        : edge.label
+  // Apply selection styling without rebuilding the full arrays
+  const flowNodes = useMemo(() => baseFlowNodes.map((n) => ({
+    ...n,
+    selected: n.id === selectedNodeId || n.id === connectingSourceId,
+  })), [baseFlowNodes, selectedNodeId, connectingSourceId])
 
-      return {
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        label: displayLabel,
-        type: 'bizEdge',
-        data: { edgeType, content: edge.content },
-        markerEnd: getEdgeMarkerEnd(edgeType),
-        selected: edge.id === selectedEdgeId,
-        animated: edgeType === 'failure' || edgeType === 'business-flow',
-        style: {
-          stroke: config.color,
-          strokeWidth: edge.id === selectedEdgeId ? 3 : 2,
-          strokeDasharray: config.strokeDasharray,
-        },
-      }
-    })
+  const flowEdges = useMemo(() => baseFlowEdges.map((e) => {
+    const isSelected = e.id === selectedEdgeId
+    return {
+      ...e,
+      selected: isSelected,
+      style: isSelected ? { ...e.style, strokeWidth: 3 } : e.style,
+    }
+  }), [baseFlowEdges, selectedEdgeId])
 
+  useEffect(() => {
     setRfNodes(flowNodes)
     setRfEdges(flowEdges)
-  }, [graphNodes, graphEdges, selectedNodeId, selectedEdgeId, bugCountMap, connectingSourceId, setRfNodes, setRfEdges])
+  }, [flowNodes, flowEdges, setRfNodes, setRfEdges])
 
   /**
    * onNodeClick：仅处理正常模式下的节点选中
@@ -371,7 +384,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const hasProjectNode = graphNodes.some((n) => n.type === 'project')
 
   return (
-    <div className="w-full h-full relative" data-testid="graph-canvas">
+    <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}

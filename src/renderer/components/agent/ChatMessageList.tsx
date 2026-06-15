@@ -37,7 +37,7 @@ export function ChatMessageList({ messages, isRunning, adapterName, onRetry, cur
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 select-text">
+    <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 select-text" role="log" aria-live="polite">
       {messages.map((msg) => (
         <ChatBubble key={msg.id} message={msg} onRetry={onRetry} />
       ))}

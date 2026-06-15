@@ -5,7 +5,8 @@
  * 当前状态 → 允许的目标状态列表。
  */
 
-import type { NodeStatus, BugStatus } from './types'
+import type { NodeStatus, BugStatus, NodeType } from './types'
+import { NODE_STATUS_TRANSITIONS } from './types/graph'
 
 /** 非法状态转换错误 */
 export class InvalidStateTransitionError extends Error {
@@ -18,6 +19,10 @@ export class InvalidStateTransitionError extends Error {
       `Invalid state transition${nodeId ? ` for node ${nodeId}` : ''}: "${from}" → "${to}" is not allowed`,
     )
     this.name = 'InvalidStateTransitionError'
+  }
+
+  toJSON(): Record<string, unknown> {
+    return { name: this.name, message: this.message, from: this.from, to: this.to, nodeId: this.nodeId }
   }
 }
 
@@ -140,4 +145,43 @@ export function validateBugTransition(
   if (!canBugTransition(from, to)) {
     throw new InvalidStateTransitionError(from, to, bugId)
   }
+}
+
+// ============================================
+// 启动时一致性校验
+// ============================================
+
+/**
+ * 校验 TRANSITION_RULES 与 NODE_STATUS_TRANSITIONS 的一致性
+ * 在应用启动时调用，发现不一致时打印错误日志
+ * @returns 不一致的数量（0 表示一致）
+ */
+export function validateTransitionConsistency(): number {
+  let inconsistencies = 0
+  for (const [nodeType, transitions] of Object.entries(NODE_STATUS_TRANSITIONS)) {
+    for (const [from, toList] of Object.entries(transitions)) {
+      for (const to of toList as NodeStatus[]) {
+        if (!canTransition(from as NodeStatus, to)) {
+          console.error(
+            `[StateMachine] Inconsistency: NODE_STATUS_TRANSITIONS[${nodeType}].${from}→${to} is allowed but TRANSITION_RULES does not permit it`,
+          )
+          inconsistencies++
+        }
+      }
+    }
+  }
+  // 反向检查：TRANSITION_RULES 中允许但 NODE_STATUS_TRANSITIONS 中没有任何 nodeType 允许的转换
+  for (const [from, toSet] of Object.entries(TRANSITION_RULES)) {
+    for (const to of toSet) {
+      const allowedByAnyNodeType = Object.values(NODE_STATUS_TRANSITIONS).some(
+        (transitions) => (transitions as Record<string, NodeStatus[]>)[from]?.includes(to),
+      )
+      if (!allowedByAnyNodeType) {
+        console.warn(
+          `[StateMachine] Warning: TRANSITION_RULES.${from}→${to} is allowed but no NodeType permits it in NODE_STATUS_TRANSITIONS`,
+        )
+      }
+    }
+  }
+  return inconsistencies
 }

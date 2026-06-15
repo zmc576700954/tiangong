@@ -88,7 +88,7 @@ describe('CodexAdapter (SDK)', () => {
     expect(mockRun).toHaveBeenCalledTimes(1)
 
     const promptArg = mockRun.mock.calls[0][0] as string
-    expect(promptArg).toContain('业务节点：Auth Module')
+    expect(promptArg).toContain('<node-title>Auth Module</node-title>')
     expect(promptArg).toContain('src/auth.ts')
     expect(promptArg).toContain('Add login form')
   })

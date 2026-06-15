@@ -417,7 +417,7 @@ export class ProjectAnalyzer {
 
     return {
       tempId: 'root',
-      type: 'module',
+      type: 'project',
       status: 'confirmed',
       title: scanResult.projectName,
       description,

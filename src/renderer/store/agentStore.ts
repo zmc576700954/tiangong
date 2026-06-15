@@ -9,8 +9,6 @@ interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
   threads: AgentThread[]
   currentThreadId: string | null
-  /** 每个 thread 的 agent 原始输出（用于 TerminalView） */
-  threadOutputs: Record<string, AgentOutput[]>
   /** 适配器偏好配置 */
   adapterPreferences: AdapterPreferences
   /** 最近一次 startSession 的回退历史（用于 UI 展示） */
@@ -39,6 +37,8 @@ interface AgentState {
   stopCurrentSession: (threadId: string) => Promise<void>
   retryMessage: (threadId: string, agentMessageId: string) => Promise<void>
   findThreadBySessionId: (sessionId: string) => AgentThread | undefined
+  /** 按 nodeBound 查找 thread（避免 threads.find 遍历） */
+  getThreadByNodeId: (nodeId: string) => AgentThread | undefined
 
   // 持久化相关
   loadThreads: (filters?: { nodeId?: string; graphId?: string }) => Promise<void>
@@ -53,7 +53,6 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   adapters: [],
   threads: [],
   currentThreadId: null,
-  threadOutputs: {},
   adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
   lastFallbackHistory: [],
 
@@ -478,6 +477,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     return get().threads.find((t) => t.sessionId === sessionId)
   },
 
+  getThreadByNodeId: (nodeId) => {
+    return get().threads.find((t) => t.nodeBound === nodeId)
+  },
+
   // ==================== 持久化 ====================
 
   loadThreads: async (filters) => {
@@ -540,8 +543,3 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     return cleanup
   },
 }))
-
-// 订阅 outputStore 变化，同步 threadOutputs 到 agentStore（保持向后兼容）
-useAgentOutputStore.subscribe((state) => {
-  useAgentStore.setState({ threadOutputs: state.threadOutputs })
-})
