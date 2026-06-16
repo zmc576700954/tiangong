@@ -48,6 +48,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private sessionOutputBuffers = new Map<string, string[]>()
   /** 单会话输出条数上限，防止内存无限增长 */
   private static readonly MAX_OUTPUT_BUFFER_SIZE = 200
+  /** 错误关键词列表（与 MemoryExtractor 保持一致） */
+  private static readonly ERROR_KEYWORDS = [
+    'error', '失败', 'exception', 'panic', 'fatal', 'crash',
+    'timeout', 'refused', 'enoent', 'econnrefused', 'permission denied',
+    'stack overflow', 'out of memory', 'segfault', 'abort',
+    'undefined is not', 'cannot read', 'typeerror', 'referenceerror',
+    'syntaxerror', 'rangeerror',
+  ]
   /** 会话级进程守护定时器：超时自动 kill，防止子进程泄漏 */
   private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** 默认会话超时时间（30 分钟） */
@@ -570,14 +578,27 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * @protected
    */
   protected buildCommandPrompt(command: AgentCommand): string {
-    const typeLabels: Record<string, string> = {
-      implement: '请实现以下功能',
-      fix_bug: '请修复以下 Bug',
-      refactor: '请重构以下代码',
-      add_test: '请为以下功能添加测试',
+    const typeContext: Record<string, { label: string; guidance: string }> = {
+      implement: {
+        label: '请实现以下功能',
+        guidance: 'Focus on clean, maintainable code. Follow existing patterns in the codebase.',
+      },
+      fix_bug: {
+        label: '请修复以下 Bug',
+        guidance: 'Identify the root cause first. Make minimal changes to fix the issue. Add a regression test if possible.',
+      },
+      refactor: {
+        label: '请重构以下代码',
+        guidance: 'Preserve existing behavior. Improve code structure without changing functionality.',
+      },
+      add_test: {
+        label: '请为以下功能添加测试',
+        guidance: 'Cover edge cases and error paths. Follow existing test patterns in the project.',
+      },
     }
 
-    return `${typeLabels[command.type] ?? '请完成以下任务'}：\n${command.description}`
+    const ctx = typeContext[command.type] ?? { label: '请完成以下任务', guidance: '' }
+    return `${ctx.label}：\n${command.description}\n\n${ctx.guidance}`
   }
 
   /**
@@ -658,18 +679,20 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const completions: string[] = []
 
     for (const output of buffer) {
-      // 简单启发式提取文件变更
-      const fileMatches = output.match(/(?:create|modify|delete|add|write|edit)[ed]?\s*[:：]?\s*(\S+\.\w+)/gi)
+      // 文件变更提取（与 MemoryExtractor._extractFileChanges 相同模式）
+      const fileMatches = output.match(/(?:modif(?:y|ied)|change(?:d)?|edit(?:ed)?|wrote?|creat(?:e|ed)|add(?:ed)?|delet(?:e|ed)|update(?:d)?)\s*[:：]\s*([^\s\n]{5,200}\.\w{2,10})/gi)
+        ?? output.match(/(?:create|modify|delete|add|write|edit)[ed]?\s*[:：]?\s*(\S+\.\w+)/gi)
       if (fileMatches) {
-        fileChanges.push(...fileMatches.map((m) => m.trim()).filter((m) => m.length < 200))
+        fileChanges.push(...fileMatches.map((m) => m.trim()).filter((m) => m.length > 3 && m.length < 200))
       }
-      // 提取错误
-      if (output.toLowerCase().includes('error') || output.toLowerCase().includes('失败')) {
+      // 错误提取（与 MemoryExtractor._extractErrors 相同关键词列表）
+      const outputLower = output.toLowerCase()
+      if (BaseAdapter.ERROR_KEYWORDS.some(kw => outputLower.includes(kw))) {
         const lines = output.split('\n').filter((l) => l.length > 10 && l.length < 300)
         errors.push(...lines.slice(0, 3))
       }
       // 提取完成语句
-      if (output.toLowerCase().includes('complete') || output.toLowerCase().includes('完成')) {
+      if (outputLower.includes('complete') || outputLower.includes('完成') || outputLower.includes('done') || outputLower.includes('success')) {
         completions.push(output.trim().substring(0, 200))
       }
     }

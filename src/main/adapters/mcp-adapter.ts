@@ -383,6 +383,13 @@ export class McpAdapter extends BaseAdapter {
   /** 会话空闲超时定时器：sessionId → timeoutId */
   private sessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private apiRateLimiter = new ApiRateLimiter()
+  /** MCP 服务器熔断器：防止连续失败导致重连风暴 */
+  private circuitBreaker = new Map<string, { failures: number; lastFailureTime: number; state: 'closed' | 'open' | 'half-open' }>()
+  private static readonly CB_FAILURE_THRESHOLD = 3
+  private static readonly CB_OPEN_DURATION_MS = 30_000 // 30 秒冷却
+  /** MCP 连接池：跨会话复用 MCP 客户端连接 */
+  private connectionPool = new Map<string, { client: McpClient; refCount: number; lastUsed: number }>()
+  private static readonly POOL_IDLE_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟空闲超时
 
   async checkInstalled(): Promise<boolean> {
     // MCP adapter is "installed" if at least one API key is configured
@@ -402,10 +409,38 @@ export class McpAdapter extends BaseAdapter {
     const enabledServers = settings.mcpServers.filter((s) => s.enabled)
     const sessionClients: McpClient[] = []
 
+    // 清理连接池中的空闲超时连接
+    this.cleanupIdlePoolConnections()
+
     for (const server of enabledServers) {
+      // 熔断器检查：跳过处于 open 状态的服务器
+      if (this.isCircuitOpen(server.name)) {
+        this.emitOutput({
+          type: 'stderr',
+          data: `MCP server ${server.name} circuit breaker open (cooling down), skipping`,
+          timestamp: Date.now(),
+        })
+        continue
+      }
       try {
+        // 优先从连接池复用
+        const pooled = this.connectionPool.get(server.name)
+        if (pooled && pooled.client.isReady()) {
+          pooled.refCount++
+          pooled.lastUsed = Date.now()
+          sessionClients.push(pooled.client)
+          this.emitOutput({
+            type: 'stdout',
+            data: `MCP server reused from pool: ${server.name}`,
+            timestamp: Date.now(),
+          })
+          continue
+        }
+        // 池中无可用连接，新建
         const client = new McpClient(server.command, server.args)
         await client.connect()
+        this.recordCircuitResult(server.name, true)
+        this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
         sessionClients.push(client)
         this.emitOutput({
           type: 'stdout',
@@ -413,6 +448,7 @@ export class McpAdapter extends BaseAdapter {
           timestamp: Date.now(),
         })
       } catch (err) {
+        this.recordCircuitResult(server.name, false)
         const msg = err instanceof Error ? err.message : String(err)
         this.emitOutput({
           type: 'stderr',
@@ -594,9 +630,24 @@ export class McpAdapter extends BaseAdapter {
     const clients = this.mcpClients.get(sessionId) ?? []
     for (const client of clients) {
       try {
-        client.disconnect().catch((err) => {
-          this.logger.warn('Failed to disconnect MCP client:', err)
-        })
+        // 连接池模式：减引用计数，仍有其他会话使用时不断开
+        let pooled = false
+        for (const [, pooledEntry] of this.connectionPool) {
+          if (pooledEntry.client === client) {
+            pooledEntry.refCount--
+            pooledEntry.lastUsed = Date.now()
+            if (pooledEntry.refCount > 0) {
+              pooled = true
+            }
+            break
+          }
+        }
+        // 非池化连接或引用计数归零时断开
+        if (!pooled) {
+          client.disconnect().catch((err) => {
+            this.logger.warn('Failed to disconnect MCP client:', err)
+          })
+        }
       } catch (err) {
         this.logger.warn('Error during session cleanup:', err)
       }
@@ -604,6 +655,65 @@ export class McpAdapter extends BaseAdapter {
     this.mcpClients.delete(sessionId)
 
     this.apiRateLimiter.cleanup(sessionId)
+  }
+
+  // ============================================
+  // 熔断器
+  // ============================================
+
+  /**
+   * 检查 MCP 服务器熔断器是否处于 open 状态
+   * open 状态时拒绝连接，等待冷却后进入 half-open 允许一次尝试
+   */
+  private isCircuitOpen(serverName: string): boolean {
+    const cb = this.circuitBreaker.get(serverName)
+    if (!cb || cb.state === 'closed') return false
+    if (cb.state === 'open') {
+      // 冷却期已过，转为 half-open 允许一次尝试
+      if (Date.now() - cb.lastFailureTime > McpAdapter.CB_OPEN_DURATION_MS) {
+        cb.state = 'half-open'
+        return false
+      }
+      return true
+    }
+    // half-open: 允许一次尝试
+    return false
+  }
+
+  /**
+   * 记录熔断器结果：成功则关闭，失败则累计
+   */
+  private recordCircuitResult(serverName: string, success: boolean): void {
+    let cb = this.circuitBreaker.get(serverName)
+    if (!cb) {
+      cb = { failures: 0, lastFailureTime: 0, state: 'closed' }
+      this.circuitBreaker.set(serverName, cb)
+    }
+    if (success) {
+      cb.failures = 0
+      cb.state = 'closed'
+    } else {
+      cb.failures++
+      cb.lastFailureTime = Date.now()
+      if (cb.failures >= McpAdapter.CB_FAILURE_THRESHOLD) {
+        cb.state = 'open'
+      }
+    }
+  }
+
+  /**
+   * 清理连接池中空闲超时的连接（refCount=0 且 lastUsed 超过池空闲超时）
+   */
+  private cleanupIdlePoolConnections(): void {
+    const now = Date.now()
+    for (const [name, entry] of this.connectionPool) {
+      if (entry.refCount <= 0 && now - entry.lastUsed > McpAdapter.POOL_IDLE_TIMEOUT_MS) {
+        entry.client.disconnect().catch((err) => {
+          this.logger.warn(`Failed to disconnect idle pooled MCP client (${name}):`, err)
+        })
+        this.connectionPool.delete(name)
+      }
+    }
   }
 
   // ============================================

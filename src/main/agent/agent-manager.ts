@@ -35,15 +35,24 @@ import type { ModeManager } from './mode-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
 import os from 'node:os'
+import { estimateTokens } from '../shared/token-utils'
 
 const logger = createLogger('AgentManager')
 
 /** 健康检查间隔：每 10 分钟输出一次诊断日志 */
 const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
-/** RSS 内存警告阈值（MB），超过时触发警告和会话清理 */
-const RSS_WARNING_THRESHOLD_MB = 2048
-/** RSS 内存危险阈值（MB），超过时强制清理最老会话 */
-const RSS_CRITICAL_THRESHOLD_MB = 3072
+/** RSS 内存警告阈值（MB）：自适应计算，基于系统总内存的 25%，范围 [1024, 8192] */
+const RSS_WARNING_THRESHOLD_MB = Math.max(1024, Math.min(8192, Math.floor((os.totalmem() / 1024 / 1024) * 0.25)))
+/** RSS 内存危险阈值（MB）：自适应计算，基于系统总内存的 40%，范围 [2048, 12288] */
+const RSS_CRITICAL_THRESHOLD_MB = Math.max(2048, Math.min(12288, Math.floor((os.totalmem() / 1024 / 1024) * 0.4)))
+
+/** 命令类型的上下文 Token 预算（根据任务复杂度自适应） */
+const CONTEXT_COMPLEXITY_BUDGET: Record<string, number> = {
+  fix_bug: 6000,
+  add_test: 6000,
+  refactor: 10000,
+  implement: 12000,
+}
 
 type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
 
@@ -55,6 +64,10 @@ interface SessionState {
   sandbox?: import('@shared/types').Sandbox
   /** 最后一次发送的指令类型（用于记忆提取的语义区分） */
   lastCommandType?: AgentCommandType
+  /** Prompt Token 估算值（用于质量反馈环） */
+  promptTokenEstimate?: number
+  /** 注入的上下文数量（用于质量反馈环） */
+  contextCount?: number
 }
 
 /** startSessionWithFallback 返回值 */
@@ -88,8 +101,8 @@ export class AgentManager {
   private sandboxSessionIndex = new Map<string, string>()
   /** 清理互斥锁：防止 terminateSession 和 cleanupSessionResources 并发导致双重清理 */
   private cleanupInProgress = new Set<string>()
-  /** 健康检查定时器（定期输出诊断日志，监控内存与资源状态） */
-  private healthCheckTimer: ReturnType<typeof setInterval> | null = null
+  /** 健康检查定时器（自适应间隔，定期输出诊断日志，监控内存与资源状态） */
+  private healthCheckTimer: ReturnType<typeof setTimeout> | null = null
   /** 适配器偏好加载器（延迟注入，避免循环依赖） */
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
   /** 适配器健康监控 */
@@ -97,6 +110,8 @@ export class AgentManager {
   /** 会话记忆系统（借鉴 claude-mem，Phase 1）—— 懒初始化以避免数据库未启动时报错 */
   private _memoryExtractor?: MemoryExtractor
   private _memoryStore?: MemoryStore
+  /** Prompt 质量反馈记录（轻量级：追踪命令类型+预算与结果的相关性） */
+  private promptOutcomeLog: Array<{ commandType: string; promptTokenEstimate: number; contextCount: number; outcome: 'success' | 'failure'; duration: number }> = []
   private get memoryExtractor(): MemoryExtractor {
     if (!this._memoryExtractor) this._memoryExtractor = new MemoryExtractor()
     return this._memoryExtractor
@@ -296,8 +311,10 @@ export class AgentManager {
         const errMsg = err instanceof Error ? err.message : String(err)
         logger.warn(`Sandbox rollback attempt ${attempt + 1}/${maxRetries + 1} failed for session ${sessionId}: ${errMsg}`)
         if (attempt < maxRetries) {
-          // 指数退避：100ms, 200ms, 400ms...
-          await new Promise<void>((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)))
+          // 指数退避 + 抖动：100ms * 2^attempt + 随机抖动，防止多会话同时失败时惊群
+          const baseDelay = 100 * Math.pow(2, attempt)
+          const jitter = Math.random() * baseDelay * 0.5
+          await new Promise<void>((resolve) => setTimeout(resolve, baseDelay + jitter))
         }
       }
     }
@@ -364,22 +381,50 @@ export class AgentManager {
   }
 
   /**
-   * 启动定期健康检查（每 HEALTH_CHECK_INTERVAL_MS 输出诊断日志）
+   * 启动定期健康检查（自适应间隔：高负载时更频繁）
    * 用于长期运行时监控内存占用和资源泄漏
    */
   private startHealthCheck(): void {
     if (this.healthCheckTimer) return
-    this.healthCheckTimer = setInterval(() => {
+    this.scheduleNextHealthCheck()
+  }
+
+  /**
+   * 计算自适应健康检查间隔
+   * 高负载（内存压力大或会话多）时缩短间隔，正常情况保持默认
+   */
+  private adaptiveHealthCheckInterval(): number {
+    const stats = this.getMemoryStats()
+    const sessionCount = this.sessionStates.size
+    // 内存超过80%阈值或会话超过70%上限 → 5分钟
+    if (stats.rssMB > RSS_WARNING_THRESHOLD_MB * 0.8 || sessionCount > this.MAX_SESSIONS * 0.7) {
+      return 5 * 60 * 1000
+    }
+    // 内存超过50%阈值或会话超过50%上限 → 7分钟
+    if (stats.rssMB > RSS_WARNING_THRESHOLD_MB * 0.5 || sessionCount > this.MAX_SESSIONS * 0.5) {
+      return 7 * 60 * 1000
+    }
+    return HEALTH_CHECK_INTERVAL_MS
+  }
+
+  /**
+   * 调度下一次健康检查
+   */
+  private scheduleNextHealthCheck(): void {
+    const interval = this.adaptiveHealthCheckInterval()
+    this.healthCheckTimer = setTimeout(() => {
       this.logDiagnostics()
       this.checkMemoryPressure()
       // 定期清理过期低置信度记忆（借鉴 claude-mem 的自动清理策略）
       this.memoryStore.pruneStale(90).catch((err) => {
         logger.warn('Memory pruneStale failed:', err)
       })
-    }, HEALTH_CHECK_INTERVAL_MS)
+      // 调度下一次检查（间隔可能根据系统状态变化）
+      this.scheduleNextHealthCheck()
+    }, interval)
     // 不阻止进程退出
     if (this.healthCheckTimer && typeof this.healthCheckTimer === 'object' && 'unref' in this.healthCheckTimer) {
-      (this.healthCheckTimer as ReturnType<typeof setInterval> & { unref(): void }).unref()
+      (this.healthCheckTimer as ReturnType<typeof setTimeout> & { unref(): void }).unref()
     }
   }
 
@@ -388,7 +433,7 @@ export class AgentManager {
    */
   private stopHealthCheck(): void {
     if (this.healthCheckTimer) {
-      clearInterval(this.healthCheckTimer)
+      clearTimeout(this.healthCheckTimer)
       this.healthCheckTimer = null
     }
   }
@@ -700,9 +745,9 @@ export class AgentManager {
 
     // 并行执行上下文解析、智能代码解析、项目记忆加载、会话历史记忆（四者互不依赖）
     const [resolvedContexts, codeContext, memoryContext, sessionHistoryContext] = await Promise.all([
-      // 标准上下文解析
+      // 标准上下文解析（根据命令类型自适应 Token 预算）
       (contextRefs && contextRefs.length > 0)
-        ? this.contextResolver.resolve(contextRefs, 8000, {
+        ? this.contextResolver.resolve(contextRefs, CONTEXT_COMPLEXITY_BUDGET[(command as AgentCommand).type] ?? 8000, {
             nodes: nodes ?? [],
             basePath: sessionConfig?.workingDirectory,
           })
@@ -767,6 +812,16 @@ export class AgentManager {
     }
 
     await this.sendCommand(sessionId, command)
+
+    // 记录 Prompt 质量反馈所需的指标
+    const state = this.sessionStates.get(sessionId)
+    if (state) {
+      const combinedLen = [resolvedContexts, codeContext, memoryContext, sessionHistoryContext]
+        .filter((s): s is string | ResolvedContext[] => !!s)
+        .reduce((sum, s) => sum + (typeof s === 'string' ? s.length : s.reduce((a, c) => a + c.content.length, 0)), 0)
+      state.promptTokenEstimate = estimateTokens(combinedLen.toString())
+      state.contextCount = resolvedContexts.length
+    }
   }
 
   /**
@@ -891,6 +946,19 @@ export class AgentManager {
     return lines.join('\n')
   }
 
+  /**
+   * 根据历史 Prompt 质量反馈计算最优 Token 预算
+   * 基于成功会话的平均 Token 消耗 × 1.2（20% 余量），数据不足时回退默认值
+   */
+  getOptimalPromptBudget(commandType: string): number {
+    const relevant = this.promptOutcomeLog.filter(e => e.commandType === commandType)
+    if (relevant.length < 5) return CONTEXT_COMPLEXITY_BUDGET[commandType] ?? 8000
+    const successEntries = relevant.filter(e => e.outcome === 'success')
+    if (successEntries.length === 0) return CONTEXT_COMPLEXITY_BUDGET[commandType] ?? 8000
+    const avgTokens = successEntries.reduce((sum, e) => sum + e.promptTokenEstimate, 0) / successEntries.length
+    return Math.max(4000, Math.min(16000, Math.round(avgTokens * 1.2)))
+  }
+
   async terminateSession(sessionId: string): Promise<void> {
     // 互斥检查：若 cleanupSessionResources 已在清理，直接返回
     if (this.cleanupInProgress.has(sessionId)) {
@@ -1011,6 +1079,22 @@ export class AgentManager {
       const result = scopeGuardError ? 'failure' : 'success'
       this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)
     }
+
+    // Prompt 质量反馈环：记录命令类型 + 预算与结果的相关性
+    if (state) {
+      this.promptOutcomeLog.push({
+        commandType: state.lastCommandType ?? 'implement',
+        promptTokenEstimate: state.promptTokenEstimate ?? 0,
+        contextCount: state.contextCount ?? 0,
+        outcome: scopeGuardError ? 'failure' : 'success',
+        duration: Date.now() - state.startTime,
+      })
+      // 保留最近 100 条记录
+      if (this.promptOutcomeLog.length > 100) {
+        this.promptOutcomeLog.shift()
+      }
+    }
+
     if (scopeGuardError) {
       throw scopeGuardError
     }

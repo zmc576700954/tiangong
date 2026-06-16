@@ -56,16 +56,20 @@ export class McpClient extends EventEmitter {
   private tools: McpTool[] = []
   private resources: McpResource[] = []
   private initialized = false
+  /** 连接建立耗时（毫秒），connect() 成功后可用 */
+  connectTimeMs?: number
 
   constructor(
     private command: string,
     private args: string[],
+    private readonly callTimeoutMs = 30_000,
   ) {
     super()
   }
 
   async connect(): Promise<void> {
     validateMcpCommand(this.command)
+    const connectStart = Date.now()
     return new Promise((resolve, reject) => {
       const connectTimeout = setTimeout(() => {
         reject(new AgentError('MCP connect timeout: process did not respond to initialize handshake within 10s', ErrorCode.AGENT_ADAPTER_ERROR))
@@ -111,6 +115,9 @@ export class McpClient extends EventEmitter {
           await this.listTools()
           await this.listResources()
           clearTimeout(connectTimeout)
+          const connectTimeMs = Date.now() - connectStart
+          this.connectTimeMs = connectTimeMs
+          this.emit('connected', { connectTimeMs })
           resolve()
         } catch (err) {
           clearTimeout(connectTimeout)
@@ -209,7 +216,7 @@ export class McpClient extends EventEmitter {
           this.pending.delete(id)
           reject(new AgentError(`MCP call timeout: ${method}`, ErrorCode.AGENT_ADAPTER_ERROR))
         }
-      }, 30000)
+      }, this.callTimeoutMs)
 
       this.pending.set(id, {
         resolve: (v: unknown) => {

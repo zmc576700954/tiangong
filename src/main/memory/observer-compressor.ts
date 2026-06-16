@@ -26,6 +26,7 @@
 
 import type { AgentOutput, MemoryItem, MemoryKind } from '@shared/types'
 import { createLogger } from '../shared/logger'
+import { estimateTokens } from '../shared/token-utils'
 
 const logger = createLogger('ObserverCompressor')
 
@@ -144,7 +145,7 @@ export class ObserverCompressor {
       const text = output.data
       if (text.trim().length > 0) {
         this.state.buffer += (this.state.buffer.length > 0 ? '\n' : '') + text
-        const addedTokens = this._estimateTokens(text)
+        const addedTokens = estimateTokens(text)
         this.state.bufferTokens += addedTokens
         this.state.totalInputTokens += addedTokens
         this.state.chunksProcessed++
@@ -240,6 +241,15 @@ export class ObserverCompressor {
         kind = 'decision'
       }
 
+      // 质量感知置信度：基于可观察的质量信号计算
+      let confidence = 0.4  // 基线
+      if (obs.filesChanged.length > 0) confidence += 0.15
+      if (obs.keyTerms.length >= 3) confidence += 0.1
+      if (obs.compressionRatio > 0.05 && obs.compressionRatio < 0.8) confidence += 0.1
+      if (obs.phaseSignal === 'done' && obs.filesChanged.length > 0) confidence += 0.15
+      if (obs.phaseSignal === 'error') confidence += 0.2
+      confidence = Math.min(0.95, confidence)
+
       items.push({
         session_id: sessionId,
         kind,
@@ -258,7 +268,7 @@ export class ObserverCompressor {
         files_modified: obs.filesChanged,
         adapter_name: options.adapterName,
         token_cost: obs.inputTokens,
-        confidence: obs.phaseSignal === 'done' ? 0.7 : obs.phaseSignal === 'error' ? 0.8 : 0.5,
+        confidence,
         created_at: obs.timestamp,
       })
     }
@@ -347,9 +357,44 @@ export class ObserverCompressor {
     const filesChanged = this._extractFileChanges(mainText)
 
     // 6. 计算输出 token
-    const outputTokens = this._estimateTokens(summary)
+    const outputTokens = estimateTokens(summary)
 
-    // 7. 生成观察结果
+    // 7. 跨观察去重：与前一条观察比较 Jaccard 相似度
+    const prev = this.state.observations[this.state.observations.length - 1]
+    if (prev && keyTerms.length > 0 && prev.keyTerms.length > 0) {
+      const prevTerms = new Set(prev.keyTerms.map(t => t.toLowerCase()))
+      const currTerms = new Set(keyTerms.map(t => t.toLowerCase()))
+      const intersection = [...currTerms].filter(t => prevTerms.has(t)).length
+      const union = new Set([...prevTerms, ...currTerms]).size
+      if (union > 0 && intersection / union > 0.7) {
+        // 合并到前一条观察而非新建
+        prev.summary = prev.summary + '\n' + summary
+        prev.keyTerms = [...new Set([...prev.keyTerms, ...keyTerms])].slice(0, 15)
+        prev.filesChanged = [...new Set([...prev.filesChanged, ...filesChanged])].slice(0, 20)
+        prev.outputTokens = estimateTokens(prev.summary)
+        prev.inputChunks = this.state.chunksProcessed
+        // 取更严重的阶段信号
+        if (phaseSignal === 'error' || prev.phaseSignal === 'error') {
+          prev.phaseSignal = 'error'
+        } else if (phaseSignal === 'done' || prev.phaseSignal === 'done') {
+          prev.phaseSignal = 'done'
+        }
+        prev.compressionRatio = prev.inputTokens > 0 ? prev.outputTokens / prev.inputTokens : 0
+
+        // 更新状态（不 push 新观察）
+        this.state.buffer = tail
+        this.state.bufferTokens = estimateTokens(tail)
+        this.state.totalOutputTokens += estimateTokens(summary)
+        this.state.lastCompressAt = now
+
+        if (this.config.verbose) {
+          logger.debug(`Observer merged with previous: Jaccard >0.7, ${keyTerms.length} terms merged`)
+        }
+        return prev
+      }
+    }
+
+    // 8. 生成新观察结果
     const observation: CompressedObservation = {
       seq: ++this.state.observationSeq,
       timestamp: now,
@@ -363,10 +408,10 @@ export class ObserverCompressor {
       compressionRatio: inputTokens > 0 ? outputTokens / inputTokens : 0,
     }
 
-    // 8. 更新状态
+    // 9. 更新状态
     this.state.observations.push(observation)
     this.state.buffer = tail
-    this.state.bufferTokens = this._estimateTokens(tail)
+    this.state.bufferTokens = estimateTokens(tail)
     this.state.totalOutputTokens += outputTokens
     this.state.lastCompressAt = now
 
@@ -403,14 +448,18 @@ export class ObserverCompressor {
 
     if (paragraphs.length === 0) return text.substring(0, 600).trim()
 
-    // 评分段落
-    const scored = paragraphs.map((p) => {
+    // 评分段落（含位置感知：首尾段落更重要）
+    const scored = paragraphs.map((p, i) => {
       let score = 0
       if (/\d+/.test(p) || /error|fail|exception/i.test(p)) score += 3
       if (/[/\\][\w.-]+\.[a-z]{2,5}/i.test(p)) score += 2
       if (/(?:decided|chose|selected|architecture|design pattern)/i.test(p)) score += 2
       if (/(?:done|complete|success|finished|✓|✅)/i.test(p)) score += 1
       if (p.length < 20) score -= 2
+      // 位置感知奖励：首段通常是引言，尾段通常是结论
+      const position = i / (paragraphs.length - 1 || 1)
+      if (position < 0.1) score += 2  // 前10%段落
+      if (position > 0.9) score += 2  // 后10%段落
       return { text: p, score }
     })
 
@@ -421,7 +470,7 @@ export class ObserverCompressor {
     let result = ''
     let tokenCount = 0
     for (const { text: p } of scored) {
-      const pt = this._estimateTokens(p)
+      const pt = estimateTokens(p)
       if (tokenCount + pt > targetTokens * 1.5) continue
       result += (result.length > 0 ? '\n\n' : '') + p
       tokenCount += pt
@@ -556,10 +605,4 @@ export class ObserverCompressor {
     return Array.from(files).slice(0, 20)
   }
 
-  /**
-   * 粗略 Token 估算：~4 chars/token
-   */
-  private _estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4)
-  }
 }

@@ -25,6 +25,8 @@ export class SessionRouter {
   private ttlCheckTimer: ReturnType<typeof setInterval> | null = null
   /** TTL 过期回调（通知 AgentManager 清理沙箱等资源） */
   private ttlExpiredHandler: TtlExpiredHandler | null = null
+  /** 上次 TTL 检查以来活跃的会话集合（用于防止误杀活跃会话） */
+  private activeSinceLastCheck = new Set<string>()
 
   constructor(private registry: AdapterRegistry) {
     this.startTtlCheck()
@@ -46,10 +48,16 @@ export class SessionRouter {
       const now = Date.now()
       const expired: string[] = []
       for (const [sessionId, entry] of this.sessionToAdapter) {
+        // 跳过自上次检查以来活跃的会话（已通过 resolve/touch 刷新时间戳）
+        if (this.activeSinceLastCheck.has(sessionId)) {
+          continue
+        }
         if (now - entry.timestamp > SESSION_TTL_MS) {
           expired.push(sessionId)
         }
       }
+      // 清空活跃标记
+      this.activeSinceLastCheck.clear()
       for (const sessionId of expired) {
         logger.warn(`Session ${sessionId} exceeded TTL, cleaning up`)
         this.unbind(sessionId)
@@ -91,6 +99,7 @@ export class SessionRouter {
     }
     // 刷新活跃时间戳，防止活跃会话被 TTL 误杀
     entry.timestamp = Date.now()
+    this.activeSinceLastCheck.add(sessionId)
     const adapter = this.registry.get(entry.adapterName)
     if (!adapter) {
       throw new AdapterError(`Adapter ${entry.adapterName} not found for session ${sessionId}`)
@@ -103,6 +112,7 @@ export class SessionRouter {
     const entry = this.sessionToAdapter.get(sessionId)
     if (entry) {
       entry.timestamp = Date.now()
+      this.activeSinceLastCheck.add(sessionId)
     }
   }
 

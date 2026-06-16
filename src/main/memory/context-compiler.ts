@@ -24,11 +24,7 @@ import type {
   TokenEconomics,
 } from '@shared/types'
 import { getMemoryStore } from './memory-store'
-
-/** 粗略 Token 估算：~4 chars/token */
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4)
-}
+import { estimateTokens } from '../shared/token-utils'
 
 export class ContextCompiler {
   /** 懒初始化：避免构造时 getMemoryStore() 调用 getClient() 在数据库未就绪时崩溃 */
@@ -88,16 +84,27 @@ export class ContextCompiler {
     // --- L2: 关键事实 (~80 tokens) ---
     const l2Lines: string[] = []
 
-    // 最后一段输出（通常是结论）
-    const lastStdout = outputs
+    // 选择信息密度最高的 stdout 块作为摘要源
+    // 评分：含错误/文件变更关键词加分，长度加分，位置递增加分（偏后=更接近结论）
+    const stdoutBlocks = outputs
       .filter((o) => o.type === 'stdout')
       .map((o) => o.data.trim())
       .filter((s) => s.length > 20)
-      .pop()
 
-    if (lastStdout) {
-      const summary = lastStdout.substring(0, 300)
-      l2Lines.push(`Summary: ${summary}`)
+    if (stdoutBlocks.length > 0) {
+      const bestBlock = stdoutBlocks.reduce((best, block, idx) => {
+        let score = block.length
+        if (/error|fail|exception/i.test(block)) score += 100
+        if (/\d+\s*(?:files?|tests?|passed|failed)/i.test(block)) score += 80
+        if (/modified|created|deleted/i.test(block)) score += 60
+        // 偏后位置的输出更可能是结论
+        score += idx * 5
+        return score > best.score ? { text: block, score } : best
+      }, { text: '', score: -1 })
+
+      if (bestBlock.text) {
+        l2Lines.push(`Summary: ${bestBlock.text.substring(0, 300)}`)
+      }
     }
 
     // 文件变更列表
@@ -196,6 +203,12 @@ export class ContextCompiler {
     const historyLines: string[] = []
     let historyTokens = 0
 
+    // 自适应历史预算：根据可用历史数量动态分配 15-40%
+    let historyBudgetPct = 0.15  // 基线
+    if (history.length >= 3) historyBudgetPct = 0.25
+    if (history.length >= 5) historyBudgetPct = 0.35
+    historyBudgetPct = Math.min(historyBudgetPct, 0.4) // 上限 40%
+
     // 生成紧凑历史上下文
     if (history.length > 0) {
       historyLines.push('[Historical Context]')
@@ -203,7 +216,7 @@ export class ContextCompiler {
       for (let i = 0; i < Math.min(history.length, 5); i++) {
         const line = `  ${i + 1}. ${store.toCompactSummary(history[i])}`
         const lineTokens = estimateTokens(line)
-        if (historyTokens + lineTokens > budget * 0.3) break // 历史占用不超过 30%
+        if (historyTokens + lineTokens > budget * historyBudgetPct) break
         historyLines.push(line)
         historyTokens += lineTokens
       }

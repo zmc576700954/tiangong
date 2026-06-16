@@ -125,6 +125,36 @@ function buildKeywordVector(tokens: string[]): Map<string, number> {
 }
 
 /**
+ * 构建 BM25 式关键词向量
+ * 使用 IDF×TF 评分替代简单归一化词频，衰减高频通用词的权重
+ */
+function buildBm25Vector(
+  tokens: string[],
+  dfMap: Map<string, number>,
+  totalDocs: number,
+  k1 = 1.2,
+  b = 0.75,
+): Map<string, number> {
+  const freq = new Map<string, number>()
+  for (const t of tokens) freq.set(t, (freq.get(t) ?? 0) + 1)
+  const avgLen = tokens.length || 1
+  const result = new Map<string, number>()
+  for (const [term, count] of freq) {
+    const df = dfMap.get(term) ?? 0
+    const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5))
+    const tf = (count * (k1 + 1)) / (count + k1 * (1 - b + b * avgLen / avgLen))
+    result.set(term, idf * tf)
+  }
+  // 归一化
+  let maxVal = 0
+  for (const v of result.values()) if (v > maxVal) maxVal = v
+  if (maxVal > 0) {
+    for (const [k, v] of result) result.set(k, v / maxVal)
+  }
+  return result
+}
+
+/**
  * 计算两个关键词向量的余弦相似度
  */
 function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): number {
@@ -159,10 +189,44 @@ function cosineSimilarity(a: Map<string, number>, b: Map<string, number>): numbe
 export class HybridSearchEngine {
   private config: HybridSearchConfig
   private memoryStore: MemoryStore
+  /** 文档向量 LRU 缓存：避免重复计算 BM25 向量 */
+  private vectorCache = new Map<string, { vector: Map<string, number>; timestamp: number }>()
+  private static VECTOR_CACHE_MAX = 200
+  private static VECTOR_CACHE_TTL = 60_000 // 1 分钟
 
   constructor(memoryStore: MemoryStore, config?: Partial<HybridSearchConfig>) {
     this.memoryStore = memoryStore
     this.config = { ...DEFAULT_CONFIG, ...config }
+  }
+
+  /**
+   * 获取或计算文档的 BM25 向量（带缓存）
+   */
+  private getOrBuildDocVector(
+    docId: string,
+    tokens: string[],
+    dfMap: Map<string, number>,
+    totalDocs: number,
+  ): Map<string, number> {
+    const cached = this.vectorCache.get(docId)
+    if (cached && Date.now() - cached.timestamp < HybridSearchEngine.VECTOR_CACHE_TTL) {
+      return cached.vector
+    }
+    const vector = buildBm25Vector(tokens, dfMap, totalDocs)
+    // LRU 淘汰：超限时删除最早的缓存条目
+    if (this.vectorCache.size >= HybridSearchEngine.VECTOR_CACHE_MAX) {
+      const oldest = this.vectorCache.keys().next().value
+      if (oldest) this.vectorCache.delete(oldest)
+    }
+    this.vectorCache.set(docId, { vector, timestamp: Date.now() })
+    return vector
+  }
+
+  /**
+   * 清除向量缓存（在记忆存储变更后调用）
+   */
+  clearVectorCache(): void {
+    this.vectorCache.clear()
   }
 
   /**
@@ -180,9 +244,9 @@ export class HybridSearchEngine {
     const ftsWeight = options?.ftsWeight ?? this.config.defaultFtsWeight
     const scoreThreshold = options?.scoreThreshold ?? this.config.defaultScoreThreshold
 
-    // 1. 构建查询的关键词向量
+    // 1. 构建查询的关键词
     const queryTokens = tokenize(query)
-    const queryVector = buildKeywordVector(queryTokens)
+    const queryTokenSet = new Set(queryTokens)
 
     if (queryTokens.length === 0) {
       return []
@@ -200,26 +264,38 @@ export class HybridSearchEngine {
       return []
     }
 
-    // 3. 关键词向量重排序
-    const ranked = candidates.map((item) => {
-      // 构建文档的关键词向量（结合 title + narrative + concepts）
+    // 3. 构建 BM25 DF Map（文档频率统计，用于衰减高频通用词）
+    const allDocTokens: Array<{ item: MemoryItem; tokens: string[]; text: string }> = []
+    const dfMap = new Map<string, number>()
+    for (const item of candidates) {
       const docText = [
         item.title,
         item.narrative,
         ...item.concepts,
         ...item.facts,
       ].join(' ')
-      const docTokens = tokenize(docText)
-      const docVector = buildKeywordVector(docTokens)
+      const tokens = tokenize(docText)
+      allDocTokens.push({ item, tokens, text: docText })
+      const unique = new Set(tokens)
+      for (const t of unique) dfMap.set(t, (dfMap.get(t) ?? 0) + 1)
+    }
+    const totalDocs = candidates.length
 
-      const keywordScore = cosineSimilarity(queryVector, docVector)
+    // 构建 BM25 查询向量
+    const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs)
 
-      // FTS5 分数估算：候选列表中的顺序作为近似（越靠前分数越高）
-      // MemoryStore.search 不直接返回 FTS5 rank，因此用位置近似
-      const candidateIndex = candidates.indexOf(item)
-      const ftsScore = candidates.length > 1
-        ? 1 - (candidateIndex / (candidates.length - 1))
-        : 1
+    // 4. 关键词向量重排序（使用 BM25 向量 + 缓存）
+    const ranked = allDocTokens.map(({ item, tokens, text: docText }) => {
+      const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs)
+      const keywordScore = cosineSimilarity(queryBm25Vector, docVector)
+
+      // FTS5 分数估算：用查询词项在文档中的命中比例作为近似
+      const docTextLower = docText.toLowerCase()
+      let matchCount = 0
+      for (const qt of queryTokenSet) {
+        if (docTextLower.includes(qt)) matchCount++
+      }
+      const ftsScore = queryTokenSet.size > 0 ? matchCount / queryTokenSet.size : 0
 
       // 混合分数
       const score = ftsWeight * ftsScore + (1 - ftsWeight) * keywordScore
@@ -230,7 +306,7 @@ export class HybridSearchEngine {
         ftsScore,
         keywordScore,
         matchReason: keywordScore > ftsScore
-          ? `Semantic match (keyword similarity: ${(keywordScore * 100).toFixed(0)}%)`
+          ? `Semantic match (BM25 similarity: ${(keywordScore * 100).toFixed(0)}%)`
           : `Text match (FTS5 rank: ${(ftsScore * 100).toFixed(0)}%)`,
       }
     })

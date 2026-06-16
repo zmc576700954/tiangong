@@ -49,12 +49,15 @@ class WindowManager {
           logger.error(`Failed to load ${validatedURL} after ${MAX_LOAD_RETRIES} retries, giving up.`)
           return
         }
-        logger.info(`Failed to load ${validatedURL}, retrying in 500ms... (${loadRetries}/${MAX_LOAD_RETRIES})`)
+        // 指数退避 + 抖动：500ms * 1.5^(retries-1) + 随机抖动
+        const baseDelay = 500 * Math.pow(1.5, loadRetries - 1)
+        const jitter = Math.random() * 200
+        logger.info(`Failed to load ${validatedURL}, retrying in ${Math.round(baseDelay + jitter)}ms... (${loadRetries}/${MAX_LOAD_RETRIES})`)
         setTimeout(() => {
           if (process.env.VITE_DEV_SERVER_URL) {
             win?.loadURL(process.env.VITE_DEV_SERVER_URL)
           }
-        }, 500)
+        }, baseDelay + jitter)
       }
       // @ts-expect-error Electron type definitions don't include did-fail-load on webContents
       win.webContents.on('did-fail-load', handleDidFailLoad)

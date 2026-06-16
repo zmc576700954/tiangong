@@ -15,6 +15,7 @@
 
 import type { AgentOutput, MemoryItem, MemoryKind, OutputHealth, AgentCommandType } from '@shared/types'
 import { createLogger } from '../shared/logger'
+import { estimateTokens } from '../shared/token-utils'
 
 const logger = createLogger('MemoryExtractor')
 
@@ -72,7 +73,7 @@ export class MemoryExtractor {
         files_read: [],
         files_modified: fileChanges.map((f) => f.path),
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: isRefactor ? 0.6 : 0.8,
         created_at: now,
       })
@@ -93,7 +94,7 @@ export class MemoryExtractor {
         files_read: [],
         files_modified: fileChanges.map((f) => f.path),
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: 0.7,
         created_at: now,
       })
@@ -114,7 +115,7 @@ export class MemoryExtractor {
         files_read: testResults.files ?? [],
         files_modified: [],
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: cmdType === 'add_test' ? 0.95 : 0.9,
         created_at: now,
       })
@@ -135,7 +136,7 @@ export class MemoryExtractor {
         files_read: [],
         files_modified: [],
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: 0.5,
         created_at: now,
       })
@@ -156,7 +157,7 @@ export class MemoryExtractor {
         files_read: [],
         files_modified: [],
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: 0.55,
         created_at: now,
       })
@@ -177,7 +178,7 @@ export class MemoryExtractor {
         files_read: [],
         files_modified: [],
         adapter_name: context.adapterName,
-        token_cost: this._estimateTokens(fullText),
+        token_cost: estimateTokens(fullText),
         confidence: 0.45,
         created_at: now,
       })
@@ -292,6 +293,15 @@ export class MemoryExtractor {
     return changes
   }
 
+  /** 错误关键词列表（扩展版：覆盖更多常见错误模式） */
+  private static readonly ERROR_KEYWORDS = [
+    'error', '失败', 'exception', 'panic', 'fatal', 'crash',
+    'timeout', 'refused', 'enoent', 'econnrefused', 'permission denied',
+    'stack overflow', 'out of memory', 'segfault', 'abort',
+    'undefined is not', 'cannot read', 'typeerror', 'referenceerror',
+    'syntaxerror', 'rangeerror',
+  ]
+
   /**
    * 从文本中提取错误信息
    */
@@ -300,11 +310,11 @@ export class MemoryExtractor {
     const lines = text.split('\n')
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].toLowerCase()
+      const lineLower = lines[i].toLowerCase()
       if (
-        (line.includes('error') || line.includes('失败') || line.includes('exception')) &&
-        line.trim().length > 15 &&
-        line.trim().length < 500
+        MemoryExtractor.ERROR_KEYWORDS.some(kw => lineLower.includes(kw)) &&
+        lines[i].trim().length > 15 &&
+        lines[i].trim().length < 500
       ) {
         // 取上下文 3 行
         const contextStart = Math.max(0, i - 1)
@@ -469,10 +479,4 @@ export class MemoryExtractor {
     return unique.slice(0, 3)
   }
 
-  /**
-   * 粗略估算文本的 Token 数（~4 chars/token）
-   */
-  private _estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4)
-  }
 }
