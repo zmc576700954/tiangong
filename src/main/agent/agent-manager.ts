@@ -234,7 +234,7 @@ export class AgentManager {
     try {
       const adapterName = this.router.getAdapterName(sessionId)
       if (adapterName) {
-        const adapter = this.adapterRegistry.get(adapterName)
+        const adapter = this.registry.get(adapterName)
         if (adapter) {
           adapter.terminateSession(sessionId).catch((err: unknown) => {
             logger.warn(`Failed to terminate adapter session ${sessionId}:`, err)

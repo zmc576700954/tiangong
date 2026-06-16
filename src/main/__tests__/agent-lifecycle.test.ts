@@ -17,6 +17,13 @@ class MockAdapter {
   async terminateSession(sessionId: string): Promise<void> {
     this.terminated.push(sessionId)
   }
+  async startSession(): Promise<any> { return { id: 'mock-session', adapterName: 'mock', config: {}, startTime: Date.now() } }
+  async sendCommand(): Promise<void> {}
+  onOutput(): () => void { return () => {} }
+  offOutput(): void {}
+  listSessions(): any[] { return [] }
+  getSession(): any { return undefined }
+  terminateAllSessions(): Promise<void> { return Promise.resolve() }
 }
 
 describe('Session Router TTL', () => {
@@ -27,7 +34,7 @@ describe('Session Router TTL', () => {
   beforeEach(() => {
     registry = new AdapterRegistry()
     adapter = new MockAdapter()
-    registry.register(adapter)
+    registry.register(adapter as any)
     router = new SessionRouter(registry)
   })
 
@@ -73,7 +80,7 @@ describe('Session Router TTL', () => {
     entry.timestamp = Date.now() - 31 * 60 * 1000
 
     // Manually trigger TTL check (normally done by setInterval)
-    const checkFn = (router as any).startTtlCheck.bind(router)
+    void (router as any).startTtlCheck.bind(router)
     router.stopTtlCheck()
     // Trigger the interval callback manually
     const now = Date.now()

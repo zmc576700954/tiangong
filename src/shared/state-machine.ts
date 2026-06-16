@@ -5,7 +5,7 @@
  * 当前状态 → 允许的目标状态列表。
  */
 
-import type { NodeStatus, BugStatus, NodeType } from './types'
+import type { NodeStatus, BugStatus } from './types'
 import { NODE_STATUS_TRANSITIONS } from './types/graph'
 
 /** 非法状态转换错误 */
@@ -159,14 +159,12 @@ export function validateBugTransition(
 export function validateTransitionConsistency(): number {
   let inconsistencies = 0
   for (const [nodeType, transitions] of Object.entries(NODE_STATUS_TRANSITIONS)) {
-    for (const [from, toList] of Object.entries(transitions)) {
-      for (const to of toList as NodeStatus[]) {
-        if (!canTransition(from as NodeStatus, to)) {
-          console.error(
-            `[StateMachine] Inconsistency: NODE_STATUS_TRANSITIONS[${nodeType}].${from}→${to} is allowed but TRANSITION_RULES does not permit it`,
-          )
-          inconsistencies++
-        }
+    for (const { from, to } of transitions) {
+      if (!canTransition(from, to)) {
+        console.error(
+          `[StateMachine] Inconsistency: NODE_STATUS_TRANSITIONS[${nodeType}].${from}→${to} is allowed but TRANSITION_RULES does not permit it`,
+        )
+        inconsistencies++
       }
     }
   }
@@ -174,7 +172,7 @@ export function validateTransitionConsistency(): number {
   for (const [from, toSet] of Object.entries(TRANSITION_RULES)) {
     for (const to of toSet) {
       const allowedByAnyNodeType = Object.values(NODE_STATUS_TRANSITIONS).some(
-        (transitions) => (transitions as Record<string, NodeStatus[]>)[from]?.includes(to),
+        (transitions) => transitions.some((t) => t.from === from && t.to === to),
       )
       if (!allowedByAnyNodeType) {
         console.warn(

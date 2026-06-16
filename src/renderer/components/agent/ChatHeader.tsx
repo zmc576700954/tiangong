@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock, Zap } from 'lucide-react'
+import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock, Zap, AlertCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { AdapterFallbackAttempt } from '@shared/types'
 
@@ -10,6 +10,7 @@ interface ChatHeaderProps {
   viewMode: 'chat' | 'terminal'
   expanded: boolean
   fallbackHistory?: AdapterFallbackAttempt[]
+  noAdaptersInstalled?: boolean
   onSelectAdapter: (name: string) => void
   onNewThread: () => void
   onToggleThreads: () => void
@@ -17,6 +18,7 @@ interface ChatHeaderProps {
   onToggleExpand: () => void
   onOpenCli?: () => void
   onOpenHistory?: () => void
+  onOpenSettings?: () => void
 }
 
 export function ChatHeader({
@@ -26,6 +28,7 @@ export function ChatHeader({
   viewMode,
   expanded,
   fallbackHistory,
+  noAdaptersInstalled,
   onSelectAdapter,
   onNewThread,
   onToggleThreads,
@@ -33,9 +36,9 @@ export function ChatHeader({
   onToggleExpand,
   onOpenCli,
   onOpenHistory,
+  onOpenSettings,
 }: ChatHeaderProps) {
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
-  const installedAdapters = adapters.filter((a) => a.installed)
 
   // 回退指示器：显示从哪个适配器回退到了哪个
   const fallbackInfo = fallbackHistory && fallbackHistory.length > 1
@@ -53,7 +56,11 @@ export function ChatHeader({
             className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md hover:bg-muted transition-colors"
           >
             {adapterName === 'auto' ? (
-              <Zap className="w-3 h-3 text-amber-400" />
+              noAdaptersInstalled ? (
+                <AlertCircle className="w-3 h-3 text-red-400" />
+              ) : (
+                <Zap className="w-3 h-3 text-amber-400" />
+              )
             ) : (
               <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
             )}
@@ -74,17 +81,31 @@ export function ChatHeader({
                 Auto
                 <span className="text-[10px] text-muted-foreground ml-auto">default</span>
               </button>
-              {installedAdapters.map((a) => (
+              {adapters.map((a) => (
                 <button
                   key={a.name}
-                  onClick={() => { onSelectAdapter(a.name); setShowAdapterMenu(false) }}
+                  onClick={() => {
+                    if (a.installed) {
+                      onSelectAdapter(a.name)
+                    } else {
+                      onOpenSettings?.()
+                    }
+                    setShowAdapterMenu(false)
+                  }}
                   className={cn(
                     'w-full flex items-center gap-2 px-2.5 py-2 text-xs hover:bg-muted transition-colors text-left',
                     adapterName === a.name && 'bg-muted',
+                    !a.installed && 'opacity-50',
                   )}
                 >
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+                  <div className={cn(
+                    'w-1.5 h-1.5 rounded-full',
+                    a.installed ? 'bg-green-400' : 'bg-muted-foreground/30',
+                  )} />
                   {a.name}
+                  {!a.installed && (
+                    <span className="text-[10px] text-muted-foreground ml-auto">not installed</span>
+                  )}
                 </button>
               ))}
             </div>

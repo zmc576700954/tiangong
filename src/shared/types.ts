@@ -43,6 +43,7 @@ export type {
   VerificationResult, VerificationReport,
   CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings,
   AdapterFallbackAttempt, AdapterPreferences,
+  InstallMethod, AdapterMarketplaceItem,
   SymbolKind, SymbolInfo, ImportEdge, SymbolReference, SymbolQueryResult,
   CodeIntelExecutionPlan,
   MemoryKind, MemoryItem, ContextLayer, LayeredContext,

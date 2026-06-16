@@ -13,7 +13,7 @@ import type {
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
-  AgentMode, AgentModeConfig,
+  AgentMode, AgentModeConfig, AdapterMarketplaceItem,
 } from './agent'
 
 // ============================================
@@ -59,6 +59,7 @@ export interface IpcApi {
   'agent:resolveAndSendCommand': (sessionId: string, command: AgentCommand, contextRefs: ContextRef[], nodeIds: string[]) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
+  'agent:getAdapterMarketplace': () => Promise<AdapterMarketplaceItem[]>
   'agent:verify': (params: {
     nodeId: string
     acceptanceCriteria: string[]

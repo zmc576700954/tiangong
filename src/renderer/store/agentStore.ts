@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus, AdapterPreferences, AdapterFallbackAttempt } from '@shared/types'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus, AdapterPreferences, AdapterFallbackAttempt, AdapterMarketplaceItem } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
 import { useAgentOutputStore } from './agentOutputStore'
@@ -13,10 +13,16 @@ interface AgentState {
   adapterPreferences: AdapterPreferences
   /** 最近一次 startSession 的回退历史（用于 UI 展示） */
   lastFallbackHistory: AdapterFallbackAttempt[]
+  /** 适配器市场数据（含安装状态和安装方式） */
+  marketplaceItems: AdapterMarketplaceItem[]
+  /** 是否需要打开设置面板（跨面板通信标志） */
+  openSettingsPanel: boolean
 
   loadAdapters: () => Promise<void>
   loadAdapterPreferences: () => Promise<void>
   setAdapterPreferences: (prefs: AdapterPreferences) => Promise<void>
+  loadMarketplaceItems: () => Promise<void>
+  setOpenSettingsPanel: (open: boolean) => void
   sendCommand: (sessionId: string, command: AgentCommand) => Promise<void>
   appendOutput: (threadId: string, output: AgentOutput) => void
   appendToStreamingMessage: (threadId: string, messageId: string, content: string) => void
@@ -53,8 +59,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   adapters: [],
   threads: [],
   currentThreadId: null,
-  adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
+  adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'] },
   lastFallbackHistory: [],
+  marketplaceItems: [],
+  openSettingsPanel: false,
 
   loadAdapters: async () => {
     const adapters = await window.electronAPI['agent:listAdapters']()
@@ -77,6 +85,19 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (err) {
       console.error('[agentStore] Failed to save adapter preferences:', err)
     }
+  },
+
+  loadMarketplaceItems: async () => {
+    try {
+      const items = await window.electronAPI['agent:getAdapterMarketplace']()
+      set({ marketplaceItems: items })
+    } catch (err) {
+      console.error('[agentStore] Failed to load marketplace items:', err)
+    }
+  },
+
+  setOpenSettingsPanel: (open) => {
+    set({ openSettingsPanel: open })
   },
 
   sendCommand: async (sessionId, command) => {
@@ -328,6 +349,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         await window.electronAPI['agent:sendCommand'](sessionId, command)
       }
     } catch (err) {
+      const errMsg = String(err)
+      const isNoAdapter = errMsg.includes('No adapter available')
       get().appendChatMessage(threadId, {
         id: generateId('msg'),
         role: 'agent',
@@ -335,9 +358,11 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         timestamp: Date.now(),
         status: 'error',
         error: {
-          code: 'SESSION_START_FAILED',
-          message: '无法启动 Agent 会话，请检查适配器是否可用。',
-          raw: String(err),
+          code: isNoAdapter ? 'NO_ADAPTER_AVAILABLE' : 'SESSION_START_FAILED',
+          message: isNoAdapter
+            ? '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。'
+            : '无法启动 Agent 会话，请检查适配器是否可用。',
+          raw: errMsg,
         },
       })
       get().updateThreadStatus(threadId, 'error')
@@ -527,6 +552,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     }
     // 加载适配器偏好
     get().loadAdapterPreferences()
+    // 启动时主动检测适配器状态
+    get().loadAdapters()
+    get().loadMarketplaceItems()
   },
 
   listenForStatusChanges: () => {

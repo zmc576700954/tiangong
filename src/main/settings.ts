@@ -26,7 +26,7 @@ export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, Ad
 
 const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
   defaultAdapter: 'claude-code',
-  fallbackOrder: ['codex', 'opencode', 'mcp'],
+  fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
 }
 
 const DEFAULT_SETTINGS: BizGraphSettings = {
@@ -264,8 +264,17 @@ export async function readSettings(): Promise<BizGraphSettings> {
     cachedAt = Date.now()
     return cachedSettings
   } catch (err) {
-    logger.warn('Failed to read settings file, using defaults:', err)
-    cachedSettings = { ...DEFAULT_SETTINGS }
+    const isEnoent = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT'
+    if (isEnoent) {
+      // 首次启动：写入默认配置，后续读取不再触发 ENOENT
+      logger.info('Settings file not found, creating with defaults')
+      const defaults = { ...DEFAULT_SETTINGS }
+      try { await writeSettings(defaults) } catch { /* 忽略写入失败 */ }
+      cachedSettings = defaults
+    } else {
+      logger.warn('Failed to read settings file, using defaults:', err)
+      cachedSettings = { ...DEFAULT_SETTINGS }
+    }
     cachedAt = Date.now()
     return cachedSettings
   }

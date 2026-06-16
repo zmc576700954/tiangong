@@ -1,12 +1,15 @@
 import { memo, useState, useEffect } from 'react'
 import { Handle, Position } from '@xyflow/react'
+import { useShallow } from 'zustand/react/shallow'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
-import type { GraphNode } from '@shared/types'
+import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check } from 'lucide-react'
 import { useAgentStore } from '../store/agentStore'
 import { useAgentOutputStore } from '../store/agentOutputStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
+
+const EMPTY_OUTPUTS: never[] = []
 
 interface BizNodeProps {
   id: string
@@ -24,11 +27,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
   const isProject = data.type === 'project'
 
-  // Agent activity state — use getThreadByNodeId to avoid threads.find() per node
-  const agentThreadInfo = useAgentStore((s) => {
+  // Agent activity state — useShallow avoids new object reference per render
+  const agentThreadInfo = useAgentStore(useShallow((s) => {
     const t = s.getThreadByNodeId(data.id)
     return t ? { id: t.id, status: t.status, sessionId: t.sessionId } : undefined
-  })
+  }))
   const agentThreadId = agentThreadInfo?.id
   const agentStatus = agentThreadInfo?.status
   const agentSessionId = agentThreadInfo?.sessionId
@@ -48,10 +51,10 @@ export const BizNodeComponent = memo(function BizNodeComponent({
     setShowCompleted(false)
   }, [isAgentCompleted])
 
-  // Select only this thread's outputs (not the entire Map)
+  // Select only this thread's outputs — stable empty array when no outputs
   const agentOutputs = useAgentOutputStore((s) => {
-    if (!agentThreadId) return []
-    return s.threadOutputs[agentThreadId] ?? []
+    if (!agentThreadId) return EMPTY_OUTPUTS as AgentOutput[]
+    return s.threadOutputs[agentThreadId] ?? EMPTY_OUTPUTS as AgentOutput[]
   })
 
   if (isProject) {

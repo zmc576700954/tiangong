@@ -45,6 +45,7 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // Agent operations
   'agent:listAdapters',
+  'agent:getAdapterMarketplace',
   'agent:startSession',
   'agent:sendCommand',
   'agent:resolveAndSendCommand',
@@ -98,6 +99,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   'settings:refreshCli',
   'settings:installCli',
   'settings:setApiKey',
+  'settings:getAdapterPreferences',
+  'settings:setAdapterPreferences',
 
   // ScopeGuard
   'scopeGuard:rollbackFile',

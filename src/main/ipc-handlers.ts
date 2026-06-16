@@ -7,12 +7,7 @@ import { BrowserWindow, app, ipcMain } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { getClient } from './database'
-import { ClaudeCodeAdapter } from './adapters/claude-code'
-import { CodexAdapter } from './adapters/codex'
-import { OpenCodeAdapter } from './adapters/opencode'
-import { McpAdapter } from './adapters/mcp-adapter'
-import { CursorAdapter } from './adapters/cursor'
-import { MindMapAdapter } from './adapters/mindmap-adapter'
+import { ADAPTER_REGISTRY } from './adapters/registry'
 import { GitAgent } from './git-agent'
 import { AdapterRegistry } from './agent/adapter-registry'
 import { SessionRouter } from './agent/session-router'
@@ -50,12 +45,10 @@ import type { ValidateFsPath } from './ipc/fs'
 
 function createCoreDependencies() {
   const registry = new AdapterRegistry()
-  registry.register(new ClaudeCodeAdapter())
-  registry.register(new CodexAdapter())
-  registry.register(new OpenCodeAdapter())
-  registry.register(new McpAdapter())
-  registry.register(new CursorAdapter())
-  registry.register(new MindMapAdapter())
+  // 从适配器描述符注册表自动注册所有适配器
+  for (const desc of ADAPTER_REGISTRY) {
+    registry.register(new desc.adapterClass())
+  }
 
   const router = new SessionRouter(registry)
   const broadcaster = new OutputBroadcaster()

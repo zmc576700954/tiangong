@@ -444,6 +444,28 @@ export interface AdapterPreferences {
   fallbackOrder: string[]
 }
 
+/** 适配器安装方式 */
+export interface InstallMethod {
+  type: 'npm' | 'npx' | 'brew' | 'curl' | 'winget' | 'scoop' | 'choco' | 'pip' | 'api-key' | 'manual'
+  command: string
+  label: string
+  platform?: 'win32' | 'darwin' | 'linux'
+}
+
+/** 适配器市场条目（前端展示用） */
+export interface AdapterMarketplaceItem {
+  name: string
+  displayName: string
+  description: string
+  type: 'cli' | 'sdk' | 'api'
+  installed: boolean
+  version: string
+  installMethods: InstallMethod[]
+  homepage: string
+  /** 当前平台推荐安装方式的索引 */
+  recommendedInstallIndex: number
+}
+
 // ============================================
 // 代码智能（Code Intelligence）类型
 // ============================================

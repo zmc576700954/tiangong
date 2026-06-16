@@ -9,6 +9,7 @@ import { AgentLogRepository } from '../repositories/agent-log-repository'
 import type { TypedHandle } from './utils'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
+import { buildMarketplaceItems } from '../adapters/registry'
 
 const logger = createLogger('AgentIPC')
 
@@ -38,6 +39,15 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
 
   typedHandle('agent:listAdapters', async () => {
     return agentManager.listAdapters()
+  })
+
+  typedHandle('agent:getAdapterMarketplace', async () => {
+    const adapters = await agentManager.listAdapters()
+    const installedMap: Record<string, boolean> = {}
+    for (const a of adapters) {
+      installedMap[a.name] = a.installed
+    }
+    return buildMarketplaceItems(installedMap)
   })
 
   typedHandle('agent:verify', async (_, params) => {

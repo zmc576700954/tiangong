@@ -10,6 +10,7 @@ import {
 import { cn } from '../lib/utils'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
+import { useAgentStore } from '../store/agentStore'
 import { useFileTreeKeyboard } from '../store/fileTreeUtils'
 import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
@@ -33,6 +34,21 @@ export function LeftPanel() {
   const [showSettings, setShowSettings] = useState(false)
   const [scanningId, setScanningId] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
+
+  // 跨面板通信：Agent 面板请求打开设置
+  const openSettingsPanel = useAgentStore((s) => s.openSettingsPanel)
+  const setOpenSettingsPanel = useAgentStore((s) => s.setOpenSettingsPanel)
+  const prevOpenRef = useRef(false)
+  useEffect(() => {
+    if (openSettingsPanel && !prevOpenRef.current) {
+      prevOpenRef.current = true
+      setShowSettings(true)
+      setOpenSettingsPanel(false)
+    }
+    if (!openSettingsPanel) {
+      prevOpenRef.current = false
+    }
+  }, [openSettingsPanel, setOpenSettingsPanel])
 
   // Keyboard shortcuts (Ctrl+C, Ctrl+V, Delete, Arrow keys, etc.)
   useFileTreeKeyboard(panelRef)

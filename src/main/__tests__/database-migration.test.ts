@@ -4,7 +4,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
-import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -39,7 +38,7 @@ describe('Database Migration', () => {
     const result = await client.execute(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     )
-    const tables = result.rows.map((r) => (r as { name: string }).name)
+    const tables = result.rows.map((r) => (r as unknown as { name: string }).name)
 
     expect(tables).toContain('graphs')
     expect(tables).toContain('nodes')
@@ -56,14 +55,14 @@ describe('Database Migration', () => {
     const client = getClient()
     const result = await client.execute("SELECT version FROM schema_version LIMIT 1")
     expect(result.rows.length).toBe(1)
-    const version = Number((result.rows[0] as { version: number }).version)
+    const version = Number((result.rows[0] as unknown as { version: number }).version)
     expect(version).toBeGreaterThan(0)
   })
 
   it('should have correct columns in graphs table', async () => {
     const client = getClient()
     const result = await client.execute("PRAGMA table_info(graphs)")
-    const columns = result.rows.map((r) => (r as { name: string }).name)
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
 
     expect(columns).toContain('id')
     expect(columns).toContain('project_path')
@@ -76,7 +75,7 @@ describe('Database Migration', () => {
   it('should have correct columns in nodes table', async () => {
     const client = getClient()
     const result = await client.execute("PRAGMA table_info(nodes)")
-    const columns = result.rows.map((r) => (r as { name: string }).name)
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
 
     expect(columns).toContain('id')
     expect(columns).toContain('graph_id')
@@ -89,7 +88,7 @@ describe('Database Migration', () => {
   it('should have correct columns in chat_threads table', async () => {
     const client = getClient()
     const result = await client.execute("PRAGMA table_info(chat_threads)")
-    const columns = result.rows.map((r) => (r as { name: string }).name)
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
 
     expect(columns).toContain('id')
     expect(columns).toContain('adapter_name')
@@ -100,7 +99,7 @@ describe('Database Migration', () => {
   it('should have correct columns in chat_messages table', async () => {
     const client = getClient()
     const result = await client.execute("PRAGMA table_info(chat_messages)")
-    const columns = result.rows.map((r) => (r as { name: string }).name)
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
 
     expect(columns).toContain('id')
     expect(columns).toContain('thread_id')

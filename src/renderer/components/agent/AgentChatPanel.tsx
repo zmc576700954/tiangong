@@ -17,6 +17,7 @@ import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { DiffReviewPanel } from './DiffReviewPanel'
 import { VerificationPanel } from './VerificationPanel'
+import { AdapterSetupGuide } from './AdapterSetupGuide'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
 interface AgentChatPanelProps {
@@ -30,7 +31,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const currentThreadId = useAgentStore((s) => s.currentThreadId)
   const threadOutputs = useAgentOutputStore((s) => s.threadOutputs)
   const lastFallbackHistory = useAgentStore((s) => s.lastFallbackHistory)
+  const marketplaceItems = useAgentStore((s) => s.marketplaceItems)
   const loadAdapters = useAgentStore((s) => s.loadAdapters)
+  const loadMarketplaceItems = useAgentStore((s) => s.loadMarketplaceItems)
+  const setOpenSettingsPanel = useAgentStore((s) => s.setOpenSettingsPanel)
   const createThread = useAgentStore((s) => s.createThread)
   const sendMessage = useAgentStore((s) => s.sendMessage)
   const stopCurrentSession = useAgentStore((s) => s.stopCurrentSession)
@@ -48,6 +52,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // Derived data — must be declared before useVerificationFlow
   const currentThread = threads.find((t) => t.id === currentThreadId)
+  const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
 
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
@@ -264,12 +269,14 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         viewMode={viewMode}
         expanded={expanded}
         fallbackHistory={lastFallbackHistory}
+        noAdaptersInstalled={noAdaptersInstalled}
         onSelectAdapter={setSelectedAdapter}
         onNewThread={handleNewThread}
         onToggleThreads={() => setShowThreadList(!showThreadList)}
         onToggleView={setViewMode}
         onToggleExpand={onToggleExpand}
         onOpenHistory={() => setShowHistory(true)}
+        onOpenSettings={() => setOpenSettingsPanel(true)}
       />
 
       {showThreadList && (
@@ -299,15 +306,35 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       </div>
 
       {!currentThread && threads.length === 0 ? (
-        <div className="flex-1 flex items-center justify-center text-center px-6">
-          <div>
-            <Bot className="w-10 h-10 mx-auto mb-3 text-muted-foreground/20" />
-            <p className="text-sm text-muted-foreground mb-1">Welcome to Agent</p>
-            <p className="text-xs text-muted-foreground/60">
-              Type a message below to start a new conversation
-            </p>
+        noAdaptersInstalled ? (
+          <AdapterSetupGuide
+            items={marketplaceItems}
+            onOpenSettings={() => setOpenSettingsPanel(true)}
+            onRefresh={async () => {
+              await loadAdapters()
+              await loadMarketplaceItems()
+            }}
+            onInstallCli={async (name: string) => {
+              if (!window.electronAPI) return { success: false, message: 'Not available' }
+              const result = await window.electronAPI['settings:installCli'](name)
+              if (result.success) {
+                await loadAdapters()
+                await loadMarketplaceItems()
+              }
+              return result
+            }}
+          />
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-center px-6">
+            <div>
+              <Bot className="w-10 h-10 mx-auto mb-3 text-muted-foreground/20" />
+              <p className="text-sm text-muted-foreground mb-1">Welcome to Agent</p>
+              <p className="text-xs text-muted-foreground/60">
+                Type a message below to start a new conversation
+              </p>
+            </div>
           </div>
-        </div>
+        )
       ) : (
         <>
           {/* Message area with flex-1 */}
