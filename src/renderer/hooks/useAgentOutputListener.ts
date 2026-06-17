@@ -1,7 +1,61 @@
 import { useEffect, useRef } from 'react'
 import { useAgentStore } from '../store/agentStore'
+import { useMessageStore } from '../store/messageStore'
+import { eventBus, Events } from '../store/eventBus'
 import { generateId } from '../lib/utils'
-import type { AgentOutput } from '@shared/types'
+import type { AgentOutput, ToolCallBlock } from '@shared/types'
+
+// ==================== High-risk operation detection ====================
+
+/** Config file patterns that are considered high-risk when modified */
+const CONFIG_PATTERNS = [
+  /\.env(\.|$)/i,
+  /\.config\.(js|ts|mjs|cjs|json|yaml|yml)$/i,
+  /\/\.?(prettierrc|eslintrc|tsconfig|babelrc|jest\.config|vite\.config|webpack\.config)/i,
+  /\/\.?(npmrc|nvmrc|node-version|editorconfig|gitignore)/i,
+  /\/(package\.json|docker-compose|Dockerfile|Makefile|Cargo\.toml|go\.mod)/i,
+  /\/(settings\.json|launch\.json|extensions\.json)/i,
+]
+
+/**
+ * Returns true if a file_change output is considered high-risk.
+ * High-risk conditions:
+ *  1. File deletion (changeType === 'delete')
+ *  2. Config file modification (matches known config patterns)
+ *  3. Future: >5 file changes in one session (tracked externally)
+ */
+export function isHighRiskOperation(output: AgentOutput): boolean {
+  if (output.type !== 'file_change') return false
+
+  // File deletion is always high-risk
+  if (output.changeType === 'delete') return true
+
+  // Config file modification is high-risk
+  const filePath = output.filePath ?? ''
+  if (CONFIG_PATTERNS.some((pat) => pat.test(filePath))) return true
+
+  return false
+}
+
+/**
+ * Returns a human-readable reason string explaining why the operation is high-risk.
+ */
+export function classifyRisk(output: AgentOutput): string {
+  if (output.type !== 'file_change') return ''
+
+  if (output.changeType === 'delete') {
+    return `File deletion: ${output.filePath ?? 'unknown file'}`
+  }
+
+  const filePath = output.filePath ?? ''
+  if (CONFIG_PATTERNS.some((pat) => pat.test(filePath))) {
+    return `Config file modification: ${filePath}`
+  }
+
+  return 'Unknown high-risk operation'
+}
+
+// ==================== Hook ====================
 
 /**
  * IPC 输出 → store 的副作用 hook
@@ -80,14 +134,30 @@ export function useAgentOutputListener(currentThreadId: string | null) {
           })
         }
 
-        const toolCall: import('@shared/types').ToolCallBlock = {
+        const toolCall: ToolCallBlock = {
           type: output.changeType === 'add' ? 'file_create' : 'file_edit',
           filePath,
           content: output.data,
           status: 'done',
         }
 
-        store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
+        // High-risk operation interception
+        const isHighRisk = isHighRiskOperation(output)
+        if (isHighRisk) {
+          // Emit CONFIRMATION_REQUIRED event instead of auto-accepting
+          eventBus.emit(Events.CONFIRMATION_REQUIRED, {
+            threadId: tid,
+            messageId: streamingMsgIdRef.current,
+            toolCall,
+            reason: classifyRisk(output),
+          })
+          // Store in pendingConfirmations
+          useMessageStore.getState().addPendingConfirmation(tid, streamingMsgIdRef.current, toolCall)
+        } else {
+          // Auto-accept low-risk operations as before
+          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
+        }
+
         store.updateThreadStatus(tid, 'running')
         return
       }
