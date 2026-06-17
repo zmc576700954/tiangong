@@ -8,6 +8,7 @@
 import type { GraphNode, GraphEdge } from '@shared/types'
 import { buildPrompt, type TaskType, type PromptContext } from './prompt-templates'
 import { finalCheck } from '../gates/final-check'
+import { getHybridSearchEngine } from '../../memory/hybrid-search'
 
 export interface BuildPromptOptions {
   /** 目标节点 */
@@ -109,4 +110,64 @@ function buildAncestorChain(
   }
 
   return chain
+}
+
+/**
+ * RAG few-shot 示例增强
+ *
+ * 从记忆库中检索与当前节点语义相似的项目结构，
+ * 格式化为示例图谱结构追加到 Prompt 末尾。
+ */
+export async function augmentWithRagExamples(
+  prompt: string,
+  node: GraphNode,
+  allNodes: GraphNode[],
+  allEdges: GraphEdge[],
+): Promise<string> {
+  const ragSection = await getRagExamples(node, allNodes, allEdges)
+  if (!ragSection) return prompt
+  return `${prompt}\n\n${ragSection}`
+}
+
+/**
+ * 从记忆库检索相似项目结构，格式化为 few-shot 示例
+ */
+async function getRagExamples(
+  node: GraphNode,
+  _allNodes: GraphNode[],
+  _allEdges: GraphEdge[],
+): Promise<string> {
+  try {
+    const engine = getHybridSearchEngine()
+    const query = [node.title, node.description].filter(Boolean).join(' — ')
+    if (!query.trim()) return ''
+
+    const results = await engine.search(query, { limit: 3 })
+
+    if (results.length === 0) return ''
+
+    const examples = results
+      .map((r, i) => {
+        const item = r.item
+        const facts = item.facts.length > 0
+          ? item.facts.map((f) => `    - ${f}`).join('\n')
+          : '    (no structured facts)'
+        return `  Example ${i + 1} [score: ${r.score.toFixed(2)}]:
+    Title: ${item.title}
+    Narrative: ${item.narrative}
+    Facts:
+${facts}
+    Concepts: ${item.concepts.join(', ') || '(none)'}
+    Files: ${item.files_modified.join(', ') || '(none)'}`
+      })
+      .join('\n\n')
+
+    return `## Similar Project Structures (RAG few-shot examples)
+The following are similar structures retrieved from the memory store. Use them as reference patterns:
+
+${examples}`
+  } catch {
+    // RAG is best-effort; never block prompt generation on retrieval failure
+    return ''
+  }
 }

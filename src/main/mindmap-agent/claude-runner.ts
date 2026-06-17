@@ -20,6 +20,8 @@ export interface ClaudeRunOptions {
   timeoutMs?: number
   outputFormat?: 'json' | 'text'
   model?: string
+  /** JSON Schema to enforce structured output when outputFormat is 'json' */
+  jsonSchema?: object
 }
 
 export interface ClaudeRunResult {
@@ -34,15 +36,21 @@ const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku', 'sonnet-4', 'claude-s
 const logger = createLogger('ClaudeRunner')
 
 export async function runClaude(prompt: string, options: ClaudeRunOptions): Promise<ClaudeRunResult> {
-  const { cwd, timeoutMs = 300_000, outputFormat = 'text', model = 'sonnet' } = options
+  const { cwd, timeoutMs = 300_000, outputFormat = 'text', model = 'sonnet', jsonSchema } = options
 
   // 验证参数，防止注入
   const safeModel = ALLOWED_MODELS.has(model) ? model : 'sonnet'
   const safeFormat = outputFormat === 'json' ? 'json' : 'text'
 
+  // 当 outputFormat 为 json 且提供了 jsonSchema 时，追加结构化输出约束
+  let finalPrompt = prompt
+  if (safeFormat === 'json' && jsonSchema) {
+    finalPrompt = `${prompt}\n\nYou MUST respond with valid JSON matching this schema:\n${JSON.stringify(jsonSchema, null, 2)}\nDo not include any text outside the JSON.`
+  }
+
   // 使用不可预测的临时文件名
   const tmpFile = path.join(os.tmpdir(), `bizgraph-prompt-${randomUUID().replace(/-/g, '')}.txt`)
-  await fs.promises.writeFile(tmpFile, prompt, 'utf-8')
+  await fs.promises.writeFile(tmpFile, finalPrompt, 'utf-8')
 
   const args = ['-p', '--model', safeModel]
   if (safeFormat === 'json') {
