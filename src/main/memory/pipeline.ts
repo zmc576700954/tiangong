@@ -122,9 +122,9 @@ export class PipelineRunner {
   }
 
   /**
-   * 创建默认的完整管线（7 阶段）
+   * 创建默认的完整管线（8 阶段）
    *
-   * 阶段顺序: normalize → compress → extract → verify → compile → waterline → persist
+   * 阶段顺序: normalize → compress → extract → verify → compile → waterline → node-bind → persist
    * 每个阶段独立运行，失败不阻塞后续阶段。
    * 使用动态 import 避免循环依赖和启动时的全量加载。
    */
@@ -190,6 +190,8 @@ export class PipelineRunner {
           layeredContext: await compiler.compile(ctx.normalizedOutputs ?? ctx.outputs, {
             sessionId: ctx.sessionId,
             adapterName: ctx.adapterName,
+            projectId: ctx.projectId,
+            nodeId: ctx.nodeId,
           }),
         }),
       },
@@ -201,6 +203,20 @@ export class PipelineRunner {
             waterline.advance(ctx.projectId ?? '', ctx.memories as MemoryItem[])
           }
           return { ...ctx, waterlineDelta: waterline.getDelta(ctx.projectId ?? '') }
+        },
+      },
+      {
+        name: 'node-bind',
+        process: async (ctx) => {
+          if (ctx.nodeId && ctx.projectId && ctx.memories && ctx.memories.length > 0) {
+            try {
+              const waterline = getWaterlineSync()
+              waterline.markNodeVerified(ctx.projectId, ctx.nodeId)
+            } catch {
+              // node-bind is a side-effect; errors should not block the pipeline
+            }
+          }
+          return ctx
         },
       },
       {

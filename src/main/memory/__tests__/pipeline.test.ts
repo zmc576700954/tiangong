@@ -161,7 +161,7 @@ describe('PipelineRunner', () => {
     expect(calls).toEqual(['before', 'process', 'after', 'before-2', 'process-2'])
   })
 
-  it('createDefault returns a runner with 7 stages', async () => {
+  it('createDefault returns a runner with 8 stages', async () => {
     const runner = await PipelineRunner.createDefault()
     const result = await runner.run(makeCtx({ outputs: [] }))
 

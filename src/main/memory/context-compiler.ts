@@ -24,6 +24,7 @@ import type {
   TokenEconomics,
 } from '@shared/types'
 import { getMemoryStore } from './memory-store'
+import { GraphMemory } from './graph-memory'
 import { estimateTokens } from '../shared/token-utils'
 
 export class ContextCompiler {
@@ -44,6 +45,7 @@ export class ContextCompiler {
       adapterName?: string
       commandDescription?: string
       projectId?: string
+      nodeId?: string
     },
   ): Promise<LayeredContext> {
     const layers: ContextLayer[] = []
@@ -132,7 +134,13 @@ export class ContextCompiler {
     })
 
     // --- L3: 完整输出 (~200-500 tokens) ---
-    const l3Content = fullText.substring(0, 2000)
+    let l3Content = fullText.substring(0, 2000)
+    if (meta.projectId) {
+      const graphCtx = await this._buildL3GraphContext(meta.projectId, outputs)
+      if (graphCtx) {
+        l3Content += '\n\n' + graphCtx
+      }
+    }
     layers.push({
       level: 3,
       label: 'L3-FullOutput',
@@ -141,7 +149,7 @@ export class ContextCompiler {
     })
 
     // --- L4: 关联历史记忆 (可变) ---
-    const l4Content = await this._buildL4(meta.projectId)
+    const l4Content = await this._buildL4(meta.projectId, meta.nodeId)
     if (l4Content) {
       layers.push({
         level: 4,
@@ -158,16 +166,71 @@ export class ContextCompiler {
    * 构建L4层：从 MemoryStore 获取关联历史记忆
    * 使用 this.memoryStore 懒 getter，通过 getRecent() 获取最近记忆
    * 返回格式: "[kind] title" 每行一条，出错时返回空字符串
+   *
+   * 如果 nodeId 存在，额外获取节点关联记忆中的 files_modified 并追加
    */
-  private async _buildL4(projectId?: string): Promise<string> {
+  private async _buildL4(projectId?: string, nodeId?: string): Promise<string> {
     try {
       const recent = await this.memoryStore.getRecent({
         projectId,
         limit: 5,
       })
       if (!recent || recent.length === 0) return ''
-      return recent
+
+      let content = recent
         .map((item) => `[${item.kind}] ${item.title}`)
+        .join('\n')
+
+      // 如果存在 nodeId，获取节点关联记忆中的相关文件
+      if (nodeId) {
+        try {
+          const nodeMemories = await this.memoryStore.getByNode(nodeId, 3)
+          const files = nodeMemories
+            .flatMap((m) => m.files_modified)
+            .filter((f) => f.length > 0)
+          const uniqueFiles = [...new Set(files)]
+          if (uniqueFiles.length > 0) {
+            content += `\nRelated files: ${uniqueFiles.join(', ')}`
+          }
+        } catch {
+          // node-associated context is optional, ignore errors
+        }
+      }
+
+      return content
+    } catch {
+      return ''
+    }
+  }
+
+  /**
+   * 构建 L3 层的图记忆上下文
+   *
+   * 使用 GraphMemory.inferRelations 推断记忆之间的因果关系，
+   * 将置信度 > 0.5 的前 5 条关系格式化为可读文本注入 L3 层。
+   *
+   * @param projectId - 项目 ID
+   * @param _outputs - 当前输出（保留供未来使用）
+   * @returns 格式化的图关系文本，出错时返回空字符串
+   */
+  private async _buildL3GraphContext(projectId: string, _outputs: AgentOutput[]): Promise<string> {
+    try {
+      const store = getMemoryStore()
+      const recent = await store.getRecent({ projectId, limit: 20 })
+      if (recent.length < 2) return ''
+
+      const graphMemory = new GraphMemory(store)
+      const [first, ...rest] = recent
+      const relations = graphMemory.inferRelations(first, rest)
+
+      const topRelations = relations
+        .filter((r) => r.confidence > 0.5)
+        .slice(0, 5)
+
+      if (topRelations.length === 0) return ''
+
+      return topRelations
+        .map((r) => `${r.reason} (${r.relation}, confidence: ${r.confidence.toFixed(2)})`)
         .join('\n')
     } catch {
       return ''
@@ -304,6 +367,7 @@ export class ContextCompiler {
         adapterName: options?.adapterName,
         commandDescription: options?.commandDescription,
         projectId: options?.projectId,
+        nodeId: options?.nodeId,
       })
 
       // 获取历史记忆

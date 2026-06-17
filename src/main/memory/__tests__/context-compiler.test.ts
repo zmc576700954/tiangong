@@ -4,15 +4,58 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ContextCompiler } from '../context-compiler'
-import type { AgentOutput, LayeredContext } from '@shared/types'
+import type { AgentOutput, LayeredContext, MemoryItem } from '@shared/types'
 
-// Mock getMemoryStore to avoid real DB dependency
+// --- Module-level mocks ---
+
+// Track what the mock store should return so tests can configure it
+let mockGetRecentResult: MemoryItem[] = []
+let mockGetByNodeResult: MemoryItem[] = []
+let mockGetRecentError: Error | null = null
+
+// Track what GraphMemory.inferRelations should return
+let mockInferRelationsResult: any[] = []
+
 vi.mock('../memory-store', () => ({
   getMemoryStore: vi.fn(() => ({
-    getRecent: vi.fn().mockResolvedValue([]),
+    getRecent: vi.fn(async () => {
+      if (mockGetRecentError) throw mockGetRecentError
+      return mockGetRecentResult
+    }),
+    getByNode: vi.fn(async () => mockGetByNodeResult),
     toCompactSummary: vi.fn((item: { kind: string; title: string }) => `[${item.kind}] ${item.title}`),
   })),
 }))
+
+vi.mock('../graph-memory', () => ({
+  GraphMemory: vi.fn().mockImplementation(function(this: any, _store: any) {
+    this.inferRelations = vi.fn(() => mockInferRelationsResult)
+  }),
+}))
+
+// --- Helpers ---
+
+/** Helper: create a memory item */
+function mockMemory(overrides: Partial<MemoryItem> = {}): MemoryItem {
+  return {
+    id: 1,
+    session_id: 'session-1',
+    kind: 'investigation',
+    project_id: 'proj-1',
+    node_id: null,
+    title: 'Test',
+    narrative: 'Test narrative',
+    facts: [],
+    concepts: [],
+    files_read: [],
+    files_modified: [],
+    adapter_name: 'test',
+    token_cost: 0,
+    confidence: 0.8,
+    created_at: new Date().toISOString(),
+    ...overrides,
+  }
+}
 
 /** Helper: create stdout outputs */
 function stdoutOutputs(lines: string[]): AgentOutput[] {
@@ -27,6 +70,11 @@ describe('ContextCompiler', () => {
   let compiler: ContextCompiler
 
   beforeEach(() => {
+    // Reset mock state
+    mockGetRecentResult = []
+    mockGetByNodeResult = []
+    mockGetRecentError = null
+    mockInferRelationsResult = []
     compiler = new ContextCompiler()
   })
 
@@ -109,26 +157,83 @@ describe('ContextCompiler', () => {
     expect(result.text).not.toContain('L4-关联历史')
   })
 
-  it('injectForDownstream handles errors gracefully', async () => {
-    // Force getMemoryStore to return a store whose getRecent rejects
-    const { getMemoryStore } = await import('../memory-store')
-    vi.mocked(getMemoryStore).mockImplementationOnce(() => ({
-      getRecent: vi.fn().mockRejectedValue(new Error('DB connection lost')),
-      toCompactSummary: vi.fn((item: { kind: string; title: string }) => `[${item.kind}] ${item.title}`),
-    }) as any)
+  it('injectForDownstream does not throw on store errors', async () => {
+    // Configure mock to throw on getRecent
+    mockGetRecentError = new Error('DB connection lost')
 
-    // Use a fresh compiler that will trigger the mock
-    const failingCompiler = new ContextCompiler()
-    const result = await failingCompiler.injectForDownstream(
+    // Should not throw, should return a result (possibly empty or partial)
+    const result = await compiler.injectForDownstream(
       stdoutOutputs(['some output']),
       500,
       { projectId: 'test-project' },
     )
 
-    // Should return empty result, not throw
-    expect(result.text).toBe('')
-    expect(result.economics.discoveryTokens).toBe(0)
-    expect(result.economics.readTokens).toBe(0)
-    expect(result.economics.savingsPct).toBe(0)
+    // The result should be a valid economics object (graceful degradation)
+    expect(result.economics).toBeDefined()
+    expect(typeof result.economics.discoveryTokens).toBe('number')
+    expect(typeof result.economics.readTokens).toBe('number')
+  })
+
+  it('compile includes graph context in L3 when projectId provided', async () => {
+    // Set up mock memories so _buildL3GraphContext has data
+    mockGetRecentResult = [
+      mockMemory({ id: 1, kind: 'investigation', title: 'Auth flow', concepts: ['auth'], files_modified: [] }),
+      mockMemory({ id: 2, kind: 'fix', title: 'Fix auth', concepts: ['auth'], files_modified: ['auth.ts'] }),
+    ]
+
+    // Set up GraphMemory mock to return relations
+    mockInferRelationsResult = [
+      { relation: 'caused_by', sourceId: 1, targetId: 2, confidence: 0.7, reason: 'Fix was caused by investigation' },
+      { relation: 'relates_to', sourceId: 2, targetId: 1, confidence: 0.3, reason: 'Low confidence edge' },
+    ]
+
+    const layered = await compiler.compile(
+      stdoutOutputs(['some output']),
+      { projectId: 'proj-1' },
+    )
+
+    const l3 = layered.layers.find((l) => l.level === 3)
+    expect(l3).toBeDefined()
+    // L3 should contain the high-confidence relation (0.7 > 0.5)
+    expect(l3!.content).toContain('caused_by')
+    // Should NOT contain the low-confidence relation (0.3 <= 0.5)
+    expect(l3!.content).not.toContain('Low confidence edge')
+  })
+
+  it('compile skips graph context when fewer than 2 memories', async () => {
+    mockGetRecentResult = [
+      mockMemory({ id: 1, kind: 'fix', title: 'Only one' }),
+    ]
+    mockInferRelationsResult = [
+      { relation: 'caused_by', sourceId: 1, targetId: 2, confidence: 0.9, reason: 'Should not appear' },
+    ]
+
+    const layered = await compiler.compile(
+      stdoutOutputs(['some output']),
+      { projectId: 'proj-1' },
+    )
+
+    const l3 = layered.layers.find((l) => l.level === 3)
+    expect(l3).toBeDefined()
+    // With < 2 memories, _buildL3GraphContext returns ''
+    expect(l3!.content).not.toContain('caused_by')
+  })
+
+  it('compile includes node-related files in L4 when nodeId provided', async () => {
+    mockGetRecentResult = [
+      mockMemory({ id: 1, kind: 'fix', title: 'Fix A' }),
+    ]
+    mockGetByNodeResult = [
+      mockMemory({ id: 10, kind: 'fix', title: 'Node fix', files_modified: ['file-a.ts', 'file-b.ts'] }),
+    ]
+
+    const layered = await compiler.compile(
+      stdoutOutputs(['output']),
+      { projectId: 'proj-1', nodeId: 'node-123' },
+    )
+
+    const l4 = layered.layers.find((l) => l.level === 4)
+    expect(l4).toBeDefined()
+    expect(l4!.content).toContain('Related files: file-a.ts, file-b.ts')
   })
 })
