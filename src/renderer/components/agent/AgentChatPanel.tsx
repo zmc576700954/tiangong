@@ -4,6 +4,7 @@ import { useAgentStore } from '../../store/agentStore'
 import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
+import { useSessionStore } from '../../store/sessionStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
 import { useDiffReview } from '../../hooks/useDiffReview'
@@ -49,7 +50,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showContextPicker, setShowContextPicker] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState('auto')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
-
+  const [showResumePrompt, setShowResumePrompt] = useState(false)
   // Derived data — must be declared before useVerificationFlow
   const currentThread = threads.find((t) => t.id === currentThreadId)
   const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
@@ -170,6 +171,16 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     setPendingContextRef(null)
   }, [pendingContextRef, setPendingContextRef, currentThreadId, selectedAdapter, createThread, selectedNode])
 
+  // Check for interrupted session when switching threads
+  useEffect(() => {
+    if (currentThreadId) {
+      const hasInterrupted = useSessionStore.getState().hasInterruptedSession(currentThreadId)
+      setShowResumePrompt(hasInterrupted)
+    } else {
+      setShowResumePrompt(false)
+    }
+  }, [currentThreadId])
+
   // Consume pendingPrompt from mindmap dev prompt generation
   const pendingPrompt = useAppStore((s) => s.pendingPrompt)
   const setPendingPrompt = useAppStore((s) => s.setPendingPrompt)
@@ -221,6 +232,31 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       streamingMsgIdRef.current = null
       await stopCurrentSession(currentThreadId)
     }
+  }
+
+  const handleResumeFromInterrupt = async () => {
+    if (!currentThreadId) return
+    const snapshot = useSessionStore.getState().loadSnapshot(currentThreadId)
+    if (!snapshot) {
+      setShowResumePrompt(false)
+      return
+    }
+
+    // Build context message from snapshot
+    const lastMessages = snapshot.messages
+      .map((m) => `${m.role}: ${m.content}`)
+      .join('\n')
+    const filesSummary = snapshot.filesChanged.length > 0
+      ? `Files changed: ${snapshot.filesChanged.join(', ')}`
+      : 'No files were changed'
+    const resumeContent = `Continuing from previous session. Last activity:\n${filesSummary}\n\nRecent messages:\n${lastMessages}`
+
+    // Clear the snapshot and hide prompt
+    useSessionStore.getState().clearSnapshot(currentThreadId)
+    setShowResumePrompt(false)
+
+    // Send resume message
+    await handleSend(resumeContent, attachedContexts)
   }
 
   const handleRetry = async (agentMessageId: string) => {
@@ -353,6 +389,24 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                   className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
                 >
                   Resume
+                </button>
+              </div>
+            )}
+            {/* Interrupt recovery prompt */}
+            {showResumePrompt && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950 border-b border-blue-200 dark:border-blue-800 text-sm shrink-0">
+                <span className="text-blue-700 dark:text-blue-300 text-xs">Session was interrupted. Continue from where you left off?</span>
+                <button
+                  onClick={handleResumeFromInterrupt}
+                  className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
+                >
+                  Resume
+                </button>
+                <button
+                  onClick={() => setShowResumePrompt(false)}
+                  className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-xs hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
+                >
+                  Dismiss
                 </button>
               </div>
             )}
