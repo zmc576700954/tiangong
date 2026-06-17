@@ -19,3 +19,5 @@ export type { RankedSearchResult, HybridSearchOptions, HybridSearchConfig } from
 export { GraphMemory, formatEdgeLabel, getEdgeStyle } from './graph-memory'
 export type { MemoryNode, MemoryEdge, MemoryRelationType, GraphTraversalResult, GraphMemoryConfig } from './graph-memory'
 export { OutputNormalizer } from './output-normalizer'
+export { PipelineRunner } from './pipeline'
+export type { PipelineContext, PipelineError, PipelineStage, PipelineResult } from './pipeline'
