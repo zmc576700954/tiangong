@@ -258,6 +258,7 @@ export type MemoryKind =
   | 'decision'         // 架构/修复决策
   | 'pattern'          // 发现的代码模式
   | 'lesson'           // 学到的经验教训
+  | 'waterline'        // 水线标记（跨会话知识基线）
 
 /** 单条记忆 —— 对应 claude-mem 的 observation */
 export interface MemoryItem {
@@ -276,6 +277,9 @@ export interface MemoryItem {
   token_cost: number           // 消耗的 token 数
   confidence: number           // 置信度 0-1
   created_at: string           // ISO 时间戳
+  version?: number             // 记忆版本号（用于乐观锁和版本链）
+  parent_version?: number | null  // 父版本号（版本链追溯）
+  embedding?: number[] | null  // 向量嵌入（语义检索用）
 }
 
 /** 上下文层级 —— 借鉴 claude-mem 的渐进式披露 */

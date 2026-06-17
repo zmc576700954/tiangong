@@ -483,6 +483,7 @@ export class MemoryStore {
       decision: '⚖️',
       pattern: '\u{1F517}',
       lesson: '\u{1F4A1}',
+      waterline: '🌊',
     }
     const icon = icons[item.kind] ?? '●'
     return `${item.id} ${icon} ${item.title}`
@@ -508,6 +509,9 @@ export class MemoryStore {
       token_cost: (row.token_cost as number) ?? 0,
       confidence: (row.confidence as number) ?? 0.0,
       created_at: row.created_at as string,
+      version: (row.version as number) ?? 1,
+      parent_version: (row.parent_version as number) ?? null,
+      embedding: row.embedding ? JSON.parse(row.embedding as string) : null,
     }
   }
 

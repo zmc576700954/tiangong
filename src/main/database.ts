@@ -262,7 +262,7 @@ async function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 2
+const CURRENT_SCHEMA_VERSION = 3
 
 async function migrate(): Promise<void> {
   const db = getClient()
@@ -282,7 +282,7 @@ async function migrate(): Promise<void> {
 
   if (currentVersion >= CURRENT_SCHEMA_VERSION) {
     // Schema 已是最新，仅执行增量列迁移（安全幂等）
-    await runIncrementalMigrations(db)
+    await runIncrementalMigrations(db, currentVersion)
     return
   }
 
@@ -424,7 +424,7 @@ async function migrate(): Promise<void> {
       CREATE TABLE memory_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('investigation', 'fix', 'review_finding', 'decision', 'pattern', 'lesson')),
+        kind TEXT NOT NULL CHECK(kind IN ('investigation', 'fix', 'review_finding', 'decision', 'pattern', 'lesson', 'waterline')),
         project_id TEXT NOT NULL DEFAULT '',
         node_id TEXT,
         title TEXT NOT NULL,
@@ -436,6 +436,9 @@ async function migrate(): Promise<void> {
         adapter_name TEXT NOT NULL DEFAULT '',
         token_cost INTEGER DEFAULT 0,
         confidence REAL DEFAULT 0.0,
+        version INTEGER DEFAULT 1,
+        parent_version INTEGER DEFAULT NULL,
+        embedding TEXT DEFAULT NULL,
         created_at TEXT NOT NULL
       )
     `, ['id', 'session_id', 'kind', 'project_id', 'title', 'narrative', 'created_at'])
@@ -459,8 +462,13 @@ async function migrate(): Promise<void> {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_node ON memory_items(node_id)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at DESC)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_adapter ON memory_items(project_id, adapter_name)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_type ON nodes(graph_id, type)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_status ON nodes(graph_id, status)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_adapter_status ON chat_threads(adapter_name, status)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_status ON chat_messages(thread_id, status)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_created ON memory_items(project_id, created_at DESC)`)
 
-    await runIncrementalMigrations(db)
+    await runIncrementalMigrations(db, currentVersion)
 
     // 更新版本号
     await db.execute('DELETE FROM schema_version')
@@ -480,8 +488,8 @@ async function migrate(): Promise<void> {
 /**
  * 增量迁移：安全添加新列（幂等操作，可重复执行）
  */
-async function runIncrementalMigrations(db: Client): Promise<void> {
-  const addColumnSafe = async (table: string, column: string, type: string) => {
+async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise<void> {
+  const addColumnSafe = async (table: string, column: string, type: string, defaultValue?: string) => {
     if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
       throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
@@ -490,8 +498,9 @@ async function runIncrementalMigrations(db: Client): Promise<void> {
       throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
     const safeType = type.toUpperCase()
+    const defaultClause = defaultValue !== undefined ? ` DEFAULT ${defaultValue}` : ''
     try {
-      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}`)
+      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}${defaultClause}`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('duplicate column') || msg.includes('already exists')) {
@@ -507,4 +516,11 @@ async function runIncrementalMigrations(db: Client): Promise<void> {
   await addColumnSafe('edges', 'description', 'TEXT')
   await addColumnSafe('edges', 'data_flow', 'TEXT')
   await addColumnSafe('edges', 'strength', 'REAL')
+
+  // v3: memory_items 新增 version / parent_version / embedding 列
+  if (currentVersion < 3) {
+    await addColumnSafe('memory_items', 'version', 'INTEGER', '1')
+    await addColumnSafe('memory_items', 'parent_version', 'INTEGER', 'NULL')
+    await addColumnSafe('memory_items', 'embedding', 'TEXT', 'NULL')
+  }
 }
