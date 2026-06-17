@@ -1,26 +1,27 @@
 /**
- * 混合搜索引擎 —— FTS5 + 关键词向量相似度的双层检索
- *
- * 在没有嵌入模型的条件下，使用启发式的关键词向量方法
- * 实现比纯 FTS5 更好的语义检索效果。
+ * 混合搜索引擎 —— FTS5 + 关键词向量相似度 + 嵌入向量的多层检索
  *
  * 检索策略:
  *   Layer 1 (FTS5): 精确/模糊文本匹配 → 召回候选集（高召回）
  *   Layer 2 (Keyword Vector): 基于 TF-IDF 启发式的关键词向量相似度 → 重排序（高精度）
- *   Layer 3 (Fallback): 当 FTS5 不可用时，使用 LIKE 搜索 + 关键词匹配
+ *   Layer 3 (Embedding): 嵌入向量余弦相似度 → 语义检索（深度语义）
+ *   Layer 4 (Fallback): 当 FTS5 不可用时，使用 LIKE 搜索 + 关键词匹配
  *
- * 关键词向量方法:
- *   将查询和每个文档都表示为一个关键词频率向量，
- *   使用余弦相似度计算语义相关性。
- *   这不是真正的嵌入向量，但比纯文本匹配能更好地捕捉语义。
+ * 双路检索:
+ *   - FTS+关键词路: 文本匹配 + BM25 向量重排序
+ *   - 嵌入路: 语义向量相似度（需要 EmbeddingService 已启用）
+ *   两路结果加权合并，提供更好的语义覆盖
  *
  * 用法:
  *   const searcher = new HybridSearchEngine(memoryStore)
+ *   await searcher.enableEmbedding()  // 可选：启用嵌入检索
  *   const results = await searcher.search("authentication bug fix", { projectId: "x" })
  */
 
 import type { MemoryItem, MemoryKind } from '@shared/types'
 import type { MemoryStore } from './memory-store'
+import { getEmbeddingService, EmbeddingService } from './embedding-service'
+import { getClient } from '../database'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('HybridSearch')
@@ -39,6 +40,8 @@ export interface RankedSearchResult {
   ftsScore: number
   /** 关键词向量相似度 0-1 */
   keywordScore: number
+  /** 嵌入向量相似度 0-1（仅嵌入检索启用时有效） */
+  embeddingScore: number
   /** 匹配的原因（调试用） */
   matchReason: string
 }
@@ -92,12 +95,33 @@ const STOP_WORDS = new Set([
 
 /**
  * 将文本分词并去停用词
+ *
+ * 支持英文和中文（CJK）分词：
+ * - 英文：按非字母数字字符拆分，去停用词
+ * - 中文：提取连续 CJK 字符的 bigram（二元组），覆盖 Unicode 范围 一-鿿
  */
 function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
+  const lower = text.toLowerCase()
+
+  // 英文分词：按非字母数字拆分
+  const englishTokens = lower
     .split(/[^a-z0-9]+/)
     .filter((t) => t.length > 1 && !STOP_WORDS.has(t))
+
+  // CJK bigram 分词：提取连续 CJK 字符的相邻二元组
+  const CJK_RANGE = /[一-鿿]/ // 一-鿿
+  const cjkChars: string[] = []
+  for (const ch of lower) {
+    if (CJK_RANGE.test(ch)) {
+      cjkChars.push(ch)
+    }
+  }
+  const cjkBigrams: string[] = []
+  for (let i = 0; i < cjkChars.length - 1; i++) {
+    cjkBigrams.push(cjkChars[i] + cjkChars[i + 1])
+  }
+
+  return [...englishTokens, ...cjkBigrams]
 }
 
 /**
@@ -193,10 +217,64 @@ export class HybridSearchEngine {
   private vectorCache = new Map<string, { vector: Map<string, number>; timestamp: number }>()
   private static VECTOR_CACHE_MAX = 200
   private static VECTOR_CACHE_TTL = 60_000 // 1 分钟
+  /** 嵌入服务实例（启用后非 null） */
+  private _embeddingService: EmbeddingService | null = null
+  /** 嵌入检索是否已启用 */
+  private _embeddingEnabled: boolean = false
 
   constructor(memoryStore: MemoryStore, config?: Partial<HybridSearchConfig>) {
     this.memoryStore = memoryStore
     this.config = { ...DEFAULT_CONFIG, ...config }
+  }
+
+  /**
+   * 启用嵌入检索
+   *
+   * 初始化 EmbeddingService，成功后设置 _embeddingEnabled=true。
+   * 失败时仅打印警告日志，不抛出异常——搜索降级到 FTS+关键词路。
+   */
+  async enableEmbedding(): Promise<void> {
+    try {
+      const service = getEmbeddingService()
+      await service.initialize()
+      this._embeddingService = service
+      this._embeddingEnabled = true
+      logger.info('Embedding search enabled')
+    } catch (err) {
+      this._embeddingEnabled = false
+      logger.warn('Embedding service initialization failed, falling back to FTS+keyword only:', err)
+    }
+  }
+
+  /**
+   * 为记忆项生成嵌入向量并存入数据库
+   *
+   * 将 title + narrative + facts 拼接后生成 384 维向量，
+   * 写入 memory_items.embedding 字段。
+   */
+  async indexEmbedding(item: MemoryItem): Promise<void> {
+    if (!this._embeddingEnabled || !this._embeddingService) return
+
+    const text = [item.title, item.narrative, ...item.facts].join(' ')
+    if (!text.trim()) return
+
+    try {
+      const vector = await this._embeddingService.generateEmbedding(text)
+      const db = getClient()
+      await db.execute({
+        sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
+        args: [JSON.stringify(vector), item.id],
+      })
+    } catch (err) {
+      logger.warn(`Failed to index embedding for item ${item.id}:`, err)
+    }
+  }
+
+  /**
+   * 嵌入检索是否已启用
+   */
+  isEmbeddingEnabled(): boolean {
+    return this._embeddingEnabled
   }
 
   /**
@@ -230,7 +308,12 @@ export class HybridSearchEngine {
   }
 
   /**
-   * 混合搜索：FTS5 召回 + 关键词向量重排序
+   * 混合搜索：FTS5 召回 + 关键词向量重排序 + 嵌入向量检索
+   *
+   * 双路检索流程:
+   *   1. FTS+关键词路: FTS5 召回 → BM25 向量重排序
+   *   2. 嵌入路（可选）: 查询嵌入 → 向量相似度检索
+   *   3. 两路结果加权合并
    *
    * @param query - 自然语言查询
    * @param options - 搜索选项
@@ -285,7 +368,7 @@ export class HybridSearchEngine {
     const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs)
 
     // 4. 关键词向量重排序（使用 BM25 向量 + 缓存）
-    const ranked = allDocTokens.map(({ item, tokens, text: docText }) => {
+    const ftsResults = allDocTokens.map(({ item, tokens, text: docText }) => {
       const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs)
       const keywordScore = cosineSimilarity(queryBm25Vector, docVector)
 
@@ -305,24 +388,162 @@ export class HybridSearchEngine {
         score,
         ftsScore,
         keywordScore,
+        embeddingScore: 0,
         matchReason: keywordScore > ftsScore
           ? `Semantic match (BM25 similarity: ${(keywordScore * 100).toFixed(0)}%)`
           : `Text match (FTS5 rank: ${(ftsScore * 100).toFixed(0)}%)`,
       }
     })
 
-    // 4. 排序和过滤
-    // 注意：includeLowConfidence 默认 false（与字段语义一致）——
-    // 旧实现 `!== false || ...` 在 undefined 时短路为 true，导致默认收录低置信度记忆。
-    const filtered = ranked
+    // 5. 嵌入检索（双路检索的第二路）
+    let embeddingResults: RankedSearchResult[] = []
+    if (this._embeddingEnabled) {
+      embeddingResults = await this._embeddingSearch(query, options)
+    }
+
+    // 6. 合并两路结果
+    const merged = this._mergeResults(ftsResults, embeddingResults, ftsWeight)
+
+    // 7. 排序和过滤
+    const filtered = merged
       .filter((r) => r.score >= scoreThreshold)
       .filter((r) => options?.includeLowConfidence === true || r.item.confidence >= 0.3)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
 
-    logger.debug(`Hybrid search "${query}": ${candidates.length} candidates → ${filtered.length} results (top score: ${filtered[0]?.score.toFixed(3) ?? 'N/A'})`)
+    logger.debug(`Hybrid search "${query}": ${candidates.length} FTS candidates, ${embeddingResults.length} embedding results → ${filtered.length} merged results (top score: ${filtered[0]?.score.toFixed(3) ?? 'N/A'})`)
 
     return filtered
+  }
+
+  /**
+   * 嵌入向量检索（双路检索的第二路）
+   *
+   * 生成查询嵌入，从数据库获取有嵌入的记忆项，
+   * 计算余弦相似度，过滤低分结果。
+   */
+  private async _embeddingSearch(
+    query: string,
+    opts?: HybridSearchOptions,
+  ): Promise<RankedSearchResult[]> {
+    if (!this._embeddingService) return []
+
+    try {
+      const queryVector = await this._embeddingService.generateEmbedding(query)
+
+      // 从数据库获取有嵌入向量的记忆项
+      const db = getClient()
+      let sql = 'SELECT * FROM memory_items WHERE embedding IS NOT NULL'
+      const args: (string | number)[] = []
+
+      if (opts?.projectId) {
+        sql += ' AND project_id = ?'
+        args.push(opts.projectId)
+      }
+      if (opts?.kind) {
+        sql += ' AND kind = ?'
+        args.push(opts.kind)
+      }
+
+      sql += ' ORDER BY created_at DESC LIMIT 200'
+
+      const result = await db.execute({ sql, args })
+      const items: MemoryItem[] = result.rows.map((row) => this._rowToMemoryItem(row))
+
+      // 计算余弦相似度
+      const scored = items
+        .map((item) => {
+          const itemEmbedding = item.embedding
+          if (!itemEmbedding || itemEmbedding.length === 0) return null
+
+          const score = EmbeddingService.cosineSimilarity(queryVector, itemEmbedding)
+          return {
+            item,
+            score,
+            ftsScore: 0,
+            keywordScore: 0,
+            embeddingScore: score,
+            matchReason: `Embedding similarity: ${(score * 100).toFixed(0)}%`,
+          } as RankedSearchResult
+        })
+        .filter((r): r is RankedSearchResult => r !== null && r.embeddingScore > 0.3)
+
+      return scored
+    } catch (err) {
+      logger.warn('Embedding search failed:', err)
+      return []
+    }
+  }
+
+  /**
+   * 合并 FTS+关键词路和嵌入路的结果
+   *
+   * 同一 item ID 的结果加权合并分数，不同 ID 的直接合并。
+   * ftsWeight 控制 FTS+关键词路的权重，嵌入路权重为 (1 - ftsWeight)。
+   */
+  private _mergeResults(
+    ftsResults: RankedSearchResult[],
+    embeddingResults: RankedSearchResult[],
+    ftsWeight: number,
+  ): RankedSearchResult[] {
+    if (embeddingResults.length === 0) return ftsResults
+    if (ftsResults.length === 0) return embeddingResults
+
+    const embeddingWeight = 1 - ftsWeight
+    const mergedMap = new Map<number, RankedSearchResult>()
+
+    // 加入 FTS+关键词路结果
+    for (const r of ftsResults) {
+      mergedMap.set(r.item.id, { ...r })
+    }
+
+    // 合并嵌入路结果
+    for (const r of embeddingResults) {
+      const existing = mergedMap.get(r.item.id)
+      if (existing) {
+        // 同 ID：加权合并分数
+        existing.score = ftsWeight * existing.score + embeddingWeight * r.embeddingScore
+        existing.embeddingScore = r.embeddingScore
+        // 更新 matchReason 以反映双路匹配
+        existing.matchReason = existing.matchReason.includes('Embedding')
+          ? existing.matchReason
+          : `${existing.matchReason} + Embedding: ${(r.embeddingScore * 100).toFixed(0)}%`
+      } else {
+        // 新 ID：嵌入路独立结果，分数按权重缩放
+        mergedMap.set(r.item.id, {
+          ...r,
+          score: embeddingWeight * r.embeddingScore,
+        })
+      }
+    }
+
+    return Array.from(mergedMap.values())
+  }
+
+  /**
+   * 将数据库行转换为 MemoryItem
+   */
+  private _rowToMemoryItem(row: Record<string, unknown>): MemoryItem {
+    return {
+      id: row.id as number,
+      session_id: row.session_id as string,
+      kind: row.kind as MemoryKind,
+      project_id: (row.project_id as string) ?? '',
+      node_id: (row.node_id as string) ?? null,
+      title: row.title as string,
+      narrative: (row.narrative as string) ?? '',
+      facts: row.facts ? JSON.parse(row.facts as string) : [],
+      concepts: row.concepts ? JSON.parse(row.concepts as string) : [],
+      files_read: row.files_read ? JSON.parse(row.files_read as string) : [],
+      files_modified: row.files_modified ? JSON.parse(row.files_modified as string) : [],
+      adapter_name: (row.adapter_name as string) ?? '',
+      token_cost: (row.token_cost as number) ?? 0,
+      confidence: (row.confidence as number) ?? 0,
+      created_at: row.created_at as string,
+      version: (row.version as number) ?? 1,
+      parent_version: (row.parent_version as number) ?? null,
+      embedding: row.embedding ? JSON.parse(row.embedding as string) : null,
+    }
   }
 
   /**
@@ -384,6 +605,7 @@ export class HybridSearchEngine {
         score: keywordScore,
         ftsScore: 0,
         keywordScore,
+        embeddingScore: 0,
         matchReason: `Keyword similarity: ${(keywordScore * 100).toFixed(0)}%`,
       }
     })
@@ -428,6 +650,7 @@ export class HybridSearchEngine {
           score,
           ftsScore: 0,
           keywordScore: score,
+          embeddingScore: 0,
           matchReason: `Similar to: ${item.title.substring(0, 60)}`,
         }
       })
