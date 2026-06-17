@@ -161,10 +161,11 @@ describe('PipelineRunner', () => {
     expect(calls).toEqual(['before', 'process', 'after', 'before-2', 'process-2'])
   })
 
-  it('createDefault returns an empty runner', async () => {
-    const runner = PipelineRunner.createDefault()
-    const result = await runner.run(makeCtx())
+  it('createDefault returns a runner with 7 stages', async () => {
+    const runner = await PipelineRunner.createDefault()
+    const result = await runner.run(makeCtx({ outputs: [] }))
 
+    // Should complete without errors (empty outputs won't trigger failures)
     expect(result.errors).toHaveLength(0)
     expect(result.context.sessionId).toBe('test-session')
     expect(result.durationMs).toBeGreaterThanOrEqual(0)

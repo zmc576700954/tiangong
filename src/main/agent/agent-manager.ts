@@ -30,6 +30,7 @@ import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
 import { readMemory } from '../mindmap-agent/memory'
 import { MemoryExtractor, MemoryStore } from '../memory'
+import { PipelineRunner } from '../memory/pipeline'
 import { getModeManager } from './mode-manager'
 import type { ModeManager } from './mode-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
@@ -1040,37 +1041,24 @@ export class AgentManager {
       this.cleanupInProgress.delete(sessionId)
     }
 
-    // 阶段 B：记忆抽取与持久化（不持锁）
-    // MEM-02: 提取并存储会话记忆（借鉴 claude-mem，Phase 1）
+    // 阶段 B：记忆管线处理（不持锁）
+    // 通过 ContextPipeline 统一管线执行：normalize → compress → extract → verify → compile → waterline → persist
     if (state) {
       try {
-        // 提取结构化记忆
-        const memories = this.memoryExtractor.extract(sessionId, outputsForMemory, {
+        const pipeline = await PipelineRunner.createDefault()
+        const result = await pipeline.run({
+          outputs: outputsForMemory,
+          sessionId,
+          adapterName: state.adapterName,
           projectId: state.config.workingDirectory,
           nodeId: state.config.nodeId,
-          adapterName: state.adapterName,
-          commandDescription: state.config.nodeTitle,
-          commandType: state.lastCommandType,
         })
-        // MODE-01: 按当前模式过滤记忆类型（不同模式关注不同记忆）
-        const modeCtx = state.config.workingDirectory
-          ? this.modeManager.resolvePromptContext(state.config.workingDirectory)
-          : null
-        const filtered = modeCtx
-          ? memories.filter((m) => modeCtx.memoryTypes.includes(m.kind))
-          : memories
-        // 持久化存储（await 确保失败被 try/catch 捕获，避免 unhandled rejection）
-        if (filtered.length > 0) {
-          try {
-            await this.memoryStore.storeMany(filtered)
-            const skipped = memories.length - filtered.length
-            logger.info(`Stored ${filtered.length} memories for session ${sessionId}${skipped > 0 ? ` (${skipped} filtered by mode)` : ''}`)
-          } catch (err) {
-            logger.warn(`Memory storage failed for session ${sessionId}:`, err)
-          }
+
+        if (result.errors.length > 0) {
+          logger.warn(`Pipeline completed with ${result.errors.length} errors`)
         }
       } catch (err) {
-        logger.warn(`Memory extraction failed for session ${sessionId}:`, err)
+        logger.warn(`Memory pipeline failed for session ${sessionId}:`, err)
       }
     }
 

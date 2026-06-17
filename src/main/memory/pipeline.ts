@@ -7,6 +7,9 @@
  */
 
 import type { AgentOutput, MemoryItem } from '@shared/types'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('PipelineRunner')
 
 // ---------------------------------------------------------------------------
 // Types
@@ -119,9 +122,100 @@ export class PipelineRunner {
   }
 
   /**
-   * 创建默认的空管线（Task 12 将填充阶段）
+   * 创建默认的完整管线（7 阶段）
+   *
+   * 阶段顺序: normalize → compress → extract → verify → compile → waterline → persist
+   * 每个阶段独立运行，失败不阻塞后续阶段。
+   * 使用动态 import 避免循环依赖和启动时的全量加载。
    */
-  static createDefault(): PipelineRunner {
-    return new PipelineRunner([])
+  static async createDefault(): Promise<PipelineRunner> {
+    const { OutputNormalizer } = await import('./output-normalizer')
+    const { ObserverCompressor } = await import('./observer-compressor')
+    const { MemoryExtractor } = await import('./memory-extractor')
+    const { HallucinationChecker } = await import('./hallucination-checker')
+    const { ContextCompiler } = await import('./context-compiler')
+    const { getWaterlineSync } = await import('./waterline-sync')
+    const { getMemoryStore } = await import('./memory-store')
+
+    const normalizer = new OutputNormalizer()
+    const compressor = new ObserverCompressor()
+    const extractor = new MemoryExtractor()
+    const checker = new HallucinationChecker()
+    const compiler = new ContextCompiler()
+
+    return new PipelineRunner([
+      {
+        name: 'normalize',
+        process: async (ctx) => ({
+          ...ctx,
+          normalizedOutputs: normalizer.normalizeAll(ctx.outputs),
+        }),
+      },
+      {
+        name: 'compress',
+        process: async (ctx) => {
+          for (const output of ctx.normalizedOutputs ?? ctx.outputs) {
+            compressor.feed(output)
+          }
+          compressor.finalize()
+          return { ...ctx, observations: compressor.getStats() }
+        },
+      },
+      {
+        name: 'extract',
+        process: async (ctx) => ({
+          ...ctx,
+          memories: extractor.extract(ctx.sessionId, ctx.normalizedOutputs ?? ctx.outputs, {}),
+        }),
+      },
+      {
+        name: 'verify',
+        enabled: () => true,
+        hooks: {
+          after: (ctx) => {
+            if (ctx.hallucinationReport && !ctx.hallucinationReport.passed) {
+              logger.warn(`Hallucination check: risk=${ctx.hallucinationReport.riskScore}`)
+            }
+          },
+        },
+        process: async (ctx) => ({
+          ...ctx,
+          hallucinationReport: checker.verifySync(ctx.normalizedOutputs ?? ctx.outputs),
+        }),
+      },
+      {
+        name: 'compile',
+        process: async (ctx) => ({
+          ...ctx,
+          layeredContext: await compiler.compile(ctx.normalizedOutputs ?? ctx.outputs, {
+            sessionId: ctx.sessionId,
+            adapterName: ctx.adapterName,
+          }),
+        }),
+      },
+      {
+        name: 'waterline',
+        process: async (ctx) => {
+          const waterline = getWaterlineSync()
+          if (ctx.memories && ctx.memories.length > 0) {
+            waterline.advance(ctx.projectId ?? '', ctx.memories as MemoryItem[])
+          }
+          return { ...ctx, waterlineDelta: waterline.getDelta(ctx.projectId ?? '') }
+        },
+      },
+      {
+        name: 'persist',
+        process: async (ctx) => {
+          if (ctx.memories && ctx.memories.length > 0) {
+            const store = getMemoryStore()
+            const safeMemories = ctx.hallucinationReport?.riskScore > 70
+              ? ctx.memories.filter(m => (m.confidence ?? 0) > 0.7)
+              : ctx.memories
+            await store.storeMany(safeMemories as Omit<MemoryItem, 'id'>[])
+          }
+          return ctx
+        },
+      },
+    ])
   }
 }
