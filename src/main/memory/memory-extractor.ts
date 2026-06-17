@@ -40,6 +40,16 @@ export class MemoryExtractor {
       commandType?: AgentCommandType
     },
   ): Omit<MemoryItem, 'id'>[] {
+    // Check output health
+    const health = this.classifyOutput(outputs)
+    if (health === 'poisoned') {
+      logger.warn(`Session ${sessionId} output is poisoned, skipping extraction`)
+      return []
+    }
+    if (health === 'empty') {
+      return []
+    }
+
     const items: Omit<MemoryItem, 'id'>[] = []
     const now = new Date().toISOString()
 
