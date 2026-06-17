@@ -17,6 +17,8 @@ export interface FileWatcherOptions {
     filePath: string
     symbolsFound: number
   }) => void
+  /** 文件变更时触发节点关联回调，用于 LLM 自动触发 */
+  onNodeFileChange?: (filePath: string, changeType: 'add' | 'change' | 'unlink') => void
 }
 
 /**
@@ -61,6 +63,7 @@ export class CodeFileWatcher {
           filePath: absolutePath,
           symbolsFound: result.symbolsFound,
         })
+        this.options.onNodeFileChange?.(absolutePath, 'add')
       })
     })
 
@@ -73,6 +76,7 @@ export class CodeFileWatcher {
           filePath: absolutePath,
           symbolsFound: result.symbolsFound,
         })
+        this.options.onNodeFileChange?.(absolutePath, 'change')
       })
     })
 
@@ -81,6 +85,7 @@ export class CodeFileWatcher {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
         await this.indexer.clearFileIndex(absolutePath)
         this.options.onIndexUpdate?.({ type: 'unlink', filePath: absolutePath, symbolsFound: 0 })
+        this.options.onNodeFileChange?.(absolutePath, 'unlink')
       })
     })
   }
@@ -92,6 +97,30 @@ export class CodeFileWatcher {
     }
     this.debounceTimers.clear()
     await this.watcher?.close()
+  }
+
+  /**
+   * 根据文件扩展名分类变更等级
+   * - minor: 格式/文档变更，不触发 LLM
+   * - medium: 代码逻辑变更，触发节点状态更新
+   * - major: 配置变更，触发结构建议
+   */
+  classifyChange(filePath: string): 'minor' | 'medium' | 'major' {
+    const ext = path.extname(filePath).toLowerCase()
+    const basename = path.basename(filePath).toLowerCase()
+
+    // 配置文件 → major
+    if (basename === 'package.json' || basename === 'tsconfig.json' || basename === '.env') {
+      return 'major'
+    }
+
+    // 样式/文档 → minor
+    if (ext === '.css' || ext === '.scss' || ext === '.less' || ext === '.md') {
+      return 'minor'
+    }
+
+    // 其他代码文件 → medium
+    return 'medium'
   }
 
   /** 防抖包装：同一文件的短时间内多次事件只执行最后一次 */
