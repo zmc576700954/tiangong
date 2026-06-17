@@ -377,8 +377,8 @@ export class HallucinationChecker {
         label: 'Conflicting file count',
       },
       {
-        a: /(?:error|错误)(?:s)?\s+(?:found|发现)[:：]?\s*(?:no|none|0|无)/gi,
-        b: /(?:error|错误)(?:s)?\s+(?:found|发现)[:：]?\s*\d+/gi,
+        a: /(?:no|zero|0)\s+(?:error|错误)(?:s)?|(?:(?:error|错误)(?:s)?)\s+(?:found|发现)[:：]?\s*(?:no|none|0|无)/gi,
+        b: /(?:error|错误)(?:s)?\s+(?:found|发现)[:：]?\s*\d+|(?:error|错误)[:：]\s+\S+/gi,
         label: 'Conflicting error reports',
       },
       {
@@ -417,6 +417,28 @@ export class HallucinationChecker {
           })
         }
       }
+
+      // Conflicting error reports: "no errors" vs "N errors"
+      if (pair.label === 'Conflicting error reports' && matchesA.length > 0 && matchesB.length > 0) {
+        claims.push({
+          claim: `Error count contradiction: "${matchesA[0].text}" vs "${matchesB[0].text}"`,
+          type: 'internal_contradiction',
+          severity: 'high',
+          evidence: `Agent reports both zero and non-zero error counts at lines: ${[...matchesA, ...matchesB].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
+          offset: matchesA[0].offset,
+        })
+      }
+
+      // Mixed success/failure signals: success and failure in same output
+      if (pair.label === 'Mixed success/failure signals' && matchesA.length > 0 && matchesB.length > 0) {
+        claims.push({
+          claim: `Mixed success/failure: "${matchesA[0].text}" vs "${matchesB[0].text}"`,
+          type: 'internal_contradiction',
+          severity: 'medium',
+          evidence: `Agent reports both success and failure signals at lines: ${[...matchesA, ...matchesB].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
+          offset: matchesA[0].offset,
+        })
+      }
     }
 
     return claims
@@ -439,6 +461,29 @@ export class HallucinationChecker {
       /(?:guaranteed|guarantee|保证)/gi,
       /(?:perfectly|完美)/gi,
     ]
+
+    // Check for critical bug fix claims with errors — highest severity
+    const hasErrors = outputs.some((o) => o.type === 'stderr' && o.data.trim().length > 0)
+    const criticalFixPatterns = [
+      /(?:fixed|resolved|closed)\s+(?:a\s+)?critical\s+/gi,
+      /(?:critical\s+(?:bug|issue|vulnerability|error|defect))\s+(?:has been\s+)?(?:fixed|resolved|closed)/gi,
+    ]
+
+    if (hasErrors) {
+      for (const pattern of criticalFixPatterns) {
+        pattern.lastIndex = 0
+        let match: RegExpExecArray | null
+        while ((match = pattern.exec(fullText)) !== null) {
+          claims.push({
+            claim: match[0],
+            type: 'overconfident',
+            severity: 'critical',
+            evidence: 'Agent claims to have fixed a critical issue but output contains errors',
+            offset: match.index,
+          })
+        }
+      }
+    }
 
     // 检查是否有足够的输出内容支持过度自信的声明
     const totalOutputLength = fullText.length

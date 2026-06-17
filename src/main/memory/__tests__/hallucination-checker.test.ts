@@ -78,6 +78,18 @@ describe('HallucinationChecker', () => {
       expect(contradictions.length).toBeGreaterThan(0)
     })
 
+    it('detects conflicting error reports', () => {
+      const checker = new HallucinationChecker()
+      const report = checker.verifySync(outputs([
+        'Error: cannot connect to database',
+        'No errors found in the system',
+      ]))
+      const contradictions = report.claims.filter((c) => c.type === 'internal_contradiction')
+      expect(contradictions.length).toBeGreaterThan(0)
+      const errorConflicts = contradictions.filter((c) => c.claim.includes('Error count contradiction'))
+      expect(errorConflicts.length).toBeGreaterThan(0)
+    })
+
     it('detects overconfident claims without evidence', () => {
       const checker = new HallucinationChecker()
       const report = checker.verifySync(outputs([
@@ -87,6 +99,19 @@ describe('HallucinationChecker', () => {
       const overconfident = report.claims.filter((c) => c.type === 'overconfident')
       // Short output with absolute language should trigger overconfident
       expect(overconfident.length).toBeGreaterThan(0)
+    })
+
+    it('detects critical severity for overconfident critical bug fix with errors', () => {
+      const checker = new HallucinationChecker()
+      const combinedOutputs: AgentOutput[] = [
+        { type: 'stdout', data: 'Fixed critical authentication bypass vulnerability', timestamp: Date.now() },
+        { type: 'stderr', data: 'Error: test suite failed', timestamp: Date.now() },
+      ]
+      const report = checker.verifySync(combinedOutputs)
+      const criticalClaims = report.claims.filter((c) => c.severity === 'critical')
+      expect(criticalClaims.length).toBeGreaterThan(0)
+      const overconfidentCritical = report.claims.filter((c) => c.type === 'overconfident' && c.severity === 'critical')
+      expect(overconfidentCritical.length).toBeGreaterThan(0)
     })
 
     it('returns clean report for empty output', () => {
