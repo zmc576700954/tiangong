@@ -2,7 +2,7 @@
  * PipelineRunner 单元测试
  */
 
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { PipelineRunner } from '../pipeline'
 import type { PipelineStage, PipelineContext } from '../pipeline'
 

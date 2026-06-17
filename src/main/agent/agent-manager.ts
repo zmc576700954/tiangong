@@ -29,7 +29,7 @@ import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
 import { readMemory } from '../mindmap-agent/memory'
-import { MemoryExtractor, MemoryStore } from '../memory'
+import { MemoryStore } from '../memory'
 import { PipelineRunner } from '../memory/pipeline'
 import { getModeManager } from './mode-manager'
 import type { ModeManager } from './mode-manager'
@@ -109,14 +109,9 @@ export class AgentManager {
   /** 适配器健康监控 */
   private healthMonitor = new AdapterHealthMonitor()
   /** 会话记忆系统（借鉴 claude-mem，Phase 1）—— 懒初始化以避免数据库未启动时报错 */
-  private _memoryExtractor?: MemoryExtractor
   private _memoryStore?: MemoryStore
   /** Prompt 质量反馈记录（轻量级：追踪命令类型+预算与结果的相关性） */
   private promptOutcomeLog: Array<{ commandType: string; promptTokenEstimate: number; contextCount: number; outcome: 'success' | 'failure'; duration: number }> = []
-  private get memoryExtractor(): MemoryExtractor {
-    if (!this._memoryExtractor) this._memoryExtractor = new MemoryExtractor()
-    return this._memoryExtractor
-  }
   private get memoryStore(): MemoryStore {
     if (!this._memoryStore) this._memoryStore = new MemoryStore()
     return this._memoryStore

@@ -14,7 +14,8 @@
  *   - 条件导入 electron.app，测试环境降级到 HOME 目录
  */
 
-import { pipeline, type Pipeline } from '@xenova/transformers'
+import path from 'node:path'
+import { pipeline } from '@xenova/transformers'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('EmbeddingService')
@@ -34,23 +35,21 @@ const EMBEDDING_DIM = 384
  */
 function getModelCacheDir(): string {
   try {
-    // 条件导入：Electron main process 可用，测试环境不可用时降级
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const electron = require('electron')
     if (electron?.app?.getPath) {
-      const path = require('path')
       return path.join(electron.app.getPath('userData'), 'models')
     }
   } catch {
     // 非 Electron 环境
   }
 
-  const path = require('path')
   const home = process.env.USERPROFILE ?? process.env.HOME ?? '/tmp'
   return path.join(home, '.bizgraph-models')
 }
 
 export class EmbeddingService {
-  private extractor: Pipeline | null = null
+  private extractor: any = null
   private initPromise: Promise<void> | null = null
 
   /**

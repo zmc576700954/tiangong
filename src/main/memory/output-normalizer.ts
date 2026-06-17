@@ -13,15 +13,13 @@
  */
 
 import type { AgentOutput } from '@shared/types'
-import { createLogger } from '../shared/logger'
-
-const logger = createLogger('OutputNormalizer')
 
 // ============================================
 // 正则预编译
 // ============================================
 
 /** ANSI 转义序列：颜色、光标移动、清屏等 */
+// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?(?:\x07|\x1B\\)/g
 
 /** 进度条行：含 [===  ] 或 ===> 等进度模式且带百分比/数字 */

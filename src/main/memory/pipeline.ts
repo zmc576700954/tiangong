@@ -158,14 +158,14 @@ export class PipelineRunner {
             compressor.feed(output)
           }
           compressor.finalize()
-          return { ...ctx, observations: compressor.getStats() }
+          return { ...ctx, observations: [] as any[] }
         },
       },
       {
         name: 'extract',
         process: async (ctx) => ({
           ...ctx,
-          memories: extractor.extract(ctx.sessionId, ctx.normalizedOutputs ?? ctx.outputs, {}),
+          memories: extractor.extract(ctx.sessionId, ctx.normalizedOutputs ?? ctx.outputs, { adapterName: ctx.adapterName ?? 'unknown' }),
         }),
       },
       {
