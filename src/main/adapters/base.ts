@@ -449,6 +449,18 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onExit = (code: number | null) => {
+      // Exit code classification for recovery diagnostics
+      // code 1       — general error; may be recoverable (adapter logic error, bad input)
+      // code 126/127 — command not found / not executable; adapter not available on this system
+      // code 137/143 — SIGKILL / SIGTERM; normal termination (user-initiated or timeout)
+      if (code === 126 || code === 127) {
+        this.logger.warn(`Adapter ${this.name} not available (exit code ${code}) — adapter may not be installed or executable`)
+      } else if (code === 137 || code === 143) {
+        this.logger.info(`Adapter ${this.name} terminated by signal (exit code ${code}) — normal termination`)
+      } else if (code !== null && code !== 0 && code !== 1) {
+        this.logger.warn(`Adapter ${this.name} exited with unusual code ${code} — recovery may be possible via SessionRecoveryManager`)
+      }
+
       if (code !== null && code !== 0) {
         this.emitOutputForSession(sessionId, {
           type: 'error',
