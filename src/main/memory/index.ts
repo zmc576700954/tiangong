@@ -18,3 +18,4 @@ export { HybridSearchEngine, getHybridSearchEngine, setHybridSearchEngineForTest
 export type { RankedSearchResult, HybridSearchOptions, HybridSearchConfig } from './hybrid-search'
 export { GraphMemory, formatEdgeLabel, getEdgeStyle } from './graph-memory'
 export type { MemoryNode, MemoryEdge, MemoryRelationType, GraphTraversalResult, GraphMemoryConfig } from './graph-memory'
+export { OutputNormalizer } from './output-normalizer'
