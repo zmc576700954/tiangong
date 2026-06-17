@@ -44,7 +44,7 @@ export type NodeType =
 export type GraphType = 'online' | 'dev'
 
 /** 边类型 */
-export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow'
+export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change'
 
 /** 业务规则（作为流程节点的属性） */
 export interface BusinessRule {
@@ -130,6 +130,7 @@ export interface EdgeContent {
   guard?: string        // 守卫表达式（轻量级 DSL，如 "user.role === 'admin'"）
   timeout?: number      // 超时（毫秒）
   retry?: { max: number; delay: number }      // 重试策略
+  suggested?: boolean  // 建议边标记，需用户确认后才变为正式边
 }
 
 /** 边（连接） */
@@ -320,7 +321,7 @@ export interface ProjectMemory {
 export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
 export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug'] as const
 export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
-export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow'] as const
+export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
 

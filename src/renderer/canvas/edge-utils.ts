@@ -7,6 +7,9 @@ export const edgeTypeConfig: Record<EdgeType, { color: string; label: string; an
   failure: { color: '#ef4444', label: '失败' },
   condition: { color: '#f59e0b', label: '条件' },
   'business-flow': { color: '#3b82f6', label: '业务流程', animated: true, strokeDasharray: '8 4' },
+  semantic: { color: '#3b82f6', label: '语义关联', strokeDasharray: '6 4' },
+  dependency: { color: '#22c55e', label: '代码依赖' },
+  'co-change': { color: '#f97316', label: '变更耦合', strokeDasharray: '2 4' },
 }
 
 export function createMarkerEnd(color: string): Edge['markerEnd'] {
