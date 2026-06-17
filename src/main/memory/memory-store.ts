@@ -159,17 +159,77 @@ export class MemoryStore {
   }
 
   /**
-   * 存储一条记忆
+   * 查找同项目中概念匹配的已有记忆（用于版本化冲突检测）
+   *
+   * 遍历 concepts 数组，用 LIKE 匹配 JSON 数组中的元素，
+   * 返回置信度最高的匹配项或 null。
+   */
+  private async _findByConcepts(projectId: string, concepts: string[]): Promise<MemoryItem | null> {
+    if (concepts.length === 0) return null
+
+    // 为每个 concept 构建 LIKE 条件
+    const conditions: string[] = []
+    const args: (string | number)[] = [projectId]
+
+    for (const concept of concepts) {
+      // LIKE 转义：与 getByConcept 保持一致
+      const escapedConcept = concept
+        .replace(/\\/g, '\\\\')
+        .replace(/%/g, '\\%')
+        .replace(/_/g, '\\_')
+        .replace(/"/g, '\\"')
+      conditions.push('concepts LIKE ? ESCAPE \'\\\'')
+      args.push(`%"${escapedConcept}"%`)
+    }
+
+    const whereClause = conditions.join(' OR ')
+
+    const rows = await this.db.execute({
+      sql: `SELECT * FROM memory_items
+            WHERE project_id = ? AND (${whereClause})
+            ORDER BY confidence DESC
+            LIMIT 1`,
+      args,
+    })
+
+    if (rows.rows.length === 0) return null
+    return this._rowToItem(rows.rows[0] as unknown as Record<string, unknown>)
+  }
+
+  /**
+   * 存储一条记忆（含版本化冲突检测）
+   *
+   * 版本规则:
+   *   - 无匹配概念 → version=1, parent_version=null
+   *   - 匹配且新置信度更高 → version=existing.version+1, parent_version=existing.id
+   *   - 匹配但新置信度不高于已有 → version=1, parent_version=existing.id（不同视角）
    * @returns 新记忆的 ID
    */
   async store(item: Omit<MemoryItem, 'id'>): Promise<number> {
     // 等待 FTS 就绪：trigger 未建时插入会让该行无法被全文检索命中
     await this.ensureFtsReady()
+
+    // 版本化：查找同项目中概念匹配的已有记忆
+    let version = 1
+    let parentVersion: number | null = null
+
+    if (item.concepts.length > 0) {
+      const existing = await this._findByConcepts(item.project_id, item.concepts)
+      if (existing) {
+        parentVersion = existing.id!
+        if (existing.confidence < item.confidence) {
+          version = (existing.version ?? 1) + 1
+        }
+        // else: version stays 1, parentVersion still links to existing (different perspective)
+      }
+    }
+
     const result = await this.db.execute({
       sql: `INSERT INTO memory_items
         (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
-         files_read, files_modified, adapter_name, token_cost, confidence, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         files_read, files_modified, adapter_name, token_cost, confidence,
+         version, parent_version, embedding, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         item.session_id,
         item.kind,
@@ -184,6 +244,9 @@ export class MemoryStore {
         item.adapter_name,
         item.token_cost,
         item.confidence,
+        version,
+        parentVersion,
+        item.embedding ? JSON.stringify(item.embedding) : null,
         item.created_at,
       ],
     })
@@ -197,6 +260,10 @@ export class MemoryStore {
    * - 中途失败整体回滚，FTS 触发器的索引行也一并回滚
    * - 兼容 :memory: 数据库（不依赖 transaction('write') 的连接独占）
    * 失败时抛出，调用方决定是否重试或降级。
+   *
+   * 注意：批量插入不执行版本化冲突检测（_findByConcepts），
+   * 每条记忆均以 version=1, parent_version=null 写入。
+   * 如需版本化，请逐条调用 store()。
    */
   async storeMany(items: Omit<MemoryItem, 'id'>[]): Promise<number[]> {
     if (items.length === 0) return []
@@ -208,8 +275,9 @@ export class MemoryStore {
     const statements = items.map((item) => ({
       sql: `INSERT INTO memory_items
         (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
-         files_read, files_modified, adapter_name, token_cost, confidence, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         files_read, files_modified, adapter_name, token_cost, confidence,
+         version, parent_version, embedding, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       args: [
         item.session_id,
         item.kind,
@@ -224,6 +292,9 @@ export class MemoryStore {
         item.adapter_name,
         item.token_cost,
         item.confidence,
+        item.version ?? 1,
+        item.parent_version ?? null,
+        item.embedding ? JSON.stringify(item.embedding) : null,
         item.created_at,
       ] as (string | number | null)[],
     }))
@@ -468,6 +539,82 @@ export class MemoryStore {
             WHERE confidence < 0.5
             AND created_at < datetime('now', '-' || ? || ' days')`,
       args: [daysThreshold],
+    })
+    return result.rowsAffected
+  }
+
+  /**
+   * 基于衰减函数的智能记忆修剪
+   *
+   * 衰减公式: decayedConfidence = confidence * 0.5^(age/halfLife)
+   * 其中 halfLife = baseHalfLife * (1 + confidence)，高置信度记忆衰减更慢
+   *
+   * 删除策略:
+   *   1. 删除 decayedConfidence < minConfidence 的记忆
+   *   2. 如果总数仍超过 maxItems，继续删除 decayedConfidence 最低的项
+   *
+   * @returns 删除的记忆条数
+   */
+  async pruneWithDecay(
+    projectId: string,
+    config?: {
+      baseHalfLife?: number   // 基础半衰期（天），默认 30
+      minConfidence?: number  // 最低衰减置信度阈值，默认 0.1
+      maxItems?: number       // 项目最大记忆条数，默认 5000
+    },
+  ): Promise<number> {
+    const baseHalfLife = config?.baseHalfLife ?? 30
+    const minConfidence = config?.minConfidence ?? 0.1
+    const maxItems = config?.maxItems ?? 5000
+
+    // 获取该项目所有记忆，计算衰减置信度
+    const rows = await this.db.execute({
+      sql: `SELECT id, confidence, created_at FROM memory_items WHERE project_id = ?`,
+      args: [projectId],
+    })
+
+    if (rows.rows.length === 0) return 0
+
+    const now = Date.now()
+    const idsToDelete = new Set<number>()
+
+    // 计算每条记忆的衰减置信度
+    const itemsWithDecay = rows.rows.map((r) => {
+      const id = r.id as number
+      const confidence = (r.confidence as number) ?? 0.0
+      const createdAt = new Date(r.created_at as string).getTime()
+      const ageInDays = Math.max(0, (now - createdAt) / (1000 * 60 * 60 * 24))
+      const halfLife = baseHalfLife * (1 + confidence)
+      const decayedConfidence = confidence * Math.pow(0.5, ageInDays / halfLife)
+      return { id, confidence, decayedConfidence }
+    })
+
+    // 阶段1: 删除衰减置信度低于阈值的项
+    for (const item of itemsWithDecay) {
+      if (item.decayedConfidence < minConfidence) {
+        idsToDelete.add(item.id)
+      }
+    }
+
+    // 阶段2: 如果剩余项仍超过 maxItems，删除衰减置信度最低的项
+    const remaining = itemsWithDecay.filter((item) => !idsToDelete.has(item.id))
+    if (remaining.length > maxItems) {
+      // 按衰减置信度升序排列，删除最低的
+      remaining.sort((a, b) => a.decayedConfidence - b.decayedConfidence)
+      const excess = remaining.length - maxItems
+      for (let i = 0; i < excess; i++) {
+        idsToDelete.add(remaining[i].id)
+      }
+    }
+
+    if (idsToDelete.size === 0) return 0
+
+    // 批量删除
+    const idsArray = Array.from(idsToDelete)
+    const placeholders = idsArray.map(() => '?').join(',')
+    const result = await this.db.execute({
+      sql: `DELETE FROM memory_items WHERE project_id = ? AND id IN (${placeholders})`,
+      args: [projectId, ...idsArray],
     })
     return result.rowsAffected
   }

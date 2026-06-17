@@ -38,7 +38,7 @@ describe('MemoryStore', () => {
       CREATE TABLE IF NOT EXISTS memory_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK(kind IN ('investigation', 'fix', 'review_finding', 'decision', 'pattern', 'lesson')),
+        kind TEXT NOT NULL CHECK(kind IN ('investigation', 'fix', 'review_finding', 'decision', 'pattern', 'lesson', 'waterline')),
         project_id TEXT NOT NULL DEFAULT '',
         node_id TEXT,
         title TEXT NOT NULL,
@@ -50,6 +50,9 @@ describe('MemoryStore', () => {
         adapter_name TEXT NOT NULL DEFAULT '',
         token_cost INTEGER DEFAULT 0,
         confidence REAL DEFAULT 0.0,
+        version INTEGER DEFAULT 1,
+        parent_version INTEGER DEFAULT NULL,
+        embedding TEXT DEFAULT NULL,
         created_at TEXT NOT NULL
       )
     `)
@@ -228,5 +231,179 @@ describe('MemoryStore', () => {
     for (const m of memories) {
       expect(m.session_id).toBe('session_X')
     }
+  })
+
+  // --- Versioning tests ---
+
+  it('should store with version defaults to 1 when no concepts match', async () => {
+    const id = await store.store(mockItem({ concepts: ['unique-concept-xyz'] }))
+    expect(id).toBeGreaterThan(0)
+
+    const recent = await store.getRecent({ projectId: '/projects/test-app' })
+    const stored = recent.find((m) => m.id === id)
+    expect(stored).toBeDefined()
+    expect(stored!.version).toBe(1)
+    expect(stored!.parent_version).toBeNull()
+  })
+
+  it('should store with version defaults to 1 when concepts are empty', async () => {
+    const id = await store.store(mockItem({ concepts: [] }))
+    expect(id).toBeGreaterThan(0)
+
+    const recent = await store.getRecent({ projectId: '/projects/test-app' })
+    const stored = recent.find((m) => m.id === id)
+    expect(stored).toBeDefined()
+    expect(stored!.version).toBe(1)
+    expect(stored!.parent_version).toBeNull()
+  })
+
+  it('should increment version when existing concept found with lower confidence', async () => {
+    // 先存一个低置信度的记忆
+    const firstId = await store.store(mockItem({
+      confidence: 0.6,
+      concepts: ['fix-applied', 'problem-solution'],
+    }))
+
+    // 再存一个高置信度的同概念记忆
+    const secondId = await store.store(mockItem({
+      session_id: 'session_010',
+      confidence: 0.9,
+      concepts: ['fix-applied', 'problem-solution'],
+    }))
+
+    const recent = await store.getRecent({ projectId: '/projects/test-app' })
+    const second = recent.find((m) => m.id === secondId)
+    expect(second).toBeDefined()
+    expect(second!.version).toBe(2) // existing.version=1 + 1
+    expect(second!.parent_version).toBe(firstId)
+  })
+
+  it('should set version=1 and parent_version when existing concept found with equal/higher confidence', async () => {
+    // 先存一个高置信度的记忆
+    const firstId = await store.store(mockItem({
+      confidence: 0.9,
+      concepts: ['fix-applied'],
+    }))
+
+    // 再存一个低置信度的同概念记忆（不同视角）
+    const secondId = await store.store(mockItem({
+      session_id: 'session_011',
+      confidence: 0.5,
+      concepts: ['fix-applied'],
+    }))
+
+    const recent = await store.getRecent({ projectId: '/projects/test-app' })
+    const second = recent.find((m) => m.id === secondId)
+    expect(second).toBeDefined()
+    expect(second!.version).toBe(1) // different perspective, version resets
+    expect(second!.parent_version).toBe(firstId) // still linked to existing
+  })
+
+  it('should resolve conflicts by timestamp+confidence: newer higher-confidence wins', async () => {
+    // 旧记忆：低置信度
+    const oldId = await store.store(mockItem({
+      confidence: 0.5,
+      concepts: ['race-condition'],
+      created_at: '2025-01-01T00:00:00Z',
+    }))
+
+    // 新记忆：高置信度，同一概念
+    const newId = await store.store(mockItem({
+      session_id: 'session_012',
+      confidence: 0.95,
+      concepts: ['race-condition'],
+      created_at: '2025-01-10T00:00:00Z',
+    }))
+
+    const recent = await store.getRecent({ projectId: '/projects/test-app' })
+    const newItem = recent.find((m) => m.id === newId)
+    const oldItem = recent.find((m) => m.id === oldId)
+
+    // 新记忆版本更高（2），链接到旧记忆
+    expect(newItem!.version).toBe(2)
+    expect(newItem!.parent_version).toBe(oldId)
+    // 旧记忆仍保留原始版本
+    expect(oldItem!.version).toBe(1)
+    expect(oldItem!.parent_version).toBeNull()
+  })
+
+  // --- pruneWithDecay tests ---
+
+  it('should pruneWithDecay remove old low-confidence items', async () => {
+    // 存一条非常旧的低置信度记忆（100天前）
+    await store.store(mockItem({
+      confidence: 0.3,
+      created_at: new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString(),
+    }))
+
+    // 存一条较新的高置信度记忆
+    await store.store(mockItem({
+      session_id: 'session_013',
+      confidence: 0.9,
+      created_at: new Date().toISOString(),
+    }))
+
+    const deleted = await store.pruneWithDecay('/projects/test-app', {
+      baseHalfLife: 30,
+      minConfidence: 0.1,
+    })
+
+    expect(deleted).toBeGreaterThanOrEqual(1)
+
+    const remaining = await store.getRecent({ projectId: '/projects/test-app' })
+    // 只保留高置信度的新记忆
+    expect(remaining.length).toBe(1)
+    expect(remaining[0].confidence).toBe(0.9)
+  })
+
+  it('should pruneWithDecay keep recent items regardless of confidence', async () => {
+    // 存一条近期的低置信度记忆
+    await store.store(mockItem({
+      confidence: 0.4,
+      created_at: new Date().toISOString(),
+    }))
+
+    const deleted = await store.pruneWithDecay('/projects/test-app', {
+      baseHalfLife: 30,
+      minConfidence: 0.1,
+    })
+
+    expect(deleted).toBe(0)
+
+    const remaining = await store.getRecent({ projectId: '/projects/test-app' })
+    expect(remaining.length).toBe(1)
+  })
+
+  it('should pruneWithDecay enforce maxItems limit', async () => {
+    // 存多条近期记忆，超出 maxItems
+    const items = []
+    for (let i = 0; i < 5; i++) {
+      items.push(mockItem({
+        session_id: `session_decay_${i}`,
+        confidence: 0.5 + i * 0.1,
+        created_at: new Date().toISOString(),
+      }))
+    }
+    await store.storeMany(items)
+
+    const deleted = await store.pruneWithDecay('/projects/test-app', {
+      maxItems: 3,
+      minConfidence: 0.0, // 不按阈值删，只按数量删
+      baseHalfLife: 99999, // 衰减极慢，不会因置信度阈值删
+    })
+
+    expect(deleted).toBe(2)
+
+    const remaining = await store.getRecent({ projectId: '/projects/test-app' })
+    expect(remaining.length).toBe(3)
+    // 保留的应是置信度最高的
+    for (const m of remaining) {
+      expect(m.confidence).toBeGreaterThanOrEqual(0.7)
+    }
+  })
+
+  it('should pruneWithDecay return 0 for non-existent project', async () => {
+    const deleted = await store.pruneWithDecay('/nonexistent')
+    expect(deleted).toBe(0)
   })
 })
