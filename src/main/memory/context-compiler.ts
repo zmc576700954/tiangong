@@ -12,7 +12,7 @@
  *
  * 用法:
  *   const compiler = new ContextCompiler()
- *   const layered = compiler.compile(outputs, { ... })
+ *   const layered = await compiler.compile(outputs, { ... })
  *   const prompt = layered.render(budgetTokens)  // 在预算内逐层注入
  */
 
@@ -37,14 +37,15 @@ export class ContextCompiler {
   /**
    * 将 AgentOutput 流编译为分层上下文
    */
-  compile(
+  async compile(
     outputs: AgentOutput[],
     meta: {
       sessionId?: string
       adapterName?: string
       commandDescription?: string
+      projectId?: string
     },
-  ): LayeredContext {
+  ): Promise<LayeredContext> {
     const layers: ContextLayer[] = []
 
     // 提取纯文本输出
@@ -139,7 +140,38 @@ export class ContextCompiler {
       estimatedTokens: estimateTokens(l3Content),
     })
 
+    // --- L4: 关联历史记忆 (可变) ---
+    const l4Content = await this._buildL4(meta.projectId)
+    if (l4Content) {
+      layers.push({
+        level: 4,
+        label: 'L4-关联历史',
+        content: l4Content,
+        estimatedTokens: estimateTokens(l4Content),
+      })
+    }
+
     return { layers }
+  }
+
+  /**
+   * 构建L4层：从 MemoryStore 获取关联历史记忆
+   * 使用 this.memoryStore 懒 getter，通过 getRecent() 获取最近记忆
+   * 返回格式: "[kind] title" 每行一条，出错时返回空字符串
+   */
+  private async _buildL4(projectId?: string): Promise<string> {
+    try {
+      const recent = await this.memoryStore.getRecent({
+        projectId,
+        limit: 5,
+      })
+      if (!recent || recent.length === 0) return ''
+      return recent
+        .map((item) => `[${item.kind}] ${item.title}`)
+        .join('\n')
+    } catch {
+      return ''
+    }
   }
 
   /**
@@ -156,7 +188,7 @@ export class ContextCompiler {
 
     for (const layer of context.layers.sort((a, b) => a.level - b.level)) {
       if (used + layer.estimatedTokens <= maxTokens) {
-        const label = layer.label.replace('L1-', '').replace('L2-', '').replace('L3-', '')
+        const label = layer.label.replace(/^L\d+-/, '')
         outputParts.push(`[${label}]\n${layer.content}`)
         used += layer.estimatedTokens
       } else {
@@ -212,9 +244,8 @@ export class ContextCompiler {
     // 生成紧凑历史上下文
     if (history.length > 0) {
       historyLines.push('[Historical Context]')
-      const store = getMemoryStore()
       for (let i = 0; i < Math.min(history.length, 5); i++) {
-        const line = `  ${i + 1}. ${store.toCompactSummary(history[i])}`
+        const line = `  ${i + 1}. ${this.memoryStore.toCompactSummary(history[i])}`
         const lineTokens = estimateTokens(line)
         if (historyTokens + lineTokens > budget * historyBudgetPct) break
         historyLines.push(line)
@@ -232,13 +263,18 @@ export class ContextCompiler {
       ? [historyLines.join('\n'), currentText]
       : [currentText]
 
+    const totalDiscovery = economics.discoveryTokens + historyTokens
+    const totalRead = economics.readTokens + historyTokens
+    const totalSavings = Math.max(0, totalDiscovery - totalRead)
+
     return {
       text: allParts.join('\n\n'),
       economics: {
-        ...economics,
-        readTokens: economics.readTokens + historyTokens,
-        savingsPct: economics.discoveryTokens > 0
-          ? Math.round((economics.savings / economics.discoveryTokens) * 1000) / 10
+        discoveryTokens: totalDiscovery,
+        readTokens: totalRead,
+        savings: totalSavings,
+        savingsPct: totalDiscovery > 0
+          ? Math.round((totalSavings / totalDiscovery) * 1000) / 10
           : 0,
       },
     }
@@ -262,21 +298,34 @@ export class ContextCompiler {
       commandDescription?: string
     },
   ): Promise<{ text: string; economics: TokenEconomics }> {
-    const layered = this.compile(outputs, {
-      sessionId: options?.sessionId,
-      adapterName: options?.adapterName,
-      commandDescription: options?.commandDescription,
-    })
+    try {
+      const layered = await this.compile(outputs, {
+        sessionId: options?.sessionId,
+        adapterName: options?.adapterName,
+        commandDescription: options?.commandDescription,
+        projectId: options?.projectId,
+      })
 
-    // 获取历史记忆
-    const history = options?.projectId
-      ? await this.memoryStore.getRecent({
-          projectId: options.projectId,
-          nodeId: options?.nodeId,
-          limit: 5,
-        })
-      : []
+      // 获取历史记忆
+      const history = options?.projectId
+        ? await this.memoryStore.getRecent({
+            projectId: options.projectId,
+            nodeId: options?.nodeId,
+            limit: 5,
+          })
+        : []
 
-    return this.renderWithHistory(layered, history, budget)
+      return this.renderWithHistory(layered, history, budget)
+    } catch {
+      return {
+        text: '',
+        economics: {
+          discoveryTokens: 0,
+          readTokens: 0,
+          savings: 0,
+          savingsPct: 0,
+        },
+      }
+    }
   }
 }
