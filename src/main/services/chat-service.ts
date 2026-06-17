@@ -113,9 +113,15 @@ export class ChatService {
     await this.repo.updateThread(threadId, { updatedAt: Date.now() })
   }
 
-  async listMessages(threadId: string): Promise<ChatMessage[]> {
-    const rows = await this.repo.listMessages(threadId)
+  async listMessages(threadId: string, limit = 50, offset = 0): Promise<ChatMessage[]> {
+    const rows = await this.repo.listMessages(threadId, limit, offset)
     return rows.map((r) => this.rowToMessage(r))
+  }
+
+  async archiveStaleThreads(projectId: string, staleDays = 30): Promise<number> {
+    const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000).toISOString()
+    const result = await this.repo.archiveStaleThreads(projectId, cutoff)
+    return result
   }
 
   // ==================== Mappers ====================

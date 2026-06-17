@@ -79,9 +79,11 @@ export interface IpcApi {
   'thread:delete': (threadId: string) => Promise<void>
   'thread:search': (query: string) => Promise<AgentThread[]>
 
-  'message:list': (threadId: string) => Promise<ChatMessage[]>
+  'message:list': (threadId: string, limit?: number, offset?: number) => Promise<ChatMessage[]>
   'message:save': (threadId: string, message: ChatMessage) => Promise<void>
   'message:saveBatch': (threadId: string, messages: ChatMessage[]) => Promise<void>
+
+  'chat:archiveStale': (projectId: string, staleDays?: number) => Promise<number>
 
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>

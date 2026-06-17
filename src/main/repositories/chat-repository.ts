@@ -218,15 +218,23 @@ export class ChatRepository {
     await this.db.batch(stmts)
   }
 
-  async listMessages(threadId: string): Promise<ChatMessageRow[]> {
+  async listMessages(threadId: string, limit = 50, offset = 0): Promise<ChatMessageRow[]> {
     const result = await this.db.execute({
-      sql: 'SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC',
-      args: [threadId],
+      sql: 'SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
+      args: [threadId, limit, offset],
     })
     return result.rows.map(toChatMessageRow)
   }
 
   async deleteMessagesByThread(threadId: string): Promise<void> {
     await this.db.execute({ sql: 'DELETE FROM chat_messages WHERE thread_id = ?', args: [threadId] })
+  }
+
+  async archiveStaleThreads(projectId: string, cutoff: string): Promise<number> {
+    const result = await this.db.execute({
+      sql: `UPDATE chat_threads SET status = 'archived' WHERE graph_id = ? AND status != 'archived' AND updated_at < ?`,
+      args: [projectId, cutoff],
+    })
+    return result.rowsAffected
   }
 }

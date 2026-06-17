@@ -17,6 +17,7 @@ const mockRepo: MockChatRepository = {
   saveMessages: vi.fn(),
   listMessages: vi.fn(),
   deleteMessagesByThread: vi.fn(),
+  archiveStaleThreads: vi.fn(),
 }
 
 // Mock generateId to return predictable IDs

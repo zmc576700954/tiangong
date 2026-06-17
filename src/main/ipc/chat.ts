@@ -31,8 +31,8 @@ export function registerChatHandlers(chatService: ChatService, typedHandle: Type
     return chatService.searchThreads(query)
   })
 
-  typedHandle('message:list', async (_, threadId) => {
-    return chatService.listMessages(threadId)
+  typedHandle('message:list', async (_, threadId, limit, offset) => {
+    return chatService.listMessages(threadId, limit, offset)
   })
 
   typedHandle('message:save', async (_, threadId, message) => {
@@ -41,5 +41,9 @@ export function registerChatHandlers(chatService: ChatService, typedHandle: Type
 
   typedHandle('message:saveBatch', async (_, threadId, messages) => {
     return chatService.saveMessages(threadId, messages)
+  })
+
+  typedHandle('chat:archiveStale', async (_, projectId, staleDays) => {
+    return chatService.archiveStaleThreads(projectId, staleDays)
   })
 }
