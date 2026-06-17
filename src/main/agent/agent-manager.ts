@@ -30,6 +30,7 @@ import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
 import { readMemory } from '../mindmap-agent/memory'
 import { MemoryStore } from '../memory'
+import { PromptOrchestrator } from '../memory/prompt-orchestrator'
 import { PipelineRunner } from '../memory/pipeline'
 import { getModeManager } from './mode-manager'
 import type { ModeManager } from './mode-manager'
@@ -786,7 +787,26 @@ export class AgentManager {
         : Promise.resolve(undefined as string | undefined),
     ])
 
-    // Store resolved contexts on the session so adapter can access them
+    // Use PromptOrchestrator to assemble the full prompt from all context layers
+    const sessionState = this.sessionStates.get(sessionId)
+    const commandType = (command as AgentCommand).type
+    const commandText = typeof command === 'string' ? command : command.description
+
+    const orchestrator = new PromptOrchestrator()
+    const assembled = await orchestrator.assemble({
+      sessionId,
+      adapterName: sessionState?.adapterName ?? '',
+      projectId: sessionConfig?.workingDirectory,
+      nodeId: sessionConfig?.nodeId,
+      nodeTitle: sessionConfig?.nodeTitle,
+      userCommand: commandText,
+      totalBudget: this.getOptimalPromptBudget(commandType),
+      sessionConfig,
+      resolvedContexts,
+      codeContext: codeContext,
+    })
+
+    // Store assembled prompt on the adapter so it can inject it into the session
     const adapter = this.router.resolve(sessionId)
     if (adapter) {
       if (resolvedContexts.length > 0) {
@@ -795,27 +815,16 @@ export class AgentManager {
       if (codeContext) {
         adapter.setCodeContext(sessionId, codeContext)
       }
-      // 合并项目记忆与会话历史记忆，统一注入 Agent 上下文
-      const modeContext = sessionConfig?.workingDirectory
-        ? this.modeManager.formatModePromptSection(sessionConfig.workingDirectory)
-        : undefined
-      const combinedMemory = [memoryContext, sessionHistoryContext, modeContext]
-        .filter((s): s is string => typeof s === 'string' && s.length > 0)
-        .join('\n\n')
-      if (combinedMemory) {
-        adapter.setMemoryContext(sessionId, combinedMemory)
-      }
+      // Set the full assembled prompt as memory context for the adapter
+      adapter.setMemoryContext(sessionId, assembled.text)
     }
 
     await this.sendCommand(sessionId, command)
 
-    // 记录 Prompt 质量反馈所需的指标
+    // Record Prompt quality feedback metrics
     const state = this.sessionStates.get(sessionId)
     if (state) {
-      const combinedLen = [resolvedContexts, codeContext, memoryContext, sessionHistoryContext]
-        .filter((s): s is string | ResolvedContext[] => !!s)
-        .reduce((sum, s) => sum + (typeof s === 'string' ? s.length : s.reduce((a, c) => a + c.content.length, 0)), 0)
-      state.promptTokenEstimate = estimateTokens(combinedLen.toString())
+      state.promptTokenEstimate = assembled.totalTokens
       state.contextCount = resolvedContexts.length
     }
   }
