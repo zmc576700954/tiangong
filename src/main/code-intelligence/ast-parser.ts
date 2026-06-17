@@ -6,6 +6,9 @@
 import * as ts from 'typescript'
 import type { SymbolInfo, ImportEdge } from '@shared/types'
 import { generateId } from '../shared/env'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('ast-parser')
 
 export interface ParseResult {
   symbols: SymbolInfo[]
@@ -44,38 +47,119 @@ export class AstParser {
 
   /**
    * 解析文件内容，返回符号和 import 关系
+   * 支持 .vue SFC 文件，自动提取 <script> 部分递归解析
+   * 解析失败时回退到 _minimalExtract
    */
   parse(filePath: string, sourceCode: string): ParseResult {
-    const sourceFile = ts.createSourceFile(
-      filePath,
-      sourceCode,
-      this.compilerOptions.target ?? ts.ScriptTarget.ES2020,
-      true,
-      this.getScriptKind(filePath)
-    )
+    // Vue SFC 支持：提取 <script> 部分后递归解析
+    if (filePath.endsWith('.vue')) {
+      return this._parseVueSfc(filePath, sourceCode)
+    }
 
+    try {
+      const sourceFile = ts.createSourceFile(
+        filePath,
+        sourceCode,
+        this.compilerOptions.target ?? ts.ScriptTarget.ES2020,
+        true,
+        this.getScriptKind(filePath)
+      )
+
+      const symbols: SymbolInfo[] = []
+      const imports: ImportEdge[] = []
+      const exports: string[] = []
+
+      const visit = (node: ts.Node, parentId?: string) => {
+        const symbol = this.extractSymbol(node, filePath, sourceCode, parentId)
+        if (symbol) {
+          symbols.push(symbol)
+          if (symbol.isExported) exports.push(symbol.name)
+        }
+
+        if (ts.isImportDeclaration(node)) {
+          const importEdge = this.extractImport(node, filePath)
+          if (importEdge) imports.push(importEdge)
+        }
+
+        // 如果当前节点创建了新的父作用域（如 class），将其 id 传给子节点
+        const childParentId = symbol?.id ?? parentId
+        ts.forEachChild(node, (child) => visit(child, childParentId))
+      }
+
+      visit(sourceFile)
+
+      return { symbols, imports, exports }
+    } catch (err) {
+      logger.warn('AST parse failed, falling back to minimal extract:', filePath, err)
+      return this._minimalExtract(filePath, sourceCode)
+    }
+  }
+
+  /**
+   * 解析 Vue SFC 文件：用正则提取 <script> 内容，检测 lang 后递归调用 parse()
+   */
+  private _parseVueSfc(filePath: string, sourceCode: string): ParseResult {
+    const empty: ParseResult = { symbols: [], imports: [], exports: [] }
+
+    // 提取 <script> 或 <script lang="ts"> 内容
+    const scriptMatch = sourceCode.match(/<script[^>]*>([\s\S]*?)<\/script>/)
+    if (!scriptMatch) {
+      return empty
+    }
+
+    const scriptContent = scriptMatch[1]
+    const scriptTag = scriptMatch[0]
+
+    // 检测 lang 属性
+    const langMatch = scriptTag.match(/lang=["'](\w+)["']/)
+    const lang = langMatch?.[1] ?? 'js'
+
+    // 根据语言确定虚拟文件路径
+    let virtualPath = filePath
+    if (lang === 'ts' || lang === 'tsx') {
+      virtualPath = filePath + '.' + lang
+    } else {
+      virtualPath = filePath + '.js'
+    }
+
+    try {
+      return this.parse(virtualPath, scriptContent)
+    } catch (err) {
+      logger.warn('Vue SFC parse failed, falling back to minimal extract:', filePath, err)
+      return this._minimalExtract(virtualPath, scriptContent)
+    }
+  }
+
+  /**
+   * 最小化提取：仅提取文件级导出声明（export default）
+   * 作为 AST 解析失败时的兜底方案
+   */
+  private _minimalExtract(filePath: string, sourceCode: string): ParseResult {
     const symbols: SymbolInfo[] = []
     const imports: ImportEdge[] = []
     const exports: string[] = []
 
-    const visit = (node: ts.Node, parentId?: string) => {
-      const symbol = this.extractSymbol(node, filePath, sourceCode, parentId)
-      if (symbol) {
-        symbols.push(symbol)
-        if (symbol.isExported) exports.push(symbol.name)
+    // 检测 export default 语句
+    const exportDefaultMatch = sourceCode.match(
+      /export\s+default\s+(?:function\s+(\w+)|class\s+(\w+)|(\w+))/
+    )
+    if (exportDefaultMatch) {
+      const name = exportDefaultMatch[1] ?? exportDefaultMatch[2] ?? exportDefaultMatch[3]
+      if (name) {
+        const kind = exportDefaultMatch[1] ? 'function' : exportDefaultMatch[2] ? 'class' : 'variable'
+        const line = sourceCode.substring(0, sourceCode.indexOf('export default')).split('\n').length
+        symbols.push({
+          id: generateId('symbol'),
+          name,
+          kind: kind as SymbolInfo['kind'],
+          filePath,
+          line,
+          column: 0,
+          isExported: true,
+        })
+        exports.push(name)
       }
-
-      if (ts.isImportDeclaration(node)) {
-        const importEdge = this.extractImport(node, filePath)
-        if (importEdge) imports.push(importEdge)
-      }
-
-      // 如果当前节点创建了新的父作用域（如 class），将其 id 传给子节点
-      const childParentId = symbol?.id ?? parentId
-      ts.forEachChild(node, (child) => visit(child, childParentId))
     }
-
-    visit(sourceFile)
 
     return { symbols, imports, exports }
   }
