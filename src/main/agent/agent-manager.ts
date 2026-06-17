@@ -32,12 +32,9 @@ import { readMemory } from '../mindmap-agent/memory'
 import { MemoryStore } from '../memory'
 import { PromptOrchestrator } from '../memory/prompt-orchestrator'
 import { PipelineRunner } from '../memory/pipeline'
-import { getModeManager } from './mode-manager'
-import type { ModeManager } from './mode-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { createLogger } from '../shared/logger'
 import os from 'node:os'
-import { estimateTokens } from '../shared/token-utils'
 
 const logger = createLogger('AgentManager')
 
@@ -119,12 +116,6 @@ export class AgentManager {
   }
   /** 会话输出缓冲区：sessionId → AgentOutput[]（用于记忆提取） */
   private sessionOutputBuffers = new Map<string, AgentOutput[]>()
-  /** 模式管理器（懒初始化，与 MemoryStore 模式一致） */
-  private _modeManager?: ModeManager
-  private get modeManager(): ModeManager {
-    if (!this._modeManager) this._modeManager = getModeManager()
-    return this._modeManager
-  }
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -741,7 +732,7 @@ export class AgentManager {
     const sessionConfig = this.sessionStates.get(sessionId)?.config
 
     // 并行执行上下文解析、智能代码解析、项目记忆加载、会话历史记忆（四者互不依赖）
-    const [resolvedContexts, codeContext, memoryContext, sessionHistoryContext] = await Promise.all([
+    const [resolvedContexts, codeContext, _memoryContext, _sessionHistoryContext] = await Promise.all([
       // 标准上下文解析（根据命令类型自适应 Token 预算）
       (contextRefs && contextRefs.length > 0)
         ? this.contextResolver.resolve(contextRefs, CONTEXT_COMPLEXITY_BUDGET[(command as AgentCommand).type] ?? 8000, {

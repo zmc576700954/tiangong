@@ -32,7 +32,7 @@ vi.mock('./context-compiler', () => {
           { level: 3, label: 'FullOutput', content: 'Full output content here with details.', estimatedTokens: 15 },
         ],
       })),
-      render: vi.fn((_context: any, maxTokens: number) => ({
+      render: vi.fn((_context: any, _maxTokens: number) => ({
         text: 'Summary of output\nKey fact one. Key fact two.\nFull output content here with details.',
         economics: { discoveryTokens: 30, readTokens: 20, savings: 10, savingsPct: 25 },
       })),
