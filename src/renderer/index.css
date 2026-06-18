@@ -252,6 +252,43 @@
   background-color: #f8fafc;
 }
 
+/* Dark mode node status styles */
+.dark .node-status-draft {
+  border-color: #64748b;
+  background-color: #1e293b;
+}
+
+.dark .node-status-confirmed {
+  border-color: #60a5fa;
+  background-color: #1e3a5f;
+}
+
+.dark .node-status-developing {
+  border-color: #fbbf24;
+  background-color: #451a03;
+}
+
+.dark .node-status-testing {
+  border-color: #a78bfa;
+  background-color: #2e1065;
+}
+
+.dark .node-status-review {
+  border-color: #22d3ee;
+  background-color: #164e63;
+}
+
+.dark .node-status-published {
+  border-color: #4ade80;
+  background-color: #14532d;
+}
+
+.dark .node-status-placeholder {
+  border-style: dashed;
+  border-color: #475569;
+  background-color: #0f172a;
+}
+
 /* 滚动条样式 */
 ::-webkit-scrollbar {
   width: 6px;
@@ -305,8 +342,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
+    animation-duration: 0ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: 0ms !important;
   }
 }

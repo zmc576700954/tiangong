@@ -172,6 +172,10 @@ function compressScopeByPriority(
   // binary-search downward if still over.
   let charBudget = maxTokens * 4
   let truncated = text.slice(0, charBudget)
+  // Fix potential surrogate pair split at boundary
+  if (truncated.length < text.length && truncated.charCodeAt(truncated.length - 1) >= 0xD800) {
+    truncated = truncated.slice(0, -1)
+  }
   while (estimate(truncated) > maxTokens && charBudget > 0) {
     charBudget = Math.floor(charBudget * 0.9)
     truncated = text.slice(0, charBudget)
@@ -294,9 +298,9 @@ export class PromptOrchestrator {
     }
 
     // Re-compress context if its budget shrank after reallocation
-    if (contextTokens > adjustedBudgets[2] && adjustedBudgets[2] > 0) {
+    if (contextTokens > adjustedBudgets[2] && adjustedBudgets[2] > 0 && outputs && outputs.length > 0) {
       try {
-        const layered = await this.contextCompiler.compile(outputs!, {
+        const layered = await this.contextCompiler.compile(outputs, {
           sessionId,
           adapterName,
           commandDescription: userCommand,
@@ -312,28 +316,25 @@ export class PromptOrchestrator {
     }
 
     // --- Inter-layer dedup: scope vs context ---
-    // If Jaccard similarity > 0.8, remove duplicate lines from context (lower priority).
+    // Use line-level dedup instead of word-level Jaccard for performance.
+    // Remove context lines that already appear in scope (lower priority layer).
     if (scopeText && contextText) {
-      const scopeWords = new Set(scopeText.toLowerCase().split(/\s+/))
-      const contextWords = new Set(contextText.toLowerCase().split(/\s+/))
-      const intersection = new Set([...scopeWords].filter((w) => contextWords.has(w)))
-      const union = new Set([...scopeWords, ...contextWords])
-      const jaccard = union.size > 0 ? intersection.size / union.size : 0
-
-      if (jaccard > 0.8) {
-        const scopeLines = new Set(scopeText.split('\n').map((l) => l.trim().toLowerCase()))
-        const contextLines = contextText.split('\n')
-        const dedupedLines = contextLines.filter(
-          (line) => !scopeLines.has(line.trim().toLowerCase()),
+      const scopeLineSet = new Set<string>()
+      for (const line of scopeText.split('\n')) {
+        const trimmed = line.trim().toLowerCase()
+        if (trimmed) scopeLineSet.add(trimmed)
+      }
+      const contextLines = contextText.split('\n')
+      const dedupedLines = contextLines.filter(
+        (line) => !scopeLineSet.has(line.trim().toLowerCase()),
+      )
+      const removedCount = contextLines.length - dedupedLines.length
+      if (removedCount > 0) {
+        contextText = dedupedLines.join('\n')
+        contextTokens = estimateTokens(contextText)
+        logger.info(
+          `Inter-layer dedup: removed ${removedCount} duplicate lines from context`,
         )
-        const removedCount = contextLines.length - dedupedLines.length
-        if (removedCount > 0) {
-          contextText = dedupedLines.join('\n')
-          contextTokens = estimateTokens(contextText)
-          logger.info(
-            `Inter-layer dedup: removed ${removedCount} duplicate lines from context (Jaccard=${jaccard.toFixed(3)})`,
-          )
-        }
       }
     }
 

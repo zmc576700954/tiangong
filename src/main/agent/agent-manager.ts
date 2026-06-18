@@ -685,22 +685,22 @@ export class AgentManager {
           this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
         }
 
-        // Task 2.4.1: placeholder→developing auto-trigger
-        // When an 'implement' session starts on a placeholder node, auto-advance to developing
+        // placeholder→developing auto-trigger
+        // NODE_STATUS_TRANSITIONS already allows placeholder→developing for feature nodes
         if (config.nodeId && config.commandType === 'implement') {
           try {
-            const { NodeRepository } = await import('../repositories/node-repository')
             const { getClient } = await import('../database')
-            const nodeRepo = new NodeRepository(getClient())
-            const currentStatus = await nodeRepo.getStatus(config.nodeId)
-            if (currentStatus === 'placeholder') {
-              // placeholder → confirmed → developing (follow valid state machine path)
-              await nodeRepo.update(config.nodeId, { status: 'confirmed' as any })
-              await nodeRepo.update(config.nodeId, { status: 'developing' as any })
+            const db = getClient()
+            // Single atomic UPDATE — avoids partial state if second step fails
+            const result = await db.execute({
+              sql: "UPDATE nodes SET status = 'developing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'placeholder'",
+              args: [config.nodeId],
+            })
+            if ((result as any).rowsAffected > 0) {
               this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
             }
-          } catch {
-            // Non-critical: status update failure should not block session creation
+          } catch (err) {
+            logger.warn(`Failed to auto-advance placeholder node ${config.nodeId}:`, err)
           }
         }
 

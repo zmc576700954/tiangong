@@ -197,11 +197,15 @@ export class GraphRepository {
     await this.db.batch(nodeInserts, 'write')
 
     // Pass 2: 批量更新 parent_id 映射
+    const rowById = new Map<string, Record<string, unknown>>()
+    for (const row of nodes.rows) {
+      rowById.set(rowStr(row, 'id'), row as Record<string, unknown>)
+    }
     const parentUpdates: Array<{ sql: string; args: [string, string] }> = []
     for (const [oldId, newId] of idMap) {
-      const row = nodes.rows.find(r => rowStr(r, 'id') === oldId)
+      const row = rowById.get(oldId)
       if (!row) continue
-      const oldParentId = rowOptStr(row, 'parent_id')
+      const oldParentId = rowOptStr(row as any, 'parent_id')
       if (oldParentId && idMap.has(oldParentId)) {
         parentUpdates.push({
           sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',

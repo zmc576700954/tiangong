@@ -11,7 +11,7 @@ import type { AgentOutput, ToolCallBlock } from '@shared/types'
 export type RiskLevel = 'high' | 'medium' | 'low'
 
 /** Config file patterns that are considered medium-risk when modified */
-const CONFIG_PATTERNS = /\.(json|yaml|yml|toml|ini|env|conf|config|rc)$|\/\.?(tsconfig|vite\.config|webpack\.config|rollup\.config|babel\.config|jest\.config|eslint|prettier)|\.env(\.\w+)?$/i
+const CONFIG_PATTERNS = /\.(json[c]?|yaml|yml|toml|ini|conf|config)$|\/\.?(tsconfig|vite\.config|webpack\.config|rollup\.config|babel\.config|jest\.config|eslint|prettier)\.?/i
 
 /**
  * Classifies a file_change output into a risk level with reason.
@@ -32,7 +32,8 @@ export function classifyRiskLevel(output: AgentOutput): { level: RiskLevel; reas
 
   // Config file modification is medium-risk
   const filePath = output.filePath ?? ''
-  if (filePath && CONFIG_PATTERNS.test(filePath)) {
+  const isEnvFile = /\/\.env(?:\.\w+)?$|^\.env(?:\.\w+)?$/.test(filePath)
+  if (filePath && (CONFIG_PATTERNS.test(filePath) || isEnvFile)) {
     return { level: 'medium', reason: `Config file modification: ${filePath}` }
   }
 

@@ -10,62 +10,6 @@
  * - nodeSelected: 节点选中 → 其他面板响应
  */
 
-type EventHandler = (...args: any[]) => void
-
-class EventBus {
-  private handlers = new Map<string, Set<EventHandler>>()
-
-  /**
-   * 订阅事件，返回取消订阅函数
-   */
-  on(event: string, handler: EventHandler): () => void {
-    let set = this.handlers.get(event)
-    if (!set) {
-      set = new Set()
-      this.handlers.set(event, set)
-    }
-    set.add(handler)
-    return () => {
-      set!.delete(handler)
-      if (set!.size === 0) this.handlers.delete(event)
-    }
-  }
-
-  /**
-   * 发布事件
-   */
-  emit(event: string, ...args: any[]): void {
-    const set = this.handlers.get(event)
-    if (!set) return
-    // Copy handlers before iteration to allow safe removal during iteration
-    const handlers = Array.from(set)
-    for (const handler of handlers) {
-      try {
-        handler(...args)
-      } catch (err) {
-        console.warn(`[EventBus] Error in handler for ${event}:`, err)
-      }
-    }
-  }
-
-  /**
-   * 移除某事件的所有处理器
-   */
-  offAll(event: string): void {
-    this.handlers.delete(event)
-  }
-
-  /**
-   * 清理所有事件（用于热重载或 Store 重置）
-   */
-  clear(): void {
-    this.handlers.clear()
-  }
-}
-
-/** 全局单例事件总线 */
-export const eventBus = new EventBus()
-
 /** 预定义事件名常量 */
 export const Events = {
   AGENT_STATUS_CHANGE: 'agent:statusChange',
@@ -91,3 +35,88 @@ export const Events = {
   OPEN_ADAPTER_SELECTOR: 'adapter:openSelector',
   ADAPTER_RECOVERED: 'adapter:recovered',
 } as const
+
+export type EventName = (typeof Events)[keyof typeof Events]
+
+/** Event parameter types — maps event names to their handler signatures */
+interface EventParamMap {
+  [Events.AGENT_STATUS_CHANGE]: [nodeId: string, status: string]
+  [Events.GRAPH_CHANGED]: []
+  [Events.NODE_SELECTED]: [nodeId: string]
+  [Events.THREAD_CREATED]: [threadId: string]
+  [Events.THREAD_DELETED]: [threadId: string]
+  [Events.NODE_STATUS_REJECTED]: [nodeId: string, from: string, to: string]
+  [Events.SESSION_STARTED]: [sessionId: string]
+  [Events.SESSION_TERMINATED]: [sessionId: string]
+  [Events.SESSION_CRASHED]: [sessionId: string]
+  [Events.SESSION_RECOVERED]: [sessionId: string, newSessionId: string]
+  [Events.SESSION_RECOVERY_FAILED]: [sessionId: string, reason: string]
+  [Events.STREAMING_CHUNK]: [threadId: string, chunk: string]
+  [Events.MESSAGE_SENT]: [threadId: string]
+  [Events.MESSAGE_FAILED]: [threadId: string, error: string]
+  [Events.ADAPTER_HEALTH_CHANGE]: [adapterName: string, status: string]
+  [Events.CONFIRMATION_REQUIRED]: [payload: unknown]
+  [Events.CONFIRMATION_RESPONDED]: [payload: unknown]
+  [Events.GENERATION_PROGRESS]: [payload: unknown]
+  [Events.NODE_STATUS_CHANGE]: [nodeId: string, oldStatus: string, newStatus: string]
+  [Events.OPEN_ADAPTER_SELECTOR]: []
+  [Events.ADAPTER_RECOVERED]: [adapterName: string]
+}
+
+type EventHandler<E extends EventName> = E extends keyof EventParamMap
+  ? (...args: EventParamMap[E]) => void
+  : (...args: unknown[]) => void
+
+class EventBus {
+  private handlers = new Map<string, Set<EventHandler<any>>>()
+
+  /**
+   * 订阅事件，返回取消订阅函数
+   */
+  on<E extends EventName>(event: E, handler: EventHandler<E>): () => void {
+    let set = this.handlers.get(event)
+    if (!set) {
+      set = new Set()
+      this.handlers.set(event, set)
+    }
+    set.add(handler)
+    return () => {
+      set!.delete(handler)
+      if (set!.size === 0) this.handlers.delete(event)
+    }
+  }
+
+  /**
+   * 发布事件
+   */
+  emit(event: EventName, ...args: unknown[]): void {
+    const set = this.handlers.get(event)
+    if (!set) return
+    // Copy handlers before iteration to allow safe removal during iteration
+    const handlers = Array.from(set)
+    for (const handler of handlers) {
+      try {
+        handler(...args)
+      } catch (err) {
+        console.warn(`[EventBus] Error in handler for ${event}:`, err)
+      }
+    }
+  }
+
+  /**
+   * 移除某事件的所有处理器
+   */
+  offAll(event: EventName): void {
+    this.handlers.delete(event)
+  }
+
+  /**
+   * 清理所有事件（用于热重载或 Store 重置）
+   */
+  clear(): void {
+    this.handlers.clear()
+  }
+}
+
+/** 全局单例事件总线 */
+export const eventBus = new EventBus()

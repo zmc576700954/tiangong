@@ -174,9 +174,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   // 生成进度事件监听
   useEffect(() => {
-    const unsub = eventBus.on(Events.GENERATION_PROGRESS, (data: { stage: string; progress: number }) => {
-      setGenProgress(data)
-      if (data.progress >= 100) {
+    const unsub = eventBus.on(Events.GENERATION_PROGRESS, (data) => {
+      const payload = data as { stage: string; progress: number }
+      setGenProgress(payload)
+      if (payload.progress >= 100) {
         setTimeout(() => setGenProgress(null), 1500)
       }
     })

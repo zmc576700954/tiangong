@@ -90,7 +90,7 @@ export class SessionRecoveryManager {
           `MCP adapter recovery: injecting context for session ${ctx.sessionId}`,
         )
         // Store the context block so AgentManager can inject it as contextSummary
-        this._pendingContextInjections.set(ctx.sessionId, contextBlock)
+        this._pendingContextInjections.set(ctx.sessionId, { text: contextBlock, createdAt: Date.now() })
         // Return null to signal "create new session" — AgentManager will
         // use the pending context injection.
         return null
@@ -99,13 +99,27 @@ export class SessionRecoveryManager {
   }
 
   /** Context text to inject on next session creation (set by MCP adapter strategy) */
-  private _pendingContextInjections = new Map<string, string>()
+  private _pendingContextInjections = new Map<string, { text: string; createdAt: number }>()
 
   /** Consume and clear the pending context injection text */
   consumePendingContext(sessionId: string): string | null {
-    const ctx = this._pendingContextInjections.get(sessionId)
+    const entry = this._pendingContextInjections.get(sessionId)
     this._pendingContextInjections.delete(sessionId)
-    return ctx ?? null
+    // Only return if not expired (1 hour TTL)
+    if (entry && Date.now() - entry.createdAt < 3600000) {
+      return entry.text
+    }
+    return null
+  }
+
+  /** Set a pending context injection for a session */
+  setPendingContext(sessionId: string, text: string): void {
+    this._pendingContextInjections.set(sessionId, { text, createdAt: Date.now() })
+    // Clean up stale entries
+    const now = Date.now()
+    for (const [key, val] of this._pendingContextInjections) {
+      if (now - val.createdAt > 3600000) this._pendingContextInjections.delete(key)
+    }
   }
 
   registerStrategy(strategy: RecoveryStrategy): void {
@@ -150,6 +164,7 @@ export class SessionRecoveryManager {
       if (newSessionId) {
         logger.info(`Session ${sessionId} recovered via ${adapterName} strategy (attempt ${attempts + 1})`)
         this.recoveryAttempts.delete(sessionId)
+        this.recoveryAttemptTimestamps.delete(sessionId)
         this._notifyRenderer({
           type: 'SESSION_RECOVERED',
           sessionId,
@@ -160,6 +175,7 @@ export class SessionRecoveryManager {
         // MCP adapter case: new session needed with context injection
         logger.info(`Session ${sessionId} requires new session with context injection via ${adapterName} strategy (attempt ${attempts + 1})`)
         this.recoveryAttempts.delete(sessionId)
+        this.recoveryAttemptTimestamps.delete(sessionId)
         this._notifyRenderer({
           type: 'SESSION_RECOVERED',
           sessionId,

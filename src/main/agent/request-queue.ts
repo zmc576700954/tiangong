@@ -34,11 +34,18 @@ interface QueuedItem {
   status: 'queued' | 'executing'
 }
 
+const DEDUP_CLEANUP_INTERVAL_MS = 60_000
+const DEDUP_MAX_AGE_MS = 120_000
+
 export class RequestQueue {
   private _queues = new Map<string, QueuedItem[]>()
   private _config: RequestQueueConfig
   private _dedupMap = new Map<string, number>()
   private _dedupWindowMs: number
+  private _drainLocks = new Map<string, Promise<void>>()
+  private _pendingCount = 0
+  private _executingCount = 0
+  private _lastDedupCleanup = 0
 
   constructor(config: RequestQueueConfig) {
     this._config = config
@@ -46,6 +53,8 @@ export class RequestQueue {
   }
 
   enqueue(req: QueueRequest): boolean {
+    this._cleanupDedupIfNeeded()
+
     if (req.nodeId) {
       const dedupKey = `${req.nodeId}:${req.command}`
       const lastTime = this._dedupMap.get(dedupKey)
@@ -65,6 +74,7 @@ export class RequestQueue {
     const queue = this._getQueue(req.adapterName)
     queue.push(item)
     queue.sort((a, b) => b.request.priority - a.request.priority)
+    this._pendingCount++
     return true
   }
 
@@ -80,21 +90,27 @@ export class RequestQueue {
 
   cancel(requestId: string): boolean {
     for (const [, queue] of this._queues) {
-      const idx = queue.findIndex(i => i.request.id === requestId && i.status === 'queued')
+      const idx = queue.findIndex(i => i.request.id === requestId)
       if (idx !== -1) {
-        queue.splice(idx, 1)
-        return true
+        const item = queue[idx]
+        if (item.status === 'queued') {
+          item.request.abortController?.abort()
+          queue.splice(idx, 1)
+          this._pendingCount--
+          return true
+        }
+        // For executing requests, signal abort so executor can stop
+        if (item.status === 'executing') {
+          item.request.abortController?.abort()
+          return true
+        }
       }
     }
     return false
   }
 
   size(): number {
-    let total = 0
-    for (const queue of this._queues.values()) {
-      total += queue.filter(i => i.status === 'queued').length
-    }
-    return total
+    return this._pendingCount
   }
 
   /**
@@ -106,10 +122,7 @@ export class RequestQueue {
    *   > 5: 'high'   — 高负载，自动延长队列超时
    */
   getSystemLoad(): 'low' | 'medium' | 'high' {
-    let count = 0
-    for (const queue of this._queues.values()) {
-      count += queue.filter(i => i.status === 'queued' || i.status === 'executing').length
-    }
+    const count = this._pendingCount + this._executingCount
     if (count < 2) return 'low'
     if (count <= 5) return 'medium'
     return 'high'
@@ -136,26 +149,70 @@ export class RequestQueue {
     return queue
   }
 
+  /** Periodically clean up stale dedup entries to prevent memory leaks */
+  private _cleanupDedupIfNeeded(): void {
+    const now = Date.now()
+    if (now - this._lastDedupCleanup < DEDUP_CLEANUP_INTERVAL_MS) return
+    this._lastDedupCleanup = now
+    const cutoff = now - DEDUP_MAX_AGE_MS
+    for (const [key, timestamp] of this._dedupMap) {
+      if (timestamp < cutoff) this._dedupMap.delete(key)
+    }
+  }
+
+  /**
+   * Drain one adapter's queue with per-adapter mutex to prevent
+   * concurrent drains from exceeding maxConcurrent.
+   */
   private async _drainAdapter(adapterName: string): Promise<void> {
+    // Wait for any in-progress drain on this adapter
+    const existing = this._drainLocks.get(adapterName)
+    if (existing) {
+      await existing
+    }
+
+    const drainPromise = this._doDrainAdapter(adapterName)
+    this._drainLocks.set(adapterName, drainPromise)
+    try {
+      await drainPromise
+    } finally {
+      this._drainLocks.delete(adapterName)
+    }
+  }
+
+  private async _doDrainAdapter(adapterName: string): Promise<void> {
     const queue = this._getQueue(adapterName)
     const maxConcurrent = this._config.maxConcurrent
-    let active = 0
+    const inFlight = new Set<Promise<void>>()
 
     while (queue.some(i => i.status === 'queued')) {
-      if (active >= maxConcurrent) break
+      if (inFlight.size >= maxConcurrent) {
+        await Promise.race(inFlight)
+      }
+
       const next = queue.find(i => i.status === 'queued')
       if (!next) break
       next.status = 'executing'
-      active++
-      try {
-        await this._config.executor(next.request)
-      } catch (error) {
-        logger.warn(`Request ${next.request.id} failed:`, error)
-      } finally {
-        active--
-        const idx = queue.indexOf(next)
-        if (idx !== -1) queue.splice(idx, 1)
-      }
+      this._pendingCount--
+      this._executingCount++
+
+      const task: Promise<void> = this._config.executor(next.request)
+        .then(() => {}) // Normalize to Promise<void>
+        .catch((error) => {
+          logger.warn(`Request ${next.request.id} failed:`, error)
+        })
+        .finally(() => {
+          this._executingCount--
+          const idx = queue.indexOf(next)
+          if (idx !== -1) queue.splice(idx, 1)
+        })
+
+      inFlight.add(task)
+      task.finally(() => inFlight.delete(task))
+    }
+
+    if (inFlight.size > 0) {
+      await Promise.allSettled(inFlight)
     }
   }
 }

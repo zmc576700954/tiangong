@@ -1,8 +1,28 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { Light as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import ts from 'react-syntax-highlighter/dist/esm/languages/prism/typescript'
+import js from 'react-syntax-highlighter/dist/esm/languages/prism/javascript'
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python'
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css'
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json'
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash'
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql'
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown'
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import React, { useState, useCallback } from 'react'
+
+// Register only the languages we need
+SyntaxHighlighter.registerLanguage('typescript', ts)
+SyntaxHighlighter.registerLanguage('javascript', js)
+SyntaxHighlighter.registerLanguage('python', python)
+SyntaxHighlighter.registerLanguage('css', css)
+SyntaxHighlighter.registerLanguage('json', json)
+SyntaxHighlighter.registerLanguage('bash', bash)
+SyntaxHighlighter.registerLanguage('sql', sql)
+SyntaxHighlighter.registerLanguage('markdown', markdown)
+SyntaxHighlighter.registerLanguage('yaml', yaml)
 import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'

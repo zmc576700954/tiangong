@@ -4,6 +4,7 @@ import { useThreadStore } from '../threadStore'
 import { useAdapterStore } from '../adapterStore'
 import { useGraphStore } from '../graphStore'
 
+let threadCounter = 0
 vi.stubGlobal('window', {
   electronAPI: {
     'agent:startSession': vi.fn().mockResolvedValue({ sessionId: 's1', adapterUsed: 'claude-code', fallbackHistory: [{ adapter: 'claude-code', reason: '', success: true }] }),
@@ -11,7 +12,10 @@ vi.stubGlobal('window', {
     'agent:resolveAndSendCommand': vi.fn().mockResolvedValue(undefined),
     'agent:terminateSession': vi.fn().mockResolvedValue(undefined),
     'agent:listAdapters': vi.fn().mockResolvedValue([]),
-    'thread:create': vi.fn().mockResolvedValue({ id: 'thread-1', title: 'New Thread', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: Date.now() }),
+    'thread:create': vi.fn().mockImplementation(() => {
+      threadCounter++
+      return Promise.resolve({ id: `thread-${threadCounter}`, title: 'New Thread', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: Date.now() })
+    }),
     'thread:update': vi.fn().mockResolvedValue(undefined),
     'thread:delete': vi.fn().mockResolvedValue(undefined),
     'thread:list': vi.fn().mockResolvedValue([]),
@@ -25,7 +29,14 @@ vi.stubGlobal('window', {
 })
 
 describe('sessionStore', () => {
+  /** Wait for async thread ID replacement from DB */
+  async function waitForThreadStable(): Promise<string> {
+    await vi.waitFor(() => useThreadStore.getState().threads.length > 0)
+    return useThreadStore.getState().currentThreadId!
+  }
+
   beforeEach(() => {
+    threadCounter = 0
     useSessionStore.setState({ activeSessions: new Map() })
     useThreadStore.setState({ threads: [], currentThreadId: null })
     useAdapterStore.setState({
@@ -98,7 +109,8 @@ describe('sessionStore', () => {
   })
 
   it('stopCurrentSession terminates session and marks streaming message as aborted', async () => {
-    const threadId = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
     useThreadStore.getState().updateThreadStatus(threadId, 'running')
     // Record sessionId on thread (simulates an active session)
     useThreadStore.setState({
@@ -126,7 +138,8 @@ describe('sessionStore', () => {
   })
 
   it('stopCurrentSession is a no-op when thread has no sessionId', async () => {
-    const threadId = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
     useThreadStore.getState().updateThreadStatus(threadId, 'running')
 
     await useSessionStore.getState().stopCurrentSession(threadId)
@@ -135,7 +148,8 @@ describe('sessionStore', () => {
   })
 
   it('sendMessage adds user message and sets title from first message', async () => {
-    const id = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const id = await waitForThreadStable()
     await useSessionStore.getState().sendMessage(id, 'Implement login module')
     const thread = useThreadStore.getState().threads.find((t) => t.id === id)!
     expect(thread.messages).toHaveLength(1)
@@ -146,7 +160,8 @@ describe('sessionStore', () => {
   })
 
   it('sendMessage truncates title to 30 chars', async () => {
-    const id = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const id = await waitForThreadStable()
     const longMessage = 'A'.repeat(50)
     await useSessionStore.getState().sendMessage(id, longMessage)
     expect(useThreadStore.getState().threads[0].title).toHaveLength(30)
@@ -154,7 +169,8 @@ describe('sessionStore', () => {
 
   it('sendMessage records sessionId on thread after successful start', async () => {
     vi.mocked(window.electronAPI['agent:startSession']).mockResolvedValueOnce({ sessionId: 'sess-abc', adapterUsed: 'claude-code', fallbackHistory: [{ adapter: 'claude-code', reason: '', success: true }] })
-    const threadId = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
     await useSessionStore.getState().sendMessage(threadId, 'Hello')
     const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)!
     expect(thread.sessionId).toBe('sess-abc')
@@ -163,7 +179,8 @@ describe('sessionStore', () => {
 
   it('sendMessage creates an error message on session start failure', async () => {
     vi.mocked(window.electronAPI['agent:startSession']).mockRejectedValueOnce(new Error('spawn ENOENT'))
-    const threadId = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
     await useSessionStore.getState().sendMessage(threadId, 'Hello')
     const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)!
     expect(thread.status).toBe('error')

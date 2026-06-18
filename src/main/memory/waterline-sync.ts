@@ -530,11 +530,18 @@ export class WaterlineSync {
 
     try {
       const snapshot = JSON.parse(items[0].narrative) as WaterlineSnapshot
-      if (snapshot && snapshot.projectId === projectId) {
+      // Schema validation: ensure critical fields exist and have correct types
+      if (
+        snapshot &&
+        typeof snapshot === 'object' &&
+        snapshot.projectId === projectId &&
+        Array.isArray(snapshot.completedInvestigations) &&
+        Array.isArray(snapshot.fixedIssues)
+      ) {
         this.waterlines.set(projectId, snapshot)
         logger.debug(`Waterline restored for ${projectId}: ${snapshot.sessionCount} sessions`)
       } else {
-        logger.warn(`Waterline restore skipped for ${projectId}: projectId mismatch or invalid snapshot`)
+        logger.warn(`Waterline restore skipped for ${projectId}: schema validation failed`)
       }
     } catch (err) {
       logger.warn(`Failed to parse waterline snapshot for ${projectId}:`, err)

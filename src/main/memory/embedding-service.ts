@@ -132,12 +132,13 @@ export class EmbeddingService {
   async initializeWithTimeout(timeoutMs = 60_000): Promise<boolean> {
     this._initFailed = false
     this._initTimedOut = false
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
         this.initialize(),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('EmbeddingService init timeout')), timeoutMs)
-        ),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => reject(new Error('EmbeddingService init timeout')), timeoutMs)
+        }),
       ])
       this._initAttempted = true
       return true
@@ -152,6 +153,8 @@ export class EmbeddingService {
         logger.warn('EmbeddingService initialization failed, falling back to keyword-only search:', err)
       }
       return false
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId)
     }
   }
 
@@ -165,8 +168,11 @@ export class EmbeddingService {
     if (!this.extractor) {
       await this.initialize()
     }
+    if (!this.extractor) {
+      throw new Error('EmbeddingService not initialized: model not available')
+    }
 
-    const output = await this.extractor!(text, {
+    const output = await this.extractor(text, {
       pooling: 'mean',
       normalize: true,
     })
@@ -191,10 +197,13 @@ export class EmbeddingService {
   async generateEmbeddings(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return []
 
-    // 逐条生成；@xenova/transformers 的 pipeline 不保证批量输入的维度一致性
+    // Generate in batches of 5 to balance throughput and memory
+    const BATCH_SIZE = 5
     const results: number[][] = []
-    for (const text of texts) {
-      results.push(await this.generateEmbedding(text))
+    for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+      const batch = texts.slice(i, i + BATCH_SIZE)
+      const batchResults = await Promise.all(batch.map(text => this.generateEmbedding(text)))
+      results.push(...batchResults)
     }
     return results
   }

@@ -80,10 +80,12 @@ const restoredProjects = new Set<string>()
  */
 function ensureWaterlineRestored(projectId: string | undefined): void {
   if (!projectId || restoredProjects.has(projectId)) return
-  restoredProjects.add(projectId)
   const waterline = getWaterlineSync()
-  waterline.restore(projectId).catch((err) => {
+  waterline.restore(projectId).then(() => {
+    restoredProjects.add(projectId)
+  }).catch((err) => {
     logger.warn(`Failed to restore waterline for ${projectId}:`, err)
+    // Don't add to restoredProjects so next call will retry
   })
 }
 

@@ -49,9 +49,11 @@ export class AdapterCircuitBreaker {
     if (entry.state === 'half-open') {
       entry.state = 'closed'
       entry.failures = 0
+      entry.lastFailureTime = 0
       logger.info(`Circuit breaker for ${key} closed after successful half-open request`)
     } else if (entry.state === 'closed') {
       entry.failures = 0
+      entry.lastFailureTime = 0
     }
   }
 

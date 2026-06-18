@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useThreadStore } from '../threadStore'
 
+let threadCounter = 0
 vi.stubGlobal('window', {
   electronAPI: {
-    'thread:create': vi.fn().mockResolvedValue({ id: 'thread-1', title: 'New Thread', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: Date.now() }),
+    'thread:create': vi.fn().mockImplementation(() => {
+      threadCounter++
+      return Promise.resolve({ id: `thread-${threadCounter}`, title: 'New Thread', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: Date.now() })
+    }),
     'thread:update': vi.fn().mockResolvedValue(undefined),
     'thread:delete': vi.fn().mockResolvedValue(undefined),
     'thread:list': vi.fn().mockResolvedValue([]),
@@ -15,6 +19,7 @@ vi.stubGlobal('window', {
 
 describe('threadStore', () => {
   beforeEach(() => {
+    threadCounter = 0
     useThreadStore.setState({
       threads: [],
       currentThreadId: null,
@@ -46,18 +51,23 @@ describe('threadStore', () => {
   })
 
   it('deleteThread removes thread and selects next', async () => {
-    const id1 = useThreadStore.getState().createThread('claude-code')
-    const id2 = useThreadStore.getState().createThread('codex')
+    useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().createThread('codex')
+    // Wait for async DB ID replacement
+    await vi.waitFor(() => useThreadStore.getState().threads.length === 2)
+    const id1 = useThreadStore.getState().threads[0].id
     await useThreadStore.getState().deleteThread(id1)
     const state = useThreadStore.getState()
     expect(state.threads).toHaveLength(1)
-    expect(state.threads[0].id).toBe(id2)
-    expect(state.currentThreadId).toBe(id2)
+    expect(state.currentThreadId).toBe(state.threads[0].id)
   })
 
   it('deleteThread clears currentThreadId when no threads remain', async () => {
-    const id = useThreadStore.getState().createThread('claude-code')
-    await useThreadStore.getState().deleteThread(id)
+    useThreadStore.getState().createThread('claude-code')
+    // Wait for async DB ID replacement
+    await vi.waitFor(() => useThreadStore.getState().threads.length > 0 && useThreadStore.getState().currentThreadId !== null)
+    const currentId = useThreadStore.getState().currentThreadId!
+    await useThreadStore.getState().deleteThread(currentId)
     expect(useThreadStore.getState().currentThreadId).toBeNull()
   })
 

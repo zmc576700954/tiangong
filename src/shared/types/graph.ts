@@ -363,14 +363,20 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
   ],
   feature: [
     { from: 'placeholder', to: 'developing' },
+    { from: 'developing', to: 'placeholder' },
     { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'developing' },
     { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
     { from: 'review', to: 'published' },
   ],
   bug: [
     { from: 'draft', to: 'developing' },
+    { from: 'developing', to: 'draft' },
     { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'developing' },
     { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
     { from: 'review', to: 'published' },
   ],
 }

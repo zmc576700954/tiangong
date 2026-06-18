@@ -238,11 +238,11 @@ export class PipelineRunner {
           // so that future sessions avoid re-investigating the same topics.
           if (ctx.layeredContext?.layers) {
             const conceptLayers = ctx.layeredContext.layers.filter(
-              (layer: any) => layer.level === 1 || layer.level === 2,
+              (layer: { level: number; content: string }) => layer.level === 1 || layer.level === 2,
             )
             if (conceptLayers.length > 0) {
               const concepts = conceptLayers
-                .map((layer: any) => layer.content)
+                .map((layer: { level: number; content: string }) => layer.content)
                 .filter(Boolean)
               waterline.addCompletedInvestigations(ctx.projectId ?? '', concepts)
             }
@@ -311,14 +311,20 @@ export class PipelineRunner {
                 const { getClient } = await import('../database')
                 const embeddings = await embeddingService.generateEmbeddings(texts)
                 const db = getClient()
+                const batchUpdates: Array<{ sql: string; args: [string, number] }> = []
                 for (let i = 0; i < ids.length; i++) {
-                  try {
-                    await db.execute({
+                  if (embeddings[i]) {
+                    batchUpdates.push({
                       sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
                       args: [JSON.stringify(embeddings[i]), ids[i]],
                     })
+                  }
+                }
+                if (batchUpdates.length > 0) {
+                  try {
+                    await db.batch(batchUpdates, 'write')
                   } catch {
-                    // Individual UPDATE failure should not block the pipeline
+                    // Batch write failure should not block the pipeline
                   }
                 }
               } catch {

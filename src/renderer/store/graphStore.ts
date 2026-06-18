@@ -67,8 +67,8 @@ interface GraphState {
 
 export const useGraphStore = create<GraphState>((set, get) => {
   // 监听 Agent 状态变更事件（解耦 agentStore → graphStore 的直接引用）
-  eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId: string, status: NodeStatus) => {
-    get().updateNode(nodeId, { status })
+  eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId, status) => {
+    get().updateNode(nodeId, { status: status as NodeStatus })
   })
 
   return {
@@ -388,28 +388,38 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   confirmSuggestedEdge: (edgeId) => {
+    const edge = get().edges.find(e => e.id === edgeId)
+    if (!edge || !edge.content?.suggested) return
+    const newContent = { ...edge.content, suggested: false }
     set(state => ({
       edges: state.edges.map(e =>
-        e.id === edgeId && e.content?.suggested
-          ? { ...e, content: { ...e.content, suggested: false } }
-          : e
+        e.id === edgeId ? { ...e, content: newContent } : e
       )
     }))
-    const edge = get().edges.find(e => e.id === edgeId)
-    if (edge) {
-      window.electronAPI['edge:update'](edgeId, { content: { ...edge.content, suggested: false } })
-    }
+    window.electronAPI['edge:update'](edgeId, { content: newContent }).catch((err) => {
+      console.error('[graphStore] Failed to confirm suggested edge:', err)
+      set(state => ({
+        edges: state.edges.map(e =>
+          e.id === edgeId ? { ...e, content: edge.content } : e
+        )
+      }))
+    })
   },
 
   rejectSuggestedEdge: (edgeId) => {
+    const edge = get().edges.find(e => e.id === edgeId)
+    if (!edge) return
     set(state => ({ edges: state.edges.filter(e => e.id !== edgeId) }))
-    window.electronAPI['edge:delete'](edgeId)
+    window.electronAPI['edge:delete'](edgeId).catch((err) => {
+      console.error('[graphStore] Failed to reject suggested edge:', err)
+      set(state => ({ edges: [...state.edges, edge] }))
+    })
   },
 
   confirmPreviewNode: (nodeId) => {
     const node = get().nodes.find(n => n.id === nodeId)
     if (!node) return
-    const { preview, ...restMetadata } = node.metadata ?? {}
+    const { preview: _preview, ...restMetadata } = node.metadata ?? {}
     const updatedMetadata = restMetadata
     set(state => ({
       nodes: state.nodes.map(n =>
@@ -420,9 +430,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   clearPreviewNodes: () => {
-    const previewIds = get().nodes.filter(n => n.metadata?.preview).map(n => n.id)
-    previewIds.forEach(id => window.electronAPI['node:delete'](id))
+    const previewNodes = get().nodes.filter(n => n.metadata?.preview)
     set(state => ({ nodes: state.nodes.filter(n => !n.metadata?.preview) }))
+    Promise.all(previewNodes.map(n => window.electronAPI['node:delete'](n.id))).catch((err: unknown) => {
+      console.error('[graphStore] Failed to delete some preview nodes:', err)
+    })
   },
 
   getNodeById: (id) => get().nodes.find(n => n.id === id),

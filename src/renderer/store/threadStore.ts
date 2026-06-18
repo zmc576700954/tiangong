@@ -43,8 +43,18 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       threads: [...state.threads, thread],
       currentThreadId: id,
     }))
-    // 异步持久化到 DB，失败时标记 thread 状态提醒用户
-    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).catch((err) => {
+    // Persist to DB — use returned DB ID if available
+    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).then((dbThread) => {
+      if (dbThread?.id && dbThread.id !== id) {
+        // Replace frontend ID with DB ID for consistency
+        set((state) => ({
+          threads: state.threads.map((t) =>
+            t.id === id ? { ...t, id: dbThread.id } : t
+          ),
+          currentThreadId: state.currentThreadId === id ? dbThread.id : state.currentThreadId,
+        }))
+      }
+    }).catch((err) => {
       console.error('[threadStore] Failed to persist new thread:', err)
       set((state) => ({
         threads: state.threads.map((t) =>
@@ -56,12 +66,19 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   deleteThread: async (threadId) => {
+    const thread = get().threads.find((t) => t.id === threadId)
     try {
       await window.electronAPI['thread:delete'](threadId)
     } catch (err) {
       console.error('[threadStore] Failed to delete thread from DB:', err)
+      // Restore thread in UI since DB deletion failed
+      if (thread) {
+        set((state) => ({
+          threads: [...state.threads, thread],
+        }))
+      }
+      return
     }
-    // 无论 DB 是否成功都从 UI 移除（避免阻塞用户操作）
     set((state) => ({
       threads: state.threads.filter((t) => t.id !== threadId),
       currentThreadId:

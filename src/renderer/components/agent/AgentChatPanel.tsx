@@ -122,6 +122,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [isResizingChat, setIsResizingChat] = useState(false)
   const [hasResized, setHasResized] = useState(false)
   const chatContainerRef = useRef<HTMLDivElement>(null)
+  const lastResizeHeightRef = useRef(0)
 
   const handleResizeChat = useCallback((e: MouseEvent) => {
     if (!chatContainerRef.current) return
@@ -132,13 +133,18 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     const newInputHeight = Math.max(60, Math.min(maxInputHeight, bottomY - e.clientY))
     setInputAreaHeight(newInputHeight)
     setHasResized(true)
-    localStorage.setItem('agentChatInputHeight', String(newInputHeight))
+    lastResizeHeightRef.current = newInputHeight
   }, [])
 
   useEffect(() => {
     if (!isResizingChat) return
     const onMove = (e: MouseEvent) => handleResizeChat(e)
-    const onUp = () => setIsResizingChat(false)
+    const onUp = () => {
+      setIsResizingChat(false)
+      if (lastResizeHeightRef.current > 0) {
+        localStorage.setItem('agentChatInputHeight', String(lastResizeHeightRef.current))
+      }
+    }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
     return () => {

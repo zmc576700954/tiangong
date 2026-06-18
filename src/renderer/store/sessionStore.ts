@@ -380,13 +380,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const stored = localStorage.getItem(`bizgraph:snapshot:${threadId}`)
       if (stored) {
         const parsed = JSON.parse(stored) as SessionSnapshot
-        // Restore to in-memory Map
-        set((state) => {
-          const next = new Map(state.sessionSnapshots)
-          next.set(threadId, parsed)
-          return { sessionSnapshots: next }
-        })
-        return parsed
+        // Basic schema validation: ensure critical fields exist
+        if (parsed && Array.isArray(parsed.messages) && typeof parsed.savedAt === 'number') {
+          set((state) => {
+            const next = new Map(state.sessionSnapshots)
+            next.set(threadId, parsed)
+            return { sessionSnapshots: next }
+          })
+          return parsed
+        }
+        // Invalid snapshot — clean up
+        localStorage.removeItem(`bizgraph:snapshot:${threadId}`)
       }
     } catch {
       // Ignore parse errors

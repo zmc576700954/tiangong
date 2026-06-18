@@ -18,7 +18,7 @@ export interface AssociationResult {
 const WEIGHTS = { dependency: 0.9, semantic: 0.7, coChange: 0.6 } as const
 
 export class KnowledgeAssociator {
-  private _embeddingService: any = null
+  private _embeddingService: { cosineSimilarity(a: number[], b: number[]): number; generateEmbedding(text: string): Promise<number[]> } | null = null
   private static _cache = new QueryCache<AssociationResult[]>({ maxSize: 100, ttlMs: 300_000 })
 
   setEmbeddingService(service: { cosineSimilarity(a: number[], b: number[]): number; generateEmbedding(text: string): Promise<number[]> }): void {
@@ -52,8 +52,9 @@ export class KnowledgeAssociator {
   async findAssociations(nodes: GraphNode[], input: AssociationInput): Promise<AssociationResult[]> {
     const threshold = input.threshold ?? 0.6
 
-    // Check cache — encode threshold as depth since QueryCache._makeKey uses depth in the key
-    const cacheKey = [...nodes.map((n) => n.id)].sort().join(':')
+    // Check cache — include input data fingerprint in key to avoid stale results
+    const inputFingerprint = `${input.dependencyEdges.length}:${input.coChangeFreqMap.size}`
+    const cacheKey = [...nodes.map((n) => n.id)].sort().join(':') + `|${inputFingerprint}`
     const cacheOptions = { depth: Math.round(threshold * 1000), relationFilter: [] as string[] }
     const cached = KnowledgeAssociator._cache.get(cacheKey, cacheOptions)
     if (cached) return cached
@@ -90,8 +91,8 @@ export class KnowledgeAssociator {
 
         const embA = embeddings.get(a.id)
         const embB = embeddings.get(b.id)
-        if (embA && embB) {
-          const sim = this._embeddingService!.cosineSimilarity(embA, embB)
+        if (this._embeddingService && embA && embB) {
+          const sim = this._embeddingService.cosineSimilarity(embA, embB)
           if (sim > 0.6) { weightedSum += WEIGHTS.semantic * sim; signals.semantic = true; totalWeight += WEIGHTS.semantic }
         }
 

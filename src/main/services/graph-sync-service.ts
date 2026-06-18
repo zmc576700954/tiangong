@@ -1,5 +1,6 @@
 import type { GraphNode, GraphEdge } from '@shared/types'
 import type { KnowledgeAssociator } from '../memory/knowledge-associator'
+import type { MemoryStore } from '../memory/memory-store'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('graph-sync-service')
@@ -7,6 +8,7 @@ const logger = createLogger('graph-sync-service')
 export interface GraphSyncDeps {
   graphService: { getNodes(graphId: string): Promise<GraphNode[]>; getEdges(graphId: string): Promise<GraphEdge[]> }
   knowledgeAssociator: KnowledgeAssociator
+  memoryStore?: MemoryStore
   pushSuggestedEdges: (graphId: string, edges: Array<{ sourceId: string; targetId: string; edgeType: string; score: number }>) => void
   updateEdge?: (edgeId: string, data: Partial<GraphEdge>) => void
   deleteEdge?: (edgeId: string) => void
@@ -60,7 +62,7 @@ export class GraphSyncService {
         .filter(e => e.edgeType === 'dependency' || e.edgeType === 'default')
         .map(e => ({ sourceId: e.source, targetId: e.target }))
 
-      const coChangeFreqMap = new Map<string, number>()
+      const coChangeFreqMap = await this._buildCoChangeFreqMap(graphId)
 
       const associations = await this._deps.knowledgeAssociator.findAssociations(nodes, {
         dependencyEdges,
@@ -79,6 +81,29 @@ export class GraphSyncService {
     } catch (error) {
       logger.warn(`Association scan failed for graph ${graphId}:`, error)
     }
+  }
+
+  private async _buildCoChangeFreqMap(_graphId: string): Promise<Map<string, number>> {
+    const freqMap = new Map<string, number>()
+    if (!this._deps.memoryStore) return freqMap
+
+    try {
+      // Extract co-change signals from memory items that modified multiple files in the same session
+      const recent = await this._deps.memoryStore.getRecent({ limit: 100 })
+      for (const mem of recent) {
+        const files = mem.files_modified ?? []
+        if (files.length < 2) continue
+        for (let i = 0; i < files.length; i++) {
+          for (let j = i + 1; j < files.length; j++) {
+            const pairKey = [files[i], files[j]].sort().join(':')
+            freqMap.set(pairKey, (freqMap.get(pairKey) ?? 0) + 1)
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to build co-change frequency map:', err)
+    }
+    return freqMap
   }
 
   destroy(): void {

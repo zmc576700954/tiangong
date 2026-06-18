@@ -165,12 +165,12 @@ function buildBm25Vector(
 ): Map<string, number> {
   const freq = new Map<string, number>()
   for (const t of tokens) freq.set(t, (freq.get(t) ?? 0) + 1)
-  const avgLen = tokens.length || 1
+  const docLen = tokens.length || 1
   const result = new Map<string, number>()
   for (const [term, count] of freq) {
     const df = dfMap.get(term) ?? 0
     const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5))
-    const tf = (count * (k1 + 1)) / (count + k1 * (1 - b + b * avgLen / avgDocLen))
+    const tf = (count * (k1 + 1)) / (count + k1 * (1 - b + b * docLen / (avgDocLen || docLen)))
     result.set(term, idf * tf)
   }
   // 归一化
@@ -640,6 +640,14 @@ export class HybridSearchEngine {
    * 将数据库行转换为 MemoryItem
    */
   private _rowToMemoryItem(row: Record<string, unknown>): MemoryItem {
+    const safeParse = (val: unknown, fallback: string[] = []): string[] => {
+      if (!val) return fallback
+      try { const parsed = JSON.parse(val as string); return Array.isArray(parsed) ? parsed : fallback } catch { return fallback }
+    }
+    const safeParseEmbedding = (val: unknown): number[] | null => {
+      if (!val) return null
+      try { return JSON.parse(val as string) } catch { return null }
+    }
     return {
       id: row.id as number,
       session_id: row.session_id as string,
@@ -648,17 +656,17 @@ export class HybridSearchEngine {
       node_id: (row.node_id as string) ?? null,
       title: row.title as string,
       narrative: (row.narrative as string) ?? '',
-      facts: row.facts ? JSON.parse(row.facts as string) : [],
-      concepts: row.concepts ? JSON.parse(row.concepts as string) : [],
-      files_read: row.files_read ? JSON.parse(row.files_read as string) : [],
-      files_modified: row.files_modified ? JSON.parse(row.files_modified as string) : [],
+      facts: safeParse(row.facts),
+      concepts: safeParse(row.concepts),
+      files_read: safeParse(row.files_read),
+      files_modified: safeParse(row.files_modified),
       adapter_name: (row.adapter_name as string) ?? '',
       token_cost: (row.token_cost as number) ?? 0,
       confidence: (row.confidence as number) ?? 0,
       created_at: row.created_at as string,
       version: (row.version as number) ?? 1,
       parent_version: (row.parent_version as number) ?? null,
-      embedding: row.embedding ? JSON.parse(row.embedding as string) : null,
+      embedding: safeParseEmbedding(row.embedding),
     }
   }
 
