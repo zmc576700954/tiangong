@@ -61,30 +61,49 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   const match = /language-(\w+)/.exec(className || '')
   const codeStr = String(children).replace(/\n$/, '')
   const isBlock = codeStr.includes('\n') || !!match
+  const language = match?.[1] ?? 'text'
+  const [copied, setCopied] = useState(false)
+  const lines = codeStr.split('\n')
+  const showLineNumbers = lines.length > 5
+
   const handleCopy = useCallback(() => {
-    navigator.clipboard?.writeText(codeStr).catch((err) => {
-      console.warn('[ChatBubble] Failed to copy code to clipboard:', err)
-    })
+    navigator.clipboard?.writeText(codeStr)
+      .then(() => {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      })
+      .catch((err) => {
+        console.warn('[ChatBubble] Failed to copy code to clipboard:', err)
+      })
   }, [codeStr])
 
   if (isBlock) {
     return (
-      <div className="relative group">
-        <SyntaxHighlighter
-          style={oneDark}
-          language={match?.[1] ?? 'text'}
-          PreTag="div"
-          customStyle={{ margin: 0, borderRadius: '0.375rem', fontSize: '11px' }}
-        >
-          {codeStr}
-        </SyntaxHighlighter>
-        <button
-          onClick={handleCopy}
-          className="absolute top-1 right-1 px-1.5 py-0.5 text-[9px] bg-muted/80 rounded
-            opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground"
-        >
-          Copy
-        </button>
+      <div className="relative group my-2 rounded-md overflow-hidden border border-border">
+        <div className="flex items-center justify-between px-3 py-1 bg-muted/50 border-b border-border">
+          <span className="text-[9px] text-muted-foreground font-mono">{language}</span>
+          <button
+            onClick={handleCopy}
+            className="text-[9px] text-muted-foreground hover:text-foreground"
+          >
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
+        <div className="flex">
+          {showLineNumbers && (
+            <div className="select-none text-right pr-2 pl-2 text-[9px] text-muted-foreground/50 leading-[18px] bg-muted/30 border-r border-border py-2">
+              {lines.map((_, i) => <div key={i}>{i + 1}</div>)}
+            </div>
+          )}
+          <SyntaxHighlighter
+            language={language}
+            PreTag="div"
+            style={oneDark}
+            customStyle={{ margin: 0, padding: '8px 12px', fontSize: '11px', background: 'transparent', flex: 1 }}
+          >
+            {codeStr}
+          </SyntaxHighlighter>
+        </div>
       </div>
     )
   }
