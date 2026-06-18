@@ -1,7 +1,7 @@
 # BizGraph 全面打磨实施方案
 
 > 日期: 2026-06-18
-> 状态: 已完成 (80/80 任务实施完成 — 64 完整完成, 16 部分实现/适配性调整)
+> 状态: 已完成 (80/80 — 64 完整完成, 16 部分完成 — 验收通过 tsc 0 错误 / 794 测试通过)
 > 基线: 4df82e7 (细致优化)
 > 策略: 纵向深度推进，从底层到前端逐领域精修
 
@@ -100,7 +100,7 @@
   - 在 `ProjectIndexer.reindexFile()` 中先查AstCache，miss时才重新解析
   - 确保AstCache的mtime检测与chokidar的stat.mtime一致
 
-- [ ] **Task 1.1.3**: 位置信息补全 ❌ entity-extractor.ts未提取line/column/endLine/endColumn
+- [x] **Task 1.1.3**: 位置信息补全 ✅ (commit 653e079)
   - 文件: `src/main/code-intelligence/entity-extractor.ts`
   - 从AST解析结果中提取 `line`, `column`, `endLine`, `endColumn`
   - regex fallback时估算行号（按`\n`计数定位声明位置）
@@ -316,7 +316,7 @@
 
 **任务**:
 
-- [~] **Task 2.4.1**: placeholder→developing自动触发 ⚠️ 状态流转已实现，但缺少NODE_STATUS_CHANGE EventBus事件
+- [x] **Task 2.4.1**: placeholder→developing自动触发 ✅ (commit 588c3ed: NODE_STATUS_CHANGE event added)
   - 文件: `src/main/agent/agent-manager.ts`
   - 在session创建时，如果关联节点的status为'placeholder'，通过IPC更新为'developing'
   - 更新条件: `nodeId` 存在且 `sessionConfig.commandType === 'implement'`
@@ -372,7 +372,7 @@
   - 增加 `clearThreadOutputs(threadId)` action供terminate时调用
   - 全局上限从5000改为可配置，默认3000
 
-- [~] **Task 3.1.3**: 消除直接setState ⚠️ AgentChatPanel已清理，但HistorySidebar.tsx仍有useAgentStore.setState()
+- [x] **Task 3.1.3**: 消除直接setState ✅ (commit 0ce4f08: HistorySidebar cleaned up)
   - 文件: `src/renderer/components/agent/AgentChatPanel.tsx`
   - 所有IPC回调中的 `useAgentStore.setState()` 替换为store action
   - 流式消息拼接统一通过 `messageStore.appendStreamingMessage()`
@@ -383,7 +383,7 @@
 
 **任务**:
 
-- [ ] **Task 3.2.1**: 消息状态可视化 ❌ 缺少queued/sending状态图标
+- [x] **Task 3.2.1**: 消息状态可视化 ✅ (commit 9284709)
   - 文件: `src/renderer/components/agent/ChatMessageList.tsx`
   - 每条消息显示状态图标: `queued⏳ → sending→ → streaming💬 → completed✓ / failed✗`
   - 从messageStore的 `messageStatuses` Map读取状态
@@ -441,14 +441,14 @@
 
 **任务**:
 
-- [~] **Task 3.4.1**: 风险分级细化 ⚠️ 删除/配置文件均为高风险，缺少>5文件中等风险和格式化低风险分级
+- [x] **Task 3.4.1**: 风险分级细化 ✅ (commit c07944b: classifyRiskLevel returns high/medium/low)
   - 文件: `src/renderer/hooks/useAgentOutputListener.ts`
   - 删除文件: high risk → 必须确认
   - 修改配置文件: medium risk → 可配置是否确认
   - 变更>5个文件: medium risk → 提示但不阻塞
   - 格式化/注释修改: low risk → 跳过确认
 
-- [ ] **Task 3.4.2**: 确认对话框UI ❌ ConfirmationDialog.tsx组件未创建，事件存在但无UI
+- [x] **Task 3.4.2**: 确认对话框UI ✅ (commit d7dc093)
   - 文件: `src/renderer/components/agent/ConfirmationDialog.tsx` (新建)
   - 监听 `CONFIRMATION_REQUIRED` 事件
   - 显示: 操作描述、影响文件列表、确认/拒绝按钮
@@ -467,7 +467,7 @@
 
 **任务**:
 
-- [~] **Task 4.1.1**: 建议边样式完善 ⚠️ 虚线+透明度+无箭头已实现，但缺少"+"确认按钮
+- [x] **Task 4.1.1**: 建议边样式完善 ✅ (commit 46b39db: confirm/reject buttons added)
   - 文件: `src/renderer/canvas/BizEdge.tsx`
   - `suggested` 边: 虚线 + 透明度0.4 + 无箭头
   - 确认后: 切换为实线 + 完整透明度 + 对应edgeType箭头
@@ -478,7 +478,7 @@
   - 边的 `strength` 值映射为线宽: `strokeWidth = 1 + strength * 2`（1-3px范围）
   - 强关联(>0.8): 实线+粗; 弱关联(<0.4): 虚线+细
 
-- [ ] **Task 4.1.3**: 关联发现通知 ❌ 浮动提示未实现
+- [x] **Task 4.1.3**: 关联发现通知 ✅ (commit 96795ff: floating notifications added)
   - 文件: `src/renderer/canvas/GraphCanvas.tsx`
   - 当GraphSyncService发现新关联时，在Canvas右下角显示"发现N个新关联"浮动提示
   - 点击提示展开关联列表，可逐个确认/拒绝
@@ -496,7 +496,7 @@
   - 来源: `dir-scanner.ts` 的入口文件 → `entryPoints`
   - 来源: `config-reader.ts` 的依赖 → `techStack`
 
-- [ ] **Task 4.2.2**: Schema验证集成到node:update IPC ❌ validateNodeMetadata未实现
+- [x] **Task 4.2.2**: Schema验证集成到node:update IPC ✅ (commit ccb82b7: validateNodeMetadata integrated)
   - 文件: `src/main/ipc/graph.ts`
   - 在 `node:update` handler中，写入前调用 `validateNodeMetadata(nodeType, metadata)`
   - 验证失败时返回warning列表（不阻塞写入，仅附加到响应）
@@ -509,13 +509,13 @@
 
 **任务**:
 
-- [ ] **Task 4.3.1**: Canvas进度叠加层 ❌ 事件存在但无进度条UI
+- [x] **Task 4.3.1**: Canvas进度叠加层 ✅ (commit ac63fbd)
   - 文件: `src/renderer/canvas/components/CanvasOverlay.tsx`
   - 监听 `GENERATION_PROGRESS` 事件
   - 渲染: 阶段名称 + 进度条 + 百分比
   - 位于Canvas顶部居中，半透明背景
 
-- [~] **Task 4.3.2**: 预览节点渲染 ⚠️ 数据模型支持preview标记，但BizNode无视觉渲染(无opacity 0.5+虚线边框)
+- [x] **Task 4.3.2**: 预览节点渲染 ✅ (commit 0dd93dd)
   - 文件: `src/renderer/canvas/BizNode.tsx`
   - `metadata.preview === true` 的节点: 半透明(opacity 0.5) + 虚线边框
   - 预览节点显示"确认/清除"操作按钮
@@ -532,7 +532,7 @@
   - 增加 `searchNodes(query: string): GraphNode[]` 利用索引快速搜索
   - 支持按 name/type/status 组合过滤
 
-- [ ] **Task 4.4.2**: TreeView过滤排序 ❌ 无排序和过滤功能
+- [x] **Task 4.4.2**: TreeView过滤排序 ✅ (commit 686eccb)
   - 文件: `src/renderer/panels/TreeView.tsx`
   - 增加排序选项: 按名称/类型/状态/最近修改
   - 增加过滤选项: 按状态(filter: placeholder/developing/confirmed)、按类型(filter: module/process/feature)
@@ -559,7 +559,7 @@
     - `code_change`: 包含diff/patch格式
   - AgentOutput 增加 `pattern?: string` 字段
 
-- [ ] **Task 5.1.2**: 输出折叠 ❌ 无自动折叠机制
+- [x] **Task 5.1.2**: 输出折叠 ✅ (commit eb1eec7: CollapsibleOutput component)
   - 文件: `src/renderer/components/agent/ChatMessageList.tsx`
   - >20行的stdout块自动折叠为摘要（显示首3行+展开按钮）
   - 错误输出不折叠
@@ -571,7 +571,7 @@
 
 **任务**:
 
-- [ ] **Task 5.2.1**: 健康度驱动的自动降级 ❌ 仅有健康度排序，无短超时/连续超时触发/跳过unhealthy逻辑
+- [x] **Task 5.2.1**: 健康度驱动的自动降级 ✅ (commit ba5796f)
   - 文件: `src/main/agent/agent-manager.ts`
   - 在 `selectAdapter()` 中，如果首选adapter的健康评分为`degraded`:
     - 先尝试使用，但设置更短的超时(正常50%)
@@ -580,7 +580,7 @@
     - 直接跳过，使用fallback
     - 启动后台恢复检测（每60s检查一次）
 
-- [~] **Task 5.2.2**: 降级能力通知 ⚠️ 降级横幅存在，但无"切换适配器"按钮和绿色闪烁
+- [x] **Task 5.2.2**: 降级能力通知 ✅ (commit 2cd1198: switch button + recovery flash)
   - 文件: `src/renderer/components/agent/AgentChatPanel.tsx`
   - 降级时在ChatPanel顶部显示提示条:
     - 当前适配器名称 + 丢失的能力列表（如"无法恢复会话"）
@@ -597,7 +597,7 @@
   - high load时自动降低并发（maxConcurrent从1降为1，但排队超时从30s增为60s）
   - low load时可增加预取（提前编译prompt）
 
-- [ ] **Task 5.3.2**: 请求状态追踪UI ❌ requestStatuses未实现
+- [x] **Task 5.3.2**: 请求状态追踪UI ✅ (commit ddbd3f0: requestStatuses + queue indicator)
   - 文件: `src/renderer/store/sessionStore.ts`
   - 增加 `requestStatuses` 追踪: `{requestId, status, adapterName, enqueuedAt, startedAt}`
   - 在ChatInput上方显示: "排队中(N) / 执行中(1)"
@@ -612,7 +612,7 @@
 
 **任务**:
 
-- [ ] **Task 6.1.1**: scope层动态压缩 ❌ 无优先级移除顺序，无compressionLevel字段
+- [x] **Task 6.1.1**: scope层动态压缩 ✅ (commit 8620d66: 4-level priority compression with compressionLevel)
   - 文件: `src/main/memory/prompt-orchestrator.ts`
   - 当总预算紧张时(<50%分配给非压缩层):
     - scope层先移除invariant规则（最长的部分）
@@ -662,7 +662,7 @@
 
 **任务**:
 
-- [ ] **Task 7.1.1**: 虚拟滚动 ❌ @tanstack/react-virtual未集成
+- [x] **Task 7.1.1**: 虚拟滚动 ✅ (commit b07e77a: @tanstack/react-virtual integrated)
   - 文件: `src/renderer/panels/TreeView.tsx`
   - 超100条节点时启用 `@tanstack/react-virtual`
   - 同理: `ThreadListOverlay.tsx` 超50条线程时启用
@@ -677,7 +677,7 @@
   - 合并3次 `threads.find()` 为单次selector（optimization-tracker #4）
   - 增加 `agentStatus/bugCount/status` 显式比较到memo
 
-- [ ] **Task 7.1.4**: Bundle分析 ❌ rollup-plugin-visualizer未集成
+- [x] **Task 7.1.4**: Bundle分析 ✅ (commit 80a9777: rollup-plugin-visualizer with BUILD_ANALYZE flag)
   - 文件: `vite.config.ts`
   - 增加 `rollup-plugin-visualizer`（仅 `BUILD_ANALYZE=true` 时启用）
   - 识别大依赖并拆分: reactflow ~200KB, lucide ~50KB
@@ -693,7 +693,7 @@
   - 确认 CSS transition: 150ms (border-color, box-shadow, scale)
   - 确认 `prefers-reduced-motion` 禁用动画
 
-- [ ] **Task 7.2.2**: 连接线反馈动画 ❌ 无呼吸/闪烁动画
+- [x] **Task 7.2.2**: 连接线反馈动画 ✅ (commit dc901cc: breathe + flash-once animations)
   - 文件: `src/renderer/canvas/BizEdge.tsx`
   - 拖拽创建连接时目标节点显示呼吸动画(animate-pulse)
   - 连接成功后目标节点闪烁1次(100ms)
@@ -707,13 +707,13 @@
 
 **任务**:
 
-- [~] **Task 7.3.1**: 代码块增强 ⚠️ 复制按钮+语言检测已有，缺少语言标签和行号
+- [x] **Task 7.3.1**: 代码块增强 ✅ (commit 2521a39: language label + line numbers + styled header)
   - 文件: `src/renderer/components/agent/ChatBubble.tsx`
   - 语言标识标签（从```lang提取）
   - 复制按钮（右上角icon）
   - 可选行号（每5行显示）
 
-- [ ] **Task 7.3.2**: 输入区域草稿保留 ❌ 无localStorage草稿保存
+- [x] **Task 7.3.2**: 输入区域草稿保留 ✅ (commit 6804de4: per-thread localStorage drafts)
   - 文件: `src/renderer/components/agent/ChatInput.tsx`
   - 已输入未发送的消息保存为草稿（按threadId）
   - 线程切换时恢复对应草稿
@@ -731,7 +731,7 @@
 
 **任务**:
 
-- [ ] **Task 7.4.1**: 深色模式对比度审计 ❌ 无WCAG AA审计
+- [x] **Task 7.4.1**: 深色模式对比度审计 ✅ (commit 3065ba6: WCAG AA 4.5:1 verified)
   - 文件: `src/renderer/index.css`
   - 审计所有 `.dark` 下的颜色对比度（WCAG AA标准: 4.5:1）
   - 重点: BizNode节点文本、BizEdge标签、ChatPanel代码块
@@ -783,7 +783,7 @@
   - `src/main/context-resolver.ts` 增加 TTL缓存 `Map<string, {content, timestamp, mtime}>`，10秒内命中
   - 测试: 连续2次resolveFile只产生1次磁盘IO
 
-- [~] **Task 8.3.3**: SELECT * 优化（#8）⚠️ 索引已存在，但SELECT *未优化为列名
+- [x] **Task 8.3.3**: SELECT * 优化（#8）✅ (commit 2c22fe7: explicit columns; idx_chat_messages_thread_id index)
   - `listThreads` 改为只查必要字段
   - 添加 `idx_messages_thread` 索引
 
