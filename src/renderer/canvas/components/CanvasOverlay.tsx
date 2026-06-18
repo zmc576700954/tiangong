@@ -26,6 +26,7 @@ interface CanvasOverlayProps {
   onAddContext?: (nodeId: string) => void
   onGenerateChildren?: (nodeId: string) => void
   hasProjectNode: boolean
+  generationProgress?: { stage: string; progress: number } | null
 }
 
 export function CanvasOverlay({
@@ -49,6 +50,7 @@ export function CanvasOverlay({
   onAddContext,
   onGenerateChildren,
   hasProjectNode,
+  generationProgress,
 }: CanvasOverlayProps) {
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
@@ -211,6 +213,20 @@ export function CanvasOverlay({
           onAddContext={onAddContext}
           onGenerateChildren={onGenerateChildren}
         />
+      )}
+
+      {/* 生成进度条 */}
+      {generationProgress && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-4 py-2 shadow-lg flex items-center gap-3 min-w-[200px]">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">{generationProgress.stage}</span>
+          <div className="flex-1 h-1.5 bg-muted rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary rounded-full transition-all duration-300"
+              style={{ width: `${Math.min(100, generationProgress.progress)}%` }}
+            />
+          </div>
+          <span className="text-xs font-mono text-muted-foreground">{Math.round(generationProgress.progress)}%</span>
+        </div>
       )}
     </>
   )

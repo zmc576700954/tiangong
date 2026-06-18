@@ -31,6 +31,7 @@ import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { AlignHorizontalDistributeCenter, GitBranch, X } from 'lucide-react'
+import { eventBus, Events } from '../store/eventBus'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -107,6 +108,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [zoomLevel, setZoomLevel] = useState(1)
   const [isZoomedOut, setIsZoomedOut] = useState(false)
 
+  const [genProgress, setGenProgress] = useState<{ stage: string; progress: number } | null>(null)
+
   // ────────────────────────────────────────────────────────────────
   // 连线模式 Hook
   // ────────────────────────────────────────────────────────────────
@@ -145,6 +148,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     loadGraph(graphId)
   }, [graphId, loadGraph])
+
+  // 生成进度事件监听
+  useEffect(() => {
+    const unsub = eventBus.on(Events.GENERATION_PROGRESS, (data: { stage: string; progress: number }) => {
+      setGenProgress(data)
+      if (data.progress >= 100) {
+        setTimeout(() => setGenProgress(null), 1500)
+      }
+    })
+    return unsub
+  }, [])
 
   // 自动创建 project 根节点（基于 graphId 防止竞态重复创建）
   const creatingProjectForGraph = useRef<string | null>(null)
@@ -554,6 +568,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onAddContext={handleAddContext}
         onGenerateChildren={handleGenerateChildren}
         hasProjectNode={hasProjectNode}
+        generationProgress={genProgress}
       />
 
       {contextPopover && (
