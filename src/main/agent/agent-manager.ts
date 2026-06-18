@@ -90,6 +90,7 @@ export class AgentManager {
   /** sessionEnded 事件处理器（按适配器存储以便清理） */
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
+  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
   private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
   /** 会话级输出监听器：按 broadcastName 过滤，防止跨会话输出污染 */
   private sessionOutputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
@@ -121,6 +122,8 @@ export class AgentManager {
   private sessionRecovery = getSessionRecoveryManager()
   /** Fallback recovery check timers */
   private fallbackRecoveryTimers = new Map<string, ReturnType<typeof setInterval>>()
+  /** Consecutive timeout counter per adapter (health-driven auto-degradation) */
+  private adapterTimeoutCounts: Map<string, number> = new Map()
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -487,6 +490,10 @@ export class AgentManager {
     this.statusChangeCallback = cb
   }
 
+  setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
+    this.nodeStatusChangeCallback = cb
+  }
+
   setOnSessionComplete(handler: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void): void {
     this.onSessionComplete = handler
   }
@@ -613,9 +620,26 @@ export class AgentManager {
         continue
       }
 
+      // Health-driven auto-degradation: skip unhealthy, shorten timeout for degraded
+      const health = this.healthMonitor.getHealth(candidate)
+      if (health && health.status === 'unhealthy') {
+        fallbackHistory.push({ adapter: candidate, reason: `${candidate} is unhealthy (score: ${health.healthScore}), skipping`, success: false })
+        logger.warn(`Adapter ${candidate} is unhealthy (score: ${health.healthScore}), skipping and starting recovery check`)
+        this.startRecoveryCheck(candidate)
+        continue
+      }
+      if (health && health.status === 'degraded') {
+        const originalTimeout = config.timeoutMs ?? 120_000
+        config = { ...config, timeoutMs: Math.floor(originalTimeout * 0.5) }
+        logger.info(`Adapter ${candidate} is degraded, reducing timeout from ${originalTimeout}ms to ${config.timeoutMs}ms`)
+      }
+
       const startTime = Date.now()
       try {
         const session = await adapter.startSession(config)
+
+        // Reset consecutive timeout counter on success
+        this.adapterTimeoutCounts.delete(candidate)
 
         let sandbox: import('@shared/types').Sandbox | undefined
         if (config.allowedFiles.length > 0) {
@@ -661,6 +685,25 @@ export class AgentManager {
           this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
         }
 
+        // Task 2.4.1: placeholder→developing auto-trigger
+        // When an 'implement' session starts on a placeholder node, auto-advance to developing
+        if (config.nodeId && config.commandType === 'implement') {
+          try {
+            const { NodeRepository } = await import('../repositories/node-repository')
+            const { getClient } = await import('../database')
+            const nodeRepo = new NodeRepository(getClient())
+            const currentStatus = await nodeRepo.getStatus(config.nodeId)
+            if (currentStatus === 'placeholder') {
+              // placeholder → confirmed → developing (follow valid state machine path)
+              await nodeRepo.update(config.nodeId, { status: 'confirmed' as any })
+              await nodeRepo.update(config.nodeId, { status: 'developing' as any })
+              this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
+            }
+          } catch {
+            // Non-critical: status update failure should not block session creation
+          }
+        }
+
         // MEM-01: 初始化会话输出缓冲（用于记忆提取）
         const sessionOutputs: AgentOutput[] = []
         this.sessionOutputBuffers.set(session.id, sessionOutputs)
@@ -686,6 +729,14 @@ export class AgentManager {
         fallbackHistory.push({ adapter: candidate, reason: `startSession failed: ${reason}`, success: false })
         // 记录失败调用到健康监控
         this.healthMonitor.recordCall(candidate, false, Date.now() - startTime, reason)
+        // Consecutive timeout tracking: after 2 consecutive failures, skip to next adapter
+        const currentCount = this.adapterTimeoutCounts.get(candidate) ?? 0
+        this.adapterTimeoutCounts.set(candidate, currentCount + 1)
+        if (currentCount + 1 >= 2) {
+          this.adapterTimeoutCounts.delete(candidate)
+          logger.warn(`Adapter ${candidate} failed ${currentCount + 1} consecutive times, moving to next adapter`)
+          continue
+        }
         logger.warn(`Adapter ${candidate} startSession failed: ${reason}, trying next...`)
         continue
       }
@@ -1098,6 +1149,47 @@ export class AgentManager {
       }
     }
 
+    // Task 2.4.2: File change auto-association with nodes
+    // After session ends, match changed files against node metadata.linkedFiles
+    if (state && nodeId) {
+      try {
+        const fileChangeOutputs = outputsForMemory.filter((o) => o.type === 'file_change' && o.filePath)
+        if (fileChangeOutputs.length > 0) {
+          const { getClient } = await import('../database')
+          const db = getClient()
+          const changedPaths = fileChangeOutputs.map((o) => o.filePath!)
+
+          // Look up the session's node to read metadata.linkedFiles
+          const nodeResult = await db.execute({
+            sql: 'SELECT id, metadata FROM nodes WHERE id = ?',
+            args: [nodeId],
+          })
+          const row = nodeResult.rows[0]
+          if (row) {
+            try {
+              const metadata = row.metadata ? JSON.parse(row.metadata as string) : {}
+              const linkedFiles: string[] = metadata.linkedFiles ?? []
+              // Check if any changed file matches a linked file
+              const matchedFiles = changedPaths.filter((fp) =>
+                linkedFiles.some((lf) => fp.endsWith(lf) || lf.endsWith(fp)),
+              )
+              if (matchedFiles.length > 0) {
+                // Update metadata.lastModified
+                metadata.lastModified = Date.now()
+                const { NodeRepository } = await import('../repositories/node-repository')
+                const nodeRepo = new NodeRepository(db)
+                await nodeRepo.update(nodeId, { metadata: metadata as any })
+              }
+            } catch {
+              // metadata parse error, skip
+            }
+          }
+        }
+      } catch {
+        // Non-critical: file-node association failure should not affect session termination
+      }
+    }
+
     if (scopeGuardError) {
       throw scopeGuardError
     }
@@ -1177,14 +1269,51 @@ export class AgentManager {
 
     if (exitCode === 1 && reason === 'crash') {
       const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+
+      // Build lastMessages from session output for context restoration
+      const lastMessages = this._extractRecentMessages(outputs)
+
+      // Look up threadId from the session's nodeId
+      let threadId: string | undefined
+      if (state.config.nodeId) {
+        try {
+          const { getClient } = await import('../database')
+          const db = getClient()
+          const result = await db.execute({
+            sql: 'SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1',
+            args: [state.config.nodeId],
+          })
+          if (result.rows.length > 0) {
+            threadId = result.rows[0].id as string
+          }
+        } catch {
+          // Non-critical: threadId is for notification only
+        }
+      }
+
       const newSessionId = await this.sessionRecovery.attemptRecovery({
         sessionId,
         adapterName: state.adapterName,
         projectId: state.config.workingDirectory,
         lastOutputs: outputs,
+        lastMessages,
+        threadId,
       })
       if (newSessionId) {
         logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
+      } else {
+        // Check if MCP adapter recovery left a pending context injection
+        const pendingContext = this.sessionRecovery.consumePendingContext()
+        if (pendingContext) {
+          logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
+          try {
+            const config = { ...state.config, contextSummary: pendingContext }
+            const result = await this.startSession(state.adapterName, config)
+            logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
+          } catch (err) {
+            logger.warn(`Failed to create new MCP session for recovery:`, err)
+          }
+        }
       }
       return
     }
@@ -1196,6 +1325,30 @@ export class AgentManager {
     }
 
     logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
+  }
+
+  /**
+   * Extract recent messages from session output buffer for context restoration.
+   * Returns up to 3 recent user/assistant exchanges derived from output data.
+   */
+  private _extractRecentMessages(outputs: AgentOutput[]): Array<{ role: string; content: string }> {
+    const messages: Array<{ role: string; content: string }> = []
+    // Collect recent stdout output as "assistant" messages
+    const stdoutChunks: string[] = []
+    for (const output of outputs) {
+      if (output.type === 'stdout') {
+        stdoutChunks.push(output.data)
+      }
+    }
+    // Combine recent stdout into a single assistant message (last 2000 chars)
+    if (stdoutChunks.length > 0) {
+      const combined = stdoutChunks.join('')
+      messages.push({
+        role: 'assistant',
+        content: combined.slice(-2000),
+      })
+    }
+    return messages.slice(-3)
   }
 
   private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
@@ -1216,5 +1369,22 @@ export class AgentManager {
       clearInterval(timer)
       this.fallbackRecoveryTimers.delete(preferredAdapter)
     }, 5 * 60_000)
+  }
+
+  /**
+   * Health-driven recovery check: periodically probes an unhealthy adapter
+   * and records a successful check so the health monitor can promote it
+   * back to degraded/healthy on the next session attempt.
+   */
+  private startRecoveryCheck(adapterName: string): void {
+    const interval = setInterval(async () => {
+      const adapter = this.registry.get(adapterName)
+      if (!adapter) { clearInterval(interval); return }
+      const installed = await adapter.checkInstalled()
+      if (installed) {
+        this.healthMonitor.recordCall(adapterName, true, 0, 'recovery-check')
+        clearInterval(interval)
+      }
+    }, 60_000)
   }
 }

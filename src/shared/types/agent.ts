@@ -35,6 +35,10 @@ export interface AgentSessionConfig {
   resumeSessionId?: string
   /** 关联的节点 ID（用于状态同步） */
   nodeId?: string
+  /** 命令类型（用于 placeholder→developing 自动触发等状态联动） */
+  commandType?: AgentCommandType
+  /** 会话超时时间（毫秒），降级适配器自动缩短 */
+  timeoutMs?: number
 }
 
 export interface BugContext {
@@ -67,6 +71,8 @@ export interface AgentOutput {
   changeType?: 'add' | 'modify' | 'delete'
   /** 错误分类码 */
   errorCode?: string
+  /** 自动模式分类 (file_operation / error_report / progress_update / code_change) */
+  pattern?: string
 }
 
 /** 已解析的上下文（含实际内容，用于注入 prompt） */
@@ -101,6 +107,7 @@ export type MessageStatus =
   | 'success'     // agent 正常完成
   | 'error'       // 出错
   | 'aborted'     // 用户主动终止
+  | 'permanently_failed' // 重试次数耗尽，需手动干预
 
 /** 消息错误信息 */
 export interface MessageError {
