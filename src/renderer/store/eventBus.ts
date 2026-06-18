@@ -86,4 +86,6 @@ export const Events = {
   CONFIRMATION_RESPONDED: 'confirmation:responded',
   GENERATION_PROGRESS: 'generation:progress',
   NODE_STATUS_CHANGE: 'node:statusChange',
+  OPEN_ADAPTER_SELECTOR: 'adapter:openSelector',
+  ADAPTER_RECOVERED: 'adapter:recovered',
 } as const

@@ -18,6 +18,7 @@ import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
+import { eventBus, Events } from '../../store/eventBus'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
 const DiffReviewPanel = lazy(() => import('./DiffReviewPanel').then(m => ({ default: m.DiffReviewPanel })))
@@ -59,6 +60,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [selectedAdapter, setSelectedAdapter] = useState('auto')
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
   const [showResumePrompt, setShowResumePrompt] = useState(false)
+  const [recoveredFlash, setRecoveredFlash] = useState(false)
   // Derived data — must be declared before useVerificationFlow
   const currentThread = threads.find((t) => t.id === currentThreadId)
   const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
@@ -165,6 +167,15 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   useEffect(() => {
     const cleanup = useAgentStore.getState().listenForStatusChanges()
     return cleanup
+  }, [])
+
+  // Auto-recovery flash when adapter recovers from degradation
+  useEffect(() => {
+    const unsub = eventBus.on(Events.ADAPTER_RECOVERED, () => {
+      setRecoveredFlash(true)
+      setTimeout(() => setRecoveredFlash(false), 2000)
+    })
+    return unsub
   }, [])
 
   // Consume pendingContextRef from file tree right-click
@@ -430,6 +441,20 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
               <div className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200 mx-3 mt-2">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
                 <span>已从 {originalAdapter} 降级到 {currentAdapter}，部分功能不可用</span>
+                <button
+                  onClick={() => {
+                    eventBus.emit(Events.OPEN_ADAPTER_SELECTOR, {})
+                  }}
+                  className="text-[10px] px-2 py-0.5 rounded border border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900 ml-2"
+                >
+                  Switch adapter
+                </button>
+              </div>
+            )}
+            {/* Auto-recovery flash banner */}
+            {recoveredFlash && (
+              <div className="bg-green-100 dark:bg-green-900 border border-green-300 dark:border-green-700 rounded px-3 py-1 text-xs text-green-700 dark:text-green-300 animate-fade-out-3s mx-3 mt-2">
+                ✓ Adapter recovered
               </div>
             )}
             <ConfirmationDialog />
