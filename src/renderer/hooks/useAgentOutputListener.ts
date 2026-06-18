@@ -5,54 +5,39 @@ import { eventBus, Events } from '../store/eventBus'
 import { generateId } from '../lib/utils'
 import type { AgentOutput, ToolCallBlock } from '@shared/types'
 
-// ==================== High-risk operation detection ====================
+// ==================== Risk level classification ====================
 
-/** Config file patterns that are considered high-risk when modified */
-const CONFIG_PATTERNS = [
-  /\.env(\.|$)/i,
-  /\.config\.(js|ts|mjs|cjs|json|yaml|yml)$/i,
-  /\/\.?(prettierrc|eslintrc|tsconfig|babelrc|jest\.config|vite\.config|webpack\.config)/i,
-  /\/\.?(npmrc|nvmrc|node-version|editorconfig|gitignore)/i,
-  /\/(package\.json|docker-compose|Dockerfile|Makefile|Cargo\.toml|go\.mod)/i,
-  /\/(settings\.json|launch\.json|extensions\.json)/i,
-]
+/** Risk level for agent file-change operations */
+export type RiskLevel = 'high' | 'medium' | 'low'
+
+/** Config file patterns that are considered medium-risk when modified */
+const CONFIG_PATTERNS = /\.(json|yaml|yml|toml|ini|env|conf|config|rc)$|\/\.?(tsconfig|vite\.config|webpack\.config|rollup\.config|babel\.config|jest\.config|eslint|prettier|\.env)/i
 
 /**
- * Returns true if a file_change output is considered high-risk.
- * High-risk conditions:
- *  1. File deletion (changeType === 'delete')
- *  2. Config file modification (matches known config patterns)
- *  3. Future: >5 file changes in one session (tracked externally)
+ * Classifies a file_change output into a risk level with reason.
+ *  - high:   file deletion → must confirm
+ *  - medium: config file modification → auto-accept but hint-able
+ *  - low:    everything else → auto-accept
  */
-export function isHighRiskOperation(output: AgentOutput): boolean {
-  if (output.type !== 'file_change') return false
+export function classifyRiskLevel(output: AgentOutput): { level: RiskLevel; reason: string } {
+  // Only file_change outputs are classified
+  if (output.type !== 'file_change') {
+    return { level: 'low', reason: '' }
+  }
 
   // File deletion is always high-risk
-  if (output.changeType === 'delete') return true
-
-  // Config file modification is high-risk
-  const filePath = output.filePath ?? ''
-  if (CONFIG_PATTERNS.some((pat) => pat.test(filePath))) return true
-
-  return false
-}
-
-/**
- * Returns a human-readable reason string explaining why the operation is high-risk.
- */
-export function classifyRisk(output: AgentOutput): string {
-  if (output.type !== 'file_change') return ''
-
   if (output.changeType === 'delete') {
-    return `File deletion: ${output.filePath ?? 'unknown file'}`
+    return { level: 'high', reason: `File deletion: ${output.filePath ?? 'unknown file'}` }
   }
 
+  // Config file modification is medium-risk
   const filePath = output.filePath ?? ''
-  if (CONFIG_PATTERNS.some((pat) => pat.test(filePath))) {
-    return `Config file modification: ${filePath}`
+  if (filePath && CONFIG_PATTERNS.test(filePath)) {
+    return { level: 'medium', reason: `Config file modification: ${filePath}` }
   }
 
-  return 'Unknown high-risk operation'
+  // Everything else is low-risk
+  return { level: 'low', reason: '' }
 }
 
 // ==================== Hook ====================
@@ -141,20 +126,24 @@ export function useAgentOutputListener(currentThreadId: string | null) {
           status: 'done',
         }
 
-        // High-risk operation interception
-        const isHighRisk = isHighRiskOperation(output)
-        if (isHighRisk) {
-          // Emit CONFIRMATION_REQUIRED event instead of auto-accepting
+        // Risk-level-based interception
+        const { level, reason } = classifyRiskLevel(output)
+
+        if (level === 'high') {
+          // Must confirm — emit CONFIRMATION_REQUIRED event
           eventBus.emit(Events.CONFIRMATION_REQUIRED, {
             threadId: tid,
             messageId: streamingMsgIdRef.current,
             toolCall,
-            reason: classifyRisk(output),
+            reason,
           })
           // Store in pendingConfirmations
           useMessageStore.getState().addPendingConfirmation(tid, streamingMsgIdRef.current, toolCall)
+        } else if (level === 'medium') {
+          // Auto-accept but could show hint (for now just accept)
+          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
         } else {
-          // Auto-accept low-risk operations as before
+          // Low risk: auto-accept
           store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
         }
 
