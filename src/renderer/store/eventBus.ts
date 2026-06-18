@@ -72,4 +72,16 @@ export const Events = {
   THREAD_CREATED: 'thread:created',
   THREAD_DELETED: 'thread:deleted',
   NODE_STATUS_REJECTED: 'node:statusRejected',
+  // Chat会话状态管理新增事件
+  SESSION_STARTED: 'session:started',
+  SESSION_TERMINATED: 'session:terminated',
+  SESSION_CRASHED: 'session:crashed',
+  SESSION_RECOVERED: 'session:recovered',
+  STREAMING_CHUNK: 'streaming:chunk',
+  MESSAGE_SENT: 'message:sent',
+  MESSAGE_FAILED: 'message:failed',
+  ADAPTER_HEALTH_CHANGE: 'adapter:healthChange',
+  CONFIRMATION_REQUIRED: 'confirmation:required',
+  CONFIRMATION_RESPONDED: 'confirmation:responded',
+  GENERATION_PROGRESS: 'generation:progress',
 } as const

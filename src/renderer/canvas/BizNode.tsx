@@ -1,4 +1,4 @@
-import { memo, useState, useEffect } from 'react'
+import { memo, useRef } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import { getNodeStatusClass, cn } from '../lib/utils'
@@ -15,6 +15,7 @@ interface BizNodeProps {
   id: string
   data: GraphNode & { bugCount: number }
   selected?: boolean
+  isZoomedOut?: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
@@ -22,9 +23,10 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   id: _id,
   data,
   selected,
+  isZoomedOut,
   onContextMenu,
 }: BizNodeProps) {
-  const typeColor = NODE_TYPE_COLORS[data.type] ?? '#94a3b8'
+  const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
 
   // Agent activity state — useShallow avoids new object reference per render
@@ -40,16 +42,14 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   const isAgentError = agentStatus === 'error'
   const isAgentCompleted = agentStatus === 'idle' && !!agentSessionId
 
-  // Fade-out for completed state
-  const [showCompleted, setShowCompleted] = useState(false)
-  useEffect(() => {
-    if (isAgentCompleted) {
-      setShowCompleted(true)
-      const timer = setTimeout(() => setShowCompleted(false), 3000)
-      return () => clearTimeout(timer)
-    }
-    setShowCompleted(false)
-  }, [isAgentCompleted])
+  // Track completed state for CSS animation (no setTimeout)
+  const completedRef = useRef(false)
+  if (isAgentCompleted && !completedRef.current) {
+    completedRef.current = true
+  } else if (!isAgentCompleted) {
+    completedRef.current = false
+  }
+  const showCompleted = completedRef.current
 
   // Select only this thread's outputs — stable empty array when no outputs
   const agentOutputs = useAgentOutputStore((s) => {
@@ -110,14 +110,19 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       role="button"
       tabIndex={0}
       className={cn(
-        'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-xs transition-all hover:shadow-md cursor-pointer',
+        'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-xs hover:shadow-md cursor-pointer',
         statusClass,
         selected && 'ring-2 ring-blue-400 ring-offset-1',
         isAgentRunning && 'border-orange-400 animate-pulse',
         isAgentError && 'border-red-400',
         showCompleted && 'border-green-400',
       )}
-      style={selected ? { borderColor: '#3b82f6' } : undefined}
+      style={{
+        borderColor: selected ? typeColor : undefined,
+        transition: 'border-color var(--duration-normal), box-shadow var(--duration-normal), transform var(--duration-normal)',
+        transform: selected ? 'scale(1.02)' : 'scale(1)',
+        boxShadow: selected ? `0 0 0 2px ${typeColor}40` : undefined,
+      }}
       onContextMenu={onContextMenu}
     >
       {/* Target handles: top + left (连线入端) */}
@@ -147,11 +152,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 
       <div className="flex items-center gap-1.5 mb-1">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
-        <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
+        <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", isZoomedOut && "hidden")}>
           {NODE_TYPE_LABELS[data.type]}
         </span>
       </div>
-      <div className="font-medium text-sm truncate">{data.title}</div>
+      <div className={cn("font-medium text-sm truncate", isZoomedOut && "text-[8px]")}>{data.title}</div>
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-muted-foreground">{data.status}</span>
         {data.bugCount > 0 && (

@@ -52,6 +52,7 @@ export type {
 
 export {
   DEFAULT_MODE_CONFIGS,
+  AdapterCapability,
 } from './types/agent'
 
 export type {

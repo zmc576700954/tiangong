@@ -24,6 +24,7 @@ import { createLogger } from './shared/logger'
 let _getTempDir: () => string = () => {
   // 动态 import electron 避免测试时未安装
   try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { app } = require('electron')
     return app.getPath('temp')
   } catch {

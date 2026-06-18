@@ -146,6 +146,26 @@ describe('WaterlineSync', () => {
       expect(sync.hasInvestigated('project-x', 'authentication')).toBe(true)
       expect(sync.hasInvestigated('project-x', 'database')).toBe(false)
     })
+
+    it('avoids short word false positives', () => {
+      // "auth" should NOT match "Investigated authority delegation"
+      sync.advance('project-x', [
+        memory({ kind: 'investigation', title: 'Investigated authority delegation' }),
+      ])
+      // Short topic "auth" (< 3 chars would be < 3, but "auth" is 4 chars, still short enough to cause problems)
+      // "auth" should not match "authority" because it's not a word-boundary match
+      expect(sync.hasInvestigated('project-x', 'auth')).toBe(false)
+
+      // But "authority" should match "Investigated authority delegation"
+      expect(sync.hasInvestigated('project-x', 'authority')).toBe(true)
+
+      // Very short topic (<3 chars) requires exact match
+      sync.advance('project-x', [
+        memory({ kind: 'investigation', title: 'CI pipeline setup' }),
+      ])
+      expect(sync.hasInvestigated('project-x', 'CI')).toBe(false) // "CI" is 2 chars, exact match only
+      expect(sync.hasInvestigated('project-x', 'ci pipeline setup')).toBe(true) // exact match (case insensitive)
+    })
   })
 
   describe('recentlyModified', () => {
@@ -155,6 +175,45 @@ describe('WaterlineSync', () => {
       ])
       expect(sync.recentlyModified('project-x', 'router.ts')).toBe(true)
       expect(sync.recentlyModified('project-x', 'nonexistent.ts')).toBe(false)
+    })
+
+    it('uses path-aware comparison', () => {
+      sync.advance('project-x', [
+        memory({ kind: 'fix', title: 'Fix', files_modified: ['project/src/parser.ts'] }),
+      ])
+
+      // "src/parser.ts" should match "project/src/parser.ts" via suffix match
+      expect(sync.recentlyModified('project-x', 'src/parser.ts')).toBe(true)
+
+      // "a.ts" should NOT match "parser.ts" — no path relationship
+      expect(sync.recentlyModified('project-x', 'a.ts')).toBe(false)
+
+      // Full path should match exactly
+      expect(sync.recentlyModified('project-x', 'project/src/parser.ts')).toBe(true)
+    })
+
+    it('normalizes backslash paths', () => {
+      sync.advance('project-x', [
+        memory({ kind: 'fix', title: 'Fix', files_modified: ['src\\main\\router.ts'] }),
+      ])
+      // Should match even with forward slash in query
+      expect(sync.recentlyModified('project-x', 'src/main/router.ts')).toBe(true)
+    })
+  })
+
+  describe('verifiedNodes bounded to 100', () => {
+    it('caps verifiedNodes at 100 entries', () => {
+      // Add 102 nodes
+      for (let i = 0; i < 102; i++) {
+        sync.markNodeVerified('project-x', `node-${i}`)
+      }
+      const wl = sync.getWaterline('project-x')
+      expect(wl.verifiedNodes).toHaveLength(100)
+      // Should keep the most recent 100 (node-2 through node-101)
+      expect(wl.verifiedNodes).not.toContain('node-0')
+      expect(wl.verifiedNodes).not.toContain('node-1')
+      expect(wl.verifiedNodes).toContain('node-2')
+      expect(wl.verifiedNodes).toContain('node-101')
     })
   })
 

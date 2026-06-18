@@ -6,6 +6,7 @@
  * 运行时动态检测安装状态，不再依赖硬编码。
  */
 
+import { AdapterCapability } from '@shared/types'
 import type { InstallMethod, AdapterMarketplaceItem } from '@shared/types'
 import { ClaudeCodeAdapter } from './claude-code'
 import { CodexAdapter } from './codex'
@@ -34,6 +35,9 @@ export interface AdapterDescriptor {
   homepage: string
   /** 是否在市场中隐藏（内置适配器） */
   hidden?: boolean
+  capabilities?: AdapterCapability[]
+  fallbackTo?: string
+  platforms?: NodeJS.Platform[]
 }
 
 const platform = process.platform
@@ -64,6 +68,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: ClaudeCodeAdapter,
     homepage: 'https://docs.anthropic.com/en/docs/claude-code',
+    capabilities: [AdapterCapability.Resume, AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn, AdapterCapability.ScopeGuard, AdapterCapability.Tools],
+    fallbackTo: 'mcp',
   },
   {
     name: 'codex',
@@ -79,6 +85,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CodexAdapter,
     homepage: 'https://github.com/openai/codex',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn],
+    fallbackTo: 'mcp',
   },
   {
     name: 'opencode',
@@ -96,6 +104,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: OpenCodeAdapter,
     homepage: 'https://opencode.ai',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'cline',
@@ -109,6 +119,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: ClineAdapter,
     homepage: 'https://cline.bot',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'kilo-code',
@@ -123,6 +135,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: KiloCodeAdapter,
     homepage: 'https://kilo.ai',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'kimi-code',
@@ -139,6 +153,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: KimiCodeAdapter,
     homepage: 'https://github.com/MoonshotAI/kimi-code',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'codebuddy',
@@ -152,6 +168,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CodeBuddyAdapter,
     homepage: 'https://github.com/Tencent/CodeBuddy',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'qoder',
@@ -165,6 +183,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: QoderAdapter,
     homepage: 'https://github.com/qoder-ai',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'qwen-code',
@@ -181,6 +201,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: QwenCodeAdapter,
     homepage: 'https://github.com/QwenLM/qwen-code',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'cursor',
@@ -196,6 +218,8 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CursorAdapter,
     homepage: 'https://cursor.com',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    fallbackTo: 'mcp',
   },
   {
     name: 'mcp',
@@ -207,6 +231,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: McpAdapter,
     homepage: 'https://modelcontextprotocol.io',
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.Tools],
   },
   {
     name: 'mindmap-internal',
@@ -219,8 +244,18 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     adapterClass: MindMapAdapter,
     homepage: '',
     hidden: true,
+    capabilities: [],
   },
 ]
+
+/** 获取当前平台兼容的适配器列表 */
+export function getFilteredRegistry(): AdapterDescriptor[] {
+  const platform = process.platform
+  return ADAPTER_REGISTRY.filter(d => {
+    if (!d.platforms) return true
+    return d.platforms.includes(platform)
+  })
+}
 
 /** 获取适配器市场数据（用于前端渲染） */
 export async function buildMarketplaceItems(

@@ -26,11 +26,20 @@ export interface UseResizablePanelResult {
  * 支持左/右方向面板，通过鼠标拖拽调整宽度。
  * 可设置固定宽度覆盖（如 Agent 面板展开模式）。
  */
+const STORAGE_KEY_PREFIX = 'bizgraph:panel:'
+
 export function useResizablePanel(options: UseResizablePanelOptions): UseResizablePanelResult {
   const { initialWidth, minWidth, maxWidth, direction } = options
-  const [width, setWidth] = useState(initialWidth)
+  const storageKey = `${STORAGE_KEY_PREFIX}${direction}`
+  const savedWidth = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
+  const [width, setWidth] = useState(savedWidth ? Math.max(minWidth, Math.min(maxWidth, Number(savedWidth))) : initialWidth)
   const [isResizing, setIsResizing] = useState(false)
   const [fixedWidth, setFixedWidth] = useState<number | null>(null)
+
+  // Persist width changes to localStorage
+  useEffect(() => {
+    localStorage.setItem(storageKey, String(width))
+  }, [width, storageKey])
 
   useEffect(() => {
     if (!isResizing) return

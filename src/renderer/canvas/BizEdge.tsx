@@ -32,11 +32,11 @@ export const BizEdge = memo(function BizEdge({
   const [isEditing, setIsEditing] = useState(false)
   const labelText = typeof label === 'string' ? label : ''
   const [editLabel, setEditLabel] = useState(labelText)
-  const [isHover, setIsHover] = useState(false)
 
   const edgeType: EdgeType = data?.edgeType ?? 'default'
   const content = data?.content
   const isBusinessFlow = edgeType === 'business-flow'
+  const isSuggested = content?.suggested === true
   const config = edgeTypeConfig[edgeType]
 
   const [edgePath, labelX, labelY] = getBezierPath({
@@ -65,9 +65,9 @@ export const BizEdge = memo(function BizEdge({
     [handleSaveLabel, labelText],
   )
 
-  const isInteractive = selected || isHover
+  const isInteractive = selected
   const strokeColor = selected ? '#3b82f6' : config.color
-  const strokeWidth = selected ? 3 : isHover ? 2.5 : 2
+  const strokeWidth = selected ? 3 : 2
 
   return (
     <>
@@ -77,8 +77,6 @@ export const BizEdge = memo(function BizEdge({
         stroke="transparent"
         strokeWidth={12}
         className="react-flow__edge-interaction"
-        onMouseEnter={() => setIsHover(true)}
-        onMouseLeave={() => setIsHover(false)}
       />
       <BaseEdge
         path={edgePath}
@@ -87,6 +85,7 @@ export const BizEdge = memo(function BizEdge({
           stroke: strokeColor,
           strokeWidth,
           transition: 'stroke 0.2s, stroke-width 0.2s',
+          ...(isSuggested ? { strokeDasharray: '6 4' } : {}),
         }}
       />
       <EdgeLabelRenderer>
@@ -97,14 +96,14 @@ export const BizEdge = memo(function BizEdge({
               ? 'border-blue-300 bg-blue-50 text-blue-700'
               : selected
                 ? 'border-blue-300 bg-blue-50 text-blue-700'
-                : 'border-slate-200 bg-white text-slate-600',
+                : isSuggested
+                  ? 'border-dashed border-amber-300 bg-amber-50 text-amber-700'
+                  : 'border-slate-200 bg-white text-slate-600',
           )}
           style={{
             position: 'absolute',
             transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
           }}
-          onMouseEnter={() => setIsHover(true)}
-          onMouseLeave={() => setIsHover(false)}
           title={content?.note || undefined}
         >
           {isEditing ? (

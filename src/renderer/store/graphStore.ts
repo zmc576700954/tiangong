@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus } from '@shared/types'
+import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -66,6 +66,15 @@ interface GraphState {
   createBug: (data: Omit<BugNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<BugNode>
   updateBug: (id: string, data: Partial<BugNode>) => Promise<void>
   deleteBug: (id: string) => Promise<void>
+
+  addSuggestedEdges: (edges: Array<{ id: string; source: string; target: string; edgeType: EdgeType; strength: number; content: EdgeContent }>) => void
+  confirmSuggestedEdge: (edgeId: string) => void
+  rejectSuggestedEdge: (edgeId: string) => void
+  clearPreviewNodes: () => void
+
+  // Map-based index accessors
+  getNodeById: (id: string) => GraphNode | undefined
+  getNodesByType: (type: string) => GraphNode[]
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -355,5 +364,40 @@ export const useGraphStore = create<GraphState>((set, get) => {
       throw err
     }
   },
+
+  addSuggestedEdges: (edges) => {
+    set(state => {
+      const newEdges = edges.filter(e => !state.edges.some(ex => ex.source === e.source && ex.target === e.target))
+      return { edges: [...state.edges, ...newEdges.map(e => ({ ...e, graphId: state.currentGraphId ?? '', label: '', id: e.id }))] }
+    })
+  },
+
+  confirmSuggestedEdge: (edgeId) => {
+    set(state => ({
+      edges: state.edges.map(e =>
+        e.id === edgeId && e.content?.suggested
+          ? { ...e, content: { ...e.content, suggested: false } }
+          : e
+      )
+    }))
+    const edge = get().edges.find(e => e.id === edgeId)
+    if (edge) {
+      window.electronAPI['edge:update'](edgeId, { content: { ...edge.content, suggested: false } })
+    }
+  },
+
+  rejectSuggestedEdge: (edgeId) => {
+    set(state => ({ edges: state.edges.filter(e => e.id !== edgeId) }))
+    window.electronAPI['edge:delete'](edgeId)
+  },
+
+  clearPreviewNodes: () => {
+    const previewIds = get().nodes.filter(n => n.metadata?.preview).map(n => n.id)
+    previewIds.forEach(id => window.electronAPI['node:delete'](id))
+    set(state => ({ nodes: state.nodes.filter(n => !n.metadata?.preview) }))
+  },
+
+  getNodeById: (id) => get().nodes.find(n => n.id === id),
+  getNodesByType: (type) => get().nodes.filter(n => n.type === type),
   }
 })

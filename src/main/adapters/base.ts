@@ -15,7 +15,7 @@ import type {
 } from '@shared/types'
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
 import type { ProtocolInputMessage } from './json-protocol'
-import { SessionNotFoundError } from '../errors'
+import { SessionNotFoundError, AdapterError } from '../errors'
 import { buildSafeEnv } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { parseFileChanges } from './file-change-parser'
@@ -60,6 +60,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** 默认会话超时时间（30 分钟） */
   private static readonly DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000
+  /** 连接超时（10 秒） */
+  static readonly CONNECTION_TIMEOUT_MS = 10_000
+  /** 首字节超时（30 秒） */
+  static readonly FIRST_BYTE_TIMEOUT_MS = 30_000
+  /** 执行超时（5 分钟） */
+  static readonly EXECUTION_TIMEOUT_MS = 5 * 60 * 1000
   /** SIGKILL 保底超时（SIGTERM 后等待时间） */
   private static readonly SIGKILL_GRACE_PERIOD_MS = 5000
 
@@ -93,17 +99,30 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 发送指令到指定会话
    */
   async sendCommand(sessionId: string, command: AgentCommand): Promise<void> {
-    const session = this.sessions.get(sessionId)
-    if (!session) {
-      throw new SessionNotFoundError(sessionId)
-    }
-    const proc = this.processes.get(sessionId)
-    this.pushOutputSession(sessionId)
     try {
-      await this.doSendCommand(session, command, proc)
-      // sessionEnded 由各适配器自行发射（CLI 适配器通过 onExit/onError，SDK 适配器在 doSendCommand 内部）
-    } finally {
-      this.popOutputSession()
+      const session = this.sessions.get(sessionId)
+      if (!session) {
+        throw new SessionNotFoundError(sessionId)
+      }
+      const proc = this.processes.get(sessionId)
+      this.pushOutputSession(sessionId)
+      try {
+        await this.doSendCommand(session, command, proc)
+      } finally {
+        this.popOutputSession()
+      }
+    } catch (error) {
+      if (error instanceof SessionNotFoundError || error instanceof AdapterError) throw error
+      const adapterError = new AdapterError(
+        `Unexpected error in ${this.name}.sendCommand: ${(error as Error).message}`,
+        this.name,
+      )
+      this.emitOutput({
+        type: 'error',
+        data: adapterError.message,
+        timestamp: Date.now(),
+      })
+      throw adapterError
     }
   }
 

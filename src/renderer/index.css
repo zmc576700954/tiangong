@@ -33,6 +33,16 @@
   --color-node-published: #22c55e;
   --color-node-placeholder: #64748b;
 
+  /* Semantic tokens */
+  --color-agent-running: hsl(var(--primary));
+  --color-bug-critical: hsl(0 84% 60%);
+  --color-node-placeholder: hsl(var(--muted));
+
+  /* Micro-interaction tokens */
+  --duration-fast: 100ms;
+  --duration-normal: 150ms;
+  --duration-slow: 200ms;
+
   --radius-lg: var(--radius);
   --radius-md: calc(var(--radius) - 2px);
   --radius-sm: calc(var(--radius) - 4px);
@@ -95,6 +105,8 @@
     --border: 217.2 32.6% 17.5%;
     --input: 217.2 32.6% 17.5%;
     --ring: 224.3 76.3% 48%;
+    --color-bug-critical: hsl(0 72% 50%);
+    --color-node-placeholder: hsl(var(--muted));
   }
 
   * {
@@ -245,4 +257,21 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
+}
+
+@keyframes fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.animate-fade-out {
+  animation: fade-out var(--duration-normal) ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

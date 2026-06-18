@@ -36,7 +36,6 @@ interface QueuedItem {
 
 export class RequestQueue {
   private _queues = new Map<string, QueuedItem[]>()
-  private _activeCount = new Map<string, number>()
   private _config: RequestQueueConfig
   private _dedupMap = new Map<string, number>()
   private _dedupWindowMs: number

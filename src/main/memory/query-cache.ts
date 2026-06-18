@@ -1,7 +1,3 @@
-import { createLogger } from '../shared/logger'
-
-const logger = createLogger('query-cache')
-
 export interface QueryCacheOptions {
   maxSize?: number
   ttlMs?: number

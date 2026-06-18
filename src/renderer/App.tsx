@@ -66,6 +66,16 @@ function App() {
 
   const [expandedAgent, setExpandedAgent] = useState(false)
 
+  // Responsive layout detection
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth)
+  useEffect(() => {
+    const handler = () => setWindowWidth(window.innerWidth)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
+  const isSmallScreen = windowWidth < 1024
+
   const graphs = useGraphStore((s) => s.graphs)
   const currentGraphId = useGraphStore((s) => s.currentGraphId)
   const loadGraphs = useGraphStore((s) => s.loadGraphs)
@@ -84,23 +94,25 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
-        {/* 左侧目录树 */}
-        <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
-          <LeftPanel />
-        </div>
+        {/* Left directory tree — hidden on small screens */}
+        {!isSmallScreen && (
+          <>
+            <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
+              <LeftPanel />
+            </div>
+            <div
+              className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
+              style={{ width: '3px' }}
+              onMouseDown={leftPanel.startResize}
+            >
+              <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
+            </div>
+          </>
+        )}
 
-        {/* 左侧分割线 */}
-        <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors shrink-0 select-none"
-          onMouseDown={leftPanel.startResize}
-        />
-
-        {/* 中间画布区域 */}
+        {/* Center canvas area */}
         <div className="flex-1 flex flex-col min-w-0">
-          {/* 图 Tab 切换 */}
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
-
-          {/* 画布 */}
           <div className="flex-1 relative">
             {currentGraphId ? (
               <GraphCanvas graphId={currentGraphId} />
@@ -115,18 +127,16 @@ function App() {
           </div>
         </div>
 
-        {/* 右侧分割线 */}
+        {/* Right Agent panel — always visible */}
         <div
-          className="w-1 cursor-col-resize hover:bg-primary/50 transition-colors shrink-0 select-none"
+          className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
+          style={{ width: '3px' }}
           onMouseDown={rightPanel.startResize}
-        />
-
-        {/* 右侧 Agent 面板 */}
+        >
+          <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
+        </div>
         <div
-          style={{
-            width: rightPanel.width,
-            minWidth: rightPanel.width,
-          }}
+          style={{ width: rightPanel.width, minWidth: rightPanel.width }}
           className="shrink-0"
         >
           <RightPanel

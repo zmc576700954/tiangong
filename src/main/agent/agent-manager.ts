@@ -25,6 +25,7 @@ import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError } from '../errors'
 import { ErrorCode } from '../errors'
+import { getSessionRecoveryManager } from './session-recovery'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
 import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
@@ -116,6 +117,10 @@ export class AgentManager {
   }
   /** 会话输出缓冲区：sessionId → AgentOutput[]（用于记忆提取） */
   private sessionOutputBuffers = new Map<string, AgentOutput[]>()
+  /** SessionRecovery 实例 */
+  private sessionRecovery = getSessionRecoveryManager()
+  /** Fallback recovery check timers */
+  private fallbackRecoveryTimers = new Map<string, ReturnType<typeof setInterval>>()
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -200,6 +205,11 @@ export class AgentManager {
       if (reason === 'crash' || reason === 'error') {
         logger.warn(`Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
         this.cleanupSessionResources(sessionId)
+        // Attempt recovery based on exit context
+        const state = this.sessionStates.get(sessionId)
+        if (state) {
+          this._handleSessionEnded(sessionId, 1, reason)
+        }
       }
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
@@ -566,11 +576,19 @@ export class AgentManager {
 
     // 去重
     const seen = new Set<string>()
-    const uniqueChain = fallbackChain.filter((a) => {
+    let uniqueChain = fallbackChain.filter((a) => {
       if (seen.has(a)) return false
       seen.add(a)
       return true
     })
+
+    // Dynamic fallback: reorder by adapter health (unless forceAdapter)
+    if (!preferences.forceAdapter) {
+      const healthiest = this.healthMonitor.getHealthiestAdapter(uniqueChain)
+      if (healthiest && healthiest !== uniqueChain[0]) {
+        uniqueChain = [healthiest, ...uniqueChain.filter(n => n !== healthiest)]
+      }
+    }
 
     const fallbackHistory: AdapterFallbackAttempt[] = []
 
@@ -635,6 +653,8 @@ export class AgentManager {
             originalAdapter: primary,
             fallbackReason: `${primary} not available, using ${candidate}`,
           }
+          // Start periodic check to detect when preferred adapter recovers
+          this._startFallbackRecoveryCheck(primary)
         }
 
         if (config.nodeId) {
@@ -1138,13 +1158,63 @@ export class AgentManager {
     if (wrapped) {
       this.broadcaster.offBroadcast(wrapped)
       this.sessionOutputListeners.delete(handler)
-      // 同步清理 sessionOutputListenerIndex 中的引用
       for (const [, handlers] of this.sessionOutputListenerIndex) {
         if (handlers.delete(handler) && handlers.size === 0) {
-          // Set 为空时保留条目无意义，但 sessionId 可能后续还会 addSessionOutputListener，
-          // 因此不主动 delete 整个 Set，避免频繁创建/销毁
+          // empty set retained for potential reuse
         }
       }
     }
+  }
+
+  private async _handleSessionEnded(sessionId: string, exitCode: number | null, reason: string): Promise<void> {
+    const state = this.sessionStates.get(sessionId)
+    if (!state) return
+
+    if (exitCode === 137 || exitCode === 143) {
+      logger.info(`Session ${sessionId} terminated normally (exit ${exitCode})`)
+      return
+    }
+
+    if (exitCode === 1 && reason === 'crash') {
+      const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+      const newSessionId = await this.sessionRecovery.attemptRecovery({
+        sessionId,
+        adapterName: state.adapterName,
+        projectId: state.config.workingDirectory,
+        lastOutputs: outputs,
+      })
+      if (newSessionId) {
+        logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
+      }
+      return
+    }
+
+    if (exitCode === 126 || exitCode === 127) {
+      this.healthMonitor.recordCall(state.adapterName, false, 0, `Exit code ${exitCode}: adapter not available`)
+      logger.warn(`Adapter ${state.adapterName} marked unavailable (exit ${exitCode})`)
+      return
+    }
+
+    logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
+  }
+
+  private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
+    if (this.fallbackRecoveryTimers.has(preferredAdapter)) return
+    const timer = setInterval(async () => {
+      const adapter = this.registry.get(preferredAdapter)
+      if (!adapter) { clearInterval(timer); this.fallbackRecoveryTimers.delete(preferredAdapter); return }
+      const installed = await adapter.checkInstalled()
+      const health = this.healthMonitor.getHealth(preferredAdapter)
+      if (installed && health && health.status === 'healthy') {
+        logger.info(`Preferred adapter ${preferredAdapter} is healthy again`)
+        clearInterval(timer)
+        this.fallbackRecoveryTimers.delete(preferredAdapter)
+      }
+    }, intervalMs)
+    this.fallbackRecoveryTimers.set(preferredAdapter, timer)
+    setTimeout(() => {
+      clearInterval(timer)
+      this.fallbackRecoveryTimers.delete(preferredAdapter)
+    }, 5 * 60_000)
   }
 }

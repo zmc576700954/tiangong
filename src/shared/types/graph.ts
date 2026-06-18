@@ -69,6 +69,7 @@ export interface NodeMetadata {
   services?: { name: string; description?: string }[]
   entities?: { name: string; fields?: string; description?: string }[]
   fileAssociations?: FileAssociation[]
+  preview?: boolean
 }
 
 /** 节点详细内容（图谱内部存储，不直接展示在画布） */

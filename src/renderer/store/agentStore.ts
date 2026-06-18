@@ -1,9 +1,21 @@
+/**
+ * Backward-compatible re-export layer for the split agent sub-stores.
+ *
+ * All components that import useAgentStore continue to work unchanged.
+ * Each method delegates to the appropriate sub-store, and state changes
+ * in sub-stores are synced back so that getState() reflects the truth.
+ *
+ * TODO: migrate components to use sub-stores directly
+ */
+
 import { create } from 'zustand'
-import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, NodeStatus, AdapterPreferences, AdapterFallbackAttempt, AdapterMarketplaceItem } from '@shared/types'
-import { generateId } from '../lib/utils'
-import { useGraphStore } from './graphStore'
+import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, AdapterPreferences, AdapterFallbackAttempt, AdapterMarketplaceItem } from '@shared/types'
+import type { AdapterState } from './adapterStore'
 import { useAgentOutputStore } from './agentOutputStore'
-import { eventBus, Events } from './eventBus'
+import { useAdapterStore } from './adapterStore'
+import { useThreadStore } from './threadStore'
+import { useMessageStore } from './messageStore'
+import { useSessionStore } from './sessionStore'
 
 interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
@@ -36,7 +48,7 @@ interface AgentState {
   sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
   appendChatMessage: (threadId: string, message: ChatMessage) => void
   renameThread: (threadId: string, title: string) => void
-  deleteThread: (threadId: string) => void
+  deleteThread: (threadId: string) => Promise<void>
   selectThread: (id: string | null) => void
   updateThreadStatus: (threadId: string, status: 'idle' | 'running' | 'error' | 'reviewed') => void
   markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
@@ -55,7 +67,45 @@ interface AgentState {
   listenForStatusChanges: () => () => void
 }
 
-export const useAgentStore = create<AgentState>((set, get) => ({
+// Subscribe to sub-store changes and sync into agentStore's own state
+// so that getState() always reflects the truth from sub-stores.
+// Uses _originalSetState (assigned below) to avoid re-forwarding to sub-stores.
+// eslint-disable-next-line prefer-const
+let _originalSetState: typeof useAgentStore.setState
+
+function syncFromSubStores() {
+  // Initial sync
+  _originalSetState({
+    adapters: useAdapterStore.getState().adapters,
+    adapterPreferences: useAdapterStore.getState().adapterPreferences,
+    lastFallbackHistory: useAdapterStore.getState().lastFallbackHistory,
+    marketplaceItems: useAdapterStore.getState().marketplaceItems,
+    openSettingsPanel: useAdapterStore.getState().openSettingsPanel,
+    threads: useThreadStore.getState().threads,
+    currentThreadId: useThreadStore.getState().currentThreadId,
+  })
+
+  // Subscribe to adapterStore changes — use _originalSetState to avoid loop
+  useAdapterStore.subscribe((state) => {
+    _originalSetState({
+      adapters: state.adapters,
+      adapterPreferences: state.adapterPreferences,
+      lastFallbackHistory: state.lastFallbackHistory,
+      marketplaceItems: state.marketplaceItems,
+      openSettingsPanel: state.openSettingsPanel,
+    })
+  })
+
+  // Subscribe to threadStore changes — use _originalSetState to avoid loop
+  useThreadStore.subscribe((state) => {
+    _originalSetState({
+      threads: state.threads,
+      currentThreadId: state.currentThreadId,
+    })
+  })
+}
+
+export const useAgentStore = create<AgentState>(() => ({
   adapters: [],
   threads: [],
   currentThreadId: null,
@@ -65,39 +115,23 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   openSettingsPanel: false,
 
   loadAdapters: async () => {
-    const adapters = await window.electronAPI['agent:listAdapters']()
-    set({ adapters })
+    await useAdapterStore.getState().loadAdapters()
   },
 
   loadAdapterPreferences: async () => {
-    try {
-      const prefs = await window.electronAPI['settings:getAdapterPreferences']()
-      set({ adapterPreferences: prefs })
-    } catch (err) {
-      console.error('[agentStore] Failed to load adapter preferences:', err)
-    }
+    await useAdapterStore.getState().loadAdapterPreferences()
   },
 
   setAdapterPreferences: async (prefs) => {
-    try {
-      await window.electronAPI['settings:setAdapterPreferences'](prefs)
-      set({ adapterPreferences: prefs })
-    } catch (err) {
-      console.error('[agentStore] Failed to save adapter preferences:', err)
-    }
+    await useAdapterStore.getState().setAdapterPreferences(prefs)
   },
 
   loadMarketplaceItems: async () => {
-    try {
-      const items = await window.electronAPI['agent:getAdapterMarketplace']()
-      set({ marketplaceItems: items })
-    } catch (err) {
-      console.error('[agentStore] Failed to load marketplace items:', err)
-    }
+    await useAdapterStore.getState().loadMarketplaceItems()
   },
 
   setOpenSettingsPanel: (open) => {
-    set({ openSettingsPanel: open })
+    useAdapterStore.getState().setOpenSettingsPanel(open)
   },
 
   sendCommand: async (sessionId, command) => {
@@ -105,11 +139,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   appendOutput: (threadId, output) => {
-    // 委托给专用 outputStore 管理内存预算和批处理
     useAgentOutputStore.getState().appendOutput(threadId, output)
-    // error 类型同时更新 thread 状态
     if (output.type === 'error') {
-      set((state) => ({
+      useThreadStore.setState((state) => ({
         threads: state.threads.map((t) =>
           t.id === threadId ? { ...t, status: 'error' as const } : t,
         ),
@@ -118,20 +150,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   appendToStreamingMessage: (threadId, messageId, content) => {
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, content: m.content + content }
-                  : m,
-              ),
-            }
-          : t,
-      ),
-    }))
+    useMessageStore.getState().appendToStreamingMessage(threadId, messageId, content)
   },
 
   clearThreadOutputs: (threadId) => {
@@ -143,58 +162,15 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   appendToolCall: (threadId, messageId, toolCall) => {
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, toolCalls: [...(m.toolCalls ?? []), toolCall] }
-                  : m,
-              ),
-            }
-          : t,
-      ),
-    }))
+    useMessageStore.getState().appendToolCall(threadId, messageId, toolCall)
   },
 
   updateToolCallAccepted: (threadId, messageIndex, toolCallIndex, accepted) => {
-    set((state) => ({
-      threads: state.threads.map((t) => {
-        if (t.id !== threadId) return t
-        const agentMessages = t.messages.filter((m) => m.role === 'agent')
-        const targetMsg = agentMessages[messageIndex]
-        if (!targetMsg) return t
-        return {
-          ...t,
-          messages: t.messages.map((m) => {
-            if (m.id !== targetMsg.id) return m
-            return {
-              ...m,
-              toolCalls: m.toolCalls?.map((tc, i) =>
-                i === toolCallIndex ? { ...tc, accepted } : tc,
-              ),
-            }
-          }),
-        }
-      }),
-    }))
+    useMessageStore.getState().updateToolCallAccepted(threadId, messageIndex, toolCallIndex, accepted)
   },
 
   updateAllToolCallsAccepted: (threadId, accepted) => {
-    set((state) => ({
-      threads: state.threads.map((t) => {
-        if (t.id !== threadId) return t
-        return {
-          ...t,
-          messages: t.messages.map((m) => ({
-            ...m,
-            toolCalls: m.toolCalls?.map((tc) => ({ ...tc, accepted })),
-          })),
-        }
-      }),
-    }))
+    useMessageStore.getState().updateAllToolCallsAccepted(threadId, accepted)
   },
 
   getOutputs: (threadId) => {
@@ -202,372 +178,137 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   },
 
   createThread: (adapterName, nodeBound) => {
-    const id = generateId('thread')
-    const thread: AgentThread = {
-      id,
-      title: 'New Thread',
-      adapterName,
-      messages: [],
-      contextRefs: [],
-      status: 'idle',
-      createdAt: Date.now(),
-      nodeBound,
-    }
-    set((state) => ({
-      threads: [...state.threads, thread],
-      currentThreadId: id,
-    }))
-    // 异步持久化到 DB，失败时标记 thread 状态提醒用户
-    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).catch((err) => {
-      console.error('[agentStore] Failed to persist new thread:', err)
-      set((state) => ({
-        threads: state.threads.map((t) =>
-          t.id === id ? { ...t, status: 'error' as const } : t,
-        ),
-      }))
-    })
-    return id
+    return useThreadStore.getState().createThread(adapterName, nodeBound)
   },
 
-  sendMessage: async (threadId, content, contextRefs, sessionConfig) => {
-    const userMessage: ChatMessage = {
-      id: generateId('msg'),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      contextRefs,
-      status: 'pending',
-    }
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: [...t.messages, userMessage],
-              title: t.title === 'New Thread' ? content.slice(0, 30) : t.title,
-              status: 'running' as const,
-            }
-          : t,
-      ),
-    }))
-
-    // 持久化用户消息到 DB
-    get().persistMessage(threadId, userMessage)
-
-    const thread = get().threads.find((t) => t.id === threadId)
-    if (!thread) return
-
-    // 使用传入的完整配置，或构建 fallback（从 graphStore 获取 projectPath）
-    const graphState = useGraphStore.getState()
-    const currentGraph = graphState.currentGraphId
-      ? graphState.graphs.find((g) => g.id === graphState.currentGraphId)
-      : undefined
-    const config: AgentSessionConfig = sessionConfig ?? {
-      workingDirectory: currentGraph?.projectPath ?? '',
-      allowedFiles: [],
-      forbiddenFiles: [],
-      invariantRules: [],
-      upstreamContext: '',
-      downstreamContext: '',
-      nodeTitle: thread.nodeBound ?? '',
-      nodeId: thread.nodeBound,
-      acceptanceCriteria: [],
-    }
-
-    if (!config.workingDirectory) {
-      get().appendChatMessage(threadId, {
-        id: generateId('msg'),
-        role: 'system',
-        content: '请先打开一个项目目录再发送消息。',
-        timestamp: Date.now(),
-        status: 'error',
-        error: { code: 'NO_PROJECT', message: '未指定项目目录' },
-      })
-      get().updateThreadStatus(threadId, 'idle')
-      return
-    }
-
-    // 续接：如果 thread 有 sessionId，注入 resumeSessionId（适配器自行决定是否支持）
-    if (thread.sessionId) {
-      config.resumeSessionId = thread.sessionId
-    }
-
-    try {
-      let sessionId: string
-      const existingSessionId = thread.sessionId
-
-      if (existingSessionId) {
-        // 复用已有 session
-        sessionId = existingSessionId
-      } else {
-        // 首次发送，创建 session
-        // adapterName 为 'auto' 时传 null，触发主进程自动回退链
-        const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
-        const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
-        sessionId = result.sessionId
-
-        // 记录回退历史
-        if (result.fallbackHistory && result.fallbackHistory.length > 1) {
-          set({ lastFallbackHistory: result.fallbackHistory })
-        }
-
-        // 绑定 sessionId 到 thread
-        set((state) => ({
-          threads: state.threads.map((t) =>
-            t.id === threadId ? { ...t, sessionId } : t,
-          ),
-        }))
-
-        // 持久化 sessionId 到 DB（失败时 warn，retry 机制可容忍）
-        window.electronAPI['thread:update'](threadId, { sessionId }).catch((err) => {
-          console.warn('[agentStore] Failed to persist sessionId, retry may lose continuity:', err)
-        })
-      }
-
-      // BUG 节点自动映射为 fix_bug 命令类型
-      const boundNode = thread.nodeBound
-        ? useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
-        : undefined
-      const commandType: AgentCommand['type'] = boundNode?.type === 'bug' ? 'fix_bug' : 'implement'
-
-      const command: AgentCommand = {
-        type: commandType,
-        description: content,
-        targetNodeId: thread.nodeBound ?? '',
-      }
-
-      // Use resolveAndSendCommand if contextRefs exist, otherwise fall back to sendCommand
-      if (contextRefs && contextRefs.length > 0) {
-        const nodeIds = contextRefs.filter((r) => r.type === 'node').map((r) => r.id)
-        await window.electronAPI['agent:resolveAndSendCommand'](
-          sessionId,
-          command,
-          contextRefs,
-          nodeIds,
-        )
-      } else {
-        await window.electronAPI['agent:sendCommand'](sessionId, command)
-      }
-    } catch (err) {
-      const errMsg = String(err)
-      const isNoAdapter = errMsg.includes('No adapter available')
-      get().appendChatMessage(threadId, {
-        id: generateId('msg'),
-        role: 'agent',
-        content: '',
-        timestamp: Date.now(),
-        status: 'error',
-        error: {
-          code: isNoAdapter ? 'NO_ADAPTER_AVAILABLE' : 'SESSION_START_FAILED',
-          message: isNoAdapter
-            ? '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。'
-            : '无法启动 Agent 会话，请检查适配器是否可用。',
-          raw: errMsg,
-        },
-      })
-      get().updateThreadStatus(threadId, 'error')
-    }
+  sendMessage: (threadId, content, contextRefs, sessionConfig) => {
+    return useSessionStore.getState().sendMessage(threadId, content, contextRefs, sessionConfig)
   },
 
   appendChatMessage: (threadId, message) => {
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? { ...t, messages: [...t.messages, message] }
-          : t,
-      ),
-    }))
+    useThreadStore.getState().appendChatMessage(threadId, message)
   },
 
   renameThread: (threadId, title) => {
-    const prevTitle = get().threads.find((t) => t.id === threadId)?.title
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId ? { ...t, title } : t,
-      ),
-    }))
-    window.electronAPI['thread:update'](threadId, { title }).catch((err) => {
-      console.error('[agentStore] Failed to persist thread rename:', err)
-      if (prevTitle) {
-        set((state) => ({
-          threads: state.threads.map((t) =>
-            t.id === threadId ? { ...t, title: prevTitle } : t,
-          ),
-        }))
-      }
-    })
+    useThreadStore.getState().renameThread(threadId, title)
   },
 
-  deleteThread: async (threadId) => {
-    try {
-      await window.electronAPI['thread:delete'](threadId)
-    } catch (err) {
-      console.error('[agentStore] Failed to delete thread from DB:', err)
-    }
-    // 无论 DB 是否成功都从 UI 移除（避免阻塞用户操作）
-    set((state) => ({
-      threads: state.threads.filter((t) => t.id !== threadId),
-      currentThreadId:
-        state.currentThreadId === threadId
-          ? state.threads.find((t) => t.id !== threadId)?.id ?? null
-          : state.currentThreadId,
-    }))
+  deleteThread: (threadId) => {
+    return useThreadStore.getState().deleteThread(threadId)
   },
 
   selectThread: (id) => {
-    set({ currentThreadId: id })
-    if (id) get().trimInactiveThreadOutputs(id)
+    useThreadStore.getState().selectThread(id)
   },
 
   updateThreadStatus: (threadId, status) => {
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId ? { ...t, status } : t,
-      ),
-    }))
+    useThreadStore.getState().updateThreadStatus(threadId, status)
   },
 
   markMessageStatus: (threadId, messageId, status, error) => {
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, status, ...(error ? { error } : { error: undefined }) }
-                  : m,
-              ),
-            }
-          : t,
-      ),
-    }))
+    useMessageStore.getState().markMessageStatus(threadId, messageId, status, error)
   },
 
-  stopCurrentSession: async (threadId) => {
-    const thread = get().threads.find((t) => t.id === threadId)
-    if (!thread?.sessionId) return
-
-    await window.electronAPI['agent:terminateSession'](thread.sessionId)
-
-    // Mark the last streaming agent message as aborted
-    const lastStreaming = [...thread.messages].reverse().find((m) => m.role === 'agent' && m.status === 'streaming')
-    if (lastStreaming) {
-      get().markMessageStatus(threadId, lastStreaming.id, 'aborted')
-    }
-
-    // 清除 sessionId 以便下次消息创建新 session
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId ? { ...t, sessionId: undefined, status: 'idle' as const } : t,
-      ),
-    }))
-    get().clearThreadOutputs(threadId)
+  stopCurrentSession: (threadId) => {
+    return useSessionStore.getState().stopCurrentSession(threadId)
   },
 
-  retryMessage: async (threadId, agentMessageId) => {
-    const thread = get().threads.find((t) => t.id === threadId)
-    if (!thread) return
-
-    const agentIdx = thread.messages.findIndex((m) => m.id === agentMessageId)
-    if (agentIdx < 0) return
-
-    // Find the preceding user message
-    const precedingUser = [...thread.messages.slice(0, agentIdx)].reverse().find((m) => m.role === 'user')
-    if (!precedingUser) return
-
-    // Terminate existing session if any
-    if (thread.sessionId) {
-      try {
-        await window.electronAPI['agent:terminateSession'](thread.sessionId)
-      } catch {
-        // Already terminated
-      }
-    }
-
-    // Remove the target agent message and everything after it, and clear stale sessionId
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? { ...t, messages: t.messages.slice(0, agentIdx), sessionId: undefined }
-          : t,
-      ),
-    }))
-
-    // Resend using the original user message content and context
-    await get().sendMessage(threadId, precedingUser.content, precedingUser.contextRefs)
+  retryMessage: (threadId, agentMessageId) => {
+    return useMessageStore.getState().retryMessage(threadId, agentMessageId)
   },
 
   findThreadBySessionId: (sessionId) => {
-    return get().threads.find((t) => t.sessionId === sessionId)
+    return useThreadStore.getState().findThreadBySessionId(sessionId)
   },
 
   getThreadByNodeId: (nodeId) => {
-    return get().threads.find((t) => t.nodeBound === nodeId)
+    return useThreadStore.getState().getThreadByNodeId(nodeId)
   },
 
-  // ==================== 持久化 ====================
-
   loadThreads: async (filters) => {
-    const threads = await window.electronAPI['thread:list'](filters)
-    set({ threads })
+    await useThreadStore.getState().loadThreads(filters)
   },
 
   loadMessages: async (threadId) => {
-    const thread = await window.electronAPI['thread:load'](threadId)
-    if (!thread) return
-    set((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId ? thread : t,
-      ),
-    }))
+    await useThreadStore.getState().loadMessages(threadId)
   },
 
   persistMessage: async (threadId, message) => {
-    try {
-      await window.electronAPI['message:save'](threadId, message)
-    } catch (err) {
-      console.error('[agentStore] Failed to persist message:', err)
-    }
+    await useThreadStore.getState().persistMessage(threadId, message)
   },
 
   persistThreadMessages: async (threadId) => {
-    const thread = get().threads.find((t) => t.id === threadId)
-    if (!thread) return
-    try {
-      await window.electronAPI['message:saveBatch'](threadId, thread.messages)
-    } catch (err) {
-      console.error('[agentStore] Failed to persist thread messages:', err)
-    }
+    await useThreadStore.getState().persistThreadMessages(threadId)
   },
 
   hydrateOnStart: async () => {
     try {
       const threads = await window.electronAPI['thread:list']()
       if (threads.length > 0) {
-        set({ threads, currentThreadId: threads[0].id })
+        useThreadStore.setState({ threads, currentThreadId: threads[0].id })
       }
     } catch (err) {
       console.error('[agentStore] Failed to hydrate threads:', err)
     }
     // 加载适配器偏好
-    get().loadAdapterPreferences()
+    useAdapterStore.getState().loadAdapterPreferences()
     // 启动时主动检测适配器状态
-    get().loadAdapters()
-    get().loadMarketplaceItems()
+    useAdapterStore.getState().loadAdapters()
+    useAdapterStore.getState().loadMarketplaceItems()
   },
 
   listenForStatusChanges: () => {
-    if (typeof window === 'undefined' || !window.electronAPI?.onAgentStatusChange) return () => {}
-    const VALID_STATUSES: NodeStatus[] = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder']
-    const cleanup = window.electronAPI.onAgentStatusChange(
-      (_sessionId: string, nodeId: string, status: string) => {
-        if (VALID_STATUSES.includes(status as NodeStatus)) {
-          // 通过事件总线解耦，不再直接调用 graphStore
-          eventBus.emit(Events.AGENT_STATUS_CHANGE, nodeId, status as NodeStatus)
-        }
-      },
-    )
-    return cleanup
+    return useSessionStore.getState().listenForStatusChanges()
   },
 }))
+
+// Override setState to forward state slices to sub-stores when tests or
+// legacy code sets state directly on useAgentStore.
+_originalSetState = useAgentStore.setState.bind(useAgentStore) as typeof useAgentStore.setState
+useAgentStore.setState = function overrideSetState(
+  partial:
+    | Partial<AgentState>
+    | ((state: AgentState) => Partial<AgentState>),
+  replace?: boolean,
+) {
+  // Apply to agentStore first so the subscriber sync doesn't re-apply
+  _originalSetState(partial as Partial<AgentState>, replace as false | undefined)
+
+  // Then forward relevant slices to sub-stores
+  const resolved = typeof partial === 'function'
+    ? (partial as (state: AgentState) => Partial<AgentState>)(useAgentStore.getState())
+    : partial
+
+  if (resolved.threads !== undefined || resolved.currentThreadId !== undefined) {
+    const threadSlice: Partial<AgentState> = {}
+    if (resolved.threads !== undefined) threadSlice.threads = resolved.threads
+    if (resolved.currentThreadId !== undefined) threadSlice.currentThreadId = resolved.currentThreadId
+    // Only set the data fields, not the methods
+    useThreadStore.setState({ threads: threadSlice.threads!, currentThreadId: threadSlice.currentThreadId } as Record<string, unknown>, false)
+  }
+
+  if (
+    resolved.adapters !== undefined ||
+    resolved.adapterPreferences !== undefined ||
+    resolved.lastFallbackHistory !== undefined ||
+    resolved.marketplaceItems !== undefined ||
+    resolved.openSettingsPanel !== undefined
+  ) {
+    const adapterSlice: Record<string, unknown> = {}
+    if (resolved.adapters !== undefined) adapterSlice.adapters = resolved.adapters
+    if (resolved.adapterPreferences !== undefined) adapterSlice.adapterPreferences = resolved.adapterPreferences
+    if (resolved.lastFallbackHistory !== undefined) adapterSlice.lastFallbackHistory = resolved.lastFallbackHistory
+    if (resolved.marketplaceItems !== undefined) adapterSlice.marketplaceItems = resolved.marketplaceItems
+    if (resolved.openSettingsPanel !== undefined) adapterSlice.openSettingsPanel = resolved.openSettingsPanel
+    useAdapterStore.setState(adapterSlice as Partial<AdapterState>, false)
+  }
+} as typeof useAgentStore.setState
+
+// Activate the sync bridge so getState() always reflects sub-store truth
+syncFromSubStores()
+
+// Re-export sub-stores for direct import by new code
+export { useAdapterStore } from './adapterStore'
+export { useThreadStore } from './threadStore'
+export { useMessageStore } from './messageStore'
+export { useSessionStore } from './sessionStore'

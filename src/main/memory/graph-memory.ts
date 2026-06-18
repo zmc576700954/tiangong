@@ -27,6 +27,7 @@
 import type { MemoryItem } from '@shared/types'
 import type { MemoryStore } from './memory-store'
 import { createLogger } from '../shared/logger'
+import { QueryCache } from './query-cache'
 
 const logger = createLogger('GraphMemory')
 
@@ -103,6 +104,7 @@ const DEFAULT_CONFIG: GraphMemoryConfig = {
 export class GraphMemory {
   private config: GraphMemoryConfig
   private memoryStore: MemoryStore
+  private _cache = new QueryCache<GraphTraversalResult>({ maxSize: 100, ttlMs: 5 * 60 * 1000 })
 
   constructor(memoryStore: MemoryStore, config?: Partial<GraphMemoryConfig>) {
     this.memoryStore = memoryStore
@@ -227,6 +229,12 @@ export class GraphMemory {
       logger.debug(`Inferred ${filtered.length} relations for memory #${newMemory.id}`)
     }
 
+    // Invalidate cached traversal results for affected memories
+    this._cache.invalidate(String(newMemory.id))
+    for (const existing of existingMemories) {
+      this._cache.invalidate(String(existing.id))
+    }
+
     return filtered
   }
 
@@ -244,6 +252,12 @@ export class GraphMemory {
     memoryId: number,
     options?: { depth?: number; relationFilter?: MemoryRelationType[] },
   ): Promise<GraphTraversalResult | null> {
+    const cached = this._cache.get(String(memoryId), {
+      depth: options?.depth,
+      relationFilter: options?.relationFilter as string[] | undefined,
+    })
+    if (cached) return cached
+
     const depth = options?.depth ?? this.config.maxTraversalDepth
     const relationFilter = options?.relationFilter
 
@@ -339,12 +353,36 @@ export class GraphMemory {
       }
     }
 
-    return {
+    const result = {
       root,
       paths,
       totalNodes: visited.size,
       totalEdges,
     }
+
+    this._cache.set(String(memoryId), {
+      depth: options?.depth,
+      relationFilter: options?.relationFilter as string[] | undefined,
+    }, result)
+
+    return result
+  }
+
+  /**
+   * 批量遍历多个记忆节点
+   */
+  async traverseBatch(
+    memoryIds: number[],
+    options?: { depth?: number; relationFilter?: MemoryRelationType[] },
+  ): Promise<Map<number, GraphTraversalResult | null>> {
+    const results = new Map<number, GraphTraversalResult | null>()
+    await Promise.all(
+      memoryIds.map(async (id) => {
+        const result = await this.traverse(id, options)
+        results.set(id, result)
+      }),
+    )
+    return results
   }
 
   /**

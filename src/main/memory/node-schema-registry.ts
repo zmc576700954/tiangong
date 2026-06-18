@@ -1,8 +1,4 @@
 import type { NodeType } from '@shared/types'
-import { createLogger } from '../shared/logger'
-
-const logger = createLogger('node-schema-registry')
-
 export interface FieldDef {
   type: 'string' | 'string[]' | 'number' | 'boolean'
   required?: boolean

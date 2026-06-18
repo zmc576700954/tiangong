@@ -1,8 +1,4 @@
 import type { GraphNode, EdgeType } from '@shared/types'
-import { createLogger } from '../shared/logger'
-
-const logger = createLogger('knowledge-associator')
-
 export interface AssociationInput {
   dependencyEdges: Array<{ sourceId: string; targetId: string }>
   coChangeFreqMap: Map<string, number>

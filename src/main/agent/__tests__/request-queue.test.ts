@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest'
+import { describe, test, expect } from 'vitest'
 import { RequestQueue, RequestPriority } from '../request-queue'
 
 describe('RequestQueue', () => {
@@ -6,7 +6,7 @@ describe('RequestQueue', () => {
     const processed: string[] = []
     const queue = new RequestQueue({
       maxConcurrent: 1,
-      executor: async (req) => { processed.push(req.id); return { success: true } }
+      executor: async (_req) => { processed.push(_req.id); return { success: true } }
     })
     queue.enqueue({ id: 'r1', adapterName: 'claude-code', command: 'cmd1', priority: RequestPriority.User })
     queue.enqueue({ id: 'r2', adapterName: 'claude-code', command: 'cmd2', priority: RequestPriority.User })
@@ -19,7 +19,7 @@ describe('RequestQueue', () => {
     let maxConcurrent = 0
     const queue = new RequestQueue({
       maxConcurrent: 1,
-      executor: async (req) => {
+      executor: async (_req) => {
         concurrent++
         maxConcurrent = Math.max(maxConcurrent, concurrent)
         await new Promise(r => setTimeout(r, 50))

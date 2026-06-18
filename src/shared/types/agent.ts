@@ -134,6 +134,7 @@ export interface AgentThread {
   createdAt: number
   nodeBound?: string
   sessionId?: string
+  fallbackInfo?: { originalAdapter: string; fallbackReason: string }
 }
 
 /** Agent 会话（可序列化，不含 Node.js 运行时对象） */
@@ -446,6 +447,18 @@ export interface AdapterPreferences {
   defaultAdapter: string
   /** 回退顺序（默认适配器失败后按序尝试） */
   fallbackOrder: string[]
+  /** 强制使用指定适配器，不进行健康度重排序 */
+  forceAdapter?: boolean
+}
+
+/** 适配器能力枚举 */
+export enum AdapterCapability {
+  Resume = 'resume',
+  Streaming = 'streaming',
+  FileOps = 'fileOps',
+  MultiTurn = 'multiTurn',
+  ScopeGuard = 'scopeGuard',
+  Tools = 'tools',
 }
 
 /** 适配器安装方式 */

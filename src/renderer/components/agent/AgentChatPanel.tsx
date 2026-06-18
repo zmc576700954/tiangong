@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Bot, GitBranch } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
+import { Bot, GitBranch, AlertTriangle } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
@@ -16,10 +16,17 @@ import { TerminalView } from './TerminalView'
 import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
-import { DiffReviewPanel } from './DiffReviewPanel'
-import { VerificationPanel } from './VerificationPanel'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
+
+const DiffReviewPanel = lazy(() => import('./DiffReviewPanel').then(m => ({ default: m.DiffReviewPanel })))
+const VerificationPanel = lazy(() => import('./VerificationPanel').then(m => ({ default: m.VerificationPanel })))
+
+const LazyFallback = () => (
+  <div className="flex items-center justify-center p-4">
+    <div className="h-6 w-48 animate-pulse rounded bg-muted" />
+  </div>
+)
 
 interface AgentChatPanelProps {
   expanded: boolean
@@ -289,6 +296,9 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   }
 
   const isRunning = currentThread?.status === 'running'
+  const isDegraded = currentThread?.fallbackInfo != null
+  const originalAdapter = currentThread?.fallbackInfo?.originalAdapter
+  const currentAdapter = currentThread?.adapterName
 
   const currentOperation = useMemo(() => {
     const fileChanges = rawOutputs.filter((o) => o.type === 'file_change')
@@ -410,14 +420,29 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 </button>
               </div>
             )}
+            {/* Degradation banner */}
+            {isDegraded && (
+              <div className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200 mx-3 mt-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <span>已从 {originalAdapter} 降级到 {currentAdapter}，部分功能不可用</span>
+              </div>
+            )}
             {viewMode === 'chat' ? (
-              <ChatMessageList
+              <>
+                {isRunning && currentThread?.messages?.length === 0 && (
+                  <div className="flex items-center gap-2 px-4 py-3">
+                    <div className="h-4 w-48 animate-pulse rounded bg-muted" />
+                    <span className="text-sm text-muted-foreground">Agent 正在思考...</span>
+                  </div>
+                )}
+                <ChatMessageList
                 messages={currentThread?.messages ?? []}
                 isRunning={!!isRunning}
                 adapterName={currentThread?.adapterName}
                 onRetry={handleRetry}
                 currentOperation={currentOperation}
               />
+              </>
             ) : (
               <TerminalView outputs={rawOutputs} />
             )}
@@ -447,6 +472,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                   {commitError}
                 </div>
               )}
+              <Suspense fallback={<LazyFallback />}>
               <DiffReviewPanel
                 toolCalls={
                   currentThread.messages
@@ -487,12 +513,14 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                   }
                 }}
               />
+              </Suspense>
             </div>
           )}
 
           {/* Verification Panel */}
           {showVerification && (
             <div className="shrink-0 px-3 py-2">
+              <Suspense fallback={<LazyFallback />}>
               <VerificationPanel
                 report={verificationReport}
                 loading={verifying}
@@ -517,6 +545,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 }}
                 onBackToEdit={resetVerification}
               />
+              </Suspense>
             </div>
           )}
 

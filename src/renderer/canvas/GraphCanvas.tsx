@@ -5,12 +5,12 @@ import {
   Background,
   Controls,
   MiniMap,
-  useNodesState,
   useEdgesState,
   useReactFlow,
   useOnViewportChange,
   type Edge,
   type Node,
+  type OnNodesChange,
   Panel,
   MarkerType,
 } from '@xyflow/react'
@@ -35,8 +35,8 @@ import { AlignHorizontalDistributeCenter } from 'lucide-react'
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number }; selected?: boolean }) {
-  return <BizNodeComponent id={id} data={data} selected={selected} />
+function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number; isZoomedOut?: boolean }; selected?: boolean }) {
+  return <BizNodeComponent id={id} data={data} selected={selected} isZoomedOut={data.isZoomedOut} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }
 
@@ -80,7 +80,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     return map
   }, [bugs])
 
-  const [rfNodes, setRfNodes, onNodesChange] = useNodesState<Node>([])
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
 
   // ────────────────────────────────────────────────────────────────
@@ -88,12 +87,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
 
-  const handleNodesChange = useCallback(
-    (changes: Parameters<typeof onNodesChange>[0]) => {
-      onNodesChange(changes)
+  const handleNodesChange: OnNodesChange<Node> = useCallback(
+    (changes) => {
       onPositionChange(changes)
     },
-    [onNodesChange, onPositionChange],
+    [onPositionChange],
   )
 
   const [showNodeMenu, setShowNodeMenu] = useState(false)
@@ -104,6 +102,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
   const [zoomLevel, setZoomLevel] = useState(1)
+  const [isZoomedOut, setIsZoomedOut] = useState(false)
 
   // ────────────────────────────────────────────────────────────────
   // 连线模式 Hook
@@ -172,7 +171,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [graphNodes, graphId, createNode, graphs])
 
   useOnViewportChange({
-    onChange: (viewport) => setZoomLevel(viewport.zoom),
+    onChange: (viewport) => {
+      setZoomLevel(viewport.zoom)
+      setIsZoomedOut(viewport.zoom < 0.5)
+    },
   })
 
   const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => ({
@@ -182,9 +184,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     data: {
       ...node,
       bugCount: bugCountMap.get(node.id) ?? 0,
+      isZoomedOut,
     },
     draggable: node.type !== 'project',
-  })), [graphNodes, bugCountMap])
+  })), [graphNodes, bugCountMap, isZoomedOut])
 
   const baseFlowEdges: Edge[] = useMemo(() => graphEdges.map((edge) => {
     const edgeType = edge.edgeType || 'default'
@@ -226,9 +229,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }), [baseFlowEdges, selectedEdgeId])
 
   useEffect(() => {
-    setRfNodes(flowNodes)
     setRfEdges(flowEdges)
-  }, [flowNodes, flowEdges, setRfNodes, setRfEdges])
+  }, [flowEdges, setRfEdges])
 
   /**
    * onNodeClick：仅处理正常模式下的节点选中
@@ -386,7 +388,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">
       <ReactFlow
-        nodes={rfNodes}
+        nodes={flowNodes}
         edges={rfEdges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}

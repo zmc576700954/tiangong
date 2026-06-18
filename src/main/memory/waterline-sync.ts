@@ -17,8 +17,9 @@
  *   实际使用内存 Map + MemoryStore 作为持久化后端
  */
 
-import type { MemoryItem } from '@shared/types'
+import type { MemoryItem, MemoryKind } from '@shared/types'
 import { createLogger } from '../shared/logger'
+import { getMemoryStore } from './memory-store'
 
 const logger = createLogger('WaterlineSync')
 
@@ -107,6 +108,29 @@ function isFixingIssue(fixTitle: string, issue: string): boolean {
   const before = idx === 0 ? ' ' : f[idx - 1]
   const after = idx + i.length === f.length ? ' ' : f[idx + i.length]
   return boundary.test(before) && boundary.test(after)
+}
+
+/**
+ * 词边界子串匹配：检查 shorter 是否在 longer 中作为独立词出现
+ *
+ * 如果 shorter 在 longer 中找到，且其前后字符为分隔符或字符串边界，
+ * 则认为匹配。用于 hasInvestigated 的双向子串匹配。
+ */
+function isWordBoundaryMatch(longer: string, shorter: string): boolean {
+  const idx = longer.indexOf(shorter)
+  if (idx < 0) return false
+
+  const boundary = /[\s\-:：,，.。()（）/\\]/
+  const before = idx === 0 ? ' ' : longer[idx - 1]
+  const after = idx + shorter.length === longer.length ? ' ' : longer[idx + shorter.length]
+  return boundary.test(before) && boundary.test(after)
+}
+
+/**
+ * 路径归一化：反斜杠转正斜杠，统一小写
+ */
+function normalizePath(p: string): string {
+  return p.replace(/\\/g, '/').toLowerCase()
 }
 
 // ============================================
@@ -199,11 +223,17 @@ export class WaterlineSync {
 
   /**
    * 标记节点为已验证
+   *
+   * 当 verifiedNodes 超过 100 时，只保留最近 100 条，
+   * 防止列表无限增长。
    */
   markNodeVerified(projectId: string, nodeId: string): void {
     const wl = this.getWaterline(projectId)
     if (!wl.verifiedNodes.includes(nodeId)) {
       wl.verifiedNodes.push(nodeId)
+      if (wl.verifiedNodes.length > 100) {
+        wl.verifiedNodes = wl.verifiedNodes.slice(-100)
+      }
     }
   }
 
@@ -291,21 +321,71 @@ export class WaterlineSync {
 
   /**
    * 检查某个调查是否已经完成（避免重复工作）
+   *
+   * 改进：短 topic（<3 字符）要求精确匹配，避免 "auth" 误命中
+   * "authority delegation"。较长 topic 允许双向子串匹配，
+   * 但使用词边界检查防止部分词内嵌入导致误判。
    */
   hasInvestigated(projectId: string, topic: string): boolean {
     const wl = this.getWaterline(projectId)
-    const topicLower = topic.toLowerCase()
-    return wl.completedInvestigations.some(
-      (i) => i.toLowerCase().includes(topicLower) || topicLower.includes(i.toLowerCase()),
-    )
+    const topicLower = topic.toLowerCase().trim()
+
+    if (topicLower.length === 0) return false
+
+    // 极短 topic（<3 字符）只允许精确匹配
+    if (topicLower.length < 3) {
+      return wl.completedInvestigations.some(
+        (i) => i.toLowerCase().trim() === topicLower,
+      )
+    }
+
+    // 较长 topic：双向子串匹配 + 词边界校验
+    return wl.completedInvestigations.some((investigation) => {
+      const invLower = investigation.toLowerCase().trim()
+
+      // 精确相等
+      if (invLower === topicLower) return true
+
+      // topic 是 investigation 的子串
+      if (invLower.includes(topicLower)) {
+        return isWordBoundaryMatch(invLower, topicLower)
+      }
+
+      // investigation 是 topic 的子串
+      if (topicLower.includes(invLower)) {
+        return isWordBoundaryMatch(topicLower, invLower)
+      }
+
+      return false
+    })
   }
 
   /**
    * 检查某个文件最近是否被修改过（避免冲突）
+   *
+   * 改进：使用路径感知比较，归一化路径后匹配。
+   * 匹配规则：精确相等、后缀匹配（以 /+target 结尾）、
+   * 或 target 以 /+path 结尾。
+   * 防止 "a.ts" 误命中 "parser.ts"。
    */
   recentlyModified(projectId: string, filePath: string): boolean {
     const wl = this.getWaterline(projectId)
-    return wl.modifiedFiles.some((f) => f.includes(filePath) || filePath.includes(f))
+    const normalized = normalizePath(filePath)
+
+    return wl.modifiedFiles.some((f) => {
+      const fNorm = normalizePath(f)
+
+      // 精确相等
+      if (fNorm === normalized) return true
+
+      // 后缀匹配：fNorm 以 /+normalized 结尾
+      if (fNorm.endsWith('/' + normalized)) return true
+
+      // 反向后缀匹配：normalized 以 /+fNorm 结尾
+      if (normalized.endsWith('/' + fNorm)) return true
+
+      return false
+    })
   }
 
   /**
@@ -313,6 +393,80 @@ export class WaterlineSync {
    */
   clearWaterline(projectId: string): void {
     this.waterlines.delete(projectId)
+  }
+
+  /**
+   * 持久化水位线快照到 MemoryStore
+   *
+   * 将当前内存中的 WaterlineSnapshot 序列化为 MemoryItem
+   * 并以 kind='waterline' 存入数据库，使水位线在进程重启后可恢复。
+   */
+  async persist(projectId: string): Promise<void> {
+    const wl = this.getWaterline(projectId)
+    const store = getMemoryStore()
+
+    // 删除该项目之前的 waterline 记录（只保留最新一份）
+    const existing = await store.search('waterline', {
+      projectId,
+      kind: 'waterline' as MemoryKind,
+      limit: 100,
+    })
+    for (const item of existing) {
+      await store.deleteBySessionScoped(item.session_id, projectId)
+    }
+
+    // 写入新的 waterline 记录
+    await store.store({
+      session_id: `waterline-${projectId}`,
+      kind: 'waterline' as MemoryKind,
+      project_id: projectId,
+      node_id: null,
+      title: 'Waterline Snapshot',
+      narrative: JSON.stringify(wl),
+      facts: [],
+      concepts: [],
+      files_read: [],
+      files_modified: [],
+      adapter_name: 'waterline-sync',
+      token_cost: 0,
+      confidence: 1.0,
+      created_at: new Date().toISOString(),
+    })
+
+    logger.debug(`Waterline persisted for ${projectId}`)
+  }
+
+  /**
+   * 从 MemoryStore 恢复水位线快照
+   *
+   * 加载 kind='waterline' 的最新 MemoryItem，
+   * 将其 narrative 反序列化为 WaterlineSnapshot 并覆盖内存状态。
+   * 如果数据库中无记录，保留内存中的初始值。
+   */
+  async restore(projectId: string): Promise<void> {
+    const store = getMemoryStore()
+    const items = await store.search('waterline', {
+      projectId,
+      kind: 'waterline' as MemoryKind,
+      limit: 1,
+    })
+
+    if (items.length === 0) {
+      logger.debug(`No waterline record found for ${projectId}, using initial state`)
+      return
+    }
+
+    try {
+      const snapshot = JSON.parse(items[0].narrative) as WaterlineSnapshot
+      if (snapshot && snapshot.projectId === projectId) {
+        this.waterlines.set(projectId, snapshot)
+        logger.debug(`Waterline restored for ${projectId}: ${snapshot.sessionCount} sessions`)
+      } else {
+        logger.warn(`Waterline restore skipped for ${projectId}: projectId mismatch or invalid snapshot`)
+      }
+    } catch (err) {
+      logger.warn(`Failed to parse waterline snapshot for ${projectId}:`, err)
+    }
   }
 
   // ============================================
