@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
-import { Bot, GitBranch, AlertTriangle } from 'lucide-react'
+import { Bot, GitBranch, AlertTriangle, Loader2 } from 'lucide-react'
 import { useAgentStore } from '../../store/agentStore'
 import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
@@ -9,6 +9,7 @@ import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
 import { useDiffReview } from '../../hooks/useDiffReview'
 import { ChatHeader } from './ChatHeader'
+import { ConfirmationDialog } from './ConfirmationDialog'
 import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
 import { ChatInput } from './ChatInput'
@@ -70,6 +71,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const currentGraphId = useGraphStore((s) => s.currentGraphId)
   const currentGraph = graphs.find((g) => g.id === currentGraphId)
   const projectPath = currentGraph?.projectPath
+
+  const requestStatuses = useSessionStore((s) => s.requestStatuses)
+  const queuedCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'queued').length, [requestStatuses])
+  const executingCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'executing').length, [requestStatuses])
 
   const rawOutputs = useMemo(
     () => (currentThread ? (threadOutputs[currentThread.id] ?? []) : []),
@@ -427,6 +432,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 <span>已从 {originalAdapter} 降级到 {currentAdapter}，部分功能不可用</span>
               </div>
             )}
+            <ConfirmationDialog />
             {viewMode === 'chat' ? (
               <>
                 {isRunning && currentThread?.messages?.length === 0 && (
