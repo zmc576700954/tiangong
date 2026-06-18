@@ -9,11 +9,11 @@ import { useCallback, useState, memo } from 'react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import type { EdgeType, EdgeContent } from '@shared/types'
-import { X, Check, Pencil } from 'lucide-react'
+import { X, Check, Pencil, Plus } from 'lucide-react'
 import { edgeTypeConfig } from './edge-utils'
 
-/** 自定义边类型：携带 edgeType 和 content 信息 */
-type BizEdgeType = Edge<{ edgeType?: EdgeType; content?: EdgeContent }, 'bizEdge'>
+/** 自定义边类型：携带 edgeType、content 和 strength 信息 */
+type BizEdgeType = Edge<{ edgeType?: EdgeType; content?: EdgeContent; strength?: number }, 'bizEdge'>
 
 export const BizEdge = memo(function BizEdge({
   id,
@@ -29,6 +29,8 @@ export const BizEdge = memo(function BizEdge({
   markerEnd,
 }: EdgeProps<BizEdgeType>) {
   const updateEdge = useGraphStore((s) => s.updateEdge)
+  const confirmSuggestedEdge = useGraphStore((s) => s.confirmSuggestedEdge)
+  const rejectSuggestedEdge = useGraphStore((s) => s.rejectSuggestedEdge)
   const [isEditing, setIsEditing] = useState(false)
   const labelText = typeof label === 'string' ? label : ''
   const [editLabel, setEditLabel] = useState(labelText)
@@ -67,7 +69,23 @@ export const BizEdge = memo(function BizEdge({
 
   const isInteractive = selected
   const strokeColor = selected ? '#3b82f6' : config.color
-  const strokeWidth = selected ? 3 : 2
+
+  // Task 4.1.2: strength-based visual encoding
+  const strength = data?.strength ?? 0.5
+  const strengthStrokeWidth = 1 + strength * 2  // range 1-3px
+  const isWeak = strength < 0.4
+
+  // Task 4.1.1: suggested edge style + strength encoding
+  const suggestedStyle = isSuggested
+    ? { strokeDasharray: '5 5', opacity: 0.4 }
+    : isWeak
+      ? { strokeDasharray: '4 3' }
+      : {}
+
+  const strokeWidth = selected ? 3 : strengthStrokeWidth
+
+  // Suggested edges have no arrow marker
+  const effectiveMarkerEnd = isSuggested ? undefined : markerEnd
 
   return (
     <>
@@ -80,12 +98,12 @@ export const BizEdge = memo(function BizEdge({
       />
       <BaseEdge
         path={edgePath}
-        markerEnd={markerEnd}
+        markerEnd={effectiveMarkerEnd}
         style={{
           stroke: strokeColor,
           strokeWidth,
-          transition: 'stroke 0.2s, stroke-width 0.2s',
-          ...(isSuggested ? { strokeDasharray: '6 4' } : {}),
+          transition: 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s',
+          ...suggestedStyle,
         }}
       />
       <EdgeLabelRenderer>
@@ -149,6 +167,31 @@ export const BizEdge = memo(function BizEdge({
             </>
           )}
         </div>
+
+        {isSuggested && (
+          <div
+            className="nodrag nopan flex gap-0.5"
+            style={{
+              position: 'absolute',
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 18}px)`,
+            }}
+          >
+            <button
+              onClick={(e) => { e.stopPropagation(); confirmSuggestedEdge?.(id) }}
+              className="w-5 h-5 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 shadow-sm"
+              title="Confirm association"
+            >
+              <Plus size={10} />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); rejectSuggestedEdge?.(id) }}
+              className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 shadow-sm"
+              title="Reject association"
+            >
+              <X size={10} />
+            </button>
+          </div>
+        )}
 
         {selected && (
           <button
