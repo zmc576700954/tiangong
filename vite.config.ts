@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
+import { visualizer } from 'rollup-plugin-visualizer'
 
 export default defineConfig({
   plugins: [
@@ -55,6 +56,16 @@ export default defineConfig({
       },
     ]),
     renderer(),
+    ...(process.env.BUILD_ANALYZE === 'true'
+      ? [
+          visualizer({
+            open: true,
+            filename: 'dist/stats.html',
+            gzipSize: true,
+            brotliSize: true,
+          }) as any,
+        ]
+      : []),
   ],
   resolve: {
     alias: {
