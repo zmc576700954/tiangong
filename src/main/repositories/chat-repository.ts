@@ -31,9 +31,14 @@ export interface ChatMessageRow {
   created_at: number
 }
 
+/** Runtime type guard for ChatThreadRow */
+export function isChatThreadRow(row: unknown): row is ChatThreadRow {
+  return typeof row === 'object' && row !== null && 'id' in row && 'title' in row && 'status' in row
+}
+
 /** Cast a libsql Row to a ChatThreadRow with runtime field validation */
 function toChatThreadRow(row: Row): ChatThreadRow {
-  return {
+  const result = {
     id: String(row.id ?? ''),
     title: String(row.title ?? ''),
     adapter_name: String(row.adapter_name ?? ''),
@@ -44,6 +49,10 @@ function toChatThreadRow(row: Row): ChatThreadRow {
     created_at: Number(row.created_at ?? 0),
     updated_at: Number(row.updated_at ?? 0),
   }
+  if (!isChatThreadRow(result)) {
+    throw new Error('Invalid ChatThreadRow: missing required fields (id, title, status)')
+  }
+  return result
 }
 
 /** Cast a libsql Row to a ChatMessageRow with runtime field validation */
@@ -97,7 +106,7 @@ export class ChatRepository {
 
   async getThread(id: string): Promise<ChatThreadRow | null> {
     const result = await this.db.execute({
-      sql: 'SELECT * FROM chat_threads WHERE id = ?',
+      sql: 'SELECT id, title, adapter_name, node_id, graph_id, session_id, status, created_at, updated_at FROM chat_threads WHERE id = ?',
       args: [id],
     })
     return (result.rows[0] ? toChatThreadRow(result.rows[0]) : null)
@@ -155,7 +164,7 @@ export class ChatRepository {
     const escaped = query.replace(/[%_[]/g, (ch) => `[${ch}]`)
     const like = `%${escaped}%`
     const result = await this.db.execute({
-      sql: `SELECT DISTINCT t.* FROM chat_threads t
+      sql: `SELECT DISTINCT t.id, t.title, t.adapter_name, t.node_id, t.graph_id, t.session_id, t.status, t.created_at, t.updated_at FROM chat_threads t
             LEFT JOIN chat_messages m ON m.thread_id = t.id
             WHERE t.title LIKE ? OR m.content LIKE ?
             ORDER BY t.updated_at DESC`,
@@ -220,7 +229,7 @@ export class ChatRepository {
 
   async listMessages(threadId: string, limit = 50, offset = 0): Promise<ChatMessageRow[]> {
     const result = await this.db.execute({
-      sql: 'SELECT * FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
+      sql: 'SELECT id, thread_id, role, content, adapter_name, status, error, session_id, context_refs, tool_calls, created_at FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
       args: [threadId, limit, offset],
     })
     return result.rows.map(toChatMessageRow)
@@ -234,6 +243,15 @@ export class ChatRepository {
     const result = await this.db.execute({
       sql: `UPDATE chat_threads SET status = 'archived' WHERE graph_id = ? AND status != 'archived' AND updated_at < ?`,
       args: [projectId, cutoff],
+    })
+    return result.rowsAffected
+  }
+
+  /** Task 2.5.2: Delete archived threads older than the cutoff (90 days) */
+  async cleanupArchivedThreads(cutoff: string): Promise<number> {
+    const result = await this.db.execute({
+      sql: `DELETE FROM chat_threads WHERE status = 'archived' AND updated_at < ?`,
+      args: [cutoff],
     })
     return result.rowsAffected
   }
