@@ -1,8 +1,39 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
 import { TreeNodeItem } from './TreeNodeItem'
 import type { GraphNode } from '@shared/types'
+
+function renderNodeRow(node: GraphNode) {
+  return (
+    <div
+      key={node.id}
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded text-sm cursor-pointer hover:bg-muted"
+      style={{
+        paddingLeft: `${(node.communityLevel ?? 0) * 12 + 8}px`,
+      }}
+      onClick={() => useGraphStore.getState().selectNode(node.id)}
+    >
+      <span
+        className={`w-2 h-2 rounded-full shrink-0 ${
+          node.status === 'placeholder' ? 'bg-gray-400 border border-dashed border-gray-500' :
+          node.status === 'developing' ? 'bg-orange-400' :
+          node.status === 'confirmed' ? 'bg-blue-400' :
+          node.status === 'draft' ? 'bg-gray-300' :
+          node.status === 'testing' ? 'bg-purple-400' :
+          node.status === 'review' ? 'bg-cyan-400' :
+          node.status === 'published' ? 'bg-green-400' :
+          'bg-gray-300'
+        }`}
+      />
+      <span className="text-[10px] text-muted-foreground uppercase shrink-0 w-4">
+        {node.type === 'module' ? 'M' : node.type === 'process' ? 'P' : node.type === 'feature' ? 'F' : node.type === 'bug' ? 'B' : 'P'}
+      </span>
+      <span className="truncate">{node.title}</span>
+    </div>
+  )
+}
 
 export function TreeView() {
   const projects = useFileTreeStore((s) => s.projects)
@@ -41,6 +72,15 @@ export function TreeView() {
   }, [nodes, statusFilter, typeFilter, sortBy])
 
   const hasGraphNodes = nodes.length > 0
+
+  const parentRef = useRef<HTMLDivElement>(null)
+  const shouldVirtualize = filteredNodes.length > 100
+  const virtualizer = useVirtualizer({
+    count: filteredNodes.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 32,
+    enabled: shouldVirtualize,
+  })
 
   return (
     <div className="flex-1 overflow-y-auto flex flex-col">
@@ -87,37 +127,42 @@ export function TreeView() {
 
       {/* Graph nodes view (when graph data is available) */}
       {hasGraphNodes && (
-        <div className="flex-1 overflow-y-auto">
+        <div ref={parentRef} className="flex-1 overflow-y-auto">
           {filteredNodes.length === 0 && (
             <div className="px-3 py-2 text-xs text-muted-foreground">
               No nodes match the current filters
             </div>
           )}
-          {filteredNodes.map((node: GraphNode) => (
+          {shouldVirtualize ? (
             <div
-              key={node.id}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded text-sm cursor-pointer hover:bg-muted"
-              style={{ paddingLeft: `${(node.communityLevel ?? 0) * 12 + 8}px` }}
-              onClick={() => useGraphStore.getState().selectNode(node.id)}
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                position: 'relative',
+                width: '100%',
+              }}
             >
-              <span
-                className={`w-2 h-2 rounded-full shrink-0 ${
-                  node.status === 'placeholder' ? 'bg-gray-400 border border-dashed border-gray-500' :
-                  node.status === 'developing' ? 'bg-orange-400' :
-                  node.status === 'confirmed' ? 'bg-blue-400' :
-                  node.status === 'draft' ? 'bg-gray-300' :
-                  node.status === 'testing' ? 'bg-purple-400' :
-                  node.status === 'review' ? 'bg-cyan-400' :
-                  node.status === 'published' ? 'bg-green-400' :
-                  'bg-gray-300'
-                }`}
-              />
-              <span className="text-[10px] text-muted-foreground uppercase shrink-0 w-4">
-                {node.type === 'module' ? 'M' : node.type === 'process' ? 'P' : node.type === 'feature' ? 'F' : node.type === 'bug' ? 'B' : 'P'}
-              </span>
-              <span className="truncate">{node.title}</span>
+              {virtualizer.getVirtualItems().map((vItem) => {
+                const node = filteredNodes[vItem.index]
+                return (
+                  <div
+                    key={node.id}
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      width: '100%',
+                      height: `${vItem.size}px`,
+                      transform: `translateY(${vItem.start}px)`,
+                    }}
+                  >
+                    {renderNodeRow(node)}
+                  </div>
+                )
+              })}
             </div>
-          ))}
+          ) : (
+            filteredNodes.map((node: GraphNode) => renderNodeRow(node))
+          )}
         </div>
       )}
 
