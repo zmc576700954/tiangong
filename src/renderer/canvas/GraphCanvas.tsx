@@ -20,6 +20,7 @@ import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
+import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
 import { NodeContextPopover } from './NodeContextPopover'
@@ -29,14 +30,14 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
-import { AlignHorizontalDistributeCenter } from 'lucide-react'
+import { AlignHorizontalDistributeCenter, GitBranch, X } from 'lucide-react'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number; isZoomedOut?: boolean }; selected?: boolean }) {
-  return <BizNodeComponent id={id} data={data} selected={selected} isZoomedOut={data.isZoomedOut} />
+function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number; isZoomedOut?: boolean; hideTextLabels?: boolean }; selected?: boolean }) {
+  return <BizNodeComponent id={id} data={data} selected={selected} isZoomedOut={data.isZoomedOut} hideTextLabels={data.hideTextLabels} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }
 
@@ -67,6 +68,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const updateNode = useGraphStore((state) => state.updateNode)
   const bugs = useGraphStore((state) => state.bugs)
   const graphs = useGraphStore((state) => state.graphs)
+  const notifications = useGraphStore((s) => s.associationNotifications)
+  const dismissNotification = useGraphStore((s) => s.dismissAssociationNotification)
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
 
@@ -177,6 +180,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     },
   })
 
+  const isEmpty = graphNodes.length === 0
+  const hasProjectNode = graphNodes.some((n) => n.type === 'project')
+
+  // ────────────────────────────────────────────────────────────────
+  // 性能降级策略：节点数过多时逐步隐藏非必要元素
+  // ────────────────────────────────────────────────────────────────
+  const nodeCount = graphNodes.length
+  const degradation = useMemo(() => ({
+    hideMiniMapAnimation: nodeCount > 500,
+    simplifyEdges: nodeCount > 500,
+    hideNodeTextLabels: nodeCount > 500,
+    hideEdgeLabels: nodeCount > 1000,
+  }), [nodeCount])
+
   const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => ({
     id: node.id,
     type: 'bizNode',
@@ -185,9 +202,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       ...node,
       bugCount: bugCountMap.get(node.id) ?? 0,
       isZoomedOut,
+      hideTextLabels: degradation.hideNodeTextLabels,
     },
     draggable: node.type !== 'project',
-  })), [graphNodes, bugCountMap, isZoomedOut])
+  })), [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels])
 
   const baseFlowEdges: Edge[] = useMemo(() => graphEdges.map((edge) => {
     const edgeType = edge.edgeType || 'default'
@@ -202,7 +220,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       target: edge.target,
       label: displayLabel,
       type: 'bizEdge',
-      data: { edgeType, content: edge.content },
+      data: { edgeType, content: edge.content, strength: edge.strength },
       markerEnd: getEdgeMarkerEnd(edgeType),
       animated: edgeType === 'failure' || edgeType === 'business-flow',
       style: {
@@ -228,9 +246,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }), [baseFlowEdges, selectedEdgeId])
 
+  // Apply degradation to edges: strip animation and optionally labels
+  const degradedFlowEdges = useMemo(() => flowEdges.map((e) => {
+    const shouldAnimate = !degradation.simplifyEdges && (e.animated ?? false)
+    const shouldHideLabel = degradation.hideEdgeLabels
+    return {
+      ...e,
+      animated: shouldAnimate,
+      label: shouldHideLabel ? undefined : e.label,
+    }
+  }), [flowEdges, degradation.simplifyEdges, degradation.hideEdgeLabels])
+
   useEffect(() => {
-    setRfEdges(flowEdges)
-  }, [flowEdges, setRfEdges])
+    setRfEdges(degradedFlowEdges)
+  }, [degradedFlowEdges, setRfEdges])
 
   /**
    * onNodeClick：仅处理正常模式下的节点选中
@@ -382,9 +411,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setNodeContextMenu(null)
   }
 
-  const isEmpty = graphNodes.length === 0
-  const hasProjectNode = graphNodes.some((n) => n.type === 'project')
-
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">
       <ReactFlow
@@ -419,12 +445,15 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           strokeDasharray: '5 5',
         }}
       >
-        <Background gap={16} size={1} />
-        <Controls />
+        <Background gap={16} size={1} color="var(--canvas-bg)" />
+        <Controls className="[&>button]:bg-background [&>button]:border-border [&>button]:text-foreground" />
         <MiniMap
           nodeColor={(node) => NODE_TYPE_COLORS[(node.data as unknown as GraphNode).type] ?? '#94a3b8'}
-          maskColor="rgba(0, 0, 0, 0.1)"
-          className="!bg-background/80 !border-border !rounded-lg !shadow-xs"
+          maskColor="var(--canvas-minimap-bg)"
+          className={cn(
+            "!bg-background/80 !border-border !rounded-lg !shadow-xs",
+            degradation.hideMiniMapAnimation && "!animate-none",
+          )}
           pannable
           zoomable
         />
@@ -484,6 +513,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 立即删除
               </button>
             </div>
+          </Panel>
+        )}
+
+        {notifications.length > 0 && (
+          <Panel position="bottom-right">
+            {notifications.map((n) => (
+              <div
+                key={n.id}
+                className="bg-primary/10 border border-primary/30 rounded-lg px-3 py-2 mb-2 flex items-center gap-2 cursor-pointer hover:bg-primary/20 transition-colors"
+                onClick={() => dismissNotification(n.id)}
+              >
+                <GitBranch size={14} className="text-primary" />
+                <span className="text-xs text-primary">Found {n.count} new association{n.count > 1 ? 's' : ''}</span>
+                <X size={12} className="text-muted-foreground ml-2" />
+              </div>
+            ))}
           </Panel>
         )}
       </ReactFlow>

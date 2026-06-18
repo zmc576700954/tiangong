@@ -79,6 +79,11 @@ interface GraphState {
 
   // Task 4.4.1: Frontend search index
   searchNodes: (query: string, filters?: { name?: string; type?: string; status?: string }) => GraphNode[]
+
+  // Association discovery notifications
+  associationNotifications: Array<{ id: string; count: number; timestamp: number }>
+  addAssociationNotification: (count: number) => void
+  dismissAssociationNotification: (id: string) => void
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -96,6 +101,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   bugs: [],
   selectedNodeId: null,
   selectedEdgeId: null,
+  associationNotifications: [],
 
   // ─────────────── Graph Operations ───────────────
   loadGraphs: async () => {
@@ -457,5 +463,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     return results
   },
+
+  addAssociationNotification: (count) => set((s) => ({
+    associationNotifications: [...s.associationNotifications, { id: `assoc_${Date.now()}`, count, timestamp: Date.now() }],
+  })),
+
+  dismissAssociationNotification: (id) => set((s) => ({
+    associationNotifications: s.associationNotifications.filter((n) => n.id !== id),
+  })),
   }
 })
