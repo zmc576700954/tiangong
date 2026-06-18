@@ -15,6 +15,7 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
   const [threads, setThreads] = useState<AgentThread[]>([])
   const [loading, setLoading] = useState(false)
   const selectThread = useAgentStore((s) => s.selectThread)
+  const loadMessages = useAgentStore((s) => s.loadMessages)
   const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
 
   const loadThreads = useCallback(async () => {
@@ -39,15 +40,7 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
   }, [visible, loadThreads])
 
   const handleSelect = async (thread: AgentThread) => {
-    const full = await window.electronAPI['thread:load'](thread.id)
-    if (full) {
-      useAgentStore.setState((state) => ({
-        threads: state.threads.some((t) => t.id === thread.id)
-          ? state.threads.map((t) => (t.id === thread.id ? full : t))
-          : [...state.threads, full],
-        currentThreadId: thread.id,
-      }))
-    }
+    await loadMessages(thread.id)
     selectThread(thread.id)
     setActiveRightPanel('agent')
     onClose()
