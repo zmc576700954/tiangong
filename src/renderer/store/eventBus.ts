@@ -77,6 +77,7 @@ export const Events = {
   SESSION_TERMINATED: 'session:terminated',
   SESSION_CRASHED: 'session:crashed',
   SESSION_RECOVERED: 'session:recovered',
+  SESSION_RECOVERY_FAILED: 'session:recoveryFailed',
   STREAMING_CHUNK: 'streaming:chunk',
   MESSAGE_SENT: 'message:sent',
   MESSAGE_FAILED: 'message:failed',
@@ -84,4 +85,5 @@ export const Events = {
   CONFIRMATION_REQUIRED: 'confirmation:required',
   CONFIRMATION_RESPONDED: 'confirmation:responded',
   GENERATION_PROGRESS: 'generation:progress',
+  NODE_STATUS_CHANGE: 'node:statusChange',
 } as const

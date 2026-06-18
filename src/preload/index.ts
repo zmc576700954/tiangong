@@ -142,6 +142,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('agent:onStatusChange', handler) }
   },
 
+  // Node status change event listener (placeholder→developing transitions)
+  onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, nodeId: string, oldStatus: string, newStatus: string) =>
+      callback(nodeId, oldStatus, newStatus)
+    ipcRenderer.on('event:NODE_STATUS_CHANGE', handler)
+    return () => { ipcRenderer.removeListener('event:NODE_STATUS_CHANGE', handler) }
+  },
+
   // Session started event (for sessionId persistence)
   onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => {
     const handler = (_: unknown, threadId: string, sessionId: string) => {
@@ -149,6 +157,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
     ipcRenderer.on('agent:onSessionStarted', handler)
     return () => ipcRenderer.off('agent:onSessionStarted', handler)
+  },
+
+  // Session recovery succeeded event
+  onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => {
+    const handler = (_: unknown, sessionId: string, newSessionId: string) => {
+      callback(sessionId, newSessionId)
+    }
+    ipcRenderer.on('session:recovered', handler)
+    return () => ipcRenderer.off('session:recovered', handler)
+  },
+
+  // Session recovery failed event
+  onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => {
+    const handler = (_: unknown, sessionId: string, reason: string) => {
+      callback(sessionId, reason)
+    }
+    ipcRenderer.on('session:recoveryFailed', handler)
+    return () => ipcRenderer.off('session:recoveryFailed', handler)
   },
 
   // Platform info
@@ -163,7 +189,10 @@ declare global {
     electronAPI: ExposedApi & {
       onAgentOutput: (callback: (sessionId: string, output: AgentOutput) => void) => () => void
       onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => () => void
+      onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => () => void
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
+      onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
+      onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
       platform: string
     }
   }

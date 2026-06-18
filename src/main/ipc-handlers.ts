@@ -75,6 +75,12 @@ agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
   }
 })
 
+agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
+  }
+})
+
 // Agent 日志持久化回调（延迟注册，需要 db client）
 let agentLogRepo: AgentLogRepository | null = null
 

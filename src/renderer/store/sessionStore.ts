@@ -146,6 +146,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return cleanup
   },
 
+  listenForNodeStatusChanges: () => {
+    if (typeof window === 'undefined' || !window.electronAPI?.onNodeStatusChange) return () => {}
+    const cleanup = window.electronAPI.onNodeStatusChange(
+      (nodeId: string, oldStatus: string, newStatus: string) => {
+        eventBus.emit(Events.NODE_STATUS_CHANGE, { nodeId, oldStatus, newStatus })
+      },
+    )
+    return cleanup
+  },
+
   sendMessage: async (threadId, content, contextRefs, sessionConfig) => {
     const userMessage: ChatMessage = {
       id: generateId('msg'),
@@ -189,6 +199,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       nodeTitle: thread.nodeBound ?? '',
       nodeId: thread.nodeBound,
       acceptanceCriteria: [],
+    }
+
+    // Determine commandType from bound node type for status auto-trigger
+    if (!config.commandType && thread.nodeBound) {
+      const boundNode = useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
+      config.commandType = boundNode?.type === 'bug' ? 'fix_bug' : 'implement'
     }
 
     if (!config.workingDirectory) {
