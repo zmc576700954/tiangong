@@ -12,8 +12,8 @@
  *
  * Budget allocation: system 10%, scope 25%, context 35%, waterline 5%, user 25%.
  * Compressible layers that exceed their budget are compressed via
- * compressScopePrompt(). Non-compressible layers are always included
- * even if over budget.
+ * compressScopeByPriority() (scope) or ContextCompiler.render() (context).
+ * Non-compressible layers are always included even if over budget.
  */
 
 import type {
@@ -53,6 +53,7 @@ export interface LayerBreakdown {
   name: string
   tokens: number
   included: boolean
+  compressionLevel?: number
 }
 
 export interface AssembleResult {
@@ -97,6 +98,87 @@ function defaultEconomics(): TokenEconomics {
   return { discoveryTokens: 0, readTokens: 0, savings: 0, savingsPct: 0 }
 }
 
+/**
+ * Priority-ordered scope compression.
+ *
+ * Sections are classified by heading prefix and removed in a defined order
+ * so that the most expendable information is dropped first.  Each
+ * compression level is applied incrementally; the function returns as soon
+ * as the text fits within `maxTokens`.
+ *
+ * Levels:
+ *   0 — no compression needed
+ *   1 — remove invariant-rules sections
+ *   2 — also remove upstream & downstream sections
+ *   3 — also compress allowed-files to basenames only
+ *   4 — hard-truncate whatever remains
+ */
+function compressScopeByPriority(
+  scopeText: string,
+  maxTokens: number,
+  estimate: (t: string) => number,
+): { text: string; compressionLevel: number } {
+  if (estimate(scopeText) <= maxTokens) {
+    return { text: scopeText, compressionLevel: 0 }
+  }
+
+  // Split into sections on double-or-more newlines
+  const sections = scopeText.split(/\n{2,}/)
+
+  type SectionClass = 'invariant' | 'upstream' | 'downstream' | 'allowed-files' | 'other'
+  const classify = (s: string): SectionClass => {
+    const trimmed = s.trim()
+    if (trimmed.startsWith('## Invariant Rules')) return 'invariant'
+    if (trimmed.startsWith('## Upstream'))       return 'upstream'
+    if (trimmed.startsWith('## Downstream'))     return 'downstream'
+    if (trimmed.startsWith('## Allowed Files'))  return 'allowed-files'
+    return 'other'
+  }
+
+  const classified = sections.map((s) => ({ text: s, cls: classify(s) }))
+
+  // --- Level 1: remove invariant rules ---
+  let filtered = classified.filter((s) => s.cls !== 'invariant')
+  let text = filtered.map((s) => s.text).join('\n\n')
+  if (estimate(text) <= maxTokens) {
+    return { text, compressionLevel: 1 }
+  }
+
+  // --- Level 2: also remove upstream & downstream ---
+  filtered = filtered.filter((s) => s.cls !== 'upstream' && s.cls !== 'downstream')
+  text = filtered.map((s) => s.text).join('\n\n')
+  if (estimate(text) <= maxTokens) {
+    return { text, compressionLevel: 2 }
+  }
+
+  // --- Level 3: compress allowed-files to basenames only ---
+  filtered = filtered.map((s) => {
+    if (s.cls !== 'allowed-files') return s
+    // Replace each path-like token with its basename
+    const compressed = s.text.replace(
+      /(?:^|\s)(?:\/[\w.-]+)+\/([\w.-]+)/gm,
+      (_, basename) => basename,
+    )
+    return { text: compressed, cls: s.cls }
+  })
+  text = filtered.map((s) => s.text).join('\n\n')
+  if (estimate(text) <= maxTokens) {
+    return { text, compressionLevel: 3 }
+  }
+
+  // --- Level 4: hard-truncate remaining text ---
+  // Approximate truncation: keep slicing characters until under budget.
+  // Use a rough 4-chars-per-token heuristic for the initial slice, then
+  // binary-search downward if still over.
+  let charBudget = maxTokens * 4
+  let truncated = text.slice(0, charBudget)
+  while (estimate(truncated) > maxTokens && charBudget > 0) {
+    charBudget = Math.floor(charBudget * 0.9)
+    truncated = text.slice(0, charBudget)
+  }
+  return { text: truncated, compressionLevel: 4 }
+}
+
 // ---------------------------------------------------------------------------
 // PromptOrchestrator
 // ---------------------------------------------------------------------------
@@ -138,13 +220,17 @@ export class PromptOrchestrator {
     // --- Layer 2: Scope (compressible) ---
     let scopeText = ''
     let scopeTokens = 0
+    let scopeCompressionLevel = 0
     if (sessionConfig) {
       scopeText = buildScopePrompt(sessionConfig, resolvedContexts, codeContext)
       scopeTokens = estimateTokens(scopeText)
       if (scopeTokens > budgets[1]) {
-        logger.info(`Scope layer (${scopeTokens} tokens) exceeds budget (${budgets[1]}), compressing`)
-        scopeText = compressScopePrompt(scopeText, budgets[1])
+        logger.info(`Scope layer (${scopeTokens} tokens) exceeds budget (${budgets[1]}), compressing by priority`)
+        const compressed = compressScopeByPriority(scopeText, budgets[1], estimateTokens)
+        scopeText = compressed.text
         scopeTokens = estimateTokens(scopeText)
+        scopeCompressionLevel = compressed.compressionLevel
+        logger.info(`Scope compression level: ${scopeCompressionLevel}, result: ${scopeTokens} tokens`)
       }
     }
 
@@ -186,6 +272,71 @@ export class PromptOrchestrator {
     const userText = userCommand
     const userTokens = estimateTokens(userText)
 
+    // --- Elastic budget reallocation (post-hoc) ---
+    // If scope layer is empty, transfer its budget to context.
+    // If waterline exceeds 5% of total budget, borrow excess from context.
+    const adjustedBudgets = [...budgets]
+    if (scopeTokens === 0) {
+      adjustedBudgets[2] += adjustedBudgets[1]
+      adjustedBudgets[1] = 0
+      logger.info('Scope layer empty: transferred scope budget to context')
+    }
+    const waterlineThreshold = totalBudget * 0.05
+    if (waterlineTokens > waterlineThreshold) {
+      const excess = waterlineTokens - Math.floor(waterlineThreshold)
+      // Only borrow from context if context has budget to spare
+      const borrowable = Math.min(excess, adjustedBudgets[2])
+      if (borrowable > 0) {
+        adjustedBudgets[2] -= borrowable
+        adjustedBudgets[3] += borrowable
+        logger.info(`Waterline exceeds 5% budget: borrowed ${borrowable} tokens from context`)
+      }
+    }
+
+    // Re-compress context if its budget shrank after reallocation
+    if (contextTokens > adjustedBudgets[2] && adjustedBudgets[2] > 0) {
+      try {
+        const layered = await this.contextCompiler.compile(outputs!, {
+          sessionId,
+          adapterName,
+          commandDescription: userCommand,
+          projectId,
+        })
+        const rendered = this.contextCompiler.render(layered, adjustedBudgets[2])
+        contextText = rendered.text
+        contextTokens = estimateTokens(contextText)
+        contextEconomics = rendered.economics
+      } catch (err) {
+        logger.warn('Context re-compression after reallocation failed:', err)
+      }
+    }
+
+    // --- Inter-layer dedup: scope vs context ---
+    // If Jaccard similarity > 0.8, remove duplicate lines from context (lower priority).
+    if (scopeText && contextText) {
+      const scopeWords = new Set(scopeText.toLowerCase().split(/\s+/))
+      const contextWords = new Set(contextText.toLowerCase().split(/\s+/))
+      const intersection = new Set([...scopeWords].filter((w) => contextWords.has(w)))
+      const union = new Set([...scopeWords, ...contextWords])
+      const jaccard = union.size > 0 ? intersection.size / union.size : 0
+
+      if (jaccard > 0.8) {
+        const scopeLines = new Set(scopeText.split('\n').map((l) => l.trim().toLowerCase()))
+        const contextLines = contextText.split('\n')
+        const dedupedLines = contextLines.filter(
+          (line) => !scopeLines.has(line.trim().toLowerCase()),
+        )
+        const removedCount = contextLines.length - dedupedLines.length
+        if (removedCount > 0) {
+          contextText = dedupedLines.join('\n')
+          contextTokens = estimateTokens(contextText)
+          logger.info(
+            `Inter-layer dedup: removed ${removedCount} duplicate lines from context (Jaccard=${jaccard.toFixed(3)})`,
+          )
+        }
+      }
+    }
+
     // --- Build breakdown ---
     const layerData = [
       { text: systemText,    tokens: systemTokens,    included: true  },
@@ -199,6 +350,9 @@ export class PromptOrchestrator {
       name: l.name,
       tokens: layerData[i].tokens,
       included: layerData[i].included,
+      ...(l.name === 'scope' && scopeCompressionLevel > 0
+        ? { compressionLevel: scopeCompressionLevel }
+        : {}),
     }))
 
     // --- Assemble final text ---
