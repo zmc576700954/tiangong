@@ -2,11 +2,59 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { useState, useCallback } from 'react'
+import React, { useState, useCallback } from 'react'
 import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'
 import type { ChatMessage } from '@shared/types'
+
+/** Auto-fold long plain-text output (>20 lines) with expand/collapse */
+function CollapsibleOutput({ content, maxLines = 20 }: { content: string; maxLines?: number }) {
+  const lines = content.split('\n')
+  const shouldFold = lines.length > maxLines
+  const [expanded, setExpanded] = useState(false)
+
+  if (!shouldFold) {
+    return <pre className="text-xs whitespace-pre-wrap font-mono break-all">{content}</pre>
+  }
+
+  const displayed = expanded ? lines : lines.slice(0, 3)
+
+  return (
+    <div className="relative">
+      <pre className="text-xs whitespace-pre-wrap font-mono break-all">{displayed.join('\n')}</pre>
+      {!expanded && <div className="absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-background to-transparent" />}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="text-[10px] text-muted-foreground hover:text-foreground mt-1"
+      >
+        {expanded ? 'Show less' : `Show all ${lines.length} lines`}
+      </button>
+    </div>
+  )
+}
+
+/** Wrapper for <pre> elements from ReactMarkdown — uses CollapsibleOutput for plain text */
+function PreBlock({ children }: React.HTMLAttributes<HTMLPreElement>) {
+  // Extract text content and detect if this is a code block with a language tag
+  const child = React.Children.toArray(children)[0]
+  let isCodeBlock = false
+  let textContent = ''
+
+  if (React.isValidElement(child) && child.props) {
+    const childProps = child.props as { className?: string; children?: React.ReactNode }
+    isCodeBlock = !!/language-(\w+)/.exec(childProps.className || '')
+    textContent = String(childProps.children ?? '').replace(/\n$/, '')
+  }
+
+  // Code blocks with language tags are handled by CodeBlock (SyntaxHighlighter)
+  if (isCodeBlock) {
+    return <>{children}</>
+  }
+
+  // Plain text output — use CollapsibleOutput for long content
+  return <CollapsibleOutput content={textContent} />
+}
 
 /** Module-level component to avoid re-creation on every render (prevents code block remounting) */
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { className?: string }) {
@@ -150,7 +198,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
                 prose-pre:my-2 prose-pre:p-0 prose-code:before:content-none prose-code:after:content-none">
                 <ReactMarkdown
                   remarkPlugins={[remarkGfm]}
-                  components={{ code: CodeBlock }}
+                  components={{ code: CodeBlock, pre: PreBlock }}
                 />
               </div>
             )
