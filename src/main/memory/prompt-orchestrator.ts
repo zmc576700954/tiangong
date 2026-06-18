@@ -23,7 +23,7 @@ import type {
   TokenEconomics,
 } from '@shared/types'
 
-import { buildScopePrompt, compressScopePrompt } from '../adapters/scope-prompt-builder'
+import { buildScopePrompt } from '../adapters/scope-prompt-builder'
 import { ContextCompiler } from './context-compiler'
 import { getWaterlineSync } from './waterline-sync'
 import { estimateTokens } from '../shared/token-utils'
