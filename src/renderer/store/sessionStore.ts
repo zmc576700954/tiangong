@@ -21,9 +21,18 @@ interface SessionInfo {
   status: 'starting' | 'active' | 'terminated' | 'crashed'
 }
 
+interface RequestStatusEntry {
+  requestId: string
+  status: 'queued' | 'executing' | 'done'
+  adapterName: string
+  enqueuedAt: number
+  startedAt?: number
+}
+
 interface SessionState {
   activeSessions: Map<string, SessionInfo>
   sessionSnapshots: Map<string, SessionSnapshot>
+  requestStatuses: Map<string, RequestStatusEntry>
 
   startSession: (adapterName: string, config: AgentSessionConfig) => Promise<string>
   resumeSession: (sessionId: string, config: AgentSessionConfig) => Promise<void>
@@ -41,11 +50,18 @@ interface SessionState {
   hasInterruptedSession: (threadId: string) => boolean
   /** Clear a saved snapshot for a thread */
   clearSnapshot: (threadId: string) => void
+  /** Track a new request in the queue */
+  addRequestStatus: (requestId: string, adapterName: string) => void
+  /** Update the status of a tracked request */
+  updateRequestStatus: (requestId: string, status: 'queued' | 'executing' | 'done') => void
+  /** Remove a tracked request */
+  removeRequestStatus: (requestId: string) => void
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessions: new Map(),
   sessionSnapshots: new Map(),
+  requestStatuses: new Map(),
 
   startSession: async (adapterName, config) => {
     const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
@@ -404,4 +420,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Ignore
     }
   },
+
+  addRequestStatus: (requestId, adapterName) => set((s) => {
+    const map = new Map(s.requestStatuses)
+    map.set(requestId, { requestId, status: 'queued', adapterName, enqueuedAt: Date.now() })
+    return { requestStatuses: map }
+  }),
+
+  updateRequestStatus: (requestId, status) => set((s) => {
+    const map = new Map(s.requestStatuses)
+    const existing = map.get(requestId)
+    if (existing) {
+      map.set(requestId, { ...existing, status, startedAt: status === 'executing' ? Date.now() : existing.startedAt })
+    }
+    return { requestStatuses: map }
+  }),
+
+  removeRequestStatus: (requestId) => set((s) => {
+    const map = new Map(s.requestStatuses)
+    map.delete(requestId)
+    return { requestStatuses: map }
+  }),
 }))

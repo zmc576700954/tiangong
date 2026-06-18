@@ -568,6 +568,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         </>
       )}
 
+      {(queuedCount > 0 || executingCount > 0) && (
+        <div className="flex items-center gap-2 px-3 py-1 text-[10px] text-muted-foreground border-b border-border">
+          {queuedCount > 0 && <span>Queued: {queuedCount}</span>}
+          {executingCount > 0 && <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" />Executing: {executingCount}</span>}
+        </div>
+      )}
+
       <ChatInput
         onSend={handleSend}
         onStop={handleStop}
