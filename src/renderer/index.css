@@ -83,6 +83,12 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 221.2 83.2% 53.3%;
     --radius: 0.5rem;
+
+    /* Canvas theme */
+    --canvas-bg: #f8fafc;
+    --canvas-minimap-bg: rgba(255, 255, 255, 0.8);
+    --canvas-controls-bg: hsl(var(--background));
+    --canvas-controls-border: hsl(var(--border));
   }
 
   /* WCAG AA 4.5:1 contrast audit verified */
@@ -108,6 +114,12 @@
     --ring: 224.3 76.3% 48%;
     --color-bug-critical: hsl(0 72% 50%);
     --color-node-placeholder: hsl(var(--muted));
+
+    /* Canvas theme (dark) */
+    --canvas-bg: #1e293b;
+    --canvas-minimap-bg: rgba(30, 41, 59, 0.8);
+    --canvas-controls-bg: hsl(var(--background));
+    --canvas-controls-border: hsl(var(--border));
   }
 
   * {
@@ -267,6 +279,29 @@
 
 .animate-fade-out {
   animation: fade-out var(--duration-normal) ease-out forwards;
+}
+
+.animate-fade-out-3s {
+  animation: fade-out 0.3s ease-out 3s forwards;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-breathe {
+  animation: breathe 1.5s ease-in-out infinite;
+}
+
+@keyframes flash-once {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.8); }
+  100% { filter: brightness(1); }
+}
+
+.animate-flash-once {
+  animation: flash-once 100ms ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {

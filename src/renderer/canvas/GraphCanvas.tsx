@@ -11,6 +11,9 @@ import {
   type Edge,
   type Node,
   type OnNodesChange,
+  type OnConnect,
+  type OnConnectStart,
+  type OnConnectEnd,
   Panel,
   MarkerType,
 } from '@xyflow/react'
@@ -71,6 +74,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const graphs = useGraphStore((state) => state.graphs)
   const notifications = useGraphStore((s) => s.associationNotifications)
   const dismissNotification = useGraphStore((s) => s.dismissAssociationNotification)
+  const setConnectingFrom = useGraphStore((s) => s.setConnectingFrom)
+  const flashNode = useGraphStore((s) => s.flashNode)
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
 
@@ -131,6 +136,24 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     handleCreateEdge,
     cancelPendingConnection,
   } = useEdgeConnection(graphId)
+
+  // Connection visual feedback handlers (Task 17)
+  const handleConnectStart = useCallback<OnConnectStart>(
+    (_event, params) => {
+      if (params?.nodeId) setConnectingFrom(params.nodeId)
+    },
+    [setConnectingFrom],
+  )
+  const handleConnectEnd = useCallback<OnConnectEnd>(() => {
+    setConnectingFrom(null)
+  }, [setConnectingFrom])
+  const handleConnect = useCallback<OnConnect>(
+    (connection) => {
+      if (connection.target) flashNode(connection.target)
+      onConnect(connection)
+    },
+    [onConnect, flashNode],
+  )
 
   // ────────────────────────────────────────────────────────────────
   // 节点业务操作 Hook
@@ -432,7 +455,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         edges={rfEdges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
+        onConnect={handleConnect}
+        onConnectStart={handleConnectStart}
+        onConnectEnd={handleConnectEnd}
         onNodeClick={onNodeClick}
         onEdgeClick={onEdgeClick}
         onPaneClick={onPaneClick}

@@ -43,6 +43,12 @@ export const BizNodeComponent = memo(function BizNodeComponent({
     }
   }))
 
+  // Connection visual feedback (Task 17)
+  const connectingFrom = useGraphStore((s) => s.connectingFrom)
+  const flashedNodeId = useGraphStore((s) => s.flashedNodeId)
+  const isPotentialTarget = !!connectingFrom && connectingFrom !== data.id
+  const isFlashing = flashedNodeId === data.id
+
   const isAgentRunning = agentStatus === 'running'
   const isAgentError = agentStatus === 'error'
   const isAgentCompleted = agentStatus === 'idle' && !!agentSessionId
@@ -113,6 +119,8 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         isAgentError && 'border-red-400',
         isAgentCompleted && 'border-green-400',
         isPreview && 'opacity-50 border-dashed border-2 border-gray-400 dark:border-gray-500',
+        isPotentialTarget && 'animate-breathe',
+        isFlashing && 'animate-flash-once',
       )}
       style={{
         borderColor: selected ? typeColor : undefined,
