@@ -1,4 +1,4 @@
-import { memo, useRef } from 'react'
+import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { useShallow } from 'zustand/react/shallow'
 import { getNodeStatusClass, cn } from '../lib/utils'
@@ -7,6 +7,7 @@ import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check } from 'lucide-react'
 import { useAgentStore } from '../store/agentStore'
 import { useAgentOutputStore } from '../store/agentOutputStore'
+import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
 
 const EMPTY_OUTPUTS: never[] = []
@@ -16,6 +17,7 @@ interface BizNodeProps {
   data: GraphNode & { bugCount: number }
   selected?: boolean
   isZoomedOut?: boolean
+  hideTextLabels?: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
@@ -24,32 +26,26 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   data,
   selected,
   isZoomedOut,
+  hideTextLabels,
   onContextMenu,
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
+  const isPreview = data.metadata?.preview === true
 
-  // Agent activity state — useShallow avoids new object reference per render
-  const agentThreadInfo = useAgentStore(useShallow((s) => {
+  // Agent activity state — merged single selector for agent thread info
+  const { agentThreadId, agentStatus, agentSessionId } = useAgentStore(useShallow((s) => {
     const t = s.getThreadByNodeId(data.id)
-    return t ? { id: t.id, status: t.status, sessionId: t.sessionId } : undefined
+    return {
+      agentThreadId: t?.id,
+      agentStatus: t?.status,
+      agentSessionId: t?.sessionId,
+    }
   }))
-  const agentThreadId = agentThreadInfo?.id
-  const agentStatus = agentThreadInfo?.status
-  const agentSessionId = agentThreadInfo?.sessionId
 
   const isAgentRunning = agentStatus === 'running'
   const isAgentError = agentStatus === 'error'
   const isAgentCompleted = agentStatus === 'idle' && !!agentSessionId
-
-  // Track completed state for CSS animation (no setTimeout)
-  const completedRef = useRef(false)
-  if (isAgentCompleted && !completedRef.current) {
-    completedRef.current = true
-  } else if (!isAgentCompleted) {
-    completedRef.current = false
-  }
-  const showCompleted = completedRef.current
 
   // Select only this thread's outputs — stable empty array when no outputs
   const agentOutputs = useAgentOutputStore((s) => {
@@ -115,7 +111,8 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         selected && 'ring-2 ring-blue-400 ring-offset-1',
         isAgentRunning && 'border-orange-400 animate-pulse',
         isAgentError && 'border-red-400',
-        showCompleted && 'border-green-400',
+        isAgentCompleted && 'border-green-400',
+        isPreview && 'opacity-50 border-dashed border-2 border-gray-400 dark:border-gray-500',
       )}
       style={{
         borderColor: selected ? typeColor : undefined,
@@ -152,11 +149,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 
       <div className="flex items-center gap-1.5 mb-1">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
-        <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", isZoomedOut && "hidden")}>
+        <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", (isZoomedOut || hideTextLabels) && "hidden")}>
           {NODE_TYPE_LABELS[data.type]}
         </span>
       </div>
-      <div className={cn("font-medium text-sm truncate", isZoomedOut && "text-[8px]")}>{data.title}</div>
+      <div className={cn("font-medium text-sm truncate", isZoomedOut && "text-[8px]", hideTextLabels && "text-[8px]")}>{data.title}</div>
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-muted-foreground">{data.status}</span>
         {data.bugCount > 0 && (
@@ -168,16 +165,33 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       </div>
 
       {/* Agent activity badge */}
-      {(isAgentRunning || isAgentError || showCompleted) && (
+      {(isAgentRunning || isAgentError || isAgentCompleted) && (
         <div className={cn(
           'absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center shadow-xs',
           isAgentRunning && 'bg-orange-400',
           isAgentError && 'bg-red-400',
-          showCompleted && 'bg-green-400',
+          isAgentCompleted && 'bg-green-400 animate-fade-out-3s',
         )}>
           {isAgentRunning && <Loader2 className="w-3 h-3 text-white animate-spin" />}
           {isAgentError && <AlertTriangle className="w-3 h-3 text-white" />}
-          {showCompleted && <Check className="w-3 h-3 text-white" />}
+          {isAgentCompleted && <Check className="w-3 h-3 text-white" />}
+        </div>
+      )}
+
+      {isPreview && (
+        <div className="flex gap-1 mt-1">
+          <button
+            onClick={(e) => { e.stopPropagation(); useGraphStore.getState().confirmPreviewNode(data.id) }}
+            className="text-[9px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900 dark:text-green-300"
+          >
+            Confirm
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); useGraphStore.getState().clearPreviewNodes() }}
+            className="text-[9px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900 dark:text-red-300"
+          >
+            Clear
+          </button>
         </div>
       )}
 

@@ -70,11 +70,15 @@ interface GraphState {
   addSuggestedEdges: (edges: Array<{ id: string; source: string; target: string; edgeType: EdgeType; strength: number; content: EdgeContent }>) => void
   confirmSuggestedEdge: (edgeId: string) => void
   rejectSuggestedEdge: (edgeId: string) => void
+  confirmPreviewNode: (nodeId: string) => void
   clearPreviewNodes: () => void
 
   // Map-based index accessors
   getNodeById: (id: string) => GraphNode | undefined
   getNodesByType: (type: string) => GraphNode[]
+
+  // Task 4.4.1: Frontend search index
+  searchNodes: (query: string, filters?: { name?: string; type?: string; status?: string }) => GraphNode[]
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -391,6 +395,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
     window.electronAPI['edge:delete'](edgeId)
   },
 
+  confirmPreviewNode: (nodeId) => {
+    const node = get().nodes.find(n => n.id === nodeId)
+    if (!node) return
+    const { preview, ...restMetadata } = node.metadata ?? {}
+    const updatedMetadata = restMetadata
+    set(state => ({
+      nodes: state.nodes.map(n =>
+        n.id === nodeId ? { ...n, metadata: updatedMetadata } : n
+      )
+    }))
+    window.electronAPI['node:update'](nodeId, { metadata: updatedMetadata })
+  },
+
   clearPreviewNodes: () => {
     const previewIds = get().nodes.filter(n => n.metadata?.preview).map(n => n.id)
     previewIds.forEach(id => window.electronAPI['node:delete'](id))
@@ -399,5 +416,46 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   getNodeById: (id) => get().nodes.find(n => n.id === id),
   getNodesByType: (type) => get().nodes.filter(n => n.type === type),
+
+  // Task 4.4.1: Frontend search index
+  searchNodes: (query, filters) => {
+    const { nodes } = get()
+    const q = query.toLowerCase().trim()
+
+    if (!q && !filters) return nodes
+
+    let results = nodes
+
+    // Filter by type
+    if (filters?.type) {
+      results = results.filter(n => n.type === filters.type)
+    }
+
+    // Filter by status
+    if (filters?.status) {
+      results = results.filter(n => n.status === filters.status)
+    }
+
+    // Filter by name (substring match)
+    if (q) {
+      results = results.filter(n => {
+        const name = (filters?.name ?? n.title).toLowerCase()
+        return name.includes(q) || n.description?.toLowerCase().includes(q)
+      })
+    }
+
+    // Sort by relevance: exact title match > title starts with > title contains > description contains
+    if (q) {
+      results.sort((a, b) => {
+        const aTitle = a.title.toLowerCase()
+        const bTitle = b.title.toLowerCase()
+        const aExact = aTitle === q ? 0 : aTitle.startsWith(q) ? 1 : aTitle.includes(q) ? 2 : 3
+        const bExact = bTitle === q ? 0 : bTitle.startsWith(q) ? 1 : bTitle.includes(q) ? 2 : 3
+        return aExact - bExact
+      })
+    }
+
+    return results
+  },
   }
 })
