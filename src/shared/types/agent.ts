@@ -103,6 +103,8 @@ export interface ToolCallBlock {
 /** 消息状态 */
 export type MessageStatus =
   | 'pending'     // 用户消息刚发出，等待 agent 响应
+  | 'queued'      // 已入队，等待处理
+  | 'sending'     // 正在发送到 agent
   | 'streaming'   // agent 正在输出
   | 'success'     // agent 正常完成
   | 'error'       // 出错

@@ -3,7 +3,7 @@ import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { useState, useCallback } from 'react'
-import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban } from 'lucide-react'
+import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'
 import type { ChatMessage } from '@shared/types'
@@ -45,6 +45,15 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
       {children}
     </code>
   )
+}
+
+const STATUS_ICONS: Record<string, { icon: React.ReactNode; label: string; className: string }> = {
+  queued: { icon: <Clock size={10} />, label: 'Queued', className: 'text-gray-400' },
+  sending: { icon: <Send size={10} />, label: 'Sending', className: 'text-blue-400' },
+  streaming: { icon: <Loader2 size={10} className="animate-spin" />, label: 'Streaming', className: 'text-blue-500' },
+  success: { icon: <Check size={10} />, label: 'Sent', className: 'text-green-500' },
+  error: { icon: <AlertTriangle size={10} />, label: 'Failed', className: 'text-red-500' },
+  permanently_failed: { icon: <XCircle size={10} />, label: 'Permanently failed', className: 'text-red-600' },
 }
 
 interface ChatBubbleProps {
@@ -89,6 +98,11 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
           <span className="text-muted-foreground/50 ml-1">
             {formatTime(message.timestamp)}
           </span>
+          {message.status && STATUS_ICONS[message.status] && (
+            <span className={`inline-flex items-center gap-0.5 text-[10px] ml-1 ${STATUS_ICONS[message.status].className}`} title={STATUS_ICONS[message.status].label}>
+              {STATUS_ICONS[message.status].icon}
+            </span>
+          )}
         </div>
         <div
           className={cn(
