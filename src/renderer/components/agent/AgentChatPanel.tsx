@@ -574,6 +574,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         containerHeight={hasResized ? inputAreaHeight : undefined}
         initialPrompt={pendingPromptRef.current}
         onPromptConsumed={() => { pendingPromptRef.current = null }}
+        threadId={currentThreadId ?? undefined}
       />
 
       <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />

@@ -22,10 +22,20 @@ interface ChatInputProps {
   containerHeight?: number
   initialPrompt?: string | null
   onPromptConsumed?: () => void
+  /** Current thread ID for per-thread draft persistence. */
+  threadId?: string
 }
 
-export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath, selectedNode, containerHeight, initialPrompt, onPromptConsumed }: ChatInputProps) {
-  const [value, setValue] = useState('')
+const DRAFT_KEY_PREFIX = 'bizgraph:draft:'
+
+export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath, selectedNode, containerHeight, initialPrompt, onPromptConsumed, threadId }: ChatInputProps) {
+  const [value, setValue] = useState(() => {
+    if (threadId) {
+      const saved = localStorage.getItem(`${DRAFT_KEY_PREFIX}${threadId}`)
+      if (saved) return saved
+    }
+    return ''
+  })
   const [showSlash, setShowSlash] = useState(false)
   const [showMention, setShowMention] = useState(false)
   const [slashFilter, setSlashFilter] = useState('')
@@ -40,6 +50,15 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
       setTimeout(() => textareaRef.current?.focus(), 0)
     }
   }, [initialPrompt, onPromptConsumed])
+
+  // Persist draft per thread on every value change
+  useEffect(() => {
+    if (threadId && value) {
+      localStorage.setItem(`${DRAFT_KEY_PREFIX}${threadId}`, value)
+    } else if (threadId && !value) {
+      localStorage.removeItem(`${DRAFT_KEY_PREFIX}${threadId}`)
+    }
+  }, [value, threadId])
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value
@@ -95,6 +114,9 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
     if (!trimmed || disabled) return
     onSend(trimmed, attachedContexts)
     setValue('')
+    if (threadId) {
+      localStorage.removeItem(`${DRAFT_KEY_PREFIX}${threadId}`)
+    }
     setShowSlash(false)
     setShowMention(false)
   }
