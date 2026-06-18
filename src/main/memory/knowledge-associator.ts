@@ -1,4 +1,6 @@
 import type { GraphNode, EdgeType } from '@shared/types'
+import { QueryCache } from './query-cache'
+
 export interface AssociationInput {
   dependencyEdges: Array<{ sourceId: string; targetId: string }>
   coChangeFreqMap: Map<string, number>
@@ -17,6 +19,7 @@ const WEIGHTS = { dependency: 0.9, semantic: 0.7, coChange: 0.6 } as const
 
 export class KnowledgeAssociator {
   private _embeddingService: any = null
+  private static _cache = new QueryCache<AssociationResult[]>({ maxSize: 100, ttlMs: 300_000 })
 
   setEmbeddingService(service: { cosineSimilarity(a: number[], b: number[]): number; generateEmbedding(text: string): Promise<number[]> }): void {
     this._embeddingService = service
@@ -48,6 +51,13 @@ export class KnowledgeAssociator {
 
   async findAssociations(nodes: GraphNode[], input: AssociationInput): Promise<AssociationResult[]> {
     const threshold = input.threshold ?? 0.6
+
+    // Check cache — encode threshold as depth since QueryCache._makeKey uses depth in the key
+    const cacheKey = [...nodes.map((n) => n.id)].sort().join(':')
+    const cacheOptions = { depth: Math.round(threshold * 1000), relationFilter: [] as string[] }
+    const cached = KnowledgeAssociator._cache.get(cacheKey, cacheOptions)
+    if (cached) return cached
+
     const results: AssociationResult[] = []
 
     const embeddings = new Map<string, number[]>()
@@ -99,7 +109,9 @@ export class KnowledgeAssociator {
         }
       }
     }
-    return results.sort((a, b) => b.score - a.score)
+    const sorted = results.sort((a, b) => b.score - a.score)
+    KnowledgeAssociator._cache.set(cacheKey, cacheOptions, sorted)
+    return sorted
   }
 
   private _determineEdgeType(signals: { dependency: boolean; semantic: boolean; coChange: boolean }): EdgeType {

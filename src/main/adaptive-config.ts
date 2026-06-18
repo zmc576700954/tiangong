@@ -5,6 +5,8 @@
  * 每个配置项有默认值、上下界和可选的 adaptFn（基于收集的指标自动调整）。
  */
 
+import * as fs from 'fs'
+
 /** 指标样本：可以是简单数值，也可以是包含 ftsScore / embeddingScore 的搜索质量 */
 type MetricSample = number | { ftsScore: number; embeddingScore: number }
 
@@ -129,6 +131,56 @@ export class AdaptiveConfig {
       result[key] = this.get(key)
     }
     return result
+  }
+
+  /** Persist current values and metrics to a JSON file */
+  save(filePath: string): void {
+    const data = {
+      values: Object.fromEntries(this.values),
+      metrics: Object.fromEntries(this.metrics),
+    }
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+  }
+
+  /** Restore values and metrics from a previously saved JSON file */
+  load(filePath: string): void {
+    if (!fs.existsSync(filePath)) return
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8')
+      const data = JSON.parse(raw)
+      if (data.values && typeof data.values === 'object') {
+        for (const [key, value] of Object.entries(data.values)) {
+          if (typeof value === 'number') {
+            this.values.set(key, value)
+          }
+        }
+      }
+      if (data.metrics && typeof data.metrics === 'object') {
+        for (const [key, samples] of Object.entries(data.metrics)) {
+          if (Array.isArray(samples)) {
+            this.metrics.set(key, samples as MetricSample[])
+          }
+        }
+      }
+    } catch {
+      // Corrupted file — silently skip; defaults remain in place
+    }
+  }
+
+  /** Start auto-saving at a regular interval; returns the timer for cleanup */
+  startAutoSave(filePath: string, intervalMs = 300_000): NodeJS.Timeout {
+    return setInterval(() => {
+      try {
+        this.save(filePath)
+      } catch {
+        // Best-effort; don't crash on write failure
+      }
+    }, intervalMs)
+  }
+
+  /** Stop auto-save by clearing the timer returned by startAutoSave */
+  stopAutoSave(timer: NodeJS.Timeout): void {
+    clearInterval(timer)
   }
 }
 

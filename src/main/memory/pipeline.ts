@@ -52,6 +52,14 @@ export interface PipelineResult {
   durationMs: number
 }
 
+/** Overrides for pipeline stage configuration */
+export interface StageOverride {
+  /** Stage names to skip entirely */
+  skip?: string[]
+  /** Stage name → replacement stage implementation */
+  replace?: Record<string, PipelineStage>
+}
+
 // ---------------------------------------------------------------------------
 // PipelineRunner
 // ---------------------------------------------------------------------------
@@ -128,7 +136,7 @@ export class PipelineRunner {
    * 每个阶段独立运行，失败不阻塞后续阶段。
    * 使用动态 import 避免循环依赖和启动时的全量加载。
    */
-  static async createDefault(): Promise<PipelineRunner> {
+  static async createDefault(overrides?: StageOverride): Promise<PipelineRunner> {
     const { OutputNormalizer } = await import('./output-normalizer')
     const { ObserverCompressor } = await import('./observer-compressor')
     const { MemoryExtractor } = await import('./memory-extractor')
@@ -136,6 +144,7 @@ export class PipelineRunner {
     const { ContextCompiler } = await import('./context-compiler')
     const { getWaterlineSync } = await import('./waterline-sync')
     const { getMemoryStore } = await import('./memory-store')
+    const { getAdaptiveConfig } = await import('../adaptive-config')
 
     const normalizer = new OutputNormalizer()
     const compressor = new ObserverCompressor()
@@ -143,30 +152,53 @@ export class PipelineRunner {
     const checker = new HallucinationChecker()
     const compiler = new ContextCompiler()
 
-    return new PipelineRunner([
+    // Pipeline execution counter for periodic adapt() calls
+    let _executionCount = 0
+
+    // Build the default stages array
+    const defaultStages: PipelineStage[] = [
       {
         name: 'normalize',
         process: async (ctx) => ({
           ...ctx,
-          normalizedOutputs: normalizer.normalizeAll(ctx.outputs),
+          normalizedOutputs: normalizer.normalizeAll(ctx.outputs, ctx.adapterName),
         }),
       },
       {
         name: 'compress',
         process: async (ctx) => {
+          // Read compress threshold from AdaptiveConfig instead of hardcoded value
+          const adaptiveConfig = getAdaptiveConfig()
+          const threshold = adaptiveConfig.get('compressThresholdTokens')
+
           for (const output of ctx.normalizedOutputs ?? ctx.outputs) {
             compressor.feed(output)
           }
-          compressor.finalize()
-          return { ...ctx, observations: [] as any[] }
+          const observations = compressor.finalize()
+
+          // Record output token estimate from observations for adaptive tuning
+          const outputTokens = observations.reduce(
+            (sum, obs) => sum + obs.outputTokens, 0,
+          )
+          adaptiveConfig.recordMetric('compressThresholdTokens', outputTokens)
+
+          // Log the threshold being used for observability
+          logger.info(`Compress stage: threshold=${threshold}, outputTokens≈${outputTokens}`)
+
+          return { ...ctx, observations }
         },
       },
       {
         name: 'extract',
-        process: async (ctx) => ({
-          ...ctx,
-          memories: extractor.extract(ctx.sessionId, ctx.normalizedOutputs ?? ctx.outputs, { adapterName: ctx.adapterName ?? 'unknown' }),
-        }),
+        process: async (ctx) => {
+          const sourceOutputs = (ctx.observations && ctx.observations.length > 0)
+            ? ctx.observations.map(obs => ({ type: 'stdout' as const, data: obs.summary ?? obs.text ?? '', timestamp: Date.now() }))
+            : (ctx.normalizedOutputs ?? ctx.outputs)
+          return {
+            ...ctx,
+            memories: extractor.extract(ctx.sessionId, sourceOutputs, { adapterName: ctx.adapterName ?? 'unknown' }),
+          }
+        },
       },
       {
         name: 'verify',
@@ -202,6 +234,20 @@ export class PipelineRunner {
           if (ctx.memories && ctx.memories.length > 0) {
             waterline.advance(ctx.projectId ?? '', ctx.memories as MemoryItem[])
           }
+          // Data flow: compile→waterline — if layeredContext has L1/L2 summaries,
+          // extract concept keywords and register them as completed investigations
+          // so that future sessions avoid re-investigating the same topics.
+          if (ctx.layeredContext?.layers) {
+            const conceptLayers = ctx.layeredContext.layers.filter(
+              (layer: any) => layer.level === 1 || layer.level === 2,
+            )
+            if (conceptLayers.length > 0) {
+              const concepts = conceptLayers
+                .map((layer: any) => layer.content)
+                .filter(Boolean)
+              waterline.addCompletedInvestigations(ctx.projectId ?? '', concepts)
+            }
+          }
           return { ...ctx, waterlineDelta: waterline.getDelta(ctx.projectId ?? '') }
         },
       },
@@ -224,14 +270,84 @@ export class PipelineRunner {
         process: async (ctx) => {
           if (ctx.memories && ctx.memories.length > 0) {
             const store = getMemoryStore()
-            const safeMemories = ctx.hallucinationReport?.riskScore > 70
-              ? ctx.memories.filter(m => (m.confidence ?? 0) > 0.7)
-              : ctx.memories
-            await store.storeMany(safeMemories as Omit<MemoryItem, 'id'>[])
+            const riskScore = ctx.hallucinationReport?.riskScore ?? 0
+
+            // Tiered filtering based on hallucination risk:
+            // risk > 90: only keep high-confidence, verified memories
+            // risk > 70: keep medium+ confidence; mark low-confidence (0.3-0.5) as unverified
+            // risk <= 70: keep all memories (they're verified)
+            let safeMemories: Omit<MemoryItem, 'id'>[]
+            if (riskScore > 90) {
+              safeMemories = ctx.memories.filter(m => (m.confidence ?? 0) > 0.8)
+            } else if (riskScore > 70) {
+              // Keep memories with confidence > 0.5 as-is
+              // Mark memories with confidence 0.3-0.5 as unverified instead of discarding
+              safeMemories = ctx.memories
+                .filter(m => (m.confidence ?? 0) > 0.3)
+                .map(m => {
+                  const confidence = m.confidence ?? 0
+                  if (confidence > 0.5) {
+                    return m
+                  }
+                  // confidence 0.3-0.5: mark as unverified via narrative annotation
+                  return {
+                    ...m,
+                    narrative: m.narrative + ' (verified: false)',
+                  }
+                })
+            } else {
+              safeMemories = ctx.memories
+            }
+
+            const ids = await store.storeMany(safeMemories as Omit<MemoryItem, 'id'>[])
+
+            // Generate embeddings for stored memories (non-blocking, graceful degradation)
+            const { getEmbeddingService } = await import('./embedding-service')
+            const embeddingService = getEmbeddingService()
+            if (embeddingService.isReady()) {
+              const { getClient } = await import('../database')
+              for (let i = 0; i < ids.length; i++) {
+                try {
+                  const memory = safeMemories[i]
+                  const text = `${memory.title} ${memory.narrative} ${(memory.facts ?? []).join(' ')}`
+                  const embedding = await embeddingService.generateEmbedding(text)
+                  await getClient().execute({
+                    sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
+                    args: [JSON.stringify(embedding), ids[i]],
+                  })
+                } catch {
+                  // Embedding generation failure should not block the pipeline
+                }
+              }
+            } else {
+              logger.info('EmbeddingService not ready, skipping embedding generation for persisted memories')
+            }
           }
+
+          // Periodic adaptive config tuning (every 20 pipeline executions)
+          _executionCount++
+          if (_executionCount % 20 === 0) {
+            try {
+              getAdaptiveConfig().adapt()
+            } catch {
+              // adapt() failure should not block the pipeline
+            }
+          }
+
           return ctx
         },
       },
-    ])
+    ]
+
+    // Apply stage overrides
+    let stages = defaultStages
+    if (overrides?.skip) {
+      stages = stages.filter(s => !overrides.skip!.includes(s.name))
+    }
+    if (overrides?.replace) {
+      stages = stages.map(s => overrides.replace![s.name] ?? s)
+    }
+
+    return new PipelineRunner(stages)
   }
 }

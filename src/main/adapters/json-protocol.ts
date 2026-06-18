@@ -363,24 +363,64 @@ export class JsonProtocolHandler {
 // ============================================
 
 /**
+ * 自动模式分类: 根据输出文本内容推断输出模式
+ *
+ * 分类规则:
+ *   - file_operation: 文本包含文件路径模式 + create/modify/delete 动词
+ *   - error_report: 文本包含 Error/Fail/Exception 关键词
+ *   - progress_update: 文本包含百分比或进度条模式
+ *   - code_change: 文本包含 diff/patch 格式 (+++--- 标记)
+ */
+function classifyPattern(text: string): string | undefined {
+  // code_change: diff/patch 格式 (+++--- 标记)
+  if (/^[+-]{3}\s/m.test(text) || /^@@\s/m.test(text)) {
+    return 'code_change'
+  }
+
+  // progress_update: 百分比或进度条
+  if (/\d+%\s/.test(text) || /[█▓░#*=]{5,}/.test(text) || /\[\d+%\]/.test(text)) {
+    return 'progress_update'
+  }
+
+  // error_report: Error/Fail/Exception 关键词
+  if (/\b(?:Error|Fail(?:ed|ure)?|Exception|Traceback)\b/i.test(text)) {
+    return 'error_report'
+  }
+
+  // file_operation: 文件路径模式 + create/modify/delete 动词
+  if (
+    /(?:\/[\w.-]+){2,}/.test(text) &&
+    /\b(?:creat|modif|delet|writ|updat|renam|mov)\w*\b/i.test(text)
+  ) {
+    return 'file_operation'
+  }
+
+  return undefined
+}
+
+/**
  * 将协议消息转换为 AgentOutput
  */
 export function protocolMessageToAgentOutput(msg: ProtocolOutputMessage): AgentOutput | null {
   switch (msg.type) {
     case 'progress': {
       const p = msg.payload as ProtocolProgressPayload
+      const data = p.percent !== undefined ? `[${p.percent}%] ${p.message}` : p.message
       return {
         type: 'stdout',
-        data: p.percent !== undefined ? `[${p.percent}%] ${p.message}` : p.message,
+        data,
         timestamp: msg.timestamp,
+        pattern: 'progress_update',
       }
     }
     case 'result': {
       const r = msg.payload as ProtocolResultPayload
+      const data = r.content
       return {
         type: r.success ? 'complete' : 'error',
-        data: r.content,
+        data,
         timestamp: msg.timestamp,
+        pattern: r.success ? classifyPattern(data) : 'error_report',
       }
     }
     case 'file_change': {
@@ -391,6 +431,7 @@ export function protocolMessageToAgentOutput(msg: ProtocolOutputMessage): AgentO
         timestamp: msg.timestamp,
         filePath: f.path,
         changeType: f.changeType,
+        pattern: 'file_operation',
       }
     }
     case 'error': {
@@ -399,14 +440,17 @@ export function protocolMessageToAgentOutput(msg: ProtocolOutputMessage): AgentO
         type: 'error',
         data: `[${e.code}] ${e.message}`,
         timestamp: msg.timestamp,
+        pattern: 'error_report',
       }
     }
     case 'tool_call': {
       const t = msg.payload as ProtocolToolCallPayload
+      const data = `Tool: ${t.tool}\nParams: ${JSON.stringify(t.params, null, 2)}`
       return {
         type: 'stdout',
-        data: `Tool: ${t.tool}\nParams: ${JSON.stringify(t.params, null, 2)}`,
+        data,
         timestamp: msg.timestamp,
+        pattern: classifyPattern(data),
       }
     }
     case 'pong':

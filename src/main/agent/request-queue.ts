@@ -49,8 +49,9 @@ export class RequestQueue {
     if (req.nodeId) {
       const dedupKey = `${req.nodeId}:${req.command}`
       const lastTime = this._dedupMap.get(dedupKey)
-      if (lastTime && Date.now() - lastTime < this._dedupWindowMs) {
-        logger.debug(`Dedup: skipping ${req.id} (same nodeId+command within ${this._dedupWindowMs}ms)`)
+      const effectiveWindow = this.getEffectiveDedupWindowMs()
+      if (lastTime && Date.now() - lastTime < effectiveWindow) {
+        logger.debug(`Dedup: skipping ${req.id} (same nodeId+command within ${effectiveWindow}ms)`)
         return false
       }
       this._dedupMap.set(dedupKey, Date.now())
@@ -94,6 +95,36 @@ export class RequestQueue {
       total += queue.filter(i => i.status === 'queued').length
     }
     return total
+  }
+
+  /**
+   * 获取系统负载等级
+   *
+   * 基于待处理 + 执行中的请求数量判断负载:
+   *   < 2: 'low'    — 系统空闲，无特殊行为
+   *   2-5: 'medium' — 正常负载
+   *   > 5: 'high'   — 高负载，自动延长队列超时
+   */
+  getSystemLoad(): 'low' | 'medium' | 'high' {
+    let count = 0
+    for (const queue of this._queues.values()) {
+      count += queue.filter(i => i.status === 'queued' || i.status === 'executing').length
+    }
+    if (count < 2) return 'low'
+    if (count <= 5) return 'medium'
+    return 'high'
+  }
+
+  /**
+   * 获取当前去重窗口超时（根据系统负载自适应）
+   *
+   * 高负载时从 30s 延长到 60s，减少重复请求的执行压力；
+   * 低/中负载使用默认 30s。
+   */
+  getEffectiveDedupWindowMs(): number {
+    return this.getSystemLoad() === 'high'
+      ? this._dedupWindowMs * 2
+      : this._dedupWindowMs
   }
 
   private _getQueue(adapterName: string): QueuedItem[] {

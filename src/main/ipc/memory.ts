@@ -5,6 +5,7 @@
  */
 
 import { getMemoryStore } from '../memory/memory-store'
+import { getWaterlineSync } from '../memory/waterline-sync'
 import type { TypedHandle } from './utils'
 import type { MemoryKind } from '@shared/types'
 import { createLogger } from '../shared/logger'
@@ -68,6 +69,24 @@ function ensureOptionalKind(value: unknown): MemoryKind | undefined {
 /** 全文搜索最小有效 query 长度（去掉空白后）：防止短查询触发全表 LIKE 扫描 */
 const MIN_SEARCH_QUERY_LEN = 2
 
+/** 已恢复水位线的项目 ID 集合（避免重复 restore） */
+const restoredProjects = new Set<string>()
+
+/**
+ * 懒加载恢复水位线：首次按 projectId 检索时触发
+ *
+ * 非阻塞：restore 失败仅打日志，不阻塞当前 IPC 调用。
+ * 幂等：同一 projectId 只 restore 一次。
+ */
+function ensureWaterlineRestored(projectId: string | undefined): void {
+  if (!projectId || restoredProjects.has(projectId)) return
+  restoredProjects.add(projectId)
+  const waterline = getWaterlineSync()
+  waterline.restore(projectId).catch((err) => {
+    logger.warn(`Failed to restore waterline for ${projectId}:`, err)
+  })
+}
+
 export function registerMemoryHandlers(typedHandle: TypedHandle): void {
   /**
    * 全文搜索记忆
@@ -95,6 +114,7 @@ export function registerMemoryHandlers(typedHandle: TypedHandle): void {
       kind: ensureOptionalKind(options?.kind),
       limit: ensureOptionalLimit(options?.limit),
     }
+    ensureWaterlineRestored(safeOptions.projectId)
     const store = getMemoryStore()
     const results = await store.search(trimmed, safeOptions)
     logger.debug(`Memory search "${trimmed}" returned ${results.length} results`)
@@ -114,6 +134,7 @@ export function registerMemoryHandlers(typedHandle: TypedHandle): void {
       nodeId: ensureOptionalString('nodeId', options?.nodeId, MAX_ID_LEN),
       limit: ensureOptionalLimit(options?.limit),
     }
+    ensureWaterlineRestored(safeOptions.projectId)
     const store = getMemoryStore()
     return store.getRecent(safeOptions)
   })
@@ -170,6 +191,12 @@ export function registerMemoryHandlers(typedHandle: TypedHandle): void {
     const safeProjectId = ensureString('projectId', projectId, MAX_ID_LEN)
     const store = getMemoryStore()
     const count = await store.deleteBySessionScoped(safeSessionId, safeProjectId)
+    // Signal user rejection to AdaptiveConfig so pruning aggressiveness adapts
+    if (count > 0) {
+      const { getAdaptiveConfig } = await import('../adaptive-config')
+      getAdaptiveConfig().recordMetric('pruneHalfLifeDays', 1)
+      getAdaptiveConfig().recordMetric('memoryMaxItems', 1)
+    }
     logger.info(`Deleted ${count} memories for session ${safeSessionId} in project ${safeProjectId}`)
     return count
   })
@@ -194,6 +221,85 @@ export function registerMemoryHandlers(typedHandle: TypedHandle): void {
     const store = getMemoryStore()
     const count = await store.pruneStale(days)
     logger.info(`Pruned ${count} stale memories (threshold: ${days} days)`)
+    return count
+  })
+
+  /**
+   * 获取概念演进链
+   *
+   * 返回从最早版本到最新版本的完整演进序列，按 version ASC 排序。
+   */
+  typedHandle('memory:getEvolutionChain', async (_event, concept: string, projectId: string) => {
+    const safeConcept = ensureString('concept', concept, MAX_QUERY_LEN)
+    const safeProjectId = ensureString('projectId', projectId, MAX_ID_LEN)
+    const store = getMemoryStore()
+    return store.getEvolutionChain(safeConcept, safeProjectId)
+  })
+
+  /**
+   * 回填旧记忆条目的 embedding 向量
+   *
+   * 对 embedding IS NULL 的条目生成向量并更新。
+   * 使用 initializeWithTimeout 防止模型下载阻塞；初始化失败时抛出 IpcError。
+   */
+  typedHandle('memory:backfillEmbeddings', async (_event, projectId: string) => {
+    const safeProjectId = ensureString('projectId', projectId, MAX_ID_LEN)
+    const store = getMemoryStore()
+    // Lazy-import EmbeddingService to avoid circular deps
+    const { getEmbeddingService } = await import('../memory/embedding-service')
+    const embeddingService = getEmbeddingService()
+    if (!embeddingService.isReady()) {
+      const ok = await embeddingService.initializeWithTimeout(60_000)
+      if (!ok) {
+        throw new IpcError('Embedding service is unavailable: initialization failed or timed out', ErrorCode.IPC_HANDLER_ERROR)
+      }
+    }
+    const count = await store.backfillEmbeddings(
+      safeProjectId,
+      (text: string) => embeddingService.generateEmbedding(text),
+    )
+    logger.info(`Backfilled ${count} embeddings for project ${safeProjectId}`)
+    return count
+  })
+
+  /**
+   * 基于衰减模型的记忆清理
+   *
+   * 根据半衰期衰减计算置信度，删除低于阈值或超出项目记忆上限的条目。
+   * config 参数均为可选，有合理默认值。
+   */
+  typedHandle('memory:pruneWithDecay', async (_event, projectId: string, config?: {
+    baseHalfLife?: number
+    minConfidence?: number
+    maxItems?: number
+  }) => {
+    const safeProjectId = ensureString('projectId', projectId, MAX_ID_LEN)
+    const safeConfig: {
+      baseHalfLife?: number
+      minConfidence?: number
+      maxItems?: number
+    } = {}
+    if (config?.baseHalfLife !== undefined && config.baseHalfLife !== null) {
+      if (typeof config.baseHalfLife !== 'number' || !Number.isFinite(config.baseHalfLife) || config.baseHalfLife < 1 || config.baseHalfLife > 3650) {
+        throw new IpcError('baseHalfLife must be a finite number between 1 and 3650', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      safeConfig.baseHalfLife = Math.floor(config.baseHalfLife)
+    }
+    if (config?.minConfidence !== undefined && config.minConfidence !== null) {
+      if (typeof config.minConfidence !== 'number' || !Number.isFinite(config.minConfidence) || config.minConfidence < 0 || config.minConfidence > 1) {
+        throw new IpcError('minConfidence must be a finite number between 0 and 1', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      safeConfig.minConfidence = config.minConfidence
+    }
+    if (config?.maxItems !== undefined && config.maxItems !== null) {
+      if (typeof config.maxItems !== 'number' || !Number.isFinite(config.maxItems) || config.maxItems < 1 || config.maxItems > 100000) {
+        throw new IpcError('maxItems must be a finite number between 1 and 100000', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      safeConfig.maxItems = Math.floor(config.maxItems)
+    }
+    const store = getMemoryStore()
+    const count = await store.pruneWithDecay(safeProjectId, safeConfig)
+    logger.info(`Pruned ${count} memories with decay for project ${safeProjectId}`)
     return count
   })
 }

@@ -51,6 +51,10 @@ function getModelCacheDir(): string {
 export class EmbeddingService {
   private extractor: any = null
   private initPromise: Promise<void> | null = null
+  /** Whether initialization has been attempted (regardless of outcome) */
+  private _initAttempted: boolean = false
+  /** Whether the last initialization attempt failed */
+  private _initFailed: boolean = false
 
   /**
    * 初始化特征提取 pipeline
@@ -93,6 +97,46 @@ export class EmbeddingService {
    */
   isReady(): boolean {
     return this.extractor !== null
+  }
+
+  /**
+   * 检查是否曾尝试过初始化（不论成功或失败）
+   */
+  isInitAttempted(): boolean {
+    return this._initAttempted
+  }
+
+  /**
+   * 检查上一次初始化尝试是否失败
+   */
+  isFailed(): boolean {
+    return this._initFailed
+  }
+
+  /**
+   * 带超时的初始化
+   *
+   * 防止模型下载阻塞启动流程。超时后标记为不可用，
+   * HybridSearch 降级为纯关键词检索。
+   */
+  async initializeWithTimeout(timeoutMs = 60_000): Promise<boolean> {
+    this._initFailed = false
+    try {
+      await Promise.race([
+        this.initialize(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('EmbeddingService init timeout')), timeoutMs)
+        ),
+      ])
+      this._initAttempted = true
+      return true
+    } catch (err) {
+      this._initFailed = true
+      this._initAttempted = true
+      logger.warn('EmbeddingService initialization failed or timed out, falling back to keyword-only search:', err)
+      this.initPromise = null
+      return false
+    }
   }
 
   /**

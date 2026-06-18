@@ -46,4 +46,9 @@ export function registerChatHandlers(chatService: ChatService, typedHandle: Type
   typedHandle('chat:archiveStale', async (_, projectId, staleDays) => {
     return chatService.archiveStaleThreads(projectId, staleDays)
   })
+
+  // Task 2.5.2: 90-day archived thread cleanup
+  typedHandle('chat:cleanupArchived', async () => {
+    return chatService.cleanupArchivedThreads(90)
+  })
 }

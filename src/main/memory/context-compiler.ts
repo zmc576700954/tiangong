@@ -241,22 +241,42 @@ export class ContextCompiler {
    * 在 Token 预算内渲染分层上下文
    * 从 L1 开始逐层包含，直到预算耗尽
    *
+   * 支持预算感知深度选择 (budgetFraction):
+   *   - budgetFraction > 0.7: 包含 L1-L4 (所有层)
+   *   - budgetFraction 0.4-0.7: 包含 L1-L3
+   *   - budgetFraction < 0.4: 仅包含 L1 摘要
+   *
    * @param context - 分层上下文
    * @param maxTokens - 可用 Token 预算
+   * @param budgetFraction - 可选，预算占总上下文的比例 (0-1)，用于深度自适应
    * @returns 渲染后的上下文字符串和 Token 经济学
    */
-  render(context: LayeredContext, maxTokens: number): { text: string; economics: TokenEconomics } {
+  render(context: LayeredContext, maxTokens: number, budgetFraction?: number): { text: string; economics: TokenEconomics } {
+    // 预算感知深度选择：根据 budgetFraction 决定最大包含层数
+    let maxLevel: 1 | 2 | 3 | 4 = 4
+    if (budgetFraction !== undefined) {
+      if (budgetFraction < 0.4) {
+        maxLevel = 1
+      } else if (budgetFraction < 0.7) {
+        maxLevel = 3
+      }
+      // budgetFraction >= 0.7 → maxLevel = 4 (all layers)
+    }
+
     const outputParts: string[] = []
     let used = 0
 
     for (const layer of context.layers.sort((a, b) => a.level - b.level)) {
+      // 深度裁剪：跳过超过 maxLevel 的层
+      if (layer.level > maxLevel) continue
+
       if (used + layer.estimatedTokens <= maxTokens) {
         const label = layer.label.replace(/^L\d+-/, '')
         outputParts.push(`[${label}]\n${layer.content}`)
         used += layer.estimatedTokens
       } else {
         // 预算不足，标记更深层可按需获取
-        const remaining = context.layers.filter((l) => l.level > layer.level)
+        const remaining = context.layers.filter((l) => l.level > layer.level && l.level <= maxLevel)
         if (remaining.length > 0) {
           const remainingTokens = remaining.reduce((sum, l) => sum + l.estimatedTokens, 0)
           outputParts.push(
@@ -289,26 +309,46 @@ export class ContextCompiler {
    * @param current - 当前会话的分层上下文
    * @param history - 来自 MemoryStore 的历史记忆（已转为紧凑字符串）
    * @param budget - Token 预算
+   * @param maxMessages - 最大历史消息数量（默认 20），超出时截断并生成摘要
    */
   renderWithHistory(
     current: LayeredContext,
     history: MemoryItem[],
     budget: number,
+    maxMessages: number = 20,
   ): { text: string; economics: TokenEconomics } {
     const historyLines: string[] = []
     let historyTokens = 0
 
+    // Task 2.5.1: Truncate history if it exceeds maxMessages, prepend summary of older ones
+    let effectiveHistory = history
+    if (history.length > maxMessages) {
+      const olderCount = history.length - maxMessages
+      // Summarize older messages: count and first line of each
+      const olderMessages = history.slice(0, olderCount)
+      const olderSummary = olderMessages
+        .slice(0, 10) // Cap summary to avoid bloating
+        .map((m, i) => `  ${i + 1}. ${this.memoryStore.toCompactSummary(m).split('\n')[0]}`)
+        .join('\n')
+      const truncationLine = olderCount > 10
+        ? `[${olderCount} earlier messages omitted — first 10 shown]\n${olderSummary}`
+        : `[${olderCount} earlier messages omitted]\n${olderSummary}`
+      historyLines.push(truncationLine)
+      historyTokens += estimateTokens(truncationLine)
+      effectiveHistory = history.slice(olderCount)
+    }
+
     // 自适应历史预算：根据可用历史数量动态分配 15-40%
     let historyBudgetPct = 0.15  // 基线
-    if (history.length >= 3) historyBudgetPct = 0.25
-    if (history.length >= 5) historyBudgetPct = 0.35
+    if (effectiveHistory.length >= 3) historyBudgetPct = 0.25
+    if (effectiveHistory.length >= 5) historyBudgetPct = 0.35
     historyBudgetPct = Math.min(historyBudgetPct, 0.4) // 上限 40%
 
     // 生成紧凑历史上下文
-    if (history.length > 0) {
+    if (effectiveHistory.length > 0) {
       historyLines.push('[Historical Context]')
-      for (let i = 0; i < Math.min(history.length, 5); i++) {
-        const line = `  ${i + 1}. ${this.memoryStore.toCompactSummary(history[i])}`
+      for (let i = 0; i < Math.min(effectiveHistory.length, 5); i++) {
+        const line = `  ${i + 1}. ${this.memoryStore.toCompactSummary(effectiveHistory[i])}`
         const lineTokens = estimateTokens(line)
         if (historyTokens + lineTokens > budget * historyBudgetPct) break
         historyLines.push(line)

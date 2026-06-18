@@ -88,8 +88,11 @@ describe('GraphMemory', () => {
     })
 
     it('infers supersedes: newer fix on same file', () => {
-      const oldFix = memory({ id: 1, kind: 'fix', title: 'Old fix', files_modified: ['src/app.ts'], created_at: '2024-01-01T00:00:00Z' })
-      const newFix = memory({ id: 2, kind: 'fix', title: 'New fix', files_modified: ['src/app.ts'], created_at: '2024-06-01T00:00:00Z' })
+      const now = new Date()
+      const oldDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) // 7 days ago
+      const newDate = new Date(now.getTime() - 1 * 24 * 60 * 60 * 1000) // 1 day ago
+      const oldFix = memory({ id: 1, kind: 'fix', title: 'Old fix', files_modified: ['src/app.ts'], created_at: oldDate.toISOString() })
+      const newFix = memory({ id: 2, kind: 'fix', title: 'New fix', files_modified: ['src/app.ts'], created_at: newDate.toISOString() })
 
       const edges = graph.inferRelations(newFix, [oldFix])
       const supersedes = edges.filter((e) => e.relation === 'supersedes')
@@ -126,6 +129,36 @@ describe('GraphMemory', () => {
       // but without shared concepts, only the context share might apply
       // Either way, no edge should have confidence below threshold if no real relationship
       expect(edges.every((e) => e.confidence >= 0.3)).toBe(true)
+    })
+
+    it('applies time decay to confidence based on created_at', () => {
+      // A memory created 180 days ago (2 half-lives) should have confidence decayed by ~75%
+      const now = new Date()
+      const oldDate = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000) // 180 days ago
+      const oldInvestigation = memory({ id: 1, kind: 'investigation', title: 'Old investigation', created_at: oldDate.toISOString() })
+      const newFix = memory({ id: 2, kind: 'fix', title: 'New fix' })
+
+      const edges = graph.inferRelations(newFix, [oldInvestigation])
+      const causedBy = edges.filter((e) => e.relation === 'caused_by')
+      if (causedBy.length > 0) {
+        // Raw confidence is 0.7; after 180 days (2 half-lives), should be ~0.7 * e^(-2) ≈ 0.095
+        // which is below 0.3 threshold, so it gets filtered out
+        expect(causedBy[0].confidence).toBeLessThan(0.7)
+      }
+      // The edge may be filtered by minRelationConfidence (0.3), so confidence should always be >= 0.3
+      expect(edges.every((e) => e.confidence >= 0.3)).toBe(true)
+    })
+
+    it('skips decay when created_at is missing', () => {
+      const investigation = memory({ id: 1, kind: 'investigation', title: 'Investigation', created_at: '' })
+      const newFix = memory({ id: 2, kind: 'fix', title: 'Fix' })
+
+      const edges = graph.inferRelations(newFix, [investigation])
+      const causedBy = edges.filter((e) => e.relation === 'caused_by')
+      if (causedBy.length > 0) {
+        // No decay should be applied when created_at is empty
+        expect(causedBy[0].confidence).toBe(0.7)
+      }
     })
   })
 

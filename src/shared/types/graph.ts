@@ -223,6 +223,12 @@ export interface ScanModule {
   name: string
   description: string
   processes: ScanProcess[]
+  /** 自动填充的模块元数据 */
+  metadata?: {
+    frameworks?: string[]
+    entryPoints?: string[]
+    techStack?: string[]
+  }
 }
 
 export interface PackageJsonInfo {

@@ -10,6 +10,7 @@
  */
 
 import { createLogger } from '../shared/logger'
+import { EmbeddingService, getEmbeddingService } from './embedding-service'
 
 const logger = createLogger('ContextDistiller')
 
@@ -55,8 +56,8 @@ export class ContextDistiller {
     // Step 1: 评分
     const scored = fragments.map((f, index) => this.score(f, index))
 
-    // Step 2: 去重 (Jaccard > 0.85 → 保留后者)
-    const { kept: deduped, removed: dedupRemoved } = this.deduplicate(scored)
+    // Step 2: 去重 (Embedding cosine > 0.92 或 Jaccard > 0.85 → 保留后者)
+    const { kept: deduped, removed: dedupRemoved } = await this.deduplicate(scored)
 
     // Step 3: 排序 (priority desc, density desc)
     const sorted = deduped.sort((a, b) => {
@@ -130,10 +131,70 @@ export class ContextDistiller {
   }
 
   /**
-   * Jaccard 去重: similarity > 0.85 → 保留后者（index 更大的）
+   * 去重: 当 EmbeddingService 可用时使用余弦相似度 (>0.92 阈值)，
+   * 否则回退到 Jaccard 相似度 (>0.85)。
+   * 保留后者（index 更大的），移除前者。
    * 返回去重后的 ScoredFragment 数组和被移除的原始片段
    */
-  private deduplicate(scored: ScoredFragment[]): {
+  private async deduplicate(scored: ScoredFragment[]): Promise<{
+    kept: ScoredFragment[]
+    removed: ContextFragment[]
+  }> {
+    const embeddingService = getEmbeddingService()
+
+    // 尝试使用 EmbeddingService 进行语义去重
+    if (embeddingService.isReady()) {
+      try {
+        return await this._deduplicateWithEmbeddings(scored, embeddingService)
+      } catch (err) {
+        logger.warn('Embedding-based dedup failed, falling back to Jaccard:', err)
+      }
+    }
+
+    // 回退到 Jaccard 去重
+    return this._deduplicateWithJaccard(scored)
+  }
+
+  /**
+   * 基于 Embedding 的语义去重: cosine similarity > 0.92 → 保留后者
+   */
+  private async _deduplicateWithEmbeddings(
+    scored: ScoredFragment[],
+    service: EmbeddingService,
+  ): Promise<{ kept: ScoredFragment[]; removed: ContextFragment[] }> {
+    const removedIndices = new Set<number>()
+
+    // 批量生成所有片段的嵌入向量
+    const contents = scored.map((sf) => sf.fragment.content)
+    const embeddings = await service.generateEmbeddings(contents)
+
+    for (let i = 0; i < scored.length; i++) {
+      if (removedIndices.has(i)) continue
+      for (let j = i + 1; j < scored.length; j++) {
+        if (removedIndices.has(j)) continue
+        const sim = EmbeddingService.cosineSimilarity(embeddings[i], embeddings[j])
+        if (sim > 0.92) {
+          removedIndices.add(i)
+          logger.debug(
+            `Dedup(embedding): removed '${scored[i].fragment.source}' (similar to '${scored[j].fragment.source}', cos=${sim.toFixed(3)})`,
+          )
+          break
+        }
+      }
+    }
+
+    const removed = scored
+      .filter((_, idx) => removedIndices.has(idx))
+      .map((sf) => sf.fragment)
+    const kept = scored.filter((_, idx) => !removedIndices.has(idx))
+
+    return { kept, removed }
+  }
+
+  /**
+   * Jaccard 去重: similarity > 0.85 → 保留后者（index 更大的）
+   */
+  private _deduplicateWithJaccard(scored: ScoredFragment[]): {
     kept: ScoredFragment[]
     removed: ContextFragment[]
   } {

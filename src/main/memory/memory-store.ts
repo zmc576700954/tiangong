@@ -164,15 +164,13 @@ export class MemoryStore {
    * 遍历 concepts 数组，用 LIKE 匹配 JSON 数组中的元素，
    * 返回置信度最高的匹配项或 null。
    */
-  private async _findByConcepts(projectId: string, concepts: string[]): Promise<MemoryItem | null> {
-    if (concepts.length === 0) return null
+  private async _findByConcepts(projectId: string, concepts: string[]): Promise<MemoryItem[]> {
+    if (concepts.length === 0) return []
 
-    // 为每个 concept 构建 LIKE 条件
     const conditions: string[] = []
     const args: (string | number)[] = [projectId]
 
     for (const concept of concepts) {
-      // LIKE 转义：与 getByConcept 保持一致
       const escapedConcept = concept
         .replace(/\\/g, '\\\\')
         .replace(/%/g, '\\%')
@@ -188,12 +186,45 @@ export class MemoryStore {
       sql: `SELECT * FROM memory_items
             WHERE project_id = ? AND (${whereClause})
             ORDER BY confidence DESC
-            LIMIT 1`,
+            LIMIT 10`,
       args,
     })
 
-    if (rows.rows.length === 0) return null
-    return this._rowToItem(rows.rows[0] as unknown as Record<string, unknown>)
+    return rows.rows.map((r) => this._rowToItem(r as unknown as Record<string, unknown>))
+  }
+
+  /**
+   * 获取概念演进链 —— 按 parent_version 链递归查询完整版本序列
+   *
+   * 返回从最早版本到最新版本的演进序列，按 version ASC 排序。
+   */
+  async getEvolutionChain(concept: string, projectId: string): Promise<MemoryItem[]> {
+    const matches = await this._findByConcepts(projectId, [concept])
+    if (matches.length === 0) return []
+
+    const chain: MemoryItem[] = []
+    const visited = new Set<number>()
+
+    for (const item of matches) {
+      if (item.id == null || visited.has(item.id)) continue
+      chain.push(item)
+      visited.add(item.id)
+
+      let currentParentVersion: number | null | undefined = item.parent_version
+      while (currentParentVersion != null && !visited.has(currentParentVersion)) {
+        const parentRows = await this.db.execute({
+          sql: 'SELECT * FROM memory_items WHERE id = ?',
+          args: [currentParentVersion],
+        })
+        if (parentRows.rows.length === 0) break
+        const parent = this._rowToItem(parentRows.rows[0] as unknown as Record<string, unknown>)
+        if (parent.id != null) visited.add(parent.id)
+        chain.push(parent)
+        currentParentVersion = parent.parent_version
+      }
+    }
+
+    return chain.sort((a, b) => (a.version ?? 1) - (b.version ?? 1))
   }
 
   /**
@@ -209,18 +240,21 @@ export class MemoryStore {
     // 等待 FTS 就绪：trigger 未建时插入会让该行无法被全文检索命中
     await this.ensureFtsReady()
 
-    // 版本化：查找同项目中概念匹配的已有记忆
+    // 版本化：查找同项目中概念匹配的已有记忆（双版本保留）
+    // 两者都保留，不再覆盖低置信度版本
     let version = 1
     let parentVersion: number | null = null
 
     if (item.concepts.length > 0) {
-      const existing = await this._findByConcepts(item.project_id, item.concepts)
-      if (existing) {
+      const existingItems = await this._findByConcepts(item.project_id, item.concepts)
+      if (existingItems.length > 0) {
+        const existing = existingItems[0] // highest confidence match
         parentVersion = existing.id!
         if (existing.confidence < item.confidence) {
           version = (existing.version ?? 1) + 1
         }
-        // else: version stays 1, parentVersion still links to existing (different perspective)
+        // else: version stays 1, parentVersion links to existing (different perspective)
+        // Both versions are retained for retrieval choice
       }
     }
 
@@ -567,9 +601,10 @@ export class MemoryStore {
     const minConfidence = config?.minConfidence ?? 0.1
     const maxItems = config?.maxItems ?? 5000
 
-    // 获取该项目所有记忆，计算衰减置信度
+    // 获取该项目所有非waterline记忆，计算衰减置信度
+    // waterline kind 永不参与衰减淘汰
     const rows = await this.db.execute({
-      sql: `SELECT id, confidence, created_at FROM memory_items WHERE project_id = ?`,
+      sql: `SELECT id, confidence, created_at, kind FROM memory_items WHERE project_id = ? AND kind != 'waterline'`,
       args: [projectId],
     })
 
@@ -578,16 +613,26 @@ export class MemoryStore {
     const now = Date.now()
     const idsToDelete = new Set<number>()
 
-    // 计算每条记忆的衰减置信度
-    const itemsWithDecay = rows.rows.map((r) => {
-      const id = r.id as number
-      const confidence = (r.confidence as number) ?? 0.0
-      const createdAt = new Date(r.created_at as string).getTime()
-      const ageInDays = Math.max(0, (now - createdAt) / (1000 * 60 * 60 * 24))
-      const halfLife = baseHalfLife * (1 + confidence)
-      const decayedConfidence = confidence * Math.pow(0.5, ageInDays / halfLife)
-      return { id, confidence, decayedConfidence }
-    })
+    // 计算每条记忆的衰减置信度（跳过 created_at 为 null 的记录）
+    const itemsWithDecay = rows.rows
+      .map((r) => {
+        const id = r.id as number
+        const confidence = (r.confidence as number) ?? 0.0
+        const createdAtStr = r.created_at as string | null
+        if (!createdAtStr) {
+          // created_at 为 null/undefined，跳过不参与衰减
+          return null
+        }
+        const createdAt = new Date(createdAtStr).getTime()
+        if (!Number.isFinite(createdAt)) {
+          return null
+        }
+        const ageInDays = Math.max(0, (now - createdAt) / (1000 * 60 * 60 * 24))
+        const halfLife = baseHalfLife * (1 + confidence)
+        const decayedConfidence = confidence * Math.pow(0.5, ageInDays / halfLife)
+        return { id, confidence, decayedConfidence }
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
 
     // 阶段1: 删除衰减置信度低于阈值的项
     for (const item of itemsWithDecay) {
@@ -669,6 +714,60 @@ export class MemoryStore {
     } catch {
       return []
     }
+  }
+
+  /**
+   * 回填旧记忆条目的 embedding 向量
+   *
+   * 对 memory_items 中 embedding IS NULL 的条目批量生成向量并更新。
+   * 仅处理非 waterline 类型。
+   *
+   * @returns 回填的记忆条数
+   */
+  async backfillEmbeddings(
+    projectId: string,
+    embeddingFn: (text: string) => Promise<number[]>,
+    batchSize = 50,
+  ): Promise<number> {
+    let totalBackfilled = 0
+
+    // 游标分页：每次取 id > cursor 的批次，避免 OFFSET 在并发写入时跳行/重复
+    let cursor = 0
+    while (true) {
+      const rows = await this.db.execute({
+        sql: `SELECT id, title, narrative, facts FROM memory_items
+              WHERE project_id = ? AND embedding IS NULL AND kind != 'waterline'
+              AND id > ?
+              ORDER BY id ASC LIMIT ?`,
+        args: [projectId, cursor, batchSize],
+      })
+
+      if (rows.rows.length === 0) break
+
+      for (const row of rows.rows) {
+        try {
+          const title = (row.title as string) ?? ''
+          const narrative = (row.narrative as string) ?? ''
+          const facts = this._parseJsonArray(row.facts as string).join(' ')
+          const text = `${title} ${narrative} ${facts}`
+          const embedding = await embeddingFn(text)
+
+          await this.db.execute({
+            sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
+            args: [JSON.stringify(embedding), row.id as number],
+          })
+          totalBackfilled++
+        } catch (err) {
+          logger.warn(`Failed to backfill embedding for memory ${row.id}:`, err)
+        }
+      }
+
+      // 推进游标到本批次最大 id
+      cursor = rows.rows[rows.rows.length - 1].id as number
+    }
+
+    logger.info(`Backfilled ${totalBackfilled} embeddings for project ${projectId}`)
+    return totalBackfilled
   }
 }
 

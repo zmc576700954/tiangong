@@ -45,12 +45,12 @@ export class SnapshotRepository {
     const row = result.rows[0]
     if (!row) return null
 
-    const data = safeJsonParse<{ nodes: GraphNode[]; edges: GraphEdge[] }>(row.data as string, 'snapshot-data')
+    const data = safeJsonParse<{ nodes: GraphNode[]; edges: GraphEdge[] }>(row.data as string, { nodes: [], edges: [] })
     return {
       id: row.id as string,
       graphId: row.graph_id as string,
       name: row.name as string,
-      data: data ?? { nodes: [], edges: [] },
+      data,
       gitCommit: (row.git_commit as string | null) ?? undefined,
       createdAt: row.created_at as string,
     }

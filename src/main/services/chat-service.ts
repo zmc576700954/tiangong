@@ -124,6 +124,12 @@ export class ChatService {
     return result
   }
 
+  /** Task 2.5.2: Delete archived threads older than 90 days */
+  async cleanupArchivedThreads(archivedDays = 90): Promise<number> {
+    const cutoff = new Date(Date.now() - archivedDays * 24 * 60 * 60 * 1000).toISOString()
+    return this.repo.cleanupArchivedThreads(cutoff)
+  }
+
   // ==================== Mappers ====================
 
   private rowToThread(row: ChatThreadRow): AgentThread {
@@ -148,10 +154,10 @@ export class ChatService {
       timestamp: row.created_at,
       adapterName: row.adapter_name || undefined,
       status: row.status as ChatMessage['status'],
-      error: safeJsonParse(row.error),
+      error: safeJsonParse(row.error, undefined),
       sessionId: row.session_id ?? undefined,
-      contextRefs: safeJsonParse(row.context_refs),
-      toolCalls: safeJsonParse(row.tool_calls),
+      contextRefs: safeJsonParse(row.context_refs, undefined),
+      toolCalls: safeJsonParse(row.tool_calls, undefined),
     }
   }
 }

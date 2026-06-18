@@ -6,6 +6,7 @@
 import * as chokidar from 'chokidar'
 import * as path from 'node:path'
 import { ProjectIndexer } from './project-indexer'
+import { getAstCache } from './ast-cache'
 
 export interface FileWatcherOptions {
   projectPath: string
@@ -57,6 +58,8 @@ export class CodeFileWatcher {
     this.watcher.on('add', async (filePath) => {
       this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
+        // Invalidate AST cache so reindexFile gets fresh parse results
+        getAstCache().invalidate(absolutePath)
         const result = await this.indexer.reindexFile(absolutePath)
         this.options.onIndexUpdate?.({
           type: 'add',
@@ -70,6 +73,8 @@ export class CodeFileWatcher {
     this.watcher.on('change', async (filePath) => {
       this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
+        // Invalidate AST cache so reindexFile gets fresh parse results
+        getAstCache().invalidate(absolutePath)
         const result = await this.indexer.reindexFile(absolutePath)
         this.options.onIndexUpdate?.({
           type: 'change',
@@ -83,6 +88,7 @@ export class CodeFileWatcher {
     this.watcher.on('unlink', (filePath) => {
       this.debouncedHandle(filePath, async () => {
         const absolutePath = path.resolve(this.options.projectPath, filePath)
+        getAstCache().invalidate(absolutePath)
         await this.indexer.clearFileIndex(absolutePath)
         this.options.onIndexUpdate?.({ type: 'unlink', filePath: absolutePath, symbolsFound: 0 })
         this.options.onNodeFileChange?.(absolutePath, 'unlink')

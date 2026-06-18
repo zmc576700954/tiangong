@@ -3,12 +3,13 @@
  *
  * 当 Agent 会话因异常退出而中断时，尝试根据适配器类型恢复会话。
  * - claude-code 适配器支持 --resume 原生恢复，策略返回原 sessionId
- * - mcp-adapter 等无状态适配器不支持恢复，策略返回 null
+ * - mcp-adapter 等无状态适配器通过注入上下文创建新会话
  *
  * 恢复由 AgentManager 调用，本模块不主动触发。
  */
 
 import type { AgentOutput } from '@shared/types'
+import { BrowserWindow } from 'electron'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('session-recovery')
@@ -19,12 +20,21 @@ export interface RecoveryContext {
   projectId?: string
   lastOutputs: AgentOutput[]
   lastMessages?: Array<{ role: string; content: string }>
+  threadId?: string
 }
 
 export interface RecoveryStrategy {
   adapterName: string
   canResume: boolean
   resume(context: RecoveryContext): Promise<string | null> // returns new sessionId or null
+}
+
+export interface RecoveryEvent {
+  type: 'SESSION_RECOVERED' | 'SESSION_RECOVERY_FAILED'
+  sessionId: string
+  newSessionId?: string
+  reason?: string
+  threadId?: string
 }
 
 export class SessionRecoveryManager {
@@ -37,13 +47,64 @@ export class SessionRecoveryManager {
     this.registerStrategy({
       adapterName: 'claude-code',
       canResume: true,
-      resume: async (ctx) => ctx.sessionId, // claude-code uses --resume flag
+      resume: async (ctx) => {
+        // Claude Code supports --resume <sessionId> natively.
+        // Build a context restoration hint from the last 3 messages.
+        const lastMessages = ctx.lastMessages?.slice(-3) ?? []
+        if (lastMessages.length > 0) {
+          const hint = lastMessages
+            .map((m) => `- ${m.role}: ${m.content.slice(0, 200)}`)
+            .join('\n')
+          logger.info(
+            `Claude Code resume with context hint for session ${ctx.sessionId}:\n${hint}`,
+          )
+        }
+        // Return the same sessionId — the caller (AgentManager) will pass
+        // resumeSessionId in AgentSessionConfig so the adapter adds --resume.
+        return ctx.sessionId
+      },
     })
     this.registerStrategy({
       adapterName: 'mcp-adapter',
       canResume: false,
-      resume: async () => null, // MCP adapter creates new session
+      resume: async (ctx) => {
+        // MCP adapter is stateless — create a new session and inject previous
+        // context as the first message.
+        const lastMessages = ctx.lastMessages?.slice(-3) ?? []
+        if (lastMessages.length === 0) {
+          logger.info('MCP adapter recovery: no previous messages to inject')
+          return null
+        }
+        const contextBlock = [
+          '[Previous session context]',
+          'Last 3 messages:',
+          ...lastMessages.map((m) => `- ${m.role}: ${m.content}`),
+          'Please continue from where we left off.',
+        ].join('\n')
+
+        // We return a special marker that the caller can use to inject context.
+        // The actual session creation happens in AgentManager.startSession,
+        // so we store the context injection text and signal a new session is needed.
+        logger.info(
+          `MCP adapter recovery: injecting context for session ${ctx.sessionId}`,
+        )
+        // Store the context block so AgentManager can inject it as contextSummary
+        this._pendingContextInjection = contextBlock
+        // Return null to signal "create new session" — AgentManager will
+        // use the pending context injection.
+        return null
+      },
     })
+  }
+
+  /** Context text to inject on next session creation (set by MCP adapter strategy) */
+  private _pendingContextInjection: string | null = null
+
+  /** Consume and clear the pending context injection text */
+  consumePendingContext(): string | null {
+    const ctx = this._pendingContextInjection
+    this._pendingContextInjection = null
+    return ctx
   }
 
   registerStrategy(strategy: RecoveryStrategy): void {
@@ -56,6 +117,12 @@ export class SessionRecoveryManager {
 
     if (attempts >= this.maxRetries) {
       logger.warn(`Max recovery attempts (${this.maxRetries}) reached for session ${sessionId}`)
+      this._notifyRenderer({
+        type: 'SESSION_RECOVERY_FAILED',
+        sessionId,
+        reason: `Max recovery attempts (${this.maxRetries}) exceeded`,
+        threadId: context.threadId,
+      })
       return null
     }
 
@@ -72,10 +139,42 @@ export class SessionRecoveryManager {
       if (newSessionId) {
         logger.info(`Session ${sessionId} recovered via ${adapterName} strategy (attempt ${attempts + 1})`)
         this.recoveryAttempts.delete(sessionId)
+        this._notifyRenderer({
+          type: 'SESSION_RECOVERED',
+          sessionId,
+          newSessionId,
+          threadId: context.threadId,
+        })
+      } else if (this._pendingContextInjection) {
+        // MCP adapter case: new session needed with context injection
+        logger.info(`Session ${sessionId} requires new session with context injection via ${adapterName} strategy (attempt ${attempts + 1})`)
+        this.recoveryAttempts.delete(sessionId)
+        this._notifyRenderer({
+          type: 'SESSION_RECOVERED',
+          sessionId,
+          newSessionId: '__new_session__',
+          threadId: context.threadId,
+        })
+      } else if (attempts + 1 >= this.maxRetries) {
+        // Final attempt failed
+        this._notifyRenderer({
+          type: 'SESSION_RECOVERY_FAILED',
+          sessionId,
+          reason: `Recovery strategy returned null after ${attempts + 1} attempts`,
+          threadId: context.threadId,
+        })
       }
       return newSessionId
     } catch (error) {
       logger.warn(`Recovery failed for session ${sessionId}:`, error)
+      if (attempts + 1 >= this.maxRetries) {
+        this._notifyRenderer({
+          type: 'SESSION_RECOVERY_FAILED',
+          sessionId,
+          reason: error instanceof Error ? error.message : String(error),
+          threadId: context.threadId,
+        })
+      }
       return null
     }
   }
@@ -86,6 +185,24 @@ export class SessionRecoveryManager {
 
   reset(sessionId: string): void {
     this.recoveryAttempts.delete(sessionId)
+  }
+
+  /**
+   * Send IPC notification to renderer process about recovery events.
+   * Uses BrowserWindow.getAllWindows() to reach all renderer windows.
+   */
+  private _notifyRenderer(event: RecoveryEvent): void {
+    try {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (event.type === 'SESSION_RECOVERED') {
+          win.webContents.send('session:recovered', event.sessionId, event.newSessionId ?? '')
+        } else {
+          win.webContents.send('session:recoveryFailed', event.sessionId, event.reason ?? '')
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to notify renderer about recovery event:', err)
+    }
   }
 }
 

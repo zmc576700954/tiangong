@@ -8,6 +8,7 @@
  *   3. 剥离进度条行（如 [====>  ] 45%）
  *   4. 剥离时间戳前缀（如 [2024-01-15 10:30:25]）
  *   5. 去除连续重复行
+ *   6. 适配器特定噪声过滤（Claude Code / Codex / MCP）
  *
  * stderr / error 类型输出保持原样不做修改。
  */
@@ -31,6 +32,25 @@ const TIMESTAMP_PREFIX_RE = /^\s*\[\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2}:\d{2}\]
 /** CRLF → LF, CR → LF */
 const CRLF_RE = /\r\n/g
 const CR_RE = /\r/g
+
+// ============================================
+// 适配器特定噪声模式
+// ============================================
+
+/** 按适配器名称索引的噪声行正则列表 */
+const ADAPTER_NOISE_PATTERNS: Map<string, RegExp[]> = new Map([
+  ['claude-code', [
+    /^Thinking\.\.\.$/m,
+    /^Tool: .*executed$/m,
+    /^Waiting for tool result\.\.\.$/m,
+  ]],
+  ['codex', [
+    /^Running command:.*$/m,
+  ]],
+  ['mcp', [
+    /^request_id:.*$/m,
+  ]],
+])
 
 // ============================================
 // OutputNormalizer 主类
@@ -59,10 +79,44 @@ export class OutputNormalizer {
   }
 
   /**
-   * 批量标准化
+   * 批量标准化，支持适配器特定噪声过滤
    */
-  normalizeAll(outputs: AgentOutput[]): AgentOutput[] {
-    return outputs.map((o) => this.normalize(o))
+  normalizeAll(outputs: AgentOutput[], adapterName?: string): AgentOutput[] {
+    return outputs.map((o) => this.normalizeWithAdapter(o, adapterName))
+  }
+
+  /**
+   * 标准化 + 适配器特定噪声过滤
+   *
+   * 先执行通用 6 步标准化，再按 adapterName 查找对应的噪声模式，
+   * 过滤掉匹配的噪声行。
+   */
+  normalizeWithAdapter(output: AgentOutput, adapterName?: string): AgentOutput {
+    // 先执行通用标准化
+    const normalized = this.normalize(output)
+
+    // 没有指定适配器名，直接返回
+    if (!adapterName) {
+      return normalized
+    }
+
+    // 需要保留原样的输出不做适配器过滤
+    if (this._shouldPreserve(normalized)) {
+      return normalized
+    }
+
+    const patterns = ADAPTER_NOISE_PATTERNS.get(adapterName)
+    if (!patterns || patterns.length === 0) {
+      return normalized
+    }
+
+    const filtered = this._filterAdapterNoise(normalized.data, patterns)
+
+    if (filtered === normalized.data) {
+      return normalized
+    }
+
+    return { ...normalized, data: filtered }
   }
 
   // ============================================
@@ -135,5 +189,16 @@ export class OutputNormalizer {
       }
     }
     return result.join('\n')
+  }
+
+  /**
+   * 步骤 6：适配器特定噪声过滤
+   *
+   * 根据适配器名称对应的噪声正则列表，逐行过滤匹配的噪声行。
+   */
+  private _filterAdapterNoise(text: string, patterns: RegExp[]): string {
+    const lines = text.split('\n')
+    const filtered = lines.filter((line) => !patterns.some((re) => re.test(line)))
+    return filtered.join('\n')
   }
 }

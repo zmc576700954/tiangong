@@ -8,7 +8,7 @@ import { eventBus, Events } from './eventBus'
 /** Per-thread send queue: serializes sends so only one is active at a time */
 class MessageQueue {
   private active = new Map<string, boolean>()
-  private queues = new Map<string, Array<() => Promise<void>>>()
+  private queues = new Map<string, Array<{ content: string; sendFn: () => Promise<void> }>>()
 
   /** Enqueue a send function for a thread. Deduplicates same content within 5s. */
   enqueue(threadId: string, content: string, sendFn: () => Promise<void>): void {
@@ -23,11 +23,16 @@ class MessageQueue {
     if (!this.queues.has(threadId)) {
       this.queues.set(threadId, [])
     }
-    this.queues.get(threadId)!.push(sendFn)
+    this.queues.get(threadId)!.push({ content, sendFn })
 
     if (!this.active.get(threadId)) {
       this.drain(threadId)
     }
+  }
+
+  /** Remove all pending (not yet active) items from the queue for a thread. */
+  cancelQueued(threadId: string): void {
+    this.queues.delete(threadId)
   }
 
   private async drain(threadId: string): Promise<void> {
@@ -37,9 +42,9 @@ class MessageQueue {
       return
     }
     this.active.set(threadId, true)
-    const fn = queue.shift()!
+    const item = queue.shift()!
     try {
-      await fn()
+      await item.sendFn()
     } catch {
       // Errors are handled by the caller; drain continues
     }
@@ -56,9 +61,16 @@ interface StreamingSeqState {
   lastSeq: Map<string, number>
 }
 
+/** Max retries per message before marking permanently_failed */
+const MAX_RETRIES = 3
+
 interface MessageState extends StreamingSeqState {
   /** Pending confirmations keyed by threadId */
   pendingConfirmations: Map<string, Map<string, { messageId: string; toolCall: ToolCallBlock }>>
+  /** Per-thread AbortController for cancelling in-flight requests */
+  abortControllers: Map<string, AbortController>
+  /** Per-message retry count tracking */
+  retryCounts: Map<string, number>
 
   appendToStreamingMessage: (threadId: string, messageId: string, content: string, seq?: number) => void
   appendToolCall: (threadId: string, messageId: string, toolCall: ToolCallBlock) => void
@@ -72,11 +84,19 @@ interface MessageState extends StreamingSeqState {
   confirmToolCall: (threadId: string, toolCallId: string, accepted: boolean) => void
   /** Expose MessageQueue.enqueue for sessionStore to use */
   enqueueSend: (threadId: string, content: string, sendFn: () => Promise<void>) => void
+  /** Cancel all queued (not yet active) sends for a thread */
+  cancelQueued: (threadId: string) => void
+  /** Abort the active in-flight request for a thread; keeps parsed file changes intact */
+  abortSession: (threadId: string) => void
+  /** Get the retry count for a message */
+  getRetryCount: (messageId: string) => number
 }
 
 export const useMessageStore = create<MessageState>((set, get) => ({
   lastSeq: new Map(),
   pendingConfirmations: new Map(),
+  abortControllers: new Map(),
+  retryCounts: new Map(),
 
   appendToStreamingMessage: (threadId, messageId, content, seq) => {
     // Seq-based chunk dedup: if a seq number is provided and we've already
@@ -181,6 +201,41 @@ export const useMessageStore = create<MessageState>((set, get) => ({
   },
 
   retryMessage: async (threadId, agentMessageId) => {
+    // Check retry limit
+    const currentCount = get().retryCounts.get(agentMessageId) ?? 0
+    if (currentCount >= MAX_RETRIES) {
+      // Mark as permanently_failed
+      useThreadStore.setState((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === threadId
+            ? {
+                ...t,
+                messages: t.messages.map((m) =>
+                  m.id === agentMessageId
+                    ? {
+                        ...m,
+                        status: 'permanently_failed' as MessageStatus,
+                        error: {
+                          code: 'RETRY_LIMIT_EXCEEDED',
+                          message: '请手动重试',
+                        },
+                      }
+                    : m,
+                ),
+              }
+            : t,
+        ),
+      }))
+      return
+    }
+
+    // Increment retry count
+    set((state) => {
+      const next = new Map(state.retryCounts)
+      next.set(agentMessageId, currentCount + 1)
+      return { retryCounts: next }
+    })
+
     const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)
     if (!thread) return
 
@@ -191,7 +246,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     const precedingUser = [...thread.messages.slice(0, agentIdx)].reverse().find((m) => m.role === 'user')
     if (!precedingUser) return
 
-    // Terminate existing session if any
+    // First terminate existing session via IPC and wait for it to complete
     if (thread.sessionId) {
       try {
         await window.electronAPI['agent:terminateSession'](thread.sessionId)
@@ -303,5 +358,41 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   enqueueSend: (threadId, content, sendFn) => {
     messageQueue.enqueue(threadId, content, sendFn)
+  },
+
+  cancelQueued: (threadId) => {
+    messageQueue.cancelQueued(threadId)
+  },
+
+  abortSession: (threadId) => {
+    // Cancel any queued sends for this thread
+    messageQueue.cancelQueued(threadId)
+
+    // Abort the in-flight request via AbortController
+    const controller = get().abortControllers.get(threadId)
+    if (controller) {
+      controller.abort()
+      // Remove the controller after aborting
+      set((state) => {
+        const next = new Map(state.abortControllers)
+        next.delete(threadId)
+        return { abortControllers: next }
+      })
+    }
+
+    // Mark the last streaming agent message as aborted (keep parsed file changes / toolCalls intact)
+    const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)
+    if (thread) {
+      const lastStreaming = [...thread.messages].reverse().find(
+        (m) => m.role === 'agent' && m.status === 'streaming',
+      )
+      if (lastStreaming) {
+        get().markMessageStatus(threadId, lastStreaming.id, 'aborted')
+      }
+    }
+  },
+
+  getRetryCount: (messageId) => {
+    return get().retryCounts.get(messageId) ?? 0
   },
 }))

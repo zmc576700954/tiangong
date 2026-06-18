@@ -26,32 +26,20 @@ export function unsafeJsonParse<T>(
 }
 
 /**
- * 安全的 JSON 解析
+ * 安全的 JSON 解析（泛型版本，带 fallback 和可选 validator）
  * - 传入 validator 时执行运行时类型校验（推荐）
  * - 不传 validator 时仅做 JSON.parse + 类型断言（向后兼容，不安全）
- * @param value - JSON 字符串
- * @param validatorOrContext - 类型守卫函数，或上下文字符串（向后兼容）
- * @param context - 上下文信息，用于错误日志（仅在 validatorOrContext 为函数时使用）
+ * @param raw - JSON 字符串
+ * @param fallback - 解析失败或校验不通过时的默认返回值
+ * @param validator - 可选的类型守卫函数
  */
-export function safeJsonParse<T>(
-  value: string | null | undefined,
-  validatorOrContext?: ((val: unknown) => val is T) | string,
-  context?: string,
-): T | undefined {
-  if (value == null) return undefined
-  const ctx = typeof validatorOrContext === 'string' ? validatorOrContext : context
+export function safeJsonParse<T>(raw: string | null | undefined, fallback: T, validator?: (val: unknown) => val is T): T {
+  if (!raw) return fallback
   try {
-    const parsed = JSON.parse(value)
-    if (typeof validatorOrContext === 'function') {
-      if (validatorOrContext(parsed)) return parsed
-      logger.warn(`JSON validation failed${ctx ? ` for ${ctx}` : ''}: parsed value does not match expected type`)
-      return undefined
-    }
+    const parsed = JSON.parse(raw)
+    if (validator && !validator(parsed)) return fallback
     return parsed as T
   } catch {
-    if (ctx) {
-      logger.warn(`Failed to parse JSON for ${ctx}`)
-    }
-    return undefined
+    return fallback
   }
 }

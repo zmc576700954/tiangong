@@ -141,6 +141,19 @@ export class GraphMemory {
     existingMemories: MemoryItem[],
   ): MemoryEdge[] {
     const edges: MemoryEdge[] = []
+    const now = Date.now()
+
+    /**
+     * Apply exponential time decay to confidence.
+     * Half-life = 90 days. If created_at is missing, skip decay.
+     */
+    const applyTimeDecay = (confidence: number, memory: MemoryItem): number => {
+      if (!memory.created_at) return confidence
+      const createdMs = new Date(memory.created_at).getTime()
+      if (isNaN(createdMs)) return confidence
+      const ageDays = (now - createdMs) / (1000 * 60 * 60 * 24)
+      return confidence * Math.exp(-ageDays / 90)
+    }
 
     for (const existing of existingMemories) {
       if (existing.id === newMemory.id) continue
@@ -151,11 +164,12 @@ export class GraphMemory {
         existing.kind === 'investigation' &&
         this._shareContext(newMemory, existing)
       ) {
+        const rawConfidence = 0.7
         edges.push({
           relation: 'caused_by',
           sourceId: existing.id,
           targetId: newMemory.id,
-          confidence: 0.7,
+          confidence: applyTimeDecay(rawConfidence, existing),
           reason: `Fix "${newMemory.title}" was likely caused by investigation "${existing.title}"`,
         })
       }
@@ -166,11 +180,12 @@ export class GraphMemory {
         existing.files_modified,
       )
       if (sharedFiles.length > 0 && newMemory.kind === 'fix' && existing.kind === 'fix') {
+        const rawConfidence = Math.min(0.8, 0.4 + sharedFiles.length * 0.2)
         edges.push({
           relation: 'depends_on',
           sourceId: existing.id,
           targetId: newMemory.id,
-          confidence: Math.min(0.8, 0.4 + sharedFiles.length * 0.2),
+          confidence: applyTimeDecay(rawConfidence, existing),
           reason: `Both modify: ${sharedFiles.slice(0, 3).join(', ')}`,
         })
       }
@@ -182,11 +197,12 @@ export class GraphMemory {
         existing.kind === 'fix' &&
         newMemory.created_at > existing.created_at
       ) {
+        const rawConfidence = 0.6
         edges.push({
           relation: 'supersedes',
           sourceId: newMemory.id,
           targetId: existing.id,
-          confidence: 0.6,
+          confidence: applyTimeDecay(rawConfidence, existing),
           reason: `Newer fix supersedes older fix on same files`,
         })
       }
@@ -197,11 +213,12 @@ export class GraphMemory {
         existing.concepts,
       )
       if (sharedConcepts.length > 0) {
+        const rawConfidence = sharedConcepts.length / Math.max(newMemory.concepts.length, 1)
         edges.push({
           relation: 'relates_to',
           sourceId: newMemory.id,
           targetId: existing.id,
-          confidence: sharedConcepts.length / Math.max(newMemory.concepts.length, 1),
+          confidence: applyTimeDecay(rawConfidence, existing),
           reason: `Shared concepts: ${sharedConcepts.join(', ')}`,
         })
       }
@@ -212,11 +229,12 @@ export class GraphMemory {
         (existing.kind === 'review_finding' || existing.kind === 'investigation') &&
         this._seemContradictory(newMemory, existing)
       ) {
+        const rawConfidence = 0.4
         edges.push({
           relation: 'contradicts',
           sourceId: newMemory.id,
           targetId: existing.id,
-          confidence: 0.4,
+          confidence: applyTimeDecay(rawConfidence, existing),
           reason: `Potentially contradictory findings`,
         })
       }
@@ -260,6 +278,9 @@ export class GraphMemory {
 
     const depth = options?.depth ?? this.config.maxTraversalDepth
     const relationFilter = options?.relationFilter
+
+    // Performance guard: when depth > 3, cap visited nodes at 200
+    const visitLimit = depth > 3 ? 200 : Infinity
 
     // 获取所有最近记忆作为候选池
     const allRecent = await this.memoryStore.getRecent({ limit: 200 })
@@ -313,6 +334,11 @@ export class GraphMemory {
 
     let currentLevel = [root]
     for (let d = 0; d < depth; d++) {
+      if (visited.size >= visitLimit) {
+        logger.info(`Traversal visit limit (${visitLimit}) reached at depth ${d}, stopping`)
+        break
+      }
+
       const nextLevel: MemoryNode[] = []
 
       for (const node of currentLevel) {
@@ -321,6 +347,7 @@ export class GraphMemory {
         const inEdges = incomingIndex.get(node.memory.id) ?? []
 
         for (const edge of outEdges) {
+          if (visited.size >= visitLimit) break
           if (relationFilter && !relationFilter.includes(edge.relation)) continue
           const targetMemory = allRecent.find((m) => m.id === edge.targetId)
           if (!targetMemory || visited.has(edge.targetId)) continue
@@ -333,6 +360,7 @@ export class GraphMemory {
         }
 
         for (const edge of inEdges) {
+          if (visited.size >= visitLimit) break
           if (relationFilter && !relationFilter.includes(edge.relation)) continue
           const sourceMemory = allRecent.find((m) => m.id === edge.sourceId)
           if (!sourceMemory || visited.has(edge.sourceId)) continue

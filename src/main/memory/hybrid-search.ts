@@ -21,6 +21,7 @@
 import type { MemoryItem, MemoryKind } from '@shared/types'
 import type { MemoryStore } from './memory-store'
 import { getEmbeddingService, EmbeddingService } from './embedding-service'
+import { getAdaptiveConfig } from '../adaptive-config'
 import { getClient } from '../database'
 import { createLogger } from '../shared/logger'
 
@@ -44,6 +45,8 @@ export interface RankedSearchResult {
   embeddingScore: number
   /** 匹配的原因（调试用） */
   matchReason: string
+  /** 同项目同概念但不同置信度的替代记忆项（按置信度降序） */
+  alternatives?: MemoryItem[]
 }
 
 /** 搜索选项 */
@@ -221,6 +224,8 @@ export class HybridSearchEngine {
   private _embeddingService: EmbeddingService | null = null
   /** 嵌入检索是否已启用 */
   private _embeddingEnabled: boolean = false
+  /** 搜索计数器，用于定期触发 AdaptiveConfig 适配 */
+  private searchCount = 0
 
   constructor(memoryStore: MemoryStore, config?: Partial<HybridSearchConfig>) {
     this.memoryStore = memoryStore
@@ -236,7 +241,12 @@ export class HybridSearchEngine {
   async enableEmbedding(): Promise<void> {
     try {
       const service = getEmbeddingService()
-      await service.initialize()
+      const ok = await service.initializeWithTimeout(60_000)
+      if (!ok) {
+        this._embeddingEnabled = false
+        logger.warn('Embedding service initialization failed or timed out, falling back to FTS+keyword only')
+        return
+      }
       this._embeddingService = service
       this._embeddingEnabled = true
       logger.info('Embedding search enabled')
@@ -244,6 +254,20 @@ export class HybridSearchEngine {
       this._embeddingEnabled = false
       logger.warn('Embedding service initialization failed, falling back to FTS+keyword only:', err)
     }
+  }
+
+  /**
+   * 尝试启用嵌入检索（幂等、安全）
+   *
+   * 如果已启用则直接返回 true；如果服务之前初始化失败则返回 false；
+   * 否则调用 enableEmbedding() 尝试初始化。
+   */
+  async tryEnableEmbedding(): Promise<boolean> {
+    if (this._embeddingEnabled) return true
+    const service = getEmbeddingService()
+    if (service.isFailed()) return false
+    await this.enableEmbedding()
+    return this._embeddingEnabled
   }
 
   /**
@@ -324,7 +348,8 @@ export class HybridSearchEngine {
     options?: HybridSearchOptions,
   ): Promise<RankedSearchResult[]> {
     const limit = options?.limit ?? 20
-    const ftsWeight = options?.ftsWeight ?? this.config.defaultFtsWeight
+    // AdaptiveConfig: use adaptive ftsWeight when no explicit override provided
+    const adaptiveFtsWeight = options?.ftsWeight !== undefined ? options.ftsWeight : getAdaptiveConfig().get('ftsWeight')
     const scoreThreshold = options?.scoreThreshold ?? this.config.defaultScoreThreshold
 
     // 1. 构建查询的关键词
@@ -381,7 +406,7 @@ export class HybridSearchEngine {
       const ftsScore = queryTokenSet.size > 0 ? matchCount / queryTokenSet.size : 0
 
       // 混合分数
-      const score = ftsWeight * ftsScore + (1 - ftsWeight) * keywordScore
+      const score = adaptiveFtsWeight * ftsScore + (1 - adaptiveFtsWeight) * keywordScore
 
       return {
         item,
@@ -402,7 +427,28 @@ export class HybridSearchEngine {
     }
 
     // 6. 合并两路结果
-    const merged = this._mergeResults(ftsResults, embeddingResults, ftsWeight)
+    const merged = this._mergeResults(ftsResults, embeddingResults, adaptiveFtsWeight)
+
+    // 6.5 Record "memoryUseful" signal to AdaptiveConfig
+    // If top result scores above 0.5, the memory system is working well —
+    // signal pruneHalfLifeDays=0 so the adaptFn sees the mix of 0s and 1s
+    // and adjusts pruning aggressiveness accordingly.
+    if (merged.length > 0 && merged[0].score > 0.5) {
+      getAdaptiveConfig().recordMetric('pruneHalfLifeDays', 0)
+    }
+
+    // 6.6 Record FTS/embedding quality metrics to AdaptiveConfig
+    if (merged.length > 0) {
+      const avgFts = merged.reduce((s, r) => s + r.ftsScore, 0) / merged.length
+      const avgEmb = merged.reduce((s, r) => s + r.embeddingScore, 0) / merged.length
+      getAdaptiveConfig().recordMetric('ftsWeight', { ftsScore: avgFts, embeddingScore: avgEmb })
+    }
+
+    // 6.7 递增搜索计数，每 50 次触发自适应适配
+    this.searchCount++
+    if (this.searchCount % 50 === 0) {
+      getAdaptiveConfig().adapt()
+    }
 
     // 7. 排序和过滤
     const filtered = merged
@@ -411,9 +457,78 @@ export class HybridSearchEngine {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
 
+    // 8. 为每个结果填充 alternatives：同项目、概念重叠但置信度较低的记忆项
+    this._attachAlternatives(filtered, allDocTokens)
+
     logger.debug(`Hybrid search "${query}": ${candidates.length} FTS candidates, ${embeddingResults.length} embedding results → ${filtered.length} merged results (top score: ${filtered[0]?.score.toFixed(3) ?? 'N/A'})`)
 
     return filtered
+  }
+
+  /**
+   * 为搜索结果填充 alternatives 字段
+   *
+   * 对于同 project_id 且概念有重叠的记忆项，将置信度较低的项
+   * 作为置信度最高项的 alternatives，按置信度降序排列。
+   *
+   * 算法：
+   *   1. 收集所有候选记忆项（含未出现在最终结果中的 FTS 候选）
+   *   2. 按 project_id 分组
+   *   3. 在同组内，对概念有重叠（交集 >= 1）的项，选置信度最高的为"主项"
+   *   4. 其余作为主项的 alternatives
+   */
+  private _attachAlternatives(
+    results: RankedSearchResult[],
+    allDocTokens: Array<{ item: MemoryItem; tokens: string[]; text: string }>,
+  ): void {
+    if (results.length === 0) return
+
+    // 收集所有候选项的 ID → MemoryItem 映射（用于查找 alternatives 来源）
+    const allItemsMap = new Map<number, MemoryItem>()
+    for (const { item } of allDocTokens) {
+      allItemsMap.set(item.id, item)
+    }
+
+    // 已在 results 中出现的 ID 集合（主结果和 alternatives 不重复）
+    const resultIds = new Set(results.map((r) => r.item.id))
+
+    // 按 project_id 分组候选项（仅不在 results 中的项才有资格做 alternative）
+    const byProject = new Map<string, MemoryItem[]>()
+    for (const [, item] of allItemsMap) {
+      if (resultIds.has(item.id)) continue
+      const pid = item.project_id
+      if (!pid) continue
+      let group = byProject.get(pid)
+      if (!group) {
+        group = []
+        byProject.set(pid, group)
+      }
+      group.push(item)
+    }
+
+    // 为每个 result 查找同项目、概念重叠的 alternatives
+    for (const r of results) {
+      const pid = r.item.project_id
+      if (!pid) continue
+
+      const candidates = byProject.get(pid)
+      if (!candidates || candidates.length === 0) continue
+
+      const resultConcepts = new Set(r.item.concepts)
+      if (resultConcepts.size === 0) continue
+
+      // 筛选：概念至少有一个重叠，且与主项不是同一个
+      const alts = candidates
+        .filter((c) => c.id !== r.item.id && c.concepts.some((concept) => resultConcepts.has(concept)))
+        // 按置信度降序
+        .sort((a, b) => b.confidence - a.confidence)
+        // 最多 5 个 alternatives
+        .slice(0, 5)
+
+      if (alts.length > 0) {
+        r.alternatives = alts
+      }
+    }
   }
 
   /**
@@ -427,6 +542,7 @@ export class HybridSearchEngine {
     opts?: HybridSearchOptions,
   ): Promise<RankedSearchResult[]> {
     if (!this._embeddingService) return []
+    if (!this._embeddingService.isReady()) return []
 
     try {
       const queryVector = await this._embeddingService.generateEmbedding(query)
@@ -659,6 +775,13 @@ export class HybridSearchEngine {
       .filter((r) => r.score >= threshold)
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
+  }
+
+  /**
+   * 获取搜索计数
+   */
+  getSearchCount(): number {
+    return this.searchCount
   }
 
   /**

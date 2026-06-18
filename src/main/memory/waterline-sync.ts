@@ -141,6 +141,10 @@ export class WaterlineSync {
   private config: WaterlineSyncConfig
   /** 每个项目的水位线快照 */
   private waterlines = new Map<string, WaterlineSnapshot>()
+  /** 每个项目上次格式化的时间戳，用于增量输出 */
+  private lastFormattedAt = new Map<string, number>()
+  /** 每个项目上次格式化时的快照副本，用于增量对比 */
+  private lastFormattedSnapshot = new Map<string, WaterlineSnapshot>()
 
   constructor(config?: Partial<WaterlineSyncConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -315,6 +319,76 @@ export class WaterlineSync {
         lines.push(`${idx + 1}. [${f.adapter}] ${f.finding}`)
       })
     }
+
+    // 记录本次格式化的时间戳和快照，供增量输出使用
+    this.lastFormattedAt.set(projectId, Date.now())
+    this.lastFormattedSnapshot.set(projectId, structuredClone(wl))
+
+    return lines.join('\n')
+  }
+
+  /**
+   * 增量格式化：仅输出自上次 formatContext 以来的变更
+   *
+   * 首次调用（无上次格式化记录）时回退到完整格式输出。
+   * 后续调用仅输出 WaterlineDelta 中的新增/变更项。
+   *
+   * @param projectId - 项目 ID
+   * @returns 增量上下文字符串
+   */
+  getIncrementalContext(projectId: string): string {
+    const previous = this.lastFormattedSnapshot.get(projectId)
+    const lastTime = this.lastFormattedAt.get(projectId)
+
+    // 首次调用：无历史记录，输出完整水位线
+    if (!previous || lastTime === undefined) {
+      return this.formatContext(projectId)
+    }
+
+    const delta = this.getDelta(projectId, previous)
+    const wl = this.getWaterline(projectId)
+
+    // 如果没有任何变更，返回简短提示
+    if (
+      delta.newFindings.length === 0 &&
+      delta.pendingIssues.length === 0 &&
+      delta.resolvedSinceLast.length === 0 &&
+      delta.sessionsSinceLast === 0
+    ) {
+      // 更新格式化追踪
+      this.lastFormattedAt.set(projectId, Date.now())
+      this.lastFormattedSnapshot.set(projectId, structuredClone(wl))
+      return '[Waterline] No changes since last check.'
+    }
+
+    const lines: string[] = []
+    lines.push('# 水位线增量更新')
+    lines.push(`会话数: ${wl.sessionCount} | 自上次以来: +${delta.sessionsSinceLast} 会话`)
+
+    if (delta.newFindings.length > 0) {
+      lines.push(`\n## 新发现 (${delta.newFindings.length})`)
+      delta.newFindings.slice(-10).forEach((f, idx) => {
+        lines.push(`${idx + 1}. ${f}`)
+      })
+    }
+
+    if (delta.pendingIssues.length > 0) {
+      lines.push(`\n## 新增待处理问题 (${delta.pendingIssues.length})`)
+      delta.pendingIssues.slice(-5).forEach((i, idx) => {
+        lines.push(`${idx + 1}. ${i}`)
+      })
+    }
+
+    if (delta.resolvedSinceLast.length > 0) {
+      lines.push(`\n## 已解决问题 (${delta.resolvedSinceLast.length})`)
+      delta.resolvedSinceLast.slice(-5).forEach((i, idx) => {
+        lines.push(`${idx + 1}. ${i}`)
+      })
+    }
+
+    // 更新格式化追踪
+    this.lastFormattedAt.set(projectId, Date.now())
+    this.lastFormattedSnapshot.set(projectId, structuredClone(wl))
 
     return lines.join('\n')
   }
@@ -498,6 +572,18 @@ export class WaterlineSync {
       if (list.length > maxSize) {
         list.splice(0, list.length - maxSize)
       }
+    }
+  }
+
+  /**
+   * 将概念关键词直接添加到已完成调查列表。
+   * 用于管线中 compile→waterline 数据流：从 LayeredContext 的 L1/L2 摘要中
+   * 提取的概念信息注册为已完成调查，避免后续会话重复探索相同主题。
+   */
+  addCompletedInvestigations(projectId: string, concepts: string[]): void {
+    const wl = this.getWaterline(projectId)
+    for (const concept of concepts) {
+      this._appendIfNew(wl.completedInvestigations, concept, this.config.maxInvestigations)
     }
   }
 }

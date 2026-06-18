@@ -9,12 +9,22 @@ import * as path from 'node:path'
 import * as ts from 'typescript'
 import { AstParser } from './ast-parser'
 import { SymbolIndex } from './symbol-index'
+import { getAstCache } from './ast-cache'
 
 export interface IndexOptions {
   projectPath: string
   includePatterns?: string[] // 默认: ['src/**/*.{ts,tsx,js,jsx}']
   excludePatterns?: string[] // 默认: ['node_modules', 'dist', '.git']
   tsConfigPath?: string // tsconfig.json 路径
+}
+
+export interface CodeChunk {
+  filePath: string
+  startLine: number
+  endLine: number
+  kind: string  // 'function' | 'class' | 'interface' | 'method' | 'module'
+  name: string
+  content: string
 }
 
 /**
@@ -81,11 +91,110 @@ export class ProjectIndexer {
    */
   async reindexFile(filePath: string): Promise<{ symbolsFound: number; importsFound: number }> {
     await this.symbolIndex.clearFile(filePath)
-    const content = await readFile(filePath, 'utf-8')
-    const result = this.astParser.parse(filePath, content)
+
+    // Check AstCache for mtime-matched results before parsing
+    let result
+    const cache = getAstCache()
+    try {
+      const stat = fsSync.statSync(filePath)
+      const cached = cache.get(filePath, stat.mtimeMs)
+      if (cached) {
+        result = cached
+      }
+    } catch {
+      // stat failed (file may be deleted), fall through to parse
+    }
+
+    if (!result) {
+      const content = await readFile(filePath, 'utf-8')
+      result = this.astParser.parse(filePath, content)
+      // Store in cache for future use
+      try {
+        const stat = fsSync.statSync(filePath)
+        cache.set(filePath, stat.mtimeMs, result)
+      } catch {
+        // stat failed, skip caching
+      }
+    }
+
     await this.symbolIndex.insertSymbols(result.symbols)
     await this.symbolIndex.insertImportEdges(result.imports)
     return { symbolsFound: result.symbols.length, importsFound: result.imports.length }
+  }
+
+  /**
+   * 语义分块：基于 AST 符号边界将文件拆分为 CodeChunk
+   * 每个符号对应一个 chunk，endLine 由下一个符号的 startLine 或文件末尾决定
+   * 无符号时回退为每 50 行一个 chunk；完全无内容时返回一个 module 级 chunk
+   */
+  chunkFile(filePath: string, content: string): CodeChunk[] {
+    const result = this.astParser.parse(filePath, content)
+    const lines = content.split('\n')
+    const totalLines = lines.length
+
+    // 有符号：按符号边界分块
+    if (result.symbols.length > 0) {
+      // 过滤掉没有行信息的符号，并按行号排序
+      const sorted = result.symbols
+        .filter((s) => s.line != null && s.line > 0)
+        .sort((a, b) => a.line - b.line)
+
+      if (sorted.length > 0) {
+        const chunks: CodeChunk[] = []
+        for (let i = 0; i < sorted.length; i++) {
+          const sym = sorted[i]
+          const startLine = sym.line
+          // endLine: 优先用符号自带的 endLine，否则取下一个符号的 startLine - 1，否则取文件末尾
+          const endLine = sym.endLine
+            ?? (i + 1 < sorted.length ? sorted[i + 1].line - 1 : totalLines)
+          const clampedEnd = Math.min(endLine, totalLines)
+          const contentSlice = lines.slice(startLine - 1, clampedEnd).join('\n')
+          chunks.push({
+            filePath,
+            startLine,
+            endLine: clampedEnd,
+            kind: sym.kind,
+            name: sym.name,
+            content: contentSlice,
+          })
+        }
+        return chunks
+      }
+
+      // 所有符号都没有行信息，回退到固定行数分块
+      return this.fallbackLineChunks(filePath, content, 50)
+    }
+
+    // 无符号：整个文件作为一个 module chunk
+    if (totalLines === 0) {
+      return [{ filePath, startLine: 1, endLine: 1, kind: 'module', name: path.basename(filePath), content: '' }]
+    }
+    return [{ filePath, startLine: 1, endLine: totalLines, kind: 'module', name: path.basename(filePath), content }]
+  }
+
+  /**
+   * 固定行数回退分块
+   */
+  private fallbackLineChunks(filePath: string, content: string, chunkSize: number): CodeChunk[] {
+    const lines = content.split('\n')
+    const totalLines = lines.length
+    if (totalLines === 0) {
+      return [{ filePath, startLine: 1, endLine: 1, kind: 'module', name: path.basename(filePath), content: '' }]
+    }
+    const chunks: CodeChunk[] = []
+    for (let start = 1; start <= totalLines; start += chunkSize) {
+      const end = Math.min(start + chunkSize - 1, totalLines)
+      const contentSlice = lines.slice(start - 1, end).join('\n')
+      chunks.push({
+        filePath,
+        startLine: start,
+        endLine: end,
+        kind: 'module',
+        name: `${path.basename(filePath)}:${start}-${end}`,
+        content: contentSlice,
+      })
+    }
+    return chunks
   }
 
   /**
@@ -93,6 +202,63 @@ export class ProjectIndexer {
    */
   async clearFileIndex(filePath: string): Promise<void> {
     await this.symbolIndex.clearFile(filePath)
+  }
+
+  /**
+   * 索引项目并生成语义分块和可选嵌入向量
+   * 不写入 memory_items，仅返回分块及嵌入结果，由调用方负责持久化
+   */
+  async indexWithEmbeddings(
+    options: IndexOptions,
+    embeddingFn?: (text: string) => Promise<number[]>
+  ): Promise<{
+    filesIndexed: number
+    chunksCreated: number
+    embeddingsGenerated: number
+    chunks: Array<CodeChunk & { embedding?: number[] }>
+  }> {
+    const include = options.includePatterns ?? ['**/*.{ts,tsx,js,jsx}']
+    const exclude = options.excludePatterns ?? ['node_modules/**', 'dist/**', '.git/**', 'build/**', '.next/**']
+
+    const files = await this.collectFiles(options.projectPath, include, exclude)
+
+    let chunksCreated = 0
+    let embeddingsGenerated = 0
+    const allChunks: Array<CodeChunk & { embedding?: number[] }> = []
+
+    for (const filePath of files) {
+      try {
+        const content = await readFile(filePath, 'utf-8')
+
+        // 解析符号并插入索引（与 indexProject 一致）
+        const result = this.astParser.parse(filePath, content)
+        await this.symbolIndex.insertSymbols(result.symbols)
+        await this.symbolIndex.insertImportEdges(result.imports)
+
+        // 语义分块
+        const chunks = this.chunkFile(filePath, content)
+
+        for (const chunk of chunks) {
+          const enriched: CodeChunk & { embedding?: number[] } = { ...chunk }
+
+          if (embeddingFn) {
+            try {
+              enriched.embedding = await embeddingFn(chunk.content)
+              embeddingsGenerated++
+            } catch (err) {
+              console.warn(`Embedding generation failed for ${chunk.filePath}:${chunk.startLine}`, err)
+            }
+          }
+
+          allChunks.push(enriched)
+          chunksCreated++
+        }
+      } catch (err) {
+        console.warn(`Failed to index ${filePath}:`, err)
+      }
+    }
+
+    return { filesIndexed: files.length, chunksCreated, embeddingsGenerated, chunks: allChunks }
   }
 
   private async collectFiles(projectPath: string, include: string[], exclude: string[]): Promise<string[]> {

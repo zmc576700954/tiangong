@@ -37,31 +37,42 @@ export function buildModules(
     projectDescription = packageJson.description
   }
 
+  // Task 4.2.1: Pre-compute metadata for auto-fill
+  const frameworks = framework ? [framework] : []
+  const entryPoints = detectEntryPoints(structure, fileAnalyses)
+  const techStack = extractTechStack(packageJson)
+
   // 策略1：基于 src/ 下的目录识别模块
   const srcDirs = getSourceDirectories(structure)
 
   if (srcDirs.length > 0) {
     for (const dir of srcDirs) {
       const module = buildModuleFromDir(dir, framework, routes, entities)
-      if (module) modules.push(module)
+      if (module) {
+        module.metadata = { frameworks, entryPoints, techStack }
+        modules.push(module)
+      }
     }
   }
 
   // 策略2：如果没有 src/ 目录，基于路由分组
   if (modules.length === 0 && routes.length > 0) {
     const routeModules = groupRoutesByModule(routes, entities)
+    routeModules.forEach((m) => { m.metadata = { frameworks, entryPoints, techStack } })
     modules.push(...routeModules)
   }
 
   // 策略3：基于实体分组
   if (modules.length === 0 && entities.length > 0) {
     const entityModules = groupEntitiesByModule(entities)
+    entityModules.forEach((m) => { m.metadata = { frameworks, entryPoints, techStack } })
     modules.push(...entityModules)
   }
 
   // 策略4：兜底 - 从 scripts 或默认生成
   if (modules.length === 0) {
     const fallback = buildFallbackModule(projectName, framework, packageJson, projectDescription)
+    fallback.metadata = { frameworks, entryPoints, techStack }
     modules.push(fallback)
   }
 
@@ -413,6 +424,56 @@ function buildFallbackModule(
     description: description || `${framework} 项目`,
     processes,
   }
+}
+
+/** Detect entry point files from directory structure and file analyses */
+function detectEntryPoints(structure: string[], fileAnalyses: FileAnalysis[]): string[] {
+  const entryPatterns = [
+    'index.ts', 'index.tsx', 'index.js', 'index.jsx',
+    'main.ts', 'main.tsx', 'main.js', 'main.jsx',
+    'app.ts', 'app.tsx', 'app.js', 'app.jsx',
+    'server.ts', 'server.js',
+    'index.vue', 'App.vue',
+  ]
+
+  const entries: string[] = []
+
+  // Check structure for top-level entry files
+  for (const relPath of structure) {
+    const basename = relPath.split('/').pop() ?? ''
+    if (entryPatterns.includes(basename) && !relPath.includes('node_modules')) {
+      entries.push(relPath)
+    }
+  }
+
+  // Also check file analyses for entry-purpose files
+  for (const fa of fileAnalyses) {
+    if (fa.purpose === 'route' || fa.purpose === 'controller') {
+      const basename = fa.filePath.split('/').pop() ?? ''
+      if (entryPatterns.includes(basename) && !entries.includes(fa.filePath)) {
+        entries.push(fa.filePath)
+      }
+    }
+  }
+
+  return entries.slice(0, 10)
+}
+
+/** Extract tech stack info from packageJson dependencies */
+function extractTechStack(packageJson: ProjectScanResult['packageJson']): string[] {
+  if (!packageJson) return []
+
+  const allDeps = [
+    ...packageJson.dependencies,
+    ...packageJson.devDependencies,
+  ]
+
+  // Filter out type definitions and dev tooling, keep meaningful tech stack entries
+  const techStack = allDeps
+    .filter((d) => !d.startsWith('@types/') && !d.includes('eslint') && !d.includes('prettier'))
+    .slice(0, 15)
+
+  return techStack
 }
 
 function inferDirectoryMeaning(dirName: string): string {

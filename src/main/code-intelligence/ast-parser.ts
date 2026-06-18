@@ -132,14 +132,27 @@ export class AstParser {
 
   /**
    * 最小化提取：仅提取文件级导出声明（export default）
-   * 作为 AST 解析失败时的兜底方案
+   * 以及 Go/Rust/Java/SQL 声明，作为 AST 解析失败时的兜底方案
    */
   private _minimalExtract(filePath: string, sourceCode: string): ParseResult {
     const symbols: SymbolInfo[] = []
     const imports: ImportEdge[] = []
     const exports: string[] = []
 
-    // 检测 export default 语句
+    const ext = filePath.substring(filePath.lastIndexOf('.') + 1).toLowerCase()
+
+    // Language-specific regex fallback for non-TS files
+    if (ext === 'go') {
+      return this._regexExtractGo(filePath, sourceCode)
+    } else if (ext === 'rs') {
+      return this._regexExtractRust(filePath, sourceCode)
+    } else if (ext === 'java' || ext === 'kt') {
+      return this._regexExtractJava(filePath, sourceCode)
+    } else if (ext === 'sql') {
+      return this._regexExtractSql(filePath, sourceCode)
+    }
+
+    // TS/JS fallback: 检测 export default 语句
     const exportDefaultMatch = sourceCode.match(
       /export\s+default\s+(?:function\s+(\w+)|class\s+(\w+)|(\w+))/
     )
@@ -157,6 +170,139 @@ export class AstParser {
           column: 0,
           isExported: true,
         })
+        exports.push(name)
+      }
+    }
+
+    return { symbols, imports, exports }
+  }
+
+  /** Go regex fallback: func, type struct, type interface, var, const */
+  private _regexExtractGo(filePath: string, sourceCode: string): ParseResult {
+    const symbols: SymbolInfo[] = []
+    const imports: ImportEdge[] = []
+    const exports: string[] = []
+
+    const patterns: Array<{ regex: RegExp; kind: SymbolInfo['kind'] }> = [
+      { regex: /^func\s+(?:\(\w+\s+\*?\w+\)\s+)?(\w+)/gm, kind: 'function' },
+      { regex: /^type\s+(\w+)\s+struct\b/gm, kind: 'class' },
+      { regex: /^type\s+(\w+)\s+interface\b/gm, kind: 'interface' },
+      { regex: /^var\s+(\w+)/gm, kind: 'variable' },
+      { regex: /^const\s+(\w+)/gm, kind: 'variable' },
+    ]
+
+    for (const { regex, kind } of patterns) {
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(sourceCode)) !== null) {
+        const name = match[1]
+        const line = sourceCode.substring(0, match.index).split('\n').length
+        const isExported = /^[A-Z]/.test(name) // Go: uppercase = exported
+        symbols.push({ id: generateId('symbol'), name, kind, filePath, line, column: 0, isExported })
+        if (isExported) exports.push(name)
+      }
+    }
+
+    // Go imports
+    const importMatch = sourceCode.match(/import\s+(?:\([\s\S]*?\)|"([^"]+)")/g)
+    if (importMatch) {
+      for (const imp of importMatch) {
+        const paths = imp.match(/"([^"]+)"/g)
+        if (paths) {
+          for (const p of paths) {
+            const toFile = p.replace(/"/g, '')
+            imports.push({ fromFile: filePath, toFile, importedNames: [], isDefaultImport: false, line: 1 })
+          }
+        }
+      }
+    }
+
+    return { symbols, imports, exports }
+  }
+
+  /** Rust regex fallback: fn, struct, enum, impl, trait, mod */
+  private _regexExtractRust(filePath: string, sourceCode: string): ParseResult {
+    const symbols: SymbolInfo[] = []
+    const imports: ImportEdge[] = []
+    const exports: string[] = []
+
+    const patterns: Array<{ regex: RegExp; kind: SymbolInfo['kind'] }> = [
+      { regex: /^(?:pub\s+)?fn\s+(\w+)/gm, kind: 'function' },
+      { regex: /^(?:pub\s+)?struct\s+(\w+)/gm, kind: 'class' },
+      { regex: /^(?:pub\s+)?enum\s+(\w+)/gm, kind: 'enum' },
+      { regex: /^(?:pub\s+)?impl\s+(?:\w+\s+for\s+)?(\w+)/gm, kind: 'class' },
+      { regex: /^(?:pub\s+)?trait\s+(\w+)/gm, kind: 'interface' },
+      { regex: /^(?:pub\s+)?mod\s+(\w+)/gm, kind: 'namespace' },
+    ]
+
+    for (const { regex, kind } of patterns) {
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(sourceCode)) !== null) {
+        const name = match[1]
+        const line = sourceCode.substring(0, match.index).split('\n').length
+        const isExported = match[0].startsWith('pub')
+        symbols.push({ id: generateId('symbol'), name, kind, filePath, line, column: 0, isExported })
+        if (isExported) exports.push(name)
+      }
+    }
+
+    return { symbols, imports, exports }
+  }
+
+  /** Java/Kotlin regex fallback: class, interface, enum, method */
+  private _regexExtractJava(filePath: string, sourceCode: string): ParseResult {
+    const symbols: SymbolInfo[] = []
+    const imports: ImportEdge[] = []
+    const exports: string[] = []
+
+    const patterns: Array<{ regex: RegExp; kind: SymbolInfo['kind'] }> = [
+      { regex: /(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?class\s+(\w+)/g, kind: 'class' },
+      { regex: /(?:public|protected|private)?\s*(?:static\s+)?interface\s+(\w+)/g, kind: 'interface' },
+      { regex: /(?:public|protected|private)?\s*(?:static\s+)?enum\s+(\w+)/g, kind: 'enum' },
+      { regex: /(?:public|protected|private)\s+(?:static\s+)?(?:final\s+)?(?:\w+(?:<[^>]+>)?)\s+(\w+)\s*\(/g, kind: 'method' },
+    ]
+
+    for (const { regex, kind } of patterns) {
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(sourceCode)) !== null) {
+        const name = match[1]
+        const line = sourceCode.substring(0, match.index).split('\n').length
+        const isExported = /public/.test(match[0])
+        symbols.push({ id: generateId('symbol'), name, kind, filePath, line, column: 0, isExported })
+        if (isExported) exports.push(name)
+      }
+    }
+
+    // Java imports
+    const importRegex = /^import\s+(?:static\s+)?([^;]+);/gm
+    let importMatch: RegExpExecArray | null
+    while ((importMatch = importRegex.exec(sourceCode)) !== null) {
+      const toFile = importMatch[1].trim()
+      const line = sourceCode.substring(0, importMatch.index).split('\n').length
+      imports.push({ fromFile: filePath, toFile, importedNames: [], isDefaultImport: false, line })
+    }
+
+    return { symbols, imports, exports }
+  }
+
+  /** SQL regex fallback: CREATE TABLE/INDEX/VIEW, functions */
+  private _regexExtractSql(filePath: string, sourceCode: string): ParseResult {
+    const symbols: SymbolInfo[] = []
+    const imports: ImportEdge[] = []
+    const exports: string[] = []
+
+    const patterns: Array<{ regex: RegExp; kind: SymbolInfo['kind'] }> = [
+      { regex: /CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi, kind: 'class' },
+      { regex: /CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi, kind: 'variable' },
+      { regex: /CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/gi, kind: 'interface' },
+      { regex: /CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+(\w+)/gi, kind: 'function' },
+    ]
+
+    for (const { regex, kind } of patterns) {
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(sourceCode)) !== null) {
+        const name = match[1]
+        const line = sourceCode.substring(0, match.index).split('\n').length
+        symbols.push({ id: generateId('symbol'), name, kind, filePath, line, column: 0, isExported: true })
         exports.push(name)
       }
     }
