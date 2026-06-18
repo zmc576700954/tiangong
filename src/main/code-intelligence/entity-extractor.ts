@@ -13,6 +13,34 @@ export interface ExtractedEntity {
   type: EntityType
   confidence: number // 0-1
   position?: { start: number; end: number } // 在原文中的位置
+  line?: number
+  endLine?: number
+  column?: number
+  endColumn?: number
+}
+
+/**
+ * 根据字符偏移量计算行号和列号
+ */
+export function computeLineInfo(text: string, start: number, end: number): {
+  line: number
+  endLine: number
+  column: number
+  endColumn: number
+} {
+  const line = countNewlines(text.slice(0, start)) + 1
+  const endLine = countNewlines(text.slice(0, end)) + 1
+  const column = start - text.slice(0, start).lastIndexOf('\n') - 1
+  const endColumn = end - text.slice(0, end).lastIndexOf('\n') - 1
+  return { line, endLine, column, endColumn }
+}
+
+function countNewlines(s: string): number {
+  let count = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\n') count++
+  }
+  return count
 }
 
 export interface ExtractionResult {
@@ -73,6 +101,7 @@ export class EntityExtractor {
         type,
         confidence: this.calculateEntityConfidence(name, type, input),
         position: { start: match.index, end: match.index + name.length },
+        ...computeLineInfo(input, match.index, match.index + name.length),
       })
     }
 
@@ -87,6 +116,7 @@ export class EntityExtractor {
         type: 'file',
         confidence: 0.95,
         position: { start: match.index, end: match.index + name.length },
+        ...computeLineInfo(input, match.index, match.index + name.length),
       })
     }
 
@@ -108,6 +138,7 @@ export class EntityExtractor {
           type: 'keyword',
           confidence: 0.6,
           position: { start: match.index, end: match.index + name.length },
+          ...computeLineInfo(input, match.index, match.index + name.length),
         })
       }
     }
@@ -124,32 +155,39 @@ export class EntityExtractor {
           type: 'class',
           confidence: 0.85,
           position: { start: match.index, end: match.index + className.length },
+          ...computeLineInfo(input, match.index, match.index + className.length),
         })
       }
       if (!seen.has(methodName)) {
         seen.add(methodName)
+        const methodStart = match.index + className.length + 1
+        const methodEnd = methodStart + methodName.length
         entities.push({
           name: methodName,
           type: 'method',
           confidence: 0.9,
-          position: { start: match.index + className.length + 1, end: match.index + className.length + 1 + methodName.length },
+          position: { start: methodStart, end: methodEnd },
+          ...computeLineInfo(input, methodStart, methodEnd),
         })
       }
     }
 
     // 5. 尝试提取 "X 的 Y 方法" 模式
-    const methodPattern = /([\u4e00-\u9fff\w]+)[的\s]+(\w+)[\s]*(?:方法|函数|method|function)/gi
+    const methodPattern = /([一-鿿\w]+)[的\s]+(\w+)[\s]*(?:方法|函数|method|function)/gi
     while ((match = methodPattern.exec(input)) !== null) {
       const className = match[1]
       const methodName = match[2]
       if (!seen.has(methodName)) {
         seen.add(methodName)
         const methodPos = match[0].indexOf(methodName)
+        const methodStart = match.index + methodPos
+        const methodEnd = methodStart + methodName.length
         entities.push({
           name: methodName,
           type: 'method',
           confidence: 0.85,
-          position: { start: match.index + methodPos, end: match.index + methodPos + methodName.length },
+          position: { start: methodStart, end: methodEnd },
+          ...computeLineInfo(input, methodStart, methodEnd),
         })
       }
       // 同时添加类名
@@ -160,6 +198,7 @@ export class EntityExtractor {
           type: 'class',
           confidence: 0.7,
           position: { start: match.index, end: match.index + className.length },
+          ...computeLineInfo(input, match.index, match.index + className.length),
         })
       }
     }
