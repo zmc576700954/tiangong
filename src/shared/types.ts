@@ -23,12 +23,14 @@ export type {
   CommunitySummary, NodeEnrichment, RefinementRecord, ProjectMemory,
   ContextRef,
   NodeTypeConfig,
+  NodeTypeBehavior,
+  NodeStatusTransition,
 } from './types/graph'
 
 export {
   NODE_STATUS_VALUES, NODE_TYPE_VALUES, GRAPH_TYPE_VALUES,
   EDGE_TYPE_VALUES, BUG_SEVERITY_VALUES, BUG_STATUS_VALUES,
-  nodeTypeRegistry,
+  NODE_STATUS_TRANSITIONS,
 } from './types/graph'
 
 export type {

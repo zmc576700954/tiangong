@@ -5,33 +5,6 @@ import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
 
 // ============================================
-// 乐观更新辅助函数
-// ============================================
-
-/** 乐观创建：添加临时项 → IPC 调用 → 确认/回滚 */
-async function optimisticCreate<T extends { id: string }>(
-  items: T[],
-  optimisticItem: T,
-  ipcCall: () => Promise<T>,
-  onSettle: (updated: T[]) => void,
-): Promise<T> {
-  const optimisticId = optimisticItem.id
-  const optimisticList = [...items, optimisticItem]
-  onSettle(optimisticList)
-
-  try {
-    const serverItem = await ipcCall()
-    // 替换乐观项为服务端返回的真实项
-    onSettle(optimisticList.map((item) => (item.id === optimisticId ? serverItem : item)))
-    return serverItem
-  } catch (err) {
-    // 回滚：移除乐观项
-    onSettle(items)
-    throw err
-  }
-}
-
-// ============================================
 // Store 定义
 // ============================================
 
@@ -162,12 +135,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const now = new Date().toISOString()
     const optimisticNode: GraphNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now }
 
-    return optimisticCreate(
-      get().nodes,
-      optimisticNode,
-      () => window.electronAPI['node:create'](data),
-      (nodes) => set({ nodes }),
-    )
+    set((state) => ({ nodes: [...state.nodes, optimisticNode] }))
+
+    try {
+      const serverItem = await window.electronAPI['node:create'](data)
+      set((state) => ({
+        nodes: state.nodes.map((item) => (item.id === optimisticId ? serverItem : item)),
+      }))
+      return serverItem
+    } catch (err) {
+      set((state) => ({
+        nodes: state.nodes.filter((item) => item.id !== optimisticId),
+      }))
+      throw err
+    }
   },
 
   createNodeBatch: async (nodesData) => {
@@ -282,12 +263,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const optimisticId = generateId('edge')
     const optimisticEdge: GraphEdge = { ...data, id: optimisticId }
 
-    return optimisticCreate(
-      get().edges,
-      optimisticEdge,
-      () => window.electronAPI['edge:create'](data),
-      (edges) => set({ edges }),
-    )
+    set((state) => ({ edges: [...state.edges, optimisticEdge] }))
+
+    try {
+      const serverItem = await window.electronAPI['edge:create'](data)
+      set((state) => ({
+        edges: state.edges.map((e) => (e.id === optimisticId ? serverItem : e)),
+      }))
+      return serverItem
+    } catch (err) {
+      set((state) => ({
+        edges: state.edges.filter((e) => e.id !== optimisticId),
+      }))
+      throw err
+    }
   },
 
   updateEdge: async (id, data) => {
@@ -338,12 +327,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const now = new Date().toISOString()
     const optimisticBug: BugNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now }
 
-    return optimisticCreate(
-      get().bugs,
-      optimisticBug,
-      () => window.electronAPI['bug:create'](data),
-      (bugs) => set({ bugs }),
-    )
+    set((state) => ({ bugs: [...state.bugs, optimisticBug] }))
+
+    try {
+      const serverItem = await window.electronAPI['bug:create'](data)
+      set((state) => ({
+        bugs: state.bugs.map((b) => (b.id === optimisticId ? serverItem : b)),
+      }))
+      return serverItem
+    } catch (err) {
+      set((state) => ({
+        bugs: state.bugs.filter((b) => b.id !== optimisticId),
+      }))
+      throw err
+    }
   },
 
   updateBug: async (id, data) => {

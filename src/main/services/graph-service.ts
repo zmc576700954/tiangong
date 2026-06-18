@@ -5,7 +5,7 @@
 
 import type { Client } from '@libsql/client'
 import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule } from '@shared/types'
-import { nodeTypeRegistry } from '@shared/types'
+import { nodeTypeRegistry } from '../shared/node-type-registry'
 import type { AgentManager } from '../agent/agent-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import { GraphRepository } from '../repositories/graph-repository'

@@ -158,7 +158,14 @@ export class AdaptiveConfig {
       if (data.metrics && typeof data.metrics === 'object') {
         for (const [key, samples] of Object.entries(data.metrics)) {
           if (Array.isArray(samples)) {
-            this.metrics.set(key, samples as MetricSample[])
+            const validSamples = (samples as unknown[]).filter((s): s is MetricSample => {
+              if (typeof s === 'number') return Number.isFinite(s)
+              if (typeof s === 'object' && s !== null && 'ftsScore' in s && 'embeddingScore' in s) {
+                return typeof (s as Record<string, unknown>).ftsScore === 'number' && typeof (s as Record<string, unknown>).embeddingScore === 'number'
+              }
+              return false
+            })
+            this.metrics.set(key, validSamples)
           }
         }
       }

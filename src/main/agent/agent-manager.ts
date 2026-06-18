@@ -1303,7 +1303,7 @@ export class AgentManager {
         logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
       } else {
         // Check if MCP adapter recovery left a pending context injection
-        const pendingContext = this.sessionRecovery.consumePendingContext()
+        const pendingContext = this.sessionRecovery.consumePendingContext(sessionId)
         if (pendingContext) {
           logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
           try {

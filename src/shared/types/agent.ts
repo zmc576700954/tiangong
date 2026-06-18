@@ -461,14 +461,15 @@ export interface AdapterPreferences {
 }
 
 /** 适配器能力枚举 */
-export enum AdapterCapability {
-  Resume = 'resume',
-  Streaming = 'streaming',
-  FileOps = 'fileOps',
-  MultiTurn = 'multiTurn',
-  ScopeGuard = 'scopeGuard',
-  Tools = 'tools',
-}
+export const AdapterCapability = {
+  Resume: 'resume',
+  Streaming: 'streaming',
+  FileOps: 'fileOps',
+  MultiTurn: 'multiTurn',
+  ScopeGuard: 'scopeGuard',
+  Tools: 'tools',
+} as const
+export type AdapterCapability = typeof AdapterCapability[keyof typeof AdapterCapability]
 
 /** 适配器安装方式 */
 export interface InstallMethod {

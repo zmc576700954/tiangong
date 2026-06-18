@@ -400,9 +400,10 @@ export class MemoryStore {
     } catch {
       // FTS5 不可用时降级到 LIKE
       const conditions: string[] = [
-        '(m.title LIKE ? OR m.narrative LIKE ? OR m.facts LIKE ? OR m.concepts LIKE ?)',
+        "(m.title LIKE ? ESCAPE '\\' OR m.narrative LIKE ? ESCAPE '\\' OR m.facts LIKE ? ESCAPE '\\' OR m.concepts LIKE ? ESCAPE '\\')",
       ]
-      const searchPattern = `%${query}%`
+      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
+      const searchPattern = `%${escapedQuery}%`
       const args: (string | number)[] = [searchPattern, searchPattern, searchPattern, searchPattern]
 
       if (options?.projectId) {
@@ -703,7 +704,7 @@ export class MemoryStore {
       created_at: row.created_at as string,
       version: (row.version as number) ?? 1,
       parent_version: (row.parent_version as number) ?? null,
-      embedding: row.embedding ? JSON.parse(row.embedding as string) : null,
+      embedding: row.embedding ? (() => { try { return JSON.parse(row.embedding as string) } catch { return null } })() : null,
     }
   }
 

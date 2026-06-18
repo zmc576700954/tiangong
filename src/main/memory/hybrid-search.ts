@@ -112,7 +112,7 @@ function tokenize(text: string): string[] {
     .filter((t) => t.length > 1 && !STOP_WORDS.has(t))
 
   // CJK bigram 分词：提取连续 CJK 字符的相邻二元组
-  const CJK_RANGE = /[一-鿿]/ // 一-鿿
+  const CJK_RANGE = /\p{Script=Han}/u
   const cjkChars: string[] = []
   for (const ch of lower) {
     if (CJK_RANGE.test(ch)) {
@@ -159,6 +159,7 @@ function buildBm25Vector(
   tokens: string[],
   dfMap: Map<string, number>,
   totalDocs: number,
+  avgDocLen: number,
   k1 = 1.2,
   b = 0.75,
 ): Map<string, number> {
@@ -169,7 +170,7 @@ function buildBm25Vector(
   for (const [term, count] of freq) {
     const df = dfMap.get(term) ?? 0
     const idf = Math.log(1 + (totalDocs - df + 0.5) / (df + 0.5))
-    const tf = (count * (k1 + 1)) / (count + k1 * (1 - b + b * avgLen / avgLen))
+    const tf = (count * (k1 + 1)) / (count + k1 * (1 - b + b * avgLen / avgDocLen))
     result.set(term, idf * tf)
   }
   // 归一化
@@ -309,12 +310,13 @@ export class HybridSearchEngine {
     tokens: string[],
     dfMap: Map<string, number>,
     totalDocs: number,
+    avgDocLen: number,
   ): Map<string, number> {
     const cached = this.vectorCache.get(docId)
     if (cached && Date.now() - cached.timestamp < HybridSearchEngine.VECTOR_CACHE_TTL) {
       return cached.vector
     }
-    const vector = buildBm25Vector(tokens, dfMap, totalDocs)
+    const vector = buildBm25Vector(tokens, dfMap, totalDocs, avgDocLen)
     // LRU 淘汰：超限时删除最早的缓存条目
     if (this.vectorCache.size >= HybridSearchEngine.VECTOR_CACHE_MAX) {
       const oldest = this.vectorCache.keys().next().value
@@ -388,13 +390,14 @@ export class HybridSearchEngine {
       for (const t of unique) dfMap.set(t, (dfMap.get(t) ?? 0) + 1)
     }
     const totalDocs = candidates.length
+    const avgDocLen = allDocTokens.reduce((sum, t) => sum + t.tokens.length, 0) / (totalDocs || 1)
 
     // 构建 BM25 查询向量
-    const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs)
+    const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs, avgDocLen)
 
     // 4. 关键词向量重排序（使用 BM25 向量 + 缓存）
     const ftsResults = allDocTokens.map(({ item, tokens, text: docText }) => {
-      const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs)
+      const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs, avgDocLen)
       const keywordScore = cosineSimilarity(queryBm25Vector, docVector)
 
       // FTS5 分数估算：用查询词项在文档中的命中比例作为近似
@@ -547,15 +550,12 @@ export class HybridSearchEngine {
     try {
       const queryVector = await this._embeddingService.generateEmbedding(query)
 
-      // 从数据库获取有嵌入向量的记忆项
-      const db = getClient()
-      let sql = 'SELECT * FROM memory_items WHERE embedding IS NOT NULL'
-      const args: (string | number)[] = []
+      // projectId is required for embedding search to avoid full table scan
+      if (!opts?.projectId) return []
 
-      if (opts?.projectId) {
-        sql += ' AND project_id = ?'
-        args.push(opts.projectId)
-      }
+      const db = getClient()
+      let sql = 'SELECT * FROM memory_items WHERE embedding IS NOT NULL AND project_id = ?'
+      const args: (string | number)[] = [opts.projectId]
       if (opts?.kind) {
         sql += ' AND kind = ?'
         args.push(opts.kind)
@@ -618,7 +618,7 @@ export class HybridSearchEngine {
       const existing = mergedMap.get(r.item.id)
       if (existing) {
         // 同 ID：加权合并分数
-        existing.score = ftsWeight * existing.score + embeddingWeight * r.embeddingScore
+        existing.score = ftsWeight * existing.ftsScore + (1 - ftsWeight) * existing.keywordScore + embeddingWeight * r.embeddingScore
         existing.embeddingScore = r.embeddingScore
         // 更新 matchReason 以反映双路匹配
         existing.matchReason = existing.matchReason.includes('Embedding')

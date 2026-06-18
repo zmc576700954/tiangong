@@ -55,6 +55,8 @@ export class EmbeddingService {
   private _initAttempted: boolean = false
   /** Whether the last initialization attempt failed */
   private _initFailed: boolean = false
+  /** Whether the last initialization attempt timed out */
+  private _initTimedOut: boolean = false
 
   /**
    * 初始化特征提取 pipeline
@@ -84,6 +86,7 @@ export class EmbeddingService {
         cache_dir: cacheDir,
       })
 
+      this._initTimedOut = false
       logger.info(`Embedding model loaded successfully (dim=${EMBEDDING_DIM})`)
     } catch (err) {
       this.initPromise = null // 允许重试
@@ -114,6 +117,13 @@ export class EmbeddingService {
   }
 
   /**
+   * 检查上一次初始化尝试是否超时
+   */
+  isTimedOut(): boolean {
+    return this._initTimedOut
+  }
+
+  /**
    * 带超时的初始化
    *
    * 防止模型下载阻塞启动流程。超时后标记为不可用，
@@ -121,6 +131,7 @@ export class EmbeddingService {
    */
   async initializeWithTimeout(timeoutMs = 60_000): Promise<boolean> {
     this._initFailed = false
+    this._initTimedOut = false
     try {
       await Promise.race([
         this.initialize(),
@@ -133,8 +144,13 @@ export class EmbeddingService {
     } catch (err) {
       this._initFailed = true
       this._initAttempted = true
-      logger.warn('EmbeddingService initialization failed or timed out, falling back to keyword-only search:', err)
-      this.initPromise = null
+      if (err instanceof Error && err.message === 'EmbeddingService init timeout') {
+        this._initTimedOut = true
+        logger.warn('EmbeddingService initialization timed out, falling back to keyword-only search')
+      } else {
+        this.initPromise = null
+        logger.warn('EmbeddingService initialization failed, falling back to keyword-only search:', err)
+      }
       return false
     }
   }

@@ -24,7 +24,7 @@ import type { AgentOutput } from '@shared/types'
 const ANSI_RE = /\x1B\[[0-9;]*[A-Za-z]|\x1B\].*?(?:\x07|\x1B\\)/g
 
 /** 进度条行：含 [===  ] 或 ===> 等进度模式且带百分比/数字 */
-const PROGRESS_BAR_RE = /^\s*\[=*[-+> ]*\]\s*\d+%/m
+const PROGRESS_BAR_RE = /^\s*\[=*[-+> ]*\]\s*\d+%/
 
 /** 行首时间戳前缀：[2024-01-15 10:30:25] 或 [2024/01/15 10:30:25] */
 const TIMESTAMP_PREFIX_RE = /^\s*\[\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2}:\d{2}\]\s*/

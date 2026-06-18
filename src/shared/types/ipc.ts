@@ -13,7 +13,7 @@ import type {
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
-  AgentMode, AgentModeConfig, AdapterMarketplaceItem,
+  AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
 } from './agent'
 
 // ============================================
@@ -70,6 +70,7 @@ export interface IpcApi {
 
   'agent:getLogsByNode': (nodeId: string) => Promise<AgentLog[]>
   'agent:getLogsByGraph': (graphId: string) => Promise<AgentLog[]>
+  'agent:closeAllSessions': () => Promise<void>
 
   // Chat 会话记录
   'thread:list': (filters?: { nodeId?: string; graphId?: string }) => Promise<AgentThread[]>
@@ -121,7 +122,8 @@ export interface IpcApi {
     modules: ScanModule[]
   }>
 
-  // 事件监听
+  // 事件监听通道（push 模式，不通过 ipcRenderer.invoke 调用）
+  // 这些仅用于类型文档，实际通过 preload 的 onAgentOutput/onAgentStatusChange 监听
   'agent:onOutput': (sessionId: string, output: AgentOutput) => void
   'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
 
@@ -148,19 +150,19 @@ export interface IpcApi {
   'codeIntel:generatePlan': (userQuery: string) => Promise<CodeIntelExecutionPlan>
 
   // Memory 记忆操作
-  'memory:search': (query: string, options?: { projectId?: string; kind?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
-  'memory:getRecent': (options?: { projectId?: string; nodeId?: string; limit?: number }) => Promise<import('./agent').MemoryItem[]>
-  'memory:getByNode': (nodeId: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
-  'memory:getBySession': (sessionId: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
+  'memory:search': (query: string, options?: { projectId?: string; kind?: MemoryKind; limit?: number }) => Promise<MemoryItem[]>
+  'memory:getRecent': (options?: { projectId?: string; nodeId?: string; limit?: number }) => Promise<MemoryItem[]>
+  'memory:getByNode': (nodeId: string, limit?: number) => Promise<MemoryItem[]>
+  'memory:getBySession': (sessionId: string, limit?: number) => Promise<MemoryItem[]>
   'memory:getStats': (projectId?: string) => Promise<Array<{ kind: string; count: number }>>
-  'memory:getCrossAdapter': (projectId: string, excludeAdapter: string, limit?: number) => Promise<import('./agent').MemoryItem[]>
+  'memory:getCrossAdapter': (projectId: string, excludeAdapter: string, limit?: number) => Promise<MemoryItem[]>
   /**
    * 删除会话记忆。必须同时提供 projectId 作为授权范围，
    * 防止仅凭 sessionId 跨项目删除——与 main 侧 deleteBySessionScoped 对齐。
    */
   'memory:delete': (sessionId: string, projectId: string) => Promise<number>
   'memory:prune': (daysThreshold?: number) => Promise<number>
-  'memory:getEvolutionChain': (concept: string, projectId: string) => Promise<import('./agent').MemoryItem[]>
+  'memory:getEvolutionChain': (concept: string, projectId: string) => Promise<MemoryItem[]>
   'memory:backfillEmbeddings': (projectId: string) => Promise<number>
   'memory:pruneWithDecay': (projectId: string, config?: { baseHalfLife?: number; minConfidence?: number; maxItems?: number }) => Promise<number>
 

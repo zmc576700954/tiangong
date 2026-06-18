@@ -9,16 +9,17 @@ import { eventBus, Events } from './eventBus'
 class MessageQueue {
   private active = new Map<string, boolean>()
   private queues = new Map<string, Array<{ content: string; sendFn: () => Promise<void> }>>()
+  private lastSends = new Map<string, { content: string; ts: number }>()
 
   /** Enqueue a send function for a thread. Deduplicates same content within 5s. */
   enqueue(threadId: string, content: string, sendFn: () => Promise<void>): void {
     // Dedup: skip if same content was sent within 5 seconds
     const lastKey = `__lastSend_${threadId}`
-    const lastEntry = this[lastKey as keyof this] as { content: string; ts: number } | undefined
+    const lastEntry = this.lastSends.get(lastKey)
     if (lastEntry && lastEntry.content === content && Date.now() - lastEntry.ts < 5000) {
       return
     }
-    ;(this as Record<string, unknown>)[lastKey] = { content, ts: Date.now() }
+    this.lastSends.set(lastKey, { content, ts: Date.now() })
 
     if (!this.queues.has(threadId)) {
       this.queues.set(threadId, [])
@@ -36,19 +37,20 @@ class MessageQueue {
   }
 
   private async drain(threadId: string): Promise<void> {
-    const queue = this.queues.get(threadId)
-    if (!queue || queue.length === 0) {
-      this.active.set(threadId, false)
-      return
+    while (true) {
+      const queue = this.queues.get(threadId)
+      if (!queue || queue.length === 0) {
+        this.active.set(threadId, false)
+        return
+      }
+      this.active.set(threadId, true)
+      const item = queue.shift()!
+      try {
+        await item.sendFn()
+      } catch {
+        // Errors are handled by the caller; drain continues
+      }
     }
-    this.active.set(threadId, true)
-    const item = queue.shift()!
-    try {
-      await item.sendFn()
-    } catch {
-      // Errors are handled by the caller; drain continues
-    }
-    this.drain(threadId)
   }
 }
 

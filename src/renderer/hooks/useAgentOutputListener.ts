@@ -11,7 +11,7 @@ import type { AgentOutput, ToolCallBlock } from '@shared/types'
 export type RiskLevel = 'high' | 'medium' | 'low'
 
 /** Config file patterns that are considered medium-risk when modified */
-const CONFIG_PATTERNS = /\.(json|yaml|yml|toml|ini|env|conf|config|rc)$|\/\.?(tsconfig|vite\.config|webpack\.config|rollup\.config|babel\.config|jest\.config|eslint|prettier|\.env)/i
+const CONFIG_PATTERNS = /\.(json|yaml|yml|toml|ini|env|conf|config|rc)$|\/\.?(tsconfig|vite\.config|webpack\.config|rollup\.config|babel\.config|jest\.config|eslint|prettier)|\.env(\.\w+)?$/i
 
 /**
  * Classifies a file_change output into a risk level with reason.
@@ -106,7 +106,7 @@ export function useAgentOutputListener(currentThreadId: string | null) {
         if (!filePath) return
 
         if (!streamingMsgIdRef.current) {
-          const msgId = `output-${output.timestamp}`
+          const msgId = generateId('msg')
           streamingMsgIdRef.current = msgId
           store.appendChatMessage(tid, {
             id: msgId,
@@ -156,7 +156,7 @@ export function useAgentOutputListener(currentThreadId: string | null) {
         if (!text) return
 
         if (!streamingMsgIdRef.current) {
-          const msgId = `output-${output.timestamp}`
+          const msgId = generateId('msg')
           streamingMsgIdRef.current = msgId
           store.appendChatMessage(tid, {
             id: msgId,
@@ -181,7 +181,7 @@ export function useAgentOutputListener(currentThreadId: string | null) {
     })
 
     return cleanup
-  }, [currentThreadId])
+  }, [])
 
   return streamingMsgIdRef
 }

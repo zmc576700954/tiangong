@@ -27,11 +27,11 @@ export interface PipelineContext {
   projectId?: string
   nodeId?: string
   normalizedOutputs?: AgentOutput[]
-  observations?: any[]
+  observations?: Array<{ summary: string; text?: string; outputTokens: number }>
   memories?: Omit<MemoryItem, 'id'>[]
-  hallucinationReport?: any
-  layeredContext?: any
-  waterlineDelta?: any
+  hallucinationReport?: { passed: boolean; riskScore: number; details?: string[] }
+  layeredContext?: { layers: Array<{ level: number; label: string; content: string; estimatedTokens: number }> }
+  waterlineDelta?: { newFindings: string[]; pendingIssues: string[]; resolvedSinceLast: string[]; sessionsSinceLast: number }
   errors?: PipelineError[]
 }
 
@@ -202,7 +202,6 @@ export class PipelineRunner {
       },
       {
         name: 'verify',
-        enabled: () => true,
         hooks: {
           after: (ctx) => {
             if (ctx.hallucinationReport && !ctx.hallucinationReport.passed) {
@@ -305,19 +304,25 @@ export class PipelineRunner {
             const { getEmbeddingService } = await import('./embedding-service')
             const embeddingService = getEmbeddingService()
             if (embeddingService.isReady()) {
-              const { getClient } = await import('../database')
-              for (let i = 0; i < ids.length; i++) {
-                try {
-                  const memory = safeMemories[i]
-                  const text = `${memory.title} ${memory.narrative} ${(memory.facts ?? []).join(' ')}`
-                  const embedding = await embeddingService.generateEmbedding(text)
-                  await getClient().execute({
-                    sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
-                    args: [JSON.stringify(embedding), ids[i]],
-                  })
-                } catch {
-                  // Embedding generation failure should not block the pipeline
+              const texts = safeMemories.map(m =>
+                `${m.title} ${m.narrative} ${(m.facts ?? []).join(' ')}`
+              )
+              try {
+                const { getClient } = await import('../database')
+                const embeddings = await embeddingService.generateEmbeddings(texts)
+                const db = getClient()
+                for (let i = 0; i < ids.length; i++) {
+                  try {
+                    await db.execute({
+                      sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
+                      args: [JSON.stringify(embeddings[i]), ids[i]],
+                    })
+                  } catch {
+                    // Individual UPDATE failure should not block the pipeline
+                  }
                 }
+              } catch {
+                // Batch embedding generation failure should not block the pipeline
               }
             } else {
               logger.info('EmbeddingService not ready, skipping embedding generation for persisted memories')

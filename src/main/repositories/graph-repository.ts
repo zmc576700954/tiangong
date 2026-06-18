@@ -79,7 +79,7 @@ export class GraphRepository {
       graph: {
         id: rowStr(graph, 'id'),
         name: rowStr(graph, 'name'),
-        type: rowStr(graph, 'type') as GraphType,
+        type: assertGraphType(rowStr(graph, 'type')),
         projectPath: rowOptStr(graph, 'project_path'),
         createdAt: rowStr(graph, 'created_at'),
         updatedAt: rowStr(graph, 'updated_at'),
@@ -161,11 +161,10 @@ export class GraphRepository {
       args: [sourceGraphId],
     })
 
-    // 原始 ID → 新 ID 映射
     const idMap = new Map<string, string>()
 
-    // Pass 1: 插入节点（parent_id 暂时保留原值）
-    for (const row of nodes.rows) {
+    // Pass 1: 插入节点（parent_id 暂时保留原值）— 批量执行
+    const nodeInserts = nodes.rows.map((row) => {
       const originalId = rowStr(row, 'id')
       const newId = generateId('node')
       idMap.set(originalId, newId)
@@ -176,61 +175,72 @@ export class GraphRepository {
         ? 'placeholder'
         : assertNodeStatus(rawStatus)
 
-      await this.db.execute({
+      return {
         sql: `INSERT INTO nodes (
           id, type, status, title, description, acceptance_criteria,
-          graph_id, graph_type, parent_id, rules, metadata, owner_role,
+          graph_id, graph_type, parent_id, rules, metadata, content, owner_role,
           position_x, position_y, context_refs, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           newId, nodeType, status, rowStr(row, 'title'),
           rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
           targetGraphId, assertGraphType(targetGraphType),
           row['parent_id'],
-          row['rules'], row['metadata'], row['owner_role'],
+          row['rules'], row['metadata'], row['content'], row['owner_role'],
           rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
           row['context_refs'],
           rowStr(row, 'created_at'), new Date().toISOString(),
         ],
-      })
-    }
+      }
+    })
+    await this.db.batch(nodeInserts, 'write')
 
-    // Pass 2: 更新 parent_id 映射
+    // Pass 2: 批量更新 parent_id 映射
+    const parentUpdates: Array<{ sql: string; args: [string, string] }> = []
     for (const [oldId, newId] of idMap) {
       const row = nodes.rows.find(r => rowStr(r, 'id') === oldId)
       if (!row) continue
       const oldParentId = rowOptStr(row, 'parent_id')
       if (oldParentId && idMap.has(oldParentId)) {
-        await this.db.execute({
+        parentUpdates.push({
           sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
           args: [idMap.get(oldParentId)!, newId],
         })
       }
     }
+    if (parentUpdates.length > 0) {
+      await this.db.batch(parentUpdates, 'write')
+    }
 
-    // Pass 3: 复制边（使用 ID 映射）
+    // Pass 3: 批量复制边
     const edges = await this.db.execute({
       sql: 'SELECT * FROM edges WHERE graph_id = ?',
       args: [sourceGraphId],
     })
 
-    for (const row of edges.rows) {
-      const newSourceId = idMap.get(rowStr(row, 'source'))
-      const newTargetId = idMap.get(rowStr(row, 'target'))
-      if (!newSourceId || !newTargetId) continue
+    const edgeInserts = edges.rows
+      .map((row) => {
+        const newSourceId = idMap.get(rowStr(row, 'source'))
+        const newTargetId = idMap.get(rowStr(row, 'target'))
+        if (!newSourceId || !newTargetId) return null
 
-      const newId = generateId('edge')
-      await this.db.execute({
-        sql: `INSERT INTO edges (
-          id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          newId, newSourceId, newTargetId,
-          rowOptStr(row, 'label') ?? null, row['edge_type'], row['content'],
-          targetGraphId, row['description'], row['data_flow'], row['strength'],
-        ],
+        const newId = generateId('edge')
+        return {
+          sql: `INSERT INTO edges (
+            id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
+            newId, newSourceId, newTargetId,
+            rowOptStr(row, 'label') ?? null, row['edge_type'], row['content'],
+            targetGraphId, row['description'], row['data_flow'], row['strength'],
+          ],
+        }
       })
+      .filter((stmt): stmt is NonNullable<typeof stmt> => stmt !== null)
+
+    if (edgeInserts.length > 0) {
+      await this.db.batch(edgeInserts, 'write')
     }
   }
 }

@@ -54,6 +54,8 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   'agent:getLogsByNode',
   'agent:getLogsByGraph',
+  'agent:checkInstalled',
+  'agent:closeAllSessions',
 
   // Chat 会话记录
   'thread:list',
@@ -65,6 +67,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   'message:list',
   'message:save',
   'message:saveBatch',
+  'chat:archiveStale',
+  'chat:cleanupArchived',
 
   // 文件系统 — 只读 + 文件操作
   'fs:readDir',
@@ -101,6 +105,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'settings:setApiKey',
   'settings:getAdapterPreferences',
   'settings:setAdapterPreferences',
+  'settings:write',
 
   // ScopeGuard
   'scopeGuard:rollbackFile',
@@ -112,6 +117,32 @@ const exposedChannels: (keyof IpcApi)[] = [
   'codeIntel:querySymbols',
   'codeIntel:getRelatedFiles',
   'codeIntel:generatePlan',
+
+  // Memory 记忆操作
+  'memory:search',
+  'memory:getRecent',
+  'memory:getByNode',
+  'memory:getBySession',
+  'memory:getStats',
+  'memory:getCrossAdapter',
+  'memory:delete',
+  'memory:prune',
+  'memory:getEvolutionChain',
+  'memory:backfillEmbeddings',
+  'memory:pruneWithDecay',
+
+  // Agent 模式管理
+  'mode:getCurrent',
+  'mode:setCurrent',
+  'mode:getAvailable',
+
+  // 项目扫描
+  'project:scan',
+
+  // Git 操作
+  'git:status',
+  'git:diff',
+  'git:commit',
 ]
 
 // Build IPC API object

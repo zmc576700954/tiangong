@@ -10,7 +10,7 @@ import { useAgentOutputStore } from '../store/agentOutputStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
 
-const EMPTY_OUTPUTS: never[] = []
+const EMPTY_OUTPUTS: AgentOutput[] = []
 
 interface BizNodeProps {
   id: string

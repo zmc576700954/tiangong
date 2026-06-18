@@ -37,11 +37,13 @@ class EventBus {
   emit(event: string, ...args: any[]): void {
     const set = this.handlers.get(event)
     if (!set) return
-    for (const handler of set) {
+    // Copy handlers before iteration to allow safe removal during iteration
+    const handlers = Array.from(set)
+    for (const handler of handlers) {
       try {
         handler(...args)
       } catch (err) {
-        console.error(`[EventBus] Error in handler for "${event}":`, err)
+        console.warn(`[EventBus] Error in handler for ${event}:`, err)
       }
     }
   }

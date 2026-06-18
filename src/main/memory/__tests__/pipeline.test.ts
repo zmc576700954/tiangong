@@ -75,7 +75,7 @@ describe('PipelineRunner', () => {
         name: 'c',
         process: async (ctx) => {
           order.push('c')
-          return { ...ctx, observations: [{ key: 'value' }] }
+          return { ...ctx, observations: [{ summary: 'value', outputTokens: 0 }] }
         },
       },
     ]
@@ -86,7 +86,7 @@ describe('PipelineRunner', () => {
     // All stages ran
     expect(order).toEqual(['a', 'b-fail', 'c'])
     // Stage c still set its output
-    expect(result.context.observations).toEqual([{ key: 'value' }])
+    expect(result.context.observations).toEqual([{ summary: 'value', outputTokens: 0 }])
     // Error was recorded for b-fail only
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0].stage).toBe('b-fail')

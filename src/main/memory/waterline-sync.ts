@@ -20,6 +20,7 @@
 import type { MemoryItem, MemoryKind } from '@shared/types'
 import { createLogger } from '../shared/logger'
 import { getMemoryStore } from './memory-store'
+import { getClient } from '../database'
 
 const logger = createLogger('WaterlineSync')
 
@@ -480,14 +481,11 @@ export class WaterlineSync {
     const store = getMemoryStore()
 
     // 删除该项目之前的 waterline 记录（只保留最新一份）
-    const existing = await store.search('waterline', {
-      projectId,
-      kind: 'waterline' as MemoryKind,
-      limit: 100,
+    const db = getClient()
+    await db.execute({
+      sql: "DELETE FROM memory_items WHERE kind = 'waterline' AND project_id = ?",
+      args: [projectId],
     })
-    for (const item of existing) {
-      await store.deleteBySessionScoped(item.session_id, projectId)
-    }
 
     // 写入新的 waterline 记录
     await store.store({

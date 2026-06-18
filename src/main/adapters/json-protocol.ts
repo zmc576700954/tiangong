@@ -149,6 +149,7 @@ export class JsonProtocolHandler {
         this.offMessage(onPong)
         this.offError(onError)
         this.isEnabled = false
+        this.dispose()
         resolve(false)
       }, timeoutMs)
 
@@ -270,7 +271,8 @@ export class JsonProtocolHandler {
       const line = JSON.stringify(message) + '\n'
       this.proc.stdin.write(line)
       return true
-    } catch {
+    } catch (err) {
+      console.warn('[JsonProtocol] Failed to write to stdin:', err)
       return false
     }
   }

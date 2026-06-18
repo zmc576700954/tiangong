@@ -31,7 +31,6 @@
   --color-node-testing: #8b5cf6;
   --color-node-review: #06b6d4;
   --color-node-published: #22c55e;
-  --color-node-placeholder: #64748b;
 
   /* Semantic tokens */
   --color-agent-running: hsl(var(--primary));

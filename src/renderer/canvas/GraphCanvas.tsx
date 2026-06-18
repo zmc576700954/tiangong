@@ -436,14 +436,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [updateNode])
 
   const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
-    await updateNode(nodeId, { status })
+    try {
+      await updateNode(nodeId, { status })
+    } catch (err) {
+      console.error('[GraphCanvas] Failed to change node status:', err)
+    }
     setNodeContextMenu(null)
   }
 
   const handleNodeDelete = async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
     if (node?.type === 'project') return
-    await deleteNode(nodeId)
+    try {
+      await deleteNode(nodeId)
+    } catch (err) {
+      console.error('[GraphCanvas] Failed to delete node:', err)
+    }
     selectNode(null)
     setNodeContextMenu(null)
   }

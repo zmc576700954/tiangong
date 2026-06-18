@@ -198,6 +198,11 @@ export class ContextDistiller {
     kept: ScoredFragment[]
     removed: ContextFragment[]
   } {
+    // For large fragment sets, skip Jaccard dedup (O(n²) is too slow)
+    if (scored.length > 200) {
+      return { kept: scored, removed: [] }
+    }
+
     const removedIndices = new Set<number>()
 
     for (let i = 0; i < scored.length; i++) {
