@@ -12,6 +12,7 @@ import { SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
 import type { GraphNode, BugNode } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
+import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { IpcError, ErrorCode } from '../errors'
 
@@ -66,7 +67,19 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
         validateTransition(currentStatus, data.status)
       }
     }
-    return nodeRepo.update(id, data)
+    let warnings: string[] = []
+    if (data.type && data.metadata) {
+      try {
+        const validation = validateNodeMetadata(data.type, data.metadata as Record<string, unknown>)
+        if (validation?.warnings) {
+          warnings = validation.warnings
+        }
+      } catch {
+        // Non-blocking: if validation fails, just proceed without warnings
+      }
+    }
+    const node = await nodeRepo.update(id, data)
+    return { ...node, warnings }
   })
 
   typedHandle('node:delete', async (_, id) => {

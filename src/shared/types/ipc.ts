@@ -31,7 +31,7 @@ export interface IpcApi {
   // 节点操作
   'node:create': (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
   'node:createBatch': (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
-  'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode>
+  'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode & { warnings?: string[] }>
   'node:delete': (id: string) => Promise<boolean>
   'node:batchUpdatePositions': (updates: Array<{ id: string; x: number; y: number }>) => Promise<boolean>
 
@@ -84,6 +84,9 @@ export interface IpcApi {
   'message:saveBatch': (threadId: string, messages: ChatMessage[]) => Promise<void>
 
   'chat:archiveStale': (projectId: string, staleDays?: number) => Promise<number>
+
+  // Chat 归档清理
+  'chat:cleanupArchived': () => Promise<number>
 
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
@@ -157,6 +160,9 @@ export interface IpcApi {
    */
   'memory:delete': (sessionId: string, projectId: string) => Promise<number>
   'memory:prune': (daysThreshold?: number) => Promise<number>
+  'memory:getEvolutionChain': (concept: string, projectId: string) => Promise<import('./agent').MemoryItem[]>
+  'memory:backfillEmbeddings': (projectId: string) => Promise<number>
+  'memory:pruneWithDecay': (projectId: string, config?: { baseHalfLife?: number; minConfidence?: number; maxItems?: number }) => Promise<number>
 
   // Agent 模式管理
   'mode:getCurrent': (projectId: string) => Promise<AgentMode>
