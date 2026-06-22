@@ -19,6 +19,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
+import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { BizEdge } from './BizEdge'
@@ -74,8 +75,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const graphs = useGraphStore((state) => state.graphs)
   const notifications = useGraphStore((s) => s.associationNotifications)
   const dismissNotification = useGraphStore((s) => s.dismissAssociationNotification)
-  const setConnectingFrom = useGraphStore((s) => s.setConnectingFrom)
-  const flashNode = useGraphStore((s) => s.flashNode)
+  const setConnectingFrom = useGraphRuntimeStore((s) => s.setConnectingFrom)
+  const flashNode = useGraphRuntimeStore((s) => s.flashNode)
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
 
@@ -110,8 +111,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
-  const [zoomLevel, setZoomLevel] = useState(1)
-  const [isZoomedOut, setIsZoomedOut] = useState(false)
+  const zoomLevel = useGraphRuntimeStore((s) => s.zoomLevel)
+  const isZoomedOut = useGraphRuntimeStore((s) => s.isZoomedOut)
+  const setZoomLevel = useGraphRuntimeStore((s) => s.setZoomLevel)
+  const setIsZoomedOut = useGraphRuntimeStore((s) => s.setIsZoomedOut)
 
   const [genProgress, setGenProgress] = useState<{ stage: string; progress: number } | null>(null)
 

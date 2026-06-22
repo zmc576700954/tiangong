@@ -57,12 +57,6 @@ interface GraphState {
   associationNotifications: Array<{ id: string; count: number; timestamp: number }>
   addAssociationNotification: (count: number) => void
   dismissAssociationNotification: (id: string) => void
-
-  // Connection visual feedback (Task 17)
-  connectingFrom: string | null
-  flashedNodeId: string | null
-  setConnectingFrom: (id: string | null) => void
-  flashNode: (id: string) => void
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -81,8 +75,6 @@ export const useGraphStore = create<GraphState>((set, get) => {
   selectedNodeId: null,
   selectedEdgeId: null,
   associationNotifications: [],
-  connectingFrom: null,
-  flashedNodeId: null,
 
   // ─────────────── Graph Operations ───────────────
   loadGraphs: async () => {
@@ -488,15 +480,5 @@ export const useGraphStore = create<GraphState>((set, get) => {
   dismissAssociationNotification: (id) => set((s) => ({
     associationNotifications: s.associationNotifications.filter((n) => n.id !== id),
   })),
-
-  // Connection visual feedback (Task 17)
-  setConnectingFrom: (id) => set({ connectingFrom: id }),
-  flashNode: (id) => {
-    set({ flashedNodeId: id })
-    // Auto-clear after the flash animation duration (matches CSS 100ms + small buffer)
-    setTimeout(() => {
-      set((s) => (s.flashedNodeId === id ? { flashedNodeId: null } : {}))
-    }, 200)
-  },
   }
 })
