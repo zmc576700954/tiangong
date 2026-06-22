@@ -21,7 +21,7 @@ const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : null
 
-export function LeftPanel({ onClose }: { onClose: () => void }) {
+export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
   const projects = useFileTreeStore((s) => s.projects)
   const addProject = useFileTreeStore((s) => s.addProject)
   const removeProject = useFileTreeStore((s) => s.removeProject)
@@ -72,6 +72,16 @@ export function LeftPanel({ onClose }: { onClose: () => void }) {
       // ignore
     }
   }, [])
+
+  // Listen for menu: Open Project
+  useEffect(() => {
+    if (!window.electronAPI?.onMenuOpenProject) return
+    const unsub = window.electronAPI.onMenuOpenProject((projectPath: string) => {
+      if (projects.some((p) => p.path === projectPath)) return
+      addProject(projectPath)
+    })
+    return unsub
+  }, [projects, addProject])
 
   // Auto-clear toast
   useEffect(() => {
@@ -158,6 +168,15 @@ export function LeftPanel({ onClose }: { onClose: () => void }) {
       <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
         <span className="text-sm font-semibold">Projects</span>
         <div className="flex items-center gap-1">
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="p-1.5 rounded hover:bg-muted transition-colors"
+              title="Hide project panel"
+            >
+              <PanelLeftClose className="w-3.5 h-3.5 text-muted-foreground" />
+            </button>
+          )}
           <button
             onClick={() => setShowSettings(true)}
             className="p-1.5 rounded hover:bg-muted transition-colors"

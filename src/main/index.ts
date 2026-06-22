@@ -63,8 +63,10 @@ class WindowManager {
       win.webContents.on('did-fail-load', handleDidFailLoad)
 
       win.on('closed', () => {
-        // @ts-expect-error Electron type definitions don't include did-fail-load on webContents
-        win.webContents.off('did-fail-load', handleDidFailLoad)
+        try {
+          // @ts-expect-error Electron type definitions don't include did-fail-load on webContents
+          win.webContents?.off('did-fail-load', handleDidFailLoad)
+        } catch { /* window already destroyed */ }
         this.windows.delete(id)
       })
     } else {
@@ -93,6 +95,21 @@ function buildMenu(): Menu {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'Open Project…',
+          accelerator: 'CmdOrCtrl+O',
+          click: async (_, focusedWindow) => {
+            const win = focusedWindow as BrowserWindow | null
+            if (!win) return
+            const result = await dialog.showOpenDialog(win, {
+              properties: ['openDirectory'],
+              title: '选择项目目录',
+            })
+            if (result.canceled || result.filePaths.length === 0) return
+            win.webContents.send('menu:openProject', result.filePaths[0])
+          },
+        },
+        { type: 'separator' },
         {
           label: 'New Window',
           accelerator: 'CmdOrCtrl+N',
@@ -203,6 +220,7 @@ function buildMenu(): Menu {
   return Menu.buildFromTemplate(template)
 }
 
+app.commandLine.appendSwitch('disable-gpu')
 app.whenReady().then(async () => {
   // Validate state machine consistency before anything else
   const { validateTransitionConsistency } = await import('@shared/state-machine')

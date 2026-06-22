@@ -18,6 +18,10 @@ export interface UseResizablePanelResult {
   /** 设置为固定宽度（如展开模式） */
   setFixedWidth: (width: number | null) => void
   fixedWidth: number | null
+  /** 面板折叠状态 */
+  collapsed: boolean
+  /** 切换折叠 */
+  toggleCollapse: () => void
 }
 
 /**
@@ -35,6 +39,7 @@ export function useResizablePanel(options: UseResizablePanelOptions): UseResizab
   const [width, setWidth] = useState(savedWidth ? Math.max(minWidth, Math.min(maxWidth, Number(savedWidth))) : initialWidth)
   const [isResizing, setIsResizing] = useState(false)
   const [fixedWidth, setFixedWidth] = useState<number | null>(null)
+  const [collapsed, setCollapsed] = useState(false)
 
   // Persist width changes to localStorage
   useEffect(() => {
@@ -69,11 +74,17 @@ export function useResizablePanel(options: UseResizablePanelOptions): UseResizab
     setIsResizing(true)
   }, [])
 
+  const toggleCollapse = useCallback(() => {
+    setCollapsed((c) => !c)
+  }, [])
+
   return {
     width: fixedWidth ?? width,
     isResizing,
     startResize,
     setFixedWidth,
     fixedWidth,
+    collapsed,
+    toggleCollapse,
   }
 }

@@ -306,9 +306,14 @@ export async function registerIpcHandlers(): Promise<void> {
     for (const p of paths) {
       if (typeof p !== 'string' || !p.trim()) continue
       try {
-        const validatedPath = await validateFsPath(p.trim(), 'read')
-        addSessionAllowedPath(senderId, validatedPath)
-        logger.info(`fs:registerProjectPaths: allowed path=${validatedPath} sender=${senderId}`)
+        // 只校验安全性（系统目录等），不检查 allowedRoots（因为新项目路径还不在允许列表中）
+        const resolved = await cachedRealpath(p.trim())
+        const normalized = path.normalize(resolved)
+        if (isBlockedSystemPath(normalized)) {
+          throw new IpcError('Access denied: cannot access system directory', ErrorCode.IPC_ACCESS_DENIED)
+        }
+        addSessionAllowedPath(senderId, normalized)
+        logger.info(`fs:registerProjectPaths: allowed path=${normalized} sender=${senderId}`)
       } catch (err) {
         logger.warn(`fs:registerProjectPaths: rejected path=${p.trim()} sender=${senderId} reason=${err instanceof Error ? err.message : err}`)
       }

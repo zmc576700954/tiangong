@@ -29,13 +29,13 @@ export class InvalidStateTransitionError extends Error {
 /** 状态转换规则图：from → Set<to> */
 const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
   // 草稿：可确认、删除（回到占位）
-  draft: new Set<NodeStatus>(['confirmed', 'placeholder']),
+  draft: new Set<NodeStatus>(['confirmed', 'developing', 'placeholder']),
 
-  // 已确认：可开始开发、回退到草稿
+  // 已确认：可开始开发、回退到草稿、删除（回到占位）
   confirmed: new Set<NodeStatus>(['developing', 'draft', 'placeholder']),
 
-  // 开发中：可提交测试、回退到已确认
-  developing: new Set<NodeStatus>(['testing', 'confirmed']),
+  // 开发中：可提交测试、回退到已确认、回退到草稿、回退到占位
+  developing: new Set<NodeStatus>(['testing', 'confirmed', 'draft', 'placeholder']),
 
   // 待测试：可通过验收、回退到开发中
   testing: new Set<NodeStatus>(['review', 'developing']),
@@ -46,8 +46,8 @@ const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
   // 已发布：终态，不可转换（除非回滚到 review）
   published: new Set<NodeStatus>(['review']),
 
-  // 占位节点：可激活为草稿
-  placeholder: new Set<NodeStatus>(['draft', 'confirmed']),
+  // 占位节点：可激活为草稿、可跳过草稿直接确认、可跳过草稿直接开发
+  placeholder: new Set<NodeStatus>(['draft', 'confirmed', 'developing']),
 }
 
 /**

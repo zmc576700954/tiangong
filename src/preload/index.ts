@@ -215,13 +215,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.off('session:recoveryFailed', handler)
   },
 
-  // Context waterline change event listener (Phase 2)
-  onWaterlineChange: (callback: (state: ContextState) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: ContextState) => {
-      callback(state)
-    }
-    ipcRenderer.on('waterline:change', handler)
-    return () => { ipcRenderer.removeListener('waterline:change', handler) }
+  // Menu events
+  onMenuOpenProject: (callback: (projectPath: string) => void) => {
+    const handler = (_: unknown, projectPath: string) => callback(projectPath)
+    ipcRenderer.on('menu:openProject', handler)
+    return () => ipcRenderer.off('menu:openProject', handler)
   },
 
   // Platform info
@@ -240,7 +238,7 @@ declare global {
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
-      onWaterlineChange: (callback: (state: ContextState) => void) => () => void
+      onMenuOpenProject: (callback: (projectPath: string) => void) => () => void
       platform: string
     }
   }
