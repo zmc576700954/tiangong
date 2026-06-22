@@ -38,6 +38,8 @@ export interface AdapterDescriptor {
   capabilities?: AdapterCapability[]
   fallbackTo?: string
   platforms?: NodeJS.Platform[]
+  /** Default context window for this adapter, in tokens. Used by ContextWaterline. */
+  contextWindow?: number
 }
 
 const platform = process.platform
@@ -70,6 +72,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://docs.anthropic.com/en/docs/claude-code',
     capabilities: [AdapterCapability.Resume, AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn, AdapterCapability.ScopeGuard, AdapterCapability.Tools],
     fallbackTo: 'mcp',
+    contextWindow: 200_000,
   },
   {
     name: 'codex',
@@ -87,6 +90,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://github.com/openai/codex',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'opencode',
@@ -106,6 +110,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://opencode.ai',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'cline',
@@ -121,6 +126,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://cline.bot',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'kilo-code',
@@ -137,6 +143,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://kilo.ai',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'kimi-code',
@@ -155,6 +162,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://github.com/MoonshotAI/kimi-code',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'codebuddy',
@@ -170,6 +178,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://github.com/Tencent/CodeBuddy',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'qoder',
@@ -185,6 +194,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://github.com/qoder-ai',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'qwen-code',
@@ -203,6 +213,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://github.com/QwenLM/qwen-code',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'cursor',
@@ -220,6 +231,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     homepage: 'https://cursor.com',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
     fallbackTo: 'mcp',
+    contextWindow: 128_000,
   },
   {
     name: 'mcp',
@@ -232,6 +244,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     adapterClass: McpAdapter,
     homepage: 'https://modelcontextprotocol.io',
     capabilities: [AdapterCapability.Streaming, AdapterCapability.Tools],
+    contextWindow: 200_000,
   },
   {
     name: 'mindmap-internal',

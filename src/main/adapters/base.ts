@@ -761,4 +761,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     session.config.contextSummary = summary
     this.logger.debug(`Built context summary for session ${sessionId}: ${summary.length} chars`)
   }
+
+  /**
+   * Report authoritative token usage from the adapter/SDK.
+   * Phase 2: skeleton; Phase 3: claude-code/codex/mcp-adapter call this
+   * after receiving real usage from their SDK/API responses.
+   */
+  protected reportUsage(sessionId: string, inputTokens: number, maxTokens?: number): void {
+    this.emit('usage', { sessionId, inputTokens, maxTokens })
+  }
 }
