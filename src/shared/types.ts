@@ -50,6 +50,7 @@ export type {
   CodeIntelExecutionPlan,
   MemoryKind, MemoryItem, ContextLayer, LayeredContext,
   TokenEconomics, AgentMode, AgentModeConfig, OutputHealth,
+  CompactStrategy, CompactTrigger, CompactResult, CompactHistoryEntry,
 } from './types/agent'
 
 export {
