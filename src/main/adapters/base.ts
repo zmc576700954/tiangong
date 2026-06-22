@@ -15,11 +15,13 @@ import type {
 } from '@shared/types'
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
 import type { ProtocolInputMessage } from './json-protocol'
-import { SessionNotFoundError, AdapterError } from '../errors'
+import { SessionNotFoundError, AdapterError, ErrorCode } from '../errors'
 import { buildSafeEnv } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { parseFileChanges } from './file-change-parser'
 import { buildScopePrompt } from './scope-prompt-builder'
+import { estimateTokens } from '../shared/token-utils'
+import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
 
 /**
  * Agent 适配器抽象基类
@@ -697,7 +699,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 从输出缓冲区生成会话上下文摘要，并存储到 session.config
    * 提取关键信息：完成的任务、修改的文件、遇到的错误
    */
-  private buildAndStoreSummary(sessionId: string): void {
+  protected buildAndStoreSummary(sessionId: string): void {
     const buffer = this.sessionOutputBuffers.get(sessionId)
     if (!buffer || buffer.length === 0) return
 
@@ -760,6 +762,103 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
     session.config.contextSummary = summary
     this.logger.debug(`Built context summary for session ${sessionId}: ${summary.length} chars`)
+  }
+
+  // ============================================
+  // Context compaction (Phase 3)
+  // ============================================
+
+  /**
+   * Public compaction entry — subclasses normally don't override this.
+   * Dispatches to the three strategy helpers based on the strategy param.
+   */
+  async compactContext(
+    sessionId: string,
+    strategy: CompactStrategy,
+    options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    switch (strategy) {
+      case 'native':  return this.compactByNative(sessionId, options)
+      case 'llm':     return this.compactByLlm(sessionId, options)
+      case 'summary': return this.compactBySummaryRewrite(sessionId, options)
+    }
+  }
+
+  /**
+   * Default summary rewrite — reads sessionOutputBuffers, calls buildAndStoreSummary
+   * which writes session.config.contextSummary, then clears the buffer.
+   */
+  protected async compactBySummaryRewrite(
+    sessionId: string,
+    options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new AdapterError(
+        `Session ${sessionId} not found`,
+        this.name,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
+    const buffer = this.sessionOutputBuffers.get(sessionId) ?? []
+    const before = estimateTokens(buffer.join('\n'))
+    const startedAt = Date.now()
+
+    this.buildAndStoreSummary(sessionId)
+
+    const summary = session.config.contextSummary ?? ''
+    const after = estimateTokens(summary)
+    this.sessionOutputBuffers.set(sessionId, [])
+
+    return {
+      sessionId,
+      strategy: 'summary',
+      trigger: options?.reason ?? 'manual',
+      tokensBefore: before,
+      tokensAfter: after,
+      summary,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+    }
+  }
+
+  /**
+   * Native compact — subclasses override (e.g. Claude Code uses CLI native /compact).
+   */
+  protected async compactByNative(
+    _sessionId: string,
+    _options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    throw new AdapterError(
+      'NATIVE_COMPACT_NOT_SUPPORTED',
+      this.name,
+      ErrorCode.AGENT_COMPACT_FAILED,
+    )
+  }
+
+  /**
+   * LLM-based compact — subclasses override (e.g. MCP adapter calls a small model).
+   */
+  protected async compactByLlm(
+    _sessionId: string,
+    _options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    throw new AdapterError(
+      'LLM_COMPACT_NOT_SUPPORTED',
+      this.name,
+      ErrorCode.AGENT_COMPACT_FAILED,
+    )
+  }
+
+  /**
+   * Subscribe to usage events emitted by reportUsage() (Phase 2 skeleton).
+   */
+  onUsage(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void {
+    this.on('usage', handler)
+  }
+
+  offUsage(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void {
+    this.off('usage', handler)
   }
 
   /**
