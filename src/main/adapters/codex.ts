@@ -90,6 +90,16 @@ export class CodexAdapter extends BaseAdapter {
 
       const result = await thread.run(fullPrompt)
 
+      // 上报 token 使用量供 ContextWaterline 监控（Phase 3 Task 34）
+      if (result.usage) {
+        const inputTokens =
+          (result.usage.input_tokens ?? 0) +
+          (result.usage.cached_input_tokens ?? 0)
+        if (inputTokens > 0) {
+          this.reportUsage(session.id, inputTokens, 128_000)
+        }
+      }
+
       // 保存 thread ID 用于后续续接
       const threadId = thread.id
       if (threadId) {
