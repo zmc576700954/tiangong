@@ -19,6 +19,10 @@ const mockRepo: MockChatRepository = {
   deleteMessagesByThread: vi.fn(),
   archiveStaleThreads: vi.fn(),
   cleanupArchivedThreads: vi.fn(),
+  incrementContextTokens: vi.fn(),
+  setContextWindowMax: vi.fn(),
+  setLastCompactedAt: vi.fn(),
+  resetContextTokens: vi.fn(),
 }
 
 // Mock generateId to return predictable IDs
@@ -54,6 +58,10 @@ describe('ChatService', () => {
         status: 'active',
         created_at: MOCK_NOW,
         updated_at: MOCK_NOW,
+        parent_thread_id: null,
+        context_tokens_used: 0,
+        context_window_max: 200000,
+        last_compacted_at: null,
       })
 
       const result = await service.createThread({ adapterName: 'claude' })
@@ -84,6 +92,10 @@ describe('ChatService', () => {
         status: 'active',
         created_at: MOCK_NOW,
         updated_at: MOCK_NOW,
+        parent_thread_id: null,
+        context_tokens_used: 0,
+        context_window_max: 200000,
+        last_compacted_at: null,
       })
 
       const result = await service.createThread({
@@ -119,6 +131,10 @@ describe('ChatService', () => {
         status: 'active',
         created_at: MOCK_NOW,
         updated_at: MOCK_NOW,
+        parent_thread_id: null,
+        context_tokens_used: 0,
+        context_window_max: 200000,
+        last_compacted_at: null,
       }
       mockRepo.getThread.mockResolvedValue(row)
 
@@ -144,6 +160,10 @@ describe('ChatService', () => {
         status: 'active',
         created_at: MOCK_NOW,
         updated_at: MOCK_NOW,
+        parent_thread_id: null,
+        context_tokens_used: 0,
+        context_window_max: 200000,
+        last_compacted_at: null,
       }
       const messageRows: ChatMessageRow[] = [
         {
@@ -158,6 +178,7 @@ describe('ChatService', () => {
           context_refs: null,
           tool_calls: null,
           created_at: MOCK_NOW,
+          token_count: 0,
         },
       ]
       mockRepo.getThread.mockResolvedValue(threadRow)
@@ -194,6 +215,10 @@ describe('ChatService', () => {
           status: 'active',
           created_at: MOCK_NOW,
           updated_at: MOCK_NOW,
+          parent_thread_id: null,
+          context_tokens_used: 0,
+          context_window_max: 200000,
+          last_compacted_at: null,
         },
       ]
       mockRepo.listThreads.mockResolvedValue(rows)
@@ -255,6 +280,10 @@ describe('ChatService', () => {
           status: 'active',
           created_at: MOCK_NOW,
           updated_at: MOCK_NOW,
+          parent_thread_id: null,
+          context_tokens_used: 0,
+          context_window_max: 200000,
+          last_compacted_at: null,
         },
       ]
       mockRepo.searchThreads.mockResolvedValue(rows)
@@ -355,6 +384,7 @@ describe('ChatService', () => {
           context_refs: JSON.stringify([{ type: 'node', id: 'n1' }]),
           tool_calls: null,
           created_at: MOCK_NOW,
+          token_count: 0,
         },
       ]
       mockRepo.listMessages.mockResolvedValue(rows)
@@ -381,6 +411,7 @@ describe('ChatService', () => {
           context_refs: null,
           tool_calls: null,
           created_at: MOCK_NOW,
+          token_count: 0,
         },
       ]
       mockRepo.listMessages.mockResolvedValue(rows)
