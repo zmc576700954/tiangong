@@ -274,7 +274,7 @@ export async function registerIpcHandlers(): Promise<void> {
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
   }
-  registerContextHandlers(contextWaterline, typedHandle, compactHistoryRepo, getMainWindow)
+  registerContextHandlers(contextWaterline, agentManager, typedHandle, compactHistoryRepo, getMainWindow)
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
   registerCodeIntelHandlers(ipcMain)
   registerMemoryHandlers(typedHandle)

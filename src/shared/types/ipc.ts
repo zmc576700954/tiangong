@@ -14,7 +14,7 @@ import type {
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
-  CompactHistoryEntry, ContextState,   // Phase 2 additions
+  CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
 } from './agent'
 
 // ============================================
@@ -93,7 +93,7 @@ export interface IpcApi {
   // Context waterline (Phase 2)
   'context:getWaterline': (threadId: string) => Promise<ContextState | null>
   'context:listHistory': (threadId: string) => Promise<CompactHistoryEntry[]>
-  'context:compactNow': (sessionId: string, strategy?: string) => Promise<{ status: string }>
+  'context:compactNow': (sessionId: string, strategy?: CompactStrategy) => Promise<CompactResult>
 
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>

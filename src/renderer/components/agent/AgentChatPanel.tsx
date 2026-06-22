@@ -319,6 +319,16 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     setShowContextPicker(false)
   }
 
+  const handleCompact = useCallback(async () => {
+    if (!currentThread?.sessionId) return
+    try {
+      const result = await window.electronAPI['context:compactNow'](currentThread.sessionId)
+      console.log('[Compact] success', result)
+    } catch (err) {
+      console.error('[Compact] failed', err)
+    }
+  }, [currentThread?.sessionId])
+
   const isRunning = currentThread?.status === 'running'
   const isDegraded = currentThread?.fallbackInfo != null
   const originalAdapter = currentThread?.fallbackInfo?.originalAdapter
@@ -348,6 +358,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onOpenHistory={() => setShowHistory(true)}
         onOpenSettings={() => setOpenSettingsPanel(true)}
         waterlineState={waterlineState}
+        onCompact={handleCompact}
       />
 
       {showThreadList && (

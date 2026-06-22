@@ -10,7 +10,8 @@ import type { BrowserWindow } from 'electron'
 import type { TypedHandle } from './utils'
 import type { ContextWaterline } from '../memory/context-waterline'
 import type { CompactHistoryRepository } from '../repositories/compact-history-repository'
-import type { ContextState, CompactHistoryEntry } from '@shared/types'
+import type { AgentManager } from '../agent/agent-manager'
+import type { ContextState, CompactHistoryEntry, CompactStrategy, CompactResult } from '@shared/types'
 
 const MAX_ID_LEN = 64
 
@@ -23,6 +24,7 @@ function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): string 
 
 export function registerContextHandlers(
   waterline: ContextWaterline,
+  agentManager: AgentManager,
   typedHandle: TypedHandle,
   compactHistoryRepo?: CompactHistoryRepository,
   getMainWindow?: () => BrowserWindow | null,
@@ -38,10 +40,13 @@ export function registerContextHandlers(
     return compactHistoryRepo.listByThread(id)
   })
 
-  // Phase 2: compactNow is a stub. Phase 3 will implement actual compaction
-  // via AgentManager.compactContext(sessionId, strategy).
-  typedHandle('context:compactNow', async (_, _sessionId: unknown, _strategy: unknown): Promise<{ status: string }> => {
-    return { status: 'not_available' }
+  // Phase 3: actually invoke AgentManager.compactContext with the resolved strategy.
+  typedHandle('context:compactNow', async (_, sessionId: unknown, strategy: unknown): Promise<CompactResult> => {
+    const sid = ensureString('sessionId', sessionId)
+    const strat = strategy === undefined || strategy === null
+      ? undefined
+      : ensureString('strategy', strategy) as CompactStrategy
+    return agentManager.compactContext(sid, strat, { reason: 'manual' })
   })
 
   // Push waterline change events to the main window

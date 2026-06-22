@@ -2,6 +2,7 @@ import type { ContextState } from '@shared/types'
 
 interface Props {
   state: ContextState | null
+  onCompact?: () => void
 }
 
 function formatTokens(n: number): string {
@@ -20,7 +21,7 @@ function formatLastCompact(timestamp: number): string {
   return `${Math.round(h / 24)}d`
 }
 
-export function ContextWaterlineBar({ state }: Props) {
+export function ContextWaterlineBar({ state, onCompact }: Props) {
   if (!state || state.tokensMax === 0) return null
 
   const pct = Math.round(state.ratio * 100)
@@ -48,6 +49,15 @@ export function ContextWaterlineBar({ state }: Props) {
         <span className="text-muted-foreground whitespace-nowrap text-[10px]">
           ⏱ {formatLastCompact(state.lastCompactedAt)}
         </span>
+      )}
+      {onCompact && (
+        <button
+          onClick={onCompact}
+          className="text-[10px] px-1.5 py-0.5 rounded hover:bg-muted border border-border"
+          title="Compact context now"
+        >
+          Compact
+        </button>
       )}
     </div>
   )

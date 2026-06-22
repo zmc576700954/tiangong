@@ -21,6 +21,7 @@ interface ChatHeaderProps {
   onOpenHistory?: () => void
   onOpenSettings?: () => void
   waterlineState?: ContextState | null
+  onCompact?: () => void
 }
 
 export function ChatHeader({
@@ -40,6 +41,7 @@ export function ChatHeader({
   onOpenHistory,
   onOpenSettings,
   waterlineState,
+  onCompact,
 }: ChatHeaderProps) {
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
 
@@ -125,7 +127,7 @@ export function ChatHeader({
         </span>
       </div>
 
-      <ContextWaterlineBar state={waterlineState ?? null} />
+      <ContextWaterlineBar state={waterlineState ?? null} onCompact={onCompact} />
 
       <div className="flex items-center gap-0.5">
         <button
