@@ -47,7 +47,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
   private outputSessionStack: string[] = []
   /** 会话输出缓冲区：为不支持 resume 的适配器收集历史输出，用于生成上下文摘要 */
-  private sessionOutputBuffers = new Map<string, string[]>()
+  protected sessionOutputBuffers = new Map<string, string[]>()
   /** 单会话输出条数上限，防止内存无限增长 */
   private static readonly MAX_OUTPUT_BUFFER_SIZE = 200
   /** 错误关键词列表（与 MemoryExtractor 保持一致） */
@@ -830,7 +830,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     _options?: { reason?: CompactTrigger },
   ): Promise<CompactResult> {
     throw new AdapterError(
-      'NATIVE_COMPACT_NOT_SUPPORTED',
+      'Native compaction is not supported by this adapter',
       this.name,
       ErrorCode.AGENT_COMPACT_FAILED,
     )
@@ -844,7 +844,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     _options?: { reason?: CompactTrigger },
   ): Promise<CompactResult> {
     throw new AdapterError(
-      'LLM_COMPACT_NOT_SUPPORTED',
+      'LLM-based compaction is not supported by this adapter',
       this.name,
       ErrorCode.AGENT_COMPACT_FAILED,
     )

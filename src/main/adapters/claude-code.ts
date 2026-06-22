@@ -12,9 +12,16 @@
 
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
-import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
-import { AdapterError } from '../errors'
+import type {
+  AgentSession,
+  AgentSessionConfig,
+  AgentCommand,
+  CompactResult,
+  CompactTrigger,
+} from '@shared/types'
+import { AdapterError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
+import { estimateTokens } from '../shared/token-utils'
 
 type QueryFn = typeof import('@anthropic-ai/claude-agent-sdk').query
 
@@ -42,6 +49,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   private sdkQuery: QueryFn | null = null
   private sdkLoadAttempted = false
   private activeQueries = new Map<string, { abort: () => void }>()
+  /** Sessions flagged for auto-compaction on the next query() call */
+  private autoCompactEnabledFor = new Set<string>()
 
   private async loadSdk(): Promise<QueryFn | null> {
     if (this.sdkLoadAttempted) return this.sdkQuery
@@ -101,6 +110,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           env: this.buildSafeEnv(),
           permissionMode: 'acceptEdits',
           ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),
+          ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
           hooks: {
             PostToolUse: [
               {
@@ -161,6 +171,13 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         }
 
         if (message.type === 'result') {
+          // Report authoritative token usage to the AgentManager budget tracker
+          if (message.usage) {
+            const inputTokens = (message.usage as { input_tokens?: number }).input_tokens ?? 0
+            if (inputTokens > 0) {
+              this.reportUsage(session.id, inputTokens)
+            }
+          }
           if (message.subtype === 'success') {
             this.emitOutput({
               type: 'complete',
@@ -206,6 +223,48 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     if (active) {
       active.abort()
       this.activeQueries.delete(sessionId)
+    }
+    // Clear the auto-compact flag when the session ends; a new session must opt in again
+    this.autoCompactEnabledFor.delete(sessionId)
+  }
+
+  /**
+   * Native compact for Claude Code:
+   * The Agent SDK does not expose a synchronous /compact API, so "native" compaction
+   * here means flagging the session so the next query() call passes
+   * `autoCompactEnabled: true`, letting the SDK perform the reduction inline.
+   * Token reduction is therefore deferred to the next turn.
+   */
+  protected async compactByNative(
+    sessionId: string,
+    options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new AdapterError(
+        `Session ${sessionId} not found`,
+        this.name,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
+
+    // Mark this session so the next query() call enables auto-compact.
+    // Keep the flag set across multiple queries — the SDK may compact incrementally.
+    this.autoCompactEnabledFor.add(sessionId)
+
+    const buffer = this.sessionOutputBuffers.get(sessionId) ?? []
+    const before = estimateTokens(buffer.join('\n'))
+    const startedAt = Date.now()
+
+    return {
+      sessionId,
+      strategy: 'native',
+      trigger: options?.reason ?? 'manual',
+      tokensBefore: before,
+      tokensAfter: before, // reduction deferred — SDK will handle on next query
+      summary: '(deferred — SDK auto-compact enabled for next turn)',
+      startedAt,
+      durationMs: Date.now() - startedAt,
     }
   }
 }
