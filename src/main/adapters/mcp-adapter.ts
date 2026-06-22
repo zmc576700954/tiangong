@@ -13,9 +13,17 @@ import { BaseAdapter } from './base'
 import { McpClient } from '../mcp/client'
 import { generateId } from '../shared/env'
 import type { ChildProcess } from 'node:child_process'
-import type { AgentSession, AgentSessionConfig, AgentCommand, ApiKeyConfig } from '@shared/types'
+import type {
+  AgentSession,
+  AgentSessionConfig,
+  AgentCommand,
+  ApiKeyConfig,
+  CompactResult,
+  CompactTrigger,
+} from '@shared/types'
 import { readSettings } from '../settings'
-import { AdapterError } from '../errors'
+import { AdapterError, ErrorCode } from '../errors'
+import { estimateTokens } from '../shared/token-utils'
 
 // ============================================
 // Tool Use 类型定义
@@ -50,11 +58,20 @@ interface RichLlmMessage {
   toolResults?: ToolResult[]
 }
 
+/** LLM 输入/输出 token 使用统计（Anthropic / OpenAI 兼容字段） */
+interface LlmUsage {
+  input_tokens?: number
+  output_tokens?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+}
+
 /** LLM 结构化响应 */
 interface LlmResponse {
   text: string
   toolCalls: UnifiedToolCall[]
   stopReason: 'end_turn' | 'tool_use' | 'max_tokens' | 'other'
+  usage?: LlmUsage
 }
 
 // ============================================
@@ -78,10 +95,12 @@ export function parseAnthropicResponse(data: unknown): LlmResponse {
       toolCalls.push({ id: block.id, name: block.name, arguments: (block.input as Record<string, unknown>) ?? {} })
     }
   }
+  const usage = d.usage as { input_tokens?: number; output_tokens?: number } | undefined
   return {
     text: textParts.join('\n'),
     toolCalls,
     stopReason: stopReason === 'tool_use' ? 'tool_use' : 'end_turn',
+    usage: usage ? { input_tokens: usage.input_tokens, output_tokens: usage.output_tokens } : undefined,
   }
 }
 
@@ -105,10 +124,12 @@ export function parseOpenAiResponse(data: unknown): LlmResponse {
     }
     if (name) toolCalls.push({ id: tc.id, name, arguments: args })
   }
+  const usage = d.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined
   return {
     text: typeof msg.content === 'string' ? msg.content : '',
     toolCalls,
     stopReason: choices[0]?.finish_reason === 'tool_calls' ? 'tool_use' : 'end_turn',
+    usage: usage ? { prompt_tokens: usage.prompt_tokens, completion_tokens: usage.completion_tokens } : undefined,
   }
 }
 
@@ -121,10 +142,12 @@ export function parseGeminiResponse(data: unknown): LlmResponse {
   const candidates = d.candidates as Array<Record<string, unknown>> | undefined
   const parts = (candidates?.[0]?.content as Record<string, unknown> | undefined)?.parts as Array<Record<string, unknown>> | undefined
   const text = typeof parts?.[0]?.text === 'string' ? parts[0].text : ''
+  const meta = d.usageMetadata as { promptTokenCount?: number; candidatesTokenCount?: number } | undefined
   return {
     text,
     toolCalls: [],
     stopReason: 'end_turn' as const,
+    usage: meta ? { prompt_tokens: meta.promptTokenCount, completion_tokens: meta.candidatesTokenCount } : undefined,
   }
 }
 
@@ -576,6 +599,7 @@ export class McpAdapter extends BaseAdapter {
             { role: 'user', content: userPrompt },
           ],
           settings.defaultModel,
+          session.id,
         )
 
         this.emitOutput({
@@ -754,6 +778,7 @@ export class McpAdapter extends BaseAdapter {
     messages: RichLlmMessage[],
     tools?: UnifiedTool[],
     defaultModel?: string,
+    sessionId?: string,
   ): Promise<LlmResponse> {
     const config = PROVIDER_CONFIGS[provider]
     if (!config) {
@@ -777,7 +802,18 @@ export class McpAdapter extends BaseAdapter {
     }
 
     const data = await res.json()
-    return config.parseResponse(data)
+    const parsed = config.parseResponse(data)
+
+    // Report authoritative token usage to the AgentManager budget tracker
+    if (sessionId && parsed.usage) {
+      const inputTokens = parsed.usage.input_tokens ?? parsed.usage.prompt_tokens ?? 0
+      if (inputTokens > 0) {
+        // Default to Claude's 200k context window; provider-specific limits can be wired later
+        this.reportUsage(sessionId, inputTokens, 200_000)
+      }
+    }
+
+    return parsed
   }
 
   /**
@@ -789,9 +825,10 @@ export class McpAdapter extends BaseAdapter {
     baseUrl: string | undefined,
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     defaultModel?: string,
+    sessionId?: string,
   ): Promise<string> {
     const richMessages: RichLlmMessage[] = messages.map((m) => ({ ...m }))
-    const response = await this.callLlmWithToolSupport(provider, key, baseUrl, richMessages, undefined, defaultModel)
+    const response = await this.callLlmWithToolSupport(provider, key, baseUrl, richMessages, undefined, defaultModel, sessionId)
     return response.text
   }
 
@@ -831,6 +868,7 @@ export class McpAdapter extends BaseAdapter {
         messages,
         tools,
         defaultModel,
+        session.id,
       )
 
       // 发送 LLM 的文本输出（如果有）
@@ -909,5 +947,101 @@ export class McpAdapter extends BaseAdapter {
       }
     }
     return { toolCallId: toolCall.id, content: `Tool not found: ${toolCall.name}`, isError: true }
+  }
+
+  // ============================================
+  // Phase 3: LLM-based context compaction
+  // ============================================
+
+  /**
+   * LLM-based compaction: send the session output buffer to a cheap model for
+   * summarisation and store the result as `session.config.contextSummary` so the
+   * next turn's scope prompt re-injects it. On failure the orchestrator falls
+   * back to `summary-rewrite`.
+   */
+  protected async compactByLlm(
+    sessionId: string,
+    options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    const session = this.sessions.get(sessionId)
+    if (!session) {
+      throw new AdapterError(
+        `Session ${sessionId} not found`,
+        this.name,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
+    const buffer = this.sessionOutputBuffers.get(sessionId) ?? []
+    const conversationText = buffer.join('\n').slice(0, 64_000)
+    const before = estimateTokens(conversationText)
+    const startedAt = Date.now()
+
+    let summary: string
+    try {
+      summary = await this.summariseViaLlm(conversationText, session)
+    } catch (err) {
+      // The orchestrator catches this and falls back to summary-rewrite
+      throw new AdapterError(
+        `LLM summarisation failed: ${err instanceof Error ? err.message : String(err)}`,
+        this.name,
+        ErrorCode.AGENT_COMPACT_FAILED,
+      )
+    }
+
+    const after = estimateTokens(summary)
+    session.config.contextSummary = summary
+    this.sessionOutputBuffers.set(sessionId, [])
+
+    return {
+      sessionId,
+      strategy: 'llm',
+      trigger: options?.reason ?? 'manual',
+      tokensBefore: before,
+      tokensAfter: after,
+      summary,
+      startedAt,
+      durationMs: Date.now() - startedAt,
+    }
+  }
+
+  /**
+   * Summarise conversation text via the active session's LLM provider.
+   * Returns a short text summary (no markdown, no preamble).
+   */
+  private async summariseViaLlm(text: string, _session: AgentSession): Promise<string> {
+    if (!text || text.trim().length === 0) {
+      return '(no prior context)'
+    }
+
+    const summaryPrompt = `Summarise this agent conversation history concisely (max 1KB), preserving:
+- Key decisions made
+- Files modified or created
+- Outstanding questions or blocked items
+- Recent context the next turn needs
+
+Conversation:
+${text}
+
+Output: a clean text summary. No preamble, no markdown.`
+
+    const settings = await readSettings()
+    const apiKey = resolveApiKey(settings.apiKeys, settings.defaultModel)
+    if (!apiKey) {
+      throw new AdapterError('No API key configured for LLM summarisation', this.name)
+    }
+
+    const result = await this.callLlmUnified(
+      apiKey.provider,
+      apiKey.key,
+      apiKey.baseUrl,
+      [
+        { role: 'system', content: 'You are a precise conversation summariser.' },
+        { role: 'user', content: summaryPrompt },
+      ],
+      settings.defaultModel,
+      // Intentionally omit sessionId here — this is a sidecar call, not part of the
+      // active session's input budget.
+    )
+    return result && result.length > 0 ? result : '(summary unavailable)'
   }
 }
