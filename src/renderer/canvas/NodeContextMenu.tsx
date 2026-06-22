@@ -3,6 +3,7 @@ import { cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2 } from 'lucide-react'
+import { useMenuPosition } from './hooks/useMenuPosition'
 
 interface NodeContextMenuProps {
   nodeId: string
@@ -64,6 +65,7 @@ export function NodeContextMenu({
   onGenerateChildren,
 }: NodeContextMenuProps) {
   const node = nodes.find((n) => n.id === nodeId)
+  const { ref: menuRef, adjustedPos } = useMenuPosition(x, y)
 
   // 使用 ref 避免每次渲染重新绑定事件监听器
   const onCloseRef = useRef(onClose)
@@ -81,8 +83,9 @@ export function NodeContextMenu({
 
   return (
     <div
+      ref={menuRef}
       className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-52"
-      style={{ left: x, top: y }}
+      style={{ left: adjustedPos.x, top: adjustedPos.y }}
       onClick={(e) => e.stopPropagation()}
     >
       <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">

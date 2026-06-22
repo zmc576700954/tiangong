@@ -378,40 +378,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     cancelConnect()
   }, [selectNode, selectEdge, cancelPendingConnection, cancelConnect])
 
-  const clampMenuPosition = useCallback((x: number, y: number, menuWidth = 160, menuHeight = 140) => {
-    const padding = 8
-    const maxX = window.innerWidth - menuWidth - padding
-    const maxY = window.innerHeight - menuHeight - padding
-    return {
-      x: Math.max(padding, Math.min(x, maxX)),
-      y: Math.max(padding, Math.min(y, maxY)),
-    }
-  }, [])
-
   const onPaneContextMenu = useCallback(
     (event: { preventDefault: () => void; clientX: number; clientY: number }) => {
       event.preventDefault()
-      setMenuPosition(clampMenuPosition(event.clientX, event.clientY, 160, 140))
+      setMenuPosition({ x: event.clientX, y: event.clientY })
       setShowNodeMenu(true)
       setNodeContextMenu(null)
       selectNode(null)
       selectEdge(null)
     },
-    [selectNode, selectEdge, clampMenuPosition],
+    [selectNode, selectEdge],
   )
 
   const handleNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
       event.preventDefault()
       event.stopPropagation()
-      const padding = 8
-      const menuWidth = 176
-      const menuHeight = 280
-      const maxX = window.innerWidth - menuWidth - padding
-      const maxY = window.innerHeight - menuHeight - padding
-      const x = Math.max(padding, Math.min(event.clientX, maxX))
-      const y = Math.max(padding, Math.min(event.clientY, maxY))
-      setNodeContextMenu({ nodeId: node.id, x, y })
+      setNodeContextMenu({ nodeId: node.id, x: event.clientX, y: event.clientY })
       setShowNodeMenu(false)
       cancelPendingConnection()
     },

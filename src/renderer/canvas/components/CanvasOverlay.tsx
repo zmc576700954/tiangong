@@ -4,6 +4,7 @@ import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/c
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
 import { NodeContextMenu } from '../NodeContextMenu'
+import { useMenuPosition } from '../hooks/useMenuPosition'
 
 interface CanvasOverlayProps {
   isEmpty: boolean
@@ -55,6 +56,7 @@ export function CanvasOverlay({
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
   const [edgeNote, setEdgeNote] = useState('')
+  const { ref: canvasMenuRef, adjustedPos: canvasMenuPos } = useMenuPosition(menuPosition.x, menuPosition.y)
 
   // 边类型菜单关闭时重置表单状态
   useEffect(() => {
@@ -99,8 +101,9 @@ export function CanvasOverlay({
       {/* 右键画布菜单 */}
       {showNodeMenu && (
         <div
+          ref={canvasMenuRef}
           className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-40"
-          style={{ left: menuPosition.x, top: menuPosition.y }}
+          style={{ left: canvasMenuPos.x, top: canvasMenuPos.y }}
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">添加节点</div>
           {canvasNodeTypes.map((type) => (

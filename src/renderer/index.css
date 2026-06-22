@@ -215,6 +215,19 @@
   box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
 }
 
+/* Custom cursors for mind map canvas */
+.react-flow__pane {
+  cursor: url('@/assets/cursors/cursor-arrow.svg') 4 2, default;
+}
+
+.react-flow__node {
+  cursor: url('@/assets/cursors/cursor-hand.svg') 6 2, pointer;
+}
+
+.react-flow__node.dragging {
+  cursor: url('@/assets/cursors/cursor-hand.svg') 6 2, pointer;
+}
+
 /* 节点状态样式 */
 .node-status-draft {
   border-color: #94a3b8;
