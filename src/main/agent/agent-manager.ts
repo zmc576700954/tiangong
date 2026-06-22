@@ -35,6 +35,11 @@ import { PromptOrchestrator } from '../memory/prompt-orchestrator'
 import { PipelineRunner } from '../memory/pipeline'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import type { ContextWaterline } from '../memory/context-waterline'
+import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
+import type { CompactHistoryRepository } from '../repositories/compact-history-repository'
+import type { ChatRepository } from '../repositories/chat-repository'
+import { ADAPTER_REGISTRY } from '../adapters/registry'
+import type { BaseAdapter } from '../adapters/base'
 import { createLogger } from '../shared/logger'
 import os from 'node:os'
 
@@ -129,6 +134,12 @@ export class AgentManager {
   private adapterTimeoutCounts: Map<string, number> = new Map()
   /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
   private waterline?: ContextWaterline
+  /** Phase 3: compact history repo for persisting compaction results */
+  private compactHistoryRepo?: CompactHistoryRepository
+  /** Phase 3: chat repo for updating thread waterline metadata after compaction */
+  private chatRepo?: ChatRepository
+  /** Phase 3: dedup map for concurrent compactContext calls on the same session */
+  private compactInflight = new Map<string, Promise<CompactResult>>()
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -222,6 +233,16 @@ export class AgentManager {
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
     adapter.on('sessionEnded', sessionEndedHandler)
+
+    // Phase 3 Task 3: forward 'usage' events to the waterline for the bound thread
+    if ('onUsage' in adapter && typeof (adapter as { onUsage?: unknown }).onUsage === 'function') {
+      (adapter as BaseAdapter).onUsage(({ sessionId: sid, inputTokens, maxTokens }) => {
+        const ss = this.sessionStates.get(sid)
+        if (ss?.threadId && this.waterline) {
+          this.waterline.onAdapterUsageReport(ss.threadId, inputTokens, maxTokens ?? 200_000)
+        }
+      })
+    }
   }
 
   /**
@@ -539,6 +560,20 @@ export class AgentManager {
    */
   setWaterline(wl: ContextWaterline): void {
     this.waterline = wl
+  }
+
+  /**
+   * 注入 CompactHistoryRepository（Phase 3：用于持久化 compact_history）
+   */
+  setCompactHistoryRepo(repo: CompactHistoryRepository): void {
+    this.compactHistoryRepo = repo
+  }
+
+  /**
+   * 注入 ChatRepository（Phase 3：用于 compactContext 后更新 thread 的 waterline 元数据）
+   */
+  setChatRepo(repo: ChatRepository): void {
+    this.chatRepo = repo
   }
 
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
@@ -894,15 +929,16 @@ export class AgentManager {
       adapter.setMemoryContext(sessionId, assembled.text)
     }
 
-    // Phase 3 Task 1: auto-compact stub now resolves threadId from sessionState.
-    // The actual compactContext call lands in Phase 3 Task 3.
+    // Phase 3 Task 3: auto-compact actually triggers now.
     const sessionStateForCompact = this.sessionStates.get(sessionId)
     const threadId = sessionStateForCompact?.threadId
     if (threadId && this.waterline?.shouldAutoCompact(threadId)) {
-      logger.info(`[Waterline] Thread ${threadId} above threshold; Phase 3 will trigger compactContext here.`)
-      // Phase 3 Task 3 will replace this with:
-      // try { await this.compactContext(sessionId, undefined, { reason: 'auto-threshold' }) }
-      // catch (err) { logger.warn(...) }
+      try {
+        await this.compactContext(sessionId, undefined, { reason: 'auto-threshold' })
+      } catch (err) {
+        logger.warn(`[Waterline] Auto-compact failed for ${sessionId}: ${err}`)
+        // Continue sending the original command despite compact failure
+      }
     }
 
     await this.sendCommand(sessionId, command)
@@ -1217,6 +1253,124 @@ export class AgentManager {
     if (scopeGuardError) {
       throw scopeGuardError
     }
+  }
+
+  /**
+   * Phase 3 Task 3: Compact the context of a session.
+   *
+   * - Dedups concurrent calls on the same session
+   * - Resolves strategy (explicit param or adapter's defaultCompactStrategy or 'summary')
+   * - Broadcasts system messages before/after
+   * - Falls back native/llm → summary on failure
+   * - Persists to compact_history
+   * - Updates chat_threads last_compacted_at + context_tokens_used
+   * - Notifies waterline via onCompacted
+   */
+  async compactContext(
+    sessionId: string,
+    strategy?: CompactStrategy,
+    options?: { reason?: CompactTrigger },
+  ): Promise<CompactResult> {
+    const existing = this.compactInflight.get(sessionId)
+    if (existing) return existing
+
+    const promise = this._doCompactContext(sessionId, strategy, options)
+    this.compactInflight.set(sessionId, promise)
+    try {
+      return await promise
+    } finally {
+      this.compactInflight.delete(sessionId)
+    }
+  }
+
+  private async _doCompactContext(
+    sessionId: string,
+    strategy: CompactStrategy | undefined,
+    options: { reason?: CompactTrigger } | undefined,
+  ): Promise<CompactResult> {
+    const state = this.sessionStates.get(sessionId)
+    if (!state) {
+      throw new AgentError(`Session ${sessionId} not found`, ErrorCode.AGENT_SESSION_NOT_FOUND)
+    }
+    const adapter = this.registry.get(state.adapterName) as BaseAdapter | undefined
+    if (!adapter) {
+      throw new AgentError(
+        `Adapter ${state.adapterName} not found`,
+        ErrorCode.AGENT_ADAPTER_NOT_FOUND,
+      )
+    }
+    const descriptor = ADAPTER_REGISTRY.find((d) => d.name === state.adapterName)
+    const finalStrategy: CompactStrategy = strategy
+      ?? (descriptor as { defaultCompactStrategy?: CompactStrategy } | undefined)?.defaultCompactStrategy
+      ?? 'summary'
+    const threadId = state.threadId
+
+    // Broadcast "compacting" notification
+    this.broadcaster.broadcast(state.broadcastName, {
+      type: 'system',
+      data: `Compacting context (${finalStrategy})...`,
+      timestamp: Date.now(),
+    })
+
+    let result: CompactResult
+    try {
+      result = await adapter.compactContext(sessionId, finalStrategy, options)
+    } catch (err) {
+      if (finalStrategy === 'native' || finalStrategy === 'llm') {
+        logger.warn(`[Compact] ${finalStrategy} failed, falling back to summary: ${err}`)
+        this.broadcaster.broadcast(state.broadcastName, {
+          type: 'system',
+          data: `${finalStrategy} compaction failed, falling back to summary rewrite.`,
+          timestamp: Date.now(),
+        })
+        result = await adapter.compactContext(sessionId, 'summary', options)
+      } else {
+        throw err
+      }
+    }
+
+    // Persist history (non-blocking on error)
+    if (this.compactHistoryRepo) {
+      try {
+        await this.compactHistoryRepo.insert({
+          threadId: threadId ?? null,
+          sessionId,
+          strategy: result.strategy,
+          trigger: result.trigger,
+          tokensBefore: result.tokensBefore,
+          tokensAfter: result.tokensAfter,
+          summary: result.summary ?? null,
+          startedAt: result.startedAt,
+          durationMs: result.durationMs,
+        })
+      } catch (err) {
+        logger.warn(`[Compact] Failed to insert history: ${err}`)
+      }
+    }
+
+    // Update thread waterline metadata (non-blocking on error)
+    if (this.chatRepo && threadId) {
+      try {
+        await this.chatRepo.setLastCompactedAt(threadId, result.startedAt)
+        await this.chatRepo.resetContextTokens(threadId, result.tokensAfter)
+      } catch (err) {
+        logger.warn(`[Compact] Failed to update thread waterline: ${err}`)
+      }
+    }
+
+    // Update waterline in-memory state
+    if (this.waterline && threadId) {
+      this.waterline.onCompacted(threadId, result.tokensAfter, result.startedAt)
+    }
+
+    // Broadcast completion
+    this.broadcaster.broadcast(state.broadcastName, {
+      type: 'system',
+      data: `Compacted: ${result.tokensBefore} → ${result.tokensAfter} tokens (${result.durationMs}ms)`,
+      timestamp: Date.now(),
+    })
+
+    return result
   }
 
   /**

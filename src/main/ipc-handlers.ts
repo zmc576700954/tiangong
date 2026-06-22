@@ -121,8 +121,15 @@ function setupAgentLogPersistence(): void {
 
 export async function registerIpcHandlers(): Promise<void> {
   const db = getClient()
+  const chatRepo = new ChatRepository(db)
+
+  // Wire waterline's dbWriteback so token changes persist to chat_threads
+  contextWaterline.setDbWriteback(async (threadId, tokensUsed) => {
+    await chatRepo.resetContextTokens(threadId, tokensUsed)
+  })
+
   const graphService = new GraphService(db, agentManager)
-  const chatService = new ChatService(new ChatRepository(db), contextWaterline)
+  const chatService = new ChatService(chatRepo, contextWaterline)
   setupAgentLogPersistence()
   const typedHandle = createTypedHandle(ipcMain)
 
@@ -260,6 +267,9 @@ export async function registerIpcHandlers(): Promise<void> {
   registerMindmapHandlers(typedHandle, agentManager)
   registerChatHandlers(chatService, typedHandle)
   const compactHistoryRepo = new CompactHistoryRepository(db)
+  // Phase 3 Task 3: wire repos into AgentManager so compactContext can persist
+  agentManager.setCompactHistoryRepo(compactHistoryRepo)
+  agentManager.setChatRepo(chatRepo)
   const getMainWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
