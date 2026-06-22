@@ -39,6 +39,10 @@ export interface AgentSessionConfig {
   commandType?: AgentCommandType
   /** 会话超时时间（毫秒），降级适配器自动缩短 */
   timeoutMs?: number
+  /** 父 session（子代理 invocation 时回链）；Phase 1 仅占位，Phase 4 起用 */
+  parentSessionId?: string
+  /** SubagentInvocation.id — Phase 1 仅占位，Phase 4 起用 */
+  swarmTaskId?: string
 }
 
 export interface BugContext {
@@ -144,6 +148,14 @@ export interface AgentThread {
   nodeBound?: string
   sessionId?: string
   fallbackInfo?: { originalAdapter: string; fallbackReason: string }
+  /** 父 thread 引用（reserved；Phase 1 仅占位，subagent flow 不使用） */
+  parentThreadId?: string
+  /** 当前 thread 已用 token（来自 ContextWaterline；Phase 2 起填值） */
+  contextTokensUsed?: number
+  /** 当前 thread 的 token 窗口上限（来自 ADAPTER_REGISTRY；Phase 2 起填值） */
+  contextWindowMax?: number
+  /** 最近一次压缩的时间戳；Phase 3 起填值 */
+  lastCompactedAt?: number
 }
 
 /** Agent 会话（可序列化，不含 Node.js 运行时对象） */
@@ -468,6 +480,11 @@ export const AdapterCapability = {
   MultiTurn: 'multiTurn',
   ScopeGuard: 'scopeGuard',
   Tools: 'tools',
+  // Phase 1 additions — context compaction & subagent dispatch
+  NativeCompact: 'native-compact',
+  LlmCompact: 'llm-compact',
+  SummaryRewrite: 'summary-rewrite',
+  SwarmCoordinator: 'swarm-coord',
 } as const
 export type AdapterCapability = typeof AdapterCapability[keyof typeof AdapterCapability]
 
@@ -568,4 +585,40 @@ export interface CodeIntelExecutionPlan {
   estimatedComplexity: 'simple' | 'moderate' | 'complex'
   requiresNewFiles: boolean
   affectedSymbols: string[]
+}
+
+// ============================================
+// Context compaction (Phase 1 of context-compaction-and-subagent-dispatch)
+// ============================================
+
+/** Compaction strategy chosen by the adapter for one compact call. */
+export type CompactStrategy = 'native' | 'llm' | 'summary'
+
+/** What triggered a compaction. */
+export type CompactTrigger = 'manual' | 'auto-threshold' | 'auto-token-limit'
+
+/** Result of a compact call — returned by AgentManager and persisted to compact_history. */
+export interface CompactResult {
+  sessionId: string
+  strategy: CompactStrategy
+  trigger: CompactTrigger
+  tokensBefore: number
+  tokensAfter: number
+  summary?: string
+  startedAt: number
+  durationMs: number
+}
+
+/** Persisted compact_history row (renderer-facing shape). */
+export interface CompactHistoryEntry {
+  id: string
+  threadId: string | null
+  sessionId: string | null
+  strategy: CompactStrategy
+  trigger: CompactTrigger
+  tokensBefore: number
+  tokensAfter: number
+  summary: string | null
+  startedAt: number
+  durationMs: number
 }
