@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock, Zap, AlertCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import type { AdapterFallbackAttempt } from '@shared/types'
+import type { AdapterFallbackAttempt, ContextState } from '@shared/types'
+import { ContextWaterlineBar } from './ContextWaterlineBar'
 
 interface ChatHeaderProps {
   adapterName: string
@@ -19,6 +20,7 @@ interface ChatHeaderProps {
   onOpenCli?: () => void
   onOpenHistory?: () => void
   onOpenSettings?: () => void
+  waterlineState?: ContextState | null
 }
 
 export function ChatHeader({
@@ -37,6 +39,7 @@ export function ChatHeader({
   onOpenCli,
   onOpenHistory,
   onOpenSettings,
+  waterlineState,
 }: ChatHeaderProps) {
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
 
@@ -121,6 +124,8 @@ export function ChatHeader({
           {threadTitle}
         </span>
       </div>
+
+      <ContextWaterlineBar state={waterlineState ?? null} />
 
       <div className="flex items-center gap-0.5">
         <button

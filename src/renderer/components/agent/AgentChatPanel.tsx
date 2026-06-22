@@ -8,6 +8,7 @@ import { useSessionStore } from '../../store/sessionStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
 import { useDiffReview } from '../../hooks/useDiffReview'
+import { useWaterline } from '../../hooks/useWaterline'
 import { ChatHeader } from './ChatHeader'
 import { ConfirmationDialog } from './ConfirmationDialog'
 import { ContextBar } from './ContextBar'
@@ -85,6 +86,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // Hooks for separated concerns
   const streamingMsgIdRef = useAgentOutputListener(currentThreadId)
+  const waterlineState = useWaterline(currentThreadId)
   const {
     showVerification,
     verificationReport,
@@ -345,6 +347,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onToggleExpand={onToggleExpand}
         onOpenHistory={() => setShowHistory(true)}
         onOpenSettings={() => setOpenSettingsPanel(true)}
+        waterlineState={waterlineState}
       />
 
       {showThreadList && (
