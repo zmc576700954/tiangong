@@ -4,6 +4,9 @@
  */
 
 import type { TypedHandle } from './utils'
+import { createLogger } from '../shared/logger'
+
+const logger = createLogger('SettingsIPC')
 
 export function registerSettingsHandlers(typedHandle: TypedHandle): void {
   typedHandle('settings:read', async () => {
@@ -47,5 +50,20 @@ export function registerSettingsHandlers(typedHandle: TypedHandle): void {
   typedHandle('settings:setAdapterPreferences', async (_, prefs) => {
     const { setAdapterPreferences } = await import('../settings')
     await setAdapterPreferences(prefs)
+  })
+
+  typedHandle('settings:getContextWaterlineConfig', async () => {
+    return {
+      autoCompactEnabled: false,
+      autoCompactThreshold: 0.75,
+      minCompactInterval: 60_000,
+    }
+  })
+
+  typedHandle('settings:setContextWaterlineConfig', async (_, cfg) => {
+    // Phase 2: log but don't persist. Phase 3 will hook this up to:
+    // 1) update ContextWaterline runtime config
+    // 2) persist to settings.json
+    logger.info('Waterline config update received (not yet persisted):', cfg)
   })
 }
