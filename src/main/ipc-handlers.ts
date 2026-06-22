@@ -31,6 +31,7 @@ import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
 import { registerChatHandlers } from './ipc/chat'
+import { registerContextHandlers } from './ipc/context-waterline'
 import { registerScopeGuardHandlers } from './ipc/scope-guard'
 import { registerCodeIntelHandlers, initCodeIntelligence, getSymbolIndex } from './ipc/code-intelligence'
 import { registerMemoryHandlers } from './ipc/memory'
@@ -39,6 +40,7 @@ import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
 import { ChatRepository } from './repositories/chat-repository'
 import { ContextWaterline } from './memory/context-waterline'
+import { CompactHistoryRepository } from './repositories/compact-history-repository'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
@@ -257,6 +259,12 @@ export async function registerIpcHandlers(): Promise<void> {
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager)
   registerChatHandlers(chatService, typedHandle)
+  const compactHistoryRepo = new CompactHistoryRepository(db)
+  const getMainWindow = (): BrowserWindow | null => {
+    const windows = BrowserWindow.getAllWindows()
+    return windows.length > 0 ? windows[0] : null
+  }
+  registerContextHandlers(contextWaterline, typedHandle, compactHistoryRepo, getMainWindow)
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
   registerCodeIntelHandlers(ipcMain)
   registerMemoryHandlers(typedHandle)

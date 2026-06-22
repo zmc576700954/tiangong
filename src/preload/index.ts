@@ -9,7 +9,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { IpcApi, AgentOutput } from '@shared/types'
+import type { IpcApi, AgentOutput, ContextState } from '@shared/types'
 
 // 渲染进程实际使用的 IPC 通道（最小暴露原则）
 const exposedChannels: (keyof IpcApi)[] = [
@@ -70,6 +70,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   'chat:archiveStale',
   'chat:cleanupArchived',
 
+  // Context waterline (Phase 2)
+  'context:getWaterline',
+  'context:listHistory',
+  'context:compactNow',
+
   // 文件系统 — 只读 + 文件操作
   'fs:readDir',
   'fs:readDirDetail',
@@ -106,6 +111,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   'settings:getAdapterPreferences',
   'settings:setAdapterPreferences',
   'settings:write',
+  'settings:getContextWaterlineConfig',
+  'settings:setContextWaterlineConfig',
 
   // ScopeGuard
   'scopeGuard:rollbackFile',
@@ -208,6 +215,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.off('session:recoveryFailed', handler)
   },
 
+  // Context waterline change event listener (Phase 2)
+  onWaterlineChange: (callback: (state: ContextState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: ContextState) => {
+      callback(state)
+    }
+    ipcRenderer.on('waterline:change', handler)
+    return () => { ipcRenderer.removeListener('waterline:change', handler) }
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -224,6 +240,7 @@ declare global {
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
+      onWaterlineChange: (callback: (state: ContextState) => void) => () => void
       platform: string
     }
   }
