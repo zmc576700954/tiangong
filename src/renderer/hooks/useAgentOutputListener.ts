@@ -3,7 +3,7 @@ import { useAgentStore } from '../store/agentStore'
 import { useMessageStore } from '../store/messageStore'
 import { eventBus, Events } from '../store/eventBus'
 import { generateId } from '../lib/utils'
-import type { AgentOutput, ToolCallBlock } from '@shared/types'
+import type { AgentOutput, ChatMessage, ToolCallBlock } from '@shared/types'
 
 // ==================== Risk level classification ====================
 
@@ -178,6 +178,19 @@ export function useAgentOutputListener(currentThreadId: string | null) {
         if (streamingMsgIdRef.current) {
           store.appendToStreamingMessage(tid, streamingMsgIdRef.current, '\n[stderr] ' + output.data.trim())
         }
+        return
+      }
+
+      if (output.type === 'system') {
+        const systemMsg: ChatMessage = {
+          id: `sys-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          role: 'system',
+          content: output.data,
+          timestamp: output.timestamp,
+          status: 'success',
+        }
+        store.appendChatMessage(tid, systemMsg)
+        return
       }
     })
 

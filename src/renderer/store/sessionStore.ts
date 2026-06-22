@@ -215,6 +215,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       nodeTitle: thread.nodeBound ?? '',
       nodeId: thread.nodeBound,
       acceptanceCriteria: [],
+      threadId: thread.id,
+    }
+
+    // Always ensure threadId is present (even when sessionConfig was supplied by caller).
+    if (!config.threadId) {
+      config.threadId = thread.id
     }
 
     // Determine commandType from bound node type for status auto-trigger

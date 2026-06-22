@@ -69,6 +69,8 @@ interface SessionState {
   promptTokenEstimate?: number
   /** 注入的上下文数量（用于质量反馈环） */
   contextCount?: number
+  /** Phase 3: thread bound to this session — used for waterline lookup & history persistence. */
+  threadId?: string
 }
 
 /** startSessionWithFallback 返回值 */
@@ -675,6 +677,7 @@ export class AgentManager {
           adapterName: candidate,
           startTime: session.startTime,
           sandbox,
+          threadId: config.threadId,
         })
         this.sessionBroadcastNames.set(session.id, broadcastName)
 
@@ -891,14 +894,15 @@ export class AgentManager {
       adapter.setMemoryContext(sessionId, assembled.text)
     }
 
-    // Phase 2: auto-compact check (stub — Phase 3 will implement actual compact).
-    // threadId resolution from sessionId is not currently maintained in AgentManager;
-    // shouldAutoCompact will return false here because autoCompactEnabled defaults to false
-    // and the waterline tracks state by threadId (populated via chat IPC), not sessionId.
-    // Phase 3: resolve threadId (via SessionRouter or session→thread map), emit system
-    // message, then await adapter.compactContext(sessionId) before sendCommand.
-    if (this.waterline?.shouldAutoCompact(sessionId)) {
-      logger.info(`[Waterline] Session ${sessionId} above threshold, would auto-compact (Phase 3)`)
+    // Phase 3 Task 1: auto-compact stub now resolves threadId from sessionState.
+    // The actual compactContext call lands in Phase 3 Task 3.
+    const sessionStateForCompact = this.sessionStates.get(sessionId)
+    const threadId = sessionStateForCompact?.threadId
+    if (threadId && this.waterline?.shouldAutoCompact(threadId)) {
+      logger.info(`[Waterline] Thread ${threadId} above threshold; Phase 3 will trigger compactContext here.`)
+      // Phase 3 Task 3 will replace this with:
+      // try { await this.compactContext(sessionId, undefined, { reason: 'auto-threshold' }) }
+      // catch (err) { logger.warn(...) }
     }
 
     await this.sendCommand(sessionId, command)

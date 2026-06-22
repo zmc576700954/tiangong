@@ -43,6 +43,8 @@ export interface AgentSessionConfig {
   parentSessionId?: string
   /** SubagentInvocation.id — Phase 1 仅占位，Phase 4 起用 */
   swarmTaskId?: string
+  /** Phase 3: thread to bind for waterline tracking & history persistence. */
+  threadId?: string
 }
 
 export interface BugContext {
@@ -66,7 +68,7 @@ export interface AgentCommand {
 
 /** Agent 输出 */
 export interface AgentOutput {
-  type: 'stdout' | 'stderr' | 'file_change' | 'error' | 'complete'
+  type: 'stdout' | 'stderr' | 'file_change' | 'error' | 'complete' | 'system'
   data: string
   timestamp: number
   /** 如果是 file_change，记录变更的文件路径 */
