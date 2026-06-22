@@ -6,6 +6,7 @@ import { GraphTabs } from './components/GraphTabs'
 import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
+import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 // 全局错误边界
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error?: Error }> {
@@ -66,6 +67,39 @@ function App() {
 
   const [expandedAgent, setExpandedAgent] = useState(false)
 
+  const [leftPanelVisible, setLeftPanelVisible] = useState(() => {
+    const saved = localStorage.getItem('bizgraph:panel:left:visible')
+    return saved !== null ? saved === 'true' : true
+  })
+  const [rightPanelVisible, setRightPanelVisible] = useState(() => {
+    const saved = localStorage.getItem('bizgraph:panel:right:visible')
+    return saved !== null ? saved === 'true' : true
+  })
+
+  // Persist panel visibility to localStorage
+  useEffect(() => {
+    localStorage.setItem('bizgraph:panel:left:visible', String(leftPanelVisible))
+  }, [leftPanelVisible])
+  useEffect(() => {
+    localStorage.setItem('bizgraph:panel:right:visible', String(rightPanelVisible))
+  }, [rightPanelVisible])
+
+  // Keyboard shortcuts for panel toggling
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault()
+        setLeftPanelVisible(v => !v)
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'j') {
+        e.preventDefault()
+        setRightPanelVisible(v => !v)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
+
   // Responsive layout detection
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
   useEffect(() => {
@@ -94,11 +128,11 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
-        {/* Left directory tree — hidden on small screens */}
-        {!isSmallScreen && (
+        {/* Left directory tree — hidden on small screens or when toggled off */}
+        {leftPanelVisible && !isSmallScreen && (
           <>
             <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
-              <LeftPanel />
+              <LeftPanel onClose={() => setLeftPanelVisible(false)} />
             </div>
             <div
               className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
@@ -111,9 +145,27 @@ function App() {
         )}
 
         {/* Center canvas area */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className="flex-1 flex flex-col min-w-0 relative">
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
           <div className="flex-1 relative">
+            {!leftPanelVisible && !isSmallScreen && (
+              <button
+                onClick={() => setLeftPanelVisible(true)}
+                className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-background border border-l-0 rounded-r shadow-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="Show file tree (Ctrl+B)"
+              >
+                <PanelLeftOpen className="w-4 h-4" />
+              </button>
+            )}
+            {!rightPanelVisible && (
+              <button
+                onClick={() => setRightPanelVisible(true)}
+                className="absolute right-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-background border border-r-0 rounded-l shadow-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="Show panel (Ctrl+J)"
+              >
+                <PanelRightOpen className="w-4 h-4" />
+              </button>
+            )}
             {currentGraphId ? (
               <GraphCanvas graphId={currentGraphId} />
             ) : (
@@ -127,23 +179,28 @@ function App() {
           </div>
         </div>
 
-        {/* Right Agent panel — always visible */}
-        <div
-          className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
-          style={{ width: '3px' }}
-          onMouseDown={rightPanel.startResize}
-        >
-          <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
-        </div>
-        <div
-          style={{ width: rightPanel.width, minWidth: rightPanel.width }}
-          className="shrink-0"
-        >
-          <RightPanel
-            expandedAgent={expandedAgent}
-            onToggleExpand={() => setExpandedAgent(!expandedAgent)}
-          />
-        </div>
+        {/* Right Agent panel — conditionally visible */}
+        {rightPanelVisible && (
+          <>
+            <div
+              className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
+              style={{ width: '3px' }}
+              onMouseDown={rightPanel.startResize}
+            >
+              <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
+            </div>
+            <div
+              style={{ width: rightPanel.width, minWidth: rightPanel.width }}
+              className="shrink-0"
+            >
+              <RightPanel
+                expandedAgent={expandedAgent}
+                onToggleExpand={() => setExpandedAgent(!expandedAgent)}
+                onClose={() => setRightPanelVisible(false)}
+              />
+            </div>
+          </>
+        )}
       </div>
     </ErrorBoundary>
   )

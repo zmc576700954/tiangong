@@ -37,7 +37,7 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
-import { AlignHorizontalDistributeCenter, GitBranch, X } from 'lucide-react'
+import { AlignHorizontalDistributeCenter, GitBranch, X, Search } from 'lucide-react'
 import { eventBus, Events } from '../store/eventBus'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
@@ -109,7 +109,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
 
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, setCenter } = useReactFlow()
 
   const bugCountMap = useMemo(() => {
     const map = new Map<string, number>()
@@ -143,6 +143,49 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+
+  // ────────────────────────────────────────────────────────────────
+  // Node search overlay
+  // ────────────────────────────────────────────────────────────────
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<GraphNode[]>([])
+  const [searchIndex, setSearchIndex] = useState(0)
+
+  const navigateToSearchResult = useCallback((node: GraphNode) => {
+    selectNode(node.id)
+    setCenter(node.position.x, node.position.y, { zoom: 1, duration: 300 })
+  }, [selectNode, setCenter])
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchResults([])
+      setSearchIndex(0)
+      return
+    }
+    const results = useGraphStore.getState().searchNodes(searchQuery)
+    setSearchResults(results)
+    setSearchIndex(0)
+  }, [searchQuery])
+
+  useEffect(() => {
+    if (searchResults.length > 0 && searchIndex < searchResults.length) {
+      navigateToSearchResult(searchResults[searchIndex])
+    }
+  }, [searchResults, searchIndex, navigateToSearchResult])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        const tag = (e.target as HTMLElement).tagName
+        if (tag === 'INPUT' || tag === 'TEXTAREA') return
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
 
   const zoomLevel = useGraphRuntimeStore((s) => s.zoomLevel)
   const isZoomedOut = useGraphRuntimeStore((s) => s.isZoomedOut)
@@ -554,14 +597,24 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         </Panel>
 
         <Panel position="top-right" className="m-2">
-          <button
-            onClick={applyLayout}
-            className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-            title="整理布局"
-          >
-            <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
-            整理布局
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setSearchOpen(true)}
+              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+              title="Search nodes (Ctrl+F)"
+            >
+              <Search className="w-3.5 h-3.5" />
+              Search
+            </button>
+            <button
+              onClick={applyLayout}
+              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+              title="整理布局"
+            >
+              <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
+              整理布局
+            </button>
+          </div>
         </Panel>
 
         {connectingSourceId && (
@@ -581,6 +634,51 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             </div>
           </Panel>
         )}
+
+        <Panel position="top-center" className="m-2">
+          {searchOpen && (
+            <div className="flex items-center gap-2 bg-background/95 backdrop-blur border rounded-lg shadow-md px-3 py-2">
+              <Search className="w-4 h-4 text-muted-foreground shrink-0" />
+              <input
+                autoFocus
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search nodes..."
+                className="bg-transparent text-sm outline-none w-48"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && searchResults.length > 0) {
+                    setSearchIndex((i) => (i + 1) % searchResults.length)
+                  }
+                  if (e.key === 'Escape') {
+                    setSearchOpen(false)
+                    setSearchQuery('')
+                  }
+                }}
+              />
+              {searchResults.length > 0 && (
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {searchIndex + 1}/{searchResults.length}
+                </span>
+              )}
+              {searchResults.length > 1 && (
+                <button
+                  onClick={() => setSearchIndex((i) => (i + 1) % searchResults.length)}
+                  className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
+                  title="Next result (Enter)"
+                >
+                  <Search className="w-3 h-3" />
+                </button>
+              )}
+              <button
+                onClick={() => { setSearchOpen(false); setSearchQuery('') }}
+                className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
+                title="Close (Escape)"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+        </Panel>
 
         {(selectedNodeId || selectedEdgeId) && !connectingSourceId && (
           <Panel position="bottom-center" className="m-2">

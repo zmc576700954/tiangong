@@ -3,6 +3,7 @@ import {
   Pencil,
   Settings,
   Terminal,
+  PanelRightClose,
 } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
@@ -14,9 +15,11 @@ import { EdgeEditor } from './EdgeEditor'
 export function RightPanel({
   expandedAgent,
   onToggleExpand,
+  onClose,
 }: {
   expandedAgent?: boolean
   onToggleExpand?: () => void
+  onClose?: () => void
 }) {
   const {
     selectedNodeId,
@@ -79,6 +82,15 @@ export function RightPanel({
           <Terminal className="w-3.5 h-3.5" />
           Agent
         </button>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-muted transition-colors ml-auto"
+            title="Hide panel (Ctrl+J)"
+          >
+            <PanelRightClose className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+        )}
       </div>
 
       {/* Content area */}

@@ -6,6 +6,7 @@ import {
   Loader2,
   Settings,
   X,
+  PanelLeftClose,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useFileTreeStore } from '../store/fileTreeStore'
@@ -20,7 +21,7 @@ const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : null
 
-export function LeftPanel() {
+export function LeftPanel({ onClose }: { onClose: () => void }) {
   const projects = useFileTreeStore((s) => s.projects)
   const addProject = useFileTreeStore((s) => s.addProject)
   const removeProject = useFileTreeStore((s) => s.removeProject)
@@ -170,6 +171,13 @@ export function LeftPanel() {
             title="Open directory"
           >
             <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-muted transition-colors"
+            title="Hide file tree (Ctrl+B)"
+          >
+            <PanelLeftClose className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
         </div>
       </div>
