@@ -34,6 +34,7 @@ import { MemoryStore } from '../memory'
 import { PromptOrchestrator } from '../memory/prompt-orchestrator'
 import { PipelineRunner } from '../memory/pipeline'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
+import type { ContextWaterline } from '../memory/context-waterline'
 import { createLogger } from '../shared/logger'
 import os from 'node:os'
 
@@ -124,6 +125,8 @@ export class AgentManager {
   private fallbackRecoveryTimers = new Map<string, ReturnType<typeof setInterval>>()
   /** Consecutive timeout counter per adapter (health-driven auto-degradation) */
   private adapterTimeoutCounts: Map<string, number> = new Map()
+  /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
+  private waterline?: ContextWaterline
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -529,6 +532,13 @@ export class AgentManager {
     this.adapterPreferencesLoader = loader
   }
 
+  /**
+   * 注入 ContextWaterline 实例
+   */
+  setWaterline(wl: ContextWaterline): void {
+    this.waterline = wl
+  }
+
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
     return this.sessionStates.get(sessionId)?.sandbox
   }
@@ -879,6 +889,16 @@ export class AgentManager {
       }
       // Set the full assembled prompt as memory context for the adapter
       adapter.setMemoryContext(sessionId, assembled.text)
+    }
+
+    // Phase 2: auto-compact check (stub — Phase 3 will implement actual compact).
+    // threadId resolution from sessionId is not currently maintained in AgentManager;
+    // shouldAutoCompact will return false here because autoCompactEnabled defaults to false
+    // and the waterline tracks state by threadId (populated via chat IPC), not sessionId.
+    // Phase 3: resolve threadId (via SessionRouter or session→thread map), emit system
+    // message, then await adapter.compactContext(sessionId) before sendCommand.
+    if (this.waterline?.shouldAutoCompact(sessionId)) {
+      logger.info(`[Waterline] Session ${sessionId} above threshold, would auto-compact (Phase 3)`)
     }
 
     await this.sendCommand(sessionId, command)

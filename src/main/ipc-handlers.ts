@@ -37,6 +37,7 @@ import { registerMemoryHandlers } from './ipc/memory'
 import { registerModeHandlers } from './ipc/mode'
 import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
+import { ContextWaterline } from './memory/context-waterline'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
@@ -60,7 +61,12 @@ function createCoreDependencies() {
 
 const { broadcaster, agentManager, gitAgent } = createCoreDependencies()
 
-export { agentManager }
+// ContextWaterline: Phase 2 实例化，通过 setWaterline 注入到 AgentManager。
+// Phase 3: autoCompactEnabled 设为 true，完善 resolveAndSendCommand 的 threadId 映射逻辑。
+const contextWaterline = new ContextWaterline()
+agentManager.setWaterline(contextWaterline)
+
+export { agentManager, contextWaterline }
 
 // COUP-01: 解耦 broadcastOutput 与 BrowserWindow 的直接耦合
 broadcaster.onBroadcast((adapterName, output) => {
