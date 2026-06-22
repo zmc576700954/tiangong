@@ -37,6 +37,7 @@ import { registerMemoryHandlers } from './ipc/memory'
 import { registerModeHandlers } from './ipc/mode'
 import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
+import { ChatRepository } from './repositories/chat-repository'
 import { ContextWaterline } from './memory/context-waterline'
 import type { ValidateFsPath } from './ipc/fs'
 
@@ -119,7 +120,7 @@ function setupAgentLogPersistence(): void {
 export async function registerIpcHandlers(): Promise<void> {
   const db = getClient()
   const graphService = new GraphService(db, agentManager)
-  const chatService = new ChatService(db)
+  const chatService = new ChatService(new ChatRepository(db), contextWaterline)
   setupAgentLogPersistence()
   const typedHandle = createTypedHandle(ipcMain)
 

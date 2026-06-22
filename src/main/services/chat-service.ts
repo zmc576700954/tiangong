@@ -8,12 +8,20 @@ import type { ChatMessage, AgentThread } from '@shared/types'
 import { ChatRepository, type ChatThreadRow, type ChatMessageRow } from '../repositories/chat-repository'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
+import { estimateTokens } from '../shared/token-utils'
+import type { ContextWaterline } from '../memory/context-waterline'
 
 export class ChatService {
   private repo: ChatRepository
+  private waterline?: ContextWaterline
 
-  constructor(db: Client) {
-    this.repo = new ChatRepository(db)
+  constructor(dbOrRepo: Client | ChatRepository, waterline?: ContextWaterline) {
+    // Backward compatible: accept either a libsql Client (constructs the repo here)
+    // or an already-constructed ChatRepository (preferred for DI / testing).
+    this.repo = dbOrRepo instanceof ChatRepository
+      ? dbOrRepo
+      : new ChatRepository(dbOrRepo)
+    this.waterline = waterline
   }
 
   // ==================== Thread Operations ====================
@@ -80,6 +88,7 @@ export class ChatService {
   // ==================== Message Operations ====================
 
   async saveMessage(threadId: string, message: ChatMessage): Promise<void> {
+    const tokenCount = estimateTokens(message.content)
     await this.repo.saveMessage({
       id: message.id,
       threadId,
@@ -92,12 +101,21 @@ export class ChatService {
       contextRefs: message.contextRefs ? JSON.stringify(message.contextRefs) : undefined,
       toolCalls: message.toolCalls ? JSON.stringify(message.toolCalls) : undefined,
       createdAt: message.timestamp,
+      tokenCount,
     })
+    if (this.waterline) {
+      this.waterline.onMessagePersisted(threadId, message.content)
+    }
+    await this.repo.incrementContextTokens(threadId, tokenCount)
     await this.repo.updateThread(threadId, { updatedAt: Date.now() })
   }
 
   async saveMessages(threadId: string, messages: ChatMessage[]): Promise<void> {
-    await this.repo.saveMessages(messages.map((m) => ({
+    const messagesWithTokens = messages.map((m) => ({
+      original: m,
+      tokenCount: estimateTokens(m.content),
+    }))
+    await this.repo.saveMessages(messagesWithTokens.map(({ original: m, tokenCount }) => ({
       id: m.id,
       threadId,
       role: m.role,
@@ -109,7 +127,14 @@ export class ChatService {
       contextRefs: m.contextRefs ? JSON.stringify(m.contextRefs) : undefined,
       toolCalls: m.toolCalls ? JSON.stringify(m.toolCalls) : undefined,
       createdAt: m.timestamp,
+      tokenCount,
     })))
+    for (const { original: m, tokenCount } of messagesWithTokens) {
+      if (this.waterline) {
+        this.waterline.onMessagePersisted(threadId, m.content)
+      }
+      await this.repo.incrementContextTokens(threadId, tokenCount)
+    }
     await this.repo.updateThread(threadId, { updatedAt: Date.now() })
   }
 
@@ -143,6 +168,9 @@ export class ChatService {
       createdAt: row.created_at,
       nodeBound: row.node_id ?? undefined,
       sessionId: row.session_id ?? undefined,
+      contextTokensUsed: row.context_tokens_used,
+      contextWindowMax: row.context_window_max,
+      lastCompactedAt: row.last_compacted_at ?? undefined,
     }
   }
 
