@@ -127,11 +127,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
 
-  // Sync flowNodes into ReactFlow's internal node state
-  useEffect(() => {
-    setRfNodes(flowNodes)
-  }, [flowNodes, setRfNodes])
-
   const handleNodesChange: OnNodesChange<Node> = useCallback(
     (changes) => {
       // Let ReactFlow handle all change types internally (select, dimensions, position, remove)
@@ -324,6 +319,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     ...n,
     selected: n.id === selectedNodeId || n.id === connectingSourceId,
   })), [baseFlowNodes, selectedNodeId, connectingSourceId])
+
+  // Sync computed flowNodes into ReactFlow's internal node state
+  useEffect(() => {
+    setRfNodes(flowNodes)
+  }, [flowNodes, setRfNodes])
 
   const flowEdges = useMemo(() => baseFlowEdges.map((e) => {
     const isSelected = e.id === selectedEdgeId

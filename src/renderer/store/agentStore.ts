@@ -73,8 +73,8 @@ interface AgentState {
 // eslint-disable-next-line prefer-const
 let _originalSetState: typeof useAgentStore.setState
 
-let _adapterRafId: number | null = null
-let _threadRafId: number | null = null
+let _adapterPending = false
+let _threadPending = false
 
 function syncFromSubStores() {
   _originalSetState({
@@ -88,8 +88,10 @@ function syncFromSubStores() {
   })
 
   useAdapterStore.subscribe((state) => {
-    if (_adapterRafId !== null) cancelAnimationFrame(_adapterRafId)
-    _adapterRafId = requestAnimationFrame(() => {
+    if (_adapterPending) return
+    _adapterPending = true
+    const run = () => {
+      _adapterPending = false
       _originalSetState({
         adapters: state.adapters,
         adapterPreferences: state.adapterPreferences,
@@ -97,19 +99,29 @@ function syncFromSubStores() {
         marketplaceItems: state.marketplaceItems,
         openSettingsPanel: state.openSettingsPanel,
       })
-      _adapterRafId = null
-    })
+    }
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(run)
+    } else {
+      run()
+    }
   })
 
   useThreadStore.subscribe((state) => {
-    if (_threadRafId !== null) cancelAnimationFrame(_threadRafId)
-    _threadRafId = requestAnimationFrame(() => {
+    if (_threadPending) return
+    _threadPending = true
+    const run = () => {
+      _threadPending = false
       _originalSetState({
         threads: state.threads,
         currentThreadId: state.currentThreadId,
       })
-      _threadRafId = null
-    })
+    }
+    if (typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(run)
+    } else {
+      run()
+    }
   })
 }
 
