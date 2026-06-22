@@ -151,19 +151,19 @@ function App() {
             {!leftPanelVisible && !isSmallScreen && (
               <button
                 onClick={() => setLeftPanelVisible(true)}
-                className="absolute left-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-background border border-l-0 rounded-r shadow-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                 title="Show file tree (Ctrl+B)"
               >
-                <PanelLeftOpen className="w-4 h-4" />
+                <PanelLeftOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
               </button>
             )}
             {!rightPanelVisible && (
               <button
                 onClick={() => setRightPanelVisible(true)}
-                className="absolute right-0 top-1/2 -translate-y-1/2 z-10 p-1 bg-background border border-r-0 rounded-l shadow-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-l border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                 title="Show panel (Ctrl+J)"
               >
-                <PanelRightOpen className="w-4 h-4" />
+                <PanelRightOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
               </button>
             )}
             {currentGraphId ? (

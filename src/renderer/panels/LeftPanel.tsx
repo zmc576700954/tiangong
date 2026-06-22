@@ -174,10 +174,10 @@ export function LeftPanel({ onClose }: { onClose: () => void }) {
           </button>
           <button
             onClick={onClose}
-            className="p-1.5 rounded hover:bg-muted transition-colors"
+            className="p-1.5 rounded bg-primary/5 border border-primary/15 hover:bg-primary/10 transition-colors"
             title="Hide file tree (Ctrl+B)"
           >
-            <PanelLeftClose className="w-3.5 h-3.5 text-muted-foreground" />
+            <PanelLeftClose className="w-3.5 h-3.5 text-primary/70" />
           </button>
         </div>
       </div>

@@ -85,10 +85,10 @@ export function RightPanel({
         {onClose && (
           <button
             onClick={onClose}
-            className="p-1.5 rounded hover:bg-muted transition-colors ml-auto"
+            className="p-1.5 rounded bg-primary/5 border border-primary/15 hover:bg-primary/10 transition-colors ml-auto"
             title="Hide panel (Ctrl+J)"
           >
-            <PanelRightClose className="w-3.5 h-3.5 text-muted-foreground" />
+            <PanelRightClose className="w-3.5 h-3.5 text-primary/70" />
           </button>
         )}
       </div>
