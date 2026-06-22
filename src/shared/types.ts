@@ -68,3 +68,5 @@ export type {
   // IPC domain
   IpcApi,
 } from './types/ipc'
+
+export * from './types/subagent'
