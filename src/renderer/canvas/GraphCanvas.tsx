@@ -20,6 +20,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
+import { useAppStore } from '../store/appStore'
 import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
@@ -452,11 +453,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setNodeContextMenu(null)
   }, [startConnect])
 
-  /** 打开上下文编辑弹窗 */
+  /** 添加节点上下文到 Agent 面板 */
   const handleAddContext = useCallback((nodeId: string) => {
-    setContextPopover({ nodeId, x: Math.round(window.innerWidth / 2 - 144), y: Math.round(window.innerHeight / 3) })
+    const node = graphNodes.find((n) => n.id === nodeId)
+    if (!node) return
+    useAppStore.getState().setPendingContextRef({
+      type: 'node',
+      id: nodeId,
+      label: node.title,
+    })
+    useAppStore.getState().setActiveRightPanel('agent')
     setNodeContextMenu(null)
-  }, [])
+  }, [graphNodes])
 
   /** 保存节点上下文 */
   const handleSaveContext = useCallback(async (nodeId: string, contexts: import('@shared/types').ContextRef[]) => {

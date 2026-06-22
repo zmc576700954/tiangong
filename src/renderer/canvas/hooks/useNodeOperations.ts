@@ -93,6 +93,9 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     const node = graphNodes.find((n) => n.id === nodeId)
     if (!node || !projectPath) return
 
+    // Immediately switch to Agent panel so user sees feedback
+    useAppStore.getState().setActiveRightPanel('agent')
+
     try {
       // placeholder 节点自动切换到 developing 状态
       if (node.status === 'placeholder') {
@@ -104,7 +107,6 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       )
       if (prompt) {
         useAppStore.getState().setPendingPrompt(prompt)
-        useAppStore.getState().setActiveRightPanel('agent')
       }
     } catch (err) {
       console.error('[useNodeOperations] startDev failed:', err)
