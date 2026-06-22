@@ -73,8 +73,10 @@ interface AgentState {
 // eslint-disable-next-line prefer-const
 let _originalSetState: typeof useAgentStore.setState
 
+let _adapterRafId: number | null = null
+let _threadRafId: number | null = null
+
 function syncFromSubStores() {
-  // Initial sync
   _originalSetState({
     adapters: useAdapterStore.getState().adapters,
     adapterPreferences: useAdapterStore.getState().adapterPreferences,
@@ -85,22 +87,28 @@ function syncFromSubStores() {
     currentThreadId: useThreadStore.getState().currentThreadId,
   })
 
-  // Subscribe to adapterStore changes — use _originalSetState to avoid loop
   useAdapterStore.subscribe((state) => {
-    _originalSetState({
-      adapters: state.adapters,
-      adapterPreferences: state.adapterPreferences,
-      lastFallbackHistory: state.lastFallbackHistory,
-      marketplaceItems: state.marketplaceItems,
-      openSettingsPanel: state.openSettingsPanel,
+    if (_adapterRafId !== null) cancelAnimationFrame(_adapterRafId)
+    _adapterRafId = requestAnimationFrame(() => {
+      _originalSetState({
+        adapters: state.adapters,
+        adapterPreferences: state.adapterPreferences,
+        lastFallbackHistory: state.lastFallbackHistory,
+        marketplaceItems: state.marketplaceItems,
+        openSettingsPanel: state.openSettingsPanel,
+      })
+      _adapterRafId = null
     })
   })
 
-  // Subscribe to threadStore changes — use _originalSetState to avoid loop
   useThreadStore.subscribe((state) => {
-    _originalSetState({
-      threads: state.threads,
-      currentThreadId: state.currentThreadId,
+    if (_threadRafId !== null) cancelAnimationFrame(_threadRafId)
+    _threadRafId = requestAnimationFrame(() => {
+      _originalSetState({
+        threads: state.threads,
+        currentThreadId: state.currentThreadId,
+      })
+      _threadRafId = null
     })
   })
 }

@@ -6,6 +6,7 @@ import { useAgentOutputStore } from './agentOutputStore'
 export interface ThreadState {
   threads: AgentThread[]
   currentThreadId: string | null
+  nodeThreadMap: Map<string, AgentThread>
 
   createThread: (adapterName: string, nodeBound?: string) => string
   deleteThread: (threadId: string) => Promise<void>
@@ -26,6 +27,7 @@ export interface ThreadState {
 export const useThreadStore = create<ThreadState>((set, get) => ({
   threads: [],
   currentThreadId: null,
+  nodeThreadMap: new Map<string, AgentThread>(),
 
   createThread: (adapterName, nodeBound) => {
     const id = generateId('thread')
@@ -39,26 +41,39 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       createdAt: Date.now(),
       nodeBound,
     }
-    set((state) => ({
-      threads: [...state.threads, thread],
-      currentThreadId: id,
-    }))
+    set((state) => {
+      const newNodeThreadMap = nodeBound
+        ? new Map(state.nodeThreadMap).set(nodeBound, thread)
+        : state.nodeThreadMap
+      return {
+        threads: [...state.threads, thread],
+        currentThreadId: id,
+        nodeThreadMap: newNodeThreadMap,
+      }
+    })
     // Persist to DB — use returned DB ID if available
     window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).then((dbThread) => {
       if (dbThread?.id && dbThread.id !== id) {
         // Replace frontend ID with DB ID for consistency
-        set((state) => ({
-          threads: state.threads.map((t) =>
-            t.id === id ? { ...t, id: dbThread.id } : t
-          ),
-          currentThreadId: state.currentThreadId === id ? dbThread.id : state.currentThreadId,
-        }))
+        set((state) => {
+          const updatedThread = state.threads.find((t) => t.id === id)
+          const newNodeThreadMap = nodeBound && updatedThread
+            ? new Map(state.nodeThreadMap).set(nodeBound, { ...updatedThread, id: dbThread.id })
+            : state.nodeThreadMap
+          return {
+            threads: state.threads.map((t) =>
+              t.id === id ? { ...t, id: dbThread.id } : t
+            ),
+            currentThreadId: state.currentThreadId === id ? dbThread.id : state.currentThreadId,
+            nodeThreadMap: newNodeThreadMap,
+          }
+        })
       }
     }).catch((err) => {
       console.error('[threadStore] Failed to persist new thread:', err)
       set((state) => ({
         threads: state.threads.map((t) =>
-          t.id === id ? { ...t, status: 'error' as const } : t,
+          t.id === id ? { ...t, status: 'error' as const } : t
         ),
       }))
     })
@@ -75,17 +90,25 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       if (thread) {
         set((state) => ({
           threads: [...state.threads, thread],
+          nodeThreadMap: thread.nodeBound
+            ? new Map(state.nodeThreadMap).set(thread.nodeBound, thread)
+            : state.nodeThreadMap,
         }))
       }
       return
     }
-    set((state) => ({
-      threads: state.threads.filter((t) => t.id !== threadId),
-      currentThreadId:
-        state.currentThreadId === threadId
-          ? state.threads.find((t) => t.id !== threadId)?.id ?? null
-          : state.currentThreadId,
-    }))
+    set((state) => {
+      const newNodeThreadMap = new Map(state.nodeThreadMap)
+      if (thread?.nodeBound) newNodeThreadMap.delete(thread.nodeBound)
+      return {
+        threads: state.threads.filter((t) => t.id !== threadId),
+        currentThreadId:
+          state.currentThreadId === threadId
+            ? state.threads.find((t) => t.id !== threadId)?.id ?? null
+            : state.currentThreadId,
+        nodeThreadMap: newNodeThreadMap,
+      }
+    })
   },
 
   selectThread: (id) => {
@@ -114,7 +137,11 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
 
   loadThreads: async (filters) => {
     const threads = await window.electronAPI['thread:list'](filters)
-    set({ threads })
+    const nodeThreadMap = new Map<string, AgentThread>()
+    for (const t of threads) {
+      if (t.nodeBound) nodeThreadMap.set(t.nodeBound, t)
+    }
+    set({ threads, nodeThreadMap })
   },
 
   updateThreadStatus: (threadId, status) => {
@@ -130,7 +157,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   },
 
   getThreadByNodeId: (nodeId) => {
-    return get().threads.find((t) => t.nodeBound === nodeId)
+    return get().nodeThreadMap.get(nodeId)
   },
 
   loadMessages: async (threadId) => {

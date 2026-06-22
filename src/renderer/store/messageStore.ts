@@ -114,37 +114,37 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       })
     }
 
-    useThreadStore.setState((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, content: m.content + content }
-                  : m,
-              ),
-            }
-          : t,
-      ),
-    }))
+    const threads = useThreadStore.getState().threads
+    const threadIndex = threads.findIndex((t) => t.id === threadId)
+    if (threadIndex === -1) return
+
+    const messages = threads[threadIndex].messages
+    const messageIndex = messages.findIndex((m) => m.id === messageId)
+    if (messageIndex === -1) return
+
+    const newMessages = [...messages]
+    newMessages[messageIndex] = { ...newMessages[messageIndex], content: newMessages[messageIndex].content + content }
+    const newThreads = [...threads]
+    newThreads[threadIndex] = { ...newThreads[threadIndex], messages: newMessages }
+
+    useThreadStore.setState({ threads: newThreads })
   },
 
   appendToolCall: (threadId, messageId, toolCall) => {
-    useThreadStore.setState((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: t.messages.map((m) =>
-                m.id === messageId
-                  ? { ...m, toolCalls: [...(m.toolCalls ?? []), toolCall] }
-                  : m,
-              ),
-            }
-          : t,
-      ),
-    }))
+    const threads = useThreadStore.getState().threads
+    const threadIndex = threads.findIndex((t) => t.id === threadId)
+    if (threadIndex === -1) return
+
+    const messages = threads[threadIndex].messages
+    const messageIndex = messages.findIndex((m) => m.id === messageId)
+    if (messageIndex === -1) return
+
+    const newMessages = [...messages]
+    newMessages[messageIndex] = { ...newMessages[messageIndex], toolCalls: [...(newMessages[messageIndex].toolCalls ?? []), toolCall] }
+    const newThreads = [...threads]
+    newThreads[threadIndex] = { ...newThreads[threadIndex], messages: newMessages }
+
+    useThreadStore.setState({ threads: newThreads })
   },
 
   updateToolCallAccepted: (threadId, messageIndex, toolCallIndex, accepted) => {
