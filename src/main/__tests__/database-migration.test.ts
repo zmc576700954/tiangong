@@ -110,4 +110,74 @@ describe('Database Migration', () => {
   it('should be idempotent — calling initDatabase again does not throw', async () => {
     await expect(initDatabase()).resolves.not.toThrow()
   })
+
+  it('schema_version should be at least 4 after migration', async () => {
+    const client = getClient()
+    const result = await client.execute('SELECT version FROM schema_version LIMIT 1')
+    const version = Number((result.rows[0] as unknown as { version: number }).version)
+    expect(version).toBeGreaterThanOrEqual(4)
+  })
+
+  it('chat_messages should have token_count column', async () => {
+    const client = getClient()
+    const result = await client.execute('PRAGMA table_info(chat_messages)')
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+    expect(columns).toContain('token_count')
+  })
+
+  it('chat_threads should have waterline columns', async () => {
+    const client = getClient()
+    const result = await client.execute('PRAGMA table_info(chat_threads)')
+    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+    expect(columns).toContain('parent_thread_id')
+    expect(columns).toContain('context_tokens_used')
+    expect(columns).toContain('context_window_max')
+    expect(columns).toContain('last_compacted_at')
+  })
+
+  it('should create compact_history table with expected columns', async () => {
+    const client = getClient()
+    const tables = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='compact_history'"
+    )
+    expect(tables.rows.length).toBe(1)
+
+    const info = await client.execute('PRAGMA table_info(compact_history)')
+    const columns = info.rows.map((r) => (r as unknown as { name: string }).name)
+    expect(columns).toEqual(expect.arrayContaining([
+      'id', 'thread_id', 'session_id', 'strategy', 'trigger',
+      'tokens_before', 'tokens_after', 'summary',
+      'started_at', 'duration_ms',
+    ]))
+  })
+
+  it('should create subagent_invocations table with expected columns', async () => {
+    const client = getClient()
+    const tables = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='subagent_invocations'"
+    )
+    expect(tables.rows.length).toBe(1)
+
+    const info = await client.execute('PRAGMA table_info(subagent_invocations)')
+    const columns = info.rows.map((r) => (r as unknown as { name: string }).name)
+    expect(columns).toEqual(expect.arrayContaining([
+      'id', 'parent_session_id', 'parent_message_id', 'graph_id',
+      'agent_type', 'description', 'prompt',
+      'adapter_name', 'node_id', 'allowed_files',
+      'status', 'result_text', 'result_files', 'tokens_used',
+      'started_at', 'finished_at', 'error',
+    ]))
+  })
+
+  it('should index subagent_invocations by parent_session_id and status', async () => {
+    const client = getClient()
+    const result = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='subagent_invocations'"
+    )
+    const indexNames = result.rows.map((r) => (r as unknown as { name: string }).name)
+    expect(indexNames).toEqual(expect.arrayContaining([
+      'idx_subagent_inv_parent',
+      'idx_subagent_inv_status',
+    ]))
+  })
 })
