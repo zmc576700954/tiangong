@@ -5,6 +5,7 @@ import {
   Background,
   Controls,
   MiniMap,
+  useNodesState,
   useEdgesState,
   useReactFlow,
   useOnViewportChange,
@@ -117,6 +118,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     return map
   }, [bugs])
 
+  const [rfNodes, setRfNodes, onRfNodesChange] = useNodesState<Node>([])
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
 
   // ────────────────────────────────────────────────────────────────
@@ -124,11 +126,19 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
 
+  // Sync flowNodes into ReactFlow's internal node state
+  useEffect(() => {
+    setRfNodes(flowNodes)
+  }, [flowNodes, setRfNodes])
+
   const handleNodesChange: OnNodesChange<Node> = useCallback(
     (changes) => {
+      // Let ReactFlow handle all change types internally (select, dimensions, position, remove)
+      onRfNodesChange(changes)
+      // Additionally persist position changes to DB
       onPositionChange(changes)
     },
-    [onPositionChange],
+    [onRfNodesChange, onPositionChange],
   )
 
   const [showNodeMenu, setShowNodeMenu] = useState(false)
@@ -499,7 +509,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">
       <ReactFlow
-        nodes={flowNodes}
+        nodes={rfNodes}
         edges={rfEdges}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
@@ -517,6 +527,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         attributionPosition="bottom-left"
         // 性能优化：仅渲染视口内的节点和边，减少大型图谱的 DOM 负担
         onlyRenderVisibleElements
+        nodeDragThreshold={3}
         elevateNodesOnSelect
         defaultEdgeOptions={{
           type: 'bizEdge',

@@ -208,10 +208,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   batchUpdatePositions: async (updates) => {
     const prevNodes = get().nodes
-    // 乐观更新
+    const updateMap = new Map(updates.map((u) => [u.id, u]))
     set((state) => ({
       nodes: state.nodes.map((n) => {
-        const u = updates.find((u) => u.id === n.id)
+        const u = updateMap.get(n.id)
         return u ? { ...n, position: { x: u.x, y: u.y } } : n
       }),
     }))

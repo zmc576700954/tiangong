@@ -13,11 +13,9 @@ export function useNodePositionPersistence(graphId: string) {
   const flushPositionUpdates = useCallback(() => {
     const updates = pendingPositionUpdates.current
     if (updates.size === 0) return
-    const store = useGraphStore.getState()
-    updates.forEach((position, nodeId) => {
-      store.updateNode(nodeId, { position }).catch((err) => {
-        console.error('[useNodePositionPersistence] Failed to persist node position:', err)
-      })
+    const batch = Array.from(updates.entries()).map(([id, pos]) => ({ id, x: pos.x, y: pos.y }))
+    useGraphStore.getState().batchUpdatePositions(batch).catch((err) => {
+      console.error('[useNodePositionPersistence] Failed to batch persist positions:', err)
     })
     pendingPositionUpdates.current = new Map()
   }, [])
