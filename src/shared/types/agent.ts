@@ -77,6 +77,8 @@ export interface AgentOutput {
   errorCode?: string
   /** 自动模式分类 (file_operation / error_report / progress_update / code_change) */
   pattern?: string
+  /** Phase 2: subagent output routing tag. Set by SubagentManager (Phase 4). */
+  invocationId?: string
 }
 
 /** 已解析的上下文（含实际内容，用于注入 prompt） */
@@ -621,4 +623,14 @@ export interface CompactHistoryEntry {
   summary: string | null
   startedAt: number
   durationMs: number
+}
+
+/** Runtime waterline state for one thread. Pushed via waterline:change IPC. */
+export interface ContextState {
+  threadId: string
+  tokensUsed: number
+  tokensMax: number
+  ratio: number                // 0.0–1.0, derived
+  lastCompactedAt: number | null
+  updatedAt: number
 }

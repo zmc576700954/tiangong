@@ -14,6 +14,7 @@ import type {
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
+  CompactHistoryEntry, ContextState,   // Phase 2 additions
 } from './agent'
 
 // ============================================
@@ -89,6 +90,11 @@ export interface IpcApi {
   // Chat 归档清理
   'chat:cleanupArchived': () => Promise<number>
 
+  // Context waterline (Phase 2)
+  'context:getWaterline': (threadId: string) => Promise<ContextState | null>
+  'context:listHistory': (threadId: string) => Promise<CompactHistoryEntry[]>
+  'context:compactNow': (sessionId: string, strategy?: string) => Promise<{ status: string }>
+
   // 文件系统
   'fs:readDir': (path: string) => Promise<{ name: string; isDirectory: boolean }[]>
   'fs:readDirDetail': (path: string) => Promise<{ name: string; path: string; isDirectory: boolean; size: number; mtimeMs: number }[]>
@@ -135,6 +141,8 @@ export interface IpcApi {
   'settings:setApiKey': (provider: string, key: string, baseUrl?: string | null) => Promise<void>
   'settings:getAdapterPreferences': () => Promise<AdapterPreferences>
   'settings:setAdapterPreferences': (prefs: AdapterPreferences) => Promise<void>
+  'settings:getContextWaterlineConfig': () => Promise<{ autoCompactEnabled: boolean; autoCompactThreshold: number; minCompactInterval: number }>
+  'settings:setContextWaterlineConfig': (cfg: { autoCompactEnabled?: boolean; autoCompactThreshold?: number; minCompactInterval?: number }) => Promise<void>
 
   // MindMap Agent 操作
   'mindmap:generate': (projectPath: string) => Promise<ScanModule[]>
