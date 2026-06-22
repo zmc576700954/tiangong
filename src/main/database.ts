@@ -262,7 +262,7 @@ async function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
 
 async function migrate(): Promise<void> {
   const db = getClient()
@@ -443,6 +443,45 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'session_id', 'kind', 'project_id', 'title', 'narrative', 'created_at'])
 
+    // Compact history (Phase 1 of context-compaction design)
+    await rebuildTableIfNeeded(db, 'compact_history', `
+      CREATE TABLE compact_history (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT REFERENCES chat_threads(id) ON DELETE CASCADE,
+        session_id TEXT,
+        strategy TEXT NOT NULL,
+        trigger TEXT NOT NULL,
+        tokens_before INTEGER NOT NULL,
+        tokens_after INTEGER NOT NULL,
+        summary TEXT,
+        started_at INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL
+      )
+    `, ['id', 'strategy', 'trigger', 'tokens_before', 'tokens_after', 'started_at', 'duration_ms'])
+
+    // Subagent invocations (Phase 1 of subagent-dispatch design)
+    await rebuildTableIfNeeded(db, 'subagent_invocations', `
+      CREATE TABLE subagent_invocations (
+        id TEXT PRIMARY KEY,
+        parent_session_id TEXT NOT NULL,
+        parent_message_id TEXT REFERENCES chat_messages(id),
+        graph_id TEXT REFERENCES graphs(id) ON DELETE CASCADE,
+        agent_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        adapter_name TEXT,
+        node_id TEXT,
+        allowed_files TEXT,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')),
+        result_text TEXT,
+        result_files TEXT,
+        tokens_used INTEGER DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        error TEXT
+      )
+    `, ['id', 'parent_session_id', 'agent_type', 'description', 'prompt', 'status', 'started_at'])
+
     // Create indexes
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
@@ -467,6 +506,10 @@ async function migrate(): Promise<void> {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_adapter_status ON chat_threads(adapter_name, status)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_status ON chat_messages(thread_id, status)`)
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_created ON memory_items(project_id, created_at DESC)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_compact_history_thread ON compact_history(thread_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_compact_history_started ON compact_history(started_at DESC)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_subagent_inv_parent ON subagent_invocations(parent_session_id)`)
+    await db.execute(`CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`)
 
     await runIncrementalMigrations(db, currentVersion)
 
@@ -522,5 +565,14 @@ async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise
     await addColumnSafe('memory_items', 'version', 'INTEGER', '1')
     await addColumnSafe('memory_items', 'parent_version', 'INTEGER', 'NULL')
     await addColumnSafe('memory_items', 'embedding', 'TEXT', 'NULL')
+  }
+
+  // v4: context-compaction & subagent-dispatch (Phase 1)
+  if (currentVersion < 4) {
+    await addColumnSafe('chat_messages', 'token_count', 'INTEGER', '0')
+    await addColumnSafe('chat_threads', 'parent_thread_id', 'TEXT')
+    await addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
+    await addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '200000')
+    await addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER')
   }
 }
