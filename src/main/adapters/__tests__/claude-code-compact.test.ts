@@ -43,6 +43,7 @@ describe('ClaudeCodeAdapter compaction', () => {
       expect(result.trigger).toBe('manual')
       expect(result.tokensBefore).toBeGreaterThanOrEqual(0)
       expect(result.tokensAfter).toBe(result.tokensBefore) // deferred — no immediate reduction
+      expect(result.deferred).toBe(true)
       expect(result.summary).toMatch(/deferred/)
       expect(result.startedAt).toBeGreaterThan(0)
       expect(result.durationMs).toBeGreaterThanOrEqual(0)

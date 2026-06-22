@@ -5,6 +5,21 @@
 
 import type { Client, Row } from '@libsql/client'
 
+const THREAD_COLUMNS = [
+  'id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id',
+  'status', 'created_at', 'updated_at', 'parent_thread_id',
+  'context_tokens_used', 'context_window_max', 'last_compacted_at',
+] as const
+
+const MESSAGE_COLUMNS = [
+  'id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error',
+  'session_id', 'context_refs', 'tool_calls', 'created_at', 'token_count',
+] as const
+
+const THREAD_SELECT = THREAD_COLUMNS.join(', ')
+const MESSAGE_SELECT = MESSAGE_COLUMNS.join(', ')
+const THREAD_PREFIXED = THREAD_COLUMNS.map(c => `t.${c}`).join(', ')
+
 export interface ChatThreadRow {
   id: string
   title: string
@@ -120,14 +135,14 @@ export class ChatRepository {
 
   async getThread(id: string): Promise<ChatThreadRow | null> {
     const result = await this.db.execute({
-      sql: 'SELECT id, title, adapter_name, node_id, graph_id, session_id, status, created_at, updated_at, parent_thread_id, context_tokens_used, context_window_max, last_compacted_at FROM chat_threads WHERE id = ?',
+      sql: `SELECT ${THREAD_SELECT} FROM chat_threads WHERE id = ?`,
       args: [id],
     })
     return (result.rows[0] ? toChatThreadRow(result.rows[0]) : null)
   }
 
   async listThreads(filters?: { nodeId?: string; graphId?: string; status?: string }): Promise<ChatThreadRow[]> {
-    let sql = 'SELECT id, title, adapter_name, node_id, graph_id, session_id, status, created_at, updated_at, parent_thread_id, context_tokens_used, context_window_max, last_compacted_at FROM chat_threads WHERE 1=1'
+    let sql = `SELECT ${THREAD_SELECT} FROM chat_threads WHERE 1=1`
     const args: (string | null)[] = []
 
     if (filters?.nodeId) {
@@ -178,7 +193,7 @@ export class ChatRepository {
     const escaped = query.replace(/[%_[]/g, (ch) => `[${ch}]`)
     const like = `%${escaped}%`
     const result = await this.db.execute({
-      sql: `SELECT DISTINCT t.id, t.title, t.adapter_name, t.node_id, t.graph_id, t.session_id, t.status, t.created_at, t.updated_at, t.parent_thread_id, t.context_tokens_used, t.context_window_max, t.last_compacted_at FROM chat_threads t
+      sql: `SELECT DISTINCT ${THREAD_PREFIXED} FROM chat_threads t
             LEFT JOIN chat_messages m ON m.thread_id = t.id
             WHERE t.title LIKE ? OR m.content LIKE ?
             ORDER BY t.updated_at DESC`,
@@ -247,7 +262,7 @@ export class ChatRepository {
 
   async listMessages(threadId: string, limit = 50, offset = 0): Promise<ChatMessageRow[]> {
     const result = await this.db.execute({
-      sql: 'SELECT id, thread_id, role, content, adapter_name, status, error, session_id, context_refs, tool_calls, created_at, token_count FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
+      sql: `SELECT ${MESSAGE_SELECT} FROM chat_messages WHERE thread_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?`,
       args: [threadId, limit, offset],
     })
     return result.rows.map(toChatMessageRow)
@@ -275,15 +290,6 @@ export class ChatRepository {
   }
 
   // ==================== Context Waterline (Phase 2) ====================
-
-  async incrementContextTokens(threadId: string, tokens: number): Promise<void> {
-    await this.db.execute({
-      sql: `UPDATE chat_threads
-            SET context_tokens_used = context_tokens_used + ?, updated_at = ?
-            WHERE id = ?`,
-      args: [tokens, Date.now(), threadId],
-    })
-  }
 
   async setContextWindowMax(threadId: string, max: number): Promise<void> {
     await this.db.execute({

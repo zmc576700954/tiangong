@@ -972,7 +972,13 @@ export class McpAdapter extends BaseAdapter {
       )
     }
     const buffer = this.sessionOutputBuffers.get(sessionId) ?? []
-    const conversationText = buffer.join('\n').slice(0, 64_000)
+    const fullText = buffer.join('\n')
+    // Head+tail strategy: preserve early decisions and recent context,
+    // rather than only taking the front and losing early critical info.
+    const MAX_CHARS = 64_000
+    const conversationText = fullText.length > MAX_CHARS
+      ? fullText.slice(0, MAX_CHARS / 2) + '\n\n[... truncated middle ...]\n\n' + fullText.slice(-(MAX_CHARS / 2))
+      : fullText
     const before = estimateTokens(conversationText)
     const startedAt = Date.now()
 
@@ -1008,7 +1014,7 @@ export class McpAdapter extends BaseAdapter {
    * Summarise conversation text via the active session's LLM provider.
    * Returns a short text summary (no markdown, no preamble).
    */
-  private async summariseViaLlm(text: string, _session: AgentSession): Promise<string> {
+  private async summariseViaLlm(text: string, session: AgentSession): Promise<string> {
     if (!text || text.trim().length === 0) {
       return '(no prior context)'
     }
@@ -1030,6 +1036,9 @@ Output: a clean text summary. No preamble, no markdown.`
       throw new AdapterError('No API key configured for LLM summarisation', this.name)
     }
 
+    // Use a derived sessionId so the rate limiter covers compact sidecar calls
+    // without counting against the active session's input budget.
+    const compactSessionId = `${session.id}:compact`
     const result = await this.callLlmUnified(
       apiKey.provider,
       apiKey.key,
@@ -1039,8 +1048,7 @@ Output: a clean text summary. No preamble, no markdown.`
         { role: 'user', content: summaryPrompt },
       ],
       settings.defaultModel,
-      // Intentionally omit sessionId here — this is a sidecar call, not part of the
-      // active session's input budget.
+      compactSessionId,
     )
     return result && result.length > 0 ? result : '(summary unavailable)'
   }

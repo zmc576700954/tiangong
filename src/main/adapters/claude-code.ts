@@ -261,10 +261,11 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       strategy: 'native',
       trigger: options?.reason ?? 'manual',
       tokensBefore: before,
-      tokensAfter: before, // reduction deferred — SDK will handle on next query
+      tokensAfter: before,
       summary: '(deferred — SDK auto-compact enabled for next turn)',
       startedAt,
       durationMs: Date.now() - startedAt,
+      deferred: true,
     }
   }
 }

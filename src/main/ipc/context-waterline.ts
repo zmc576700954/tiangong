@@ -22,6 +22,8 @@ function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): string 
   return val
 }
 
+const VALID_STRATEGIES: readonly CompactStrategy[] = ['native', 'llm', 'summary']
+
 export function registerContextHandlers(
   waterline: ContextWaterline,
   agentManager: AgentManager,
@@ -43,9 +45,11 @@ export function registerContextHandlers(
   // Phase 3: actually invoke AgentManager.compactContext with the resolved strategy.
   typedHandle('context:compactNow', async (_, sessionId: unknown, strategy: unknown): Promise<CompactResult> => {
     const sid = ensureString('sessionId', sessionId)
-    const strat = strategy === undefined || strategy === null
+    const strat: CompactStrategy | undefined = strategy === undefined || strategy === null
       ? undefined
-      : ensureString('strategy', strategy) as CompactStrategy
+      : VALID_STRATEGIES.includes(strategy as CompactStrategy)
+        ? (strategy as CompactStrategy)
+        : undefined
     return agentManager.compactContext(sid, strat, { reason: 'manual' })
   })
 

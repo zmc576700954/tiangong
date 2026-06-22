@@ -31,15 +31,15 @@ describe('ContextWaterline', () => {
 
   describe('onMessagePersisted', () => {
     it('accumulates tokens', () => {
-      wl.onMessagePersisted('t1', 'hello')
+      wl.onMessagePersisted('t1', 42)
       const state = wl.getState('t1')!
-      expect(state.tokensUsed).toBeGreaterThan(0)
+      expect(state.tokensUsed).toBe(42)
     })
 
     it('emits change after throttle', () => {
       const handler = vi.fn()
       wl.onChange(handler)
-      wl.onMessagePersisted('t1', 'hello world')
+      wl.onMessagePersisted('t1', 10)
       // hasn't fired yet — throttled
       expect(handler).not.toHaveBeenCalled()
       vi.advanceTimersByTime(600)
@@ -49,7 +49,7 @@ describe('ContextWaterline', () => {
 
   describe('onAdapterUsageReport', () => {
     it('overrides estimated tokens with authoritative count', () => {
-      wl.onMessagePersisted('t1', 'hello world')
+      wl.onMessagePersisted('t1', 10)
       wl.onAdapterUsageReport('t1', 500, 200_000)
       const state = wl.getState('t1')!
       expect(state.tokensUsed).toBe(500)
@@ -59,7 +59,7 @@ describe('ContextWaterline', () => {
 
   describe('onCompacted', () => {
     it('resets tokensUsed and stamps lastCompactedAt', () => {
-      wl.onMessagePersisted('t1', 'some long text')
+      wl.onMessagePersisted('t1', 100)
       wl.onCompacted('t1', 300, 1_000_000)
       const state = wl.getState('t1')!
       expect(state.tokensUsed).toBe(300)
@@ -102,11 +102,13 @@ describe('ContextWaterline', () => {
     it('coalesces multiple rapid changes into one event', () => {
       const handler = vi.fn()
       wl.onChange(handler)
-      wl.onMessagePersisted('t1', 'a')
-      wl.onMessagePersisted('t1', 'b')
-      wl.onMessagePersisted('t1', 'c')
+      wl.onMessagePersisted('t1', 5)
+      wl.onMessagePersisted('t1', 5)
+      wl.onMessagePersisted('t1', 5)
       vi.advanceTimersByTime(600)
       expect(handler).toHaveBeenCalledTimes(1)
+      // tokens should be accumulated (5+5+5)
+      expect(wl.getState('t1')!.tokensUsed).toBe(15)
     })
   })
 
@@ -124,6 +126,67 @@ describe('ContextWaterline', () => {
       expect(state.ratio).toBeCloseTo(0.1)
       expect(state.lastCompactedAt).toBeNull()
       expect(state.updatedAt).toBeGreaterThan(0)
+    })
+  })
+
+  describe('dbWriteback', () => {
+    it('debounces dbWriteback on onMessagePersisted', () => {
+      const writeback = vi.fn().mockResolvedValue(undefined)
+      wl.setDbWriteback(writeback)
+      wl.onMessagePersisted('t1', 42)
+      // Not called yet — debounced
+      expect(writeback).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(600)
+      expect(writeback).toHaveBeenCalledWith('t1', 42)
+    })
+
+    it('debounces dbWriteback on onAdapterUsageReport', () => {
+      const writeback = vi.fn().mockResolvedValue(undefined)
+      wl.setDbWriteback(writeback)
+      wl.onAdapterUsageReport('t1', 500, 200_000)
+      // Not called yet — debounced
+      expect(writeback).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(600)
+      expect(writeback).toHaveBeenCalledWith('t1', 500)
+    })
+
+    it('calls dbWriteback immediately on onCompacted', () => {
+      const writeback = vi.fn().mockResolvedValue(undefined)
+      wl.setDbWriteback(writeback)
+      wl.onCompacted('t1', 300, 1_000_000)
+      // Compaction writes immediately — no debounce
+      expect(writeback).toHaveBeenCalledWith('t1', 300)
+    })
+
+    it('coalesces rapid calls into one debounced write with latest value', () => {
+      const writeback = vi.fn().mockResolvedValue(undefined)
+      wl.setDbWriteback(writeback)
+      wl.onMessagePersisted('t1', 10)
+      wl.onMessagePersisted('t1', 10)
+      wl.onAdapterUsageReport('t1', 500, 200_000)
+      // Only one write after debounce, with the latest value (500)
+      vi.advanceTimersByTime(600)
+      expect(writeback).toHaveBeenCalledTimes(1)
+      expect(writeback).toHaveBeenCalledWith('t1', 500)
+    })
+
+    it('onCompacted cancels pending debounced write', () => {
+      const writeback = vi.fn().mockResolvedValue(undefined)
+      wl.setDbWriteback(writeback)
+      wl.onMessagePersisted('t1', 10)
+      // Debounced write pending, but compaction writes immediately
+      wl.onCompacted('t1', 300, 1_000_000)
+      expect(writeback).toHaveBeenCalledTimes(1)
+      expect(writeback).toHaveBeenCalledWith('t1', 300)
+      // Advance timer — no additional write from the earlier debounce
+      vi.advanceTimersByTime(600)
+      expect(writeback).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not call dbWriteback when not set', () => {
+      // Should not throw
+      wl.onMessagePersisted('t1', 42)
+      expect(wl.getState('t1')!.tokensUsed).toBe(42)
     })
   })
 })

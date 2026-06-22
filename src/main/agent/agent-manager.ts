@@ -1299,10 +1299,12 @@ export class AgentManager {
         ErrorCode.AGENT_ADAPTER_NOT_FOUND,
       )
     }
+    const VALID_STRATEGIES: readonly CompactStrategy[] = ['native', 'llm', 'summary']
     const descriptor = ADAPTER_REGISTRY.find((d) => d.name === state.adapterName)
-    const finalStrategy: CompactStrategy = strategy
+    const rawStrategy = strategy
       ?? (descriptor as { defaultCompactStrategy?: CompactStrategy } | undefined)?.defaultCompactStrategy
       ?? 'summary'
+    const finalStrategy: CompactStrategy = VALID_STRATEGIES.includes(rawStrategy) ? rawStrategy : 'summary'
     const threadId = state.threadId
 
     // Broadcast "compacting" notification
@@ -1330,7 +1332,8 @@ export class AgentManager {
     }
 
     // Persist history (non-blocking on error)
-    if (this.compactHistoryRepo) {
+    // Skip for deferred compactions — the real reduction hasn't happened yet.
+    if (!result.deferred && this.compactHistoryRepo) {
       try {
         await this.compactHistoryRepo.insert({
           threadId: threadId ?? null,
@@ -1349,7 +1352,8 @@ export class AgentManager {
     }
 
     // Update thread waterline metadata (non-blocking on error)
-    if (this.chatRepo && threadId) {
+    // Skip for deferred compactions — tokensAfter is not yet accurate.
+    if (!result.deferred && this.chatRepo && threadId) {
       try {
         await this.chatRepo.setLastCompactedAt(threadId, result.startedAt)
         await this.chatRepo.resetContextTokens(threadId, result.tokensAfter)
@@ -1359,16 +1363,25 @@ export class AgentManager {
     }
 
     // Update waterline in-memory state
-    if (this.waterline && threadId) {
+    // Skip for deferred compactions — will be updated when SDK reports real usage.
+    if (!result.deferred && this.waterline && threadId) {
       this.waterline.onCompacted(threadId, result.tokensAfter, result.startedAt)
     }
 
     // Broadcast completion
-    this.broadcaster.broadcast(state.broadcastName, {
-      type: 'system',
-      data: `Compacted: ${result.tokensBefore} → ${result.tokensAfter} tokens (${result.durationMs}ms)`,
-      timestamp: Date.now(),
-    })
+    if (result.deferred) {
+      this.broadcaster.broadcast(state.broadcastName, {
+        type: 'system',
+        data: `Native compact enabled — SDK will compact on next turn`,
+        timestamp: Date.now(),
+      })
+    } else {
+      this.broadcaster.broadcast(state.broadcastName, {
+        type: 'system',
+        data: `Compacted: ${result.tokensBefore} → ${result.tokensAfter} tokens (${result.durationMs}ms)`,
+        timestamp: Date.now(),
+      })
+    }
 
     return result
   }

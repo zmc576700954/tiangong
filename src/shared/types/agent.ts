@@ -611,6 +611,9 @@ export interface CompactResult {
   summary?: string
   startedAt: number
   durationMs: number
+  /** True when the actual token reduction is deferred (e.g. SDK auto-compact on next turn).
+   *  When deferred, history/waterline persistence is skipped until the real reduction occurs. */
+  deferred?: boolean
 }
 
 /** Persisted compact_history row (renderer-facing shape). */

@@ -223,4 +223,39 @@ describe('AgentManager.compactContext', () => {
     expect(setLastCompactedAt).toHaveBeenCalledWith('t1', expect.any(Number))
     expect(resetContextTokens).toHaveBeenCalledWith('t1', 100)
   })
+
+  it('skips history/waterline persistence for deferred compact results', async () => {
+    mockAdapter.compactContextMock.mockResolvedValue({
+      ...defaultMockResult('native'),
+      tokensAfter: 1000, // same as tokensBefore — deferred
+      deferred: true,
+    })
+
+    const insert = vi.fn().mockResolvedValue('compact_456')
+    const setLastCompactedAt = vi.fn().mockResolvedValue(undefined)
+    const resetContextTokens = vi.fn().mockResolvedValue(undefined)
+    manager.setCompactHistoryRepo({ insert } as any)
+    manager.setChatRepo({ setLastCompactedAt, resetContextTokens } as any)
+
+    const result = await manager.compactContext('s1', 'native')
+
+    expect(result.deferred).toBe(true)
+    expect(insert).not.toHaveBeenCalled()
+    expect(setLastCompactedAt).not.toHaveBeenCalled()
+    expect(resetContextTokens).not.toHaveBeenCalled()
+  })
+
+  it('broadcasts deferred notice instead of token summary for deferred results', async () => {
+    const broadcasts: string[] = []
+    broadcaster.onBroadcast((_adapter, output) => {
+      if (output.type === 'system') broadcasts.push(output.data)
+    })
+    mockAdapter.compactContextMock.mockResolvedValue({
+      ...defaultMockResult('native'),
+      tokensAfter: 1000,
+      deferred: true,
+    })
+    await manager.compactContext('s1', 'native')
+    expect(broadcasts.some((b) => /SDK will compact/i.test(b))).toBe(true)
+  })
 })

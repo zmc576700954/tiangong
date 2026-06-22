@@ -104,9 +104,8 @@ export class ChatService {
       tokenCount,
     })
     if (this.waterline) {
-      this.waterline.onMessagePersisted(threadId, message.content)
+      this.waterline.onMessagePersisted(threadId, tokenCount)
     }
-    await this.repo.incrementContextTokens(threadId, tokenCount)
     await this.repo.updateThread(threadId, { updatedAt: Date.now() })
   }
 
@@ -129,11 +128,9 @@ export class ChatService {
       createdAt: m.timestamp,
       tokenCount,
     })))
-    for (const { original: m, tokenCount } of messagesWithTokens) {
-      if (this.waterline) {
-        this.waterline.onMessagePersisted(threadId, m.content)
-      }
-      await this.repo.incrementContextTokens(threadId, tokenCount)
+    if (this.waterline && messagesWithTokens.length > 0) {
+      const totalTokens = messagesWithTokens.reduce((sum, m) => sum + m.tokenCount, 0)
+      this.waterline.onMessagePersisted(threadId, totalTokens)
     }
     await this.repo.updateThread(threadId, { updatedAt: Date.now() })
   }

@@ -19,7 +19,6 @@ const mockRepo: MockChatRepository = {
   deleteMessagesByThread: vi.fn(),
   archiveStaleThreads: vi.fn(),
   cleanupArchivedThreads: vi.fn(),
-  incrementContextTokens: vi.fn(),
   setContextWindowMax: vi.fn(),
   setLastCompactedAt: vi.fn(),
   resetContextTokens: vi.fn(),

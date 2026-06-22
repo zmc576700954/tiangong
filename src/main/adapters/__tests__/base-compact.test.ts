@@ -70,13 +70,13 @@ describe('BaseAdapter compaction', () => {
 
   describe('compactByNative', () => {
     it('throws by default', async () => {
-      await expect(adapter.compactContext(sessionId, 'native')).rejects.toThrow(/NATIVE_COMPACT_NOT_SUPPORTED/)
+      await expect(adapter.compactContext(sessionId, 'native')).rejects.toThrow(/not supported by this adapter/)
     })
   })
 
   describe('compactByLlm', () => {
     it('throws by default', async () => {
-      await expect(adapter.compactContext(sessionId, 'llm')).rejects.toThrow(/LLM_COMPACT_NOT_SUPPORTED/)
+      await expect(adapter.compactContext(sessionId, 'llm')).rejects.toThrow(/not supported by this adapter/)
     })
   })
 
