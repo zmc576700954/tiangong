@@ -20,6 +20,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { useGraphStore } from '../store/graphStore'
 import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
+import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { BizEdge } from './BizEdge'
@@ -41,8 +42,22 @@ import { eventBus, Events } from '../store/eventBus'
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected }: { id: string; data: GraphNode & { bugCount: number; isZoomedOut?: boolean; hideTextLabels?: boolean }; selected?: boolean }) {
-  return <BizNodeComponent id={id} data={data} selected={selected} isZoomedOut={data.isZoomedOut} hideTextLabels={data.hideTextLabels} />
+function BizNodeWrapper({ id, data, selected }: {
+  id: string
+  data: GraphNode & {
+    bugCount: number
+    isZoomedOut?: boolean
+    hideTextLabels?: boolean
+    isConnectingSource?: boolean
+    isFlashed?: boolean
+    hasThread?: boolean
+    agentThreadId?: string
+    agentStatus?: string
+    agentSessionId?: string
+  }
+  selected?: boolean
+}) {
+  return <BizNodeComponent id={id} data={data} selected={selected} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }
 
@@ -77,6 +92,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const dismissNotification = useGraphStore((s) => s.dismissAssociationNotification)
   const setConnectingFrom = useGraphRuntimeStore((s) => s.setConnectingFrom)
   const flashNode = useGraphRuntimeStore((s) => s.flashNode)
+  const connectingFrom = useGraphRuntimeStore((s) => s.connectingFrom)
+  const flashedNodeId = useGraphRuntimeStore((s) => s.flashedNodeId)
+  const threads = useThreadStore((s) => s.threads)
+  const nodeThreadMap = useMemo(() => {
+    const map = new Map<string, { id: string; status?: string; sessionId?: string }>()
+    for (const t of threads) {
+      if (t.nodeBound) {
+        map.set(t.nodeBound, { id: t.id, status: t.status, sessionId: t.sessionId })
+      }
+    }
+    return map
+  }, [threads])
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
 
@@ -235,18 +262,27 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     hideEdgeLabels: nodeCount > 1000,
   }), [nodeCount])
 
-  const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => ({
-    id: node.id,
-    type: 'bizNode',
-    position: node.position,
-    data: {
-      ...node,
-      bugCount: bugCountMap.get(node.id) ?? 0,
-      isZoomedOut,
-      hideTextLabels: degradation.hideNodeTextLabels,
-    },
-    draggable: node.type !== 'project',
-  })), [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels])
+  const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => {
+    const threadInfo = nodeThreadMap.get(node.id)
+    return {
+      id: node.id,
+      type: 'bizNode',
+      position: node.position,
+      data: {
+        ...node,
+        bugCount: bugCountMap.get(node.id) ?? 0,
+        isZoomedOut,
+        hideTextLabels: degradation.hideNodeTextLabels,
+        isConnectingSource: connectingFrom === node.id,
+        isFlashed: flashedNodeId === node.id,
+        hasThread: !!threadInfo,
+        agentThreadId: threadInfo?.id,
+        agentStatus: threadInfo?.status,
+        agentSessionId: threadInfo?.sessionId,
+      },
+      draggable: node.type !== 'project',
+    }
+  }), [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap])
 
   const baseFlowEdges: Edge[] = useMemo(() => graphEdges.map((edge) => {
     const edgeType = edge.edgeType || 'default'

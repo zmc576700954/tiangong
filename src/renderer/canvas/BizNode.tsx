@@ -1,11 +1,9 @@
 import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
-import { useShallow } from 'zustand/react/shallow'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check } from 'lucide-react'
-import { useAgentStore } from '../store/agentStore'
 import { useAgentOutputStore } from '../store/agentOutputStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
@@ -14,10 +12,18 @@ const EMPTY_OUTPUTS: AgentOutput[] = []
 
 interface BizNodeProps {
   id: string
-  data: GraphNode & { bugCount: number }
+  data: GraphNode & {
+    bugCount: number
+    isZoomedOut?: boolean
+    hideTextLabels?: boolean
+    isConnectingSource?: boolean
+    isFlashed?: boolean
+    hasThread?: boolean
+    agentThreadId?: string
+    agentStatus?: string
+    agentSessionId?: string
+  }
   selected?: boolean
-  isZoomedOut?: boolean
-  hideTextLabels?: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
@@ -25,29 +31,15 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   id: _id,
   data,
   selected,
-  isZoomedOut,
-  hideTextLabels,
   onContextMenu,
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
   const isPreview = data.metadata?.preview === true
 
-  // Agent activity state — merged single selector for agent thread info
-  const { agentThreadId, agentStatus, agentSessionId } = useAgentStore(useShallow((s) => {
-    const t = s.getThreadByNodeId(data.id)
-    return {
-      agentThreadId: t?.id,
-      agentStatus: t?.status,
-      agentSessionId: t?.sessionId,
-    }
-  }))
-
-  // Connection visual feedback (Task 17)
-  const connectingFrom = useGraphStore((s) => s.connectingFrom)
-  const flashedNodeId = useGraphStore((s) => s.flashedNodeId)
-  const isPotentialTarget = !!connectingFrom && connectingFrom !== data.id
-  const isFlashing = flashedNodeId === data.id
+  const { isConnectingSource, isFlashed, agentThreadId, agentStatus, agentSessionId } = data
+  const isPotentialTarget = !!isConnectingSource
+  const isFlashing = !!isFlashed
 
   const isAgentRunning = agentStatus === 'running'
   const isAgentError = agentStatus === 'error'
@@ -157,11 +149,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 
       <div className="flex items-center gap-1.5 mb-1">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
-        <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", (isZoomedOut || hideTextLabels) && "hidden")}>
+        <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", (data.isZoomedOut || data.hideTextLabels) && "hidden")}>
           {NODE_TYPE_LABELS[data.type]}
         </span>
       </div>
-      <div className={cn("font-medium text-sm truncate", isZoomedOut && "text-[8px]", hideTextLabels && "text-[8px]")}>{data.title}</div>
+      <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{data.title}</div>
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-muted-foreground">{data.status}</span>
         {data.bugCount > 0 && (
