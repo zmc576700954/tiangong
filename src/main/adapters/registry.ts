@@ -7,7 +7,7 @@
  */
 
 import { AdapterCapability } from '@shared/types'
-import type { InstallMethod, AdapterMarketplaceItem } from '@shared/types'
+import type { InstallMethod, AdapterMarketplaceItem, CompactStrategy } from '@shared/types'
 import { ClaudeCodeAdapter } from './claude-code'
 import { CodexAdapter } from './codex'
 import { OpenCodeAdapter } from './opencode'
@@ -40,6 +40,8 @@ export interface AdapterDescriptor {
   platforms?: NodeJS.Platform[]
   /** Default context window for this adapter, in tokens. Used by ContextWaterline. */
   contextWindow?: number
+  /** Phase 3: default compaction strategy when not explicitly specified. */
+  defaultCompactStrategy?: CompactStrategy
 }
 
 const platform = process.platform
@@ -70,9 +72,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: ClaudeCodeAdapter,
     homepage: 'https://docs.anthropic.com/en/docs/claude-code',
-    capabilities: [AdapterCapability.Resume, AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn, AdapterCapability.ScopeGuard, AdapterCapability.Tools],
+    capabilities: [AdapterCapability.Resume, AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn, AdapterCapability.ScopeGuard, AdapterCapability.Tools, AdapterCapability.NativeCompact, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 200_000,
+    defaultCompactStrategy: 'native',
   },
   {
     name: 'codex',
@@ -88,9 +91,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CodexAdapter,
     homepage: 'https://github.com/openai/codex',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.MultiTurn, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'opencode',
@@ -108,9 +112,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: OpenCodeAdapter,
     homepage: 'https://opencode.ai',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'cline',
@@ -124,9 +129,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: ClineAdapter,
     homepage: 'https://cline.bot',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'kilo-code',
@@ -141,9 +147,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: KiloCodeAdapter,
     homepage: 'https://kilo.ai',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'kimi-code',
@@ -160,9 +167,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: KimiCodeAdapter,
     homepage: 'https://github.com/MoonshotAI/kimi-code',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'codebuddy',
@@ -176,9 +184,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CodeBuddyAdapter,
     homepage: 'https://github.com/Tencent/CodeBuddy',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'qoder',
@@ -192,9 +201,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: QoderAdapter,
     homepage: 'https://github.com/qoder-ai',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'qwen-code',
@@ -211,9 +221,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: QwenCodeAdapter,
     homepage: 'https://github.com/QwenLM/qwen-code',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'cursor',
@@ -229,9 +240,10 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: CursorAdapter,
     homepage: 'https://cursor.com',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
+    defaultCompactStrategy: 'summary',
   },
   {
     name: 'mcp',
@@ -243,8 +255,9 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: McpAdapter,
     homepage: 'https://modelcontextprotocol.io',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.Tools],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.Tools, AdapterCapability.LlmCompact, AdapterCapability.SummaryRewrite],
     contextWindow: 200_000,
+    defaultCompactStrategy: 'llm',
   },
   {
     name: 'mindmap-internal',
