@@ -45,7 +45,7 @@ import { eventBus, Events } from '../store/eventBus'
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected }: {
+function BizNodeWrapper({ id, data, selected, multiSelected }: {
   id: string
   data: GraphNode & {
     bugCount: number
@@ -59,8 +59,9 @@ function BizNodeWrapper({ id, data, selected }: {
     agentSessionId?: string
   }
   selected?: boolean
+  multiSelected?: boolean
 }) {
-  return <BizNodeComponent id={id} data={data} selected={selected} />
+  return <BizNodeComponent id={id} data={data} selected={selected} multiSelected={multiSelected} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }
 
@@ -84,6 +85,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId)
   const selectNode = useGraphStore((state) => state.selectNode)
   const selectEdge = useGraphStore((state) => state.selectEdge)
+  const selectedNodeIds = useGraphStore((state) => state.selectedNodeIds)
+  const toggleNodeSelection = useGraphStore((state) => state.toggleNodeSelection)
+  const clearNodeSelection = useGraphStore((state) => state.clearNodeSelection)
   const createNode = useGraphStore((state) => state.createNode)
   const createEdge = useGraphStore((state) => state.createEdge)
   const deleteNode = useGraphStore((state) => state.deleteNode)
@@ -376,7 +380,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const flowNodes = useMemo(() => baseFlowNodes.map((n) => ({
     ...n,
     selected: n.id === selectedNodeId || n.id === connectingSourceId,
-  })), [baseFlowNodes, selectedNodeId, connectingSourceId])
+    multiSelected: selectedNodeIds.has(n.id),
+  })), [baseFlowNodes, selectedNodeId, connectingSourceId, selectedNodeIds])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
@@ -414,10 +419,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const onNodeClick = useCallback(
     (_event: unknown, node: Node) => {
       if (isConnecting) return
+
+      const nativeEvent = _event as MouseEvent
+      const isModifier = nativeEvent?.ctrlKey || nativeEvent?.metaKey
+
+      if (isModifier) {
+        // Toggle multi-select; preserve existing single-select
+        toggleNodeSelection(node.id)
+        return
+      }
+
+      // Normal single-select: clear multi-select, set single-select
       selectNode(node.id)
+      clearNodeSelection()
       setNodeContextMenu(null)
     },
-    [selectNode, isConnecting],
+    [selectNode, toggleNodeSelection, clearNodeSelection, isConnecting],
   )
 
   const onEdgeClick = useCallback(
@@ -430,12 +447,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const onPaneClick = useCallback(() => {
     selectNode(null)
     selectEdge(null)
+    clearNodeSelection()
     setShowNodeMenu(false)
     cancelPendingConnection()
     setNodeContextMenu(null)
     // 点击空白处取消连线模式
     cancelConnect()
-  }, [selectNode, selectEdge, cancelPendingConnection, cancelConnect])
+  }, [selectNode, selectEdge, clearNodeSelection, cancelPendingConnection, cancelConnect])
 
   const onPaneContextMenu = useCallback(
     (event: { preventDefault: () => void; clientX: number; clientY: number }) => {

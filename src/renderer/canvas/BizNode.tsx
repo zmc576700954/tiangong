@@ -24,6 +24,7 @@ interface BizNodeProps {
     agentSessionId?: string
   }
   selected?: boolean
+  multiSelected?: boolean
   onContextMenu?: (e: React.MouseEvent) => void
 }
 
@@ -31,6 +32,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   id: _id,
   data,
   selected,
+  multiSelected,
   onContextMenu,
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
@@ -56,9 +58,13 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       <div
         className="group px-6 py-4 rounded-xl border-2 min-w-[180px] shadow-md cursor-default"
         style={{
-          borderColor: selected ? '#3b82f6' : typeColor,
+          borderColor: multiSelected ? '#8b5cf6' : selected ? '#3b82f6' : typeColor,
           background: `linear-gradient(135deg, ${typeColor}08, ${typeColor}15)`,
-          boxShadow: selected ? '0 0 0 2px rgba(59, 130, 246, 0.3)' : undefined,
+          boxShadow: multiSelected
+            ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
+            : selected
+              ? '0 0 0 2px rgba(59, 130, 246, 0.3)'
+              : undefined,
         }}
         onContextMenu={onContextMenu}
       >
@@ -107,6 +113,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         'group relative px-4 py-2.5 rounded-lg border-2 min-w-[140px] max-w-[200px] shadow-xs hover:shadow-md cursor-pointer',
         statusClass,
         selected && 'ring-2 ring-blue-400 ring-offset-1',
+        multiSelected && 'ring-2 ring-purple-400 ring-offset-1',
         isAgentRunning && 'border-orange-400 animate-pulse',
         isAgentError && 'border-red-400',
         isAgentCompleted && 'border-green-400',
@@ -115,10 +122,14 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         isFlashing && 'animate-flash-once',
       )}
       style={{
-        borderColor: selected ? typeColor : undefined,
+        borderColor: multiSelected ? '#8b5cf6' : selected ? typeColor : undefined,
         transition: 'border-color var(--duration-normal), box-shadow var(--duration-normal), transform var(--duration-normal)',
-        transform: selected ? 'scale(1.02)' : 'scale(1)',
-        boxShadow: selected ? `0 0 0 2px ${typeColor}40` : undefined,
+        transform: selected || multiSelected ? 'scale(1.02)' : 'scale(1)',
+        boxShadow: multiSelected
+          ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
+          : selected
+            ? `0 0 0 2px ${typeColor}40`
+            : undefined,
       }}
       onContextMenu={onContextMenu}
     >
