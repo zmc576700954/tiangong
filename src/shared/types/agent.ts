@@ -45,6 +45,8 @@ export interface AgentSessionConfig {
   swarmTaskId?: string
   /** Phase 3: thread to bind for waterline tracking & history persistence. */
   threadId?: string
+  /** Phase 4: subagent tool restriction (consumed by adapters in Claude Code / MCP). */
+  subagentAllowedTools?: string[] | '*'
 }
 
 export interface BugContext {
