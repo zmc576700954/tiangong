@@ -26,6 +26,7 @@ interface CanvasOverlayProps {
   onStartDev?: (nodeId: string) => void
   onAddContext?: (nodeId: string) => void
   onGenerateChildren?: (nodeId: string) => void
+  onFanout?: () => void
   hasProjectNode: boolean
   generationProgress?: { stage: string; progress: number } | null
 }
@@ -50,6 +51,7 @@ export function CanvasOverlay({
   onStartDev,
   onAddContext,
   onGenerateChildren,
+  onFanout,
   hasProjectNode,
   generationProgress,
 }: CanvasOverlayProps) {
@@ -215,6 +217,7 @@ export function CanvasOverlay({
           onStartDev={onStartDev}
           onAddContext={onAddContext}
           onGenerateChildren={onGenerateChildren}
+          onFanout={onFanout}
         />
       )}
 

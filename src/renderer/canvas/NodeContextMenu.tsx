@@ -2,7 +2,7 @@ import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
-import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2 } from 'lucide-react'
+import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2, Bot } from 'lucide-react'
 import { useMenuPosition } from './hooks/useMenuPosition'
 
 interface NodeContextMenuProps {
@@ -19,6 +19,7 @@ interface NodeContextMenuProps {
   onStartDev?: (nodeId: string) => void
   onAddContext?: (nodeId: string) => void
   onGenerateChildren?: (nodeId: string) => void
+  onFanout?: () => void
 }
 
 const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
@@ -63,6 +64,7 @@ export function NodeContextMenu({
   onStartDev,
   onAddContext,
   onGenerateChildren,
+  onFanout,
 }: NodeContextMenuProps) {
   const node = nodes.find((n) => n.id === nodeId)
   const { ref: menuRef, adjustedPos } = useMenuPosition(x, y)
@@ -173,6 +175,16 @@ export function NodeContextMenu({
             >
               <Play className="w-3 h-3" />
               生成开发 Prompt
+            </button>
+          )}
+          {onFanout && (
+            <button
+              onClick={() => { onFanout(); onClose() }}
+              data-testid="node-menu-fanout"
+              className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
+            >
+              <Bot className="w-3 h-3" />
+              Fan-out 子代理 (基于选中节点)
             </button>
           )}
         </div>

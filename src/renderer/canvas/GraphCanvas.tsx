@@ -30,6 +30,7 @@ import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
+import { FanoutPromptDialog } from '../components/agent/FanoutPromptDialog'
 import { NodeContextPopover } from './NodeContextPopover'
 import { useCanvasKeyboard } from './hooks/useCanvasKeyboard'
 import { useAutoLayout } from './hooks/useAutoLayout'
@@ -143,6 +144,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+
+  const [showFanout, setShowFanout] = useState(false)
 
   // ────────────────────────────────────────────────────────────────
   // Node search overlay
@@ -752,6 +755,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onStartDev={handleStartDev}
         onAddContext={handleAddContext}
         onGenerateChildren={handleGenerateChildren}
+        onFanout={() => setShowFanout(true)}
         hasProjectNode={hasProjectNode}
         generationProgress={genProgress}
       />
@@ -766,6 +770,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           onClose={() => setContextPopover(null)}
         />
       )}
+
+      <FanoutPromptDialog
+        open={showFanout}
+        onOpenChange={setShowFanout}
+      />
     </div>
   )
 }
