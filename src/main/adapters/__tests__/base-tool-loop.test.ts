@@ -43,3 +43,66 @@ describe('BaseAdapter parseToolCalls', () => {
     expect(adapter['parseToolCalls'](text)).toEqual([])
   })
 })
+
+describe('BaseAdapter runToolAwareLoop', () => {
+  it('emits stdout and completes when no tool calls', async () => {
+    const adapter = new TestAdapter()
+    adapter['subagentManager'] = { invoke: vi.fn() } as unknown as import('../../agent/subagent-manager').SubagentManager
+
+    const outputs: import('@shared/types').AgentOutput[] = []
+    adapter.onOutput((o) => outputs.push(o))
+
+    await adapter['runToolAwareLoop'](
+      { id: 's1', adapterName: 'test', config: { workingDirectory: '/tmp', allowedFiles: [], forbiddenFiles: [], invariantRules: [], upstreamContext: '', downstreamContext: '', nodeTitle: '', acceptanceCriteria: [] }, startTime: Date.now() },
+      { type: 'implement', description: 'Do it', targetNodeId: 'n1' },
+      async () => 'plain result',
+    )
+
+    expect(outputs.some((o) => o.type === 'stdout' && o.data === 'plain result')).toBe(true)
+    expect(outputs.some((o) => o.type === 'complete')).toBe(true)
+  })
+
+  it('invokes subagent and re-spawns with result', async () => {
+    const adapter = new TestAdapter()
+    const invoke = vi.fn().mockResolvedValue({ resultText: 'subagent done' })
+    adapter['subagentManager'] = { invoke } as unknown as import('../../agent/subagent-manager').SubagentManager
+
+    const outputs: import('@shared/types').AgentOutput[] = []
+    adapter.onOutput((o) => outputs.push(o))
+
+    let secondCall = false
+    await adapter['runToolAwareLoop'](
+      { id: 's1', adapterName: 'test', config: { workingDirectory: '/tmp', allowedFiles: [], forbiddenFiles: [], invariantRules: [], upstreamContext: '', downstreamContext: '', nodeTitle: '', acceptanceCriteria: [] }, startTime: Date.now() },
+      { type: 'implement', description: 'Do it', targetNodeId: 'n1' },
+      async (prompt) => {
+        if (secondCall) {
+          expect(prompt).toContain('subagent done')
+          return 'final result'
+        }
+        secondCall = true
+        return '<tool_call>{"tool": "dispatch_subagent", "args": {"agent_type": "explore", "description": "x", "prompt": "y"}}</tool_call>'
+      },
+    )
+
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(outputs.some((o) => o.type === 'stdout' && o.data === 'final result')).toBe(true)
+    expect(outputs.some((o) => o.type === 'complete')).toBe(true)
+  })
+
+  it('stops at max rounds', async () => {
+    const adapter = new TestAdapter()
+    const invoke = vi.fn().mockResolvedValue({ resultText: 'again' })
+    adapter['subagentManager'] = { invoke } as unknown as import('../../agent/subagent-manager').SubagentManager
+
+    const outputs: import('@shared/types').AgentOutput[] = []
+    adapter.onOutput((o) => outputs.push(o))
+
+    await adapter['runToolAwareLoop'](
+      { id: 's1', adapterName: 'test', config: { workingDirectory: '/tmp', allowedFiles: [], forbiddenFiles: [], invariantRules: [], upstreamContext: '', downstreamContext: '', nodeTitle: '', acceptanceCriteria: [] }, startTime: Date.now() },
+      { type: 'implement', description: 'Do it', targetNodeId: 'n1' },
+      async () => '<tool_call>{"tool": "dispatch_subagent", "args": {"agent_type": "explore", "description": "x", "prompt": "y"}}</tool_call>',
+    )
+
+    expect(outputs.some((o) => o.type === 'error' && o.data.includes('max rounds'))).toBe(true)
+  })
+})

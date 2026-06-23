@@ -73,6 +73,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   static readonly EXECUTION_TIMEOUT_MS = 5 * 60 * 1000
   /** SIGKILL 保底超时（SIGTERM 后等待时间） */
   private static readonly SIGKILL_GRACE_PERIOD_MS = 5000
+  /** Phase 5: inline tool loop max rounds */
+  protected static readonly MAX_TOOL_ROUNDS = 5
+  /** Phase 5: inline tool loop total timeout */
+  protected static readonly TOOL_AWARE_LOOP_TIMEOUT_MS = 5 * 60 * 1000
 
   constructor() {
     super()
@@ -766,6 +770,98 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     return calls
   }
 
+  /**
+   * Phase 5: Tool-aware execution loop for CLI adapters without native tool support.
+   *
+   * @param session - Active agent session
+   * @param command - Original user command
+   * @param spawnOnce - Function that runs the CLI once with the given full prompt and returns stdout
+   */
+  protected async runToolAwareLoop(
+    session: AgentSession,
+    command: AgentCommand,
+    spawnOnce: (fullPrompt: string) => Promise<string>,
+  ): Promise<void> {
+    if (!this.subagentManager) {
+      this.emitOutput({
+        type: 'error',
+        data: 'SubagentManager not injected; inline tool dispatch unavailable.',
+        timestamp: Date.now(),
+      })
+      return
+    }
+
+    const history: ToolHistoryEntry[] = []
+    const toolPrompt = this.buildSubagentToolPrompt()
+    const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildCommandPrompt(command)}`
+    const startTime = Date.now()
+
+    for (let round = 0; round < BaseAdapter.MAX_TOOL_ROUNDS; round++) {
+      if (Date.now() - startTime > BaseAdapter.TOOL_AWARE_LOOP_TIMEOUT_MS) {
+        this.emitOutput({
+          type: 'error',
+          data: `Inline tool loop timed out after ${BaseAdapter.TOOL_AWARE_LOOP_TIMEOUT_MS}ms`,
+          timestamp: Date.now(),
+        })
+        return
+      }
+
+      const historyText = history.length > 0
+        ? `\n## Tool Call History\n${history.map((h) => {
+          if (h.role === 'assistant') return `Assistant: ${h.content}`
+          return `Result of ${h.tool}:\n${h.result}`
+        }).join('\n\n')}\n`
+        : ''
+
+      const fullPrompt = `${basePrompt}${historyText}\nPlease continue.`
+      const stdout = await spawnOnce(fullPrompt)
+
+      const calls = this.parseToolCalls(stdout)
+      if (calls.length === 0) {
+        this.emitOutput({ type: 'stdout', data: stdout, timestamp: Date.now() })
+        this.emitOutput({ type: 'complete', data: 'OpenCode session completed', timestamp: Date.now() })
+        return
+      }
+
+      this.emitOutput({ type: 'stdout', data: stdout, timestamp: Date.now() })
+      history.push({ role: 'assistant', content: stdout })
+
+      const results = await Promise.all(
+        calls.map(async (call) => {
+          if (call.tool !== DISPATCH_SUBAGENT_TOOL_NAME) {
+            return { tool: call.tool, result: `Unknown tool: ${call.tool}` }
+          }
+          try {
+            const args = call.args
+            const result = await this.subagentManager!.invoke({
+              parentSessionId: session.id,
+              agentType: String(args.agent_type ?? ''),
+              description: String(args.description ?? ''),
+              prompt: String(args.prompt ?? ''),
+              adapterName: args.adapter_name ? String(args.adapter_name) : undefined,
+              nodeId: args.node_id ? String(args.node_id) : undefined,
+              allowedFiles: Array.isArray(args.allowed_files) ? (args.allowed_files as string[]) : undefined,
+            })
+            return { tool: call.tool, result: result.resultText }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err)
+            return { tool: call.tool, result: `Subagent failed: ${msg}` }
+          }
+        }),
+      )
+
+      for (const r of results) {
+        history.push({ role: 'tool', tool: r.tool, result: r.result })
+      }
+    }
+
+    this.emitOutput({
+      type: 'error',
+      data: `Inline tool loop reached max rounds (${BaseAdapter.MAX_TOOL_ROUNDS})`,
+      timestamp: Date.now(),
+    })
+  }
+
   protected buildScopePrompt(
     config: AgentSessionConfig,
     resolvedContexts?: ResolvedContext[],
@@ -1001,3 +1097,7 @@ interface InlineToolCall {
   tool: string
   args: Record<string, unknown>
 }
+
+type ToolHistoryEntry =
+  | { role: 'assistant'; content: string }
+  | { role: 'tool'; tool: string; result: string }
