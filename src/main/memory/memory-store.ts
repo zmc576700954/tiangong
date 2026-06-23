@@ -401,13 +401,18 @@ export class MemoryStore {
       // FTS5 不可用时降级到 LIKE
       // Split multi-word query into individual terms and OR them,
       // so that "auth bug" matches items containing either "auth" or "bug"
-      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_').replace(/'/g, "''")
-      const terms = escapedQuery.split(/\s+/).filter(t => t.length > 0)
-      const conditions: string[] = terms.map(t => {
-        const pattern = `%${t}%`
-        return `(m.title LIKE '${pattern}' ESCAPE '\\' OR m.narrative LIKE '${pattern}' ESCAPE '\\' OR m.facts LIKE '${pattern}' ESCAPE '\\' OR m.concepts LIKE '${pattern}' ESCAPE '\\')`
-      })
+      // All LIKE patterns use parameterized ? placeholders to prevent SQL injection.
+      const terms = query.split(/\s+/).filter(t => t.length > 0)
+      const LIKE_FIELDS = ['m.title', 'm.narrative', 'm.facts', 'm.concepts'] as const
+      const conditions: string[] = []
       const args: (string | number)[] = []
+      for (const t of terms) {
+        const pattern = `%${t}%`
+        conditions.push(`(${LIKE_FIELDS.map(f => `${f} LIKE ? ESCAPE '\\'`).join(' OR ')})`)
+        for (const _ of LIKE_FIELDS) {
+          args.push(pattern)
+        }
+      }
 
       if (options?.projectId) {
         conditions.push('m.project_id = ?')
@@ -418,10 +423,11 @@ export class MemoryStore {
         args.push(options.kind)
       }
 
-      // The first group of conditions (from terms) are ORed together,
+      // The term conditions (one per search term) are ORed together,
       // then ANDed with any projectId/kind filters.
-      const termConditions = conditions.slice(0, terms.length).join(' OR ')
-      const filterConditions = conditions.slice(terms.length)
+      const termCount = terms.length
+      const termConditions = conditions.slice(0, termCount).join(' OR ')
+      const filterConditions = conditions.slice(termCount)
       const whereClause = filterConditions.length > 0
         ? `(${termConditions}) AND ${filterConditions.join(' AND ')}`
         : termConditions
