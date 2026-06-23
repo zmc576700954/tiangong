@@ -325,7 +325,11 @@ export class AgentManager {
 
     // Wait for all async operations (adapter terminate + sandbox rollback) to settle
     // before clearing state, so that resources are truly released before overlap is possible.
-    await Promise.allSettled(pendingOps)
+    // Cap at 30s to prevent mutex deadlock if an operation hangs.
+    await Promise.race([
+      Promise.allSettled(pendingOps),
+      new Promise<void>(resolve => setTimeout(resolve, 30_000)),
+    ])
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
     const listeners = this.sessionOutputListenerIndex.get(sessionId)
@@ -723,14 +727,17 @@ export class AgentManager {
     const fallbackHistory: AdapterFallbackAttempt[] = []
 
     // 检查会话上限，防止无限创建
-    if (this.sessionStates.size - this.reservedSlots.size >= this.MAX_SESSIONS) {
+    // reservedSlots tracks in-flight startSession calls to prevent TOCTOU races
+    // on the capacity check; real sessions are in sessionStates.
+    const activeSessions = this.sessionStates.size
+    const pendingReservations = this.reservedSlots.size
+    if (activeSessions + pendingReservations >= this.MAX_SESSIONS) {
       logger.error(`Maximum session limit (${this.MAX_SESSIONS}) reached, cannot create new session`)
       throw new AgentError('Maximum concurrent sessions exceeded', ErrorCode.AGENT_SESSION_LIMIT)
     }
     // Reserve a slot key to prevent TOCTOU race
     const slotKey = `__reserved_${Date.now()}_${Math.random().toString(36).slice(2)}`
     this.reservedSlots.add(slotKey)
-    this.sessionStates.set(slotKey, null as any)
 
     for (const candidate of uniqueChain) {
       const adapter = this.registry.get(candidate)
@@ -797,7 +804,6 @@ export class AgentManager {
           swarmTaskId: config.swarmTaskId,
         })
         // Remove the reserved slot now that the real session is registered
-        this.sessionStates.delete(slotKey)
         this.reservedSlots.delete(slotKey)
         this.sessionBroadcastNames.set(session.id, broadcastName)
 
