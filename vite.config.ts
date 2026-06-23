@@ -4,9 +4,8 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
-import { visualizer } from 'rollup-plugin-visualizer'
 
-export default defineConfig({
+export default defineConfig(async () => ({
   plugins: [
     react(),
     tailwindcss(),
@@ -22,7 +21,7 @@ export default defineConfig({
             minify: process.env.NODE_ENV === 'production',
             outDir: 'dist-electron/main',
             rollupOptions: {
-              external: ['electron', '@libsql/client', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk'],
+              external: ['electron', '@libsql/client', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', 'onnxruntime-node', 'sharp'],
             },
           },
           resolve: {
@@ -58,7 +57,7 @@ export default defineConfig({
     renderer(),
     ...(process.env.BUILD_ANALYZE === 'true'
       ? [
-          visualizer({
+          (await import('rollup-plugin-visualizer')).visualizer({
             open: true,
             filename: 'dist/stats.html',
             gzipSize: true,
@@ -92,4 +91,4 @@ export default defineConfig({
       },
     },
   },
-})
+}))

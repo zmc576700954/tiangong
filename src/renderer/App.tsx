@@ -1,4 +1,5 @@
 import { useState, useEffect, Component, type ReactNode } from 'react'
+import { PanelLeftOpen } from 'lucide-react'
 import { LeftPanel } from './panels/LeftPanel'
 import { RightPanel } from './panels/RightPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
@@ -120,6 +121,15 @@ function App() {
     useAgentStore.getState().hydrateOnStart()
   }, [loadGraphs])
 
+  // Auto-expand left panel when menu: Open Project fires
+  useEffect(() => {
+    if (!window.electronAPI?.onMenuOpenProject) return
+    const unsub = window.electronAPI.onMenuOpenProject(() => {
+      if (leftPanel.collapsed) leftPanel.toggleCollapse()
+    })
+    return unsub
+  }, [leftPanel.collapsed, leftPanel.toggleCollapse])
+
   // 同步展开模式到右侧面板固定宽度
   useEffect(() => {
     rightPanel.setFixedWidth(expandedAgent ? 480 : null)
@@ -128,11 +138,11 @@ function App() {
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
-        {/* Left directory tree — hidden on small screens or when toggled off */}
-        {leftPanelVisible && !isSmallScreen && (
+        {/* Left directory tree */}
+        {!leftPanel.collapsed && (
           <>
             <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
-              <LeftPanel onClose={() => setLeftPanelVisible(false)} />
+              <LeftPanel onCollapse={leftPanel.toggleCollapse} />
             </div>
             <div
               className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
@@ -145,7 +155,17 @@ function App() {
         )}
 
         {/* Center canvas area */}
-        <div className="flex-1 flex flex-col min-w-0 relative">
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Left panel toggle */}
+          {leftPanel.collapsed && (
+            <button
+              onClick={leftPanel.toggleCollapse}
+              className="absolute top-2 left-2 z-10 p-1.5 rounded hover:bg-muted transition-colors"
+              title="Show project panel"
+            >
+              <PanelLeftOpen className="w-4 h-4 text-muted-foreground" />
+            </button>
+          )}
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
           <div className="flex-1 relative">
             {!leftPanelVisible && !isSmallScreen && (
