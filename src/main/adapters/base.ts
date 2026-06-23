@@ -699,6 +699,42 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     return parts.join('\n')
   }
 
+  /**
+   * Phase 5: Build the inline tool prompt describing dispatch_subagent.
+   * CLI adapters without native tool support inject this into their prompt.
+   */
+  protected buildSubagentToolPrompt(): string {
+    const schema = DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema
+    const required = schema.required as unknown as string[]
+    const properties = schema.properties as unknown as Record<
+      string,
+      { type: string; description: string; enum?: readonly string[]; items?: unknown }
+    >
+
+    const paramLines = Object.entries(properties).map(([name, def]) => {
+      const isRequired = required.includes(name)
+      const enumPart = def.enum ? ` (enum: ${def.enum.join(', ')})` : ''
+      return `- ${name}${isRequired ? '' : ' (optional)'}: ${def.description}${enumPart}`
+    })
+
+    return [
+      '## Available Tools',
+      '',
+      'You can call the following tool by emitting exactly one JSON object wrapped in `<tool_call>` and `</tool_call>` tags.',
+      'After the tool executes, its result will be returned to you and you may continue thinking.',
+      '',
+      `Tool: ${DISPATCH_SUBAGENT_TOOL_NAME}`,
+      `Description: ${DISPATCH_SUBAGENT_TOOL_SCHEMA.description}`,
+      '',
+      'Parameters:',
+      ...paramLines,
+      '',
+      'Example call:',
+      `<tool_call>{"tool": "${DISPATCH_SUBAGENT_TOOL_NAME}", "args": {"agent_type": "explore", "description": "Find usages", "prompt": "Find all usages of Foo in src/.", "allowed_files": ["src/foo.ts"]}}</tool_call>`,
+      '',
+    ].join('\n')
+  }
+
   protected buildScopePrompt(
     config: AgentSessionConfig,
     resolvedContexts?: ResolvedContext[],
