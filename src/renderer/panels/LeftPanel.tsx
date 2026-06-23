@@ -75,7 +75,6 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
 
   // Listen for menu: Open Project
   useEffect(() => {
-    if (!window.electronAPI?.onMenuOpenProject) return
     const unsub = window.electronAPI.onMenuOpenProject((projectPath: string) => {
       if (projects.some((p) => p.path === projectPath)) return
       addProject(projectPath)

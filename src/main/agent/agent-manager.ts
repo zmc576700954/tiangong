@@ -1338,13 +1338,13 @@ export class AgentManager {
                 const nodeRepo = new NodeRepository(db)
                 await nodeRepo.update(nodeId, { metadata: metadata as any })
               }
-            } catch {
-              // metadata parse error, skip
+            } catch (e) {
+              logger.warn('Failed to parse metadata for file-node association', { nodeId, error: String(e) })
             }
           }
         }
-      } catch {
-        // Non-critical: file-node association failure should not affect session termination
+      } catch (e) {
+        logger.warn('File-node association failed during session termination', { error: String(e) })
       }
     }
 

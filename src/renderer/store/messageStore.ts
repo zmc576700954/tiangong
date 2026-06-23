@@ -56,6 +56,67 @@ class MessageQueue {
 
 const messageQueue = new MessageQueue()
 
+// ==================== RAF-batched streaming ====================
+
+interface StreamingChunk {
+  threadId: string
+  messageId: string
+  content: string
+  seq?: number
+}
+
+let streamingBuffer: StreamingChunk[] = []
+let streamingFlushScheduled = false
+const STREAMING_BATCH_INTERVAL = 16
+
+function flushStreamingBuffer() {
+  streamingFlushScheduled = false
+  if (streamingBuffer.length === 0) return
+
+  const batch = streamingBuffer
+  streamingBuffer = []
+
+  // Group chunks by (threadId, messageId), accumulating content
+  const grouped = new Map<string, { threadId: string; messageId: string; content: string }>()
+  for (const chunk of batch) {
+    const key = `${chunk.threadId}:${chunk.messageId}`
+    const existing = grouped.get(key)
+    if (existing) {
+      existing.content += chunk.content
+    } else {
+      grouped.set(key, { threadId: chunk.threadId, messageId: chunk.messageId, content: chunk.content })
+    }
+  }
+
+  // Apply batch updates per thread
+  const threads = useThreadStore.getState().threads
+  const threadUpdates = new Map<number, typeof threads[number]['messages']>()
+
+  for (const { threadId, messageId, content } of grouped.values()) {
+    const threadIndex = threads.findIndex((t) => t.id === threadId)
+    if (threadIndex === -1) continue
+
+    let messages = threadUpdates.get(threadIndex)
+    if (!messages) {
+      messages = [...threads[threadIndex].messages]
+      threadUpdates.set(threadIndex, messages)
+    }
+
+    const messageIndex = messages.findIndex((m) => m.id === messageId)
+    if (messageIndex === -1) continue
+
+    messages[messageIndex] = { ...messages[messageIndex], content: messages[messageIndex].content + content }
+  }
+
+  if (threadUpdates.size === 0) return
+
+  const newThreads = [...threads]
+  for (const [threadIndex, messages] of threadUpdates) {
+    newThreads[threadIndex] = { ...newThreads[threadIndex], messages }
+  }
+  useThreadStore.setState({ threads: newThreads })
+}
+
 // ==================== Streaming dedup state ====================
 
 /** Tracks last-seen sequence number per (threadId, messageId) for chunk dedup */
@@ -114,20 +175,15 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       })
     }
 
-    const threads = useThreadStore.getState().threads
-    const threadIndex = threads.findIndex((t) => t.id === threadId)
-    if (threadIndex === -1) return
-
-    const messages = threads[threadIndex].messages
-    const messageIndex = messages.findIndex((m) => m.id === messageId)
-    if (messageIndex === -1) return
-
-    const newMessages = [...messages]
-    newMessages[messageIndex] = { ...newMessages[messageIndex], content: newMessages[messageIndex].content + content }
-    const newThreads = [...threads]
-    newThreads[threadIndex] = { ...newThreads[threadIndex], messages: newMessages }
-
-    useThreadStore.setState({ threads: newThreads })
+    streamingBuffer.push({ threadId, messageId, content, seq })
+    if (!streamingFlushScheduled) {
+      streamingFlushScheduled = true
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(flushStreamingBuffer)
+      } else {
+        setTimeout(flushStreamingBuffer, STREAMING_BATCH_INTERVAL)
+      }
+    }
   },
 
   appendToolCall: (threadId, messageId, toolCall) => {

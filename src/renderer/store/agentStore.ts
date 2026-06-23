@@ -36,7 +36,7 @@ interface AgentState {
   loadMarketplaceItems: () => Promise<void>
   setOpenSettingsPanel: (open: boolean) => void
   sendCommand: (sessionId: string, command: AgentCommand) => Promise<void>
-  appendOutput: (threadId: string, output: AgentOutput) => void
+  appendOutput: (threadId: string, output: AgentOutput, activeThreadId?: string) => void
   appendToStreamingMessage: (threadId: string, messageId: string, content: string) => void
   clearThreadOutputs: (threadId: string) => void
   trimInactiveThreadOutputs: (activeThreadId: string) => void
@@ -163,8 +163,8 @@ export const useAgentStore = create<AgentState>(() => ({
     await window.electronAPI['agent:sendCommand'](sessionId, command)
   },
 
-  appendOutput: (threadId, output) => {
-    useAgentOutputStore.getState().appendOutput(threadId, output)
+  appendOutput: (threadId, output, activeThreadId?) => {
+    useAgentOutputStore.getState().appendOutput(threadId, output, activeThreadId)
     if (output.type === 'error') {
       useThreadStore.setState((state) => ({
         threads: state.threads.map((t) =>

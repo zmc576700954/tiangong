@@ -290,8 +290,11 @@ export class ScopeGuard {
       try {
         const content = await fs.readFile(srcPath)
         await fs.writeFile(backupPath, content)
-      } catch {
-        // 文件可能不存在（新建文件），忽略错误
+      } catch (e) {
+        // ENOENT is expected (file may not exist yet); other errors need attention
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          logger.warn('ScopeGuard: failed to backup file', { srcPath, error: String(e) })
+        }
       }
     }
 

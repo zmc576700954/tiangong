@@ -432,13 +432,23 @@ export class HallucinationChecker {
       // Proximity check: only flag as contradiction if matches are within 200 chars
       // to avoid false positives from unrelated "error handling" / "pass error to callback"
       if (pair.label === 'Mixed success/failure signals' && matchesA.length > 0 && matchesB.length > 0) {
-        // Sort matchesB offsets and use binary search for efficient proximity check
         const sortedBOffsets = matchesB.map(m => m.offset).sort((a, b) => a - b)
         for (const ma of matchesA) {
-          // Find the closest matchB offset to ma.offset
-          const lo = Math.max(0, sortedBOffsets.findIndex(o => o >= ma.offset - 200))
-          if (lo < sortedBOffsets.length && Math.abs(sortedBOffsets[lo] - ma.offset) < 200) {
-            const mb = matchesB.find(m => m.offset === sortedBOffsets[lo])!
+          // Find the first B-offset >= ma.offset - 200
+          const lo = sortedBOffsets.findIndex(o => o >= ma.offset - 200)
+          // Check both lo and lo-1 candidates; pick the closest within 200 chars
+          const candidates: number[] = []
+          if (lo >= 0 && lo < sortedBOffsets.length) candidates.push(lo)
+          if (lo - 1 >= 0) candidates.push(lo - 1)
+          if (lo === -1 && sortedBOffsets.length > 0) candidates.push(sortedBOffsets.length - 1)
+
+          let claimsForThisA = 0
+          for (const candidateIdx of candidates) {
+            if (claimsForThisA >= 3) break
+            const bOffset = sortedBOffsets[candidateIdx]
+            if (Math.abs(bOffset - ma.offset) >= 200) continue
+
+            const mb = matchesB.find(m => m.offset === bOffset)!
             claims.push({
               claim: `Mixed success/failure: "${ma.text}" vs "${mb.text}"`,
               type: 'internal_contradiction',
@@ -446,7 +456,7 @@ export class HallucinationChecker {
               evidence: `Agent reports both success and failure signals within 200 chars at lines: ${[ma, mb].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
               offset: ma.offset,
             })
-            break
+            claimsForThisA++
           }
         }
       }

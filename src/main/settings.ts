@@ -75,6 +75,10 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
 // ============================================
 
 const API_KEY_PREFIX_ENC = 'enc:'
+// SECURITY: fbk: keys use AES-256-CBC with a key derived from userData path + random salt.
+// This is obfuscation, NOT real encryption against a local attacker who can read the salt file
+// and the application path. It only raises the bar above plaintext storage. For real protection,
+// rely on OS keychain (safeStorage) which is preferred when available.
 const API_KEY_PREFIX_FALLBACK = 'fbk:'
 
 /** 当 safeStorage 不可用时，使用基于随机盐 + 机器标识的密钥进行 AES 加密 */
@@ -145,6 +149,9 @@ async function decryptApiKey(encrypted: string): Promise<string> {
   if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
     return decryptFallback(encrypted)
   }
+  // SECURITY: plain: prefix returns the API key as base64-decoded plaintext.
+  // This exists solely for backward compatibility with v0 configs. These keys should
+  // never be logged, cached in plaintext, or exposed via IPC responses without masking.
   // 向后兼容：旧版 plain: 前缀（base64 编码的明文）
   if (encrypted.startsWith('plain:')) {
     try {
@@ -275,7 +282,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
       // 首次启动：写入默认配置，后续读取不再触发 ENOENT
       logger.info('Settings file not found, creating with defaults')
       const defaults = { ...DEFAULT_SETTINGS }
-      try { await writeSettings(defaults) } catch { /* 忽略写入失败 */ }
+      try { await writeSettings(defaults) } catch (e) { logger.warn('Failed to write initial default settings:', e) }
       cachedSettings = defaults
     } else {
       logger.warn('Failed to read settings file, using defaults:', err)
@@ -490,6 +497,11 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
  * Read the raw (encrypted) API keys from disk without decrypting.
  * Used by the settings IPC handler to preserve encrypted keys when the
  * renderer sends back masked values, avoiding a round-trip through decrypt+re-encrypt.
+ *
+ * SECURITY: This function has no additional authorization check beyond Electron's
+ * IPC security model (contextIsolation + contextBridge). It is only called from the
+ * settings IPC handler, which is itself gated by Electron's sandbox. No renderer
+ * code can call this directly — it must go through the preload bridge.
  */
 export async function getEncryptedApiKeys(): Promise<Array<{ provider: string; key: string }>> {
   const settingsPath = await getSettingsPath()

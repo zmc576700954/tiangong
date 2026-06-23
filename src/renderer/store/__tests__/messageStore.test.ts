@@ -1,6 +1,14 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { useMessageStore } from '../messageStore'
 import { useThreadStore } from '../threadStore'
+
+// The streaming message store uses RAF batching. In tests, requestAnimationFrame
+// may not fire, so we need to flush the buffer manually.
+// We access the internal flush function by triggering it via a fake RAF.
+function flushStreamingBuffer() {
+  // Trigger any pending RAF callbacks
+  vi.advanceTimersByTime(16)
+}
 
 vi.stubGlobal('window', {
   electronAPI: {
@@ -32,6 +40,23 @@ describe('messageStore', () => {
     })
   })
 
+describe('streaming (RAF-batched)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    useMessageStore.setState({
+      lastSeq: new Map(),
+      pendingConfirmations: new Map(),
+    })
+    useThreadStore.setState({
+      threads: [],
+      currentThreadId: null,
+    })
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('appendToStreamingMessage appends content to the target message', () => {
     const id = useThreadStore.getState().createThread('claude-code')
     useThreadStore.getState().appendChatMessage(id, {
@@ -42,6 +67,7 @@ describe('messageStore', () => {
       status: 'streaming',
     })
     useMessageStore.getState().appendToStreamingMessage(id, 'msg-stream', ' World')
+    flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('Hello World')
   })
 
@@ -56,20 +82,25 @@ describe('messageStore', () => {
     })
     // Send seq=1 first time — should be accepted
     useMessageStore.getState().appendToStreamingMessage(id, 'msg-dedup', 'A', 1)
+    flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('A')
 
     // Send seq=1 again — should be deduplicated (skipped)
     useMessageStore.getState().appendToStreamingMessage(id, 'msg-dedup', 'B', 1)
+    flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('A')
 
     // Send seq=2 — should be accepted (higher seq)
     useMessageStore.getState().appendToStreamingMessage(id, 'msg-dedup', 'C', 2)
+    flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('AC')
 
     // Send seq=0 — should be deduplicated (lower seq than last=2)
     useMessageStore.getState().appendToStreamingMessage(id, 'msg-dedup', 'D', 0)
+    flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('AC')
   })
+})
 
   it('appendToolCall adds a tool call block to the message', () => {
     const id = useThreadStore.getState().createThread('claude-code')

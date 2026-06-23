@@ -266,13 +266,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       acceptanceCriteria: selectedNode?.acceptanceCriteria ?? [],
     }
 
-    streamingMsgIdRef.current = null
+    if (currentThreadId) streamingMsgIdRef.current.delete(currentThreadId)
     await sendMessage(threadId, content, contextRefs, sessionConfig)
   }
 
   const handleStop = async () => {
     if (currentThreadId) {
-      streamingMsgIdRef.current = null
+      if (currentThreadId) streamingMsgIdRef.current.delete(currentThreadId)
       await stopCurrentSession(currentThreadId)
     }
   }
@@ -304,7 +304,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const handleRetry = async (agentMessageId: string) => {
     if (currentThreadId) {
-      streamingMsgIdRef.current = null
+      if (currentThreadId) streamingMsgIdRef.current.delete(currentThreadId)
       await retryMessage(currentThreadId, agentMessageId)
     }
   }

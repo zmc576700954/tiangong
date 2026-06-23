@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import {
   Pencil,
   Trash2,
@@ -438,7 +438,7 @@ function CriteriaEditor({
       <label className="text-xs font-medium text-muted-foreground">Acceptance Criteria</label>
       <div className="space-y-1">
         {criteria.map((c, i) => (
-          <div key={c} className="flex items-center gap-1.5 px-2 py-1 text-sm bg-muted/50 rounded">
+          <div key={i} className="flex items-center gap-1.5 px-2 py-1 text-sm bg-muted/50 rounded">
             <Check className="w-3 h-3 text-green-500 shrink-0" />
             <span className="flex-1 truncate">{c}</span>
             <button
@@ -488,6 +488,9 @@ export function NodeEditor({
   const childNodes = nodes.filter((n) => n.parentId === node.id)
   const typeColor = NODE_TYPE_COLORS[node.type] ?? '#94a3b8'
 
+  const handleTitleSave = useCallback((title: string) => onUpdate({ title }), [onUpdate])
+  const handleDescriptionSave = useCallback((v: string) => onUpdate({ description: v }), [onUpdate])
+
   return (
     <div className="p-3 space-y-4">
       {/* Node header */}
@@ -503,7 +506,7 @@ export function NodeEditor({
         </div>
         <EditableTitle
           title={node.title}
-          onSave={(title) => onUpdate({ title })}
+          onSave={handleTitleSave}
         />
       </div>
 
@@ -516,7 +519,7 @@ export function NodeEditor({
       <EditableTextArea
         label="Description"
         value={node.description ?? ''}
-        onSave={(v) => onUpdate({ description: v })}
+        onSave={handleDescriptionSave}
         placeholder="Enter node description..."
         rows={3}
       />

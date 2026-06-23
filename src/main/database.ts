@@ -513,10 +513,9 @@ async function migrate(): Promise<void> {
 
     await runIncrementalMigrations(db, currentVersion)
 
-    // 更新版本号
-    await db.execute('DELETE FROM schema_version')
+    // 更新版本号（INSERT OR REPLACE is atomic, avoids losing version on partial failure）
     await db.execute({
-      sql: 'INSERT INTO schema_version (version) VALUES (?)',
+      sql: 'INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)',
       args: [CURRENT_SCHEMA_VERSION],
     })
 

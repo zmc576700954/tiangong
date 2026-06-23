@@ -1,54 +1,13 @@
-import { useState, useEffect, Component, type ReactNode } from 'react'
+import { useState, useEffect } from 'react'
 import { LeftPanel } from './panels/LeftPanel'
 import { RightPanel } from './panels/RightPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
 import { GraphTabs } from './components/GraphTabs'
+import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
-
-// 全局错误边界
-class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error?: Error }> {
-  constructor(props: { children: ReactNode }) {
-    super(props)
-    this.state = { hasError: false }
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error }
-  }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('React ErrorBoundary caught:', error, errorInfo)
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="flex items-center justify-center h-screen w-screen bg-background text-foreground p-8"
-        >
-          <div className="text-center space-y-4 max-w-md"
-          >
-            <h1 className="text-xl font-semibold text-destructive"
-            >应用发生错误</h1>
-            <p className="text-sm text-muted-foreground"
-            >
-              {this.state.error?.message ?? '未知错误'}
-            </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:bg-primary/90"
-            >
-              重新加载
-            </button>
-          </div>
-        </div>
-      )
-    }
-    return this.props.children
-  }
-}
 
 function App() {
   const leftPanel = useResizablePanel({
@@ -122,7 +81,6 @@ function App() {
 
   // Auto-expand left panel when menu: Open Project fires
   useEffect(() => {
-    if (!window.electronAPI?.onMenuOpenProject) return
     const unsub = window.electronAPI.onMenuOpenProject(() => {
       if (leftPanel.collapsed) leftPanel.toggleCollapse()
     })
@@ -140,9 +98,11 @@ function App() {
         {/* Left directory tree */}
         {!leftPanel.collapsed && (
           <>
-            <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
-              <LeftPanel onCollapse={leftPanel.toggleCollapse} />
-            </div>
+            <ErrorBoundary label="项目面板">
+              <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
+                <LeftPanel onCollapse={leftPanel.toggleCollapse} />
+              </div>
+            </ErrorBoundary>
             <div
               className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
               style={{ width: '3px' }}
@@ -166,36 +126,38 @@ function App() {
             </button>
           )}
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
-          <div className="flex-1 relative">
-            {leftPanel.collapsed && !isSmallScreen && (
-              <button
-                onClick={() => leftPanel.toggleCollapse()}
-                className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
-                title="Show file tree (Ctrl+B)"
-              >
-                <PanelLeftOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
-              </button>
-            )}
-            {!rightPanelVisible && (
-              <button
-                onClick={() => setRightPanelVisible(true)}
-                className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-l border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
-                title="Show panel (Ctrl+J)"
-              >
-                <PanelRightOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
-              </button>
-            )}
-            {currentGraphId ? (
-              <GraphCanvas graphId={currentGraphId} />
-            ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                <div className="text-center">
-                  <p className="text-lg font-medium mb-2">欢迎使用 BizGraph</p>
-                  <p className="text-sm">创建或选择一个图开始工作</p>
+          <ErrorBoundary label="画布">
+            <div className="flex-1 relative">
+              {leftPanel.collapsed && !isSmallScreen && (
+                <button
+                  onClick={() => leftPanel.toggleCollapse()}
+                  className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
+                  title="Show file tree (Ctrl+B)"
+                >
+                  <PanelLeftOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
+                </button>
+              )}
+              {!rightPanelVisible && (
+                <button
+                  onClick={() => setRightPanelVisible(true)}
+                  className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-l border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
+                  title="Show panel (Ctrl+J)"
+                >
+                  <PanelRightOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
+                </button>
+              )}
+              {currentGraphId ? (
+                <GraphCanvas graphId={currentGraphId} />
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground">
+                  <div className="text-center">
+                    <p className="text-lg font-medium mb-2">欢迎使用 BizGraph</p>
+                    <p className="text-sm">创建或选择一个图开始工作</p>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </ErrorBoundary>
         </div>
 
         {/* Right Agent panel — conditionally visible */}
@@ -208,16 +170,18 @@ function App() {
             >
               <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
             </div>
-            <div
-              style={{ width: rightPanel.width, minWidth: rightPanel.width }}
-              className="shrink-0"
-            >
-              <RightPanel
-                expandedAgent={expandedAgent}
-                onToggleExpand={() => setExpandedAgent(!expandedAgent)}
-                onClose={() => setRightPanelVisible(false)}
-              />
-            </div>
+            <ErrorBoundary label="Agent 面板">
+              <div
+                style={{ width: rightPanel.width, minWidth: rightPanel.width }}
+                className="shrink-0"
+              >
+                <RightPanel
+                  expandedAgent={expandedAgent}
+                  onToggleExpand={() => setExpandedAgent(!expandedAgent)}
+                  onClose={() => setRightPanelVisible(false)}
+                />
+              </div>
+            </ErrorBoundary>
           </>
         )}
       </div>

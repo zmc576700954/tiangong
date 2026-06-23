@@ -28,7 +28,7 @@ interface AgentOutputState {
   threadOutputs: Record<string, AgentOutput[]>
 
   /** 将输出追加到指定 thread 的缓冲区（立即或批量 flush） */
-  appendOutput: (threadId: string, output: AgentOutput) => void
+  appendOutput: (threadId: string, output: AgentOutput, activeThreadId?: string) => void
   /** 立即清空指定 thread 的输出 */
   clearThreadOutputs: (threadId: string) => void
   /** 裁剪非活跃 thread 的输出到保留上限 */
@@ -38,7 +38,7 @@ interface AgentOutputState {
 }
 
 /** 将缓冲区中的输出批量写入 store，合并为一次状态更新 */
-function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentOutputState>) => void) {
+function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentOutputState>) => void, activeThreadId?: string) {
   flushScheduled = false
   if (outputBuffer.length === 0) return
 
@@ -63,11 +63,10 @@ function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentO
     }
 
     // 全局内存预算：超出时淘汰非活跃 thread 的最旧输出
-    const currentThreadId: string | undefined = undefined // TODO: pass from store for correct memory trimming
     let total = countTotalOutputs(newOutputs)
     if (total > MAX_TOTAL_OUTPUTS) {
       const threadIds = Object.keys(newOutputs)
-        .filter((tid) => tid !== currentThreadId)
+        .filter((tid) => tid !== activeThreadId)
         .sort((a, b) => (newOutputs[b]?.length ?? 0) - (newOutputs[a]?.length ?? 0))
       for (const tid of threadIds) {
         if (total <= MAX_TOTAL_OUTPUTS) break
@@ -84,28 +83,28 @@ function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentO
 }
 
 /** 调度一次 flush（如果尚未调度） */
-function scheduleFlush(set: (fn: (state: AgentOutputState) => Partial<AgentOutputState>) => void) {
+function scheduleFlush(set: (fn: (state: AgentOutputState) => Partial<AgentOutputState>) => void, activeThreadId?: string) {
   if (flushScheduled) return
   flushScheduled = true
   if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(() => flushOutputBuffer(set))
+    requestAnimationFrame(() => flushOutputBuffer(set, activeThreadId))
   } else {
-    setTimeout(() => flushOutputBuffer(set), BATCH_INTERVAL)
+    setTimeout(() => flushOutputBuffer(set, activeThreadId), BATCH_INTERVAL)
   }
 }
 
 export const useAgentOutputStore = create<AgentOutputState>((_set, get) => ({
   threadOutputs: {},
 
-  appendOutput: (threadId, output) => {
+  appendOutput: (threadId, output, activeThreadId?) => {
     // 对 error 类型输出立即 flush，确保错误状态不延迟显示
     if (output.type === 'error') {
       outputBuffer.push({ threadId, output })
-      flushOutputBuffer(_set)
+      flushOutputBuffer(_set, activeThreadId)
       return
     }
     outputBuffer.push({ threadId, output })
-    scheduleFlush(_set)
+    scheduleFlush(_set, activeThreadId)
   },
 
   clearThreadOutputs: (threadId) => {

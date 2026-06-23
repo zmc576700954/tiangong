@@ -237,6 +237,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('subagent:progress', handler) }
   },
 
+  // Open Project menu event listener
+  onMenuOpenProject: (callback: (projectPath: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
+    ipcRenderer.on('menu:openProject', handler)
+    return () => { ipcRenderer.off('menu:openProject', handler) }
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -255,8 +262,7 @@ declare global {
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
       onWaterlineChange: (callback: (state: ContextState) => void) => () => void
       onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => () => void
-      /** Open Project menu event — may not be available in all environments */
-      onMenuOpenProject?: (callback: (projectPath: string) => void) => () => void
+      onMenuOpenProject: (callback: (projectPath: string) => void) => () => void
       platform: string
     }
   }

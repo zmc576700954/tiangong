@@ -49,11 +49,10 @@ export function classifyRiskLevel(output: AgentOutput): { level: RiskLevel; reas
  * 监听 agent:output IPC 事件，将输出路由到正确的 thread 和 message
  */
 export function useAgentOutputListener(currentThreadId: string | null) {
-  const streamingMsgIdRef = useRef<string | null>(null)
+  const streamingMsgIdRef = useRef<Map<string, string>>(new Map())
 
-  // Reset streaming ref when thread changes
   useEffect(() => {
-    streamingMsgIdRef.current = null
+    streamingMsgIdRef.current = new Map()
   }, [currentThreadId])
 
   useEffect(() => {
@@ -72,15 +71,16 @@ export function useAgentOutputListener(currentThreadId: string | null) {
       const tid = ownerThread.id
       const adapterName = ownerThread.adapterName
 
-      store.appendOutput(tid, output)
+      store.appendOutput(tid, output, currentThreadId ?? undefined)
 
       if (output.type === 'error') {
-        if (streamingMsgIdRef.current) {
-          store.markMessageStatus(tid, streamingMsgIdRef.current, 'error', {
+        const msgId = streamingMsgIdRef.current.get(tid)
+        if (msgId) {
+          store.markMessageStatus(tid, msgId, 'error', {
             code: output.errorCode ?? 'UNKNOWN',
             message: output.data || 'Agent 异常退出',
           })
-          streamingMsgIdRef.current = null
+          streamingMsgIdRef.current.delete(tid)
         } else {
           store.appendChatMessage(tid, {
             id: generateId('msg'),
@@ -100,9 +100,10 @@ export function useAgentOutputListener(currentThreadId: string | null) {
       }
 
       if (output.type === 'complete') {
-        if (streamingMsgIdRef.current) {
-          store.markMessageStatus(tid, streamingMsgIdRef.current, 'success')
-          streamingMsgIdRef.current = null
+        const msgId = streamingMsgIdRef.current.get(tid)
+        if (msgId) {
+          store.markMessageStatus(tid, msgId, 'success')
+          streamingMsgIdRef.current.delete(tid)
         }
         store.updateThreadStatus(tid, 'idle')
         useAgentStore.getState().persistThreadMessages(tid)
@@ -113,9 +114,10 @@ export function useAgentOutputListener(currentThreadId: string | null) {
         const filePath = output.filePath
         if (!filePath) return
 
-        if (!streamingMsgIdRef.current) {
-          const msgId = generateId('msg')
-          streamingMsgIdRef.current = msgId
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
           store.appendChatMessage(tid, {
             id: msgId,
             role: 'agent',
@@ -141,18 +143,15 @@ export function useAgentOutputListener(currentThreadId: string | null) {
           // Must confirm — emit CONFIRMATION_REQUIRED event
           eventBus.emit(Events.CONFIRMATION_REQUIRED, {
             threadId: tid,
-            messageId: streamingMsgIdRef.current,
+            messageId: msgId,
             toolCall,
             reason,
           })
           // Store in pendingConfirmations
-          useMessageStore.getState().addPendingConfirmation(tid, streamingMsgIdRef.current, toolCall)
-        } else if (level === 'medium') {
-          // Auto-accept but could show hint (for now just accept)
-          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
+          useMessageStore.getState().addPendingConfirmation(tid, msgId, toolCall)
         } else {
-          // Low risk: auto-accept
-          store.appendToolCall(tid, streamingMsgIdRef.current!, toolCall)
+          // Low/medium risk: auto-accept
+          store.appendToolCall(tid, msgId, toolCall)
         }
 
         store.updateThreadStatus(tid, 'running')
@@ -163,9 +162,10 @@ export function useAgentOutputListener(currentThreadId: string | null) {
         const text = output.data.trim()
         if (!text) return
 
-        if (!streamingMsgIdRef.current) {
-          const msgId = generateId('msg')
-          streamingMsgIdRef.current = msgId
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
           store.appendChatMessage(tid, {
             id: msgId,
             role: 'agent',
@@ -175,15 +175,16 @@ export function useAgentOutputListener(currentThreadId: string | null) {
             status: 'streaming',
           })
         } else {
-          store.appendToStreamingMessage(tid, streamingMsgIdRef.current, '\n' + text)
+          store.appendToStreamingMessage(tid, msgId, '\n' + text)
         }
         store.updateThreadStatus(tid, 'running')
         return
       }
 
       if (output.type === 'stderr') {
-        if (streamingMsgIdRef.current) {
-          store.appendToStreamingMessage(tid, streamingMsgIdRef.current, '\n[stderr] ' + output.data.trim())
+        const msgId = streamingMsgIdRef.current.get(tid)
+        if (msgId) {
+          store.appendToStreamingMessage(tid, msgId, '\n[stderr] ' + output.data.trim())
         }
         return
       }
