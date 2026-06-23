@@ -41,6 +41,8 @@ import { ChatService } from './services/chat-service'
 import { ChatRepository } from './repositories/chat-repository'
 import { ContextWaterline } from './memory/context-waterline'
 import { CompactHistoryRepository } from './repositories/compact-history-repository'
+import { SubagentManager } from './agent/subagent-manager'
+import { SubagentInvocationRepository } from './repositories/subagent-invocation-repository'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
@@ -270,6 +272,14 @@ export async function registerIpcHandlers(): Promise<void> {
   // Phase 3 Task 3: wire repos into AgentManager so compactContext can persist
   agentManager.setCompactHistoryRepo(compactHistoryRepo)
   agentManager.setChatRepo(chatRepo)
+
+  // Phase 4 Task 3: SubagentManager — adapters get wired via setSubagentManager in their own tasks.
+  const subagentInvocationRepo = new SubagentInvocationRepository(db)
+  const subagentManager = new SubagentManager(agentManager, subagentInvocationRepo)
+  agentManager.setSubagentManager(subagentManager)
+  // Reference them so they remain in scope for upcoming handler registrations (Task 7).
+  void subagentManager
+  void subagentInvocationRepo
   const getMainWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
