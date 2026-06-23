@@ -482,6 +482,23 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
   return settings.apiKeys.find((k) => k.provider === provider)?.key
 }
 
+/**
+ * Read the raw (encrypted) API keys from disk without decrypting.
+ * Used by the settings IPC handler to preserve encrypted keys when the
+ * renderer sends back masked values, avoiding a round-trip through decrypt+re-encrypt.
+ */
+export async function getEncryptedApiKeys(): Promise<Array<{ provider: string; key: string }>> {
+  const settingsPath = await getSettingsPath()
+  try {
+    const raw = await fs.readFile(settingsPath, 'utf-8')
+    const parsed = JSON.parse(raw) as unknown
+    if (validateSettingsShape(parsed) && Array.isArray(parsed.apiKeys)) {
+      return parsed.apiKeys as Array<{ provider: string; key: string }>
+    }
+  } catch { /* file missing or corrupt */ }
+  return []
+}
+
 const ALLOWED_PROVIDERS: ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']
 
 export async function setApiKey(

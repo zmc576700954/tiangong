@@ -14,6 +14,28 @@ import { DatabaseError, ErrorCode } from '../errors'
 export class NodeRepository {
   constructor(private db: Client) {}
 
+  /** Map a database row to a GraphNode */
+  private rowToNode(row: Record<string, unknown>): GraphNode {
+    return {
+      id: row.id as string,
+      type: assertNodeType(row.type as string),
+      status: assertNodeStatus(row.status as string),
+      title: row.title as string,
+      description: row.description as string | undefined,
+      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, []),
+      graphId: row.graph_id as string,
+      graphType: assertGraphType(row.graph_type as string, 'graphType'),
+      parentId: row.parent_id as string | undefined,
+      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
+      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
+      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
+      ownerRole: row.owner_role as GraphNode['ownerRole'],
+      position: { x: row.position_x as number, y: row.position_y as number },
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    } as GraphNode
+  }
+
   async create(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): Promise<GraphNode> {
     const id = generateId('node')
     const now = new Date().toISOString()
@@ -125,24 +147,7 @@ export class NodeRepository {
     if (!row) {
       throw new DatabaseError(`Node not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
     }
-    return {
-      id: row.id as string,
-      type: assertNodeType(row.type as string),
-      status: assertNodeStatus(row.status as string),
-      title: row.title as string,
-      description: row.description as string | undefined,
-      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, []),
-      graphId: row.graph_id as string,
-      graphType: assertGraphType(row.graph_type as string, 'graphType'),
-      parentId: row.parent_id as string | undefined,
-      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
-      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
-      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
-      ownerRole: row.owner_role as GraphNode['ownerRole'],
-      position: { x: row.position_x as number, y: row.position_y as number },
-      createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
-    } as GraphNode
+    return this.rowToNode(row as unknown as Record<string, unknown>)
   }
 
   async delete(id: string): Promise<void> {
@@ -163,24 +168,7 @@ export class NodeRepository {
     const result = await this.db.execute({ sql: 'SELECT * FROM nodes WHERE id = ?', args: [id] })
     const row = result.rows[0]
     if (!row) return null
-    return {
-      id: row.id as string,
-      type: assertNodeType(row.type as string),
-      status: assertNodeStatus(row.status as string),
-      title: row.title as string,
-      description: row.description as string | undefined,
-      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, []),
-      graphId: row.graph_id as string,
-      graphType: assertGraphType(row.graph_type as string, 'graphType'),
-      parentId: row.parent_id as string | undefined,
-      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
-      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
-      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
-      ownerRole: row.owner_role as GraphNode['ownerRole'],
-      position: { x: row.position_x as number, y: row.position_y as number },
-      createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
-    } as GraphNode
+    return this.rowToNode(row as unknown as Record<string, unknown>)
   }
 
   async updateParentId(nodeId: string, parentId: string | null): Promise<void> {

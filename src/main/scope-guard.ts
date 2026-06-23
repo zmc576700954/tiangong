@@ -37,6 +37,11 @@ let _getTempDir: () => string = () => {
   }
 }
 
+/** Module-level reference to the ScopeGuard instance, used by setTempDirGetter guard */
+let scopeGuardInstance: ScopeGuard | undefined
+
+const logger = createLogger('ScopeGuard')
+
 /** 测试时注入临时目录获取函数 */
 export function setTempDirGetter(fn: () => string): void {
   // Guard: warn if sandboxes are active, as swapping the getter mid-operation
@@ -46,11 +51,6 @@ export function setTempDirGetter(fn: () => string): void {
   }
   _getTempDir = fn
 }
-
-const logger = createLogger('ScopeGuard')
-
-/** Module-level reference to the ScopeGuard instance, used by setTempDirGetter guard */
-let scopeGuardInstance: ScopeGuard | undefined
 
 /** 定时扫描初始间隔（毫秒） */
 const ACTIVE_SCAN_INTERVAL_MS = 500
@@ -641,6 +641,9 @@ export class ScopeGuard {
    * 3. 所有内部状态 Map
    */
   destroy(): void {
+    // Clear module-level singleton reference
+    if (scopeGuardInstance === this) scopeGuardInstance = undefined
+
     // 1. 清理所有定时扫描器
     for (const [, timer] of this.scanTimers) {
       clearTimeout(timer)

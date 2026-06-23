@@ -432,22 +432,22 @@ export class HallucinationChecker {
       // Proximity check: only flag as contradiction if matches are within 200 chars
       // to avoid false positives from unrelated "error handling" / "pass error to callback"
       if (pair.label === 'Mixed success/failure signals' && matchesA.length > 0 && matchesB.length > 0) {
-        let found = false
+        // Sort matchesB offsets and use binary search for efficient proximity check
+        const sortedBOffsets = matchesB.map(m => m.offset).sort((a, b) => a - b)
         for (const ma of matchesA) {
-          for (const mb of matchesB) {
-            if (Math.abs(ma.offset - mb.offset) < 200) {
-              claims.push({
-                claim: `Mixed success/failure: "${ma.text}" vs "${mb.text}"`,
-                type: 'internal_contradiction',
-                severity: 'medium',
-                evidence: `Agent reports both success and failure signals within 200 chars at lines: ${[ma, mb].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
-                offset: ma.offset,
-              })
-              found = true
-              break
-            }
+          // Find the closest matchB offset to ma.offset
+          const lo = Math.max(0, sortedBOffsets.findIndex(o => o >= ma.offset - 200))
+          if (lo < sortedBOffsets.length && Math.abs(sortedBOffsets[lo] - ma.offset) < 200) {
+            const mb = matchesB.find(m => m.offset === sortedBOffsets[lo])!
+            claims.push({
+              claim: `Mixed success/failure: "${ma.text}" vs "${mb.text}"`,
+              type: 'internal_contradiction',
+              severity: 'medium',
+              evidence: `Agent reports both success and failure signals within 200 chars at lines: ${[ma, mb].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
+              offset: ma.offset,
+            })
+            break
           }
-          if (found) break
         }
       }
     }

@@ -738,7 +738,7 @@ export class McpAdapter extends BaseAdapter {
   dispose(): void {
     if (this.poolCleanupTimer) {
       clearInterval(this.poolCleanupTimer)
-      this.poolCleanupTimer = undefined as any
+      this.poolCleanupTimer = undefined
     }
     for (const [, entry] of this.connectionPool) {
       entry.client.disconnect?.().catch(() => {})

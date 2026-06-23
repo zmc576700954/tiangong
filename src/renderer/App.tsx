@@ -122,9 +122,8 @@ function App() {
 
   // Auto-expand left panel when menu: Open Project fires
   useEffect(() => {
-    const api = window.electronAPI as any
-    if (!api?.onMenuOpenProject) return
-    const unsub = api.onMenuOpenProject(() => {
+    if (!window.electronAPI?.onMenuOpenProject) return
+    const unsub = window.electronAPI.onMenuOpenProject(() => {
       if (leftPanel.collapsed) leftPanel.toggleCollapse()
     })
     return unsub

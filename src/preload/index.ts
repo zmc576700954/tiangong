@@ -255,6 +255,8 @@ declare global {
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
       onWaterlineChange: (callback: (state: ContextState) => void) => () => void
       onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => () => void
+      /** Open Project menu event — may not be available in all environments */
+      onMenuOpenProject?: (callback: (projectPath: string) => void) => () => void
       platform: string
     }
   }
