@@ -6,6 +6,11 @@ const mockQuery = vi.fn()
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  // Phase 4: claude-code.ts pulls createSdkMcpServer from the SDK for
+  // the dispatch_subagent tool registration. Tests don't exercise it
+  // (no SubagentManager is injected) but vitest's strict mock guard
+  // requires the export to be defined.
+  createSdkMcpServer: vi.fn(),
 }))
 
 // Mock settings to provide defaultModel

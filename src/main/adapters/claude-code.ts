@@ -10,7 +10,8 @@
  * - 动态导入 SDK，未安装时优雅降级
  */
 
-import { BaseAdapter } from './base'
+import { z } from 'zod'
+import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
 import { generateId } from '../shared/env'
 import type {
   AgentSession,
@@ -18,12 +19,15 @@ import type {
   AgentCommand,
   CompactResult,
   CompactTrigger,
+  SubagentInvokeArgs,
 } from '@shared/types'
 import { AdapterError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import { estimateTokens } from '../shared/token-utils'
 
 type QueryFn = typeof import('@anthropic-ai/claude-agent-sdk').query
+type CreateSdkMcpServerFn = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer
+type McpServerConfig = ReturnType<CreateSdkMcpServerFn>
 
 function isAssistantMessage(msg: unknown): msg is {
   content?: Array<{ type: string; text?: string }>
@@ -47,6 +51,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   protected logger = createLogger('ClaudeCodeAdapter')
 
   private sdkQuery: QueryFn | null = null
+  private sdkCreateMcpServer: CreateSdkMcpServerFn | null = null
   private sdkLoadAttempted = false
   private activeQueries = new Map<string, { abort: () => void }>()
   /** Sessions flagged for auto-compaction on the next query() call */
@@ -59,6 +64,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     try {
       const mod = await import('@anthropic-ai/claude-agent-sdk')
       this.sdkQuery = mod.query
+      this.sdkCreateMcpServer = mod.createSdkMcpServer
       return this.sdkQuery
     } catch {
       this.logger.warn('@anthropic-ai/claude-agent-sdk not installed')
@@ -101,6 +107,83 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     try {
       const { readSettings } = await import('../settings')
       const settings = await readSettings()
+
+      // Phase 4: register dispatch_subagent tool via in-process MCP server
+      // when SubagentManager has been injected.
+      const sessionId = session.id
+      let mcpServers: Record<string, McpServerConfig> | undefined
+      if (this.subagentManager && this.sdkCreateMcpServer) {
+        const dispatchTool = {
+          name: DISPATCH_SUBAGENT_TOOL_NAME,
+          description:
+            'Spawn an ephemeral subagent for a focused task. Multiple calls may be issued in one turn to run in parallel. The subagent runs with a constrained tool set and file scope; its final output is returned to you as the tool result.',
+          inputSchema: {
+            agent_type: z
+              .enum(['explore', 'implement', 'review', 'fix', 'general'])
+              .describe('Which subagent type to spawn.'),
+            description: z.string().describe('A 3-5 word label for the task.'),
+            prompt: z.string().describe('Full task instructions. The subagent only sees this text.'),
+            adapter_name: z.string().optional().describe('Optional adapter override.'),
+            node_id: z.string().optional().describe('Optional canvas node binding.'),
+            allowed_files: z
+              .array(z.string())
+              .optional()
+              .describe('Optional file allow-list.'),
+          },
+          handler: async (rawArgs: { [x: string]: unknown }) => {
+            const args = rawArgs as {
+              agent_type: string
+              description: string
+              prompt: string
+              adapter_name?: string
+              node_id?: string
+              allowed_files?: string[]
+            }
+            if (!this.subagentManager) {
+              return {
+                content: [{ type: 'text' as const, text: 'Subagent dispatch is not available.' }],
+              }
+            }
+            try {
+              const result = await this.subagentManager.invoke({
+                parentSessionId: sessionId,
+                agentType: args.agent_type,
+                description: args.description,
+                prompt: args.prompt,
+                adapterName: args.adapter_name,
+                nodeId: args.node_id,
+                allowedFiles: args.allowed_files,
+              } as SubagentInvokeArgs)
+              return {
+                content: [{ type: 'text' as const, text: result.resultText }],
+              }
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err)
+              return {
+                content: [{ type: 'text' as const, text: `Subagent failed: ${errMsg}` }],
+                isError: true,
+              }
+            }
+          },
+        }
+
+        mcpServers = {
+          bizgraph: this.sdkCreateMcpServer({
+            name: 'bizgraph',
+            version: '1.0.0',
+            tools: [dispatchTool],
+          }),
+        }
+      }
+
+      // Phase 4: when running as a CHILD session, constrain the SDK's built-in tools
+      // to the agent type's allowed set.
+      let toolsOption: string[] | undefined
+      const allowedTools = session.config.subagentAllowedTools
+      if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
+        toolsOption = allowedTools
+      }
+
       const queryIter = query({
         prompt: commandPrompt,
         options: {
@@ -111,6 +194,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           permissionMode: 'acceptEdits',
           ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),
           ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
+          ...(mcpServers ? { mcpServers } : {}),
+          ...(toolsOption ? { tools: toolsOption } : {}),
           hooks: {
             PostToolUse: [
               {
