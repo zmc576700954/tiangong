@@ -112,7 +112,7 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: OpenCodeAdapter,
     homepage: 'https://opencode.ai',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite],
+    capabilities: [AdapterCapability.Streaming, AdapterCapability.FileOps, AdapterCapability.SummaryRewrite, AdapterCapability.Tools],
     fallbackTo: 'mcp',
     contextWindow: 128_000,
     defaultCompactStrategy: 'summary',
