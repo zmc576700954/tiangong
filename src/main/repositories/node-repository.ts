@@ -158,6 +158,31 @@ export class NodeRepository {
     return assertNodeStatus(row.status as string)
   }
 
+  /** 按 ID 查找节点，不存在时返回 null */
+  async findById(id: string): Promise<GraphNode | null> {
+    const result = await this.db.execute({ sql: 'SELECT * FROM nodes WHERE id = ?', args: [id] })
+    const row = result.rows[0]
+    if (!row) return null
+    return {
+      id: row.id as string,
+      type: assertNodeType(row.type as string),
+      status: assertNodeStatus(row.status as string),
+      title: row.title as string,
+      description: row.description as string | undefined,
+      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, []),
+      graphId: row.graph_id as string,
+      graphType: assertGraphType(row.graph_type as string, 'graphType'),
+      parentId: row.parent_id as string | undefined,
+      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
+      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
+      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
+      ownerRole: row.owner_role as GraphNode['ownerRole'],
+      position: { x: row.position_x as number, y: row.position_y as number },
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
+    } as GraphNode
+  }
+
   async updateParentId(nodeId: string, parentId: string | null): Promise<void> {
     await this.db.execute({
       sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',

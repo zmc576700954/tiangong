@@ -399,12 +399,15 @@ export class MemoryStore {
       return rows.rows.map((r) => this._rowToItem(r as unknown as Record<string, unknown>))
     } catch {
       // FTS5 不可用时降级到 LIKE
-      const conditions: string[] = [
-        "(m.title LIKE ? ESCAPE '\\' OR m.narrative LIKE ? ESCAPE '\\' OR m.facts LIKE ? ESCAPE '\\' OR m.concepts LIKE ? ESCAPE '\\')",
-      ]
-      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_')
-      const searchPattern = `%${escapedQuery}%`
-      const args: (string | number)[] = [searchPattern, searchPattern, searchPattern, searchPattern]
+      // Split multi-word query into individual terms and OR them,
+      // so that "auth bug" matches items containing either "auth" or "bug"
+      const escapedQuery = query.replace(/%/g, '\\%').replace(/_/g, '\\_').replace(/'/g, "''")
+      const terms = escapedQuery.split(/\s+/).filter(t => t.length > 0)
+      const conditions: string[] = terms.map(t => {
+        const pattern = `%${t}%`
+        return `(m.title LIKE '${pattern}' ESCAPE '\\' OR m.narrative LIKE '${pattern}' ESCAPE '\\' OR m.facts LIKE '${pattern}' ESCAPE '\\' OR m.concepts LIKE '${pattern}' ESCAPE '\\')`
+      })
+      const args: (string | number)[] = []
 
       if (options?.projectId) {
         conditions.push('m.project_id = ?')
@@ -415,9 +418,17 @@ export class MemoryStore {
         args.push(options.kind)
       }
 
+      // The first group of conditions (from terms) are ORed together,
+      // then ANDed with any projectId/kind filters.
+      const termConditions = conditions.slice(0, terms.length).join(' OR ')
+      const filterConditions = conditions.slice(terms.length)
+      const whereClause = filterConditions.length > 0
+        ? `(${termConditions}) AND ${filterConditions.join(' AND ')}`
+        : termConditions
+
       const rows = await this.db.execute({
         sql: `SELECT m.* FROM memory_items m
-              WHERE ${conditions.join(' AND ')}
+              WHERE ${whereClause}
               ORDER BY m.created_at DESC
               LIMIT ?`,
         args: [...args, limit],

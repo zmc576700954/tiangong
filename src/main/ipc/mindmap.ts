@@ -105,7 +105,8 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
     targetId: string,
     feedback: string,
   ) => {
-    const agent = new MindMapAgent(projectPath, agentManager)
+    const validatedPath = validateProjectPath(projectPath)
+    const agent = new MindMapAgent(validatedPath, agentManager)
     const result = await agent.refine(scope, targetId, feedback)
     return result
   })

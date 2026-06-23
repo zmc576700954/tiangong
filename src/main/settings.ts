@@ -88,7 +88,7 @@ async function getFallbackKey(): Promise<Buffer> {
     if (salt.length < 16) throw new Error('salt too short')
   } catch {
     salt = randomBytes(32)
-    await fs.writeFile(saltPath, salt)
+    await fs.writeFile(saltPath, salt, { mode: 0o600 })
   }
   // 密钥派生：userData 路径 + 随机盐，确保每台安装有唯一密钥
   const keyMaterial = app.getPath('userData') + ':' + salt.toString('base64')
@@ -155,8 +155,12 @@ async function decryptApiKey(encrypted: string): Promise<string> {
     }
   }
   // 向后兼容：裸明文 Key（旧版本直接存储）
-  // 标记为需要迁移，但暂不阻断使用
+  // 验证格式：只允许字母数字、连字符、下划线、点号（常见 API key 字符集）
   if (encrypted.length > 0) {
+    if (!/^[\w\-./:=+]+$/.test(encrypted)) {
+      logger.error('Unencrypted API key contains invalid characters, rejecting for security')
+      return ''
+    }
     logger.warn('Unencrypted API key detected. It will be re-encrypted on next save.')
     return encrypted
   }

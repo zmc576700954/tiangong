@@ -159,7 +159,7 @@ describe('OutputBroadcaster', () => {
     const output: AgentOutput = { type: 'stdout', data: 'hello', timestamp: 1 }
     broadcaster.broadcast('claude-code', output)
 
-    expect(handler).toHaveBeenCalledWith('claude-code', output)
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ adapterName: 'claude-code', output }))
   })
 
   it('多个 handler 都被调用', () => {

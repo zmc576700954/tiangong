@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   Pencil,
   Trash2,
@@ -138,6 +138,11 @@ function EditableTextArea({
   rows?: number
 }) {
   const [localValue, setLocalValue] = useState(value)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => { mountedRef.current = false }
+  }, [])
 
   useEffect(() => {
     setLocalValue(value)
@@ -146,7 +151,7 @@ function EditableTextArea({
   // Debounce save: only trigger onSave 500ms after user stops typing
   useEffect(() => {
     const timer = setTimeout(() => {
-      if (localValue !== value) {
+      if (localValue !== value && mountedRef.current) {
         onSave(localValue)
       }
     }, 500)

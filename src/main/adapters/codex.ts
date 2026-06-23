@@ -23,6 +23,8 @@ export class CodexAdapter extends BaseAdapter {
   private sdkLoadAttempted = false
   private threads = new Map<string, ReturnType<InstanceType<CodexConstructor>['startThread']>>()
   private threadIds = new Map<string, string>()
+  /** Session-level Codex instances: reuse across doSendCommand calls within the same session */
+  private codexInstances = new Map<string, InstanceType<CodexConstructor>>()
 
   private async loadSdk(): Promise<CodexConstructor | null> {
     if (this.sdkLoadAttempted) return this.CodexClass
@@ -66,9 +68,13 @@ export class CodexAdapter extends BaseAdapter {
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
     try {
-      const codex = new CodexClass({
-        env: this.buildSafeEnv() as Record<string, string>,
-      })
+      let codex = this.codexInstances.get(session.id)
+      if (!codex) {
+        codex = new CodexClass({
+          env: this.buildSafeEnv() as Record<string, string>,
+        })
+        this.codexInstances.set(session.id, codex)
+      }
 
       const isResume = session.config.resumeSessionId != null
       let thread = this.threads.get(session.id)
@@ -158,11 +164,13 @@ export class CodexAdapter extends BaseAdapter {
   protected doCloseQuery(sessionId: string): void {
     this.threads.delete(sessionId)
     this.threadIds.delete(sessionId)
+    this.codexInstances.delete(sessionId)
   }
 
   protected override async doTerminate(_session: AgentSession, _proc?: import('node:child_process').ChildProcess): Promise<void> {
     this.threads.delete(_session.id)
     this.threadIds.delete(_session.id)
+    this.codexInstances.delete(_session.id)
     await super.doTerminate(_session, _proc)
   }
 }

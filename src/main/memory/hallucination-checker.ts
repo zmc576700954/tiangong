@@ -387,7 +387,6 @@ export class HallucinationChecker {
         label: 'Mixed success/failure signals',
       },
     ]
-
     for (const pair of contradictionPairs) {
       pair.a.lastIndex = 0
       pair.b.lastIndex = 0
@@ -430,14 +429,26 @@ export class HallucinationChecker {
       }
 
       // Mixed success/failure signals: success and failure in same output
+      // Proximity check: only flag as contradiction if matches are within 200 chars
+      // to avoid false positives from unrelated "error handling" / "pass error to callback"
       if (pair.label === 'Mixed success/failure signals' && matchesA.length > 0 && matchesB.length > 0) {
-        claims.push({
-          claim: `Mixed success/failure: "${matchesA[0].text}" vs "${matchesB[0].text}"`,
-          type: 'internal_contradiction',
-          severity: 'medium',
-          evidence: `Agent reports both success and failure signals at lines: ${[...matchesA, ...matchesB].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
-          offset: matchesA[0].offset,
-        })
+        let found = false
+        for (const ma of matchesA) {
+          for (const mb of matchesB) {
+            if (Math.abs(ma.offset - mb.offset) < 200) {
+              claims.push({
+                claim: `Mixed success/failure: "${ma.text}" vs "${mb.text}"`,
+                type: 'internal_contradiction',
+                severity: 'medium',
+                evidence: `Agent reports both success and failure signals within 200 chars at lines: ${[ma, mb].map((m) => lines.findIndex((l) => l.includes(m.text)) + 1).filter((n) => n > 0).join(', ')}`,
+                offset: ma.offset,
+              })
+              found = true
+              break
+            }
+          }
+          if (found) break
+        }
       }
     }
 

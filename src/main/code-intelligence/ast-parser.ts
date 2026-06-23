@@ -4,6 +4,7 @@
  */
 
 import * as ts from 'typescript'
+import path from 'node:path'
 import type { SymbolInfo, ImportEdge } from '@shared/types'
 import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
@@ -413,7 +414,7 @@ export class AstParser {
     // 将相对路径解析为绝对路径，支持路径别名
     let resolvedPath = moduleSpecifier // 默认保留原样（外部模块）
     if (moduleSpecifier.startsWith('.')) {
-      resolvedPath = new URL(moduleSpecifier, `file://${filePath}`).pathname
+      resolvedPath = path.resolve(path.dirname(filePath), moduleSpecifier)
     } else {
       // 尝试匹配路径别名（如 @shared/types → src/shared/types）
       let aliasResolved = false

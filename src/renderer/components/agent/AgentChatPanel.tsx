@@ -63,7 +63,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showResumePrompt, setShowResumePrompt] = useState(false)
   const [recoveredFlash, setRecoveredFlash] = useState(false)
   // Derived data — must be declared before useVerificationFlow
-  const currentThread = threads.find((t) => t.id === currentThreadId)
+  const currentThread = useMemo(() => threads.find((t) => t.id === currentThreadId), [threads, currentThreadId])
   const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
 
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
@@ -147,8 +147,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         localStorage.setItem('agentChatInputHeight', String(lastResizeHeightRef.current))
       }
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('mousemove', onMove, { passive: true })
+    window.addEventListener('mouseup', onUp, { passive: true })
     return () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)

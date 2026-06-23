@@ -83,7 +83,7 @@ describe('OpenCodeAdapter', () => {
 
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
-      stdin: { write: vi.fn(), end: vi.fn() },
+      stdin: { write: vi.fn(), end: vi.fn(), on: vi.fn() },
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('done'))
       }), off: vi.fn() },
@@ -114,8 +114,9 @@ describe('OpenCodeAdapter', () => {
 
     let capturedPrompt = ''
     const mockStdin = {
-      write: vi.fn((data: string) => { capturedPrompt = data }),
+      write: vi.fn((data: string, _cb?: (err?: Error) => void) => { capturedPrompt = data }),
       end: vi.fn(),
+      on: vi.fn(),
     }
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
@@ -146,8 +147,9 @@ describe('OpenCodeAdapter', () => {
 
     let capturedPrompt = ''
     const mockStdin = {
-      write: vi.fn((data: string) => { capturedPrompt = data }),
+      write: vi.fn((data: string, _cb?: (err?: Error) => void) => { capturedPrompt = data }),
       end: vi.fn(),
+      on: vi.fn(),
     }
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,

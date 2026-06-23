@@ -314,6 +314,9 @@ export class HybridSearchEngine {
   ): Map<string, number> {
     const cached = this.vectorCache.get(docId)
     if (cached && Date.now() - cached.timestamp < HybridSearchEngine.VECTOR_CACHE_TTL) {
+      // LRU: delete and re-insert to move to end of Map iteration order
+      this.vectorCache.delete(docId)
+      this.vectorCache.set(docId, cached)
       return cached.vector
     }
     const vector = buildBm25Vector(tokens, dfMap, totalDocs, avgDocLen)
@@ -617,8 +620,10 @@ export class HybridSearchEngine {
     for (const r of embeddingResults) {
       const existing = mergedMap.get(r.item.id)
       if (existing) {
-        // 同 ID：加权合并分数
-        existing.score = ftsWeight * existing.ftsScore + (1 - ftsWeight) * existing.keywordScore + embeddingWeight * r.embeddingScore
+        // 同 ID：加权合并分数，归一化到 [0, 1] 防止溢出
+        const ftsContribution = ftsWeight * existing.ftsScore + (1 - ftsWeight) * existing.keywordScore
+        const embeddingContribution = embeddingWeight * r.embeddingScore
+        existing.score = Math.min(1, ftsContribution + embeddingContribution)
         existing.embeddingScore = r.embeddingScore
         // 更新 matchReason 以反映双路匹配
         existing.matchReason = existing.matchReason.includes('Embedding')

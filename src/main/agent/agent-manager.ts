@@ -24,6 +24,7 @@ import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError, ErrorCode } from '../errors'
+import { getClient } from '../database'
 import { getSessionRecoveryManager } from './session-recovery'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
@@ -94,7 +95,7 @@ export class AgentManager {
   /** 最大并发会话数，防止会话无限创建导致资源泄漏 */
   private MAX_SESSIONS = this.calculateMaxSessions()
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
-  private outputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
+  private outputListeners = new Map<(output: AgentOutput) => void, (payload: import('./output-broadcaster').BroadcastPayload) => void>()
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
   private smartContextResolver?: SmartContextResolver
@@ -102,10 +103,12 @@ export class AgentManager {
   /** sessionEnded 事件处理器（按适配器存储以便清理） */
   private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
+  private sessionStartedCallback?: (threadId: string, sessionId: string) => void
+  private reservedSlots = new Set<string>()
   private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
   private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
   /** 会话级输出监听器：按 broadcastName 过滤，防止跨会话输出污染 */
-  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (adapterName: string, output: AgentOutput) => void>()
+  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (payload: import('./output-broadcaster').BroadcastPayload) => void>()
   /** sessionId → broadcastName 映射（由 startSession 设置，与 broadcaster 的广播名一致） */
   private sessionBroadcastNames = new Map<string, string>()
   /** sessionId → 该会话注册的输出监听 handler 集合（用于 cleanupSessionResources 自动清理） */
@@ -125,7 +128,12 @@ export class AgentManager {
   /** Prompt 质量反馈记录（轻量级：追踪命令类型+预算与结果的相关性） */
   private promptOutcomeLog: Array<{ commandType: string; promptTokenEstimate: number; contextCount: number; outcome: 'success' | 'failure'; duration: number }> = []
   private get memoryStore(): MemoryStore {
-    if (!this._memoryStore) this._memoryStore = new MemoryStore()
+    if (!this._memoryStore) {
+      // Verify DB is initialized before creating MemoryStore — operations will fail
+      // if the database client is null, so we fail immediately with a clear message.
+      getClient() // throws DatabaseError if DB not initialized
+      this._memoryStore = new MemoryStore()
+    }
     return this._memoryStore
   }
   /** 会话输出缓冲区：sessionId → AgentOutput[]（用于记忆提取） */
@@ -134,6 +142,8 @@ export class AgentManager {
   private sessionRecovery = getSessionRecoveryManager()
   /** Fallback recovery check timers */
   private fallbackRecoveryTimers = new Map<string, { interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }>()
+  /** Recovery check interval (startRecoveryCheck) — stored for cleanup in destroy() */
+  private recoveryCheckInterval?: ReturnType<typeof setInterval>
   /** Consecutive timeout counter per adapter (health-driven auto-degradation) */
   private adapterTimeoutCounts: Map<string, number> = new Map()
   /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
@@ -217,7 +227,7 @@ export class AgentManager {
       const sessionId = adapter.resolveOutputSession?.(output)
       if (sessionId) {
         const broadcastName = this.sessionStates.get(sessionId)?.broadcastName ?? adapter.name
-        this.broadcaster.broadcast(broadcastName, output)
+        this.broadcaster.broadcast(broadcastName, output, sessionId)
         return
       }
       this.broadcaster.broadcast(adapter.name, output)
@@ -255,13 +265,13 @@ export class AgentManager {
    * 清理指定 session 的所有资源（沙箱、路由、广播名、输出监听器等）
    * 通过 cleanupInProgress 互斥锁防止与 terminateSession 并发导致双重清理
    */
-  private cleanupSessionResources(sessionId: string): void {
+  private async cleanupSessionResources(sessionId: string): Promise<void> {
     // 互斥检查：若已在清理中，跳过
     if (this.cleanupInProgress.has(sessionId)) return
     this.cleanupInProgress.add(sessionId)
 
     try {
-      this._doCleanupSessionResources(sessionId)
+      await this._doCleanupSessionResources(sessionId)
     } finally {
       // 释放互斥锁：确保即使清理过程中抛异常也不会死锁
       this.cleanupInProgress.delete(sessionId)
@@ -274,9 +284,15 @@ export class AgentManager {
    * 抽取为独立方法以便调用方（如 terminateSession 的 SessionNotFoundError 分支）
    * 在已经持有锁的情况下直接调用，避免重入 cleanupSessionResources 时
    * 被锁检查 short-circuit 跳过而导致残留资源未被释放。
+   *
+   * 所有异步操作（adapter 终止、沙箱回滚）均被 await，
+   * 确保资源在方法返回前已释放，防止与后续 terminateSession 重叠。
    */
-  private _doCleanupSessionResources(sessionId: string): void {
+  private async _doCleanupSessionResources(sessionId: string): Promise<void> {
     const state = this.sessionStates.get(sessionId)
+
+    // Collect async operations so we can await them before removing state
+    const pendingOps: Promise<void>[] = []
 
     // 终止 adapter 会话（防止子进程泄漏）
     try {
@@ -284,9 +300,12 @@ export class AgentManager {
       if (adapterName) {
         const adapter = this.registry.get(adapterName)
         if (adapter) {
-          adapter.terminateSession(sessionId).catch((err: unknown) => {
-            logger.warn(`Failed to terminate adapter session ${sessionId}:`, err)
-          })
+          pendingOps.push(
+            adapter.terminateSession(sessionId).then(
+              () => {},
+              (err: unknown) => { logger.warn(`Failed to terminate adapter session ${sessionId}:`, err) },
+            ),
+          )
         }
       }
     } catch {
@@ -297,10 +316,16 @@ export class AgentManager {
     if (state?.sandbox) {
       const sandbox = state.sandbox
       this.sandboxSessionIndex.delete(sandbox.id)
-      this.rollbackWithRetry(sessionId, sandbox, 2).catch((err: unknown) => {
-        logger.error(`Failed to rollback sandbox for session ${sessionId} after retries:`, err)
-      })
+      pendingOps.push(
+        this.rollbackWithRetry(sessionId, sandbox, 2).catch((err: unknown) => {
+          logger.error(`Failed to rollback sandbox for session ${sessionId} after retries:`, err)
+        }),
+      )
     }
+
+    // Wait for all async operations (adapter terminate + sandbox rollback) to settle
+    // before clearing state, so that resources are truly released before overlap is possible.
+    await Promise.allSettled(pendingOps)
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
     const listeners = this.sessionOutputListenerIndex.get(sessionId)
@@ -320,6 +345,12 @@ export class AgentManager {
     this.sessionOutputBuffers.delete(sessionId)
     this.compactInflight.delete(sessionId)
     this.router.unbind(sessionId)
+
+    // Trim promptOutcomeLog in crash/error path (normally trimmed in terminateSession,
+    // but cleanupSessionResources can be invoked without terminateSession)
+    if (this.promptOutcomeLog.length > 100) {
+      this.promptOutcomeLog = this.promptOutcomeLog.slice(-100)
+    }
   }
 
   /**
@@ -504,6 +535,11 @@ export class AgentManager {
     this.cleanupInProgress.clear()
     // 停止健康检查定时器
     this.stopHealthCheck()
+    // 清理 recovery check interval
+    if (this.recoveryCheckInterval) {
+      clearInterval(this.recoveryCheckInterval)
+      this.recoveryCheckInterval = undefined
+    }
     // 清理 ScopeGuard 所有定时器和 watcher
     this.scopeGuard.destroy()
   }
@@ -521,6 +557,10 @@ export class AgentManager {
 
   setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
     this.statusChangeCallback = cb
+  }
+
+  setSessionStartedCallback(cb: (threadId: string, sessionId: string) => void): void {
+    this.sessionStartedCallback = cb
   }
 
   setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
@@ -612,7 +652,7 @@ export class AgentManager {
   broadcastToSession(sessionId: string, output: AgentOutput): void {
     const state = this.sessionStates.get(sessionId)
     if (state) {
-      this.broadcaster.broadcast(state.broadcastName, output)
+      this.broadcaster.broadcast(state.broadcastName, output, sessionId)
     }
   }
 
@@ -683,10 +723,14 @@ export class AgentManager {
     const fallbackHistory: AdapterFallbackAttempt[] = []
 
     // 检查会话上限，防止无限创建
-    if (this.sessionStates.size >= this.MAX_SESSIONS) {
+    if (this.sessionStates.size - this.reservedSlots.size >= this.MAX_SESSIONS) {
       logger.error(`Maximum session limit (${this.MAX_SESSIONS}) reached, cannot create new session`)
       throw new AgentError('Maximum concurrent sessions exceeded', ErrorCode.AGENT_SESSION_LIMIT)
     }
+    // Reserve a slot key to prevent TOCTOU race
+    const slotKey = `__reserved_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    this.reservedSlots.add(slotKey)
+    this.sessionStates.set(slotKey, null as any)
 
     for (const candidate of uniqueChain) {
       const adapter = this.registry.get(candidate)
@@ -752,6 +796,9 @@ export class AgentManager {
           parentSessionId: config.parentSessionId,
           swarmTaskId: config.swarmTaskId,
         })
+        // Remove the reserved slot now that the real session is registered
+        this.sessionStates.delete(slotKey)
+        this.reservedSlots.delete(slotKey)
         this.sessionBroadcastNames.set(session.id, broadcastName)
 
         // fallback 时路由记录实际适配器名
@@ -804,6 +851,11 @@ export class AgentManager {
           }
         })
 
+        // Emit session started event for renderer IPC
+        if (this.sessionStartedCallback && config.threadId) {
+          this.sessionStartedCallback(config.threadId, session.id)
+        }
+
         return {
           sessionId: session.id,
           fallback: isFallback || undefined,
@@ -828,7 +880,9 @@ export class AgentManager {
       }
     }
 
-    // 所有适配器都失败
+    // 所有适配器都失败 — 清理预留槽位
+    this.sessionStates.delete(slotKey)
+    this.reservedSlots.delete(slotKey)
     throw new AdapterError(
       `No adapter available. Tried: ${uniqueChain.join(', ')}. Details: ${fallbackHistory.map((f) => `${f.adapter} (${f.reason})`).join('; ')}`,
       primary,
@@ -1350,7 +1404,7 @@ export class AgentManager {
       type: 'system',
       data: `Compacting context (${finalStrategy})...`,
       timestamp: Date.now(),
-    })
+    }, sessionId)
 
     let result: CompactResult
     try {
@@ -1362,7 +1416,7 @@ export class AgentManager {
           type: 'system',
           data: `${finalStrategy} compaction failed, falling back to summary rewrite.`,
           timestamp: Date.now(),
-        })
+        }, sessionId)
         result = await adapter.compactContext(sessionId, 'summary', options)
       } else {
         throw err
@@ -1412,13 +1466,13 @@ export class AgentManager {
         type: 'system',
         data: `Native compact enabled — SDK will compact on next turn`,
         timestamp: Date.now(),
-      })
+      }, sessionId)
     } else {
       this.broadcaster.broadcast(state.broadcastName, {
         type: 'system',
         data: `Compacted: ${result.tokensBefore} → ${result.tokensAfter} tokens (${result.durationMs}ms)`,
         timestamp: Date.now(),
-      })
+      }, sessionId)
     }
 
     return result
@@ -1428,7 +1482,7 @@ export class AgentManager {
    * 添加全局输出监听器（用于 MindMapAgent 等内部组件收集输出）
    */
   addOutputListener(handler: (output: AgentOutput) => void): void {
-    const wrapped = (_adapterName: string, output: AgentOutput) => handler(output)
+    const wrapped = (payload: import('./output-broadcaster').BroadcastPayload) => handler(payload.output)
     // 存储包装后的 handler 以便移除
     this.outputListeners.set(handler, wrapped)
     this.broadcaster.onBroadcast(wrapped)
@@ -1450,17 +1504,16 @@ export class AgentManager {
    * 通过 broadcastName 过滤，防止跨会话输出污染
    */
   addSessionOutputListener(sessionId: string, handler: (output: AgentOutput) => void): void {
-    const broadcastName = this.sessionBroadcastNames.get(sessionId)
-    if (!broadcastName) {
-      logger.warn(`addSessionOutputListener: no broadcast name for session ${sessionId}`)
-      return
-    }
-    const wrapped = (name: string, output: AgentOutput) => {
-      if (name === broadcastName) {
-        handler(output)
+    const state = this.sessionStates.get(sessionId)
+    if (!state) return
+    const targetName = state.broadcastName
+
+    const filteredHandler = (payload: import('./output-broadcaster').BroadcastPayload) => {
+      if (payload.adapterName === targetName) {
+        handler(payload.output)
       }
     }
-    this.sessionOutputListeners.set(handler, wrapped)
+    this.sessionOutputListeners.set(handler, filteredHandler)
     // 记录 handler → sessionId 映射，以便 cleanupSessionResources 时自动清理
     let indexSet = this.sessionOutputListenerIndex.get(sessionId)
     if (!indexSet) {
@@ -1468,7 +1521,7 @@ export class AgentManager {
       this.sessionOutputListenerIndex.set(sessionId, indexSet)
     }
     indexSet.add(handler)
-    this.broadcaster.onBroadcast(wrapped)
+    this.broadcaster.onBroadcast(filteredHandler)
   }
 
   /**
@@ -1558,7 +1611,8 @@ export class AgentManager {
 
   /**
    * Extract recent messages from session output buffer for context restoration.
-   * Returns up to 3 recent user/assistant exchanges derived from output data.
+   * Returns up to 1 recent assistant message derived from output data
+   * (stdout chunks are combined into a single message, last 2000 chars).
    */
   private _extractRecentMessages(outputs: AgentOutput[]): Array<{ role: string; content: string }> {
     const messages: Array<{ role: string; content: string }> = []
@@ -1577,7 +1631,7 @@ export class AgentManager {
         content: combined.slice(-2000),
       })
     }
-    return messages.slice(-3)
+    return messages.slice(-1)
   }
 
   private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
@@ -1613,13 +1667,17 @@ export class AgentManager {
    * back to degraded/healthy on the next session attempt.
    */
   private startRecoveryCheck(adapterName: string): void {
-    const interval = setInterval(async () => {
+    if (this.recoveryCheckInterval) return // already running
+    this.recoveryCheckInterval = setInterval(async () => {
       const adapter = this.registry.get(adapterName)
-      if (!adapter) { clearInterval(interval); return }
+      if (!adapter) {
+        if (this.recoveryCheckInterval) { clearInterval(this.recoveryCheckInterval); this.recoveryCheckInterval = undefined }
+        return
+      }
       const installed = await adapter.checkInstalled()
       if (installed) {
         this.healthMonitor.recordCall(adapterName, true, 0, 'recovery-check')
-        clearInterval(interval)
+        if (this.recoveryCheckInterval) { clearInterval(this.recoveryCheckInterval); this.recoveryCheckInterval = undefined }
       }
     }, 60_000)
   }

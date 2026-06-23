@@ -1,5 +1,4 @@
 import { useState, useEffect, Component, type ReactNode } from 'react'
-import { PanelLeftOpen } from 'lucide-react'
 import { LeftPanel } from './panels/LeftPanel'
 import { RightPanel } from './panels/RightPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
@@ -68,19 +67,12 @@ function App() {
 
   const [expandedAgent, setExpandedAgent] = useState(false)
 
-  const [leftPanelVisible, setLeftPanelVisible] = useState(() => {
-    const saved = localStorage.getItem('bizgraph:panel:left:visible')
-    return saved !== null ? saved === 'true' : true
-  })
   const [rightPanelVisible, setRightPanelVisible] = useState(() => {
     const saved = localStorage.getItem('bizgraph:panel:right:visible')
     return saved !== null ? saved === 'true' : true
   })
 
   // Persist panel visibility to localStorage
-  useEffect(() => {
-    localStorage.setItem('bizgraph:panel:left:visible', String(leftPanelVisible))
-  }, [leftPanelVisible])
   useEffect(() => {
     localStorage.setItem('bizgraph:panel:right:visible', String(rightPanelVisible))
   }, [rightPanelVisible])
@@ -90,7 +82,7 @@ function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault()
-        setLeftPanelVisible(v => !v)
+        leftPanel.toggleCollapse()
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'j') {
         e.preventDefault()
@@ -104,9 +96,16 @@ function App() {
   // Responsive layout detection
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
   useEffect(() => {
-    const handler = () => setWindowWidth(window.innerWidth)
+    let resizeTimer: ReturnType<typeof setTimeout>
+    const handler = () => {
+      clearTimeout(resizeTimer)
+      resizeTimer = setTimeout(() => setWindowWidth(window.innerWidth), 150)
+    }
     window.addEventListener('resize', handler)
-    return () => window.removeEventListener('resize', handler)
+    return () => {
+      clearTimeout(resizeTimer)
+      window.removeEventListener('resize', handler)
+    }
   }, [])
 
   const isSmallScreen = windowWidth < 1024
@@ -123,8 +122,9 @@ function App() {
 
   // Auto-expand left panel when menu: Open Project fires
   useEffect(() => {
-    if (!window.electronAPI?.onMenuOpenProject) return
-    const unsub = window.electronAPI.onMenuOpenProject(() => {
+    const api = window.electronAPI as any
+    if (!api?.onMenuOpenProject) return
+    const unsub = api.onMenuOpenProject(() => {
       if (leftPanel.collapsed) leftPanel.toggleCollapse()
     })
     return unsub
@@ -168,9 +168,9 @@ function App() {
           )}
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
           <div className="flex-1 relative">
-            {!leftPanelVisible && !isSmallScreen && (
+            {leftPanel.collapsed && !isSmallScreen && (
               <button
-                onClick={() => setLeftPanelVisible(true)}
+                onClick={() => leftPanel.toggleCollapse()}
                 className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                 title="Show file tree (Ctrl+B)"
               >

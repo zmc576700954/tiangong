@@ -4,19 +4,11 @@
  */
 
 import type { TypedHandle } from './utils'
+import { ensureString } from './utils'
 import type { SubagentManager } from '../agent/subagent-manager'
 import type { SubagentInvocationRepository } from '../repositories/subagent-invocation-repository'
 import type { SubagentResult } from '@shared/types'
 import type { BrowserWindow } from 'electron'
-
-const MAX_ID_LEN = 64
-
-function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): string {
-  if (typeof val !== 'string') throw new Error(`${label} must be a string`)
-  if (val.length === 0) throw new Error(`${label} must not be empty`)
-  if (val.length > maxLen) throw new Error(`${label} exceeds max length ${maxLen}`)
-  return val
-}
 
 export function registerSubagentHandlers(
   subagentManager: SubagentManager,

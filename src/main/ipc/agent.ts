@@ -6,6 +6,7 @@
 import type { AgentManager } from '../agent/agent-manager'
 import { VerificationService } from '../agent/verification-service'
 import { AgentLogRepository } from '../repositories/agent-log-repository'
+import type { NodeRepository } from '../repositories/node-repository'
 import type { TypedHandle } from './utils'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
@@ -13,7 +14,7 @@ import { buildMarketplaceItems } from '../adapters/registry'
 
 const logger = createLogger('AgentIPC')
 
-export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle, agentLogRepo?: AgentLogRepository): void {
+export function registerAgentHandlers(agentManager: AgentManager, typedHandle: TypedHandle, agentLogRepo?: AgentLogRepository, nodeRepo?: NodeRepository): void {
   const verificationService = new VerificationService()
 
   typedHandle('agent:checkInstalled', async (_, adapterName) => {
@@ -29,8 +30,11 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     return agentManager.sendCommand(sessionId, command)
   })
 
-  typedHandle('agent:resolveAndSendCommand', async (_, sessionId, command, contextRefs, _nodeIds) => {
-    return agentManager.resolveAndSendCommand(sessionId, command, contextRefs)
+  typedHandle('agent:resolveAndSendCommand', async (_, sessionId, command, contextRefs, nodeIds) => {
+    const nodes = nodeRepo && nodeIds?.length
+      ? (await Promise.all(nodeIds.map((id: string) => nodeRepo.findById(id)))).filter(Boolean) as import('@shared/types').GraphNode[]
+      : undefined
+    return agentManager.resolveAndSendCommand(sessionId, command, contextRefs, nodes)
   })
 
   typedHandle('agent:terminateSession', async (_, sessionId) => {

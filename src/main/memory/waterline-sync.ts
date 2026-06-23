@@ -194,7 +194,7 @@ export class WaterlineSync {
         // 避免短词（如 "bug"）误关任意含 "bug" 的开放问题。
         wl.openIssues = wl.openIssues.filter((issue) => !isFixingIssue(mem.title, issue))
       } else if (mem.kind === 'review_finding') {
-        wl.openIssues.push(mem.title)
+        this._appendIfNew(wl.openIssues, mem.title, 50)
       } else if (mem.kind === 'lesson') {
         this._appendIfNew(wl.avoidedRepetitions, mem.title, 30)
       }
@@ -478,32 +478,23 @@ export class WaterlineSync {
    */
   async persist(projectId: string): Promise<void> {
     const wl = this.getWaterline(projectId)
-    const store = getMemoryStore()
 
-    // 删除该项目之前的 waterline 记录（只保留最新一份）
+    // Atomic delete+insert using batch to prevent data loss on crash between operations
     const db = getClient()
-    await db.execute({
-      sql: "DELETE FROM memory_items WHERE kind = 'waterline' AND project_id = ?",
-      args: [projectId],
-    })
+    const narrative = JSON.stringify(wl)
+    const now = new Date().toISOString()
 
-    // 写入新的 waterline 记录
-    await store.store({
-      session_id: `waterline-${projectId}`,
-      kind: 'waterline' as MemoryKind,
-      project_id: projectId,
-      node_id: null,
-      title: 'Waterline Snapshot',
-      narrative: JSON.stringify(wl),
-      facts: [],
-      concepts: [],
-      files_read: [],
-      files_modified: [],
-      adapter_name: 'waterline-sync',
-      token_cost: 0,
-      confidence: 1.0,
-      created_at: new Date().toISOString(),
-    })
+    await db.batch([
+      {
+        sql: "DELETE FROM memory_items WHERE kind = 'waterline' AND project_id = ?",
+        args: [projectId],
+      },
+      {
+        sql: `INSERT INTO memory_items (session_id, kind, project_id, node_id, title, narrative, facts, concepts, files_read, files_modified, adapter_name, token_cost, confidence, created_at)
+              VALUES (?, 'waterline', ?, NULL, 'Waterline Snapshot', ?, '[]', '[]', '[]', '[]', 'waterline-sync', 0, 1.0, ?)`,
+        args: [`waterline-${projectId}`, projectId, narrative, now],
+      },
+    ], 'write')
 
     logger.debug(`Waterline persisted for ${projectId}`)
   }

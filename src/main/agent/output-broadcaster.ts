@@ -9,21 +9,28 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('OutputBroadcaster')
 
-export class OutputBroadcaster {
-  private handlers = new Set<(adapterName: string, output: AgentOutput) => void>()
+export interface BroadcastPayload {
+  adapterName: string
+  sessionId?: string
+  output: AgentOutput
+}
 
-  onBroadcast(handler: (adapterName: string, output: AgentOutput) => void): void {
+export class OutputBroadcaster {
+  private handlers = new Set<(payload: BroadcastPayload) => void>()
+
+  onBroadcast(handler: (payload: BroadcastPayload) => void): void {
     this.handlers.add(handler)
   }
 
-  offBroadcast(handler: (adapterName: string, output: AgentOutput) => void): void {
+  offBroadcast(handler: (payload: BroadcastPayload) => void): void {
     this.handlers.delete(handler)
   }
 
-  broadcast(adapterName: string, output: AgentOutput): void {
+  broadcast(adapterName: string, output: AgentOutput, sessionId?: string): void {
+    const payload: BroadcastPayload = { adapterName, sessionId, output }
     for (const handler of this.handlers) {
       try {
-        handler(adapterName, output)
+        handler(payload)
       } catch (err) {
         logger.error('handler error:', err)
       }

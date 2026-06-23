@@ -155,6 +155,30 @@ export function isPathWithinProject(filePath: string, projectPath: string): bool
   return resolvedFile.startsWith(resolvedProject + sep) || resolvedFile === resolvedProject
 }
 
+/** 最大 ID 长度，用于 ensureString 的默认 maxLen */
+export const MAX_ID_LEN = 64
+
+/**
+ * 共享的 IPC 参数校验：确保值是合法字符串
+ * 抛出 IpcError(ErrorCode.IPC_INVALID_ARGUMENT)，而非裸 Error
+ */
+export function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): string {
+  if (typeof val !== 'string') throw new IpcError(`${label} must be a string`, ErrorCode.IPC_INVALID_ARGUMENT)
+  if (val.length === 0) throw new IpcError(`${label} must not be empty`, ErrorCode.IPC_INVALID_ARGUMENT)
+  if (val.length > maxLen) throw new IpcError(`${label} exceeds max length ${maxLen}`, ErrorCode.IPC_INVALID_ARGUMENT)
+  return val
+}
+
+/**
+ * 共享的 IPC 参数校验：确保值是 number 或 undefined/null
+ * 抛出 IpcError(ErrorCode.IPC_INVALID_ARGUMENT)，而非裸 Error
+ */
+export function ensureOptionalNumber(label: string, val: unknown): number | undefined {
+  if (val === undefined || val === null) return undefined
+  if (typeof val !== 'number') throw new IpcError(`${label} must be a number`, ErrorCode.IPC_INVALID_ARGUMENT)
+  return val
+}
+
 export function createTypedHandle(
   ipcMain: Electron.IpcMain,
   pipeline?: IpcMiddlewarePipeline,

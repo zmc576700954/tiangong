@@ -481,6 +481,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onExit = (code: number | null) => {
+      // Process exited naturally — clear the kill timer to prevent it firing on a dead process
+      this.clearSessionKillTimer(sessionId)
+
       // Exit code classification for recovery diagnostics
       // code 1       — general error; may be recoverable (adapter logic error, bad input)
       // code 126/127 — command not found / not executable; adapter not available on this system
@@ -597,7 +600,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * @protected
    */
   protected async doTerminate(_session: AgentSession, proc?: ChildProcess): Promise<void> {
-    if (!proc || proc.killed) return
+    // proc.killed is only true after an explicit kill() call.
+    // proc.exitCode !== null means the process has already exited naturally.
+    if (!proc || proc.killed || proc.exitCode !== null) return
     return new Promise<void>((resolve) => {
       const timeout = setTimeout(() => {
         if (!proc.killed) {

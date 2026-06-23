@@ -283,8 +283,8 @@ describe('AgentManager', () => {
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
 
       const outputs: Array<{ name: string; output: AgentOutput }> = []
-      broadcaster.onBroadcast((name, output) => {
-        outputs.push({ name, output })
+      broadcaster.onBroadcast((payload) => {
+        outputs.push({ name: payload.adapterName, output: payload.output })
       })
 
       await manager.sendCommand(sessionId, { type: 'implement', description: 'test', targetNodeId: 'n1' })
@@ -308,8 +308,8 @@ describe('AgentManager', () => {
       const { sessionId } = await manager.startSession('claude-code', mockConfig())
 
       const outputs: Array<{ name: string; output: AgentOutput }> = []
-      broadcaster.onBroadcast((name, output) => {
-        outputs.push({ name, output })
+      broadcaster.onBroadcast((payload) => {
+        outputs.push({ name: payload.adapterName, output: payload.output })
       })
 
       await manager.sendCommand(sessionId, { type: 'implement', description: 'test', targetNodeId: 'n1' })
@@ -327,6 +327,9 @@ describe('AgentManager', () => {
 
       // Simulate crash
       adapter.simulateCrash(sessionId)
+
+      // cleanupSessionResources is async and triggered via event — allow microtasks to flush
+      await new Promise((resolve) => setTimeout(resolve, 50))
 
       // Router and sandbox should be cleaned up
       expect(router.getActiveSessionIds()).not.toContain(sessionId)

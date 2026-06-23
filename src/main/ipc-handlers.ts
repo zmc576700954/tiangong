@@ -15,6 +15,7 @@ import { OutputBroadcaster } from './agent/output-broadcaster'
 import { AgentManager } from './agent/agent-manager'
 import { GraphService } from './services/graph-service'
 import { AgentLogRepository } from './repositories/agent-log-repository'
+import { NodeRepository } from './repositories/node-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
 import { IpcError, ErrorCode } from './errors'
@@ -76,15 +77,22 @@ agentManager.setWaterline(contextWaterline)
 export { agentManager, contextWaterline }
 
 // COUP-01: 解耦 broadcastOutput 与 BrowserWindow 的直接耦合
-broadcaster.onBroadcast((adapterName, output) => {
+broadcaster.onBroadcast((payload) => {
+  const sessionId = payload.sessionId ?? ''
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onOutput', adapterName, output)
+    win.webContents.send('agent:onOutput', sessionId, payload.output)
   }
 })
 
 agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+  }
+})
+
+agentManager.setSessionStartedCallback((threadId, sessionId) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('agent:onSessionStarted', threadId, sessionId)
   }
 })
 
@@ -96,18 +104,27 @@ agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
 
 // Agent 日志持久化回调（延迟注册，需要 db client）
 let agentLogRepo: AgentLogRepository | null = null
+let logNodeRepo: NodeRepository | null = null
 
 function setupAgentLogPersistence(): void {
   if (agentLogRepo) return
   const db = getClient()
   agentLogRepo = new AgentLogRepository(db)
+  logNodeRepo = new NodeRepository(db)
 
-  agentManager.setOnSessionComplete((sessionId, adapterName, nodeId, result, duration) => {
+  agentManager.setOnSessionComplete(async (sessionId, adapterName, nodeId, result, duration) => {
+    let graphId = ''
+    if (nodeId && logNodeRepo) {
+      try {
+        const node = await logNodeRepo.findById(nodeId)
+        if (node) graphId = node.graphId
+      } catch { /* ignore lookup failure */ }
+    }
     agentLogRepo!.create({
       sessionId,
       adapterName,
       nodeId,
-      graphId: '',
+      graphId,
       command: { type: 'implement', description: '', targetNodeId: nodeId },
       outputs: [],
       result,
@@ -263,7 +280,7 @@ export async function registerIpcHandlers(): Promise<void> {
   // ---------- 注册各领域 handlers ----------
   const snapshotRepo = new SnapshotRepository(db)
   registerGraphHandlers(db, typedHandle, graphService, snapshotRepo)
-  registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined)
+  registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db))
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService)
@@ -292,7 +309,7 @@ export async function registerIpcHandlers(): Promise<void> {
   }
   registerContextHandlers(contextWaterline, agentManager, typedHandle, compactHistoryRepo, getMainWindow)
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
-  registerCodeIntelHandlers(ipcMain)
+  registerCodeIntelHandlers(typedHandle)
   registerMemoryHandlers(typedHandle)
   registerModeHandlers(typedHandle)
   // Phase 4 Task 7: subagent:* channels + progress push events
@@ -318,17 +335,36 @@ export async function registerIpcHandlers(): Promise<void> {
   })
 
   // 渲染进程 localStorage 保存的项目路径 → 加入会话级允许列表
+  // 安全：只允许注册已存在于项目路径数据库中的路径，防止渲染进程扩展自身文件访问权限
   typedHandle('fs:registerProjectPaths', async (_event, paths: unknown) => {
     if (!Array.isArray(paths)) return
     const { senderId } = getIpcContext()
+    // 获取所有已注册的项目路径作为允许根目录
+    let projectRoots: string[] = []
+    try {
+      const projectPaths = await graphService.getProjectPaths()
+      projectRoots = projectPaths.map((p: string) => path.resolve(p))
+    } catch {
+      logger.warn('fs:registerProjectPaths: failed to load project paths, rejecting all')
+    }
     for (const p of paths) {
       if (typeof p !== 'string' || !p.trim()) continue
       try {
-        // 只校验安全性（系统目录等），不检查 allowedRoots（因为新项目路径还不在允许列表中）
         const resolved = await cachedRealpath(p.trim())
         const normalized = path.normalize(resolved)
         if (isBlockedSystemPath(normalized)) {
           throw new IpcError('Access denied: cannot access system directory', ErrorCode.IPC_ACCESS_DENIED)
+        }
+        // 验证路径在某个已知项目根目录下，防止注册任意路径
+        const sep = path.sep
+        const isUnderProject = projectRoots.some((root) =>
+          process.platform === 'win32'
+            ? normalized.toLowerCase().startsWith(root.toLowerCase() + sep) ||
+              normalized.toLowerCase() === root.toLowerCase()
+            : normalized.startsWith(root + sep) || normalized === root,
+        )
+        if (!isUnderProject) {
+          throw new IpcError('Access denied: path is not under any registered project directory', ErrorCode.IPC_ACCESS_DENIED)
         }
         addSessionAllowedPath(senderId, normalized)
         logger.info(`fs:registerProjectPaths: allowed path=${normalized} sender=${senderId}`)

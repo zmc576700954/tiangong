@@ -194,6 +194,12 @@ export class MemoryExtractor {
       })
     }
 
+    // Fix token cost N-fold inflation: when multiple memories are extracted
+    // from one session, each claims the full estimateTokens(fullText) cost.
+    // Divide by the number of items produced so each shares the cost fairly.
+    const itemCount = items.length || 1
+    items.forEach(item => { item.token_cost = Math.round(item.token_cost / itemCount) })
+
     logger.debug(`Extracted ${items.length} memory items from session ${sessionId}`)
     return items
   }

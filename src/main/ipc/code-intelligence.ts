@@ -3,11 +3,11 @@
  * 暴露符号索引、项目扫描、执行计划生成等能力给渲染进程
  */
 
-import type { IpcMain } from 'electron'
 import { SymbolIndex } from '../code-intelligence/symbol-index'
 import { ProjectIndexer } from '../code-intelligence/project-indexer'
 import { ExecutionPlanner } from '../code-intelligence/execution-planner'
-import { createTypedHandle, validateProjectPath } from './utils'
+import { validateProjectPath } from './utils'
+import type { TypedHandle } from './utils'
 import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 
@@ -30,8 +30,7 @@ export function getSymbolIndex(): SymbolIndex | null {
   return symbolIndex
 }
 
-export function registerCodeIntelHandlers(ipcMain: IpcMain): void {
-  const typedHandle = createTypedHandle(ipcMain)
+export function registerCodeIntelHandlers(typedHandle: TypedHandle): void {
 
   // 索引项目代码
   typedHandle('codeIntel:indexProject', async (_event, projectPath: string) => {

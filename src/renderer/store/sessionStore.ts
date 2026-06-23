@@ -33,6 +33,8 @@ interface SessionState {
   activeSessions: Map<string, SessionInfo>
   sessionSnapshots: Map<string, SessionSnapshot>
   requestStatuses: Map<string, RequestStatusEntry>
+  /** Threads currently sending a message — prevents double-send on rapid clicks */
+  sendingThreads: Set<string>
 
   startSession: (adapterName: string, config: AgentSessionConfig) => Promise<string>
   resumeSession: (sessionId: string, config: AgentSessionConfig) => Promise<void>
@@ -63,6 +65,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   activeSessions: new Map(),
   sessionSnapshots: new Map(),
   requestStatuses: new Map(),
+  sendingThreads: new Set(),
 
   startSession: async (adapterName, config) => {
     const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
@@ -174,6 +177,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   sendMessage: async (threadId, content, contextRefs, sessionConfig) => {
+    // Concurrency guard: prevent double-send on rapid clicks
+    const { sendingThreads } = get()
+    if (sendingThreads.has(threadId)) return
+    set({ sendingThreads: new Set([...sendingThreads, threadId]) })
+
     const userMessage: ChatMessage = {
       id: generateId('msg'),
       role: 'user',
@@ -334,6 +342,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       })
       useThreadStore.getState().updateThreadStatus(threadId, 'error')
+    } finally {
+      // Clear concurrency guard
+      const { sendingThreads } = get()
+      const next = new Set(sendingThreads)
+      next.delete(threadId)
+      set({ sendingThreads: next })
     }
   },
 

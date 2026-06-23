@@ -385,15 +385,11 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
 // 节点类型注册表（支持动态扩展节点类型）
 // ============================================
 
-/** @main-process-only 函数类型无法通过 IPC 序列化，仅用于主进程行为调度 */
-export interface NodeTypeBehavior {
-  /** 节点创建时触发 */
-  onCreate?: (node: GraphNode) => void | Promise<void>
-  /** 节点删除时触发 */
-  onDelete?: (nodeId: string) => void | Promise<void>
-  /** 节点状态变更时触发 */
-  onStatusChange?: (nodeId: string, from: NodeStatus, to: NodeStatus) => void | Promise<void>
-}
+/**
+ * NodeTypeBehavior 已移至 src/main/types/node-behavior.ts
+ * 该接口包含函数签名，无法通过 IPC 序列化，仅用于主进程。
+ * 如需在主进程中使用，请从 src/main/types/node-behavior.ts 导入。
+ */
 
 /** 节点类型配置（用于注册新节点类型） */
 export interface NodeTypeConfig {
@@ -409,8 +405,12 @@ export interface NodeTypeConfig {
   allowedChildTypes?: string[]
   /** 节点描述模板 */
   descriptionTemplate?: string
-  /** 行为钩子（可选） */
-  behavior?: NodeTypeBehavior
+  /**
+   * 行为钩子（可选）。
+   * Typed as unknown in shared types because NodeTypeBehavior contains
+   * non-serializable function signatures. Cast to NodeTypeBehavior in main process.
+   */
+  behavior?: unknown
 }
 
 /**

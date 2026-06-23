@@ -56,9 +56,20 @@ export class OpenCodeAdapter extends BaseAdapter {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
+    // Handle stdin write errors (process may exit before write completes)
+    if (proc.stdin) {
+      proc.stdin.on('error', (err) => {
+        this.logger.warn(`stdin write error for session ${session.id}: ${err.message}`)
+      })
+    }
+
     // 通过 stdin 传入 prompt，避免超出 OS 命令行长度限制
-    proc.stdin.write(fullPrompt)
-    proc.stdin.end()
+    proc.stdin?.write(fullPrompt, (err) => {
+      if (err) {
+        this.logger.warn(`stdin write failed for session ${session.id}: ${err.message}`)
+      }
+    })
+    proc.stdin?.end()
 
     this.processes.set(session.id, proc)
     await this.runOneShot(proc, session.id, { parseFileChanges: false })

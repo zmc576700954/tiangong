@@ -75,8 +75,9 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
 
   // Listen for menu: Open Project
   useEffect(() => {
-    if (!window.electronAPI?.onMenuOpenProject) return
-    const unsub = window.electronAPI.onMenuOpenProject((projectPath: string) => {
+    const api = window.electronAPI as any
+    if (!api?.onMenuOpenProject) return
+    const unsub = api.onMenuOpenProject((projectPath: string) => {
       if (projects.some((p) => p.path === projectPath)) return
       addProject(projectPath)
     })
@@ -192,7 +193,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
             <Plus className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
           <button
-            onClick={onClose}
+            onClick={onCollapse}
             className="p-1.5 rounded bg-primary/5 border border-primary/15 hover:bg-primary/10 transition-colors"
             title="Hide file tree (Ctrl+B)"
           >

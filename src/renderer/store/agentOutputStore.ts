@@ -13,7 +13,7 @@ let flushScheduled = false
 const BATCH_INTERVAL = 16 // ~1 frame at 60fps
 
 /** 已清理的 thread 集合，防止 flush 时写入已清空的 thread（TOCTOU 修复） */
-let clearedThreads = new Set<string>()
+const clearedThreads = new Set<string>()
 
 /** 计算所有 thread 输出的总量 */
 function countTotalOutputs(outputs: Record<string, AgentOutput[]>): number {

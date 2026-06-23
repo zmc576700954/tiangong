@@ -9,6 +9,9 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('SettingsIPC')
 
+/** Regex to detect masked API keys like `sk-****abcd` or `****` */
+const MASKED_KEY_PATTERN = /^\S{0,4}\*{2,}\S{0,4}$/
+
 /** 已知适配器名称白名单，防止 settings:installCli 执行任意命令 */
 const KNOWN_ADAPTER_NAMES = new Set([
   'claude-code', 'codex', 'opencode', 'cline', 'kilo-code', 'kimi-code',
@@ -40,6 +43,35 @@ export function registerSettingsHandlers(typedHandle: TypedHandle): void {
       for (const k of settings.apiKeys) {
         if (!k || typeof k !== 'object' || typeof k.provider !== 'string' || typeof k.key !== 'string') {
           throw new IpcError('Each apiKey must have {provider: string, key: string}', ErrorCode.IPC_INVALID_ARGUMENT)
+        }
+      }
+      // Preserve real encrypted keys when the renderer sends back masked values.
+      // The renderer only sees masked keys (e.g. "sk-****abcd"), so writing them
+      // back would overwrite the real encrypted values. Instead, read the current
+      // encrypted settings from disk and keep the existing encrypted key for any
+      // provider whose incoming key looks masked.
+      const { readSettings, getSettingsPath } = await import('../settings')
+      const current = await readSettings()
+      const fs = await import('node:fs/promises')
+      let encryptedRaw: { apiKeys?: Array<{ provider: string; key: string }> } | null = null
+      try {
+        const rawPath = await getSettingsPath()
+        const rawText = await fs.readFile(rawPath, 'utf-8')
+        encryptedRaw = JSON.parse(rawText)
+      } catch { /* first launch or missing file — no existing keys to preserve */ }
+      for (const incoming of settings.apiKeys) {
+        if (MASKED_KEY_PATTERN.test(incoming.key)) {
+          const existingPlain = current.apiKeys.find((k) => k.provider === incoming.provider)
+          if (existingPlain && existingPlain.key) {
+            // Re-encrypt the existing plain key — writeSettings will handle encryption
+            incoming.key = existingPlain.key
+          } else if (encryptedRaw?.apiKeys) {
+            // Fall back to the raw encrypted value from disk
+            const existingEncrypted = encryptedRaw.apiKeys.find((k) => k.provider === incoming.provider)
+            if (existingEncrypted) {
+              incoming.key = existingEncrypted.key
+            }
+          }
         }
       }
     }

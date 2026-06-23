@@ -5,10 +5,12 @@
  * 共享类型文件不应包含运行时逻辑（Map, class 实例化等）。
  */
 
-import type { NodeTypeConfig, NodeTypeBehavior, NodeType, NodeStatus } from '@shared/types'
+import type { NodeTypeConfig, NodeType, NodeStatus } from '@shared/types'
+import type { NodeTypeBehavior } from '../types/node-behavior'
 import { NODE_STATUS_TRANSITIONS } from '@shared/types'
 
-export type { NodeTypeConfig, NodeTypeBehavior }
+export type { NodeTypeConfig } from '@shared/types'
+export type { NodeTypeBehavior } from '../types/node-behavior'
 
 class NodeTypeRegistry {
   private types = new Map<string, NodeTypeConfig>()
@@ -48,12 +50,16 @@ class NodeTypeRegistry {
     return transitions.some((t) => t.from === from && t.to === to)
   }
 
-  getBehavior(type: string): NodeTypeBehavior | undefined { return this.types.get(type)?.behavior }
+  getBehavior(type: string): NodeTypeBehavior | undefined {
+    const behavior = this.types.get(type)?.behavior
+    return behavior as NodeTypeBehavior | undefined
+  }
 
   attachBehavior(type: string, behavior: Partial<NodeTypeBehavior>): void {
     const config = this.types.get(type)
     if (!config) throw new Error(`Cannot attach behavior to unknown node type: ${type}`)
-    config.behavior = { ...config.behavior, ...behavior }
+    const existingBehavior = (config.behavior ?? {}) as Partial<NodeTypeBehavior>
+    config.behavior = { ...existingBehavior, ...behavior }
   }
 }
 

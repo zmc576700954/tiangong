@@ -160,8 +160,8 @@ describe('AgentManager.compactContext', () => {
 
   it('broadcasts a "Compacting" system message before and a "Compacted" message after', async () => {
     const broadcasts: string[] = []
-    broadcaster.onBroadcast((_adapter, output) => {
-      if (output.type === 'system') broadcasts.push(output.data)
+    broadcaster.onBroadcast((payload) => {
+      if (payload.output.type === 'system') broadcasts.push(payload.output.data)
     })
     await manager.compactContext('s1', 'summary')
     expect(broadcasts.length).toBeGreaterThanOrEqual(2)
@@ -171,8 +171,8 @@ describe('AgentManager.compactContext', () => {
 
   it('broadcasts fallback notice when native fails', async () => {
     const broadcasts: string[] = []
-    broadcaster.onBroadcast((_adapter, output) => {
-      if (output.type === 'system') broadcasts.push(output.data)
+    broadcaster.onBroadcast((payload) => {
+      if (payload.output.type === 'system') broadcasts.push(payload.output.data)
     })
     mockAdapter.compactContextMock.mockImplementation(async (sid, strat) => {
       if (strat === 'native') throw new Error('not supported')
@@ -247,8 +247,8 @@ describe('AgentManager.compactContext', () => {
 
   it('broadcasts deferred notice instead of token summary for deferred results', async () => {
     const broadcasts: string[] = []
-    broadcaster.onBroadcast((_adapter, output) => {
-      if (output.type === 'system') broadcasts.push(output.data)
+    broadcaster.onBroadcast((payload) => {
+      if (payload.output.type === 'system') broadcasts.push(payload.output.data)
     })
     mockAdapter.compactContextMock.mockResolvedValue({
       ...defaultMockResult('native'),

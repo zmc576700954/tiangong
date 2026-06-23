@@ -214,14 +214,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   batchUpdatePositions: async (updates) => {
-    const prevNodes = get().nodes
     const updateMap = new Map(updates.map((u) => [u.id, u]))
-    set((state) => ({
-      nodes: state.nodes.map((n) => {
-        const u = updateMap.get(n.id)
-        return u ? { ...n, position: { x: u.x, y: u.y } } : n
-      }),
-    }))
+    let prevNodes: GraphNode[] = []
+    set((state) => {
+      prevNodes = state.nodes
+      return {
+        nodes: state.nodes.map((n) => {
+          const u = updateMap.get(n.id)
+          return u ? { ...n, position: { x: u.x, y: u.y } } : n
+        }),
+      }
+    })
 
     try {
       await window.electronAPI['node:batchUpdatePositions'](updates)
@@ -494,3 +497,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
   }
 })
+
+// HMR cleanup: unsubscribe from previous module's event bus listener
+const _hot = (import.meta as any).hot
+if (_hot) {
+  _hot.dispose(() => { _unsubAgentStatus?.() })
+}

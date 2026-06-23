@@ -214,7 +214,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
             }
             return { role: 'assistant', content }
           }
-          // user 的 tool_result 消息
+          // tool result 消息 (role: 'tool' carries toolResults)
           if (m.toolResults) {
             return {
               role: 'user',
@@ -257,7 +257,9 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     buildBody: (messages, model, tools) => {
       const openaiMessages = messages.map((m) => {
         if (m.role === 'tool') {
-          return { role: 'tool', tool_call_id: m.toolResults?.[0]?.toolCallId ?? '', content: m.content }
+          // Each role:'tool' message carries one tool result with toolCallId
+          const toolCallId = m.toolResults?.[0]?.toolCallId ?? ''
+          return { role: 'tool', tool_call_id: toolCallId, content: m.content }
         }
         if (m.toolCalls) {
           return {
@@ -729,6 +731,21 @@ export class McpAdapter extends BaseAdapter {
     this.apiRateLimiter.cleanup(`${sessionId}:compact`)
   }
 
+  /**
+   * Dispose the adapter: stop the pool cleanup timer and disconnect all pooled clients.
+   * Should be called when the application shuts down to prevent resource leaks.
+   */
+  dispose(): void {
+    if (this.poolCleanupTimer) {
+      clearInterval(this.poolCleanupTimer)
+      this.poolCleanupTimer = undefined as any
+    }
+    for (const [, entry] of this.connectionPool) {
+      entry.client.disconnect?.().catch(() => {})
+    }
+    this.connectionPool.clear()
+  }
+
   // ============================================
   // 熔断器
   // ============================================
@@ -845,7 +862,8 @@ export class McpAdapter extends BaseAdapter {
     })
 
     if (!res.ok) {
-      const text = await res.text()
+      let text = '(unable to read response body)'
+      try { text = await res.text() } catch { /* ignore */ }
       throw new AdapterError(`${provider} API error ${res.status}: ${text}`, this.name)
     }
 
@@ -989,11 +1007,14 @@ export class McpAdapter extends BaseAdapter {
         content: response.text,
         toolCalls: response.toolCalls,
       })
-      messages.push({
-        role: 'user',
-        content: '',
-        toolResults: truncatedRoute,
-      })
+      // Push tool results as individual role:'tool' messages for OpenAI/DeepSeek compatibility
+      for (const tr of truncatedRoute) {
+        messages.push({
+          role: 'tool',
+          content: tr.content,
+          toolResults: [tr],
+        })
+      }
     }
 
     return '[Max tool iterations reached]'

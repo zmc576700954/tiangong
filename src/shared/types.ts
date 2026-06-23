@@ -23,7 +23,6 @@ export type {
   CommunitySummary, NodeEnrichment, RefinementRecord, ProjectMemory,
   ContextRef,
   NodeTypeConfig,
-  NodeTypeBehavior,
   NodeStatusTransition,
 } from './types/graph'
 

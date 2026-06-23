@@ -135,7 +135,7 @@ describe('ScopeGuard', () => {
   // ==========================================
   describe('buildScopeConfig', () => {
     it('should build scope config with all fields', () => {
-      const config = guard.buildScopeConfig({
+      const config = ScopeGuard.buildScopeConfig({
         workingDirectory: WORKING_DIR,
         nodeTitle: 'Auth Module',
         acceptanceCriteria: ['User can login', 'Token expires in 1h'],
@@ -159,7 +159,7 @@ describe('ScopeGuard', () => {
     })
 
     it('should build scope config with defaults', () => {
-      const config = guard.buildScopeConfig({
+      const config = ScopeGuard.buildScopeConfig({
         workingDirectory: WORKING_DIR,
         nodeTitle: 'Simple Node',
         acceptanceCriteria: [],

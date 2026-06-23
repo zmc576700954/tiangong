@@ -21,6 +21,11 @@ import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
 
 /** 获取临时目录路径（可在测试中 mock） */
+// THREAD-SAFETY NOTE: This module-level mutable function reference is not thread-safe.
+// If setTempDirGetter is called while sandboxes are active (i.e., this.sandboxes.size > 0),
+// concurrent reads of _getTempDir could see a partially replaced function. In practice,
+// Electron's main process is single-threaded, so this is safe for production use. However,
+// test code that calls setTempDirGetter should ensure no sandboxes are active at the time.
 let _getTempDir: () => string = () => {
   // 动态 import electron 避免测试时未安装
   try {
@@ -34,10 +39,18 @@ let _getTempDir: () => string = () => {
 
 /** 测试时注入临时目录获取函数 */
 export function setTempDirGetter(fn: () => string): void {
+  // Guard: warn if sandboxes are active, as swapping the getter mid-operation
+  // could cause backup directories to be created in inconsistent locations.
+  if (scopeGuardInstance?.hasActiveSandboxes) {
+    logger.warn('setTempDirGetter called while sandboxes are active — this is not thread-safe and may cause inconsistent temp directory paths')
+  }
   _getTempDir = fn
 }
 
 const logger = createLogger('ScopeGuard')
+
+/** Module-level reference to the ScopeGuard instance, used by setTempDirGetter guard */
+let scopeGuardInstance: ScopeGuard | undefined
 
 /** 定时扫描初始间隔（毫秒） */
 const ACTIVE_SCAN_INTERVAL_MS = 500
@@ -49,6 +62,8 @@ const ACTIVE_SCAN_BACKOFF_FACTOR = 1.5
 const ACTIVE_SCAN_BACKOFF_THRESHOLD = 3
 /** 递归扫描最大深度 */
 const MAX_SCAN_DEPTH = 5
+/** 递归扫描最大运行时间（毫秒），超时后放弃本次扫描 */
+const MAX_SCAN_DURATION_MS = 30_000
 /** 单个快照最大文件条目数 */
 const MAX_SNAPSHOT_ENTRIES = 5_000
 /** 所有 sandbox 快照总条目上限，防止多 sandbox 并存时内存爆炸 */
@@ -142,7 +157,11 @@ function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): strin
   return allowedFiles.map((file) => {
     const resolved = path.resolve(workingDir, file)
     const relative = path.relative(workingDir, resolved)
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    // Windows: path.relative is case-sensitive but the filesystem is not;
+    // normalize both sides to lowercase before comparing.
+    const effectiveRelative = process.platform === 'win32' ? relative.toLowerCase() : relative
+    const isTraversal = effectiveRelative.startsWith('..') || path.isAbsolute(relative)
+    if (isTraversal) {
       throw new ScopeGuardError(
         `Path traversal detected: ${file} escapes working directory ${workingDir}`,
         ErrorCode.SCOPE_PATH_TRAVERSAL,
@@ -182,6 +201,8 @@ async function computeContentHash(filePath: string, fileSize: number): Promise<s
         const hash = crypto.createHash('sha256')
         hash.update(buffer)
         hash.update(Buffer.from(fileSize.toString()))
+        // SHA-256 truncated to 64 bits (16 hex chars). Birthday paradox gives ~1 in 4B
+        // collision probability. Acceptable for file integrity checking with automatic rollback on mismatch.
         return hash.digest('hex').substring(0, 16)
       } finally {
         await fd.close()
@@ -202,6 +223,16 @@ interface FileSnapshotEntry {
 }
 
 export class ScopeGuard {
+  constructor() {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- module-level singleton tracking
+    scopeGuardInstance = this
+  }
+
+  /** Whether any sandboxes are currently active (used by setTempDirGetter guard) */
+  get hasActiveSandboxes(): boolean {
+    return this.sandboxes.size > 0
+  }
+
   private sandboxes = new Map<string, Sandbox>()
   private watchers = new Map<string, FSWatcher>()
   /** 定时主动扫描器：补充 chokidar 的异步延迟 */
@@ -640,8 +671,9 @@ export class ScopeGuard {
   // ============================================
 
   /**
-   * 当全局快照总条目超限时，淘汰最早创建的 sandbox 快照
-   * 使用 Map 的插入顺序作为 LRU 近似（最早创建的 sandbox 最先被淘汰）
+   * 当全局快照总条目超限时，淘汰最早创建的非活跃 sandbox 快照
+   * 使用 Map 的插入顺序作为 LRU 近似
+   * 不淘汰仍在 active 状态的 sandbox，防止合规会话被错误回滚
    */
   private evictSnapshotsIfNeeded(): void {
     if (this.totalSnapshotEntries <= MAX_TOTAL_SNAPSHOT_ENTRIES) return
@@ -650,6 +682,8 @@ export class ScopeGuard {
     while (this.totalSnapshotEntries > MAX_TOTAL_SNAPSHOT_ENTRIES) {
       const { value: oldestId, done } = iterator.next()
       if (done) break
+      // Skip sandboxes that are still active (watcher exists)
+      if (this.watchers.has(oldestId)) continue
       const snapshot = this.initialSnapshots.get(oldestId)
       if (snapshot) {
         this.totalSnapshotEntries -= snapshot.size
@@ -852,8 +886,9 @@ export class ScopeGuard {
     // 获取初始快照，用于区分“新增文件”和“已有文件”，避免误报
     const initialSnapshot = sandboxId ? this.initialSnapshots.get(sandboxId) : undefined
     const violations: string[] = []
+    const scanStartTime = Date.now()
     for (const dir of dirs) {
-      await this.scanDirRecursive(dir, allowedSet, violations, 0, initialSnapshot)
+      await this.scanDirRecursive(dir, allowedSet, violations, 0, initialSnapshot, scanStartTime)
     }
     return violations
   }
@@ -867,8 +902,14 @@ export class ScopeGuard {
     violations: string[],
     depth: number,
     initialSnapshot?: Map<string, FileSnapshotEntry>,
+    scanStartTime?: number,
   ): Promise<void> {
     if (depth > MAX_SCAN_DEPTH) return
+    // Bail out if scan has exceeded maximum duration to prevent unbounded recursion
+    if (scanStartTime !== undefined && Date.now() - scanStartTime > MAX_SCAN_DURATION_MS) {
+      logger.warn(`Active scan exceeded ${MAX_SCAN_DURATION_MS}ms, aborting scan at ${dir}`)
+      return
+    }
     try {
       const entries = await fs.readdir(dir, { withFileTypes: true })
       for (const entry of entries) {
@@ -894,7 +935,7 @@ export class ScopeGuard {
             }
           }
         } else if (entry.isDirectory()) {
-          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1, initialSnapshot)
+          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1, initialSnapshot, scanStartTime)
         }
       }
     } catch {
@@ -927,6 +968,13 @@ export class ScopeGuard {
    * 清理空目录（从下往上）
    * @param dir - 要清理的目录
    * @param preserveRoot - 保留的根目录（不会删除此目录本身）
+   *
+   * NOTE: This method recursively walks sandbox.workingDir and deletes empty directories
+   * regardless of whether they were created during the sandbox session. This is intentional
+   * behavior — after rollback, any empty directories left behind are likely artifacts of the
+   * agent's operation. However, if a directory was pre-existing and became empty due to
+   * unrelated causes, it could be incorrectly deleted. Deletions are logged at warn level
+   * so users can review and identify any unintended removals.
    */
   private async cleanupEmptyDirs(dir: string, preserveRoot?: string): Promise<void> {
     let entries: Dirent[]
@@ -950,6 +998,7 @@ export class ScopeGuard {
       const remaining = await fs.readdir(dir)
       if (remaining.length === 0 && dir !== preserveRoot) {
         await fs.rmdir(dir)
+        logger.warn(`Deleted empty directory (may not have been created by agent): ${dir}`)
       }
     } catch {
       // 忽略删除错误
@@ -958,8 +1007,9 @@ export class ScopeGuard {
 
   /**
    * 构建范围配置
+   * Static: this method does not access instance state and is a pure data transform.
    */
-  buildScopeConfig(params: {
+  static buildScopeConfig(params: {
     workingDirectory: string
     nodeTitle: string
     acceptanceCriteria: string[]

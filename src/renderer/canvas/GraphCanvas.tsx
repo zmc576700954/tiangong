@@ -168,11 +168,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setSearchIndex(0)
   }, [searchQuery])
 
+  const searchNavTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   useEffect(() => {
-    if (searchResults.length > 0 && searchIndex < searchResults.length) {
+    if (searchResults.length > 0 && searchOpen) {
+      clearTimeout(searchNavTimer.current)
+      searchNavTimer.current = setTimeout(() => {
+        navigateToSearchResult(searchResults[0])
+      }, 300)
+    }
+    return () => clearTimeout(searchNavTimer.current)
+  }, [searchResults, searchOpen, navigateToSearchResult])
+
+  // Navigate when user manually cycles through results (Enter key)
+  useEffect(() => {
+    if (searchResults.length > 0 && searchIndex > 0 && searchIndex < searchResults.length) {
       navigateToSearchResult(searchResults[searchIndex])
     }
-  }, [searchResults, searchIndex, navigateToSearchResult])
+  }, [searchIndex, searchResults, navigateToSearchResult])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -519,16 +531,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setContextPopover(null)
   }, [updateNode])
 
-  const handleNodeStatusChange = async (nodeId: string, status: NodeStatus) => {
+  const handleNodeStatusChange = useCallback(async (nodeId: string, status: NodeStatus) => {
     try {
       await updateNode(nodeId, { status })
     } catch (err) {
       console.error('[GraphCanvas] Failed to change node status:', err)
     }
     setNodeContextMenu(null)
-  }
+  }, [updateNode])
 
-  const handleNodeDelete = async (nodeId: string) => {
+  const handleNodeDelete = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
     if (node?.type === 'project') return
     try {
@@ -538,7 +550,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
     selectNode(null)
     setNodeContextMenu(null)
-  }
+  }, [graphNodes, deleteNode, selectNode])
 
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">

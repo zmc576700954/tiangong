@@ -302,8 +302,10 @@ export class GraphMemory {
     const incomingIndex = new Map<number, MemoryEdge[]>()
     const seenEdge = new Set<string>()
 
-    for (const mem of allRecent) {
-      const edges = this.inferRelations(mem, allRecent)
+    // Performance guard: limit candidate set for pairwise inference to avoid O(N^2) blowup
+    const candidates = allRecent.slice(0, 50)
+    for (const mem of candidates) {
+      const edges = this.inferRelations(mem, candidates)
       for (const edge of edges) {
         const key = SYMMETRIC_RELATIONS.has(edge.relation)
           ? `${Math.min(edge.sourceId, edge.targetId)}↔${edge.relation}↔${Math.max(edge.sourceId, edge.targetId)}`
@@ -449,6 +451,11 @@ export class GraphMemory {
     const recent = await this.memoryStore.getRecent({ projectId, limit: maxNodes })
 
     const nodes = recent.map((m) => this.wrapNode(m))
+    // Build a Map<id, MemoryNode> for O(1) lookups instead of O(N) nodes.find()
+    const nodeMap = new Map<number, MemoryNode>()
+    for (const node of nodes) {
+      nodeMap.set(node.id, node)
+    }
     const allEdges: MemoryEdge[] = []
 
     // 为每个节点推断关系
@@ -456,8 +463,8 @@ export class GraphMemory {
       const edges = this.inferRelations(nodes[i].memory, recent)
       for (const edge of edges) {
         // 添加边到源节点和目标节点
-        const sourceNode = nodes.find((n) => n.id === edge.sourceId)
-        const targetNode = nodes.find((n) => n.id === edge.targetId)
+        const sourceNode = nodeMap.get(edge.sourceId)
+        const targetNode = nodeMap.get(edge.targetId)
         if (sourceNode && targetNode) {
           sourceNode.outgoingEdges.push(edge)
           targetNode.incomingEdges.push(edge)

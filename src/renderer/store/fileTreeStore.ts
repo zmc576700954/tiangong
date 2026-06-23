@@ -32,6 +32,9 @@ const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : null
 
+// Module-level toast timer for cleanup
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+
 // ---- 持久化 key ----
 const EXPANDED_PATHS_KEY = 'bizgraph:expandedPaths'
 
@@ -357,7 +360,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Paste failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     // ---- 重命名 ----
@@ -386,7 +390,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Rename failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     cancelRename: () => {
@@ -418,7 +423,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Create file failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     createDir: async (parentDir: string, name: string) => {
@@ -444,7 +450,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Create folder failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     // ---- 删除 ----
@@ -477,7 +484,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Delete failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     // ---- 拖拽 ----
@@ -521,7 +529,8 @@ export const useFileTreeStore = create<FileTreeState>()(
         set((s) => { s.toast = { message: `Move failed: ${err}`, type: 'error' } })
       }
 
-      setTimeout(() => get().clearToast(), 3000)
+      clearTimeout(toastTimer)
+      toastTimer = setTimeout(() => get().clearToast(), 3000)
     },
 
     // ---- 上下文菜单 ----

@@ -5,22 +5,9 @@
 
 import type { ChatService } from '../services/chat-service'
 import type { TypedHandle } from './utils'
+import { ensureString, ensureOptionalNumber } from './utils'
 
-const MAX_ID_LEN = 64
 const MAX_QUERY_LEN = 2000
-
-function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): string {
-  if (typeof val !== 'string') throw new Error(`${label} must be a string`)
-  if (val.length === 0) throw new Error(`${label} must not be empty`)
-  if (val.length > maxLen) throw new Error(`${label} exceeds max length ${maxLen}`)
-  return val
-}
-
-function ensureOptionalNumber(label: string, val: unknown): number | undefined {
-  if (val === undefined || val === null) return undefined
-  if (typeof val !== 'number') throw new Error(`${label} must be a number`)
-  return val
-}
 
 export function registerChatHandlers(chatService: ChatService, typedHandle: TypedHandle): void {
   typedHandle('thread:list', async (_, filters) => {

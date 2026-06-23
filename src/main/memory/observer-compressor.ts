@@ -371,6 +371,7 @@ export class ObserverCompressor {
         prev.summary = prev.summary + '\n' + summary
         prev.keyTerms = [...new Set([...prev.keyTerms, ...keyTerms])].slice(0, 15)
         prev.filesChanged = [...new Set([...prev.filesChanged, ...filesChanged])].slice(0, 20)
+        prev.inputTokens = (prev.inputTokens || 0) + (inputTokens || 0)
         prev.outputTokens = estimateTokens(prev.summary)
         prev.inputChunks = this.state.chunksProcessed
         // 取更严重的阶段信号
