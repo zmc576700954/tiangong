@@ -55,7 +55,7 @@ export function FanoutPromptDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[600px]">
+      <DialogContent className="max-w-[600px]" data-testid="fanout-dialog">
         <DialogHeader>
           <DialogTitle>Fan-out 子代理</DialogTitle>
         </DialogHeader>
@@ -64,10 +64,11 @@ export function FanoutPromptDialog({ open, onOpenChange }: Props) {
           onChange={(e) => setPrompt(e.target.value)}
           className="w-full h-48 p-2 border rounded text-sm font-mono resize-y bg-background"
           placeholder="Edit the prompt as needed…"
+          data-testid="fanout-prompt-input"
         />
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
-          <Button onClick={handleSubmit}>发送到当前会话</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="fanout-cancel-btn">取消</Button>
+          <Button onClick={handleSubmit} data-testid="fanout-submit-btn">发送到当前会话</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

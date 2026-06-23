@@ -153,6 +153,7 @@ export function ChatHeader({
             className="relative w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground text-xs"
             onClick={onOpenSubagents}
             title="Subagent invocations"
+            data-testid="chat-header-subagents-btn"
           >
             <span aria-hidden>🤖</span>
             {activeSubagentCount !== undefined && activeSubagentCount > 0 && (

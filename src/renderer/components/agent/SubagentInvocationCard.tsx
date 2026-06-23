@@ -38,10 +38,10 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
     'bg-blue-500/10 text-blue-600 border-blue-500/30'
 
   return (
-    <div className={`my-2 rounded-md border px-3 py-2 text-sm ${statusColor}`}>
+    <div className={`my-2 rounded-md border px-3 py-2 text-sm ${statusColor}`} data-testid={`subagent-card-${invocationId}`}>
       <div className="flex items-center gap-2 mb-1">
         <span className="font-mono text-xs">🤖 {agentType ?? invocation?.agentType ?? '?'}</span>
-        <Badge variant="secondary" className="text-[10px]">{status}</Badge>
+        <Badge variant="secondary" className="text-[10px]" data-testid="subagent-card-status">{status}</Badge>
         <span className="flex-1 truncate text-xs opacity-70">
           {description ?? invocation?.description ?? ''}
         </span>
@@ -51,6 +51,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
             variant="ghost"
             className="h-6 px-2 text-[10px]"
             onClick={() => cancelInvocation(invocationId)}
+            data-testid="subagent-card-cancel"
           >
             Cancel
           </Button>
@@ -80,7 +81,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
 
       {/* Final result (only when completed) */}
       {status === 'completed' && resultText && (
-        <div className="mt-2 pt-2 border-t border-current/20">
+        <div className="mt-2 pt-2 border-t border-current/20" data-testid="subagent-card-result">
           <div className="text-[10px] opacity-70 mb-1">
             Result • {invocation?.tokensUsed ?? 0} tokens
             {invocation?.finishedAt && invocation?.startedAt &&

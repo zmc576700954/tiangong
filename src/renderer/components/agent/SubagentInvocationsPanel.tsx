@@ -21,13 +21,13 @@ export function SubagentInvocationsPanel({ open, onOpenChange, parentSessionId }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-[420px] sm:max-w-[420px]">
+      <SheetContent side="right" className="w-[420px] sm:max-w-[420px]" data-testid="subagent-panel">
         <SheetHeader>
           <SheetTitle>Subagent Invocations</SheetTitle>
         </SheetHeader>
-        <div className="mt-4 space-y-2 overflow-y-auto max-h-[calc(100vh-120px)]">
+        <div className="mt-4 space-y-2 overflow-y-auto max-h-[calc(100vh-120px)]" data-testid="subagent-list">
           {invocations.length === 0 && (
-            <div className="text-sm text-muted-foreground">No subagent invocations yet.</div>
+            <div className="text-sm text-muted-foreground" data-testid="subagent-empty">No subagent invocations yet.</div>
           )}
           {invocations.map((inv) => (
             <SubagentInvocationCard
