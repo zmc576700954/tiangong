@@ -9,7 +9,11 @@
  * Reference: cc-switch unified configuration pattern
  */
 
-import { BaseAdapter } from './base'
+import {
+  BaseAdapter,
+  DISPATCH_SUBAGENT_TOOL_NAME,
+  DISPATCH_SUBAGENT_TOOL_SCHEMA,
+} from './base'
 import { McpClient } from '../mcp/client'
 import { generateId } from '../shared/env'
 import type { ChildProcess } from 'node:child_process'
@@ -167,9 +171,17 @@ interface ProviderConfig {
   parseResponse: (data: unknown) => LlmResponse
 }
 
+/** Default model IDs per provider — update when newer models become stable */
+const DEFAULT_MODELS = {
+  anthropic: 'claude-3-5-sonnet-20241022',
+  openai: 'gpt-4o',
+  deepseek: 'deepseek-chat',
+  gemini: 'gemini-1.5-flash',
+} as const
+
 const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
   anthropic: {
-    defaultModel: 'claude-3-5-sonnet-20241022',
+    defaultModel: DEFAULT_MODELS.anthropic,
     supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/v1/messages` : 'https://api.anthropic.com/v1/messages',
     buildHeaders: (key) => ({
@@ -235,7 +247,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     parseResponse: parseAnthropicResponse,
   },
   openai: {
-    defaultModel: 'gpt-4o',
+    defaultModel: DEFAULT_MODELS.openai,
     supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.openai.com/v1/chat/completions',
     buildHeaders: (key) => ({
@@ -278,7 +290,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     parseResponse: parseOpenAiResponse,
   },
   deepseek: {
-    defaultModel: 'deepseek-chat',
+    defaultModel: DEFAULT_MODELS.deepseek,
     supportsTools: true,
     buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.deepseek.com/v1/chat/completions',
     buildHeaders: (key) => ({
@@ -290,7 +302,7 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     parseResponse: parseOpenAiResponse,
   },
   gemini: {
-    defaultModel: 'gemini-1.5-flash',
+    defaultModel: DEFAULT_MODELS.gemini,
     supportsTools: false,
     buildUrl: (baseUrl, _key, model) => {
       const safeModel = encodeURIComponent(model)
@@ -407,12 +419,17 @@ export class McpAdapter extends BaseAdapter {
   private sessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private apiRateLimiter = new ApiRateLimiter()
   /** MCP 服务器熔断器：防止连续失败导致重连风暴 */
+  // 内联熔断器：MCP 专用，与 circuit-breaker.ts 的 AdapterCircuitBreaker 相比
+  // 更轻量且直接耦合 MCP server 生命周期。若未来其他适配器也需要熔断，
+  // 应统一迁移到 AdapterCircuitBreaker（含 half-open→closed 正式转换）。
   private circuitBreaker = new Map<string, { failures: number; lastFailureTime: number; state: 'closed' | 'open' | 'half-open' }>()
   private static readonly CB_FAILURE_THRESHOLD = 3
   private static readonly CB_OPEN_DURATION_MS = 30_000 // 30 秒冷却
   /** MCP 连接池：跨会话复用 MCP 客户端连接 */
   private connectionPool = new Map<string, { client: McpClient; refCount: number; lastUsed: number }>()
   private static readonly POOL_IDLE_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟空闲超时
+  /** 连接池定期清理定时器 */
+  private poolCleanupTimer?: ReturnType<typeof setInterval>
 
   async checkInstalled(): Promise<boolean> {
     // MCP adapter is "installed" if at least one API key is configured
@@ -435,50 +452,70 @@ export class McpAdapter extends BaseAdapter {
     // 清理连接池中的空闲超时连接
     this.cleanupIdlePoolConnections()
 
-    for (const server of enabledServers) {
-      // 熔断器检查：跳过处于 open 状态的服务器
-      if (this.isCircuitOpen(server.name)) {
-        this.emitOutput({
-          type: 'stderr',
-          data: `MCP server ${server.name} circuit breaker open (cooling down), skipping`,
-          timestamp: Date.now(),
-        })
-        continue
-      }
-      try {
-        // 优先从连接池复用
-        const pooled = this.connectionPool.get(server.name)
-        if (pooled && pooled.client.isReady()) {
-          pooled.refCount++
-          pooled.lastUsed = Date.now()
-          sessionClients.push(pooled.client)
+    // 启动连接池定期清理定时器（仅启动一次）
+    if (!this.poolCleanupTimer) {
+      this.poolCleanupTimer = setInterval(() => this.cleanupIdlePoolConnections(), 5 * 60 * 1000)
+      this.poolCleanupTimer.unref()
+    }
+
+    // 先注册会话，确保后续 emitOutput 能正确关联
+    const session: AgentSession = {
+      id: sessionId,
+      adapterName: this.name,
+      config: structuredClone(config),
+      startTime: Date.now(),
+    }
+    this.registerSession(session)
+    this.pushOutputSession(sessionId)
+
+    try {
+      for (const server of enabledServers) {
+        // 熔断器检查：跳过处于 open 状态的服务器
+        if (this.isCircuitOpen(server.name)) {
           this.emitOutput({
-            type: 'stdout',
-            data: `MCP server reused from pool: ${server.name}`,
+            type: 'stderr',
+            data: `MCP server ${server.name} circuit breaker open (cooling down), skipping`,
             timestamp: Date.now(),
           })
           continue
         }
-        // 池中无可用连接，新建
-        const client = new McpClient(server.command, server.args)
-        await client.connect()
-        this.recordCircuitResult(server.name, true)
-        this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
-        sessionClients.push(client)
-        this.emitOutput({
-          type: 'stdout',
-          data: `MCP server connected: ${server.name}`,
-          timestamp: Date.now(),
-        })
-      } catch (err) {
-        this.recordCircuitResult(server.name, false)
-        const msg = err instanceof Error ? err.message : String(err)
-        this.emitOutput({
-          type: 'stderr',
-          data: `MCP server failed (${server.name}): ${msg}`,
-          timestamp: Date.now(),
-        })
+        try {
+          // 优先从连接池复用
+          const pooled = this.connectionPool.get(server.name)
+          if (pooled && pooled.client.isReady()) {
+            pooled.refCount++
+            pooled.lastUsed = Date.now()
+            sessionClients.push(pooled.client)
+            this.emitOutput({
+              type: 'stdout',
+              data: `MCP server reused from pool: ${server.name}`,
+              timestamp: Date.now(),
+            })
+            continue
+          }
+          // 池中无可用连接，新建
+          const client = new McpClient(server.command, server.args)
+          await client.connect()
+          this.recordCircuitResult(server.name, true)
+          this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
+          sessionClients.push(client)
+          this.emitOutput({
+            type: 'stdout',
+            data: `MCP server connected: ${server.name}`,
+            timestamp: Date.now(),
+          })
+        } catch (err) {
+          this.recordCircuitResult(server.name, false)
+          const msg = err instanceof Error ? err.message : String(err)
+          this.emitOutput({
+            type: 'stderr',
+            data: `MCP server failed (${server.name}): ${msg}`,
+            timestamp: Date.now(),
+          })
+        }
       }
+    } finally {
+      this.popOutputSession()
     }
 
     this.mcpClients.set(sessionId, sessionClients)
@@ -495,20 +532,16 @@ export class McpAdapter extends BaseAdapter {
     // Build scope prompt
     const scopePrompt = this.buildScopePrompt(config)
 
-    const session: AgentSession = {
-      id: sessionId,
-      adapterName: this.name,
-      config: structuredClone(config),
-      startTime: Date.now(),
+    this.pushOutputSession(sessionId)
+    try {
+      this.emitOutput({
+        type: 'stdout',
+        data: `MCP fallback session started.\n${scopePrompt}`,
+        timestamp: Date.now(),
+      })
+    } finally {
+      this.popOutputSession()
     }
-
-    this.registerSession(session)
-
-    this.emitOutput({
-      type: 'stdout',
-      data: `MCP fallback session started.\n${scopePrompt}`,
-      timestamp: Date.now(),
-    })
 
     return session
   }
@@ -560,13 +593,26 @@ export class McpAdapter extends BaseAdapter {
 
       let responseText: string
 
-      if (supportsTools && mcpTools.length > 0) {
+      if (supportsTools && (mcpTools.length > 0 || this.subagentManager)) {
         // 结构化 Tool Use 模式（Anthropic / OpenAI / DeepSeek）
         const tools: UnifiedTool[] = mcpTools.map((t) => ({
           name: t.name,
           description: t.description,
           inputSchema: t.inputSchema,
         }))
+
+        // Append dispatch_subagent tool when SubagentManager is set
+        if (this.subagentManager) {
+          tools.unshift({
+            name: DISPATCH_SUBAGENT_TOOL_NAME,
+            description: DISPATCH_SUBAGENT_TOOL_SCHEMA.description,
+            inputSchema: DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema as unknown as Record<string, unknown>,
+          })
+        }
+
+        // Phase 4: subagentAllowedTools restriction is enforced for Claude Code's SDK tools
+        // only. MCP adapter tools come from MCP server discovery and don't map 1:1 to
+        // SubagentToolName. Phase 5+ will revisit if needed.
 
         const messages: RichLlmMessage[] = [
           { role: 'system', content: systemPrompt },
@@ -679,6 +725,8 @@ export class McpAdapter extends BaseAdapter {
     this.mcpClients.delete(sessionId)
 
     this.apiRateLimiter.cleanup(sessionId)
+    // Also clean up the derived compact sidecar sessionId
+    this.apiRateLimiter.cleanup(`${sessionId}:compact`)
   }
 
   // ============================================
@@ -888,6 +936,33 @@ export class McpAdapter extends BaseAdapter {
       // 执行 tool calls
       const toolResults: ToolResult[] = []
       for (const toolCall of response.toolCalls) {
+        // Phase 4: Intercept dispatch_subagent — route to SubagentManager instead of MCP client
+        if (toolCall.name === DISPATCH_SUBAGENT_TOOL_NAME && this.subagentManager) {
+          const args = toolCall.arguments as Record<string, unknown>
+          try {
+            const result = await this.subagentManager.invoke({
+              parentSessionId: session.id,
+              agentType: String(args.agent_type ?? ''),
+              description: String(args.description ?? ''),
+              prompt: String(args.prompt ?? ''),
+              adapterName: args.adapter_name ? String(args.adapter_name) : undefined,
+              nodeId: args.node_id ? String(args.node_id) : undefined,
+              allowedFiles: Array.isArray(args.allowed_files) ? (args.allowed_files as string[]) : undefined,
+            })
+            toolResults.push({
+              toolCallId: toolCall.id,
+              content: result.resultText,
+            })
+          } catch (err) {
+            toolResults.push({
+              toolCallId: toolCall.id,
+              content: `Subagent failed: ${err instanceof Error ? err.message : String(err)}`,
+              isError: true,
+            })
+          }
+          continue
+        }
+
         const result = await this.executeMcpTool(clients, toolCall)
         toolResults.push(result)
 
@@ -1036,6 +1111,10 @@ Output: a clean text summary. No preamble, no markdown.`
       throw new AdapterError('No API key configured for LLM summarisation', this.name)
     }
 
+    // Use compactModel if configured (cheaper model for summarisation),
+    // otherwise fall back to defaultModel
+    const compactModel = settings.compactModel || settings.defaultModel
+
     // Use a derived sessionId so the rate limiter covers compact sidecar calls
     // without counting against the active session's input budget.
     const compactSessionId = `${session.id}:compact`
@@ -1047,7 +1126,7 @@ Output: a clean text summary. No preamble, no markdown.`
         { role: 'system', content: 'You are a precise conversation summariser.' },
         { role: 'user', content: summaryPrompt },
       ],
-      settings.defaultModel,
+      compactModel,
       compactSessionId,
     )
     return result && result.length > 0 ? result : '(summary unavailable)'
