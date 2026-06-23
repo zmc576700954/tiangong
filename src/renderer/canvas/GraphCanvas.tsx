@@ -45,7 +45,7 @@ import { eventBus, Events } from '../store/eventBus'
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected, multiSelected }: {
+function BizNodeWrapper({ id, data, selected, multiSelected: _multiSelected }: {
   id: string
   data: GraphNode & {
     bugCount: number
@@ -61,6 +61,7 @@ function BizNodeWrapper({ id, data, selected, multiSelected }: {
   selected?: boolean
   multiSelected?: boolean
 }) {
+  const multiSelected = useGraphStore((s) => s.selectedNodeIds.has(id))
   return <BizNodeComponent id={id} data={data} selected={selected} multiSelected={multiSelected} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }

@@ -93,9 +93,11 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
         items.map((data) => ({ ...data, id: `node_${Date.now()}_${Math.random().toString(36).slice(2)}`, createdAt: Date.now(), updatedAt: Date.now() })),
       'node:update': async (id: string, data: Record<string, unknown>) => ({ ...mockNodes.find((n) => n.id === id), ...data }),
       'node:delete': async () => true,
+      'node:batchUpdatePositions': async () => undefined,
 
       // Edge
       'edge:create': async (data: Record<string, unknown>) => ({ ...data, id: `edge_${Date.now()}` }),
+      'edge:update': async () => undefined,
       'edge:delete': async () => true,
 
       // Thread
