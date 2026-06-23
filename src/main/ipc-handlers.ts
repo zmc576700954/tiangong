@@ -43,6 +43,7 @@ import { ContextWaterline } from './memory/context-waterline'
 import { CompactHistoryRepository } from './repositories/compact-history-repository'
 import { SubagentManager } from './agent/subagent-manager'
 import { SubagentInvocationRepository } from './repositories/subagent-invocation-repository'
+import { BaseAdapter } from './adapters/base'
 import type { ValidateFsPath } from './ipc/fs'
 
 // ============================================
@@ -64,7 +65,7 @@ function createCoreDependencies() {
   return { registry, router, broadcaster, agentManager, gitAgent }
 }
 
-const { broadcaster, agentManager, gitAgent } = createCoreDependencies()
+const { registry, broadcaster, agentManager, gitAgent } = createCoreDependencies()
 
 // ContextWaterline: Phase 2 实例化，通过 setWaterline 注入到 AgentManager。
 // Phase 3: autoCompactEnabled 设为 true，完善 resolveAndSendCommand 的 threadId 映射逻辑。
@@ -277,6 +278,12 @@ export async function registerIpcHandlers(): Promise<void> {
   const subagentInvocationRepo = new SubagentInvocationRepository(db)
   const subagentManager = new SubagentManager(agentManager, subagentInvocationRepo)
   agentManager.setSubagentManager(subagentManager)
+  // Phase 4 Task 4: pass SubagentManager to every BaseAdapter-derived adapter
+  for (const adapter of registry.list()) {
+    if (adapter instanceof BaseAdapter) {
+      adapter.setSubagentManager(subagentManager)
+    }
+  }
   // Reference them so they remain in scope for upcoming handler registrations (Task 7).
   void subagentManager
   void subagentInvocationRepo

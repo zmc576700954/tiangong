@@ -22,6 +22,7 @@ import { parseFileChanges } from './file-change-parser'
 import { buildScopePrompt } from './scope-prompt-builder'
 import { estimateTokens } from '../shared/token-utils'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
+import type { SubagentManager } from '../agent/subagent-manager'
 
 /**
  * Agent 适配器抽象基类
@@ -42,6 +43,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected sessionCleanups = new Map<string, () => void>()
   protected protocolHandlers = new Map<string, JsonProtocolHandler>()
   protected logger = createLogger('BaseAdapter')
+  /** Phase 4: SubagentManager注入，供子类（Claude Code/MCP）派发子代理使用 */
+  protected subagentManager?: SubagentManager
   /** 输出到 session 的映射（WeakMap 自动 GC，不阻止 AgentOutput 回收） */
   private outputSessionMap = new WeakMap<AgentOutput, string>()
   /** 当前输出上下文栈（用于 doSendCommand 中自动关联 session） */
@@ -292,6 +295,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       throw new SessionNotFoundError(sessionId)
     }
     session.memoryContext = memoryContext
+  }
+
+  /**
+   * Phase 4: 注入 SubagentManager，使适配器（Claude Code 通过 createSdkMcpServer、
+   * MCP 通过 tools 数组）能够派发子代理任务。
+   */
+  setSubagentManager(mgr: SubagentManager): void {
+    this.subagentManager = mgr
   }
 
   /**
@@ -870,3 +881,46 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     this.emit('usage', { sessionId, inputTokens, maxTokens })
   }
 }
+
+/**
+ * Phase 4: shared schema for the dispatch_subagent tool exposed by adapters
+ * supporting subagent dispatch (Claude Code via createSdkMcpServer, MCP via tools array).
+ */
+export const DISPATCH_SUBAGENT_TOOL_NAME = 'dispatch_subagent'
+
+export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
+  name: DISPATCH_SUBAGENT_TOOL_NAME,
+  description: 'Spawn an ephemeral subagent for a focused task. Multiple calls may be issued in one turn to run in parallel. The subagent runs with a constrained tool set and file scope; its final output is returned to you as the tool result.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      agent_type: {
+        type: 'string' as const,
+        description: 'Which subagent type to spawn.',
+        enum: ['explore', 'implement', 'review', 'fix', 'general'],
+      },
+      description: {
+        type: 'string' as const,
+        description: 'A 3-5 word label for the task.',
+      },
+      prompt: {
+        type: 'string' as const,
+        description: 'Full task instructions. The subagent only sees this text.',
+      },
+      adapter_name: {
+        type: 'string' as const,
+        description: 'Optional adapter override (defaults to the type default).',
+      },
+      node_id: {
+        type: 'string' as const,
+        description: 'Optional canvas node binding.',
+      },
+      allowed_files: {
+        type: 'array' as const,
+        items: { type: 'string' as const },
+        description: 'Optional file allow-list for subset/fresh scope strategies.',
+      },
+    },
+    required: ['agent_type', 'description', 'prompt'],
+  },
+} as const
