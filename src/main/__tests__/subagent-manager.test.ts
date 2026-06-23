@@ -266,6 +266,151 @@ describe('SubagentManager', () => {
     await promise
   })
 
+  it('serialises write-capable subagents with overlapping allowed_files', async () => {
+    let resolveFirst: (() => void) | undefined
+    const firstReady = new Promise<void>((r) => {
+      resolveFirst = r
+    })
+    let sendCommandCallCount = 0
+
+    mockManager.sendCommand.mockImplementation(async () => {
+      sendCommandCallCount++
+      const callIndex = sendCommandCallCount
+      if (callIndex === 1) {
+        // First invocation hangs until manually released
+        await firstReady
+        setTimeout(
+          () =>
+            mockManager._emitOutput('child-1', {
+              type: 'complete',
+              data: 'done1',
+              timestamp: 0,
+            }),
+          0,
+        )
+      } else {
+        // Second invocation completes immediately
+        setTimeout(
+          () =>
+            mockManager._emitOutput('child-1', {
+              type: 'complete',
+              data: 'done2',
+              timestamp: 0,
+            }),
+          0,
+        )
+      }
+    })
+
+    // Both 'implement' (scopeStrategy='subset') with overlapping files.
+    const first = mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'implement',
+      description: 'first edit',
+      prompt: 'edit a.ts and b.ts',
+      allowedFiles: ['src/a.ts', 'src/b.ts'],
+    })
+
+    // Wait a tick — first should be in-flight (sendCommand called).
+    await new Promise((r) => setTimeout(r, 10))
+    expect(sendCommandCallCount).toBe(1)
+
+    // Second overlaps on src/b.ts — should wait at the gate.
+    const second = mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'implement',
+      description: 'second edit',
+      prompt: 'edit b.ts',
+      allowedFiles: ['src/b.ts'],
+    })
+
+    // Give second a window to start — it should NOT, because of the gate.
+    await new Promise((r) => setTimeout(r, 50))
+    expect(sendCommandCallCount).toBe(1)
+
+    // Release the first invocation.
+    resolveFirst!()
+    await first
+
+    // Now the second proceeds.
+    const secondResult = await second
+    expect(sendCommandCallCount).toBe(2)
+    expect(secondResult.resultText).toContain('done2')
+  })
+
+  it('does NOT serialise read-only subagents (inherit scope)', async () => {
+    let sendCommandCallCount = 0
+    mockManager.sendCommand.mockImplementation(async () => {
+      sendCommandCallCount++
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', {
+            type: 'complete',
+            data: 'done',
+            timestamp: 0,
+          }),
+        0,
+      )
+    })
+
+    // Both 'explore' (scopeStrategy='inherit') — read-only, no serialisation.
+    const [r1, r2] = await Promise.all([
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'explore',
+        description: 'e1',
+        prompt: 'p1',
+      }),
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'explore',
+        description: 'e2',
+        prompt: 'p2',
+      }),
+    ])
+    expect(r1.resultText).toBeDefined()
+    expect(r2.resultText).toBeDefined()
+    expect(sendCommandCallCount).toBe(2)
+  })
+
+  it('does NOT serialise write-capable subagents with disjoint allowed_files', async () => {
+    let sendCommandCallCount = 0
+
+    mockManager.sendCommand.mockImplementation(async () => {
+      sendCommandCallCount++
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', {
+            type: 'complete',
+            data: 'done',
+            timestamp: 0,
+          }),
+        0,
+      )
+    })
+
+    // Both 'implement' with disjoint allowed_files — should proceed in parallel.
+    const [r1, r2] = await Promise.all([
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'implement',
+        description: 'edit a',
+        prompt: 'edit a.ts',
+        allowedFiles: ['src/a.ts'],
+      }),
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'implement',
+        description: 'edit b',
+        prompt: 'edit b.ts',
+        allowedFiles: ['src/b.ts'],
+      }),
+    ])
+    expect(sendCommandCallCount).toBe(2)
+    expect(r1.resultText).toBeDefined()
+    expect(r2.resultText).toBeDefined()
+  })
+
   it('onProgress fires for status transitions', async () => {
     const events: any[] = []
     mgr.onProgress((e) => events.push(e))

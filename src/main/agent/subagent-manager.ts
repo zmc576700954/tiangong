@@ -14,6 +14,11 @@
  *   9. Updates the row to completed/failed
  *  10. Terminates the child session
  *  11. Returns SubagentResult
+ *
+ * Write-intent serialisation: when two write-capable subagents under the same
+ * parent have overlapping allowed_files, the later one waits for the earlier
+ * one(s) to finish before spawning. Read-only subagents (inherit scope) skip
+ * this gate entirely.
  */
 
 import { EventEmitter } from 'events'
@@ -30,6 +35,9 @@ import type {
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
 
+/** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
+type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
+
 const DEFAULT_MAX_CONCURRENT = 5
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
 
@@ -39,9 +47,22 @@ export interface SubagentProgressEvent {
   error?: string
 }
 
+interface ActiveInvocation {
+  sessionId: string
+  parentSessionId: string
+  /** Empty array if read-only / inherit-scope invocation. */
+  allowedFiles: string[]
+  /** True iff this invocation is write-capable (subset|fresh with non-empty allowed_files). */
+  isWrite: boolean
+  /** Resolves when the invocation finishes (success or failure). */
+  donePromise: Promise<void>
+  /** Resolver for donePromise. */
+  resolveDone: () => void
+}
+
 export class SubagentManager extends EventEmitter {
   private activeCount = new Map<string, number>() // parentSessionId → running count
-  private activeInvocations = new Map<string, { sessionId: string; parentSessionId: string }>()
+  private activeInvocations = new Map<string, ActiveInvocation>()
   private customTypes = new Map<string, AgentTypeDefinition>()
 
   constructor(
@@ -67,13 +88,55 @@ export class SubagentManager extends EventEmitter {
     return this.customTypes.get(name) ?? BUILT_IN_AGENT_TYPES.find((t) => t.name === name)
   }
 
+  /**
+   * A subagent has write intent when its scope strategy permits writes
+   * AND it has a non-empty allow-list. 'inherit' is used by read-only
+   * types (explore/review).
+   */
+  private isWriteCapable(def: AgentTypeDefinition, allowedFiles: string[]): boolean {
+    return (
+      (def.scopeStrategy === 'subset' || def.scopeStrategy === 'fresh') &&
+      allowedFiles.length > 0
+    )
+  }
+
   async invoke(args: SubagentInvokeArgs): Promise<SubagentResult> {
     const def = this.getType(args.agentType)
     if (!def) {
       throw new AgentError(`Unknown agent type: ${args.agentType}`, ErrorCode.AGENT_ADAPTER_ERROR)
     }
 
-    // Concurrency cap per parent session
+    // Resolve scope eagerly so the serialisation gate can compare against
+    // currently-active invocations BEFORE we touch the concurrency cap.
+    const parentState = this.agentManager.getSessionState(args.parentSessionId)
+    if (!parentState) {
+      throw new AgentError(
+        `Parent session ${args.parentSessionId} not found`,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
+    const childAllowedFiles = this.resolveAllowedFiles(def, args, parentState.config)
+    const isWrite = this.isWriteCapable(def, childAllowedFiles)
+
+    // Serialisation gate: a write-capable invocation must wait for every
+    // currently-active write-capable invocation under the SAME parent whose
+    // allow-list overlaps. Read-only invocations skip the gate entirely.
+    if (isWrite) {
+      const childAllowedSet = new Set(childAllowedFiles)
+      const conflicting: Promise<void>[] = []
+      for (const active of this.activeInvocations.values()) {
+        if (!active.isWrite) continue
+        if (active.parentSessionId !== args.parentSessionId) continue
+        const overlap = active.allowedFiles.some((f) => childAllowedSet.has(f))
+        if (overlap) conflicting.push(active.donePromise)
+      }
+      if (conflicting.length > 0) {
+        await Promise.all(conflicting)
+      }
+    }
+
+    // Concurrency cap per parent session — applied AFTER the gate so a
+    // waiting subagent doesn't tie up a slot while it sits in the queue.
     const current = this.activeCount.get(args.parentSessionId) ?? 0
     if (current >= this.maxConcurrent) {
       throw new AgentError(
@@ -111,7 +174,14 @@ export class SubagentManager extends EventEmitter {
       await this.repo.updateStatus(invocationId, 'running')
       this.emitProgress({ invocationId, status: 'running' })
 
-      const partial = await this._runInvocation(invocationId, args, def)
+      const partial = await this._runInvocation(
+        invocationId,
+        args,
+        def,
+        parentState,
+        childAllowedFiles,
+        isWrite,
+      )
 
       const finishedAt = Date.now()
       await this.repo.complete(invocationId, {
@@ -141,7 +211,10 @@ export class SubagentManager extends EventEmitter {
     } finally {
       const cnt = this.activeCount.get(args.parentSessionId) ?? 1
       this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
+      const active = this.activeInvocations.get(invocationId)
       this.activeInvocations.delete(invocationId)
+      // Unblock any subagents waiting on this one.
+      active?.resolveDone()
     }
   }
 
@@ -149,17 +222,11 @@ export class SubagentManager extends EventEmitter {
     invocationId: string,
     args: SubagentInvokeArgs,
     def: AgentTypeDefinition,
+    parentState: SessionState,
+    childAllowedFiles: string[],
+    isWrite: boolean,
   ): Promise<{ resultText: string; resultFiles: string[]; tokensUsed: number }> {
-    // Resolve child config
-    const parentState = this.agentManager.getSessionState(args.parentSessionId)
-    if (!parentState) {
-      throw new AgentError(
-        `Parent session ${args.parentSessionId} not found`,
-        ErrorCode.AGENT_SESSION_NOT_FOUND,
-      )
-    }
     const parentConfig = parentState.config
-    const childAllowedFiles = this.resolveAllowedFiles(def, args, parentConfig)
     const childAdapterName = args.adapterName ?? def.defaultAdapter ?? parentState.adapterName
 
     const childConfig: AgentSessionConfig = {
@@ -183,9 +250,20 @@ export class SubagentManager extends EventEmitter {
     // Start child session
     const startResult = await this.agentManager.startSession(childAdapterName, childConfig)
     const childSessionId = startResult.sessionId
+
+    // Register this invocation as active. The donePromise will be resolved
+    // in the invoke()'s `finally` block, unblocking any waiting subagents.
+    let resolveDone!: () => void
+    const donePromise = new Promise<void>((r) => {
+      resolveDone = r
+    })
     this.activeInvocations.set(invocationId, {
       sessionId: childSessionId,
       parentSessionId: args.parentSessionId,
+      allowedFiles: childAllowedFiles,
+      isWrite,
+      donePromise,
+      resolveDone,
     })
 
     // Subscribe to child outputs — tag with invocationId, re-broadcast to parent
