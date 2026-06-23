@@ -238,6 +238,8 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     if (prefs.defaultAdapter !== undefined && typeof prefs.defaultAdapter !== 'string') return false
     if (prefs.fallbackOrder !== undefined && !Array.isArray(prefs.fallbackOrder)) return false
   }
+  // customAgentTypes 必须是数组
+  if (obj.customAgentTypes !== undefined && !Array.isArray(obj.customAgentTypes)) return false
   return true
 }
 
@@ -302,6 +304,7 @@ function mergeSettings(
     defaultModel: saved.defaultModel ?? defaults.defaultModel,
     mcpServers: saved.mcpServers ?? defaults.mcpServers,
     adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
+    customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
   }
 }
 

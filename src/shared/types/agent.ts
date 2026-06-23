@@ -4,6 +4,7 @@
  */
 
 import type { ContextRef, BugSeverity } from './graph'
+import type { AgentTypeDefinition } from './subagent'
 
 // ============================================
 // Agent 适配器类型（核心扩展点）
@@ -461,6 +462,8 @@ export interface BizGraphSettings {
   compactModel?: string
   mcpServers: McpServerConfig[]
   adapterPreferences?: AdapterPreferences
+  /** Phase 5: user-defined subagent types persisted in settings.json. */
+  customAgentTypes?: AgentTypeDefinition[]
 }
 
 /** 适配器自动回退链中的单次尝试记录 */

@@ -297,6 +297,18 @@ export async function registerIpcHandlers(): Promise<void> {
   const subagentInvocationRepo = new SubagentInvocationRepository(db)
   const subagentManager = new SubagentManager(agentManager, subagentInvocationRepo)
   agentManager.setSubagentManager(subagentManager)
+  // Phase 5 Task 8: register user-defined subagent types from settings.json
+  try {
+    const { readSettings } = await import('./settings')
+    const settings = await readSettings()
+    if (settings.customAgentTypes) {
+      for (const def of settings.customAgentTypes) {
+        subagentManager.registerType(def)
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to load customAgentTypes from settings:', err)
+  }
   // Phase 4 Task 4: pass SubagentManager to every BaseAdapter-derived adapter
   for (const adapter of registry.list()) {
     if (adapter instanceof BaseAdapter) {
