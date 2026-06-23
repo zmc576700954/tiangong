@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { OpenCodeAdapter } from '../opencode'
-import { spawn, ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import type { AgentSessionConfig } from '@shared/types'
+import type { AgentSessionConfig, AgentOutput } from '@shared/types'
+import type { SubagentManager } from '../../agent/subagent-manager'
 
 vi.mock(import('node:child_process'), async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>()
+  const actual = await importOriginal()
   return {
-    ...actual,
+    ...(actual as Record<string, unknown>),
     spawn: vi.fn(),
   }
 })
@@ -17,7 +19,7 @@ function createMockProc(stdoutChunks: string[], stderrChunks: string[] = []): Ch
   const proc = new EventEmitter() as unknown as ChildProcess
   Object.assign(proc, {
     stdin: Object.assign(stdinEmitter, {
-      write: vi.fn((data, cb) => cb?.()),
+      write: vi.fn((_data, cb) => cb?.()),
       end: vi.fn(),
     }),
     stdout: new EventEmitter(),
@@ -50,7 +52,7 @@ describe('OpenCodeAdapter inline subagent dispatch', () => {
 
   it('dispatches subagent when stdout contains tool_call', async () => {
     const invoke = vi.fn().mockResolvedValue({ resultText: 'exploration complete' })
-    adapter.setSubagentManager({ invoke } as unknown as import('../../agent/subagent-manager').SubagentManager)
+    adapter.setSubagentManager({ invoke } as unknown as SubagentManager)
 
     const config: AgentSessionConfig = {
       workingDirectory: '/tmp',
@@ -76,7 +78,7 @@ describe('OpenCodeAdapter inline subagent dispatch', () => {
       return createMockProc(['final answer'])
     })
 
-    const outputs: import('@shared/types').AgentOutput[] = []
+    const outputs: AgentOutput[] = []
     adapter.onOutput((o) => outputs.push(o))
 
     await adapter.sendCommand(session.id, { type: 'implement', description: 'Find usages', targetNodeId: 'n1' })
@@ -92,7 +94,7 @@ describe('OpenCodeAdapter inline subagent dispatch', () => {
   })
 
   it('completes normally when no tool_call present', async () => {
-    adapter.setSubagentManager({ invoke: vi.fn() } as unknown as import('../../agent/subagent-manager').SubagentManager)
+    adapter.setSubagentManager({ invoke: vi.fn() } as unknown as SubagentManager)
 
     const config: AgentSessionConfig = {
       workingDirectory: '/tmp',
@@ -107,7 +109,7 @@ describe('OpenCodeAdapter inline subagent dispatch', () => {
     const session = await adapter.startSession(config)
     vi.mocked(spawn).mockImplementation(() => createMockProc(['plain output']))
 
-    const outputs: import('@shared/types').AgentOutput[] = []
+    const outputs: AgentOutput[] = []
     adapter.onOutput((o) => outputs.push(o))
 
     await adapter.sendCommand(session.id, { type: 'implement', description: 'Do it', targetNodeId: 'n1' })

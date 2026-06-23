@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { BaseAdapter } from '../base'
-import type { AgentSession, AgentSessionConfig } from '@shared/types'
+import type { AgentSession, AgentSessionConfig, AgentOutput } from '@shared/types'
+import type { SubagentManager } from '../../agent/subagent-manager'
 
 class TestAdapter extends BaseAdapter {
   readonly name = 'test'
@@ -47,9 +48,9 @@ describe('BaseAdapter parseToolCalls', () => {
 describe('BaseAdapter runToolAwareLoop', () => {
   it('emits stdout and completes when no tool calls', async () => {
     const adapter = new TestAdapter()
-    adapter['subagentManager'] = { invoke: vi.fn() } as unknown as import('../../agent/subagent-manager').SubagentManager
+    adapter['subagentManager'] = { invoke: vi.fn() } as unknown as SubagentManager
 
-    const outputs: import('@shared/types').AgentOutput[] = []
+    const outputs: AgentOutput[] = []
     adapter.onOutput((o) => outputs.push(o))
 
     await adapter['runToolAwareLoop'](
@@ -65,9 +66,9 @@ describe('BaseAdapter runToolAwareLoop', () => {
   it('invokes subagent and re-spawns with result', async () => {
     const adapter = new TestAdapter()
     const invoke = vi.fn().mockResolvedValue({ resultText: 'subagent done' })
-    adapter['subagentManager'] = { invoke } as unknown as import('../../agent/subagent-manager').SubagentManager
+    adapter['subagentManager'] = { invoke } as unknown as SubagentManager
 
-    const outputs: import('@shared/types').AgentOutput[] = []
+    const outputs: AgentOutput[] = []
     adapter.onOutput((o) => outputs.push(o))
 
     let secondCall = false
@@ -92,9 +93,9 @@ describe('BaseAdapter runToolAwareLoop', () => {
   it('stops at max rounds', async () => {
     const adapter = new TestAdapter()
     const invoke = vi.fn().mockResolvedValue({ resultText: 'again' })
-    adapter['subagentManager'] = { invoke } as unknown as import('../../agent/subagent-manager').SubagentManager
+    adapter['subagentManager'] = { invoke } as unknown as SubagentManager
 
-    const outputs: import('@shared/types').AgentOutput[] = []
+    const outputs: AgentOutput[] = []
     adapter.onOutput((o) => outputs.push(o))
 
     await adapter['runToolAwareLoop'](

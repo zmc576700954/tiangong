@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { SubagentManager } from '../agent/subagent-manager'
 
 const mockExecFile = vi.fn()
 const mockProc = {
@@ -20,7 +21,7 @@ vi.mock('node:child_process', () => ({
 }))
 
 vi.mock('node:util', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:util')>()
+  const actual = (await importOriginal()) as Record<string, unknown>
   return {
     ...actual,
     promisify: (fn: unknown) => fn,
@@ -51,6 +52,7 @@ describe('OpenCodeAdapter', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     adapter = new OpenCodeAdapter()
+    adapter.setSubagentManager({ invoke: vi.fn() } as unknown as SubagentManager)
   })
 
   it('should report name and version', () => {
@@ -88,10 +90,10 @@ describe('OpenCodeAdapter', () => {
         if (event === 'data') cb(Buffer.from('done'))
       }), off: vi.fn() },
       stderr: { on: vi.fn(), off: vi.fn() },
-      on: vi.fn(),
-      once: vi.fn((event: string, cb: (code: number) => void) => {
+      on: vi.fn((event: string, cb: (code: number) => void) => {
         if (event === 'exit') cb(0)
       }),
+      once: vi.fn(),
       off: vi.fn(),
     }))
 
@@ -125,10 +127,10 @@ describe('OpenCodeAdapter', () => {
         if (event === 'data') cb(Buffer.from('ok'))
       }), off: vi.fn() },
       stderr: { on: vi.fn(), off: vi.fn() },
-      on: vi.fn(),
-      once: vi.fn((event: string, cb: (code: number) => void) => {
+      on: vi.fn((event: string, cb: (code: number) => void) => {
         if (event === 'exit') cb(0)
       }),
+      once: vi.fn(),
       off: vi.fn(),
     }))
 
@@ -158,10 +160,10 @@ describe('OpenCodeAdapter', () => {
         if (event === 'data') cb(Buffer.from('ok'))
       }), off: vi.fn() },
       stderr: { on: vi.fn(), off: vi.fn() },
-      on: vi.fn(),
-      once: vi.fn((event: string, cb: (code: number) => void) => {
+      on: vi.fn((event: string, cb: (code: number) => void) => {
         if (event === 'exit') cb(0)
       }),
+      once: vi.fn(),
       off: vi.fn(),
     }))
 
