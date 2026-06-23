@@ -38,6 +38,7 @@ import type { ContextWaterline } from '../memory/context-waterline'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
 import type { CompactHistoryRepository } from '../repositories/compact-history-repository'
 import type { ChatRepository } from '../repositories/chat-repository'
+import type { SubagentManager } from './subagent-manager'
 import { ADAPTER_REGISTRY } from '../adapters/registry'
 import type { BaseAdapter } from '../adapters/base'
 import { createLogger } from '../shared/logger'
@@ -76,6 +77,10 @@ interface SessionState {
   contextCount?: number
   /** Phase 3: thread bound to this session — used for waterline lookup & history persistence. */
   threadId?: string
+  /** Phase 4: parent session if this is a subagent child session. */
+  parentSessionId?: string
+  /** Phase 4: subagent_invocations row id if this is a subagent child session. */
+  swarmTaskId?: string
 }
 
 /** startSessionWithFallback 返回值 */
@@ -140,6 +145,8 @@ export class AgentManager {
   private chatRepo?: ChatRepository
   /** Phase 3: dedup map for concurrent compactContext calls on the same session */
   private compactInflight = new Map<string, Promise<CompactResult>>()
+  /** Phase 4: subagent dispatch manager (injected via setter to break cyclic dependency). */
+  private subagentManager?: SubagentManager
 
   /**
    * 基于系统资源动态计算最大会话数
@@ -312,6 +319,7 @@ export class AgentManager {
     this.sessionStates.delete(sessionId)
     this.sessionBroadcastNames.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
+    this.compactInflight.delete(sessionId)
     this.router.unbind(sessionId)
   }
 
@@ -576,8 +584,37 @@ export class AgentManager {
     this.chatRepo = repo
   }
 
+  /**
+   * Phase 4: 注入 SubagentManager（setter 模式打破循环依赖）
+   */
+  setSubagentManager(mgr: SubagentManager): void {
+    this.subagentManager = mgr
+  }
+
+  getSubagentManager(): SubagentManager | undefined {
+    return this.subagentManager
+  }
+
   getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
     return this.sessionStates.get(sessionId)?.sandbox
+  }
+
+  /** Phase 4: expose session config for subagent scope validation. */
+  getSessionConfig(sessionId: string): AgentSessionConfig | undefined {
+    return this.sessionStates.get(sessionId)?.config
+  }
+
+  /** Phase 4: expose session state for subagent parent linkage. */
+  getSessionState(sessionId: string): SessionState | undefined {
+    return this.sessionStates.get(sessionId)
+  }
+
+  /** Phase 4: broadcast an output to a session's thread channel (used by SubagentManager). */
+  broadcastToSession(sessionId: string, output: AgentOutput): void {
+    const state = this.sessionStates.get(sessionId)
+    if (state) {
+      this.broadcaster.broadcast(state.broadcastName, output)
+    }
   }
 
   /**
@@ -713,6 +750,8 @@ export class AgentManager {
           startTime: session.startTime,
           sandbox,
           threadId: config.threadId,
+          parentSessionId: config.parentSessionId,
+          swarmTaskId: config.swarmTaskId,
         })
         this.sessionBroadcastNames.set(session.id, broadcastName)
 
