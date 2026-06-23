@@ -22,6 +22,8 @@ interface ChatHeaderProps {
   onOpenSettings?: () => void
   waterlineState?: ContextState | null
   onCompact?: () => void
+  activeSubagentCount?: number
+  onOpenSubagents?: () => void
 }
 
 export function ChatHeader({
@@ -42,6 +44,8 @@ export function ChatHeader({
   onOpenSettings,
   waterlineState,
   onCompact,
+  activeSubagentCount,
+  onOpenSubagents,
 }: ChatHeaderProps) {
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
 
@@ -144,6 +148,20 @@ export function ChatHeader({
         >
           <List className="w-3.5 h-3.5" />
         </button>
+        {onOpenSubagents && (
+          <button
+            className="relative w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground text-xs"
+            onClick={onOpenSubagents}
+            title="Subagent invocations"
+          >
+            <span aria-hidden>🤖</span>
+            {activeSubagentCount !== undefined && activeSubagentCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-primary text-primary-foreground rounded-full text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center">
+                {activeSubagentCount}
+              </span>
+            )}
+          </button>
+        )}
         {onOpenHistory && (
           <button
             onClick={onOpenHistory}

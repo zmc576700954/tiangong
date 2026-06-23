@@ -5,6 +5,7 @@ import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useSessionStore } from '../../store/sessionStore'
+import { useSubagentStore } from '../../store/subagentStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
 import { useDiffReview } from '../../hooks/useDiffReview'
@@ -19,6 +20,7 @@ import { ThreadListOverlay } from './ThreadListOverlay'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
+import { SubagentInvocationsPanel } from './SubagentInvocationsPanel'
 import { eventBus, Events } from '../../store/eventBus'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
@@ -62,6 +64,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [attachedContexts, setAttachedContexts] = useState<ContextRef[]>([])
   const [showResumePrompt, setShowResumePrompt] = useState(false)
   const [recoveredFlash, setRecoveredFlash] = useState(false)
+  const [showSubagentPanel, setShowSubagentPanel] = useState(false)
+  const subagentInvocations = useSubagentStore((s) => s.invocations)
+  const activeSubagentCount = useMemo(
+    () => subagentInvocations.filter((i) => i.status === 'queued' || i.status === 'running').length,
+    [subagentInvocations],
+  )
   // Derived data — must be declared before useVerificationFlow
   const currentThread = useMemo(() => threads.find((t) => t.id === currentThreadId), [threads, currentThreadId])
   const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
@@ -363,6 +371,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onOpenSettings={() => setOpenSettingsPanel(true)}
         waterlineState={waterlineState}
         onCompact={handleCompact}
+        activeSubagentCount={activeSubagentCount}
+        onOpenSubagents={() => setShowSubagentPanel(true)}
       />
 
       {showThreadList && (
@@ -640,6 +650,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       />
 
       <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />
+
+      <SubagentInvocationsPanel
+        open={showSubagentPanel}
+        onOpenChange={setShowSubagentPanel}
+        parentSessionId={currentThread?.sessionId ?? null}
+      />
     </div>
   )
 }
