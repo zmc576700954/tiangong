@@ -31,28 +31,28 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       {
         id: 'node_e2e_module_001',
         graphId: 'graph_e2e_001',
+        graphType: 'dev',
         type: 'module',
         title: 'E2E Module',
         description: 'Test module node',
-        x: 200,
-        y: 300,
+        position: { x: 200, y: 300 },
         status: 'placeholder',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         metadata: {},
         content: {},
       },
       {
         id: 'node_e2e_process_001',
         graphId: 'graph_e2e_001',
+        graphType: 'dev',
         type: 'process',
         title: 'E2E Process',
         description: 'Test process node',
-        x: 500,
-        y: 300,
+        position: { x: 500, y: 300 },
         status: 'placeholder',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
         metadata: {},
         content: {},
       },
@@ -172,6 +172,14 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
 
       // Settings
       'settings:read': async () => ({ defaultModel: 'sonnet' }),
+      'settings:getAdapterPreferences': async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
+      }),
+      'settings:setAdapterPreferences': async () => undefined,
+
+      // Marketplace
+      'agent:getAdapterMarketplace': async () => [],
 
       // Event listeners
       onAgentOutput: (cb: (sessionId: string, output: unknown) => void) => {
