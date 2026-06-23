@@ -43,36 +43,48 @@ export class OpenCodeAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePromptForSession(session)
     const constraintSuffix = this.buildConstraintSuffix(session.config)
-    const commandPrompt = this.buildCommandPrompt(command)
-    const fullPrompt = `${scopePrompt}\n${constraintSuffix}\n\n${commandPrompt}`
 
-    const args: string[] = ['-q']
+    await this.runToolAwareLoop(session, command, async (fullPrompt) => {
+      const args: string[] = ['-q']
 
-    const proc = spawn('opencode', args, {
-      cwd: session.config.workingDirectory,
-      env: this.buildSafeEnv(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-
-    // Handle stdin write errors (process may exit before write completes)
-    if (proc.stdin) {
-      proc.stdin.on('error', (err) => {
-        this.logger.warn(`stdin write error for session ${session.id}: ${err.message}`)
+      const proc = spawn('opencode', args, {
+        cwd: session.config.workingDirectory,
+        env: this.buildSafeEnv(),
+        stdio: ['pipe', 'pipe', 'pipe'],
       })
-    }
 
-    // 通过 stdin 传入 prompt，避免超出 OS 命令行长度限制
-    proc.stdin?.write(fullPrompt, (err) => {
-      if (err) {
-        this.logger.warn(`stdin write failed for session ${session.id}: ${err.message}`)
+      if (proc.stdin) {
+        proc.stdin.on('error', (err) => {
+          this.logger.warn(`stdin write error for session ${session.id}: ${err.message}`)
+        })
       }
-    })
-    proc.stdin?.end()
 
-    this.processes.set(session.id, proc)
-    await this.runOneShot(proc, session.id, { parseFileChanges: false })
+      const finalPrompt = constraintSuffix ? `${fullPrompt}\n${constraintSuffix}` : fullPrompt
+      proc.stdin?.write(finalPrompt, (err) => {
+        if (err) {
+          this.logger.warn(`stdin write failed for session ${session.id}: ${err.message}`)
+        }
+      })
+      proc.stdin?.end()
+
+      this.processes.set(session.id, proc)
+
+      return new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = []
+        proc.stdout?.on('data', (chunk) => chunks.push(chunk))
+        proc.stderr?.on('data', (chunk) => {
+          this.emitOutput({ type: 'stderr', data: chunk.toString('utf-8'), timestamp: Date.now() })
+        })
+        proc.on('error', reject)
+        proc.on('exit', (code) => {
+          if (code !== null && code !== 0) {
+            this.logger.warn(`opencode exited with code ${code}`)
+          }
+          resolve(Buffer.concat(chunks).toString('utf-8'))
+        })
+      })
+    })
   }
 
   /**

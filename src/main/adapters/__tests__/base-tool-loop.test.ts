@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { BaseAdapter } from '../base'
-import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { AgentSession, AgentSessionConfig } from '@shared/types'
 
 class TestAdapter extends BaseAdapter {
   readonly name = 'test'
