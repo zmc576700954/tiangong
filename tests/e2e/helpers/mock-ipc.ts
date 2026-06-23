@@ -180,6 +180,9 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       }),
       'settings:setAdapterPreferences': async () => undefined,
 
+      // Context waterline
+      'context:getWaterline': async () => null,
+
       // Marketplace
       'agent:getAdapterMarketplace': async () => [],
 

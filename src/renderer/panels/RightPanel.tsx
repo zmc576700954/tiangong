@@ -72,6 +72,7 @@ export function RightPanel({
         </button>
         <button
           onClick={() => setActiveTab('agent')}
+          data-testid="right-panel-agent-tab"
           className={cn(
             'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-sm transition-colors',
             activeTab === 'agent'

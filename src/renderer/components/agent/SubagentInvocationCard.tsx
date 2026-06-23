@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useSubagentStore } from '../../store/subagentStore'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
@@ -10,10 +11,10 @@ interface Props {
 }
 
 export function SubagentInvocationCard({ invocationId, agentType, description }: Props) {
-  const invocation = useSubagentStore((s) =>
+  const invocation = useSubagentStore(useShallow((s) =>
     s.invocations.find((i) => i.id === invocationId)
-  )
-  const outputs = useSubagentStore((s) => s.outputsByInvocation.get(invocationId) ?? [])
+  ))
+  const outputs = useSubagentStore(useShallow((s) => s.outputsByInvocation.get(invocationId) ?? []))
   const cancelInvocation = useSubagentStore((s) => s.cancelInvocation)
   const getResult = useSubagentStore((s) => s.getResult)
   const [expanded, setExpanded] = useState(false)

@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../ui/sheet'
 import { useSubagentStore } from '../../store/subagentStore'
 import { SubagentInvocationCard } from './SubagentInvocationCard'
@@ -10,7 +11,7 @@ interface Props {
 }
 
 export function SubagentInvocationsPanel({ open, onOpenChange, parentSessionId }: Props) {
-  const invocations = useSubagentStore((s) => s.invocations)
+  const invocations = useSubagentStore(useShallow((s) => s.invocations))
   const loadInvocations = useSubagentStore((s) => s.loadInvocations)
 
   useEffect(() => {
