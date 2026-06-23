@@ -499,7 +499,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
 })
 
 // HMR cleanup: unsubscribe from previous module's event bus listener
-const _hot = (import.meta as any).hot
+const _hot = (import.meta as { hot?: { dispose: (cb: () => void) => void } }).hot
 if (_hot) {
   _hot.dispose(() => { _unsubAgentStatus?.() })
 }
