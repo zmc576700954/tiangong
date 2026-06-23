@@ -464,6 +464,12 @@ export interface BizGraphSettings {
   adapterPreferences?: AdapterPreferences
   /** Phase 5: user-defined subagent types persisted in settings.json. */
   customAgentTypes?: AgentTypeDefinition[]
+  /** Phase 5: context waterline config persisted in settings.json. */
+  contextWaterline?: {
+    autoCompactEnabled?: boolean
+    autoCompactThreshold?: number
+    minCompactInterval?: number
+  }
 }
 
 /** 适配器自动回退链中的单次尝试记录 */

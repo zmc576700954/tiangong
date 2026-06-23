@@ -144,6 +144,25 @@ export async function registerIpcHandlers(): Promise<void> {
   const db = getClient()
   const chatRepo = new ChatRepository(db)
 
+  // Apply persisted waterline config to runtime ContextWaterline instance
+  try {
+    const { readSettings } = await import('./settings')
+    const persisted = await readSettings()
+    if (persisted.contextWaterline) {
+      if (persisted.contextWaterline.autoCompactEnabled !== undefined) {
+        contextWaterline.autoCompactEnabled = persisted.contextWaterline.autoCompactEnabled
+      }
+      if (persisted.contextWaterline.autoCompactThreshold !== undefined) {
+        contextWaterline.autoCompactThreshold = persisted.contextWaterline.autoCompactThreshold
+      }
+      if (persisted.contextWaterline.minCompactInterval !== undefined) {
+        contextWaterline.minCompactInterval = persisted.contextWaterline.minCompactInterval
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to apply persisted contextWaterline config:', err)
+  }
+
   // Wire waterline's dbWriteback so token changes persist to chat_threads
   contextWaterline.setDbWriteback(async (threadId, tokensUsed) => {
     await chatRepo.resetContextTokens(threadId, tokensUsed)
@@ -284,7 +303,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService)
-  registerSettingsHandlers(typedHandle)
+  registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager)
   registerChatHandlers(chatService, typedHandle)

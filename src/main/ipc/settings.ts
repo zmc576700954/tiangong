@@ -6,6 +6,7 @@
 import type { TypedHandle } from './utils'
 import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
+import type { ContextWaterline } from '../memory/context-waterline'
 
 const logger = createLogger('SettingsIPC')
 
@@ -18,7 +19,10 @@ const KNOWN_ADAPTER_NAMES = new Set([
   'cursor', 'codebuddy', 'qoder', 'qwen-code', 'mcp', 'mindmap',
 ])
 
-export function registerSettingsHandlers(typedHandle: TypedHandle): void {
+export function registerSettingsHandlers(
+  typedHandle: TypedHandle,
+  waterline?: ContextWaterline,
+): void {
   typedHandle('settings:read', async () => {
     const { readSettings, maskApiKey } = await import('../settings')
     const settings = await readSettings()
@@ -102,17 +106,45 @@ export function registerSettingsHandlers(typedHandle: TypedHandle): void {
   })
 
   typedHandle('settings:getContextWaterlineConfig', async () => {
+    const { readSettings } = await import('../settings')
+    const settings = await readSettings()
     return {
-      autoCompactEnabled: false,
-      autoCompactThreshold: 0.75,
-      minCompactInterval: 60_000,
+      autoCompactEnabled: settings.contextWaterline?.autoCompactEnabled ?? true,
+      autoCompactThreshold: settings.contextWaterline?.autoCompactThreshold ?? 0.75,
+      minCompactInterval: settings.contextWaterline?.minCompactInterval ?? 60_000,
     }
   })
 
   typedHandle('settings:setContextWaterlineConfig', async (_, cfg) => {
-    // Phase 2: log but don't persist. Phase 3 will hook this up to:
-    // 1) update ContextWaterline runtime config
-    // 2) persist to settings.json
-    logger.info('Waterline config update received (not yet persisted):', cfg)
+    if (!cfg || typeof cfg !== 'object') {
+      throw new IpcError('contextWaterline config must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (cfg.autoCompactEnabled !== undefined && typeof cfg.autoCompactEnabled !== 'boolean') {
+      throw new IpcError('autoCompactEnabled must be a boolean', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (cfg.autoCompactThreshold !== undefined) {
+      if (typeof cfg.autoCompactThreshold !== 'number' || cfg.autoCompactThreshold < 0 || cfg.autoCompactThreshold > 1) {
+        throw new IpcError('autoCompactThreshold must be a number between 0 and 1', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (cfg.minCompactInterval !== undefined) {
+      if (typeof cfg.minCompactInterval !== 'number' || cfg.minCompactInterval < 0) {
+        throw new IpcError('minCompactInterval must be a non-negative number', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+
+    const { readSettings, writeSettings } = await import('../settings')
+    const settings = await readSettings()
+    settings.contextWaterline = { ...(settings.contextWaterline ?? {}), ...cfg }
+    await writeSettings(settings)
+
+    // Apply to runtime ContextWaterline instance
+    if (waterline) {
+      if (cfg.autoCompactEnabled !== undefined) waterline.autoCompactEnabled = cfg.autoCompactEnabled
+      if (cfg.autoCompactThreshold !== undefined) waterline.autoCompactThreshold = cfg.autoCompactThreshold
+      if (cfg.minCompactInterval !== undefined) waterline.minCompactInterval = cfg.minCompactInterval
+    } else {
+      logger.warn('Waterline config persisted but no runtime ContextWaterline instance was provided')
+    }
   })
 }

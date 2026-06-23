@@ -305,6 +305,7 @@ function mergeSettings(
     mcpServers: saved.mcpServers ?? defaults.mcpServers,
     adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
+    contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
   }
 }
 
