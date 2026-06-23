@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useAgentStore } from '../store/agentStore'
 import { useMessageStore } from '../store/messageStore'
+import { useSubagentStore } from '../store/subagentStore'
 import { eventBus, Events } from '../store/eventBus'
 import { generateId } from '../lib/utils'
 import type { AgentOutput, ChatMessage, ToolCallBlock } from '@shared/types'
@@ -59,6 +60,12 @@ export function useAgentOutputListener(currentThreadId: string | null) {
     if (typeof window === 'undefined' || !window.electronAPI?.onAgentOutput) return
 
     const cleanup = window.electronAPI.onAgentOutput((_sessionId: string, output: AgentOutput) => {
+      // Phase 5: subagent outputs carry invocationId — route to subagentStore, bypass main stream
+      if (output.invocationId) {
+        useSubagentStore.getState().appendOutput(output.invocationId, output)
+        return
+      }
+
       const store = useAgentStore.getState()
       const ownerThread = store.findThreadBySessionId(_sessionId)
       if (!ownerThread) return
@@ -194,7 +201,17 @@ export function useAgentOutputListener(currentThreadId: string | null) {
       }
     })
 
-    return cleanup
+    let progressCleanup: (() => void) | undefined
+    if (window.electronAPI?.onSubagentProgress) {
+      progressCleanup = window.electronAPI.onSubagentProgress((data) => {
+        useSubagentStore.getState().applyProgress(data)
+      })
+    }
+
+    return () => {
+      cleanup()
+      progressCleanup?.()
+    }
   }, [])
 
   return streamingMsgIdRef
