@@ -19,6 +19,7 @@ interface GraphState {
   bugs: BugNode[]
   selectedNodeId: string | null
   selectedEdgeId: string | null
+  selectedNodeIds: Set<string>
 
   loadGraphs: () => Promise<void>
   loadGraph: (graphId: string) => Promise<void>
@@ -33,6 +34,9 @@ interface GraphState {
   batchUpdatePositions: (updates: Array<{ id: string; x: number; y: number }>) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   selectNode: (id: string | null) => void
+  toggleNodeSelection: (nodeId: string) => void
+  clearNodeSelection: () => void
+  selectNodeIds: (ids: string[]) => void
 
   createEdge: (data: Omit<GraphEdge, 'id'>) => Promise<GraphEdge>
   updateEdge: (id: string, data: Partial<GraphEdge>) => Promise<void>
@@ -80,6 +84,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   bugs: [],
   selectedNodeId: null,
   selectedEdgeId: null,
+  selectedNodeIds: new Set(),
   associationNotifications: [],
 
   // ─────────────── Graph Operations ───────────────
@@ -259,6 +264,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
   selectNode: (id) => {
     set({ selectedNodeId: id, selectedEdgeId: null })
   },
+
+  toggleNodeSelection: (nodeId) => set((s) => {
+    const next = new Set(s.selectedNodeIds)
+    if (next.has(nodeId)) next.delete(nodeId)
+    else next.add(nodeId)
+    return { selectedNodeIds: next }
+  }),
+
+  clearNodeSelection: () => set({ selectedNodeIds: new Set() }),
+
+  selectNodeIds: (ids) => set({ selectedNodeIds: new Set(ids) }),
 
   // ─────────────── Edge Operations (乐观更新) ───────────────
   createEdge: async (data) => {
