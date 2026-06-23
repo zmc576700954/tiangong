@@ -76,6 +76,8 @@ export class EdgeRepository {
     if (data.strength !== undefined) { updates.push('strength = ?'); args.push(data.strength ?? null) }
 
     if (updates.length > 0) {
+      updates.push('updated_at = ?')
+      args.push(new Date().toISOString())
       args.push(id)
       await this.db.execute({
         sql: `UPDATE edges SET ${updates.join(', ')} WHERE id = ?`,

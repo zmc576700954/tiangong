@@ -59,6 +59,7 @@ export class BizGraphError extends Error {
       name: this.name,
       message: this.message,
       code: this.code,
+      stack: this.stack,
     }
   }
 }

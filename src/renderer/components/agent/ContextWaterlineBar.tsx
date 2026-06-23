@@ -1,3 +1,4 @@
+import { Clock } from 'lucide-react'
 import type { ContextState } from '@shared/types'
 
 interface Props {
@@ -46,8 +47,9 @@ export function ContextWaterlineBar({ state, onCompact }: Props) {
         {pct}% ({formatTokens(state.tokensUsed)}/{formatTokens(state.tokensMax)})
       </span>
       {state.lastCompactedAt && (
-        <span className="text-muted-foreground whitespace-nowrap text-[10px]">
-          ⏱ {formatLastCompact(state.lastCompactedAt)}
+        <span className="text-muted-foreground whitespace-nowrap text-[10px] flex items-center gap-0.5">
+          <Clock className="w-2.5 h-2.5" />
+          {formatLastCompact(state.lastCompactedAt)}
         </span>
       )}
       {onCompact && (

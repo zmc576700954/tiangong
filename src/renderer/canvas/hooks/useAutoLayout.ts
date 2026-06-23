@@ -34,14 +34,14 @@ export function useAutoLayout(layoutOptions?: LayoutOptions) {
     })
 
     // fitView 并限制最小缩放比例，避免节点多时过度缩小
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       fitView({
         padding: 0.15,
         duration: 400,
         minZoom: 0.4,
         maxZoom: 1.2,
       })
-    }, 50)
+    })
   }, [getNodes, getEdges, setNodes, batchUpdatePositions, fitView, layoutOptions])
 
   return { applyLayout }

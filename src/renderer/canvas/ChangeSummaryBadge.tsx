@@ -13,7 +13,7 @@ export function ChangeSummaryBadge({ outputs, className }: ChangeSummaryBadgePro
   const fileChanges = outputs.filter((o) => o.type === 'file_change')
   if (fileChanges.length === 0) return null
 
-  const uniqueFiles = [...new Set(fileChanges.map((o) => o.filePath).filter(Boolean))]
+  const uniqueFiles = [...new Set(fileChanges.map((o) => o.filePath).filter((fp): fp is string => fp !== undefined))]
 
   return (
     <div className={cn('mt-1', className)}>

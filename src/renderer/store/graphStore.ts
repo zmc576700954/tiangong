@@ -8,6 +8,9 @@ import { canTransition } from '@shared/state-machine'
 // Store 定义
 // ============================================
 
+/** Agent 状态变更事件取消订阅函数 */
+let _unsubAgentStatus: (() => void) | null = null
+
 interface GraphState {
   graphs: Graph[]
   currentGraphId: string | null
@@ -57,11 +60,14 @@ interface GraphState {
   associationNotifications: Array<{ id: string; count: number; timestamp: number }>
   addAssociationNotification: (count: number) => void
   dismissAssociationNotification: (id: string) => void
+
+  /** 清理事件监听，释放资源 */
+  destroy: () => void
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
   // 监听 Agent 状态变更事件（解耦 agentStore → graphStore 的直接引用）
-  eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId, status) => {
+  _unsubAgentStatus = eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId, status) => {
     get().updateNode(nodeId, { status: status as NodeStatus })
   })
 
@@ -159,8 +165,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const created = await window.electronAPI['node:createBatch'](nodesData)
       set((state) => ({
         nodes: state.nodes.map((n) => {
-          const idx = optimisticIds.indexOf(n.id)
-          return idx >= 0 ? created[idx] : n
+          if (!optimisticIds.includes(n.id)) return n
+          const match = created.find(c => c.title === n.title && (c.parentId ?? '') === (n.parentId ?? ''))
+          return match ?? n
         }),
       }))
       return created
@@ -480,5 +487,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
   dismissAssociationNotification: (id) => set((s) => ({
     associationNotifications: s.associationNotifications.filter((n) => n.id !== id),
   })),
+
+  destroy: () => {
+    _unsubAgentStatus?.()
+    _unsubAgentStatus = null
+  },
   }
 })

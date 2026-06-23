@@ -159,4 +159,10 @@ export class CodexAdapter extends BaseAdapter {
     this.threads.delete(sessionId)
     this.threadIds.delete(sessionId)
   }
+
+  protected override async doTerminate(_session: AgentSession, _proc?: import('node:child_process').ChildProcess): Promise<void> {
+    this.threads.delete(_session.id)
+    this.threadIds.delete(_session.id)
+    await super.doTerminate(_session, _proc)
+  }
 }

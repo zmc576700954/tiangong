@@ -7,7 +7,8 @@ import type { IpcMain } from 'electron'
 import { SymbolIndex } from '../code-intelligence/symbol-index'
 import { ProjectIndexer } from '../code-intelligence/project-indexer'
 import { ExecutionPlanner } from '../code-intelligence/execution-planner'
-import { createTypedHandle } from './utils'
+import { createTypedHandle, validateProjectPath } from './utils'
+import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('CodeIntelIPC')
@@ -37,11 +38,12 @@ export function registerCodeIntelHandlers(ipcMain: IpcMain): void {
     if (!symbolIndex) {
       throw new Error('Code intelligence not initialized')
     }
+    const validatedPath = validateProjectPath(projectPath)
     if (!projectIndexer) {
       projectIndexer = new ProjectIndexer(symbolIndex)
     }
-    logger.info(`Indexing project: ${projectPath}`)
-    const result = await projectIndexer.indexProject({ projectPath })
+    logger.info(`Indexing project: ${validatedPath}`)
+    const result = await projectIndexer.indexProject({ projectPath: validatedPath })
     logger.info(`Indexed ${result.filesIndexed} files, ${result.symbolsFound} symbols, ${result.importsFound} imports`)
     return result
   })
@@ -58,6 +60,9 @@ export function registerCodeIntelHandlers(ipcMain: IpcMain): void {
   typedHandle('codeIntel:getRelatedFiles', async (_event, filePath: string, depth) => {
     if (!symbolIndex) {
       throw new Error('Code intelligence not initialized')
+    }
+    if (!filePath || filePath.includes('..')) {
+      throw new IpcError('Invalid filePath', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const related = await symbolIndex.getRelatedFiles(filePath, depth ?? 2)
     return Array.from(related.entries()).map(([filePath, distance]) => ({

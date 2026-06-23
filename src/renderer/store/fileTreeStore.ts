@@ -364,7 +364,7 @@ export const useFileTreeStore = create<FileTreeState>()(
 
     commitRename: async (oldPath: string, newName: string) => {
       const { renamingPath } = get()
-      if (!renamingPath && renamingPath !== oldPath) return
+      if (!renamingPath || renamingPath !== oldPath) return
 
       try {
         await ipc?.['fs:rename'](oldPath, newName)

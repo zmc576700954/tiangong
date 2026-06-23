@@ -77,7 +77,7 @@ export class McpClient extends EventEmitter {
 
       this.proc = spawn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: buildSafeEnv(),
+        env: buildSafeEnv('mcp'),
       })
 
       this.proc.stdout?.on('data', (data: Buffer) => {

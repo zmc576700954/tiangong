@@ -42,7 +42,7 @@ describe('ClaudeCodeAdapter compaction', () => {
       expect(result.strategy).toBe('native')
       expect(result.trigger).toBe('manual')
       expect(result.tokensBefore).toBeGreaterThanOrEqual(0)
-      expect(result.tokensAfter).toBe(result.tokensBefore) // deferred — no immediate reduction
+      expect(result.tokensAfter).toBe(-1) // deferred — actual count unknown until next turn
       expect(result.deferred).toBe(true)
       expect(result.summary).toMatch(/deferred/)
       expect(result.startedAt).toBeGreaterThan(0)

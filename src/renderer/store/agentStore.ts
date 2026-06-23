@@ -87,7 +87,7 @@ function syncFromSubStores() {
     currentThreadId: useThreadStore.getState().currentThreadId,
   })
 
-  useAdapterStore.subscribe((state) => {
+  const unsubAdapter = useAdapterStore.subscribe((state) => {
     if (_adapterPending) return
     _adapterPending = true
     const run = () => {
@@ -107,7 +107,7 @@ function syncFromSubStores() {
     }
   })
 
-  useThreadStore.subscribe((state) => {
+  const unsubThread = useThreadStore.subscribe((state) => {
     if (_threadPending) return
     _threadPending = true
     const run = () => {
@@ -123,6 +123,11 @@ function syncFromSubStores() {
       run()
     }
   })
+
+  return () => {
+    unsubAdapter()
+    unsubThread()
+  }
 }
 
 export const useAgentStore = create<AgentState>(() => ({
@@ -325,7 +330,7 @@ useAgentStore.setState = function overrideSetState(
 } as typeof useAgentStore.setState
 
 // Activate the sync bridge so getState() always reflects sub-store truth
-syncFromSubStores()
+void syncFromSubStores()
 
 // Re-export sub-stores for direct import by new code
 export { useAdapterStore } from './adapterStore'

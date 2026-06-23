@@ -6,6 +6,7 @@
 import type { Client } from '@libsql/client'
 import type { AgentLog } from '@shared/types'
 import { generateId } from '../shared/env'
+import { safeJsonParse } from '../shared/db-utils'
 
 export class AgentLogRepository {
   constructor(private db: Client) {}
@@ -58,8 +59,8 @@ export class AgentLogRepository {
       adapterName: row.adapter_name as string,
       nodeId: row.node_id as string,
       graphId: row.graph_id as string,
-      command: JSON.parse(row.command as string),
-      outputs: JSON.parse(row.outputs as string),
+      command: safeJsonParse(row.command as string, null) as unknown as AgentLog['command'],
+      outputs: safeJsonParse(row.outputs as string, []) as unknown as AgentLog['outputs'],
       result: row.result as 'success' | 'failure' | 'cancelled',
       duration: row.duration as number,
       createdAt: row.created_at as string,

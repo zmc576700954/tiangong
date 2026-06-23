@@ -87,24 +87,9 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   const showLineNumbers = lines.length > 5
 
   const handleCopy = useCallback(() => {
-    const write = navigator.clipboard?.writeText ?? (async (t: string) => {
-      const ta = document.createElement('textarea')
-      ta.value = t
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      document.execCommand('copy')
-      document.body.removeChild(ta)
-    })
-    write(codeStr)
-      .then(() => {
-        setCopied(true)
-        setTimeout(() => setCopied(false), 2000)
-      })
-      .catch((err) => {
-        console.warn('[ChatBubble] Failed to copy code to clipboard:', err)
-      })
+    navigator.clipboard.writeText(codeStr)
+      .then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+      .catch((err) => { console.warn('[ChatBubble] Failed to copy code to clipboard:', err) })
   }, [codeStr])
 
   if (isBlock) {

@@ -39,7 +39,7 @@ export function TerminalView({ outputs }: TerminalViewProps) {
   return (
     <div className="flex-1 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed">
       {outputs.map((output, i) => (
-        <div key={i} className={cn('whitespace-pre-wrap break-all', TYPE_STYLES[output.type])}>
+        <div key={`${output.type}-${output.timestamp}-${i}`} className={cn('whitespace-pre-wrap break-all', TYPE_STYLES[output.type])}>
           <span className="text-muted-foreground/30 select-none mr-1.5">
             [{output.type}]
           </span>

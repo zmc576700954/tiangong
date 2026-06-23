@@ -12,6 +12,9 @@ let outputBuffer: Array<{ threadId: string; output: AgentOutput }> = []
 let flushScheduled = false
 const BATCH_INTERVAL = 16 // ~1 frame at 60fps
 
+/** 已清理的 thread 集合，防止 flush 时写入已清空的 thread（TOCTOU 修复） */
+let clearedThreads = new Set<string>()
+
 /** 计算所有 thread 输出的总量 */
 function countTotalOutputs(outputs: Record<string, AgentOutput[]>): number {
   let total = 0
@@ -39,6 +42,10 @@ function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentO
   flushScheduled = false
   if (outputBuffer.length === 0) return
 
+  // 快照并清除已清理的 thread 集合，防止本次 flush 写入已清空的 thread
+  const skip = new Set(clearedThreads)
+  clearedThreads.clear()
+
   const batch = outputBuffer
   outputBuffer = []
 
@@ -47,6 +54,7 @@ function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentO
     const errorThreadIds = new Set<string>()
 
     for (const { threadId, output } of batch) {
+      if (skip.has(threadId)) continue
       const existing = newOutputs[threadId] ?? []
       newOutputs[threadId] = [...existing, output].slice(-MAX_OUTPUTS_PER_THREAD)
       if (output.type === 'error') {
@@ -55,7 +63,7 @@ function flushOutputBuffer(set: (fn: (state: AgentOutputState) => Partial<AgentO
     }
 
     // 全局内存预算：超出时淘汰非活跃 thread 的最旧输出
-    const currentThreadId = (window as unknown as { __agentCurrentThreadId?: string }).__agentCurrentThreadId
+    const currentThreadId: string | undefined = undefined // TODO: pass from store for correct memory trimming
     let total = countTotalOutputs(newOutputs)
     if (total > MAX_TOTAL_OUTPUTS) {
       const threadIds = Object.keys(newOutputs)
@@ -101,6 +109,8 @@ export const useAgentOutputStore = create<AgentOutputState>((_set, get) => ({
   },
 
   clearThreadOutputs: (threadId) => {
+    // 标记为已清理，防止并发 flush 写回已清空的 thread
+    clearedThreads.add(threadId)
     // 同时清理缓冲区中对应 thread 的条目
     outputBuffer = outputBuffer.filter((entry) => entry.threadId !== threadId)
     _set((state) => {

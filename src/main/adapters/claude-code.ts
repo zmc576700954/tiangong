@@ -346,7 +346,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       strategy: 'native',
       trigger: options?.reason ?? 'manual',
       tokensBefore: before,
-      tokensAfter: before,
+      tokensAfter: -1, // deferred — actual count unknown until next turn
       summary: '(deferred — SDK auto-compact enabled for next turn)',
       startedAt,
       durationMs: Date.now() - startedAt,

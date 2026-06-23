@@ -385,7 +385,7 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
 // 节点类型注册表（支持动态扩展节点类型）
 // ============================================
 
-/** 节点类型行为钩子 */
+/** @main-process-only 函数类型无法通过 IPC 序列化，仅用于主进程行为调度 */
 export interface NodeTypeBehavior {
   /** 节点创建时触发 */
   onCreate?: (node: GraphNode) => void | Promise<void>

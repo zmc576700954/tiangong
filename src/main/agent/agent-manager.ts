@@ -23,8 +23,7 @@ import { AdapterRegistry } from './adapter-registry'
 import { SessionRouter } from './session-router'
 import { OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
-import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError } from '../errors'
-import { ErrorCode } from '../errors'
+import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError, ErrorCode } from '../errors'
 import { getSessionRecoveryManager } from './session-recovery'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
@@ -134,7 +133,7 @@ export class AgentManager {
   /** SessionRecovery 实例 */
   private sessionRecovery = getSessionRecoveryManager()
   /** Fallback recovery check timers */
-  private fallbackRecoveryTimers = new Map<string, ReturnType<typeof setInterval>>()
+  private fallbackRecoveryTimers = new Map<string, { interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }>()
   /** Consecutive timeout counter per adapter (health-driven auto-degradation) */
   private adapterTimeoutCounts: Map<string, number> = new Map()
   /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
@@ -1583,22 +1582,29 @@ export class AgentManager {
 
   private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
     if (this.fallbackRecoveryTimers.has(preferredAdapter)) return
-    const timer = setInterval(async () => {
+    const interval = setInterval(async () => {
       const adapter = this.registry.get(preferredAdapter)
-      if (!adapter) { clearInterval(timer); this.fallbackRecoveryTimers.delete(preferredAdapter); return }
+      if (!adapter) {
+        clearInterval(interval)
+        clearTimeout(this.fallbackRecoveryTimers.get(preferredAdapter)?.timeout)
+        this.fallbackRecoveryTimers.delete(preferredAdapter)
+        return
+      }
       const installed = await adapter.checkInstalled()
       const health = this.healthMonitor.getHealth(preferredAdapter)
       if (installed && health && health.status === 'healthy') {
         logger.info(`Preferred adapter ${preferredAdapter} is healthy again`)
-        clearInterval(timer)
+        const timers = this.fallbackRecoveryTimers.get(preferredAdapter)
+        if (timers) { clearInterval(timers.interval); clearTimeout(timers.timeout) }
         this.fallbackRecoveryTimers.delete(preferredAdapter)
       }
     }, intervalMs)
-    this.fallbackRecoveryTimers.set(preferredAdapter, timer)
-    setTimeout(() => {
-      clearInterval(timer)
+    const timeout = setTimeout(() => {
+      clearInterval(interval)
       this.fallbackRecoveryTimers.delete(preferredAdapter)
     }, 5 * 60_000)
+    timeout.unref()
+    this.fallbackRecoveryTimers.set(preferredAdapter, { interval, timeout })
   }
 
   /**

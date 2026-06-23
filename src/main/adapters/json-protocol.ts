@@ -286,8 +286,11 @@ export class JsonProtocolHandler {
       this.buffer += data.toString('utf-8')
       // 防止单行超大输出导致 OOM（10MB 上限）
       if (this.buffer.length > 10 * 1024 * 1024) {
-        console.error('[JsonProtocol] Buffer exceeded 10MB limit, resetting')
-        this.buffer = ''
+        console.error('[JsonProtocol] Buffer exceeded 10MB limit, attempting flush before reset')
+        this.flushBuffer()
+        if (this.buffer.length > 10 * 1024 * 1024) {
+          this.buffer = ''
+        }
         // 通知 errorHandlers，让上层适配器能感知并终止 session
         for (const handler of this.errorHandlers) {
           try {

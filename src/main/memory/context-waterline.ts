@@ -5,7 +5,8 @@
  * DB is the source of truth for token counts. This class maintains an
  * in-memory mirror that is kept in sync via three input sources:
  *   1. onMessagePersisted — tokenCount from estimateTokens() at message-create time
- *   2. onAdapterUsageReport — authoritative usage from adapter (Phase 3+)
+ *   2. onAdapterUsageReport — authoritative usage from adapter (Phase 3+);
+ *      takes the higher of accumulated estimate vs. adapter report to prevent regression
  *   3. onCompacted — reset after compaction (Phase 3+)
  *
  * DB writes are debounced to THROTTLE_MS for onMessagePersisted and
@@ -38,10 +39,15 @@ interface WaterlineState {
 
 export class ContextWaterline {
   private state = new Map<string, WaterlineState>()
-  private emitter = new EventEmitter().setMaxListeners(MAX_LISTENERS)
+  private emitter: EventEmitter
   private throttleTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private dbDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private dbWriteback?: DbWriteback
+
+  constructor() {
+    this.emitter = new EventEmitter()
+    this.emitter.setMaxListeners(MAX_LISTENERS)
+  }
 
   // ============ Configuration ============
 
@@ -65,7 +71,9 @@ export class ContextWaterline {
 
   onAdapterUsageReport(threadId: string, used: number, max: number): void {
     const s = this.getOrInitState(threadId)
-    s.tokensUsed = used
+    // Adapter reports are authoritative but should never regress the
+    // accumulated estimate — take the higher of the two values.
+    s.tokensUsed = Math.max(s.tokensUsed, used)
     s.tokensMax = max
     this.emitChangeThrottled(threadId)
     this.persistTokensDebounced(threadId)

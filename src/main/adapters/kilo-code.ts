@@ -48,13 +48,17 @@ export class KiloCodeAdapter extends BaseAdapter {
     const commandPrompt = this.buildCommandPrompt(command)
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
-    const args = ['run', '--auto', fullPrompt]
+    const args = ['run', '--auto']
 
     const proc = spawn('kilo', args, {
       cwd: session.config.workingDirectory || undefined,
       env: this.buildSafeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'],
     })
+
+    // 通过 stdin 传入 prompt，避免超出 OS 命令行长度限制和参数注入风险
+    proc.stdin.write(fullPrompt)
+    proc.stdin.end()
 
     this.processes.set(session.id, proc)
     await this.runOneShot(proc, session.id, { parseFileChanges: false })

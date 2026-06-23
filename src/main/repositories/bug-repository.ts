@@ -8,6 +8,7 @@ import type { BugNode } from '@shared/types'
 import type { BugStatus } from '@shared/types'
 import { assertBugSeverity, assertBugStatus } from '@shared/type-guards'
 import { generateId } from '../shared/env'
+import { DatabaseError, ErrorCode } from '../errors'
 
 export class BugRepository {
   constructor(private db: Client) {}
@@ -50,6 +51,9 @@ export class BugRepository {
     })
 
     const row = result.rows[0]
+    if (!row) {
+      throw new DatabaseError(`Bug not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
+    }
     return {
       id: row.id as string,
       title: row.title as string,

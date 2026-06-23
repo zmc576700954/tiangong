@@ -40,6 +40,7 @@ interface SessionState {
   getSessionStatus: (threadId: string) => SessionInfo | undefined
   stopCurrentSession: (threadId: string) => Promise<void>
   listenForStatusChanges: () => () => void
+  listenForNodeStatusChanges: () => () => void
   /** Main message-sending logic — creates user message, starts/resumes session, sends command */
   sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
   /** Save a snapshot of the current session state for interrupt recovery */

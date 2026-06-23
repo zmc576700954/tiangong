@@ -33,6 +33,9 @@ export function useCanvasKeyboard({
       }
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
+        // 文本输入中不响应删除键
+        const target = e.target as HTMLElement
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
         // 连线模式下不响应删除键
         if (isConnecting) return
         if (selectedNodeId) {

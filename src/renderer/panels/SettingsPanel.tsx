@@ -150,7 +150,7 @@ export function SettingsPanel() {
                   type="password"
                   value={apiKeys[provider] || ''}
                   onChange={(e) => setApiKeys((prev) => ({ ...prev, [provider]: e.target.value }))}
-                  placeholder={maskedKeys[provider] ? `Current: ${maskedKeys[provider]}` : 'Enter API key...'}
+                  placeholder={maskedKeys[provider] ? 'Current: ****' : 'Enter API key...'}
                   className="flex-1 px-2 py-1.5 text-xs border rounded bg-background"
                 />
                 <button

@@ -173,8 +173,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // Listen for agent status changes to sync node status
   useEffect(() => {
-    const cleanup = useAgentStore.getState().listenForStatusChanges()
-    return cleanup
+    const cleanup1 = useAgentStore.getState().listenForStatusChanges()
+    const cleanup2 = useSessionStore.getState().listenForNodeStatusChanges()
+    return () => {
+      cleanup1?.()
+      cleanup2?.()
+    }
   }, [])
 
   // Auto-recovery flash when adapter recovers from degradation

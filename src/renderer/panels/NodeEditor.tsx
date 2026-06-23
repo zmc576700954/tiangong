@@ -313,7 +313,7 @@ function MetadataEditor({
           APIs
         </div>
         {apis.map((api, i) => (
-          <div key={i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 rounded">
+          <div key={api.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 rounded">
             <span className="flex-1 truncate">{api.name}</span>
             <button
               onClick={() => removeItem('apis', i)}
@@ -336,7 +336,7 @@ function MetadataEditor({
           Services
         </div>
         {services.map((svc, i) => (
-          <div key={i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-green-50 rounded">
+          <div key={svc.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-green-50 rounded">
             <span className="flex-1 truncate">{svc.name}</span>
             <button
               onClick={() => removeItem('services', i)}
@@ -359,7 +359,7 @@ function MetadataEditor({
           Entities
         </div>
         {entities.map((ent, i) => (
-          <div key={i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-purple-50 rounded">
+          <div key={ent.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-purple-50 rounded">
             <span className="flex-1 truncate">{ent.name}</span>
             <button
               onClick={() => removeItem('entities', i)}
@@ -433,7 +433,7 @@ function CriteriaEditor({
       <label className="text-xs font-medium text-muted-foreground">Acceptance Criteria</label>
       <div className="space-y-1">
         {criteria.map((c, i) => (
-          <div key={i} className="flex items-center gap-1.5 px-2 py-1 text-sm bg-muted/50 rounded">
+          <div key={c} className="flex items-center gap-1.5 px-2 py-1 text-sm bg-muted/50 rounded">
             <Check className="w-3 h-3 text-green-500 shrink-0" />
             <span className="flex-1 truncate">{c}</span>
             <button

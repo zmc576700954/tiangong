@@ -134,6 +134,10 @@ const IGNORED_PATTERNS = [
   /[\\/]\.vscode([\\/]|$)/,
 ]
 
+/**
+ * 清洗允许文件列表：移除重复、规范化路径、过滤空值
+ * @note 符号链接/junction 的解析由 IPC 层的 validateProjectPath 处理
+ */
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
   return allowedFiles.map((file) => {
     const resolved = path.resolve(workingDir, file)
@@ -414,14 +418,14 @@ export class ScopeGuard {
       logger.warn(
         `Post-execution validation failed: ${outOfBoundsFiles.length} out-of-bounds files detected`,
       )
+      // 验证失败时保留快照，rollback 可能需要初始快照信息
     } else {
       logger.info('Post-execution validation passed')
-    }
-
-    // 验证完成后立即释放初始快照内存（rollback/commit 不再需要初始快照）
-    if (initialSnapshot) {
-      this.totalSnapshotEntries -= initialSnapshot.size
-      this.initialSnapshots.delete(sandbox.id)
+      // 验证成功后释放初始快照内存
+      if (initialSnapshot) {
+        this.totalSnapshotEntries -= initialSnapshot.size
+        this.initialSnapshots.delete(sandbox.id)
+      }
     }
 
     return result
@@ -725,9 +729,12 @@ export class ScopeGuard {
     }
 
     // 并行递归扫描子目录
-    await Promise.all(
-      subDirs.map((subDir) => this.captureFileSnapshotRecursive(subDir, snapshot, depth + 1)),
-    )
+    // 分批并发处理子目录，避免 EMFILE
+    const BATCH_SIZE = 4
+    for (let i = 0; i < subDirs.length; i += BATCH_SIZE) {
+      const batch = subDirs.slice(i, i + BATCH_SIZE)
+      await Promise.all(batch.map((subDir) => this.captureFileSnapshotRecursive(subDir, snapshot, depth + 1)))
+    }
   }
 
   // ============================================
@@ -870,10 +877,20 @@ export class ScopeGuard {
         if (shouldIgnorePath(fullPath)) continue
         if (entry.isFile()) {
           if (!allowedSet.has(fullPath)) {
-            // 只有当文件不在初始快照中时，才视为越界（新增文件）
-            // 避免将已有但未列入白名单的文件误报为越界
             if (!initialSnapshot || !initialSnapshot.has(fullPath)) {
+              // 新增的越界文件
               violations.push(fullPath)
+            } else {
+              // 已有越界文件被修改（mtime 变化）
+              try {
+                const stat = await fs.stat(fullPath)
+                const snap = initialSnapshot.get(fullPath)!
+                if (stat.mtimeMs !== snap.mtimeMs) {
+                  violations.push(fullPath)
+                }
+              } catch {
+                // 文件可能已被删除，忽略
+              }
             }
           }
         } else if (entry.isDirectory()) {

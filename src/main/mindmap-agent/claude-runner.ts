@@ -68,7 +68,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
 
     const proc = spawn('claude', args, {
       cwd,
-      env: buildSafeEnv(),
+      env: buildSafeEnv('claude-code'),
       shell: false,
       stdio: [stdinFd, 'pipe', 'pipe'],
     })

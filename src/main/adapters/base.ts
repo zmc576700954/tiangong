@@ -77,7 +77,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   constructor() {
     super()
     // MEM-01: 避免大量会话时触发 maxListeners 警告
-    this.setMaxListeners(0)
+    this.setMaxListeners(50)
   }
 
   /**
@@ -660,7 +660,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 实际逻辑委托给 ../shared/env 中的 buildSafeEnv()
    */
   protected buildSafeEnv(): NodeJS.ProcessEnv {
-    return buildSafeEnv()
+    return buildSafeEnv(this.name)
   }
 
   /**

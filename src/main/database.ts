@@ -529,6 +529,25 @@ async function migrate(): Promise<void> {
 }
 
 /**
+ * 校验 ALTER TABLE 的 DEFAULT 值，防止 SQL 注入
+ * 仅允许：数值字面量、单引号字符串、NULL、CURRENT_TIMESTAMP
+ */
+function validateDefaultValue(value: string): string {
+  if (value.includes(';')) {
+    throw new DatabaseError(`Invalid default value (contains semicolon): ${value}`, ErrorCode.DB_INVALID_IDENTIFIER)
+  }
+  const trimmed = value.trim()
+  const SAFE_PATTERNS = [
+    /^-?\d+(\.\d+)?$/,                    // numeric literals: 0, 1, -1, 3.14
+    /^'.*'$/,                              // quoted string literals: 'text'
+    /^NULL$/i,                             // NULL
+    /^CURRENT_TIMESTAMP$/i,               // CURRENT_TIMESTAMP
+  ]
+  if (SAFE_PATTERNS.some((p) => p.test(trimmed))) return trimmed
+  throw new DatabaseError(`Invalid default value (not a safe literal): ${value}`, ErrorCode.DB_INVALID_IDENTIFIER)
+}
+
+/**
  * 增量迁移：安全添加新列（幂等操作，可重复执行）
  */
 async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise<void> {
@@ -541,7 +560,7 @@ async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise
       throw new DatabaseError(`Unsupported column type: ${type}`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
     const safeType = type.toUpperCase()
-    const defaultClause = defaultValue !== undefined ? ` DEFAULT ${defaultValue}` : ''
+    const defaultClause = defaultValue !== undefined ? ` DEFAULT ${validateDefaultValue(defaultValue)}` : ''
     try {
       await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}${defaultClause}`)
     } catch (err: unknown) {
@@ -559,6 +578,7 @@ async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise
   await addColumnSafe('edges', 'description', 'TEXT')
   await addColumnSafe('edges', 'data_flow', 'TEXT')
   await addColumnSafe('edges', 'strength', 'REAL')
+  await addColumnSafe('edges', 'updated_at', 'TEXT')
 
   // v3: memory_items 新增 version / parent_version / embedding 列
   if (currentVersion < 3) {

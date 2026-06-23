@@ -17,6 +17,9 @@ import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/typ
 import { createLogger } from '../shared/logger'
 import { runClaude } from '../mindmap-agent/claude-runner'
 
+/** 运行中的 MindMap 会话 AbortController，用于 doTerminate 取消 */
+const activeControllers = new Map<string, AbortController>()
+
 export class MindMapAdapter extends BaseAdapter {
   readonly name = 'mindmap-internal'
   readonly version = '1.0.0'
@@ -66,11 +69,16 @@ export class MindMapAdapter extends BaseAdapter {
         timestamp: Date.now(),
       })
 
+      const controller = new AbortController()
+      activeControllers.set(session.id, controller)
+
       const result = await runClaude(fullPrompt, {
         cwd: session.config.workingDirectory,
         timeoutMs: 300_000,
         outputFormat: 'text',
       })
+
+      activeControllers.delete(session.id)
 
       if (result.timedOut) {
         this.emitOutput({
@@ -134,5 +142,14 @@ export class MindMapAdapter extends BaseAdapter {
         this.emit('sessionEnded', session.id, 'error')
       }
     }
+  }
+
+  protected override async doTerminate(_session: AgentSession, _proc?: import('node:child_process').ChildProcess): Promise<void> {
+    const controller = activeControllers.get(_session.id)
+    if (controller) {
+      controller.abort()
+      activeControllers.delete(_session.id)
+    }
+    await super.doTerminate(_session, _proc)
   }
 }

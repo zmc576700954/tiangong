@@ -54,17 +54,21 @@ export function buildScopePrompt(
     lines.push('')
   }
 
-  if (config.allowedFiles.length > 0) {
+  const isValidFilePath = (p: string) => p.length > 0 && p.length < 500 && !p.includes('\n') && !p.includes('\0')
+  const safeAllowed = config.allowedFiles.filter(isValidFilePath)
+  const safeForbidden = config.forbiddenFiles.filter(isValidFilePath)
+
+  if (safeAllowed.length > 0) {
     lines.push('## 允许修改的文件（白名单）')
-    for (const file of config.allowedFiles) {
+    for (const file of safeAllowed) {
       lines.push(`- ${file}`)
     }
     lines.push('')
   }
 
-  if (config.forbiddenFiles.length > 0) {
+  if (safeForbidden.length > 0) {
     lines.push('## 禁止修改的文件（黑名单）')
-    for (const file of config.forbiddenFiles) {
+    for (const file of safeForbidden) {
       lines.push(`- ${file}`)
     }
     lines.push('')

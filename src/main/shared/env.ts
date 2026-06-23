@@ -10,10 +10,13 @@ import { randomUUID } from 'node:crypto'
  * 合并了 base.ts 和 mcp/client.ts 中两个独立实现的逻辑，
  * 使用更完整的 allowedKeys 列表（取两者并集）。
  */
-export function buildSafeEnv(): NodeJS.ProcessEnv {
+export function buildSafeEnv(adapterType?: string): NodeJS.ProcessEnv {
   const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
-  // 精确前缀：避免 CLAUDE_ 过宽匹配未来可能添加的敏感变量
-  const allowedPrefixes = ['CLAUDE_CODE_', 'ANTHROPIC_']
+  // 精确前缀：仅 CLAUDE_CODE_ 允许宽匹配（CLI 自身环境变量）
+  const allowedPrefixes = ['CLAUDE_CODE_']
+  // 仅对已知一方适配器暴露 ANTHROPIC_ 密钥，防止第三方 MCP 服务器窃取
+  const FIRST_PARTY_ADAPTERS = new Set(['claude-code', 'codex', 'opencode', 'mcp'])
+  const includeAnthropic = FIRST_PARTY_ADAPTERS.has(adapterType ?? '')
   const allowedKeys = new Set([
     'PATH', 'Path', 'PATHEXT',
     'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
@@ -49,9 +52,13 @@ export function buildSafeEnv(): NodeJS.ProcessEnv {
     'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG',
     // CI / build
     'CI', 'BUILD_NUMBER', 'BUILD_ID',
-    // Anthropic / Claude CLI
-    'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY',
   ])
+  // Anthropic 密钥仅对一方适配器暴露
+  if (includeAnthropic) {
+    allowedKeys.add('ANTHROPIC_AUTH_TOKEN')
+    allowedKeys.add('ANTHROPIC_BASE_URL')
+    allowedKeys.add('ANTHROPIC_API_KEY')
+  }
 
   const safeEnv: NodeJS.ProcessEnv = {}
   for (const [key, value] of Object.entries(process.env)) {
@@ -69,5 +76,5 @@ export function buildSafeEnv(): NodeJS.ProcessEnv {
  * 供各 Repository 和 Service 共用，替代分散定义的同名函数
  */
 export function generateId(prefix: string): string {
-  return `${prefix}-${randomUUID().replace(/-/g, '')}`
+  return `${prefix}-${randomUUID().replaceAll('-', '')}`
 }

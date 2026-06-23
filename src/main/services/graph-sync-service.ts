@@ -28,6 +28,7 @@ export class GraphSyncService {
   start(graphId: string): void {
     if (this._timers.has(graphId)) return
     const timer = setInterval(() => this._runAssociationScan(graphId), this._scanIntervalMs)
+    timer.unref()
     this._timers.set(graphId, timer)
     logger.info(`GraphSyncService started for graph ${graphId}`)
   }

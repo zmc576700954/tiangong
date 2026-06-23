@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 
 export interface UseResizablePanelOptions {
   /** 初始宽度 */
@@ -35,11 +35,9 @@ export function useResizablePanel(options: UseResizablePanelOptions): UseResizab
   const [width, setWidth] = useState(savedWidth ? Math.max(minWidth, Math.min(maxWidth, Number(savedWidth))) : initialWidth)
   const [isResizing, setIsResizing] = useState(false)
   const [fixedWidth, setFixedWidth] = useState<number | null>(null)
+  const widthRef = useRef(width)
 
-  // Persist width changes to localStorage
-  useEffect(() => {
-    localStorage.setItem(storageKey, String(width))
-  }, [width, storageKey])
+  useEffect(() => { widthRef.current = width }, [width])
 
   useEffect(() => {
     if (!isResizing) return
@@ -54,6 +52,7 @@ export function useResizablePanel(options: UseResizablePanelOptions): UseResizab
 
     const handleMouseUp = () => {
       setIsResizing(false)
+      localStorage.setItem(storageKey, String(widthRef.current))
     }
 
     window.addEventListener('mousemove', handleMouseMove)

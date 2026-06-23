@@ -243,7 +243,7 @@ app.on('before-quit', async (event) => {
   if (cleanupDone) return
   event.preventDefault()
 
-  if (isQuitting) return // cleanup 已在进行中，阻止退出直到完成
+  if (isQuitting) return // cleanup 已在进行中，等待完成后自动 app.quit()
   isQuitting = true
 
   // 5 秒超时保护，防止子进程挂起导致应用无法退出
@@ -263,7 +263,10 @@ app.on('before-quit', async (event) => {
         logger.error('Failed to close database:', err)
       }
     })(),
-    new Promise<void>((resolve) => setTimeout(resolve, 5000)),
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 5000)
+      t.unref()
+    }),
   ])
 
   try {

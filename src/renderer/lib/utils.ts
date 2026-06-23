@@ -32,7 +32,7 @@ export function formatDate(date: string | Date): string {
 /**
  * 防抖函数
  */
-export function debounce<T extends (...args: unknown[]) => unknown>(
+export function debounce<T extends (...args: any[]) => unknown>(
   fn: T,
   delay: number,
 ): (...args: Parameters<T>) => void {

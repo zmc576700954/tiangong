@@ -24,19 +24,19 @@ class Logger {
   }
 
   debug(...args: unknown[]): void {
-    if (this.shouldLog('debug')) console.log(`[${this.module}]`, ...args)
+    if (this.shouldLog('debug')) console.log(`[${new Date().toISOString()}] [${this.module}]`, ...args)
   }
 
   info(...args: unknown[]): void {
-    if (this.shouldLog('info')) console.info(`[${this.module}]`, ...args)
+    if (this.shouldLog('info')) console.info(`[${new Date().toISOString()}] [${this.module}]`, ...args)
   }
 
   warn(...args: unknown[]): void {
-    if (this.shouldLog('warn')) console.warn(`[${this.module}]`, ...args)
+    if (this.shouldLog('warn')) console.warn(`[${new Date().toISOString()}] [${this.module}]`, ...args)
   }
 
   error(...args: unknown[]): void {
-    if (this.shouldLog('error')) console.error(`[${this.module}]`, ...args)
+    if (this.shouldLog('error')) console.error(`[${new Date().toISOString()}] [${this.module}]`, ...args)
   }
 }
 
