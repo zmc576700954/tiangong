@@ -339,11 +339,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     return this.outputSessionMap.get(output)
   }
 
-  private pushOutputSession(sessionId: string): void {
+  protected pushOutputSession(sessionId: string): void {
     this.outputSessionStack.push(sessionId)
   }
 
-  private popOutputSession(): void {
+  protected popOutputSession(): void {
     this.outputSessionStack.pop()
   }
 

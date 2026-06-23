@@ -457,6 +457,8 @@ export interface BizGraphSettings {
   cliTools: CliToolConfig[]
   apiKeys: ApiKeyConfig[]
   defaultModel?: string
+  /** Phase 4: optional cheap model for LLM-based compaction. */
+  compactModel?: string
   mcpServers: McpServerConfig[]
   adapterPreferences?: AdapterPreferences
 }
