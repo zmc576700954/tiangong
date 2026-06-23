@@ -119,6 +119,12 @@ const exposedChannels: (keyof IpcApi)[] = [
   'scopeGuard:commitSession',
   'scopeGuard:rollbackSession',
 
+  // Subagent dispatch (Phase 4)
+  'subagent:listTypes',
+  'subagent:listInvocations',
+  'subagent:cancel',
+  'subagent:getResult',
+
   // Code Intelligence
   'codeIntel:indexProject',
   'codeIntel:querySymbols',
@@ -177,7 +183,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: Electron.IpcRendererEvent, sessionId: string, nodeId: string, status: string) =>
       callback(sessionId, nodeId, status)
     ipcRenderer.on('agent:onStatusChange', handler)
-    return () => { ipcRenderer.removeListener('agent:onStatusChange', handler) }
+    return () => { ipcRenderer.off('agent:onStatusChange', handler) }
   },
 
   // Node status change event listener (placeholder→developing transitions)
@@ -185,7 +191,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: Electron.IpcRendererEvent, nodeId: string, oldStatus: string, newStatus: string) =>
       callback(nodeId, oldStatus, newStatus)
     ipcRenderer.on('event:NODE_STATUS_CHANGE', handler)
-    return () => { ipcRenderer.removeListener('event:NODE_STATUS_CHANGE', handler) }
+    return () => { ipcRenderer.off('event:NODE_STATUS_CHANGE', handler) }
   },
 
   // Session started event (for sessionId persistence)
@@ -221,7 +227,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       callback(state)
     }
     ipcRenderer.on('waterline:change', handler)
-    return () => { ipcRenderer.removeListener('waterline:change', handler) }
+    return () => { ipcRenderer.off('waterline:change', handler) }
+  },
+
+  // Subagent progress event listener (Phase 4)
+  onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { invocationId: string; status: string; error?: string }) => callback(data)
+    ipcRenderer.on('subagent:progress', handler)
+    return () => { ipcRenderer.removeListener('subagent:progress', handler) }
   },
 
   // Platform info
@@ -241,6 +254,7 @@ declare global {
       onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
       onWaterlineChange: (callback: (state: ContextState) => void) => () => void
+      onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => () => void
       platform: string
     }
   }

@@ -36,6 +36,7 @@ import { registerScopeGuardHandlers } from './ipc/scope-guard'
 import { registerCodeIntelHandlers, initCodeIntelligence, getSymbolIndex } from './ipc/code-intelligence'
 import { registerMemoryHandlers } from './ipc/memory'
 import { registerModeHandlers } from './ipc/mode'
+import { registerSubagentHandlers } from './ipc/subagent'
 import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
 import { ChatRepository } from './repositories/chat-repository'
@@ -182,7 +183,8 @@ export async function registerIpcHandlers(): Promise<void> {
   const REALPATH_CACHE_MAX = 500
 
   async function cachedRealpath(targetPath: string): Promise<string> {
-    const cached = realpathCache.get(targetPath)
+    const cacheKey = process.platform === 'win32' ? targetPath.toLowerCase() : targetPath
+    const cached = realpathCache.get(cacheKey)
     if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
       return cached.resolved
     }
@@ -207,7 +209,7 @@ export async function registerIpcHandlers(): Promise<void> {
       const oldest = realpathCache.keys().next().value
       if (oldest !== undefined) realpathCache.delete(oldest)
     }
-    realpathCache.set(targetPath, { resolved, timestamp: Date.now() })
+    realpathCache.set(cacheKey, { resolved, timestamp: Date.now() })
     return resolved
   }
 
@@ -284,9 +286,6 @@ export async function registerIpcHandlers(): Promise<void> {
       adapter.setSubagentManager(subagentManager)
     }
   }
-  // Reference them so they remain in scope for upcoming handler registrations (Task 7).
-  void subagentManager
-  void subagentInvocationRepo
   const getMainWindow = (): BrowserWindow | null => {
     const windows = BrowserWindow.getAllWindows()
     return windows.length > 0 ? windows[0] : null
@@ -296,6 +295,8 @@ export async function registerIpcHandlers(): Promise<void> {
   registerCodeIntelHandlers(ipcMain)
   registerMemoryHandlers(typedHandle)
   registerModeHandlers(typedHandle)
+  // Phase 4 Task 7: subagent:* channels + progress push events
+  registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
 
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {

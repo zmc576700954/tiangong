@@ -16,6 +16,11 @@ import type {
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
   CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
 } from './agent'
+import type {
+  AgentTypeDefinition,
+  SubagentInvocation,
+  SubagentResult,
+} from './subagent'
 
 // ============================================
 // IPC 通信类型
@@ -183,4 +188,10 @@ export interface IpcApi {
   'scopeGuard:rollbackFile': (sessionId: string, filePath: string) => Promise<boolean>
   'scopeGuard:commitSession': (sessionId: string) => Promise<ValidationResult>
   'scopeGuard:rollbackSession': (sessionId: string) => Promise<void>
+
+  // Subagent dispatch (Phase 4)
+  'subagent:listTypes': () => Promise<AgentTypeDefinition[]>
+  'subagent:listInvocations': (parentSessionId: string) => Promise<SubagentInvocation[]>
+  'subagent:cancel': (invocationId: string) => Promise<void>
+  'subagent:getResult': (invocationId: string) => Promise<SubagentResult | null>
 }
