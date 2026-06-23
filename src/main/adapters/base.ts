@@ -735,6 +735,37 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     ].join('\n')
   }
 
+  /**
+   * Phase 5: Parse inline tool_call tags from LLM stdout.
+   */
+  protected parseToolCalls(text: string): InlineToolCall[] {
+    const calls: InlineToolCall[] = []
+    const regex = /<tool_call>([\s\S]*?)<\/tool_call>/g
+    let match: RegExpExecArray | null
+    while ((match = regex.exec(text)) !== null) {
+      const raw = match[1].trim()
+      try {
+        const parsed = JSON.parse(raw) as unknown
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          typeof (parsed as Record<string, unknown>).tool === 'string' &&
+          typeof (parsed as Record<string, unknown>).args === 'object'
+        ) {
+          calls.push({
+            tool: (parsed as Record<string, unknown>).tool as string,
+            args: (parsed as Record<string, unknown>).args as Record<string, unknown>,
+          })
+        } else {
+          this.logger.warn(`Invalid tool_call structure: ${raw}`)
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to parse tool_call JSON: ${raw}`, err)
+      }
+    }
+    return calls
+  }
+
   protected buildScopePrompt(
     config: AgentSessionConfig,
     resolvedContexts?: ResolvedContext[],
@@ -965,3 +996,8 @@ export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
     required: ['agent_type', 'description', 'prompt'],
   },
 } as const
+
+interface InlineToolCall {
+  tool: string
+  args: Record<string, unknown>
+}
