@@ -226,6 +226,10 @@ export class SessionRecoveryManager {
    * Uses BrowserWindow.getAllWindows() to reach all renderer windows.
    */
   private _notifyRenderer(event: RecoveryEvent): void {
+    // Skip renderer notification when Electron/BrowserWindow is unavailable (e.g., unit tests).
+    if (!BrowserWindow || typeof BrowserWindow.getAllWindows !== 'function') {
+      return
+    }
     try {
       for (const win of BrowserWindow.getAllWindows()) {
         if (event.type === 'SESSION_RECOVERED') {

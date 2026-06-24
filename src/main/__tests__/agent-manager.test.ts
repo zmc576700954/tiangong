@@ -67,6 +67,14 @@ class TestAdapter extends BaseAdapter {
   public simulateTimeout(sessionId: string): void {
     this.emit('sessionEnded', sessionId, 'timeout', 137)
   }
+
+  public simulateSuccess(sessionId: string): void {
+    this.emit('sessionEnded', sessionId, 'success', 0)
+  }
+
+  public simulateExit(sessionId: string, reason: 'crash' | 'error' | 'timeout' | 'success', exitCode: number | null): void {
+    this.emit('sessionEnded', sessionId, reason, exitCode)
+  }
 }
 
 describe('AgentManager', () => {
@@ -340,6 +348,83 @@ describe('AgentManager', () => {
 
       // Router and sandbox should be cleaned up
       expect(router.getActiveSessionIds()).not.toContain(sessionId)
+    })
+
+    it('should clean up resources when session completes successfully', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+
+      adapter.simulateSuccess(sessionId)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+      expect((manager as any).sessionStates.has(sessionId)).toBe(false)
+      expect((manager as any).sessionOutputBuffers.has(sessionId)).toBe(false)
+    })
+
+    it('should not trigger recovery for non-recoverable exit codes 126/127', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateExit(sessionId, 'crash', 126)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should not trigger recovery for exit code 127', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateExit(sessionId, 'crash', 127)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should not trigger recovery for non-recoverable success reason', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateSuccess(sessionId)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should keep native-resumed session active without corrupting router fallback metadata', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+
+      adapter.simulateCrash(sessionId)
+
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessionIds()).toContain(sessionId)
+      })
+
+      // Native resume must not set broadcastName as originalAdapter fallback metadata.
+      expect(router.getFallbackInfo(sessionId)).toBeUndefined()
     })
   })
 

@@ -246,30 +246,45 @@ export class AgentManager {
     this.outputHandlers.set(adapter.name, handler)
     adapter.onOutput(handler)
 
-    // 监听 session 异常结束事件，自动清理沙箱等资源
+    // 监听 session 结束事件，自动清理沙箱等资源
     const sessionEndedHandler: SessionEndedHandler = async (sessionId, reason, exitCode) => {
-      if (reason === 'crash' || reason === 'error' || reason === 'timeout') {
-        logger.warn(`Session ${sessionId} ended abnormally (${reason}, exit ${exitCode}), cleaning up...`)
-        const state = this.sessionStates.get(sessionId)
-        const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
-        if (state) {
-          state.terminationReason = reason
-        }
-
-        if (state) {
-          // Run recovery while the original session state/output buffer is still intact.
-          const outcome = await this._handleSessionEnded(sessionId, exitCode, reason, state, outputs)
-          if (outcome === 'native') {
-            // Native resume keeps the same sessionId active. Clear only transient
-            // crash artifacts and leave the session/router binding in place.
-            this.sessionOutputBuffers.delete(sessionId)
-            this.compactInflight.delete(sessionId)
-            return
+      try {
+        if (reason === 'crash' || reason === 'error' || reason === 'timeout') {
+          logger.warn(`Session ${sessionId} ended abnormally (${reason}, exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+          if (state) {
+            state.terminationReason = reason
           }
+
+          if (state) {
+            // Run recovery while the original session state/output buffer is still intact.
+            const outcome = await this._handleSessionEnded(sessionId, exitCode, reason, state, outputs)
+            if (outcome === 'native') {
+              // Native resume keeps the same sessionId active. Clear only transient
+              // crash artifacts and leave the session/router binding in place.
+              this.sessionOutputBuffers.delete(sessionId)
+              this.compactInflight.delete(sessionId)
+              return
+            }
+          }
+
+          // For replacement sessions or unrecoverable crashes, clean up the original session.
+          await this.cleanupSessionResources(sessionId)
+          return
         }
 
-        // For replacement sessions or unrecoverable crashes, clean up the original session.
-        await this.cleanupSessionResources(sessionId)
+        if (reason === 'success') {
+          // Normal completion: clean up resources without running recovery.
+          logger.info(`Session ${sessionId} completed successfully (exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          if (state) {
+            state.terminationReason = 'success'
+          }
+          await this.cleanupSessionResources(sessionId)
+        }
+      } catch (err) {
+        logger.error(`Unhandled error in sessionEnded handler for ${sessionId}:`, err)
       }
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
@@ -1655,7 +1670,9 @@ export class AgentManager {
         // Native resume: keep the same sessionId active in the manager's maps.
         this.sessionStates.set(sessionId, state)
         this.sessionBroadcastNames.set(sessionId, state.broadcastName)
-        this.router.bind(sessionId, state.adapterName, state.broadcastName)
+        // The third argument of SessionRouter.bind is originalAdapter (not broadcast name).
+        // Native resume uses the same adapter, so no fallback metadata is needed.
+        this.router.bind(sessionId, state.adapterName)
         return 'native'
       }
 
