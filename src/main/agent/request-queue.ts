@@ -32,6 +32,7 @@ export interface RequestQueueConfig {
 interface QueuedItem {
   request: QueueRequest
   status: 'queued' | 'executing'
+  cancelled?: boolean
 }
 
 const DEDUP_CLEANUP_INTERVAL_MS = 60_000
@@ -93,13 +94,14 @@ export class RequestQueue {
       const idx = queue.findIndex(i => i.request.id === requestId)
       if (idx !== -1) {
         const item = queue[idx]
+        item.cancelled = true
         if (item.status === 'queued') {
           item.request.abortController?.abort()
           queue.splice(idx, 1)
           this._pendingCount--
           return true
         }
-        // For executing requests, signal abort so executor can stop
+        // For executing requests, signal abort so the executor can stop and clean up.
         if (item.status === 'executing') {
           item.request.abortController?.abort()
           return true
@@ -203,6 +205,8 @@ export class RequestQueue {
         })
         .finally(() => {
           this._executingCount--
+          // Remove the item if it is still in the queue (e.g. after a cancellation
+          // aborts an executing request, or after normal completion/failure).
           const idx = queue.indexOf(next)
           if (idx !== -1) queue.splice(idx, 1)
         })
