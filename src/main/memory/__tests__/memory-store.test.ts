@@ -3,10 +3,11 @@
  * 使用 LibSQL 内存数据库，真实验证 SQL 操作
  */
 
-import { describe, it, expect, beforeEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest'
 import { createClient, type Client } from '@libsql/client'
 import { MemoryStore } from '../memory-store'
 import type { MemoryItem, MemoryKind } from '@shared/types'
+import type { ResultSet, Row } from '@libsql/client'
 
 describe('MemoryStore', () => {
   let db: Client
@@ -405,5 +406,83 @@ describe('MemoryStore', () => {
   it('should pruneWithDecay return 0 for non-existent project', async () => {
     const deleted = await store.pruneWithDecay('/nonexistent')
     expect(deleted).toBe(0)
+  })
+
+  describe('safe row id conversion', () => {
+    it('converts bigint row ids to number', async () => {
+      const mockDb = {
+        execute: vi.fn().mockResolvedValue({
+          rows: [{
+            id: 42n,
+            session_id: 'session_bigint',
+            kind: 'fix',
+            project_id: '/projects/test-app',
+            node_id: null,
+            title: 'Bigint id test',
+            narrative: '',
+            facts: '[]',
+            concepts: '[]',
+            files_read: '[]',
+            files_modified: '[]',
+            adapter_name: 'claude-code',
+            token_cost: 0,
+            confidence: 0.5,
+            created_at: '2025-01-01T00:00:00Z',
+            version: 1,
+            parent_version: null,
+            embedding: null,
+          } as unknown as Row],
+          columns: [],
+          columnTypes: [],
+          rowsAffected: 0,
+          lastInsertRowid: 42n,
+          toJSON: () => ({}),
+        } as ResultSet),
+        batch: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      } as unknown as Client
+      const mockStore = new MemoryStore(mockDb)
+      const recent = await mockStore.getRecent({ projectId: '/projects/test-app' })
+      expect(recent).toHaveLength(1)
+      expect(recent[0].id).toBe(42)
+      expect(typeof recent[0].id).toBe('number')
+    })
+
+    it('throws when bigint row id exceeds safe integer range', async () => {
+      const unsafeId = BigInt(Number.MAX_SAFE_INTEGER) + 1n
+      const mockDb = {
+        execute: vi.fn().mockResolvedValue({
+          rows: [{
+            id: unsafeId,
+            session_id: 'session_bigint',
+            kind: 'fix',
+            project_id: '/projects/test-app',
+            node_id: null,
+            title: 'Unsafe bigint id test',
+            narrative: '',
+            facts: '[]',
+            concepts: '[]',
+            files_read: '[]',
+            files_modified: '[]',
+            adapter_name: 'claude-code',
+            token_cost: 0,
+            confidence: 0.5,
+            created_at: '2025-01-01T00:00:00Z',
+            version: 1,
+            parent_version: null,
+            embedding: null,
+          } as unknown as Row],
+          columns: [],
+          columnTypes: [],
+          rowsAffected: 0,
+          lastInsertRowid: unsafeId,
+          toJSON: () => ({}),
+        } as ResultSet),
+        batch: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      } as unknown as Client
+      const mockStore = new MemoryStore(mockDb)
+      await expect(mockStore.getRecent({ projectId: '/projects/test-app' })).rejects.toThrow('exceeds Number.MAX_SAFE_INTEGER')
+    })
   })
 })

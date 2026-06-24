@@ -24,6 +24,7 @@ import { getEmbeddingService, EmbeddingService } from './embedding-service'
 import { getAdaptiveConfig } from '../adaptive-config'
 import { getClient } from '../database'
 import { createLogger } from '../shared/logger'
+import { safeRowId } from '../shared/db-utils'
 
 const logger = createLogger('HybridSearch')
 
@@ -654,7 +655,7 @@ export class HybridSearchEngine {
       try { return JSON.parse(val as string) } catch { return null }
     }
     return {
-      id: row.id as number,
+      id: safeRowId(row.id),
       session_id: row.session_id as string,
       kind: row.kind as MemoryKind,
       project_id: (row.project_id as string) ?? '',

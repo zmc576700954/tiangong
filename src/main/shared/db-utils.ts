@@ -43,3 +43,24 @@ export function safeJsonParse<T>(raw: string | null | undefined, fallback: T, va
     return fallback
   }
 }
+
+/**
+ * 将 SQLite 的 rowid（bigint | number | string）安全转换为 number。
+ *
+ * SQLite ROWID 上限是 2^63-1，远超 Number.MAX_SAFE_INTEGER (2^53-1)；
+ * 直接 Number(bigint) 会在 ~9e15 处静默丢失精度，让后续按 id 关联的查询
+ * 命中错误的行。这里显式校验并在越界时抛错，让上层尽早发现而非静默错乱。
+ */
+export function safeRowId(raw: unknown): number {
+  if (typeof raw === 'bigint') {
+    if (raw > BigInt(Number.MAX_SAFE_INTEGER) || raw < BigInt(Number.MIN_SAFE_INTEGER)) {
+      throw new Error(`Row id ${raw} exceeds Number.MAX_SAFE_INTEGER; refusing to lose precision`)
+    }
+    return Number(raw)
+  }
+  const n = Number(raw)
+  if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
+    throw new Error(`Invalid row id: ${String(raw)}`)
+  }
+  return n
+}

@@ -368,6 +368,32 @@ describe('ChatService', () => {
     })
   })
 
+  describe('archiveStaleThreads', () => {
+    it('should pass numeric millisecond cutoff to repository', async () => {
+      mockRepo.archiveStaleThreads.mockResolvedValue(2)
+
+      const result = await service.archiveStaleThreads('project-1', 30)
+
+      const cutoff = mockRepo.archiveStaleThreads.mock.calls[0][1]
+      expect(typeof cutoff).toBe('number')
+      expect(cutoff).toBeLessThan(MOCK_NOW)
+      expect(result).toBe(2)
+    })
+  })
+
+  describe('cleanupArchivedThreads', () => {
+    it('should pass numeric millisecond cutoff to repository', async () => {
+      mockRepo.cleanupArchivedThreads.mockResolvedValue(3)
+
+      const result = await service.cleanupArchivedThreads(90)
+
+      const cutoff = mockRepo.cleanupArchivedThreads.mock.calls[0][0]
+      expect(typeof cutoff).toBe('number')
+      expect(cutoff).toBeLessThan(MOCK_NOW)
+      expect(result).toBe(3)
+    })
+  })
+
   describe('listMessages', () => {
     it('should list and deserialize messages', async () => {
       const rows: ChatMessageRow[] = [

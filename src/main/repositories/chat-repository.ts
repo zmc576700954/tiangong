@@ -189,13 +189,13 @@ export class ChatRepository {
   }
 
   async searchThreads(query: string): Promise<ChatThreadRow[]> {
-    // 转义 SQL LIKE 特殊字符（%, _, [），防止通配符注入
-    const escaped = query.replace(/[%_[]/g, (ch) => `[${ch}]`)
+    // Escape SQL LIKE wildcards (% and _) with backslash; declare ESCAPE clause.
+    const escaped = query.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
     const like = `%${escaped}%`
     const result = await this.db.execute({
       sql: `SELECT DISTINCT ${THREAD_PREFIXED} FROM chat_threads t
             LEFT JOIN chat_messages m ON m.thread_id = t.id
-            WHERE t.title LIKE ? OR m.content LIKE ?
+            WHERE t.title LIKE ? ESCAPE '\\' OR m.content LIKE ? ESCAPE '\\'
             ORDER BY t.updated_at DESC`,
       args: [like, like],
     })
@@ -272,7 +272,7 @@ export class ChatRepository {
     await this.db.execute({ sql: 'DELETE FROM chat_messages WHERE thread_id = ?', args: [threadId] })
   }
 
-  async archiveStaleThreads(projectId: string, cutoff: string): Promise<number> {
+  async archiveStaleThreads(projectId: string, cutoff: number): Promise<number> {
     const result = await this.db.execute({
       sql: `UPDATE chat_threads SET status = 'archived' WHERE graph_id = ? AND status != 'archived' AND updated_at < ?`,
       args: [projectId, cutoff],
@@ -281,7 +281,7 @@ export class ChatRepository {
   }
 
   /** Task 2.5.2: Delete archived threads older than the cutoff (90 days) */
-  async cleanupArchivedThreads(cutoff: string): Promise<number> {
+  async cleanupArchivedThreads(cutoff: number): Promise<number> {
     const result = await this.db.execute({
       sql: `DELETE FROM chat_threads WHERE status = 'archived' AND updated_at < ?`,
       args: [cutoff],

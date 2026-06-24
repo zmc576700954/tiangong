@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { BizGraphSettings } from '../settings'
+import type { BizGraphSettings, AdapterPreferences } from '../settings'
 
 const mockUserDataPath = '/tmp/bizgraph-test'
 const mockFsData = new Map<string, string>()
@@ -181,5 +181,61 @@ describe('Settings - API Key Management', () => {
 
     const key = await getApiKey('nonexistent')
     expect(key).toBeUndefined()
+  })
+})
+
+describe('Settings - Adapter Preferences', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.resetModules()
+  })
+
+  it('should accept valid adapter preferences', async () => {
+    const { setAdapterPreferences, getAdapterPreferences } = await import('../settings')
+
+    const prefs = {
+      defaultAdapter: 'claude-code',
+      fallbackOrder: ['codex', 'opencode', 'mcp'],
+    }
+    await setAdapterPreferences(prefs)
+    const read = await getAdapterPreferences()
+    expect(read.defaultAdapter).toBe('claude-code')
+    expect(read.fallbackOrder).toEqual(['codex', 'opencode', 'mcp'])
+  })
+
+  it('should reject unknown defaultAdapter', async () => {
+    const { setAdapterPreferences } = await import('../settings')
+
+    await expect(setAdapterPreferences({
+      defaultAdapter: 'unknown-adapter',
+      fallbackOrder: ['codex'],
+    })).rejects.toThrow('Unknown defaultAdapter')
+  })
+
+  it('should reject unknown adapter in fallbackOrder', async () => {
+    const { setAdapterPreferences } = await import('../settings')
+
+    await expect(setAdapterPreferences({
+      defaultAdapter: 'claude-code',
+      fallbackOrder: ['codex', 'unknown-adapter'],
+    })).rejects.toThrow('Unknown adapter in fallbackOrder')
+  })
+
+  it('should reject non-array fallbackOrder', async () => {
+    const { setAdapterPreferences } = await import('../settings')
+
+    await expect(setAdapterPreferences({
+      defaultAdapter: 'claude-code',
+      fallbackOrder: 'codex',
+    } as unknown as AdapterPreferences)).rejects.toThrow('fallbackOrder must be an array')
+  })
+
+  it('should reject non-string entries in fallbackOrder', async () => {
+    const { setAdapterPreferences } = await import('../settings')
+
+    await expect(setAdapterPreferences({
+      defaultAdapter: 'claude-code',
+      fallbackOrder: ['codex', 123],
+    } as unknown as AdapterPreferences)).rejects.toThrow('Unknown adapter in fallbackOrder')
   })
 })

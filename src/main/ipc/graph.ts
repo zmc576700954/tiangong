@@ -10,16 +10,90 @@ import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
-import type { GraphNode, BugNode } from '@shared/types'
+import type { GraphNode, BugNode, GraphType, NodeStatus } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { IpcError, ErrorCode } from '../errors'
+import { ensureString, MAX_ID_LEN } from './utils'
 
 export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
   const nodeRepo = new NodeRepository(db)
   const edgeRepo = new EdgeRepository(db)
   const bugRepo = new BugRepository(db)
+
+  const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
+  const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
+  const MAX_TITLE_LEN = 200
+  const MAX_DESCRIPTION_LEN = 2000
+
+  function isValidPosition(pos: unknown): pos is { x: number; y: number } {
+    return (
+      pos !== null &&
+      typeof pos === 'object' &&
+      typeof (pos as Record<string, unknown>).x === 'number' &&
+      typeof (pos as Record<string, unknown>).y === 'number'
+    )
+  }
+
+  function validateNodeCreate(data: unknown): void {
+    if (!data || typeof data !== 'object') {
+      throw new IpcError('Node data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const node = data as Record<string, unknown>
+    const type = ensureString('type', node.type, 32)
+    if (!VALID_NODE_TYPES.includes(type as GraphNode['type'])) {
+      throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const status = ensureString('status', node.status, 32)
+    if (!NODE_STATUS_VALUES.includes(status as NodeStatus)) {
+      throw new IpcError(`Invalid node status: ${status}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    ensureString('title', node.title, MAX_TITLE_LEN)
+    ensureString('graphId', node.graphId, MAX_ID_LEN)
+    const graphType = ensureString('graphType', node.graphType, 32)
+    if (!GRAPH_TYPE_VALUES.includes(graphType as GraphType)) {
+      throw new IpcError(`Invalid graph type: ${graphType}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (!isValidPosition(node.position)) {
+      throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+
+  function validateNodeUpdate(id: string, data: unknown): void {
+    ensureString('id', id, MAX_ID_LEN)
+    if (!data || typeof data !== 'object') {
+      throw new IpcError('Node update data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const node = data as Record<string, unknown>
+    if (node.title !== undefined) ensureString('title', node.title, MAX_TITLE_LEN)
+    if (node.description !== undefined) {
+      if (typeof node.description !== 'string' || node.description.length > MAX_DESCRIPTION_LEN) {
+        throw new IpcError(`description must be a string with max length ${MAX_DESCRIPTION_LEN}`, ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (node.status !== undefined) {
+      const status = ensureString('status', node.status, 32)
+      if (!NODE_STATUS_VALUES.includes(status as NodeStatus)) {
+        throw new IpcError(`Invalid node status: ${status}`, ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (node.type !== undefined) {
+      const type = ensureString('type', node.type, 32)
+      if (!VALID_NODE_TYPES.includes(type as GraphNode['type'])) {
+        throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (node.graphType !== undefined) {
+      const graphType = ensureString('graphType', node.graphType, 32)
+      if (!GRAPH_TYPE_VALUES.includes(graphType as GraphType)) {
+        throw new IpcError(`Invalid graph type: ${graphType}`, ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (node.position !== undefined && !isValidPosition(node.position)) {
+      throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
 
   // ---------- 图操作 ----------
   typedHandle('graph:create', async (_, data) => {
@@ -45,22 +119,22 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
 
   // ---------- 节点操作 ----------
   typedHandle('node:create', async (_, data) => {
-    if (!VALID_NODE_TYPES.includes(data.type)) {
-      throw new IpcError(`Invalid node type: ${data.type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-    return nodeRepo.create(data)
+    validateNodeCreate(data)
+    return nodeRepo.create(data as Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>)
   })
 
-  typedHandle('node:createBatch', async (_, nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
-    for (const data of nodesData) {
-      if (!VALID_NODE_TYPES.includes(data.type)) {
-        throw new IpcError(`Invalid node type: ${data.type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
-      }
+  typedHandle('node:createBatch', async (_, nodesData: unknown) => {
+    if (!Array.isArray(nodesData)) {
+      throw new IpcError('nodesData must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
     }
-    return nodeRepo.createBatch(nodesData)
+    for (const data of nodesData) {
+      validateNodeCreate(data)
+    }
+    return nodeRepo.createBatch(nodesData as Array<Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>>)
   })
 
   typedHandle('node:update', async (_, id: string, data: Partial<GraphNode>) => {
+    validateNodeUpdate(id, data)
     if (data.status !== undefined) {
       const currentStatus = await nodeRepo.getStatus(id)
       if (currentStatus !== null && currentStatus !== data.status) {

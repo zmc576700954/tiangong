@@ -13,6 +13,7 @@ import { getClient } from '../database'
 import type { Client } from '@libsql/client'
 import type { MemoryItem, MemoryKind } from '@shared/types'
 import { createLogger } from '../shared/logger'
+import { safeRowId } from '../shared/db-utils'
 
 const logger = createLogger('MemoryStore')
 
@@ -284,7 +285,7 @@ export class MemoryStore {
         item.created_at,
       ],
     })
-    return this._safeRowId(result.lastInsertRowid)
+    return safeRowId(result.lastInsertRowid)
   }
 
   /**
@@ -335,28 +336,7 @@ export class MemoryStore {
 
     // batch 默认在 "deferred" 事务模式下执行；任一语句失败整批回滚
     const results = await this.db.batch(statements, 'deferred')
-    return results.map((r) => this._safeRowId(r.lastInsertRowid))
-  }
-
-  /**
-   * 将 LibSQL 的 lastInsertRowid（bigint | number | string）安全转换为 number。
-   *
-   * SQLite ROWID 上限是 2^63-1，远超 Number.MAX_SAFE_INTEGER (2^53-1)；
-   * 直接 Number(bigint) 会在 ~9e15 处静默丢失精度，让后续按 id 关联的查询
-   * 命中错误的行。这里显式校验并在越界时抛错，让上层尽早发现而非静默错乱。
-   */
-  private _safeRowId(raw: unknown): number {
-    if (typeof raw === 'bigint') {
-      if (raw > BigInt(Number.MAX_SAFE_INTEGER) || raw < BigInt(Number.MIN_SAFE_INTEGER)) {
-        throw new Error(`memory_items.id ${raw} exceeds Number.MAX_SAFE_INTEGER; refusing to lose precision`)
-      }
-      return Number(raw)
-    }
-    const n = Number(raw)
-    if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
-      throw new Error(`Invalid lastInsertRowid: ${String(raw)}`)
-    }
-    return n
+    return results.map((r) => safeRowId(r.lastInsertRowid))
   }
 
   /**
@@ -704,7 +684,7 @@ export class MemoryStore {
    */
   private _rowToItem(row: Record<string, unknown>): MemoryItem {
     return {
-      id: row.id as number,
+      id: safeRowId(row.id),
       session_id: row.session_id as string,
       kind: row.kind as MemoryKind,
       project_id: (row.project_id as string) ?? '',

@@ -29,6 +29,14 @@ const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
   fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
 }
 
+/** Known adapter names registered in the adapter registry.
+ *  Kept in sync with src/main/adapters/registry.ts ADAPTER_REGISTRY.
+ */
+const KNOWN_ADAPTER_NAMES = new Set([
+  'claude-code', 'codex', 'opencode', 'cline', 'kilo-code', 'kimi-code',
+  'codebuddy', 'qoder', 'qwen-code', 'cursor', 'mcp', 'mindmap-internal',
+])
+
 const DEFAULT_SETTINGS: BizGraphSettings = {
   version: 1,
   cliTools: [
@@ -564,8 +572,16 @@ export async function setAdapterPreferences(prefs: AdapterPreferences): Promise<
   if (!prefs.defaultAdapter || typeof prefs.defaultAdapter !== 'string') {
     throw new BizGraphError('defaultAdapter is required', ErrorCode.IPC_INVALID_ARGUMENT)
   }
+  if (!KNOWN_ADAPTER_NAMES.has(prefs.defaultAdapter)) {
+    throw new BizGraphError(`Unknown defaultAdapter: ${prefs.defaultAdapter}`, ErrorCode.IPC_INVALID_ARGUMENT)
+  }
   if (!Array.isArray(prefs.fallbackOrder)) {
     throw new BizGraphError('fallbackOrder must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  for (const name of prefs.fallbackOrder) {
+    if (typeof name !== 'string' || !KNOWN_ADAPTER_NAMES.has(name)) {
+      throw new BizGraphError(`Unknown adapter in fallbackOrder: ${name}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
   }
   const settings = await readSettings()
   settings.adapterPreferences = {

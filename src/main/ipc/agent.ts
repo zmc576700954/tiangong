@@ -9,7 +9,7 @@ import { type AgentLogRepository } from '../repositories/agent-log-repository'
 import type { NodeRepository } from '../repositories/node-repository'
 import type { GraphNode, AgentOutput } from '@shared/types'
 import type { TypedHandle } from './utils'
-import { AgentError, ErrorCode } from '../errors'
+import { AgentError, IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import { buildMarketplaceItems } from '../adapters/registry'
 
@@ -32,6 +32,16 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
   })
 
   typedHandle('agent:resolveAndSendCommand', async (_, sessionId, command, contextRefs, nodeIds) => {
+    if (nodeIds !== undefined) {
+      if (!Array.isArray(nodeIds)) {
+        throw new IpcError('nodeIds must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      for (const id of nodeIds) {
+        if (typeof id !== 'string' || id.length === 0) {
+          throw new IpcError('Each nodeId must be a non-empty string', ErrorCode.IPC_INVALID_ARGUMENT)
+        }
+      }
+    }
     const nodes = nodeRepo && nodeIds?.length
       ? (await Promise.all(nodeIds.map((id: string) => nodeRepo.findById(id)))).filter(Boolean) as GraphNode[]
       : undefined

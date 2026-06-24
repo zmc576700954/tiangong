@@ -147,18 +147,27 @@ describe('ChatRepository', () => {
   })
 
   describe('searchThreads', () => {
-    it('LIKE 搜索转义特殊字符', async () => {
+    it('LIKE 搜索转义百分号并声明 ESCAPE', async () => {
       (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
       await repo.searchThreads('100%')
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args[0]).toBe('%100[%]%')
+      expect(call.args[0]).toBe('%100\\%%')
+      expect(call.sql).toContain("ESCAPE '\\'")
     })
 
-    it('下划线也被转义', async () => {
+    it('LIKE 搜索转义下划线并声明 ESCAPE', async () => {
       (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
       await repo.searchThreads('a_b')
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args[0]).toBe('%a[_]b%')
+      expect(call.args[0]).toBe('%a\\_b%')
+      expect(call.sql).toContain("ESCAPE '\\'")
+    })
+
+    it('LIKE 搜索同时转义反斜杠本身', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
+      await repo.searchThreads('a\\b')
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args[0]).toBe('%a\\\\b%')
     })
 
     it('JOIN chat_messages 搜索', async () => {
@@ -167,6 +176,28 @@ describe('ChatRepository', () => {
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
       expect(call.sql).toContain('LEFT JOIN chat_messages')
       expect(call.sql).toContain('m.content LIKE ?')
+    })
+  })
+
+  describe('archiveStaleThreads', () => {
+    it('uses numeric millisecond cutoff', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowsAffected: 3, lastInsertRowid: 0n })
+      const result = await repo.archiveStaleThreads('g1', 1700000000000)
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args).toEqual(['g1', 1700000000000])
+      expect(typeof call.args[1]).toBe('number')
+      expect(result).toBe(3)
+    })
+  })
+
+  describe('cleanupArchivedThreads', () => {
+    it('uses numeric millisecond cutoff', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowsAffected: 5, lastInsertRowid: 0n })
+      const result = await repo.cleanupArchivedThreads(1690000000000)
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args).toEqual([1690000000000])
+      expect(typeof call.args[0]).toBe('number')
+      expect(result).toBe(5)
     })
   })
 
