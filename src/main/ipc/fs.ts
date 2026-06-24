@@ -6,6 +6,7 @@
 import fs from 'node:fs/promises'
 import type { Dirent } from 'node:fs'
 import path from 'node:path'
+import { isPathWithin } from '../shared/path-utils'
 import type { TypedHandle } from './utils'
 import type { FileSearchResult } from '@shared/types'
 import { IpcError, ErrorCode } from '../errors'
@@ -206,17 +207,11 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     const newPath = path.join(parentDir, newName)
 
     // 确保新路径不逃逸出父目录（防止路径遍历）
-    const resolvedParent = path.resolve(parentDir)
-    const resolvedNew = path.resolve(newPath)
-    const isWithinParent = process.platform === 'win32'
-      ? resolvedNew.toLowerCase().startsWith(resolvedParent.toLowerCase() + path.sep) ||
-        resolvedNew.toLowerCase() === resolvedParent.toLowerCase()
-      : resolvedNew.startsWith(resolvedParent + path.sep) || resolvedNew === resolvedParent
-    if (!isWithinParent) {
+    if (!(await isPathWithin(parentDir, newPath))) {
       throw new IpcError('Rename target escapes parent directory', ErrorCode.IPC_ACCESS_DENIED)
     }
 
-    const validNewPath = await vWrite(resolvedNew)
+    const validNewPath = await vWrite(newPath)
     assertNotDangerous(validNewPath)
 
     // 检查目标是否已存在

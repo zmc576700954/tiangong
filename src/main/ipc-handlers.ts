@@ -18,6 +18,7 @@ import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
+import { isPathWithin } from './shared/path-utils'
 import { IpcError, ErrorCode } from './errors'
 
 const logger = createLogger('IPC')
@@ -261,7 +262,6 @@ export async function registerIpcHandlers(): Promise<void> {
     }
 
     // 2. 构建允许的路径根目录
-    const sep = path.sep
     const allowedRoots: string[] = []
     allowedRoots.push(path.resolve(app.getPath('userData')))
     allowedRoots.push(path.resolve(app.getPath('temp')))
@@ -283,12 +283,7 @@ export async function registerIpcHandlers(): Promise<void> {
 
     // 3. 检查是否在允许路径下
     for (const root of allowedRoots) {
-      const normalizedRoot = path.resolve(root)
-      const isAllowed = process.platform === 'win32'
-        ? normalized.toLowerCase().startsWith(normalizedRoot.toLowerCase() + sep) ||
-          normalized.toLowerCase() === normalizedRoot.toLowerCase()
-        : normalized.startsWith(normalizedRoot + sep) || normalized === normalizedRoot
-      if (isAllowed) {
+      if (await isPathWithin(path.resolve(root), normalized)) {
         return normalized
       }
     }
@@ -387,13 +382,13 @@ export async function registerIpcHandlers(): Promise<void> {
           throw new IpcError('Access denied: cannot access system directory', ErrorCode.IPC_ACCESS_DENIED)
         }
         // 验证路径在某个已知项目根目录下，防止注册任意路径
-        const sep = path.sep
-        const isUnderProject = projectRoots.some((root) =>
-          process.platform === 'win32'
-            ? normalized.toLowerCase().startsWith(root.toLowerCase() + sep) ||
-              normalized.toLowerCase() === root.toLowerCase()
-            : normalized.startsWith(root + sep) || normalized === root,
-        )
+        let isUnderProject = false
+        for (const root of projectRoots) {
+          if (await isPathWithin(root, normalized)) {
+            isUnderProject = true
+            break
+          }
+        }
         if (!isUnderProject) {
           throw new IpcError('Access denied: path is not under any registered project directory', ErrorCode.IPC_ACCESS_DENIED)
         }

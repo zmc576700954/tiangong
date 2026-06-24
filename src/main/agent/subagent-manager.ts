@@ -389,8 +389,13 @@ export class SubagentManager extends EventEmitter {
         }
         return child
       }
-      case 'fresh':
-        return args.allowedFiles ?? []
+      case 'fresh': {
+        const child = args.allowedFiles ?? []
+        const parentSet = new Set(parentConfig.allowedFiles)
+        // Intersect with the parent's allow-list so a fresh subagent cannot
+        // escape the parent/project scope.
+        return child.filter((f) => parentSet.has(f))
+      }
     }
   }
 

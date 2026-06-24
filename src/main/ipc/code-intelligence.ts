@@ -3,6 +3,7 @@
  * 暴露符号索引、项目扫描、执行计划生成等能力给渲染进程
  */
 
+import path from 'node:path'
 import { SymbolIndex } from '../code-intelligence/symbol-index'
 import { ProjectIndexer } from '../code-intelligence/project-indexer'
 import { ExecutionPlanner } from '../code-intelligence/execution-planner'
@@ -60,7 +61,7 @@ export function registerCodeIntelHandlers(typedHandle: TypedHandle): void {
     if (!symbolIndex) {
       throw new Error('Code intelligence not initialized')
     }
-    if (!filePath || filePath.includes('..')) {
+    if (!filePath || filePath.includes('..') || path.isAbsolute(filePath)) {
       throw new IpcError('Invalid filePath', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const related = await symbolIndex.getRelatedFiles(filePath, depth ?? 2)
