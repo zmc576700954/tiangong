@@ -269,7 +269,7 @@ export class SubagentManager extends EventEmitter {
     // Subscribe to child outputs — tag with invocationId, re-broadcast to parent
     const outputBuffer: string[] = []
     const fileChanges: string[] = []
-    const tokensUsed = 0
+    let tokensUsed = 0
     let settled = false
 
     const outputHandler = (output: AgentOutput): void => {
@@ -348,6 +348,12 @@ export class SubagentManager extends EventEmitter {
     }
 
     const resultText = outputBuffer.join('\n').trim() || '(no output)'
+
+    // Pull authoritative token usage from the child session state before cleanup.
+    const childState = this.agentManager.getSessionState(childSessionId)
+    if (childState?.tokensUsed !== undefined) {
+      tokensUsed = childState.tokensUsed
+    }
 
     // Terminate child session (best-effort cleanup)
     try {

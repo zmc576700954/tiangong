@@ -387,6 +387,28 @@ function validateNpmPackageName(pkg: string): boolean {
   return /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/.test(pkg)
 }
 
+/** Resolve the absolute path to the npm executable without relying on shell resolution. */
+function resolveNpmCommand(): string {
+  if (process.platform === 'win32') {
+    try {
+      const result = spawnSync('where', ['npm.cmd'], { encoding: 'utf-8' })
+      if (result.status === 0) {
+        return result.stdout.trim().split(/\r?\n/)[0]
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'npm.cmd'
+  }
+  try {
+    const result = spawnSync('which', ['npm'], { encoding: 'utf-8' })
+    if (result.status === 0) return result.stdout.trim()
+  } catch {
+    /* ignore */
+  }
+  return 'npm'
+}
+
 export async function installCliTool(name: string): Promise<{
   success: boolean
   message: string
@@ -400,11 +422,11 @@ export async function installCliTool(name: string): Promise<{
   }
 
   // W3-FIX: 检测 npm 是否可用
-  const npmCheck = spawnSync('npm', ['--version'], {
+  const npmCmd = resolveNpmCommand()
+  const npmCheck = spawnSync(npmCmd, ['--version'], {
     encoding: 'utf-8',
     timeout: 5000,
     stdio: ['pipe', 'pipe', 'ignore'],
-    shell: process.platform === 'win32',
   })
   if (npmCheck.error || npmCheck.status !== 0) {
     return {
@@ -414,10 +436,9 @@ export async function installCliTool(name: string): Promise<{
   }
 
   return new Promise((resolve) => {
-    const proc = spawn('npm', ['install', '-g', tool.npmPackage], {
+    const proc = spawn(npmCmd, ['install', '-g', tool.npmPackage], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 120000,
-      shell: process.platform === 'win32', // Windows 上需要 shell 来找到 npm.cmd
     })
 
     let stdout = ''
@@ -491,28 +512,6 @@ export function maskApiKey(key: string): string {
 export async function getApiKey(provider: string): Promise<string | undefined> {
   const settings = await readSettings()
   return settings.apiKeys.find((k) => k.provider === provider)?.key
-}
-
-/**
- * Read the raw (encrypted) API keys from disk without decrypting.
- * Used by the settings IPC handler to preserve encrypted keys when the
- * renderer sends back masked values, avoiding a round-trip through decrypt+re-encrypt.
- *
- * SECURITY: This function has no additional authorization check beyond Electron's
- * IPC security model (contextIsolation + contextBridge). It is only called from the
- * settings IPC handler, which is itself gated by Electron's sandbox. No renderer
- * code can call this directly — it must go through the preload bridge.
- */
-export async function getEncryptedApiKeys(): Promise<Array<{ provider: string; key: string }>> {
-  const settingsPath = await getSettingsPath()
-  try {
-    const raw = await fs.readFile(settingsPath, 'utf-8')
-    const parsed = JSON.parse(raw) as unknown
-    if (validateSettingsShape(parsed) && Array.isArray(parsed.apiKeys)) {
-      return parsed.apiKeys as Array<{ provider: string; key: string }>
-    }
-  } catch { /* file missing or corrupt */ }
-  return []
 }
 
 const ALLOWED_PROVIDERS: ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']

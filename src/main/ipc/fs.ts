@@ -12,12 +12,20 @@ import { IpcError, ErrorCode } from '../errors'
 
 export type ValidateFsPath = (targetPath: string, operation: 'read' | 'write') => Promise<string>
 
+function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
+  return err instanceof Error && 'code' in err
+}
+
 async function throwIfExists(filePath: string, name: string): Promise<void> {
   try {
     await fs.access(filePath)
     throw new IpcError(`Already exists: ${name}`, ErrorCode.IPC_HANDLER_ERROR)
   } catch (err: unknown) {
     if (err instanceof IpcError && err.message.startsWith('Already exists')) throw err
+    // ENOENT means the file does not exist, which is the expected case.
+    // Any other error (e.g., EACCES/EPERM) must be surfaced.
+    if (isErrnoException(err) && err.code === 'ENOENT') return
+    throw err
   }
 }
 
@@ -200,7 +208,11 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     // 确保新路径不逃逸出父目录（防止路径遍历）
     const resolvedParent = path.resolve(parentDir)
     const resolvedNew = path.resolve(newPath)
-    if (!resolvedNew.startsWith(resolvedParent + path.sep) && resolvedNew !== resolvedParent) {
+    const isWithinParent = process.platform === 'win32'
+      ? resolvedNew.toLowerCase().startsWith(resolvedParent.toLowerCase() + path.sep) ||
+        resolvedNew.toLowerCase() === resolvedParent.toLowerCase()
+      : resolvedNew.startsWith(resolvedParent + path.sep) || resolvedNew === resolvedParent
+    if (!isWithinParent) {
       throw new IpcError('Rename target escapes parent directory', ErrorCode.IPC_ACCESS_DENIED)
     }
 

@@ -542,7 +542,8 @@ export class ScopeGuard {
    */
   async rollbackFile(sandbox: Sandbox, filePath: string): Promise<boolean> {
     // 安全校验：确保 filePath 在沙箱工作目录内，防止路径遍历攻击
-    const resolvedPath = path.resolve(filePath)
+    // Relative paths are resolved against the sandbox working directory, not process.cwd().
+    const resolvedPath = path.resolve(sandbox.workingDir, filePath)
     const resolvedWorkingDir = path.resolve(sandbox.workingDir)
     const sep = path.sep
     const isWithinSandbox = process.platform === 'win32'

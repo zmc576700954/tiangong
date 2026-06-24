@@ -477,11 +477,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
       results = results.filter(n => n.status === filters.status)
     }
 
-    // Filter by name (substring match)
+    // Filter by name (substring match against title)
+    if (filters?.name) {
+      const nameFilter = filters.name.toLowerCase()
+      results = results.filter(n => n.title.toLowerCase().includes(nameFilter))
+    }
+
+    // Search by query (substring match against title/description)
     if (q) {
       results = results.filter(n => {
-        const name = (filters?.name ?? n.title).toLowerCase()
-        return name.includes(q) || n.description?.toLowerCase().includes(q)
+        const title = n.title.toLowerCase()
+        return title.includes(q) || n.description?.toLowerCase().includes(q)
       })
     }
 

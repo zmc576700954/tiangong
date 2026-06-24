@@ -84,6 +84,10 @@ interface SessionState {
   parentSessionId?: string
   /** Phase 4: subagent_invocations row id if this is a subagent child session. */
   swarmTaskId?: string
+  /** Cumulative input tokens reported by the adapter for this session. */
+  tokensUsed?: number
+  /** Reason the adapter session ended (crash / error / user / success). */
+  terminationReason?: 'success' | 'crash' | 'error' | 'user'
 }
 
 /** startSessionWithFallback 返回值 */
@@ -242,9 +246,12 @@ export class AgentManager {
     const sessionEndedHandler: SessionEndedHandler = (sessionId, reason) => {
       if (reason === 'crash' || reason === 'error') {
         logger.warn(`Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
+        const state = this.sessionStates.get(sessionId)
+        if (state) {
+          state.terminationReason = reason
+        }
         this.cleanupSessionResources(sessionId)
         // Attempt recovery based on exit context
-        const state = this.sessionStates.get(sessionId)
         if (state) {
           this._handleSessionEnded(sessionId, 1, reason)
         }
@@ -257,8 +264,11 @@ export class AgentManager {
     if ('onUsage' in adapter && typeof (adapter as { onUsage?: unknown }).onUsage === 'function') {
       (adapter as BaseAdapter).onUsage(({ sessionId: sid, inputTokens, maxTokens }) => {
         const ss = this.sessionStates.get(sid)
-        if (ss?.threadId && this.waterline) {
-          this.waterline.onAdapterUsageReport(ss.threadId, inputTokens, maxTokens ?? 200_000)
+        if (ss) {
+          ss.tokensUsed = (ss.tokensUsed ?? 0) + inputTokens
+          if (ss?.threadId && this.waterline) {
+            this.waterline.onAdapterUsageReport(ss.threadId, inputTokens, maxTokens ?? 200_000)
+          }
         }
       })
     }
@@ -303,8 +313,9 @@ export class AgentManager {
       if (adapterName) {
         const adapter = this.registry.get(adapterName)
         if (adapter) {
+          const cleanupReason = state?.terminationReason ?? 'error'
           pendingOps.push(
-            adapter.terminateSession(sessionId).then(
+            adapter.terminateSession(sessionId, cleanupReason).then(
               () => {},
               (err: unknown) => { logger.warn(`Failed to terminate adapter session ${sessionId}:`, err) },
             ),
@@ -779,7 +790,10 @@ export class AgentManager {
         this.adapterTimeoutCounts.delete(candidate)
 
         let sandbox: Sandbox | undefined
-        if (config.allowedFiles.length > 0) {
+        // Prepare a sandbox for normal write sessions and for read-only verification
+        // sessions. When verifyOnly is true, allowedFiles is empty, so any write is
+        // treated as an out-of-bounds violation.
+        if (config.allowedFiles.length > 0 || config.verifyOnly) {
           sandbox = await this.scopeGuard.prepareSandbox(
             config.allowedFiles,
             config.workingDirectory,
@@ -890,7 +904,6 @@ export class AgentManager {
     }
 
     // 所有适配器都失败 — 清理预留槽位
-    this.sessionStates.delete(slotKey)
     this.reservedSlots.delete(slotKey)
     throw new AdapterError(
       `No adapter available. Tried: ${uniqueChain.join(', ')}. Details: ${fallbackHistory.map((f) => `${f.adapter} (${f.reason})`).join('; ')}`,
@@ -1187,7 +1200,7 @@ export class AgentManager {
     return Math.max(4000, Math.min(16000, Math.round(avgTokens * 1.2)))
   }
 
-  async terminateSession(sessionId: string): Promise<void> {
+  async terminateSession(sessionId: string, reason?: string): Promise<void> {
     // 互斥检查：若 cleanupSessionResources 已在清理，直接返回
     if (this.cleanupInProgress.has(sessionId)) {
       logger.info(`Session ${sessionId} already being cleaned up, skipping terminateSession`)
@@ -1232,7 +1245,8 @@ export class AgentManager {
       outputsForMemory = this.sessionOutputBuffers.get(sessionId) ?? []
 
       try {
-        await adapter.terminateSession(sessionId)
+        const terminationReason = reason ?? state?.terminationReason ?? 'user'
+        await adapter.terminateSession(sessionId, terminationReason)
       } finally {
         // 无论 terminateSession 是否成功，都确保清理路由和状态
         this.router.unbind(sessionId)
@@ -1291,17 +1305,19 @@ export class AgentManager {
 
     // Agent 日志：记录会话完成（附 Token 经济学指标）
     if (this.onSessionComplete && state) {
-      const result = scopeGuardError ? 'failure' : 'success'
+      const abnormal = state.terminationReason === 'crash' || state.terminationReason === 'error'
+      const result = scopeGuardError || abnormal ? 'failure' : 'success'
       this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)
     }
 
     // Prompt 质量反馈环：记录命令类型 + 预算与结果的相关性
     if (state) {
+      const abnormal = state.terminationReason === 'crash' || state.terminationReason === 'error'
       this.promptOutcomeLog.push({
         commandType: state.lastCommandType ?? 'implement',
         promptTokenEstimate: state.promptTokenEstimate ?? 0,
         contextCount: state.contextCount ?? 0,
-        outcome: scopeGuardError ? 'failure' : 'success',
+        outcome: scopeGuardError || abnormal ? 'failure' : 'success',
         duration: Date.now() - state.startTime,
       })
       // 保留最近 100 条记录

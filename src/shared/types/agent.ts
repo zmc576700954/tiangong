@@ -48,6 +48,8 @@ export interface AgentSessionConfig {
   threadId?: string
   /** Phase 4: subagent tool restriction (consumed by adapters in Claude Code / MCP). */
   subagentAllowedTools?: string[] | '*'
+  /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
+  verifyOnly?: boolean
 }
 
 export interface BugContext {
@@ -209,7 +211,7 @@ export interface AgentAdapter {
   offOutput(handler: (output: AgentOutput) => void): void
 
   /** 终止会话 */
-  terminateSession(sessionId: string): Promise<void>
+  terminateSession(sessionId: string, reason?: string): Promise<void>
 
   /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
   resolveOutputSession?(output: AgentOutput): string | undefined

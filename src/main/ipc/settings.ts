@@ -49,26 +49,18 @@ export function registerSettingsHandlers(
           throw new IpcError('Each apiKey must have {provider: string, key: string}', ErrorCode.IPC_INVALID_ARGUMENT)
         }
       }
-      // Preserve real encrypted keys when the renderer sends back masked values.
+      // Preserve real keys when the renderer sends back masked values.
       // The renderer only sees masked keys (e.g. "sk-****abcd"), so writing them
-      // back would overwrite the real encrypted values. Instead, read the current
-      // plain-text keys (via readSettings) and the raw encrypted keys (via
-      // getEncryptedApiKeys) to preserve whichever is available.
-      const { readSettings, getEncryptedApiKeys } = await import('../settings')
+      // back would overwrite the real values. Read the current decrypted keys and
+      // keep the existing value for any masked entry.
+      const { readSettings } = await import('../settings')
       const current = await readSettings()
-      const encryptedKeys = await getEncryptedApiKeys()
       for (const incoming of settings.apiKeys) {
         if (MASKED_KEY_PATTERN.test(incoming.key)) {
           const existingPlain = current.apiKeys.find((k) => k.provider === incoming.provider)
           if (existingPlain && existingPlain.key) {
-            // Re-encrypt the existing plain key — writeSettings will handle encryption
+            // writeSettings will handle encryption
             incoming.key = existingPlain.key
-          } else {
-            // Fall back to the raw encrypted value from disk
-            const existingEncrypted = encryptedKeys.find((k) => k.provider === incoming.provider)
-            if (existingEncrypted) {
-              incoming.key = existingEncrypted.key
-            }
           }
         }
       }

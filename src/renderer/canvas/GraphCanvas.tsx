@@ -305,7 +305,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           console.error('[GraphCanvas] Failed to create project node:', err)
         })
         .finally(() => {
-          // 不清除标记 — 该 graph 已尝试过创建，失败也不重试
+          // Clear the guard so transient failures can be retried on the next render.
+          creatingProjectForGraph.current = null
         })
     }
   }, [graphNodes, graphId, createNode, graphs])

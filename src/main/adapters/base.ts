@@ -152,7 +152,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /**
    * 终止指定会话
    */
-  async terminateSession(sessionId: string): Promise<void> {
+  async terminateSession(sessionId: string, reason: string = 'user'): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (!session) {
       return
@@ -175,9 +175,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.sessionCleanups.delete(sessionId)
         this.disposeProtocolHandler(sessionId)
         // 先发出 complete 事件（此时 session 仍存在，消费者可查找）
+        const message =
+          reason === 'timeout'
+            ? 'Session terminated due to timeout'
+            : reason === 'crash'
+              ? 'Session terminated due to crash'
+              : reason === 'error'
+                ? 'Session terminated due to error'
+                : 'Session terminated by user'
         this.emitOutput({
           type: 'complete',
-          data: 'Session terminated by user',
+          data: message,
           timestamp: Date.now(),
         })
         // 清理进程守护定时器

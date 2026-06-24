@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config([
-  { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**', 'tests/e2e/**'] },
+  { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],
@@ -52,6 +52,26 @@ export default tseslint.config([
         'warn',
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
+    },
+  },
+  {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ['tests/e2e/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+      '@typescript-eslint/consistent-type-imports': [
+        'warn',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
+      ],
+      'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
     },
   },
 ])

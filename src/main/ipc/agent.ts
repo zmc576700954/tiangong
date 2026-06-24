@@ -76,6 +76,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
       nodeTitle: 'Verification',
       nodeId,
       acceptanceCriteria: [],
+      verifyOnly: true,
     }
 
     const { sessionId } = await agentManager.startSession(installed.name, config)
