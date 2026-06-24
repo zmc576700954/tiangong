@@ -24,7 +24,7 @@ import { mapReduceSummarize } from './community/summarizer'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
-import type { ScanModule, NodeType, GraphNode, GraphEdge, CommunitySummary } from '@shared/types'
+import type { ScanModule, NodeType, GraphNode, GraphEdge, CommunitySummary, ProjectMemory } from '@shared/types'
 import type { TaskType } from './synthesis/prompt-templates'
 import type { AgentManager } from '../agent/agent-manager'
 
@@ -337,7 +337,7 @@ ${nodeContent}
 
 function buildRefinementPrompt(
   scope: string, targetId: string, feedback: string,
-  allModules: ScanModule[], memory: import('@shared/types').ProjectMemory,
+  allModules: ScanModule[], memory: ProjectMemory,
 ): string {
   const ctx = scope === 'project'
     ? `模块列表：\n${allModules.map((m) => `- ${m.name}: ${m.description}`).join('\n')}`

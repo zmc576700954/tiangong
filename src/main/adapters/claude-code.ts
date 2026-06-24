@@ -25,8 +25,10 @@ import { AdapterError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import { estimateTokens } from '../shared/token-utils'
 
-type QueryFn = typeof import('@anthropic-ai/claude-agent-sdk').query
-type CreateSdkMcpServerFn = typeof import('@anthropic-ai/claude-agent-sdk').createSdkMcpServer
+import type * as ClaudeAgentSdk from '@anthropic-ai/claude-agent-sdk'
+
+type QueryFn = typeof ClaudeAgentSdk.query
+type CreateSdkMcpServerFn = typeof ClaudeAgentSdk.createSdkMcpServer
 type McpServerConfig = ReturnType<CreateSdkMcpServerFn>
 
 function isAssistantMessage(msg: unknown): msg is {

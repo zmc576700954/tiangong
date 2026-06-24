@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import type { BizGraphSettings } from '../settings'
 
 const mockUserDataPath = '/tmp/bizgraph-test'
 const mockFsData = new Map<string, string>()
@@ -54,7 +55,7 @@ describe('Settings - Encryption', () => {
       mcpServers: [],
     }
 
-    await writeSettings(settings as import('../settings').BizGraphSettings)
+    await writeSettings(settings as BizGraphSettings)
     const read = await readSettings()
 
     expect(read.apiKeys).toHaveLength(1)

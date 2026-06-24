@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, test, expect } from 'vitest'
 import { KnowledgeAssociator } from '../knowledge-associator'
 import type { GraphNode } from '@shared/types'

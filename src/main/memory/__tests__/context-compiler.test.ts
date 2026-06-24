@@ -2,6 +2,8 @@
  * ContextCompiler 单元测试
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ContextCompiler } from '../context-compiler'
 import type { AgentOutput, LayeredContext, MemoryItem } from '@shared/types'

@@ -9,9 +9,11 @@ import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
+import type { Codex } from '@openai/codex-sdk'
+import type { ChildProcess } from 'node:child_process'
 import { createLogger } from '../shared/logger'
 
-type CodexConstructor = typeof import('@openai/codex-sdk').Codex
+type CodexConstructor = typeof Codex
 
 export class CodexAdapter extends BaseAdapter {
   readonly name = 'codex'
@@ -167,7 +169,7 @@ export class CodexAdapter extends BaseAdapter {
     this.codexInstances.delete(sessionId)
   }
 
-  protected override async doTerminate(_session: AgentSession, _proc?: import('node:child_process').ChildProcess): Promise<void> {
+  protected override async doTerminate(_session: AgentSession, _proc?: ChildProcess): Promise<void> {
     this.threads.delete(_session.id)
     this.threadIds.delete(_session.id)
     this.codexInstances.delete(_session.id)

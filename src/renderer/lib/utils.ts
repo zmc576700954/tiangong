@@ -30,9 +30,17 @@ export function formatDate(date: string | Date): string {
 }
 
 /**
+ * 格式化时间
+ */
+export function formatTime(ts: number): string {
+  const d = new Date(ts)
+  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
  * 防抖函数
  */
-export function debounce<T extends (...args: any[]) => unknown>(
+export function debounce<T extends (...args: unknown[]) => unknown>(
   fn: T,
   delay: number,
 ): (...args: Parameters<T>) => void {

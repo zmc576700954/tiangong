@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { ScopeGuard } from '../scope-guard'
-import type { Dirent } from 'node:fs'
+import type { Dirent, Stats } from 'node:fs'
 import path from 'node:path'
 import { ScopeGuardError } from '../errors'
 
@@ -23,7 +23,7 @@ function mockDirent(name: string, isDir = false): Dirent {
 }
 
 function mockStats(mtimeMs: number, size: number) {
-  return { mtimeMs, size } as import('node:fs').Stats
+  return { mtimeMs, size } as Stats
 }
 
 // ============================================

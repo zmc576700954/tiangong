@@ -79,7 +79,7 @@ function checkRateLimit(channel: string, webContentsId: number): void {
  * 支持泛型参数指定：typedHandle<[string, number]>('channel', async (event, name, count) => ...)
  * 默认 Args 为 any[] 以兼容现有代码，新代码建议使用具体类型
  */
-export type TypedHandle = <Args extends unknown[] = any[]>(
+export type TypedHandle = <Args extends unknown[] = unknown[]>(
   channel: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   handler: (event: IpcMainInvokeEvent, ...args: any[] & Args) => Promise<any>,

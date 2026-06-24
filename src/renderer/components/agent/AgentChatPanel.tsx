@@ -89,7 +89,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const rawOutputs = useMemo(
     () => (currentThread ? (threadOutputs[currentThread.id] ?? []) : []),
-    [currentThread?.id, threadOutputs],
+    [currentThread, threadOutputs],
   )
 
   // Hooks for separated concerns

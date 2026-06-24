@@ -18,8 +18,10 @@ vi.mock('node:child_process', () => ({
   execFile: (...args: [string, readonly string[]]) => mockExecFile(...args),
 }))
 
+import type * as Util from 'node:util'
+
 vi.mock('node:util', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:util')>()
+  const actual = await importOriginal<typeof Util>()
   return { ...actual, promisify: (fn: unknown) => fn }
 })
 

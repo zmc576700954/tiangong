@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { SubagentManager } from '../agent/subagent-manager'
 import type { AgentOutput } from '@shared/types'

@@ -3,7 +3,7 @@ import { Readable, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { BaseAdapter } from '../adapters/base'
 import { inferChangeType } from '../adapters/file-change-parser'
-import type { AgentSessionConfig, AgentCommand, AgentOutput, ResolvedContext } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, AgentOutput, ResolvedContext, AgentSession } from '@shared/types'
 
 // Create a concrete adapter for testing
 class TestAdapter extends BaseAdapter {
@@ -15,7 +15,7 @@ class TestAdapter extends BaseAdapter {
     return true
   }
 
-  async startSession(config: AgentSessionConfig): Promise<import('@shared/types').AgentSession> {
+  async startSession(config: AgentSessionConfig): Promise<AgentSession> {
     const session = {
       id: `test-${Date.now()}`,
       adapterName: this.name,

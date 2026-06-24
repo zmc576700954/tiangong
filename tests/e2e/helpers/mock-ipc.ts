@@ -8,8 +8,50 @@ export const MOCK_SESSION_ID = 'session_e2e_001'
 
 type SubagentStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
-export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus }) {
-  await page.addInitScript((opts: { initialStatus: SubagentStatus }) => {
+const defaultMockGraph = {
+  id: 'graph_e2e_001',
+  name: 'E2E Test Graph',
+  type: 'dev',
+  projectPath: '/tmp/bizgraph-e2e-project',
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+}
+
+const defaultMockNodes = [
+  {
+    id: 'node_e2e_module_001',
+    graphId: 'graph_e2e_001',
+    graphType: 'dev',
+    type: 'module',
+    title: 'E2E Module',
+    description: 'Test module node',
+    position: { x: 200, y: 300 },
+    status: 'placeholder',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    metadata: {},
+    content: {},
+  },
+  {
+    id: 'node_e2e_process_001',
+    graphId: 'graph_e2e_001',
+    graphType: 'dev',
+    type: 'process',
+    title: 'E2E Process',
+    description: 'Test process node',
+    position: { x: 500, y: 300 },
+    status: 'placeholder',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    metadata: {},
+    content: {},
+  },
+]
+
+export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: typeof defaultMockGraph[]; nodes?: typeof defaultMockNodes }) {
+  const mockGraphs = options?.graphs ?? [defaultMockGraph]
+  const mockNodes = options?.nodes ?? defaultMockNodes
+  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: typeof defaultMockGraph[]; nodes: typeof defaultMockNodes }) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
 
     function emit(channel: string, ...args: unknown[]) {
@@ -18,45 +60,9 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       }
     }
 
-    const mockGraph = {
-      id: 'graph_e2e_001',
-      name: 'E2E Test Graph',
-      type: 'dev',
-      projectPath: '/tmp/bizgraph-e2e-project',
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }
-
-    const mockNodes = [
-      {
-        id: 'node_e2e_module_001',
-        graphId: 'graph_e2e_001',
-        graphType: 'dev',
-        type: 'module',
-        title: 'E2E Module',
-        description: 'Test module node',
-        position: { x: 200, y: 300 },
-        status: 'placeholder',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        metadata: {},
-        content: {},
-      },
-      {
-        id: 'node_e2e_process_001',
-        graphId: 'graph_e2e_001',
-        graphType: 'dev',
-        type: 'process',
-        title: 'E2E Process',
-        description: 'Test process node',
-        position: { x: 500, y: 300 },
-        status: 'placeholder',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        metadata: {},
-        content: {},
-      },
-    ]
+    const mockGraphs = opts.graphs
+    const mockGraph = mockGraphs[0]
+    const mockNodes = opts.nodes
 
     const mockSubagentTypes = [
       { name: 'explore', displayName: '探索者', description: 'Read-only search', allowedTools: ['Read', 'Glob', 'Grep'], scopeStrategy: 'inherit' },
@@ -79,7 +85,7 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     const mockApi: Record<string, unknown> = {
       // Graph
       'graph:get': async () => ({ graph: mockGraph, nodes: mockNodes, edges: [], bugs: [] }),
-      'graph:list': async () => [mockGraph],
+      'graph:list': async () => mockGraphs,
       'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraph, name, type }),
 
       // Node
@@ -212,7 +218,7 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     window.electronAPI = mockApi as Window['electronAPI']
-  }, { initialStatus: options?.initialStatus ?? 'queued' })
+  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes })
 }
 
 export async function setMockInvocationStatus(page: Page, status: SubagentStatus, resultText?: string) {

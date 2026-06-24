@@ -10,14 +10,23 @@ import { useResizablePanel } from './hooks/useResizablePanel'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 function App() {
-  const leftPanel = useResizablePanel({
+  const {
+    width: leftWidth,
+    collapsed: leftCollapsed,
+    toggleCollapse: toggleLeftPanel,
+    startResize: startLeftResize,
+  } = useResizablePanel({
     initialWidth: 240,
     minWidth: 180,
     maxWidth: 400,
     direction: 'left',
   })
 
-  const rightPanel = useResizablePanel({
+  const {
+    width: rightWidth,
+    setFixedWidth: setRightPanelWidth,
+    startResize: startRightResize,
+  } = useResizablePanel({
     initialWidth: 320,
     minWidth: 240,
     maxWidth: 500,
@@ -41,7 +50,7 @@ function App() {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
         e.preventDefault()
-        leftPanel.toggleCollapse()
+        toggleLeftPanel()
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'j') {
         e.preventDefault()
@@ -50,7 +59,7 @@ function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [toggleLeftPanel])
 
   // Responsive layout detection
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -82,31 +91,31 @@ function App() {
   // Auto-expand left panel when menu: Open Project fires
   useEffect(() => {
     const unsub = window.electronAPI.onMenuOpenProject(() => {
-      if (leftPanel.collapsed) leftPanel.toggleCollapse()
+      if (leftCollapsed) toggleLeftPanel()
     })
     return unsub
-  }, [leftPanel.collapsed, leftPanel.toggleCollapse])
+  }, [leftCollapsed, toggleLeftPanel])
 
   // 同步展开模式到右侧面板固定宽度
   useEffect(() => {
-    rightPanel.setFixedWidth(expandedAgent ? 480 : null)
-  }, [expandedAgent])
+    setRightPanelWidth(expandedAgent ? 480 : null)
+  }, [expandedAgent, setRightPanelWidth])
 
   return (
     <ErrorBoundary>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* Left directory tree */}
-        {!leftPanel.collapsed && (
+        {!leftCollapsed && (
           <>
             <ErrorBoundary label="项目面板">
-              <div style={{ width: leftPanel.width, minWidth: leftPanel.width }} className="shrink-0">
-                <LeftPanel onCollapse={leftPanel.toggleCollapse} />
+              <div style={{ width: leftWidth, minWidth: leftWidth }} className="shrink-0">
+                <LeftPanel onCollapse={toggleLeftPanel} />
               </div>
             </ErrorBoundary>
             <div
               className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
               style={{ width: '3px' }}
-              onMouseDown={leftPanel.startResize}
+              onMouseDown={startLeftResize}
             >
               <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
             </div>
@@ -116,9 +125,9 @@ function App() {
         {/* Center canvas area */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Left panel toggle */}
-          {leftPanel.collapsed && (
+          {leftCollapsed && (
             <button
-              onClick={leftPanel.toggleCollapse}
+              onClick={toggleLeftPanel}
               className="absolute top-2 left-2 z-10 p-1.5 rounded hover:bg-muted transition-colors"
               title="Show project panel"
             >
@@ -128,9 +137,9 @@ function App() {
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
           <ErrorBoundary label="画布">
             <div className="flex-1 relative">
-              {leftPanel.collapsed && !isSmallScreen && (
+              {leftCollapsed && !isSmallScreen && (
                 <button
-                  onClick={() => leftPanel.toggleCollapse()}
+                  onClick={() => toggleLeftPanel()}
                   className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                   title="Show file tree (Ctrl+B)"
                 >
@@ -166,13 +175,13 @@ function App() {
             <div
               className="group relative flex cursor-col-resize items-center justify-center shrink-0 select-none"
               style={{ width: '3px' }}
-              onMouseDown={rightPanel.startResize}
+              onMouseDown={startRightResize}
             >
               <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
             </div>
             <ErrorBoundary label="Agent 面板">
               <div
-                style={{ width: rightPanel.width, minWidth: rightPanel.width }}
+                style={{ width: rightWidth, minWidth: rightWidth }}
                 className="shrink-0"
               >
                 <RightPanel

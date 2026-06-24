@@ -49,7 +49,7 @@ function getModelCacheDir(): string {
 }
 
 export class EmbeddingService {
-  private extractor: any = null
+  private extractor: unknown = null
   private initPromise: Promise<void> | null = null
   /** Whether initialization has been attempted (regardless of outcome) */
   private _initAttempted: boolean = false
@@ -172,13 +172,13 @@ export class EmbeddingService {
       throw new Error('EmbeddingService not initialized: model not available')
     }
 
-    const output = await this.extractor(text, {
+    const extractor = this.extractor as (text: string, options: { pooling: 'mean'; normalize: boolean }) => Promise<{ data: Float32Array | number[] }>
+    const output = await extractor(text, {
       pooling: 'mean',
       normalize: true,
     })
 
-    // @xenova/transformers 返回 Tensor，.data 是 Float32Array 或 number[]
-    const data = output.data as Float32Array | number[]
+    const data = output.data
     const vector = Array.from(data)
 
     if (vector.length !== EMBEDDING_DIM) {

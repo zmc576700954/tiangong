@@ -1,29 +1,26 @@
 import { test, expect } from '@playwright/test'
-import { waitForCanvas, createNodeViaMenu } from './helpers/graph-helpers'
-import { getNodeIds } from './helpers/node-helpers'
+import { waitForCanvas } from './helpers/graph-helpers'
+import { setupMockIpc, MOCK_NODE_MODULE_ID, MOCK_NODE_PROCESS_ID } from './helpers/mock-ipc'
 
 test.describe('Edge Creation', () => {
   test.beforeEach(async ({ page }) => {
+    await setupMockIpc(page)
     await page.goto('http://localhost:5173')
+    await page.click('text=E2E Test Graph')
     await waitForCanvas(page)
   })
 
   test('should connect two nodes and show edge type menu', async ({ page }) => {
-    // Create two nodes
-    await createNodeViaMenu(page, 'module', { x: 200, y: 300 })
-    await createNodeViaMenu(page, 'process', { x: 500, y: 300 })
-
     const nodes = page.locator('[data-id].react-flow__node')
     await expect(nodes).toHaveCount(2, { timeout: 5_000 })
 
-    // Right-click first node and select connect
-    const nodeIds = await getNodeIds(page)
-    const sourceNode = page.locator(`[data-id="${nodeIds[0]}"]`)
+    // Right-click source node and select connect
+    const sourceNode = page.locator(`[data-id="${MOCK_NODE_MODULE_ID}"]`)
     await sourceNode.click({ button: 'right' })
     await page.click('[data-testid="node-menu-connect"]')
 
-    // Click second node to trigger connection
-    const targetNode = page.locator(`[data-id="${nodeIds[1]}"]`)
+    // Click target node to trigger connection
+    const targetNode = page.locator(`[data-id="${MOCK_NODE_PROCESS_ID}"]`)
     await targetNode.click()
 
     // Verify edge type menu appears
@@ -31,20 +28,15 @@ test.describe('Edge Creation', () => {
   })
 
   test('should create an edge after selecting type', async ({ page }) => {
-    // Create two nodes
-    await createNodeViaMenu(page, 'module', { x: 200, y: 300 })
-    await createNodeViaMenu(page, 'process', { x: 500, y: 300 })
-
     const nodes = page.locator('[data-id].react-flow__node')
     await expect(nodes).toHaveCount(2, { timeout: 5_000 })
 
     // Connect via right-click
-    const nodeIds = await getNodeIds(page)
-    const sourceNode = page.locator(`[data-id="${nodeIds[0]}"]`)
+    const sourceNode = page.locator(`[data-id="${MOCK_NODE_MODULE_ID}"]`)
     await sourceNode.click({ button: 'right' })
     await page.click('[data-testid="node-menu-connect"]')
 
-    const targetNode = page.locator(`[data-id="${nodeIds[1]}"]`)
+    const targetNode = page.locator(`[data-id="${MOCK_NODE_PROCESS_ID}"]`)
     await targetNode.click()
 
     // Select default edge type

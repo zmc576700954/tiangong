@@ -4,7 +4,7 @@
  */
 
 import type { AgentAdapter } from '@shared/types'
-import { AdapterRegistry } from './adapter-registry'
+import { type AdapterRegistry } from './adapter-registry'
 import { SessionNotFoundError, AdapterError } from '../errors'
 import { createLogger } from '../shared/logger'
 

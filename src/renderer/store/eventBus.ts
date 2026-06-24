@@ -68,7 +68,7 @@ type EventHandler<E extends EventName> = E extends keyof EventParamMap
   : (...args: unknown[]) => void
 
 class EventBus {
-  private handlers = new Map<string, Set<EventHandler<any>>>()
+  private handlers = new Map<string, Set<(...args: unknown[]) => void>>()
 
   /**
    * 订阅事件，返回取消订阅函数
@@ -79,9 +79,10 @@ class EventBus {
       set = new Set()
       this.handlers.set(event, set)
     }
-    set.add(handler)
+    const wrapped = (...args: unknown[]) => (handler as (...args: unknown[]) => void)(...args)
+    set.add(wrapped)
     return () => {
-      set!.delete(handler)
+      set!.delete(wrapped)
       if (set!.size === 0) this.handlers.delete(event)
     }
   }

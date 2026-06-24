@@ -5,8 +5,9 @@
 
 import type { AgentManager } from '../agent/agent-manager'
 import { VerificationService } from '../agent/verification-service'
-import { AgentLogRepository } from '../repositories/agent-log-repository'
+import { type AgentLogRepository } from '../repositories/agent-log-repository'
 import type { NodeRepository } from '../repositories/node-repository'
+import type { GraphNode, AgentOutput } from '@shared/types'
 import type { TypedHandle } from './utils'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
@@ -32,7 +33,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
 
   typedHandle('agent:resolveAndSendCommand', async (_, sessionId, command, contextRefs, nodeIds) => {
     const nodes = nodeRepo && nodeIds?.length
-      ? (await Promise.all(nodeIds.map((id: string) => nodeRepo.findById(id)))).filter(Boolean) as import('@shared/types').GraphNode[]
+      ? (await Promise.all(nodeIds.map((id: string) => nodeRepo.findById(id)))).filter(Boolean) as GraphNode[]
       : undefined
     return agentManager.resolveAndSendCommand(sessionId, command, contextRefs, nodes)
   })
@@ -91,7 +92,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
           agentManager.removeSessionOutputListener(handler)
           resolve(value)
         }
-        const handler = (output: import('@shared/types').AgentOutput) => {
+        const handler = (output: AgentOutput) => {
           if (output.type === 'stdout') collected += output.data
           if (output.type === 'complete' || output.type === 'error') {
             settle(collected)

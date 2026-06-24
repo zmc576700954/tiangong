@@ -67,7 +67,7 @@ export function useResizablePanel(options: UseResizablePanelOptions): UseResizab
       window.removeEventListener('mousemove', handleMouseMove)
       window.removeEventListener('mouseup', handleMouseUp)
     }
-  }, [isResizing, direction, minWidth, maxWidth])
+  }, [isResizing, direction, minWidth, maxWidth, storageKey])
 
   const startResize = useCallback(() => {
     setIsResizing(true)

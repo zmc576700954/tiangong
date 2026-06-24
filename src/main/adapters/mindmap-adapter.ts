@@ -14,6 +14,7 @@
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { ChildProcess } from 'node:child_process'
 import { createLogger } from '../shared/logger'
 import { runClaude } from '../mindmap-agent/claude-runner'
 
@@ -144,7 +145,7 @@ export class MindMapAdapter extends BaseAdapter {
     }
   }
 
-  protected override async doTerminate(_session: AgentSession, _proc?: import('node:child_process').ChildProcess): Promise<void> {
+  protected override async doTerminate(_session: AgentSession, _proc?: ChildProcess): Promise<void> {
     const controller = this.activeControllers.get(_session.id)
     if (controller) {
       controller.abort()

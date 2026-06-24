@@ -2,6 +2,8 @@
  * PromptOrchestrator 单元测试
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PromptOrchestrator } from '../prompt-orchestrator'
 import type { AssembleResult } from '../prompt-orchestrator'

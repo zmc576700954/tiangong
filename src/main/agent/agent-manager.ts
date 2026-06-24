@@ -6,6 +6,7 @@
  * - OutputBroadcaster: 输出广播
  */
 
+import type { ResultSet } from '@libsql/client'
 import type {
   AgentAdapter,
   AgentSessionConfig,
@@ -18,17 +19,19 @@ import type {
   AdapterFallbackAttempt,
   AdapterPreferences,
   ProjectMemory,
+  Sandbox,
+  NodeMetadata,
 } from '@shared/types'
-import { AdapterRegistry } from './adapter-registry'
-import { SessionRouter } from './session-router'
-import { OutputBroadcaster } from './output-broadcaster'
+import { type AdapterRegistry } from './adapter-registry'
+import { type SessionRouter } from './session-router'
+import { type OutputBroadcaster, type BroadcastPayload } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, ScopeGuardError, ErrorCode } from '../errors'
 import { getClient } from '../database'
 import { getSessionRecoveryManager } from './session-recovery'
 import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
-import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
+import { SmartContextResolver, type ResolvedCodeContext } from '../code-intelligence/smart-context-resolver'
 import { readMemory } from '../mindmap-agent/memory'
 import { MemoryStore } from '../memory'
 import { PromptOrchestrator } from '../memory/prompt-orchestrator'
@@ -68,7 +71,7 @@ interface SessionState {
   broadcastName: string
   adapterName: string
   startTime: number
-  sandbox?: import('@shared/types').Sandbox
+  sandbox?: Sandbox
   /** 最后一次发送的指令类型（用于记忆提取的语义区分） */
   lastCommandType?: AgentCommandType
   /** Prompt Token 估算值（用于质量反馈环） */
@@ -95,7 +98,7 @@ export class AgentManager {
   /** 最大并发会话数，防止会话无限创建导致资源泄漏 */
   private MAX_SESSIONS = this.calculateMaxSessions()
   private outputHandlers = new Map<string, (output: AgentOutput) => void>()
-  private outputListeners = new Map<(output: AgentOutput) => void, (payload: import('./output-broadcaster').BroadcastPayload) => void>()
+  private outputListeners = new Map<(output: AgentOutput) => void, (payload: BroadcastPayload) => void>()
   private contextResolver = new ContextResolver()
   private scopeGuard = new ScopeGuard()
   private smartContextResolver?: SmartContextResolver
@@ -108,7 +111,7 @@ export class AgentManager {
   private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
   private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
   /** 会话级输出监听器：按 broadcastName 过滤，防止跨会话输出污染 */
-  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (payload: import('./output-broadcaster').BroadcastPayload) => void>()
+  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (payload: BroadcastPayload) => void>()
   /** sessionId → broadcastName 映射（由 startSession 设置，与 broadcaster 的广播名一致） */
   private sessionBroadcastNames = new Map<string, string>()
   /** sessionId → 该会话注册的输出监听 handler 集合（用于 cleanupSessionResources 自动清理） */
@@ -364,7 +367,7 @@ export class AgentManager {
    */
   private async rollbackWithRetry(
     sessionId: string,
-    sandbox: import('@shared/types').Sandbox,
+    sandbox: Sandbox,
     maxRetries: number,
   ): Promise<void> {
     let lastError: unknown
@@ -638,7 +641,7 @@ export class AgentManager {
     return this.subagentManager
   }
 
-  getSandbox(sessionId: string): import('@shared/types').Sandbox | undefined {
+  getSandbox(sessionId: string): Sandbox | undefined {
     return this.sessionStates.get(sessionId)?.sandbox
   }
 
@@ -667,7 +670,7 @@ export class AgentManager {
     return this.router.getActiveSessionIds()
   }
 
-  get scopeGuardInstance(): import('../scope-guard').ScopeGuard {
+  get scopeGuardInstance(): ScopeGuard {
     return this.scopeGuard
   }
 
@@ -775,7 +778,7 @@ export class AgentManager {
         // Reset consecutive timeout counter on success
         this.adapterTimeoutCounts.delete(candidate)
 
-        let sandbox: import('@shared/types').Sandbox | undefined
+        let sandbox: Sandbox | undefined
         if (config.allowedFiles.length > 0) {
           sandbox = await this.scopeGuard.prepareSandbox(
             config.allowedFiles,
@@ -835,7 +838,7 @@ export class AgentManager {
               sql: "UPDATE nodes SET status = 'developing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'placeholder'",
               args: [config.nodeId],
             })
-            if ((result as any).rowsAffected > 0) {
+            if ((result as ResultSet).rowsAffected > 0) {
               this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
             }
           } catch (err) {
@@ -1121,7 +1124,7 @@ export class AgentManager {
   /**
    * 将 ResolvedCodeContext 格式化为 prompt 字符串
    */
-  private formatCodeContext(ctx: import('../code-intelligence/smart-context-resolver').ResolvedCodeContext): string {
+  private formatCodeContext(ctx: ResolvedCodeContext): string {
     const lines: string[] = ['# 代码上下文']
 
     if (ctx.summary) {
@@ -1325,7 +1328,7 @@ export class AgentManager {
           const row = nodeResult.rows[0]
           if (row) {
             try {
-              const metadata = row.metadata ? JSON.parse(row.metadata as string) : {}
+              const metadata: NodeMetadata & { linkedFiles?: string[]; lastModified?: number } = row.metadata ? JSON.parse(row.metadata as string) : {}
               const linkedFiles: string[] = metadata.linkedFiles ?? []
               // Check if any changed file matches a linked file
               const matchedFiles = changedPaths.filter((fp) =>
@@ -1336,7 +1339,7 @@ export class AgentManager {
                 metadata.lastModified = Date.now()
                 const { NodeRepository } = await import('../repositories/node-repository')
                 const nodeRepo = new NodeRepository(db)
-                await nodeRepo.update(nodeId, { metadata: metadata as any })
+                await nodeRepo.update(nodeId, { metadata })
               }
             } catch (e) {
               logger.warn('Failed to parse metadata for file-node association', { nodeId, error: String(e) })
@@ -1488,7 +1491,7 @@ export class AgentManager {
    * 添加全局输出监听器（用于 MindMapAgent 等内部组件收集输出）
    */
   addOutputListener(handler: (output: AgentOutput) => void): void {
-    const wrapped = (payload: import('./output-broadcaster').BroadcastPayload) => handler(payload.output)
+    const wrapped = (payload: BroadcastPayload) => handler(payload.output)
     // 存储包装后的 handler 以便移除
     this.outputListeners.set(handler, wrapped)
     this.broadcaster.onBroadcast(wrapped)
@@ -1514,7 +1517,7 @@ export class AgentManager {
     if (!state) return
     const targetName = state.broadcastName
 
-    const filteredHandler = (payload: import('./output-broadcaster').BroadcastPayload) => {
+    const filteredHandler = (payload: BroadcastPayload) => {
       if (payload.adapterName === targetName) {
         handler(payload.output)
       }

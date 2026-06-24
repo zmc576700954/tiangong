@@ -5,7 +5,7 @@
 
 import * as chokidar from 'chokidar'
 import * as path from 'node:path'
-import { ProjectIndexer } from './project-indexer'
+import { type ProjectIndexer } from './project-indexer'
 import { getAstCache } from './ast-cache'
 
 export interface FileWatcherOptions {

@@ -24,7 +24,7 @@ import { useAppStore } from '../store/appStore'
 import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
-import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
+import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { cn } from '../lib/utils'
@@ -215,16 +215,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [genProgress, setGenProgress] = useState<{ stage: string; progress: number } | null>(null)
 
   // ────────────────────────────────────────────────────────────────
-  // 连线模式 Hook
-  // ────────────────────────────────────────────────────────────────
-  const {
-    connectingSourceId,
-    isConnecting,
-    startConnect,
-    cancelConnect,
-  } = useConnectionMode({ graphEdges, createEdge, graphId, setRfEdges })
-
-  // ────────────────────────────────────────────────────────────────
   // 边创建流程 Hook
   // ────────────────────────────────────────────────────────────────
   const {
@@ -235,6 +225,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     handleCreateEdge,
     cancelPendingConnection,
   } = useEdgeConnection(graphId)
+
+  // ────────────────────────────────────────────────────────────────
+  // 连线模式 Hook
+  // ────────────────────────────────────────────────────────────────
+  const {
+    connectingSourceId,
+    isConnecting,
+    startConnect,
+    cancelConnect,
+  } = useConnectionMode({ graphEdges, createEdge, graphId, setRfEdges, onConnect })
 
   // Connection visual feedback handlers (Task 17)
   const handleConnectStart = useCallback<OnConnectStart>(
@@ -544,7 +544,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [graphNodes])
 
   /** 保存节点上下文 */
-  const handleSaveContext = useCallback(async (nodeId: string, contexts: import('@shared/types').ContextRef[]) => {
+  const handleSaveContext = useCallback(async (nodeId: string, contexts: ContextRef[]) => {
     try {
       await updateNode(nodeId, { contextRefs: contexts })
     } catch (err) {

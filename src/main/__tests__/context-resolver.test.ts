@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ContextResolver, truncateToBudget } from '../context-resolver'
 import { estimateTokens } from '../shared/token-utils'

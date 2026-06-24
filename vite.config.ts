@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import path from 'node:path'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -62,7 +62,7 @@ export default defineConfig(async () => ({
             filename: 'dist/stats.html',
             gzipSize: true,
             brotliSize: true,
-          }) as any,
+          }) as Plugin,
         ]
       : []),
   ],

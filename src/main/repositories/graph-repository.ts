@@ -205,7 +205,7 @@ export class GraphRepository {
     for (const [oldId, newId] of idMap) {
       const row = rowById.get(oldId)
       if (!row) continue
-      const oldParentId = rowOptStr(row as any, 'parent_id')
+      const oldParentId = rowOptStr(row, 'parent_id')
       if (oldParentId && idMap.has(oldParentId)) {
         parentUpdates.push({
           sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',

@@ -213,7 +213,7 @@ export function useAgentOutputListener(currentThreadId: string | null) {
       cleanup()
       progressCleanup?.()
     }
-  }, [])
+  }, [currentThreadId])
 
   return streamingMsgIdRef
 }

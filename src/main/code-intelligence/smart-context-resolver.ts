@@ -10,7 +10,7 @@
 import * as path from 'node:path'
 import { readFile as readFs } from 'node:fs/promises'
 import type { SymbolQueryResult, GraphNode } from '@shared/types'
-import { SymbolIndex } from './symbol-index'
+import { type SymbolIndex } from './symbol-index'
 import { EntityExtractor, type ExtractionResult } from './entity-extractor'
 
 export interface SmartContextOptions {

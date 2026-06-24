@@ -2,6 +2,8 @@
  * GraphMemory 单元测试
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { GraphMemory, formatEdgeLabel, getEdgeStyle } from '../graph-memory'
 import type { MemoryItem, MemoryKind } from '@shared/types'

@@ -24,7 +24,7 @@ class Logger {
   }
 
   debug(...args: unknown[]): void {
-    if (this.shouldLog('debug')) console.log(`[${new Date().toISOString()}] [${this.module}]`, ...args)
+    if (this.shouldLog('debug')) console.info(`[${new Date().toISOString()}] [${this.module}]`, ...args)
   }
 
   info(...args: unknown[]): void {

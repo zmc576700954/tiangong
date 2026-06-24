@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import type { Edge } from '@xyflow/react'
+import type { Connection, Edge } from '@xyflow/react'
 import type { GraphEdge } from '@shared/types'
 import { getEdgeMarkerEnd } from '../edge-utils'
 
@@ -39,6 +39,8 @@ interface UseConnectionModeOptions {
   graphId: string
   /** 更新 ReactFlow 边状态 */
   setRfEdges: React.Dispatch<React.SetStateAction<Edge[]>>
+  /** 选择边类型后创建边（替代直接创建） */
+  onConnect?: (connection: Connection) => void
 }
 
 /**
@@ -58,6 +60,7 @@ export function useConnectionMode({
   createEdge,
   graphId,
   setRfEdges,
+  onConnect,
 }: UseConnectionModeOptions): ConnectionModeState {
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null)
   const connectingSourceIdRef = useRef<string | null>(null)
@@ -92,30 +95,41 @@ export function useConnectionMode({
         (ed) => ed.source === srcId && ed.target === targetNodeId,
       )
 
-      if (!exists) {
-        const edgeId = generateId('edge')
-        const newEdge: Edge = {
-          id: edgeId,
-          source: srcId,
-          target: targetNodeId,
-          type: 'bizEdge',
-          data: { edgeType: 'default' as const },
-          markerEnd: getEdgeMarkerEnd('default'),
-          style: { stroke: '#94a3b8', strokeWidth: 2 },
-        }
-        setRfEdges((eds) => [...eds, newEdge])
-
-        // 异步持久化到数据库
-        createEdge({
-          source: srcId,
-          target: targetNodeId,
-          label: '',
-          graphId,
-          edgeType: 'default',
-        }).catch((err: unknown) => {
-          console.error('[useConnectionMode] Failed to persist edge:', err)
-        })
+      if (exists) {
+        setConnectingSourceId(null)
+        connectingSourceIdRef.current = null
+        return
       }
+
+      if (onConnect) {
+        onConnect({ source: srcId, target: targetNodeId, sourceHandle: null, targetHandle: null })
+        setConnectingSourceId(null)
+        connectingSourceIdRef.current = null
+        return
+      }
+
+      const edgeId = generateId('edge')
+      const newEdge: Edge = {
+        id: edgeId,
+        source: srcId,
+        target: targetNodeId,
+        type: 'bizEdge',
+        data: { edgeType: 'default' as const },
+        markerEnd: getEdgeMarkerEnd('default'),
+        style: { stroke: '#94a3b8', strokeWidth: 2 },
+      }
+      setRfEdges((eds) => [...eds, newEdge])
+
+      // 异步持久化到数据库
+      createEdge({
+        source: srcId,
+        target: targetNodeId,
+        label: '',
+        graphId,
+        edgeType: 'default',
+      }).catch((err: unknown) => {
+        console.error('[useConnectionMode] Failed to persist edge:', err)
+      })
 
       setConnectingSourceId(null)
       connectingSourceIdRef.current = null
@@ -123,7 +137,7 @@ export function useConnectionMode({
 
     document.addEventListener('click', handleCaptureClick, { capture: true })
     return () => document.removeEventListener('click', handleCaptureClick, { capture: true })
-  }, [createEdge, graphId, setRfEdges])
+  }, [createEdge, graphId, setRfEdges, onConnect])
 
   const startConnect = useCallback((sourceId: string) => {
     setConnectingSourceId(sourceId)

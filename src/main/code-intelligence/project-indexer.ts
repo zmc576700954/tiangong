@@ -4,11 +4,12 @@
  */
 
 import * as fsSync from 'node:fs'
+import type { Dirent } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 import * as path from 'node:path'
 import * as ts from 'typescript'
 import { AstParser } from './ast-parser'
-import { SymbolIndex } from './symbol-index'
+import { type SymbolIndex } from './symbol-index'
 import { getAstCache } from './ast-cache'
 
 export interface IndexOptions {
@@ -272,7 +273,7 @@ export class ProjectIndexer {
   }
 
   private async walkDir(dir: string, results: string[], excludeDirs: string[]): Promise<void> {
-    let entries: import('node:fs').Dirent[]
+    let entries: Dirent[]
     try {
       entries = await readdir(dir, { withFileTypes: true })
     } catch {

@@ -12,6 +12,7 @@ import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql'
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown'
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import React, { useState, useCallback } from 'react'
+import { formatTime } from '../../lib/utils'
 
 // Register only the languages we need
 SyntaxHighlighter.registerLanguage('typescript', ts)
@@ -304,9 +305,4 @@ export function RunningIndicator({
       </span>
     </div>
   )
-}
-
-export function formatTime(ts: number): string {
-  const d = new Date(ts)
-  return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }

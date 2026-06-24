@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, test, expect, vi } from 'vitest'
 import { GraphSyncService } from '../graph-sync-service'
 

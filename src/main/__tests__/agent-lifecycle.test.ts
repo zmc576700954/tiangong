@@ -3,6 +3,8 @@
  * 覆盖 SessionRouter 的 TTL 行为和 adapter 终止逻辑
  */
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { SessionRouter } from '../agent/session-router'
 import { AdapterRegistry } from '../agent/adapter-registry'

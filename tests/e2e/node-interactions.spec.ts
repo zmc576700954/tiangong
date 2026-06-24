@@ -1,10 +1,13 @@
 import { test, expect } from '@playwright/test'
 import { waitForCanvas, createNodeViaMenu } from './helpers/graph-helpers'
 import { getNodeIds, deleteNodeViaMenu } from './helpers/node-helpers'
+import { setupMockIpc } from './helpers/mock-ipc'
 
 test.describe('Node Interactions', () => {
   test.beforeEach(async ({ page }) => {
+    await setupMockIpc(page, { nodes: [] })
     await page.goto('http://localhost:5173')
+    await page.click('text=E2E Test Graph')
     await waitForCanvas(page)
   })
 
