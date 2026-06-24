@@ -12,6 +12,7 @@
 
 import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { isRelativeTraversal } from './shared/path-utils'
 import type { ContextRef, ResolvedContext, GraphNode } from '@shared/types'
 
 import { estimateTokens } from './shared/token-utils'
@@ -178,7 +179,7 @@ export class ContextResolver {
     const resolvedPath = path.resolve(basePath, ref.id)
     const resolvedBase = path.resolve(basePath)
     const relative = path.relative(resolvedBase, resolvedPath)
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    if (isRelativeTraversal(relative) || path.isAbsolute(relative)) {
       return `[路径越界: ${ref.label} (${ref.id})]`
     }
 

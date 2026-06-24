@@ -19,7 +19,7 @@ import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/type
 import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
-import { isPathWithin } from './shared/path-utils'
+import { isPathWithin, isRelativeTraversal } from './shared/path-utils'
 
 /** 获取临时目录路径（可在测试中 mock） */
 // THREAD-SAFETY NOTE: This module-level mutable function reference is not thread-safe.
@@ -158,10 +158,7 @@ function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): strin
   return allowedFiles.map((file) => {
     const resolved = path.resolve(workingDir, file)
     const relative = path.relative(workingDir, resolved)
-    // Windows: path.relative is case-sensitive but the filesystem is not;
-    // normalize both sides to lowercase before comparing.
-    const effectiveRelative = process.platform === 'win32' ? relative.toLowerCase() : relative
-    const isTraversal = effectiveRelative.startsWith('..') || path.isAbsolute(relative)
+    const isTraversal = isRelativeTraversal(relative) || path.isAbsolute(relative)
     if (isTraversal) {
       throw new ScopeGuardError(
         `Path traversal detected: ${file} escapes working directory ${workingDir}`,

@@ -40,7 +40,7 @@ function readLinkTargetSync(p: string): string | undefined {
 /**
  * Resolve a path to its real (symlink-free) location.
  *
- - On ENOENT/ENAMETOOLONG, fall back to `path.resolve` so the check still works
+ * - On ENOENT/ENAMETOOLONG, fall back to `path.resolve` so the check still works
  *   for not-yet-created files.
  * - On other errors, if the path is a symlink, resolve the link target manually
  *   so symlink-escape detection is not weakened.
@@ -61,6 +61,16 @@ async function safeRealpath(p: string): Promise<string> {
   }
 }
 
+/**
+ * Synchronous variant of `safeRealpath`.
+ *
+ * - On ENOENT/ENAMETOOLONG, falls back to `path.resolve` for not-yet-created
+ *   paths.
+ * - If the path is a symlink, resolves the link target manually so symlink
+ *   escapes are still detected.
+ * - For any other error on a non-symlink path, falls back to `path.resolve`
+ *   rather than propagating permission errors to sync IPC handlers.
+ */
 function safeRealpathSync(p: string): string {
   try {
     return fsSync.realpathSync(p)
@@ -72,7 +82,8 @@ function safeRealpathSync(p: string): string {
     if (target !== undefined) {
       return path.resolve(path.dirname(p), target)
     }
-    throw err
+    // Fallback for permission / access errors on non-symlink paths.
+    return path.resolve(p)
   }
 }
 
@@ -89,6 +100,18 @@ function normalizeForCompare(p: string): string {
   return normalized
 }
 
+/**
+ * Return true if a path computed relative to a parent directory represents an
+ * upward traversal (`..` or `../...`).
+ *
+ * Files whose names merely start with dots (e.g. `..foo.txt`, `...bar.ts`) are
+ * not treated as traversal.
+ */
+export function isRelativeTraversal(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, '/')
+  return normalized === '..' || normalized.startsWith('../')
+}
+
 function checkRelativeContainment(parent: string, child: string): boolean {
   const rel = path.relative(parent, child)
   const normalizedRel = process.platform === 'win32' ? rel.replace(/\\/g, '/') : rel
@@ -97,7 +120,7 @@ function checkRelativeContainment(parent: string, child: string): boolean {
   if (normalizedRel === '') return true
 
   // Reject explicit upward traversal (`..` or `../...`).
-  if (normalizedRel === '..' || normalizedRel.startsWith('../')) return false
+  if (isRelativeTraversal(normalizedRel)) return false
 
   // An absolute relative result means the paths are on different Windows
   // drives or otherwise unrelated.

@@ -4,6 +4,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { isRelativeTraversal } from '../shared/path-utils'
 import type { FileAnalysis } from './types'
 import { Semaphore } from './types'
 import { createLogger } from '../shared/logger'
@@ -102,7 +103,7 @@ export async function analyzeKeyFiles(
         const fullPath = path.resolve(projectPath, relPath)
         // 验证文件路径在项目目录内，防止路径遍历
         const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
-        if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
+        if (isRelativeTraversal(relativeCheck) || path.isAbsolute(relativeCheck)) {
           logger.warn(`Path traversal detected: ${relPath}`)
           return
         }

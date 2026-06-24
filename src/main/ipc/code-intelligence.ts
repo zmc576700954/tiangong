@@ -4,6 +4,7 @@
  */
 
 import path from 'node:path'
+import { isRelativeTraversal } from '../shared/path-utils'
 import { SymbolIndex } from '../code-intelligence/symbol-index'
 import { ProjectIndexer } from '../code-intelligence/project-indexer'
 import { ExecutionPlanner } from '../code-intelligence/execution-planner'
@@ -62,13 +63,7 @@ export function registerCodeIntelHandlers(typedHandle: TypedHandle): void {
       throw new Error('Code intelligence not initialized')
     }
     const normalized = path.normalize(filePath)
-    const sepNormalized = process.platform === 'win32' ? normalized.replace(/\\/g, '/') : normalized
-    if (
-      !filePath ||
-      sepNormalized === '..' ||
-      sepNormalized.startsWith('../') ||
-      path.isAbsolute(sepNormalized)
-    ) {
+    if (!filePath || isRelativeTraversal(normalized) || path.isAbsolute(normalized)) {
       throw new IpcError('Invalid filePath', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const related = await symbolIndex.getRelatedFiles(filePath, depth ?? 2)
