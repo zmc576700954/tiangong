@@ -259,7 +259,7 @@ describe('SubagentManager', () => {
     expect(invocationId).toBeDefined()
 
     await mgr.cancel(invocationId!)
-    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1')
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'user')
     const row = mockRepo.rows.get(invocationId!)
     expect(row.status).toBe('cancelled')
 

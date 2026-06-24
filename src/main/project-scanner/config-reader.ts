@@ -5,6 +5,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createLogger } from '../shared/logger'
+import { isErrorWithCode } from '../shared/errno'
 
 const logger = createLogger('ProjectScanner')
 
@@ -42,7 +43,7 @@ export async function readConfigs(projectPath: string): Promise<ProjectConfigs> 
       return parser(raw)
     } catch (err: unknown) {
       // ENOENT 是预期行为（项目可能不使用该技术栈），不输出日志
-      if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (isErrorWithCode(err) && err.code === 'ENOENT') {
         return null
       }
       logger.warn(`Failed to read ${filename}:`, err)

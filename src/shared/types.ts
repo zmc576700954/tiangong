@@ -50,7 +50,7 @@ export type {
   MemoryKind, MemoryItem, ContextLayer, LayeredContext,
   TokenEconomics, AgentMode, AgentModeConfig, OutputHealth,
   CompactStrategy, CompactTrigger, CompactResult, CompactHistoryEntry,
-  ContextState,
+  ContextState, TerminationReason,
 } from './types/agent'
 
 export {

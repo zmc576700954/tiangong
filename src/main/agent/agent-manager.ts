@@ -21,6 +21,7 @@ import type {
   ProjectMemory,
   Sandbox,
   NodeMetadata,
+  TerminationReason,
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
 import { type SessionRouter } from './session-router'
@@ -86,8 +87,9 @@ interface SessionState {
   swarmTaskId?: string
   /** Cumulative input tokens reported by the adapter for this session. */
   tokensUsed?: number
-  /** Reason the adapter session ended (crash / error / user / success). */
-  terminationReason?: 'success' | 'crash' | 'error' | 'user'
+  /** Reason the adapter session ended. `undefined` means the session completed successfully.
+   *  Only abnormal termination reasons are recorded here. */
+  terminationReason?: TerminationReason
 }
 
 /** startSessionWithFallback 返回值 */
@@ -214,7 +216,7 @@ export class AgentManager {
         return
       }
       try {
-        await this.terminateSession(sessionId)
+        await this.terminateSession(sessionId, 'error')
       } catch (err) {
         logger.warn('Failed to terminate session during scope violation cleanup:', err)
       }
@@ -440,7 +442,7 @@ export class AgentManager {
       .slice(0, count)
     for (const [sessionId] of sorted) {
       logger.info(`Memory pressure cleanup: terminating session ${sessionId}`)
-      this.terminateSession(sessionId).catch((err) => {
+      this.terminateSession(sessionId, 'error').catch((err) => {
         logger.warn(`Failed to terminate session ${sessionId} during memory cleanup:`, err)
       })
     }
@@ -568,7 +570,7 @@ export class AgentManager {
   async terminateAllSessions(): Promise<void> {
     const sessionIds = this.router.getActiveSessionIds()
     await Promise.allSettled(
-      sessionIds.map((id) => this.terminateSession(id)),
+      sessionIds.map((id) => this.terminateSession(id, 'user')),
     )
     this.sessionStates.clear()
   }
@@ -1200,7 +1202,7 @@ export class AgentManager {
     return Math.max(4000, Math.min(16000, Math.round(avgTokens * 1.2)))
   }
 
-  async terminateSession(sessionId: string, reason?: string): Promise<void> {
+  async terminateSession(sessionId: string, reason?: TerminationReason): Promise<void> {
     // 互斥检查：若 cleanupSessionResources 已在清理，直接返回
     if (this.cleanupInProgress.has(sessionId)) {
       logger.info(`Session ${sessionId} already being cleaned up, skipping terminateSession`)
@@ -1244,8 +1246,17 @@ export class AgentManager {
       // 抓拍 outputs，后续阶段 B 不再访问 sessionOutputBuffers
       outputsForMemory = this.sessionOutputBuffers.get(sessionId) ?? []
 
+      // Persist the termination reason into state *before* deletion so that
+      // the `abnormal` check in phase B (after the lock is released) can see it.
+      // Without this, a `timeout` reason passed by the caller would be lost.
+      // Default to 'error' when no reason is given — internal callers (timers, cleanup)
+      // that omit reason are typically abnormal paths, not user-initiated termination.
+      const terminationReason = reason ?? state?.terminationReason ?? 'error'
+      if (state && reason) {
+        state.terminationReason = reason
+      }
+
       try {
-        const terminationReason = reason ?? state?.terminationReason ?? 'user'
         await adapter.terminateSession(sessionId, terminationReason)
       } finally {
         // 无论 terminateSession 是否成功，都确保清理路由和状态
@@ -1303,16 +1314,16 @@ export class AgentManager {
       }
     }
 
+    const abnormal = state?.terminationReason === 'crash' || state?.terminationReason === 'error' || state?.terminationReason === 'timeout'
+
     // Agent 日志：记录会话完成（附 Token 经济学指标）
     if (this.onSessionComplete && state) {
-      const abnormal = state.terminationReason === 'crash' || state.terminationReason === 'error'
       const result = scopeGuardError || abnormal ? 'failure' : 'success'
       this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)
     }
 
     // Prompt 质量反馈环：记录命令类型 + 预算与结果的相关性
     if (state) {
-      const abnormal = state.terminationReason === 'crash' || state.terminationReason === 'error'
       this.promptOutcomeLog.push({
         commandType: state.lastCommandType ?? 'implement',
         promptTokenEstimate: state.promptTokenEstimate ?? 0,

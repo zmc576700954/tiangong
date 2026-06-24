@@ -10,6 +10,11 @@ import type { AgentTypeDefinition } from './subagent'
 // Agent 适配器类型（核心扩展点）
 // ============================================
 
+/** Reason an adapter session was terminated abnormally.
+ *  When `terminationReason` is `undefined`, the session completed successfully (normal exit).
+ *  Only non-success reasons are recorded explicitly. */
+export type TerminationReason = 'user' | 'timeout' | 'crash' | 'error'
+
 /** Agent 范围上下文 */
 export interface AgentSessionConfig {
   /** 项目根目录 */
@@ -211,7 +216,7 @@ export interface AgentAdapter {
   offOutput(handler: (output: AgentOutput) => void): void
 
   /** 终止会话 */
-  terminateSession(sessionId: string, reason?: string): Promise<void>
+  terminateSession(sessionId: string, reason?: TerminationReason): Promise<void>
 
   /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
   resolveOutputSession?(output: AgentOutput): string | undefined

@@ -36,6 +36,15 @@ pnpm-debug.log*
 lerna-debug.log*
 dev.log
 
+# BizGraph runtime state
+.bizgraph/
+
+# Claude Code (machine-specific)
+.claude/settings.json
+.claude/settings.local.json
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+
 # Playwright MCP artifacts
 .playwright-mcp/
 

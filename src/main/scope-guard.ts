@@ -19,6 +19,7 @@ import type { Sandbox, ValidationResult, AgentSessionConfig } from '@shared/type
 import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
+import { isErrorWithCode } from './shared/errno'
 
 /** 获取临时目录路径（可在测试中 mock） */
 // THREAD-SAFETY NOTE: This module-level mutable function reference is not thread-safe.
@@ -292,7 +293,7 @@ export class ScopeGuard {
         await fs.writeFile(backupPath, content)
       } catch (e) {
         // ENOENT is expected (file may not exist yet); other errors need attention
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (!isErrorWithCode(e) || e.code !== 'ENOENT') {
           logger.warn('ScopeGuard: failed to backup file', { srcPath, error: String(e) })
         }
       }

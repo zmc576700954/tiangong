@@ -51,7 +51,7 @@ export async function sendPromptViaAgent(
       if (!settled) {
         settled = true
         agentManager.removeSessionOutputListener(handler)
-        agentManager.terminateSession(sessionId).catch((err) => {
+        agentManager.terminateSession(sessionId, 'timeout').catch((err) => {
           logger.warn('Failed to terminate session on timeout:', err)
         })
         if (chunks.length > 0) {

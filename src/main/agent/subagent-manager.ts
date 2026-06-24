@@ -269,6 +269,12 @@ export class SubagentManager extends EventEmitter {
     // Subscribe to child outputs — tag with invocationId, re-broadcast to parent
     const outputBuffer: string[] = []
     const fileChanges: string[] = []
+    // Token accounting: the authoritative source is SessionState.tokensUsed, updated
+    // via the onUsage callback on the child session.  This local variable serves as a
+    // preliminary counter before the session completes; it is overwritten with the
+    // authoritative value from the child session state after the session ends (see
+    // childState.tokensUsed assignment below).  The local value is returned to the
+    // caller via the SubagentResult struct.
     let tokensUsed = 0
     let settled = false
 
@@ -333,7 +339,7 @@ export class SubagentManager extends EventEmitter {
       this.agentManager.removeSessionOutputListener(outputHandler)
       // Best-effort cleanup of the child session we just started.
       try {
-        await this.agentManager.terminateSession(childSessionId)
+        await this.agentManager.terminateSession(childSessionId, 'error')
       } catch {
         /* best-effort */
       }
@@ -357,7 +363,7 @@ export class SubagentManager extends EventEmitter {
 
     // Terminate child session (best-effort cleanup)
     try {
-      await this.agentManager.terminateSession(childSessionId)
+      await this.agentManager.terminateSession(childSessionId, 'user')
     } catch {
       /* best-effort */
     }
@@ -398,7 +404,7 @@ export class SubagentManager extends EventEmitter {
     const active = this.activeInvocations.get(invocationId)
     if (active) {
       try {
-        await this.agentManager.terminateSession(active.sessionId)
+        await this.agentManager.terminateSession(active.sessionId, 'user')
       } catch {
         /* best-effort */
       }

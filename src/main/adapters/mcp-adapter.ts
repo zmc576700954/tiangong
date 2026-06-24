@@ -525,7 +525,7 @@ export class McpAdapter extends BaseAdapter {
     // 设置会话空闲超时定时器，防止连接泄露
     const timer = setTimeout(() => {
       this.logger.warn(`Session ${sessionId} idle timeout, cleaning up...`)
-      this.terminateSession(sessionId).catch((err) => {
+      this.terminateSession(sessionId, 'timeout').catch((err) => {
         this.logger.warn('Failed to terminate session on idle timeout:', err)
       })
     }, MCP_SESSION_TIMEOUT_MS)

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "biztracker": {
-      "command": "C:\\Users\\zmc57\\AppData\\Local\\Python\\pythoncore-3.14-64\\python.exe",
-      "args": ["-m", "biztracker.mcp.server"]
-    }
-  }
-}

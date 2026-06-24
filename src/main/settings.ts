@@ -9,6 +9,7 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import { spawnSync, spawn } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto'
+import { isErrorWithCode } from './shared/errno'
 import type {
   CliToolConfig,
   ApiKeyConfig,
@@ -277,7 +278,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
     cachedAt = Date.now()
     return cachedSettings
   } catch (err) {
-    const isEnoent = err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT'
+    const isEnoent = isErrorWithCode(err) && err.code === 'ENOENT'
     if (isEnoent) {
       // 首次启动：写入默认配置，后续读取不再触发 ENOENT
       logger.info('Settings file not found, creating with defaults')
@@ -387,26 +388,40 @@ function validateNpmPackageName(pkg: string): boolean {
   return /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/.test(pkg)
 }
 
-/** Resolve the absolute path to the npm executable without relying on shell resolution. */
+/** Resolve the absolute path to the npm executable without relying on shell resolution.
+ *  Result is cached after the first call — npm location does not change at runtime. */
+let _cachedNpmCmd: string | undefined
 function resolveNpmCommand(): string {
+  if (_cachedNpmCmd) return _cachedNpmCmd
   if (process.platform === 'win32') {
     try {
       const result = spawnSync('where', ['npm.cmd'], { encoding: 'utf-8' })
       if (result.status === 0) {
-        return result.stdout.trim().split(/\r?\n/)[0]
+        _cachedNpmCmd = result.stdout.trim().split(/\r?\n/)[0]
+        return _cachedNpmCmd
       }
     } catch {
       /* ignore */
     }
-    return 'npm.cmd'
+    _cachedNpmCmd = 'npm.cmd'
+    return _cachedNpmCmd
   }
   try {
     const result = spawnSync('which', ['npm'], { encoding: 'utf-8' })
-    if (result.status === 0) return result.stdout.trim()
+    if (result.status === 0) {
+      _cachedNpmCmd = result.stdout.trim()
+      return _cachedNpmCmd
+    }
   } catch {
     /* ignore */
   }
-  return 'npm'
+  _cachedNpmCmd = 'npm'
+  return _cachedNpmCmd
+}
+
+/** Reset the cached npm command path. Intended for test use only. */
+export function _resetNpmCache(): void {
+  _cachedNpmCmd = undefined
 }
 
 export async function installCliTool(name: string): Promise<{
@@ -454,7 +469,7 @@ export async function installCliTool(name: string): Promise<{
 
     proc.on('error', (err: Error) => {
       // W3-FIX: 检测权限错误并提供提示
-      const code = (err as NodeJS.ErrnoException).code
+      const code = isErrorWithCode(err) ? err.code : undefined
       if (code === 'EACCES') {
         resolve({
           success: false,

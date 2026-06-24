@@ -39,7 +39,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
   })
 
   typedHandle('agent:terminateSession', async (_, sessionId) => {
-    return agentManager.terminateSession(sessionId)
+    return agentManager.terminateSession(sessionId, 'user')
   })
 
   typedHandle('agent:listAdapters', async () => {
@@ -129,7 +129,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     } finally {
       // Always terminate the verification session to prevent resource leaks
       try {
-        await agentManager.terminateSession(sessionId)
+        await agentManager.terminateSession(sessionId, 'user')
       } catch (err) {
         // Session may already be terminated
         const reason = err instanceof Error ? err.message : String(err)
@@ -154,7 +154,7 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     const errors: Array<{ sessionId: string; error: string }> = []
     for (const sessionId of agentManager.getActiveSessionIds()) {
       try {
-        await agentManager.terminateSession(sessionId)
+        await agentManager.terminateSession(sessionId, 'user')
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err)
         logger.warn(`Failed to terminate session ${sessionId}: ${reason}`)

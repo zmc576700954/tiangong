@@ -12,6 +12,7 @@ import type {
   AgentCommand,
   AgentOutput,
   ResolvedContext,
+  TerminationReason,
 } from '@shared/types'
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
 import type { ProtocolInputMessage } from './json-protocol'
@@ -152,7 +153,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /**
    * 终止指定会话
    */
-  async terminateSession(sessionId: string, reason: string = 'user'): Promise<void> {
+  async terminateSession(sessionId: string, reason?: TerminationReason): Promise<void> {
+    // Default to 'error' when no reason is given — internal callers (timers, cleanup)
+    // that omit reason are typically abnormal paths, not user-initiated termination.
+    const effectiveReason = reason ?? 'error'
     const session = this.sessions.get(sessionId)
     if (!session) {
       return
@@ -176,11 +180,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.disposeProtocolHandler(sessionId)
         // 先发出 complete 事件（此时 session 仍存在，消费者可查找）
         const message =
-          reason === 'timeout'
+          effectiveReason === 'timeout'
             ? 'Session terminated due to timeout'
-            : reason === 'crash'
+            : effectiveReason === 'crash'
               ? 'Session terminated due to crash'
-              : reason === 'error'
+              : effectiveReason === 'error'
                 ? 'Session terminated due to error'
                 : 'Session terminated by user'
         this.emitOutput({
@@ -395,7 +399,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     handler.onError((err, rawLine) => {
       if (err.message.startsWith('BUFFER_OVERFLOW')) {
         this.logger.error(`Protocol buffer overflow for session ${sessionId}, terminating`)
-        this.terminateSession(sessionId).catch((e) => {
+        this.terminateSession(sessionId, 'error').catch((e) => {
           this.logger.error(`Failed to terminate session ${sessionId} after buffer overflow:`, e)
         })
         return

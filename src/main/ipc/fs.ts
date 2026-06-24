@@ -9,12 +9,9 @@ import path from 'node:path'
 import type { TypedHandle } from './utils'
 import type { FileSearchResult } from '@shared/types'
 import { IpcError, ErrorCode } from '../errors'
+import { isErrorWithCode } from '../shared/errno'
 
 export type ValidateFsPath = (targetPath: string, operation: 'read' | 'write') => Promise<string>
-
-function isErrnoException(err: unknown): err is NodeJS.ErrnoException {
-  return err instanceof Error && 'code' in err
-}
 
 async function throwIfExists(filePath: string, name: string): Promise<void> {
   try {
@@ -24,7 +21,7 @@ async function throwIfExists(filePath: string, name: string): Promise<void> {
     if (err instanceof IpcError && err.message.startsWith('Already exists')) throw err
     // ENOENT means the file does not exist, which is the expected case.
     // Any other error (e.g., EACCES/EPERM) must be surfaced.
-    if (isErrnoException(err) && err.code === 'ENOENT') return
+    if (isErrorWithCode(err) && err.code === 'ENOENT') return
     throw err
   }
 }
@@ -165,7 +162,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
     try {
       await fs.writeFile(validPath, '', { encoding: 'utf-8', flag: 'wx' })
     } catch (err: unknown) {
-      if (err instanceof Error && (err as NodeJS.ErrnoException).code === 'EEXIST') {
+      if (isErrorWithCode(err) && err.code === 'EEXIST') {
         throw new IpcError(`File already exists: ${path.basename(validPath)}`, ErrorCode.IPC_HANDLER_ERROR)
       }
       throw err
