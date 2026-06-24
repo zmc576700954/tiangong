@@ -4,6 +4,7 @@
  */
 
 import path from 'node:path'
+import { isPathWithinSync } from '../shared/path-utils'
 import type { GitAgent } from '../git-agent'
 import type { TypedHandle } from './utils'
 import { validateProjectPath } from './utils'
@@ -30,11 +31,7 @@ export function registerGitHandlers(gitAgent: GitAgent, typedHandle: TypedHandle
         throw new IpcError(`Invalid file path in commit: ${file}`, ErrorCode.IPC_INVALID_ARGUMENT)
       }
       const resolved = path.resolve(safePath, file)
-      // Windows: case-insensitive path comparison
-      const isWithinRepo = process.platform === 'win32'
-        ? resolved.toLowerCase().startsWith(safePath.toLowerCase() + path.sep) || resolved.toLowerCase() === safePath.toLowerCase()
-        : (resolved.startsWith(safePath + path.sep) || resolved === safePath)
-      if (!isWithinRepo) {
+      if (!isPathWithinSync(safePath, resolved)) {
         throw new IpcError(`File path escapes repository: ${file}`, ErrorCode.IPC_ACCESS_DENIED)
       }
       return file
