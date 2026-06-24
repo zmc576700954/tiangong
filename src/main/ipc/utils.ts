@@ -119,20 +119,19 @@ export function isBlockedSystemPath(normalizedPath: string): boolean {
  */
 export function validateProjectPath(projectPath: string): string {
   const resolved = path.resolve(projectPath)
-  const normalized = path.normalize(resolved)
 
-  if (isBlockedSystemPath(normalized)) {
+  if (isBlockedSystemPath(resolved)) {
     throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
   }
 
   // 确保路径不是 root 或 home 目录本身（只允许子目录）
   if (process.platform !== 'win32') {
-    if (normalized === '/' || normalized === '/root' || normalized === process.env.HOME) {
+    if (resolved === '/' || resolved === '/root' || resolved === process.env.HOME) {
       throw new IpcError('Access denied: cannot access root or home directory, please select a project subdirectory', ErrorCode.IPC_ACCESS_DENIED)
     }
   }
 
-  return normalized
+  return resolved
 }
 
 /**

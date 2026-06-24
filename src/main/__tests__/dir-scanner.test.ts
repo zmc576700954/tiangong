@@ -27,10 +27,18 @@ describe('scanDirectory', () => {
     await expect(scanDirectory(blocked)).rejects.toThrow(ScopeGuardError)
   })
 
-  it('does not reject prefix-bypass siblings of system directories', async () => {
-    // e.g. /etc-project or C:\Windows-project should NOT be treated as inside /etc or C:\Windows.
-    const sibling = process.platform === 'win32' ? 'C:\\Windows-project' : '/etc-project'
-    const result = await scanDirectory(sibling)
-    expect(result).toEqual([])
+  it('does not reject a real directory whose name shares a prefix with a blocked system path', async () => {
+    // Create an actual directory inside the user temp folder whose name starts
+    // with a blocked prefix (e.g. Windows-* / etc-*). It must not be confused
+    // with the real system directory.
+    const prefix = process.platform === 'win32' ? 'Windows-' : 'etc-'
+    const siblingDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix))
+    try {
+      await fs.writeFile(path.join(siblingDir, 'safe.txt'), '')
+      const result = await scanDirectory(siblingDir)
+      expect(result).toContain('safe.txt')
+    } finally {
+      await fs.rm(siblingDir, { recursive: true, force: true })
+    }
   })
 })

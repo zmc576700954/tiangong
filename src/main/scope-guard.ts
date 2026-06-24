@@ -551,12 +551,6 @@ export class ScopeGuard {
     }
 
     const relativePath = path.relative(sandbox.workingDir, resolvedPath)
-    // 二次检查：relative 不应逃逸
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-      logger.warn(`rollbackFile rejected: path traversal detected for ${filePath}`)
-      return false
-    }
-
     const backupPath = path.join(sandbox.backupDir, relativePath)
 
     try {

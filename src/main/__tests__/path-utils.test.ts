@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import fs from 'node:fs/promises'
+import fsSync from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { isPathWithin, isPathWithinSync } from '../shared/path-utils'
@@ -10,6 +11,7 @@ describe('path-utils', () => {
   let projectEvilDir: string
   let subDir: string
   let outsideFile: string
+  let dotdotNamedFile: string
 
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'path-utils-'))
@@ -17,6 +19,7 @@ describe('path-utils', () => {
     projectEvilDir = path.join(tmpDir, 'project-evil')
     subDir = path.join(projectDir, 'src')
     outsideFile = path.join(tmpDir, 'outside.txt')
+    dotdotNamedFile = path.join(projectDir, '..foo.txt')
 
     await fs.mkdir(projectDir, { recursive: true })
     await fs.mkdir(projectEvilDir, { recursive: true })
@@ -24,6 +27,7 @@ describe('path-utils', () => {
     await fs.writeFile(path.join(projectDir, 'file.txt'), 'ok')
     await fs.writeFile(path.join(projectEvilDir, 'evil.txt'), 'evil')
     await fs.writeFile(outsideFile, 'outside')
+    await fs.writeFile(dotdotNamedFile, 'not traversal')
   })
 
   afterAll(async () => {
@@ -45,6 +49,10 @@ describe('path-utils', () => {
       expect(await isPathWithin(projectDir, path.join(projectDir, 'src', '..', '..', 'outside.txt'))).toBe(false)
     })
 
+    it('allows files whose names start with .. (not traversal)', async () => {
+      expect(await isPathWithin(projectDir, dotdotNamedFile)).toBe(true)
+    })
+
     it('rejects Windows-style prefix bypass (sibling directory with same prefix)', async () => {
       // `project-evil` starts with `project` but must not be treated as inside it.
       expect(await isPathWithin(projectDir, projectEvilDir)).toBe(false)
@@ -54,7 +62,7 @@ describe('path-utils', () => {
     it('rejects symlink escape from inside the parent', async () => {
       const linkPath = path.join(projectDir, 'escape-link')
       try {
-        await fs.symlink(tmpDir, linkPath, process.platform === 'win32' ? 'dir' : 'dir')
+        await fs.symlink(tmpDir, linkPath, 'dir')
       } catch {
         // Symlinks may require privileges on Windows; skip if unsupported.
         return
@@ -71,7 +79,7 @@ describe('path-utils', () => {
     it('accepts symlink that stays inside the parent', async () => {
       const linkPath = path.join(projectDir, 'inside-link')
       try {
-        await fs.symlink(subDir, linkPath, process.platform === 'win32' ? 'dir' : 'dir')
+        await fs.symlink(subDir, linkPath, 'dir')
       } catch {
         return
       }
@@ -91,6 +99,38 @@ describe('path-utils', () => {
       expect(isPathWithinSync(projectDir, path.join(projectDir, 'file.txt'))).toBe(true)
       expect(isPathWithinSync(projectDir, path.join(projectDir, '..', 'outside.txt'))).toBe(false)
       expect(isPathWithinSync(projectDir, projectEvilDir)).toBe(false)
+      expect(isPathWithinSync(projectDir, dotdotNamedFile)).toBe(true)
+    })
+
+    it('rejects symlink escape from inside the parent', () => {
+      const linkPath = path.join(projectDir, 'escape-link-sync')
+      try {
+        fsSync.symlinkSync(tmpDir, linkPath, 'dir')
+      } catch {
+        return
+      }
+
+      try {
+        expect(isPathWithinSync(projectDir, linkPath)).toBe(false)
+        expect(isPathWithinSync(projectDir, path.join(linkPath, 'outside.txt'))).toBe(false)
+      } finally {
+        fsSync.unlinkSync(linkPath)
+      }
+    })
+
+    it('accepts symlink that stays inside the parent', () => {
+      const linkPath = path.join(projectDir, 'inside-link-sync')
+      try {
+        fsSync.symlinkSync(subDir, linkPath, 'dir')
+      } catch {
+        return
+      }
+
+      try {
+        expect(isPathWithinSync(projectDir, linkPath)).toBe(true)
+      } finally {
+        fsSync.unlinkSync(linkPath)
+      }
     })
   })
 })

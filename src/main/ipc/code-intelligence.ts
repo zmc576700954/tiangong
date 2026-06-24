@@ -61,7 +61,14 @@ export function registerCodeIntelHandlers(typedHandle: TypedHandle): void {
     if (!symbolIndex) {
       throw new Error('Code intelligence not initialized')
     }
-    if (!filePath || filePath.includes('..') || path.isAbsolute(filePath)) {
+    const normalized = path.normalize(filePath)
+    const sepNormalized = process.platform === 'win32' ? normalized.replace(/\\/g, '/') : normalized
+    if (
+      !filePath ||
+      sepNormalized === '..' ||
+      sepNormalized.startsWith('../') ||
+      path.isAbsolute(sepNormalized)
+    ) {
       throw new IpcError('Invalid filePath', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const related = await symbolIndex.getRelatedFiles(filePath, depth ?? 2)

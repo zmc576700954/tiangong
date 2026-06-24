@@ -18,7 +18,7 @@ import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
-import { isPathWithin } from './shared/path-utils'
+import { isPathWithinResolved } from './shared/path-utils'
 import { IpcError, ErrorCode } from './errors'
 
 const logger = createLogger('IPC')
@@ -281,9 +281,9 @@ export async function registerIpcHandlers(): Promise<void> {
       allowedRoots.push(path.resolve(p))
     }
 
-    // 3. 检查是否在允许路径下
+    // 3. 检查是否在允许路径下（normalized 已被 cachedRealpath 解析过，避免重复 realpath）
     for (const root of allowedRoots) {
-      if (await isPathWithin(path.resolve(root), normalized)) {
+      if (isPathWithinResolved(path.resolve(root), normalized)) {
         return normalized
       }
     }
@@ -382,9 +382,10 @@ export async function registerIpcHandlers(): Promise<void> {
           throw new IpcError('Access denied: cannot access system directory', ErrorCode.IPC_ACCESS_DENIED)
         }
         // 验证路径在某个已知项目根目录下，防止注册任意路径
+        // normalized 已被 cachedRealpath 解析过，避免重复 realpath。
         let isUnderProject = false
         for (const root of projectRoots) {
-          if (await isPathWithin(root, normalized)) {
+          if (isPathWithinResolved(root, normalized)) {
             isUnderProject = true
             break
           }
