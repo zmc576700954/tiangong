@@ -134,6 +134,47 @@ describe('ProjectAnalyzer', () => {
     expect(root!.metadata!.services).toBeDefined()
     expect(root!.metadata!.services!.length).toBeGreaterThan(0)
   })
+
+  it('should not create false dependencies from generic CRUD feature names', () => {
+    const analyzer = new ProjectAnalyzer()
+    const scan: ProjectScanResult = {
+      ...sampleScanResult,
+      modules: [
+        {
+          name: 'Users',
+          description: 'User management',
+          processes: [
+            {
+              name: 'Manage',
+              description: '',
+              features: [
+                { name: 'Create', description: '', type: 'feature' },
+                { name: 'Update', description: '', type: 'feature' },
+              ],
+            },
+          ],
+        },
+        {
+          name: 'Orders',
+          description: 'Order management',
+          processes: [
+            {
+              name: 'Manage',
+              description: '',
+              features: [
+                { name: 'Create', description: '', type: 'feature' },
+                { name: 'Delete', description: '', type: 'feature' },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+
+    const result = analyzer.analyze(scan)
+    const crossEdges = result.edges.filter((e) => e.edgeType === 'condition')
+    expect(crossEdges.length).toBe(0)
+  })
 })
 
 describe('dagre layout', () => {

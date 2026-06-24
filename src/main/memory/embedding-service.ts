@@ -65,6 +65,7 @@ export class EmbeddingService {
    * 使用 singleton init promise 防止并发初始化。
    */
   async initialize(): Promise<void> {
+    this._initAttempted = true
     if (this.extractor) return
 
     if (this.initPromise) {
@@ -130,6 +131,7 @@ export class EmbeddingService {
    * HybridSearch 降级为纯关键词检索。
    */
   async initializeWithTimeout(timeoutMs = 60_000): Promise<boolean> {
+    this._initAttempted = true
     this._initFailed = false
     this._initTimedOut = false
     let timeoutId: ReturnType<typeof setTimeout> | undefined

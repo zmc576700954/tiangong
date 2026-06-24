@@ -373,64 +373,71 @@ export class HybridSearchEngine {
       limit: this.config.ftsRecallLimit,
     })
 
-    if (candidates.length === 0) {
-      logger.debug(`FTS5 returned no results for "${query}", trying LIKE fallback`)
-      return []
-    }
-
-    // 3. 构建 BM25 DF Map（文档频率统计，用于衰减高频通用词）
+    // 3. 关键词路结果（FTS5 + BM25 重排序）
+    let ftsResults: RankedSearchResult[] = []
     const allDocTokens: Array<{ item: MemoryItem; tokens: string[]; text: string }> = []
-    const dfMap = new Map<string, number>()
-    for (const item of candidates) {
-      const docText = [
-        item.title,
-        item.narrative,
-        ...item.concepts,
-        ...item.facts,
-      ].join(' ')
-      const tokens = tokenize(docText)
-      allDocTokens.push({ item, tokens, text: docText })
-      const unique = new Set(tokens)
-      for (const t of unique) dfMap.set(t, (dfMap.get(t) ?? 0) + 1)
+
+    if (candidates.length === 0) {
+      logger.debug(`FTS5 returned no results for "${query}"`)
+    } else {
+      // 3.1 构建 BM25 DF Map（文档频率统计，用于衰减高频通用词）
+      const dfMap = new Map<string, number>()
+      for (const item of candidates) {
+        const docText = [
+          item.title,
+          item.narrative,
+          ...item.concepts,
+          ...item.facts,
+        ].join(' ')
+        const tokens = tokenize(docText)
+        allDocTokens.push({ item, tokens, text: docText })
+        const unique = new Set(tokens)
+        for (const t of unique) dfMap.set(t, (dfMap.get(t) ?? 0) + 1)
+      }
+      const totalDocs = candidates.length
+      const avgDocLen = allDocTokens.reduce((sum, t) => sum + t.tokens.length, 0) / (totalDocs || 1)
+
+      // 构建 BM25 查询向量
+      const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs, avgDocLen)
+
+      // 3.2 关键词向量重排序（使用 BM25 向量 + 缓存）
+      ftsResults = allDocTokens.map(({ item, tokens, text: docText }) => {
+        const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs, avgDocLen)
+        const keywordScore = cosineSimilarity(queryBm25Vector, docVector)
+
+        // FTS5 分数估算：用查询词项在文档中的命中比例作为近似
+        const docTextLower = docText.toLowerCase()
+        let matchCount = 0
+        for (const qt of queryTokenSet) {
+          if (docTextLower.includes(qt)) matchCount++
+        }
+        const ftsScore = queryTokenSet.size > 0 ? matchCount / queryTokenSet.size : 0
+
+        // 混合分数
+        const score = adaptiveFtsWeight * ftsScore + (1 - adaptiveFtsWeight) * keywordScore
+
+        return {
+          item,
+          score,
+          ftsScore,
+          keywordScore,
+          embeddingScore: 0,
+          matchReason: keywordScore > ftsScore
+            ? `Semantic match (BM25 similarity: ${(keywordScore * 100).toFixed(0)}%)`
+            : `Text match (FTS5 rank: ${(ftsScore * 100).toFixed(0)}%)`,
+        }
+      })
     }
-    const totalDocs = candidates.length
-    const avgDocLen = allDocTokens.reduce((sum, t) => sum + t.tokens.length, 0) / (totalDocs || 1)
 
-    // 构建 BM25 查询向量
-    const queryBm25Vector = buildBm25Vector(queryTokens, dfMap, totalDocs, avgDocLen)
-
-    // 4. 关键词向量重排序（使用 BM25 向量 + 缓存）
-    const ftsResults = allDocTokens.map(({ item, tokens, text: docText }) => {
-      const docVector = this.getOrBuildDocVector(String(item.id), tokens, dfMap, totalDocs, avgDocLen)
-      const keywordScore = cosineSimilarity(queryBm25Vector, docVector)
-
-      // FTS5 分数估算：用查询词项在文档中的命中比例作为近似
-      const docTextLower = docText.toLowerCase()
-      let matchCount = 0
-      for (const qt of queryTokenSet) {
-        if (docTextLower.includes(qt)) matchCount++
-      }
-      const ftsScore = queryTokenSet.size > 0 ? matchCount / queryTokenSet.size : 0
-
-      // 混合分数
-      const score = adaptiveFtsWeight * ftsScore + (1 - adaptiveFtsWeight) * keywordScore
-
-      return {
-        item,
-        score,
-        ftsScore,
-        keywordScore,
-        embeddingScore: 0,
-        matchReason: keywordScore > ftsScore
-          ? `Semantic match (BM25 similarity: ${(keywordScore * 100).toFixed(0)}%)`
-          : `Text match (FTS5 rank: ${(ftsScore * 100).toFixed(0)}%)`,
-      }
-    })
-
-    // 5. 嵌入检索（双路检索的第二路）
+    // 4. 嵌入检索（双路检索的第二路）：FTS5 无候选时也尝试语义召回
     let embeddingResults: RankedSearchResult[] = []
     if (this._embeddingEnabled) {
       embeddingResults = await this._embeddingSearch(query, options)
+    }
+
+    // 如果 FTS5 和嵌入路都未返回结果，直接返回空
+    if (ftsResults.length === 0 && embeddingResults.length === 0) {
+      return []
     }
 
     // 6. 合并两路结果

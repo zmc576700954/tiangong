@@ -11,6 +11,7 @@ import * as ts from 'typescript'
 import { AstParser } from './ast-parser'
 import { type SymbolIndex } from './symbol-index'
 import { getAstCache } from './ast-cache'
+import type { SymbolInfo, ImportEdge } from '@shared/types'
 
 export interface IndexOptions {
   projectPath: string
@@ -67,21 +68,30 @@ export class ProjectIndexer {
 
     let symbolsFound = 0
     let importsFound = 0
+    const allSymbols: SymbolInfo[] = []
+    const allEdges: ImportEdge[] = []
 
-    // 解析每个文件
+    // 解析每个文件：先累计符号/边，最后批量插入，避免每个文件都触发 DB 往返
     for (const filePath of files) {
       try {
         const content = await readFile(filePath, 'utf-8')
         const result = this.astParser.parse(filePath, content)
 
-        await this.symbolIndex.insertSymbols(result.symbols)
-        await this.symbolIndex.insertImportEdges(result.imports)
+        allSymbols.push(...result.symbols)
+        allEdges.push(...result.imports)
 
         symbolsFound += result.symbols.length
         importsFound += result.imports.length
       } catch (err) {
         console.warn(`Failed to parse ${filePath}:`, err)
       }
+    }
+
+    if (allSymbols.length > 0) {
+      await this.symbolIndex.insertSymbols(allSymbols)
+    }
+    if (allEdges.length > 0) {
+      await this.symbolIndex.insertImportEdges(allEdges)
     }
 
     return { filesIndexed: files.length, symbolsFound, importsFound }
