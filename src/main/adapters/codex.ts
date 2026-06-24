@@ -72,9 +72,11 @@ export class CodexAdapter extends BaseAdapter {
     try {
       let codex = this.codexInstances.get(session.id)
       if (!codex) {
-        codex = new CodexClass({
-          env: this.buildSafeEnv() as Record<string, string>,
-        })
+        const safeEnv = this.buildSafeEnv()
+        const env = Object.fromEntries(
+          Object.entries(safeEnv).filter((entry): entry is [string, string] => entry[1] !== undefined),
+        )
+        codex = new CodexClass({ env })
         this.codexInstances.set(session.id, codex)
       }
 

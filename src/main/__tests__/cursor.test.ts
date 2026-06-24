@@ -78,9 +78,10 @@ describe('CursorAdapter', () => {
     const config = makeConfig({ workingDirectory: '/my/project' })
     const session = await adapter.startSession(config)
 
+    const mockStdin = { write: vi.fn(), end: vi.fn(), on: vi.fn(), writableEnded: false }
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
-      stdin: { write: vi.fn(), end: vi.fn() },
+      stdin: mockStdin,
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('done'))
       }), off: vi.fn() },
@@ -99,15 +100,17 @@ describe('CursorAdapter', () => {
       ['agent'],
       expect.objectContaining({ cwd: '/my/project' }),
     )
+    expect(mockStdin.on).toHaveBeenCalledWith('error', expect.any(Function))
   })
 
   it('doSendCommand includes --resume when resumeSessionId is set', async () => {
     const config = makeConfig({ resumeSessionId: 'prev-session' })
     const session = await adapter.startSession(config)
 
+    const mockStdin = { write: vi.fn(), end: vi.fn(), on: vi.fn(), writableEnded: false }
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
-      stdin: { write: vi.fn(), end: vi.fn() },
+      stdin: mockStdin,
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') cb(Buffer.from('ok'))
       }), off: vi.fn() },
@@ -126,6 +129,7 @@ describe('CursorAdapter', () => {
       expect.arrayContaining(['--resume', 'prev-session']),
       expect.anything(),
     )
+    expect(mockStdin.on).toHaveBeenCalledWith('error', expect.any(Function))
   })
 
   it('doSendCommand includes scope prompt via stdin', async () => {
@@ -139,6 +143,8 @@ describe('CursorAdapter', () => {
     const mockStdin = {
       write: vi.fn((data: string) => { capturedPrompt = data }),
       end: vi.fn(),
+      on: vi.fn(),
+      writableEnded: false,
     }
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,

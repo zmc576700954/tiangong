@@ -66,7 +66,7 @@ export class SessionRecoveryManager {
       },
     })
     this.registerStrategy({
-      adapterName: 'mcp-adapter',
+      adapterName: 'mcp',
       canResume: false,
       resume: async (ctx) => {
         // MCP adapter is stateless — create a new session and inject previous

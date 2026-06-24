@@ -177,4 +177,67 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
     await adapter.terminateSession(session.id)
   })
+
+  it('attaches stdin error handler before writing', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    const mockStdin = {
+      write: vi.fn(),
+      end: vi.fn(),
+      on: vi.fn(),
+      writableEnded: false,
+    }
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdin: mockStdin,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      once: vi.fn(),
+      off: vi.fn(),
+    }))
+
+    await adapter.sendCommand(session.id, command)
+
+    const errorHandlerCall = mockStdin.on.mock.calls.find((call: unknown[]) => call[0] === 'error')
+    expect(errorHandlerCall).toBeDefined()
+    expect(mockStdin.write).toHaveBeenCalled()
+    expect(mockStdin.end).toHaveBeenCalled()
+  })
+
+  it('does not write to stdin when it has already ended', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+
+    const mockStdin = {
+      write: vi.fn(),
+      end: vi.fn(),
+      on: vi.fn(),
+      writableEnded: true,
+    }
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdin: mockStdin,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('ok'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      once: vi.fn(),
+      off: vi.fn(),
+    }))
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockStdin.on).not.toHaveBeenCalled()
+    expect(mockStdin.write).not.toHaveBeenCalled()
+    expect(mockStdin.end).not.toHaveBeenCalled()
+  })
 })

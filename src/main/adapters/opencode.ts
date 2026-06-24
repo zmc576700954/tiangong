@@ -54,19 +54,18 @@ export class OpenCodeAdapter extends BaseAdapter {
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
-      if (proc.stdin) {
+      const finalPrompt = constraintSuffix ? `${fullPrompt}\n${constraintSuffix}` : fullPrompt
+      if (proc.stdin && !proc.stdin.writableEnded) {
         proc.stdin.on('error', (err) => {
           this.logger.warn(`stdin write error for session ${session.id}: ${err.message}`)
         })
+        proc.stdin.write(finalPrompt, (err) => {
+          if (err) {
+            this.logger.warn(`stdin write failed for session ${session.id}: ${err.message}`)
+          }
+        })
+        proc.stdin.end()
       }
-
-      const finalPrompt = constraintSuffix ? `${fullPrompt}\n${constraintSuffix}` : fullPrompt
-      proc.stdin?.write(finalPrompt, (err) => {
-        if (err) {
-          this.logger.warn(`stdin write failed for session ${session.id}: ${err.message}`)
-        }
-      })
-      proc.stdin?.end()
 
       this.processes.set(session.id, proc)
 

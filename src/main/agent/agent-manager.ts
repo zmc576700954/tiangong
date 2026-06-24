@@ -1231,7 +1231,7 @@ export class AgentManager {
           // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
           // 我们已经持有 cleanupInProgress 锁，直接调用 _doCleanupSessionResources，
           // 避免 cleanupSessionResources 的锁检查 short-circuit 导致残留状态未被释放。
-          this._doCleanupSessionResources(sessionId)
+          await this._doCleanupSessionResources(sessionId)
           return
         }
         throw err

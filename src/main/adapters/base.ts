@@ -261,11 +261,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const timeout = setTimeout(() => {
       if (!proc.killed) {
         this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, force killing`)
-        if (process.platform === 'win32') {
-          proc.kill()
-        } else {
-          proc.kill('SIGKILL')
-        }
+        proc.kill('SIGKILL')
       }
     }, gracePeriodMs)
     proc.once('exit', () => clearTimeout(timeout))
@@ -619,7 +615,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       const timeout = setTimeout(() => {
         if (!proc.killed) {
           this.logger.warn(`Process ${proc.pid} did not exit after signal, force killing`)
-          proc.kill()
+          proc.kill('SIGKILL')
         }
       }, BaseAdapter.SIGKILL_GRACE_PERIOD_MS)
       proc.once('exit', () => {
@@ -827,7 +823,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       const calls = this.parseToolCalls(stdout)
       if (calls.length === 0) {
         this.emitOutput({ type: 'stdout', data: stdout, timestamp: Date.now() })
-        this.emitOutput({ type: 'complete', data: 'OpenCode session completed', timestamp: Date.now() })
+        this.emitOutput({ type: 'complete', data: `${this.name} session completed`, timestamp: Date.now() })
         return
       }
 

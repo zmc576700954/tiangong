@@ -57,8 +57,13 @@ export class KimiCodeAdapter extends BaseAdapter {
     })
 
     // 通过 stdin 传入 prompt，避免超出 OS 命令行长度限制和参数注入风险
-    proc.stdin.write(fullPrompt)
-    proc.stdin.end()
+    if (proc.stdin && !proc.stdin.writableEnded) {
+      proc.stdin.on('error', (err) => {
+        this.logger.warn(`stdin write error for session ${session.id}: ${err.message}`)
+      })
+      proc.stdin.write(fullPrompt)
+      proc.stdin.end()
+    }
 
     this.processes.set(session.id, proc)
     await this.runOneShot(proc, session.id, { parseFileChanges: false })
