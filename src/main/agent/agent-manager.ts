@@ -280,6 +280,8 @@ export class AgentManager {
           const state = this.sessionStates.get(sessionId)
           if (state) {
             state.terminationReason = 'success'
+            // Reset recovery attempts for this lineage so future crashes can be recovered again.
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
           }
           await this.cleanupSessionResources(sessionId)
         }

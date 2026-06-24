@@ -639,5 +639,49 @@ describe('AgentManager', () => {
       expect(context.lastOutputs.length).toBeGreaterThan(0)
       expect(context.lastMessages?.length).toBeGreaterThan(0)
     })
+
+    it('resets recovery retry counter when a recovered session completes successfully', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const command: AgentCommand = { type: 'implement', description: 'keep going', targetNodeId: 'n1' }
+      const { sessionId: originalId } = await manager.startSession('mcp', mockConfig())
+      await manager.sendCommand(originalId, command)
+
+      // First crash: MCP recovery creates a replacement session with context injection.
+      manager['sessionRecovery'].setPendingContext(originalId, '[context]')
+      const state1 = (manager as any).sessionStates.get(originalId)
+      const outputs1 = (manager as any).sessionOutputBuffers.get(originalId) ?? []
+      await (manager as any)._handleSessionEnded(originalId, null, 'error', state1, outputs1)
+
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessionIds().length).toBe(2)
+      })
+      const replacementId = manager.getActiveSessionIds().find((id) => id !== originalId)
+      expect(replacementId).toBeDefined()
+
+      // The replacement session completes naturally with success.
+      const recoverySpy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateSuccess(replacementId!)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(manager.getActiveSessionIds()).not.toContain(replacementId)
+      // Retry counter should have been reset on success.
+      expect(manager['sessionRecovery'].getAttempts(originalId)).toBe(0)
+
+      // Start a new session in the same lineage and crash it: recovery must be attempted again.
+      const { sessionId: newId } = await manager.startSession('mcp', mockConfig())
+      manager['sessionRecovery'].setPendingContext(newId, '[context]')
+      // Simulate lineage by carrying over originSessionId.
+      const newState = (manager as any).sessionStates.get(newId)
+      newState.originSessionId = originalId
+      const newOutputs = (manager as any).sessionOutputBuffers.get(newId) ?? []
+
+      await (manager as any)._handleSessionEnded(newId, null, 'error', newState, newOutputs)
+
+      expect(recoverySpy).toHaveBeenCalled()
+      expect(manager['sessionRecovery'].getAttempts(originalId)).toBe(1)
+
+      recoverySpy.mockRestore()
+    })
   })
 })
