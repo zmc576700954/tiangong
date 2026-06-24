@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { safeJsonParse, safeRowId } from '../shared/db-utils'
+import { DatabaseError } from '../errors'
 
 describe('safeJsonParse', () => {
   it('returns parsed value for valid JSON', () => {
@@ -36,18 +37,19 @@ describe('safeRowId', () => {
     expect(safeRowId(BigInt(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER)
   })
 
-  it('throws for bigint exceeding safe integer range', () => {
+  it('throws DatabaseError for bigint exceeding safe integer range', () => {
     const unsafeId = BigInt(Number.MAX_SAFE_INTEGER) + 1n
+    expect(() => safeRowId(unsafeId)).toThrow(DatabaseError)
     expect(() => safeRowId(unsafeId)).toThrow('exceeds Number.MAX_SAFE_INTEGER')
   })
 
-  it('throws for non-numeric values', () => {
-    expect(() => safeRowId('not-a-number')).toThrow('Invalid row id')
-    expect(() => safeRowId(NaN)).toThrow('Invalid row id')
-    expect(() => safeRowId(undefined)).toThrow('Invalid row id')
+  it('throws DatabaseError for non-numeric values', () => {
+    expect(() => safeRowId('not-a-number')).toThrow(DatabaseError)
+    expect(() => safeRowId(NaN)).toThrow(DatabaseError)
+    expect(() => safeRowId(undefined)).toThrow(DatabaseError)
   })
 
-  it('converts null to 0', () => {
-    expect(safeRowId(null)).toBe(0)
+  it('throws DatabaseError for null', () => {
+    expect(() => safeRowId(null)).toThrow(DatabaseError)
   })
 })

@@ -14,6 +14,7 @@ import type { GraphNode, BugNode, GraphType, NodeStatus } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
+import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
 import { ensureString, MAX_ID_LEN } from './utils'
 
@@ -36,13 +37,17 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     )
   }
 
+  function isValidNodeType(type: string): boolean {
+    return VALID_NODE_TYPES.includes(type as GraphNode['type']) || nodeTypeRegistry.has(type)
+  }
+
   function validateNodeCreate(data: unknown): void {
     if (!data || typeof data !== 'object') {
       throw new IpcError('Node data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const node = data as Record<string, unknown>
     const type = ensureString('type', node.type, 32)
-    if (!VALID_NODE_TYPES.includes(type as GraphNode['type'])) {
+    if (!isValidNodeType(type)) {
       throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const status = ensureString('status', node.status, 32)
@@ -80,7 +85,7 @@ export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, grap
     }
     if (node.type !== undefined) {
       const type = ensureString('type', node.type, 32)
-      if (!VALID_NODE_TYPES.includes(type as GraphNode['type'])) {
+      if (!isValidNodeType(type)) {
         throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
       }
     }

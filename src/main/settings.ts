@@ -16,7 +16,7 @@ import type {
   BizGraphSettings,
   AdapterPreferences,
 } from '@shared/types'
-import { BizGraphError, ErrorCode } from './errors'
+import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 
 const logger = createLogger('Settings')
@@ -570,17 +570,17 @@ export async function getAdapterPreferences(): Promise<AdapterPreferences> {
 
 export async function setAdapterPreferences(prefs: AdapterPreferences): Promise<void> {
   if (!prefs.defaultAdapter || typeof prefs.defaultAdapter !== 'string') {
-    throw new BizGraphError('defaultAdapter is required', ErrorCode.IPC_INVALID_ARGUMENT)
+    throw new IpcError('defaultAdapter is required', ErrorCode.IPC_INVALID_ARGUMENT)
   }
   if (!KNOWN_ADAPTER_NAMES.has(prefs.defaultAdapter)) {
-    throw new BizGraphError(`Unknown defaultAdapter: ${prefs.defaultAdapter}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    throw new IpcError(`Unknown defaultAdapter: ${prefs.defaultAdapter}`, ErrorCode.IPC_INVALID_ARGUMENT)
   }
   if (!Array.isArray(prefs.fallbackOrder)) {
-    throw new BizGraphError('fallbackOrder must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+    throw new IpcError('fallbackOrder must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
   }
   for (const name of prefs.fallbackOrder) {
     if (typeof name !== 'string' || !KNOWN_ADAPTER_NAMES.has(name)) {
-      throw new BizGraphError(`Unknown adapter in fallbackOrder: ${name}`, ErrorCode.IPC_INVALID_ARGUMENT)
+      throw new IpcError(`Unknown adapter in fallbackOrder: ${name}`, ErrorCode.IPC_INVALID_ARGUMENT)
     }
   }
   const settings = await readSettings()

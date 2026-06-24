@@ -614,7 +614,7 @@ export class MemoryStore {
     // 计算每条记忆的衰减置信度（跳过 created_at 为 null 的记录）
     const itemsWithDecay = rows.rows
       .map((r) => {
-        const id = r.id as number
+        const id = safeRowId(r.id)
         const confidence = (r.confidence as number) ?? 0.0
         const createdAtStr = r.created_at as string | null
         if (!createdAtStr) {
@@ -750,9 +750,10 @@ export class MemoryStore {
           const text = `${title} ${narrative} ${facts}`
           const embedding = await embeddingFn(text)
 
+          const rowId = safeRowId(row.id)
           await this.db.execute({
             sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
-            args: [JSON.stringify(embedding), row.id as number],
+            args: [JSON.stringify(embedding), rowId],
           })
           totalBackfilled++
         } catch (err) {
@@ -761,7 +762,7 @@ export class MemoryStore {
       }
 
       // 推进游标到本批次最大 id
-      cursor = rows.rows[rows.rows.length - 1].id as number
+      cursor = safeRowId(rows.rows[rows.rows.length - 1].id)
     }
 
     logger.info(`Backfilled ${totalBackfilled} embeddings for project ${projectId}`)

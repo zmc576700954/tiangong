@@ -32,7 +32,7 @@ describe('AgentLogRepository', () => {
         adapter_name: 'claude-code',
         node_id: 'node-1',
         graph_id: 'graph-1',
-        command: JSON.stringify({ type: 'implement', description: 'do it' }),
+        command: JSON.stringify({ type: 'implement', description: 'do it', targetNodeId: 'node-1' }),
         outputs: JSON.stringify([{ type: 'stdout', data: 'ok' }]),
         result: 'success',
         duration: 1234,
@@ -63,7 +63,7 @@ describe('AgentLogRepository', () => {
 
       const logs = await repo.listByNode('node-2')
       expect(logs).toHaveLength(1)
-      expect(logs[0].command).toEqual({ type: 'implement', description: '' })
+      expect(logs[0].command).toEqual({ type: 'implement', description: '', targetNodeId: '' })
       expect(logs[0].outputs).toEqual([])
     })
 
@@ -116,6 +116,23 @@ describe('AgentLogRepository', () => {
       }]))
 
       await expect(repo.listByNode('node-5')).rejects.toThrow(DatabaseError)
+    })
+
+    it('throws DatabaseError when command shape is invalid', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+        id: 'log-6',
+        session_id: 'session-6',
+        adapter_name: 'codex',
+        node_id: 'node-6',
+        graph_id: 'graph-6',
+        command: JSON.stringify({ type: 'implement' }),
+        outputs: JSON.stringify([]),
+        result: 'success',
+        duration: 0,
+        created_at: '2025-01-06T00:00:00Z',
+      }]))
+
+      await expect(repo.listByNode('node-6')).rejects.toThrow(DatabaseError)
     })
   })
 })

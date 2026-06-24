@@ -238,4 +238,16 @@ describe('Settings - Adapter Preferences', () => {
       fallbackOrder: ['codex', 123],
     } as unknown as AdapterPreferences)).rejects.toThrow('Unknown adapter in fallbackOrder')
   })
+
+  it('should keep KNOWN_ADAPTER_NAMES in sync with the adapter registry', async () => {
+    const { ADAPTER_REGISTRY } = await import('../adapters/registry')
+    const registryNames = new Set(ADAPTER_REGISTRY.map((d) => d.name))
+    const { setAdapterPreferences } = await import('../settings')
+
+    // Verify every registry name is accepted
+    await expect(setAdapterPreferences({
+      defaultAdapter: 'claude-code',
+      fallbackOrder: Array.from(registryNames),
+    })).resolves.not.toThrow()
+  })
 })

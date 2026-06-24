@@ -3,6 +3,7 @@
  */
 
 import { createLogger } from './logger'
+import { DatabaseError, ErrorCode } from '../errors'
 
 const logger = createLogger('DB')
 
@@ -52,15 +53,18 @@ export function safeJsonParse<T>(raw: string | null | undefined, fallback: T, va
  * 命中错误的行。这里显式校验并在越界时抛错，让上层尽早发现而非静默错乱。
  */
 export function safeRowId(raw: unknown): number {
+  if (raw === null || raw === undefined) {
+    throw new DatabaseError('Row id is null or undefined', ErrorCode.DB_INVALID_IDENTIFIER)
+  }
   if (typeof raw === 'bigint') {
     if (raw > BigInt(Number.MAX_SAFE_INTEGER) || raw < BigInt(Number.MIN_SAFE_INTEGER)) {
-      throw new Error(`Row id ${raw} exceeds Number.MAX_SAFE_INTEGER; refusing to lose precision`)
+      throw new DatabaseError(`Row id ${raw} exceeds Number.MAX_SAFE_INTEGER; refusing to lose precision`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
     return Number(raw)
   }
   const n = Number(raw)
   if (!Number.isFinite(n) || !Number.isSafeInteger(n)) {
-    throw new Error(`Invalid row id: ${String(raw)}`)
+    throw new DatabaseError(`Invalid row id: ${String(raw)}`, ErrorCode.DB_INVALID_IDENTIFIER)
   }
   return n
 }

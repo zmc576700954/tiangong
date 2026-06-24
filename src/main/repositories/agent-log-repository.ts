@@ -61,9 +61,16 @@ export class AgentLogRepository {
       return String(val)
     }
 
-    const command = safeJsonParse(row.command as string, { type: 'implement', description: '' })
-    if (command === null || typeof command !== 'object' || Array.isArray(command)) {
-      throw new DatabaseError('Corrupted agent_logs row: command is not a valid object', ErrorCode.DB_QUERY_FAILED)
+    const command = safeJsonParse(row.command as string, { type: 'implement', description: '', targetNodeId: '' })
+    if (
+      command === null ||
+      typeof command !== 'object' ||
+      Array.isArray(command) ||
+      typeof (command as Record<string, unknown>).type !== 'string' ||
+      typeof (command as Record<string, unknown>).description !== 'string' ||
+      typeof (command as Record<string, unknown>).targetNodeId !== 'string'
+    ) {
+      throw new DatabaseError('Corrupted agent_logs row: command is not a valid AgentCommand', ErrorCode.DB_QUERY_FAILED)
     }
 
     const outputs = safeJsonParse(row.outputs as string, [])

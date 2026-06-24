@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { registerGraphHandlers } from '../graph'
 import type { GraphService } from '../../services/graph-service'
 import type { SnapshotRepository } from '../../repositories/snapshot-repository'
+import { nodeTypeRegistry } from '../../shared/node-type-registry'
 import type { Client } from '@libsql/client'
 import type { TypedHandle } from '../utils'
 
@@ -98,6 +99,19 @@ describe('registerGraphHandlers', () => {
         type: 'module',
         status: 'confirmed',
         title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+      }
+      await expect(handlers['node:create']({}, data)).resolves.not.toThrow()
+    })
+
+    it('accepts registered extension node types', async () => {
+      nodeTypeRegistry.register({ type: 'custom-type', label: 'Custom' })
+      const data = {
+        type: 'custom-type',
+        status: 'confirmed',
+        title: 'Custom Node',
         graphId: 'graph-1',
         graphType: 'online',
         position: { x: 0, y: 0 },
