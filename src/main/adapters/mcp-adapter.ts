@@ -662,7 +662,7 @@ export class McpAdapter extends BaseAdapter {
         data: 'MCP session completed',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success')
+      this.emit('sessionEnded', session.id, 'success', 0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -670,7 +670,7 @@ export class McpAdapter extends BaseAdapter {
         data: `LLM API error: ${msg}`,
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'error')
+      this.emit('sessionEnded', session.id, 'error', null)
     }
   }
 

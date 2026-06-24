@@ -85,7 +85,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'TIMEOUT',
         })
-        this.emit('sessionEnded', session.id, 'error')
+        this.emit('sessionEnded', session.id, 'timeout', null)
         return
       }
 
@@ -97,7 +97,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
-        this.emit('sessionEnded', session.id, 'crash')
+        this.emit('sessionEnded', session.id, 'crash', result.exitCode)
         return
       }
 
@@ -115,7 +115,7 @@ export class MindMapAdapter extends BaseAdapter {
         data: 'MindMap 生成完成',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success')
+      this.emit('sessionEnded', session.id, 'success', 0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -124,7 +124,7 @@ export class MindMapAdapter extends BaseAdapter {
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
-      this.emit('sessionEnded', session.id, 'error')
+      this.emit('sessionEnded', session.id, 'error', null)
     } finally {
       this.activeControllers.delete(session.id)
     }

@@ -21,6 +21,8 @@ export interface RecoveryContext {
   lastOutputs: AgentOutput[]
   lastMessages?: Array<{ role: string; content: string }>
   threadId?: string
+  /** Original sessionId that started the recovery lineage; used for stable retry accounting across replacement sessions. */
+  originSessionId?: string
 }
 
 export interface RecoveryStrategy {
@@ -127,6 +129,10 @@ export class SessionRecoveryManager {
   }
 
   async attemptRecovery(context: RecoveryContext): Promise<string | null> {
+    // Use a stable lineage key so retry accounting survives sessionId changes
+    // caused by stateless adapter replacements.
+    const attemptKey = context.originSessionId ?? context.sessionId
+
     // Periodic cleanup: remove stale recovery attempts older than 1 hour
     const now = Date.now()
     for (const [key, val] of this.recoveryAttemptTimestamps) {
@@ -137,10 +143,10 @@ export class SessionRecoveryManager {
     }
 
     const { sessionId, adapterName } = context
-    const attempts = this.recoveryAttempts.get(sessionId) ?? 0
+    const attempts = this.recoveryAttempts.get(attemptKey) ?? 0
 
     if (attempts >= this.maxRetries) {
-      logger.warn(`Max recovery attempts (${this.maxRetries}) reached for session ${sessionId}`)
+      logger.warn(`Max recovery attempts (${this.maxRetries}) reached for session lineage ${attemptKey}`)
       this._notifyRenderer({
         type: 'SESSION_RECOVERY_FAILED',
         sessionId,
@@ -156,15 +162,17 @@ export class SessionRecoveryManager {
       return null
     }
 
-    this.recoveryAttempts.set(sessionId, attempts + 1)
-    this.recoveryAttemptTimestamps.set(sessionId, Date.now())
+    this.recoveryAttempts.set(attemptKey, attempts + 1)
+    this.recoveryAttemptTimestamps.set(attemptKey, Date.now())
 
     try {
       const newSessionId = await strategy.resume(context)
       if (newSessionId) {
         logger.info(`Session ${sessionId} recovered via ${adapterName} strategy (attempt ${attempts + 1})`)
-        this.recoveryAttempts.delete(sessionId)
-        this.recoveryAttemptTimestamps.delete(sessionId)
+        // Only reset attempts for a real native resume; stateless replacements keep
+        // the lineage counter so a chain of replacement crashes cannot loop forever.
+        this.recoveryAttempts.delete(attemptKey)
+        this.recoveryAttemptTimestamps.delete(attemptKey)
         this._notifyRenderer({
           type: 'SESSION_RECOVERED',
           sessionId,
@@ -172,10 +180,9 @@ export class SessionRecoveryManager {
           threadId: context.threadId,
         })
       } else if (this._pendingContextInjections.has(context.sessionId)) {
-        // MCP adapter case: new session needed with context injection
+        // MCP adapter case: new session needed with context injection.
+        // Do NOT reset attempts here — the lineage counter must persist across replacements.
         logger.info(`Session ${sessionId} requires new session with context injection via ${adapterName} strategy (attempt ${attempts + 1})`)
-        this.recoveryAttempts.delete(sessionId)
-        this.recoveryAttemptTimestamps.delete(sessionId)
         this._notifyRenderer({
           type: 'SESSION_RECOVERED',
           sessionId,

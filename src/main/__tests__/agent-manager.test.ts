@@ -61,7 +61,11 @@ class TestAdapter extends BaseAdapter {
   }
 
   public simulateCrash(sessionId: string): void {
-    this.emit('sessionEnded', sessionId, 'crash')
+    this.emit('sessionEnded', sessionId, 'crash', 1)
+  }
+
+  public simulateTimeout(sessionId: string): void {
+    this.emit('sessionEnded', sessionId, 'timeout', 137)
   }
 }
 
@@ -469,10 +473,50 @@ describe('AgentManager', () => {
       const state = (manager as any).sessionStates.get(sessionId)
 
       await (manager as any)._handleSessionEnded(sessionId, null, 'error', state)
-      await new Promise((resolve) => setTimeout(resolve, 0))
 
       // The replacement session should receive the last user command
-      expect(sendSpy).toHaveBeenCalledWith(expect.any(String), command)
+      await vi.waitFor(() => {
+        expect(sendSpy).toHaveBeenCalledWith(expect.any(String), command)
+      })
+    })
+
+    it('attempts recovery for timeout even with signal exit codes (137/143)', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      const state = (manager as any).sessionStates.get(sessionId)
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+
+      await (manager as any)._handleSessionEnded(sessionId, 137, 'timeout', state)
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId, adapterName: 'mcp' }))
+    })
+
+    it('stops replacing MCP sessions after the global retry budget', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId: originalId } = await manager.startSession('mcp', mockConfig())
+      const command: AgentCommand = { type: 'implement', description: 'keep going', targetNodeId: 'n1' }
+      await manager.sendCommand(originalId, command)
+
+      let currentId = originalId
+      const initialCount = manager.getActiveSessionIds().length
+
+      // maxRetries = 3: the first three crashes each create a replacement session.
+      for (let i = 0; i < 3; i++) {
+        const state = (manager as any).sessionStates.get(currentId)
+        await (manager as any)._handleSessionEnded(currentId, null, 'error', state)
+        const active = manager.getActiveSessionIds()
+        expect(active.length).toBe(initialCount + i + 1)
+        const nextId = active.find((id) => id !== currentId)
+        expect(nextId).toBeDefined()
+        currentId = nextId!
+      }
+
+      // The fourth crash exhausts the budget: no replacement session is created.
+      const state = (manager as any).sessionStates.get(currentId)
+      await (manager as any)._handleSessionEnded(currentId, null, 'error', state)
+      expect(manager.getActiveSessionIds().length).toBe(initialCount + 3)
     })
   })
 })

@@ -64,7 +64,7 @@ const CONTEXT_COMPLEXITY_BUDGET: Record<string, number> = {
   implement: 12000,
 }
 
-type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
+type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout', exitCode: number | null) => void
 
 interface SessionState {
   config: AgentSessionConfig
@@ -86,10 +86,12 @@ interface SessionState {
   swarmTaskId?: string
   /** Cumulative input tokens reported by the adapter for this session. */
   tokensUsed?: number
-  /** Reason the adapter session ended (crash / error / user / success). */
-  terminationReason?: 'success' | 'crash' | 'error' | 'user'
+  /** Reason the adapter session ended (crash / error / timeout / user / success). */
+  terminationReason?: 'success' | 'crash' | 'error' | 'timeout' | 'user'
   /** Last user command sent to this session; used for recovery re-send. */
   lastCommand?: AgentCommand
+  /** Original sessionId for replacement sessions created by recovery, used to keep retry accounting across sessionIds. */
+  originSessionId?: string
 }
 
 /** startSessionWithFallback 返回值 */
@@ -245,9 +247,9 @@ export class AgentManager {
     adapter.onOutput(handler)
 
     // 监听 session 异常结束事件，自动清理沙箱等资源
-    const sessionEndedHandler: SessionEndedHandler = (sessionId, reason) => {
-      if (reason === 'crash' || reason === 'error') {
-        logger.warn(`Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
+    const sessionEndedHandler: SessionEndedHandler = (sessionId, reason, exitCode) => {
+      if (reason === 'crash' || reason === 'error' || reason === 'timeout') {
+        logger.warn(`Session ${sessionId} ended abnormally (${reason}, exit ${exitCode}), cleaning up...`)
         const state = this.sessionStates.get(sessionId)
         if (state) {
           state.terminationReason = reason
@@ -255,7 +257,7 @@ export class AgentManager {
         this.cleanupSessionResources(sessionId)
         // Attempt recovery based on exit context
         if (state) {
-          this._handleSessionEnded(sessionId, 1, reason, state)
+          this._handleSessionEnded(sessionId, exitCode, reason, state)
         }
       }
     }
@@ -1329,6 +1331,13 @@ export class AgentManager {
       if (this.promptOutcomeLog.length > 100) {
         this.promptOutcomeLog.shift()
       }
+
+      // Reset recovery attempts for this lineage on a healthy termination so future
+      // crashes can be recovered again.
+      const terminationReason = reason ?? state.terminationReason
+      if (terminationReason === 'success' || terminationReason === 'user') {
+        this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+      }
     }
 
     // Task 2.4.2: File change auto-association with nodes
@@ -1571,15 +1580,14 @@ export class AgentManager {
   }
 
   private async _handleSessionEnded(sessionId: string, exitCode: number | null, reason: string, state: SessionState): Promise<void> {
-    if (exitCode === 137 || exitCode === 143) {
+    if ((exitCode === 137 || exitCode === 143) && reason !== 'timeout') {
       logger.info(`Session ${sessionId} terminated normally (exit ${exitCode})`)
       return
     }
 
-    const isRecoverable = exitCode === null || (
-      exitCode !== 126 && exitCode !== 127 &&
-      (reason === 'crash' || reason === 'error' || reason === 'timeout')
-    )
+    const isRecoverable =
+      (reason === 'crash' || reason === 'error' || reason === 'timeout') &&
+      exitCode !== 126 && exitCode !== 127
 
     if (isRecoverable) {
       const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
@@ -1605,6 +1613,7 @@ export class AgentManager {
         }
       }
 
+      const originSessionId = state.originSessionId ?? sessionId
       const newSessionId = await this.sessionRecovery.attemptRecovery({
         sessionId,
         adapterName: state.adapterName,
@@ -1612,17 +1621,18 @@ export class AgentManager {
         lastOutputs: outputs,
         lastMessages,
         threadId,
+        originSessionId,
       })
       if (newSessionId) {
         logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
+        // Carry the recovery lineage to the new session so retry accounting survives sessionId changes.
+        const newState = this.sessionStates.get(newSessionId)
+        if (newState) {
+          newState.originSessionId = originSessionId
+        }
         // For stateless adapters that create a fresh session, resume the last user command.
         if (newSessionId !== sessionId && state.lastCommand) {
-          try {
-            await this.sendCommand(newSessionId, state.lastCommand)
-            logger.info(`Resumed last command on recovered session ${newSessionId}`)
-          } catch (err) {
-            logger.warn(`Failed to resume last command on recovered session ${newSessionId}:`, err)
-          }
+          await this._resumeLastCommand(newSessionId, state.lastCommand)
         }
       } else {
         // Check if MCP adapter recovery left a pending context injection
@@ -1633,15 +1643,14 @@ export class AgentManager {
             const config = { ...state.config, contextSummary: pendingContext }
             const result = await this.startSession(state.adapterName, config)
             logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
+            const replacementState = this.sessionStates.get(result.sessionId)
+            if (replacementState) {
+              replacementState.originSessionId = originSessionId
+            }
             // Resume the last user command on the replacement session; if there is none,
             // the session stays idle and the UI is notified via the existing recovery event.
             if (state.lastCommand) {
-              try {
-                await this.sendCommand(result.sessionId, state.lastCommand)
-                logger.info(`Resumed last command on replacement session ${result.sessionId}`)
-              } catch (err) {
-                logger.warn(`Failed to resume last command on replacement session ${result.sessionId}:`, err)
-              }
+              await this._resumeLastCommand(result.sessionId, state.lastCommand)
             } else {
               logger.info(`Replacement session ${result.sessionId} started idle; no previous command to resume`)
             }
@@ -1660,6 +1669,28 @@ export class AgentManager {
     }
 
     logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
+  }
+
+  /**
+   * Safely resume the last user command on a recovered/replacement session.
+   * Verifies the session exists and the target adapter is ready before sending.
+   */
+  private async _resumeLastCommand(sessionId: string, command: AgentCommand): Promise<void> {
+    if (!this.sessionStates.has(sessionId)) {
+      logger.warn(`Cannot resume command: recovered session ${sessionId} is not ready`)
+      return
+    }
+    const adapter = this.router.resolve(sessionId)
+    if (!adapter) {
+      logger.warn(`Cannot resume command: no adapter bound to recovered session ${sessionId}`)
+      return
+    }
+    try {
+      await this.sendCommand(sessionId, command)
+      logger.info(`Resumed last command on recovered session ${sessionId}`)
+    } catch (err) {
+      logger.warn(`Failed to resume last command on recovered session ${sessionId}:`, err)
+    }
   }
 
   /**

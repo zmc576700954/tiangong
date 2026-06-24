@@ -32,7 +32,6 @@ export interface RequestQueueConfig {
 interface QueuedItem {
   request: QueueRequest
   status: 'queued' | 'executing'
-  cancelled?: boolean
 }
 
 const DEDUP_CLEANUP_INTERVAL_MS = 60_000
@@ -94,7 +93,6 @@ export class RequestQueue {
       const idx = queue.findIndex(i => i.request.id === requestId)
       if (idx !== -1) {
         const item = queue[idx]
-        item.cancelled = true
         if (item.status === 'queued') {
           item.request.abortController?.abort()
           queue.splice(idx, 1)
