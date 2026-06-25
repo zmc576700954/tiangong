@@ -17,6 +17,7 @@ import type {
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
 import type { ProtocolInputMessage } from './json-protocol'
 import { SessionNotFoundError, AdapterError, ErrorCode } from '../errors'
+import { getPlatformProvider } from '../platform'
 import { buildSafeEnv } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { parseFileChanges } from './file-change-parser'
@@ -273,11 +274,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       }
     }, gracePeriodMs)
     proc.once('exit', () => clearTimeout(timeout))
-    if (process.platform === 'win32') {
-      proc.kill()
-    } else {
-      proc.kill('SIGTERM')
-    }
+    const provider = getPlatformProvider()
+    provider.killProcess(proc)
   }
 
   /**
@@ -642,11 +640,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         clearTimeout(timeout)
         resolve()
       })
-      if (process.platform === 'win32') {
-        proc.kill()
-      } else {
-        proc.kill('SIGTERM')
-      }
+      const provider = getPlatformProvider()
+      provider.killProcess(proc)
     })
   }
 

@@ -18,6 +18,7 @@ import type {
   AdapterPreferences,
 } from '@shared/types'
 import { BizGraphError, IpcError, ErrorCode } from './errors'
+import { getPlatformProvider } from './platform'
 import { createLogger } from './shared/logger'
 
 const logger = createLogger('Settings')
@@ -359,14 +360,10 @@ export async function detectCliTool(name: string): Promise<{
     const version = (result.stdout ?? '').trim().split(/\r?\n/)[0]
     let cmdPath: string | undefined
     try {
-      const whichCmd = process.platform === 'win32' ? 'where' : 'which'
-      const whichResult = spawnSync(whichCmd, [tool.command], {
-        encoding: 'utf-8',
-        timeout: 3000,
-        stdio: ['pipe', 'pipe', 'ignore'],
-      })
-      if (!whichResult.error && whichResult.status === 0) {
-        cmdPath = (whichResult.stdout ?? '').trim().split(/\r?\n/)[0]
+      const provider = getPlatformProvider()
+      const found = provider.whichCommand(tool.command)
+      if (found) {
+        cmdPath = found.split(/\r?\n/)[0]
       }
     } catch (err) {
       logger.warn(`Failed to find path for ${tool.command}:`, err)
@@ -401,29 +398,14 @@ function validateNpmPackageName(pkg: string): boolean {
 let _cachedNpmCmd: string | undefined
 function resolveNpmCommand(): string {
   if (_cachedNpmCmd) return _cachedNpmCmd
-  if (process.platform === 'win32') {
-    try {
-      const result = spawnSync('where', ['npm.cmd'], { encoding: 'utf-8' })
-      if (result.status === 0) {
-        _cachedNpmCmd = result.stdout.trim().split(/\r?\n/)[0]
-        return _cachedNpmCmd
-      }
-    } catch {
-      /* ignore */
-    }
-    _cachedNpmCmd = 'npm.cmd'
+  const provider = getPlatformProvider()
+  const npmCmdName = provider.isWindows ? 'npm.cmd' : 'npm'
+  const found = provider.whichCommand(npmCmdName)
+  if (found) {
+    _cachedNpmCmd = found.trim().split(/\r?\n/)[0]
     return _cachedNpmCmd
   }
-  try {
-    const result = spawnSync('which', ['npm'], { encoding: 'utf-8' })
-    if (result.status === 0) {
-      _cachedNpmCmd = result.stdout.trim()
-      return _cachedNpmCmd
-    }
-  } catch {
-    /* ignore */
-  }
-  _cachedNpmCmd = 'npm'
+  _cachedNpmCmd = npmCmdName
   return _cachedNpmCmd
 }
 

@@ -13,6 +13,7 @@
 
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
+import { getPlatformProvider } from '../platform'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import type { ChildProcess } from 'node:child_process'
 import { createLogger } from '../shared/logger'
@@ -30,11 +31,12 @@ export class MindMapAdapter extends BaseAdapter {
   async checkInstalled(): Promise<boolean> {
     try {
       const { execFileSync } = await import('node:child_process')
+      const provider = getPlatformProvider()
       execFileSync('claude', ['--version'], {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'ignore'],
-        shell: process.platform === 'win32',
+        ...provider.getShellConfig(),
         windowsHide: true,
       })
       return true
