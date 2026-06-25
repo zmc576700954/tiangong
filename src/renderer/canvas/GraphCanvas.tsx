@@ -177,12 +177,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [searchQuery])
 
   // Navigate only after Enter or an explicit next-result click.
-  const cycleSearchResult = useCallback(() => {
+  const goToSearchResult = useCallback((idx: number) => {
+    const node = searchResults[idx]
+    if (node) navigateToSearchResult(node)
+  }, [searchResults, navigateToSearchResult])
+
+  const nextSearchResult = useCallback(() => {
     if (searchResults.length === 0) return
-    const idx = searchIndex % searchResults.length
-    navigateToSearchResult(searchResults[idx])
-    setSearchIndex((i) => (i + 1) % searchResults.length)
-  }, [searchResults, searchIndex, navigateToSearchResult])
+    const next = (searchIndex + 1) % searchResults.length
+    goToSearchResult(next)
+    setSearchIndex(next)
+  }, [searchResults, searchIndex, goToSearchResult])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -673,7 +678,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 className="bg-transparent text-sm outline-none w-48"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && searchResults.length > 0) {
-                    cycleSearchResult()
+                    goToSearchResult(searchIndex)
                   }
                   if (e.key === 'Escape') {
                     setSearchOpen(false)
@@ -688,9 +693,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
               )}
               {searchResults.length > 1 && (
                 <button
-                  onClick={cycleSearchResult}
+                  onClick={nextSearchResult}
                   className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
-                  title="Next result (Enter)"
+                  title="Next result"
                 >
                   <Search className="w-3 h-3" />
                 </button>
