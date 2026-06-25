@@ -111,6 +111,8 @@ export interface ToolCallBlock {
   content: string
   status: 'running' | 'done' | 'error'
   accepted?: boolean
+  /** Original change type from the agent output (add/modify/delete) */
+  changeType?: 'add' | 'modify' | 'delete'
 }
 
 /** 消息状态 */

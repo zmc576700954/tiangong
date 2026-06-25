@@ -7,6 +7,8 @@ export interface ThreadState {
   threads: AgentThread[]
   currentThreadId: string | null
   nodeThreadMap: Map<string, AgentThread>
+  /** Resolvers for frontend thread IDs that are being swapped to DB IDs */
+  threadIdResolvers: Map<string, { promise: Promise<string>; resolve: (id: string) => void }>
 
   createThread: (adapterName: string, nodeBound?: string) => string
   deleteThread: (threadId: string) => Promise<void>
@@ -22,12 +24,15 @@ export interface ThreadState {
   persistMessage: (threadId: string, message: ChatMessage) => Promise<void>
   /** Persist all messages of a thread to DB */
   persistThreadMessages: (threadId: string) => Promise<void>
+  /** Resolve a frontend thread ID to its DB-backed ID (returns the same ID if already resolved or unknown) */
+  resolveThreadId: (threadId: string) => Promise<string>
 }
 
 export const useThreadStore = create<ThreadState>((set, get) => ({
   threads: [],
   currentThreadId: null,
   nodeThreadMap: new Map<string, AgentThread>(),
+  threadIdResolvers: new Map<string, { promise: Promise<string>; resolve: (id: string) => void }>(),
 
   createThread: (adapterName, nodeBound) => {
     const id = generateId('thread')
@@ -41,6 +46,11 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
       createdAt: Date.now(),
       nodeBound,
     }
+
+    // Create a resolver so callers (e.g. sendMessage) can wait for the DB-backed ID
+    let resolveId: (id: string) => void
+    const idPromise = new Promise<string>((resolve) => { resolveId = resolve })
+
     set((state) => {
       const newNodeThreadMap = nodeBound
         ? new Map(state.nodeThreadMap).set(nodeBound, thread)
@@ -49,8 +59,22 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         threads: [...state.threads, thread],
         currentThreadId: id,
         nodeThreadMap: newNodeThreadMap,
+        threadIdResolvers: new Map(state.threadIdResolvers).set(id, {
+          promise: idPromise,
+          resolve: resolveId!,
+        }),
       }
     })
+
+    const finalizeId = (finalId: string) => {
+      resolveId(finalId)
+      set((state) => {
+        const next = new Map(state.threadIdResolvers)
+        next.delete(id)
+        return { threadIdResolvers: next }
+      })
+    }
+
     // Persist to DB — use returned DB ID if available
     window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).then((dbThread) => {
       if (dbThread?.id && dbThread.id !== id) {
@@ -69,8 +93,10 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
           }
         })
       }
+      finalizeId(dbThread?.id ?? id)
     }).catch((err) => {
       console.error('[threadStore] Failed to persist new thread:', err)
+      finalizeId(id)
       set((state) => ({
         threads: state.threads.map((t) =>
           t.id === id ? { ...t, status: 'error' as const } : t
@@ -196,5 +222,11 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     } catch (err) {
       console.error('[threadStore] Failed to persist thread messages:', err)
     }
+  },
+
+  resolveThreadId: (threadId) => {
+    const resolver = get().threadIdResolvers.get(threadId)
+    if (!resolver) return Promise.resolve(threadId)
+    return resolver.promise
   },
 }))

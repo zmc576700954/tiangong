@@ -130,8 +130,6 @@ const MAX_RETRIES = 3
 interface MessageState extends StreamingSeqState {
   /** Pending confirmations keyed by threadId */
   pendingConfirmations: Map<string, Map<string, { messageId: string; toolCall: ToolCallBlock }>>
-  /** Per-thread AbortController for cancelling in-flight requests */
-  abortControllers: Map<string, AbortController>
   /** Per-message retry count tracking */
   retryCounts: Map<string, number>
 
@@ -149,8 +147,6 @@ interface MessageState extends StreamingSeqState {
   enqueueSend: (threadId: string, content: string, sendFn: () => Promise<void>) => void
   /** Cancel all queued (not yet active) sends for a thread */
   cancelQueued: (threadId: string) => void
-  /** Abort the active in-flight request for a thread; keeps parsed file changes intact */
-  abortSession: (threadId: string) => void
   /** Get the retry count for a message */
   getRetryCount: (messageId: string) => number
 }
@@ -158,7 +154,6 @@ interface MessageState extends StreamingSeqState {
 export const useMessageStore = create<MessageState>((set, get) => ({
   lastSeq: new Map(),
   pendingConfirmations: new Map(),
-  abortControllers: new Map(),
   retryCounts: new Map(),
 
   appendToStreamingMessage: (threadId, messageId, content, seq) => {
@@ -420,34 +415,6 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   cancelQueued: (threadId) => {
     messageQueue.cancelQueued(threadId)
-  },
-
-  abortSession: (threadId) => {
-    // Cancel any queued sends for this thread
-    messageQueue.cancelQueued(threadId)
-
-    // Abort the in-flight request via AbortController
-    const controller = get().abortControllers.get(threadId)
-    if (controller) {
-      controller.abort()
-      // Remove the controller after aborting
-      set((state) => {
-        const next = new Map(state.abortControllers)
-        next.delete(threadId)
-        return { abortControllers: next }
-      })
-    }
-
-    // Mark the last streaming agent message as aborted (keep parsed file changes / toolCalls intact)
-    const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)
-    if (thread) {
-      const lastStreaming = [...thread.messages].reverse().find(
-        (m) => m.role === 'agent' && m.status === 'streaming',
-      )
-      if (lastStreaming) {
-        get().markMessageStatus(threadId, lastStreaming.id, 'aborted')
-      }
-    }
   },
 
   getRetryCount: (messageId) => {

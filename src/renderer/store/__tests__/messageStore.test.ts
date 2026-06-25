@@ -33,10 +33,13 @@ describe('messageStore', () => {
     useMessageStore.setState({
       lastSeq: new Map(),
       pendingConfirmations: new Map(),
+      retryCounts: new Map(),
     })
     useThreadStore.setState({
       threads: [],
       currentThreadId: null,
+      threadIdResolvers: new Map(),
+      nodeThreadMap: new Map(),
     })
   })
 
@@ -46,10 +49,13 @@ describe('streaming (RAF-batched)', () => {
     useMessageStore.setState({
       lastSeq: new Map(),
       pendingConfirmations: new Map(),
+      retryCounts: new Map(),
     })
     useThreadStore.setState({
       threads: [],
       currentThreadId: null,
+      threadIdResolvers: new Map(),
+      nodeThreadMap: new Map(),
     })
   })
 

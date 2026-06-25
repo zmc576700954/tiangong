@@ -32,11 +32,23 @@ export interface UseResizablePanelResult {
  */
 const STORAGE_KEY_PREFIX = 'bizgraph:panel:'
 
+export function parseSavedPanelWidth(
+  savedWidth: string | null,
+  initialWidth: number,
+  minWidth: number,
+  maxWidth: number,
+): number {
+  if (!savedWidth) return initialWidth
+  const parsed = Number(savedWidth)
+  if (!Number.isFinite(parsed)) return initialWidth
+  return Math.max(minWidth, Math.min(maxWidth, parsed))
+}
+
 export function useResizablePanel(options: UseResizablePanelOptions): UseResizablePanelResult {
   const { initialWidth, minWidth, maxWidth, direction } = options
   const storageKey = `${STORAGE_KEY_PREFIX}${direction}`
   const savedWidth = typeof window !== 'undefined' ? localStorage.getItem(storageKey) : null
-  const [width, setWidth] = useState(savedWidth ? Math.max(minWidth, Math.min(maxWidth, Number(savedWidth))) : initialWidth)
+  const [width, setWidth] = useState(parseSavedPanelWidth(savedWidth, initialWidth, minWidth, maxWidth))
   const [isResizing, setIsResizing] = useState(false)
   const [fixedWidth, setFixedWidth] = useState<number | null>(null)
   const widthRef = useRef(width)

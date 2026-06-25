@@ -68,6 +68,7 @@ export type {
 export type {
   // IPC domain
   IpcApi,
+  IpcEventMap,
 } from './types/ipc'
 
 export * from './types/subagent'

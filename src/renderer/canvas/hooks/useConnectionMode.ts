@@ -87,10 +87,6 @@ export function useConnectionMode({
       const targetNodeId = findNodeIdFromDom(e.target)
       if (!targetNodeId || targetNodeId === srcId) return
 
-      // 阻止事件继续传播，防止 onPaneClick 清除连线状态
-      e.stopPropagation()
-      e.preventDefault()
-
       const exists = graphEdgesRef.current.some(
         (ed) => ed.source === srcId && ed.target === targetNodeId,
       )
@@ -100,6 +96,10 @@ export function useConnectionMode({
         connectingSourceIdRef.current = null
         return
       }
+
+      // Only suppress pane click for a valid new target; avoid preventDefault
+      // so we don't block default browser behavior (focus, accessibility, etc.)
+      e.stopPropagation()
 
       if (onConnect) {
         onConnect({ source: srcId, target: targetNodeId, sourceHandle: null, targetHandle: null })

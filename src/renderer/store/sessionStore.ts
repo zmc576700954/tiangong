@@ -180,112 +180,117 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // Concurrency guard: prevent double-send on rapid clicks
     const { sendingThreads } = get()
     if (sendingThreads.has(threadId)) return
-    const next = new Set(sendingThreads)
-    next.add(threadId)
-    set({ sendingThreads: next })
+    const locked = new Set(sendingThreads)
+    locked.add(threadId)
+    set({ sendingThreads: locked })
 
-    const userMessage: ChatMessage = {
-      id: generateId('msg'),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-      contextRefs,
-      status: 'pending',
-    }
-    useThreadStore.setState((state) => ({
-      threads: state.threads.map((t) =>
-        t.id === threadId
-          ? {
-              ...t,
-              messages: [...t.messages, userMessage],
-              title: t.title === 'New Thread' ? content.slice(0, 30) : t.title,
-              status: 'running' as const,
-            }
-          : t,
-      ),
-    }))
-
-    // 持久化用户消息到 DB
-    useThreadStore.getState().persistMessage(threadId, userMessage)
-
-    const thread = useThreadStore.getState().threads.find((t) => t.id === threadId)
-    if (!thread) return
-
-    // 使用传入的完整配置，或构建 fallback（从 graphStore 获取 projectPath）
-    const graphState = useGraphStore.getState()
-    const currentGraph = graphState.currentGraphId
-      ? graphState.graphs.find((g) => g.id === graphState.currentGraphId)
-      : undefined
-    const config: AgentSessionConfig = sessionConfig ?? {
-      workingDirectory: currentGraph?.projectPath ?? '',
-      allowedFiles: [],
-      forbiddenFiles: [],
-      invariantRules: [],
-      upstreamContext: '',
-      downstreamContext: '',
-      nodeTitle: thread.nodeBound ?? '',
-      nodeId: thread.nodeBound,
-      acceptanceCriteria: [],
-      threadId: thread.id,
-    }
-
-    // Always ensure threadId is present (even when sessionConfig was supplied by caller).
-    if (!config.threadId) {
-      config.threadId = thread.id
-    }
-
-    // Determine commandType from bound node type for status auto-trigger
-    if (!config.commandType && thread.nodeBound) {
-      const boundNode = useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
-      config.commandType = boundNode?.type === 'bug' ? 'fix_bug' : 'implement'
-    }
-
-    if (!config.workingDirectory) {
-      useThreadStore.getState().appendChatMessage(threadId, {
-        id: generateId('msg'),
-        role: 'system',
-        content: '请先打开一个项目目录再发送消息。',
-        timestamp: Date.now(),
-        status: 'error',
-        error: { code: 'NO_PROJECT', message: '未指定项目目录' },
-      })
-      useThreadStore.getState().updateThreadStatus(threadId, 'idle')
-      return
-    }
-
-    // 续接：如果 thread 有 sessionId，注入 resumeSessionId（适配器自行决定是否支持）
-    if (thread.sessionId) {
-      config.resumeSessionId = thread.sessionId
-    }
+    let resolvedThreadId = threadId
 
     try {
+      // Wait for the DB-backed thread ID to be resolved so messages are never
+      // persisted under a transient frontend ID.
+      resolvedThreadId = await useThreadStore.getState().resolveThreadId(threadId)
+
+      const thread = useThreadStore.getState().threads.find((t) => t.id === resolvedThreadId)
+      if (!thread) return
+
+      const userMessage: ChatMessage = {
+        id: generateId('msg'),
+        role: 'user',
+        content,
+        timestamp: Date.now(),
+        contextRefs,
+        status: 'pending',
+      }
+      useThreadStore.setState((state) => ({
+        threads: state.threads.map((t) =>
+          t.id === resolvedThreadId
+            ? {
+                ...t,
+                messages: [...t.messages, userMessage],
+                title: t.title === 'New Thread' ? content.slice(0, 30) : t.title,
+                status: 'running' as const,
+              }
+            : t,
+        ),
+      }))
+
+      // Persist user message to DB using the resolved thread ID
+      useThreadStore.getState().persistMessage(resolvedThreadId, userMessage)
+
+      // Use the passed config, or build a fallback from the current graph
+      const graphState = useGraphStore.getState()
+      const currentGraph = graphState.currentGraphId
+        ? graphState.graphs.find((g) => g.id === graphState.currentGraphId)
+        : undefined
+      const config: AgentSessionConfig = sessionConfig ?? {
+        workingDirectory: currentGraph?.projectPath ?? '',
+        allowedFiles: [],
+        forbiddenFiles: [],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: thread.nodeBound ?? '',
+        nodeId: thread.nodeBound,
+        acceptanceCriteria: [],
+        threadId: resolvedThreadId,
+      }
+
+      // Always ensure threadId is present (even when sessionConfig was supplied by caller).
+      if (!config.threadId) {
+        config.threadId = resolvedThreadId
+      }
+
+      // Determine commandType from bound node type for status auto-trigger
+      if (!config.commandType && thread.nodeBound) {
+        const boundNode = useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
+        config.commandType = boundNode?.type === 'bug' ? 'fix_bug' : 'implement'
+      }
+
+      if (!config.workingDirectory) {
+        useThreadStore.getState().appendChatMessage(resolvedThreadId, {
+          id: generateId('msg'),
+          role: 'system',
+          content: '请先打开一个项目目录再发送消息。',
+          timestamp: Date.now(),
+          status: 'error',
+          error: { code: 'NO_PROJECT', message: '未指定项目目录' },
+        })
+        useThreadStore.getState().updateThreadStatus(resolvedThreadId, 'idle')
+        return
+      }
+
+      // Resume existing session when thread already has a sessionId
+      if (thread.sessionId) {
+        config.resumeSessionId = thread.sessionId
+      }
+
       let sessionId: string
       const existingSessionId = thread.sessionId
 
       if (existingSessionId) {
-        // 复用已有 session
+        // Reuse existing session
         sessionId = existingSessionId
       } else {
-        // 首次发送，创建 session
-        // adapterName 为 'auto' 时传 null，触发主进程自动回退链
+        // First send: create a session. Use null for 'auto' to trigger fallback chain.
         const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
         const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
         sessionId = result.sessionId
 
-        // 记录回退历史
+        // Record fallback history
         if (result.fallbackHistory && result.fallbackHistory.length > 1) {
           useAdapterStore.setState({ lastFallbackHistory: result.fallbackHistory })
         }
 
-        // 绑定 sessionId 到 thread
+        // Bind sessionId to thread
         useThreadStore.setState((state) => ({
           threads: state.threads.map((t) =>
-            t.id === threadId ? { ...t, sessionId } : t,
+            t.id === resolvedThreadId ? { ...t, sessionId } : t,
           ),
         }))
 
-        // 持久化 sessionId 到 DB（失败时 warn，retry 机制可容忍）
-        window.electronAPI['thread:update'](threadId, { sessionId }).catch((err) => {
+        // Persist sessionId to DB (warn on failure; retry may lose continuity)
+        window.electronAPI['thread:update'](resolvedThreadId, { sessionId }).catch((err) => {
           console.warn('[sessionStore] Failed to persist sessionId, retry may lose continuity:', err)
         })
 
@@ -302,7 +307,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         })
       }
 
-      // BUG 节点自动映射为 fix_bug 命令类型
+      // BUG nodes map to fix_bug command type
       const boundNode = thread.nodeBound
         ? useGraphStore.getState().nodes.find((n) => n.id === thread.nodeBound)
         : undefined
@@ -329,7 +334,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       const errMsg = String(err)
       const isNoAdapter = errMsg.includes('No adapter available')
-      useThreadStore.getState().appendChatMessage(threadId, {
+      useThreadStore.getState().appendChatMessage(resolvedThreadId, {
         id: generateId('msg'),
         role: 'agent',
         content: '',
@@ -343,9 +348,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           raw: errMsg,
         },
       })
-      useThreadStore.getState().updateThreadStatus(threadId, 'error')
+      useThreadStore.getState().updateThreadStatus(resolvedThreadId, 'error')
     } finally {
-      // Clear concurrency guard
+      // Always clear the concurrency guard, even on early returns or errors
       const { sendingThreads } = get()
       const next = new Set(sendingThreads)
       next.delete(threadId)

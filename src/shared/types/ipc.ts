@@ -133,11 +133,6 @@ export interface IpcApi {
     modules: ScanModule[]
   }>
 
-  // 事件监听通道（push 模式，不通过 ipcRenderer.invoke 调用）
-  // 这些仅用于类型文档，实际通过 preload 的 onAgentOutput/onAgentStatusChange 监听
-  'agent:onOutput': (sessionId: string, output: AgentOutput) => void
-  'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
-
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
   'settings:write': (settings: BizGraphSettings) => Promise<void>
@@ -194,4 +189,16 @@ export interface IpcApi {
   'subagent:listInvocations': (parentSessionId: string) => Promise<SubagentInvocation[]>
   'subagent:cancel': (invocationId: string) => Promise<void>
   'subagent:getResult': (invocationId: string) => Promise<SubagentResult | null>
+}
+
+/**
+ * Push-only event channels.
+ *
+ * These are not exposed via `ipcRenderer.invoke`; they are delivered from the
+ * main process through dedicated `ipcRenderer.on` listeners exposed by the
+ * preload script (e.g. `onAgentOutput`, `onAgentStatusChange`).
+ */
+export interface IpcEventMap {
+  'agent:onOutput': (sessionId: string, output: AgentOutput) => void
+  'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
 }

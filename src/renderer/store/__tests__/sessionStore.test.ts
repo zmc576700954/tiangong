@@ -37,8 +37,8 @@ describe('sessionStore', () => {
 
   beforeEach(() => {
     threadCounter = 0
-    useSessionStore.setState({ activeSessions: new Map() })
-    useThreadStore.setState({ threads: [], currentThreadId: null })
+    useSessionStore.setState({ activeSessions: new Map(), sendingThreads: new Set() })
+    useThreadStore.setState({ threads: [], currentThreadId: null, threadIdResolvers: new Map() })
     useAdapterStore.setState({
       adapters: [],
       adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
@@ -203,5 +203,42 @@ describe('sessionStore', () => {
   it('listenForStatusChanges returns a cleanup function', () => {
     const cleanup = useSessionStore.getState().listenForStatusChanges()
     expect(typeof cleanup).toBe('function')
+  })
+
+  it('sendMessage releases the sendingThreads lock even when no project is open', async () => {
+    useGraphStore.setState({
+      graphs: [{ id: 'g1', name: 'Test', type: 'online', projectPath: '', createdAt: '', updatedAt: '' }],
+      currentGraphId: 'g1',
+    })
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
+
+    await useSessionStore.getState().sendMessage(threadId, 'Hello')
+
+    expect(useSessionStore.getState().sendingThreads.has(threadId)).toBe(false)
+    expect(useThreadStore.getState().threads[0].status).toBe('idle')
+  })
+
+  it('sendMessage releases the sendingThreads lock after a session start error', async () => {
+    vi.mocked(window.electronAPI['agent:startSession']).mockRejectedValueOnce(new Error('No adapter available'))
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
+
+    await useSessionStore.getState().sendMessage(threadId, 'Hello')
+
+    expect(useSessionStore.getState().sendingThreads.has(threadId)).toBe(false)
+    expect(useThreadStore.getState().threads[0].status).toBe('error')
+  })
+
+  it('sendMessage persists the user message using the resolved DB thread ID', async () => {
+    useThreadStore.getState().createThread('claude-code')
+    const threadId = await waitForThreadStable()
+
+    await useSessionStore.getState().sendMessage(threadId, 'Hello')
+
+    expect(window.electronAPI['message:save']).toHaveBeenCalledWith(
+      'thread-1',
+      expect.objectContaining({ role: 'user', content: 'Hello' }),
+    )
   })
 })
