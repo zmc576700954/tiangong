@@ -953,7 +953,13 @@ export class AgentManager {
       try {
         return await this.adapterPreferencesLoader()
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
         logger.warn('Failed to load adapter preferences, using defaults:', err)
+        this.broadcaster.broadcast('agent-manager', {
+          type: 'stderr',
+          data: `Failed to load adapter preferences, using defaults: ${reason}`,
+          timestamp: Date.now(),
+        })
       }
     }
     return { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }
@@ -1759,7 +1765,7 @@ export class AgentManager {
         content: combined.slice(-2000),
       })
     }
-    return messages.slice(-1)
+    return messages
   }
 
   private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {

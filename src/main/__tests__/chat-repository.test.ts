@@ -63,12 +63,22 @@ describe('ChatRepository', () => {
         id: 't1', title: 'Thread', adapter_name: 'claude-code',
         node_id: 'n1', graph_id: null, session_id: null,
         status: 'active', created_at: 1000, updated_at: 2000,
+        context_tokens_used: 0, context_window_max: 200000,
       }]))
 
       const thread = await repo.getThread('t1')
       expect(thread).not.toBeNull()
       expect(thread!.id).toBe('t1')
       expect(thread!.created_at).toBe(1000)
+    })
+
+    it('缺少必填字段 → 抛出 DatabaseError', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+        id: 't1', title: 'Thread',
+        // 缺少 adapter_name / status / created_at / updated_at / context_tokens_used / context_window_max
+      }]))
+
+      await expect(repo.getThread('t1')).rejects.toThrow('Missing required field')
     })
 
     it('未找到 → null', async () => {
@@ -244,7 +254,7 @@ describe('ChatRepository', () => {
         id: 'm1', thread_id: 't1', role: 'agent', content: 'test',
         adapter_name: 'claude', status: 'success',
         error: null, session_id: null, context_refs: null, tool_calls: null,
-        created_at: 1000,
+        created_at: 1000, token_count: 0,
       }]))
 
       const messages = await repo.listMessages('t1')
@@ -253,6 +263,15 @@ describe('ChatRepository', () => {
       expect(messages[0].session_id).toBeNull()
       expect(messages[0].context_refs).toBeNull()
       expect(messages[0].tool_calls).toBeNull()
+    })
+
+    it('缺少必填字段 → 抛出 DatabaseError', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+        id: 'm1', thread_id: 't1', role: 'agent', content: 'test',
+        // 缺少 adapter_name / status / created_at / token_count
+      }]))
+
+      await expect(repo.listMessages('t1')).rejects.toThrow('Missing required field')
     })
   })
 })

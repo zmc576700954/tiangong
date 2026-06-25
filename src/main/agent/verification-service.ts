@@ -62,7 +62,8 @@ export class VerificationService {
     }
 
     // Single-pass: extract all JUSTIFICATION_N: ... matches
-    const justRegex = /JUSTIFICATION_(\d+):\s*(.+?)(?=\n(?:CRITERION_|JUSTIFICATION_)|$)/gis
+    // 使用更宽松的分隔符：捕获到下一个 CRITERION_/JUSTIFICATION_ 标记或文本结尾
+    const justRegex = /JUSTIFICATION_(\d+):\s*([\s\S]*?)(?=\s*(?:CRITERION_|JUSTIFICATION_)|$)/gi
     const justMap = new Map<number, string>()
     while ((match = justRegex.exec(response)) !== null) {
       const num = parseInt(match[1], 10)

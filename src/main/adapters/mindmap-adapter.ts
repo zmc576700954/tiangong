@@ -29,14 +29,14 @@ export class MindMapAdapter extends BaseAdapter {
 
   async checkInstalled(): Promise<boolean> {
     try {
-      const { spawnSync } = await import('node:child_process')
-      const result = spawnSync('claude', ['--version'], {
+      const { execFileSync } = await import('node:child_process')
+      execFileSync('claude', ['--version'], {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'ignore'],
-        shell: process.platform === 'win32',
+        windowsHide: true,
       })
-      return result.status === 0
+      return true
     } catch {
       this.logger.warn('claude CLI not found')
       return false

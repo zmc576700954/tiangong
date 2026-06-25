@@ -36,6 +36,13 @@ describe('truncateToBudget', () => {
     expect(result.length).toBeLessThan(text.length)
     expect(result).toContain('[truncated]')
   })
+
+  it('iteratively truncates until within token budget', () => {
+    const text = 'a'.repeat(10000) // 2500 tokens
+    const result = truncateToBudget(text, 100)
+    expect(estimateTokens(result)).toBeLessThanOrEqual(100)
+    expect(result).toContain('[truncated]')
+  })
 })
 
 describe('ContextResolver', () => {
@@ -197,6 +204,21 @@ describe('ContextResolver', () => {
     expect(readFile).toHaveBeenCalledTimes(1)
     // stat may be called for mtime validation on cache hit
     expect(stat).toHaveBeenCalled()
+  })
+
+  it('invalidates TTL cache when stat fails (deleted file)', async () => {
+    vi.mocked(readFile).mockResolvedValue('cached content')
+    vi.mocked(stat)
+      .mockResolvedValueOnce({ mtimeMs: 1000 } as any)
+      .mockRejectedValueOnce(new Error('ENOENT'))
+
+    const refs: ContextRef[] = [{ type: 'file', id: 'deleted.ts', label: 'deleted.ts' }]
+    await resolver.resolve(refs, 8000, { basePath: '/project' })
+    const result = await resolver.resolve(refs, 8000, { basePath: '/project' })
+
+    // Cache should be invalidated and file re-read
+    expect(readFile).toHaveBeenCalledTimes(2)
+    expect(result[0].content).toContain('cached content')
   })
 
   it('rejects path traversal via relative path escaping', async () => {

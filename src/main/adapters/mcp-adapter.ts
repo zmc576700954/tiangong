@@ -552,7 +552,7 @@ export class McpAdapter extends BaseAdapter {
     const settings = await readSettings()
 
     // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
-    const apiKey = this.resolveApiKey(settings.apiKeys, settings.defaultModel)
+    const apiKey = resolveApiKey(settings.apiKeys, settings.defaultModel)
 
     if (!apiKey) {
       this.emitOutput({
@@ -672,13 +672,6 @@ export class McpAdapter extends BaseAdapter {
       })
       this.emit('sessionEnded', session.id, 'error', null)
     }
-  }
-
-  /**
-   * 根据 provider 匹配 API Key（委托给独立导出函数）
-   */
-  private resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): ApiKeyConfig | undefined {
-    return resolveApiKey(apiKeys, defaultModel)
   }
 
   protected async doTerminate(_session: AgentSession, _proc?: ChildProcess): Promise<void> {

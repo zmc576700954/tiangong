@@ -110,6 +110,23 @@ justification_1: OK`
       expect(results[1].passed).toBe(false)
     })
 
+    it('多行 justification 包含空行也能正确捕获', () => {
+      const response = `CRITERION_1: PASS
+JUSTIFICATION_1: 邮箱登录已正确实现
+并且包含第二行说明
+
+CRITERION_2: FAIL
+JUSTIFICATION_2: 密码未加密
+使用明文存储`
+
+      const results = service.parseVerificationResponse(response, ['支持邮箱登录', '密码加密存储'])
+      expect(results).toHaveLength(2)
+      expect(results[0].passed).toBe(true)
+      expect(results[0].justification).toContain('第二行说明')
+      expect(results[1].passed).toBe(false)
+      expect(results[1].justification).toContain('使用明文存储')
+    })
+
     it('部分匹配 → 缺失的默认 false', () => {
       const response = `CRITERION_1: PASS
 JUSTIFICATION_1: Done`

@@ -4,6 +4,7 @@
  */
 
 import type { Client, Row } from '@libsql/client'
+import { DatabaseError, ErrorCode } from '../errors'
 
 const THREAD_COLUMNS = [
   'id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id',
@@ -56,44 +57,60 @@ export function isChatThreadRow(row: unknown): row is ChatThreadRow {
   return typeof row === 'object' && row !== null && 'id' in row && 'title' in row && 'status' in row
 }
 
+function requireString(row: Row, field: string): string {
+  const value = row[field]
+  if (value === undefined || value === null || value === '') {
+    throw new DatabaseError(`Missing required field: ${field}`, ErrorCode.DB_QUERY_FAILED)
+  }
+  return String(value)
+}
+
+function requireNumber(row: Row, field: string): number {
+  const value = row[field]
+  if (value === undefined || value === null || value === '') {
+    throw new DatabaseError(`Missing required field: ${field}`, ErrorCode.DB_QUERY_FAILED)
+  }
+  const num = Number(value)
+  if (Number.isNaN(num)) {
+    throw new DatabaseError(`Invalid numeric field: ${field}`, ErrorCode.DB_QUERY_FAILED)
+  }
+  return num
+}
+
 /** Cast a libsql Row to a ChatThreadRow with runtime field validation */
 function toChatThreadRow(row: Row): ChatThreadRow {
-  const result = {
-    id: String(row.id ?? ''),
-    title: String(row.title ?? ''),
-    adapter_name: String(row.adapter_name ?? ''),
+  return {
+    id: requireString(row, 'id'),
+    title: requireString(row, 'title'),
+    adapter_name: requireString(row, 'adapter_name'),
     node_id: row.node_id != null ? String(row.node_id) : null,
     graph_id: row.graph_id != null ? String(row.graph_id) : null,
     session_id: row.session_id != null ? String(row.session_id) : null,
-    status: String(row.status ?? ''),
-    created_at: Number(row.created_at ?? 0),
-    updated_at: Number(row.updated_at ?? 0),
+    status: requireString(row, 'status'),
+    created_at: requireNumber(row, 'created_at'),
+    updated_at: requireNumber(row, 'updated_at'),
     parent_thread_id: row.parent_thread_id != null ? String(row.parent_thread_id) : null,
-    context_tokens_used: Number(row.context_tokens_used ?? 0),
-    context_window_max: Number(row.context_window_max ?? 200000),
+    context_tokens_used: requireNumber(row, 'context_tokens_used'),
+    context_window_max: requireNumber(row, 'context_window_max'),
     last_compacted_at: row.last_compacted_at != null ? Number(row.last_compacted_at) : null,
   }
-  if (!isChatThreadRow(result)) {
-    throw new Error('Invalid ChatThreadRow: missing required fields (id, title, status)')
-  }
-  return result
 }
 
 /** Cast a libsql Row to a ChatMessageRow with runtime field validation */
 function toChatMessageRow(row: Row): ChatMessageRow {
   return {
-    id: String(row.id ?? ''),
-    thread_id: String(row.thread_id ?? ''),
-    role: String(row.role ?? ''),
-    content: String(row.content ?? ''),
-    adapter_name: String(row.adapter_name ?? ''),
-    status: String(row.status ?? ''),
+    id: requireString(row, 'id'),
+    thread_id: requireString(row, 'thread_id'),
+    role: requireString(row, 'role'),
+    content: requireString(row, 'content'),
+    adapter_name: requireString(row, 'adapter_name'),
+    status: requireString(row, 'status'),
     error: row.error != null ? String(row.error) : null,
     session_id: row.session_id != null ? String(row.session_id) : null,
     context_refs: row.context_refs != null ? String(row.context_refs) : null,
     tool_calls: row.tool_calls != null ? String(row.tool_calls) : null,
-    created_at: Number(row.created_at ?? 0),
-    token_count: Number(row.token_count ?? 0),
+    created_at: requireNumber(row, 'created_at'),
+    token_count: requireNumber(row, 'token_count'),
   }
 }
 

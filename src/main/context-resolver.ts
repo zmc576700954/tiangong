@@ -31,13 +31,26 @@ const FILE_CACHE_MAX_SIZE = 200
 
 /**
  * 截断文本到指定 token 预算（CJK 感知）
+ *
+ * 通过迭代收缩并重新估算 token 数，确保结果严格落在预算内。
  */
 export function truncateToBudget(text: string, maxTokens: number): string {
-  const estimated = estimateTokens(text)
-  if (estimated <= maxTokens) return text
-  const ratio = maxTokens / estimated
-  const charBudget = Math.floor(text.length * ratio * 0.9) // 留 10% 余量
-  return text.slice(0, charBudget) + '\n\n[truncated]'
+  if (maxTokens <= 0) return ''
+  if (estimateTokens(text) <= maxTokens) return text
+
+  let result = text
+  // 最多迭代 20 次，避免异常输入导致死循环
+  for (let i = 0; i < 20; i++) {
+    const estimated = estimateTokens(result)
+    if (estimated <= maxTokens) break
+
+    const ratio = maxTokens / estimated
+    const charBudget = Math.max(1, Math.floor(result.length * ratio * 0.9)) // 留 10% 余量
+    if (charBudget >= result.length) break
+    result = result.slice(0, charBudget)
+  }
+
+  return result + '\n\n[truncated]'
 }
 
 export interface ResolveOptions {
@@ -195,8 +208,8 @@ export class ContextResolver {
           }
           // mtime 变化，文件已修改，失效缓存继续读取
         } catch {
-          // stat 失败，回退到 TTL 缓存
-          return this.truncateContent(cached.content)
+          // stat 失败（如文件已被删除），失效缓存并继续读取
+          this.fileCache.delete(resolvedPath)
         }
       }
 

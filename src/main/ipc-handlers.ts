@@ -81,25 +81,33 @@ export { agentManager, contextWaterline }
 broadcaster.onBroadcast((payload) => {
   const sessionId = payload.sessionId ?? ''
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onOutput', sessionId, payload.output)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onOutput', sessionId, payload.output)
+    }
   }
 })
 
 agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+    }
   }
 })
 
 agentManager.setSessionStartedCallback((threadId, sessionId) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onSessionStarted', threadId, sessionId)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onSessionStarted', threadId, sessionId)
+    }
   }
 })
 
 agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
+    if (!win.isDestroyed()) {
+      win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
+    }
   }
 })
 
