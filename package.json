@@ -20,6 +20,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
+    "build:win:msix": "electron-builder --win msix",
+    "build:all": "electron-builder --mac --win --linux",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -102,22 +104,20 @@
     },
     "win": {
       "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "nsis", "arch": ["x64", "arm64"] },
+        { "target": "msix", "arch": ["x64", "arm64"] }
       ]
+    },
+    "msix": {
+      "identityName": "com.bizgraph.app",
+      "publisher": "CN=BizGraph",
+      "publisherDisplayName": "BizGraph",
+      "languages": ["zh-CN", "en-US"],
+      "store": false
     },
     "linux": {
       "target": [
-        {
-          "target": "AppImage",
-          "arch": [
-            "x64"
-          ]
-        }
+        { "target": "AppImage", "arch": ["x64", "arm64"] }
       ],
       "category": "Development"
     }
