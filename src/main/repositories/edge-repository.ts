@@ -3,7 +3,7 @@
  * 负责 Edge 的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphEdge } from '@shared/types'
 import { assertEdgeType } from '@shared/type-guards'
 import { DatabaseError, ErrorCode } from '../errors'
@@ -37,31 +37,30 @@ function parseEdgeRow(row: Record<string, unknown>): GraphEdge {
 }
 
 export class EdgeRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
-  async create(data: Omit<GraphEdge, 'id'>): Promise<GraphEdge> {
+  create(data: Omit<GraphEdge, 'id'>): GraphEdge {
     const id = generateId('edge')
 
-    await this.db.execute({
-      sql: 'INSERT INTO edges (id, source, target, label, edge_type, content, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      args: [
-        id,
-        data.source,
-        data.target,
-        data.label ?? null,
-        data.edgeType ?? null,
-        data.content ? JSON.stringify(data.content) : null,
-        data.graphId,
-        data.description ?? null,
-        data.dataFlow ?? null,
-        data.strength ?? null,
-      ],
-    })
+    this.db.prepare(
+      'INSERT INTO edges (id, source, target, label, edge_type, content, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(
+      id,
+      data.source,
+      data.target,
+      data.label ?? null,
+      data.edgeType ?? null,
+      data.content ? JSON.stringify(data.content) : null,
+      data.graphId,
+      data.description ?? null,
+      data.dataFlow ?? null,
+      data.strength ?? null,
+    )
 
     return { ...data, id }
   }
 
-  async update(id: string, data: Partial<GraphEdge>): Promise<GraphEdge> {
+  update(id: string, data: Partial<GraphEdge>): GraphEdge {
     const updates: string[] = []
     const args: (string | number | null)[] = []
 
@@ -79,29 +78,24 @@ export class EdgeRepository {
       updates.push('updated_at = ?')
       args.push(new Date().toISOString())
       args.push(id)
-      await this.db.execute({
-        sql: `UPDATE edges SET ${updates.join(', ')} WHERE id = ?`,
-        args,
-      })
+      this.db.prepare(
+        `UPDATE edges SET ${updates.join(', ')} WHERE id = ?`
+      ).run(...args)
     }
 
-    const result = await this.db.execute({ sql: 'SELECT * FROM edges WHERE id = ?', args: [id] })
-    const row = result.rows[0]
+    const row = this.db.prepare('SELECT * FROM edges WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) {
       throw new DatabaseError(`Edge not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
     }
     return parseEdgeRow(row)
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.execute({ sql: 'DELETE FROM edges WHERE id = ?', args: [id] })
+  delete(id: string): void {
+    this.db.prepare('DELETE FROM edges WHERE id = ?').run(id)
   }
 
-  async listByGraph(graphId: string): Promise<GraphEdge[]> {
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM edges WHERE graph_id = ?',
-      args: [graphId],
-    })
-    return result.rows.map((row) => parseEdgeRow(row))
+  listByGraph(graphId: string): GraphEdge[] {
+    const rows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ?').all(graphId) as Record<string, unknown>[]
+    return rows.map((row) => parseEdgeRow(row))
   }
 }

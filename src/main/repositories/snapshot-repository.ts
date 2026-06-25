@@ -3,32 +3,30 @@
  * 负责图快照的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphSnapshot, GraphNode, GraphEdge } from '@shared/types'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 
 export class SnapshotRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
-  async create(graphId: string, name: string, nodes: GraphNode[], edges: GraphEdge[], gitCommit?: string): Promise<GraphSnapshot> {
+  create(graphId: string, name: string, nodes: GraphNode[], edges: GraphEdge[], gitCommit?: string): GraphSnapshot {
     const id = generateId('snapshot')
     const now = new Date().toISOString()
 
-    await this.db.execute({
-      sql: 'INSERT INTO snapshots (id, graph_id, name, data, git_commit, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-      args: [id, graphId, name, JSON.stringify({ nodes, edges }), gitCommit ?? null, now],
-    })
+    this.db.prepare(
+      'INSERT INTO snapshots (id, graph_id, name, data, git_commit, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, graphId, name, JSON.stringify({ nodes, edges }), gitCommit ?? null, now)
 
     return { id, graphId, name, data: { nodes, edges }, gitCommit, createdAt: now }
   }
 
-  async listByGraph(graphId: string): Promise<Omit<GraphSnapshot, 'data'>[]> {
-    const result = await this.db.execute({
-      sql: 'SELECT id, graph_id, name, git_commit, created_at FROM snapshots WHERE graph_id = ? ORDER BY created_at DESC',
-      args: [graphId],
-    })
-    return result.rows.map((row) => ({
+  listByGraph(graphId: string): Omit<GraphSnapshot, 'data'>[] {
+    const rows = this.db.prepare(
+      'SELECT id, graph_id, name, git_commit, created_at FROM snapshots WHERE graph_id = ? ORDER BY created_at DESC'
+    ).all(graphId) as Record<string, unknown>[]
+    return rows.map((row) => ({
       id: row.id as string,
       graphId: row.graph_id as string,
       name: row.name as string,
@@ -37,12 +35,8 @@ export class SnapshotRepository {
     }))
   }
 
-  async load(id: string): Promise<GraphSnapshot | null> {
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM snapshots WHERE id = ?',
-      args: [id],
-    })
-    const row = result.rows[0]
+  load(id: string): GraphSnapshot | null {
+    const row = this.db.prepare('SELECT * FROM snapshots WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) return null
 
     const data = safeJsonParse<{ nodes: GraphNode[]; edges: GraphEdge[] }>(row.data as string, { nodes: [], edges: [] })
@@ -56,7 +50,7 @@ export class SnapshotRepository {
     }
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.execute({ sql: 'DELETE FROM snapshots WHERE id = ?', args: [id] })
+  delete(id: string): void {
+    this.db.prepare('DELETE FROM snapshots WHERE id = ?').run(id)
   }
 }

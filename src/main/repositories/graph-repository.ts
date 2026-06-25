@@ -3,7 +3,7 @@
  * 负责 Graph 的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { Graph, GraphNode, GraphEdge, BugNode, GraphType } from '@shared/types'
 import { assertGraphType, assertNodeType, assertNodeStatus, assertEdgeType, assertBugSeverity, assertBugStatus } from '@shared/type-guards'
 import { generateId } from '../shared/env'
@@ -29,23 +29,22 @@ function rowNum(row: Record<string, unknown>, key: string): number {
 }
 
 export class GraphRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
-  async create(data: { name: string; type: GraphType; projectPath?: string }): Promise<Graph> {
+  create(data: { name: string; type: GraphType; projectPath?: string }): Graph {
     const id = generateId('graph')
     const now = new Date().toISOString()
 
-    await this.db.execute({
-      sql: 'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-      args: [id, data.name, data.type, data.projectPath ?? null, now, now],
-    })
+    this.db.prepare(
+      'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(id, data.name, data.type, data.projectPath ?? null, now, now)
 
     return { id, name: data.name, type: data.type, projectPath: data.projectPath, createdAt: now, updatedAt: now }
   }
 
-  async list(): Promise<Graph[]> {
-    const result = await this.db.execute('SELECT * FROM graphs ORDER BY updated_at DESC')
-    return result.rows.map((row) => ({
+  list(): Graph[] {
+    const rows = this.db.prepare('SELECT * FROM graphs ORDER BY updated_at DESC').all() as Record<string, unknown>[]
+    return rows.map((row) => ({
       id: rowStr(row, 'id'),
       name: rowStr(row, 'name'),
       type: assertGraphType(rowStr(row, 'type')),
@@ -55,36 +54,32 @@ export class GraphRepository {
     }))
   }
 
-  async get(
+  get(
     id: string,
     options?: { nodeLimit?: number; edgeLimit?: number; bugLimit?: number },
-  ): Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null> {
+  ): { graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null {
     const nodeLimit = options?.nodeLimit ?? 5000
     const edgeLimit = options?.edgeLimit ?? 5000
     const bugLimit = options?.bugLimit ?? 1000
 
-    // PERFORMANCE: 并行执行无依赖关系的查询，减少总等待时间
-    const [graphResult, nodesResult, edgesResult, bugsResult] = await Promise.all([
-      this.db.execute({ sql: 'SELECT * FROM graphs WHERE id = ?', args: [id] }),
-      this.db.execute({ sql: 'SELECT * FROM nodes WHERE graph_id = ? LIMIT ?', args: [id, nodeLimit] }),
-      this.db.execute({ sql: 'SELECT * FROM edges WHERE graph_id = ? LIMIT ?', args: [id, edgeLimit] }),
-      this.db.execute({ sql: 'SELECT * FROM bug_nodes WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?', args: [id, bugLimit] }),
-    ])
+    // Sequential queries (better-sqlite3 is synchronous, no parallelism benefit)
+    const graphRow = this.db.prepare('SELECT * FROM graphs WHERE id = ?').get(id) as Record<string, unknown> | undefined
+    if (!graphRow) return null
 
-    if (graphResult.rows.length === 0) return null
-
-    const graph = graphResult.rows[0]
+    const nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ? LIMIT ?').all(id, nodeLimit) as Record<string, unknown>[]
+    const edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ? LIMIT ?').all(id, edgeLimit) as Record<string, unknown>[]
+    const bugsRows = this.db.prepare('SELECT * FROM bug_nodes WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?').all(id, bugLimit) as Record<string, unknown>[]
 
     return {
       graph: {
-        id: rowStr(graph, 'id'),
-        name: rowStr(graph, 'name'),
-        type: assertGraphType(rowStr(graph, 'type')),
-        projectPath: rowOptStr(graph, 'project_path'),
-        createdAt: rowStr(graph, 'created_at'),
-        updatedAt: rowStr(graph, 'updated_at'),
+        id: rowStr(graphRow, 'id'),
+        name: rowStr(graphRow, 'name'),
+        type: assertGraphType(rowStr(graphRow, 'type')),
+        projectPath: rowOptStr(graphRow, 'project_path'),
+        createdAt: rowStr(graphRow, 'created_at'),
+        updatedAt: rowStr(graphRow, 'updated_at'),
       },
-      nodes: nodesResult.rows.map((row) => ({
+      nodes: nodesRows.map((row) => ({
         id: rowStr(row, 'id'),
         type: assertNodeType(rowStr(row, 'type')),
         status: assertNodeStatus(rowStr(row, 'status')),
@@ -105,7 +100,7 @@ export class GraphRepository {
         createdAt: rowStr(row, 'created_at'),
         updatedAt: rowStr(row, 'updated_at'),
       })),
-      edges: edgesResult.rows.map((row) => ({
+      edges: edgesRows.map((row) => ({
         id: rowStr(row, 'id'),
         source: rowStr(row, 'source'),
         target: rowStr(row, 'target'),
@@ -120,7 +115,7 @@ export class GraphRepository {
         strength: typeof row.strength === 'number' ? row.strength : undefined,
         content: safeJsonParse<GraphEdge['content']>(rowOptStr(row, 'content'), undefined),
       })),
-      bugs: bugsResult.rows.map((row) => ({
+      bugs: bugsRows.map((row) => ({
         id: rowStr(row, 'id'),
         title: rowStr(row, 'title'),
         description: rowStr(row, 'description'),
@@ -134,54 +129,55 @@ export class GraphRepository {
     }
   }
 
-  async delete(id: string): Promise<void> {
-    await this.db.batch([
-      { sql: 'DELETE FROM edges WHERE graph_id = ?', args: [id] },
-      { sql: 'DELETE FROM nodes WHERE graph_id = ?', args: [id] },
-      { sql: 'DELETE FROM bug_nodes WHERE graph_id = ?', args: [id] },
-      { sql: 'DELETE FROM snapshots WHERE graph_id = ?', args: [id] },
-      { sql: 'DELETE FROM agent_logs WHERE graph_id = ?', args: [id] },
-      { sql: 'DELETE FROM graphs WHERE id = ?', args: [id] },
-    ], 'write')
+  delete(id: string): void {
+    const deleteGraph = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM edges WHERE graph_id = ?').run(id)
+      this.db.prepare('DELETE FROM nodes WHERE graph_id = ?').run(id)
+      this.db.prepare('DELETE FROM bug_nodes WHERE graph_id = ?').run(id)
+      this.db.prepare('DELETE FROM snapshots WHERE graph_id = ?').run(id)
+      this.db.prepare('DELETE FROM agent_logs WHERE graph_id = ?').run(id)
+      this.db.prepare('DELETE FROM graphs WHERE id = ?').run(id)
+    })
+    deleteGraph()
   }
 
-  async getProjectPaths(): Promise<string[]> {
-    const result = await this.db.execute(
+  getProjectPaths(): string[] {
+    const rows = this.db.prepare(
       'SELECT DISTINCT project_path FROM graphs WHERE project_path IS NOT NULL'
-    )
-    return result.rows
+    ).all() as Record<string, unknown>[]
+    return rows
       .map((row) => row.project_path as string | null)
       .filter((p): p is string => p !== null && p !== undefined)
   }
 
   /** 克隆在线图的所有节点和边到开发图 */
-  async cloneGraphNodes(sourceGraphId: string, targetGraphId: string, targetGraphType: GraphType): Promise<void> {
-    const nodes = await this.db.execute({
-      sql: 'SELECT * FROM nodes WHERE graph_id = ?',
-      args: [sourceGraphId],
-    })
+  cloneGraphNodes(sourceGraphId: string, targetGraphId: string, targetGraphType: GraphType): void {
+    const nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]
 
     const idMap = new Map<string, string>()
 
-    // Pass 1: 插入节点（parent_id 暂时保留原值）— 批量执行
-    const nodeInserts = nodes.rows.map((row) => {
-      const originalId = rowStr(row, 'id')
-      const newId = generateId('node')
-      idMap.set(originalId, newId)
+    // Pass 1: 插入节点（parent_id 暂时保留原值）— 事务提交
+    const insertNodeStmt = this.db.prepare(
+      `INSERT INTO nodes (
+        id, type, status, title, description, acceptance_criteria,
+        graph_id, graph_type, parent_id, rules, metadata, content, owner_role,
+        position_x, position_y, context_refs, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
 
-      const nodeType = assertNodeType(rowStr(row, 'type'))
-      const rawStatus = rowStr(row, 'status')
-      const status = nodeType === 'feature' && targetGraphType === 'dev'
-        ? 'placeholder'
-        : assertNodeStatus(rawStatus)
+    const insertNodes = this.db.transaction((rows: Record<string, unknown>[]) => {
+      for (const row of rows) {
+        const originalId = rowStr(row, 'id')
+        const newId = generateId('node')
+        idMap.set(originalId, newId)
 
-      return {
-        sql: `INSERT INTO nodes (
-          id, type, status, title, description, acceptance_criteria,
-          graph_id, graph_type, parent_id, rules, metadata, content, owner_role,
-          position_x, position_y, context_refs, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
+        const nodeType = assertNodeType(rowStr(row, 'type'))
+        const rawStatus = rowStr(row, 'status')
+        const status = nodeType === 'feature' && targetGraphType === 'dev'
+          ? 'placeholder'
+          : assertNodeStatus(rawStatus)
+
+        insertNodeStmt.run(
           newId, nodeType, status, rowStr(row, 'title'),
           rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
@@ -191,60 +187,52 @@ export class GraphRepository {
           rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
           row['context_refs'],
           rowStr(row, 'created_at'), new Date().toISOString(),
-        ],
+        )
       }
     })
-    await this.db.batch(nodeInserts, 'write')
+    insertNodes(nodesRows)
 
     // Pass 2: 批量更新 parent_id 映射
     const rowById = new Map<string, Record<string, unknown>>()
-    for (const row of nodes.rows) {
-      rowById.set(rowStr(row, 'id'), row as Record<string, unknown>)
+    for (const row of nodesRows) {
+      rowById.set(rowStr(row, 'id'), row)
     }
-    const parentUpdates: Array<{ sql: string; args: [string, string] }> = []
-    for (const [oldId, newId] of idMap) {
-      const row = rowById.get(oldId)
-      if (!row) continue
-      const oldParentId = rowOptStr(row, 'parent_id')
-      if (oldParentId && idMap.has(oldParentId)) {
-        parentUpdates.push({
-          sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
-          args: [idMap.get(oldParentId)!, newId],
-        })
+    const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
+    const updateParents = this.db.transaction(() => {
+      for (const [oldId, newId] of idMap) {
+        const row = rowById.get(oldId)
+        if (!row) continue
+        const oldParentId = rowOptStr(row, 'parent_id')
+        if (oldParentId && idMap.has(oldParentId)) {
+          parentUpdateStmt.run(idMap.get(oldParentId)!, newId)
+        }
       }
-    }
-    if (parentUpdates.length > 0) {
-      await this.db.batch(parentUpdates, 'write')
-    }
+    })
+    updateParents()
 
     // Pass 3: 批量复制边
-    const edges = await this.db.execute({
-      sql: 'SELECT * FROM edges WHERE graph_id = ?',
-      args: [sourceGraphId],
-    })
+    const edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]
 
-    const edgeInserts = edges.rows
-      .map((row) => {
+    const insertEdgeStmt = this.db.prepare(
+      `INSERT INTO edges (
+        id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+
+    const insertEdges = this.db.transaction((rows: Record<string, unknown>[]) => {
+      for (const row of rows) {
         const newSourceId = idMap.get(rowStr(row, 'source'))
         const newTargetId = idMap.get(rowStr(row, 'target'))
-        if (!newSourceId || !newTargetId) return null
+        if (!newSourceId || !newTargetId) continue
 
         const newId = generateId('edge')
-        return {
-          sql: `INSERT INTO edges (
-            id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [
-            newId, newSourceId, newTargetId,
-            rowOptStr(row, 'label') ?? null, row['edge_type'], row['content'],
-            targetGraphId, row['description'], row['data_flow'], row['strength'],
-          ],
-        }
-      })
-      .filter((stmt): stmt is NonNullable<typeof stmt> => stmt !== null)
-
-    if (edgeInserts.length > 0) {
-      await this.db.batch(edgeInserts, 'write')
-    }
+        insertEdgeStmt.run(
+          newId, newSourceId, newTargetId,
+          rowOptStr(row, 'label') ?? null, row['edge_type'], row['content'],
+          targetGraphId, row['description'], row['data_flow'], row['strength'],
+        )
+      }
+    })
+    insertEdges(edgesRows)
   }
 }

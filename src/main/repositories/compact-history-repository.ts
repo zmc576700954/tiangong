@@ -3,7 +3,7 @@
  * 持久化 compact_history 表。Phase 1 落地骨架，Phase 3 起被 AgentManager.compactContext 使用。
  */
 
-import type { Client, Row } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import { generateId } from '../shared/env'
 import type {
   CompactHistoryEntry,
@@ -23,7 +23,7 @@ export interface CompactHistoryInsert {
   durationMs: number
 }
 
-function toEntry(row: Row): CompactHistoryEntry {
+function toEntry(row: Record<string, unknown>): CompactHistoryEntry {
   return {
     id: String(row.id ?? ''),
     threadId: row.thread_id != null ? String(row.thread_id) : null,
@@ -39,45 +39,43 @@ function toEntry(row: Row): CompactHistoryEntry {
 }
 
 export class CompactHistoryRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
   /** Insert a compaction record. Returns the generated id. */
-  async insert(data: CompactHistoryInsert): Promise<string> {
+  insert(data: CompactHistoryInsert): string {
     const id = generateId('compact')
-    await this.db.execute({
-      sql: `INSERT INTO compact_history (
+    this.db.prepare(
+      `INSERT INTO compact_history (
               id, thread_id, session_id, strategy, trigger,
               tokens_before, tokens_after, summary,
               started_at, duration_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        data.threadId,
-        data.sessionId,
-        data.strategy,
-        data.trigger,
-        data.tokensBefore,
-        data.tokensAfter,
-        data.summary,
-        data.startedAt,
-        data.durationMs,
-      ],
-    })
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data.threadId,
+      data.sessionId,
+      data.strategy,
+      data.trigger,
+      data.tokensBefore,
+      data.tokensAfter,
+      data.summary,
+      data.startedAt,
+      data.durationMs,
+    )
     return id
   }
 
   /** List recent compactions for a thread, newest first. Default limit 50. */
-  async listByThread(threadId: string, limit = 50): Promise<CompactHistoryEntry[]> {
-    const result = await this.db.execute({
-      sql: `SELECT id, thread_id, session_id, strategy, trigger,
+  listByThread(threadId: string, limit = 50): CompactHistoryEntry[] {
+    const rows = this.db.prepare(
+      `SELECT id, thread_id, session_id, strategy, trigger,
                    tokens_before, tokens_after, summary,
                    started_at, duration_ms
             FROM compact_history
             WHERE thread_id = ?
             ORDER BY started_at DESC
-            LIMIT ?`,
-      args: [threadId, limit],
-    })
-    return result.rows.map(toEntry)
+            LIMIT ?`
+    ).all(threadId, limit) as Record<string, unknown>[]
+    return rows.map(toEntry)
   }
 }

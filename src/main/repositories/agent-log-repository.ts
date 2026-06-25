@@ -3,54 +3,44 @@
  * 负责 Agent 执行日志的写入和查询
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { AgentLog } from '@shared/types'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 import { DatabaseError, ErrorCode } from '../errors'
 
 export class AgentLogRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
-  async create(data: Omit<AgentLog, 'id' | 'createdAt'>): Promise<AgentLog> {
+  create(data: Omit<AgentLog, 'id' | 'createdAt'>): AgentLog {
     const id = generateId('agent_log')
     const now = new Date().toISOString()
 
-    await this.db.execute({
-      sql: `INSERT INTO agent_logs (id, session_id, adapter_name, node_id, graph_id, command, outputs, result, duration, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id, data.sessionId, data.adapterName, data.nodeId, data.graphId,
-        JSON.stringify(data.command), JSON.stringify(data.outputs),
-        data.result, data.duration, now,
-      ],
-    })
+    this.db.prepare(
+      `INSERT INTO agent_logs (id, session_id, adapter_name, node_id, graph_id, command, outputs, result, duration, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id, data.sessionId, data.adapterName, data.nodeId, data.graphId,
+      JSON.stringify(data.command), JSON.stringify(data.outputs),
+      data.result, data.duration, now,
+    )
 
     return { ...data, id, createdAt: now }
   }
 
-  async listByNode(nodeId: string): Promise<AgentLog[]> {
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM agent_logs WHERE node_id = ? ORDER BY created_at DESC',
-      args: [nodeId],
-    })
-    return result.rows.map((row) => this.parseRow(row))
+  listByNode(nodeId: string): AgentLog[] {
+    const rows = this.db.prepare('SELECT * FROM agent_logs WHERE node_id = ? ORDER BY created_at DESC').all(nodeId) as Record<string, unknown>[]
+    return rows.map((row) => this.parseRow(row))
   }
 
-  async listByGraph(graphId: string, limit = 100): Promise<AgentLog[]> {
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM agent_logs WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?',
-      args: [graphId, limit],
-    })
-    return result.rows.map((row) => this.parseRow(row))
+  listByGraph(graphId: string, limit = 100): AgentLog[] {
+    const rows = this.db.prepare('SELECT * FROM agent_logs WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?').all(graphId, limit) as Record<string, unknown>[]
+    return rows.map((row) => this.parseRow(row))
   }
 
-  async listBySession(sessionId: string): Promise<AgentLog[]> {
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM agent_logs WHERE session_id = ? ORDER BY created_at DESC',
-      args: [sessionId],
-    })
-    return result.rows.map((row) => this.parseRow(row))
+  listBySession(sessionId: string): AgentLog[] {
+    const rows = this.db.prepare('SELECT * FROM agent_logs WHERE session_id = ? ORDER BY created_at DESC').all(sessionId) as Record<string, unknown>[]
+    return rows.map((row) => this.parseRow(row))
   }
 
   private parseRow(row: Record<string, unknown>): AgentLog {

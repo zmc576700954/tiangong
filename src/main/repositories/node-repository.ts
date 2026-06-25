@@ -3,7 +3,7 @@
  * 负责 Node 的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphNode } from '@shared/types'
 import type { NodeStatus } from '@shared/types'
 import { assertNodeType, assertNodeStatus, assertGraphType } from '@shared/type-guards'
@@ -12,7 +12,7 @@ import { safeJsonParse } from '../shared/db-utils'
 import { DatabaseError, ErrorCode } from '../errors'
 
 export class NodeRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
   /** Map a database row to a GraphNode */
   private rowToNode(row: Record<string, unknown>): GraphNode {
@@ -36,56 +36,58 @@ export class NodeRepository {
     } as GraphNode
   }
 
-  async create(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): Promise<GraphNode> {
+  create(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): GraphNode {
     const id = generateId('node')
     const now = new Date().toISOString()
 
-    await this.db.execute({
-      sql: `INSERT INTO nodes (
+    this.db.prepare(
+      `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
         position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        data.type,
-        data.status,
-        data.title,
-        data.description ?? null,
-        data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
-        data.graphId,
-        data.graphType,
-        data.parentId ?? null,
-        data.rules ? JSON.stringify(data.rules) : null,
-        data.metadata ? JSON.stringify(data.metadata) : null,
-        data.ownerRole ?? null,
-        data.position.x,
-        data.position.y,
-        data.contextRefs ? JSON.stringify(data.contextRefs) : null,
-        now,
-        now,
-      ],
-    })
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data.type,
+      data.status,
+      data.title,
+      data.description ?? null,
+      data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
+      data.graphId,
+      data.graphType,
+      data.parentId ?? null,
+      data.rules ? JSON.stringify(data.rules) : null,
+      data.metadata ? JSON.stringify(data.metadata) : null,
+      data.ownerRole ?? null,
+      data.position.x,
+      data.position.y,
+      data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+      now,
+      now,
+    )
 
     return { ...data, id, createdAt: now, updatedAt: now }
   }
 
-  /** 批量创建节点（LibSQL batch API，单次事务提交） */
-  async createBatch(nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]): Promise<GraphNode[]> {
+  /** 批量创建节点（事务提交） */
+  createBatch(nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]): GraphNode[] {
     if (nodesData.length === 0) return []
     const now = new Date().toISOString()
     const created: GraphNode[] = []
 
-    const statements = nodesData.map((data) => {
-      const id = generateId('node')
-      created.push({ ...data, id, createdAt: now, updatedAt: now })
-      return {
-        sql: `INSERT INTO nodes (
-          id, type, status, title, description, acceptance_criteria,
-          graph_id, graph_type, parent_id, rules, metadata, owner_role,
-          position_x, position_y, context_refs, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
+    const stmt = this.db.prepare(
+      `INSERT INTO nodes (
+        id, type, status, title, description, acceptance_criteria,
+        graph_id, graph_type, parent_id, rules, metadata, owner_role,
+        position_x, position_y, context_refs, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+
+    const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
+      for (const data of items) {
+        const id = generateId('node')
+        created.push({ ...data, id, createdAt: now, updatedAt: now })
+        stmt.run(
           id,
           data.type,
           data.status,
@@ -103,15 +105,15 @@ export class NodeRepository {
           data.contextRefs ? JSON.stringify(data.contextRefs) : null,
           now,
           now,
-        ],
+        )
       }
     })
 
-    await this.db.batch(statements, 'write')
+    insertMany(nodesData)
     return created
   }
 
-  async update(id: string, data: Partial<GraphNode>): Promise<GraphNode> {
+  update(id: string, data: Partial<GraphNode>): GraphNode {
     const now = new Date().toISOString()
 
     const updates: string[] = []
@@ -133,59 +135,50 @@ export class NodeRepository {
     args.push(now)
     args.push(id)
 
-    await this.db.execute({
-      sql: `UPDATE nodes SET ${updates.join(', ')} WHERE id = ?`,
-      args,
-    })
+    this.db.prepare(
+      `UPDATE nodes SET ${updates.join(', ')} WHERE id = ?`
+    ).run(...args)
 
-    const result = await this.db.execute({
-      sql: 'SELECT * FROM nodes WHERE id = ?',
-      args: [id],
-    })
-
-    const row = result.rows[0]
+    const row = this.db.prepare('SELECT * FROM nodes WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) {
       throw new DatabaseError(`Node not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
     }
-    return this.rowToNode(row as unknown as Record<string, unknown>)
+    return this.rowToNode(row)
   }
 
-  async delete(id: string): Promise<void> {
+  delete(id: string): void {
     // 外键 ON DELETE CASCADE 会自动删除关联的 edges 和 bug_nodes
-    await this.db.execute({ sql: 'DELETE FROM nodes WHERE id = ?', args: [id] })
+    this.db.prepare('DELETE FROM nodes WHERE id = ?').run(id)
   }
 
   /** 查询节点当前状态（用于状态转换校验） */
-  async getStatus(id: string): Promise<NodeStatus | null> {
-    const result = await this.db.execute({ sql: 'SELECT status FROM nodes WHERE id = ?', args: [id] })
-    const row = result.rows[0]
+  getStatus(id: string): NodeStatus | null {
+    const row = this.db.prepare('SELECT status FROM nodes WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) return null
     return assertNodeStatus(row.status as string)
   }
 
   /** 按 ID 查找节点，不存在时返回 null */
-  async findById(id: string): Promise<GraphNode | null> {
-    const result = await this.db.execute({ sql: 'SELECT * FROM nodes WHERE id = ?', args: [id] })
-    const row = result.rows[0]
+  findById(id: string): GraphNode | null {
+    const row = this.db.prepare('SELECT * FROM nodes WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!row) return null
-    return this.rowToNode(row as unknown as Record<string, unknown>)
+    return this.rowToNode(row)
   }
 
-  async updateParentId(nodeId: string, parentId: string | null): Promise<void> {
-    await this.db.execute({
-      sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
-      args: [parentId, nodeId],
-    })
+  updateParentId(nodeId: string, parentId: string | null): void {
+    this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?').run(parentId, nodeId)
   }
 
-  /** 批量更新节点位置（LibSQL batch API，单次事务提交） */
-  async batchUpdatePositions(updates: Array<{ id: string; x: number; y: number }>): Promise<void> {
+  /** 批量更新节点位置（事务提交） */
+  batchUpdatePositions(updates: Array<{ id: string; x: number; y: number }>): void {
     if (updates.length === 0) return
     const now = new Date().toISOString()
-    const statements = updates.map(({ id, x, y }) => ({
-      sql: 'UPDATE nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ?',
-      args: [x, y, now, id],
-    }))
-    await this.db.batch(statements, 'write')
+    const stmt = this.db.prepare('UPDATE nodes SET position_x = ?, position_y = ?, updated_at = ? WHERE id = ?')
+    const updateMany = this.db.transaction((items: Array<{ id: string; x: number; y: number }>) => {
+      for (const { id, x, y } of items) {
+        stmt.run(x, y, now, id)
+      }
+    })
+    updateMany(updates)
   }
 }

@@ -6,7 +6,7 @@
  * complete/fail；Phase 5 渲染层通过 IPC listByParent/get 拉取数据。
  */
 
-import type { Client, Row } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 import type { SubagentInvocation, SubagentStatus } from '@shared/types'
@@ -44,7 +44,7 @@ function parseStringArray(raw: unknown): string[] | null {
   return parsed.filter((v): v is string => typeof v === 'string')
 }
 
-function toInvocation(row: Row): SubagentInvocation {
+function toInvocation(row: Record<string, unknown>): SubagentInvocation {
   return {
     id: String(row.id ?? ''),
     parentSessionId: String(row.parent_session_id ?? ''),
@@ -67,91 +67,86 @@ function toInvocation(row: Row): SubagentInvocation {
 }
 
 export class SubagentInvocationRepository {
-  constructor(private db: Client) {}
+  constructor(private db: BetterSqlite3.Database) {}
 
   /** Insert a new invocation with status='queued'. Returns the generated id. */
-  async create(data: SubagentInvocationCreate): Promise<string> {
+  create(data: SubagentInvocationCreate): string {
     const id = generateId('inv')
-    await this.db.execute({
-      sql: `INSERT INTO subagent_invocations (
+    this.db.prepare(
+      `INSERT INTO subagent_invocations (
               id, parent_session_id, parent_message_id, graph_id,
               agent_type, description, prompt,
               adapter_name, node_id, allowed_files,
               status, result_text, result_files, tokens_used,
               started_at, finished_at, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        data.parentSessionId,
-        data.parentMessageId ?? null,
-        data.graphId ?? null,
-        data.agentType,
-        data.description,
-        data.prompt,
-        data.adapterName ?? null,
-        data.nodeId ?? null,
-        data.allowedFiles ? JSON.stringify(data.allowedFiles) : null,
-        'queued',
-        null,
-        null,
-        0,
-        data.startedAt,
-        null,
-        null,
-      ],
-    })
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      id,
+      data.parentSessionId,
+      data.parentMessageId ?? null,
+      data.graphId ?? null,
+      data.agentType,
+      data.description,
+      data.prompt,
+      data.adapterName ?? null,
+      data.nodeId ?? null,
+      data.allowedFiles ? JSON.stringify(data.allowedFiles) : null,
+      'queued',
+      null,
+      null,
+      0,
+      data.startedAt,
+      null,
+      null,
+    )
     return id
   }
 
   /** Update just the status column (e.g. queued → running). */
-  async updateStatus(id: string, status: SubagentStatus): Promise<void> {
-    await this.db.execute({
-      sql: 'UPDATE subagent_invocations SET status = ? WHERE id = ?',
-      args: [status, id],
-    })
+  updateStatus(id: string, status: SubagentStatus): void {
+    this.db.prepare(
+      'UPDATE subagent_invocations SET status = ? WHERE id = ?'
+    ).run(status, id)
   }
 
   /** Mark a row as completed and write terminal fields. */
-  async complete(id: string, data: SubagentInvocationComplete): Promise<void> {
-    await this.db.execute({
-      sql: `UPDATE subagent_invocations
+  complete(id: string, data: SubagentInvocationComplete): void {
+    this.db.prepare(
+      `UPDATE subagent_invocations
             SET status = ?, result_text = ?, result_files = ?, tokens_used = ?, finished_at = ?
-            WHERE id = ?`,
-      args: [
-        'completed',
-        data.resultText,
-        JSON.stringify(data.resultFiles),
-        data.tokensUsed,
-        data.finishedAt,
-        id,
-      ],
-    })
+            WHERE id = ?`
+    ).run(
+      'completed',
+      data.resultText,
+      JSON.stringify(data.resultFiles),
+      data.tokensUsed,
+      data.finishedAt,
+      id,
+    )
   }
 
   /** Mark a row as failed and write the error message. */
-  async fail(id: string, data: SubagentInvocationFail): Promise<void> {
-    await this.db.execute({
-      sql: `UPDATE subagent_invocations
+  fail(id: string, data: SubagentInvocationFail): void {
+    this.db.prepare(
+      `UPDATE subagent_invocations
             SET status = ?, error = ?, finished_at = ?
-            WHERE id = ?`,
-      args: ['failed', data.error, data.finishedAt, id],
-    })
+            WHERE id = ?`
+    ).run('failed', data.error, data.finishedAt, id)
   }
 
   /** Mark a row as cancelled. */
-  async cancel(id: string, finishedAt: number): Promise<void> {
-    await this.db.execute({
-      sql: `UPDATE subagent_invocations
+  cancel(id: string, finishedAt: number): void {
+    this.db.prepare(
+      `UPDATE subagent_invocations
             SET status = ?, finished_at = ?
-            WHERE id = ? AND status IN ('queued','running')`,
-      args: ['cancelled', finishedAt, id],
-    })
+            WHERE id = ? AND status IN ('queued','running')`
+    ).run('cancelled', finishedAt, id)
   }
 
   /** List invocations under one parent session, newest first. */
-  async listByParent(parentSessionId: string, limit = 100): Promise<SubagentInvocation[]> {
-    const result = await this.db.execute({
-      sql: `SELECT id, parent_session_id, parent_message_id, graph_id,
+  listByParent(parentSessionId: string, limit = 100): SubagentInvocation[] {
+    const rows = this.db.prepare(
+      `SELECT id, parent_session_id, parent_message_id, graph_id,
                    agent_type, description, prompt,
                    adapter_name, node_id, allowed_files,
                    status, result_text, result_files, tokens_used,
@@ -159,23 +154,21 @@ export class SubagentInvocationRepository {
             FROM subagent_invocations
             WHERE parent_session_id = ?
             ORDER BY started_at DESC
-            LIMIT ?`,
-      args: [parentSessionId, limit],
-    })
-    return result.rows.map(toInvocation)
+            LIMIT ?`
+    ).all(parentSessionId, limit) as Record<string, unknown>[]
+    return rows.map(toInvocation)
   }
 
   /** Fetch a single invocation by id. */
-  async get(id: string): Promise<SubagentInvocation | null> {
-    const result = await this.db.execute({
-      sql: `SELECT id, parent_session_id, parent_message_id, graph_id,
+  get(id: string): SubagentInvocation | null {
+    const row = this.db.prepare(
+      `SELECT id, parent_session_id, parent_message_id, graph_id,
                    agent_type, description, prompt,
                    adapter_name, node_id, allowed_files,
                    status, result_text, result_files, tokens_used,
                    started_at, finished_at, error
-            FROM subagent_invocations WHERE id = ?`,
-      args: [id],
-    })
-    return result.rows[0] ? toInvocation(result.rows[0]) : null
+            FROM subagent_invocations WHERE id = ?`
+    ).get(id) as Record<string, unknown> | undefined
+    return row ? toInvocation(row) : null
   }
 }
