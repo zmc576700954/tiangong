@@ -121,7 +121,7 @@ export class MindMapAgent {
   // 单模块生成
   // ========================================
 
-  async generateModule(moduleDir: string): Promise<ScanModule | null> {
+  async generateModule(moduleDir: string): Promise<ScanModule> {
     const context = await collectContext(this.projectPath, moduleDir, '')
     const memory = await readMemory(this.projectPath)
     const prompt = buildModuleGenerationPrompt(moduleDir, context.directoryTree, memory.preferences)
@@ -207,7 +207,7 @@ export class MindMapAgent {
     targetId: string,
     feedback: string,
     _allModules: ScanModule[] = [],
-  ): Promise<ScanModule[] | ScanModule | ValidatedEnrichment | null> {
+  ): Promise<ScanModule[] | ScanModule | ValidatedEnrichment> {
     const memory = await readMemory(this.projectPath)
     classifyComplexity(feedback, memory.businessDomains)
     const prompt = buildRefinementPrompt(scope, targetId, feedback, _allModules, memory)
@@ -232,10 +232,10 @@ export class MindMapAgent {
     }
 
     const parsed = extractJson(stdout)
-    let output: ScanModule[] | ScanModule | ValidatedEnrichment | null = null
+    let output: ScanModule[] | ScanModule | ValidatedEnrichment | undefined
     if (scope === 'project') output = validateModules(parsed)
-    else if (scope === 'module') output = validateModules(parsed)[0] ?? null
-    else output = validateEnrichment(parsed)
+    else if (scope === 'module') output = validateModules(parsed)[0] ?? undefined
+    else output = validateEnrichment(parsed) ?? undefined
 
     if (!output || (Array.isArray(output) && output.length === 0)) {
       throw new AgentError('未返回有效精炼结果', ErrorCode.AGENT_PROCESS_ERROR)

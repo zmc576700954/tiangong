@@ -73,7 +73,7 @@ export class SymbolIndex {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_ref_file ON symbol_refs(file_path)`)
   }
 
-  /** 批量插入符号（使用 db.batch() 一次事务提交，减少 DB 往返） */
+  /** 批量插入符号（在显式事务中用 db.batch() 提交，减少 DB 往返并保证原子性） */
   async insertSymbols(symbols: SymbolInfo[]): Promise<void> {
     if (symbols.length === 0) return
     const db = this.db()
@@ -82,24 +82,18 @@ export class SymbolIndex {
       (id, name, kind, file_path, line, column, end_line, end_column, signature, js_doc, parent_id, is_exported, source_code)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
-    // SQLite 单条语句变量上限约 999；13 个参数 => 每批最多 76 条，留裕量取 50
-    const BATCH_SIZE = 50
-    for (let i = 0; i < symbols.length; i += BATCH_SIZE) {
-      const batch = symbols.slice(i, i + BATCH_SIZE)
-      const stmts = batch.map((s) => ({
-        sql,
-        args: [
-          s.id, s.name, s.kind, s.filePath, s.line, s.column,
-          s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
-          s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
-          s.sourceCode ?? null,
-        ] as (string | number | null)[],
-      }))
-      await db.batch(stmts)
-    }
+    await this.runInTransaction(db, symbols, 50, (s) => ({
+      sql,
+      args: [
+        s.id, s.name, s.kind, s.filePath, s.line, s.column,
+        s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
+        s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
+        s.sourceCode ?? null,
+      ] as (string | number | null)[],
+    }))
   }
 
-  /** 批量插入 import 边（使用 db.batch() 一次事务提交，减少 DB 往返） */
+  /** 批量插入 import 边（在显式事务中用 db.batch() 提交，减少 DB 往返并保证原子性） */
   async insertImportEdges(edges: ImportEdge[]): Promise<void> {
     if (edges.length === 0) return
     const db = this.db()
@@ -108,15 +102,32 @@ export class SymbolIndex {
       (from_file, to_file, imported_names, is_default, line)
       VALUES (?, ?, ?, ?, ?)
     `
-    // 5 个参数 => 每批最多约 199 条，取整 150
-    const BATCH_SIZE = 150
-    for (let i = 0; i < edges.length; i += BATCH_SIZE) {
-      const batch = edges.slice(i, i + BATCH_SIZE)
-      const stmts = batch.map((e) => ({
-        sql,
-        args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line] as (string | number | null)[],
-      }))
-      await db.batch(stmts)
+    await this.runInTransaction(db, edges, 150, (e) => ({
+      sql,
+      args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line] as (string | number | null)[],
+    }))
+  }
+
+  private async runInTransaction<T>(
+    db: Client,
+    items: T[],
+    batchSize: number,
+    buildStmt: (item: T) => { sql: string; args: (string | number | null)[] },
+  ): Promise<void> {
+    const tx = await db.transaction()
+    try {
+      for (let i = 0; i < items.length; i += batchSize) {
+        const chunk = items.slice(i, i + batchSize)
+        await tx.batch(chunk.map(buildStmt))
+      }
+      await tx.commit()
+    } catch (err) {
+      await tx.rollback().catch(() => {})
+      throw err
+    } finally {
+      if (!tx.closed) {
+        tx.close()
+      }
     }
   }
 
@@ -193,23 +204,29 @@ export class SymbolIndex {
       const nextFrontier = new Set<string>()
       const db = this.db()
       const paths = [...frontier]
-      const placeholders = paths.map(() => '?').join(', ')
 
-      const edgesResult = await db.execute({
-        sql: `
-          SELECT from_file as p FROM import_edges WHERE to_file IN (${placeholders})
-          UNION
-          SELECT to_file as p FROM import_edges WHERE from_file IN (${placeholders})
-        `,
-        args: [...paths, ...paths],
-      })
+      // SQLite 变量上限约 999；这里是 from/to 两组占位符，故每批控制在 400 条以内
+      const CHUNK_SIZE = 400
+      for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
+        const chunk = paths.slice(i, i + CHUNK_SIZE)
+        const placeholders = chunk.map(() => '?').join(', ')
 
-      for (const row of edgesResult.rows) {
-        const p = (row as unknown as Record<string, unknown>).p as string
-        if (!visited.has(p) && p !== filePath) {
-          visited.add(p)
-          result.set(p, currentDepth + 1)
-          nextFrontier.add(p)
+        const edgesResult = await db.execute({
+          sql: `
+            SELECT from_file as p FROM import_edges WHERE to_file IN (${placeholders})
+            UNION
+            SELECT to_file as p FROM import_edges WHERE from_file IN (${placeholders})
+          `,
+          args: [...chunk, ...chunk],
+        })
+
+        for (const row of edgesResult.rows) {
+          const p = (row as unknown as Record<string, unknown>).p as string
+          if (!visited.has(p) && p !== filePath) {
+            visited.add(p)
+            result.set(p, currentDepth + 1)
+            nextFrontier.add(p)
+          }
         }
       }
 
