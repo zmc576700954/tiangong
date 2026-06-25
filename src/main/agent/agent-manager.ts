@@ -51,6 +51,8 @@ const logger = createLogger('AgentManager')
 
 /** 健康检查间隔：每 10 分钟输出一次诊断日志 */
 const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+/** 清理异步操作（adapter 终止、沙箱回滚）的超时时间（毫秒） */
+const CLEANUP_ASYNC_TIMEOUT_MS = 30_000
 /** RSS 内存警告阈值（MB）：自适应计算，基于系统总内存的 25%，范围 [1024, 8192] */
 const RSS_WARNING_THRESHOLD_MB = Math.max(1024, Math.min(8192, Math.floor((os.totalmem() / 1024 / 1024) * 0.25)))
 /** RSS 内存危险阈值（MB）：自适应计算，基于系统总内存的 40%，范围 [2048, 12288] */
@@ -373,11 +375,13 @@ export class AgentManager {
 
     // Wait for all async operations (adapter terminate + sandbox rollback) to settle
     // before clearing state, so that resources are truly released before overlap is possible.
-    // Cap at 30s to prevent mutex deadlock if an operation hangs.
-    await Promise.race([
-      Promise.allSettled(pendingOps),
-      new Promise<void>(resolve => setTimeout(resolve, 30_000)),
-    ])
+    // A timer logs a warning if cleanup takes too long, but we still await settlement
+    // to avoid deleting state while a hanging operation might still touch it.
+    const cleanupTimeout = setTimeout(() => {
+      logger.warn(`Session ${sessionId} cleanup is taking longer than ${CLEANUP_ASYNC_TIMEOUT_MS}ms; waiting for pending operations to settle before removing state`)
+    }, CLEANUP_ASYNC_TIMEOUT_MS)
+    await Promise.allSettled(pendingOps)
+    clearTimeout(cleanupTimeout)
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
     const listeners = this.sessionOutputListenerIndex.get(sessionId)
