@@ -5,6 +5,7 @@
 import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { isPathWithinSync } from '../shared/path-utils'
+import { getPlatformProvider } from '../platform'
 import { IpcError, ErrorCode } from '../errors'
 import { ipcContext } from './context'
 import type { IpcMiddlewarePipeline } from './middleware'
@@ -92,23 +93,33 @@ export type TypedHandle = <Args extends any[] = any[]>(
  * 返回 true 表示路径在被阻止的系统目录下
  */
 export function isBlockedSystemPath(normalizedPath: string): boolean {
-  const blockedPrefixes = process.platform === 'win32'
-    ? [
-        path.resolve(process.env.SystemRoot || 'C:\\Windows'),
-        path.resolve('C:\\Program Files'),
-        path.resolve('C:\\Program Files (x86)'),
-      ]
-    : [
-        '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
-        '/opt', '/sys', '/proc', '/dev',
-      ]
+  const provider = getPlatformProvider()
+
+  if (provider.isWindows) {
+    const blockedPrefixes = [
+      path.resolve(process.env.SystemRoot || 'C:\\Windows'),
+      path.resolve('C:\\Program Files'),
+      path.resolve('C:\\Program Files (x86)'),
+    ]
+    for (const blocked of blockedPrefixes) {
+      if (provider.pathsEqual(normalizedPath, blocked) || isPathWithinSync(path.resolve(blocked), normalizedPath)) {
+        return true
+      }
+    }
+    return provider.isSystemPath(normalizedPath)
+  }
+
+  const blockedPrefixes = [
+    '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
+    '/opt', '/sys', '/proc', '/dev',
+  ]
 
   for (const blocked of blockedPrefixes) {
     if (isPathWithinSync(path.resolve(blocked), normalizedPath)) {
       return true
     }
   }
-  return false
+  return provider.isSystemPath(normalizedPath)
 }
 
 /**
@@ -119,13 +130,14 @@ export function isBlockedSystemPath(normalizedPath: string): boolean {
  */
 export function validateProjectPath(projectPath: string): string {
   const resolved = path.resolve(projectPath)
+  const provider = getPlatformProvider()
 
   if (isBlockedSystemPath(resolved)) {
     throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
   }
 
   // 确保路径不是 root 或 home 目录本身（只允许子目录）
-  if (process.platform !== 'win32') {
+  if (!provider.isWindows) {
     if (resolved === '/' || resolved === '/root' || resolved === process.env.HOME) {
       throw new IpcError('Access denied: cannot access root or home directory, please select a project subdirectory', ErrorCode.IPC_ACCESS_DENIED)
     }

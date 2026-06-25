@@ -21,6 +21,7 @@ import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
 import { isErrorWithCode } from './shared/errno'
 import { isPathWithin, isRelativeTraversal } from './shared/path-utils'
+import { getPlatformProvider } from './platform'
 
 /** 获取临时目录路径（可在测试中 mock） */
 // THREAD-SAFETY NOTE: This module-level mutable function reference is not thread-safe.
@@ -329,15 +330,18 @@ export class ScopeGuard {
     const watcherPaths = watchPaths
 
     // P2-7A: WSL/网络 FS 检测，自动启用 usePolling
-    const isWsl = process.platform === 'linux' && process.env.WSL_DISTRO_NAME !== undefined
+    const provider = getPlatformProvider()
+    const isWsl = provider.isWsl
     const isNetworkFs = workingDir.startsWith('\\') || workingDir.startsWith('//')
 
+    const providerWatcherOpts = provider.getWatcherOptions()
     const watcher = chokidar.watch(watcherPaths, {
       ignored: IGNORED_PATTERNS,
       persistent: true,
       ignoreInitial: true,
       usePolling: isWsl || isNetworkFs,
       interval: isWsl || isNetworkFs ? 500 : undefined,
+      ...providerWatcherOpts,
     })
 
     // 允许进程退出时不被 watcher 阻塞

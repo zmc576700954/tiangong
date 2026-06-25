@@ -48,6 +48,7 @@ import { SubagentManager } from './agent/subagent-manager'
 import { SubagentInvocationRepository } from './repositories/subagent-invocation-repository'
 import { BaseAdapter } from './adapters/base'
 import type { ValidateFsPath } from './ipc/fs'
+import { getPlatformProvider } from './platform'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -230,7 +231,8 @@ export async function registerIpcHandlers(): Promise<void> {
   const REALPATH_CACHE_MAX = 500
 
   async function cachedRealpath(targetPath: string): Promise<string> {
-    const cacheKey = process.platform === 'win32' ? targetPath.toLowerCase() : targetPath
+    const provider = getPlatformProvider()
+    const cacheKey = provider.isWindows ? targetPath.toLowerCase() : targetPath
     const cached = realpathCache.get(cacheKey)
     if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
       return cached.resolved
