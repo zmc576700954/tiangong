@@ -34,6 +34,7 @@ export class MindMapAdapter extends BaseAdapter {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'ignore'],
+        shell: process.platform === 'win32',
         windowsHide: true,
       })
       return true
