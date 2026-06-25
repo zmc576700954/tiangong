@@ -4,8 +4,8 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { isPathWithinSync } from '../shared/path-utils'
 import { ScopeGuardError, ErrorCode } from '../errors'
+import { getPlatformProvider } from '../platform'
 
 const IGNORED_DIRS = new Set([
   'node_modules',
@@ -26,21 +26,10 @@ const MAX_SCAN_DEPTH = 4
 const MAX_RECURSE_DEPTH = 3
 
 function validateProjectPath(projectPath: string): void {
+  const provider = getPlatformProvider()
   const resolved = path.resolve(projectPath)
-  const blockedPrefixes = process.platform === 'win32'
-    ? [
-        path.resolve(process.env.SystemRoot || 'C:\\Windows'),
-        path.resolve('C:\\Program Files'),
-        path.resolve('C:\\Program Files (x86)'),
-      ]
-    : [
-        '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
-        '/sys', '/proc', '/dev',
-      ]
-  for (const blocked of blockedPrefixes) {
-    if (isPathWithinSync(path.resolve(blocked), resolved)) {
-      throw new ScopeGuardError(`Invalid project path: ${projectPath} is a system directory`, ErrorCode.SCOPE_PATH_TRAVERSAL)
-    }
+  if (provider.isSystemPath(resolved)) {
+    throw new ScopeGuardError(`Invalid project path: ${projectPath} is a system directory`, ErrorCode.SCOPE_PATH_TRAVERSAL)
   }
 }
 

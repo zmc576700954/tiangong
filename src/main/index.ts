@@ -5,6 +5,7 @@ import { registerIpcHandlers, agentManager } from './ipc-handlers'
 import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
+import { getPlatformProvider } from './platform'
 
 const logger = createLogger('Main')
 
@@ -88,7 +89,8 @@ const windowManager = new WindowManager()
 
 // Application menu template
 function buildMenu(): Menu {
-  const isMac = process.platform === 'darwin'
+  const provider = getPlatformProvider()
+  const isMac = provider.isMac
 
   const template: Electron.MenuItemConstructorOptions[] = [
     // File menu
@@ -249,7 +251,8 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
+  const provider = getPlatformProvider()
+  if (!provider.isMac) {
     app.quit()
   }
 })
