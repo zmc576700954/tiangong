@@ -3,8 +3,6 @@
  * 使用临时 better-sqlite3 数据库进行测试
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { SymbolIndex } from '../symbol-index'
 import { generateId } from '../../shared/env'

@@ -6,7 +6,7 @@
  * and maintained in one place instead of being scattered across the codebase.
  */
 
-import { type ChildProcess } from 'node:child_process'
+import { type ChildProcess, type SpawnOptions, execSync } from 'node:child_process'
 import path from 'node:path'
 
 export interface PlatformProvider {
@@ -24,7 +24,7 @@ export interface PlatformProvider {
   isWithinParent(child: string, parent: string): boolean
 
   killProcess(proc: ChildProcess): void
-  getShellConfig(): Partial<import('node:child_process').SpawnOptions>
+  getShellConfig(): Partial<SpawnOptions>
 
   whichCommand(cmd: string): string | null
 
@@ -87,9 +87,9 @@ class DarwinProvider implements PlatformProvider {
   }
 
   killProcess(proc: ChildProcess): void { proc.kill('SIGTERM') }
-  getShellConfig(): Partial<import('node:child_process').SpawnOptions> { return {} }
+  getShellConfig(): Partial<SpawnOptions> { return {} }
   whichCommand(cmd: string): string | null {
-    try { return require('child_process').execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
+    try { return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
   }
   getWatcherOptions(): Record<string, unknown> { return {} }
 }
@@ -123,9 +123,9 @@ class Win32Provider implements PlatformProvider {
   }
 
   killProcess(proc: ChildProcess): void { proc.kill() }
-  getShellConfig(): Partial<import('node:child_process').SpawnOptions> { return { shell: true } }
+  getShellConfig(): Partial<SpawnOptions> { return { shell: true } }
   whichCommand(cmd: string): string | null {
-    try { return require('child_process').execSync(`where ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
+    try { return execSync(`where ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
   }
   getWatcherOptions(): Record<string, unknown> { return {} }
 }
@@ -155,9 +155,9 @@ class LinuxProvider implements PlatformProvider {
   }
 
   killProcess(proc: ChildProcess): void { proc.kill('SIGTERM') }
-  getShellConfig(): Partial<import('node:child_process').SpawnOptions> { return {} }
+  getShellConfig(): Partial<SpawnOptions> { return {} }
   whichCommand(cmd: string): string | null {
-    try { return require('child_process').execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
+    try { return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
   }
   getWatcherOptions(): Record<string, unknown> {
     return this.isWsl ? { usePolling: true } : {}
