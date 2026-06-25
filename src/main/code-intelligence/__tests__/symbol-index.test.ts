@@ -3,7 +3,7 @@
  * 使用临时 better-sqlite3 数据库进行测试
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { SymbolIndex } from '../symbol-index'
 import { generateId } from '../../shared/env'
 import BetterSqlite3 from 'better-sqlite3'

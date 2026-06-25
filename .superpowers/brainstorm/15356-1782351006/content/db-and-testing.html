@@ -1,0 +1,122 @@
+<h2>数据库方案对比（更新）</h2>
+<p class="subtitle">全端适配方案重新评估</p>
+
+<div class="section">
+  <h3>各方案 Windows ARM64 支持现状</h3>
+  <div class="mockup">
+    <div class="mockup-header">npm 原生包覆盖对比</div>
+    <div class="mockup-body" style="font-size:14px;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#1e1e2e;color:#cdd6f4;">
+            <th style="padding:8px;border:1px solid #45475a;text-align:left;">数据库</th>
+            <th style="padding:8px;border:1px solid #45475a;text-align:center;">类型</th>
+            <th style="padding:8px;border:1px solid #45475a;text-align:center;">win-x64</th>
+            <th style="padding:8px;border:1px solid #45475a;text-align:center;">win-arm64</th>
+            <th style="padding:8px;border:1px solid #45475a;text-align:center;">mac-arm64</th>
+            <th style="padding:8px;border:1px solid #45475a;text-align:center;">linux-arm64</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr style="background:#181825;">
+            <td style="padding:8px;border:1px solid #45475a;">@libsql/client</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#89b4fa;">Rust native</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#f38ba8;">❌</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+          </tr>
+          <tr style="background:#1e1e2e;">
+            <td style="padding:8px;border:1px solid #45475a;">better-sqlite3</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#89b4fa;">C++ native</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+          </tr>
+          <tr style="background:#181825;">
+            <td style="padding:8px;border:1px solid #45475a;">sql.js</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#89b4fa;">WASM</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+            <td style="padding:8px;border:1px solid #45475a;text-align:center;color:#a6e3a1;">✅</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;">
+  <h3>方案 A：替换为 better-sqlite3（推荐）</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>优势</h4>
+      <ul>
+        <li><strong>全架构原生支持</strong>，win32-arm64 有 prebuild</li>
+        <li>性能最优（同步 API，比 libsql 更快）</li>
+        <li>prebuild-install 自动下载，CI 无需额外配置</li>
+        <li>成熟项目，Electron 生态首选嵌入式 DB</li>
+        <li>无需 x64 模拟层或 HTTP 降级</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>劣势</h4>
+      <ul>
+        <li>需要重写 database.ts 数据访问层</li>
+        <li>API 从 libsql 切换到 better-sqlite3（语法差异）</li>
+        <li>失去 libsql 特有功能（嵌入式副本、HTTP 同步）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1rem;">
+  <h3>方案 B：DatabaseProvider 抽象层（双引擎）</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>优势</h4>
+      <ul>
+        <li>保留 libsql，新增 better-sqlite3 作为 ARM64 fallback</li>
+        <li>按平台自动选择最优引擎</li>
+        <li>渐进式迁移，不破坏现有功能</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>劣势</h4>
+      <ul>
+        <li>维护两套数据库驱动，复杂度高</li>
+        <li>两套 SQL 行为可能有微妙差异</li>
+        <li>包体积增大（两个原生库）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1rem;">
+  <h3>方案 C：sql.js 统一方案</h3>
+  <div class="pros-cons">
+    <div class="pros">
+      <h4>优势</h4>
+      <ul>
+        <li>零原生依赖，全平台统一</li>
+        <li>无需任何平台适配</li>
+      </ul>
+    </div>
+    <div class="cons">
+      <h4>劣势</h4>
+      <ul>
+        <li>全库加载到内存，大库 OOM 风险</li>
+        <li>性能远差于原生方案</li>
+        <li>sql.js 官方不推荐 Electron 使用</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;padding:16px;background:#1e1e2e;border:2px solid #a6e3a1;border-radius:8px;">
+  <h3 style="color:#a6e3a1;">💡 推荐：方案 A — 替换为 better-sqlite3</h3>
+  <p style="color:#cdd6f4;">很多开源项目不做降级/模拟层，正是因为选择了一个全架构覆盖的数据库。better-sqlite3 是 Electron 生态最成熟的嵌入式数据库，6 个目标架构全部有 prebuild，无需任何兼容层或降级策略。</p>
+  <p style="margin-top:8px;color:#cdd6f4;">BizGraph 当前未使用 libsql 的特有功能（嵌入式副本、Turso 同步），仅用其 SQLite 子集，迁移成本低。</p>
+</div>

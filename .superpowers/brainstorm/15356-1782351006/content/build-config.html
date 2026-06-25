@@ -1,0 +1,94 @@
+<h2>构建配置改造</h2>
+<p class="subtitle">electron-builder 配置 + 构建脚本调整</p>
+
+<div class="section">
+  <h3>1. package.json build 配置变更</h3>
+  <div class="mockup">
+    <div class="mockup-header">当前 → 目标</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;line-height:1.6;">
+      <div style="display:flex;gap:16px;">
+        <div style="flex:1;">
+          <div style="color:#f38ba8;font-weight:bold;margin-bottom:8px;">❌ 当前</div>
+          <pre style="background:#11111b;padding:12px;border-radius:6px;overflow-x:auto;color:#cdd6f4;">"mac": {
+  "target": [{
+    "target": "dmg",
+    "arch": ["arm64", "x64"]
+  }]
+},
+"win": {
+  "target": [{
+    "target": "nsis",
+    "arch": ["x64"]
+  }]
+},
+"linux": {
+  "target": [{
+    "target": "AppImage",
+    "arch": ["x64"]
+  }]
+}</pre>
+        </div>
+        <div style="flex:1;">
+          <div style="color:#a6e3a1;font-weight:bold;margin-bottom:8px;">✅ 目标</div>
+          <pre style="background:#11111b;padding:12px;border-radius:6px;overflow-x:auto;color:#cdd6f4;">"mac": {
+  "target": [{
+    "target": "dmg",
+    "arch": ["arm64", "x64"]
+  }]
+},
+"win": {
+  "target": [
+    { "target": "nsis", "arch": ["x64", "arm64"] },
+    { "target": "msix", "arch": ["x64", "arm64"] }
+  ]
+},
+"linux": {
+  "target": [{
+    "target": "AppImage",
+    "arch": ["x64", "arm64"]
+  }]
+}</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;">
+  <h3>2. MSIX 专属配置</h3>
+  <div style="background:#181825;border:1px solid #45475a;border-radius:8px;padding:16px;font-family:monospace;font-size:13px;color:#cdd6f4;">
+    <pre style="margin:0;">"msix": {
+  "identityName": "com.bizgraph.app",
+  "publisher": "CN=BizGraph",
+  "publisherDisplayName": "BizGraph",
+  "languages": ["zh-CN", "en-US"],
+  "store": false
+}</pre>
+    <p style="margin-top:8px;font-family:sans-serif;font-size:14px;color:#bac2de;">
+      ⚠️ <code>store: false</code> 表示先做侧载分发，后续上架 Microsoft Store 时再改为 true 并补充签名配置
+    </p>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;">
+  <h3>3. 构建脚本扩展</h3>
+  <div class="mockup">
+    <div class="mockup-header">package.json scripts</div>
+    <div class="mockup-body" style="font-family:monospace;font-size:13px;color:#cdd6f4;">
+      <pre style="background:#11111b;padding:12px;border-radius:6px;">"build:win":       "electron-builder --win"              // NSIS x64+arm64
+"build:win:msix":  "electron-builder --win msix"          // MSIX x64+arm64
+"build:mac":       "electron-builder --mac"               // DMG arm64+x64
+"build:linux":     "electron-builder --linux"             // AppImage x64+arm64
+"build:all":       "electron-builder --mac --win --linux" // 全平台</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:1.5rem;">
+  <h3>4. Windows ARM64 libsql 兼容策略</h3>
+  <div style="background:#181825;border:1px solid #45475a;border-radius:8px;padding:16px;">
+    <p><strong>原理：</strong>Windows 11 ARM64 内置 x64 模拟层（WoA64），x64 Node.js 原生模块可透明运行。</p>
+    <p style="margin-top:8px;"><strong>实现：</strong>electron-builder 打包时，Windows arm64 构建仍包含 <code>@libsql/win32-x64-msvc</code> 原生包。运行时通过 x64 模拟层加载，无需代码改动。</p>
+    <p style="margin-top:8px;"><strong>兜底：</strong>在 <code>src/main/database.ts</code> 初始化时检测架构不匹配，若 x64 模拟层不可用则 fallback 到 libsql HTTP 远程模式（连接 Turso 云端），并提示用户。</p>
+  </div>
+</div>

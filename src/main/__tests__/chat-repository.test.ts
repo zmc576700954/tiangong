@@ -16,7 +16,7 @@ function createMockDb() {
     close: vi.fn(),
   } as unknown as BetterSqlite3.Database & { _stmt: typeof stmtMock }
   // Attach stmt for test access
-  ;(db as Record<string, unknown>)._stmt = stmtMock
+  ;(db as unknown as Record<string, unknown>)._stmt = stmtMock
   return { db, stmt: stmtMock }
 }
 
