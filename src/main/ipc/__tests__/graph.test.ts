@@ -3,7 +3,7 @@ import { registerGraphHandlers } from '../graph'
 import type { GraphService } from '../../services/graph-service'
 import type { SnapshotRepository } from '../../repositories/snapshot-repository'
 import { nodeTypeRegistry } from '../../shared/node-type-registry'
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { TypedHandle } from '../utils'
 
 import { IpcError } from '../../errors'
@@ -14,7 +14,7 @@ describe('registerGraphHandlers', () => {
   let handlers: Record<string, (...args: any[]) => Promise<unknown>>
   let graphService: GraphService
   let snapshotRepo: SnapshotRepository
-  let db: Client
+  let db: BetterSqlite3.Database
 
   beforeEach(() => {
     handlers = {}
@@ -31,11 +31,18 @@ describe('registerGraphHandlers', () => {
       load: vi.fn().mockResolvedValue(null),
       delete: vi.fn().mockResolvedValue(undefined),
     } as unknown as SnapshotRepository
+    const stmtMock = {
+      run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
+      get: vi.fn().mockReturnValue(null),
+      all: vi.fn().mockReturnValue([]),
+    }
     db = {
-      execute: vi.fn().mockResolvedValue({ rows: [] }),
-      batch: vi.fn().mockResolvedValue([]),
+      prepare: vi.fn().mockReturnValue(stmtMock),
+      transaction: vi.fn((fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args)),
+      exec: vi.fn(),
+      pragma: vi.fn().mockReturnValue([]),
       close: vi.fn(),
-    } as unknown as Client
+    } as unknown as BetterSqlite3.Database
 
     const typedHandle: TypedHandle = (channel, handler) => {
       handlers[channel] = handler as (...args: any[]) => Promise<unknown>

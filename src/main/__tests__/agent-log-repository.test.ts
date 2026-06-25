@@ -1,32 +1,39 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { AgentLogRepository } from '../repositories/agent-log-repository'
-import type { Client, Row, ResultSet } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import { DatabaseError } from '../errors'
 
-function createMockDb(): Client {
-  return {
-    execute: vi.fn().mockResolvedValue({ rows: [] }),
-    batch: vi.fn().mockResolvedValue([]),
+function createMockDb() {
+  const stmtMock = {
+    run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
+    get: vi.fn().mockReturnValue(null),
+    all: vi.fn().mockReturnValue([]),
+  }
+  const db = {
+    prepare: vi.fn().mockReturnValue(stmtMock),
+    transaction: vi.fn((fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args)),
+    exec: vi.fn(),
+    pragma: vi.fn().mockReturnValue([]),
     close: vi.fn(),
-  } as unknown as Client
-}
-
-function mockRows(rows: Record<string, unknown>[]): ResultSet {
-  return { rows: rows as unknown as Row[], columns: [], columnTypes: [], rowsAffected: 0, lastInsertRowid: 0n, toJSON: () => ({}) }
+  } as unknown as BetterSqlite3.Database
+  return { db, stmt: stmtMock }
 }
 
 describe('AgentLogRepository', () => {
-  let db: Client
+  let db: BetterSqlite3.Database
+  let stmt: ReturnType<typeof createMockDb>['stmt']
   let repo: AgentLogRepository
 
   beforeEach(() => {
-    db = createMockDb()
+    const mock = createMockDb()
+    db = mock.db
+    stmt = mock.stmt
     repo = new AgentLogRepository(db)
   })
 
   describe('parseRow', () => {
-    it('returns AgentLog for valid row', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('returns AgentLog for valid row', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-1',
         session_id: 'session-1',
         adapter_name: 'claude-code',
@@ -37,9 +44,9 @@ describe('AgentLogRepository', () => {
         result: 'success',
         duration: 1234,
         created_at: '2025-01-01T00:00:00Z',
-      }]))
+      }])
 
-      const logs = await repo.listByNode('node-1')
+      const logs = repo.listByNode('node-1')
       expect(logs).toHaveLength(1)
       expect(logs[0].id).toBe('log-1')
       expect(logs[0].command.type).toBe('implement')
@@ -47,8 +54,8 @@ describe('AgentLogRepository', () => {
       expect(logs[0].result).toBe('success')
     })
 
-    it('uses non-null defaults for corrupted JSON fields', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('uses non-null defaults for corrupted JSON fields', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-2',
         session_id: 'session-2',
         adapter_name: 'codex',
@@ -59,16 +66,16 @@ describe('AgentLogRepository', () => {
         result: 'failure',
         duration: 0,
         created_at: '2025-01-02T00:00:00Z',
-      }]))
+      }])
 
-      const logs = await repo.listByNode('node-2')
+      const logs = repo.listByNode('node-2')
       expect(logs).toHaveLength(1)
       expect(logs[0].command).toEqual({ type: 'implement', description: '', targetNodeId: '' })
       expect(logs[0].outputs).toEqual([])
     })
 
-    it('throws DatabaseError when required string field is missing', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('throws DatabaseError when required string field is missing', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-3',
         session_id: null,
         adapter_name: 'codex',
@@ -79,13 +86,13 @@ describe('AgentLogRepository', () => {
         result: 'success',
         duration: 0,
         created_at: '2025-01-03T00:00:00Z',
-      }]))
+      }])
 
-      await expect(repo.listByNode('node-3')).rejects.toThrow(DatabaseError)
+      expect(() => repo.listByNode('node-3')).toThrow(DatabaseError)
     })
 
-    it('throws DatabaseError when result enum is invalid', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('throws DatabaseError when result enum is invalid', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-4',
         session_id: 'session-4',
         adapter_name: 'codex',
@@ -96,13 +103,13 @@ describe('AgentLogRepository', () => {
         result: 'unknown',
         duration: 0,
         created_at: '2025-01-04T00:00:00Z',
-      }]))
+      }])
 
-      await expect(repo.listByNode('node-4')).rejects.toThrow(DatabaseError)
+      expect(() => repo.listByNode('node-4')).toThrow(DatabaseError)
     })
 
-    it('throws DatabaseError when outputs is not an array after parse', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('throws DatabaseError when outputs is not an array after parse', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-5',
         session_id: 'session-5',
         adapter_name: 'codex',
@@ -113,13 +120,13 @@ describe('AgentLogRepository', () => {
         result: 'success',
         duration: 0,
         created_at: '2025-01-05T00:00:00Z',
-      }]))
+      }])
 
-      await expect(repo.listByNode('node-5')).rejects.toThrow(DatabaseError)
+      expect(() => repo.listByNode('node-5')).toThrow(DatabaseError)
     })
 
-    it('throws DatabaseError when command shape is invalid', async () => {
-      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+    it('throws DatabaseError when command shape is invalid', () => {
+      stmt.all.mockReturnValueOnce([{
         id: 'log-6',
         session_id: 'session-6',
         adapter_name: 'codex',
@@ -130,9 +137,9 @@ describe('AgentLogRepository', () => {
         result: 'success',
         duration: 0,
         created_at: '2025-01-06T00:00:00Z',
-      }]))
+      }])
 
-      await expect(repo.listByNode('node-6')).rejects.toThrow(DatabaseError)
+      expect(() => repo.listByNode('node-6')).toThrow(DatabaseError)
     })
   })
 })

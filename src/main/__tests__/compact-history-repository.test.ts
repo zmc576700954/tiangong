@@ -1,38 +1,38 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CompactHistoryRepository } from '../repositories/compact-history-repository'
-import type { Client, Row, ResultSet } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 
-function createMockDb(): Client {
-  return {
-    execute: vi.fn().mockResolvedValue({ rows: [] }),
-    batch: vi.fn().mockResolvedValue([]),
-    close: vi.fn(),
-  } as unknown as Client
-}
-
-function mockRows(rows: Record<string, unknown>[]): ResultSet {
-  return {
-    rows: rows as unknown as Row[],
-    columns: [],
-    columnTypes: [],
-    rowsAffected: 0,
-    lastInsertRowid: 0n,
-    toJSON: () => ({}),
+function createMockDb() {
+  const stmtMock = {
+    run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
+    get: vi.fn().mockReturnValue(null),
+    all: vi.fn().mockReturnValue([]),
   }
+  const db = {
+    prepare: vi.fn().mockReturnValue(stmtMock),
+    transaction: vi.fn((fn: () => void) => () => fn()),
+    exec: vi.fn(),
+    pragma: vi.fn().mockReturnValue([]),
+    close: vi.fn(),
+  } as unknown as BetterSqlite3.Database
+  return { db, stmt: stmtMock }
 }
 
 describe('CompactHistoryRepository', () => {
-  let db: Client
+  let db: BetterSqlite3.Database
+  let stmt: ReturnType<typeof createMockDb>['stmt']
   let repo: CompactHistoryRepository
 
   beforeEach(() => {
-    db = createMockDb()
+    const mock = createMockDb()
+    db = mock.db
+    stmt = mock.stmt
     repo = new CompactHistoryRepository(db)
   })
 
   describe('insert', () => {
-    it('persists a CompactResult and returns the generated id', async () => {
-      const id = await repo.insert({
+    it('persists a CompactResult and returns the generated id', () => {
+      const id = repo.insert({
         threadId: 't1',
         sessionId: 's1',
         strategy: 'native',
@@ -45,13 +45,11 @@ describe('CompactHistoryRepository', () => {
       })
 
       expect(id).toMatch(/^compact-/)
-      expect(db.execute).toHaveBeenCalledWith(expect.objectContaining({
-        sql: expect.stringContaining('INSERT INTO compact_history'),
-      }))
+      expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO compact_history'))
     })
 
-    it('accepts null thread_id and session_id and null summary', async () => {
-      const id = await repo.insert({
+    it('accepts null thread_id and session_id and null summary', () => {
+      const id = repo.insert({
         threadId: null,
         sessionId: null,
         strategy: 'summary',
@@ -63,16 +61,16 @@ describe('CompactHistoryRepository', () => {
         durationMs: 0,
       })
       expect(id).toMatch(/^compact-/)
-      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args[1]).toBeNull() // thread_id
-      expect(call.args[2]).toBeNull() // session_id
-      expect(call.args[7]).toBeNull() // summary
+      const callArgs = stmt.run.mock.calls[0]
+      expect(callArgs[1]).toBeNull() // thread_id
+      expect(callArgs[2]).toBeNull() // session_id
+      expect(callArgs[7]).toBeNull() // summary
     })
   })
 
   describe('listByThread', () => {
-    it('returns rows ordered by started_at DESC', async () => {
-      ;(db.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockRows([
+    it('returns rows ordered by started_at DESC', () => {
+      stmt.all.mockReturnValueOnce([
         {
           id: 'compact-aaa', thread_id: 't1', session_id: 's1',
           strategy: 'native', trigger: 'manual',
@@ -85,25 +83,22 @@ describe('CompactHistoryRepository', () => {
           tokens_before: 80, tokens_after: 40,
           summary: null, started_at: 1, duration_ms: 5,
         },
-      ]))
+      ])
 
-      const rows = await repo.listByThread('t1')
+      const rows = repo.listByThread('t1')
 
       expect(rows).toHaveLength(2)
       expect(rows[0].id).toBe('compact-aaa')
       expect(rows[0].threadId).toBe('t1')
       expect(rows[0].tokensBefore).toBe(100)
       expect(rows[1].summary).toBeNull()
-      expect(db.execute).toHaveBeenCalledWith(expect.objectContaining({
-        sql: expect.stringContaining('ORDER BY started_at DESC'),
-      }))
+      expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('ORDER BY started_at DESC'))
     })
 
-    it('respects limit', async () => {
-      ;(db.execute as ReturnType<typeof vi.fn>).mockResolvedValueOnce(mockRows([]))
-      await repo.listByThread('t1', 5)
-      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args).toEqual(['t1', 5])
+    it('respects limit', () => {
+      repo.listByThread('t1', 5)
+      const callArgs = stmt.all.mock.calls[0]
+      expect(callArgs).toEqual(['t1', 5])
     })
   })
 })

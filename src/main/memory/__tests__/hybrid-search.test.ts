@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
-import { createClient, type Client } from '@libsql/client'
+import BetterSqlite3 from 'better-sqlite3'
 import * as database from '../../database'
 import { HybridSearchEngine } from '../hybrid-search'
 import { MemoryStore } from '../memory-store'
@@ -11,7 +11,7 @@ import type { EmbeddingService } from '../embedding-service'
 import type { MemoryItem, MemoryKind } from '@shared/types'
 
 describe('HybridSearchEngine', () => {
-  let db: Client
+  let db: BetterSqlite3.Database
   let store: MemoryStore
 
   const mockItem = (overrides?: Partial<Omit<MemoryItem, 'id'>>): Omit<MemoryItem, 'id'> => ({
@@ -32,8 +32,8 @@ describe('HybridSearchEngine', () => {
     ...overrides,
   })
 
-  async function setupSchema(client: Client): Promise<void> {
-    await client.execute(`
+  function setupSchema(database: BetterSqlite3.Database): void {
+    database.exec(`
       CREATE TABLE IF NOT EXISTS memory_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -57,17 +57,17 @@ describe('HybridSearchEngine', () => {
     `)
   }
 
-  beforeAll(async () => {
-    db = createClient({ url: ':memory:' })
-    await setupSchema(db)
+  beforeAll(() => {
+    db = new BetterSqlite3(':memory:')
+    setupSchema(db)
   })
 
-  afterAll(async () => {
-    await db.close()
+  afterAll(() => {
+    db.close()
   })
 
-  beforeEach(async () => {
-    await db.execute('DELETE FROM memory_items')
+  beforeEach(() => {
+    db.prepare('DELETE FROM memory_items').run()
     store = new MemoryStore(db)
     vi.spyOn(database, 'getClient').mockReturnValue(db)
   })
@@ -75,7 +75,7 @@ describe('HybridSearchEngine', () => {
   it('falls back to embedding search when FTS5 returns no candidates', async () => {
     const embedding: number[] = [1, 0, 0, 0]
 
-    await store.store(
+    store.store(
       mockItem({
         project_id: 'proj-1',
         title: 'unrelated title',

@@ -1,6 +1,6 @@
 /**
  * SymbolIndex 单元测试
- * 使用临时 LibSQL 数据库进行测试
+ * 使用临时 better-sqlite3 数据库进行测试
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -8,30 +8,36 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { SymbolIndex } from '../symbol-index'
 import { generateId } from '../../shared/env'
-import { createClient, type Client } from '@libsql/client'
+import BetterSqlite3 from 'better-sqlite3'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import type { SymbolInfo, ImportEdge } from '@shared/types'
 
+// Mock the database module so SymbolIndex doesn't try to use getClient()
+vi.mock('../../database', () => ({
+  getClient: vi.fn(),
+}))
+
 describe('SymbolIndex', () => {
   let index: SymbolIndex
-  let testClient: Client
+  let testDb: BetterSqlite3.Database
   let dbDir: string
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'symbol-test-'))
     const testDbPath = path.join(dbDir, 'test.db')
-    testClient = createClient({ url: `file:${testDbPath}` })
-    index = new SymbolIndex(testClient)
-    await index.initTables()
-    await index.clearAll()
+    testDb = new BetterSqlite3(testDbPath)
+    testDb.pragma('journal_mode = WAL')
+    index = new SymbolIndex(testDb)
+    index.initTables()
+    index.clearAll()
   })
 
-  afterEach(async () => {
+  afterEach(() => {
     try {
-      await testClient.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-      await (testClient as any).close?.()
+      testDb.pragma('wal_checkpoint(TRUNCATE)')
+      testDb.close()
     } catch {
       // ignore
     }
@@ -43,7 +49,7 @@ describe('SymbolIndex', () => {
     }
   })
 
-  it('should insert and query symbols', async () => {
+  it('should insert and query symbols', () => {
     const symbols: SymbolInfo[] = [
       {
         id: generateId('symbol'),
@@ -58,16 +64,16 @@ describe('SymbolIndex', () => {
         signature: 'class UserService',
       },
     ]
-    await index.insertSymbols(symbols)
+    index.insertSymbols(symbols)
 
-    const results = await index.querySymbols('UserService')
+    const results = index.querySymbols('UserService')
     expect(results).toHaveLength(1)
     expect(results[0].symbol.name).toBe('UserService')
     expect(results[0].matchedBy).toBe('exact')
     expect(results[0].score).toBe(1.0)
   })
 
-  it('should support fuzzy query', async () => {
+  it('should support fuzzy query', () => {
     const symbols: SymbolInfo[] = [
       {
         id: generateId('symbol'),
@@ -92,13 +98,13 @@ describe('SymbolIndex', () => {
         isExported: true,
       },
     ]
-    await index.insertSymbols(symbols)
+    index.insertSymbols(symbols)
 
-    const results = await index.querySymbols('User', { fuzzy: true })
+    const results = index.querySymbols('User', { fuzzy: true })
     expect(results.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('should track import dependencies', async () => {
+  it('should track import dependencies', () => {
     const edges: ImportEdge[] = [
       {
         fromFile: '/project/src/user/controller.ts',
@@ -108,14 +114,14 @@ describe('SymbolIndex', () => {
         line: 1,
       },
     ]
-    await index.insertImportEdges(edges)
+    index.insertImportEdges(edges)
 
-    const imports = await index.getImports('/project/src/user/controller.ts')
+    const imports = index.getImports('/project/src/user/controller.ts')
     expect(imports).toHaveLength(1)
     expect(imports[0].toFile).toBe('/project/src/user/service.ts')
   })
 
-  it('should find related files by dependency depth', async () => {
+  it('should find related files by dependency depth', () => {
     const edges: ImportEdge[] = [
       {
         fromFile: '/project/src/a.ts',
@@ -139,15 +145,15 @@ describe('SymbolIndex', () => {
         line: 1,
       },
     ]
-    await index.insertImportEdges(edges)
+    index.insertImportEdges(edges)
 
-    const related = await index.getRelatedFiles('/project/src/b.ts', 2)
+    const related = index.getRelatedFiles('/project/src/b.ts', 2)
     expect(related.has('/project/src/a.ts')).toBe(true)
     expect(related.has('/project/src/c.ts')).toBe(true)
     expect(related.has('/project/src/d.ts')).toBe(true) // depth=2: b->c->d
   })
 
-  it('should handle wide frontiers without exceeding SQLite parameter limits', async () => {
+  it('should handle wide frontiers without exceeding SQLite parameter limits', () => {
     const centralFile = '/project/src/central.ts'
     const edgeCount = 600
     const edges: ImportEdge[] = []
@@ -162,16 +168,16 @@ describe('SymbolIndex', () => {
       })
     }
 
-    await index.insertImportEdges(edges)
+    index.insertImportEdges(edges)
 
-    const related = await index.getRelatedFiles(centralFile, 1)
+    const related = index.getRelatedFiles(centralFile, 1)
     expect(related.size).toBe(edgeCount)
     for (let i = 0; i < edgeCount; i++) {
       expect(related.has(`/project/src/deps/lib-${i}.ts`)).toBe(true)
     }
   })
 
-  it('should clear file data', async () => {
+  it('should clear file data', () => {
     const symbols: SymbolInfo[] = [
       {
         id: generateId('symbol'),
@@ -185,9 +191,9 @@ describe('SymbolIndex', () => {
         isExported: true,
       },
     ]
-    await index.insertSymbols(symbols)
-    await index.clearFile('/project/src/a.ts')
-    const results = await index.querySymbols('A')
+    index.insertSymbols(symbols)
+    index.clearFile('/project/src/a.ts')
+    const results = index.querySymbols('A')
     expect(results).toHaveLength(0)
   })
 })

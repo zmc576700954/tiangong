@@ -3,36 +3,42 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { createClient, type Client } from '@libsql/client'
+import BetterSqlite3 from 'better-sqlite3'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import { ProjectIndexer } from '../project-indexer'
 import { SymbolIndex } from '../symbol-index'
 
+// Mock the database module so SymbolIndex doesn't try to use getClient()
+vi.mock('../../database', () => ({
+  getClient: vi.fn(),
+}))
+
 describe('ProjectIndexer', () => {
-  let testClient: Client
+  let testDb: BetterSqlite3.Database
   let dbDir: string
   let projectDir: string
   let index: SymbolIndex
   let indexer: ProjectIndexer
 
-  beforeEach(async () => {
+  beforeEach(() => {
     dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-indexer-test-'))
     const testDbPath = path.join(dbDir, 'test.db')
-    testClient = createClient({ url: `file:${testDbPath}` })
-    index = new SymbolIndex(testClient)
-    await index.initTables()
-    await index.clearAll()
+    testDb = new BetterSqlite3(testDbPath)
+    testDb.pragma('journal_mode = WAL')
+    index = new SymbolIndex(testDb)
+    index.initTables()
+    index.clearAll()
 
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-indexer-src-'))
     indexer = new ProjectIndexer(index)
   })
 
-  afterEach(async () => {
+  afterEach(() => {
     try {
-      await testClient.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-      await (testClient as unknown as { close: () => Promise<void> }).close()
+      testDb.pragma('wal_checkpoint(TRUNCATE)')
+      testDb.close()
     } catch {
       // ignore
     }
@@ -67,10 +73,10 @@ describe('ProjectIndexer', () => {
     expect(result.symbolsFound).toBeGreaterThan(0)
     expect(result.importsFound).toBeGreaterThan(0)
 
-    const symbols = await index.querySymbols('foo')
+    const symbols = index.querySymbols('foo')
     expect(symbols.length).toBeGreaterThan(0)
 
-    const imports = await index.getImports(path.join(projectDir, 'a.ts'))
+    const imports = index.getImports(path.join(projectDir, 'a.ts'))
     expect(imports.length).toBe(1)
     expect(imports[0].toFile).toBe(path.join(projectDir, 'b'))
   })

@@ -25,20 +25,20 @@ vi.mock('electron', () => ({
 import { initDatabase, closeDatabase, getClient } from '../database'
 
 describe('Database Migration', () => {
-  beforeAll(async () => {
-    await initDatabase()
+  beforeAll(() => {
+    initDatabase()
   })
 
-  afterAll(async () => {
-    await closeDatabase()
+  afterAll(() => {
+    closeDatabase()
   })
 
-  it('should create all 8 tables on fresh init', async () => {
-    const client = getClient()
-    const result = await client.execute(
+  it('should create all 8 tables on fresh init', () => {
+    const db = getClient()
+    const rows = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    )
-    const tables = result.rows.map((r) => (r as unknown as { name: string }).name)
+    ).all() as Record<string, unknown>[]
+    const tables = rows.map((r) => r.name as string)
 
     expect(tables).toContain('graphs')
     expect(tables).toContain('nodes')
@@ -51,18 +51,18 @@ describe('Database Migration', () => {
     expect(tables.length).toBeGreaterThanOrEqual(8)
   })
 
-  it('should have schema_version metadata', async () => {
-    const client = getClient()
-    const result = await client.execute("SELECT version FROM schema_version LIMIT 1")
-    expect(result.rows.length).toBe(1)
-    const version = Number((result.rows[0] as unknown as { version: number }).version)
+  it('should have schema_version metadata', () => {
+    const db = getClient()
+    const row = db.prepare("SELECT version FROM schema_version LIMIT 1").get() as { version: number } | undefined
+    expect(row).toBeDefined()
+    const version = Number(row!.version)
     expect(version).toBeGreaterThan(0)
   })
 
-  it('should have correct columns in graphs table', async () => {
-    const client = getClient()
-    const result = await client.execute("PRAGMA table_info(graphs)")
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('should have correct columns in graphs table', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(graphs)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
 
     expect(columns).toContain('id')
     expect(columns).toContain('project_path')
@@ -72,10 +72,10 @@ describe('Database Migration', () => {
     expect(columns).toContain('updated_at')
   })
 
-  it('should have correct columns in nodes table', async () => {
-    const client = getClient()
-    const result = await client.execute("PRAGMA table_info(nodes)")
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('should have correct columns in nodes table', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(nodes)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
 
     expect(columns).toContain('id')
     expect(columns).toContain('graph_id')
@@ -85,10 +85,10 @@ describe('Database Migration', () => {
     expect(columns).toContain('status')
   })
 
-  it('should have correct columns in chat_threads table', async () => {
-    const client = getClient()
-    const result = await client.execute("PRAGMA table_info(chat_threads)")
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('should have correct columns in chat_threads table', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(chat_threads)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
 
     expect(columns).toContain('id')
     expect(columns).toContain('adapter_name')
@@ -96,10 +96,10 @@ describe('Database Migration', () => {
     expect(columns).toContain('title')
   })
 
-  it('should have correct columns in chat_messages table', async () => {
-    const client = getClient()
-    const result = await client.execute("PRAGMA table_info(chat_messages)")
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('should have correct columns in chat_messages table', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(chat_messages)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
 
     expect(columns).toContain('id')
     expect(columns).toContain('thread_id')
@@ -107,43 +107,43 @@ describe('Database Migration', () => {
     expect(columns).toContain('content')
   })
 
-  it('should be idempotent — calling initDatabase again does not throw', async () => {
-    await expect(initDatabase()).resolves.not.toThrow()
+  it('should be idempotent — calling initDatabase again does not throw', () => {
+    expect(() => initDatabase()).not.toThrow()
   })
 
-  it('schema_version should be at least 4 after migration', async () => {
-    const client = getClient()
-    const result = await client.execute('SELECT version FROM schema_version LIMIT 1')
-    const version = Number((result.rows[0] as unknown as { version: number }).version)
+  it('schema_version should be at least 4 after migration', () => {
+    const db = getClient()
+    const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined
+    const version = Number(row!.version)
     expect(version).toBeGreaterThanOrEqual(4)
   })
 
-  it('chat_messages should have token_count column', async () => {
-    const client = getClient()
-    const result = await client.execute('PRAGMA table_info(chat_messages)')
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('chat_messages should have token_count column', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(chat_messages)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
     expect(columns).toContain('token_count')
   })
 
-  it('chat_threads should have waterline columns', async () => {
-    const client = getClient()
-    const result = await client.execute('PRAGMA table_info(chat_threads)')
-    const columns = result.rows.map((r) => (r as unknown as { name: string }).name)
+  it('chat_threads should have waterline columns', () => {
+    const db = getClient()
+    const cols = db.pragma('table_info(chat_threads)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
     expect(columns).toContain('parent_thread_id')
     expect(columns).toContain('context_tokens_used')
     expect(columns).toContain('context_window_max')
     expect(columns).toContain('last_compacted_at')
   })
 
-  it('should create compact_history table with expected columns', async () => {
-    const client = getClient()
-    const tables = await client.execute(
+  it('should create compact_history table with expected columns', () => {
+    const db = getClient()
+    const tables = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='compact_history'"
-    )
-    expect(tables.rows.length).toBe(1)
+    ).all() as Record<string, unknown>[]
+    expect(tables.length).toBe(1)
 
-    const info = await client.execute('PRAGMA table_info(compact_history)')
-    const columns = info.rows.map((r) => (r as unknown as { name: string }).name)
+    const cols = db.pragma('table_info(compact_history)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
     expect(columns).toEqual(expect.arrayContaining([
       'id', 'thread_id', 'session_id', 'strategy', 'trigger',
       'tokens_before', 'tokens_after', 'summary',
@@ -151,15 +151,15 @@ describe('Database Migration', () => {
     ]))
   })
 
-  it('should create subagent_invocations table with expected columns', async () => {
-    const client = getClient()
-    const tables = await client.execute(
+  it('should create subagent_invocations table with expected columns', () => {
+    const db = getClient()
+    const tables = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='subagent_invocations'"
-    )
-    expect(tables.rows.length).toBe(1)
+    ).all() as Record<string, unknown>[]
+    expect(tables.length).toBe(1)
 
-    const info = await client.execute('PRAGMA table_info(subagent_invocations)')
-    const columns = info.rows.map((r) => (r as unknown as { name: string }).name)
+    const cols = db.pragma('table_info(subagent_invocations)') as Record<string, unknown>[]
+    const columns = cols.map((r) => r.name as string)
     expect(columns).toEqual(expect.arrayContaining([
       'id', 'parent_session_id', 'parent_message_id', 'graph_id',
       'agent_type', 'description', 'prompt',
@@ -169,12 +169,12 @@ describe('Database Migration', () => {
     ]))
   })
 
-  it('should index subagent_invocations by parent_session_id and status', async () => {
-    const client = getClient()
-    const result = await client.execute(
+  it('should index subagent_invocations by parent_session_id and status', () => {
+    const db = getClient()
+    const rows = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='subagent_invocations'"
-    )
-    const indexNames = result.rows.map((r) => (r as unknown as { name: string }).name)
+    ).all() as Record<string, unknown>[]
+    const indexNames = rows.map((r) => r.name as string)
     expect(indexNames).toEqual(expect.arrayContaining([
       'idx_subagent_inv_parent',
       'idx_subagent_inv_status',
