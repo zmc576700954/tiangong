@@ -1,19 +1,19 @@
 /**
  * BizGraph database layer
- * Using LibSQL (SQLite superset) for local single-file database
+ * Using better-sqlite3 for local single-file database (full arch support)
  */
 
-import { createClient, type Client } from '@libsql/client'
+import BetterSqlite3 from 'better-sqlite3'
 import { app } from 'electron'
 import path from 'node:path'
-import fs from 'node:fs/promises'
+import fs from 'node:fs'
 import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 
 const logger = createLogger('Database')
 
-let client: Client | null = null
+let db: BetterSqlite3.Database | null = null
 let keepaliveTimer: ReturnType<typeof setInterval> | null = null
 
 /** 验证 SQLite 标识符是否合法（防止 SQL 注入） */
@@ -30,93 +30,91 @@ export function safeIdentifier(name: string): string {
   return `"${name.replace(/"/g, '""')}"`
 }
 
-export async function initDatabase(): Promise<Client> {
+export function initDatabase(): BetterSqlite3.Database {
   const userDataPath = app.getPath('userData')
   const dbDir = path.join(userDataPath, 'data')
-  await fs.mkdir(dbDir, { recursive: true })
+  fs.mkdirSync(dbDir, { recursive: true })
   const dbPath = path.join(dbDir, DB_FILENAME)
 
-  client = createClient({
-    url: `file:${dbPath}`,
-  })
+  db = new BetterSqlite3(dbPath)
 
   // 启用 WAL 模式提升并发读性能
-  await client.execute('PRAGMA journal_mode = WAL')
+  db.pragma('journal_mode = WAL')
   // 启用外键约束
-  await client.execute('PRAGMA foreign_keys = ON')
-  // 设置 WAL 自动 checkpoint 阈略（Pages），防止 WAL 文件无限增长
-  await client.execute('PRAGMA wal_autocheckpoint = 1000')
+  db.pragma('foreign_keys = ON')
+  // 设置 WAL 自动 checkpoint 阈值（Pages），防止 WAL 文件无限增长
+  db.pragma('wal_autocheckpoint = 1000')
 
-  await migrate()
+  migrate()
 
   // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
   keepaliveTimer = setInterval(() => {
-    if (!client) return
-    client.execute('PRAGMA wal_checkpoint(PASSIVE)').catch((err) => {
+    if (!db) return
+    try {
+      db.pragma('wal_checkpoint(PASSIVE)')
+    } catch (err) {
       logger.warn('WAL checkpoint failed:', err)
-    })
+    }
   }, 5 * 60 * 1000)
   // 不阻止进程退出
   if (keepaliveTimer.unref) keepaliveTimer.unref()
 
-  return client
+  return db
 }
 
 /** 关闭数据库连接 */
-export async function closeDatabase(): Promise<void> {
+export function closeDatabase(): void {
   if (keepaliveTimer) {
     clearInterval(keepaliveTimer)
     keepaliveTimer = null
   }
-  if (client) {
-    // 最终 WAL checkpoint，确保所有数据落盘
-    await client.execute('PRAGMA wal_checkpoint(TRUNCATE)').catch((err) => {
+  if (db) {
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)')
+    } catch (err) {
       logger.warn('Final WAL checkpoint failed during close:', err)
-    })
-    await client.execute('PRAGMA optimize').catch((err) => {
-      logger.warn('PRAGMA optimize failed during close:', err)
-    })
-    // 如果客户端支持显式 close，优先调用以释放底层资源
-    if ('close' in client && typeof (client as { close: unknown }).close === 'function') {
-      await (client as unknown as { close: () => Promise<void> }).close()
     }
-    client = null
+    try {
+      db.pragma('optimize')
+    } catch (err) {
+      logger.warn('PRAGMA optimize failed during close:', err)
+    }
+    db.close()
+    db = null
   }
 }
 
-export function getClient(): Client {
-  if (!client) {
+export function getClient(): BetterSqlite3.Database {
+  if (!db) {
     throw new DatabaseError('Database not initialized. Call initDatabase() first.', ErrorCode.DB_NOT_INITIALIZED)
   }
-  return client
+  return db
 }
 
 /**
  * Restore data from a backup table, handling enum value migrations
  */
-async function restoreFromBackup(
-  db: Client,
+function restoreFromBackup(
+  db: BetterSqlite3.Database,
   tableName: string,
   tempTable: string,
-): Promise<void> {
-  // 验证标识符合法性
+): void {
   if (!isValidIdentifier(tableName) || !isValidIdentifier(tempTable)) {
     throw new DatabaseError(`Invalid table identifier: ${tableName} or ${tempTable}`, ErrorCode.DB_INVALID_IDENTIFIER)
   }
 
   try {
-    const newColsResult = await db.execute(`PRAGMA table_info(${safeIdentifier(tableName)})`)
-    const newCols = newColsResult.rows.map((r) => r.name as string).filter(isValidIdentifier)
+    const newColsResult = db.pragma(`table_info(${safeIdentifier(tableName)})`) as Record<string, unknown>[]
+    const newCols = newColsResult.map((r) => r.name as string).filter(isValidIdentifier)
 
-    const oldColsResult = await db.execute(`PRAGMA table_info(${safeIdentifier(tempTable)})`)
-    const oldCols = oldColsResult.rows.map((r) => r.name as string).filter(isValidIdentifier)
+    const oldColsResult = db.pragma(`table_info(${safeIdentifier(tempTable)})`) as Record<string, unknown>[]
+    const oldCols = oldColsResult.map((r) => r.name as string).filter(isValidIdentifier)
 
-    const commonCols = newCols.filter((c) => oldCols.includes(c))
+    const commonCols = newCols.filter((c: string) => oldCols.includes(c))
 
     if (commonCols.length > 0) {
       const colsStr = commonCols.map(safeIdentifier).join(', ')
-      // Build SELECT clause with value transformations for renamed enum values
-      const selectCols = commonCols.map((col) => {
+      const selectCols = commonCols.map((col: string) => {
         const safeCol = safeIdentifier(col)
         if (tableName === 'graphs' && col === 'type') {
           return `CASE ${safeCol} WHEN 'production' THEN 'online' WHEN 'development' THEN 'dev' ELSE ${safeCol} END AS ${safeCol}`
@@ -125,19 +123,16 @@ async function restoreFromBackup(
           return `CASE ${safeCol} WHEN 'production' THEN 'online' WHEN 'development' THEN 'dev' ELSE ${safeCol} END AS ${safeCol}`
         }
         if (tableName === 'nodes' && col === 'type') {
-          // Old node types (rule/api/service/entity) mapped to new canonical types
           return `CASE ${safeCol} WHEN 'rule' THEN 'process' WHEN 'api' THEN 'feature' WHEN 'service' THEN 'feature' WHEN 'entity' THEN 'feature' ELSE ${safeCol} END AS ${safeCol}`
         }
         return safeCol
       }).join(', ')
-      await db.execute(`INSERT INTO ${safeIdentifier(tableName)} (${colsStr}) SELECT ${selectCols} FROM ${safeIdentifier(tempTable)}`)
+      db.exec(`INSERT INTO ${safeIdentifier(tableName)} (${colsStr}) SELECT ${selectCols} FROM ${safeIdentifier(tempTable)}`)
     }
 
-    // Drop backup table
-    await db.execute(`DROP TABLE ${safeIdentifier(tempTable)}`)
+    db.exec(`DROP TABLE ${safeIdentifier(tempTable)}`)
     logger.info(`Restored ${tableName} data from backup`)
   } catch (restoreErr) {
-    // 不删除备份表，让异常向上传播，使外层 SAVEPOINT ROLLBACK 保留原始数据
     logger.error(`Failed to restore ${tableName} data, will rollback:`, restoreErr)
     throw restoreErr
   }
@@ -146,32 +141,25 @@ async function restoreFromBackup(
 /**
  * Check if table needs rebuilding (when schema changes)
  */
-async function rebuildTableIfNeeded(
-  db: Client,
+function rebuildTableIfNeeded(
+  db: BetterSqlite3.Database,
   tableName: string,
   createSql: string,
   requiredColumns: string[],
-): Promise<void> {
-  // 验证标识符合法性
+): void {
   if (!isValidIdentifier(tableName)) {
     throw new DatabaseError(`Invalid table identifier: ${tableName}`, ErrorCode.DB_INVALID_IDENTIFIER)
   }
 
-  // Check if table exists
-  const tableInfo = await db.execute({
-    sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-    args: [tableName],
-  })
+  const tableInfo = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tableName)
 
-  if (tableInfo.rows.length === 0) {
-    // Table does not exist, create it
-    await db.execute(createSql)
+  if (!tableInfo) {
+    db.exec(createSql)
     return
   }
 
-  // Table exists, check schema compatibility via PRAGMA table_info (non-intrusive)
-  const colResult = await db.execute(`PRAGMA table_info(${safeIdentifier(tableName)})`)
-  const existingCols = new Set(colResult.rows.map((r) => r.name as string).filter(isValidIdentifier))
+  const colResult = db.pragma(`table_info(${safeIdentifier(tableName)})`) as Record<string, unknown>[]
+  const existingCols = new Set(colResult.map((r) => r.name as string).filter(isValidIdentifier))
   const hasAllColumns = requiredColumns.filter(isValidIdentifier).every((col) => existingCols.has(col))
 
   const tempTable = `${tableName}_backup`
@@ -180,16 +168,9 @@ async function rebuildTableIfNeeded(
   }
 
   if (hasAllColumns) {
-    // Schema columns match — but CHECK constraints may have changed.
-    // Read the existing CREATE TABLE SQL and compare CHECK clauses with the expected one.
-    const existingSqlResult = await db.execute({
-      sql: "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
-      args: [tableName],
-    })
-    const existingSql = (existingSqlResult.rows[0]?.sql as string) ?? ''
+    const existingSqlRow = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name=?").get(tableName) as { sql: string } | undefined
+    const existingSql = (existingSqlRow?.sql as string) ?? ''
 
-    // Extract CHECK(...) clauses from both SQLs and compare
-    // 使用计数器处理嵌套括号，替代正则的 [^)] 匹配
     const extractChecks = (sql: string) => {
       const checks: string[] = []
       const lowerSql = sql.toLowerCase()
@@ -198,7 +179,7 @@ async function rebuildTableIfNeeded(
         const idx = lowerSql.indexOf('check(', i)
         if (idx === -1) break
         let depth = 1
-        let j = idx + 6 // 'check('.length
+        let j = idx + 6
         while (j < sql.length && depth > 0) {
           if (sql[j] === '(') depth++
           else if (sql[j] === ')') depth--
@@ -216,47 +197,32 @@ async function rebuildTableIfNeeded(
     const expectedChecks = extractChecks(createSql).join('||')
 
     if (existingChecks === expectedChecks) {
-      // Schema and constraints are compatible — check for leftover backup table
-      const backupCheck = await db.execute({
-        sql: "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        args: [tempTable],
-      })
-      if (backupCheck.rows.length > 0) {
+      const backupCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tempTable)
+      if (backupCheck) {
         logger.info(`Found leftover backup ${tempTable}, restoring data...`)
-        await restoreFromBackup(db, tableName, tempTable)
+        restoreFromBackup(db, tableName, tempTable)
       }
       return
     }
 
-    // CHECK constraints differ — need rebuild
     logger.info(`Table ${tableName} CHECK constraints changed, rebuilding...`)
   }
 
-  // Missing columns, need to rebuild table — 使用事务保护
   logger.info(`Table ${tableName} schema outdated, rebuilding...`)
 
-  // P0-9: 使用 SAVEPOINT 替代 BEGIN，避免嵌套事务崩溃
-  await db.execute('SAVEPOINT rebuild_sp')
+  db.exec('SAVEPOINT rebuild_sp')
   try {
-    // 1. Backup old table data
-    await db.execute(`DROP TABLE IF EXISTS ${safeIdentifier(tempTable)}`)
-    await db.execute(`CREATE TABLE ${safeIdentifier(tempTable)} AS SELECT * FROM ${safeIdentifier(tableName)}`)
-
-    // 2. Drop old table
-    await db.execute(`DROP TABLE ${safeIdentifier(tableName)}`)
-
-    // 3. Create new table
-    await db.execute(createSql)
-
-    // 4. Try to restore data
-    await restoreFromBackup(db, tableName, tempTable)
-
-    await db.execute('RELEASE rebuild_sp')
+    db.exec(`DROP TABLE IF EXISTS ${safeIdentifier(tempTable)}`)
+    db.exec(`CREATE TABLE ${safeIdentifier(tempTable)} AS SELECT * FROM ${safeIdentifier(tableName)}`)
+    db.exec(`DROP TABLE ${safeIdentifier(tableName)}`)
+    db.exec(createSql)
+    restoreFromBackup(db, tableName, tempTable)
+    db.exec('RELEASE rebuild_sp')
     logger.info(`Table ${tableName} rebuilt successfully`)
   } catch (err) {
-    await db.execute('ROLLBACK TO rebuild_sp').catch((rollbackErr) => {
+    try { db.exec('ROLLBACK TO rebuild_sp') } catch (rollbackErr) {
       logger.error(`Rollback failed for ${tableName}:`, rollbackErr)
-    })
+    }
     throw err
   }
 }
@@ -264,34 +230,29 @@ async function rebuildTableIfNeeded(
 /** 当前 Schema 版本号，每次迁移时递增 */
 const CURRENT_SCHEMA_VERSION = 4
 
-async function migrate(): Promise<void> {
+function migrate(): void {
   const db = getClient()
 
-  // 创建 schema_version 表（如果不存在）
-  await db.execute(`
+  db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
       version INTEGER NOT NULL
     )
   `)
 
-  // 读取当前版本号
-  const versionResult = await db.execute('SELECT version FROM schema_version LIMIT 1')
-  const currentVersion = versionResult.rows.length > 0
-    ? (versionResult.rows[0].version as number)
-    : 0
+  const versionRow = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined
+  const currentVersion = versionRow?.version ?? 0
 
   if (currentVersion >= CURRENT_SCHEMA_VERSION) {
-    // Schema 已是最新，仅执行增量列迁移（安全幂等）
-    await runIncrementalMigrations(db, currentVersion)
+    runIncrementalMigrations(db, currentVersion)
     return
   }
 
   logger.info(`Migrating schema from v${currentVersion} to v${CURRENT_SCHEMA_VERSION}...`)
 
-  await db.execute('SAVEPOINT migrate_sp')
+  db.exec('SAVEPOINT migrate_sp')
   try {
-    // Graphs table (dual graph model: online / dev)
-    await rebuildTableIfNeeded(db, 'graphs', `
+    // All rebuildTableIfNeeded calls — identical signatures, just sync now
+    rebuildTableIfNeeded(db, 'graphs', `
       CREATE TABLE graphs (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -302,8 +263,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'name', 'type', 'created_at', 'updated_at'])
 
-    // Nodes table
-    await rebuildTableIfNeeded(db, 'nodes', `
+    rebuildTableIfNeeded(db, 'nodes', `
       CREATE TABLE nodes (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug')),
@@ -328,8 +288,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at'])
 
-    // Edges table
-    await rebuildTableIfNeeded(db, 'edges', `
+    rebuildTableIfNeeded(db, 'edges', `
       CREATE TABLE edges (
         id TEXT PRIMARY KEY,
         source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
@@ -344,8 +303,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'source', 'target', 'graph_id'])
 
-    // Bug nodes table
-    await rebuildTableIfNeeded(db, 'bug_nodes', `
+    rebuildTableIfNeeded(db, 'bug_nodes', `
       CREATE TABLE bug_nodes (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -359,8 +317,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'title', 'description', 'severity', 'status', 'node_id', 'graph_id', 'created_at', 'updated_at'])
 
-    // Snapshots table
-    await rebuildTableIfNeeded(db, 'snapshots', `
+    rebuildTableIfNeeded(db, 'snapshots', `
       CREATE TABLE snapshots (
         id TEXT PRIMARY KEY,
         graph_id TEXT NOT NULL,
@@ -371,8 +328,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'graph_id', 'name', 'data', 'created_at'])
 
-    // Agent logs table
-    await rebuildTableIfNeeded(db, 'agent_logs', `
+    rebuildTableIfNeeded(db, 'agent_logs', `
       CREATE TABLE agent_logs (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -387,8 +343,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'session_id', 'adapter_name', 'node_id', 'graph_id', 'command', 'outputs', 'result', 'duration', 'created_at'])
 
-    // Chat threads table
-    await rebuildTableIfNeeded(db, 'chat_threads', `
+    rebuildTableIfNeeded(db, 'chat_threads', `
       CREATE TABLE chat_threads (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -402,8 +357,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'title', 'adapter_name', 'node_id', 'graph_id', 'session_id', 'status', 'created_at', 'updated_at'])
 
-    // Chat messages table
-    await rebuildTableIfNeeded(db, 'chat_messages', `
+    rebuildTableIfNeeded(db, 'chat_messages', `
       CREATE TABLE chat_messages (
       id TEXT PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
@@ -419,8 +373,7 @@ async function migrate(): Promise<void> {
     )
     `, ['id', 'thread_id', 'role', 'content', 'adapter_name', 'status', 'error', 'session_id', 'context_refs', 'tool_calls', 'created_at'])
 
-    // Memory items table (Phase 1: 会话记忆层, FTS5 全文搜索)
-    await rebuildTableIfNeeded(db, 'memory_items', `
+    rebuildTableIfNeeded(db, 'memory_items', `
       CREATE TABLE memory_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -443,8 +396,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'session_id', 'kind', 'project_id', 'title', 'narrative', 'created_at'])
 
-    // Compact history (Phase 1 of context-compaction design)
-    await rebuildTableIfNeeded(db, 'compact_history', `
+    rebuildTableIfNeeded(db, 'compact_history', `
       CREATE TABLE compact_history (
         id TEXT PRIMARY KEY,
         thread_id TEXT REFERENCES chat_threads(id) ON DELETE CASCADE,
@@ -459,8 +411,7 @@ async function migrate(): Promise<void> {
       )
     `, ['id', 'strategy', 'trigger', 'tokens_before', 'tokens_after', 'started_at', 'duration_ms'])
 
-    // Subagent invocations (Phase 1 of subagent-dispatch design)
-    await rebuildTableIfNeeded(db, 'subagent_invocations', `
+    rebuildTableIfNeeded(db, 'subagent_invocations', `
       CREATE TABLE subagent_invocations (
         id TEXT PRIMARY KEY,
         parent_session_id TEXT NOT NULL,
@@ -483,46 +434,49 @@ async function migrate(): Promise<void> {
     `, ['id', 'parent_session_id', 'agent_type', 'description', 'prompt', 'status', 'started_at'])
 
     // Create indexes
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_edges_graph_id ON edges(graph_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_node_id ON bug_nodes(node_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_bug_nodes_graph_id ON bug_nodes(graph_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_snapshots_graph_id ON snapshots(graph_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_agent_logs_session_id ON agent_logs(session_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_node_id ON chat_threads(node_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_graph_id ON chat_threads(graph_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_session_id ON memory_items(session_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_kind ON memory_items(kind)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_node ON memory_items(node_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at DESC)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_adapter ON memory_items(project_id, adapter_name)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_type ON nodes(graph_id, type)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_status ON nodes(graph_id, status)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_threads_adapter_status ON chat_threads(adapter_name, status)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_status ON chat_messages(thread_id, status)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_memory_items_project_created ON memory_items(project_id, created_at DESC)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_compact_history_thread ON compact_history(thread_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_compact_history_started ON compact_history(started_at DESC)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_subagent_inv_parent ON subagent_invocations(parent_session_id)`)
-    await db.execute(`CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`)
+    const indexes = [
+      `CREATE INDEX IF NOT EXISTS idx_nodes_graph_id ON nodes(graph_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_edges_graph_id ON edges(graph_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_bug_nodes_node_id ON bug_nodes(node_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_bug_nodes_graph_id ON bug_nodes(graph_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_snapshots_graph_id ON snapshots(graph_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_agent_logs_session_id ON agent_logs(session_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_threads_node_id ON chat_threads(node_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_threads_graph_id ON chat_threads(graph_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_session_id ON memory_items(session_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_kind ON memory_items(kind)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_node ON memory_items(node_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_project_adapter ON memory_items(project_id, adapter_name)`,
+      `CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_type ON nodes(graph_id, type)`,
+      `CREATE INDEX IF NOT EXISTS idx_nodes_graph_id_status ON nodes(graph_id, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_threads_adapter_status ON chat_threads(adapter_name, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_status ON chat_messages(thread_id, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_memory_items_project_created ON memory_items(project_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_compact_history_thread ON compact_history(thread_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_compact_history_started ON compact_history(started_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_subagent_inv_parent ON subagent_invocations(parent_session_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`,
+    ]
+    for (const sql of indexes) {
+      db.exec(sql)
+    }
 
-    await runIncrementalMigrations(db, currentVersion)
+    runIncrementalMigrations(db, currentVersion)
 
-    // 更新版本号（INSERT OR REPLACE is atomic, avoids losing version on partial failure）
-    await db.execute({
-      sql: 'INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)',
-      args: [CURRENT_SCHEMA_VERSION],
-    })
+    db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
 
-    await db.execute('RELEASE migrate_sp')
+    db.exec('RELEASE migrate_sp')
     logger.info(`Schema migrated to v${CURRENT_SCHEMA_VERSION}`)
   } catch (err) {
-    await db.execute('ROLLBACK TO migrate_sp').catch((err) => { logger.warn('ROLLBACK TO migrate_sp failed:', err) })
+    try { db.exec('ROLLBACK TO migrate_sp') } catch (rollbackErr) {
+      logger.warn('ROLLBACK TO migrate_sp failed:', rollbackErr)
+    }
     throw err
   }
 }
@@ -549,8 +503,8 @@ function validateDefaultValue(value: string): string {
 /**
  * 增量迁移：安全添加新列（幂等操作，可重复执行）
  */
-async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise<void> {
-  const addColumnSafe = async (table: string, column: string, type: string, defaultValue?: string) => {
+function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0): void {
+  const addColumnSafe = (table: string, column: string, type: string, defaultValue?: string) => {
     if (!isValidIdentifier(table) || !isValidIdentifier(column)) {
       throw new DatabaseError(`Invalid identifier for migration: ${table}.${column}`, ErrorCode.DB_INVALID_IDENTIFIER)
     }
@@ -561,37 +515,36 @@ async function runIncrementalMigrations(db: Client, currentVersion = 0): Promise
     const safeType = type.toUpperCase()
     const defaultClause = defaultValue !== undefined ? ` DEFAULT ${validateDefaultValue(defaultValue)}` : ''
     try {
-      await db.execute(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}${defaultClause}`)
+      db.exec(`ALTER TABLE ${safeIdentifier(table)} ADD COLUMN ${safeIdentifier(column)} ${safeType}${defaultClause}`)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('duplicate column') || msg.includes('already exists')) {
-        return // 列已存在，安全忽略
+        return
       }
       throw new DatabaseError(`Failed to add column ${column} to ${table}: ${msg}`, ErrorCode.DB_QUERY_FAILED)
     }
   }
-  await addColumnSafe('nodes', 'content', 'TEXT')
-  await addColumnSafe('nodes', 'community_summary', 'TEXT')
-  await addColumnSafe('nodes', 'community_level', 'INTEGER')
-  await addColumnSafe('edges', 'content', 'TEXT')
-  await addColumnSafe('edges', 'description', 'TEXT')
-  await addColumnSafe('edges', 'data_flow', 'TEXT')
-  await addColumnSafe('edges', 'strength', 'REAL')
-  await addColumnSafe('edges', 'updated_at', 'TEXT')
 
-  // v3: memory_items 新增 version / parent_version / embedding 列
+  addColumnSafe('nodes', 'content', 'TEXT')
+  addColumnSafe('nodes', 'community_summary', 'TEXT')
+  addColumnSafe('nodes', 'community_level', 'INTEGER')
+  addColumnSafe('edges', 'content', 'TEXT')
+  addColumnSafe('edges', 'description', 'TEXT')
+  addColumnSafe('edges', 'data_flow', 'TEXT')
+  addColumnSafe('edges', 'strength', 'REAL')
+  addColumnSafe('edges', 'updated_at', 'TEXT')
+
   if (currentVersion < 3) {
-    await addColumnSafe('memory_items', 'version', 'INTEGER', '1')
-    await addColumnSafe('memory_items', 'parent_version', 'INTEGER', 'NULL')
-    await addColumnSafe('memory_items', 'embedding', 'TEXT', 'NULL')
+    addColumnSafe('memory_items', 'version', 'INTEGER', '1')
+    addColumnSafe('memory_items', 'parent_version', 'INTEGER', 'NULL')
+    addColumnSafe('memory_items', 'embedding', 'TEXT', 'NULL')
   }
 
-  // v4: context-compaction & subagent-dispatch (Phase 1)
   if (currentVersion < 4) {
-    await addColumnSafe('chat_messages', 'token_count', 'INTEGER', '0')
-    await addColumnSafe('chat_threads', 'parent_thread_id', 'TEXT')
-    await addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
-    await addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '200000')
-    await addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER')
+    addColumnSafe('chat_messages', 'token_count', 'INTEGER', '0')
+    addColumnSafe('chat_threads', 'parent_thread_id', 'TEXT')
+    addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
+    addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '200000')
+    addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER')
   }
 }
