@@ -149,29 +149,25 @@ export class SmartContextResolver {
       const entitiesOfType = extraction.entities.filter((e) => e.type === type)
       if (entitiesOfType.length === 0) continue
 
-      // 同一类型内的实体并行查询，减少串行等待
-      const queryResults = await Promise.all(
-        entitiesOfType.map((entity) => {
-          if (type === 'file') {
-            // 文件路径类型的实体：获取该文件的所有导出符号
-            return this.symbolIndex.getSymbolsByFile(entity.name)
-              .then((symbols) => symbols
-                .filter((s) => s.isExported)
-                .map((s) => ({ symbol: s, score: entity.confidence, matchedBy: 'path' as const }))
-              )
-          } else {
-            // 其他类型：按名称查询符号
-            const kind =
-              type === 'method' ? 'method'
-              : type === 'function' ? 'function'
-              : type === 'interface' ? 'interface'
-              : type === 'class' ? 'class'
-              : undefined
-            return this.symbolIndex.querySymbols(entity.name, { kind, limit: 5 })
-              .then((found) => found.map((f) => ({ ...f, score: f.score * entity.confidence })))
-          }
-        })
-      )
+      // 同一类型内的实体查询（now sync with better-sqlite3）
+      const queryResults = entitiesOfType.map((entity) => {
+        if (type === 'file') {
+          // 文件路径类型的实体：获取该文件的所有导出符号
+          return this.symbolIndex.getSymbolsByFile(entity.name)
+            .filter((s) => s.isExported)
+            .map((s) => ({ symbol: s, score: entity.confidence, matchedBy: 'path' as const }))
+        } else {
+          // 其他类型：按名称查询符号
+          const kind =
+            type === 'method' ? 'method'
+            : type === 'function' ? 'function'
+            : type === 'interface' ? 'interface'
+            : type === 'class' ? 'class'
+            : undefined
+          return this.symbolIndex.querySymbols(entity.name, { kind, limit: 5 })
+            .map((f) => ({ ...f, score: f.score * entity.confidence }))
+        }
+      })
 
       // 合并结果，去重
       for (const entityResults of queryResults) {

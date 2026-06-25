@@ -129,19 +129,21 @@ function setupAgentLogPersistence(): void {
         if (node) graphId = node.graphId
       } catch { /* ignore lookup failure */ }
     }
-    agentLogRepo!.create({
-      sessionId,
-      adapterName,
-      nodeId,
-      graphId,
-      command: { type: 'implement', description: '', targetNodeId: nodeId },
-      outputs: [],
-      result,
-      duration,
-    }).catch((err) => {
+    try {
+      agentLogRepo!.create({
+        sessionId,
+        adapterName,
+        nodeId,
+        graphId,
+        command: { type: 'implement', description: '', targetNodeId: nodeId },
+        outputs: [],
+        result,
+        duration,
+      })
+    } catch (err) {
       const logger = createLogger('AgentLog')
       logger.warn('Failed to write agent log:', err)
-    })
+    }
   })
 }
 

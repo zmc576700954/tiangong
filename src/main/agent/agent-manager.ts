@@ -6,7 +6,6 @@
  * - OutputBroadcaster: 输出广播
  */
 
-import type { ResultSet } from '@libsql/client'
 import type {
   AgentAdapter,
   AgentSessionConfig,
@@ -350,7 +349,9 @@ export class AgentManager {
       if (adapterName) {
         const adapter = this.registry.get(adapterName)
         if (adapter) {
-          const cleanupReason = state?.terminationReason ?? 'error'
+          const cleanupReason: TerminationReason = (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error')
+            ? state.terminationReason
+            : 'error'
           pendingOps.push(
             adapter.terminateSession(sessionId, cleanupReason).then(
               () => {},
@@ -538,9 +539,11 @@ export class AgentManager {
       this.logDiagnostics()
       this.checkMemoryPressure()
       // 定期清理过期低置信度记忆（借鉴 claude-mem 的自动清理策略）
-      this.memoryStore.pruneStale(90).catch((err) => {
+      try {
+        this.memoryStore.pruneStale(90)
+      } catch (err) {
         logger.warn('Memory pruneStale failed:', err)
-      })
+      }
       // 调度下一次检查（间隔可能根据系统状态变化）
       this.scheduleNextHealthCheck()
     }, interval)
@@ -884,14 +887,12 @@ export class AgentManager {
         // NODE_STATUS_TRANSITIONS already allows placeholder→developing for feature nodes
         if (config.nodeId && config.commandType === 'implement') {
           try {
-            const { getClient } = await import('../database')
             const db = getClient()
             // Single atomic UPDATE — avoids partial state if second step fails
-            const result = await db.execute({
-              sql: "UPDATE nodes SET status = 'developing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'placeholder'",
-              args: [config.nodeId],
-            })
-            if ((result as ResultSet).rowsAffected > 0) {
+            const info = db.prepare(
+              "UPDATE nodes SET status = 'developing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'placeholder'"
+            ).run(config.nodeId)
+            if (info.changes > 0) {
               this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
             }
           } catch (err) {
@@ -1295,7 +1296,11 @@ export class AgentManager {
       // Without this, a `timeout` reason passed by the caller would be lost.
       // Default to 'error' when no reason is given — internal callers (timers, cleanup)
       // that omit reason are typically abnormal paths, not user-initiated termination.
-      const terminationReason = reason ?? state?.terminationReason ?? 'error'
+      const terminationReason: TerminationReason = (reason === 'user' || reason === 'timeout' || reason === 'crash' || reason === 'error')
+        ? reason
+        : (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error')
+          ? state.terminationReason
+          : 'error'
       if (state && reason) {
         state.terminationReason = reason
       }
@@ -1394,16 +1399,11 @@ export class AgentManager {
       try {
         const fileChangeOutputs = outputsForMemory.filter((o) => o.type === 'file_change' && o.filePath)
         if (fileChangeOutputs.length > 0) {
-          const { getClient } = await import('../database')
           const db = getClient()
           const changedPaths = fileChangeOutputs.map((o) => o.filePath!)
 
           // Look up the session's node to read metadata.linkedFiles
-          const nodeResult = await db.execute({
-            sql: 'SELECT id, metadata FROM nodes WHERE id = ?',
-            args: [nodeId],
-          })
-          const row = nodeResult.rows[0]
+          const row = db.prepare('SELECT id, metadata FROM nodes WHERE id = ?').get(nodeId) as Record<string, unknown> | undefined
           if (row) {
             try {
               const metadata: NodeMetadata & { linkedFiles?: string[]; lastModified?: number } = row.metadata ? JSON.parse(row.metadata as string) : {}
@@ -1660,14 +1660,10 @@ export class AgentManager {
     let threadId: string | undefined
     if (state.config.nodeId) {
       try {
-        const { getClient } = await import('../database')
         const db = getClient()
-        const result = await db.execute({
-          sql: 'SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1',
-          args: [state.config.nodeId],
-        })
-        if (result.rows.length > 0) {
-          threadId = result.rows[0].id as string
+        const row = db.prepare('SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1').get(state.config.nodeId) as { id: string } | undefined
+        if (row) {
+          threadId = row.id
         }
       } catch {
         // Non-critical: threadId is for notification only

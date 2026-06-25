@@ -81,12 +81,13 @@ const restoredProjects = new Set<string>()
 function ensureWaterlineRestored(projectId: string | undefined): void {
   if (!projectId || restoredProjects.has(projectId)) return
   const waterline = getWaterlineSync()
-  waterline.restore(projectId).then(() => {
+  try {
+    waterline.restore(projectId)
     restoredProjects.add(projectId)
-  }).catch((err) => {
+  } catch (err) {
     logger.warn(`Failed to restore waterline for ${projectId}:`, err)
     // Don't add to restoredProjects so next call will retry
-  })
+  }
 }
 
 export function registerMemoryHandlers(typedHandle: TypedHandle): void {

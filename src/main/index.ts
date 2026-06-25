@@ -229,8 +229,8 @@ app.whenReady().then(async () => {
     logger.error(`State machine has ${inconsistencies} inconsistencies between TRANSITION_RULES and NODE_STATUS_TRANSITIONS`)
   }
 
-  // Initialize database
-  await initDatabase()
+  // Initialize database (sync with better-sqlite3)
+  initDatabase()
 
   // Register IPC handlers
   await registerIpcHandlers()
@@ -276,7 +276,7 @@ app.on('before-quit', async (event) => {
       // 停止 IPC 频率限制清理定时器
       stopCleanup()
       try {
-        await closeDatabase()
+        closeDatabase()
       } catch (err) {
         logger.error('Failed to close database:', err)
       }

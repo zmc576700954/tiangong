@@ -476,25 +476,21 @@ export class WaterlineSync {
    * 将当前内存中的 WaterlineSnapshot 序列化为 MemoryItem
    * 并以 kind='waterline' 存入数据库，使水位线在进程重启后可恢复。
    */
-  async persist(projectId: string): Promise<void> {
+  persist(projectId: string): void {
     const wl = this.getWaterline(projectId)
 
-    // Atomic delete+insert using batch to prevent data loss on crash between operations
+    // Atomic delete+insert inside a transaction to prevent data loss on crash between operations
     const db = getClient()
     const narrative = JSON.stringify(wl)
     const now = new Date().toISOString()
 
-    await db.batch([
-      {
-        sql: "DELETE FROM memory_items WHERE kind = 'waterline' AND project_id = ?",
-        args: [projectId],
-      },
-      {
-        sql: `INSERT INTO memory_items (session_id, kind, project_id, node_id, title, narrative, facts, concepts, files_read, files_modified, adapter_name, token_cost, confidence, created_at)
-              VALUES (?, 'waterline', ?, NULL, 'Waterline Snapshot', ?, '[]', '[]', '[]', '[]', 'waterline-sync', 0, 1.0, ?)`,
-        args: [`waterline-${projectId}`, projectId, narrative, now],
-      },
-    ], 'write')
+    db.transaction(() => {
+      db.prepare("DELETE FROM memory_items WHERE kind = 'waterline' AND project_id = ?").run(projectId)
+      db.prepare(
+        `INSERT INTO memory_items (session_id, kind, project_id, node_id, title, narrative, facts, concepts, files_read, files_modified, adapter_name, token_cost, confidence, created_at)
+         VALUES (?, 'waterline', ?, NULL, 'Waterline Snapshot', ?, '[]', '[]', '[]', '[]', 'waterline-sync', 0, 1.0, ?)`,
+      ).run(`waterline-${projectId}`, projectId, narrative, now)
+    })()
 
     logger.debug(`Waterline persisted for ${projectId}`)
   }
@@ -506,9 +502,9 @@ export class WaterlineSync {
    * 将其 narrative 反序列化为 WaterlineSnapshot 并覆盖内存状态。
    * 如果数据库中无记录，保留内存中的初始值。
    */
-  async restore(projectId: string): Promise<void> {
+  restore(projectId: string): void {
     const store = getMemoryStore()
-    const items = await store.search('waterline', {
+    const items = store.search('waterline', {
       projectId,
       kind: 'waterline' as MemoryKind,
       limit: 1,

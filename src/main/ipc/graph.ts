@@ -3,7 +3,7 @@
  * 图、节点、边、Bug 的 CRUD 操作
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphService } from '../services/graph-service'
 import { NodeRepository } from '../repositories/node-repository'
 import { EdgeRepository } from '../repositories/edge-repository'
@@ -18,7 +18,7 @@ import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
 import { ensureString, MAX_ID_LEN } from './utils'
 
-export function registerGraphHandlers(db: Client, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
+export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
   const nodeRepo = new NodeRepository(db)
   const edgeRepo = new EdgeRepository(db)
   const bugRepo = new BugRepository(db)

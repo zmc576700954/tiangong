@@ -322,7 +322,9 @@ export class PipelineRunner {
                 }
                 if (batchUpdates.length > 0) {
                   try {
-                    await db.batch(batchUpdates, 'write')
+                    db.transaction(() => {
+                      for (const u of batchUpdates) db.prepare(u.sql).run(...u.args)
+                    })()
                   } catch {
                     // Batch write failure should not block the pipeline
                   }

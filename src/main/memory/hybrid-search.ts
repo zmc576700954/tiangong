@@ -287,10 +287,7 @@ export class HybridSearchEngine {
     try {
       const vector = await this._embeddingService.generateEmbedding(text)
       const db = getClient()
-      await db.execute({
-        sql: 'UPDATE memory_items SET embedding = ? WHERE id = ?',
-        args: [JSON.stringify(vector), item.id],
-      })
+      db.prepare('UPDATE memory_items SET embedding = ? WHERE id = ?').run(JSON.stringify(vector), item.id)
     } catch (err) {
       logger.warn(`Failed to index embedding for item ${item.id}:`, err)
     }
@@ -574,8 +571,8 @@ export class HybridSearchEngine {
 
       sql += ' ORDER BY created_at DESC LIMIT 200'
 
-      const result = await db.execute({ sql, args })
-      const items: MemoryItem[] = result.rows.map((row) => this._rowToMemoryItem(row))
+      const rows = db.prepare(sql).all(...args)
+      const items: MemoryItem[] = rows.map((row) => this._rowToMemoryItem(row as Record<string, unknown>))
 
       // 计算余弦相似度
       const scored = items

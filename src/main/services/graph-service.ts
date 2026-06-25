@@ -3,7 +3,7 @@
  * 组合 Repository，处理业务逻辑和事务
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule } from '@shared/types'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import type { AgentManager } from '../agent/agent-manager'
@@ -33,7 +33,7 @@ export class GraphService {
   private cachedProjectPaths: string[] | null = null
   private symbolIndex?: SymbolIndex
   constructor(
-    private db: Client,
+    private db: BetterSqlite3.Database,
     private agentManager?: AgentManager,
   ) {
     this.graphRepo = new GraphRepository(db)
@@ -48,15 +48,15 @@ export class GraphService {
     this.cachedProjectPaths = null
   }
 
-  async createGraph(data: { name: string; type: GraphType }): Promise<Graph> {
-    const result = await this.graphRepo.create(data)
+  createGraph(data: { name: string; type: GraphType }): Graph {
+    const result = this.graphRepo.create(data)
     this.invalidateProjectPathsCache()
     return result
   }
 
   /** 从已有在线图派生开发图 */
-  async deriveGraph(sourceGraphId: string, name?: string): Promise<Graph> {
-    const sourceData = await this.graphRepo.get(sourceGraphId)
+  deriveGraph(sourceGraphId: string, name?: string): Graph {
+    const sourceData = this.graphRepo.get(sourceGraphId)
     if (!sourceData) {
       throw new Error(`Source graph not found: ${sourceGraphId}`)
     }
@@ -64,27 +64,27 @@ export class GraphService {
       throw new Error('Can only derive dev graph from an online graph')
     }
 
-    const devGraph = await this.graphRepo.create({
+    const devGraph = this.graphRepo.create({
       name: name ?? `${sourceData.graph.name} - 开发场景`,
       type: 'dev',
       projectPath: sourceData.graph.projectPath,
     })
 
-    await this.graphRepo.cloneGraphNodes(sourceGraphId, devGraph.id, 'dev')
+    this.graphRepo.cloneGraphNodes(sourceGraphId, devGraph.id, 'dev')
     this.invalidateProjectPathsCache()
     return devGraph
   }
 
-  async listGraphs(): Promise<Graph[]> {
+  listGraphs(): Graph[] {
     return this.graphRepo.list()
   }
 
-  async getGraph(id: string) {
+  getGraph(id: string) {
     return this.graphRepo.get(id)
   }
 
-  async deleteGraph(id: string): Promise<void> {
-    await this.graphRepo.delete(id)
+  deleteGraph(id: string): void {
+    this.graphRepo.delete(id)
     this.invalidateProjectPathsCache()
   }
 
@@ -139,28 +139,21 @@ export class GraphService {
     const onlineGraphId = generateId('graph-online')
     const devGraphId = generateId('graph-dev')
 
-    const tx = await this.db.transaction('write')
-    try {
+    // better-sqlite3 transaction: auto-commit on normal return, auto-rollback on exception
+    this.db.transaction(() => {
       // 创建 online 图（产品蓝图）
-      await tx.execute({
-        sql: 'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-        args: [onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now],
-      })
+      this.db.prepare(
+        'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now)
 
       // 创建 dev 图（开发场景）
-      await tx.execute({
-        sql: 'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-        args: [devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now],
-      })
+      this.db.prepare(
+        'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
 
-      await this.createNodes(onlineGraphId, 'online', graphResult, now, tx)
-      await this.createNodes(devGraphId, 'dev', graphResult, now, tx)
-
-      await tx.commit()
-    } catch (err) {
-      await tx.rollback()
-      throw err
-    }
+      this.createNodes(onlineGraphId, 'online', graphResult, now, this.db)
+      this.createNodes(devGraphId, 'dev', graphResult, now, this.db)
+    })()
 
     this.invalidateProjectPathsCache()
 
@@ -185,14 +178,25 @@ export class GraphService {
     }
   }
 
-  private async createNodes(
+  private createNodes(
     graphId: string,
     graphType: 'online' | 'dev',
     graphResult: ProjectGraphResult,
     now: string,
-    executor: Pick<Client, 'execute'> = this.db,
-  ): Promise<void> {
+    executor: BetterSqlite3.Database = this.db,
+  ): void {
     const tempIdMap = new Map<string, string>()
+
+    const insertNodeStmt = executor.prepare(`INSERT INTO nodes (
+      id, type, status, title, description, acceptance_criteria,
+      graph_id, graph_type, parent_id, rules, metadata, owner_role,
+      position_x, position_y, content, community_summary, community_level,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+
+    const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
+
+    const insertEdgeStmt = executor.prepare('INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
 
     // 第一轮：创建所有节点，记录 tempId -> realId 映射
     for (const nodeData of graphResult.nodes) {
@@ -210,35 +214,27 @@ export class GraphService {
         ? 'placeholder'
         : nodeData.status
 
-      await executor.execute({
-        sql: `INSERT INTO nodes (
-          id, type, status, title, description, acceptance_criteria,
-          graph_id, graph_type, parent_id, rules, metadata, owner_role,
-          position_x, position_y, content, community_summary, community_level,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        args: [
-          nodeId,
-          nodeData.type,
-          status,
-          nodeData.title,
-          nodeData.description ?? null,
-          nodeData.acceptanceCriteria ? JSON.stringify(nodeData.acceptanceCriteria) : null,
-          graphId,
-          graphType,
-          null, // parent_id 第二轮更新
-          nodeData.rules ? JSON.stringify(nodeData.rules) : null,
-          nodeData.metadata ? JSON.stringify(nodeData.metadata) : null,
-          nodeData.ownerRole ?? null,
-          nodeData.position.x,
-          nodeData.position.y + (graphType === 'dev' ? 20 : 0),
-          nodeData.content ? JSON.stringify(nodeData.content) : null,
-          nodeData.communitySummary ?? null,
-          nodeData.communityLevel ?? null,
-          now,
-          now,
-        ],
-      })
+      insertNodeStmt.run(
+        nodeId,
+        nodeData.type,
+        status,
+        nodeData.title,
+        nodeData.description ?? null,
+        nodeData.acceptanceCriteria ? JSON.stringify(nodeData.acceptanceCriteria) : null,
+        graphId,
+        graphType,
+        null, // parent_id 第二轮更新
+        nodeData.rules ? JSON.stringify(nodeData.rules) : null,
+        nodeData.metadata ? JSON.stringify(nodeData.metadata) : null,
+        nodeData.ownerRole ?? null,
+        nodeData.position.x,
+        nodeData.position.y + (graphType === 'dev' ? 20 : 0),
+        nodeData.content ? JSON.stringify(nodeData.content) : null,
+        nodeData.communitySummary ?? null,
+        nodeData.communityLevel ?? null,
+        now,
+        now,
+      )
     }
 
     // 第二轮：更新 parent_id
@@ -247,10 +243,7 @@ export class GraphService {
         const nodeId = tempIdMap.get(nodeData.tempId)
         const parentId = tempIdMap.get(nodeData.parentTempId)
         if (nodeId && parentId) {
-          await executor.execute({
-            sql: 'UPDATE nodes SET parent_id = ? WHERE id = ?',
-            args: [parentId, nodeId],
-          })
+          updateParentStmt.run(parentId, nodeId)
         }
       }
     }
@@ -261,19 +254,20 @@ export class GraphService {
       const targetId = tempIdMap.get(edgeData.targetTempId)
       if (sourceId && targetId) {
         const edgeId = generateId('edge')
-        await executor.execute({
-          sql: 'INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          args: [edgeId, sourceId, targetId, edgeData.label ?? null, edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null, edgeData.dataFlow ?? null, edgeData.strength ?? null],
-        })
+        insertEdgeStmt.run(
+          edgeId, sourceId, targetId, edgeData.label ?? null,
+          edgeData.edgeType ?? 'default', graphId, edgeData.description ?? null,
+          edgeData.dataFlow ?? null, edgeData.strength ?? null,
+        )
       } else {
         logger.warn(`Edge dropped: sourceTempId="${edgeData.sourceTempId}" or targetTempId="${edgeData.targetTempId}" not found in tempIdMap`)
       }
     }
   }
 
-  async getProjectPaths(): Promise<string[]> {
+  getProjectPaths(): string[] {
     if (this.cachedProjectPaths === null) {
-      this.cachedProjectPaths = await this.graphRepo.getProjectPaths()
+      this.cachedProjectPaths = this.graphRepo.getProjectPaths()
     }
     return this.cachedProjectPaths
   }
@@ -298,16 +292,15 @@ export class GraphService {
     }
 
     // 获取图中所有带 fileAssociations 的节点
-    const result = await this.db.execute({
-      sql: 'SELECT id, metadata FROM nodes WHERE graph_id = ? AND metadata IS NOT NULL',
-      args: [graphId],
-    })
+    const rows = this.db.prepare(
+      'SELECT id, metadata FROM nodes WHERE graph_id = ? AND metadata IS NOT NULL'
+    ).all(graphId)
 
     // 构建 filePath → nodeId 映射
     const fileToNode = new Map<string, string>()
     const nodeFiles = new Map<string, string[]>()
 
-    for (const row of result.rows) {
+    for (const row of rows) {
       const nodeId = String((row as Record<string, unknown>).id)
       const metadataStr = String((row as Record<string, unknown>).metadata)
       try {
@@ -323,11 +316,10 @@ export class GraphService {
     }
 
     // 查询已存在的边，避免重复建议
-    const existingEdges = await this.db.execute({
-      sql: 'SELECT source, target FROM edges WHERE graph_id = ?',
-      args: [graphId],
-    })
-    const edgeSet = new Set(existingEdges.rows.map((r) => {
+    const existingEdgeRows = this.db.prepare(
+      'SELECT source, target FROM edges WHERE graph_id = ?'
+    ).all(graphId)
+    const edgeSet = new Set(existingEdgeRows.map((r) => {
       const row = r as Record<string, unknown>
       return `${String(row.source)}->${String(row.target)}`
     }))

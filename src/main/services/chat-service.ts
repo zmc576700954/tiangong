@@ -3,7 +3,7 @@
  * 线程 CRUD、消息存储、自动命名、session_id 回写
  */
 
-import type { Client } from '@libsql/client'
+import type BetterSqlite3 from 'better-sqlite3'
 import type { ChatMessage, AgentThread } from '@shared/types'
 import { ChatRepository, type ChatThreadRow, type ChatMessageRow } from '../repositories/chat-repository'
 import { generateId } from '../shared/env'
@@ -15,8 +15,8 @@ export class ChatService {
   private repo: ChatRepository
   private waterline?: ContextWaterline
 
-  constructor(dbOrRepo: Client | ChatRepository, waterline?: ContextWaterline) {
-    // Backward compatible: accept either a libsql Client (constructs the repo here)
+  constructor(dbOrRepo: BetterSqlite3.Database | ChatRepository, waterline?: ContextWaterline) {
+    // Backward compatible: accept either a BetterSqlite3.Database (constructs the repo here)
     // or an already-constructed ChatRepository (preferred for DI / testing).
     this.repo = dbOrRepo instanceof ChatRepository
       ? dbOrRepo
