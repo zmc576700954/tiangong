@@ -7,6 +7,7 @@ import { OutputBroadcaster } from '../agent/output-broadcaster'
 import { BaseAdapter } from '../adapters/base'
 import type { AgentSession, AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 import { SessionNotFoundError, AdapterError } from '../errors'
+import { SessionRecoveryManager, setForTesting } from '../agent/session-recovery'
 
 // Minimal test adapter — name configurable
 class TestAdapter extends BaseAdapter {
@@ -60,7 +61,19 @@ class TestAdapter extends BaseAdapter {
   }
 
   public simulateCrash(sessionId: string): void {
-    this.emit('sessionEnded', sessionId, 'crash')
+    this.emit('sessionEnded', sessionId, 'crash', 1)
+  }
+
+  public simulateTimeout(sessionId: string): void {
+    this.emit('sessionEnded', sessionId, 'timeout', 137)
+  }
+
+  public simulateSuccess(sessionId: string): void {
+    this.emit('sessionEnded', sessionId, 'success', 0)
+  }
+
+  public simulateExit(sessionId: string, reason: 'crash' | 'error' | 'timeout' | 'success', exitCode: number | null): void {
+    this.emit('sessionEnded', sessionId, reason, exitCode)
   }
 }
 
@@ -71,6 +84,7 @@ describe('AgentManager', () => {
   let manager: AgentManager
 
   beforeEach(() => {
+    setForTesting(new SessionRecoveryManager())
     registry = new AdapterRegistry()
     router = new SessionRouter(registry)
     broadcaster = new OutputBroadcaster()
@@ -79,6 +93,7 @@ describe('AgentManager', () => {
 
   afterEach(() => {
     manager.destroy()
+    setForTesting(null)
   })
 
   const mockConfig = (overrides?: Partial<AgentSessionConfig>): AgentSessionConfig => ({
@@ -334,6 +349,83 @@ describe('AgentManager', () => {
       // Router and sandbox should be cleaned up
       expect(router.getActiveSessionIds()).not.toContain(sessionId)
     })
+
+    it('should clean up resources when session completes successfully', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+
+      adapter.simulateSuccess(sessionId)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+      expect((manager as any).sessionStates.has(sessionId)).toBe(false)
+      expect((manager as any).sessionOutputBuffers.has(sessionId)).toBe(false)
+    })
+
+    it('should not trigger recovery for non-recoverable exit codes 126/127', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateExit(sessionId, 'crash', 126)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should not trigger recovery for exit code 127', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateExit(sessionId, 'crash', 127)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should not trigger recovery for non-recoverable success reason', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateSuccess(sessionId)
+
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).not.toHaveBeenCalled()
+      expect(router.getActiveSessionIds()).not.toContain(sessionId)
+
+      spy.mockRestore()
+    })
+
+    it('should keep native-resumed session active without corrupting router fallback metadata', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+
+      adapter.simulateCrash(sessionId)
+
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessionIds()).toContain(sessionId)
+      })
+
+      // Native resume must not set broadcastName as originalAdapter fallback metadata.
+      expect(router.getFallbackInfo(sessionId)).toBeUndefined()
+    })
   })
 
   describe('listAdapters', () => {
@@ -359,6 +451,237 @@ describe('AgentManager', () => {
       const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       // No error should occur
+    })
+  })
+
+  describe('recovery', () => {
+    it('attempts recovery when a session crashes', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+
+      adapter.simulateCrash(sessionId)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId, adapterName: 'claude-code' }))
+    })
+
+    it('attempts recovery for error and null exit codes', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      const state = (manager as any).sessionStates.get(sessionId)
+      const outputs = (manager as any).sessionOutputBuffers.get(sessionId) ?? []
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+
+      await (manager as any)._handleSessionEnded(sessionId, null, 'error', state, outputs)
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId, adapterName: 'mcp' }))
+    })
+
+    it('attempts recovery for timeout reason', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      const state = (manager as any).sessionStates.get(sessionId)
+      const outputs = (manager as any).sessionOutputBuffers.get(sessionId) ?? []
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+
+      await (manager as any)._handleSessionEnded(sessionId, 1, 'timeout', state, outputs)
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId, adapterName: 'mcp' }))
+    })
+
+    it('caps recovery retries at 3 attempts', async () => {
+      const recovery = manager['sessionRecovery']
+      recovery.registerStrategy({
+        adapterName: 'failing-adapter',
+        canResume: false,
+        resume: async () => null,
+      })
+      const base = {
+        sessionId: 's1',
+        adapterName: 'failing-adapter',
+        projectId: '/project',
+        lastOutputs: [] as AgentOutput[],
+        lastMessages: [] as Array<{ role: string; content: string }>,
+      }
+
+      await recovery.attemptRecovery(base)
+      await recovery.attemptRecovery(base)
+      await recovery.attemptRecovery(base)
+      expect(recovery.getAttempts('s1')).toBe(3)
+
+      // Further attempts should be short-circuited
+      const result = await recovery.attemptRecovery(base)
+      expect(result).toBeNull()
+    })
+
+    it('keeps independent recovery checks per adapter', async () => {
+      const a = new TestAdapter('a')
+      const b = new TestAdapter('b')
+      vi.spyOn(a, 'checkInstalled').mockResolvedValue(true)
+      vi.spyOn(b, 'checkInstalled').mockResolvedValue(true)
+      manager.registerAdapter(a)
+      manager.registerAdapter(b)
+
+      const recordSpy = vi.spyOn((manager as any).healthMonitor, 'recordCall')
+
+      vi.useFakeTimers()
+      try {
+        ;(manager as any).startRecoveryCheck('a')
+        ;(manager as any).startRecoveryCheck('b')
+        expect((manager as any).recoveryCheckIntervals.size).toBe(2)
+
+        // Calling again must not create a duplicate interval
+        ;(manager as any).startRecoveryCheck('a')
+        expect((manager as any).recoveryCheckIntervals.size).toBe(2)
+
+        await vi.advanceTimersByTimeAsync(60_000)
+        expect(recordSpy).toHaveBeenCalledWith('a', true, 0, 'recovery-check')
+        expect(recordSpy).toHaveBeenCalledWith('b', true, 0, 'recovery-check')
+        expect((manager as any).recoveryCheckIntervals.size).toBe(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('resumes the last command after MCP context-injection recovery', async () => {
+      const adapter = new TestAdapter('mcp')
+      const sendSpy = vi.spyOn(adapter, 'sendCommand')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      const command: AgentCommand = { type: 'implement', description: 'continue', targetNodeId: 'n1' }
+      await manager.sendCommand(sessionId, command)
+
+      // Inject a pending context so the recovery path creates a replacement session
+      manager['sessionRecovery'].setPendingContext(sessionId, '[context]')
+      const state = (manager as any).sessionStates.get(sessionId)
+      const outputs = (manager as any).sessionOutputBuffers.get(sessionId) ?? []
+
+      await (manager as any)._handleSessionEnded(sessionId, null, 'error', state, outputs)
+
+      // The replacement session should receive the last user command
+      await vi.waitFor(() => {
+        expect(sendSpy).toHaveBeenCalledWith(expect.any(String), command)
+      })
+    })
+
+    it('attempts recovery for timeout even with signal exit codes (137/143)', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      const state = (manager as any).sessionStates.get(sessionId)
+      const outputs = (manager as any).sessionOutputBuffers.get(sessionId) ?? []
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+
+      await (manager as any)._handleSessionEnded(sessionId, 137, 'timeout', state, outputs)
+
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ sessionId, adapterName: 'mcp' }))
+    })
+
+    it('stops replacing MCP sessions after the global retry budget', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId: originalId } = await manager.startSession('mcp', mockConfig())
+      const command: AgentCommand = { type: 'implement', description: 'keep going', targetNodeId: 'n1' }
+      await manager.sendCommand(originalId, command)
+
+      let currentId = originalId
+      const initialCount = manager.getActiveSessionIds().length
+
+      // maxRetries = 3: the first three crashes each create a replacement session.
+      for (let i = 0; i < 3; i++) {
+        const state = (manager as any).sessionStates.get(currentId)
+        const outputs = (manager as any).sessionOutputBuffers.get(currentId) ?? []
+        await (manager as any)._handleSessionEnded(currentId, null, 'error', state, outputs)
+        const active = manager.getActiveSessionIds()
+        expect(active.length).toBe(initialCount + i + 1)
+        const nextId = active.find((id) => id !== currentId)
+        expect(nextId).toBeDefined()
+        currentId = nextId!
+      }
+
+      // The fourth crash exhausts the budget: no replacement session is created.
+      const state = (manager as any).sessionStates.get(currentId)
+      const outputs = (manager as any).sessionOutputBuffers.get(currentId) ?? []
+      await (manager as any)._handleSessionEnded(currentId, null, 'error', state, outputs)
+      expect(manager.getActiveSessionIds().length).toBe(initialCount + 3)
+    })
+
+    it('keeps native-resumed sessions active in the manager', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+
+      adapter.simulateCrash(sessionId)
+
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessionIds()).toContain(sessionId)
+      })
+    })
+
+    it('preserves output context for MCP recovery from real session output', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('mcp', mockConfig())
+      await manager.sendCommand(sessionId, { type: 'implement', description: 'hello', targetNodeId: 'n1' })
+
+      const spy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateCrash(sessionId)
+
+      await vi.waitFor(() => {
+        expect(spy).toHaveBeenCalled()
+      })
+
+      const context = spy.mock.calls[0][0]
+      expect(context.lastOutputs.length).toBeGreaterThan(0)
+      expect(context.lastMessages?.length).toBeGreaterThan(0)
+    })
+
+    it('resets recovery retry counter when a recovered session completes successfully', async () => {
+      const adapter = new TestAdapter('mcp')
+      manager.registerAdapter(adapter)
+      const command: AgentCommand = { type: 'implement', description: 'keep going', targetNodeId: 'n1' }
+      const { sessionId: originalId } = await manager.startSession('mcp', mockConfig())
+      await manager.sendCommand(originalId, command)
+
+      // First crash: MCP recovery creates a replacement session with context injection.
+      manager['sessionRecovery'].setPendingContext(originalId, '[context]')
+      const state1 = (manager as any).sessionStates.get(originalId)
+      const outputs1 = (manager as any).sessionOutputBuffers.get(originalId) ?? []
+      await (manager as any)._handleSessionEnded(originalId, null, 'error', state1, outputs1)
+
+      await vi.waitFor(() => {
+        expect(manager.getActiveSessionIds().length).toBe(2)
+      })
+      const replacementId = manager.getActiveSessionIds().find((id) => id !== originalId)
+      expect(replacementId).toBeDefined()
+
+      // The replacement session completes naturally with success.
+      const recoverySpy = vi.spyOn(manager['sessionRecovery'], 'attemptRecovery')
+      adapter.simulateSuccess(replacementId!)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect(manager.getActiveSessionIds()).not.toContain(replacementId)
+      // Retry counter should have been reset on success.
+      expect(manager['sessionRecovery'].getAttempts(originalId)).toBe(0)
+
+      // Start a new session in the same lineage and crash it: recovery must be attempted again.
+      const { sessionId: newId } = await manager.startSession('mcp', mockConfig())
+      manager['sessionRecovery'].setPendingContext(newId, '[context]')
+      // Simulate lineage by carrying over originSessionId.
+      const newState = (manager as any).sessionStates.get(newId)
+      newState.originSessionId = originalId
+      const newOutputs = (manager as any).sessionOutputBuffers.get(newId) ?? []
+
+      await (manager as any)._handleSessionEnded(newId, null, 'error', newState, newOutputs)
+
+      expect(recoverySpy).toHaveBeenCalled()
+      expect(manager['sessionRecovery'].getAttempts(originalId)).toBe(1)
+
+      recoverySpy.mockRestore()
     })
   })
 })

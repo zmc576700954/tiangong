@@ -147,6 +147,30 @@ describe('SymbolIndex', () => {
     expect(related.has('/project/src/d.ts')).toBe(true) // depth=2: b->c->d
   })
 
+  it('should handle wide frontiers without exceeding SQLite parameter limits', async () => {
+    const centralFile = '/project/src/central.ts'
+    const edgeCount = 600
+    const edges: ImportEdge[] = []
+
+    for (let i = 0; i < edgeCount; i++) {
+      edges.push({
+        fromFile: centralFile,
+        toFile: `/project/src/deps/lib-${i}.ts`,
+        importedNames: [`Lib${i}`],
+        isDefaultImport: false,
+        line: i + 1,
+      })
+    }
+
+    await index.insertImportEdges(edges)
+
+    const related = await index.getRelatedFiles(centralFile, 1)
+    expect(related.size).toBe(edgeCount)
+    for (let i = 0; i < edgeCount; i++) {
+      expect(related.has(`/project/src/deps/lib-${i}.ts`)).toBe(true)
+    }
+  })
+
   it('should clear file data', async () => {
     const symbols: SymbolInfo[] = [
       {

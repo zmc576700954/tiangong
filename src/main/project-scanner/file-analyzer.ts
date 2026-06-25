@@ -4,11 +4,15 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { isRelativeTraversal } from '../shared/path-utils'
 import type { FileAnalysis } from './types'
 import { Semaphore } from './types'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('ProjectScanner')
+
+/** 单个文件内容大小上限（字节），超过则跳过以避免内存/性能问题 */
+const MAX_FILE_SIZE_BYTES = 50_000
 
 const LANGUAGE_MAP: Record<string, string> = {
   '.ts': 'TypeScript', '.tsx': 'TypeScript/React',
@@ -102,12 +106,18 @@ export async function analyzeKeyFiles(
         const fullPath = path.resolve(projectPath, relPath)
         // 验证文件路径在项目目录内，防止路径遍历
         const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
-        if (relativeCheck.startsWith('..') || path.isAbsolute(relativeCheck)) {
+        if (isRelativeTraversal(relativeCheck) || path.isAbsolute(relativeCheck)) {
           logger.warn(`Path traversal detected: ${relPath}`)
           return
         }
+        // 先检查文件大小，避免把超大文件完整读入内存
+        const stat = await fs.stat(fullPath)
+        if (stat.size > MAX_FILE_SIZE_BYTES) {
+          logger.debug(`Skipping large file (${stat.size} bytes): ${relPath}`)
+          return
+        }
         const content = await fs.readFile(fullPath, 'utf-8')
-        if (content.length > 50000) return // 跳过超大文件
+        if (content.length > MAX_FILE_SIZE_BYTES) return // 兜底：跳过超大文件
         analyses.push({
           filePath: relPath,
           content,

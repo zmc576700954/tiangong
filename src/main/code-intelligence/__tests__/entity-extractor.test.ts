@@ -118,4 +118,18 @@ describe('EntityExtractor', () => {
     expect(entity!.column).toBe(entityStart - line2Start)
     expect(entity!.endColumn).toBe(entityStart - line2Start + 'UserService'.length)
   })
+
+  it('should calculate confidence around the matched occurrence, not the first occurrence', () => {
+    // "UserService" 第一次出现时上下文没有佐证词，"OrderService" 出现在 "class" 附近
+    const input = 'UserService is used first. We should refactor class OrderService soon.'
+    const result = extractor.extract(input)
+
+    const userService = result.entities.find((e) => e.name === 'UserService')
+    const orderService = result.entities.find((e) => e.name === 'OrderService')
+
+    expect(userService).toBeDefined()
+    expect(orderService).toBeDefined()
+    // OrderService 临近 class，置信度应高于没有上下文佐证的 UserService
+    expect(orderService!.confidence).toBeGreaterThan(userService!.confidence)
+  })
 })

@@ -193,9 +193,24 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
       throw new IpcError('AI 返回格式错误', ErrorCode.IPC_HANDLER_ERROR)
     }
 
+    const children: Array<{ title: string; description?: string }> = []
+    for (const child of parsed.children) {
+      if (!child || typeof child !== 'object') {
+        throw new IpcError('AI 返回的子节点必须是对象', ErrorCode.IPC_HANDLER_ERROR)
+      }
+      const c = child as Record<string, unknown>
+      if (typeof c.title !== 'string' || c.title.length === 0) {
+        throw new IpcError('AI 返回的子节点 title 必须是有效字符串', ErrorCode.IPC_HANDLER_ERROR)
+      }
+      if (c.description !== undefined && typeof c.description !== 'string') {
+        throw new IpcError('AI 返回的子节点 description 必须是字符串', ErrorCode.IPC_HANDLER_ERROR)
+      }
+      children.push({ title: c.title, description: c.description as string | undefined })
+    }
+
     return {
       childType,
-      children: parsed.children as Array<{ title: string; description?: string }>,
+      children,
     }
   })
 }

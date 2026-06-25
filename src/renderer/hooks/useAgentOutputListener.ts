@@ -134,6 +134,7 @@ export function useAgentOutputListener(currentThreadId: string | null) {
           filePath,
           content: output.data,
           status: 'done',
+          changeType: output.changeType,
         }
 
         // Risk-level-based interception

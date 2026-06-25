@@ -23,6 +23,8 @@ describe('threadStore', () => {
     useThreadStore.setState({
       threads: [],
       currentThreadId: null,
+      threadIdResolvers: new Map(),
+      nodeThreadMap: new Map(),
     })
   })
 
@@ -134,5 +136,20 @@ describe('threadStore', () => {
     vi.mocked(window.electronAPI['thread:list']).mockResolvedValueOnce(mockThreads)
     await useThreadStore.getState().loadThreads()
     expect(useThreadStore.getState().threads).toEqual(mockThreads)
+  })
+
+  it('resolveThreadId returns the same ID for threads without a pending DB swap', async () => {
+    const id = await useThreadStore.getState().resolveThreadId('unknown-thread')
+    expect(id).toBe('unknown-thread')
+  })
+
+  it('resolveThreadId resolves to the DB-backed ID once available', async () => {
+    const frontendId = useThreadStore.getState().createThread('claude-code')
+    const resolvedIdPromise = useThreadStore.getState().resolveThreadId(frontendId)
+
+    await vi.waitFor(() => useThreadStore.getState().threads[0]?.id !== frontendId)
+
+    const resolvedId = await resolvedIdPromise
+    expect(resolvedId).toBe('thread-1')
   })
 })

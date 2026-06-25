@@ -4,6 +4,7 @@
 
 import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
+import { isPathWithinSync } from '../shared/path-utils'
 import { IpcError, ErrorCode } from '../errors'
 import { ipcContext } from './context'
 import type { IpcMiddlewarePipeline } from './middleware'
@@ -102,14 +103,10 @@ export function isBlockedSystemPath(normalizedPath: string): boolean {
         '/opt', '/sys', '/proc', '/dev',
       ]
 
-  const sep = path.sep
   for (const blocked of blockedPrefixes) {
-    const normalizedBlocked = path.normalize(blocked)
-    const isBlocked = process.platform === 'win32'
-      ? normalizedPath.toLowerCase().startsWith(normalizedBlocked.toLowerCase() + sep) ||
-        normalizedPath.toLowerCase() === normalizedBlocked.toLowerCase()
-      : normalizedPath.startsWith(normalizedBlocked + sep) || normalizedPath === normalizedBlocked
-    if (isBlocked) return true
+    if (isPathWithinSync(path.resolve(blocked), normalizedPath)) {
+      return true
+    }
   }
   return false
 }
@@ -122,20 +119,19 @@ export function isBlockedSystemPath(normalizedPath: string): boolean {
  */
 export function validateProjectPath(projectPath: string): string {
   const resolved = path.resolve(projectPath)
-  const normalized = path.normalize(resolved)
 
-  if (isBlockedSystemPath(normalized)) {
+  if (isBlockedSystemPath(resolved)) {
     throw new IpcError(`Access denied: cannot access system directory`, ErrorCode.IPC_ACCESS_DENIED)
   }
 
   // 确保路径不是 root 或 home 目录本身（只允许子目录）
   if (process.platform !== 'win32') {
-    if (normalized === '/' || normalized === '/root' || normalized === process.env.HOME) {
+    if (resolved === '/' || resolved === '/root' || resolved === process.env.HOME) {
       throw new IpcError('Access denied: cannot access root or home directory, please select a project subdirectory', ErrorCode.IPC_ACCESS_DENIED)
     }
   }
 
-  return normalized
+  return resolved
 }
 
 /**
@@ -145,15 +141,8 @@ export function validateProjectPath(projectPath: string): string {
  * 确保解析后的绝对路径不会逃逸出项目目录。
  */
 export function isPathWithinProject(filePath: string, projectPath: string): boolean {
-  const resolvedProject = path.resolve(projectPath)
   const resolvedFile = path.resolve(projectPath, filePath)
-  const sep = path.sep
-
-  if (process.platform === 'win32') {
-    return resolvedFile.toLowerCase().startsWith(resolvedProject.toLowerCase() + sep) ||
-           resolvedFile.toLowerCase() === resolvedProject.toLowerCase()
-  }
-  return resolvedFile.startsWith(resolvedProject + sep) || resolvedFile === resolvedProject
+  return isPathWithinSync(projectPath, resolvedFile)
 }
 
 /** 最大 ID 长度，用于 ensureString 的默认 maxLen */

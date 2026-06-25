@@ -306,11 +306,19 @@ export class ProjectAnalyzer {
     const sharedKeywords = ['公共', 'common', 'shared', '工具', 'util', '基础', 'base', '核心', 'core']
 
     // 收集每个模块的功能点名称集合（小写），用于检测交叉引用
+    // 过滤掉通用的 CRUD/短名称，避免产生伪依赖
+    const GENERIC_FEATURE_STOP_WORDS = new Set([
+      'get', 'set', 'add', 'remove', 'delete', 'create', 'read', 'update',
+      'list', 'find', 'search', 'save', 'validate', 'check', 'process',
+      'handle', 'submit', 'send', 'run', 'execute', 'start', 'stop',
+    ])
     const moduleFeatureNames = modules.map((m) => {
       const names = new Set<string>()
       for (const p of m.processes) {
         for (const f of p.features) {
-          names.add(f.name.toLowerCase())
+          const lower = f.name.toLowerCase()
+          if (lower.length <= 3 || GENERIC_FEATURE_STOP_WORDS.has(lower)) continue
+          names.add(lower)
         }
       }
       return names

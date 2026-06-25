@@ -63,12 +63,22 @@ describe('ChatRepository', () => {
         id: 't1', title: 'Thread', adapter_name: 'claude-code',
         node_id: 'n1', graph_id: null, session_id: null,
         status: 'active', created_at: 1000, updated_at: 2000,
+        context_tokens_used: 0, context_window_max: 200000,
       }]))
 
       const thread = await repo.getThread('t1')
       expect(thread).not.toBeNull()
       expect(thread!.id).toBe('t1')
       expect(thread!.created_at).toBe(1000)
+    })
+
+    it('缺少必填字段 → 抛出 DatabaseError', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+        id: 't1', title: 'Thread',
+        // 缺少 adapter_name / status / created_at / updated_at / context_tokens_used / context_window_max
+      }]))
+
+      await expect(repo.getThread('t1')).rejects.toThrow('Missing required field')
     })
 
     it('未找到 → null', async () => {
@@ -147,18 +157,27 @@ describe('ChatRepository', () => {
   })
 
   describe('searchThreads', () => {
-    it('LIKE 搜索转义特殊字符', async () => {
+    it('LIKE 搜索转义百分号并声明 ESCAPE', async () => {
       (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
       await repo.searchThreads('100%')
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args[0]).toBe('%100[%]%')
+      expect(call.args[0]).toBe('%100\\%%')
+      expect(call.sql).toContain("ESCAPE '\\'")
     })
 
-    it('下划线也被转义', async () => {
+    it('LIKE 搜索转义下划线并声明 ESCAPE', async () => {
       (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
       await repo.searchThreads('a_b')
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
-      expect(call.args[0]).toBe('%a[_]b%')
+      expect(call.args[0]).toBe('%a\\_b%')
+      expect(call.sql).toContain("ESCAPE '\\'")
+    })
+
+    it('LIKE 搜索同时转义反斜杠本身', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([]))
+      await repo.searchThreads('a\\b')
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args[0]).toBe('%a\\\\b%')
     })
 
     it('JOIN chat_messages 搜索', async () => {
@@ -167,6 +186,28 @@ describe('ChatRepository', () => {
       const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
       expect(call.sql).toContain('LEFT JOIN chat_messages')
       expect(call.sql).toContain('m.content LIKE ?')
+    })
+  })
+
+  describe('archiveStaleThreads', () => {
+    it('uses numeric millisecond cutoff', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowsAffected: 3, lastInsertRowid: 0n })
+      const result = await repo.archiveStaleThreads('g1', 1700000000000)
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args).toEqual(['g1', 1700000000000])
+      expect(typeof call.args[1]).toBe('number')
+      expect(result).toBe(3)
+    })
+  })
+
+  describe('cleanupArchivedThreads', () => {
+    it('uses numeric millisecond cutoff', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [], rowsAffected: 5, lastInsertRowid: 0n })
+      const result = await repo.cleanupArchivedThreads(1690000000000)
+      const call = (db.execute as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(call.args).toEqual([1690000000000])
+      expect(typeof call.args[0]).toBe('number')
+      expect(result).toBe(5)
     })
   })
 
@@ -213,7 +254,7 @@ describe('ChatRepository', () => {
         id: 'm1', thread_id: 't1', role: 'agent', content: 'test',
         adapter_name: 'claude', status: 'success',
         error: null, session_id: null, context_refs: null, tool_calls: null,
-        created_at: 1000,
+        created_at: 1000, token_count: 0,
       }]))
 
       const messages = await repo.listMessages('t1')
@@ -222,6 +263,15 @@ describe('ChatRepository', () => {
       expect(messages[0].session_id).toBeNull()
       expect(messages[0].context_refs).toBeNull()
       expect(messages[0].tool_calls).toBeNull()
+    })
+
+    it('缺少必填字段 → 抛出 DatabaseError', async () => {
+      (db.execute as ReturnType<typeof vi.fn>).mockResolvedValue(mockRows([{
+        id: 'm1', thread_id: 't1', role: 'agent', content: 'test',
+        // 缺少 adapter_name / status / created_at / token_count
+      }]))
+
+      await expect(repo.listMessages('t1')).rejects.toThrow('Missing required field')
     })
   })
 })

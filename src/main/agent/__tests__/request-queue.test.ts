@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'vitest'
+import { describe, test, expect, vi } from 'vitest'
 import { RequestQueue, RequestPriority } from '../request-queue'
 
 describe('RequestQueue', () => {
@@ -53,6 +53,38 @@ describe('RequestQueue', () => {
     queue.enqueue({ id: 'r1', adapterName: 'a', command: 'c', priority: RequestPriority.User })
     const cancelled = queue.cancel('r1')
     expect(cancelled).toBe(true)
+    expect(queue.size()).toBe(0)
+  })
+
+  test('cancel aborts and cleans up executing request', async () => {
+    let started = false
+    let aborted = false
+    const queue = new RequestQueue({
+      maxConcurrent: 1,
+      executor: async (req) => {
+        started = true
+        return new Promise((resolve) => {
+          const check = () => {
+            if (req.abortController?.signal.aborted) {
+              aborted = true
+              resolve({ success: false })
+            } else {
+              setTimeout(check, 10)
+            }
+          }
+          check()
+        })
+      },
+    })
+    queue.enqueue({ id: 'r1', adapterName: 'a', command: 'c', priority: RequestPriority.User })
+    const drainPromise = queue.drain()
+
+    await vi.waitFor(() => started)
+    const cancelled = queue.cancel('r1')
+    expect(cancelled).toBe(true)
+
+    await drainPromise
+    expect(aborted).toBe(true)
     expect(queue.size()).toBe(0)
   })
 })

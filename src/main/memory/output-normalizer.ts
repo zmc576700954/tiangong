@@ -50,6 +50,18 @@ const ADAPTER_NOISE_PATTERNS: Map<string, RegExp[]> = new Map([
   ['mcp', [
     /^request_id:.*$/m,
   ]],
+  ['cursor', [
+    /^Analyzing\.+$/m,
+    /^Cursor: thinking.*$/m,
+  ]],
+  ['opencode', [
+    /^OpenCode: .*$/m,
+    /^Running:.*$/m,
+  ]],
+  ['mindmap-internal', [
+    /^mindmap-internal: .*$/m,
+    /^\[mindmap\].*$/m,
+  ]],
 ])
 
 // ============================================

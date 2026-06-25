@@ -60,7 +60,7 @@ describe('BaseAdapter runToolAwareLoop', () => {
     )
 
     expect(outputs.some((o) => o.type === 'stdout' && o.data === 'plain result')).toBe(true)
-    expect(outputs.some((o) => o.type === 'complete')).toBe(true)
+    expect(outputs.some((o) => o.type === 'complete' && o.data === 'test session completed')).toBe(true)
   })
 
   it('invokes subagent and re-spawns with result', async () => {
@@ -87,7 +87,7 @@ describe('BaseAdapter runToolAwareLoop', () => {
 
     expect(invoke).toHaveBeenCalledTimes(1)
     expect(outputs.some((o) => o.type === 'stdout' && o.data === 'final result')).toBe(true)
-    expect(outputs.some((o) => o.type === 'complete')).toBe(true)
+    expect(outputs.some((o) => o.type === 'complete' && o.data === 'test session completed')).toBe(true)
   })
 
   it('stops at max rounds', async () => {

@@ -64,6 +64,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   ]
   /** 会话级进程守护定时器：超时自动 kill，防止子进程泄漏 */
   private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** 被守护定时器超时杀死的会话（用于区分用户主动终止） */
+  private timeoutKilledSessions = new Set<string>()
   /** 默认会话超时时间（30 分钟） */
   private static readonly DEFAULT_SESSION_TIMEOUT_MS = 30 * 60 * 1000
   /** 连接超时（10 秒） */
@@ -237,6 +239,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const timer = setTimeout(() => {
       if (!proc.killed) {
         this.logger.warn(`Session ${sessionId} exceeded timeout (${timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS}ms), force killing`)
+        // Mark this session as timeout-killed so onExit can emit reason 'timeout'
+        this.timeoutKilledSessions.add(sessionId)
         // 先尝试 SIGTERM，再保底 SIGKILL
         this.forceKillProcess(proc)
       }
@@ -265,11 +269,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const timeout = setTimeout(() => {
       if (!proc.killed) {
         this.logger.warn(`Process ${proc.pid} did not exit after SIGTERM, force killing`)
-        if (process.platform === 'win32') {
-          proc.kill()
-        } else {
-          proc.kill('SIGKILL')
-        }
+        proc.kill('SIGKILL')
       }
     }, gracePeriodMs)
     proc.once('exit', () => clearTimeout(timeout))
@@ -526,8 +526,20 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           timestamp: Date.now(),
         })
       }
+      // Determine termination reason and notify external listeners
+      let reason: 'success' | 'crash' | 'error' | 'timeout'
+      if (code === 0) {
+        reason = 'success'
+      } else if (this.timeoutKilledSessions.has(sessionId)) {
+        reason = 'timeout'
+      } else if (code === null) {
+        reason = 'error'
+      } else {
+        reason = 'crash'
+      }
+      this.timeoutKilledSessions.delete(sessionId)
       // 通知外部监听者 session 已结束（用于 AgentManager 清理沙箱等资源）
-      this.emit('sessionEnded', sessionId, code === null ? 'error' : code === 0 ? 'success' : 'crash')
+      this.emit('sessionEnded', sessionId, reason, code)
     }
 
     const onError = (err: Error) => {
@@ -538,7 +550,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         errorCode: 'AGENT_CRASH',
       })
       // 通知外部监听者 session 因错误结束
-      this.emit('sessionEnded', sessionId, 'error')
+      this.emit('sessionEnded', sessionId, 'error', null)
     }
 
     return { onStdout, onStderr, onExit, onError }
@@ -623,7 +635,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       const timeout = setTimeout(() => {
         if (!proc.killed) {
           this.logger.warn(`Process ${proc.pid} did not exit after signal, force killing`)
-          proc.kill()
+          proc.kill('SIGKILL')
         }
       }, BaseAdapter.SIGKILL_GRACE_PERIOD_MS)
       proc.once('exit', () => {
@@ -831,7 +843,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       const calls = this.parseToolCalls(stdout)
       if (calls.length === 0) {
         this.emitOutput({ type: 'stdout', data: stdout, timestamp: Date.now() })
-        this.emitOutput({ type: 'complete', data: 'OpenCode session completed', timestamp: Date.now() })
+        this.emitOutput({ type: 'complete', data: `${this.name} session completed`, timestamp: Date.now() })
         return
       }
 

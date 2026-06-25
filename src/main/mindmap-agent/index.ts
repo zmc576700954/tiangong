@@ -11,6 +11,7 @@
  * - refine: 迭代精炼
  */
 
+import path from 'node:path'
 import { runClaude, extractJson } from './claude-runner'
 import { readMemory, updateDomains, addRefinement, recommendInitialDomains, contributeToGlobalKnowledge } from './memory'
 import { validateModules, validateEnrichment, type ValidatedEnrichment } from './schema-validator'
@@ -50,108 +51,102 @@ export class MindMapAgent {
   // ========================================
 
   async generateFull(projectName: string, framework: string): Promise<ScanModule[]> {
-    try {
-      const recommendedDomains = await recommendInitialDomains(this.projectPath, framework)
-      const context = await collectContext(this.projectPath, projectName, framework)
-      const prompt = buildGlobalPrompt(context, recommendedDomains)
+    const recommendedDomains = await recommendInitialDomains(this.projectPath, framework)
+    const context = await collectContext(this.projectPath, projectName, framework)
+    const prompt = buildGlobalPrompt(context, recommendedDomains)
 
-      logger.info('开始生成，prompt 长度:', prompt.length)
+    logger.info('开始生成，prompt 长度:', prompt.length)
 
-      let stdout: string
-      if (this.agentManager) {
-        stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
-          nodeTitle: `生成思维导图: ${projectName}`,
-          timeoutMs: 120_000,
-          adapterName: 'mindmap-internal',
-        })
-      } else {
-        const result = await runClaude(prompt, {
-          cwd: this.projectPath,
-          timeoutMs: 120_000,
-          outputFormat: 'text',
-        })
-        if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-          throw new AgentError(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`, ErrorCode.AGENT_PROCESS_ERROR)
-        }
-        stdout = result.stdout
-      }
-
-      logger.info('Claude 返回，stdout 长度:', stdout.length)
-
-      const parsed = extractJson(stdout)
-      const modules = validateModules(parsed)
-      logger.info('解析到', modules.length, '个模块')
-
-      if (modules.length === 0) {
-        throw new AgentError('未返回有效模块', ErrorCode.AGENT_PROCESS_ERROR)
-      }
-
-      // 社区聚类与摘要
-      let communitySummaries: CommunitySummary[] = []
-      try {
-        const clusters = await clusterCommunities(this.projectPath, modules)
-        const summaryMap = await mapReduceSummarize(modules, this.projectPath, projectName)
-        communitySummaries = clusters
-          .map(cluster => {
-            const summary = summaryMap.get(cluster.title) ?? summaryMap.get('__project__') ?? ''
-            return toCommunitySummary(cluster, summary)
-          })
-        this.lastCommunitySummaries = communitySummaries
-        logger.info(`Generated ${communitySummaries.length} community summaries`)
-      } catch (err) {
-        logger.warn('Community summarization failed, continuing without:', err)
-      }
-
-      // 写入记忆
-      await updateDomains(
-        this.projectPath,
-        modules.map((m) => m.name),
-        context.memory.architecturePattern || `${projectName} 项目`,
-      )
-
-      // 异步贡献到全局知识库
-      void contributeToGlobalKnowledge(this.projectPath).catch((err) => {
-        logger.warn('contributeToGlobalKnowledge failed:', err)
+    let stdout: string
+    if (this.agentManager) {
+      stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+        nodeTitle: `生成思维导图: ${projectName}`,
+        timeoutMs: 120_000,
+        adapterName: 'mindmap-internal',
       })
-
-      return modules
-    } catch (err) {
-      logger.error('generateFull failed:', err)
-      return []
+    } else {
+      const result = await runClaude(prompt, {
+        cwd: this.projectPath,
+        timeoutMs: 120_000,
+        outputFormat: 'text',
+      })
+      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+        throw new AgentError(`Claude 调用失败: exitCode=${result.exitCode} timedOut=${result.timedOut} stderr=${result.stderr}`, ErrorCode.AGENT_PROCESS_ERROR)
+      }
+      stdout = result.stdout
     }
+
+    logger.info('Claude 返回，stdout 长度:', stdout.length)
+
+    const parsed = extractJson(stdout)
+    const modules = validateModules(parsed)
+    logger.info('解析到', modules.length, '个模块')
+
+    if (modules.length === 0) {
+      throw new AgentError('未返回有效模块', ErrorCode.AGENT_PROCESS_ERROR)
+    }
+
+    // 社区聚类与摘要
+    let communitySummaries: CommunitySummary[] = []
+    try {
+      const clusters = await clusterCommunities(this.projectPath, modules)
+      const summaryMap = await mapReduceSummarize(modules, this.projectPath, projectName)
+      communitySummaries = clusters
+        .map(cluster => {
+          const summary = summaryMap.get(cluster.title) ?? summaryMap.get('__project__') ?? ''
+          return toCommunitySummary(cluster, summary)
+        })
+      this.lastCommunitySummaries = communitySummaries
+      logger.info(`Generated ${communitySummaries.length} community summaries`)
+    } catch (err) {
+      logger.warn('Community summarization failed, continuing without:', err)
+    }
+
+    // 写入记忆
+    await updateDomains(
+      this.projectPath,
+      modules.map((m) => m.name),
+      context.memory.architecturePattern || `${projectName} 项目`,
+    )
+
+    // 异步贡献到全局知识库
+    void contributeToGlobalKnowledge(this.projectPath).catch((err) => {
+      logger.warn('contributeToGlobalKnowledge failed:', err)
+    })
+
+    return modules
   }
 
   // ========================================
   // 单模块生成
   // ========================================
 
-  async generateModule(moduleDir: string): Promise<ScanModule | null> {
-    try {
-      const context = await collectContext(this.projectPath, moduleDir, '')
-      const memory = await readMemory(this.projectPath)
-      const prompt = buildModuleGenerationPrompt(moduleDir, context.directoryTree, memory.preferences)
+  async generateModule(moduleDir: string): Promise<ScanModule> {
+    const context = await collectContext(this.projectPath, moduleDir, '')
+    const memory = await readMemory(this.projectPath)
+    const prompt = buildModuleGenerationPrompt(moduleDir, context.directoryTree, memory.preferences)
 
-      let stdout: string
-      if (this.agentManager) {
-        stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
-          nodeTitle: `生成模块: ${moduleDir}`,
-          timeoutMs: 60_000,
-          adapterName: 'mindmap-internal',
-        })
-      } else {
-        const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
-        if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
-          throw new AgentError('Claude 调用失败', ErrorCode.AGENT_PROCESS_ERROR)
-        }
-        stdout = result.stdout
+    let stdout: string
+    if (this.agentManager) {
+      stdout = await sendPromptViaAgent(this.agentManager, this.projectPath, prompt, {
+        nodeTitle: `生成模块: ${moduleDir}`,
+        timeoutMs: 60_000,
+        adapterName: 'mindmap-internal',
+      })
+    } else {
+      const result = await runClaude(prompt, { cwd: this.projectPath, timeoutMs: 60_000 })
+      if (result.exitCode !== 0 || result.timedOut || !result.stdout) {
+        throw new AgentError('Claude 调用失败', ErrorCode.AGENT_PROCESS_ERROR)
       }
-
-      const parsed = extractJson(stdout)
-      return validateModules(parsed)[0] || null
-    } catch (err) {
-      logger.error('generateModule failed:', err)
-      return null
+      stdout = result.stdout
     }
+
+    const parsed = extractJson(stdout)
+    const module = validateModules(parsed)[0]
+    if (!module) {
+      throw new AgentError('未返回有效模块', ErrorCode.AGENT_PROCESS_ERROR)
+    }
+    return module
   }
 
   // ========================================
@@ -212,7 +207,7 @@ export class MindMapAgent {
     targetId: string,
     feedback: string,
     _allModules: ScanModule[] = [],
-  ): Promise<ScanModule[] | ScanModule | ValidatedEnrichment | null> {
+  ): Promise<ScanModule[] | ScanModule | ValidatedEnrichment> {
     const memory = await readMemory(this.projectPath)
     classifyComplexity(feedback, memory.businessDomains)
     const prompt = buildRefinementPrompt(scope, targetId, feedback, _allModules, memory)
@@ -237,10 +232,14 @@ export class MindMapAgent {
     }
 
     const parsed = extractJson(stdout)
-    let output: ScanModule[] | ScanModule | ValidatedEnrichment | null = null
+    let output: ScanModule[] | ScanModule | ValidatedEnrichment | undefined
     if (scope === 'project') output = validateModules(parsed)
-    else if (scope === 'module') output = validateModules(parsed)[0] || null
-    else output = validateEnrichment(parsed)
+    else if (scope === 'module') output = validateModules(parsed)[0] ?? undefined
+    else output = validateEnrichment(parsed) ?? undefined
+
+    if (!output || (Array.isArray(output) && output.length === 0)) {
+      throw new AgentError('未返回有效精炼结果', ErrorCode.AGENT_PROCESS_ERROR)
+    }
 
     await addRefinement(this.projectPath, {
       scope, targetId,
@@ -268,11 +267,13 @@ export class MindMapAgent {
       logger.info('解析到', modules.length, '个模块')
 
       if (modules.length > 0) {
-        // 异步更新记忆，不阻塞结果返回
+        // 异步更新记忆，不阻塞结果返回；使用有意义的架构模式描述
+        const projectName = path.basename(this.projectPath)
+        const pattern = `${projectName} 项目（${modules.length} 个业务模块）`
         void updateDomains(
           this.projectPath,
           modules.map((m) => m.name),
-          '',
+          pattern,
         ).catch((err) => {
           logger.warn('updateDomains failed:', err)
         })
@@ -280,8 +281,9 @@ export class MindMapAgent {
 
       return modules
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
       logger.error('parseGenerationResult failed:', err)
-      return []
+      throw new AgentError(`解析生成结果失败: ${message}`, ErrorCode.AGENT_PROCESS_ERROR)
     }
   }
 

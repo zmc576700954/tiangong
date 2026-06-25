@@ -73,56 +73,61 @@ export class SymbolIndex {
     await db.execute(`CREATE INDEX IF NOT EXISTS idx_ref_file ON symbol_refs(file_path)`)
   }
 
-  /** 批量插入符号（使用 SAVEPOINT 事务包裹提升性能） */
+  /** 批量插入符号（在显式事务中用 db.batch() 提交，减少 DB 往返并保证原子性） */
   async insertSymbols(symbols: SymbolInfo[]): Promise<void> {
     if (symbols.length === 0) return
     const db = this.db()
-
-    await db.execute('SAVEPOINT insert_symbols')
-    try {
-      for (const s of symbols) {
-        await db.execute({
-          sql: `
-            INSERT OR REPLACE INTO symbols
-            (id, name, kind, file_path, line, column, end_line, end_column, signature, js_doc, parent_id, is_exported, source_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          args: [
-            s.id, s.name, s.kind, s.filePath, s.line, s.column,
-            s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
-            s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
-            s.sourceCode ?? null,
-          ],
-        })
-      }
-      await db.execute('RELEASE SAVEPOINT insert_symbols')
-    } catch (err) {
-      await db.execute('ROLLBACK TO SAVEPOINT insert_symbols')
-      throw err
-    }
+    const sql = `
+      INSERT OR REPLACE INTO symbols
+      (id, name, kind, file_path, line, column, end_line, end_column, signature, js_doc, parent_id, is_exported, source_code)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    await this.runInTransaction(db, symbols, 50, (s) => ({
+      sql,
+      args: [
+        s.id, s.name, s.kind, s.filePath, s.line, s.column,
+        s.endLine ?? null, s.endColumn ?? null, s.signature ?? null,
+        s.jsDoc ?? null, s.parentId ?? null, s.isExported ? 1 : 0,
+        s.sourceCode ?? null,
+      ] as (string | number | null)[],
+    }))
   }
 
-  /** 批量插入 import 边（使用 SAVEPOINT 事务包裹提升性能） */
+  /** 批量插入 import 边（在显式事务中用 db.batch() 提交，减少 DB 往返并保证原子性） */
   async insertImportEdges(edges: ImportEdge[]): Promise<void> {
     if (edges.length === 0) return
     const db = this.db()
+    const sql = `
+      INSERT OR REPLACE INTO import_edges
+      (from_file, to_file, imported_names, is_default, line)
+      VALUES (?, ?, ?, ?, ?)
+    `
+    await this.runInTransaction(db, edges, 150, (e) => ({
+      sql,
+      args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line] as (string | number | null)[],
+    }))
+  }
 
-    await db.execute('SAVEPOINT insert_edges')
+  private async runInTransaction<T>(
+    db: Client,
+    items: T[],
+    batchSize: number,
+    buildStmt: (item: T) => { sql: string; args: (string | number | null)[] },
+  ): Promise<void> {
+    const tx = await db.transaction()
     try {
-      for (const e of edges) {
-        await db.execute({
-          sql: `
-            INSERT OR REPLACE INTO import_edges
-            (from_file, to_file, imported_names, is_default, line)
-            VALUES (?, ?, ?, ?, ?)
-          `,
-          args: [e.fromFile, e.toFile, JSON.stringify(e.importedNames), e.isDefaultImport ? 1 : 0, e.line],
-        })
+      for (let i = 0; i < items.length; i += batchSize) {
+        const chunk = items.slice(i, i + batchSize)
+        await tx.batch(chunk.map(buildStmt))
       }
-      await db.execute('RELEASE SAVEPOINT insert_edges')
+      await tx.commit()
     } catch (err) {
-      await db.execute('ROLLBACK TO SAVEPOINT insert_edges')
+      await tx.rollback().catch(() => {})
       throw err
+    } finally {
+      if (!tx.closed) {
+        tx.close()
+      }
     }
   }
 
@@ -191,27 +196,42 @@ export class SymbolIndex {
   async getRelatedFiles(filePath: string, depth: number = 2): Promise<Map<string, number>> {
     const result = new Map<string, number>()
     const visited = new Set<string>()
-    const queue: { path: string; d: number }[] = [{ path: filePath, d: 0 }]
+    // 按层处理，每层把当前 frontier 的所有文件一次性批量查询
+    let frontier = new Set<string>([filePath])
+    let currentDepth = 0
 
-    while (queue.length > 0) {
-      const { path, d } = queue.shift()!
-      if (visited.has(path) || d > depth) continue
-      visited.add(path)
-      if (d > 0) result.set(path, d)
-
+    while (frontier.size > 0 && currentDepth < depth) {
+      const nextFrontier = new Set<string>()
       const db = this.db()
-      const edgesResult = await db.execute({
-        sql: `
-          SELECT from_file as p FROM import_edges WHERE to_file = ?
-          UNION
-          SELECT to_file as p FROM import_edges WHERE from_file = ?
-        `,
-        args: [path, path],
-      })
-      for (const row of edgesResult.rows) {
-        const p = (row as unknown as Record<string, unknown>).p as string
-        if (!visited.has(p)) queue.push({ path: p, d: d + 1 })
+      const paths = [...frontier]
+
+      // SQLite 变量上限约 999；这里是 from/to 两组占位符，故每批控制在 400 条以内
+      const CHUNK_SIZE = 400
+      for (let i = 0; i < paths.length; i += CHUNK_SIZE) {
+        const chunk = paths.slice(i, i + CHUNK_SIZE)
+        const placeholders = chunk.map(() => '?').join(', ')
+
+        const edgesResult = await db.execute({
+          sql: `
+            SELECT from_file as p FROM import_edges WHERE to_file IN (${placeholders})
+            UNION
+            SELECT to_file as p FROM import_edges WHERE from_file IN (${placeholders})
+          `,
+          args: [...chunk, ...chunk],
+        })
+
+        for (const row of edgesResult.rows) {
+          const p = (row as unknown as Record<string, unknown>).p as string
+          if (!visited.has(p) && p !== filePath) {
+            visited.add(p)
+            result.set(p, currentDepth + 1)
+            nextFrontier.add(p)
+          }
+        }
       }
+
+      frontier = nextFrontier
+      currentDepth++
     }
 
     return result

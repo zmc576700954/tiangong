@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { FileEdit, GitBranch, Terminal, FilePlus, Check, X, ChevronDown, ChevronRight } from 'lucide-react'
+import { FileEdit, GitBranch, Terminal, FilePlus, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import type { ToolCallBlock } from '@shared/types'
 
@@ -12,12 +12,8 @@ const TYPE_CONFIG = {
 
 export function ToolCallRenderer({
   block,
-  onAccept,
-  onReject,
 }: {
   block: ToolCallBlock
-  onAccept?: () => void
-  onReject?: () => void
 }) {
   const [expanded, setExpanded] = useState(true)
   const config = TYPE_CONFIG[block.type]
@@ -40,22 +36,6 @@ export function ToolCallRenderer({
           <span className="text-[10px] text-blue-400 font-mono ml-auto truncate">
             {block.filePath}
           </span>
-        )}
-        {block.type === 'diff' && block.status === 'done' && (
-          <div className="flex gap-1 ml-2">
-            <button
-              onClick={(e) => { e.stopPropagation(); onAccept?.() }}
-              className="text-[9px] text-green-400 border border-green-800 rounded px-1.5 py-0.5 hover:bg-green-900/30"
-            >
-              <Check className="w-2.5 h-2.5 inline mr-0.5" />Accept
-            </button>
-            <button
-              onClick={(e) => { e.stopPropagation(); onReject?.() }}
-              className="text-[9px] text-red-400 border border-red-800 rounded px-1.5 py-0.5 hover:bg-red-900/30"
-            >
-              <X className="w-2.5 h-2.5 inline mr-0.5" />Reject
-            </button>
-          </div>
         )}
       </button>
       {expanded && (

@@ -99,7 +99,7 @@ export class RequestQueue {
           this._pendingCount--
           return true
         }
-        // For executing requests, signal abort so executor can stop
+        // For executing requests, signal abort so the executor can stop and clean up.
         if (item.status === 'executing') {
           item.request.abortController?.abort()
           return true
@@ -203,6 +203,8 @@ export class RequestQueue {
         })
         .finally(() => {
           this._executingCount--
+          // Remove the item if it is still in the queue (e.g. after a cancellation
+          // aborts an executing request, or after normal completion/failure).
           const idx = queue.indexOf(next)
           if (idx !== -1) queue.splice(idx, 1)
         })

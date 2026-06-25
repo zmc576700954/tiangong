@@ -138,11 +138,12 @@ function EditableTextArea({
   rows?: number
 }) {
   const [localValue, setLocalValue] = useState(value)
-  const mountedRef = useRef(true)
+  const localValueRef = useRef(localValue)
+  const valueRef = useRef(value)
+  const pendingSaveRef = useRef(false)
 
-  useEffect(() => {
-    return () => { mountedRef.current = false }
-  }, [])
+  useEffect(() => { localValueRef.current = localValue }, [localValue])
+  useEffect(() => { valueRef.current = value }, [value])
 
   useEffect(() => {
     setLocalValue(value)
@@ -150,13 +151,26 @@ function EditableTextArea({
 
   // Debounce save: only trigger onSave 500ms after user stops typing
   useEffect(() => {
+    pendingSaveRef.current = true
     const timer = setTimeout(() => {
-      if (localValue !== value && mountedRef.current) {
-        onSave(localValue)
+      if (localValueRef.current !== valueRef.current) {
+        onSave(localValueRef.current)
       }
+      pendingSaveRef.current = false
     }, 500)
     return () => clearTimeout(timer)
   }, [localValue, onSave, value])
+
+  // Flush any pending save before unmount so edits are not lost
+  useEffect(() => {
+    return () => {
+      if (pendingSaveRef.current && localValueRef.current !== valueRef.current) {
+        onSave(localValueRef.current)
+      }
+    }
+    // onSave is expected to be stable (useCallback in the parent)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div className="space-y-1.5">

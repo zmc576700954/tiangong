@@ -116,6 +116,8 @@ export interface ToolCallBlock {
   content: string
   status: 'running' | 'done' | 'error'
   accepted?: boolean
+  /** Original change type from the agent output (add/modify/delete) */
+  changeType?: 'add' | 'modify' | 'delete'
 }
 
 /** 消息状态 */
@@ -231,10 +233,16 @@ export interface AgentAdapter {
   setMemoryContext(sessionId: string, memoryContext: string): void
 
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
-  on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
+  on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout', exitCode: number | null) => void): void
 
   /** 移除会话结束事件监听 */
-  off(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error') => void): void
+  off(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout', exitCode: number | null) => void): void
+
+  /** 订阅 Token 使用事件（可选，未实现时 AgentManager 会记录警告） */
+  onUsage?(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void
+
+  /** 取消 Token 使用事件订阅（可选） */
+  offUsage?(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void
 }
 
 // ============================================

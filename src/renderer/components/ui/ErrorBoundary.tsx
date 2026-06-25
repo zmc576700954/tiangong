@@ -3,6 +3,8 @@ import { Component, type ReactNode } from 'react'
 interface ErrorBoundaryProps {
   children: ReactNode
   label?: string
+  /** 错误上报回调；如需发送到主进程日志，可在外部通过 IPC 包装 */
+  onError?: (error: Error, errorInfo: React.ErrorInfo) => void
 }
 
 interface ErrorBoundaryState {
@@ -22,6 +24,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error(`ErrorBoundary${this.props.label ? ` [${this.props.label}]` : ''} caught:`, error, errorInfo)
+    this.props.onError?.(error, errorInfo)
+  }
+
+  private reset = () => {
+    this.setState({ hasError: false, error: undefined })
   }
 
   render() {
@@ -34,12 +41,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             <p className="text-sm text-muted-foreground">
               {this.state.error?.message ?? '未知错误'}
             </p>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:bg-primary/90"
-            >
-              重新加载
-            </button>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                onClick={this.reset}
+                className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/90"
+              >
+                重试
+              </button>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:bg-primary/90"
+              >
+                重新加载
+              </button>
+            </div>
           </div>
         </div>
       )

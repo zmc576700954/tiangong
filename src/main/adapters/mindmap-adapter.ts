@@ -29,14 +29,15 @@ export class MindMapAdapter extends BaseAdapter {
 
   async checkInstalled(): Promise<boolean> {
     try {
-      const { spawnSync } = await import('node:child_process')
-      const result = spawnSync('claude', ['--version'], {
+      const { execFileSync } = await import('node:child_process')
+      execFileSync('claude', ['--version'], {
         encoding: 'utf-8',
         timeout: 5000,
         stdio: ['pipe', 'pipe', 'ignore'],
         shell: process.platform === 'win32',
+        windowsHide: true,
       })
-      return result.status === 0
+      return true
     } catch {
       this.logger.warn('claude CLI not found')
       return false
@@ -61,25 +62,22 @@ export class MindMapAdapter extends BaseAdapter {
       ? `${scopePrompt}\n\n---\n\n${command.description}`
       : command.description
 
-    let sessionEnded = false
+    // 使用 BaseAdapter 的输出处理器模式，解析文件变更
+    this.emitOutput({
+      type: 'stdout',
+      data: `[MindMap] 开始生成，工作目录: ${session.config.workingDirectory}`,
+      timestamp: Date.now(),
+    })
+
+    const controller = new AbortController()
+    this.activeControllers.set(session.id, controller)
+
     try {
-      // 使用 BaseAdapter 的输出处理器模式，解析文件变更
-      this.emitOutput({
-        type: 'stdout',
-        data: `[MindMap] 开始生成，工作目录: ${session.config.workingDirectory}`,
-        timestamp: Date.now(),
-      })
-
-      const controller = new AbortController()
-      this.activeControllers.set(session.id, controller)
-
       const result = await runClaude(fullPrompt, {
         cwd: session.config.workingDirectory,
         timeoutMs: 300_000,
         outputFormat: 'text',
       })
-
-      this.activeControllers.delete(session.id)
 
       if (result.timedOut) {
         this.emitOutput({
@@ -88,8 +86,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'TIMEOUT',
         })
-        this.emit('sessionEnded', session.id, 'error')
-        sessionEnded = true
+        this.emit('sessionEnded', session.id, 'timeout', null)
         return
       }
 
@@ -101,8 +98,7 @@ export class MindMapAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
-        this.emit('sessionEnded', session.id, 'crash')
-        sessionEnded = true
+        this.emit('sessionEnded', session.id, 'crash', result.exitCode)
         return
       }
 
@@ -120,8 +116,7 @@ export class MindMapAdapter extends BaseAdapter {
         data: 'MindMap 生成完成',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success')
-      sessionEnded = true
+      this.emit('sessionEnded', session.id, 'success', 0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -130,18 +125,9 @@ export class MindMapAdapter extends BaseAdapter {
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
-      this.emit('sessionEnded', session.id, 'error')
-      sessionEnded = true
+      this.emit('sessionEnded', session.id, 'error', null)
     } finally {
-      if (!sessionEnded) {
-        this.emitOutput({
-          type: 'error',
-          data: 'MindMap 适配器异常退出（未预期的代码路径）',
-          timestamp: Date.now(),
-          errorCode: 'AGENT_CRASH',
-        })
-        this.emit('sessionEnded', session.id, 'error')
-      }
+      this.activeControllers.delete(session.id)
     }
   }
 

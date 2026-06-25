@@ -98,19 +98,23 @@ export class GitAgent {
    * 创建快照对应的 Git tag
    * @returns tag 对应的 commit hash，失败时抛出 GitError
    */
-  async createSnapshotTag(
-    path: string,
-    snapshot: GraphSnapshot,
-  ): Promise<string | undefined> {
+  async createSnapshotTag(path: string, snapshot: GraphSnapshot): Promise<string> {
     try {
       const git = this.getGit(path)
       const tagName = `bizgraph-snapshot-${snapshot.id}`
       await git.addTag(tagName)
       const log = await git.log({ maxCount: 1 })
-      return log.latest?.hash
+      const hash = log.latest?.hash
+      if (!hash) {
+        throw new GitError('Failed to resolve tag commit hash', path)
+      }
+      return hash
     } catch (err) {
-      logger.warn('Failed to create snapshot tag:', err)
-      return undefined
+      if (err instanceof GitError) throw err
+      throw new GitError(
+        `Failed to create snapshot tag: ${err instanceof Error ? err.message : String(err)}`,
+        path,
+      )
     }
   }
 

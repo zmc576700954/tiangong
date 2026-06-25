@@ -11,8 +11,16 @@
 
 import type { AgentOutput } from '@shared/types'
 
+/** 支持解析的文件扩展名列表（集中维护，便于配置） */
+const SUPPORTED_FILE_EXTENSIONS = [
+  'ts', 'tsx', 'js', 'jsx', 'py', 'java', 'go', 'rs', 'md', 'json', 'yaml', 'yml',
+  'vue', 'svelte', 'css', 'html', 'toml', 'ini',
+]
+
+const EXT_PATTERN_SOURCE = SUPPORTED_FILE_EXTENSIONS.join('|')
+
 /** 文件扩展名快速预检查 */
-const FILE_EXT_QUICK_CHECK = /\.(ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml)\b/
+const FILE_EXT_QUICK_CHECK = new RegExp(`\\.(?:${EXT_PATTERN_SOURCE})\\b`)
 
 /** 最大解析长度 */
 const MAX_PARSE_LENGTH = 50_000
@@ -21,7 +29,10 @@ const MAX_PARSE_LENGTH = 50_000
 const EXAMPLE_MARKERS = /\b(e\.g\.|for example|such as|like this|similar to)\b/gi
 
 /** 文件变更模式 */
-const FILE_PATTERN = /(?:edit|modify|update|create|add|delete|remove)\s+(?:file\s+)?[`'"]?([\w/\\.-]+\.(?:ts|tsx|js|jsx|py|java|go|rs|md|json|yaml|yml))[`'"]?/gi
+const FILE_PATTERN = new RegExp(
+  '(?:edit|modify|update|create|add|delete|remove)\\s+(?:file\\s+)?[\\`\'"]?([\\w/\\\\.-]+\\.(?:' + EXT_PATTERN_SOURCE + '))[\\`\'"]?',
+  'gi',
+)
 
 /**
  * 解析文本中的文件变更信息

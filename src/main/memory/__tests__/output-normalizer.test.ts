@@ -90,4 +90,24 @@ describe('OutputNormalizer', () => {
       expect(result).toBe(input)
     })
   })
+
+  describe('adapter-specific noise', () => {
+    it('filters cursor noise lines', () => {
+      const input = stdout('useful output\nAnalyzing...\nmore useful output')
+      const result = normalizer.normalizeWithAdapter(input, 'cursor')
+      expect(result.data).toBe('useful output\nmore useful output')
+    })
+
+    it('filters opencode noise lines', () => {
+      const input = stdout('useful output\nOpenCode: thinking\nmore useful output')
+      const result = normalizer.normalizeWithAdapter(input, 'opencode')
+      expect(result.data).toBe('useful output\nmore useful output')
+    })
+
+    it('filters mindmap-internal noise lines', () => {
+      const input = stdout('useful output\nmindmap-internal: status update\nmore useful output')
+      const result = normalizer.normalizeWithAdapter(input, 'mindmap-internal')
+      expect(result.data).toBe('useful output\nmore useful output')
+    })
+  })
 })

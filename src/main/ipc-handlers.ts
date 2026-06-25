@@ -18,6 +18,7 @@ import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
+import { isPathWithinResolved } from './shared/path-utils'
 import { IpcError, ErrorCode } from './errors'
 
 const logger = createLogger('IPC')
@@ -80,25 +81,33 @@ export { agentManager, contextWaterline }
 broadcaster.onBroadcast((payload) => {
   const sessionId = payload.sessionId ?? ''
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onOutput', sessionId, payload.output)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onOutput', sessionId, payload.output)
+    }
   }
 })
 
 agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
+    }
   }
 })
 
 agentManager.setSessionStartedCallback((threadId, sessionId) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:onSessionStarted', threadId, sessionId)
+    if (!win.isDestroyed()) {
+      win.webContents.send('agent:onSessionStarted', threadId, sessionId)
+    }
   }
 })
 
 agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
   for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
+    if (!win.isDestroyed()) {
+      win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
+    }
   }
 })
 
@@ -261,7 +270,6 @@ export async function registerIpcHandlers(): Promise<void> {
     }
 
     // 2. 构建允许的路径根目录
-    const sep = path.sep
     const allowedRoots: string[] = []
     allowedRoots.push(path.resolve(app.getPath('userData')))
     allowedRoots.push(path.resolve(app.getPath('temp')))
@@ -281,14 +289,9 @@ export async function registerIpcHandlers(): Promise<void> {
       allowedRoots.push(path.resolve(p))
     }
 
-    // 3. 检查是否在允许路径下
+    // 3. 检查是否在允许路径下（normalized 已被 cachedRealpath 解析过，避免重复 realpath）
     for (const root of allowedRoots) {
-      const normalizedRoot = path.resolve(root)
-      const isAllowed = process.platform === 'win32'
-        ? normalized.toLowerCase().startsWith(normalizedRoot.toLowerCase() + sep) ||
-          normalized.toLowerCase() === normalizedRoot.toLowerCase()
-        : normalized.startsWith(normalizedRoot + sep) || normalized === normalizedRoot
-      if (isAllowed) {
+      if (isPathWithinResolved(path.resolve(root), normalized)) {
         return normalized
       }
     }
@@ -387,13 +390,14 @@ export async function registerIpcHandlers(): Promise<void> {
           throw new IpcError('Access denied: cannot access system directory', ErrorCode.IPC_ACCESS_DENIED)
         }
         // 验证路径在某个已知项目根目录下，防止注册任意路径
-        const sep = path.sep
-        const isUnderProject = projectRoots.some((root) =>
-          process.platform === 'win32'
-            ? normalized.toLowerCase().startsWith(root.toLowerCase() + sep) ||
-              normalized.toLowerCase() === root.toLowerCase()
-            : normalized.startsWith(root + sep) || normalized === root,
-        )
+        // normalized 已被 cachedRealpath 解析过，避免重复 realpath。
+        let isUnderProject = false
+        for (const root of projectRoots) {
+          if (isPathWithinResolved(root, normalized)) {
+            isUnderProject = true
+            break
+          }
+        }
         if (!isUnderProject) {
           throw new IpcError('Access denied: path is not under any registered project directory', ErrorCode.IPC_ACCESS_DENIED)
         }

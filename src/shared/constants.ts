@@ -93,6 +93,9 @@ export const EDGE_TYPE_OPTIONS: { type: EdgeType; label: string; color: string; 
   { type: 'failure', label: '失败分支', color: '#ef4444', description: '失败后的异常分支' },
   { type: 'condition', label: '条件分支', color: '#f59e0b', description: '条件判断分支' },
   { type: 'business-flow', label: '业务流程', color: '#3b82f6', description: '跨模块业务关联' },
+  { type: 'semantic', label: '语义关联', color: '#8b5cf6', description: '语义层面的业务关联' },
+  { type: 'dependency', label: '代码依赖', color: '#64748b', description: '模块或文件间的代码依赖' },
+  { type: 'co-change', label: '协同变更', color: '#ec4899', description: '经常一起变更的关联' },
 ]
 
 /** 支持的 Agent 适配器列表 */

@@ -4,6 +4,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { isPathWithinSync } from '../shared/path-utils'
 import { ScopeGuardError, ErrorCode } from '../errors'
 
 const IGNORED_DIRS = new Set([
@@ -36,14 +37,8 @@ function validateProjectPath(projectPath: string): void {
         '/etc', '/usr', '/bin', '/sbin', '/lib', '/lib64',
         '/sys', '/proc', '/dev',
       ]
-  const sep = path.sep
   for (const blocked of blockedPrefixes) {
-    const normBlocked = path.normalize(blocked)
-    const isBlocked = process.platform === 'win32'
-      ? resolved.toLowerCase().startsWith(normBlocked.toLowerCase() + sep) ||
-        resolved.toLowerCase() === normBlocked.toLowerCase()
-      : resolved.startsWith(normBlocked + sep) || resolved === normBlocked
-    if (isBlocked) {
+    if (isPathWithinSync(path.resolve(blocked), resolved)) {
       throw new ScopeGuardError(`Invalid project path: ${projectPath} is a system directory`, ErrorCode.SCOPE_PATH_TRAVERSAL)
     }
   }

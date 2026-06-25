@@ -15,12 +15,22 @@ const ALLOWED_MCP_COMMANDS = new Set([
   'pnpm', 'yarn', 'pip', 'pipx', 'uv',
 ])
 
-function validateMcpCommand(command: string): void {
+/** 项目自身 node_modules/.bin/ 的绝对路径前缀（以路径分隔符结尾） */
+function getProjectNodeModulesBin(): string {
+  return path.resolve(process.cwd(), 'node_modules', '.bin') + path.sep
+}
+
+const PATH_SEPARATOR_RE = /[\\/]/
+
+export function validateMcpCommand(command: string): void {
   const basename = path.basename(command)
-  // 允许白名单中的命令名（不含路径分隔符，即系统 PATH 查找）
-  if (ALLOWED_MCP_COMMANDS.has(basename) && !command.includes(path.sep)) return
-  // 允许 node_modules/.bin/ 下的命令
-  if (command.includes('node_modules')) return
+  // 允许白名单中的裸命令名（通过系统 PATH 查找，不含任何路径分隔符）
+  if (ALLOWED_MCP_COMMANDS.has(basename) && !PATH_SEPARATOR_RE.test(command)) return
+  // 仅允许项目自身 node_modules/.bin/ 下的绝对路径白名单命令
+  if (path.isAbsolute(command)) {
+    const resolved = path.resolve(command)
+    if (resolved.startsWith(getProjectNodeModulesBin()) && ALLOWED_MCP_COMMANDS.has(basename)) return
+  }
   throw new AgentError(
     `MCP command not allowed: "${command}". Only common package managers and runtimes are permitted: ${[...ALLOWED_MCP_COMMANDS].join(', ')}`,
     ErrorCode.AGENT_ADAPTER_ERROR,

@@ -141,14 +141,13 @@ export class ChatService {
   }
 
   async archiveStaleThreads(projectId: string, staleDays = 30): Promise<number> {
-    const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000).toISOString()
-    const result = await this.repo.archiveStaleThreads(projectId, cutoff)
-    return result
+    const cutoff = Date.now() - staleDays * 24 * 60 * 60 * 1000
+    return this.repo.archiveStaleThreads(projectId, cutoff)
   }
 
   /** Task 2.5.2: Delete archived threads older than 90 days */
   async cleanupArchivedThreads(archivedDays = 90): Promise<number> {
-    const cutoff = new Date(Date.now() - archivedDays * 24 * 60 * 60 * 1000).toISOString()
+    const cutoff = Date.now() - archivedDays * 24 * 60 * 60 * 1000
     return this.repo.cleanupArchivedThreads(cutoff)
   }
 

@@ -50,7 +50,7 @@ export async function runClaude(prompt: string, options: ClaudeRunOptions): Prom
 
   // 使用不可预测的临时文件名
   const tmpFile = path.join(os.tmpdir(), `bizgraph-prompt-${randomUUID().replace(/-/g, '')}.txt`)
-  await fs.promises.writeFile(tmpFile, finalPrompt, 'utf-8')
+  await fs.promises.writeFile(tmpFile, finalPrompt, { encoding: 'utf-8', mode: 0o600 })
 
   const args = ['-p', '--model', safeModel]
   if (safeFormat === 'json') {

@@ -52,6 +52,8 @@ const logger = createLogger('AgentManager')
 
 /** 健康检查间隔：每 10 分钟输出一次诊断日志 */
 const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+/** 清理异步操作（adapter 终止、沙箱回滚）的超时时间（毫秒） */
+const CLEANUP_ASYNC_TIMEOUT_MS = 30_000
 /** RSS 内存警告阈值（MB）：自适应计算，基于系统总内存的 25%，范围 [1024, 8192] */
 const RSS_WARNING_THRESHOLD_MB = Math.max(1024, Math.min(8192, Math.floor((os.totalmem() / 1024 / 1024) * 0.25)))
 /** RSS 内存危险阈值（MB）：自适应计算，基于系统总内存的 40%，范围 [2048, 12288] */
@@ -65,7 +67,7 @@ const CONTEXT_COMPLEXITY_BUDGET: Record<string, number> = {
   implement: 12000,
 }
 
-type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error') => void
+type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout', exitCode: number | null) => void
 
 interface SessionState {
   config: AgentSessionConfig
@@ -87,9 +89,12 @@ interface SessionState {
   swarmTaskId?: string
   /** Cumulative input tokens reported by the adapter for this session. */
   tokensUsed?: number
-  /** Reason the adapter session ended. `undefined` means the session completed successfully.
-   *  Only abnormal termination reasons are recorded here. */
-  terminationReason?: TerminationReason
+  /** Reason the adapter session ended (crash / error / timeout / user / success). */
+  terminationReason?: 'success' | 'crash' | 'error' | 'timeout' | 'user'
+  /** Last user command sent to this session; used for recovery re-send. */
+  lastCommand?: AgentCommand
+  /** Original sessionId for replacement sessions created by recovery, used to keep retry accounting across sessionIds. */
+  originSessionId?: string
 }
 
 /** startSessionWithFallback 返回值 */
@@ -151,8 +156,8 @@ export class AgentManager {
   private sessionRecovery = getSessionRecoveryManager()
   /** Fallback recovery check timers */
   private fallbackRecoveryTimers = new Map<string, { interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }>()
-  /** Recovery check interval (startRecoveryCheck) — stored for cleanup in destroy() */
-  private recoveryCheckInterval?: ReturnType<typeof setInterval>
+  /** Per-adapter recovery check intervals — one per unhealthy adapter */
+  private recoveryCheckIntervals = new Map<string, ReturnType<typeof setInterval>>()
   /** Consecutive timeout counter per adapter (health-driven auto-degradation) */
   private adapterTimeoutCounts: Map<string, number> = new Map()
   /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
@@ -244,27 +249,55 @@ export class AgentManager {
     this.outputHandlers.set(adapter.name, handler)
     adapter.onOutput(handler)
 
-    // 监听 session 异常结束事件，自动清理沙箱等资源
-    const sessionEndedHandler: SessionEndedHandler = (sessionId, reason) => {
-      if (reason === 'crash' || reason === 'error') {
-        logger.warn(`Session ${sessionId} ended abnormally (${reason}), cleaning up...`)
-        const state = this.sessionStates.get(sessionId)
-        if (state) {
-          state.terminationReason = reason
+    // 监听 session 结束事件，自动清理沙箱等资源
+    const sessionEndedHandler: SessionEndedHandler = async (sessionId, reason, exitCode) => {
+      try {
+        if (reason === 'crash' || reason === 'error' || reason === 'timeout') {
+          logger.warn(`Session ${sessionId} ended abnormally (${reason}, exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+          if (state) {
+            state.terminationReason = reason
+          }
+
+          if (state) {
+            // Run recovery while the original session state/output buffer is still intact.
+            const outcome = await this._handleSessionEnded(sessionId, exitCode, reason, state, outputs)
+            if (outcome === 'native') {
+              // Native resume keeps the same sessionId active. Clear only transient
+              // crash artifacts and leave the session/router binding in place.
+              this.sessionOutputBuffers.delete(sessionId)
+              this.compactInflight.delete(sessionId)
+              return
+            }
+          }
+
+          // For replacement sessions or unrecoverable crashes, clean up the original session.
+          await this.cleanupSessionResources(sessionId)
+          return
         }
-        this.cleanupSessionResources(sessionId)
-        // Attempt recovery based on exit context
-        if (state) {
-          this._handleSessionEnded(sessionId, 1, reason)
+
+        if (reason === 'success') {
+          // Normal completion: clean up resources without running recovery.
+          logger.info(`Session ${sessionId} completed successfully (exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          if (state) {
+            state.terminationReason = 'success'
+            // Reset recovery attempts for this lineage so future crashes can be recovered again.
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+          }
+          await this.cleanupSessionResources(sessionId)
         }
+      } catch (err) {
+        logger.error(`Unhandled error in sessionEnded handler for ${sessionId}:`, err)
       }
     }
     this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
     adapter.on('sessionEnded', sessionEndedHandler)
 
     // Phase 3 Task 3: forward 'usage' events to the waterline for the bound thread
-    if ('onUsage' in adapter && typeof (adapter as { onUsage?: unknown }).onUsage === 'function') {
-      (adapter as BaseAdapter).onUsage(({ sessionId: sid, inputTokens, maxTokens }) => {
+    if (typeof adapter.onUsage === 'function') {
+      adapter.onUsage(({ sessionId: sid, inputTokens, maxTokens }) => {
         const ss = this.sessionStates.get(sid)
         if (ss) {
           ss.tokensUsed = (ss.tokensUsed ?? 0) + inputTokens
@@ -273,6 +306,8 @@ export class AgentManager {
           }
         }
       })
+    } else {
+      logger.warn(`Adapter ${adapter.name} does not support usage events (onUsage missing)`)
     }
   }
 
@@ -341,11 +376,13 @@ export class AgentManager {
 
     // Wait for all async operations (adapter terminate + sandbox rollback) to settle
     // before clearing state, so that resources are truly released before overlap is possible.
-    // Cap at 30s to prevent mutex deadlock if an operation hangs.
-    await Promise.race([
-      Promise.allSettled(pendingOps),
-      new Promise<void>(resolve => setTimeout(resolve, 30_000)),
-    ])
+    // A timer logs a warning if cleanup takes too long, but we still await settlement
+    // to avoid deleting state while a hanging operation might still touch it.
+    const cleanupTimeout = setTimeout(() => {
+      logger.warn(`Session ${sessionId} cleanup is taking longer than ${CLEANUP_ASYNC_TIMEOUT_MS}ms; waiting for pending operations to settle before removing state`)
+    }, CLEANUP_ASYNC_TIMEOUT_MS)
+    await Promise.allSettled(pendingOps)
+    clearTimeout(cleanupTimeout)
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
     const listeners = this.sessionOutputListenerIndex.get(sessionId)
@@ -555,11 +592,11 @@ export class AgentManager {
     this.cleanupInProgress.clear()
     // 停止健康检查定时器
     this.stopHealthCheck()
-    // 清理 recovery check interval
-    if (this.recoveryCheckInterval) {
-      clearInterval(this.recoveryCheckInterval)
-      this.recoveryCheckInterval = undefined
+    // 清理所有 recovery check intervals
+    for (const interval of this.recoveryCheckIntervals.values()) {
+      clearInterval(interval)
     }
+    this.recoveryCheckIntervals.clear()
     // 清理 ScopeGuard 所有定时器和 watcher
     this.scopeGuard.destroy()
   }
@@ -921,7 +958,13 @@ export class AgentManager {
       try {
         return await this.adapterPreferencesLoader()
       } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
         logger.warn('Failed to load adapter preferences, using defaults:', err)
+        this.broadcaster.broadcast('agent-manager', {
+          type: 'stderr',
+          data: `Failed to load adapter preferences, using defaults: ${reason}`,
+          timestamp: Date.now(),
+        })
       }
     }
     return { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }
@@ -940,6 +983,7 @@ export class AgentManager {
     const prevCommandType = state?.lastCommandType
     if (state) {
       state.lastCommandType = command.type
+      state.lastCommand = command
     }
     try {
       await adapter.sendCommand(sessionId, command)
@@ -1233,7 +1277,7 @@ export class AgentManager {
           // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
           // 我们已经持有 cleanupInProgress 锁，直接调用 _doCleanupSessionResources，
           // 避免 cleanupSessionResources 的锁检查 short-circuit 导致残留状态未被释放。
-          this._doCleanupSessionResources(sessionId)
+          await this._doCleanupSessionResources(sessionId)
           return
         }
         throw err
@@ -1334,6 +1378,13 @@ export class AgentManager {
       // 保留最近 100 条记录
       if (this.promptOutcomeLog.length > 100) {
         this.promptOutcomeLog.shift()
+      }
+
+      // Reset recovery attempts for this lineage on a healthy termination so future
+      // crashes can be recovered again.
+      const terminationReason = reason ?? state.terminationReason
+      if (terminationReason === 'success' || terminationReason === 'user') {
+        this.sessionRecovery.reset(state.originSessionId ?? sessionId)
       }
     }
 
@@ -1576,73 +1627,134 @@ export class AgentManager {
     }
   }
 
-  private async _handleSessionEnded(sessionId: string, exitCode: number | null, reason: string): Promise<void> {
-    const state = this.sessionStates.get(sessionId)
-    if (!state) return
-
-    if (exitCode === 137 || exitCode === 143) {
+  private async _handleSessionEnded(
+    sessionId: string,
+    exitCode: number | null,
+    reason: string,
+    state: SessionState,
+    outputs: AgentOutput[],
+  ): Promise<'native' | 'replacement' | 'none'> {
+    if ((exitCode === 137 || exitCode === 143) && reason !== 'timeout') {
       logger.info(`Session ${sessionId} terminated normally (exit ${exitCode})`)
-      return
+      return 'none'
     }
 
-    if (exitCode === 1 && reason === 'crash') {
-      const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+    const isRecoverable =
+      (reason === 'crash' || reason === 'error' || reason === 'timeout') &&
+      exitCode !== 126 && exitCode !== 127
 
-      // Build lastMessages from session output for context restoration
-      const lastMessages = this._extractRecentMessages(outputs)
-
-      // Look up threadId from the session's nodeId
-      let threadId: string | undefined
-      if (state.config.nodeId) {
-        try {
-          const { getClient } = await import('../database')
-          const db = getClient()
-          const result = await db.execute({
-            sql: 'SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1',
-            args: [state.config.nodeId],
-          })
-          if (result.rows.length > 0) {
-            threadId = result.rows[0].id as string
-          }
-        } catch {
-          // Non-critical: threadId is for notification only
-        }
-      }
-
-      const newSessionId = await this.sessionRecovery.attemptRecovery({
-        sessionId,
-        adapterName: state.adapterName,
-        projectId: state.config.workingDirectory,
-        lastOutputs: outputs,
-        lastMessages,
-        threadId,
-      })
-      if (newSessionId) {
-        logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
+    if (!isRecoverable) {
+      if (exitCode === 126 || exitCode === 127) {
+        this.healthMonitor.recordCall(state.adapterName, false, 0, `Exit code ${exitCode}: adapter not available`)
+        logger.warn(`Adapter ${state.adapterName} marked unavailable (exit ${exitCode})`)
       } else {
-        // Check if MCP adapter recovery left a pending context injection
-        const pendingContext = this.sessionRecovery.consumePendingContext(sessionId)
-        if (pendingContext) {
-          logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
-          try {
-            const config = { ...state.config, contextSummary: pendingContext }
-            const result = await this.startSession(state.adapterName, config)
-            logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
-          } catch (err) {
-            logger.warn(`Failed to create new MCP session for recovery:`, err)
-          }
-        }
+        logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
       }
-      return
+      return 'none'
     }
 
-    if (exitCode === 126 || exitCode === 127) {
-      this.healthMonitor.recordCall(state.adapterName, false, 0, `Exit code ${exitCode}: adapter not available`)
-      logger.warn(`Adapter ${state.adapterName} marked unavailable (exit ${exitCode})`)
-      return
+    // Build lastMessages from session output for context restoration
+    const lastMessages = this._extractRecentMessages(outputs)
+
+    // Look up threadId from the session's nodeId
+    let threadId: string | undefined
+    if (state.config.nodeId) {
+      try {
+        const { getClient } = await import('../database')
+        const db = getClient()
+        const result = await db.execute({
+          sql: 'SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1',
+          args: [state.config.nodeId],
+        })
+        if (result.rows.length > 0) {
+          threadId = result.rows[0].id as string
+        }
+      } catch {
+        // Non-critical: threadId is for notification only
+      }
     }
 
-    logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
+    const originSessionId = state.originSessionId ?? sessionId
+    const newSessionId = await this.sessionRecovery.attemptRecovery({
+      sessionId,
+      adapterName: state.adapterName,
+      projectId: state.config.workingDirectory,
+      lastOutputs: outputs,
+      lastMessages,
+      threadId,
+      originSessionId,
+    })
+
+    if (newSessionId) {
+      logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
+
+      if (newSessionId === sessionId) {
+        // Native resume: keep the same sessionId active in the manager's maps.
+        this.sessionStates.set(sessionId, state)
+        this.sessionBroadcastNames.set(sessionId, state.broadcastName)
+        // The third argument of SessionRouter.bind is originalAdapter (not broadcast name).
+        // Native resume uses the same adapter, so no fallback metadata is needed.
+        this.router.bind(sessionId, state.adapterName)
+        return 'native'
+      }
+
+      // Replacement session created by the strategy itself.
+      const newState = this.sessionStates.get(newSessionId)
+      if (newState) {
+        newState.originSessionId = originSessionId
+      }
+      if (state.lastCommand) {
+        await this._resumeLastCommand(newSessionId, state.lastCommand)
+      }
+      return 'replacement'
+    }
+
+    // Check if MCP adapter recovery left a pending context injection
+    const pendingContext = this.sessionRecovery.consumePendingContext(sessionId)
+    if (pendingContext) {
+      logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
+      try {
+        const config = { ...state.config, contextSummary: pendingContext }
+        const result = await this.startSession(state.adapterName, config)
+        logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
+        const replacementState = this.sessionStates.get(result.sessionId)
+        if (replacementState) {
+          replacementState.originSessionId = originSessionId
+        }
+        if (state.lastCommand) {
+          await this._resumeLastCommand(result.sessionId, state.lastCommand)
+        } else {
+          logger.info(`Replacement session ${result.sessionId} started idle; no previous command to resume`)
+        }
+        return 'replacement'
+      } catch (err) {
+        logger.warn(`Failed to create new MCP session for recovery:`, err)
+      }
+    }
+
+    return 'none'
+  }
+
+  /**
+   * Safely resume the last user command on a recovered/replacement session.
+   * Verifies the session exists and the target adapter is ready before sending.
+   */
+  private async _resumeLastCommand(sessionId: string, command: AgentCommand): Promise<void> {
+    if (!this.sessionStates.has(sessionId)) {
+      logger.warn(`Cannot resume command: recovered session ${sessionId} is not ready`)
+      return
+    }
+    const adapter = this.router.resolve(sessionId)
+    if (!adapter) {
+      logger.warn(`Cannot resume command: no adapter bound to recovered session ${sessionId}`)
+      return
+    }
+    try {
+      await this.sendCommand(sessionId, command)
+      logger.info(`Resumed last command on recovered session ${sessionId}`)
+    } catch (err) {
+      logger.warn(`Failed to resume last command on recovered session ${sessionId}:`, err)
+    }
   }
 
   /**
@@ -1667,7 +1779,7 @@ export class AgentManager {
         content: combined.slice(-2000),
       })
     }
-    return messages.slice(-1)
+    return messages
   }
 
   private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
@@ -1703,18 +1815,27 @@ export class AgentManager {
    * back to degraded/healthy on the next session attempt.
    */
   private startRecoveryCheck(adapterName: string): void {
-    if (this.recoveryCheckInterval) return // already running
-    this.recoveryCheckInterval = setInterval(async () => {
+    if (this.recoveryCheckIntervals.has(adapterName)) return // already running for this adapter
+    const interval = setInterval(async () => {
       const adapter = this.registry.get(adapterName)
       if (!adapter) {
-        if (this.recoveryCheckInterval) { clearInterval(this.recoveryCheckInterval); this.recoveryCheckInterval = undefined }
+        const activeInterval = this.recoveryCheckIntervals.get(adapterName)
+        if (activeInterval) {
+          clearInterval(activeInterval)
+          this.recoveryCheckIntervals.delete(adapterName)
+        }
         return
       }
       const installed = await adapter.checkInstalled()
       if (installed) {
         this.healthMonitor.recordCall(adapterName, true, 0, 'recovery-check')
-        if (this.recoveryCheckInterval) { clearInterval(this.recoveryCheckInterval); this.recoveryCheckInterval = undefined }
+        const activeInterval = this.recoveryCheckIntervals.get(adapterName)
+        if (activeInterval) {
+          clearInterval(activeInterval)
+          this.recoveryCheckIntervals.delete(adapterName)
+        }
       }
     }, 60_000)
+    this.recoveryCheckIntervals.set(adapterName, interval)
   }
 }

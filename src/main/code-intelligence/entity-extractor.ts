@@ -99,7 +99,7 @@ export class EntityExtractor {
       entities.push({
         name,
         type,
-        confidence: this.calculateEntityConfidence(name, type, input),
+        confidence: this.calculateEntityConfidence(name, type, input, match.index),
         position: { start: match.index, end: match.index + name.length },
         ...computeLineInfo(input, match.index, match.index + name.length),
       })
@@ -153,7 +153,7 @@ export class EntityExtractor {
         entities.push({
           name: className,
           type: 'class',
-          confidence: 0.85,
+          confidence: this.calculateEntityConfidence(className, 'class', input, match.index),
           position: { start: match.index, end: match.index + className.length },
           ...computeLineInfo(input, match.index, match.index + className.length),
         })
@@ -165,7 +165,7 @@ export class EntityExtractor {
         entities.push({
           name: methodName,
           type: 'method',
-          confidence: 0.9,
+          confidence: this.calculateEntityConfidence(methodName, 'method', input, methodStart),
           position: { start: methodStart, end: methodEnd },
           ...computeLineInfo(input, methodStart, methodEnd),
         })
@@ -227,13 +227,20 @@ export class EntityExtractor {
     return desc.replace(/\s+/g, ' ').trim()
   }
 
-  private calculateEntityConfidence(name: string, type: EntityType, context: string): number {
+  private calculateEntityConfidence(
+    name: string,
+    type: EntityType,
+    context: string,
+    occurrenceOffset: number,
+  ): number {
     let score = 0.7
     // 命名规范加分
     if (/^[A-Z][a-zA-Z0-9]*$/.test(name) && type === 'class') score += 0.1
     if (/^[a-z][a-zA-Z0-9]*$/.test(name) && type === 'function') score += 0.1
-    // 上下文佐证加分
-    const surrounding = context.slice(Math.max(0, context.indexOf(name) - 30), context.indexOf(name) + name.length + 30)
+    // 上下文佐证加分：使用实际匹配位置切片，而不是总是取首次出现
+    const start = Math.max(0, occurrenceOffset - 30)
+    const end = Math.min(context.length, occurrenceOffset + name.length + 30)
+    const surrounding = context.slice(start, end)
     if (/class|interface|function|method|组件|类|接口|函数|方法/.test(surrounding)) score += 0.1
     return Math.min(1.0, score)
   }

@@ -20,6 +20,7 @@ import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
 import { isErrorWithCode } from './shared/errno'
+import { isPathWithin, isRelativeTraversal } from './shared/path-utils'
 
 /** 获取临时目录路径（可在测试中 mock） */
 // THREAD-SAFETY NOTE: This module-level mutable function reference is not thread-safe.
@@ -158,10 +159,7 @@ function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): strin
   return allowedFiles.map((file) => {
     const resolved = path.resolve(workingDir, file)
     const relative = path.relative(workingDir, resolved)
-    // Windows: path.relative is case-sensitive but the filesystem is not;
-    // normalize both sides to lowercase before comparing.
-    const effectiveRelative = process.platform === 'win32' ? relative.toLowerCase() : relative
-    const isTraversal = effectiveRelative.startsWith('..') || path.isAbsolute(relative)
+    const isTraversal = isRelativeTraversal(relative) || path.isAbsolute(relative)
     if (isTraversal) {
       throw new ScopeGuardError(
         `Path traversal detected: ${file} escapes working directory ${workingDir}`,
@@ -545,24 +543,12 @@ export class ScopeGuard {
     // 安全校验：确保 filePath 在沙箱工作目录内，防止路径遍历攻击
     // Relative paths are resolved against the sandbox working directory, not process.cwd().
     const resolvedPath = path.resolve(sandbox.workingDir, filePath)
-    const resolvedWorkingDir = path.resolve(sandbox.workingDir)
-    const sep = path.sep
-    const isWithinSandbox = process.platform === 'win32'
-      ? resolvedPath.toLowerCase().startsWith(resolvedWorkingDir.toLowerCase() + sep) ||
-        resolvedPath.toLowerCase() === resolvedWorkingDir.toLowerCase()
-      : resolvedPath.startsWith(resolvedWorkingDir + sep) || resolvedPath === resolvedWorkingDir
-    if (!isWithinSandbox) {
+    if (!(await isPathWithin(sandbox.workingDir, resolvedPath))) {
       logger.warn(`rollbackFile rejected: ${filePath} is outside sandbox working directory ${sandbox.workingDir}`)
       return false
     }
 
     const relativePath = path.relative(sandbox.workingDir, resolvedPath)
-    // 二次检查：relative 不应逃逸
-    if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-      logger.warn(`rollbackFile rejected: path traversal detected for ${filePath}`)
-      return false
-    }
-
     const backupPath = path.join(sandbox.backupDir, relativePath)
 
     try {

@@ -40,7 +40,8 @@ export function DiffReviewPanel({
         status: tc.accepted === true ? 'accepted' as const
           : tc.accepted === false ? 'rejected' as const
           : 'pending' as const,
-        changeType: tc.type === 'file_create' ? 'add' as const : 'modify' as const,
+        changeType: tc.changeType
+          ?? (tc.type === 'file_create' ? 'add' as const : 'modify' as const),
       }))
       .filter((fc) => fc.filePath !== 'unknown'),
     [toolCalls],

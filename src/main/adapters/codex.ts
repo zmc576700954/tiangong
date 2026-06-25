@@ -72,9 +72,11 @@ export class CodexAdapter extends BaseAdapter {
     try {
       let codex = this.codexInstances.get(session.id)
       if (!codex) {
-        codex = new CodexClass({
-          env: this.buildSafeEnv() as Record<string, string>,
-        })
+        const safeEnv = this.buildSafeEnv()
+        const env = Object.fromEntries(
+          Object.entries(safeEnv).filter((entry): entry is [string, string] => entry[1] !== undefined),
+        )
+        codex = new CodexClass({ env })
         this.codexInstances.set(session.id, codex)
       }
 
@@ -150,7 +152,7 @@ export class CodexAdapter extends BaseAdapter {
         data: 'Codex session completed',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success')
+      this.emit('sessionEnded', session.id, 'success', 0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutput({
@@ -159,7 +161,7 @@ export class CodexAdapter extends BaseAdapter {
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
-      this.emit('sessionEnded', session.id, 'error')
+      this.emit('sessionEnded', session.id, 'error', null)
     }
   }
 

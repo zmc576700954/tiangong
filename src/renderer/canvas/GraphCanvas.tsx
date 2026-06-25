@@ -176,23 +176,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setSearchIndex(0)
   }, [searchQuery])
 
-  const searchNavTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => {
-    if (searchResults.length > 0 && searchOpen) {
-      clearTimeout(searchNavTimer.current)
-      searchNavTimer.current = setTimeout(() => {
-        navigateToSearchResult(searchResults[0])
-      }, 300)
-    }
-    return () => clearTimeout(searchNavTimer.current)
-  }, [searchResults, searchOpen, navigateToSearchResult])
+  // Navigate only after Enter or an explicit next-result click.
+  const goToSearchResult = useCallback((idx: number) => {
+    const node = searchResults[idx]
+    if (node) navigateToSearchResult(node)
+  }, [searchResults, navigateToSearchResult])
 
-  // Navigate when user manually cycles through results (Enter key)
-  useEffect(() => {
-    if (searchResults.length > 0 && searchIndex > 0 && searchIndex < searchResults.length) {
-      navigateToSearchResult(searchResults[searchIndex])
-    }
-  }, [searchIndex, searchResults, navigateToSearchResult])
+  const nextSearchResult = useCallback(() => {
+    if (searchResults.length === 0) return
+    const next = (searchIndex + 1) % searchResults.length
+    goToSearchResult(next)
+    setSearchIndex(next)
+  }, [searchResults, searchIndex, goToSearchResult])
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -513,17 +508,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
+    const graphType = currentGraph?.type ?? 'online'
     await createNode({
       type,
       status: 'draft',
       title: `新建${NODE_TYPE_LABELS[type]}`,
       graphId,
-      graphType: 'online',
+      graphType,
       position,
       acceptanceCriteria: [],
     })
     setShowNodeMenu(false)
-  }, [screenToFlowPosition, menuPosition, createNode, graphId])
+  }, [screenToFlowPosition, menuPosition, createNode, graphId, currentGraph?.type])
 
   /** 进入连线模式（由右键菜单触发） */
   const handleStartConnect = useCallback((sourceId: string) => {
@@ -682,7 +678,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 className="bg-transparent text-sm outline-none w-48"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && searchResults.length > 0) {
-                    setSearchIndex((i) => (i + 1) % searchResults.length)
+                    goToSearchResult(searchIndex)
                   }
                   if (e.key === 'Escape') {
                     setSearchOpen(false)
@@ -697,9 +693,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
               )}
               {searchResults.length > 1 && (
                 <button
-                  onClick={() => setSearchIndex((i) => (i + 1) % searchResults.length)}
+                  onClick={nextSearchResult}
                   className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
-                  title="Next result (Enter)"
+                  title="Next result"
                 >
                   <Search className="w-3 h-3" />
                 </button>

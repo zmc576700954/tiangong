@@ -272,7 +272,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const handleStop = async () => {
     if (currentThreadId) {
-      if (currentThreadId) streamingMsgIdRef.current.delete(currentThreadId)
+      streamingMsgIdRef.current.delete(currentThreadId)
       await stopCurrentSession(currentThreadId)
     }
   }
@@ -304,7 +304,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const handleRetry = async (agentMessageId: string) => {
     if (currentThreadId) {
-      if (currentThreadId) streamingMsgIdRef.current.delete(currentThreadId)
+      streamingMsgIdRef.current.delete(currentThreadId)
       await retryMessage(currentThreadId, agentMessageId)
     }
   }
