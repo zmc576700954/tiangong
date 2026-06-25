@@ -21,7 +21,7 @@ export default defineConfig(async () => ({
             minify: process.env.NODE_ENV === 'production',
             outDir: 'dist-electron/main',
             rollupOptions: {
-              external: ['electron', '@libsql/client', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', 'onnxruntime-node', 'sharp'],
+              external: ['electron', 'better-sqlite3', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', 'onnxruntime-node', 'sharp'],
             },
           },
           resolve: {
