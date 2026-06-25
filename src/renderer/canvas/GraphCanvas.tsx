@@ -45,7 +45,7 @@ import { eventBus, Events } from '../store/eventBus'
 const edgeTypes = { bizEdge: BizEdge }
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
-function BizNodeWrapper({ id, data, selected, multiSelected: _multiSelected }: {
+function BizNodeWrapper({ id, data, selected }: {
   id: string
   data: GraphNode & {
     bugCount: number
@@ -59,7 +59,6 @@ function BizNodeWrapper({ id, data, selected, multiSelected: _multiSelected }: {
     agentSessionId?: string
   }
   selected?: boolean
-  multiSelected?: boolean
 }) {
   const multiSelected = useGraphStore((s) => s.selectedNodeIds.has(id))
   return <BizNodeComponent id={id} data={data} selected={selected} multiSelected={multiSelected} />
@@ -151,6 +150,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
   const [showFanout, setShowFanout] = useState(false)
+  const [confirmDeleteTarget, setConfirmDeleteTarget] = useState<'node' | 'edge' | null>(null)
 
   // ────────────────────────────────────────────────────────────────
   // Node search overlay
@@ -171,9 +171,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       setSearchIndex(0)
       return
     }
-    const results = useGraphStore.getState().searchNodes(searchQuery)
-    setSearchResults(results)
-    setSearchIndex(0)
+    // Debounce search to avoid excessive computation on every keystroke
+    const timer = setTimeout(() => {
+      const results = useGraphStore.getState().searchNodes(searchQuery)
+      setSearchResults(results)
+      setSearchIndex(0)
+    }, 200)
+    return () => clearTimeout(timer)
   }, [searchQuery])
 
   // Navigate only after Enter or an explicit next-result click.
@@ -320,94 +324,145 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // 性能降级策略：节点数过多时逐步隐藏非必要元素
   // ────────────────────────────────────────────────────────────────
   const nodeCount = graphNodes.length
+  const DEGRADE_THRESHOLD = 200
+  const EDGE_LABEL_HIDE_THRESHOLD = 1000
+  const MINIMAP_UNMOUNT_THRESHOLD = 1000
+
   const degradation = useMemo(() => ({
-    hideMiniMapAnimation: nodeCount > 500,
-    simplifyEdges: nodeCount > 500,
-    hideNodeTextLabels: nodeCount > 500,
-    hideEdgeLabels: nodeCount > 1000,
+    hideMiniMapAnimation: nodeCount > DEGRADE_THRESHOLD,
+    simplifyEdges: nodeCount > DEGRADE_THRESHOLD,
+    hideNodeTextLabels: nodeCount > DEGRADE_THRESHOLD,
+    hideEdgeLabels: nodeCount > EDGE_LABEL_HIDE_THRESHOLD,
   }), [nodeCount])
 
-  const baseFlowNodes: Node[] = useMemo(() => graphNodes.map((node) => {
-    const threadInfo = nodeThreadMap.get(node.id)
-    return {
-      id: node.id,
-      type: 'bizNode',
-      position: node.position,
-      data: {
-        ...node,
-        bugCount: bugCountMap.get(node.id) ?? 0,
+  const nodeCacheRef = useRef(new Map<string, { key: string; node: Node }>())
+  const edgeCacheRef = useRef(new Map<string, { key: string; edge: Edge }>())
+
+  const flowNodes = useMemo(() => {
+    const cache = nodeCacheRef.current
+    const nextIds = new Set<string>()
+
+    const nodes = graphNodes.map((node) => {
+      const threadInfo = nodeThreadMap.get(node.id)
+      const bugCount = bugCountMap.get(node.id) ?? 0
+      const selected = node.id === selectedNodeId || node.id === connectingSourceId
+      const multiSelected = selectedNodeIds.has(node.id)
+      const key = JSON.stringify([
+        node.id,
+        node.updatedAt,
+        bugCount,
         isZoomedOut,
-        hideTextLabels: degradation.hideNodeTextLabels,
-        isConnectingSource: connectingFrom === node.id,
-        isFlashed: flashedNodeId === node.id,
-        hasThread: !!threadInfo,
-        agentThreadId: threadInfo?.id,
-        agentStatus: threadInfo?.status,
-        agentSessionId: threadInfo?.sessionId,
-      },
-      draggable: node.type !== 'project',
+        degradation.hideNodeTextLabels,
+        connectingFrom === node.id,
+        flashedNodeId === node.id,
+        threadInfo?.id,
+        threadInfo?.status,
+        threadInfo?.sessionId,
+        selected,
+        multiSelected,
+      ])
+
+      nextIds.add(node.id)
+      const cached = cache.get(node.id)
+      if (cached?.key === key) {
+        return cached.node
+      }
+
+      const flowNode: Node = {
+        id: node.id,
+        type: 'bizNode',
+        position: node.position,
+        data: {
+          ...node,
+          bugCount,
+          isZoomedOut,
+          hideTextLabels: degradation.hideNodeTextLabels,
+          isConnectingSource: connectingFrom === node.id,
+          isFlashed: flashedNodeId === node.id,
+          hasThread: !!threadInfo,
+          agentThreadId: threadInfo?.id,
+          agentStatus: threadInfo?.status,
+          agentSessionId: threadInfo?.sessionId,
+        },
+        draggable: node.type !== 'project',
+        selected,
+      }
+      cache.set(node.id, { key, node: flowNode })
+      return flowNode
+    })
+
+    for (const id of cache.keys()) {
+      if (!nextIds.has(id)) cache.delete(id)
     }
-  }), [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap])
-
-  const baseFlowEdges: Edge[] = useMemo(() => graphEdges.map((edge) => {
-    const edgeType = edge.edgeType || 'default'
-    const config = edgeTypeConfig[edgeType]
-    const displayLabel = edge.content?.condition
-      ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
-      : edge.label
-
-    return {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      label: displayLabel,
-      type: 'bizEdge',
-      data: { edgeType, content: edge.content, strength: edge.strength },
-      markerEnd: getEdgeMarkerEnd(edgeType),
-      animated: edgeType === 'failure' || edgeType === 'business-flow',
-      style: {
-        stroke: config.color,
-        strokeWidth: 2,
-        strokeDasharray: config.strokeDasharray,
-      },
-    }
-  }), [graphEdges])
-
-  // Apply selection styling without rebuilding the full arrays
-  const flowNodes = useMemo(() => baseFlowNodes.map((n) => ({
-    ...n,
-    selected: n.id === selectedNodeId || n.id === connectingSourceId,
-    multiSelected: selectedNodeIds.has(n.id),
-  })), [baseFlowNodes, selectedNodeId, connectingSourceId, selectedNodeIds])
+    return nodes
+  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
     setRfNodes(flowNodes)
   }, [flowNodes, setRfNodes])
 
-  const flowEdges = useMemo(() => baseFlowEdges.map((e) => {
-    const isSelected = e.id === selectedEdgeId
-    return {
-      ...e,
-      selected: isSelected,
-      style: isSelected ? { ...e.style, strokeWidth: 3 } : e.style,
-    }
-  }), [baseFlowEdges, selectedEdgeId])
+  const flowEdges = useMemo(() => {
+    const cache = edgeCacheRef.current
+    const nextIds = new Set<string>()
 
-  // Apply degradation to edges: strip animation and optionally labels
-  const degradedFlowEdges = useMemo(() => flowEdges.map((e) => {
-    const shouldAnimate = !degradation.simplifyEdges && (e.animated ?? false)
-    const shouldHideLabel = degradation.hideEdgeLabels
-    return {
-      ...e,
-      animated: shouldAnimate,
-      label: shouldHideLabel ? undefined : e.label,
+    const edges = graphEdges.map((edge) => {
+      const edgeType = edge.edgeType || 'default'
+      const config = edgeTypeConfig[edgeType]
+      const displayLabel = edge.content?.condition
+        ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
+        : edge.label
+      const isSelected = edge.id === selectedEdgeId
+      const shouldAnimate = !degradation.simplifyEdges && (edgeType === 'failure' || edgeType === 'business-flow')
+      const shouldHideLabel = degradation.hideEdgeLabels
+      const key = JSON.stringify([
+        edge.id,
+        edge.source,
+        edge.target,
+        displayLabel,
+        edgeType,
+        edge.content?.condition,
+        edge.strength,
+        isSelected,
+        shouldAnimate,
+        shouldHideLabel,
+      ])
+
+      nextIds.add(edge.id)
+      const cached = cache.get(edge.id)
+      if (cached?.key === key) {
+        return cached.edge
+      }
+
+      const flowEdge: Edge = {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        label: shouldHideLabel ? undefined : displayLabel,
+        type: 'bizEdge',
+        data: { edgeType, content: edge.content, strength: edge.strength },
+        markerEnd: getEdgeMarkerEnd(edgeType),
+        animated: shouldAnimate,
+        style: {
+          stroke: config.color,
+          strokeWidth: isSelected ? 3 : 2,
+          strokeDasharray: config.strokeDasharray,
+        },
+        selected: isSelected,
+      }
+      cache.set(edge.id, { key, edge: flowEdge })
+      return flowEdge
+    })
+
+    for (const id of cache.keys()) {
+      if (!nextIds.has(id)) cache.delete(id)
     }
-  }), [flowEdges, degradation.simplifyEdges, degradation.hideEdgeLabels])
+    return edges
+  }, [graphEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
 
   useEffect(() => {
-    setRfEdges(degradedFlowEdges)
-  }, [degradedFlowEdges, setRfEdges])
+    setRfEdges(flowEdges)
+  }, [flowEdges, setRfEdges])
 
   /**
    * onNodeClick：仅处理正常模式下的节点选中
@@ -475,7 +530,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     [cancelPendingConnection],
   )
 
-  useCanvasKeyboard({
+  const { clearConfirmPending } = useCanvasKeyboard({
     selectedNodeId,
     selectedEdgeId,
     onDeleteNode: deleteNode,
@@ -486,6 +541,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     },
     isConnecting,
     onCancelConnect: cancelConnect,
+    onRequestDeleteConfirm: (target) => setConfirmDeleteTarget(target),
   })
 
   const { applyLayout } = useAutoLayout()
@@ -610,16 +666,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       >
         <Background gap={16} size={1} color="var(--canvas-bg)" />
         <Controls className="[&>button]:bg-background [&>button]:border-border [&>button]:text-foreground" />
-        <MiniMap
-          nodeColor={(node) => NODE_TYPE_COLORS[(node.data as unknown as GraphNode).type] ?? '#94a3b8'}
-          maskColor="var(--canvas-minimap-bg)"
-          className={cn(
-            "!bg-background/80 !border-border !rounded-lg !shadow-xs",
-            degradation.hideMiniMapAnimation && "!animate-none",
-          )}
-          pannable
-          zoomable
-        />
+        {nodeCount <= MINIMAP_UNMOUNT_THRESHOLD && (
+          <MiniMap
+            nodeColor={(node) => NODE_TYPE_COLORS[(node.data as unknown as GraphNode).type] ?? '#94a3b8'}
+            maskColor="var(--canvas-minimap-bg)"
+            className={cn(
+              "!bg-background/80 !border-border !rounded-lg !shadow-xs",
+              degradation.hideMiniMapAnimation && "!animate-none",
+            )}
+            pannable
+            zoomable
+          />
+        )}
 
         <Panel position="bottom-left" className="m-2">
           <div className="bg-background/90 backdrop-blur border rounded-lg shadow-xs px-2 py-1 text-[10px] text-muted-foreground font-mono">
@@ -714,22 +772,44 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         {(selectedNodeId || selectedEdgeId) && !connectingSourceId && (
           <Panel position="bottom-center" className="m-2">
             <div className="flex items-center gap-2 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-muted-foreground">
-              <span>{selectedNodeId ? '按 Delete 删除节点' : '按 Delete 删除连接线'}</span>
-              <span className="text-border">|</span>
-              <button
-                onClick={() => {
-                  if (selectedNodeId) {
-                    deleteNode(selectedNodeId)
-                    selectNode(null)
-                  } else if (selectedEdgeId) {
-                    deleteEdge(selectedEdgeId)
-                    selectEdge(null)
-                  }
-                }}
-                className="text-destructive hover:underline"
-              >
-                立即删除
-              </button>
+              {confirmDeleteTarget ? (
+                <>
+                  <span className="text-destructive">确认删除？此操作不可撤销</span>
+                  <button
+                    onClick={() => {
+                      if (selectedNodeId) {
+                        deleteNode(selectedNodeId)
+                        selectNode(null)
+                      } else if (selectedEdgeId) {
+                        deleteEdge(selectedEdgeId)
+                        selectEdge(null)
+                      }
+                      setConfirmDeleteTarget(null)
+                      clearConfirmPending()
+                    }}
+                    className="text-destructive hover:underline font-medium"
+                  >
+                    确认删除
+                  </button>
+                  <button
+                    onClick={() => { setConfirmDeleteTarget(null); clearConfirmPending() }}
+                    className="hover:underline"
+                  >
+                    取消
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span>{selectedNodeId ? '按 Delete 删除节点' : '按 Delete 删除连接线'}</span>
+                  <span className="text-border">|</span>
+                  <button
+                    onClick={() => setConfirmDeleteTarget(selectedNodeId ? 'node' : 'edge')}
+                    className="text-destructive hover:underline"
+                  >
+                    立即删除
+                  </button>
+                </>
+              )}
             </div>
           </Panel>
         )}

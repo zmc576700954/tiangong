@@ -24,6 +24,8 @@ export type {
   ContextRef,
   NodeTypeConfig,
   NodeStatusTransition,
+  GraphFetchOptions,
+  GraphViewportBounds,
 } from './types/graph'
 
 export {

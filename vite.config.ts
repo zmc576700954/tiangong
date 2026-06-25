@@ -85,8 +85,11 @@ export default defineConfig(async () => ({
     rollupOptions: {
       output: {
         manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
           'vendor-reactflow': ['@xyflow/react'],
           'vendor-lucide': ['lucide-react'],
+          'vendor-markdown': ['react-markdown', 'react-syntax-highlighter', 'remark-gfm'],
+          'vendor-transformers': ['@xenova/transformers'],
         },
       },
     },

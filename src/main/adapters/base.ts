@@ -25,6 +25,7 @@ import { buildScopePrompt } from './scope-prompt-builder'
 import { estimateTokens } from '../shared/token-utils'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
 import type { SubagentManager } from '../agent/subagent-manager'
+import os from 'node:os'
 
 /**
  * Agent 适配器抽象基类
@@ -53,8 +54,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private outputSessionStack: string[] = []
   /** 会话输出缓冲区：为不支持 resume 的适配器收集历史输出，用于生成上下文摘要 */
   protected sessionOutputBuffers = new Map<string, string[]>()
-  /** 单会话输出条数上限，防止内存无限增长 */
-  private static readonly MAX_OUTPUT_BUFFER_SIZE = 200
+  /** 单会话输出条数上限，根据可用内存自适应，防止内存无限增长 */
+  private static getMaxOutputBufferSize(): number {
+    try {
+      const freeMemMB = os.freemem() / 1024 / 1024
+      return Math.max(50, Math.min(500, Math.floor(freeMemMB / 10)))
+    } catch {
+      return 200
+    }
+  }
+  /** 单条输出最大字符数，超长截断防止内存溢出 */
+  private static readonly MAX_OUTPUT_ENTRY_SIZE = 10_000
   /** 错误关键词列表（与 MemoryExtractor 保持一致） */
   private static readonly ERROR_KEYWORDS = [
     'error', '失败', 'exception', 'panic', 'fatal', 'crash',
@@ -65,6 +75,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   ]
   /** 会话级进程守护定时器：超时自动 kill，防止子进程泄漏 */
   private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** stdout 批缓冲：降低高频输出时的事件发射频率 */
+  private stdoutBatchBuffers = new Map<string, string>()
+  private stdoutBatchTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly STDOUT_BATCH_MS = 50
+  /** 环境变量缓存：避免每次 spawn 都重建安全 env */
+  private safeEnvCache: NodeJS.ProcessEnv | null = null
   /** 被守护定时器超时杀死的会话（用于区分用户主动终止） */
   private timeoutKilledSessions = new Set<string>()
   /** 默认会话超时时间（30 分钟） */
@@ -86,6 +102,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     super()
     // MEM-01: 避免大量会话时触发 maxListeners 警告
     this.setMaxListeners(50)
+  }
+
+  /** 返回当前活跃子进程数（供 AgentManager 做全局进程数保护） */
+  getProcessCount(): number {
+    return this.processes.size
   }
 
   /**
@@ -201,7 +222,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         this.sessions.delete(sessionId)
         this.processes.delete(sessionId)
       } catch (cleanupErr) {
-        this.logger.error(`Cleanup failed for session ${sessionId}:`, cleanupErr)
+        this.logger.warn(`Cleanup failed for session ${sessionId} — resources may not be fully released`, cleanupErr)
       } finally {
         // 清理输出缓冲区，防止内存泄漏
         this.sessionOutputBuffers.delete(sessionId)
@@ -336,10 +357,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           buffer = []
           this.sessionOutputBuffers.set(sessionId, buffer)
         }
-        buffer.push(output.data)
+        buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
+          ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
+          : output.data)
         // 限制缓冲区大小，防止内存无限增长
-        if (buffer.length > BaseAdapter.MAX_OUTPUT_BUFFER_SIZE) {
-          buffer.splice(0, buffer.length - BaseAdapter.MAX_OUTPUT_BUFFER_SIZE)
+        if (buffer.length > BaseAdapter.getMaxOutputBufferSize()) {
+          buffer.splice(0, buffer.length - BaseAdapter.getMaxOutputBufferSize())
         }
       }
     }
@@ -473,9 +496,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     onStderr: (data: Buffer) => void
     onExit: (code: number | null) => void
     onError: (err: Error) => void
+    flushStdout: () => void
   } {
-    const onStdout = (data: Buffer) => {
-      const text = data.toString('utf-8')
+    const flushStdout = () => {
+      const text = this.stdoutBatchBuffers.get(sessionId)
+      if (!text) return
+      this.stdoutBatchBuffers.delete(sessionId)
       this.emitOutputForSession(sessionId, {
         type: 'stdout',
         data: text,
@@ -484,6 +510,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       if (options?.parseFileChanges !== false) {
         this.parseFileChanges(text)
       }
+    }
+
+    const onStdout = (data: Buffer) => {
+      const text = data.toString('utf-8')
+      const existing = this.stdoutBatchBuffers.get(sessionId) ?? ''
+      this.stdoutBatchBuffers.set(sessionId, existing ? existing + text : text)
+
+      const existingTimer = this.stdoutBatchTimers.get(sessionId)
+      if (existingTimer) clearTimeout(existingTimer)
+      const timer = setTimeout(flushStdout, this.STDOUT_BATCH_MS)
+      this.stdoutBatchTimers.set(sessionId, timer)
     }
 
     const onStderr = (data: Buffer) => {
@@ -495,6 +532,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const onExit = (code: number | null) => {
+      // 进程退出前先把 stdout 缓冲 flush 出去，避免最后一段输出丢失
+      flushStdout()
+
       // Process exited naturally — clear the kill timer to prevent it firing on a dead process
       this.clearSessionKillTimer(sessionId)
 
@@ -551,7 +591,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       this.emit('sessionEnded', sessionId, 'error', null)
     }
 
-    return { onStdout, onStderr, onExit, onError }
+    return { onStdout, onStderr, onExit, onError, flushStdout }
   }
 
   /**
@@ -564,7 +604,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const proc = this.processes.get(session.id)
     if (!proc) return () => {}
 
-    const { onStdout, onStderr, onExit, onError } = this.createOutputHandlers(session.id, options)
+    const { onStdout, onStderr, onExit, onError, flushStdout } = this.createOutputHandlers(session.id, options)
 
     proc.stdout?.on('data', onStdout)
     proc.stderr?.on('data', onStderr)
@@ -572,10 +612,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     proc.on('error', onError)
 
     const detach = () => {
+      flushStdout()
       proc.stdout?.off('data', onStdout)
       proc.stderr?.off('data', onStderr)
       proc.off('exit', onExit)
       proc.off('error', onError)
+      const timer = this.stdoutBatchTimers.get(session.id)
+      if (timer) {
+        clearTimeout(timer)
+        this.stdoutBatchTimers.delete(session.id)
+      }
+      this.stdoutBatchBuffers.delete(session.id)
     }
     this.sessionCleanups.set(session.id, detach)
     return detach
@@ -686,9 +733,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 清理环境变量，防止敏感信息泄露给子进程
    * 过滤掉以 BIZGRAPH_ 开头的变量，只保留必要的系统环境变量
    * 实际逻辑委托给 ../shared/env 中的 buildSafeEnv()
+   * 结果按适配器实例缓存，避免每次 spawn 重复计算
    */
   protected buildSafeEnv(): NodeJS.ProcessEnv {
-    return buildSafeEnv(this.name)
+    if (!this.safeEnvCache) {
+      this.safeEnvCache = buildSafeEnv(this.name)
+    }
+    return this.safeEnvCache
   }
 
   /**

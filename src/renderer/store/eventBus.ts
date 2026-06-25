@@ -90,7 +90,7 @@ class EventBus {
   /**
    * 发布事件
    */
-  emit(event: EventName, ...args: unknown[]): void {
+  emit<E extends EventName>(event: E, ...args: EventParamMap[E extends keyof EventParamMap ? E : never]): void {
     const set = this.handlers.get(event)
     if (!set) return
     // Copy handlers before iteration to allow safe removal during iteration

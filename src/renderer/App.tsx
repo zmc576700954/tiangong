@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { LeftPanel } from './panels/LeftPanel'
-import { RightPanel } from './panels/RightPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
 import { GraphTabs } from './components/GraphTabs'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
@@ -8,6 +7,12 @@ import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
+
+const RightPanel = lazy(() => import('./panels/RightPanel').then(m => ({ default: m.RightPanel })))
+
+function RightPanelFallback() {
+  return <div className="h-full w-full flex items-center justify-center bg-background/50" />
+}
 
 function App() {
   const {
@@ -130,6 +135,8 @@ function App() {
               onClick={toggleLeftPanel}
               className="absolute top-2 left-2 z-10 p-1.5 rounded hover:bg-muted transition-colors"
               title="Show project panel"
+              aria-label="Show project panel"
+              aria-expanded="false"
             >
               <PanelLeftOpen className="w-4 h-4 text-muted-foreground" />
             </button>
@@ -142,6 +149,8 @@ function App() {
                   onClick={() => toggleLeftPanel()}
                   className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                   title="Show file tree (Ctrl+B)"
+                  aria-label="Show file tree"
+                  aria-expanded="false"
                 >
                   <PanelLeftOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
                 </button>
@@ -151,6 +160,8 @@ function App() {
                   onClick={() => setRightPanelVisible(true)}
                   className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-l border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
                   title="Show panel (Ctrl+J)"
+                  aria-label="Show right panel"
+                  aria-expanded="false"
                 >
                   <PanelRightOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
                 </button>
@@ -184,11 +195,13 @@ function App() {
                 style={{ width: rightWidth, minWidth: rightWidth }}
                 className="shrink-0"
               >
-                <RightPanel
-                  expandedAgent={expandedAgent}
-                  onToggleExpand={() => setExpandedAgent(!expandedAgent)}
-                  onClose={() => setRightPanelVisible(false)}
-                />
+                <Suspense fallback={<RightPanelFallback />}>
+                  <RightPanel
+                    expandedAgent={expandedAgent}
+                    onToggleExpand={() => setExpandedAgent(v => !v)}
+                    onClose={() => setRightPanelVisible(false)}
+                  />
+                </Suspense>
               </div>
             </ErrorBoundary>
           </>

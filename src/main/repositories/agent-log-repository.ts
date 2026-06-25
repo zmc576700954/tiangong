@@ -43,6 +43,12 @@ export class AgentLogRepository {
     return rows.map((row) => this.parseRow(row))
   }
 
+  /** 删除超过 N 天的旧日志，返回删除条数 */
+  pruneOld(days = 90): number {
+    const info = this.db.prepare("DELETE FROM agent_logs WHERE created_at < datetime('now', ?)").run(`-${days} days`)
+    return info.changes
+  }
+
   private parseRow(row: Record<string, unknown>): AgentLog {
     const requireString = (val: unknown, field: string): string => {
       if (val == null || val === '') {

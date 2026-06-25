@@ -319,7 +319,9 @@ describe('BaseAdapter - Session Lifecycle', () => {
     // Simulate stdout data
     proc!.stdout!.emit('data', Buffer.from('Hello from agent\n'))
 
-    expect(outputs.length).toBeGreaterThan(0)
+    // stdout is batched with a short delay; wait for flush
+    await vi.waitFor(() => expect(outputs.length).toBeGreaterThan(0))
+
     expect(outputs[0].type).toBe('stdout')
     expect(outputs[0].data).toBe('Hello from agent\n')
 

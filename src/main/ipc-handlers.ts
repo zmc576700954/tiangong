@@ -78,38 +78,30 @@ agentManager.setWaterline(contextWaterline)
 
 export { agentManager, contextWaterline }
 
-// COUP-01: 解耦 broadcastOutput 与 BrowserWindow 的直接耦合
-broadcaster.onBroadcast((payload) => {
-  const sessionId = payload.sessionId ?? ''
+/** Broadcast a message to all non-destroyed BrowserWindows */
+function broadcastToWindows(channel: string, ...args: unknown[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send('agent:onOutput', sessionId, payload.output)
+      win.webContents.send(channel, ...args)
     }
   }
+}
+
+// COUP-01: 解耦 broadcastOutput 与 BrowserWindow 的直接耦合
+broadcaster.onBroadcast((payload) => {
+  broadcastToWindows('agent:onOutput', payload.sessionId ?? '', payload.output)
 })
 
 agentManager.setStatusChangeCallback((sessionId, nodeId, status) => {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      win.webContents.send('agent:onStatusChange', sessionId, nodeId, status)
-    }
-  }
+  broadcastToWindows('agent:onStatusChange', sessionId, nodeId, status)
 })
 
 agentManager.setSessionStartedCallback((threadId, sessionId) => {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      win.webContents.send('agent:onSessionStarted', threadId, sessionId)
-    }
-  }
+  broadcastToWindows('agent:onSessionStarted', threadId, sessionId)
 })
 
 agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) {
-      win.webContents.send('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
-    }
-  }
+  broadcastToWindows('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
 })
 
 // Agent 日志持久化回调（延迟注册，需要 db client）
@@ -213,7 +205,8 @@ export async function registerIpcHandlers(): Promise<void> {
   }
 
   /** 获取指定窗口的所有允许路径 */
-  function getSessionAllowedPaths(webContentsId: number): Set<string> {
+  function getSessionAllowedPaths(webContentsId: number | undefined): Set<string> {
+    if (webContentsId === undefined) return new Set<string>()
     return sessionPathsByWindow.get(webContentsId) ?? new Set()
   }
 
@@ -225,10 +218,10 @@ export async function registerIpcHandlers(): Promise<void> {
   })
 
   // ---------- 路径安全校验 ----------
-  /** realpath 缓存：减少高频文件操作时的系统调用开销（TTL 10秒，最大 500 条） */
+  /** realpath 缓存：减少高频文件操作时的系统调用开销（TTL 60秒，最大 2000 条） */
   const realpathCache = new Map<string, { resolved: string; timestamp: number }>()
-  const REALPATH_CACHE_TTL = 10_000
-  const REALPATH_CACHE_MAX = 500
+  const REALPATH_CACHE_TTL = 60_000
+  const REALPATH_CACHE_MAX = 2000
 
   async function cachedRealpath(targetPath: string): Promise<string> {
     const provider = getPlatformProvider()
@@ -262,6 +255,41 @@ export async function registerIpcHandlers(): Promise<void> {
     return resolved
   }
 
+  /** 允许路径根目录缓存：按 senderId 缓存 30 秒，避免每次 FS 操作重复构建 */
+  let allowedRootsCache: { senderId: number | undefined; roots: string[]; timestamp: number } | null = null
+  const ALLOWED_ROOTS_TTL = 30_000
+
+  async function getAllowedRoots(senderId: number | undefined): Promise<string[]> {
+    const now = Date.now()
+    if (
+      allowedRootsCache &&
+      allowedRootsCache.senderId === senderId &&
+      now - allowedRootsCache.timestamp < ALLOWED_ROOTS_TTL
+    ) {
+      return allowedRootsCache.roots
+    }
+
+    const roots: string[] = []
+    roots.push(path.resolve(app.getPath('userData')))
+    roots.push(path.resolve(app.getPath('temp')))
+
+    try {
+      const projectPaths = await graphService.getProjectPaths()
+      for (const projectPath of projectPaths) {
+        roots.push(path.resolve(projectPath))
+      }
+    } catch (err) {
+      logger.warn('Failed to load project paths for path validation:', err)
+    }
+
+    for (const p of getSessionAllowedPaths(senderId)) {
+      roots.push(path.resolve(p))
+    }
+
+    allowedRootsCache = { senderId, roots, timestamp: now }
+    return roots
+  }
+
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
     const { senderId } = getIpcContext()
     // 解析符号链接获取真实路径（带缓存），文件不存在时回退到 path.resolve
@@ -273,25 +301,8 @@ export async function registerIpcHandlers(): Promise<void> {
       throw new IpcError(`Access denied: cannot ${operation} system directory`, ErrorCode.IPC_ACCESS_DENIED)
     }
 
-    // 2. 构建允许的路径根目录
-    const allowedRoots: string[] = []
-    allowedRoots.push(path.resolve(app.getPath('userData')))
-    allowedRoots.push(path.resolve(app.getPath('temp')))
-
-    try {
-      const projectPaths = await graphService.getProjectPaths()
-      for (const projectPath of projectPaths) {
-        allowedRoots.push(path.resolve(projectPath))
-      }
-    } catch (err) {
-      // 数据库可能未就绪，记录日志但不阻塞路径校验
-      logger.warn('Failed to load project paths for path validation:', err)
-    }
-
-    // 会话级允许路径（按窗口隔离）
-    for (const p of getSessionAllowedPaths(senderId)) {
-      allowedRoots.push(path.resolve(p))
-    }
+    // 2. 获取允许的路径根目录（带缓存）
+    const allowedRoots = await getAllowedRoots(senderId)
 
     // 3. 检查是否在允许路径下（normalized 已被 cachedRealpath 解析过，避免重复 realpath）
     for (const root of allowedRoots) {

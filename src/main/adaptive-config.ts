@@ -5,7 +5,7 @@
  * 每个配置项有默认值、上下界和可选的 adaptFn（基于收集的指标自动调整）。
  */
 
-import * as fs from 'fs'
+import { writeFile as fsWriteFile, readFile as fsReadFile } from 'node:fs/promises'
 
 /** 指标样本：可以是简单数值，也可以是包含 ftsScore / embeddingScore 的搜索质量 */
 type MetricSample = number | { ftsScore: number; embeddingScore: number }
@@ -134,19 +134,24 @@ export class AdaptiveConfig {
   }
 
   /** Persist current values and metrics to a JSON file */
-  save(filePath: string): void {
+  async save(filePath: string): Promise<void> {
     const data = {
       values: Object.fromEntries(this.values),
       metrics: Object.fromEntries(this.metrics),
     }
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8')
+    await fsWriteFile(filePath, JSON.stringify(data, null, 2), 'utf-8')
   }
 
   /** Restore values and metrics from a previously saved JSON file */
-  load(filePath: string): void {
-    if (!fs.existsSync(filePath)) return
+  async load(filePath: string): Promise<void> {
+    let raw: string
     try {
-      const raw = fs.readFileSync(filePath, 'utf-8')
+      raw = await fsReadFile(filePath, 'utf-8')
+    } catch {
+      // File doesn't exist or unreadable; use defaults
+      return
+    }
+    try {
       const data = JSON.parse(raw)
       if (data.values && typeof data.values === 'object') {
         for (const [key, value] of Object.entries(data.values)) {
@@ -177,11 +182,9 @@ export class AdaptiveConfig {
   /** Start auto-saving at a regular interval; returns the timer for cleanup */
   startAutoSave(filePath: string, intervalMs = 300_000): NodeJS.Timeout {
     return setInterval(() => {
-      try {
-        this.save(filePath)
-      } catch {
+      this.save(filePath).catch(() => {
         // Best-effort; don't crash on write failure
-      }
+      })
     }, intervalMs)
   }
 

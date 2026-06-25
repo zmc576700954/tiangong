@@ -6,10 +6,46 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { isRelativeTraversal } from '../shared/path-utils'
 import type { FileAnalysis } from './types'
-import { Semaphore } from './types'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('ProjectScanner')
+
+const MAX_CONCURRENCY = 20
+
+async function boundedMap<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R | undefined>,
+): Promise<R[]> {
+  const results: R[] = []
+  let index = 0
+  let active = 0
+  let settled = false
+
+  return new Promise((resolve, reject) => {
+    const startNext = () => {
+      if (settled) return
+      while (active < concurrency && index < items.length) {
+        active++
+        const current = index++
+        fn(items[current])
+          .then((res) => {
+            if (res !== undefined) results.push(res)
+            active--
+            startNext()
+          })
+          .catch((err) => {
+            settled = true
+            reject(err)
+          })
+      }
+      if (active === 0 && index >= items.length) {
+        resolve(results)
+      }
+    }
+    startNext()
+  })
+}
 
 /** 单个文件内容大小上限（字节），超过则跳过以避免内存/性能问题 */
 const MAX_FILE_SIZE_BYTES = 50_000
@@ -89,49 +125,49 @@ export async function analyzeKeyFiles(
   framework: string,
   structure: string[],
 ): Promise<FileAnalysis[]> {
-  const analyses: FileAnalysis[] = []
   const keyFiles = identifyKeyFiles(framework)
-  const semaphore = new Semaphore(20)
 
-  const tasks = structure.map(async (relPath) => {
-    if (relPath.endsWith('/')) return
+  return boundedMap(
+    structure,
+    MAX_CONCURRENCY,
+    async (relPath): Promise<FileAnalysis | undefined> => {
+      if (relPath.endsWith('/')) return undefined
 
-    const ext = path.extname(relPath)
-    const purpose = inferFilePurpose(relPath, ext)
+      const ext = path.extname(relPath)
+      const purpose = inferFilePurpose(relPath, ext)
 
-    // 只读取关键文件的内容
-    if (keyFiles.includes(ext) || purpose !== 'other') {
-      await semaphore.acquire()
+      // 只读取关键文件的内容
+      if (!keyFiles.includes(ext) && purpose === 'other') {
+        return undefined
+      }
+
+      const fullPath = path.resolve(projectPath, relPath)
+      // 验证文件路径在项目目录内，防止路径遍历
+      const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
+      if (isRelativeTraversal(relativeCheck) || path.isAbsolute(relativeCheck)) {
+        logger.warn(`Path traversal detected: ${relPath}`)
+        return undefined
+      }
+
       try {
-        const fullPath = path.resolve(projectPath, relPath)
-        // 验证文件路径在项目目录内，防止路径遍历
-        const relativeCheck = path.relative(path.resolve(projectPath), fullPath)
-        if (isRelativeTraversal(relativeCheck) || path.isAbsolute(relativeCheck)) {
-          logger.warn(`Path traversal detected: ${relPath}`)
-          return
-        }
         // 先检查文件大小，避免把超大文件完整读入内存
         const stat = await fs.stat(fullPath)
         if (stat.size > MAX_FILE_SIZE_BYTES) {
           logger.debug(`Skipping large file (${stat.size} bytes): ${relPath}`)
-          return
+          return undefined
         }
         const content = await fs.readFile(fullPath, 'utf-8')
-        if (content.length > MAX_FILE_SIZE_BYTES) return // 兜底：跳过超大文件
-        analyses.push({
+        if (content.length > MAX_FILE_SIZE_BYTES) return undefined // 兜底：跳过超大文件
+        return {
           filePath: relPath,
           content,
           language: getLanguage(ext),
           purpose,
-        })
+        }
       } catch (err) {
         logger.warn(`Failed to read ${relPath}:`, err)
-      } finally {
-        semaphore.release()
+        return undefined
       }
-    }
-  })
-
-  await Promise.all(tasks)
-  return analyses
+    },
+  )
 }

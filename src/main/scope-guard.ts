@@ -197,12 +197,12 @@ async function computeContentHash(filePath: string, fileSize: number): Promise<s
       try {
         const buffer = Buffer.alloc(sampleSize)
         await fd.read(buffer, 0, sampleSize, 0)
-        // 混合文件大小与内容采样，防止仅大小相同但内容不同的碰撞
-        const hash = crypto.createHash('sha256')
+        // 使用 SHA-1 替代 SHA-256：Node.js 内部为 C 实现，速度更快，
+        // 且无需 native 模块编译，适配低配机和普通用户环境。
+        const hash = crypto.createHash('sha1')
         hash.update(buffer)
         hash.update(Buffer.from(fileSize.toString()))
-        // SHA-256 truncated to 64 bits (16 hex chars). Birthday paradox gives ~1 in 4B
-        // collision probability. Acceptable for file integrity checking with automatic rollback on mismatch.
+        // 截断至 64 bit（16 十六进制字符），降低内存与比对开销。
         return hash.digest('hex').substring(0, 16)
       } finally {
         await fd.close()
@@ -288,8 +288,8 @@ export class ScopeGuard {
       const backupPath = path.join(backupDir, relativePath)
       await fs.mkdir(path.dirname(backupPath), { recursive: true })
       try {
-        const content = await fs.readFile(srcPath)
-        await fs.writeFile(backupPath, content)
+        // 使用 copyFile 避免把文件完整读入用户态内存，降低低配机内存压力
+        await fs.copyFile(srcPath, backupPath)
       } catch (e) {
         // ENOENT is expected (file may not exist yet); other errors need attention
         if (!isErrorWithCode(e) || e.code !== 'ENOENT') {
@@ -316,8 +316,10 @@ export class ScopeGuard {
     const watchedDirs = new Set<string>()
 
     // 始终监控工作目录本身，覆盖白名单目录之外的项目文件
-    watchedDirs.add(workingDir)
-    watchPaths.push(workingDir)
+    if (!watchedDirs.has(workingDir)) {
+      watchedDirs.add(workingDir)
+      watchPaths.push(workingDir)
+    }
 
     for (const filePath of sanitizedFiles) {
       const dir = path.dirname(filePath)
@@ -718,7 +720,8 @@ export class ScopeGuard {
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
-    } catch {
+    } catch (err) {
+      logger.debug(`Skipping directory (no permission or deleted): ${dir}`, err)
       return // 跳过无权限目录
     }
 
@@ -743,7 +746,8 @@ export class ScopeGuard {
         try {
           const stat = await fs.stat(filePath)
           return { filePath, stat }
-        } catch {
+        } catch (err) {
+          logger.debug(`stat failed for ${filePath}`, err)
           return null
         }
       }),
@@ -927,8 +931,8 @@ export class ScopeGuard {
                 if (stat.mtimeMs !== snap.mtimeMs) {
                   violations.push(fullPath)
                 }
-              } catch {
-                // 文件可能已被删除，忽略
+              } catch (err) {
+                logger.debug(`stat failed during violation scan: ${fullPath}`, err)
               }
             }
           }
@@ -936,8 +940,8 @@ export class ScopeGuard {
           await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1, initialSnapshot, scanStartTime)
         }
       }
-    } catch {
-      // 忽略无权限目录
+    } catch (err) {
+      logger.debug(`scanDirRecursive failed for ${dir}`, err)
     }
   }
 
@@ -978,7 +982,8 @@ export class ScopeGuard {
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
-    } catch {
+    } catch (err) {
+      logger.warn(`cleanupEmptyDirs: failed to read directory ${dir}`, err)
       return
     }
 
@@ -998,8 +1003,8 @@ export class ScopeGuard {
         await fs.rmdir(dir)
         logger.warn(`Deleted empty directory (may not have been created by agent): ${dir}`)
       }
-    } catch {
-      // 忽略删除错误
+    } catch (err) {
+      logger.warn(`cleanupEmptyDirs: failed to remove directory ${dir}`, err)
     }
   }
 

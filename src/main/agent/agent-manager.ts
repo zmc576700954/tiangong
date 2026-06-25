@@ -185,6 +185,28 @@ export class AgentManager {
     }
   }
 
+  /** 全局子进程数硬上限：防止低配机同时跑大量子进程耗尽 fd/内存 */
+  private readonly MAX_PROCESSES = Math.min(this.MAX_SESSIONS, Math.max(4, os.cpus().length * 2))
+
+  /** 会话输出缓冲区上限：根据可用内存自适应 */
+  private calculateOutputBufferCap(): number {
+    try {
+      const freeMemMB = os.freemem() / 1024 / 1024
+      return Math.max(100, Math.min(2000, Math.floor(freeMemMB / 50)))
+    } catch {
+      return 500
+    }
+  }
+
+  /** 统计所有适配器当前活跃子进程总数 */
+  private countActiveProcesses(): number {
+    let count = 0
+    for (const adapter of this.registry.list()) {
+      count += (adapter as BaseAdapter).getProcessCount?.() ?? 0
+    }
+    return count
+  }
+
   constructor(
     private registry: AdapterRegistry,
     private router: SessionRouter,
@@ -377,13 +399,14 @@ export class AgentManager {
 
     // Wait for all async operations (adapter terminate + sandbox rollback) to settle
     // before clearing state, so that resources are truly released before overlap is possible.
-    // A timer logs a warning if cleanup takes too long, but we still await settlement
-    // to avoid deleting state while a hanging operation might still touch it.
-    const cleanupTimeout = setTimeout(() => {
-      logger.warn(`Session ${sessionId} cleanup is taking longer than ${CLEANUP_ASYNC_TIMEOUT_MS}ms; waiting for pending operations to settle before removing state`)
-    }, CLEANUP_ASYNC_TIMEOUT_MS)
-    await Promise.allSettled(pendingOps)
-    clearTimeout(cleanupTimeout)
+    // A hard timeout prevents a hanging operation from permanently blocking cleanup.
+    const cleanupTimeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        logger.error(`Session ${sessionId} cleanup exceeded ${CLEANUP_ASYNC_TIMEOUT_MS}ms; force-progressing state cleanup`)
+        resolve()
+      }, CLEANUP_ASYNC_TIMEOUT_MS)
+    })
+    await Promise.race([Promise.allSettled(pendingOps), cleanupTimeout])
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
     const listeners = this.sessionOutputListenerIndex.get(sessionId)
@@ -782,6 +805,12 @@ export class AgentManager {
 
     const fallbackHistory: AdapterFallbackAttempt[] = []
 
+    // 检查系统剩余内存，低配机接近耗尽时拒绝新建会话
+    if (os.freemem() < 512 * 1024 * 1024) {
+      logger.error('Insufficient free memory (<512MB), refusing to create new session')
+      throw new AgentError('Insufficient free memory to start a new agent session', ErrorCode.AGENT_RESOURCE_EXHAUSTED)
+    }
+
     // 检查会话上限，防止无限创建
     // reservedSlots tracks in-flight startSession calls to prevent TOCTOU races
     // on the capacity check; real sessions are in sessionStates.
@@ -790,6 +819,10 @@ export class AgentManager {
     if (activeSessions + pendingReservations >= this.MAX_SESSIONS) {
       logger.error(`Maximum session limit (${this.MAX_SESSIONS}) reached, cannot create new session`)
       throw new AgentError('Maximum concurrent sessions exceeded', ErrorCode.AGENT_SESSION_LIMIT)
+    }
+    if (this.countActiveProcesses() >= this.MAX_PROCESSES) {
+      logger.error(`Maximum process limit (${this.MAX_PROCESSES}) reached, cannot create new session`)
+      throw new AgentError('Maximum concurrent agent processes exceeded', ErrorCode.AGENT_RESOURCE_EXHAUSTED)
     }
     // Reserve a slot key to prevent TOCTOU race
     const slotKey = `__reserved_${Date.now()}_${Math.random().toString(36).slice(2)}`
@@ -908,8 +941,8 @@ export class AgentManager {
           if (output.type === 'stdout' || output.type === 'stderr' || output.type === 'file_change' || output.type === 'complete') {
             sessionOutputs.push(output)
             // 限制缓冲区大小，防止内存无限增长
-            if (sessionOutputs.length > 500) {
-              sessionOutputs.splice(0, sessionOutputs.length - 500)
+            if (sessionOutputs.length > this.calculateOutputBufferCap()) {
+              sessionOutputs.splice(0, sessionOutputs.length - this.calculateOutputBufferCap())
             }
           }
         })

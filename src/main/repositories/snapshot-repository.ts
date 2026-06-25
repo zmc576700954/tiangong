@@ -22,10 +22,10 @@ export class SnapshotRepository {
     return { id, graphId, name, data: { nodes, edges }, gitCommit, createdAt: now }
   }
 
-  listByGraph(graphId: string): Omit<GraphSnapshot, 'data'>[] {
+  listByGraph(graphId: string, limit = 50): Omit<GraphSnapshot, 'data'>[] {
     const rows = this.db.prepare(
-      'SELECT id, graph_id, name, git_commit, created_at FROM snapshots WHERE graph_id = ? ORDER BY created_at DESC'
-    ).all(graphId) as Record<string, unknown>[]
+      'SELECT id, graph_id, name, git_commit, created_at FROM snapshots WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?'
+    ).all(graphId, limit) as Record<string, unknown>[]
     return rows.map((row) => ({
       id: row.id as string,
       graphId: row.graph_id as string,
@@ -33,6 +33,16 @@ export class SnapshotRepository {
       gitCommit: (row.git_commit as string | null) ?? undefined,
       createdAt: row.created_at as string,
     }))
+  }
+
+  /** 只保留每个图最新的 keepCount 个 snapshot，删除更旧的 */
+  pruneOldSnapshots(graphId: string, keepCount = 20): void {
+    const ids = this.db.prepare(
+      'SELECT id FROM snapshots WHERE graph_id = ? ORDER BY created_at DESC LIMIT -1 OFFSET ?'
+    ).all(graphId, keepCount) as { id: string }[]
+    if (ids.length === 0) return
+    const placeholders = ids.map(() => '?').join(',')
+    this.db.prepare(`DELETE FROM snapshots WHERE id IN (${placeholders})`).run(...ids.map((r) => r.id))
   }
 
   load(id: string): GraphSnapshot | null {

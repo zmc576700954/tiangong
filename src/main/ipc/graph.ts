@@ -10,7 +10,7 @@ import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
-import type { GraphNode, BugNode, GraphType, NodeStatus } from '@shared/types'
+import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
@@ -109,8 +109,8 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     return graphService.listGraphs()
   })
 
-  typedHandle('graph:get', async (_, id) => {
-    return graphService.getGraph(id)
+  typedHandle('graph:get', async (_, id: string, options?: GraphFetchOptions) => {
+    return graphService.getGraph(id, options)
   })
 
   typedHandle('graph:delete', async (_, id) => {

@@ -17,6 +17,7 @@ import { analyzeKeyFiles } from './file-analyzer'
 import { extractRoutes } from './route-parser'
 import { extractEntities } from './entity-parser'
 import { buildModules } from './module-builder'
+import { readProjectScanCache, writeProjectScanCache } from './cache'
 
 /** 从 package.json 提取统一格式的元数据 */
 function mapPackageJson(
@@ -40,6 +41,11 @@ export class ProjectScanner {
    */
   async scan(projectPath: string): Promise<ProjectScanResult> {
     const projectName = path.basename(projectPath)
+
+    const cached = await readProjectScanCache(projectPath)
+    if (cached) {
+      return cached
+    }
 
     // 1. 读取配置文件
     const configs = await readConfigs(projectPath)
@@ -70,12 +76,16 @@ export class ProjectScanner {
       entities,
     )
 
-    return {
+    const result: ProjectScanResult = {
       projectName,
       projectPath,
       framework,
       packageJson: mapPackageJson(configs.packageJson, projectName),
       modules,
     }
+
+    await writeProjectScanCache(projectPath, result)
+
+    return result
   }
 }

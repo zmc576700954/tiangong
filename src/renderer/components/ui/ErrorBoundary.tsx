@@ -5,6 +5,11 @@ interface ErrorBoundaryProps {
   label?: string
   /** 错误上报回调；如需发送到主进程日志，可在外部通过 IPC 包装 */
   onError?: (error: Error, errorInfo: React.ErrorInfo) => void
+  /**
+   * When this key changes, the boundary auto-resets.
+   * Use to force child components to remount with fresh state after an error.
+   */
+  resetKey?: string | number
 }
 
 interface ErrorBoundaryState {
@@ -27,6 +32,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     this.props.onError?.(error, errorInfo)
   }
 
+  componentDidUpdate(prevProps: ErrorBoundaryProps) {
+    // Auto-reset when resetKey changes
+    if (this.state.hasError && this.props.resetKey !== prevProps.resetKey) {
+      this.setState({ hasError: false, error: undefined })
+    }
+  }
+
   private reset = () => {
     this.setState({ hasError: false, error: undefined })
   }
@@ -45,12 +57,14 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               <button
                 onClick={this.reset}
                 className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm hover:bg-secondary/90"
+                aria-label={`重试${label}`}
               >
                 重试
               </button>
               <button
                 onClick={() => window.location.reload()}
                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm hover:bg-primary/90"
+                aria-label="重新加载页面"
               >
                 重新加载
               </button>

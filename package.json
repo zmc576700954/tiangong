@@ -20,7 +20,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.ts",
-    "build:win:msix": "electron-builder --win msix",
+    "build:win:appx": "electron-builder --win appx",
     "build:all": "electron-builder --mac --win --linux",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -80,9 +80,13 @@
     "vite-plugin-electron-renderer": "^0.14.0",
     "vitest": "^4.1.7"
   },
+  "overrides": {
+    "sharp": "file:./stubs/sharp"
+  },
   "build": {
     "appId": "com.bizgraph.app",
     "productName": "BizGraph",
+    "buildDependenciesFromSource": false,
     "directories": {
       "output": "release"
     },
@@ -105,15 +109,14 @@
     "win": {
       "target": [
         { "target": "nsis", "arch": ["x64", "arm64"] },
-        { "target": "msix", "arch": ["x64", "arm64"] }
+        { "target": "appx", "arch": ["x64", "arm64"] }
       ]
     },
-    "msix": {
+    "appx": {
       "identityName": "com.bizgraph.app",
       "publisher": "CN=BizGraph",
       "publisherDisplayName": "BizGraph",
-      "languages": ["zh-CN", "en-US"],
-      "store": false
+      "languages": ["zh-CN", "en-US"]
     },
     "linux": {
       "target": [

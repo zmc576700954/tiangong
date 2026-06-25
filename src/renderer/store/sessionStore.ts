@@ -170,7 +170,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     if (typeof window === 'undefined' || !window.electronAPI?.onNodeStatusChange) return () => {}
     const cleanup = window.electronAPI.onNodeStatusChange(
       (nodeId: string, oldStatus: string, newStatus: string) => {
-        eventBus.emit(Events.NODE_STATUS_CHANGE, { nodeId, oldStatus, newStatus })
+        eventBus.emit(Events.NODE_STATUS_CHANGE, nodeId, oldStatus, newStatus)
       },
     )
     return cleanup
@@ -401,7 +401,20 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   loadSnapshot: (threadId) => {
     // First check in-memory Map
     const inMemory = get().sessionSnapshots.get(threadId)
-    if (inMemory) return inMemory
+    if (inMemory) {
+      // Check expiry: discard snapshots older than 24 hours
+      const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000
+      if (Date.now() - inMemory.savedAt > SNAPSHOT_TTL_MS) {
+        set((state) => {
+          const next = new Map(state.sessionSnapshots)
+          next.delete(threadId)
+          return { sessionSnapshots: next }
+        })
+        localStorage.removeItem(`bizgraph:snapshot:${threadId}`)
+        return null
+      }
+      return inMemory
+    }
 
     // Then check localStorage
     try {
@@ -410,6 +423,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const parsed = JSON.parse(stored) as SessionSnapshot
         // Basic schema validation: ensure critical fields exist
         if (parsed && Array.isArray(parsed.messages) && typeof parsed.savedAt === 'number') {
+          // Check expiry: discard snapshots older than 24 hours
+          const SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000
+          if (Date.now() - parsed.savedAt > SNAPSHOT_TTL_MS) {
+            localStorage.removeItem(`bizgraph:snapshot:${threadId}`)
+            return null
+          }
           set((state) => {
             const next = new Map(state.sessionSnapshots)
             next.set(threadId, parsed)
@@ -464,6 +483,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const existing = map.get(requestId)
     if (existing) {
       map.set(requestId, { ...existing, status, startedAt: status === 'executing' ? Date.now() : existing.startedAt })
+    }
+    // Auto-cleanup: remove completed/errored entries after 5 seconds
+    if (status === 'done') {
+      setTimeout(() => { get().removeRequestStatus(requestId) }, 5000)
     }
     return { requestStatuses: map }
   }),

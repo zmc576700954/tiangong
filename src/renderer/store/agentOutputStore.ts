@@ -33,6 +33,8 @@ interface AgentOutputState {
   clearThreadOutputs: (threadId: string) => void
   /** 裁剪非活跃 thread 的输出到保留上限 */
   trimInactiveThreadOutputs: (activeThreadId: string) => void
+  /** 移除指定 thread 的所有输出（线程删除时调用） */
+  removeThreadOutputs: (threadId: string) => void
   /** 获取指定 thread 的所有输出 */
   getOutputs: (threadId: string) => AgentOutput[]
 }
@@ -133,6 +135,15 @@ export const useAgentOutputStore = create<AgentOutputState>((_set, get) => ({
       return changed
         ? { threadOutputs: { ...state.threadOutputs, ...updated } }
         : state
+    })
+  },
+
+  /** Remove all outputs for a thread (call when thread is deleted) */
+  removeThreadOutputs: (threadId) => {
+    _set((state) => {
+      if (!(threadId in state.threadOutputs)) return state
+      const { [threadId]: _, ...rest } = state.threadOutputs
+      return { threadOutputs: rest }
     })
   },
 

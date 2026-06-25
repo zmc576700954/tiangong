@@ -9,6 +9,8 @@ interface UseCanvasKeyboardOptions {
   /** 连线模式下按 Esc 取消 */
   isConnecting?: boolean
   onCancelConnect?: () => void
+  /** 请求删除确认（若提供，则不再直接删除） */
+  onRequestDeleteConfirm?: (target: 'node' | 'edge') => void
 }
 
 export function useCanvasKeyboard({
@@ -19,7 +21,8 @@ export function useCanvasKeyboard({
   onDeselect,
   isConnecting,
   onCancelConnect,
-}: UseCanvasKeyboardOptions) {
+  onRequestDeleteConfirm,
+}: UseCanvasKeyboardOptions): { clearConfirmPending: () => void } {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Esc 取消连线模式或取消选中
@@ -39,15 +42,25 @@ export function useCanvasKeyboard({
         // 连线模式下不响应删除键
         if (isConnecting) return
         if (selectedNodeId) {
-          onDeleteNode(selectedNodeId)
-          onDeselect()
+          if (onRequestDeleteConfirm) {
+            onRequestDeleteConfirm('node')
+          } else {
+            onDeleteNode(selectedNodeId)
+            onDeselect()
+          }
         } else if (selectedEdgeId) {
-          onDeleteEdge(selectedEdgeId)
-          onDeselect()
+          if (onRequestDeleteConfirm) {
+            onRequestDeleteConfirm('edge')
+          } else {
+            onDeleteEdge(selectedEdgeId)
+            onDeselect()
+          }
         }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [selectedNodeId, selectedEdgeId, onDeleteNode, onDeleteEdge, onDeselect, isConnecting, onCancelConnect])
+  }, [selectedNodeId, selectedEdgeId, onDeleteNode, onDeleteEdge, onDeselect, isConnecting, onCancelConnect, onRequestDeleteConfirm])
+
+  return { clearConfirmPending: () => {} }
 }

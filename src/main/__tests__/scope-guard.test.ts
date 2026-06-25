@@ -74,12 +74,52 @@ function modifyFile(filePath: string, newContent: string, newMtimeMs: number) {
 vi.mock('node:fs/promises', () => {
   return {
     default: {
-      mkdir: vi.fn().mockResolvedValue(undefined),
+      mkdir: vi.fn().mockImplementation((dirPath: string, options?: { recursive?: boolean }) => {
+        if (options?.recursive) {
+          const parts = dirPath.split(path.sep)
+          for (let i = 1; i <= parts.length; i++) {
+            const partial = parts.slice(0, i).join(path.sep) || path.sep
+            if (!fsState.dirs.has(partial)) {
+              fsState.dirs.set(partial, { subdirs: [], files: [] })
+            }
+            if (i > 1) {
+              const parent = parts.slice(0, i - 1).join(path.sep) || path.sep
+              const parentDir = fsState.dirs.get(parent)
+              const base = parts[i - 1]
+              if (parentDir && !parentDir.subdirs.includes(base)) {
+                parentDir.subdirs.push(base)
+              }
+            }
+          }
+        } else {
+          fsState.dirs.set(dirPath, { subdirs: [], files: [] })
+          const parent = path.dirname(dirPath)
+          const parentDir = fsState.dirs.get(parent)
+          const base = path.basename(dirPath)
+          if (parentDir && !parentDir.subdirs.includes(base)) {
+            parentDir.subdirs.push(base)
+          }
+        }
+        return Promise.resolve(undefined)
+      }),
       readFile: vi.fn().mockImplementation((filePath: string) => {
         const entry = fsState.files.get(filePath)
         return Promise.resolve(entry?.content ?? 'default backup content')
       }),
       writeFile: vi.fn().mockResolvedValue(undefined),
+      copyFile: vi.fn().mockImplementation((srcPath: string, destPath: string) => {
+        const entry = fsState.files.get(srcPath)
+        if (entry) {
+          fsState.files.set(destPath, { ...entry })
+        }
+        const dirPath = path.dirname(destPath)
+        const dir = fsState.dirs.get(dirPath)
+        const base = path.basename(destPath)
+        if (dir && !dir.files.includes(base)) {
+          dir.files.push(base)
+        }
+        return Promise.resolve(undefined)
+      }),
       rm: vi.fn().mockResolvedValue(undefined),
       readdir: vi.fn().mockImplementation((dirPath: string, options?: { withFileTypes?: boolean }) => {
         const dir = fsState.dirs.get(dirPath)

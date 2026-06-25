@@ -135,6 +135,8 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
         nodeThreadMap: newNodeThreadMap,
       }
     })
+    // Clean up output store for the deleted thread
+    useAgentOutputStore.getState().removeThreadOutputs(threadId)
   },
 
   selectThread: (id) => {

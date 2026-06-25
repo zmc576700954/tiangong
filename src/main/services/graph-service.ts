@@ -4,7 +4,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
-import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule } from '@shared/types'
+import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule, GraphFetchOptions } from '@shared/types'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import type { AgentManager } from '../agent/agent-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
@@ -79,8 +79,8 @@ export class GraphService {
     return this.graphRepo.list()
   }
 
-  getGraph(id: string) {
-    return this.graphRepo.get(id)
+  getGraph(id: string, options?: GraphFetchOptions) {
+    return this.graphRepo.get(id, options)
   }
 
   deleteGraph(id: string): void {
@@ -305,13 +305,14 @@ export class GraphService {
       const metadataStr = String((row as Record<string, unknown>).metadata)
       try {
         const metadata = JSON.parse(metadataStr)
+        if (!metadata || typeof metadata !== 'object') continue
         const files = metadata.fileAssociations?.map((f: { path: string }) => f.path) ?? []
         nodeFiles.set(nodeId, files)
         for (const file of files) {
           fileToNode.set(file, nodeId)
         }
-      } catch {
-        // 忽略无效 metadata
+      } catch (err) {
+        logger.debug(`Invalid metadata JSON for node ${nodeId}`, err)
       }
     }
 

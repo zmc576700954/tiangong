@@ -1,11 +1,16 @@
 /**
  * Backward-compatible re-export layer for the split agent sub-stores.
  *
+ * @deprecated New code should import sub-stores directly:
+ *   - useAdapterStore from './adapterStore'
+ *   - useThreadStore from './threadStore'
+ *   - useMessageStore from './messageStore'
+ *   - useSessionStore from './sessionStore'
+ *   - useAgentOutputStore from './agentOutputStore'
+ *
  * All components that import useAgentStore continue to work unchanged.
  * Each method delegates to the appropriate sub-store, and state changes
  * in sub-stores are synced back so that getState() reflects the truth.
- *
- * TODO: migrate components to use sub-stores directly
  */
 
 import { create } from 'zustand'
@@ -73,9 +78,6 @@ interface AgentState {
 // eslint-disable-next-line prefer-const
 let _originalSetState: typeof useAgentStore.setState
 
-let _adapterPending = false
-let _threadPending = false
-
 function syncFromSubStores() {
   _originalSetState({
     adapters: useAdapterStore.getState().adapters,
@@ -88,40 +90,22 @@ function syncFromSubStores() {
   })
 
   const unsubAdapter = useAdapterStore.subscribe((state) => {
-    if (_adapterPending) return
-    _adapterPending = true
-    const run = () => {
-      _adapterPending = false
-      _originalSetState({
-        adapters: state.adapters,
-        adapterPreferences: state.adapterPreferences,
-        lastFallbackHistory: state.lastFallbackHistory,
-        marketplaceItems: state.marketplaceItems,
-        openSettingsPanel: state.openSettingsPanel,
-      })
-    }
-    if (typeof requestAnimationFrame !== 'undefined') {
-      requestAnimationFrame(run)
-    } else {
-      run()
-    }
+    // Sync immediately so getState() reflects sub-store truth for synchronous
+    // callers (e.g. tests and legacy code that expects agentStore to be current).
+    _originalSetState({
+      adapters: state.adapters,
+      adapterPreferences: state.adapterPreferences,
+      lastFallbackHistory: state.lastFallbackHistory,
+      marketplaceItems: state.marketplaceItems,
+      openSettingsPanel: state.openSettingsPanel,
+    })
   })
 
   const unsubThread = useThreadStore.subscribe((state) => {
-    if (_threadPending) return
-    _threadPending = true
-    const run = () => {
-      _threadPending = false
-      _originalSetState({
-        threads: state.threads,
-        currentThreadId: state.currentThreadId,
-      })
-    }
-    if (typeof requestAnimationFrame !== 'undefined') {
-      requestAnimationFrame(run)
-    } else {
-      run()
-    }
+    _originalSetState({
+      threads: state.threads,
+      currentThreadId: state.currentThreadId,
+    })
   })
 
   return () => {
@@ -305,11 +289,10 @@ useAgentStore.setState = function overrideSetState(
     : partial
 
   if (resolved.threads !== undefined || resolved.currentThreadId !== undefined) {
-    const threadSlice: Partial<AgentState> = {}
-    if (resolved.threads !== undefined) threadSlice.threads = resolved.threads
-    if (resolved.currentThreadId !== undefined) threadSlice.currentThreadId = resolved.currentThreadId
-    // Only set the data fields, not the methods
-    useThreadStore.setState({ threads: threadSlice.threads!, currentThreadId: threadSlice.currentThreadId } as Record<string, unknown>, false)
+    const threadUpdate: { threads?: AgentThread[]; currentThreadId?: string | null } = {}
+    if (resolved.threads !== undefined) threadUpdate.threads = resolved.threads as AgentThread[]
+    if (resolved.currentThreadId !== undefined) threadUpdate.currentThreadId = resolved.currentThreadId
+    useThreadStore.setState(threadUpdate, false)
   }
 
   if (

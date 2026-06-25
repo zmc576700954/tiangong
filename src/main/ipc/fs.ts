@@ -12,6 +12,20 @@ import type { FileSearchResult } from '@shared/types'
 import { IpcError, ErrorCode } from '../errors'
 import { isErrorWithCode } from '../shared/errno'
 
+const STAT_CACHE_TTL_MS = 5000
+const statCache = new Map<string, { stat: Awaited<ReturnType<typeof fs.stat>>; timestamp: number }>()
+
+async function cachedStat(filePath: string): Promise<Awaited<ReturnType<typeof fs.stat>>> {
+  const now = Date.now()
+  const cached = statCache.get(filePath)
+  if (cached && now - cached.timestamp < STAT_CACHE_TTL_MS) {
+    return cached.stat
+  }
+  const stat = await fs.stat(filePath)
+  statCache.set(filePath, { stat, timestamp: now })
+  return stat
+}
+
 export type ValidateFsPath = (targetPath: string, operation: 'read' | 'write') => Promise<string>
 
 async function throwIfExists(filePath: string, name: string): Promise<void> {
@@ -42,9 +56,15 @@ export async function searchFilesRecursive(
   if (!query) return []
   const results: FileSearchResult[] = []
   const q = query.toLowerCase()
+  const concurrency = 10
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: dirPath, depth: 0 }]
+  let running = 0
+  let finished = false
 
-  async function walk(dir: string, depth: number) {
-    if (results.length >= limit || depth > maxDepth) return
+  const shouldStop = () => finished || results.length >= limit
+
+  const processDir = async (dir: string, depth: number) => {
+    if (shouldStop() || depth > maxDepth) return
     let entries: Dirent[]
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
@@ -53,7 +73,7 @@ export async function searchFilesRecursive(
     }
 
     for (const entry of entries) {
-      if (results.length >= limit) return
+      if (shouldStop()) return
       if (SKIP_DIRS.has(entry.name)) continue
 
       const fullPath = path.join(dir, entry.name)
@@ -68,13 +88,40 @@ export async function searchFilesRecursive(
       }
 
       if (entry.isDirectory()) {
-        await walk(fullPath, depth + 1)
+        queue.push({ dir: fullPath, depth: depth + 1 })
       }
     }
   }
 
-  await walk(dirPath, 0)
-  return results
+  return new Promise((resolve) => {
+    const checkDone = () => {
+      if (queue.length === 0 && running === 0) {
+        finished = true
+        resolve(results)
+      }
+    }
+
+    const worker = async () => {
+      while (!finished) {
+        const item = queue.shift()
+        if (!item) break
+        running++
+        try {
+          await processDir(item.dir, item.depth)
+        } finally {
+          running--
+          if (!finished) checkDone()
+        }
+      }
+    }
+
+    for (let i = 0; i < concurrency; i++) {
+      worker().catch(() => {})
+    }
+
+    // 兜底：如果队列为空且没有运行中任务，立即 resolve
+    checkDone()
+  })
 }
 
 export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: TypedHandle): void {
@@ -132,7 +179,7 @@ export function registerFsHandlers(validateFsPath: ValidateFsPath, typedHandle: 
       entries.map(async (entry) => {
         const fullPath = path.join(validPath, entry.name)
         try {
-          const stat = await fs.stat(fullPath)
+          const stat = await cachedStat(fullPath)
           return {
             name: entry.name,
             path: fullPath,

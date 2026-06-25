@@ -4,7 +4,7 @@
  */
 
 import type {
-  Graph, GraphType, GraphNode, GraphEdge, BugNode, GraphSnapshot,
+  Graph, GraphType, GraphNode, GraphEdge, BugNode, GraphSnapshot, GraphFetchOptions,
   NodeStatus, ContextRef,
   ProjectScanResult, ScanModule, NodeEnrichment, NodeType,
 } from './graph'
@@ -21,7 +21,6 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
-
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -30,7 +29,7 @@ export interface IpcApi {
   // 图操作
   'graph:create': (data: { name: string; type: GraphType }) => Promise<Graph>
   'graph:list': () => Promise<Graph[]>
-  'graph:get': (id: string) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
+  'graph:get': (id: string, options?: GraphFetchOptions) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>
   'graph:derive': (sourceGraphId: string, name?: string) => Promise<Graph>
 
@@ -201,4 +200,11 @@ export interface IpcApi {
 export interface IpcEventMap {
   'agent:onOutput': (sessionId: string, output: AgentOutput) => void
   'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
+  'agent:onSessionStarted': (threadId: string, sessionId: string) => void
+  'event:NODE_STATUS_CHANGE': (nodeId: string, oldStatus: string, newStatus: string) => void
+  'session:recovered': (sessionId: string, newSessionId: string) => void
+  'session:recoveryFailed': (sessionId: string, reason: string) => void
+  'waterline:change': (state: ContextState) => void
+  'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
+  'menu:openProject': (projectPath: string) => void
 }

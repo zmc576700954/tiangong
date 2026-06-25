@@ -240,6 +240,21 @@ export interface PackageJsonInfo {
   devDependencies: string[]
 }
 
+export interface GraphViewportBounds {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+export interface GraphFetchOptions {
+  viewport?: GraphViewportBounds
+  limit?: number
+  offset?: number
+  edgeLimit?: number
+  bugLimit?: number
+}
+
 export interface ProjectScanResult {
   projectName: string
   projectPath: string
@@ -348,21 +363,17 @@ export interface NodeStatusTransition {
   condition?: string
 }
 
-/** 各节点类型允许的状态转换矩阵 */
+/** 各节点类型允许的状态转换矩阵
+ *  与 state-machine.ts TRANSITION_RULES 保持一致，per-node-type 更严格子集。
+ *  validateTransitionConsistency() 在启动时检查两者一致性。 */
 export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> = {
   project: [
     { from: 'draft', to: 'confirmed' },
-  ],
-  module: [
-    { from: 'draft', to: 'confirmed' },
     { from: 'confirmed', to: 'developing' },
-  ],
-  process: [
-    { from: 'draft', to: 'confirmed' },
-    { from: 'confirmed', to: 'developing' },
-  ],
-  feature: [
-    { from: 'placeholder', to: 'developing' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'draft' },
     { from: 'developing', to: 'placeholder' },
     { from: 'developing', to: 'testing' },
     { from: 'testing', to: 'developing' },
@@ -370,9 +381,63 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
     { from: 'review', to: 'testing' },
     { from: 'review', to: 'published' },
   ],
+  module: [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'developing' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'draft' },
+    { from: 'developing', to: 'placeholder' },
+    { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'developing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
+    { from: 'review', to: 'published' },
+  ],
+  process: [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'developing' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'draft' },
+    { from: 'developing', to: 'placeholder' },
+    { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'developing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
+    { from: 'review', to: 'published' },
+  ],
+  feature: [
+    { from: 'placeholder', to: 'developing' },
+    { from: 'placeholder', to: 'draft' },
+    { from: 'placeholder', to: 'confirmed' },
+    { from: 'draft', to: 'confirmed' },
+    { from: 'draft', to: 'developing' },
+    { from: 'draft', to: 'placeholder' },
+    { from: 'confirmed', to: 'developing' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'developing', to: 'placeholder' },
+    { from: 'developing', to: 'testing' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'draft' },
+    { from: 'testing', to: 'developing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
+    { from: 'review', to: 'published' },
+  ],
   bug: [
     { from: 'draft', to: 'developing' },
+    { from: 'draft', to: 'confirmed' },
+    { from: 'draft', to: 'placeholder' },
+    { from: 'confirmed', to: 'developing' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
     { from: 'developing', to: 'draft' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'placeholder' },
     { from: 'developing', to: 'testing' },
     { from: 'testing', to: 'developing' },
     { from: 'testing', to: 'review' },

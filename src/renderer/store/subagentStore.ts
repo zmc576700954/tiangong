@@ -35,6 +35,9 @@ interface SubagentState {
 
 const MAX_OUTPUT_PER_INVOCATION = 500
 
+/** Valid status values for SubagentInvocation — used for runtime validation */
+const VALID_SUBAGENT_STATUSES = new Set<string>(['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'])
+
 export const useSubagentStore = create<SubagentState>((set) => ({
   invocations: [],
   outputsByInvocation: new Map(),
@@ -67,6 +70,11 @@ export const useSubagentStore = create<SubagentState>((set) => ({
   },
 
   applyProgress: ({ invocationId, status, error }) => {
+    // Validate status before applying to prevent invalid states from IPC
+    if (!VALID_SUBAGENT_STATUSES.has(status)) {
+      console.warn(`[subagentStore] Ignoring invalid subagent status: "${status}" for invocation ${invocationId}`)
+      return
+    }
     set((s) => {
       const invocations = s.invocations.map((inv) =>
         inv.id === invocationId

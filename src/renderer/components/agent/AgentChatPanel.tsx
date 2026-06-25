@@ -477,7 +477,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 <span>已从 {originalAdapter} 降级到 {currentAdapter}，部分功能不可用</span>
                 <button
                   onClick={() => {
-                    eventBus.emit(Events.OPEN_ADAPTER_SELECTOR, {})
+                    eventBus.emit(Events.OPEN_ADAPTER_SELECTOR)
                   }}
                   className="text-[10px] px-2 py-0.5 rounded border border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900 ml-2"
                 >

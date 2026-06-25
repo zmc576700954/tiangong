@@ -11,12 +11,23 @@ import { canTransition } from '@shared/state-machine'
 /** Agent 状态变更事件取消订阅函数 */
 let _unsubAgentStatus: (() => void) | null = null
 
+function buildNodeMap(nodes: GraphNode[]): Map<string, GraphNode> {
+  return new Map(nodes.map((n) => [n.id, n]))
+}
+
+function buildEdgeMap(edges: GraphEdge[]): Map<string, GraphEdge> {
+  return new Map(edges.map((e) => [e.id, e]))
+}
+
 interface GraphState {
   graphs: Graph[]
   currentGraphId: string | null
   nodes: GraphNode[]
   edges: GraphEdge[]
   bugs: BugNode[]
+  /** 内部 Map 索引，用于 O(1) 节点/边查找（不暴露给组件订阅） */
+  _nodeMap: Map<string, GraphNode>
+  _edgeMap: Map<string, GraphEdge>
   selectedNodeId: string | null
   selectedEdgeId: string | null
   selectedNodeIds: Set<string>
@@ -70,6 +81,20 @@ interface GraphState {
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
+  const setNodes = (fn: (nodes: GraphNode[]) => GraphNode[]) => {
+    set((state) => {
+      const next = fn(state.nodes)
+      return { nodes: next, _nodeMap: buildNodeMap(next) }
+    })
+  }
+
+  const setEdges = (fn: (edges: GraphEdge[]) => GraphEdge[]) => {
+    set((state) => {
+      const next = fn(state.edges)
+      return { edges: next, _edgeMap: buildEdgeMap(next) }
+    })
+  }
+
   // 监听 Agent 状态变更事件（解耦 agentStore → graphStore 的直接引用）
   _unsubAgentStatus = eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId, status) => {
     get().updateNode(nodeId, { status: status as NodeStatus })
@@ -82,6 +107,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
   nodes: [],
   edges: [],
   bugs: [],
+  _nodeMap: new Map(),
+  _edgeMap: new Map(),
   selectedNodeId: null,
   selectedEdgeId: null,
   selectedNodeIds: new Set(),
@@ -100,6 +127,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodes: result.nodes,
         edges: result.edges,
         bugs: result.bugs,
+        _nodeMap: buildNodeMap(result.nodes),
+        _edgeMap: buildEdgeMap(result.edges),
       })
     }
   },
@@ -128,7 +157,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (id) {
       get().loadGraph(id)
     } else {
-      set({ nodes: [], edges: [], bugs: [] })
+      set({ nodes: [], edges: [], bugs: [], _nodeMap: new Map(), _edgeMap: new Map() })
     }
   },
 
@@ -138,18 +167,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const now = new Date().toISOString()
     const optimisticNode: GraphNode = { ...data, id: optimisticId, createdAt: now, updatedAt: now }
 
-    set((state) => ({ nodes: [...state.nodes, optimisticNode] }))
+    setNodes((nodes) => [...nodes, optimisticNode])
 
     try {
       const serverItem = await window.electronAPI['node:create'](data)
-      set((state) => ({
-        nodes: state.nodes.map((item) => (item.id === optimisticId ? serverItem : item)),
-      }))
+      setNodes((nodes) => nodes.map((item) => (item.id === optimisticId ? serverItem : item)))
       return serverItem
     } catch (err) {
-      set((state) => ({
-        nodes: state.nodes.filter((item) => item.id !== optimisticId),
-      }))
+      setNodes((nodes) => nodes.filter((item) => item.id !== optimisticId))
       throw err
     }
   },
@@ -164,28 +189,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
       updatedAt: now,
     }))
 
-    set((state) => ({ nodes: [...state.nodes, ...optimisticNodes] }))
+    setNodes((nodes) => [...nodes, ...optimisticNodes])
 
     try {
       const created = await window.electronAPI['node:createBatch'](nodesData)
-      set((state) => ({
-        nodes: state.nodes.map((n) => {
+      setNodes((nodes) =>
+        nodes.map((n) => {
           if (!optimisticIds.includes(n.id)) return n
           const match = created.find(c => c.title === n.title && (c.parentId ?? '') === (n.parentId ?? ''))
           return match ?? n
         }),
-      }))
+      )
       return created
     } catch (err) {
-      set((state) => ({
-        nodes: state.nodes.filter((n) => !optimisticIds.includes(n.id)),
-      }))
+      setNodes((nodes) => nodes.filter((n) => !optimisticIds.includes(n.id)))
       throw err
     }
   },
 
   updateNode: async (id, data) => {
-    const prevNode = get().nodes.find((n) => n.id === id)
+    const prevNode = get()._nodeMap.get(id)
     if (!prevNode) return
 
     // 状态机校验：如果更新包含 status，验证转换是否合法
@@ -194,26 +217,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
         const err = new Error(
           `非法状态转换: "${prevNode.status}" → "${data.status}" 不被允许`,
         )
-        eventBus.emit(Events.NODE_STATUS_REJECTED, id, prevNode.status, data.status, err.message)
+        eventBus.emit(Events.NODE_STATUS_REJECTED, id, prevNode.status, data.status)
         throw err
       }
     }
 
     // 乐观更新
-    set((state) => ({
-      nodes: state.nodes.map((n) => (n.id === id ? { ...n, ...data } : n)),
-    }))
+    setNodes((nodes) => nodes.map((n) => (n.id === id ? { ...n, ...data } : n)))
 
     try {
       const updated = await window.electronAPI['node:update'](id, data)
-      set((state) => ({
-        nodes: state.nodes.map((n) => (n.id === id ? updated : n)),
-      }))
+      setNodes((nodes) => nodes.map((n) => (n.id === id ? updated : n)))
     } catch (err) {
       // 回滚
-      set((state) => ({
-        nodes: state.nodes.map((n) => (n.id === id ? prevNode : n)),
-      }))
+      setNodes((nodes) => nodes.map((n) => (n.id === id ? prevNode : n)))
       throw err
     }
   },
@@ -221,42 +238,36 @@ export const useGraphStore = create<GraphState>((set, get) => {
   batchUpdatePositions: async (updates) => {
     const updateMap = new Map(updates.map((u) => [u.id, u]))
     let prevNodes: GraphNode[] = []
-    set((state) => {
-      prevNodes = state.nodes
-      return {
-        nodes: state.nodes.map((n) => {
-          const u = updateMap.get(n.id)
-          return u ? { ...n, position: { x: u.x, y: u.y } } : n
-        }),
-      }
+    setNodes((nodes) => {
+      prevNodes = nodes
+      return nodes.map((n) => {
+        const u = updateMap.get(n.id)
+        return u ? { ...n, position: { x: u.x, y: u.y } } : n
+      })
     })
 
     try {
       await window.electronAPI['node:batchUpdatePositions'](updates)
     } catch (err) {
-      set({ nodes: prevNodes })
+      set({ nodes: prevNodes, _nodeMap: buildNodeMap(prevNodes) })
       throw err
     }
   },
 
   deleteNode: async (id) => {
-    const deletedNode = get().nodes.find((n) => n.id === id)
+    const deletedNode = get()._nodeMap.get(id)
     const deletedEdges = get().edges.filter((e) => e.source === id || e.target === id)
     // 乐观删除
-    set((state) => ({
-      nodes: state.nodes.filter((n) => n.id !== id),
-      edges: state.edges.filter((e) => e.source !== id && e.target !== id),
-      selectedNodeId: state.selectedNodeId === id ? null : state.selectedNodeId,
-    }))
+    setNodes((nodes) => nodes.filter((n) => n.id !== id))
+    setEdges((edges) => edges.filter((e) => e.source !== id && e.target !== id))
+    set({ selectedNodeId: get().selectedNodeId === id ? null : get().selectedNodeId })
 
     try {
       await window.electronAPI['node:delete'](id)
     } catch (err) {
       // 回滚：恢复节点和关联边
-      set((state) => ({
-        nodes: deletedNode ? [...state.nodes, deletedNode] : state.nodes,
-        edges: [...state.edges, ...deletedEdges],
-      }))
+      setNodes((nodes) => deletedNode ? [...nodes, deletedNode] : nodes)
+      setEdges((edges) => [...edges, ...deletedEdges])
       throw err
     }
   },
@@ -281,56 +292,42 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const optimisticId = generateId('edge')
     const optimisticEdge: GraphEdge = { ...data, id: optimisticId }
 
-    set((state) => ({ edges: [...state.edges, optimisticEdge] }))
+    setEdges((edges) => [...edges, optimisticEdge])
 
     try {
       const serverItem = await window.electronAPI['edge:create'](data)
-      set((state) => ({
-        edges: state.edges.map((e) => (e.id === optimisticId ? serverItem : e)),
-      }))
+      setEdges((edges) => edges.map((e) => (e.id === optimisticId ? serverItem : e)))
       return serverItem
     } catch (err) {
-      set((state) => ({
-        edges: state.edges.filter((e) => e.id !== optimisticId),
-      }))
+      setEdges((edges) => edges.filter((e) => e.id !== optimisticId))
       throw err
     }
   },
 
   updateEdge: async (id, data) => {
-    const prevEdge = get().edges.find((e) => e.id === id)
+    const prevEdge = get()._edgeMap.get(id)
     if (!prevEdge) return
 
-    set((state) => ({
-      edges: state.edges.map((e) => (e.id === id ? { ...e, ...data } : e)),
-    }))
+    setEdges((edges) => edges.map((e) => (e.id === id ? { ...e, ...data } : e)))
 
     try {
       const updated = await window.electronAPI['edge:update'](id, data)
-      set((state) => ({
-        edges: state.edges.map((e) => (e.id === id ? updated : e)),
-      }))
+      setEdges((edges) => edges.map((e) => (e.id === id ? updated : e)))
     } catch (err) {
-      set((state) => ({
-        edges: state.edges.map((e) => (e.id === id ? prevEdge : e)),
-      }))
+      setEdges((edges) => edges.map((e) => (e.id === id ? prevEdge : e)))
       throw err
     }
   },
 
   deleteEdge: async (id) => {
-    const deletedEdge = get().edges.find((e) => e.id === id)
-    set((state) => ({
-      edges: state.edges.filter((e) => e.id !== id),
-      selectedEdgeId: state.selectedEdgeId === id ? null : state.selectedEdgeId,
-    }))
+    const deletedEdge = get()._edgeMap.get(id)
+    setEdges((edges) => edges.filter((e) => e.id !== id))
+    set({ selectedEdgeId: get().selectedEdgeId === id ? null : get().selectedEdgeId })
 
     try {
       await window.electronAPI['edge:delete'](id)
     } catch (err) {
-      set((state) => ({
-        edges: deletedEdge ? [...state.edges, deletedEdge] : state.edges,
-      }))
+      setEdges((edges) => deletedEdge ? [...edges, deletedEdge] : edges)
       throw err
     }
   },
@@ -399,64 +396,71 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
 
   addSuggestedEdges: (edges) => {
-    set(state => {
-      const newEdges = edges.filter(e => !state.edges.some(ex => ex.source === e.source && ex.target === e.target))
-      return { edges: [...state.edges, ...newEdges.map(e => ({ ...e, graphId: state.currentGraphId ?? '', label: '', id: e.id }))] }
+    const currentGraphId = get().currentGraphId
+    setEdges((stateEdges) => {
+      const newEdges = edges.filter(e => !stateEdges.some(ex => ex.source === e.source && ex.target === e.target))
+      return [...stateEdges, ...newEdges.map(e => ({ ...e, graphId: currentGraphId ?? '', label: '', id: e.id }))]
     })
   },
 
   confirmSuggestedEdge: (edgeId) => {
-    const edge = get().edges.find(e => e.id === edgeId)
+    const edge = get()._edgeMap.get(edgeId)
     if (!edge || !edge.content?.suggested) return
     const newContent = { ...edge.content, suggested: false }
-    set(state => ({
-      edges: state.edges.map(e =>
+    setEdges((edges) =>
+      edges.map(e =>
         e.id === edgeId ? { ...e, content: newContent } : e
       )
-    }))
+    )
     window.electronAPI['edge:update'](edgeId, { content: newContent }).catch((err) => {
       console.error('[graphStore] Failed to confirm suggested edge:', err)
-      set(state => ({
-        edges: state.edges.map(e =>
+      setEdges((edges) =>
+        edges.map(e =>
           e.id === edgeId ? { ...e, content: edge.content } : e
         )
-      }))
+      )
     })
   },
 
   rejectSuggestedEdge: (edgeId) => {
-    const edge = get().edges.find(e => e.id === edgeId)
+    const edge = get()._edgeMap.get(edgeId)
     if (!edge) return
-    set(state => ({ edges: state.edges.filter(e => e.id !== edgeId) }))
+    setEdges((edges) => edges.filter(e => e.id !== edgeId))
     window.electronAPI['edge:delete'](edgeId).catch((err) => {
       console.error('[graphStore] Failed to reject suggested edge:', err)
-      set(state => ({ edges: [...state.edges, edge] }))
+      setEdges((edges) => [...edges, edge])
     })
   },
 
   confirmPreviewNode: (nodeId) => {
-    const node = get().nodes.find(n => n.id === nodeId)
+    const node = get()._nodeMap.get(nodeId)
     if (!node) return
     const { preview: _preview, ...restMetadata } = node.metadata ?? {}
     const updatedMetadata = restMetadata
-    set(state => ({
-      nodes: state.nodes.map(n =>
+    setNodes((nodes) =>
+      nodes.map(n =>
         n.id === nodeId ? { ...n, metadata: updatedMetadata } : n
       )
-    }))
+    )
     window.electronAPI['node:update'](nodeId, { metadata: updatedMetadata })
   },
 
   clearPreviewNodes: () => {
     const previewNodes = get().nodes.filter(n => n.metadata?.preview)
-    set(state => ({ nodes: state.nodes.filter(n => !n.metadata?.preview) }))
+    setNodes((nodes) => nodes.filter(n => !n.metadata?.preview))
     Promise.all(previewNodes.map(n => window.electronAPI['node:delete'](n.id))).catch((err: unknown) => {
       console.error('[graphStore] Failed to delete some preview nodes:', err)
     })
   },
 
-  getNodeById: (id) => get().nodes.find(n => n.id === id),
-  getNodesByType: (type) => get().nodes.filter(n => n.type === type),
+  getNodeById: (id) => get()._nodeMap.get(id),
+  getNodesByType: (type) => {
+    const result: GraphNode[] = []
+    for (const node of get()._nodeMap.values()) {
+      if (node.type === type) result.push(node)
+    }
+    return result
+  },
 
   // Task 4.4.1: Frontend search index
   searchNodes: (query, filters) => {
@@ -519,6 +523,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
   },
   }
 })
+
+// Keep internal Map indexes in sync when external callers (e.g. tests or legacy
+// code) set nodes/edges directly without providing _nodeMap/_edgeMap.
+const _originalGraphSetState = useGraphStore.setState.bind(useGraphStore)
+useGraphStore.setState = function overrideGraphSetState(
+  partial: Partial<GraphState> | ((state: GraphState) => Partial<GraphState>),
+  replace?: boolean,
+) {
+  const resolved = typeof partial === 'function'
+    ? (partial as (state: GraphState) => Partial<GraphState>)(useGraphStore.getState())
+    : partial
+  const update: Partial<GraphState> = { ...resolved }
+  if (resolved.nodes !== undefined && resolved._nodeMap === undefined) {
+    update._nodeMap = buildNodeMap(resolved.nodes)
+  }
+  if (resolved.edges !== undefined && resolved._edgeMap === undefined) {
+    update._edgeMap = buildEdgeMap(resolved.edges)
+  }
+  return _originalGraphSetState(update, replace as false | undefined)
+} as typeof useGraphStore.setState
 
 // HMR cleanup: unsubscribe from previous module's event bus listener
 const _hot = (import.meta as { hot?: { dispose: (cb: () => void) => void } }).hot

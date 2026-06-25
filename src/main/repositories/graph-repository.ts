@@ -4,27 +4,27 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
-import type { Graph, GraphNode, GraphEdge, BugNode, GraphType } from '@shared/types'
+import type { Graph, GraphNode, GraphEdge, BugNode, GraphType, GraphFetchOptions } from '@shared/types'
 import { assertGraphType, assertNodeType, assertNodeStatus, assertEdgeType, assertBugSeverity, assertBugStatus } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 
 function rowStr(row: Record<string, unknown>, key: string): string {
   const val = row[key]
-  if (typeof val !== 'string') throw new TypeError(`Expected string for ${key}, got ${typeof val}`)
+  if (typeof val !== 'string') throw new TypeError(`Expected string for ${key}, got ${typeof val} (row id: ${row.id ?? 'unknown'})`)
   return val
 }
 
 function rowOptStr(row: Record<string, unknown>, key: string): string | undefined {
   const val = row[key]
   if (val === null || val === undefined) return undefined
-  if (typeof val !== 'string') throw new TypeError(`Expected string for ${key}, got ${typeof val}`)
+  if (typeof val !== 'string') throw new TypeError(`Expected string for ${key}, got ${typeof val} (row id: ${row.id ?? 'unknown'})`)
   return val
 }
 
 function rowNum(row: Record<string, unknown>, key: string): number {
   const val = row[key]
-  if (typeof val !== 'number') throw new TypeError(`Expected number for ${key}, got ${typeof val}`)
+  if (typeof val !== 'number') throw new TypeError(`Expected number for ${key}, got ${typeof val} (row id: ${row.id ?? 'unknown'})`)
   return val
 }
 
@@ -56,18 +56,42 @@ export class GraphRepository {
 
   get(
     id: string,
-    options?: { nodeLimit?: number; edgeLimit?: number; bugLimit?: number },
+    options?: GraphFetchOptions,
   ): { graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null {
-    const nodeLimit = options?.nodeLimit ?? 5000
+    const nodeLimit = options?.limit ?? 5000
     const edgeLimit = options?.edgeLimit ?? 5000
     const bugLimit = options?.bugLimit ?? 1000
+    const offset = options?.offset ?? 0
+    const viewport = options?.viewport
 
     // Sequential queries (better-sqlite3 is synchronous, no parallelism benefit)
     const graphRow = this.db.prepare('SELECT * FROM graphs WHERE id = ?').get(id) as Record<string, unknown> | undefined
     if (!graphRow) return null
 
-    const nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ? LIMIT ?').all(id, nodeLimit) as Record<string, unknown>[]
-    const edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ? LIMIT ?').all(id, edgeLimit) as Record<string, unknown>[]
+    let nodesRows: Record<string, unknown>[]
+    if (viewport) {
+      nodesRows = this.db
+        .prepare('SELECT * FROM nodes WHERE graph_id = ? AND position_x BETWEEN ? AND ? AND position_y BETWEEN ? AND ? LIMIT ? OFFSET ?')
+        .all(id, viewport.minX, viewport.maxX, viewport.minY, viewport.maxY, nodeLimit, offset) as Record<string, unknown>[]
+    } else {
+      nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ? LIMIT ? OFFSET ?').all(id, nodeLimit, offset) as Record<string, unknown>[]
+    }
+
+    let edgesRows: Record<string, unknown>[]
+    if (viewport) {
+      const nodeIds = nodesRows.map((row) => String(row.id))
+      if (nodeIds.length > 0) {
+        const placeholders = nodeIds.map(() => '?').join(',')
+        edgesRows = this.db
+          .prepare(`SELECT * FROM edges WHERE graph_id = ? AND (source IN (${placeholders}) OR target IN (${placeholders})) LIMIT ?`)
+          .all(id, ...nodeIds, ...nodeIds, edgeLimit) as Record<string, unknown>[]
+      } else {
+        edgesRows = []
+      }
+    } else {
+      edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ? LIMIT ?').all(id, edgeLimit) as Record<string, unknown>[]
+    }
+
     const bugsRows = this.db.prepare('SELECT * FROM bug_nodes WHERE graph_id = ? ORDER BY created_at DESC LIMIT ?').all(id, bugLimit) as Record<string, unknown>[]
 
     return {
@@ -150,13 +174,13 @@ export class GraphRepository {
       .filter((p): p is string => p !== null && p !== undefined)
   }
 
-  /** 克隆在线图的所有节点和边到开发图 */
+  /** 克隆在线图的所有节点和边到开发图（单事务保证原子性） */
   cloneGraphNodes(sourceGraphId: string, targetGraphId: string, targetGraphType: GraphType): void {
     const nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]
+    const edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]
 
     const idMap = new Map<string, string>()
 
-    // Pass 1: 插入节点（parent_id 暂时保留原值）— 事务提交
     const insertNodeStmt = this.db.prepare(
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
@@ -164,9 +188,17 @@ export class GraphRepository {
         position_x, position_y, context_refs, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
+    const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
+    const insertEdgeStmt = this.db.prepare(
+      `INSERT INTO edges (
+        id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
 
-    const insertNodes = this.db.transaction((rows: Record<string, unknown>[]) => {
-      for (const row of rows) {
+    // Single transaction for atomicity
+    const cloneAll = this.db.transaction(() => {
+      // Pass 1: Insert nodes (parent_id temporarily preserved from source)
+      for (const row of nodesRows) {
         const originalId = rowStr(row, 'id')
         const newId = generateId('node')
         idMap.set(originalId, newId)
@@ -189,38 +221,19 @@ export class GraphRepository {
           rowStr(row, 'created_at'), new Date().toISOString(),
         )
       }
-    })
-    insertNodes(nodesRows)
 
-    // Pass 2: 批量更新 parent_id 映射
-    const rowById = new Map<string, Record<string, unknown>>()
-    for (const row of nodesRows) {
-      rowById.set(rowStr(row, 'id'), row)
-    }
-    const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
-    const updateParents = this.db.transaction(() => {
+      // Pass 2: Update parent_id mapping
       for (const [oldId, newId] of idMap) {
-        const row = rowById.get(oldId)
+        const row = nodesRows.find((r) => rowStr(r, 'id') === oldId)
         if (!row) continue
         const oldParentId = rowOptStr(row, 'parent_id')
         if (oldParentId && idMap.has(oldParentId)) {
           parentUpdateStmt.run(idMap.get(oldParentId)!, newId)
         }
       }
-    })
-    updateParents()
 
-    // Pass 3: 批量复制边
-    const edgesRows = this.db.prepare('SELECT * FROM edges WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]
-
-    const insertEdgeStmt = this.db.prepare(
-      `INSERT INTO edges (
-        id, source, target, label, edge_type, content, graph_id, description, data_flow, strength
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-
-    const insertEdges = this.db.transaction((rows: Record<string, unknown>[]) => {
-      for (const row of rows) {
+      // Pass 3: Copy edges
+      for (const row of edgesRows) {
         const newSourceId = idMap.get(rowStr(row, 'source'))
         const newTargetId = idMap.get(rowStr(row, 'target'))
         if (!newSourceId || !newTargetId) continue
@@ -233,6 +246,6 @@ export class GraphRepository {
         )
       }
     })
-    insertEdges(edgesRows)
+    cloneAll()
   }
 }
