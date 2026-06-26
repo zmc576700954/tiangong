@@ -5,6 +5,21 @@ import type { Dirent, Stats } from 'node:fs'
 import path from 'node:path'
 import { ScopeGuardError } from '../errors'
 
+// Mock safeRealpathSync to track calls and allow symlink simulation
+const realpathSyncMap = new Map<string, string>()
+
+import type * as PathUtils from '../shared/path-utils'
+
+vi.mock('../shared/path-utils', async () => {
+  const actual = await vi.importActual('../shared/path-utils') as typeof PathUtils
+  return {
+    ...actual,
+    safeRealpathSync: vi.fn((p: string) => {
+      return realpathSyncMap.get(p) ?? p
+    }),
+  }
+})
+
 // ============================================
 // Mock 辅助函数
 // ============================================
@@ -163,6 +178,7 @@ describe('ScopeGuard', () => {
   beforeEach(() => {
     guard = new ScopeGuard()
     resetFsState()
+    realpathSyncMap.clear()
     vi.clearAllMocks()
   })
 
@@ -270,6 +286,53 @@ describe('ScopeGuard', () => {
       expect(() =>
         guard.validateChanges(['src/auth.ts'], ['src/../../../etc/passwd'], WORKING_DIR),
       ).toThrow('Path traversal detected')
+    })
+
+    // ==========================================
+    // Symlink traversal detection
+    // ==========================================
+    it('should reject symlinks inside workingDir pointing outside', () => {
+      const symlinkPath = path.join(WORKING_DIR, 'link-to-etc')
+      const outsideTarget = path.resolve('/etc/passwd')
+      // Simulate safeRealpathSync resolving the symlink to outside workingDir
+      realpathSyncMap.set(symlinkPath, outsideTarget)
+
+      expect(() =>
+        guard.validateChanges(['src/auth.ts'], ['link-to-etc'], WORKING_DIR),
+      ).toThrow('Path traversal detected')
+    })
+
+    it('should allow normal relative paths within workingDir', () => {
+      const normalPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+      // No symlink resolution needed, path resolves to itself
+      realpathSyncMap.set(normalPath, normalPath)
+
+      const result = guard.validateChanges(
+        ['src/auth.ts'],
+        ['src/auth.ts'],
+        WORKING_DIR,
+      )
+
+      expect(result.compliant).toBe(true)
+      expect(result.validFiles).toContain('src/auth.ts')
+    })
+
+    it('should allow symlinks inside workingDir pointing to another file inside workingDir', () => {
+      const symlinkPath = path.join(WORKING_DIR, 'link-to-auth')
+      const targetPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+      // Simulate safeRealpathSync resolving the symlink to inside workingDir
+      realpathSyncMap.set(symlinkPath, targetPath)
+
+      // allowedFiles contains the symlink, actualChanges also contains the symlink
+      // both should resolve to the same target path
+      const result = guard.validateChanges(
+        ['link-to-auth'],
+        ['link-to-auth'],
+        WORKING_DIR,
+      )
+
+      expect(result.compliant).toBe(true)
+      expect(result.validFiles).toContain('link-to-auth')
     })
   })
 
@@ -437,6 +500,29 @@ describe('ScopeGuard', () => {
       expect(result.compliant).toBe(false)
       expect(result.outOfBoundsFiles).toHaveLength(0)
       expect(result.shouldRollback).toBe(true)
+    })
+
+    it('should NOT false-positive on symlink inside pointing to allowed file', async () => {
+      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+      const symlinkPath = path.join(WORKING_DIR, 'src', 'link-to-auth')
+
+      addDir(WORKING_DIR, ['src'])
+      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts', 'link-to-auth'])
+      addFile(authPath, 'original', 1000)
+      addFile(symlinkPath, 'original', 1000)
+      // Simulate safeRealpathSync resolving the symlink to the allowed file
+      realpathSyncMap.set(symlinkPath, authPath)
+
+      // allowedFiles contains the symlink path; after sanitizeAllowedFiles,
+      // sandbox.allowedFiles will contain the resolved target (authPath)
+      const sandbox = await guard.prepareSandbox(['src/link-to-auth'], WORKING_DIR)
+
+      // No changes made — postExecutionValidation should pass
+      const result = await guard.postExecutionValidation(sandbox)
+
+      expect(result.compliant).toBe(true)
+      expect(result.outOfBoundsFiles).toHaveLength(0)
+      expect(result.shouldRollback).toBe(false)
     })
   })
 
@@ -656,6 +742,27 @@ describe('ScopeGuard', () => {
 
       // subdir is not a file, so it's not counted as a violation
       expect(violations).toHaveLength(0)
+    })
+
+    it('should detect symlink inside workingDir pointing outside as violation', async () => {
+      const authPath = path.join(WORKING_DIR, 'src', 'auth.ts')
+      const symlinkPath = path.join(WORKING_DIR, 'src', 'link-to-etc')
+      const outsideTarget = path.resolve('/etc/passwd')
+
+      addDir(path.join(WORKING_DIR, 'src'), [], ['auth.ts', 'link-to-etc'])
+      addFile(authPath, '', 0)
+      addFile(symlinkPath, '', 0)
+      // Simulate safeRealpathSync resolving the symlink to outside workingDir
+      realpathSyncMap.set(symlinkPath, outsideTarget)
+
+      // @ts-expect-error accessing private method
+      const violations = await guard.scanDirectoriesForViolations(
+        new Set([path.join(WORKING_DIR, 'src')]),
+        new Set([authPath]),
+      )
+
+      expect(violations).toHaveLength(1)
+      expect(violations).toContain(outsideTarget)
     })
   })
 

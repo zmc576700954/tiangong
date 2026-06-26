@@ -71,7 +71,7 @@ async function safeRealpath(p: string): Promise<string> {
  * - For any other error on a non-symlink path, falls back to `path.resolve`
  *   rather than propagating permission errors to sync IPC handlers.
  */
-function safeRealpathSync(p: string): string {
+export function safeRealpathSync(p: string): string {
   try {
     return fsSync.realpathSync(p)
   } catch (err) {

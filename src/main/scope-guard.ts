@@ -20,7 +20,7 @@ import { ScopeGuardError, ErrorCode } from './errors'
 import { generateId } from './shared/env'
 import { createLogger } from './shared/logger'
 import { isErrorWithCode } from './shared/errno'
-import { isPathWithin, isRelativeTraversal } from './shared/path-utils'
+import { isPathWithin, isRelativeTraversal, safeRealpathSync } from './shared/path-utils'
 import { getPlatformProvider } from './platform'
 
 /** 获取临时目录路径（可在测试中 mock） */
@@ -153,12 +153,12 @@ const IGNORED_PATTERNS = [
 ]
 
 /**
- * 清洗允许文件列表：移除重复、规范化路径、过滤空值
- * @note 符号链接/junction 的解析由 IPC 层的 validateProjectPath 处理
+ * 清洗允许文件列表：移除重复、规范化路径、过滤空值、解析符号链接
+ * @note 使用 safeRealpathSync 解析符号链接，防止工作目录内的 symlink 指向外部
  */
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
   return allowedFiles.map((file) => {
-    const resolved = path.resolve(workingDir, file)
+    const resolved = safeRealpathSync(path.resolve(workingDir, file))
     const relative = path.relative(workingDir, resolved)
     const isTraversal = isRelativeTraversal(relative) || path.isAbsolute(relative)
     if (isTraversal) {
@@ -357,7 +357,9 @@ export class ScopeGuard {
     // chokidar 事件处理器（第一层：快速响应）
     const onFileEvent = async (eventPath: string) => {
       const sandbox = this.sandboxes.get(sandboxId)
-      const resolved = sandbox ? path.resolve(sandbox.workingDir, eventPath) : path.resolve(eventPath)
+      const resolved = sandbox
+        ? safeRealpathSync(path.resolve(sandbox.workingDir, eventPath))
+        : safeRealpathSync(path.resolve(eventPath))
 
       if (shouldIgnorePath(resolved)) return
 
@@ -412,13 +414,14 @@ export class ScopeGuard {
     const validFiles: string[] = []
     const newFiles: string[] = []
 
-    // 检测新增和修改的文件
+    // 检测新增和修改的文件（统一解析符号链接后再与白名单比较）
     for (const [filePath, currentInfo] of currentSnapshot) {
-      const initialInfo = initialSnapshot.get(filePath)
+      const resolvedPath = safeRealpathSync(filePath)
+      const initialInfo = initialSnapshot.get(resolvedPath)
 
       if (!initialInfo) {
         // 新增文件
-        if (allowedSet.has(filePath)) {
+        if (allowedSet.has(resolvedPath)) {
           validFiles.push(filePath)
         } else {
           outOfBoundsFiles.push(filePath)
@@ -430,7 +433,7 @@ export class ScopeGuard {
         initialInfo.contentHash !== currentInfo.contentHash
       ) {
         // 已存在文件被修改（mtime/size 任一变化，或内容哈希不一致时触发深度检查）
-        if (allowedSet.has(filePath)) {
+        if (allowedSet.has(resolvedPath)) {
           validFiles.push(filePath)
         } else {
           outOfBoundsFiles.push(filePath)
@@ -440,7 +443,8 @@ export class ScopeGuard {
 
     // 检测被删除的白名单文件（不算违规，但记录用于日志）
     for (const [filePath] of initialSnapshot) {
-      if (!currentSnapshot.has(filePath) && allowedSet.has(filePath)) {
+      const resolvedPath = safeRealpathSync(filePath)
+      if (!currentSnapshot.has(filePath) && allowedSet.has(resolvedPath)) {
         validFiles.push(filePath)
       }
     }
@@ -480,7 +484,7 @@ export class ScopeGuard {
     const validFiles: string[] = []
 
     for (const changedFile of actualChanges) {
-      const resolved = path.resolve(workingDir, changedFile)
+      const resolved = safeRealpathSync(path.resolve(workingDir, changedFile))
       if (allowedSet.has(resolved)) {
         validFiles.push(changedFile)
       } else {
@@ -756,7 +760,8 @@ export class ScopeGuard {
     for (const result of fileStats) {
       if (result && snapshot.size < MAX_SNAPSHOT_ENTRIES) {
         const contentHash = await computeContentHash(result.filePath, result.stat.size)
-        snapshot.set(result.filePath, {
+        const resolvedPath = safeRealpathSync(result.filePath)
+        snapshot.set(resolvedPath, {
           mtimeMs: result.stat.mtimeMs,
           size: result.stat.size,
           contentHash,
@@ -918,18 +923,19 @@ export class ScopeGuard {
         if (!entry.isFile() && !entry.isDirectory()) continue
         const fullPath = path.join(dir, entry.name)
         if (shouldIgnorePath(fullPath)) continue
+        const resolvedPath = safeRealpathSync(fullPath)
         if (entry.isFile()) {
-          if (!allowedSet.has(fullPath)) {
-            if (!initialSnapshot || !initialSnapshot.has(fullPath)) {
+          if (!allowedSet.has(resolvedPath)) {
+            if (!initialSnapshot || !initialSnapshot.has(resolvedPath)) {
               // 新增的越界文件
-              violations.push(fullPath)
+              violations.push(resolvedPath)
             } else {
               // 已有越界文件被修改（mtime 变化）
               try {
                 const stat = await fs.stat(fullPath)
-                const snap = initialSnapshot.get(fullPath)!
+                const snap = initialSnapshot.get(resolvedPath)!
                 if (stat.mtimeMs !== snap.mtimeMs) {
-                  violations.push(fullPath)
+                  violations.push(resolvedPath)
                 }
               } catch (err) {
                 logger.debug(`stat failed during violation scan: ${fullPath}`, err)
@@ -937,7 +943,7 @@ export class ScopeGuard {
             }
           }
         } else if (entry.isDirectory()) {
-          await this.scanDirRecursive(fullPath, allowedSet, violations, depth + 1, initialSnapshot, scanStartTime)
+          await this.scanDirRecursive(resolvedPath, allowedSet, violations, depth + 1, initialSnapshot, scanStartTime)
         }
       }
     } catch (err) {
