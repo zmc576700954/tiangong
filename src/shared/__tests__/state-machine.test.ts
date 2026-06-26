@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest'
-import { canTransition, validateTransition, getAllowedTransitions, findTransitionPath, InvalidStateTransitionError } from '../state-machine'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import {
+  canTransition,
+  validateTransition,
+  getAllowedTransitions,
+  findTransitionPath,
+  InvalidStateTransitionError,
+  canBugTransition,
+  validateBugTransition,
+  validateTransitionConsistency,
+} from '../state-machine'
 
 describe('canTransition', () => {
   it('allows draft → confirmed', () => {
@@ -74,5 +83,64 @@ describe('findTransitionPath', () => {
     expect(path!.length).toBeGreaterThan(2)
     expect(path![0]).toBe('published')
     expect(path![path!.length - 1]).toBe('draft')
+  })
+})
+
+describe('canBugTransition', () => {
+  it('allows open → fixed', () => {
+    expect(canBugTransition('open', 'fixed')).toBe(true)
+  })
+
+  it('allows fixed → verified', () => {
+    expect(canBugTransition('fixed', 'verified')).toBe(true)
+  })
+
+  it('allows fixed → open (reopen)', () => {
+    expect(canBugTransition('fixed', 'open')).toBe(true)
+  })
+
+  it('allows verified → open (reopen)', () => {
+    expect(canBugTransition('verified', 'open')).toBe(true)
+  })
+
+  it('blocks open → verified (must pass fixed)', () => {
+    expect(canBugTransition('open', 'verified')).toBe(false)
+  })
+
+  it('allows same state (no-op)', () => {
+    expect(canBugTransition('open', 'open')).toBe(true)
+    expect(canBugTransition('verified', 'verified')).toBe(true)
+  })
+})
+
+describe('validateBugTransition', () => {
+  it('throws on illegal bug transition', () => {
+    expect(() => validateBugTransition('open', 'verified', 'bug-1')).toThrow(InvalidStateTransitionError)
+  })
+
+  it('does not throw on legal bug transition', () => {
+    expect(() => validateBugTransition('open', 'fixed')).not.toThrow()
+  })
+
+  it('includes bugId in error message when provided', () => {
+    expect(() => validateBugTransition('open', 'verified', 'bug-1')).toThrow('bug-1')
+  })
+})
+
+describe('validateTransitionConsistency', () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    consoleSpy.mockRestore()
+  })
+
+  it('returns 0 when rules are consistent', () => {
+    expect(validateTransitionConsistency()).toBe(0)
+    expect(consoleSpy).not.toHaveBeenCalled()
   })
 })

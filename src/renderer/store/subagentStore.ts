@@ -95,5 +95,5 @@ export const useSubagentStore = create<SubagentState>((set) => ({
     return window.electronAPI['subagent:getResult'](invocationId)
   },
 
-  reset: () => set({ invocations: [], outputsByInvocation: new Map() }),
+  reset: () => set({ invocations: [], outputsByInvocation: new Map(), subagentTypes: [] }),
 }))

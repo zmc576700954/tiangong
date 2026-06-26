@@ -8,7 +8,7 @@ export default tseslint.config([
   { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ['src/main/**/*.ts', 'src/shared/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],
+    files: ['src/main/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],
     languageOptions: {
       ecmaVersion: 2022,
       globals: globals.node,
@@ -24,6 +24,34 @@ export default tseslint.config([
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
       'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
+      'eqeqeq': ['error', 'always', { null: 'ignore' }],
+      'curly': ['error', 'multi-line'],
+    },
+  },
+  {
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    files: ['src/shared/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: globals.node,
+    },
+    rules: {
+      // Stricter rules for shared code — crosses IPC boundary
+      '@typescript-eslint/no-explicit-any': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' },
+      ],
+      '@typescript-eslint/consistent-type-imports': [
+        'error',
+        { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
+      ],
+      'no-console': ['warn', { allow: ['warn', 'error', 'info'] }],
+      'eqeqeq': ['error', 'always', { null: 'ignore' }],
+      'curly': ['error', 'multi-line'],
+      'no-restricted-imports': ['error', {
+        patterns: ['../main/*', '../../main/*', '../renderer/*', '../../renderer/*'],
+      }],
     },
   },
   {
@@ -52,6 +80,11 @@ export default tseslint.config([
         'warn',
         { prefer: 'type-imports', fixStyle: 'inline-type-imports' },
       ],
+      'eqeqeq': ['error', 'always', { null: 'ignore' }],
+      'curly': ['error', 'multi-line'],
+      'no-restricted-imports': ['error', {
+        patterns: ['../main/*', '../../main/*', '../../shared/main/*'],
+      }],
     },
   },
   {

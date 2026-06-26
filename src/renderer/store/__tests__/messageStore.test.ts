@@ -298,4 +298,33 @@ describe('streaming (RAF-batched)', () => {
     await new Promise((r) => setTimeout(r, 50))
     expect(order).toEqual([1, 2])
   })
+
+  it('getRetryCount returns current retry count', () => {
+    useMessageStore.setState({ retryCounts: new Map([['m1', 2]]) })
+    expect(useMessageStore.getState().getRetryCount('m1')).toBe(2)
+    expect(useMessageStore.getState().getRetryCount('m2')).toBe(0)
+  })
+
+  it('retryMessage marks permanently_failed after max retries', () => {
+    const id = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().appendChatMessage(id, {
+      id: 'u1',
+      role: 'user',
+      content: 'hello',
+      timestamp: Date.now(),
+      status: 'success',
+    })
+    useThreadStore.getState().appendChatMessage(id, {
+      id: 'm1',
+      role: 'agent',
+      content: '',
+      timestamp: Date.now(),
+      status: 'error',
+    })
+    useMessageStore.setState({ retryCounts: new Map([['m1', 3]]) })
+    useMessageStore.getState().retryMessage(id, 'm1')
+    const msg = useThreadStore.getState().threads[0].messages.find((m) => m.id === 'm1')
+    expect(msg?.status).toBe('permanently_failed')
+    expect(msg?.error?.code).toBe('RETRY_LIMIT_EXCEEDED')
+  })
 })

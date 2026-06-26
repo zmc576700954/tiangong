@@ -9,8 +9,13 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
-      include: ['src/main/**/*.ts'],
+      include: ['src/main/**/*.ts', 'src/shared/**/*.ts'],
       exclude: ['src/main/index.ts', 'src/main/ipc-handlers.ts', 'src/**/*.d.ts'],
+      thresholds: {
+        lines: 30,
+        branches: 20,
+        functions: 25,
+      },
     },
   },
   resolve: {

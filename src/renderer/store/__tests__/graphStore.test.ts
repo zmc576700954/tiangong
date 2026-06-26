@@ -34,14 +34,21 @@ vi.stubGlobal('window', {
     })),
     'node:delete': vi.fn().mockResolvedValue(true),
     'node:batchUpdatePositions': vi.fn().mockResolvedValue(true),
+    'node:createBatch': vi.fn().mockImplementation((nodesData: Record<string, unknown>[]) =>
+      nodesData.map((data, i) => ({
+        ...data,
+        id: `batch-node-${i}`,
+        createdAt: '2024-01-01',
+        updatedAt: '2024-01-01',
+      })),
+    ),
     'edge:create': vi.fn().mockImplementation((data: Record<string, unknown>) => ({
       ...data,
       id: 'edge-server-id',
     })),
-    'edge:update': vi.fn().mockImplementation((id: string, data: Record<string, unknown>) => ({
-      id,
-      ...data,
-    })),
+    'edge:update': vi.fn().mockImplementation((id: string, data: Record<string, unknown>) =>
+      Promise.resolve({ id, ...data }),
+    ),
     'edge:delete': vi.fn().mockResolvedValue(true),
     'bug:create': vi.fn().mockImplementation((data: Record<string, unknown>) => ({
       ...data,
@@ -283,6 +290,125 @@ describe('graphStore', () => {
       }
       // Rollback: bug should still be present
       expect(useGraphStore.getState().bugs).toHaveLength(1)
+    })
+  })
+
+  // ==========================================
+  // State Machine Validation
+  // ==========================================
+  describe('State Machine Validation', () => {
+    it('updateNode rejects illegal status transition', async () => {
+      useGraphStore.setState({
+        nodes: [{ id: 'n1', title: 'N1', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+      })
+      await expect(useGraphStore.getState().updateNode('n1', { status: 'published' })).rejects.toThrow('非法状态转换')
+    })
+
+    it('updateNode allows legal status transition', async () => {
+      useGraphStore.setState({
+        nodes: [{ id: 'n1', title: 'N1', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+      })
+      await useGraphStore.getState().updateNode('n1', { status: 'confirmed' })
+      expect(useGraphStore.getState().nodes[0].status).toBe('confirmed')
+    })
+  })
+
+  // ==========================================
+  // Batch Node Creation
+  // ==========================================
+  describe('Batch Node Creation', () => {
+    it('createNodeBatch creates multiple nodes optimistically', async () => {
+      vi.mocked(window.electronAPI['node:createBatch']).mockResolvedValueOnce([
+        { id: 'server-1', title: 'A', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+        { id: 'server-2', title: 'B', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+      ])
+      const nodes = await useGraphStore.getState().createNodeBatch([
+        { title: 'A', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } } as never,
+        { title: 'B', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } } as never,
+      ])
+      expect(nodes).toHaveLength(2)
+      expect(useGraphStore.getState().nodes).toHaveLength(2)
+    })
+  })
+
+  // ==========================================
+  // Search
+  // ==========================================
+  describe('searchNodes', () => {
+    beforeEach(() => {
+      useGraphStore.setState({
+        nodes: [
+          { id: 'n1', title: 'Authentication', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+          { id: 'n2', title: 'Authorization', type: 'feature', status: 'confirmed', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+          { id: 'n3', title: 'Login', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '', description: 'User login flow' },
+        ],
+      })
+    })
+
+    it('searches by title substring', () => {
+      const results = useGraphStore.getState().searchNodes('Auth')
+      expect(results.map((n) => n.id)).toContain('n1')
+      expect(results.map((n) => n.id)).toContain('n2')
+    })
+
+    it('searches by description substring', () => {
+      const results = useGraphStore.getState().searchNodes('login flow')
+      expect(results.map((n) => n.id)).toContain('n3')
+    })
+
+    it('filters by status', () => {
+      const results = useGraphStore.getState().searchNodes('', { status: 'confirmed' })
+      expect(results).toHaveLength(1)
+      expect(results[0].id).toBe('n2')
+    })
+
+    it('sorts exact matches first', () => {
+      const results = useGraphStore.getState().searchNodes('Login')
+      expect(results[0].id).toBe('n3')
+    })
+  })
+
+  // ==========================================
+  // Suggested Edges
+  // ==========================================
+  describe('Suggested Edges', () => {
+    it('addSuggestedEdges adds edges with current graphId', () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      useGraphStore.getState().addSuggestedEdges([{ id: 'se1', source: 'n1', target: 'n2', edgeType: 'semantic', strength: 0.8, content: { suggested: true } }])
+      const edge = useGraphStore.getState().edges[0]
+      expect(edge.graphId).toBe('g1')
+      expect(edge.content?.suggested).toBe(true)
+    })
+
+    it('confirmSuggestedEdge updates suggested flag', async () => {
+      useGraphStore.setState({
+        currentGraphId: 'g1',
+        edges: [{ id: 'se1', source: 'n1', target: 'n2', graphId: 'g1', content: { suggested: true } }],
+      })
+      useGraphStore.getState().confirmSuggestedEdge('se1')
+      await vi.waitFor(() => expect(useGraphStore.getState().edges[0].content?.suggested).toBe(false))
+    })
+
+    it('rejectSuggestedEdge removes edge', async () => {
+      useGraphStore.setState({
+        currentGraphId: 'g1',
+        edges: [{ id: 'se1', source: 'n1', target: 'n2', graphId: 'g1' }],
+      })
+      useGraphStore.getState().rejectSuggestedEdge('se1')
+      await vi.waitFor(() => expect(useGraphStore.getState().edges).toHaveLength(0))
+    })
+  })
+
+  // ==========================================
+  // Association Notifications
+  // ==========================================
+  describe('Association Notifications', () => {
+    it('adds and dismisses notifications', () => {
+      useGraphStore.getState().addAssociationNotification(3)
+      expect(useGraphStore.getState().associationNotifications).toHaveLength(1)
+      const id = useGraphStore.getState().associationNotifications[0].id
+      useGraphStore.getState().dismissAssociationNotification(id)
+      expect(useGraphStore.getState().associationNotifications).toHaveLength(0)
     })
   })
 })

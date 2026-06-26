@@ -84,28 +84,28 @@ function getSourceDirectories(structure: string[]): SourceDirectory[] {
   const dirs = new Map<string, SourceDirectory>()
 
   for (const relPath of structure) {
-    if (!relPath.endsWith('/')) continue
-
-    const parts = relPath.split('/')
-    // 寻找 src/xxx/ 或 app/xxx/ 这样的一级子目录
-    if (parts.length === 2) {
-      const parent = parts[0] + '/'
-      if (srcPrefixes.includes(parent)) {
-        const subName = parts[1]
-        if (!dirs.has(subName)) {
-          dirs.set(subName, {
-            name: subName,
-            path: relPath,
-            files: [],
-          })
+    if (relPath.endsWith('/')) {
+      const parts = relPath.split('/').filter(Boolean)
+      // 寻找 src/xxx/ 或 app/xxx/ 这样的一级子目录
+      if (parts.length === 2) {
+        const parent = parts[0] + '/'
+        if (srcPrefixes.includes(parent)) {
+          const subName = parts[1]
+          if (!dirs.has(subName)) {
+            dirs.set(subName, {
+              name: subName,
+              path: relPath,
+              files: [],
+            })
+          }
         }
       }
-    }
-
-    // 收集每个目录下的文件
-    for (const [, dirInfo] of dirs) {
-      if (relPath.startsWith(dirInfo.path) && !relPath.endsWith('/')) {
-        dirInfo.files.push(relPath)
+    } else {
+      // 收集每个目录下的文件
+      for (const [, dirInfo] of dirs) {
+        if (relPath.startsWith(dirInfo.path)) {
+          dirInfo.files.push(relPath)
+        }
       }
     }
   }

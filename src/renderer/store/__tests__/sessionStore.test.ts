@@ -28,6 +28,17 @@ vi.stubGlobal('window', {
   },
 })
 
+const localStorageMock = (() => {
+  const store: Record<string, string> = {}
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => { store[key] = value },
+    removeItem: (key: string) => { delete store[key] },
+  }
+})()
+
+vi.stubGlobal('localStorage', localStorageMock)
+
 describe('sessionStore', () => {
   /** Wait for async thread ID replacement from DB */
   async function waitForThreadStable(): Promise<string> {
@@ -37,7 +48,7 @@ describe('sessionStore', () => {
 
   beforeEach(() => {
     threadCounter = 0
-    useSessionStore.setState({ activeSessions: new Map(), sendingThreads: new Set() })
+    useSessionStore.setState({ activeSessions: new Map(), sendingThreads: new Set(), sessionSnapshots: new Map(), requestStatuses: new Map() })
     useThreadStore.setState({ threads: [], currentThreadId: null, threadIdResolvers: new Map() })
     useAdapterStore.setState({
       adapters: [],
@@ -240,5 +251,64 @@ describe('sessionStore', () => {
       'thread-1',
       expect.objectContaining({ role: 'user', content: 'Hello' }),
     )
+  })
+
+  describe('snapshots', () => {
+    it('saveSnapshot stores last messages and file changes', () => {
+      useThreadStore.setState({
+        threads: [{
+          id: 't1',
+          title: 'T',
+          adapterName: 'claude-code',
+          messages: [
+            { id: 'm1', role: 'user', content: 'hello', timestamp: 1, status: 'success' },
+            { id: 'm2', role: 'agent', content: 'done', timestamp: 2, status: 'success' },
+          ],
+          contextRefs: [],
+          status: 'idle',
+          createdAt: 1,
+        }],
+      })
+      useSessionStore.getState().saveSnapshot('t1')
+      const snapshot = useSessionStore.getState().loadSnapshot('t1')
+      expect(snapshot).not.toBeNull()
+      expect(snapshot!.messages).toHaveLength(2)
+    })
+
+    it('loadSnapshot returns null for expired snapshots', () => {
+      useSessionStore.setState({
+        sessionSnapshots: new Map([['t1', { messages: [], filesChanged: [], savedAt: Date.now() - 25 * 60 * 60 * 1000 }]]),
+      })
+      expect(useSessionStore.getState().loadSnapshot('t1')).toBeNull()
+    })
+
+    it('hasInterruptedSession checks in-memory and localStorage', () => {
+      useThreadStore.setState({
+        threads: [{
+          id: 't1', title: 'T', adapterName: 'claude-code', messages: [], contextRefs: [], status: 'idle', createdAt: 1,
+        }],
+      })
+      expect(useSessionStore.getState().hasInterruptedSession('t1')).toBe(false)
+      useSessionStore.getState().saveSnapshot('t1')
+      expect(useSessionStore.getState().hasInterruptedSession('t1')).toBe(true)
+    })
+
+    it('clearSnapshot removes snapshot', () => {
+      useSessionStore.getState().saveSnapshot('t1')
+      useSessionStore.getState().clearSnapshot('t1')
+      expect(useSessionStore.getState().hasInterruptedSession('t1')).toBe(false)
+      expect(useSessionStore.getState().loadSnapshot('t1')).toBeNull()
+    })
+  })
+
+  describe('request status', () => {
+    it('add, update, and remove request status', () => {
+      useSessionStore.getState().addRequestStatus('r1', 'claude-code')
+      expect(useSessionStore.getState().requestStatuses.get('r1')?.status).toBe('queued')
+      useSessionStore.getState().updateRequestStatus('r1', 'executing')
+      expect(useSessionStore.getState().requestStatuses.get('r1')?.status).toBe('executing')
+      useSessionStore.getState().removeRequestStatus('r1')
+      expect(useSessionStore.getState().requestStatuses.has('r1')).toBe(false)
+    })
   })
 })
