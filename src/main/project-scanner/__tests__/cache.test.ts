@@ -74,7 +74,7 @@ describe('project-scanner cache', () => {
     expect(cached).toBeNull()
   })
 
-  it('only change root directory mtime without file changes → cache hit', async () => {
+  it('changing only directory mtimes does not affect cache', async () => {
     const projectDir = await createDummyProject(tempDir)
     const result = dummyResult()
 
@@ -86,5 +86,21 @@ describe('project-scanner cache', () => {
 
     const cached = await readProjectScanCache(projectDir)
     expect(cached).toEqual(result)
+  })
+
+  it('empty project directory → cache works and returns null on miss', async () => {
+    const emptyDir = path.join(tempDir, 'empty-project')
+    await fs.mkdir(emptyDir, { recursive: true })
+    const result = dummyResult()
+
+    // Write cache for empty project
+    await writeProjectScanCache(emptyDir, result)
+    const cached1 = await readProjectScanCache(emptyDir)
+    expect(cached1).toEqual(result)
+
+    // After adding a file, cache should miss
+    await fs.writeFile(path.join(emptyDir, 'new-file.txt'), 'hello', 'utf-8')
+    const cached2 = await readProjectScanCache(emptyDir)
+    expect(cached2).toBeNull()
   })
 })

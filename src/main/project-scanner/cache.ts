@@ -38,14 +38,18 @@ async function computeProjectHash(projectPath: string): Promise<string | null> {
   hash.update(projectPath)
 
   async function walk(dir: string, depth: number): Promise<void> {
+    // Limit walk depth to avoid excessive I/O on deeply nested dependency trees.
+    // node_modules is already skipped, so this bounds legitimate source depth.
     if (depth > 5) return
     let entries
     try {
       entries = await fs.readdir(dir, { withFileTypes: true })
     } catch { return }
 
+    const skipDirs = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'out', 'release'])
+
     for (const entry of entries) {
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.')) continue
+      if (skipDirs.has(entry.name)) continue
       const fullPath = path.join(dir, entry.name)
       if (entry.isDirectory()) {
         await walk(fullPath, depth + 1)
