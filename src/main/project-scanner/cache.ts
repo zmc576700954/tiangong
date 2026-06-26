@@ -16,7 +16,7 @@ const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 interface CacheEntry {
   projectPath: string
-  rootMtimeMs: number
+  projectHash: string
   cachedAt: string
   result: ProjectScanResult
 }
@@ -25,30 +25,51 @@ function getCacheDir(): string {
   return path.join(app.getPath('userData'), 'cache', 'project-scans')
 }
 
-function getCacheKey(projectPath: string, rootMtimeMs: number): string {
-  return crypto.createHash('sha256').update(`${projectPath}|${rootMtimeMs}`).digest('hex')
+function getCacheKey(projectPath: string, projectHash: string): string {
+  return crypto.createHash('sha256').update(`${projectPath}|${projectHash}`).digest('hex')
 }
 
 function getCacheFilePath(cacheKey: string): string {
   return path.join(getCacheDir(), `${cacheKey}.json`)
 }
 
-async function getRootMtime(projectPath: string): Promise<number | null> {
-  try {
-    const stat = await fs.stat(projectPath)
-    return stat.mtimeMs
-  } catch (err) {
-    logger.warn(`Failed to stat project path for cache key: ${projectPath}`, err)
-    return null
+async function computeProjectHash(projectPath: string): Promise<string | null> {
+  const hash = crypto.createHash('sha256')
+  hash.update(projectPath)
+
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > 5) return
+    let entries
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true })
+    } catch { return }
+
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name.startsWith('.')) continue
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(fullPath, depth + 1)
+      } else if (entry.isFile()) {
+        try {
+          const stat = await fs.stat(fullPath)
+          hash.update(`${fullPath}|${stat.mtimeMs}|${stat.size}`)
+        } catch { /* skip */ }
+      }
+    }
   }
+
+  try {
+    await walk(projectPath, 0)
+    return hash.digest('hex')
+  } catch { return null }
 }
 
 export async function readProjectScanCache(projectPath: string): Promise<ProjectScanResult | null> {
   try {
-    const rootMtimeMs = await getRootMtime(projectPath)
-    if (rootMtimeMs == null) return null
+    const projectHash = await computeProjectHash(projectPath)
+    if (projectHash == null) return null
 
-    const cacheKey = getCacheKey(projectPath, rootMtimeMs)
+    const cacheKey = getCacheKey(projectPath, projectHash)
     const cachePath = getCacheFilePath(cacheKey)
 
     let raw: string
@@ -65,7 +86,7 @@ export async function readProjectScanCache(projectPath: string): Promise<Project
     }
 
     const parsed = JSON.parse(raw) as CacheEntry
-    if (parsed.projectPath !== projectPath || parsed.rootMtimeMs !== rootMtimeMs) {
+    if (parsed.projectPath !== projectPath || parsed.projectHash !== projectHash) {
       return null
     }
 
@@ -82,17 +103,17 @@ export async function writeProjectScanCache(
   result: ProjectScanResult,
 ): Promise<void> {
   try {
-    const rootMtimeMs = await getRootMtime(projectPath)
-    if (rootMtimeMs == null) return
+    const projectHash = await computeProjectHash(projectPath)
+    if (projectHash == null) return
 
-    const cacheKey = getCacheKey(projectPath, rootMtimeMs)
+    const cacheKey = getCacheKey(projectPath, projectHash)
     const cachePath = getCacheFilePath(cacheKey)
 
     await fs.mkdir(path.dirname(cachePath), { recursive: true })
 
     const entry: CacheEntry = {
       projectPath,
-      rootMtimeMs,
+      projectHash,
       cachedAt: new Date().toISOString(),
       result,
     }
