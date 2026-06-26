@@ -303,7 +303,11 @@ export class GraphMemory {
     const seenEdge = new Set<string>()
 
     // Performance guard: limit candidate set for pairwise inference to avoid O(N^2) blowup
-    const candidates = allRecent.slice(0, 50)
+    const MAX_PAIRWISE_CANDIDATES = 30
+    const candidates = allRecent.slice(0, MAX_PAIRWISE_CANDIDATES)
+    const YIELD_EVERY_N = 10
+    let processedCount = 0
+
     for (const mem of candidates) {
       const edges = this.inferRelations(mem, candidates)
       for (const edge of edges) {
@@ -316,6 +320,11 @@ export class GraphMemory {
         outgoingIndex.get(edge.sourceId)!.push(edge)
         if (!incomingIndex.has(edge.targetId)) incomingIndex.set(edge.targetId, [])
         incomingIndex.get(edge.targetId)!.push(edge)
+      }
+
+      processedCount++
+      if (processedCount % YIELD_EVERY_N === 0 && candidates.length > YIELD_EVERY_N) {
+        await new Promise((resolve) => setImmediate(resolve))
       }
     }
 

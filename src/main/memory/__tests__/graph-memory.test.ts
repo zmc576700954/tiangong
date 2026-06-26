@@ -171,13 +171,47 @@ describe('GraphMemory', () => {
       expect(result).toBeNull()
     })
 
-    it('traverses from existing memory', async () => {
-      const m1 = memory({ id: 1, kind: 'investigation', title: 'Root investigation', concepts: ['auth'] })
-      const m2 = memory({ id: 2, kind: 'fix', title: 'Fix follow-up', concepts: ['auth'], files_modified: ['src/auth.ts'] })
+    it('traverses with depth > 3 and many candidates without blocking', async () => {
+      // Create 50+ memories so the candidate pool cap is hit
+      const memories: MemoryItem[] = []
+      for (let i = 1; i <= 55; i++) {
+        memories.push(
+          memory({
+            id: i,
+            kind: 'investigation',
+            title: `Memory ${i}`,
+            concepts: ['auth', 'security'],
+            files_modified: ['src/auth.ts'],
+          })
+        )
+      }
+
+      memStore.getRecent.mockResolvedValue(memories)
+
+      // Spy on setImmediate to verify yields occur
+      const setImmediateSpy = vi.spyOn(global, 'setImmediate')
+
+      const result = await graph.traverse(1, { depth: 4 })
+
+      expect(result).not.toBeNull()
+      if (result) {
+        expect(result.root.id).toBe(1)
+        expect(result.totalNodes).toBeGreaterThanOrEqual(1)
+      }
+
+      // With 30 candidates and YIELD_EVERY_N=10, we expect 2 yields (at 10 and 20)
+      expect(setImmediateSpy).toHaveBeenCalled()
+
+      setImmediateSpy.mockRestore()
+    })
+
+    it('returns correct edges with capped candidate pool', async () => {
+      const m1 = memory({ id: 1, kind: 'investigation', title: 'Root', concepts: ['auth'] })
+      const m2 = memory({ id: 2, kind: 'fix', title: 'Fix', concepts: ['auth'], files_modified: ['src/auth.ts'] })
 
       memStore.getRecent.mockResolvedValue([m1, m2])
 
-      const result = await graph.traverse(1, { depth: 1 })
+      const result = await graph.traverse(1, { depth: 4 })
       expect(result).not.toBeNull()
       if (result) {
         expect(result.root.id).toBe(1)
