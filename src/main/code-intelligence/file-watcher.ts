@@ -32,6 +32,7 @@ export class CodeFileWatcher {
   private options: FileWatcherOptions
   /** 防抖定时器：避免短时间内重复触发索引更新 */
   private debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private debounceGenerations = new Map<string, number>()
   private readonly DEBOUNCE_MS = 300
 
   constructor(options: FileWatcherOptions) {
@@ -102,6 +103,7 @@ export class CodeFileWatcher {
       clearTimeout(timer)
     }
     this.debounceTimers.clear()
+    this.debounceGenerations.clear()
     await this.watcher?.close()
   }
 
@@ -134,8 +136,15 @@ export class CodeFileWatcher {
     const existing = this.debounceTimers.get(filePath)
     if (existing) clearTimeout(existing)
 
+    const currentGen = (this.debounceGenerations.get(filePath) ?? 0) + 1
+    this.debounceGenerations.set(filePath, currentGen)
+
     const timer = setTimeout(async () => {
       this.debounceTimers.delete(filePath)
+      if (this.debounceGenerations.get(filePath) !== currentGen) {
+        return
+      }
+      this.debounceGenerations.delete(filePath)
       try {
         await handler()
       } catch (err) {
