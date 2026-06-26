@@ -23,6 +23,51 @@ import { IpcError, ErrorCode } from './errors'
 
 const logger = createLogger('IPC')
 
+// ---------- realpath 缓存（模块级导出，便于测试） ----------
+/** realpath 缓存：减少高频文件操作时的系统调用开销（TTL 60秒，最大 2000 条） */
+const realpathCache = new Map<string, { resolved: string; timestamp: number }>()
+const REALPATH_CACHE_TTL = 60_000
+const REALPATH_CACHE_MAX = 2000
+
+export async function cachedRealpath(targetPath: string): Promise<string> {
+  const provider = getPlatformProvider()
+  const cacheKey = provider.isWindows ? targetPath.toLowerCase() : targetPath
+  const cached = realpathCache.get(cacheKey)
+  if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
+    return cached.resolved
+  }
+
+  let resolved: string
+  let shouldCache = true
+  try {
+    resolved = await fs.realpath(targetPath)
+  } catch {
+    // 文件不存在时，解析父目录的真实路径再拼接文件名，
+    // 防止攻击者通过符号链接父目录绕过路径校验
+    // 不缓存不存在路径：避免 TOCTOU（首次缓存后攻击者创建 symlink）
+    shouldCache = false
+    const parentDir = path.dirname(targetPath)
+    const fileName = path.basename(targetPath)
+    try {
+      const resolvedParent = await fs.realpath(parentDir)
+      resolved = path.join(resolvedParent, fileName)
+    } catch {
+      // 父目录也不存在（全新路径），回退到 path.resolve
+      resolved = path.resolve(targetPath)
+    }
+  }
+
+  if (shouldCache) {
+    // LRU 淘汰：超过大小时删除最早条目
+    if (realpathCache.size >= REALPATH_CACHE_MAX) {
+      const oldest = realpathCache.keys().next().value
+      if (oldest !== undefined) realpathCache.delete(oldest)
+    }
+    realpathCache.set(cacheKey, { resolved, timestamp: Date.now() })
+  }
+  return resolved
+}
+
 import { createTypedHandle, isBlockedSystemPath } from './ipc/utils'
 import { registerGraphHandlers } from './ipc/graph'
 import { registerAgentHandlers } from './ipc/agent'
@@ -218,43 +263,6 @@ export async function registerIpcHandlers(): Promise<void> {
   })
 
   // ---------- 路径安全校验 ----------
-  /** realpath 缓存：减少高频文件操作时的系统调用开销（TTL 60秒，最大 2000 条） */
-  const realpathCache = new Map<string, { resolved: string; timestamp: number }>()
-  const REALPATH_CACHE_TTL = 60_000
-  const REALPATH_CACHE_MAX = 2000
-
-  async function cachedRealpath(targetPath: string): Promise<string> {
-    const provider = getPlatformProvider()
-    const cacheKey = provider.isWindows ? targetPath.toLowerCase() : targetPath
-    const cached = realpathCache.get(cacheKey)
-    if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
-      return cached.resolved
-    }
-    let resolved: string
-    try {
-      resolved = await fs.realpath(targetPath)
-    } catch {
-      // 文件不存在时，解析父目录的真实路径再拼接文件名，
-      // 防止攻击者通过符号链接父目录绕过路径校验
-      const parentDir = path.dirname(targetPath)
-      const fileName = path.basename(targetPath)
-      try {
-        const resolvedParent = await fs.realpath(parentDir)
-        resolved = path.join(resolvedParent, fileName)
-      } catch {
-        // 父目录也不存在（全新路径），回退到 path.resolve
-        resolved = path.resolve(targetPath)
-      }
-    }
-    // LRU 淘汰：超过大小时删除最早条目
-    if (realpathCache.size >= REALPATH_CACHE_MAX) {
-      const oldest = realpathCache.keys().next().value
-      if (oldest !== undefined) realpathCache.delete(oldest)
-    }
-    realpathCache.set(cacheKey, { resolved, timestamp: Date.now() })
-    return resolved
-  }
-
   /** 允许路径根目录缓存：按 senderId 缓存 30 秒，避免每次 FS 操作重复构建 */
   let allowedRootsCache: { senderId: number | undefined; roots: string[]; timestamp: number } | null = null
   const ALLOWED_ROOTS_TTL = 30_000
