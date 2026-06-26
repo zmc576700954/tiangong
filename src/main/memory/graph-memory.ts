@@ -303,7 +303,7 @@ export class GraphMemory {
     const seenEdge = new Set<string>()
 
     // Performance guard: limit candidate set for pairwise inference to avoid O(N^2) blowup
-    const MAX_PAIRWISE_CANDIDATES = 30
+    const MAX_PAIRWISE_CANDIDATES = 50
     const candidates = allRecent.slice(0, MAX_PAIRWISE_CANDIDATES)
     const YIELD_EVERY_N = 10
     let processedCount = 0
@@ -323,6 +323,7 @@ export class GraphMemory {
       }
 
       processedCount++
+      // Yield to the event loop every N iterations to prevent blocking the main process
       if (processedCount % YIELD_EVERY_N === 0 && candidates.length > YIELD_EVERY_N) {
         await new Promise((resolve) => setImmediate(resolve))
       }

@@ -199,8 +199,8 @@ describe('GraphMemory', () => {
         expect(result.totalNodes).toBeGreaterThanOrEqual(1)
       }
 
-      // With 30 candidates and YIELD_EVERY_N=10, we expect 2 yields (at 10 and 20)
-      expect(setImmediateSpy).toHaveBeenCalled()
+      // With 50 candidates and YIELD_EVERY_N=10, we expect 5 yields (at 10, 20, 30, 40, 50)
+      expect(setImmediateSpy).toHaveBeenCalledTimes(5)
 
       setImmediateSpy.mockRestore()
     })
