@@ -77,44 +77,40 @@ function flushStreamingBuffer() {
   streamingBuffer = []
 
   // Group chunks by (threadId, messageId), accumulating content
-  const grouped = new Map<string, { threadId: string; messageId: string; content: string }>()
+  const grouped = new Map<string, Map<string, string>>()
   for (const chunk of batch) {
-    const key = `${chunk.threadId}:${chunk.messageId}`
-    const existing = grouped.get(key)
-    if (existing) {
-      existing.content += chunk.content
+    const threadMap = grouped.get(chunk.threadId)
+    if (threadMap) {
+      const existing = threadMap.get(chunk.messageId)
+      threadMap.set(chunk.messageId, existing ? existing + chunk.content : chunk.content)
     } else {
-      grouped.set(key, { threadId: chunk.threadId, messageId: chunk.messageId, content: chunk.content })
+      grouped.set(chunk.threadId, new Map([[chunk.messageId, chunk.content]]))
     }
   }
 
-  // Apply batch updates per thread
-  const threads = useThreadStore.getState().threads
-  const threadUpdates = new Map<number, typeof threads[number]['messages']>()
+  // Apply updates using Zustand functional set to always read latest state
+  useThreadStore.setState((state) => {
+    const threads = state.threads.map((thread) => {
+      const messageUpdates = grouped.get(thread.id)
+      if (!messageUpdates || messageUpdates.size === 0) return thread
 
-  for (const { threadId, messageId, content } of grouped.values()) {
-    const threadIndex = threads.findIndex((t) => t.id === threadId)
-    if (threadIndex === -1) continue
+      let messagesChanged = false
+      const messages = thread.messages.map((message) => {
+        const content = messageUpdates.get(message.id)
+        if (content === undefined) return message
+        messagesChanged = true
+        return { ...message, content: message.content + content }
+      })
 
-    let messages = threadUpdates.get(threadIndex)
-    if (!messages) {
-      messages = [...threads[threadIndex].messages]
-      threadUpdates.set(threadIndex, messages)
+      return messagesChanged ? { ...thread, messages } : thread
+    })
+
+    // Only return a new reference if something actually changed
+    if (threads.some((t, i) => t !== state.threads[i])) {
+      return { threads }
     }
-
-    const messageIndex = messages.findIndex((m) => m.id === messageId)
-    if (messageIndex === -1) continue
-
-    messages[messageIndex] = { ...messages[messageIndex], content: messages[messageIndex].content + content }
-  }
-
-  if (threadUpdates.size === 0) return
-
-  const newThreads = [...threads]
-  for (const [threadIndex, messages] of threadUpdates) {
-    newThreads[threadIndex] = { ...newThreads[threadIndex], messages }
-  }
-  useThreadStore.setState({ threads: newThreads })
+    return {}
+  })
 }
 
 // ==================== Streaming dedup state ====================

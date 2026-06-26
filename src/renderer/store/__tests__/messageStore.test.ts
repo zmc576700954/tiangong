@@ -106,6 +106,52 @@ describe('streaming (RAF-batched)', () => {
     flushStreamingBuffer()
     expect(useThreadStore.getState().threads[0].messages[0].content).toBe('AC')
   })
+
+  it('flushStreamingBuffer uses latest thread state (functional setState) when threads array changes mid-stream', () => {
+    const id = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().appendChatMessage(id, {
+      id: 'msg-stream',
+      role: 'agent',
+      content: 'Hello',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+
+    // Enqueue a streaming chunk but do NOT flush yet
+    useMessageStore.getState().appendToStreamingMessage(id, 'msg-stream', ' World')
+
+    // Now mutate the threads array (add a new thread) before flush
+    useThreadStore.getState().createThread('claude-code')
+
+    // Flush should still append to the correct thread by ID, not by stale index
+    flushStreamingBuffer()
+    const threads = useThreadStore.getState().threads
+    const targetThread = threads.find((t) => t.id === id)
+    expect(targetThread).toBeDefined()
+    expect(targetThread!.messages[0].content).toBe('Hello World')
+  })
+
+  it('flushStreamingBuffer gracefully skips chunks for non-existent thread or message', () => {
+    const id = useThreadStore.getState().createThread('claude-code')
+    useThreadStore.getState().appendChatMessage(id, {
+      id: 'msg-real',
+      role: 'agent',
+      content: 'Hello',
+      timestamp: Date.now(),
+      status: 'streaming',
+    })
+
+    // Enqueue chunks for a non-existent thread and non-existent message
+    useMessageStore.getState().appendToStreamingMessage('nonexistent-thread', 'msg-1', 'X')
+    useMessageStore.getState().appendToStreamingMessage(id, 'nonexistent-message', 'Y')
+    // Also enqueue one for the real thread/message
+    useMessageStore.getState().appendToStreamingMessage(id, 'msg-real', ' World')
+
+    flushStreamingBuffer()
+
+    const targetThread = useThreadStore.getState().threads.find((t) => t.id === id)
+    expect(targetThread!.messages[0].content).toBe('Hello World')
+  })
 })
 
   it('appendToolCall adds a tool call block to the message', () => {
