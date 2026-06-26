@@ -171,4 +171,58 @@ describe('CodeFileWatcher', () => {
 
     expect(mockIndexer.reindexFile).toHaveBeenCalledTimes(1)
   })
+
+  it('interleaved events on different files each execute exactly once', async () => {
+    await watcher.start()
+
+    // Interleave changes on a.ts and b.ts
+    changeHandler!('a.ts')
+    await vi.advanceTimersByTimeAsync(50)
+    changeHandler!('b.ts')
+    await vi.advanceTimersByTimeAsync(50)
+    changeHandler!('a.ts')
+    await vi.advanceTimersByTimeAsync(50)
+    changeHandler!('b.ts')
+
+    // Advance past the last debounce for both files
+    await vi.advanceTimersByTimeAsync(400)
+
+    // Each file should have been reindexed exactly once
+    expect(mockIndexer.reindexFile).toHaveBeenCalledTimes(2)
+    expect(mockIndexer.reindexFile).toHaveBeenCalledWith('/project/a.ts')
+    expect(mockIndexer.reindexFile).toHaveBeenCalledWith('/project/b.ts')
+  })
+
+  it('Map cleanup: both Maps are empty after all timers fire and stop() is called', async () => {
+    await watcher.start()
+
+    changeHandler!('a.ts')
+    changeHandler!('b.ts')
+
+    // Access private Maps via type assertion for verification
+    const w = watcher as unknown as {
+      debounceTimers: Map<string, unknown>
+      debounceGenerations: Map<string, number>
+    }
+
+    // Maps should be populated while timers are pending
+    expect(w.debounceTimers.size).toBe(2)
+    expect(w.debounceGenerations.size).toBe(2)
+
+    // Let all timers fire
+    await vi.advanceTimersByTimeAsync(400)
+
+    // debounceTimers should be empty after handlers run
+    expect(w.debounceTimers.size).toBe(0)
+    // debounceGenerations should also be cleaned up after successful execution
+    expect(w.debounceGenerations.size).toBe(0)
+
+    // Queue another event then stop
+    changeHandler!('c.ts')
+    await watcher.stop()
+
+    // Both Maps must be empty after stop()
+    expect(w.debounceTimers.size).toBe(0)
+    expect(w.debounceGenerations.size).toBe(0)
+  })
 })

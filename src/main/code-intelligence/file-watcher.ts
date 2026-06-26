@@ -105,6 +105,7 @@ export class CodeFileWatcher {
     this.debounceTimers.clear()
     this.debounceGenerations.clear()
     await this.watcher?.close()
+    this.watcher = undefined
   }
 
   /**
@@ -142,6 +143,7 @@ export class CodeFileWatcher {
     const timer = setTimeout(async () => {
       this.debounceTimers.delete(filePath)
       if (this.debounceGenerations.get(filePath) !== currentGen) {
+        this.debounceGenerations.delete(filePath)
         return
       }
       this.debounceGenerations.delete(filePath)
