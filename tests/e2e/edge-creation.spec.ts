@@ -11,7 +11,8 @@ test.describe('Edge Creation', () => {
   })
 
   test('should connect two nodes and show edge type menu', async ({ page }) => {
-    const nodes = page.locator('[data-id].react-flow__node')
+    // Count only business nodes (excluding the auto-created project root)
+    const nodes = page.locator('[data-id].react-flow__node').filter({ has: page.locator('[role="button"]') })
     await expect(nodes).toHaveCount(2, { timeout: 5_000 })
 
     // Right-click source node and select connect
@@ -28,7 +29,8 @@ test.describe('Edge Creation', () => {
   })
 
   test('should create an edge after selecting type', async ({ page }) => {
-    const nodes = page.locator('[data-id].react-flow__node')
+    // Count only business nodes (excluding the auto-created project root)
+    const nodes = page.locator('[data-id].react-flow__node').filter({ has: page.locator('[role="button"]') })
     await expect(nodes).toHaveCount(2, { timeout: 5_000 })
 
     // Connect via right-click
