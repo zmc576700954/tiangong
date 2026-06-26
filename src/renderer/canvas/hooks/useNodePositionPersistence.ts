@@ -38,14 +38,15 @@ export function useNodePositionPersistence(graphId: string) {
     [flushPositionUpdates],
   )
 
-  // 切换图时清空待保存的位置队列
+  // 切换图时先刷入待保存的位置队列，再清空
   useEffect(() => {
-    pendingPositionUpdates.current = new Map()
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current)
       debounceTimerRef.current = null
     }
-  }, [graphId])
+    flushPositionUpdates()
+    pendingPositionUpdates.current = new Map()
+  }, [graphId, flushPositionUpdates])
 
   // 组件卸载时刷入最后的位置更新
   useEffect(() => {
