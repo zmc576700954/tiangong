@@ -45,7 +45,6 @@ export function useNodePositionPersistence(graphId: string) {
       debounceTimerRef.current = null
     }
     flushPositionUpdates()
-    pendingPositionUpdates.current = new Map()
   }, [graphId, flushPositionUpdates])
 
   // 组件卸载时刷入最后的位置更新
