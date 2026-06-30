@@ -625,6 +625,17 @@ export class AgentManager {
     this.recoveryCheckIntervals.clear()
     // 清理 ScopeGuard 所有定时器和 watcher
     this.scopeGuard.destroy()
+    // 释放适配器级资源（如 MCP 连接池、池清理定时器）——避免应用退出时泄漏子进程/连接
+    for (const adapter of this.registry.list()) {
+      const disposable = adapter as { dispose?: () => void }
+      if (typeof disposable.dispose === 'function') {
+        try {
+          disposable.dispose()
+        } catch (err) {
+          logger.warn(`Adapter ${adapter.name} dispose() failed:`, err)
+        }
+      }
+    }
   }
 
   /**

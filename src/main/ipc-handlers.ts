@@ -29,12 +29,14 @@ const realpathCache = new Map<string, { resolved: string; timestamp: number }>()
 const REALPATH_CACHE_TTL = 60_000
 const REALPATH_CACHE_MAX = 2000
 
-export async function cachedRealpath(targetPath: string): Promise<string> {
+export async function cachedRealpath(targetPath: string, skipCache = false): Promise<string> {
   const provider = getPlatformProvider()
   const cacheKey = provider.isWindows ? targetPath.toLowerCase() : targetPath
-  const cached = realpathCache.get(cacheKey)
-  if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
-    return cached.resolved
+  if (!skipCache) {
+    const cached = realpathCache.get(cacheKey)
+    if (cached && Date.now() - cached.timestamp < REALPATH_CACHE_TTL) {
+      return cached.resolved
+    }
   }
 
   let resolved: string
@@ -217,6 +219,19 @@ export async function registerIpcHandlers(): Promise<void> {
     await chatRepo.resetContextTokens(threadId, tokensUsed)
   })
 
+  // Wire waterline's DB loader so token state survives process restarts:
+  // a long thread's accumulated usage is read back from chat_threads on first access
+  // rather than resetting to 0 (which would understate shouldAutoCompact's ratio).
+  contextWaterline.setDbLoader((threadId) => {
+    try {
+      const row = chatRepo.getThread(threadId)
+      if (!row) return null
+      return { tokensUsed: row.context_tokens_used ?? 0, tokensMax: row.context_window_max ?? 0 }
+    } catch {
+      return null
+    }
+  })
+
   const graphService = new GraphService(db, agentManager)
   const chatService = new ChatService(chatRepo, contextWaterline)
   setupAgentLogPersistence()
@@ -279,7 +294,17 @@ export async function registerIpcHandlers(): Promise<void> {
 
     const roots: string[] = []
     roots.push(path.resolve(app.getPath('userData')))
-    roots.push(path.resolve(app.getPath('temp')))
+    // 仅允许专属临时子目录，而非整个系统 temp。
+    // 系统 temp 是共享可写目录，且 ScopeGuard 备份位于 <temp>/bizgraph-backups，
+    // 若整目录可被渲染进程读写，将能篡改/删除回滚所依赖的备份文件。
+    // 专属子目录 <temp>/bizgraph 与 bizgraph-backups 同级、互不包含。
+    const scopedTemp = path.resolve(path.join(app.getPath('temp'), 'bizgraph'))
+    try {
+      await fs.mkdir(scopedTemp, { recursive: true })
+    } catch (err) {
+      logger.warn('Failed to create scoped temp dir:', err)
+    }
+    roots.push(scopedTemp)
 
     try {
       const projectPaths = await graphService.getProjectPaths()
@@ -300,8 +325,10 @@ export async function registerIpcHandlers(): Promise<void> {
 
   const validateFsPath: ValidateFsPath = async (targetPath, operation) => {
     const { senderId } = getIpcContext()
-    // 解析符号链接获取真实路径（带缓存），文件不存在时回退到 path.resolve
-    const resolved = await cachedRealpath(targetPath)
+    // 解析符号链接获取真实路径（带缓存），文件不存在时回退到 path.resolve。
+    // 写操作跳过正向缓存、即时解析：正向缓存存在 TTL 窗口，期间路径组件可能被替换为
+    // 指向系统/越权位置的符号链接，而校验仍返回旧的安全解析结果（TOCTOU）。
+    const resolved = await cachedRealpath(targetPath, operation === 'write')
     const normalized = path.normalize(resolved)
 
     // 1. 拒绝系统关键目录

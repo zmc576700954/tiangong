@@ -92,6 +92,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
+    const sessionId = session.id
     const query = await this.loadSdk()
     if (!query) {
       throw new AdapterError(
@@ -112,7 +113,6 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
       // Phase 4: register dispatch_subagent tool via in-process MCP server
       // when SubagentManager has been injected.
-      const sessionId = session.id
       let mcpServers: Record<string, McpServerConfig> | undefined
       if (this.subagentManager && this.sdkCreateMcpServer) {
         const dispatchTool = {
@@ -216,7 +216,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                     const toolName = typeof hookInput.tool_name === 'string' ? hookInput.tool_name : undefined
                     if (filePath) {
                       const isCreate = toolName === 'Write'
-                      this.emitOutput({
+                      this.emitOutputForSession(sessionId, {
                         type: 'file_change',
                         data: `${isCreate ? 'create' : 'modify'}: ${filePath}`,
                         timestamp: Date.now(),
@@ -246,7 +246,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           if (isAssistantMessage(message.message)) {
             for (const block of message.message.content ?? []) {
               if (block.type === 'text' && block.text) {
-                this.emitOutput({
+                this.emitOutputForSession(sessionId, {
                   type: 'stdout',
                   data: block.text,
                   timestamp: Date.now(),
@@ -266,7 +266,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             }
           }
           if (message.subtype === 'success') {
-            this.emitOutput({
+            this.emitOutputForSession(sessionId, {
               type: 'complete',
               data: message.result || 'Completed',
               timestamp: Date.now(),
@@ -275,7 +275,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             const errorText =
               (message.errors.length > 0 ? message.errors.join('\n') : undefined) ??
               'Agent execution failed'
-            this.emitOutput({
+            this.emitOutputForSession(sessionId, {
               type: 'error',
               data: errorText,
               timestamp: Date.now(),
@@ -287,13 +287,13 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       if (err instanceof Error && err.name === 'AbortError') {
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'complete',
           data: 'Session cancelled by user',
           timestamp: Date.now(),
         })
       } else {
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'error',
           data: `SDK error: ${msg}`,
           timestamp: Date.now(),

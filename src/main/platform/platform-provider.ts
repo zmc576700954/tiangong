@@ -6,7 +6,8 @@
  * and maintained in one place instead of being scattered across the codebase.
  */
 
-import { type ChildProcess, type SpawnOptions, execSync } from 'node:child_process'
+import { type ChildProcess, type SpawnOptions, execSync, spawnSync } from 'node:child_process'
+import os from 'node:os'
 import path from 'node:path'
 
 export interface PlatformProvider {
@@ -29,6 +30,17 @@ export interface PlatformProvider {
   whichCommand(cmd: string): string | null
 
   getWatcherOptions(): Record<string, unknown>
+
+  /**
+   * Restrict a file so only the current OS user can read/write it.
+   *
+   * On POSIX the caller is expected to have already created the file with mode
+   * 0o600 (which is honoured), so this is a no-op. On Windows POSIX mode bits are
+   * ignored by the filesystem, so this tightens the ACL via `icacls`: inheritance
+   * is removed and only the current user is granted full control. Best-effort:
+   * returns true on success, false if the ACL change could not be applied.
+   */
+  restrictFileToCurrentUser(filePath: string): boolean
 }
 
 let instance: PlatformProvider | null = null
@@ -92,6 +104,7 @@ class DarwinProvider implements PlatformProvider {
     try { return execSync(`which ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
   }
   getWatcherOptions(): Record<string, unknown> { return {} }
+  restrictFileToCurrentUser(_filePath: string): boolean { return true }
 }
 
 // --- Win32 ---
@@ -128,6 +141,26 @@ class Win32Provider implements PlatformProvider {
     try { return execSync(`where ${cmd}`, { encoding: 'utf-8' }).trim() } catch { return null }
   }
   getWatcherOptions(): Record<string, unknown> { return {} }
+
+  restrictFileToCurrentUser(filePath: string): boolean {
+    // Windows ignores POSIX mode bits, so tighten the DACL explicitly:
+    //   /inheritance:r  — remove inherited ACEs (drops broad group access)
+    //   /grant:r <user>:F — replace this user's ACEs with Full control only
+    // Invoked via spawnSync with an argument array (no shell) to avoid injection;
+    // the username comes from the OS, not from external input.
+    try {
+      const username = os.userInfo().username
+      if (!username) return false
+      const result = spawnSync(
+        'icacls',
+        [filePath, '/inheritance:r', '/grant:r', `${username}:F`],
+        { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true },
+      )
+      return !result.error && result.status === 0
+    } catch {
+      return false
+    }
+  }
 }
 
 // --- Linux (incl. WSL) ---
@@ -162,4 +195,5 @@ class LinuxProvider implements PlatformProvider {
   getWatcherOptions(): Record<string, unknown> {
     return this.isWsl ? { usePolling: true } : {}
   }
+  restrictFileToCurrentUser(_filePath: string): boolean { return true }
 }

@@ -78,6 +78,8 @@ describe('ProjectIndexer', () => {
 
     const imports = index.getImports(path.join(projectDir, 'a.ts'))
     expect(imports.length).toBe(1)
-    expect(imports[0].toFile).toBe(path.join(projectDir, 'b'))
+    // 导入说明符 './b' 应解析为磁盘上的真实文件 b.ts（含扩展名），
+    // 与符号存储用的绝对 filePath 一致，依赖图查询才能命中。
+    expect(imports[0].toFile).toBe(path.join(projectDir, 'b.ts'))
   })
 })

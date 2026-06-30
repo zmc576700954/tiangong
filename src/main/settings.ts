@@ -23,6 +23,27 @@ import { createLogger } from './shared/logger'
 
 const logger = createLogger('Settings')
 
+/** Paths whose ACL has already been tightened this session, to avoid repeated icacls spawns. */
+const aclApplied = new Set<string>()
+
+/**
+ * Best-effort: restrict a sensitive file so only the current OS user can access it.
+ * No-op on POSIX (mode 0o600 already applied at write time); on Windows runs icacls.
+ * Failures are logged at debug level and never throw — encryption is the real defence.
+ */
+function restrictFileAcl(filePath: string): void {
+  const provider = getPlatformProvider()
+  // On non-Windows the 0o600 mode bits are authoritative; skip the redundant call.
+  if (!provider.isWindows) return
+  if (aclApplied.has(filePath)) return
+  const ok = provider.restrictFileToCurrentUser(filePath)
+  if (ok) {
+    aclApplied.add(filePath)
+  } else {
+    logger.debug(`Could not tighten ACL on ${filePath} (icacls unavailable or failed)`)
+  }
+}
+
 // Re-export types for backward compatibility
 export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences }
 
@@ -87,8 +108,10 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
 const API_KEY_PREFIX_ENC = 'enc:'
 // SECURITY: fbk: keys use AES-256-CBC with a key derived from userData path + random salt.
 // This is obfuscation, NOT real encryption against a local attacker who can read the salt file
-// and the application path. It only raises the bar above plaintext storage. For real protection,
-// rely on OS keychain (safeStorage) which is preferred when available.
+// and the application path. It only raises the bar above plaintext storage. As defence-in-depth,
+// the salt file and settings.json have their ACLs tightened to the current user on Windows
+// (restrictFileAcl → icacls), and mode 0o600 on POSIX. For real protection, rely on the OS
+// keychain (safeStorage), which is preferred whenever available.
 const API_KEY_PREFIX_FALLBACK = 'fbk:'
 
 /** 当 safeStorage 不可用时，使用基于随机盐 + 机器标识的密钥进行 AES 加密 */
@@ -103,6 +126,8 @@ async function getFallbackKey(): Promise<Buffer> {
   } catch {
     salt = randomBytes(32)
     await fs.writeFile(saltPath, salt, { mode: 0o600 })
+    // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）
+    restrictFileAcl(saltPath)
   }
   // 密钥派生：userData 路径 + 随机盐，确保每台安装有唯一密钥
   const keyMaterial = app.getPath('userData') + ':' + salt.toString('base64')
@@ -307,6 +332,10 @@ export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   const settingsPath = await getSettingsPath()
   const encrypted = await encryptSettings(settings)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
+  // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）。
+  // settings.json 可能含 fbk: 回退加密的 API Key，回退方案本身仅为混淆，
+  // 收紧 ACL 可在 safeStorage 不可用时降低本地同主机其他用户读取的风险。
+  restrictFileAcl(settingsPath)
   cachedSettings = settings
 }
 

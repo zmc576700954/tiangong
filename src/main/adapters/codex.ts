@@ -60,6 +60,7 @@ export class CodexAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
+    const sessionId = session.id
     const CodexClass = await this.loadSdk()
     if (!CodexClass) {
       throw new AdapterError('Codex SDK not installed. Run: npm install @openai/codex-sdk', this.name)
@@ -120,7 +121,7 @@ export class CodexAdapter extends BaseAdapter {
       // 输出 agent 消息
       for (const item of result.items) {
         if (item.type === 'agent_message' && item.text) {
-          this.emitOutput({
+          this.emitOutputForSession(sessionId, {
             type: 'stdout',
             data: item.text,
             timestamp: Date.now(),
@@ -128,7 +129,7 @@ export class CodexAdapter extends BaseAdapter {
         }
         if (item.type === 'file_change') {
           for (const change of item.changes) {
-            this.emitOutput({
+            this.emitOutputForSession(sessionId, {
               type: 'file_change',
               data: `${change.kind}: ${change.path}`,
               timestamp: Date.now(),
@@ -140,27 +141,29 @@ export class CodexAdapter extends BaseAdapter {
       }
 
       if (result.finalResponse) {
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'stdout',
           data: result.finalResponse,
           timestamp: Date.now(),
         })
       }
 
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'complete',
         data: 'Codex session completed',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success', 0)
+      // 不在此处 emit sessionEnded('success')：codex 缓存 thread/instance 以支持多轮续接，
+      // 单命令成功不应销毁会话（参考 claude-code）。资源清理由显式 terminateSession 负责。
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'error',
         data: `Codex SDK error: ${msg}`,
         timestamp: Date.now(),
         errorCode: 'AGENT_CRASH',
       })
+      // 错误仍需通知 AgentManager 以触发会话恢复/清理流程
       this.emit('sessionEnded', session.id, 'error', null)
     }
   }

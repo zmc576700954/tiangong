@@ -34,6 +34,7 @@ import type {
 } from '@shared/types'
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
+import { generateId } from '../shared/env'
 
 /** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
 type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
@@ -48,7 +49,10 @@ export interface SubagentProgressEvent {
 }
 
 interface ActiveInvocation {
-  sessionId: string
+  /** Child session id; undefined until the child session has started. */
+  sessionId?: string
+  /** Persisted invocation row id; undefined until repo.create() returns. */
+  invocationId?: string
   parentSessionId: string
   /** Empty array if read-only / inherit-scope invocation. */
   allowedFiles: string[]
@@ -120,111 +124,142 @@ export class SubagentManager extends EventEmitter {
 
     // Serialisation gate: a write-capable invocation must wait for every
     // currently-active write-capable invocation under the SAME parent whose
-    // allow-list overlaps. Read-only invocations skip the gate entirely.
+    // allow-list overlaps. Read-only invocations skip the WAIT but still register
+    // (so cancel() can find them).
+    //
+    // CRITICAL: registration into activeInvocations must happen SYNCHRONOUSLY,
+    // in the same microtask as the gate evaluation. Parallel dispatch (Promise.all
+    // over many invoke() calls in one tick) would otherwise let every write-capable
+    // call pass the gate before any registers, defeating serialisation. We therefore
+    // register immediately after evaluating the gate and before the first await.
+    const registrationKey = generateId('subinv')
+    let resolveDone!: () => void
+    const donePromise = new Promise<void>((r) => {
+      resolveDone = r
+    })
+
+    const conflicting: Promise<void>[] = []
     if (isWrite) {
       const childAllowedSet = new Set(childAllowedFiles)
-      const conflicting: Promise<void>[] = []
       for (const active of this.activeInvocations.values()) {
         if (!active.isWrite) continue
         if (active.parentSessionId !== args.parentSessionId) continue
         const overlap = active.allowedFiles.some((f) => childAllowedSet.has(f))
         if (overlap) conflicting.push(active.donePromise)
       }
+    }
+    // Register synchronously so concurrently-dispatched siblings observe this invocation.
+    this.activeInvocations.set(registrationKey, {
+      parentSessionId: args.parentSessionId,
+      allowedFiles: childAllowedFiles,
+      isWrite,
+      donePromise,
+      resolveDone,
+    })
+
+    try {
       if (conflicting.length > 0) {
         await Promise.all(conflicting)
       }
-    }
 
-    // Concurrency cap per parent session — applied AFTER the gate so a
-    // waiting subagent doesn't tie up a slot while it sits in the queue.
-    const current = this.activeCount.get(args.parentSessionId) ?? 0
-    if (current >= this.maxConcurrent) {
-      throw new AgentError(
-        `Subagent concurrency limit reached (${this.maxConcurrent}) for session ${args.parentSessionId}`,
-        ErrorCode.AGENT_SESSION_LIMIT,
-      )
-    }
-    this.activeCount.set(args.parentSessionId, current + 1)
-
-    const startedAt = Date.now()
-
-    let invocationId: string
-    try {
-      invocationId = await this.repo.create({
-        parentSessionId: args.parentSessionId,
-        parentMessageId: args.parentMessageId,
-        agentType: args.agentType,
-        description: args.description,
-        prompt: args.prompt,
-        adapterName: args.adapterName ?? def.defaultAdapter,
-        nodeId: args.nodeId,
-        allowedFiles: args.allowedFiles,
-        startedAt,
-      })
-    } catch (err) {
-      // Roll back concurrency reservation on persistence failure.
-      const cnt = this.activeCount.get(args.parentSessionId) ?? 1
-      this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
-      throw err
-    }
-
-    this.emitProgress({ invocationId, status: 'queued' })
-
-    try {
-      await this.repo.updateStatus(invocationId, 'running')
-      this.emitProgress({ invocationId, status: 'running' })
-
-      const partial = await this._runInvocation(
-        invocationId,
-        args,
-        def,
-        parentState,
-        childAllowedFiles,
-        isWrite,
-      )
-
-      const finishedAt = Date.now()
-      await this.repo.complete(invocationId, {
-        resultText: partial.resultText,
-        resultFiles: partial.resultFiles,
-        tokensUsed: partial.tokensUsed,
-        finishedAt,
-      })
-      this.emitProgress({ invocationId, status: 'completed' })
-
-      return {
-        invocationId,
-        resultText: partial.resultText,
-        resultFiles: partial.resultFiles,
-        tokensUsed: partial.tokensUsed,
-        durationMs: finishedAt - startedAt,
+      // Concurrency cap per parent session — applied AFTER the gate so a
+      // waiting subagent doesn't tie up a slot while it sits in the queue.
+      const current = this.activeCount.get(args.parentSessionId) ?? 0
+      if (current >= this.maxConcurrent) {
+        throw new AgentError(
+          `Subagent concurrency limit reached (${this.maxConcurrent}) for session ${args.parentSessionId}`,
+          ErrorCode.AGENT_SESSION_LIMIT,
+        )
       }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
+      this.activeCount.set(args.parentSessionId, current + 1)
+
+      const startedAt = Date.now()
+
+      let invocationId: string
       try {
-        await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
-      } catch {
-        /* repo error already logged elsewhere */
+        invocationId = await this.repo.create({
+          parentSessionId: args.parentSessionId,
+          parentMessageId: args.parentMessageId,
+          agentType: args.agentType,
+          description: args.description,
+          prompt: args.prompt,
+          adapterName: args.adapterName ?? def.defaultAdapter,
+          nodeId: args.nodeId,
+          allowedFiles: args.allowedFiles,
+          startedAt,
+        })
+      } catch (err) {
+        // Roll back concurrency reservation on persistence failure.
+        const cnt = this.activeCount.get(args.parentSessionId) ?? 1
+        this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
+        throw err
       }
-      this.emitProgress({ invocationId, status: 'failed', error: errorMsg })
-      throw err
+
+      // Backfill the invocationId onto the already-registered entry so cancel() can find it.
+      const entry = this.activeInvocations.get(registrationKey)
+      if (entry) entry.invocationId = invocationId
+
+      this.emitProgress({ invocationId, status: 'queued' })
+
+      try {
+        await this.repo.updateStatus(invocationId, 'running')
+        this.emitProgress({ invocationId, status: 'running' })
+
+        const partial = await this._runInvocation(
+          registrationKey,
+          invocationId,
+          args,
+          def,
+          parentState,
+          childAllowedFiles,
+          isWrite,
+        )
+
+        const finishedAt = Date.now()
+        await this.repo.complete(invocationId, {
+          resultText: partial.resultText,
+          resultFiles: partial.resultFiles,
+          tokensUsed: partial.tokensUsed,
+          finishedAt,
+        })
+        this.emitProgress({ invocationId, status: 'completed' })
+
+        return {
+          invocationId,
+          resultText: partial.resultText,
+          resultFiles: partial.resultFiles,
+          tokensUsed: partial.tokensUsed,
+          durationMs: finishedAt - startedAt,
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        try {
+          await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
+        } catch {
+          /* repo error already logged elsewhere */
+        }
+        this.emitProgress({ invocationId, status: 'failed', error: errorMsg })
+        throw err
+      } finally {
+        const cnt = this.activeCount.get(args.parentSessionId) ?? 1
+        this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
+      }
     } finally {
-      const cnt = this.activeCount.get(args.parentSessionId) ?? 1
-      this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
-      const active = this.activeInvocations.get(invocationId)
-      this.activeInvocations.delete(invocationId)
-      // Unblock any subagents waiting on this one.
-      active?.resolveDone()
+      // Always remove the registration and unblock any siblings waiting on this one,
+      // regardless of which stage failed (gate wait, concurrency cap, repo.create, run).
+      this.activeInvocations.delete(registrationKey)
+      resolveDone()
     }
   }
 
   private async _runInvocation(
+    registrationKey: string,
     invocationId: string,
     args: SubagentInvokeArgs,
     def: AgentTypeDefinition,
     parentState: SessionState,
     childAllowedFiles: string[],
-    isWrite: boolean,
+    _isWrite: boolean,
   ): Promise<{ resultText: string; resultFiles: string[]; tokensUsed: number }> {
     const parentConfig = parentState.config
     const childAdapterName = args.adapterName ?? def.defaultAdapter ?? parentState.adapterName
@@ -251,20 +286,11 @@ export class SubagentManager extends EventEmitter {
     const startResult = await this.agentManager.startSession(childAdapterName, childConfig)
     const childSessionId = startResult.sessionId
 
-    // Register this invocation as active. The donePromise will be resolved
-    // in the invoke()'s `finally` block, unblocking any waiting subagents.
-    let resolveDone!: () => void
-    const donePromise = new Promise<void>((r) => {
-      resolveDone = r
-    })
-    this.activeInvocations.set(invocationId, {
-      sessionId: childSessionId,
-      parentSessionId: args.parentSessionId,
-      allowedFiles: childAllowedFiles,
-      isWrite,
-      donePromise,
-      resolveDone,
-    })
+    // Backfill the child sessionId onto the entry registered synchronously in invoke()
+    // (keyed by registrationKey). The donePromise/resolveDone live on that entry and are
+    // settled in invoke()'s outer finally, unblocking any waiting siblings.
+    const activeEntry = this.activeInvocations.get(registrationKey)
+    if (activeEntry) activeEntry.sessionId = childSessionId
 
     // Subscribe to child outputs — tag with invocationId, re-broadcast to parent
     const outputBuffer: string[] = []
@@ -406,8 +432,15 @@ export class SubagentManager extends EventEmitter {
   }
 
   async cancel(invocationId: string): Promise<void> {
-    const active = this.activeInvocations.get(invocationId)
-    if (active) {
+    // Entries are keyed by an internal registrationKey; locate by invocationId field.
+    let active: ActiveInvocation | undefined
+    for (const entry of this.activeInvocations.values()) {
+      if (entry.invocationId === invocationId) {
+        active = entry
+        break
+      }
+    }
+    if (active?.sessionId) {
       try {
         await this.agentManager.terminateSession(active.sessionId, 'user')
       } catch {

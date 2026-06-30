@@ -546,6 +546,13 @@ function migrate(): void {
 
   logger.info(`Migrating schema from v${currentVersion} to v${CURRENT_SCHEMA_VERSION}...`)
 
+  // 外键必须在事务开始前关闭：事务内 PRAGMA foreign_keys 是 no-op。
+  // 若保持开启，rebuildTableIfNeeded 里的 `DROP TABLE` 会触发 ON DELETE CASCADE，
+  // 级联清空依赖表（如 nodes → edges / bug_nodes），且这些行不会被 restoreFromBackup 恢复，
+  // 造成静默数据丢失。遵循 SQLite 官方表重建配方：OFF → 重建 → foreign_key_check → ON。
+  const fkWasOn = db.pragma('foreign_keys', { simple: true }) === 1
+  if (fkWasOn) db.pragma('foreign_keys = OFF')
+
   db.exec('SAVEPOINT migrate_sp')
   try {
     if (currentVersion < CURRENT_SCHEMA_VERSION) {
@@ -564,14 +571,29 @@ function migrate(): void {
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
 
+    // 重建期间外键未强制，提交前校验完整性，及早发现迁移引入的悬空引用。
+    const fkViolations = db.pragma('foreign_key_check') as unknown[]
+    if (Array.isArray(fkViolations) && fkViolations.length > 0) {
+      throw new DatabaseError(
+        `Foreign key violations after migration: ${JSON.stringify(fkViolations.slice(0, 10))}`,
+        ErrorCode.DB_MIGRATION_FAILED,
+      )
+    }
+
     db.exec('RELEASE migrate_sp')
     writeSchemaChecksumCache(checksum)
     logger.info(`Schema migrated to v${CURRENT_SCHEMA_VERSION}`)
   } catch (err) {
-    try { db.exec('ROLLBACK TO migrate_sp') } catch (rollbackErr) {
+    // 必须完全退出事务，否则下方恢复 foreign_keys 的 PRAGMA 会被当作 no-op。
+    try {
+      db.exec('ROLLBACK TO migrate_sp')
+      db.exec('RELEASE migrate_sp')
+    } catch (rollbackErr) {
       logger.warn('ROLLBACK TO migrate_sp failed:', rollbackErr)
     }
     throw err
+  } finally {
+    if (fkWasOn) db.pragma('foreign_keys = ON')
   }
 }
 

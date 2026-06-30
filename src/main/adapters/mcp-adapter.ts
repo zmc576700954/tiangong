@@ -499,7 +499,14 @@ export class McpAdapter extends BaseAdapter {
           const client = new McpClient(server.command, server.args)
           await client.connect()
           this.recordCircuitResult(server.name, true)
-          this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
+          // 仅在无现存池条目、或现存条目已无其他引用时才写入池槽。
+          // 若旧条目仍被其他会话引用（refCount > 0），覆盖会丢失其引用计数，
+          // 导致旧 client 在清理时被误判为非池化而提前 disconnect（use-after-disconnect）。
+          // 这种情况下把新 client 作为会话本地连接使用（不入池），由本会话结束时断开。
+          const existingEntry = this.connectionPool.get(server.name)
+          if (!existingEntry || existingEntry.refCount <= 0) {
+            this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
+          }
           sessionClients.push(client)
           this.emitOutput({
             type: 'stdout',
@@ -549,13 +556,14 @@ export class McpAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: ChildProcess): Promise<void> {
+    const sessionId = session.id
     const settings = await readSettings()
 
     // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
     const apiKey = resolveApiKey(settings.apiKeys, settings.defaultModel)
 
     if (!apiKey) {
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'error',
         data: 'No API key configured. Please add an API key in Settings.',
         timestamp: Date.now(),
@@ -585,7 +593,7 @@ export class McpAdapter extends BaseAdapter {
       const rateCheck = this.apiRateLimiter.check(session.id)
       if (!rateCheck.allowed) {
         const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'error',
           data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
           timestamp: Date.now(),
@@ -650,26 +658,28 @@ export class McpAdapter extends BaseAdapter {
           session.id,
         )
 
-        this.emitOutput({
+        this.emitOutputForSession(sessionId, {
           type: 'stdout',
           data: responseText,
           timestamp: Date.now(),
         })
       }
 
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'complete',
         data: 'MCP session completed',
         timestamp: Date.now(),
       })
-      this.emit('sessionEnded', session.id, 'success', 0)
+      // 不在此处 emit sessionEnded('success')：MCP adapter 维护连接池与空闲计时器以支持
+      // 多轮复用，单命令成功不应销毁会话。资源清理由显式 terminateSession / 空闲超时负责。
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.emitOutput({
+      this.emitOutputForSession(sessionId, {
         type: 'error',
         data: `LLM API error: ${msg}`,
         timestamp: Date.now(),
       })
+      // 错误仍需通知 AgentManager 以触发会话恢复/清理流程
       this.emit('sessionEnded', session.id, 'error', null)
     }
   }
@@ -932,7 +942,7 @@ export class McpAdapter extends BaseAdapter {
 
       // 发送 LLM 的文本输出（如果有）
       if (response.text) {
-        this.emitOutput({
+        this.emitOutputForSession(session.id, {
           type: 'stdout',
           data: response.text,
           timestamp: Date.now(),
@@ -979,7 +989,7 @@ export class McpAdapter extends BaseAdapter {
 
         // 输出 tool 执行信息
         const statusIcon = result.isError ? '❌' : '✅'
-        this.emitOutput({
+        this.emitOutputForSession(session.id, {
           type: 'stdout',
           data: `${statusIcon} Tool: ${toolCall.name}\n${result.content.substring(0, 500)}`,
           timestamp: Date.now(),

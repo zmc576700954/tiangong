@@ -5,6 +5,7 @@
 
 import * as ts from 'typescript'
 import path from 'node:path'
+import * as fs from 'node:fs'
 import type { SymbolInfo, ImportEdge } from '@shared/types'
 import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
@@ -19,7 +20,7 @@ export interface ParseResult {
 
 export class AstParser {
   private compilerOptions: ts.CompilerOptions
-  /** 路径别名映射，如 { '@shared': 'src/shared', '@main': 'src/main' } */
+  /** 路径别名映射，目标为绝对路径，如 { '@shared': '/proj/src/shared' } */
   private aliasMap: Map<string, string>
 
   constructor(compilerOptions?: ts.CompilerOptions) {
@@ -35,15 +36,50 @@ export class AstParser {
     // 从 compilerOptions.paths 提取路径别名映射
     this.aliasMap = new Map()
     if (this.compilerOptions.paths && this.compilerOptions.baseUrl) {
+      const baseUrl = this.compilerOptions.baseUrl
       for (const [alias, targets] of Object.entries(this.compilerOptions.paths)) {
         if (Array.isArray(targets) && targets.length > 0) {
           // 将 `@shared/*` 转换为 `@shared`
           const aliasKey = alias.replace(/\/\*$/, '')
           const targetDir = targets[0].replace(/\/\*$/, '')
-          this.aliasMap.set(aliasKey, targetDir)
+          // 目标相对 baseUrl，归一为绝对路径，确保与符号存储用的绝对 filePath 可比对
+          this.aliasMap.set(aliasKey, path.resolve(baseUrl, targetDir))
         }
       }
     }
+  }
+
+  /** 候选源码扩展名，用于把无扩展名的模块说明符解析为磁盘真实文件 */
+  private static readonly RESOLVE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
+
+  /**
+   * 把一个无扩展名的基路径解析为磁盘上的真实文件：
+   * 依次尝试 base.<ext> 与 base/index.<ext>。命中则返回绝对文件路径，否则返回 null。
+   */
+  private resolveModuleFile(basePath: string): string | null {
+    // 说明符已带扩展名且文件存在（如 './foo.js'）
+    try {
+      if (fs.statSync(basePath).isFile()) return basePath
+    } catch {
+      // 不是直接文件，继续尝试补扩展名
+    }
+    for (const ext of AstParser.RESOLVE_EXTENSIONS) {
+      const candidate = basePath + ext
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        // 继续尝试下一个候选
+      }
+    }
+    for (const ext of AstParser.RESOLVE_EXTENSIONS) {
+      const candidate = path.join(basePath, 'index' + ext)
+      try {
+        if (fs.statSync(candidate).isFile()) return candidate
+      } catch {
+        // 继续尝试下一个候选
+      }
+    }
+    return null
   }
 
   /**
@@ -411,23 +447,30 @@ export class AstParser {
       }
     }
 
-    // 将相对路径解析为绝对路径，支持路径别名
-    let resolvedPath = moduleSpecifier // 默认保留原样（外部模块）
+    // 将相对路径/别名解析为磁盘上的真实文件（含扩展名 + index 解析），
+    // 使 toFile 与符号存储用的绝对 filePath 一致，依赖图查询才能命中。
+    let resolvedPath = moduleSpecifier // 默认保留原样（外部模块/裸包名）
+    let basePath: string | null = null
     if (moduleSpecifier.startsWith('.')) {
-      resolvedPath = path.resolve(path.dirname(filePath), moduleSpecifier)
+      basePath = path.resolve(path.dirname(filePath), moduleSpecifier)
     } else {
-      // 尝试匹配路径别名（如 @shared/types → src/shared/types）
-      let aliasResolved = false
+      // 尝试匹配路径别名（如 @shared/types → <baseUrl>/shared/types）
       for (const [alias, targetDir] of this.aliasMap) {
-        if (moduleSpecifier.startsWith(alias + '/') || moduleSpecifier === alias) {
-          resolvedPath = moduleSpecifier.replace(alias, targetDir)
-          aliasResolved = true
+        if (moduleSpecifier === alias) {
+          basePath = targetDir
+          break
+        }
+        if (moduleSpecifier.startsWith(alias + '/')) {
+          basePath = path.join(targetDir, moduleSpecifier.slice(alias.length + 1))
           break
         }
       }
-      if (!aliasResolved) {
-        resolvedPath = moduleSpecifier
-      }
+    }
+
+    if (basePath !== null) {
+      // 已带扩展名且存在则直接用；否则尝试补扩展名 / index 文件；都失败则回退到 basePath
+      const resolved = this.resolveModuleFile(basePath) ?? basePath
+      resolvedPath = path.normalize(resolved)
     }
 
     const { line } = ts.getLineAndCharacterOfPosition(node.getSourceFile(), node.getStart())

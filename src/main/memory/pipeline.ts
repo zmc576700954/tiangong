@@ -11,6 +11,10 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('PipelineRunner')
 
+// 跨 runner 实例存活的 pipeline 执行计数：createDefault 每次会话结束都会新建 runner，
+// 若把计数器放在闭包内会每次归零，导致周期性 adapt() 永不触发。
+let _pipelineExecutionCount = 0
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -152,9 +156,6 @@ export class PipelineRunner {
     const checker = new HallucinationChecker()
     const compiler = new ContextCompiler()
 
-    // Pipeline execution counter for periodic adapt() calls
-    let _executionCount = 0
-
     // Build the default stages array
     const defaultStages: PipelineStage[] = [
       {
@@ -191,9 +192,23 @@ export class PipelineRunner {
       {
         name: 'extract',
         process: async (ctx) => {
-          const sourceOutputs = (ctx.observations && ctx.observations.length > 0)
-            ? ctx.observations.map(obs => ({ type: 'stdout' as const, data: obs.summary ?? obs.text ?? '', timestamp: Date.now() }))
-            : (ctx.normalizedOutputs ?? ctx.outputs)
+          // 当 compress 产出 observations 时，用其摘要作为主文本来源；
+          // 但必须始终并入原始的 file_change 事件——MemoryExtractor 主要依赖它推断
+          // files_modified（进而决定 kind=fix、graph-memory 的 depends_on/supersedes、
+          // waterline 的 modifiedFiles）。仅传 observation 摘要会丢失全部文件变更信息。
+          const baseOutputs = ctx.normalizedOutputs ?? ctx.outputs
+          let sourceOutputs: AgentOutput[]
+          if (ctx.observations && ctx.observations.length > 0) {
+            const fileChangeEvents = baseOutputs.filter((o) => o.type === 'file_change')
+            const observationOutputs: AgentOutput[] = ctx.observations.map((obs) => ({
+              type: 'stdout' as const,
+              data: obs.summary ?? obs.text ?? '',
+              timestamp: Date.now(),
+            }))
+            sourceOutputs = [...observationOutputs, ...fileChangeEvents]
+          } else {
+            sourceOutputs = baseOutputs
+          }
           return {
             ...ctx,
             memories: extractor.extract(ctx.sessionId, sourceOutputs, { adapterName: ctx.adapterName ?? 'unknown' }),
@@ -211,7 +226,12 @@ export class PipelineRunner {
         },
         process: async (ctx) => ({
           ...ctx,
-          hallucinationReport: checker.verifySync(ctx.normalizedOutputs ?? ctx.outputs),
+          // 使用异步 verify() 并传入工作目录（projectId 即 workingDirectory），
+          // 以启用文件路径幻觉检查（_checkFileClaims）——这是最能识别幻觉的检查，
+          // verifySync 会跳过它，导致 persist 阶段据以过滤的 riskScore 被显著削弱。
+          hallucinationReport: ctx.projectId
+            ? await checker.verify(ctx.normalizedOutputs ?? ctx.outputs, ctx.projectId)
+            : checker.verifySync(ctx.normalizedOutputs ?? ctx.outputs),
         }),
       },
       {
@@ -247,7 +267,18 @@ export class PipelineRunner {
               waterline.addCompletedInvestigations(ctx.projectId ?? '', concepts)
             }
           }
-          return { ...ctx, waterlineDelta: waterline.getDelta(ctx.projectId ?? '') }
+          const delta = waterline.getDelta(ctx.projectId ?? '')
+          // 持久化水位线快照，使其在进程重启后可恢复（restore()）。
+          // 此前无任何生产调用方调用 persist，导致已完成调查/已修复问题/已验证节点
+          // 全部仅存于内存，进程退出即丢失，"避免重复工作"的核心功能失效。
+          if (ctx.projectId) {
+            try {
+              waterline.persist(ctx.projectId)
+            } catch (err) {
+              logger.warn('Waterline persist failed:', err)
+            }
+          }
+          return { ...ctx, waterlineDelta: delta }
         },
       },
       {
@@ -298,7 +329,8 @@ export class PipelineRunner {
               safeMemories = ctx.memories
             }
 
-            const ids = await store.storeMany(safeMemories as Omit<MemoryItem, 'id'>[])
+            // 走带概念级版本化/去重的写入路径，避免反复跑相同任务时记忆无限重复增长。
+            const ids = await store.storeManyVersioned(safeMemories as Omit<MemoryItem, 'id'>[])
 
             // Generate embeddings for stored memories (non-blocking, graceful degradation)
             const { getEmbeddingService } = await import('./embedding-service')
@@ -338,8 +370,8 @@ export class PipelineRunner {
           }
 
           // Periodic adaptive config tuning (every 20 pipeline executions)
-          _executionCount++
-          if (_executionCount % 20 === 0) {
+          _pipelineExecutionCount++
+          if (_pipelineExecutionCount % 20 === 0) {
             try {
               getAdaptiveConfig().adapt()
             } catch {

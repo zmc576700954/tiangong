@@ -23,6 +23,7 @@ function createMockProvider(overrides: Partial<PlatformProvider> = {}): Platform
     getShellConfig: vi.fn().mockReturnValue({ shell: true }),
     whichCommand: vi.fn().mockReturnValue(null),
     getWatcherOptions: vi.fn().mockReturnValue({}),
+    restrictFileToCurrentUser: vi.fn().mockReturnValue(true),
     ...overrides,
   } as PlatformProvider
 }

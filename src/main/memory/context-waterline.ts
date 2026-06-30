@@ -43,6 +43,10 @@ export class ContextWaterline {
   private throttleTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private dbDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private dbWriteback?: DbWriteback
+  /** Optional sync loader to hydrate persisted token state on first access (set after db is available). */
+  private dbLoader?: (threadId: string) => { tokensUsed: number; tokensMax: number } | null
+  /** Thread ids already hydrated from DB, to avoid repeated loads. */
+  private hydrated = new Set<string>()
 
   constructor() {
     this.emitter = new EventEmitter()
@@ -58,6 +62,16 @@ export class ContextWaterline {
   /** Set or update the DB writeback (called after db is available) */
   setDbWriteback(fn: DbWriteback): void {
     this.dbWriteback = fn
+  }
+
+  /**
+   * Set a synchronous loader used to hydrate persisted token state from the DB
+   * the first time a thread's state is initialised. Without this, restarting the
+   * process resets a long thread's accumulated tokens to 0, so shouldAutoCompact's
+   * ratio is understated until the next adapter usage report arrives.
+   */
+  setDbLoader(fn: (threadId: string) => { tokensUsed: number; tokensMax: number } | null): void {
+    this.dbLoader = fn
   }
 
   // ============ Input sources ============
@@ -165,6 +179,19 @@ export class ContextWaterline {
     let s = this.state.get(threadId)
     if (!s) {
       s = { threadId, tokensUsed: 0, tokensMax: 200_000, lastCompactedAt: null }
+      // Hydrate persisted token usage on first access so restarts don't reset to 0.
+      if (this.dbLoader && !this.hydrated.has(threadId)) {
+        this.hydrated.add(threadId)
+        try {
+          const loaded = this.dbLoader(threadId)
+          if (loaded) {
+            s.tokensUsed = loaded.tokensUsed > 0 ? loaded.tokensUsed : s.tokensUsed
+            s.tokensMax = loaded.tokensMax > 0 ? loaded.tokensMax : s.tokensMax
+          }
+        } catch (err) {
+          logger.warn(`Waterline DB hydrate failed for thread ${threadId}:`, err)
+        }
+      }
       this.state.set(threadId, s)
     }
     return s

@@ -19,6 +19,25 @@ const KNOWN_ADAPTER_NAMES = new Set([
   'cursor', 'codebuddy', 'qoder', 'qwen-code', 'mcp', 'mindmap',
 ])
 
+/**
+ * 安全命令令牌：仅允许字母、数字、点、下划线、连字符（可选携带平台扩展名）。
+ * 拒绝路径分隔符、空格、shell 元字符——阻止渲染进程把 command 指向任意
+ * 绝对路径可执行文件或注入 shell 元字符（H2）。PATH 解析的裸命令名仍可用。
+ */
+const SAFE_COMMAND_PATTERN = /^[A-Za-z0-9._-]+$/
+
+function assertSafeCommand(command: unknown, context: string): void {
+  if (typeof command !== 'string' || command.length === 0 || command.length > 128) {
+    throw new IpcError(`${context}: command must be a non-empty string`, ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  if (!SAFE_COMMAND_PATTERN.test(command)) {
+    throw new IpcError(
+      `${context}: command must be a bare executable name (no paths or shell metacharacters)`,
+      ErrorCode.IPC_INVALID_ARGUMENT,
+    )
+  }
+}
+
 export function registerSettingsHandlers(
   typedHandle: TypedHandle,
   waterline?: ContextWaterline,
@@ -42,6 +61,33 @@ export function registerSettingsHandlers(
     }
     if (settings.apiKeys && !Array.isArray(settings.apiKeys)) {
       throw new IpcError('apiKeys must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    // 校验 CLI 工具命令：阻止渲染进程把 command 指向任意可执行文件（H2）
+    if (settings.cliTools !== undefined) {
+      if (!Array.isArray(settings.cliTools)) {
+        throw new IpcError('cliTools must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      for (const tool of settings.cliTools) {
+        if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string') {
+          throw new IpcError('Each cliTool must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
+        }
+        assertSafeCommand(tool.command, `cliTool '${tool.name}'`)
+      }
+    }
+    // 校验 MCP server 命令与参数：command 必须安全、args 必须全为字符串
+    if (settings.mcpServers !== undefined) {
+      if (!Array.isArray(settings.mcpServers)) {
+        throw new IpcError('mcpServers must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      for (const server of settings.mcpServers) {
+        if (!server || typeof server !== 'object' || typeof server.name !== 'string') {
+          throw new IpcError('Each mcpServer must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
+        }
+        assertSafeCommand(server.command, `mcpServer '${server.name}'`)
+        if (!Array.isArray(server.args) || server.args.some((a: unknown) => typeof a !== 'string')) {
+          throw new IpcError(`mcpServer '${server.name}': args must be an array of strings`, ErrorCode.IPC_INVALID_ARGUMENT)
+        }
+      }
     }
     if (Array.isArray(settings.apiKeys)) {
       for (const k of settings.apiKeys) {
@@ -83,7 +129,19 @@ export function registerSettingsHandlers(
   })
 
   typedHandle('settings:setApiKey', async (_, provider, key, baseUrl) => {
-    const { setApiKey } = await import('../settings')
+    const { setApiKey, readSettings } = await import('../settings')
+    // 渲染进程只持有遮蔽后的 key（settings:read 返回的形式）。若把遮蔽值原样写回，
+    // 会用 mask 字符串覆盖真实 key。检测到遮蔽值时保留现有真实 key（与 settings:write 一致）。
+    if (typeof key === 'string' && MASKED_KEY_PATTERN.test(key)) {
+      const current = await readSettings()
+      const existing = current.apiKeys.find((k) => k.provider === provider)
+      if (existing && existing.key) {
+        await setApiKey(provider, existing.key, baseUrl ?? existing.baseUrl ?? undefined)
+        return
+      }
+      // 无现有真实 key 可保留：拒绝写入遮蔽值，避免污染存储
+      throw new IpcError('Cannot set a masked API key value', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
     await setApiKey(provider, key, baseUrl ?? undefined)
   })
 

@@ -37,6 +37,12 @@ export class ProjectIndexer {
   private astParser: AstParser
   private symbolIndex: SymbolIndex
 
+  /** 单文件大小上限（字节）。超过则跳过解析，避免压缩/打包产物撑爆内存与 DB */
+  private static readonly MAX_FILE_SIZE_BYTES = 1_000_000
+
+  /** 每个文件正在进行的 reindex Promise，串行化同一文件的并发重索引，避免 clearFile/insert 交错 */
+  private reindexInFlight = new Map<string, Promise<{ symbolsFound: number; importsFound: number }>>()
+
   constructor(symbolIndex: SymbolIndex, tsConfigPath?: string) {
     this.symbolIndex = symbolIndex
     let compilerOptions: ts.CompilerOptions | undefined
@@ -74,6 +80,13 @@ export class ProjectIndexer {
     // 解析每个文件：先累计符号/边，最后批量插入，避免每个文件都触发 DB 往返
     for (const filePath of files) {
       try {
+        // 跳过超大文件（打包/压缩产物），避免深层 AST 与重复 sourceCode 撑爆内存/DB
+        try {
+          const stat = await fsSync.promises.stat(filePath)
+          if (stat.size > ProjectIndexer.MAX_FILE_SIZE_BYTES) continue
+        } catch {
+          // stat 失败则继续尝试读取（可能是权限/竞态），由下方 readFile 兜底
+        }
         const content = await readFile(filePath, 'utf-8')
         const result = this.astParser.parse(filePath, content)
 
@@ -99,8 +112,26 @@ export class ProjectIndexer {
 
   /**
    * 增量更新：重新索引单个文件
+   * 串行化同一文件的并发调用：若上一次 reindex 仍在进行（其 await 可能长于 file-watcher 的
+   * debounce 窗口），新调用排队等待，避免两次 clearFile/insert 交错产生陈旧或重复行。
    */
   async reindexFile(filePath: string): Promise<{ symbolsFound: number; importsFound: number }> {
+    const prev = this.reindexInFlight.get(filePath)
+    const run = (prev ? prev.catch(() => undefined) : Promise.resolve()).then(() =>
+      this._doReindexFile(filePath),
+    )
+    this.reindexInFlight.set(filePath, run)
+    try {
+      return await run
+    } finally {
+      // 仅当当前 run 仍是最新登记的 Promise 时才清理，避免误删后续排队的条目
+      if (this.reindexInFlight.get(filePath) === run) {
+        this.reindexInFlight.delete(filePath)
+      }
+    }
+  }
+
+  private async _doReindexFile(filePath: string): Promise<{ symbolsFound: number; importsFound: number }> {
     await this.symbolIndex.clearFile(filePath)
 
     // Check AstCache for mtime-matched results before parsing
@@ -275,14 +306,43 @@ export class ProjectIndexer {
   private async collectFiles(projectPath: string, include: string[], exclude: string[]): Promise<string[]> {
     const results: string[] = []
 
-    // 简单递归实现
-    await this.walkDir(projectPath, results, exclude.map((e) => e.replace('/**', '')))
+    // 将 glob 排除模式归一为目录名（去掉 /** 等），按路径段精确匹配，避免子串误判
+    const excludeNames = new Set(
+      exclude
+        .map((e) => e.replace(/[/\\]\*\*$/, '').replace(/[/\\]+$/, ''))
+        .map((e) => e.split(/[/\\]/).filter(Boolean).pop() ?? e)
+        .filter(Boolean),
+    )
+
+    const visited = new Set<string>()
+    await this.walkDir(projectPath, results, excludeNames, visited, 0)
 
     // 按 include 模式过滤
     return results.filter((f) => include.some((p) => this.matchGlob(f, p)))
   }
 
-  private async walkDir(dir: string, results: string[], excludeDirs: string[]): Promise<void> {
+  /** 目录递归最大深度，防止符号链接环或异常深层级导致栈溢出/挂起 */
+  private static readonly MAX_WALK_DEPTH = 25
+
+  private async walkDir(
+    dir: string,
+    results: string[],
+    excludeNames: Set<string>,
+    visited: Set<string>,
+    depth: number,
+  ): Promise<void> {
+    if (depth > ProjectIndexer.MAX_WALK_DEPTH) return
+
+    // 用真实路径去重，避免符号链接环导致的无限递归
+    let realDir: string
+    try {
+      realDir = await fsSync.promises.realpath(dir)
+    } catch {
+      realDir = path.resolve(dir)
+    }
+    if (visited.has(realDir)) return
+    visited.add(realDir)
+
     let entries: Dirent[]
     try {
       entries = await readdir(dir, { withFileTypes: true })
@@ -292,8 +352,9 @@ export class ProjectIndexer {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (!excludeDirs.some((e) => fullPath.includes(e)) && !entry.name.startsWith('.')) {
-          await this.walkDir(fullPath, results, excludeDirs)
+        // 按目录名精确匹配排除项；同时跳过隐藏目录与符号链接目录（后者可能指向环外/环内）
+        if (!excludeNames.has(entry.name) && !entry.name.startsWith('.') && !entry.isSymbolicLink()) {
+          await this.walkDir(fullPath, results, excludeNames, visited, depth + 1)
         }
       } else if (entry.isFile()) {
         results.push(fullPath)

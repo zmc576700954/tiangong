@@ -482,8 +482,28 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 为指定 session 发送输出（直接关联 sessionId，不依赖上下文栈）
    * @protected
    */
-  private emitOutputForSession(sessionId: string, output: AgentOutput): void {
+  /**
+   * 向指定 sessionId 精准发出输出，不依赖 outputSessionStack。
+   * SDK 适配器（claude-code / codex / mcp）应优先用此方法，避免并发会话下
+   * 因 await 挂起导致输出被错配到栈顶的另一个会话。
+   * @protected
+   */
+  protected emitOutputForSession(sessionId: string, output: AgentOutput): void {
     this.outputSessionMap.set(output, sessionId)
+    // 收集 stdout/complete 到缓冲区，用于后续生成上下文摘要（与 emitOutput 行为一致）
+    if (output.type === 'stdout' || output.type === 'complete') {
+      let buffer = this.sessionOutputBuffers.get(sessionId)
+      if (!buffer) {
+        buffer = []
+        this.sessionOutputBuffers.set(sessionId, buffer)
+      }
+      buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
+        ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
+        : output.data)
+      if (buffer.length > BaseAdapter.getMaxOutputBufferSize()) {
+        buffer.splice(0, buffer.length - BaseAdapter.getMaxOutputBufferSize())
+      }
+    }
     this.emit('output', output)
   }
 
@@ -636,28 +656,52 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected async runOneShot(
     proc: ChildProcess,
     sessionId: string,
-    options?: { parseFileChanges?: boolean },
+    options?: { parseFileChanges?: boolean; timeoutMs?: number },
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const { onStdout, onStderr, onExit: baseOnExit, onError: baseOnError } = this.createOutputHandlers(sessionId, options)
+      let settled = false
+
+      // 硬超时：挂死的 CLI（等待 stdin、永不退出）会让 sendCommand 永久 pending 且子进程泄漏。
+      // 超时后强杀进程，由 onExit/onError 收尾。
+      const timeoutMs = options?.timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS
+      const killTimer = setTimeout(() => {
+        if (proc.exitCode === null && !proc.killed) {
+          this.logger.warn(`runOneShot for session ${sessionId} exceeded ${timeoutMs}ms, force killing`)
+          this.timeoutKilledSessions.add(sessionId)
+          this.forceKillProcess(proc)
+        }
+      }, timeoutMs)
 
       const onExit = (code: number | null) => {
+        if (settled) return
+        settled = true
         baseOnExit(code)
         cleanup()
         resolve()
       }
 
       const onError = (err: Error) => {
+        if (settled) return
+        settled = true
         baseOnError(err)
         cleanup()
         reject(err)
       }
 
       const cleanup = () => {
+        clearTimeout(killTimer)
         proc.stdout?.off('data', onStdout)
         proc.stderr?.off('data', onStderr)
         proc.off('exit', onExit)
         proc.off('error', onError)
+        // 清理本会话残留的 stdout 批处理定时器与缓冲，防止退出后定时器空转与 Map 泄漏
+        const batchTimer = this.stdoutBatchTimers.get(sessionId)
+        if (batchTimer) {
+          clearTimeout(batchTimer)
+          this.stdoutBatchTimers.delete(sessionId)
+        }
+        this.stdoutBatchBuffers.delete(sessionId)
       }
 
       proc.stdout?.on('data', onStdout)

@@ -73,6 +73,13 @@ export class MemoryStore {
       return
     }
 
+    // 旧版本曾用不对称的 delete 触发器（INSERT 用 json_each 展开、DELETE 传原始 JSON），
+    // 会逐步损坏 FTS 倒排索引。由于 CREATE TRIGGER IF NOT EXISTS 不会替换已存在的旧触发器，
+    // 这里先无条件 DROP，重建为正确版本后再 'rebuild' 一次以修复历史损坏。
+    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ai`)
+    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ad`)
+    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_au`)
+
     if (jsonEachAvailable) {
       // 使用 json_each() 展开 JSON 数组，提取纯文本值（更好的搜索质量）
       this.db.exec(`
@@ -97,14 +104,40 @@ export class MemoryStore {
       this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
-          VALUES ('delete', old.id, old.title, old.narrative, old.facts, old.concepts);
+          VALUES (
+            'delete',
+            old.id,
+            old.title,
+            old.narrative,
+            CASE WHEN json_valid(old.facts)
+              THEN (SELECT group_concat(value, ' ') FROM json_each(old.facts))
+              ELSE old.facts
+            END,
+            CASE WHEN json_valid(old.concepts)
+              THEN (SELECT group_concat(value, ' ') FROM json_each(old.concepts))
+              ELSE old.concepts
+            END
+          );
         END
       `)
 
       this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_au AFTER UPDATE ON memory_items BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
-          VALUES ('delete', old.id, old.title, old.narrative, old.facts, old.concepts);
+          VALUES (
+            'delete',
+            old.id,
+            old.title,
+            old.narrative,
+            CASE WHEN json_valid(old.facts)
+              THEN (SELECT group_concat(value, ' ') FROM json_each(old.facts))
+              ELSE old.facts
+            END,
+            CASE WHEN json_valid(old.concepts)
+              THEN (SELECT group_concat(value, ' ') FROM json_each(old.concepts))
+              ELSE old.concepts
+            END
+          );
           INSERT INTO ${FTS_TABLE}(rowid, title, narrative, facts, concepts)
           VALUES (
             new.id,
@@ -145,6 +178,14 @@ export class MemoryStore {
           VALUES (new.id, new.title, new.narrative, new.facts, new.concepts);
         END
       `)
+    }
+
+    // 用 'rebuild' 命令从 content 表（memory_items）重建整个 FTS 索引，
+    // 修复旧版不对称触发器可能造成的索引损坏。失败不致命（仅影响搜索质量）。
+    try {
+      this.db.exec(`INSERT INTO ${FTS_TABLE}(${FTS_TABLE}) VALUES ('rebuild')`)
+    } catch (err) {
+      logger.warn('FTS5 index rebuild failed (search may be degraded):', err)
     }
 
     logger.info('FTS5 virtual table and triggers initialized')
@@ -348,8 +389,77 @@ export class MemoryStore {
   }
 
   /**
-   * FTS5 全文搜索（降级到 LIKE）
+   * 批量存储并应用概念级版本化/去重（事务化）。
+   *
+   * 与 storeMany 不同：每条记忆在写入前先用 _findByConcepts 查找同项目概念匹配项，
+   * 命中时建立 parent_version 链接（高置信度才递增 version）。这避免了反复跑相同任务时
+   * 记忆无限重复增长的问题（pipeline 主写入路径应使用此方法而非 storeMany）。
+   *
+   * 注意：_findByConcepts 在事务内对刚插入的行同样可见（同一连接），因此同一批次内的
+   * 重复概念也会被串联，不会各自独立写成 version=1。
    */
+  storeManyVersioned(items: Omit<MemoryItem, 'id'>[]): number[] {
+    if (items.length === 0) return []
+
+    if (this.ftsState !== 'ready') {
+      if (this.ftsState === 'failed') {
+        this._initFts()
+      }
+      if ((this.ftsState as string) !== 'ready') {
+        logger.warn('FTS not ready, skipping storeManyVersioned to avoid unindexed rows')
+        return []
+      }
+    }
+
+    const insertStmt = this.db.prepare(
+      `INSERT INTO memory_items
+        (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
+         files_read, files_modified, adapter_name, token_cost, confidence,
+         version, parent_version, embedding, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+
+    const insertMany = this.db.transaction((items: Omit<MemoryItem, 'id'>[]) => {
+      const ids: number[] = []
+      for (const item of items) {
+        let version = 1
+        let parentVersion: number | null = null
+        if (item.concepts.length > 0) {
+          const existingItems = this._findByConcepts(item.project_id, item.concepts)
+          if (existingItems.length > 0) {
+            const existing = existingItems[0]
+            parentVersion = existing.id!
+            if (existing.confidence < item.confidence) {
+              version = (existing.version ?? 1) + 1
+            }
+          }
+        }
+        const info = insertStmt.run(
+          item.session_id,
+          item.kind,
+          item.project_id,
+          item.node_id ?? null,
+          item.title,
+          item.narrative,
+          JSON.stringify(item.facts),
+          JSON.stringify(item.concepts),
+          JSON.stringify(item.files_read),
+          JSON.stringify(item.files_modified),
+          item.adapter_name,
+          item.token_cost,
+          item.confidence,
+          version,
+          parentVersion,
+          item.embedding ? JSON.stringify(item.embedding) : null,
+          item.created_at,
+        )
+        ids.push(safeRowId(info.lastInsertRowid))
+      }
+      return ids
+    })
+
+    return insertMany(items)
+  }
   search(
     query: string,
     options?: {
@@ -660,13 +770,26 @@ export class MemoryStore {
 
     if (idsToDelete.size === 0) return 0
 
-    // 批量删除
+    // 分批删除：当 idsToDelete 很大（项目记忆远超 maxItems）时，单条 `id IN (?,?,...)`
+    // 的占位符数量可能超过 SQLITE_MAX_VARIABLE_NUMBER（默认 32766）而抛错，导致 prune 整体失败、
+    // 内存永远无法清理。每批 ≤ 900 个 id（为 project_id 留出余量），整体包在一个事务里保证原子性。
     const idsArray = Array.from(idsToDelete)
-    const placeholders = idsArray.map(() => '?').join(',')
-    const info = this.db.prepare(
-      `DELETE FROM memory_items WHERE project_id = ? AND id IN (${placeholders})`,
-    ).run(projectId, ...idsArray)
-    return info.changes
+    const BATCH_SIZE = 900
+    let totalChanges = 0
+    const deleteBatches = this.db.transaction((all: number[]) => {
+      let changes = 0
+      for (let i = 0; i < all.length; i += BATCH_SIZE) {
+        const batch = all.slice(i, i + BATCH_SIZE)
+        const placeholders = batch.map(() => '?').join(',')
+        const info = this.db.prepare(
+          `DELETE FROM memory_items WHERE project_id = ? AND id IN (${placeholders})`,
+        ).run(projectId, ...batch)
+        changes += info.changes
+      }
+      return changes
+    })
+    totalChanges = deleteBatches(idsArray)
+    return totalChanges
   }
 
   /**
