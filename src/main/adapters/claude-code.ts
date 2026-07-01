@@ -52,6 +52,14 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
   protected logger = createLogger('ClaudeCodeAdapter')
 
+  /**
+   * SDK 多轮适配器：由 BaseAdapter 自动托管空闲回收定时器。
+   * registerSession / sendCommand 处基类会自动 arm / re-arm，无需在此手动调用。
+   */
+  protected get autoManageIdleReaper(): boolean {
+    return true
+  }
+
   private sdkQuery: QueryFn | null = null
   private sdkCreateMcpServer: CreateSdkMcpServerFn | null = null
   private sdkLoadAttempted = false
@@ -89,9 +97,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     }
     this.registerSession(session)
     // SDK adapter: session persists across commands for multi-turn continuity.
-    // Start the idle reaper so the session is reclaimed if the caller never calls
-    // terminateSession (mirrors the pattern in CodexAdapter and McpAdapter).
-    this.resetIdleReaper(sessionId)
+    // Idle reaper is armed automatically by BaseAdapter.registerSession (see
+    // autoManageIdleReaper) so orphan sessions are still reclaimed.
     return session
   }
 
@@ -275,9 +282,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
               data: message.result || 'Completed',
               timestamp: Date.now(),
             })
-            // Reset idle reaper after each successful turn so the session is not
-            // reclaimed while still in active multi-turn use (mirrors CodexAdapter).
-            this.resetIdleReaper(sessionId)
+            // Idle reaper is re-armed automatically by BaseAdapter.sendCommand on return.
           } else {
             const errorText =
               (message.errors.length > 0 ? message.errors.join('\n') : undefined) ??

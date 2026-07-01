@@ -119,6 +119,32 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * 是否由 BaseAdapter 自动托管 SDK 会话空闲回收定时器。
+   *
+   * 覆盖为 true 的适配器（SDK 多轮：claude-code / codex / mcp）会由 BaseAdapter
+   * 在 registerSession / sendCommand 处自动 arm / re-arm reaper —— 子类不再需要在
+   * doSendCommand 的成功、早退（缺 key、限流…）等分支散落调用 resetIdleReaper。
+   *
+   * 每新增一个早退分支都要求作者记得手动调用 arm，是"altitude 层级不足"的经典表现：
+   * 唯一的正确修复是把生命周期上移到基类（此机制），任何新分支自动获得回收保护。
+   *
+   * 单进程 CLI 一次性适配器（进程退出即 sessionEnded）覆盖为 false（默认）。
+   * @protected
+   */
+  protected get autoManageIdleReaper(): boolean {
+    return false
+  }
+
+  /**
+   * 子类可覆盖以定制 idle 窗口（默认沿用 DEFAULT_SESSION_TIMEOUT_MS）。
+   * MCP 有自己的 30 分钟常量，覆盖此方法而非在 doSendCommand 中传参。
+   * @protected
+   */
+  protected getIdleReaperMs(): number {
+    return BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS
+  }
+
+  /**
    * 检测用户系统是否已安装该 Agent
    */
   abstract checkInstalled(): Promise<boolean>
@@ -140,6 +166,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
   /**
    * 发送指令到指定会话
+   *
+   * 对声明 autoManageIdleReaper=true 的 SDK 适配器（claude-code / codex / mcp），
+   * 基类自动在指令到达时清除 reaper（防止上一命令的残留定时器在执行期间触发），
+   * 并在 doSendCommand 返回后（无论成功还是子类内部已处理的早退分支）重新 arm。
+   * 这样子类的 doSendCommand 只需专注业务逻辑，不再需要在每个 return / early-exit
+   * 分支都记得手动调用 resetIdleReaper。
    */
   async sendCommand(sessionId: string, command: AgentCommand): Promise<void> {
     try {
@@ -149,10 +181,18 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       }
       const proc = this.processes.get(sessionId)
       this.pushOutputSession(sessionId)
+      if (this.autoManageIdleReaper) {
+        this.clearIdleReaper(sessionId)
+      }
       try {
         await this.doSendCommand(session, command, proc)
       } finally {
         this.popOutputSession()
+        // Re-arm on ALL exits (success, thrown error) — subclasses' internal early-return
+        // branches also fall through here because they return normally to doSendCommand's caller.
+        if (this.autoManageIdleReaper && this.sessions.has(sessionId)) {
+          this.resetIdleReaper(sessionId, this.getIdleReaperMs())
+        }
       }
     } catch (error) {
       if (error instanceof SessionNotFoundError || error instanceof AdapterError) throw error
@@ -251,7 +291,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
-   * 保存会话到内部映射
+   * 保存会话到内部映射，可选启动进程守护定时器。
+   *
+   * 对声明 autoManageIdleReaper=true 的 SDK 适配器，同时首次 arm 空闲回收定时器。
+   * 子类的 startSession 不再需要显式调用 resetIdleReaper（历史上散落在
+   * claude-code / codex / mcp 三处，任一遗漏都会导致会话永不回收）。
    * @protected
    */
   protected registerSession(session: AgentSession, proc?: ChildProcess): void {
@@ -259,6 +303,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     if (proc) {
       this.processes.set(session.id, proc)
       this.startSessionKillTimer(session.id, proc)
+    }
+    if (this.autoManageIdleReaper) {
+      this.resetIdleReaper(session.id, this.getIdleReaperMs())
     }
   }
 
@@ -397,23 +444,36 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const sessionId = this.outputSessionStack[this.outputSessionStack.length - 1]
     if (sessionId) {
       this.outputSessionMap.set(output, sessionId)
-      // 收集 stdout/complete 到缓冲区，用于后续生成上下文摘要
-      if (output.type === 'stdout' || output.type === 'complete') {
-        let buffer = this.sessionOutputBuffers.get(sessionId)
-        if (!buffer) {
-          buffer = []
-          this.sessionOutputBuffers.set(sessionId, buffer)
-        }
-        buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
-          ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
-          : output.data)
-        // 限制缓冲区大小，防止内存无限增长
-        if (buffer.length > BaseAdapter.getMaxOutputBufferSize()) {
-          buffer.splice(0, buffer.length - BaseAdapter.getMaxOutputBufferSize())
-        }
-      }
+      this.appendToSessionBuffer(sessionId, output)
     }
     this.emit('output', output)
+  }
+
+  /**
+   * 会话输出缓冲策略的唯一实现点：
+   * - 只收集 stdout / complete 类型（供后续 buildAndStoreSummary 生成摘要）
+   * - 单条超长时按 MAX_OUTPUT_ENTRY_SIZE 截断（防内存溢出）
+   * - 缓冲区上限按 getMaxOutputBufferSize() 自适应（防无限增长）
+   *
+   * emitOutput 与 emitOutputForSession 都必须走此方法，避免两条路径的截断/上限策略
+   * 独立演化 —— 历史上 emitOutputForSession 曾内联复制过这段代码，任何策略调整都
+   * 需要在两处同步修改。
+   * @protected
+   */
+  private appendToSessionBuffer(sessionId: string, output: AgentOutput): void {
+    if (output.type !== 'stdout' && output.type !== 'complete') return
+    let buffer = this.sessionOutputBuffers.get(sessionId)
+    if (!buffer) {
+      buffer = []
+      this.sessionOutputBuffers.set(sessionId, buffer)
+    }
+    buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
+      ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
+      : output.data)
+    const cap = BaseAdapter.getMaxOutputBufferSize()
+    if (buffer.length > cap) {
+      buffer.splice(0, buffer.length - cap)
+    }
   }
 
   /**
@@ -526,10 +586,6 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   // ============================================
 
   /**
-   * 为指定 session 发送输出（直接关联 sessionId，不依赖上下文栈）
-   * @protected
-   */
-  /**
    * 向指定 sessionId 精准发出输出，不依赖 outputSessionStack。
    * SDK 适配器（claude-code / codex / mcp）应优先用此方法，避免并发会话下
    * 因 await 挂起导致输出被错配到栈顶的另一个会话。
@@ -537,20 +593,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   protected emitOutputForSession(sessionId: string, output: AgentOutput): void {
     this.outputSessionMap.set(output, sessionId)
-    // 收集 stdout/complete 到缓冲区，用于后续生成上下文摘要（与 emitOutput 行为一致）
-    if (output.type === 'stdout' || output.type === 'complete') {
-      let buffer = this.sessionOutputBuffers.get(sessionId)
-      if (!buffer) {
-        buffer = []
-        this.sessionOutputBuffers.set(sessionId, buffer)
-      }
-      buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
-        ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
-        : output.data)
-      if (buffer.length > BaseAdapter.getMaxOutputBufferSize()) {
-        buffer.splice(0, buffer.length - BaseAdapter.getMaxOutputBufferSize())
-      }
-    }
+    this.appendToSessionBuffer(sessionId, output)
     this.emit('output', output)
   }
 

@@ -63,12 +63,13 @@ interface ActiveInvocation {
   /** Resolver for donePromise. */
   resolveDone: () => void
   /**
-   * Set by cancel() when cancellation arrives before the child session has started
-   * (sessionId not yet backfilled). _runInvocation checks this immediately after
-   * startSession() resolves and terminates the just-started child, closing the race
-   * where a cancel during the start window would otherwise be silently ineffective.
+   * Cancellation signal for this invocation. cancel() calls controller.abort() so
+   * that any `await` in invoke()/_runInvocation which forwards the signal will throw,
+   * and `signal.aborted` can be checked at each await boundary via _throwIfCancelled().
+   * This replaces the older pattern of manually rechecking `entry.cancelled` after every
+   * await — every new await now inherits cancellation semantics for free.
    */
-  cancelled?: boolean
+  controller: AbortController
 }
 
 export class SubagentManager extends EventEmitter {
@@ -109,6 +110,26 @@ export class SubagentManager extends EventEmitter {
       (def.scopeStrategy === 'subset' || def.scopeStrategy === 'fresh') &&
       allowedFiles.length > 0
     )
+  }
+
+  /**
+   * Throw an AgentError if the invocation's AbortController has fired.
+   *
+   * Any new `await` inserted into invoke()/_runInvocation only needs to call this
+   * afterwards — no per-await bespoke flag rechecks. This is what makes cancellation
+   * safe to add without also having to remember to guard every future await point.
+   */
+  private _throwIfCancelled(
+    entry: ActiveInvocation | undefined,
+    invocationId: string | undefined,
+    where: string,
+  ): void {
+    if (entry?.controller.signal.aborted) {
+      throw new AgentError(
+        `Subagent invocation ${invocationId ?? '(pending)'} cancelled at ${where}`,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
   }
 
   async invoke(args: SubagentInvokeArgs): Promise<SubagentResult> {
@@ -156,12 +177,14 @@ export class SubagentManager extends EventEmitter {
       }
     }
     // Register synchronously so concurrently-dispatched siblings observe this invocation.
+    const controller = new AbortController()
     this.activeInvocations.set(registrationKey, {
       parentSessionId: args.parentSessionId,
       allowedFiles: childAllowedFiles,
       isWrite,
       donePromise,
       resolveDone,
+      controller,
     })
 
     try {
@@ -206,22 +229,19 @@ export class SubagentManager extends EventEmitter {
       const entry = this.activeInvocations.get(registrationKey)
       if (entry) entry.invocationId = invocationId
 
-      // Guard: cancel() may have fired during the repo.create() await window.
-      // In that window the entry had no invocationId yet, so cancel() could not match
-      // it by ID — but it may have set entry.cancelled=true via the pre-backfill path.
-      // Without this check invoke() would call updateStatus('running') and overwrite the
-      // DB status that cancel() already set to 'cancelled', letting the task run anyway.
-      if (entry?.cancelled) {
-        // Pre-start cancel: roll back the concurrency reservation.
-        // This path throws before entering the inner try/finally that normally
-        // decrements activeCount, so we must decrement here to avoid permanent
-        // slot exhaustion for the parent session.
+      // If cancel() fired during any await above (gate wait, repo.create), _throwIfCancelled
+      // detects it via the shared AbortController and throws before we enter the running
+      // path. Adding a new await above this point automatically inherits this guard, unlike
+      // the old per-await `entry.cancelled` recheck which had to be duplicated every time.
+      try {
+        this._throwIfCancelled(entry, invocationId, 'pre-start')
+      } catch (err) {
+        // Pre-start cancel: roll back the concurrency reservation so the parent session
+        // doesn't permanently lose a slot.  The inner try/finally that normally decrements
+        // activeCount hasn't been entered yet at this point.
         const cnt = this.activeCount.get(args.parentSessionId) ?? 1
         this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
-        throw new AgentError(
-          `Subagent invocation ${invocationId} was cancelled before it could start`,
-          ErrorCode.AGENT_SESSION_NOT_FOUND,
-        )
+        throw err
       }
 
       this.emitProgress({ invocationId, status: 'queued' })
@@ -258,12 +278,19 @@ export class SubagentManager extends EventEmitter {
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
-        try {
-          await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
-        } catch {
-          /* repo error already logged elsewhere */
+        // If the error was raised because cancel() aborted the controller, cancel()
+        // itself already transitions the DB row to 'cancelled' — don't overwrite it
+        // with a 'failed' status here.  This is the reason we can safely add new awaits
+        // above: cancellation cleanly threads through the shared signal.
+        const cancelledByAbort = this.activeInvocations.get(registrationKey)?.controller.signal.aborted
+        if (!cancelledByAbort) {
+          try {
+            await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
+          } catch {
+            /* repo error already logged elsewhere */
+          }
+          this.emitProgress({ invocationId, status: 'failed', error: errorMsg })
         }
-        this.emitProgress({ invocationId, status: 'failed', error: errorMsg })
         throw err
       } finally {
         const cnt = this.activeCount.get(args.parentSessionId) ?? 1
@@ -318,10 +345,12 @@ export class SubagentManager extends EventEmitter {
     if (activeEntry) activeEntry.sessionId = childSessionId
 
     // Close the cancel-during-start race: if cancel() fired while sessionId was still
-    // undefined, it set `cancelled` but could not terminate (no session yet). Now that
-    // the child has started, honour that pending cancellation by terminating it and
-    // aborting before any work runs.
-    if (activeEntry?.cancelled) {
+    // undefined, controller.signal is aborted but no session was there to terminate yet.
+    // Now that the child has started, honour the pending cancellation via terminate + throw.
+    // Any *future* await inserted above this point (e.g. context resolution, memory
+    // hydration) inherits the same guard by calling _throwIfCancelled — no per-await
+    // bespoke flag rechecks needed.
+    if (activeEntry?.controller.signal.aborted) {
       try {
         await this.agentManager.terminateSession(childSessionId, 'user')
       } catch {
@@ -375,6 +404,22 @@ export class SubagentManager extends EventEmitter {
       completeReject = reject
     })
 
+    // Mid-execution cancel: when cancel() aborts the controller between sendCommand
+    // and completion, reject the settle wait immediately so the outer finally cleans up
+    // instead of blocking until timeout / natural completion.
+    const onAbort = (): void => {
+      if (!settled) {
+        settled = true
+        completeReject?.(
+          new AgentError(
+            `Subagent invocation ${invocationId} cancelled during execution`,
+            ErrorCode.AGENT_SESSION_NOT_FOUND,
+          ),
+        )
+      }
+    }
+    activeEntry?.controller.signal.addEventListener('abort', onAbort, { once: true })
+
     // Attach listener BEFORE sending the command so we don't miss early completions.
     this.agentManager.addSessionOutputListener(childSessionId, outputHandler)
 
@@ -418,6 +463,7 @@ export class SubagentManager extends EventEmitter {
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle)
       this.agentManager.removeSessionOutputListener(outputHandler)
+      activeEntry?.controller.signal.removeEventListener('abort', onAbort)
     }
 
     const resultText = outputBuffer.join('\n').trim() || '(no output)'
@@ -481,17 +527,20 @@ export class SubagentManager extends EventEmitter {
         break
       }
     }
-    if (active?.sessionId) {
-      try {
-        await this.agentManager.terminateSession(active.sessionId, 'user')
-      } catch {
-        /* best-effort */
+    if (active) {
+      // Abort the signal FIRST so any await checking _throwIfCancelled sees it,
+      // and so the settlePromise abort listener (installed inside _runInvocation)
+      // wakes an in-flight command.  A pre-start cancel (sessionId still undefined)
+      // is picked up by _runInvocation's post-startSession guard — cancellation is
+      // never silently dropped.
+      active.controller.abort()
+      if (active.sessionId) {
+        try {
+          await this.agentManager.terminateSession(active.sessionId, 'user')
+        } catch {
+          /* best-effort */
+        }
       }
-    } else if (active) {
-      // Cancellation arrived before the child session started (sessionId not yet
-      // backfilled). Record intent so _runInvocation terminates the child the moment
-      // it starts, instead of silently letting it run to completion.
-      active.cancelled = true
     }
     await this.repo.cancel(invocationId, Date.now())
     this.emitProgress({ invocationId, status: 'cancelled' })

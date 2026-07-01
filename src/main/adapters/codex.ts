@@ -21,6 +21,14 @@ export class CodexAdapter extends BaseAdapter {
 
   protected override logger = createLogger('CodexAdapter')
 
+  /**
+   * SDK 多轮适配器：BaseAdapter 自动托管空闲回收定时器。
+   * registerSession / sendCommand 处基类自动 arm / re-arm，无需手动。
+   */
+  protected get autoManageIdleReaper(): boolean {
+    return true
+  }
+
   private CodexClass: CodexConstructor | null = null
   private sdkLoadAttempted = false
   private threads = new Map<string, ReturnType<InstanceType<CodexConstructor>['startThread']>>()
@@ -56,8 +64,7 @@ export class CodexAdapter extends BaseAdapter {
       startTime: Date.now(),
     }
     this.registerSession(session)
-    // 首次启动空闲回收计时（会在 doSendCommand 成功后每次重置）
-    this.resetIdleReaper(sessionId)
+    // Idle reaper 由 BaseAdapter.registerSession 自动 arm（autoManageIdleReaper=true）。
     return session
   }
 
@@ -155,11 +162,9 @@ export class CodexAdapter extends BaseAdapter {
         data: 'Codex session completed',
         timestamp: Date.now(),
       })
-      // 不在此处 emit sessionEnded('success')：codex 缓存 thread/instance 以支持多轮续接，
-      // 单命令成功不应销毁会话（参考 claude-code）。资源清理由显式 terminateSession 或
-      // 空闲回收定时器（resetIdleReaper）负责，后者在无活动 30 分钟后通过 sessionEnded('success')
-      // 让 AgentManager 执行完整清理，包括记忆管线。
-      this.resetIdleReaper(sessionId)
+      // codex 缓存 thread/instance 以支持多轮续接，单命令成功不应销毁会话（参考 claude-code）。
+      // 资源清理由显式 terminateSession 或空闲回收定时器（BaseAdapter 自动 re-arm）负责，
+      // 后者在无活动窗口后通过 sessionEnded('idle') 让 AgentManager 执行完整清理，包括记忆管线。
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutputForSession(sessionId, {

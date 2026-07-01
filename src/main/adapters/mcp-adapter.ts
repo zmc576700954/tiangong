@@ -416,6 +416,20 @@ export class McpAdapter extends BaseAdapter {
   readonly name = 'mcp'
   readonly version = '1.0.0'
 
+  /**
+   * SDK 多轮适配器：BaseAdapter 自动托管空闲回收定时器。
+   * 使用 MCP_SESSION_TIMEOUT_MS 作为空闲窗口（30 分钟），通过 getIdleReaperMs 传给基类。
+   * 这样 doSendCommand 里的所有 early-return 分支（缺 key、限流、断路器…）都不再需要
+   * 手动 arm reaper —— 基类在 sendCommand 的 finally 里统一 re-arm。
+   */
+  protected get autoManageIdleReaper(): boolean {
+    return true
+  }
+
+  protected getIdleReaperMs(): number {
+    return MCP_SESSION_TIMEOUT_MS
+  }
+
   private mcpClients = new Map<string, McpClient[]>()
   private apiRateLimiter = new ApiRateLimiter()
   /** MCP 服务器熔断器：防止连续失败导致重连风暴 */
@@ -535,10 +549,8 @@ export class McpAdapter extends BaseAdapter {
 
     this.mcpClients.set(sessionId, sessionClients)
 
-    // 启动空闲回收定时器：使用共享 resetIdleReaper（会在每次 doSendCommand 成功后重置）。
-    // 超时后 emit sessionEnded('success') → AgentManager 执行完整清理（含记忆管线、状态删除），
-    // 而非自行 terminateSession — 后者绕过 AgentManager，导致管理器侧 sessionStates 永久泄漏。
-    this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
+    // Idle reaper armed automatically by BaseAdapter.registerSession
+    // (autoManageIdleReaper=true + getIdleReaperMs() → MCP_SESSION_TIMEOUT_MS).
 
     // Build scope prompt
     const scopePrompt = this.buildScopePrompt(config)
@@ -559,10 +571,9 @@ export class McpAdapter extends BaseAdapter {
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: ChildProcess): Promise<void> {
     const sessionId = session.id
-    // 命令到达时立即清除旧的空闲定时器，防止上一命令结束后残留的定时器
-    // 在新命令执行期间触发 sessionEnded，撕毁正在进行的会话。
-    // resetIdleReaper 将在命令成功完成后重新设置定时器。
-    this.clearIdleReaper(sessionId)
+    // 空闲回收定时器的 clear/re-arm 由 BaseAdapter.sendCommand 统一在 doSendCommand
+    // 前后处理（autoManageIdleReaper=true）——本方法所有 early-return 路径都会经过
+    // 那里的 finally，因此无需在每个分支手动 restore。
     const settings = await readSettings()
 
     // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
@@ -574,9 +585,6 @@ export class McpAdapter extends BaseAdapter {
         data: 'No API key configured. Please add an API key in Settings.',
         timestamp: Date.now(),
       })
-      // Restore idle reaper so the session is eventually reclaimed even if the
-      // caller never calls terminateSession (prevents orphaned session accumulation).
-      this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
       return
     }
 
@@ -607,9 +615,6 @@ export class McpAdapter extends BaseAdapter {
           data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
           timestamp: Date.now(),
         })
-        // Restore idle reaper so the session stays alive for the caller's next retry
-        // attempt and is eventually reclaimed if retries never arrive.
-        this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
         return
       }
 
@@ -682,10 +687,10 @@ export class McpAdapter extends BaseAdapter {
         data: 'MCP session completed',
         timestamp: Date.now(),
       })
-      // 不在此处 emit sessionEnded('success')：MCP adapter 维护连接池以支持多轮复用，
-      // 单命令成功不应销毁会话。资源清理由显式 terminateSession 或共享 idle reaper 负责；
-      // 后者在无活动 30 分钟后 emit sessionEnded('success') → AgentManager 执行完整清理。
-      this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
+      // MCP adapter 维护连接池以支持多轮复用，单命令成功不应销毁会话。资源清理由显式
+      // terminateSession 或共享 idle reaper 负责；后者由 BaseAdapter 在 sendCommand
+      // 的 finally 中自动 re-arm，无活动窗口后 emit sessionEnded('idle') →
+      // AgentManager 执行完整清理（含记忆管线）。
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutputForSession(sessionId, {

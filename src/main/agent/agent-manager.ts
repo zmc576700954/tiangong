@@ -332,35 +332,16 @@ export class AgentManager {
 
         if (reason === 'idle') {
           // SDK adapter idle-reaper fired: session was alive but had no activity for
-          // idleMs. Unlike 'success' (which comes from an explicit command completion),
-          // 'idle' means the adapter timed out waiting — we still need to run the
-          // memory pipeline (Phase B) so session memories are not lost.
-          logger.info(`Session ${sessionId} reclaimed by idle reaper, running memory pipeline before cleanup...`)
-          const state = this.sessionStates.get(sessionId)
-          const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
-          if (state) {
-            state.terminationReason = 'idle' as TerminationReason
-            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
-            // Phase B: run memory pipeline (same as terminateSession Phase B)
-            if (outputs.length > 0) {
-              try {
-                const pipeline = await PipelineRunner.createDefault()
-                await pipeline.run({
-                  outputs,
-                  sessionId,
-                  adapterName: state.adapterName,
-                  projectId: state.config.workingDirectory,
-                  nodeId: state.config.nodeId,
-                })
-              } catch (err) {
-                logger.warn(`Memory pipeline failed for idle-reaped session ${sessionId}:`, err)
-              }
-            }
-            if (this.onSessionComplete) {
-              this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', 'success', Date.now() - state.startTime)
-            }
+          // idleMs. Delegate to terminateSession(sessionId, 'idle') so the memory
+          // pipeline (Phase B), scope-guard commit, onSessionComplete callback, and
+          // sessionRecovery reset all run through the single canonical teardown path
+          // instead of being duplicated here (see review finding: altitude/idle-branch).
+          logger.info(`Session ${sessionId} reclaimed by idle reaper, delegating to terminateSession`)
+          try {
+            await this.terminateSession(sessionId, 'idle')
+          } catch (err) {
+            logger.warn(`terminateSession('idle') failed for ${sessionId}:`, err)
           }
-          await this.cleanupSessionResources(sessionId)
         }
       } catch (err) {
         logger.error(`Unhandled error in sessionEnded handler for ${sessionId}:`, err)
@@ -1483,9 +1464,10 @@ export class AgentManager {
       }
 
       // Reset recovery attempts for this lineage on a healthy termination so future
-      // crashes can be recovered again.
+      // crashes can be recovered again.  'idle' is included: it means the adapter
+      // was alive and healthy but hit the inactivity timeout, not a failure.
       const terminationReason = reason ?? state.terminationReason
-      if (terminationReason === 'success' || terminationReason === 'user') {
+      if (terminationReason === 'success' || terminationReason === 'user' || terminationReason === 'idle') {
         this.sessionRecovery.reset(state.originSessionId ?? sessionId)
       }
     }

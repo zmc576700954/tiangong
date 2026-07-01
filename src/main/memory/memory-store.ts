@@ -20,6 +20,21 @@ const logger = createLogger('MemoryStore')
 /** FTS5 虚拟表名 */
 const FTS_TABLE = 'memory_fts'
 
+/**
+ * FTS 触发器结构版本号：修改触发器逻辑时递增（v1 → v2 → …）。
+ *
+ * 用 SQLite 内置的 PRAGMA user_version（32 位整数，独立于 database.ts 使用的
+ * schema_version 表）持久化当前 DB 已应用的触发器版本。启动时数值比较：
+ *   stored < CURRENT_FTS_TRIGGER_VERSION → 重建触发器 + rebuild FTS 索引
+ *   stored ≥ CURRENT_FTS_TRIGGER_VERSION → 跳过重建（消除 O(N) 启动开销）
+ *
+ * 相比历史上"在触发器 SQL 中埋一段注释字符串然后 substring-match"的做法，此方案不受
+ * 触发器 SQL 格式化 / 注释挪位 / 其他触发器意外包含相同字符串等影响。
+ *
+ * ⚠️  修改 memory_fts_ai / _ad / _au 三个触发器时必须递增此常量。
+ */
+const CURRENT_FTS_TRIGGER_VERSION = 1
+
 export class MemoryStore {
   private db: BetterSqlite3.Database
   /** FTS5 初始化状态：'pending' 表示在尝试中，'ready' 已就绪，'failed' 失败可重试 */
@@ -97,24 +112,19 @@ export class MemoryStore {
     // 会逐步损坏 FTS 倒排索引。由于 CREATE TRIGGER IF NOT EXISTS 不会替换已存在的旧触发器，
     // 需要先 DROP 再重建为正确版本，并执行 'rebuild' 修复历史损坏。
     //
-    // 性能门控：检查现有触发器 SQL 是否已包含 `json_valid` 标记（正确版本特征字符串）。
-    // 已修复 → 直接跳过 DROP/rebuild，避免每次进程启动都对全表做 O(N) 重索引。
-    // 触发器不存在或已是旧版本 → 走修复路径（仅发生一次，之后永远跳过）。
-    // 触发器版本标记：嵌入 trigger SQL 中，用于检测是否需要重建。
-    // ⚠️  如果将来修改触发器逻辑，必须同步更新此标记（fts_trigger_v1 → fts_trigger_v2 …），
-    // 否则现有数据库会继续使用旧版触发器而不重建。
-    const FTS_TRIGGER_VERSION_TAG = 'fts_trigger_v1'
-    const existingTriggerSql = (() => {
+    // 版本记录：用 PRAGMA user_version（SQLite 内置的 32 位整数元数据字段）持久化
+    // 当前 DB 已应用的触发器版本，与 database.ts 的 schema_version 表相互独立、无冲突。
+    // 相比历史上"substring-match 触发器 SQL 中的注释标记"的方案，此方式不受触发器 SQL
+    // 格式化或其他触发器意外包含相同字符串等影响。
+    const storedTriggerVersion = ((): number => {
       try {
-        const row = this.db.prepare(
-          `SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'memory_fts_ad'`
-        ).get() as { sql?: string } | undefined
-        return row?.sql ?? ''
+        const row = this.db.pragma('user_version', { simple: true })
+        return typeof row === 'number' ? row : Number(row) || 0
       } catch {
-        return ''
+        return 0
       }
     })()
-    const triggersAlreadyFixed = existingTriggerSql.includes(FTS_TRIGGER_VERSION_TAG)
+    const triggersAlreadyFixed = storedTriggerVersion >= CURRENT_FTS_TRIGGER_VERSION
 
     if (!triggersAlreadyFixed) {
       // 旧版或缺失触发器：DROP 全部后重建，确保三个触发器版本一致
@@ -146,7 +156,6 @@ export class MemoryStore {
 
       this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items
-        -- fts_trigger_v1
         BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
           VALUES (
@@ -208,12 +217,10 @@ export class MemoryStore {
         END
       `)
 
-      // ⚠️  fts_trigger_v1 版本标记：必须与 json_each 分支中的标记保持一致，
-      // 触发器版本检测（triggersAlreadyFixed）依赖此注释存在于 memory_fts_ad 的 SQL 中。
-      // 若将来修改触发器逻辑，两个分支的标记须同步更新（v1 → v2 …）。
+      // ⚠️  修改此触发器逻辑时须递增 CURRENT_FTS_TRIGGER_VERSION（顶部常量），
+      // 否则现有数据库不会检测到差异、不会重建。
       this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items
-        -- fts_trigger_v1
         BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
           VALUES ('delete', old.id, old.title, old.narrative, old.facts, old.concepts);
@@ -239,6 +246,12 @@ export class MemoryStore {
         logger.info('FTS5 index rebuilt to repair legacy asymmetric-trigger corruption')
       } catch (err) {
         logger.warn('FTS5 index rebuild failed (search may be degraded):', err)
+      }
+      // 只有触发器 + rebuild 都完成后才推进 user_version，避免中途失败被误判为"已修复"
+      try {
+        this.db.pragma(`user_version = ${CURRENT_FTS_TRIGGER_VERSION}`)
+      } catch (err) {
+        logger.warn(`Failed to persist FTS trigger version ${CURRENT_FTS_TRIGGER_VERSION}:`, err)
       }
     }
 
@@ -312,56 +325,53 @@ export class MemoryStore {
   }
 
   /**
-   * 存储一条记忆（含版本化冲突检测）
+   * 计算记忆的版本信息（供 store / storeManyVersioned 复用）
    *
-   * 版本规则:
-   *   - 无匹配概念 → version=1, parent_version=null
-   *   - 匹配且新置信度更高 → version=existing.version+1, parent_version=existing.id
-   *   - 匹配但新置信度不高于已有 → version=1, parent_version=existing.id（不同视角）
-   * @returns 新记忆的 ID
+   * 规则：
+   *   - 无匹配概念 → version=1, parentVersion=null
+   *   - 匹配且新置信度更高 → version=existing.version+1, parentVersion=existing.id（真版本链）
+   *   - 匹配但新置信度不高于已有 → version=1, parentVersion=existing.id（不同视角，保留可导航链）
    */
-  store(item: Omit<MemoryItem, 'id'>): number {
-    // FTS 未就绪时无法保证全文检索，跳过存储
-    if (this.ftsState !== 'ready') {
-      // 重试初始化一次
-      if (this.ftsState === 'failed') {
-        this._initFts()
-      }
-      if ((this.ftsState as string) !== 'ready') {
-        logger.warn('FTS not ready, skipping store to avoid unindexed rows')
-        return -1
-      }
+  private _computeVersionInfo(item: Omit<MemoryItem, 'id'>): { version: number; parentVersion: number | null } {
+    if (item.concepts.length === 0) return { version: 1, parentVersion: null }
+
+    const existingItems = this._findByConcepts(item.project_id, item.concepts)
+    if (existingItems.length === 0) return { version: 1, parentVersion: null }
+
+    const existing = existingItems[0] // highest confidence match
+    if (existing.confidence < item.confidence) {
+      return { version: (existing.version ?? 1) + 1, parentVersion: existing.id! }
     }
+    return { version: 1, parentVersion: existing.id! }
+  }
 
-    // 版本化：查找同项目中概念匹配的已有记忆（双版本保留）
-    // 两者都保留，不再覆盖低置信度版本
-    let version = 1
-    let parentVersion: number | null = null
-
-    if (item.concepts.length > 0) {
-      const existingItems = this._findByConcepts(item.project_id, item.concepts)
-      if (existingItems.length > 0) {
-        const existing = existingItems[0] // highest confidence match
-        if (existing.confidence < item.confidence) {
-          // New memory supersedes the existing one: link them as a version chain.
-          version = (existing.version ?? 1) + 1
-          parentVersion = existing.id!
-        } else {
-          // Same or lower confidence: still link via parent_version so getEvolutionChain
-          // can walk the full history.  version stays 1 (independent observation), but
-          // the parent link keeps the chain navigable.
-          parentVersion = existing.id!
-        }
-      }
+  /**
+   * FTS 就绪校验：若失败可重试一次，仍未就绪返回 false 让调用方跳过写入。
+   * store / storeMany / storeManyVersioned 共享此门控，避免每处独立复制。
+   */
+  private _ensureFtsReadyOrRetry(operation: string): boolean {
+    if (this.ftsState === 'ready') return true
+    if (this.ftsState === 'failed') {
+      this._initFts()
     }
+    if ((this.ftsState as string) !== 'ready') {
+      logger.warn(`FTS not ready, skipping ${operation} to avoid unindexed rows`)
+      return false
+    }
+    return true
+  }
 
-    const info = this.db.prepare(
-      `INSERT INTO memory_items
-        (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
-         files_read, files_modified, adapter_name, token_cost, confidence,
-         version, parent_version, embedding, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
+  /**
+   * 执行 memory_items 的 INSERT（供 store / storeMany / storeManyVersioned 复用）
+   *
+   * 使用缓存的 17 列预编译语句 —— 单一实现点保证列顺序与列数变更时只需修改一处。
+   */
+  private _executeInsert(
+    item: Omit<MemoryItem, 'id'>,
+    version: number,
+    parentVersion: number | null,
+  ): number {
+    const info = this._getInsertStmt().run(
       item.session_id,
       item.kind,
       item.project_id,
@@ -384,55 +394,35 @@ export class MemoryStore {
   }
 
   /**
-   * 批量存储多条记忆（事务化）
+   * 存储一条记忆（含版本化冲突检测）
+   *
+   * 版本规则见 _computeVersionInfo。
+   * @returns 新记忆的 ID，FTS 未就绪时返回 -1
+   */
+  store(item: Omit<MemoryItem, 'id'>): number {
+    if (!this._ensureFtsReadyOrRetry('store')) return -1
+    const { version, parentVersion } = this._computeVersionInfo(item)
+    return this._executeInsert(item, version, parentVersion)
+  }
+
+  /**
+   * 批量存储多条记忆（事务化，不做版本化冲突检测）
    *
    * 使用 better-sqlite3 的事务 API 在单个事务中执行所有 INSERT：
    * - 中途失败整体回滚，FTS 触发器的索引行也一并回滚
    * 失败时抛出，调用方决定是否重试或降级。
    *
-   * 注意：批量插入不执行版本化冲突检测（_findByConcepts），
-   * 每条记忆均以 version=1, parent_version=null 写入。
-   * 如需版本化，请逐条调用 store()。
+   * 每条记忆均以 item.version ?? 1, item.parent_version ?? null 写入。
+   * 如需概念级去重/版本化，请改用 storeManyVersioned()。
    */
   storeMany(items: Omit<MemoryItem, 'id'>[]): number[] {
     if (items.length === 0) return []
-
-    // FTS 未就绪时无法保证全文检索，返回空
-    if (this.ftsState !== 'ready') {
-      if (this.ftsState === 'failed') {
-        this._initFts()
-      }
-      if ((this.ftsState as string) !== 'ready') {
-        logger.warn('FTS not ready, skipping storeMany to avoid unindexed rows')
-        return []
-      }
-    }
-
-    const insertStmt = this._getInsertStmt()
+    if (!this._ensureFtsReadyOrRetry('storeMany')) return []
 
     const insertMany = this.db.transaction((items: Omit<MemoryItem, 'id'>[]) => {
       const ids: number[] = []
       for (const item of items) {
-        const info = insertStmt.run(
-          item.session_id,
-          item.kind,
-          item.project_id,
-          item.node_id ?? null,
-          item.title,
-          item.narrative,
-          JSON.stringify(item.facts),
-          JSON.stringify(item.concepts),
-          JSON.stringify(item.files_read),
-          JSON.stringify(item.files_modified),
-          item.adapter_name,
-          item.token_cost,
-          item.confidence,
-          item.version ?? 1,
-          item.parent_version ?? null,
-          item.embedding ? JSON.stringify(item.embedding) : null,
-          item.created_at,
-        )
-        ids.push(safeRowId(info.lastInsertRowid))
+        ids.push(this._executeInsert(item, item.version ?? 1, item.parent_version ?? null))
       }
       return ids
     })
@@ -452,59 +442,13 @@ export class MemoryStore {
    */
   storeManyVersioned(items: Omit<MemoryItem, 'id'>[]): number[] {
     if (items.length === 0) return []
-
-    if (this.ftsState !== 'ready') {
-      if (this.ftsState === 'failed') {
-        this._initFts()
-      }
-      if ((this.ftsState as string) !== 'ready') {
-        logger.warn('FTS not ready, skipping storeManyVersioned to avoid unindexed rows')
-        return []
-      }
-    }
-
-    const insertStmt = this._getInsertStmt()
+    if (!this._ensureFtsReadyOrRetry('storeManyVersioned')) return []
 
     const insertMany = this.db.transaction((items: Omit<MemoryItem, 'id'>[]) => {
       const ids: number[] = []
       for (const item of items) {
-        let version = 1
-        let parentVersion: number | null = null
-        if (item.concepts.length > 0) {
-          const existingItems = this._findByConcepts(item.project_id, item.concepts)
-          if (existingItems.length > 0) {
-            const existing = existingItems[0]
-            if (existing.confidence < item.confidence) {
-              // New memory supersedes the existing one: create a true version chain.
-              version = (existing.version ?? 1) + 1
-              parentVersion = existing.id!
-            } else {
-              // Same or lower confidence: link via parent_version so getEvolutionChain
-              // can walk the full history.  version stays 1, but the chain is preserved.
-              parentVersion = existing.id!
-            }
-          }
-        }
-        const info = insertStmt.run(
-          item.session_id,
-          item.kind,
-          item.project_id,
-          item.node_id ?? null,
-          item.title,
-          item.narrative,
-          JSON.stringify(item.facts),
-          JSON.stringify(item.concepts),
-          JSON.stringify(item.files_read),
-          JSON.stringify(item.files_modified),
-          item.adapter_name,
-          item.token_cost,
-          item.confidence,
-          version,
-          parentVersion,
-          item.embedding ? JSON.stringify(item.embedding) : null,
-          item.created_at,
-        )
-        ids.push(safeRowId(info.lastInsertRowid))
+        const { version, parentVersion } = this._computeVersionInfo(item)
+        ids.push(this._executeInsert(item, version, parentVersion))
       }
       return ids
     })
