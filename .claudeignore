@@ -1,0 +1,109 @@
+# Claude Code CLI 忽略文件配置
+# 用于减少 Token 消耗，排除不必要的文件
+
+# ===================
+# 依赖目录
+# ===================
+node_modules/
+vendor/
+
+# ===================
+# 编译后的前端资源
+# ===================
+public/admin-assets/assets/*.js
+public/admin-assets/assets/*.css
+public/build/
+
+# ===================
+# 调试文件
+# ===================
+storage/debugbar/
+storage/logs/
+*.log
+
+# ===================
+# 数据库大文件
+# ===================
+database/sql/
+database/seeders/AreasTableSeeder.php
+
+# ===================
+# 锁文件
+# ===================
+composer.lock
+package-lock.json
+
+# ===================
+# IDE 辅助文件
+# ===================
+_admin_ide_helper.php
+vendor/_laravel_ide/
+.phpunit.result.cache
+.phpunit.cache/
+
+# ===================
+# 冗余文档（保留核心文档）
+# ===================
+# 保留: CLAUDE.md, IFLOW.md, README.md, ai-context.md
+# 保留: docs/agent-api.md, docs/agent-ad-revenue-api.md, docs/wechat-payment-callback.md
+# 排除: docs/ 目录下的重复文档
+docs/业务逻辑梳理.md
+docs/接口清单速查表.md
+docs/配置项文档.md
+
+# 旧的规则文件（已合并到 CLAUDE.md）
+.ai-rules.md
+
+# ===================
+# 图片文件
+# ===================
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.webp
+
+# ===================
+# 缓存和临时文件
+# ===================
+.cache/
+tmp/
+.temp/
+storage/framework/cache/
+storage/framework/views/
+
+# ===================
+# 测试输出
+# ===================
+tests/
+tests-results/
+phpunit.xml
+
+# ===================
+# Git 和 IDE
+# ===================
+.git/
+.vscode/
+.idea/
+.fleet/
+.kiro/
+.github/
+.playwright-mcp/
+.bizgraph
+
+# ===================
+# 打包内容
+# ===================
+dist/
+dist-electron/
+release/
+
+# ===================
+# 其他
+# ===================
+storage/app/extracted_context.*
+
+# WorkBuddy 目录（非 Claude Code 使用）
+.workbuddy/
