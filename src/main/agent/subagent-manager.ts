@@ -115,9 +115,12 @@ export class SubagentManager extends EventEmitter {
   /**
    * Throw an AgentError if the invocation's AbortController has fired.
    *
-   * Any new `await` inserted into invoke()/_runInvocation only needs to call this
-   * afterwards — no per-await bespoke flag rechecks. This is what makes cancellation
-   * safe to add without also having to remember to guard every future await point.
+   * 覆盖范围：仅当显式调用时检查取消状态。目前用于 invoke() 中 startSession 之前的
+   * 启动阶段 await 窗口（gate wait、repo.create）。执行期间的 await（sendCommand →
+   * settlePromise）由 _runInvocation 中注册的 onAbort 中止监听器覆盖，而非本方法。
+   *
+   * 在 invoke() 的 startSession 与 _runInvocation 注册 settlePromise 中止监听器之间
+   * 插入的新 await 必须显式调用本方法以保持取消安全；本方法不会自动覆盖所有 await 点。
    */
   private _throwIfCancelled(
     entry: ActiveInvocation | undefined,

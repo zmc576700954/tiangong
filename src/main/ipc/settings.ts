@@ -41,11 +41,15 @@ const SAFE_COMMAND_PATTERN = /^[A-Za-z0-9._-]+$/
  */
 const DANGEROUS_ARG_PATTERNS = [
   /^--eval$/i,
+  /^--eval=/i,        // 带值形式：node --eval=<code>
   /^-e$/,
   /^--print$/i,
+  /^--print=/i,       // 带值形式：node --print=<code>
   /^-p$/,
   /^-c$/,
+  /^-c.+/,            // 紧跟 code 的形式：python -c<code>
   /^eval$/i,
+  /^--input-type=/i,  // node --input-type=module 配合 stdin eval
 ]
 
 function assertSafeCommand(command: unknown, context: string): void {
@@ -178,7 +182,12 @@ export function registerSettingsHandlers(
       const current = await readSettings()
       const existing = current.apiKeys.find((k) => k.provider === provider)
       if (existing && existing.key) {
-        await setApiKey(provider, existing.key, baseUrl ?? existing.baseUrl ?? undefined)
+        // 已读取 current，直接复用以更新 baseUrl（如有变化），避免 setApiKey 二次 readSettings
+        if (baseUrl !== undefined) {
+          existing.baseUrl = baseUrl
+        }
+        const { writeSettings } = await import('../settings')
+        await writeSettings(current)
         return
       }
       // 无现有真实 key 可保留：拒绝写入遮蔽值，避免污染存储

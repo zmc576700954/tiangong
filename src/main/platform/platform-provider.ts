@@ -154,10 +154,16 @@ class Win32Provider implements PlatformProvider {
       const result = spawnSync(
         'icacls',
         [filePath, '/inheritance:r', '/grant:r', `${username}:F`],
-        { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true },
+        { encoding: 'utf-8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
       )
+      if (result.error || result.status !== 0) {
+        // 捕获 stderr 以便诊断 ACL 设置失败（用户名含域、路径含特殊字符、权限不足等）
+        const stderr = (result.stderr ?? '').toString().trim()
+        console.warn(`[PlatformProvider] icacls failed for ${filePath} (status=${result.status}): ${stderr || result.error?.message || 'unknown'}`)
+      }
       return !result.error && result.status === 0
-    } catch {
+    } catch (err) {
+      console.warn(`[PlatformProvider] icacls threw for ${filePath}:`, err)
       return false
     }
   }

@@ -80,10 +80,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * SDK 适配器（claude-code / codex / mcp）缓存会话以支持多轮续接，不会在每个指令后
    * 自行销毁。若调用方忘记显式 terminateSession，会话会永久驻留（内存泄漏）。
    * 每次 doSendCommand 成功后通过 resetIdleReaper() 重置计时，超过空闲期后自动
-   * emit sessionEnded('success') 让 AgentManager 走正常清理路径（含记忆管线），
-   * 而非直接调用 terminateSession — 后者绕过 AgentManager，导致管理器状态泄漏。
+   * emit sessionEnded('idle') 让 AgentManager 走 terminateSession('idle') 完整清理
+   * 路径（含记忆管线、scope-guard 提交、onSessionComplete），而非直接调用
+   * terminateSession — 后者绕过 AgentManager，导致管理器状态泄漏。
    */
   private idleSessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * 正在被 idle reaper 回收（已 emit sessionEnded('idle') 但 AgentManager 异步
+   * terminateSession 尚未完成）的会话集合。sendCommand 入口检查此集合，拒绝在
+   * 半终止会话上执行新命令，消除"emit 回调已执行但 sessions 尚未删除"的窄窗口竞态。
+   */
+  private idleReapingSessions = new Set<string>()
   /** stdout 批缓冲：降低高频输出时的事件发射频率 */
   private stdoutBatchBuffers = new Map<string, string>()
   private stdoutBatchTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -179,6 +186,12 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       if (!session) {
         throw new SessionNotFoundError(sessionId)
       }
+      // 拒绝在正被 idle reaper 回收的会话上执行新命令：idle 回调已 emit
+      // sessionEnded('idle') 但 AgentManager 的异步 terminateSession 可能尚未
+      // 从 sessions 中删除该会话。此时若放行新命令，命令会在半终止会话上执行。
+      if (this.idleReapingSessions.has(sessionId)) {
+        throw new SessionNotFoundError(sessionId)
+      }
       const proc = this.processes.get(sessionId)
       this.pushOutputSession(sessionId)
       if (this.autoManageIdleReaper) {
@@ -268,6 +281,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
         // 清理进程守护定时器 & SDK 空闲回收定时器
         this.clearSessionKillTimer(sessionId)
         this.clearIdleReaper(sessionId)
+        // 清除 idle 回收标记，释放集合条目
+        this.idleReapingSessions.delete(sessionId)
         // outputSessionMap 使用 WeakMap，无需手动清理（GC 自动回收无引用的 AgentOutput）
         this.sessions.delete(sessionId)
         this.processes.delete(sessionId)
@@ -355,6 +370,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     const timer = setTimeout(() => {
       this.logger.info(`Session ${sessionId} idle for ${idleMs}ms, reclaiming via sessionEnded('idle')`)
       this.idleSessionTimers.delete(sessionId)
+      // 标记会话正在被回收，使 sendCommand 入口能拒绝在 emit 与异步 terminateSession
+      // 之间的窄窗口内到达的新命令（防止命令运行在半终止会话上）。
+      this.idleReapingSessions.add(sessionId)
       // Emit idle so AgentManager runs its normal cleanup path (memory pipeline,
       // recovery-counter reset, onSessionComplete) and properly clears its own state.
       // Using 'idle' (not 'timeout') avoids triggering recovery logic and ensures
@@ -756,7 +774,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       // 复用统一的会话守护定时器（startSessionKillTimer）而非自建第二套机制——
       // 二者用同一常量、同一 forceKillProcess + timeoutKilledSessions 标记逻辑，
       // 分开维护会导致超时策略改动只生效一半（见历史 review）。超时后强杀进程，由 onExit/onError 收尾。
-      const timeoutMs = options?.timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS
+      // 默认用 EXECUTION_TIMEOUT_MS（5 分钟）而非 30 分钟会话超时：one-shot CLI 调用是单次执行，
+      // 不应像常驻 SDK 会话那样长时间挂起，更短的窗口能更快回收挂死进程。需要更长执行时间的
+      // 适配器可通过 options.timeoutMs 显式覆盖。
+      const timeoutMs = options?.timeoutMs ?? BaseAdapter.EXECUTION_TIMEOUT_MS
       this.startSessionKillTimer(sessionId, proc, timeoutMs)
 
       const onExit = (code: number | null) => {

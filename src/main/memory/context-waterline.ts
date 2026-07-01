@@ -74,6 +74,26 @@ export class ContextWaterline {
     this.dbLoader = fn
   }
 
+  /**
+   * 清理指定线程的全部运行时状态（state / hydrated / 各定时器）。
+   * 在线程被 compact 完成、会话销毁或线程删除时调用，防止 hydrated Set 与
+   * 定时器映射在长生命周期进程中随线程数无限累积造成内存泄漏。
+   */
+  clearThread(threadId: string): void {
+    this.state.delete(threadId)
+    this.hydrated.delete(threadId)
+    const throttle = this.throttleTimers.get(threadId)
+    if (throttle) {
+      clearTimeout(throttle)
+      this.throttleTimers.delete(threadId)
+    }
+    const dbTimer = this.dbDebounceTimers.get(threadId)
+    if (dbTimer) {
+      clearTimeout(dbTimer)
+      this.dbDebounceTimers.delete(threadId)
+    }
+  }
+
   // ============ Input sources ============
 
   onMessagePersisted(threadId: string, tokenCount: number): void {
@@ -194,8 +214,10 @@ export class ContextWaterline {
           this.state.set(threadId, s)
         } catch (err) {
           logger.warn(`Waterline DB hydrate failed for thread ${threadId}:`, err)
-          // Do not cache state — next access will retry hydration.
-          return s
+          // 仍以默认值缓存状态，避免后续每次访问都重试 DB（高频重查），
+          // 并确保调用方对 tokensUsed 的更新不会因未入 state 而丢失。
+          // 不标记 hydrated，留待后台重试机制（如下次 onCompacted）再次尝试。
+          this.state.set(threadId, s)
         }
       } else {
         this.state.set(threadId, s)

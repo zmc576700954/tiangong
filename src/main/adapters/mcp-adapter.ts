@@ -526,8 +526,16 @@ export class McpAdapter extends BaseAdapter {
             || !existingEntry.client.isReady()
           if (shouldPoolNewClient) {
             this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
+            sessionClients.push(client)
+          } else {
+            // case 4: 现存池条目健康且有引用（与上方首次复用检查之间 isReady() 状态翻转）。
+            // 复用现存条目而非丢弃刚 connect 的新 client，避免建连开销浪费。
+            existingEntry.refCount++
+            existingEntry.lastUsed = Date.now()
+            sessionClients.push(existingEntry.client)
+            // best-effort 关闭多余的 client，释放其底层连接
+            try { await client.disconnect() } catch { /* best-effort */ }
           }
-          sessionClients.push(client)
           this.emitOutput({
             type: 'stdout',
             data: `MCP server connected: ${server.name}`,

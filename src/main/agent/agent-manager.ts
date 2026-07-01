@@ -336,6 +336,8 @@ export class AgentManager {
           // pipeline (Phase B), scope-guard commit, onSessionComplete callback, and
           // sessionRecovery reset all run through the single canonical teardown path
           // instead of being duplicated here (see review finding: altitude/idle-branch).
+          // terminateSession 内部的 cleanupInProgress 互斥已防止与并发清理冲突，
+          // 因此即使此处异步执行完整记忆管线，也不会与同一会话的其它终止路径重入。
           logger.info(`Session ${sessionId} reclaimed by idle reaper, delegating to terminateSession`)
           try {
             await this.terminateSession(sessionId, 'idle')

@@ -22,6 +22,11 @@ export class AstParser {
   private compilerOptions: ts.CompilerOptions
   /** 路径别名映射，目标为绝对路径，如 { '@shared': '/proj/src/shared' } */
   private aliasMap: Map<string, string>
+  /**
+   * 按 alias 长度降序排列的别名数组，供 import 解析时优先匹配更长（更具体）的别名。
+   * 避免互为前缀的别名（如 `@app` 与 `@app/components`）因 Map 插入顺序而误匹配到较短别名。
+   */
+  private sortedAliases: Array<[alias: string, targetDir: string]> = []
 
   constructor(compilerOptions?: ts.CompilerOptions) {
     this.compilerOptions = compilerOptions ?? {
@@ -47,6 +52,10 @@ export class AstParser {
         }
       }
     }
+    // 按长度降序预排序，确保更具体的别名优先匹配（避免 @app 误吃 @app/components）
+    this.sortedAliases = [...this.aliasMap.entries()].sort(
+      (a, b) => b[0].length - a[0].length,
+    )
   }
 
   /** 候选源码扩展名，用于把无扩展名的模块说明符解析为磁盘真实文件 */
@@ -60,14 +69,22 @@ export class AstParser {
    *
    * 失效策略：
    * - clearResolveCache()：全量重索引前调用，清除全部陈旧条目。
-   * - invalidateResolveCacheForFile()：增量重索引删除文件时调用，
-   *   清除指向该文件的条目，防止留下幽灵依赖边。
+   * - invalidateResolveCacheForFile()：增量重索引（删除/新建/修改）文件时调用，
+   *   清除指向该文件的条目（删除场景）以及该文件可能对应的 null 条目（创建场景），
+   *   防止留下幽灵依赖边或漏失新增依赖边。
    */
   /** 模块路径解析结果缓存的最大条目数。超出后按插入顺序淘汰最旧的条目（FIFO），
    * 防止长时间运行的增量重索引中缓存无限增长。
    * 全量重索引前调用 clearResolveCache() 可立即清空。*/
   private static readonly MAX_RESOLVE_CACHE_SIZE = 20_000
   private resolveCache = new Map<string, string | null>()
+  /**
+   * 反向索引：resolvedFilePath → 解析到该文件的 basePath 集合。
+   * 仅记录成功解析（非 null）的条目，使 invalidateResolveCacheForFile 在删除/修改
+   * 场景下 O(1) 定位受影响条目，避免对 20k 缓存做全量 O(n) 扫描。
+   * null 条目（解析失败）按 basePath 候选直接删除，无需反向索引。
+   */
+  private resolveReverseIndex = new Map<string, Set<string>>()
 
   /**
    * 把一个无扩展名的基路径解析为磁盘上的真实文件：
@@ -80,19 +97,53 @@ export class AstParser {
    */
   clearResolveCache(): void {
     this.resolveCache.clear()
+    this.resolveReverseIndex.clear()
   }
 
   /**
-   * 清除指向指定文件的所有缓存条目。
-   * 在增量重索引删除文件前调用（_doReindexFile），防止其他文件对该文件的
-   * 导入仍命中已失效的缓存，从而留下幽灵依赖边。
+   * 清除与指定文件相关的所有缓存条目，覆盖删除、新建、修改三种增量场景：
+   *
+   * - 删除/修改：通过反向索引 O(1) 删除所有解析到该文件的 basePath 条目，
+   *   防止其他文件对该文件的导入仍命中已失效的缓存，从而留下幽灵依赖边。
+   * - 新建/修改：该文件此前可能不存在，对应 basePath 被缓存为 null。由于 null 条目
+   *   不进反向索引，需按该文件去掉已知扩展名后的候选 basePath 逐个清除，否则后续
+   *   重索引会命中陈旧 null，依赖边指向无扩展名的 basePath 而非真实文件，造成漏命中。
    */
-  invalidateResolveCacheForFile(deletedFilePath: string): void {
-    for (const [key, value] of this.resolveCache) {
-      if (value === deletedFilePath) {
-        this.resolveCache.delete(key)
+  invalidateResolveCacheForFile(filePath: string): void {
+    // 删除/修改场景：通过反向索引 O(1) 清除解析到该文件的条目
+    const basePaths = this.resolveReverseIndex.get(filePath)
+    if (basePaths) {
+      for (const bp of basePaths) this.resolveCache.delete(bp)
+      this.resolveReverseIndex.delete(filePath)
+    }
+    // 新建场景：清除可能被缓存为 null 的 basePath 候选（文件此前不存在）
+    for (const basePath of this._candidateBasePaths(filePath)) {
+      if (this.resolveCache.get(basePath) === null) {
+        this.resolveCache.delete(basePath)
       }
     }
+  }
+
+  /**
+   * 枚举一个文件可能对应的所有无扩展名 basePath（用于 null 缓存条目失效）。
+   * 例如 `/proj/foo.ts` → `/proj/foo`、`/proj/foo`（带扩展名原样）、`/proj/index.ts` 等。
+   */
+  private _candidateBasePaths(filePath: string): string[] {
+    const candidates = new Set<string>([filePath])
+    for (const ext of AstParser.RESOLVE_EXTENSIONS) {
+      if (filePath.endsWith(ext)) {
+        // ./foo.ts → ./foo
+        candidates.add(filePath.slice(0, -ext.length))
+      }
+    }
+    // index 文件：./foo/index.ts 对应 basePath ./foo，去掉末尾 /index + ext
+    for (const ext of AstParser.RESOLVE_EXTENSIONS) {
+      const suffix = path.sep + 'index' + ext
+      if (filePath.endsWith(suffix)) {
+        candidates.add(filePath.slice(0, -suffix.length))
+      }
+    }
+    return [...candidates]
   }
 
   private resolveModuleFile(basePath: string): string | null {
@@ -101,36 +152,46 @@ export class AstParser {
 
     const result = this._resolveModuleFileUncached(basePath)
     this.resolveCache.set(basePath, result)
+    if (result !== null) {
+      // 维护反向索引，供 invalidateResolveCacheForFile O(1) 失效
+      let keys = this.resolveReverseIndex.get(result)
+      if (!keys) {
+        keys = new Set()
+        this.resolveReverseIndex.set(result, keys)
+      }
+      keys.add(basePath)
+    }
     // 超出上限时淘汰最旧的条目（Map 按插入顺序迭代）
     if (this.resolveCache.size > AstParser.MAX_RESOLVE_CACHE_SIZE) {
       const oldest = this.resolveCache.keys().next().value
-      if (oldest !== undefined) this.resolveCache.delete(oldest)
+      if (oldest !== undefined) {
+        const oldestValue = this.resolveCache.get(oldest)
+        this.resolveCache.delete(oldest)
+        if (oldestValue && oldestValue !== null) {
+          const resolvedPath: string = oldestValue
+          const keys = this.resolveReverseIndex.get(resolvedPath)
+          if (keys) {
+            keys.delete(oldest)
+            if (keys.size === 0) this.resolveReverseIndex.delete(resolvedPath)
+          }
+        }
+      }
     }
     return result
   }
 
   private _resolveModuleFileUncached(basePath: string): string | null {
+    // 使用 existsSync 代替 statSync().isFile()：existsSync 内部仅做一次 stat 且不
+    // 抛异常，避免了 try/catch 开销；对不存在的路径直接返回 false 而非抛 ENOENT。
     // 说明符已带扩展名且文件存在（如 './foo.js'）
-    try {
-      if (fs.statSync(basePath).isFile()) return basePath
-    } catch {
-      // 不是直接文件，继续尝试补扩展名
-    }
+    if (fs.existsSync(basePath) && fs.statSync(basePath).isFile()) return basePath
     for (const ext of AstParser.RESOLVE_EXTENSIONS) {
       const candidate = basePath + ext
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate
-      } catch {
-        // 继续尝试下一个候选
-      }
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate
     }
     for (const ext of AstParser.RESOLVE_EXTENSIONS) {
       const candidate = path.join(basePath, 'index' + ext)
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate
-      } catch {
-        // 继续尝试下一个候选
-      }
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate
     }
     return null
   }
@@ -508,7 +569,8 @@ export class AstParser {
       basePath = path.resolve(path.dirname(filePath), moduleSpecifier)
     } else {
       // 尝试匹配路径别名（如 @shared/types → <baseUrl>/shared/types）
-      for (const [alias, targetDir] of this.aliasMap) {
+      // 按长度降序遍历，优先匹配更具体的别名（如 @app/components 先于 @app）
+      for (const [alias, targetDir] of this.sortedAliases) {
         if (moduleSpecifier === alias) {
           basePath = targetDir
           break

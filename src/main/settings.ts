@@ -123,6 +123,9 @@ async function getFallbackKey(): Promise<Buffer> {
   try {
     salt = await fs.readFile(saltPath)
     if (salt.length < 16) throw new Error('salt too short')
+    // 历史遗留的盐文件（旧版本升级或外部拷贝）可能从未被收紧 ACL。
+    // 幂等加固：aclApplied Set 保证同一文件每进程只调用一次 icacls。
+    restrictFileAcl(saltPath)
   } catch {
     salt = randomBytes(32)
     await fs.writeFile(saltPath, salt, { mode: 0o600 })

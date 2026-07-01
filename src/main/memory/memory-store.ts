@@ -339,10 +339,14 @@ export class MemoryStore {
     if (existingItems.length === 0) return { version: 1, parentVersion: null }
 
     const existing = existingItems[0] // highest confidence match
+    // safeRowId 在 _rowToItem 中已确保 id 为有效正整数；双重校验以防御异常 DB 行，
+    // 无效时回退为无父链，避免建立错误的版本关系。
+    const parentId = typeof existing.id === 'number' && existing.id > 0 ? existing.id : null
+    if (parentId === null) return { version: 1, parentVersion: null }
     if (existing.confidence < item.confidence) {
-      return { version: (existing.version ?? 1) + 1, parentVersion: existing.id! }
+      return { version: (existing.version ?? 1) + 1, parentVersion: parentId }
     }
-    return { version: 1, parentVersion: existing.id! }
+    return { version: 1, parentVersion: parentId }
   }
 
   /**

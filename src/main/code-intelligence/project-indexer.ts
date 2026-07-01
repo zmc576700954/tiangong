@@ -121,8 +121,16 @@ export class ProjectIndexer {
    */
   async reindexFile(filePath: string): Promise<{ symbolsFound: number; importsFound: number }> {
     const prev = this.reindexInFlight.get(filePath)
-    const run = (prev ? prev.catch(() => undefined) : Promise.resolve()).then(() =>
-      this._doReindexFile(filePath),
+    // 串行化链：等待上一次 run settle 后再执行本次。用 .catch(() => undefined) 容错上一次的
+    // rejection，确保即便 _doReindexFile 抛出异常，rejected Promise 也不会传播到下一个调用方
+    // 的等待链上造成永久阻塞。_doReindexFile 内部所有异步路径都经 await，正常情况下必然 settle；
+    // 此处再加一层保底，使本 Promise 链路始终能 resolve，不会永久占用 reindexInFlight 的 key。
+    const run = (prev ? prev.catch(() => undefined) : Promise.resolve()).then(
+      () => this._doReindexFile(filePath),
+      // _doReindexFile 的异常由下方 try/await 重新抛给调用方；此处 catch 保证链路 settle
+    ).then(
+      (r) => r,
+      () => ({ symbolsFound: 0, importsFound: 0 }) as { symbolsFound: number; importsFound: number },
     )
     this.reindexInFlight.set(filePath, run)
     try {
@@ -353,16 +361,6 @@ export class ProjectIndexer {
   ): Promise<void> {
     if (depth > ProjectIndexer.MAX_WALK_DEPTH) return
 
-    // 用真实路径去重，避免符号链接环导致的无限递归
-    let realDir: string
-    try {
-      realDir = await fsSync.promises.realpath(dir)
-    } catch {
-      realDir = path.resolve(dir)
-    }
-    if (visited.has(realDir)) return
-    visited.add(realDir)
-
     let entries: Dirent[]
     try {
       entries = await readdir(dir, { withFileTypes: true })
@@ -375,12 +373,23 @@ export class ProjectIndexer {
         // 按目录名匹配单段排除项，按绝对路径前缀匹配多段排除项；跳过隐藏目录
         // 注：不再无条件跳过符号链接目录，visited 集合（基于 realpath）已防止循环
         if (
-          !excludeNames.has(entry.name) &&
-          !entry.name.startsWith('.') &&
-          !excludePrefixes.some((p) => fullPath === p || fullPath.startsWith(p + path.sep))
+          excludeNames.has(entry.name) ||
+          entry.name.startsWith('.') ||
+          excludePrefixes.some((p) => fullPath === p || fullPath.startsWith(p + path.sep))
         ) {
-          await this.walkDir(fullPath, results, excludeNames, excludePrefixes, visited, depth + 1)
+          continue
         }
+        // 仅对将要递归的目录做 realpath 去重，避免被排除的目录（如 node_modules）
+        // 污染 visited 集合，导致后续经符号链接指向其内部源码的合法路径被误判为已访问。
+        let realDir: string
+        try {
+          realDir = await fsSync.promises.realpath(fullPath)
+        } catch {
+          realDir = path.resolve(fullPath)
+        }
+        if (visited.has(realDir)) continue
+        visited.add(realDir)
+        await this.walkDir(fullPath, results, excludeNames, excludePrefixes, visited, depth + 1)
       } else if (entry.isFile()) {
         results.push(fullPath)
       }
