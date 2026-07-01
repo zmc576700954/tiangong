@@ -75,10 +75,29 @@ export class MemoryStore {
 
     // 旧版本曾用不对称的 delete 触发器（INSERT 用 json_each 展开、DELETE 传原始 JSON），
     // 会逐步损坏 FTS 倒排索引。由于 CREATE TRIGGER IF NOT EXISTS 不会替换已存在的旧触发器，
-    // 这里先无条件 DROP，重建为正确版本后再 'rebuild' 一次以修复历史损坏。
-    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ai`)
-    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ad`)
-    this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_au`)
+    // 需要先 DROP 再重建为正确版本，并执行 'rebuild' 修复历史损坏。
+    //
+    // 性能门控：检查现有触发器 SQL 是否已包含 `json_valid` 标记（正确版本特征字符串）。
+    // 已修复 → 直接跳过 DROP/rebuild，避免每次进程启动都对全表做 O(N) 重索引。
+    // 触发器不存在或已是旧版本 → 走修复路径（仅发生一次，之后永远跳过）。
+    const existingTriggerSql = (() => {
+      try {
+        const row = this.db.prepare(
+          `SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'memory_fts_ad'`
+        ).get() as { sql?: string } | undefined
+        return row?.sql ?? ''
+      } catch {
+        return ''
+      }
+    })()
+    const triggersAlreadyFixed = existingTriggerSql.includes('json_valid')
+
+    if (!triggersAlreadyFixed) {
+      // 旧版或缺失触发器：DROP 全部后重建，确保三个触发器版本一致
+      this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ai`)
+      this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_ad`)
+      this.db.exec(`DROP TRIGGER IF EXISTS memory_fts_au`)
+    }
 
     if (jsonEachAvailable) {
       // 使用 json_each() 展开 JSON 数组，提取纯文本值（更好的搜索质量）
@@ -180,12 +199,16 @@ export class MemoryStore {
       `)
     }
 
-    // 用 'rebuild' 命令从 content 表（memory_items）重建整个 FTS 索引，
-    // 修复旧版不对称触发器可能造成的索引损坏。失败不致命（仅影响搜索质量）。
-    try {
-      this.db.exec(`INSERT INTO ${FTS_TABLE}(${FTS_TABLE}) VALUES ('rebuild')`)
-    } catch (err) {
-      logger.warn('FTS5 index rebuild failed (search may be degraded):', err)
+    // 仅在触发器需要修复时（旧版本升级）才执行全量 FTS rebuild。
+    // 已修复的数据库（triggersAlreadyFixed === true）跳过此步，避免每次启动都
+    // 对 memory_items 全表做 O(N) 重索引，消除启动热路径上的性能瓶颈。
+    if (!triggersAlreadyFixed) {
+      try {
+        this.db.exec(`INSERT INTO ${FTS_TABLE}(${FTS_TABLE}) VALUES ('rebuild')`)
+        logger.info('FTS5 index rebuilt to repair legacy asymmetric-trigger corruption')
+      } catch (err) {
+        logger.warn('FTS5 index rebuild failed (search may be degraded):', err)
+      }
     }
 
     logger.info('FTS5 virtual table and triggers initialized')
@@ -288,12 +311,14 @@ export class MemoryStore {
       const existingItems = this._findByConcepts(item.project_id, item.concepts)
       if (existingItems.length > 0) {
         const existing = existingItems[0] // highest confidence match
-        parentVersion = existing.id!
         if (existing.confidence < item.confidence) {
+          // New memory supersedes the existing one: link them as a version chain.
           version = (existing.version ?? 1) + 1
+          parentVersion = existing.id!
         }
-        // else: version stays 1, parentVersion links to existing (different perspective)
-        // Both versions are retained for retrieval choice
+        // else: same or lower confidence → insert as an independent version=1 record
+        // with no parent_version link, so getEvolutionChain doesn't confuse two
+        // version=1 entries as parent/child.
       }
     }
 
@@ -428,10 +453,13 @@ export class MemoryStore {
           const existingItems = this._findByConcepts(item.project_id, item.concepts)
           if (existingItems.length > 0) {
             const existing = existingItems[0]
-            parentVersion = existing.id!
             if (existing.confidence < item.confidence) {
+              // New memory supersedes the existing one: create a true version chain.
               version = (existing.version ?? 1) + 1
+              parentVersion = existing.id!
             }
+            // else: same or lower confidence → insert as independent version=1
+            // with no parent link, keeping getEvolutionChain's version sort unambiguous.
           }
         }
         const info = insertStmt.run(

@@ -62,6 +62,13 @@ interface ActiveInvocation {
   donePromise: Promise<void>
   /** Resolver for donePromise. */
   resolveDone: () => void
+  /**
+   * Set by cancel() when cancellation arrives before the child session has started
+   * (sessionId not yet backfilled). _runInvocation checks this immediately after
+   * startSession() resolves and terminates the just-started child, closing the race
+   * where a cancel during the start window would otherwise be silently ineffective.
+   */
+  cancelled?: boolean
 }
 
 export class SubagentManager extends EventEmitter {
@@ -199,6 +206,18 @@ export class SubagentManager extends EventEmitter {
       const entry = this.activeInvocations.get(registrationKey)
       if (entry) entry.invocationId = invocationId
 
+      // Guard: cancel() may have fired during the repo.create() await window.
+      // In that window the entry had no invocationId yet, so cancel() could not match
+      // it by ID — but it may have set entry.cancelled=true via the pre-backfill path.
+      // Without this check invoke() would call updateStatus('running') and overwrite the
+      // DB status that cancel() already set to 'cancelled', letting the task run anyway.
+      if (entry?.cancelled) {
+        throw new AgentError(
+          `Subagent invocation ${invocationId} was cancelled before it could start`,
+          ErrorCode.AGENT_SESSION_NOT_FOUND,
+        )
+      }
+
       this.emitProgress({ invocationId, status: 'queued' })
 
       try {
@@ -291,6 +310,22 @@ export class SubagentManager extends EventEmitter {
     // settled in invoke()'s outer finally, unblocking any waiting siblings.
     const activeEntry = this.activeInvocations.get(registrationKey)
     if (activeEntry) activeEntry.sessionId = childSessionId
+
+    // Close the cancel-during-start race: if cancel() fired while sessionId was still
+    // undefined, it set `cancelled` but could not terminate (no session yet). Now that
+    // the child has started, honour that pending cancellation by terminating it and
+    // aborting before any work runs.
+    if (activeEntry?.cancelled) {
+      try {
+        await this.agentManager.terminateSession(childSessionId, 'user')
+      } catch {
+        /* best-effort */
+      }
+      throw new AgentError(
+        `Subagent invocation ${invocationId} cancelled before start`,
+        ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
 
     // Subscribe to child outputs — tag with invocationId, re-broadcast to parent
     const outputBuffer: string[] = []
@@ -446,6 +481,11 @@ export class SubagentManager extends EventEmitter {
       } catch {
         /* best-effort */
       }
+    } else if (active) {
+      // Cancellation arrived before the child session started (sessionId not yet
+      // backfilled). Record intent so _runInvocation terminates the child the moment
+      // it starts, instead of silently letting it run to completion.
+      active.cancelled = true
     }
     await this.repo.cancel(invocationId, Date.now())
     this.emitProgress({ invocationId, status: 'cancelled' })

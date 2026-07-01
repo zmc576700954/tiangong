@@ -263,6 +263,26 @@ export class AgentManager {
       if (sessionId) {
         const broadcastName = this.sessionStates.get(sessionId)?.broadcastName ?? adapter.name
         this.broadcaster.broadcast(broadcastName, output, sessionId)
+
+        // Finding 3 fix: reset the recovery-attempt counter when a turn completes successfully.
+        // SDK multi-turn adapters (claude-code / codex / mcp) keep sessions alive across commands
+        // and do NOT emit sessionEnded('success') per turn, so the only per-turn success signal
+        // is the 'complete' output. Resetting here ensures an intermittent crash doesn't
+        // permanently exhaust the lineage's retry budget even after many healthy subsequent turns.
+        //
+        // Guard: skip if cleanup is in progress — during replacement-recovery the old session's
+        // teardown also emits 'complete', and resetting there would clobber the counter that the
+        // recovery path uses to bound retries.
+        if (
+          output.type === 'complete' &&
+          !this.cleanupInProgress.has(sessionId) &&
+          this.sessionStates.has(sessionId)
+        ) {
+          const state = this.sessionStates.get(sessionId)
+          if (state) {
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+          }
+        }
         return
       }
       this.broadcaster.broadcast(adapter.name, output)

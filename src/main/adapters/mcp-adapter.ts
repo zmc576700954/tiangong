@@ -417,8 +417,6 @@ export class McpAdapter extends BaseAdapter {
   readonly version = '1.0.0'
 
   private mcpClients = new Map<string, McpClient[]>()
-  /** 会话空闲超时定时器：sessionId → timeoutId */
-  private sessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private apiRateLimiter = new ApiRateLimiter()
   /** MCP 服务器熔断器：防止连续失败导致重连风暴 */
   // 内联熔断器：MCP 专用，与 circuit-breaker.ts 的 AdapterCircuitBreaker 相比
@@ -499,12 +497,20 @@ export class McpAdapter extends BaseAdapter {
           const client = new McpClient(server.command, server.args)
           await client.connect()
           this.recordCircuitResult(server.name, true)
-          // 仅在无现存池条目、或现存条目已无其他引用时才写入池槽。
-          // 若旧条目仍被其他会话引用（refCount > 0），覆盖会丢失其引用计数，
-          // 导致旧 client 在清理时被误判为非池化而提前 disconnect（use-after-disconnect）。
-          // 这种情况下把新 client 作为会话本地连接使用（不入池），由本会话结束时断开。
+          // 池槽写入策略：
+          // 1. 无现存条目 → 直接写入。
+          // 2. 现存条目已无引用（refCount <= 0） → 可安全替换。
+          // 3. 现存条目有引用但客户端已死 (isReady() false) → 替换：
+          //    死客户端无法服务新连接，持有其引用的旧会话在清理时会通过
+          //    client-reference 匹配走非池化断开路径，不会影响引用计数。
+          //    若不替换，池槽永久被死条目占据，所有新会话退化为私有连接，丧失复用。
+          // 4. 现存条目有引用且客户端仍存活 → 保留：覆盖会丢失 refCount，
+          //    旧 client 在清理时被误判为非池化而提前 disconnect（use-after-disconnect）。
           const existingEntry = this.connectionPool.get(server.name)
-          if (!existingEntry || existingEntry.refCount <= 0) {
+          const shouldPoolNewClient = !existingEntry
+            || existingEntry.refCount <= 0
+            || !existingEntry.client.isReady()
+          if (shouldPoolNewClient) {
             this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
           }
           sessionClients.push(client)
@@ -529,14 +535,10 @@ export class McpAdapter extends BaseAdapter {
 
     this.mcpClients.set(sessionId, sessionClients)
 
-    // 设置会话空闲超时定时器，防止连接泄露
-    const timer = setTimeout(() => {
-      this.logger.warn(`Session ${sessionId} idle timeout, cleaning up...`)
-      this.terminateSession(sessionId, 'timeout').catch((err) => {
-        this.logger.warn('Failed to terminate session on idle timeout:', err)
-      })
-    }, MCP_SESSION_TIMEOUT_MS)
-    this.sessionTimers.set(sessionId, timer)
+    // 启动空闲回收定时器：使用共享 resetIdleReaper（会在每次 doSendCommand 成功后重置）。
+    // 超时后 emit sessionEnded('success') → AgentManager 执行完整清理（含记忆管线、状态删除），
+    // 而非自行 terminateSession — 后者绕过 AgentManager，导致管理器侧 sessionStates 永久泄漏。
+    this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
 
     // Build scope prompt
     const scopePrompt = this.buildScopePrompt(config)
@@ -670,8 +672,10 @@ export class McpAdapter extends BaseAdapter {
         data: 'MCP session completed',
         timestamp: Date.now(),
       })
-      // 不在此处 emit sessionEnded('success')：MCP adapter 维护连接池与空闲计时器以支持
-      // 多轮复用，单命令成功不应销毁会话。资源清理由显式 terminateSession / 空闲超时负责。
+      // 不在此处 emit sessionEnded('success')：MCP adapter 维护连接池以支持多轮复用，
+      // 单命令成功不应销毁会话。资源清理由显式 terminateSession 或共享 idle reaper 负责；
+      // 后者在无活动 30 分钟后 emit sessionEnded('success') → AgentManager 执行完整清理。
+      this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.emitOutputForSession(sessionId, {
@@ -696,11 +700,8 @@ export class McpAdapter extends BaseAdapter {
    * 不清理 sessions/processes 等基类管理的状态
    */
   private cleanupMcpResources(sessionId: string): void {
-    const timer = this.sessionTimers.get(sessionId)
-    if (timer) {
-      clearTimeout(timer)
-      this.sessionTimers.delete(sessionId)
-    }
+    // 空闲回收由共享 BaseAdapter.clearIdleReaper 负责（base.terminateSession 已调用），
+    // 旧版自有 sessionTimers 已迁移到 resetIdleReaper/clearIdleReaper，这里无需额外操作。
 
     const clients = this.mcpClients.get(sessionId) ?? []
     for (const client of clients) {

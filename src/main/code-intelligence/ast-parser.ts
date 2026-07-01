@@ -53,10 +53,54 @@ export class AstParser {
   private static readonly RESOLVE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']
 
   /**
+   * basePath → resolved file path 的解析结果缓存。
+   * 一次完整索引会对同一模块路径（如 '@shared/types' 展开后的绝对路径）解析数百次，
+   * 缓存可将 ~13 次 synchronous statSync 扇出压缩为 O(1) Map 查找。
+   * Map<null> 表示解析失败（无匹配文件），避免对不存在的路径重复扫描。
+   *
+   * 失效策略：
+   * - clearResolveCache()：全量重索引前调用，清除全部陈旧条目。
+   * - invalidateResolveCacheForFile()：增量重索引删除文件时调用，
+   *   清除指向该文件的条目，防止留下幽灵依赖边。
+   */
+  private resolveCache = new Map<string, string | null>()
+
+  /**
    * 把一个无扩展名的基路径解析为磁盘上的真实文件：
    * 依次尝试 base.<ext> 与 base/index.<ext>。命中则返回绝对文件路径，否则返回 null。
+   * 结果被缓存，同一路径的后续调用直接返回而不访问文件系统。
    */
+  /**
+   * 清除全部解析结果缓存。在全量重索引（indexProject）开始前调用，
+   * 确保上一次增量更新遗留的陈旧条目不污染新的索引结果。
+   */
+  clearResolveCache(): void {
+    this.resolveCache.clear()
+  }
+
+  /**
+   * 清除指向指定文件的所有缓存条目。
+   * 在增量重索引删除文件前调用（_doReindexFile），防止其他文件对该文件的
+   * 导入仍命中已失效的缓存，从而留下幽灵依赖边。
+   */
+  invalidateResolveCacheForFile(deletedFilePath: string): void {
+    for (const [key, value] of this.resolveCache) {
+      if (value === deletedFilePath) {
+        this.resolveCache.delete(key)
+      }
+    }
+  }
+
   private resolveModuleFile(basePath: string): string | null {
+    const cached = this.resolveCache.get(basePath)
+    if (cached !== undefined) return cached   // null 表示之前已解析为"不存在"
+
+    const result = this._resolveModuleFileUncached(basePath)
+    this.resolveCache.set(basePath, result)
+    return result
+  }
+
+  private _resolveModuleFileUncached(basePath: string): string | null {
     // 说明符已带扩展名且文件存在（如 './foo.js'）
     try {
       if (fs.statSync(basePath).isFile()) return basePath

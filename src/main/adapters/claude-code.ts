@@ -88,6 +88,10 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       startTime: Date.now(),
     }
     this.registerSession(session)
+    // SDK adapter: session persists across commands for multi-turn continuity.
+    // Start the idle reaper so the session is reclaimed if the caller never calls
+    // terminateSession (mirrors the pattern in CodexAdapter and McpAdapter).
+    this.resetIdleReaper(sessionId)
     return session
   }
 
@@ -271,6 +275,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
               data: message.result || 'Completed',
               timestamp: Date.now(),
             })
+            // Reset idle reaper after each successful turn so the session is not
+            // reclaimed while still in active multi-turn use (mirrors CodexAdapter).
+            this.resetIdleReaper(sessionId)
           } else {
             const errorText =
               (message.errors.length > 0 ? message.errors.join('\n') : undefined) ??

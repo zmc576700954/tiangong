@@ -75,6 +75,15 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   ]
   /** 会话级进程守护定时器：超时自动 kill，防止子进程泄漏 */
   private sessionKillTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /**
+   * SDK 适配器空闲回收定时器。
+   * SDK 适配器（claude-code / codex / mcp）缓存会话以支持多轮续接，不会在每个指令后
+   * 自行销毁。若调用方忘记显式 terminateSession，会话会永久驻留（内存泄漏）。
+   * 每次 doSendCommand 成功后通过 resetIdleReaper() 重置计时，超过空闲期后自动
+   * emit sessionEnded('success') 让 AgentManager 走正常清理路径（含记忆管线），
+   * 而非直接调用 terminateSession — 后者绕过 AgentManager，导致管理器状态泄漏。
+   */
+  private idleSessionTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** stdout 批缓冲：降低高频输出时的事件发射频率 */
   private stdoutBatchBuffers = new Map<string, string>()
   private stdoutBatchTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -216,8 +225,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
           data: message,
           timestamp: Date.now(),
         })
-        // 清理进程守护定时器
+        // 清理进程守护定时器 & SDK 空闲回收定时器
         this.clearSessionKillTimer(sessionId)
+        this.clearIdleReaper(sessionId)
         // outputSessionMap 使用 WeakMap，无需手动清理（GC 自动回收无引用的 AgentOutput）
         this.sessions.delete(sessionId)
         this.processes.delete(sessionId)
@@ -279,6 +289,43 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     if (timer) {
       clearTimeout(timer)
       this.sessionKillTimers.delete(sessionId)
+    }
+  }
+
+  /**
+   * 启动或重置 SDK 会话空闲回收定时器。
+   *
+   * 每次 doSendCommand 成功后调用以重置计时窗口；startSession 时也应调用一次。
+   * 超过 idleMs 无活动则 emit sessionEnded('success') — 交由 AgentManager 执行完整
+   * 清理（含记忆管线），而非适配器自行 terminateSession（后者绕过 AgentManager）。
+   *
+   * 仅适用于 SDK 多轮适配器（codex / mcp / claude-code）；CLI 一次性适配器
+   * 在进程退出时已自动 emit sessionEnded，无需此机制。
+   * @protected
+   */
+  protected resetIdleReaper(sessionId: string, idleMs: number = BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS): void {
+    this.clearIdleReaper(sessionId)
+    const timer = setTimeout(() => {
+      this.logger.info(`Session ${sessionId} idle for ${idleMs}ms, reclaiming via sessionEnded('success')`)
+      this.idleSessionTimers.delete(sessionId)
+      // Emit success so AgentManager runs its normal cleanup path (memory pipeline,
+      // recovery-counter reset, onSessionComplete) and properly clears its own state.
+      // Using 'success' (not 'timeout') avoids triggering recovery logic and ensures
+      // the session is recorded as a healthy completion rather than a failure.
+      this.emit('sessionEnded', sessionId, 'success', 0)
+    }, idleMs)
+    this.idleSessionTimers.set(sessionId, timer)
+  }
+
+  /**
+   * 取消 SDK 会话空闲回收定时器（在 terminateSession 中调用，防止已清理会话再次触发）。
+   * @protected
+   */
+  protected clearIdleReaper(sessionId: string): void {
+    const timer = this.idleSessionTimers.get(sessionId)
+    if (timer) {
+      clearTimeout(timer)
+      this.idleSessionTimers.delete(sessionId)
     }
   }
 
@@ -663,15 +710,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       let settled = false
 
       // 硬超时：挂死的 CLI（等待 stdin、永不退出）会让 sendCommand 永久 pending 且子进程泄漏。
-      // 超时后强杀进程，由 onExit/onError 收尾。
+      // 复用统一的会话守护定时器（startSessionKillTimer）而非自建第二套机制——
+      // 二者用同一常量、同一 forceKillProcess + timeoutKilledSessions 标记逻辑，
+      // 分开维护会导致超时策略改动只生效一半（见历史 review）。超时后强杀进程，由 onExit/onError 收尾。
       const timeoutMs = options?.timeoutMs ?? BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS
-      const killTimer = setTimeout(() => {
-        if (proc.exitCode === null && !proc.killed) {
-          this.logger.warn(`runOneShot for session ${sessionId} exceeded ${timeoutMs}ms, force killing`)
-          this.timeoutKilledSessions.add(sessionId)
-          this.forceKillProcess(proc)
-        }
-      }, timeoutMs)
+      this.startSessionKillTimer(sessionId, proc, timeoutMs)
 
       const onExit = (code: number | null) => {
         if (settled) return
@@ -690,7 +733,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       }
 
       const cleanup = () => {
-        clearTimeout(killTimer)
+        this.clearSessionKillTimer(sessionId)
         proc.stdout?.off('data', onStdout)
         proc.stderr?.off('data', onStderr)
         proc.off('exit', onExit)

@@ -69,6 +69,10 @@ export class ProjectIndexer {
     const include = options.includePatterns ?? ['**/*.{ts,tsx,js,jsx}']
     const exclude = options.excludePatterns ?? ['node_modules/**', 'dist/**', '.git/**', 'build/**', '.next/**']
 
+    // Clear the AstParser module-resolution cache before a full reindex so that
+    // stale entries left by prior incremental updates do not produce ghost import edges.
+    this.astParser.clearResolveCache()
+
     // 收集所有匹配的文件
     const files = await this.collectFiles(options.projectPath, include, exclude)
 
@@ -132,6 +136,10 @@ export class ProjectIndexer {
   }
 
   private async _doReindexFile(filePath: string): Promise<{ symbolsFound: number; importsFound: number }> {
+    // Invalidate resolve cache entries that pointed to this file before clearing
+    // the symbol index, so stale ghost import edges are not left behind if this
+    // file was deleted (the importer is not re-indexed in that case).
+    this.astParser.invalidateResolveCacheForFile(filePath)
     await this.symbolIndex.clearFile(filePath)
 
     // Check AstCache for mtime-matched results before parsing

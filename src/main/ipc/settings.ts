@@ -16,7 +16,7 @@ const MASKED_KEY_PATTERN = /^\S{0,4}\*{2,}\S{0,4}$/
 /** 已知适配器名称白名单，防止 settings:installCli 执行任意命令 */
 const KNOWN_ADAPTER_NAMES = new Set([
   'claude-code', 'codex', 'opencode', 'cline', 'kilo-code', 'kimi-code',
-  'cursor', 'codebuddy', 'qoder', 'qwen-code', 'mcp', 'mindmap',
+  'cursor', 'codebuddy', 'qoder', 'qwen-code', 'mcp', 'mindmap-internal',
 ])
 
 /**
