@@ -559,6 +559,10 @@ export class McpAdapter extends BaseAdapter {
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand, _proc?: ChildProcess): Promise<void> {
     const sessionId = session.id
+    // 命令到达时立即清除旧的空闲定时器，防止上一命令结束后残留的定时器
+    // 在新命令执行期间触发 sessionEnded，撕毁正在进行的会话。
+    // resetIdleReaper 将在命令成功完成后重新设置定时器。
+    this.clearIdleReaper(sessionId)
     const settings = await readSettings()
 
     // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key

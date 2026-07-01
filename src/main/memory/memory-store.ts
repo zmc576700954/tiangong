@@ -24,6 +24,12 @@ export class MemoryStore {
   private db: BetterSqlite3.Database
   /** FTS5 初始化状态：'pending' 表示在尝试中，'ready' 已就绪，'failed' 失败可重试 */
   private ftsState: 'pending' | 'ready' | 'failed' = 'pending'
+  /**
+   * 缓存的 INSERT 预编译语句，供 store/storeMany/storeManyVersioned 复用。
+   * better-sqlite3 的 prepare() 每次调用都分配新对象，缓存可消除每次写入的分配开销。
+   * 懒初始化（首次使用时创建），避免在 db 尚未 migrate 完成时预编译。
+   */
+  private _insertStmt?: BetterSqlite3.Statement
 
   /**
    * @param db - 可选：注入数据库客户端（测试用），不传则从全局单例获取
@@ -43,6 +49,20 @@ export class MemoryStore {
       this.ftsState = 'failed'
       logger.warn('FTS5 setup failed (will retry on next search):', err)
     }
+  }
+
+  /** 懒初始化并缓存 INSERT 预编译语句，避免每次 store/storeMany/storeManyVersioned 调用都重新 prepare */
+  private _getInsertStmt(): BetterSqlite3.Statement {
+    if (!this._insertStmt) {
+      this._insertStmt = this.db.prepare(
+        `INSERT INTO memory_items
+          (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
+           files_read, files_modified, adapter_name, token_cost, confidence,
+           version, parent_version, embedding, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+    }
+    return this._insertStmt
   }
 
   /**
@@ -80,6 +100,10 @@ export class MemoryStore {
     // 性能门控：检查现有触发器 SQL 是否已包含 `json_valid` 标记（正确版本特征字符串）。
     // 已修复 → 直接跳过 DROP/rebuild，避免每次进程启动都对全表做 O(N) 重索引。
     // 触发器不存在或已是旧版本 → 走修复路径（仅发生一次，之后永远跳过）。
+    // 触发器版本标记：嵌入 trigger SQL 中，用于检测是否需要重建。
+    // ⚠️  如果将来修改触发器逻辑，必须同步更新此标记（fts_trigger_v1 → fts_trigger_v2 …），
+    // 否则现有数据库会继续使用旧版触发器而不重建。
+    const FTS_TRIGGER_VERSION_TAG = 'fts_trigger_v1'
     const existingTriggerSql = (() => {
       try {
         const row = this.db.prepare(
@@ -90,7 +114,7 @@ export class MemoryStore {
         return ''
       }
     })()
-    const triggersAlreadyFixed = existingTriggerSql.includes('json_valid')
+    const triggersAlreadyFixed = existingTriggerSql.includes(FTS_TRIGGER_VERSION_TAG)
 
     if (!triggersAlreadyFixed) {
       // 旧版或缺失触发器：DROP 全部后重建，确保三个触发器版本一致
@@ -121,7 +145,9 @@ export class MemoryStore {
       `)
 
       this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items BEGIN
+        CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items
+        -- fts_trigger_v1
+        BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
           VALUES (
             'delete',
@@ -315,10 +341,12 @@ export class MemoryStore {
           // New memory supersedes the existing one: link them as a version chain.
           version = (existing.version ?? 1) + 1
           parentVersion = existing.id!
+        } else {
+          // Same or lower confidence: still link via parent_version so getEvolutionChain
+          // can walk the full history.  version stays 1 (independent observation), but
+          // the parent link keeps the chain navigable.
+          parentVersion = existing.id!
         }
-        // else: same or lower confidence → insert as an independent version=1 record
-        // with no parent_version link, so getEvolutionChain doesn't confuse two
-        // version=1 entries as parent/child.
       }
     }
 
@@ -375,13 +403,7 @@ export class MemoryStore {
       }
     }
 
-    const insertStmt = this.db.prepare(
-      `INSERT INTO memory_items
-        (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
-         files_read, files_modified, adapter_name, token_cost, confidence,
-         version, parent_version, embedding, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
+    const insertStmt = this._getInsertStmt()
 
     const insertMany = this.db.transaction((items: Omit<MemoryItem, 'id'>[]) => {
       const ids: number[] = []
@@ -436,13 +458,7 @@ export class MemoryStore {
       }
     }
 
-    const insertStmt = this.db.prepare(
-      `INSERT INTO memory_items
-        (session_id, kind, project_id, node_id, title, narrative, facts, concepts,
-         files_read, files_modified, adapter_name, token_cost, confidence,
-         version, parent_version, embedding, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
+    const insertStmt = this._getInsertStmt()
 
     const insertMany = this.db.transaction((items: Omit<MemoryItem, 'id'>[]) => {
       const ids: number[] = []
@@ -457,9 +473,11 @@ export class MemoryStore {
               // New memory supersedes the existing one: create a true version chain.
               version = (existing.version ?? 1) + 1
               parentVersion = existing.id!
+            } else {
+              // Same or lower confidence: link via parent_version so getEvolutionChain
+              // can walk the full history.  version stays 1, but the chain is preserved.
+              parentVersion = existing.id!
             }
-            // else: same or lower confidence → insert as independent version=1
-            // with no parent link, keeping getEvolutionChain's version sort unambiguous.
           }
         }
         const info = insertStmt.run(

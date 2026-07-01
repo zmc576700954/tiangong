@@ -66,7 +66,7 @@ const CONTEXT_COMPLEXITY_BUDGET: Record<string, number> = {
   implement: 12000,
 }
 
-type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout', exitCode: number | null) => void
+type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle', exitCode: number | null) => void
 
 interface SessionState {
   config: AgentSessionConfig
@@ -89,7 +89,7 @@ interface SessionState {
   /** Cumulative input tokens reported by the adapter for this session. */
   tokensUsed?: number
   /** Reason the adapter session ended (crash / error / timeout / user / success). */
-  terminationReason?: 'success' | 'crash' | 'error' | 'timeout' | 'user'
+  terminationReason?: 'success' | 'crash' | 'error' | 'timeout' | 'user' | 'idle'
   /** Last user command sent to this session; used for recovery re-send. */
   lastCommand?: AgentCommand
   /** Original sessionId for replacement sessions created by recovery, used to keep retry accounting across sessionIds. */
@@ -326,6 +326,39 @@ export class AgentManager {
             state.terminationReason = 'success'
             // Reset recovery attempts for this lineage so future crashes can be recovered again.
             this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+          }
+          await this.cleanupSessionResources(sessionId)
+        }
+
+        if (reason === 'idle') {
+          // SDK adapter idle-reaper fired: session was alive but had no activity for
+          // idleMs. Unlike 'success' (which comes from an explicit command completion),
+          // 'idle' means the adapter timed out waiting — we still need to run the
+          // memory pipeline (Phase B) so session memories are not lost.
+          logger.info(`Session ${sessionId} reclaimed by idle reaper, running memory pipeline before cleanup...`)
+          const state = this.sessionStates.get(sessionId)
+          const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+          if (state) {
+            state.terminationReason = 'idle' as TerminationReason
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+            // Phase B: run memory pipeline (same as terminateSession Phase B)
+            if (outputs.length > 0) {
+              try {
+                const pipeline = await PipelineRunner.createDefault()
+                await pipeline.run({
+                  outputs,
+                  sessionId,
+                  adapterName: state.adapterName,
+                  projectId: state.config.workingDirectory,
+                  nodeId: state.config.nodeId,
+                })
+              } catch (err) {
+                logger.warn(`Memory pipeline failed for idle-reaped session ${sessionId}:`, err)
+              }
+            }
+            if (this.onSessionComplete) {
+              this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', 'success', Date.now() - state.startTime)
+            }
           }
           await this.cleanupSessionResources(sessionId)
         }
@@ -1360,9 +1393,9 @@ export class AgentManager {
       // Without this, a `timeout` reason passed by the caller would be lost.
       // Default to 'error' when no reason is given — internal callers (timers, cleanup)
       // that omit reason are typically abnormal paths, not user-initiated termination.
-      const terminationReason: TerminationReason = (reason === 'user' || reason === 'timeout' || reason === 'crash' || reason === 'error')
+      const terminationReason: TerminationReason = (reason === 'user' || reason === 'timeout' || reason === 'crash' || reason === 'error' || reason === 'idle')
         ? reason
-        : (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error')
+        : (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error' || state?.terminationReason === 'idle')
           ? state.terminationReason
           : 'error'
       if (state && reason) {

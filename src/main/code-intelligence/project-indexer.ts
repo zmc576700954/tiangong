@@ -314,16 +314,27 @@ export class ProjectIndexer {
   private async collectFiles(projectPath: string, include: string[], exclude: string[]): Promise<string[]> {
     const results: string[] = []
 
-    // 将 glob 排除模式归一为目录名（去掉 /** 等），按路径段精确匹配，避免子串误判
-    const excludeNames = new Set(
-      exclude
-        .map((e) => e.replace(/[/\\]\*\*$/, '').replace(/[/\\]+$/, ''))
-        .map((e) => e.split(/[/\\]/).filter(Boolean).pop() ?? e)
-        .filter(Boolean),
+    // 将 glob 排除模式分为两类：
+    // - excludeNames: 纯目录名（单段，如 node_modules），用于每级快速匹配
+    // - excludePrefixes: 含路径的模式（多段，如 packages/foo/dist），归一为绝对路径前缀
+    const normalizedExcludes = exclude.map((e) =>
+      e.replace(/[/\\]\*\*$/, '').replace(/[/\\]+$/, ''),
     )
+    const excludeNames = new Set<string>()
+    const excludePrefixes: string[] = []
+    for (const e of normalizedExcludes) {
+      if (!e) continue
+      const segments = e.split(/[/\\]/).filter(Boolean)
+      if (segments.length <= 1) {
+        excludeNames.add(e)
+      } else {
+        // 归一为绝对路径前缀，用于 walkDir 按 fullPath 前缀匹配
+        excludePrefixes.push(path.resolve(projectPath, e))
+      }
+    }
 
     const visited = new Set<string>()
-    await this.walkDir(projectPath, results, excludeNames, visited, 0)
+    await this.walkDir(projectPath, results, excludeNames, excludePrefixes, visited, 0)
 
     // 按 include 模式过滤
     return results.filter((f) => include.some((p) => this.matchGlob(f, p)))
@@ -336,6 +347,7 @@ export class ProjectIndexer {
     dir: string,
     results: string[],
     excludeNames: Set<string>,
+    excludePrefixes: string[],
     visited: Set<string>,
     depth: number,
   ): Promise<void> {
@@ -360,9 +372,14 @@ export class ProjectIndexer {
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name)
       if (entry.isDirectory()) {
-        // 按目录名精确匹配排除项；同时跳过隐藏目录与符号链接目录（后者可能指向环外/环内）
-        if (!excludeNames.has(entry.name) && !entry.name.startsWith('.') && !entry.isSymbolicLink()) {
-          await this.walkDir(fullPath, results, excludeNames, visited, depth + 1)
+        // 按目录名匹配单段排除项，按绝对路径前缀匹配多段排除项；跳过隐藏目录
+        // 注：不再无条件跳过符号链接目录，visited 集合（基于 realpath）已防止循环
+        if (
+          !excludeNames.has(entry.name) &&
+          !entry.name.startsWith('.') &&
+          !excludePrefixes.some((p) => fullPath === p || fullPath.startsWith(p + path.sep))
+        ) {
+          await this.walkDir(fullPath, results, excludeNames, excludePrefixes, visited, depth + 1)
         }
       } else if (entry.isFile()) {
         results.push(fullPath)

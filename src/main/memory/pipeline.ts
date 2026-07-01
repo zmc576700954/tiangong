@@ -11,9 +11,6 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('PipelineRunner')
 
-// 跨 runner 实例存活的 pipeline 执行计数：createDefault 每次会话结束都会新建 runner，
-// 若把计数器放在闭包内会每次归零，导致周期性 adapt() 永不触发。
-let _pipelineExecutionCount = 0
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,6 +66,14 @@ export interface StageOverride {
 // ---------------------------------------------------------------------------
 
 export class PipelineRunner {
+  /**
+   * 跨 runner 实例存活的 pipeline 执行计数。
+   * createDefault 每次会话结束都会新建 runner 实例，若用实例字段会每次归零，
+   * 导致周期性 adapt() 永不触发。静态字段解决此问题，同时可在测试中重置：
+   *   PipelineRunner._executionCount = 0
+   */
+  static _executionCount = 0
+
   constructor(private readonly stages: PipelineStage[]) {}
 
   /**
@@ -354,8 +359,10 @@ export class PipelineRunner {
                 }
                 if (batchUpdates.length > 0) {
                   try {
+                    // 预编译一次，在事务内重复调用 run()，避免每条记录分配新 Statement 对象
+                    const updateStmt = db.prepare('UPDATE memory_items SET embedding = ? WHERE id = ?')
                     db.transaction(() => {
-                      for (const u of batchUpdates) db.prepare(u.sql).run(...u.args)
+                      for (const u of batchUpdates) updateStmt.run(...u.args)
                     })()
                   } catch {
                     // Batch write failure should not block the pipeline
@@ -370,8 +377,8 @@ export class PipelineRunner {
           }
 
           // Periodic adaptive config tuning (every 20 pipeline executions)
-          _pipelineExecutionCount++
-          if (_pipelineExecutionCount % 20 === 0) {
+          PipelineRunner._executionCount++
+          if (PipelineRunner._executionCount % 20 === 0) {
             try {
               getAdaptiveConfig().adapt()
             } catch {

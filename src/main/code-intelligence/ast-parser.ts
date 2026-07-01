@@ -63,6 +63,10 @@ export class AstParser {
    * - invalidateResolveCacheForFile()：增量重索引删除文件时调用，
    *   清除指向该文件的条目，防止留下幽灵依赖边。
    */
+  /** 模块路径解析结果缓存的最大条目数。超出后按插入顺序淘汰最旧的条目（FIFO），
+   * 防止长时间运行的增量重索引中缓存无限增长。
+   * 全量重索引前调用 clearResolveCache() 可立即清空。*/
+  private static readonly MAX_RESOLVE_CACHE_SIZE = 20_000
   private resolveCache = new Map<string, string | null>()
 
   /**
@@ -97,6 +101,11 @@ export class AstParser {
 
     const result = this._resolveModuleFileUncached(basePath)
     this.resolveCache.set(basePath, result)
+    // 超出上限时淘汰最旧的条目（Map 按插入顺序迭代）
+    if (this.resolveCache.size > AstParser.MAX_RESOLVE_CACHE_SIZE) {
+      const oldest = this.resolveCache.keys().next().value
+      if (oldest !== undefined) this.resolveCache.delete(oldest)
+    }
     return result
   }
 

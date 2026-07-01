@@ -296,7 +296,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 启动或重置 SDK 会话空闲回收定时器。
    *
    * 每次 doSendCommand 成功后调用以重置计时窗口；startSession 时也应调用一次。
-   * 超过 idleMs 无活动则 emit sessionEnded('success') — 交由 AgentManager 执行完整
+   * 超过 idleMs 无活动则 emit sessionEnded('idle') — 交由 AgentManager 执行完整
    * 清理（含记忆管线），而非适配器自行 terminateSession（后者绕过 AgentManager）。
    *
    * 仅适用于 SDK 多轮适配器（codex / mcp / claude-code）；CLI 一次性适配器
@@ -306,13 +306,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected resetIdleReaper(sessionId: string, idleMs: number = BaseAdapter.DEFAULT_SESSION_TIMEOUT_MS): void {
     this.clearIdleReaper(sessionId)
     const timer = setTimeout(() => {
-      this.logger.info(`Session ${sessionId} idle for ${idleMs}ms, reclaiming via sessionEnded('success')`)
+      this.logger.info(`Session ${sessionId} idle for ${idleMs}ms, reclaiming via sessionEnded('idle')`)
       this.idleSessionTimers.delete(sessionId)
-      // Emit success so AgentManager runs its normal cleanup path (memory pipeline,
+      // Emit idle so AgentManager runs its normal cleanup path (memory pipeline,
       // recovery-counter reset, onSessionComplete) and properly clears its own state.
-      // Using 'success' (not 'timeout') avoids triggering recovery logic and ensures
-      // the session is recorded as a healthy completion rather than a failure.
-      this.emit('sessionEnded', sessionId, 'success', 0)
+      // Using 'idle' (not 'timeout') avoids triggering recovery logic and ensures
+      // the session is recorded as an idle expiry rather than a failure.
+      this.emit('sessionEnded', sessionId, 'idle', 0)
     }, idleMs)
     this.idleSessionTimers.set(sessionId, timer)
   }
