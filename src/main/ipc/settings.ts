@@ -10,8 +10,12 @@ import type { ContextWaterline } from '../memory/context-waterline'
 
 const logger = createLogger('SettingsIPC')
 
-/** Regex to detect masked API keys like `sk-****abcd` or `****` */
-const MASKED_KEY_PATTERN = /^\S{0,4}\*{2,}\S{0,4}$/
+/**
+ * Regex to detect masked API keys like `sk-****abcd` or `****`.
+ * Requires at least 4 consecutive asterisks to avoid false positives on
+ * legitimate short tokens that happen to contain `**` (e.g. `t0k**en1`).
+ */
+const MASKED_KEY_PATTERN = /^\S{0,4}\*{4,}\S{0,4}$/
 
 /** 已知适配器名称白名单，防止 settings:installCli 执行任意命令 */
 const KNOWN_ADAPTER_NAMES = new Set([
@@ -26,6 +30,24 @@ const KNOWN_ADAPTER_NAMES = new Set([
  */
 const SAFE_COMMAND_PATTERN = /^[A-Za-z0-9._-]+$/
 
+/**
+ * 已知可直接执行内联代码的危险参数标志。
+ * 即使 command 通过了白名单（node/python），这些 arg 也能在主进程中执行任意代码，
+ * 因此一并拒绝（see finding #1 in code review）。
+ *
+ * node:   --eval / -e / --print / -p / --input-type=module（stdin eval）
+ * python: -c
+ * deno/bun: eval（子命令）
+ */
+const DANGEROUS_ARG_PATTERNS = [
+  /^--eval$/i,
+  /^-e$/,
+  /^--print$/i,
+  /^-p$/,
+  /^-c$/,
+  /^eval$/i,
+]
+
 function assertSafeCommand(command: unknown, context: string): void {
   if (typeof command !== 'string' || command.length === 0 || command.length > 128) {
     throw new IpcError(`${context}: command must be a non-empty string`, ErrorCode.IPC_INVALID_ARGUMENT)
@@ -35,6 +57,25 @@ function assertSafeCommand(command: unknown, context: string): void {
       `${context}: command must be a bare executable name (no paths or shell metacharacters)`,
       ErrorCode.IPC_INVALID_ARGUMENT,
     )
+  }
+}
+
+function assertSafeArgs(args: string[], context: string): void {
+  for (const arg of args) {
+    if (arg.length > 1024) {
+      throw new IpcError(`${context}: arg exceeds maximum length of 1024 characters`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    // Null bytes and unescaped newlines are injection indicators
+    if (arg.includes('\0') || arg.includes('\n') || arg.includes('\r')) {
+      throw new IpcError(`${context}: arg contains invalid control characters`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    // Block flags that allow inline code execution in common interpreter commands
+    if (DANGEROUS_ARG_PATTERNS.some((p) => p.test(arg))) {
+      throw new IpcError(
+        `${context}: arg "${arg}" is not permitted (code-execution flag)`,
+        ErrorCode.IPC_INVALID_ARGUMENT,
+      )
+    }
   }
 }
 
@@ -87,6 +128,7 @@ export function registerSettingsHandlers(
         if (!Array.isArray(server.args) || server.args.some((a: unknown) => typeof a !== 'string')) {
           throw new IpcError(`mcpServer '${server.name}': args must be an array of strings`, ErrorCode.IPC_INVALID_ARGUMENT)
         }
+        assertSafeArgs(server.args as string[], `mcpServer '${server.name}'`)
       }
     }
     if (Array.isArray(settings.apiKeys)) {

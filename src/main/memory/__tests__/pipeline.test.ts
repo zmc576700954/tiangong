@@ -2,7 +2,7 @@
  * PipelineRunner 单元测试
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { PipelineRunner } from '../pipeline'
 import type { PipelineStage, PipelineContext } from '../pipeline'
 
@@ -16,6 +16,14 @@ function makeCtx(overrides?: Partial<PipelineContext>): PipelineContext {
 }
 
 describe('PipelineRunner', () => {
+  // Reset the static execution counter before each test to prevent cross-test
+  // pollution: PipelineRunner._executionCount is shared across all instances,
+  // and a previous test that runs createDefault() could push the counter past a
+  // multiple of 20, triggering getAdaptiveConfig().adapt() unexpectedly here.
+  beforeEach(() => {
+    PipelineRunner._executionCount = 0
+  })
+
   it('runs stages in order', async () => {
     const order: string[] = []
 

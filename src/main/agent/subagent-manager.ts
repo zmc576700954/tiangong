@@ -212,6 +212,12 @@ export class SubagentManager extends EventEmitter {
       // Without this check invoke() would call updateStatus('running') and overwrite the
       // DB status that cancel() already set to 'cancelled', letting the task run anyway.
       if (entry?.cancelled) {
+        // Pre-start cancel: roll back the concurrency reservation.
+        // This path throws before entering the inner try/finally that normally
+        // decrements activeCount, so we must decrement here to avoid permanent
+        // slot exhaustion for the parent session.
+        const cnt = this.activeCount.get(args.parentSessionId) ?? 1
+        this.activeCount.set(args.parentSessionId, Math.max(0, cnt - 1))
         throw new AgentError(
           `Subagent invocation ${invocationId} was cancelled before it could start`,
           ErrorCode.AGENT_SESSION_NOT_FOUND,

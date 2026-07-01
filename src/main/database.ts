@@ -585,11 +585,13 @@ function migrate(): void {
     logger.info(`Schema migrated to v${CURRENT_SCHEMA_VERSION}`)
   } catch (err) {
     // 必须完全退出事务，否则下方恢复 foreign_keys 的 PRAGMA 会被当作 no-op。
-    try {
-      db.exec('ROLLBACK TO migrate_sp')
-      db.exec('RELEASE migrate_sp')
-    } catch (rollbackErr) {
+    // ROLLBACK TO 和 RELEASE 分开 try/catch：若两者在同一块，RELEASE 抛出时
+    // savepoint 泄漏，导致 finally 中的 PRAGMA foreign_keys = ON 仍为 no-op。
+    try { db.exec('ROLLBACK TO migrate_sp') } catch (rollbackErr) {
       logger.warn('ROLLBACK TO migrate_sp failed:', rollbackErr)
+    }
+    try { db.exec('RELEASE migrate_sp') } catch (releaseErr) {
+      logger.warn('RELEASE migrate_sp (after rollback) failed:', releaseErr)
     }
     throw err
   } finally {

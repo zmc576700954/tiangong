@@ -574,6 +574,9 @@ export class McpAdapter extends BaseAdapter {
         data: 'No API key configured. Please add an API key in Settings.',
         timestamp: Date.now(),
       })
+      // Restore idle reaper so the session is eventually reclaimed even if the
+      // caller never calls terminateSession (prevents orphaned session accumulation).
+      this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
       return
     }
 
@@ -604,6 +607,9 @@ export class McpAdapter extends BaseAdapter {
           data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
           timestamp: Date.now(),
         })
+        // Restore idle reaper so the session stays alive for the caller's next retry
+        // attempt and is eventually reclaimed if retries never arrive.
+        this.resetIdleReaper(sessionId, MCP_SESSION_TIMEOUT_MS)
         return
       }
 

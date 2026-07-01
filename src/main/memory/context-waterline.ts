@@ -180,8 +180,9 @@ export class ContextWaterline {
     if (!s) {
       s = { threadId, tokensUsed: 0, tokensMax: 200_000, lastCompactedAt: null }
       // Hydrate persisted token usage on first access so restarts don't reset to 0.
-      // hydrated.add is inside the try so a transient DB error does not permanently
-      // block future hydration attempts for this thread.
+      // On success: cache the hydrated state and mark as done via hydrated.add.
+      // On failure: return s WITHOUT caching it in this.state, so the next access
+      // retries the DB load (the state.set call is deliberately inside the try block).
       if (this.dbLoader && !this.hydrated.has(threadId)) {
         try {
           const loaded = this.dbLoader(threadId)
@@ -190,12 +191,15 @@ export class ContextWaterline {
             s.tokensMax = loaded.tokensMax > 0 ? loaded.tokensMax : s.tokensMax
           }
           this.hydrated.add(threadId)
+          this.state.set(threadId, s)
         } catch (err) {
           logger.warn(`Waterline DB hydrate failed for thread ${threadId}:`, err)
-          // Not marking as hydrated — will retry on next access
+          // Do not cache state — next access will retry hydration.
+          return s
         }
+      } else {
+        this.state.set(threadId, s)
       }
-      this.state.set(threadId, s)
     }
     return s
   }

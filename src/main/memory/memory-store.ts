@@ -200,7 +200,7 @@ export class MemoryStore {
         END
       `)
     } else {
-      // 回退：直接索引原始 JSON 文本
+      // 回退：直接索引原始 JSON 文本（SQLite < 3.38，json_each 不可用）
       this.db.exec(`
         CREATE TRIGGER IF NOT EXISTS memory_fts_ai AFTER INSERT ON memory_items BEGIN
           INSERT INTO ${FTS_TABLE}(rowid, title, narrative, facts, concepts)
@@ -208,8 +208,13 @@ export class MemoryStore {
         END
       `)
 
+      // ⚠️  fts_trigger_v1 版本标记：必须与 json_each 分支中的标记保持一致，
+      // 触发器版本检测（triggersAlreadyFixed）依赖此注释存在于 memory_fts_ad 的 SQL 中。
+      // 若将来修改触发器逻辑，两个分支的标记须同步更新（v1 → v2 …）。
       this.db.exec(`
-        CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items BEGIN
+        CREATE TRIGGER IF NOT EXISTS memory_fts_ad AFTER DELETE ON memory_items
+        -- fts_trigger_v1
+        BEGIN
           INSERT INTO ${FTS_TABLE}(${FTS_TABLE}, rowid, title, narrative, facts, concepts)
           VALUES ('delete', old.id, old.title, old.narrative, old.facts, old.concepts);
         END
