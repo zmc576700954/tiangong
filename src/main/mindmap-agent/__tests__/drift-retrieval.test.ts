@@ -7,21 +7,21 @@ const mockModules: ScanModule[] = [
     name: 'Auth',
     description: 'Authentication and user management',
     processes: [
-      { name: 'Login', description: 'User login', features: [{ name: 'Login Form', description: 'Login UI' }] },
+      { name: 'Login', description: 'User login', features: [{ name: 'Login Form', description: 'Login UI', type: 'feature' }] },
     ],
   },
   {
     name: 'Payment',
     description: 'Payment processing and checkout',
     processes: [
-      { name: 'Checkout', description: 'Checkout flow', features: [{ name: 'Cart', description: 'Cart items' }] },
+      { name: 'Checkout', description: 'Checkout flow', features: [{ name: 'Cart', description: 'Cart items', type: 'feature' }] },
     ],
   },
   {
     name: 'User',
     description: 'User profile and settings management',
     processes: [
-      { name: 'Profile', description: 'User profile', features: [{ name: 'Avatar', description: 'User avatar' }] },
+      { name: 'Profile', description: 'User profile', features: [{ name: 'Avatar', description: 'User avatar', type: 'feature' }] },
     ],
   },
 ]

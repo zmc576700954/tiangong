@@ -24,10 +24,10 @@ SyntaxHighlighter.registerLanguage('bash', bash)
 SyntaxHighlighter.registerLanguage('sql', sql)
 SyntaxHighlighter.registerLanguage('markdown', markdown)
 SyntaxHighlighter.registerLanguage('yaml', yaml)
-import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle } from 'lucide-react'
+import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'
-import type { ChatMessage } from '@shared/types'
+import type { ChatMessage, ContextRef, ToolCallBlock } from '@shared/types'
 
 /** Auto-fold long plain-text output (>20 lines) with expand/collapse */
 function CollapsibleOutput({ content, maxLines = 20 }: { content: string; maxLines?: number }) {
@@ -139,6 +139,156 @@ const STATUS_ICONS: Record<string, { icon: React.ReactNode; label: string; class
   permanently_failed: { icon: <XCircle size={10} />, label: 'Permanently failed', className: 'text-red-600' },
 }
 
+function ProgressBlock({ data }: { data: unknown }) {
+  const { stage, label, current, total } = data as {
+    stage?: string
+    label?: string
+    current?: number
+    total?: number
+  }
+  const percent = total && total > 0 ? Math.round(((current ?? 0) / total) * 100) : 0
+  return (
+    <div className="my-2 space-y-1">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="w-3 h-3 animate-spin" />
+        <span className="font-medium capitalize">{stage ?? 'running'}</span>
+        {label && <span className="text-muted-foreground/70 truncate">{label}</span>}
+      </div>
+      {total !== undefined && total > 0 && (
+        <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
+          <div
+            className="h-full bg-primary transition-all duration-300"
+            style={{ width: `${percent}%` }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ThinkingBlock({ data }: { data: unknown }) {
+  const { data: text } = data as { data?: string }
+  const [expanded, setExpanded] = useState(false)
+  if (!text) return null
+  return (
+    <div className="my-2 border border-border rounded-md overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-muted/50 hover:bg-muted transition-colors text-left text-xs text-muted-foreground"
+      >
+        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <span>Thinking...</span>
+      </button>
+      {expanded && (
+        <div className="p-2.5 text-[11px] text-muted-foreground bg-background font-mono whitespace-pre-wrap">
+          {text}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StructuredToolCallBlock({ data }: { data: unknown }) {
+  const block = data as ToolCallBlock
+  return <ToolCallRenderer block={block} />
+}
+
+function ContextInjectionBlock({ data }: { data: unknown }) {
+  const { contextRefs, tokenEstimate } = data as {
+    contextRefs?: ContextRef[]
+    tokenEstimate?: number
+  }
+  const [expanded, setExpanded] = useState(false)
+  if (!contextRefs?.length) return null
+  return (
+    <div className="my-2">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] hover:bg-blue-500/20 transition-colors"
+      >
+        <span>已注入上下文</span>
+        {tokenEstimate !== undefined && (
+          <span className="text-blue-400/70">~{tokenEstimate} tokens</span>
+        )}
+        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1">
+          {contextRefs.map((ref, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="px-1 py-0.5 rounded bg-muted uppercase">{ref.type}</span>
+              <span className="truncate">{ref.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function TextBlock({ data }: { data: unknown }) {
+  const { level, message, raw } = data as {
+    level?: string
+    message?: string
+    raw?: string
+  }
+  const [showRaw, setShowRaw] = useState(false)
+  if (!message) return null
+  return (
+    <div
+      className={cn(
+        'my-2 p-2 rounded text-[11px]',
+        level === 'error'
+          ? 'bg-red-500/10 text-red-400'
+          : level === 'warning'
+            ? 'bg-amber-500/10 text-amber-400'
+            : 'bg-muted text-muted-foreground',
+      )}
+    >
+      <p>{message}</p>
+      {raw && (
+        <button
+          onClick={() => setShowRaw(!showRaw)}
+          className="text-[10px] underline mt-1 text-muted-foreground hover:text-foreground"
+        >
+          {showRaw ? 'Hide details' : 'Show details'}
+        </button>
+      )}
+      {showRaw && raw && (
+        <pre className="mt-1 text-[10px] whitespace-pre-wrap">{raw}</pre>
+      )}
+    </div>
+  )
+}
+
+function MessageContextRefs({ refs, tokenEstimate }: { refs: ContextRef[]; tokenEstimate?: number }) {
+  const [expanded, setExpanded] = useState(false)
+  if (!refs.length) return null
+  return (
+    <div className="mt-2 pt-2 border-t border-border/50">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+      >
+        {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+        <span>Context</span>
+        <span className="text-muted-foreground/60">({refs.length})</span>
+        {tokenEstimate !== undefined && <span className="text-muted-foreground/60">~{tokenEstimate} tokens</span>}
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1">
+          {refs.map((ref, i) => (
+            <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+              <span className="px-1 py-0.5 rounded bg-muted uppercase">{ref.type}</span>
+              <span className="truncate">{ref.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface ChatBubbleProps {
   message: ChatMessage
   onRetry?: (messageId: string) => void
@@ -241,6 +391,24 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
             )
           ) : null}
 
+          {/* Structured content blocks */}
+          {message.structuredContent?.map((block, i) => {
+            switch (block.type) {
+              case 'progress':
+                return <ProgressBlock key={i} data={block.data} />
+              case 'thinking':
+                return <ThinkingBlock key={i} data={block.data} />
+              case 'tool_call':
+                return <StructuredToolCallBlock key={i} data={block.data} />
+              case 'context_injection':
+                return <ContextInjectionBlock key={i} data={block.data} />
+              case 'text':
+                return <TextBlock key={i} data={block.data} />
+              default:
+                return null
+            }
+          })}
+
           {/* Tool calls */}
           {message.toolCalls?.map((block, i) => (
             <ToolCallRenderer
@@ -248,6 +416,11 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
               block={block}
             />
           ))}
+
+          {/* Context refs */}
+          {message.contextRefs && message.contextRefs.length > 0 && (
+            <MessageContextRefs refs={message.contextRefs} tokenEstimate={message.tokenEstimate} />
+          )}
         </div>
 
         {/* Aborted label */}

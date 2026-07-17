@@ -11,8 +11,8 @@ const mockModules: ScanModule[] = [
         name: 'Login',
         description: 'User login process',
         features: [
-          { name: 'Login Form', description: 'Login form UI' },
-          { name: 'Token Validation', description: 'Validate JWT tokens' },
+          { name: 'Login Form', description: 'Login form UI', type: 'feature' },
+          { name: 'Token Validation', description: 'Validate JWT tokens', type: 'feature' },
         ],
       },
     ],
@@ -25,7 +25,7 @@ const mockModules: ScanModule[] = [
         name: 'Checkout',
         description: 'Checkout process',
         features: [
-          { name: 'Cart Review', description: 'Review cart items' },
+          { name: 'Cart Review', description: 'Review cart items', type: 'feature' },
         ],
       },
     ],

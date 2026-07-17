@@ -31,8 +31,8 @@ const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
   // 草稿：可确认、删除（回到占位）
   draft: new Set<NodeStatus>(['confirmed', 'developing', 'placeholder']),
 
-  // 已确认：可开始开发、回退到草稿、删除（回到占位）
-  confirmed: new Set<NodeStatus>(['developing', 'draft', 'placeholder']),
+  // 已确认：可开始开发、回退到草稿、删除（回到占位）、发布为 Wiki 页面
+  confirmed: new Set<NodeStatus>(['developing', 'draft', 'placeholder', 'published']),
 
   // 开发中：可提交测试、回退到已确认、回退到草稿、回退到占位
   developing: new Set<NodeStatus>(['testing', 'confirmed', 'draft', 'placeholder']),
@@ -43,8 +43,8 @@ const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
   // 待验收：可发布、回退到测试
   review: new Set<NodeStatus>(['published', 'testing']),
 
-  // 已发布：终态，不可转换（除非回滚到 review）
-  published: new Set<NodeStatus>(['review']),
+  // 已发布：可回退到已确认/草稿/占位，便于 Wiki 页面修订后重新发布
+  published: new Set<NodeStatus>(['confirmed', 'draft', 'placeholder']),
 
   // 占位节点：可激活为草稿、可跳过草稿直接确认、可跳过草稿直接开发
   placeholder: new Set<NodeStatus>(['draft', 'confirmed', 'developing']),

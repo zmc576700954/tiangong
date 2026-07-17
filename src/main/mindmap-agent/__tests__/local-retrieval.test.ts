@@ -10,7 +10,7 @@ const mockModules: ScanModule[] = [
       {
         name: 'Login',
         description: 'Login process',
-        features: [{ name: 'Login Form', description: 'Login UI' }],
+        features: [{ name: 'Login Form', description: 'Login UI', type: 'feature' }],
       },
     ],
   },
@@ -21,7 +21,7 @@ const mockModules: ScanModule[] = [
       {
         name: 'Checkout',
         description: 'Checkout process',
-        features: [{ name: 'Cart', description: 'Cart management' }],
+        features: [{ name: 'Cart', description: 'Cart management', type: 'feature' }],
       },
     ],
   },

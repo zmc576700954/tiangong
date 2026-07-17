@@ -5,10 +5,15 @@
 
 import { ProjectScanner } from '../project-scanner'
 import type { GraphService } from '../services/graph-service'
+import type { ChatService } from '../services/chat-service'
 import { validateProjectPath } from './utils'
 import type { TypedHandle } from './utils'
 
-export function registerProjectHandlers(typedHandle: TypedHandle, graphService: GraphService): void {
+export function registerProjectHandlers(
+  typedHandle: TypedHandle,
+  graphService: GraphService,
+  _chatService?: ChatService,
+): void {
   typedHandle('project:scan', async (_, projectPath) => {
     const validatedPath = validateProjectPath(projectPath)
     const scanner = new ProjectScanner()

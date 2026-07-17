@@ -7,7 +7,7 @@ function makeCtx(overrides?: Partial<PromptContext>): PromptContext {
     node: { id: 'n1', type: 'feature', title: 'Login Feature', description: 'User login' },
     ancestors: [{ title: 'Auth Module', description: 'Handles authentication' }],
     children: [{ title: 'Token Validation', description: 'Validate JWT' }],
-    relatedEdges: [{ id: 'e1', source: 'n1', target: 'n2', type: 'depends_on' }],
+    relatedEdges: [{ id: 'e1', source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'dependency' }],
     relatedNodes: [{ title: 'User Service', description: 'User management' }],
     ...overrides,
   }
@@ -40,11 +40,12 @@ describe('buildFeaturePrompt', () => {
       node: {
         id: 'n1', type: 'feature', title: 'Login', description: 'Login',
         content: {
-          businessRules: [{ title: 'Rule 1', condition: 'user exists', action: 'allow login' }],
+          businessRules: [{ id: 'r1', title: 'Rule 1', description: 'Ensure user exists', condition: 'user exists', action: 'allow login' }],
           acceptanceCriteria: [],
           relatedFiles: [],
           implementationNotes: [],
           codeSignatures: [],
+          fullDescription: 'Login feature',
         },
       },
     })
@@ -63,6 +64,7 @@ describe('buildFeaturePrompt', () => {
           relatedFiles: [],
           implementationNotes: [],
           codeSignatures: [],
+          fullDescription: 'Login feature',
         },
       },
     })
@@ -81,6 +83,7 @@ describe('buildFeaturePrompt', () => {
           relatedFiles: ['src/auth.ts'],
           implementationNotes: [],
           codeSignatures: [],
+          fullDescription: 'Login feature',
         },
       },
     })

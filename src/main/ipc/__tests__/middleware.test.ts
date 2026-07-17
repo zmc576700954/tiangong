@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import {
   IpcMiddlewarePipeline,
   createLoggingMiddleware,
@@ -31,13 +31,13 @@ describe('IpcMiddlewarePipeline', () => {
     const pipeline = new IpcMiddlewarePipeline()
     const order: number[] = []
 
-    pipeline.use(async (ctx, next) => {
+    pipeline.use(async (_ctx, next) => {
       order.push(1)
       const result = await next()
       order.push(3)
       return result
     })
-    pipeline.use(async (ctx, next) => {
+    pipeline.use(async (_ctx, next) => {
       order.push(2)
       return next()
     })
@@ -50,7 +50,7 @@ describe('IpcMiddlewarePipeline', () => {
 
   it('middleware can modify result', async () => {
     const pipeline = new IpcMiddlewarePipeline()
-    pipeline.use(async (ctx, next) => {
+    pipeline.use(async (_ctx, next) => {
       const result = await next()
       return `${result}-modified`
     })
@@ -63,7 +63,7 @@ describe('IpcMiddlewarePipeline', () => {
   it('dispose clears all middleware and disposers', () => {
     const pipeline = new IpcMiddlewarePipeline()
     const disposer = vi.fn()
-    pipeline.useDisposable({ middleware: async (ctx, next) => next(), dispose: disposer })
+    pipeline.useDisposable({ middleware: async (_ctx, next) => next(), dispose: disposer })
     pipeline.dispose()
     expect(disposer).toHaveBeenCalled()
   })

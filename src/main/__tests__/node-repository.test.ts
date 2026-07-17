@@ -60,10 +60,33 @@ describe('NodeRepository', () => {
     expect(db.transaction).toHaveBeenCalled()
   })
 
+  it('create persists wiki fields', () => {
+    const node = repo.create({
+      ...makeNodeData(),
+      type: 'wiki-page',
+      wikiContent: '# Hello',
+      wikiMeta: { author: 'ai', tags: ['intro'] },
+    })
+    expect(node.type).toBe('wiki-page')
+    expect(node.wikiContent).toBe('# Hello')
+    expect(node.wikiMeta).toEqual({ author: 'ai', tags: ['intro'] })
+  })
+
+  it('update modifies wiki fields', () => {
+    stmt.get.mockReturnValueOnce({
+      id: 'n1', type: 'wiki-page', status: 'draft', title: 'Wiki', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: '## Updated', wiki_meta: '{"tags":["doc"]}',
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    })
+    const node = repo.update('n1', { wikiContent: '## Updated' })
+    expect(node.wikiContent).toBe('## Updated')
+  })
   it('update modifies node fields', () => {
     stmt.get.mockReturnValueOnce({
       id: 'n1', type: 'feature', status: 'confirmed', title: 'Updated', description: null, acceptance_criteria: null,
       graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null,
       owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
     })
     const node = repo.update('n1', { status: 'confirmed', title: 'Updated' })

@@ -38,7 +38,7 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
-import { AlignHorizontalDistributeCenter, GitBranch, X, Search } from 'lucide-react'
+import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText } from 'lucide-react'
 import { eventBus, Events } from '../store/eventBus'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
@@ -115,6 +115,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const projectPath = currentGraph?.projectPath
 
   const { screenToFlowPosition, setCenter } = useReactFlow()
+
+  // Listen for navigation requests from components outside ReactFlowProvider (e.g., RightPanel)
+  useEffect(() => {
+    const unsub = eventBus.on(Events.NAVIGATE_TO_NODE, (targetId) => {
+      selectNode(targetId)
+      const target = graphNodes.find((n) => n.id === targetId)
+      if (target) {
+        setCenter(target.position.x, target.position.y, { zoom: 1, duration: 300 })
+      }
+    })
+    return unsub
+  }, [graphNodes, selectNode, setCenter])
 
   const bugCountMap = useMemo(() => {
     const map = new Map<string, number>()
@@ -568,14 +580,27 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     await createNode({
       type,
       status: 'draft',
-      title: `新建${NODE_TYPE_LABELS[type]}`,
+      title: type === 'wiki-page' ? 'Wiki 页面' : `新建${NODE_TYPE_LABELS[type]}`,
       graphId,
       graphType,
       position,
       acceptanceCriteria: [],
+      wikiContent: type === 'wiki-page' ? '# 新 Wiki 页面\n\n' : undefined,
     })
     setShowNodeMenu(false)
   }, [screenToFlowPosition, menuPosition, createNode, graphId, currentGraph?.type])
+
+  const handleCreateSpecialWikiPage = useCallback(async (kind: 'index' | 'log') => {
+    const { indexId, logId } = await useGraphStore.getState().ensureSpecialWikiPages()
+    const targetId = kind === 'index' ? indexId : logId
+    if (targetId) {
+      selectNode(targetId)
+      const node = useGraphStore.getState().getNodeById(targetId)
+      if (node) {
+        setCenter(node.position.x, node.position.y, { zoom: 1, duration: 300 })
+      }
+    }
+  }, [selectNode, setCenter])
 
   /** 进入连线模式（由右键菜单触发） */
   const handleStartConnect = useCallback((sourceId: string) => {
@@ -702,6 +727,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             >
               <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
               整理布局
+            </button>
+            <button
+              onClick={() => handleCreateSpecialWikiPage('index')}
+              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+              title="创建 Graph Index"
+            >
+              <BookOpen className="w-3.5 h-3.5" />
+              Graph Index
+            </button>
+            <button
+              onClick={() => handleCreateSpecialWikiPage('log')}
+              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+              title="创建 Graph Log"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              Graph Log
             </button>
           </div>
         </Panel>

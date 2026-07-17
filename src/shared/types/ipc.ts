@@ -130,6 +130,7 @@ export interface IpcApi {
     onlineGraph: Graph
     devGraph: Graph
     modules: ScanModule[]
+    threadId?: string
   }>
 
   // 配置管理

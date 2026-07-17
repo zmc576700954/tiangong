@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { MessageStatus, MessageError, ToolCallBlock } from '@shared/types'
+import type { MessageStatus, MessageError, ToolCallBlock, ContextRef } from '@shared/types'
 import { useThreadStore } from './threadStore'
 import { eventBus, Events } from './eventBus'
 
@@ -131,6 +131,17 @@ interface MessageState extends StreamingSeqState {
 
   appendToStreamingMessage: (threadId: string, messageId: string, content: string, seq?: number) => void
   appendToolCall: (threadId: string, messageId: string, toolCall: ToolCallBlock) => void
+  appendStructuredContent: (
+    threadId: string,
+    messageId: string,
+    block: { type: 'progress' | 'thinking' | 'tool_call' | 'context_injection' | 'text'; data: unknown },
+  ) => void
+  setMessageContextRefs: (
+    threadId: string,
+    messageId: string,
+    contextRefs: ContextRef[],
+    tokenEstimate?: number,
+  ) => void
   updateToolCallAccepted: (threadId: string, messageIndex: number, toolCallIndex: number, accepted: boolean) => void
   updateAllToolCallsAccepted: (threadId: string, accepted: boolean) => void
   markMessageStatus: (threadId: string, messageId: string, status: MessageStatus, error?: MessageError) => void
@@ -192,6 +203,43 @@ export const useMessageStore = create<MessageState>((set, get) => ({
     newThreads[threadIndex] = { ...newThreads[threadIndex], messages: newMessages }
 
     useThreadStore.setState({ threads: newThreads })
+  },
+
+  appendStructuredContent: (threadId, messageId, block) => {
+    useThreadStore.setState((state) => ({
+      threads: state.threads.map((t) => {
+        if (t.id !== threadId) return t
+        return {
+          ...t,
+          messages: t.messages.map((m) => {
+            if (m.id !== messageId) return m
+            return {
+              ...m,
+              structuredContent: [...(m.structuredContent ?? []), block],
+            }
+          }),
+        }
+      }),
+    }))
+  },
+
+  setMessageContextRefs: (threadId, messageId, contextRefs, tokenEstimate) => {
+    useThreadStore.setState((state) => ({
+      threads: state.threads.map((t) => {
+        if (t.id !== threadId) return t
+        return {
+          ...t,
+          messages: t.messages.map((m) => {
+            if (m.id !== messageId) return m
+            return {
+              ...m,
+              contextRefs: contextRefs.length > 0 ? contextRefs : m.contextRefs,
+              ...(tokenEstimate !== undefined ? { tokenEstimate } : {}),
+            }
+          }),
+        }
+      }),
+    }))
   },
 
   updateToolCallAccepted: (threadId, messageIndex, toolCallIndex, accepted) => {

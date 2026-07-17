@@ -36,13 +36,15 @@ const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
 function getChildTypeOptions(parentType: NodeType): NodeType[] {
   switch (parentType) {
     case 'project':
-      return ['module']
+      return ['module', 'wiki-page']
     case 'module':
-      return ['process', 'feature']
+      return ['process', 'feature', 'wiki-page']
     case 'process':
-      return ['feature', 'bug']
+      return ['feature', 'bug', 'wiki-page']
     case 'feature':
       return ['bug']
+    case 'wiki-page':
+      return ['wiki-page']
     case 'bug':
       return []
     default:

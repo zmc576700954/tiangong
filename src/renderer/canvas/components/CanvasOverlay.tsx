@@ -70,8 +70,8 @@ export function CanvasOverlay({
   }, [showEdgeTypeMenu])
 
   const canvasNodeTypes: NodeType[] = hasProjectNode
-    ? ['module', 'process', 'feature', 'bug']
-    : ['project', 'module', 'process', 'feature', 'bug']
+    ? ['module', 'process', 'feature', 'bug', 'wiki-page']
+    : ['project', 'module', 'process', 'feature', 'bug', 'wiki-page']
 
   return (
     <>

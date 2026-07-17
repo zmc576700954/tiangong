@@ -89,7 +89,7 @@ describe('buildDevPrompt', () => {
   it('includes related edges', () => {
     const n1 = makeNode({ id: 'n1' })
     const n2 = makeNode({ id: 'n2', title: 'User Service' })
-    const edge: GraphEdge = { id: 'e1', source: 'n1', target: 'n2', type: 'depends_on', graphId: 'g1' }
+    const edge: GraphEdge = { id: 'e1', source: 'n1', target: 'n2', edgeType: 'dependency', graphId: 'g1' }
     const prompt = buildDevPrompt({
       node: n1,
       taskType: 'feature',

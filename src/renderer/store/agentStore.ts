@@ -46,6 +46,17 @@ interface AgentState {
   clearThreadOutputs: (threadId: string) => void
   trimInactiveThreadOutputs: (activeThreadId: string) => void
   appendToolCall: (threadId: string, messageId: string, toolCall: ToolCallBlock) => void
+  appendStructuredContent: (
+    threadId: string,
+    messageId: string,
+    block: { type: 'progress' | 'thinking' | 'tool_call' | 'context_injection' | 'text'; data: unknown },
+  ) => void
+  setMessageContextRefs: (
+    threadId: string,
+    messageId: string,
+    contextRefs: ContextRef[],
+    tokenEstimate?: number,
+  ) => void
   updateToolCallAccepted: (threadId: string, messageIndex: number, toolCallIndex: number, accepted: boolean) => void
   updateAllToolCallsAccepted: (threadId: string, accepted: boolean) => void
   getOutputs: (threadId: string) => AgentOutput[]
@@ -172,6 +183,14 @@ export const useAgentStore = create<AgentState>(() => ({
 
   appendToolCall: (threadId, messageId, toolCall) => {
     useMessageStore.getState().appendToolCall(threadId, messageId, toolCall)
+  },
+
+  appendStructuredContent: (threadId, messageId, block) => {
+    useMessageStore.getState().appendStructuredContent(threadId, messageId, block)
+  },
+
+  setMessageContextRefs: (threadId, messageId, contextRefs, tokenEstimate) => {
+    useMessageStore.getState().setMessageContextRefs(threadId, messageId, contextRefs, tokenEstimate)
   },
 
   updateToolCallAccepted: (threadId, messageIndex, toolCallIndex, accepted) => {

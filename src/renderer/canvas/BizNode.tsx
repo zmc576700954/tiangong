@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, AgentOutput } from '@shared/types'
-import { Bug, Loader2, AlertTriangle, Check } from 'lucide-react'
+import { Bug, Loader2, AlertTriangle, Check, BookOpen } from 'lucide-react'
 import { useAgentOutputStore } from '../store/agentOutputStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
@@ -37,6 +37,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 }: BizNodeProps) {
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
+  const isWikiPage = data.type === 'wiki-page'
   const isPreview = data.metadata?.preview === true
 
   const { isConnectingSource, isFlashed, agentThreadId, agentStatus, agentSessionId } = data
@@ -165,8 +166,16 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         </span>
       </div>
       <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{data.title}</div>
+      {isWikiPage && data.wikiContent && (
+        <div className="mt-1 text-[9px] text-muted-foreground truncate max-w-[180px]">
+          {data.wikiContent.split('\n')[0]?.replace(/^#+\s*/, '')}
+        </div>
+      )}
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-muted-foreground">{data.status}</span>
+        {isWikiPage && (
+          <BookOpen className="w-3 h-3 text-amber-500" />
+        )}
         {data.bugCount > 0 && (
           <div className="flex items-center gap-0.5 text-[10px] text-destructive">
             <Bug className="w-3 h-3" />

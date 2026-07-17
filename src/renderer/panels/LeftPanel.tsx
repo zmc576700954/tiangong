@@ -12,6 +12,7 @@ import { cn } from '../lib/utils'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
 import { useAgentStore } from '../store/agentStore'
+import { useAppStore } from '../store/appStore'
 import { useFileTreeKeyboard } from '../store/fileTreeUtils'
 import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
@@ -116,6 +117,11 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
       const { setCurrentGraph } = useGraphStore.getState()
       setCurrentGraph(result.onlineGraph.id)
       await loadGraphs()
+
+      if (result.threadId) {
+        useAgentStore.getState().selectThread(result.threadId)
+        useAppStore.getState().setActiveRightPanel('agent')
+      }
     } catch {
       // handled by store
     } finally {

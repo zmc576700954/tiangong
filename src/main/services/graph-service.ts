@@ -4,7 +4,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
-import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule, GraphFetchOptions } from '@shared/types'
+import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule, GraphFetchOptions, ChatMessage, AgentOutput } from '@shared/types'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import type { AgentManager } from '../agent/agent-manager'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
@@ -15,17 +15,20 @@ import { generateId } from '../shared/env'
 import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
 import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
-import { sendPromptViaAgent } from '../agent/send-and-wait'
+import { createAgentSessionForPrompt } from '../agent/send-and-wait'
+import type { ChatService } from './chat-service'
+import { estimateTokens } from '../shared/token-utils'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('GraphService')
 
-export const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
+export const VALID_NODE_TYPES: NodeType[] = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page']
 
 export interface InitFromProjectResult {
   onlineGraph: Graph
   devGraph: Graph
   modules: ProjectScanResult['modules']
+  threadId?: string
 }
 
 export class GraphService {
@@ -35,6 +38,7 @@ export class GraphService {
   constructor(
     private db: BetterSqlite3.Database,
     private agentManager?: AgentManager,
+    private chatService?: ChatService,
   ) {
     this.graphRepo = new GraphRepository(db)
   }
@@ -92,89 +96,319 @@ export class GraphService {
     const { projectPath, projectName } = data
     const now = new Date().toISOString()
 
-    // 1. L1/L2 扫描（始终执行，作为 AI 的上下文输入）
-    const scanner = new ProjectScanner()
-    const scanResult = await scanner.scan(projectPath)
+    // 创建 Chat 线程（阶段 1：协议与数据层入口）
+    let threadId: string | undefined
+    if (this.chatService) {
+      const thread = await this.chatService.createThread({
+        adapterName: 'mindmap-internal',
+      })
+      threadId = thread.id
+      await this.chatService.updateThread(threadId, {
+        title: `生成思维导图：${projectName}`,
+        status: 'running',
+      })
+    }
 
-    // 2. L3 AI 增强：通过 AgentManager 生成业务语义化的模块
-    let modules: ScanModule[] = scanResult.modules
-    if (this.agentManager) {
-      try {
-        const context = await collectContext(projectPath, projectName, scanResult.framework)
-        const prompt = buildGlobalPrompt(context)
-        logger.info(`Prompt 已生成, 长度: ${prompt.length}`)
-
-        const rawOutput = await sendPromptViaAgent(this.agentManager, projectPath, prompt, {
-          nodeTitle: '思维导图生成',
-          timeoutMs: 300_000,
-          adapterName: 'mindmap-internal',
-        })
-
-        const agent = new MindMapAgent(projectPath, this.agentManager)
-        const aiModules = agent.parseGenerationResult(rawOutput)
-        if (aiModules.length > 0) {
-          modules = aiModules
-          logger.info(`MindMapAgent 生成 ${aiModules.length} 个业务模块`)
-        } else {
-          logger.info('MindMapAgent 返回空结果，使用原 scanner 输出')
-        }
-      } catch (err) {
-        logger.warn('MindMapAgent 失败，降级使用原 scanner:', err)
+    const progress = async (
+      stage: string,
+      label: string,
+      extra?: { current?: number; total?: number; tokenEstimate?: number },
+    ) => {
+      if (!this.chatService || !threadId) return
+      const message: ChatMessage = {
+        id: generateId('msg'),
+        role: 'system',
+        content: label,
+        timestamp: Date.now(),
+        adapterName: 'mindmap-internal',
+        status: 'success',
+        stage,
+        structuredContent: [
+          {
+            type: 'progress',
+            data: { stage, label, ...(extra ?? {}) },
+          },
+        ],
+        tokenEstimate: extra?.tokenEstimate,
       }
-    } else {
-      logger.info('AgentManager 不可用，跳过 AI 增强')
+      await this.chatService.saveMessage(threadId, message)
     }
 
-    // 3. 用模块列表替换 scanResult 的 modules（后续分析基于此）
-    const enrichedScanResult: ProjectScanResult = {
-      ...scanResult,
-      modules,
+    const writeWarning = async (message: string, raw?: string) => {
+      if (!this.chatService || !threadId) return
+      await this.chatService.saveMessage(threadId, {
+        id: generateId('msg'),
+        role: 'system',
+        content: message,
+        timestamp: Date.now(),
+        adapterName: 'mindmap-internal',
+        status: 'success',
+        stage: 'calling_agent',
+        structuredContent: [
+          {
+            type: 'text',
+            data: { level: 'warning', message, raw },
+          },
+        ],
+      })
     }
 
-    // 4. 分析生成节点和边（dagre 布局在 analyzer 内部完成）
-    const analyzer = new ProjectAnalyzer()
-    const graphResult = analyzer.analyze(enrichedScanResult)
+    const writeError = async (message: string, raw?: string) => {
+      if (!this.chatService || !threadId) return
+      await this.chatService.saveMessage(threadId, {
+        id: generateId('msg'),
+        role: 'system',
+        content: message,
+        timestamp: Date.now(),
+        adapterName: 'mindmap-internal',
+        status: 'error',
+        error: {
+          code: 'MINDMAP_GENERATION_FAILED',
+          message,
+          raw,
+        },
+      })
+      await this.chatService.updateThread(threadId, { status: 'error' })
+    }
 
-    // 5. 创建图和节点（事务保护，确保数据一致性）
-    const onlineGraphId = generateId('graph-online')
-    const devGraphId = generateId('graph-dev')
+    try {
+      // 1. 扫描阶段
+      await progress('scanning', `开始扫描项目：${projectName}`)
+      const scanner = new ProjectScanner()
+      const scanResult = await scanner.scan(projectPath)
+      await progress(
+        'scanning',
+        `扫描完成，框架：${scanResult.framework}，识别到 ${scanResult.modules.length} 个模块`,
+        { current: scanResult.modules.length, total: scanResult.modules.length },
+      )
 
-    // better-sqlite3 transaction: auto-commit on normal return, auto-rollback on exception
-    this.db.transaction(() => {
-      // 创建 online 图（产品蓝图）
-      this.db.prepare(
-        'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now)
+      // 2. L3 AI 增强：通过 AgentManager 生成业务语义化的模块
+      let modules: ScanModule[] = scanResult.modules
+      if (this.agentManager) {
+        try {
+          await progress('collecting_context', '正在收集项目上下文…')
+          const context = await collectContext(projectPath, projectName, scanResult.framework)
+          await progress(
+            'building_prompt',
+            '正在构建全局分析 Prompt…',
+            { tokenEstimate: estimateTokens(JSON.stringify(context)) },
+          )
 
-      // 创建 dev 图（开发场景）
-      this.db.prepare(
-        'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
+          const prompt = buildGlobalPrompt(context)
+          const promptTokens = estimateTokens(prompt)
+          await progress(
+            'building_prompt',
+            `Prompt 已生成，长度 ${prompt.length}，预估 ${promptTokens} tokens`,
+            { tokenEstimate: promptTokens },
+          )
 
-      this.createNodes(onlineGraphId, 'online', graphResult, now, this.db)
-      this.createNodes(devGraphId, 'dev', graphResult, now, this.db)
-    })()
+          // 启动 Agent 会话并实时消费输出
+          await progress('calling_agent', '正在调用 Agent 生成业务模块…')
+          const sessionId = await createAgentSessionForPrompt(this.agentManager, projectPath, prompt, {
+            nodeTitle: '思维导图生成',
+            timeoutMs: 300_000,
+            adapterName: 'mindmap-internal',
+            threadId,
+          })
 
-    this.invalidateProjectPathsCache()
+          const agentMessageId = generateId('msg')
+          let agentContent = ''
+          let agentStatus: ChatMessage['status'] = 'streaming'
 
-    return {
-      onlineGraph: {
-        id: onlineGraphId,
-        name: `${projectName} - 产品蓝图`,
-        type: 'online' as const,
-        projectPath,
-        createdAt: now,
-        updatedAt: now,
-      },
-      devGraph: {
-        id: devGraphId,
-        name: `${projectName} - 开发场景`,
-        type: 'dev' as const,
-        projectPath,
-        createdAt: now,
-        updatedAt: now,
-      },
-      modules: enrichedScanResult.modules,
+          const updateAgentMessage = async () => {
+            if (!this.chatService || !threadId) return
+            await this.chatService.saveMessage(threadId, {
+              id: agentMessageId,
+              role: 'agent',
+              content: agentContent,
+              timestamp: Date.now(),
+              adapterName: 'mindmap-internal',
+              status: agentStatus,
+              sessionId,
+            })
+          }
+
+          const rawOutput = await new Promise<string>((resolve, reject) => {
+            const chunks: string[] = []
+            let settled = false
+            const startTime = Date.now()
+            const timeoutMs = 300_000
+
+            const timeoutId = setTimeout(() => {
+              if (!settled) {
+                settled = true
+                this.agentManager!.removeSessionOutputListener(handler)
+                this.agentManager!.terminateSession(sessionId, 'timeout').catch((err) => {
+                  logger.warn('Failed to terminate session on timeout:', err)
+                })
+                if (chunks.length > 0) {
+                  logger.info('超时但有部分输出，使用已收到的内容')
+                  resolve(chunks.join('\n'))
+                } else {
+                  reject(new Error(`timeout: ${Math.round(timeoutMs / 1000)}s 内未收到任何输出`))
+                }
+              }
+            }, timeoutMs)
+
+            const handler = async (output: AgentOutput) => {
+              if (output.type === 'stdout' || output.type === 'file_change') {
+                chunks.push(output.data)
+                agentContent += output.data
+                await updateAgentMessage()
+              } else if (output.type === 'stderr') {
+                // stderr 追加到 Agent 消息中，便于排查
+                agentContent += `\n[stderr] ${output.data}`
+                await updateAgentMessage()
+              } else if (output.type === 'error') {
+                agentContent += `\n[error] ${output.data}`
+                await updateAgentMessage()
+                if (!settled) {
+                  settled = true
+                  clearTimeout(timeoutId)
+                  this.agentManager!.removeSessionOutputListener(handler)
+                  this.agentManager!.terminateSession(sessionId, 'error').catch((err) => {
+                    logger.warn('Failed to terminate session on error output:', err)
+                  })
+                  reject(new Error(output.data || 'Agent error'))
+                }
+              } else if (output.type === 'complete') {
+                if (!settled) {
+                  settled = true
+                  clearTimeout(timeoutId)
+                  this.agentManager!.removeSessionOutputListener(handler)
+                  agentStatus = 'success'
+                  await updateAgentMessage()
+                  logger.info(`完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
+                  resolve(chunks.join('\n'))
+                }
+              }
+            }
+
+            this.agentManager!.addSessionOutputListener(sessionId, handler)
+
+            this.agentManager!.sendCommand(sessionId, {
+              type: 'implement',
+              description: prompt,
+              targetNodeId: '',
+            }).catch((err) => {
+              if (!settled) {
+                settled = true
+                clearTimeout(timeoutId)
+                this.agentManager!.removeSessionOutputListener(handler)
+                reject(err)
+              }
+            })
+          })
+
+          await progress('parsing_result', '正在解析 Agent 返回结果…')
+          const agent = new MindMapAgent(projectPath, this.agentManager)
+          const aiModules = agent.parseGenerationResult(rawOutput)
+          if (aiModules.length > 0) {
+            modules = aiModules
+            logger.info(`MindMapAgent 生成 ${aiModules.length} 个业务模块`)
+          } else {
+            logger.info('MindMapAgent 返回空结果，使用原 scanner 输出')
+          }
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err)
+          logger.warn('MindMapAgent 失败，降级使用原 scanner:', err)
+          await writeWarning(`AI 增强失败：${reason}`, reason)
+        }
+      } else {
+        logger.info('AgentManager 不可用，跳过 AI 增强')
+      }
+
+      // 3. 用模块列表替换 scanResult 的 modules（后续分析基于此）
+      const enrichedScanResult: ProjectScanResult = {
+        ...scanResult,
+        modules,
+      }
+
+      // 4. 分析生成节点和边（dagre 布局在 analyzer 内部完成）
+      const analyzer = new ProjectAnalyzer()
+      const graphResult = analyzer.analyze(enrichedScanResult)
+
+      // 5. 创建图和节点（事务保护，确保数据一致性）
+      await progress('creating_graph', `正在创建 online/dev 图（${modules.length} 个模块）…`)
+      const onlineGraphId = generateId('graph-online')
+      const devGraphId = generateId('graph-dev')
+
+      // better-sqlite3 transaction: auto-commit on normal return, auto-rollback on exception
+      this.db.transaction(() => {
+        // 创建 online 图（产品蓝图）
+        this.db.prepare(
+          'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now)
+
+        // 创建 dev 图（开发场景）
+        this.db.prepare(
+          'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
+
+        this.createNodes(onlineGraphId, 'online', graphResult, now, this.db)
+        this.createNodes(devGraphId, 'dev', graphResult, now, this.db)
+      })()
+
+      this.invalidateProjectPathsCache()
+
+      const featureCount = modules.reduce(
+        (sum, m) =>
+          sum +
+          m.processes.reduce(
+            (pSum, p) => pSum + p.features.length,
+            0,
+          ),
+        0,
+      )
+
+      if (this.chatService && threadId) {
+        await this.chatService.saveMessage(threadId, {
+          id: generateId('msg'),
+          role: 'system',
+          content: `思维导图创建成功：${modules.length} 个模块，${featureCount} 个功能点`,
+          timestamp: Date.now(),
+          adapterName: 'mindmap-internal',
+          status: 'success',
+          stage: 'creating_graph',
+          structuredContent: [
+            {
+              type: 'text',
+              data: {
+                graphId: onlineGraphId,
+                moduleCount: modules.length,
+                featureCount,
+              },
+            },
+          ],
+        })
+        await this.chatService.updateThread(threadId, { status: 'idle' })
+      }
+
+      return {
+        onlineGraph: {
+          id: onlineGraphId,
+          name: `${projectName} - 产品蓝图`,
+          type: 'online' as const,
+          projectPath,
+          createdAt: now,
+          updatedAt: now,
+        },
+        devGraph: {
+          id: devGraphId,
+          name: `${projectName} - 开发场景`,
+          type: 'dev' as const,
+          projectPath,
+          createdAt: now,
+          updatedAt: now,
+        },
+        modules: enrichedScanResult.modules,
+        threadId,
+      }
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      logger.error('initFromProject failed:', err)
+      await writeError(`生成思维导图失败：${reason}`, reason)
+      throw err
     }
   }
 
@@ -191,8 +425,8 @@ export class GraphService {
       id, type, status, title, description, acceptance_criteria,
       graph_id, graph_type, parent_id, rules, metadata, owner_role,
       position_x, position_y, content, community_summary, community_level,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      wiki_content, wiki_meta, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
     const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
 
@@ -232,6 +466,8 @@ export class GraphService {
         nodeData.content ? JSON.stringify(nodeData.content) : null,
         nodeData.communitySummary ?? null,
         nodeData.communityLevel ?? null,
+        nodeData.wikiContent ?? null,
+        nodeData.wikiMeta ? JSON.stringify(nodeData.wikiMeta) : null,
         now,
         now,
       )

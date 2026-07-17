@@ -78,7 +78,7 @@ export interface AgentCommand {
 
 /** Agent 输出 */
 export interface AgentOutput {
-  type: 'stdout' | 'stderr' | 'file_change' | 'error' | 'complete' | 'system'
+  type: 'stdout' | 'stderr' | 'file_change' | 'error' | 'complete' | 'system' | 'progress' | 'thinking' | 'tool_call' | 'context_injection'
   data: string
   timestamp: number
   /** 如果是 file_change，记录变更的文件路径 */
@@ -91,6 +91,16 @@ export interface AgentOutput {
   pattern?: string
   /** Phase 2: subagent output routing tag. Set by SubagentManager (Phase 4). */
   invocationId?: string
+  /** 当前执行阶段（progress / thinking / tool_call / context_injection 语义用） */
+  stage?: string
+  /** 进度信息（progress 语义用） */
+  progress?: { current: number; total: number; label: string }
+  /** 工具调用块（tool_call 语义用） */
+  toolCall?: ToolCallBlock
+  /** 注入的上下文引用（context_injection 语义用） */
+  contextRefs?: ContextRef[]
+  /** 该输出条目的 token 估算 */
+  tokenEstimate?: number
 }
 
 /** 已解析的上下文（含实际内容，用于注入 prompt） */
@@ -147,6 +157,15 @@ export interface ChatMessage {
   adapterName?: string
   toolCalls?: ToolCallBlock[]
   contextRefs?: ContextRef[]
+  /** 结构化内容块（progress / thinking / tool_call / context_injection / text） */
+  structuredContent?: Array<{
+    type: 'progress' | 'thinking' | 'tool_call' | 'context_injection' | 'text'
+    data: unknown
+  }>
+  /** 该消息的 token 估算 */
+  tokenEstimate?: number
+  /** 当前执行阶段（用于展示 thinking / progress 等上下文） */
+  stage?: string
   status: MessageStatus
   error?: MessageError
   sessionId?: string

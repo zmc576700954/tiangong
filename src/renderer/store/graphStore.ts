@@ -78,6 +78,9 @@ interface GraphState {
 
   /** 清理事件监听，释放资源 */
   destroy: () => void
+
+  /** 确保当前图存在 Graph Index / Graph Log 特殊 Wiki 页（LLM-Wiki） */
+  ensureSpecialWikiPages: () => Promise<{ indexId: string | null; logId: string | null }>
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -520,6 +523,49 @@ export const useGraphStore = create<GraphState>((set, get) => {
   destroy: () => {
     _unsubAgentStatus?.()
     _unsubAgentStatus = null
+  },
+
+  ensureSpecialWikiPages: async () => {
+    const graphId = get().currentGraphId
+    if (!graphId) return { indexId: null, logId: null }
+
+    const graph = get().graphs.find((g) => g.id === graphId)
+    const graphType = graph?.type ?? 'online'
+    const existing = get().nodes.filter((n) => n.type === 'wiki-page')
+
+    let indexNode = existing.find((n) => n.title === 'Graph Index')
+    if (!indexNode) {
+      indexNode = await get().createNode({
+        type: 'wiki-page',
+        status: 'confirmed',
+        title: 'Graph Index',
+        description: '本图的索引页，汇总所有节点与关系。',
+        graphId,
+        graphType,
+        position: { x: -400, y: 0 },
+        acceptanceCriteria: [],
+        wikiContent: '# Graph Index\n\n这是本图的索引 Wiki 页，可以用 [[页面标题]] 链接到其他 Wiki 页面。',
+        wikiMeta: { special: 'index' },
+      })
+    }
+
+    let logNode = existing.find((n) => n.title === 'Graph Log')
+    if (!logNode) {
+      logNode = await get().createNode({
+        type: 'wiki-page',
+        status: 'confirmed',
+        title: 'Graph Log',
+        description: '本图的变更日志。',
+        graphId,
+        graphType,
+        position: { x: -400, y: 120 },
+        acceptanceCriteria: [],
+        wikiContent: '# Graph Log\n\n记录本图的变更历史、Agent 会话产物与重要决策。',
+        wikiMeta: { special: 'log' },
+      })
+    }
+
+    return { indexId: indexNode.id, logId: logNode.id }
   },
   }
 })

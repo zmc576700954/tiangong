@@ -32,6 +32,7 @@ export const Events = {
   CONFIRMATION_RESPONDED: 'confirmation:responded',
   GENERATION_PROGRESS: 'generation:progress',
   NODE_STATUS_CHANGE: 'node:statusChange',
+  NAVIGATE_TO_NODE: 'node:navigate',
   OPEN_ADAPTER_SELECTOR: 'adapter:openSelector',
   ADAPTER_RECOVERED: 'adapter:recovered',
 } as const
@@ -59,6 +60,7 @@ interface EventParamMap {
   [Events.CONFIRMATION_RESPONDED]: [payload: unknown]
   [Events.GENERATION_PROGRESS]: [payload: unknown]
   [Events.NODE_STATUS_CHANGE]: [nodeId: string, oldStatus: string, newStatus: string]
+  [Events.NAVIGATE_TO_NODE]: [nodeId: string]
   [Events.OPEN_ADAPTER_SELECTOR]: []
   [Events.ADAPTER_RECOVERED]: [adapterName: string]
 }

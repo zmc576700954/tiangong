@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 import { useVerificationFlow } from '../useVerificationFlow'
-import type { ChatMessage, AgentOutput, VerificationReport } from '@shared/types'
+import type { ChatMessage, VerificationReport } from '@shared/types'
 
 const mockVerify = vi.fn()
 
@@ -47,9 +47,11 @@ describe('useVerificationFlow', () => {
 
   it('startVerification calls agent:verify and sets report', async () => {
     const report: VerificationReport = {
-      passed: true,
-      criteria: [{ criterion: 'Works correctly', passed: true, evidence: 'Test passed' }],
-      summary: 'All criteria met',
+      nodeId: 'node-1',
+      passedCount: 1,
+      totalCount: 1,
+      timestamp: Date.now(),
+      results: [{ criterion: 'Works correctly', passed: true, justification: 'Test passed' }],
     }
     mockVerify.mockResolvedValue(report)
 
@@ -101,7 +103,13 @@ describe('useVerificationFlow', () => {
   })
 
   it('resetVerification clears all state', async () => {
-    mockVerify.mockResolvedValue({ passed: true, criteria: [], summary: 'ok' })
+    mockVerify.mockResolvedValue({
+      nodeId: 'node-1',
+      passedCount: 1,
+      totalCount: 1,
+      timestamp: Date.now(),
+      results: [],
+    })
 
     const { result } = renderHook(() =>
       useVerificationFlow(makeThread(), makeNode(), [], '/project'),

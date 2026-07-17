@@ -9,6 +9,7 @@ describe('nodeTypeRegistry', () => {
     expect(types).toContain('process')
     expect(types).toContain('feature')
     expect(types).toContain('bug')
+    expect(types).toContain('wiki-page')
   })
 
   it('get returns config for known type', () => {
@@ -32,7 +33,7 @@ describe('nodeTypeRegistry', () => {
 
   it('listConfigs returns all configs', () => {
     const configs = nodeTypeRegistry.listConfigs()
-    expect(configs.length).toBeGreaterThanOrEqual(5)
+    expect(configs.length).toBeGreaterThanOrEqual(6)
   })
 
   it('register adds a new type', () => {
@@ -50,6 +51,8 @@ describe('nodeTypeRegistry', () => {
     expect(nodeTypeRegistry.validateParentChild('module', 'process')).toBe(true)
     expect(nodeTypeRegistry.validateParentChild('process', 'feature')).toBe(true)
     expect(nodeTypeRegistry.validateParentChild('process', 'bug')).toBe(true)
+    expect(nodeTypeRegistry.validateParentChild('module', 'wiki-page')).toBe(true)
+    expect(nodeTypeRegistry.validateParentChild('wiki-page', 'wiki-page')).toBe(true)
   })
 
   it('validateParentChild returns false for invalid parent-child', () => {
@@ -86,11 +89,11 @@ describe('nodeTypeRegistry', () => {
       defaultStatus: 'draft',
     })
     nodeTypeRegistry.attachBehavior('behavior-test', {
-      canHaveBugs: true,
+      onCreate: async () => {},
     })
     const behavior = nodeTypeRegistry.getBehavior('behavior-test')
     expect(behavior).toBeDefined()
-    expect(behavior?.canHaveBugs).toBe(true)
+    expect(behavior?.onCreate).toBeDefined()
   })
 
   it('attachBehavior throws for unknown type', () => {

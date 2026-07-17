@@ -12,6 +12,41 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('sendPromptViaAgent')
 
+export interface CreateAgentSessionOptions {
+  nodeTitle?: string
+  timeoutMs?: number
+  adapterName?: string
+  threadId?: string
+}
+
+/**
+ * 仅为 prompt 创建一个 Agent 会话并返回 sessionId。
+ * 调用方需要自行 addSessionOutputListener + sendCommand，以便实时消费输出。
+ */
+export async function createAgentSessionForPrompt(
+  agentManager: AgentManager,
+  projectPath: string,
+  _prompt: string,
+  options?: CreateAgentSessionOptions,
+): Promise<string> {
+  const config: AgentSessionConfig = {
+    workingDirectory: projectPath,
+    allowedFiles: [],
+    forbiddenFiles: [],
+    invariantRules: [],
+    upstreamContext: '',
+    downstreamContext: '',
+    nodeTitle: options?.nodeTitle ?? '思维导图生成',
+    acceptanceCriteria: [],
+    timeoutMs: options?.timeoutMs ?? 300_000,
+    threadId: options?.threadId,
+  }
+
+  const adapterName = options?.adapterName ?? 'claude-code'
+  const { sessionId } = await agentManager.startSession(adapterName, config)
+  return sessionId
+}
+
 /**
  * 创建会话、发送 prompt、收集全部输出
  * @returns Claude 的完整文本输出

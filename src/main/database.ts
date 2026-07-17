@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 4
+const CURRENT_SCHEMA_VERSION = 5
 
 interface TableSchema {
   name: string
@@ -257,7 +257,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
     createSql: `
       CREATE TABLE nodes (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug')),
+        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug', 'wiki-page')),
         status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
         title TEXT NOT NULL,
         description TEXT,
@@ -274,6 +274,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
         community_summary TEXT,
         community_level INTEGER,
         context_refs TEXT,
+        wiki_content TEXT,
+        wiki_meta TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -658,11 +660,8 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
     addColumnSafe('memory_items', 'embedding', 'TEXT', 'NULL')
   }
 
-  if (currentVersion < 4) {
-    addColumnSafe('chat_messages', 'token_count', 'INTEGER', '0')
-    addColumnSafe('chat_threads', 'parent_thread_id', 'TEXT')
-    addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
-    addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '200000')
-    addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER')
+  if (currentVersion < 5) {
+    addColumnSafe('nodes', 'wiki_content', 'TEXT')
+    addColumnSafe('nodes', 'wiki_meta', 'TEXT')
   }
 }

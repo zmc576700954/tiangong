@@ -26,6 +26,7 @@ import type {
   BusinessRule,
   NodeMetadata,
 } from '@shared/types'
+import { WikiPageEditor } from '../components/wiki/WikiPageEditor'
 
 // ==================== Editable Title ====================
 
@@ -491,11 +492,13 @@ export function NodeEditor({
   onUpdate,
   onDelete,
   onStartAgent,
+  onNavigate,
 }: {
   node: GraphNode
   onUpdate: (data: Partial<GraphNode>) => void
   onDelete: () => void
   onStartAgent: () => void
+  onNavigate?: (nodeId: string) => void
 }) {
   const { nodes } = useGraphStore()
 
@@ -504,6 +507,9 @@ export function NodeEditor({
 
   const handleTitleSave = useCallback((title: string) => onUpdate({ title }), [onUpdate])
   const handleDescriptionSave = useCallback((v: string) => onUpdate({ description: v }), [onUpdate])
+  const handleWikiUpdate = useCallback((data: { wikiContent?: string; wikiMeta?: Record<string, unknown> }) => {
+    onUpdate(data)
+  }, [onUpdate])
 
   return (
     <div className="p-3 space-y-4">
@@ -527,6 +533,16 @@ export function NodeEditor({
       {/* Status selector for feature/bug */}
       {(node.type === 'feature' || node.type === 'bug') && (
         <StatusSelector status={node.status} onChange={(s) => onUpdate({ status: s })} />
+      )}
+
+      {/* Wiki page editor */}
+      {node.type === 'wiki-page' && (
+        <WikiPageEditor
+          wikiContent={node.wikiContent}
+          wikiMeta={node.wikiMeta}
+          onUpdate={handleWikiUpdate}
+          onNavigate={onNavigate}
+        />
       )}
 
       {/* Description */}
@@ -604,13 +620,13 @@ export function NodeEditor({
 
       {/* Action buttons */}
       <div className="pt-2 space-y-2 border-t">
-        {node.type === 'feature' && (
+        {(node.type === 'feature' || node.type === 'wiki-page') && (
           <button
             onClick={onStartAgent}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
           >
             <Play className="w-3.5 h-3.5" />
-            Implement with Agent
+            {node.type === 'wiki-page' ? '完善 Wiki 内容' : 'Implement with Agent'}
           </button>
         )}
         {node.type !== 'project' && (

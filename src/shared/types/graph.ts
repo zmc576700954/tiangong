@@ -16,6 +16,10 @@ export interface ContextRef {
   content?: string
   /** 上下文来源 */
   source?: 'user-attach' | 'right-click' | 'mention' | 'auto-scope'
+  /** 在 type='text' 时进一步区分 project / snippet，用于 UI 图标/颜色 */
+  kind?: 'project' | 'snippet'
+  /** Token 估算（可选，用于上下文汇总展示） */
+  tokenEstimate?: number
 }
 
 // ============================================
@@ -39,6 +43,7 @@ export type NodeType =
   | 'process'      // 业务流程
   | 'feature'      // 功能点（仅开发场景）
   | 'bug'          // BUG点（仅开发场景）
+  | 'wiki-page'    // Wiki 页面（可包含 markdown 内容、YAML frontmatter、wikilink）
 
 /** 图类型：每个项目只有两张图 */
 export type GraphType = 'online' | 'dev'
@@ -108,6 +113,10 @@ export interface GraphNode {
   metadata?: NodeMetadata
   /** 节点详细内容（图谱内部存储） */
   content?: NodeContent
+  /** Wiki 页面 Markdown 内容（LLM-Wiki） */
+  wikiContent?: string
+  /** Wiki 页面 YAML frontmatter 元数据（LLM-Wiki） */
+  wikiMeta?: Record<string, unknown>
   /** 预计算的社区摘要 */
   communitySummary?: string
   /** 所属社区层级 0=项目级 1=模块级 2=流程级 */
@@ -341,7 +350,7 @@ export interface ProjectMemory {
 // ============================================
 
 export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
-export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug'] as const
+export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page'] as const
 export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
 export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
@@ -443,6 +452,18 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
     { from: 'testing', to: 'review' },
     { from: 'review', to: 'testing' },
     { from: 'review', to: 'published' },
+  ],
+  'wiki-page': [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'draft', to: 'placeholder' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'confirmed', to: 'published' },
+    { from: 'published', to: 'confirmed' },
+    { from: 'published', to: 'draft' },
+    { from: 'published', to: 'placeholder' },
+    { from: 'placeholder', to: 'draft' },
+    { from: 'placeholder', to: 'confirmed' },
   ],
 }
 

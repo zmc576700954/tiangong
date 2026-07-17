@@ -62,13 +62,23 @@ describe('registerSubagentHandlers', () => {
   it('getResult returns result for completed invocation', async () => {
     vi.mocked(repo.get).mockResolvedValue({
       id: 'inv-1',
+      parentSessionId: 's1',
+      parentMessageId: null,
+      graphId: null,
+      agentType: 'explore',
+      description: 'test',
+      prompt: 'go',
+      adapterName: null,
+      nodeId: null,
+      allowedFiles: null,
       status: 'completed',
       resultText: 'done',
       resultFiles: ['file.ts'],
       tokensUsed: 100,
       startedAt: 1000,
       finishedAt: 2000,
-    } as any)
+      error: null,
+    })
 
     const result = await handlers['subagent:getResult']({}, 'inv-1')
     expect(result).toEqual({
@@ -83,8 +93,23 @@ describe('registerSubagentHandlers', () => {
   it('getResult returns null for non-completed invocation', async () => {
     vi.mocked(repo.get).mockResolvedValue({
       id: 'inv-1',
+      parentSessionId: 's1',
+      parentMessageId: null,
+      graphId: null,
+      agentType: 'explore',
+      description: 'test',
+      prompt: 'go',
+      adapterName: null,
+      nodeId: null,
+      allowedFiles: null,
       status: 'running',
-    } as any)
+      resultText: null,
+      resultFiles: null,
+      tokensUsed: 0,
+      startedAt: 1000,
+      finishedAt: null,
+      error: null,
+    })
 
     const result = await handlers['subagent:getResult']({}, 'inv-1')
     expect(result).toBeNull()

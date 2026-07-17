@@ -29,6 +29,8 @@ export class NodeRepository {
       rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
       metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
       contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
+      wikiContent: typeof row.wiki_content === 'string' ? row.wiki_content : undefined,
+      wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined),
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
       createdAt: row.created_at as string,
@@ -44,8 +46,8 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, context_refs, wiki_content, wiki_meta, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -62,6 +64,8 @@ export class NodeRepository {
       data.position.x,
       data.position.y,
       data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+      data.wikiContent ?? null,
+      data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
       now,
       now,
     )
@@ -79,8 +83,8 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, context_refs, wiki_content, wiki_meta, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
@@ -103,6 +107,8 @@ export class NodeRepository {
           data.position.x,
           data.position.y,
           data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+          data.wikiContent ?? null,
+          data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
           now,
           now,
         )
@@ -128,6 +134,8 @@ export class NodeRepository {
     if (data.rules !== undefined) { updates.push('rules = ?'); args.push(JSON.stringify(data.rules)) }
     if (data.metadata !== undefined) { updates.push('metadata = ?'); args.push(JSON.stringify(data.metadata)) }
     if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
+    if (data.wikiContent !== undefined) { updates.push('wiki_content = ?'); args.push(data.wikiContent) }
+    if (data.wikiMeta !== undefined) { updates.push('wiki_meta = ?'); args.push(JSON.stringify(data.wikiMeta)) }
     if (data.ownerRole !== undefined) { updates.push('owner_role = ?'); args.push(data.ownerRole) }
     if (data.position !== undefined) { updates.push('position_x = ?, position_y = ?'); args.push(data.position.x, data.position.y) }
 

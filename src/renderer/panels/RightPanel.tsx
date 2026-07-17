@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
+import { eventBus, Events } from '../store/eventBus'
 import { cn } from '../lib/utils'
 import { AgentChatPanel } from '../components/agent/AgentChatPanel'
 import { NodeEditor } from './NodeEditor'
@@ -50,6 +51,10 @@ export function RightPanel({
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId)
   const selectedEdge = edges.find((e) => e.id === selectedEdgeId)
+
+  const handleNodeNavigate = (targetId: string) => {
+    eventBus.emit(Events.NAVIGATE_TO_NODE, targetId)
+  }
 
   // 注意：不再自动切换 tab。用户选择节点后，需要手动点击 'node' tab 查看详情。
   // 这避免覆盖用户的显式 tab 选择。
@@ -107,6 +112,7 @@ export function RightPanel({
                   selectNode(null)
                 }}
                 onStartAgent={() => setActiveTab('agent')}
+                onNavigate={handleNodeNavigate}
               />
             ) : selectedEdge ? (
               <EdgeEditor

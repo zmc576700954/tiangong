@@ -47,7 +47,7 @@ describe('NODE_STATUS_LABELS', () => {
 
 describe('NODE_TYPE_LABELS', () => {
   it('has a non-empty label for every NodeType', () => {
-    const types: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
+    const types: NodeType[] = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page']
     for (const type of types) {
       expect(NODE_TYPE_LABELS[type]).toBeTruthy()
     }
@@ -56,7 +56,7 @@ describe('NODE_TYPE_LABELS', () => {
 
 describe('NODE_TYPE_COLORS', () => {
   it('has a hex color for every NodeType', () => {
-    const types: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
+    const types: NodeType[] = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page']
     for (const type of types) {
       expect(NODE_TYPE_COLORS[type]).toMatch(/^#/)
     }
@@ -65,7 +65,7 @@ describe('NODE_TYPE_COLORS', () => {
 
 describe('CANVAS_NODE_TYPES', () => {
   it('includes all NodeType values with labels and colors', () => {
-    const expected: NodeType[] = ['project', 'module', 'process', 'feature', 'bug']
+    const expected: NodeType[] = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page']
     const types = CANVAS_NODE_TYPES.map((n) => n.type)
     expect(types).toEqual(expected)
     for (const node of CANVAS_NODE_TYPES) {

@@ -12,20 +12,20 @@ function makeContext(overrides?: Partial<MindMapContext>): MindMapContext {
     readmeContent: '# Test',
     entryPointContent: 'console.log("hi")',
     memory: {
-      projectName: 'TestProject',
+      projectId: 'p1',
+      projectPath: '/test',
+      businessDomains: [],
+      architecturePattern: '',
+      coreUserFlows: [],
+      techConstraints: [],
+      refinements: [],
       preferences: {
         namingStyle: 'business',
         granularity: 'medium',
         maxModules: 6,
         avoidPatterns: ['npm run'],
-        businessDomains: [],
-        technicalDomains: [],
-        refinements: [],
       },
-      refinements: [],
-      modules: [],
-      architecturePattern: '',
-      businessDomains: [],
+      updatedAt: new Date().toISOString(),
     },
     keyFileSnippets: '[auth] Auth module',
     ...overrides,
@@ -65,7 +65,6 @@ describe('buildGlobalPrompt', () => {
       memory: {
         ...makeContext().memory,
         businessDomains: ['用户管理', '订单系统'],
-        preferences: { ...makeContext().memory.preferences, businessDomains: ['用户管理', '订单系统'] },
       },
     })
     const prompt = buildGlobalPrompt(ctx)

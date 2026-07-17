@@ -232,8 +232,8 @@ export async function registerIpcHandlers(): Promise<void> {
     }
   })
 
-  const graphService = new GraphService(db, agentManager)
   const chatService = new ChatService(chatRepo, contextWaterline)
+  const graphService = new GraphService(db, agentManager, chatService)
   setupAgentLogPersistence()
   const typedHandle = createTypedHandle(ipcMain)
 
@@ -355,7 +355,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db))
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
-  registerProjectHandlers(typedHandle, graphService)
+  registerProjectHandlers(typedHandle, graphService, chatService)
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager)

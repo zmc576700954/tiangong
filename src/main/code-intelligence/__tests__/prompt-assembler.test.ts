@@ -108,6 +108,7 @@ describe('PromptAssembler', () => {
       relatedSymbols: [makeSymbolResult('validateToken')],
       relatedFiles: [{
         filePath: 'src/types.ts',
+        distance: 1,
         reason: 'import',
         content: 'export interface User { id: string }',
       }],
@@ -137,8 +138,17 @@ describe('PromptAssembler', () => {
     const context: ResolvedCodeContext = {
       summary: '',
       primarySymbols: [makeSymbolResult('authenticate', {
-        signature: 'async function authenticate(): Promise<User>',
-        jsDoc: 'Authenticates user',
+        symbol: {
+          id: 'sym-auth',
+          name: 'authenticate',
+          kind: 'function',
+          filePath: 'src/index.ts',
+          line: 10,
+          column: 0,
+          isExported: true,
+          signature: 'async function authenticate(): Promise<User>',
+          jsDoc: 'Authenticates user',
+        },
       })],
       relatedSymbols: [],
       relatedFiles: [],

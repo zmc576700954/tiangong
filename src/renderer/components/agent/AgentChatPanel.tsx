@@ -16,7 +16,7 @@ import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
 import { ChatInput } from './ChatInput'
 import { TerminalView } from './TerminalView'
-import { ThreadListOverlay } from './ThreadListOverlay'
+import { ThreadListSidebar } from './ThreadListSidebar'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
@@ -57,7 +57,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const selectThread = useAgentStore((s) => s.selectThread)
 
   const [viewMode, setViewMode] = useState<'chat' | 'terminal'>('chat')
-  const [showThreadList, setShowThreadList] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [showContextPicker, setShowContextPicker] = useState(false)
   const [selectedAdapter, setSelectedAdapter] = useState('auto')
@@ -364,7 +364,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         noAdaptersInstalled={noAdaptersInstalled}
         onSelectAdapter={setSelectedAdapter}
         onNewThread={handleNewThread}
-        onToggleThreads={() => setShowThreadList(!showThreadList)}
+        onToggleThreads={() => setSidebarCollapsed((c) => !c)}
         onToggleView={setViewMode}
         onToggleExpand={onToggleExpand}
         onOpenHistory={() => setShowHistory(true)}
@@ -375,23 +375,25 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onOpenSubagents={() => setShowSubagentPanel(true)}
       />
 
-      {showThreadList && (
-        <ThreadListOverlay
+      <div className="flex-1 min-h-0 flex">
+        <ThreadListSidebar
           threads={threads}
           currentThreadId={currentThreadId}
-          onSelect={(id) => { selectThread(id); setShowThreadList(false) }}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((c) => !c)}
+          onSelect={selectThread}
+          onNewThread={handleNewThread}
           onDelete={deleteThread}
           onRename={renameThread}
-          onClose={() => setShowThreadList(false)}
         />
-      )}
 
-      <div className="relative">
-        <ContextBar
-          contexts={attachedContexts}
-          onRemove={handleRemoveContext}
-          onAdd={() => setShowContextPicker((v) => !v)}
-        />
+        <div className="flex-1 min-h-0 flex flex-col">
+          <div className="relative">
+            <ContextBar
+              contexts={attachedContexts}
+              onRemove={handleRemoveContext}
+              onAdd={() => setShowContextPicker((v) => !v)}
+            />
         {showContextPicker && (
           <ContextPickerPopup
             onSelect={handleContextPickerSelect}
@@ -649,7 +651,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         threadId={currentThreadId ?? undefined}
       />
 
-      <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />
+      </div>
+    </div>
+
+    <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />
 
       <SubagentInvocationsPanel
         open={showSubagentPanel}

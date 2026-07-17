@@ -43,6 +43,7 @@ export const NODE_TYPE_LABELS: Record<NodeType, string> = {
   process: '业务流程',
   feature: '功能点',
   bug: 'BUG点',
+  'wiki-page': 'Wiki 页面',
 }
 
 /** 节点类型颜色 */
@@ -52,6 +53,7 @@ export const NODE_TYPE_COLORS: Record<NodeType, string> = {
   process: '#8b5cf6',
   feature: '#22c55e',
   bug: '#ef4444',
+  'wiki-page': '#f59e0b',
 }
 
 /** 思维导图中可创建的节点类型 */
@@ -61,6 +63,7 @@ export const CANVAS_NODE_TYPES = [
   { type: 'process', label: '业务流程', color: '#8b5cf6' },
   { type: 'feature', label: '功能点', color: '#22c55e' },
   { type: 'bug', label: 'BUG点', color: '#ef4444' },
+  { type: 'wiki-page', label: 'Wiki 页面', color: '#f59e0b' },
 ] as const
 
 /** Bug 严重级别标签 */

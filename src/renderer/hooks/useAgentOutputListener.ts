@@ -4,7 +4,7 @@ import { useMessageStore } from '../store/messageStore'
 import { useSubagentStore } from '../store/subagentStore'
 import { eventBus, Events } from '../store/eventBus'
 import { generateId } from '../lib/utils'
-import type { AgentOutput, ChatMessage, ToolCallBlock } from '@shared/types'
+import type { AgentOutput, ChatMessage, ToolCallBlock, ContextRef } from '@shared/types'
 
 // ==================== Risk level classification ====================
 
@@ -179,6 +179,107 @@ export function useAgentOutputListener(currentThreadId: string | null) {
           store.appendToStreamingMessage(tid, msgId, '\n' + text)
         }
         store.updateThreadStatus(tid, 'running')
+        return
+      }
+
+      if (output.type === 'progress') {
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
+          store.appendChatMessage(tid, {
+            id: msgId,
+            role: 'agent',
+            content: '',
+            timestamp: output.timestamp,
+            adapterName,
+            status: 'streaming',
+            structuredContent: [],
+          })
+        }
+        store.appendStructuredContent(tid, msgId, {
+          type: 'progress',
+          data: {
+            stage: output.stage,
+            label: output.progress?.label ?? output.data,
+            current: output.progress?.current,
+            total: output.progress?.total,
+          },
+        })
+        store.updateThreadStatus(tid, 'running')
+        return
+      }
+
+      if (output.type === 'thinking') {
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
+          store.appendChatMessage(tid, {
+            id: msgId,
+            role: 'agent',
+            content: '',
+            timestamp: output.timestamp,
+            adapterName,
+            status: 'streaming',
+            structuredContent: [],
+          })
+        }
+        store.appendStructuredContent(tid, msgId, {
+          type: 'thinking',
+          data: { stage: output.stage, data: output.data },
+        })
+        store.updateThreadStatus(tid, 'running')
+        return
+      }
+
+      if (output.type === 'tool_call') {
+        const toolCall = output.toolCall
+        if (!toolCall) return
+
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
+          store.appendChatMessage(tid, {
+            id: msgId,
+            role: 'agent',
+            content: '',
+            timestamp: output.timestamp,
+            adapterName,
+            status: 'streaming',
+            toolCalls: [],
+          })
+        }
+        store.appendToolCall(tid, msgId, toolCall)
+        store.updateThreadStatus(tid, 'running')
+        return
+      }
+
+      if (output.type === 'context_injection') {
+        const refs: ContextRef[] = output.contextRefs ?? []
+        let msgId = streamingMsgIdRef.current.get(tid)
+        if (!msgId) {
+          msgId = generateId('msg')
+          streamingMsgIdRef.current.set(tid, msgId)
+          store.appendChatMessage(tid, {
+            id: msgId,
+            role: 'system',
+            content: output.data,
+            timestamp: output.timestamp,
+            adapterName,
+            status: 'success',
+            contextRefs: refs,
+            tokenEstimate: output.tokenEstimate,
+            structuredContent: [],
+          })
+        } else {
+          store.setMessageContextRefs(tid, msgId, refs, output.tokenEstimate)
+        }
+        store.appendStructuredContent(tid, msgId, {
+          type: 'context_injection',
+          data: { contextRefs: refs, tokenEstimate: output.tokenEstimate },
+        })
         return
       }
 

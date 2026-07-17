@@ -71,6 +71,16 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
       throw new IpcError('Node update data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     const node = data as Record<string, unknown>
+    if (node.wikiContent !== undefined) {
+      if (typeof node.wikiContent !== 'string') {
+        throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
+    if (node.wikiMeta !== undefined) {
+      if (node.wikiMeta !== null && (typeof node.wikiMeta !== 'object' || Array.isArray(node.wikiMeta))) {
+        throw new IpcError('wikiMeta must be an object or null', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+    }
     if (node.title !== undefined) ensureString('title', node.title, MAX_TITLE_LEN)
     if (node.description !== undefined) {
       if (typeof node.description !== 'string' || node.description.length > MAX_DESCRIPTION_LEN) {

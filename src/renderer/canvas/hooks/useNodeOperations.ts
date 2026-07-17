@@ -32,6 +32,7 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       parentId,
       position,
       acceptanceCriteria: [],
+      wikiContent: childType === 'wiki-page' ? `# 新建${NODE_TYPE_LABELS[childType]}\n\n` : undefined,
     })
   }, [graphNodes, createNode, graphId, screenToFlowPosition])
 
