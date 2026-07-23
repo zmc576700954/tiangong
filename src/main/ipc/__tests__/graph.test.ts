@@ -334,4 +334,57 @@ describe('registerGraphHandlers', () => {
       await expect(handlers['wiki:resolveLink']({}, 'graph-1', '')).rejects.toThrow(IpcError)
     })
   })
+
+  describe('wiki:parseContent', () => {
+    it('rejects non-string content', async () => {
+      await expect(handlers['wiki:parseContent']({}, 'graph-1', 123)).rejects.toThrow(IpcError)
+    })
+
+    it('rejects oversized content', async () => {
+      await expect(handlers['wiki:parseContent']({}, 'graph-1', 'x'.repeat(512 * 1024 + 1))).rejects.toThrow(IpcError)
+    })
+
+    it('returns parsed structure for valid input', async () => {
+      const result = await handlers['wiki:parseContent']({}, 'graph-1', '# T\n\n[[Missing]]') as { links: unknown[]; frontmatter: Record<string, unknown> }
+      expect(result.links).toHaveLength(1)
+      expect(result.frontmatter).toEqual({})
+    })
+  })
+
+  describe('wiki:getBacklinks', () => {
+    it('rejects empty nodeId', async () => {
+      await expect(handlers['wiki:getBacklinks']({}, '')).rejects.toThrow(IpcError)
+    })
+  })
+
+  describe('wiki:findDangling', () => {
+    it('rejects empty graphId', async () => {
+      await expect(handlers['wiki:findDangling']({}, '')).rejects.toThrow(IpcError)
+    })
+  })
+
+  describe('wiki:ingestFiles', () => {
+    it('rejects empty filePaths', async () => {
+      await expect(handlers['wiki:ingestFiles']({}, 'graph-1', [])).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-array filePaths', async () => {
+      await expect(handlers['wiki:ingestFiles']({}, 'graph-1', 'x.md')).rejects.toThrow(IpcError)
+    })
+
+    it('rejects oversized batch', async () => {
+      await expect(handlers['wiki:ingestFiles']({}, 'graph-1', Array(101).fill('/a.md'))).rejects.toThrow(IpcError)
+    })
+
+    it('rejects unknown graph', async () => {
+      await expect(handlers['wiki:ingestFiles']({}, 'missing-graph', ['/tmp/a.md'])).rejects.toThrow(IpcError)
+    })
+
+    it('rejects system paths', async () => {
+      (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
+      })
+      await expect(handlers['wiki:ingestFiles']({}, 'graph-1', ['/etc/passwd.md'])).rejects.toThrow(IpcError)
+    })
+  })
 })

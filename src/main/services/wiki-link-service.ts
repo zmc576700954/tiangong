@@ -7,8 +7,11 @@
  */
 
 import type { GraphEdge, GraphNode } from '@shared/types'
+import type { DanglingLink, ParsedWikiContent, WikiLinkResolution } from '@shared/types/wiki'
 import { extractWikiLinks, normalizeWikiTitle, parseWikiMarkdown } from '../wiki/markdown-utils'
 import { WikiIndexService } from './wiki-index-service'
+
+export type { DanglingLink, ParsedWikiContent, WikiLinkResolution } from '@shared/types/wiki'
 
 export interface WikiNodeRepo {
   findById(id: string): GraphNode | null
@@ -30,25 +33,6 @@ export interface SyncLinksResult {
   added: GraphEdge[]
   removed: GraphEdge[]
   dangling: string[]
-}
-
-export interface WikiLinkResolution {
-  targetTitle: string
-  displayText?: string
-  resolved: boolean
-  nodeId?: string
-}
-
-export interface ParsedWikiContent {
-  frontmatter: Record<string, unknown>
-  title?: string
-  links: WikiLinkResolution[]
-}
-
-export interface DanglingLink {
-  fromNodeId: string
-  fromTitle: string
-  targetTitle: string
 }
 
 export class WikiLinkService {

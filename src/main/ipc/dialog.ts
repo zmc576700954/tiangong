@@ -17,4 +17,15 @@ export function registerDialogHandlers(typedHandle: TypedHandle): void {
     }
     return result.filePaths[0]
   })
+
+  typedHandle('dialog:openFiles', async (_, options?: { extensions?: string[] }) => {
+    const extensions = options?.extensions ?? ['md', 'markdown', 'txt']
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile', 'multiSelections'],
+      title: '选择要导入的文件',
+      filters: [{ name: 'Documents', extensions }],
+    })
+    if (result.canceled) return []
+    return result.filePaths
+  })
 }

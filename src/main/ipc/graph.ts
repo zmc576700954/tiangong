@@ -4,6 +4,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
+import * as fs from 'fs/promises'
 import type { GraphService } from '../services/graph-service'
 import { NodeRepository } from '../repositories/node-repository'
 import { EdgeRepository } from '../repositories/edge-repository'
@@ -14,14 +15,18 @@ import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } fro
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
+import { IngestService } from '../wiki/ingest-service'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
-import { ensureString, ensureOptionalNumber, MAX_ID_LEN } from './utils'
+import { ensureString, ensureOptionalNumber, validateProjectPath, MAX_ID_LEN } from './utils'
 
 const logger = createLogger('GraphIPC')
+
+/** wiki:parseContent 的 content 最大长度（512 KB） */
+const MAX_WIKI_CONTENT_LEN = 512 * 1024
 
 export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
   const nodeRepo = new NodeRepository(db)
@@ -299,6 +304,47 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     ensureString('graphId', graphId, MAX_ID_LEN)
     ensureString('targetTitle', targetTitle, MAX_TITLE_LEN)
     return WikiIndexService.resolveWikiLink(graphId, targetTitle, nodeRepo)
+  })
+
+  typedHandle('wiki:parseContent', async (_, graphId: string, content: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    ensureString('content', content, MAX_WIKI_CONTENT_LEN)
+    return WikiLinkService.parseContent(graphId, content, nodeRepo)
+  })
+
+  typedHandle('wiki:getBacklinks', async (_, nodeId: string) => {
+    ensureString('nodeId', nodeId, MAX_ID_LEN)
+    const nodes = WikiLinkService.getBacklinks(nodeId, nodeRepo, edgeRepo)
+    return nodes.map((n) => ({ id: n.id, title: n.title }))
+  })
+
+  typedHandle('wiki:findDangling', async (_, graphId: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    return WikiLinkService.findDanglingLinks(graphId, nodeRepo)
+  })
+
+  typedHandle('wiki:ingestFiles', async (_, graphId: string, filePaths: string[]) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    if (!Array.isArray(filePaths) || filePaths.length === 0) {
+      throw new IpcError('filePaths must be a non-empty array', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    // 批量上限 100：IngestService 第二遍逐节点 syncNodeLinks 是 O(N²)，限制批量控制开销
+    if (filePaths.length > 100) {
+      throw new IpcError('filePaths exceeds max batch size 100', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const graphData = await graphService.getGraph(graphId)
+    if (!graphData) {
+      throw new IpcError(`Graph not found: ${graphId}`, ErrorCode.IPC_HANDLER_ERROR)
+    }
+    // 路径安全：拒绝系统目录（与 validateProjectPath 同一防线）
+    const validated = filePaths.map((p) => {
+      ensureString('filePath', p, 1024)
+      return validateProjectPath(p)
+    })
+    return IngestService.ingestFiles(
+      graphId, validated, graphData.graph.type, nodeRepo, edgeRepo,
+      (p) => fs.readFile(p, 'utf-8'),
+    )
   })
 
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册

@@ -217,7 +217,7 @@ export function NodeContextMenu({
       )}
 
       {/* 删除节点 */}
-      {node.type !== 'project' && (
+      {node.type !== 'project' && !node.wikiMeta?.specialPage && (
         <div className="border-t mt-1 pt-1">
           <button
             onClick={() => onDelete(nodeId)}

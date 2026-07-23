@@ -1,164 +1,109 @@
 /**
  * Wiki 页面编辑器
- * 支持 Markdown 内容编辑、YAML frontmatter 元数据编辑、wikilink 解析与跳转。
+ * 解析规则统一在后端（wiki:parseContent），前端只负责渲染：
+ * - Markdown 页签：原始编辑，失焦保存（同时落 markdown 与 wikiMeta.frontmatter）
+ * - 预览页签：wikilink 内联渲染，已解析可跳转，悬空可一键创建
+ * - Backlinks 页签：反向链接列表
+ * - Meta 页签：后端解析的 frontmatter 只读展示
  */
-import { useState, useCallback, useMemo } from 'react'
-import { BookOpen, PenLine, Eye, Settings2, Link2, FileText } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { BookOpen, PenLine, Eye, Settings2, Link2, FileText, Plus, CornerDownLeft } from 'lucide-react'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose,
+} from '@/components/ui/dialog'
 import { useGraphStore } from '@/store/graphStore'
+import { splitWikiLinks, formatMetaValue, type WikiLinkResolution, type WikiRenderSegment } from '@/lib/wiki-render'
 import { cn } from '@/lib/utils'
 
 interface WikiPageEditorProps {
+  nodeId: string
+  graphId: string
   wikiContent: string | undefined
   wikiMeta: Record<string, unknown> | undefined
   onUpdate: (data: { wikiContent?: string; wikiMeta?: Record<string, unknown> }) => void
   onNavigate?: (nodeId: string) => void
 }
 
-const WIKILINK_RE = /\[\[([^\]]+)\]\]/g
-
-function parseFrontmatter(meta: Record<string, unknown> | undefined): string {
-  if (!meta || Object.keys(meta).length === 0) return ''
-  const lines = Object.entries(meta).map(([key, value]) => {
-    if (Array.isArray(value)) {
-      return `${key}:\n${value.map((v) => `  - ${String(v)}`).join('\n')}`
-    }
-    if (typeof value === 'object' && value !== null) {
-      return `${key}: ${JSON.stringify(value)}`
-    }
-    return `${key}: ${String(value)}`
-  })
-  return `---\n${lines.join('\n')}\n---`
-}
-
-function parseYamlInput(input: string): Record<string, unknown> | undefined {
-  const trimmed = input.trim()
-  if (!trimmed) return undefined
-  const result: Record<string, unknown> = {}
-  const lines = trimmed.replace(/^---\n?/, '').replace(/\n?---$/, '').split('\n')
-  let currentKey: string | null = null
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (!line || line.startsWith('#')) continue
-    if (line.startsWith('- ')) {
-      const item = line.slice(2)
-      if (currentKey) {
-        const arr = result[currentKey]
-        if (Array.isArray(arr)) {
-          arr.push(item)
-        } else {
-          result[currentKey] = [item]
-        }
-      }
-      continue
-    }
-    const colonIdx = line.indexOf(':')
-    if (colonIdx === -1) continue
-    const key = line.slice(0, colonIdx).trim()
-    let value: unknown = line.slice(colonIdx + 1).trim()
-    if (value === '') {
-      currentKey = key
-      result[key] = []
-      continue
-    }
-    currentKey = null
-    if ((value as string).startsWith('[') && (value as string).endsWith(']')) {
-      try {
-        value = JSON.parse(value as string)
-      } catch {
-        // keep as string
-      }
-    } else if ((value as string).toLowerCase() === 'true') {
-      value = true
-    } else if ((value as string).toLowerCase() === 'false') {
-      value = false
-    } else if (!Number.isNaN(Number(value)) && (value as string) !== '') {
-      value = Number(value)
-    }
-    result[key] = value
-  }
-  return Object.keys(result).length > 0 ? result : undefined
-}
-
-function WikilinkRenderer({ content, nodes, onNavigate }: {
-  content: string
-  nodes: { id: string; title: string; type: string }[]
-  onNavigate?: (nodeId: string) => void
-}) {
-  const parts = useMemo(() => {
-    const result: { type: 'text' | 'link'; value: string; nodeId?: string }[] = []
-    let lastIndex = 0
-    let match: RegExpExecArray | null
-    WIKILINK_RE.lastIndex = 0
-    while ((match = WIKILINK_RE.exec(content)) !== null) {
-      if (match.index > lastIndex) {
-        result.push({ type: 'text', value: content.slice(lastIndex, match.index) })
-      }
-      const title = match[1].trim()
-      const target = nodes.find((n) => n.title === title)
-      result.push({ type: 'link', value: title, nodeId: target?.id })
-      lastIndex = match.index + match[0].length
-    }
-    if (lastIndex < content.length) {
-      result.push({ type: 'text', value: content.slice(lastIndex) })
-    }
-    return result
-  }, [content, nodes])
-
-  return (
-    <>
-      {parts.map((part, i) => {
-        if (part.type === 'text') {
-          return <span key={i}>{part.value}</span>
-        }
-        if (part.nodeId) {
-          return (
-            <button
-              key={i}
-              onClick={() => onNavigate?.(part.nodeId!)}
-              className="inline-flex items-center gap-0.5 text-primary hover:underline"
-              title="跳转到页面"
-            >
-              <Link2 className="w-3 h-3" />
-              {part.value}
-            </button>
-          )
-        }
-        return (
-          <span key={i} className="inline-flex items-center gap-0.5 text-muted-foreground" title="未找到目标页面">
-            <Link2 className="w-3 h-3" />
-            {part.value}
-          </span>
-        )
-      })}
-    </>
-  )
-}
+const PARSE_DEBOUNCE_MS = 500
 
 export function WikiPageEditor({
+  nodeId,
+  graphId,
   wikiContent,
   wikiMeta,
   onUpdate,
   onNavigate,
 }: WikiPageEditorProps) {
   const [activeTab, setActiveTab] = useState('content')
-  const [metaInput, setMetaInput] = useState(() => parseFrontmatter(wikiMeta))
-  const nodes = useGraphStore((s) => s.nodes)
+  const [draft, setDraft] = useState(wikiContent ?? '')
+  const [links, setLinks] = useState<WikiLinkResolution[]>([])
+  const [backlinks, setBacklinks] = useState<{ id: string; title: string }[]>([])
+  const [createTarget, setCreateTarget] = useState<string | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const createNode = useGraphStore((s) => s.createNode)
 
-  const handleContentChange = useCallback((value: string) => {
-    onUpdate({ wikiContent: value })
-  }, [onUpdate])
-
-  const handleMetaBlur = useCallback(() => {
-    const parsed = parseYamlInput(metaInput)
-    onUpdate({ wikiMeta: parsed })
-  }, [metaInput, onUpdate])
-
-  const plainText = useMemo(() => {
-    return (wikiContent ?? '').replace(WIKILINK_RE, (_, title: string) => title)
+  // 外部内容变化（如 Agent 更新）时同步草稿
+  useEffect(() => {
+    setDraft(wikiContent ?? '')
   }, [wikiContent])
+
+  // 防抖解析（仅更新链接解析状态，不落库）
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      window.electronAPI['wiki:parseContent'](graphId, draft)
+        .then((r) => setLinks(r.links))
+        .catch(() => setLinks([]))
+    }, PARSE_DEBOUNCE_MS)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [draft, graphId])
+
+  // Backlinks 页签激活时拉取
+  useEffect(() => {
+    if (activeTab !== 'backlinks') return
+    window.electronAPI['wiki:getBacklinks'](nodeId)
+      .then(setBacklinks)
+      .catch(() => setBacklinks([]))
+  }, [activeTab, nodeId])
+
+  const handleBlur = useCallback(() => {
+    if (draft === (wikiContent ?? '')) return
+    window.electronAPI['wiki:parseContent'](graphId, draft)
+      .then((parsed) => {
+        onUpdate({
+          wikiContent: draft,
+          wikiMeta: { ...(wikiMeta ?? {}), frontmatter: parsed.frontmatter },
+        })
+      })
+      .catch(() => {
+        // frontmatter YAML 错误时仍保存内容，wikiMeta 保持不变
+        onUpdate({ wikiContent: draft })
+      })
+  }, [draft, wikiContent, wikiMeta, graphId, onUpdate])
+
+  const handleCreatePage = useCallback(async () => {
+    if (!createTarget) return
+    const graphType = useGraphStore.getState().nodes.find((n) => n.id === nodeId)?.graphType ?? 'online'
+    const node = await createNode({
+      type: 'wiki-page',
+      status: 'draft',
+      title: createTarget,
+      graphId,
+      graphType,
+      position: { x: 0, y: 0 },
+      acceptanceCriteria: [],
+      wikiContent: `# ${createTarget}\n\n`,
+    })
+    setCreateTarget(null)
+    onNavigate?.(node.id)
+  }, [createTarget, createNode, graphId, nodeId, onNavigate])
+
+  const frontmatter = (wikiMeta?.frontmatter ?? {}) as Record<string, unknown>
+  const segments = splitWikiLinks(draft, links)
+  const hasLinks = segments.some((s) => s.kind === 'link')
 
   return (
     <div className="space-y-3">
@@ -168,7 +113,7 @@ export function WikiPageEditor({
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="grid w-full grid-cols-3 h-8">
+        <TabsList className="grid w-full grid-cols-4 h-8">
           <TabsTrigger value="content" className="text-xs gap-1">
             <PenLine className="w-3 h-3" />
             Markdown
@@ -177,64 +122,176 @@ export function WikiPageEditor({
             <Eye className="w-3 h-3" />
             预览
           </TabsTrigger>
+          <TabsTrigger value="backlinks" className="text-xs gap-1">
+            <CornerDownLeft className="w-3 h-3" />
+            反向链接
+          </TabsTrigger>
           <TabsTrigger value="meta" className="text-xs gap-1">
             <Settings2 className="w-3 h-3" />
-            Frontmatter
+            Meta
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="content" className="mt-2">
           <textarea
-            value={wikiContent ?? ''}
-            onChange={(e) => handleContentChange(e.target.value)}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={handleBlur}
             placeholder="输入 Markdown 内容... 使用 [[页面标题]] 创建 wikilink"
             className="w-full px-2 py-1.5 text-sm border rounded-md bg-background font-mono resize-y min-h-[180px]"
             spellCheck={false}
           />
           <p className="text-[10px] text-muted-foreground mt-1">
-            支持 [[页面标题]] 语法链接到同图其他 Wiki 页面
+            失焦自动保存。[[页面标题]] 或 [[页面标题|显示文本]] 链接到同图 Wiki 页面
           </p>
         </TabsContent>
 
         <TabsContent value="preview" className="mt-2">
-          <div className="border rounded-md bg-background p-3 min-h-[180px] max-h-[360px] overflow-y-auto prose prose-sm dark:prose-invert max-w-none">
-            {wikiContent ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {plainText}
-              </ReactMarkdown>
-            ) : (
+          <div className="border rounded-md bg-background p-3 min-h-[180px] max-h-[360px] overflow-y-auto">
+            {!draft ? (
               <div className="text-xs text-muted-foreground flex items-center gap-1">
                 <FileText className="w-3 h-3" />
                 暂无内容，请在 Markdown 页签中编辑
               </div>
+            ) : (
+              <>
+                {/* 结构化预览：GFM 渲染，[[link]] 以代码样式占位展示 */}
+                <div className="prose prose-sm dark:prose-invert max-w-none [&_code]:text-xs">
+                  <ReactMarkdownSkipLinks content={draft} />
+                </div>
+                {/* 链接区：wikilink 内联交互（跳转 / 创建） */}
+                {hasLinks && (
+                  <div className="mt-3 pt-2 border-t space-y-1" data-testid="wiki-links">
+                    <p className="text-[10px] text-muted-foreground">页面链接</p>
+                    <WikiLinkList segments={segments} onNavigate={onNavigate} onCreate={setCreateTarget} />
+                  </div>
+                )}
+              </>
             )}
           </div>
-          {wikiContent && (
-            <div className="mt-2 text-[10px] text-muted-foreground">
-              <WikilinkRenderer
-                content={wikiContent}
-                nodes={nodes.map((n) => ({ id: n.id, title: n.title, type: n.type }))}
-                onNavigate={onNavigate}
-              />
-            </div>
-          )}
+        </TabsContent>
+
+        <TabsContent value="backlinks" className="mt-2">
+          <div className="border rounded-md bg-background p-3 min-h-[120px]">
+            {backlinks.length === 0 ? (
+              <p className="text-xs text-muted-foreground">暂无其他页面链接到本页</p>
+            ) : (
+              <ul className="space-y-1">
+                {backlinks.map((b) => (
+                  <li key={b.id}>
+                    <button
+                      onClick={() => onNavigate?.(b.id)}
+                      className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                    >
+                      <Link2 className="w-3 h-3" />
+                      {b.title}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </TabsContent>
 
         <TabsContent value="meta" className="mt-2">
-          <textarea
-            value={metaInput}
-            onChange={(e) => setMetaInput(e.target.value)}
-            onBlur={handleMetaBlur}
-            placeholder="---\nauthor: ai\ntags:\n  - docs\n---"
-            className="w-full px-2 py-1.5 text-sm border rounded-md bg-background font-mono resize-y min-h-[120px]"
-            spellCheck={false}
-          />
-          <p className="text-[10px] text-muted-foreground mt-1">
-            YAML frontmatter，失焦后自动保存。支持简单键值与列表。
-          </p>
+          <div className="border rounded-md bg-background p-3 min-h-[120px]">
+            {Object.keys(frontmatter).length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                无 frontmatter。在 Markdown 顶部以 --- 包裹 YAML 即可添加，保存后在此查看。
+              </p>
+            ) : (
+              <dl className="space-y-1">
+                {Object.entries(frontmatter).map(([key, value]) => (
+                  <div key={key} className="flex gap-2 text-xs">
+                    <dt className="font-medium text-muted-foreground shrink-0 w-24 truncate">{key}</dt>
+                    <dd className="flex-1 break-all">{formatMetaValue(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
+
+      {/* 悬空链接 → 创建页面确认 */}
+      <Dialog open={createTarget !== null} onOpenChange={(open) => { if (!open) setCreateTarget(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="text-sm">创建 Wiki 页面「{createTarget}」？</DialogTitle>
+          </DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            该链接指向的页面尚不存在。创建后链接将自动解析。
+          </p>
+          <DialogFooter>
+            <DialogClose className="px-3 py-1.5 text-xs border rounded-md hover:bg-muted">取消</DialogClose>
+            <button
+              onClick={handleCreatePage}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+            >
+              <Plus className="w-3 h-3" />
+              创建
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+/**
+ * GFM 渲染：[[link]] 以行内代码样式占位（wikilink 的交互在下方链接区）。
+ * 预处理把 [[...]] 包为 `[[...]]`，避免被 markdown 语法解析切碎。
+ */
+function ReactMarkdownSkipLinks({ content }: { content: string }) {
+  const prepared = content.replace(/\[\[([^\]]+)\]\]/g, '`[[$1]]`')
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{prepared}</ReactMarkdown>
+}
+
+function WikiLinkList({
+  segments,
+  onNavigate,
+  onCreate,
+}: {
+  segments: WikiRenderSegment[]
+  onNavigate?: (nodeId: string) => void
+  onCreate: (targetTitle: string) => void
+}) {
+  const seen = new Set<string>()
+  return (
+    <ul className="flex flex-wrap gap-1.5">
+      {segments.filter((s) => s.kind === 'link').map((seg) => {
+        if (seg.kind !== 'link') return null
+        const key = seg.targetTitle.toLowerCase()
+        if (seen.has(key)) return null
+        seen.add(key)
+        if (seg.resolved && seg.nodeId) {
+          return (
+            <li key={key}>
+              <button
+                onClick={() => onNavigate?.(seg.nodeId!)}
+                className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-primary/10 text-primary hover:bg-primary/20"
+                title={`跳转到「${seg.targetTitle}」`}
+              >
+                <Link2 className="w-3 h-3" />
+                {seg.displayText ?? seg.targetTitle}
+              </button>
+            </li>
+          )
+        }
+        return (
+          <li key={key}>
+            <button
+              onClick={() => onCreate(seg.targetTitle)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded border border-dashed border-muted-foreground/50 text-muted-foreground hover:text-foreground"
+              title={`页面「${seg.targetTitle}」不存在，点击创建`}
+            >
+              <Plus className="w-3 h-3" />
+              {seg.displayText ?? seg.targetTitle}
+            </button>
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 

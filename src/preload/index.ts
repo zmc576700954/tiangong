@@ -43,6 +43,13 @@ const exposedChannels: (keyof IpcApi)[] = [
   'snapshot:load',
   'snapshot:delete',
 
+  // Wiki operations
+  'wiki:resolveLink',
+  'wiki:parseContent',
+  'wiki:getBacklinks',
+  'wiki:findDangling',
+  'wiki:ingestFiles',
+
   // Agent operations
   'agent:listAdapters',
   'agent:getAdapterMarketplace',
@@ -92,6 +99,7 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // Dialog
   'dialog:openDirectory',
+  'dialog:openFiles',
 
   // Project scanning
   'graph:initFromProject',

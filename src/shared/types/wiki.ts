@@ -24,3 +24,38 @@ export interface WikiLink {
   /** 链接在文档中的 0-based 字符位置 */
   position: number
 }
+
+/** 带解析状态的 wikilink（parseContent 返回） */
+export interface WikiLinkResolution {
+  targetTitle: string
+  displayText?: string
+  resolved: boolean
+  nodeId?: string
+}
+
+/** wiki:parseContent 返回的结构化解析结果 */
+export interface ParsedWikiContent {
+  frontmatter: Record<string, unknown>
+  title?: string
+  links: WikiLinkResolution[]
+}
+
+/** 悬空链接（断链）记录 */
+export interface DanglingLink {
+  fromNodeId: string
+  fromTitle: string
+  targetTitle: string
+}
+
+/** 单文件导入失败记录 */
+export interface IngestFailure {
+  file: string
+  error: string
+}
+
+/** wiki:ingestFiles 返回的导入结果 */
+export interface IngestResult {
+  created: { id: string; title: string }[]
+  updated: { id: string; title: string }[]
+  failed: IngestFailure[]
+}

@@ -538,6 +538,8 @@ export function NodeEditor({
       {/* Wiki page editor */}
       {node.type === 'wiki-page' && (
         <WikiPageEditor
+          nodeId={node.id}
+          graphId={node.graphId}
           wikiContent={node.wikiContent}
           wikiMeta={node.wikiMeta}
           onUpdate={handleWikiUpdate}
@@ -629,7 +631,7 @@ export function NodeEditor({
             {node.type === 'wiki-page' ? '完善 Wiki 内容' : 'Implement with Agent'}
           </button>
         )}
-        {node.type !== 'project' && (
+        {node.type !== 'project' && !node.wikiMeta?.specialPage && (
           <button
             onClick={onDelete}
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-destructive border border-destructive/30 rounded-md hover:bg-destructive/10 transition-colors"
