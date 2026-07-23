@@ -22,7 +22,22 @@ class NodeTypeRegistry {
       { type: 'process', label: '业务流程', defaultStatus: 'draft', allowedParentTypes: ['module'], allowedChildTypes: ['feature', 'bug', 'wiki-page'] },
       { type: 'feature', label: '功能点', defaultStatus: 'placeholder', allowedParentTypes: ['process'] },
       { type: 'bug', label: 'BUG点', defaultStatus: 'draft', allowedParentTypes: ['process'] },
-      { type: 'wiki-page', label: 'Wiki 页面', defaultStatus: 'draft', allowedParentTypes: ['project', 'module', 'process', 'wiki-page'], allowedChildTypes: ['wiki-page'] },
+      {
+        type: 'wiki-page',
+        label: 'Wiki 页面',
+        defaultStatus: 'confirmed',
+        icon: 'book-open',
+        color: '#a855f7',
+        allowedParentTypes: ['project', 'module', 'process', 'wiki-page'],
+        allowedChildTypes: ['wiki-page'],
+        metadataSchema: {
+          fields: {
+            specialPage: { type: 'string', description: '特殊页面类型：index 或 log' },
+            tags: { type: 'string[]', description: '页面标签列表' },
+            createdBy: { type: 'string', description: '创建者标识' },
+          },
+        },
+      },
     ]
     for (const config of builtin) {
       this.types.set(config.type, config)

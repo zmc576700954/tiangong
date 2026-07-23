@@ -12,6 +12,8 @@ import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
 import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
 import { generateId } from '../shared/env'
+import { NodeRepository } from '../repositories/node-repository'
+import { WikiIndexService } from './wiki-index-service'
 import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
 import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
@@ -52,14 +54,15 @@ export class GraphService {
     this.cachedProjectPaths = null
   }
 
-  createGraph(data: { name: string; type: GraphType }): Graph {
+  async createGraph(data: { name: string; type: GraphType }): Promise<Graph> {
     const result = this.graphRepo.create(data)
+    await WikiIndexService.createSpecialPages(result.id, data.type, new NodeRepository(this.db))
     this.invalidateProjectPathsCache()
     return result
   }
 
   /** 从已有在线图派生开发图 */
-  deriveGraph(sourceGraphId: string, name?: string): Graph {
+  async deriveGraph(sourceGraphId: string, name?: string): Promise<Graph> {
     const sourceData = this.graphRepo.get(sourceGraphId)
     if (!sourceData) {
       throw new Error(`Source graph not found: ${sourceGraphId}`)
@@ -75,6 +78,7 @@ export class GraphService {
     })
 
     this.graphRepo.cloneGraphNodes(sourceGraphId, devGraph.id, 'dev')
+    await WikiIndexService.ensureSpecialPages(devGraph.id, 'dev', new NodeRepository(this.db))
     this.invalidateProjectPathsCache()
     return devGraph
   }
@@ -350,6 +354,10 @@ export class GraphService {
       })()
 
       this.invalidateProjectPathsCache()
+
+      // 6. 为 online / dev 图创建 Graph Index / Graph Log 特殊 Wiki 页
+      await WikiIndexService.createSpecialPages(onlineGraphId, 'online', new NodeRepository(this.db))
+      await WikiIndexService.createSpecialPages(devGraphId, 'dev', new NodeRepository(this.db))
 
       const featureCount = modules.reduce(
         (sum, m) =>

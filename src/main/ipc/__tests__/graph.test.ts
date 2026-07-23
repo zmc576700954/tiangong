@@ -15,6 +15,7 @@ describe('registerGraphHandlers', () => {
   let graphService: GraphService
   let snapshotRepo: SnapshotRepository
   let db: BetterSqlite3.Database
+  let stmtMock: { run: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn>; all: ReturnType<typeof vi.fn> }
 
   beforeEach(() => {
     handlers = {}
@@ -31,7 +32,7 @@ describe('registerGraphHandlers', () => {
       load: vi.fn().mockResolvedValue(null),
       delete: vi.fn().mockResolvedValue(undefined),
     } as unknown as SnapshotRepository
-    const stmtMock = {
+    stmtMock = {
       run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
       get: vi.fn().mockReturnValue(null),
       all: vi.fn().mockReturnValue([]),
@@ -125,6 +126,95 @@ describe('registerGraphHandlers', () => {
       }
       await expect(handlers['node:create']({}, data)).resolves.not.toThrow()
     })
+
+    it('creates a valid node with optional community fields', async () => {
+      const data = {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        content: { fullDescription: 'full' },
+        communitySummary: 'summary',
+        communityLevel: 1,
+      }
+      await expect(handlers['node:create']({}, data)).resolves.not.toThrow()
+    })
+
+    it('creates a valid node with wiki fields', async () => {
+      const data = {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        wikiContent: '# Wiki',
+        wikiMeta: { frontmatter: { title: 'Wiki' }, role: 'index' },
+      }
+      await expect(handlers['node:create']({}, data)).resolves.not.toThrow()
+    })
+
+    it('rejects non-string wikiContent', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        wikiContent: 123,
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-object wikiMeta', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        wikiMeta: 'not-an-object',
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-object content', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        content: 'not-an-object',
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-string communitySummary', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        communitySummary: 123,
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-number communityLevel', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        communityLevel: '1',
+      })).rejects.toThrow(IpcError)
+    })
   })
 
   describe('node:createBatch', () => {
@@ -156,6 +246,60 @@ describe('registerGraphHandlers', () => {
 
     it('rejects invalid status update', async () => {
       await expect(handlers['node:update']({}, 'node-1', { status: 'bad-status' }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-object content update', async () => {
+      await expect(handlers['node:update']({}, 'node-1', { content: 'invalid' }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-string communitySummary update', async () => {
+      await expect(handlers['node:update']({}, 'node-1', { communitySummary: 123 }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-number communityLevel update', async () => {
+      await expect(handlers['node:update']({}, 'node-1', { communityLevel: '1' }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('accepts valid community fields update', async () => {
+      stmtMock.get.mockReturnValueOnce({
+        id: 'node-1', type: 'feature', status: 'draft', title: 'N1', description: null, acceptance_criteria: null,
+        graph_id: 'graph-1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+        content: '{"fullDescription":"updated"}', community_summary: 'new summary', community_level: 2,
+        wiki_content: null, wiki_meta: null,
+        owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+      })
+      await expect(handlers['node:update']({}, 'node-1', {
+        content: { fullDescription: 'updated' },
+        communitySummary: 'new summary',
+        communityLevel: 2,
+      })).resolves.not.toThrow()
+    })
+
+    it('accepts valid wiki fields update', async () => {
+      stmtMock.get.mockReturnValueOnce({
+        id: 'node-1', type: 'wiki-page', status: 'draft', title: 'Wiki', description: null, acceptance_criteria: null,
+        graph_id: 'graph-1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+        content: null, community_summary: null, community_level: null,
+        wiki_content: '# Updated', wiki_meta: '{"frontmatter":{"title":"Updated"},"role":"research"}',
+        owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+      })
+      await expect(handlers['node:update']({}, 'node-1', {
+        wikiContent: '# Updated',
+        wikiMeta: { frontmatter: { title: 'Updated' }, role: 'research' },
+      })).resolves.not.toThrow()
+    })
+
+    it('rejects non-string wikiContent update', async () => {
+      await expect(handlers['node:update']({}, 'node-1', { wikiContent: 123 }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-object wikiMeta update', async () => {
+      await expect(handlers['node:update']({}, 'node-1', { wikiMeta: 'invalid' }))
         .rejects.toThrow(IpcError)
     })
   })

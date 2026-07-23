@@ -87,6 +87,15 @@ export const GRAPH_TYPE_LABELS: Record<GraphType, string> = {
   dev: '开发场景',
 }
 
+/** Wiki 页面类型常量 */
+export const WIKI_PAGE_TYPE: NodeType = 'wiki-page'
+
+/** 图索引页标题 */
+export const GRAPH_INDEX_TITLE = 'Graph Index'
+
+/** 图日志页标题 */
+export const GRAPH_LOG_TITLE = 'Graph Log'
+
 import type { EdgeType } from './types'
 
 /** 边类型选项（用于画布和属性面板统一） */

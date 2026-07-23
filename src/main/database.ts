@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 5
+const CURRENT_SCHEMA_VERSION = 6
 
 interface TableSchema {
   name: string
@@ -280,7 +280,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         updated_at TEXT NOT NULL
       )
     `,
-    requiredColumns: ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at'],
+    requiredColumns: ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at', 'wiki_content', 'wiki_meta'],
   },
   {
     name: 'edges',

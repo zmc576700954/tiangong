@@ -68,7 +68,7 @@ describe('getAllowedTransitions', () => {
     expect(transitions).toContain('developing')
     expect(transitions).toContain('draft')
     expect(transitions).toContain('placeholder')
-    expect(transitions).not.toContain('published')
+    expect(transitions).toContain('published')
   })
 })
 
@@ -78,11 +78,11 @@ describe('findTransitionPath', () => {
   })
 
   it('returns multi-step path when indirect', () => {
-    const path = findTransitionPath('published', 'draft')
+    const path = findTransitionPath('draft', 'published')
     expect(path).not.toBeNull()
     expect(path!.length).toBeGreaterThan(2)
-    expect(path![0]).toBe('published')
-    expect(path![path!.length - 1]).toBe('draft')
+    expect(path![0]).toBe('draft')
+    expect(path![path!.length - 1]).toBe('published')
   })
 })
 
