@@ -43,12 +43,22 @@ export function WikiPageEditor({
   const [backlinks, setBacklinks] = useState<{ id: string; title: string }[]>([])
   const [createTarget, setCreateTarget] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 用户有未保存编辑时为 true：外部内容更新不得覆盖草稿
+  const dirtyRef = useRef(false)
   const createNode = useGraphStore((s) => s.createNode)
 
-  // 外部内容变化（如 Agent 更新）时同步草稿
+  // 外部内容变化（如 Agent 更新）时同步草稿；用户有未保存编辑时不覆盖
   useEffect(() => {
-    setDraft(wikiContent ?? '')
+    if (!dirtyRef.current) setDraft(wikiContent ?? '')
   }, [wikiContent])
+
+  // 切换编辑的节点时强制复位 dirty 并加载新节点内容
+  //（nodeId 变化时 wikiContent 通常也随之变化，但不能依赖该巧合，须显式复位）
+  useEffect(() => {
+    dirtyRef.current = false
+    setDraft(wikiContent ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 仅在切换节点时复位草稿
+  }, [nodeId])
 
   // 防抖解析（仅更新链接解析状态，不落库）
   useEffect(() => {
@@ -70,23 +80,33 @@ export function WikiPageEditor({
   }, [activeTab, nodeId])
 
   const handleBlur = useCallback(() => {
-    if (draft === (wikiContent ?? '')) return
-    window.electronAPI['wiki:parseContent'](graphId, draft)
+    if (draft === (wikiContent ?? '')) { dirtyRef.current = false; return }
+    const sentDraft = draft
+    window.electronAPI['wiki:parseContent'](graphId, sentDraft)
       .then((parsed) => {
+        dirtyRef.current = false
         onUpdate({
-          wikiContent: draft,
+          wikiContent: sentDraft,
           wikiMeta: { ...(wikiMeta ?? {}), frontmatter: parsed.frontmatter },
         })
       })
       .catch(() => {
         // frontmatter YAML 错误时仍保存内容，wikiMeta 保持不变
-        onUpdate({ wikiContent: draft })
+        dirtyRef.current = false
+        onUpdate({ wikiContent: sentDraft })
       })
   }, [draft, wikiContent, wikiMeta, graphId, onUpdate])
 
   const handleCreatePage = useCallback(async () => {
     if (!createTarget) return
-    const graphType = useGraphStore.getState().nodes.find((n) => n.id === nodeId)?.graphType ?? 'online'
+    const state = useGraphStore.getState()
+    const graphType = state.graphs.find((g) => g.id === graphId)?.type
+      ?? state.nodes.find((n) => n.id === nodeId)?.graphType
+    if (!graphType) {
+      // 无法确定图类型时不创建（避免静默错建到 online 图）
+      console.warn(`[WikiPageEditor] 无法确定 graphId=${graphId} 的图类型，取消创建页面「${createTarget}」`)
+      return
+    }
     const node = await createNode({
       type: 'wiki-page',
       status: 'draft',
@@ -135,7 +155,7 @@ export function WikiPageEditor({
         <TabsContent value="content" className="mt-2">
           <textarea
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => { dirtyRef.current = true; setDraft(e.target.value) }}
             onBlur={handleBlur}
             placeholder="输入 Markdown 内容... 使用 [[页面标题]] 创建 wikilink"
             className="w-full px-2 py-1.5 text-sm border rounded-md bg-background font-mono resize-y min-h-[180px]"

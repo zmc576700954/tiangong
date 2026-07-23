@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import * as fs from 'fs/promises'
+import * as os from 'os'
+import * as path from 'path'
 import { registerGraphHandlers } from '../graph'
 import type { GraphService } from '../../services/graph-service'
 import type { SnapshotRepository } from '../../repositories/snapshot-repository'
@@ -385,6 +388,26 @@ describe('registerGraphHandlers', () => {
         graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
       })
       await expect(handlers['wiki:ingestFiles']({}, 'graph-1', ['/etc/passwd.md'])).rejects.toThrow(IpcError)
+    })
+
+    it('ingests files successfully end-to-end', async () => {
+      (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
+      })
+      // handler 注入真实 fs.readFile，须让文件真实存在；
+      // 用 os.tmpdir() 拼接（validateProjectPath 只做 path.resolve，不拦截 tmp 目录）
+      const filePath = path.join(os.tmpdir(), `ingest-test-页面-${process.pid}.md`)
+      await fs.writeFile(filePath, '# ingest-test-页面\n\n内容', 'utf-8')
+      try {
+        const result = await handlers['wiki:ingestFiles']({}, 'graph-1', [filePath]) as {
+          created: { id: string; title: string }[]; updated: unknown[]; failed: { file: string; error: string }[]
+        }
+        expect(result.failed).toEqual([])
+        expect(result.created).toHaveLength(1)
+        expect(result.created[0].title).toBe('ingest-test-页面')
+      } finally {
+        await fs.unlink(filePath).catch(() => undefined)
+      }
     })
   })
 })

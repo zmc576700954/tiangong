@@ -78,6 +78,8 @@ export class IngestService {
           continue
         }
 
+        // 同名判定大小写不敏感，与 WikiIndexService.resolveWikiLink 的解析策略保持一致
+        //（否则会出现「链接解析到 A 页，导入却追加到 a 页」的裂口）
         const existing = nodeRepo
           .listByGraph(graphId)
           .find((n) => n.type === 'wiki-page' && normalizeWikiTitle(n.title).toLowerCase() === title.toLowerCase())
@@ -111,9 +113,14 @@ export class IngestService {
       }
     }
 
-    // 第二遍：统一落边（此时同批节点已全部入库，互链可解析）
+    // 第二遍：统一落边（此时同批节点已全部入库，互链可解析）。
+    // 单节点落边失败不阻断整批——节点已创建/更新，失败信息记入 failed 供调用方提示
     for (const nodeId of touchedNodeIds) {
-      WikiLinkService.syncNodeLinks(nodeId, nodeRepo, edgeRepo)
+      try {
+        WikiLinkService.syncNodeLinks(nodeId, nodeRepo, edgeRepo)
+      } catch (err) {
+        result.failed.push({ file: `node:${nodeId}`, error: `落边失败: ${err instanceof Error ? err.message : String(err)}` })
+      }
     }
 
     return result

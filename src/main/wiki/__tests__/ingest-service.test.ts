@@ -159,4 +159,41 @@ describe('IngestService.ingestFiles', () => {
     const positions = f.nodes.map((n) => `${n.position.x},${n.position.y}`)
     expect(new Set(positions).size).toBe(f.nodes.length)  // 无堆叠
   })
+
+  it('单节点落边失败不阻断整批，记入 failed', async () => {
+    // 页面A 引用 页面B：第二遍 syncNodeLinks 会对 页面A 调 edgeRepo.create，构造其抛错
+    const files = {
+      '/a.md': '# 页面A\n\n见 [[页面B]]',
+      '/b.md': '# 页面B',
+    }
+    const throwingEdgeRepo: IngestEdgeRepo = {
+      ...f.edgeRepo,
+      create() { throw new Error('DB locked') },
+    }
+
+    const result = await IngestService.ingestFiles('g1', Object.keys(files), 'online',
+      f.nodeRepo, throwingEdgeRepo, makeReadFile(files))
+
+    // resolve 而非 reject；节点已创建；落边失败以 node: 前缀记入 failed
+    expect(result.created).toHaveLength(2)
+    expect(result.failed).toHaveLength(1)
+    expect(result.failed[0].file).toMatch(/^node:/)
+    expect(result.failed[0].error).toContain('落边失败')
+    expect(result.failed[0].error).toContain('DB locked')
+  })
+
+  it('同名判定大小写不敏感（与 resolveWikiLink 解析策略一致）', async () => {
+    // 先导入一次（标题为「MyPage」）
+    await IngestService.ingestFiles('g1', ['/a.md'], 'online', f.nodeRepo, f.edgeRepo,
+      makeReadFile({ '/a.md': '# MyPage\n\n第一版' }))
+    // 再导入大小写不同的同名文件：应追加而非新建
+    const result = await IngestService.ingestFiles('g1', ['/b.md'], 'online', f.nodeRepo, f.edgeRepo,
+      makeReadFile({ '/b.md': '# mypage\n\n第二版' }))
+
+    expect(result.created).toHaveLength(0)
+    expect(result.updated).toHaveLength(1)
+    expect(f.nodes).toHaveLength(1)
+    expect(f.nodes[0].wikiContent).toContain('第一版')
+    expect(f.nodes[0].wikiContent).toContain('第二版')
+  })
 })

@@ -475,11 +475,20 @@ describe('importWikiFiles', () => {
     useGraphStore.setState({ currentGraphId: 'g1' })
     const ingest = window.electronAPI['wiki:ingestFiles'] as ReturnType<typeof vi.fn>
     ingest.mockResolvedValueOnce({ created: [{ id: 'n1', title: 'A' }], updated: [], failed: [] })
+    const graphGet = window.electronAPI['graph:get'] as ReturnType<typeof vi.fn>
+    graphGet.mockResolvedValueOnce({
+      graph: { id: 'g1', name: 'G', type: 'online' },
+      nodes: [{ id: 'n1', type: 'wiki-page', status: 'draft', title: 'A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+      edges: [],
+      bugs: [],
+    })
 
     const result = await useGraphStore.getState().importWikiFiles(['/a.md'])
 
     expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'])
     expect(result.created).toHaveLength(1)
+    expect(graphGet).toHaveBeenCalledWith('g1')
+    expect(useGraphStore.getState().nodes.map((n) => n.id)).toContain('n1')
   })
 
   it('无当前图时返回空结果', async () => {
