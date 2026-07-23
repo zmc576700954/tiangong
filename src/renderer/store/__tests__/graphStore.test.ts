@@ -62,6 +62,8 @@ vi.stubGlobal('window', {
       updatedAt: '2024-01-01',
     })),
     'bug:delete': vi.fn().mockResolvedValue(true),
+    'wiki:parseContent': vi.fn().mockResolvedValue({ frontmatter: {}, links: [] }),
+    'wiki:ingestFiles': vi.fn().mockResolvedValue({ created: [], updated: [], failed: [] }),
   },
 })
 
@@ -410,5 +412,79 @@ describe('graphStore', () => {
       useGraphStore.getState().dismissAssociationNotification(id)
       expect(useGraphStore.getState().associationNotifications).toHaveLength(0)
     })
+  })
+})
+
+describe('wiki-link 边过滤', () => {
+  beforeEach(() => {
+    useGraphStore.setState({
+      graphs: [],
+      currentGraphId: null,
+      nodes: [],
+      edges: [],
+      bugs: [],
+      selectedNodeId: null,
+      selectedEdgeId: null,
+    })
+    vi.clearAllMocks()
+  })
+
+  it('loadGraph 过滤 wiki-link 边，不进画布 edges', async () => {
+    const wikiEdge = { id: 'e-wiki', source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'wiki-link' }
+    const bizEdge = { id: 'e-biz', source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'default' }
+    ;(window.electronAPI['graph:get'] as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      graph: { id: 'g1', name: 'G', type: 'online' },
+      nodes: [],
+      edges: [wikiEdge, bizEdge],
+      bugs: [],
+    })
+
+    await useGraphStore.getState().loadGraph('g1')
+
+    const edgeIds = useGraphStore.getState().edges.map((e) => e.id)
+    expect(edgeIds).toContain('e-biz')
+    expect(edgeIds).not.toContain('e-wiki')
+  })
+
+  it('createEdge 丢弃服务端返回的 wiki-link 边', async () => {
+    ;(window.electronAPI['edge:create'] as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      id: 'e-wiki', source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'wiki-link',
+    })
+
+    await useGraphStore.getState().createEdge({ source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'wiki-link' })
+
+    expect(useGraphStore.getState().edges.some((e) => e.edgeType === 'wiki-link')).toBe(false)
+  })
+})
+
+describe('importWikiFiles', () => {
+  beforeEach(() => {
+    useGraphStore.setState({
+      graphs: [],
+      currentGraphId: null,
+      nodes: [],
+      edges: [],
+      bugs: [],
+      selectedNodeId: null,
+      selectedEdgeId: null,
+    })
+    vi.clearAllMocks()
+  })
+
+  it('调用 wiki:ingestFiles 并重载图', async () => {
+    useGraphStore.setState({ currentGraphId: 'g1' })
+    const ingest = window.electronAPI['wiki:ingestFiles'] as ReturnType<typeof vi.fn>
+    ingest.mockResolvedValueOnce({ created: [{ id: 'n1', title: 'A' }], updated: [], failed: [] })
+
+    const result = await useGraphStore.getState().importWikiFiles(['/a.md'])
+
+    expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'])
+    expect(result.created).toHaveLength(1)
+  })
+
+  it('无当前图时返回空结果', async () => {
+    useGraphStore.setState({ currentGraphId: null })
+    const result = await useGraphStore.getState().importWikiFiles(['/a.md'])
+    expect(result).toEqual({ created: [], updated: [], failed: [] })
   })
 })

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch } from 'lucide-react'
+import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp } from 'lucide-react'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
@@ -29,6 +29,9 @@ interface CanvasOverlayProps {
   onFanout?: () => void
   hasProjectNode: boolean
   generationProgress?: { stage: string; progress: number } | null
+  onImportWikiFiles?: () => void
+  importSummary?: { text: string; failed: { file: string; error: string }[] } | null
+  onDismissImportSummary?: () => void
 }
 
 export function CanvasOverlay({
@@ -54,6 +57,9 @@ export function CanvasOverlay({
   onFanout,
   hasProjectNode,
   generationProgress,
+  onImportWikiFiles,
+  importSummary,
+  onDismissImportSummary,
 }: CanvasOverlayProps) {
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
@@ -119,6 +125,16 @@ export function CanvasOverlay({
               {NODE_TYPE_LABELS[type]}
             </button>
           ))}
+          <div className="border-t mt-1 pt-1">
+            <button
+              onClick={() => onImportWikiFiles?.()}
+              data-testid="canvas-menu-import-wiki"
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
+            >
+              <FileUp className="w-3.5 h-3.5 text-amber-600" />
+              导入 Wiki 页面…
+            </button>
+          </div>
         </div>
       )}
 
@@ -232,6 +248,23 @@ export function CanvasOverlay({
             />
           </div>
           <span className="text-xs font-mono text-muted-foreground">{Math.round(generationProgress.progress)}%</span>
+        </div>
+      )}
+
+      {/* Wiki 导入结果横幅 */}
+      {importSummary && (
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-background border rounded-lg shadow-lg px-4 py-2 max-w-md" data-testid="import-summary">
+          <div className="flex items-center gap-3">
+            <span className="text-sm">{importSummary.text}</span>
+            <button onClick={onDismissImportSummary} className="text-xs text-muted-foreground hover:text-foreground">关闭</button>
+          </div>
+          {importSummary.failed.length > 0 && (
+            <ul className="mt-1 text-xs text-destructive space-y-0.5">
+              {importSummary.failed.map((f) => (
+                <li key={f.file}>{f.file.split('/').pop()}：{f.error}</li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
     </>

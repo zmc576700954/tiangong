@@ -156,6 +156,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const [showNodeMenu, setShowNodeMenu] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
+  const [importSummary, setImportSummary] = useState<{ text: string; failed: { file: string; error: string }[] } | null>(null)
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -602,6 +603,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [selectNode, setCenter])
 
+  const handleImportWikiFiles = useCallback(async () => {
+    const paths = await window.electronAPI['dialog:openFiles']({ extensions: ['md', 'markdown', 'txt'] })
+    if (paths.length === 0) return
+    const result = await useGraphStore.getState().importWikiFiles(paths)
+    setImportSummary({
+      text: `导入完成：新建 ${result.created.length}，更新 ${result.updated.length}，失败 ${result.failed.length}`,
+      failed: result.failed,
+    })
+    setShowNodeMenu(false)
+  }, [])
+
   /** 进入连线模式（由右键菜单触发） */
   const handleStartConnect = useCallback((sourceId: string) => {
     startConnect(sourceId)
@@ -895,6 +907,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onFanout={() => setShowFanout(true)}
         hasProjectNode={hasProjectNode}
         generationProgress={genProgress}
+        onImportWikiFiles={handleImportWikiFiles}
+        importSummary={importSummary}
+        onDismissImportSummary={() => setImportSummary(null)}
       />
 
       {contextPopover && (

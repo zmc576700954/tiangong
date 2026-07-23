@@ -5,7 +5,7 @@
 
 ## 当前状态
 
-**进行中** — T3 完成，执行 T4 中
+**进行中** — T4 完成（T3 并行收尾中），待 T5
 
 ## 目标
 
@@ -16,7 +16,7 @@
 - [x] T1: `npm rebuild better-sqlite3` + 测试基线修复（chore）— 含 3 处存量缺陷修复，见决策记录
 - [x] T2: EdgeType 增加 `wiki-link` + WikiLinkService + IPC 落边钩子（feat）
 - [x] T3: IPC 新通道（parseContent / getBacklinks / ingestFiles / findDangling）+ WikiPageEditor 重写（feat）——wiki:ingestFiles 通道注册由 T4 实现接入
-- [ ] T4: Ingest 管线 + 导入 UI 入口（feat）
+- [x] T4: Ingest 管线 + 导入 UI 入口（feat）
 - [ ] T5: 本任务文档收尾 + CLAUDE.md 补充 Wiki 机制说明（docs）
 
 每个任务完成后：更新本文件 checkbox + 记录 commit hash → 运行验证门槛 → commit。
@@ -40,6 +40,7 @@
 - 2026-07-23（T2）：WikiLinkService 落地——syncNodeLinks diff 落边（悬空链接不入库）、parseContent 实时解析、getBacklinks、findDanglingLinks；resolveWikiLink 改同步签名；IPC 层 node:create/createBatch/update 挂落边钩子，edge:create 拒绝手工 wiki-link 边
 - 2026-07-23（T2 审查）：node:createBatch 逐节点 syncWikiLinks 为 O(N²) 全图扫描（每次 listByGraph）——单次数十节点可接受；T4 Ingest 批量导入若达数百节点需优化（批量同步接口或缓存 listByGraph），届时处理
 - 2026-07-23（T3）：Wiki 类型上移 @shared/types/wiki（service re-export 保持导入兼容）；新增 wiki:parseContent/getBacklinks/findDangling + dialog:openFiles 通道；WikiPageEditor 重写——预览为 GFM 渲染 + 独立链接交互区（[[link]] 代码样式占位防 markdown 切碎），失焦保存同时落 frontmatter，特殊页禁止删除
+- 2026-07-23（T4）：IngestService 落地——标题三级回退、同名追加（来源分隔线）、批量先建后链（同批互链可解析）、单文件失败不阻塞；IPC 批量上限 100（对应逐节点 sync 的 O(N²) 性能债）；graphStore 过滤 wiki-link 边不进画布；导入 UI 走画布右键菜单 + 结果横幅
 
 ## 会话恢复指南
 

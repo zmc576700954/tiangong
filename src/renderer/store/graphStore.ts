@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
+import type { IngestResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -17,6 +18,11 @@ function buildNodeMap(nodes: GraphNode[]): Map<string, GraphNode> {
 
 function buildEdgeMap(edges: GraphEdge[]): Map<string, GraphEdge> {
   return new Map(edges.map((e) => [e.id, e]))
+}
+
+/** wiki-link 边只服务关系查询，不进画布 */
+function excludeWikiLinkEdges(edges: GraphEdge[]): GraphEdge[] {
+  return edges.filter((e) => e.edgeType !== 'wiki-link')
 }
 
 interface GraphState {
@@ -81,6 +87,9 @@ interface GraphState {
 
   /** 确保当前图存在 Graph Index / Graph Log 特殊 Wiki 页（LLM-Wiki） */
   ensureSpecialWikiPages: () => Promise<{ indexId: string | null; logId: string | null }>
+
+  /** 导入 markdown/txt 文件为 Wiki 页面（Ingest 管线） */
+  importWikiFiles: (filePaths: string[]) => Promise<IngestResult>
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -126,12 +135,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
   loadGraph: async (graphId: string) => {
     const result = await window.electronAPI['graph:get'](graphId)
     if (result) {
+      const edges = excludeWikiLinkEdges(result.edges)
       set({
         nodes: result.nodes,
-        edges: result.edges,
+        edges,
         bugs: result.bugs,
         _nodeMap: buildNodeMap(result.nodes),
-        _edgeMap: buildEdgeMap(result.edges),
+        _edgeMap: buildEdgeMap(edges),
       })
     }
   },
@@ -299,7 +309,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     try {
       const serverItem = await window.electronAPI['edge:create'](data)
-      setEdges((edges) => edges.map((e) => (e.id === optimisticId ? serverItem : e)))
+      setEdges((edges) => edges.map((e) => (e.id === optimisticId ? serverItem : e)).filter((e) => e.edgeType !== 'wiki-link'))
       return serverItem
     } catch (err) {
       setEdges((edges) => edges.filter((e) => e.id !== optimisticId))
@@ -566,6 +576,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
     }
 
     return { indexId: indexNode.id, logId: logNode.id }
+  },
+
+  importWikiFiles: async (filePaths) => {
+    const graphId = get().currentGraphId
+    if (!graphId || filePaths.length === 0) return { created: [], updated: [], failed: [] }
+    const result = await window.electronAPI['wiki:ingestFiles'](graphId, filePaths)
+    await get().loadGraph(graphId)
+    return result
   },
   }
 })
