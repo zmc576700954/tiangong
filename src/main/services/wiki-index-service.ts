@@ -19,7 +19,7 @@ export interface CreateSpecialPagesResult {
 }
 
 export interface WikiNodeRepository {
-  create(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): GraphNode
+  create?(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): GraphNode
   listByGraph(graphId: string): GraphNode[]
 }
 
@@ -70,11 +70,11 @@ export class WikiIndexService {
    *
    * @returns 目标节点 ID，未找到时返回 null
    */
-  static async resolveWikiLink(
+  static resolveWikiLink(
     graphId: string,
     targetTitle: string,
     nodeRepo: WikiNodeRepository,
-  ): Promise<string | null> {
+  ): string | null {
     const normalized = normalizeWikiTitle(targetTitle).toLowerCase()
     if (!normalized) return null
 
@@ -127,7 +127,7 @@ export class WikiIndexService {
       wikiMeta: wikiMeta as Record<string, unknown>,
     }
 
-    const node = nodeRepo.create(data)
+    const node = nodeRepo.create!(data)
     return node.id
   }
 }

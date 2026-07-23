@@ -5,7 +5,7 @@
 
 ## 当前状态
 
-**进行中** — T1 完成（测试基线 167 文件 / 1742 用例全绿），执行 T2 中
+**进行中** — T2 完成，执行 T3 中
 
 ## 目标
 
@@ -14,7 +14,7 @@
 ## 任务清单
 
 - [x] T1: `npm rebuild better-sqlite3` + 测试基线修复（chore）— 含 3 处存量缺陷修复，见决策记录
-- [ ] T2: EdgeType 增加 `wiki-link` + WikiLinkService + IPC 落边钩子（feat）
+- [x] T2: EdgeType 增加 `wiki-link` + WikiLinkService + IPC 落边钩子（feat）
 - [ ] T3: IPC 新通道（parseContent / getBacklinks / ingestFiles / findDangling）+ WikiPageEditor 重写（feat）
 - [ ] T4: Ingest 管线 + 导入 UI 入口（feat）
 - [ ] T5: 本任务文档收尾 + CLAUDE.md 补充 Wiki 机制说明（docs）
@@ -37,6 +37,7 @@
 - 2026-07-23：导入节点初始 status: draft，走正常确认流程
 - 2026-07-23：frontmatter 编辑从手写 YAML 改为后端解析结果的结构化展示，解析规则唯一化
 - 2026-07-23（T1）：rebuild better-sqlite3 后暴露 11 处存量测试失败，逐一修复：① DarwinProvider.isSystemPath 误拦 macOS tmpdir（/var 是符号链接，只应拦截 root/db/log/tmp 等真实系统子目录）；② chat_threads/chat_messages 缺少 token_count、waterline 等 5 列的增量迁移；③ safeRealpath 对不存在路径的 ENOENT 回退保留符号链接，导致嵌套路径 containment 校验误判——新增 resolveNearestExistingAncestor 逐级向上 realpath；④ cachedRealpath 测试断言与 macOS /var→/private/var 符号链接行为不兼容，改为与 fs.realpath 比较。T2 的落边钩子改挂 IPC 层（src/main/ipc/graph.ts）而非 GraphService——IPC handler 直接调用 nodeRepo，未走 GraphService
+- 2026-07-23（T2）：WikiLinkService 落地——syncNodeLinks diff 落边（悬空链接不入库）、parseContent 实时解析、getBacklinks、findDanglingLinks；resolveWikiLink 改同步签名；IPC 层 node:create/createBatch/update 挂落边钩子，edge:create 拒绝手工 wiki-link 边
 
 ## 会话恢复指南
 

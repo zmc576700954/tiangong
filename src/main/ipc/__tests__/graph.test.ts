@@ -302,5 +302,36 @@ describe('registerGraphHandlers', () => {
       await expect(handlers['node:update']({}, 'node-1', { wikiMeta: 'invalid' }))
         .rejects.toThrow(IpcError)
     })
+
+    it('accepts valid wikiContent update and triggers no error from sync', async () => {
+      stmtMock.get.mockReturnValueOnce({
+        id: 'node-1', type: 'wiki-page', status: 'draft', title: 'Wiki', description: null, acceptance_criteria: null,
+        graph_id: 'graph-1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+        content: null, community_summary: null, community_level: null,
+        wiki_content: '[[Some Page]]', wiki_meta: null,
+        owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+      })
+      await expect(handlers['node:update']({}, 'node-1', { wikiContent: '[[Some Page]]' })).resolves.not.toThrow()
+    })
+  })
+
+  describe('edge:create wiki-link guard', () => {
+    it('rejects manual wiki-link edge creation', async () => {
+      await expect(handlers['edge:create']({}, {
+        source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'wiki-link',
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('allows business edge creation', async () => {
+      await expect(handlers['edge:create']({}, {
+        source: 'n1', target: 'n2', graphId: 'g1', edgeType: 'default',
+      })).resolves.not.toThrow()
+    })
+  })
+
+  describe('wiki:resolveLink', () => {
+    it('rejects empty targetTitle', async () => {
+      await expect(handlers['wiki:resolveLink']({}, 'graph-1', '')).rejects.toThrow(IpcError)
+    })
   })
 })

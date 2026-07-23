@@ -10,9 +10,10 @@ import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
-import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
+import type { GraphNode, GraphEdge, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
+import { WikiLinkService } from '../services/wiki-link-service'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
@@ -23,6 +24,15 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
   const nodeRepo = new NodeRepository(db)
   const edgeRepo = new EdgeRepository(db)
   const bugRepo = new BugRepository(db)
+
+  /** wikiContent 变更后同步 wiki-link 边（失败仅记录，不阻断节点操作） */
+  function syncWikiLinks(nodeId: string): void {
+    try {
+      WikiLinkService.syncNodeLinks(nodeId, nodeRepo, edgeRepo)
+    } catch (err) {
+      console.error('[wiki] syncNodeLinks failed for', nodeId, err)
+    }
+  }
 
   const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
   const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
@@ -168,7 +178,9 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
   // ---------- 节点操作 ----------
   typedHandle('node:create', async (_, data) => {
     validateNodeCreate(data)
-    return nodeRepo.create(data as Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>)
+    const node = nodeRepo.create(data as Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>)
+    if (node.type === 'wiki-page' && node.wikiContent) syncWikiLinks(node.id)
+    return node
   })
 
   typedHandle('node:createBatch', async (_, nodesData: unknown) => {
@@ -178,7 +190,11 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     for (const data of nodesData) {
       validateNodeCreate(data)
     }
-    return nodeRepo.createBatch(nodesData as Array<Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>>)
+    const created = nodeRepo.createBatch(nodesData as Array<Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>>)
+    for (const node of created) {
+      if (node.type === 'wiki-page' && node.wikiContent) syncWikiLinks(node.id)
+    }
+    return created
   })
 
   typedHandle('node:update', async (_, id: string, data: Partial<GraphNode>) => {
@@ -201,6 +217,7 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
       }
     }
     const node = await nodeRepo.update(id, data)
+    if (data.wikiContent !== undefined) syncWikiLinks(id)
     return { ...node, warnings }
   })
 
@@ -216,6 +233,9 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
 
   // ---------- 边操作 ----------
   typedHandle('edge:create', async (_, data) => {
+    if ((data as GraphEdge).edgeType === 'wiki-link') {
+      throw new IpcError('wiki-link edges are managed by WikiLinkService and cannot be created manually', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
     return edgeRepo.create(data)
   })
 

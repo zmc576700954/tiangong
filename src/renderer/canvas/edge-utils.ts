@@ -10,6 +10,7 @@ export const edgeTypeConfig: Record<EdgeType, { color: string; label: string; an
   semantic: { color: '#3b82f6', label: '语义关联', strokeDasharray: '6 4' },
   dependency: { color: '#22c55e', label: '代码依赖' },
   'co-change': { color: '#f97316', label: '变更耦合', strokeDasharray: '2 4' },
+  'wiki-link': { color: '#8b5cf6', label: 'Wiki 链接', strokeDasharray: '4 4' },
 }
 
 export function createMarkerEnd(color: string): Edge['markerEnd'] {
