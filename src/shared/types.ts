@@ -16,6 +16,7 @@ export type {
   // Graph domain
   NodeStatus, NodeType, GraphType, EdgeType,
   BusinessRule, FileAssociation, NodeMetadata, NodeContent, GraphNode,
+  WikiNodeMeta,
   EdgeContent, GraphEdge, Graph,
   BugSeverity, BugStatus, BugNode,
   GraphSnapshot,

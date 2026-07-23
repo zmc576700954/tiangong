@@ -12,11 +12,12 @@ import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
 import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
+import { WikiIndexService } from '../services/wiki-index-service'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
-import { ensureString, MAX_ID_LEN } from './utils'
+import { ensureString, ensureOptionalNumber, MAX_ID_LEN } from './utils'
 
 export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
   const nodeRepo = new NodeRepository(db)
@@ -41,6 +42,16 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     return VALID_NODE_TYPES.includes(type as GraphNode['type']) || nodeTypeRegistry.has(type)
   }
 
+  function isPlainObject(val: unknown): val is Record<string, unknown> {
+    return val !== null && typeof val === 'object' && !Array.isArray(val)
+  }
+
+  function validateNodeContent(label: string, val: unknown): void {
+    if (val !== undefined && !isPlainObject(val)) {
+      throw new IpcError(`${label} must be an object`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+
   function validateNodeCreate(data: unknown): void {
     if (!data || typeof data !== 'object') {
       throw new IpcError('Node data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
@@ -62,6 +73,17 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     }
     if (!isValidPosition(node.position)) {
       throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    validateNodeContent('content', node.content)
+    if (node.communitySummary !== undefined && typeof node.communitySummary !== 'string') {
+      throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    ensureOptionalNumber('communityLevel', node.communityLevel)
+    if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
+      throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (node.wikiMeta !== undefined && !isPlainObject(node.wikiMeta)) {
+      throw new IpcError('wikiMeta must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
     }
   }
 
@@ -97,6 +119,17 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     }
     if (node.position !== undefined && !isValidPosition(node.position)) {
       throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    validateNodeContent('content', node.content)
+    if (node.communitySummary !== undefined && typeof node.communitySummary !== 'string') {
+      throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    ensureOptionalNumber('communityLevel', node.communityLevel)
+    if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
+      throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (node.wikiMeta !== undefined && !isPlainObject(node.wikiMeta)) {
+      throw new IpcError('wikiMeta must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
     }
   }
 
@@ -227,6 +260,12 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
   typedHandle('snapshot:delete', async (_, id: string) => {
     await snapshotRepo.delete(id)
     return true
+  })
+
+  typedHandle('wiki:resolveLink', async (_, graphId: string, targetTitle: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    ensureString('targetTitle', targetTitle, MAX_TITLE_LEN)
+    return WikiIndexService.resolveWikiLink(graphId, targetTitle, nodeRepo)
   })
 
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册

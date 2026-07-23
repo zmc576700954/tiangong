@@ -39,6 +39,7 @@ export type NodeType =
   | 'process'      // 业务流程
   | 'feature'      // 功能点（仅开发场景）
   | 'bug'          // BUG点（仅开发场景）
+  | 'wiki-page'    // Wiki 页面（索引、日志、查询页等）
 
 /** 图类型：每个项目只有两张图 */
 export type GraphType = 'online' | 'dev'
@@ -88,6 +89,18 @@ export interface NodeContent {
   codeSignatures?: string[]
 }
 
+/** 节点 Wiki 元数据（YAML frontmatter 缓存） */
+export interface WikiNodeMeta {
+  /** YAML frontmatter 键值对 */
+  frontmatter?: Record<string, unknown>
+  /** Wiki 页面角色 */
+  role?: 'index' | 'log' | 'query' | 'research' | 'generic'
+  /** 特殊页面类型 */
+  specialPage?: 'index' | 'log'
+  /** 页面标签列表 */
+  tags?: string[]
+}
+
 /** 节点数据 */
 export interface GraphNode {
   id: string
@@ -114,6 +127,10 @@ export interface GraphNode {
   communityLevel?: number
   /** 节点关联的上下文（文件/文本/其他节点） */
   contextRefs?: ContextRef[]
+  /** 节点 Wiki 正文字段（markdown） */
+  wikiContent?: string
+  /** 节点 Wiki 元数据（YAML frontmatter 缓存） */
+  wikiMeta?: WikiNodeMeta
   /** 节点所有者角色 */
   ownerRole?: 'product' | 'developer' | 'tester'
   /** 在画布上的位置 */
@@ -341,7 +358,7 @@ export interface ProjectMemory {
 // ============================================
 
 export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
-export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug'] as const
+export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page'] as const
 export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
 export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
@@ -444,6 +461,23 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
     { from: 'review', to: 'testing' },
     { from: 'review', to: 'published' },
   ],
+  'wiki-page': [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'draft', to: 'placeholder' },
+    { from: 'confirmed', to: 'draft' },
+    { from: 'confirmed', to: 'developing' },
+    { from: 'confirmed', to: 'placeholder' },
+    { from: 'developing', to: 'confirmed' },
+    { from: 'developing', to: 'draft' },
+    { from: 'developing', to: 'placeholder' },
+    { from: 'developing', to: 'testing' },
+    { from: 'testing', to: 'developing' },
+    { from: 'testing', to: 'review' },
+    { from: 'review', to: 'testing' },
+    { from: 'review', to: 'published' },
+    { from: 'placeholder', to: 'draft' },
+    { from: 'placeholder', to: 'confirmed' },
+  ],
 }
 
 // ============================================
@@ -456,12 +490,26 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
  * 如需在主进程中使用，请从 src/main/types/node-behavior.ts 导入。
  */
 
+/** 节点类型元数据 schema 字段定义 */
+export interface NodeTypeMetadataSchemaField {
+  type: 'string' | 'string[]' | 'number' | 'boolean'
+  required?: boolean
+  description: string
+}
+
+/** 节点类型元数据 schema */
+export interface NodeTypeMetadataSchema {
+  fields: Record<string, NodeTypeMetadataSchemaField>
+}
+
 /** 节点类型配置（用于注册新节点类型） */
 export interface NodeTypeConfig {
   type: string
   label: string
   /** 节点图标标识（用于 UI 渲染） */
   icon?: string
+  /** 节点颜色（十六进制色值） */
+  color?: string
   /** 默认状态 */
   defaultStatus?: NodeStatus
   /** 允许作为父节点的类型 */
@@ -470,6 +518,8 @@ export interface NodeTypeConfig {
   allowedChildTypes?: string[]
   /** 节点描述模板 */
   descriptionTemplate?: string
+  /** 节点元数据 schema */
+  metadataSchema?: NodeTypeMetadataSchema
   /**
    * 行为钩子（可选）。
    * Typed as unknown in shared types because NodeTypeBehavior contains

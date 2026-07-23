@@ -31,6 +31,11 @@ export class NodeRepository {
       contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
+      content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined),
+      communitySummary: (row.community_summary as GraphNode['communitySummary']) ?? undefined,
+      communityLevel: (row.community_level as GraphNode['communityLevel']) ?? undefined,
+      wikiContent: (row.wiki_content as GraphNode['wikiContent']) ?? undefined,
+      wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined),
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
     } as GraphNode
@@ -44,8 +49,9 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, content, community_summary, community_level,
+        context_refs, wiki_content, wiki_meta, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -61,7 +67,12 @@ export class NodeRepository {
       data.ownerRole ?? null,
       data.position.x,
       data.position.y,
+      data.content ? JSON.stringify(data.content) : null,
+      data.communitySummary ?? null,
+      data.communityLevel ?? null,
       data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+      data.wikiContent ?? null,
+      data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
       now,
       now,
     )
@@ -79,8 +90,9 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, content, community_summary, community_level,
+        context_refs, wiki_content, wiki_meta, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
@@ -102,7 +114,12 @@ export class NodeRepository {
           data.ownerRole ?? null,
           data.position.x,
           data.position.y,
+          data.content ? JSON.stringify(data.content) : null,
+          data.communitySummary ?? null,
+          data.communityLevel ?? null,
           data.contextRefs ? JSON.stringify(data.contextRefs) : null,
+          data.wikiContent ?? null,
+          data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
           now,
           now,
         )
@@ -130,6 +147,11 @@ export class NodeRepository {
     if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
     if (data.ownerRole !== undefined) { updates.push('owner_role = ?'); args.push(data.ownerRole) }
     if (data.position !== undefined) { updates.push('position_x = ?, position_y = ?'); args.push(data.position.x, data.position.y) }
+    if (data.content !== undefined) { updates.push('content = ?'); args.push(JSON.stringify(data.content)) }
+    if (data.communitySummary !== undefined) { updates.push('community_summary = ?'); args.push(data.communitySummary) }
+    if (data.communityLevel !== undefined) { updates.push('community_level = ?'); args.push(data.communityLevel) }
+    if (data.wikiContent !== undefined) { updates.push('wiki_content = ?'); args.push(data.wikiContent ?? null) }
+    if (data.wikiMeta !== undefined) { updates.push('wiki_meta = ?'); args.push(JSON.stringify(data.wikiMeta)) }
 
     updates.push('updated_at = ?')
     args.push(now)
@@ -167,6 +189,12 @@ export class NodeRepository {
 
   updateParentId(nodeId: string, parentId: string | null): void {
     this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?').run(parentId, nodeId)
+  }
+
+  /** 按图 ID 列出所有节点 */
+  listByGraph(graphId: string): GraphNode[] {
+    const rows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ?').all(graphId) as Record<string, unknown>[]
+    return rows.map((row) => this.rowToNode(row))
   }
 
   /** 批量更新节点位置（事务提交） */

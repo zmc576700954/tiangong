@@ -18,6 +18,7 @@ const NODE_SIZES: Record<NodeType, { width: number; height: number }> = {
   process: { width: 180, height: 70 },
   feature: { width: 160, height: 60 },
   bug:     { width: 160, height: 60 },
+  'wiki-page': { width: 160, height: 60 },
 }
 
 /**

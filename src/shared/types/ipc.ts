@@ -57,6 +57,9 @@ export interface IpcApi {
   'snapshot:load': (id: string) => Promise<GraphSnapshot | null>
   'snapshot:delete': (id: string) => Promise<boolean>
 
+  // Wiki 操作
+  'wiki:resolveLink': (graphId: string, targetTitle: string) => Promise<string | null>
+
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>
   'agent:startSession': (adapterName: string | null, config: AgentSessionConfig) => Promise<{ sessionId: string; fallback?: boolean; adapterUsed?: string; fallbackHistory?: AdapterFallbackAttempt[] }>

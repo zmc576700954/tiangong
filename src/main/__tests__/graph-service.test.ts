@@ -48,20 +48,20 @@ describe('GraphService', () => {
     service = new GraphService(db)
   })
 
-  it('createGraph creates and invalidates cache', () => {
-    const graph = service.createGraph({ name: 'G1', type: 'online' })
+  it('createGraph creates and invalidates cache', async () => {
+    const graph = await service.createGraph({ name: 'G1', type: 'online' })
     expect(graph.name).toBe('G1')
     expect(graph.type).toBe('online')
   })
 
-  it('deriveGraph throws when source not found', () => {
-    expect(() => service.deriveGraph('missing')).toThrow('Source graph not found')
+  it('deriveGraph throws when source not found', async () => {
+    await expect(service.deriveGraph('missing')).rejects.toThrow('Source graph not found')
   })
 
-  it('deriveGraph throws when source is not online', () => {
+  it('deriveGraph throws when source is not online', async () => {
     const repo = (service as unknown as { graphRepo: { get: ReturnType<typeof vi.fn> } }).graphRepo
     repo.get.mockReturnValue({ graph: { id: 'g1', type: 'dev' } })
-    expect(() => service.deriveGraph('g1')).toThrow('Can only derive dev graph from an online graph')
+    await expect(service.deriveGraph('g1')).rejects.toThrow('Can only derive dev graph from an online graph')
   })
 
   it('listGraphs delegates to repository', () => {

@@ -39,6 +39,9 @@ export const ErrorCode = {
   // Git
   GIT_NOT_A_REPO: 'GIT_NOT_A_REPO',
   GIT_OPERATION_FAILED: 'GIT_OPERATION_FAILED',
+
+  // Wiki / Markdown
+  WIKI_PARSE_ERROR: 'WIKI_PARSE_ERROR',
 } as const
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode]

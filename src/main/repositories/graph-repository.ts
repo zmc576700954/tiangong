@@ -121,6 +121,8 @@ export class GraphRepository {
         contextRefs: safeJsonParse<GraphNode['contextRefs']>(rowOptStr(row, 'context_refs'), undefined),
         ownerRole: rowOptStr(row, 'owner_role') as GraphNode['ownerRole'],
         position: { x: rowNum(row, 'position_x'), y: rowNum(row, 'position_y') },
+        wikiContent: rowOptStr(row, 'wiki_content'),
+        wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(rowOptStr(row, 'wiki_meta'), undefined),
         createdAt: rowStr(row, 'created_at'),
         updatedAt: rowStr(row, 'updated_at'),
       })),
@@ -185,8 +187,8 @@ export class GraphRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, content, owner_role,
-        position_x, position_y, context_refs, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, context_refs, wiki_content, wiki_meta, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
     const insertEdgeStmt = this.db.prepare(
@@ -218,6 +220,8 @@ export class GraphRepository {
           row['rules'], row['metadata'], row['content'], row['owner_role'],
           rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
           row['context_refs'],
+          row['wiki_content'],
+          row['wiki_meta'],
           rowStr(row, 'created_at'), new Date().toISOString(),
         )
       }
