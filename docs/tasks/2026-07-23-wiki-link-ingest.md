@@ -44,6 +44,7 @@
 - 2026-07-23（T3+T4 质量审查）：6 项 must-fix——①IngestService 第二遍落边缺容错（单节点失败会拖垮整批）；②WikiPageEditor 外部更新会覆盖未保存草稿；③handleCreatePage graphType 静默 fallback 'online' 有在 dev 图错建风险；④⑤补充 ingestFiles 成功路径 / importWikiFiles 重载测试；⑥ingest 同名匹配的大小写策略未注释化（已核实与 resolveWikiLink 一致：均 `normalizeWikiTitle(x).toLowerCase()`，必须保留）。另有 2 项 minor 顺带修复
 - 2026-07-23（T3+T4 质量修复）：ca5830b 落地全部 6 项 must-fix + handleBlur sentDraft 防竞态；新增 3 测试（落边容错、大小写不敏感同名追加行为锁、ingestFiles 端到端），复审 ✅ 通过。全量 170 files / 1793 tests 全绿
 - 2026-07-23：T5 完成，CLAUDE.md 补充 Wiki System 架构说明，本任务收尾
+- 2026-07-24（最终整体审查）：✅ 可合并/发布，无 Critical/Important 功能缺陷。跨进程链路、落边钩子时机、node/graph 删除级联（FK CASCADE + 事务内删除）、安全校验、画布过滤单点均确认正确。3 项后续跟进（不阻塞）：①补 node:delete wiki-link 边 CASCADE 的真实 DB 测试（edge-repository.test.ts）；②edges 表 CHECK 约束陈旧（仍限旧五值，死约束）+ graph_id 缺 FK——后续纳入 requiredColumns 触发的重建顺带修正；③edge:update/edge:delete 未对 wiki-link 边对称设防（可自愈，Graph Lint 阶段再定）
 
 ## 会话恢复指南
 
