@@ -5,7 +5,7 @@
 
 ## 当前状态
 
-**进行中** — T4 完成（T3 并行收尾中），待 T5
+**完成** — 全部 5 个任务已交付（T3+T4 质量审查 6 项修复于 ca5830b 落地并复审通过）
 
 ## 目标
 
@@ -17,7 +17,7 @@
 - [x] T2: EdgeType 增加 `wiki-link` + WikiLinkService + IPC 落边钩子（feat）
 - [x] T3: IPC 新通道（parseContent / getBacklinks / ingestFiles / findDangling）+ WikiPageEditor 重写（feat）——wiki:ingestFiles 通道注册由 T4 实现接入
 - [x] T4: Ingest 管线 + 导入 UI 入口（feat）
-- [ ] T5: 本任务文档收尾 + CLAUDE.md 补充 Wiki 机制说明（docs）
+- [x] T5: 本任务文档收尾 + CLAUDE.md 补充 Wiki 机制说明（docs）
 
 每个任务完成后：更新本文件 checkbox + 记录 commit hash → 运行验证门槛 → commit。
 
@@ -41,6 +41,9 @@
 - 2026-07-23（T2 审查）：node:createBatch 逐节点 syncWikiLinks 为 O(N²) 全图扫描（每次 listByGraph）——单次数十节点可接受；T4 Ingest 批量导入若达数百节点需优化（批量同步接口或缓存 listByGraph），届时处理
 - 2026-07-23（T3）：Wiki 类型上移 @shared/types/wiki（service re-export 保持导入兼容）；新增 wiki:parseContent/getBacklinks/findDangling + dialog:openFiles 通道；WikiPageEditor 重写——预览为 GFM 渲染 + 独立链接交互区（[[link]] 代码样式占位防 markdown 切碎），失焦保存同时落 frontmatter，特殊页禁止删除
 - 2026-07-23（T4）：IngestService 落地——标题三级回退、同名追加（来源分隔线）、批量先建后链（同批互链可解析）、单文件失败不阻塞；IPC 批量上限 100（对应逐节点 sync 的 O(N²) 性能债）；graphStore 过滤 wiki-link 边不进画布；导入 UI 走画布右键菜单 + 结果横幅
+- 2026-07-23（T3+T4 质量审查）：6 项 must-fix——①IngestService 第二遍落边缺容错（单节点失败会拖垮整批）；②WikiPageEditor 外部更新会覆盖未保存草稿；③handleCreatePage graphType 静默 fallback 'online' 有在 dev 图错建风险；④⑤补充 ingestFiles 成功路径 / importWikiFiles 重载测试；⑥ingest 同名匹配的大小写策略未注释化（已核实与 resolveWikiLink 一致：均 `normalizeWikiTitle(x).toLowerCase()`，必须保留）。另有 2 项 minor 顺带修复
+- 2026-07-23（T3+T4 质量修复）：ca5830b 落地全部 6 项 must-fix + handleBlur sentDraft 防竞态；新增 3 测试（落边容错、大小写不敏感同名追加行为锁、ingestFiles 端到端），复审 ✅ 通过。全量 170 files / 1793 tests 全绿
+- 2026-07-23：T5 完成，CLAUDE.md 补充 Wiki System 架构说明，本任务收尾
 
 ## 会话恢复指南
 
@@ -49,7 +52,7 @@
 1. 读设计文档（上方链接）了解全貌
 2. 看本文件「任务清单」找到第一个未完成项
 3. 看「决策记录」了解已定边界，不要重新讨论
-4. 当前步骤：T1 已提交，T2 由子代理实现（任务全文见 docs/superpowers/plans/2026-07-23-wiki-link-ingest.md，含完整 TDD 代码）
+4. 当前步骤：全部完成。后续阶段（LLM Ingest、Louvain 图计算、Graph Lint）见记忆 [[llm-wiki-stepwise-plan]]
 
 ## 已知注意事项
 
@@ -57,3 +60,4 @@
 - macOS 上 `os.tmpdir()` 返回 /var/folders/...，fs.realpath 解析为 /private/var/folders/...——涉及 tmpdir 的路径断言一律与 realpath 结果比较，勿用 path.resolve
 - `wiki:resolveLink` 已存在但前端无调用方，T3 会接入并改由 WikiLinkService 实现
 - WikiPageEditor 的手写 YAML 解析器与 js-yaml 行为不一致，T3 删除
+- T3/T4 并行派发导致 T4 的 wiki:ingestFiles handler + IPC 测试被 T3 的 commit 79ce623 吸收——教训：不可并行派发实现子代理（subagent-driven-development 明确禁止），后续任务串行执行

@@ -75,7 +75,7 @@ BizGraph is a three-process Electron app:
 Eleven tables:
 - `graphs` — online/dev graphs per project
 - `nodes` — graph nodes with type, status, position, metadata
-- `edges` — node relationships
+- `edges` — node relationships（含 wiki-link 类型的 Wiki 关系边）
 - `bug_nodes` — bug metadata linked to nodes
 - `snapshots` — graph snapshots with optional git commit
 - `agent_logs` — session completion logs
@@ -102,6 +102,14 @@ Eleven tables:
 - `ContextCompiler`, `ContextDistiller`, `PromptOrchestrator`
 - `HybridSearchEngine`, `EmbeddingService`, `GraphMemory`
 - `PipelineRunner` runs normalize → compress → extract → verify → compile → waterline → persist on session end.
+
+**Wiki System** (`src/main/wiki/` + `src/main/services/wiki-link-service.ts`) — LLM-Wiki 知识体。
+- `markdown-utils.ts` — frontmatter/wikilink 纯函数解析（前后端唯一规则源）。
+- `WikiIndexService` — Graph Index / Graph Log 特殊页与标题解析。
+- `WikiLinkService` — wikilink 统一权威：解析、落边（edges 表 `edge_type='wiki-link'`）、反向链接、断链扫描。悬空链接不入库。
+- `ingest-service.ts` — 规则式文件导入：标题三级回退（frontmatter.title > H1 > 文件名）、同名追加、批量先建后链。
+- 落边钩子挂在 `src/main/ipc/graph.ts` 的 node:create/createBatch/update；`edge:create` 拒绝手工 wiki-link 边。
+- 画布过滤 wiki-link 边（`graphStore.excludeWikiLinkEdges`）；特殊页（wikiMeta.specialPage）禁止删除。
 
 **Context Waterline** (`src/main/memory/context-waterline.ts`) — Token economics for long chat threads.
 - Tracks per-thread token usage and adapter context windows.
