@@ -62,7 +62,10 @@ describe('cachedRealpath', () => {
     await fs.writeFile(filePath, 'hello')
 
     const result = await cachedRealpath(filePath)
-    expect(result).toBe(path.resolve(filePath))
+    // cachedRealpath 返回 fs.realpath 结果（符号链接已解析）；
+    // macOS 上 os.tmpdir() 位于 /var（→ /private/var 的符号链接）下，
+    // 因此不能与 path.resolve（不解析符号链接）直接比较
+    expect(result).toBe(await fs.realpath(filePath))
   })
 
   it('does not cache fallback for non-existent paths (TOCTOU protection)', async () => {
@@ -72,9 +75,11 @@ describe('cachedRealpath', () => {
     const symlinkTarget = path.join(outsideDir, 'target.txt')
     await fs.writeFile(symlinkTarget, 'target')
 
-    // 1. First call: path does not exist, should fall back and NOT cache
+    // 1. First call: path does not exist, should fall back and NOT cache.
+    // 生产实现对「父目录存在、文件不存在」的情况会返回 realpath(父目录)+文件名
+    //（tmpDir 在 macOS /var 符号链接下，因此是 /private/var/... 前缀）
     const firstResult = await cachedRealpath(nonExistentPath)
-    expect(firstResult).toBe(path.resolve(nonExistentPath))
+    expect(firstResult).toBe(path.join(await fs.realpath(tmpDir), 'nonexistent.txt'))
 
     // 2. Create a symlink at the previously non-existent path
     try {
@@ -86,16 +91,16 @@ describe('cachedRealpath', () => {
 
     // 3. Second call: should resolve the symlink (not a stale cache hit)
     const secondResult = await cachedRealpath(nonExistentPath)
-    expect(secondResult).toBe(path.resolve(symlinkTarget))
+    expect(secondResult).toBe(await fs.realpath(symlinkTarget))
   })
 
   it('caches successfully resolved realpaths', async () => {
     const filePath = path.join(tmpDir, 'cacheable.txt')
     await fs.writeFile(filePath, 'hello')
 
-    // First call should cache
+    // First call should cache（返回值是 realpath 结果，可能含 /private/var 前缀）
     const firstResult = await cachedRealpath(filePath)
-    expect(firstResult).toBe(path.resolve(filePath))
+    expect(firstResult).toBe(await fs.realpath(filePath))
 
     // Second call should hit cache and return same result
     const secondResult = await cachedRealpath(filePath)
@@ -108,6 +113,7 @@ describe('cachedRealpath', () => {
     await fs.mkdir(subdir, { recursive: true })
 
     const result = await cachedRealpath(nonExistentPath)
-    expect(result).toBe(path.resolve(nonExistentPath))
+    // 生产实现：父目录 realpath + 文件名（macOS 下 tmpDir 解析为 /private/var/...）
+    expect(result).toBe(path.join(await fs.realpath(subdir), 'newfile.txt'))
   })
 })

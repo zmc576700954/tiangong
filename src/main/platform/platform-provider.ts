@@ -90,7 +90,13 @@ class DarwinProvider implements PlatformProvider {
 
   isSystemPath(p: string): boolean {
     const resolved = path.resolve(p)
-    return /^(\/etc|\/usr|\/bin|\/sbin|\/boot|\/lib|\/var)/.test(resolved) || resolved === '/'
+    if (resolved === '/') return true
+    if (/^(\/etc|\/usr|\/bin|\/sbin|\/boot|\/lib)(\/|$)/.test(resolved)) return true
+    // macOS: /var 是指向 /private/var 的符号链接，os.tmpdir() 位于其下。
+    // 只拦截真实系统子目录（/var/root、/var/db 等），tmpdir 等用户临时目录放行。
+    if (/^\/var\/(root|db|mail|spool|at|audit|backups|log|tmp)(\/|$)/.test(resolved)) return true
+    if (/^\/private\/var\/(root|db|mail|spool|at|audit|backups|log|tmp)(\/|$)/.test(resolved)) return true
+    return false
   }
 
   isWithinParent(child: string, parent: string): boolean {

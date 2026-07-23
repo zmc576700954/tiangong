@@ -51,6 +51,10 @@ async function safeRealpath(p: string): Promise<string> {
     return await fs.realpath(p)
   } catch (err) {
     if (isMissingError(err)) {
+      // 路径不存在：解析最近的已存在祖先，再拼接剩余部分，
+      // 避免符号链接目录（如 macOS /var → /private/var）在拼接后仍带链接
+      const resolved = await resolveNearestExistingAncestor(p)
+      if (resolved !== null) return resolved
       return path.resolve(p)
     }
     const target = await readLinkTarget(p)
@@ -59,6 +63,26 @@ async function safeRealpath(p: string): Promise<string> {
     }
     throw err
   }
+}
+
+/** 逐级向上找已存在的祖先做 realpath，再拼接不存在的尾部；全部失败返回 null */
+async function resolveNearestExistingAncestor(p: string): Promise<string | null> {
+  let current = path.dirname(p)
+  const missingParts: string[] = [path.basename(p)]
+  // 有界上溯，防止极端嵌套路径造成过多系统调用
+  for (let depth = 0; depth < 32; depth++) {
+    try {
+      const realAncestor = await fs.realpath(current)
+      return path.join(realAncestor, ...missingParts.reverse())
+    } catch (ancestorErr) {
+      if (!isMissingError(ancestorErr)) return null
+      missingParts.unshift(path.basename(current))
+      const parent = path.dirname(current)
+      if (parent === current) return null
+      current = parent
+    }
+  }
+  return null
 }
 
 /**

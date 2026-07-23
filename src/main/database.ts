@@ -664,4 +664,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
     addColumnSafe('nodes', 'wiki_content', 'TEXT')
     addColumnSafe('nodes', 'wiki_meta', 'TEXT')
   }
+
+  // ChatRepository 读取这些列时要求存在（requireNumber），必须保证任何升级路径都会补齐
+  addColumnSafe('chat_messages', 'token_count', 'INTEGER', '0')
+  addColumnSafe('chat_threads', 'parent_thread_id', 'TEXT', 'NULL')
+  addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
+  addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '0')
+  addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER', 'NULL')
 }
