@@ -10,7 +10,7 @@ import { EdgeRepository } from '../repositories/edge-repository'
 import { BugRepository } from '../repositories/bug-repository'
 import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
-import type { GraphNode, GraphEdge, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
+import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
@@ -18,7 +18,10 @@ import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
+import { createLogger } from '../shared/logger'
 import { ensureString, ensureOptionalNumber, MAX_ID_LEN } from './utils'
+
+const logger = createLogger('GraphIPC')
 
 export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
   const nodeRepo = new NodeRepository(db)
@@ -30,7 +33,7 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     try {
       WikiLinkService.syncNodeLinks(nodeId, nodeRepo, edgeRepo)
     } catch (err) {
-      console.error('[wiki] syncNodeLinks failed for', nodeId, err)
+      logger.error('syncNodeLinks failed for', nodeId, err)
     }
   }
 
@@ -233,7 +236,7 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
 
   // ---------- 边操作 ----------
   typedHandle('edge:create', async (_, data) => {
-    if ((data as GraphEdge).edgeType === 'wiki-link') {
+    if ((data as { edgeType?: unknown }).edgeType === 'wiki-link') {
       throw new IpcError('wiki-link edges are managed by WikiLinkService and cannot be created manually', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     return edgeRepo.create(data)

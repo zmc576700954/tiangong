@@ -38,6 +38,7 @@
 - 2026-07-23：frontmatter 编辑从手写 YAML 改为后端解析结果的结构化展示，解析规则唯一化
 - 2026-07-23（T1）：rebuild better-sqlite3 后暴露 11 处存量测试失败，逐一修复：① DarwinProvider.isSystemPath 误拦 macOS tmpdir（/var 是符号链接，只应拦截 root/db/log/tmp 等真实系统子目录）；② chat_threads/chat_messages 缺少 token_count、waterline 等 5 列的增量迁移；③ safeRealpath 对不存在路径的 ENOENT 回退保留符号链接，导致嵌套路径 containment 校验误判——新增 resolveNearestExistingAncestor 逐级向上 realpath；④ cachedRealpath 测试断言与 macOS /var→/private/var 符号链接行为不兼容，改为与 fs.realpath 比较。T2 的落边钩子改挂 IPC 层（src/main/ipc/graph.ts）而非 GraphService——IPC handler 直接调用 nodeRepo，未走 GraphService
 - 2026-07-23（T2）：WikiLinkService 落地——syncNodeLinks diff 落边（悬空链接不入库）、parseContent 实时解析、getBacklinks、findDanglingLinks；resolveWikiLink 改同步签名；IPC 层 node:create/createBatch/update 挂落边钩子，edge:create 拒绝手工 wiki-link 边
+- 2026-07-23（T2 审查）：node:createBatch 逐节点 syncWikiLinks 为 O(N²) 全图扫描（每次 listByGraph）——单次数十节点可接受；T4 Ingest 批量导入若达数百节点需优化（批量同步接口或缓存 listByGraph），届时处理
 
 ## 会话恢复指南
 

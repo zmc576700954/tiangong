@@ -33,6 +33,7 @@ export class WikiIndexService {
     graphType: GraphType,
     nodeRepo: WikiNodeRepository,
   ): Promise<CreateSpecialPagesResult> {
+    if (!nodeRepo.create) throw new TypeError('WikiNodeRepository.create is required for createSpecialPages')
     const indexId = this.createWikiPage(graphId, graphType, 'index', nodeRepo)
     const logId = this.createWikiPage(graphId, graphType, 'log', nodeRepo)
     return { indexId, logId }
@@ -47,6 +48,7 @@ export class WikiIndexService {
     graphType: GraphType,
     nodeRepo: WikiNodeRepository,
   ): Promise<CreateSpecialPagesResult> {
+    if (!nodeRepo.create) throw new TypeError('WikiNodeRepository.create is required for ensureSpecialPages')
     const nodes = nodeRepo.listByGraph(graphId)
     const existing = new Map<'index' | 'log', string>()
 
@@ -89,6 +91,7 @@ export class WikiIndexService {
     return null
   }
 
+  /** 仅 createSpecialPages / ensureSpecialPages 调用；二者入口已守卫 create 存在 */
   private static createWikiPage(
     graphId: string,
     graphType: GraphType,

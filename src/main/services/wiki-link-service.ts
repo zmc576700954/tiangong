@@ -15,6 +15,11 @@ export interface WikiNodeRepo {
   listByGraph(graphId: string): GraphNode[]
 }
 
+/**
+ * 仅使用 EdgeRepository 子集能力：
+ * create 时只写 source / target / edgeType / graphId，
+ * GraphEdge 其他可选字段（label、description、strength 等）由 repository 默认填充。
+ */
 export interface WikiEdgeRepo {
   create(data: Omit<GraphEdge, 'id'>): GraphEdge
   delete(id: string): void

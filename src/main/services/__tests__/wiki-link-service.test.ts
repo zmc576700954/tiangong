@@ -171,4 +171,28 @@ describe('WikiLinkService.parseContent / getBacklinks / findDanglingLinks', () =
     expect(dangling[0]).toHaveProperty('fromNodeId')
     expect(dangling[0]).toHaveProperty('fromTitle')
   })
+
+  it('getBacklinks 目标节点不存在时返回空数组', () => {
+    const backlinks = WikiLinkService.getBacklinks('node-missing', f.nodeRepo, f.edgeRepo)
+
+    expect(backlinks).toEqual([])
+  })
+
+  it.each(['', undefined])('wikiContent 清空后 syncNodeLinks 移除该节点所有既有 wiki-link 出边', (cleared) => {
+    f.addWikiPage('页面A', '# A')
+    const b = f.addWikiPage('页面B', '[[页面A]]')
+    WikiLinkService.syncNodeLinks(b.id, f.nodeRepo, f.edgeRepo)
+    expect(f.edges).toHaveLength(1)
+
+    b.wikiContent = cleared
+    const result = WikiLinkService.syncNodeLinks(b.id, f.nodeRepo, f.edgeRepo)
+
+    expect(result.removed).toHaveLength(1)
+    expect(result.added).toHaveLength(0)
+    expect(f.edges).toHaveLength(0)
+  })
+
+  it('findDanglingLinks 对空图返回空数组', () => {
+    expect(WikiLinkService.findDanglingLinks('g-empty', f.nodeRepo)).toEqual([])
+  })
 })
