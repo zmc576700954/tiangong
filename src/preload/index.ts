@@ -49,6 +49,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   'wiki:getBacklinks',
   'wiki:findDangling',
   'wiki:ingestFiles',
+  'wiki:computeCommunities',
+  'wiki:lint',
 
   // Agent operations
   'agent:listAdapters',

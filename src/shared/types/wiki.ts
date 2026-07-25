@@ -59,3 +59,40 @@ export interface IngestResult {
   updated: { id: string; title: string }[]
   failed: IngestFailure[]
 }
+
+/** 导入模式：规则式 / LLM 提炼式 */
+export type IngestMode = 'rule' | 'llm'
+
+/** Graph Lint 单条问题 */
+export interface LintIssue {
+  kind: 'dangling-link' | 'orphan' | 'community-singleton' | 'community-oversized'
+  severity: 'info' | 'warning'
+  /** 相关节点（断链时为源节点） */
+  nodeId?: string
+  message: string
+  /** 引导用户如何修复 */
+  hint: string
+}
+
+/** wiki:lint 返回的报告 */
+export interface LintReport {
+  issues: LintIssue[]
+  stats: { nodeCount: number; edgeCount: number; communityCount: number }
+}
+
+/** 单个社区信息 */
+export interface CommunityInfo {
+  id: string
+  memberIds: string[]
+  size: number
+  internalEdges: number
+  externalEdges: number
+}
+
+/** wiki:computeCommunities 返回结果 */
+export interface ComputeResult {
+  communityCount: number
+  nodeCount: number
+  modularity: number
+  communities: CommunityInfo[]
+}
