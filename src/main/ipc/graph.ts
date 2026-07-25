@@ -359,10 +359,14 @@ export function registerGraphHandlers(
       throw new IpcError(`Invalid ingest mode: ${resolvedMode}`, ErrorCode.IPC_INVALID_ARGUMENT)
     }
     if (resolvedMode === 'llm') {
+      const projectPath = graphData.graph.projectPath
+      if (!projectPath) {
+        throw new IpcError('该图无 projectPath，无法使用 LLM 提炼导入', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
       const agentRunner =
         overrides?.agentRunner ??
         ((prompt: string) =>
-          sendPromptViaAgent(agentManager, graphData.graph.projectPath ?? '', prompt, {
+          sendPromptViaAgent(agentManager, projectPath, prompt, {
             nodeTitle: 'Wiki LLM 提炼导入',
             timeoutMs: 120_000,
           }))

@@ -16,7 +16,7 @@ import type { NodeRepository } from '../../repositories/node-repository'
 import type { EdgeRepository } from '../../repositories/edge-repository'
 import { generateId } from '../../shared/env'
 
-import { IpcError } from '../../errors'
+import { IpcError, ErrorCode } from '../../errors'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -530,6 +530,47 @@ describe('registerGraphHandlers', () => {
           agentManager,
           { agentRunner },
         )
+      })
+
+      it('rejects llm mode without projectPath', async () => {
+        (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValue({
+          graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
+        })
+        await expect(handlers['wiki:ingestFiles']({}, 'graph-1', ['/tmp/a.md'], 'llm')).rejects.toMatchObject({
+          code: ErrorCode.IPC_INVALID_ARGUMENT,
+          message: expect.stringContaining('projectPath'),
+        })
+      })
+
+      describe('agent unavailable', () => {
+        beforeEach(() => {
+          agentRunner = vi.fn().mockRejectedValue(new Error('adapter not found'))
+          handlers = {}
+          registerGraphHandlers(
+            db,
+            makeTypedHandle(handlers),
+            graphService,
+            snapshotRepo,
+            agentManager,
+            { agentRunner },
+          )
+        })
+
+        it('rejects whole call when agentRunner fails on the first file', async () => {
+          (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValue({
+            graph: { id: 'graph-1', type: 'online', projectPath: '/tmp/project' }, nodes: [], edges: [], bugs: [],
+          })
+          const filePath = path.join(os.tmpdir(), `ingest-llm-fail-${process.pid}.md`)
+          await fs.writeFile(filePath, 'raw content', 'utf-8')
+          try {
+            await expect(handlers['wiki:ingestFiles']({}, 'graph-1', [filePath], 'llm')).rejects.toMatchObject({
+              code: ErrorCode.AGENT_ADAPTER_ERROR,
+              message: expect.stringContaining('LLM 不可用'),
+            })
+          } finally {
+            await fs.unlink(filePath).catch(() => undefined)
+          }
+        })
       })
 
       it('routes through injected agentRunner override', async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { LlmIngestService, type AgentRunner } from '../llm-ingest-service'
+import { LlmIngestService, type AgentRunner, MAX_LLM_FILE_SIZE } from '../llm-ingest-service'
+import { IpcError, ErrorCode } from '../../errors'
 import type { GraphNode, GraphEdge } from '@shared/types'
 
 class MemNodeRepo {
@@ -23,6 +24,7 @@ class MemEdgeRepo {
 }
 
 const readFile = async (p: string) => `raw content of ${p}`
+const oversizedReadFile = async (_p: string) => 'x'.repeat(MAX_LLM_FILE_SIZE + 1)
 
 describe('LlmIngestService.ingestWithLlm', () => {
   let nodeRepo: MemNodeRepo
@@ -73,12 +75,32 @@ describe('LlmIngestService.ingestWithLlm', () => {
     let call = 0
     const runner: AgentRunner = async () => {
       call++
-      if (call === 1) throw new Error('agent timeout')
+      if (call === 2) throw new Error('agent timeout on second file')
       return '---\ntitle: 好页面\n---\n\n# 好页面'
     }
-    const r = await LlmIngestService.ingestWithLlm('g1', ['/bad.md', '/good.md'], 'online', nodeRepo, edgeRepo, readFile, runner)
+    const r = await LlmIngestService.ingestWithLlm('g1', ['/good.md', '/bad.md'], 'online', nodeRepo, edgeRepo, readFile, runner)
     expect(r.failed.length).toBe(1)
     expect(r.created.length).toBe(1)
+  })
+
+  it('agent 首个文件即失败时整单抛 IpcError', async () => {
+    const runner: AgentRunner = async () => { throw new Error('claude-code not found') }
+    await expect(
+      LlmIngestService.ingestWithLlm('g1', ['/a.md'], 'online', nodeRepo, edgeRepo, readFile, runner),
+    ).rejects.toThrow(IpcError)
+    await expect(
+      LlmIngestService.ingestWithLlm('g1', ['/a.md'], 'online', nodeRepo, edgeRepo, readFile, runner),
+    ).rejects.toMatchObject({ code: ErrorCode.AGENT_ADAPTER_ERROR, message: expect.stringContaining('LLM 不可用，请改用规则式导入') })
+  })
+
+  it('超大文件进入 failed 且不走 agentRunner', async () => {
+    let called = false
+    const runner: AgentRunner = async () => { called = true; return '---\ntitle: 不应触发\n---\n\n# 不应触发' }
+    const r = await LlmIngestService.ingestWithLlm('g1', ['/big.md'], 'online', nodeRepo, edgeRepo, oversizedReadFile, runner)
+    expect(r.created).toHaveLength(0)
+    expect(r.failed.length).toBe(1)
+    expect(r.failed[0].error).toContain('超过 LLM 提炼上限')
+    expect(called).toBe(false)
   })
 
   it('prompt 中包含已有页面标题供 wikilink 对齐', async () => {
