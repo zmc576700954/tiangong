@@ -10,7 +10,7 @@
 import type { GraphType } from '@shared/types'
 import type { IngestResult } from '@shared/types/wiki'
 import { basename } from 'path'
-import { parseWikiMarkdown } from './markdown-utils'
+import { parseWikiMarkdown, normalizeWikiTitle } from './markdown-utils'
 import { IngestService, type IngestNodeRepo, type IngestEdgeRepo, type ReadFileFn } from './ingest-service'
 
 export type AgentRunner = (prompt: string) => Promise<string>
@@ -65,8 +65,8 @@ export class LlmIngestService {
           parseWikiMarkdown(output)
         } catch {
           warning = 'LLM 输出 frontmatter 无法解析，已回退为文件名标题 + 原文整体导入'
-          const safeBody = output.replace(/^---[\s\S]*?---/, '').trim()
-          markdown = `# ${fileBaseName(filePath)}\n\n${safeBody}`
+          const safeBody = output.replace(/^---\r?\n[\s\S]*?\r?\n---\r?/, '').trim()
+          markdown = `# ${normalizeWikiTitle(fileBaseName(filePath))}\n\n${safeBody}`
         }
         refined.push({ filePath, markdown, ...(warning ? { warning } : {}) })
       } catch (err) {

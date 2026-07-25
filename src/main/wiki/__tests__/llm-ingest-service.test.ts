@@ -56,7 +56,17 @@ describe('LlmIngestService.ingestWithLlm', () => {
     expect(r.created.length).toBe(1)
     const node = nodeRepo.nodes.get(r.created[0].id)!
     expect(node.title).toBe('订单')
-    expect((node.wikiMeta as { ingestWarning?: string }).ingestWarning).toBeDefined()
+    expect(node.wikiContent).toContain('正文内容')
+    expect((node.wikiMeta as { ingestWarning?: string }).ingestWarning).toBe('LLM 输出 frontmatter 无法解析，已回退为文件名标题 + 原文整体导入')
+  })
+
+  it('frontmatter 回退时正文中的水平分隔线不被误截断', async () => {
+    const runner: AgentRunner = async () => '---\n: bad\n---\n\nA\n\n---\n\nB'
+    const r = await LlmIngestService.ingestWithLlm('g1', ['/a.md'], 'online', nodeRepo, edgeRepo, readFile, runner)
+    expect(r.created.length).toBe(1)
+    const node = nodeRepo.nodes.get(r.created[0].id)!
+    expect(node.wikiContent).toContain('A')
+    expect(node.wikiContent).toContain('B')
   })
 
   it('单文件失败不阻塞整批', async () => {
