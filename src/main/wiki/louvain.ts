@@ -4,6 +4,7 @@
  * 输入无向带权图，输出稳定的社区划分。固定 seed 时结果可复现。
  * resolution 控制粒度（>1 更细，<1 更粗），默认 1.0。
  * 悬空边（引用不存在节点）在构图时被过滤。
+ * 自环边在构图与模块度计算中均被忽略。
  */
 
 export interface LouvainGraph {
@@ -27,7 +28,7 @@ function lcg(seed: number): () => number {
   let s = seed >>> 0 || 1
   return () => {
     s = (s * 1664525 + 1013904223) >>> 0
-    return s / 0xffffffff
+    return s / 0x100000000
   }
 }
 
@@ -81,7 +82,7 @@ export function louvain(graph: LouvainGraph, options: LouvainOptions = {}): Comm
 
     let localMoved = true
     let guard = 0
-    while (localMoved && guard < 100) {
+    while (localMoved && guard < 10000) {
       localMoved = false
       guard++
       const order = currentIds.slice()

@@ -44,9 +44,10 @@ describe('louvain', () => {
     expect(r1.modularity()).toBeCloseTo(r2.modularity(), 10)
   })
 
-  it('communityOf 对未知节点返回 undefined 行为外的自身社区', () => {
+  it('communityOf 对未知节点返回空字符串', () => {
     const r = louvain({ nodeIds: ['a'], edges: [] })
     expect(r.communityOf('a')).toBeDefined()
+    expect(r.communityOf('unknown')).toBe('')
   })
 
   it('悬空边（引用不存在节点）被过滤不报错', () => {
