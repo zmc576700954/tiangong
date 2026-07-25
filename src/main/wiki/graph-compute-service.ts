@@ -28,20 +28,22 @@ const COMMUNITY_PAGE_TAG = 'community'
 
 export class GraphComputeService {
   static computeCommunities(graphId: string, nodeRepo: ComputeNodeRepo, edgeRepo: ComputeEdgeRepo): ComputeResult {
-    const pages = nodeRepo
-      .listByGraph(graphId)
-      .filter((n) => n.type === 'wiki-page' && (n.wikiMeta as WikiNodeMeta | undefined)?.specialPage !== COMMUNITY_PAGE_TAG)
+    const allNodes = nodeRepo.listByGraph(graphId)
+    const pages = allNodes.filter(
+      (n) => n.type === 'wiki-page' && (n.wikiMeta as WikiNodeMeta | undefined)?.specialPage !== COMMUNITY_PAGE_TAG,
+    )
     const edges = edgeRepo.listByGraph(graphId).filter((e) => e.edgeType === 'wiki-link')
 
     const empty: ComputeResult = { communityCount: 0, nodeCount: pages.length, modularity: 0, communities: [] }
     if (pages.length < 2 || edges.length === 0) return empty
 
-    const pageIds = new Set(pages.map((p) => p.id))
+    const sortedIds = [...new Set(pages.map((p) => p.id))].sort()
+    const pageIds = new Set(sortedIds)
     const louvainEdges = edges
       .filter((e) => pageIds.has(e.source) && pageIds.has(e.target))
       .map((e) => ({ source: e.source, target: e.target, weight: e.strength ?? 1 }))
 
-    const assignment = louvain({ nodeIds: [...pageIds], edges: louvainEdges }, { seed: 42 })
+    const assignment = louvain({ nodeIds: sortedIds, edges: louvainEdges }, { seed: 42 })
     const communityIds = assignment.communities()
     if (communityIds.length === 0) return empty
 
@@ -57,7 +59,9 @@ export class GraphComputeService {
       const ratio = ids.length / total
       const level = ratio > 0.5 ? 0 : ratio > 0.1 ? 1 : 2
       for (const id of ids) {
-        nodeRepo.update(id, { communityId: cid, communityLevel: level })
+        if (nodeRepo.findById(id)) {
+          nodeRepo.update(id, { communityId: cid, communityLevel: level })
+        }
       }
     }
 
@@ -67,38 +71,43 @@ export class GraphComputeService {
       let external = 0
       const idSet = new Set(ids)
       for (const e of edges) {
-        if (idSet.has(e.source) && idSet.has(e.target)) internal++
-        else if (idSet.has(e.source) || idSet.has(e.target)) external++
+        const w = e.strength ?? 1
+        if (idSet.has(e.source) && idSet.has(e.target)) internal += w
+        else if (idSet.has(e.source) || idSet.has(e.target)) external += w
       }
       communities.push({ id: cid, memberIds: ids, size: ids.length, internalEdges: internal, externalEdges: external })
     }
 
-    this.syncCommunityPages(graphId, pages, communities, members, nodeRepo)
+    this.syncCommunityPages(graphId, allNodes, pages, communities, members, nodeRepo)
 
     return { communityCount: communityIds.length, nodeCount: total, modularity: assignment.modularity(), communities }
   }
 
   private static syncCommunityPages(
     graphId: string,
+    allNodes: GraphNode[],
     pages: GraphNode[],
     communities: CommunityInfo[],
     members: Map<string, string[]>,
     nodeRepo: ComputeNodeRepo,
   ): void {
     const titleOf = new Map(pages.map((p) => [p.id, p.title]))
-    const existingCommunityPages = nodeRepo
-      .listByGraph(graphId)
-      .filter((n) => (n.wikiMeta as WikiNodeMeta | undefined)?.specialPage === COMMUNITY_PAGE_TAG)
-    const byCommunityId = new Map(
-      existingCommunityPages.map((n) => [((n.wikiMeta as WikiNodeMeta).frontmatter?.communityId as string) ?? '', n]),
+    const existingCommunityPages = allNodes.filter(
+      (n) => (n.wikiMeta as WikiNodeMeta | undefined)?.specialPage === COMMUNITY_PAGE_TAG,
     )
-
-    const aliveIds = new Set(communities.map((c) => c.id))
-    for (const [cid, page] of byCommunityId) {
-      if (cid && !aliveIds.has(cid)) nodeRepo.delete(page.id)
+    const byCommunityId = new Map<string, GraphNode>()
+    for (const n of existingCommunityPages) {
+      const cid = ((n.wikiMeta as WikiNodeMeta).frontmatter?.communityId as string) ?? ''
+      if (cid) byCommunityId.set(cid, n)
     }
 
-    for (const c of communities) {
+    const aliveIds = new Set(communities.map((c) => c.id))
+    for (const page of existingCommunityPages) {
+      const cid = ((page.wikiMeta as WikiNodeMeta).frontmatter?.communityId as string) ?? ''
+      if (!cid || !aliveIds.has(cid)) nodeRepo.delete(page.id)
+    }
+
+    for (const [idx, c] of communities.entries()) {
       const ids = members.get(c.id)!
       const repTitle = ids.map((id) => titleOf.get(id) ?? id).sort()[0] ?? c.id
       const memberLinks = ids
@@ -121,7 +130,7 @@ export class GraphComputeService {
         nodeRepo.create({
           type: 'wiki-page', status: 'confirmed', title: `社区 · ${repTitle}`,
           graphId, graphType: pages[0]?.graphType ?? 'online',
-          position: { x: 0, y: 0 }, wikiContent,
+          position: { x: idx * 280, y: 400 }, wikiContent,
           wikiMeta: wikiMeta as Record<string, unknown>,
         })
       }

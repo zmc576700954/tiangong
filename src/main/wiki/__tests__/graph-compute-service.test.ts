@@ -79,12 +79,19 @@ describe('GraphComputeService.computeCommunities', () => {
     link('c', 'd')
     const r1 = GraphComputeService.computeCommunities('g1', nodeRepo, edgeRepo)
     const firstIds = new Map([...nodeRepo.nodes.values()].map((n) => [n.id, n.communityId]))
+    const firstPageIds = new Set(
+      [...nodeRepo.nodes.values()]
+        .filter((n) => (n.wikiMeta as { specialPage?: string } | undefined)?.specialPage === 'community')
+        .map((n) => n.id),
+    )
     const r2 = GraphComputeService.computeCommunities('g1', nodeRepo, edgeRepo)
     expect(r2.communityCount).toBe(r1.communityCount)
     const communityPages = [...nodeRepo.nodes.values()].filter(
       (n) => (n.wikiMeta as { specialPage?: string } | undefined)?.specialPage === 'community',
     )
     expect(communityPages.length).toBe(2)
+    const secondPageIds = new Set(communityPages.map((n) => n.id))
+    expect(secondPageIds).toEqual(firstPageIds)
     for (const [id, cid] of firstIds) {
       if (cid) expect(nodeRepo.nodes.get(id)!.communityId).toBe(cid)
     }
