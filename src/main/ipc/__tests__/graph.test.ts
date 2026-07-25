@@ -8,51 +8,139 @@ import type { SnapshotRepository } from '../../repositories/snapshot-repository'
 import { nodeTypeRegistry } from '../../shared/node-type-registry'
 import type BetterSqlite3 from 'better-sqlite3'
 import type { TypedHandle } from '../utils'
+import type { AgentManager } from '../../agent/agent-manager'
+import type { AgentRunner } from '../../wiki/llm-ingest-service'
+import type { IngestResult, ComputeResult, LintReport } from '@shared/types/wiki'
+import type { Graph, GraphNode, GraphEdge } from '@shared/types'
+import type { NodeRepository } from '../../repositories/node-repository'
+import type { EdgeRepository } from '../../repositories/edge-repository'
+import { generateId } from '../../shared/env'
 
 import { IpcError } from '../../errors'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
+
+function createMockDb() {
+  const stmtMock = {
+    run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
+    get: vi.fn().mockReturnValue(null),
+    all: vi.fn().mockReturnValue([]),
+  }
+  const db = {
+    prepare: vi.fn().mockReturnValue(stmtMock),
+    transaction: vi.fn((fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args)),
+    exec: vi.fn(),
+    pragma: vi.fn().mockReturnValue([]),
+    close: vi.fn(),
+  } as unknown as BetterSqlite3.Database
+  return { db, stmt: stmtMock }
+}
+
+function createFakeRepos() {
+  const nodes: GraphNode[] = []
+  const edges: GraphEdge[] = []
+
+  const nodeRepo = {
+    findById: (id: string) => nodes.find((n) => n.id === id) ?? null,
+    listByGraph: (graphId: string) => nodes.filter((n) => n.graphId === graphId),
+    create(data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>): GraphNode {
+      const now = new Date().toISOString()
+      const node: GraphNode = { ...data, id: generateId('node'), createdAt: now, updatedAt: now }
+      nodes.push(node)
+      return node
+    },
+    update(id: string, data: Partial<GraphNode>): GraphNode {
+      const idx = nodes.findIndex((n) => n.id === id)
+      if (idx === -1) throw new Error(`Node not found: ${id}`)
+      nodes[idx] = { ...nodes[idx], ...data, updatedAt: new Date().toISOString() }
+      return nodes[idx]
+    },
+    delete(id: string) {
+      const idx = nodes.findIndex((n) => n.id === id)
+      if (idx !== -1) nodes.splice(idx, 1)
+    },
+  }
+
+  const edgeRepo = {
+    create(data: Omit<GraphEdge, 'id'>): GraphEdge {
+      const edge: GraphEdge = { ...data, id: generateId('edge') }
+      edges.push(edge)
+      return edge
+    },
+    delete(id: string) {
+      const idx = edges.findIndex((e) => e.id === id)
+      if (idx !== -1) edges.splice(idx, 1)
+    },
+    listByGraph: (graphId: string) => edges.filter((e) => e.graphId === graphId),
+  }
+
+  function addWikiPage(title: string, wikiContent: string, graphId = 'g1'): GraphNode {
+    const now = new Date().toISOString()
+    const data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'> = {
+      type: 'wiki-page', status: 'draft', title, graphId, graphType: 'online',
+      position: { x: 0, y: 0 }, wikiContent,
+    }
+    const node: GraphNode = { ...data, id: generateId('node'), createdAt: now, updatedAt: now }
+    nodes.push(node)
+    return node
+  }
+
+  return { nodeRepo, edgeRepo, nodes, edges, addWikiPage }
+}
+
+function createAgentManagerStub(): AgentManager {
+  return {
+    startSession: vi.fn().mockResolvedValue({ sessionId: 'session-1' }),
+    sendCommand: vi.fn().mockResolvedValue(undefined),
+    terminateSession: vi.fn().mockResolvedValue(undefined),
+  } as unknown as AgentManager
+}
+
+function createGraphServiceStub(): GraphService {
+  return {
+    createGraph: vi.fn().mockResolvedValue({ id: 'graph-1' }),
+    listGraphs: vi.fn().mockResolvedValue([]),
+    getGraph: vi.fn().mockResolvedValue(null),
+    deleteGraph: vi.fn().mockResolvedValue(undefined),
+    deriveGraph: vi.fn().mockResolvedValue({ id: 'graph-2' }),
+    initFromProject: vi.fn().mockResolvedValue({ onlineGraph: { id: 'g1' }, devGraph: { id: 'g2' }, modules: [] }),
+    getProjectPaths: vi.fn().mockReturnValue([]),
+  } as unknown as GraphService
+}
+
+function createSnapshotRepoStub(): SnapshotRepository {
+  return {
+    create: vi.fn().mockResolvedValue({ id: 'snapshot-1' }),
+    listByGraph: vi.fn().mockResolvedValue([]),
+    load: vi.fn().mockResolvedValue(null),
+    delete: vi.fn().mockResolvedValue(undefined),
+  } as unknown as SnapshotRepository
+}
+
+function makeTypedHandle(handlers: Record<string, (...args: any[]) => Promise<unknown>>): TypedHandle {
+  return (channel, handler) => {
+    handlers[channel] = handler as (...args: any[]) => Promise<unknown>
+  }
+}
 
 describe('registerGraphHandlers', () => {
   let handlers: Record<string, (...args: any[]) => Promise<unknown>>
   let graphService: GraphService
   let snapshotRepo: SnapshotRepository
   let db: BetterSqlite3.Database
-  let stmtMock: { run: ReturnType<typeof vi.fn>; get: ReturnType<typeof vi.fn>; all: ReturnType<typeof vi.fn> }
+  let stmtMock: ReturnType<typeof createMockDb>['stmt']
+  let agentManager: AgentManager
 
   beforeEach(() => {
     handlers = {}
-    graphService = {
-      createGraph: vi.fn().mockResolvedValue({ id: 'graph-1' }),
-      listGraphs: vi.fn().mockResolvedValue([]),
-      getGraph: vi.fn().mockResolvedValue(null),
-      deleteGraph: vi.fn().mockResolvedValue(undefined),
-      deriveGraph: vi.fn().mockResolvedValue({ id: 'graph-2' }),
-    } as unknown as GraphService
-    snapshotRepo = {
-      create: vi.fn().mockResolvedValue({ id: 'snapshot-1' }),
-      listByGraph: vi.fn().mockResolvedValue([]),
-      load: vi.fn().mockResolvedValue(null),
-      delete: vi.fn().mockResolvedValue(undefined),
-    } as unknown as SnapshotRepository
-    stmtMock = {
-      run: vi.fn().mockReturnValue({ changes: 1, lastInsertRowid: 1 }),
-      get: vi.fn().mockReturnValue(null),
-      all: vi.fn().mockReturnValue([]),
-    }
-    db = {
-      prepare: vi.fn().mockReturnValue(stmtMock),
-      transaction: vi.fn((fn: (...args: unknown[]) => unknown) => (...args: unknown[]) => fn(...args)),
-      exec: vi.fn(),
-      pragma: vi.fn().mockReturnValue([]),
-      close: vi.fn(),
-    } as unknown as BetterSqlite3.Database
+    graphService = createGraphServiceStub()
+    snapshotRepo = createSnapshotRepoStub()
+    const mock = createMockDb()
+    db = mock.db
+    stmtMock = mock.stmt
+    agentManager = createAgentManagerStub()
 
-    const typedHandle: TypedHandle = (channel, handler) => {
-      handlers[channel] = handler as (...args: any[]) => Promise<unknown>
-    }
-
-    registerGraphHandlers(db, typedHandle, graphService, snapshotRepo)
+    registerGraphHandlers(db, makeTypedHandle(handlers), graphService, snapshotRepo, agentManager)
   })
 
   describe('node:create', () => {
@@ -390,24 +478,160 @@ describe('registerGraphHandlers', () => {
       await expect(handlers['wiki:ingestFiles']({}, 'graph-1', ['/etc/passwd.md'])).rejects.toThrow(IpcError)
     })
 
-    it('ingests files successfully end-to-end', async () => {
+    it('rejects invalid mode', async () => {
       (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
         graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
       })
-      // handler 注入真实 fs.readFile，须让文件真实存在；
-      // 用 os.tmpdir() 拼接（validateProjectPath 只做 path.resolve，不拦截 tmp 目录）
+      await expect(handlers['wiki:ingestFiles']({}, 'graph-1', ['/tmp/a.md'], 'bad')).rejects.toThrow(IpcError)
+    })
+
+    it('ingests files with default rule mode', async () => {
+      (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
+      })
       const filePath = path.join(os.tmpdir(), `ingest-test-页面-${process.pid}.md`)
       await fs.writeFile(filePath, '# ingest-test-页面\n\n内容', 'utf-8')
       try {
-        const result = await handlers['wiki:ingestFiles']({}, 'graph-1', [filePath]) as {
-          created: { id: string; title: string }[]; updated: unknown[]; failed: { file: string; error: string }[]
-        }
+        const result = await handlers['wiki:ingestFiles']({}, 'graph-1', [filePath]) as IngestResult
         expect(result.failed).toEqual([])
         expect(result.created).toHaveLength(1)
         expect(result.created[0].title).toBe('ingest-test-页面')
       } finally {
         await fs.unlink(filePath).catch(() => undefined)
       }
+    })
+
+    it('explicit mode rule uses rule path', async () => {
+      (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        graph: { id: 'graph-1', type: 'online' }, nodes: [], edges: [], bugs: [],
+      })
+      const filePath = path.join(os.tmpdir(), `ingest-rule-${process.pid}.md`)
+      await fs.writeFile(filePath, '# Rule模式\n\n内容', 'utf-8')
+      try {
+        const result = await handlers['wiki:ingestFiles']({}, 'graph-1', [filePath], 'rule') as IngestResult
+        expect(result.failed).toEqual([])
+        expect(result.created).toHaveLength(1)
+        expect(result.created[0].title).toBe('Rule模式')
+      } finally {
+        await fs.unlink(filePath).catch(() => undefined)
+      }
+    })
+
+    describe('llm mode', () => {
+      let agentRunner: AgentRunner
+      beforeEach(() => {
+        agentRunner = vi.fn().mockResolvedValue('---\ntitle: LLM提炼\n---\n\n# LLM提炼\n\n内容。')
+        handlers = {}
+        registerGraphHandlers(
+          db,
+          makeTypedHandle(handlers),
+          graphService,
+          snapshotRepo,
+          agentManager,
+          { agentRunner },
+        )
+      })
+
+      it('routes through injected agentRunner override', async () => {
+        (graphService.getGraph as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+          graph: { id: 'graph-1', type: 'online', projectPath: '/tmp/project' }, nodes: [], edges: [], bugs: [],
+        })
+        const filePath = path.join(os.tmpdir(), `ingest-llm-${process.pid}.md`)
+        await fs.writeFile(filePath, 'raw content', 'utf-8')
+        try {
+          const result = await handlers['wiki:ingestFiles']({}, 'graph-1', [filePath], 'llm') as IngestResult
+          expect(result.failed).toEqual([])
+          expect(result.created).toHaveLength(1)
+          expect(result.created[0].title).toBe('LLM提炼')
+          expect(agentRunner).toHaveBeenCalled()
+        } finally {
+          await fs.unlink(filePath).catch(() => undefined)
+        }
+      })
+    })
+  })
+})
+
+describe('registerGraphHandlers wiki integration', () => {
+  let handlers: Record<string, (...args: any[]) => Promise<unknown>>
+  let f: ReturnType<typeof createFakeRepos>
+  let graphService: GraphService
+  let snapshotRepo: SnapshotRepository
+  let db: BetterSqlite3.Database
+  let agentManager: AgentManager
+
+  beforeEach(() => {
+    handlers = {}
+    f = createFakeRepos()
+    graphService = createGraphServiceStub()
+    snapshotRepo = createSnapshotRepoStub()
+    db = createMockDb().db
+    agentManager = createAgentManagerStub()
+
+    const graphRepo = {
+      create: (data: { name: string; type: Graph['type'] }) => {
+        const graph: Graph = { id: 'g1', ...data, createdAt: '', updatedAt: '' }
+        return graph
+      },
+      get: (id: string) => {
+        if (id !== 'g1') return null
+        return { graph: { id: 'g1', name: 'G', type: 'online', createdAt: '', updatedAt: '' }, nodes: [], edges: [], bugs: [] }
+      },
+    } as unknown as GraphService['graphRepo']
+    ;(graphService as unknown as { graphRepo: typeof graphRepo }).graphRepo = graphRepo
+
+    const nodeProxy = new Proxy(f.nodeRepo, {
+      get(target, prop) {
+        return (target as Record<string, unknown>)[prop as string]
+      },
+    }) as unknown as NodeRepository
+    const edgeProxy = new Proxy(f.edgeRepo, {
+      get(target, prop) {
+        return (target as Record<string, unknown>)[prop as string]
+      },
+    }) as unknown as EdgeRepository
+
+    registerGraphHandlers(
+      db,
+      makeTypedHandle(handlers),
+      graphService,
+      snapshotRepo,
+      agentManager,
+      { nodeRepo: nodeProxy, edgeRepo: edgeProxy },
+    )
+  })
+
+  describe('wiki:computeCommunities', () => {
+    it('rejects empty graphId', async () => {
+      await expect(handlers['wiki:computeCommunities']({}, '')).rejects.toThrow(IpcError)
+    })
+
+    it('returns ComputeResult on a graph with wiki-link edges', async () => {
+      const a = f.addWikiPage('页面A', '# A')
+      const b = f.addWikiPage('页面B', '# B\n\n[[页面A]]')
+      const c = f.addWikiPage('页面C', '# C\n\n[[页面A]]')
+      f.edgeRepo.create({ source: b.id, target: a.id, edgeType: 'wiki-link', graphId: 'g1' })
+      f.edgeRepo.create({ source: c.id, target: a.id, edgeType: 'wiki-link', graphId: 'g1' })
+
+      const result = await handlers['wiki:computeCommunities']({}, 'g1') as ComputeResult
+      expect(result.nodeCount).toBe(3)
+      expect(result.communityCount).toBeGreaterThanOrEqual(1)
+      expect(result.communities.length).toBe(result.communityCount)
+    })
+  })
+
+  describe('wiki:lint', () => {
+    it('returns LintReport with a dangling link issue', async () => {
+      f.addWikiPage('页面A', '# A')
+      f.addWikiPage('页面B', '# B\n\n参见 [[不存在的页面]]。')
+
+      const result = await handlers['wiki:lint']({}, 'g1') as LintReport
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: 'dangling-link' }),
+        ]),
+      )
+      expect(result.stats.nodeCount).toBe(2)
     })
   })
 })
