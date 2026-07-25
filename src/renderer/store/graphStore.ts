@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
-import type { IngestResult } from '@shared/types/wiki'
+import type { IngestResult, IngestMode, LintReport, ComputeResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -89,7 +89,13 @@ interface GraphState {
   ensureSpecialWikiPages: () => Promise<{ indexId: string | null; logId: string | null }>
 
   /** 导入 markdown/txt 文件为 Wiki 页面（Ingest 管线） */
-  importWikiFiles: (filePaths: string[]) => Promise<IngestResult>
+  importWikiFiles: (filePaths: string[], mode?: IngestMode) => Promise<IngestResult>
+
+  /** 运行 Wiki 图检查 */
+  lintGraph: () => Promise<LintReport | null>
+
+  /** 计算 Wiki 社区并刷新图 */
+  computeCommunities: () => Promise<ComputeResult | null>
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -578,10 +584,24 @@ export const useGraphStore = create<GraphState>((set, get) => {
     return { indexId: indexNode.id, logId: logNode.id }
   },
 
-  importWikiFiles: async (filePaths) => {
+  importWikiFiles: async (filePaths, mode) => {
     const graphId = get().currentGraphId
     if (!graphId || filePaths.length === 0) return { created: [], updated: [], failed: [] }
-    const result = await window.electronAPI['wiki:ingestFiles'](graphId, filePaths)
+    const result = await window.electronAPI['wiki:ingestFiles'](graphId, filePaths, mode)
+    await get().loadGraph(graphId)
+    return result
+  },
+
+  lintGraph: async () => {
+    const graphId = get().currentGraphId
+    if (!graphId) return null
+    return window.electronAPI['wiki:lint'](graphId)
+  },
+
+  computeCommunities: async () => {
+    const graphId = get().currentGraphId
+    if (!graphId) return null
+    const result = await window.electronAPI['wiki:computeCommunities'](graphId)
     await get().loadGraph(graphId)
     return result
   },

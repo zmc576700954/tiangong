@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp } from 'lucide-react'
+import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp, Sparkles, AlertTriangle } from 'lucide-react'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
@@ -30,6 +30,9 @@ interface CanvasOverlayProps {
   hasProjectNode: boolean
   generationProgress?: { stage: string; progress: number } | null
   onImportWikiFiles?: () => void
+  onImportWikiFilesLlm?: () => void
+  onLint?: () => void
+  lintLoading?: boolean
   importSummary?: { text: string; failed: { file: string; error: string }[] } | null
   onDismissImportSummary?: () => void
 }
@@ -58,6 +61,9 @@ export function CanvasOverlay({
   hasProjectNode,
   generationProgress,
   onImportWikiFiles,
+  onImportWikiFilesLlm,
+  onLint,
+  lintLoading,
   importSummary,
   onDismissImportSummary,
 }: CanvasOverlayProps) {
@@ -133,6 +139,22 @@ export function CanvasOverlay({
             >
               <FileUp className="w-3.5 h-3.5 text-amber-600" />
               导入 Wiki 页面…
+            </button>
+            <button
+              onClick={() => onImportWikiFilesLlm?.()}
+              data-testid="canvas-menu-import-wiki-llm"
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+              LLM 提炼导入 Wiki 页面…
+            </button>
+            <button
+              onClick={() => onLint?.()}
+              data-testid="canvas-menu-lint"
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
+              {lintLoading ? '检查中…' : '图检查（Lint）'}
             </button>
           </div>
         </div>
