@@ -36,6 +36,7 @@ export class NodeRepository {
       content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined),
       communitySummary: (row.community_summary as GraphNode['communitySummary']) ?? undefined,
       communityLevel: (row.community_level as GraphNode['communityLevel']) ?? undefined,
+      communityId: (row.community_id as GraphNode['communityId']) ?? undefined,
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
     } as GraphNode
@@ -49,9 +50,9 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, content, community_summary, community_level,
+        position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -70,6 +71,7 @@ export class NodeRepository {
       data.content ? JSON.stringify(data.content) : null,
       data.communitySummary ?? null,
       data.communityLevel ?? null,
+      data.communityId ?? null,
       data.contextRefs ? JSON.stringify(data.contextRefs) : null,
       data.wikiContent ?? null,
       data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
@@ -90,9 +92,9 @@ export class NodeRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, rules, metadata, owner_role,
-        position_x, position_y, content, community_summary, community_level,
+        position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
@@ -117,6 +119,7 @@ export class NodeRepository {
           data.content ? JSON.stringify(data.content) : null,
           data.communitySummary ?? null,
           data.communityLevel ?? null,
+          data.communityId ?? null,
           data.contextRefs ? JSON.stringify(data.contextRefs) : null,
           data.wikiContent ?? null,
           data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
@@ -152,6 +155,7 @@ export class NodeRepository {
     if (data.content !== undefined) { updates.push('content = ?'); args.push(JSON.stringify(data.content)) }
     if (data.communitySummary !== undefined) { updates.push('community_summary = ?'); args.push(data.communitySummary) }
     if (data.communityLevel !== undefined) { updates.push('community_level = ?'); args.push(data.communityLevel) }
+    if (data.communityId !== undefined) { updates.push('community_id = ?'); args.push(data.communityId) }
 
     updates.push('updated_at = ?')
     args.push(now)

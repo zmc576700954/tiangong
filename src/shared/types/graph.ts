@@ -103,6 +103,12 @@ export interface WikiNodeMeta {
   specialPage?: 'index' | 'log' | 'community'
   /** 页面标签列表 */
   tags?: string[]
+  /** 导入来源文件路径（Ingest 写入） */
+  sourceFile?: string
+  /** 导入时间 ISO 字符串（Ingest 写入） */
+  importedAt?: string
+  /** LLM 导入回退警告（LlmIngest 写入） */
+  ingestWarning?: string
 }
 
 /** 节点数据 */

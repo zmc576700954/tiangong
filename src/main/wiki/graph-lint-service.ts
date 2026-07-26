@@ -51,7 +51,7 @@ export class GraphLintService {
       byCommunity.get(p.communityId)!.push(p)
     }
     const total = pages.length
-    for (const [cid, members] of byCommunity) {
+    for (const [, members] of byCommunity) {
       if (members.length === 1) {
         issues.push({
           kind: 'community-singleton', severity: 'info', nodeId: members[0].id,
@@ -59,9 +59,10 @@ export class GraphLintService {
           hint: '增加它与其它页面之间的 wikilink，重新计算社区',
         })
       } else if (total > 0 && members.length / total > OVERSIZED_RATIO) {
+        const representative = members[0].title
         issues.push({
           kind: 'community-oversized', severity: 'warning',
-          message: `社区 ${cid} 含 ${members.length}/${total} 页（>${OVERSIZED_RATIO * 100}%），疑似未分化`,
+          message: `社区「${representative}」含 ${members.length}/${total} 页（>${OVERSIZED_RATIO * 100}%），疑似未分化`,
           hint: '调高 Louvain resolution 细分，或检查是否有过度互联的枢纽页',
         })
       }
