@@ -625,6 +625,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const r = await useGraphStore.getState().lintGraph()
       setLintReport(r)
       setLintOpen(true)
+    } catch (err) {
+      console.error('[GraphCanvas] lint failed:', err)
     } finally {
       setLintLoading(false)
     }
@@ -637,6 +639,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const r = await useGraphStore.getState().lintGraph()
       setLintReport(r)
       setLintOpen(true)
+    } catch (err) {
+      console.error('[GraphCanvas] compute communities failed:', err)
     } finally {
       setLintLoading(false)
     }
