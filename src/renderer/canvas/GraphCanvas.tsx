@@ -25,6 +25,7 @@ import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
+import type { LintReport } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { cn } from '../lib/utils'
@@ -40,6 +41,7 @@ import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText } from 'lucide-react'
 import { eventBus, Events } from '../store/eventBus'
+import { LintPanel } from '../components/wiki/LintPanel'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -157,6 +159,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [showNodeMenu, setShowNodeMenu] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
   const [importSummary, setImportSummary] = useState<{ text: string; failed: { file: string; error: string }[] } | null>(null)
+  const [lintReport, setLintReport] = useState<LintReport | null>(null)
+  const [lintOpen, setLintOpen] = useState(false)
+  const [lintLoading, setLintLoading] = useState(false)
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -603,15 +608,46 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [selectNode, setCenter])
 
-  const handleImportWikiFiles = useCallback(async () => {
+  const handleImportWikiFiles = useCallback(async (mode: 'rule' | 'llm' = 'rule') => {
     const paths = await window.electronAPI['dialog:openFiles']({ extensions: ['md', 'markdown', 'txt'] })
     if (paths.length === 0) return
-    const result = await useGraphStore.getState().importWikiFiles(paths)
+    const result = await useGraphStore.getState().importWikiFiles(paths, mode)
     setImportSummary({
       text: `导入完成：新建 ${result.created.length}，更新 ${result.updated.length}，失败 ${result.failed.length}`,
       failed: result.failed,
     })
     setShowNodeMenu(false)
+  }, [])
+
+  const handleLint = useCallback(async () => {
+    setLintLoading(true)
+    try {
+      const r = await useGraphStore.getState().lintGraph()
+      setLintReport(r)
+      setLintOpen(true)
+    } catch (err) {
+      console.error('[GraphCanvas] lint failed:', err)
+    } finally {
+      setLintLoading(false)
+    }
+  }, [])
+
+  const handleRecompute = useCallback(async () => {
+    setLintLoading(true)
+    try {
+      await useGraphStore.getState().computeCommunities()
+      const r = await useGraphStore.getState().lintGraph()
+      setLintReport(r)
+      setLintOpen(true)
+    } catch (err) {
+      console.error('[GraphCanvas] compute communities failed:', err)
+    } finally {
+      setLintLoading(false)
+    }
+  }, [])
+
+  const handleLintNavigate = useCallback((nodeId: string) => {
+    eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
   }, [])
 
   /** 进入连线模式（由右键菜单触发） */
@@ -907,10 +943,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onFanout={() => setShowFanout(true)}
         hasProjectNode={hasProjectNode}
         generationProgress={genProgress}
-        onImportWikiFiles={handleImportWikiFiles}
+        onImportWikiFiles={() => handleImportWikiFiles('rule')}
+        onImportWikiFilesLlm={() => handleImportWikiFiles('llm')}
+        onLint={handleLint}
+        lintLoading={lintLoading}
         importSummary={importSummary}
         onDismissImportSummary={() => setImportSummary(null)}
       />
+
+      {lintOpen && lintReport && (
+        <LintPanel
+          report={lintReport}
+          onNavigate={handleLintNavigate}
+          onClose={() => setLintOpen(false)}
+          onRecompute={handleRecompute}
+        />
+      )}
 
       {contextPopover && (
         <NodeContextPopover

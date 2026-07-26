@@ -15,7 +15,13 @@ import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } fro
 import { validateTransition, validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
+import { GraphComputeService } from '../wiki/graph-compute-service'
+import { GraphLintService } from '../wiki/graph-lint-service'
+import { LlmIngestService, type AgentRunner } from '../wiki/llm-ingest-service'
 import { IngestService } from '../wiki/ingest-service'
+import { sendPromptViaAgent } from '../agent/send-and-wait'
+import type { AgentManager } from '../agent/agent-manager'
+import type { IngestMode } from '@shared/types/wiki'
 import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
@@ -28,9 +34,16 @@ const logger = createLogger('GraphIPC')
 /** wiki:parseContent 的 content 最大长度（512 KB） */
 const MAX_WIKI_CONTENT_LEN = 512 * 1024
 
-export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: TypedHandle, graphService: GraphService, snapshotRepo: SnapshotRepository): void {
-  const nodeRepo = new NodeRepository(db)
-  const edgeRepo = new EdgeRepository(db)
+export function registerGraphHandlers(
+  db: BetterSqlite3.Database,
+  typedHandle: TypedHandle,
+  graphService: GraphService,
+  snapshotRepo: SnapshotRepository,
+  agentManager: AgentManager,
+  overrides?: { nodeRepo?: NodeRepository; edgeRepo?: EdgeRepository; agentRunner?: AgentRunner },
+): void {
+  const nodeRepo = overrides?.nodeRepo ?? new NodeRepository(db)
+  const edgeRepo = overrides?.edgeRepo ?? new EdgeRepository(db)
   const bugRepo = new BugRepository(db)
 
   /** wikiContent 变更后同步 wiki-link 边（失败仅记录，不阻断节点操作） */
@@ -323,7 +336,7 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
     return WikiLinkService.findDanglingLinks(graphId, nodeRepo)
   })
 
-  typedHandle('wiki:ingestFiles', async (_, graphId: string, filePaths: string[]) => {
+  typedHandle('wiki:ingestFiles', async (_, graphId: string, filePaths: string[], mode?: IngestMode) => {
     ensureString('graphId', graphId, MAX_ID_LEN)
     if (!Array.isArray(filePaths) || filePaths.length === 0) {
       throw new IpcError('filePaths must be a non-empty array', ErrorCode.IPC_INVALID_ARGUMENT)
@@ -341,10 +354,42 @@ export function registerGraphHandlers(db: BetterSqlite3.Database, typedHandle: T
       ensureString('filePath', p, 1024)
       return validateProjectPath(p)
     })
+    const resolvedMode = mode ?? 'rule'
+    if (resolvedMode !== 'rule' && resolvedMode !== 'llm') {
+      throw new IpcError(`Invalid ingest mode: ${resolvedMode}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    if (resolvedMode === 'llm') {
+      const projectPath = graphData.graph.projectPath
+      if (!projectPath) {
+        throw new IpcError('该图无 projectPath，无法使用 LLM 提炼导入', ErrorCode.IPC_INVALID_ARGUMENT)
+      }
+      const agentRunner =
+        overrides?.agentRunner ??
+        ((prompt: string) =>
+          sendPromptViaAgent(agentManager, projectPath, prompt, {
+            nodeTitle: 'Wiki LLM 提炼导入',
+            timeoutMs: 120_000,
+          }))
+      return LlmIngestService.ingestWithLlm(
+        graphId, validated, graphData.graph.type, nodeRepo, edgeRepo,
+        (p) => fs.readFile(p, 'utf-8'),
+        agentRunner,
+      )
+    }
     return IngestService.ingestFiles(
       graphId, validated, graphData.graph.type, nodeRepo, edgeRepo,
       (p) => fs.readFile(p, 'utf-8'),
     )
+  })
+
+  typedHandle('wiki:computeCommunities', async (_, graphId: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    return GraphComputeService.computeCommunities(graphId, nodeRepo, edgeRepo)
+  })
+
+  typedHandle('wiki:lint', async (_, graphId: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    return GraphLintService.lint(graphId, nodeRepo, edgeRepo)
   })
 
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册

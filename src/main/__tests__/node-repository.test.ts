@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { NodeRepository } from '../repositories/node-repository'
 import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphNode } from '@shared/types'
+import Database from 'better-sqlite3'
 
 function createMockDb() {
   const stmtMock = {
@@ -66,6 +67,7 @@ describe('NodeRepository', () => {
     expect(callArgs[14]).toBe(JSON.stringify(content)) // position_x=12, position_y=13, content=14
     expect(callArgs[15]).toBe('summary') // community_summary=15
     expect(callArgs[16]).toBe(1) // community_level=16
+    expect(callArgs[17]).toBeNull() // community_id=17
   })
 
   it('create persists wikiContent and wikiMeta', () => {
@@ -75,8 +77,8 @@ describe('NodeRepository', () => {
     expect(node.wikiMeta).toEqual(wikiMeta)
 
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[18]).toBe('# Hello') // wiki_content=18
-    expect(callArgs[19]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=19
+    expect(callArgs[19]).toBe('# Hello') // wiki_content=19
+    expect(callArgs[20]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=20
   })
 
   it('create stores optional fields as null when omitted', () => {
@@ -85,8 +87,9 @@ describe('NodeRepository', () => {
     expect(callArgs[14]).toBeNull() // content
     expect(callArgs[15]).toBeNull() // community_summary
     expect(callArgs[16]).toBeNull() // community_level
-    expect(callArgs[18]).toBeNull() // wiki_content
-    expect(callArgs[19]).toBeNull() // wiki_meta
+    expect(callArgs[17]).toBeNull() // community_id
+    expect(callArgs[19]).toBeNull() // wiki_content
+    expect(callArgs[20]).toBeNull() // wiki_meta
   })
 
   it('createBatch returns empty for empty input', () => {
@@ -233,5 +236,81 @@ describe('NodeRepository', () => {
   it('batchUpdatePositions updates positions in transaction', () => {
     repo.batchUpdatePositions([{ id: 'n1', x: 10, y: 20 }])
     expect(db.transaction).toHaveBeenCalled()
+  })
+})
+
+describe('NodeRepository with real in-memory database', () => {
+  let realDb: BetterSqlite3.Database
+  let realRepo: NodeRepository
+
+  beforeEach(() => {
+    realDb = new Database(':memory:') as unknown as BetterSqlite3.Database
+    realDb.exec(`
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT,
+        acceptance_criteria TEXT,
+        graph_id TEXT NOT NULL,
+        graph_type TEXT NOT NULL,
+        parent_id TEXT,
+        rules TEXT,
+        metadata TEXT,
+        owner_role TEXT,
+        position_x REAL NOT NULL,
+        position_y REAL NOT NULL,
+        content TEXT,
+        community_summary TEXT,
+        community_level INTEGER,
+        community_id TEXT,
+        context_refs TEXT,
+        wiki_content TEXT,
+        wiki_meta TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `)
+    realRepo = new NodeRepository(realDb)
+  })
+
+  afterEach(() => {
+    realDb.close()
+  })
+
+  it('persists communityId through update and re-read', () => {
+    const created = realRepo.create({
+      type: 'wiki-page',
+      status: 'draft',
+      title: 'Wiki A',
+      graphId: 'g1',
+      graphType: 'online',
+      position: { x: 0, y: 0 },
+    })
+    const updated = realRepo.update(created.id, { communityId: 'c1', communityLevel: 2 })
+    expect(updated.communityId).toBe('c1')
+    expect(updated.communityLevel).toBe(2)
+
+    const reread = realRepo.findById(created.id)
+    expect(reread?.communityId).toBe('c1')
+    expect(reread?.communityLevel).toBe(2)
+  })
+
+  it('persists communityId through create and listByGraph', () => {
+    realRepo.create({
+      type: 'wiki-page',
+      status: 'draft',
+      title: 'Wiki B',
+      graphId: 'g1',
+      graphType: 'online',
+      position: { x: 0, y: 0 },
+      communityId: 'c2',
+      communityLevel: 1,
+    })
+    const listed = realRepo.listByGraph('g1')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]?.communityId).toBe('c2')
+    expect(listed[0]?.communityLevel).toBe(1)
   })
 })

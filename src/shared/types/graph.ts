@@ -100,9 +100,15 @@ export interface WikiNodeMeta {
   /** Wiki 页面角色 */
   role?: 'index' | 'log' | 'query' | 'research' | 'generic'
   /** 特殊页面类型 */
-  specialPage?: 'index' | 'log'
+  specialPage?: 'index' | 'log' | 'community'
   /** 页面标签列表 */
   tags?: string[]
+  /** 导入来源文件路径（Ingest 写入） */
+  sourceFile?: string
+  /** 导入时间 ISO 字符串（Ingest 写入） */
+  importedAt?: string
+  /** LLM 导入回退警告（LlmIngest 写入） */
+  ingestWarning?: string
 }
 
 /** 节点数据 */
@@ -131,6 +137,8 @@ export interface GraphNode {
   wikiMeta?: Record<string, unknown>
   /** 预计算的社区摘要 */
   communitySummary?: string
+  /** 所属社区 ID（Louvain 计算写回） */
+  communityId?: string
   /** 所属社区层级 0=项目级 1=模块级 2=流程级 */
   communityLevel?: number
   /** 节点关联的上下文（文件/文本/其他节点） */

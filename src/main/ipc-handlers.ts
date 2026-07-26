@@ -351,7 +351,7 @@ export async function registerIpcHandlers(): Promise<void> {
 
   // ---------- 注册各领域 handlers ----------
   const snapshotRepo = new SnapshotRepository(db)
-  registerGraphHandlers(db, typedHandle, graphService, snapshotRepo)
+  registerGraphHandlers(db, typedHandle, graphService, snapshotRepo, agentManager)
   registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db))
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)

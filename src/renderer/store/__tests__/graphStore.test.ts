@@ -64,6 +64,8 @@ vi.stubGlobal('window', {
     'bug:delete': vi.fn().mockResolvedValue(true),
     'wiki:parseContent': vi.fn().mockResolvedValue({ frontmatter: {}, links: [] }),
     'wiki:ingestFiles': vi.fn().mockResolvedValue({ created: [], updated: [], failed: [] }),
+    'wiki:lint': vi.fn().mockResolvedValue({ issues: [], stats: { nodeCount: 0, edgeCount: 0, communityCount: 0 } }),
+    'wiki:computeCommunities': vi.fn().mockResolvedValue({ communityCount: 0, nodeCount: 0, modularity: 0, communities: [] }),
   },
 })
 
@@ -371,6 +373,92 @@ describe('graphStore', () => {
   })
 
   // ==========================================
+  // Wiki Actions
+  // ==========================================
+  describe('Wiki Actions', () => {
+    it('importWikiFiles passes mode to wiki:ingestFiles and reloads graph', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const ingest = window.electronAPI['wiki:ingestFiles'] as ReturnType<typeof vi.fn>
+      ingest.mockResolvedValueOnce({ created: [{ id: 'n1', title: 'A' }], updated: [], failed: [] })
+      const graphGet = window.electronAPI['graph:get'] as ReturnType<typeof vi.fn>
+      graphGet.mockResolvedValueOnce({
+        graph: { id: 'g1', name: 'G', type: 'online' },
+        nodes: [{ id: 'n1', type: 'wiki-page', status: 'draft', title: 'A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+        edges: [],
+        bugs: [],
+      })
+
+      const result = await useGraphStore.getState().importWikiFiles(['/a.md'], 'llm')
+
+      expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'], 'llm')
+      expect(result.created).toHaveLength(1)
+      expect(graphGet).toHaveBeenCalledWith('g1')
+    })
+
+    it('importWikiFiles passes undefined mode when omitted', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const ingest = window.electronAPI['wiki:ingestFiles'] as ReturnType<typeof vi.fn>
+      ingest.mockResolvedValueOnce({ created: [], updated: [], failed: [] })
+      ;(window.electronAPI['graph:get'] as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        graph: { id: 'g1', name: 'G', type: 'online' },
+        nodes: [],
+        edges: [],
+        bugs: [],
+      })
+
+      await useGraphStore.getState().importWikiFiles(['/a.md'])
+
+      expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'], undefined)
+    })
+
+    it('lintGraph calls wiki:lint with current graphId and returns report', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const lint = window.electronAPI['wiki:lint'] as ReturnType<typeof vi.fn>
+      const report = { issues: [{ kind: 'dangling-link', severity: 'warning', message: 'm', hint: 'h' }], stats: { nodeCount: 2, edgeCount: 1, communityCount: 1 } }
+      lint.mockResolvedValueOnce(report)
+
+      const result = await useGraphStore.getState().lintGraph()
+
+      expect(lint).toHaveBeenCalledWith('g1')
+      expect(result).toEqual(report)
+    })
+
+    it('lintGraph returns null when no graph is current', async () => {
+      useGraphStore.setState({ currentGraphId: null })
+      const result = await useGraphStore.getState().lintGraph()
+      expect(result).toBeNull()
+      expect(window.electronAPI['wiki:lint']).not.toHaveBeenCalled()
+    })
+
+    it('computeCommunities calls wiki:computeCommunities and reloads graph', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const compute = window.electronAPI['wiki:computeCommunities'] as ReturnType<typeof vi.fn>
+      const resultPayload = { communityCount: 1, nodeCount: 2, modularity: 0.5, communities: [{ id: 'c1', memberIds: ['n1', 'n2'], size: 2, internalEdges: 1, externalEdges: 0 }] }
+      compute.mockResolvedValueOnce(resultPayload)
+      const graphGet = window.electronAPI['graph:get'] as ReturnType<typeof vi.fn>
+      graphGet.mockResolvedValueOnce({
+        graph: { id: 'g1', name: 'G', type: 'online' },
+        nodes: [],
+        edges: [],
+        bugs: [],
+      })
+
+      const result = await useGraphStore.getState().computeCommunities()
+
+      expect(compute).toHaveBeenCalledWith('g1')
+      expect(graphGet).toHaveBeenCalledWith('g1')
+      expect(result).toEqual(resultPayload)
+    })
+
+    it('computeCommunities returns null when no graph is current', async () => {
+      useGraphStore.setState({ currentGraphId: null })
+      const result = await useGraphStore.getState().computeCommunities()
+      expect(result).toBeNull()
+      expect(window.electronAPI['wiki:computeCommunities']).not.toHaveBeenCalled()
+    })
+  })
+
+  // ==========================================
   // Suggested Edges
   // ==========================================
   describe('Suggested Edges', () => {
@@ -485,7 +573,7 @@ describe('importWikiFiles', () => {
 
     const result = await useGraphStore.getState().importWikiFiles(['/a.md'])
 
-    expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'])
+    expect(ingest).toHaveBeenCalledWith('g1', ['/a.md'], undefined)
     expect(result.created).toHaveLength(1)
     expect(graphGet).toHaveBeenCalledWith('g1')
     expect(useGraphStore.getState().nodes.map((n) => n.id)).toContain('n1')

@@ -21,7 +21,7 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
-import type { ParsedWikiContent, DanglingLink, IngestResult } from './wiki'
+import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult } from './wiki'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -63,7 +63,9 @@ export interface IpcApi {
   'wiki:parseContent': (graphId: string, content: string) => Promise<ParsedWikiContent>
   'wiki:getBacklinks': (nodeId: string) => Promise<{ id: string; title: string }[]>
   'wiki:findDangling': (graphId: string) => Promise<DanglingLink[]>
-  'wiki:ingestFiles': (graphId: string, filePaths: string[]) => Promise<IngestResult>
+  'wiki:ingestFiles': (graphId: string, filePaths: string[], mode?: IngestMode) => Promise<IngestResult>
+  'wiki:computeCommunities': (graphId: string) => Promise<ComputeResult>
+  'wiki:lint': (graphId: string) => Promise<LintReport>
 
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>

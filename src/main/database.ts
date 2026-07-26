@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 6
+const CURRENT_SCHEMA_VERSION = 7
 
 interface TableSchema {
   name: string
@@ -273,6 +273,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         content TEXT,
         community_summary TEXT,
         community_level INTEGER,
+        community_id TEXT,
         context_refs TEXT,
         wiki_content TEXT,
         wiki_meta TEXT,
@@ -648,6 +649,7 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('nodes', 'content', 'TEXT')
   addColumnSafe('nodes', 'community_summary', 'TEXT')
   addColumnSafe('nodes', 'community_level', 'INTEGER')
+  addColumnSafe('nodes', 'community_id', 'TEXT')
   addColumnSafe('edges', 'content', 'TEXT')
   addColumnSafe('edges', 'description', 'TEXT')
   addColumnSafe('edges', 'data_flow', 'TEXT')
