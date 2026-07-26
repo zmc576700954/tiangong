@@ -32,7 +32,7 @@ class NodeTypeRegistry {
         allowedChildTypes: ['wiki-page'],
         metadataSchema: {
           fields: {
-            specialPage: { type: 'string', description: '特殊页面类型：index 或 log' },
+            specialPage: { type: 'string', description: '特殊页面类型：index、log 或 community' },
             tags: { type: 'string[]', description: '页面标签列表' },
             createdBy: { type: 'string', description: '创建者标识' },
           },
