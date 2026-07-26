@@ -621,16 +621,26 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const handleLint = useCallback(async () => {
     setLintLoading(true)
-    const r = await useGraphStore.getState().lintGraph()
-    setLintReport(r)
-    setLintOpen(true)
-    setLintLoading(false)
+    try {
+      const r = await useGraphStore.getState().lintGraph()
+      setLintReport(r)
+      setLintOpen(true)
+    } finally {
+      setLintLoading(false)
+    }
   }, [])
 
   const handleRecompute = useCallback(async () => {
-    await useGraphStore.getState().computeCommunities()
-    await handleLint()
-  }, [handleLint])
+    setLintLoading(true)
+    try {
+      await useGraphStore.getState().computeCommunities()
+      const r = await useGraphStore.getState().lintGraph()
+      setLintReport(r)
+      setLintOpen(true)
+    } finally {
+      setLintLoading(false)
+    }
+  }, [])
 
   const handleLintNavigate = useCallback((nodeId: string) => {
     eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
