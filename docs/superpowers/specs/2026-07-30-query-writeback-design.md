@@ -75,7 +75,7 @@ export interface WritebackItem {
   id: string                  // writeback_xxx（generateId）
   graphId: string
   kind: WritebackKind
-  targetNodeId: string | null // append-log：目标节点；new-page：null
+  targetNodeId: string          // 关联节点：append-log=追加目标；new-page=源节点（采纳连边用）。恒非 null
   title: string               // 新页面标题 / 小节标题
   content: string             // 待写入的 markdown 正文
   sourceSessionId: string     // 去重键
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS writeback_items (
   id TEXT PRIMARY KEY,
   graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
   kind TEXT NOT NULL CHECK(kind IN ('append-log','new-page')),
-  target_node_id TEXT REFERENCES nodes(id) ON DELETE SET NULL,
+  target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   content TEXT NOT NULL,
   source_session_id TEXT NOT NULL,
@@ -186,7 +186,7 @@ title: <概念聚类标题>
 | ctx.nodeId 为空 / 节点不存在 / 特殊页 | 跳过生成，记 debug 日志 |
 | ctx.memories 为空 | 跳过生成 |
 | 同会话重复生成 | findBySession 命中 → 跳过（幂等） |
-| 采纳时目标节点已删 | acceptWriteback 抛 IpcError，面板 catch 显示并刷新；该项留队列（可丢弃） |
+| 采纳时目标节点已删 | 节点真删时关联 writeback_items 随 target_node_id ON DELETE CASCADE 一并清除（队列自动瘦身）；防御上 accept 仍校验节点存在，不存在抛 IpcError |
 | 采纳时 content 已含同标题小节 | 跳过写入直接标 accepted（幂等） |
 | 写库失败 | DatabaseError，IPC createTypedHandle 统一捕获 |
 | 全局关 / 项目关 | writeback 阶段 enabled()=false，整阶段跳过 |
