@@ -54,6 +54,13 @@ describe('WritebackRepository', () => {
     expect(repo.findBySession('sess_other')).toHaveLength(0)
   })
 
+  it('findBySession excludes discarded items (only pending/accepted count for dedup)', () => {
+    const item = repo.create({ graphId: 'g1', kind: 'append-log', targetNodeId: 'n1', title: 'T', content: 'C', sourceSessionId: 'sess_d', confidence: 0.5 })
+    expect(repo.findBySession('sess_d')).toHaveLength(1)
+    repo.updateStatus(item.id, 'discarded')
+    expect(repo.findBySession('sess_d')).toHaveLength(0)
+  })
+
   it('updateStatus sets status + resolvedAt; listPending excludes resolved', () => {
     const item = repo.create({ graphId: 'g1', kind: 'append-log', targetNodeId: 'n1', title: 'T', content: 'C', sourceSessionId: 's', confidence: 0.5 })
     repo.updateStatus(item.id, 'accepted')
@@ -69,8 +76,11 @@ describe('WritebackRepository', () => {
 
   it('graph delete cascades writeback_items', () => {
     repo.create({ graphId: 'g1', kind: 'append-log', targetNodeId: 'n1', title: 'T', content: 'C', sourceSessionId: 's', confidence: 0.5 })
-    // nodes.graph_id 在真实 schema 中也是 ON DELETE CASCADE，先删图会级联清节点与 writeback_items
+    // 真实 schema 中 nodes.graph_id 没有 REFERENCES，本 fixture 也沿用该行为。
+    // 删除 graph 时，只有 writeback_items.graph_id 的 ON DELETE CASCADE 会清理 writeback_items。
     db.prepare(`DELETE FROM graphs WHERE id='g1'`).run()
+    const nodeCount = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c
+    expect(nodeCount).toBe(1)
     expect(repo.listPending('g1')).toHaveLength(0)
   })
 })
