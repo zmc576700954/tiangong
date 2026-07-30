@@ -96,3 +96,21 @@ export interface ComputeResult {
   modularity: number
   communities: CommunityInfo[]
 }
+
+export type WritebackKind = 'append-log' | 'new-page'
+export type WritebackStatus = 'pending' | 'accepted' | 'discarded'
+
+export interface WritebackItem {
+  id: string
+  graphId: string
+  kind: WritebackKind
+  /** 关联节点 id：append-log=追加目标；new-page=源节点（采纳时连边用）。恒非 null。 */
+  targetNodeId: string
+  title: string
+  content: string
+  sourceSessionId: string
+  confidence: number
+  status: WritebackStatus
+  createdAt: string
+  resolvedAt: string | null
+}

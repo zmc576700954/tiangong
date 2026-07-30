@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 7
+const CURRENT_SCHEMA_VERSION = 8
 
 interface TableSchema {
   name: string
@@ -455,6 +455,25 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['id', 'parent_session_id', 'agent_type', 'description', 'prompt', 'status', 'started_at'],
   },
+  {
+    name: 'writeback_items',
+    createSql: `
+      CREATE TABLE writeback_items (
+        id TEXT PRIMARY KEY,
+        graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK(kind IN ('append-log','new-page')),
+        target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        content TEXT NOT NULL,
+        source_session_id TEXT NOT NULL,
+        confidence REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+      )
+    `,
+    requiredColumns: ['id', 'graph_id', 'kind', 'target_node_id', 'title', 'content', 'source_session_id', 'confidence', 'status', 'created_at'],
+  },
 ]
 
 const INDEX_SQLS: string[] = [
@@ -485,6 +504,8 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_compact_history_started ON compact_history(started_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_subagent_inv_parent ON subagent_invocations(parent_session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_writeback_graph_status ON writeback_items(graph_id, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_writeback_session ON writeback_items(source_session_id)`,
 ]
 
 function getSchemaChecksumPath(): string {
@@ -655,6 +676,7 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('edges', 'data_flow', 'TEXT')
   addColumnSafe('edges', 'strength', 'REAL')
   addColumnSafe('edges', 'updated_at', 'TEXT')
+  addColumnSafe('graphs', 'writeback_disabled', 'INTEGER', '0')
 
   if (currentVersion < 3) {
     addColumnSafe('memory_items', 'version', 'INTEGER', '1')
