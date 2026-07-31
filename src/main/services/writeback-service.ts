@@ -87,6 +87,15 @@ export class WritebackService {
   }
 
   /**
+   * 丢弃待审项：仅 pending → discarded；其他状态幂等不变；未知 id 静默返回
+   */
+  discard(itemId: string): void {
+    const item = this.repo.findById(itemId)
+    if (!item || item.status !== 'pending') return
+    this.repo.updateStatus(itemId, 'discarded')
+  }
+
+  /**
    * 采纳写回项：append-log 幂等追加到目标节点 wikiContent；new-page 建 wiki-page 节点并连边。
    * 幂等：非 pending 直接返回；小节标题已存在时跳过写入但仍标 accepted。
    */

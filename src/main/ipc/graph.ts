@@ -418,9 +418,7 @@ export function registerGraphHandlers(
 
   typedHandle('wiki:discardWriteback', async (_, itemId: string) => {
     ensureString('itemId', itemId, MAX_ID_LEN)
-    const item = writebackRepo.findById(itemId)
-    // 未知 id 静默 no-op（与 accept 的报错语义区分：丢弃是低风险操作）
-    if (item) writebackRepo.updateStatus(itemId, 'discarded')
+    writebackService.discard(itemId)
   })
 
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册

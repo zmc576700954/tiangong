@@ -345,3 +345,57 @@ describe('WritebackService.accept', () => {
     expect(() => bare.accept('any-id')).toThrow('nodeRepo/edgeRepo')
   })
 })
+
+describe('WritebackService.discard', () => {
+  let db: Database.Database
+  let nodeRepo: NodeRepository
+  let writebackRepo: WritebackRepository
+  let service: WritebackService
+
+  beforeEach(() => {
+    db = makeDb()
+    nodeRepo = new NodeRepository(db)
+    writebackRepo = new WritebackRepository(db)
+    service = new WritebackService(writebackRepo, fakeTitleSource())
+  })
+
+  function seedPending(): string {
+    const node = nodeRepo.create({
+      type: 'wiki-page', status: 'confirmed', title: '页面A',
+      graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 },
+    })
+    return writebackRepo.create({
+      graphId: 'g1', kind: 'append-log', targetNodeId: node.id,
+      title: '会话日志 · 2026-07-31', content: '## 会话日志',
+      sourceSessionId: 'sess_d', confidence: 0.5,
+    }).id
+  }
+
+  it('discard pending marks discarded with resolvedAt', () => {
+    const id = seedPending()
+    service.discard(id)
+    const item = writebackRepo.findById(id)!
+    expect(item.status).toBe('discarded')
+    expect(item.resolvedAt).not.toBeNull()
+  })
+
+  it('discard accepted item leaves it accepted (lifecycle guard)', () => {
+    const id = seedPending()
+    writebackRepo.updateStatus(id, 'accepted')
+    service.discard(id)
+    expect(writebackRepo.findById(id)!.status).toBe('accepted')
+  })
+
+  it('discard already-discarded item is a no-op', () => {
+    const id = seedPending()
+    writebackRepo.updateStatus(id, 'discarded')
+    const before = writebackRepo.findById(id)!.resolvedAt
+    service.discard(id)
+    expect(writebackRepo.findById(id)!.status).toBe('discarded')
+    expect(writebackRepo.findById(id)!.resolvedAt).toBe(before)
+  })
+
+  it('discard unknown id is a silent no-op', () => {
+    expect(() => service.discard('writeback-nonexistent')).not.toThrow()
+  })
+})

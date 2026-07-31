@@ -684,21 +684,22 @@ describe('registerGraphHandlers wiki integration', () => {
 function makeWritebackDb() {
   const db = new Database(':memory:')
   db.exec(`
-    CREATE TABLE graphs (id TEXT PRIMARY KEY, name TEXT, type TEXT, project_path TEXT,
-      writeback_disabled INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
+    CREATE TABLE graphs (id TEXT PRIMARY KEY, name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('online', 'dev')), project_path TEXT,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE nodes (
       id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      status TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug', 'wiki-page')),
+      status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
       title TEXT NOT NULL,
       description TEXT,
       acceptance_criteria TEXT,
       graph_id TEXT NOT NULL,
-      graph_type TEXT NOT NULL,
+      graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
       parent_id TEXT,
       rules TEXT,
       metadata TEXT,
-      owner_role TEXT,
+      owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
       position_x REAL NOT NULL,
       position_y REAL NOT NULL,
       content TEXT,
@@ -713,17 +714,15 @@ function makeWritebackDb() {
     );
     CREATE TABLE edges (
       id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      target TEXT NOT NULL,
+      source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       label TEXT,
-      edge_type TEXT,
-      content TEXT,
+      edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link')),
       graph_id TEXT NOT NULL,
+      content TEXT,
       description TEXT,
       data_flow TEXT,
-      strength REAL,
-      created_at TEXT,
-      updated_at TEXT
+      strength REAL
     );
     CREATE TABLE bug_nodes (id TEXT PRIMARY KEY, graph_id TEXT, node_id TEXT);
     CREATE TABLE snapshots (id TEXT PRIMARY KEY, graph_id TEXT);

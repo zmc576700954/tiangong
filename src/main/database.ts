@@ -291,7 +291,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         label TEXT,
-        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow')),
+        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link')),
         graph_id TEXT NOT NULL,
         content TEXT,
         description TEXT,
