@@ -30,6 +30,11 @@ function fakeWritebackRepo(): WritebackRepoLike & { items: WritebackItem[] } {
       return it
     },
     findBySession: (sid: string) => items.filter((i) => i.sourceSessionId === sid),
+    findById: (id: string) => items.find((i) => i.id === id) ?? null,
+    updateStatus: (id: string, status: WritebackItem['status']) => {
+      const it = items.find((i) => i.id === id)
+      if (it) it.status = status
+    },
   }
 }
 

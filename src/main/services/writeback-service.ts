@@ -1,10 +1,16 @@
 import type { MemoryItem } from '@shared/types'
-import type { WritebackItem } from '@shared/types/wiki'
+import type { WritebackItem, WritebackStatus } from '@shared/types/wiki'
+import type { NodeRepository } from '../repositories/node-repository'
+import type { EdgeRepository } from '../repositories/edge-repository'
 import { normalizeWikiTitle } from '../wiki/markdown-utils'
+import { IpcError, ErrorCode } from '../errors'
+import { WikiLinkService } from './wiki-link-service'
 
 export interface WritebackRepoLike {
   create(data: Omit<WritebackItem, 'id' | 'status' | 'createdAt' | 'resolvedAt'>): WritebackItem
   findBySession(sourceSessionId: string): WritebackItem[]
+  findById(id: string): WritebackItem | null
+  updateStatus(id: string, status: WritebackStatus): void
 }
 
 /** 提供「现有节点标题」查询，用于 new-page concept 去重 */
@@ -37,6 +43,7 @@ export class WritebackService {
   constructor(
     private readonly repo: WritebackRepoLike,
     private readonly titles: NodeTitleSource,
+    private readonly deps?: { nodeRepo: NodeRepository; edgeRepo: EdgeRepository },
   ) {}
 
   generate(input: GenerateInput, now: Date = new Date()): WritebackItem[] {
@@ -73,6 +80,52 @@ export class WritebackService {
       }))
     }
     return created
+  }
+
+  /**
+   * 采纳写回项：append-log 幂等追加到目标节点 wikiContent；new-page 建 wiki-page 节点并连边。
+   * 幂等：非 pending 直接返回；小节标题已存在时跳过写入但仍标 accepted。
+   */
+  accept(itemId: string): void {
+    if (!this.deps) throw new IpcError('WritebackService.accept 需要 nodeRepo/edgeRepo 依赖', ErrorCode.IPC_INVALID_ARGUMENT)
+    const item = this.repo.findById(itemId)
+    if (!item) throw new IpcError(`写回项不存在: ${itemId}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    if (item.status !== 'pending') return // 幂等：已处理直接返回
+
+    if (item.kind === 'append-log') this.acceptAppendLog(item)
+    else this.acceptNewPage(item)
+    this.repo.updateStatus(itemId, 'accepted')
+  }
+
+  private acceptAppendLog(item: WritebackItem): void {
+    const node = this.deps!.nodeRepo.findById(item.targetNodeId)
+    if (!node) throw new IpcError('目标节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
+    const current = node.wikiContent ?? ''
+    if (current.includes(item.title)) return // 幂等：小节已存在，跳过写入（外层仍标 accepted）
+    this.deps!.nodeRepo.update(node.id, { wikiContent: current + item.content })
+    WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+  }
+
+  private acceptNewPage(item: WritebackItem): void {
+    const source = this.deps!.nodeRepo.findById(item.targetNodeId) // new-page: targetNodeId 存源节点 id
+    if (!source) throw new IpcError('源节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
+    const created = this.deps!.nodeRepo.create({
+      graphId: item.graphId,
+      graphType: source.graphType,
+      type: 'wiki-page',
+      status: 'confirmed',
+      title: item.title,
+      wikiContent: item.content,
+      position: { x: source.position.x + 280, y: source.position.y + 120 },
+    })
+    WikiLinkService.syncNodeLinks(created.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    this.deps!.edgeRepo.create({
+      graphId: item.graphId,
+      source: source.id,
+      target: created.id,
+      edgeType: 'semantic',
+      label: 'writeback-derived',
+    })
   }
 
   private buildAppendLog(
