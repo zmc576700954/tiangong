@@ -21,7 +21,7 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
-import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult } from './wiki'
+import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from './wiki'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -66,6 +66,10 @@ export interface IpcApi {
   'wiki:ingestFiles': (graphId: string, filePaths: string[], mode?: IngestMode) => Promise<IngestResult>
   'wiki:computeCommunities': (graphId: string) => Promise<ComputeResult>
   'wiki:lint': (graphId: string) => Promise<LintReport>
+  'wiki:listWriteback': (graphId: string) => Promise<WritebackItem[]>
+  'wiki:countWriteback': (graphId: string) => Promise<number>
+  'wiki:acceptWriteback': (itemId: string) => Promise<void>
+  'wiki:discardWriteback': (itemId: string) => Promise<void>
 
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>

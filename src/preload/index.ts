@@ -51,6 +51,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   'wiki:ingestFiles',
   'wiki:computeCommunities',
   'wiki:lint',
+  'wiki:listWriteback',
+  'wiki:countWriteback',
+  'wiki:acceptWriteback',
+  'wiki:discardWriteback',
 
   // Agent operations
   'agent:listAdapters',

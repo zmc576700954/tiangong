@@ -17,6 +17,8 @@ import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
 import { GraphComputeService } from '../wiki/graph-compute-service'
 import { GraphLintService } from '../wiki/graph-lint-service'
+import { WritebackRepository } from '../repositories/writeback-repository'
+import { WritebackService } from '../services/writeback-service'
 import { LlmIngestService, type AgentRunner } from '../wiki/llm-ingest-service'
 import { IngestService } from '../wiki/ingest-service'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
@@ -45,6 +47,12 @@ export function registerGraphHandlers(
   const nodeRepo = overrides?.nodeRepo ?? new NodeRepository(db)
   const edgeRepo = overrides?.edgeRepo ?? new EdgeRepository(db)
   const bugRepo = new BugRepository(db)
+  const writebackRepo = new WritebackRepository(db)
+  const writebackService = new WritebackService(
+    writebackRepo,
+    { findExistingTitles: (gid: string) => nodeRepo.listByGraph(gid).map((n) => n.title) },
+    { nodeRepo, edgeRepo, db },
+  )
 
   /** wikiContent 变更后同步 wiki-link 边（失败仅记录，不阻断节点操作） */
   function syncWikiLinks(nodeId: string): void {
@@ -390,6 +398,29 @@ export function registerGraphHandlers(
   typedHandle('wiki:lint', async (_, graphId: string) => {
     ensureString('graphId', graphId, MAX_ID_LEN)
     return GraphLintService.lint(graphId, nodeRepo, edgeRepo)
+  })
+
+  // ---------- Writeback 审核队列 ----------
+  typedHandle('wiki:listWriteback', async (_, graphId: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    return writebackRepo.listPending(graphId)
+  })
+
+  typedHandle('wiki:countWriteback', async (_, graphId: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    return writebackRepo.countPending(graphId)
+  })
+
+  typedHandle('wiki:acceptWriteback', async (_, itemId: string) => {
+    ensureString('itemId', itemId, MAX_ID_LEN)
+    writebackService.accept(itemId)
+  })
+
+  typedHandle('wiki:discardWriteback', async (_, itemId: string) => {
+    ensureString('itemId', itemId, MAX_ID_LEN)
+    const item = writebackRepo.findById(itemId)
+    // 未知 id 静默 no-op（与 accept 的报错语义区分：丢弃是低风险操作）
+    if (item) writebackRepo.updateStatus(itemId, 'discarded')
   })
 
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册

@@ -158,6 +158,9 @@ export class GraphRepository {
   delete(id: string): void {
     const deleteGraph = this.db.transaction(() => {
       this.db.prepare('DELETE FROM edges WHERE graph_id = ?').run(id)
+      // writeback_items 按 graph_id 显式删除（FK CASCADE 本可兜住，但这样与事务内
+      // 其它表的显式删除模式一致，即使 FK pragma 被关也不会漏）
+      this.db.prepare('DELETE FROM writeback_items WHERE graph_id = ?').run(id)
       this.db.prepare('DELETE FROM nodes WHERE graph_id = ?').run(id)
       this.db.prepare('DELETE FROM bug_nodes WHERE graph_id = ?').run(id)
       this.db.prepare('DELETE FROM snapshots WHERE graph_id = ?').run(id)

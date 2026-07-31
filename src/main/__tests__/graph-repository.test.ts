@@ -75,7 +75,8 @@ describe('GraphRepository', () => {
   it('delete runs cascading delete in transaction', () => {
     repo.delete('g1')
     expect(db.transaction).toHaveBeenCalled()
-    expect(stmt.run).toHaveBeenCalledTimes(6)
+    expect(stmt.run).toHaveBeenCalledTimes(7)
+    expect(db.prepare).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM writeback_items WHERE graph_id'))
   })
 
   it('getProjectPaths filters null paths', () => {

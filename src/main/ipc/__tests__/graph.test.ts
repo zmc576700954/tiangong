@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
+import Database from 'better-sqlite3'
 import { registerGraphHandlers } from '../graph'
 import type { GraphService } from '../../services/graph-service'
 import type { SnapshotRepository } from '../../repositories/snapshot-repository'
@@ -10,10 +11,12 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { TypedHandle } from '../utils'
 import type { AgentManager } from '../../agent/agent-manager'
 import type { AgentRunner } from '../../wiki/llm-ingest-service'
-import type { IngestResult, ComputeResult, LintReport } from '@shared/types/wiki'
+import type { IngestResult, ComputeResult, LintReport, WritebackItem } from '@shared/types/wiki'
 import type { Graph, GraphNode, GraphEdge } from '@shared/types'
-import type { NodeRepository } from '../../repositories/node-repository'
+import { NodeRepository } from '../../repositories/node-repository'
 import type { EdgeRepository } from '../../repositories/edge-repository'
+import { WritebackRepository } from '../../repositories/writeback-repository'
+import { GraphRepository } from '../../repositories/graph-repository'
 import { generateId } from '../../shared/env'
 
 import { IpcError, ErrorCode } from '../../errors'
@@ -674,5 +677,179 @@ describe('registerGraphHandlers wiki integration', () => {
       )
       expect(result.stats.nodeCount).toBe(2)
     })
+  })
+})
+
+// ---------- Writeback IPC：真实内存库（不写 FK pragma，模拟生产连接） ----------
+function makeWritebackDb() {
+  const db = new Database(':memory:')
+  db.exec(`
+    CREATE TABLE graphs (id TEXT PRIMARY KEY, name TEXT, type TEXT, project_path TEXT,
+      writeback_disabled INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
+    CREATE TABLE nodes (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      acceptance_criteria TEXT,
+      graph_id TEXT NOT NULL,
+      graph_type TEXT NOT NULL,
+      parent_id TEXT,
+      rules TEXT,
+      metadata TEXT,
+      owner_role TEXT,
+      position_x REAL NOT NULL,
+      position_y REAL NOT NULL,
+      content TEXT,
+      community_summary TEXT,
+      community_level INTEGER,
+      community_id TEXT,
+      context_refs TEXT,
+      wiki_content TEXT,
+      wiki_meta TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE edges (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      target TEXT NOT NULL,
+      label TEXT,
+      edge_type TEXT,
+      content TEXT,
+      graph_id TEXT NOT NULL,
+      description TEXT,
+      data_flow TEXT,
+      strength REAL,
+      created_at TEXT,
+      updated_at TEXT
+    );
+    CREATE TABLE bug_nodes (id TEXT PRIMARY KEY, graph_id TEXT, node_id TEXT);
+    CREATE TABLE snapshots (id TEXT PRIMARY KEY, graph_id TEXT);
+    CREATE TABLE agent_logs (id TEXT PRIMARY KEY, graph_id TEXT);
+    CREATE TABLE writeback_items (
+      id TEXT PRIMARY KEY,
+      graph_id TEXT NOT NULL REFERENCES graphs(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK(kind IN ('append-log','new-page')),
+      target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      title TEXT NOT NULL, content TEXT NOT NULL,
+      source_session_id TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
+      created_at TEXT NOT NULL, resolved_at TEXT
+    );
+  `)
+  return db
+}
+
+describe('registerGraphHandlers writeback（真实内存库）', () => {
+  let handlers: Record<string, (...args: any[]) => Promise<unknown>>
+  let db: Database.Database
+  let nodeRepo: NodeRepository
+  let writebackRepo: WritebackRepository
+
+  beforeEach(() => {
+    handlers = {}
+    db = makeWritebackDb()
+    db.prepare(`INSERT INTO graphs (id,name,type,created_at,updated_at) VALUES ('g1','G1','online','2026-01-01','2026-01-01')`).run()
+    db.prepare(`INSERT INTO graphs (id,name,type,created_at,updated_at) VALUES ('g2','G2','online','2026-01-01','2026-01-01')`).run()
+    nodeRepo = new NodeRepository(db)
+    writebackRepo = new WritebackRepository(db)
+
+    registerGraphHandlers(
+      db,
+      makeTypedHandle(handlers),
+      createGraphServiceStub(),
+      createSnapshotRepoStub(),
+      createAgentManagerStub(),
+    )
+  })
+
+  function seedItem(overrides?: Partial<Parameters<WritebackRepository['create']>[0]>): WritebackItem {
+    return writebackRepo.create({
+      graphId: 'g1',
+      kind: 'append-log',
+      targetNodeId: overrides?.targetNodeId ?? 'n1',
+      title: '会话日志 · 2026-07-31',
+      content: '\n## 会话日志 · 2026-07-31\n\n- 发现 X\n',
+      sourceSessionId: `sess_${generateId('t')}`,
+      confidence: 0.8,
+      ...overrides,
+    })
+  }
+
+  it('wiki:listWriteback returns only pending items of the requested graph', async () => {
+    nodeRepo.create({ type: 'wiki-page', status: 'confirmed', title: '页面A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } })
+    nodeRepo.create({ type: 'wiki-page', status: 'confirmed', title: '页面B', graphId: 'g2', graphType: 'online', position: { x: 0, y: 0 } })
+    const n1 = nodeRepo.listByGraph('g1')[0]
+    const n2 = nodeRepo.listByGraph('g2')[0]
+
+    const pending1 = seedItem({ targetNodeId: n1.id })
+    const accepted = seedItem({ targetNodeId: n1.id })
+    writebackRepo.updateStatus(accepted.id, 'accepted')
+    seedItem({ targetNodeId: n2.id, graphId: 'g2' }) // 别的图的 pending
+
+    const items = await handlers['wiki:listWriteback']({}, 'g1') as WritebackItem[]
+    expect(items.map((i) => i.id)).toEqual([pending1.id])
+  })
+
+  it('wiki:listWriteback rejects empty graphId', async () => {
+    await expect(handlers['wiki:listWriteback']({}, '')).rejects.toThrow(IpcError)
+  })
+
+  it('wiki:countWriteback returns pending count for graph', async () => {
+    const node = nodeRepo.create({ type: 'wiki-page', status: 'confirmed', title: '页面A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } })
+    seedItem({ targetNodeId: node.id })
+    const accepted = seedItem({ targetNodeId: node.id })
+    writebackRepo.updateStatus(accepted.id, 'accepted')
+
+    await expect(handlers['wiki:countWriteback']({}, 'g1')).resolves.toBe(1)
+    await expect(handlers['wiki:countWriteback']({}, '')).rejects.toThrow(IpcError)
+  })
+
+  it('wiki:acceptWriteback rejects empty itemId', async () => {
+    await expect(handlers['wiki:acceptWriteback']({}, '')).rejects.toThrow(IpcError)
+  })
+
+  it('wiki:acceptWriteback appends section to node wikiContent and marks accepted', async () => {
+    const node = nodeRepo.create({
+      type: 'wiki-page', status: 'confirmed', title: '页面A',
+      graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 },
+      wikiContent: '# 页面A\n\n原有内容。\n',
+    })
+    const item = seedItem({ targetNodeId: node.id })
+
+    await handlers['wiki:acceptWriteback']({}, item.id)
+
+    const updated = nodeRepo.findById(node.id)!
+    expect(updated.wikiContent).toContain('原有内容。')
+    expect(updated.wikiContent).toContain('## 会话日志 · 2026-07-31')
+    expect(updated.wikiContent).toContain('- 发现 X')
+    expect(writebackRepo.findById(item.id)!.status).toBe('accepted')
+  })
+
+  it('wiki:discardWriteback marks item discarded; unknown id is a silent no-op', async () => {
+    const node = nodeRepo.create({ type: 'wiki-page', status: 'confirmed', title: '页面A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } })
+    const item = seedItem({ targetNodeId: node.id })
+
+    await handlers['wiki:discardWriteback']({}, item.id)
+    expect(writebackRepo.findById(item.id)!.status).toBe('discarded')
+    expect(writebackRepo.findById(item.id)!.resolvedAt).not.toBeNull()
+
+    // 未知 id：静默 no-op，不抛错
+    await expect(handlers['wiki:discardWriteback']({}, 'writeback-nonexistent')).resolves.toBeUndefined()
+    await expect(handlers['wiki:discardWriteback']({}, '')).rejects.toThrow(IpcError)
+  })
+
+  it('GraphRepository.delete removes writeback_items explicitly（不依赖 FK CASCADE）', () => {
+    const node = nodeRepo.create({ type: 'wiki-page', status: 'confirmed', title: '页面A', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } })
+    seedItem({ targetNodeId: node.id })
+    expect(writebackRepo.countPending('g1')).toBe(1)
+
+    new GraphRepository(db).delete('g1')
+
+    const count = (db.prepare('SELECT COUNT(*) AS c FROM writeback_items').get() as { c: number }).c
+    expect(count).toBe(0)
   })
 })
