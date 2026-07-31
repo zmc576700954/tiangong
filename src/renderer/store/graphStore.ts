@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
-import type { IngestResult, IngestMode, LintReport, ComputeResult } from '@shared/types/wiki'
+import type { IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -96,6 +96,18 @@ interface GraphState {
 
   /** 计算 Wiki 社区并刷新图 */
   computeCommunities: () => Promise<ComputeResult | null>
+
+  /** 列出当前图的待审核写回项 */
+  listWriteback: () => Promise<WritebackItem[]>
+
+  /** 统计当前图待审核写回项数量 */
+  countWriteback: () => Promise<number>
+
+  /** 采纳写回项 */
+  acceptWriteback: (itemId: string) => Promise<void>
+
+  /** 丢弃写回项 */
+  discardWriteback: (itemId: string) => Promise<void>
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -604,6 +616,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const result = await window.electronAPI['wiki:computeCommunities'](graphId)
     await get().loadGraph(graphId)
     return result
+  },
+
+  listWriteback: async () => {
+    const graphId = get().currentGraphId
+    if (!graphId) return []
+    return window.electronAPI['wiki:listWriteback'](graphId)
+  },
+
+  countWriteback: async () => {
+    const graphId = get().currentGraphId
+    if (!graphId) return 0
+    return window.electronAPI['wiki:countWriteback'](graphId)
+  },
+
+  acceptWriteback: async (itemId) => {
+    await window.electronAPI['wiki:acceptWriteback'](itemId)
+  },
+
+  discardWriteback: async (itemId) => {
+    await window.electronAPI['wiki:discardWriteback'](itemId)
   },
   }
 })

@@ -66,6 +66,10 @@ vi.stubGlobal('window', {
     'wiki:ingestFiles': vi.fn().mockResolvedValue({ created: [], updated: [], failed: [] }),
     'wiki:lint': vi.fn().mockResolvedValue({ issues: [], stats: { nodeCount: 0, edgeCount: 0, communityCount: 0 } }),
     'wiki:computeCommunities': vi.fn().mockResolvedValue({ communityCount: 0, nodeCount: 0, modularity: 0, communities: [] }),
+    'wiki:listWriteback': vi.fn().mockResolvedValue([]),
+    'wiki:countWriteback': vi.fn().mockResolvedValue(0),
+    'wiki:acceptWriteback': vi.fn().mockResolvedValue(undefined),
+    'wiki:discardWriteback': vi.fn().mockResolvedValue(undefined),
   },
 })
 
@@ -455,6 +459,55 @@ describe('graphStore', () => {
       const result = await useGraphStore.getState().computeCommunities()
       expect(result).toBeNull()
       expect(window.electronAPI['wiki:computeCommunities']).not.toHaveBeenCalled()
+    })
+
+    it('listWriteback calls wiki:listWriteback with current graphId and returns items', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const list = window.electronAPI['wiki:listWriteback'] as ReturnType<typeof vi.fn>
+      const items = [
+        { id: 'w1', graphId: 'g1', kind: 'append-log', targetNodeId: 'n1', title: '日志', content: 'c', sourceSessionId: 's1', confidence: 0.82, status: 'pending', createdAt: '', resolvedAt: null },
+      ]
+      list.mockResolvedValueOnce(items)
+
+      const result = await useGraphStore.getState().listWriteback()
+
+      expect(list).toHaveBeenCalledWith('g1')
+      expect(result).toEqual(items)
+    })
+
+    it('listWriteback returns [] when no graph is current', async () => {
+      useGraphStore.setState({ currentGraphId: null })
+      const result = await useGraphStore.getState().listWriteback()
+      expect(result).toEqual([])
+      expect(window.electronAPI['wiki:listWriteback']).not.toHaveBeenCalled()
+    })
+
+    it('countWriteback calls wiki:countWriteback with current graphId and returns count', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1' })
+      const count = window.electronAPI['wiki:countWriteback'] as ReturnType<typeof vi.fn>
+      count.mockResolvedValueOnce(3)
+
+      const result = await useGraphStore.getState().countWriteback()
+
+      expect(count).toHaveBeenCalledWith('g1')
+      expect(result).toBe(3)
+    })
+
+    it('countWriteback returns 0 when no graph is current', async () => {
+      useGraphStore.setState({ currentGraphId: null })
+      const result = await useGraphStore.getState().countWriteback()
+      expect(result).toBe(0)
+      expect(window.electronAPI['wiki:countWriteback']).not.toHaveBeenCalled()
+    })
+
+    it('acceptWriteback calls wiki:acceptWriteback with itemId', async () => {
+      await useGraphStore.getState().acceptWriteback('w1')
+      expect(window.electronAPI['wiki:acceptWriteback']).toHaveBeenCalledWith('w1')
+    })
+
+    it('discardWriteback calls wiki:discardWriteback with itemId', async () => {
+      await useGraphStore.getState().discardWriteback('w2')
+      expect(window.electronAPI['wiki:discardWriteback']).toHaveBeenCalledWith('w2')
     })
   })
 
