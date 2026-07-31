@@ -4,12 +4,13 @@
  * nodes/edges 表 DDL 与生产 schema 同列，保证 repository 真实 SQL 可跑。
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import { NodeRepository } from '../../repositories/node-repository'
 import { EdgeRepository } from '../../repositories/edge-repository'
 import { WritebackRepository } from '../../repositories/writeback-repository'
 import { WritebackService, type NodeTitleSource, type WritebackRepoLike } from '../writeback-service'
+import { WikiLinkService } from '../wiki-link-service'
 import { IpcError } from '../../errors'
 import type { GraphNode } from '@shared/types'
 import type { WritebackItem } from '@shared/types/wiki'
@@ -103,7 +104,7 @@ describe('WritebackService.accept', () => {
     nodeRepo = new NodeRepository(db)
     edgeRepo = new EdgeRepository(db)
     writebackRepo = new WritebackRepository(db)
-    service = new WritebackService(writebackRepo, fakeTitleSource(), { nodeRepo, edgeRepo })
+    service = new WritebackService(writebackRepo, fakeTitleSource(), { nodeRepo, edgeRepo, db })
   })
 
   it('accept append-log appends section to node wikiContent and marks accepted', () => {
@@ -209,6 +210,84 @@ describe('WritebackService.accept', () => {
     expect(wikiLinks[0].target).toBe(source.id)
 
     expect(writebackRepo.findById(item.id)!.status).toBe('accepted')
+  })
+
+  it('accept new-page is idempotent when same-title wiki-page already exists', () => {
+    const source = createWikiPage('源节点', '# 源节点\n')
+    const item1 = writebackRepo.create({
+      graphId: 'g1',
+      kind: 'new-page',
+      targetNodeId: source.id,
+      title: 'auth-flow',
+      content: '---\ntitle: auth-flow\n---\n\n# auth-flow\n',
+      sourceSessionId: 'sess_1',
+      confidence: 0.75,
+    })
+    service.accept(item1.id)
+
+    // 第二个 pending item 标题与已创建的 wiki-page 相同
+    const item2 = writebackRepo.create({
+      graphId: 'g1',
+      kind: 'new-page',
+      targetNodeId: source.id,
+      title: 'auth-flow',
+      content: '---\ntitle: auth-flow\n---\n\n# auth-flow\n\n> second\n',
+      sourceSessionId: 'sess_2',
+      confidence: 0.75,
+    })
+    service.accept(item2.id)
+
+    const pages = nodeRepo.listByGraph('g1').filter((n) => n.title === 'auth-flow' && n.type === 'wiki-page')
+    expect(pages).toHaveLength(1)
+    expect(writebackRepo.findById(item1.id)!.status).toBe('accepted')
+    expect(writebackRepo.findById(item2.id)!.status).toBe('accepted')
+  })
+
+  it('accept new-page still succeeds and marks accepted when syncNodeLinks throws', () => {
+    const spy = vi.spyOn(WikiLinkService, 'syncNodeLinks').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    const source = createWikiPage('源节点', '# 源节点\n')
+    const item = writebackRepo.create({
+      graphId: 'g1',
+      kind: 'new-page',
+      targetNodeId: source.id,
+      title: 'sync-error-page',
+      content: '---\ntitle: sync-error-page\n---\n\n# sync-error-page\n',
+      sourceSessionId: 'sess_1',
+      confidence: 0.75,
+    })
+
+    expect(() => service.accept(item.id)).not.toThrow()
+
+    expect(writebackRepo.findById(item.id)!.status).toBe('accepted')
+    const created = nodeRepo.listByGraph('g1').find((n) => n.title === 'sync-error-page')
+    expect(created).toBeDefined()
+
+    spy.mockRestore()
+  })
+
+  it('accept append-log still succeeds and marks accepted when syncNodeLinks throws', () => {
+    const spy = vi.spyOn(WikiLinkService, 'syncNodeLinks').mockImplementation(() => {
+      throw new Error('boom')
+    })
+    const node = createWikiPage('页面A', '# 页面A\n')
+    const item = writebackRepo.create({
+      graphId: 'g1',
+      kind: 'append-log',
+      targetNodeId: node.id,
+      title: '会话日志 · 2026-07-30',
+      content: '\n## 会话日志 · 2026-07-30\n\n- 发现 X\n',
+      sourceSessionId: 'sess_1',
+      confidence: 0.8,
+    })
+
+    expect(() => service.accept(item.id)).not.toThrow()
+
+    expect(nodeRepo.findById(node.id)!.wikiContent).toContain('发现 X')
+    expect(writebackRepo.findById(item.id)!.status).toBe('accepted')
+
+    spy.mockRestore()
   })
 
   it('accept throws when target node does not exist', () => {

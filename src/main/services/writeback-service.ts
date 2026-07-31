@@ -1,10 +1,14 @@
+import type BetterSqlite3 from 'better-sqlite3'
 import type { MemoryItem } from '@shared/types'
 import type { WritebackItem, WritebackStatus } from '@shared/types/wiki'
 import type { NodeRepository } from '../repositories/node-repository'
 import type { EdgeRepository } from '../repositories/edge-repository'
 import { normalizeWikiTitle } from '../wiki/markdown-utils'
+import { createLogger } from '../shared/logger'
 import { IpcError, ErrorCode } from '../errors'
 import { WikiLinkService } from './wiki-link-service'
+
+const logger = createLogger('WritebackService')
 
 export interface WritebackRepoLike {
   create(data: Omit<WritebackItem, 'id' | 'status' | 'createdAt' | 'resolvedAt'>): WritebackItem
@@ -43,7 +47,7 @@ export class WritebackService {
   constructor(
     private readonly repo: WritebackRepoLike,
     private readonly titles: NodeTitleSource,
-    private readonly deps?: { nodeRepo: NodeRepository; edgeRepo: EdgeRepository },
+    private readonly deps?: { nodeRepo: NodeRepository; edgeRepo: EdgeRepository; db?: BetterSqlite3.Database },
   ) {}
 
   generate(input: GenerateInput, now: Date = new Date()): WritebackItem[] {
@@ -92,9 +96,17 @@ export class WritebackService {
     if (!item) throw new IpcError(`写回项不存在: ${itemId}`, ErrorCode.IPC_INVALID_ARGUMENT)
     if (item.status !== 'pending') return // 幂等：已处理直接返回
 
-    if (item.kind === 'append-log') this.acceptAppendLog(item)
-    else this.acceptNewPage(item)
-    this.repo.updateStatus(itemId, 'accepted')
+    const doAccept = () => {
+      if (item.kind === 'append-log') this.acceptAppendLog(item)
+      else this.acceptNewPage(item)
+      this.repo.updateStatus(itemId, 'accepted')
+    }
+
+    if (this.deps!.db) {
+      this.deps!.db.transaction(doAccept)()
+    } else {
+      doAccept()
+    }
   }
 
   private acceptAppendLog(item: WritebackItem): void {
@@ -103,12 +115,20 @@ export class WritebackService {
     const current = node.wikiContent ?? ''
     if (current.includes(item.title)) return // 幂等：小节已存在，跳过写入（外层仍标 accepted）
     this.deps!.nodeRepo.update(node.id, { wikiContent: current + item.content })
-    WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    try {
+      WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    } catch (err) {
+      logger.error('syncNodeLinks failed for', node.id, err)
+    }
   }
 
   private acceptNewPage(item: WritebackItem): void {
     const source = this.deps!.nodeRepo.findById(item.targetNodeId) // new-page: targetNodeId 存源节点 id
     if (!source) throw new IpcError('源节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
+    const existing = this.deps!.nodeRepo
+      .listByGraph(item.graphId)
+      .some((n) => n.title === item.title && n.type === 'wiki-page')
+    if (existing) return // 标题级幂等：同名 wiki-page 已存在，跳过创建
     const created = this.deps!.nodeRepo.create({
       graphId: item.graphId,
       graphType: source.graphType,
@@ -118,7 +138,11 @@ export class WritebackService {
       wikiContent: item.content,
       position: { x: source.position.x + 280, y: source.position.y + 120 },
     })
-    WikiLinkService.syncNodeLinks(created.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    try {
+      WikiLinkService.syncNodeLinks(created.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    } catch (err) {
+      logger.error('syncNodeLinks failed for', created.id, err)
+    }
     this.deps!.edgeRepo.create({
       graphId: item.graphId,
       source: source.id,
