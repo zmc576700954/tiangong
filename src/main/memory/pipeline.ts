@@ -139,9 +139,9 @@ export class PipelineRunner {
   }
 
   /**
-   * 创建默认的完整管线（8 阶段）
+   * 创建默认的完整管线（9 阶段）
    *
-   * 阶段顺序: normalize → compress → extract → verify → compile → waterline → node-bind → persist
+   * 阶段顺序: normalize → compress → extract → verify → compile → waterline → node-bind → persist → writeback
    * 每个阶段独立运行，失败不阻塞后续阶段。
    * 使用动态 import 避免循环依赖和启动时的全量加载。
    */
@@ -386,6 +386,63 @@ export class PipelineRunner {
             }
           }
 
+          return ctx
+        },
+      },
+      {
+        name: 'writeback',
+        process: async (ctx) => {
+          // 全局开关（默认开）：settings.writeback.enabled === false 时整阶段跳过。
+          // 注意不能用 enabled()——它是同步签名，而 readSettings 是异步读盘。
+          try {
+            const { readSettings } = await import('../settings')
+            const settings = await readSettings()
+            if (settings.writeback?.enabled === false) return ctx
+          } catch (err) {
+            logger.warn('writeback stage: settings read failed, defaulting to enabled', err)
+          }
+
+          if (!ctx.nodeId || !ctx.memories || ctx.memories.length === 0) return ctx
+          try {
+            const { getClient } = await import('../database')
+            const { NodeRepository } = await import('../repositories/node-repository')
+            const { EdgeRepository } = await import('../repositories/edge-repository')
+            const { WritebackRepository } = await import('../repositories/writeback-repository')
+            const { WritebackService } = await import('../services/writeback-service')
+            const db = getClient()
+            const nodeRepo = new NodeRepository(db)
+            const node = nodeRepo.findById(ctx.nodeId)
+            if (!node) return ctx
+            // graphId 从节点反查，不用 ctx.projectId（管线里它是 workingDirectory，语义二义）
+            const graphId = node.graphId
+            // 项目单向覆盖：全局开时 writeback_disabled=1 可关；全局关时项目不可开
+            const g = db.prepare('SELECT writeback_disabled FROM graphs WHERE id = ?').get(graphId) as
+              | { writeback_disabled: number }
+              | undefined
+            if (g?.writeback_disabled === 1) return ctx
+            // 特殊页（index/log/community）不写入
+            const wikiMeta = node.wikiMeta as { specialPage?: string } | undefined
+            if (wikiMeta?.specialPage) return ctx
+
+            const writebackRepo = new WritebackRepository(db)
+            const edgeRepo = new EdgeRepository(db)
+            const titles = {
+              findExistingTitles: (gid: string) => nodeRepo.listByGraph(gid).map((n) => n.title),
+            }
+            const service = new WritebackService(writebackRepo, titles, { nodeRepo, edgeRepo, db })
+            const created = service.generate({
+              graphId,
+              nodeId: node.id,
+              nodeTitle: node.title,
+              sessionId: ctx.sessionId,
+              memories: ctx.memories as Array<Omit<MemoryItem, 'id'>>,
+            })
+            if (created.length > 0) {
+              logger.info(`writeback stage: generated ${created.length} pending item(s) for session ${ctx.sessionId}`)
+            }
+          } catch (err) {
+            logger.warn('writeback stage failed:', err)
+          }
           return ctx
         },
       },

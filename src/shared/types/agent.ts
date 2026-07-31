@@ -504,6 +504,10 @@ export interface BizGraphSettings {
     autoCompactThreshold?: number
     minCompactInterval?: number
   }
+  /** Query Writeback: 会话结束后生成待审写回项（默认开；全局关时项目不可开） */
+  writeback?: {
+    enabled?: boolean
+  }
 }
 
 /** 适配器自动回退链中的单次尝试记录 */
