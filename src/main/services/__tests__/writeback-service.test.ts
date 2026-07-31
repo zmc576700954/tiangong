@@ -89,4 +89,40 @@ describe('WritebackService.generate', () => {
     const out = svc.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's', memories })
     expect(out.find((i) => i.kind === 'new-page')).toBeUndefined()
   })
+
+  it('creates separate new-page clusters for overlapping concepts', () => {
+    const memories = [
+      mem({ title: 'M1', concepts: ['a', 'b'], confidence: 0.9 }),
+      mem({ title: 'M2', concepts: ['a'], confidence: 0.8 }),
+      mem({ title: 'M3', concepts: ['b'], confidence: 0.7 }),
+    ]
+    const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's', memories })
+    expect(out.some((i) => i.kind === 'append-log')).toBe(true)
+    const newPages = out.filter((i) => i.kind === 'new-page')
+    expect(newPages).toHaveLength(2)
+    expect(newPages.map((i) => i.title).sort()).toEqual(['a', 'b'])
+  })
+
+  it('uses deterministic now for append-log title and section', () => {
+    const now = new Date('2026-07-30T14:32:00Z')
+    const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's', memories: [mem({})] }, now)
+    expect(out[0].title).toBe('会话日志 · 2026-07-30')
+    expect(out[0].content).toContain('## 会话日志 · 2026-07-30 14:32')
+  })
+
+  it('escapes markdown injection in append-log content', () => {
+    const out = service.generate({
+      graphId: 'g1',
+      nodeId: 'n1',
+      nodeTitle: 'A',
+      sessionId: 's',
+      memories: [mem({
+        title: '[[evil]] **bold**',
+        narrative: 'narrative',
+        facts: ['[[bad]] `code`'],
+      })],
+    })
+    expect(out[0].content).not.toContain('[[evil]]')
+    expect(out[0].content).not.toContain('[[bad]]')
+  })
 })

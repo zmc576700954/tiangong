@@ -23,13 +23,23 @@ export interface GenerateInput {
 const TOP_N = 5
 const MIN_CLUSTER = 2
 
+/** 转义 markdown 特殊字符，防止 agent 产出内容注入虚假 wikilink/格式 */
+function escMd(s: string): string {
+  return s.replace(/([\\`*_[\]{}()#+.!|<>])/g, '\\$1')
+}
+
+/** 把换行符替换为空格，避免注入 frontmatter/标题/链接 */
+function stripNewlines(s: string): string {
+  return s.replace(/\n/g, ' ')
+}
+
 export class WritebackService {
   constructor(
     private readonly repo: WritebackRepoLike,
     private readonly titles: NodeTitleSource,
   ) {}
 
-  generate(input: GenerateInput): WritebackItem[] {
+  generate(input: GenerateInput, now: Date = new Date()): WritebackItem[] {
     if (input.memories.length === 0) return []
     if (this.repo.findBySession(input.sessionId).length > 0) return []
 
@@ -38,24 +48,26 @@ export class WritebackService {
       .slice(0, TOP_N)
     const confidence = top.reduce((s, m) => s + (m.confidence ?? 0), 0) / top.length
 
+    const safeNodeTitle = stripNewlines(input.nodeTitle)
     const created: WritebackItem[] = []
     created.push(this.repo.create({
       graphId: input.graphId,
       kind: 'append-log',
       targetNodeId: input.nodeId,
-      title: `会话日志 · ${new Date().toISOString().slice(0, 10)}`,
-      content: this.buildAppendLog(top),
+      title: `会话日志 · ${now.toISOString().slice(0, 10)}`,
+      content: this.buildAppendLog(top, confidence, now),
       sourceSessionId: input.sessionId,
       confidence,
     }))
 
     for (const cluster of this.clusterNovelConcepts(top, input.graphId)) {
+      const concept = stripNewlines(cluster.concept)
       created.push(this.repo.create({
         graphId: input.graphId,
         kind: 'new-page',
         targetNodeId: input.nodeId, // 源节点 id，采纳时连边用
-        title: cluster.concept,
-        content: this.buildNewPage(cluster.concept, cluster.memories, input),
+        title: concept,
+        content: this.buildNewPage(concept, cluster.memories, safeNodeTitle),
         sourceSessionId: input.sessionId,
         confidence,
       }))
@@ -63,16 +75,24 @@ export class WritebackService {
     return created
   }
 
-  private buildAppendLog(top: Array<Omit<MemoryItem, 'id'>>): string {
+  private buildAppendLog(
+    top: Array<Omit<MemoryItem, 'id'>>,
+    confidence: number,
+    now: Date,
+  ): string {
     const adapter = top[0]?.adapter_name ?? 'agent'
-    const confidence = top.reduce((s, m) => s + (m.confidence ?? 0), 0) / top.length
-    const bullets = top.map((m) => `- ${m.title}`).join('\n')
+    const bullets = top.map((m) => `- ${escMd(m.title)}`).join('\n')
     const detail = top
-      .map((m) => `### ${m.title}\n\n${m.narrative}${m.facts.length ? '\n\n' + m.facts.map((f) => `- ${f}`).join('\n') : ''}`)
+      .map((m) => {
+        const facts = m.facts.length
+          ? '\n\n' + m.facts.map((f) => `- ${escMd(f)}`).join('\n')
+          : ''
+        return `### ${escMd(m.title)}\n\n${escMd(m.narrative)}${facts}`
+      })
       .join('\n\n')
     return [
       '',
-      `## 会话日志 · ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`,
+      `## 会话日志 · ${now.toISOString().slice(0, 16).replace('T', ' ')}`,
       '',
       `> 来源：${adapter} 会话 · 置信度 ${confidence.toFixed(2)}`,
       '',
@@ -87,8 +107,13 @@ export class WritebackService {
     ].join('\n')
   }
 
-  private buildNewPage(concept: string, memories: Array<Omit<MemoryItem, 'id'>>, input: GenerateInput): string {
-    const list = memories.map((m) => `- ${m.title}`).join('\n')
+  private buildNewPage(
+    concept: string,
+    memories: Array<Omit<MemoryItem, 'id'>>,
+    safeNodeTitle: string,
+  ): string {
+    const list = memories.map((m) => `- ${escMd(m.title)}`).join('\n')
+    const wikilinkTarget = safeNodeTitle.replace(/[[\]]/g, '')
     return [
       '---',
       `title: ${concept}`,
@@ -98,7 +123,7 @@ export class WritebackService {
       '',
       '> 由 Query Writeback 从会话提炼 · 待人工整理',
       '',
-      `- 源节点：[[${input.nodeTitle}]]`,
+      `- 源节点：[[${wikilinkTarget}]]`,
       '',
       list,
       '',
