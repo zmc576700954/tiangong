@@ -144,6 +144,22 @@ describe('Settings - Encryption', () => {
     expect(read.defaultModel).toBeDefined()
   })
 
+  it('should preserve writeback.enabled false from saved settings', async () => {
+    const { readSettings } = await import('../settings')
+
+    const saved = {
+      version: 1,
+      cliTools: [],
+      apiKeys: [],
+      mcpServers: [],
+      writeback: { enabled: false },
+    }
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify(saved))
+
+    const read = await readSettings()
+    expect(read.writeback).toEqual({ enabled: false })
+  })
+
   it('should return defaults when settings file does not exist', async () => {
     const { readSettings } = await import('../settings')
 

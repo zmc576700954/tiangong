@@ -120,6 +120,13 @@ function countWritebackRows(db: BetterSqlite3.Database): number {
   return (db.prepare('SELECT COUNT(*) AS c FROM writeback_items').get() as { c: number }).c
 }
 
+/** 控制组：在相同 db 上用不同 sessionId 跑 happy path，证明阶段本身功能正常。 */
+async function assertControlCreatesRows(db: BetterSqlite3.Database) {
+  const before = countWritebackRows(db)
+  await runWritebackOnly({ sessionId: 'sess_control', nodeId: 'n1', memories: [makeMemory({ session_id: 'sess_control' })] })
+  expect(countWritebackRows(db)).toBeGreaterThan(before)
+}
+
 describe('pipeline writeback stage', () => {
   let db: BetterSqlite3.Database
 
@@ -173,6 +180,13 @@ describe('pipeline writeback stage', () => {
 
     expect(result.errors).toHaveLength(0)
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：恢复全局开关后应正常写回
+    mockReadSettings.mockResolvedValue({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [],
+      writeback: { enabled: true },
+    })
+    await assertControlCreatesRows(db)
   })
 
   it('skips when project writeback_disabled = 1 (global enabled)', async () => {
@@ -181,6 +195,10 @@ describe('pipeline writeback stage', () => {
     await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'n1', memories: [makeMemory()] })
 
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：项目侧恢复启用后应正常写回
+    db.prepare(`UPDATE graphs SET writeback_disabled = 0 WHERE id = 'g1'`).run()
+    await assertControlCreatesRows(db)
   })
 
   it('project cannot re-enable when globally disabled (单向覆盖)', async () => {
@@ -193,23 +211,39 @@ describe('pipeline writeback stage', () => {
 
     expect(result.errors).toHaveLength(0)
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：全局启用后应正常写回（项目侧本来就是启用的）
+    mockReadSettings.mockResolvedValue({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [],
+      writeback: { enabled: true },
+    })
+    await assertControlCreatesRows(db)
   })
 
   it('skips when nodeId missing', async () => {
     await runWritebackOnly({ sessionId: 'sess_1', memories: [makeMemory()] })
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：补回 nodeId 后应正常写回
+    await assertControlCreatesRows(db)
   })
 
   it('skips when memories empty or absent', async () => {
     await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'n1', memories: [] })
     await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'n1' })
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：补回 memories 后应正常写回
+    await assertControlCreatesRows(db)
   })
 
   it('skips when node not found', async () => {
     const result = await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'node_ghost', memories: [makeMemory()] })
     expect(result.errors).toHaveLength(0)
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：换成存在的节点后应正常写回
+    await assertControlCreatesRows(db)
   })
 
   it('skips special pages (index/log/community)', async () => {
@@ -221,6 +255,9 @@ describe('pipeline writeback stage', () => {
     await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'n_index', memories: [makeMemory()] })
 
     expect(countWritebackRows(db)).toBe(0)
+
+    // 控制组：换成普通节点后应正常写回
+    await assertControlCreatesRows(db)
   })
 
   it('dedups by session: second run for same session creates nothing', async () => {
@@ -232,16 +269,18 @@ describe('pipeline writeback stage', () => {
     expect(countWritebackRows(db)).toBe(afterFirst)
   })
 
-  it('stage failure does not break run() — error stays contained', async () => {
+  it('stage failure is contained in result.errors with stage name', async () => {
     mockGetClient.mockImplementation(() => {
       throw new Error('db boom')
     })
 
     const result = await runWritebackOnly({ sessionId: 'sess_1', nodeId: 'n1', memories: [makeMemory()] })
 
-    // 阶段内部已 try/catch，异常不外逃、不进入 result.errors
-    expect(result.errors).toHaveLength(0)
-    expect(result.context.sessionId).toBe('sess_1')
+    // 外层 try/catch 已移除；runner 的 per-stage catch 会把异常写入 result.errors
+    expect(result.errors.length).toBeGreaterThanOrEqual(1)
+    const writebackError = result.errors.find((e) => e.stage === 'writeback')
+    expect(writebackError).toBeDefined()
+    expect(writebackError!.error.message).toContain('db boom')
   })
 
   it('settings read failure defaults to enabled', async () => {

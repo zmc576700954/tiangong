@@ -403,45 +403,40 @@ export class PipelineRunner {
           }
 
           if (!ctx.nodeId || !ctx.memories || ctx.memories.length === 0) return ctx
-          try {
-            const { getClient } = await import('../database')
-            const { NodeRepository } = await import('../repositories/node-repository')
-            const { EdgeRepository } = await import('../repositories/edge-repository')
-            const { WritebackRepository } = await import('../repositories/writeback-repository')
-            const { WritebackService } = await import('../services/writeback-service')
-            const db = getClient()
-            const nodeRepo = new NodeRepository(db)
-            const node = nodeRepo.findById(ctx.nodeId)
-            if (!node) return ctx
-            // graphId 从节点反查，不用 ctx.projectId（管线里它是 workingDirectory，语义二义）
-            const graphId = node.graphId
-            // 项目单向覆盖：全局开时 writeback_disabled=1 可关；全局关时项目不可开
-            const g = db.prepare('SELECT writeback_disabled FROM graphs WHERE id = ?').get(graphId) as
-              | { writeback_disabled: number }
-              | undefined
-            if (g?.writeback_disabled === 1) return ctx
-            // 特殊页（index/log/community）不写入
-            const wikiMeta = node.wikiMeta as { specialPage?: string } | undefined
-            if (wikiMeta?.specialPage) return ctx
+          const { getClient } = await import('../database')
+          const { GraphRepository } = await import('../repositories/graph-repository')
+          const { NodeRepository } = await import('../repositories/node-repository')
+          const { EdgeRepository } = await import('../repositories/edge-repository')
+          const { WritebackRepository } = await import('../repositories/writeback-repository')
+          const { WritebackService } = await import('../services/writeback-service')
+          const db = getClient()
+          const nodeRepo = new NodeRepository(db)
+          const node = nodeRepo.findById(ctx.nodeId)
+          if (!node) return ctx
+          // graphId 从节点反查，不用 ctx.projectId（管线里它是 workingDirectory，语义二义）
+          const graphId = node.graphId
+          // 项目单向覆盖：全局开时 writeback_disabled=1 可关；全局关时项目不可开
+          const graphRepo = new GraphRepository(db)
+          if (graphRepo.isWritebackDisabled(graphId)) return ctx
+          // 特殊页（index/log/community）不写入
+          const wikiMeta = node.wikiMeta as { specialPage?: string } | undefined
+          if (wikiMeta?.specialPage) return ctx
 
-            const writebackRepo = new WritebackRepository(db)
-            const edgeRepo = new EdgeRepository(db)
-            const titles = {
-              findExistingTitles: (gid: string) => nodeRepo.listByGraph(gid).map((n) => n.title),
-            }
-            const service = new WritebackService(writebackRepo, titles, { nodeRepo, edgeRepo, db })
-            const created = service.generate({
-              graphId,
-              nodeId: node.id,
-              nodeTitle: node.title,
-              sessionId: ctx.sessionId,
-              memories: ctx.memories as Array<Omit<MemoryItem, 'id'>>,
-            })
-            if (created.length > 0) {
-              logger.info(`writeback stage: generated ${created.length} pending item(s) for session ${ctx.sessionId}`)
-            }
-          } catch (err) {
-            logger.warn('writeback stage failed:', err)
+          const writebackRepo = new WritebackRepository(db)
+          const edgeRepo = new EdgeRepository(db)
+          const titles = {
+            findExistingTitles: (gid: string) => nodeRepo.listByGraph(gid).map((n) => n.title),
+          }
+          const service = new WritebackService(writebackRepo, titles, { nodeRepo, edgeRepo, db })
+          const created = service.generate({
+            graphId,
+            nodeId: node.id,
+            nodeTitle: node.title,
+            sessionId: ctx.sessionId,
+            memories: ctx.memories as Array<Omit<MemoryItem, 'id'>>,
+          })
+          if (created.length > 0) {
+            logger.info(`writeback stage: generated ${created.length} pending item(s) for session ${ctx.sessionId}`)
           }
           return ctx
         },

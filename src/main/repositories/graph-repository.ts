@@ -176,6 +176,12 @@ export class GraphRepository {
       .filter((p): p is string => p !== null && p !== undefined)
   }
 
+  /** Query Writeback 项目级开关：true = 该项目强制关闭写回（仅全局开时生效） */
+  isWritebackDisabled(graphId: string): boolean {
+    const row = this.db.prepare('SELECT writeback_disabled FROM graphs WHERE id = ?').get(graphId) as { writeback_disabled: number | null } | undefined
+    return row?.writeback_disabled === 1
+  }
+
   /** 克隆在线图的所有节点和边到开发图（单事务保证原子性） */
   cloneGraphNodes(sourceGraphId: string, targetGraphId: string, targetGraphType: GraphType): void {
     const nodesRows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ?').all(sourceGraphId) as Record<string, unknown>[]

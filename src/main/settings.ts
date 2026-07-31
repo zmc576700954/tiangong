@@ -99,6 +99,7 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
     },
   ],
   adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
+  writeback: { enabled: true },
 }
 
 // ============================================
@@ -355,6 +356,7 @@ function mergeSettings(
     adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
     contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
+    writeback: saved.writeback ?? defaults.writeback,
   }
 }
 
