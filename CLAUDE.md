@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> 最后更新：2026-06-29
+> 最后更新：2026-08-01
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -72,8 +72,8 @@ BizGraph is a three-process Electron app:
 
 **Database** (`src/main/database.ts`) — better-sqlite3 stored in the user's app data directory. Schema is defined inline in `migrate()` with `rebuildTableIfNeeded()` for non-destructive migrations and `runIncrementalMigrations()` for additive changes. Uses WAL mode and a schema checksum cache for fast startup.
 
-Eleven tables:
-- `graphs` — online/dev graphs per project
+Twelve tables:
+- `graphs` — online/dev graphs per project（含 writeback_disabled 项目级开关）
 - `nodes` — graph nodes with type, status, position, metadata
 - `edges` — node relationships（含 wiki-link 类型的 Wiki 关系边）
 - `bug_nodes` — bug metadata linked to nodes
@@ -84,6 +84,7 @@ Eleven tables:
 - `memory_items` — extracted session memories
 - `compact_history` — context compaction events
 - `subagent_invocations` — child agent invocations
+- `writeback_items` — 会话产物回写审核队列（pending/accepted/discarded）
 
 **Dual Graph Model** — Each project has exactly two graphs: `online` (the product/business blueprint) and `dev` (a developer working copy derived from the online graph). Nodes form a hierarchy: project → module → process → feature/bug. Bug nodes have severity levels (low/medium/high/critical) and status (open/fixed/verified). Dev-graph feature nodes are auto-set to `placeholder` on init; starting implementation auto-advances `placeholder → developing`.
 
@@ -101,7 +102,7 @@ Eleven tables:
 - `MemoryStore`, `MemoryExtractor`, `ObserverCompressor`, `HallucinationChecker`
 - `ContextCompiler`, `ContextDistiller`, `PromptOrchestrator`
 - `HybridSearchEngine`, `EmbeddingService`, `GraphMemory`
-- `PipelineRunner` runs normalize → compress → extract → verify → compile → waterline → persist on session end.
+- `PipelineRunner` runs normalize → compress → extract → verify → compile → waterline → node-bind → persist → writeback on session end.
 
 **Wiki System** (`src/main/wiki/` + `src/main/services/wiki-link-service.ts`) — LLM-Wiki 知识体。
 - `markdown-utils.ts` — frontmatter/wikilink 纯函数解析（前后端唯一规则源）。
@@ -110,6 +111,7 @@ Eleven tables:
 - `ingest-service.ts` — 规则式文件导入：标题三级回退（frontmatter.title > H1 > 文件名）、同名追加、批量先建后链。
 - 落边钩子挂在 `src/main/ipc/graph.ts` 的 node:create/createBatch/update；`edge:create` 拒绝手工 wiki-link 边。
 - 画布过滤 wiki-link 边（`graphStore.excludeWikiLinkEdges`）；特殊页（wikiMeta.specialPage）禁止删除。
+- `WritebackService`（`src/main/services/writeback-service.ts`）— Query Writeback：会话结束由 PipelineRunner writeback 阶段从 MemoryItem 规则提炼回写项（append-log 追加「## 会话日志」/ new-page 概念聚类 ≥2 提炼新页），入 `writeback_items` 审核队列；用户经画布「审核队列(N)」面板采纳/丢弃后回写进图。开关：全局 `settings.writeback.enabled`（默认开）+ 项目 `graphs.writeback_disabled` 单向覆盖。
 
 **Context Waterline** (`src/main/memory/context-waterline.ts`) — Token economics for long chat threads.
 - Tracks per-thread token usage and adapter context windows.
