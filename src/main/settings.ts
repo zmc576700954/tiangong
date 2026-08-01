@@ -286,6 +286,12 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
   }
   // customAgentTypes 必须是数组
   if (obj.customAgentTypes !== undefined && !Array.isArray(obj.customAgentTypes)) return false
+  // writeback 必须是对象且 enabled 为布尔值
+  if (obj.writeback !== undefined) {
+    if (obj.writeback === null || typeof obj.writeback !== 'object' || Array.isArray(obj.writeback)) return false
+    const wb = obj.writeback as Record<string, unknown>
+    if (wb.enabled !== undefined && typeof wb.enabled !== 'boolean') return false
+  }
   return true
 }
 

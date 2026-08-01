@@ -138,10 +138,11 @@ describe('WritebackPanel', () => {
   })
 
   it('action buttons are real buttons, focusable and receive keyboard events', () => {
+    const onAccept = vi.fn()
     render(
       <WritebackPanel
         items={[makeItem({ id: 'w-kb' })]}
-        onAccept={vi.fn()}
+        onAccept={onAccept}
         onDiscard={vi.fn()}
         onNavigate={vi.fn()}
         onClose={vi.fn()}
@@ -158,7 +159,10 @@ describe('WritebackPanel', () => {
       expect((btn as HTMLButtonElement).type).toBe('button')
       btn.focus()
       expect(document.activeElement).toBe(btn)
-      expect(fireEvent.keyDown(btn, { key: 'Enter' })).toBe(true)
     }
+    // 原生 button 的 Enter 键激活触发 click
+    fireEvent.keyDown(acceptBtn, { key: 'Enter' })
+    fireEvent.click(acceptBtn)
+    expect(onAccept).toHaveBeenCalledWith('w-kb')
   })
 })

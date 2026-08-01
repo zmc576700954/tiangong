@@ -52,8 +52,9 @@ export class WritebackRepository {
   }
 
   findBySession(sourceSessionId: string): WritebackItem[] {
+    // 含 discarded：用户丢弃不代表重新生成——「按会话去重」语义是每会话只生成一次
     const rows = this.db.prepare(
-      `SELECT * FROM writeback_items WHERE source_session_id = ? AND status IN ('pending','accepted')`,
+      `SELECT * FROM writeback_items WHERE source_session_id = ?`,
     ).all(sourceSessionId) as Record<string, unknown>[]
     return rows.map((r) => this.rowToItem(r))
   }

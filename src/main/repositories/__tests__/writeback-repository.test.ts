@@ -54,11 +54,11 @@ describe('WritebackRepository', () => {
     expect(repo.findBySession('sess_other')).toHaveLength(0)
   })
 
-  it('findBySession excludes discarded items (only pending/accepted count for dedup)', () => {
+  it('findBySession includes discarded items (session dedup survives discard-all)', () => {
     const item = repo.create({ graphId: 'g1', kind: 'append-log', targetNodeId: 'n1', title: 'T', content: 'C', sourceSessionId: 'sess_d', confidence: 0.5 })
     expect(repo.findBySession('sess_d')).toHaveLength(1)
     repo.updateStatus(item.id, 'discarded')
-    expect(repo.findBySession('sess_d')).toHaveLength(0)
+    expect(repo.findBySession('sess_d')).toHaveLength(1)
   })
 
   it('updateStatus sets status + resolvedAt; listPending excludes resolved', () => {

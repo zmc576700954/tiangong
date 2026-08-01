@@ -130,4 +130,52 @@ describe('WritebackService.generate', () => {
     expect(out[0].content).not.toContain('[[evil]]')
     expect(out[0].content).not.toContain('[[bad]]')
   })
+
+  it('new-page frontmatter title is YAML-quoted (special chars cannot break parsing)', () => {
+    const memories = [
+      mem({ concepts: ['[auth] "flow"'], confidence: 0.9 }),
+      mem({ concepts: ['[auth] "flow"'], confidence: 0.9 }),
+    ]
+    const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's', memories })
+    const np = out.find((i) => i.kind === 'new-page')
+    expect(np).toBeDefined()
+    expect(np!.content).toContain('title: "[auth] \\"flow\\""')
+  })
+
+  it('new-page wikilink sanitizes pipe/bracket chars in source node title', () => {
+    const memories = [
+      mem({ concepts: ['auth-flow'], confidence: 0.9 }),
+      mem({ concepts: ['auth-flow'], confidence: 0.9 }),
+    ]
+    const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: '用户 | 管[理]员', sessionId: 's', memories })
+    const np = out.find((i) => i.kind === 'new-page')
+    expect(np).toBeDefined()
+    expect(np!.content).toContain('[[用户 管理员]]')
+  })
+
+  it('new-page wikilink normalizes whitespace in source node title', () => {
+    const memories = [
+      mem({ concepts: ['auth-flow'], confidence: 0.9 }),
+      mem({ concepts: ['auth-flow'], confidence: 0.9 }),
+    ]
+    const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'Node　　A', sessionId: 's', memories })
+    const np = out.find((i) => i.kind === 'new-page')
+    expect(np).toBeDefined()
+    expect(np!.content).toContain('[[Node A]]')
+  })
+
+  it('NaN confidence falls back to 0 instead of poisoning the average', () => {
+    const out = service.generate({
+      graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's',
+      memories: [mem({ confidence: NaN })],
+    })
+    expect(out[0].confidence).toBe(0)
+  })
+
+  it('skips generation when session items were all discarded (dedup survives discard-all)', () => {
+    const first = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 'sess_1', memories: [mem({})] })
+    for (const item of first) repo.updateStatus(item.id, 'discarded')
+    const again = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 'sess_1', memories: [mem({})] })
+    expect(again).toEqual([])
+  })
 })

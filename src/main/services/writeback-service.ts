@@ -43,6 +43,16 @@ function stripNewlines(s: string): string {
   return s.replace(/\n/g, ' ')
 }
 
+/** YAML 双引号标量转义：concept 来自 agent 产出，直接拼接会破坏 frontmatter */
+function escYaml(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+/** 清洗 wikilink 目标标题：去掉括号/竖线（避免被解析成显示文本分隔），归一化空白 */
+function sanitizeLinkTitle(s: string): string {
+  return normalizeWikiTitle(s.replace(/[[\]|]/g, ''))
+}
+
 export class WritebackService {
   constructor(
     private readonly repo: WritebackRepoLike,
@@ -58,6 +68,7 @@ export class WritebackService {
       .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
       .slice(0, TOP_N)
     const confidence = top.reduce((s, m) => s + (m.confidence ?? 0), 0) / top.length
+    const safeConfidence = Number.isFinite(confidence) ? confidence : 0
 
     const safeNodeTitle = stripNewlines(input.nodeTitle)
     const created: WritebackItem[] = []
@@ -66,9 +77,9 @@ export class WritebackService {
       kind: 'append-log',
       targetNodeId: input.nodeId,
       title: `会话日志 · ${now.toISOString().slice(0, 10)}`,
-      content: this.buildAppendLog(top, confidence, now),
+      content: this.buildAppendLog(top, safeConfidence, now),
       sourceSessionId: input.sessionId,
-      confidence,
+      confidence: safeConfidence,
     }))
 
     for (const cluster of this.clusterNovelConcepts(top, input.graphId)) {
@@ -80,7 +91,7 @@ export class WritebackService {
         title: concept,
         content: this.buildNewPage(concept, cluster.memories, safeNodeTitle),
         sourceSessionId: input.sessionId,
-        confidence,
+        confidence: safeConfidence,
       }))
     }
     return created
@@ -122,7 +133,10 @@ export class WritebackService {
     const node = this.deps!.nodeRepo.findById(item.targetNodeId)
     if (!node) throw new IpcError('目标节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
     const current = node.wikiContent ?? ''
-    if (current.includes(item.title)) return // 幂等：小节已存在，跳过写入（外层仍标 accepted）
+    // 幂等：小节标题行已存在则跳过写入（外层仍标 accepted）。
+    // 按「## 标题」行匹配，正文里恰好提到该日期字符串不触发误跳过。
+    const sectionRe = new RegExp(`^##\\s+${item.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm')
+    if (sectionRe.test(current)) return
     this.deps!.nodeRepo.update(node.id, { wikiContent: current + item.content })
     try {
       WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
@@ -199,10 +213,10 @@ export class WritebackService {
     safeNodeTitle: string,
   ): string {
     const list = memories.map((m) => `- ${escMd(m.title)}`).join('\n')
-    const wikilinkTarget = safeNodeTitle.replace(/[[\]]/g, '')
+    const wikilinkTarget = sanitizeLinkTitle(safeNodeTitle)
     return [
       '---',
-      `title: ${concept}`,
+      `title: "${escYaml(concept)}"`,
       '---',
       '',
       `# ${concept}`,

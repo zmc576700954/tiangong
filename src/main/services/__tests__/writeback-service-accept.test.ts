@@ -149,7 +149,7 @@ describe('WritebackService.accept', () => {
     const occurrences = contentAfterFirst.split('## 会话日志 · 2026-07-30').length - 1
     expect(occurrences).toBe(1)
 
-    // 场景二：新 pending item 标题已存在于 wikiContent —— 跳过写入但仍标 accepted
+    // 场景二：新 pending item 小节标题行已存在于 wikiContent —— 跳过写入但仍标 accepted
     nodeRepo.update(node.id, {
       wikiContent: '# 页面A\n\n## 会话日志 · 2026-07-30\n\n- 旧条目\n',
     })
@@ -169,6 +169,23 @@ describe('WritebackService.accept', () => {
     expect(writebackRepo.findById(dup.id)!.status).toBe('accepted')
   })
 
+  it('accept append-log still writes when title appears only in body text (not a section heading)', () => {
+    const node = createWikiPage('页面A', '# 页面A\n\n今日总结见「会话日志 · 2026-07-30」一节。\n')
+    const item = writebackRepo.create({
+      graphId: 'g1',
+      kind: 'append-log',
+      targetNodeId: node.id,
+      title: '会话日志 · 2026-07-30',
+      content: '\n## 会话日志 · 2026-07-30\n\n- 新条目\n',
+      sourceSessionId: 'sess_1',
+      confidence: 0.8,
+    })
+    service.accept(item.id)
+    const content = nodeRepo.findById(node.id)!.wikiContent!
+    expect(content).toContain('- 新条目')
+    expect(writebackRepo.findById(item.id)!.status).toBe('accepted')
+  })
+
   it('accept new-page creates wiki-page node + edge to source node', () => {
     const source = createWikiPage('源节点', '# 源节点\n')
     const item = writebackRepo.create({
@@ -176,7 +193,7 @@ describe('WritebackService.accept', () => {
       kind: 'new-page',
       targetNodeId: source.id,
       title: 'auth-flow',
-      content: '---\ntitle: auth-flow\n---\n\n# auth-flow\n\n- 源节点：[[源节点]]\n',
+      content: '---\ntitle: "auth-flow"\n---\n\n# auth-flow\n\n- 源节点：[[源节点]]\n',
       sourceSessionId: 'sess_1',
       confidence: 0.75,
     })

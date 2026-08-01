@@ -160,6 +160,22 @@ describe('Settings - Encryption', () => {
     expect(read.writeback).toEqual({ enabled: false })
   })
 
+  it('should fall back to defaults when writeback.enabled is not a boolean', async () => {
+    const { readSettings } = await import('../settings')
+
+    const saved = {
+      version: 1,
+      cliTools: [],
+      apiKeys: [],
+      mcpServers: [],
+      writeback: { enabled: 'false' },
+    }
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify(saved))
+
+    const read = await readSettings()
+    expect(read.writeback).toEqual({ enabled: true }) // 非法结构整体回退默认
+  })
+
   it('should return defaults when settings file does not exist', async () => {
     const { readSettings } = await import('../settings')
 
