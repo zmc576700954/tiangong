@@ -29,6 +29,18 @@ describe('GraphLintService.lint', () => {
     expect(r.issues.some((i) => i.kind === 'dangling-link')).toBe(true)
   })
 
+  it('社区页的断链是噪音被排除；普通页指向社区页同名的断链仍报', () => {
+    nodeRepo.nodes.set('comm', wikiNode('comm', '社区：X', {
+      wikiContent: '成员：[[不存在的成员]]',
+      wikiMeta: { specialPage: 'community' },
+    }))
+    nodeRepo.nodes.set('a', wikiNode('a', 'A', { wikiContent: '见 [[也不存在]]' }))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const dangling = r.issues.filter((i) => i.kind === 'dangling-link')
+    expect(dangling.length).toBe(1)
+    expect(dangling[0].nodeId).toBe('a')
+  })
+
   it('无入边无出边的普通页 → orphan；特殊页不计', () => {
     nodeRepo.nodes.set('a', wikiNode('a', '孤儿页'))
     nodeRepo.nodes.set('idx', wikiNode('idx', 'Graph Index', {

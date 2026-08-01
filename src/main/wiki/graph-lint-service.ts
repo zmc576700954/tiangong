@@ -22,8 +22,13 @@ export class GraphLintService {
     const issues: LintIssue[] = []
     const pages = nodeRepo.listByGraph(graphId).filter((n) => n.type === 'wiki-page')
     const edges = edgeRepo.listByGraph(graphId).filter((e) => e.edgeType === 'wiki-link')
+    // 社区页内容自动生成且不落边，其成员链接的断链报告是噪音（下次重算即再生）
+    const communityPages = new Set(
+      pages.filter((p) => (p.wikiMeta as WikiNodeMeta | undefined)?.specialPage === 'community').map((p) => p.id)
+    )
 
     for (const d of WikiLinkService.findDanglingLinks(graphId, nodeRepo)) {
+      if (communityPages.has(d.fromNodeId)) continue
       issues.push({
         kind: 'dangling-link', severity: 'warning', nodeId: d.fromNodeId,
         message: `「${d.fromTitle}」引用了不存在的页面 [[${d.targetTitle}]]`,

@@ -1,4 +1,5 @@
 import { AlertTriangle, Info, X, RotateCw } from 'lucide-react'
+import type { KeyboardEvent } from 'react'
 import { cn } from '@/lib/utils'
 import type { LintReport, LintIssue } from '@shared/types/wiki'
 
@@ -37,6 +38,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
         </div>
         <div className="flex items-center gap-1">
           <button
+            type="button"
             onClick={onRecompute}
             title="重新计算社区"
             className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
@@ -44,6 +46,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
             <RotateCw className="w-3.5 h-3.5" />
           </button>
           <button
+            type="button"
             onClick={onClose}
             title="关闭"
             className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
@@ -77,6 +80,18 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
                           : 'bg-background',
                       )}
                       onClick={() => issue.nodeId && onNavigate(issue.nodeId)}
+                      {...(issue.nodeId
+                        ? {
+                            role: 'button',
+                            tabIndex: 0,
+                            onKeyDown: (e: KeyboardEvent) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                onNavigate(issue.nodeId!)
+                              }
+                            },
+                          }
+                        : {})}
                     >
                       <div className="flex items-start gap-1.5">
                         <SeverityIcon severity={issue.severity} />

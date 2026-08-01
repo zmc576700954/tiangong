@@ -14,7 +14,7 @@ import type { AgentRunner } from '../../wiki/llm-ingest-service'
 import type { IngestResult, ComputeResult, LintReport, WritebackItem } from '@shared/types/wiki'
 import type { Graph, GraphNode, GraphEdge } from '@shared/types'
 import { NodeRepository } from '../../repositories/node-repository'
-import type { EdgeRepository } from '../../repositories/edge-repository'
+import { EdgeRepository } from '../../repositories/edge-repository'
 import { WritebackRepository } from '../../repositories/writeback-repository'
 import { GraphRepository } from '../../repositories/graph-repository'
 import { generateId } from '../../shared/env'
@@ -850,5 +850,79 @@ describe('registerGraphHandlers writeback（真实内存库）', () => {
 
     const count = (db.prepare('SELECT COUNT(*) AS c FROM writeback_items').get() as { c: number }).c
     expect(count).toBe(0)
+  })
+})
+
+// ---------- wiki:computeCommunities / wiki:lint：真实内存库集成测试 ----------
+describe('registerGraphHandlers wiki 计算（真实内存库）', () => {
+  let handlers: Record<string, (...args: any[]) => Promise<unknown>>
+  let db: Database.Database
+  let nodeRepo: NodeRepository
+  let edgeRepo: EdgeRepository
+
+  function addPage(title: string, wikiContent?: string, extra?: Partial<GraphNode>): GraphNode {
+    return nodeRepo.create({
+      type: 'wiki-page', status: 'confirmed', title,
+      graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 },
+      wikiContent, ...extra,
+    })
+  }
+
+  beforeEach(() => {
+    handlers = {}
+    db = makeWritebackDb()
+    db.prepare(`INSERT INTO graphs (id,name,type,created_at,updated_at) VALUES ('g1','G1','online','2026-01-01','2026-01-01')`).run()
+    nodeRepo = new NodeRepository(db)
+    edgeRepo = new EdgeRepository(db)
+
+    registerGraphHandlers(
+      db,
+      makeTypedHandle(handlers),
+      createGraphServiceStub(),
+      createSnapshotRepoStub(),
+      createAgentManagerStub(),
+    )
+  })
+
+  it('wiki:computeCommunities 返回 ComputeResult 并把 communityId 持久化到 nodes 表', async () => {
+    const a = addPage('页面A', '# A')
+    const b = addPage('页面B', '# B\n\n[[页面A]]')
+    const c = addPage('页面C', '# C\n\n[[页面A]]')
+    edgeRepo.create({ source: b.id, target: a.id, edgeType: 'wiki-link', graphId: 'g1' })
+    edgeRepo.create({ source: c.id, target: a.id, edgeType: 'wiki-link', graphId: 'g1' })
+
+    const result = await handlers['wiki:computeCommunities']({}, 'g1') as ComputeResult
+    expect(result.nodeCount).toBe(3)
+    expect(result.communityCount).toBeGreaterThanOrEqual(1)
+    expect(result.communities).toHaveLength(result.communityCount)
+
+    const rows = db.prepare(
+      `SELECT community_id AS cid, community_level AS lvl FROM nodes WHERE id IN (?, ?, ?)`
+    ).all(a.id, b.id, c.id) as Array<{ cid: string | null; lvl: number | null }>
+    expect(rows).toHaveLength(3)
+    for (const row of rows) {
+      expect(row.cid).not.toBeNull()
+      expect(row.lvl).not.toBeNull()
+    }
+    // 同一社区分配一致
+    expect(new Set(rows.map((r) => r.cid)).size).toBeLessThanOrEqual(result.communityCount)
+  })
+
+  it('wiki:lint 返回断链 + orphan 问题与统计', async () => {
+    addPage('孤儿页', '# 孤儿')
+    const b = addPage('页面B', '# B\n\n参见 [[missing]]。')
+    edgeRepo.create({ source: b.id, target: b.id, edgeType: 'wiki-link', graphId: 'g1' }) // B 有边，不算 orphan
+
+    const result = await handlers['wiki:lint']({}, 'g1') as LintReport
+    const kinds = result.issues.map((i) => i.kind)
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'dangling-link', nodeId: b.id, severity: 'warning' }),
+        expect.objectContaining({ kind: 'orphan', severity: 'info' }),
+      ]),
+    )
+    expect(kinds.filter((k) => k === 'orphan')).toHaveLength(1)
+    expect(result.stats.nodeCount).toBe(2)
+    expect(result.stats.edgeCount).toBe(1)
   })
 })

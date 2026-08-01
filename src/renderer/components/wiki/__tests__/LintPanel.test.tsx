@@ -79,6 +79,30 @@ describe('LintPanel', () => {
     expect(onNavigate).not.toHaveBeenCalled()
   })
 
+  it('navigates via keyboard Enter and Space on a focused row', () => {
+    const onNavigate = vi.fn()
+    const report = makeReport([
+      { kind: 'dangling-link', severity: 'warning', message: 'kbd-row', hint: 'h', nodeId: 'n-kbd' },
+    ])
+
+    render(
+      <LintPanel
+        report={report}
+        onNavigate={onNavigate}
+        onClose={vi.fn()}
+        onRecompute={vi.fn()}
+      />,
+    )
+
+    const row = screen.getByRole('button', { name: /kbd-row/ })
+    row.focus()
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onNavigate).toHaveBeenCalledWith('n-kbd')
+    fireEvent.keyDown(row, { key: ' ' })
+    expect(onNavigate).toHaveBeenCalledTimes(2)
+    expect(onNavigate).toHaveBeenLastCalledWith('n-kbd')
+  })
+
   it('calls onRecompute when clicking the recompute button', () => {
     const onRecompute = vi.fn()
     render(
