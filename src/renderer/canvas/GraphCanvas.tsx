@@ -25,7 +25,7 @@ import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
-import type { LintReport } from '@shared/types/wiki'
+import type { LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { cn } from '../lib/utils'
@@ -42,6 +42,7 @@ import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText } from 'lucide-react'
 import { eventBus, Events } from '../store/eventBus'
 import { LintPanel } from '../components/wiki/LintPanel'
+import { WritebackPanel } from '../components/wiki/WritebackPanel'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -162,6 +163,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [lintReport, setLintReport] = useState<LintReport | null>(null)
   const [lintOpen, setLintOpen] = useState(false)
   const [lintLoading, setLintLoading] = useState(false)
+  const [writebackOpen, setWritebackOpen] = useState(false)
+  const [writebackItems, setWritebackItems] = useState<WritebackItem[]>([])
+  const [writebackCount, setWritebackCount] = useState(0)
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -287,6 +291,25 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     loadGraph(graphId)
   }, [graphId, loadGraph])
+
+  // 刷新写回审核队列（打开面板时、图切换时、采纳/丢弃后调用）
+  const refreshWriteback = useCallback(async () => {
+    try {
+      const [items, count] = await Promise.all([
+        useGraphStore.getState().listWriteback(),
+        useGraphStore.getState().countWriteback(),
+      ])
+      setWritebackItems(items)
+      setWritebackCount(count)
+    } catch (err) {
+      console.error('[GraphCanvas] writeback refresh failed:', err)
+    }
+  }, [])
+
+  // 图加载/切换时刷新一次计数，让菜单角标 (N) 无需打开面板即为准确
+  useEffect(() => {
+    refreshWriteback()
+  }, [graphId, refreshWriteback])
 
   // 生成进度事件监听
   useEffect(() => {
@@ -650,6 +673,35 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
   }, [])
 
+  const handleOpenWriteback = useCallback(async () => {
+    await refreshWriteback()
+    setWritebackOpen(true)
+  }, [refreshWriteback])
+
+  const handleAcceptWriteback = useCallback(async (itemId: string) => {
+    try {
+      await useGraphStore.getState().acceptWriteback(itemId)
+      await refreshWriteback()
+      const gid = useGraphStore.getState().currentGraphId
+      if (gid) await useGraphStore.getState().loadGraph(gid) // 采纳后图已变，刷新画布
+    } catch (err) {
+      console.error('[GraphCanvas] accept writeback failed:', err)
+    }
+  }, [refreshWriteback])
+
+  const handleDiscardWriteback = useCallback(async (itemId: string) => {
+    try {
+      await useGraphStore.getState().discardWriteback(itemId)
+      await refreshWriteback()
+    } catch (err) {
+      console.error('[GraphCanvas] discard writeback failed:', err)
+    }
+  }, [refreshWriteback])
+
+  const handleWritebackNavigate = useCallback((nodeId: string) => {
+    eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
+  }, [])
+
   /** 进入连线模式（由右键菜单触发） */
   const handleStartConnect = useCallback((sourceId: string) => {
     startConnect(sourceId)
@@ -947,6 +999,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onImportWikiFilesLlm={() => handleImportWikiFiles('llm')}
         onLint={handleLint}
         lintLoading={lintLoading}
+        onOpenWriteback={handleOpenWriteback}
+        writebackCount={writebackCount}
         importSummary={importSummary}
         onDismissImportSummary={() => setImportSummary(null)}
       />
@@ -957,6 +1011,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           onNavigate={handleLintNavigate}
           onClose={() => setLintOpen(false)}
           onRecompute={handleRecompute}
+        />
+      )}
+
+      {writebackOpen && (
+        <WritebackPanel
+          items={writebackItems}
+          onAccept={handleAcceptWriteback}
+          onDiscard={handleDiscardWriteback}
+          onNavigate={handleWritebackNavigate}
+          onClose={() => setWritebackOpen(false)}
         />
       )}
 

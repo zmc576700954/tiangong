@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp, Sparkles, AlertTriangle } from 'lucide-react'
+import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp, Sparkles, AlertTriangle, Inbox } from 'lucide-react'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
@@ -33,6 +33,8 @@ interface CanvasOverlayProps {
   onImportWikiFilesLlm?: () => void
   onLint?: () => void
   lintLoading?: boolean
+  onOpenWriteback?: () => void
+  writebackCount?: number
   importSummary?: { text: string; failed: { file: string; error: string }[] } | null
   onDismissImportSummary?: () => void
 }
@@ -64,6 +66,8 @@ export function CanvasOverlay({
   onImportWikiFilesLlm,
   onLint,
   lintLoading,
+  onOpenWriteback,
+  writebackCount,
   importSummary,
   onDismissImportSummary,
 }: CanvasOverlayProps) {
@@ -156,6 +160,17 @@ export function CanvasOverlay({
               <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
               {lintLoading ? '检查中…' : '图检查（Lint）'}
             </button>
+            {onOpenWriteback && (
+              <button
+                type="button"
+                onClick={() => onOpenWriteback()}
+                data-testid="canvas-menu-writeback"
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
+              >
+                <Inbox className="w-3.5 h-3.5 text-sky-600" />
+                审核队列{writebackCount ? ` (${writebackCount})` : ''}
+              </button>
+            )}
           </div>
         </div>
       )}
