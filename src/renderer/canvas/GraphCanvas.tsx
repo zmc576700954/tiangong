@@ -306,8 +306,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [])
 
-  // 图加载/切换时刷新一次计数，让菜单角标 (N) 无需打开面板即为准确
+  // 图加载/切换时刷新一次计数，让菜单角标 (N) 无需打开面板即为准确；
+  // 同时重置面板状态，避免切换后短暂显示上一张图的待审项
   useEffect(() => {
+    setWritebackOpen(false)
+    setWritebackItems([])
+    setWritebackCount(0)
     refreshWriteback()
   }, [graphId, refreshWriteback])
 
