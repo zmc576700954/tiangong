@@ -84,6 +84,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
                         ? {
                             role: 'button',
                             tabIndex: 0,
+                            'aria-label': `定位到节点：${issue.message}`,
                             onKeyDown: (e: KeyboardEvent) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault()

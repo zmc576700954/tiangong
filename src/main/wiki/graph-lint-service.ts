@@ -37,7 +37,11 @@ export class GraphLintService {
     }
 
     const hasEdge = new Set<string>()
-    for (const e of edges) { hasEdge.add(e.source); hasEdge.add(e.target) }
+    // 自环边（页面只链接自己）不构成连通性，不计入 orphan 判定
+    for (const e of edges) {
+      if (e.source === e.target) continue
+      hasEdge.add(e.source); hasEdge.add(e.target)
+    }
     for (const p of pages) {
       if ((p.wikiMeta as WikiNodeMeta | undefined)?.specialPage) continue
       if (!hasEdge.has(p.id)) {

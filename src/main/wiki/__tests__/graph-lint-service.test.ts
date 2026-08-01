@@ -60,6 +60,15 @@ describe('GraphLintService.lint', () => {
     expect(r.issues.some((i) => i.kind === 'orphan')).toBe(false)
   })
 
+  it('只有自环边的页面仍算 orphan', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'A'))
+    edgeRepo.edges.push({ id: 'e1', source: 'a', target: 'a', edgeType: 'wiki-link', graphId: 'g1' })
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const orphans = r.issues.filter((i) => i.kind === 'orphan')
+    expect(orphans.length).toBe(1)
+    expect(orphans[0].nodeId).toBe('a')
+  })
+
   it('单节点社区 → community-singleton', () => {
     nodeRepo.nodes.set('a', wikiNode('a', 'A', { communityId: 'c1', communityLevel: 2 }))
     nodeRepo.nodes.set('b', wikiNode('b', 'B', { communityId: 'c2', communityLevel: 2 }))

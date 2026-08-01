@@ -911,7 +911,9 @@ describe('registerGraphHandlers wiki 计算（真实内存库）', () => {
   it('wiki:lint 返回断链 + orphan 问题与统计', async () => {
     addPage('孤儿页', '# 孤儿')
     const b = addPage('页面B', '# B\n\n参见 [[missing]]。')
-    edgeRepo.create({ source: b.id, target: b.id, edgeType: 'wiki-link', graphId: 'g1' }) // B 有边，不算 orphan
+    // B 通过真实第三页连接，不算 orphan（自环边不构成连通性）
+    const c = addPage('页面C', '# C')
+    edgeRepo.create({ source: b.id, target: c.id, edgeType: 'wiki-link', graphId: 'g1' })
 
     const result = await handlers['wiki:lint']({}, 'g1') as LintReport
     const kinds = result.issues.map((i) => i.kind)
@@ -922,7 +924,17 @@ describe('registerGraphHandlers wiki 计算（真实内存库）', () => {
       ]),
     )
     expect(kinds.filter((k) => k === 'orphan')).toHaveLength(1)
-    expect(result.stats.nodeCount).toBe(2)
+    expect(result.stats.nodeCount).toBe(3)
     expect(result.stats.edgeCount).toBe(1)
+  })
+
+  it('wiki:lint 只有自环边的页面仍算 orphan', async () => {
+    const a = addPage('自环页', '# A')
+    edgeRepo.create({ source: a.id, target: a.id, edgeType: 'wiki-link', graphId: 'g1' })
+
+    const result = await handlers['wiki:lint']({}, 'g1') as LintReport
+    const orphans = result.issues.filter((i) => i.kind === 'orphan')
+    expect(orphans).toHaveLength(1)
+    expect(orphans[0].nodeId).toBe(a.id)
   })
 })
