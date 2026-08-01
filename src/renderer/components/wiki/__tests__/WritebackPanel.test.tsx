@@ -36,12 +36,12 @@ describe('WritebackPanel', () => {
       />,
     )
 
-    expect(screen.getByText('审核队列')).toBeDefined()
-    expect(screen.getByText('待审核 2')).toBeDefined()
-    expect(screen.getByText('追加日志')).toBeDefined()
-    expect(screen.getByText('新页面')).toBeDefined()
-    expect(screen.getByText('追加到日志页')).toBeDefined()
-    expect(screen.getByText('新页面：部署流程')).toBeDefined()
+    expect(screen.getByText('审核队列')).toBeTruthy()
+    expect(screen.getByText('待审核 2')).toBeTruthy()
+    expect(screen.getByText('追加日志')).toBeTruthy()
+    expect(screen.getByText('新页面')).toBeTruthy()
+    expect(screen.getByText('追加到日志页')).toBeTruthy()
+    expect(screen.getByText('新页面：部署流程')).toBeTruthy()
   })
 
   it('calls onAccept / onDiscard with item id when clicking action buttons', () => {
@@ -75,8 +75,8 @@ describe('WritebackPanel', () => {
       />,
     )
 
-    expect(screen.getByText('暂无待审核的写回项')).toBeDefined()
-    expect(screen.getByText('待审核 0')).toBeDefined()
+    expect(screen.getByText('暂无待审核的写回项')).toBeTruthy()
+    expect(screen.getByText('待审核 0')).toBeTruthy()
   })
 
   it('displays confidence as a percentage', () => {
@@ -90,7 +90,21 @@ describe('WritebackPanel', () => {
       />,
     )
 
-    expect(screen.getByText('82%')).toBeDefined()
+    expect(screen.getByText('82%')).toBeTruthy()
+  })
+
+  it('renders 0% when confidence is NaN', () => {
+    render(
+      <WritebackPanel
+        items={[makeItem({ confidence: NaN as unknown as number })]}
+        onAccept={vi.fn()}
+        onDiscard={vi.fn()}
+        onNavigate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('0%')).toBeTruthy()
   })
 
   it('append-log row 定位 button calls onNavigate with targetNodeId', () => {

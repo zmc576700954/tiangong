@@ -30,6 +30,11 @@ function KindBadge({ kind }: { kind: WritebackKind }) {
   )
 }
 
+function formatConfidence(c: number | undefined): string {
+  if (c == null || Number.isNaN(c)) return '0%'
+  return `${Math.round(c * 100)}%`
+}
+
 export function WritebackPanel({ items, onAccept, onDiscard, onNavigate, onClose }: WritebackPanelProps) {
   return (
     <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
@@ -60,7 +65,7 @@ export function WritebackPanel({ items, onAccept, onDiscard, onNavigate, onClose
                   {item.title}
                 </span>
                 <span className="text-[10px] text-muted-foreground shrink-0">
-                  {Math.round(item.confidence * 100)}%
+                  {formatConfidence(item.confidence)}
                 </span>
               </div>
 
@@ -69,7 +74,7 @@ export function WritebackPanel({ items, onAccept, onDiscard, onNavigate, onClose
               </p>
 
               <div className="flex items-center gap-1.5 pt-0.5">
-                {item.kind === 'append-log' && (
+                {item.kind === 'append-log' && item.targetNodeId && (
                   <button
                     type="button"
                     onClick={() => onNavigate(item.targetNodeId)}
