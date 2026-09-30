@@ -42,6 +42,9 @@ export const ErrorCode = {
 
   // Wiki / Markdown
   WIKI_PARSE_ERROR: 'WIKI_PARSE_ERROR',
+
+  // 状态机
+  STATE_TRANSITION_INVALID: 'STATE_TRANSITION_INVALID',
 } as const
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode]
@@ -58,13 +61,20 @@ export class BizGraphError extends Error {
     Object.setPrototypeOf(this, BizGraphError.prototype)
   }
 
-  /** 序列化为普通对象，确保自定义属性能通过 Electron IPC 传输 */
+  /** 序列化为普通对象，确保自定义属性能通过 Electron IPC 传输
+   *
+   * 自 v8 起新增 `details` 通道：子类可通过 `protected details` 字段传入结构化上下文，
+   * 或在 `toJSON()` 中通过 `super.toJSON()` 合并。`createTypedHandle` 在 IPC 边界
+   * 透传 `BizGraphError` 时直接复用本输出，保证 renderer 端 `err.code === '...'` 与
+   * `err.details` 不被吞掉。
+   */
   toJSON(): Record<string, unknown> {
     return {
       name: this.name,
       message: this.message,
       code: this.code,
       stack: this.stack,
+      details: undefined,
     }
   }
 }

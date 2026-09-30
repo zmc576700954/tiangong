@@ -12,7 +12,7 @@ import { BugRepository } from '../repositories/bug-repository'
 import { type SnapshotRepository } from '../repositories/snapshot-repository'
 import type { TypedHandle } from './utils'
 import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } from '@shared/types'
-import { validateTransition, validateBugTransition } from '@shared/state-machine'
+import { validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
 import { GraphComputeService } from '../wiki/graph-compute-service'
@@ -228,12 +228,8 @@ export function registerGraphHandlers(
 
   typedHandle('node:update', async (_, id: string, data: Partial<GraphNode>) => {
     validateNodeUpdate(id, data)
-    if (data.status !== undefined) {
-      const currentStatus = await nodeRepo.getStatus(id)
-      if (currentStatus !== null && currentStatus !== data.status) {
-        validateTransition(currentStatus, data.status)
-      }
-    }
+    // 状态机 per-NodeType 校验由 NodeRepository.update() 内部统一执行
+    // （调 validateNodeTypeTransition）。此处不再重复校验，避免双重源。
     let warnings: string[] = []
     if (data.type && data.metadata) {
       try {

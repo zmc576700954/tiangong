@@ -964,16 +964,22 @@ export class AgentManager {
         }
 
         // placeholder→developing auto-trigger
-        // NODE_STATUS_TRANSITIONS already allows placeholder→developing for feature nodes
+        // 走 NodeRepository.update() 让 status 变更经 per-NodeType 校验
+        // （`validateNodeTypeTransition`）：feature 类型节点合法推进；
+        // 其他类型节点（project/module/process/bug/wiki-page）抛
+        // InvalidStateTransitionError 被下方 try/catch 吞掉，仅记 warn 日志。
+        // 保留 `current.status === 'placeholder'` 幂等检查，避免对已推进节点无效写入。
         if (config.nodeId && config.commandType === 'implement') {
           try {
             const db = getClient()
-            // Single atomic UPDATE — avoids partial state if second step fails
-            const info = db.prepare(
-              "UPDATE nodes SET status = 'developing', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'placeholder'"
-            ).run(config.nodeId)
-            if (info.changes > 0) {
-              this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
+            const { NodeRepository } = await import('../repositories/node-repository')
+            const nodeRepo = new NodeRepository(db)
+            const current = nodeRepo.findById(config.nodeId)
+            if (current && current.status === 'placeholder') {
+              const updated = nodeRepo.update(config.nodeId, { status: 'developing' })
+              if (updated.status === 'developing') {
+                this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
+              }
             }
           } catch (err) {
             logger.warn(`Failed to auto-advance placeholder node ${config.nodeId}:`, err)

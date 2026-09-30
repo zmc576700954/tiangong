@@ -1,5 +1,6 @@
 {
-  "name": "sharp",
+  "name": "sharp-stub",
   "version": "0.0.0",
-  "main": "index.js"
+  "main": "index.js",
+  "private": true
 }

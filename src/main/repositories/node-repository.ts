@@ -7,6 +7,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphNode } from '@shared/types'
 import type { NodeStatus } from '@shared/types'
 import { assertNodeType, assertNodeStatus, assertGraphType } from '@shared/type-guards'
+import { validateNodeTypeTransition } from '@shared/state-machine'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 import { DatabaseError, ErrorCode } from '../errors'
@@ -135,6 +136,18 @@ export class NodeRepository {
 
   update(id: string, data: Partial<GraphNode>): GraphNode {
     const now = new Date().toISOString()
+
+    // 状态机强制校验：若本次更新包含 status，先读出现状（type + status），
+    // 再用 `validateNodeTypeTransition` 按 per-NodeType 矩阵校验。
+    // 这是消除 `agent-manager.ts:968-981` 裸 SQL 旁路后的统一入口：
+    // 所有写 status 的路径都必须经此函数校验后落库。
+    if (data.status !== undefined) {
+      const current = this.findById(id)
+      if (!current) {
+        throw new DatabaseError(`Node not found: ${id}`, ErrorCode.DB_QUERY_FAILED)
+      }
+      validateNodeTypeTransition(current.type, current.status, data.status, id)
+    }
 
     const updates: string[] = []
     const args: (string | number | null)[] = []

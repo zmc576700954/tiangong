@@ -6,7 +6,8 @@ import path from 'node:path'
 import type { IpcMainInvokeEvent } from 'electron'
 import { isPathWithinSync } from '../shared/path-utils'
 import { getPlatformProvider } from '../platform'
-import { IpcError, ErrorCode } from '../errors'
+import { BizGraphError, IpcError, ErrorCode } from '../errors'
+import { InvalidStateTransitionError } from '@shared/state-machine'
 import { ipcContext } from './context'
 import type { IpcMiddlewarePipeline } from './middleware'
 
@@ -204,7 +205,29 @@ export function createTypedHandle(
           handler(event, ...args),
         )
       } catch (err) {
+        // 透传链（顺序很重要）：
+        // 1) 已经是 `IpcError`：原样抛出（保留 code / message / details）
+        // 2) `BizGraphError` 子类（含 `DatabaseError` / `AgentError` / `ScopeGuardError`
+        //    / `SessionNotFoundError` / `AdapterError` / `GitError` 等）：
+        //    用 `err.toJSON()` 重建，普通 Error 字段会被 IPC 结构化克隆丢失
+        // 3) `InvalidStateTransitionError`（来自 `@shared/state-machine`，不继承
+        //    `BizGraphError` 但 `toJSON()` 输出标准 code + details）：
+        //    通过 `err.name` 识别后透传 `toJSON()`
+        // 4) 其他裸 Error / 未知值：原 `IPC_HANDLER_ERROR` 包装（降级路径）
         if (err instanceof IpcError) throw err
+        if (err instanceof BizGraphError) {
+          // 结构化克隆会丢 `Error` 原型与自定义 getter；抛 plain object 让
+          // Electron IPC 把它当数据传给 renderer，renderer 端可读 code/details
+          throw err.toJSON() as never
+        }
+        if (err instanceof InvalidStateTransitionError) {
+          throw err.toJSON() as never
+        }
+        // 兼容按 name 字符串识别的旧式 InvalidStateTransitionError（防御性）
+        if (err instanceof Error && err.name === 'InvalidStateTransitionError'
+          && typeof (err as InvalidStateTransitionError).toJSON === 'function') {
+          throw (err as InvalidStateTransitionError).toJSON() as never
+        }
         throw new IpcError(
           err instanceof Error ? err.message : String(err),
           ErrorCode.IPC_HANDLER_ERROR,

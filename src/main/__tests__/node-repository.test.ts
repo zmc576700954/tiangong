@@ -125,16 +125,69 @@ describe('NodeRepository', () => {
     expect(node.wikiContent).toBe('## Updated')
   })
   it('update modifies node fields', () => {
-    stmt.get.mockReturnValueOnce({
+    // 第一次 stmt.get 给 findById（per-NodeType 校验前的现状读取）
+    // 第二次 stmt.get 给 UPDATE 后的 SELECT * FROM nodes WHERE id = ?
+    const updatedNodeRow = {
       id: 'n1', type: 'feature', status: 'confirmed', title: 'Updated', description: null, acceptance_criteria: null,
       graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
       wiki_content: null, wiki_meta: null,
       content: null, community_summary: null, community_level: null,
       owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
-    })
+    }
+    stmt.get
+      .mockReturnValueOnce({ ...updatedNodeRow, status: 'placeholder' }) // findById 返回 placeholder
+      .mockReturnValueOnce(updatedNodeRow) // UPDATE 后 SELECT 返回
     const node = repo.update('n1', { status: 'confirmed', title: 'Updated' })
     expect(node.status).toBe('confirmed')
     expect(node.title).toBe('Updated')
+  })
+
+  it('update rejects invalid per-NodeType status transition', () => {
+    // project 节点不允许 placeholder→developing（仅 feature 允许）
+    stmt.get.mockReturnValueOnce({
+      id: 'n1', type: 'project', status: 'placeholder', title: 'P1', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null, content: null, community_summary: null, community_level: null,
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    })
+    expect(() => repo.update('n1', { status: 'developing' }))
+      .toThrow(/Invalid state transition.*\(project\).*placeholder.*developing/)
+  })
+
+  it('update allows valid per-NodeType status transition (placeholder→developing on feature)', () => {
+    stmt.get.mockReturnValueOnce({
+      id: 'n1', type: 'feature', status: 'placeholder', title: 'F1', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null, content: null, community_summary: null, community_level: null,
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    })
+    const updated = {
+      id: 'n1', type: 'feature', status: 'developing', title: 'F1', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null, content: null, community_summary: null, community_level: null,
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    }
+    stmt.get.mockReturnValueOnce(updated)
+    const node = repo.update('n1', { status: 'developing' })
+    expect(node.status).toBe('developing')
+  })
+
+  it('update allows no-op same-status update without throwing', () => {
+    // 同状态（from===to）validateNodeTypeTransition 直接 return，不抛错
+    stmt.get.mockReturnValueOnce({
+      id: 'n1', type: 'feature', status: 'developing', title: 'F1', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null, content: null, community_summary: null, community_level: null,
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    })
+    stmt.get.mockReturnValueOnce({
+      id: 'n1', type: 'feature', status: 'developing', title: 'F1', description: null, acceptance_criteria: null,
+      graph_id: 'g1', graph_type: 'online', parent_id: null, rules: null, metadata: null, context_refs: null,
+      wiki_content: null, wiki_meta: null, content: null, community_summary: null, community_level: null,
+      owner_role: null, position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+    })
+    const node = repo.update('n1', { status: 'developing' })
+    expect(node.status).toBe('developing')
   })
 
   it('update persists content, communitySummary and communityLevel', () => {

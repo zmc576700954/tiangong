@@ -3,26 +3,59 @@
  *
  * 定义 NodeStatus 的合法转换路径，防止非法状态变更。
  * 当前状态 → 允许的目标状态列表。
+ *
+ * 自 v8 起新增 `validateNodeTypeTransition(type, from, to)`：基于
+ * `NODE_STATUS_TRANSITIONS[type]` 的 per-NodeType 矩阵校验。比全局
+ * `TRANSITION_RULES` 更严格，是 `NodeRepository.update()` 写 status 时的
+ * 强制校验点。`InvalidStateTransitionError` 在 `toJSON()` 中输出
+ * `code: 'STATE_TRANSITION_INVALID'` 与结构化 `details`，便于 IPC 透传到
+ * renderer（见 `src/main/errors.ts` 的 `STATE_TRANSITION_INVALID` 与
+ * `src/main/ipc/utils.ts` 的 `createTypedHandle`）。
  */
 
-import type { NodeStatus, BugStatus } from './types'
+import type { NodeStatus, BugStatus, NodeType } from './types'
 import { NODE_STATUS_TRANSITIONS } from './types/graph'
 
-/** 非法状态转换错误 */
+/** 非法状态转换错误
+ *
+ * 位于 `@shared/*` 边界，**不**继承 `BizGraphError`（`@shared` 不能 import `@main`
+ * 是 ESLint 硬约束）。但通过 `toJSON()` 输出标准字段集（`code` + `details`），
+ * 让 `createTypedHandle` 在 IPC 层能识别并透传到 renderer。
+ */
 export class InvalidStateTransitionError extends Error {
+  /** 错误码固定字符串，与 `src/main/errors.ts` 的 `ErrorCode.STATE_TRANSITION_INVALID` 同步 */
+  static readonly CODE = 'STATE_TRANSITION_INVALID'
+
   constructor(
     readonly from: string,
     readonly to: string,
     readonly nodeId?: string,
+    readonly nodeType?: string,
   ) {
     super(
-      `Invalid state transition${nodeId ? ` for node ${nodeId}` : ''}: "${from}" → "${to}" is not allowed`,
+      `Invalid state transition${nodeId ? ` for node ${nodeId}` : ''}${nodeType ? ` (${nodeType})` : ''}: "${from}" → "${to}" is not allowed`,
     )
     this.name = 'InvalidStateTransitionError'
   }
 
+  /** IPC 透传用的序列化输出
+   *
+   * `createTypedHandle` 通过 `err.name === 'InvalidStateTransitionError'` 识别后，
+   * 用本输出替换默认包装，保证 renderer 端能拿到 `code` 与 `details.from/to/nodeId/nodeType`。
+   */
   toJSON(): Record<string, unknown> {
-    return { name: this.name, message: this.message, from: this.from, to: this.to, nodeId: this.nodeId }
+    return {
+      name: this.name,
+      message: this.message,
+      code: InvalidStateTransitionError.CODE,
+      stack: this.stack,
+      details: {
+        from: this.from,
+        to: this.to,
+        nodeId: this.nodeId,
+        nodeType: this.nodeType,
+      },
+    }
   }
 }
 
@@ -71,6 +104,42 @@ export function validateTransition(
 ): void {
   if (!canTransition(from, to)) {
     throw new InvalidStateTransitionError(from, to, nodeId)
+  }
+}
+
+/**
+ * Per-NodeType 校验：基于 NODE_STATUS_TRANSITIONS[type] 矩阵
+ *
+ * 与全局 `validateTransition(from, to)` 的差异：
+ * - 全局规则只校验"任意 NodeType 是否允许 from→to"
+ * - per-type 规则额外校验"该 NodeType 是否允许 from→to"
+ *
+ * 例如 `placeholder→developing` 全局规则允许，但仅 `feature` NodeType 允许；
+ * `project` / `module` / `process` / `bug` / `wiki-page` 类型的 placeholder 节点
+ * 走这条路径会被拒。这是 `NodeRepository.update()` 写 status 时的强制校验点。
+ *
+ * 同状态 from===to 直接通过（与 `canTransition` 一致）。
+ *
+ * @param type 节点类型（如 'project' / 'feature' / 'wiki-page'）
+ * @param from 当前状态
+ * @param to 目标状态
+ * @param nodeId 可选，错误信息附加节点 ID
+ */
+export function validateNodeTypeTransition(
+  type: NodeType,
+  from: NodeStatus,
+  to: NodeStatus,
+  nodeId?: string,
+): void {
+  if (from === to) return
+  const allowed = NODE_STATUS_TRANSITIONS[type]
+  if (!allowed) {
+    // 未知 NodeType：保守拒绝
+    throw new InvalidStateTransitionError(from, to, nodeId, type)
+  }
+  const isAllowed = allowed.some((t) => t.from === from && t.to === to)
+  if (!isAllowed) {
+    throw new InvalidStateTransitionError(from, to, nodeId, type)
   }
 }
 

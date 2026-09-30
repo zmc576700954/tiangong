@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> 最后更新：2026-08-01
+> 最后更新：2026-09-30
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -128,6 +128,22 @@ Twelve tables:
 
 **Error Types** (`src/main/errors.ts`) — All errors extend `BizGraphError` with typed `ErrorCode` constants. Domain-specific subclasses: `DatabaseError`, `IpcError`, `AgentError`, `SessionNotFoundError`, `AdapterError`, `ScopeGuardError`.
 
+### Boundaries with Agent CLI
+
+> Inspired by `dsh-synapse`'s "Boundaries with DSH" design philosophy: what BizGraph deliberately does *not* do is part of the system design, not an oversight.
+
+BizGraph 编排 Agent CLI，但严格保持自身职责边界。**不替换** Agent CLI 的任何内部行为；**不污染**下游可复用的优化机制；**不承担**删除语义不属于自己的数据。
+
+- **不替换 Agent CLI 的认证 / 权限检查** — BizGraph 不重新实现 OAuth/API key 验证；凭证始终归 Agent CLI 自己管理。
+- **不修改 system prompt / user request / model request headers / tool schema / provider routing / approval context** — BizGraph 只在调用边界之上组装 scope / memory / 项目上下文，不改写 LLM 看到的输入。
+- **不污染可复用 KV-cache prefix** — 任何注入到 Agent prompt 的内容都必须可缓存复用，不因会话上下文动态变化而失效。
+- **不写入项目工作目录之外的文件** — 所有文件改动由 `ScopeGuard` 兜底；白名单之外拒绝写入。配置 / 缓存 / 数据库归 userData，不侵入项目根。
+- **卸载插件保留数据；删除画布元数据不删除 Agent 会话** — BizGraph 元数据（节点 / 边 / Wiki / Writeback 队列）独立于 Agent CLI 的会话日志。卸载 BizGraph 不删 Agent 自己的 history。
+- **多 Agent CLI 的协议不归一** — BizGraph 适配不同 CLI（Claude Code / Codex / OpenCode / Cline / Kimi / Qwen / Qoder / CodeBuddy / Cursor）的协议差异，不强行标准化；CLI 升级到新协议由各自 AdapterDescriptor 适配。
+- **IPC 路径校验不替代 OS 级沙箱** — 白名单 + `safeRealpath` 是 BizGraph 的内部边界，不是用户的最后防线；Agent CLI 自身的越权行为由其自身 sandbox / permission 模式保证。
+
+违反以上边界的代码改动需要明确标注 + 评审，否则视为隐性合同。
+
 ### Path Aliases
 
 Defined in both `tsconfig.json` and `vite.config.ts`:
@@ -164,3 +180,6 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `devel
 - Adapter metadata lives in `ADAPTER_REGISTRY` (`src/main/adapters/registry.ts`); keep `KNOWN_ADAPTER_NAMES` in `src/main/settings.ts` synchronized when adding adapters.
 - Database schema changes require bumping `CURRENT_SCHEMA_VERSION` in `src/main/database.ts`.
 - State machine transitions are defined in `src/shared/types/graph.ts` (`NODE_STATUS_TRANSITIONS`) and enforced in `src/shared/state-machine.ts` (`TRANSITION_RULES`). Keep them consistent.
+- IPC errors must extend `BizGraphError` and override `toJSON()` to expose structured fields. `createTypedHandle` (`src/main/ipc/utils.ts`) transparently forwards `BizGraphError.toJSON()` to the renderer; raw `Error` instances get wrapped to `IPC_HANDLER_ERROR` and lose custom fields. Custom error subclasses living in `@shared/*` (e.g. `InvalidStateTransitionError`) either extend a minimal `BizGraphError` shim in `src/shared/errors.ts` or expose a `code` field recognized by the IPC layer.
+- FloatingPanel components (`LintPanel` / `WritebackPanel` / future overlays) share the same shell (`absolute top-16 right-4 z-50 w-80 max-h-[70vh]`). When a third overlay lands, extract a shared `<FloatingPanelShell>` component rather than copy-pasting the wrapper.
+- Node status transitions must go through `NodeRepository.update()` which enforces `validateNodeTypeTransition(type, from, to)` internally. Direct `UPDATE nodes SET status = ...` from main-process code outside `node-repository.ts` is an implicit contract and a code-review red flag.
