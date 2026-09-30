@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 9
+const CURRENT_SCHEMA_VERSION = 10
 
 interface TableSchema {
   name: string
@@ -478,6 +478,51 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['id', 'graph_id', 'kind', 'target_node_id', 'title', 'content', 'source_session_id', 'confidence', 'status', 'created_at'],
   },
+  // v10: Recipes（YAML 可分享工作流）
+  // recipes 表存储已加载的 recipe 快照（source_path + yaml_text + 解析后字段）
+  // recipe_runs 表存储每次执行的完整记录（步骤 + 输出 + 状态），便于审计与重放。
+  {
+    name: 'recipes',
+    createSql: `
+      CREATE TABLE recipes (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        description TEXT,
+        tags TEXT,
+        source TEXT NOT NULL CHECK(source IN ('user','project')),
+        source_path TEXT NOT NULL,
+        yaml_text TEXT NOT NULL,
+        inputs_schema TEXT,
+        steps_json TEXT NOT NULL,
+        default_adapter TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'name', 'version', 'source', 'source_path', 'yaml_text', 'steps_json', 'created_at', 'updated_at'],
+  },
+  {
+    name: 'recipe_runs',
+    createSql: `
+      CREATE TABLE recipe_runs (
+        id TEXT PRIMARY KEY,
+        recipe_id TEXT NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+        recipe_version TEXT NOT NULL,
+        session_id TEXT,
+        graph_id TEXT,
+        node_id TEXT,
+        status TEXT NOT NULL CHECK(status IN ('pending','running','succeeded','failed','cancelled')),
+        inputs_json TEXT NOT NULL DEFAULT '{}',
+        steps_json TEXT NOT NULL DEFAULT '[]',
+        outputs_json TEXT NOT NULL DEFAULT '{}',
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      )
+    `,
+    requiredColumns: ['id', 'recipe_id', 'recipe_version', 'status', 'inputs_json', 'steps_json', 'outputs_json', 'started_at'],
+  },
 ]
 
 const INDEX_SQLS: string[] = [
@@ -493,6 +538,11 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_chat_threads_updated_at ON chat_threads(updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_id ON chat_messages(thread_id)`,
   `CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at)`,
+  // v10 recipes
+  `CREATE INDEX IF NOT EXISTS idx_recipes_source ON recipes(source)`,
+  `CREATE INDEX IF NOT EXISTS idx_recipe_runs_recipe_id ON recipe_runs(recipe_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_recipe_runs_status ON recipe_runs(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_recipe_runs_session_id ON recipe_runs(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_items_session_id ON memory_items(session_id)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items(project_id)`,
   `CREATE INDEX IF NOT EXISTS idx_memory_items_kind ON memory_items(kind)`,
@@ -707,4 +757,8 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('writeback_items', 'narrative', 'TEXT')
   addColumnSafe('writeback_items', 'source_node_ids', 'TEXT')
   addColumnSafe('writeback_items', 'target_node_title', 'TEXT')
+
+  // v10：recipes + recipe_runs 由 TABLE_DEFINITIONS 首次创建；增量迁移仅做"已存在老库"补列。
+  // 注：recipes / recipe_runs 是全新表，老 schema 没创建过它们，故 runIncrementalMigrations 不补。
+  // 任何 v<10 → v10 升级由 migrate() 在首次冷启动时通过 TABLE_DEFINITIONS 完整 CREATE。
 }

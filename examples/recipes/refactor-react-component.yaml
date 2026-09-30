@@ -1,0 +1,58 @@
+---
+name: refactor-react-component
+description: Refactor a React component into smaller pieces
+tags: [refactor, react]
+inputs:
+  - name: target-path
+    label: Target file path
+    type: string
+    description: Path to the React component to refactor (relative to workingDirectory)
+    default: file:/data/inputs/target-path.txt
+  - name: max-lines
+    label: Max lines per extracted component
+    type: number
+    default: 80
+---
+
+# Recipe — Refactor React Component
+#
+# 端到端的"读 → 改 → 验证" 模板：先让 explore 子代理摸清上下文，再让
+# implement 子代理拆分文件，最后 review 子代理审查结果。
+# 用户只需要填两个字段即可启动一个跨会话级别的代码任务。
+
+steps:
+  - id: explore-context
+    kind: agent
+    agent_type: explore
+    description: Map the component's surroundings
+    prompt: |
+      Read ${input.target-path} and identify:
+      1. All imports (especially shared hooks/utils/components)
+      2. Props type and where it's consumed
+      3. Internal state, side effects, memo boundaries
+      4. Test file (if any)
+      Return a structured report with file paths and findings.
+  - id: apply-refactor
+    kind: agent
+    agent_type: implement
+    description: Split into smaller components
+    prompt: |
+      Refactor the component at ${input.target-path}. Constraints:
+      - No single extracted component should exceed ${input.max-lines} lines.
+      - Preserve all behavior; do not change props semantics.
+      - Prefer extracting sub-components over re-using useMemo/useCallback.
+      - Update the test file if you change the export shape.
+      Allowed files: src/**/*.{ts,tsx}, tests/**/*.{ts,tsx}
+    allowed_files:
+      - src
+      - tests
+  - id: review
+    kind: agent
+    agent_type: review
+    description: Review the refactor
+    prompt: |
+      Review the diff produced by the refactor step. Check:
+      - Are the extracted components appropriately scoped?
+      - Are prop types correctly inferred or explicitly typed?
+      - Is the original component's test still passing or updated?
+      Return a bullet list of issues with file:line references.

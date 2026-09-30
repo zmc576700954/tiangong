@@ -1285,8 +1285,10 @@ export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
     properties: {
       agent_type: {
         type: 'string' as const,
-        description: 'Which subagent type to spawn.',
-        enum: ['explore', 'implement', 'review', 'fix', 'general'],
+        description:
+          'Which subagent type to spawn. Built-in: explore|implement|review|fix|general. ' +
+          'Or a custom type from settings. Or a Recipe (YAML workflow) via the "recipe:<id>" prefix.',
+        pattern: '^recipe:[a-z][a-z0-9-]*$|^[a-z][a-z0-9-]*$',
       },
       description: {
         type: 'string' as const,

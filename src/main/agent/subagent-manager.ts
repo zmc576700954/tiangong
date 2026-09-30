@@ -35,6 +35,7 @@ import type {
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
+import type { RecipeRunner } from '../recipes/recipe-runner'
 
 /** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
 type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
@@ -76,6 +77,7 @@ export class SubagentManager extends EventEmitter {
   private activeCount = new Map<string, number>() // parentSessionId → running count
   private activeInvocations = new Map<string, ActiveInvocation>()
   private customTypes = new Map<string, AgentTypeDefinition>()
+  private recipeRunner?: RecipeRunner
 
   constructor(
     private agentManager: AgentManager,
@@ -84,6 +86,11 @@ export class SubagentManager extends EventEmitter {
     private timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ) {
     super()
+  }
+
+  /** Inject the RecipeRunner so dispatch_subagent(agent_type="recipe:<id>") routes here. */
+  setRecipeRunner(runner: RecipeRunner): void {
+    this.recipeRunner = runner
   }
 
   /** Register a user-defined agent type (settings). */
@@ -136,6 +143,38 @@ export class SubagentManager extends EventEmitter {
   }
 
   async invoke(args: SubagentInvokeArgs): Promise<SubagentResult> {
+    // Recipe prefix — bypass the type registry and route to RecipeRunner. Recipe runs
+    // are stored in recipe_runs (separate table), so the SubagentInvocationRepository
+    // is not touched here.
+    if (args.agentType.startsWith('recipe:')) {
+      if (!this.recipeRunner) {
+        throw new AgentError(
+          `Recipe runner is not configured; cannot invoke ${args.agentType}`,
+          ErrorCode.AGENT_ADAPTER_ERROR,
+        )
+      }
+      const startedAt = Date.now()
+      const run = await this.recipeRunner.run({
+        recipeId: args.agentType.slice('recipe:'.length).trim(),
+        inputs: this.extractRecipeInputs(args),
+        parentSessionId: args.parentSessionId,
+        nodeId: args.nodeId,
+      })
+      const invocationId = `recipe_${run.id}`
+      this.emitProgress({
+        invocationId,
+        status: run.status === 'succeeded' ? 'completed' : (run.status as 'running' | 'failed' | 'cancelled'),
+        error: run.error ?? undefined,
+      })
+      return {
+        invocationId,
+        resultText: this.formatRecipeResult(run),
+        resultFiles: [],
+        tokensUsed: 0,
+        durationMs: run.finished_at ? run.finished_at - startedAt : Date.now() - startedAt,
+      }
+    }
+
     const def = this.getType(args.agentType)
     if (!def) {
       throw new AgentError(`Unknown agent type: ${args.agentType}`, ErrorCode.AGENT_ADAPTER_ERROR)
@@ -558,5 +597,28 @@ export class SubagentManager extends EventEmitter {
 
   private emitProgress(event: SubagentProgressEvent): void {
     this.emit('progress', event)
+  }
+
+  /**
+   * 把 dispatch_subagent 的 prompt + 隐式输入转换成 RecipeInput 字典。
+   *
+   * 约定：调用方在 prompt 中写 `${input.<name>}` 即可被 RecipeRunner 模板替换。
+   * 这里我们不解析 prompt，只把 prompt 放在 `prompt` 字段——RecipeRunner 会从 Recipe YAML
+   * 中拿到声明然后调超。
+   */
+  private extractRecipeInputs(args: SubagentInvokeArgs): Record<string, string | number | boolean> {
+    return { prompt: args.prompt }
+  }
+
+  private formatRecipeResult(run: { status: string; steps: Array<{ step_name: string; output?: string; error?: string }>; error: string | null }): string {
+    if (run.status !== 'succeeded') {
+      return `[Recipe ${run.status}] ${run.error ?? 'unknown error'}`
+    }
+    return run.steps
+      .map((s) => {
+        const out = s.output ? s.output : s.error ? `(error: ${s.error})` : '(no output)'
+        return `### ${s.step_name}\n${out}`
+      })
+      .join('\n\n')
   }
 }

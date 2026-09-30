@@ -139,6 +139,15 @@ const exposedChannels: (keyof IpcApi)[] = [
   'subagent:cancel',
   'subagent:getResult',
 
+  // Recipes (Phase C)
+  'recipes:list',
+  'recipes:get',
+  'recipes:run',
+  'recipes:cancel',
+  'recipes:refresh',
+  'recipes:listRuns',
+  'recipes:getRun',
+
   // Code Intelligence
   'codeIntel:indexProject',
   'codeIntel:querySymbols',

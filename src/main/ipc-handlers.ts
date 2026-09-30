@@ -96,6 +96,9 @@ import { SubagentInvocationRepository } from './repositories/subagent-invocation
 import { BaseAdapter } from './adapters/base'
 import type { ValidateFsPath } from './ipc/fs'
 import { getPlatformProvider } from './platform'
+import { RecipeManager } from './recipes/recipe-manager'
+import { RecipeRunner } from './recipes/recipe-runner'
+import { registerRecipeHandlers } from './ipc/recipe'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -385,6 +388,35 @@ export async function registerIpcHandlers(): Promise<void> {
   } catch (err) {
     logger.warn('Failed to load customAgentTypes from settings:', err)
   }
+
+  // Phase C: Recipe (YAML shareable workflows) — RecipeManager + RecipeRunner.
+  // RecipeManager loads from <userData>/recipes/ + <projectRoot>/.bizgraph/recipes/.
+  // RecipeRunner routes "recipe:<id>" dispatch_subagent invocations through SubagentManager.
+  const recipeManager = new RecipeManager({ db })
+  const recipeRunner = new RecipeRunner({
+    db,
+    manager: recipeManager,
+    subagentManager,
+    // 异步 getter — RecipeRunner 在 shell 步骤执行时才调用，避免循环引用。
+    getWorkingDirectory: async () => {
+      try {
+        const paths = await graphService.getProjectPaths()
+        return paths.length > 0 ? paths[paths.length - 1] : null
+      } catch {
+        return null
+      }
+    },
+  })
+  subagentManager.setRecipeRunner(recipeRunner)
+  // 初始扫描（userData 目录一定存在；项目目录可能还没有）
+  try {
+    await recipeManager.loadAll()
+    logger.info(`RecipeManager loaded ${recipeManager.list().length} recipes from userData`)
+  } catch (err) {
+    logger.warn('Failed to load initial recipes:', err)
+  }
+  registerRecipeHandlers({ manager: recipeManager, runner: recipeRunner }, typedHandle)
+
   // Phase 4 Task 4: pass SubagentManager to every BaseAdapter-derived adapter
   for (const adapter of registry.list()) {
     if (adapter instanceof BaseAdapter) {

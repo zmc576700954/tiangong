@@ -75,3 +75,4 @@ export type {
 } from './types/ipc'
 
 export * from './types/subagent'
+export * from './types/recipe'

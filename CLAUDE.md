@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> 最后更新：2026-09-30
+> 最后更新：2026-10-01
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -72,7 +72,7 @@ BizGraph is a three-process Electron app:
 
 **Database** (`src/main/database.ts`) — better-sqlite3 stored in the user's app data directory. Schema is defined inline in `migrate()` with `rebuildTableIfNeeded()` for non-destructive migrations and `runIncrementalMigrations()` for additive changes. Uses WAL mode and a schema checksum cache for fast startup.
 
-Twelve tables:
+Fourteen tables:
 - `graphs` — online/dev graphs per project（含 writeback_disabled 项目级开关）
 - `nodes` — graph nodes with type, status, position, metadata
 - `edges` — node relationships（含 wiki-link 类型的 Wiki 关系边）
@@ -85,6 +85,8 @@ Twelve tables:
 - `compact_history` — context compaction events
 - `subagent_invocations` — child agent invocations
 - `writeback_items` — 会话产物回写审核队列（pending/accepted/discarded）
+- `recipes` — Recipe 定义（id / name / version / source / source_path / yaml_text / inputs_schema / tags / 时间戳）
+- `recipe_runs` — Recipe 运行历史（id / recipe_id / session_id / graph_id / node_id / status / inputs / outputs / error / 时间戳）
 
 **Dual Graph Model** — Each project has exactly two graphs: `online` (the product/business blueprint) and `dev` (a developer working copy derived from the online graph). Nodes form a hierarchy: project → module → process → feature/bug. Bug nodes have severity levels (low/medium/high/critical) and status (open/fixed/verified). Dev-graph feature nodes are auto-set to `placeholder` on init; starting implementation auto-advances `placeholder → developing`.
 
@@ -119,6 +121,8 @@ Twelve tables:
 - Persists waterline metadata to `chat_threads` via `CompactHistoryRepository` and `ChatRepository`.
 
 **Subagent Manager** (`src/main/agent/subagent-manager.ts`) — Spawns ephemeral child agent sessions from a parent session's `dispatch_subagent` tool call. Supports built-in agent types (explore, implement, review, fix, general) and user-defined types from settings. Enforces scope strategies (`inherit`, `subset`, `fresh`) and write-intent serialization for overlapping allowed files.
+
+**Recipes** (`src/main/recipes/`) — YAML-declarative shareable workflows loaded from `<userData>/recipes/*.yaml` (user-level) or `<workingDirectory>/.bizgraph/recipes/*.yaml` (project-level); project overrides user. Steps are `agent` (routed via `SubagentManager.invoke` with `recipe:<id>` prefix in `agentType`) or `shell` (executed via `child_process.spawn` with ScopeGuard-equivalent cwd boundary check). Recipes are persisted to `recipes` (metadata + full `yaml_text`) and `recipe_runs` (history). IPC surface: `recipes:list | :get | :run | :cancel | :refresh | :listRuns | :getRun`. UI: `src/renderer/panels/RecipesPanel.tsx`. Inspired by Goose Recipes — declarative workflows over imperative orchestration.
 
 **Repositories** (`src/main/repositories/`) — Data access layer for graphs, nodes, edges, bugs, chat, agent logs, compact history, and subagent invocations.
 
@@ -183,3 +187,4 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `devel
 - IPC errors must extend `BizGraphError` and override `toJSON()` to expose structured fields. `createTypedHandle` (`src/main/ipc/utils.ts`) transparently forwards `BizGraphError.toJSON()` to the renderer; raw `Error` instances get wrapped to `IPC_HANDLER_ERROR` and lose custom fields. Custom error subclasses living in `@shared/*` (e.g. `InvalidStateTransitionError`) either extend a minimal `BizGraphError` shim in `src/shared/errors.ts` or expose a `code` field recognized by the IPC layer.
 - FloatingPanel components (`LintPanel` / `WritebackPanel` / future overlays) share the same shell (`absolute top-16 right-4 z-50 w-80 max-h-[70vh]`). When a third overlay lands, extract a shared `<FloatingPanelShell>` component rather than copy-pasting the wrapper.
 - Node status transitions must go through `NodeRepository.update()` which enforces `validateNodeTypeTransition(type, from, to)` internally. Direct `UPDATE nodes SET status = ...` from main-process code outside `node-repository.ts` is an implicit contract and a code-review red flag.
+- Recipe YAML files are edited on disk only — the renderer has no editor for them. Users edit `<userData>/recipes/*.yaml` or `<workingDirectory>/.bizgraph/recipes/*.yaml` in their own editor and click ↻ in `RecipesPanel` to rescan. Recipe metadata + full `yaml_text` are persisted in the `recipes` table on each scan, so the file is the source of truth at write time but the database is the cache at read time.

@@ -132,8 +132,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             'Spawn an ephemeral subagent for a focused task. Multiple calls may be issued in one turn to run in parallel. The subagent runs with a constrained tool set and file scope; its final output is returned to you as the tool result.',
           inputSchema: {
             agent_type: z
-              .enum(['explore', 'implement', 'review', 'fix', 'general'])
-              .describe('Which subagent type to spawn.'),
+              .string()
+              .regex(/^recipe:[a-z][a-z0-9-]*$|^[a-z][a-z0-9-]*$/, 'agent_type must be a built-in/custom type or "recipe:<id>"')
+              .describe('Built-in/custom subagent type, or "recipe:<id>" for a Recipe workflow.'),
             description: z.string().describe('A 3-5 word label for the task.'),
             prompt: z.string().describe('Full task instructions. The subagent only sees this text.'),
             adapter_name: z.string().optional().describe('Optional adapter override.'),

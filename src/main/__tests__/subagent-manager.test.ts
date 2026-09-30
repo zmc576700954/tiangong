@@ -440,3 +440,160 @@ describe('SubagentManager', () => {
     expect(statuses).toContain('completed')
   })
 })
+
+import Database from 'better-sqlite3'
+
+describe('SubagentManager recipe:<id> dispatch', () => {
+  it('routes recipe:<id> agentType to RecipeRunner', async () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+
+    const db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE recipes (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        description TEXT,
+        tags TEXT,
+        source TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        yaml_text TEXT NOT NULL,
+        inputs_schema TEXT,
+        steps_json TEXT NOT NULL,
+        default_adapter TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE recipe_runs (
+        id TEXT PRIMARY KEY,
+        recipe_id TEXT NOT NULL,
+        recipe_version TEXT NOT NULL,
+        session_id TEXT,
+        graph_id TEXT,
+        node_id TEXT,
+        status TEXT NOT NULL,
+        inputs_json TEXT NOT NULL,
+        steps_json TEXT NOT NULL,
+        outputs_json TEXT NOT NULL,
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      );
+    `)
+
+    // Inject a recipe directly into the in-memory manager cache (bypass file I/O).
+    const { RecipeManager } = await import('../recipes/recipe-manager')
+    const { RecipeRunner } = await import('../recipes/recipe-runner')
+    const mgr_recipes = new RecipeManager({ db })
+    ;(mgr_recipes as unknown as { cache: Map<string, unknown> }).cache.set('demo', {
+      id: 'demo',
+      name: 'Demo',
+      version: '1',
+      steps: [
+        {
+          kind: 'agent',
+          agent_type: 'explore',
+          description: 'Demo step',
+          prompt: 'do demo',
+        },
+      ],
+      source: 'user',
+    })
+
+    const runner = new RecipeRunner({
+      db,
+      manager: mgr_recipes,
+      subagentManager: {
+        invoke: vi.fn().mockResolvedValue({
+          invocationId: 'inner',
+          resultText: 'inner result',
+          resultFiles: [],
+          tokensUsed: 0,
+          durationMs: 0,
+        }),
+      } as any,
+    })
+    mgr.setRecipeRunner(runner)
+
+    const result = await mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'recipe:demo',
+      description: 'Run demo recipe',
+      prompt: 'override prompt',
+    })
+    expect(result.invocationId.startsWith('recipe_')).toBe(true)
+    expect(result.resultText).toContain('inner result')
+  })
+
+  it('throws when recipe runner missing and recipe:<id> invoked', async () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+    // intentionally NOT calling setRecipeRunner
+
+    await expect(
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'recipe:missing',
+        description: 'x',
+        prompt: 'y',
+      }),
+    ).rejects.toThrow(/Recipe runner is not configured/)
+  })
+
+  it('returns failed run when recipe id is unknown', async () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+
+    const db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE recipes (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        version TEXT NOT NULL,
+        description TEXT,
+        tags TEXT,
+        source TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        yaml_text TEXT NOT NULL,
+        inputs_schema TEXT,
+        steps_json TEXT NOT NULL,
+        default_adapter TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE recipe_runs (
+        id TEXT PRIMARY KEY,
+        recipe_id TEXT NOT NULL,
+        recipe_version TEXT NOT NULL,
+        session_id TEXT,
+        graph_id TEXT,
+        node_id TEXT,
+        status TEXT NOT NULL,
+        inputs_json TEXT NOT NULL,
+        steps_json TEXT NOT NULL,
+        outputs_json TEXT NOT NULL,
+        error TEXT,
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      );
+    `)
+    const { RecipeManager } = await import('../recipes/recipe-manager')
+    const { RecipeRunner } = await import('../recipes/recipe-runner')
+    const recipes = new RecipeManager({ db })
+    const runner = new RecipeRunner({ db, manager: recipes })
+    mgr.setRecipeRunner(runner)
+
+    const result = await mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'recipe:does-not-exist',
+      description: 'x',
+      prompt: 'y',
+    })
+    expect(result.invocationId.startsWith('recipe_')).toBe(true)
+    expect(result.resultText).toMatch(/not found/i)
+  })
+})

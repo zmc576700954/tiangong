@@ -22,6 +22,11 @@ import type {
   SubagentResult,
 } from './subagent'
 import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from './wiki'
+import type {
+  RecipeDefinition,
+  RecipeRun,
+  RecipeRunRequest,
+} from './recipe'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -204,6 +209,15 @@ export interface IpcApi {
   'subagent:listInvocations': (parentSessionId: string) => Promise<SubagentInvocation[]>
   'subagent:cancel': (invocationId: string) => Promise<void>
   'subagent:getResult': (invocationId: string) => Promise<SubagentResult | null>
+
+  // Recipes (Phase C — YAML shareable workflows)
+  'recipes:list': () => Promise<RecipeDefinition[]>
+  'recipes:get': (id: string) => Promise<RecipeDefinition | null>
+  'recipes:run': (request: RecipeRunRequest) => Promise<RecipeRun>
+  'recipes:cancel': (runId: string) => Promise<boolean>
+  'recipes:refresh': () => Promise<number>
+  'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
+  'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
 }
 
 /**
