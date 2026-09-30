@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu, dialog } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { registerIpcHandlers, agentManager } from './ipc-handlers'
+import { registerIpcHandlers, agentManager, registry } from './ipc-handlers'
 import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
@@ -276,6 +276,18 @@ app.on('before-quit', async (event) => {
         logger.error('Failed to terminate sessions:', err)
       }
       agentManager.destroy()
+      // Phase B: 显式释放 MCP 连接池 + 清理定时器。
+      // 之前完全依赖 child_process 退出时的 OS 级回收，连接池中的客户端可能
+      // 持有未关闭的 stdio 句柄，导致子进程变成孤儿。dispose() 显式断开并清空池。
+      // 通过鸭子类型判断：仅当适配器实现了 dispose() 才调用，避免破坏其他适配器契约。
+      try {
+        const mcpAdapter = registry.get('mcp')
+        if (mcpAdapter && typeof (mcpAdapter as unknown as { dispose?: () => void }).dispose === 'function') {
+          (mcpAdapter as unknown as { dispose: () => void }).dispose()
+        }
+      } catch (err) {
+        logger.error('Failed to dispose MCP adapter:', err)
+      }
       // 停止 IPC 频率限制清理定时器
       stopCleanup()
       try {

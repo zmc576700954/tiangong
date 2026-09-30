@@ -255,7 +255,16 @@ export const ADAPTER_REGISTRY: AdapterDescriptor[] = [
     ],
     adapterClass: McpAdapter,
     homepage: 'https://modelcontextprotocol.io',
-    capabilities: [AdapterCapability.Streaming, AdapterCapability.Tools, AdapterCapability.MultiTurn, AdapterCapability.LlmCompact, AdapterCapability.SummaryRewrite],
+    capabilities: [
+      AdapterCapability.Streaming,
+      AdapterCapability.Tools,
+      // Phase B: MCP 适配器天然具备 tool_use 循环（executeToolUseLoop），
+      // 与仅声明 Tools 的适配器能力位对齐。
+      AdapterCapability.ToolUse,
+      AdapterCapability.MultiTurn,
+      AdapterCapability.LlmCompact,
+      AdapterCapability.SummaryRewrite,
+    ],
     contextWindow: 200_000,
     defaultCompactStrategy: 'llm',
   },

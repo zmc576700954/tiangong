@@ -118,6 +118,10 @@ function createCoreDependencies() {
 
 const { registry, broadcaster, agentManager, gitAgent } = createCoreDependencies()
 
+// 暴露全局实例供 main/index.ts 在 before-quit hook 中做最终资源清理（dispose MCP 池等）。
+// 仅暴露必要只读入口，避免被外部任意修改。
+export { registry }
+
 // ContextWaterline: Phase 2 实例化，通过 setWaterline 注入到 AgentManager。
 // Phase 3: autoCompactEnabled 设为 true，完善 resolveAndSendCommand 的 threadId 映射逻辑。
 const contextWaterline = new ContextWaterline()

@@ -485,6 +485,14 @@ export interface McpServerConfig {
   command: string
   args: string[]
   enabled: boolean
+  /** Phase B: scope hint for UI; not enforced at runtime (adapters always read userData). */
+  scope?: 'user' | 'project'
+  /** Phase B: extra environment variables passed to the MCP child process. */
+  env?: Record<string, string>
+  /** Phase B: interval (ms) between health probe calls. 0 disables probes. */
+  healthCheckIntervalMs?: number
+  /** Phase B: if true, attempt reconnect after a transient disconnect. */
+  autoReconnect?: boolean
 }
 
 export interface BizGraphSettings {
@@ -540,6 +548,12 @@ export const AdapterCapability = {
   LlmCompact: 'llm-compact',
   SummaryRewrite: 'summary-rewrite',
   SwarmCoordinator: 'swarm-coord',
+  // Phase B: explicit tool_use loop capability, distinct from Tools.
+  // Tools alone only signals that an adapter CAN accept tool_use input.
+  // ToolUse signals that the adapter can autonomously drive the loop:
+  //   send tool_call → receive tool_result → continue until end_turn.
+  // MCP / Claude Code / Codex adapters qualify; one-shot CLI adapters don't.
+  ToolUse: 'toolUse',
 } as const
 export type AdapterCapability = typeof AdapterCapability[keyof typeof AdapterCapability]
 

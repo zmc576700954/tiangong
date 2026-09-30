@@ -28,6 +28,7 @@ import type {
 import { readSettings } from '../settings'
 import { AdapterError, ErrorCode } from '../errors'
 import { estimateTokens } from '../shared/token-utils'
+import { adapterHealthMonitor } from '../agent/adapter-health-monitor'
 
 // ============================================
 // Tool Use 类型定义
@@ -493,10 +494,9 @@ export class McpAdapter extends BaseAdapter {
           })
           continue
         }
-        try {
-          // 优先从连接池复用
-          const pooled = this.connectionPool.get(server.name)
-          if (pooled && pooled.client.isReady()) {
+        // 优先从连接池复用
+        const pooled = this.connectionPool.get(server.name)
+        if (pooled && pooled.client.isReady()) {
             pooled.refCount++
             pooled.lastUsed = Date.now()
             sessionClients.push(pooled.client)
@@ -509,8 +509,13 @@ export class McpAdapter extends BaseAdapter {
           }
           // 池中无可用连接，新建
           const client = new McpClient(server.command, server.args)
-          await client.connect()
-          this.recordCircuitResult(server.name, true)
+          const connectStart = Date.now()
+          try {
+            await client.connect()
+            const connectMs = Date.now() - connectStart
+            // Phase B: 握手成功 → 健康度正向记一次（mcp + server.name 双粒度）
+            adapterHealthMonitor.recordCall(`mcp:${server.name}`, true, connectMs)
+            this.recordCircuitResult(server.name, true)
           // 池槽写入策略：
           // 1. 无现存条目 → 直接写入。
           // 2. 现存条目已无引用（refCount <= 0） → 可安全替换。
@@ -1057,18 +1062,25 @@ export class McpAdapter extends BaseAdapter {
     for (const client of clients) {
       const availableTools = client.getTools()
       if (availableTools.some((t) => t.name === toolCall.name)) {
+        const toolStart = Date.now()
         try {
           const result = await client.callTool(toolCall.name, toolCall.arguments)
+          // Phase B: 工具调用成功 → 健康度正向记一次（按工具名粒度，便于发现单个坏工具）
+          adapterHealthMonitor.recordCall(`mcp-tool:${toolCall.name}`, true, Date.now() - toolStart)
           return {
             toolCallId: toolCall.id,
             content: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
+          // Phase B: 工具调用失败 → 健康度负向记一次（携带 reason 便于聚合面板分类）
+          adapterHealthMonitor.recordCall(`mcp-tool:${toolCall.name}`, false, Date.now() - toolStart, msg)
           return { toolCallId: toolCall.id, content: `Tool error: ${msg}`, isError: true }
         }
       }
     }
+    // Phase B: 工具未在任何 MCP server 上找到，单独记一次失败（不是 server 故障，是路由失败）
+    adapterHealthMonitor.recordCall(`mcp-tool:${toolCall.name}`, false, 0, 'Tool not found')
     return { toolCallId: toolCall.id, content: `Tool not found: ${toolCall.name}`, isError: true }
   }
 

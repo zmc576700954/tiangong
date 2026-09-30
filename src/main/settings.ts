@@ -275,6 +275,17 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
       if (item === null || typeof item !== 'object') return false
       const s = item as Record<string, unknown>
       if (typeof s.name !== 'string' || typeof s.command !== 'string') return false
+      // Phase B: 兼容新增可选字段，老 settings.json 仍可加载。
+      // 不强制类型严格校验（仅拒绝明显错误的形态），避免破坏现有配置。
+      if (s.scope !== undefined && s.scope !== 'user' && s.scope !== 'project') return false
+      if (s.env !== undefined && (s.env === null || typeof s.env !== 'object' || Array.isArray(s.env))) return false
+      if (s.env !== undefined) {
+        for (const v of Object.values(s.env as Record<string, unknown>)) {
+          if (typeof v !== 'string') return false
+        }
+      }
+      if (s.healthCheckIntervalMs !== undefined && (typeof s.healthCheckIntervalMs !== 'number' || !Number.isFinite(s.healthCheckIntervalMs))) return false
+      if (s.autoReconnect !== undefined && typeof s.autoReconnect !== 'boolean') return false
     }
   }
   // adapterPreferences 必须是对象
