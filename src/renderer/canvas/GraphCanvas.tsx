@@ -39,10 +39,11 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
-import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText } from 'lucide-react'
+import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText } from 'lucide-react'
 import { eventBus, Events } from '../store/eventBus'
 import { LintPanel } from '../components/wiki/LintPanel'
 import { WritebackPanel } from '../components/wiki/WritebackPanel'
+import { RecipesPanel } from '../panels/RecipesPanel'
 import { toastSuccess, toastError, toastInfo } from '../lib/toast'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
@@ -178,6 +179,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     for (const it of writebackItems) m.set(it.id, it.title)
     writebackItemsRef.current = m
   }, [writebackItems])
+
+  // ────────────────────────────────────────────────────────────────
+  // Recipes panel state
+  // ────────────────────────────────────────────────────────────────
+  const [recipesOpen, setRecipesOpen] = useState(false)
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -694,6 +700,14 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setWritebackOpen(true)
   }, [refreshWriteback])
 
+  const handleOpenRecipes = useCallback(() => {
+    setRecipesOpen(true)
+  }, [])
+
+  const handleCloseRecipes = useCallback(() => {
+    setRecipesOpen(false)
+  }, [])
+
   const handleAcceptWriteback = useCallback(async (itemId: string) => {
     setWritebackPending((prev) => {
       if (prev.has(itemId)) return prev
@@ -970,6 +984,14 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
               <FileText className="w-3.5 h-3.5" />
               Graph Log
             </button>
+            <button
+              onClick={handleOpenRecipes}
+              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
+              title="Recipes — 可分享的 YAML 工作流"
+            >
+              <ScrollText className="w-3.5 h-3.5" />
+              Recipes
+            </button>
           </div>
         </Panel>
 
@@ -1153,6 +1175,26 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           onClose={() => setWritebackOpen(false)}
           onDismissError={handleDismissWritebackError}
         />
+      )}
+
+      {recipesOpen && (
+        <div className="absolute top-16 right-4 z-50 w-[480px] max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 border-b">
+            <span className="text-sm font-medium">Recipes</span>
+            <button
+              type="button"
+              onClick={handleCloseRecipes}
+              title="关闭"
+              aria-label="关闭 Recipes 面板"
+              className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <RecipesPanel />
+          </div>
+        </div>
       )}
 
       {contextPopover && (
