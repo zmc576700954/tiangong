@@ -43,6 +43,7 @@ import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileTe
 import { eventBus, Events } from '../store/eventBus'
 import { LintPanel } from '../components/wiki/LintPanel'
 import { WritebackPanel } from '../components/wiki/WritebackPanel'
+import { toastSuccess, toastError, toastInfo } from '../lib/toast'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -166,6 +167,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [writebackOpen, setWritebackOpen] = useState(false)
   const [writebackItems, setWritebackItems] = useState<WritebackItem[]>([])
   const [writebackCount, setWritebackCount] = useState(0)
+  /** 正在处理的 itemId 集合（in-flight 守卫）。防止重复点击并让 UI 显示「处理中」。 */
+  const [writebackPending, setWritebackPending] = useState<Set<string>>(new Set())
+  /** 最近一次操作的错误信息；用于面板顶部 banner。null 表示无错误。 */
+  const [writebackLastError, setWritebackLastError] = useState<string | null>(null)
+  /** itemId → title 的查找表，给 toast 提示用（避免在异步回调里读到陈旧 closure） */
+  const writebackItemsRef = useRef<Map<string, string>>(new Map())
+  useEffect(() => {
+    const m = new Map<string, string>()
+    for (const it of writebackItems) m.set(it.id, it.title)
+    writebackItemsRef.current = m
+  }, [writebackItems])
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -683,24 +695,134 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [refreshWriteback])
 
   const handleAcceptWriteback = useCallback(async (itemId: string) => {
+    setWritebackPending((prev) => {
+      if (prev.has(itemId)) return prev
+      const next = new Set(prev)
+      next.add(itemId)
+      return next
+    })
+    setWritebackLastError(null)
     try {
       await useGraphStore.getState().acceptWriteback(itemId)
       await refreshWriteback()
       const gid = useGraphStore.getState().currentGraphId
       if (gid) await useGraphStore.getState().loadGraph(gid) // 采纳后图已变，刷新画布
+      const title = writebackItemsRef.current.get(itemId) ?? itemId
+      toastSuccess('已采纳', title)
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[GraphCanvas] accept writeback failed:', err)
+      setWritebackLastError(`采纳失败：${msg}`)
+      toastError('采纳失败', msg)
+    } finally {
+      setWritebackPending((prev) => {
+        const next = new Set(prev)
+        next.delete(itemId)
+        return next
+      })
     }
   }, [refreshWriteback])
 
   const handleDiscardWriteback = useCallback(async (itemId: string) => {
+    setWritebackPending((prev) => {
+      if (prev.has(itemId)) return prev
+      const next = new Set(prev)
+      next.add(itemId)
+      return next
+    })
+    setWritebackLastError(null)
     try {
       await useGraphStore.getState().discardWriteback(itemId)
       await refreshWriteback()
+      toastInfo('已丢弃', undefined)
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
       console.error('[GraphCanvas] discard writeback failed:', err)
+      setWritebackLastError(`丢弃失败：${msg}`)
+      toastError('丢弃失败', msg)
+    } finally {
+      setWritebackPending((prev) => {
+        const next = new Set(prev)
+        next.delete(itemId)
+        return next
+      })
     }
   }, [refreshWriteback])
+
+  /** 串行处理一批 item；任一失败立即停下，已成功的保留。 */
+  const handleBatchAcceptWriteback = useCallback(async (itemIds: string[]) => {
+    let successCount = 0
+    let firstError: string | null = null
+    for (const id of itemIds) {
+      try {
+        setWritebackPending((prev) => {
+          const next = new Set(prev)
+          next.add(id)
+          return next
+        })
+        await useGraphStore.getState().acceptWriteback(id)
+        successCount += 1
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        firstError = firstError ?? msg
+        console.error('[GraphCanvas] batch accept failed for', id, err)
+      } finally {
+        setWritebackPending((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    }
+    await refreshWriteback()
+    if (successCount > 0) {
+      const gid = useGraphStore.getState().currentGraphId
+      if (gid) await useGraphStore.getState().loadGraph(gid)
+      toastSuccess(`批量采纳完成`, `${successCount}/${itemIds.length} 项`)
+    }
+    if (firstError) {
+      setWritebackLastError(`批量采纳部分失败：${firstError}`)
+      toastError('批量采纳失败', firstError)
+    }
+  }, [refreshWriteback])
+
+  const handleBatchDiscardWriteback = useCallback(async (itemIds: string[]) => {
+    let successCount = 0
+    let firstError: string | null = null
+    for (const id of itemIds) {
+      try {
+        setWritebackPending((prev) => {
+          const next = new Set(prev)
+          next.add(id)
+          return next
+        })
+        await useGraphStore.getState().discardWriteback(id)
+        successCount += 1
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        firstError = firstError ?? msg
+        console.error('[GraphCanvas] batch discard failed for', id, err)
+      } finally {
+        setWritebackPending((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+    }
+    await refreshWriteback()
+    if (successCount > 0) {
+      toastInfo(`批量丢弃完成`, `${successCount}/${itemIds.length} 项`)
+    }
+    if (firstError) {
+      setWritebackLastError(`批量丢弃部分失败：${firstError}`)
+      toastError('批量丢弃失败', firstError)
+    }
+  }, [refreshWriteback])
+
+  const handleDismissWritebackError = useCallback(() => {
+    setWritebackLastError(null)
+  }, [])
 
   const handleWritebackNavigate = useCallback((nodeId: string) => {
     eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
@@ -1021,10 +1143,15 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       {writebackOpen && (
         <WritebackPanel
           items={writebackItems}
+          pendingIds={writebackPending}
+          lastError={writebackLastError}
           onAccept={handleAcceptWriteback}
           onDiscard={handleDiscardWriteback}
+          onBatchAccept={handleBatchAcceptWriteback}
+          onBatchDiscard={handleBatchDiscardWriteback}
           onNavigate={handleWritebackNavigate}
           onClose={() => setWritebackOpen(false)}
+          onDismissError={handleDismissWritebackError}
         />
       )}
 

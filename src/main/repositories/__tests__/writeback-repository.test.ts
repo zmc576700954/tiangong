@@ -16,6 +16,7 @@ function makeDb() {
       kind TEXT NOT NULL CHECK(kind IN ('append-log','new-page')),
       target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       title TEXT NOT NULL, content TEXT NOT NULL,
+      details TEXT, narrative TEXT, source_node_ids TEXT, target_node_title TEXT,
       source_session_id TEXT NOT NULL,
       confidence REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
@@ -82,5 +83,67 @@ describe('WritebackRepository', () => {
     const nodeCount = (db.prepare('SELECT COUNT(*) AS c FROM nodes').get() as { c: number }).c
     expect(nodeCount).toBe(1)
     expect(repo.listPending('g1')).toHaveLength(0)
+  })
+
+  describe('v9 structured fields', () => {
+    it('create + listPending round-trips details / narrative / sourceNodeIds / targetNodeTitle', () => {
+      repo.create({
+        graphId: 'g1',
+        kind: 'new-page',
+        targetNodeId: 'n1',
+        title: 'auth-flow',
+        content: '# auth-flow',
+        details: undefined, // new-page 不需要 details
+        narrative: undefined,
+        sourceNodeIds: ['n1', 'n2'],
+        targetNodeTitle: '源节点',
+        sourceSessionId: 'sess_v9',
+        confidence: 0.75,
+      })
+      const items = repo.listPending('g1')
+      expect(items).toHaveLength(1)
+      const it = items[0]
+      expect(it.details).toBeUndefined()
+      expect(it.narrative).toBeUndefined()
+      expect(it.sourceNodeIds).toEqual(['n1', 'n2'])
+      expect(it.targetNodeTitle).toBe('源节点')
+    })
+
+    it('append-log 写入 details / narrative 后可读回', () => {
+      const created = repo.create({
+        graphId: 'g1',
+        kind: 'append-log',
+        targetNodeId: 'n1',
+        title: 'T',
+        content: '## 会话日志',
+        details: '### 子项\n\n细节',
+        narrative: '会话叙事 TL;DR',
+        sourceSessionId: 's',
+        confidence: 0.5,
+      })
+      const fetched = repo.findById(created.id)!
+      expect(fetched.details).toBe('### 子项\n\n细节')
+      expect(fetched.narrative).toBe('会话叙事 TL;DR')
+    })
+
+    it('corrupt source_node_ids JSON 降级为 undefined 不抛异常', () => {
+      db.prepare(`INSERT INTO writeback_items
+        (id, graph_id, kind, target_node_id, title, content, source_node_ids,
+         source_session_id, confidence, status, created_at, resolved_at)
+        VALUES ('w_corrupt','g1','append-log','n1','T','C','not-json',
+                's',0.5,'pending','2026-01-01',NULL)`).run()
+      const it = repo.findById('w_corrupt')!
+      expect(it.sourceNodeIds).toBeUndefined()
+    })
+
+    it('空数组的 source_node_ids 也视为 undefined', () => {
+      repo.create({
+        graphId: 'g1', kind: 'append-log', targetNodeId: 'n1',
+        title: 'T', content: 'C', sourceNodeIds: [],
+        sourceSessionId: 's', confidence: 0.5,
+      })
+      const items = repo.listPending('g1')
+      expect(items[0].sourceNodeIds).toBeUndefined()
+    })
   })
 })

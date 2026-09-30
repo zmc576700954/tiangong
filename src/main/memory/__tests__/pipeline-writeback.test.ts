@@ -74,6 +74,7 @@ function makeDb() {
       target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       content TEXT NOT NULL,
+      details TEXT, narrative TEXT, source_node_ids TEXT, target_node_title TEXT,
       source_session_id TEXT NOT NULL,
       confidence REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),

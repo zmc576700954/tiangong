@@ -108,6 +108,14 @@ export interface WritebackItem {
   targetNodeId: string
   title: string
   content: string
+  /** 仅 append-log：详情折叠块正文（不含 `<details>` 标签）。前端用 `<details>` 包裹渲染。 */
+  details?: string
+  /** 仅 append-log：会话叙事导言（不含 ## 标题、不含详情折叠）。 */
+  narrative?: string
+  /** 仅 new-page：从这些 source node 聚类出来的概念来源。 */
+  sourceNodeIds?: string[]
+  /** 仅 new-page：源节点标题（采纳时连边用的源节点的标题快照）。 */
+  targetNodeTitle?: string
   sourceSessionId: string
   confidence: number
   status: WritebackStatus

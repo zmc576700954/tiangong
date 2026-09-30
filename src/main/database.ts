@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 8
+const CURRENT_SCHEMA_VERSION = 9
 
 interface TableSchema {
   name: string
@@ -465,6 +465,10 @@ const TABLE_SCHEMAS: TableSchema[] = [
         target_node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         title TEXT NOT NULL,
         content TEXT NOT NULL,
+        details TEXT,
+        narrative TEXT,
+        source_node_ids TEXT,
+        target_node_title TEXT,
         source_session_id TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
@@ -695,4 +699,12 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER', 'NULL')
+
+  // v9：writeback_items 拆分 details / narrative / source_node_ids / target_node_title
+  // 旧 content 已内嵌 <details> 折叠块；新 schema 让前端按字段渲染，
+  // 旧 item.content 仍可读（旧数据向前兼容），新生成的写入新字段。
+  addColumnSafe('writeback_items', 'details', 'TEXT')
+  addColumnSafe('writeback_items', 'narrative', 'TEXT')
+  addColumnSafe('writeback_items', 'source_node_ids', 'TEXT')
+  addColumnSafe('writeback_items', 'target_node_title', 'TEXT')
 }

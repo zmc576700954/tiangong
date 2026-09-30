@@ -6,6 +6,7 @@ import { ErrorBoundary } from './components/ui/ErrorBoundary'
 import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
+import { ToastContainer } from './lib/toast'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 const RightPanel = lazy(() => import('./panels/RightPanel').then(m => ({ default: m.RightPanel })))
@@ -108,6 +109,7 @@ function App() {
 
   return (
     <ErrorBoundary>
+      <ToastContainer />
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* Left directory tree */}
         {!leftCollapsed && (

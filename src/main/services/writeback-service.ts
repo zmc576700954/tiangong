@@ -53,6 +53,20 @@ function sanitizeLinkTitle(s: string): string {
   return normalizeWikiTitle(s.replace(/[[\]|]/g, ''))
 }
 
+/** append-log 结构化输出（v9 拆分） */
+interface AppendLogOutput {
+  content: string
+  details: string
+  narrative: string
+}
+
+/** new-page 结构化输出（v9 拆分） */
+interface NewPageOutput {
+  content: string
+  sourceNodeIds: string[]
+  targetNodeTitle: string
+}
+
 export class WritebackService {
   constructor(
     private readonly repo: WritebackRepoLike,
@@ -72,24 +86,31 @@ export class WritebackService {
 
     const safeNodeTitle = stripNewlines(input.nodeTitle)
     const created: WritebackItem[] = []
+
+    const appendLog = this.buildAppendLog(top, safeConfidence, now)
     created.push(this.repo.create({
       graphId: input.graphId,
       kind: 'append-log',
       targetNodeId: input.nodeId,
       title: `会话日志 · ${now.toISOString().slice(0, 10)}`,
-      content: this.buildAppendLog(top, safeConfidence, now),
+      content: appendLog.content,
+      details: appendLog.details,
+      narrative: appendLog.narrative,
       sourceSessionId: input.sessionId,
       confidence: safeConfidence,
     }))
 
     for (const cluster of this.clusterNovelConcepts(top, input.graphId)) {
       const concept = stripNewlines(cluster.concept)
+      const newPage = this.buildNewPage(concept, cluster.memories, safeNodeTitle)
       created.push(this.repo.create({
         graphId: input.graphId,
         kind: 'new-page',
         targetNodeId: input.nodeId, // 源节点 id，采纳时连边用
         title: concept,
-        content: this.buildNewPage(concept, cluster.memories, safeNodeTitle),
+        content: newPage.content,
+        sourceNodeIds: newPage.sourceNodeIds,
+        targetNodeTitle: newPage.targetNodeTitle,
         sourceSessionId: input.sessionId,
         confidence: safeConfidence,
       }))
@@ -175,13 +196,23 @@ export class WritebackService {
     })
   }
 
+  /**
+   * 构造 append-log 写回项的三段内容：
+   * - content：始终可见（## 标题 + 来源 meta + bullets 摘要）
+   * - details：折叠详情（H3 标题 + narrative + facts）——前端用 `<details>` 包裹渲染
+   * - narrative：仅 narrative 文本的连接（不包含 H3/facts），便于纯文本摘要展示
+   *
+   * 旧版「<details><summary>详情</summary>...</details>」内嵌 content 已废弃，
+   * 拆分后 content 永远不嵌 markdown HTML 结构。
+   */
   private buildAppendLog(
     top: Array<Omit<MemoryItem, 'id'>>,
     confidence: number,
     now: Date,
-  ): string {
+  ): AppendLogOutput {
     const adapter = top[0]?.adapter_name ?? 'agent'
     const bullets = top.map((m) => `- ${escMd(m.title)}`).join('\n')
+    const narrative = top.map((m) => escMd(m.narrative)).join('\n\n')
     const detail = top
       .map((m) => {
         const facts = m.facts.length
@@ -190,7 +221,8 @@ export class WritebackService {
         return `### ${escMd(m.title)}\n\n${escMd(m.narrative)}${facts}`
       })
       .join('\n\n')
-    return [
+
+    const content = [
       '',
       `## 会话日志 · ${now.toISOString().slice(0, 16).replace('T', ' ')}`,
       '',
@@ -198,23 +230,27 @@ export class WritebackService {
       '',
       bullets,
       '',
-      '<details><summary>详情</summary>',
-      '',
-      detail,
-      '',
-      '</details>',
-      '',
     ].join('\n')
+
+    return { content, details: detail, narrative }
   }
 
+  /**
+   * 构造 new-page 写回项：
+   * - content：frontmatter + H1 + 源 wikilink + bullet list
+   * - sourceNodeIds：本簇记忆所属节点的 id 列表（去重）。当前实现是单节点
+   *   （clusterNovelConcepts 只在单 session 的 memories 中聚类），但保留数组结构
+   *   以便未来跨节点聚类时无缝升级。
+   * - targetNodeTitle：源节点标题的快照，采纳时即使用户重命名/删除了源节点，UI 仍可展示。
+   */
   private buildNewPage(
     concept: string,
     memories: Array<Omit<MemoryItem, 'id'>>,
     safeNodeTitle: string,
-  ): string {
+  ): NewPageOutput {
     const list = memories.map((m) => `- ${escMd(m.title)}`).join('\n')
     const wikilinkTarget = sanitizeLinkTitle(safeNodeTitle)
-    return [
+    const content = [
       '---',
       `title: "${escYaml(concept)}"`,
       '---',
@@ -228,6 +264,12 @@ export class WritebackService {
       list,
       '',
     ].join('\n')
+
+    const sourceNodeIds = Array.from(
+      new Set(memories.map((m) => m.node_id).filter((id): id is string => typeof id === 'string' && id.length > 0)),
+    )
+
+    return { content, sourceNodeIds, targetNodeTitle: safeNodeTitle }
   }
 
   private clusterNovelConcepts(
