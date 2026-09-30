@@ -54,6 +54,7 @@ export type {
   TokenEconomics, AgentMode, AgentModeConfig, OutputHealth,
   CompactStrategy, CompactTrigger, CompactResult, CompactHistoryEntry,
   ContextState, TerminationReason,
+  AdapterHealthMetrics, AdapterHealthScore,  // D4 健康度面板
 } from './types/agent'
 
 export {

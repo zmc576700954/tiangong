@@ -15,6 +15,7 @@ import type {
   SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
   CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
+  AdapterHealthScore,                                                    // D4 健康度面板
 } from './agent'
 import type {
   AgentTypeDefinition,
@@ -79,6 +80,8 @@ export interface IpcApi {
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
   'agent:getAdapterMarketplace': () => Promise<AdapterMarketplaceItem[]>
+  // D4: 健康度面板 — 返回所有已记录的适配器健康评分（无样本时不返回）
+  'agent:getHealth': () => Promise<AdapterHealthScore[]>
   'agent:verify': (params: {
     nodeId: string
     acceptanceCriteria: string[]

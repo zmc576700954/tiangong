@@ -535,6 +535,40 @@ export interface AdapterPreferences {
   forceAdapter?: boolean
 }
 
+/**
+ * 适配器健康度指标（运行时累计，由 AdapterHealthMonitor 维护）。
+ * 类型在 shared/types 中定义为渲染端可见，main 侧通过 @shared/types 引用同一份定义。
+ */
+export interface AdapterHealthMetrics {
+  /** 总调用次数 */
+  totalCalls: number
+  /** 成功次数 */
+  successCalls: number
+  /** 失败次数 */
+  failedCalls: number
+  /** 平均响应时间（毫秒） */
+  avgResponseTimeMs: number
+  /** 最近错误信息（最多保留 5 条） */
+  recentErrors: string[]
+  /** 最后调用时间 */
+  lastCalledAt: number
+}
+
+/** 适配器健康评分结果 — D4 健康度面板数据源 */
+export interface AdapterHealthScore {
+  adapterName: string
+  /** 综合健康评分 0-100 */
+  healthScore: number
+  /** 成功率百分比 */
+  successRate: number
+  /** 平均响应时间 */
+  avgResponseTimeMs: number
+  /** 状态：healthy | degraded | unhealthy | unknown（零调用样本） */
+  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+  /** 原始指标 */
+  metrics: AdapterHealthMetrics
+}
+
 /** 适配器能力枚举 */
 export const AdapterCapability = {
   Resume: 'resume',
