@@ -17,6 +17,7 @@ import type {
   BizGraphSettings,
   AdapterPreferences,
 } from '@shared/types'
+import type { A2AServerConfig, A2ARemoteAgent } from '@shared/types/a2a'
 import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { getPlatformProvider } from './platform'
 import { createLogger } from './shared/logger'
@@ -45,7 +46,7 @@ function restrictFileAcl(filePath: string): void {
 }
 
 // Re-export types for backward compatibility
-export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences }
+export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences, A2AServerConfig, A2ARemoteAgent }
 
 const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
   defaultAdapter: 'claude-code',
@@ -117,26 +118,37 @@ const API_KEY_PREFIX_FALLBACK = 'fbk:'
 
 /** 当 safeStorage 不可用时，使用基于随机盐 + 机器标识的密钥进行 AES 加密 */
 let cachedFallbackKey: Buffer | null = null
+let pendingFallbackKey: Promise<Buffer> | null = null
 async function getFallbackKey(): Promise<Buffer> {
   if (cachedFallbackKey) return cachedFallbackKey
-  const saltPath = path.join(app.getPath('userData'), '.bizgraph-salt')
-  let salt: Buffer
-  try {
-    salt = await fs.readFile(saltPath)
-    if (salt.length < 16) throw new Error('salt too short')
-    // 历史遗留的盐文件（旧版本升级或外部拷贝）可能从未被收紧 ACL。
-    // 幂等加固：aclApplied Set 保证同一文件每进程只调用一次 icacls。
-    restrictFileAcl(saltPath)
-  } catch {
-    salt = randomBytes(32)
-    await fs.writeFile(saltPath, salt, { mode: 0o600 })
-    // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）
-    restrictFileAcl(saltPath)
+  // Serialize concurrent calls so that two encryptApiKey calls in the same
+  // Promise.all batch don't both see "salt missing" and both try to write a
+  // different random salt — the second writer would clobber the first and
+  // subsequent decrypts would fail with bad-decrypt.
+  if (!pendingFallbackKey) {
+    pendingFallbackKey = (async () => {
+      const saltPath = path.join(app.getPath('userData'), '.bizgraph-salt')
+      let salt: Buffer
+      try {
+        salt = await fs.readFile(saltPath)
+        if (salt.length < 16) throw new Error('salt too short')
+        // 历史遗留的盐文件（旧版本升级或外部拷贝）可能从未被收紧 ACL。
+        // 幂等加固：aclApplied Set 保证同一文件每进程只调用一次 icacls。
+        restrictFileAcl(saltPath)
+      } catch {
+        salt = randomBytes(32)
+        await fs.writeFile(saltPath, salt, { mode: 0o600 })
+        // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）
+        restrictFileAcl(saltPath)
+      }
+      // 密钥派生：userData 路径 + 随机盐，确保每台安装有唯一密钥
+      const keyMaterial = app.getPath('userData') + ':' + salt.toString('base64')
+      const key = scryptSync(keyMaterial, salt, 32)
+      cachedFallbackKey = key
+      return key
+    })()
   }
-  // 密钥派生：userData 路径 + 随机盐，确保每台安装有唯一密钥
-  const keyMaterial = app.getPath('userData') + ':' + salt.toString('base64')
-  cachedFallbackKey = scryptSync(keyMaterial, salt, 32)
-  return cachedFallbackKey
+  return pendingFallbackKey
 }
 
 async function encryptFallback(plain: string): Promise<string> {
@@ -220,6 +232,14 @@ export function needsMigration(encrypted: string): boolean {
   return !encrypted.startsWith(API_KEY_PREFIX_ENC) && !encrypted.startsWith(API_KEY_PREFIX_FALLBACK) && encrypted !== ''
 }
 
+/**
+ * 加密 settings 中的所有敏感字段：
+ *   - apiKeys[].key
+ *   - a2aServer.apiKey         (Phase D9)
+ *   - a2a.remoteAgents[].apiKey (Phase D9)
+ *
+ * `encryptApiKey` 同时支持 safeStorage 与 AES fallback（见上文）。
+ */
 async function encryptSettings(settings: BizGraphSettings): Promise<BizGraphSettings> {
   return {
     ...settings,
@@ -227,6 +247,23 @@ async function encryptSettings(settings: BizGraphSettings): Promise<BizGraphSett
       ...k,
       key: await encryptApiKey(k.key),
     }))),
+    a2aServer: settings.a2aServer
+      ? {
+          ...settings.a2aServer,
+          apiKey: await encryptApiKey(settings.a2aServer.apiKey),
+        }
+      : undefined,
+    a2a: settings.a2a
+      ? {
+          ...settings.a2a,
+          remoteAgents: await Promise.all(
+            settings.a2a.remoteAgents.map(async (ra) => ({
+              ...ra,
+              apiKey: ra.apiKey !== undefined ? await encryptApiKey(ra.apiKey) : undefined,
+            })),
+          ),
+        }
+      : undefined,
   }
 }
 
@@ -237,6 +274,23 @@ async function decryptSettings(settings: BizGraphSettings): Promise<BizGraphSett
       ...k,
       key: await decryptApiKey(k.key),
     }))),
+    a2aServer: settings.a2aServer
+      ? {
+          ...settings.a2aServer,
+          apiKey: await decryptApiKey(settings.a2aServer.apiKey),
+        }
+      : undefined,
+    a2a: settings.a2a
+      ? {
+          ...settings.a2a,
+          remoteAgents: await Promise.all(
+            settings.a2a.remoteAgents.map(async (ra) => ({
+              ...ra,
+              apiKey: ra.apiKey !== undefined ? await decryptApiKey(ra.apiKey) : undefined,
+            })),
+          ),
+        }
+      : undefined,
   }
 }
 
@@ -245,6 +299,38 @@ const SETTINGS_FILENAME = 'settings.json'
 let cachedSettings: BizGraphSettings | null = null
 let cachedAt = 0
 const CACHE_TTL_MS = 30_000
+
+// ============================================
+// Settings 变更事件（Phase D9 引入，供 A2A Server / Client 热重载订阅）
+// ============================================
+
+/** onChange handler 签名：handler(prev, next) 在 writeSettings 成功后同步触发。
+ *  异常由 fire 函数内部捕获并 logger.warn，避免单个 handler 崩溃导致后续 handler 失联。 */
+export type SettingsChangeHandler = (prev: BizGraphSettings, next: BizGraphSettings) => void
+
+const changeHandlers = new Set<SettingsChangeHandler>()
+
+/** 订阅 settings 变更。返回 unsubscribe 函数。 */
+export function onChange(handler: SettingsChangeHandler): () => void {
+  changeHandlers.add(handler)
+  return () => { changeHandlers.delete(handler) }
+}
+
+/** 手动失效内存缓存，强制下次 readSettings 从磁盘重读。 */
+export function invalidateSettingsCache(): void {
+  cachedSettings = null
+  cachedAt = 0
+}
+
+function fireChange(prev: BizGraphSettings, next: BizGraphSettings): void {
+  for (const handler of changeHandlers) {
+    try {
+      handler(prev, next)
+    } catch (err) {
+      logger.warn('Settings change handler threw:', err)
+    }
+  }
+}
 
 /**
  * 轻量级 JSON 结构验证：确保解析后的对象符合 BizGraphSettings 基本结构，
@@ -303,6 +389,40 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     const wb = obj.writeback as Record<string, unknown>
     if (wb.enabled !== undefined && typeof wb.enabled !== 'boolean') return false
   }
+  // Phase D9: a2aServer 必须有合法 port / bindAddress / apiKey / agentCard
+  if (obj.a2aServer !== undefined) {
+    if (obj.a2aServer === null || typeof obj.a2aServer !== 'object' || Array.isArray(obj.a2aServer)) return false
+    const srv = obj.a2aServer as Record<string, unknown>
+    if (typeof srv.enabled !== 'boolean') return false
+    if (typeof srv.port !== 'number' || srv.port < 1 || srv.port > 65535 || !Number.isInteger(srv.port)) return false
+    if (srv.bindAddress !== '127.0.0.1' && srv.bindAddress !== '0.0.0.0') return false
+    if (typeof srv.apiKey !== 'string') return false
+    if (srv.tlsCertPath !== undefined && typeof srv.tlsCertPath !== 'string') return false
+    if (srv.tlsKeyPath !== undefined && typeof srv.tlsKeyPath !== 'string') return false
+    if (srv.agentCard === null || typeof srv.agentCard !== 'object' || Array.isArray(srv.agentCard)) return false
+  }
+  // Phase D9: a2a.remoteAgents 必须是数组，每个元素为合法 A2ARemoteAgent
+  if (obj.a2a !== undefined) {
+    if (obj.a2a === null || typeof obj.a2a !== 'object' || Array.isArray(obj.a2a)) return false
+    const a2a = obj.a2a as Record<string, unknown>
+    if (!Array.isArray(a2a.remoteAgents)) return false
+    for (const item of a2a.remoteAgents) {
+      if (item === null || typeof item !== 'object') return false
+      const ra = item as Record<string, unknown>
+      if (typeof ra.name !== 'string' || ra.name.length === 0) return false
+      if (typeof ra.endpoint !== 'string') return false
+      try {
+        new URL(ra.endpoint)
+      } catch {
+        return false
+      }
+      if (ra.apiKey !== undefined && typeof ra.apiKey !== 'string') return false
+      if (ra.tlsVerify !== undefined && typeof ra.tlsVerify !== 'boolean') return false
+      if (ra.timeoutMs !== undefined && (typeof ra.timeoutMs !== 'number' || !Number.isFinite(ra.timeoutMs))) return false
+      if (ra.devAllowLocalhost !== undefined && typeof ra.devAllowLocalhost !== 'boolean') return false
+      if (ra.enabled !== undefined && typeof ra.enabled !== 'boolean') return false
+    }
+  }
   return true
 }
 
@@ -350,7 +470,14 @@ export async function readSettings(): Promise<BizGraphSettings> {
 }
 
 export async function writeSettings(settings: BizGraphSettings): Promise<void> {
+  // Defense-in-depth: validate shape before persisting so callers (IPC handlers,
+  // settings UI) get immediate feedback on invalid data instead of silently
+  // writing a malformed settings.json that next readSettings() will reject.
+  if (!validateSettingsShape(settings)) {
+    throw new BizGraphError('Invalid settings shape', ErrorCode.SETTINGS_INVALID_FORMAT)
+  }
   const settingsPath = await getSettingsPath()
+  const prev = cachedSettings
   const encrypted = await encryptSettings(settings)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
   // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）。
@@ -358,6 +485,8 @@ export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   // 收紧 ACL 可在 safeStorage 不可用时降低本地同主机其他用户读取的风险。
   restrictFileAcl(settingsPath)
   cachedSettings = settings
+  // Phase D9: settings.onChange 热重载。prev 可能为 null（首次写入）。
+  fireChange(prev ?? settings, settings)
 }
 
 function mergeSettings(
@@ -374,6 +503,9 @@ function mergeSettings(
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
     contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
     writeback: saved.writeback ?? defaults.writeback,
+    // Phase D9: a2aServer / a2a 整体替换（不深合并）；未在 saved 中保留 undefined 以便后续 null 检查
+    a2aServer: saved.a2aServer ?? defaults.a2aServer,
+    a2a: saved.a2a ?? defaults.a2a,
   }
 }
 
