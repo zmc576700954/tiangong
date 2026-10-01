@@ -5,6 +5,7 @@
 
 import type { ContextRef, BugSeverity } from './graph'
 import type { AgentTypeDefinition } from './subagent'
+import type { A2AServerConfig, A2ARemoteAgent } from './a2a'
 
 // ============================================
 // Agent 适配器类型（核心扩展点）
@@ -515,6 +516,12 @@ export interface BizGraphSettings {
   /** Query Writeback: 会话结束后生成待审写回项（默认开；全局关时项目不可开） */
   writeback?: {
     enabled?: boolean
+  }
+  /** Phase D9: A2A Server 配置（HTTP + SSE 端点；持久化到 settings.json） */
+  a2aServer?: A2AServerConfig
+  /** Phase D9: A2A 远程 Agent 列表（注册为 `a2a:<name>` 子代理类型） */
+  a2a?: {
+    remoteAgents: A2ARemoteAgent[]
   }
 }
 
