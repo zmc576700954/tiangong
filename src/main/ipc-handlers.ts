@@ -435,6 +435,19 @@ export async function registerIpcHandlers(): Promise<void> {
   // Phase 4 Task 7: subagent:* channels + progress push events
   registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
 
+  // Phase D9: A2A subsystem wiring (server + remote agent clients + hot-reload)
+  try {
+    const { createA2ASessionStarters, wireA2ASubsystem } = await import('./a2a/wiring')
+    const starters = createA2ASessionStarters(agentManager)
+    wireA2ASubsystem({
+      subagentManager,
+      messageSendSession: starters.messageSendSession,
+      messageStreamSession: starters.messageStreamSession,
+    })
+  } catch (err) {
+    logger.warn('Failed to wire A2A subsystem:', err)
+  }
+
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {
     await initCodeIntelligence()

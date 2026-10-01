@@ -25,6 +25,7 @@ import { buildScopePrompt } from './scope-prompt-builder'
 import { estimateTokens } from '../shared/token-utils'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
 import type { SubagentManager } from '../agent/subagent-manager'
+import { SUBAGENT_AGENT_TYPE_PATTERN } from '@shared/types/a2a'
 import os from 'node:os'
 
 /**
@@ -1287,8 +1288,9 @@ export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
         type: 'string' as const,
         description:
           'Which subagent type to spawn. Built-in: explore|implement|review|fix|general. ' +
-          'Or a custom type from settings. Or a Recipe (YAML workflow) via the "recipe:<id>" prefix.',
-        pattern: '^recipe:[a-z][a-z0-9-]*$|^[a-z][a-z0-9-]*$',
+          'Or a custom type from settings. Or a Recipe (YAML workflow) via the "recipe:<id>" prefix. ' +
+          'Or an A2A remote agent via the "a2a:<name>" prefix.',
+        pattern: SUBAGENT_AGENT_TYPE_PATTERN,
       },
       description: {
         type: 'string' as const,

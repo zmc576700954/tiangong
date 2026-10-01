@@ -36,6 +36,7 @@ import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
 import type { RecipeRunner } from '../recipes/recipe-runner'
+import type { A2AClient } from '../a2a/client'
 
 /** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
 type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
@@ -78,6 +79,8 @@ export class SubagentManager extends EventEmitter {
   private activeInvocations = new Map<string, ActiveInvocation>()
   private customTypes = new Map<string, AgentTypeDefinition>()
   private recipeRunner?: RecipeRunner
+  /** A2A 远端客户端（name → A2AClient）。ipc-handlers 在 settings.onChange 时重建。 */
+  private a2aClients = new Map<string, A2AClient>()
 
   constructor(
     private agentManager: AgentManager,
@@ -91,6 +94,24 @@ export class SubagentManager extends EventEmitter {
   /** Inject the RecipeRunner so dispatch_subagent(agent_type="recipe:<id>") routes here. */
   setRecipeRunner(runner: RecipeRunner): void {
     this.recipeRunner = runner
+  }
+
+  /**
+   * Inject an A2AClient for a given remote agent (settings.a2a.remoteAgents).
+   * Called from ipc-handlers when settings.onChange fires — one client per
+   * remote agent. Existing clients are NOT destroyed here; call clearA2AClients
+   * first when re-running hot-reload to release keepalive sockets.
+   */
+  setA2AClient(name: string, client: A2AClient): void {
+    this.a2aClients.set(name, client)
+  }
+
+  /** Destroy all injected A2AClients (hot-reload: release sockets before re-registering). */
+  clearA2AClients(): void {
+    for (const client of this.a2aClients.values()) {
+      try { client.destroy() } catch { /* best-effort */ }
+    }
+    this.a2aClients.clear()
   }
 
   /** Register a user-defined agent type (settings). */
@@ -143,6 +164,45 @@ export class SubagentManager extends EventEmitter {
   }
 
   async invoke(args: SubagentInvokeArgs): Promise<SubagentResult> {
+    // a2a: prefix — bypass the type registry and route to A2AClient. A2A
+    // remote invocations do NOT touch the subagent_invocations table (the
+    // remote agent owns its task lifecycle; BizGraph is the caller's audit
+    // trail via chat_threads.metadata.task_kind='a2a', handled in C4).
+    if (args.agentType.startsWith('a2a:')) {
+      const name = args.agentType.slice('a2a:'.length).trim()
+      const client = this.a2aClients.get(name)
+      if (!client) {
+        throw new AgentError(
+          `A2A remote '${name}' is not configured. Add it under settings.a2a.remoteAgents.`,
+          ErrorCode.AGENT_ADAPTER_ERROR,
+        )
+      }
+      const startedAt = Date.now()
+      const invocationId = `a2a_${generateId('subinv')}`
+      const a2aController = new AbortController()
+      // Mirror recipe's progress-only emission (no DB row); cancellations
+      // are best-effort since a2a branches bypass the activeInvocations gate.
+      this.emitProgress({ invocationId, status: 'running' })
+      try {
+        const result = await client.call(
+          { role: 'user', parts: [{ type: 'text', text: args.prompt }] },
+          { signal: a2aController.signal },
+        )
+        this.emitProgress({ invocationId, status: 'completed' })
+        return {
+          invocationId,
+          resultText: result.resultText || '(no output)',
+          resultFiles: result.resultFiles.map((f) => f.filePath ?? '').filter(Boolean),
+          tokensUsed: 0,
+          durationMs: Date.now() - startedAt,
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        this.emitProgress({ invocationId, status: 'failed', error: message })
+        throw err
+      }
+    }
+
     // Recipe prefix — bypass the type registry and route to RecipeRunner. Recipe runs
     // are stored in recipe_runs (separate table), so the SubagentInvocationRepository
     // is not touched here.

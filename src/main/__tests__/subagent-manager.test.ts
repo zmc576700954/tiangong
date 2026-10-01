@@ -597,3 +597,81 @@ describe('SubagentManager recipe:<id> dispatch', () => {
     expect(result.resultText).toMatch(/not found/i)
   })
 })
+
+describe('SubagentManager — a2a: prefix', () => {
+  /**
+   * Phase D9 C5: dispatch_subagent(agent_type='a2a:<name>') routes to
+   * A2AClient.call() (not to AgentManager / subagent_invocations table).
+   * Three behaviors tested:
+   *   - routes to the right client by name
+   *   - abort signal propagated to A2AClient.call()
+   *   - unknown a2a name → AgentError (no client for that name)
+   */
+
+  function createMockA2AClient(impl?: (msg: unknown, opts: unknown) => Promise<unknown>) {
+    return {
+      call: vi.fn().mockImplementation(impl ?? (async () => ({
+        resultText: 'remote says hi',
+        resultFiles: [],
+        finalStatus: { state: 'completed' },
+      }))),
+      destroy: vi.fn(),
+      name: vi.fn().mockReturnValue('peer-1'),
+      testConnection: vi.fn(),
+    } as any
+  }
+
+  it('routes a2a:<name> to the matching A2AClient', async () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+    const client = createMockA2AClient()
+    mgr.setA2AClient('peer-1', client)
+
+    const result = await mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'a2a:peer-1',
+      description: 'Ask peer',
+      prompt: 'hello remote',
+    })
+
+    expect(result.invocationId.startsWith('a2a_')).toBe(true)
+    expect(result.resultText).toBe('remote says hi')
+    expect(client.call).toHaveBeenCalledOnce()
+    const [msg, opts] = (client.call as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(msg).toEqual({ role: 'user', parts: [{ type: 'text', text: 'hello remote' }] })
+    expect(opts).toMatchObject({ signal: expect.anything() })
+    // Crucially: should NOT have created a local AgentManager session.
+    expect(mockManager.startSession).not.toHaveBeenCalled()
+  })
+
+  it('throws AgentError when no A2AClient matches the name', async () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+
+    await expect(
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'a2a:not-registered',
+        description: 'x',
+        prompt: 'y',
+      }),
+    ).rejects.toThrow(/a2a remote 'not-registered' is not configured/i)
+  })
+
+  it('clearA2AClients destroys all registered clients', () => {
+    const mockManager = createMockAgentManager()
+    const mockRepo = createMockRepo()
+    const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+    const c1 = createMockA2AClient()
+    const c2 = createMockA2AClient()
+    mgr.setA2AClient('p1', c1)
+    mgr.setA2AClient('p2', c2)
+
+    mgr.clearA2AClients()
+
+    expect(c1.destroy).toHaveBeenCalledOnce()
+    expect(c2.destroy).toHaveBeenCalledOnce()
+  })
+})
