@@ -45,6 +45,14 @@ import { LintPanel } from '../components/wiki/LintPanel'
 import { WritebackPanel } from '../components/wiki/WritebackPanel'
 import { RecipesPanel } from '../panels/RecipesPanel'
 import { toastSuccess, toastError, toastInfo } from '../lib/toast'
+import {
+  useAwarenessConnection,
+  useBroadcastLocalCursor,
+  useBroadcastLocalSelection,
+  useRemoteAwareness,
+} from '../realtime/hooks'
+import { RemoteCursors, RemotePresenceBadge } from './RemoteCursors'
+import { computeRemoteSelectionByNode } from './remote-selection'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
@@ -74,6 +82,10 @@ interface GraphCanvasProps {
   graphId: string
 }
 
+function selectedNodeIdsAsArray(set: ReadonlySet<string>): string[] {
+  return Array.from(set)
+}
+
 export function GraphCanvas({ graphId }: GraphCanvasProps) {
   return (
     <ReactFlowProvider>
@@ -93,6 +105,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const selectedNodeIds = useGraphStore((state) => state.selectedNodeIds)
   const toggleNodeSelection = useGraphStore((state) => state.toggleNodeSelection)
   const clearNodeSelection = useGraphStore((state) => state.clearNodeSelection)
+
+  /** D10b: 当前鼠标在 flow 坐标系下的位置（XYFlow paneMouseMove 写入） */
+  const _canvasCursorRef = useRef<{ x: number; y: number } | null>(null)
   const createNode = useGraphStore((state) => state.createNode)
   const createEdge = useGraphStore((state) => state.createEdge)
   const deleteNode = useGraphStore((state) => state.deleteNode)
@@ -304,6 +319,35 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   } = useNodeOperations(graphId, projectPath)
 
   // ────────────────────────────────────────────────────────────────
+  // D10b: 协作 awareness — 建连 / 广播本地光标 / 广播本地选区
+  // ────────────────────────────────────────────────────────────────
+  useAwarenessConnection()
+  const remoteStates = useRemoteAwareness()
+
+  /** 本地 userId（首次访问 IPC 缓存） */
+  const [localUserId, setLocalUserId] = useState<string | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI['realtime:getIdentity']()
+      .then((identity) => {
+        if (!cancelled) setLocalUserId(identity.userId)
+      })
+      .catch(() => {
+        // IPC 拉取失败时 awareness 仍能跑（无 identity 过滤 → 看到自己也算远端，但可用）
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  /** 把光标位置广播到 awareness。getter 形式避免在 React mousemove 频繁触发。 */
+  useBroadcastLocalCursor(() => {
+    // flow 坐标系下：当前没有鼠标位置传感器（XYFlow 没现成的 cursor in API），
+    // 我们让 ReactFlow 自带的 paneMouseMove 推送给一个 ref。
+    return _canvasCursorRef.current
+  })
+  /** 选中节点列表变化 → 广播 */
+  useBroadcastLocalSelection(() => selectedNodeIdsAsArray(selectedNodeIds))
+
+  // ────────────────────────────────────────────────────────────────
   // 图加载
   // ────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -401,6 +445,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const nodeCacheRef = useRef(new Map<string, { key: string; node: Node }>())
   const edgeCacheRef = useRef(new Map<string, { key: string; edge: Edge }>())
 
+  // D10b: 计算每个节点被哪些远端用户选中（memo on remoteStates + localUserId）
+  const remoteSelectionByNode = useMemo(() => {
+    if (!localUserId) return new Map<string, ReturnType<typeof computeRemoteSelectionByNode> extends Map<string, infer V> ? V : never>()
+    return computeRemoteSelectionByNode(remoteStates, localUserId)
+  }, [remoteStates, localUserId])
+
   const flowNodes = useMemo(() => {
     const cache = nodeCacheRef.current
     const nextIds = new Set<string>()
@@ -410,6 +460,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const bugCount = bugCountMap.get(node.id) ?? 0
       const selected = node.id === selectedNodeId || node.id === connectingSourceId
       const multiSelected = selectedNodeIds.has(node.id)
+      // D10b: 远端用户选中本节点的颜色列表（去重 + 排序）
+      const remoteEntries = remoteSelectionByNode.get(node.id)
+      const remoteSelectionColors = remoteEntries && remoteEntries.length > 0
+        ? Array.from(new Set(remoteEntries.map((e) => e.color))).sort()
+        : undefined
       const key = JSON.stringify([
         node.id,
         node.updatedAt,
@@ -423,6 +478,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         threadInfo?.sessionId,
         selected,
         multiSelected,
+        remoteSelectionColors ?? null,
       ])
 
       nextIds.add(node.id)
@@ -446,6 +502,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           agentThreadId: threadInfo?.id,
           agentStatus: threadInfo?.status,
           agentSessionId: threadInfo?.sessionId,
+          // D10b: 远端选中颜色
+          ...(remoteSelectionColors ? { remoteSelectionColors } : {}),
         },
         draggable: node.type !== 'project',
         selected,
@@ -458,7 +516,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return nodes
-  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds])
+  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
@@ -907,6 +965,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={handleNodeContextMenu}
+        onMouseMove={(event) => {
+          // D10b: 把鼠标的 flow 坐标写入 ref，让 useBroadcastLocalCursor 周期性采样
+          if (screenToFlowPosition) {
+            try {
+              const flow = screenToFlowPosition({
+                x: (event as React.MouseEvent).clientX,
+                y: (event as React.MouseEvent).clientY,
+              })
+              _canvasCursorRef.current = flow
+            } catch {
+              // screenToFlowPosition 在 ReactFlow 上下文外可能抛错
+            }
+          }
+        }}
+        onMouseLeave={() => {
+          _canvasCursorRef.current = null
+        }}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView
@@ -949,6 +1024,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             {Math.round(zoomLevel * 100)}%
           </div>
         </Panel>
+
+        <Panel position="bottom-left" className="m-2 ml-12">
+          <RemotePresenceBadge localUserId={localUserId ?? ''} />
+        </Panel>
+
+        {/* D10b: 远端光标覆盖层 */}
+        {localUserId && <RemoteCursors localUserId={localUserId} />}
 
         <Panel position="top-right" className="m-2">
           <div className="flex items-center gap-1.5">

@@ -52,6 +52,7 @@
     "remark-gfm": "^4.0.1",
     "simple-git": "^3.27.0",
     "tailwind-merge": "^3.0.0",
+    "ws": "^8.18.0",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
@@ -64,6 +65,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/ws": "^8.5.10",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "@vitejs/plugin-react": "^4.3.0",

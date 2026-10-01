@@ -54,6 +54,7 @@ export type {
   TokenEconomics, AgentMode, AgentModeConfig, OutputHealth,
   CompactStrategy, CompactTrigger, CompactResult, CompactHistoryEntry,
   ContextState, TerminationReason,
+  UserIdentity,
 } from './types/agent'
 
 export {

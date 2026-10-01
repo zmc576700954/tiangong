@@ -99,6 +99,7 @@ import { getPlatformProvider } from './platform'
 import { RecipeManager } from './recipes/recipe-manager'
 import { RecipeRunner } from './recipes/recipe-runner'
 import { registerRecipeHandlers } from './ipc/recipe'
+import { registerRealtimeHandlers } from './ipc/realtime'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -434,6 +435,9 @@ export async function registerIpcHandlers(): Promise<void> {
   registerModeHandlers(typedHandle)
   // Phase 4 Task 7: subagent:* channels + progress push events
   registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
+
+  // D10b: realtime (awareness / user identity)
+  registerRealtimeHandlers(typedHandle)
 
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {

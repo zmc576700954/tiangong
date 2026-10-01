@@ -516,6 +516,18 @@ export interface BizGraphSettings {
   writeback?: {
     enabled?: boolean
   }
+  /** D10b: 协作 awareness 身份 — 用户 ID / 名称 / 颜色（首次启动随机分配） */
+  userIdentity?: UserIdentity
+}
+
+/** D10b: 协作 awareness 用户的展示身份。每个 BizGraph 安装一个 userId，跨设备/重装不变。 */
+export interface UserIdentity {
+  /** 全局唯一 UUID；首次启动随机生成 */
+  userId: string
+  /** 显示名（用户可在设置中改） */
+  userName: string
+  /** 调色板下标 [0..5]（红/橙/黄/绿/蓝/紫 6 色循环） */
+  colorIndex: number
 }
 
 /** 适配器自动回退链中的单次尝试记录 */

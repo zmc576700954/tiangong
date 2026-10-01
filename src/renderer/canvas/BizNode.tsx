@@ -22,6 +22,8 @@ interface BizNodeProps {
     agentThreadId?: string
     agentStatus?: string
     agentSessionId?: string
+    /** D10b: 远端用户选中本节点的颜色列表（按 colorIndex 排序去重） */
+    remoteSelectionColors?: string[]
   }
   selected?: boolean
   multiSelected?: boolean
@@ -40,7 +42,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   const isWikiPage = data.type === 'wiki-page'
   const isPreview = data.metadata?.preview === true
 
-  const { isConnectingSource, isFlashed, agentThreadId, agentStatus, agentSessionId } = data
+  const { isConnectingSource, isFlashed, agentThreadId, agentStatus, agentSessionId, remoteSelectionColors } = data
   const isPotentialTarget = !!isConnectingSource
   const isFlashing = !!isFlashed
 
@@ -61,11 +63,17 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         style={{
           borderColor: multiSelected ? '#8b5cf6' : selected ? '#3b82f6' : typeColor,
           background: `linear-gradient(135deg, ${typeColor}08, ${typeColor}15)`,
-          boxShadow: multiSelected
-            ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
-            : selected
-              ? '0 0 0 2px rgba(59, 130, 246, 0.3)'
-              : undefined,
+          boxShadow: [
+            multiSelected
+              ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
+              : selected
+                ? '0 0 0 2px rgba(59, 130, 246, 0.3)'
+                : 'none',
+            // D10b: 远端选中时叠加多色 ring
+            ...(remoteSelectionColors ?? []).map((color, idx) =>
+              `0 0 0 ${4 + idx * 3}px ${color}40`,
+            ),
+          ].filter((s) => s !== 'none').join(', ') || undefined,
         }}
         onContextMenu={onContextMenu}
       >
@@ -126,11 +134,17 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         borderColor: multiSelected ? '#8b5cf6' : selected ? typeColor : undefined,
         transition: 'border-color var(--duration-normal), box-shadow var(--duration-normal), transform var(--duration-normal)',
         transform: selected || multiSelected ? 'scale(1.02)' : 'scale(1)',
-        boxShadow: multiSelected
-          ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
-          : selected
-            ? `0 0 0 2px ${typeColor}40`
-            : undefined,
+        boxShadow: [
+          multiSelected
+            ? '0 0 0 2px rgba(139, 92, 246, 0.3)'
+            : selected
+              ? `0 0 0 2px ${typeColor}40`
+              : 'none',
+          // D10b: 远端选中时叠加多色 ring
+          ...(remoteSelectionColors ?? []).map((color, idx) =>
+            `0 0 0 ${4 + idx * 3}px ${color}40`,
+          ),
+        ].filter((s) => s !== 'none').join(', ') || undefined,
       }}
       onContextMenu={onContextMenu}
     >
