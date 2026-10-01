@@ -99,6 +99,8 @@ import { getPlatformProvider } from './platform'
 import { RecipeManager } from './recipes/recipe-manager'
 import { RecipeRunner } from './recipes/recipe-runner'
 import { registerRecipeHandlers } from './ipc/recipe'
+import { registerConflictHandlers } from './ipc/conflict'
+import { getConflictReporter } from './services/conflict-reporter'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -432,6 +434,14 @@ export async function registerIpcHandlers(): Promise<void> {
   registerCodeIntelHandlers(typedHandle)
   registerMemoryHandlers(typedHandle)
   registerModeHandlers(typedHandle)
+  // Phase D10d: realtime conflict resolution — conflict:getRecentReports / :clearReports + onReported push
+  registerConflictHandlers(typedHandle)
+  // 把 actor id 同步到 reporter（D10b 会把 settings.userId 接入；现在用 process.pid fallback）
+  try {
+    getConflictReporter().setActorId(`pid-${process.pid}`)
+  } catch (err) {
+    logger.warn('Failed to wire actor id into ConflictReporter:', err)
+  }
   // Phase 4 Task 7: subagent:* channels + progress push events
   registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
 

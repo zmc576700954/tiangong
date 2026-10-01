@@ -19,6 +19,7 @@ import { GraphComputeService } from '../wiki/graph-compute-service'
 import { GraphLintService } from '../wiki/graph-lint-service'
 import { WritebackRepository } from '../repositories/writeback-repository'
 import { WritebackService } from '../services/writeback-service'
+import { getConflictReporter } from '../services/conflict-reporter'
 import { LlmIngestService, type AgentRunner } from '../wiki/llm-ingest-service'
 import { IngestService } from '../wiki/ingest-service'
 import { sendPromptViaAgent } from '../agent/send-and-wait'
@@ -393,7 +394,8 @@ export function registerGraphHandlers(
 
   typedHandle('wiki:lint', async (_, graphId: string) => {
     ensureString('graphId', graphId, MAX_ID_LEN)
-    return GraphLintService.lint(graphId, nodeRepo, edgeRepo)
+    const extraIssues = getConflictReporter().getLintIssuesForGraph(graphId)
+    return GraphLintService.lint(graphId, nodeRepo, edgeRepo, extraIssues)
   })
 
   // ---------- Writeback 审核队列 ----------

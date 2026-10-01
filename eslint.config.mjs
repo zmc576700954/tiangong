@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config([
-  { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**', 'coverage', '.claude'] },
+  { ignores: ['dist', 'dist-electron', 'release', 'bizgraph/**', 'coverage', '.claude', 'vendor'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['src/main/**/*.ts', 'src/preload/**/*.ts', '*.config.ts'],

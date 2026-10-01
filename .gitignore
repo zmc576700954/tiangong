@@ -62,3 +62,6 @@ out/
 
 # Worktrees
 .worktrees/
+
+# Local vendored deps (workaround for broken npm lockfile in worktree)
+vendor/

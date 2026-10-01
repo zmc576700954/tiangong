@@ -27,6 +27,7 @@ import type {
   RecipeRun,
   RecipeRunRequest,
 } from './recipe'
+import type { ConflictReport } from './conflict'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -218,6 +219,10 @@ export interface IpcApi {
   'recipes:refresh': () => Promise<number>
   'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
   'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
+
+  // Realtime conflict resolution (D10d)
+  'conflict:getRecentReports': (graphId: string, limit?: number) => Promise<ConflictReport[]>
+  'conflict:clearReports': (graphId: string) => Promise<void>
 }
 
 /**
@@ -237,4 +242,5 @@ export interface IpcEventMap {
   'waterline:change': (state: ContextState) => void
   'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
   'menu:openProject': (projectPath: string) => void
+  'conflict:onReported': (report: ConflictReport) => void
 }

@@ -15,6 +15,7 @@ const KIND_LABELS: Record<LintIssue['kind'], string> = {
   'orphan': '孤立页面',
   'community-singleton': '单节点社区',
   'community-oversized': '超大社区',
+  'realtime-conflict': '冲突报告',
 }
 
 export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPanelProps) {
@@ -25,7 +26,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
     return acc
   }, new Map<LintIssue['kind'], LintIssue[]>())
 
-  const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized']
+  const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized', 'realtime-conflict']
 
   return (
     <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
