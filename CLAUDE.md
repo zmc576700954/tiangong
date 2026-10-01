@@ -124,6 +124,8 @@ Fourteen tables:
 
 **Recipes** (`src/main/recipes/`) — YAML-declarative shareable workflows loaded from `<userData>/recipes/*.yaml` (user-level) or `<workingDirectory>/.bizgraph/recipes/*.yaml` (project-level); project overrides user. Steps are `agent` (routed via `SubagentManager.invoke` with `recipe:<id>` prefix in `agentType`) or `shell` (executed via `child_process.spawn` with ScopeGuard-equivalent cwd boundary check). Recipes are persisted to `recipes` (metadata + full `yaml_text`) and `recipe_runs` (history). IPC surface: `recipes:list | :get | :run | :cancel | :refresh | :listRuns | :getRun`. UI: `src/renderer/panels/RecipesPanel.tsx`. Inspired by Goose Recipes — declarative workflows over imperative orchestration.
 
+**A2A Protocol** (`src/main/a2a/` + `src/shared/types/a2a.ts`) — Google A2A spec v0.3.0 cross-process agent protocol. BizGraph acts as both server (exposes its own `AgentCard` at `/.well-known/agent-card.json` + 5 endpoints: `message:send`, `message:stream` (SSE), `tasks`, `tasks/:id`) and client (registers remote agents as `a2a:<name>` subagent types). Hot-reload wired via `settings.onChange` so port / bind / apiKey / remote-agent list updates rebuild the server + clients without restart. IPC surface: `a2a:getServerStatus | :startServer | :stopServer | :testConnection | :listRemoteAgents | :saveRemoteAgent | :deleteRemoteAgent | :testServerConfig` + push event `a2a:serverStatusChange`. UI: `src/renderer/panels/A2ASettingsTab.tsx` (Settings → A2A tab). Auth: bearer token (server side, constant-time compare via `auth.ts`) + SSRF guard for client (`endpoint-guard.ts` rejects RFC1918/link-local/CGNAT/loopback by default; `devAllowLocalhost` opt-in for dev).
+
 **Repositories** (`src/main/repositories/`) — Data access layer for graphs, nodes, edges, bugs, chat, agent logs, compact history, and subagent invocations.
 
 **Services** (`src/main/services/`) — Wrap repositories with business logic. `GraphService` orchestrates graph/node operations and project paths; `ChatService` handles thread/message streaming.
@@ -145,6 +147,7 @@ BizGraph 编排 Agent CLI，但严格保持自身职责边界。**不替换** Ag
 - **卸载插件保留数据；删除画布元数据不删除 Agent 会话** — BizGraph 元数据（节点 / 边 / Wiki / Writeback 队列）独立于 Agent CLI 的会话日志。卸载 BizGraph 不删 Agent 自己的 history。
 - **多 Agent CLI 的协议不归一** — BizGraph 适配不同 CLI（Claude Code / Codex / OpenCode / Cline / Kimi / Qwen / Qoder / CodeBuddy / Cursor）的协议差异，不强行标准化；CLI 升级到新协议由各自 AdapterDescriptor 适配。
 - **IPC 路径校验不替代 OS 级沙箱** — 白名单 + `safeRealpath` 是 BizGraph 的内部边界，不是用户的最后防线；Agent CLI 自身的越权行为由其自身 sandbox / permission 模式保证。
+- **A2A Server 透传 prompt，不注入本地 memory / scope 状态** — 远端 LLM 视角下 BizGraph 是透明转发方：`message-stream.route.ts` 仅把 `A2AMessage.parts` 原样下发（包含 `TextPart.text` / `DataPart.data`），不夹带 BizGraph 内部 `MemoryItem` / `scopeGuard` 状态 / 项目上下文摘要。否则破坏远端 LLM KV-cache 复用并泄露本地状态。
 
 违反以上边界的代码改动需要明确标注 + 评审，否则视为隐性合同。
 
