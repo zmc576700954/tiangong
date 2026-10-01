@@ -516,6 +516,15 @@ export interface BizGraphSettings {
   writeback?: {
     enabled?: boolean
   }
+  /** Phase D6: OpenTelemetry 导出配置。otlpEndpoint 为空时 telemetry 关闭（零开销）。 */
+  telemetry?: {
+    /** OTLP HTTP endpoint (e.g. `http://localhost:4318/v1/traces`)。 */
+    otlpEndpoint?: string
+    /** Resource `service.name`，默认 `bizgraph`。 */
+    serviceName?: string
+    /** Resource `service.version`，默认 `0.0.0`。 */
+    serviceVersion?: string
+  }
 }
 
 /** 适配器自动回退链中的单次尝试记录 */

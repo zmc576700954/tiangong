@@ -6,6 +6,8 @@ import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
 import { getPlatformProvider } from './platform'
+import { initTelemetry, shutdownTelemetry } from './telemetry'
+import { readSettings } from './settings'
 
 const logger = createLogger('Main')
 
@@ -234,6 +236,18 @@ app.whenReady().then(async () => {
   // Initialize database (sync with better-sqlite3)
   initDatabase()
 
+  // Initialize OpenTelemetry (Phase D6) — best-effort, no-op when settings.telemetry.otlpEndpoint is unset
+  try {
+    const settings = await readSettings()
+    await initTelemetry({
+      otlpEndpoint: settings.telemetry?.otlpEndpoint,
+      serviceName: settings.telemetry?.serviceName,
+      serviceVersion: settings.telemetry?.serviceVersion,
+    })
+  } catch (err) {
+    logger.warn('Telemetry initialization failed (continuing without telemetry):', err)
+  }
+
   // Register IPC handlers
   await registerIpcHandlers()
 
@@ -294,6 +308,12 @@ app.on('before-quit', async (event) => {
         closeDatabase()
       } catch (err) {
         logger.error('Failed to close database:', err)
+      }
+      // Phase D6: 关闭 telemetry SDK，flush 残余 spans。best-effort + 5s 超时已内置。
+      try {
+        await shutdownTelemetry()
+      } catch (err) {
+        logger.error('Failed to shutdown telemetry:', err)
       }
     })(),
     new Promise<void>((resolve) => {

@@ -4,6 +4,7 @@
  */
 
 import { createLogger } from '../shared/logger'
+import { recordAdapterCall } from '../telemetry'
 
 const logger = createLogger('AdapterHealthMonitor')
 
@@ -62,6 +63,13 @@ export class AdapterHealthMonitor {
    * 记录一次适配器调用结果
    */
   recordCall(adapterName: string, success: boolean, responseTimeMs: number, errorMessage?: string): void {
+    // Phase D6: emit counter span for telemetry export.
+    // 不阻塞主流程 — recordAdapterCall 内部是 best-effort，未初始化时是 noop。
+    try {
+      recordAdapterCall(adapterName, success, responseTimeMs)
+    } catch {
+      /* never throw from monitoring path */
+    }
     let m = this.metrics.get(adapterName)
     if (!m) {
       m = {

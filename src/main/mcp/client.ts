@@ -6,8 +6,10 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import path from 'node:path'
+import { SpanKind } from '@opentelemetry/api'
 import { buildSafeEnv } from '../shared/env'
 import { AgentError, ErrorCode } from '../errors'
+import { withSpan } from '../telemetry'
 
 /** MCP 服务器允许执行的命令白名单 */
 const ALLOWED_MCP_COMMANDS = new Set([
@@ -79,6 +81,18 @@ export class McpClient extends EventEmitter {
 
   async connect(): Promise<void> {
     validateMcpCommand(this.command)
+    return withSpan(
+      'bizgraph.mcp.connect',
+      async (span) => {
+        span.setAttribute('mcp.command', this.command)
+        span.setAttribute('mcp.args_count', this.args.length)
+        await this._connectInternal()
+      },
+      { kind: SpanKind.CLIENT },
+    )
+  }
+
+  private async _connectInternal(): Promise<void> {
     const connectStart = Date.now()
     return new Promise((resolve, reject) => {
       const connectTimeout = setTimeout(() => {
@@ -188,7 +202,16 @@ export class McpClient extends EventEmitter {
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<unknown> {
-    return this.call('tools/call', { name, arguments: args })
+    return withSpan(
+      'bizgraph.mcp.call',
+      async (span) => {
+        span.setAttribute('mcp.tool_name', name)
+        // 不记录 args 内容（避免 PII 泄漏 + 大 payload 影响 OTLP cache）
+        span.setAttribute('mcp.args_keys_count', Object.keys(args).length)
+        return this.call('tools/call', { name, arguments: args })
+      },
+      { kind: SpanKind.CLIENT },
+    )
   }
 
   async listResources(): Promise<McpResource[]> {

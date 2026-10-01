@@ -303,6 +303,14 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     const wb = obj.writeback as Record<string, unknown>
     if (wb.enabled !== undefined && typeof wb.enabled !== 'boolean') return false
   }
+  // telemetry 必须是对象，可选字段必须是字符串
+  if (obj.telemetry !== undefined) {
+    if (obj.telemetry === null || typeof obj.telemetry !== 'object' || Array.isArray(obj.telemetry)) return false
+    const tel = obj.telemetry as Record<string, unknown>
+    if (tel.otlpEndpoint !== undefined && typeof tel.otlpEndpoint !== 'string') return false
+    if (tel.serviceName !== undefined && typeof tel.serviceName !== 'string') return false
+    if (tel.serviceVersion !== undefined && typeof tel.serviceVersion !== 'string') return false
+  }
   return true
 }
 
@@ -374,6 +382,7 @@ function mergeSettings(
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
     contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
     writeback: saved.writeback ?? defaults.writeback,
+    telemetry: saved.telemetry ?? defaults.telemetry,
   }
 }
 

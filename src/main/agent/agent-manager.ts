@@ -45,6 +45,8 @@ import type { SubagentManager } from './subagent-manager'
 import { ADAPTER_REGISTRY } from '../adapters/registry'
 import type { BaseAdapter } from '../adapters/base'
 import { createLogger } from '../shared/logger'
+import { withSpan } from '../telemetry'
+import { SpanKind, type Span } from '@opentelemetry/api'
 import os from 'node:os'
 
 const logger = createLogger('AgentManager')
@@ -829,6 +831,25 @@ export class AgentManager {
     adapterName: string | null,
     config: AgentSessionConfig,
   ): Promise<StartSessionResult> {
+    return withSpan(
+      'bizgraph.agent.start',
+      async (span) => {
+        span.setAttribute('adapter.requested', adapterName ?? 'default')
+        if (config.nodeId) span.setAttribute('node.id', config.nodeId)
+        if (config.threadId) span.setAttribute('thread.id', config.threadId)
+        if (config.parentSessionId) span.setAttribute('parent.session.id', config.parentSessionId)
+        span.setAttribute('session.allowed_files_count', config.allowedFiles.length)
+        return this._startSessionInternal(adapterName, config, span)
+      },
+      { kind: SpanKind.INTERNAL },
+    )
+  }
+
+  private async _startSessionInternal(
+    adapterName: string | null,
+    config: AgentSessionConfig,
+    span?: Span,
+  ): Promise<StartSessionResult> {
     // 确定回退链：首选适配器 + 回退顺序
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
@@ -1005,6 +1026,12 @@ export class AgentManager {
           this.sessionStartedCallback(config.threadId, session.id)
         }
 
+        if (span) {
+          span.setAttribute('adapter.used', candidate)
+          span.setAttribute('session.id', session.id)
+          span.setAttribute('fallback.used', isFallback)
+        }
+
         return {
           sessionId: session.id,
           fallback: isFallback || undefined,
@@ -1062,26 +1089,41 @@ export class AgentManager {
     if (!adapter) {
       throw new SessionNotFoundError(sessionId)
     }
-    // 记录指令类型，供 terminateSession 中的记忆提取器使用
-    // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
-    //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
-    //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
-    const state = this.sessionStates.get(sessionId)
-    const prevCommandType = state?.lastCommandType
-    if (state) {
-      state.lastCommandType = command.type
-      state.lastCommand = command
-    }
-    try {
-      await adapter.sendCommand(sessionId, command)
-    } catch (err) {
-      // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
-      // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
-      if (state && state.lastCommandType === command.type) {
-        state.lastCommandType = prevCommandType
-      }
-      throw err
-    }
+    return withSpan(
+      'bizgraph.agent.command',
+      async (span) => {
+        span.setAttribute('session.id', sessionId)
+        span.setAttribute('command.type', typeof command === 'string' ? 'text' : command.type)
+        if (typeof command !== 'string' && command.type) {
+          // 不写 prompt 内容（避免 token-cache 污染 + PII 泄漏）
+          // 只记录元数据：type / id
+          if ((command as { id?: string }).id) {
+            span.setAttribute('command.id', (command as { id?: string }).id!)
+          }
+        }
+        // 记录指令类型，供 terminateSession 中的记忆提取器使用
+        // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
+        //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
+        //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
+        const state = this.sessionStates.get(sessionId)
+        const prevCommandType = state?.lastCommandType
+        if (state) {
+          state.lastCommandType = command.type
+          state.lastCommand = command
+        }
+        try {
+          await adapter.sendCommand(sessionId, command)
+        } catch (err) {
+          // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
+          // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
+          if (state && state.lastCommandType === command.type) {
+            state.lastCommandType = prevCommandType
+          }
+          throw err
+        }
+      },
+      { kind: SpanKind.INTERNAL },
+    )
   }
 
   /**

@@ -22,6 +22,7 @@
  */
 
 import { EventEmitter } from 'events'
+import { SpanKind } from '@opentelemetry/api'
 import type { AgentManager } from './agent-manager'
 import type { SubagentInvocationRepository } from '../repositories/subagent-invocation-repository'
 import type {
@@ -35,6 +36,7 @@ import type {
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
+import { withSpan } from '../telemetry'
 import type { RecipeRunner } from '../recipes/recipe-runner'
 
 /** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
@@ -143,6 +145,23 @@ export class SubagentManager extends EventEmitter {
   }
 
   async invoke(args: SubagentInvokeArgs): Promise<SubagentResult> {
+    // Phase D6: bizgraph.subagent.invoke span — agent.command 的子 span，
+    // 通过 OTel context propagation 自动串起调用链。
+    return withSpan(
+      'bizgraph.subagent.invoke',
+      async (span) => {
+        span.setAttribute('subagent.agent_type', args.agentType)
+        span.setAttribute('subagent.parent_session_id', args.parentSessionId)
+        if (args.nodeId) span.setAttribute('node.id', args.nodeId)
+        if (args.adapterName) span.setAttribute('adapter.requested', args.adapterName)
+        span.setAttribute('subagent.allowed_files_count', args.allowedFiles?.length ?? 0)
+        return this._invokeInternal(args)
+      },
+      { kind: SpanKind.INTERNAL },
+    )
+  }
+
+  private async _invokeInternal(args: SubagentInvokeArgs): Promise<SubagentResult> {
     // Recipe prefix — bypass the type registry and route to RecipeRunner. Recipe runs
     // are stored in recipe_runs (separate table), so the SubagentInvocationRepository
     // is not touched here.
