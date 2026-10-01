@@ -560,6 +560,8 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`,
   `CREATE INDEX IF NOT EXISTS idx_writeback_graph_status ON writeback_items(graph_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_writeback_session ON writeback_items(source_session_id)`,
+  // Phase D9: A2A 任务查询 — json_extract 表达式索引加速 task_kind='a2a' 过滤。
+  `CREATE INDEX IF NOT EXISTS idx_chat_threads_task_kind ON chat_threads(json_extract(metadata, '$.task_kind'))`,
 ]
 
 function getSchemaChecksumPath(): string {
@@ -749,6 +751,10 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER', 'NULL')
+
+  // Phase D9: A2A 任务复用 chat_threads；metadata.task_kind='a2a' 区分本地任务。
+  // TEXT 默认 '{}' 以便现有查询无需兼容 null。
+  addColumnSafe('chat_threads', 'metadata', 'TEXT', "'{}'")
 
   // v9：writeback_items 拆分 details / narrative / source_node_ids / target_node_title
   // 旧 content 已内嵌 <details> 折叠块；新 schema 让前端按字段渲染，

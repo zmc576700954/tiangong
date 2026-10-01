@@ -2,6 +2,15 @@ import { app, BrowserWindow, Menu, dialog } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerIpcHandlers, agentManager, registry } from './ipc-handlers'
+import type { A2AServer } from './a2a/server'
+
+/** A2AServer 实例（由 ipc-handlers 在 settings.onChange 时创建/销毁）。
+ *  使用 setter 而非直接 import，避免循环依赖（A2AServer → ipc-handlers）。
+ *  C5 时由 ipc-handlers 注入；C4 阶段保持 null，before-quit hook 容忍 null。 */
+let a2aServer: A2AServer | null = null
+export function setA2AServer(server: A2AServer | null): void {
+  a2aServer = server
+}
 import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
@@ -271,6 +280,9 @@ app.on('before-quit', async (event) => {
   const cleanupWithTimeout = Promise.race([
     (async () => {
       try {
+        // Phase D9: A2A server 必须先于 AgentManager 关闭。
+        // 否则 server 上的 SSE 流在父 listener 已关时仍在尝试 sendCommand / terminateSession。
+        await a2aServer?.destroy()
         await agentManager.terminateAllSessions()
       } catch (err) {
         logger.error('Failed to terminate sessions:', err)
