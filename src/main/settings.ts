@@ -100,6 +100,7 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
   adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   writeback: { enabled: true },
+  realtime: { enabled: false, port: 1234, host: '127.0.0.1' },
 }
 
 // ============================================
@@ -303,6 +304,14 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     const wb = obj.writeback as Record<string, unknown>
     if (wb.enabled !== undefined && typeof wb.enabled !== 'boolean') return false
   }
+  // realtime 必须是对象且字段类型合法
+  if (obj.realtime !== undefined) {
+    if (obj.realtime === null || typeof obj.realtime !== 'object' || Array.isArray(obj.realtime)) return false
+    const rt = obj.realtime as Record<string, unknown>
+    if (rt.enabled !== undefined && typeof rt.enabled !== 'boolean') return false
+    if (rt.port !== undefined && (typeof rt.port !== 'number' || !Number.isInteger(rt.port) || rt.port < 0 || rt.port > 65535)) return false
+    if (rt.host !== undefined && typeof rt.host !== 'string') return false
+  }
   return true
 }
 
@@ -374,6 +383,7 @@ function mergeSettings(
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
     contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
     writeback: saved.writeback ?? defaults.writeback,
+    realtime: saved.realtime ?? defaults.realtime,
   }
 }
 
