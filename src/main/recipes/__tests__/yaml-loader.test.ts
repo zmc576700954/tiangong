@@ -30,8 +30,9 @@ steps:
     expect(def.id).toBe('greet')
     expect(def.name).toBe('Say hello')
     expect(def.version).toBe('1')
-    expect(def.steps).toHaveLength(1)
-    expect(def.steps[0]!.kind).toBe('agent')
+    expect(def.steps).toBeDefined()
+    expect(def.steps!).toHaveLength(1)
+    expect(def.steps![0]!.kind).toBe('agent')
   })
 
   it('parses inputs schema with enum type', () => {
@@ -70,11 +71,11 @@ steps:
     timeout_ms: 60000
 `
     const def = parseRecipe(yaml)
-    expect(def.steps[0]!.kind).toBe('shell')
-    if (def.steps[0]!.kind === 'shell') {
-      expect(def.steps[0]!.command).toEqual(['npm', 'run', 'build'])
-      expect(def.steps[0]!.cwd).toBe('src')
-      expect(def.steps[0]!.timeout_ms).toBe(60000)
+    expect(def.steps![0]!.kind).toBe('shell')
+    if (def.steps![0]!.kind === 'shell') {
+      expect(def.steps![0]!.command).toEqual(['npm', 'run', 'build'])
+      expect(def.steps![0]!.cwd).toBe('src')
+      expect(def.steps![0]!.timeout_ms).toBe(60000)
     }
   })
 
