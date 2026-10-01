@@ -93,4 +93,56 @@ describe('GraphLintService.lint', () => {
     expect(r.stats.edgeCount).toBe(1)
     expect(r.stats.communityCount).toBe(1)
   })
+
+  it('wikiContent 不空且 frontmatter 为空 → missing-frontmatter', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'A', { wikiContent: '正文' }))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const fm = r.issues.filter((i) => i.kind === 'missing-frontmatter')
+    expect(fm.length).toBe(1)
+    expect(fm[0].fixable).toBe(true)
+    expect(fm[0].fix?.kind).toBe('add-frontmatter')
+  })
+
+  it('wikiMeta.frontmatter 是非空对象 → 不报 missing-frontmatter', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'A', {
+      wikiContent: '正文',
+      wikiMeta: { frontmatter: { title: 'A' } },
+    }))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    expect(r.issues.some((i) => i.kind === 'missing-frontmatter')).toBe(false)
+  })
+
+  it('标题大小写不规范 → inconsistent-case（fixable=true）', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'Graph Index'))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const ic = r.issues.filter((i) => i.kind === 'inconsistent-case')
+    expect(ic.length).toBe(1)
+    expect(ic[0].fixable).toBe(true)
+    expect(ic[0].fix?.kind).toBe('normalize-case')
+  })
+
+  it('标题已全部小写 → 不报 inconsistent-case', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'graph index'))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    expect(r.issues.some((i) => i.kind === 'inconsistent-case')).toBe(false)
+  })
+
+  it('断链 issue 携带 fixable=true 与 create-stub-page 修复动作', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'A', { wikiContent: '见 [[missing]]' }))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const dl = r.issues.filter((i) => i.kind === 'dangling-link')
+    expect(dl.length).toBe(1)
+    expect(dl[0].fixable).toBe(true)
+    expect(dl[0].fix?.kind).toBe('create-stub-page')
+    expect((dl[0].fix?.payload as { targetTitle?: string }).targetTitle).toBe('missing')
+    expect(dl[0].location?.file).toBe('a')
+  })
+
+  it('orphan issue fixable=false（无一键修复）', () => {
+    nodeRepo.nodes.set('a', wikiNode('a', 'A'))
+    const r = GraphLintService.lint('g1', nodeRepo, edgeRepo)
+    const o = r.issues.filter((i) => i.kind === 'orphan')
+    expect(o.length).toBe(1)
+    expect(o[0].fixable).toBe(false)
+  })
 })

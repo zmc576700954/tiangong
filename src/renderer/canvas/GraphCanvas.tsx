@@ -25,7 +25,7 @@ import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
-import type { LintReport, WritebackItem } from '@shared/types/wiki'
+import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { cn } from '../lib/utils'
@@ -695,6 +695,21 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     eventBus.emit(Events.NAVIGATE_TO_NODE, nodeId)
   }, [])
 
+  const handleLintApplyFix = useCallback(async (issue: LintIssue) => {
+    if (!issue.fix) return
+    const graphId = useGraphStore.getState().currentGraphId
+    if (!graphId) return
+    try {
+      await useGraphStore.getState().applyLintFix(issue.fix)
+      // 重新跑 lint，把已修复项从主报告中剔除
+      const fresh = await useGraphStore.getState().lintGraph()
+      setLintReport(fresh)
+    } catch (err) {
+      console.error('[GraphCanvas] apply lint fix failed:', err)
+      throw err
+    }
+  }, [])
+
   const handleOpenWriteback = useCallback(async () => {
     await refreshWriteback()
     setWritebackOpen(true)
@@ -1159,6 +1174,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           onNavigate={handleLintNavigate}
           onClose={() => setLintOpen(false)}
           onRecompute={handleRecompute}
+          onApplyFix={handleLintApplyFix}
         />
       )}
 

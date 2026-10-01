@@ -21,7 +21,7 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
-import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from './wiki'
+import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, LintFixResult, LintFixAction, ComputeResult, WritebackItem } from './wiki'
 import type {
   RecipeDefinition,
   RecipeRun,
@@ -71,6 +71,7 @@ export interface IpcApi {
   'wiki:ingestFiles': (graphId: string, filePaths: string[], mode?: IngestMode) => Promise<IngestResult>
   'wiki:computeCommunities': (graphId: string) => Promise<ComputeResult>
   'wiki:lint': (graphId: string) => Promise<LintReport>
+  'wiki:applyFix': (graphId: string, fix: LintFixAction) => Promise<LintFixResult>
   'wiki:listWriteback': (graphId: string) => Promise<WritebackItem[]>
   'wiki:countWriteback': (graphId: string) => Promise<number>
   'wiki:acceptWriteback': (itemId: string) => Promise<void>

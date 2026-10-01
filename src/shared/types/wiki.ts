@@ -63,21 +63,81 @@ export interface IngestResult {
 /** 导入模式：规则式 / LLM 提炼式 */
 export type IngestMode = 'rule' | 'llm'
 
+/** Lint 问题严重度 */
+export type LintSeverity = 'error' | 'warning' | 'info'
+
+/** Lint 问题 kind（用于按类别分组渲染） */
+export type LintIssueKind =
+  | 'dangling-link'
+  | 'orphan'
+  | 'community-singleton'
+  | 'community-oversized'
+  | 'missing-frontmatter'
+  | 'inconsistent-case'
+
+/** Lint 问题 code（用于修复路由与唯一标识） */
+export type LintIssueCode =
+  | 'dangling-link'
+  | 'orphan'
+  | 'community-singleton'
+  | 'community-oversized'
+  | 'missing-frontmatter'
+  | 'inconsistent-case'
+
+/** 修复动作描述（fix payload 形状按 kind 区分） */
+export interface LintFixAction {
+  /** 修复动作标识（对应 main 侧 dispatch key） */
+  kind: 'create-stub-page' | 'add-frontmatter' | 'normalize-case'
+  /** 修复所需参数 */
+  payload: Record<string, unknown>
+}
+
+/** 问题在文件/节点上的位置（用于跳转） */
+export interface LintIssueLocation {
+  /** 节点 ID（断链 / orphan 等图内问题时为源节点 ID） */
+  file: string
+  /** 可选行号（仅当 issue 锚定到具体行时填写） */
+  line?: number
+  /** 可选列号 */
+  column?: number
+}
+
 /** Graph Lint 单条问题 */
 export interface LintIssue {
-  kind: 'dangling-link' | 'orphan' | 'community-singleton' | 'community-oversized'
-  severity: 'info' | 'warning'
+  /** 问题类别（用于 UI 分组） */
+  kind: LintIssueKind
+  /** 严重度（用于排序与 UI 染色） */
+  severity: LintSeverity
+  /** 问题唯一 code（用于修复路由 / 测试 / 国际化） */
+  code: LintIssueCode
   /** 相关节点（断链时为源节点） */
   nodeId?: string
+  /** 问题描述（中文，用户可读） */
   message: string
   /** 引导用户如何修复 */
   hint: string
+  /** 锚点位置：UI 可用于"跳转到节点"或"跳转到行" */
+  location?: LintIssueLocation
+  /** 是否可一键修复 */
+  fixable: boolean
+  /** 修复动作（fixable=true 时填写）；UI 调 wiki:applyFix(code, payload) */
+  fix?: LintFixAction
 }
 
 /** wiki:lint 返回的报告 */
 export interface LintReport {
   issues: LintIssue[]
   stats: { nodeCount: number; edgeCount: number; communityCount: number }
+}
+
+/** wiki:applyFix 的返回结果 */
+export interface LintFixResult {
+  /** 是否成功 */
+  ok: boolean
+  /** 受影响节点 ID（创建 stub 页时为新节点 ID；其余为被改节点 ID） */
+  nodeId?: string
+  /** 错误信息（失败时） */
+  error?: string
 }
 
 /** 单个社区信息 */

@@ -17,6 +17,7 @@ import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
 import { GraphComputeService } from '../wiki/graph-compute-service'
 import { GraphLintService } from '../wiki/graph-lint-service'
+import { LintFixService } from '../wiki/lint-fix-service'
 import { WritebackRepository } from '../repositories/writeback-repository'
 import { WritebackService } from '../services/writeback-service'
 import { LlmIngestService, type AgentRunner } from '../wiki/llm-ingest-service'
@@ -394,6 +395,29 @@ export function registerGraphHandlers(
   typedHandle('wiki:lint', async (_, graphId: string) => {
     ensureString('graphId', graphId, MAX_ID_LEN)
     return GraphLintService.lint(graphId, nodeRepo, edgeRepo)
+  })
+
+  typedHandle('wiki:applyFix', async (_, graphId: string, fix: unknown) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    if (!fix || typeof fix !== 'object') {
+      throw new IpcError('fix 必须为对象', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const f = fix as { kind?: unknown; payload?: unknown }
+    if (typeof f.kind !== 'string' || !f.kind) {
+      throw new IpcError('fix.kind 必填', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const allowedKinds = new Set(['create-stub-page', 'add-frontmatter', 'normalize-case'])
+    if (!allowedKinds.has(f.kind)) {
+      throw new IpcError(`不支持的 fix.kind: ${f.kind}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    const payload = (f.payload && typeof f.payload === 'object') ? f.payload as Record<string, unknown> : {}
+    const result = LintFixService.apply(
+      { kind: f.kind as 'create-stub-page' | 'add-frontmatter' | 'normalize-case', payload },
+      nodeRepo,
+      edgeRepo,
+    )
+    // 修复动作可能新增/改动节点，触发源图重载（renderer 端会监听）
+    return result
   })
 
   // ---------- Writeback 审核队列 ----------

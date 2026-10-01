@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
-import type { IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from '@shared/types/wiki'
+import type { IngestResult, IngestMode, LintReport, LintFixAction, LintFixResult, ComputeResult, WritebackItem } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -93,6 +93,9 @@ interface GraphState {
 
   /** 运行 Wiki 图检查 */
   lintGraph: () => Promise<LintReport | null>
+
+  /** 应用一条 Lint 修复动作（创建 stub / 补 frontmatter / 归一化标题） */
+  applyLintFix: (fix: LintFixAction) => Promise<LintFixResult>
 
   /** 计算 Wiki 社区并刷新图 */
   computeCommunities: () => Promise<ComputeResult | null>
@@ -608,6 +611,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const graphId = get().currentGraphId
     if (!graphId) return null
     return window.electronAPI['wiki:lint'](graphId)
+  },
+
+  applyLintFix: async (fix) => {
+    const graphId = get().currentGraphId
+    if (!graphId) throw new Error('no current graph')
+    const result = await window.electronAPI['wiki:applyFix'](graphId, fix)
+    // 修复动作可能新增/改动节点，重载图以同步状态
+    await get().loadGraph(graphId)
+    return result
   },
 
   computeCommunities: async () => {
