@@ -15,7 +15,7 @@
 import { setA2AServer } from '../index'
 import { createLogger } from '../shared/logger'
 import { readSettings, onChange } from '../settings'
-import type { A2ARemoteAgent, A2AServerConfig, A2AArtifact, A2AMessage } from '@shared/types/a2a'
+import type { A2ARemoteAgent, A2AServerConfig, A2AArtifact, A2AMessage, A2AAgentCard } from '@shared/types/a2a'
 import type { AgentManager } from '../agent/agent-manager'
 import type { SubagentManager } from '../agent/subagent-manager'
 import { A2AClient } from './client'
@@ -178,7 +178,7 @@ export interface WireA2ADeps {
  *
  * 返回 dispose() 关闭监听 + 销毁所有子系统。
  */
-export function wireA2ASubsystem(deps: WireA2ADeps): () => void {
+export function wireA2ASubsystem(deps: WireA2ADeps): A2AController {
   const { subagentManager, messageSendSession, messageStreamSession } = deps
 
   let taskStore: A2ATaskStore | null = null
@@ -277,9 +277,39 @@ export function wireA2ASubsystem(deps: WireA2ADeps): () => void {
     })
   })
 
-  return function dispose(): void {
+  // dispose() declared as const first so controller can capture it; assigned below.
+  // eslint-disable-next-line prefer-const
+  let dispose!: () => void
+
+  // Controller for IPC handlers + UI introspection.
+  const controller: A2AController = {
+    getServer: () => server,
+    getTaskStore: () => taskStore,
+    getClients: () => clients,
+    testConnection: async (name: string) => {
+      const client = clients.get(name)
+      if (!client) return { ok: false, error: `Remote agent '${name}' not found`, latencyMs: 0 }
+      return client.testConnection()
+    },
+    dispose: () => dispose(),
+  }
+
+  dispose = (): void => {
     offChange()
     void stopServer()
     destroyClients()
   }
+
+  return controller
+}
+
+/**
+ * A2AController — IPC handlers 通过这个接口查询 server 状态 / 触发 client 调用。
+ */
+export interface A2AController {
+  getServer(): A2AServer | null
+  getTaskStore(): A2ATaskStore | null
+  getClients(): Map<string, A2AClient>
+  testConnection(name: string): Promise<{ ok: boolean; card?: A2AAgentCard; error?: string; latencyMs: number }>
+  dispose(): void
 }

@@ -27,6 +27,12 @@ import type {
   RecipeRun,
   RecipeRunRequest,
 } from './recipe'
+import type {
+  A2ARemoteAgent,
+  A2AServerConfig,
+  A2AAgentCard,
+  A2AServerStatus,
+} from './a2a'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -218,6 +224,24 @@ export interface IpcApi {
   'recipes:refresh': () => Promise<number>
   'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
   'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
+
+  // A2A (Phase D9 — cross-process agent protocol)
+  /** Snapshot of A2A server lifecycle + task-store counters. */
+  'a2a:getServerStatus': () => Promise<A2AServerStatus>
+  /** Start the configured A2A server (idempotent if already running). */
+  'a2a:startServer': () => Promise<{ success: boolean; port?: number; error?: string }>
+  /** Stop the running A2A server (no-op if already stopped). */
+  'a2a:stopServer': () => Promise<{ success: boolean }>
+  /** Test reachability of a remote A2A agent by name. */
+  'a2a:testConnection': (name: string) => Promise<{ ok: boolean; card?: A2AAgentCard; error?: string; latencyMs: number }>
+  /** List configured remote A2A agents (apiKey fields masked). */
+  'a2a:listRemoteAgents': () => Promise<A2ARemoteAgent[]>
+  /** Persist (create or replace) a remote A2A agent. apiKey preserved if already masked. */
+  'a2a:saveRemoteAgent': (agent: A2ARemoteAgent) => Promise<{ success: boolean; error?: string }>
+  /** Delete a remote A2A agent by name. */
+  'a2a:deleteRemoteAgent': (name: string) => Promise<{ success: boolean }>
+  /** Validate A2AServerConfig shape before save (port range, bindAddress, apiKey length). */
+  'a2a:testServerConfig': (cfg: A2AServerConfig) => Promise<{ valid: boolean; errors: string[] }>
 }
 
 /**
@@ -237,4 +261,6 @@ export interface IpcEventMap {
   'waterline:change': (state: ContextState) => void
   'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
   'menu:openProject': (projectPath: string) => void
+  /** A2A server lifecycle change (start/stop/restart). Carries the same payload as `a2a:getServerStatus`. */
+  'a2a:serverStatusChange': (status: A2AServerStatus) => void
 }

@@ -16,6 +16,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { URL } from 'node:url'
+import type { Socket } from 'node:net'
 import {
   encodeSendMessageRequest,
   decodeArtifact,
@@ -44,7 +45,7 @@ export interface A2ACallOptions {
 }
 
 export class A2AClient {
-  private keepaliveSockets: Set<import('node:net').Socket> = new Set()
+  private keepaliveSockets: Set<Socket> = new Set()
 
   constructor(private readonly agent: A2ARemoteAgent) {}
 

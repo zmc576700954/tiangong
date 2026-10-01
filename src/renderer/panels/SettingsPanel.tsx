@@ -4,6 +4,7 @@ import { cn } from '../lib/utils'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { SubagentTypesTab } from './SubagentTypesTab'
 import { ContextWaterlineTab } from './ContextWaterlineTab'
+import { A2ASettingsTab } from './A2ASettingsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
@@ -114,6 +115,7 @@ export function SettingsPanel() {
           <TabsTrigger value="general">基础设置</TabsTrigger>
           <TabsTrigger value="subagents">子代理类型</TabsTrigger>
           <TabsTrigger value="waterline">上下文水位</TabsTrigger>
+          <TabsTrigger value="a2a">A2A</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="space-y-5">
@@ -235,6 +237,10 @@ export function SettingsPanel() {
 
         <TabsContent value="waterline">
           <ContextWaterlineTab onSave={() => { /* persisted via IPC inside the tab */ }} />
+        </TabsContent>
+
+        <TabsContent value="a2a">
+          <A2ASettingsTab />
         </TabsContent>
       </Tabs>
     </div>
