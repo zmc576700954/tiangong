@@ -7,7 +7,7 @@
  *                  连续超时计数、checkInstalled 失败抛 AdapterError
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi, type Mock } from 'vitest'
 import { FallbackRouter } from '../fallback-router'
 import { AdapterHealthMonitor } from '../adapter-health-monitor'
 import type { AdapterRegistry } from '../adapter-registry'
@@ -161,7 +161,7 @@ describe('FallbackRouter', () => {
       healthMonitor.recordCall('claude-code', false, 4000, 'fail')
       const router = new FallbackRouter(registry, healthMonitor, onUnhealthy)
       const capturedConfig: AgentSessionConfig[] = []
-      ;(primary.startSession as any) = vi.fn(async (cfg: AgentSessionConfig) => {
+      ;(primary.startSession as Mock<(cfg: AgentSessionConfig) => Promise<AgentSession>>) = vi.fn(async (cfg: AgentSessionConfig) => {
         capturedConfig.push(cfg)
         return {
           id: `s-${Date.now()}`,
@@ -203,8 +203,8 @@ describe('FallbackRouter', () => {
       // 单次 resolveSession：primary 失败 → 立即移到 mcp；mcp 成功
       await router.resolveSession('claude-code', ['claude-code', 'mcp'], sampleConfig())
       // primary was attempted once (the for-loop continues to next adapter on failure)
-      expect((primary.startSession as any).mock.calls.length).toBe(1)
-      expect((fallback.startSession as any).mock.calls.length).toBe(1)
+      expect((primary.startSession as Mock).mock.calls.length).toBe(1)
+      expect((fallback.startSession as Mock).mock.calls.length).toBe(1)
       // primary's failure is tracked in timeout counts but never cleared (no success)
       expect(router.getTimeoutCounts().get('claude-code')).toBe(1)
     })
@@ -221,7 +221,7 @@ describe('FallbackRouter', () => {
       expect(router.getTimeoutCounts().get('claude-code')).toBe(1)
 
       // Second call: re-prime primary to succeed so we can verify the count gets cleared
-      ;(primary.startSession as any).mockImplementation(async (cfg: AgentSessionConfig) => ({
+      ;(primary.startSession as Mock<(cfg: AgentSessionConfig) => Promise<AgentSession>>).mockImplementation(async (cfg: AgentSessionConfig) => ({
         id: `s-${Math.random()}`,
         adapterName: 'claude-code',
         config: cfg,
@@ -243,8 +243,8 @@ describe('FallbackRouter', () => {
       const router = new FallbackRouter(registry, healthMonitor, onUnhealthy)
       // Single resolveSession: primary fails once, then mcp succeeds.
       await router.resolveSession('claude-code', ['claude-code', 'mcp'], sampleConfig())
-      expect((primary.startSession as any).mock.calls.length).toBe(1)
-      expect((fallback.startSession as any).mock.calls.length).toBe(1)
+      expect((primary.startSession as Mock).mock.calls.length).toBe(1)
+      expect((fallback.startSession as Mock).mock.calls.length).toBe(1)
     })
 
     it('throws AdapterError when the entire chain fails', async () => {
@@ -265,8 +265,8 @@ describe('FallbackRouter', () => {
       const router = new FallbackRouter(registry, healthMonitor, onUnhealthy)
       // Single resolveSession: primary fails once, then mcp succeeds.
       await router.resolveSession('claude-code', ['claude-code', 'mcp'], sampleConfig())
-      expect((primary.startSession as any).mock.calls.length).toBe(1)
-      expect((fallback.startSession as any).mock.calls.length).toBe(1)
+      expect((primary.startSession as Mock).mock.calls.length).toBe(1)
+      expect((fallback.startSession as Mock).mock.calls.length).toBe(1)
     })
 
     it('skips unregistered adapters in the chain (no throw, marks as failure)', async () => {
