@@ -13,6 +13,7 @@ import {
   BaseAdapter,
   DISPATCH_SUBAGENT_TOOL_NAME,
   DISPATCH_SUBAGENT_TOOL_SCHEMA,
+  buildDelegateRecipeToolSchema,
 } from './base'
 import { McpClient } from '../mcp/client'
 import { generateId } from '../shared/env'
@@ -648,6 +649,16 @@ export class McpAdapter extends BaseAdapter {
             description: DISPATCH_SUBAGENT_TOOL_SCHEMA.description,
             inputSchema: DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema as unknown as Record<string, unknown>,
           })
+
+          // Phase D5b: expose delegate_recipe tool when this session has allowedDelegates
+          const delegateSchema = buildDelegateRecipeToolSchema(session.config.allowedDelegates)
+          if (delegateSchema) {
+            tools.unshift({
+              name: delegateSchema.name,
+              description: delegateSchema.description,
+              inputSchema: delegateSchema.input_schema as unknown as Record<string, unknown>,
+            })
+          }
         }
 
         // Phase 4: subagentAllowedTools restriction is enforced for Claude Code's SDK tools

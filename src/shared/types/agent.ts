@@ -55,6 +55,12 @@ export interface AgentSessionConfig {
   subagentAllowedTools?: string[] | '*'
   /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
   verifyOnly?: boolean
+  /**
+   * Phase D5b: 此 session 可 delegate 给哪些 recipe id（白名单）。
+   * adapter 据此决定是否暴露 `delegate_recipe` 工具。
+   * 缺省/空数组 → 不暴露 delegate_recipe 工具。
+   */
+  allowedDelegates?: string[]
 }
 
 export interface BugContext {

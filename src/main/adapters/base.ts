@@ -927,8 +927,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /**
    * Phase 5: Build the inline tool prompt describing dispatch_subagent.
    * CLI adapters without native tool support inject this into their prompt.
+   *
+   * Phase D5b: when session.config.allowedDelegates is non-empty, also append
+   * a delegate_recipe tool description with the concrete enum of allowed recipes.
    */
-  protected buildSubagentToolPrompt(): string {
+  protected buildSubagentToolPrompt(allowedDelegates?: string[]): string {
     const schema = DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema
     const required = schema.required as unknown as string[]
     const properties = schema.properties as unknown as Record<
@@ -942,7 +945,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       return `- ${name}${isRequired ? '' : ' (optional)'}: ${def.description}${enumPart}`
     })
 
-    return [
+    const parts: string[] = [
       '## Available Tools',
       '',
       'You can call the following tool by emitting exactly one JSON object wrapped in `<tool_call>` and `</tool_call>` tags.',
@@ -957,7 +960,25 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       'Example call:',
       `<tool_call>{"tool": "${DISPATCH_SUBAGENT_TOOL_NAME}", "args": {"agent_type": "explore", "description": "Find usages", "prompt": "Find all usages of Foo in src/.", "allowed_files": ["src/foo.ts"]}}</tool_call>`,
       '',
-    ].join('\n')
+    ]
+
+    // Phase D5b: delegate_recipe tool description
+    if (allowedDelegates && allowedDelegates.length > 0) {
+      parts.push(
+        `Tool: ${DELEGATE_RECIPE_TOOL_NAME}`,
+        `Description: ${DELEGATE_RECIPE_TOOL_SCHEMA_BASE.description}`,
+        '',
+        'Parameters:',
+        `- recipe_id (required): Which sibling Recipe to delegate to. Must be one of: ${allowedDelegates.join(', ')}.`,
+        `- inputs (optional): Input parameters for the delegated recipe (object).`,
+        '',
+        'Example call:',
+        `<tool_call>{"tool": "${DELEGATE_RECIPE_TOOL_NAME}", "args": {"recipe_id": "${allowedDelegates[0]}", "inputs": {}}}</tool_call>`,
+        '',
+      )
+    }
+
+    return parts.join('\n')
   }
 
   /**
@@ -1013,7 +1034,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     }
 
     const history: ToolHistoryEntry[] = []
-    const toolPrompt = this.buildSubagentToolPrompt()
+    const toolPrompt = this.buildSubagentToolPrompt(session.config.allowedDelegates)
     const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildCommandPrompt(command)}`
     const startTime = Date.now()
 
@@ -1049,6 +1070,36 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
       const results = await Promise.all(
         calls.map(async (call) => {
+          if (call.tool === DELEGATE_RECIPE_TOOL_NAME) {
+            // Phase D5b: delegate_recipe 路由到 SubagentManager.invoke(agentType='recipe:<id>')
+            const allowed = session.config.allowedDelegates
+            const recipeId = String(call.args.recipe_id ?? '')
+            const inputs = (call.args.inputs && typeof call.args.inputs === 'object'
+              ? call.args.inputs
+              : {}) as Record<string, string | number | boolean>
+            if (!allowed || allowed.length === 0) {
+              return { tool: call.tool, result: `delegate_recipe unavailable: session has no allowed_delegates` }
+            }
+            if (!allowed.includes(recipeId)) {
+              return { tool: call.tool, result: `delegate_recipe refused: "${recipeId}" not in allowed_delegates (${allowed.join(', ')})` }
+            }
+            try {
+              const result = await this.subagentManager!.invoke({
+                parentSessionId: session.id,
+                agentType: `recipe:${recipeId}`,
+                description: `delegate ${recipeId}`,
+                prompt: '',
+                inputs,
+                // delegate 不再向下传递 allowedDelegates：避免 delegate → delegate 链
+                // 任意扩张 recipe 嵌套图（D5c 再考虑链路复用）。
+                allowedDelegates: undefined,
+              })
+              return { tool: call.tool, result: result.resultText }
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              return { tool: call.tool, result: `delegate_recipe failed: ${msg}` }
+            }
+          }
           if (call.tool !== DISPATCH_SUBAGENT_TOOL_NAME) {
             return { tool: call.tool, result: `Unknown tool: ${call.tool}` }
           }
@@ -1315,6 +1366,79 @@ export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
     required: ['agent_type', 'description', 'prompt'],
   },
 } as const
+
+/**
+ * Phase D5b: shared schema for the delegate_recipe tool.
+ *
+ * 与 dispatch_subagent 不同：
+ *   - agent_type 必须是 recipe:<id>，enum 由 allowed_delegates 注入
+ *   - inputs 字段显式声明要传给目标 recipe 的 input 参数
+ *
+ * delegate_recipe 工具只在 session 显式声明 allowedDelegates 时被注入。
+ * recipe <-> recipe 路径：parent recipe → agent 步骤 → child session（继承 allowedDelegates）
+ * → child session 暴露 delegate_recipe。
+ */
+export const DELEGATE_RECIPE_TOOL_NAME = 'delegate_recipe'
+
+export const DELEGATE_RECIPE_TOOL_SCHEMA_BASE = {
+  name: DELEGATE_RECIPE_TOOL_NAME,
+  description: 'Delegate the current task to a sibling Recipe (YAML workflow) declared in allowed_delegates. The delegated recipe runs as a sub-recipe and its final output is returned as the tool result. Use this to compose pre-defined workflows without rebuilding the DAG.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      recipe_id: {
+        type: 'string' as const,
+        description: 'Which sibling Recipe to delegate to. Must be one of allowed_delegates.',
+      },
+      inputs: {
+        type: 'object' as const,
+        description: 'Input parameters for the delegated recipe (matches its declared inputs_schema).',
+      },
+    },
+    required: ['recipe_id'],
+  },
+} as const
+
+/**
+ * Build the delegate_recipe tool schema with a concrete enum of allowed recipe ids.
+ * Used by adapters (BaseAdapter inline prompt / McpAdapter tools array) when the
+ * parent session declares allowedDelegates.
+ *
+ * 空数组 → 返回 null（adapter 不暴露此工具）。
+ */
+export function buildDelegateRecipeToolSchema(allowedDelegates: string[] | undefined): {
+  name: string
+  description: string
+  input_schema: {
+    type: 'object'
+    properties: {
+      recipe_id: { type: 'string'; description: string; enum: string[] }
+      inputs: { type: 'object'; description: string }
+    }
+    required: string[]
+  }
+} | null {
+  if (!allowedDelegates || allowedDelegates.length === 0) return null
+  return {
+    name: DELEGATE_RECIPE_TOOL_NAME,
+    description: DELEGATE_RECIPE_TOOL_SCHEMA_BASE.description,
+    input_schema: {
+      type: 'object',
+      properties: {
+        recipe_id: {
+          type: 'string',
+          description: `Which sibling Recipe to delegate to. Must be one of: ${allowedDelegates.join(', ')}.`,
+          enum: [...allowedDelegates],
+        },
+        inputs: {
+          type: 'object',
+          description: 'Input parameters for the delegated recipe (matches its declared inputs_schema).',
+        },
+      },
+      required: ['recipe_id'],
+    },
+  }
+}
 
 interface InlineToolCall {
   tool: string

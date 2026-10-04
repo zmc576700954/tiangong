@@ -1,7 +1,10 @@
 /**
  * Recipe Runner
  *
- * 顺序执行 Recipe 的所有步骤（拓扑排序简化版：按数组顺序；depends_on 仅做运行前校验）。
+ * 执行 Recipe 步骤（DAG + 并行批处理）：
+ *   - 步骤依赖 `depends_on` 形成 DAG；执行时按拓扑分层（wave）。
+ *   - 同一 wave 内的步骤：连续 parallel=true 的步聚合为并行批，串行步单独成批。
+ *   - 串行/并行混合 wave 中：先跑并行批（含其内部并发），再跑串行批，依此类推。
  *
  * 步骤类型分发：
  *   - agent → SubagentManager.invoke()
@@ -27,6 +30,7 @@ import type {
   RecipeDefinition,
   RecipeAgentStep,
   RecipeShellStep,
+  RecipeStep,
   RecipeRun,
   RecipeRunRequest,
   RecipeRunStepRecord,
@@ -60,6 +64,7 @@ async function runAgentStep(
   parentSessionId: string,
   deps: RecipeRunnerDeps,
   signal: AbortSignal,
+  context: StepExecutionContext,
 ): Promise<string> {
   if (!deps.subagentManager) {
     throw new BizGraphError(
@@ -67,16 +72,26 @@ async function runAgentStep(
       ErrorCode.RECIPE_RUN_FAILED,
     )
   }
+  // 在 recipe:<id> 前缀路径上，recipeRunner 透传 inputs 到 SubagentManager。
+  const invokeArgs: Parameters<typeof deps.subagentManager.invoke>[0] = {
+    parentSessionId,
+    agentType: step.agent_type,
+    description: step.description,
+    prompt: resolvedPrompt,
+    adapterName: step.adapter_name,
+    nodeId: step.node_id,
+    allowedFiles: step.allowed_files,
+  }
+  if (step.agent_type.startsWith('recipe:') && context.recipeInputs) {
+    invokeArgs.inputs = context.recipeInputs
+  }
+  // 透传 allowedDelegates：recipe 子节点应当继承当前 recipe 的 delegate 白名单
+  //（除非该步自行覆盖 —— 当前未开放 step 级覆盖，全部用 recipe 级）。
+  if (context.allowedDelegates && context.allowedDelegates.length > 0) {
+    invokeArgs.allowedDelegates = context.allowedDelegates
+  }
   const result = await Promise.race([
-    deps.subagentManager.invoke({
-      parentSessionId,
-      agentType: step.agent_type,
-      description: step.description,
-      prompt: resolvedPrompt,
-      adapterName: step.adapter_name,
-      nodeId: step.node_id,
-      allowedFiles: step.allowed_files,
-    }),
+    deps.subagentManager.invoke(invokeArgs),
     new Promise<never>((_, reject) => {
       if (signal.aborted) {
         reject(new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED))
@@ -201,8 +216,118 @@ async function runShellStep(
 }
 
 // ============================================
-// RecipeRunner
+// DAG + 并行批
 // ============================================
+
+/**
+ * 一个并行批：要么 1 个串行步，要么 ≥1 个 parallel=true 步并发执行。
+ * 批内的所有步属于同一个 wave（依赖前序 wave 全部完成）。
+ */
+interface StepBatch {
+  /** 批内步索引（指向 def.steps）。 */
+  stepIndices: number[]
+  /** true = 批内并发；false = 批内只有 1 个串行步。 */
+  parallel: boolean
+}
+
+/**
+ * 步骤执行时携带的上下文：
+ *   - recipeInputs：recipe 级 inputs（用于透传到 recipe:<id> 子步骤）
+ *   - allowedDelegates：当前 recipe 暴露的 delegate 白名单（透传到子 session）
+ */
+interface StepExecutionContext {
+  recipeInputs: Record<string, string | number | boolean>
+  allowedDelegates?: string[]
+}
+
+/**
+ * 给定 Recipe.steps 计算 DAG 拓扑分层（waves）：
+ *   - wave 0：所有无 depends_on 的步
+ *   - wave n+1：所有 dep 都在前序 wave 中的步
+ *   - 环检测：若某步的依赖无法被任何 wave 满足 → BizGraphError(RECIPE_INVALID_STEP)
+ *
+ * 不在数组顺序中、仅依赖满足即可进入 wave；同一 wave 内按数组顺序排列
+ * 以保证 deterministic 输出与可读性。
+ */
+export function computeWaves(steps: RecipeStep[]): number[][] {
+  // step → 它的 id/name（用于依赖解析）
+  const labelOf = (s: RecipeStep): string | undefined => s.id ?? s.name
+  const labelToIndex = new Map<string, number>()
+  for (let i = 0; i < steps.length; i++) {
+    const lbl = labelOf(steps[i]!)
+    if (lbl) labelToIndex.set(lbl, i)
+  }
+
+  const inWave: number[] = new Array<number>(steps.length).fill(-1)
+  const remaining = new Set<number>(steps.map((_, i) => i))
+  const waves: number[][] = []
+  let currentWave = 0
+
+  while (remaining.size > 0) {
+    const ready: number[] = []
+    for (const idx of remaining) {
+      const s = steps[idx]!
+      const deps = s.depends_on ?? []
+      const allResolved = deps.every((dep) => {
+        const depIdx = labelToIndex.get(dep)
+        return depIdx !== undefined && inWave[depIdx] !== -1
+      })
+      if (allResolved) ready.push(idx)
+    }
+    if (ready.length === 0) {
+      // 仍有未解析的步 → 环或悬空依赖。yaml-loader 已经做过悬空校验，
+      // 这里仅可能是环（depends_on 形成环）。
+      throw new BizGraphError(
+        `Recipe step DAG has a cycle or unresolved dependency among steps: ${[...remaining]
+          .map((i) => steps[i]!.id ?? steps[i]!.name ?? `#${i}`)
+          .join(', ')}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    // 同一 wave 内按数组顺序排列
+    ready.sort((a, b) => a - b)
+    for (const idx of ready) {
+      inWave[idx] = currentWave
+      remaining.delete(idx)
+    }
+    waves.push(ready)
+    currentWave++
+  }
+
+  return waves
+}
+
+/**
+ * 把单个 wave 切分成串行/并行子批：
+ *   - 连续 parallel=true 的步合并为一个并行批
+ *   - 每个 parallel=undefined/false 的步单独成串行批
+ *
+ * 这样串行步和并行批在 wave 内交替出现，整体仍按数组顺序推进。
+ */
+export function batchWave(indices: number[], steps: RecipeStep[]): StepBatch[] {
+  const batches: StepBatch[] = []
+  let current: number[] = []
+  let currentParallel = false
+  for (const idx of indices) {
+    const isParallel = steps[idx]!.kind === 'agent' && (steps[idx] as RecipeAgentStep).parallel === true
+    if (isParallel) {
+      if (currentParallel && current.length > 0) {
+        current.push(idx)
+      } else {
+        if (current.length > 0) batches.push({ stepIndices: current, parallel: currentParallel })
+        current = [idx]
+        currentParallel = true
+      }
+    } else {
+      if (current.length > 0) batches.push({ stepIndices: current, parallel: currentParallel })
+      batches.push({ stepIndices: [idx], parallel: false })
+      current = []
+      currentParallel = false
+    }
+  }
+  if (current.length > 0) batches.push({ stepIndices: current, parallel: currentParallel })
+  return batches
+}
 
 export class RecipeRunner {
   private activeRuns = new Map<string, AbortController>()
@@ -290,53 +415,118 @@ export class RecipeRunner {
     signal: AbortSignal,
   ): Promise<void> {
     const inputs = request.inputs ?? {}
-    for (const step of def.steps) {
+    const execCtx: StepExecutionContext = {
+      recipeInputs: inputs,
+      allowedDelegates: def.allowed_delegates && def.allowed_delegates.length > 0
+        ? def.allowed_delegates
+        : undefined,
+    }
+
+    // DAG 拓扑分层；wave 内再切批
+    const waves = computeWaves(def.steps)
+    for (const waveIndices of waves) {
       if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
-      const record: RecipeRunStepRecord = {
-        step_id: step.id ?? step.name ?? `step_${run.steps.length}`,
-        step_name: step.name ?? step.id ?? `Step ${run.steps.length + 1}`,
-        kind: step.kind,
-        status: 'running',
-        started_at: Date.now(),
+      const batches = batchWave(waveIndices, def.steps)
+      for (const batch of batches) {
+        if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
+        await this.executeBatch(def, request, run, batch, execCtx, signal)
       }
-      run.steps.push(record)
-      try {
-        if (step.kind === 'agent') {
-          const resolvedPrompt = applyInputTemplate(step.prompt, inputs, def.inputs)
-          const result = await runAgentStep(
-            step,
-            resolvedPrompt,
-            request.parentSessionId ?? `recipe-${run.id}`,
-            this.deps,
-            signal,
+    }
+  }
+
+  /**
+   * 执行一个批：
+   *   - serial 批：1 个步，await
+   *   - parallel 批：≥1 个步，并发执行
+   *
+   * 错误处理：使用 Promise.allSettled 而非 Promise.all，确保所有并发步都有机会
+   * 完成（成功或失败）并写入步骤记录，再判断批是否失败。
+   * 「同批中一个失败 → 整个批失败」语义：收集所有失败原因，抛首个给上层。
+   */
+  private async executeBatch(
+    def: RecipeDefinition,
+    request: RecipeRunRequest,
+    run: RecipeRun,
+    batch: StepBatch,
+    execCtx: StepExecutionContext,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (batch.parallel) {
+      const results = await Promise.allSettled(
+        batch.stepIndices.map((idx) => this.executeOneStep(def, request, run, idx, execCtx, signal)),
+      )
+      const firstRejection = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+      if (firstRejection) {
+        // 重新抛出首个失败原因（D5c 再加 on_failure 策略：retry / skip）
+        throw firstRejection.reason instanceof Error
+          ? firstRejection.reason
+          : new BizGraphError(String(firstRejection.reason), ErrorCode.RECIPE_RUN_FAILED)
+      }
+      return
+    }
+    // serial 批：长度为 1
+    await this.executeOneStep(def, request, run, batch.stepIndices[0]!, execCtx, signal)
+  }
+
+  /**
+   * 执行单个步（agent 或 shell）。失败时立即 throw，由上层 executeSteps 捕获。
+   */
+  private async executeOneStep(
+    def: RecipeDefinition,
+    request: RecipeRunRequest,
+    run: RecipeRun,
+    stepIdx: number,
+    execCtx: StepExecutionContext,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const step = def.steps[stepIdx]!
+    if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
+    const inputs = request.inputs ?? {}
+    const record: RecipeRunStepRecord = {
+      step_id: step.id ?? step.name ?? `step_${stepIdx}`,
+      step_name: step.name ?? step.id ?? `Step ${stepIdx + 1}`,
+      kind: step.kind,
+      status: 'running',
+      started_at: Date.now(),
+    }
+    run.steps.push(record)
+    try {
+      if (step.kind === 'agent') {
+        const resolvedPrompt = applyInputTemplate(step.prompt, inputs, def.inputs)
+        const result = await runAgentStep(
+          step,
+          resolvedPrompt,
+          request.parentSessionId ?? `recipe-${run.id}`,
+          this.deps,
+          signal,
+          execCtx,
+        )
+        record.output = result
+        run.outputs[record.step_id] = result
+      } else {
+        const wd = (await this.deps.getWorkingDirectory?.()) ?? null
+        if (!wd) {
+          throw new BizGraphError(
+            'Shell steps require a working directory; none configured',
+            ErrorCode.RECIPE_RUN_FAILED,
           )
-          record.output = result
-          run.outputs[record.step_id] = result
-        } else {
-          const wd = (await this.deps.getWorkingDirectory?.()) ?? null
-          if (!wd) {
-            throw new BizGraphError(
-              'Shell steps require a working directory; none configured',
-              ErrorCode.RECIPE_RUN_FAILED,
-            )
-          }
-          const shellResult = await runShellStep(step, wd, signal)
-          record.output = shellResult.stdout + (shellResult.stderr ? `\n[stderr]\n${shellResult.stderr}` : '')
-          if (shellResult.exitCode !== 0) {
-            throw new BizGraphError(
-              `Shell step "${record.step_name}" exited with code ${shellResult.exitCode}`,
-              ErrorCode.RECIPE_RUN_FAILED,
-            )
-          }
         }
-        record.status = 'succeeded'
-        record.finished_at = Date.now()
-      } catch (err) {
-        record.status = 'failed'
-        record.finished_at = Date.now()
-        record.error = err instanceof Error ? err.message : String(err)
-        throw err
+        const shellResult = await runShellStep(step, wd, signal)
+        record.output = shellResult.stdout + (shellResult.stderr ? `\n[stderr]\n${shellResult.stderr}` : '')
+        if (shellResult.exitCode !== 0) {
+          throw new BizGraphError(
+            `Shell step "${record.step_name}" exited with code ${shellResult.exitCode}`,
+            ErrorCode.RECIPE_RUN_FAILED,
+          )
+        }
       }
+      record.status = 'succeeded'
+      record.finished_at = Date.now()
+    } catch (err) {
+      record.status = 'failed'
+      record.finished_at = Date.now()
+      record.error = err instanceof Error ? err.message : String(err)
+      throw err
     }
   }
 
