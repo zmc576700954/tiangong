@@ -6,10 +6,10 @@
  */
 import { useCallback } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { computeDagreLayout, type LayoutOptions } from '../layout'
+import { computeTreeLayout, type TreeLayoutOptions } from '../layouts/tree-layout'
 import { useGraphStore } from '../../store/graphStore'
 
-export function useAutoLayout(layoutOptions?: LayoutOptions) {
+export function useAutoLayout(layoutOptions?: TreeLayoutOptions) {
   const { getNodes, getEdges, setNodes, fitView } = useReactFlow()
   const batchUpdatePositions = useGraphStore((s) => s.batchUpdatePositions)
 
@@ -18,7 +18,7 @@ export function useAutoLayout(layoutOptions?: LayoutOptions) {
     const edges = getEdges()
     if (nodes.length === 0) return
 
-    const layouted = computeDagreLayout(nodes, edges, layoutOptions)
+    const { nodes: layouted } = computeTreeLayout(nodes, edges, layoutOptions)
 
     // 更新画布
     setNodes(layouted)
