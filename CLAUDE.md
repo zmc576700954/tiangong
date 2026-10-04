@@ -72,7 +72,7 @@ BizGraph is a three-process Electron app:
 
 **Database** (`src/main/database.ts`) — better-sqlite3 stored in the user's app data directory. Schema is defined inline in `migrate()` with `rebuildTableIfNeeded()` for non-destructive migrations and `runIncrementalMigrations()` for additive changes. Uses WAL mode and a schema checksum cache for fast startup.
 
-Twelve tables:
+Thirteen tables. The 12 SQL tables below plus `recipes` (Recipe metadata cached from `<userData>/recipes/*.yaml` and `<workingDirectory>/.bizgraph/recipes/*.yaml`; recipe_runs lives in memory only — file is the source of truth at write time, DB is the cache at read time):
 - `graphs` — online/dev graphs per project（含 writeback_disabled 项目级开关）
 - `nodes` — graph nodes with type, status, position, metadata
 - `edges` — node relationships（含 wiki-link 类型的 Wiki 关系边）
