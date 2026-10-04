@@ -1,6 +1,7 @@
-import { AlertTriangle, Info, X, RotateCw } from 'lucide-react'
+import { AlertTriangle, Info, RotateCw } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { cn } from '@/lib/utils'
+import { FloatingPanel } from '../ui/FloatingPanel'
 import type { LintReport, LintIssue } from '@shared/types/wiki'
 
 interface LintPanelProps {
@@ -28,35 +29,30 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
   const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized']
 
   return (
-    <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">图检查</span>
-          <span className="text-[10px] text-muted-foreground">
-            页面 {report.stats.nodeCount} · 链接 {report.stats.edgeCount} · 社区 {report.stats.communityCount}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onRecompute}
-            title="重新计算社区"
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-          >
-            <RotateCw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            title="关闭"
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+    <FloatingPanel
+      isOpen
+      onClose={onClose}
+      title="图检查"
+      variant="corner"
+      width="md"
+      subtitle={
+        <span>
+          页面 {report.stats.nodeCount} · 链接 {report.stats.edgeCount} · 社区 {report.stats.communityCount}
+        </span>
+      }
+      headerActions={
+        <button
+          type="button"
+          onClick={onRecompute}
+          title="重新计算社区"
+          aria-label="重新计算社区"
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+        >
+          <RotateCw className="w-3.5 h-3.5" />
+        </button>
+      }
+    >
+      <div className="h-full overflow-y-auto p-3 space-y-3">
         {report.issues.length === 0 ? (
           <p className="text-xs text-muted-foreground text-center py-4">未发现异常</p>
         ) : (
@@ -110,7 +106,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
           })
         )}
       </div>
-    </div>
+    </FloatingPanel>
   )
 }
 

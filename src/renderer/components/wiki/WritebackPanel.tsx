@@ -15,6 +15,7 @@ import { CheckSquare, MapPin, Square, X, ChevronDown, ChevronRight, AlertTriangl
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
+import { FloatingPanel } from '../ui/FloatingPanel'
 import type { WritebackItem, WritebackKind } from '@shared/types/wiki'
 
 interface WritebackPanelProps {
@@ -111,27 +112,19 @@ export function WritebackPanel({
   }, [selected, onBatchDiscard])
 
   return (
-    <div className="absolute top-16 right-4 z-50 w-96 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
-      {/* 标题栏 + 选中计数 */}
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">审核队列</span>
-          <span className="text-[10px] text-muted-foreground">
-            待审核 {items.length}
-            {selected.size > 0 && ` · 已选 ${selected.size}`}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          title="关闭"
-          aria-label="关闭审核队列"
-          className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
+    <FloatingPanel
+      isOpen
+      onClose={onClose}
+      title="审核队列"
+      variant="corner"
+      width="lg"
+      subtitle={
+        <span>
+          待审核 {items.length}
+          {selected.size > 0 && ` · 已选 ${selected.size}`}
+        </span>
+      }
+    >
       {/* 错误条 */}
       {lastError && (
         <div
@@ -148,7 +141,7 @@ export function WritebackPanel({
               aria-label="关闭错误提示"
               className="p-0.5 rounded hover:bg-red-100 transition-colors"
             >
-              <X className="w-3 h-3" />
+              <X className="w-3 h-3" aria-hidden="true" />
             </button>
           )}
         </div>
@@ -193,7 +186,7 @@ export function WritebackPanel({
       )}
 
       {/* 列表 */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+      <div className="h-full overflow-y-auto p-3 space-y-2">
         {items.length === 0 ? (
           <p className="text-xs text-muted-foreground text-center py-4">暂无待审核的写回项</p>
         ) : (
@@ -211,7 +204,7 @@ export function WritebackPanel({
           ))
         )}
       </div>
-    </div>
+    </FloatingPanel>
   )
 }
 
