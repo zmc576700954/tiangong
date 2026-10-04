@@ -21,7 +21,7 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
-import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from './wiki'
+import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem, RollbackResult } from './wiki'
 import type {
   RecipeDefinition,
   RecipeRun,
@@ -75,6 +75,8 @@ export interface IpcApi {
   'wiki:countWriteback': (graphId: string) => Promise<number>
   'wiki:acceptWriteback': (itemId: string) => Promise<void>
   'wiki:discardWriteback': (itemId: string) => Promise<void>
+  'wiki:rollbackWriteback': (itemId: string) => Promise<RollbackResult>
+  'wiki:listWritebackHistory': (graphId: string, sinceIso?: string) => Promise<WritebackItem[]>
 
   // Agent 操作
   'agent:checkInstalled': (adapterName: string) => Promise<boolean>

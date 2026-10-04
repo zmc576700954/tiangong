@@ -417,5 +417,18 @@ export function registerGraphHandlers(
     writebackService.discard(itemId)
   })
 
+  typedHandle('wiki:rollbackWriteback', async (_, itemId: string) => {
+    ensureString('itemId', itemId, MAX_ID_LEN)
+    return writebackService.rollback(itemId)
+  })
+
+  typedHandle('wiki:listWritebackHistory', async (_, graphId: string, sinceIso?: string) => {
+    ensureString('graphId', graphId, MAX_ID_LEN)
+    if (sinceIso !== undefined && typeof sinceIso !== 'string') {
+      throw new IpcError('sinceIso must be a string when provided', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+    return writebackRepo.listHistory(graphId, sinceIso)
+  })
+
   // 注意: graph:initFromProject 已在 ipc/project.ts 中注册（含路径校验），此处不重复注册
 }

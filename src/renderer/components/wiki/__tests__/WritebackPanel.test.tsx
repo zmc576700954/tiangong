@@ -28,10 +28,12 @@ function makeItem(overrides: Partial<WritebackItem> = {}): WritebackItem {
 
 interface RenderOptions {
   items?: WritebackItem[]
+  historyItems?: WritebackItem[]
   pendingIds?: Set<string>
   lastError?: string | null
   onAccept?: (id: string) => void
   onDiscard?: (id: string) => void
+  onRollback?: (id: string) => void
   onBatchAccept?: (ids: string[]) => void
   onBatchDiscard?: (ids: string[]) => void
   onNavigate?: (id: string) => void
@@ -42,6 +44,7 @@ interface RenderOptions {
 function renderPanel(opts: RenderOptions = {}) {
   const onAccept = opts.onAccept ?? vi.fn()
   const onDiscard = opts.onDiscard ?? vi.fn()
+  const onRollback = opts.onRollback ?? vi.fn()
   const onBatchAccept = opts.onBatchAccept ?? vi.fn()
   const onBatchDiscard = opts.onBatchDiscard ?? vi.fn()
   const onNavigate = opts.onNavigate ?? vi.fn()
@@ -50,10 +53,12 @@ function renderPanel(opts: RenderOptions = {}) {
   const result = render(
     <WritebackPanel
       items={opts.items ?? [makeItem()]}
+      historyItems={opts.historyItems ?? []}
       pendingIds={opts.pendingIds ?? new Set()}
       lastError={opts.lastError}
       onAccept={onAccept}
       onDiscard={onDiscard}
+      onRollback={onRollback}
       onBatchAccept={onBatchAccept}
       onBatchDiscard={onBatchDiscard}
       onNavigate={onNavigate}
@@ -61,7 +66,7 @@ function renderPanel(opts: RenderOptions = {}) {
       onDismissError={onDismissError}
     />,
   )
-  return { ...result, onAccept, onDiscard, onBatchAccept, onBatchDiscard, onNavigate, onClose, onDismissError }
+  return { ...result, onAccept, onDiscard, onRollback, onBatchAccept, onBatchDiscard, onNavigate, onClose, onDismissError }
 }
 
 describe('WritebackPanel — basics', () => {
@@ -338,6 +343,7 @@ describe('WritebackPanel — 选中状态清理', () => {
     const { rerender } = render(
       <WritebackPanel
         items={items1}
+        historyItems={[]}
         pendingIds={new Set()}
         onAccept={vi.fn()}
         onDiscard={vi.fn()}
@@ -354,6 +360,7 @@ describe('WritebackPanel — 选中状态清理', () => {
     rerender(
       <WritebackPanel
         items={items2}
+        historyItems={[]}
         pendingIds={new Set()}
         onAccept={vi.fn()}
         onDiscard={vi.fn()}
@@ -366,5 +373,108 @@ describe('WritebackPanel — 选中状态清理', () => {
 
     // 只剩 1 个 item，selected 应只剩 w1
     expect(screen.getByText(/已选 1/)).toBeTruthy()
+  })
+})
+
+describe('WritebackPanel — Tabs (Pending / History)', () => {
+  it('renders tab switcher with counts', () => {
+    renderPanel({
+      items: [
+        makeItem({ id: 'p1', title: '待审 1' }),
+        makeItem({ id: 'p2', title: '待审 2' }),
+      ],
+      historyItems: [
+        makeItem({ id: 'h1', status: 'accepted', title: '已采纳 1' }),
+        makeItem({ id: 'h2', status: 'rolled_back', title: '已撤回 1' }),
+      ],
+    })
+
+    expect(screen.getByTestId('tab-pending')).toBeTruthy()
+    expect(screen.getByTestId('tab-history')).toBeTruthy()
+    // 默认在 pending tab —— pending 列表可见
+    expect(screen.getByText('待审 1')).toBeTruthy()
+    expect(screen.getByText('待审 2')).toBeTruthy()
+  })
+
+  it('clicking 历史 tab switches view and hides pending items', () => {
+    renderPanel({
+      items: [makeItem({ id: 'p1', title: 'Pending 项' })],
+      historyItems: [
+        makeItem({ id: 'h1', status: 'accepted', title: 'Accepted 项' }),
+      ],
+    })
+
+    fireEvent.click(screen.getByTestId('tab-history'))
+    expect(screen.queryByText('Pending 项')).toBeNull()
+    expect(screen.getByText('Accepted 项')).toBeTruthy()
+  })
+
+  it('shows 历史 empty state when historyItems is empty', () => {
+    renderPanel({ items: [makeItem()], historyItems: [] })
+
+    fireEvent.click(screen.getByTestId('tab-history'))
+    expect(screen.getByText('暂无历史写回项')).toBeTruthy()
+  })
+})
+
+describe('WritebackPanel — History rollback', () => {
+  it('accepted history item renders 撤回 button calling onRollback', () => {
+    const { onRollback } = renderPanel({
+      items: [],
+      historyItems: [makeItem({ id: 'h-acc', status: 'accepted', title: '已采纳日志' })],
+    })
+    fireEvent.click(screen.getByTestId('tab-history'))
+
+    fireEvent.click(screen.getByTestId('rollback-h-acc'))
+    expect(onRollback).toHaveBeenCalledWith('h-acc')
+  })
+
+  it('rolled_back item is grayed and has no rollback button, with step details', () => {
+    renderPanel({
+      items: [],
+      historyItems: [
+        makeItem({
+          id: 'h-rb',
+          status: 'rolled_back',
+          title: '已撤回项',
+          rollbackActions: [
+            { kind: 'removed-section', description: '已从「页面A」移除段落：## 会话日志 · 2026-08-01' },
+          ],
+        }),
+      ],
+    })
+    fireEvent.click(screen.getByTestId('tab-history'))
+
+    const card = screen.getByTestId('history-item-h-rb')
+    expect(card.getAttribute('data-status')).toBe('rolled_back')
+    expect(screen.getByTestId('status-rolled-back')).toBeTruthy()
+    expect(screen.queryByTestId('rollback-h-rb')).toBeNull()
+    expect(screen.getByTestId('rollback-steps')).toBeTruthy()
+    expect(screen.getByText('已从「页面A」移除段落：## 会话日志 · 2026-08-01')).toBeTruthy()
+  })
+
+  it('rolled_back item with no actions still renders grayed card', () => {
+    renderPanel({
+      items: [],
+      historyItems: [makeItem({ id: 'h-rb2', status: 'rolled_back', title: '空步骤已撤回' })],
+    })
+    fireEvent.click(screen.getByTestId('tab-history'))
+
+    const card = screen.getByTestId('history-item-h-rb2')
+    expect(card.getAttribute('data-status')).toBe('rolled_back')
+    expect(screen.getByTestId('status-rolled-back')).toBeTruthy()
+    expect(screen.queryByTestId('rollback-steps')).toBeNull()
+  })
+
+  it('accept/discard buttons are NOT shown on history tab', () => {
+    renderPanel({
+      items: [makeItem({ id: 'p1' })],
+      historyItems: [makeItem({ id: 'h1', status: 'accepted' })],
+    })
+    fireEvent.click(screen.getByTestId('tab-history'))
+
+    expect(screen.queryByText('采纳')).toBeNull()
+    expect(screen.queryByText('丢弃')).toBeNull()
+    expect(screen.queryByText('批量采纳')).toBeNull()
   })
 })

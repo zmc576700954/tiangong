@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import type { MemoryItem } from '@shared/types'
-import type { WritebackItem, WritebackStatus } from '@shared/types/wiki'
+import type { WritebackItem, WritebackStatus, RollbackAction, RollbackResult } from '@shared/types/wiki'
 import type { NodeRepository } from '../repositories/node-repository'
 import type { EdgeRepository } from '../repositories/edge-repository'
 import { normalizeWikiTitle } from '../wiki/markdown-utils'
@@ -14,7 +14,7 @@ export interface WritebackRepoLike {
   create(data: Omit<WritebackItem, 'id' | 'status' | 'createdAt' | 'resolvedAt'>): WritebackItem
   findBySession(sourceSessionId: string): WritebackItem[]
   findById(id: string): WritebackItem | null
-  updateStatus(id: string, status: WritebackStatus): void
+  updateStatus(id: string, status: WritebackStatus, rollbackActions?: RollbackAction[]): void
 }
 
 /** 提供「现有节点标题」查询，用于 new-page concept 去重 */
@@ -148,6 +148,146 @@ export class WritebackService {
     } else {
       doAccept()
     }
+  }
+
+  /**
+   * 撤回已采纳的写回项：恢复 accept 前的图状态。
+   * - append-log：从目标节点的 wikiContent 中按 `## 标题` 行定位移除对应段落
+   * - new-page：删除 accept 时创建的 wiki-page 节点 + 关联边（writeback-derived 语义边 + wiki-link 出/入边）
+   *
+   * 仅 accepted 可 rollback；非 accepted 抛 IpcError。
+   * 部分副作用已被用户手动改动（节点已删 / 段落已被编辑）→ 跳过的动作计入 skippedActions。
+   */
+  rollback(itemId: string): RollbackResult {
+    if (!this.deps) throw new IpcError('WritebackService.rollback 需要 nodeRepo/edgeRepo 依赖', ErrorCode.IPC_INVALID_ARGUMENT)
+    const item = this.repo.findById(itemId)
+    if (!item) throw new IpcError(`写回项不存在: ${itemId}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    if (item.status !== 'accepted') {
+      throw new IpcError(`仅已采纳项可撤回，当前状态: ${item.status}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+
+    const undone: RollbackAction[] = []
+    const skipped: RollbackAction[] = []
+
+    const doRollback = () => {
+      if (item.kind === 'append-log') this.rollbackAppendLog(item, undone, skipped)
+      else this.rollbackNewPage(item, undone, skipped)
+      this.repo.updateStatus(itemId, 'rolled_back', [...undone, ...skipped])
+    }
+
+    if (this.deps!.db) {
+      this.deps!.db.transaction(doRollback)()
+    } else {
+      doRollback()
+    }
+    return {
+      success: true,
+      status: 'rolled_back',
+      undoneActions: undone,
+      skippedActions: skipped,
+    }
+  }
+
+  /**
+   * 从目标节点 wikiContent 中移除 append-log 段落。
+   * 锚定策略：定位 `## 标题` 行；从该行起切到下一个 `## ` 标题或文件末尾。
+   * 段首回退一个 `\n`（accept 拼接留下的边界空行），让原文恢复原状。
+   * 段落已不存在（用户手动改）→ skipped。
+   *
+   * 注意：append-log 总是 append 到 wikiContent 末尾，所以「下一标题」分支主要服务
+   * 「用户手动在 accept 后追加了另一节」这种边角场景——段尾保留 1 个 `\n` 作为节间分隔。
+   */
+  private rollbackAppendLog(item: WritebackItem, undone: RollbackAction[], skipped: RollbackAction[]): void {
+    const node = this.deps!.nodeRepo.findById(item.targetNodeId)
+    if (!node) {
+      skipped.push({
+        kind: 'removed-section',
+        description: `目标节点已被删除：${item.targetNodeId.slice(0, 12)}…，无法定位段落`,
+      })
+      return
+    }
+    const current = node.wikiContent ?? ''
+    const titleEscaped = item.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const headingRe = new RegExp(`^##\\s+${titleEscaped}\\s*$`, 'm')
+    const m = headingRe.exec(current)
+    if (!m) {
+      skipped.push({
+        kind: 'removed-section',
+        description: `未在「${node.title}」中找到段落：## ${item.title}（可能已被手动编辑）`,
+      })
+      return
+    }
+    const headingIdx = m.index
+
+    // 找下一个 ## 标题行作为段末索引
+    const nextHeadingRe = /^##\s+/gm
+    nextHeadingRe.lastIndex = headingIdx + m[0].length
+    const nextMatch = nextHeadingRe.exec(current)
+    const rawSectionEnd = nextMatch ? nextMatch.index : current.length
+
+    // 段首回退一个 `\n`：accept 拼接时遗留 `\n\n`（原段尾 + append 段首），吃掉一个恢复原样
+    let removeStart = headingIdx
+    if (removeStart >= 1 && current[removeStart - 1] === '\n') {
+      removeStart -= 1
+    }
+
+    // 段尾：accept 段尾自带 `\n`；若无下一个标题则连这个 `\n` 一并吃掉（恢复原段尾），
+    // 若有下一个标题则保留 1 个 `\n` 作为下一节与原内容之间的分隔符（Markdown 段间空行）。
+    let removeEnd = rawSectionEnd
+    if (nextMatch && removeEnd > removeStart && current[removeEnd - 1] === '\n') {
+      removeEnd -= 1
+    }
+
+    const removed = current.slice(0, removeStart) + current.slice(removeEnd)
+    this.deps!.nodeRepo.update(node.id, { wikiContent: removed })
+    undone.push({
+      kind: 'removed-section',
+      description: `已从「${node.title}」移除段落：## ${item.title}`,
+    })
+    try {
+      WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
+    } catch (err) {
+      logger.error('rollbackAppendLog syncNodeLinks failed for', node.id, err)
+    }
+  }
+
+  /**
+   * 删除 new-page 创建的 wiki-page 节点及其关联边：
+   * - writeback-derived 语义边（accept 时显式创建）
+   * - 该节点作为 source 或 target 的 wiki-link 边（accept syncNodeLinks 同步产生）
+   * 节点已被用户删除 → skipped；关联边已被清理 → 仅记 done。
+   */
+  private rollbackNewPage(item: WritebackItem, undone: RollbackAction[], skipped: RollbackAction[]): void {
+    const page = this.deps!.nodeRepo
+      .listByGraph(item.graphId)
+      .find((n) => n.type === 'wiki-page' && n.title === item.title)
+    if (!page) {
+      skipped.push({
+        kind: 'deleted-page',
+        description: `页面「${item.title}」已被删除，无法再次撤回`,
+      })
+      return
+    }
+
+    const edges = this.deps!.edgeRepo.listByGraph(item.graphId)
+    const related = edges.filter(
+      (e) =>
+        (e.source === page.id || e.target === page.id) &&
+        (e.edgeType === 'wiki-link' || (e.edgeType === 'semantic' && e.label === 'writeback-derived')),
+    )
+    for (const edge of related) this.deps!.edgeRepo.delete(edge.id)
+    if (related.length > 0) {
+      undone.push({
+        kind: 'deleted-edges',
+        description: `已清理 ${related.length} 条关联边（writeback-derived / wiki-link）`,
+      })
+    }
+
+    this.deps!.nodeRepo.delete(page.id)
+    undone.push({
+      kind: 'deleted-page',
+      description: `已删除页面：${item.title}`,
+    })
   }
 
   private acceptAppendLog(item: WritebackItem): void {

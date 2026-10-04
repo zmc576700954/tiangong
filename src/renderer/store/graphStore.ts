@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
-import type { IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from '@shared/types/wiki'
+import type { IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem, RollbackResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
 import { canTransition } from '@shared/state-machine'
@@ -108,6 +108,12 @@ interface GraphState {
 
   /** 丢弃写回项 */
   discardWriteback: (itemId: string) => Promise<void>
+
+  /** 撤回已采纳的写回项（accepted → rolled_back）；返回 undo/skipped 详情 */
+  rollbackWriteback: (itemId: string) => Promise<RollbackResult>
+
+  /** 列出 accepted + 30 天内 rolled_back 的历史项 */
+  listWritebackHistory: (sinceIso?: string) => Promise<WritebackItem[]>
 }
 
 export const useGraphStore = create<GraphState>((set, get) => {
@@ -636,6 +642,16 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   discardWriteback: async (itemId) => {
     await window.electronAPI['wiki:discardWriteback'](itemId)
+  },
+
+  rollbackWriteback: async (itemId) => {
+    return window.electronAPI['wiki:rollbackWriteback'](itemId)
+  },
+
+  listWritebackHistory: async (sinceIso) => {
+    const graphId = get().currentGraphId
+    if (!graphId) return []
+    return window.electronAPI['wiki:listWritebackHistory'](graphId, sinceIso)
   },
   }
 })
