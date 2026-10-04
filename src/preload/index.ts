@@ -10,6 +10,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcApi, AgentOutput, ContextState } from '@shared/types'
+import type { RecipeRunProgressEvent } from '@shared/types/recipe'
 
 // 渲染进程实际使用的 IPC 通道（最小暴露原则）
 const exposedChannels: (keyof IpcApi)[] = [
@@ -142,6 +143,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   // Recipes (Phase C)
   'recipes:list',
   'recipes:get',
+  'recipes:dag',
   'recipes:run',
   'recipes:cancel',
   'recipes:refresh',
@@ -260,6 +262,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('subagent:progress', handler) }
   },
 
+  // Recipe run progress event listener (D5c-3)
+  onRecipeRunProgress: (callback: (data: RecipeRunProgressEvent) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: RecipeRunProgressEvent) => callback(data)
+    ipcRenderer.on('recipe:run:progress', handler)
+    return () => { ipcRenderer.removeListener('recipe:run:progress', handler) }
+  },
+
   // Open Project menu event listener
   onMenuOpenProject: (callback: (projectPath: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, projectPath: string) => callback(projectPath)
@@ -285,6 +294,7 @@ declare global {
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void
       onWaterlineChange: (callback: (state: ContextState) => void) => () => void
       onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => () => void
+      onRecipeRunProgress: (callback: (data: RecipeRunProgressEvent) => void) => () => void
       onMenuOpenProject: (callback: (projectPath: string) => void) => () => void
       platform: string
     }

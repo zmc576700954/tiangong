@@ -5,6 +5,33 @@ import { RecipesPanel } from '../RecipesPanel'
 import type { RecipeDefinition, RecipeRun } from '@shared/types/recipe'
 
 /**
+ * @xyflow/react 在 jsdom 中需要 ResizeObserver。
+ * DAG 视图在 RecipesPanel 里通过 RecipeDagView 渲染，必须 mock 掉。
+ */
+class ResizeObserverMock {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+;(globalThis as unknown as { ResizeObserver: typeof ResizeObserverMock }).ResizeObserver = ResizeObserverMock
+// matchMedia 也在 jsdom 缺失，给 xyflow 一个最小 stub
+if (typeof window !== 'undefined' && !window.matchMedia) {
+  Object.defineProperty(window, 'matchMedia', {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })),
+  })
+}
+
+/**
  * RecipesPanel 渲染层测试（最小覆盖）：
  *  - 空态文案渲染（无 recipe 时给出 userData / .bizgraph/recipes/ 提示）
  *  - 列表展示 mock recipe（含 source 徽标 + step count + tags）
@@ -38,6 +65,7 @@ function makeRecipe(overrides: Partial<RecipeDefinition> = {}): RecipeDefinition
 function makeApi(overrides: Partial<{
   'recipes:list': () => Promise<RecipeDefinition[]>
   'recipes:get': (id: string) => Promise<RecipeDefinition | null>
+  'recipes:dag': (id: string) => Promise<unknown>
   'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean> }) => Promise<RecipeRun>
   'recipes:cancel': (runId: string) => Promise<boolean>
   'recipes:refresh': () => Promise<number>
@@ -47,6 +75,7 @@ function makeApi(overrides: Partial<{
   return {
     'recipes:list': vi.fn(async () => []),
     'recipes:get': vi.fn(async () => null),
+    'recipes:dag': vi.fn(async () => null),
     'recipes:run': vi.fn(async () => ({
       id: 'recipe-run-1',
       recipe_id: 'demo',
@@ -101,9 +130,10 @@ describe('RecipesPanel', () => {
     })
     // inputs form
     expect(screen.getByText('Target path')).toBeTruthy()
-    // steps preview: agent_type=explore and command rendering
-    expect(screen.getByText(/explore/)).toBeTruthy()
-    expect(screen.getByText(/echo/)).toBeTruthy()
+    // steps preview: agent_type=explore and command rendering.
+    // "explore" 现在在 DAG 节点和 step 详情都出现；用 getAllByText 至少匹配一处即可。
+    expect(screen.getAllByText(/explore/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/echo/).length).toBeGreaterThan(0)
   })
 
   it('runs a recipe and refreshes run history', async () => {

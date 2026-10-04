@@ -28,6 +28,7 @@ import type {
   RecipeAgentStep,
   RecipeShellStep,
   RecipeRun,
+  RecipeRunProgressEvent,
   RecipeRunRequest,
   RecipeRunStepRecord,
 } from '@shared/types/recipe'
@@ -49,6 +50,16 @@ export interface RecipeRunnerDeps {
    */
   getWorkingDirectory?: () => string | null | Promise<string | null>
 }
+
+/**
+ * 步骤级进度事件回调签名。
+ *
+ * 为什么放在 RecipeRunnerDeps 之外：
+ *   - deps 在 RecipeRunner 构造时一次性注入；监听器可能在稍后由 IPC 层挂载。
+ *   - 监听器与 RecipeRunner 解耦，方便测试与单元验证。
+ *   - 与 SubagentManager.onProgress 模式保持一致。
+ */
+export type RecipeProgressListener = (event: RecipeRunProgressEvent) => void
 
 // ============================================
 // 单步执行
@@ -206,8 +217,23 @@ async function runShellStep(
 
 export class RecipeRunner {
   private activeRuns = new Map<string, AbortController>()
+  private progressListener: RecipeProgressListener | null = null
 
   constructor(private deps: RecipeRunnerDeps) {}
+
+  /**
+   * 注册步骤级进度事件监听器（D5c-3）。
+   * 同一时刻仅保留最后一个监听器（项目无并发场景需要广播）。
+   * 返回 unsubscribe 函数。
+   */
+  setProgressListener(listener: RecipeProgressListener | null): () => void {
+    this.progressListener = listener
+    return () => {
+      if (this.progressListener === listener) {
+        this.progressListener = null
+      }
+    }
+  }
 
   /** 取消正在进行的 run。best-effort：找不到时 no-op。 */
   cancel(runId: string): boolean {
@@ -215,6 +241,15 @@ export class RecipeRunner {
     if (!ctrl) return false
     ctrl.abort()
     return true
+  }
+
+  private emitProgress(event: RecipeRunProgressEvent): void {
+    try {
+      this.progressListener?.(event)
+    } catch (err) {
+      // 监听器抛错不影响 run 主流程 —— 仅日志。
+      logger.warn(`Recipe progress listener threw: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /** 主入口：执行一个 recipe。 */
@@ -290,16 +325,32 @@ export class RecipeRunner {
     signal: AbortSignal,
   ): Promise<void> {
     const inputs = request.inputs ?? {}
-    for (const step of def.steps) {
+    const totalSteps = def.steps.length
+    let completedSteps = 0
+    let failedSteps = 0
+    for (let stepIndex = 0; stepIndex < def.steps.length; stepIndex++) {
       if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
+      const step = def.steps[stepIndex]!
+      const stepId = step.id ?? step.name ?? `step_${stepIndex}`
       const record: RecipeRunStepRecord = {
-        step_id: step.id ?? step.name ?? `step_${run.steps.length}`,
-        step_name: step.name ?? step.id ?? `Step ${run.steps.length + 1}`,
+        step_id: stepId,
+        step_name: step.name ?? step.id ?? `Step ${stepIndex + 1}`,
         kind: step.kind,
         status: 'running',
         started_at: Date.now(),
       }
       run.steps.push(record)
+      this.emitProgress({
+        runId: run.id,
+        recipeId: def.id,
+        stepId,
+        status: 'running',
+        stepIndex,
+        totalSteps,
+        completedSteps,
+        failedSteps,
+        startedAt: record.started_at,
+      })
       try {
         if (step.kind === 'agent') {
           const resolvedPrompt = applyInputTemplate(step.prompt, inputs, def.inputs)
@@ -311,7 +362,7 @@ export class RecipeRunner {
             signal,
           )
           record.output = result
-          run.outputs[record.step_id] = result
+          run.outputs[stepId] = result
         } else {
           const wd = (await this.deps.getWorkingDirectory?.()) ?? null
           if (!wd) {
@@ -331,10 +382,37 @@ export class RecipeRunner {
         }
         record.status = 'succeeded'
         record.finished_at = Date.now()
+        completedSteps++
+        this.emitProgress({
+          runId: run.id,
+          recipeId: def.id,
+          stepId,
+          status: 'completed',
+          stepIndex,
+          totalSteps,
+          completedSteps,
+          failedSteps,
+          startedAt: record.started_at,
+          finishedAt: record.finished_at,
+        })
       } catch (err) {
-        record.status = 'failed'
+        record.status = signal.aborted ? 'cancelled' : 'failed'
         record.finished_at = Date.now()
         record.error = err instanceof Error ? err.message : String(err)
+        if (record.status === 'failed') failedSteps++
+        this.emitProgress({
+          runId: run.id,
+          recipeId: def.id,
+          stepId,
+          status: record.status,
+          stepIndex,
+          totalSteps,
+          completedSteps,
+          failedSteps,
+          startedAt: record.started_at,
+          finishedAt: record.finished_at,
+          error: record.error,
+        })
         throw err
       }
     }
