@@ -11,17 +11,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { PromptFormatter } from '../prompt-formatter'
 import type { MemoryStore } from '../../memory'
-import type { ProjectMemory, SymbolQueryResult } from '@shared/types'
+import type { MemoryItem, ProjectMemory, SymbolQueryResult } from '@shared/types'
 import type { ResolvedCodeContext } from '../../code-intelligence/smart-context-resolver'
 
 function makeMemoryStore(overrides?: Partial<MemoryStore>): MemoryStore {
   return {
     getRecent: vi.fn(() => []),
     getCrossAdapter: vi.fn(() => []),
-    toCompactSummary: vi.fn((item: any) => `summary:${item.id}`),
+    toCompactSummary: vi.fn((item: MemoryItem) => `summary:${item.id}`),
     ...overrides,
   } as unknown as MemoryStore
 }
+
+/** 测试用最小 MemoryItem 形状：toCompactSummary 只需要 id 字段 */
+const asMemoryItems = (items: Array<Partial<MemoryItem>>): MemoryItem[] =>
+  items as unknown as MemoryItem[]
 
 function makeMemory(overrides?: Partial<ProjectMemory>): ProjectMemory {
   return {
@@ -177,31 +181,31 @@ describe('PromptFormatter', () => {
 
     it('formats recent memories via toCompactSummary', async () => {
       const ms = makeMemoryStore({
-        getRecent: vi.fn(() => [{ id: 'm1' }, { id: 'm2' }] as any),
+        getRecent: vi.fn(() => asMemoryItems([{ id: 1 }, { id: 2 }])),
         getCrossAdapter: vi.fn(() => []),
       })
       const f = new PromptFormatter(ms, promptOutcomeLog)
       const out = await f.formatSessionHistoryContext('/project', 'node_1')
       expect(out).toContain('# 会话历史记忆')
-      expect(out).toContain('summary:m1')
-      expect(out).toContain('summary:m2')
+      expect(out).toContain('summary:1')
+      expect(out).toContain('summary:2')
       expect(ms.toCompactSummary).toHaveBeenCalledTimes(2)
     })
 
     it('appends cross-adapter discoveries when getCrossAdapter returns items', async () => {
       const ms = makeMemoryStore({
-        getRecent: vi.fn(() => [{ id: 'r1' }] as any),
-        getCrossAdapter: vi.fn(() => [{ id: 'c1', adapter_name: 'codex' }] as any),
+        getRecent: vi.fn(() => asMemoryItems([{ id: 11 }])),
+        getCrossAdapter: vi.fn(() => asMemoryItems([{ id: 21, adapter_name: 'codex' }])),
       })
       const f = new PromptFormatter(ms, promptOutcomeLog)
       const out = await f.formatSessionHistoryContext('/project')
       expect(out).toContain('## 其他 Agent 的发现')
-      expect(out).toContain('[codex] summary:c1')
+      expect(out).toContain('[codex] summary:21')
     })
 
     it('passes nodeId and currentSessionId through to the store', async () => {
       const ms = makeMemoryStore({
-        getRecent: vi.fn(() => [{ id: 'r1' }] as any),
+        getRecent: vi.fn(() => asMemoryItems([{ id: 11 }])),
       })
       const f = new PromptFormatter(ms, promptOutcomeLog)
       await f.formatSessionHistoryContext('/project', 'node_42', 's1')

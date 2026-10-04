@@ -8,29 +8,35 @@
  * - startRecoveryCheck: 健康度恢复时清理、防止重复 timer
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest'
 import { RecoveryOrchestrator } from '../recovery-orchestrator'
 import { SessionRecoveryManager, setForTesting } from '../session-recovery'
 import { AdapterHealthMonitor } from '../adapter-health-monitor'
 import type { AdapterRegistry } from '../adapter-registry'
 import type { SessionRouter } from '../session-router'
-import type { AgentSessionConfig } from '@shared/types'
+import type { AgentAdapter, AgentCommand, AgentCommandType, AgentSessionConfig } from '@shared/types'
 
-function makeAdapter(name: string, opts: { installed?: boolean } = {}): any {
+function makeAdapter(name: string, opts: { installed?: boolean } = {}): AgentAdapter {
   return {
     name,
+    version: '1.0.0',
     checkInstalled: vi.fn(async () => opts.installed ?? true),
     startSession: vi.fn(),
     sendCommand: vi.fn(),
     terminateSession: vi.fn(),
+    onOutput: vi.fn(),
+    offOutput: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
-    onOutput: vi.fn(),
     getProcessCount: () => 0,
-  }
+    setResolvedContexts: vi.fn(),
+    setCodeContext: vi.fn(),
+    setMemoryContext: vi.fn(),
+    resolveOutputSession: vi.fn(),
+  } as unknown as AgentAdapter
 }
 
-function makeRegistry(adapters: any[]): AdapterRegistry {
+function makeRegistry(adapters: AgentAdapter[]): AdapterRegistry {
   const map = new Map(adapters.map((a) => [a.name, a]))
   return {
     get: vi.fn((name: string) => map.get(name)),
@@ -52,7 +58,18 @@ const sampleSessionConfig = (overrides?: Partial<AgentSessionConfig>): AgentSess
   ...overrides,
 })
 
-const baseSessionState = (overrides?: Partial<any>): any => ({
+/** 测试用 SessionState 最小形状：仅覆盖本测试使用到的字段 */
+type TestSessionState = {
+  config: AgentSessionConfig
+  broadcastName: string
+  adapterName: string
+  startTime: number
+  lastCommandType?: AgentCommandType
+  lastCommand?: AgentCommand
+  originSessionId?: string
+}
+
+const baseSessionState = (overrides?: Partial<TestSessionState>): TestSessionState => ({
   config: sampleSessionConfig(),
   broadcastName: 'claude-code',
   adapterName: 'claude-code',
@@ -64,10 +81,10 @@ const baseSessionState = (overrides?: Partial<any>): any => ({
 describe('RecoveryOrchestrator', () => {
   let healthMonitor: AdapterHealthMonitor
   let sessionRouter: SessionRouter
-  let sessionStates: Map<string, any>
+  let sessionStates: Map<string, TestSessionState>
   let sessionBroadcastNames: Map<string, string>
-  let startSessionFn: ReturnType<typeof vi.fn>
-  let sendCommandFn: ReturnType<typeof vi.fn>
+  let startSessionFn: Mock
+  let sendCommandFn: Mock
   let recovery: SessionRecoveryManager
 
   beforeEach(() => {
@@ -90,15 +107,15 @@ describe('RecoveryOrchestrator', () => {
     setForTesting(null)
   })
 
-  function makeOrchestrator(adapterList: any[] = [], sessionRecovery: SessionRecoveryManager = recovery): RecoveryOrchestrator {
+  function makeOrchestrator(adapterList: AgentAdapter[] = [], sessionRecovery: SessionRecoveryManager = recovery): RecoveryOrchestrator {
     return new RecoveryOrchestrator(
       makeRegistry(adapterList),
       healthMonitor,
       sessionRouter,
       sessionStates,
       sessionBroadcastNames,
-      startSessionFn as any,
-      sendCommandFn as any,
+      startSessionFn as Mock<(adapterName: string, config: AgentSessionConfig) => Promise<{ sessionId: string; fallback?: boolean; adapterUsed: string; fallbackHistory: unknown[] }>>,
+      sendCommandFn as Mock<(sessionId: string, command: unknown) => Promise<void>>,
       sessionRecovery,
     )
   }
@@ -166,7 +183,7 @@ describe('RecoveryOrchestrator', () => {
       const orch = makeOrchestrator()
       const state = baseSessionState({ adapterName: 'mcp', lastCommand: { type: 'implement', description: 'go', targetNodeId: 'n1' } })
       // Inject pending context so attemptRecovery returns null but orchestrator hits the MCP path
-      const orchestrator = orch as any
+      const orchestrator = orch as unknown as { sessionRecovery: SessionRecoveryManager }
       orchestrator.sessionRecovery.setPendingContext('s1', '[prev context]')
       // startSessionFn returns a new session id
       startSessionFn.mockResolvedValueOnce({
@@ -190,7 +207,7 @@ describe('RecoveryOrchestrator', () => {
     it('returns "none" if MCP context injection recovery also fails (startSessionFn throws)', async () => {
       const orch = makeOrchestrator()
       const state = baseSessionState({ adapterName: 'mcp' })
-      const orchestrator = orch as any
+      const orchestrator = orch as unknown as { sessionRecovery: SessionRecoveryManager }
       orchestrator.sessionRecovery.setPendingContext('s1', '[prev context]')
       recovery.registerStrategy({
         adapterName: 'mcp',
