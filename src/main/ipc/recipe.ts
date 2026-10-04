@@ -4,11 +4,15 @@
  * 暴露给渲染进程的 Recipe 操作：
  *   - recipes:list          → RecipeDefinition[]
  *   - recipes:get           → RecipeDefinition
+ *   - recipes:dag           → RecipeDag（静态 DAG 视图，D5c-1）
  *   - recipes:run           → RecipeRun（异步返回最终结果）
  *   - recipes:cancel        → boolean
  *   - recipes:refresh       → 强制重扫 userData + 项目级目录
  *   - recipes:listRuns      → RecipeRun[]（某 recipe 的历史 runs）
  *   - recipes:getRun        → RecipeRun | null
+ *
+ * 推送事件：
+ *   - recipe:run:progress   → RecipeRunProgressEvent（D5c-3，RecipeRunner → renderer）
  */
 
 import type { TypedHandle } from './utils'
@@ -17,6 +21,8 @@ import type { RecipeManager } from '../recipes/recipe-manager'
 import type { RecipeRunner } from '../recipes/recipe-runner'
 import { ErrorCode, IpcError } from '../errors'
 import type { RecipeRunRequest } from '@shared/types/recipe'
+import { buildRecipeDag } from '@shared/recipe-dag'
+import type { BrowserWindow } from 'electron'
 
 export interface RecipeHandlerDeps {
   manager: RecipeManager
@@ -26,6 +32,7 @@ export interface RecipeHandlerDeps {
 export function registerRecipeHandlers(
   deps: RecipeHandlerDeps,
   typedHandle: TypedHandle,
+  getMainWindow?: () => BrowserWindow | null,
 ): void {
   const { manager, runner } = deps
 
@@ -36,6 +43,15 @@ export function registerRecipeHandlers(
   typedHandle('recipes:get', async (_, id: unknown) => {
     const recipeId = ensureString('id', id)
     return manager.get(recipeId) ?? null
+  })
+
+  typedHandle('recipes:dag', async (_, id: unknown) => {
+    const recipeId = ensureString('id', id)
+    const def = manager.get(recipeId)
+    if (!def) {
+      throw new IpcError(`Recipe not found: ${recipeId}`, ErrorCode.RECIPE_NOT_FOUND)
+    }
+    return buildRecipeDag(def)
   })
 
   typedHandle('recipes:run', async (_event, request: unknown) => {
@@ -91,4 +107,16 @@ export function registerRecipeHandlers(
     const id = ensureString('runId', runId)
     return runner.getRun(id) ?? null
   })
+
+  // Push step-level progress events to the renderer (D5c-3).
+  // RecipeRunner 不直接持有 BrowserWindow 引用 —— 它通过 onProgress 回调把事件
+  // 传出来，IPC 层负责转发到当前主窗口。这避免 RecipeRunner 与 Electron UI 耦合。
+  if (getMainWindow) {
+    runner.setProgressListener((event) => {
+      const win = getMainWindow()
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('recipe:run:progress', event)
+      }
+    })
+  }
 }

@@ -187,3 +187,121 @@ export interface RecipeRunRequest {
   /** 可选 description（用于子代理日志）。 */
   description?: string
 }
+
+// ============================================
+// Recipe DAG —— 静态视图（D5c-1）
+// ============================================
+
+/** DAG 中每个节点的状态（独立于运行期，UI 渲染用）。 */
+export type RecipeDagNodeStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped'
+
+/**
+ * DAG 节点 = Recipe 的一个 step。
+ *
+ * 渲染层只关心「拓扑排序 + 节点状态着色」，所以把 step 元数据 flatten 成简单结构。
+ * 步骤 kind 通过 nodeType 字段保留，避免渲染层再回去查 RecipeDefinition。
+ */
+export interface RecipeDagNode {
+  /** 节点唯一 id（在 DAG 内稳定）。派生规则：step.id → step.name → 索引。 */
+  id: string
+  /** 步骤在 Recipe.steps 数组中的索引（用于排序兜底）。 */
+  index: number
+  /** 显示名。 */
+  label: string
+  /** 步骤类型：agent / shell。 */
+  nodeType: 'agent' | 'shell'
+  /** agent 步骤的 agent_type；shell 步骤为空。 */
+  agentType?: string
+  /** shell 步骤的 command[0]；agent 步骤为空。 */
+  shellCommand?: string
+  /** 静态运行时状态；UI 用它着色。 */
+  status: RecipeDagNodeStatus
+  /** 拓扑层级（0 = 入度为 0 的起点）。并行步骤会共享同一层级。 */
+  level: number
+  /** 运行期信息：开始时间（ms）。 */
+  startedAt?: number
+  /** 运行期信息：完成时间（ms）。 */
+  finishedAt?: number
+  /** 运行期信息：错误信息。 */
+  error?: string
+}
+
+/** DAG 边：from → to 的依赖关系。 */
+export interface RecipeDagEdge {
+  id: string
+  source: string
+  target: string
+  /**
+   * 边的来源：
+   *   - 'depends_on'：来自 RecipeStep.depends_on 显式声明
+   *   - 'output-ref'：来自 prompt 模板里的 ${outputs.x.y} 引用（隐式推断）
+   *   - 'index'：来自 YAML 数组顺序（兜底：相邻步骤的前向边）
+   */
+  kind: 'depends_on' | 'output-ref' | 'index'
+}
+
+/** Recipe 的 DAG 视图（运行前 + 运行中通用）。 */
+export interface RecipeDag {
+  /** 关联的 recipe id。 */
+  recipeId: string
+  /** 节点列表。 */
+  nodes: RecipeDagNode[]
+  /** 边列表。 */
+  edges: RecipeDagEdge[]
+  /**
+   * 拓扑层级（每层一组可并行执行的节点）。
+   * 渲染层用此决定列布局。
+   */
+  levels: RecipeDagNode[][]
+  /** 检测到的循环依赖（节点 id 列表）。空数组 = 无环。 */
+  cycles: string[][]
+  /**
+   * 推断失败/缺失依赖（引用的上游 id 在 steps 里不存在）。
+   * 仅用于 UI 提示；不阻断运行（RecipeRunner 当前按数组顺序跑）。
+   */
+  missingDeps: Array<{ from: string; to: string; reason: 'depends_on' | 'output-ref'; missing: string }>
+}
+
+// ============================================
+// Recipe Run Progress Event（D5c-3）
+// ============================================
+
+/**
+ * RecipeRunner 推送给渲染进程的实时进度事件。
+ *
+ * 与 SubagentProgressEvent 不同：这里关心的是「整条 Recipe 的步骤级进度」，
+ * 包括 shell 步骤（无 subagent 包装）。Renderer 通过 runId 过滤 + stepId 着色。
+ */
+export interface RecipeRunProgressEvent {
+  /** Recipe run id（与 RecipeRun.id 一致）。 */
+  runId: string
+  /** 关联的 recipe id。 */
+  recipeId: string
+  /** 当前步骤 id。 */
+  stepId: string
+  /** 当前步骤状态。 */
+  status: RecipeRunNodeStatus
+  /** 步骤序号（0-based）。便于 UI 排序。 */
+  stepIndex: number
+  /** 总步骤数（便于顶部进度 X/Y）。 */
+  totalSteps: number
+  /** 已完成步骤数（含当前若是 completed）。 */
+  completedSteps: number
+  /** 失败步骤数（> 0 时 UI 标红）。 */
+  failedSteps: number
+  /** 错误信息（status=failed 时填充）。 */
+  error?: string
+  /** 步骤开始时间（ms）。 */
+  startedAt?: number
+  /** 步骤完成时间（ms）。 */
+  finishedAt?: number
+}
+
+/** RecipeRunProgressEvent 中 step status 的取值。 */
+export type RecipeRunNodeStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'

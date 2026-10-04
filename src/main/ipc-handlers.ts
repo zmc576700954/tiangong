@@ -415,17 +415,17 @@ export async function registerIpcHandlers(): Promise<void> {
   } catch (err) {
     logger.warn('Failed to load initial recipes:', err)
   }
-  registerRecipeHandlers({ manager: recipeManager, runner: recipeRunner }, typedHandle)
+  const getMainWindow = (): BrowserWindow | null => {
+    const windows = BrowserWindow.getAllWindows()
+    return windows.length > 0 ? windows[0] : null
+  }
+  registerRecipeHandlers({ manager: recipeManager, runner: recipeRunner }, typedHandle, getMainWindow)
 
   // Phase 4 Task 4: pass SubagentManager to every BaseAdapter-derived adapter
   for (const adapter of registry.list()) {
     if (adapter instanceof BaseAdapter) {
       adapter.setSubagentManager(subagentManager)
     }
-  }
-  const getMainWindow = (): BrowserWindow | null => {
-    const windows = BrowserWindow.getAllWindows()
-    return windows.length > 0 ? windows[0] : null
   }
   registerContextHandlers(contextWaterline, agentManager, typedHandle, compactHistoryRepo, getMainWindow)
   registerScopeGuardHandlers(agentManager.scopeGuardInstance, agentManager, typedHandle)
