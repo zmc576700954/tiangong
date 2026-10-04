@@ -1,0 +1,24 @@
+{
+  "name": "Sample React App",
+  "version": "0.1.0",
+  "description": "BizGraph examples/ 下的示例 React 项目，用于演示基座 v1 的 Recipe 工作流。",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0",
+    "vitest": "^2.0.0"
+  }
+}

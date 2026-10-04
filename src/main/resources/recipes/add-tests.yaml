@@ -1,0 +1,32 @@
+version: "1.0.0"
+title: "添加单元测试"
+description: "为指定源文件添加一组单元测试，覆盖主流程与边界条件。"
+parameters:
+  - key: sourcePath
+    inputType: string
+    required: true
+    description: "要测试的源文件路径（相对项目根）"
+  - key: testFramework
+    inputType: string
+    required: false
+    default: "vitest"
+    description: "测试框架（vitest / jest / mocha）"
+instructions: |
+  你是一位测试工程师。
+  为目标源文件编写单元测试，遵循项目现有测试规范。
+
+  硬性约束：
+  - 不修改产品代码（仅添加/修改测试文件）
+  - 测试函数命名清晰表达意图（it('returns X when Y')）
+  - 覆盖：主流程 + 至少 1 个边界 + 1 个错误路径
+  - 不引入新的测试依赖（用项目已有的框架）
+
+  工作流：
+  1. 检查项目测试目录结构（__tests__/、*.test.ts、spec/）
+  2. 阅读目标文件 + 其依赖
+  3. 在合适位置创建/补充测试文件
+  4. 运行测试套件确认通过
+prompt: "为 {{ sourcePath }} 添加单元测试（{{ testFramework }}）。"
+defaultAdapter: "claude-code"
+scopeStrategy: "subset"
+allowedTools: ["Read", "Write", "Glob", "Grep", "Bash"]

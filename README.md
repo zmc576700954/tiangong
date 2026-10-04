@@ -34,6 +34,8 @@ BizGraph (Electron + React)
 
 ## 快速开始
 
+完整 5 分钟教程：[docs/base/QUICK_START.md](./docs/base/QUICK_START.md)。
+
 ### 安装 BizGraph
 
 ```bash
@@ -85,6 +87,7 @@ npm install -g @tencent-ai/codebuddy-code
 - **记忆系统**：跨会话记忆提取、压缩、幻觉检测、向量检索（借鉴 claude-mem）
 - **上下文水线**：Token 预算监控、自动压缩、紧凑历史持久化
 - **子代理调度**：Agent 可派发 explore/implement/review/fix/general 子任务，支持写冲突串行化
+- **Recipes 工作流**（基座 v1 新增）：YAML 描述的可复用 Agent 任务模板，与 Block Goose Recipes v1.0.0 schema 兼容。双层加载：用户级 `<userData>/recipes/` + 项目级 `<projectRoot>/.bizgraph/recipes/`，项目级覆盖用户级。每个 Recipe 注册为 `recipe:<id>` 子代理类型，走 SubagentManager 派发。内置 3 个示例（重构/补测试/升级依赖）。详见 [`src/main/resources/recipes/`](./src/main/resources/recipes/) 与 [docs/base/QUICK_START.md](./docs/base/QUICK_START.md#5-跑一个内置-recipe)。
 
 ## 开发路线图
 

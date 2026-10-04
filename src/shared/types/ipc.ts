@@ -16,12 +16,31 @@ import type {
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
   CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
 } from './agent'
+
+/** Adapter health score (mirrors src/main/agent/adapter-health-monitor.ts). */
+export type AdapterHealthStatus = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
+export interface AdapterHealthScore {
+  adapterName: string
+  healthScore: number
+  successRate: number
+  avgResponseTimeMs: number
+  status: AdapterHealthStatus
+  metrics: {
+    totalCalls: number
+    successCalls: number
+    failedCalls: number
+    avgResponseTimeMs: number
+    recentErrors: string[]
+    lastCalledAt: number
+  }
+}
 import type {
   AgentTypeDefinition,
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
 import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, ComputeResult, WritebackItem } from './wiki'
+import type { RecipeWithSource, RecipeRun } from './recipe'
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -78,6 +97,7 @@ export interface IpcApi {
   'agent:resolveAndSendCommand': (sessionId: string, command: AgentCommand, contextRefs: ContextRef[], nodeIds: string[]) => Promise<void>
   'agent:terminateSession': (sessionId: string) => Promise<void>
   'agent:listAdapters': () => Promise<{ name: string; version: string; installed: boolean }[]>
+  'agent:getHealth': () => Promise<AdapterHealthScore[]>
   'agent:getAdapterMarketplace': () => Promise<AdapterMarketplaceItem[]>
   'agent:verify': (params: {
     nodeId: string
@@ -204,6 +224,13 @@ export interface IpcApi {
   'subagent:listInvocations': (parentSessionId: string) => Promise<SubagentInvocation[]>
   'subagent:cancel': (invocationId: string) => Promise<void>
   'subagent:getResult': (invocationId: string) => Promise<SubagentResult | null>
+
+  // Recipe 工作流（基座 v1）
+  'recipes:list': () => Promise<RecipeWithSource[]>
+  'recipes:getBuiltIn': () => Promise<RecipeWithSource[]>
+  'recipes:run': (recipe: RecipeWithSource, inputs: Record<string, unknown>, parentSessionId: string) => Promise<RecipeRun>
+  'recipes:listRuns': (recipeId?: string) => Promise<RecipeRun[]>
+  'recipes:getDirs': () => Promise<{ user: string; project: string | null }>
 }
 
 /**

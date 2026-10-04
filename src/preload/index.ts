@@ -170,6 +170,16 @@ const exposedChannels: (keyof IpcApi)[] = [
   'git:status',
   'git:diff',
   'git:commit',
+
+  // Agent 健康度
+  'agent:getHealth',
+
+  // Recipes（基座 v1）
+  'recipes:list',
+  'recipes:getBuiltIn',
+  'recipes:run',
+  'recipes:listRuns',
+  'recipes:getDirs',
 ]
 
 // Build IPC API object

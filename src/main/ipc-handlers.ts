@@ -94,6 +94,8 @@ import { CompactHistoryRepository } from './repositories/compact-history-reposit
 import { SubagentManager } from './agent/subagent-manager'
 import { SubagentInvocationRepository } from './repositories/subagent-invocation-repository'
 import { BaseAdapter } from './adapters/base'
+import { RecipeRunner } from './recipes/runner'
+import { registerRecipeHandlers, registerRecipesAsSubagentTypes } from './ipc/recipes'
 import type { ValidateFsPath } from './ipc/fs'
 import { getPlatformProvider } from './platform'
 
@@ -398,6 +400,24 @@ export async function registerIpcHandlers(): Promise<void> {
   registerModeHandlers(typedHandle)
   // Phase 4 Task 7: subagent:* channels + progress push events
   registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
+
+  // Recipe 子代理 + IPC（基座 v1）：每个 Recipe 注册为 recipe:<id> 子代理类型，
+  // 走 SubagentManager.invoke 派发。workingDirectory 取最近 active project。
+  const recipeRunner = new RecipeRunner(subagentManager)
+  const getWorkingDirectory = (): string | null => {
+    try {
+      const paths = graphService.getProjectPaths()
+      return paths.length > 0 ? paths[0] : null
+    } catch {
+      return null
+    }
+  }
+  try {
+    await registerRecipesAsSubagentTypes(subagentManager, getWorkingDirectory)
+  } catch (err) {
+    logger.warn('Failed to register recipes as subagent types:', err)
+  }
+  registerRecipeHandlers({ subagentManager, runner: recipeRunner, getWorkingDirectory }, typedHandle)
 
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {

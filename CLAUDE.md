@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> 最后更新：2026-08-01
+> 最后更新：2026-09-30
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -164,3 +164,6 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `devel
 - Adapter metadata lives in `ADAPTER_REGISTRY` (`src/main/adapters/registry.ts`); keep `KNOWN_ADAPTER_NAMES` in `src/main/settings.ts` synchronized when adding adapters.
 - Database schema changes require bumping `CURRENT_SCHEMA_VERSION` in `src/main/database.ts`.
 - State machine transitions are defined in `src/shared/types/graph.ts` (`NODE_STATUS_TRANSITIONS`) and enforced in `src/shared/state-machine.ts` (`TRANSITION_RULES`). Keep them consistent.
+- **Recipes 工作流**（基座 v1 新增）：YAML 描述的可复用 Agent 任务模板，与 Block Goose Recipes v1.0.0 schema 兼容。双层加载路径：用户级 `<userData>/recipes/*.yaml` + 项目级 `<projectRoot>/.bizgraph/recipes/*.yaml`，项目级覆盖用户级（按文件 basename）。每个 Recipe 在 `registerIpcHandlers()` 中注册为 `recipe:<id>` subagent type，通过 `SubagentManager.invoke(agentType='recipe:<id>')` 派发，与父代理的 `dispatch_subagent` 共享同一通道。Schema 校验失败抛 `BizGraphError(RECIPE_PARSE_ERROR)`。详见 `src/main/recipes/` 与 `docs/base/QUICK_START.md`。
+- **全局 Toast 系统**（基座 v1 新增）：通过 `useToast()` hook（`src/renderer/lib/toast.ts`）调用，渲染由 `<ToastContainer />`（`src/renderer/components/ui/ToastContainer.tsx`）统一管理，固定 `top-3 right-3 z-[100]`。success/info 默认 3000ms，error 默认 5000ms，可手动 dismiss。新增 toast 通道时优先复用该 hook 而非自建。
+- **DISPATCH_SUBAGENT 工具 schema**（基座 v1 起动态化）：通过 `buildDispatchSubagentToolSchema(subagentManager?)` 工厂（`src/main/adapters/base.ts`）生成，agent_type 枚举跟随 `SubagentManager.listTypes()`。`DISPATCH_SUBAGENT_TOOL_SCHEMA` 常量保留作为工厂默认调用（向后兼容），未注入 manager 时回退到 5 个内置类型。

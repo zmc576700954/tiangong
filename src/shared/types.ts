@@ -75,3 +75,11 @@ export type {
 } from './types/ipc'
 
 export * from './types/subagent'
+
+export type {
+  RecipeDefinition,
+  RecipeParameter,
+  RecipeRun,
+  RecipeWithSource,
+  RecipeParameterInputType,
+} from './types/recipe'

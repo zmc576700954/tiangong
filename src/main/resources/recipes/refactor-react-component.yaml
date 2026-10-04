@@ -1,0 +1,29 @@
+version: "1.0.0"
+title: "重构 React 组件"
+description: "在保持 props 接口不变的前提下，重构一个 React 组件的内部实现。"
+parameters:
+  - key: componentPath
+    inputType: string
+    required: true
+    description: "要重构的组件文件路径（相对项目根）"
+instructions: |
+  你是一位资深 React 工程师。
+  重构目标组件的内部实现以提升可读性、性能或可维护性。
+
+  硬性约束：
+  - 不得修改 props 接口（props 名称、类型、必填性全部保持不变）
+  - 不得修改组件默认导出（export default 必须保留）
+  - 不得引入新的运行时依赖
+  - 重构后保持原有 UI 行为（视觉无差异）
+
+  工作流：
+  1. 阅读组件文件 + 全部引用方
+  2. 识别可优化点（hooks 顺序、useMemo/useCallback 缺失、render 时函数定义、嵌套条件等）
+  3. 提交一组原子化的 Edit（每步可独立运行）
+  4. 简明说明每个改动的动机
+
+  完成后用一句话总结「before / after」对比。
+prompt: "请重构 {{ componentPath }}（项目根相对路径）。"
+defaultAdapter: "claude-code"
+scopeStrategy: "subset"
+allowedTools: ["Read", "Edit", "Glob", "Grep"]

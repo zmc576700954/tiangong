@@ -42,6 +42,9 @@ export const ErrorCode = {
 
   // Wiki / Markdown
   WIKI_PARSE_ERROR: 'WIKI_PARSE_ERROR',
+
+  // Recipe YAML
+  RECIPE_PARSE_ERROR: 'RECIPE_PARSE_ERROR',
 } as const
 
 export type ErrorCodeType = (typeof ErrorCode)[keyof typeof ErrorCode]

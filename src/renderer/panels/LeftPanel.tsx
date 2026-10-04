@@ -7,6 +7,7 @@ import {
   Settings,
   X,
   PanelLeftClose,
+  ChefHat,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useFileTreeStore } from '../store/fileTreeStore'
@@ -17,6 +18,7 @@ import { useFileTreeKeyboard } from '../store/fileTreeUtils'
 import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
+import { RecipesPanel } from './RecipesPanel'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -34,6 +36,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showRecipes, setShowRecipes] = useState(false)
   const [scanningId, setScanningId] = useState<string | null>(null)
   const panelRef = useRef<HTMLDivElement>(null)
 
@@ -190,6 +193,13 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
             <Settings className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
           <button
+            onClick={() => setShowRecipes(true)}
+            className="p-1.5 rounded hover:bg-muted transition-colors"
+            title="Recipes（工作流）"
+          >
+            <ChefHat className="w-3.5 h-3.5 text-muted-foreground" />
+          </button>
+          <button
             onClick={handleOpenDirectory}
             className="p-1.5 rounded hover:bg-muted transition-colors"
             title="Open directory"
@@ -310,6 +320,15 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
           </div>
           <div className="flex-1 overflow-hidden">
             <SettingsPanel />
+          </div>
+        </div>
+      )}
+
+      {/* Recipes Overlay */}
+      {showRecipes && (
+        <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur flex flex-col">
+          <div className="flex-1 overflow-hidden">
+            <RecipesPanel onClose={() => setShowRecipes(false)} />
           </div>
         </div>
       )}

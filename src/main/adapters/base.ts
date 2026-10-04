@@ -927,9 +927,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   /**
    * Phase 5: Build the inline tool prompt describing dispatch_subagent.
    * CLI adapters without native tool support inject this into their prompt.
+   *
+   * Reads agent types from `this.subagentManager` if set (registered at
+   * adapter boot), falling back to the five built-in types so legacy
+   * tests that run without a manager keep working.
    */
   protected buildSubagentToolPrompt(): string {
-    const schema = DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema
+    const manager: SubagentManagerLike | undefined = this.subagentManager
+    const schema = buildDispatchSubagentToolSchema(manager).input_schema
     const required = schema.required as unknown as string[]
     const properties = schema.properties as unknown as Record<
       string,
@@ -949,7 +954,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       'After the tool executes, its result will be returned to you and you may continue thinking.',
       '',
       `Tool: ${DISPATCH_SUBAGENT_TOOL_NAME}`,
-      `Description: ${DISPATCH_SUBAGENT_TOOL_SCHEMA.description}`,
+      `Description: ${manager ? buildDispatchSubagentToolSchema(manager).description : DISPATCH_SUBAGENT_TOOL_SCHEMA.description}`,
       '',
       'Parameters:',
       ...paramLines,
@@ -1277,42 +1282,96 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
  */
 export const DISPATCH_SUBAGENT_TOOL_NAME = 'dispatch_subagent'
 
-export const DISPATCH_SUBAGENT_TOOL_SCHEMA = {
-  name: DISPATCH_SUBAGENT_TOOL_NAME,
-  description: 'Spawn an ephemeral subagent for a focused task. Multiple calls may be issued in one turn to run in parallel. The subagent runs with a constrained tool set and file scope; its final output is returned to you as the tool result.',
+/** Built-in agent type names — used when no SubagentManager is injected yet. */
+const BUILTIN_AGENT_TYPE_NAMES = ['explore', 'implement', 'review', 'fix', 'general'] as const
+
+/**
+ * Minimal SubagentManager shape needed by the schema factory.
+ *
+ * Defined as a structural interface so the factory can be consumed by
+ * adapters without depending on the SubagentManager class (avoids cycles).
+ */
+export interface SubagentManagerLike {
+  listTypes(): Array<{ name: string }>
+}
+
+/**
+ * Build the dispatch_subagent tool schema with a dynamic agent_type enum.
+ *
+ * Falls back to the five built-in type names if no manager is supplied, so the
+ * legacy const export (`DISPATCH_SUBAGENT_TOOL_SCHEMA`) remains valid for tests
+ * that import it without a manager.
+ *
+ * The schema shape is intentionally identical to the legacy constant so existing
+ * consumers (mcp-adapter, buildSubagentToolPrompt) work unchanged.
+ */
+export function buildDispatchSubagentToolSchema(
+  subagentManager?: SubagentManagerLike,
+): {
+  name: typeof DISPATCH_SUBAGENT_TOOL_NAME
+  description: string
   input_schema: {
-    type: 'object' as const,
-    properties: {
-      agent_type: {
-        type: 'string' as const,
-        description: 'Which subagent type to spawn.',
-        enum: ['explore', 'implement', 'review', 'fix', 'general'],
+    type: 'object'
+    properties: Record<string, unknown>
+    required: string[]
+  }
+} {
+  const types = (() => {
+    if (!subagentManager || typeof subagentManager.listTypes !== 'function') {
+      return [...BUILTIN_AGENT_TYPE_NAMES]
+    }
+    try {
+      const listed = subagentManager.listTypes().map((t) => t.name)
+      return listed.length > 0 ? listed : [...BUILTIN_AGENT_TYPE_NAMES]
+    } catch {
+      return [...BUILTIN_AGENT_TYPE_NAMES]
+    }
+  })()
+  return {
+    name: DISPATCH_SUBAGENT_TOOL_NAME,
+    description:
+      'Spawn an ephemeral subagent for a focused task. Multiple calls may be issued in one turn to run in parallel. The subagent runs with a constrained tool set and file scope; its final output is returned to you as the tool result.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        agent_type: {
+          type: 'string' as const,
+          description: 'Which subagent type to spawn.',
+          enum: types,
+        },
+        description: {
+          type: 'string' as const,
+          description: 'A 3-5 word label for the task.',
+        },
+        prompt: {
+          type: 'string' as const,
+          description: 'Full task instructions. The subagent only sees this text.',
+        },
+        adapter_name: {
+          type: 'string' as const,
+          description: 'Optional adapter override (defaults to the type default).',
+        },
+        node_id: {
+          type: 'string' as const,
+          description: 'Optional canvas node binding.',
+        },
+        allowed_files: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Optional file allow-list for subset/fresh scope strategies.',
+        },
       },
-      description: {
-        type: 'string' as const,
-        description: 'A 3-5 word label for the task.',
-      },
-      prompt: {
-        type: 'string' as const,
-        description: 'Full task instructions. The subagent only sees this text.',
-      },
-      adapter_name: {
-        type: 'string' as const,
-        description: 'Optional adapter override (defaults to the type default).',
-      },
-      node_id: {
-        type: 'string' as const,
-        description: 'Optional canvas node binding.',
-      },
-      allowed_files: {
-        type: 'array' as const,
-        items: { type: 'string' as const },
-        description: 'Optional file allow-list for subset/fresh scope strategies.',
-      },
+      required: ['agent_type', 'description', 'prompt'],
     },
-    required: ['agent_type', 'description', 'prompt'],
-  },
-} as const
+  }
+}
+
+/**
+ * Backwards-compatible constant — same shape as before but uses the five
+ * built-in types (no recipes). Tests that import `DISPATCH_SUBAGENT_TOOL_SCHEMA`
+ * keep working; production code uses `buildDispatchSubagentToolSchema(manager)`.
+ */
+export const DISPATCH_SUBAGENT_TOOL_SCHEMA = buildDispatchSubagentToolSchema()
 
 interface InlineToolCall {
   tool: string

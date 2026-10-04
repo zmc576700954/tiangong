@@ -12,7 +12,7 @@
 import {
   BaseAdapter,
   DISPATCH_SUBAGENT_TOOL_NAME,
-  DISPATCH_SUBAGENT_TOOL_SCHEMA,
+  buildDispatchSubagentToolSchema,
 } from './base'
 import { McpClient } from '../mcp/client'
 import { generateId } from '../shared/env'
@@ -28,6 +28,7 @@ import type {
 import { readSettings } from '../settings'
 import { AdapterError, ErrorCode } from '../errors'
 import { estimateTokens } from '../shared/token-utils'
+import { adapterHealthMonitor } from '../agent/adapter-health-monitor'
 
 // ============================================
 // Tool Use 类型定义
@@ -508,9 +509,18 @@ export class McpAdapter extends BaseAdapter {
             continue
           }
           // 池中无可用连接，新建
+          const connectStart = Date.now()
           const client = new McpClient(server.command, server.args)
-          await client.connect()
-          this.recordCircuitResult(server.name, true)
+          try {
+            await client.connect()
+            const dt = Date.now() - connectStart
+            adapterHealthMonitor.recordCall('mcp', true, dt)
+            this.recordCircuitResult(server.name, true)
+          } catch (err) {
+            const dt = Date.now() - connectStart
+            adapterHealthMonitor.recordCall('mcp', false, dt, err instanceof Error ? err.message : String(err))
+            throw err
+          }
           // 池槽写入策略：
           // 1. 无现存条目 → 直接写入。
           // 2. 现存条目已无引用（refCount <= 0） → 可安全替换。
@@ -543,6 +553,7 @@ export class McpAdapter extends BaseAdapter {
           })
         } catch (err) {
           this.recordCircuitResult(server.name, false)
+          adapterHealthMonitor.recordCall('mcp', false, 0, err instanceof Error ? err.message : String(err))
           const msg = err instanceof Error ? err.message : String(err)
           this.emitOutput({
             type: 'stderr',
@@ -638,10 +649,11 @@ export class McpAdapter extends BaseAdapter {
 
         // Append dispatch_subagent tool when SubagentManager is set
         if (this.subagentManager) {
+          const dyn = buildDispatchSubagentToolSchema(this.subagentManager)
           tools.unshift({
             name: DISPATCH_SUBAGENT_TOOL_NAME,
-            description: DISPATCH_SUBAGENT_TOOL_SCHEMA.description,
-            inputSchema: DISPATCH_SUBAGENT_TOOL_SCHEMA.input_schema as unknown as Record<string, unknown>,
+            description: dyn.description,
+            inputSchema: dyn.input_schema as unknown as Record<string, unknown>,
           })
         }
 

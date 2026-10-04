@@ -175,6 +175,14 @@ export function ensureString(label: string, val: unknown, maxLen = MAX_ID_LEN): 
  * 共享的 IPC 参数校验：确保值是 number 或 undefined/null
  * 抛出 IpcError(ErrorCode.IPC_INVALID_ARGUMENT)，而非裸 Error
  */
+/** 共享的 IPC 参数校验：确保值是 string 或 undefined/null */
+export function ensureOptionalString(label: string, val: unknown): string | undefined {
+  if (val === undefined || val === null) return undefined
+  if (typeof val !== 'string') throw new IpcError(`${label} must be a string`, ErrorCode.IPC_INVALID_ARGUMENT)
+  return val
+}
+
+/** 共享的 IPC 参数校验：确保值是 number 或 undefined/null */
 export function ensureOptionalNumber(label: string, val: unknown): number | undefined {
   if (val === undefined || val === null) return undefined
   if (typeof val !== 'number') throw new IpcError(`${label} must be a number`, ErrorCode.IPC_INVALID_ARGUMENT)

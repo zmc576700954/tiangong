@@ -540,6 +540,8 @@ export const AdapterCapability = {
   LlmCompact: 'llm-compact',
   SummaryRewrite: 'summary-rewrite',
   SwarmCoordinator: 'swarm-coord',
+  // Phase B addition — structured tool use via SDK (Anthropic tool_use / OpenAI tool_calls)
+  ToolUse: 'tool-use',
 } as const
 export type AdapterCapability = typeof AdapterCapability[keyof typeof AdapterCapability]
 

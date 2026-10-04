@@ -99,7 +99,17 @@
     },
     "files": [
       "dist",
-      "dist-electron"
+      "dist-electron",
+      "src/main/resources/**"
+    ],
+    "extraResources": [
+      {
+        "from": "src/main/resources",
+        "to": "resources",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

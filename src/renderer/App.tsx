@@ -3,6 +3,7 @@ import { LeftPanel } from './panels/LeftPanel'
 import { GraphCanvas } from './canvas/GraphCanvas'
 import { GraphTabs } from './components/GraphTabs'
 import { ErrorBoundary } from './components/ui/ErrorBoundary'
+import { ToastContainer } from './components/ui/ToastContainer'
 import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
@@ -108,6 +109,7 @@ function App() {
 
   return (
     <ErrorBoundary>
+      <>
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* Left directory tree */}
         {!leftCollapsed && (
@@ -207,6 +209,8 @@ function App() {
           </>
         )}
       </div>
+    <ToastContainer />
+    </>
     </ErrorBoundary>
   )
 }

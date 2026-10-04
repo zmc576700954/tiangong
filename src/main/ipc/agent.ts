@@ -56,6 +56,10 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     return agentManager.listAdapters()
   })
 
+  typedHandle('agent:getHealth', async () => {
+    return agentManager.getAllAdapterHealth()
+  })
+
   typedHandle('agent:getAdapterMarketplace', async () => {
     const adapters = await agentManager.listAdapters()
     const installedMap: Record<string, boolean> = {}
