@@ -98,7 +98,21 @@ export interface ComputeResult {
 }
 
 export type WritebackKind = 'append-log' | 'new-page'
-export type WritebackStatus = 'pending' | 'accepted' | 'discarded'
+/**
+ * 写回项状态机（D7b 扩展）：
+ *   pending → accepted | discarded   （基座版规则，未变）
+ *   accepted → rolled_back           （D7b：用户撤回已采纳项）
+ *   discarded → pending              （D7b：恢复误丢弃，重新进入审核队列）
+ */
+export type WritebackStatus = 'pending' | 'accepted' | 'discarded' | 'rolled_back'
+
+/** 单条 rollback 动作的审计记录 */
+export interface RollbackAction {
+  /** 动作类型：移除段落 / 删除页面 / 删除边 */
+  kind: 'removed-section' | 'deleted-page' | 'deleted-edges'
+  /** 人类可读的描述，用于 hover tooltip / toast */
+  description: string
+}
 
 export interface WritebackItem {
   id: string
@@ -121,4 +135,16 @@ export interface WritebackItem {
   status: WritebackStatus
   createdAt: string
   resolvedAt: string | null
+  /** 仅 rolled_back 状态：本次 rollback 实际执行的步骤（审计）。 */
+  rollbackActions?: RollbackAction[]
+}
+
+/** rollback IPC 返回结构 */
+export interface RollbackResult {
+  success: boolean
+  status: WritebackStatus
+  /** 真正执行的撤销动作（append-log 通常 1 个，new-page 通常 2 个） */
+  undoneActions: RollbackAction[]
+  /** 因副作用已被用户改动而跳过的动作（用于前端 tooltip：部分回滚） */
+  skippedActions: RollbackAction[]
 }

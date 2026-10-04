@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 10
+const CURRENT_SCHEMA_VERSION = 11
 
 interface TableSchema {
   name: string
@@ -471,9 +471,10 @@ const TABLE_SCHEMAS: TableSchema[] = [
         target_node_title TEXT,
         source_session_id TEXT NOT NULL,
         confidence REAL NOT NULL DEFAULT 0,
-        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded','rolled_back')),
         created_at TEXT NOT NULL,
-        resolved_at TEXT
+        resolved_at TEXT,
+        rollback_actions TEXT
       )
     `,
     requiredColumns: ['id', 'graph_id', 'kind', 'target_node_id', 'title', 'content', 'source_session_id', 'confidence', 'status', 'created_at'],
@@ -761,4 +762,8 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // v10：recipes + recipe_runs 由 TABLE_DEFINITIONS 首次创建；增量迁移仅做"已存在老库"补列。
   // 注：recipes / recipe_runs 是全新表，老 schema 没创建过它们，故 runIncrementalMigrations 不补。
   // 任何 v<10 → v10 升级由 migrate() 在首次冷启动时通过 TABLE_DEFINITIONS 完整 CREATE。
+
+  // v11：writeback rollback（D7b）— 新增 rolled_back 状态 + rollback_actions 审计列。
+  // CHECK 约束扩展由 rebuildTableIfNeeded 检测；老库升级路径上补 rollback_actions 列。
+  addColumnSafe('writeback_items', 'rollback_actions', 'TEXT')
 }

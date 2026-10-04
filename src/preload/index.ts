@@ -55,6 +55,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   'wiki:countWriteback',
   'wiki:acceptWriteback',
   'wiki:discardWriteback',
+  'wiki:rollbackWriteback',
+  'wiki:listWritebackHistory',
 
   // Agent operations
   'agent:listAdapters',
