@@ -10,6 +10,7 @@ import { getClient } from './database'
 import { ADAPTER_REGISTRY } from './adapters/registry'
 import { GitAgent } from './git-agent'
 import { AdapterRegistry } from './agent/adapter-registry'
+import { YjsRealtime, setYjsRealtime } from './realtime/yjs-realtime'
 import { SessionRouter } from './agent/session-router'
 import { OutputBroadcaster } from './agent/output-broadcaster'
 import { AgentManager } from './agent/agent-manager'
@@ -242,6 +243,21 @@ export async function registerIpcHandlers(): Promise<void> {
   const chatService = new ChatService(chatRepo, contextWaterline)
   const graphService = new GraphService(db, agentManager, chatService)
   setupAgentLogPersistence()
+
+  // ---------- Y.Doc realtime (D10a + D10c) ----------
+  // 老 nodes/edges 表 → yjs_snapshots 一次性迁移；为每张图加载 Y.Doc；
+  // 绑定 diff→SQLite 镜像 + 防抖快照保存；可选启动 WS server。
+  // 失败不阻塞主流程（Y.Doc 是渐进升级，老表仍可读）。
+  try {
+    const yjs = new YjsRealtime(db)
+    setYjsRealtime(yjs)
+    yjs.init().catch((err) => {
+      logger.warn('YjsRealtime.init() failed:', err)
+    })
+  } catch (err) {
+    logger.warn('YjsRealtime construction failed:', err)
+  }
+
   const typedHandle = createTypedHandle(ipcMain)
 
   // ---------- 会话级允许路径（按窗口隔离） ----------

@@ -288,6 +288,14 @@ app.on('before-quit', async (event) => {
       } catch (err) {
         logger.error('Failed to dispose MCP adapter:', err)
       }
+      // Flush Y.Doc snapshots + stop WS server before closing DB.
+      try {
+        const { getYjsRealtime } = await import('./realtime/yjs-realtime')
+        const yjs = getYjsRealtime()
+        if (yjs) await yjs.shutdown()
+      } catch (err) {
+        logger.error('Failed to shutdown YjsRealtime:', err)
+      }
       // 停止 IPC 频率限制清理定时器
       stopCleanup()
       try {

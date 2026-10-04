@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 10
+const CURRENT_SCHEMA_VERSION = 11
 
 interface TableSchema {
   name: string
@@ -523,6 +523,23 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['id', 'recipe_id', 'recipe_version', 'status', 'inputs_json', 'steps_json', 'outputs_json', 'started_at'],
   },
+  // v11：Yjs 文档快照（Y.Doc 二进制持久化层）
+  // 每张图一行；doc_state 是 Y.encodeStateAsUpdate() 输出的 BLOB。
+  // schema_version 写入侧规则版本（字段语义变化时 +1，老数据读 path 不一致会被拒）。
+  // 老 nodes/edges 表保留作为只读 fallback 以兼容既有 query；启动时由 SnapshotStore 一次性回填。
+  {
+    name: 'yjs_snapshots',
+    createSql: `
+      CREATE TABLE yjs_snapshots (
+        graph_id TEXT PRIMARY KEY,
+        doc_state BLOB NOT NULL,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (graph_id) REFERENCES graphs(id) ON DELETE CASCADE
+      )
+    `,
+    requiredColumns: ['graph_id', 'doc_state', 'schema_version', 'updated_at'],
+  },
 ]
 
 const INDEX_SQLS: string[] = [
@@ -560,6 +577,8 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_subagent_inv_status ON subagent_invocations(status)`,
   `CREATE INDEX IF NOT EXISTS idx_writeback_graph_status ON writeback_items(graph_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_writeback_session ON writeback_items(source_session_id)`,
+  // v11: yjs_snapshots
+  `CREATE INDEX IF NOT EXISTS idx_yjs_snapshots_updated_at ON yjs_snapshots(updated_at DESC)`,
 ]
 
 function getSchemaChecksumPath(): string {
