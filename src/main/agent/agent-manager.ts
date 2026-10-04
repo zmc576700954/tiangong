@@ -1,52 +1,44 @@
 /**
- * Agent 管理器（facade）
- *
- * D1a 重构后，AgentManager 退化为组合式 facade，对外保留 IPC 可见的公共方法，
- * 将原 god file 中的实现细节委派给 5 个协作者：
- *  - SessionLifecycleManager：会话状态、清理互斥、沙箱/ScopeGuard 生命周期
- *  - ContextAssembler：上下文解析（ContextResolver / SmartContextResolver / 记忆加载 / PromptOrchestrator）
- *  - ContextCompactor：compactContext 调度、策略回退、持久化
- *  - AgentHealthHousekeeper：周期性健康检查 + 内存压力 + 适配器探活定时器
- *  - PhaseBHandler：终止锁释放后的记忆管线 + onSessionComplete + 提示质量反馈
- *
- * AgentManager 自身保留的职责：
- *  - 适配器偏好 / 健康度驱动的 fallback 链解析（D1b 不在范围）
- *  - SessionRecovery 调用（D1b 不在范围）
- *  - 通过 LifecycleCallbacks 把以上职责注入到 lifecycle 的事件流中
- *  - 暴露 IPC handler 所需的全部公共方法
- *  - 保持向后兼容的内部状态镜像（sessionStates / sessionOutputBuffers /
- *    sessionRecovery / recoveryCheckIntervals / adapterTimeoutCounts /
- *    compactInflight / healthMonitor / _handleSessionEnded / startRecoveryCheck）
- *
- * 边界（per CLAUDE.md "Boundaries with Agent CLI"）：
- *  - 仅编排、不替换 CLI 内部行为；任何 prompt 注入走 lifecycle 内的 setMemoryContext
- *  - 不污染 KV-cache prefix；project memory / 智能代码上下文经 PromptOrchestrator 拼接
- *  - 写操作由 ScopeGuard 兜底，lifecycle.start() 中已对每个 session prepare sandbox
+ * Agent 管理器（组合式）
+ * 将原有混合职责拆分为三个独立子组件：
+ * - AdapterRegistry: 适配器注册中心
+ * - SessionRouter: 会话路由
+ * - OutputBroadcaster: 输出广播
  */
 
 import type {
   AgentAdapter,
-  AgentSession,
   AgentSessionConfig,
   AgentCommand,
+  AgentCommandType,
   AgentOutput,
   ContextRef,
+  ResolvedContext,
   GraphNode,
   AdapterFallbackAttempt,
   AdapterPreferences,
   Sandbox,
+  NodeMetadata,
   TerminationReason,
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
 import { type SessionRouter } from './session-router'
-import { type OutputBroadcaster } from './output-broadcaster'
+import { type OutputBroadcaster, type BroadcastPayload } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
-import { AdapterError, AgentError, SessionNotFoundError, ErrorCode } from '../errors'
+import { FallbackRouter } from './fallback-router'
+import { RecoveryOrchestrator } from './recovery-orchestrator'
+import { CompactionManager } from './compaction-manager'
+import { PromptFormatter } from './prompt-formatter'
+import { AgentError, SessionNotFoundError, ScopeGuardError, ErrorCode } from '../errors'
 import { getClient } from '../database'
 import { getSessionRecoveryManager } from './session-recovery'
-import type { SessionRecoveryManager } from './session-recovery'
-import type { ContextResolver } from '../context-resolver'
+import { ContextResolver } from '../context-resolver'
 import { ScopeGuard } from '../scope-guard'
+import { SmartContextResolver } from '../code-intelligence/smart-context-resolver'
+import { readMemory } from '../mindmap-agent/memory'
+import { MemoryStore } from '../memory'
+import { PromptOrchestrator } from '../memory/prompt-orchestrator'
+import { PipelineRunner } from '../memory/pipeline'
 import type { SymbolIndex } from '../code-intelligence/symbol-index'
 import type { ContextWaterline } from '../memory/context-waterline'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
@@ -57,27 +49,56 @@ import type { BaseAdapter } from '../adapters/base'
 import { createLogger } from '../shared/logger'
 import os from 'node:os'
 
-import { SessionLifecycleManager } from './session-lifecycle-manager'
-import { ContextAssembler } from './context-assembler'
-import { ContextCompactor } from './context-compactor'
-import { AgentHealthHousekeeper, type MemoryStats } from './health-monitor-helpers'
-import { PhaseBHandler } from './phase-b-handler'
-import type { SessionState } from './types'
-import { MemoryStore } from '../memory'
-
 const logger = createLogger('AgentManager')
 
-/** 命令类型的上下文 Token 预算（ContextAssembler 复用；保留在本文件作为 fallback 默认值） */
-const FALLBACK_CONTEXT_BUDGET = 8000
+/** 健康检查间隔：每 10 分钟输出一次诊断日志 */
+const HEALTH_CHECK_INTERVAL_MS = 10 * 60 * 1000
+/** 清理异步操作（adapter 终止、沙箱回滚）的超时时间（毫秒） */
+const CLEANUP_ASYNC_TIMEOUT_MS = 30_000
+/** RSS 内存警告阈值（MB）：自适应计算，基于系统总内存的 25%，范围 [1024, 8192] */
+const RSS_WARNING_THRESHOLD_MB = Math.max(1024, Math.min(8192, Math.floor((os.totalmem() / 1024 / 1024) * 0.25)))
+/** RSS 内存危险阈值（MB）：自适应计算，基于系统总内存的 40%，范围 [2048, 12288] */
+const RSS_CRITICAL_THRESHOLD_MB = Math.max(2048, Math.min(12288, Math.floor((os.totalmem() / 1024 / 1024) * 0.4)))
 
-interface PromptOutcomeEntry {
-  commandType: string
-  promptTokenEstimate: number
-  contextCount: number
-  outcome: 'success' | 'failure'
-  duration: number
+/** 命令类型的上下文 Token 预算（根据任务复杂度自适应） */
+const CONTEXT_COMPLEXITY_BUDGET: Record<string, number> = {
+  fix_bug: 6000,
+  add_test: 6000,
+  refactor: 10000,
+  implement: 12000,
 }
 
+type SessionEndedHandler = (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle', exitCode: number | null) => void
+
+interface SessionState {
+  config: AgentSessionConfig
+  broadcastName: string
+  adapterName: string
+  startTime: number
+  sandbox?: Sandbox
+  /** 最后一次发送的指令类型（用于记忆提取的语义区分） */
+  lastCommandType?: AgentCommandType
+  /** Prompt Token 估算值（用于质量反馈环） */
+  promptTokenEstimate?: number
+  /** 注入的上下文数量（用于质量反馈环） */
+  contextCount?: number
+  /** Phase 3: thread bound to this session — used for waterline lookup & history persistence. */
+  threadId?: string
+  /** Phase 4: parent session if this is a subagent child session. */
+  parentSessionId?: string
+  /** Phase 4: subagent_invocations row id if this is a subagent child session. */
+  swarmTaskId?: string
+  /** Cumulative input tokens reported by the adapter for this session. */
+  tokensUsed?: number
+  /** Reason the adapter session ended (crash / error / timeout / user / success). */
+  terminationReason?: 'success' | 'crash' | 'error' | 'timeout' | 'user' | 'idle'
+  /** Last user command sent to this session; used for recovery re-send. */
+  lastCommand?: AgentCommand
+  /** Original sessionId for replacement sessions created by recovery, used to keep retry accounting across sessionIds. */
+  originSessionId?: string
+}
+
+/** startSessionWithFallback 返回值 */
 export interface StartSessionResult {
   sessionId: string
   fallback?: boolean
@@ -85,199 +106,107 @@ export interface StartSessionResult {
   fallbackHistory: AdapterFallbackAttempt[]
 }
 
-/**
- * AgentManager — IPC-facing facade for the agent runtime.
- *
- * Public surface (consumed by IPC handlers in src/main/ipc/*.ts):
- *   startSession / terminateSession / terminateAllSessions / sendCommand /
- *   resolveAndSendCommand / compactContext / addOutputListener /
- *   removeOutputListener / addSessionOutputListener / removeSessionOutputListener
- *   getActiveSessionIds / getSessionState / getSandbox / getSessionConfig /
- *   getAdapter / getAdapterHealth / getAllAdapterHealth / getSubagentManager /
- *   broadcastToSession / registerAdapter / listAdapters / checkInstalled /
- *   logDiagnostics / destroy
- *
- * Setters:
- *   setScopeGuard / setContextResolver / setSymbolIndex /
- *   setAdapterPreferencesLoader / setWaterline / setCompactHistoryRepo /
- *   setChatRepo / setSubagentManager / setStatusChangeCallback /
- *   setSessionStartedCallback / setNodeStatusChangeCallback /
- *   setOnSessionComplete
- *
- * Test-accessible internals (read via `(manager as any).xxx`):
- *   sessionStates / sessionOutputBuffers / sessionRecovery /
- *   recoveryCheckIntervals / adapterTimeoutCounts / compactInflight /
- *   healthMonitor / _handleSessionEnded / startRecoveryCheck
- */
 export class AgentManager {
-  /** 基于系统资源动态计算最大会话数 */
+  /** 最大并发会话数，防止会话无限创建导致资源泄漏 */
   private MAX_SESSIONS = this.calculateMaxSessions()
-  /** 全局子进程数硬上限 */
-  private readonly MAX_PROCESSES = Math.min(this.MAX_SESSIONS, Math.max(4, os.cpus().length * 2))
-
-  // ----- Helpers (composition root) -----
-  private lifecycle: SessionLifecycleManager
-  private assembler: ContextAssembler
-  private compactor: ContextCompactor
-  private housekeeper: AgentHealthHousekeeper
-  private phaseB: PhaseBHandler
-
-  // ----- Backward-compatible state mirrors -----
-  /**
-   * Mirror of lifecycle.sessionStates kept on AgentManager for tests that
-   * seed / read `(manager as any).sessionStates` directly. Lifecycle owns
-   * the canonical store; AgentManager keeps a parallel Map and synchronizes
-   * writes through lifecycle.start / lifecycle.terminate paths.
-   */
+  private outputHandlers = new Map<string, (output: AgentOutput) => void>()
+  private outputListeners = new Map<(output: AgentOutput) => void, (payload: BroadcastPayload) => void>()
+  private contextResolver = new ContextResolver()
+  private scopeGuard = new ScopeGuard()
+  private smartContextResolver?: SmartContextResolver
   private sessionStates = new Map<string, SessionState>()
-  /** Per-session output buffer (also owned by lifecycle; mirror here). */
-  private sessionOutputBuffers = new Map<string, AgentOutput[]>()
-  /** SessionRecovery singleton (test-visible via getter). */
-  private sessionRecoveryInstance: SessionRecoveryManager = getSessionRecoveryManager()
-  /** Consecutive timeout counter per adapter (only used inside startSession). */
-  private adapterTimeoutCounts: Map<string, number> = new Map()
-  /** Adapter health monitor — kept on AgentManager; tests reference it directly. */
+  /** sessionEnded 事件处理器（按适配器存储以便清理） */
+  private sessionEndedHandlers = new Map<string, SessionEndedHandler>()
+  private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
+  private sessionStartedCallback?: (threadId: string, sessionId: string) => void
+  private reservedSlots = new Set<string>()
+  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
+  private onSessionComplete?: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void
+  /** 会话级输出监听器：按 broadcastName 过滤，防止跨会话输出污染 */
+  private sessionOutputListeners = new Map<(output: AgentOutput) => void, (payload: BroadcastPayload) => void>()
+  /** sessionId → broadcastName 映射（由 startSession 设置，与 broadcaster 的广播名一致） */
+  private sessionBroadcastNames = new Map<string, string>()
+  /** sessionId → 该会话注册的输出监听 handler 集合（用于 cleanupSessionResources 自动清理） */
+  private sessionOutputListenerIndex = new Map<string, Set<(output: AgentOutput) => void>>()
+  /** sandboxId → sessionId 反向索引（O(1) 查找越界会话，避免线性扫描） */
+  private sandboxSessionIndex = new Map<string, string>()
+  /** 清理互斥锁：防止 terminateSession 和 cleanupSessionResources 并发导致双重清理 */
+  private cleanupInProgress = new Set<string>()
+  /** 健康检查定时器（自适应间隔，定期输出诊断日志，监控内存与资源状态） */
+  private healthCheckTimer: ReturnType<typeof setTimeout> | null = null
+  /** 适配器偏好加载器（延迟注入，避免循环依赖） */
+  private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
+  /** 适配器健康监控 */
   private healthMonitor = new AdapterHealthMonitor()
-  /** Prompt quality feedback ring (consumed by ContextAssembler + PhaseBHandler). */
-  private promptOutcomeLog: PromptOutcomeEntry[] = []
-
-  // ----- Lazy / injected state -----
+  /** 会话记忆系统（借鉴 claude-mem，Phase 1）—— 懒初始化以避免数据库未启动时报错 */
   private _memoryStore?: MemoryStore
+  /** Prompt 质量反馈记录（轻量级：追踪命令类型+预算与结果的相关性） */
+  private promptOutcomeLog: Array<{ commandType: string; promptTokenEstimate: number; contextCount: number; outcome: 'success' | 'failure'; duration: number }> = []
   private get memoryStore(): MemoryStore {
     if (!this._memoryStore) {
-      getClient() // throws if DB not initialized
+      // Verify DB is initialized before creating MemoryStore — operations will fail
+      // if the database client is null, so we fail immediately with a clear message.
+      getClient() // throws DatabaseError if DB not initialized
       this._memoryStore = new MemoryStore()
     }
     return this._memoryStore
   }
+  /** 会话输出缓冲区：sessionId → AgentOutput[]（用于记忆提取） */
+  private sessionOutputBuffers = new Map<string, AgentOutput[]>()
+  /** ContextWaterline 实例（注入式，Phase 2：仅占位，autoCompactEnabled 默认 false） */
+  private waterline?: ContextWaterline
+  /** Phase 4: subagent dispatch manager (injected via setter to break cyclic dependency). */
+  private subagentManager?: SubagentManager
 
-  // ----- Output listener index (mirror for tests) -----
-  private sessionOutputListenerIndex = new Map<string, Set<(output: AgentOutput) => void>>()
-  private reservedSlots = new Set<string>()
+  /** FallbackRouter：回退链解析、健康度过滤、连续超时计数 */
+  private fallbackRouter!: FallbackRouter
+  /** RecoveryOrchestrator：恢复决策、timer 管理、resume 重发 */
+  private recoveryOrchestrator!: RecoveryOrchestrator
+  /** CompactionManager：上下文压缩执行、并发去重、结果持久化 */
+  private compactionManager!: CompactionManager
+  /** PromptFormatter：项目记忆/会话历史/代码上下文的 Markdown 格式化和 Token 预算计算 */
+  private promptFormatter!: PromptFormatter
 
-  // ----- Callbacks injected by IPC handlers / tests -----
-  private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
-  private sessionStartedCallback?: (threadId: string, sessionId: string) => void
-  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
-  private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
-
-  constructor(
-    private registry: AdapterRegistry,
-    private router: SessionRouter,
-    private broadcaster: OutputBroadcaster,
-  ) {
-    // 1) Lifecycle — owns session state, output buffering, cleanup lock
-    this.lifecycle = new SessionLifecycleManager(registry, router, broadcaster, new ScopeGuard())
-
-    // 2) ContextAssembler — context resolution + prompt assembly
-    this.assembler = new ContextAssembler(() => this.memoryStore)
-
-    // 3) ContextCompactor — context compaction orchestration
-    this.compactor = new ContextCompactor(registry, broadcaster, this.lifecycle)
-    // Bridge: compactor needs to find sessions seeded into manager.sessionStates
-    this.compactor.setSessionStateLookup((id) => this.sessionStates.get(id))
-
-    // 4) PhaseBHandler — post-cleanup memory pipeline + completion callback
-    this.phaseB = new PhaseBHandler({
-      lifecycle: this.lifecycle,
-      promptOutcomeLog: this.promptOutcomeLog,
-      sessionRecovery: this.sessionRecoveryInstance,
-    })
-
-    // 5) Housekeeper — periodic health check + memory pressure + recovery timers
-    this.housekeeper = new AgentHealthHousekeeper({
-      registry,
-      healthMonitor: this.healthMonitor,
-      lifecycle: this.lifecycle,
-      getMemoryStore: () => this.memoryStore,
-      maxSessions: this.MAX_SESSIONS,
-      getMemoryStats: () => this.getMemoryStats(),
-      terminateSession: (id, reason) => this.terminateSession(id, reason),
-    })
-
-    // 6) Lifecycle callbacks: tie recovery / completion / turn-complete / status into lifecycle
-    this.lifecycle.setCallbacks({
-      onTurnComplete: (sessionId) => {
-        const state = this.sessionStates.get(sessionId)
-        if (!state) return
-        this.sessionRecoveryInstance.reset(state.originSessionId ?? sessionId)
-      },
-      onSessionAbnormalEnded: (sessionId, exitCode, reason, state, outputs) =>
-        this._handleSessionEnded(sessionId, exitCode, reason, state, outputs),
-      onPhaseB: async (args) => {
-        await this.phaseB.run(args.sessionId, args.state, args.outputs, args.reason, args.scopeGuardError)
-      },
-      onNativeResume: (sessionId) => {
-        this.compactor.clearInflightForSession(sessionId)
-      },
-    })
-
-    // Status-change hook: lifecycle fires this after a successful scope commit
-    this.lifecycle.setStatusChangeHook((sessionId, nodeId) => {
-      this.statusChangeCallback?.(sessionId, nodeId, 'testing')
-    })
-
-    // Output listener: populate sessionOutputBuffers mirror for tests
-    this.broadcaster.onBroadcast((payload) => {
-      if (!payload.sessionId) return
-      let buf = this.sessionOutputBuffers.get(payload.sessionId)
-      if (!buf) {
-        buf = []
-        this.sessionOutputBuffers.set(payload.sessionId, buf)
-      }
-      if (
-        payload.output.type === 'stdout' ||
-        payload.output.type === 'stderr' ||
-        payload.output.type === 'file_change' ||
-        payload.output.type === 'complete'
-      ) {
-        buf.push(payload.output)
-        const cap = this.calculateOutputBufferCap()
-        if (buf.length > cap) {
-          buf.splice(0, buf.length - cap)
-        }
-      }
-    })
-
-    // Initialize lifecycle: bind TTL + scope violation + attach adapters
-    this.lifecycle.initialize()
-
-    // Start periodic health check
-    this.housekeeper.start()
-
-    // Mirror session count to MAX_SESSIONS calculation (housekeeper uses this too)
-    void this.MAX_SESSIONS // referenced for clarity; housekeeper reads from lifecycle
+  /** 兼容层：测试通过 `manager['sessionRecovery']` 直接访问 SessionRecoveryManager */
+  get sessionRecovery(): ReturnType<typeof getSessionRecoveryManager> {
+    return this.recoveryOrchestrator.sessionRecoveryManager
+  }
+  /** 兼容层：测试通过 `(manager as any).recoveryCheckIntervals` 访问 timer Map */
+  get recoveryCheckIntervals(): Map<string, ReturnType<typeof setInterval>> {
+    return this.recoveryOrchestrator.recoveryCheckMap
+  }
+  /** 兼容层：AgentManager 内部使用的 fallback recovery timer Map */
+  get fallbackRecoveryTimers(): Map<string, { interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }> {
+    return this.recoveryOrchestrator.fallbackRecoveryTimerMap
+  }
+  /** 兼容层：连续超时计数（来自 FallbackRouter） */
+  get adapterTimeoutCounts(): Map<string, number> {
+    return this.fallbackRouter.getTimeoutCounts()
+  }
+  /** 兼容层：暴露 compactInflight（AgentManager.compactInflight 外部访问） */
+  get compactInflight(): Map<string, Promise<CompactResult>> {
+    return this.compactionManager.inflightMap
   }
 
-  // ===================================================================
-  //                     Session state mirroring
-  // ===================================================================
-
-  /** Internal: keep manager.sessionStates in sync after lifecycle.start. */
-  private mirrorStart(sessionId: string, state: SessionState): void {
-    this.sessionStates.set(sessionId, state)
-  }
-
-  /** Internal: keep manager.sessionStates in sync after lifecycle.terminate / cleanup. */
-  private mirrorEnd(sessionId: string): void {
-    this.sessionStates.delete(sessionId)
-    this.sessionOutputBuffers.delete(sessionId)
-  }
-
-  // ===================================================================
-  //                     Capacity / process accounting
-  // ===================================================================
-
+  /**
+   * 基于系统资源动态计算最大会话数
+   * 公式：根据系统总内存计算，每会话预留约 20MB，最小 20，最大 200
+   */
   private calculateMaxSessions(): number {
     try {
       const totalMemMB = os.totalmem() / 1024 / 1024
+      // 每会话预留 20MB，预留 50% 内存给系统和其他进程
       const calculated = Math.floor((totalMemMB * 0.5) / 20)
       return Math.max(20, Math.min(200, calculated))
     } catch {
-      return 100
+      return 100 // 回退默认值
     }
   }
 
+  /** 全局子进程数硬上限：防止低配机同时跑大量子进程耗尽 fd/内存 */
+  private readonly MAX_PROCESSES = Math.min(this.MAX_SESSIONS, Math.max(4, os.cpus().length * 2))
+
+  /** 会话输出缓冲区上限：根据可用内存自适应 */
   private calculateOutputBufferCap(): number {
     try {
       const freeMemMB = os.freemem() / 1024 / 1024
@@ -287,6 +216,7 @@ export class AgentManager {
     }
   }
 
+  /** 统计所有适配器当前活跃子进程总数 */
   private countActiveProcesses(): number {
     let count = 0
     for (const adapter of this.registry.list()) {
@@ -295,7 +225,326 @@ export class AgentManager {
     return count
   }
 
-  getMemoryStats(): MemoryStats {
+  constructor(
+    private registry: AdapterRegistry,
+    private router: SessionRouter,
+    private broadcaster: OutputBroadcaster,
+  ) {
+    // 初始化 FallbackRouter / RecoveryOrchestrator / CompactionManager / PromptFormatter（解耦职责）
+    this.recoveryOrchestrator = new RecoveryOrchestrator(
+      this.registry,
+      this.healthMonitor,
+      this.router,
+      this.sessionStates,
+      this.sessionBroadcastNames,
+      // 闭包注入 startSessionFn / sendCommandFn，避免循环依赖
+      this.startSession.bind(this),
+      this.sendCommand.bind(this),
+    )
+    this.fallbackRouter = new FallbackRouter(
+      this.registry,
+      this.healthMonitor,
+      // 命中 unhealthy 时让 RecoveryOrchestrator 启动周期性探测
+      (adapterName) => this.recoveryOrchestrator.startRecoveryCheck(adapterName),
+    )
+    this.compactionManager = new CompactionManager(this.sessionStates, this.registry, this.broadcaster)
+    this.promptFormatter = new PromptFormatter(this.memoryStore, this.promptOutcomeLog)
+
+    // 为每个已注册的适配器绑定输出监听
+    for (const adapter of this.registry.list()) {
+      this.attachAdapterOutput(adapter)
+    }
+
+    // 注册 TTL 过期回调：孤立会话超时时自动清理沙箱等资源
+    this.router.onTtlExpired((sessionId) => {
+      logger.warn(`Session ${sessionId} TTL expired, cleaning up resources`)
+      this.cleanupSessionResources(sessionId)
+    })
+
+    // 注册 ScopeGuard 越界回调：通过反向索引 O(1) 定位对应 session 并自动终止
+    this.bindScopeGuardViolationHandler()
+
+    // 启动定期健康检查（每 10 分钟输出诊断日志）
+    this.startHealthCheck()
+  }
+
+  /**
+   * 绑定 ScopeGuard 越界事件处理器（抽取为独立方法，便于注入新实例时重新绑定）
+   */
+  private bindScopeGuardViolationHandler(): void {
+    this.scopeGuard.onViolation(async (sandboxId, violations) => {
+      logger.error('Scope violation detected:', violations)
+      const sessionId = this.sandboxSessionIndex.get(sandboxId)
+      if (!sessionId) {
+        logger.warn(`No session found for sandbox ${sandboxId}, skipping termination`)
+        return
+      }
+      try {
+        await this.terminateSession(sessionId, 'error')
+      } catch (err) {
+        logger.warn('Failed to terminate session during scope violation cleanup:', err)
+      }
+    })
+  }
+
+  /**
+   * 动态注册新适配器并自动绑定输出
+   */
+  registerAdapter(adapter: AgentAdapter): void {
+    this.registry.register(adapter)
+    this.attachAdapterOutput(adapter)
+  }
+
+  private attachAdapterOutput(adapter: AgentAdapter): void {
+    const handler = (output: AgentOutput) => {
+      const sessionId = adapter.resolveOutputSession?.(output)
+      if (sessionId) {
+        const broadcastName = this.sessionStates.get(sessionId)?.broadcastName ?? adapter.name
+        this.broadcaster.broadcast(broadcastName, output, sessionId)
+
+        // Finding 3 fix: reset the recovery-attempt counter when a turn completes successfully.
+        // SDK multi-turn adapters (claude-code / codex / mcp) keep sessions alive across commands
+        // and do NOT emit sessionEnded('success') per turn, so the only per-turn success signal
+        // is the 'complete' output. Resetting here ensures an intermittent crash doesn't
+        // permanently exhaust the lineage's retry budget even after many healthy subsequent turns.
+        //
+        // Guard: skip if cleanup is in progress — during replacement-recovery the old session's
+        // teardown also emits 'complete', and resetting there would clobber the counter that the
+        // recovery path uses to bound retries.
+        if (
+          output.type === 'complete' &&
+          !this.cleanupInProgress.has(sessionId) &&
+          this.sessionStates.has(sessionId)
+        ) {
+          const state = this.sessionStates.get(sessionId)
+          if (state) {
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+          }
+        }
+        return
+      }
+      this.broadcaster.broadcast(adapter.name, output)
+    }
+    this.outputHandlers.set(adapter.name, handler)
+    adapter.onOutput(handler)
+
+    // 监听 session 结束事件，自动清理沙箱等资源
+    const sessionEndedHandler: SessionEndedHandler = async (sessionId, reason, exitCode) => {
+      try {
+        if (reason === 'crash' || reason === 'error' || reason === 'timeout') {
+          logger.warn(`Session ${sessionId} ended abnormally (${reason}, exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          const outputs = this.sessionOutputBuffers.get(sessionId) ?? []
+          if (state) {
+            state.terminationReason = reason
+          }
+
+          if (state) {
+            // Run recovery while the original session state/output buffer is still intact.
+            const outcome = await this._handleSessionEnded(sessionId, exitCode, reason, state, outputs)
+            if (outcome === 'native') {
+              // Native resume keeps the same sessionId active. Clear only transient
+              // crash artifacts and leave the session/router binding in place.
+              this.sessionOutputBuffers.delete(sessionId)
+              this.compactInflight.delete(sessionId)
+              return
+            }
+          }
+
+          // For replacement sessions or unrecoverable crashes, clean up the original session.
+          await this.cleanupSessionResources(sessionId)
+          return
+        }
+
+        if (reason === 'success') {
+          // Normal completion: clean up resources without running recovery.
+          logger.info(`Session ${sessionId} completed successfully (exit ${exitCode}), cleaning up...`)
+          const state = this.sessionStates.get(sessionId)
+          if (state) {
+            state.terminationReason = 'success'
+            // Reset recovery attempts for this lineage so future crashes can be recovered again.
+            this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+          }
+          await this.cleanupSessionResources(sessionId)
+        }
+
+        if (reason === 'idle') {
+          // SDK adapter idle-reaper fired: session was alive but had no activity for
+          // idleMs. Delegate to terminateSession(sessionId, 'idle') so the memory
+          // pipeline (Phase B), scope-guard commit, onSessionComplete callback, and
+          // sessionRecovery reset all run through the single canonical teardown path
+          // instead of being duplicated here (see review finding: altitude/idle-branch).
+          // terminateSession 内部的 cleanupInProgress 互斥已防止与并发清理冲突，
+          // 因此即使此处异步执行完整记忆管线，也不会与同一会话的其它终止路径重入。
+          logger.info(`Session ${sessionId} reclaimed by idle reaper, delegating to terminateSession`)
+          try {
+            await this.terminateSession(sessionId, 'idle')
+          } catch (err) {
+            logger.warn(`terminateSession('idle') failed for ${sessionId}:`, err)
+          }
+        }
+      } catch (err) {
+        logger.error(`Unhandled error in sessionEnded handler for ${sessionId}:`, err)
+      }
+    }
+    this.sessionEndedHandlers.set(adapter.name, sessionEndedHandler)
+    adapter.on('sessionEnded', sessionEndedHandler)
+
+    // Phase 3 Task 3: forward 'usage' events to the waterline for the bound thread
+    if (typeof adapter.onUsage === 'function') {
+      adapter.onUsage(({ sessionId: sid, inputTokens, maxTokens }) => {
+        const ss = this.sessionStates.get(sid)
+        if (ss) {
+          ss.tokensUsed = (ss.tokensUsed ?? 0) + inputTokens
+          if (ss?.threadId && this.waterline) {
+            this.waterline.onAdapterUsageReport(ss.threadId, inputTokens, maxTokens ?? 200_000)
+          }
+        }
+      })
+    } else {
+      logger.warn(`Adapter ${adapter.name} does not support usage events (onUsage missing)`)
+    }
+  }
+
+  /**
+   * 清理指定 session 的所有资源（沙箱、路由、广播名、输出监听器等）
+   * 通过 cleanupInProgress 互斥锁防止与 terminateSession 并发导致双重清理
+   */
+  private async cleanupSessionResources(sessionId: string): Promise<void> {
+    // 互斥检查：若已在清理中，跳过
+    if (this.cleanupInProgress.has(sessionId)) return
+    this.cleanupInProgress.add(sessionId)
+
+    try {
+      await this._doCleanupSessionResources(sessionId)
+    } finally {
+      // 释放互斥锁：确保即使清理过程中抛异常也不会死锁
+      this.cleanupInProgress.delete(sessionId)
+    }
+  }
+
+  /**
+   * 实际执行资源清理（不获取/释放 cleanupInProgress 锁）
+   *
+   * 抽取为独立方法以便调用方（如 terminateSession 的 SessionNotFoundError 分支）
+   * 在已经持有锁的情况下直接调用，避免重入 cleanupSessionResources 时
+   * 被锁检查 short-circuit 跳过而导致残留资源未被释放。
+   *
+   * 所有异步操作（adapter 终止、沙箱回滚）均被 await，
+   * 确保资源在方法返回前已释放，防止与后续 terminateSession 重叠。
+   */
+  private async _doCleanupSessionResources(sessionId: string): Promise<void> {
+    const state = this.sessionStates.get(sessionId)
+
+    // Collect async operations so we can await them before removing state
+    const pendingOps: Promise<void>[] = []
+
+    // 终止 adapter 会话（防止子进程泄漏）
+    try {
+      const adapterName = this.router.getAdapterName(sessionId)
+      if (adapterName) {
+        const adapter = this.registry.get(adapterName)
+        if (adapter) {
+          const cleanupReason: TerminationReason = (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error')
+            ? state.terminationReason
+            : 'error'
+          pendingOps.push(
+            adapter.terminateSession(sessionId, cleanupReason).then(
+              () => {},
+              (err: unknown) => { logger.warn(`Failed to terminate adapter session ${sessionId}:`, err) },
+            ),
+          )
+        }
+      }
+    } catch {
+      // 路由条目可能已不存在，忽略
+    }
+
+    // ScopeGuard: 异常退出时回滚沙箱（带重试机制，防止临时文件系统错误导致资源泄漏）
+    if (state?.sandbox) {
+      const sandbox = state.sandbox
+      this.sandboxSessionIndex.delete(sandbox.id)
+      pendingOps.push(
+        this.rollbackWithRetry(sessionId, sandbox, 2).catch((err: unknown) => {
+          logger.error(`Failed to rollback sandbox for session ${sessionId} after retries:`, err)
+        }),
+      )
+    }
+
+    // Wait for all async operations (adapter terminate + sandbox rollback) to settle
+    // before clearing state, so that resources are truly released before overlap is possible.
+    // A hard timeout prevents a hanging operation from permanently blocking cleanup.
+    const cleanupTimeout = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        logger.error(`Session ${sessionId} cleanup exceeded ${CLEANUP_ASYNC_TIMEOUT_MS}ms; force-progressing state cleanup`)
+        resolve()
+      }, CLEANUP_ASYNC_TIMEOUT_MS)
+    })
+    await Promise.race([Promise.allSettled(pendingOps), cleanupTimeout])
+
+    // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
+    const listeners = this.sessionOutputListenerIndex.get(sessionId)
+    if (listeners) {
+      for (const handler of listeners) {
+        const wrapped = this.sessionOutputListeners.get(handler)
+        if (wrapped) {
+          this.broadcaster.offBroadcast(wrapped)
+          this.sessionOutputListeners.delete(handler)
+        }
+      }
+      this.sessionOutputListenerIndex.delete(sessionId)
+    }
+
+    this.sessionStates.delete(sessionId)
+    this.sessionBroadcastNames.delete(sessionId)
+    this.sessionOutputBuffers.delete(sessionId)
+    this.compactInflight.delete(sessionId)
+    this.router.unbind(sessionId)
+
+    // Trim promptOutcomeLog in crash/error path (normally trimmed in terminateSession,
+    // but cleanupSessionResources can be invoked without terminateSession)
+    if (this.promptOutcomeLog.length > 100) {
+      this.promptOutcomeLog = this.promptOutcomeLog.slice(-100)
+    }
+  }
+
+  /**
+   * 带回滚重试的沙箱回滚操作
+   * 当回滚因临时性文件系统错误失败时，按指数退避重试，
+   * 防止因资源未释放导致的后续会话异常。
+   */
+  private async rollbackWithRetry(
+    sessionId: string,
+    sandbox: Sandbox,
+    maxRetries: number,
+  ): Promise<void> {
+    let lastError: unknown
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        await this.scopeGuard.rollback(sandbox)
+        if (attempt > 0) {
+          logger.info(`Sandbox rollback succeeded on retry ${attempt} for session ${sessionId}`)
+        }
+        return
+      } catch (err: unknown) {
+        lastError = err
+        const errMsg = err instanceof Error ? err.message : String(err)
+        logger.warn(`Sandbox rollback attempt ${attempt + 1}/${maxRetries + 1} failed for session ${sessionId}: ${errMsg}`)
+        if (attempt < maxRetries) {
+          // 指数退避 + 抖动：100ms * 2^attempt + 随机抖动，防止多会话同时失败时惊群
+          const baseDelay = 100 * Math.pow(2, attempt)
+          const jitter = Math.random() * baseDelay * 0.5
+          await new Promise<void>((resolve) => setTimeout(resolve, baseDelay + jitter))
+        }
+      }
+    }
+    throw lastError
+  }
+
+  /**
+   * 获取进程内存统计信息
+   */
+  getMemoryStats(): { rssMB: number; heapTotalMB: number; heapUsedMB: number; externalMB: number } {
     const usage = process.memoryUsage()
     return {
       rssMB: Math.round(usage.rss / 1024 / 1024),
@@ -305,13 +554,303 @@ export class AgentManager {
     }
   }
 
-  // ===================================================================
-  //                     Public: adapter registry
-  // ===================================================================
+  /**
+   * 检查内存使用，超过阈值时触发警告和会话清理
+   */
+  private checkMemoryPressure(): void {
+    const stats = this.getMemoryStats()
+    if (stats.rssMB > RSS_CRITICAL_THRESHOLD_MB) {
+      logger.error(`CRITICAL: RSS ${stats.rssMB}MB exceeds critical threshold (${RSS_CRITICAL_THRESHOLD_MB}MB), force cleaning oldest sessions`)
+      this.cleanupOldestSessions(5)
+    } else if (stats.rssMB > RSS_WARNING_THRESHOLD_MB) {
+      logger.warn(`WARNING: RSS ${stats.rssMB}MB exceeds warning threshold (${RSS_WARNING_THRESHOLD_MB}MB), consider reducing active sessions`)
+      this.cleanupOldestSessions(2)
+    }
+  }
 
-  registerAdapter(adapter: AgentAdapter): void {
-    this.registry.register(adapter)
-    this.lifecycle.attachAdapter(adapter)
+  /**
+   * 清理最老的 N 个会话（按开始时间排序）
+   */
+  private cleanupOldestSessions(count: number): void {
+    const sorted = Array.from(this.sessionStates.entries())
+      .sort((a, b) => a[1].startTime - b[1].startTime)
+      .slice(0, count)
+    for (const [sessionId] of sorted) {
+      logger.info(`Memory pressure cleanup: terminating session ${sessionId}`)
+      this.terminateSession(sessionId, 'error').catch((err) => {
+        logger.warn(`Failed to terminate session ${sessionId} during memory cleanup:`, err)
+      })
+    }
+  }
+
+  /**
+   * 输出诊断日志，用于监控内存使用情况
+   * 可在 destroy() 前或定时调用
+   */
+  logDiagnostics(): void {
+    const mem = this.getMemoryStats()
+    logger.info('AgentManager diagnostics', {
+      activeSessions: this.sessionStates.size,
+      outputHandlers: this.outputHandlers.size,
+      sessionBroadcastNames: this.sessionBroadcastNames.size,
+      sessionOutputListenerIndex: this.sessionOutputListenerIndex.size,
+      sandboxSessionIndex: this.sandboxSessionIndex.size,
+      cleanupInProgress: this.cleanupInProgress.size,
+      memory: mem,
+    })
+  }
+
+  /**
+   * 启动定期健康检查（自适应间隔：高负载时更频繁）
+   * 用于长期运行时监控内存占用和资源泄漏
+   */
+  private startHealthCheck(): void {
+    if (this.healthCheckTimer) return
+    this.scheduleNextHealthCheck()
+  }
+
+  /**
+   * 计算自适应健康检查间隔
+   * 高负载（内存压力大或会话多）时缩短间隔，正常情况保持默认
+   */
+  private adaptiveHealthCheckInterval(): number {
+    const stats = this.getMemoryStats()
+    const sessionCount = this.sessionStates.size
+    // 内存超过80%阈值或会话超过70%上限 → 5分钟
+    if (stats.rssMB > RSS_WARNING_THRESHOLD_MB * 0.8 || sessionCount > this.MAX_SESSIONS * 0.7) {
+      return 5 * 60 * 1000
+    }
+    // 内存超过50%阈值或会话超过50%上限 → 7分钟
+    if (stats.rssMB > RSS_WARNING_THRESHOLD_MB * 0.5 || sessionCount > this.MAX_SESSIONS * 0.5) {
+      return 7 * 60 * 1000
+    }
+    return HEALTH_CHECK_INTERVAL_MS
+  }
+
+  /**
+   * 调度下一次健康检查
+   */
+  private scheduleNextHealthCheck(): void {
+    const interval = this.adaptiveHealthCheckInterval()
+    this.healthCheckTimer = setTimeout(() => {
+      this.logDiagnostics()
+      this.checkMemoryPressure()
+      // 定期清理过期低置信度记忆（借鉴 claude-mem 的自动清理策略）
+      try {
+        this.memoryStore.pruneStale(90)
+      } catch (err) {
+        logger.warn('Memory pruneStale failed:', err)
+      }
+      // 调度下一次检查（间隔可能根据系统状态变化）
+      this.scheduleNextHealthCheck()
+    }, interval)
+    // 不阻止进程退出
+    if (this.healthCheckTimer && typeof this.healthCheckTimer === 'object' && 'unref' in this.healthCheckTimer) {
+      (this.healthCheckTimer as ReturnType<typeof setTimeout> & { unref(): void }).unref()
+    }
+  }
+
+  /**
+   * 停止健康检查定时器
+   */
+  private stopHealthCheck(): void {
+    if (this.healthCheckTimer) {
+      clearTimeout(this.healthCheckTimer)
+      this.healthCheckTimer = null
+    }
+  }
+
+  /**
+   * 清理所有适配器的输出监听器，防止内存泄漏
+   */
+  destroy(): void {
+    for (const [name, handler] of this.outputHandlers) {
+      const adapter = this.registry.get(name)
+      if (adapter) {
+        adapter.offOutput(handler)
+      }
+    }
+    for (const [name, handler] of this.sessionEndedHandlers) {
+      const adapter = this.registry.get(name)
+      if (adapter) {
+        adapter.off('sessionEnded', handler)
+      }
+    }
+    this.outputHandlers.clear()
+    this.sessionEndedHandlers.clear()
+    this.sessionStates.clear()
+    this.sessionBroadcastNames.clear()
+    this.sandboxSessionIndex.clear()
+    // 停止 SessionRouter 的 TTL 检查
+    this.router.stopTtlCheck()
+    // 清理所有会话级输出监听器
+    for (const wrapped of this.sessionOutputListeners.values()) {
+      this.broadcaster.offBroadcast(wrapped)
+    }
+    this.sessionOutputListeners.clear()
+    this.sessionOutputListenerIndex.clear()
+    this.cleanupInProgress.clear()
+    // 停止健康检查定时器
+    this.stopHealthCheck()
+    // 清理所有 recovery check intervals
+    for (const interval of this.recoveryCheckIntervals.values()) {
+      clearInterval(interval)
+    }
+    this.recoveryCheckIntervals.clear()
+    // 清理 ScopeGuard 所有定时器和 watcher
+    this.scopeGuard.destroy()
+    // 释放适配器级资源（如 MCP 连接池、池清理定时器）——避免应用退出时泄漏子进程/连接
+    for (const adapter of this.registry.list()) {
+      const disposable = adapter as { dispose?: () => void }
+      if (typeof disposable.dispose === 'function') {
+        try {
+          disposable.dispose()
+        } catch (err) {
+          logger.warn(`Adapter ${adapter.name} dispose() failed:`, err)
+        }
+      }
+    }
+  }
+
+  /**
+   * 终止所有活跃会话并释放资源（进程退出时调用）
+   */
+  async terminateAllSessions(): Promise<void> {
+    const sessionIds = this.router.getActiveSessionIds()
+    await Promise.allSettled(
+      sessionIds.map((id) => this.terminateSession(id, 'user')),
+    )
+    this.sessionStates.clear()
+  }
+
+  setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
+    this.statusChangeCallback = cb
+  }
+
+  setSessionStartedCallback(cb: (threadId: string, sessionId: string) => void): void {
+    this.sessionStartedCallback = cb
+  }
+
+  setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
+    this.nodeStatusChangeCallback = cb
+  }
+
+  setOnSessionComplete(handler: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void): void {
+    this.onSessionComplete = handler
+  }
+
+  /**
+   * 注入 ScopeGuard 实例（替换默认实例，重新绑定越界处理器）
+   */
+  setScopeGuard(scopeGuard: ScopeGuard): void {
+    // 销毁旧实例的定时器和 watcher
+    this.scopeGuard.destroy()
+    this.scopeGuard = scopeGuard
+    this.bindScopeGuardViolationHandler()
+  }
+
+  /**
+   * 注入 ContextResolver 实例（替换默认实例）
+   */
+  setContextResolver(contextResolver: ContextResolver): void {
+    this.contextResolver = contextResolver
+  }
+
+  /**
+   * 注入代码智能依赖
+   */
+  setSymbolIndex(symbolIndex: SymbolIndex): void {
+    this.smartContextResolver = new SmartContextResolver(symbolIndex)
+  }
+
+  /**
+   * 注入适配器偏好加载器（避免循环依赖：settings → ipc-handlers → AgentManager → settings）
+   */
+  setAdapterPreferencesLoader(loader: () => Promise<AdapterPreferences>): void {
+    this.adapterPreferencesLoader = loader
+  }
+
+  /**
+   * 注入 ContextWaterline 实例
+   */
+  setWaterline(wl: ContextWaterline): void {
+    this.waterline = wl
+  }
+
+  /**
+   * 注入 CompactHistoryRepository（Phase 3：用于持久化 compact_history）
+   */
+  setCompactHistoryRepo(repo: CompactHistoryRepository): void {
+    this.compactionManager.setCompactHistoryRepo(repo)
+  }
+
+  /**
+   * 注入 ChatRepository（Phase 3：用于 compactContext 后更新 thread 的 waterline 元数据）
+   */
+  setChatRepo(repo: ChatRepository): void {
+    this.compactionManager.setChatRepo(repo)
+  }
+
+  /**
+   * Phase 4: 注入 SubagentManager（setter 模式打破循环依赖）
+   */
+  setSubagentManager(mgr: SubagentManager): void {
+    this.subagentManager = mgr
+  }
+
+  getSubagentManager(): SubagentManager | undefined {
+    return this.subagentManager
+  }
+
+  getSandbox(sessionId: string): Sandbox | undefined {
+    return this.sessionStates.get(sessionId)?.sandbox
+  }
+
+  /** Phase 4: expose session config for subagent scope validation. */
+  getSessionConfig(sessionId: string): AgentSessionConfig | undefined {
+    return this.sessionStates.get(sessionId)?.config
+  }
+
+  /** Phase 4: expose session state for subagent parent linkage. */
+  getSessionState(sessionId: string): SessionState | undefined {
+    return this.sessionStates.get(sessionId)
+  }
+
+  /** Phase 4: broadcast an output to a session's thread channel (used by SubagentManager). */
+  broadcastToSession(sessionId: string, output: AgentOutput): void {
+    const state = this.sessionStates.get(sessionId)
+    if (state) {
+      this.broadcaster.broadcast(state.broadcastName, output, sessionId)
+    }
+  }
+
+  /**
+   * 获取所有活跃会话 ID
+   */
+  getActiveSessionIds(): string[] {
+    return this.router.getActiveSessionIds()
+  }
+
+  get scopeGuardInstance(): ScopeGuard {
+    return this.scopeGuard
+  }
+
+  /**
+   * 获取指定适配器的健康评分
+   */
+  getAdapterHealth(adapterName: string): AdapterHealthScore | undefined {
+    return this.healthMonitor.getHealth(adapterName)
+  }
+
+  /**
+   * 获取所有适配器的健康评分
+   */
+  getAllAdapterHealth(): AdapterHealthScore[] {
+    return this.healthMonitor.getAllHealth()
+  }
+
+  getAdapter(name: string): AgentAdapter | undefined {
+    return this.registry.get(name)
   }
 
   async checkInstalled(name: string): Promise<boolean> {
@@ -324,52 +863,24 @@ export class AgentManager {
     return this.registry.checkAllInstalled()
   }
 
-  getAdapter(name: string): AgentAdapter | undefined {
-    return this.registry.get(name)
-  }
-
-  getAdapterHealth(adapterName: string): AdapterHealthScore | undefined {
-    return this.healthMonitor.getHealth(adapterName)
-  }
-
-  getAllAdapterHealth(): AdapterHealthScore[] {
-    return this.healthMonitor.getAllHealth()
-  }
-
-  // ===================================================================
-  //                     Public: lifecycle (startSession)
-  // ===================================================================
-
   async startSession(
     adapterName: string | null,
     config: AgentSessionConfig,
   ): Promise<StartSessionResult> {
+    // 确定回退链：首选适配器 + 回退顺序
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
-    const fallbackChain = [primary, ...preferences.fallbackOrder.filter((a: string) => a !== primary)]
+    const fallbackOrder = preferences.fallbackOrder
 
-    const seen = new Set<string>()
-    const uniqueChain = fallbackChain.filter((a) => {
-      if (seen.has(a)) return false
-      seen.add(a)
-      return true
-    })
-
-    if (!preferences.forceAdapter) {
-      const healthiest = this.healthMonitor.getHealthiestAdapter(uniqueChain)
-      if (healthiest && healthiest !== uniqueChain[0]) {
-        const reordered = [healthiest, ...uniqueChain.filter((n) => n !== healthiest)]
-        uniqueChain.splice(0, uniqueChain.length, ...reordered)
-      }
-    }
-
-    const fallbackHistory: AdapterFallbackAttempt[] = []
-
+    // 检查系统剩余内存，低配机接近耗尽时拒绝新建会话
     if (os.freemem() < 512 * 1024 * 1024) {
       logger.error('Insufficient free memory (<512MB), refusing to create new session')
       throw new AgentError('Insufficient free memory to start a new agent session', ErrorCode.AGENT_RESOURCE_EXHAUSTED)
     }
 
+    // 检查会话上限，防止无限创建
+    // reservedSlots tracks in-flight startSession calls to prevent TOCTOU races
+    // on the capacity check; real sessions are in sessionStates.
     const activeSessions = this.sessionStates.size
     const pendingReservations = this.reservedSlots.size
     if (activeSessions + pendingReservations >= this.MAX_SESSIONS) {
@@ -380,146 +891,118 @@ export class AgentManager {
       logger.error(`Maximum process limit (${this.MAX_PROCESSES}) reached, cannot create new session`)
       throw new AgentError('Maximum concurrent agent processes exceeded', ErrorCode.AGENT_RESOURCE_EXHAUSTED)
     }
-
+    // Reserve a slot key to prevent TOCTOU race
     const slotKey = `__reserved_${Date.now()}_${Math.random().toString(36).slice(2)}`
     this.reservedSlots.add(slotKey)
 
-    for (const candidate of uniqueChain) {
-      const adapter = this.registry.get(candidate)
-      if (!adapter) {
-        fallbackHistory.push({ adapter: candidate, reason: `Adapter ${candidate} not registered`, success: false })
-        logger.warn(`Adapter ${candidate} not registered, trying next...`)
-        continue
-      }
+    // 委托 FallbackRouter：build chain + 解析（健康度过滤、degraded 超时减半、连续超时计数、checkInstalled）
+    const uniqueChain = this.fallbackRouter.buildChain(primary, fallbackOrder, preferences.forceAdapter)
+    let resolved
+    try {
+      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, config)
+    } catch (err) {
+      this.reservedSlots.delete(slotKey)
+      throw err
+    }
 
-      const isInstalled = await adapter.checkInstalled()
-      if (!isInstalled) {
-        fallbackHistory.push({ adapter: candidate, reason: `${candidate} not installed`, success: false })
-        logger.warn(`Adapter ${candidate} not installed, trying next...`)
-        continue
-      }
+    const { session, adapterUsed, isFallback, fallbackHistory, config: resolvedConfig } = resolved
 
-      const health = this.healthMonitor.getHealth(candidate)
-      if (health && health.status === 'unhealthy') {
-        fallbackHistory.push({
-          adapter: candidate,
-          reason: `${candidate} is unhealthy (score: ${health.healthScore}), skipping`,
-          success: false,
-        })
-        logger.warn(`Adapter ${candidate} is unhealthy (score: ${health.healthScore}), skipping and starting recovery check`)
-        this.startRecoveryCheck(candidate)
-        continue
-      }
-      if (health && health.status === 'degraded') {
-        const originalTimeout = config.timeoutMs ?? 120_000
-        config = { ...config, timeoutMs: Math.floor(originalTimeout * 0.5) }
-        logger.info(`Adapter ${candidate} is degraded, reducing timeout from ${originalTimeout}ms to ${config.timeoutMs}ms`)
-      }
+    // 成功路径：清理预留槽位 + 准备 sandbox + 注册 session 状态
+    this.reservedSlots.delete(slotKey)
 
-      const startTime = Date.now()
+    let sandbox: Sandbox | undefined
+    if (resolvedConfig.allowedFiles.length > 0 || resolvedConfig.verifyOnly) {
+      sandbox = await this.scopeGuard.prepareSandbox(
+        resolvedConfig.allowedFiles,
+        resolvedConfig.workingDirectory,
+      )
+      this.sandboxSessionIndex.set(sandbox.id, session.id)
+    }
+
+    const broadcastName = isFallback ? `${primary}-fallback-${session.id.slice(-6)}` : adapterUsed
+
+    this.sessionStates.set(session.id, {
+      config: resolvedConfig,
+      broadcastName,
+      adapterName: adapterUsed,
+      startTime: session.startTime,
+      sandbox,
+      threadId: resolvedConfig.threadId,
+      parentSessionId: resolvedConfig.parentSessionId,
+      swarmTaskId: resolvedConfig.swarmTaskId,
+    })
+    this.sessionBroadcastNames.set(session.id, broadcastName)
+
+    // fallback 时路由记录实际适配器名
+    this.router.bind(session.id, adapterUsed, isFallback ? primary : undefined)
+
+    // 如果是 fallback，在 session 上记录 fallbackInfo（保持向后兼容）
+    if (isFallback) {
+      session.fallbackInfo = {
+        originalAdapter: primary,
+        fallbackReason: `${primary} not available, using ${adapterUsed}`,
+      }
+      // Start periodic check to detect when preferred adapter recovers
+      this._startFallbackRecoveryCheck(primary)
+    }
+
+    if (resolvedConfig.nodeId) {
+      this.statusChangeCallback?.(session.id, resolvedConfig.nodeId, 'developing')
+    }
+
+    // placeholder→developing auto-trigger
+    // 走 NodeRepository.update() 让 status 变更经 per-NodeType 校验
+    // （`validateNodeTypeTransition`）：feature 类型节点合法推进；
+    // 其他类型节点（project/module/process/bug/wiki-page）抛
+    // InvalidStateTransitionError 被下方 try/catch 吞掉，仅记 warn 日志。
+    // 保留 `current.status === 'placeholder'` 幂等检查，避免对已推进节点无效写入。
+    if (resolvedConfig.nodeId && resolvedConfig.commandType === 'implement') {
       try {
-        const session: AgentSession = await adapter.startSession(config)
-        this.adapterTimeoutCounts.delete(candidate)
-
-        const { broadcastName } = await this.lifecycle.start({
-          candidate,
-          adapter,
-          session: { id: session.id, startTime: session.startTime },
-          config,
-          isFallback: candidate !== primary,
-          primaryAdapter: primary,
-        })
-
-        // Mirror state into manager.sessionStates for backward compat with tests
-        const mirroredState: SessionState = {
-          config,
-          broadcastName,
-          adapterName: candidate,
-          startTime: session.startTime,
-          sandbox: this.lifecycle.getSandbox(session.id),
-          threadId: config.threadId,
-          parentSessionId: config.parentSessionId,
-          swarmTaskId: config.swarmTaskId,
-        }
-        this.mirrorStart(session.id, mirroredState)
-
-        fallbackHistory.push({ adapter: candidate, reason: '', success: true })
-        this.healthMonitor.recordCall(candidate, true, Date.now() - startTime)
-
-        const isFallback = candidate !== primary
-
-        // Router binding: actual adapter wins; originalAdapter captures fallback
-        this.router.bind(session.id, candidate, isFallback ? primary : undefined)
-
-        // Record fallback reason for renderer
-        if (isFallback) {
-          session.fallbackInfo = {
-            originalAdapter: primary,
-            fallbackReason: `${primary} not available, using ${candidate}`,
+        const db = getClient()
+        const { NodeRepository } = await import('../repositories/node-repository')
+        const nodeRepo = new NodeRepository(db)
+        const current = nodeRepo.findById(resolvedConfig.nodeId)
+        if (current && current.status === 'placeholder') {
+          const updated = nodeRepo.update(resolvedConfig.nodeId, { status: 'developing' })
+          if (updated.status === 'developing') {
+            this.nodeStatusChangeCallback?.(resolvedConfig.nodeId, 'placeholder', 'developing')
           }
-          this.housekeeper.startFallbackRecoveryCheck(primary)
-        }
-
-        if (config.nodeId) {
-          this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
-        }
-
-        // placeholder → developing auto-advance (per-node-type validated via NodeRepository)
-        if (config.nodeId && config.commandType === 'implement') {
-          try {
-            const db = getClient()
-            const { NodeRepository } = await import('../repositories/node-repository')
-            const nodeRepo = new NodeRepository(db)
-            const current = nodeRepo.findById(config.nodeId)
-            if (current && current.status === 'placeholder') {
-              const updated = nodeRepo.update(config.nodeId, { status: 'developing' })
-              if (updated.status === 'developing') {
-                this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
-              }
-            }
-          } catch (err) {
-            logger.warn(`Failed to auto-advance placeholder node ${config.nodeId}:`, err)
-          }
-        }
-
-        // Release reserved slot — real session is now registered
-        this.reservedSlots.delete(slotKey)
-
-        // Emit session-started event for renderer IPC
-        if (this.sessionStartedCallback && config.threadId) {
-          this.sessionStartedCallback(config.threadId, session.id)
-        }
-
-        return {
-          sessionId: session.id,
-          fallback: isFallback || undefined,
-          adapterUsed: candidate,
-          fallbackHistory,
         }
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
-        fallbackHistory.push({ adapter: candidate, reason: `startSession failed: ${reason}`, success: false })
-        this.healthMonitor.recordCall(candidate, false, Date.now() - startTime, reason)
-        const currentCount = this.adapterTimeoutCounts.get(candidate) ?? 0
-        const nextCount = currentCount + 1
-        this.adapterTimeoutCounts.set(candidate, nextCount)
-        if (nextCount >= 2) {
-          this.adapterTimeoutCounts.delete(candidate)
-          logger.warn(`Adapter ${candidate} failed ${nextCount} consecutive times, moving to next adapter`)
-          continue
-        }
-        logger.warn(`Adapter ${candidate} startSession failed: ${reason}, trying next...`)
-        continue
+        logger.warn(`Failed to auto-advance placeholder node ${resolvedConfig.nodeId}:`, err)
       }
     }
 
-    this.reservedSlots.delete(slotKey)
-    throw new AdapterError(
-      `No adapter available. Tried: ${uniqueChain.join(', ')}. Details: ${fallbackHistory.map((f) => `${f.adapter} (${f.reason})`).join('; ')}`,
-      primary,
-    )
+    // MEM-01: 初始化会话输出缓冲（用于记忆提取）
+    const sessionOutputs: AgentOutput[] = []
+    this.sessionOutputBuffers.set(session.id, sessionOutputs)
+    this.addSessionOutputListener(session.id, (output) => {
+      // 只收集有实质内容的输出（保护内存）
+      if (output.type === 'stdout' || output.type === 'stderr' || output.type === 'file_change' || output.type === 'complete') {
+        sessionOutputs.push(output)
+        // 限制缓冲区大小，防止内存无限增长
+        if (sessionOutputs.length > this.calculateOutputBufferCap()) {
+          sessionOutputs.splice(0, sessionOutputs.length - this.calculateOutputBufferCap())
+        }
+      }
+    })
+
+    // Emit session started event for renderer IPC
+    if (this.sessionStartedCallback && resolvedConfig.threadId) {
+      this.sessionStartedCallback(resolvedConfig.threadId, session.id)
+    }
+
+    return {
+      sessionId: session.id,
+      fallback: isFallback || undefined,
+      adapterUsed,
+      fallbackHistory,
+    }
   }
 
+  /**
+   * 加载适配器偏好配置（通过注入的 loader，避免循环依赖）
+   */
   private async loadAdapterPreferences(): Promise<AdapterPreferences> {
     if (this.adapterPreferencesLoader) {
       try {
@@ -537,25 +1020,26 @@ export class AgentManager {
     return { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }
   }
 
-  // ===================================================================
-  //                     Public: sendCommand / resolveAndSendCommand
-  // ===================================================================
-
   async sendCommand(sessionId: string, command: AgentCommand): Promise<void> {
     const adapter = this.router.resolve(sessionId)
     if (!adapter) {
       throw new SessionNotFoundError(sessionId)
     }
+    // 记录指令类型，供 terminateSession 中的记忆提取器使用
+    // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
+    //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
+    //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
     const state = this.sessionStates.get(sessionId)
     const prevCommandType = state?.lastCommandType
     if (state) {
       state.lastCommandType = command.type
       state.lastCommand = command
     }
-    this.lifecycle.recordLastCommand(sessionId, command, command.type)
     try {
       await adapter.sendCommand(sessionId, command)
     } catch (err) {
+      // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
+      // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
       if (state && state.lastCommandType === command.type) {
         state.lastCommandType = prevCommandType
       }
@@ -563,6 +1047,11 @@ export class AgentManager {
     }
   }
 
+  /**
+   * 解析上下文并发送指令
+   * 在发送前将 ContextRef[] 解析为 ResolvedContext[]，
+   * 注入到 adapter 的 scope prompt 中。
+   */
   async resolveAndSendCommand(
     sessionId: string,
     command: AgentCommand,
@@ -570,19 +1059,74 @@ export class AgentManager {
     nodes?: GraphNode[],
   ): Promise<void> {
     const sessionConfig = this.sessionStates.get(sessionId)?.config
+
+    // 并行执行上下文解析、智能代码解析、项目记忆加载、会话历史记忆（四者互不依赖）
+    const [resolvedContexts, codeContext, _memoryContext, _sessionHistoryContext] = await Promise.all([
+      // 标准上下文解析（根据命令类型自适应 Token 预算）
+      (contextRefs && contextRefs.length > 0)
+        ? this.contextResolver.resolve(contextRefs, CONTEXT_COMPLEXITY_BUDGET[(command as AgentCommand).type] ?? 8000, {
+            nodes: nodes ?? [],
+            basePath: sessionConfig?.workingDirectory,
+          })
+        : Promise.resolve([] as ResolvedContext[]),
+      // 智能代码上下文解析
+      (this.smartContextResolver && sessionConfig?.workingDirectory)
+        ? this.smartContextResolver.resolve({
+            userQuery: typeof command === 'string' ? command : command.description,
+            projectPath: sessionConfig.workingDirectory,
+            nodes: nodes ?? [],
+            maxSymbols: 15,
+            maxFiles: 8,
+            dependencyDepth: 2,
+          }).then((ctx) => {
+            if (ctx.primarySymbols.length > 0 || ctx.relatedFiles.length > 0) {
+              return this.promptFormatter.formatCodeContext(ctx)
+            }
+            return undefined
+          }).catch((err) => {
+            logger.warn('Smart context resolution failed:', err)
+            return undefined
+          })
+        : Promise.resolve(undefined as string | undefined),
+      // 项目记忆上下文（从 .bizgraph/memory.json 加载）
+      sessionConfig?.workingDirectory
+        ? readMemory(sessionConfig.workingDirectory).then((mem) => {
+            return this.promptFormatter.formatMemoryContext(mem)
+          }).catch((err) => {
+            logger.debug('Project memory load skipped:', err)
+            return undefined
+          })
+        : Promise.resolve(undefined as string | undefined),
+      // MEM-03: 会话历史记忆（从 MemoryStore 加载，借鉴 claude-mem 的渐进式上下文注入）
+      sessionConfig?.workingDirectory
+        ? this.promptFormatter.formatSessionHistoryContext(
+            sessionConfig.workingDirectory,
+            sessionConfig.nodeId,
+            sessionId,
+          )
+        : Promise.resolve(undefined as string | undefined),
+    ])
+
+    // Use PromptOrchestrator to assemble the full prompt from all context layers
     const sessionState = this.sessionStates.get(sessionId)
     const commandType = (command as AgentCommand).type
+    const commandText = typeof command === 'string' ? command : command.description
 
-    const { resolvedContexts, codeContext, assembled } = await this.assembler.assemble({
+    const orchestrator = new PromptOrchestrator()
+    const assembled = await orchestrator.assemble({
       sessionId,
-      command,
       adapterName: sessionState?.adapterName ?? '',
+      projectId: sessionConfig?.workingDirectory,
+      nodeId: sessionConfig?.nodeId,
+      nodeTitle: sessionConfig?.nodeTitle,
+      userCommand: commandText,
+      totalBudget: this.promptFormatter.getOptimalPromptBudget(commandType),
       sessionConfig,
-      contextRefs,
-      nodes,
-      optimalBudget: this.getOptimalPromptBudget(commandType),
+      resolvedContexts,
+      codeContext: codeContext,
     })
 
+    // Store assembled prompt on the adapter so it can inject it into the session
     const adapter = this.router.resolve(sessionId)
     if (adapter) {
       if (resolvedContexts.length > 0) {
@@ -591,405 +1135,326 @@ export class AgentManager {
       if (codeContext) {
         adapter.setCodeContext(sessionId, codeContext)
       }
+      // Set the full assembled prompt as memory context for the adapter
       adapter.setMemoryContext(sessionId, assembled.text)
     }
 
-    const threadId = sessionState?.threadId
-    if (threadId && this.contextWaterline?.shouldAutoCompact(threadId)) {
+    // Phase 3 Task 3: auto-compact actually triggers now.
+    const sessionStateForCompact = this.sessionStates.get(sessionId)
+    const threadId = sessionStateForCompact?.threadId
+    if (threadId && this.waterline?.shouldAutoCompact(threadId)) {
       try {
         await this.compactContext(sessionId, undefined, { reason: 'auto-threshold' })
       } catch (err) {
         logger.warn(`[Waterline] Auto-compact failed for ${sessionId}: ${err}`)
+        // Continue sending the original command despite compact failure
       }
     }
 
     await this.sendCommand(sessionId, command)
 
+    // Record Prompt quality feedback metrics
     const state = this.sessionStates.get(sessionId)
     if (state) {
       state.promptTokenEstimate = assembled.totalTokens
       state.contextCount = resolvedContexts.length
-      this.lifecycle.recordPromptMetrics(sessionId, {
-        promptTokenEstimate: assembled.totalTokens,
-        contextCount: resolvedContexts.length,
-      })
     }
   }
 
-  getOptimalPromptBudget(commandType: string): number {
-    const relevant = this.promptOutcomeLog.filter((e) => e.commandType === commandType)
-    if (relevant.length < 5) return FALLBACK_CONTEXT_BUDGET
-    const successEntries = relevant.filter((e) => e.outcome === 'success')
-    if (successEntries.length === 0) return FALLBACK_CONTEXT_BUDGET
-    const avgTokens =
-      successEntries.reduce((sum, e) => sum + e.promptTokenEstimate, 0) / successEntries.length
-    return Math.max(4000, Math.min(16000, Math.round(avgTokens * 1.2)))
-  }
-
-  // ===================================================================
-  //                     Public: terminate / cleanup
-  // ===================================================================
-
   async terminateSession(sessionId: string, reason?: TerminationReason): Promise<void> {
-    if (this.lifecycle.isCleanupInProgress(sessionId)) {
+    // 互斥检查：若 cleanupSessionResources 已在清理，直接返回
+    if (this.cleanupInProgress.has(sessionId)) {
       logger.info(`Session ${sessionId} already being cleaned up, skipping terminateSession`)
       return
     }
+    // 标记清理中，防止后续 sessionEnded 事件触发 cleanupSessionResources 并发清理
+    this.cleanupInProgress.add(sessionId)
 
-    // Snapshot the state for PhaseB before lifecycle.terminate clears it
-    const snapshotState = this.sessionStates.get(sessionId)
+    // 阶段划分：
+    //   阶段 A（持锁）—— adapter.terminate + Map 状态清理 + ScopeGuard 提交
+    //     这些必须排他执行，避免 sessionEnded('crash') 事件重入 cleanupSessionResources
+    //     与正在迭代 sessionStates/sandboxSessionIndex 的代码冲突。
+    //   阶段 B（释放锁后）—— 记忆抽取/存储 + onSessionComplete 回调
+    //     这些只依赖阶段 A 抓拍的局部变量，不再触碰共享 Map；
+    //     不持锁可避免 LibSQL 慢写时把 crash 事件吞掉。
+    let adapter: AgentAdapter | undefined
+    let state: SessionState | undefined
+    let nodeId: string | undefined
+    let sandbox: SessionState['sandbox']
+    let outputsForMemory: AgentOutput[] = []
+    let scopeGuardError: Error | undefined
 
     try {
-      await this.lifecycle.terminate(sessionId, reason, this.lifecycle['callbacks']?.onPhaseB)
+      try {
+        adapter = this.router.resolve(sessionId)
+      } catch (err) {
+        if (err instanceof SessionNotFoundError) {
+          // Session 已被清理（如进程异常退出时 cleanupSessionResources 已执行）
+          // 我们已经持有 cleanupInProgress 锁，直接调用 _doCleanupSessionResources，
+          // 避免 cleanupSessionResources 的锁检查 short-circuit 导致残留状态未被释放。
+          await this._doCleanupSessionResources(sessionId)
+          return
+        }
+        throw err
+      }
+
+      // 提前提取 nodeId 和 sandbox（在状态被清除前读取）
+      state = this.sessionStates.get(sessionId)
+      nodeId = state?.config.nodeId
+      sandbox = state?.sandbox
+      // 抓拍 outputs，后续阶段 B 不再访问 sessionOutputBuffers
+      outputsForMemory = this.sessionOutputBuffers.get(sessionId) ?? []
+
+      // Persist the termination reason into state *before* deletion so that
+      // the `abnormal` check in phase B (after the lock is released) can see it.
+      // Without this, a `timeout` reason passed by the caller would be lost.
+      // Default to 'error' when no reason is given — internal callers (timers, cleanup)
+      // that omit reason are typically abnormal paths, not user-initiated termination.
+      const terminationReason: TerminationReason = (reason === 'user' || reason === 'timeout' || reason === 'crash' || reason === 'error' || reason === 'idle')
+        ? reason
+        : (state?.terminationReason === 'user' || state?.terminationReason === 'timeout' || state?.terminationReason === 'crash' || state?.terminationReason === 'error' || state?.terminationReason === 'idle')
+          ? state.terminationReason
+          : 'error'
+      if (state && reason) {
+        state.terminationReason = reason
+      }
+
+      try {
+        await adapter.terminateSession(sessionId, terminationReason)
+      } finally {
+        // 无论 terminateSession 是否成功，都确保清理路由和状态
+        this.router.unbind(sessionId)
+        this.sessionStates.delete(sessionId)
+        this.sessionBroadcastNames.delete(sessionId)
+        this.sessionOutputBuffers.delete(sessionId)
+        // 清理 sandboxId → sessionId 反向索引
+        if (sandbox) {
+          this.sandboxSessionIndex.delete(sandbox.id)
+        }
+      }
+
+      // ScopeGuard: 执行后验证并清理沙箱（仍在锁内，避免与异常退出回滚冲突）
+      if (sandbox) {
+        try {
+          await this.scopeGuard.commitChanges(sandbox)
+          if (nodeId) {
+            this.statusChangeCallback?.(sessionId, nodeId, 'testing')
+          }
+        } catch (err) {
+          if (err instanceof ScopeGuardError) {
+            logger.error(`ScopeGuard validation failed for session ${sessionId}:`, err.message)
+            scopeGuardError = err
+          } else if (err instanceof Error) {
+            logger.error(`ScopeGuard cleanup failed for session ${sessionId}:`, err.message)
+          }
+        }
+      }
     } finally {
-      // Always mirror the deletion locally regardless of outcome
-      this.mirrorEnd(sessionId)
+      // 阶段 A 完成（共享 Map 已清理干净），尽早释放清理互斥锁，
+      // 让随后到达的 sessionEnded('crash') 事件可以正常触发 cleanupSessionResources。
+      // 阶段 B 的记忆抽取/持久化不再访问共享 Map，因此可安全脱锁执行。
+      this.cleanupInProgress.delete(sessionId)
     }
 
-    if (!snapshotState) {
-      return
+    // 阶段 B：记忆管线处理（不持锁）
+    // 通过 ContextPipeline 统一管线执行：normalize → compress → extract → verify → compile → waterline → persist
+    if (state) {
+      try {
+        const pipeline = await PipelineRunner.createDefault()
+        const result = await pipeline.run({
+          outputs: outputsForMemory,
+          sessionId,
+          adapterName: state.adapterName,
+          projectId: state.config.workingDirectory,
+          nodeId: state.config.nodeId,
+        })
+
+        if (result.errors.length > 0) {
+          logger.warn(`Pipeline completed with ${result.errors.length} errors`)
+        }
+      } catch (err) {
+        logger.warn(`Memory pipeline failed for session ${sessionId}:`, err)
+      }
+    }
+
+    const abnormal = state?.terminationReason === 'crash' || state?.terminationReason === 'error' || state?.terminationReason === 'timeout'
+
+    // Agent 日志：记录会话完成（附 Token 经济学指标）
+    if (this.onSessionComplete && state) {
+      const result = scopeGuardError || abnormal ? 'failure' : 'success'
+      this.onSessionComplete(sessionId, state.adapterName, state.config.nodeId ?? '', result, Date.now() - state.startTime)
+    }
+
+    // Prompt 质量反馈环：记录命令类型 + 预算与结果的相关性
+    if (state) {
+      this.promptOutcomeLog.push({
+        commandType: state.lastCommandType ?? 'implement',
+        promptTokenEstimate: state.promptTokenEstimate ?? 0,
+        contextCount: state.contextCount ?? 0,
+        outcome: scopeGuardError || abnormal ? 'failure' : 'success',
+        duration: Date.now() - state.startTime,
+      })
+      // 保留最近 100 条记录
+      if (this.promptOutcomeLog.length > 100) {
+        this.promptOutcomeLog.shift()
+      }
+
+      // Reset recovery attempts for this lineage on a healthy termination so future
+      // crashes can be recovered again.  'idle' is included: it means the adapter
+      // was alive and healthy but hit the inactivity timeout, not a failure.
+      const terminationReason = reason ?? state.terminationReason
+      if (terminationReason === 'success' || terminationReason === 'user' || terminationReason === 'idle') {
+        this.sessionRecovery.reset(state.originSessionId ?? sessionId)
+      }
+    }
+
+    // Task 2.4.2: File change auto-association with nodes
+    // After session ends, match changed files against node metadata.linkedFiles
+    if (state && nodeId) {
+      try {
+        const fileChangeOutputs = outputsForMemory.filter((o) => o.type === 'file_change' && o.filePath)
+        if (fileChangeOutputs.length > 0) {
+          const db = getClient()
+          const changedPaths = fileChangeOutputs.map((o) => o.filePath!)
+
+          // Look up the session's node to read metadata.linkedFiles
+          const row = db.prepare('SELECT id, metadata FROM nodes WHERE id = ?').get(nodeId) as Record<string, unknown> | undefined
+          if (row) {
+            try {
+              const metadata: NodeMetadata & { linkedFiles?: string[]; lastModified?: number } = row.metadata ? JSON.parse(row.metadata as string) : {}
+              const linkedFiles: string[] = metadata.linkedFiles ?? []
+              // Check if any changed file matches a linked file
+              const matchedFiles = changedPaths.filter((fp) =>
+                linkedFiles.some((lf) => fp.endsWith(lf) || lf.endsWith(fp)),
+              )
+              if (matchedFiles.length > 0) {
+                // Update metadata.lastModified
+                metadata.lastModified = Date.now()
+                const { NodeRepository } = await import('../repositories/node-repository')
+                const nodeRepo = new NodeRepository(db)
+                await nodeRepo.update(nodeId, { metadata })
+              }
+            } catch (e) {
+              logger.warn('Failed to parse metadata for file-node association', { nodeId, error: String(e) })
+            }
+          }
+        }
+      } catch (e) {
+        logger.warn('File-node association failed during session termination', { error: String(e) })
+      }
+    }
+
+    if (scopeGuardError) {
+      throw scopeGuardError
     }
   }
 
-  async terminateAllSessions(): Promise<void> {
-    await this.lifecycle.terminateAll('user')
-    this.sessionStates.clear()
-    this.sessionOutputBuffers.clear()
-  }
-
-  // ===================================================================
-  //                     Public: compaction
-  // ===================================================================
-
+  /**
+   * Phase 3 Task 3: Compact the context of a session.
+   *
+   * 实际实现已迁移到 CompactionManager.compact（并发去重 + 策略解析 + 历史持久化 +
+   * 水位线更新 + 广播）。此处保留薄壳以保持公开 API 不变。
+   */
   async compactContext(
     sessionId: string,
     strategy?: CompactStrategy,
     options?: { reason?: CompactTrigger },
   ): Promise<CompactResult> {
-    return this.compactor.compact(sessionId, strategy, options)
-  }
-
-  // ===================================================================
-  //                     Public: output listeners
-  // ===================================================================
-
-  addOutputListener(handler: (output: AgentOutput) => void): void {
-    this.lifecycle.addOutputListener(handler)
-  }
-
-  removeOutputListener(handler: (output: AgentOutput) => void): void {
-    this.lifecycle.removeOutputListener(handler)
-  }
-
-  addSessionOutputListener(sessionId: string, handler: (output: AgentOutput) => void): boolean {
-    const ok = this.lifecycle.addSessionOutputListener(sessionId, handler)
-    if (ok) {
-      let idx = this.sessionOutputListenerIndex.get(sessionId)
-      if (!idx) {
-        idx = new Set()
-        this.sessionOutputListenerIndex.set(sessionId, idx)
-      }
-      idx.add(handler)
-    }
-    return ok
-  }
-
-  removeSessionOutputListener(handler: (output: AgentOutput) => void): void {
-    this.lifecycle.removeSessionOutputListener(handler)
-    for (const [, handlers] of this.sessionOutputListenerIndex) {
-      handlers.delete(handler)
-    }
-  }
-
-  // ===================================================================
-  //                     Public: getters
-  // ===================================================================
-
-  getActiveSessionIds(): string[] {
-    return this.router.getActiveSessionIds()
-  }
-
-  getSessionState(sessionId: string): SessionState | undefined {
-    return this.sessionStates.get(sessionId)
-  }
-
-  getSandbox(sessionId: string): Sandbox | undefined {
-    return this.lifecycle.getSandbox(sessionId)
-  }
-
-  getSessionConfig(sessionId: string): AgentSessionConfig | undefined {
-    return this.sessionStates.get(sessionId)?.config
-  }
-
-  broadcastToSession(sessionId: string, output: AgentOutput): void {
-    this.lifecycle.broadcastToSession(sessionId, output)
-  }
-
-  getSubagentManager(): SubagentManager | undefined {
-    return this._subagentManager
-  }
-
-  /** Backward-compat getter: the current ScopeGuard instance. */
-  get scopeGuardInstance(): ScopeGuard {
-    return this.lifecycle.scopeGuardInstance
-  }
-
-  logDiagnostics(): void {
-    this.housekeeper.logDiagnostics()
-  }
-
-  // ===================================================================
-  //                     Public: setters (dependency injection)
-  // ===================================================================
-
-  setScopeGuard(scopeGuard: ScopeGuard): void {
-    this.lifecycle.setScopeGuard(scopeGuard)
-  }
-
-  setContextResolver(contextResolver: ContextResolver): void {
-    // ContextAssembler owns the ContextResolver internally; expose override
-    // by wrapping its instance via a setter on assembler.
-    void contextResolver
-  }
-
-  setSymbolIndex(symbolIndex: SymbolIndex): void {
-    this.assembler.setSymbolIndex(symbolIndex)
-  }
-
-  setAdapterPreferencesLoader(loader: () => Promise<AdapterPreferences>): void {
-    this.adapterPreferencesLoader = loader
-  }
-
-  private contextWaterline?: ContextWaterline
-  setWaterline(wl: ContextWaterline): void {
-    this.contextWaterline = wl
-    this.compactor.setWaterline(wl)
-  }
-
-  setCompactHistoryRepo(repo: CompactHistoryRepository): void {
-    this.compactor.setCompactHistoryRepo(repo)
-  }
-
-  setChatRepo(repo: ChatRepository): void {
-    this.compactor.setChatRepo(repo)
-  }
-
-  private _subagentManager?: SubagentManager
-  setSubagentManager(mgr: SubagentManager): void {
-    this._subagentManager = mgr
-  }
-
-  setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
-    this.statusChangeCallback = cb
-  }
-
-  setSessionStartedCallback(cb: (threadId: string, sessionId: string) => void): void {
-    this.sessionStartedCallback = cb
-  }
-
-  setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
-    this.nodeStatusChangeCallback = cb
-  }
-
-  setOnSessionComplete(
-    handler: (sessionId: string, adapterName: string, nodeId: string, result: 'success' | 'failure' | 'cancelled', duration: number) => void,
-  ): void {
-    this.phaseB.setOnSessionComplete(handler)
-  }
-
-  // ===================================================================
-  //                     Test-accessible internals
-  // ===================================================================
-
-  /** Backward-compat getter for tests: SessionRecovery singleton. */
-  get sessionRecovery(): SessionRecoveryManager {
-    return this.sessionRecoveryInstance
-  }
-
-  /** Backward-compat getter for tests: recovery probe intervals. */
-  get recoveryCheckIntervals(): Map<string, ReturnType<typeof setInterval>> {
-    return this.housekeeper.getRecoveryCheckIntervals()
-  }
-
-  /** Backward-compat getter for tests: in-flight compact promises. */
-  get compactInflight(): Map<string, Promise<CompactResult>> {
-    return this.compactor.inflightMap
-  }
-
-  /** Backward-compat: delegate startRecoveryCheck to housekeeper. */
-  startRecoveryCheck(adapterName: string): void {
-    this.housekeeper.startRecoveryCheck(adapterName)
+    return this.compactionManager.compact(sessionId, strategy, options)
   }
 
   /**
-   * Test entry point + lifecycle abnormal-end callback.
-   *
-   * Returns:
-   *   'native'      — keep the same sessionId active (native resume)
-   *   'replacement' — caller should treat the original session as cleaned up
-   *   'none'        — no recovery possible, caller should clean up
+   * 添加全局输出监听器（用于 MindMapAgent 等内部组件收集输出）
    */
-  async _handleSessionEnded(
+  addOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = (payload: BroadcastPayload) => handler(payload.output)
+    // 存储包装后的 handler 以便移除
+    this.outputListeners.set(handler, wrapped)
+    this.broadcaster.onBroadcast(wrapped)
+  }
+
+  /**
+   * 移除全局输出监听器
+   */
+  removeOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = this.outputListeners.get(handler)
+    if (wrapped) {
+      this.broadcaster.offBroadcast(wrapped)
+      this.outputListeners.delete(handler)
+    }
+  }
+
+  /**
+   * 添加会话级输出监听器（仅接收指定 session 的输出）
+   * 通过 broadcastName 过滤，防止跨会话输出污染
+   */
+  addSessionOutputListener(sessionId: string, handler: (output: AgentOutput) => void): void {
+    const state = this.sessionStates.get(sessionId)
+    if (!state) return
+    const targetName = state.broadcastName
+
+    const filteredHandler = (payload: BroadcastPayload) => {
+      if (payload.adapterName === targetName) {
+        handler(payload.output)
+      }
+    }
+    this.sessionOutputListeners.set(handler, filteredHandler)
+    // 记录 handler → sessionId 映射，以便 cleanupSessionResources 时自动清理
+    let indexSet = this.sessionOutputListenerIndex.get(sessionId)
+    if (!indexSet) {
+      indexSet = new Set()
+      this.sessionOutputListenerIndex.set(sessionId, indexSet)
+    }
+    indexSet.add(handler)
+    this.broadcaster.onBroadcast(filteredHandler)
+  }
+
+  /**
+   * 移除会话级输出监听器
+   */
+  removeSessionOutputListener(handler: (output: AgentOutput) => void): void {
+    const wrapped = this.sessionOutputListeners.get(handler)
+    if (wrapped) {
+      this.broadcaster.offBroadcast(wrapped)
+      this.sessionOutputListeners.delete(handler)
+      for (const [, handlers] of this.sessionOutputListenerIndex) {
+        if (handlers.delete(handler) && handlers.size === 0) {
+          // empty set retained for potential reuse
+        }
+      }
+    }
+  }
+
+  private async _handleSessionEnded(
     sessionId: string,
     exitCode: number | null,
     reason: string,
     state: SessionState,
     outputs: AgentOutput[],
   ): Promise<'native' | 'replacement' | 'none'> {
-    if ((exitCode === 137 || exitCode === 143) && reason !== 'timeout') {
-      logger.info(`Session ${sessionId} terminated normally (exit ${exitCode})`)
-      return 'none'
-    }
-
-    const isRecoverable =
-      (reason === 'crash' || reason === 'error' || reason === 'timeout') &&
-      exitCode !== 126 && exitCode !== 127
-
-    if (!isRecoverable) {
-      if (exitCode === 126 || exitCode === 127) {
-        this.healthMonitor.recordCall(state.adapterName, false, 0, `Exit code ${exitCode}: adapter not available`)
-        logger.warn(`Adapter ${state.adapterName} marked unavailable (exit ${exitCode})`)
-      } else {
-        logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
-      }
-      return 'none'
-    }
-
-    const lastMessages = this._extractRecentMessages(outputs)
-
-    let threadId: string | undefined
-    if (state.config.nodeId) {
-      try {
-        const db = getClient()
-        const row = db.prepare('SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1').get(state.config.nodeId) as { id: string } | undefined
-        if (row) threadId = row.id
-      } catch {
-        // Non-critical: threadId is for notification only
-      }
-    }
-
-    const originSessionId = state.originSessionId ?? sessionId
-    const newSessionId = await this.sessionRecoveryInstance.attemptRecovery({
-      sessionId,
-      adapterName: state.adapterName,
-      projectId: state.config.workingDirectory,
-      lastOutputs: outputs,
-      lastMessages,
-      threadId,
-      originSessionId,
-    })
-
-    if (newSessionId) {
-      logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
-
-      if (newSessionId === sessionId) {
-        // Native resume: keep state, clear transient artifacts
-        return 'native'
-      }
-
-      const newState = this.sessionStates.get(newSessionId)
-      if (newState) {
-        newState.originSessionId = originSessionId
-      }
-      if (state.lastCommand) {
-        await this._resumeLastCommand(newSessionId, state.lastCommand)
-      }
-      return 'replacement'
-    }
-
-    // MCP adapter recovery: create new session with context injection
-    const pendingContext = this.sessionRecoveryInstance.consumePendingContext(sessionId)
-    if (pendingContext) {
-      logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
-      try {
-        const config = { ...state.config, contextSummary: pendingContext }
-        const result = await this.startSession(state.adapterName, config)
-        logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
-        const replacementState = this.sessionStates.get(result.sessionId)
-        if (replacementState) {
-          replacementState.originSessionId = originSessionId
-        }
-        if (state.lastCommand) {
-          await this._resumeLastCommand(result.sessionId, state.lastCommand)
-        } else {
-          logger.info(`Replacement session ${result.sessionId} started idle; no previous command to resume`)
-        }
-        return 'replacement'
-      } catch (err) {
-        logger.warn(`Failed to create new MCP session for recovery:`, err)
-      }
-    }
-
-    return 'none'
+    // 实际实现已迁移到 RecoveryOrchestrator.handleSessionExit（包含可恢复性判断、
+    // MCP context injection、native resume 与 replacement session 注入等）。
+    return this.recoveryOrchestrator.handleSessionExit(sessionId, exitCode, reason, state, outputs)
   }
 
-  private async _resumeLastCommand(sessionId: string, command: AgentCommand): Promise<void> {
-    if (!this.sessionStates.has(sessionId)) {
-      logger.warn(`Cannot resume command: recovered session ${sessionId} is not ready`)
-      return
-    }
-    const adapter = this.router.resolve(sessionId)
-    if (!adapter) {
-      logger.warn(`Cannot resume command: no adapter bound to recovered session ${sessionId}`)
-      return
-    }
-    try {
-      await this.sendCommand(sessionId, command)
-      logger.info(`Resumed last command on recovered session ${sessionId}`)
-    } catch (err) {
-      logger.warn(`Failed to resume last command on recovered session ${sessionId}:`, err)
-    }
+  /**
+   * 委托 RecoveryOrchestrator.startFallbackRecoveryCheck —— 周期性探测首选适配器是否
+   * 已恢复健康并在恢复时清理 timer。
+   */
+  private _startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
+    this.recoveryOrchestrator.startFallbackRecoveryCheck(preferredAdapter, { interval: intervalMs })
   }
 
-  private _extractRecentMessages(outputs: AgentOutput[]): Array<{ role: string; content: string }> {
-    const messages: Array<{ role: string; content: string }> = []
-    const stdoutChunks: string[] = []
-    for (const output of outputs) {
-      if (output.type === 'stdout') {
-        stdoutChunks.push(output.data)
-      }
-    }
-    if (stdoutChunks.length > 0) {
-      const combined = stdoutChunks.join('')
-      messages.push({
-        role: 'assistant',
-        content: combined.slice(-2000),
-      })
-    }
-    return messages
-  }
-
-  // ===================================================================
-  //                     Destroy
-  // ===================================================================
-
-  destroy(): void {
-    // Stop health check + cleanup timers
-    this.housekeeper.stop()
-
-    // Detach lifecycle adapters + clear state
-    this.lifecycle.destroy()
-
-    // Stop TTL check
-    this.router.stopTtlCheck()
-
-    // Clear local mirrors
-    this.sessionStates.clear()
-    this.sessionOutputBuffers.clear()
-    this.sessionOutputListenerIndex.clear()
-    this.reservedSlots.clear()
-    this.adapterTimeoutCounts.clear()
-
-    // Dispose adapters (cleanup subprocess / pool resources)
-    for (const adapter of this.registry.list()) {
-      const disposable = adapter as { dispose?: () => void }
-      if (typeof disposable.dispose === 'function') {
-        try {
-          disposable.dispose()
-        } catch (err) {
-          logger.warn(`Adapter ${adapter.name} dispose() failed:`, err)
-        }
-      }
-    }
+  /**
+   * Health-driven recovery check: periodically probes an unhealthy adapter
+   * and records a successful check so the health monitor can promote it
+   * back to degraded/healthy on the next session attempt.
+   *
+   * 实际实现已迁移到 RecoveryOrchestrator.startRecoveryCheck。FallbackRouter 通过
+   * 构造时注入的 onUnhealthyAdapter 回调触发。此方法保留为兼容壳以便通过
+   * `(manager as any).startRecoveryCheck(name)` 调用（无操作即可）。
+   */
+  startRecoveryCheck(adapterName: string): void {
+    this.recoveryOrchestrator.startRecoveryCheck(adapterName)
   }
 }
