@@ -15,6 +15,7 @@ import {
   type OnConnect,
   type OnConnectStart,
   type OnConnectEnd,
+  type OnNodeDrag,
   Panel,
   MarkerType,
 } from '@xyflow/react'
@@ -625,7 +626,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     onNodeDragStart: onForceDragStart,
     onNodeDrag: onForceDrag,
     onNodeDragStop: onForceDragStop,
-    isForceModeRef,
   } = useForceLayout()
   /** 当前布局模式：'tree' = dagre，'force' = d3-force。决定拖拽时是否触发 reheat。 */
   const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
@@ -955,9 +955,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={handleNodeContextMenu}
-        onNodeDragStart={onForceDragStart}
-        onNodeDrag={onForceDrag}
-        onNodeDragStop={onForceDragStop}
+        onNodeDragStart={onForceDragStart as unknown as OnNodeDrag<Node>}
+        onNodeDrag={onForceDrag as unknown as OnNodeDrag<Node>}
+        onNodeDragStop={onForceDragStop as unknown as OnNodeDrag<Node>}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         fitView

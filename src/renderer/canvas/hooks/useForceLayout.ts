@@ -16,7 +16,7 @@
  * `setForceMode(false)` 或重新加载图来退出 force mode。
  */
 import { useCallback, useEffect, useRef } from 'react'
-import { useReactFlow, type Node, type NodeMouseHandler } from '@xyflow/react'
+import { useReactFlow, type NodeMouseHandler } from '@xyflow/react'
 import {
   type Simulation,
 } from 'd3-force'
