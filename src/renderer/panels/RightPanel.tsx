@@ -12,6 +12,7 @@ import { cn } from '../lib/utils'
 import { AgentChatPanel } from '../components/agent/AgentChatPanel'
 import { NodeEditor } from './NodeEditor'
 import { EdgeEditor } from './EdgeEditor'
+import { useI18n } from '../i18n/useI18n'
 
 export function RightPanel({
   expandedAgent,
@@ -36,15 +37,16 @@ export function RightPanel({
   } = useGraphStore()
 
   const [activeTab, setActiveTab] = useState<'node' | 'agent'>('node')
+  const { t } = useI18n()
 
   const activeRightPanel = useAppStore((s) => s.activeRightPanel)
   const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
 
-  // Sync external tab switching from appStore (e.g., from file tree context menu)
+  // 同步 appStore 的外部 tab 切换（例如文件树右键菜单触发）
   useEffect(() => {
     if (activeRightPanel === 'agent' && activeTab !== 'agent') {
       setActiveTab('agent')
-      // Reset store signal so it doesn't keep overriding manual tab clicks
+      // 清掉 store 信号，免得它一直覆盖用户手动切的 tab
       setActiveRightPanel('node')
     }
   }, [activeRightPanel, activeTab, setActiveRightPanel])
@@ -61,7 +63,7 @@ export function RightPanel({
 
   return (
     <div className="h-full flex flex-col border-l bg-background">
-      {/* Tab switching */}
+      {/* Tab 切换 */}
       <div className="h-10 border-b flex items-center px-2 gap-1 shrink-0">
         <button
           onClick={() => setActiveTab('node')}
@@ -73,7 +75,7 @@ export function RightPanel({
           )}
         >
           <Pencil className="w-3.5 h-3.5" />
-          Node
+          {t('right.tab.node')}
         </button>
         <button
           onClick={() => setActiveTab('agent')}
@@ -86,20 +88,20 @@ export function RightPanel({
           )}
         >
           <Terminal className="w-3.5 h-3.5" />
-          Agent
+          {t('right.tab.agent')}
         </button>
         {onClose && (
           <button
             onClick={onClose}
             className="p-1.5 rounded bg-primary/5 border border-primary/15 hover:bg-primary/10 transition-colors ml-auto"
-            title="Hide panel (Ctrl+J)"
+            title={t('right.hidePanel')}
           >
             <PanelRightClose className="w-3.5 h-3.5 text-primary/70" />
           </button>
         )}
       </div>
 
-      {/* Content area */}
+      {/* 内容区 */}
       <div className="flex-1 overflow-y-auto">
         {activeTab === 'node' && (
           <>
@@ -127,8 +129,8 @@ export function RightPanel({
             ) : (
               <div className="text-center text-muted-foreground text-sm py-12 px-4">
                 <Settings className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                <p>Select a node or edge on the canvas</p>
-                <p className="text-xs mt-1">to edit properties</p>
+                <p>{t('right.emptyTitle')}</p>
+                <p className="text-xs mt-1">{t('right.emptyHint')}</p>
               </div>
             )}
           </>

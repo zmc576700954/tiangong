@@ -17,6 +17,7 @@ import { useFileTreeKeyboard } from '../store/fileTreeUtils'
 import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
+import { useI18n } from '../i18n/useI18n'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -29,6 +30,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
   const toggleExpand = useFileTreeStore((s) => s.toggleExpand)
   const toast = useFileTreeStore((s) => s.toast)
   const clearToast = useFileTreeStore((s) => s.clearToast)
+  const { t } = useI18n()
 
   const { loadGraphs } = useGraphStore()
 
@@ -52,10 +54,10 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
     }
   }, [openSettingsPanel, setOpenSettingsPanel])
 
-  // Keyboard shortcuts (Ctrl+C, Ctrl+V, Delete, Arrow keys, etc.)
+  // 键盘快捷键（Ctrl+C、Ctrl+V、Delete、方向键等）
   useFileTreeKeyboard(panelRef)
 
-  // Load saved projects on mount
+  // 挂载时载入已保存的项目
   useEffect(() => {
     const STORAGE_KEY = 'bizgraph:projects'
     try {
@@ -70,11 +72,11 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         })
       }
     } catch {
-      // ignore
+      // 忽略
     }
   }, [])
 
-  // Listen for menu: Open Project
+  // 监听菜单「打开项目」
   useEffect(() => {
     const unsub = window.electronAPI.onMenuOpenProject((projectPath: string) => {
       if (projects.some((p) => p.path === projectPath)) return
@@ -83,7 +85,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
     return unsub
   }, [projects, addProject])
 
-  // Auto-clear toast
+  // toast 自动消失
   useEffect(() => {
     if (!toast) return
     const timer = setTimeout(clearToast, 3000)
@@ -98,7 +100,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
       if (projects.some((p) => p.path === dirPath)) return
       await addProject(dirPath)
     } catch {
-      // handled by store
+      // 由 store 统一处理
     }
   }, [projects, addProject])
 
@@ -123,7 +125,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         useAppStore.getState().setActiveRightPanel('agent')
       }
     } catch {
-      // handled by store
+      // 由 store 统一处理
     } finally {
       setScanningId(null)
     }
@@ -155,7 +157,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
     [addProject],
   )
 
-  // Use store's expandedPaths to check project expansion
+  // 用 store 的 expandedPaths 判断项目是否展开
   const expandedPaths = useFileTreeStore((s) => s.expandedPaths)
 
   return (
@@ -169,15 +171,15 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Header */}
+      {/* 顶部工具栏 */}
       <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
-        <span className="text-sm font-semibold">Projects</span>
+        <span className="text-sm font-semibold">{t('projects.title')}</span>
         <div className="flex items-center gap-1">
           {onCollapse && (
             <button
               onClick={onCollapse}
               className="p-1.5 rounded hover:bg-muted transition-colors"
-              title="Hide project panel"
+              title={t('projects.hidePanel')}
             >
               <PanelLeftClose className="w-3.5 h-3.5 text-muted-foreground" />
             </button>
@@ -185,28 +187,28 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
           <button
             onClick={() => setShowSettings(true)}
             className="p-1.5 rounded hover:bg-muted transition-colors"
-            title="Settings"
+            title={t('projects.settings')}
           >
             <Settings className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
           <button
             onClick={handleOpenDirectory}
             className="p-1.5 rounded hover:bg-muted transition-colors"
-            title="Open directory"
+            title={t('projects.openDirectory')}
           >
             <Plus className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
           <button
             onClick={onCollapse}
             className="p-1.5 rounded bg-primary/5 border border-primary/15 hover:bg-primary/10 transition-colors"
-            title="Hide file tree (Ctrl+B)"
+            title={t('projects.hideFileTree')}
           >
             <PanelLeftClose className="w-3.5 h-3.5 text-primary/70" />
           </button>
         </div>
       </div>
 
-      {/* Toast */}
+      {/* Toast 提示 */}
       {toast && (
         <div
           className={cn(
@@ -221,23 +223,23 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         </div>
       )}
 
-      {/* Empty state */}
+      {/* 空状态 */}
       {projects.length === 0 && (
         <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground text-xs px-4">
           <FolderOpen className="w-6 h-6 mb-2 opacity-50" />
-          <p>No projects yet</p>
-          <p className="mt-1">Click + to open a directory</p>
+          <p>{t('projects.emptyTitle')}</p>
+          <p className="mt-1">{t('projects.emptyHint')}</p>
         </div>
       )}
 
-      {/* Project list + tree */}
+      {/* 项目列表与文件树 */}
       {projects.length > 0 && (
         <div className="flex-1 overflow-y-auto p-2">
           {projects.map((project) => {
             const isProjectExpanded = expandedPaths.has(project.path)
             return (
               <div key={project.id} className="mb-2">
-                {/* Project header */}
+                {/* 项目行 */}
                 <div className="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-muted group">
                   <button
                     onClick={() => toggleExpand(project.path)}
@@ -259,7 +261,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
                     onClick={() => handleScanProject(project.id)}
                     disabled={scanningId === project.id}
                     className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-primary/10 text-primary transition-opacity"
-                    title="Generate mind map"
+                    title={t('projects.generateMindMap')}
                   >
                     {scanningId === project.id ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
@@ -270,13 +272,13 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
                   <button
                     onClick={() => removeProject(project.id)}
                     className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-destructive/10 text-destructive transition-opacity"
-                    title="Remove"
+                    title={t('projects.remove')}
                   >
                     <X className="w-3 h-3" />
                   </button>
                 </div>
 
-                {/* Tree children */}
+                {/* 树的子节点 */}
                 {isProjectExpanded && project.root && (
                   <div className="ml-2">
                     {project.root.children?.map((child) => (
@@ -290,16 +292,16 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         </div>
       )}
 
-      {/* Context Menu (rendered at portal level) */}
+      {/* 右键菜单（在 portal 层渲染） */}
       <FileTreeContextMenu />
 
-      {/* Settings Overlay */}
+      {/* 设置浮层 */}
       {showSettings && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur flex flex-col">
           <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
             <div className="flex items-center gap-2">
               <Settings className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">Settings</span>
+              <span className="text-sm font-medium">{t('projects.settings')}</span>
             </div>
             <button
               onClick={() => setShowSettings(false)}

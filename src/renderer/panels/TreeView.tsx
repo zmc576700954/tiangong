@@ -3,6 +3,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
 import { TreeNodeItem } from './TreeNodeItem'
+import { useI18n } from '../i18n/useI18n'
+import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import type { GraphNode } from '@shared/types'
 
 function renderNodeRow(node: GraphNode) {
@@ -38,6 +40,7 @@ function renderNodeRow(node: GraphNode) {
 export function TreeView() {
   const projects = useFileTreeStore((s) => s.projects)
   const nodes = useGraphStore((s) => s.nodes)
+  const { t, locale } = useI18n()
 
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [typeFilter, setTypeFilter] = useState<string>('all')
@@ -84,7 +87,7 @@ export function TreeView() {
 
   return (
     <div className="flex-1 overflow-y-auto flex flex-col">
-      {/* Filter/sort toolbar */}
+      {/* 筛选 / 排序工具栏 */}
       {hasGraphNodes && (
         <div className="flex gap-1 px-2 py-1 border-b border-border text-[10px] shrink-0">
           <select
@@ -92,45 +95,45 @@ export function TreeView() {
             onChange={(e) => setStatusFilter(e.target.value)}
             className="bg-transparent border border-border rounded px-1 py-0.5 text-muted-foreground"
           >
-            <option value="all">All Status</option>
-            <option value="placeholder">Placeholder</option>
-            <option value="developing">Developing</option>
-            <option value="confirmed">Confirmed</option>
-            <option value="draft">Draft</option>
-            <option value="testing">Testing</option>
-            <option value="review">Review</option>
-            <option value="published">Published</option>
+            <option value="all">{t('projects.tree.filterAllStatus')}</option>
+            <option value="placeholder">{nodeStatusLabel('placeholder', locale)}</option>
+            <option value="developing">{nodeStatusLabel('developing', locale)}</option>
+            <option value="confirmed">{nodeStatusLabel('confirmed', locale)}</option>
+            <option value="draft">{nodeStatusLabel('draft', locale)}</option>
+            <option value="testing">{nodeStatusLabel('testing', locale)}</option>
+            <option value="review">{nodeStatusLabel('review', locale)}</option>
+            <option value="published">{nodeStatusLabel('published', locale)}</option>
           </select>
           <select
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
             className="bg-transparent border border-border rounded px-1 py-0.5 text-muted-foreground"
           >
-            <option value="all">All Types</option>
-            <option value="module">Module</option>
-            <option value="process">Process</option>
-            <option value="feature">Feature</option>
-            <option value="bug">Bug</option>
+            <option value="all">{t('projects.tree.filterAllTypes')}</option>
+            <option value="module">{nodeTypeLabel('module', locale)}</option>
+            <option value="process">{nodeTypeLabel('process', locale)}</option>
+            <option value="feature">{nodeTypeLabel('feature', locale)}</option>
+            <option value="bug">{nodeTypeLabel('bug', locale)}</option>
           </select>
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as 'name' | 'type' | 'status' | 'modified')}
             className="bg-transparent border border-border rounded px-1 py-0.5 text-muted-foreground"
           >
-            <option value="name">Name</option>
-            <option value="type">Type</option>
-            <option value="status">Status</option>
-            <option value="modified">Modified</option>
+            <option value="name">{t('projects.tree.sortName')}</option>
+            <option value="type">{t('projects.tree.sortType')}</option>
+            <option value="status">{t('projects.tree.sortStatus')}</option>
+            <option value="modified">{t('projects.tree.sortModified')}</option>
           </select>
         </div>
       )}
 
-      {/* Graph nodes view (when graph data is available) */}
+      {/* 图节点视图（有图数据时） */}
       {hasGraphNodes && (
         <div ref={parentRef} className="flex-1 overflow-y-auto">
           {filteredNodes.length === 0 && (
             <div className="px-3 py-2 text-xs text-muted-foreground">
-              No nodes match the current filters
+              {t('projects.tree.noMatchingNodes')}
             </div>
           )}
           {shouldVirtualize ? (
@@ -166,14 +169,14 @@ export function TreeView() {
         </div>
       )}
 
-      {/* File tree view (fallback when no graph data) */}
+      {/* 文件树视图（没有图数据时的回落） */}
       {!hasGraphNodes && (
         <div className="flex-1 overflow-y-auto">
           {projects.map((project) => (
             <div key={project.id} className="mb-1">
               {project.loading && (
                 <div className="px-3 py-1 text-xs text-muted-foreground animate-pulse">
-                  Loading {project.name}...
+                  {t('projects.tree.loadingProject', { name: project.name })}
                 </div>
               )}
               {project.root && (

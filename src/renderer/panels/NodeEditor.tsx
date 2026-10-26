@@ -28,7 +28,7 @@ import type {
 } from '@shared/types'
 import { WikiPageEditor } from '../components/wiki/WikiPageEditor'
 
-// ==================== Editable Title ====================
+// ==================== 可编辑标题 ====================
 
 export function EditableTitle({ title, onSave }: { title: string; onSave: (v: string) => void }) {
   const [isEditing, setIsEditing] = useState(false)
@@ -81,7 +81,7 @@ export function EditableTitle({ title, onSave }: { title: string; onSave: (v: st
   )
 }
 
-// ==================== Status Selector ====================
+// ==================== 状态选择器 ====================
 
 function StatusSelector({
   status,
@@ -90,18 +90,20 @@ function StatusSelector({
   status: NodeStatus
   onChange: (s: NodeStatus) => void
 }) {
+  const { t, locale } = useI18n()
+
   const options: { value: NodeStatus; label: string; color: string }[] = [
-    { value: 'draft', label: 'Draft', color: '#94a3b8' },
-    { value: 'confirmed', label: 'Confirmed', color: '#3b82f6' },
-    { value: 'developing', label: 'Developing', color: '#f59e0b' },
-    { value: 'testing', label: 'Testing', color: '#8b5cf6' },
-    { value: 'review', label: 'Review', color: '#06b6d4' },
-    { value: 'published', label: 'Published', color: '#22c55e' },
+    { value: 'draft', label: nodeStatusLabel('draft', locale), color: '#94a3b8' },
+    { value: 'confirmed', label: nodeStatusLabel('confirmed', locale), color: '#3b82f6' },
+    { value: 'developing', label: nodeStatusLabel('developing', locale), color: '#f59e0b' },
+    { value: 'testing', label: nodeStatusLabel('testing', locale), color: '#8b5cf6' },
+    { value: 'review', label: nodeStatusLabel('review', locale), color: '#06b6d4' },
+    { value: 'published', label: nodeStatusLabel('published', locale), color: '#22c55e' },
   ]
 
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground">Status</label>
+      <label className="text-xs font-medium text-muted-foreground">{t('node.editor.status')}</label>
       <div className="flex flex-wrap gap-1.5">
         {options.map((opt) => (
           <button
@@ -123,7 +125,7 @@ function StatusSelector({
   )
 }
 
-// ==================== Editable Text Area ====================
+// ==================== 可编辑文本域 ====================
 
 function EditableTextArea({
   label,
@@ -150,7 +152,7 @@ function EditableTextArea({
     setLocalValue(value)
   }, [value])
 
-  // Debounce save: only trigger onSave 500ms after user stops typing
+  // 防抖保存：用户停止输入 500ms 后才触发 onSave
   useEffect(() => {
     pendingSaveRef.current = true
     const timer = setTimeout(() => {
@@ -162,14 +164,14 @@ function EditableTextArea({
     return () => clearTimeout(timer)
   }, [localValue, onSave, value])
 
-  // Flush any pending save before unmount so edits are not lost
+  // 卸载前把待保存内容刷出去，避免编辑丢失
   useEffect(() => {
     return () => {
       if (pendingSaveRef.current && localValueRef.current !== valueRef.current) {
         onSave(localValueRef.current)
       }
     }
-    // onSave is expected to be stable (useCallback in the parent)
+    // 期望 onSave 引用稳定（父组件里用 useCallback）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -187,7 +189,7 @@ function EditableTextArea({
   )
 }
 
-// ==================== Rules Editor ====================
+// ==================== 业务规则编辑器 ====================
 
 function RulesEditor({
   rules,
@@ -200,6 +202,7 @@ function RulesEditor({
   const [newCondition, setNewCondition] = useState('')
   const [newAction, setNewAction] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const { t } = useI18n()
 
   const handleAdd = () => {
     if (!newTitle.trim()) return
@@ -220,7 +223,7 @@ function RulesEditor({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
-        <label className="text-xs font-medium text-muted-foreground">Business Rules</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('node.editor.businessRules')}</label>
         <button
           onClick={() => setShowForm(!showForm)}
           className="p-0.5 rounded hover:bg-muted"
@@ -244,10 +247,14 @@ function RulesEditor({
             </button>
           </div>
           {rule.condition && (
-            <div className="text-[10px] text-amber-700 mt-0.5">Condition: {rule.condition}</div>
+            <div className="text-[10px] text-amber-700 mt-0.5">
+              {t('node.editor.ruleCondition', { condition: rule.condition })}
+            </div>
           )}
           {rule.action && (
-            <div className="text-[10px] text-amber-700">Action: {rule.action}</div>
+            <div className="text-[10px] text-amber-700">
+              {t('node.editor.ruleAction', { action: rule.action })}
+            </div>
           )}
         </div>
       ))}
@@ -258,21 +265,21 @@ function RulesEditor({
             type="text"
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="Rule name"
+            placeholder={t('node.editor.ruleNamePlaceholder')}
             className="w-full px-2 py-1 text-xs border rounded bg-background"
           />
           <input
             type="text"
             value={newCondition}
             onChange={(e) => setNewCondition(e.target.value)}
-            placeholder="Trigger condition"
+            placeholder={t('node.editor.ruleConditionPlaceholder')}
             className="w-full px-2 py-1 text-xs border rounded bg-background"
           />
           <input
             type="text"
             value={newAction}
             onChange={(e) => setNewAction(e.target.value)}
-            placeholder="Action"
+            placeholder={t('node.editor.ruleActionPlaceholder')}
             className="w-full px-2 py-1 text-xs border rounded bg-background"
           />
           <div className="flex gap-1">
@@ -280,13 +287,13 @@ function RulesEditor({
               onClick={handleAdd}
               className="px-2 py-0.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
             >
-              Add
+              {t('node.editor.add')}
             </button>
             <button
               onClick={() => setShowForm(false)}
               className="px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
             >
-              Cancel
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -295,7 +302,7 @@ function RulesEditor({
   )
 }
 
-// ==================== Metadata Editor ====================
+// ==================== 元数据编辑器 ====================
 
 function MetadataEditor({
   metadata,
@@ -307,6 +314,7 @@ function MetadataEditor({
   const apis = metadata?.apis ?? []
   const services = metadata?.services ?? []
   const entities = metadata?.entities ?? []
+  const { t } = useI18n()
 
   const addItem = (
     key: 'apis' | 'services' | 'entities',
@@ -326,11 +334,11 @@ function MetadataEditor({
 
   return (
     <div className="space-y-3">
-      {/* APIs */}
+      {/* API 接口 */}
       <div className="space-y-1">
         <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           <Code2 className="w-3 h-3" />
-          APIs
+          {t('node.editor.apis')}
         </div>
         {apis.map((api, i) => (
           <div key={api.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-blue-50 rounded">
@@ -344,16 +352,16 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
-          placeholder="Add API..."
+          placeholder={t('node.editor.addApiPlaceholder')}
           onAdd={(name) => addItem('apis', { name })}
         />
       </div>
 
-      {/* Services */}
+      {/* 服务 */}
       <div className="space-y-1">
         <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           <Server className="w-3 h-3" />
-          Services
+          {t('node.editor.services')}
         </div>
         {services.map((svc, i) => (
           <div key={svc.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-green-50 rounded">
@@ -367,16 +375,16 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
-          placeholder="Add service..."
+          placeholder={t('node.editor.addServicePlaceholder')}
           onAdd={(name) => addItem('services', { name })}
         />
       </div>
 
-      {/* Entities */}
+      {/* 实体 */}
       <div className="space-y-1">
         <div className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
           <Database className="w-3 h-3" />
-          Entities
+          {t('node.editor.entities')}
         </div>
         {entities.map((ent, i) => (
           <div key={ent.name || i} className="flex items-center gap-1 px-2 py-0.5 text-xs bg-purple-50 rounded">
@@ -390,7 +398,7 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
-          placeholder="Add entity..."
+          placeholder={t('node.editor.addEntityPlaceholder')}
           onAdd={(name) => addItem('entities', { name })}
         />
       </div>
@@ -431,7 +439,7 @@ function AddItemInput({ placeholder, onAdd }: { placeholder: string; onAdd: (nam
   )
 }
 
-// ==================== Criteria Editor ====================
+// ==================== 验收标准编辑器 ====================
 
 function CriteriaEditor({
   criteria,
@@ -441,6 +449,7 @@ function CriteriaEditor({
   onUpdate: (criteria: string[]) => void
 }) {
   const [newValue, setNewValue] = useState('')
+  const { t } = useI18n()
 
   const handleAdd = () => {
     if (!newValue.trim()) return
@@ -450,7 +459,7 @@ function CriteriaEditor({
 
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground">Acceptance Criteria</label>
+      <label className="text-xs font-medium text-muted-foreground">{t('node.editor.acceptanceCriteria')}</label>
       <div className="space-y-1">
         {criteria.map((c, i) => (
           <div key={i} className="flex items-center gap-1.5 px-2 py-1 text-sm bg-muted/50 rounded">
@@ -469,7 +478,7 @@ function CriteriaEditor({
             type="text"
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
-            placeholder="Add criterion..."
+            placeholder={t('node.editor.addCriterionPlaceholder')}
             className="flex-1 px-2 py-1 text-sm border rounded bg-background"
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
           />
@@ -485,7 +494,7 @@ function CriteriaEditor({
   )
 }
 
-// ==================== Node Editor ====================
+// ==================== 节点编辑器 ====================
 
 export function NodeEditor({
   node,
@@ -501,7 +510,7 @@ export function NodeEditor({
   onNavigate?: (nodeId: string) => void
 }) {
   const { nodes } = useGraphStore()
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
 
   const childNodes = nodes.filter((n) => n.parentId === node.id)
   const typeColor = NODE_TYPE_COLORS[node.type] ?? '#94a3b8'
@@ -514,7 +523,7 @@ export function NodeEditor({
 
   return (
     <div className="p-3 space-y-4">
-      {/* Node header */}
+      {/* 节点头部 */}
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <div
@@ -531,12 +540,12 @@ export function NodeEditor({
         />
       </div>
 
-      {/* Status selector for feature/bug */}
+      {/* 功能点 / BUG 的状态选择器 */}
       {(node.type === 'feature' || node.type === 'bug') && (
         <StatusSelector status={node.status} onChange={(s) => onUpdate({ status: s })} />
       )}
 
-      {/* Wiki page editor */}
+      {/* Wiki 页面编辑器 */}
       {node.type === 'wiki-page' && (
         <WikiPageEditor
           nodeId={node.id}
@@ -548,19 +557,19 @@ export function NodeEditor({
         />
       )}
 
-      {/* Description */}
+      {/* 描述 */}
       <EditableTextArea
-        label="Description"
+        label={t('node.editor.description')}
         value={node.description ?? ''}
         onSave={handleDescriptionSave}
-        placeholder="Enter node description..."
+        placeholder={t('node.editor.descriptionPlaceholder')}
         rows={3}
       />
 
-      {/* Context refs display */}
+      {/* 关联上下文展示 */}
       {node.contextRefs && node.contextRefs.length > 0 && (
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">关联上下文</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('node.editor.relatedContext')}</label>
           <div className="flex flex-wrap gap-1">
             {node.contextRefs.map((ctx) => (
               <span
@@ -579,11 +588,11 @@ export function NodeEditor({
         </div>
       )}
 
-      {/* Module node: child nodes list */}
+      {/* 模块节点：子节点列表 */}
       {node.type === 'module' && childNodes.length > 0 && (
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-muted-foreground">
-            Child processes ({childNodes.length})
+            {t('node.editor.childProcesses', { count: childNodes.length })}
           </label>
           <div className="space-y-1">
             {childNodes.map((child) => (
@@ -605,7 +614,7 @@ export function NodeEditor({
         </div>
       )}
 
-      {/* Process node: rules + metadata */}
+      {/* 流程节点：规则 + 元数据 */}
       {node.type === 'process' && (
         <>
           <RulesEditor rules={node.rules ?? []} onUpdate={(rules) => onUpdate({ rules })} />
@@ -613,7 +622,7 @@ export function NodeEditor({
         </>
       )}
 
-      {/* Feature/Bug: acceptance criteria */}
+      {/* 功能点 / BUG：验收标准 */}
       {(node.type === 'feature' || node.type === 'bug') && (
         <CriteriaEditor
           criteria={node.acceptanceCriteria ?? []}
@@ -621,7 +630,7 @@ export function NodeEditor({
         />
       )}
 
-      {/* Action buttons */}
+      {/* 操作按钮 */}
       <div className="pt-2 space-y-2 border-t">
         {(node.type === 'feature' || node.type === 'wiki-page') && (
           <button
@@ -629,7 +638,9 @@ export function NodeEditor({
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
           >
             <Play className="w-3.5 h-3.5" />
-            {node.type === 'wiki-page' ? '完善 Wiki 内容' : 'Implement with Agent'}
+            {node.type === 'wiki-page'
+              ? t('node.editor.completeWiki')
+              : t('node.editor.implementWithAgent')}
           </button>
         )}
         {node.type !== 'project' && !node.wikiMeta?.specialPage && (
@@ -638,7 +649,7 @@ export function NodeEditor({
             className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-destructive border border-destructive/30 rounded-md hover:bg-destructive/10 transition-colors"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            Delete node
+            {t('node.editor.deleteNode')}
           </button>
         )}
       </div>

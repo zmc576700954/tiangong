@@ -19,15 +19,21 @@ import { useFileTreeStore } from '../store/fileTreeStore'
 import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { useAgentStore } from '../store/agentStore'
+import { useI18n } from '../i18n/useI18n'
+import { nodeTypeLabel } from '@shared/i18n'
+import type { Locale } from '@shared/i18n'
 import type { NodeType } from '@shared/types'
 import type { TreeNode } from '../store/fileTreeStore'
 
-const TYPE_OPTIONS: { type: NodeType; label: string; color: string }[] = [
-  { type: 'module', label: '业务模块', color: '#3b82f6' },
-  { type: 'process', label: '业务流程', color: '#8b5cf6' },
-  { type: 'feature', label: '功能点', color: '#22c55e' },
-  { type: 'bug', label: 'BUG 点', color: '#ef4444' },
-]
+/** 节点类型选项——标签走共享的 nodeTypeLabel 查表 */
+function typeOptions(locale: Locale): { type: NodeType; label: string; color: string }[] {
+  return [
+    { type: 'module', label: nodeTypeLabel('module', locale), color: '#3b82f6' },
+    { type: 'process', label: nodeTypeLabel('process', locale), color: '#8b5cf6' },
+    { type: 'feature', label: nodeTypeLabel('feature', locale), color: '#22c55e' },
+    { type: 'bug', label: nodeTypeLabel('bug', locale), color: '#ef4444' },
+  ]
+}
 
 export function FileTreeContextMenu() {
   const contextMenuPath = useFileTreeStore((s) => s.contextMenuPath)
@@ -47,8 +53,9 @@ export function FileTreeContextMenu() {
   const [showTypePicker, setShowTypePicker] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const { t, locale } = useI18n()
 
-  // Close on click outside
+  // 点击外部关闭
   useEffect(() => {
     if (!contextMenuPath) return
     const handler = (e: MouseEvent) => {
@@ -62,7 +69,7 @@ export function FileTreeContextMenu() {
     return () => window.removeEventListener('mousedown', handler)
   }, [contextMenuPath, setContextMenu])
 
-  // Close on Escape
+  // Esc 关闭
   useEffect(() => {
     if (!contextMenuPath) return
     const handler = (e: KeyboardEvent) => {
@@ -130,7 +137,7 @@ export function FileTreeContextMenu() {
     if (!onlineGraph) {
       useFileTreeStore.getState().clearToast()
       useFileTreeStore.setState({
-        toast: { message: '请先创建或扫描项目生成在线图', type: 'error' },
+        toast: { message: t('projects.context.needOnlineGraph'), type: 'error' },
       })
       setContextMenu(null)
       return
@@ -153,11 +160,17 @@ export function FileTreeContextMenu() {
       })
 
       useFileTreeStore.setState({
-        toast: { message: `已创建${nodeType}节点: ${nodeName}`, type: 'success' },
+        toast: {
+          message: t('projects.context.nodeCreated', {
+            type: nodeTypeLabel(nodeType, locale),
+            name: nodeName,
+          }),
+          type: 'success',
+        },
       })
     } catch (err) {
       useFileTreeStore.setState({
-        toast: { message: `创建节点失败: ${err}`, type: 'error' },
+        toast: { message: t('projects.context.createNodeFailed', { error: String(err) }), type: 'error' },
       })
     } finally {
       setLoadingAction(null)
@@ -170,7 +183,7 @@ export function FileTreeContextMenu() {
     const onlineGraph = graphs.find((g) => g.type === 'online')
     if (!onlineGraph) {
       useFileTreeStore.setState({
-        toast: { message: '请先创建或扫描项目生成在线图', type: 'error' },
+        toast: { message: t('projects.context.needOnlineGraph'), type: 'error' },
       })
       setContextMenu(null)
       return
@@ -181,7 +194,7 @@ export function FileTreeContextMenu() {
     try {
       const adapters = useAgentStore.getState().adapters.filter((a) => a.installed)
       if (adapters.length === 0) {
-        throw new Error('没有已安装的 Agent')
+        throw new Error(t('projects.context.noAgentInstalled'))
       }
 
       const config = {
@@ -191,7 +204,7 @@ export function FileTreeContextMenu() {
         invariantRules: [],
         upstreamContext: '',
         downstreamContext: '',
-        nodeTitle: `推演: ${nodeName}`,
+        nodeTitle: t('projects.context.deduceNodeTitle', { name: nodeName }),
         acceptanceCriteria: [],
       }
 
@@ -206,14 +219,14 @@ export function FileTreeContextMenu() {
       })
 
       useFileTreeStore.setState({
-        toast: { message: 'Agent 推演已启动，请在 Agent 面板查看结果', type: 'success' },
+        toast: { message: t('projects.context.deduceStarted'), type: 'success' },
       })
 
       setAgentWorkingDirectory(contextMenuPath)
       setActiveRightPanel('agent')
     } catch (err) {
       useFileTreeStore.setState({
-        toast: { message: `推演失败: ${err}`, type: 'error' },
+        toast: { message: t('projects.context.deduceFailed', { error: String(err) }), type: 'error' },
       })
     } finally {
       setLoadingAction(null)
@@ -230,7 +243,7 @@ export function FileTreeContextMenu() {
     const onlineGraph = graphs.find((g) => g.type === 'online')
     if (!onlineGraph) {
       useFileTreeStore.setState({
-        toast: { message: '请先创建或扫描项目生成在线图', type: 'error' },
+        toast: { message: t('projects.context.needOnlineGraph'), type: 'error' },
       })
       setShowTypePicker(false)
       setContextMenu(null)
@@ -265,33 +278,33 @@ export function FileTreeContextMenu() {
       className="bg-background border rounded-lg shadow-lg py-1 w-56"
       style={menuStyle}
     >
-      {/* Header */}
+      {/* 标题栏 */}
       <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
         <span className="truncate font-medium">{nodeName}</span>
       </div>
 
-      {/* Group 1: Agent Operations */}
-      <MenuGroup title="Agent">
+      {/* 分组 1：Agent 操作 */}
+      <MenuGroup title={t('projects.context.agentGroup')}>
         <MenuItem
           icon={Terminal}
-          label="Agent 输入框"
+          label={t('projects.context.agentInput')}
           onClick={handleAgentInput}
         />
         <MenuItem
           icon={loadingAction === 'deduce' ? Loader2 : Sparkles}
-          label="推演思维导图"
+          label={t('projects.context.deduceMindMap')}
           onClick={handleDeduceMindMap}
           loading={loadingAction === 'deduce'}
         />
       </MenuGroup>
 
-      {/* Group 2: Generate Nodes */}
-      <MenuGroup title="生成节点">
+      {/* 分组 2：生成节点 */}
+      <MenuGroup title={t('projects.context.generateGroup')}>
         {[
-          { type: 'module' as NodeType, label: '生成业务模块', icon: Box },
-          { type: 'process' as NodeType, label: '生成业务流程', icon: GitBranch },
-          { type: 'feature' as NodeType, label: '生成功能点', icon: Code2 },
-          { type: 'bug' as NodeType, label: '生成 BUG 点', icon: Bug },
+          { type: 'module' as NodeType, label: t('projects.context.generateModule'), icon: Box },
+          { type: 'process' as NodeType, label: t('projects.context.generateProcess'), icon: GitBranch },
+          { type: 'feature' as NodeType, label: t('projects.context.generateFeature'), icon: Code2 },
+          { type: 'bug' as NodeType, label: t('projects.context.generateBug'), icon: Bug },
         ].map(({ type, label, icon }) => (
           <MenuItem
             key={type}
@@ -303,17 +316,19 @@ export function FileTreeContextMenu() {
         ))}
         <MenuItem
           icon={Plus}
-          label="添加独立节点"
+          label={t('projects.context.addStandaloneNode')}
           onClick={handleAddIndependentNode}
         />
       </MenuGroup>
 
-      {/* Type picker popup */}
+      {/* 节点类型选择浮层 */}
       {showTypePicker && (
         <div className="px-2 py-1.5 border-t border-b">
-          <div className="text-[10px] text-muted-foreground mb-1 px-1">选择节点类型</div>
+          <div className="text-[10px] text-muted-foreground mb-1 px-1">
+            {t('projects.context.selectNodeType')}
+          </div>
           <div className="grid grid-cols-2 gap-1">
-            {TYPE_OPTIONS.map(({ type, label, color }) => (
+            {typeOptions(locale).map(({ type, label, color }) => (
               <button
                 key={type}
                 onClick={() => handleTypeSelected(type)}
@@ -327,19 +342,19 @@ export function FileTreeContextMenu() {
         </div>
       )}
 
-      {/* Group 3: File Operations */}
-      <MenuGroup title="文件操作">
-        <MenuItem icon={Copy} label="复制" onClick={handleCopy} />
-        <MenuItem icon={Scissors} label="剪切" onClick={handleCut} />
+      {/* 分组 3：文件操作 */}
+      <MenuGroup title={t('projects.context.fileOpsGroup')}>
+        <MenuItem icon={Copy} label={t('projects.context.copy')} onClick={handleCopy} />
+        <MenuItem icon={Scissors} label={t('projects.context.cut')} onClick={handleCut} />
         <MenuItem
           icon={Clipboard}
-          label="粘贴"
+          label={t('projects.context.paste')}
           onClick={handlePaste}
           disabled={!clipboard}
         />
         <MenuItem
           icon={confirmDelete ? X : Trash2}
-          label={confirmDelete ? '确认删除？' : '删除'}
+          label={confirmDelete ? t('projects.context.confirmDelete') : t('projects.context.delete')}
           onClick={handleDelete}
           danger
         />
@@ -348,7 +363,7 @@ export function FileTreeContextMenu() {
   )
 }
 
-// ---- Sub-components ----
+// ---- 子组件 ----
 
 function MenuGroup({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -395,7 +410,7 @@ function MenuItem({
   )
 }
 
-// ---- Helpers ----
+// ---- 辅助函数 ----
 
 function findNodeByPath(root: TreeNode | null, targetPath: string): TreeNode | null {
   if (!root) return null

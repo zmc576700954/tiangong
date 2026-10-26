@@ -6,9 +6,20 @@ import {
   GitBranch,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import type { GraphEdge, GraphNode, FileAssociation } from '@shared/types'
+import { useI18n } from '../i18n/useI18n'
+import { edgeTypeOptions as allEdgeTypeOptions } from '@shared/i18n'
+import type { EdgeType, GraphEdge, GraphNode, FileAssociation } from '@shared/types'
 
-// ==================== Edge Editor ====================
+/** 本编辑器只提供这几类手建连接 */
+const SUPPORTED_EDGE_TYPES: EdgeType[] = [
+  'default',
+  'success',
+  'failure',
+  'condition',
+  'business-flow',
+]
+
+// ==================== 连接线编辑器 ====================
 
 export function EdgeEditor({
   edge,
@@ -21,59 +32,57 @@ export function EdgeEditor({
   onUpdate: (data: Partial<GraphEdge>) => void
   onDelete: () => void
 }) {
+  const { t, locale } = useI18n()
+
   const sourceNode = nodes.find((n) => n.id === edge.source)
   const targetNode = nodes.find((n) => n.id === edge.target)
 
-  const edgeTypeOptions = [
-    { value: 'default' as const, label: '默认流程', color: '#94a3b8' },
-    { value: 'success' as const, label: '成功分支', color: '#22c55e' },
-    { value: 'failure' as const, label: '失败分支', color: '#ef4444' },
-    { value: 'condition' as const, label: '条件分支', color: '#f59e0b' },
-    { value: 'business-flow' as const, label: '业务流程', color: '#3b82f6' },
-  ]
+  const edgeTypeOptions = allEdgeTypeOptions(locale).filter((o) =>
+    SUPPORTED_EDGE_TYPES.includes(o.type),
+  )
 
   return (
     <div className="p-3 space-y-4">
-      {/* Edge header */}
+      {/* 连接线头部 */}
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
           <GitBranch className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">连接线</span>
+          <span className="text-[10px] text-muted-foreground uppercase tracking-wider">{t('edge.editor.headerLabel')}</span>
         </div>
-        <h3 className="text-base font-semibold">流程连接</h3>
+        <h3 className="text-base font-semibold">{t('edge.editor.title')}</h3>
       </div>
 
-      {/* Source → Target */}
+      {/* 起点 → 终点 */}
       <div className="space-y-2 p-2 bg-muted/30 rounded-md">
         <div className="flex items-center gap-2 text-sm">
           <div className="flex-1 truncate">
-            <span className="text-xs text-muted-foreground">From</span>
-            <div className="font-medium truncate">{sourceNode?.title || 'Unknown'}</div>
+            <span className="text-xs text-muted-foreground">{t('edge.editor.from')}</span>
+            <div className="font-medium truncate">{sourceNode?.title || t('edge.editor.unknown')}</div>
           </div>
           <ArrowRight className="w-4 h-4 text-muted-foreground shrink-0" />
           <div className="flex-1 truncate">
-            <span className="text-xs text-muted-foreground">To</span>
-            <div className="font-medium truncate">{targetNode?.title || 'Unknown'}</div>
+            <span className="text-xs text-muted-foreground">{t('edge.editor.to')}</span>
+            <div className="font-medium truncate">{targetNode?.title || t('edge.editor.unknown')}</div>
           </div>
         </div>
       </div>
 
-      {/* Edge type selector */}
+      {/* 连接类型选择器 */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">连接类型</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('edge.editor.typeLabel')}</label>
         <div className="grid grid-cols-2 gap-1.5">
           {edgeTypeOptions.map((opt) => (
             <button
-              key={opt.value}
-              onClick={() => onUpdate({ edgeType: opt.value })}
+              key={opt.type}
+              onClick={() => onUpdate({ edgeType: opt.type })}
               className={cn(
                 'flex items-center gap-1.5 px-2 py-1.5 text-xs rounded-md border transition-colors',
-                edge.edgeType === opt.value
+                edge.edgeType === opt.type
                   ? 'border-transparent text-white'
                   : 'border-border text-muted-foreground hover:text-foreground hover:bg-muted',
               )}
               style={
-                edge.edgeType === opt.value
+                edge.edgeType === opt.type
                   ? { backgroundColor: opt.color }
                   : undefined
               }
@@ -81,7 +90,7 @@ export function EdgeEditor({
               <div
                 className="w-2 h-2 rounded-full shrink-0"
                 style={{
-                  backgroundColor: edge.edgeType === opt.value ? 'white' : opt.color,
+                  backgroundColor: edge.edgeType === opt.type ? 'white' : opt.color,
                 }}
               />
               {opt.label}
@@ -90,28 +99,28 @@ export function EdgeEditor({
         </div>
       </div>
 
-      {/* Label */}
+      {/* 标签 */}
       <div className="space-y-1.5">
-        <label className="text-xs font-medium text-muted-foreground">条件标签</label>
+        <label className="text-xs font-medium text-muted-foreground">{t('edge.editor.conditionLabel')}</label>
         <input
           type="text"
           value={edge.label || ''}
           onChange={(e) => onUpdate({ label: e.target.value || undefined })}
-          placeholder="例如：金额 > 1000"
+          placeholder={t('edge.editor.conditionPlaceholder')}
           className="w-full px-2 py-1.5 text-sm border rounded-md bg-background"
         />
         <p className="text-[10px] text-muted-foreground">
-          用于描述流程分支的触发条件
+          {t('edge.editor.conditionHint')}
         </p>
       </div>
 
-      {/* Edge Content (business logic) */}
+      {/* 连接内容（业务逻辑） */}
       {(edge.edgeType === 'business-flow' || edge.content) && (
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-muted-foreground">业务逻辑</label>
+          <label className="text-xs font-medium text-muted-foreground">{t('edge.editor.businessLogic')}</label>
           <div className="space-y-1.5">
             <div>
-              <label className="text-[10px] text-muted-foreground">判断条件</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.judgementLabel')}</label>
               <input
                 type="text"
                 value={edge.content?.condition || ''}
@@ -122,12 +131,12 @@ export function EdgeEditor({
                     content: { ...edge.content, condition },
                   })
                 }}
-                placeholder="如：库存 > 0"
+                placeholder={t('edge.editor.judgementPlaceholder')}
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
               />
             </div>
             <div>
-              <label className="text-[10px] text-muted-foreground">备注说明</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.noteLabel')}</label>
               <textarea
                 value={edge.content?.note || ''}
                 onChange={(e) =>
@@ -135,15 +144,15 @@ export function EdgeEditor({
                     content: { ...edge.content, note: e.target.value || undefined },
                   })
                 }
-                placeholder="如：退款时需同步回滚库存"
+                placeholder={t('edge.editor.notePlaceholder')}
                 rows={3}
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background resize-none"
               />
             </div>
 
-            {/* Trigger */}
+            {/* 触发方式 */}
             <div>
-              <label className="text-[10px] text-muted-foreground">触发方式</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.triggerLabel')}</label>
               <select
                 value={edge.content?.trigger || 'auto'}
                 onChange={(e) =>
@@ -156,15 +165,15 @@ export function EdgeEditor({
                 }
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
               >
-                <option value="auto">自动 (auto)</option>
-                <option value="manual">手动 (manual)</option>
-                <option value="scheduled">定时 (scheduled)</option>
+                <option value="auto">{t('edge.editor.triggerAuto')}</option>
+                <option value="manual">{t('edge.editor.triggerManual')}</option>
+                <option value="scheduled">{t('edge.editor.triggerScheduled')}</option>
               </select>
             </div>
 
-            {/* Guard */}
+            {/* 守卫表达式 */}
             <div>
-              <label className="text-[10px] text-muted-foreground">守卫表达式</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.guardLabel')}</label>
               <input
                 type="text"
                 value={edge.content?.guard || ''}
@@ -176,14 +185,14 @@ export function EdgeEditor({
                     },
                   })
                 }
-                placeholder="守卫表达式，如 user.role === 'admin'"
+                placeholder={t('edge.editor.guardPlaceholder')}
                 className="w-full mt-0.5 px-2 py-1.5 text-sm border rounded-md bg-background"
               />
             </div>
 
-            {/* Timeout */}
+            {/* 超时 */}
             <div>
-              <label className="text-[10px] text-muted-foreground">超时时间 (ms)</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.timeoutLabel')}</label>
               <input
                 type="number"
                 value={edge.content?.timeout ?? ''}
@@ -202,12 +211,12 @@ export function EdgeEditor({
               />
             </div>
 
-            {/* Retry */}
+            {/* 重试 */}
             <div className="space-y-1.5">
-              <label className="text-[10px] text-muted-foreground">重试配置</label>
+              <label className="text-[10px] text-muted-foreground">{t('edge.editor.retryTitle')}</label>
               <div className="flex gap-2">
                 <div className="flex-1">
-                  <label className="text-[10px] text-muted-foreground">最大次数</label>
+                  <label className="text-[10px] text-muted-foreground">{t('edge.editor.retryMax')}</label>
                   <input
                     type="number"
                     value={edge.content?.retry?.max ?? ''}
@@ -229,7 +238,7 @@ export function EdgeEditor({
                   />
                 </div>
                 <div className="flex-1">
-                  <label className="text-[10px] text-muted-foreground">间隔 (ms)</label>
+                  <label className="text-[10px] text-muted-foreground">{t('edge.editor.retryDelay')}</label>
                   <input
                     type="number"
                     value={edge.content?.retry?.delay ?? ''}
@@ -256,21 +265,21 @@ export function EdgeEditor({
         </div>
       )}
 
-      {/* Delete */}
+      {/* 删除 */}
       <div className="pt-2 border-t">
         <button
           onClick={onDelete}
           className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-sm text-destructive border border-destructive/30 rounded-md hover:bg-destructive/10 transition-colors"
         >
           <Trash2 className="w-3.5 h-3.5" />
-          Delete connection
+          {t('edge.editor.deleteConnection')}
         </button>
       </div>
     </div>
   )
 }
 
-// ==================== File Associations Editor ====================
+// ==================== 关联文件编辑器 ====================
 
 export function FileAssociationsEditor({
   associations,
@@ -284,6 +293,7 @@ export function FileAssociationsEditor({
   const [newType, setNewType] = useState<'file' | 'directory' | 'method'>('file')
   const [newMethod, setNewMethod] = useState('')
   const [newDesc, setNewDesc] = useState('')
+  const { t } = useI18n()
 
   const handleAdd = () => {
     if (!newPath.trim()) return
@@ -310,9 +320,15 @@ export function FileAssociationsEditor({
     method: '⚡',
   }
 
+  const typeLabels: Record<'file' | 'directory' | 'method', string> = {
+    file: t('edge.editor.typeFile'),
+    directory: t('edge.editor.typeDirectory'),
+    method: t('edge.editor.typeMethod'),
+  }
+
   return (
     <div className="space-y-1.5">
-      <label className="text-xs font-medium text-muted-foreground">关联文件</label>
+      <label className="text-xs font-medium text-muted-foreground">{t('edge.editor.relatedFiles')}</label>
       {associations.length > 0 && (
         <div className="space-y-1">
           {associations.map((assoc, i) => (
@@ -335,18 +351,18 @@ export function FileAssociationsEditor({
       {isAdding ? (
         <div className="space-y-1.5 p-2 border rounded-md">
           <div className="flex gap-1">
-            {(['file', 'directory', 'method'] as const).map((t) => (
+            {(['file', 'directory', 'method'] as const).map((kind) => (
               <button
-                key={t}
-                onClick={() => setNewType(t)}
+                key={kind}
+                onClick={() => setNewType(kind)}
                 className={cn(
                   'px-2 py-0.5 text-[10px] rounded border transition-colors',
-                  newType === t
+                  newType === kind
                     ? 'bg-primary text-primary-foreground border-transparent'
                     : 'border-border text-muted-foreground hover:text-foreground',
                 )}
               >
-                {t === 'file' ? '文件' : t === 'directory' ? '目录' : '方法'}
+                {typeLabels[kind]}
               </button>
             ))}
           </div>
@@ -354,7 +370,7 @@ export function FileAssociationsEditor({
             type="text"
             value={newPath}
             onChange={(e) => setNewPath(e.target.value)}
-            placeholder="相对路径，如 src/order/service.ts"
+            placeholder={t('edge.editor.pathPlaceholder')}
             className="w-full px-2 py-1 text-xs border rounded bg-background"
             autoFocus
           />
@@ -363,7 +379,7 @@ export function FileAssociationsEditor({
               type="text"
               value={newMethod}
               onChange={(e) => setNewMethod(e.target.value)}
-              placeholder="方法名，如 refund"
+              placeholder={t('edge.editor.methodPlaceholder')}
               className="w-full px-2 py-1 text-xs border rounded bg-background"
             />
           )}
@@ -371,15 +387,15 @@ export function FileAssociationsEditor({
             type="text"
             value={newDesc}
             onChange={(e) => setNewDesc(e.target.value)}
-            placeholder="简要说明（可选）"
+            placeholder={t('edge.editor.descPlaceholder')}
             className="w-full px-2 py-1 text-xs border rounded bg-background"
           />
           <div className="flex gap-1">
             <button onClick={handleAdd} className="flex-1 py-1 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90">
-              添加
+              {t('edge.editor.add')}
             </button>
             <button onClick={() => setIsAdding(false)} className="flex-1 py-1 text-xs border rounded hover:bg-muted">
-              取消
+              {t('common.cancel')}
             </button>
           </div>
         </div>
@@ -388,7 +404,7 @@ export function FileAssociationsEditor({
           onClick={() => setIsAdding(true)}
           className="w-full py-1.5 text-xs border border-dashed rounded text-muted-foreground hover:text-foreground hover:border-foreground/30 transition-colors"
         >
-          + 添加关联
+          {t('edge.editor.addAssociation')}
         </button>
       )}
     </div>
