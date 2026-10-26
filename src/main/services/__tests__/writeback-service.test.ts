@@ -35,6 +35,10 @@ function fakeWritebackRepo(): WritebackRepoLike & { items: WritebackItem[] } {
       const it = items.find((i) => i.id === id)
       if (it) it.status = status
     },
+    setCreatedNodeId: (id: string, nodeId: string) => {
+      const it = items.find((i) => i.id === id)
+      if (it) it.createdNodeId = nodeId
+    },
   }
 }
 
@@ -111,7 +115,8 @@ describe('WritebackService.generate', () => {
   it('uses deterministic now for append-log title and section', () => {
     const now = new Date('2026-07-30T14:32:00Z')
     const out = service.generate({ graphId: 'g1', nodeId: 'n1', nodeTitle: 'A', sessionId: 's', memories: [mem({})] }, now)
-    expect(out[0].title).toBe('会话日志 · 2026-07-30')
+    // 标题必须与正文里的小节标题一致 —— 幂等检查与撤回都以正文标题为锚点。
+    expect(out[0].title).toBe('会话日志 · 2026-07-30 14:32')
     expect(out[0].content).toContain('## 会话日志 · 2026-07-30 14:32')
   })
 

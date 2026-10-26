@@ -63,7 +63,7 @@ describe('Settings - Encryption', () => {
     expect(read.apiKeys[0].key).toBe('sk-test-key-12345')
   })
 
-  it('should fall back to defaults when decryption format is invalid', async () => {
+  it('keeps the rest of the settings when one API key cannot be decrypted', async () => {
     const { readSettings } = await import('../settings')
 
     const malformed = {
@@ -75,12 +75,14 @@ describe('Settings - Encryption', () => {
     mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify(malformed))
 
     const read = await readSettings()
-    // Decryption errors are caught and defaults are returned
-    expect(read.apiKeys).toEqual([])
+    // 单个 key 解不开只降级这个 key（空串）。整份配置不能回退到默认值：
+    // 下一次 writeSettings 会把默认值覆盖到 settings.json —— 用户的
+    // MCP server / 自定义 agent 类型会跟着一起丢。
+    expect(read.apiKeys).toEqual([{ provider: 'anthropic', key: '' }])
     expect(read.version).toBe(1)
   })
 
-  it('should fall back to defaults when IV length is invalid', async () => {
+  it('keeps the rest of the settings when the fallback IV length is invalid', async () => {
     const { readSettings } = await import('../settings')
 
     const shortIv = Buffer.from('ab').toString('base64')
@@ -94,8 +96,7 @@ describe('Settings - Encryption', () => {
     mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify(malformed))
 
     const read = await readSettings()
-    // Decryption errors are caught and defaults are returned
-    expect(read.apiKeys).toEqual([])
+    expect(read.apiKeys).toEqual([{ provider: 'anthropic', key: '' }])
     expect(read.version).toBe(1)
   })
 

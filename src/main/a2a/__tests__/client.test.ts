@@ -464,8 +464,10 @@ describe('endpoint-guard — URL validation', () => {
   })
 
   it('allows http://127.0.0.1 with devAllowLocalhost=true', async () => {
+    // 返回值是**已校验的 IP 列表** —— 调用方要靠它把实际连接钉死，
+    // 否则校验与连接之间的 DNS rebinding 窗口会让防护失效。
     await expect(assertSafeEndpoint('http://127.0.0.1:8089', { devAllowLocalhost: true }))
-      .resolves.toBeUndefined()
+      .resolves.toEqual(['127.0.0.1'])
   })
 
   it('rejects malformed URL', async () => {

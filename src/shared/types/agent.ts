@@ -57,6 +57,12 @@ export interface AgentSessionConfig {
   /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
   verifyOnly?: boolean
   /**
+   * 透明转发会话（A2A 入站）：**不**注入 BizGraph 内部 scope / memory / 项目上下文，
+   * prompt 原文下发（CLAUDE.md Boundaries §3 —— 远端 LLM 视角下 BizGraph 是透明转发方）。
+   * 适配器据此省略 system prompt 与命令样板，并关闭文件 / shell 工具。
+   */
+  transparentForward?: boolean
+  /**
    * Phase D5b: 此 session 可 delegate 给哪些 recipe id（白名单）。
    * adapter 据此决定是否暴露 `delegate_recipe` 工具。
    * 缺省/空数组 → 不暴露 delegate_recipe 工具。

@@ -23,7 +23,7 @@ import { BizGraphError, ErrorCode } from '../../errors'
 import { A2A_SSE_KEEPALIVE_MS } from '@shared/types/a2a'
 import type { AgentOutput } from '@shared/types/agent'
 import type { A2ATaskStore } from '../task-store'
-import type { A2AMessage } from '@shared/types/a2a'
+import type { A2AMessage, A2ATerminationReason } from '@shared/types/a2a'
 
 export interface MessageStreamSessionStarter {
   startSession(message: A2AMessage, contextId: string): Promise<string>
@@ -33,7 +33,7 @@ export interface MessageStreamSessionStarter {
     sessionId: string,
     listener: (output: AgentOutput) => void,
   ): () => void
-  terminateSession(sessionId: string, reason: string): Promise<void>
+  terminateSession(sessionId: string, reason: A2ATerminationReason): Promise<void>
 }
 
 export interface MessageStreamDeps {
@@ -76,11 +76,70 @@ export async function handleMessageStream(
   })
   res.write(': stream-open\n\n')
 
-  const sessionId = await deps.session.startSession(request.message, contextId)
+  let closed = false
+  let unsubscribe: (() => void) | null = null
+  let sessionId: string | null = null
+  let keepalive: ReturnType<typeof setInterval> | null = null
+
+  const cleanup = (reason: 'client-disconnect' | 'completed' | 'failed') => {
+    if (closed) return
+    closed = true
+    if (keepalive !== null) {
+      clearInterval(keepalive)
+      keepalive = null
+    }
+    if (unsubscribe !== null) {
+      try { unsubscribe() } catch { /* listener may have been removed already */ }
+      unsubscribe = null
+    }
+    if (sessionId !== null) {
+      if (reason === 'client-disconnect') {
+        deps.taskStore.setStatus(sessionId, 'canceled')
+        try {
+          res.write(formatStatusEvent({ state: 'canceled' }))
+        } catch { /* socket may be gone */ }
+      }
+      // completed / failed 也必须终止会话：否则 CLI 子进程、ScopeGuard 沙箱与
+      // 文件监听器会一直留着 —— 每个 A2A 请求泄漏一份。
+      void deps.session.terminateSession(sessionId, reason).catch(() => {})
+    }
+    try { res.end() } catch { /* already ended */ }
+  }
+
+  // 先挂 socket close 监听，再 await startSession：await 期间客户端可能已经断开，
+  // 而 'close' 只发一次 —— 等 startSession 返回再挂监听就永远收不到，
+  // 刚建好的会话（CLI 进程 + 沙箱 + 文件监听）会泄漏。
+  req.socket.on('close', () => {
+    cleanup('client-disconnect')
+  })
+
+  let startedSessionId: string
+  try {
+    startedSessionId = await deps.session.startSession(request.message, contextId)
+  } catch (err) {
+    // 会话没能起来：还没有 task 可标记，直接以 failed 结束流。
+    try {
+      res.write(formatStatusEvent({
+        state: 'failed',
+        message: { role: 'agent', parts: [{ type: 'text', text: (err as Error).message }] },
+      }))
+    } catch { /* socket gone */ }
+    try { res.end() } catch { /* already ended */ }
+    return
+  }
+  sessionId = startedSessionId
+  const sid = startedSessionId
+
+  if (closed) {
+    // 客户端在会话建立期间就断开了：刚建好的会话必须立刻终止。
+    void deps.session.terminateSession(sessionId, 'client-disconnect').catch(() => {})
+    return
+  }
+
   deps.taskStore.put({
-    taskId: sessionId,
+    taskId: sid,
     contextId,
-    sessionId,
+    sessionId: sid,
     status: 'working',
     startedAt: Date.now(),
     lastActivityAt: Date.now(),
@@ -88,37 +147,16 @@ export async function handleMessageStream(
     history: [request.message],
   })
 
-  let closed = false
-  let unsubscribe: (() => void) | null = null
-
-  const keepalive = setInterval(() => {
+  keepalive = setInterval(() => {
     if (closed) return
     try { res.write(formatSseKeepalive()) } catch { /* socket already gone */ }
   }, A2A_SSE_KEEPALIVE_MS)
-
-  const cleanup = (reason: 'client-disconnect' | 'completed' | 'failed') => {
-    if (closed) return
-    closed = true
-    clearInterval(keepalive)
-    if (unsubscribe !== null) {
-      try { unsubscribe() } catch { /* listener may have been removed already */ }
-      unsubscribe = null
-    }
-    if (reason === 'client-disconnect') {
-      deps.taskStore.setStatus(sessionId, 'canceled')
-      void deps.session.terminateSession(sessionId, 'a2a-client-disconnect').catch(() => {})
-      try {
-        res.write(formatStatusEvent({ state: 'canceled' }))
-      } catch { /* socket may be gone */ }
-    }
-    try { res.end() } catch { /* already ended */ }
-  }
 
   const listener = (output: AgentOutput) => {
     if (closed) return
     try {
       if (output.type === 'stdout' || output.type === 'stderr') {
-        deps.taskStore.appendArtifact(sessionId, {
+        deps.taskStore.appendArtifact(sid, {
           name: output.type,
           parts: [{ type: 'text', text: output.data }],
         })
@@ -131,7 +169,7 @@ export async function handleMessageStream(
           filePath: output.filePath,
           changeType: output.changeType,
         }
-        deps.taskStore.appendArtifact(sessionId, {
+        deps.taskStore.appendArtifact(sid, {
           name: 'file_change',
           parts: [{ type: 'data', data: filePayload }],
         })
@@ -140,14 +178,14 @@ export async function handleMessageStream(
           parts: [{ type: 'data', data: filePayload }],
         }))
       } else if (output.type === 'error') {
-        deps.taskStore.setStatus(sessionId, 'failed')
+        deps.taskStore.setStatus(sid, 'failed')
         res.write(formatStatusEvent({
           state: 'failed',
           message: { role: 'agent', parts: [{ type: 'text', text: output.data }] },
         }))
         cleanup('failed')
       } else if (output.type === 'complete') {
-        deps.taskStore.setStatus(sessionId, 'completed')
+        deps.taskStore.setStatus(sid, 'completed')
         res.write(formatStatusEvent({ state: 'completed' }))
         cleanup('completed')
       }
@@ -155,20 +193,29 @@ export async function handleMessageStream(
       // are intentionally ignored — A2A protocol has no equivalent event, and emitting
       // them would pollute the spec-defined stream.
     } catch {
-      deps.taskStore.setStatus(sessionId, 'failed')
+      deps.taskStore.setStatus(sid, 'failed')
       cleanup('failed')
     }
   }
 
-  unsubscribe = deps.session.subscribeOnSessionOutput(sessionId, listener)
-
-  req.socket.on('close', () => {
-    if (!closed) cleanup('client-disconnect')
-  })
+  try {
+    unsubscribe = deps.session.subscribeOnSessionOutput(sessionId, listener)
+  } catch (err) {
+    // 订阅失败（会话已消失）：不能装作成功 —— 会永远挂着等 complete。
+    deps.taskStore.setStatus(sessionId, 'failed')
+    try {
+      res.write(formatStatusEvent({
+        state: 'failed',
+        message: { role: 'agent', parts: [{ type: 'text', text: (err as Error).message }] },
+      }))
+    } catch { /* socket gone */ }
+    cleanup('failed')
+    return
+  }
 
   const text = request.message.parts.find((p) => p.type === 'text')?.text ?? ''
   void deps.session.sendCommand(sessionId, text).catch((err) => {
-    deps.taskStore.setStatus(sessionId, 'failed')
+    deps.taskStore.setStatus(sid, 'failed')
     if (!closed) {
       try {
         res.write(formatStatusEvent({

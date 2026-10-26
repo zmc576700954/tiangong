@@ -370,7 +370,7 @@ describe('A2AServer', () => {
     await new Promise((r) => setTimeout(r, 50))
 
     expect(ctrl.terminated.length).toBe(1)
-    expect(ctrl.terminated[0].reason).toBe('a2a-client-disconnect')
+    expect(ctrl.terminated[0].reason).toBe('client-disconnect')
   })
 
   it('throws A2A_PORT_IN_USE when starting on an occupied port', async () => {

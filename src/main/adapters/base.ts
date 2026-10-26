@@ -873,6 +873,19 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * 按会话语义构建命令提示词。
+   *
+   * 透明转发会话（A2A 入站）直接下发 command.description 原文 —— 不加
+   * 「请实现以下功能：」这类样板，否则远端 LLM 看到的就不是调用方的原文，
+   * 会破坏 KV-cache 复用（CLAUDE.md Boundaries §3）。
+   * @protected
+   */
+  protected buildCommandPromptForSession(session: AgentSession, command: AgentCommand): string {
+    if (session.config.transparentForward) return command.description
+    return this.buildCommandPrompt(command)
+  }
+
+  /**
    * 解析输出中的文件变更信息
    * 委托给 file-change-parser 模块处理
    * @protected
@@ -906,6 +919,10 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     session: AgentSession,
     resolvedContexts?: ResolvedContext[],
   ): string {
+    // 透明转发会话（A2A 入站）：不注入任何 BizGraph 内部状态 ——
+    // scope 约束 / 前序摘要 / 项目记忆都不下发（CLAUDE.md Boundaries §3）。
+    if (session.config.transparentForward) return ''
+
     const parts: string[] = []
 
     // 注入前序会话摘要（为不支持原生 resume 的适配器提供伪连续性）
@@ -1036,7 +1053,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
     const history: ToolHistoryEntry[] = []
     const toolPrompt = this.buildSubagentToolPrompt(session.config.allowedDelegates)
-    const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildCommandPrompt(command)}`
+    const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildCommandPromptForSession(session, command)}`
     const startTime = Date.now()
 
     for (let round = 0; round < BaseAdapter.MAX_TOOL_ROUNDS; round++) {

@@ -71,7 +71,8 @@ function makeDb() {
       confidence REAL NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded','rolled_back')),
       created_at TEXT NOT NULL, resolved_at TEXT,
-      rollback_actions TEXT
+      rollback_actions TEXT,
+      created_node_id TEXT
     );
   `)
   db.prepare(`INSERT INTO graphs (id,name,type,created_at,updated_at) VALUES ('g1','G','online','2026-01-01','2026-01-01')`).run()
@@ -245,6 +246,7 @@ describe('WritebackService.rollback — append-log', () => {
       findBySession: (sid) => writebackRepo.findBySession(sid),
       findById: (id) => (id === ghost.id ? ghost : writebackRepo.findById(id)),
       updateStatus: (id, status, actions) => writebackRepo.updateStatus(id, status, actions),
+      setCreatedNodeId: (id, nodeId) => writebackRepo.setCreatedNodeId(id, nodeId),
     }
     const svc = new WritebackService(wrappingRepo, fakeTitleSource(), { nodeRepo, edgeRepo, db })
 

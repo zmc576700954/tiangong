@@ -192,6 +192,8 @@ export interface WritebackItem {
   sourceNodeIds?: string[]
   /** 仅 new-page：源节点标题（采纳时连边用的源节点的标题快照）。 */
   targetNodeTitle?: string
+  /** 仅 new-page：采纳时**实际创建**的 wiki-page 节点 id。撤回按这个 id 定位页面。 */
+  createdNodeId?: string
   sourceSessionId: string
   confidence: number
   status: WritebackStatus

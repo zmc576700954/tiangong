@@ -144,7 +144,12 @@ async function getFallbackKey(): Promise<Buffer> {
         // 历史遗留的盐文件（旧版本升级或外部拷贝）可能从未被收紧 ACL。
         // 幂等加固：aclApplied Set 保证同一文件每进程只调用一次 icacls。
         restrictFileAcl(saltPath)
-      } catch {
+      } catch (err) {
+        // 只有「盐文件不存在」才允许新建。
+        // 读失败（EACCES / ENOSPC / 杀软锁文件 / 内容被截断）时覆写盐文件
+        // 会换掉派生密钥 —— 所有 fbk: 密文从此永久解不开（用户重新配置也
+        // 救不回原来的 key）。读失败必须原样抛出，让上层看到真实原因。
+        if (!isErrorWithCode(err) || err.code !== 'ENOENT') throw err
         salt = randomBytes(32)
         await fs.writeFile(saltPath, salt, { mode: 0o600 })
         // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）
@@ -208,8 +213,11 @@ async function decryptApiKey(encrypted: string): Promise<string> {
       const buf = Buffer.from(encrypted.slice(API_KEY_PREFIX_ENC.length), 'base64')
       return safeStorage.decryptString(buf)
     } catch (err) {
-      logger.warn('safeStorage decryption failed, trying fallback:', err)
-      // safeStorage 解密失败，尝试 fallback（可能是从其他机器迁移的数据）
+      // safeStorage 解密失败（换了机器 / keychain 被清）→ 这个 key 已经救不回来。
+      // 但绝不能往下走：下面的「裸明文」分支会把 base64 密文当成 key 返回，
+      // 用户看到的是一个看似正常、实则完全错误的凭据。
+      logger.error('safeStorage decryption failed; the key must be re-entered:', err)
+      return ''
     }
   }
   if (encrypted.startsWith(API_KEY_PREFIX_FALLBACK)) {
@@ -282,17 +290,34 @@ async function encryptSettings(settings: BizGraphSettings): Promise<BizGraphSett
   }
 }
 
+/**
+ * 解密单个 key，失败时降级为空串而不是抛错。
+ *
+ * 单个 key 解不开（盐文件损坏 / safeStorage 换了机器）不应该让**整份配置**
+ * 变成默认：readSettings 一旦回退到默认配置，下一次 writeSettings 就会把
+ * 默认值覆盖到用户的 settings.json —— MCP server、自定义 agent 类型、
+ * A2A 配置会跟着一起丢。只牺牲这一个 key（用户重新填一次即可）。
+ */
+async function decryptApiKeySafe(encrypted: string): Promise<string> {
+  try {
+    return await decryptApiKey(encrypted)
+  } catch (err) {
+    logger.error('Failed to decrypt API key; it must be re-entered:', err)
+    return ''
+  }
+}
+
 async function decryptSettings(settings: BizGraphSettings): Promise<BizGraphSettings> {
   return {
     ...settings,
     apiKeys: await Promise.all(settings.apiKeys.map(async (k) => ({
       ...k,
-      key: await decryptApiKey(k.key),
+      key: await decryptApiKeySafe(k.key),
     }))),
     a2aServer: settings.a2aServer
       ? {
           ...settings.a2aServer,
-          apiKey: await decryptApiKey(settings.a2aServer.apiKey),
+          apiKey: await decryptApiKeySafe(settings.a2aServer.apiKey),
         }
       : undefined,
     a2a: settings.a2a
@@ -301,7 +326,7 @@ async function decryptSettings(settings: BizGraphSettings): Promise<BizGraphSett
           remoteAgents: await Promise.all(
             settings.a2a.remoteAgents.map(async (ra) => ({
               ...ra,
-              apiKey: ra.apiKey !== undefined ? await decryptApiKey(ra.apiKey) : undefined,
+              apiKey: ra.apiKey !== undefined ? await decryptApiKeySafe(ra.apiKey) : undefined,
             })),
           ),
         }

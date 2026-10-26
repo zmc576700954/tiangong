@@ -181,8 +181,15 @@ export function registerSettingsHandlers(
       // The renderer only sees masked keys (e.g. "sk-****abcd"), so writing them
       // back would overwrite the real values. Read the current decrypted keys and
       // keep the existing value for any masked entry.
+      //
+      // 合并而不是整体替换：settings:write 的调用方（A2A 面板只写 a2aServer、
+      // 语言切换、自定义 agent 类型）可能只带部分 apiKeys，甚至空数组 ——
+      // 整体替换会把库里所有 provider 的 key 静默清空，用户毫无察觉。
+      // 删除 / 清空某个 key 走 settings:setApiKey（传空串）。
       const preserved: typeof incoming.apiKeys = []
+      const seenProviders = new Set<string>()
       for (const k of incoming.apiKeys) {
+        seenProviders.add(k.provider)
         if (MASKED_KEY_PATTERN.test(k.key)) {
           const existingPlain = current.apiKeys.find((c) => c.provider === k.provider)
           if (existingPlain && existingPlain.key) {
@@ -193,6 +200,11 @@ export function registerSettingsHandlers(
           continue
         }
         preserved.push({ ...k })
+      }
+      // incoming 里没出现的 provider：保留库里已存的 key。
+      for (const c of current.apiKeys) {
+        if (seenProviders.has(c.provider)) continue
+        preserved.push({ ...c })
       }
       incoming = { ...incoming, apiKeys: preserved }
     }

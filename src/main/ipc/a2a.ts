@@ -179,10 +179,16 @@ export function registerA2AHandlers(deps: A2AHandlerDeps, typedHandle: TypedHand
     const settings = await settingsApi.read()
     const existing = settings.a2a?.remoteAgents ?? []
     const idx = existing.findIndex((a) => a.name === agent.name)
-    // apiKey 若为 masked → 复用旧值（与 settings IPC apiKey 写入同模式）。
+    // apiKey 三态：
+    //   - masked（`abcd****wxyz`）→ 复用旧值（UI 回显的遮蔽形式）
+    //   - undefined / 空白 → 复用旧值（UI 的输入框默认是空的，用户只改个端口
+    //     就保存时不该把已存的 token 抹掉）
+    //   - 明文 → 覆盖
+    // 之前 undefined 会直接写进 settings：远端 agent 的凭据被无声销毁，
+    // 之后所有调用都 401。
+    const old = idx >= 0 ? existing[idx]?.apiKey : undefined
     let apiKey: string | undefined = agent.apiKey
-    if (apiKey !== undefined && MASKED_KEY_PATTERN.test(apiKey)) {
-      const old = idx >= 0 ? existing[idx]?.apiKey : undefined
+    if (apiKey === undefined || apiKey.trim() === '' || MASKED_KEY_PATTERN.test(apiKey)) {
       apiKey = old
     }
     const sanitized: A2ARemoteAgent = { ...agent, apiKey }

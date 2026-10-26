@@ -18,34 +18,47 @@ import { readSettings, onChange } from '../settings'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { A2ARemoteAgent, A2AServerConfig, A2AArtifact, A2AMessage, A2AAgentCard } from '@shared/types/a2a'
+import type {
+  A2ARemoteAgent,
+  A2AServerConfig,
+  A2AArtifact,
+  A2AMessage,
+  A2AAgentCard,
+  A2ATerminationReason,
+} from '@shared/types/a2a'
+import { A2A_INBOUND_TASK_TIMEOUT_MS } from '@shared/types/a2a'
 import type { AgentManager } from '../agent/agent-manager'
 import type { SubagentManager } from '../agent/subagent-manager'
 import { A2AClient } from './client'
 import { A2AServer } from './server'
 import { A2ATaskStore } from './task-store'
+import { createTaskPersistence } from './task-persistence'
 import type { MessageSendSessionStarter } from './routes/message-send'
 import type { MessageStreamSessionStarter } from './routes/message-stream'
-import type { AgentOutput, AgentCommand } from '@shared/types/agent'
+import type { AgentOutput, AgentCommand, TerminationReason } from '@shared/types/agent'
 
 const logger = createLogger('A2A')
 
 /**
- * A2A 入站会话在「没有任何项目」时的兜底工作目录。
+ * A2A 入站会话的隔离工作目录。
  *
  * 绝不能用 process.cwd()：macOS 打包后它是 '/'，ScopeGuard 会把整个磁盘
- * 快照一遍（卡死 + 巨量内存）。这个目录是空的、专属的，Agent 在里面写什么
- * 都会被 verifyOnly 沙箱判为越界并回滚。
+ * 快照一遍（卡死 + 巨量内存）。也不能用用户项目目录：ScopeGuard 会把工作目录
+ * 整棵树快照一次（每个 A2A 请求一次，成本随项目体积线性增长），而工作目录
+ * 同时是 CLI 的 cwd —— 远端调用方不该借本机 CLI 够到项目文件。
+ *
+ * 这个目录是空的、专属的：透明转发会话没有文件 / shell 工具，工作目录没有
+ * 业务含义，用它即可让快照成本≈0 且 CLI 够不到项目文件。
  */
-const A2A_FALLBACK_WORKDIR = path.join(os.tmpdir(), 'bizgraph-a2a-sandbox')
+const A2A_SANDBOX_WORKDIR = path.join(os.tmpdir(), 'bizgraph-a2a-sandbox')
 
-function ensureFallbackWorkdir(): string {
+function ensureSandboxWorkdir(): string {
   try {
-    fs.mkdirSync(A2A_FALLBACK_WORKDIR, { recursive: true })
+    fs.mkdirSync(A2A_SANDBOX_WORKDIR, { recursive: true })
   } catch (err) {
-    logger.warn('Failed to create A2A fallback working directory:', err)
+    logger.warn('Failed to create A2A sandbox working directory:', err)
   }
-  return A2A_FALLBACK_WORKDIR
+  return A2A_SANDBOX_WORKDIR
 }
 
 /**
@@ -61,11 +74,11 @@ function ensureFallbackWorkdir(): string {
  *     artifacts + history。失败抛 Error 由 routes 的 try/catch 兜底。
  *
  * **不**注入 BizGraph 内部 memory / scope 到下游 prompt（CLAUDE.md Boundaries §3）：
- * 下游 prompt 仅为 message.text 原文。
+ * 下游 prompt 仅为 message.text 原文 —— transparentForward 让适配器省略 scope
+ * system prompt 与命令样板，同时关闭文件 / shell 工具与本地 subagent 派发。
  */
 export function createA2ASessionStarters(
   agentManager: AgentManager,
-  resolveWorkingDirectory?: () => string | undefined,
 ): { messageSendSession: MessageSendSessionStarter; messageStreamSession: MessageStreamSessionStarter } {
   // Per-listener registry: maps listener → remove fn so unsubscribe() works.
   const listenerUnsubs = new WeakMap<(output: AgentOutput) => void, () => void>()
@@ -76,20 +89,21 @@ export function createA2ASessionStarters(
     targetNodeId,
   })
 
-  // 工作目录决定两件事：Agent CLI 在哪儿执行，以及 ScopeGuard 监控哪些目录。
-  // 必须是受控目录 —— projectPath 优先（沙箱才能覆盖真实项目写入），
-  // 没有项目时退到专属空目录。
-  const resolveWorkdir = (): string => {
-    const projectPath = resolveWorkingDirectory?.()
-    if (projectPath) return projectPath
-    return ensureFallbackWorkdir()
-  }
+  // 工作目录是**隔离的空目录**：既是 CLI 的 cwd，也是 ScopeGuard 的快照范围。
+  // 用用户项目目录会让每个 A2A 请求都把整棵项目树快照一遍（成本随体积线性增长），
+  // 而且远端调用方能借本机 CLI 够到项目文件。透明转发会话没有文件 / shell 工具，
+  // 空目录足够。
+  const resolveWorkdir = (): string => ensureSandboxWorkdir()
 
   // Minimal AgentSessionConfig. 远程 A2A 任务**不允许**修改本地文件：
   // verifyOnly=true 会让 AgentManager 建一个空白名单的沙箱，任何写入都被
   // ScopeGuard 判为越界并回滚（CLAUDE.md「所有文件改动由 ScopeGuard 兜底」）。
   // 注意：allowedFiles=[] 且 verifyOnly 未开时，session-lifecycle-manager 根本
   // 不会建沙箱 —— 那等于给网络端点开了一个无限制的文件写入口。
+  //
+  // transparentForward=true：不注入 BizGraph 内部 scope / memory / 项目上下文，
+  // 适配器据此省略 system prompt 与命令样板，并关闭文件 / shell / subagent 工具
+  // （CLAUDE.md Boundaries §3）。
   const a2aSessionConfig = (contextId: string): {
     agentName: string
     description: string
@@ -102,6 +116,7 @@ export function createA2ASessionStarters(
     nodeTitle: string
     acceptanceCriteria: string[]
     verifyOnly: true
+    transparentForward: true
     metadata?: Record<string, unknown>
   } => ({
     agentName: 'a2a-message',
@@ -115,6 +130,7 @@ export function createA2ASessionStarters(
     nodeTitle: 'A2A Message',
     acceptanceCriteria: [],
     verifyOnly: true,
+    transparentForward: true,
   })
 
   const sharedStartSession = async (
@@ -133,15 +149,34 @@ export function createA2ASessionStarters(
     await agentManager.sendCommand(sessionId, buildCommand(text, 'a2a-message'))
   }
 
-  const sharedTerminate = async (sessionId: string, reason: string): Promise<void> => {
-    await agentManager.terminateSession(sessionId, reason as 'user' | 'error')
+  /**
+   * A2A 语义原因 → AgentManager 的 TerminationReason。
+   *
+   * 必须是显式映射：AgentManager 收到非法值时会落成 'error'，而
+   * 'a2a-client-disconnect' 这种字符串此前被直接 cast 进去 —— 结果是
+   * 正常断开被记成失败，Phase B 的 abnormal 判定与 agent_logs 全错。
+   */
+  const TERMINATION_REASONS: Record<A2ATerminationReason, TerminationReason> = {
+    'client-disconnect': 'user',
+    completed: 'user',
+    failed: 'error',
+    error: 'error',
+  }
+
+  const sharedTerminate = async (sessionId: string, reason: A2ATerminationReason): Promise<void> => {
+    await agentManager.terminateSession(sessionId, TERMINATION_REASONS[reason] ?? 'error')
   }
 
   const subscribe = (
     sessionId: string,
     listener: (output: AgentOutput) => void,
   ): (() => void) => {
-    agentManager.addSessionOutputListener(sessionId, listener)
+    // 注册失败必须抛：会话不存在时 AgentManager 返回 false，调用方却以为
+    // 订阅成功 —— 结果永远收不到 complete / error，流一直挂着直到超时。
+    const ok = agentManager.addSessionOutputListener(sessionId, listener)
+    if (!ok) {
+      throw new Error(`Cannot subscribe to A2A session output: session ${sessionId} not found`)
+    }
     const unsub = () => {
       try { agentManager.removeSessionOutputListener(listener) } catch { /* best-effort */ }
     }
@@ -184,9 +219,19 @@ export function createA2ASessionStarters(
         }
       }
       subscribe(sessionId, listener)
+      // 上限兜底：CLI 卡死 / 适配器不返回时，Promise 永远不 settle ——
+      // HTTP 请求与 Agent 会话会一直挂着。
+      const completionTimer = setTimeout(() => {
+        rejectFn?.(
+          new Error(
+            `A2A session ${sessionId} did not complete within ${A2A_INBOUND_TASK_TIMEOUT_MS}ms`,
+          ),
+        )
+      }, A2A_INBOUND_TASK_TIMEOUT_MS)
       try {
         await donePromise
       } finally {
+        clearTimeout(completionTimer)
         const unsub = listenerUnsubs.get(listener)
         if (unsub) unsub()
       }
@@ -239,7 +284,9 @@ export function wireA2ASubsystem(deps: WireA2ADeps): A2AController {
   }
 
   async function startServer(config: A2AServerConfig): Promise<void> {
-    const nextTaskStore = new A2ATaskStore()
+    // 任务持久化到 chat_threads（metadata.task_kind='a2a'）：重启后历史任务
+    // 仍可查，重启前仍在 working 的任务会被收敛为 failed。
+    const nextTaskStore = new A2ATaskStore(await createTaskPersistence())
     const instance = new A2AServer({
       config,
       messageSendSession,
@@ -322,7 +369,22 @@ export function wireA2ASubsystem(deps: WireA2ADeps): A2AController {
     // Server next (may bind/unbind ports).
     if (cfg && cfg.enabled) {
       if (server) {
-        await server.refreshConfig(cfg)
+        try {
+          await server.refreshConfig(cfg)
+        } catch (err) {
+          // refreshConfig 失败（端口被占 / TLS 证书读不了）时，server 实例
+          // 可能已经处于半重启状态。不把它拆掉的话，状态接口会继续报
+          // running:true，而端口其实没绑上 —— 远端调用方全部连不上。
+          logger.warn(
+            `Failed to refresh A2A server config: ${(err as Error).message}; recreating server`,
+          )
+          await stopServer()
+          try {
+            await startServer(cfg)
+          } catch (restartErr) {
+            logger.warn(`Failed to restart A2A server: ${(restartErr as Error).message}`)
+          }
+        }
       } else {
         try {
           await startServer(cfg)

@@ -93,6 +93,14 @@ export class RecoveryOrchestrator {
     private readonly sendCommandFn: SendCommandFn,
     /** 全局 SessionRecoveryManager 单例，可注入便于测试 */
     private readonly sessionRecovery: SessionRecoveryManager = getSessionRecoveryManager(),
+    /**
+     * 把恢复谱系的根 sessionId 写到会话的 canonical state。
+     *
+     * 必须走这个回调而不是直接改 `sessionStates`（AgentManager 的镜像表）：
+     * 崩溃回调读的是 lifecycle 的 canonical state，只写镜像的话谱系根会在
+     * 下一轮丢失，attemptKey 每代都变，3 次重试上限永不触发。
+     */
+    private readonly setOriginSessionId?: (sessionId: string, originSessionId: string) => void,
   ) {}
 
   /** 暴露 recoveryCheckIntervals（兼容原 AgentManager API —— 测试通过 (manager as any).recoveryCheckIntervals 访问） */
@@ -174,6 +182,8 @@ export class RecoveryOrchestrator {
         // Native resume: keep the same sessionId active in the manager's maps.
         this.sessionStates.set(sessionId, state)
         this.sessionBroadcastNames?.set(sessionId, state.broadcastName)
+        // 谱系根写回 canonical state —— 同一对象，也顺带修正镜像表。
+        this.setOriginSessionId?.(sessionId, originSessionId)
         // 重新绑定时保留 fallback 的 originalAdapter —— 否则回退信息会被清空。
         const originalAdapter = this.sessionRouter.getOriginalAdapterName?.(sessionId)
         if (originalAdapter) {
@@ -184,6 +194,9 @@ export class RecoveryOrchestrator {
         return 'native'
       }
 
+      // 替换会话：谱系根必须写进**新会话**的 canonical state，
+      // 否则新会话再次崩溃时 attemptKey 会变成它自己的 id，重试上限失效。
+      this.setOriginSessionId?.(newSessionId, originSessionId)
       const newState = this.sessionStates.get(newSessionId)
       if (newState) {
         newState.originSessionId = originSessionId
@@ -208,6 +221,8 @@ export class RecoveryOrchestrator {
         if (replacementState) {
           replacementState.originSessionId = originSessionId
         }
+        // 同上：canonical state 也要带上谱系根，新会话再次崩溃时才能续上计数。
+        this.setOriginSessionId?.(result.sessionId, originSessionId)
         if (state.lastCommand) {
           await this.resumeLastCommand(result.sessionId, state.lastCommand)
         } else {

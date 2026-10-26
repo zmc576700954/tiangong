@@ -76,7 +76,7 @@ export class CodexAdapter extends BaseAdapter {
     }
 
     const scopePrompt = this.buildScopePromptForSession(session)
-    const commandPrompt = this.buildCommandPrompt(command)
+    const commandPrompt = this.buildCommandPromptForSession(session, command)
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
     try {

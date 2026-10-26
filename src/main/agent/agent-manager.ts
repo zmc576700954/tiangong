@@ -201,6 +201,9 @@ export class AgentManager {
       this.startSession.bind(this),
       this.sendCommand.bind(this),
       this.sessionRecoveryInstance,
+      // 谱系根要落在 lifecycle 的 canonical state 上（崩溃回调从那里读），
+      // 镜像表同步一份，供本层的恢复计数清理用。
+      (sessionId, originSessionId) => this.setSessionOrigin(sessionId, originSessionId),
     )
 
     // 7) FallbackRouter — 回退链路由（去重 / 健康度优先 / 连续超时计数）
@@ -302,6 +305,19 @@ export class AgentManager {
   private mirrorEnd(sessionId: string): void {
     this.sessionStates.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
+  }
+
+  /**
+   * 记录恢复谱系的根 sessionId。
+   *
+   * 写入 lifecycle 的 canonical state（崩溃回调的唯一读取来源），
+   * 并同步镜像表 —— 两处都要有，否则恢复重试计数要么永远不触发，
+   * 要么永远不被清零。
+   */
+  private setSessionOrigin(sessionId: string, originSessionId: string): void {
+    this.lifecycle.setOriginSessionId(sessionId, originSessionId)
+    const mirrored = this.sessionStates.get(sessionId)
+    if (mirrored) mirrored.originSessionId = originSessionId
   }
 
   // ===================================================================

@@ -114,7 +114,10 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     }
 
     const scopePrompt = this.buildScopePromptForSession(session)
-    const commandPrompt = this.buildCommandPrompt(command)
+    const commandPrompt = this.buildCommandPromptForSession(session, command)
+    // 透明转发会话（A2A 入站）：远端调用方不应能借本机 CLI 读文件、跑 shell，
+    // 或派生本地 subagent。下文据此关闭 MCP server、内置工具与文件级 settings。
+    const transparent = session.config.transparentForward === true
 
     const abortController = new AbortController()
     this.activeQueries.set(session.id, { abort: () => abortController.abort() })
@@ -126,7 +129,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       // Phase 4: register dispatch_subagent tool via in-process MCP server
       // when SubagentManager has been injected.
       let mcpServers: Record<string, McpServerConfig> | undefined
-      if (this.subagentManager && this.sdkCreateMcpServer) {
+      if (!transparent && this.subagentManager && this.sdkCreateMcpServer) {
         const dispatchTool = {
           name: DISPATCH_SUBAGENT_TOOL_NAME,
           description:
@@ -197,16 +200,24 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       const allowedTools = session.config.subagentAllowedTools
       if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
         toolsOption = allowedTools
+      } else if (transparent) {
+        // SDK 语义：tools: [] = 禁用全部内置工具（Read / Write / Edit / Bash …）。
+        // 透明转发的远端调用方只应拿到模型回答，拿不到本机文件与 shell。
+        toolsOption = []
       }
 
       const queryIter = query({
         prompt: commandPrompt,
         options: {
-          systemPrompt: scopePrompt,
+          // 透明转发：不下发 BizGraph 的 scope / memory / 项目上下文。
+          ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),
           cwd: session.config.workingDirectory,
           model: settings.defaultModel || 'sonnet',
           env: this.buildSafeEnv(),
-          permissionMode: 'acceptEdits',
+          permissionMode: transparent ? 'default' : 'acceptEdits',
+          // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
+          // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
+          ...(transparent ? { settingSources: [] } : {}),
           ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),
           ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
           ...(mcpServers ? { mcpServers } : {}),

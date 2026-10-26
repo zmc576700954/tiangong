@@ -46,6 +46,7 @@ export class WritebackRepository {
       narrative: (row.narrative as string | null) ?? undefined,
       sourceNodeIds,
       targetNodeTitle: (row.target_node_title as string | null) ?? undefined,
+      createdNodeId: (row.created_node_id as string | null) ?? undefined,
       sourceSessionId: row.source_session_id as string,
       confidence: row.confidence as number,
       status: row.status as WritebackStatus,
@@ -131,5 +132,14 @@ export class WritebackRepository {
     sql += ` WHERE id = ?`
     args.push(id)
     this.db.prepare(sql).run(...args)
+  }
+
+  /**
+   * 记录 new-page 采纳时创建的节点 id。
+   *
+   * 撤回必须按 id 定位页面：按标题找会把「同名但不是本项创建」的页面也删掉。
+   */
+  setCreatedNodeId(id: string, nodeId: string): void {
+    this.db.prepare('UPDATE writeback_items SET created_node_id = ? WHERE id = ?').run(nodeId, id)
   }
 }

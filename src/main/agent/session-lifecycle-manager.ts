@@ -393,7 +393,9 @@ export class SessionLifecycleManager {
           ? state.terminationReason
           : 'error'
       if (state && reason) {
-        state.terminationReason = reason
+        // 只持久化**校验过**的原因：非法值（如 A2A 的 'a2a-client-disconnect'）
+        // 落进 state 后，Phase B 的 abnormal 判定会全部落空 → 失败会话被记成 success。
+        state.terminationReason = terminationReason
       }
 
       try {
@@ -404,10 +406,20 @@ export class SessionLifecycleManager {
         this.sessionStates.delete(sessionId)
         this.sessionBroadcastNames.delete(sessionId)
         this.sessionOutputBuffers.delete(sessionId)
+        this.releaseOutputListeners(sessionId)
         // 清理 sandboxId → sessionId 反向索引
         if (sandbox) {
           this.sandboxSessionIndex.delete(sandbox.id)
         }
+        // 通知 AgentManager 清掉它自己的会话镜像 —— 否则 manager.sessionStates
+        // 会一直留着已结束的会话，最终撞上 MAX_SESSIONS 上限再也起不了新会话。
+        // 异常收尾（crash/error/timeout）不能清零恢复重试计数，否则恢复会无限循环。
+        this.callbacks.onSessionCleanedUp?.(
+          sessionId,
+          terminationReason === 'crash' || terminationReason === 'error' || terminationReason === 'timeout'
+            ? 'abnormal'
+            : 'success',
+        )
       }
 
       // ScopeGuard: 执行后验证并清理沙箱（仍在锁内，避免与异常退出回滚冲突）
@@ -453,6 +465,18 @@ export class SessionLifecycleManager {
     if (scopeGuardError) {
       throw scopeGuardError
     }
+  }
+
+  /**
+   * 把恢复谱系的根 sessionId 写进该会话的 **canonical** state。
+   *
+   * 谱系根必须落在 lifecycle 的这张表上：崩溃回调读的是 `this.sessionStates`，
+   * 写进 AgentManager 的镜像表只会被下一轮读取忽略 —— 恢复重试上限（3 次）
+   * 因此永远不触发，崩溃的适配器会被无限重启。
+   */
+  setOriginSessionId(sessionId: string, originSessionId: string): void {
+    const state = this.sessionStates.get(sessionId)
+    if (state) state.originSessionId = originSessionId
   }
 
   /**
@@ -560,17 +584,7 @@ export class SessionLifecycleManager {
     await Promise.race([Promise.allSettled(pendingOps), cleanupTimeout])
 
     // 清理会话级输出监听器（sessionOutputListeners + sessionOutputListenerIndex）
-    const listeners = this.sessionOutputListenerIndex.get(sessionId)
-    if (listeners) {
-      for (const handler of listeners) {
-        const wrapped = this.sessionOutputListeners.get(handler)
-        if (wrapped) {
-          this.broadcaster.offBroadcast(wrapped)
-          this.sessionOutputListeners.delete(handler)
-        }
-      }
-      this.sessionOutputListenerIndex.delete(sessionId)
-    }
+    this.releaseOutputListeners(sessionId)
 
     this.sessionStates.delete(sessionId)
     this.sessionBroadcastNames.delete(sessionId)
@@ -580,6 +594,24 @@ export class SessionLifecycleManager {
     // 通知外部（AgentManager）同步它自己的镜像 —— 否则 manager.sessionStates
     // 会一直留着已经结束的会话。
     this.callbacks.onSessionCleanedUp?.(sessionId, outcome)
+  }
+
+  /**
+   * 摘掉某会话在 broadcaster 上注册的全部输出监听器。
+   * terminate() 与 cleanupSessionResources 两条路径都要调用，否则监听器
+   * 会一直挂在 broadcaster 上（每个会话泄漏一个闭包）。
+   */
+  private releaseOutputListeners(sessionId: string): void {
+    const listeners = this.sessionOutputListenerIndex.get(sessionId)
+    if (!listeners) return
+    for (const handler of listeners) {
+      const wrapped = this.sessionOutputListeners.get(handler)
+      if (wrapped) {
+        this.broadcaster.offBroadcast(wrapped)
+        this.sessionOutputListeners.delete(handler)
+      }
+    }
+    this.sessionOutputListenerIndex.delete(sessionId)
   }
 
   /**

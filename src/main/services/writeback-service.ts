@@ -15,6 +15,8 @@ export interface WritebackRepoLike {
   findBySession(sourceSessionId: string): WritebackItem[]
   findById(id: string): WritebackItem | null
   updateStatus(id: string, status: WritebackStatus, rollbackActions?: RollbackAction[]): void
+  /** 记录 new-page 采纳时创建的节点 id（撤回按 id 定位页面）。 */
+  setCreatedNodeId(id: string, nodeId: string): void
 }
 
 /** 提供「现有节点标题」查询，用于 new-page concept 去重 */
@@ -46,6 +48,23 @@ function stripNewlines(s: string): string {
 /** YAML 双引号标量转义：concept 来自 agent 产出，直接拼接会破坏 frontmatter */
 function escYaml(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+}
+
+/**
+ * 从 append-log 正文里取回真正的 `## 标题` 文本。
+ *
+ * 锚点必须来自**实际写入的内容**，不能来自 item.title：title 是「会话日志 · 日期」
+ * （只到日），正文里的标题是「会话日志 · 日期 时间」（到分钟）。用 title 当锚点，
+ * 幂等检查与撤回都定位不到真正写入的小节 —— 重复采纳会写两份，撤回永远跳过。
+ */
+function sectionHeadingText(content: string): string | null {
+  const m = /^##\s+(.+?)\s*$/m.exec(content)
+  return m ? m[1] : null
+}
+
+/** 正则元字符转义（标题里可能有 `·` `.` `(` 等）。 */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /** 清洗 wikilink 目标标题：去掉括号/竖线（避免被解析成显示文本分隔），归一化空白 */
@@ -92,7 +111,7 @@ export class WritebackService {
       graphId: input.graphId,
       kind: 'append-log',
       targetNodeId: input.nodeId,
-      title: `会话日志 · ${now.toISOString().slice(0, 10)}`,
+      title: `会话日志 · ${now.toISOString().slice(0, 16).replace('T', ' ')}`,
       content: appendLog.content,
       details: appendLog.details,
       narrative: appendLog.narrative,
@@ -138,8 +157,15 @@ export class WritebackService {
     if (item.status !== 'pending') return // 幂等：已处理直接返回
 
     const doAccept = () => {
-      if (item.kind === 'append-log') this.acceptAppendLog(item)
-      else this.acceptNewPage(item)
+      if (item.kind === 'append-log') {
+        this.acceptAppendLog(item)
+      } else {
+        // 记下实际创建的节点 id：撤回按 id 定位页面，避免误删同名页面。
+        const createdNodeId = this.acceptNewPage(item)
+        if (createdNodeId !== undefined) {
+          this.repo.setCreatedNodeId(itemId, createdNodeId)
+        }
+      }
       this.repo.updateStatus(itemId, 'accepted')
     }
 
@@ -172,7 +198,10 @@ export class WritebackService {
     const doRollback = () => {
       if (item.kind === 'append-log') this.rollbackAppendLog(item, undone, skipped)
       else this.rollbackNewPage(item, undone, skipped)
-      this.repo.updateStatus(itemId, 'rolled_back', [...undone, ...skipped])
+      // 只审计**实际执行**的动作（WritebackItem.rollbackActions 的语义）。
+      // 跳过的动作通过 RollbackResult.skippedActions 现场返回给调用方，
+      // 混进审计列表会让历史面板把「没做的事」显示成做过。
+      this.repo.updateStatus(itemId, 'rolled_back', undone)
     }
 
     if (this.deps!.db) {
@@ -206,14 +235,21 @@ export class WritebackService {
       })
       return
     }
+    const heading = sectionHeadingText(item.content)
+    if (heading === null) {
+      skipped.push({
+        kind: 'removed-section',
+        description: `写回项「${item.title}」的内容里找不到小节标题，无法定位段落`,
+      })
+      return
+    }
     const current = node.wikiContent ?? ''
-    const titleEscaped = item.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const headingRe = new RegExp(`^##\\s+${titleEscaped}\\s*$`, 'm')
+    const headingRe = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, 'm')
     const m = headingRe.exec(current)
     if (!m) {
       skipped.push({
         kind: 'removed-section',
-        description: `未在「${node.title}」中找到段落：## ${item.title}（可能已被手动编辑）`,
+        description: `未在「${node.title}」中找到段落：## ${heading}（可能已被手动编辑）`,
       })
       return
     }
@@ -242,7 +278,7 @@ export class WritebackService {
     this.deps!.nodeRepo.update(node.id, { wikiContent: removed })
     undone.push({
       kind: 'removed-section',
-      description: `已从「${node.title}」移除段落：## ${item.title}`,
+      description: `已从「${node.title}」移除段落：## ${heading}`,
     })
     try {
       WikiLinkService.syncNodeLinks(node.id, this.deps!.nodeRepo, this.deps!.edgeRepo)
@@ -256,23 +292,60 @@ export class WritebackService {
    * - writeback-derived 语义边（accept 时显式创建）
    * - 该节点作为 source 或 target 的 wiki-link 边（accept syncNodeLinks 同步产生）
    * 节点已被用户删除 → skipped；关联边已被清理 → 仅记 done。
+   *
+   * 定位方式：优先用 accept 时记下的节点 id。id 缺失（老数据）时退回
+   * 「同名 wiki-page + 存在 writeback-derived 边」双重条件 —— 只按标题找会
+   * 把同名但并非本项创建的页面一起删掉。
    */
   private rollbackNewPage(item: WritebackItem, undone: RollbackAction[], skipped: RollbackAction[]): void {
-    const page = this.deps!.nodeRepo
-      .listByGraph(item.graphId)
-      .find((n) => n.type === 'wiki-page' && n.title === item.title)
-    if (!page) {
+    const edges = this.deps!.edgeRepo.listByGraph(item.graphId)
+
+    let pageId: string | undefined
+    if (item.createdNodeId !== undefined) {
+      const node = this.deps!.nodeRepo.findById(item.createdNodeId)
+      if (node && node.type === 'wiki-page') pageId = node.id
+      else if (!node) {
+        skipped.push({
+          kind: 'deleted-page',
+          description: `页面「${item.title}」已被删除，无法自动撤回`,
+        })
+        return
+      } else {
+        skipped.push({
+          kind: 'deleted-page',
+          description: `页面「${item.title}」已被改成其他节点类型，无法自动撤回`,
+        })
+        return
+      }
+    } else {
+      // 老数据没有 created_node_id：要求「同名 wiki-page」且「有 writeback-derived
+      // 边指向它」才认定为本次创建，避免误删用户自己的同名页面。
+      const candidate = this.deps!.nodeRepo
+        .listByGraph(item.graphId)
+        .find((n) => n.type === 'wiki-page' && n.title === item.title)
+      if (candidate !== undefined) {
+        const derived = edges.some(
+          (e) =>
+            e.source === item.targetNodeId &&
+            e.target === candidate.id &&
+            e.edgeType === 'semantic' &&
+            e.label === 'writeback-derived',
+        )
+        if (derived) pageId = candidate.id
+      }
+    }
+
+    if (pageId === undefined) {
       skipped.push({
         kind: 'deleted-page',
-        description: `页面「${item.title}」已被删除，无法再次撤回`,
+        description: `未找到由本写回项创建的页面「${item.title}」，无法自动撤回（页面可能被用户改名或已删除）`,
       })
       return
     }
 
-    const edges = this.deps!.edgeRepo.listByGraph(item.graphId)
     const related = edges.filter(
       (e) =>
-        (e.source === page.id || e.target === page.id) &&
+        (e.source === pageId || e.target === pageId) &&
         (e.edgeType === 'wiki-link' || (e.edgeType === 'semantic' && e.label === 'writeback-derived')),
     )
     for (const edge of related) this.deps!.edgeRepo.delete(edge.id)
@@ -283,7 +356,7 @@ export class WritebackService {
       })
     }
 
-    this.deps!.nodeRepo.delete(page.id)
+    this.deps!.nodeRepo.delete(pageId)
     undone.push({
       kind: 'deleted-page',
       description: `已删除页面：${item.title}`,
@@ -295,8 +368,11 @@ export class WritebackService {
     if (!node) throw new IpcError('目标节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
     const current = node.wikiContent ?? ''
     // 幂等：小节标题行已存在则跳过写入（外层仍标 accepted）。
-    // 按「## 标题」行匹配，正文里恰好提到该日期字符串不触发误跳过。
-    const sectionRe = new RegExp(`^##\\s+${item.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'm')
+    // 锚点取自**正文里真正写入的标题**（不是 item.title —— title 只到日，
+    // 正文标题到分钟，两者不一致会让幂等检查永远不命中 → 重复采纳写两份）。
+    const heading = sectionHeadingText(item.content)
+    if (heading === null) throw new IpcError('写回项内容缺少小节标题，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
+    const sectionRe = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, 'm')
     if (sectionRe.test(current)) return
     this.deps!.nodeRepo.update(node.id, { wikiContent: current + item.content })
     try {
@@ -306,13 +382,19 @@ export class WritebackService {
     }
   }
 
-  private acceptNewPage(item: WritebackItem): void {
+  /**
+   * 创建 wiki-page 节点并连边。
+   *
+   * @returns 新建节点的 id；同名页面已存在（本次什么都没创建）时返回 undefined。
+   *   撤回必须靠这个 id 定位页面 —— 按标题找会误删同名的其他页面。
+   */
+  private acceptNewPage(item: WritebackItem): string | undefined {
     const source = this.deps!.nodeRepo.findById(item.targetNodeId) // new-page: targetNodeId 存源节点 id
     if (!source) throw new IpcError('源节点已删除，无法采纳', ErrorCode.IPC_INVALID_ARGUMENT)
     const existing = this.deps!.nodeRepo
       .listByGraph(item.graphId)
       .some((n) => n.title === item.title && n.type === 'wiki-page')
-    if (existing) return // 标题级幂等：同名 wiki-page 已存在，跳过创建
+    if (existing) return undefined // 标题级幂等：同名 wiki-page 已存在，跳过创建
     const created = this.deps!.nodeRepo.create({
       graphId: item.graphId,
       graphType: source.graphType,
@@ -334,6 +416,7 @@ export class WritebackService {
       edgeType: 'semantic',
       label: 'writeback-derived',
     })
+    return created.id
   }
 
   /**

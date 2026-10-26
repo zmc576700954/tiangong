@@ -68,34 +68,50 @@ export class A2AServer {
     }
     this.activeConfig = cfg
     const handler = this.makeHandler()
-    if (cfg.tlsCertPath !== undefined && cfg.tlsKeyPath !== undefined) {
-      const tlsOpts = this.loadTlsOptions(cfg.tlsCertPath, cfg.tlsKeyPath)
-      this.server = https.createServer(tlsOpts, handler)
-    } else {
-      this.server = http.createServer(handler)
-    }
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: NodeJS.ErrnoException) => {
-        this.server?.removeListener('error', onError)
-        if (err.code === 'EADDRINUSE') {
-          reject(new BizGraphError(`Port ${cfg.port} already in use`, ErrorCode.A2A_PORT_IN_USE))
-        } else {
-          reject(new BizGraphError(`Failed to start A2A server: ${err.message}`, ErrorCode.UNKNOWN))
+    const server: Server | HttpsServer = cfg.tlsCertPath !== undefined && cfg.tlsKeyPath !== undefined
+      ? https.createServer(this.loadTlsOptions(cfg.tlsCertPath, cfg.tlsKeyPath), handler)
+      : http.createServer(handler)
+    this.server = server
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: NodeJS.ErrnoException) => {
+          server.removeListener('error', onError)
+          if (err.code === 'EADDRINUSE') {
+            reject(new BizGraphError(`Port ${cfg.port} already in use`, ErrorCode.A2A_PORT_IN_USE))
+          } else {
+            reject(new BizGraphError(`Failed to start A2A server: ${err.message}`, ErrorCode.UNKNOWN))
+          }
         }
-      }
-      this.server!.once('error', onError)
-      this.server!.listen(cfg.port, cfg.bindAddress, () => {
-        this.server!.removeListener('error', onError)
-        const addr = this.server!.address()
-        if (typeof addr === 'object' && addr !== null) {
-          this.bound = { port: addr.port, bindAddress: cfg.bindAddress }
-        } else {
-          this.bound = { port: cfg.port, bindAddress: cfg.bindAddress }
-        }
-        this.deps.logger.info(`A2A server listening on ${cfg.bindAddress}:${this.bound.port}`)
-        resolve()
+        server.once('error', onError)
+        server.listen(cfg.port, cfg.bindAddress, () => {
+          server.removeListener('error', onError)
+          // listen 之后必须保留一个常驻 'error' 监听器：server 后续的 'error'
+          // （accept 阶段的 EMFILE/ENFILE 等）若无人处理会变成未捕获异常，
+          // 直接杀死 Electron main 进程 —— 那里没有 uncaughtException 兜底。
+          server.on('error', (err) => {
+            this.deps.logger.error(`A2A server error: ${err.message}`)
+          })
+          const addr = server.address()
+          if (typeof addr === 'object' && addr !== null) {
+            this.bound = { port: addr.port, bindAddress: cfg.bindAddress }
+          } else {
+            this.bound = { port: cfg.port, bindAddress: cfg.bindAddress }
+          }
+          this.deps.logger.info(`A2A server listening on ${cfg.bindAddress}:${this.bound.port}`)
+          resolve()
+        })
       })
-    })
+    } catch (err) {
+      // 启动失败必须把 server 置回 null：否则 start() 之后永久早退，
+      // A2A Server 再也起不来，且状态接口会误报 running:true 而 port 为 undefined。
+      this.server = null
+      this.bound = null
+      this.activeConfig = null
+      if (server.listening) {
+        await new Promise<void>((resolve) => { server.close(() => resolve()) }).catch(() => {})
+      }
+      throw err
+    }
   }
 
   /** 关闭 listener + 终止所有 active session。幂等。 */
@@ -135,6 +151,15 @@ export class A2AServer {
   /** 实际监听端口（用于 IPC 状态显示）。未启动返回 undefined。 */
   boundPort(): number | undefined {
     return this.bound?.port
+  }
+
+  /**
+   * 底层 listener 是否真的在监听。
+   * start() 失败时 this.server 会被重置为 null；但 hot-reload 的 destroy→start
+   * 之间存在「实例存在但没绑上端口」的窗口，状态接口据此避免误报 running。
+   */
+  isListening(): boolean {
+    return this.server !== null && this.server.listening
   }
 
   /** 当前绑定地址。未启动返回 undefined。 */
@@ -274,7 +299,7 @@ export function getA2AServerStatus(server: A2AServer | null, taskStore: A2ATaskS
   failedTasks: number
 } {
   const stats = taskStore?.stats() ?? { activeTasks: 0, completedTasks: 0, failedTasks: 0 }
-  if (server === null || taskStore === null) {
+  if (server === null || taskStore === null || !server.isListening()) {
     return { running: false, ...stats }
   }
   return {

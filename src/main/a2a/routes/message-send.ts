@@ -13,7 +13,7 @@ import { decodeSendMessageRequest, encodeSendMessageResponse } from '../codec'
 import { BizGraphError, ErrorCode } from '../../errors'
 import type { AgentOutput } from '@shared/types/agent'
 import type { A2ATaskStore } from '../task-store'
-import type { A2AArtifact, A2AMessage, A2ATask } from '@shared/types/a2a'
+import type { A2AArtifact, A2AMessage, A2ATask, A2ATerminationReason } from '@shared/types/a2a'
 
 export interface MessageSendSessionStarter {
   /** 启动新 Agent session，返回 sessionId。注入透传 prompt（不污染 KV-cache）。 */
@@ -25,8 +25,8 @@ export interface MessageSendSessionStarter {
     sessionId: string,
     onOutput: (output: AgentOutput) => void,
   ): Promise<{ artifacts: A2AArtifact[]; history: A2AMessage[] }>
-  /** 出错时回收。 */
-  terminateSession(sessionId: string, reason: string): Promise<void>
+  /** 出错或完成时回收会话。 */
+  terminateSession(sessionId: string, reason: A2ATerminationReason): Promise<void>
 }
 
 export interface MessageSendDeps {
@@ -96,9 +96,12 @@ export async function handleMessageSend(
     deps.taskStore.setStatus(sessionId, 'completed', { artifacts, history })
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(encodeSendMessageResponse({ task }))
+    // 成功路径也必须终止会话：否则 CLI 子进程、ScopeGuard 沙箱与文件监听器
+    // 会一直留着 —— 每个同步 A2A 请求泄漏一份。
+    await deps.session.terminateSession(sessionId, 'completed').catch(() => {})
   } catch (err) {
     deps.taskStore.setStatus(sessionId, 'failed')
-    await deps.session.terminateSession(sessionId, 'a2a-error').catch(() => {})
+    await deps.session.terminateSession(sessionId, 'error').catch(() => {})
     throw err
   }
 }

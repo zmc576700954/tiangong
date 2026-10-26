@@ -44,7 +44,7 @@ export class QoderAdapter extends BaseAdapter {
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
     const scopePrompt = this.buildScopePromptForSession(session)
-    const commandPrompt = this.buildCommandPrompt(command)
+    const commandPrompt = this.buildCommandPromptForSession(session, command)
     const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
 
     const args: string[] = [fullPrompt]

@@ -315,6 +315,23 @@ export const A2A_TASK_SWEEP_MS = 60_000
 export const A2A_DNS_CACHE_MS = 60_000
 
 /**
+ * A2A 路由终止会话时使用的**语义**原因。
+ * 单独定义这层词汇（而不是直接传 AgentManager 的 TerminationReason）：
+ * A2A 路由层不该知道 AgentManager 的内部原因枚举，而非法原因会让
+ * Phase B 的 abnormal 判定全部落空 —— 失败会话被记成 success。
+ * wiring 层负责把这里的语义原因映射成合法的 TerminationReason。
+ */
+export type A2ATerminationReason = 'client-disconnect' | 'completed' | 'failed' | 'error'
+
+/**
+ * 入站 A2A 任务的最长执行时间（ms）。
+ *
+ * 没有这个上限时，Agent 卡死 / CLI 不返回 → HTTP 请求与 Agent 会话会一直
+ * 挂着，进程里堆积的会话最终撞上 MAX_SESSIONS 上限。
+ */
+export const A2A_INBOUND_TASK_TIMEOUT_MS = 10 * 60_000
+
+/**
  * SubagentManager.invoke 的 agentType 合法值正则。
  *
  * 三种合法形式：

@@ -109,11 +109,15 @@ export interface AssertSafeEndpointOptions {
  *   - scheme ∈ {http, https}
  *   - host 不是任何内网 / loopback / link-local IP（除非 devAllowLocalhost）
  *   - DNS 解析后的所有 IP 都安全（防 DNS rebinding）
+ *
+ * @returns 通过校验的 IP 列表。调用方**必须**用它固定实际连接的地址 ——
+ *   否则恶意 DNS 可以在「校验」与「连接」之间把解析结果从公网 IP 换成
+ *   内网 IP（rebinding TOCTOU），防护形同虚设。
  */
 export async function assertSafeEndpoint(
   endpoint: string,
   options: AssertSafeEndpointOptions = {},
-): Promise<void> {
+): Promise<string[]> {
   let url: URL
   try {
     url = new URL(endpoint)
@@ -146,6 +150,8 @@ export async function assertSafeEndpoint(
       )
     }
   }
+
+  return ips
 }
 
 /** 是否为 loopback 地址（含 ::ffff:127.0.0.1 之类的 IPv4-mapped 形式）。 */

@@ -18,6 +18,7 @@ import { performance } from 'node:perf_hooks'
 import https from 'node:https'
 import { URL } from 'node:url'
 import type { Socket } from 'node:net'
+import type { LookupFunction } from 'node:net'
 import {
   encodeSendMessageRequest,
   decodeArtifact,
@@ -28,6 +29,37 @@ import { A2A_DEFAULT_TIMEOUT_MS, SSE_EVENT_ARTIFACT, SSE_EVENT_STATUS, SSE_EVENT
 import { parseSseChunk } from './codec'
 import { BizGraphError, ErrorCode } from '../errors'
 import { assertSafeEndpoint } from './endpoint-guard'
+
+/** IPv4 / IPv6 地址族。 */
+function familyOf(ip: string): 4 | 6 {
+  return ip.includes(':') ? 6 : 4
+}
+
+/**
+ * 固定 DNS 解析结果的 lookup 覆盖。
+ *
+ * SSRF 校验（assertSafeEndpoint）与实际连接之间存在 TOCTOU 窗口：恶意 DNS
+ * 可以先返回公网 IP 过检，再在连接时返回内网 IP（rebinding）。把已校验的
+ * IP 钉进连接，连接就只可能落到刚验过的地址上。
+ *
+ * Node 20 的 autoSelectFamily 会以 all:true 调用 lookup（happy eyeballs），
+ * 两种回调形态都要支持。
+ */
+function pinnedLookup(ips: string[]): LookupFunction {
+  return (_hostname, options, callback) => {
+    const wantsAll = typeof options === 'object' && options !== null && options.all === true
+    if (wantsAll) {
+      callback(null, ips.map((address) => ({ address, family: familyOf(address) })))
+      return
+    }
+    const first = ips[0]
+    if (first === undefined) {
+      callback(new Error('No validated address available for endpoint'), '', 0)
+      return
+    }
+    callback(null, first, familyOf(first))
+  }
+}
 
 export interface A2ACallResult {
   /** 拼接所有 TextPart 的 resultText（与 SubagentResult.resultText 兼容） */
@@ -76,7 +108,9 @@ export class A2AClient {
   async call(message: A2AMessage, options: A2ACallOptions = {}): Promise<A2ACallResult> {
     // SSRF guard 在每次 call 时执行（不止 save 时）— 防止远端 DNS rebinding。
     // 必须 await：否则防护不生效，且 guard 的 rejection 会变成 unhandled rejection。
-    await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
+    // 返回值是已校验的 IP —— 必须钉进实际连接，否则校验与连接之间的
+    // rebinding 窗口会让防护失效。
+    const validatedIps = await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
 
     const timeoutMs = options.timeoutMs ?? this.agent.timeoutMs ?? A2A_DEFAULT_TIMEOUT_MS
     // 调用方的取消信号与本地超时必须同时生效——只用其一都会漏掉另一个。
@@ -94,6 +128,8 @@ export class A2AClient {
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
           path: url.pathname + url.search,
+          // 连接地址钉死在校验过的 IP 上 —— 防止校验后 DNS rebinding。
+          lookup: pinnedLookup(validatedIps),
           // signal 必须真正挂到 request 上 —— 只 new 一个 AbortSignal 而不传，
           // 超时和取消都不会生效，请求会一直挂着。
           signal,
@@ -225,8 +261,9 @@ export class A2AClient {
    */
   async testConnection(): Promise<{ ok: boolean; card?: A2AAgentCard; error?: string; latencyMs: number }> {
     // 同样必须 await —— 否则 guard 的 rejection 会逃逸成 unhandled rejection。
+    let validatedIps: string[]
     try {
-      await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
+      validatedIps = await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
     } catch (err) {
       return { ok: false, error: (err as Error).message, latencyMs: 0 }
     }
@@ -247,6 +284,8 @@ export class A2AClient {
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
           path: url.pathname,
+          // 同 call()：连接地址钉死在校验过的 IP 上。
+          lookup: pinnedLookup(validatedIps),
           signal: AbortSignal.timeout(timeoutMs),
           rejectUnauthorized: this.agent.tlsVerify !== false,
         },

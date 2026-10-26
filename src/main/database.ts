@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 14
+const CURRENT_SCHEMA_VERSION = 15
 
 interface TableSchema {
   name: string
@@ -474,7 +474,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
         status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded','rolled_back')),
         created_at TEXT NOT NULL,
         resolved_at TEXT,
-        rollback_actions TEXT
+        rollback_actions TEXT,
+        created_node_id TEXT
       )
     `,
     requiredColumns: ['id', 'graph_id', 'kind', 'target_node_id', 'title', 'content', 'source_session_id', 'confidence', 'status', 'created_at'],
@@ -793,4 +794,9 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // v13：writeback rollback（D7b）— 新增 rolled_back 状态 + rollback_actions 审计列。
   // CHECK 约束扩展由 rebuildTableIfNeeded 检测；老库升级路径上补 rollback_actions 列。
   addColumnSafe('writeback_items', 'rollback_actions', 'TEXT')
+
+  // v15：记录 new-page 采纳时**实际创建**的节点 id。
+  // 没有它，撤回只能按标题找同名 wiki-page —— 会把同名但并非本项创建的
+  // 页面一起删掉（数据丢失）。
+  addColumnSafe('writeback_items', 'created_node_id', 'TEXT')
 }
