@@ -27,6 +27,17 @@ import type {
   RecipeRun,
   RecipeRunRequest,
 } from './recipe'
+import type { UserIdentity } from './agent'
+
+/** D10b: Awareness server 连接信息（inline 避免跨目录引用） */
+export interface RealtimeConnectionInfo {
+  /** WebSocket URL（含协议/host/port） */
+  wsUrl: string
+  /** 当前服务监听的端口 */
+  port: number
+  /** 是否已启动 */
+  started: boolean
+}
 // ============================================
 // IPC 通信类型
 // ============================================
@@ -218,6 +229,11 @@ export interface IpcApi {
   'recipes:refresh': () => Promise<number>
   'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
   'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
+
+  // D10b: realtime (awareness / user identity)
+  'realtime:getIdentity': () => Promise<UserIdentity>
+  'realtime:setIdentity': (patch: Partial<Pick<UserIdentity, 'userName' | 'colorIndex'>>) => Promise<UserIdentity>
+  'realtime:getConnectionInfo': () => Promise<RealtimeConnectionInfo>
 }
 
 /**

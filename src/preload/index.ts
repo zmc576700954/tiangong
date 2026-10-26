@@ -148,6 +148,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   'recipes:listRuns',
   'recipes:getRun',
 
+  // D10b: realtime (awareness / user identity)
+  'realtime:getIdentity',
+  'realtime:setIdentity',
+  'realtime:getConnectionInfo',
+
   // Code Intelligence
   'codeIntel:indexProject',
   'codeIntel:querySymbols',

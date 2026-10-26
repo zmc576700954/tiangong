@@ -104,6 +104,9 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   writeback: { enabled: true },
   locale: 'zh-CN',
   realtime: { enabled: false, port: 1234, host: '127.0.0.1' },
+  // D10b: userIdentity 不在默认配置里初始化 — 由 realtime IPC 的
+  // loadOrCreateIdentity() 在首次访问时生成。这样保证 userId 是真随机
+  // （每次设置读默认值都是同一个 userId，但我们的生成是显式调用的）。
 }
 
 // ============================================
@@ -315,6 +318,14 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     if (rt.port !== undefined && (typeof rt.port !== 'number' || !Number.isInteger(rt.port) || rt.port < 0 || rt.port > 65535)) return false
     if (rt.host !== undefined && typeof rt.host !== 'string') return false
   }
+  // D10b: userIdentity 校验（只允许合法结构；非法整体丢弃，由 IPC 层重新生成）
+  if (obj.userIdentity !== undefined && obj.userIdentity !== null) {
+    if (typeof obj.userIdentity !== 'object' || Array.isArray(obj.userIdentity)) return false
+    const ui = obj.userIdentity as Record<string, unknown>
+    if (typeof ui.userId !== 'string' || ui.userId.length === 0 || ui.userId.length > 128) return false
+    if (typeof ui.userName !== 'string' || ui.userName.length === 0 || ui.userName.length > 64) return false
+    if (typeof ui.colorIndex !== 'number' || !Number.isInteger(ui.colorIndex) || ui.colorIndex < 0 || ui.colorIndex >= 6) return false
+  }
   return true
 }
 
@@ -388,6 +399,9 @@ function mergeSettings(
     writeback: saved.writeback ?? defaults.writeback,
     locale: resolveLocale(saved.locale ?? defaults.locale),
     realtime: saved.realtime ?? defaults.realtime,
+    // D10b: userIdentity 不在默认值里（避免重装复用旧 userId），
+    // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
+    userIdentity: saved.userIdentity,
   }
 }
 
