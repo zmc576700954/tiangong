@@ -1,8 +1,9 @@
-import { AlertTriangle, Info, X, RotateCw } from 'lucide-react'
+import { AlertTriangle, Info, RotateCw } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '../../i18n/useI18n'
 import type { TranslationKey } from '@shared/i18n'
+import { FloatingPanel } from '../ui/FloatingPanel'
 import type { LintReport, LintIssue } from '@shared/types/wiki'
 
 interface LintPanelProps {
@@ -33,39 +34,34 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
   const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized', 'realtime-conflict']
 
   return (
-    <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">{t('wiki.lint.title')}</span>
-          <span className="text-[10px] text-muted-foreground">
-            {t('wiki.lint.stats', {
-              pages: report.stats.nodeCount,
-              links: report.stats.edgeCount,
-              communities: report.stats.communityCount,
-            })}
-          </span>
-        </div>
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={onRecompute}
-            title={t('wiki.lint.recompute')}
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-          >
-            <RotateCw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            title={t('wiki.lint.close')}
-            className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+    <FloatingPanel
+      isOpen
+      onClose={onClose}
+      title={t('wiki.lint.title')}
+      variant="corner"
+      width="md"
+      subtitle={
+        <span>
+          {t('wiki.lint.stats', {
+            pages: report.stats.nodeCount,
+            links: report.stats.edgeCount,
+            communities: report.stats.communityCount,
+          })}
+        </span>
+      }
+      headerActions={
+        <button
+          type="button"
+          onClick={onRecompute}
+          title={t('wiki.lint.recompute')}
+          aria-label={t('wiki.lint.recompute')}
+          className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+        >
+          <RotateCw className="w-3.5 h-3.5" />
+        </button>
+      }
+    >
+      <div className="h-full overflow-y-auto p-3 space-y-3">
         {report.issues.length === 0 ? (
           <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.lint.noIssues')}</p>
         ) : (
@@ -121,7 +117,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
           })
         )}
       </div>
-    </div>
+    </FloatingPanel>
   )
 }
 

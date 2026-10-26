@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { X, FileText, Type, Search, Plus } from 'lucide-react'
 import { useI18n } from '../i18n/useI18n'
 import type { ContextRef, FileSearchResult } from '@shared/types'
+import { FloatingPanel } from '../components/ui/FloatingPanel'
 
 interface NodeContextPopoverProps {
   x: number
@@ -21,12 +22,12 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
   const [textValue, setTextValue] = useState('')
   const [textLabel, setTextLabel] = useState('')
   const [isSearching, setIsSearching] = useState(false)
-  const popoverRef = useRef<HTMLDivElement>(null)
+  const wrapperRef = useRef<HTMLDivElement>(null)
 
   // Click outside to close
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as HTMLElement)) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as HTMLElement)) {
         onClose()
       }
     }
@@ -82,135 +83,132 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
   }
 
   return (
-    <div
-      ref={popoverRef}
-      className="absolute z-50 bg-background border rounded-lg shadow-xl w-72"
-      style={{ left: x, top: y }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <span className="text-xs font-medium">{t('canvas.contextPopover.title')}</span>
-        <button onClick={onClose} className="p-0.5 rounded hover:bg-muted">
-          <X className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Mode tabs */}
-      <div className="flex border-b">
-        <button
-          onClick={() => setMode('file')}
-          className={`flex-1 px-3 py-1.5 text-[11px] flex items-center justify-center gap-1 transition-colors ${
-            mode === 'file' ? 'bg-primary/10 text-primary border-b-2 border-primary' : 'text-muted-foreground hover:bg-muted'
-          }`}
-        >
-          <FileText className="w-3 h-3" />
-          {t('agent.refType.file')}
-        </button>
-        <button
-          onClick={() => setMode('text')}
-          className={`flex-1 px-3 py-1.5 text-[11px] flex items-center justify-center gap-1 transition-colors ${
-            mode === 'text' ? 'bg-primary/10 text-primary border-b-2 border-primary' : 'text-muted-foreground hover:bg-muted'
-          }`}
-        >
-          <Type className="w-3 h-3" />
-          {t('agent.refType.text')}
-        </button>
-      </div>
-
-      <div className="p-2 space-y-2">
-        {mode === 'file' ? (
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-1.5 px-2 py-1 border rounded bg-background">
-              <Search className="w-3 h-3 text-muted-foreground shrink-0" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('canvas.contextPopover.searchPlaceholder')}
-                className="flex-1 text-xs bg-transparent outline-none"
-              />
-            </div>
-            {isSearching && <div className="text-[10px] text-muted-foreground px-2">{t('canvas.contextPopover.searching')}</div>}
-            {searchResults.map((file) => (
-              <button
-                key={file.relativePath}
-                onClick={() => addFileContext(file)}
-                className="w-full text-left px-2 py-1 text-xs rounded hover:bg-muted flex items-center gap-1.5 transition-colors"
-              >
-                <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
-                <span className="truncate">{file.name}</span>
-                <span className="text-[9px] text-muted-foreground truncate ml-auto">{file.relativePath}</span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="space-y-1.5">
-            <input
-              type="text"
-              value={textLabel}
-              onChange={(e) => setTextLabel(e.target.value)}
-              placeholder={t('canvas.contextPopover.labelPlaceholder')}
-              className="w-full px-2 py-1 text-xs border rounded bg-background"
-            />
-            <textarea
-              value={textValue}
-              onChange={(e) => setTextValue(e.target.value)}
-              placeholder={t('canvas.contextPopover.bodyPlaceholder')}
-              rows={3}
-              className="w-full px-2 py-1 text-xs border rounded bg-background resize-none"
-            />
+    <div ref={wrapperRef} onClick={(e) => e.stopPropagation()}>
+      <FloatingPanel
+        isOpen
+        onClose={onClose}
+        title={t('canvas.contextPopover.title')}
+        variant="anchored"
+        width="sm"
+        anchor={{ x, y }}
+        footer={
+          <div className="flex justify-end gap-1.5">
             <button
-              onClick={addTextContext}
-              disabled={!textValue.trim()}
-              className="w-full px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+              onClick={onClose}
+              className="px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
             >
-              <Plus className="w-3 h-3" />
-              {t('canvas.contextPopover.addText')}
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={() => { onSave(contexts); onClose() }}
+              className="px-2.5 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+            >
+              {t('common.save')}
             </button>
           </div>
-        )}
+        }
+      >
+        {/* Mode tabs */}
+        <div className="flex border-b">
+          <button
+            onClick={() => setMode('file')}
+            className={`flex-1 px-3 py-1.5 text-[11px] flex items-center justify-center gap-1 transition-colors ${
+              mode === 'file' ? 'bg-primary/10 text-primary border-b-2 border-primary' : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            <FileText className="w-3 h-3" />
+            {t('agent.refType.file')}
+          </button>
+          <button
+            onClick={() => setMode('text')}
+            className={`flex-1 px-3 py-1.5 text-[11px] flex items-center justify-center gap-1 transition-colors ${
+              mode === 'text' ? 'bg-primary/10 text-primary border-b-2 border-primary' : 'text-muted-foreground hover:bg-muted'
+            }`}
+          >
+            <Type className="w-3 h-3" />
+            {t('agent.refType.text')}
+          </button>
+        </div>
 
-        {/* Existing contexts list */}
-        {contexts.length > 0 && (
-          <div className="border-t pt-2 space-y-1">
-            <div className="text-[10px] text-muted-foreground px-1">{t('canvas.contextPopover.added', { count: contexts.length })}</div>
-            {contexts.map((ctx) => (
-              <div key={ctx.id} className="flex items-center gap-1.5 px-2 py-1 text-xs bg-muted/50 rounded group">
-                {ctx.type === 'file' ? (
-                  <FileText className="w-3 h-3 text-blue-500 shrink-0" />
-                ) : ctx.type === 'text' ? (
-                  <Type className="w-3 h-3 text-amber-500 shrink-0" />
-                ) : (
-                  <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
-                )}
-                <span className="truncate flex-1">{ctx.label}</span>
-                <button
-                  onClick={() => removeContext(ctx.id)}
-                  className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 text-destructive transition-opacity"
-                >
-                  <X className="w-2.5 h-2.5" />
-                </button>
+        <div className="p-2 space-y-2">
+          {mode === 'file' ? (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 px-2 py-1 border rounded bg-background">
+                <Search className="w-3 h-3 text-muted-foreground shrink-0" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={t('canvas.contextPopover.searchPlaceholder')}
+                  className="flex-1 text-xs bg-transparent outline-none"
+                />
               </div>
-            ))}
-          </div>
-        )}
-      </div>
+              {isSearching && <div className="text-[10px] text-muted-foreground px-2">{t('canvas.contextPopover.searching')}</div>}
+              {searchResults.map((file) => (
+                <button
+                  key={file.relativePath}
+                  onClick={() => addFileContext(file)}
+                  className="w-full text-left px-2 py-1 text-xs rounded hover:bg-muted flex items-center gap-1.5 transition-colors"
+                >
+                  <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
+                  <span className="truncate">{file.name}</span>
+                  <span className="text-[9px] text-muted-foreground truncate ml-auto">{file.relativePath}</span>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <input
+                type="text"
+                value={textLabel}
+                onChange={(e) => setTextLabel(e.target.value)}
+                placeholder={t('canvas.contextPopover.labelPlaceholder')}
+                className="w-full px-2 py-1 text-xs border rounded bg-background"
+              />
+              <textarea
+                value={textValue}
+                onChange={(e) => setTextValue(e.target.value)}
+                placeholder={t('canvas.contextPopover.bodyPlaceholder')}
+                rows={3}
+                className="w-full px-2 py-1 text-xs border rounded bg-background resize-none"
+              />
+              <button
+                onClick={addTextContext}
+                disabled={!textValue.trim()}
+                className="w-full px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
+              >
+                <Plus className="w-3 h-3" />
+                {t('canvas.contextPopover.addText')}
+              </button>
+            </div>
+          )}
 
-      {/* Save button */}
-      <div className="border-t px-2 py-1.5 flex justify-end gap-1.5">
-        <button
-          onClick={onClose}
-          className="px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-        >
-          {t('common.cancel')}
-        </button>
-        <button
-          onClick={() => { onSave(contexts); onClose() }}
-          className="px-2.5 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
-        >
-          {t('common.save')}
-        </button>
-      </div>
+          {/* Existing contexts list */}
+          {contexts.length > 0 && (
+            <div className="border-t pt-2 space-y-1">
+              <div className="text-[10px] text-muted-foreground px-1">{t('canvas.contextPopover.added', { count: contexts.length })}</div>
+              {contexts.map((ctx) => (
+                <div key={ctx.id} className="flex items-center gap-1.5 px-2 py-1 text-xs bg-muted/50 rounded group">
+                  {ctx.type === 'file' ? (
+                    <FileText className="w-3 h-3 text-blue-500 shrink-0" />
+                  ) : ctx.type === 'text' ? (
+                    <Type className="w-3 h-3 text-amber-500 shrink-0" />
+                  ) : (
+                    <FileText className="w-3 h-3 text-muted-foreground shrink-0" />
+                  )}
+                  <span className="truncate flex-1">{ctx.label}</span>
+                  <button
+                    onClick={() => removeContext(ctx.id)}
+                    className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-destructive/10 text-destructive transition-opacity"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </FloatingPanel>
     </div>
   )
 }

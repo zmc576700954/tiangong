@@ -4,6 +4,7 @@ import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import { localizeGraphName } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
+import { FloatingPanel } from './ui/FloatingPanel'
 import type { Graph } from '@shared/types'
 
 interface GraphTabsProps {
@@ -71,9 +72,33 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
       </button>
 
       {/* 新建图对话框 */}
-      {showNewDialog && (
-        <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-background border rounded-lg shadow-lg p-4 z-50 w-80">
-          <h3 className="font-medium mb-3">{t('graph.tab.new')}</h3>
+      <FloatingPanel
+        isOpen={showNewDialog}
+        onClose={() => setShowNewDialog(false)}
+        title={t('graph.tab.new')}
+        variant="centered"
+        width="md"
+        showCloseButton={false}
+        className="top-12 -translate-y-0"
+        footer={
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setShowNewDialog(false)}
+              className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {t('graph.tab.cancel')}
+            </button>
+            <button
+              data-testid="create-graph-btn"
+              onClick={handleCreate}
+              className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+            >
+              {t('graph.tab.create')}
+            </button>
+          </div>
+        }
+      >
+        <div className="p-4">
           <input
             data-testid="graph-name-input"
             type="text"
@@ -123,23 +148,8 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
               </select>
             </div>
           )}
-          <div className="flex justify-end gap-2">
-            <button
-              onClick={() => setShowNewDialog(false)}
-              className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              {t('graph.tab.cancel')}
-            </button>
-            <button
-              data-testid="create-graph-btn"
-              onClick={handleCreate}
-              className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
-            >
-              {t('graph.tab.create')}
-            </button>
-          </div>
         </div>
-      )}
+      </FloatingPanel>
     </div>
   )
 }

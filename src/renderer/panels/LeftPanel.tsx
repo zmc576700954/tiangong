@@ -18,6 +18,7 @@ import { TreeNodeItem } from './TreeNodeItem'
 import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
 import { useI18n } from '../i18n/useI18n'
+import { FloatingPanel } from '../components/ui/FloatingPanel'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -297,25 +298,15 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
       <FileTreeContextMenu />
 
       {/* 设置浮层 */}
-      {showSettings && (
-        <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur flex flex-col">
-          <div className="h-10 border-b flex items-center justify-between px-3 shrink-0">
-            <div className="flex items-center gap-2">
-              <Settings className="w-4 h-4 text-muted-foreground" />
-              <span className="text-sm font-medium">{t('projects.settings')}</span>
-            </div>
-            <button
-              onClick={() => setShowSettings(false)}
-              className="p-1 rounded hover:bg-muted transition-colors"
-            >
-              <X className="w-4 h-4 text-muted-foreground" />
-            </button>
-          </div>
-          <div className="flex-1 overflow-hidden">
-            <SettingsPanel />
-          </div>
-        </div>
-      )}
+      <FloatingPanel
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        title={t('projects.settings')}
+        variant="fullscreen"
+        icon={<Settings className="w-4 h-4 text-muted-foreground" />}
+      >
+        <SettingsPanel />
+      </FloatingPanel>
     </div>
   )
 }
