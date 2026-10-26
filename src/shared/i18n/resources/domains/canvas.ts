@@ -38,6 +38,14 @@ export const canvasZh = {
 
   // ── 工具栏 / 布局 ──
   'canvas.layout.arrange': '整理布局',
+  'canvas.layout.menuTooltip': '自动布局（树形 / 力导向）',
+  'canvas.layout.modeTree': '· 树形',
+  'canvas.layout.modeForce': '· 力导向',
+  'canvas.layout.label': '自动布局',
+  'canvas.layout.tree': '树形布局',
+  'canvas.layout.treeDesc': 'dagre 层级布局，适合 project → module → feature',
+  'canvas.layout.force': '力导向布局',
+  'canvas.layout.forceDesc': 'd3-force，按边关系 + 排斥力均衡，跨模块图更均匀',
 
   // ── 连线模式 ──
   'canvas.connecting.hint': '连线模式：点击目标节点完成连线',
@@ -109,6 +117,14 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.edge.rejectAssociation': 'Reject association',
 
   'canvas.layout.arrange': 'Arrange layout',
+  'canvas.layout.menuTooltip': 'Auto layout (tree / force-directed)',
+  'canvas.layout.modeTree': '· Tree',
+  'canvas.layout.modeForce': '· Force',
+  'canvas.layout.label': 'Auto layout',
+  'canvas.layout.tree': 'Tree layout',
+  'canvas.layout.treeDesc': 'Dagre hierarchical layout, for project → module → feature',
+  'canvas.layout.force': 'Force-directed layout',
+  'canvas.layout.forceDesc': 'd3-force, balanced by edge relations and repulsion; even across modules',
 
   'canvas.connecting.hint': 'Connection mode: click a target node to finish',
   'canvas.connecting.cancel': 'Cancel (Esc)',

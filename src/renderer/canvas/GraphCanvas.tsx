@@ -15,6 +15,7 @@ import {
   type OnConnect,
   type OnConnectStart,
   type OnConnectEnd,
+  type OnNodeDrag,
   Panel,
   MarkerType,
 } from '@xyflow/react'
@@ -37,11 +38,20 @@ import { FanoutPromptDialog } from '../components/agent/FanoutPromptDialog'
 import { NodeContextPopover } from './NodeContextPopover'
 import { useCanvasKeyboard } from './hooks/useCanvasKeyboard'
 import { useAutoLayout } from './hooks/useAutoLayout'
+import { useForceLayout } from './hooks/useForceLayout'
 import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
-import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText } from 'lucide-react'
+import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from '../components/ui/dropdown-menu'
 import { eventBus, Events } from '../store/eventBus'
 import { LintPanel } from '../components/wiki/LintPanel'
 import { WritebackPanel } from '../components/wiki/WritebackPanel'
@@ -670,6 +680,40 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const { applyLayout } = useAutoLayout()
   const hasAppliedInitialLayout = useRef(false)
+  /** 力导向布局 hook —— 提供 applyForceLayout、拖拽 pin/reheat 处理器 */
+  const {
+    applyForceLayout,
+    exitForceMode,
+    onNodeDragStart: onForceDragStart,
+    onNodeDrag: onForceDrag,
+    onNodeDragStop: onForceDragStop,
+  } = useForceLayout()
+  /** 当前布局模式：'tree' = dagre，'force' = d3-force。决定拖拽时是否触发 reheat。 */
+  const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
+  /** 力导向布局计算中（CPU 密集） —— 显示 spinner，禁用按钮防重入。 */
+  const [forceLoading, setForceLoading] = useState(false)
+
+  /** 进入力导向布局：显示 loading、计算、写入、退出 force mode 时清 loading。 */
+  const handleApplyForceLayout = useCallback(() => {
+    if (forceLoading) return
+    setForceLoading(true)
+    setLayoutMode('force')
+    // 用 setTimeout 把 spinner 让出一帧再跑计算，避免 UI 不更新
+    setTimeout(() => {
+      try {
+        applyForceLayout()
+      } finally {
+        setForceLoading(false)
+      }
+    }, 16)
+  }, [applyForceLayout, forceLoading])
+
+  /** 切回树形布局：先退出 force mode，再跑 dagre。 */
+  const handleApplyTreeLayout = useCallback(() => {
+    exitForceMode()
+    setLayoutMode('tree')
+    applyLayout()
+  }, [exitForceMode, applyLayout])
 
   // 首次加载图时自动应用 dagre 布局
   useEffect(() => {
@@ -684,7 +728,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     hasAppliedInitialLayout.current = false
     creatingProjectForGraph.current = null
-  }, [graphId])
+    // 切图时清掉 force mode（避免 simulation 引用旧节点的 simNodes）
+    exitForceMode()
+    setLayoutMode('tree')
+    setForceLoading(false)
+  }, [graphId, exitForceMode])
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
@@ -976,6 +1024,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={handleNodeContextMenu}
+        onNodeDragStart={onForceDragStart as unknown as OnNodeDrag<Node>}
+        onNodeDrag={onForceDrag as unknown as OnNodeDrag<Node>}
+        onNodeDragStop={onForceDragStop as unknown as OnNodeDrag<Node>}
         onMouseMove={(event) => {
           // D10b: 把鼠标的 flow 坐标写入 ref，让 useBroadcastLocalCursor 周期性采样
           if (screenToFlowPosition) {
@@ -1053,14 +1104,57 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
               <Search className="w-3.5 h-3.5" />
               {t('canvas.search.button')}
             </button>
-            <button
-              onClick={applyLayout}
-              className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title={t('canvas.layout.arrange')}
-            >
-              <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
-              {t('canvas.layout.arrange')}
-            </button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  disabled={forceLoading}
+                  className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  title={t('canvas.layout.menuTooltip')}
+                  data-testid="layout-menu-trigger"
+                >
+                  {forceLoading ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
+                  )}
+                  {t('canvas.layout.arrange')}
+                  <span className="ml-0.5 text-[10px] text-muted-foreground">
+                    {layoutMode === 'force' ? t('canvas.layout.modeForce') : t('canvas.layout.modeTree')}
+                  </span>
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>{t('canvas.layout.label')}</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onSelect={handleApplyTreeLayout}
+                  className="flex items-start gap-2 py-2"
+                  data-testid="layout-tree"
+                >
+                  <AlignHorizontalDistributeCenter className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div className="flex flex-col">
+                    <span className="text-sm">{t('canvas.layout.tree')}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {t('canvas.layout.treeDesc')}
+                    </span>
+                  </div>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={handleApplyForceLayout}
+                  disabled={forceLoading}
+                  className="flex items-start gap-2 py-2"
+                  data-testid="layout-force"
+                >
+                  <Network className="w-4 h-4 mt-0.5 shrink-0" />
+                  <div className="flex flex-col">
+                    <span className="text-sm">{t('canvas.layout.force')}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {t('canvas.layout.forceDesc')}
+                    </span>
+                  </div>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <button
               onClick={() => handleCreateSpecialWikiPage('index')}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
