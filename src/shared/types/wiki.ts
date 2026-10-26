@@ -65,7 +65,7 @@ export type IngestMode = 'rule' | 'llm'
 
 /** Graph Lint 单条问题 */
 export interface LintIssue {
-  kind: 'dangling-link' | 'orphan' | 'community-singleton' | 'community-oversized'
+  kind: 'dangling-link' | 'orphan' | 'community-singleton' | 'community-oversized' | 'realtime-conflict'
   severity: 'info' | 'warning'
   /** 相关节点（断链时为源节点） */
   nodeId?: string

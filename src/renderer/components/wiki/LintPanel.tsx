@@ -18,6 +18,7 @@ const KIND_LABEL_KEYS: Record<LintIssue['kind'], TranslationKey> = {
   'orphan': 'wiki.lint.kind.orphan',
   'community-singleton': 'wiki.lint.kind.communitySingleton',
   'community-oversized': 'wiki.lint.kind.communityOversized',
+  'realtime-conflict': 'wiki.lint.kind.realtimeConflict',
 }
 
 export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPanelProps) {
@@ -29,7 +30,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
     return acc
   }, new Map<LintIssue['kind'], LintIssue[]>())
 
-  const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized']
+  const orderedKinds: LintIssue['kind'][] = ['dangling-link', 'orphan', 'community-singleton', 'community-oversized', 'realtime-conflict']
 
   return (
     <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">

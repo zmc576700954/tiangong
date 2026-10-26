@@ -10,6 +10,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcApi, AgentOutput, ContextState } from '@shared/types'
+import type { ConflictReport } from '@shared/types/conflict'
 
 // 渲染进程实际使用的 IPC 通道（最小暴露原则）
 const exposedChannels: (keyof IpcApi)[] = [
@@ -184,6 +185,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   'git:status',
   'git:diff',
   'git:commit',
+
+  // Realtime conflict resolution (D10d)
+  'conflict:getRecentReports',
+  'conflict:clearReports',
 ]
 
 // Build IPC API object
@@ -286,6 +291,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.removeListener('locale:changed', handler) }
   },
 
+  // Realtime conflict reported event listener (D10d)
+  onConflictReported: (callback: (report: ConflictReport) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, report: ConflictReport) => callback(report)
+    ipcRenderer.on('conflict:onReported', handler)
+    return () => { ipcRenderer.off('conflict:onReported', handler) }
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -307,6 +319,7 @@ declare global {
       onMenuOpenProject: (callback: (projectPath: string) => void) => () => void
       locale: string
       onLocaleChanged: (callback: (locale: string) => void) => () => void
+      onConflictReported: (callback: (report: ConflictReport) => void) => () => void
       platform: string
     }
   }

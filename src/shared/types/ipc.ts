@@ -28,6 +28,7 @@ import type {
   RecipeRunRequest,
 } from './recipe'
 import type { UserIdentity } from './agent'
+import type { ConflictReport } from './conflict'
 
 /** D10b: Awareness server 连接信息（inline 避免跨目录引用） */
 export interface RealtimeConnectionInfo {
@@ -234,6 +235,10 @@ export interface IpcApi {
   'realtime:getIdentity': () => Promise<UserIdentity>
   'realtime:setIdentity': (patch: Partial<Pick<UserIdentity, 'userName' | 'colorIndex'>>) => Promise<UserIdentity>
   'realtime:getConnectionInfo': () => Promise<RealtimeConnectionInfo>
+
+  // Realtime conflict resolution (D10d)
+  'conflict:getRecentReports': (graphId: string, limit?: number) => Promise<ConflictReport[]>
+  'conflict:clearReports': (graphId: string) => Promise<void>
 }
 
 /**
@@ -253,4 +258,5 @@ export interface IpcEventMap {
   'waterline:change': (state: ContextState) => void
   'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
   'menu:openProject': (projectPath: string) => void
+  'conflict:onReported': (report: ConflictReport) => void
 }

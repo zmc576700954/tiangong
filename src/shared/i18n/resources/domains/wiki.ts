@@ -63,6 +63,7 @@ export const wikiZh = {
   'wiki.lint.kind.orphan': '孤立页面',
   'wiki.lint.kind.communitySingleton': '单节点社区',
   'wiki.lint.kind.communityOversized': '超大社区',
+  'wiki.lint.kind.realtimeConflict': '冲突报告',
 
   // ---- 特殊页展示名（存储标题仍是英文标识，见 GRAPH_INDEX_TITLE） ----
   'wiki.specialPage.index': '图索引',
@@ -126,6 +127,7 @@ export const wikiEn: Record<keyof typeof wikiZh, string> = {
   'wiki.lint.kind.orphan': 'Orphan page',
   'wiki.lint.kind.communitySingleton': 'Single-node community',
   'wiki.lint.kind.communityOversized': 'Oversized community',
+  'wiki.lint.kind.realtimeConflict': 'Realtime conflict',
 
   'wiki.specialPage.index': 'Graph Index',
   'wiki.specialPage.log': 'Graph Log',

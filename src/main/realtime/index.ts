@@ -104,3 +104,17 @@ export async function _resetAwarenessServerForTest(): Promise<void> {
   await stopAwarenessServer()
   logger.debug('Awareness server reset for tests')
 }
+// ============================================
+// D10d: 冲突解决（lamport 时钟 + 业务规则 + 最小 Y.Doc 工厂）
+// ============================================
+
+export * from './lamport'
+export * from './conflict-rules'
+export {
+  getOrCreateRealtimeDoc,
+  getRealtimeDoc,
+  closeRealtimeDoc,
+  closeAllRealtimeDocs,
+  realtimeDocCount,
+  __resetRealtimeDocRegistry,
+} from './conflict-docs'

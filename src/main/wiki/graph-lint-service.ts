@@ -18,7 +18,13 @@ export interface LintEdgeRepo {
 const OVERSIZED_RATIO = 0.5
 
 export class GraphLintService {
-  static lint(graphId: string, nodeRepo: LintNodeRepo, edgeRepo: LintEdgeRepo): LintReport {
+  static lint(
+    graphId: string,
+    nodeRepo: LintNodeRepo,
+    edgeRepo: LintEdgeRepo,
+    /** 来自 Realtime 层（conflict-reporter）的额外 issues；与静态 lint 合并 */
+    extraIssues: LintIssue[] = [],
+  ): LintReport {
     const issues: LintIssue[] = []
     const pages = nodeRepo.listByGraph(graphId).filter((n) => n.type === 'wiki-page')
     const edges = edgeRepo.listByGraph(graphId).filter((e) => e.edgeType === 'wiki-link')
@@ -78,7 +84,7 @@ export class GraphLintService {
     }
 
     return {
-      issues,
+      issues: [...issues, ...extraIssues],
       stats: { nodeCount: pages.length, edgeCount: edges.length, communityCount: byCommunity.size },
     }
   }

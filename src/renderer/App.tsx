@@ -8,6 +8,7 @@ import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
 import { ToastContainer } from './lib/toast'
 import { useI18n } from './i18n/useI18n'
+import { attachConflictListener } from './store/conflictStore'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 const RightPanel = lazy(() => import('./panels/RightPanel').then(m => ({ default: m.RightPanel })))
@@ -52,6 +53,11 @@ function App() {
   useEffect(() => {
     localStorage.setItem('bizgraph:panel:right:visible', String(rightPanelVisible))
   }, [rightPanelVisible])
+
+  // D10d: 挂全局 conflict:onReported 监听 → conflictStore → toast
+  useEffect(() => {
+    return attachConflictListener()
+  }, [])
 
   // Keyboard shortcuts for panel toggling
   useEffect(() => {
