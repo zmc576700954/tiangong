@@ -518,6 +518,16 @@ export interface BizGraphSettings {
   }
   /** 界面语言：zh-CN（默认，中文为主）| en-US（兜底） */
   locale?: 'zh-CN' | 'en-US'
+  /** D10a: Yjs 实时协作 — WebSocket 服务器配置。
+   *  enabled=false 时不启动 WS server, 仅在主进程内维护 Y.Doc 镜像。 */
+  realtime?: {
+    /** 是否启用 WebSocket 服务器（默认 false；D10a 阶段默认关闭避免端口占用） */
+    enabled?: boolean
+    /** WS server 监听端口（默认 1234） */
+    port?: number
+    /** 监听 host（默认 127.0.0.1） */
+    host?: string
+  }
 }
 
 /** 适配器自动回退链中的单次尝试记录 */
