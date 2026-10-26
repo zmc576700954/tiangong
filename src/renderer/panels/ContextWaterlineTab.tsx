@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Button } from '../components/ui/button'
+import { useI18n } from '../i18n/useI18n'
 
 interface WaterlineConfig {
   autoCompactEnabled: boolean
@@ -12,6 +13,7 @@ interface Props {
 }
 
 export function ContextWaterlineTab({ onSave }: Props) {
+  const { t } = useI18n()
   const [config, setConfig] = useState<WaterlineConfig>({
     autoCompactEnabled: true,
     autoCompactThreshold: 0.75,
@@ -37,7 +39,7 @@ export function ContextWaterlineTab({ onSave }: Props) {
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-medium">Context Waterline</h3>
+      <h3 className="text-sm font-medium">{t('settings.waterline.title')}</h3>
 
       <div className="space-y-3">
         <label className="flex items-center gap-2 text-sm">
@@ -46,12 +48,12 @@ export function ContextWaterlineTab({ onSave }: Props) {
             checked={config.autoCompactEnabled}
             onChange={(e) => setConfig({ ...config, autoCompactEnabled: e.target.checked })}
           />
-          Auto-compact when context exceeds threshold
+          {t('settings.waterline.autoCompact')}
         </label>
 
         <div>
           <label className="text-[10px] block">
-            Threshold: {Math.round(config.autoCompactThreshold * 100)}%
+            {t('settings.waterline.threshold', { value: Math.round(config.autoCompactThreshold * 100) })}
           </label>
           <input
             type="range"
@@ -66,7 +68,7 @@ export function ContextWaterlineTab({ onSave }: Props) {
 
         <div>
           <label className="text-[10px] block">
-            Min interval between compactions
+            {t('settings.waterline.minInterval')}
           </label>
           <input
             type="number"
@@ -76,11 +78,11 @@ export function ContextWaterlineTab({ onSave }: Props) {
             min={10}
             max={3600}
           />
-          <span className="text-[10px] text-muted-foreground ml-2">seconds</span>
+          <span className="text-[10px] text-muted-foreground ml-2">{t('settings.waterline.seconds')}</span>
         </div>
 
         <Button size="sm" onClick={handleSave}>
-          {saved ? '✓ Saved' : 'Save'}
+          {saved ? t('settings.waterline.saved') : t('settings.waterline.save')}
         </Button>
       </div>
     </div>

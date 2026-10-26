@@ -4,6 +4,8 @@ import { cn } from '../lib/utils'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { SubagentTypesTab } from './SubagentTypesTab'
 import { ContextWaterlineTab } from './ContextWaterlineTab'
+import { useI18n } from '../i18n/useI18n'
+import type { Locale } from '@shared/i18n/types'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
@@ -11,6 +13,7 @@ const ipc = typeof window !== 'undefined' && window.electronAPI
   : null
 
 export function SettingsPanel() {
+  const { locale, setLocale: setUiLocale, t } = useI18n()
   const [settings, setSettings] = useState<BizGraphSettings | null>(null)
   const [loading, setLoading] = useState(true)
   const [installing, setInstalling] = useState<string | null>(null)
@@ -18,11 +21,16 @@ export function SettingsPanel() {
   const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({})
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
   const [customTypes, setCustomTypes] = useState<AgentTypeDefinition[]>([])
+  const [localeDraft, setLocaleDraft] = useState<Locale>(locale)
 
   useEffect(() => {
     loadSettings()
   }, [])
 
+  // 主进程推送语言变更时同步下拉框
+  useEffect(() => {
+    setLocaleDraft(locale)
+  }, [locale])
   const loadSettings = async () => {
     if (!ipc) return
     try {
@@ -88,6 +96,25 @@ export function SettingsPanel() {
     }
   }
 
+  const handleLocaleChange = async (next: Locale) => {
+    if (!ipc || !settings) return
+    const previous = locale
+    setLocaleDraft(next)
+    setUiLocale(next)
+    try {
+      const updated: BizGraphSettings = { ...settings, locale: next }
+      await ipc['settings:write'](updated)
+      setSettings(updated)
+      setToast({ message: t('settings.language.saved'), type: 'success' })
+    } catch (err) {
+      console.error('Failed to persist locale:', err)
+      setLocaleDraft(previous)
+      setUiLocale(previous)
+      setToast({ message: t('settings.language.saveFailed'), type: 'error' })
+    }
+    setTimeout(() => setToast(null), 4000)
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -111,20 +138,35 @@ export function SettingsPanel() {
 
       <Tabs defaultValue="general">
         <TabsList className="mb-4">
-          <TabsTrigger value="general">基础设置</TabsTrigger>
-          <TabsTrigger value="subagents">子代理类型</TabsTrigger>
-          <TabsTrigger value="waterline">上下文水位</TabsTrigger>
+          <TabsTrigger value="general">{t('settings.tab.general')}</TabsTrigger>
+          <TabsTrigger value="subagents">{t('settings.tab.subagents')}</TabsTrigger>
+          <TabsTrigger value="waterline">{t('settings.tab.waterline')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="space-y-5">
           <section>
+            <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
+              {t('settings.language')}
+            </h3>
+            <select
+              data-testid="language-select"
+              value={localeDraft}
+              onChange={(e) => { void handleLocaleChange(e.target.value as Locale) }}
+              className="w-full px-2 py-1.5 text-xs border rounded bg-background"
+            >
+              <option value="zh-CN">{t('settings.language.zhCN')}</option>
+              <option value="en-US">{t('settings.language.enUS')}</option>
+            </select>
+          </section>
+
+          <section>
             <div className="flex items-center justify-between mb-2">
               <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                CLI Tools
+                {t('settings.cliTools')}
               </h3>
               <button
                 onClick={refreshCli}
-                className="p-1 rounded hover:bg-muted text-muted-foreground" title="Refresh status"
+                className="p-1 rounded hover:bg-muted text-muted-foreground" title={t('settings.refreshStatus')}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
@@ -140,13 +182,13 @@ export function SettingsPanel() {
                     <div>
                       <div className="text-sm font-medium">{tool.name}</div>
                       <div className="text-[10px] text-muted-foreground">
-                        {tool.installed ? (tool.version || 'installed') : 'not installed'}
+                        {tool.installed ? (tool.version || t('settings.installed')) : t('settings.notInstalled')}
                       </div>
                     </div>
                   </div>
                   {tool.installed ? (
                     <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex items-center gap-1">
-                      <Check className="w-3 h-3" /> Ready
+                      <Check className="w-3 h-3" /> {t('settings.ready')}
                     </span>
                   ) : (
                     <button
@@ -155,7 +197,7 @@ export function SettingsPanel() {
                       className="text-xs px-2.5 py-1 bg-primary text-primary-foreground rounded hover:bg-primary/90 flex items-center gap-1 disabled:opacity-50"
                     >
                       <Download className="w-3 h-3" />
-                      {installing === tool.name ? 'Installing...' : 'Install'}
+                      {installing === tool.name ? t('settings.installing') : t('settings.install')}
                     </button>
                   )}
                 </div>
@@ -165,7 +207,7 @@ export function SettingsPanel() {
 
           <section>
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              API Keys (MCP Fallback)
+              {t('settings.apiKeys')}
             </h3>
             <div className="space-y-2">
               {['anthropic', 'openai', 'deepseek'].map((provider) => (
@@ -176,14 +218,14 @@ export function SettingsPanel() {
                       type="password"
                       value={apiKeys[provider] || ''}
                       onChange={(e) => setApiKeys((prev) => ({ ...prev, [provider]: e.target.value }))}
-                      placeholder={maskedKeys[provider] ? 'Current: ****' : 'Enter API key...'}
+                      placeholder={maskedKeys[provider] ? t('settings.currentKey') : t('settings.enterApiKey')}
                       className="flex-1 px-2 py-1.5 text-xs border rounded bg-background"
                     />
                     <button
                       onClick={() => saveApiKey(provider)}
                       className="px-2.5 py-1.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
                     >
-                      Save
+                      {t('settings.save')}
                     </button>
                   </div>
                 </div>
@@ -192,14 +234,14 @@ export function SettingsPanel() {
             <div className="mt-2 flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
               <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
               <span>
-                API keys are stored locally in settings.json. They are used as fallback when CLI tools are unavailable.
+                {t('settings.apiKeysHint')}
               </span>
             </div>
           </section>
 
           <section>
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              MCP Servers
+              {t('settings.mcpServers')}
             </h3>
             <div className="space-y-1.5">
               {settings?.mcpServers.map((server) => (
@@ -218,7 +260,7 @@ export function SettingsPanel() {
                     'text-xs px-1.5 py-0.5 rounded-full',
                     server.enabled ? 'bg-green-100 text-green-700' : 'bg-muted text-muted-foreground'
                   )}>
-                    {server.enabled ? 'Enabled' : 'Disabled'}
+                    {server.enabled ? t('settings.enabled') : t('settings.disabled')}
                   </span>
                 </div>
               ))}
