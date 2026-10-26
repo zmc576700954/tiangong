@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { localizeGraphName, threadTitle, setLocale } from '../i18n'
-import { DEFAULT_THREAD_TITLE } from '../constants'
+import { localizeGraphName, threadTitle, wikiPageTitle, setLocale } from '../i18n'
+import { DEFAULT_THREAD_TITLE, GRAPH_INDEX_TITLE, GRAPH_LOG_TITLE } from '../constants'
 
 describe('localizeGraphName', () => {
   it('keeps the Chinese suffix as-is in Chinese mode', () => {
@@ -52,5 +52,22 @@ describe('threadTitle', () => {
   it('leaves a user-renamed title untouched', () => {
     setLocale('zh-CN')
     expect(threadTitle('排查登录超时')).toBe('排查登录超时')
+  })
+})
+
+describe('wikiPageTitle', () => {
+  it('translates the special page titles for display', () => {
+    setLocale('zh-CN')
+    expect(wikiPageTitle(GRAPH_INDEX_TITLE)).toBe('图索引')
+    expect(wikiPageTitle(GRAPH_LOG_TITLE)).toBe('图日志')
+    setLocale('en-US')
+    expect(wikiPageTitle(GRAPH_INDEX_TITLE)).toBe('Graph Index')
+    expect(wikiPageTitle(GRAPH_LOG_TITLE)).toBe('Graph Log')
+    setLocale('zh-CN')
+  })
+
+  it('leaves ordinary page titles untouched', () => {
+    setLocale('zh-CN')
+    expect(wikiPageTitle('支付流程')).toBe('支付流程')
   })
 })

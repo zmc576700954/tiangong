@@ -2,7 +2,7 @@ import { zh, en } from './resources'
 import type { TranslationKey } from './resources'
 import { DEFAULT_LOCALE } from './types'
 import type { Locale } from './types'
-import { DEFAULT_THREAD_TITLE } from '../constants'
+import { DEFAULT_THREAD_TITLE, GRAPH_INDEX_TITLE, GRAPH_LOG_TITLE } from '../constants'
 import type { BugSeverity, BugStatus, EdgeType, GraphType, NodeStatus, NodeType } from '../types/graph'
 
 export type { TranslationKey } from './resources'
@@ -238,4 +238,20 @@ export function localizeGraphName(name: string, locale: Locale = getLocale()): s
  */
 export function threadTitle(title: string, locale: Locale = getLocale()): string {
   return title === DEFAULT_THREAD_TITLE ? tIn(locale, 'thread.defaultTitle') : title
+}
+
+/**
+ * Wiki 特殊页的展示名。
+ * 存储标题（GRAPH_INDEX_TITLE / GRAPH_LOG_TITLE）是英文标识符——
+ * WikiIndexService 靠它解析 [[Graph Index]] 这类 wikilink，改了就断链。
+ * 展示时按语言替换，链接目标与页面正文保持原样。
+ */
+const WIKI_SPECIAL_PAGE_TITLES: { id: string; key: TranslationKey }[] = [
+  { id: GRAPH_INDEX_TITLE, key: 'wiki.specialPage.index' },
+  { id: GRAPH_LOG_TITLE, key: 'wiki.specialPage.log' },
+]
+
+export function wikiPageTitle(title: string, locale: Locale = getLocale()): string {
+  const found = WIKI_SPECIAL_PAGE_TITLES.find((s) => s.id === title)
+  return found ? tIn(locale, found.key) : title
 }

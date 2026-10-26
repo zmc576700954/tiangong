@@ -7,6 +7,7 @@ import { useGraphStore } from './store/graphStore'
 import { useAgentStore } from './store/agentStore'
 import { useResizablePanel } from './hooks/useResizablePanel'
 import { ToastContainer } from './lib/toast'
+import { useI18n } from './i18n/useI18n'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 const RightPanel = lazy(() => import('./panels/RightPanel').then(m => ({ default: m.RightPanel })))
@@ -16,6 +17,7 @@ function RightPanelFallback() {
 }
 
 function App() {
+  const { t } = useI18n()
   const {
     width: leftWidth,
     collapsed: leftCollapsed,
@@ -114,7 +116,7 @@ function App() {
         {/* Left directory tree */}
         {!leftCollapsed && (
           <>
-            <ErrorBoundary label="项目面板">
+            <ErrorBoundary labelKey="app.errorBoundary.panel.projects">
               <div style={{ width: leftWidth, minWidth: leftWidth }} className="shrink-0">
                 <LeftPanel onCollapse={toggleLeftPanel} />
               </div>
@@ -136,22 +138,22 @@ function App() {
             <button
               onClick={toggleLeftPanel}
               className="absolute top-2 left-2 z-10 p-1.5 rounded hover:bg-muted transition-colors"
-              title="Show project panel"
-              aria-label="Show project panel"
+              title={t('app.showProjectPanel')}
+              aria-label={t('app.showProjectPanel')}
               aria-expanded="false"
             >
               <PanelLeftOpen className="w-4 h-4 text-muted-foreground" />
             </button>
           )}
           <GraphTabs graphs={graphs} currentGraphId={currentGraphId} />
-          <ErrorBoundary label="画布">
+          <ErrorBoundary labelKey="app.errorBoundary.panel.canvas">
             <div className="flex-1 relative">
               {leftCollapsed && !isSmallScreen && (
                 <button
                   onClick={() => toggleLeftPanel()}
                   className="absolute left-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-r border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
-                  title="Show file tree (Ctrl+B)"
-                  aria-label="Show file tree"
+                  title={t('app.showFileTreeShortcut')}
+                  aria-label={t('app.showFileTree')}
                   aria-expanded="false"
                 >
                   <PanelLeftOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
@@ -161,8 +163,8 @@ function App() {
                 <button
                   onClick={() => setRightPanelVisible(true)}
                   className="absolute right-0 top-0 bottom-0 z-10 w-6 flex items-center justify-center bg-primary/5 border-l border-primary/20 hover:bg-primary/10 hover:w-8 transition-all group"
-                  title="Show panel (Ctrl+J)"
-                  aria-label="Show right panel"
+                  title={t('app.showRightPanelShortcut')}
+                  aria-label={t('app.showRightPanel')}
                   aria-expanded="false"
                 >
                   <PanelRightOpen className="w-4 h-4 text-primary/60 group-hover:text-primary transition-colors" />
@@ -173,8 +175,8 @@ function App() {
               ) : (
                 <div className="flex items-center justify-center h-full text-muted-foreground">
                   <div className="text-center">
-                    <p className="text-lg font-medium mb-2">欢迎使用 BizGraph</p>
-                    <p className="text-sm">创建或选择一个图开始工作</p>
+                    <p className="text-lg font-medium mb-2">{t('app.welcome.title')}</p>
+                    <p className="text-sm">{t('app.welcome.hint')}</p>
                   </div>
                 </div>
               )}
@@ -192,7 +194,7 @@ function App() {
             >
               <div className="h-full w-px bg-border group-hover:w-0.5 group-hover:bg-primary/50 transition-all" />
             </div>
-            <ErrorBoundary label="Agent 面板">
+            <ErrorBoundary labelKey="app.errorBoundary.panel.agent">
               <div
                 style={{ width: rightWidth, minWidth: rightWidth }}
                 className="shrink-0"
