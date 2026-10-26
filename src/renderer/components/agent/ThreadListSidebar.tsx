@@ -41,9 +41,9 @@ export function ThreadListSidebar({
     const sorted = [...threads].sort((a, b) => getLastUpdatedAt(b) - getLastUpdatedAt(a))
     if (!query) return sorted
     return sorted.filter(
-      (t) =>
-        t.title.toLowerCase().includes(query) ||
-        t.adapterName.toLowerCase().includes(query),
+      (thread) =>
+        thread.title.toLowerCase().includes(query) ||
+        thread.adapterName.toLowerCase().includes(query),
     )
   }, [threads, searchQuery])
 
@@ -60,7 +60,7 @@ export function ThreadListSidebar({
   }
 
   const handleDelete = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this thread?')) {
+    if (window.confirm(t('agent.thread.deleteConfirm'))) {
       onDelete(id)
     }
   }
@@ -73,11 +73,11 @@ export function ThreadListSidebar({
       )}
     >
       <div className="flex items-center justify-between px-2 py-2 border-b border-border h-9">
-        {!collapsed && <span className="text-xs font-semibold text-foreground">Threads</span>}
+        {!collapsed && <span className="text-xs font-semibold text-foreground">{t('agent.header.threads')}</span>}
         <button
           onClick={onToggleCollapsed}
           className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
-          title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={collapsed ? t('agent.sidebar.expand') : t('agent.sidebar.collapse')}
         >
           {collapsed ? (
             <PanelLeft className="w-3.5 h-3.5" />
@@ -95,7 +95,7 @@ export function ThreadListSidebar({
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search threads..."
+              placeholder={t('agent.search.threads')}
               className="w-full pl-7 pr-2 py-1 text-xs bg-background border rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
@@ -105,7 +105,7 @@ export function ThreadListSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto">
         {filteredThreads.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground text-xs px-2">
-            {searchQuery ? 'No matching threads' : t('thread.empty')}
+            {searchQuery ? t('agent.search.noMatches') : t('thread.empty')}
           </div>
         ) : (
           <div className={cn('space-y-1', collapsed ? 'p-1.5' : 'p-2')}>

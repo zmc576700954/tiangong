@@ -346,14 +346,14 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   const isRunning = currentThread?.status === 'running'
   const isDegraded = currentThread?.fallbackInfo != null
-  const originalAdapter = currentThread?.fallbackInfo?.originalAdapter
-  const currentAdapter = currentThread?.adapterName
+  const originalAdapter = currentThread?.fallbackInfo?.originalAdapter ?? ''
+  const currentAdapter = currentThread?.adapterName ?? ''
 
   const currentOperation = useMemo(() => {
     const fileChanges = rawOutputs.filter((o) => o.type === 'file_change')
     const last = fileChanges[fileChanges.length - 1]
-    return last?.filePath ? `is editing ${last.filePath}` : undefined
-  }, [rawOutputs])
+    return last?.filePath ? `${t('agent.running.editingVerb')} ${last.filePath}` : undefined
+  }, [rawOutputs, t])
 
   return (
     <div className="h-full flex flex-col relative" ref={chatContainerRef}>
@@ -416,7 +416,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
               await loadMarketplaceItems()
             }}
             onInstallCli={async (name: string) => {
-              if (!window.electronAPI) return { success: false, message: 'Not available' }
+              if (!window.electronAPI) return { success: false, message: t('agent.install.unavailable') }
               const result = await window.electronAPI['settings:installCli'](name)
               if (result.success) {
                 await loadAdapters()
@@ -429,9 +429,9 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           <div className="flex-1 flex items-center justify-center text-center px-6">
             <div>
               <Bot className="w-10 h-10 mx-auto mb-3 text-muted-foreground/20" />
-              <p className="text-sm text-muted-foreground mb-1">Welcome to Agent</p>
+              <p className="text-sm text-muted-foreground mb-1">{t('agent.welcome.title')}</p>
               <p className="text-xs text-muted-foreground/60">
-                Type a message below to start a new conversation
+                {t('agent.welcome.hint')}
               </p>
             </div>
           </div>
@@ -443,7 +443,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             {/* Resume banner */}
             {currentThread?.sessionId && currentThread?.adapterName === 'claude-code' && currentThread?.status === 'idle' && (
               <div className="px-3 py-2 bg-blue-50 dark:bg-blue-950 text-sm flex items-center justify-between border-b border-blue-200 dark:border-blue-800 shrink-0">
-                <span className="text-blue-700 dark:text-blue-300 text-xs">This session can be continued</span>
+                <span className="text-blue-700 dark:text-blue-300 text-xs">{t('agent.resume.canContinue')}</span>
                 <button
                   onClick={() => {
                     const lastUserMsg = currentThread.messages.filter((m) => m.role === 'user').pop()
@@ -453,25 +453,25 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                   }}
                   className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
                 >
-                  Resume
+                  {t('agent.resume.action')}
                 </button>
               </div>
             )}
             {/* Interrupt recovery prompt */}
             {showResumePrompt && (
               <div className="flex items-center gap-2 px-3 py-2 bg-blue-50 dark:bg-blue-950 border-b border-blue-200 dark:border-blue-800 text-sm shrink-0">
-                <span className="text-blue-700 dark:text-blue-300 text-xs">Session was interrupted. Continue from where you left off?</span>
+                <span className="text-blue-700 dark:text-blue-300 text-xs">{t('agent.resume.interrupted')}</span>
                 <button
                   onClick={handleResumeFromInterrupt}
                   className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 transition-colors"
                 >
-                  Resume
+                  {t('agent.resume.action')}
                 </button>
                 <button
                   onClick={() => setShowResumePrompt(false)}
                   className="px-3 py-1 bg-gray-200 dark:bg-gray-700 rounded text-xs hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors"
                 >
-                  Dismiss
+                  {t('agent.resume.dismiss')}
                 </button>
               </div>
             )}
@@ -479,21 +479,21 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
             {isDegraded && (
               <div className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200 mx-3 mt-2">
                 <AlertTriangle className="h-4 w-4 shrink-0" />
-                <span>已从 {originalAdapter} 降级到 {currentAdapter}，部分功能不可用</span>
+                <span>{t('agent.degraded.notice', { from: originalAdapter, to: currentAdapter })}</span>
                 <button
                   onClick={() => {
                     eventBus.emit(Events.OPEN_ADAPTER_SELECTOR)
                   }}
                   className="text-[10px] px-2 py-0.5 rounded border border-amber-400 dark:border-amber-600 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900 ml-2"
                 >
-                  Switch adapter
+                  {t('agent.degraded.switchAdapter')}
                 </button>
               </div>
             )}
             {/* Auto-recovery flash banner */}
             {recoveredFlash && (
               <div className="bg-green-100 dark:bg-green-900 border border-green-300 dark:border-green-700 rounded px-3 py-1 text-xs text-green-700 dark:text-green-300 animate-fade-out-3s mx-3 mt-2">
-                ✓ Adapter recovered
+                {t('agent.adapter.recovered')}
               </div>
             )}
             <ConfirmationDialog />
@@ -502,7 +502,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 {isRunning && currentThread?.messages?.length === 0 && (
                   <div className="flex items-center gap-2 px-4 py-3">
                     <div className="h-4 w-48 animate-pulse rounded bg-muted" />
-                    <span className="text-sm text-muted-foreground">Agent 正在思考...</span>
+                    <span className="text-sm text-muted-foreground">{t('agent.thinkingBanner')}</span>
                   </div>
                 )}
                 <ChatMessageList
@@ -529,7 +529,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                     rounded-lg text-sm text-blue-400 hover:bg-blue-600/20 transition-colors"
                 >
                   <GitBranch className="w-4 h-4" />
-                  Review Changes
+                  {t('agent.review.changes')}
                 </button>
               </div>
           )}
@@ -575,7 +575,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                       })
                     }
                   } catch (err) {
-                    const msg = err instanceof Error ? err.message : 'Commit failed'
+                    const msg = err instanceof Error ? err.message : t('agent.commit.failed')
                     console.error('[DiffReview] Commit failed:', err)
                     setCommitError(msg)
                   } finally {
@@ -634,8 +634,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
       {(queuedCount > 0 || executingCount > 0) && (
         <div className="flex items-center gap-2 px-3 py-1 text-[10px] text-muted-foreground border-b border-border">
-          {queuedCount > 0 && <span>Queued: {queuedCount}</span>}
-          {executingCount > 0 && <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" />Executing: {executingCount}</span>}
+          {queuedCount > 0 && <span>{t('agent.queue.queued', { count: queuedCount })}</span>}
+          {executingCount > 0 && <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" />{t('agent.queue.executing', { count: executingCount })}</span>}
         </div>
       )}
 

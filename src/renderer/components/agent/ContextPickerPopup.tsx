@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Circle, FileText, Search } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useGraphStore } from '../../store/graphStore'
+import { useI18n } from '../../i18n/useI18n'
+import type { TranslationKey } from '@shared/i18n'
 import type { ContextRef } from '@shared/types'
 
 interface ContextPickerPopupProps {
@@ -10,7 +12,15 @@ interface ContextPickerPopupProps {
   excludeIds: string[]
 }
 
+/** 引用类型 → 展示文案 */
+const REF_TYPE_KEYS: Record<ContextRef['type'], TranslationKey> = {
+  node: 'agent.refType.node',
+  file: 'agent.refType.file',
+  text: 'agent.refType.text',
+}
+
 export function ContextPickerPopup({ onSelect, onClose, excludeIds }: ContextPickerPopupProps) {
+  const { t } = useI18n()
   const [filter, setFilter] = useState('')
   const [selectedIndex, setSelectedIndex] = useState(0)
   const nodes = useGraphStore((s) => s.nodes)
@@ -65,14 +75,14 @@ export function ContextPickerPopup({ onSelect, onClose, excludeIds }: ContextPic
           ref={inputRef}
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
-          placeholder="Search nodes..."
+          placeholder={t('agent.contextPicker.placeholder')}
           className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
         />
       </div>
       {results.length === 0 ? (
         <div className="p-3">
           <p className="text-xs text-muted-foreground text-center">
-            {filter ? `No results for "${filter}"` : 'No available nodes'}
+            {filter ? t('agent.contextPicker.noResults', { filter }) : t('agent.contextPicker.noNodes')}
           </p>
         </div>
       ) : (
@@ -92,7 +102,7 @@ export function ContextPickerPopup({ onSelect, onClose, excludeIds }: ContextPic
                 <FileText className="w-3 h-3 text-green-400" />
               )}
               <span className="text-xs truncate">{item.label}</span>
-              <span className="text-[10px] text-muted-foreground ml-auto">{item.type}</span>
+              <span className="text-[10px] text-muted-foreground ml-auto">{t(REF_TYPE_KEYS[item.type])}</span>
             </button>
           ))}
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { SlashCommand } from './promptTemplates'
 import { SLASH_COMMANDS } from './promptTemplates'
 
@@ -10,6 +11,7 @@ interface SlashCommandMenuProps {
 }
 
 export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenuProps) {
+  const { t } = useI18n()
   const [selectedIndex, setSelectedIndex] = useState(0)
 
   const filtered = SLASH_COMMANDS.filter((cmd) =>
@@ -48,7 +50,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
   return (
     <div className="absolute bottom-full left-0 right-0 mb-1 bg-background border border-border rounded-lg shadow-lg overflow-hidden z-50">
       <div className="px-2.5 py-1.5 text-[9px] text-muted-foreground uppercase tracking-wider bg-muted/30">
-        Commands
+        {t('agent.commands.title')}
       </div>
       {filtered.map((cmd, i) => {
         const Icon = cmd.icon
@@ -56,6 +58,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
           <button
             key={cmd.name}
             onClick={() => onSelect(cmd)}
+            title={t(cmd.labelKey)}
             className={cn(
               'w-full flex items-center gap-2 px-2.5 py-2 text-left transition-colors',
               i === selectedIndex ? 'bg-muted' : 'hover:bg-muted/50',
@@ -65,7 +68,7 @@ export function SlashCommandMenu({ filter, onSelect, onClose }: SlashCommandMenu
             <span className="text-xs font-mono font-semibold text-blue-400 w-20">
               {cmd.name}
             </span>
-            <span className="text-[11px] text-muted-foreground">{cmd.description}</span>
+            <span className="text-[11px] text-muted-foreground">{t(cmd.descriptionKey)}</span>
           </button>
         )
       })}

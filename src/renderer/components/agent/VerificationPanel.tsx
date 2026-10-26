@@ -1,5 +1,6 @@
 import { CheckCircle, XCircle, Loader2, Wrench, SkipForward, ArrowLeft } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { VerificationReport } from '@shared/types'
 
 interface VerificationPanelProps {
@@ -23,11 +24,12 @@ export function VerificationPanel({
   currentRetry = 0,
   error,
 }: VerificationPanelProps) {
+  const { t } = useI18n()
   if (loading) {
     return (
       <div className="border border-border rounded-lg p-6 bg-background flex flex-col items-center gap-3">
         <Loader2 className="w-6 h-6 text-blue-400 animate-spin" />
-        <span className="text-sm text-muted-foreground">Verifying acceptance criteria...</span>
+        <span className="text-sm text-muted-foreground">{t('agent.verify.checking')}</span>
       </div>
     )
   }
@@ -45,7 +47,7 @@ export function VerificationPanel({
             className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
           >
             <ArrowLeft className="w-3 h-3" />
-            Back to Edit
+            {t('agent.verify.backToEdit')}
           </button>
         </div>
       </div>
@@ -69,12 +71,12 @@ export function VerificationPanel({
             ? <CheckCircle className="w-4 h-4 text-green-400" />
             : <XCircle className="w-4 h-4 text-red-400" />}
           <span className="text-sm font-medium">
-            Verification Report — {report.passedCount}/{report.totalCount} passed
+            {t('agent.verify.reportTitle', { passed: report.passedCount, total: report.totalCount })}
           </span>
         </div>
         {currentRetry > 0 && (
           <span className="text-[10px] text-muted-foreground">
-            Retry {currentRetry}/{maxRetries}
+            {t('agent.verify.retryCount', { current: currentRetry, max: maxRetries })}
           </span>
         )}
       </div>
@@ -101,7 +103,7 @@ export function VerificationPanel({
           className="flex items-center gap-1 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
         >
           <ArrowLeft className="w-3 h-3" />
-          Back to Edit
+          {t('agent.verify.backToEdit')}
         </button>
         <div className="flex items-center gap-1.5">
           {canRetry && (
@@ -111,7 +113,7 @@ export function VerificationPanel({
                 rounded hover:bg-orange-600/20 transition-colors"
             >
               <Wrench className="w-3 h-3" />
-              Retry Failed
+              {t('agent.verify.retryFailed')}
             </button>
           )}
           <button
@@ -120,7 +122,7 @@ export function VerificationPanel({
               rounded hover:bg-blue-700 transition-colors"
           >
             <SkipForward className="w-3 h-3" />
-            Mark Complete
+            {t('agent.verify.markComplete')}
           </button>
         </div>
       </div>

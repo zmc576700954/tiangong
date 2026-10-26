@@ -3,6 +3,7 @@ import { X, Search, MessageSquare } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
 import { useAgentStore } from '../../store/agentStore'
 import { useAppStore } from '../../store/appStore'
+import { useI18n } from '../../i18n/useI18n'
 import type { AgentThread } from '@shared/types'
 
 interface HistorySidebarProps {
@@ -11,6 +12,7 @@ interface HistorySidebarProps {
 }
 
 export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
+  const { t } = useI18n()
   const [searchQuery, setSearchQuery] = useState('')
   const [threads, setThreads] = useState<AgentThread[]>([])
   const [loading, setLoading] = useState(false)
@@ -51,7 +53,7 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
   return (
     <div className="fixed left-0 top-0 bottom-0 w-80 bg-background border-r border-border z-50 flex flex-col shadow-xl">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <h3 className="text-xs font-semibold text-foreground">History</h3>
+        <h3 className="text-xs font-semibold text-foreground">{t('agent.header.history')}</h3>
         <button onClick={onClose} className="p-1 rounded hover:bg-muted transition-colors">
           <X className="w-3.5 h-3.5 text-muted-foreground" />
         </button>
@@ -61,7 +63,7 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
           <Search className="w-3.5 h-3.5 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search threads..."
+            placeholder={t('agent.search.threads')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') loadThreads() }}
@@ -71,15 +73,15 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
       </div>
       <div className="flex-1 overflow-y-auto">
         {loading ? (
-          <div className="text-center py-12 text-muted-foreground text-xs">Loading...</div>
+          <div className="text-center py-12 text-muted-foreground text-xs">{t('common.loading')}</div>
         ) : threads.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground text-xs">No threads found</div>
+          <div className="text-center py-12 text-muted-foreground text-xs">{t('agent.history.empty')}</div>
         ) : (
           <div className="p-2 space-y-1">
-            {threads.map((t) => (
+            {threads.map((thread) => (
               <button
-                key={t.id}
-                onClick={() => handleSelect(t)}
+                key={thread.id}
+                onClick={() => handleSelect(thread)}
                 className={cn(
                   'w-full text-left px-2.5 py-2 rounded-md transition-colors hover:bg-muted/50 border border-transparent',
                 )}
@@ -87,12 +89,12 @@ export function HistorySidebar({ visible, onClose }: HistorySidebarProps) {
                 <div className="flex items-center gap-2">
                   <MessageSquare className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium truncate">{t.title}</div>
+                    <div className="text-xs font-medium truncate">{thread.title}</div>
                     <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-[10px] text-muted-foreground">{t.adapterName}</span>
-                      {t.nodeBound && <span className="text-[10px] text-muted-foreground/50">node</span>}
+                      <span className="text-[10px] text-muted-foreground">{thread.adapterName}</span>
+                      {thread.nodeBound && <span className="text-[10px] text-muted-foreground/50">{t('agent.history.boundNode')}</span>}
                       <span className="text-[10px] text-muted-foreground/50">
-                        {formatDate(new Date(t.createdAt))}
+                        {formatDate(new Date(thread.createdAt))}
                       </span>
                     </div>
                   </div>

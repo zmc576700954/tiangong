@@ -3,6 +3,18 @@ import { useShallow } from 'zustand/react/shallow'
 import { useSubagentStore } from '../../store/subagentStore'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
+import { useI18n } from '../../i18n/useI18n'
+import type { TranslationKey } from '@shared/i18n'
+import type { SubagentStatus } from '@shared/types'
+
+/** 调用状态 → 展示文案 */
+const STATUS_KEYS: Record<SubagentStatus, TranslationKey> = {
+  queued: 'agent.subagent.status.queued',
+  running: 'agent.subagent.status.running',
+  completed: 'agent.subagent.status.completed',
+  failed: 'agent.subagent.status.failed',
+  cancelled: 'agent.subagent.status.cancelled',
+}
 
 interface Props {
   invocationId: string
@@ -11,6 +23,7 @@ interface Props {
 }
 
 export function SubagentInvocationCard({ invocationId, agentType, description }: Props) {
+  const { t } = useI18n()
   const invocation = useSubagentStore(useShallow((s) =>
     s.invocations.find((i) => i.id === invocationId)
   ))
@@ -42,7 +55,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
     <div className={`my-2 rounded-md border px-3 py-2 text-sm ${statusColor}`} data-testid={`subagent-card-${invocationId}`}>
       <div className="flex items-center gap-2 mb-1">
         <span className="font-mono text-xs">🤖 {agentType ?? invocation?.agentType ?? '?'}</span>
-        <Badge variant="secondary" className="text-[10px]" data-testid="subagent-card-status">{status}</Badge>
+        <Badge variant="secondary" className="text-[10px]" data-testid="subagent-card-status">{t(STATUS_KEYS[status])}</Badge>
         <span className="flex-1 truncate text-xs opacity-70">
           {description ?? invocation?.description ?? ''}
         </span>
@@ -54,7 +67,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
             onClick={() => cancelInvocation(invocationId)}
             data-testid="subagent-card-cancel"
           >
-            Cancel
+            {t('common.cancel')}
           </Button>
         )}
       </div>
@@ -66,7 +79,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
             onClick={() => setExpanded(!expanded)}
             className="text-[10px] opacity-70 hover:opacity-100 mb-1"
           >
-            {expanded ? '▼' : '▶'} {outputs.length} output line{outputs.length !== 1 ? 's' : ''}
+            {expanded ? '▼' : '▶'} {t(outputs.length === 1 ? 'agent.subagent.outputLine' : 'agent.subagent.outputLines', { count: outputs.length })}
           </button>
           {expanded && (
             <pre className="text-[10px] font-mono bg-black/5 dark:bg-white/5 rounded p-2 max-h-48 overflow-auto whitespace-pre-wrap">
@@ -84,7 +97,7 @@ export function SubagentInvocationCard({ invocationId, agentType, description }:
       {status === 'completed' && resultText && (
         <div className="mt-2 pt-2 border-t border-current/20" data-testid="subagent-card-result">
           <div className="text-[10px] opacity-70 mb-1">
-            Result • {invocation?.tokensUsed ?? 0} tokens
+            {t('agent.subagent.resultTokens', { count: invocation?.tokensUsed ?? 0 })}
             {invocation?.finishedAt && invocation?.startedAt &&
               ` • ${invocation.finishedAt - invocation.startedAt}ms`}
           </div>

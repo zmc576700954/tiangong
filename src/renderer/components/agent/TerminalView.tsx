@@ -1,6 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { Terminal } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { AgentOutput } from '@shared/types'
 
 interface TerminalViewProps {
@@ -16,6 +17,7 @@ const TYPE_STYLES: Record<string, string> = {
 }
 
 export function TerminalView({ outputs }: TerminalViewProps) {
+  const { t } = useI18n()
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -27,9 +29,9 @@ export function TerminalView({ outputs }: TerminalViewProps) {
       <div className="flex-1 flex items-center justify-center text-center px-6 py-12">
         <div>
           <Terminal className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">No output yet</p>
+          <p className="text-sm text-muted-foreground">{t('agent.terminal.empty')}</p>
           <p className="text-xs text-muted-foreground/60 mt-1">
-            Agent output will appear here
+            {t('agent.terminal.hint')}
           </p>
         </div>
       </div>

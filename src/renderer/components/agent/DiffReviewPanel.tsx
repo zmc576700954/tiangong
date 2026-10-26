@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { Check, X, FileEdit, FilePlus, GitBranch, ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { ToolCallBlock } from '@shared/types'
 
 interface FileChangeState {
@@ -31,6 +32,7 @@ export function DiffReviewPanel({
   committing,
 }: DiffReviewPanelProps) {
   const [expandedFile, setExpandedFile] = useState<number | null>(null)
+  const { t } = useI18n()
 
   const fileChanges: FileChangeState[] = useMemo(() =>
     toolCalls
@@ -72,9 +74,9 @@ export function DiffReviewPanel({
       <div className="flex items-center justify-between px-3 py-2 bg-muted/30 border-b border-border">
         <div className="flex items-center gap-2">
           <GitBranch className="w-3.5 h-3.5 text-muted-foreground" />
-          <span className="text-xs font-medium">Changes ({fileChanges.length} files)</span>
+          <span className="text-xs font-medium">{t('agent.diff.changesTitle', { count: fileChanges.length })}</span>
           <span className="text-[10px] text-muted-foreground">
-            {acceptedCount}/{fileChanges.length} accepted
+            {t('agent.diff.acceptedCount', { accepted: acceptedCount, total: fileChanges.length })}
           </span>
         </div>
         <div className="flex items-center gap-1">
@@ -82,13 +84,13 @@ export function DiffReviewPanel({
             onClick={onAcceptAll}
             className="text-[10px] px-2 py-0.5 rounded bg-green-600/10 text-green-400 hover:bg-green-600/20 transition-colors"
           >
-            Accept All
+            {t('agent.action.acceptAll')}
           </button>
           <button
             onClick={onRejectAll}
             className="text-[10px] px-2 py-0.5 rounded bg-red-600/10 text-red-400 hover:bg-red-600/20 transition-colors"
           >
-            Reject All
+            {t('agent.action.rejectAll')}
           </button>
         </div>
       </div>
@@ -115,13 +117,13 @@ export function DiffReviewPanel({
                     onClick={() => onAcceptFile(fc.toolCallIndex)}
                     className="text-[9px] text-green-400 border border-green-800 rounded px-1.5 py-0.5 hover:bg-green-900/30"
                   >
-                    Accept
+                    {t('agent.action.accept')}
                   </button>
                   <button
                     onClick={() => onRejectFile(fc.toolCallIndex, fc.filePath)}
                     className="text-[9px] text-red-400 border border-red-800 rounded px-1.5 py-0.5 hover:bg-red-900/30"
                   >
-                    Reject
+                    {t('agent.action.reject')}
                   </button>
                 </div>
               )}
@@ -161,7 +163,7 @@ export function DiffReviewPanel({
           )}
         >
           {committing && <Loader2 className="w-3 h-3 animate-spin" />}
-          Commit
+          {t('agent.action.commit')}
         </button>
       </div>
     </div>

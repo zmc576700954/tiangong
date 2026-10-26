@@ -8,6 +8,7 @@
 import { useState } from 'react'
 import { Bot, Check, ExternalLink, Copy, CheckCheck, Settings, RefreshCw, ChevronDown, ChevronRight, Terminal, Zap, Key } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { AdapterMarketplaceItem, InstallMethod } from '@shared/types'
 
 interface AdapterSetupGuideProps {
@@ -26,6 +27,7 @@ function getTypeIcon(type: AdapterMarketplaceItem['type']) {
 }
 
 function CopyButton({ text }: { text: string }) {
+  const { t } = useI18n()
   const [copied, setCopied] = useState(false)
   const handleCopy = () => {
     navigator.clipboard.writeText(text).then(() => {
@@ -37,7 +39,7 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={handleCopy}
       className="p-1 rounded hover:bg-muted transition-colors shrink-0"
-      title="Copy"
+      title={t('agent.action.copy')}
     >
       {copied ? <CheckCheck className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-muted-foreground" />}
     </button>
@@ -78,6 +80,7 @@ function InstallMethodItem({ method }: { method: InstallMethod }) {
 }
 
 function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onInstallCli: (name: string) => Promise<{ success: boolean; message: string }> }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(item.installed ? false : item.recommendedInstallIndex >= 0)
   const [installing, setInstalling] = useState(false)
 
@@ -108,11 +111,11 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
             <span className="text-sm font-medium">{item.displayName}</span>
             {item.installed ? (
               <span className="inline-flex items-center gap-1 text-[10px] text-green-500 bg-green-500/10 px-1.5 py-0.5 rounded">
-                <Check className="w-2.5 h-2.5" /> Ready
+                <Check className="w-2.5 h-2.5" /> {t('agent.adapter.ready')}
               </span>
             ) : (
               <span className="text-[10px] text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded">
-                Not Installed
+                {t('agent.adapter.notInstalled')}
               </span>
             )}
           </div>
@@ -127,13 +130,13 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
             <>
               {recommendedMethod && (
                 <div className="mb-1.5">
-                  <p className="text-[10px] text-muted-foreground px-2 mb-1">Recommended</p>
+                  <p className="text-[10px] text-muted-foreground px-2 mb-1">{t('agent.install.recommended')}</p>
                   <InstallMethodItem method={recommendedMethod} />
                 </div>
               )}
               {item.installMethods.filter((_, i) => i !== item.recommendedInstallIndex).length > 0 && (
                 <div>
-                  <p className="text-[10px] text-muted-foreground px-2 mb-1">Other methods</p>
+                  <p className="text-[10px] text-muted-foreground px-2 mb-1">{t('agent.install.otherMethods')}</p>
                   {item.installMethods
                     .filter((_, i) => i !== item.recommendedInstallIndex)
                     .map((method, i) => (
@@ -148,13 +151,13 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
                     disabled={installing}
                     className="text-[11px] px-2.5 py-1 bg-primary text-primary-foreground rounded hover:bg-primary/90 transition-colors disabled:opacity-50"
                   >
-                    {installing ? 'Installing...' : 'Install via npm'}
+                    {installing ? t('agent.install.installing') : t('agent.install.viaNpm')}
                   </button>
                 </div>
               )}
             </>
           ) : (
-            <p className="text-[11px] text-muted-foreground px-2">No installation methods available</p>
+            <p className="text-[11px] text-muted-foreground px-2">{t('agent.install.none')}</p>
           )}
           {item.homepage && (
             <a
@@ -164,7 +167,7 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
               className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-blue-500 hover:text-blue-400 transition-colors"
             >
               <ExternalLink className="w-3 h-3" />
-              View documentation
+              {t('agent.install.docs')}
             </a>
           )}
         </div>
@@ -172,7 +175,7 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
 
       {expanded && item.installed && (
         <div className="border-t border-border px-3 py-2">
-          <p className="text-[11px] text-green-500">This adapter is ready to use.</p>
+          <p className="text-[11px] text-green-500">{t('agent.install.readyHint')}</p>
         </div>
       )}
     </div>
@@ -180,6 +183,7 @@ function AdapterCard({ item, onInstallCli }: { item: AdapterMarketplaceItem; onI
 }
 
 export function AdapterSetupGuide({ items, onOpenSettings, onRefresh, onInstallCli }: AdapterSetupGuideProps) {
+  const { t } = useI18n()
   const installedCount = items.filter((i) => i.installed).length
   const anyInstalled = installedCount > 0
 
@@ -189,12 +193,12 @@ export function AdapterSetupGuide({ items, onOpenSettings, onRefresh, onInstallC
         <div className="text-center mb-6">
           <Bot className="w-10 h-10 mx-auto mb-3 text-muted-foreground/30" />
           <h2 className="text-lg font-semibold mb-1">
-            {anyInstalled ? 'Agent Tools' : 'Choose Your Agent Tools'}
+            {anyInstalled ? t('agent.setup.tools') : t('agent.setup.chooseTools')}
           </h2>
           <p className="text-xs text-muted-foreground">
             {anyInstalled
-              ? `${installedCount} of ${items.length} adapters installed`
-              : 'Install at least one agent tool to start coding with AI'
+              ? t('agent.setup.installedCount', { installed: installedCount, total: items.length })
+              : t('agent.setup.hint')
             }
           </p>
         </div>
@@ -211,14 +215,14 @@ export function AdapterSetupGuide({ items, onOpenSettings, onRefresh, onInstallC
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
           >
             <RefreshCw className="w-3 h-3" />
-            Refresh
+            {t('agent.action.refresh')}
           </button>
           <button
             onClick={onOpenSettings}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
           >
             <Settings className="w-3 h-3" />
-            Settings
+            {t('agent.action.settings')}
           </button>
         </div>
       </div>

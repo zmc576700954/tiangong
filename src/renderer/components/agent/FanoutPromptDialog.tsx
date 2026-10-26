@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Button } from '../ui/button'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
+import { useI18n } from '../../i18n/useI18n'
 
 interface Props {
   open: boolean
@@ -16,6 +17,7 @@ const TEMPLATE = `请你为以下节点各派发一个 implement 子代理并行
 要求:对每个节点用 dispatch_subagent 工具发起任务,各任务允许并行,等所有完成后给我汇总。`
 
 export function FanoutPromptDialog({ open, onOpenChange }: Props) {
+  const { t } = useI18n()
   const selectedNodeIds = useGraphStore(useShallow((s) => Array.from(s.selectedNodeIds)))
   const singleSelectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
@@ -57,20 +59,20 @@ export function FanoutPromptDialog({ open, onOpenChange }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[600px]" data-testid="fanout-dialog">
+      <DialogContent className="max-w-[600px]" closeLabel={t('common.close')} data-testid="fanout-dialog">
         <DialogHeader>
-          <DialogTitle>Fan-out 子代理</DialogTitle>
+          <DialogTitle>{t('agent.fanout.title')}</DialogTitle>
         </DialogHeader>
         <textarea
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           className="w-full h-48 p-2 border rounded text-sm font-mono resize-y bg-background"
-          placeholder="Edit the prompt as needed…"
+          placeholder={t('agent.fanout.placeholder')}
           data-testid="fanout-prompt-input"
         />
         <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="fanout-cancel-btn">取消</Button>
-          <Button onClick={handleSubmit} data-testid="fanout-submit-btn">发送到当前会话</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} data-testid="fanout-cancel-btn">{t('common.cancel')}</Button>
+          <Button onClick={handleSubmit} data-testid="fanout-submit-btn">{t('agent.fanout.submit')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

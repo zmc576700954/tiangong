@@ -1,4 +1,5 @@
 import { Clock } from 'lucide-react'
+import { useI18n } from '../../i18n/useI18n'
 import type { ContextState } from '@shared/types'
 
 interface Props {
@@ -12,17 +13,8 @@ function formatTokens(n: number): string {
   return String(n)
 }
 
-function formatLastCompact(timestamp: number): string {
-  const elapsedMs = Date.now() - timestamp
-  const m = Math.round(elapsedMs / 60_000)
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m}m`
-  const h = Math.round(m / 60)
-  if (h < 24) return `${h}h`
-  return `${Math.round(h / 24)}d`
-}
-
 export function ContextWaterlineBar({ state, onCompact }: Props) {
+  const { t } = useI18n()
   if (!state || state.tokensMax === 0) return null
 
   const pct = Math.round(state.ratio * 100)
@@ -32,10 +24,24 @@ export function ContextWaterlineBar({ state, onCompact }: Props) {
       ? 'bg-yellow-500'
       : 'bg-red-500'
 
+  // 上次压缩距今多久——按语言给出「刚刚 / N 分钟 / N 小时 / N 天」
+  const formatLastCompact = (timestamp: number): string => {
+    const elapsedMs = Date.now() - timestamp
+    const m = Math.round(elapsedMs / 60_000)
+    if (m < 1) return t('agent.waterline.justNow')
+    if (m < 60) return t('agent.waterline.minutes', { count: m })
+    const h = Math.round(m / 60)
+    if (h < 24) return t('agent.waterline.hours', { count: h })
+    return t('agent.waterline.days', { count: Math.round(h / 24) })
+  }
+
   return (
     <div
       className="flex items-center gap-2 text-xs text-muted-foreground px-2 min-w-0"
-      title={`Context usage: ${state.tokensUsed.toLocaleString()} / ${state.tokensMax.toLocaleString()} tokens`}
+      title={t('agent.waterline.usage', {
+        used: state.tokensUsed.toLocaleString(),
+        max: state.tokensMax.toLocaleString(),
+      })}
     >
       <div className="flex-1 min-w-[60px] max-w-[160px] h-1.5 bg-muted rounded-full overflow-hidden">
         <div
@@ -56,9 +62,9 @@ export function ContextWaterlineBar({ state, onCompact }: Props) {
         <button
           onClick={onCompact}
           className="text-[10px] px-1.5 py-0.5 rounded hover:bg-muted border border-border"
-          title="Compact context now"
+          title={t('agent.waterline.compactNow')}
         >
-          Compact
+          {t('agent.waterline.compact')}
         </button>
       )}
     </div>

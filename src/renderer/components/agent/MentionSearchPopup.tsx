@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Circle, FileText, Folder } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { useGraphStore } from '../../store/graphStore'
+import { useI18n } from '../../i18n/useI18n'
+import type { TranslationKey } from '@shared/i18n'
 import type { ContextRef, FileSearchResult } from '@shared/types'
 
 interface MentionSearchPopupProps {
@@ -14,7 +16,15 @@ interface MentionSearchPopupProps {
 
 type Tab = 'nodes' | 'files'
 
+/** 引用类型 → 展示文案 */
+const REF_TYPE_KEYS: Record<ContextRef['type'], TranslationKey> = {
+  node: 'agent.refType.node',
+  file: 'agent.refType.file',
+  text: 'agent.refType.text',
+}
+
 export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, projectPath }: MentionSearchPopupProps) {
+  const { t } = useI18n()
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [tab, setTab] = useState<Tab>('nodes')
   const [fileResults, setFileResults] = useState<FileSearchResult[]>([])
@@ -107,7 +117,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
           )}
         >
           <Circle className="w-3 h-3" />
-          Nodes
+          {t('agent.mention.tabNodes')}
         </button>
         <button
           onMouseDown={(e) => { e.preventDefault(); setTab('files') }}
@@ -119,7 +129,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
           )}
         >
           <Folder className="w-3 h-3" />
-          Files
+          {t('agent.mention.tabFiles')}
         </button>
       </div>
 
@@ -128,12 +138,14 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
         {showEmpty ? (
           <div className="px-3 py-3 text-center">
             <p className="text-[10px] text-muted-foreground">
-              {filter ? `No ${tab} found for "${filter}"` : `Type to search ${tab}`}
+              {filter
+                ? t('agent.mention.noResults', { tab: t(tab === 'nodes' ? 'agent.mention.tabNodes' : 'agent.mention.tabFiles'), filter })
+                : t('agent.mention.typeToSearch', { tab: t(tab === 'nodes' ? 'agent.mention.tabNodes' : 'agent.mention.tabFiles') })}
             </p>
           </div>
         ) : fileLoading && tab === 'files' ? (
           <div className="px-3 py-3 text-center">
-            <p className="text-[10px] text-muted-foreground animate-pulse">Searching...</p>
+            <p className="text-[10px] text-muted-foreground animate-pulse">{t('agent.mention.searching')}</p>
           </div>
         ) : (
           results.map((item, i) => (
@@ -155,7 +167,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
               )}
               <span className="text-xs truncate">{item.label}</span>
               <span className="text-[10px] text-muted-foreground ml-auto shrink-0">
-                {item.type}
+                {t(REF_TYPE_KEYS[item.type])}
               </span>
             </button>
           ))
@@ -165,7 +177,7 @@ export function MentionSearchPopup({ filter, onSelect, onClose, excludeIds, proj
       {/* Hint */}
       <div className="flex items-center justify-between px-2.5 py-1 border-t border-border bg-muted/30">
         <span className="text-[9px] text-muted-foreground/60">
-          Tab switch · ↑↓ navigate · Enter select · Esc close
+          {t('agent.mention.hint')}
         </span>
       </div>
     </div>

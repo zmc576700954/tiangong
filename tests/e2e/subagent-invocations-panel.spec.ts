@@ -16,15 +16,15 @@ test.describe('Subagent Invocations Panel', () => {
 
     await expect(page.locator('[data-testid="subagent-panel"]')).toBeVisible({ timeout: 5_000 })
     await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"]`)).toBeVisible()
-    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('queued')
+    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('排队中')
   })
 
   test('updates card status on progress event', async ({ page }) => {
     await page.click('[data-testid="chat-header-subagents-btn"]')
-    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('queued')
+    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('排队中')
 
     await setMockInvocationStatus(page, 'running')
     await emitSubagentProgress(page, 'running')
-    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('running')
+    await expect(page.locator(`[data-testid="subagent-card-${MOCK_INVOCATION_ID}"] [data-testid="subagent-card-status"]`)).toContainText('执行中')
   })
 })

@@ -1,19 +1,52 @@
 import type { GraphNode, GraphEdge } from '@shared/types'
+import type { TranslationKey } from '@shared/i18n'
 import { Code2, Shield, GitBranch, Check } from 'lucide-react'
 import { collectFileAssociations, collectCrossModuleConstraints } from '../../canvas/agent-context-builder'
 
 export interface SlashCommand {
   name: string
+  /** 英文兜底文案——渲染走 labelKey / descriptionKey */
   label: string
   description: string
+  /** 展示文案对应的 i18n key */
+  labelKey: TranslationKey
+  descriptionKey: TranslationKey
   icon: React.ComponentType<{ className?: string }>
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: '/implement', label: 'Implement', description: 'Implement a feature from node requirements', icon: Code2 },
-  { name: '/fix', label: 'Fix Bug', description: 'Fix a bug with context from node', icon: Shield },
-  { name: '/refactor', label: 'Refactor', description: 'Refactor with constraints from node', icon: GitBranch },
-  { name: '/test', label: 'Add Tests', description: 'Add tests based on acceptance criteria', icon: Check },
+  {
+    name: '/implement',
+    label: 'Implement',
+    description: 'Implement a feature from node requirements',
+    labelKey: 'command.implement',
+    descriptionKey: 'agent.command.implementDescription',
+    icon: Code2,
+  },
+  {
+    name: '/fix',
+    label: 'Fix Bug',
+    description: 'Fix a bug with context from node',
+    labelKey: 'command.fixBug',
+    descriptionKey: 'agent.command.fixBugDescription',
+    icon: Shield,
+  },
+  {
+    name: '/refactor',
+    label: 'Refactor',
+    description: 'Refactor with constraints from node',
+    labelKey: 'command.refactor',
+    descriptionKey: 'agent.command.refactorDescription',
+    icon: GitBranch,
+  },
+  {
+    name: '/test',
+    label: 'Add Tests',
+    description: 'Add tests based on acceptance criteria',
+    labelKey: 'command.addTest',
+    descriptionKey: 'agent.command.addTestDescription',
+    icon: Check,
+  },
 ]
 
 const SLASH_TO_COMMAND: Record<string, string> = {

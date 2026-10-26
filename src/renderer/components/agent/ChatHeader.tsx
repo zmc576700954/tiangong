@@ -75,7 +75,7 @@ export function ChatHeader({
             ) : (
               <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
             )}
-            <span className="truncate max-w-[80px]">{adapterName === 'auto' ? 'Auto' : adapterName || 'Select Agent'}</span>
+            <span className="truncate max-w-[80px]">{adapterName === 'auto' ? t('agent.adapter.auto') : adapterName || t('agent.adapter.select')}</span>
             <ChevronDown className="w-3 h-3 text-muted-foreground" />
           </button>
           {showAdapterMenu && (
@@ -89,8 +89,8 @@ export function ChatHeader({
                 )}
               >
                 <Zap className="w-3 h-3 text-amber-400" />
-                Auto
-                <span className="text-[10px] text-muted-foreground ml-auto">default</span>
+                {t('agent.adapter.auto')}
+                <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.default')}</span>
               </button>
               {adapters.map((a) => (
                 <button
@@ -115,7 +115,7 @@ export function ChatHeader({
                   )} />
                   {a.name}
                   {!a.installed && (
-                    <span className="text-[10px] text-muted-foreground ml-auto">not installed</span>
+                    <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.notInstalled')}</span>
                   )}
                 </button>
               ))}
@@ -146,7 +146,7 @@ export function ChatHeader({
         <button
           onClick={onToggleThreads}
           className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground"
-          title="Threads"
+          title={t('agent.header.threads')}
         >
           <List className="w-3.5 h-3.5" />
         </button>
@@ -154,7 +154,7 @@ export function ChatHeader({
           <button
             className="relative w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground text-xs"
             onClick={onOpenSubagents}
-            title="Subagent invocations"
+            title={t('agent.header.subagents')}
             data-testid="chat-header-subagents-btn"
           >
             <span aria-hidden>🤖</span>
@@ -169,7 +169,7 @@ export function ChatHeader({
           <button
             onClick={onOpenHistory}
             className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground"
-            title="History"
+            title={t('agent.header.history')}
           >
             <Clock className="w-3.5 h-3.5" />
           </button>
@@ -178,7 +178,7 @@ export function ChatHeader({
           <button
             onClick={onOpenCli}
             className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground"
-            title="Open in CLI"
+            title={t('agent.header.openInCli')}
           >
             <Terminal className="w-3.5 h-3.5" />
           </button>
@@ -206,7 +206,7 @@ export function ChatHeader({
         <button
           onClick={onToggleExpand}
           className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground ml-1"
-          title={expanded ? 'Collapse' : 'Expand'}
+          title={expanded ? t('agent.header.collapse') : t('agent.header.expand')}
         >
           {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
         </button>

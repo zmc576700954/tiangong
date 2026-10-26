@@ -13,6 +13,7 @@ import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml'
 import React, { useState, useCallback } from 'react'
 import { formatTime } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 
 // Register only the languages we need
 SyntaxHighlighter.registerLanguage('typescript', ts)
@@ -27,10 +28,12 @@ SyntaxHighlighter.registerLanguage('yaml', yaml)
 import { User, Bot, Loader2, AlertTriangle, Copy, RefreshCw, Check, Ban, Clock, Send, XCircle, ChevronDown, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { ToolCallRenderer } from './ToolCallRenderer'
+import type { TranslationKey } from '@shared/i18n'
 import type { ChatMessage, ContextRef, ToolCallBlock } from '@shared/types'
 
 /** Auto-fold long plain-text output (>20 lines) with expand/collapse */
 function CollapsibleOutput({ content, maxLines = 20 }: { content: string; maxLines?: number }) {
+  const { t } = useI18n()
   const lines = content.split('\n')
   const shouldFold = lines.length > maxLines
   const [expanded, setExpanded] = useState(false)
@@ -49,7 +52,7 @@ function CollapsibleOutput({ content, maxLines = 20 }: { content: string; maxLin
         onClick={() => setExpanded(!expanded)}
         className="text-[10px] text-muted-foreground hover:text-foreground mt-1"
       >
-        {expanded ? 'Show less' : `Show all ${lines.length} lines`}
+        {expanded ? t('agent.output.showLess') : t('agent.output.showAllLines', { count: lines.length })}
       </button>
     </div>
   )
@@ -79,6 +82,7 @@ function PreBlock({ children }: React.HTMLAttributes<HTMLPreElement>) {
 
 /** Module-level component to avoid re-creation on every render (prevents code block remounting) */
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { className?: string }) {
+  const { t } = useI18n()
   const match = /language-(\w+)/.exec(className || '')
   const codeStr = String(children).replace(/\n$/, '')
   const isBlock = codeStr.includes('\n') || !!match
@@ -102,7 +106,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
             onClick={handleCopy}
             className="text-[9px] text-muted-foreground hover:text-foreground"
           >
-            {copied ? 'Copied!' : 'Copy'}
+            {copied ? t('agent.output.copied') : t('agent.action.copy')}
           </button>
         </div>
         <div className="flex">
@@ -130,16 +134,24 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   )
 }
 
-const STATUS_ICONS: Record<string, { icon: React.ReactNode; label: string; className: string }> = {
-  queued: { icon: <Clock size={10} />, label: 'Queued', className: 'text-gray-400' },
-  sending: { icon: <Send size={10} />, label: 'Sending', className: 'text-blue-400' },
-  streaming: { icon: <Loader2 size={10} className="animate-spin" />, label: 'Streaming', className: 'text-blue-500' },
-  success: { icon: <Check size={10} />, label: 'Sent', className: 'text-green-500' },
-  error: { icon: <AlertTriangle size={10} />, label: 'Failed', className: 'text-red-500' },
-  permanently_failed: { icon: <XCircle size={10} />, label: 'Permanently failed', className: 'text-red-600' },
+/** 上下文引用类型 → 展示文案 */
+const REF_TYPE_KEYS: Record<ContextRef['type'], TranslationKey> = {
+  node: 'agent.refType.node',
+  file: 'agent.refType.file',
+  text: 'agent.refType.text',
+}
+
+const STATUS_ICONS: Record<string, { icon: React.ReactNode; labelKey: TranslationKey; className: string }> = {
+  queued: { icon: <Clock size={10} />, labelKey: 'agent.status.queued', className: 'text-gray-400' },
+  sending: { icon: <Send size={10} />, labelKey: 'agent.status.sending', className: 'text-blue-400' },
+  streaming: { icon: <Loader2 size={10} className="animate-spin" />, labelKey: 'agent.status.streaming', className: 'text-blue-500' },
+  success: { icon: <Check size={10} />, labelKey: 'agent.status.sent', className: 'text-green-500' },
+  error: { icon: <AlertTriangle size={10} />, labelKey: 'agent.status.failed', className: 'text-red-500' },
+  permanently_failed: { icon: <XCircle size={10} />, labelKey: 'agent.status.permanentlyFailed', className: 'text-red-600' },
 }
 
 function ProgressBlock({ data }: { data: unknown }) {
+  const { t } = useI18n()
   const { stage, label, current, total } = data as {
     stage?: string
     label?: string
@@ -151,7 +163,7 @@ function ProgressBlock({ data }: { data: unknown }) {
     <div className="my-2 space-y-1">
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         <Loader2 className="w-3 h-3 animate-spin" />
-        <span className="font-medium capitalize">{stage ?? 'running'}</span>
+        <span className="font-medium capitalize">{stage ?? t('agent.progress.running')}</span>
         {label && <span className="text-muted-foreground/70 truncate">{label}</span>}
       </div>
       {total !== undefined && total > 0 && (
@@ -167,6 +179,7 @@ function ProgressBlock({ data }: { data: unknown }) {
 }
 
 function ThinkingBlock({ data }: { data: unknown }) {
+  const { t } = useI18n()
   const { data: text } = data as { data?: string }
   const [expanded, setExpanded] = useState(false)
   if (!text) return null
@@ -177,7 +190,7 @@ function ThinkingBlock({ data }: { data: unknown }) {
         className="w-full flex items-center gap-2 px-2.5 py-1.5 bg-muted/50 hover:bg-muted transition-colors text-left text-xs text-muted-foreground"
       >
         {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        <span>Thinking...</span>
+        <span>{t('agent.message.thinking')}</span>
       </button>
       {expanded && (
         <div className="p-2.5 text-[11px] text-muted-foreground bg-background font-mono whitespace-pre-wrap">
@@ -194,6 +207,7 @@ function StructuredToolCallBlock({ data }: { data: unknown }) {
 }
 
 function ContextInjectionBlock({ data }: { data: unknown }) {
+  const { t } = useI18n()
   const { contextRefs, tokenEstimate } = data as {
     contextRefs?: ContextRef[]
     tokenEstimate?: number
@@ -206,9 +220,9 @@ function ContextInjectionBlock({ data }: { data: unknown }) {
         onClick={() => setExpanded(!expanded)}
         className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] hover:bg-blue-500/20 transition-colors"
       >
-        <span>已注入上下文</span>
+        <span>{t('agent.context.injected')}</span>
         {tokenEstimate !== undefined && (
-          <span className="text-blue-400/70">~{tokenEstimate} tokens</span>
+          <span className="text-blue-400/70">{t('agent.context.tokens', { count: tokenEstimate })}</span>
         )}
         {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
       </button>
@@ -216,7 +230,7 @@ function ContextInjectionBlock({ data }: { data: unknown }) {
         <div className="mt-1.5 space-y-1">
           {contextRefs.map((ref, i) => (
             <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span className="px-1 py-0.5 rounded bg-muted uppercase">{ref.type}</span>
+              <span className="px-1 py-0.5 rounded bg-muted uppercase">{t(REF_TYPE_KEYS[ref.type])}</span>
               <span className="truncate">{ref.label}</span>
             </div>
           ))}
@@ -227,6 +241,7 @@ function ContextInjectionBlock({ data }: { data: unknown }) {
 }
 
 function TextBlock({ data }: { data: unknown }) {
+  const { t } = useI18n()
   const { level, message, raw } = data as {
     level?: string
     message?: string
@@ -251,7 +266,7 @@ function TextBlock({ data }: { data: unknown }) {
           onClick={() => setShowRaw(!showRaw)}
           className="text-[10px] underline mt-1 text-muted-foreground hover:text-foreground"
         >
-          {showRaw ? 'Hide details' : 'Show details'}
+          {showRaw ? t('agent.details.hide') : t('agent.details.show')}
         </button>
       )}
       {showRaw && raw && (
@@ -262,6 +277,7 @@ function TextBlock({ data }: { data: unknown }) {
 }
 
 function MessageContextRefs({ refs, tokenEstimate }: { refs: ContextRef[]; tokenEstimate?: number }) {
+  const { t } = useI18n()
   const [expanded, setExpanded] = useState(false)
   if (!refs.length) return null
   return (
@@ -271,15 +287,15 @@ function MessageContextRefs({ refs, tokenEstimate }: { refs: ContextRef[]; token
         className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
       >
         {expanded ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-        <span>Context</span>
+        <span>{t('agent.context.label')}</span>
         <span className="text-muted-foreground/60">({refs.length})</span>
-        {tokenEstimate !== undefined && <span className="text-muted-foreground/60">~{tokenEstimate} tokens</span>}
+        {tokenEstimate !== undefined && <span className="text-muted-foreground/60">{t('agent.context.tokens', { count: tokenEstimate })}</span>}
       </button>
       {expanded && (
         <div className="mt-1.5 space-y-1">
           {refs.map((ref, i) => (
             <div key={i} className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <span className="px-1 py-0.5 rounded bg-muted uppercase">{ref.type}</span>
+              <span className="px-1 py-0.5 rounded bg-muted uppercase">{t(REF_TYPE_KEYS[ref.type])}</span>
               <span className="truncate">{ref.label}</span>
             </div>
           ))}
@@ -295,6 +311,7 @@ interface ChatBubbleProps {
 }
 
 export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
+  const { t } = useI18n()
   const isUser = message.role === 'user'
   const isError = message.status === 'error'
   const isAborted = message.status === 'aborted'
@@ -327,12 +344,12 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
       </div>
       <div className="flex-1 min-w-0">
         <div className="text-[10px] text-muted-foreground mb-1">
-          {isUser ? 'You' : message.adapterName ?? 'Agent'}
+          {isUser ? t('agent.message.you') : message.adapterName ?? 'Agent'}
           <span className="text-muted-foreground/50 ml-1">
             {formatTime(message.timestamp)}
           </span>
           {message.status && STATUS_ICONS[message.status] && (
-            <span className={`inline-flex items-center gap-0.5 text-[10px] ml-1 ${STATUS_ICONS[message.status].className}`} title={STATUS_ICONS[message.status].label}>
+            <span className={`inline-flex items-center gap-0.5 text-[10px] ml-1 ${STATUS_ICONS[message.status].className}`} title={t(STATUS_ICONS[message.status].labelKey)}>
               {STATUS_ICONS[message.status].icon}
             </span>
           )}
@@ -360,7 +377,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
                     onClick={() => setShowRawError(!showRawError)}
                     className="text-[10px] text-muted-foreground hover:text-foreground underline"
                   >
-                    {showRawError ? '隐藏原始错误' : '查看原始错误'}
+                    {showRawError ? t('agent.error.hideRaw') : t('agent.error.showRaw')}
                   </button>
                   {showRawError && (
                     <pre className="mt-1 p-2 text-[10px] bg-red-950/30 rounded overflow-x-auto text-red-300 select-text">
@@ -427,7 +444,7 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
         {isAborted && (
           <div className="flex items-center gap-1 mt-1 text-[10px] text-muted-foreground/70">
             <Ban className="w-3 h-3" />
-            <span>已终止</span>
+            <span>{t('agent.message.aborted')}</span>
           </div>
         )}
 
@@ -437,19 +454,19 @@ export function ChatBubble({ message, onRetry }: ChatBubbleProps) {
             <button
               onClick={handleCopy}
               className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              title="Copy"
+              title={t('agent.action.copy')}
             >
               {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-              {copied ? 'Copied' : 'Copy'}
+              {copied ? t('agent.action.copied') : t('agent.action.copy')}
             </button>
             {(isError || isAborted) && onRetry && (
               <button
                 onClick={handleRetry}
                 className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title="Retry"
+                title={t('common.retry')}
               >
                 <RefreshCw className="w-3 h-3" />
-                Retry
+                {t('common.retry')}
               </button>
             )}
           </div>
@@ -466,6 +483,7 @@ export function RunningIndicator({
   adapterName?: string
   currentOperation?: string
 }) {
+  const { t } = useI18n()
   return (
     <div className="flex gap-2 items-center py-1">
       <div className="w-5 h-5 rounded-full bg-purple-500/20 flex items-center justify-center">
@@ -474,7 +492,7 @@ export function RunningIndicator({
       <span className="text-xs text-amber-400">
         {currentOperation
           ? `${adapterName ?? 'Agent'} ${currentOperation}`
-          : `${adapterName ?? 'Agent'} is working...`}
+          : t('agent.running.working', { agent: adapterName ?? 'Agent' })}
       </span>
     </div>
   )

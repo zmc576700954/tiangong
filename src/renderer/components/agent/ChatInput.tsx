@@ -5,6 +5,7 @@ import { SlashCommandMenu } from './SlashCommandMenu'
 import type { SlashCommand } from './promptTemplates'
 import { generatePromptTemplate } from './promptTemplates'
 import { MentionSearchPopup } from './MentionSearchPopup'
+import { useI18n } from '../../i18n/useI18n'
 import type { GraphNode } from '@shared/types'
 import type { ContextRef } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
@@ -29,6 +30,7 @@ interface ChatInputProps {
 const DRAFT_KEY_PREFIX = 'bizgraph:draft:'
 
 export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, attachedContexts, projectPath, selectedNode, containerHeight, initialPrompt, onPromptConsumed, threadId }: ChatInputProps) {
+  const { t } = useI18n()
   const [value, setValue] = useState(() => {
     if (threadId) {
       const saved = localStorage.getItem(`${DRAFT_KEY_PREFIX}${threadId}`)
@@ -169,7 +171,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           value={value}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder="Type a message, / for commands, @ to add context..."
+          placeholder={t('agent.input.placeholder')}
           disabled={disabled && !isRunning}
           rows={1}
           className={cn(
@@ -183,7 +185,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           <button
             onClick={onStop}
             className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 transition-colors bg-red-600 text-white hover:bg-red-700 self-end"
-            title="Stop"
+            title={t('agent.action.stop')}
           >
             <Square className="w-3.5 h-3.5" />
           </button>
@@ -203,7 +205,7 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
         )}
       </div>
       <div className="flex justify-between mt-1.5 shrink-0">
-        <span className="text-[9px] text-muted-foreground/50">Shift+Enter for newline</span>
+        <span className="text-[9px] text-muted-foreground/50">{t('agent.input.shiftEnterHint')}</span>
       </div>
     </div>
   )

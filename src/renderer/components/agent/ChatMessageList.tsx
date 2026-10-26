@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { MessageSquare } from 'lucide-react'
 import { ChatBubble, RunningIndicator } from './ChatBubble'
+import { useI18n } from '../../i18n/useI18n'
 import type { ChatMessage } from '@shared/types'
 
 interface ChatMessageListProps {
@@ -12,6 +13,7 @@ interface ChatMessageListProps {
 }
 
 export function ChatMessageList({ messages, isRunning, adapterName, onRetry, currentOperation }: ChatMessageListProps) {
+  const { t } = useI18n()
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // Compute a content signature so we also scroll on streaming content growth
@@ -27,9 +29,9 @@ export function ChatMessageList({ messages, isRunning, adapterName, onRetry, cur
       <div className="flex-1 flex items-center justify-center text-center px-6 py-12">
         <div>
           <MessageSquare className="w-8 h-8 mx-auto mb-2 text-muted-foreground/30" />
-          <p className="text-sm text-muted-foreground">Start a conversation</p>
+          <p className="text-sm text-muted-foreground">{t('agent.chat.startConversation')}</p>
           <p className="text-xs text-muted-foreground/60 mt-1">
-            Type a message, use / for commands, or @ to add context
+            {t('agent.chat.startHint')}
           </p>
         </div>
       </div>
