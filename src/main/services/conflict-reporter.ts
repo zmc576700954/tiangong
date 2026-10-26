@@ -131,10 +131,12 @@ export class ConflictReporter {
           : 'info'
       issues.push({
         kind: 'realtime-conflict',
+        code: 'realtime-conflict',
         severity,
         nodeId: r.nodeId,
         message: formatLintMessage(r),
         hint: hintForKind(r.kind),
+        fixable: false,
       })
     }
     return issues
