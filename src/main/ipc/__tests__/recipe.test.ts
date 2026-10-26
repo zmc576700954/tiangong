@@ -18,6 +18,12 @@ import type * as NodeFs from 'node:fs'
 
 const mockUserDataPath = '/tmp/bizgraph-test-ipc'
 
+/** 内置 Recipe 桩件——真实内置资源由 builtin.test.ts 单独覆盖。 */
+vi.mock('../../recipes/builtin', () => ({
+  getBuiltinRecipeDir: () => '/tmp/bizgraph-test-ipc/builtin',
+  loadBuiltInRecipes: vi.fn(async () => []),
+}))
+
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn(() => mockUserDataPath),

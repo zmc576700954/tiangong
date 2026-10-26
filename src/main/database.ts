@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 11
+const CURRENT_SCHEMA_VERSION = 12
 
 interface TableSchema {
   name: string
@@ -490,7 +490,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         version TEXT NOT NULL,
         description TEXT,
         tags TEXT,
-        source TEXT NOT NULL CHECK(source IN ('user','project')),
+        source TEXT NOT NULL CHECK(source IN ('user','project','builtin')),
         source_path TEXT NOT NULL,
         yaml_text TEXT NOT NULL,
         inputs_schema TEXT,

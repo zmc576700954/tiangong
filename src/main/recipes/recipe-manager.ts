@@ -21,13 +21,14 @@ import { app } from 'electron'
 import { createLogger } from '../shared/logger'
 import { BizGraphError, ErrorCode } from '../errors'
 import { parseRecipe, validateRecipeGraph } from './yaml-loader'
+import { loadBuiltInRecipes } from './builtin'
 import type { RecipeDefinition } from '@shared/types/recipe'
 import type Database from 'better-sqlite3'
 
 const logger = createLogger('RecipeManager')
 
-/** Recipe 加载来源（决定覆盖优先级：project > user）。 */
-export type RecipeSource = 'user' | 'project'
+/** Recipe 加载来源（决定覆盖优先级：project > user > builtin）。 */
+export type RecipeSource = 'user' | 'project' | 'builtin'
 
 /** RecipeManager 的最小依赖接口。便于测试时注入 mock database。 */
 export interface RecipeManagerDeps {
@@ -52,9 +53,11 @@ export class RecipeManager {
     this.validateGraphs()
   }
 
-  /** 从两个目录加载所有 Recipe。失败的文件被记录到 logger，但不会抛错。 */
+  /** 从三个来源加载所有 Recipe。失败的文件被记录到 logger，但不会抛错。 */
   async loadAll(): Promise<void> {
     this.cache.clear()
+    // 顺序即覆盖优先级：内置 < 用户级 < 项目级（同 id 后加载的覆盖先加载的）。
+    await this.scanBuiltinRecipes()
     await this.scanUserRecipes()
     await this.scanProjectRecipes()
     this.validateGraphs()
@@ -81,6 +84,15 @@ export class RecipeManager {
   private async scanUserRecipes(): Promise<void> {
     const userDir = path.join(app.getPath('userData'), 'recipes')
     await this.scanDirectory(userDir, 'user')
+  }
+
+  /** 内置 Recipe（随应用打包）。id 带 `builtin-` 前缀，用户同名 recipe 可覆盖。 */
+  private async scanBuiltinRecipes(): Promise<void> {
+    for (const { def, yamlText } of await loadBuiltInRecipes()) {
+      const enriched: RecipeDefinition = { ...def, source: 'builtin' }
+      this.upsertRecipeRow(enriched, yamlText)
+      this.cache.set(enriched.id, enriched)
+    }
   }
 
   private async scanProjectRecipes(): Promise<void> {

@@ -18,6 +18,16 @@ const mockUserDataPath = '/tmp/bizgraph-test'
 const userRecipes: Map<string, string> = new Map()
 const projectRecipes: Map<string, string> = new Map()
 
+/** 内置 Recipe 桩件——真实内置资源由 builtin.test.ts 单独覆盖。 */
+const { builtinRecipes } = vi.hoisted(() => ({
+  builtinRecipes: [] as Array<{ def: { id: string; name: string; version: '1' }; yamlText: string }>,
+}))
+
+vi.mock('../builtin', () => ({
+  getBuiltinRecipeDir: () => '/tmp/bizgraph-test/builtin',
+  loadBuiltInRecipes: vi.fn(async () => builtinRecipes),
+}))
+
 vi.mock('electron', () => ({
   app: {
     getPath: vi.fn((name: string) => {
@@ -117,6 +127,7 @@ steps:
 beforeEach(() => {
   userRecipes.clear()
   projectRecipes.clear()
+  builtinRecipes.length = 0
 })
 
 describe('RecipeManager', () => {
@@ -152,6 +163,25 @@ describe('RecipeManager', () => {
     expect(mgr.list()).toHaveLength(1)
     expect(mgr.get('a')?.source).toBe('project')
     expect(mgr.get('a')?.description).toBe('from project')
+  })
+
+  it('user-level overrides built-in for the same id', async () => {
+    builtinRecipes.push({ def: { id: 'a', name: 'Builtin A', version: '1' }, yamlText: 'id: a' })
+    userRecipes.set(`${mockUserDataPath}/recipes/a.yaml`, validYaml('a'))
+
+    const mgr = new RecipeManager({ db: setupDb() })
+    await mgr.loadAll()
+
+    expect(mgr.get('a')?.source).toBe('user')
+  })
+
+  it('loads built-in recipes with source=builtin', async () => {
+    builtinRecipes.push({ def: { id: 'builtin-x', name: 'Builtin X', version: '1' }, yamlText: 'id: builtin-x' })
+
+    const mgr = new RecipeManager({ db: setupDb() })
+    await mgr.loadAll()
+
+    expect(mgr.get('builtin-x')?.source).toBe('builtin')
   })
 
   it('a single bad YAML does not crash loading', async () => {

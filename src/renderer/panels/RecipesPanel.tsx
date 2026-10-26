@@ -43,10 +43,11 @@ interface Props {
   }
 }
 
-/** 来源徽标文案——user / project 是存储值，展示时按语言替换 */
-const SOURCE_LABEL_KEYS: Record<'user' | 'project', TranslationKey> = {
+/** 来源徽标文案——user / project / builtin 是存储值，展示时按语言替换 */
+const SOURCE_LABEL_KEYS: Record<'user' | 'project' | 'builtin', TranslationKey> = {
   user: 'recipes.source.user',
   project: 'recipes.source.project',
+  builtin: 'recipes.source.builtin',
 }
 
 /** 运行状态徽标文案 */

@@ -141,8 +141,8 @@ export interface RecipeDefinition {
   description?: string
   /** 标签，用于 UI 过滤。 */
   tags?: string[]
-  /** 来源标识：'user'（userData） / 'project'（项目 .bizgraph/recipes/）。运行时派生，不存库。 */
-  source?: 'user' | 'project'
+  /** 来源标识：'user'（userData）/ 'project'（项目 .bizgraph/recipes/）/ 'builtin'（随包内置）。运行时派生，不存库。 */
+  source?: 'user' | 'project' | 'builtin'
   /** 来源文件绝对路径。运行时派生，不存库。 */
   sourcePath?: string
   /** 入参 schema。 */

@@ -526,7 +526,8 @@ export function stringifyRecipe(def: RecipeDefinition): string {
 // 模板替换（运行时）：${input.x} / ${outputs.x.y}
 // ============================================
 
-const TEMPLATE_INPUT_RE = /\$\{input\.([a-z][a-z0-9_]*)\}/g
+// input 名必须是 kebab-case（validateInputSpec 强制），所以模板里也要允许 `-`。
+const TEMPLATE_INPUT_RE = /\$\{input\.([a-z][a-z0-9_-]*)\}/g
 const TEMPLATE_OUTPUT_RE = /\$\{outputs\.([a-z][a-z0-9-]*)(?:\.([a-zA-Z0-9_.-]+))?\}/g
 
 /**
