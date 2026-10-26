@@ -155,6 +155,51 @@ function startErrorServer(status: number): Promise<{ port: number; close: () => 
   })
 }
 
+/** Raw SSE server — lets a test control the exact bytes on the wire. */
+function startRawSseServer(body: string): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      res.write(body)
+      res.end()
+    })
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      if (typeof addr !== 'object' || addr === null) {
+        reject(new Error('No port'))
+        return
+      }
+      resolve({ port: addr.port, close: () => new Promise<void>(r => server.close(() => r())) })
+    })
+  })
+}
+
+/** Server that accepts the TCP connection but never answers — used for the timeout test. */
+function startSilentServer(): Promise<{ port: number; close: () => Promise<void> }> {
+  return new Promise((resolve, reject) => {
+    const sockets: net.Socket[] = []
+    const server = net.createServer((sock) => {
+      sockets.push(sock)
+    })
+    server.on('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address()
+      if (typeof addr !== 'object' || addr === null) {
+        reject(new Error('No port'))
+        return
+      }
+      resolve({
+        port: addr.port,
+        close: () => new Promise<void>((r) => {
+          for (const s of sockets) s.destroy()
+          server.close(() => r())
+        }),
+      })
+    })
+  })
+}
+
 describe('A2AClient — happy path', () => {
   let remote: RemoteHandle | null = null
   let errorServer: { port: number; close: () => Promise<void> } | null = null
@@ -285,6 +330,101 @@ describe('A2AClient — abort signal', () => {
     ).rejects.toThrow()
     await remote.server.destroy()
     remote.taskStore.destroy()
+  })
+})
+
+describe('A2AClient — deadline and terminal-state handling', () => {
+  let rawServer: { port: number; close: () => Promise<void> } | null = null
+  let silentServer: { port: number; close: () => Promise<void> } | null = null
+
+  afterEach(async () => {
+    if (rawServer) await rawServer.close()
+    if (silentServer) await silentServer.close()
+    rawServer = null
+    silentServer = null
+  })
+
+  it('rejects when the remote never answers (timeout is enforced)', async () => {
+    silentServer = await startSilentServer()
+    const client = new A2AClient({
+      ...baseRemote,
+      endpoint: `http://127.0.0.1:${silentServer.port}`,
+      apiKey,
+      timeoutMs: 300,
+    })
+    await expect(
+      client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+    ).rejects.toThrow(/timed out|cancelled/i)
+  })
+
+  it('rejects when the stream ends without a terminal status event', async () => {
+    rawServer = await startRawSseServer('event: status\ndata: {"state":"working"}\n\n')
+    const client = new A2AClient({
+      ...baseRemote,
+      endpoint: `http://127.0.0.1:${rawServer.port}`,
+      apiKey,
+    })
+    await expect(
+      client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+    ).rejects.toThrow(/terminal status/i)
+  })
+
+  it('rejects when the remote cancels the task', async () => {
+    rawServer = await startRawSseServer('event: status\ndata: {"state":"canceled"}\n\n')
+    const client = new A2AClient({
+      ...baseRemote,
+      endpoint: `http://127.0.0.1:${rawServer.port}`,
+      apiKey,
+    })
+    await expect(
+      client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+    ).rejects.toThrow(/canceled/i)
+  })
+
+  it('rejects when the remote asks for input (one-shot calls cannot answer)', async () => {
+    rawServer = await startRawSseServer('event: status\ndata: {"state":"input-required"}\n\n')
+    const client = new A2AClient({
+      ...baseRemote,
+      endpoint: `http://127.0.0.1:${rawServer.port}`,
+      apiKey,
+    })
+    await expect(
+      client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+    ).rejects.toThrow(/input/i)
+  })
+
+  it('applies the SSRF guard inside call()', async () => {
+    const client = new A2AClient({
+      ...baseRemote,
+      endpoint: 'http://10.0.0.1:8089',
+      devAllowLocalhost: false,
+    })
+    await expect(
+      client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+    ).rejects.toMatchObject({ code: 'A2A_SSRF_BLOCKED' })
+  })
+})
+
+describe('A2A server — bearer token comparison', () => {
+  it('answers 401 (not 500) when the token has a different byte length', async () => {
+    const remote = await setupRemote((_text) => [
+      { type: 'complete', data: '', timestamp: Date.now() },
+    ])
+    try {
+      const client = new A2AClient({
+        ...baseRemote,
+        endpoint: `http://127.0.0.1:${remote.port}`,
+        // 多字节 token：字符数与配置一致但字节数不同 —— 旧实现会在
+        // timingSafeEqual 里抛 RangeError → 500。
+        apiKey: '测试-测试-测试-测试-测试',
+      })
+      await expect(
+        client.call({ role: 'user', parts: [{ type: 'text', text: 'x' }] }),
+      ).rejects.toThrow(/401|auth/i)
+    } finally {
+      await remote.server.destroy()
+      remote.taskStore.destroy()
+    }
   })
 })
 

@@ -22,6 +22,13 @@ import { readSettings } from './settings'
 
 const logger = createLogger('Main')
 
+// Node 20 默认把未处理的 promise rejection 当作 uncaught exception 抛出 ——
+// 主进程会直接退出。A2A 的 SSRF 校验、远端调用超时等都会以 rejection 形式冒泡，
+// 单个远端代理不可达不应该拖垮整个应用。这里记录后放行。
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection in main process:', reason)
+})
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 // 窗口管理器

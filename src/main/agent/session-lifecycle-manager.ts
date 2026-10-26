@@ -233,7 +233,7 @@ export class SessionLifecycleManager {
           if (state) {
             state.terminationReason = 'success'
           }
-          await this.cleanupSessionResources(sessionId)
+          await this.cleanupSessionResources(sessionId, 'success')
           return
         }
 
@@ -486,11 +486,14 @@ export class SessionLifecycleManager {
    * Uses scope rollback (not commit) since the session may have left partial
    * writes behind. Idempotent via cleanupInProgress mutex.
    */
-  async cleanupSessionResources(sessionId: string): Promise<void> {
+  async cleanupSessionResources(
+    sessionId: string,
+    outcome: 'success' | 'abnormal' = 'abnormal',
+  ): Promise<void> {
     if (this.cleanupInProgress.has(sessionId)) return
     this.cleanupInProgress.add(sessionId)
     try {
-      await this._doCleanupSessionResources(sessionId)
+      await this._doCleanupSessionResources(sessionId, outcome)
     } finally {
       this.cleanupInProgress.delete(sessionId)
     }
@@ -500,7 +503,10 @@ export class SessionLifecycleManager {
    * Inner cleanup that assumes the caller already holds the cleanup lock.
    * Always clears maps and rolls back any active sandbox.
    */
-  private async _doCleanupSessionResources(sessionId: string): Promise<void> {
+  private async _doCleanupSessionResources(
+    sessionId: string,
+    outcome: 'success' | 'abnormal' = 'abnormal',
+  ): Promise<void> {
     const state = this.sessionStates.get(sessionId)
 
     const pendingOps: Promise<void>[] = []
@@ -570,6 +576,10 @@ export class SessionLifecycleManager {
     this.sessionBroadcastNames.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
     this.router.unbind(sessionId)
+
+    // 通知外部（AgentManager）同步它自己的镜像 —— 否则 manager.sessionStates
+    // 会一直留着已经结束的会话。
+    this.callbacks.onSessionCleanedUp?.(sessionId, outcome)
   }
 
   /**

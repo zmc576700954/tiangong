@@ -486,7 +486,13 @@ export async function registerIpcHandlers(): Promise<void> {
   let a2aController: A2AController | null = null
   try {
     const { createA2ASessionStarters, wireA2ASubsystem } = await import('./a2a/wiring')
-    const starters = createA2ASessionStarters(agentManager)
+    // A2A 入站会话的工作目录 = 当前打开的项目目录。
+    // ScopeGuard 的沙箱以工作目录为监控根目录：取项目目录，远程任务对项目的
+    // 写入才落在沙箱视野内（verifyOnly + 空白名单 → 越界即回滚）。
+    const starters = createA2ASessionStarters(agentManager, () => {
+      const projectPath = graphService.getMostRecentProjectPath()
+      return projectPath ? path.resolve(projectPath) : undefined
+    })
     a2aController = wireA2ASubsystem({
       subagentManager,
       messageSendSession: starters.messageSendSession,

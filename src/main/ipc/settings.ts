@@ -10,6 +10,8 @@ import { createLogger } from '../shared/logger'
 import type { ContextWaterline } from '../memory/context-waterline'
 import { getLocale, resolveLocale, setLocale } from '@shared/i18n'
 import type { Locale } from '@shared/i18n/types'
+import type { BizGraphSettings } from '@shared/types/agent'
+import type { A2ARemoteAgent } from '@shared/types/a2a'
 
 const logger = createLogger('SettingsIPC')
 
@@ -111,22 +113,39 @@ export function registerSettingsHandlers(
         ...k,
         key: k.key ? maskApiKey(k.key) : '',
       })),
+      // A2A 的 bearer token 同样是密钥：server token 就是 verifyBearer 比对的值，
+      // 远端 agent token 会随每个请求头发出去 —— 一律遮蔽后再交给渲染进程。
+      a2aServer: settings.a2aServer
+        ? {
+            ...settings.a2aServer,
+            apiKey: settings.a2aServer.apiKey ? maskApiKey(settings.a2aServer.apiKey) : '',
+          }
+        : undefined,
+      a2a: settings.a2a
+        ? {
+            ...settings.a2a,
+            remoteAgents: settings.a2a.remoteAgents.map((ra) => ({
+              ...ra,
+              apiKey: ra.apiKey ? maskApiKey(ra.apiKey) : undefined,
+            })),
+          }
+        : undefined,
     }
   })
 
-  typedHandle('settings:write', async (_, settings) => {
-    if (!settings || typeof settings !== 'object') {
+  typedHandle('settings:write', async (_, incoming) => {
+    if (!incoming || typeof incoming !== 'object') {
       throw new IpcError('settings must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
     }
-    if (settings.apiKeys && !Array.isArray(settings.apiKeys)) {
+    if (incoming.apiKeys && !Array.isArray(incoming.apiKeys)) {
       throw new IpcError('apiKeys must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     // 校验 CLI 工具命令：阻止渲染进程把 command 指向任意可执行文件（H2）
-    if (settings.cliTools !== undefined) {
-      if (!Array.isArray(settings.cliTools)) {
+    if (incoming.cliTools !== undefined) {
+      if (!Array.isArray(incoming.cliTools)) {
         throw new IpcError('cliTools must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
       }
-      for (const tool of settings.cliTools) {
+      for (const tool of incoming.cliTools) {
         if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string') {
           throw new IpcError('Each cliTool must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
         }
@@ -134,11 +153,11 @@ export function registerSettingsHandlers(
       }
     }
     // 校验 MCP server 命令与参数：command 必须安全、args 必须全为字符串
-    if (settings.mcpServers !== undefined) {
-      if (!Array.isArray(settings.mcpServers)) {
+    if (incoming.mcpServers !== undefined) {
+      if (!Array.isArray(incoming.mcpServers)) {
         throw new IpcError('mcpServers must be an array', ErrorCode.IPC_INVALID_ARGUMENT)
       }
-      for (const server of settings.mcpServers) {
+      for (const server of incoming.mcpServers) {
         if (!server || typeof server !== 'object' || typeof server.name !== 'string') {
           throw new IpcError('Each mcpServer must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
         }
@@ -149,8 +168,11 @@ export function registerSettingsHandlers(
         assertSafeArgs(server.args as string[], `mcpServer '${server.name}'`)
       }
     }
-    if (Array.isArray(settings.apiKeys)) {
-      for (const k of settings.apiKeys) {
+    const { readSettings, writeSettings } = await import('../settings')
+    const current = await readSettings()
+
+    if (Array.isArray(incoming.apiKeys)) {
+      for (const k of incoming.apiKeys) {
         if (!k || typeof k !== 'object' || typeof k.provider !== 'string' || typeof k.key !== 'string') {
           throw new IpcError('Each apiKey must have {provider: string, key: string}', ErrorCode.IPC_INVALID_ARGUMENT)
         }
@@ -159,23 +181,53 @@ export function registerSettingsHandlers(
       // The renderer only sees masked keys (e.g. "sk-****abcd"), so writing them
       // back would overwrite the real values. Read the current decrypted keys and
       // keep the existing value for any masked entry.
-      const { readSettings } = await import('../settings')
-      const current = await readSettings()
-      for (const incoming of settings.apiKeys) {
-        if (MASKED_KEY_PATTERN.test(incoming.key)) {
-          const existingPlain = current.apiKeys.find((k) => k.provider === incoming.provider)
+      const preserved: typeof incoming.apiKeys = []
+      for (const k of incoming.apiKeys) {
+        if (MASKED_KEY_PATTERN.test(k.key)) {
+          const existingPlain = current.apiKeys.find((c) => c.provider === k.provider)
           if (existingPlain && existingPlain.key) {
-            // writeSettings will handle encryption
-            incoming.key = existingPlain.key
+            preserved.push({ ...k, key: existingPlain.key })
+            continue
           }
+          // 库里没有对应的真实 key —— 遮蔽值不能落盘，直接丢弃这条。
+          continue
         }
+        preserved.push({ ...k })
       }
+      incoming = { ...incoming, apiKeys: preserved }
     }
-    const { writeSettings } = await import('../settings')
-    await writeSettings(settings)
+
+    // A2A server token：渲染进程回传的是遮蔽值 → 保留库里真实值。
+    let a2aServer = current.a2aServer
+    if (incoming.a2aServer !== undefined) {
+      const mergedSrv = { ...current.a2aServer, ...incoming.a2aServer }
+      if (mergedSrv.apiKey !== undefined && MASKED_KEY_PATTERN.test(mergedSrv.apiKey)) {
+        mergedSrv.apiKey = current.a2aServer?.apiKey ?? ''
+      }
+      a2aServer = mergedSrv
+    }
+
+    // A2A 远端 agent 列表：整体替换，但逐个保留被遮蔽的 apiKey。
+    let a2a = current.a2a
+    if (incoming.a2a !== undefined) {
+      const incomingAgents = incoming.a2a.remoteAgents ?? []
+      const remoteAgents = incomingAgents.map((ra: A2ARemoteAgent) => {
+        if (ra.apiKey !== undefined && MASKED_KEY_PATTERN.test(ra.apiKey)) {
+          const old = current.a2a?.remoteAgents.find((c) => c.name === ra.name)
+          return { ...ra, apiKey: old?.apiKey }
+        }
+        return { ...ra }
+      })
+      a2a = { ...current.a2a, ...incoming.a2a, remoteAgents }
+    }
+
+    // 写入方可能只提交部分字段（例如 A2A 面板只写 a2aServer）——
+    // 整体覆盖会把 apiKeys / mcpServers / locale 等全部清空，这里做顶层合并。
+    const merged = { ...current, ...incoming, a2aServer, a2a } as BizGraphSettings
+    await writeSettings(merged)
 
     // 语言变更要立刻生效：更新主进程运行时状态，并推给所有窗口
-    const nextLocale = resolveLocale(settings.locale)
+    const nextLocale = resolveLocale(merged.locale)
     if (nextLocale !== getLocale()) {
       setLocale(nextLocale)
       broadcastLocale(nextLocale)

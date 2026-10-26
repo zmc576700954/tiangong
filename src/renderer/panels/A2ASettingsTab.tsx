@@ -40,7 +40,7 @@ interface Props {
     'a2a:deleteRemoteAgent': (name: string) => Promise<{ success: boolean }>
     'a2a:testServerConfig': (cfg: A2AServerConfig) => Promise<{ valid: boolean; errors: string[] }>
     'settings:read': () => Promise<{ a2aServer?: A2AServerConfig; a2a?: { remoteAgents: A2ARemoteAgent[] } }>
-    'settings:write': (s: unknown) => Promise<void>
+    'settings:write': (s: { a2aServer?: A2AServerConfig }) => Promise<void>
     onA2AServerStatusChange?: (cb: (status: A2AServerStatus) => void) => () => void
   }
 }
@@ -59,12 +59,30 @@ const DEFAULT_AGENT_CARD: A2AAgentCard = {
   defaultOutputModes: ['text'],
   skills: [],
 }
-void DEFAULT_AGENT_CARD // reserved for future "Reset card" button
+
+/**
+ * 新建 A2A Server 配置时的初始值。
+ *
+ * settings 里默认**没有** a2aServer（区分「没配过」和「配了但取默认值」），
+ * 所以面板必须自己给一份初始值 —— 否则这里只会显示「未配置」，用户永远
+ * 建不出配置，A2A Server 也就永远启不起来。
+ */
+function createDefaultServerConfig(): A2AServerConfig {
+  return {
+    enabled: false,
+    port: 8089,
+    bindAddress: '127.0.0.1',
+    apiKey: '',
+    agentCard: { ...DEFAULT_AGENT_CARD },
+  }
+}
 
 export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
   const api = getApi(apiProp)
   const { t } = useI18n()
   const [serverCfg, setServerCfg] = useState<A2AServerConfig | null>(null)
+  /** settings 里是否已经存过 a2aServer 配置（false = 还没配过，表单只是初始值）。 */
+  const [serverConfigured, setServerConfigured] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [status, setStatus] = useState<A2AServerStatus>({
     running: false, activeTasks: 0, completedTasks: 0, failedTasks: 0,
@@ -89,7 +107,9 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
     if (!api) return
     try {
       const s = await api['settings:read']()
-      setServerCfg(s.a2aServer ?? null)
+      // 没配过 → 用初始值填表，用户保存后配置才真正落盘。
+      setServerConfigured(!!s.a2aServer)
+      setServerCfg(s.a2aServer ?? createDefaultServerConfig())
     } catch { /* keep previous */ }
   }
 
@@ -106,10 +126,11 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
   }, [])
 
   const saveServerCfg = async (): Promise<void> => {
-    if (!api || !serverCfg) return
+    if (!api) return
+    const current = serverCfg ?? createDefaultServerConfig()
     const next: A2AServerConfig = {
-      ...serverCfg,
-      apiKey: apiKeyInput || serverCfg.apiKey,
+      ...current,
+      apiKey: apiKeyInput || current.apiKey,
     }
     const test = await api['a2a:testServerConfig'](next)
     if (!test.valid) {
@@ -119,6 +140,7 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
     try {
       await api['settings:write']({ a2aServer: next })
       setServerCfg(next)
+      setServerConfigured(true)
       setApiKeyInput('')
       toastSuccess(t('settings.a2a.toast.configSaved'))
       void refreshStatus()
@@ -129,9 +151,13 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
 
   const startServer = async (): Promise<void> => {
     if (!api) return
-    const r = await api['a2a:startServer']()
-    if (r.success) toastSuccess(t('settings.a2a.toast.started', { port: r.port ?? '?' }))
-    else toastError(t('settings.a2a.toast.startFailed', { error: r.error ?? 'unknown' }))
+    try {
+      const r = await api['a2a:startServer']()
+      if (r.success) toastSuccess(t('settings.a2a.toast.started', { port: r.port ?? '?' }))
+      else toastError(t('settings.a2a.toast.startFailed', { error: r.error ?? 'unknown' }))
+    } catch (err) {
+      toastError(t('settings.a2a.toast.startFailed', { error: (err as Error).message }))
+    }
     void refreshStatus()
   }
 
@@ -213,6 +239,9 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
         : t('settings.a2a.status.running', { address: status.bindAddress ?? '?', port: status.port ?? '?' }))
     : t('settings.a2a.status.stopped')
 
+  // 未配置时也展示表单（用初始值填充）—— 否则用户无法创建 A2A Server 配置。
+  const effectiveCfg = serverCfg ?? createDefaultServerConfig()
+
   return (
     <div className="space-y-5 relative">
       {/* A2A Server */}
@@ -230,18 +259,19 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
           </span>
         </div>
 
-        {serverCfg === null ? (
-          <div className="text-xs text-muted-foreground italic p-3 rounded border bg-muted/20">
+        {!serverConfigured && (
+          <div className="text-xs text-muted-foreground italic p-3 rounded border bg-muted/20 mb-2">
             {t('settings.a2a.server.notConfigured')}
           </div>
-        ) : (
-          <div className="space-y-2 p-3 rounded border bg-muted/20">
+        )}
+
+        <div className="space-y-2 p-3 rounded border bg-muted/20">
             <div className="flex items-center gap-2 text-xs">
               <label className="w-20 text-muted-foreground">{t('settings.a2a.field.enabled')}</label>
               <input
                 type="checkbox"
-                checked={serverCfg.enabled}
-                onChange={(e) => setServerCfg({ ...serverCfg, enabled: e.target.checked })}
+                checked={effectiveCfg.enabled}
+                onChange={(e) => setServerCfg({ ...effectiveCfg, enabled: e.target.checked })}
               />
             </div>
             <div className="flex items-center gap-2 text-xs">
@@ -250,16 +280,16 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
                 type="number"
                 min={1}
                 max={65535}
-                value={serverCfg.port}
-                onChange={(e) => setServerCfg({ ...serverCfg, port: Number(e.target.value) })}
+                value={effectiveCfg.port}
+                onChange={(e) => setServerCfg({ ...effectiveCfg, port: Number(e.target.value) })}
                 className="flex-1 px-2 py-1 border rounded bg-background"
               />
             </div>
             <div className="flex items-center gap-2 text-xs">
               <label className="w-20 text-muted-foreground">{t('settings.a2a.field.bind')}</label>
               <select
-                value={serverCfg.bindAddress}
-                onChange={(e) => setServerCfg({ ...serverCfg, bindAddress: e.target.value as '127.0.0.1' | '0.0.0.0' })}
+                value={effectiveCfg.bindAddress}
+                onChange={(e) => setServerCfg({ ...effectiveCfg, bindAddress: e.target.value as '127.0.0.1' | '0.0.0.0' })}
                 className="flex-1 px-2 py-1 border rounded bg-background"
               >
                 <option value="127.0.0.1">{t('settings.a2a.bind.loopback')}</option>
@@ -271,7 +301,7 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
               <input
                 type="password"
                 value={apiKeyInput}
-                placeholder={serverCfg.apiKey ? t('settings.a2a.apiKey.current') : t('settings.a2a.apiKey.placeholder')}
+                placeholder={effectiveCfg.apiKey ? t('settings.a2a.apiKey.current') : t('settings.a2a.apiKey.placeholder')}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 className="flex-1 px-2 py-1 border rounded bg-background"
               />
@@ -280,8 +310,8 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
               <label className="w-20 text-muted-foreground">{t('settings.a2a.field.cardName')}</label>
               <input
                 type="text"
-                value={serverCfg.agentCard.name}
-                onChange={(e) => setServerCfg({ ...serverCfg, agentCard: { ...serverCfg.agentCard, name: e.target.value } })}
+                value={effectiveCfg.agentCard.name}
+                onChange={(e) => setServerCfg({ ...effectiveCfg, agentCard: { ...effectiveCfg.agentCard, name: e.target.value } })}
                 className="flex-1 px-2 py-1 border rounded bg-background"
               />
             </div>
@@ -295,7 +325,7 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
                 size="sm"
                 variant="outline"
                 onClick={status.running ? stopServer : startServer}
-                disabled={!serverCfg.enabled && !status.running}
+                disabled={!effectiveCfg.enabled && !status.running}
               >
                 {status.running ? <PowerOff className="w-3 h-3 mr-1" /> : <Power className="w-3 h-3 mr-1" />}
                 {status.running ? t('settings.a2a.action.stop') : t('settings.a2a.action.start')}
@@ -314,7 +344,6 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
               })}
             </div>
           </div>
-        )}
       </section>
 
       {/* Remote Agents */}

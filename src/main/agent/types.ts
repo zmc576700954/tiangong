@@ -101,6 +101,18 @@ export type LifecycleAbnormalEndCallback = (
 export type LifecycleTurnCompleteCallback = (sessionId: string) => void
 
 /**
+ * 会话资源清理完成后的回调。
+ *
+ * outcome 区分「正常收尾」与「异常退出」：
+ *   - 'success'   —— 会话跑完（agent 正常结束），恢复链路的重试计数应当清零
+ *   - 'abnormal'  —— 崩溃 / 超时 / 主动终止，重试计数必须保留（否则会无限重试）
+ */
+export type LifecycleSessionCleanedUpCallback = (
+  sessionId: string,
+  outcome: 'success' | 'abnormal',
+) => void
+
+/**
  * LifecycleCallbacks — set of optional hooks AgentManager provides so the
  * lifecycle manager can stay free of fallback/recovery logic. Lifecycle
  * always degrades safely when callbacks are absent (no recovery, no reset).
@@ -119,4 +131,10 @@ export interface LifecycleCallbacks {
    * per-session caches (e.g. compactInflight).
    */
   onNativeResume?: (sessionId: string) => void
+  /**
+   * Called after the lifecycle released every per-session resource.
+   * AgentManager uses it to drop its own session-state mirror — without it
+   * the mirror keeps entries for every session that ended on its own.
+   */
+  onSessionCleanedUp?: LifecycleSessionCleanedUpCallback
 }

@@ -80,7 +80,10 @@ export async function handleMessageSend(
     // THEN send the command so the listener is attached before any output arrives.
     const completionPromise = deps.session.runToCompletion(sessionId, () => {})
     await deps.session.sendCommand(sessionId, text)
-    const { artifacts, history } = await completionPromise
+    const { artifacts, history: agentHistory } = await completionPromise
+    // 保留路由写入的用户消息，再追加 agent 回复 —— 直接覆盖会把 history 清空。
+    const existing = deps.taskStore.get(sessionId)
+    const history = [...(existing?.history ?? []), ...agentHistory]
     const task: A2ATask = {
       id: sessionId,
       contextId,

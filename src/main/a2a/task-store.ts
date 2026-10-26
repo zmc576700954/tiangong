@@ -58,11 +58,15 @@ export class A2ATaskStore {
     if (extras) {
       Object.assign(entry.record, extras)
     }
+    const isTerminal = state === 'completed' || state === 'failed' || state === 'canceled'
+    if (!isTerminal) return
+    // 终态：记录完成时间以触发 TTL 清理。
+    // 计数只在**首次**进入终态时累加 —— 重复 setStatus 同一终态不应重复计数。
+    if (entry.completedAt !== undefined) return
+    entry.completedAt = Date.now()
     if (state === 'completed') {
-      entry.completedAt = Date.now()
       this.completedCount += 1
     } else if (state === 'failed') {
-      entry.completedAt = Date.now()
       this.failedCount += 1
     }
   }

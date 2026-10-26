@@ -232,6 +232,16 @@ export class AgentManager {
         if (!state) return
         this.sessionRecoveryInstance.reset(state.originSessionId ?? sessionId)
       },
+      onSessionCleanedUp: (sessionId, outcome) => {
+        // 清理完成 → 同步本层的镜像，并按结果决定是否清零恢复重试计数。
+        // 正常收尾（success）说明这条 lineage 已经跑通，重试计数应当归零；
+        // 异常退出必须保留计数，否则恢复会无限循环。
+        const state = this.sessionStates.get(sessionId)
+        this.mirrorEnd(sessionId)
+        if (outcome === 'success') {
+          this.sessionRecoveryInstance.reset(state?.originSessionId ?? sessionId)
+        }
+      },
       onSessionAbnormalEnded: (sessionId, exitCode, reason, state, outputs) =>
         this._handleSessionEnded(sessionId, exitCode, reason, state, outputs),
       onPhaseB: async (args) => {
@@ -381,7 +391,7 @@ export class AgentManager {
         if (config.nodeId) span.setAttribute('node.id', config.nodeId)
         if (config.threadId) span.setAttribute('thread.id', config.threadId)
         if (config.parentSessionId) span.setAttribute('parent.session.id', config.parentSessionId)
-        span.setAttribute('session.allowed_files_count', config.allowedFiles.length)
+        span.setAttribute('session.allowed_files_count', config.allowedFiles?.length ?? 0)
         return this._startSessionInternal(adapterName, config, span)
       },
       { kind: SpanKind.INTERNAL },

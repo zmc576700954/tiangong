@@ -14,6 +14,7 @@
  */
 
 import http from 'node:http'
+import { performance } from 'node:perf_hooks'
 import https from 'node:https'
 import { URL } from 'node:url'
 import type { Socket } from 'node:net'
@@ -44,6 +45,25 @@ export interface A2ACallOptions {
   timeoutMs?: number
 }
 
+/**
+ * 把多个 AbortSignal 合成一个：任一触发即 abort。
+ *
+ * 不用 `AbortSignal.any()`——它不在本项目的 TS lib（ES2022 + DOM）里，
+ * 且 Electron 33 内置 Node 20.18 的实现细节也随版本变化。
+ */
+function combineSignals(signals: Array<AbortSignal | undefined>): AbortSignal {
+  const present = signals.filter((s): s is AbortSignal => s !== undefined)
+  if (present.length === 0) return new AbortController().signal
+  if (present.length === 1) return present[0]
+  const controller = new AbortController()
+  const onAbort = (): void => { controller.abort() }
+  for (const s of present) {
+    if (s.aborted) { controller.abort(); break }
+    s.addEventListener('abort', onAbort, { once: true })
+  }
+  return controller.signal
+}
+
 export class A2AClient {
   private keepaliveSockets: Set<Socket> = new Set()
 
@@ -55,10 +75,12 @@ export class A2AClient {
    */
   async call(message: A2AMessage, options: A2ACallOptions = {}): Promise<A2ACallResult> {
     // SSRF guard 在每次 call 时执行（不止 save 时）— 防止远端 DNS rebinding。
-    assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
+    // 必须 await：否则防护不生效，且 guard 的 rejection 会变成 unhandled rejection。
+    await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
 
     const timeoutMs = options.timeoutMs ?? this.agent.timeoutMs ?? A2A_DEFAULT_TIMEOUT_MS
-    const signal = options.signal ?? AbortSignal.timeout(timeoutMs)
+    // 调用方的取消信号与本地超时必须同时生效——只用其一都会漏掉另一个。
+    const signal = combineSignals([options.signal, AbortSignal.timeout(timeoutMs)])
 
     return new Promise<A2ACallResult>((resolve, reject) => {
       let url: URL
@@ -72,11 +94,13 @@ export class A2AClient {
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
           path: url.pathname + url.search,
+          // signal 必须真正挂到 request 上 —— 只 new 一个 AbortSignal 而不传，
+          // 超时和取消都不会生效，请求会一直挂着。
+          signal,
           headers: {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
             ...(this.agent.apiKey ? { Authorization: `Bearer ${this.agent.apiKey}` } : {}),
-            ...(this.agent.tlsVerify === false ? {} : {}),
           },
           rejectUnauthorized: this.agent.tlsVerify !== false,
         },
@@ -117,13 +141,25 @@ export class A2AClient {
                   }
                 } else if (ev.event === SSE_EVENT_STATUS) {
                   finalStatus = decodeStatus(ev.data)
-                  if (finalStatus.state === 'completed' || finalStatus.state === 'failed' || finalStatus.state === 'canceled') {
+                  if (finalStatus.state === 'failed') {
                     res.resume()
-                    if (finalStatus.state === 'failed') {
-                      reject(new BizGraphError(`Remote agent failed: ${finalStatus.message?.parts.find((p) => p.type === 'text')?.type === 'text' ? (finalStatus.message.parts.find((p) => p.type === 'text') as { text: string }).text : 'unknown'}`, ErrorCode.AGENT_ADAPTER_ERROR))
-                    } else {
-                      resolve({ resultText, resultFiles: artifacts, finalStatus })
-                    }
+                    reject(new BizGraphError(`Remote agent failed: ${finalStatus.message?.parts.find((p) => p.type === 'text')?.type === 'text' ? (finalStatus.message.parts.find((p) => p.type === 'text') as { text: string }).text : 'unknown'}`, ErrorCode.AGENT_ADAPTER_ERROR))
+                    return
+                  }
+                  if (finalStatus.state === 'canceled') {
+                    res.resume()
+                    reject(new BizGraphError('Remote agent canceled the task', ErrorCode.A2A_REMOTE_UNREACHABLE))
+                    return
+                  }
+                  if (finalStatus.state === 'completed') {
+                    res.resume()
+                    resolve({ resultText, resultFiles: artifacts, finalStatus })
+                    return
+                  }
+                  if (finalStatus.state === 'input-required') {
+                    // 一次性调用无法回答远端的追问——立即失败，而不是挂到超时。
+                    res.resume()
+                    reject(new BizGraphError('Remote agent requires additional input, which one-shot A2A calls cannot provide', ErrorCode.A2A_BAD_REQUEST))
                     return
                   }
                 } else if (ev.event === SSE_EVENT_MESSAGE) {
@@ -144,10 +180,9 @@ export class A2AClient {
             }
           })
           res.on('end', () => {
-            // stream ended without terminal status event
-            if (finalStatus.state === 'working') {
-              resolve({ resultText, resultFiles: artifacts, finalStatus: { state: 'completed' } })
-            }
+            // 远端在给出终态事件前就结束流（进程被杀 / 连接中断）——
+            // 这是一次失败的调用，不能按成功结算（Promise 已结算时此 reject 是 no-op）。
+            reject(new BizGraphError('Remote agent stream ended without a terminal status event', ErrorCode.A2A_REMOTE_UNREACHABLE))
           })
           res.on('error', (err) => {
             reject(new BizGraphError(`Remote agent stream error: ${err.message}`, ErrorCode.A2A_REMOTE_UNREACHABLE))
@@ -163,7 +198,10 @@ export class A2AClient {
       })
 
       req.on('error', (err) => {
-        if ((err as NodeJS.ErrnoException).code === 'ECONNRESET') {
+        if (signal.aborted) {
+          // 超时或调用方取消 —— 不是「远端不可达」，错误信息要能区分。
+          reject(new BizGraphError('Remote agent request timed out or was cancelled', ErrorCode.A2A_REMOTE_UNREACHABLE))
+        } else if ((err as NodeJS.ErrnoException).code === 'ECONNRESET') {
           reject(new BizGraphError('Remote agent connection reset', ErrorCode.A2A_REMOTE_UNREACHABLE))
         } else {
           reject(new BizGraphError(`Remote agent unreachable: ${err.message}`, ErrorCode.A2A_REMOTE_UNREACHABLE))
@@ -186,23 +224,34 @@ export class A2AClient {
    * 不验证 bearer（spec 要求 discovery endpoint 必须开放）。
    */
   async testConnection(): Promise<{ ok: boolean; card?: A2AAgentCard; error?: string; latencyMs: number }> {
-    assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
-    const start = Date.now()
+    // 同样必须 await —— 否则 guard 的 rejection 会逃逸成 unhandled rejection。
+    try {
+      await assertSafeEndpoint(this.agent.endpoint, { devAllowLocalhost: this.agent.devAllowLocalhost })
+    } catch (err) {
+      return { ok: false, error: (err as Error).message, latencyMs: 0 }
+    }
+    // 用高精度时钟：Date.now() 只有毫秒精度，loopback 往返常常不足 1ms，
+    // 会把延迟测成 0（下游「延迟 > 0」的断言会随机挂）。
+    const start = performance.now()
+    const elapsed = (): number => Math.round((performance.now() - start) * 100) / 100
     return new Promise((resolve) => {
       let url: URL
       try { url = new URL(this.agent.endpoint) } catch { resolve({ ok: false, error: 'invalid endpoint URL', latencyMs: 0 }); return }
       url.pathname = (url.pathname.replace(/\/$/, '')) + '/.well-known/agent-card.json'
       const transport = url.protocol === 'https:' ? https : http
+      // 连接测试同样要有上限 —— 否则远端挂住时这个 Promise 永远不 settle。
+      const timeoutMs = this.agent.timeoutMs ?? A2A_DEFAULT_TIMEOUT_MS
       const req = transport.request(
         {
           method: 'GET',
           hostname: url.hostname,
           port: url.port || (url.protocol === 'https:' ? 443 : 80),
           path: url.pathname,
+          signal: AbortSignal.timeout(timeoutMs),
           rejectUnauthorized: this.agent.tlsVerify !== false,
         },
         (res) => {
-          const latencyMs = Date.now() - start
+          const latencyMs = elapsed()
           if ((res.statusCode ?? 0) !== 200) {
             res.resume()
             resolve({ ok: false, error: `HTTP ${res.statusCode}`, latencyMs })
@@ -219,12 +268,12 @@ export class A2AClient {
             }
           })
           res.on('error', (err) => {
-            resolve({ ok: false, error: err.message, latencyMs: Date.now() - start })
+            resolve({ ok: false, error: err.message, latencyMs: elapsed() })
           })
         },
       )
       req.on('error', (err) => {
-        resolve({ ok: false, error: err.message, latencyMs: Date.now() - start })
+        resolve({ ok: false, error: err.message, latencyMs: elapsed() })
       })
       req.end()
     })

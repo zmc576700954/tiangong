@@ -198,14 +198,33 @@ export class SubagentManager extends EventEmitter {
       }
       const startedAt = Date.now()
       const invocationId = `a2a_${generateId('subinv')}`
-      const a2aController = new AbortController()
-      // Mirror recipe's progress-only emission (no DB row); cancellations
-      // are best-effort since a2a branches bypass the activeInvocations gate.
+      // 取消信号必须是真的：注册进 activeInvocations 后，cancel() 才能找到
+      // 并 abort 在飞的远端调用。之前的 controller 从未被 abort，等于「有取消
+      // 按钮但按了没用」——而且传入的死信号会顶掉 client 自己的超时。
+      const controller = new AbortController()
+      const registrationKey = generateId('subinv')
+      let resolveDone!: () => void
+      const donePromise = new Promise<void>((r) => {
+        resolveDone = r
+      })
+      this.activeInvocations.set(registrationKey, {
+        invocationId,
+        parentSessionId: args.parentSessionId,
+        allowedFiles: [],
+        // a2a 远端代理不写本地文件（本地写入由 A2A 会话的 verifyOnly 沙箱兜底），
+        // 因此不参与写意图串行化闸门。
+        isWrite: false,
+        donePromise,
+        resolveDone,
+        controller,
+      })
+      // Mirror recipe's progress-only emission (no DB row); the repo row is
+      // absent for a2a, so repo.cancel() is a harmless no-op.
       this.emitProgress({ invocationId, status: 'running' })
       try {
         const result = await client.call(
           { role: 'user', parts: [{ type: 'text', text: args.prompt }] },
-          { signal: a2aController.signal },
+          { signal: controller.signal },
         )
         this.emitProgress({ invocationId, status: 'completed' })
         return {
@@ -217,8 +236,16 @@ export class SubagentManager extends EventEmitter {
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        this.emitProgress({ invocationId, status: 'failed', error: message })
+        // 被 cancel() 主动中止 → 报 cancelled，不报 failed。
+        this.emitProgress({
+          invocationId,
+          status: controller.signal.aborted ? 'cancelled' : 'failed',
+          error: message,
+        })
         throw err
+      } finally {
+        this.activeInvocations.delete(registrationKey)
+        resolveDone()
       }
     }
 

@@ -158,10 +158,30 @@ export class FallbackRouter {
 
       const startTime = Date.now()
       try {
-        const session = await adapter.startSession(config)
+        const started = await adapter.startSession(config)
 
         // 注册回调在 try 内执行：失败视同本次候选者失败，继续回退到下一个适配器。
-        await options?.onSessionStarted?.(candidate, config, session)
+        // 但「注册回调失败」通常与适配器本身无关（渲染进程窗口已销毁、节点状态
+        // 推进失败等）—— 把适配器记成失败会让健康正常的适配器被健康度误淘汰，
+        // 几轮之后彻底出局。这里只回收已经启动的 session（避免留下孤儿进程），
+        // 既不写健康度，也不累加连续失败计数。
+        try {
+          await options?.onSessionStarted?.(candidate, config, started)
+        } catch (hookErr) {
+          const hookReason = hookErr instanceof Error ? hookErr.message : String(hookErr)
+          logger.warn(
+            `Adapter ${candidate} started but session-start hook failed: ${hookReason}`,
+          )
+          try {
+            await adapter.terminateSession(started.id, 'error')
+          } catch { /* best-effort 回收 */ }
+          fallbackHistory.push({
+            adapter: candidate,
+            reason: `session-start hook failed: ${hookReason}`,
+            success: false,
+          })
+          continue
+        }
 
         // Reset consecutive timeout counter on success
         this.adapterTimeoutCounts.delete(candidate)
@@ -173,7 +193,7 @@ export class FallbackRouter {
 
         const isFallback = candidate !== primary
         return {
-          session,
+          session: started,
           adapterUsed: candidate,
           isFallback,
           fallbackHistory,

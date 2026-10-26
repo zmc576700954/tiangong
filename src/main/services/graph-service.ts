@@ -517,6 +517,14 @@ export class GraphService {
   }
 
   /**
+   * 最近更新的图所属项目路径（=「当前打开的项目」）。
+   * 没有项目时返回 undefined —— 调用方需要自己决定兜底目录。
+   */
+  getMostRecentProjectPath(): string | undefined {
+    return this.graphRepo.getMostRecentProjectPath()
+  }
+
+  /**
    * 基于代码 import 关系自动建议边
    * 扫描图中节点的 fileAssociations，查询 SymbolIndex 中的 import 关系，
    * 返回可以创建的边建议列表。

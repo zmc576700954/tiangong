@@ -108,6 +108,8 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   // D10b: userIdentity 不在默认配置里初始化 — 由 realtime IPC 的
   // loadOrCreateIdentity() 在首次访问时生成。这样保证 userId 是真随机
   // （每次设置读默认值都是同一个 userId，但我们的生成是显式调用的）。
+  // Phase D9: a2aServer / a2a 同样不进默认配置 —— 「没配过」和「配了但
+  // 取默认值」是两种状态；没配过时由 Settings → A2A 面板按需创建。
 }
 
 // ============================================
@@ -153,7 +155,13 @@ async function getFallbackKey(): Promise<Buffer> {
       const key = scryptSync(keyMaterial, salt, 32)
       cachedFallbackKey = key
       return key
-    })()
+    })().catch((err) => {
+      // 失败时清掉缓存的 promise —— 否则一次瞬时故障（EACCES / ENOSPC / 杀软锁文件）
+      // 会让 pendingFallbackKey 永久持有一个 rejected promise，
+      // 之后所有加解密都跟着失败，直到重启进程。
+      pendingFallbackKey = null
+      throw err
+    })
   }
   return pendingFallbackKey
 }

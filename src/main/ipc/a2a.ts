@@ -111,6 +111,13 @@ export function registerA2AHandlers(deps: A2AHandlerDeps, typedHandle: TypedHand
     if (!settings.a2aServer) {
       throw new IpcError('A2A server config is missing; configure it under Settings → A2A', ErrorCode.IPC_INVALID_ARGUMENT)
     }
+    // token 太短时启动服务等于开一个谁都进不来的端口 —— 直接拒绝。
+    if (settings.a2aServer.apiKey.length < A2A_MIN_API_KEY_LENGTH) {
+      throw new IpcError(
+        `A2A server apiKey must be at least ${A2A_MIN_API_KEY_LENGTH} characters`,
+        ErrorCode.IPC_INVALID_ARGUMENT,
+      )
+    }
     const next = { ...settings, a2aServer: { ...settings.a2aServer, enabled: true } }
     await settingsApi.write(next)
     // 等待 hot-reload 触发（同步事件，但 watcher 调用 applySettings 是 async fire-and-forget）。
@@ -150,12 +157,21 @@ export function registerA2AHandlers(deps: A2AHandlerDeps, typedHandle: TypedHand
     if (typeof agent.name !== 'string' || agent.name.length === 0) {
       throw new IpcError('agent.name is required', ErrorCode.IPC_INVALID_ARGUMENT)
     }
+    // 名字会被注册成 `a2a:<name>` 子代理类型，必须匹配子代理类型白名单，
+    // 否则 agent 能保存成功却永远无法被 dispatch。
+    if (!/^[a-z][a-z0-9-]*$/.test(agent.name)) {
+      throw new IpcError(
+        'agent.name must be kebab-case (lowercase letters, digits and dashes, starting with a letter)',
+        ErrorCode.IPC_INVALID_ARGUMENT,
+      )
+    }
     if (typeof agent.endpoint !== 'string' || agent.endpoint.length === 0) {
       throw new IpcError('agent.endpoint is required', ErrorCode.IPC_INVALID_ARGUMENT)
     }
-    // SSRF 同步校验（DNS 解析推迟到 call 时；这里只校验 IP literal）
+    // SSRF 同步校验（DNS 解析推迟到 call 时；这里只校验 IP literal）。
+    // devAllowLocalhost 必须透传 —— 否则 loopback peer（开发场景）永远存不下来。
     try {
-      assertSafeEndpointSync(agent.endpoint)
+      assertSafeEndpointSync(agent.endpoint, { devAllowLocalhost: agent.devAllowLocalhost === true })
     } catch (err) {
       throw new IpcError(`Invalid endpoint: ${(err as Error).message}`, ErrorCode.IPC_INVALID_ARGUMENT)
     }
@@ -170,15 +186,14 @@ export function registerA2AHandlers(deps: A2AHandlerDeps, typedHandle: TypedHand
       apiKey = old
     }
     const sanitized: A2ARemoteAgent = { ...agent, apiKey }
+    // idx === -1（新增）时 slice(0, -1) / slice(0) 会把整个数组复制两遍，
+    // 导致每个已存在的 agent 都被重复插入 —— 这里显式区分新增与更新。
+    const remoteAgents = idx >= 0
+      ? [...existing.slice(0, idx), sanitized, ...existing.slice(idx + 1)]
+      : [...existing, sanitized]
     const next = {
       ...settings,
-      a2a: {
-        remoteAgents: [
-          ...existing.slice(0, idx),
-          sanitized,
-          ...existing.slice(idx + 1),
-        ],
-      },
+      a2a: { remoteAgents },
     }
     try {
       await settingsApi.write(next)
@@ -219,7 +234,10 @@ export function registerA2AHandlers(deps: A2AHandlerDeps, typedHandle: TypedHand
     if (cfg.bindAddress !== '127.0.0.1' && cfg.bindAddress !== '0.0.0.0') {
       errors.push('bindAddress must be 127.0.0.1 or 0.0.0.0')
     }
-    if (typeof cfg.apiKey !== 'string' || cfg.apiKey.length < A2A_MIN_API_KEY_LENGTH) {
+    if (typeof cfg.apiKey !== 'string') {
+      errors.push('apiKey must be a string')
+    } else if (!MASKED_KEY_PATTERN.test(cfg.apiKey) && cfg.apiKey.length < A2A_MIN_API_KEY_LENGTH) {
+      // masked 值表示「沿用已保存的 token」——长度校验只对明文生效。
       errors.push(`apiKey must be a string of at least ${A2A_MIN_API_KEY_LENGTH} characters`)
     }
     if (cfg.agentCard !== undefined) {

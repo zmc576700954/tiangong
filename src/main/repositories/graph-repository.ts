@@ -179,6 +179,17 @@ export class GraphRepository {
       .filter((p): p is string => p !== null && p !== undefined)
   }
 
+  /**
+   * 最近更新的图所属的项目路径 —— 用来回答「当前打开的是哪个项目」。
+   * 没有带 project_path 的图时返回 undefined。
+   */
+  getMostRecentProjectPath(): string | undefined {
+    const row = this.db.prepare(
+      "SELECT project_path FROM graphs WHERE project_path IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
+    ).get() as { project_path?: string } | undefined
+    return row?.project_path
+  }
+
   /** Query Writeback 项目级开关：true = 该项目强制关闭写回（仅全局开时生效） */
   isWritebackDisabled(graphId: string): boolean {
     const row = this.db.prepare('SELECT writeback_disabled FROM graphs WHERE id = ?').get(graphId) as { writeback_disabled: number | null } | undefined

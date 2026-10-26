@@ -17,19 +17,23 @@ const BEARER_PREFIX = 'Bearer '
 
 /**
  * 比较两个字符串是否相等（constant-time）。
- * 长度不等时返回 false，但仍执行一次等长 dummy 比较以保持 constant-time。
+ *
+ * 比较的是 **UTF-8 字节** 长度，不是 JS 字符长度：字符数相同但字节数不同的
+ * 字符串（例如 16 个 ASCII 字符 vs 16 个多字节字符）会让 timingSafeEqual 抛
+ * ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH，而不是返回 false。
  */
 function safeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) {
-    // Force a same-length comparison by padding with a dummy string of identical
+  const bufA = Buffer.from(a, 'utf8')
+  const bufB = Buffer.from(b, 'utf8')
+  if (bufA.length !== bufB.length) {
+    // Force a same-length comparison by padding with a dummy buffer of identical
     // length. We still return false unconditionally; the dummy work is just to
     // keep the time-to-completion roughly constant regardless of input length.
-    const dummyA = Buffer.alloc(a.length)
-    const dummyB = Buffer.alloc(a.length)
-    timingSafeEqual(dummyA, dummyB)
+    const dummy = Buffer.alloc(bufA.length)
+    timingSafeEqual(dummy, dummy)
     return false
   }
-  return timingSafeEqual(Buffer.from(a, 'utf8'), Buffer.from(b, 'utf8'))
+  return timingSafeEqual(bufA, bufB)
 }
 
 /**

@@ -47,13 +47,18 @@ async function resolveHost(host: string): Promise<string[]> {
  * 判断 IPv4 / IPv6 是否属于受保护的内网 / loopback / link-local 范围。
  *  涵盖：RFC1918 (10/8, 172.16/12, 192.168/16), RFC4193 (fc00::/7),
  *       link-local (169.254/16, fe80::/10), CGNAT (100.64/10),
- *       loopback (127/8, ::1), 0.0.0.0/8, multicast (224/4, ff00::/8)。
+ *       loopback (127/8, ::1), 0.0.0.0/8, multicast (224/4, ff00::/8),
+ *       IPv4-mapped IPv6 (::ffff:a.b.c.d / ::ffff:7f00:1)。
  */
 export function isPrivateOrLoopbackIp(addr: string): boolean {
   // IPv6 — handle common special ranges first.
   if (addr.includes(':')) {
     const lower = addr.toLowerCase().split('%')[0] // strip zone id
     if (lower === '::1' || lower === '::') return true
+    // IPv4-mapped IPv6 (::ffff:127.0.0.1) —— 按内嵌的 IPv4 判定，
+    // 否则 ::ffff:127.0.0.1 会被当成普通公网地址放行。
+    const mapped = parseIpv4Mapped(lower)
+    if (mapped !== null) return isPrivateOrLoopbackIp(mapped)
     if (lower.startsWith('fc') || lower.startsWith('fd')) return true // ULA
     if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true // link-local
     if (lower.startsWith('ff')) return true // multicast
@@ -72,6 +77,26 @@ export function isPrivateOrLoopbackIp(addr: string): boolean {
   if (a === 169 && b === 254) return true // 169.254.0.0/16 link-local
   if (a === 100 && b >= 64 && b <= 127) return true // 100.64.0.0/10 CGNAT
   return false
+}
+
+/**
+ * 解析 IPv4-mapped IPv6（::ffff:x.x.x.x 或 ::ffff:hhhh:hhhh），
+ * 返回内嵌的 IPv4 点分十进制；不是该形式时返回 null。
+ */
+function parseIpv4Mapped(lower: string): string | null {
+  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(lower)
+  if (dotted) return dotted[1]
+  // WHATWG URL 会把 ::ffff:127.0.0.1 规范化为 ::ffff:7f00:1 —— 末 32 bit 即 IPv4。
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower)
+  if (!hex) return null
+  const hi = parseInt(hex[1], 16)
+  const lo = parseInt(hex[2], 16)
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`
+}
+
+/** URL.hostname 对 IPv6 literal 会带方括号（`[::1]`）——判断前先剥掉。 */
+function stripBrackets(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
 }
 
 export interface AssertSafeEndpointOptions {
@@ -103,9 +128,10 @@ export async function assertSafeEndpoint(
 
   // Host: literal IP or hostname
   const host = url.hostname
+  const bareHost = stripBrackets(host)
   let ips: string[]
-  if (isIpLiteral(host)) {
-    ips = [host]
+  if (isIpLiteral(bareHost)) {
+    ips = [bareHost]
   } else {
     ips = await resolveHost(host)
   }
@@ -113,8 +139,7 @@ export async function assertSafeEndpoint(
   for (const ip of ips) {
     if (isPrivateOrLoopbackIp(ip)) {
       // loopback is OK only with explicit devAllowLocalhost
-      const isLoopback = ip === '127.0.0.1' || ip === '::1'
-      if (isLoopback && options.devAllowLocalhost === true) continue
+      if (isLoopbackAddress(ip) && options.devAllowLocalhost === true) continue
       throw new BizGraphError(
         `Endpoint ${host} resolves to ${ip}, which is in a private/loopback range (devAllowLocalhost=${options.devAllowLocalhost === true})`,
         ErrorCode.A2A_SSRF_BLOCKED,
@@ -123,9 +148,15 @@ export async function assertSafeEndpoint(
   }
 }
 
+/** 是否为 loopback 地址（含 ::ffff:127.0.0.1 之类的 IPv4-mapped 形式）。 */
+function isLoopbackAddress(ip: string): boolean {
+  if (ip === '127.0.0.1' || ip === '::1') return true
+  return parseIpv4Mapped(ip.toLowerCase()) === '127.0.0.1'
+}
+
 function isIpLiteral(host: string): boolean {
   // Crude but sufficient: contains only digits, dots, colons, hex, and %.
-  return /^[0-9a-fA-F:.%]+$/.test(host)
+  return /^[0-9a-fA-F:.%]+$/.test(stripBrackets(host))
 }
 
 /** 同步校验（仅看 scheme + 已知 IP literal；不查 DNS）。用于 settings 保存时。 */
@@ -139,10 +170,9 @@ export function assertSafeEndpointSync(endpoint: string, options: AssertSafeEndp
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new BizGraphError(`Unsupported scheme: ${url.protocol}`, ErrorCode.A2A_SSRF_BLOCKED)
   }
-  const host = url.hostname
+  const host = stripBrackets(url.hostname)
   if (isIpLiteral(host) && isPrivateOrLoopbackIp(host)) {
-    const isLoopback = host === '127.0.0.1' || host === '::1'
-    if (isLoopback && options.devAllowLocalhost === true) return
+    if (isLoopbackAddress(host) && options.devAllowLocalhost === true) return
     throw new BizGraphError(
       `Endpoint IP ${host} is in a private/loopback range`,
       ErrorCode.A2A_SSRF_BLOCKED,

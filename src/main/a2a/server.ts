@@ -191,7 +191,14 @@ export class A2AServer {
         }
         if (path.startsWith('/v1/tasks/') && method === 'GET') {
           verifyBearer(req, this.deps.config.apiKey)
-          const taskId = decodeURIComponent(path.slice('/v1/tasks/'.length))
+          // 非法百分号编码（如 %zz）会让 decodeURIComponent 抛 URIError，
+          // 落到外层 catch 就变成 500 —— 客户端拼错 id 是 400 级错误。
+          let taskId: string
+          try {
+            taskId = decodeURIComponent(path.slice('/v1/tasks/'.length))
+          } catch {
+            throw new BizGraphError('Malformed task id encoding', ErrorCode.A2A_BAD_REQUEST)
+          }
           const tasksDeps: TasksRouteDeps = {
             taskStore: this.deps.taskStore,
             buildTask: this.deps.buildTask,

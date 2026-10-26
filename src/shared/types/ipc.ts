@@ -181,7 +181,8 @@ export interface IpcApi {
 
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
-  'settings:write': (settings: BizGraphSettings) => Promise<void>
+  // 只提交需要变更的字段即可；主进程与当前设置做顶层合并后再落盘。
+  'settings:write': (settings: Partial<BizGraphSettings>) => Promise<void>
   'settings:refreshCli': () => Promise<CliToolConfig[]>
   'settings:installCli': (name: string) => Promise<{ success: boolean; message: string }>
   'settings:setApiKey': (provider: string, key: string, baseUrl?: string | null) => Promise<void>
