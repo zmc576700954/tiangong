@@ -6,6 +6,7 @@ import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
 import { getPlatformProvider } from './platform'
+import { getLocale } from '@shared/i18n'
 
 const logger = createLogger('Main')
 
@@ -31,6 +32,8 @@ class WindowManager {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        // 渲染进程同步读取初始语言，避免首屏闪一下默认语言
+        additionalArguments: [`--bizgraph-locale=${getLocale()}`],
       },
     })
 

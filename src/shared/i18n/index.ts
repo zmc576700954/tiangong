@@ -4,6 +4,9 @@ import { DEFAULT_LOCALE } from './types'
 import type { Locale } from './types'
 import type { NodeStatus, NodeType } from '../types/graph'
 
+export type { TranslationKey } from './resources'
+export type { Locale } from './types'
+
 /**
  * 共享 i18n 层
  *
@@ -50,17 +53,30 @@ function lookup(locale: Locale, key: string): string | undefined {
 }
 
 /**
- * 宽松翻译——动态 key 专用。
- * 查找顺序：当前语言 → 中文（DEFAULT_LOCALE）→ key 本身。
- * 回落中文而不是英文：英文界面下漏翻的 key 显示成裸 key 比显示中文更糟。
+ * 按指定语言翻译。
+ * 渲染进程的 Provider 用它取首帧文案——模块级 currentLocale 此时可能还是默认值，
+ * 直接用 t() 会在切到英文时闪一下中文。
  */
-export function tRaw(key: string, vars?: Record<string, string | number>): string {
-  const found = lookup(currentLocale, key) ?? lookup(DEFAULT_LOCALE, key)
+export function tIn(
+  locale: Locale,
+  key: string,
+  vars?: Record<string, string | number>,
+): string {
+  const found = lookup(locale, key) ?? lookup(DEFAULT_LOCALE, key)
   if (found === undefined) {
     console.warn(`[i18n] missing translation key: ${key}`)
     return interpolate(key, vars)
   }
   return interpolate(found, vars)
+}
+
+/**
+ * 宽松翻译——动态 key 专用。
+ * 查找顺序：当前语言 → 中文（DEFAULT_LOCALE）→ key 本身。
+ * 回落中文而不是英文：英文界面下漏翻的 key 显示成裸 key 比显示中文更糟。
+ */
+export function tRaw(key: string, vars?: Record<string, string | number>): string {
+  return tIn(currentLocale, key, vars)
 }
 
 /** 严格翻译——key 写错直接编译报错 */

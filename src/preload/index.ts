@@ -267,6 +267,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.off('menu:openProject', handler) }
   },
 
+  // 初始语言——主进程通过 --bizgraph-locale= 参数注入，同步可读，首屏不闪
+  locale: (() => {
+    const arg = process.argv.find((a) => a.startsWith('--bizgraph-locale='))
+    const value = arg?.split('=')[1]
+    return value === 'en-US' ? 'en-US' : 'zh-CN'
+  })(),
+
+  // 主进程推送语言变更（切换后广播到所有窗口）
+  onLocaleChanged: (callback: (locale: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, locale: string) => callback(locale)
+    ipcRenderer.on('locale:changed', handler)
+    return () => { ipcRenderer.removeListener('locale:changed', handler) }
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -286,6 +300,8 @@ declare global {
       onWaterlineChange: (callback: (state: ContextState) => void) => () => void
       onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => () => void
       onMenuOpenProject: (callback: (projectPath: string) => void) => () => void
+      locale: string
+      onLocaleChanged: (callback: (locale: string) => void) => () => void
       platform: string
     }
   }
