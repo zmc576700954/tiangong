@@ -5,6 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 import electron from 'vite-plugin-electron'
 import renderer from 'vite-plugin-electron-renderer'
 
+const DEV_SERVER_HOST = '127.0.0.1'
+const DEV_SERVER_PORT = 5173
+
 export default defineConfig(async () => ({
   plugins: [
     react(),
@@ -13,6 +16,10 @@ export default defineConfig(async () => ({
       {
         entry: 'src/main/index.ts',
         onstart(options) {
+          // vite-plugin-electron 会把 loopback 地址归一化成 "localhost"，而 macOS 下
+          // Chromium 解析 localhost 优先走 IPv6 ::1。若同端口被另一个项目以 IPv6 绑定，
+          // Electron 会加载到别人的页面。此处显式指向 server 实际绑定的 IPv4 地址。
+          process.env.VITE_DEV_SERVER_URL = `http://${DEV_SERVER_HOST}:${DEV_SERVER_PORT}`
           options.startup()
         },
         vite: {
@@ -75,8 +82,8 @@ export default defineConfig(async () => ({
   },
   root: '.',
   server: {
-    host: '127.0.0.1',
-    port: 5173,
+    host: DEV_SERVER_HOST,
+    port: DEV_SERVER_PORT,
     strictPort: true,
   },
   build: {
