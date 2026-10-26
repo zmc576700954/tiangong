@@ -1,6 +1,8 @@
 import { AlertTriangle, Info, X, RotateCw } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
 import { cn } from '@/lib/utils'
+import { useI18n } from '../../i18n/useI18n'
+import type { TranslationKey } from '@shared/i18n'
 import type { LintReport, LintIssue } from '@shared/types/wiki'
 
 interface LintPanelProps {
@@ -10,14 +12,16 @@ interface LintPanelProps {
   onRecompute: () => void
 }
 
-const KIND_LABELS: Record<LintIssue['kind'], string> = {
-  'dangling-link': '断链',
-  'orphan': '孤立页面',
-  'community-singleton': '单节点社区',
-  'community-oversized': '超大社区',
+/** 检查项分类标签——按 kind 查 i18n key */
+const KIND_LABEL_KEYS: Record<LintIssue['kind'], TranslationKey> = {
+  'dangling-link': 'wiki.lint.kind.danglingLink',
+  'orphan': 'wiki.lint.kind.orphan',
+  'community-singleton': 'wiki.lint.kind.communitySingleton',
+  'community-oversized': 'wiki.lint.kind.communityOversized',
 }
 
 export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPanelProps) {
+  const { t } = useI18n()
   const groups = report.issues.reduce((acc, issue) => {
     const list = acc.get(issue.kind) ?? []
     list.push(issue)
@@ -31,16 +35,20 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
     <div className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg">
       <div className="flex items-center justify-between px-3 py-2 border-b">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">图检查</span>
+          <span className="text-sm font-medium">{t('wiki.lint.title')}</span>
           <span className="text-[10px] text-muted-foreground">
-            页面 {report.stats.nodeCount} · 链接 {report.stats.edgeCount} · 社区 {report.stats.communityCount}
+            {t('wiki.lint.stats', {
+              pages: report.stats.nodeCount,
+              links: report.stats.edgeCount,
+              communities: report.stats.communityCount,
+            })}
           </span>
         </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={onRecompute}
-            title="重新计算社区"
+            title={t('wiki.lint.recompute')}
             className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
           >
             <RotateCw className="w-3.5 h-3.5" />
@@ -48,7 +56,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
           <button
             type="button"
             onClick={onClose}
-            title="关闭"
+            title={t('wiki.lint.close')}
             className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
           >
             <X className="w-3.5 h-3.5" />
@@ -58,7 +66,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
         {report.issues.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-4">未发现异常</p>
+          <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.lint.noIssues')}</p>
         ) : (
           orderedKinds.map((kind) => {
             const issues = groups.get(kind)
@@ -66,8 +74,10 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
             return (
               <div key={kind}>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-medium">{KIND_LABELS[kind]}</span>
-                  <span className="text-[10px] text-muted-foreground">{issues.length} 项</span>
+                  <span className="text-xs font-medium">{t(KIND_LABEL_KEYS[kind])}</span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {t('wiki.lint.issueCount', { count: issues.length })}
+                  </span>
                 </div>
                 <ul className="space-y-1.5">
                   {issues.map((issue, idx) => (
@@ -84,7 +94,7 @@ export function LintPanel({ report, onNavigate, onClose, onRecompute }: LintPane
                         ? {
                             role: 'button',
                             tabIndex: 0,
-                            'aria-label': `定位到节点：${issue.message}`,
+                            'aria-label': t('wiki.lint.locateNode', { message: issue.message }),
                             onKeyDown: (e: KeyboardEvent) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault()
@@ -122,6 +132,7 @@ function SeverityIcon({ severity }: { severity: LintIssue['severity'] }) {
 }
 
 function SeverityBadge({ severity }: { severity: LintIssue['severity'] }) {
+  const { t } = useI18n()
   return (
     <span
       className={cn(
@@ -131,7 +142,7 @@ function SeverityBadge({ severity }: { severity: LintIssue['severity'] }) {
           : 'bg-slate-50 text-slate-700 border-slate-200',
       )}
     >
-      {severity === 'warning' ? 'warning' : 'info'}
+      {severity === 'warning' ? t('wiki.lint.severity.warning') : t('wiki.lint.severity.info')}
     </span>
   )
 }

@@ -15,6 +15,8 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogClose,
 } from '@/components/ui/dialog'
 import { useGraphStore } from '@/store/graphStore'
+import { useI18n } from '../../i18n/useI18n'
+import { wikiPageTitle } from '@shared/i18n'
 import { splitWikiLinks, formatMetaValue, type WikiLinkResolution, type WikiRenderSegment } from '@/lib/wiki-render'
 import { cn } from '@/lib/utils'
 
@@ -42,6 +44,7 @@ export function WikiPageEditor({
   const [links, setLinks] = useState<WikiLinkResolution[]>([])
   const [backlinks, setBacklinks] = useState<{ id: string; title: string }[]>([])
   const [createTarget, setCreateTarget] = useState<string | null>(null)
+  const { locale, t } = useI18n()
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 用户有未保存编辑时为 true：外部内容更新不得覆盖草稿
   const dirtyRef = useRef(false)
@@ -129,26 +132,26 @@ export function WikiPageEditor({
     <div className="space-y-3">
       <div className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
         <BookOpen className="w-3.5 h-3.5" />
-        <span>Wiki 页面</span>
+        <span>{t('wiki.editor.title')}</span>
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="grid w-full grid-cols-4 h-8">
           <TabsTrigger value="content" className="text-xs gap-1">
             <PenLine className="w-3 h-3" />
-            Markdown
+            {t('wiki.editor.tab.markdown')}
           </TabsTrigger>
           <TabsTrigger value="preview" className="text-xs gap-1">
             <Eye className="w-3 h-3" />
-            预览
+            {t('wiki.editor.tab.preview')}
           </TabsTrigger>
           <TabsTrigger value="backlinks" className="text-xs gap-1">
             <CornerDownLeft className="w-3 h-3" />
-            反向链接
+            {t('wiki.editor.tab.backlinks')}
           </TabsTrigger>
           <TabsTrigger value="meta" className="text-xs gap-1">
             <Settings2 className="w-3 h-3" />
-            Meta
+            {t('wiki.editor.tab.meta')}
           </TabsTrigger>
         </TabsList>
 
@@ -157,12 +160,12 @@ export function WikiPageEditor({
             value={draft}
             onChange={(e) => { dirtyRef.current = true; setDraft(e.target.value) }}
             onBlur={handleBlur}
-            placeholder="输入 Markdown 内容... 使用 [[页面标题]] 创建 wikilink"
+            placeholder={t('wiki.editor.placeholder')}
             className="w-full px-2 py-1.5 text-sm border rounded-md bg-background font-mono resize-y min-h-[180px]"
             spellCheck={false}
           />
           <p className="text-[10px] text-muted-foreground mt-1">
-            失焦自动保存。[[页面标题]] 或 [[页面标题|显示文本]] 链接到同图 Wiki 页面
+            {t('wiki.editor.hint')}
           </p>
         </TabsContent>
 
@@ -171,7 +174,7 @@ export function WikiPageEditor({
             {!draft ? (
               <div className="text-xs text-muted-foreground flex items-center gap-1">
                 <FileText className="w-3 h-3" />
-                暂无内容，请在 Markdown 页签中编辑
+                {t('wiki.editor.emptyPreview')}
               </div>
             ) : (
               <>
@@ -182,7 +185,7 @@ export function WikiPageEditor({
                 {/* 链接区：wikilink 内联交互（跳转 / 创建） */}
                 {hasLinks && (
                   <div className="mt-3 pt-2 border-t space-y-1" data-testid="wiki-links">
-                    <p className="text-[10px] text-muted-foreground">页面链接</p>
+                    <p className="text-[10px] text-muted-foreground">{t('wiki.editor.pageLinks')}</p>
                     <WikiLinkList segments={segments} onNavigate={onNavigate} onCreate={setCreateTarget} />
                   </div>
                 )}
@@ -194,7 +197,7 @@ export function WikiPageEditor({
         <TabsContent value="backlinks" className="mt-2">
           <div className="border rounded-md bg-background p-3 min-h-[120px]">
             {backlinks.length === 0 ? (
-              <p className="text-xs text-muted-foreground">暂无其他页面链接到本页</p>
+              <p className="text-xs text-muted-foreground">{t('wiki.editor.emptyBacklinks')}</p>
             ) : (
               <ul className="space-y-1">
                 {backlinks.map((b) => (
@@ -204,7 +207,7 @@ export function WikiPageEditor({
                       className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
                     >
                       <Link2 className="w-3 h-3" />
-                      {b.title}
+                      {wikiPageTitle(b.title, locale)}
                     </button>
                   </li>
                 ))}
@@ -217,7 +220,7 @@ export function WikiPageEditor({
           <div className="border rounded-md bg-background p-3 min-h-[120px]">
             {Object.keys(frontmatter).length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                无 frontmatter。在 Markdown 顶部以 --- 包裹 YAML 即可添加，保存后在此查看。
+                {t('wiki.editor.emptyMeta')}
               </p>
             ) : (
               <dl className="space-y-1">
@@ -235,21 +238,21 @@ export function WikiPageEditor({
 
       {/* 悬空链接 → 创建页面确认 */}
       <Dialog open={createTarget !== null} onOpenChange={(open) => { if (!open) setCreateTarget(null) }}>
-        <DialogContent className="max-w-sm">
+        <DialogContent className="max-w-sm" closeLabel={t('common.close')}>
           <DialogHeader>
-            <DialogTitle className="text-sm">创建 Wiki 页面「{createTarget}」？</DialogTitle>
+            <DialogTitle className="text-sm">{t('wiki.editor.createTitle', { title: createTarget ?? '' })}</DialogTitle>
           </DialogHeader>
           <p className="text-xs text-muted-foreground">
-            该链接指向的页面尚不存在。创建后链接将自动解析。
+            {t('wiki.editor.createHint')}
           </p>
           <DialogFooter>
-            <DialogClose className="px-3 py-1.5 text-xs border rounded-md hover:bg-muted">取消</DialogClose>
+            <DialogClose className="px-3 py-1.5 text-xs border rounded-md hover:bg-muted">{t('common.cancel')}</DialogClose>
             <button
               onClick={handleCreatePage}
               className="inline-flex items-center gap-1 px-3 py-1.5 text-xs bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
             >
               <Plus className="w-3 h-3" />
-              创建
+              {t('wiki.editor.create')}
             </button>
           </DialogFooter>
         </DialogContent>
@@ -277,6 +280,7 @@ function WikiLinkList({
   onCreate: (targetTitle: string) => void
 }) {
   const seen = new Set<string>()
+  const { locale, t } = useI18n()
   return (
     <ul className="flex flex-wrap gap-1.5">
       {segments.filter((s) => s.kind === 'link').map((seg) => {
@@ -284,16 +288,17 @@ function WikiLinkList({
         const key = seg.targetTitle.toLowerCase()
         if (seen.has(key)) return null
         seen.add(key)
+        const targetLabel = wikiPageTitle(seg.targetTitle, locale)
         if (seg.resolved && seg.nodeId) {
           return (
             <li key={key}>
               <button
                 onClick={() => onNavigate?.(seg.nodeId!)}
                 className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded bg-primary/10 text-primary hover:bg-primary/20"
-                title={`跳转到「${seg.targetTitle}」`}
+                title={t('wiki.editor.jumpTo', { title: targetLabel })}
               >
                 <Link2 className="w-3 h-3" />
-                {seg.displayText ?? seg.targetTitle}
+                {seg.displayText ?? targetLabel}
               </button>
             </li>
           )
@@ -303,10 +308,10 @@ function WikiLinkList({
             <button
               onClick={() => onCreate(seg.targetTitle)}
               className="inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded border border-dashed border-muted-foreground/50 text-muted-foreground hover:text-foreground"
-              title={`页面「${seg.targetTitle}」不存在，点击创建`}
+              title={t('wiki.editor.createMissing', { title: targetLabel })}
             >
               <Plus className="w-3 h-3" />
-              {seg.displayText ?? seg.targetTitle}
+              {seg.displayText ?? targetLabel}
             </button>
           </li>
         )
@@ -316,6 +321,7 @@ function WikiLinkList({
 }
 
 export function WikiPageBadge({ nodeId, className }: { nodeId: string; className?: string }) {
+  const { locale } = useI18n()
   const node = useGraphStore((s) => s.nodes.find((n) => n.id === nodeId))
   if (!node) return null
   return (
@@ -327,7 +333,7 @@ export function WikiPageBadge({ nodeId, className }: { nodeId: string; className
       )}
     >
       <BookOpen className="w-3 h-3" />
-      {node.title}
+      {wikiPageTitle(node.title, locale)}
     </button>
   )
 }

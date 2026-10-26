@@ -15,6 +15,7 @@ import { CheckSquare, MapPin, Square, X, ChevronDown, ChevronRight, AlertTriangl
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { WritebackItem, WritebackKind } from '@shared/types/wiki'
 
 interface WritebackPanelProps {
@@ -30,12 +31,10 @@ interface WritebackPanelProps {
   onDismissError?: () => void
 }
 
-const KIND_LABELS: Record<WritebackKind, string> = {
-  'append-log': '追加日志',
-  'new-page': '新页面',
-}
-
 function KindBadge({ kind }: { kind: WritebackKind }) {
+  const { t } = useI18n()
+  const label =
+    kind === 'append-log' ? t('wiki.writeback.kind.appendLog') : t('wiki.writeback.kind.newPage')
   return (
     <span
       className={cn(
@@ -45,7 +44,7 @@ function KindBadge({ kind }: { kind: WritebackKind }) {
           : 'bg-green-50 text-green-700 border-green-200',
       )}
     >
-      {KIND_LABELS[kind]}
+      {label}
     </span>
   )
 }
@@ -68,6 +67,7 @@ export function WritebackPanel({
   onDismissError,
 }: WritebackPanelProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const { t } = useI18n()
 
   // items 变化时清掉过期的选择（被采纳/丢弃/消失）
   useEffect(() => {
@@ -115,17 +115,17 @@ export function WritebackPanel({
       {/* 标题栏 + 选中计数 */}
       <div className="flex items-center justify-between px-3 py-2 border-b">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-medium">审核队列</span>
+          <span className="text-sm font-medium">{t('wiki.writeback.title')}</span>
           <span className="text-[10px] text-muted-foreground">
-            待审核 {items.length}
-            {selected.size > 0 && ` · 已选 ${selected.size}`}
+            {t('wiki.writeback.pendingCount', { count: items.length })}
+            {selected.size > 0 && ` ${t('wiki.writeback.selectedCount', { count: selected.size })}`}
           </span>
         </div>
         <button
           type="button"
           onClick={onClose}
-          title="关闭"
-          aria-label="关闭审核队列"
+          title={t('wiki.writeback.close')}
+          aria-label={t('wiki.writeback.closeQueue')}
           className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
         >
           <X className="w-3.5 h-3.5" />
@@ -145,7 +145,7 @@ export function WritebackPanel({
             <button
               type="button"
               onClick={onDismissError}
-              aria-label="关闭错误提示"
+              aria-label={t('wiki.writeback.dismissError')}
               className="p-0.5 rounded hover:bg-red-100 transition-colors"
             >
               <X className="w-3 h-3" />
@@ -160,7 +160,7 @@ export function WritebackPanel({
           <button
             type="button"
             onClick={toggleAll}
-            aria-label={allSelected ? '全不选' : '全选'}
+            aria-label={allSelected ? t('wiki.writeback.selectNone') : t('wiki.writeback.selectAll')}
             className="flex items-center gap-1 px-2 py-1 rounded hover:bg-muted transition-colors"
           >
             {allSelected ? (
@@ -168,7 +168,7 @@ export function WritebackPanel({
             ) : (
               <Square className="w-3 h-3" aria-hidden="true" />
             )}
-            {allSelected ? '全不选' : '全选'}
+            {allSelected ? t('wiki.writeback.selectNone') : t('wiki.writeback.selectAll')}
           </button>
           <div className="flex-1" />
           <button
@@ -178,7 +178,7 @@ export function WritebackPanel({
             data-testid="batch-discard"
             className="px-2 py-1 rounded text-muted-foreground hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            批量丢弃
+            {t('wiki.writeback.batchDiscard')}
           </button>
           <button
             type="button"
@@ -187,7 +187,7 @@ export function WritebackPanel({
             data-testid="batch-accept"
             className="px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            批量采纳
+            {t('wiki.writeback.batchAccept')}
           </button>
         </div>
       )}
@@ -195,7 +195,7 @@ export function WritebackPanel({
       {/* 列表 */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {items.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-4">暂无待审核的写回项</p>
+          <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.writeback.empty')}</p>
         ) : (
           items.map((item) => (
             <WritebackItemCard
@@ -235,6 +235,7 @@ function WritebackItemCard({
   onNavigate,
 }: WritebackItemCardProps) {
   const [expanded, setExpanded] = useState(false)
+  const { t } = useI18n()
 
   const hasDetails = !!item.details && item.details.trim().length > 0
   const hasNarrative = !!item.narrative && item.narrative.trim().length > 0
@@ -253,7 +254,7 @@ function WritebackItemCard({
       <div className="flex items-center gap-1.5">
         <input
           type="checkbox"
-          aria-label={`选择 ${item.title}`}
+          aria-label={t('wiki.writeback.selectItem', { title: item.title })}
           checked={selected}
           onChange={onToggleSelect}
           disabled={pending}
@@ -291,7 +292,7 @@ function WritebackItemCard({
           ) : (
             <ChevronRight className="w-3 h-3" aria-hidden="true" />
           )}
-          {expanded ? '收起详情' : '展开详情'}
+          {expanded ? t('wiki.writeback.collapseDetails') : t('wiki.writeback.expandDetails')}
         </button>
       )}
       {expanded && (
@@ -310,14 +311,14 @@ function WritebackItemCard({
           )}
           {hasSourceNodes && (
             <div className="flex flex-wrap items-center gap-1">
-              <span className="text-[10px] text-muted-foreground">来源节点：</span>
+              <span className="text-[10px] text-muted-foreground">{t('wiki.writeback.sourceNodes')}</span>
               {item.sourceNodeIds!.map((nid) => (
                 <button
                   key={nid}
                   type="button"
                   onClick={() => onNavigate(nid)}
                   className="flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 transition-colors"
-                  title={`定位到 ${nid}`}
+                  title={t('wiki.writeback.locateNode', { id: nid })}
                 >
                   <MapPin className="w-2.5 h-2.5" aria-hidden="true" />
                   <span className="font-mono text-[10px]">{nid.slice(0, 12)}</span>
@@ -327,7 +328,7 @@ function WritebackItemCard({
           )}
           {hasTargetNodeTitle && (
             <div className="text-[10px] text-muted-foreground">
-              来源节点标题：<span className="text-foreground">{item.targetNodeTitle}</span>
+              {t('wiki.writeback.sourceNodeTitle')}<span className="text-foreground">{item.targetNodeTitle}</span>
             </div>
           )}
         </div>
@@ -345,11 +346,11 @@ function WritebackItemCard({
           <button
             type="button"
             onClick={() => onNavigate(item.targetNodeId)}
-            title="定位到目标节点"
+            title={t('wiki.writeback.locateTarget')}
             className="flex items-center gap-1 px-2 py-1 rounded text-muted-foreground hover:bg-muted transition-colors"
           >
             <MapPin className="w-3 h-3" />
-            定位
+            {t('wiki.writeback.locate')}
           </button>
         )}
         <div className="flex-1" />
@@ -360,7 +361,7 @@ function WritebackItemCard({
           data-testid={`discard-${item.id}`}
           className="px-2 py-1 rounded text-muted-foreground hover:bg-red-50 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {pending ? '处理中…' : '丢弃'}
+          {pending ? t('wiki.writeback.processing') : t('wiki.writeback.discard')}
         </button>
         <button
           type="button"
@@ -369,7 +370,7 @@ function WritebackItemCard({
           data-testid={`accept-${item.id}`}
           className="px-2 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {pending ? '处理中…' : '采纳'}
+          {pending ? t('wiki.writeback.processing') : t('wiki.writeback.accept')}
         </button>
       </div>
     </div>

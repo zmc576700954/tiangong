@@ -13,6 +13,7 @@
 import { create } from 'zustand'
 import { immer } from 'zustand/middleware/immer'
 import { enableMapSet } from 'immer'
+import { t } from '@shared/i18n'
 
 enableMapSet()
 import {
@@ -355,9 +356,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           }
         }
 
-        set((s) => { s.toast = { message: 'Pasted successfully', type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.pasteSuccess'), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Paste failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.pasteFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)
@@ -385,9 +386,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           }
         }
 
-        set((s) => { s.toast = { message: 'Renamed successfully', type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.renameSuccess'), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Rename failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.renameFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)
@@ -418,9 +419,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           }
         }
 
-        set((s) => { s.toast = { message: `Created file: ${name}`, type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.createFileSuccess', { name }), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Create file failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.createFileFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)
@@ -445,9 +446,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           }
         }
 
-        set((s) => { s.toast = { message: `Created folder: ${name}`, type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.createFolderSuccess', { name }), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Create folder failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.createFolderFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)
@@ -479,9 +480,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           await get().refreshProject(projPath)
         }
 
-        set((s) => { s.toast = { message: `Deleted ${paths.length} item(s)`, type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.deleteSuccess', { count: paths.length }), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Delete failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.deleteFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)
@@ -524,9 +525,9 @@ export const useFileTreeStore = create<FileTreeState>()(
           await get().refreshProject(projPath)
         }
 
-        set((s) => { s.toast = { message: 'Moved successfully', type: 'success' } })
+        set((s) => { s.toast = { message: t('fileTree.moveSuccess'), type: 'success' } })
       } catch (err) {
-        set((s) => { s.toast = { message: `Move failed: ${err}`, type: 'error' } })
+        set((s) => { s.toast = { message: t('fileTree.moveFailed', { error: String(err) }), type: 'error' } })
       }
 
       clearTimeout(toastTimer)

@@ -13,7 +13,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
-import type { RecipeDefinition, RecipeRun } from '@shared/types/recipe'
+import { useI18n } from '../i18n/useI18n'
+import type { TranslationKey } from '@shared/i18n'
+import type { RecipeDefinition, RecipeRun, RecipeRunStatus } from '@shared/types/recipe'
 
 interface Props {
   /** 注入 electronAPI；测试可传 mock。 */
@@ -28,12 +30,43 @@ interface Props {
   }
 }
 
+/** 来源徽标文案——user / project 是存储值，展示时按语言替换 */
+const SOURCE_LABEL_KEYS: Record<'user' | 'project', TranslationKey> = {
+  user: 'recipes.source.user',
+  project: 'recipes.source.project',
+}
+
+/** 运行状态徽标文案 */
+const RUN_STATUS_LABEL_KEYS: Record<RecipeRunStatus, TranslationKey> = {
+  pending: 'recipes.status.pending',
+  running: 'recipes.status.running',
+  succeeded: 'recipes.status.succeeded',
+  failed: 'recipes.status.failed',
+  cancelled: 'recipes.status.cancelled',
+}
+
+/**
+ * 布尔输入的固定选项。
+ * true / false 是 YAML 字面量，值与显示都保持英文——用户写进 YAML 的就是这两个词。
+ */
+const BOOLEAN_OPTIONS = [
+  { value: 'true', label: 'true' },
+  { value: 'false', label: 'false' },
+] as const
+
+/** 用户级 recipe 目录（相对 userData） */
+const USER_RECIPES_DIR = 'userData/recipes/'
+
+/** 项目级 recipe 目录（相对工作目录） */
+const PROJECT_RECIPES_DIR = '.bizgraph/recipes/'
+
 function getApi(propsApi?: Props['electronAPI']) {
   return propsApi ?? (window.electronAPI as unknown as Props['electronAPI'])
 }
 
 export function RecipesPanel({ electronAPI: apiProp }: Props) {
   const api = getApi(apiProp)
+  const { t } = useI18n()
   const [recipes, setRecipes] = useState<RecipeDefinition[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [inputValues, setInputValues] = useState<Record<string, string>>({})
@@ -111,7 +144,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
   }
 
   if (!api) {
-    return <div className="p-4 text-xs text-muted-foreground">electronAPI not available</div>
+    return <div className="p-4 text-xs text-muted-foreground">{t('recipes.apiUnavailable')}</div>
   }
 
   return (
@@ -119,15 +152,25 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
       {/* Left: list */}
       <div className="w-64 border-r flex flex-col">
         <div className="flex items-center justify-between p-2 border-b">
-          <h3 className="font-medium">Recipes</h3>
-          <Button size="sm" variant="ghost" onClick={() => void refresh()}>
+          <h3 className="font-medium">{t('recipes.title')}</h3>
+          <Button
+            size="sm"
+            variant="ghost"
+            title={t('recipes.refresh')}
+            aria-label={t('recipes.refresh')}
+            onClick={() => void refresh()}
+          >
             ↻
           </Button>
         </div>
         <div className="flex-1 overflow-y-auto">
           {recipes.length === 0 && (
             <div className="p-4 text-xs text-muted-foreground">
-              No recipes loaded. Create YAML files in <code className="font-mono">userData/recipes/</code> or <code className="font-mono">.bizgraph/recipes/</code> then click ↻.
+              {t('recipes.emptyPrefix')}{' '}
+              <code className="font-mono">{USER_RECIPES_DIR}</code>{' '}
+              {t('recipes.emptyConnector')}{' '}
+              <code className="font-mono">{PROJECT_RECIPES_DIR}</code>
+              {t('recipes.emptySuffix')}
             </div>
           )}
           {recipes.map((r) => (
@@ -139,14 +182,14 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
               <div className="flex items-center gap-2">
                 <span className="font-mono text-xs">{r.id}</span>
                 <Badge variant={r.source === 'project' ? 'default' : 'outline'} className="text-[10px]">
-                  {r.source ?? 'user'}
+                  {t(SOURCE_LABEL_KEYS[r.source ?? 'user'])}
                 </Badge>
               </div>
               {r.description && (
                 <div className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{r.description}</div>
               )}
               <div className="text-[10px] text-muted-foreground mt-1">
-                {r.steps.length} step{r.steps.length !== 1 ? 's' : ''}
+                {t('recipes.stepCount', { count: r.steps.length })}
                 {r.tags && r.tags.length > 0 && <> &rarr; {r.tags.join(', ')}</>}
               </div>
             </div>
@@ -162,7 +205,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
               <div className="flex items-center gap-2">
                 <h2 className="font-semibold">{selected.name}</h2>
                 <Badge variant={selected.source === 'project' ? 'default' : 'outline'}>
-                  {selected.source ?? 'user'}
+                  {t(SOURCE_LABEL_KEYS[selected.source ?? 'user'])}
                 </Badge>
               </div>
               {selected.description && (
@@ -176,7 +219,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
             {/* Inputs form */}
             {selected.inputs && selected.inputs.length > 0 && (
               <div className="p-3 border-b space-y-2">
-                <h4 className="text-xs font-medium">Inputs</h4>
+                <h4 className="text-xs font-medium">{t('recipes.inputs')}</h4>
                 {selected.inputs.map((spec) => (
                   <div key={spec.name}>
                     <label className="text-[10px] text-muted-foreground">
@@ -193,8 +236,9 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
                         onChange={(e) => setInputValues({ ...inputValues, [spec.name]: e.target.value })}
                       >
                         <option value="">-</option>
-                        <option value="true">true</option>
-                        <option value="false">false</option>
+                        {BOOLEAN_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
                       </select>
                     ) : spec.type === 'enum' && spec.options ? (
                       <select
@@ -224,7 +268,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
             {/* Run button */}
             <div className="p-3 border-b flex items-center gap-2">
               <Button onClick={() => void handleRun()} disabled={running}>
-                {running ? 'Running…' : 'Run Recipe'}
+                {running ? t('recipes.running') : t('recipes.run')}
               </Button>
               {lastError && (
                 <span className="text-xs text-destructive">{lastError}</span>
@@ -233,7 +277,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
 
             {/* Steps preview */}
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              <h4 className="text-xs font-medium">Steps ({selected.steps.length})</h4>
+              <h4 className="text-xs font-medium">{t('recipes.steps', { count: selected.steps.length })}</h4>
               {selected.steps.map((s, i) => (
                 <div key={i} className="border rounded p-2 text-xs">
                   <div className="flex items-center gap-2">
@@ -259,9 +303,9 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
 
             {/* Run history */}
             <div className="border-t max-h-40 overflow-y-auto p-3 space-y-1">
-              <h4 className="text-xs font-medium">Run History ({runs.length})</h4>
+              <h4 className="text-xs font-medium">{t('recipes.runHistory', { count: runs.length })}</h4>
               {runs.length === 0 && (
-                <div className="text-[10px] text-muted-foreground">No runs yet.</div>
+                <div className="text-[10px] text-muted-foreground">{t('recipes.noRuns')}</div>
               )}
               {runs.map((run) => (
                 <div key={run.id} className="text-[10px] flex items-center gap-2">
@@ -269,7 +313,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
                     variant={run.status === 'succeeded' ? 'default' : 'destructive'}
                     className="text-[10px]"
                   >
-                    {run.status}
+                    {t(RUN_STATUS_LABEL_KEYS[run.status])}
                   </Badge>
                   <span className="font-mono">{run.id}</span>
                   <span className="text-muted-foreground">
@@ -277,7 +321,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
                   </span>
                   {run.status === 'running' && (
                     <Button size="sm" variant="ghost" className="h-4 text-[10px] ml-auto"
-                      onClick={() => void handleCancel(run.id)}>Cancel</Button>
+                      onClick={() => void handleCancel(run.id)}>{t('recipes.cancel')}</Button>
                   )}
                 </div>
               ))}
@@ -285,7 +329,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
-            Select a recipe on the left
+            {t('recipes.selectHint')}
           </div>
         )}
       </div>

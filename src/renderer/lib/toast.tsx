@@ -19,6 +19,7 @@
 import { create } from 'zustand'
 import { useEffect } from 'react'
 import { cn } from './utils'
+import { useI18n } from '../i18n/useI18n'
 import { X, CheckCircle2, AlertCircle, Info } from 'lucide-react'
 
 export type ToastKind = 'success' | 'error' | 'info'
@@ -102,10 +103,11 @@ export function ToastContainer() {
 
 function ToastCard({ toast }: { toast: Toast }) {
   const dismiss = useToastStore((s) => s.dismiss)
+  const { t } = useI18n()
   useEffect(() => {
     if (toast.durationMs && toast.durationMs > 0) {
-      const t = setTimeout(() => dismiss(toast.id), toast.durationMs)
-      return () => clearTimeout(t)
+      const timer = setTimeout(() => dismiss(toast.id), toast.durationMs)
+      return () => clearTimeout(timer)
     }
     return undefined
   }, [toast.id, toast.durationMs, dismiss])
@@ -136,8 +138,8 @@ function ToastCard({ toast }: { toast: Toast }) {
       <button
         type="button"
         onClick={() => dismiss(toast.id)}
-        aria-label="关闭通知"
-        title="关闭"
+        aria-label={t('toast.close')}
+        title={t('toast.closeTitle')}
         className="shrink-0 p-0.5 rounded hover:bg-black/10 transition-colors"
       >
         <X className="w-3.5 h-3.5" />

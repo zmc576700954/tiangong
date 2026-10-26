@@ -77,7 +77,7 @@ describe('RecipesPanel', () => {
     await waitFor(() => {
       expect(api['recipes:list']).toHaveBeenCalled()
     })
-    expect(screen.getByText(/No recipes loaded/i)).toBeTruthy()
+    expect(screen.getByText(/尚未加载任何 Recipe/)).toBeTruthy()
   })
 
   it('renders the recipe list with source badge, step count, and tags', async () => {
@@ -87,8 +87,8 @@ describe('RecipesPanel', () => {
     await waitFor(() => {
       expect(screen.getByText('demo')).toBeTruthy()
     })
-    expect(screen.getByText(/2\s*steps/)).toBeTruthy()
-    expect(screen.getAllByText('user').length).toBeGreaterThan(0)
+    expect(screen.getByText(/2\s*个步骤/)).toBeTruthy()
+    expect(screen.getAllByText('用户级').length).toBeGreaterThan(0)
     expect(screen.getByText(/demo, test/)).toBeTruthy()
   })
 
@@ -111,9 +111,9 @@ describe('RecipesPanel', () => {
     const api = makeApi({ 'recipes:list': vi.fn(async () => [recipe]) })
     render(<RecipesPanel electronAPI={api} />)
     await waitFor(() => {
-      expect(screen.getByText('Run Recipe')).toBeTruthy()
+      expect(screen.getByText('运行 Recipe')).toBeTruthy()
     })
-    fireEvent.click(screen.getByText('Run Recipe'))
+    fireEvent.click(screen.getByText('运行 Recipe'))
     await waitFor(() => {
       expect(api['recipes:run']).toHaveBeenCalledWith({ recipeId: 'demo', inputs: {} })
     })
