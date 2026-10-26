@@ -21,6 +21,39 @@
 /** Recipe 步骤类型白名单。仅两类，避免任意执行入口。 */
 export type RecipeStepKind = 'agent' | 'shell'
 
+// ============================================
+// Sub Recipe (D5a)
+// ============================================
+
+/**
+ * SubRecipe —— Recipe 内嵌的子流程引用（受 Goose `sub_recipes` 启发）。
+ *
+ * 设计哲学（基座 v1 不变）：
+ *   - 串行执行（D5b 再加 parallel / on_failure）。
+ *   - 局部 `name` 作为 outputs 命名空间前缀：`sub_recipes[*].name` 必须 kebab-case 且唯一。
+ *   - `recipe` 引用另一个 Recipe 的 id（解析期校验存在性）。
+ *   - `inputs` 字典会经 `${inputs.x}` / `${outputs.<name>.field}` 模板渲染后传入被引用 Recipe。
+ */
+export interface SubRecipe {
+  /** 局部名（kebab-case 且在本 Recipe 内唯一）。同时作为 outputs 命名空间前缀。 */
+  name: string
+  /** 引用的 Recipe id（必须存在于 RecipeManager 缓存）。 */
+  recipe: string
+  /** 传给被引用 Recipe 的 inputs。值允许 string|number|boolean。 */
+  inputs?: Record<string, string | number | boolean>
+}
+
+/**
+ * Recipe 完成条件（基座版预留，runner 当前只校验结构，不执行 LLM 判断）。
+ * 阶段 2 接入 LLM-evaluator：把 recipe 最终输出喂给模型，让模型按条件字符串判断成功/失败。
+ */
+export interface RecipeResponse {
+  /** 成功条件表达式（自然语言，LLM 解释）。 */
+  success_condition?: string
+  /** 失败条件表达式（自然语言，LLM 解释）。 */
+  failure_condition?: string
+}
+
 /**
  * Recipe 步骤基类。kind 决定其余字段。
  *
@@ -114,10 +147,14 @@ export interface RecipeDefinition {
   sourcePath?: string
   /** 入参 schema。 */
   inputs?: RecipeInputSpec[]
-  /** 步骤列表。至少 1 个。 */
-  steps: RecipeStep[]
+  /** 步骤列表。至少 1 个（D5a 起：含 sub_recipes 的 Recipe 允许空 steps）。 */
+  steps?: RecipeStep[]
   /** 默认使用哪个 adapter。未指定时由 SubagentManager 决定。 */
   default_adapter?: string
+  /** SubRecipe 序列（D5a）：按数组顺序串行执行，outputs 累积到 `dagOutputs[name]`。 */
+  sub_recipes?: SubRecipe[]
+  /** 完成条件（基座版仅结构校验，runner 不执行 LLM 判断）。 */
+  response?: RecipeResponse
 }
 
 // ============================================
@@ -170,6 +207,8 @@ export interface RecipeRun {
   error: string | null
   started_at: number
   finished_at: number | null
+  /** 子流程记录（D5a）：当顶层 Recipe 含 sub_recipes 并由 runDAG 触发时填充。 */
+  subRuns?: RecipeRun[]
 }
 
 /** RecipeRunner.run() 的入参 —— 类似 SubagentInvokeArgs 但不限于单步。 */

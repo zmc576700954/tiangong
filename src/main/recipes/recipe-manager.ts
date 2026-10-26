@@ -20,7 +20,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import { createLogger } from '../shared/logger'
 import { BizGraphError, ErrorCode } from '../errors'
-import { parseRecipe } from './yaml-loader'
+import { parseRecipe, validateRecipeGraph } from './yaml-loader'
 import type { RecipeDefinition } from '@shared/types/recipe'
 import type Database from 'better-sqlite3'
 
@@ -49,6 +49,7 @@ export class RecipeManager {
       if (def.source === 'project') this.cache.delete(id)
     }
     await this.scanProjectRecipes()
+    this.validateGraphs()
   }
 
   /** 从两个目录加载所有 Recipe。失败的文件被记录到 logger，但不会抛错。 */
@@ -56,6 +57,25 @@ export class RecipeManager {
     this.cache.clear()
     await this.scanUserRecipes()
     await this.scanProjectRecipes()
+    this.validateGraphs()
+  }
+
+  /** 项目级重扫后做一次图校验（user 级在 loadAll 时已并入）。 */
+  private validateGraphs(): void {
+    const all = new Map<string, RecipeDefinition>()
+    for (const [id, def] of this.cache.entries()) all.set(id, def)
+    for (const def of this.cache.values()) {
+      if (def.sub_recipes && def.sub_recipes.length > 0) {
+        try {
+          validateRecipeGraph(def, all)
+        } catch (err) {
+          // 单个坏 recipe 不影响其它加载；从缓存中丢弃并日志记录。
+          const msg = err instanceof Error ? err.message : String(err)
+          logger.warn(`Recipe "${def.id}" failed graph validation: ${msg}`)
+          this.cache.delete(def.id)
+        }
+      }
+    }
   }
 
   private async scanUserRecipes(): Promise<void> {
@@ -113,7 +133,7 @@ export class RecipeManager {
   private upsertRecipeRow(def: RecipeDefinition, yamlText: string): void {
     const now = new Date().toISOString()
     const inputsSchemaJson = def.inputs ? JSON.stringify(def.inputs) : null
-    const stepsJson = JSON.stringify(def.steps)
+    const stepsJson = JSON.stringify(def.steps ?? [])
     const tagsJson = def.tags ? JSON.stringify(def.tags) : null
     const source = def.source ?? 'user'
 

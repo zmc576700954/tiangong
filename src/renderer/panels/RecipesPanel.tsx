@@ -189,7 +189,8 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
                 <div className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{r.description}</div>
               )}
               <div className="text-[10px] text-muted-foreground mt-1">
-                {t('recipes.stepCount', { count: r.steps.length })}
+                {t('recipes.stepCount', { count: (r.steps ?? []).length })}
+                {r.sub_recipes && r.sub_recipes.length > 0 && <> &rarr; {t('recipes.subRecipeCount', { count: r.sub_recipes.length })}</>}
                 {r.tags && r.tags.length > 0 && <> &rarr; {r.tags.join(', ')}</>}
               </div>
             </div>
@@ -277,8 +278,8 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
 
             {/* Steps preview */}
             <div className="flex-1 overflow-y-auto p-3 space-y-2">
-              <h4 className="text-xs font-medium">{t('recipes.steps', { count: selected.steps.length })}</h4>
-              {selected.steps.map((s, i) => (
+              <h4 className="text-xs font-medium">{t('recipes.steps', { count: (selected.steps ?? []).length })}</h4>
+              {(selected.steps ?? []).map((s, i) => (
                 <div key={i} className="border rounded p-2 text-xs">
                   <div className="flex items-center gap-2">
                     <Badge variant={s.kind === 'shell' ? 'secondary' : 'outline'} className="text-[10px]">
@@ -299,6 +300,44 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
                   )}
                 </div>
               ))}
+
+              {/* Sub-recipes preview (D5a) */}
+              {selected.sub_recipes && selected.sub_recipes.length > 0 && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-medium">Sub-recipes ({selected.sub_recipes.length})</h4>
+                  {selected.sub_recipes.map((sr, i) => (
+                    <div key={i} className="border rounded p-2 text-xs mt-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-[10px]">sub_recipe</Badge>
+                        <span className="font-mono">{sr.name}</span>
+                        <span className="text-muted-foreground">→ {sr.recipe}</span>
+                      </div>
+                      {sr.inputs && Object.keys(sr.inputs).length > 0 && (
+                        <pre className="mt-1 whitespace-pre-wrap font-mono text-[10px] text-muted-foreground">
+                          inputs: {JSON.stringify(sr.inputs)}
+                        </pre>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Response preview (D5a) */}
+              {selected.response && (selected.response.success_condition || selected.response.failure_condition) && (
+                <div className="mt-3">
+                  <h4 className="text-xs font-medium">Response</h4>
+                  {selected.response.success_condition && (
+                    <div className="text-[10px] text-muted-foreground">
+                      success: {selected.response.success_condition}
+                    </div>
+                  )}
+                  {selected.response.failure_condition && (
+                    <div className="text-[10px] text-muted-foreground">
+                      failure: {selected.response.failure_condition}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Run history */}

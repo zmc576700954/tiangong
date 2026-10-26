@@ -22,7 +22,7 @@ import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { BizGraphError, ErrorCode } from '../errors'
 import type { RecipeManager } from './recipe-manager'
-import { applyInputTemplate } from './yaml-loader'
+import { applyTemplate, topoSortSubRecipes } from './yaml-loader'
 import type {
   RecipeDefinition,
   RecipeAgentStep,
@@ -30,6 +30,7 @@ import type {
   RecipeRun,
   RecipeRunRequest,
   RecipeRunStepRecord,
+  SubRecipe,
 } from '@shared/types/recipe'
 import type { SubagentManager } from '../agent/subagent-manager'
 import type Database from 'better-sqlite3'
@@ -217,38 +218,102 @@ export class RecipeRunner {
     return true
   }
 
-  /** 主入口：执行一个 recipe。 */
+  /** 主入口：执行一个 recipe。
+   *
+   * 行为决策：
+   *   - 顶层 Recipe 含 sub_recipes → 走 runDAG() 路径（序列执行子流程，outputs 跨步骤可见）。
+   *   - 否则走原单 Recipe 的 run() 路径（保持向后兼容）。
+   */
   async run(request: RecipeRunRequest): Promise<RecipeRun> {
-    const runId = generateId('recipe')
-    const ctrl = new AbortController()
-    this.activeRuns.set(runId, ctrl)
-
-    let def: RecipeDefinition
+    // 先轻量探一下 def，决定走哪条路径
+    let def: RecipeDefinition | undefined
     try {
       def = this.deps.manager.getOrThrow(request.recipeId)
     } catch (err) {
       // Recipe 不存在时仍然要持久化一条 failed run，便于用户看到错误
-      const failed: RecipeRun = {
-        id: runId,
-        recipe_id: request.recipeId,
-        recipe_version: 'unknown',
-        session_id: request.parentSessionId ?? null,
-        graph_id: null,
-        node_id: request.nodeId ?? null,
-        status: 'failed',
-        inputs: request.inputs ?? {},
-        steps: [],
-        outputs: {},
-        error: err instanceof Error ? err.message : String(err),
-        started_at: Date.now(),
-        finished_at: Date.now(),
+      return this.recordFailedLookup(request, err)
+    }
+    if (def.sub_recipes && def.sub_recipes.length > 0) {
+      return this.runDAG(request, def)
+    }
+    return this.runSingle(request, def)
+  }
+
+  /**
+   * 直接以 DAG 模式运行 Recipe（即使顶层 Recipe 没有 sub_recipes，也会进入 DAG 入口并
+   * 顺序执行 def.steps）。调用方主要在内部使用；测试代码可显式调用以验证 sub_recipes 路径。
+   */
+  async runDAG(request: RecipeRunRequest, topDef: RecipeDefinition): Promise<RecipeRun> {
+    const runId = generateId('recipe')
+    const ctrl = new AbortController()
+    this.activeRuns.set(runId, ctrl)
+
+    const run: RecipeRun = {
+      id: runId,
+      recipe_id: topDef.id,
+      recipe_version: topDef.version,
+      session_id: request.parentSessionId ?? null,
+      graph_id: null,
+      node_id: request.nodeId ?? null,
+      status: 'running',
+      inputs: request.inputs ?? {},
+      steps: [],
+      outputs: {},
+      error: null,
+      started_at: Date.now(),
+      finished_at: null,
+      subRuns: [],
+    }
+    this.insertRunRow(run)
+
+    // dagOutputs 跨步骤累积，由 sub_recipe[*].name 做命名空间
+    const dagOutputs: Record<string, unknown> = {}
+    // 顶层 inputs 在 sub_recipe 渲染时也可见（${input.x}）
+    const topInputs = request.inputs ?? {}
+
+    try {
+      // 1. 先跑顶层 steps（如果有），它们的 outputs 不进 dagOutputs（顶层 steps 的输出走 run.outputs[step_id]）
+      if (topDef.steps && topDef.steps.length > 0) {
+        await this.executeSteps(topDef, request, run, ctrl.signal, dagOutputs)
       }
+      // 2. 再跑 sub_recipes（串行）
+      if (topDef.sub_recipes && topDef.sub_recipes.length > 0) {
+        const ordered = topoSortSubRecipes(topDef.sub_recipes)
+        for (const sr of ordered) {
+          if (ctrl.signal.aborted) {
+            throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
+          }
+          await this.executeSubRecipe(sr, topInputs, dagOutputs, request, run, ctrl.signal)
+        }
+      }
+      run.status = 'succeeded'
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      run.error = msg
+      run.status = ctrl.signal.aborted ? 'cancelled' : 'failed'
+      logger.warn(`Recipe DAG run ${runId} ended with status=${run.status}: ${msg}`)
+    } finally {
+      run.finished_at = Date.now()
       this.activeRuns.delete(runId)
-      this.insertRunRow(failed)
-      return failed
+      this.updateRunRow(run)
+    }
+    return run
+  }
+
+  /** 单 Recipe 路径（基座 v1 兼容：不识别 sub_recipes）。
+   *
+   * parentSignal 可选：DAG 调用时传入顶层 ctrl.signal，使得子 run 也能随父级一起取消。
+   */
+  private async runSingle(request: RecipeRunRequest, def: RecipeDefinition, parentSignal?: AbortSignal): Promise<RecipeRun> {
+    const runId = generateId('recipe')
+    const ctrl = new AbortController()
+    this.activeRuns.set(runId, ctrl)
+    if (parentSignal) {
+      if (parentSignal.aborted) ctrl.abort()
+      else parentSignal.addEventListener('abort', () => ctrl.abort(), { once: true })
     }
 
-    const runRecord: RecipeRun = {
+    const run: RecipeRun = {
       id: runId,
       recipe_id: def.id,
       recipe_version: def.version,
@@ -263,24 +328,101 @@ export class RecipeRunner {
       started_at: Date.now(),
       finished_at: null,
     }
-
-    this.insertRunRow(runRecord)
+    this.insertRunRow(run)
 
     try {
-      await this.executeSteps(def, request, runRecord, ctrl.signal)
-      runRecord.status = 'succeeded'
+      await this.executeSteps(def, request, run, ctrl.signal, {})
+      run.status = 'succeeded'
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      runRecord.error = msg
-      runRecord.status = ctrl.signal.aborted ? 'cancelled' : 'failed'
-      logger.warn(`Recipe run ${runId} ended with status=${runRecord.status}: ${msg}`)
+      run.error = msg
+      run.status = ctrl.signal.aborted ? 'cancelled' : 'failed'
+      logger.warn(`Recipe run ${runId} ended with status=${run.status}: ${msg}`)
     } finally {
-      runRecord.finished_at = Date.now()
+      run.finished_at = Date.now()
       this.activeRuns.delete(runId)
-      this.updateRunRow(runRecord)
+      this.updateRunRow(run)
     }
+    return run
+  }
 
-    return runRecord
+  /** 当 Recipe id 找不到时，仍然要持久化一条 failed run，便于用户看到错误。 */
+  private recordFailedLookup(request: RecipeRunRequest, err: unknown): RecipeRun {
+    const failed: RecipeRun = {
+      id: generateId('recipe'),
+      recipe_id: request.recipeId,
+      recipe_version: 'unknown',
+      session_id: request.parentSessionId ?? null,
+      graph_id: null,
+      node_id: request.nodeId ?? null,
+      status: 'failed',
+      inputs: request.inputs ?? {},
+      steps: [],
+      outputs: {},
+      error: err instanceof Error ? err.message : String(err),
+      started_at: Date.now(),
+      finished_at: Date.now(),
+    }
+    this.insertRunRow(failed)
+    return failed
+  }
+
+  /**
+   * 执行一个 sub_recipe：
+   *   - 解析 inputs：${input.x} 来自顶层 inputs；${outputs.<prev>.field} 来自 dagOutputs
+   *   - 把 sub_recipe 自己声明的 inputs 字典覆盖到 inputs（sub_recipe 优先）
+   *   - 串行跑被引用 Recipe 的 steps（不支持嵌套 sub_recipes 展开 —— D5b/D5c 再做）
+   *   - 把该 sub_recipe 的最终 outputs 整体塞进 dagOutputs[name]
+   *   - 把 sub_recipe 对应的 RecipeRun 推入 run.subRuns
+   */
+  private async executeSubRecipe(
+    sr: SubRecipe,
+    topInputs: Record<string, string | number | boolean>,
+    dagOutputs: Record<string, unknown>,
+    request: RecipeRunRequest,
+    parentRun: RecipeRun,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const subDef = this.deps.manager.getOrThrow(sr.recipe)
+    // inputs 优先级：sub_recipe 显式 inputs > 顶层 inputs
+    const mergedInputs: Record<string, string | number | boolean> = {
+      ...topInputs,
+      ...(sr.inputs ?? {}),
+    }
+    // 渲染 sub_recipe.inputs 字典里的 ${input.x} / ${outputs.x.y} 占位符
+    const resolvedInputs: Record<string, string | number | boolean> = {}
+    for (const [k, v] of Object.entries(mergedInputs)) {
+      if (typeof v === 'string') {
+        resolvedInputs[k] = applyTemplate(v, mergedInputs, dagOutputs, subDef.inputs)
+      } else {
+        resolvedInputs[k] = v
+      }
+    }
+    // 构造子 RecipeRun
+    const subRequest: RecipeRunRequest = {
+      recipeId: subDef.id,
+      inputs: resolvedInputs,
+      parentSessionId: request.parentSessionId ?? `recipe-${parentRun.id}`,
+      nodeId: request.nodeId,
+      allowedFiles: request.allowedFiles,
+      adapterName: request.adapterName,
+      description: `${sr.name} (sub of ${parentRun.recipe_id})`,
+    }
+    // 子 RecipeRun 直接走 runSingle（暂不嵌套 DAG；D5c 可扩展），并把父 signal 透传以便 cancel 联动。
+    const subRun = await this.runSingle(subRequest, subDef, signal)
+    parentRun.subRuns!.push(subRun)
+    // 把子 run 的 outputs 累积到 dagOutputs[sr.name]
+    if (subRun.status === 'succeeded') {
+      dagOutputs[sr.name] = { ...subRun.outputs }
+      parentRun.outputs[sr.name] = JSON.stringify(subRun.outputs)
+    }
+    // 任何非 succeeded 状态（D5a 不做 on_failure）→ 让整个 DAG 失败
+    if (subRun.status !== 'succeeded') {
+      throw new BizGraphError(
+        `Sub-recipe "${sr.name}" (${sr.recipe}) ended with status=${subRun.error ?? subRun.status}`,
+        ErrorCode.RECIPE_RUN_FAILED,
+      )
+    }
   }
 
   private async executeSteps(
@@ -288,9 +430,11 @@ export class RecipeRunner {
     request: RecipeRunRequest,
     run: RecipeRun,
     signal: AbortSignal,
+    outputs: Record<string, unknown>,
   ): Promise<void> {
     const inputs = request.inputs ?? {}
-    for (const step of def.steps) {
+    const steps = def.steps ?? []
+    for (const step of steps) {
       if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
       const record: RecipeRunStepRecord = {
         step_id: step.id ?? step.name ?? `step_${run.steps.length}`,
@@ -302,7 +446,7 @@ export class RecipeRunner {
       run.steps.push(record)
       try {
         if (step.kind === 'agent') {
-          const resolvedPrompt = applyInputTemplate(step.prompt, inputs, def.inputs)
+          const resolvedPrompt = applyTemplate(step.prompt, inputs, outputs, def.inputs)
           const result = await runAgentStep(
             step,
             resolvedPrompt,

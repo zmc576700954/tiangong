@@ -19,6 +19,7 @@ import type {
   RecipeAgentStep,
   RecipeShellStep,
   RecipeInputSpec,
+  SubRecipe,
 } from '@shared/types/recipe'
 
 // ============================================
@@ -46,6 +47,11 @@ const KEBAB_CASE_RE = /^[a-z][a-z0-9-]*$/
 
 function isKebabCase(s: string): boolean {
   return KEBAB_CASE_RE.test(s)
+}
+
+// scalar 类型 union，用于 SubRecipe.inputs 的运行时校验
+function isScalarValue(v: unknown): v is string | number | boolean {
+  return typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean'
 }
 
 // ============================================
@@ -215,6 +221,122 @@ function validateStep(raw: unknown, index: number): RecipeStep {
 }
 
 // ============================================
+// Sub Recipe 校验（D5a）
+// ============================================
+
+/**
+ * 校验单个 sub_recipe 节点。
+ * - name：kebab-case、非空
+ * - recipe：非空字符串（被引用的 Recipe id；存在性由 RecipeManager 在加载时校验）
+ * - inputs：可选，纯对象，值只能是 string|number|boolean
+ */
+function validateSubRecipe(raw: unknown, path: string, seenNames: Set<string>): SubRecipe {
+  if (!isPlainObject(raw)) {
+    throw new BizGraphError(
+      `Recipe sub_recipe must be an object at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  if (!isNonEmptyString(raw.name)) {
+    throw new BizGraphError(
+      `Recipe sub_recipe must have non-empty 'name' at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  if (!isKebabCase(raw.name)) {
+    throw new BizGraphError(
+      `Recipe sub_recipe name must be kebab-case at ${path}: got "${raw.name}"`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  if (seenNames.has(raw.name)) {
+    throw new BizGraphError(
+      `Duplicate sub_recipe name "${raw.name}" at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  seenNames.add(raw.name)
+  if (!isNonEmptyString(raw.recipe)) {
+    throw new BizGraphError(
+      `Recipe sub_recipe must have non-empty 'recipe' (referenced recipe id) at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  let inputs: Record<string, string | number | boolean> | undefined
+  if (raw.inputs !== undefined && raw.inputs !== null) {
+    if (!isPlainObject(raw.inputs)) {
+      throw new BizGraphError(
+        `Recipe sub_recipe 'inputs' must be an object at ${path}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    inputs = {}
+    for (const [k, v] of Object.entries(raw.inputs as Record<string, unknown>)) {
+      if (!isScalarValue(v)) {
+        throw new BizGraphError(
+          `Recipe sub_recipe input "${k}" must be string|number|boolean at ${path}`,
+          ErrorCode.RECIPE_INVALID_STEP,
+        )
+      }
+      inputs[k] = v
+    }
+  }
+  return {
+    name: raw.name,
+    recipe: raw.recipe,
+    inputs,
+  }
+}
+
+/**
+ * 校验 sub_recipes 数组。
+ * - 顺序即 DAG 执行顺序（D5a 不解析 depends_on；D5b 再加 parallel / on_failure）
+ * - name 在 Recipe 内必须唯一
+ */
+function validateSubRecipes(raw: unknown, path: string): SubRecipe[] {
+  if (!Array.isArray(raw)) {
+    throw new BizGraphError(
+      `Recipe sub_recipes must be an array at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  const seenNames = new Set<string>()
+  return raw.map((sr, i) => validateSubRecipe(sr, `${path}[${i}]`, seenNames))
+}
+
+/**
+ * 校验 response 对象（D5a 仅结构校验，不执行 LLM 判断）。
+ */
+function validateResponse(raw: unknown, path: string): { success_condition?: string; failure_condition?: string } {
+  if (!isPlainObject(raw)) {
+    throw new BizGraphError(
+      `Recipe response must be an object at ${path}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  const out: { success_condition?: string; failure_condition?: string } = {}
+  if (raw.success_condition !== undefined) {
+    if (!isString(raw.success_condition)) {
+      throw new BizGraphError(
+        `Recipe response.success_condition must be a string at ${path}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    out.success_condition = raw.success_condition
+  }
+  if (raw.failure_condition !== undefined) {
+    if (!isString(raw.failure_condition)) {
+      throw new BizGraphError(
+        `Recipe response.failure_condition must be a string at ${path}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    out.failure_condition = raw.failure_condition
+  }
+  return out
+}
+
+// ============================================
 // 顶层解析
 // ============================================
 
@@ -262,12 +384,6 @@ export function parseRecipe(yamlText: string): RecipeDefinition {
       ErrorCode.RECIPE_INVALID_STEP,
     )
   }
-  if (!Array.isArray(raw.steps) || raw.steps.length === 0) {
-    throw new BizGraphError(
-      'Recipe must have at least 1 step',
-      ErrorCode.RECIPE_INVALID_STEP,
-    )
-  }
 
   const inputsArr: RecipeInputSpec[] = []
   if (Array.isArray(raw.inputs)) {
@@ -276,7 +392,28 @@ export function parseRecipe(yamlText: string): RecipeDefinition {
     })
   }
 
-  const steps: RecipeStep[] = raw.steps.map((s, i) => validateStep(s, i))
+  const steps: RecipeStep[] = []
+  if (Array.isArray(raw.steps)) {
+    raw.steps.forEach((s, i) => steps.push(validateStep(s, i)))
+  }
+
+  const subRecipes: SubRecipe[] | undefined = Array.isArray(raw.sub_recipes)
+    ? validateSubRecipes(raw.sub_recipes, 'sub_recipes')
+    : undefined
+
+  const response:
+    | { success_condition?: string; failure_condition?: string }
+    | undefined = isPlainObject(raw.response) ? validateResponse(raw.response, 'response') : undefined
+
+  // steps 与 sub_recipes 至少有一个非空（D5a：sub_recipes-only 也合法）
+  const hasSteps = steps.length > 0
+  const hasSubRecipes = (subRecipes?.length ?? 0) > 0
+  if (!hasSteps && !hasSubRecipes) {
+    throw new BizGraphError(
+      'Recipe must have at least 1 step or 1 sub_recipe',
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
 
   // id 唯一性 + depends_on 引用校验
   const seenIds = new Set<string>()
@@ -312,8 +449,10 @@ export function parseRecipe(yamlText: string): RecipeDefinition {
     description: isString(raw.description) ? raw.description : undefined,
     tags: isStringArray(raw.tags) ? (raw.tags as string[]) : undefined,
     inputs: inputsArr.length > 0 ? inputsArr : undefined,
-    steps,
+    steps: steps.length > 0 ? steps : undefined,
     default_adapter: isString(raw.default_adapter) ? raw.default_adapter : undefined,
+    sub_recipes: subRecipes && subRecipes.length > 0 ? subRecipes : undefined,
+    response,
   }
 }
 
@@ -331,29 +470,76 @@ export function stringifyRecipe(def: RecipeDefinition): string {
     inputs: def.inputs,
     steps: def.steps,
     default_adapter: def.default_adapter,
+    sub_recipes: def.sub_recipes,
+    response: def.response,
   }
   return yaml.dump(raw, { indent: 2, lineWidth: -1, noRefs: true }).trimEnd()
 }
 
 // ============================================
-// 模板替换（运行时）：${input.<name>}
+// 模板替换（运行时）：${input.x} / ${outputs.x.y}
 // ============================================
 
 const TEMPLATE_INPUT_RE = /\$\{input\.([a-z][a-z0-9_]*)\}/g
+const TEMPLATE_OUTPUT_RE = /\$\{outputs\.([a-z][a-z0-9-]*)(?:\.([a-zA-Z0-9_.-]+))?\}/g
 
 /**
- * 把 ${input.name} 模板字符串中的占位替换为实际输入值。
- * 缺输入值时：
+ * 在对象上按 dotted path 取值。仅支持 own-property 标量 / 子对象；非标量返回值走 JSON.stringify。
+ * 空字段段被跳过；路径非法 → undefined。
+ */
+function readPath(root: unknown, path: string): unknown {
+  if (root === undefined || root === null) return undefined
+  if (path === '') return root
+  let cur: unknown = root
+  for (const seg of path.split('.')) {
+    if (cur === null || cur === undefined) return undefined
+    if (typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[seg]
+  }
+  return cur
+}
+
+/**
+ * 把 ${input.x} + ${outputs.x.y} 模板字符串中的占位替换为实际值。
+ *
+ * - inputs：来自 RecipeRunRequest.inputs（schema.default / required 行为见下）。
+ * - outputs：来自 DAG runner 的 dagOutputs[name]（结构化对象；缺字段抛错）。
+ *
+ * 缺 inputs 值时：
  *   - 字段 required=true（默认）→ 抛 BizGraphError
  *   - 字段 required=false + 有 default → 用 default
  *   - 都没有 → 替换为空字符串
  */
-export function applyInputTemplate(
+export function applyTemplate(
   template: string,
   inputs: Record<string, string | number | boolean>,
+  outputs: Record<string, unknown>,
   schema?: RecipeInputSpec[],
 ): string {
-  return template.replace(TEMPLATE_INPUT_RE, (_, key: string) => {
+  // 先 outputs（避免被 input 规则捕获）
+  const result = template.replace(TEMPLATE_OUTPUT_RE, (_, name: string, path?: string) => {
+    const bucket = outputs[name]
+    if (bucket === undefined || bucket === null) {
+      throw new BizGraphError(
+        `Recipe output "${name}" is not available in this scope`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    const value = path ? readPath(bucket, path) : bucket
+    if (value === undefined || value === null) {
+      throw new BizGraphError(
+        `Recipe output "${name}${path ? '.' + path : ''}" resolved to undefined`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    if (typeof value === 'object') {
+      // 复杂结构 → JSON 序列化（避免 String() 退化为 [object Object]）
+      return JSON.stringify(value)
+    }
+    return String(value)
+  })
+  // 再 inputs（保持基座语义）
+  return result.replace(TEMPLATE_INPUT_RE, (_, key: string) => {
     const value = inputs[key]
     if (value !== undefined && value !== null) {
       return String(value)
@@ -370,4 +556,116 @@ export function applyInputTemplate(
       ErrorCode.RECIPE_INVALID_STEP,
     )
   })
+}
+
+/**
+ * 把 ${input.name} 模板字符串中的占位替换为实际输入值。
+ * 仅处理 ${input.x}（不引用 outputs）。保留以兼容基座版调用点；新代码请用 applyTemplate。
+ *
+ * 缺输入值时：
+ *   - 字段 required=true（默认）→ 抛 BizGraphError
+ *   - 字段 required=false + 有 default → 用 default
+ *   - 都没有 → 替换为空字符串
+ */
+export function applyInputTemplate(
+  template: string,
+  inputs: Record<string, string | number | boolean>,
+  schema?: RecipeInputSpec[],
+): string {
+  return applyTemplate(template, inputs, {}, schema)
+}
+
+// ============================================
+// DAG 校验（D5a）
+// ============================================
+
+/**
+ * 校验 Recipe 的 sub_recipes 引用完整性 + 检测循环。
+ * 由 RecipeManager 在加载完所有 Recipe 后调用，确保 referenced recipe 都存在。
+ *
+ * 参数：
+ *   - def：被校验的 RecipeDefinition（顶层）
+ *   - allDefs：当前已加载的所有 Recipe 快照（id → def）
+ *
+ * 抛 BizGraphError(RECIPE_INVALID_STEP) 当：
+ *   - sub_recipes[*].recipe 引用了不存在的 id
+ *   - 图中存在循环（A → B → A）
+ *
+ * 注：DAG 拓扑排序在 RecipeRunner.runDAG() 中执行（仅对子图，跨 Recipe 引用视为节点）。
+ *
+ * 实现：标准 3 色 DFS（WHITE/GRAY/BLACK）。遇到 GRAY 邻居即回边 → 环。
+ */
+export function validateRecipeGraph(
+  def: RecipeDefinition,
+  allDefs: Map<string, RecipeDefinition>,
+): void {
+  if (!def.sub_recipes || def.sub_recipes.length === 0) return
+
+  // 1. 检查每个被引用的 recipe 是否存在
+  for (const sr of def.sub_recipes) {
+    if (!allDefs.has(sr.recipe)) {
+      throw new BizGraphError(
+        `Recipe "${def.id}" sub_recipe "${sr.name}" references unknown recipe "${sr.recipe}"`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+  }
+
+  // 2. 三色 DFS：跨 Recipe 循环检测（递归版；DAG 一般较浅，栈深度可控）
+  const WHITE = 0
+  const GRAY = 1
+  const BLACK = 2
+  const color = new Map<string, number>()
+  for (const id of allDefs.keys()) color.set(id, WHITE)
+
+  const visit = (id: string, path: string[]): void => {
+    const c = color.get(id) ?? WHITE
+    if (c === GRAY) {
+      // 回边 = 环
+      const cycle = [...path, id].join(' -> ')
+      throw new BizGraphError(
+        `Recipe graph contains a cycle: ${cycle}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    if (c === BLACK) return
+    color.set(id, GRAY)
+    const cur = allDefs.get(id)
+    if (cur?.sub_recipes) {
+      for (const sr of cur.sub_recipes) {
+        visit(sr.recipe, [...path, id])
+      }
+    }
+    color.set(id, BLACK)
+  }
+
+  visit(def.id, [def.id])
+}
+
+/**
+ * 对单个 Recipe 的 sub_recipes 数组执行拓扑排序。
+ * 当前实现：每个 sub_recipe 视为节点，依赖顺序即数组顺序（D5a 不解析 depends_on）；
+ * 检测 self-loop（同一 name 出现两次已经在 parseRecipe 阶段拒绝）。
+ *
+ * 返回值：排序后的 sub_recipes 数组（基座版 = 输入顺序拷贝）。
+ * 抛 BizGraphError 当输入包含重复 recipe 引用且 ordering 形成冲突。
+ *
+ * 注：跨 Recipe 循环由 validateRecipeGraph() 检测；本函数仅处理单 Recipe 内。
+ */
+export function topoSortSubRecipes(subs: SubRecipe[]): SubRecipe[] {
+  // 基座版：拓扑顺序 = 数组顺序；引用合法性由 validateRecipeGraph 兜底。
+  // 这里做一个简单去重 + 自检（同名重复已在 parseRecipe 拒绝）。
+  const seen = new Set<string>()
+  const ordered: SubRecipe[] = []
+  for (const sr of subs) {
+    if (seen.has(sr.name)) {
+      throw new BizGraphError(
+        `Duplicate sub_recipe name "${sr.name}" in topological order`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    seen.add(sr.name)
+    ordered.push(sr)
+  }
+  return ordered
 }
