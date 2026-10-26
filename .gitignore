@@ -62,3 +62,6 @@ out/
 
 # Worktrees
 .worktrees/
+
+# i18n 残留英文扫描基线（本地生成，不入库）
+scripts/i18n-baseline.txt
