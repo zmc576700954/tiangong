@@ -32,6 +32,7 @@ import type {
   RecipeShellStep,
   RecipeStep,
   RecipeRun,
+  RecipeRunProgressEvent,
   RecipeRunRequest,
   RecipeRunStepRecord,
   SubRecipe,
@@ -54,6 +55,16 @@ export interface RecipeRunnerDeps {
    */
   getWorkingDirectory?: () => string | null | Promise<string | null>
 }
+
+/**
+ * 步骤级进度事件回调签名。
+ *
+ * 为什么放在 RecipeRunnerDeps 之外：
+ *   - deps 在 RecipeRunner 构造时一次性注入；监听器可能在稍后由 IPC 层挂载。
+ *   - 监听器与 RecipeRunner 解耦，方便测试与单元验证。
+ *   - 与 SubagentManager.onProgress 模式保持一致。
+ */
+export type RecipeProgressListener = (event: RecipeRunProgressEvent) => void
 
 // ============================================
 // 单步执行
@@ -242,6 +253,15 @@ interface StepExecutionContext {
 }
 
 /**
+ * D5c-3：进度事件计数。并行批内多个步共享同一 tracker。
+ */
+interface ProgressTracker {
+  totalSteps: number
+  completedSteps: number
+  failedSteps: number
+}
+
+/**
  * 给定 Recipe.steps 计算 DAG 拓扑分层（waves）：
  *   - wave 0：所有无 depends_on 的步
  *   - wave n+1：所有 dep 都在前序 wave 中的步
@@ -334,8 +354,23 @@ export function batchWave(indices: number[], steps: RecipeStep[] | undefined): S
 
 export class RecipeRunner {
   private activeRuns = new Map<string, AbortController>()
+  private progressListener: RecipeProgressListener | null = null
 
   constructor(private deps: RecipeRunnerDeps) {}
+
+  /**
+   * 注册步骤级进度事件监听器（D5c-3）。
+   * 同一时刻仅保留最后一个监听器（项目无并发场景需要广播）。
+   * 返回 unsubscribe 函数。
+   */
+  setProgressListener(listener: RecipeProgressListener | null): () => void {
+    this.progressListener = listener
+    return () => {
+      if (this.progressListener === listener) {
+        this.progressListener = null
+      }
+    }
+  }
 
   /** 取消正在进行的 run。best-effort：找不到时 no-op。 */
   cancel(runId: string): boolean {
@@ -343,6 +378,15 @@ export class RecipeRunner {
     if (!ctrl) return false
     ctrl.abort()
     return true
+  }
+
+  private emitProgress(event: RecipeRunProgressEvent): void {
+    try {
+      this.progressListener?.(event)
+    } catch (err) {
+      // 监听器抛错不影响 run 主流程 —— 仅日志。
+      logger.warn(`Recipe progress listener threw: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   /** 主入口：执行一个 recipe。
@@ -567,6 +611,13 @@ export class RecipeRunner {
         : undefined,
     }
 
+    // D5c-3：进度计数。并行批共享同一个 tracker —— 计数在单线程 JS 中是原子的。
+    const tracker: ProgressTracker = {
+      totalSteps: def.steps?.length ?? 0,
+      completedSteps: 0,
+      failedSteps: 0,
+    }
+
     // DAG 拓扑分层；wave 内再切批
     const waves = computeWaves(def.steps)
     for (const waveIndices of waves) {
@@ -575,7 +626,7 @@ export class RecipeRunner {
       const batches = batchWave(waveIndices, def.steps)
       for (const batch of batches) {
         if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
-        await this.executeBatch(def, request, run, batch, execCtx, outputs, signal)
+        await this.executeBatch(def, request, run, batch, execCtx, outputs, signal, tracker)
       }
     }
   }
@@ -597,10 +648,11 @@ export class RecipeRunner {
     execCtx: StepExecutionContext,
     outputs: Record<string, unknown>,
     signal: AbortSignal,
+    tracker: ProgressTracker,
   ): Promise<void> {
     if (batch.parallel) {
       const results = await Promise.allSettled(
-        batch.stepIndices.map((idx) => this.executeOneStep(def, request, run, idx, execCtx, outputs, signal)),
+        batch.stepIndices.map((idx) => this.executeOneStep(def, request, run, idx, execCtx, outputs, signal, tracker)),
       )
       const firstRejection = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
       if (firstRejection) {
@@ -612,7 +664,7 @@ export class RecipeRunner {
       return
     }
     // serial 批：长度为 1
-    await this.executeOneStep(def, request, run, batch.stepIndices[0]!, execCtx, outputs, signal)
+    await this.executeOneStep(def, request, run, batch.stepIndices[0]!, execCtx, outputs, signal, tracker)
   }
 
   /**
@@ -626,19 +678,32 @@ export class RecipeRunner {
     execCtx: StepExecutionContext,
     outputs: Record<string, unknown>,
     signal: AbortSignal,
+    tracker: ProgressTracker,
   ): Promise<void> {
     const step = def.steps?.[stepIdx]
     if (!step) throw new BizGraphError(`Recipe step ${stepIdx} not found`, ErrorCode.RECIPE_RUN_FAILED)
     if (signal.aborted) throw new BizGraphError('Cancelled', ErrorCode.RECIPE_RUN_FAILED)
     const inputs = request.inputs ?? {}
+    const stepId = step.id ?? step.name ?? `step_${stepIdx}`
     const record: RecipeRunStepRecord = {
-      step_id: step.id ?? step.name ?? `step_${stepIdx}`,
+      step_id: stepId,
       step_name: step.name ?? step.id ?? `Step ${stepIdx + 1}`,
       kind: step.kind,
       status: 'running',
       started_at: Date.now(),
     }
     run.steps.push(record)
+    this.emitProgress({
+      runId: run.id,
+      recipeId: def.id,
+      stepId,
+      status: 'running',
+      stepIndex: stepIdx,
+      totalSteps: tracker.totalSteps,
+      completedSteps: tracker.completedSteps,
+      failedSteps: tracker.failedSteps,
+      startedAt: record.started_at,
+    })
     try {
       if (step.kind === 'agent') {
         const resolvedPrompt = applyTemplate(step.prompt, inputs, outputs, def.inputs)
@@ -672,10 +737,37 @@ export class RecipeRunner {
       }
       record.status = 'succeeded'
       record.finished_at = Date.now()
+      tracker.completedSteps++
+      this.emitProgress({
+        runId: run.id,
+        recipeId: def.id,
+        stepId,
+        status: 'completed',
+        stepIndex: stepIdx,
+        totalSteps: tracker.totalSteps,
+        completedSteps: tracker.completedSteps,
+        failedSteps: tracker.failedSteps,
+        startedAt: record.started_at,
+        finishedAt: record.finished_at,
+      })
     } catch (err) {
-      record.status = 'failed'
+      record.status = signal.aborted ? 'cancelled' : 'failed'
       record.finished_at = Date.now()
       record.error = err instanceof Error ? err.message : String(err)
+      if (record.status === 'failed') tracker.failedSteps++
+      this.emitProgress({
+        runId: run.id,
+        recipeId: def.id,
+        stepId,
+        status: record.status,
+        stepIndex: stepIdx,
+        totalSteps: tracker.totalSteps,
+        completedSteps: tracker.completedSteps,
+        failedSteps: tracker.failedSteps,
+        startedAt: record.started_at,
+        finishedAt: record.finished_at,
+        error: record.error,
+      })
       throw err
     }
   }

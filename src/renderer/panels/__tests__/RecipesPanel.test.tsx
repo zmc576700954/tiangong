@@ -5,6 +5,11 @@ import { RecipesPanel } from '../RecipesPanel'
 import type { RecipeDefinition, RecipeRun } from '@shared/types/recipe'
 
 /**
+ * ResizeObserver / matchMedia 的 stub 由 vitest.setup.js 全局提供
+ * （@xyflow/react 的 DAG 视图在 jsdom 里需要它们）。
+ */
+
+/**
  * RecipesPanel 渲染层测试（最小覆盖）：
  *  - 空态文案渲染（无 recipe 时给出 userData / .bizgraph/recipes/ 提示）
  *  - 列表展示 mock recipe（含 source 徽标 + step count + tags）
@@ -38,6 +43,7 @@ function makeRecipe(overrides: Partial<RecipeDefinition> = {}): RecipeDefinition
 function makeApi(overrides: Partial<{
   'recipes:list': () => Promise<RecipeDefinition[]>
   'recipes:get': (id: string) => Promise<RecipeDefinition | null>
+  'recipes:dag': (id: string) => Promise<unknown>
   'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean> }) => Promise<RecipeRun>
   'recipes:cancel': (runId: string) => Promise<boolean>
   'recipes:refresh': () => Promise<number>
@@ -47,6 +53,7 @@ function makeApi(overrides: Partial<{
   return {
     'recipes:list': vi.fn(async () => []),
     'recipes:get': vi.fn(async () => null),
+    'recipes:dag': vi.fn(async () => null),
     'recipes:run': vi.fn(async () => ({
       id: 'recipe-run-1',
       recipe_id: 'demo',
@@ -101,9 +108,10 @@ describe('RecipesPanel', () => {
     })
     // inputs form
     expect(screen.getByText('Target path')).toBeTruthy()
-    // steps preview: agent_type=explore and command rendering
-    expect(screen.getByText(/explore/)).toBeTruthy()
-    expect(screen.getByText(/echo/)).toBeTruthy()
+    // steps preview: agent_type=explore and command rendering.
+    // "explore" 现在在 DAG 节点和 step 详情都出现；用 getAllByText 至少匹配一处即可。
+    expect(screen.getAllByText(/explore/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/echo/).length).toBeGreaterThan(0)
   })
 
   it('runs a recipe and refreshes run history', async () => {

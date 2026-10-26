@@ -25,7 +25,9 @@ import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintRep
 import type {
   RecipeDefinition,
   RecipeRun,
+  RecipeRunProgressEvent,
   RecipeRunRequest,
+  RecipeDag,
 } from './recipe'
 import type { UserIdentity } from './agent'
 import type { ConflictReport } from './conflict'
@@ -225,6 +227,7 @@ export interface IpcApi {
   // Recipes (Phase C — YAML shareable workflows)
   'recipes:list': () => Promise<RecipeDefinition[]>
   'recipes:get': (id: string) => Promise<RecipeDefinition | null>
+  'recipes:dag': (id: string) => Promise<RecipeDag>
   'recipes:run': (request: RecipeRunRequest) => Promise<RecipeRun>
   'recipes:cancel': (runId: string) => Promise<boolean>
   'recipes:refresh': () => Promise<number>
@@ -257,6 +260,7 @@ export interface IpcEventMap {
   'session:recoveryFailed': (sessionId: string, reason: string) => void
   'waterline:change': (state: ContextState) => void
   'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
+  'recipe:run:progress': (data: RecipeRunProgressEvent) => void
   'menu:openProject': (projectPath: string) => void
   'conflict:onReported': (report: ConflictReport) => void
 }

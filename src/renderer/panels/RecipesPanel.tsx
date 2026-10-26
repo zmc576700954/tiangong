@@ -7,26 +7,39 @@
  *   - 顶部按钮：Refresh（强制重扫）+ Run by ID（手填 recipe id + inputs）
  *   - 左侧 Recipe 列表（id + source 徽标 + description）
  *   - 右侧详情：步骤预览（步骤类型 + prompt 摘要）+ Inputs 表单 + Run 按钮 + Run History
+ *   - 折叠面板：DAG 视图（D5c-2）
+ *   - 运行时进度面板（D5c-3）
  *   - 不实现 YAML 编辑器（CLAUDE.md 不在渲染进程编辑 YAML；用户在文件系统写 .yaml 后点 Refresh）
  */
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
+import { ChevronDown, ChevronRight, Network } from 'lucide-react'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '@shared/i18n'
-import type { RecipeDefinition, RecipeRun, RecipeRunStatus } from '@shared/types/recipe'
+import type {
+  RecipeDefinition,
+  RecipeRun,
+  RecipeRunStatus,
+  RecipeRunProgressEvent,
+  RecipeDagNodeStatus,
+} from '@shared/types/recipe'
+import { RecipeDagView } from './RecipeDagView'
+import { RecipeRunProgress } from './RecipeRunProgress'
 
 interface Props {
   /** 注入 electronAPI；测试可传 mock。 */
   electronAPI?: {
     'recipes:list': () => Promise<RecipeDefinition[]>
     'recipes:get': (id: string) => Promise<RecipeDefinition | null>
+    'recipes:dag': (id: string) => Promise<unknown>
     'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean> }) => Promise<RecipeRun>
     'recipes:cancel': (runId: string) => Promise<boolean>
     'recipes:refresh': () => Promise<number>
     'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
     'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
+    onRecipeRunProgress?: (cb: (data: RecipeRunProgressEvent) => void) => () => void
   }
 }
 
@@ -73,6 +86,9 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
   const [running, setRunning] = useState(false)
   const [lastError, setLastError] = useState<string | null>(null)
   const [runs, setRuns] = useState<RecipeRun[]>([])
+  const [dagExpanded, setDagExpanded] = useState(true)
+  const [activeRun, setActiveRun] = useState<{ runId: string; recipe: RecipeDefinition } | null>(null)
+  const [liveStepStatus, setLiveStepStatus] = useState<Record<string, { status: RecipeDagNodeStatus; error?: string }>>({})
 
   const refresh = async (): Promise<void> => {
     if (!api) return
@@ -98,14 +114,23 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
       return
     }
     setInputValues({})
+    setLiveStepStatus({})
     void api['recipes:listRuns'](selected.id, 20).then(setRuns).catch(() => setRuns([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
+
+  const handleStepUpdate = useCallback((stepId: string, status: RecipeDagNodeStatus, error?: string) => {
+    setLiveStepStatus((prev) => ({
+      ...prev,
+      [stepId]: { status, error },
+    }))
+  }, [])
 
   const handleRun = async (): Promise<void> => {
     if (!selected || !api) return
     setRunning(true)
     setLastError(null)
+    setLiveStepStatus({})
     try {
       const inputs: Record<string, string | number | boolean> = {}
       for (const spec of selected.inputs ?? []) {
@@ -124,7 +149,8 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
           inputs[spec.name] = v
         }
       }
-      await api['recipes:run']({ recipeId: selected.id, inputs })
+      const run = await api['recipes:run']({ recipeId: selected.id, inputs })
+      setActiveRun({ runId: run.id, recipe: selected })
       const history = await api['recipes:listRuns'](selected.id, 20)
       setRuns(history)
     } catch (err) {
@@ -148,7 +174,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
   }
 
   return (
-    <div className="flex h-full text-sm">
+    <div className="relative flex h-full text-sm">
       {/* Left: list */}
       <div className="w-64 border-r flex flex-col">
         <div className="flex items-center justify-between p-2 border-b">
@@ -214,6 +240,32 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
               )}
               {selected.sourcePath && (
                 <div className="text-[10px] text-muted-foreground font-mono mt-1 truncate">{selected.sourcePath}</div>
+              )}
+            </div>
+
+            {/* DAG 视图（折叠面板） */}
+            <div className="border-b">
+              <button
+                type="button"
+                onClick={() => setDagExpanded((v) => !v)}
+                aria-expanded={dagExpanded}
+                data-testid="recipes-dag-toggle"
+                className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium hover:bg-accent transition-colors"
+              >
+                {dagExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                <Network className="w-3.5 h-3.5 text-muted-foreground" />
+                {t('recipes.dag.viewTitle')}
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  {t('recipes.dag.nodeEdgeSummary', {
+                    nodes: (selected.steps ?? []).length,
+                    edges: Math.max((selected.steps ?? []).length - 1, 0),
+                  })}
+                </span>
+              </button>
+              {dagExpanded && (
+                <div className="px-3 pb-3">
+                  <RecipeDagView recipe={selected} liveStatus={liveStepStatus} />
+                </div>
               )}
             </div>
 
@@ -304,7 +356,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
               {/* Sub-recipes preview (D5a) */}
               {selected.sub_recipes && selected.sub_recipes.length > 0 && (
                 <div className="mt-3">
-                  <h4 className="text-xs font-medium">Sub-recipes ({selected.sub_recipes.length})</h4>
+                  <h4 className="text-xs font-medium">{t('recipes.subRecipesTitle', { count: selected.sub_recipes.length })}</h4>
                   {selected.sub_recipes.map((sr, i) => (
                     <div key={i} className="border rounded p-2 text-xs mt-1">
                       <div className="flex items-center gap-2">
@@ -325,15 +377,15 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
               {/* Response preview (D5a) */}
               {selected.response && (selected.response.success_condition || selected.response.failure_condition) && (
                 <div className="mt-3">
-                  <h4 className="text-xs font-medium">Response</h4>
+                  <h4 className="text-xs font-medium">{t('recipes.responseTitle')}</h4>
                   {selected.response.success_condition && (
                     <div className="text-[10px] text-muted-foreground">
-                      success: {selected.response.success_condition}
+                      {t('recipes.response.success')}: {selected.response.success_condition}
                     </div>
                   )}
                   {selected.response.failure_condition && (
                     <div className="text-[10px] text-muted-foreground">
-                      failure: {selected.response.failure_condition}
+                      {t('recipes.response.failure')}: {selected.response.failure_condition}
                     </div>
                   )}
                 </div>
@@ -372,6 +424,17 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
           </div>
         )}
       </div>
+
+      {/* 执行进度面板（D5c-3） */}
+      {activeRun && (
+        <RecipeRunProgress
+          recipe={activeRun.recipe}
+          runId={activeRun.runId}
+          electronAPI={api}
+          onStepUpdate={handleStepUpdate}
+          onClose={() => setActiveRun(null)}
+        />
+      )}
     </div>
   )
 }
