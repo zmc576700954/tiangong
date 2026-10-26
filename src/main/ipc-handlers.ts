@@ -198,6 +198,23 @@ function setupAgentLogPersistence(): void {
 // IPC 处理器注册
 // ============================================
 
+/**
+ * 注册窗口关闭时的会话允许路径清理。
+ *
+ * webContents.id 必须在窗口创建时捕获：'closed' 事件触发时窗口已被销毁，
+ * 此时访问 win.webContents 会抛 "Object has been destroyed"，
+ * 在主进程成为未捕获异常并弹窗崩溃。
+ */
+export function registerSessionPathCleanup(
+  win: BrowserWindow,
+  sessionPathsByWindow: Map<number, Set<string>>
+): void {
+  const webContentsId = win.webContents.id
+  win.on('closed', () => {
+    sessionPathsByWindow.delete(webContentsId)
+  })
+}
+
 export async function registerIpcHandlers(): Promise<void> {
   const db = getClient()
   const chatRepo = new ChatRepository(db)
@@ -279,9 +296,7 @@ export async function registerIpcHandlers(): Promise<void> {
 
   // 窗口关闭时自动清理对应路径集
   app.on('browser-window-created', (_event, win) => {
-    win.on('closed', () => {
-      sessionPathsByWindow.delete(win.webContents.id)
-    })
+    registerSessionPathCleanup(win, sessionPathsByWindow)
   })
 
   // ---------- 路径安全校验 ----------

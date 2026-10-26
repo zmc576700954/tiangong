@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { cachedRealpath } from '../ipc-handlers'
+import type { BrowserWindow } from 'electron'
+import { cachedRealpath, registerSessionPathCleanup } from '../ipc-handlers'
 import { setPlatformProviderForTest } from '../platform/platform-provider'
 import type { PlatformProvider } from '../platform/platform-provider'
 
@@ -115,5 +116,33 @@ describe('cachedRealpath', () => {
     const result = await cachedRealpath(nonExistentPath)
     // 生产实现：父目录 realpath + 文件名（macOS 下 tmpDir 解析为 /private/var/...）
     expect(result).toBe(path.join(await fs.realpath(subdir), 'newfile.txt'))
+  })
+})
+
+describe('registerSessionPathCleanup', () => {
+  it('cleans up session paths on window close without touching the destroyed window', () => {
+    const sessionPathsByWindow = new Map<number, Set<string>>()
+    sessionPathsByWindow.set(7, new Set(['/tmp/project']))
+
+    let closedHandler: (() => void) | undefined
+    const fakeWin = {
+      webContents: { id: 7 },
+      on(event: string, handler: () => void) {
+        if (event === 'closed') closedHandler = handler
+      },
+    } as unknown as BrowserWindow
+
+    registerSessionPathCleanup(fakeWin, sessionPathsByWindow)
+
+    // 模拟窗口销毁：Electron 的 webContents getter 在销毁后会抛
+    // "Object has been destroyed"，'closed' 回调里不能再访问它
+    Object.defineProperty(fakeWin, 'webContents', {
+      get() {
+        throw new TypeError('Object has been destroyed')
+      },
+    })
+
+    expect(() => closedHandler?.()).not.toThrow()
+    expect(sessionPathsByWindow.has(7)).toBe(false)
   })
 })
