@@ -3,6 +3,7 @@ import {
   t, tRaw, getLocale, setLocale, subscribeLocale, resolveLocale,
   nodeTypeLabel, nodeStatusLabel,
   bugSeverityLabel, bugStatusLabel, graphTypeLabel, agentCommandLabel, edgeTypeOptions,
+  edgeTypeLabel,
 } from '../i18n'
 import { zh, en } from '../i18n/resources'
 
@@ -132,6 +133,15 @@ describe('type and status labels', () => {
       expect(option.description).toBeTruthy()
     }
     expect(options[0].label).toBe('默认流程')
+  })
+
+  it('labels every edge type, including the wiki-link the option list omits', () => {
+    expect(edgeTypeLabel('default')).toBe('默认流程')
+    expect(edgeTypeLabel('wiki-link')).toBe('Wiki 链接')
+    setLocale('en-US')
+    expect(edgeTypeLabel('default')).toBe('Default Flow')
+    expect(edgeTypeLabel('wiki-link')).toBe('Wiki Link')
+    setLocale('zh-CN')
   })
 })
 

@@ -6,6 +6,7 @@ import { SubagentTypesTab } from './SubagentTypesTab'
 import { ContextWaterlineTab } from './ContextWaterlineTab'
 import { useI18n } from '../i18n/useI18n'
 import type { Locale } from '@shared/i18n/types'
+import type { TranslationKey } from '@shared/i18n'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
@@ -19,7 +20,8 @@ export function SettingsPanel() {
   const [installing, setInstalling] = useState<string | null>(null)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
   const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({})
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null)
+  // key 形式在渲染时才按当前语言取值——切换语言的那一帧不能用旧语言拼文案
+  const [toast, setToast] = useState<{ key?: TranslationKey; message?: string; type: 'success' | 'error' } | null>(null)
   const [customTypes, setCustomTypes] = useState<AgentTypeDefinition[]>([])
   const [localeDraft, setLocaleDraft] = useState<Locale>(locale)
 
@@ -105,12 +107,12 @@ export function SettingsPanel() {
       const updated: BizGraphSettings = { ...settings, locale: next }
       await ipc['settings:write'](updated)
       setSettings(updated)
-      setToast({ message: t('settings.language.saved'), type: 'success' })
+      setToast({ key: 'settings.language.saved', type: 'success' })
     } catch (err) {
       console.error('Failed to persist locale:', err)
       setLocaleDraft(previous)
       setUiLocale(previous)
-      setToast({ message: t('settings.language.saveFailed'), type: 'error' })
+      setToast({ key: 'settings.language.saveFailed', type: 'error' })
     }
     setTimeout(() => setToast(null), 4000)
   }
@@ -132,7 +134,7 @@ export function SettingsPanel() {
             ? 'bg-green-50 text-green-700 border-green-200'
             : 'bg-red-50 text-red-700 border-red-200'
         }`}>
-          {toast.message}
+          {toast.key ? t(toast.key) : toast.message}
         </div>
       )}
 

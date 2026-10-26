@@ -18,6 +18,7 @@ import type {
   AdapterPreferences,
 } from '@shared/types'
 import { BizGraphError, IpcError, ErrorCode } from './errors'
+import { t } from '@shared/i18n'
 import { getPlatformProvider } from './platform'
 import { createLogger } from './shared/logger'
 import { resolveLocale } from '@shared/i18n'
@@ -474,10 +475,10 @@ export async function installCliTool(name: string): Promise<{
 }> {
   const settings = await readSettings()
   const tool = settings.cliTools.find((t) => t.name === name)
-  if (!tool) return { success: false, message: `Unknown tool: ${name}` }
+  if (!tool) return { success: false, message: t('settings.install.unknownTool', { name }) }
 
   if (!validateNpmPackageName(tool.npmPackage)) {
-    return { success: false, message: `Invalid package name: ${tool.npmPackage}` }
+    return { success: false, message: t('settings.install.invalidPackage', { package: tool.npmPackage }) }
   }
 
   // W3-FIX: 检测 npm 是否可用
@@ -490,7 +491,7 @@ export async function installCliTool(name: string): Promise<{
   if (npmCheck.error || npmCheck.status !== 0) {
     return {
       success: false,
-      message: 'npm is not installed or not in PATH. Please install Node.js first: https://nodejs.org/',
+      message: t('settings.install.npmMissing'),
     }
   }
 
@@ -517,10 +518,10 @@ export async function installCliTool(name: string): Promise<{
       if (code === 'EACCES') {
         resolve({
           success: false,
-          message: `Permission denied. Try: sudo npm install -g ${tool.npmPackage} (macOS/Linux) or run as Administrator (Windows)`,
+          message: t('settings.install.permissionDenied', { package: tool.npmPackage }),
         })
       } else {
-        resolve({ success: false, message: `Install failed: ${err.message}` })
+        resolve({ success: false, message: t('settings.install.failed', { error: err.message }) })
       }
     })
 
@@ -531,10 +532,10 @@ export async function installCliTool(name: string): Promise<{
         if (combined.includes('EACCES') || combined.includes('permission denied') || combined.includes('Operation not permitted')) {
           resolve({
             success: false,
-            message: `Permission denied. Try: sudo npm install -g ${tool.npmPackage} (macOS/Linux) or run as Administrator (Windows)`,
+            message: t('settings.install.permissionDenied', { package: tool.npmPackage }),
           })
         } else {
-          resolve({ success: false, message: `Install failed: ${stderr.slice(0, 500)}` })
+          resolve({ success: false, message: t('settings.install.failed', { error: stderr.slice(0, 500) }) })
         }
         return
       }
@@ -547,12 +548,12 @@ export async function installCliTool(name: string): Promise<{
         resolve({
           success: detected.installed,
           message: detected.installed
-            ? `${tool.name} installed successfully (${detected.version})`
-            : `Install command ran but tool not detected`,
+            ? t('settings.install.success', { name: tool.name, version: detected.version ?? '' })
+            : t('settings.install.notDetected'),
         })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
-        resolve({ success: false, message: `Install failed: ${msg}` })
+        resolve({ success: false, message: t('settings.install.failed', { error: msg }) })
       }
     })
   })

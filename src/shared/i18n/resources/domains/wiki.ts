@@ -50,6 +50,7 @@ export const wikiZh = {
 
   // ---- 链接检查（LintPanel） ----
   'wiki.lint.title': '图检查',
+  'wiki.lint.checking': '检查中…',
   'wiki.lint.stats': '页面 {pages} · 链接 {links} · 社区 {communities}',
   'wiki.lint.recompute': '重新计算社区',
   'wiki.lint.close': '关闭',
@@ -112,6 +113,7 @@ export const wikiEn: Record<keyof typeof wikiZh, string> = {
   'wiki.writeback.kind.newPage': 'New page',
 
   'wiki.lint.title': 'Graph Check',
+  'wiki.lint.checking': 'Checking…',
   'wiki.lint.stats': 'Pages {pages} · Links {links} · Communities {communities}',
   'wiki.lint.recompute': 'Recompute communities',
   'wiki.lint.close': 'Close',

@@ -70,7 +70,7 @@ export function NodeContextMenu({
   onGenerateChildren,
   onFanout,
 }: NodeContextMenuProps) {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const node = nodes.find((n) => n.id === nodeId)
   const { ref: menuRef, adjustedPos } = useMenuPosition(x, y)
 
@@ -105,7 +105,7 @@ export function NodeContextMenu({
         <>
           <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider flex items-center gap-1">
             <Plus className="w-2.5 h-2.5" />
-            添加子节点
+            {t('canvas.contextMenu.addChild')}
           </div>
           <div className="px-2 pb-1 flex flex-wrap gap-1">
             {childTypeOptions.map((type) => (
@@ -124,7 +124,7 @@ export function NodeContextMenu({
                 className="px-2 py-1 text-[10px] rounded border border-dashed border-primary/40 text-primary hover:bg-primary/10 transition-colors flex items-center gap-1"
               >
                 <Wand2 className="w-2.5 h-2.5" />
-                AI 生成
+                {t('canvas.contextMenu.aiGenerate')}
               </button>
             )}
           </div>
@@ -139,7 +139,7 @@ export function NodeContextMenu({
           className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
         >
           <Link className="w-3 h-3" />
-          添加关联连线
+          {t('canvas.contextMenu.addRelation')}
         </button>
       </div>
 
@@ -151,7 +151,7 @@ export function NodeContextMenu({
             className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
           >
             <Paperclip className="w-3 h-3" />
-            添加上下文
+            {t('canvas.contextMenu.addContext')}
           </button>
         </div>
       )}
@@ -160,7 +160,7 @@ export function NodeContextMenu({
       <div className="border-t mt-1 pt-1">
         <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider flex items-center gap-1">
           <Sparkles className="w-2.5 h-2.5" />
-          AI 操作
+          {t('canvas.contextMenu.aiActions')}
         </div>
         <div className="px-2 pb-1 space-y-0.5">
           {onEnrichNode && (
@@ -170,7 +170,7 @@ export function NodeContextMenu({
               className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
             >
               <Sparkles className="w-3 h-3" />
-              AI 补充详情
+              {t('canvas.contextMenu.aiFillDetails')}
             </button>
           )}
           {onStartDev && (
@@ -179,7 +179,7 @@ export function NodeContextMenu({
               className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
             >
               <Play className="w-3 h-3" />
-              生成开发 Prompt
+              {t('canvas.contextMenu.generatePrompt')}
             </button>
           )}
           {onFanout && (
@@ -189,7 +189,7 @@ export function NodeContextMenu({
               className="w-full text-left px-2 py-1.5 text-xs rounded hover:bg-muted transition-colors flex items-center gap-2 text-muted-foreground hover:text-foreground"
             >
               <Bot className="w-3 h-3" />
-              Fan-out 子代理 (基于选中节点)
+              {t('canvas.contextMenu.fanout')}
             </button>
           )}
         </div>
@@ -198,7 +198,7 @@ export function NodeContextMenu({
       {/* 状态切换 */}
       {node.type !== 'project' && (
         <div className="border-t mt-1 pt-1">
-          <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">状态</div>
+          <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">{t('canvas.contextMenu.status')}</div>
           <div className="px-2 pb-1 grid grid-cols-3 gap-1">
             {statusOptions.map((opt) => (
               <button
@@ -228,7 +228,7 @@ export function NodeContextMenu({
             className="w-full text-left px-3 py-1.5 text-sm text-destructive hover:bg-destructive/10 transition-colors flex items-center gap-2"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            删除节点
+            {t('canvas.contextMenu.deleteNode')}
           </button>
         </div>
       )}

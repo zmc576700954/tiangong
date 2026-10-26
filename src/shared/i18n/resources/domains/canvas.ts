@@ -30,10 +30,60 @@ export const canvasZh = {
   'canvas.node.newTitle': '新建{type}',
   'canvas.node.previewConfirm': '确认',
   'canvas.node.previewClear': '清除',
+  'canvas.node.wikiContentTemplate': '# {title}\n\n',
 
   // ── 边 ──
   'canvas.edge.confirmAssociation': '确认关联',
   'canvas.edge.rejectAssociation': '拒绝关联',
+
+  // ── 工具栏 / 布局 ──
+  'canvas.layout.arrange': '整理布局',
+
+  // ── 连线模式 ──
+  'canvas.connecting.hint': '连线模式：点击目标节点完成连线',
+  'canvas.connecting.cancel': '取消 (Esc)',
+
+  // ── 删除确认 ──
+  'canvas.delete.confirm': '确认删除？此操作不可撤销',
+  'canvas.delete.confirmButton': '确认删除',
+  'canvas.delete.now': '立即删除',
+  'canvas.delete.nodeHint': '按 Delete 删除节点',
+  'canvas.delete.edgeHint': '按 Delete 删除连接线',
+
+  // ── Wiki 导入 ──
+  'canvas.import.summary': '导入完成：新建 {created}，更新 {updated}，失败 {failed}',
+
+  // ── 空白画布引导 ──
+  'canvas.overlay.emptyTitle': '画布为空',
+  'canvas.overlay.emptyHint': '右键点击画布创建第一个节点',
+  'canvas.overlay.rightClickCreate': '右键创建',
+  'canvas.overlay.dragConnect': '拖拽连线',
+  'canvas.overlay.addNode': '添加节点',
+  'canvas.overlay.importWiki': '导入 Wiki 页面…',
+  'canvas.overlay.llmImportWiki': 'LLM 提炼导入 Wiki 页面…',
+  'canvas.overlay.selectEdgeType': '选择连接类型',
+  'canvas.overlay.createEdge': '确认创建',
+
+  // ── 节点右键菜单 ──
+  'canvas.contextMenu.addChild': '添加子节点',
+  'canvas.contextMenu.aiGenerate': 'AI 生成',
+  'canvas.contextMenu.addRelation': '添加关联连线',
+  'canvas.contextMenu.addContext': '添加上下文',
+  'canvas.contextMenu.aiActions': 'AI 操作',
+  'canvas.contextMenu.aiFillDetails': 'AI 补充详情',
+  'canvas.contextMenu.generatePrompt': '生成开发 Prompt',
+  'canvas.contextMenu.fanout': 'Fan-out 子代理 (基于选中节点)',
+  'canvas.contextMenu.status': '状态',
+  'canvas.contextMenu.deleteNode': '删除节点',
+
+  // ── 添加上下文浮层 ──
+  'canvas.contextPopover.title': '添加上下文',
+  'canvas.contextPopover.searchPlaceholder': '搜索项目文件...',
+  'canvas.contextPopover.searching': '搜索中...',
+  'canvas.contextPopover.labelPlaceholder': '标题（可选）',
+  'canvas.contextPopover.bodyPlaceholder': '输入业务约束、技术要求等...',
+  'canvas.contextPopover.addText': '添加文本',
+  'canvas.contextPopover.added': '已添加 ({count})',
 } as const
 
 export const canvasEn: Record<keyof typeof canvasZh, string> = {
@@ -54,6 +104,49 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.node.newTitle': 'New {type}',
   'canvas.node.previewConfirm': 'Confirm',
   'canvas.node.previewClear': 'Clear',
+  'canvas.node.wikiContentTemplate': '# {title}\n\n',
   'canvas.edge.confirmAssociation': 'Confirm association',
   'canvas.edge.rejectAssociation': 'Reject association',
+
+  'canvas.layout.arrange': 'Arrange layout',
+
+  'canvas.connecting.hint': 'Connection mode: click a target node to finish',
+  'canvas.connecting.cancel': 'Cancel (Esc)',
+
+  'canvas.delete.confirm': 'Delete? This action cannot be undone',
+  'canvas.delete.confirmButton': 'Delete',
+  'canvas.delete.now': 'Delete now',
+  'canvas.delete.nodeHint': 'Press Delete to delete the node',
+  'canvas.delete.edgeHint': 'Press Delete to delete the edge',
+
+  'canvas.import.summary': 'Import finished: {created} created, {updated} updated, {failed} failed',
+
+  'canvas.overlay.emptyTitle': 'Canvas is empty',
+  'canvas.overlay.emptyHint': 'Right-click the canvas to create the first node',
+  'canvas.overlay.rightClickCreate': 'Right-click to create',
+  'canvas.overlay.dragConnect': 'Drag to connect',
+  'canvas.overlay.addNode': 'Add node',
+  'canvas.overlay.importWiki': 'Import Wiki page…',
+  'canvas.overlay.llmImportWiki': 'Distill with LLM into a Wiki page…',
+  'canvas.overlay.selectEdgeType': 'Select connection type',
+  'canvas.overlay.createEdge': 'Create',
+
+  'canvas.contextMenu.addChild': 'Add child node',
+  'canvas.contextMenu.aiGenerate': 'AI generate',
+  'canvas.contextMenu.addRelation': 'Add related edge',
+  'canvas.contextMenu.addContext': 'Add context',
+  'canvas.contextMenu.aiActions': 'AI actions',
+  'canvas.contextMenu.aiFillDetails': 'Fill details with AI',
+  'canvas.contextMenu.generatePrompt': 'Generate dev prompt',
+  'canvas.contextMenu.fanout': 'Fan-out subagents (from selected node)',
+  'canvas.contextMenu.status': 'Status',
+  'canvas.contextMenu.deleteNode': 'Delete node',
+
+  'canvas.contextPopover.title': 'Add context',
+  'canvas.contextPopover.searchPlaceholder': 'Search project files...',
+  'canvas.contextPopover.searching': 'Searching...',
+  'canvas.contextPopover.labelPlaceholder': 'Title (optional)',
+  'canvas.contextPopover.bodyPlaceholder': 'Enter business constraints, technical requirements...',
+  'canvas.contextPopover.addText': 'Add text',
+  'canvas.contextPopover.added': 'Added ({count})',
 }

@@ -1,5 +1,6 @@
 import { X, FileText, Circle, Plus, Folder, AlignLeft } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { ContextRef } from '@shared/types'
 
 type ContextKind = 'node' | 'file' | 'project' | 'snippet' | 'text'
@@ -47,6 +48,7 @@ interface ContextBarProps {
 }
 
 export function ContextBar({ contexts, onRemove, onAdd }: ContextBarProps) {
+  const { t } = useI18n()
   const totalTokens =
     contexts.length > 0 && contexts.every((c) => typeof c.tokenEstimate === 'number')
       ? contexts.reduce((sum, c) => sum + (c.tokenEstimate ?? 0), 0)
@@ -55,7 +57,7 @@ export function ContextBar({ contexts, onRemove, onAdd }: ContextBarProps) {
   if (contexts.length === 0) {
     return (
       <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border">
-        <span className="text-[10px] text-muted-foreground">附加上下文以聚焦 Agent 关注范围</span>
+        <span className="text-[10px] text-muted-foreground">{t('agent.contextBar.empty')}</span>
         <button
           onClick={onAdd}
           className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground transition-colors border border-dashed border-border rounded-full px-2 py-0.5"
@@ -68,7 +70,7 @@ export function ContextBar({ contexts, onRemove, onAdd }: ContextBarProps) {
 
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border flex-wrap">
-      <span className="text-[10px] text-muted-foreground mr-1 shrink-0">Context:</span>
+      <span className="text-[10px] text-muted-foreground mr-1 shrink-0">{t('agent.contextBar.label')}</span>
       {contexts.map((ctx) => {
         const kind = getContextKind(ctx)
         const style = CONTEXT_STYLES[kind]

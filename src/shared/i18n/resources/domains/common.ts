@@ -53,6 +53,19 @@ export const commonZh = {
   // ---- Toast ----
   'toast.close': '关闭通知',
   'toast.closeTitle': '关闭',
+  'toast.writeback.accepted': '已采纳',
+  'toast.writeback.acceptFailed': '采纳失败：{message}',
+  'toast.writeback.acceptFailedTitle': '采纳失败',
+  'toast.writeback.discarded': '已丢弃',
+  'toast.writeback.discardFailed': '丢弃失败：{message}',
+  'toast.writeback.discardFailedTitle': '丢弃失败',
+  'toast.writeback.acceptAllDone': '批量采纳完成',
+  'toast.writeback.acceptAllPartial': '批量采纳部分失败：{message}',
+  'toast.writeback.acceptAllFailed': '批量采纳失败',
+  'toast.writeback.discardAllDone': '批量丢弃完成',
+  'toast.writeback.discardAllPartial': '批量丢弃部分失败：{message}',
+  'toast.writeback.discardAllFailed': '批量丢弃失败',
+  'toast.writeback.itemCount': '{count}/{total} 项',
 } as const
 
 export const commonEn: Record<keyof typeof commonZh, string> = {
@@ -101,4 +114,17 @@ export const commonEn: Record<keyof typeof commonZh, string> = {
 
   'toast.close': 'Dismiss notification',
   'toast.closeTitle': 'Close',
+  'toast.writeback.accepted': 'Accepted',
+  'toast.writeback.acceptFailed': 'Accept failed: {message}',
+  'toast.writeback.acceptFailedTitle': 'Accept failed',
+  'toast.writeback.discarded': 'Discarded',
+  'toast.writeback.discardFailed': 'Discard failed: {message}',
+  'toast.writeback.discardFailedTitle': 'Discard failed',
+  'toast.writeback.acceptAllDone': 'Accepted all',
+  'toast.writeback.acceptAllPartial': 'Some items failed to accept: {message}',
+  'toast.writeback.acceptAllFailed': 'Failed to accept all',
+  'toast.writeback.discardAllDone': 'Discarded all',
+  'toast.writeback.discardAllPartial': 'Some items failed to discard: {message}',
+  'toast.writeback.discardAllFailed': 'Failed to discard all',
+  'toast.writeback.itemCount': '{count}/{total} item(s)',
 }

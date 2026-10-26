@@ -207,6 +207,13 @@ export function edgeTypeOptions(locale: Locale = getLocale()): { type: EdgeType;
   }))
 }
 
+/** 连线类型在画布上的短标签——wiki-link 也要有，所以不能只查 EDGE_TYPE_KEYS */
+export function edgeTypeLabel(type: EdgeType, locale: Locale = getLocale()): string {
+  if (type === 'wiki-link') return tIn(locale, 'edge.wikiLink.label')
+  const key = EDGE_TYPE_KEYS[type]
+  return key ? tIn(locale, key) : type
+}
+
 /**
  * 图名后缀映射——存储值固定为中文，展示时按语言替换。
  * `zh` 是入库时的原样后缀，`en` 是同一条目的英文形态（用于把已本地化的名字换回来）。

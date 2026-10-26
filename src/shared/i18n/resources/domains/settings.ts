@@ -53,6 +53,13 @@ export const settingsZh = {
   'settings.waterline.seconds': '秒',
   'settings.waterline.saved': '✓ 已保存',
   'settings.waterline.save': '保存',
+  'settings.install.unknownTool': '未知工具：{name}',
+  'settings.install.invalidPackage': '非法的包名：{package}',
+  'settings.install.npmMissing': '未安装 npm 或 npm 不在 PATH 中。请先安装 Node.js：https://nodejs.org/',
+  'settings.install.permissionDenied': '权限不足。尝试：sudo npm install -g {package}（macOS/Linux）或以管理员身份运行（Windows）',
+  'settings.install.failed': '安装失败：{error}',
+  'settings.install.success': '{name} 安装成功（{version}）',
+  'settings.install.notDetected': '安装命令已执行，但未检测到该工具',
 } as const
 
 export const settingsEn: Record<keyof typeof settingsZh, string> = {
@@ -110,4 +117,11 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.waterline.seconds': 'seconds',
   'settings.waterline.saved': '✓ Saved',
   'settings.waterline.save': 'Save',
+  'settings.install.unknownTool': 'Unknown tool: {name}',
+  'settings.install.invalidPackage': 'Invalid package name: {package}',
+  'settings.install.npmMissing': 'npm is not installed or not in PATH. Please install Node.js first: https://nodejs.org/',
+  'settings.install.permissionDenied': 'Permission denied. Try: sudo npm install -g {package} (macOS/Linux) or run as Administrator (Windows)',
+  'settings.install.failed': 'Install failed: {error}',
+  'settings.install.success': '{name} installed successfully ({version})',
+  'settings.install.notDetected': 'Install command ran but tool not detected',
 }

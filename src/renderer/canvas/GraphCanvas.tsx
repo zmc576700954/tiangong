@@ -355,7 +355,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     if (!hasProject && creatingProjectForGraph.current !== graphId) {
       creatingProjectForGraph.current = graphId
       const currentGraph = graphs.find((g) => g.id === graphId)
-      const title = currentGraph?.name ?? '项目'
+      const title = currentGraph?.name ?? nodeTypeLabel('project', locale)
       const graphType = currentGraph?.type ?? 'online'
       createNode({
         type: 'project',
@@ -374,7 +374,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           creatingProjectForGraph.current = null
         })
     }
-  }, [graphNodes, graphId, createNode, graphs])
+  }, [graphNodes, graphId, createNode, graphs, locale])
 
   useOnViewportChange({
     onChange: (viewport) => {
@@ -641,7 +641,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       graphType,
       position,
       acceptanceCriteria: [],
-      wikiContent: type === 'wiki-page' ? '# 新 Wiki 页面\n\n' : undefined,
+      wikiContent: type === 'wiki-page'
+        ? t('canvas.node.wikiContentTemplate', { title: nodeTypeLabel('wiki-page', locale) })
+        : undefined,
     })
     setShowNodeMenu(false)
   }, [screenToFlowPosition, menuPosition, createNode, graphId, currentGraph?.type, locale, t])
@@ -663,11 +665,15 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     if (paths.length === 0) return
     const result = await useGraphStore.getState().importWikiFiles(paths, mode)
     setImportSummary({
-      text: `导入完成：新建 ${result.created.length}，更新 ${result.updated.length}，失败 ${result.failed.length}`,
+      text: t('canvas.import.summary', {
+        created: result.created.length,
+        updated: result.updated.length,
+        failed: result.failed.length,
+      }),
       failed: result.failed,
     })
     setShowNodeMenu(false)
-  }, [])
+  }, [t])
 
   const handleLint = useCallback(async () => {
     setLintLoading(true)
@@ -727,12 +733,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const gid = useGraphStore.getState().currentGraphId
       if (gid) await useGraphStore.getState().loadGraph(gid) // 采纳后图已变，刷新画布
       const title = writebackItemsRef.current.get(itemId) ?? itemId
-      toastSuccess('已采纳', title)
+      toastSuccess(t('toast.writeback.accepted'), title)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[GraphCanvas] accept writeback failed:', err)
-      setWritebackLastError(`采纳失败：${msg}`)
-      toastError('采纳失败', msg)
+      setWritebackLastError(t('toast.writeback.acceptFailed', { message: msg }))
+      toastError(t('toast.writeback.acceptFailedTitle'), msg)
     } finally {
       setWritebackPending((prev) => {
         const next = new Set(prev)
@@ -740,7 +746,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         return next
       })
     }
-  }, [refreshWriteback])
+  }, [refreshWriteback, t])
 
   const handleDiscardWriteback = useCallback(async (itemId: string) => {
     setWritebackPending((prev) => {
@@ -753,12 +759,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     try {
       await useGraphStore.getState().discardWriteback(itemId)
       await refreshWriteback()
-      toastInfo('已丢弃', undefined)
+      toastInfo(t('toast.writeback.discarded'), undefined)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error('[GraphCanvas] discard writeback failed:', err)
-      setWritebackLastError(`丢弃失败：${msg}`)
-      toastError('丢弃失败', msg)
+      setWritebackLastError(t('toast.writeback.discardFailed', { message: msg }))
+      toastError(t('toast.writeback.discardFailedTitle'), msg)
     } finally {
       setWritebackPending((prev) => {
         const next = new Set(prev)
@@ -766,7 +772,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         return next
       })
     }
-  }, [refreshWriteback])
+  }, [refreshWriteback, t])
 
   /** 串行处理一批 item；任一失败立即停下，已成功的保留。 */
   const handleBatchAcceptWriteback = useCallback(async (itemIds: string[]) => {
@@ -797,13 +803,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     if (successCount > 0) {
       const gid = useGraphStore.getState().currentGraphId
       if (gid) await useGraphStore.getState().loadGraph(gid)
-      toastSuccess(`批量采纳完成`, `${successCount}/${itemIds.length} 项`)
+      toastSuccess(t('toast.writeback.acceptAllDone'), t('toast.writeback.itemCount', { count: successCount, total: itemIds.length }))
     }
     if (firstError) {
-      setWritebackLastError(`批量采纳部分失败：${firstError}`)
-      toastError('批量采纳失败', firstError)
+      setWritebackLastError(t('toast.writeback.acceptAllPartial', { message: firstError }))
+      toastError(t('toast.writeback.acceptAllFailed'), firstError)
     }
-  }, [refreshWriteback])
+  }, [refreshWriteback, t])
 
   const handleBatchDiscardWriteback = useCallback(async (itemIds: string[]) => {
     let successCount = 0
@@ -831,13 +837,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
     await refreshWriteback()
     if (successCount > 0) {
-      toastInfo(`批量丢弃完成`, `${successCount}/${itemIds.length} 项`)
+      toastInfo(t('toast.writeback.discardAllDone'), t('toast.writeback.itemCount', { count: successCount, total: itemIds.length }))
     }
     if (firstError) {
-      setWritebackLastError(`批量丢弃部分失败：${firstError}`)
-      toastError('批量丢弃失败', firstError)
+      setWritebackLastError(t('toast.writeback.discardAllPartial', { message: firstError }))
+      toastError(t('toast.writeback.discardAllFailed'), firstError)
     }
-  }, [refreshWriteback])
+  }, [refreshWriteback, t])
 
   const handleDismissWritebackError = useCallback(() => {
     setWritebackLastError(null)
@@ -968,10 +974,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             <button
               onClick={applyLayout}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title="整理布局"
+              title={t('canvas.layout.arrange')}
             >
               <AlignHorizontalDistributeCenter className="w-3.5 h-3.5" />
-              整理布局
+              {t('canvas.layout.arrange')}
             </button>
             <button
               onClick={() => handleCreateSpecialWikiPage('index')}
@@ -1004,7 +1010,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           <Panel position="top-center" className="m-2">
             <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg shadow-xs px-4 py-2 text-sm text-blue-700">
               <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-              <span>连线模式：点击目标节点完成连线</span>
+              <span>{t('canvas.connecting.hint')}</span>
               <button
                 onClick={(e) => {
                   e.stopPropagation()
@@ -1012,7 +1018,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 }}
                 className="ml-2 px-2 py-0.5 text-xs bg-white border border-blue-300 rounded hover:bg-blue-100 transition-colors"
               >
-                取消 (Esc)
+                {t('canvas.connecting.cancel')}
               </button>
             </div>
           </Panel>
@@ -1068,7 +1074,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             <div className="flex items-center gap-2 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-muted-foreground">
               {confirmDeleteTarget ? (
                 <>
-                  <span className="text-destructive">确认删除？此操作不可撤销</span>
+                  <span className="text-destructive">{t('canvas.delete.confirm')}</span>
                   <button
                     onClick={() => {
                       if (selectedNodeId) {
@@ -1083,24 +1089,24 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                     }}
                     className="text-destructive hover:underline font-medium"
                   >
-                    确认删除
+                    {t('canvas.delete.confirmButton')}
                   </button>
                   <button
                     onClick={() => { setConfirmDeleteTarget(null); clearConfirmPending() }}
                     className="hover:underline"
                   >
-                    取消
+                    {t('common.cancel')}
                   </button>
                 </>
               ) : (
                 <>
-                  <span>{selectedNodeId ? '按 Delete 删除节点' : '按 Delete 删除连接线'}</span>
+                  <span>{selectedNodeId ? t('canvas.delete.nodeHint') : t('canvas.delete.edgeHint')}</span>
                   <span className="text-border">|</span>
                   <button
                     onClick={() => setConfirmDeleteTarget(selectedNodeId ? 'node' : 'edge')}
                     className="text-destructive hover:underline"
                   >
-                    立即删除
+                    {t('canvas.delete.now')}
                   </button>
                 </>
               )}
@@ -1185,7 +1191,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       {recipesOpen && (
         <div className="absolute top-16 right-4 z-50 w-[480px] max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg overflow-hidden">
           <div className="flex items-center justify-between px-3 py-2 border-b">
-            <span className="text-sm font-medium">Recipes</span>
+            <span className="text-sm font-medium">{t('recipes.title')}</span>
             <button
               type="button"
               onClick={handleCloseRecipes}

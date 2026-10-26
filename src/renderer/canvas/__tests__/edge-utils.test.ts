@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { edgeTypeConfig, createMarkerEnd, getEdgeMarkerEnd } from '../edge-utils'
+import { edgeTypeLabel } from '@shared/i18n'
 import type { EdgeType } from '@shared/types'
 
 describe('edge-utils', () => {
@@ -8,7 +9,7 @@ describe('edge-utils', () => {
     for (const type of types) {
       expect(edgeTypeConfig[type]).toBeDefined()
       expect(edgeTypeConfig[type].color).toMatch(/^#/)
-      expect(edgeTypeConfig[type].label).toBeTruthy()
+      expect(edgeTypeLabel(type)).toBeTruthy()
     }
   })
 

@@ -9,6 +9,7 @@ import { useCallback, useState, memo } from 'react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import { useI18n } from '../i18n/useI18n'
+import { edgeTypeLabel } from '@shared/i18n'
 import type { EdgeType, EdgeContent } from '@shared/types'
 import { X, Check, Pencil, Plus } from 'lucide-react'
 import { edgeTypeConfig } from './edge-utils'
@@ -29,7 +30,7 @@ export const BizEdge = memo(function BizEdge({
   selected,
   markerEnd,
 }: EdgeProps<BizEdgeType>) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const updateEdge = useGraphStore((s) => s.updateEdge)
   const confirmSuggestedEdge = useGraphStore((s) => s.confirmSuggestedEdge)
   const rejectSuggestedEdge = useGraphStore((s) => s.rejectSuggestedEdge)
@@ -152,7 +153,7 @@ export const BizEdge = memo(function BizEdge({
                 style={{ backgroundColor: config.color }}
               />
               <span className="truncate max-w-[100px]">
-                {labelText || config.label}
+                {labelText || edgeTypeLabel(edgeType, locale)}
               </span>
               {isInteractive && (
                 <button

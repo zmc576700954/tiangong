@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, FileText, Type, Search, Plus } from 'lucide-react'
+import { useI18n } from '../i18n/useI18n'
 import type { ContextRef, FileSearchResult } from '@shared/types'
 
 interface NodeContextPopoverProps {
@@ -12,6 +13,7 @@ interface NodeContextPopoverProps {
 }
 
 export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave, onClose }: NodeContextPopoverProps) {
+  const { t } = useI18n()
   const [contexts, setContexts] = useState<ContextRef[]>(existingContexts)
   const [mode, setMode] = useState<'file' | 'text'>('file')
   const [searchQuery, setSearchQuery] = useState('')
@@ -87,7 +89,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
       onClick={(e) => e.stopPropagation()}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b">
-        <span className="text-xs font-medium">添加上下文</span>
+        <span className="text-xs font-medium">{t('canvas.contextPopover.title')}</span>
         <button onClick={onClose} className="p-0.5 rounded hover:bg-muted">
           <X className="w-3.5 h-3.5" />
         </button>
@@ -102,7 +104,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
           }`}
         >
           <FileText className="w-3 h-3" />
-          文件
+          {t('agent.refType.file')}
         </button>
         <button
           onClick={() => setMode('text')}
@@ -111,7 +113,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
           }`}
         >
           <Type className="w-3 h-3" />
-          文本
+          {t('agent.refType.text')}
         </button>
       </div>
 
@@ -124,11 +126,11 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="搜索项目文件..."
+                placeholder={t('canvas.contextPopover.searchPlaceholder')}
                 className="flex-1 text-xs bg-transparent outline-none"
               />
             </div>
-            {isSearching && <div className="text-[10px] text-muted-foreground px-2">搜索中...</div>}
+            {isSearching && <div className="text-[10px] text-muted-foreground px-2">{t('canvas.contextPopover.searching')}</div>}
             {searchResults.map((file) => (
               <button
                 key={file.relativePath}
@@ -147,13 +149,13 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
               type="text"
               value={textLabel}
               onChange={(e) => setTextLabel(e.target.value)}
-              placeholder="标题（可选）"
+              placeholder={t('canvas.contextPopover.labelPlaceholder')}
               className="w-full px-2 py-1 text-xs border rounded bg-background"
             />
             <textarea
               value={textValue}
               onChange={(e) => setTextValue(e.target.value)}
-              placeholder="输入业务约束、技术要求等..."
+              placeholder={t('canvas.contextPopover.bodyPlaceholder')}
               rows={3}
               className="w-full px-2 py-1 text-xs border rounded bg-background resize-none"
             />
@@ -163,7 +165,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
               className="w-full px-2 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1"
             >
               <Plus className="w-3 h-3" />
-              添加文本
+              {t('canvas.contextPopover.addText')}
             </button>
           </div>
         )}
@@ -171,7 +173,7 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
         {/* Existing contexts list */}
         {contexts.length > 0 && (
           <div className="border-t pt-2 space-y-1">
-            <div className="text-[10px] text-muted-foreground px-1">已添加 ({contexts.length})</div>
+            <div className="text-[10px] text-muted-foreground px-1">{t('canvas.contextPopover.added', { count: contexts.length })}</div>
             {contexts.map((ctx) => (
               <div key={ctx.id} className="flex items-center gap-1.5 px-2 py-1 text-xs bg-muted/50 rounded group">
                 {ctx.type === 'file' ? (
@@ -200,13 +202,13 @@ export function NodeContextPopover({ x, y, existingContexts, projectPath, onSave
           onClick={onClose}
           className="px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
         >
-          取消
+          {t('common.cancel')}
         </button>
         <button
           onClick={() => { onSave(contexts); onClose() }}
           className="px-2.5 py-1 text-xs rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
         >
-          保存
+          {t('common.save')}
         </button>
       </div>
     </div>

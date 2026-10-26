@@ -73,7 +73,7 @@ export function CanvasOverlay({
   importSummary,
   onDismissImportSummary,
 }: CanvasOverlayProps) {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
   const [edgeNote, setEdgeNote] = useState('')
@@ -102,17 +102,17 @@ export function CanvasOverlay({
               <MapIcon className="w-8 h-8 text-muted-foreground" />
             </div>
             <div className="space-y-1">
-              <p className="text-lg font-medium text-muted-foreground">画布为空</p>
-              <p className="text-sm text-muted-foreground">右键点击画布创建第一个节点</p>
+              <p className="text-lg font-medium text-muted-foreground">{t('canvas.overlay.emptyTitle')}</p>
+              <p className="text-sm text-muted-foreground">{t('canvas.overlay.emptyHint')}</p>
             </div>
             <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground">
               <div className="flex items-center gap-1">
                 <MousePointerClick className="w-3.5 h-3.5" />
-                <span>右键创建</span>
+                <span>{t('canvas.overlay.rightClickCreate')}</span>
               </div>
               <div className="flex items-center gap-1">
                 <ArrowRight className="w-3.5 h-3.5" />
-                <span>拖拽连线</span>
+                <span>{t('canvas.overlay.dragConnect')}</span>
               </div>
             </div>
           </div>
@@ -126,7 +126,7 @@ export function CanvasOverlay({
           className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-40"
           style={{ left: canvasMenuPos.x, top: canvasMenuPos.y }}
         >
-          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">添加节点</div>
+          <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">{t('canvas.overlay.addNode')}</div>
           {canvasNodeTypes.map((type) => (
             <button
               key={type}
@@ -145,7 +145,7 @@ export function CanvasOverlay({
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <FileUp className="w-3.5 h-3.5 text-amber-600" />
-              导入 Wiki 页面…
+              {t('canvas.overlay.importWiki')}
             </button>
             <button
               onClick={() => onImportWikiFilesLlm?.()}
@@ -153,7 +153,7 @@ export function CanvasOverlay({
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <Sparkles className="w-3.5 h-3.5 text-violet-500" />
-              LLM 提炼导入 Wiki 页面…
+              {t('canvas.overlay.llmImportWiki')}
             </button>
             <button
               onClick={() => onLint?.()}
@@ -161,7 +161,7 @@ export function CanvasOverlay({
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-              {lintLoading ? '检查中…' : '图检查（Lint）'}
+              {lintLoading ? t('wiki.lint.checking') : t('wiki.lint.title')}
             </button>
             {onOpenWriteback && (
               <button
@@ -171,7 +171,7 @@ export function CanvasOverlay({
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
               >
                 <Inbox className="w-3.5 h-3.5 text-sky-600" />
-                审核队列{writebackCount ? ` (${writebackCount})` : ''}
+                {t('wiki.writeback.title')}{writebackCount ? ` (${writebackCount})` : ''}
               </button>
             )}
           </div>
@@ -187,7 +187,7 @@ export function CanvasOverlay({
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
             <GitBranch className="w-3 h-3" />
-            选择连接类型
+            {t('canvas.overlay.selectEdgeType')}
           </div>
           {edgeTypeOptions(locale).map((opt) => (
             <button
@@ -218,21 +218,21 @@ export function CanvasOverlay({
           {selectedEdgeType === 'business-flow' && (
             <div className="px-3 pt-2 pb-1 border-t mt-1 space-y-2">
               <div>
-                <label className="text-[10px] text-muted-foreground">判断条件</label>
+                <label className="text-[10px] text-muted-foreground">{t('edge.editor.judgementLabel')}</label>
                 <input
                   type="text"
                   value={edgeCondition}
                   onChange={(e) => setEdgeCondition(e.target.value)}
-                  placeholder="如：退款申请通过"
+                  placeholder={t('edge.editor.judgementPlaceholder')}
                   className="w-full mt-0.5 px-2 py-1 text-xs border rounded bg-background"
                 />
               </div>
               <div>
-                <label className="text-[10px] text-muted-foreground">备注说明</label>
+                <label className="text-[10px] text-muted-foreground">{t('edge.editor.noteLabel')}</label>
                 <textarea
                   value={edgeNote}
                   onChange={(e) => setEdgeNote(e.target.value)}
-                  placeholder="如：需同步回滚库存"
+                  placeholder={t('edge.editor.notePlaceholder')}
                   rows={2}
                   className="w-full mt-0.5 px-2 py-1 text-xs border rounded bg-background resize-none"
                 />
@@ -250,7 +250,7 @@ export function CanvasOverlay({
                 }}
                 className="w-full py-1.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
               >
-                确认创建
+                {t('canvas.overlay.createEdge')}
               </button>
             </div>
           )}
@@ -296,7 +296,7 @@ export function CanvasOverlay({
         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-50 bg-background border rounded-lg shadow-lg px-4 py-2 max-w-md" data-testid="import-summary">
           <div className="flex items-center gap-3">
             <span className="text-sm">{importSummary.text}</span>
-            <button onClick={onDismissImportSummary} className="text-xs text-muted-foreground hover:text-foreground">关闭</button>
+            <button onClick={onDismissImportSummary} className="text-xs text-muted-foreground hover:text-foreground">{t('common.close')}</button>
           </div>
           {importSummary.failed.length > 0 && (
             <ul className="mt-1 text-xs text-destructive space-y-0.5">
