@@ -71,6 +71,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:getLogsByGraph',
   'agent:checkInstalled',
   'agent:closeAllSessions',
+  'agent:getHealth',          // D4: 健康度面板
 
   // Chat 会话记录
   'thread:list',

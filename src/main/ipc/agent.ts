@@ -56,6 +56,12 @@ export function registerAgentHandlers(agentManager: AgentManager, typedHandle: T
     return agentManager.listAdapters()
   })
 
+  // D4 健康度面板：返回所有已记录样本的适配器健康评分（零样本的会被 monitor 过滤）。
+  // 数据来自 AdapterHealthMonitor，mcp-adapter 在 connect/call 边界调用 recordCall。
+  typedHandle('agent:getHealth', async () => {
+    return agentManager.getAllAdapterHealth()
+  })
+
   typedHandle('agent:getAdapterMarketplace', async () => {
     const adapters = await agentManager.listAdapters()
     const installedMap: Record<string, boolean> = {}

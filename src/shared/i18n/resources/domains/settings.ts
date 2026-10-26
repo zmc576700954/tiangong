@@ -2,6 +2,7 @@ export const settingsZh = {
   'settings.tab.general': '基础设置',
   'settings.tab.subagents': '子代理类型',
   'settings.tab.waterline': '上下文水位',
+  'settings.tab.health': '健康度',
 
   'settings.cliTools': 'CLI 工具',
   'settings.refreshStatus': '刷新状态',
@@ -66,6 +67,7 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.tab.general': 'General',
   'settings.tab.subagents': 'Subagent Types',
   'settings.tab.waterline': 'Context Waterline',
+  'settings.tab.health': 'Health',
 
   'settings.cliTools': 'CLI Tools',
   'settings.refreshStatus': 'Refresh status',

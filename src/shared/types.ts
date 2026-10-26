@@ -55,6 +55,7 @@ export type {
   CompactStrategy, CompactTrigger, CompactResult, CompactHistoryEntry,
   ContextState, TerminationReason,
   UserIdentity,
+  AdapterHealthMetrics, AdapterHealthScore,  // D4 健康度面板
 } from './types/agent'
 
 export {

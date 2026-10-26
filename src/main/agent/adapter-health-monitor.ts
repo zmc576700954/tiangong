@@ -3,40 +3,13 @@
  * 为每个适配器维护健康评分：成功率、响应时间、错误率
  */
 
+import type { AdapterHealthMetrics, AdapterHealthScore } from '@shared/types'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('AdapterHealthMonitor')
 
-/** 适配器健康指标 */
-export interface AdapterHealthMetrics {
-  /** 总调用次数 */
-  totalCalls: number
-  /** 成功次数 */
-  successCalls: number
-  /** 失败次数 */
-  failedCalls: number
-  /** 平均响应时间（毫秒） */
-  avgResponseTimeMs: number
-  /** 最近错误信息（最多保留 5 条） */
-  recentErrors: string[]
-  /** 最后调用时间 */
-  lastCalledAt: number
-}
-
-/** 适配器健康评分结果 */
-export interface AdapterHealthScore {
-  adapterName: string
-  /** 综合健康评分 0-100 */
-  healthScore: number
-  /** 成功率百分比 */
-  successRate: number
-  /** 平均响应时间 */
-  avgResponseTimeMs: number
-  /** 状态：healthy | degraded | unhealthy | unknown（零调用样本） */
-  status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
-  /** 原始指标 */
-  metrics: AdapterHealthMetrics
-}
+/** 类型再导出，避免外部 import 路径变化（@shared/types ↔ ./adapter-health-monitor） */
+export type { AdapterHealthMetrics, AdapterHealthScore }
 
 /** 健康评分阈值 */
 const HEALTH_THRESHOLDS = {
