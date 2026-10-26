@@ -442,6 +442,15 @@ export function parseRecipe(yamlText: string): RecipeDefinition {
     }
   }
 
+  const allowedDelegates = validateAllowedDelegates(raw.allowed_delegates)
+  // self-delegation guard：recipe 不能 delegate 给自身（避免直接递归）
+  if (allowedDelegates?.includes(raw.id)) {
+    throw new BizGraphError(
+      `Recipe "${raw.id}" cannot include itself in allowed_delegates (would cause direct recursion)`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+
   return {
     id: raw.id,
     name: raw.name,
@@ -453,7 +462,42 @@ export function parseRecipe(yamlText: string): RecipeDefinition {
     default_adapter: isString(raw.default_adapter) ? raw.default_adapter : undefined,
     sub_recipes: subRecipes && subRecipes.length > 0 ? subRecipes : undefined,
     response,
+    allowed_delegates: allowedDelegates,
+
   }
+}
+
+/**
+ * 校验 allowed_delegates 字段（Phase D5b）。
+ *
+ * 规则：
+ *   - 缺省/null → undefined（不暴露 delegate_recipe 工具）
+ *   - 必须是 string[]，每一项必须 kebab-case
+ *   - 不能包含 recipe 自身的 id（避免直接递归）
+ */
+function validateAllowedDelegates(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (!Array.isArray(raw)) {
+    throw new BizGraphError(
+      `Recipe allowed_delegates must be an array, got ${JSON.stringify(raw)}`,
+      ErrorCode.RECIPE_INVALID_STEP,
+    )
+  }
+  for (const entry of raw) {
+    if (!isNonEmptyString(entry)) {
+      throw new BizGraphError(
+        `Recipe allowed_delegates entries must be non-empty strings, got ${JSON.stringify(entry)}`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+    if (!isKebabCase(entry)) {
+      throw new BizGraphError(
+        `Recipe allowed_delegates entries must be kebab-case, got "${entry}"`,
+        ErrorCode.RECIPE_INVALID_STEP,
+      )
+    }
+  }
+  return raw as string[]
 }
 
 /**
@@ -472,6 +516,8 @@ export function stringifyRecipe(def: RecipeDefinition): string {
     default_adapter: def.default_adapter,
     sub_recipes: def.sub_recipes,
     response: def.response,
+    allowed_delegates: def.allowed_delegates,
+
   }
   return yaml.dump(raw, { indent: 2, lineWidth: -1, noRefs: true }).trimEnd()
 }

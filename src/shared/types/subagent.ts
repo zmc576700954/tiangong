@@ -61,6 +61,16 @@ export interface SubagentInvokeArgs {
   adapterName?: string
   nodeId?: string
   allowedFiles?: string[]
+  /**
+   * Phase D5b: 当 agentType='recipe:<id>' 时由 RecipeRunner 通过此字段传入
+   * 模板替换后的 inputs。其它路径忽略。delegate_recipe 工具也走此字段。
+   */
+  inputs?: Record<string, string | number | boolean>
+  /**
+   * Phase D5b: 父 session 暴露的 delegate_recipe 工具允许的 recipe id 列表。
+   * 仅当此字段非空时，子 session adapter 才暴露 delegate_recipe 工具。
+   */
+  allowedDelegates?: string[]
 }
 
 /** Persisted subagent_invocations row (renderer-facing shape). */

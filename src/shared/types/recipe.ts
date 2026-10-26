@@ -155,6 +155,16 @@ export interface RecipeDefinition {
   sub_recipes?: SubRecipe[]
   /** 完成条件（基座版仅结构校验，runner 不执行 LLM 判断）。 */
   response?: RecipeResponse
+  /**
+   * 此 recipe 允许 delegate 给哪些其它 recipe id。
+   * 运行时注入 `delegate_recipe` 工具给子代理；enum 即此列表。
+   * 缺省/空数组 → 不暴露 `delegate_recipe` 工具。
+   *
+   * 与 CLAUDE.md "Boundaries" 一致：delegate 仅在本 recipe 声明的闭包内可调用，
+   * 避免 LLM 随意跨 recipe 嵌套导致递归/不可控执行图。
+   */
+  allowed_delegates?: string[]
+
 }
 
 // ============================================

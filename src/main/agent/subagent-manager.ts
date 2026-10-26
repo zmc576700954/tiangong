@@ -156,7 +156,9 @@ export class SubagentManager extends EventEmitter {
       const startedAt = Date.now()
       const run = await this.recipeRunner.run({
         recipeId: args.agentType.slice('recipe:'.length).trim(),
-        inputs: this.extractRecipeInputs(args),
+        // Phase D5b：delegate_recipe 工具会显式传入 inputs；recipe:<id> 由 RecipeRunner
+        // 走 prompt 模板时也会把 args.inputs 透传。
+        inputs: this.mergeRecipeInputs(args),
         parentSessionId: args.parentSessionId,
         nodeId: args.nodeId,
       })
@@ -369,6 +371,10 @@ export class SubagentManager extends EventEmitter {
       resumeSessionId: undefined,
       // Phase 4: tool restriction for the child session
       subagentAllowedTools: def.allowedTools,
+      // Phase D5b: 透传 delegate 白名单（仅当父调用显式声明时才暴露 delegate_recipe 工具）
+      allowedDelegates: args.allowedDelegates && args.allowedDelegates.length > 0
+        ? args.allowedDelegates
+        : undefined,
     }
 
     // Build the child task prompt — systemPromptAddon prepended for type-specific framing.
@@ -602,11 +608,14 @@ export class SubagentManager extends EventEmitter {
   /**
    * 把 dispatch_subagent 的 prompt + 隐式输入转换成 RecipeInput 字典。
    *
-   * 约定：调用方在 prompt 中写 `${input.<name>}` 即可被 RecipeRunner 模板替换。
-   * 这里我们不解析 prompt，只把 prompt 放在 `prompt` 字段——RecipeRunner 会从 Recipe YAML
-   * 中拿到声明然后调超。
+   * 约定（D5a）：调用方在 prompt 中写 `${input.<name>}` 即可被 RecipeRunner 模板替换。
+   * 约定（D5b）：如果 args.inputs 已显式提供（来自 delegate_recipe 工具），
+   * 直接合并；否则 fallback 到 `{prompt: args.prompt}`，保持向后兼容。
    */
-  private extractRecipeInputs(args: SubagentInvokeArgs): Record<string, string | number | boolean> {
+  private mergeRecipeInputs(args: SubagentInvokeArgs): Record<string, string | number | boolean> {
+    if (args.inputs && Object.keys(args.inputs).length > 0) {
+      return { ...args.inputs, prompt: args.prompt }
+    }
     return { prompt: args.prompt }
   }
 
