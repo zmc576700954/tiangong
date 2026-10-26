@@ -24,6 +24,7 @@ import type {
 import { AdapterError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import { estimateTokens } from '../shared/token-utils'
+import { SUBAGENT_AGENT_TYPE_PATTERN } from '@shared/types/a2a'
 
 import type * as ClaudeAgentSdk from '@anthropic-ai/claude-agent-sdk'
 
@@ -133,8 +134,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           inputSchema: {
             agent_type: z
               .string()
-              .regex(/^recipe:[a-z][a-z0-9-]*$|^[a-z][a-z0-9-]*$/, 'agent_type must be a built-in/custom type or "recipe:<id>"')
-              .describe('Built-in/custom subagent type, or "recipe:<id>" for a Recipe workflow.'),
+              .regex(new RegExp(SUBAGENT_AGENT_TYPE_PATTERN), 'agent_type must be a built-in/custom type, "recipe:<id>" (Recipe workflow), or "a2a:<name>" (A2A remote agent)')
+              .describe('Built-in/custom subagent type, "recipe:<id>" for a Recipe workflow, or "a2a:<name>" for an A2A remote agent.'),
             description: z.string().describe('A 3-5 word label for the task.'),
             prompt: z.string().describe('Full task instructions. The subagent only sees this text.'),
             adapter_name: z.string().optional().describe('Optional adapter override.'),

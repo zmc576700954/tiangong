@@ -229,7 +229,7 @@ function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 13
+const CURRENT_SCHEMA_VERSION = 14
 
 interface TableSchema {
   name: string
@@ -580,6 +580,8 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_writeback_session ON writeback_items(source_session_id)`,
   // v11: yjs_snapshots
   `CREATE INDEX IF NOT EXISTS idx_yjs_snapshots_updated_at ON yjs_snapshots(updated_at DESC)`,
+  // Phase D9: A2A 任务查询 — json_extract 表达式索引加速 task_kind='a2a' 过滤。
+  `CREATE INDEX IF NOT EXISTS idx_chat_threads_task_kind ON chat_threads(json_extract(metadata, '$.task_kind'))`,
 ]
 
 function getSchemaChecksumPath(): string {
@@ -660,12 +662,14 @@ function migrate(): void {
       }
     }
 
+    // 增量补列必须先于索引创建：Phase D9 的表达式索引依赖
+    // chat_threads.metadata（由 addColumnSafe 补齐），老库上先建索引会因列不存在而失败。
+    runIncrementalMigrations(db, currentVersion)
+
     // Create indexes idempotently (cheap even when up-to-date).
     for (const sql of INDEX_SQLS) {
       db.exec(sql)
     }
-
-    runIncrementalMigrations(db, currentVersion)
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
 
@@ -769,6 +773,10 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('chat_threads', 'context_tokens_used', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'context_window_max', 'INTEGER', '0')
   addColumnSafe('chat_threads', 'last_compacted_at', 'INTEGER', 'NULL')
+
+  // Phase D9: A2A 任务复用 chat_threads；metadata.task_kind='a2a' 区分本地任务。
+  // TEXT 默认 '{}' 以便现有查询无需兼容 null。
+  addColumnSafe('chat_threads', 'metadata', 'TEXT', "'{}'")
 
   // v9：writeback_items 拆分 details / narrative / source_node_ids / target_node_title
   // 旧 content 已内嵌 <details> 折叠块；新 schema 让前端按字段渲染，

@@ -5,6 +5,7 @@
 
 import type { ContextRef, BugSeverity } from './graph'
 import type { AgentTypeDefinition } from './subagent'
+import type { A2AServerConfig, A2ARemoteAgent } from './a2a'
 
 // ============================================
 // Agent 适配器类型（核心扩展点）
@@ -544,6 +545,12 @@ export interface BizGraphSettings {
     serviceName?: string
     /** Resource `service.version`，默认 `0.0.0`。 */
     serviceVersion?: string
+  }
+  /** Phase D9: A2A Server 配置（HTTP + SSE 端点；持久化到 settings.json） */
+  a2aServer?: A2AServerConfig
+  /** Phase D9: A2A 远程 Agent 列表（注册为 `a2a:<name>` 子代理类型） */
+  a2a?: {
+    remoteAgents: A2ARemoteAgent[]
   }
 }
 

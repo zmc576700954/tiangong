@@ -103,6 +103,7 @@ import { registerRecipeHandlers } from './ipc/recipe'
 import { registerRealtimeHandlers } from './ipc/realtime'
 import { registerConflictHandlers } from './ipc/conflict'
 import { getConflictReporter } from './services/conflict-reporter'
+import type { A2AController } from './a2a/wiring'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -479,6 +480,40 @@ export async function registerIpcHandlers(): Promise<void> {
 
   // D10b: realtime (awareness / user identity)
   registerRealtimeHandlers(typedHandle)
+
+  // Phase D9: A2A subsystem wiring (server + remote agent clients + hot-reload).
+  // wireA2ASubsystem 返回 A2AController — IPC handlers 用它查询 server / clients。
+  let a2aController: A2AController | null = null
+  try {
+    const { createA2ASessionStarters, wireA2ASubsystem } = await import('./a2a/wiring')
+    const starters = createA2ASessionStarters(agentManager)
+    a2aController = wireA2ASubsystem({
+      subagentManager,
+      messageSendSession: starters.messageSendSession,
+      messageStreamSession: starters.messageStreamSession,
+    })
+  } catch (err) {
+    logger.warn('Failed to wire A2A subsystem:', err)
+  }
+
+  if (a2aController) {
+    try {
+      const { registerA2AHandlers } = await import('./ipc/a2a')
+      const { readSettings: readSettingsLazy, writeSettings: writeSettingsLazy } = await import('./settings')
+      registerA2AHandlers(
+        {
+          controller: a2aController,
+          settingsApi: {
+            read: () => readSettingsLazy(),
+            write: (s) => writeSettingsLazy(s),
+          },
+        },
+        typedHandle,
+      )
+    } catch (err) {
+      logger.warn('Failed to register A2A IPC handlers:', err)
+    }
+  }
 
   // 初始化代码智能（符号索引 + 注入到 AgentManager 和 GraphService）
   try {

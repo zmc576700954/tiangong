@@ -8,6 +8,7 @@ import { useI18n } from '../i18n/useI18n'
 import type { Locale } from '@shared/i18n/types'
 import type { TranslationKey } from '@shared/i18n'
 import { AdapterHealthPanel } from './AdapterHealthPanel'
+import { A2ASettingsTab } from './A2ASettingsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
@@ -145,6 +146,7 @@ export function SettingsPanel() {
           <TabsTrigger value="subagents">{t('settings.tab.subagents')}</TabsTrigger>
           <TabsTrigger value="waterline">{t('settings.tab.waterline')}</TabsTrigger>
           <TabsTrigger value="health">{t('settings.tab.health')}</TabsTrigger>
+          <TabsTrigger value="a2a">{t('settings.tab.a2a')}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="general" className="space-y-5">
@@ -285,6 +287,10 @@ export function SettingsPanel() {
 
         <TabsContent value="health">
           <AdapterHealthPanel />
+        </TabsContent>
+
+        <TabsContent value="a2a">
+          <A2ASettingsTab />
         </TabsContent>
       </Tabs>
     </div>

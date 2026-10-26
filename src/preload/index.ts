@@ -160,6 +160,16 @@ const exposedChannels: (keyof IpcApi)[] = [
   'realtime:setIdentity',
   'realtime:getConnectionInfo',
 
+  // A2A (Phase D9 — cross-process agent protocol)
+  'a2a:getServerStatus',
+  'a2a:startServer',
+  'a2a:stopServer',
+  'a2a:testConnection',
+  'a2a:listRemoteAgents',
+  'a2a:saveRemoteAgent',
+  'a2a:deleteRemoteAgent',
+  'a2a:testServerConfig',
+
   // Code Intelligence
   'codeIntel:indexProject',
   'codeIntel:querySymbols',
@@ -311,6 +321,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.off('conflict:onReported', handler) }
   },
 
+  // A2A server status change event listener (Phase D9)
+  onA2AServerStatusChange: (callback: (status: { running: boolean; port?: number; bindAddress?: string; tls?: boolean; activeTasks: number; completedTasks: number; failedTasks: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: { running: boolean; port?: number; bindAddress?: string; tls?: boolean; activeTasks: number; completedTasks: number; failedTasks: number }) => callback(status)
+    ipcRenderer.on('a2a:serverStatusChange', handler)
+    return () => { ipcRenderer.off('a2a:serverStatusChange', handler) }
+  },
+
   // Platform info
   platform: process.platform,
 })
@@ -334,6 +351,7 @@ declare global {
       locale: string
       onLocaleChanged: (callback: (locale: string) => void) => () => void
       onConflictReported: (callback: (report: ConflictReport) => void) => () => void
+      onA2AServerStatusChange: (callback: (status: { running: boolean; port?: number; bindAddress?: string; tls?: boolean; activeTasks: number; completedTasks: number; failedTasks: number }) => void) => () => void
       platform: string
     }
   }
