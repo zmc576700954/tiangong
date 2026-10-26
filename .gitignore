@@ -68,3 +68,6 @@ scripts/i18n-baseline.txt
 
 # Local vendored deps (workaround for broken npm lockfile in worktree)
 vendor/
+
+# Test coverage reports
+coverage/
