@@ -16,10 +16,10 @@ import {
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
 import {
-  NODE_TYPE_LABELS,
-  NODE_STATUS_LABELS,
   NODE_TYPE_COLORS,
 } from '@shared/constants'
+import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
+import { useI18n } from '../i18n/useI18n'
 import type {
   GraphNode,
   NodeStatus,
@@ -501,6 +501,7 @@ export function NodeEditor({
   onNavigate?: (nodeId: string) => void
 }) {
   const { nodes } = useGraphStore()
+  const { locale } = useI18n()
 
   const childNodes = nodes.filter((n) => n.parentId === node.id)
   const typeColor = NODE_TYPE_COLORS[node.type] ?? '#94a3b8'
@@ -521,7 +522,7 @@ export function NodeEditor({
             style={{ backgroundColor: typeColor }}
           />
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-            {NODE_TYPE_LABELS[node.type]}
+            {nodeTypeLabel(node.type, locale)}
           </span>
         </div>
         <EditableTitle
@@ -596,7 +597,7 @@ export function NodeEditor({
                 />
                 <span className="truncate flex-1">{child.title}</span>
                 <span className="text-[10px] text-muted-foreground">
-                  {NODE_STATUS_LABELS[child.status]}
+                  {nodeStatusLabel(child.status, locale)}
                 </span>
               </div>
             ))}

@@ -2,7 +2,7 @@ import { zh, en } from './resources'
 import type { TranslationKey } from './resources'
 import { DEFAULT_LOCALE } from './types'
 import type { Locale } from './types'
-import type { NodeStatus, NodeType } from '../types/graph'
+import type { BugSeverity, BugStatus, EdgeType, GraphType, NodeStatus, NodeType } from '../types/graph'
 
 export type { TranslationKey } from './resources'
 export type { Locale } from './types'
@@ -103,10 +103,105 @@ const NODE_STATUS_KEYS: Record<NodeStatus, TranslationKey> = {
   placeholder: 'status.placeholder',
 }
 
-export function nodeTypeLabel(type: NodeType): string {
-  return t(NODE_TYPE_KEYS[type])
+/**
+ * 标签查表函数。
+ *
+ * `locale` 缺省取模块级当前语言——给 store / hook / 主进程用。
+ * React 组件要传 `useI18n()` 里的 locale：组件只有消费了 i18n context
+ * 才会在语言切换时重渲染，光调模块级函数不会刷新。
+ */
+export function nodeTypeLabel(type: NodeType, locale: Locale = getLocale()): string {
+  return tIn(locale, NODE_TYPE_KEYS[type])
 }
 
-export function nodeStatusLabel(status: NodeStatus): string {
-  return t(NODE_STATUS_KEYS[status])
+export function nodeStatusLabel(status: NodeStatus, locale: Locale = getLocale()): string {
+  return tIn(locale, NODE_STATUS_KEYS[status])
+}
+
+const BUG_SEVERITY_KEYS: Record<BugSeverity, TranslationKey> = {
+  low: 'bug.severity.low',
+  medium: 'bug.severity.medium',
+  high: 'bug.severity.high',
+  critical: 'bug.severity.critical',
+}
+
+const BUG_STATUS_KEYS: Record<BugStatus, TranslationKey> = {
+  open: 'bug.status.open',
+  fixed: 'bug.status.fixed',
+  verified: 'bug.status.verified',
+}
+
+const GRAPH_TYPE_KEYS: Record<GraphType, TranslationKey> = {
+  online: 'graph.type.online',
+  dev: 'graph.type.dev',
+}
+
+/** 'wiki-link' 由 WikiLinkService 自动落边，不出现在手建边选项里 */
+type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link'>
+
+const EDGE_TYPE_KEYS: Record<HandBuiltEdgeType, TranslationKey> = {
+  default: 'edge.default.label',
+  success: 'edge.success.label',
+  failure: 'edge.failure.label',
+  condition: 'edge.condition.label',
+  'business-flow': 'edge.businessFlow.label',
+  semantic: 'edge.semantic.label',
+  dependency: 'edge.dependency.label',
+  'co-change': 'edge.coChange.label',
+}
+
+const EDGE_TYPE_DESC_KEYS: Record<HandBuiltEdgeType, TranslationKey> = {
+  default: 'edge.default.description',
+  success: 'edge.success.description',
+  failure: 'edge.failure.description',
+  condition: 'edge.condition.description',
+  'business-flow': 'edge.businessFlow.description',
+  semantic: 'edge.semantic.description',
+  dependency: 'edge.dependency.description',
+  'co-change': 'edge.coChange.description',
+}
+
+const EDGE_TYPE_COLORS: Record<HandBuiltEdgeType, string> = {
+  default: '#94a3b8',
+  success: '#22c55e',
+  failure: '#ef4444',
+  condition: '#f59e0b',
+  'business-flow': '#3b82f6',
+  semantic: '#8b5cf6',
+  dependency: '#64748b',
+  'co-change': '#ec4899',
+}
+
+const AGENT_COMMAND_KEYS: Record<string, TranslationKey> = {
+  implement: 'command.implement',
+  fix_bug: 'command.fixBug',
+  refactor: 'command.refactor',
+  add_test: 'command.addTest',
+}
+
+export function bugSeverityLabel(severity: BugSeverity, locale: Locale = getLocale()): string {
+  return tIn(locale, BUG_SEVERITY_KEYS[severity])
+}
+
+export function bugStatusLabel(status: BugStatus, locale: Locale = getLocale()): string {
+  return tIn(locale, BUG_STATUS_KEYS[status])
+}
+
+export function graphTypeLabel(type: GraphType, locale: Locale = getLocale()): string {
+  return tIn(locale, GRAPH_TYPE_KEYS[type])
+}
+
+/** 未知 command 原样返回 command 本身，不报错 */
+export function agentCommandLabel(command: string, locale: Locale = getLocale()): string {
+  const key = AGENT_COMMAND_KEYS[command]
+  return key ? tIn(locale, key) : command
+}
+
+export function edgeTypeOptions(locale: Locale = getLocale()): { type: EdgeType; label: string; color: string; description: string }[] {
+  return (Object.keys(EDGE_TYPE_KEYS) as HandBuiltEdgeType[]).map((type) => ({
+    type,
+    label: tIn(locale, EDGE_TYPE_KEYS[type]),
+    color: EDGE_TYPE_COLORS[type],
+    description: tIn(locale, EDGE_TYPE_DESC_KEYS[type]),
+  }))
 }

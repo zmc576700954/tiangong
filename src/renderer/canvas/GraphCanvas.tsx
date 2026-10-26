@@ -23,7 +23,8 @@ import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
-import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
+import { NODE_TYPE_COLORS } from '@shared/constants'
+import { nodeTypeLabel } from '@shared/i18n'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
@@ -631,7 +632,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     await createNode({
       type,
       status: 'draft',
-      title: type === 'wiki-page' ? 'Wiki 页面' : `新建${NODE_TYPE_LABELS[type]}`,
+      title: type === 'wiki-page' ? nodeTypeLabel('wiki-page') : `新建${nodeTypeLabel(type)}`,
       graphId,
       graphType,
       position,

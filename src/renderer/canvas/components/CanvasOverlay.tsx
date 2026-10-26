@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { MousePointerClick, ArrowRight, Map as MapIcon, GitBranch, FileUp, Sparkles, AlertTriangle, Inbox } from 'lucide-react'
-import { NODE_TYPE_LABELS, NODE_TYPE_COLORS, EDGE_TYPE_OPTIONS } from '@shared/constants'
+import { NODE_TYPE_COLORS } from '@shared/constants'
+import { edgeTypeOptions, nodeTypeLabel } from '@shared/i18n'
+import { useI18n } from '../../i18n/useI18n'
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
 import { NodeContextMenu } from '../NodeContextMenu'
@@ -71,6 +73,7 @@ export function CanvasOverlay({
   importSummary,
   onDismissImportSummary,
 }: CanvasOverlayProps) {
+  const { locale } = useI18n()
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
   const [edgeNote, setEdgeNote] = useState('')
@@ -132,7 +135,7 @@ export function CanvasOverlay({
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"
             >
               <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: NODE_TYPE_COLORS[type] }} />
-              {NODE_TYPE_LABELS[type]}
+              {nodeTypeLabel(type, locale)}
             </button>
           ))}
           <div className="border-t mt-1 pt-1">
@@ -186,7 +189,7 @@ export function CanvasOverlay({
             <GitBranch className="w-3 h-3" />
             选择连接类型
           </div>
-          {EDGE_TYPE_OPTIONS.map((opt) => (
+          {edgeTypeOptions(locale).map((opt) => (
             <button
               key={opt.type}
               onClick={() => {

@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   t, tRaw, getLocale, setLocale, subscribeLocale, resolveLocale,
+  nodeTypeLabel, nodeStatusLabel,
+  bugSeverityLabel, bugStatusLabel, graphTypeLabel, agentCommandLabel, edgeTypeOptions,
 } from '../i18n'
 import { zh, en } from '../i18n/resources'
 
@@ -75,6 +77,61 @@ describe('resolveLocale', () => {
     expect(resolveLocale(undefined)).toBe('zh-CN')
     expect(resolveLocale('fr-FR')).toBe('zh-CN')
     expect(resolveLocale(42)).toBe('zh-CN')
+  })
+})
+
+describe('type and status labels', () => {
+  it('has a label for every NodeType', () => {
+    for (const type of ['project', 'module', 'process', 'feature', 'bug', 'wiki-page'] as const) {
+      expect(nodeTypeLabel(type)).toBeTruthy()
+    }
+  })
+
+  it('has a label for every NodeStatus', () => {
+    for (const status of ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const) {
+      expect(nodeStatusLabel(status)).toBeTruthy()
+    }
+  })
+
+  it('keeps the Chinese wording of the existing UI', () => {
+    expect(nodeTypeLabel('module')).toBe('业务模块')
+    expect(nodeStatusLabel('testing')).toBe('待测试')
+    expect(nodeStatusLabel('placeholder')).toBe('占位')
+  })
+
+  it('has a label for every BugSeverity and BugStatus', () => {
+    for (const severity of ['low', 'medium', 'high', 'critical'] as const) {
+      expect(bugSeverityLabel(severity)).toBeTruthy()
+    }
+    for (const status of ['open', 'fixed', 'verified'] as const) {
+      expect(bugStatusLabel(status)).toBeTruthy()
+    }
+    expect(bugSeverityLabel('critical')).toBe('严重')
+    expect(bugStatusLabel('open')).toBe('未修复')
+  })
+
+  it('has a label for every GraphType', () => {
+    expect(graphTypeLabel('online')).toBe('已上线场景')
+    expect(graphTypeLabel('dev')).toBe('开发场景')
+  })
+
+  it('returns the command itself when it is unknown', () => {
+    expect(agentCommandLabel('implement')).toBe('实现')
+    expect(agentCommandLabel('some_unknown_command')).toBe('some_unknown_command')
+  })
+
+  it('lists the eight hand-built edge types with label, color and description', () => {
+    const options = edgeTypeOptions()
+    expect(options.map((o) => o.type)).toEqual([
+      'default', 'success', 'failure', 'condition',
+      'business-flow', 'semantic', 'dependency', 'co-change',
+    ])
+    for (const option of options) {
+      expect(option.label).toBeTruthy()
+      expect(option.color).toMatch(/^#/)
+      expect(option.description).toBeTruthy()
+    }
+    expect(options[0].label).toBe('默认流程')
   })
 })
 

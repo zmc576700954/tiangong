@@ -1,7 +1,9 @@
 import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
-import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
+import { NODE_TYPE_COLORS } from '@shared/constants'
+import { nodeTypeLabel } from '@shared/i18n'
+import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check, BookOpen } from 'lucide-react'
 import { useAgentOutputStore } from '../store/agentOutputStore'
@@ -35,6 +37,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   multiSelected,
   onContextMenu,
 }: BizNodeProps) {
+  const { locale } = useI18n()
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
   const isWikiPage = data.type === 'wiki-page'
@@ -96,7 +99,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         <div className="flex items-center gap-1.5 mb-1">
           <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
-            {NODE_TYPE_LABELS[data.type]}
+            {nodeTypeLabel(data.type, locale)}
           </span>
         </div>
         <div className="font-bold text-lg truncate">{data.title}</div>
@@ -162,7 +165,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       <div className="flex items-center gap-1.5 mb-1">
         <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: typeColor }} />
         <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", (data.isZoomedOut || data.hideTextLabels) && "hidden")}>
-          {NODE_TYPE_LABELS[data.type]}
+          {nodeTypeLabel(data.type, locale)}
         </span>
       </div>
       <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{data.title}</div>

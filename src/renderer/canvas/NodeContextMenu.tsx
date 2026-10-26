@@ -1,6 +1,8 @@
 import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
-import { NODE_TYPE_LABELS, NODE_TYPE_COLORS } from '@shared/constants'
+import { NODE_TYPE_COLORS } from '@shared/constants'
+import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
+import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2, Bot } from 'lucide-react'
 import { useMenuPosition } from './hooks/useMenuPosition'
@@ -22,14 +24,14 @@ interface NodeContextMenuProps {
   onFanout?: () => void
 }
 
-const statusOptions: { value: NodeStatus; label: string; color: string }[] = [
-  { value: 'placeholder', label: '占位', color: '#64748b' },
-  { value: 'draft', label: '草稿', color: '#94a3b8' },
-  { value: 'confirmed', label: '已确认', color: '#3b82f6' },
-  { value: 'developing', label: '开发中', color: '#f59e0b' },
-  { value: 'testing', label: '待测试', color: '#8b5cf6' },
-  { value: 'review', label: '待验收', color: '#06b6d4' },
-  { value: 'published', label: '已发布', color: '#22c55e' },
+const statusOptions: { value: NodeStatus; color: string }[] = [
+  { value: 'placeholder', color: '#64748b' },
+  { value: 'draft', color: '#94a3b8' },
+  { value: 'confirmed', color: '#3b82f6' },
+  { value: 'developing', color: '#f59e0b' },
+  { value: 'testing', color: '#8b5cf6' },
+  { value: 'review', color: '#06b6d4' },
+  { value: 'published', color: '#22c55e' },
 ]
 
 /** 根据父节点类型推断适合创建的子节点类型 */
@@ -68,6 +70,7 @@ export function NodeContextMenu({
   onGenerateChildren,
   onFanout,
 }: NodeContextMenuProps) {
+  const { locale } = useI18n()
   const node = nodes.find((n) => n.id === nodeId)
   const { ref: menuRef, adjustedPos } = useMenuPosition(x, y)
 
@@ -112,7 +115,7 @@ export function NodeContextMenu({
                 className="px-2 py-1 text-[10px] rounded border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors flex items-center gap-1"
               >
                 <div className="w-2 h-2 rounded-full" style={{ backgroundColor: NODE_TYPE_COLORS[type] }} />
-                {NODE_TYPE_LABELS[type]}
+                {nodeTypeLabel(type, locale)}
               </button>
             ))}
             {onGenerateChildren && (node.type === 'module' || node.type === 'process') && (
@@ -209,7 +212,7 @@ export function NodeContextMenu({
                 )}
                 style={node.status === opt.value ? { backgroundColor: opt.color } : undefined}
               >
-                {opt.label}
+                {nodeStatusLabel(opt.value, locale)}
               </button>
             ))}
           </div>

@@ -1,8 +1,12 @@
 /**
  * BizGraph 常量定义
+ *
+ * 注意：界面文案不在这里——标签一律走 `@shared/i18n` 的语言感知查表函数
+ * （nodeTypeLabel / nodeStatusLabel / edgeTypeOptions …）。这里只留颜色、
+ * 枚举和不能翻译的标识。
  */
 
-import type { NodeStatus, NodeType, BugSeverity, BugStatus, GraphType } from './types'
+import type { NodeStatus, NodeType } from './types'
 
 /** 应用信息 */
 export const APP_NAME = 'BizGraph'
@@ -25,27 +29,6 @@ export const NODE_STATUS_COLORS: Record<NodeStatus, string> = {
   placeholder: '#64748b',
 }
 
-/** 节点状态标签 */
-export const NODE_STATUS_LABELS: Record<NodeStatus, string> = {
-  draft: '草稿',
-  confirmed: '已确认',
-  developing: '开发中',
-  testing: '待测试',
-  review: '待验收',
-  published: '已发布',
-  placeholder: '占位',
-}
-
-/** 思维导图中显示的节点类型标签 */
-export const NODE_TYPE_LABELS: Record<NodeType, string> = {
-  project: '项目',
-  module: '业务模块',
-  process: '业务流程',
-  feature: '功能点',
-  bug: 'BUG点',
-  'wiki-page': 'Wiki 页面',
-}
-
 /** 节点类型颜色 */
 export const NODE_TYPE_COLORS: Record<NodeType, string> = {
   project: '#6366f1',
@@ -56,59 +39,24 @@ export const NODE_TYPE_COLORS: Record<NodeType, string> = {
   'wiki-page': '#f59e0b',
 }
 
-/** 思维导图中可创建的节点类型 */
+/** 思维导图中可创建的节点类型——label 走 nodeTypeLabel() */
 export const CANVAS_NODE_TYPES = [
-  { type: 'project', label: '项目', color: '#6366f1' },
-  { type: 'module', label: '业务模块', color: '#3b82f6' },
-  { type: 'process', label: '业务流程', color: '#8b5cf6' },
-  { type: 'feature', label: '功能点', color: '#22c55e' },
-  { type: 'bug', label: 'BUG点', color: '#ef4444' },
-  { type: 'wiki-page', label: 'Wiki 页面', color: '#f59e0b' },
+  { type: 'project', color: '#6366f1' },
+  { type: 'module', color: '#3b82f6' },
+  { type: 'process', color: '#8b5cf6' },
+  { type: 'feature', color: '#22c55e' },
+  { type: 'bug', color: '#ef4444' },
+  { type: 'wiki-page', color: '#f59e0b' },
 ] as const
-
-/** Bug 严重级别标签 */
-export const BUG_SEVERITY_LABELS: Record<BugSeverity, string> = {
-  low: '低',
-  medium: '中',
-  high: '高',
-  critical: '严重',
-}
-
-/** Bug 状态标签 */
-export const BUG_STATUS_LABELS: Record<BugStatus, string> = {
-  open: '未修复',
-  fixed: '已修复',
-  verified: '已验证',
-}
-
-/** 图类型标签 */
-export const GRAPH_TYPE_LABELS: Record<GraphType, string> = {
-  online: '已上线场景',
-  dev: '开发场景',
-}
 
 /** Wiki 页面类型常量 */
 export const WIKI_PAGE_TYPE: NodeType = 'wiki-page'
 
-/** 图索引页标题 */
+/** 图索引页标题——WikiIndexService 依赖这个英文标识识别特殊页，不能翻译 */
 export const GRAPH_INDEX_TITLE = 'Graph Index'
 
-/** 图日志页标题 */
+/** 图日志页标题——同上 */
 export const GRAPH_LOG_TITLE = 'Graph Log'
-
-import type { EdgeType } from './types'
-
-/** 边类型选项（用于画布和属性面板统一） */
-export const EDGE_TYPE_OPTIONS: { type: EdgeType; label: string; color: string; description: string }[] = [
-  { type: 'default', label: '默认流程', color: '#94a3b8', description: '标准流程连接' },
-  { type: 'success', label: '成功分支', color: '#22c55e', description: '成功后的流程分支' },
-  { type: 'failure', label: '失败分支', color: '#ef4444', description: '失败后的异常分支' },
-  { type: 'condition', label: '条件分支', color: '#f59e0b', description: '条件判断分支' },
-  { type: 'business-flow', label: '业务流程', color: '#3b82f6', description: '跨模块业务关联' },
-  { type: 'semantic', label: '语义关联', color: '#8b5cf6', description: '语义层面的业务关联' },
-  { type: 'dependency', label: '代码依赖', color: '#64748b', description: '模块或文件间的代码依赖' },
-  { type: 'co-change', label: '协同变更', color: '#ec4899', description: '经常一起变更的关联' },
-]
 
 /** 支持的 Agent 适配器列表 */
 export const SUPPORTED_AGENTS = [
@@ -116,11 +64,3 @@ export const SUPPORTED_AGENTS = [
   { name: 'codex', displayName: 'Codex CLI', npmPackage: '@openai/codex' },
   { name: 'opencode', displayName: 'OpenCode', npmPackage: 'opencode' },
 ] as const
-
-/** Agent 命令类型标签 */
-export const AGENT_COMMAND_LABELS: Record<string, string> = {
-  implement: '实现',
-  fix_bug: '修复 Bug',
-  refactor: '重构',
-  add_test: '添加测试',
-}

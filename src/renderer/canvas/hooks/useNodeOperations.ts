@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import { useReactFlow } from '@xyflow/react'
-import { NODE_TYPE_LABELS } from '@shared/constants'
+import { nodeTypeLabel } from '@shared/i18n'
 import type { NodeType } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
@@ -26,13 +26,13 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     await createNode({
       type: childType,
       status: 'draft',
-      title: `新建${NODE_TYPE_LABELS[childType]}`,
+      title: `新建${nodeTypeLabel(childType)}`,
       graphId,
       graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
       parentId,
       position,
       acceptanceCriteria: [],
-      wikiContent: childType === 'wiki-page' ? `# 新建${NODE_TYPE_LABELS[childType]}\n\n` : undefined,
+      wikiContent: childType === 'wiki-page' ? `# 新建${nodeTypeLabel(childType)}\n\n` : undefined,
     })
   }, [graphNodes, createNode, graphId, screenToFlowPosition])
 
