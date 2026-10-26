@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage } from '@shared/types'
+import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { generateId } from '../lib/utils'
 import { useGraphStore } from './graphStore'
 import { useAgentOutputStore } from './agentOutputStore'
@@ -208,7 +209,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ? {
                 ...t,
                 messages: [...t.messages, userMessage],
-                title: t.title === 'New Thread' ? content.slice(0, 30) : t.title,
+                title: t.title === DEFAULT_THREAD_TITLE ? content.slice(0, 30) : t.title,
                 status: 'running' as const,
               }
             : t,

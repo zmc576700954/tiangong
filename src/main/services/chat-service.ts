@@ -5,6 +5,7 @@
 
 import type BetterSqlite3 from 'better-sqlite3'
 import type { ChatMessage, AgentThread } from '@shared/types'
+import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { ChatRepository, type ChatThreadRow, type ChatMessageRow } from '../repositories/chat-repository'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
@@ -34,14 +35,14 @@ export class ChatService {
     const id = generateId('thread')
     await this.repo.createThread({
       id,
-      title: 'New Thread',
+      title: DEFAULT_THREAD_TITLE,
       adapterName: data.adapterName,
       nodeId: data.nodeId,
       graphId: data.graphId,
     })
     return {
       id,
-      title: 'New Thread',
+      title: DEFAULT_THREAD_TITLE,
       adapterName: data.adapterName,
       messages: [],
       contextRefs: [],

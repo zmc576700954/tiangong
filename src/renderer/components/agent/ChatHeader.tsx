@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare, Clock, Zap, AlertCircle } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useI18n } from '../../i18n/useI18n'
 import type { AdapterFallbackAttempt, ContextState } from '@shared/types'
 import { ContextWaterlineBar } from './ContextWaterlineBar'
 
@@ -47,6 +48,7 @@ export function ChatHeader({
   activeSubagentCount,
   onOpenSubagents,
 }: ChatHeaderProps) {
+  const { t } = useI18n()
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
 
   // 回退指示器：显示从哪个适配器回退到了哪个
@@ -137,7 +139,7 @@ export function ChatHeader({
         <button
           onClick={onNewThread}
           className="w-6 h-6 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground"
-          title="New Thread"
+          title={t('thread.newThread')}
         >
           <Plus className="w-3.5 h-3.5" />
         </button>

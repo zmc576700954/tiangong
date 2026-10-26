@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { AgentThread, ChatMessage } from '@shared/types'
+import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { generateId } from '../lib/utils'
 import { useAgentOutputStore } from './agentOutputStore'
 
@@ -38,7 +39,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     const id = generateId('thread')
     const thread: AgentThread = {
       id,
-      title: 'New Thread',
+      title: DEFAULT_THREAD_TITLE,
       adapterName,
       messages: [],
       contextRefs: [],

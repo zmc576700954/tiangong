@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Plus, X, GitBranch, Map } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
+import { localizeGraphName } from '@shared/i18n'
+import { useI18n } from '../i18n/useI18n'
 import type { Graph } from '@shared/types'
 
 interface GraphTabsProps {
@@ -10,6 +12,7 @@ interface GraphTabsProps {
 }
 
 export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
+  const { locale, t } = useI18n()
   const { setCurrentGraph, createGraph, deleteGraph } = useGraphStore()
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newGraphName, setNewGraphName] = useState('')
@@ -45,7 +48,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
           ) : (
             <GitBranch className="w-3.5 h-3.5" />
           )}
-          <span className="max-w-[120px] truncate">{graph.name}</span>
+          <span className="max-w-[120px] truncate">{localizeGraphName(graph.name, locale)}</span>
           <button
             onClick={(e) => {
               e.stopPropagation()
@@ -70,11 +73,11 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
       {/* 新建图对话框 */}
       {showNewDialog && (
         <div className="absolute top-12 left-1/2 -translate-x-1/2 bg-background border rounded-lg shadow-lg p-4 z-50 w-80">
-          <h3 className="font-medium mb-3">新建图</h3>
+          <h3 className="font-medium mb-3">{t('graph.tab.new')}</h3>
           <input
             data-testid="graph-name-input"
             type="text"
-            placeholder="图名称"
+            placeholder={t('graph.tab.namePlaceholder')}
             value={newGraphName}
             onChange={(e) => setNewGraphName(e.target.value)}
             className="w-full px-3 py-2 border rounded-md text-sm mb-3 bg-background"
@@ -91,7 +94,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
                   : 'hover:bg-muted',
               )}
             >
-              Online
+              {t('graph.tab.type.online')}
             </button>
             <button
               onClick={() => setNewGraphType('dev')}
@@ -102,20 +105,20 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
                   : 'hover:bg-muted',
               )}
             >
-              Dev
+              {t('graph.tab.type.dev')}
             </button>
           </div>
           {newGraphType === 'dev' && onlineGraphs.length > 0 && (
             <div className="mb-3">
-              <label className="text-xs text-muted-foreground mb-1 block">从在线图派生</label>
+              <label className="text-xs text-muted-foreground mb-1 block">{t('graph.tab.deriveFrom')}</label>
               <select
                 value={deriveFromGraphId ?? ''}
                 onChange={(e) => setDeriveFromGraphId(e.target.value || null)}
                 className="w-full px-3 py-2 border rounded-md text-sm bg-background"
               >
-                <option value="">空白图</option>
+                <option value="">{t('graph.tab.blank')}</option>
                 {onlineGraphs.map(g => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
+                  <option key={g.id} value={g.id}>{localizeGraphName(g.name, locale)}</option>
                 ))}
               </select>
             </div>
@@ -125,14 +128,14 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
               onClick={() => setShowNewDialog(false)}
               className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              取消
+              {t('graph.tab.cancel')}
             </button>
             <button
               data-testid="create-graph-btn"
               onClick={handleCreate}
               className="px-3 py-1.5 text-sm bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
             >
-              创建
+              {t('graph.tab.create')}
             </button>
           </div>
         </div>

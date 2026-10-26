@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react'
 import { Search, Plus, PanelLeftClose, PanelLeft, Pencil, Trash2, Check } from 'lucide-react'
 import { cn, formatDate } from '../../lib/utils'
+import { threadTitle } from '@shared/i18n'
+import { useI18n } from '../../i18n/useI18n'
 import type { AgentThread } from '@shared/types'
 
 interface ThreadListSidebarProps {
@@ -29,6 +31,7 @@ export function ThreadListSidebar({
   onDelete,
   onRename,
 }: ThreadListSidebarProps) {
+  const { locale, t } = useI18n()
   const [searchQuery, setSearchQuery] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editValue, setEditValue] = useState('')
@@ -102,13 +105,14 @@ export function ThreadListSidebar({
       <div className="flex-1 min-h-0 overflow-y-auto">
         {filteredThreads.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground text-xs px-2">
-            {searchQuery ? 'No matching threads' : 'No threads yet'}
+            {searchQuery ? 'No matching threads' : t('thread.empty')}
           </div>
         ) : (
           <div className={cn('space-y-1', collapsed ? 'p-1.5' : 'p-2')}>
             {filteredThreads.map((thread) => {
               const isSelected = currentThreadId === thread.id
-              const initial = thread.title.charAt(0).toUpperCase() || '?'
+              const displayTitle = threadTitle(thread.title, locale)
+              const initial = displayTitle.charAt(0).toUpperCase() || '?'
               const updatedAt = getLastUpdatedAt(thread)
 
               if (collapsed) {
@@ -116,7 +120,7 @@ export function ThreadListSidebar({
                   <button
                     key={thread.id}
                     onClick={() => onSelect(thread.id)}
-                    title={`${thread.title} · ${thread.adapterName}`}
+                    title={`${displayTitle} · ${thread.adapterName}`}
                     className={cn(
                       'w-full flex items-center justify-center h-8 rounded-md transition-colors border',
                       isSelected
@@ -170,7 +174,7 @@ export function ThreadListSidebar({
                       </div>
                     ) : (
                       <>
-                        <div className="text-xs font-medium truncate">{thread.title}</div>
+                        <div className="text-xs font-medium truncate">{displayTitle}</div>
                         <div className="flex items-center gap-2 mt-0.5">
                           <span className="text-[10px] text-muted-foreground">
                             {thread.adapterName}
@@ -218,10 +222,10 @@ export function ThreadListSidebar({
             'flex items-center justify-center gap-1.5 text-xs font-medium rounded-md hover:bg-muted transition-colors text-foreground w-full',
             collapsed ? 'h-8' : 'px-2 py-1.5',
           )}
-          title="New Thread"
+          title={t('thread.newThread')}
         >
           <Plus className="w-3.5 h-3.5" />
-          {!collapsed && 'New Thread'}
+          {!collapsed && t('thread.newThread')}
         </button>
       </div>
     </div>

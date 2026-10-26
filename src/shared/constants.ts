@@ -12,6 +12,9 @@ import type { NodeStatus, NodeType } from './types'
 export const APP_NAME = 'BizGraph'
 export const APP_VERSION = '0.1.0'
 
+/** 会话默认标题——存储值固定，界面按语言显示（threadTitle() 负责翻译） */
+export const DEFAULT_THREAD_TITLE = 'New Thread'
+
 /** 数据库文件名 */
 export const DB_FILENAME = 'bizgraph.db'
 

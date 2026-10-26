@@ -2,6 +2,7 @@ import { zh, en } from './resources'
 import type { TranslationKey } from './resources'
 import { DEFAULT_LOCALE } from './types'
 import type { Locale } from './types'
+import { DEFAULT_THREAD_TITLE } from '../constants'
 import type { BugSeverity, BugStatus, EdgeType, GraphType, NodeStatus, NodeType } from '../types/graph'
 
 export type { TranslationKey } from './resources'
@@ -204,4 +205,37 @@ export function edgeTypeOptions(locale: Locale = getLocale()): { type: EdgeType;
     color: EDGE_TYPE_COLORS[type],
     description: tIn(locale, EDGE_TYPE_DESC_KEYS[type]),
   }))
+}
+
+/**
+ * 图名后缀映射——存储值固定为中文，展示时按语言替换。
+ * `zh` 是入库时的原样后缀，`en` 是同一条目的英文形态（用于把已本地化的名字换回来）。
+ */
+const GRAPH_NAME_SUFFIXES: { zh: string; en: string; key: TranslationKey }[] = [
+  { zh: '产品蓝图', en: 'Product Blueprint', key: 'graph.nameSuffix.online' },
+  { zh: '开发场景', en: 'Dev Scenario', key: 'graph.nameSuffix.dev' },
+]
+
+/**
+ * 把图名里已知的后缀换成当前语言——只认后缀表里的两条，其他后缀原样返回。
+ * React 组件要传 `useI18n()` 里的 locale，否则语言切换时不会重渲染。
+ */
+export function localizeGraphName(name: string, locale: Locale = getLocale()): string {
+  for (const suffix of GRAPH_NAME_SUFFIXES) {
+    for (const candidate of [suffix.zh, suffix.en]) {
+      const marker = ` - ${candidate}`
+      if (name.endsWith(marker)) {
+        return `${name.slice(0, name.length - marker.length)} - ${tIn(locale, suffix.key)}`
+      }
+    }
+  }
+  return name
+}
+
+/**
+ * 会话标题——存储值是 DEFAULT_THREAD_TITLE 时按语言显示，其余原样返回。
+ * 存储值不变，首条消息自动改名的判定仍能命中。
+ */
+export function threadTitle(title: string, locale: Locale = getLocale()): string {
+  return title === DEFAULT_THREAD_TITLE ? tIn(locale, 'thread.defaultTitle') : title
 }

@@ -3,6 +3,7 @@ import { menuZh, menuEn } from './domains/menu'
 import { settingsZh, settingsEn } from './domains/settings'
 import { nodeZh, nodeEn } from './domains/node'
 import { graphZh, graphEn } from './domains/graph'
+import { threadZh, threadEn } from './domains/thread'
 import { projectsZh, projectsEn } from './domains/projects'
 import { canvasZh, canvasEn } from './domains/canvas'
 import { agentZh, agentEn } from './domains/agent'
@@ -19,6 +20,7 @@ export const zh = {
   ...settingsZh,
   ...nodeZh,
   ...graphZh,
+  ...threadZh,
   ...projectsZh,
   ...canvasZh,
   ...agentZh,
@@ -36,6 +38,7 @@ export const en: Record<keyof typeof zh, string> = {
   ...settingsEn,
   ...nodeEn,
   ...graphEn,
+  ...threadEn,
   ...projectsEn,
   ...canvasEn,
   ...agentEn,

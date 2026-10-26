@@ -22,6 +22,8 @@ import { HistorySidebar } from './HistorySidebar'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
 import { SubagentInvocationsPanel } from './SubagentInvocationsPanel'
 import { eventBus, Events } from '../../store/eventBus'
+import { threadTitle as localizeThreadTitle } from '@shared/i18n'
+import { useI18n } from '../../i18n/useI18n'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
 const DiffReviewPanel = lazy(() => import('./DiffReviewPanel').then(m => ({ default: m.DiffReviewPanel })))
@@ -39,6 +41,7 @@ interface AgentChatPanelProps {
 }
 
 export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps) {
+  const { locale, t } = useI18n()
   const adapters = useAgentStore((s) => s.adapters)
   const threads = useAgentStore((s) => s.threads)
   const currentThreadId = useAgentStore((s) => s.currentThreadId)
@@ -357,7 +360,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       <ChatHeader
         adapterName={selectedAdapter}
         adapters={adapters}
-        threadTitle={currentThread?.title ?? 'New Thread'}
+        threadTitle={currentThread ? localizeThreadTitle(currentThread.title, locale) : t('thread.defaultTitle')}
         viewMode={viewMode}
         expanded={expanded}
         fallbackHistory={lastFallbackHistory}
