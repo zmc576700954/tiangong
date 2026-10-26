@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, dialog } from 'electron'
+import { app, BrowserWindow, Menu } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { registerIpcHandlers, agentManager, registry } from './ipc-handlers'
@@ -6,7 +6,8 @@ import { initDatabase, closeDatabase } from './database'
 import { stopCleanup } from './ipc/utils'
 import { createLogger } from './shared/logger'
 import { getPlatformProvider } from './platform'
-import { getLocale } from '@shared/i18n'
+import { getLocale, subscribeLocale } from '@shared/i18n'
+import { buildMenuTemplate } from './menu'
 
 const logger = createLogger('Main')
 
@@ -90,140 +91,24 @@ class WindowManager {
 
 const windowManager = new WindowManager()
 
-// Application menu template
+// Application menu
 function buildMenu(): Menu {
   const provider = getPlatformProvider()
-  const isMac = provider.isMac
-
-  const template: Electron.MenuItemConstructorOptions[] = [
-    // File menu
-    {
-      label: 'File',
-      submenu: [
-        {
-          label: 'Open Project…',
-          accelerator: 'CmdOrCtrl+O',
-          click: async (_, focusedWindow) => {
-            const win = focusedWindow as BrowserWindow | null
-            if (!win) return
-            const result = await dialog.showOpenDialog(win, {
-              properties: ['openDirectory'],
-              title: '选择项目目录',
-            })
-            if (result.canceled || result.filePaths.length === 0) return
-            win.webContents.send('menu:openProject', result.filePaths[0])
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'New Window',
-          accelerator: 'CmdOrCtrl+N',
-          click: () => {
-            windowManager.createWindow()
-          },
-        },
-        { type: 'separator' },
-        {
-          label: 'Close Window',
-          accelerator: isMac ? 'Cmd+W' : 'Ctrl+W',
-          click: (_, focusedWindow) => {
-            focusedWindow?.close()
-          },
-        },
-        ...(isMac
-          ? []
-          : [
-              { type: 'separator' as const },
-              {
-                label: 'Exit',
-                accelerator: 'Alt+F4',
-                click: () => {
-                  app.quit()
-                },
-              },
-            ]),
-      ],
-    },
-    // Edit menu
-    {
-      label: 'Edit',
-      submenu: [
-        { role: 'undo', label: 'Undo' },
-        { role: 'redo', label: 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: 'Cut' },
-        { role: 'copy', label: 'Copy' },
-        { role: 'paste', label: 'Paste' },
-        { role: 'selectAll', label: 'Select All' },
-      ],
-    },
-    // View menu
-    {
-      label: 'View',
-      submenu: [
-        { role: 'reload', label: 'Reload' },
-        { role: 'forceReload', label: 'Force Reload' },
-        { role: 'toggleDevTools', label: 'Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: 'Reset Zoom' },
-        { role: 'zoomIn', label: 'Zoom In' },
-        { role: 'zoomOut', label: 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: 'Fullscreen' },
-      ],
-    },
-    // Window menu
-    {
-      label: 'Window',
-      submenu: [
-        { role: 'minimize', label: 'Minimize' },
-        ...(isMac
-          ? [
-              { role: 'zoom', label: 'Zoom' } as const,
-              { type: 'separator' as const },
-              { role: 'front', label: 'Bring All to Front' } as const,
-            ]
-          : [{ role: 'close', label: 'Close' } as const]),
-      ],
-    },
-    // Help menu
-    {
-      label: 'Help',
-      submenu: [
-        {
-          label: 'About BizGraph',
-          click: () => {
-            dialog.showMessageBox({
-              type: 'info',
-              title: 'About BizGraph',
-              message: 'BizGraph v0.1.0',
-              detail: 'Open Source Agent CLI Desktop Orchestrator',
-            })
-          },
-        },
-      ],
-    },
-  ]
-
-  if (isMac) {
-    template.unshift({
-      label: 'BizGraph',
-      submenu: [
-        { role: 'about', label: 'About BizGraph' },
-        { type: 'separator' },
-        { role: 'services', label: 'Services' },
-        { type: 'separator' },
-        { role: 'hide', label: 'Hide BizGraph' },
-        { role: 'hideOthers', label: 'Hide Others' },
-        { role: 'unhide', label: 'Show All' },
-        { type: 'separator' },
-        { role: 'quit', label: 'Quit BizGraph' },
-      ],
-    })
-  }
-
-  return Menu.buildFromTemplate(template)
+  return Menu.buildFromTemplate(
+    buildMenuTemplate({
+      createWindow: () => windowManager.createWindow(),
+      isMac: provider.isMac,
+      quitApp: () => app.quit(),
+    }),
+  )
 }
+
+// 语言切换后重建原生菜单
+subscribeLocale(() => {
+  // app 未就绪时建菜单会抛错——启动阶段由 whenReady 里的显式调用负责
+  if (!app.isReady()) return
+  Menu.setApplicationMenu(buildMenu())
+})
 
 app.commandLine.appendSwitch('disable-gpu')
 app.whenReady().then(async () => {
