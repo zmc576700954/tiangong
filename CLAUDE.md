@@ -60,7 +60,7 @@ BizGraph is a three-process Electron app:
 - **Context compaction**: Adapters implement `compactContext()` with strategies `native` / `llm` / `summary`.
 - **Subagent dispatch**: Adapters can expose a `dispatch_subagent` tool routed through `SubagentManager`.
 
-**Agent Runtime** (`src/main/agent/`) — `AgentManager` composes `AdapterRegistry`, `SessionRouter`, and `OutputBroadcaster`. It prepares sandboxes, resolves contexts, sends commands, handles session lifecycle, and routes outputs to renderer windows.
+**Agent Runtime** (`src/main/agent/`) — `AgentManager` is a facade over `AdapterRegistry`, `SessionRouter`, `OutputBroadcaster` and the D1a/D1b collaborators: `SessionLifecycleManager`（会话状态 / 沙箱 / 清理锁）、`ContextAssembler` + `PromptFormatter`（上下文解析与 prompt 片段）、`ContextCompactor`（压缩编排）、`FallbackRouter`（适配器回退链）、`RecoveryOrchestrator`（恢复决策与探测定时器）、`AgentHealthHousekeeper`（健康检查 / 内存压力）、`PhaseBHandler`（结束后记忆管线）。It prepares sandboxes, resolves contexts, sends commands, handles session lifecycle, and routes outputs to renderer windows.
 
 - Injects `SmartContextResolver` (code intelligence), project memory (`readMemory`), session history memory (`MemoryStore`), and assembled prompts (`PromptOrchestrator`).
 - Binds `ContextWaterline` for token economics and auto-compaction.

@@ -5,9 +5,10 @@
  * Responsibilities (D1a):
  *  - Periodic health check timer (adaptive: 5/7/10 minutes based on load)
  *  - RSS-based memory pressure detection + oldest-session cleanup
- *  - Health-driven recovery check (probe unhealthy adapter until installed)
- *  - Fallback recovery check (probe preferred adapter after fallback until healthy)
  *  - Stale memory cleanup (claude-mem style periodic prune)
+ *
+ * The recovery timers (health-driven probe + fallback probe) live in
+ * RecoveryOrchestrator (D1b) — this module only forwards to them.
  *
  * AgentManager retains the lifecycle facade (start/stop/destroy) but delegates
  * the timer bookkeeping + cleanup logic here.
@@ -47,6 +48,10 @@ export interface AgentHealthHousekeeperDeps {
   getMemoryStats: () => MemoryStats
   /** Callback to terminate a session (avoid circular dep on AgentManager.terminateSession). */
   terminateSession: (sessionId: string, reason: 'error') => Promise<void>
+  /** Probe an unhealthy adapter until it reports installed (owned by RecoveryOrchestrator). */
+  startRecoveryCheck: (adapterName: string) => void
+  /** Probe the preferred adapter after a fallback until healthy again (owned by RecoveryOrchestrator). */
+  startFallbackRecoveryCheck: (preferredAdapter: string, intervalMs?: number) => void
 }
 
 /**
@@ -56,8 +61,6 @@ export interface AgentHealthHousekeeperDeps {
  */
 export class AgentHealthHousekeeper {
   private healthCheckTimer: ReturnType<typeof setTimeout> | null = null
-  private fallbackRecoveryTimers = new Map<string, { interval: ReturnType<typeof setInterval>; timeout: ReturnType<typeof setTimeout> }>()
-  private recoveryCheckIntervals = new Map<string, ReturnType<typeof setInterval>>()
 
   constructor(private readonly deps: AgentHealthHousekeeperDeps) {}
 
@@ -70,21 +73,12 @@ export class AgentHealthHousekeeper {
     this.scheduleNext()
   }
 
-  /** Stop the health check timer and clear all background intervals. */
+  /** Stop the health check timer. Recovery timers are owned by RecoveryOrchestrator. */
   stop(): void {
     if (this.healthCheckTimer) {
       clearTimeout(this.healthCheckTimer)
       this.healthCheckTimer = null
     }
-    for (const interval of this.recoveryCheckIntervals.values()) {
-      clearInterval(interval)
-    }
-    this.recoveryCheckIntervals.clear()
-    for (const timers of this.fallbackRecoveryTimers.values()) {
-      clearInterval(timers.interval)
-      clearTimeout(timers.timeout)
-    }
-    this.fallbackRecoveryTimers.clear()
   }
 
   /** Terminate the N oldest active sessions (by startTime) during memory pressure. */
@@ -116,28 +110,7 @@ export class AgentHealthHousekeeper {
 
   /** Probe an unhealthy adapter periodically until it reports installed. */
   startRecoveryCheck(adapterName: string): void {
-    if (this.recoveryCheckIntervals.has(adapterName)) return // already running
-    const interval = setInterval(async () => {
-      const adapter = this.deps.registry.get(adapterName)
-      if (!adapter) {
-        const active = this.recoveryCheckIntervals.get(adapterName)
-        if (active) {
-          clearInterval(active)
-          this.recoveryCheckIntervals.delete(adapterName)
-        }
-        return
-      }
-      const installed = await adapter.checkInstalled()
-      if (installed) {
-        this.deps.healthMonitor.recordCall(adapterName, true, 0, 'recovery-check')
-        const active = this.recoveryCheckIntervals.get(adapterName)
-        if (active) {
-          clearInterval(active)
-          this.recoveryCheckIntervals.delete(adapterName)
-        }
-      }
-    }, 60_000)
-    this.recoveryCheckIntervals.set(adapterName, interval)
+    this.deps.startRecoveryCheck(adapterName)
   }
 
   /**
@@ -146,31 +119,7 @@ export class AgentHealthHousekeeper {
    * minutes to avoid indefinite probing.
    */
   startFallbackRecoveryCheck(preferredAdapter: string, intervalMs = 60_000): void {
-    if (this.fallbackRecoveryTimers.has(preferredAdapter)) return
-    const interval = setInterval(async () => {
-      const adapter = this.deps.registry.get(preferredAdapter)
-      if (!adapter) {
-        clearInterval(interval)
-        const timers = this.fallbackRecoveryTimers.get(preferredAdapter)
-        if (timers) clearTimeout(timers.timeout)
-        this.fallbackRecoveryTimers.delete(preferredAdapter)
-        return
-      }
-      const installed = await adapter.checkInstalled()
-      const health = this.deps.healthMonitor.getHealth(preferredAdapter)
-      if (installed && health && health.status === 'healthy') {
-        logger.info(`Preferred adapter ${preferredAdapter} is healthy again`)
-        const timers = this.fallbackRecoveryTimers.get(preferredAdapter)
-        if (timers) { clearInterval(timers.interval); clearTimeout(timers.timeout) }
-        this.fallbackRecoveryTimers.delete(preferredAdapter)
-      }
-    }, intervalMs)
-    const timeout = setTimeout(() => {
-      clearInterval(interval)
-      this.fallbackRecoveryTimers.delete(preferredAdapter)
-    }, 5 * 60_000)
-    timeout.unref()
-    this.fallbackRecoveryTimers.set(preferredAdapter, { interval, timeout })
+    this.deps.startFallbackRecoveryCheck(preferredAdapter, intervalMs)
   }
 
   /**
@@ -217,10 +166,5 @@ export class AgentHealthHousekeeper {
       cleanupInProgress: this.deps.lifecycle.cleanupInProgressCount,
       memory: mem,
     })
-  }
-
-  /** Test-only: probe intervals for health-driven recovery checks. */
-  getRecoveryCheckIntervals(): Map<string, ReturnType<typeof setInterval>> {
-    return this.recoveryCheckIntervals
   }
 }

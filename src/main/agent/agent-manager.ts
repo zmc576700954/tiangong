@@ -26,7 +26,6 @@
 
 import type {
   AgentAdapter,
-  AgentSession,
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
@@ -64,13 +63,13 @@ import { ContextAssembler } from './context-assembler'
 import { ContextCompactor } from './context-compactor'
 import { AgentHealthHousekeeper, type MemoryStats } from './health-monitor-helpers'
 import { PhaseBHandler } from './phase-b-handler'
+import { FallbackRouter, type ResolvedAdapterSession } from './fallback-router'
+import { RecoveryOrchestrator } from './recovery-orchestrator'
+import { PromptFormatter } from './prompt-formatter'
 import type { SessionState } from './types'
 import { MemoryStore } from '../memory'
 
 const logger = createLogger('AgentManager')
-
-/** 命令类型的上下文 Token 预算（ContextAssembler 复用；保留在本文件作为 fallback 默认值） */
-const FALLBACK_CONTEXT_BUDGET = 8000
 
 interface PromptOutcomeEntry {
   commandType: string
@@ -123,6 +122,9 @@ export class AgentManager {
   private compactor: ContextCompactor
   private housekeeper: AgentHealthHousekeeper
   private phaseB: PhaseBHandler
+  private promptFormatter: PromptFormatter
+  private fallbackRouter: FallbackRouter
+  private recoveryOrchestrator: RecoveryOrchestrator
 
   // ----- Backward-compatible state mirrors -----
   /**
@@ -136,11 +138,9 @@ export class AgentManager {
   private sessionOutputBuffers = new Map<string, AgentOutput[]>()
   /** SessionRecovery singleton (test-visible via getter). */
   private sessionRecoveryInstance: SessionRecoveryManager = getSessionRecoveryManager()
-  /** Consecutive timeout counter per adapter (only used inside startSession). */
-  private adapterTimeoutCounts: Map<string, number> = new Map()
   /** Adapter health monitor — kept on AgentManager; tests reference it directly. */
   private healthMonitor = new AdapterHealthMonitor()
-  /** Prompt quality feedback ring (consumed by ContextAssembler + PhaseBHandler). */
+  /** Prompt quality feedback ring (consumed by PromptFormatter + PhaseBHandler). */
   private promptOutcomeLog: PromptOutcomeEntry[] = []
 
   // ----- Lazy / injected state -----
@@ -171,22 +171,47 @@ export class AgentManager {
     // 1) Lifecycle — owns session state, output buffering, cleanup lock
     this.lifecycle = new SessionLifecycleManager(registry, router, broadcaster, new ScopeGuard())
 
-    // 2) ContextAssembler — context resolution + prompt assembly
-    this.assembler = new ContextAssembler(() => this.memoryStore)
+    // 2) PromptFormatter — prompt 片段格式化 + 最优 token 预算
+    //    惰性取 MemoryStore：AgentManager 在 DB 初始化前构造，不能提前取实例。
+    this.promptFormatter = new PromptFormatter(() => this.memoryStore, this.promptOutcomeLog)
 
-    // 3) ContextCompactor — context compaction orchestration
+    // 3) ContextAssembler — context resolution + prompt assembly
+    this.assembler = new ContextAssembler(this.promptFormatter)
+
+    // 4) ContextCompactor — context compaction orchestration
     this.compactor = new ContextCompactor(registry, broadcaster, this.lifecycle)
     // Bridge: compactor needs to find sessions seeded into manager.sessionStates
     this.compactor.setSessionStateLookup((id) => this.sessionStates.get(id))
 
-    // 4) PhaseBHandler — post-cleanup memory pipeline + completion callback
+    // 5) PhaseBHandler — post-cleanup memory pipeline + completion callback
     this.phaseB = new PhaseBHandler({
       lifecycle: this.lifecycle,
       promptOutcomeLog: this.promptOutcomeLog,
       sessionRecovery: this.sessionRecoveryInstance,
     })
 
-    // 5) Housekeeper — periodic health check + memory pressure + recovery timers
+    // 6) RecoveryOrchestrator — 会话恢复决策 + 恢复探测定时器
+    this.recoveryOrchestrator = new RecoveryOrchestrator(
+      registry,
+      this.healthMonitor,
+      router,
+      this.sessionStates,
+      undefined,
+      // 闭包注入 startSessionFn / sendCommandFn，避免循环依赖
+      this.startSession.bind(this),
+      this.sendCommand.bind(this),
+      this.sessionRecoveryInstance,
+    )
+
+    // 7) FallbackRouter — 回退链路由（去重 / 健康度优先 / 连续超时计数）
+    this.fallbackRouter = new FallbackRouter(
+      registry,
+      this.healthMonitor,
+      // 命中 unhealthy 时启动周期性探测
+      (adapterName) => this.recoveryOrchestrator.startRecoveryCheck(adapterName),
+    )
+
+    // 8) Housekeeper — periodic health check + memory pressure
     this.housekeeper = new AgentHealthHousekeeper({
       registry,
       healthMonitor: this.healthMonitor,
@@ -195,9 +220,12 @@ export class AgentManager {
       maxSessions: this.MAX_SESSIONS,
       getMemoryStats: () => this.getMemoryStats(),
       terminateSession: (id, reason) => this.terminateSession(id, reason),
+      startRecoveryCheck: (adapterName) => this.recoveryOrchestrator.startRecoveryCheck(adapterName),
+      startFallbackRecoveryCheck: (preferredAdapter, intervalMs = 60_000) =>
+        this.recoveryOrchestrator.startFallbackRecoveryCheck(preferredAdapter, { interval: intervalMs }),
     })
 
-    // 6) Lifecycle callbacks: tie recovery / completion / turn-complete / status into lifecycle
+    // 9) Lifecycle callbacks: tie recovery / completion / turn-complete / status into lifecycle
     this.lifecycle.setCallbacks({
       onTurnComplete: (sessionId) => {
         const state = this.sessionStates.get(sessionId)
@@ -365,27 +393,14 @@ export class AgentManager {
     config: AgentSessionConfig,
     span?: Span,
   ): Promise<StartSessionResult> {
-    // 确定回退链：首选适配器 + 回退顺序
+    // 确定回退链：首选适配器 + 回退顺序（去重 + 健康度优先重排）
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
-    const fallbackChain = [primary, ...preferences.fallbackOrder.filter((a: string) => a !== primary)]
-
-    const seen = new Set<string>()
-    const uniqueChain = fallbackChain.filter((a) => {
-      if (seen.has(a)) return false
-      seen.add(a)
-      return true
-    })
-
-    if (!preferences.forceAdapter) {
-      const healthiest = this.healthMonitor.getHealthiestAdapter(uniqueChain)
-      if (healthiest && healthiest !== uniqueChain[0]) {
-        const reordered = [healthiest, ...uniqueChain.filter((n) => n !== healthiest)]
-        uniqueChain.splice(0, uniqueChain.length, ...reordered)
-      }
-    }
-
-    const fallbackHistory: AdapterFallbackAttempt[] = []
+    const uniqueChain = this.fallbackRouter.buildChain(
+      primary,
+      preferences.fallbackOrder,
+      preferences.forceAdapter,
+    )
 
     if (os.freemem() < 512 * 1024 * 1024) {
       logger.error('Insufficient free memory (<512MB), refusing to create new session')
@@ -399,153 +414,102 @@ export class AgentManager {
       throw new AgentError('Maximum concurrent sessions exceeded', ErrorCode.AGENT_SESSION_LIMIT)
     }
     if (this.countActiveProcesses() >= this.MAX_PROCESSES) {
-      logger.error(`Maximum process limit (${this.MAX_PROCESSES}) reached, cannot create new session`)
+      logger.error(`Maximum concurrent agent processes exceeded, cannot create new session`)
       throw new AgentError('Maximum concurrent agent processes exceeded', ErrorCode.AGENT_RESOURCE_EXHAUSTED)
     }
 
     const slotKey = `__reserved_${Date.now()}_${Math.random().toString(36).slice(2)}`
     this.reservedSlots.add(slotKey)
 
-    for (const candidate of uniqueChain) {
-      const adapter = this.registry.get(candidate)
-      if (!adapter) {
-        fallbackHistory.push({ adapter: candidate, reason: `Adapter ${candidate} not registered`, success: false })
-        logger.warn(`Adapter ${candidate} not registered, trying next...`)
-        continue
-      }
-
-      const isInstalled = await adapter.checkInstalled()
-      if (!isInstalled) {
-        fallbackHistory.push({ adapter: candidate, reason: `${candidate} not installed`, success: false })
-        logger.warn(`Adapter ${candidate} not installed, trying next...`)
-        continue
-      }
-
-      const health = this.healthMonitor.getHealth(candidate)
-      if (health && health.status === 'unhealthy') {
-        fallbackHistory.push({
-          adapter: candidate,
-          reason: `${candidate} is unhealthy (score: ${health.healthScore}), skipping`,
-          success: false,
-        })
-        logger.warn(`Adapter ${candidate} is unhealthy (score: ${health.healthScore}), skipping and starting recovery check`)
-        this.startRecoveryCheck(candidate)
-        continue
-      }
-      if (health && health.status === 'degraded') {
-        const originalTimeout = config.timeoutMs ?? 120_000
-        config = { ...config, timeoutMs: Math.floor(originalTimeout * 0.5) }
-        logger.info(`Adapter ${candidate} is degraded, reducing timeout from ${originalTimeout}ms to ${config.timeoutMs}ms`)
-      }
-
-      const startTime = Date.now()
-      try {
-        const session: AgentSession = await adapter.startSession(config)
-        this.adapterTimeoutCounts.delete(candidate)
-
-        const { broadcastName } = await this.lifecycle.start({
-          candidate,
-          adapter,
-          session: { id: session.id, startTime: session.startTime },
-          config,
-          isFallback: candidate !== primary,
-          primaryAdapter: primary,
-        })
-
-        // Mirror state into manager.sessionStates for backward compat with tests
-        const mirroredState: SessionState = {
-          config,
-          broadcastName,
-          adapterName: candidate,
-          startTime: session.startTime,
-          sandbox: this.lifecycle.getSandbox(session.id),
-          threadId: config.threadId,
-          parentSessionId: config.parentSessionId,
-          swarmTaskId: config.swarmTaskId,
-        }
-        this.mirrorStart(session.id, mirroredState)
-
-        fallbackHistory.push({ adapter: candidate, reason: '', success: true })
-        this.healthMonitor.recordCall(candidate, true, Date.now() - startTime)
-
-        const isFallback = candidate !== primary
-
-        // Router binding: actual adapter wins; originalAdapter captures fallback
-        this.router.bind(session.id, candidate, isFallback ? primary : undefined)
-
-        // Record fallback reason for renderer
-        if (isFallback) {
-          session.fallbackInfo = {
-            originalAdapter: primary,
-            fallbackReason: `${primary} not available, using ${candidate}`,
+    let resolved: ResolvedAdapterSession
+    try {
+      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, config, {
+        onSessionStarted: async (candidate, candidateConfig, session) => {
+          const adapter = this.registry.get(candidate)
+          if (!adapter) {
+            throw new AdapterError(`Adapter ${candidate} disappeared during startup`, candidate)
           }
-          this.housekeeper.startFallbackRecoveryCheck(primary)
-        }
+          const isFallback = candidate !== primary
 
-        if (config.nodeId) {
-          this.statusChangeCallback?.(session.id, config.nodeId, 'developing')
-        }
+          const { broadcastName } = await this.lifecycle.start({
+            candidate,
+            adapter,
+            session: { id: session.id, startTime: session.startTime },
+            config: candidateConfig,
+            isFallback,
+            primaryAdapter: primary,
+          })
 
-        // placeholder → developing auto-advance (per-node-type validated via NodeRepository)
-        if (config.nodeId && config.commandType === 'implement') {
-          try {
-            const db = getClient()
-            const { NodeRepository } = await import('../repositories/node-repository')
-            const nodeRepo = new NodeRepository(db)
-            const current = nodeRepo.findById(config.nodeId)
-            if (current && current.status === 'placeholder') {
-              const updated = nodeRepo.update(config.nodeId, { status: 'developing' })
-              if (updated.status === 'developing') {
-                this.nodeStatusChangeCallback?.(config.nodeId, 'placeholder', 'developing')
-              }
+          // Mirror state into manager.sessionStates for backward compat with tests
+          const mirroredState: SessionState = {
+            config: candidateConfig,
+            broadcastName,
+            adapterName: candidate,
+            startTime: session.startTime,
+            sandbox: this.lifecycle.getSandbox(session.id),
+            threadId: candidateConfig.threadId,
+            parentSessionId: candidateConfig.parentSessionId,
+            swarmTaskId: candidateConfig.swarmTaskId,
+          }
+          this.mirrorStart(session.id, mirroredState)
+
+          // Router binding: actual adapter wins; originalAdapter captures fallback
+          this.router.bind(session.id, candidate, isFallback ? primary : undefined)
+
+          // Record fallback reason for renderer
+          if (isFallback) {
+            session.fallbackInfo = {
+              originalAdapter: primary,
+              fallbackReason: `${primary} not available, using ${candidate}`,
             }
-          } catch (err) {
-            logger.warn(`Failed to auto-advance placeholder node ${config.nodeId}:`, err)
+            this.housekeeper.startFallbackRecoveryCheck(primary)
           }
-        }
 
-        // Release reserved slot — real session is now registered
-        this.reservedSlots.delete(slotKey)
+          if (candidateConfig.nodeId) {
+            this.statusChangeCallback?.(session.id, candidateConfig.nodeId, 'developing')
+          }
 
-        // Emit session-started event for renderer IPC
-        if (this.sessionStartedCallback && config.threadId) {
-          this.sessionStartedCallback(config.threadId, session.id)
-        }
+          // placeholder → developing auto-advance (per-node-type validated via NodeRepository)
+          if (candidateConfig.nodeId && candidateConfig.commandType === 'implement') {
+            try {
+              const db = getClient()
+              const { NodeRepository } = await import('../repositories/node-repository')
+              const nodeRepo = new NodeRepository(db)
+              const current = nodeRepo.findById(candidateConfig.nodeId)
+              if (current && current.status === 'placeholder') {
+                const updated = nodeRepo.update(candidateConfig.nodeId, { status: 'developing' })
+                if (updated.status === 'developing') {
+                  this.nodeStatusChangeCallback?.(candidateConfig.nodeId, 'placeholder', 'developing')
+                }
+              }
+            } catch (err) {
+              logger.warn(`Failed to auto-advance placeholder node ${candidateConfig.nodeId}:`, err)
+            }
+          }
 
-        if (span) {
-          span.setAttribute('adapter.used', candidate)
-          span.setAttribute('session.id', session.id)
-          span.setAttribute('fallback.used', isFallback)
-        }
-
-        return {
-          sessionId: session.id,
-          fallback: isFallback || undefined,
-          adapterUsed: candidate,
-          fallbackHistory,
-        }
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
-        fallbackHistory.push({ adapter: candidate, reason: `startSession failed: ${reason}`, success: false })
-        this.healthMonitor.recordCall(candidate, false, Date.now() - startTime, reason)
-        const currentCount = this.adapterTimeoutCounts.get(candidate) ?? 0
-        const nextCount = currentCount + 1
-        this.adapterTimeoutCounts.set(candidate, nextCount)
-        if (nextCount >= 2) {
-          this.adapterTimeoutCounts.delete(candidate)
-          logger.warn(`Adapter ${candidate} failed ${nextCount} consecutive times, moving to next adapter`)
-          continue
-        }
-        logger.warn(`Adapter ${candidate} startSession failed: ${reason}, trying next...`)
-        continue
-      }
+          // Emit session-started event for renderer IPC
+          if (this.sessionStartedCallback && candidateConfig.threadId) {
+            this.sessionStartedCallback(candidateConfig.threadId, session.id)
+          }
+        },
+      })
+    } finally {
+      // Release reserved slot — real session is registered (or every candidate failed)
+      this.reservedSlots.delete(slotKey)
     }
 
-    this.reservedSlots.delete(slotKey)
-    throw new AdapterError(
-      `No adapter available. Tried: ${uniqueChain.join(', ')}. Details: ${fallbackHistory.map((f) => `${f.adapter} (${f.reason})`).join('; ')}`,
-      primary,
-    )
+    if (span) {
+      span.setAttribute('adapter.used', resolved.adapterUsed)
+      span.setAttribute('session.id', resolved.session.id)
+      span.setAttribute('fallback.used', resolved.isFallback)
+    }
+
+    return {
+      sessionId: resolved.session.id,
+      fallback: resolved.isFallback || undefined,
+      adapterUsed: resolved.adapterUsed,
+      fallbackHistory: resolved.fallbackHistory,
+    }
   }
 
   private async loadAdapterPreferences(): Promise<AdapterPreferences> {
@@ -666,13 +630,7 @@ export class AgentManager {
   }
 
   getOptimalPromptBudget(commandType: string): number {
-    const relevant = this.promptOutcomeLog.filter((e) => e.commandType === commandType)
-    if (relevant.length < 5) return FALLBACK_CONTEXT_BUDGET
-    const successEntries = relevant.filter((e) => e.outcome === 'success')
-    if (successEntries.length === 0) return FALLBACK_CONTEXT_BUDGET
-    const avgTokens =
-      successEntries.reduce((sum, e) => sum + e.promptTokenEstimate, 0) / successEntries.length
-    return Math.max(4000, Math.min(16000, Math.round(avgTokens * 1.2)))
+    return this.promptFormatter.getOptimalPromptBudget(commandType)
   }
 
   // ===================================================================
@@ -857,7 +815,12 @@ export class AgentManager {
 
   /** Backward-compat getter for tests: recovery probe intervals. */
   get recoveryCheckIntervals(): Map<string, ReturnType<typeof setInterval>> {
-    return this.housekeeper.getRecoveryCheckIntervals()
+    return this.recoveryOrchestrator.recoveryCheckMap
+  }
+
+  /** Backward-compat getter for tests: consecutive adapter timeout counters. */
+  get adapterTimeoutCounts(): Map<string, number> {
+    return this.fallbackRouter.getTimeoutCounts()
   }
 
   /** Backward-compat getter for tests: in-flight compact promises. */
@@ -865,9 +828,9 @@ export class AgentManager {
     return this.compactor.inflightMap
   }
 
-  /** Backward-compat: delegate startRecoveryCheck to housekeeper. */
+  /** Backward-compat: delegate startRecoveryCheck to the recovery orchestrator. */
   startRecoveryCheck(adapterName: string): void {
-    this.housekeeper.startRecoveryCheck(adapterName)
+    this.recoveryOrchestrator.startRecoveryCheck(adapterName)
   }
 
   /**
@@ -885,136 +848,15 @@ export class AgentManager {
     state: SessionState,
     outputs: AgentOutput[],
   ): Promise<'native' | 'replacement' | 'none'> {
-    if ((exitCode === 137 || exitCode === 143) && reason !== 'timeout') {
-      logger.info(`Session ${sessionId} terminated normally (exit ${exitCode})`)
-      return 'none'
-    }
-
-    const isRecoverable =
-      (reason === 'crash' || reason === 'error' || reason === 'timeout') &&
-      exitCode !== 126 && exitCode !== 127
-
-    if (!isRecoverable) {
-      if (exitCode === 126 || exitCode === 127) {
-        this.healthMonitor.recordCall(state.adapterName, false, 0, `Exit code ${exitCode}: adapter not available`)
-        logger.warn(`Adapter ${state.adapterName} marked unavailable (exit ${exitCode})`)
-      } else {
-        logger.warn(`Session ${sessionId} exited with code ${exitCode}, reason: ${reason}`)
-      }
-      return 'none'
-    }
-
-    const lastMessages = this._extractRecentMessages(outputs)
-
-    let threadId: string | undefined
-    if (state.config.nodeId) {
-      try {
-        const db = getClient()
-        const row = db.prepare('SELECT id FROM chat_threads WHERE node_id = ? ORDER BY created_at DESC LIMIT 1').get(state.config.nodeId) as { id: string } | undefined
-        if (row) threadId = row.id
-      } catch {
-        // Non-critical: threadId is for notification only
-      }
-    }
-
-    const originSessionId = state.originSessionId ?? sessionId
-    const newSessionId = await this.sessionRecoveryInstance.attemptRecovery({
-      sessionId,
-      adapterName: state.adapterName,
-      projectId: state.config.workingDirectory,
-      lastOutputs: outputs,
-      lastMessages,
-      threadId,
-      originSessionId,
-    })
-
-    if (newSessionId) {
-      logger.info(`Session ${sessionId} recovered as ${newSessionId}`)
-
-      if (newSessionId === sessionId) {
-        // Native resume: keep state, clear transient artifacts
-        return 'native'
-      }
-
-      const newState = this.sessionStates.get(newSessionId)
-      if (newState) {
-        newState.originSessionId = originSessionId
-      }
-      if (state.lastCommand) {
-        await this._resumeLastCommand(newSessionId, state.lastCommand)
-      }
-      return 'replacement'
-    }
-
-    // MCP adapter recovery: create new session with context injection
-    const pendingContext = this.sessionRecoveryInstance.consumePendingContext(sessionId)
-    if (pendingContext) {
-      logger.info(`Session ${sessionId}: creating new MCP session with context injection`)
-      try {
-        const config = { ...state.config, contextSummary: pendingContext }
-        const result = await this.startSession(state.adapterName, config)
-        logger.info(`Session ${sessionId} replaced by new session ${result.sessionId} with context injection`)
-        const replacementState = this.sessionStates.get(result.sessionId)
-        if (replacementState) {
-          replacementState.originSessionId = originSessionId
-        }
-        if (state.lastCommand) {
-          await this._resumeLastCommand(result.sessionId, state.lastCommand)
-        } else {
-          logger.info(`Replacement session ${result.sessionId} started idle; no previous command to resume`)
-        }
-        return 'replacement'
-      } catch (err) {
-        logger.warn(`Failed to create new MCP session for recovery:`, err)
-      }
-    }
-
-    return 'none'
+    return this.recoveryOrchestrator.handleSessionExit(sessionId, exitCode, reason, state, outputs)
   }
-
-  private async _resumeLastCommand(sessionId: string, command: AgentCommand): Promise<void> {
-    if (!this.sessionStates.has(sessionId)) {
-      logger.warn(`Cannot resume command: recovered session ${sessionId} is not ready`)
-      return
-    }
-    const adapter = this.router.resolve(sessionId)
-    if (!adapter) {
-      logger.warn(`Cannot resume command: no adapter bound to recovered session ${sessionId}`)
-      return
-    }
-    try {
-      await this.sendCommand(sessionId, command)
-      logger.info(`Resumed last command on recovered session ${sessionId}`)
-    } catch (err) {
-      logger.warn(`Failed to resume last command on recovered session ${sessionId}:`, err)
-    }
-  }
-
-  private _extractRecentMessages(outputs: AgentOutput[]): Array<{ role: string; content: string }> {
-    const messages: Array<{ role: string; content: string }> = []
-    const stdoutChunks: string[] = []
-    for (const output of outputs) {
-      if (output.type === 'stdout') {
-        stdoutChunks.push(output.data)
-      }
-    }
-    if (stdoutChunks.length > 0) {
-      const combined = stdoutChunks.join('')
-      messages.push({
-        role: 'assistant',
-        content: combined.slice(-2000),
-      })
-    }
-    return messages
-  }
-
-  // ===================================================================
-  //                     Destroy
-  // ===================================================================
 
   destroy(): void {
     // Stop health check + cleanup timers
     this.housekeeper.stop()
+
+    // Stop recovery probe timers (owned by the recovery orchestrator)
+    this.recoveryOrchestrator.destroy()
 
     // Detach lifecycle adapters + clear state
     this.lifecycle.destroy()
@@ -1027,7 +869,7 @@ export class AgentManager {
     this.sessionOutputBuffers.clear()
     this.sessionOutputListenerIndex.clear()
     this.reservedSlots.clear()
-    this.adapterTimeoutCounts.clear()
+    this.fallbackRouter.getTimeoutCounts().clear()
 
     // Dispose adapters (cleanup subprocess / pool resources)
     for (const adapter of this.registry.list()) {
