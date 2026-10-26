@@ -195,6 +195,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [lintLoading, setLintLoading] = useState(false)
   const [writebackOpen, setWritebackOpen] = useState(false)
   const [writebackItems, setWritebackItems] = useState<WritebackItem[]>([])
+  const [writebackHistoryItems, setWritebackHistoryItems] = useState<WritebackItem[]>([])
   const [writebackCount, setWritebackCount] = useState(0)
   /** 正在处理的 itemId 集合（in-flight 守卫）。防止重复点击并让 UI 显示「处理中」。 */
   const [writebackPending, setWritebackPending] = useState<Set<string>>(new Set())
@@ -205,8 +206,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     const m = new Map<string, string>()
     for (const it of writebackItems) m.set(it.id, it.title)
+    // 撤回操作作用于历史项（accepted / rolled_back），标题也要能查到
+    for (const it of writebackHistoryItems) m.set(it.id, it.title)
     writebackItemsRef.current = m
-  }, [writebackItems])
+  }, [writebackItems, writebackHistoryItems])
 
   // ────────────────────────────────────────────────────────────────
   // Recipes panel state
@@ -370,12 +373,15 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // 刷新写回审核队列（打开面板时、图切换时、采纳/丢弃后调用）
   const refreshWriteback = useCallback(async () => {
     try {
-      const [items, count] = await Promise.all([
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+      const [items, count, history] = await Promise.all([
         useGraphStore.getState().listWriteback(),
         useGraphStore.getState().countWriteback(),
+        useGraphStore.getState().listWritebackHistory(since),
       ])
       setWritebackItems(items)
       setWritebackCount(count)
+      setWritebackHistoryItems(history)
     } catch (err) {
       console.error('[GraphCanvas] writeback refresh failed:', err)
     }
@@ -386,6 +392,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     setWritebackOpen(false)
     setWritebackItems([])
+    setWritebackHistoryItems([])
     setWritebackCount(0)
     refreshWriteback()
   }, [graphId, refreshWriteback])
@@ -966,6 +973,45 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     }
   }, [refreshWriteback, t])
 
+  /** 撤回已采纳的写回项：accepted → rolled_back。失败保留原状态。 */
+  const handleRollbackWriteback = useCallback(async (itemId: string) => {
+    setWritebackPending((prev) => {
+      if (prev.has(itemId)) return prev
+      const next = new Set(prev)
+      next.add(itemId)
+      return next
+    })
+    setWritebackLastError(null)
+    try {
+      const result = await useGraphStore.getState().rollbackWriteback(itemId)
+      await refreshWriteback()
+      const gid = useGraphStore.getState().currentGraphId
+      if (gid) await useGraphStore.getState().loadGraph(gid) // 撤回后图已变，刷新画布
+      const title = writebackItemsRef.current.get(itemId) ?? itemId
+      const undone = result?.undoneActions?.length ?? 0
+      const skipped = result?.skippedActions?.length ?? 0
+      if (skipped > 0) {
+        toastInfo(
+          t('toast.writeback.rolledBackPartial'),
+          t('toast.writeback.rollbackPartialDetail', { title, undone, skipped }),
+        )
+      } else {
+        toastSuccess(t('toast.writeback.rolledBack'), title)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error('[GraphCanvas] rollback writeback failed:', err)
+      setWritebackLastError(t('toast.writeback.rollbackFailed', { message: msg }))
+      toastError(t('toast.writeback.rollbackFailedTitle'), msg)
+    } finally {
+      setWritebackPending((prev) => {
+        const next = new Set(prev)
+        next.delete(itemId)
+        return next
+      })
+    }
+  }, [refreshWriteback, t])
+
   const handleDismissWritebackError = useCallback(() => {
     setWritebackLastError(null)
   }, [])
@@ -1368,10 +1414,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       {writebackOpen && (
         <WritebackPanel
           items={writebackItems}
+          historyItems={writebackHistoryItems}
           pendingIds={writebackPending}
           lastError={writebackLastError}
           onAccept={handleAcceptWriteback}
           onDiscard={handleDiscardWriteback}
+          onRollback={handleRollbackWriteback}
           onBatchAccept={handleBatchAcceptWriteback}
           onBatchDiscard={handleBatchDiscardWriteback}
           onNavigate={handleWritebackNavigate}

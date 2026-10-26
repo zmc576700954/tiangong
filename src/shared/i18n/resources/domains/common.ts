@@ -66,6 +66,11 @@ export const commonZh = {
   'toast.writeback.discardAllPartial': '批量丢弃部分失败：{message}',
   'toast.writeback.discardAllFailed': '批量丢弃失败',
   'toast.writeback.itemCount': '{count}/{total} 项',
+  'toast.writeback.rolledBack': '已撤回',
+  'toast.writeback.rolledBackPartial': '已撤回（部分跳过）',
+  'toast.writeback.rollbackPartialDetail': '{title}：{undone} 步执行，{skipped} 步跳过',
+  'toast.writeback.rollbackFailedTitle': '撤回失败',
+  'toast.writeback.rollbackFailed': '撤回失败：{message}',
 } as const
 
 export const commonEn: Record<keyof typeof commonZh, string> = {
@@ -127,4 +132,9 @@ export const commonEn: Record<keyof typeof commonZh, string> = {
   'toast.writeback.discardAllPartial': 'Some items failed to discard: {message}',
   'toast.writeback.discardAllFailed': 'Failed to discard all',
   'toast.writeback.itemCount': '{count}/{total} item(s)',
+  'toast.writeback.rolledBack': 'Rolled back',
+  'toast.writeback.rolledBackPartial': 'Rolled back (partially skipped)',
+  'toast.writeback.rollbackPartialDetail': '{title}: {undone} step(s) done, {skipped} skipped',
+  'toast.writeback.rollbackFailedTitle': 'Rollback failed',
+  'toast.writeback.rollbackFailed': 'Rollback failed: {message}',
 }

@@ -736,8 +736,9 @@ function makeWritebackDb() {
       details TEXT, narrative TEXT, source_node_ids TEXT, target_node_title TEXT,
       source_session_id TEXT NOT NULL,
       confidence REAL NOT NULL DEFAULT 0,
-      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded')),
-      created_at TEXT NOT NULL, resolved_at TEXT
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','discarded','rolled_back')),
+      created_at TEXT NOT NULL, resolved_at TEXT,
+      rollback_actions TEXT
     );
   `)
   return db

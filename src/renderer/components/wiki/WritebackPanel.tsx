@@ -4,14 +4,16 @@
  * 设计哲学：
  * - 完整预览：content 用 Markdown 渲染（react-markdown），details 用原生 <details> 折叠，
  *   narrative 单独展示纯文本摘要，避免旧版「line-clamp-3 截断整段 <details>」的反 UX。
- * - 批量操作：顶部 checkbox + 「批量采纳 / 批量丢弃」按当前选中集合操作。
+ * - 双 Tab：Pending（待审核 / accept / discard） + History（已采纳 + 已撤回，撤回 / 灰显）。
+ * - 批量操作：Pending Tab 顶部 checkbox + 「批量采纳 / 批量丢弃」按当前选中集合操作。
  * - In-flight 守卫：`pendingIds` 集合内的项禁用按钮，防重复点击 + 视觉反馈。
  * - 错误展示：顶部 banner 显示 lastError，单独 dismiss。
  * - 关闭前未处理项检查：避免误关导致用户丢失上下文（仅在不空闲时给出一次 toast，不强制阻拦）。
+ * - 撤回（rollback）：仅 accepted 可撤回；rolled_back 项灰显 + hover 显示已执行的撤销步骤。
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { CheckSquare, MapPin, Square, X, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react'
+import { CheckSquare, MapPin, Square, Undo2, X, ChevronDown, ChevronRight, AlertTriangle, History } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { cn } from '@/lib/utils'
@@ -21,16 +23,20 @@ import type { WritebackItem, WritebackKind } from '@shared/types/wiki'
 
 interface WritebackPanelProps {
   items: WritebackItem[]
+  historyItems?: WritebackItem[]
   pendingIds: ReadonlySet<string>
   lastError?: string | null
   onAccept: (itemId: string) => Promise<void> | void
   onDiscard: (itemId: string) => Promise<void> | void
+  onRollback?: (itemId: string) => Promise<void> | void
   onBatchAccept: (itemIds: string[]) => Promise<void> | void
   onBatchDiscard: (itemIds: string[]) => Promise<void> | void
   onNavigate: (nodeId: string) => void
   onClose: () => void
   onDismissError?: () => void
 }
+
+type ActiveTab = 'pending' | 'history'
 
 function KindBadge({ kind }: { kind: WritebackKind }) {
   const { t } = useI18n()
@@ -50,6 +56,31 @@ function KindBadge({ kind }: { kind: WritebackKind }) {
   )
 }
 
+function StatusBadge({ status }: { status: WritebackItem['status'] }) {
+  const { t } = useI18n()
+  if (status === 'rolled_back') {
+    return (
+      <span
+        data-testid="status-rolled-back"
+        className="text-[10px] px-1.5 py-0.5 rounded-full border bg-gray-50 text-gray-500 border-gray-200 shrink-0"
+      >
+        {t('wiki.writeback.status.rolledBack')}
+      </span>
+    )
+  }
+  if (status === 'accepted') {
+    return (
+      <span
+        data-testid="status-accepted"
+        className="text-[10px] px-1.5 py-0.5 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0"
+      >
+        {t('wiki.writeback.status.accepted')}
+      </span>
+    )
+  }
+  return null
+}
+
 function formatConfidence(c: number | undefined): string {
   if (c == null || Number.isNaN(c)) return '0%'
   return `${Math.round(c * 100)}%`
@@ -57,16 +88,19 @@ function formatConfidence(c: number | undefined): string {
 
 export function WritebackPanel({
   items,
+  historyItems = [],
   pendingIds,
   lastError,
   onAccept,
   onDiscard,
+  onRollback,
   onBatchAccept,
   onBatchDiscard,
   onNavigate,
   onClose,
   onDismissError,
 }: WritebackPanelProps) {
+  const [activeTab, setActiveTab] = useState<ActiveTab>('pending')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const { t } = useI18n()
 
@@ -111,6 +145,9 @@ export function WritebackPanel({
     await onBatchDiscard(ids)
   }, [selected, onBatchDiscard])
 
+  const historyCount = historyItems.length
+  const pendingCount = items.length
+
   return (
     <FloatingPanel
       isOpen
@@ -120,11 +157,48 @@ export function WritebackPanel({
       width="lg"
       subtitle={
         <span>
-          {t('wiki.writeback.pendingCount', { count: items.length })}
+          {t('wiki.writeback.pendingCount', { count: pendingCount })}
           {selected.size > 0 && ` ${t('wiki.writeback.selectedCount', { count: selected.size })}`}
         </span>
       }
     >
+      {/* Tab 栏 */}
+      <div role="tablist" className="flex items-center gap-1 px-3 py-1.5 border-b bg-muted/20">
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === 'pending'}
+          data-testid="tab-pending"
+          onClick={() => setActiveTab('pending')}
+          className={cn(
+            'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
+            activeTab === 'pending'
+              ? 'bg-background text-foreground shadow-xs font-medium'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          {t('wiki.writeback.tab.pending')}
+          <span className="text-[10px] text-muted-foreground">{pendingCount}</span>
+        </button>
+        <button
+          role="tab"
+          type="button"
+          aria-selected={activeTab === 'history'}
+          data-testid="tab-history"
+          onClick={() => setActiveTab('history')}
+          className={cn(
+            'flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors',
+            activeTab === 'history'
+              ? 'bg-background text-foreground shadow-xs font-medium'
+              : 'text-muted-foreground hover:text-foreground',
+          )}
+        >
+          <History className="w-3 h-3" aria-hidden="true" />
+          {t('wiki.writeback.tab.history')}
+          <span className="text-[10px] text-muted-foreground">{historyCount}</span>
+        </button>
+      </div>
+
       {/* 错误条 */}
       {lastError && (
         <div
@@ -147,8 +221,8 @@ export function WritebackPanel({
         </div>
       )}
 
-      {/* 批量操作栏 */}
-      {items.length > 0 && (
+      {/* 批量操作栏 — 仅 Pending Tab */}
+      {activeTab === 'pending' && items.length > 0 && (
         <div className="flex items-center gap-1.5 px-3 py-1.5 border-b bg-muted/30 text-xs">
           <button
             type="button"
@@ -186,19 +260,32 @@ export function WritebackPanel({
       )}
 
       {/* 列表 */}
-      <div className="h-full overflow-y-auto p-3 space-y-2">
-        {items.length === 0 ? (
-          <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.writeback.empty')}</p>
+      <div className="flex-1 overflow-y-auto p-3 space-y-2">
+        {activeTab === 'pending' ? (
+          items.length === 0 ? (
+            <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.writeback.empty')}</p>
+          ) : (
+            items.map((item) => (
+              <WritebackItemCard
+                key={item.id}
+                item={item}
+                pending={pendingIds.has(item.id)}
+                selected={selected.has(item.id)}
+                onToggleSelect={() => toggleOne(item.id)}
+                onAccept={() => onAccept(item.id)}
+                onDiscard={() => onDiscard(item.id)}
+                onNavigate={onNavigate}
+              />
+            ))
+          )
+        ) : historyItems.length === 0 ? (
+          <p className="text-xs text-muted-foreground text-center py-4">{t('wiki.writeback.historyEmpty')}</p>
         ) : (
-          items.map((item) => (
-            <WritebackItemCard
-              key={item.id}
+          historyItems.map((item) => (
+            <HistoryItemCard
               item={item}
               pending={pendingIds.has(item.id)}
-              selected={selected.has(item.id)}
-              onToggleSelect={() => toggleOne(item.id)}
-              onAccept={() => onAccept(item.id)}
-              onDiscard={() => onDiscard(item.id)}
+              onRollback={onRollback ? () => onRollback(item.id) : undefined}
               onNavigate={onNavigate}
             />
           ))
@@ -365,6 +452,119 @@ function WritebackItemCard({
         >
           {pending ? t('wiki.writeback.processing') : t('wiki.writeback.accept')}
         </button>
+      </div>
+    </div>
+  )
+}
+
+interface HistoryItemCardProps {
+  item: WritebackItem
+  pending: boolean
+  onRollback?: (() => void) | undefined
+  onNavigate: (nodeId: string) => void
+}
+
+/**
+ * 历史 Tab 中的写回项卡片：
+ * - accepted：原样显示但按钮区只暴露「撤回」
+ * - rolled_back：灰显 + 标题旁加「已撤回」徽标 + hover 显示已执行的 rollback 步骤
+ */
+function HistoryItemCard({ item, pending, onRollback, onNavigate }: HistoryItemCardProps) {
+  const { t } = useI18n()
+  const isRolledBack = item.status === 'rolled_back'
+  const rollbackSteps = item.rollbackActions ?? []
+
+  const rollbackTitle = isRolledBack
+    ? rollbackSteps.length > 0
+      ? t('wiki.writeback.rollbackExecuted', {
+          steps: rollbackSteps.map((s) => s.description).join('；'),
+        })
+      : t('wiki.writeback.status.rolledBack')
+    : undefined
+
+  return (
+    <div
+      className={cn(
+        'p-2 rounded border text-xs space-y-1.5 transition-opacity',
+        isRolledBack
+          ? 'bg-muted/40 border-muted opacity-60'
+          : 'bg-background border-border',
+        pending && 'opacity-60',
+      )}
+      data-testid={`history-item-${item.id}`}
+      data-status={item.status}
+      title={rollbackTitle}
+    >
+      <div className="flex items-center gap-1.5">
+        <KindBadge kind={item.kind} />
+        <span
+          className={cn(
+            'flex-1 truncate font-medium',
+            isRolledBack && 'line-through text-muted-foreground',
+          )}
+          title={item.title}
+        >
+          {item.title}
+        </span>
+        <StatusBadge status={item.status} />
+        <span className="text-[10px] text-muted-foreground shrink-0">
+          {formatConfidence(item.confidence)}
+        </span>
+      </div>
+
+      {/* accepted/rolled_back 都允许回看 content（Markdown 渲染） */}
+      {item.content && (
+        <div className="prose prose-xs max-w-none dark:prose-invert text-[11px] leading-relaxed line-clamp-4 [&_p]:my-0.5 [&_ul]:my-0.5 [&_li]:my-0 [&_h1]:text-xs [&_h2]:text-[11px] [&_h3]:text-[11px] [&_h2]:mt-1 [&_h2]:mb-0.5 [&_h3]:mt-0.5 [&_h3]:mb-0">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml>
+            {item.content}
+          </ReactMarkdown>
+        </div>
+      )}
+
+      {/* rolled_back：显示已执行的动作摘要 */}
+      {isRolledBack && rollbackSteps.length > 0 && (
+        <div
+          className="text-[10px] text-muted-foreground border-l-2 border-muted pl-2"
+          data-testid="rollback-steps"
+        >
+          <div className="font-medium mb-0.5">{t('wiki.writeback.rollbackSteps')}</div>
+          <ul className="list-disc list-inside space-y-0.5">
+            {rollbackSteps.map((s, idx) => (
+              <li key={idx}>{s.description}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="flex items-center gap-1.5 pt-0.5">
+        {item.kind === 'append-log' && item.targetNodeId && (
+          <button
+            type="button"
+            onClick={() => onNavigate(item.targetNodeId)}
+            title={t('wiki.writeback.locateTarget')}
+            className="flex items-center gap-1 px-2 py-1 rounded text-muted-foreground hover:bg-muted transition-colors"
+          >
+            <MapPin className="w-3 h-3" />
+            {t('wiki.writeback.locate')}
+          </button>
+        )}
+        <div className="flex-1" />
+        {item.kind === 'append-log' && item.targetNodeId && isRolledBack && (
+          <span className="text-[10px] text-muted-foreground">{t('wiki.writeback.sectionRemoved')}</span>
+        )}
+        {!isRolledBack && onRollback && (
+          <button
+            type="button"
+            onClick={onRollback}
+            disabled={pending}
+            data-testid={`rollback-${item.id}`}
+            className="flex items-center gap-1 px-2 py-1 rounded text-muted-foreground hover:bg-amber-50 hover:text-amber-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title={t('wiki.writeback.rollbackTooltip')}
+          >
+            <Undo2 className="w-3 h-3" />
+            {pending ? t('wiki.writeback.rollingBack') : t('wiki.writeback.rollback')}
+          </button>
+        )}
       </div>
     </div>
   )
