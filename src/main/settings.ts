@@ -326,6 +326,14 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
     if (typeof ui.userName !== 'string' || ui.userName.length === 0 || ui.userName.length > 64) return false
     if (typeof ui.colorIndex !== 'number' || !Number.isInteger(ui.colorIndex) || ui.colorIndex < 0 || ui.colorIndex >= 6) return false
   }
+  // telemetry 必须是对象，可选字段必须是字符串
+  if (obj.telemetry !== undefined) {
+    if (obj.telemetry === null || typeof obj.telemetry !== 'object' || Array.isArray(obj.telemetry)) return false
+    const tel = obj.telemetry as Record<string, unknown>
+    if (tel.otlpEndpoint !== undefined && typeof tel.otlpEndpoint !== 'string') return false
+    if (tel.serviceName !== undefined && typeof tel.serviceName !== 'string') return false
+    if (tel.serviceVersion !== undefined && typeof tel.serviceVersion !== 'string') return false
+  }
   return true
 }
 
@@ -402,6 +410,7 @@ function mergeSettings(
     // D10b: userIdentity 不在默认值里（避免重装复用旧 userId），
     // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
     userIdentity: saved.userIdentity,
+    telemetry: saved.telemetry ?? defaults.telemetry,
   }
 }
 

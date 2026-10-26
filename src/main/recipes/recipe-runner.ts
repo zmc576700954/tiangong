@@ -21,9 +21,11 @@
 
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { SpanKind } from '@opentelemetry/api'
 import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { BizGraphError, ErrorCode } from '../errors'
+import { withSpan } from '../telemetry'
 import type { RecipeManager } from './recipe-manager'
 import { applyTemplate, topoSortSubRecipes } from './yaml-loader'
 import type {
@@ -396,6 +398,19 @@ export class RecipeRunner {
    *   - 否则走原单 Recipe 的 run() 路径（保持向后兼容）。
    */
   async run(request: RecipeRunRequest): Promise<RecipeRun> {
+    return withSpan(
+      'bizgraph.recipe.run',
+      async (span) => {
+        span.setAttribute('recipe.id', request.recipeId)
+        if (request.parentSessionId) span.setAttribute('parent.session.id', request.parentSessionId)
+        if (request.nodeId) span.setAttribute('node.id', request.nodeId)
+        return this._runInternal(request)
+      },
+      { kind: SpanKind.INTERNAL },
+    )
+  }
+
+  private async _runInternal(request: RecipeRunRequest): Promise<RecipeRun> {
     // 先轻量探一下 def，决定走哪条路径
     let def: RecipeDefinition | undefined
     try {

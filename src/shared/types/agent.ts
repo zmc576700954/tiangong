@@ -536,6 +536,15 @@ export interface BizGraphSettings {
   }
   /** D10b: 协作 awareness 身份 — 用户 ID / 名称 / 颜色（首次启动随机分配） */
   userIdentity?: UserIdentity
+  /** Phase D6: OpenTelemetry 导出配置。otlpEndpoint 为空时 telemetry 关闭（零开销）。 */
+  telemetry?: {
+    /** OTLP HTTP endpoint (e.g. `http://localhost:4318/v1/traces`)。 */
+    otlpEndpoint?: string
+    /** Resource `service.name`，默认 `bizgraph`。 */
+    serviceName?: string
+    /** Resource `service.version`，默认 `0.0.0`。 */
+    serviceVersion?: string
+  }
 }
 
 /** D10b: 协作 awareness 用户的展示身份。每个 BizGraph 安装一个 userId，跨设备/重装不变。 */

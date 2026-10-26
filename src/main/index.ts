@@ -8,6 +8,8 @@ import { createLogger } from './shared/logger'
 import { getPlatformProvider } from './platform'
 import { getLocale, subscribeLocale } from '@shared/i18n'
 import { buildMenuTemplate } from './menu'
+import { initTelemetry, shutdownTelemetry } from './telemetry'
+import { readSettings } from './settings'
 
 const logger = createLogger('Main')
 
@@ -122,13 +124,25 @@ app.whenReady().then(async () => {
   // Initialize database (sync with better-sqlite3)
   initDatabase()
 
+  // Read settings once — reused by telemetry init and locale setup.
+  const settings = await readSettings()
+
+  // Initialize OpenTelemetry (Phase D6) — best-effort, no-op when settings.telemetry.otlpEndpoint is unset
+  try {
+    await initTelemetry({
+      otlpEndpoint: settings.telemetry?.otlpEndpoint,
+      serviceName: settings.telemetry?.serviceName,
+      serviceVersion: settings.telemetry?.serviceVersion,
+    })
+  } catch (err) {
+    logger.warn('Telemetry initialization failed (continuing without telemetry):', err)
+  }
+
   // Register IPC handlers
   await registerIpcHandlers()
 
   // Set locale before building the menu — otherwise the first-frame menu is English
-  const { readSettings } = await import('./settings')
   const { setLocale, resolveLocale } = await import('@shared/i18n')
-  const settings = await readSettings()
   setLocale(resolveLocale(settings.locale))
 
   // Set application menu
@@ -196,6 +210,12 @@ app.on('before-quit', async (event) => {
         closeDatabase()
       } catch (err) {
         logger.error('Failed to close database:', err)
+      }
+      // Phase D6: 关闭 telemetry SDK，flush 残余 spans。best-effort + 5s 超时已内置。
+      try {
+        await shutdownTelemetry()
+      } catch (err) {
+        logger.error('Failed to shutdown telemetry:', err)
       }
     })(),
     new Promise<void>((resolve) => {
