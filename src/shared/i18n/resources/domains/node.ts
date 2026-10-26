@@ -1,0 +1,31 @@
+export const nodeZh = {
+  'nodeType.project': '项目',
+  'nodeType.module': '业务模块',
+  'nodeType.process': '业务流程',
+  'nodeType.feature': '功能点',
+  'nodeType.bug': 'BUG点',
+  'nodeType.wikiPage': 'Wiki 页面',
+  'status.draft': '草稿',
+  'status.confirmed': '已确认',
+  'status.developing': '开发中',
+  'status.testing': '待测试',
+  'status.review': '待验收',
+  'status.published': '已发布',
+  'status.placeholder': '占位',
+} as const
+
+export const nodeEn: Record<keyof typeof nodeZh, string> = {
+  'nodeType.project': 'Project',
+  'nodeType.module': 'Module',
+  'nodeType.process': 'Process',
+  'nodeType.feature': 'Feature',
+  'nodeType.bug': 'Bug',
+  'nodeType.wikiPage': 'Wiki Page',
+  'status.draft': 'Draft',
+  'status.confirmed': 'Confirmed',
+  'status.developing': 'Developing',
+  'status.testing': 'Testing',
+  'status.review': 'Review',
+  'status.published': 'Published',
+  'status.placeholder': 'Placeholder',
+}
