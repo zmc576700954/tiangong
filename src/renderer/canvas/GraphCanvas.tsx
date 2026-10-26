@@ -25,6 +25,7 @@ import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeTypeLabel } from '@shared/i18n'
+import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
@@ -84,6 +85,7 @@ export function GraphCanvas({ graphId }: GraphCanvasProps) {
 }
 
 function GraphCanvasInner({ graphId }: GraphCanvasProps) {
+  const { locale, t } = useI18n()
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
   const loadGraph = useGraphStore((state) => state.loadGraph)
@@ -632,7 +634,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     await createNode({
       type,
       status: 'draft',
-      title: type === 'wiki-page' ? nodeTypeLabel('wiki-page') : `新建${nodeTypeLabel(type)}`,
+      title: type === 'wiki-page'
+        ? nodeTypeLabel('wiki-page', locale)
+        : t('canvas.node.newTitle', { type: nodeTypeLabel(type, locale) }),
       graphId,
       graphType,
       position,
@@ -640,7 +644,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       wikiContent: type === 'wiki-page' ? '# 新 Wiki 页面\n\n' : undefined,
     })
     setShowNodeMenu(false)
-  }, [screenToFlowPosition, menuPosition, createNode, graphId, currentGraph?.type])
+  }, [screenToFlowPosition, menuPosition, createNode, graphId, currentGraph?.type, locale, t])
 
   const handleCreateSpecialWikiPage = useCallback(async (kind: 'index' | 'log') => {
     const { indexId, logId } = await useGraphStore.getState().ensureSpecialWikiPages()
@@ -894,7 +898,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [graphNodes, deleteNode, selectNode])
 
   return (
-    <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label="Business graph canvas">
+    <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label={t('canvas.ariaLabel')}>
       <ReactFlow
         nodes={rfNodes}
         edges={rfEdges}
@@ -956,10 +960,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             <button
               onClick={() => setSearchOpen(true)}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title="Search nodes (Ctrl+F)"
+              title={t('canvas.search.tooltip')}
             >
               <Search className="w-3.5 h-3.5" />
-              Search
+              {t('canvas.search.button')}
             </button>
             <button
               onClick={applyLayout}
@@ -972,23 +976,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             <button
               onClick={() => handleCreateSpecialWikiPage('index')}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title="创建 Graph Index"
+              title={t('canvas.graphIndex.create')}
             >
               <BookOpen className="w-3.5 h-3.5" />
-              Graph Index
+              {t('canvas.graphIndex')}
             </button>
             <button
               onClick={() => handleCreateSpecialWikiPage('log')}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title="创建 Graph Log"
+              title={t('canvas.graphLog.create')}
             >
               <FileText className="w-3.5 h-3.5" />
-              Graph Log
+              {t('canvas.graphLog')}
             </button>
             <button
               onClick={handleOpenRecipes}
               className="flex items-center gap-1.5 bg-background/90 backdrop-blur border rounded-lg shadow-xs px-3 py-1.5 text-xs text-foreground hover:bg-accent transition-colors"
-              title="Recipes — 可分享的 YAML 工作流"
+              title={t('canvas.recipes.tooltip')}
             >
               <ScrollText className="w-3.5 h-3.5" />
               Recipes
@@ -1022,7 +1026,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 autoFocus
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search nodes..."
+                placeholder={t('canvas.search.placeholder')}
                 className="bg-transparent text-sm outline-none w-48"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && searchResults.length > 0) {
@@ -1043,7 +1047,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 <button
                   onClick={nextSearchResult}
                   className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
-                  title="Next result"
+                  title={t('canvas.search.nextResult')}
                 >
                   <Search className="w-3 h-3" />
                 </button>
@@ -1051,7 +1055,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
               <button
                 onClick={() => { setSearchOpen(false); setSearchQuery('') }}
                 className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground"
-                title="Close (Escape)"
+                title={t('canvas.search.close')}
               >
                 <X className="w-3 h-3" />
               </button>
@@ -1113,7 +1117,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
                 onClick={() => dismissNotification(n.id)}
               >
                 <GitBranch size={14} className="text-primary" />
-                <span className="text-xs text-primary">Found {n.count} new association{n.count > 1 ? 's' : ''}</span>
+                <span className="text-xs text-primary">{t('canvas.notification.newAssociations', { count: n.count })}</span>
                 <X size={12} className="text-muted-foreground ml-2" />
               </div>
             ))}
@@ -1185,8 +1189,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             <button
               type="button"
               onClick={handleCloseRecipes}
-              title="关闭"
-              aria-label="关闭 Recipes 面板"
+              title={t('canvas.recipes.close')}
+              aria-label={t('canvas.recipes.closeAria')}
               className="p-1.5 rounded hover:bg-muted text-muted-foreground transition-colors"
             >
               <X className="w-3.5 h-3.5" />

@@ -4,11 +4,13 @@ import { nodeTypeLabel } from '@shared/i18n'
 import type { NodeType } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
+import { useI18n } from '../../i18n/useI18n'
 
 /**
  * 封装节点相关的业务操作：添加子节点、AI 生成、AI 补充详情、生成开发 Prompt。
  */
 export function useNodeOperations(graphId: string, projectPath?: string) {
+  const { locale, t } = useI18n()
   const graphNodes = useGraphStore((state) => state.nodes)
   const createNode = useGraphStore((state) => state.createNode)
   const updateNode = useGraphStore((state) => state.updateNode)
@@ -23,18 +25,21 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       ? { x: parent.position.x + offsetX, y: parent.position.y + offsetY }
       : screenToFlowPosition({ x: 400, y: 300 })
 
+    // 新节点标题按当前语言生成——类型名走共享层的标签表
+    const newTitle = t('canvas.node.newTitle', { type: nodeTypeLabel(childType, locale) })
+
     await createNode({
       type: childType,
       status: 'draft',
-      title: `新建${nodeTypeLabel(childType)}`,
+      title: newTitle,
       graphId,
       graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
       parentId,
       position,
       acceptanceCriteria: [],
-      wikiContent: childType === 'wiki-page' ? `# 新建${nodeTypeLabel(childType)}\n\n` : undefined,
+      wikiContent: childType === 'wiki-page' ? `# ${newTitle}\n\n` : undefined,
     })
-  }, [graphNodes, createNode, graphId, screenToFlowPosition])
+  }, [graphNodes, createNode, graphId, screenToFlowPosition, locale, t])
 
   const handleGenerateChildren = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)

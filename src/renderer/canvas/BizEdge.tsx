@@ -8,6 +8,7 @@ import {
 import { useCallback, useState, memo } from 'react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
+import { useI18n } from '../i18n/useI18n'
 import type { EdgeType, EdgeContent } from '@shared/types'
 import { X, Check, Pencil, Plus } from 'lucide-react'
 import { edgeTypeConfig } from './edge-utils'
@@ -28,6 +29,7 @@ export const BizEdge = memo(function BizEdge({
   selected,
   markerEnd,
 }: EdgeProps<BizEdgeType>) {
+  const { t } = useI18n()
   const updateEdge = useGraphStore((s) => s.updateEdge)
   const confirmSuggestedEdge = useGraphStore((s) => s.confirmSuggestedEdge)
   const rejectSuggestedEdge = useGraphStore((s) => s.rejectSuggestedEdge)
@@ -179,14 +181,14 @@ export const BizEdge = memo(function BizEdge({
             <button
               onClick={(e) => { e.stopPropagation(); confirmSuggestedEdge?.(id) }}
               className="w-5 h-5 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 shadow-sm"
-              title="Confirm association"
+              title={t('canvas.edge.confirmAssociation')}
             >
               <Plus size={10} />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); rejectSuggestedEdge?.(id) }}
               className="w-5 h-5 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 shadow-sm"
-              title="Reject association"
+              title={t('canvas.edge.rejectAssociation')}
             >
               <X size={10} />
             </button>

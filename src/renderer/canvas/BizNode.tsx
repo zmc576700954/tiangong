@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { Handle, Position } from '@xyflow/react'
 import { getNodeStatusClass, cn } from '../lib/utils'
 import { NODE_TYPE_COLORS } from '@shared/constants'
-import { nodeTypeLabel } from '@shared/i18n'
+import { nodeStatusLabel, nodeTypeLabel, wikiPageTitle } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check, BookOpen } from 'lucide-react'
@@ -37,7 +37,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
   multiSelected,
   onContextMenu,
 }: BizNodeProps) {
-  const { locale } = useI18n()
+  const { locale, t } = useI18n()
   const typeColor = NODE_TYPE_COLORS[data.type] ?? 'hsl(var(--muted-foreground))'
   const isProject = data.type === 'project'
   const isWikiPage = data.type === 'wiki-page'
@@ -102,7 +102,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
             {nodeTypeLabel(data.type, locale)}
           </span>
         </div>
-        <div className="font-bold text-lg truncate">{data.title}</div>
+        <div className="font-bold text-lg truncate">{wikiPageTitle(data.title, locale)}</div>
       </div>
     )
   }
@@ -168,14 +168,14 @@ export const BizNodeComponent = memo(function BizNodeComponent({
           {nodeTypeLabel(data.type, locale)}
         </span>
       </div>
-      <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{data.title}</div>
+      <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{wikiPageTitle(data.title, locale)}</div>
       {isWikiPage && data.wikiContent && (
         <div className="mt-1 text-[9px] text-muted-foreground truncate max-w-[180px]">
           {data.wikiContent.split('\n')[0]?.replace(/^#+\s*/, '')}
         </div>
       )}
       <div className="flex items-center justify-between mt-1.5">
-        <span className="text-[10px] text-muted-foreground">{data.status}</span>
+        <span className="text-[10px] text-muted-foreground">{nodeStatusLabel(data.status, locale)}</span>
         {isWikiPage && (
           <BookOpen className="w-3 h-3 text-amber-500" />
         )}
@@ -207,13 +207,13 @@ export const BizNodeComponent = memo(function BizNodeComponent({
             onClick={(e) => { e.stopPropagation(); useGraphStore.getState().confirmPreviewNode(data.id) }}
             className="text-[9px] px-1.5 py-0.5 rounded bg-green-100 text-green-700 hover:bg-green-200 dark:bg-green-900 dark:text-green-300"
           >
-            Confirm
+            {t('canvas.node.previewConfirm')}
           </button>
           <button
             onClick={(e) => { e.stopPropagation(); useGraphStore.getState().clearPreviewNodes() }}
             className="text-[9px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 hover:bg-red-200 dark:bg-red-900 dark:text-red-300"
           >
-            Clear
+            {t('canvas.node.previewClear')}
           </button>
         </div>
       )}
