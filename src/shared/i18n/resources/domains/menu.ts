@@ -20,6 +20,21 @@ export const menuZh = {
   'menu.about': '关于 BizGraph',
   'menu.aboutDetail': '开源 Agent CLI 桌面编排器',
   'menu.selectProjectDir': '选择项目目录',
+
+  // role 驱动的系统菜单项——macOS 只会按**系统语言**给这些项配文案，
+  // 不跟随应用内的语言切换，所以这里显式给 label。
+  'menu.undo': '撤销',
+  'menu.redo': '重做',
+  'menu.cut': '剪切',
+  'menu.copy': '复制',
+  'menu.paste': '粘贴',
+  'menu.selectAll': '全选',
+  'menu.services': '服务',
+  'menu.hideApp': '隐藏 {app}',
+  'menu.hideOthers': '隐藏其他',
+  'menu.unhide': '显示全部',
+  'menu.quit': '退出 {app}',
+  'menu.front': '全部置于顶层',
 } as const
 
 export const menuEn: Record<keyof typeof menuZh, string> = {
@@ -44,4 +59,17 @@ export const menuEn: Record<keyof typeof menuZh, string> = {
   'menu.about': 'About BizGraph',
   'menu.aboutDetail': 'Open Source Agent CLI Desktop Orchestrator',
   'menu.selectProjectDir': 'Select project directory',
+
+  'menu.undo': 'Undo',
+  'menu.redo': 'Redo',
+  'menu.cut': 'Cut',
+  'menu.copy': 'Copy',
+  'menu.paste': 'Paste',
+  'menu.selectAll': 'Select All',
+  'menu.services': 'Services',
+  'menu.hideApp': 'Hide {app}',
+  'menu.hideOthers': 'Hide Others',
+  'menu.unhide': 'Show All',
+  'menu.quit': 'Quit {app}',
+  'menu.front': 'Bring All to Front',
 }

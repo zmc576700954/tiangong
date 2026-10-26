@@ -1,5 +1,6 @@
 import type { MenuItemConstructorOptions } from 'electron'
 import { t } from '@shared/i18n'
+import { APP_NAME } from '@shared/constants'
 
 /**
  * Electron 原生菜单模板。
@@ -7,8 +8,10 @@ import { t } from '@shared/i18n'
  * 只做类型导入（`import type` 编译期擦除），运行时的 electron 依赖都放在
  * click 回调里动态取——这样本模块能在 vitest 的 node 环境里直接测。
  *
- * role 驱动的系统菜单项（copy / paste / undo / about …）**不设 label**：
- * macOS 上 Electron 会用系统语言给出这些文案，强行写死 label 反而压掉本地化。
+ * role 驱动的系统菜单项（copy / paste / undo / about …）**必须显式给 label**：
+ * macOS 只按**系统语言**给 role 项配文案，不跟随应用内的语言切换——不写死
+ * 的话，中文界面下会看到「编辑 / Undo / Copy / Paste」这种中英混排。
+ * 行为与快捷键仍由 role 提供。
  */
 export function buildMenuTemplate(deps: {
   createWindow: () => void
@@ -63,13 +66,13 @@ export function buildMenuTemplate(deps: {
     {
       label: t('menu.edit'),
       submenu: [
-        { role: 'undo' },
-        { role: 'redo' },
+        { role: 'undo', label: t('menu.undo') },
+        { role: 'redo', label: t('menu.redo') },
         { type: 'separator' },
-        { role: 'cut' },
-        { role: 'copy' },
-        { role: 'paste' },
-        { role: 'selectAll' },
+        { role: 'cut', label: t('menu.cut') },
+        { role: 'copy', label: t('menu.copy') },
+        { role: 'paste', label: t('menu.paste') },
+        { role: 'selectAll', label: t('menu.selectAll') },
       ],
     },
     {
@@ -94,9 +97,9 @@ export function buildMenuTemplate(deps: {
           ? [
               { role: 'zoom', label: t('menu.zoom') } as const,
               { type: 'separator' as const },
-              { role: 'front' } as const,
+              { role: 'front', label: t('menu.front') } as const,
             ]
-          : [{ role: 'close' } as const]),
+          : [{ role: 'close', label: t('menu.closeWindow') } as const]),
       ],
     },
     {
@@ -122,15 +125,15 @@ export function buildMenuTemplate(deps: {
     template.unshift({
       label: 'BizGraph',
       submenu: [
-        { role: 'about' },
+        { role: 'about', label: t('menu.about') },
         { type: 'separator' },
-        { role: 'services' },
+        { role: 'services', label: t('menu.services') },
         { type: 'separator' },
-        { role: 'hide' },
-        { role: 'hideOthers' },
-        { role: 'unhide' },
+        { role: 'hide', label: t('menu.hideApp', { app: APP_NAME }) },
+        { role: 'hideOthers', label: t('menu.hideOthers') },
+        { role: 'unhide', label: t('menu.unhide') },
         { type: 'separator' },
-        { role: 'quit' },
+        { role: 'quit', label: t('menu.quit', { app: APP_NAME }) },
       ],
     })
   }

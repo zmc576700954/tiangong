@@ -188,6 +188,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
             onClick={() => setShowSettings(true)}
             className="p-1.5 rounded hover:bg-muted transition-colors"
             title={t('projects.settings')}
+            data-testid="open-settings"
           >
             <Settings className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
