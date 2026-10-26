@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  t, tRaw, getLocale, setLocale, subscribeLocale,
+  t, tRaw, getLocale, setLocale, subscribeLocale, resolveLocale,
 } from '../i18n'
 import { zh, en } from '../i18n/resources'
 
@@ -59,6 +59,22 @@ describe('i18n locale state', () => {
     setLocale('zh-CN')
     expect(listener).not.toHaveBeenCalled()
     unsubscribe()
+  })
+})
+
+describe('resolveLocale', () => {
+  it('accepts en-US', () => {
+    expect(resolveLocale('en-US')).toBe('en-US')
+  })
+
+  it('accepts zh-CN', () => {
+    expect(resolveLocale('zh-CN')).toBe('zh-CN')
+  })
+
+  it('falls back to zh-CN for anything else', () => {
+    expect(resolveLocale(undefined)).toBe('zh-CN')
+    expect(resolveLocale('fr-FR')).toBe('zh-CN')
+    expect(resolveLocale(42)).toBe('zh-CN')
   })
 })
 

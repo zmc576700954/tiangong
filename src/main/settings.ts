@@ -20,6 +20,7 @@ import type {
 import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { getPlatformProvider } from './platform'
 import { createLogger } from './shared/logger'
+import { resolveLocale } from '@shared/i18n'
 
 const logger = createLogger('Settings')
 
@@ -100,6 +101,7 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
   adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   writeback: { enabled: true },
+  locale: 'zh-CN',
 }
 
 // ============================================
@@ -374,6 +376,7 @@ function mergeSettings(
     customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
     contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
     writeback: saved.writeback ?? defaults.writeback,
+    locale: resolveLocale(saved.locale ?? defaults.locale),
   }
 }
 

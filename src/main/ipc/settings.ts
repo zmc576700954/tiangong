@@ -3,12 +3,26 @@
  * 配置管理：CLI 工具、API Key、模型设置、适配器偏好
  */
 
+import { BrowserWindow } from 'electron'
 import type { TypedHandle } from './utils'
 import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import type { ContextWaterline } from '../memory/context-waterline'
+import { getLocale, resolveLocale, setLocale } from '@shared/i18n'
+import type { Locale } from '@shared/i18n/types'
 
 const logger = createLogger('SettingsIPC')
+
+/**
+ * 向所有窗口推送语言变更。
+ * 主进程与渲染进程各自打包了一份共享 i18n 层，是两个互不相通的运行时实例——
+ * 跨进程同步只能靠这条推送通道。
+ */
+export function broadcastLocale(locale: Locale): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('locale:changed', locale)
+  }
+}
 
 /**
  * Regex to detect masked API keys like `sk-****abcd` or `****`.
@@ -159,6 +173,13 @@ export function registerSettingsHandlers(
     }
     const { writeSettings } = await import('../settings')
     await writeSettings(settings)
+
+    // 语言变更要立刻生效：更新主进程运行时状态，并推给所有窗口
+    const nextLocale = resolveLocale(settings.locale)
+    if (nextLocale !== getLocale()) {
+      setLocale(nextLocale)
+      broadcastLocale(nextLocale)
+    }
   })
 
   typedHandle('settings:refreshCli', async () => {

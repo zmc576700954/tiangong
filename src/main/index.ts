@@ -237,6 +237,12 @@ app.whenReady().then(async () => {
   // Register IPC handlers
   await registerIpcHandlers()
 
+  // Set locale before building the menu — otherwise the first-frame menu is English
+  const { readSettings } = await import('./settings')
+  const { setLocale, resolveLocale } = await import('@shared/i18n')
+  const settings = await readSettings()
+  setLocale(resolveLocale(settings.locale))
+
   // Set application menu
   Menu.setApplicationMenu(buildMenu())
 

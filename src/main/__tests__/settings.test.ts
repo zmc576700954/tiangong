@@ -185,6 +185,40 @@ describe('Settings - Encryption', () => {
   })
 })
 
+describe('Settings - Locale', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.resetModules()
+  })
+
+  it('defaults the locale to zh-CN', async () => {
+    const { readSettings } = await import('../settings')
+    const settings = await readSettings()
+    expect(settings.locale).toBe('zh-CN')
+  })
+
+  it('persists a saved locale', async () => {
+    const { writeSettings, readSettings } = await import('../settings')
+    const current = await readSettings()
+    await writeSettings({ ...current, locale: 'en-US' })
+    const reread = await readSettings()
+    expect(reread.locale).toBe('en-US')
+    await writeSettings({ ...reread, locale: 'zh-CN' })
+  })
+
+  it('falls back to zh-CN when the saved locale is unknown', async () => {
+    const { readSettings } = await import('../settings')
+
+    mockFsData.set(
+      `${mockUserDataPath}/settings.json`,
+      JSON.stringify({ version: 1, cliTools: [], apiKeys: [], mcpServers: [], locale: 'fr-FR' }),
+    )
+
+    const read = await readSettings()
+    expect(read.locale).toBe('zh-CN')
+  })
+})
+
 describe('Settings - API Key Management', () => {
   beforeEach(() => {
     mockFsData.clear()

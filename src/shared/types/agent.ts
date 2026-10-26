@@ -516,6 +516,8 @@ export interface BizGraphSettings {
   writeback?: {
     enabled?: boolean
   }
+  /** 界面语言：zh-CN（默认，中文为主）| en-US（兜底） */
+  locale?: 'zh-CN' | 'en-US'
 }
 
 /** 适配器自动回退链中的单次尝试记录 */
