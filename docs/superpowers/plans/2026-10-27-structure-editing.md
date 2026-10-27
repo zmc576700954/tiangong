@@ -891,15 +891,32 @@ git commit -m "refactor(canvas): 类型层级规则统一到 nodeTypeRegistry �
 
 ```
 nodes:
-p1 (project, parent NULL)
-m1 (module,  parent p1)
-m2 (module,  parent p1)
-c1 (process, parent m1)
-f1 (feature, parent c1)
-c3 (process, parent m2)
+p1 (project,  parent NULL)
+m1 (project,  parent p1)
+m2 (module,   parent p1)
+c1 (process,  parent m1)
+f1 (feature,  parent c1)
+c3 (process,  parent m2)
 
 edges（5 条初始层级边，与 parent_id 一致）:
 (p1,m1) (m1,c1) (c1,f1) (p1,m2) (m2,c3)
+
+⚠️ **m1 的类型是 `project` 而不是 `module`（R-26 修正）**：本 fixture 里有三次「成功的
+reparent」，其中 `reparent('m2','m1')` 要求 `validateParentChild(T(m1), T(m2))` 为真。
+按原始写法（T(m1)=module、T(m2)=module）这一对是**类型非法**的——`module.allowedChildTypes
+= ['process','wiki-page']` 不含 `module`，`module.allowedParentTypes = ['project']` 也不含
+`module`——于是这条调用会抛 `HIERARCHY_TYPE_INVALID`，三个用例直接挂。
+
+穷举 6 种内置类型的全部 6^6 = 46656 种组合的结论：**没有任何**组合能同时满足
+「9 个用例全过」与「fixture 的 5 条父子边全部类型合法」。原因是一对矛盾：
+要让 `reparent('m2','m1')` 合法，`T(m1)` 只能是能容纳 `module` 的 `project`
+（只有 `project.allowedChildTypes` 含 `module`）；而要让 `m1→c1` 这条既有边类型合法，
+`T(c1)` 又必须落在 `project.allowedChildTypes` 里 —— 只能是 `module` —— 于是
+`reparent('c1','m2')`（`module` 挂 `module`）变成非法。
+
+所以 fixture 的**既有边**不需要类型合法（fixture 是用裸 SQL 插进去的，本来就绕过校验；
+真正参与类型判定的是三次 reparent 调用），而三次调用的类型组合是存在的：`T(m1)=project`。
+这是唯一一处偏离，且 9 个用例的调用、断言、错误码**全部原样保留**。
 ```
 
 ⚠️ `c3` 存在的唯一理由：它给 `m2` 提供了**另一个**子节点。Step 4 的验收条件之一是「平移后的子树**不与目标父节点的其他子节点重叠**」——没有 `c3` 这条条件就是空断言，测不出任何东西。`c3` 的 `sort_index` 为 0（它是 `m2` 的第一个子节点）。
