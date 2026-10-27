@@ -151,4 +151,45 @@ describe('NodeRepository — 层级相关行为', () => {
     // collapsed 是 NOT NULL DEFAULT 0 —— 读回来是 false 而不是 undefined
     expect(found!.collapsed).toBe(false)
   })
+
+  // collapsed **不是 create() 的输入**：这一列不在 INSERT 里，值由列默认值
+  // （NOT NULL DEFAULT 0）决定。返回对象不能声称一个没写进去的状态 ——
+  // 调用方传 collapsed: true 时，返回对象说「折叠中」，而刚写入的那一行是 0（展开）。
+  it('never returns a collapsed flag the freshly written row does not have', () => {
+    const created = nodeRepo.create({
+      type: 'feature', status: 'draft', title: 'CallerWantsCollapsed',
+      graphId: 'g1', graphType: 'online',
+      position: { x: 0, y: 0 },
+      collapsed: true,
+    })
+
+    // 返回对象 == 把刚写入的那一行读回来会得到什么
+    expect(created.collapsed).toBe(false)
+    // 库里那一行仍然是 0 —— INSERT 没有写这一列，行为没被改坏
+    const row = db.prepare('SELECT collapsed FROM nodes WHERE id = ?').get(created.id) as { collapsed: number }
+    expect(row.collapsed).toBe(0)
+  })
+
+  it('returns collapsed false when the caller does not pass it', () => {
+    const created = nodeRepo.create({
+      type: 'feature', status: 'draft', title: 'NoCollapsedFlag',
+      graphId: 'g1', graphType: 'online',
+      position: { x: 0, y: 0 },
+    })
+    expect(created.collapsed).toBe(false)
+  })
+
+  it('returns collapsed false for batch-created nodes too', () => {
+    const created = nodeRepo.createBatch([
+      { type: 'feature', status: 'draft', title: 'BatchCollapsed', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, collapsed: true },
+      { type: 'feature', status: 'draft', title: 'BatchPlain', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 } },
+    ])
+
+    expect(created[0].collapsed).toBe(false)
+    expect(created[1].collapsed).toBe(false)
+    const rows = db
+      .prepare('SELECT collapsed FROM nodes WHERE id IN (?, ?) ORDER BY title')
+      .all(created[0].id, created[1].id) as { collapsed: number }[]
+    expect(rows.map((r) => r.collapsed)).toEqual([0, 0])
+  })
 })

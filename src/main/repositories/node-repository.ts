@@ -17,19 +17,30 @@ import { isDescendant } from '../shared/hierarchy-utils'
 import { DatabaseError, ErrorCode, HierarchyError } from '../errors'
 
 /**
- * 把主进程算出来的兄弟序号写回节点对象。
+ * 把**仓库真正写进去的值**规范化到节点对象上。
  *
- * 序号写在 `...data` **之后**：调用方带来的 `data.sortIndex` 只是客户端的期望值，
- * 权威号是主进程算出来的这个（与库里的 `sort_index` 一致）。
- * 根节点没有兄弟 → 序号为空 → **整个键省掉**（不是 null：`null` 既不是 number
- * 也不是 undefined，与 `GraphNode.sortIndex?: number` 不符）。
+ * 原则：返回对象 == 「把刚写入的那一行读回来会得到什么」。
+ *
+ * - `sortIndex`：仓库算出来的号覆盖调用方传的值（调用方带来的只是期望值）；
+ *   没有号时**整个键省掉**（不是留一个 `sortIndex: undefined` 的键）——
+ *   根节点没有兄弟，`sort_index` 列是 NULL。
+ * - `collapsed`：**一律 false**。这一列**不在 INSERT 里**（`collapsed INTEGER NOT NULL
+ *   DEFAULT 0`），它的值由列默认值决定，**不是 `create()` 的输入**。调用方传
+ *   `collapsed: true` 时不能原样带出去 —— 返回对象不能声称一个没写进去的状态，
+ *   否则渲染端 `graphStore.createNode` 用服务端返回值替换乐观节点后，
+ *   内存里是「折叠中」而库里是「展开」，下次刷新才纠正。
+ *
+ * 两个新字段的处理必须是同一套规则：一个规范化，另一个照抄调用方的值是不行的。
  */
-function withSortIndex(node: GraphNode, sortIndex: number | undefined): GraphNode {
+function withPersistedDefaults(node: GraphNode, sortIndex: number | undefined): GraphNode {
   if (sortIndex === undefined) {
+    // 根节点 → sort_index 是 NULL → 映射成 undefined（不是 null）
     delete node.sortIndex
-    return node
+  } else {
+    node.sortIndex = sortIndex
   }
-  node.sortIndex = sortIndex
+  // collapsed 由列默认值（0）决定 → 读回来永远是 false
+  node.collapsed = false
   return node
 }
 
@@ -112,7 +123,7 @@ export class NodeRepository {
       now,
     )
 
-    return withSortIndex({ ...data, id, createdAt: now, updatedAt: now }, sortIndex)
+    return withPersistedDefaults({ ...data, id, createdAt: now, updatedAt: now }, sortIndex)
   }
 
   /** 批量创建节点（事务提交） */
@@ -140,7 +151,7 @@ export class NodeRepository {
         const data = items[i]
         const id = generateId('node')
         const sortIndex = sortIndexes[i]
-        created.push(withSortIndex({ ...data, id, createdAt: now, updatedAt: now }, sortIndex))
+        created.push(withPersistedDefaults({ ...data, id, createdAt: now, updatedAt: now }, sortIndex))
         stmt.run(
           id,
           data.type,
