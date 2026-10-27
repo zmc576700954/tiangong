@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { buildReparentGhostEdge, deriveHierarchyEdges } from '../hierarchy'
+import {
+  buildReparentGhostEdge,
+  deriveHierarchyEdges,
+  REPARENT_DRAGGING_Z_INDEX,
+  REPARENT_TARGET_Z_INDEX,
+  resolveReparentZIndex,
+} from '../hierarchy'
 import type { GraphNode, GraphEdge, EdgeType } from '@shared/types'
 
 const mkNode = (id: string, parentId?: string): GraphNode => ({
@@ -101,5 +107,38 @@ describe('buildReparentGhostEdge', () => {
   it('keeps a stable id that does not depend on the edge direction', () => {
     expect(buildReparentGhostEdge('child-dragged', 'parent-candidate', 'g1').id)
       .toBe('ghost-child-dragged-parent-candidate')
+  })
+})
+
+describe('resolveReparentZIndex', () => {
+  it('gives ordinary nodes no z-index at all', () => {
+    // 普通节点不设 zIndex → 走 xyflow 的默认值 0（不能是 0 以外的值，也不能带 key）
+    expect(resolveReparentZIndex(false, false)).toBeUndefined()
+  })
+
+  it('lifts the drop target above ordinary siblings', () => {
+    expect(resolveReparentZIndex(true, false)).toBe(REPARENT_TARGET_Z_INDEX)
+  })
+
+  it('lifts the dragged node above the drop target', () => {
+    expect(resolveReparentZIndex(false, true)).toBe(REPARENT_DRAGGING_Z_INDEX)
+  })
+
+  it('prefers the dragged node when target and dragging overlap', () => {
+    // 防御性写法：被拖节点优先于落点目标
+    expect(resolveReparentZIndex(true, true)).toBe(REPARENT_DRAGGING_Z_INDEX)
+  })
+
+  it('keeps the ordinary < target < dragged order', () => {
+    expect(REPARENT_DRAGGING_Z_INDEX).toBeGreaterThan(REPARENT_TARGET_Z_INDEX)
+    expect(REPARENT_TARGET_Z_INDEX).toBeGreaterThan(0)
+  })
+
+  it('keeps the dragged node above the drop target even when both are selected', () => {
+    // SELECTED_NODE_Z = 1000（@xyflow/system/dist/esm/index.js:1602）
+    // xyflow 的最终 z = 我们的 zIndex + (选中 ? 1000 : 0)，两边都选中时也要保持顺序
+    const SELECTED_NODE_Z = 1000
+    expect(REPARENT_DRAGGING_Z_INDEX + SELECTED_NODE_Z)
+      .toBeGreaterThan(REPARENT_TARGET_Z_INDEX + SELECTED_NODE_Z)
   })
 })

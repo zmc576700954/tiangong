@@ -4,6 +4,9 @@
  * 图谱的父子关系以 `nodes.parent_id` 为唯一事实来源，层级边由它派生而非从
  * `edges` 表读取。存储的历史层级边会在渲染时被丢弃，避免同一对父子节点
  * 出现两条线；迁移残留的 `default` 父子边同样被剔除。
+ *
+ * 这个文件同时住着「层级绘制约定」：边的方向（父 → 子，幽灵边 = 候选父 → 被拖节点）
+ * 与绘制层级（普通节点 < 落点目标 < 被拖节点）。方向与层级是同一条约定，放一起一眼可查。
  */
 import type { GraphNode, GraphEdge } from '@shared/types'
 
@@ -16,6 +19,32 @@ export interface DerivedHierarchyResult {
 
 /** 幽灵连线（拖拽重挂预览）的前缀 —— 画布靠它把临时边与真边区分开 */
 export const GHOST_EDGE_PREFIX = 'ghost-'
+
+/** 落点目标抬到普通兄弟之上 —— 徽标溢出到节点框外，不会被后画的兄弟盖住 */
+export const REPARENT_TARGET_Z_INDEX = 1001
+
+/**
+ * 被拖节点抬到落点目标之上 —— 用户正在拖的节点不能被它要放上去的节点埋掉。
+ *
+ * 2002 这个数不是随手写的：xyflow 的 `calculateZ` 会给**选中**的节点再 +1000
+ * （`@xyflow/system/dist/esm/index.js:1771-1777`），
+ * 所以落点目标的最终 z ∈ {1001 未选中, 2001 选中}，
+ * 被拖节点的最终 z ∈ {2002, 3002} → **无论选中态如何，被拖节点都在落点目标之上**。
+ */
+export const REPARENT_DRAGGING_Z_INDEX = 2002
+
+/**
+ * 重挂拖拽期间的绘制层级：普通节点 < 落点目标 < 被拖节点。
+ * 普通节点返回 undefined → 不设 zIndex，走 xyflow 的默认值 0。
+ */
+export function resolveReparentZIndex(
+  isReparentTarget: boolean,
+  isReparentDragging: boolean,
+): number | undefined {
+  if (isReparentDragging) return REPARENT_DRAGGING_Z_INDEX
+  if (isReparentTarget) return REPARENT_TARGET_Z_INDEX
+  return undefined
+}
 
 /**
  * 拖拽重挂的幽灵连线 —— **父 → 子**。

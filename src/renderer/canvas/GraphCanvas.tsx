@@ -32,7 +32,12 @@ import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, createMarkerEnd, edgeTypeConfig } from './edge-utils'
-import { buildReparentGhostEdge, deriveHierarchyEdges, GHOST_EDGE_PREFIX } from './layouts/hierarchy'
+import {
+  buildReparentGhostEdge,
+  deriveHierarchyEdges,
+  GHOST_EDGE_PREFIX,
+  resolveReparentZIndex,
+} from './layouts/hierarchy'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
@@ -82,14 +87,6 @@ const edgeTypes = { bizEdge: BizEdge }
  * 因为方向约定（父 → 子）跟那些边是同一条。
  */
 const GHOST_EDGE_COLOR = '#22c55e'
-
-/**
- * 落点目标节点的 z-index —— 抬到兄弟节点之上。
- *
- * xyflow 在 `zIndexMode: 'basic'`（默认）下认用户给的 zIndex，并给选中的节点额外 +1000。
- * 1001 能压过普通兄弟（0）也能压过**选中**的兄弟（1000）。
- */
-const REPARENT_TARGET_Z_INDEX = 1001
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
 function BizNodeWrapper({ id, data, selected }: {
@@ -603,6 +600,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const isReparentTarget = reparentTargetId === node.id
       const isReparentTargetValid = isReparentTarget && reparentTargetValid
       const nodeReparentReason = isReparentTarget ? reparentReason : undefined
+      /** 被拖节点 —— 绘制层级要抬到落点目标之上（见 resolveReparentZIndex） */
+      const isReparentDragging = reparentDraggingId === node.id
+      /** 本节点的绘制层级（普通节点 undefined → 不设 zIndex） */
+      const reparentZIndex = resolveReparentZIndex(isReparentTarget, isReparentDragging)
       const key = JSON.stringify([
         node.id,
         node.updatedAt,
@@ -620,6 +621,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         isReparentTarget,
         isReparentTargetValid,
         nodeReparentReason ?? null,
+        isReparentDragging,
       ])
 
       nextIds.add(node.id)
@@ -663,10 +665,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         },
         draggable: node.type !== 'project',
         selected,
-        // 落点目标抬到兄弟节点之上：原因徽标溢出到节点框外面时，
-        // 后画的兄弟节点会整个盖住它（兄弟 z-index 也是 0，靠 DOM 顺序决定谁在上面）。
+        // 重挂拖拽期间的绘制层级：普通节点 < 落点目标 < 被拖节点。
+        // 落点目标要抬到兄弟之上（原因徽标溢出到节点框外面，会被后画的兄弟盖住）；
+        // 被拖节点要抬到落点目标之上（用户正在拖的节点不能被它要放上去的节点埋掉）。
         // xyflow 在 zIndexMode 'basic' 下认用户给的 zIndex（选中节点另有 +1000）。
-        ...(isReparentTarget ? { zIndex: REPARENT_TARGET_Z_INDEX } : {}),
+        // 普通节点不带 zIndex 这个 key → 走 xyflow 的默认值 0。
+        ...(reparentZIndex !== undefined ? { zIndex: reparentZIndex } : {}),
       }
       cache.set(node.id, { key, node: flowNode })
       return flowNode
@@ -676,7 +680,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return nodes
-  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason])
+  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason, reparentDraggingId])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
