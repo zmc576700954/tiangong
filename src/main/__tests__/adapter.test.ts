@@ -3,7 +3,7 @@ import { Readable, Writable } from 'node:stream'
 import type { ChildProcess } from 'node:child_process'
 import { BaseAdapter } from '../adapters/base'
 import { inferChangeType } from '../adapters/file-change-parser'
-import type { AgentSessionConfig, AgentCommand, AgentOutput, ResolvedContext, AgentSession } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, AgentOutput, AgentSession } from '@shared/types'
 
 // Create a concrete adapter for testing
 class TestAdapter extends BaseAdapter {
@@ -61,8 +61,8 @@ class TestAdapter extends BaseAdapter {
     return outputs
   }
 
-  public testBuildScopePrompt(config: AgentSessionConfig, resolvedContexts?: ResolvedContext[]): string {
-    return this.buildScopePrompt(config, resolvedContexts)
+  public testBuildScopePrompt(config: AgentSessionConfig): string {
+    return this.buildScopePrompt(config)
   }
 
   public testBuildSafeEnv(): NodeJS.ProcessEnv {
@@ -402,7 +402,7 @@ describe('BaseAdapter - Session Lifecycle', () => {
   })
 })
 
-describe('buildScopePrompt with resolved contexts', () => {
+describe('buildScopePrompt 不含附加上下文', () => {
   let adapter: TestAdapter
 
   beforeEach(() => {
@@ -413,7 +413,7 @@ describe('buildScopePrompt with resolved contexts', () => {
     adapter.cleanup()
   })
 
-  it('appends resolved contexts to scope prompt', () => {
+  it('附加上下文由 buildAdditionalContextsPrompt 单独产出，不混进 scope 稳定前缀', () => {
     const config: AgentSessionConfig = {
       workingDirectory: '/test',
       allowedFiles: [],
@@ -425,62 +425,9 @@ describe('buildScopePrompt with resolved contexts', () => {
       acceptanceCriteria: [],
     }
 
-    const resolved: ResolvedContext[] = [
-      {
-        type: 'node',
-        id: 'n1',
-        label: 'Login',
-        content: '节点: Login (feature)\n描述: Login flow',
-        tokenEstimate: 10,
-      },
-      {
-        type: 'file',
-        id: '/src/auth.ts',
-        label: 'auth.ts',
-        content: 'export function login() {}',
-        tokenEstimate: 5,
-      },
-    ]
-
-    const prompt = adapter.testBuildScopePrompt(config, resolved)
-
-    expect(prompt).toContain('# 业务节点：<node-title>Test Node</node-title>')
-    expect(prompt).toContain('## 附加上下文')
-    expect(prompt).toContain('### Login (node)')
-    expect(prompt).toContain('Login flow')
-    expect(prompt).toContain('### auth.ts (file)')
-    expect(prompt).toContain('export function login')
-  })
-
-  it('does not add context section when resolved is empty', () => {
-    const config: AgentSessionConfig = {
-      workingDirectory: '/test',
-      allowedFiles: [],
-      forbiddenFiles: [],
-      invariantRules: [],
-      upstreamContext: '',
-      downstreamContext: '',
-      nodeTitle: 'Test Node',
-      acceptanceCriteria: [],
-    }
-
-    const prompt = adapter.testBuildScopePrompt(config, [])
-    expect(prompt).not.toContain('## 附加上下文')
-  })
-
-  it('does not add context section when resolved is undefined', () => {
-    const config: AgentSessionConfig = {
-      workingDirectory: '/test',
-      allowedFiles: [],
-      forbiddenFiles: [],
-      invariantRules: [],
-      upstreamContext: '',
-      downstreamContext: '',
-      nodeTitle: 'Test Node',
-      acceptanceCriteria: [],
-    }
-
+    // 附加上下文随每轮附件变化 —— 混进 scope 会让可复用 KV-cache 前缀在换附件时整体失效。
     const prompt = adapter.testBuildScopePrompt(config)
+    expect(prompt).toContain('# 业务节点：<node-title>Test Node</node-title>')
     expect(prompt).not.toContain('## 附加上下文')
   })
 })

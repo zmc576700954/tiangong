@@ -50,14 +50,18 @@ function sanitizeUserInput(input: string): string {
 }
 
 /**
- * 构建范围约束提示词
+ * 构建「节点级」范围约束提示词。
+ *
+ * 只包含会话内不变的约束（节点标题 / 验收标准 / 白名单 / 黑名单 / 业务不变量 /
+ * 上下游契约 / 待修复 Bug）—— 这一段进可复用的 KV-cache 稳定前缀。
+ *
+ * 附加上下文（用户本轮附加的文件 / 节点）**不进这里**：它随每轮附件变化，
+ * 混进稳定前缀会让换附件时整个前缀失效。附加上下文由
+ * buildAdditionalContextsPrompt 单独产出，进 turn 段。
+ *
  * @param config - 会话配置
- * @param resolvedContexts - 已解析的上下文列表
  */
-export function buildScopePrompt(
-  config: AgentSessionConfig,
-  resolvedContexts?: ResolvedContext[],
-): string {
+export function buildScopePrompt(config: AgentSessionConfig): string {
   const lines: string[] = []
 
   lines.push(`# 业务节点：<node-title>${sanitizeUserInput(config.nodeTitle)}</node-title>`)
@@ -120,16 +124,25 @@ export function buildScopePrompt(
     }
   }
 
-  // 注入已解析的上下文
-  if (resolvedContexts && resolvedContexts.length > 0) {
-    lines.push(SCOPE_SECTION_HEADINGS.additionalContexts)
-    for (const ctx of resolvedContexts) {
-      lines.push(`### ${ctx.label} (${ctx.type})`)
-      lines.push(ctx.content)
-      lines.push('')
-    }
-  }
+  return lines.join('\n')
+}
 
+/**
+ * 构建「附加上下文」段。
+ *
+ * 用户本轮附加的文件 / 节点 —— 每一轮都可能不同，因此归 turn 段而不是
+ * 稳定前缀（见 buildScopePrompt 的说明）。
+ *
+ * @param resolvedContexts - 已解析的上下文列表
+ */
+export function buildAdditionalContextsPrompt(resolvedContexts?: ResolvedContext[]): string {
+  if (!resolvedContexts || resolvedContexts.length === 0) return ''
+  const lines: string[] = [SCOPE_SECTION_HEADINGS.additionalContexts]
+  for (const ctx of resolvedContexts) {
+    lines.push(`### ${ctx.label} (${ctx.type})`)
+    lines.push(ctx.content)
+    lines.push('')
+  }
   return lines.join('\n')
 }
 

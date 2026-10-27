@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   buildScopePrompt,
+  buildAdditionalContextsPrompt,
   compressScopePrompt,
   SCOPE_SECTION_HEADINGS,
 } from '../scope-prompt-builder'
@@ -63,18 +64,8 @@ describe('buildScopePrompt', () => {
     expect(prompt).toContain('Timeout')
   })
 
-  it('includes resolved contexts', () => {
-    const resolved: ResolvedContext[] = [{
-      type: 'node',
-      id: 'n1',
-      label: 'Auth',
-      content: 'Auth flow',
-      tokenEstimate: 10,
-    }]
-    const prompt = buildScopePrompt(makeConfig(), resolved)
-    expect(prompt).toContain('## 附加上下文')
-    expect(prompt).toContain('### Auth (node)')
-    expect(prompt).toContain('Auth flow')
+  it('不含附加上下文 —— 它随每轮附件变化，不进稳定前缀', () => {
+    expect(buildScopePrompt(makeConfig())).not.toContain('## 附加上下文')
   })
 
   it('omits empty sections', () => {
@@ -111,16 +102,38 @@ describe('SCOPE_SECTION_HEADINGS', () => {
   it('buildScopePrompt 产出的段标题全部来自常量表', () => {
     const prompt = buildScopePrompt(makeConfig({
       bugContext: [{ bugId: '1', title: 'Login fail', description: 'Timeout', severity: 'high' }],
-    }), [{ type: 'node', id: 'n1', label: 'Auth', content: 'Auth flow', tokenEstimate: 10 }])
+    }))
     const headings = Object.values(SCOPE_SECTION_HEADINGS)
     const emitted = prompt.split('\n').filter((line) => line.startsWith('## '))
     expect(emitted.length).toBeGreaterThan(0)
     for (const line of emitted) expect(headings).toContain(line)
   })
 
-  it('buildScopePrompt 不再接受 codeContext 形参（scope 必须跨轮稳定）', () => {
-    // codeContext 每轮变化，放进 scope 会污染可复用的 KV-cache 前缀。
-    expect(buildScopePrompt.length).toBe(2)
+  it('buildScopePrompt 只接受 config 一个形参（scope 必须跨轮稳定）', () => {
+    // codeContext / 附加上下文每轮变化，放进 scope 会污染可复用的 KV-cache 前缀。
+    expect(buildScopePrompt.length).toBe(1)
+  })
+})
+
+describe('buildAdditionalContextsPrompt', () => {
+  const resolved: ResolvedContext[] = [{
+    type: 'node',
+    id: 'n1',
+    label: 'Auth',
+    content: 'Auth flow',
+    tokenEstimate: 10,
+  }]
+
+  it('renders the additional-contexts section', () => {
+    const prompt = buildAdditionalContextsPrompt(resolved)
+    expect(prompt).toContain('## 附加上下文')
+    expect(prompt).toContain('### Auth (node)')
+    expect(prompt).toContain('Auth flow')
+  })
+
+  it('returns empty string when there is nothing attached', () => {
+    expect(buildAdditionalContextsPrompt([])).toBe('')
+    expect(buildAdditionalContextsPrompt(undefined)).toBe('')
   })
 })
 

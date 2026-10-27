@@ -24,7 +24,7 @@ import type {
   TokenEconomics,
 } from '@shared/types'
 
-import { buildScopePrompt, SCOPE_SECTION_HEADINGS } from '../adapters/scope-prompt-builder'
+import { buildScopePrompt, buildAdditionalContextsPrompt, SCOPE_SECTION_HEADINGS } from '../adapters/scope-prompt-builder'
 import { ContextCompiler } from './context-compiler'
 import { getWaterlineSync } from './waterline-sync'
 import { estimateTokens } from '../shared/token-utils'
@@ -254,7 +254,7 @@ export class PromptOrchestrator {
     let scopeTokens = 0
     let scopeCompressionLevel = 0
     if (sessionConfig) {
-      scopeText = buildScopePrompt(sessionConfig, resolvedContexts)
+      scopeText = buildScopePrompt(sessionConfig)
     }
     // 项目记忆是项目级稳定内容，归入 scope 段（随 scope 一起进 stable 前缀）。
     // 追加发生在压缩之前，让压缩阶梯能处理超预算。
@@ -277,7 +277,13 @@ export class PromptOrchestrator {
 
     // --- Layer 3: Context (compressible) ---
     // 代码上下文与会话历史记忆每轮变化，属于 context 层；scope 是跨轮稳定前缀，不收它们。
-    const fixedContextText = joinContextParts(codeContext, sessionHistory)
+    // 附加上下文（用户本轮附件）同样每轮变化 —— 它不在 scope 段里，否则换附件时
+    // 稳定前缀整体失效。
+    const additionalContextsText = truncateToTokenBudget(
+      buildAdditionalContextsPrompt(resolvedContexts),
+      budgets[2],
+    )
+    const fixedContextText = joinContextParts(additionalContextsText, codeContext, sessionHistory)
     const fixedContextTokens = estimateTokens(fixedContextText)
     const compiledBudget = Math.max(0, budgets[2] - fixedContextTokens)
     let compiledText = ''
@@ -370,6 +376,7 @@ export class PromptOrchestrator {
     const parts: string[] = []
     if (systemText)    parts.push(systemText)
     if (scopeText)     parts.push(scopeText)
+    if (sessionConfig?.contextSummary) parts.push(sessionConfig.contextSummary)
     if (contextText)   parts.push(contextText)
     if (waterlineText) parts.push(waterlineText)
     if (userText)      parts.push(userText)
@@ -378,11 +385,12 @@ export class PromptOrchestrator {
     const totalTokens = estimateTokens(text)
 
     // --- Split into stable prefix / per-turn context ---
-    // stable：系统指令 + 会话摘要 + scope 约束（含项目记忆）。跨轮逐字节一致，可被 KV-cache 复用。
-    // turn：代码上下文 + 编译上下文 + 会话历史记忆 + 水位线。每轮随请求变化。
+    // stable：系统指令 + scope 约束（含项目记忆）。跨轮逐字节一致，可被 KV-cache 复用。
+    // turn：会话摘要 + 代码上下文 + 附加上下文 + 编译上下文 + 会话历史记忆 + 水位线。
+    //       这些都会随轮次变化 —— 留在 stable 会让可复用前缀在压缩 / 换附件时整体失效。
     // 用户请求不进任一段——它由适配器的 buildCommandPrompt 单独承载，保证只出现一次。
-    const stable = joinContextParts(systemText, sessionConfig?.contextSummary, scopeText)
-    const turn = joinContextParts(contextText, waterlineText)
+    const stable = joinContextParts(systemText, scopeText)
+    const turn = joinContextParts(sessionConfig?.contextSummary, contextText, waterlineText)
     const context: PromptContext = { stable, turn }
 
     // Compute aggregate economics

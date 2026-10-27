@@ -256,13 +256,50 @@ describe('PromptContext (stable / turn 分段)', () => {
     expect(a.context.turn).not.toBe(b.context.turn)
   })
 
-  it('会话摘要进 stable 段', async () => {
+  it('会话摘要进 turn 段，不进 stable 段', async () => {
+    // 压缩 / 恢复会重写 contextSummary —— 它是「上下文」不是「稳定约束」。
+    // 留在 stable 会让可复用 KV-cache 前缀在压缩那一刻整体失效
+    // （CLAUDE.md「不污染可复用 KV-cache prefix」）。
     const r = await new PromptOrchestrator().assemble({
       ...baseOptions,
       userCommand: 'cmd',
       sessionConfig: makeConfig({ contextSummary: '前序会话摘要QQQ' }),
     })
-    expect(r.context.stable).toContain('前序会话摘要QQQ')
+    expect(r.context.turn).toContain('前序会话摘要QQQ')
+    expect(r.context.stable).not.toContain('前序会话摘要QQQ')
+  })
+
+  it('附加上下文（随本轮附件变化）进 turn 段，不进 stable 段', async () => {
+    const r = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: 'cmd',
+      resolvedContexts: [
+        { type: 'file', id: 'f1', label: 'CTX-LABEL', content: 'CTX-CONTENT-AAA', tokenEstimate: 10 },
+      ],
+    })
+    expect(r.context.turn).toContain('CTX-CONTENT-AAA')
+    expect(r.context.stable).not.toContain('CTX-CONTENT-AAA')
+  })
+
+  it('会话摘要与附加上下文变化时 stable 段逐字节不变', async () => {
+    const a = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: 'cmd',
+      sessionConfig: makeConfig({ contextSummary: '摘要A' }),
+      resolvedContexts: [
+        { type: 'file', id: 'f1', label: 'L1', content: '内容A', tokenEstimate: 10 },
+      ],
+    })
+    const b = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: 'cmd',
+      sessionConfig: makeConfig({ contextSummary: '摘要B' }),
+      resolvedContexts: [
+        { type: 'file', id: 'f2', label: 'L2', content: '内容B', tokenEstimate: 10 },
+      ],
+    })
+    expect(a.context.stable).toBe(b.context.stable)
+    expect(a.context.turn).not.toBe(b.context.turn)
   })
 
   it('waterline 超预算时截断自身，不借用 context 层的预算', async () => {

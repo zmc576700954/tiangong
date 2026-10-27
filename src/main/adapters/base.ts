@@ -12,7 +12,6 @@ import type {
   AgentCommand,
   AgentOutput,
   PromptContext,
-  ResolvedContext,
   TerminationReason,
 } from '@shared/types'
 import { JsonProtocolHandler, protocolMessageToAgentOutput } from './json-protocol'
@@ -913,6 +912,9 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    * 白名单 / 黑名单这类约束必须随 prompt 下发：黑名单唯一的执行手段就是提示词
    * （没有 OS 级兜底），提示词一丢这条安全约束就静默消失。
    *
+   * 兜底路径把会话摘要也带上：这条路径上「唯一上下文」就是这一段，丢掉摘要
+   * 等于丢掉被压缩掉的会话内容 —— 与编排器路径的取舍不同是刻意的。
+   *
    * 透明转发会话（A2A 入站）返回空串：不注入任何 BizGraph 内部状态
    * （CLAUDE.md Boundaries §3）。
    * @protected
@@ -1159,11 +1161,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     })
   }
 
-  protected buildScopePrompt(
-    config: AgentSessionConfig,
-    resolvedContexts?: ResolvedContext[],
-  ): string {
-    return buildScopePrompt(config, resolvedContexts)
+  protected buildScopePrompt(config: AgentSessionConfig): string {
+    return buildScopePrompt(config)
   }
 
   // ============================================

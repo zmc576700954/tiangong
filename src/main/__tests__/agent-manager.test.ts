@@ -376,7 +376,7 @@ describe('AgentManager', () => {
       historySpy.mockRestore()
     })
 
-    it('适配器实时配置里的压缩摘要进 stable 段', async () => {
+    it('适配器实时配置里的压缩摘要进 turn 段（不进 stable）', async () => {
       const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig())
@@ -396,12 +396,14 @@ describe('AgentManager', () => {
         targetNodeId: 'n1',
       })
 
-      expect(setPromptContextSpy.mock.calls[0][1].stable).toContain('SUMMARY-AAA')
+      // 压缩 / 恢复会重写摘要 —— 它进 turn 段，stable 前缀保持逐字节一致
+      expect(setPromptContextSpy.mock.calls[0][1].turn).toContain('SUMMARY-AAA')
+      expect(setPromptContextSpy.mock.calls[0][1].stable).not.toContain('SUMMARY-AAA')
 
       historySpy.mockRestore()
     })
 
-    it('自动压缩产生的摘要当轮就进 stable 段', async () => {
+    it('自动压缩产生的摘要当轮就进 turn 段', async () => {
       const adapter = new TestAdapter('test-adapter')
       manager.registerAdapter(adapter)
       const { sessionId } = await manager.startSession('test-adapter', mockConfig({ threadId: 't-1' }))
@@ -431,7 +433,8 @@ describe('AgentManager', () => {
         targetNodeId: 'n1',
       })
 
-      expect(setPromptContextSpy.mock.calls[0][1].stable).toContain('COMPACT-SUMMARY')
+      expect(setPromptContextSpy.mock.calls[0][1].turn).toContain('COMPACT-SUMMARY')
+      expect(setPromptContextSpy.mock.calls[0][1].stable).not.toContain('COMPACT-SUMMARY')
 
       historySpy.mockRestore()
     })
