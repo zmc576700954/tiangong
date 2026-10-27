@@ -246,18 +246,23 @@ export class HierarchyService {
    * - **新父子对** `(newParentId, nodeId)` 上的边：这一对**重挂后就是父子对** →
    *   该对上的 `'default'` 按 §4.2.1 判为层级边（要么升级成 `'hierarchical'`，
    *   要么在已有 `'hierarchical'` 时作为多余边删掉）。
-   * - **旧父子对** `(oldParentId, nodeId)` 上的边：重挂后**不再是父子对** →
-   *   该对上的 `'default'` 是**真正的语义边**，原样保留（不改类型、不删）；
-   *   **唯一例外**是「该对上本来没有 `'hierarchical'`」——那时那条 `'default'`
-   *   就是迁移前的层级边，它要跟着节点迁到新父下（被改 `source`）。
+   * - **旧父子对** `(oldParentId, nodeId)` 上的边：重挂后**不再是父子对** → 分两种情形：
+   *   - **该对本来就有 `'hierarchical'`** → 该对上的 `'default'` **不是**层级边，
+   *     是真正的语义边：四级判定里一次都不会碰到它，原样保留（不改类型、不删）。
+   *   - **该对本来没有 `'hierarchical'`** → 该对上的 `'default'` **就是迁移前的层级边**，
+   *     命运按级分叉：**第 ① / ② 级直接删掉**（重挂后它已不在父子对上，
+   *     留着只会变成一条用户没画过的语义线）；**第 ③ 级搬过来**
+   *     （`source` 与 `edge_type` 一起改）；旧对有多条时只搬第一条，其余删掉。
    *
    * **为什么升级 / 删除父子对上的 `'default'` 不会让用户的线消失：**
    * 父子对上的 `'default'` 边**本来就不渲染** —— 渲染层
    * `src/renderer/canvas/layouts/hierarchy.ts:41` 会把落在父子对上的 `'default'`
    * 直接丢弃（不进 `semanticEdges`），画布上父子之间只有一条派生的层级线。
-   * 反过来，**不在父子对上的 `'default'` 边是真正的语义边** ——
-   * 永远不许改类型、不许删（`'default'` 同时是 `EdgeEditor.tsx` 的
-   * `SUPPORTED_EDGE_TYPES` 第一项，也是 AI 写入路径的默认类型）。
+   * 反过来，一条 `'default'` 边**只有在它落在父子对上时**才是层级边；
+   * 落在别处的 `'default'`（包括旧对本来就有 `'hierarchical'` 时旧对上的那些）
+   * 是真正的语义边 —— 永远不许改类型、不许删
+   * （`'default'` 同时是 `EdgeEditor.tsx` 的 `SUPPORTED_EDGE_TYPES` 第一项，
+   * 也是 AI 写入路径的默认类型）。
    * 仓库里已有的判据是同一个（`hierarchy-migration.ts`：「父子关系唯一，不靠猜」）。
    *
    * **目标状态（R-37）**：新的父子对 `(newParentId, nodeId)` 上**有且只有一条存储边，

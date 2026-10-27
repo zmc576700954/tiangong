@@ -99,7 +99,7 @@ describe('useNodeOperations — 补建层级边', () => {
       // 刻意不 await —— 真实调用方（NodeContextMenu）也不 await
       void result.current.handleAddChild('parent1', 'module')
       // 让微任务队列跑完，并给 Node 判定「未处理的拒绝」的机会
-      await new Promise((resolve) => setTimeout(resolve, 20))
+      await new Promise((resolve) => setImmediate(resolve))
 
       expect(rejections).toHaveLength(0)
       // 失败被记了日志（不是静默吞掉）
