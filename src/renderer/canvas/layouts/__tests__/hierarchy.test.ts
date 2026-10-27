@@ -111,6 +111,13 @@ describe('buildReparentGhostEdge', () => {
 })
 
 describe('resolveReparentZIndex', () => {
+  /**
+   * xyflow 给**选中**节点额外加的 z（`SELECTED_NODE_Z`）。
+   * 它的最终 z = 我们给的 zIndex + (选中 ? 1000 : 0)，
+   * 见 `@xyflow/system/dist/esm/index.js:1771-1777` 的 `calculateZ`。
+   */
+  const SELECTED_NODE_Z = 1000
+
   it('gives ordinary nodes no z-index at all', () => {
     // 普通节点不设 zIndex → 走 xyflow 的默认值 0（不能是 0 以外的值，也不能带 key）
     expect(resolveReparentZIndex(false, false)).toBeUndefined()
@@ -135,10 +142,20 @@ describe('resolveReparentZIndex', () => {
   })
 
   it('keeps the dragged node above the drop target even when both are selected', () => {
-    // SELECTED_NODE_Z = 1000（@xyflow/system/dist/esm/index.js:1602）
-    // xyflow 的最终 z = 我们的 zIndex + (选中 ? 1000 : 0)，两边都选中时也要保持顺序
-    const SELECTED_NODE_Z = 1000
+    // 两边都选中时也要保持顺序
     expect(REPARENT_DRAGGING_Z_INDEX + SELECTED_NODE_Z)
       .toBeGreaterThan(REPARENT_TARGET_Z_INDEX + SELECTED_NODE_Z)
+  })
+
+  it('keeps the dragged node above the drop target when only the target is selected', () => {
+    // 卡边组合：落点目标被选中（z = 1001 + 1000 = 2001）、被拖节点未被选中（z = 2002）
+    // → 余量只有 1。这条钉住的正是「把被拖节点改成 1002 就会破口」的那个缺口。
+    expect(REPARENT_DRAGGING_Z_INDEX).toBeGreaterThan(REPARENT_TARGET_Z_INDEX + SELECTED_NODE_Z)
+  })
+
+  it('pins the absolute z-index values', () => {
+    // 只被相对关系钉住不够：绝对值变了，相对关系可能仍然成立但余量已经不够
+    expect(REPARENT_TARGET_Z_INDEX).toBe(1001)
+    expect(REPARENT_DRAGGING_Z_INDEX).toBe(2002)
   })
 })
