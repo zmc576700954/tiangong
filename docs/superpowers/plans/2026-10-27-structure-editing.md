@@ -22,7 +22,7 @@
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
-- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:597）与 `flowEdges`（:743）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:716-718）/ `useEffect(() => setRfEdges(flowEdges))`（:810-812），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:615）与 `flowEdges`（:761）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:734-736）/ `useEffect(() => setRfEdges(flowEdges))`（:828-830），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -606,7 +606,7 @@ const flowEdges = useMemo(() => {
 
 - [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
 
-`onEdgeClick`（`GraphCanvas.tsx:809`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
+`onEdgeClick`（`GraphCanvas.tsx:857`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
 
 - 右侧面板 `RightPanel.tsx:55` 用 `edges.find(e => e.id === selectedEdgeId)` 找边 → 找不到 → 面板空白；
 - 按 Delete → `graphStore.deleteEdge(id)` → `edge:delete` IPC → `edgeRepo.delete('derived-...')` → `DELETE ... WHERE id = ?` 命中 0 行 → **静默无操作**（不报错，但用户以为删掉了）。
@@ -1617,7 +1617,7 @@ await createEdge({
 })
 ```
 
-（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:227` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
+（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:239` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
 
 `handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边（在 `createNode` 之后紧跟着建，边用同一个 `created.id` 作 target）。
 
@@ -2117,13 +2117,13 @@ Expected: FAIL —— 模块不存在
     规格只要求 IPC 失败才回弹。
 
 ⚠️ **力导向布局模式下不启用重挂**（控制器裁决 R-38）：力导向模式下一次拖拽结束会
-把**所有**节点的仿真坐标整体写回数据库（`useForceLayout.ts:217-227`），
+把**所有**节点的仿真坐标整体写回数据库（`useForceLayout.ts:282-292`），
 那会覆盖掉重挂算出来的锚点位置与整棵子树的平移结果。要同时支持两者，
 就得在重挂提交后把仿真按 store 的新坐标**重新播种**——那是 `useForceLayout` 的重构，
 超出本任务范围，规格也没有要求。因此：`layoutMode === 'force'` 时
 `useReparentDrag` 不注册拖拽回调（拖拽仍是纯力导向交互），树形布局（默认）下才启用。
 
-**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:208` 已有 `useReactFlow()`）。
+**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:229` 已有 `useReactFlow()`）。
 
 - [ ] **Step 4: Add the store action**
 
@@ -2209,8 +2209,8 @@ return p ? { ...n, position: { x: p.x, y: p.y } } : n
 
 | 路径 | 触发点 | 写什么 |
 |---|---|---|
-| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:236-240` → :1326），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
-| 力导向拖拽收尾 | `useForceLayout.onNodeDragStop`（:190-228） | 把**所有**节点的仿真坐标写回 DB —— **只在力导向模式下**，树形布局下直接 return |
+| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:293-301` → :1536），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
+| 力导向拖拽收尾 | `useForceLayout.onNodeDragStop`（:255-293） | 把**所有**节点的仿真坐标写回 DB —— **只在力导向模式下**，树形布局下直接 return |
 | 重挂（本任务新增） | `graph:reparent` → 主进程算锚点位置与整棵子树的平移 → 返回 `movedPositions` | 权威位置 |
 
 **冲突**：树形布局下，重挂拖拽结束时，路径 1 会把**指针松开处**的坐标写进 DB，
@@ -2240,7 +2240,7 @@ return p ? { ...n, position: { x: p.x, y: p.y } } : n
    - **失败** → toast + **回弹**：把节点位置**写回拖拽开始时的原位** → 然后解除抑制。
 3. 回弹写回原位时，位置对象必须是**新建的字面量**（`{ x: A.x, y: A.y }`），
    不能复用旧对象引用：`flowNodes` 的缓存比的是**引用**
-   （`GraphCanvas.tsx:634`：`if (prev.position === node.position) return prev`），
+   （`GraphCanvas.tsx:677`：`if (prev.position === node.position) return prev`），
    引用相同 → 缓存命中 → 复用旧节点对象 → xyflow 不更新位置 → **看起来没回弹**。
    用 `useGraphStore.getState().batchUpdatePositions([{ id, x, y }])` 最省事
    （它内部就是 `position: { x: u.x, y: u.y }`，每次都是新对象）。
@@ -2269,14 +2269,14 @@ key 不变就会复用没有高亮的旧节点对象，红框/绿框根本不会
 
 `src/renderer/canvas/BizNode.tsx`：
 - 高亮样式：合法候选用绿色，非法候选用红色（规格 §4.4 第 4 条写的是「绿色高亮边框」）。
-- ⚠️ **别用 `border-*`**：`BizNode.tsx:129-131` 已经在用
+- ⚠️ **别用 `border-*`**：`BizNode.tsx:239-241` 已经在用
   `border-orange-400`（agent running）/ `border-red-400`（agent error）/
   `border-green-400`（agent completed），颜色撞车，且同一条 `cn()` 链上
   两个 `border-color` 工具类谁赢由 **Tailwind 产物里的 CSS 顺序**决定，不由类名书写顺序决定。
-  也**别用 `ring-*`**：:127-128 的 `ring-blue-400`（选中）/ `ring-purple-400`（多选）已经占了。
+  也**别用 `ring-*`**：:237-238 的 `ring-blue-400`（选中）/ `ring-purple-400`（多选）已经占了。
   → 用 **outline**（Tailwind v4 支持 `outline-2 outline-green-500` / `outline-red-500`），
   它是独立的 CSS 属性，跟 border-color 和 box-shadow 都不冲突。
-- ⚠️ **`BizNodeProps` 的 `data` 类型要一起改**：`BizNode.tsx:15-33` 把 `data` 写成
+- ⚠️ **`BizNodeProps` 的 `data` 类型要一起改**：`BizNode.tsx:84-106` 把 `data` 写成
   `GraphNode & { bugCount: number; isZoomedOut?: boolean; ... }` 的**显式交叉类型**。
   只往 data 对象里塞 `isReparentTarget` 而不改这个类型，TypeScript 会报
   「对象字面量的属性不存在」。→ 在交叉类型里补上
@@ -2493,7 +2493,7 @@ collapsed: row.collapsed === 1,     // 列是 NOT NULL DEFAULT 0，永远不会�
   - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
   - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
   - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
-  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:217-232`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:229-245`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
 
 ⚠️ **光算出 `sortIndex` 不够 —— INSERT 的列清单里也得加它**（控制器核代码后补的）：
 
@@ -2567,7 +2567,7 @@ collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
 
 - [ ] **Step 5: Make tree layout honor sort_index**
 
-`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:648-649` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
+`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:691-692` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
 
 ⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。
 
@@ -2587,7 +2587,7 @@ const v = raw === undefined || raw === null ? undefined : Number(raw)
 但 `tree-layout.ts` 是**渲染层**的兜底 —— 存量数据、Yjs 远端写入、其它写入路径
 都可能绕过那两处映射。**渲染层不能假设上游一定干净。**）
 
-⚠️ 节点缓存 key（`GraphCanvas.tsx:607`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
+⚠️ 节点缓存 key（`GraphCanvas.tsx:645`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
 - [ ] **Step 6: 拖拽重挂后，渲染端的兄弟序号必须刷新（R-46）**
 
@@ -2813,11 +2813,11 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:908` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:942` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
 
 ⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
 
-`GraphCanvas.tsx:210-211`：
+`GraphCanvas.tsx:224-225`：
 
 ```ts
 const currentGraph = graphs.find((g) => g.id === graphId)
@@ -2860,11 +2860,11 @@ const handleLayoutModeChange = (mode: 'tree' | 'force') => {
 `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
 （`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
-`GraphCanvas.tsx:210-211`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`GraphCanvas.tsx:224-225`，`currentGraph = graphs.find((g) => g.id === graphId)`、
 `projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
 
 （`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
-从 `:172` 开始，`projectPath` 在 `:211`、`layoutMode` 在 `:908` —— 同一个函数体，直接用。）
+从 `:184` 开始，`projectPath` 在 `:225`、`layoutMode` 在 `:942` —— 同一个函数体，直接用。）
 
 ⚠️ **别把写回做成 effect**（`useEffect(() => localStorage.setItem(key, layoutMode), [layoutMode, projectPath])`）。
 那样首帧就会把 `'tree'` 写进真正的键 → 正好覆盖掉用户上次的选择 —— 读和写必须分开，
@@ -2899,7 +2899,7 @@ Expected: 零 lint 警告、零类型错误、全部测试通过
 ```
 
 - `mockState` 里加一个 `reparentCalls: Array<{ nodeId: string; newParentId: string }> = []`。
-  该 mock **已经把 `mockState` 挂在 `window.__bizgraphMockState` 上**（`mock-ipc.ts:82`）→
+  该 mock **已经把 `mockState` 挂在 `window.__bizgraphMockState` 上**（`mock-ipc.ts:198`）→
   测试里直接 `await page.evaluate(() => (window as ...).__bizgraphMockState?.reparentCalls)` 就能断言
   「`graph:reparent` 有没有被调用过」。**拒绝类用例靠这个断言**（见下面第 3、4 条）。
 
@@ -2941,9 +2941,9 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`）
 
    ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
-   `mock-ipc.ts:101` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
+   `mock-ipc.ts:264` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
    **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
-   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:362-364`）先本地执行
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:374-376`）先本地执行
 
    ```ts
    setNodes((nodes) => nodes.filter((n) => n.id !== id))
