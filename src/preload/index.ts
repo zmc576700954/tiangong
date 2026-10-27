@@ -29,6 +29,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   'node:delete',
   'node:batchUpdatePositions',
 
+  // Node type rules (single authority: main-process nodeTypeRegistry)
+  'nodeType:listConfigs',
+
   // Edge operations
   'edge:create',
   'edge:update',

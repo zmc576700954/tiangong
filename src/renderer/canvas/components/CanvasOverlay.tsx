@@ -19,6 +19,8 @@ interface CanvasOverlayProps {
   onCreateEdge: (type: EdgeType, content?: EdgeContent) => void
   nodeContextMenu: { nodeId: string; x: number; y: number } | null
   nodes: GraphNode[]
+  /** 当前父节点允许的子节点类型（类型名）—— 来自主进程 nodeTypeRegistry 的规则表 */
+  allowedChildTypes: string[]
   onNodeStatusChange: (nodeId: string, status: NodeStatus) => void
   onNodeDelete: (nodeId: string) => void
   onCloseNodeContextMenu: () => void
@@ -52,6 +54,7 @@ export function CanvasOverlay({
   onCreateEdge,
   nodeContextMenu,
   nodes,
+  allowedChildTypes,
   onNodeStatusChange,
   onNodeDelete,
   onCloseNodeContextMenu,
@@ -264,6 +267,7 @@ export function CanvasOverlay({
           x={nodeContextMenu.x}
           y={nodeContextMenu.y}
           nodes={nodes}
+          allowedChildTypes={allowedChildTypes}
           onStatusChange={onNodeStatusChange}
           onDelete={onNodeDelete}
           onClose={onCloseNodeContextMenu}

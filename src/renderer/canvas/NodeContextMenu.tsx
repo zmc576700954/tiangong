@@ -3,6 +3,7 @@ import { cn } from '../lib/utils'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
+import { NODE_TYPE_VALUES } from '@shared/types'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2, Bot } from 'lucide-react'
 import { ViewportMenu } from './components/ViewportMenu'
@@ -12,6 +13,11 @@ interface NodeContextMenuProps {
   x: number
   y: number
   nodes: GraphNode[]
+  /**
+   * 当前父节点允许的子节点类型（类型名，不是 label）。
+   * 唯一权威是主进程的 nodeTypeRegistry —— 渲染端不再自带一份副本。
+   */
+  allowedChildTypes: string[]
   onStatusChange: (nodeId: string, status: NodeStatus) => void
   onDelete: (nodeId: string) => void
   onClose: () => void
@@ -34,24 +40,9 @@ const statusOptions: { value: NodeStatus; color: string }[] = [
   { value: 'published', color: '#22c55e' },
 ]
 
-/** 根据父节点类型推断适合创建的子节点类型 */
-function getChildTypeOptions(parentType: NodeType): NodeType[] {
-  switch (parentType) {
-    case 'project':
-      return ['module', 'wiki-page']
-    case 'module':
-      return ['process', 'feature', 'wiki-page']
-    case 'process':
-      return ['feature', 'bug', 'wiki-page']
-    case 'feature':
-      return ['bug']
-    case 'wiki-page':
-      return ['wiki-page']
-    case 'bug':
-      return []
-    default:
-      return ['feature']
-  }
+/** 规则表给的是类型名（不是 label）——窄化到已知的 NodeType，未知类型直接忽略 */
+function isNodeType(value: string): value is NodeType {
+  return (NODE_TYPE_VALUES as readonly string[]).includes(value)
 }
 
 export function NodeContextMenu({
@@ -59,6 +50,7 @@ export function NodeContextMenu({
   x,
   y,
   nodes,
+  allowedChildTypes,
   onStatusChange,
   onDelete,
   onClose,
@@ -85,7 +77,7 @@ export function NodeContextMenu({
 
   if (!node) return null
 
-  const childTypeOptions = getChildTypeOptions(node.type)
+  const childTypeOptions = allowedChildTypes.filter(isNodeType)
 
   return (
     <ViewportMenu

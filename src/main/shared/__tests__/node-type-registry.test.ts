@@ -65,6 +65,23 @@ describe('nodeTypeRegistry', () => {
     expect(nodeTypeRegistry.validateParentChild('module', 'unknown')).toBe(false)
   })
 
+  it('module cannot have feature children', () => {
+    expect(nodeTypeRegistry.validateParentChild('module', 'feature')).toBe(false)
+  })
+
+  it('feature can have bug children', () => {
+    expect(nodeTypeRegistry.validateParentChild('feature', 'bug')).toBe(true)
+  })
+
+  it('bug cannot have any children', () => {
+    expect(nodeTypeRegistry.validateParentChild('bug', 'feature')).toBe(false)
+    expect(nodeTypeRegistry.validateParentChild('bug', 'process')).toBe(false)
+  })
+
+  it('feature cannot be a child of module', () => {
+    expect(nodeTypeRegistry.validateParentChild('feature', 'module')).toBe(false)
+  })
+
   it('validateStatusTransition returns true for same status', () => {
     expect(nodeTypeRegistry.validateStatusTransition('feature', 'draft', 'draft')).toBe(true)
   })

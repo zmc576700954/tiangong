@@ -20,8 +20,8 @@ class NodeTypeRegistry {
       { type: 'project', label: '项目根节点', defaultStatus: 'confirmed', allowedChildTypes: ['module'] },
       { type: 'module', label: '业务模块', defaultStatus: 'draft', allowedParentTypes: ['project'], allowedChildTypes: ['process', 'wiki-page'] },
       { type: 'process', label: '业务流程', defaultStatus: 'draft', allowedParentTypes: ['module'], allowedChildTypes: ['feature', 'bug', 'wiki-page'] },
-      { type: 'feature', label: '功能点', defaultStatus: 'placeholder', allowedParentTypes: ['process'] },
-      { type: 'bug', label: 'BUG点', defaultStatus: 'draft', allowedParentTypes: ['process'] },
+      { type: 'feature', label: '功能点', defaultStatus: 'placeholder', allowedParentTypes: ['process'], allowedChildTypes: ['bug'] },
+      { type: 'bug', label: 'BUG点', defaultStatus: 'draft', allowedParentTypes: ['process', 'feature'], allowedChildTypes: [] },
       {
         type: 'wiki-page',
         label: 'Wiki 页面',

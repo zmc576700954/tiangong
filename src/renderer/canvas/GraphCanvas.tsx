@@ -45,6 +45,7 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
+import { useNodeTypeConfigs } from './hooks/useNodeTypeConfigs'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
 import {
   DropdownMenu,
@@ -261,6 +262,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [recipeStepStatus, setRecipeStepStatus] = useState<Record<string, { status: RecipeDagNodeStatus; error?: string }>>({})
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+
+  /**
+   * 节点类型规则表的唯一权威在主进程 nodeTypeRegistry，渲染端经 IPC 读取。
+   * 右键菜单的「添加子节点」可选项完全由这张表决定，渲染端不再自带一份副本。
+   */
+  const { configs: nodeTypeConfigs } = useNodeTypeConfigs()
+  const contextTargetNode = nodeContextMenu
+    ? graphNodes.find((n) => n.id === nodeContextMenu.nodeId)
+    : undefined
+  const allowedChildTypes = contextTargetNode?.type
+    ? (nodeTypeConfigs[contextTargetNode.type]?.allowedChildTypes ?? [])
+    : []
 
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -1447,6 +1460,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onCreateEdge={handleCreateEdge}
         nodeContextMenu={nodeContextMenu}
         nodes={graphNodes}
+        allowedChildTypes={allowedChildTypes}
         onNodeStatusChange={handleNodeStatusChange}
         onNodeDelete={handleNodeDelete}
         onCloseNodeContextMenu={() => setNodeContextMenu(null)}

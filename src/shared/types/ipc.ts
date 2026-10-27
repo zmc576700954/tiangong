@@ -5,7 +5,7 @@
 
 import type {
   Graph, GraphType, GraphNode, GraphEdge, BugNode, GraphSnapshot, GraphFetchOptions,
-  NodeStatus, ContextRef,
+  NodeStatus, ContextRef, NodeTypeConfig,
   ProjectScanResult, ScanModule, NodeEnrichment, NodeType,
 } from './graph'
 import type {
@@ -66,6 +66,9 @@ export interface IpcApi {
   'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode & { warnings?: string[] }>
   'node:delete': (id: string) => Promise<boolean>
   'node:batchUpdatePositions': (updates: Array<{ id: string; x: number; y: number }>) => Promise<boolean>
+
+  // 节点类型规则 —— 单一权威在主进程 nodeTypeRegistry，渲染端只读
+  'nodeType:listConfigs': () => Promise<NodeTypeConfig[]>
 
   // 边操作
   'edge:create': (data: Omit<GraphEdge, 'id'>) => Promise<GraphEdge>
