@@ -247,12 +247,18 @@ export class GraphRepository {
 
         // `collapsed` 故意**不**进 INSERT：新行拿列默认值 0（展开态）——
         // 折叠是开发者视角，从 online 派生出来的 dev 图应当是展开的（spec §4.2.1）。
+        //
+        // `parent_id` 用 `|| null` 归一：空串不是真实的节点 id，但在正常写入路径上可达
+        // （node-repository 的 `data.parentId ?? null` 与 `String(data.parentId)` 都放行 ''），
+        // 原样带过去会让目标图里出现 `parent_id = ''` 的节点，而 hierarchy-service 的
+        // 子节点查询（getChildren / collectDescendants）没有 graph_id 过滤 ——
+        // `WHERE parent_id = ''` 会命中**每一张图**里父 id 为空串的节点。
         insertNodeStmt.run(
           newId, nodeType, status, rowStr(row, 'title'),
           rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
           targetGraphId, assertGraphType(targetGraphType),
-          row['parent_id'],
+          row['parent_id'] || null,
           row['sort_index'],
           row['rules'], row['metadata'], row['content'], row['owner_role'],
           rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
@@ -268,6 +274,8 @@ export class GraphRepository {
         const row = nodesRows.find((r) => rowStr(r, 'id') === oldId)
         if (!row) continue
         const oldParentId = rowOptStr(row, 'parent_id')
+        // 没有父节点（NULL 或空串）：Pass 1 已经把它归一成 NULL 落库了，这里无需再 UPDATE。
+        // 真实 id 但不在 idMap 里（父节点住在另一张图）的，落到下面的 else 分支置 NULL。
         if (!oldParentId) continue
         if (idMap.has(oldParentId)) {
           parentUpdateStmt.run(idMap.get(oldParentId)!, newId)

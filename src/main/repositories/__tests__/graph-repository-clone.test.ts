@@ -76,12 +76,16 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
     const rows = db.prepare(
       "SELECT title, sort_index, collapsed FROM nodes WHERE graph_id='g_dev'"
     ).all() as { title: string; sort_index: number | null; collapsed: number }[]
+    const p1 = rows.find((r) => r.title === 'P1')!
     const m1 = rows.find((r) => r.title === 'M1')!
     const m2 = rows.find((r) => r.title === 'M2')!
     expect(m1.sort_index).toBe(0)
     expect(m2.sort_index).toBe(1)
     // 源图 M1 的 collapsed 是 1，克隆到 dev 图必须重置为 0（折叠是开发者视角）
     expect(m1.collapsed).toBe(0)
+    // 根节点的 sort_index 在源图是 NULL，克隆后必须**保留 NULL** ——
+    // 根节点没有兄弟，序号对它没有意义，不能被 `?? 0` 之类的兜底改成 0。
+    expect(p1.sort_index).toBeNull()
   })
 
   it('remaps hierarchical edges to the cloned node ids', () => {
@@ -103,7 +107,7 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
     }
   })
 
-  it('drops a cross-graph dangling parent_id instead of cloning it', () => {
+  it('normalizes a parent_id that is not a real node into a root', () => {
     // 第三个用例自带一对图（'g_on2' → 'g_dev2'）与第三张图（'g_other'），
     // 完全不动前两个用例的 'g_on' / 'g_dev' —— 悬挂节点留在源图里也不会影响它们。
     const now = new Date().toISOString()
@@ -120,6 +124,11 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
     // 父节点住在**另一张图**里 —— parent_id 没有外键，这种脏数据是可能存在的
     ins.run('x_other', 'project', 'confirmed', 'XOther', 'g_other', 'online', null, null, 0, 0, 0, now, now)
     ins.run('x1', 'module', 'draft', 'X1', 'g_on2', 'online', 'x_other', 0, 0, 0, 0, now, now)
+    // 父节点是**空串** —— 也不是真实节点 id。空串在正常写入路径上可达
+    // （node-repository 的 `data.parentId ?? null` / `String(data.parentId)` 都放行 ''），
+    // 而 hierarchy-service 的子节点查询没有 graph_id 过滤 → `WHERE parent_id = ''`
+    // 会命中每一张图里父 id 为空串的节点。
+    ins.run('x2', 'module', 'draft', 'X2', 'g_on2', 'online', '', 0, 0, 0, 0, now, now)
 
     repo.cloneGraphNodes('g_on2', 'g_dev2', 'dev')
 
@@ -127,9 +136,12 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
       "SELECT title, parent_id FROM nodes WHERE graph_id='g_dev2'"
     ).all() as { title: string; parent_id: string | null }[]
     const x1 = devNodes.find((n) => n.title === 'X1')!
+    const x2 = devNodes.find((n) => n.title === 'X2')!
     // 源图的 parent_id 指向另一张图的节点 → 克隆节点在 dev 图里必须是根节点。
     // 否则 hierarchy-service.collectDescendants（子节点查询没有 graph_id 过滤）
     // 会顺着这条悬挂关系走进 online 图。
     expect(x1.parent_id).toBeNull()
+    // 空串同样不是真实父 id → 克隆后归一为 NULL（根节点）
+    expect(x2.parent_id).toBeNull()
   })
 })
