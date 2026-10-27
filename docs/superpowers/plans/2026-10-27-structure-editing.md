@@ -1116,8 +1116,9 @@ git commit -m "refactor(canvas): 关闭 node:update 的 parentId 旁路"
 **Files:**
 - Modify: `src/renderer/canvas/hooks/useNodeOperations.ts`（`handleAddChild`、`handleGenerateChildren`）
 - Modify: `src/main/project-analyzer.ts`（层级边改写 `hierarchical`）
-- Modify: `src/main/services/graph-service.ts`（AI 路径补建层级边 + 防环校验）
+- Modify: `src/main/services/graph-service.ts`（AI 路径补建层级边 + 防环校验 + 分配 `sort_index`）
 - Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（新建）
+- Test: `src/main/services/__tests__/graph-service-sort-index.test.ts`（新建）
 
 **Interfaces:**
 - Consumes: Task 1 的 `EdgeType` 含 `'hierarchical'`；Task 3 的 `deriveHierarchyEdges`（渲染侧保证即使漏建边也有连线）
@@ -1207,10 +1208,114 @@ describe('useNodeOperations — 补建层级边', () => {
 })
 ```
 
+再新建 `src/main/services/__tests__/graph-service-sort-index.test.ts` —— 覆盖**第三条写入路径**（`initFromProject` → `graph-service.createNodes`）。
+
+⚠️ **这条路径必须用真实库**：它写的是 `nodes` 表的全部 21 个列，mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 Task 11 Step 1 的写法（那里已有现成模式）。
+
+`initFromProject` 走真实写入路径的两个前提：
+- `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:43`），mock 掉它不影响被测的写入路径。
+- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:203`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
+
+```ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
+
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-graph-svc-sort-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+const mockScanResult = {
+  projectName: 'Test Project',
+  projectPath: '/project',
+  framework: 'react',
+  packageJson: null,
+  modules: [
+    {
+      name: 'M1',
+      description: 'module one',
+      processes: [{ name: 'P1', description: 'process one', features: [] }],
+    },
+  ],
+}
+
+// 一个父节点 P1 + 三个兄弟 C1/C2/C3（数组顺序 = analyzer 的输出顺序）
+const mockGraphResult = {
+  projectName: 'Test Project',
+  projectPath: '/project',
+  framework: 'react',
+  nodes: [
+    { tempId: 'root', type: 'project', status: 'confirmed', title: 'Root', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], ownerRole: 'product' },
+    { tempId: 'p1', type: 'module', status: 'draft', title: 'P1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'root', ownerRole: 'product' },
+    { tempId: 'c1', type: 'process', status: 'draft', title: 'C1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+    { tempId: 'c2', type: 'process', status: 'draft', title: 'C2', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+    { tempId: 'c3', type: 'process', status: 'draft', title: 'C3', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+  ],
+  edges: [],
+}
+
+vi.mock('../../project-scanner', () => ({
+  ProjectScanner: vi.fn().mockImplementation(function () {
+    return { scan: vi.fn().mockResolvedValue(mockScanResult) }
+  }),
+}))
+
+vi.mock('../../project-analyzer', () => ({
+  ProjectAnalyzer: vi.fn().mockImplementation(function () {
+    return { analyze: vi.fn().mockReturnValue(mockGraphResult) }
+  }),
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { GraphService } from '../graph-service'
+
+describe('GraphService.createNodes — 兄弟顺序', () => {
+  let db: ReturnType<typeof getClient>
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+  })
+
+  afterAll(() => {
+    closeDatabase()
+  })
+
+  it('assigns consecutive sort_index to siblings written by the scan path', async () => {
+    const service = new GraphService(db)
+    const { onlineGraph } = await service.initFromProject({
+      projectPath: '/project',
+      projectName: 'Test Project',
+    })
+
+    const parent = db
+      .prepare("SELECT id FROM nodes WHERE graph_id = ? AND title = 'P1'")
+      .get(onlineGraph.id) as { id: string }
+    const rows = db
+      .prepare('SELECT title, sort_index FROM nodes WHERE parent_id = ? ORDER BY sort_index')
+      .all(parent.id) as { title: string; sort_index: number }[]
+
+    expect(rows.map((r) => r.title)).toEqual(['C1', 'C2', 'C3'])
+    expect(rows.map((r) => r.sort_index)).toEqual([0, 1, 2])
+  })
+})
+```
+
+⚠️ `initFromProject` 给 online 与 dev 两张图**各写一遍节点**，所以查询必须限定到一张图（上面用 `graph_id` 找父节点、再按 `parent_id` 取子节点）——否则 dev 图的同名节点会混进来。
+
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`
-Expected: FAIL —— 当前不建边
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/main/services/__tests__/graph-service-sort-index.test.ts`
+Expected: 两个都 FAIL —— 渲染层当前不建边；主进程扫描路径当前不写 `sort_index`（兄弟的 `sort_index` 全是 NULL）
 
 - [ ] **Step 3: Make handleAddChild build the edge**
 
@@ -1255,7 +1360,21 @@ for (const nodeData of graphResult.nodes) {
 
 这让 AI 生成路径不依赖 `graphResult.edges` 里是否带了层级边——`parent_id` 有就一定有层级边。
 
-⚠️ 上面的代码是**示意**。`insertEdgeStmt` 的列顺序与占位符数量必须照 `graph-service.ts` 里那条语句的**实际定义**写——照抄示意里的参数顺序会把 `edge_type` 写进别的列。实施时先读那条 INSERT 语句的真实绑定顺序。
+⚠️ 上面的代码是**示意**。`insertEdgeStmt` 的列顺序与占位符数量必须照 `graph-service.ts` 里那条语句的**实际定义**写——照抄示意里的参数顺序会把 `edge_type` 写进别的列。实施时先读那条语句的真实绑定顺序。
+
+---
+
+⚠️ **第二轮要一起写 `sort_index`（spec §4.8）——这条路径绕过了 `NodeRepository.create()`**
+
+`graph-service.ts:428` 的 `createNodes` 是**裸 SQL 写入**：自己 `prepare` INSERT、自己 `UPDATE parent_id`，**不经过 `NodeRepository`**。所以 Task 11 给 `NodeRepository.create()` / `createBatch()` 补的「新建子节点取 `max(兄弟) + 1`」**覆盖不到这条路径**。不写的话，这条路径建出来的子节点 `sort_index` 全是 NULL，后果是**兄弟顺序错乱**：
+
+- 画布布局把 `sortIndex` 为 `undefined` 的节点排在**最后**（Task 11 的兜底规则）。用户随后手动加一个子节点 C3（Task 11 给了它 `COALESCE(MAX(sort_index), -1) + 1`——而兄弟全是 NULL，`MAX` 返回 NULL，`COALESCE` 兜到 -1 → C3 拿到 **0**）→ 布局把 C3 排到**最前**，C1/C2（undefined）排到最后 → **后建的节点跑到了前面**。
+- 下次启动的迁移（R-11 修法后只补 NULL）也救不回来：本路径的节点有层级边（第四轮补的）→ 落在 tier-0 → 按边 rowid 排出 `C1=0, C2=1`，而 C3 已经**占着 0** → 撞号，顺序仍然不确定。
+
+实现要点：
+- **第二轮**（`graph-service.ts:489-497` 写 `parent_id` 的那轮）里，同一父节点的多个子节点要拿**连续**的 `sort_index`（0, 1, 2…）——批内递增，不要每个子节点都去查一次库。
+- 基准值 = 该父节点**已有**子节点的最大 `sort_index` + 1，写法 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL）。本方法建的是**全新图**（`initFromProject` 每次新建 online/dev 两张图），所以通常是 0 起步，但基准值仍要按公式取，不要写死 0。
+- **兄弟顺序 = `graphResult.nodes` 里同父节点的「出现顺序」**（analyzer 的 dagre 布局顺序）。它同时也是第四轮补边的插入顺序——两者必须一致，否则迁移按边 rowid 排出的顺序会与 `sort_index` 打架（R-11 的教训：两套顺序源必须同源）。
 
 - [ ] **Step 5: Add cycle checks to the AI write path**
 
@@ -1267,13 +1386,13 @@ for (const nodeData of graphResult.nodes) {
 
 - [ ] **Step 6: Run test to verify it passes**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/ src/main/ipc/__tests__/mindmap.test.ts`
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/ src/main/ipc/__tests__/mindmap.test.ts src/main/services/__tests__/graph-service-sort-index.test.ts`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/hooks/__tests__/ src/main/project-analyzer.ts src/main/services/graph-service.ts
+git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/hooks/__tests__/ src/main/project-analyzer.ts src/main/services/graph-service.ts src/main/services/__tests__/graph-service-sort-index.test.ts
 git commit -m "fix(canvas): 手动加子节点补建层级边，AI 与扫描路径边类型化"
 ```
 
