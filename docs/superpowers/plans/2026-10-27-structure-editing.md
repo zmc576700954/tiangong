@@ -1935,11 +1935,11 @@ reparentNode: async (nodeId, newParentId) => {
 - [ ] **Step 5: Wire it into GraphCanvas**
 
 `src/renderer/canvas/GraphCanvas.tsx`：
-- 现有的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`（:1144-1146）已是力导向布局的钩子，**需与拖拽重挂共存**：拖拽时既跑力导向 reheat，也跑重挂候选检测
+- 现有的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`（:1182-1184）已是力导向布局的钩子，**需与拖拽重挂共存**：拖拽时既跑力导向 reheat，也跑重挂候选检测
 - `onNodeDragStop` 时若候选有效，跳过原有的位置持久化逻辑（由 `reparentNode` 返回的 `movedPositions` 统一写位置）；否则走原有的位置持久化
 - 候选命中时给目标节点加高亮样式（新增 `data.isReparentTarget` / `data.isReparentTargetValid` 属性传给 `BizNode`）
 
-⚠️ **高亮状态怎么进 `flowNodes`**：不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。正确做法：把 `candidate?.nodeId`（`string | null`）与 `candidate?.valid`（`boolean | undefined`）当作**原始值**放进 `flowNodes` 的 useMemo **依赖数组**和它的缓存 key 里（key 是 `JSON.stringify([...])` 的成员列表，见 :535-551），在 useMemo 内部给命中的那个节点加 `data.isReparentTarget`。原始值引用稳定，放进依赖数组安全。
+⚠️ **高亮状态怎么进 `flowNodes`**：不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发 → 无限重渲染循环。正确做法：把 `candidate?.nodeId`（`string | null`）与 `candidate?.valid`（`boolean | undefined`）当作**原始值**放进 `flowNodes` 的 useMemo **依赖数组**和它的缓存 key 里（key 是 `JSON.stringify([...])` 的成员列表，见 :545-557），在 useMemo 内部给命中的那个节点加 `data.isReparentTarget`。原始值引用稳定，放进依赖数组安全。
 
 `src/renderer/canvas/BizNode.tsx`：新增高亮样式——合法候选用绿色边框，非法候选用红色边框。
 
