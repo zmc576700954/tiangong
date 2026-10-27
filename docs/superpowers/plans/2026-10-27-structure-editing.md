@@ -1164,7 +1164,25 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 
 - [ ] **Step 1: Write the failing test**
 
-`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts:132`，闭包在 `:41-460` 内）。**先把它提升到模块作用域并 `export`**——它和它依赖的 `validateNodeContent`（`:91`）、`MAX_TITLE_LEN` / `MAX_DESCRIPTION_LEN`（`:71-72`）都是纯函数，不依赖任何闭包变量，提升是安全的。
+`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts:132`，闭包在 `:42-` 内）。**先把它提升到模块作用域并 `export`**——它和它依赖的纯函数不依赖任何**运行时**闭包变量，提升是安全的。
+
+⚠️ **要一起提升的闭包内声明有 8 个，不止 brief 早先写的 3 个**（控制器实测 `src/main/ipc/graph.ts`）：
+
+| 闭包内声明 | 位置 |
+|---|---|
+| `NODE_STATUS_VALUES` | `:69` |
+| `GRAPH_TYPE_VALUES` | `:70` |
+| `MAX_TITLE_LEN` | `:71` |
+| `MAX_DESCRIPTION_LEN` | `:72` |
+| `isValidPosition` | `:74` |
+| `isValidNodeType` | `:83` |
+| `isPlainObject` | `:87` |
+| `validateNodeContent` | `:91` |
+
+（`ensureString` / `ensureOptionalNumber` / `MAX_ID_LEN` 来自 `./utils`，`VALID_NODE_TYPES` / `nodeTypeRegistry` /
+`IpcError` / `ErrorCode` 都是模块作用域的 import —— **不用动**。）
+
+`validateNodeCreate` 仍在闭包内，它引用这些提升后的模块级常量没有问题。
 
 然后在 `src/main/ipc/__tests__/` 下新建 `graph-node-update.test.ts` 直接测它——主进程测试跑在 vitest 的 `node` 环境，没有 `window`，走 `window.electronAPI` 的写法跑不起来：
 
