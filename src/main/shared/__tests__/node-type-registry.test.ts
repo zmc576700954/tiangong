@@ -81,8 +81,13 @@ describe('nodeTypeRegistry', () => {
    * 下面两条用「探针类型」把**父侧**检查单独拎出来：
    * 探针的 allowedParentTypes 明确允许该父节点 → 子侧必然放行，
    * 所以结果为 false 只能来自父侧的 allowedChildTypes。
-   * 没有它们的话，删掉 feature / bug 的 allowedChildTypes 这一行，
-   * 整套用例仍然全绿（子侧照样把非法父子关系拒掉）。
+   * 它们的作用是证明父侧检查确实在生效——父侧检查若被整体去掉，这两条会红。
+   *
+   * ⚠️ 它们**不是**内置表那两行的钉子：
+   * feature 的 allowedChildTypes 行由「feature can have bug children」行为钉住；
+   * bug 的 allowedChildTypes 行由「every builtin type explicitly declares
+   * allowedChildTypes」结构钉住——归一化之后「没写」与「写了空数组」运行期等价，
+   * 没有任何行为断言能区分二者。
    */
   it('bug rejects a child whose allowedParentTypes permits bug', () => {
     nodeTypeRegistry.register({
