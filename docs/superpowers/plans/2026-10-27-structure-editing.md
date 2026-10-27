@@ -890,10 +890,13 @@ m1 (module,  parent p1)
 m2 (module,  parent p1)
 c1 (process, parent m1)
 f1 (feature, parent c1)
+c3 (process, parent m2)
 
-edges（4 条初始层级边，与 parent_id 一致）:
-(p1,m1) (m1,c1) (c1,f1) (p1,m2)
+edges（5 条初始层级边，与 parent_id 一致）:
+(p1,m1) (m1,c1) (c1,f1) (p1,m2) (m2,c3)
 ```
+
+⚠️ `c3` 存在的唯一理由：它给 `m2` 提供了**另一个**子节点。Step 4 的验收条件之一是「平移后的子树**不与目标父节点的其他子节点重叠**」——没有 `c3` 这条条件就是空断言，测不出任何东西。`c3` 的 `sort_index` 为 0（它是 `m2` 的第一个子节点）。
 
 ⚠️ **这个测试必须用真实库（`initDatabase()`），不要手搓「最小 schema」**
 
@@ -989,8 +992,21 @@ describe('HierarchyService.reparent', () => {
     const row = db.prepare("SELECT sort_index FROM nodes WHERE id='m2'").get() as { sort_index: number }
     expect(row.sort_index).toBeGreaterThan(0)
   })
+
+  it('places the moved subtree clear of the new parent other children', () => {
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('c1', 'm2')
+    const sibling = db.prepare(
+      "SELECT position_x, position_y FROM nodes WHERE id='c3'"
+    ).get() as { position_x: number; position_y: number }
+    for (const moved of res.movedPositions) {
+      expect(moved.x === sibling.position_x && moved.y === sibling.position_y).toBe(false)
+    }
+  })
 })
 ```
+
+⚠️ 最后这个用例断言的是 Step 4 的验收条件「**不与目标父节点的其他子节点重叠**」——它只断言「**坐标不完全相同**」，**不**指定平移方向或具体落点（向下、向右都行），所以它约束的是**验收条件**而不是**实现方式**。子节点间相对位置是否保持（刚性平移）由复审读代码判断，不在测试里钉死。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1075,7 +1091,7 @@ export function isDescendant(
 - [ ] **Step 5: Run test to verify it passes**
 
 Run: `npx vitest run src/main/services/__tests__/hierarchy-service.test.ts`
-Expected: PASS（8 个用例全绿）
+Expected: PASS（9 个用例全绿）
 
 - [ ] **Step 6: Register the IPC**
 
