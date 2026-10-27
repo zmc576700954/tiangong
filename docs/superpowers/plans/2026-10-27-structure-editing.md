@@ -1148,7 +1148,7 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 ## Task 7: 关闭 `node:update` 与 Yjs 远端路径的 parentId 旁路
 
 **Files:**
-- Modify: `src/main/ipc/graph.ts`（`validateNodeUpdate`，:131）
+- Modify: `src/main/ipc/graph.ts`（`validateNodeUpdate`，:132）
 - Modify: `src/main/repositories/node-repository.ts`（清理 `updateParentId`，:210；给 `update()` 加防环校验）
 - Modify: `src/main/realtime/yjs-manager.ts`（`insertRemoteNode`，:212）
 - Test: `src/main/ipc/__tests__/graph-node-update.test.ts`（新建）
@@ -1164,7 +1164,7 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 
 - [ ] **Step 1: Write the failing test**
 
-`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts:131`，闭包在 `:41-460` 内）。**先把它提升到模块作用域并 `export`**——它和它依赖的 `validateNodeContent`（`:90`）、`MAX_TITLE_LEN` / `MAX_DESCRIPTION_LEN`（`:70-71`）都是纯函数，不依赖任何闭包变量，提升是安全的。
+`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts:132`，闭包在 `:41-460` 内）。**先把它提升到模块作用域并 `export`**——它和它依赖的 `validateNodeContent`（`:91`）、`MAX_TITLE_LEN` / `MAX_DESCRIPTION_LEN`（`:71-72`）都是纯函数，不依赖任何闭包变量，提升是安全的。
 
 然后在 `src/main/ipc/__tests__/` 下新建 `graph-node-update.test.ts` 直接测它——主进程测试跑在 vitest 的 `node` 环境，没有 `window`，走 `window.electronAPI` 的写法跑不起来：
 
@@ -1192,7 +1192,7 @@ Expected: FAIL —— 当前 `node:update` 接受 `parentId`
 
 - [ ] **Step 3: Block parentId in validateNodeUpdate**
 
-`src/main/ipc/graph.ts` 的 `validateNodeUpdate`（:131，已在 Step 1 提升到模块作用域）里加：
+`src/main/ipc/graph.ts` 的 `validateNodeUpdate`（:132，已在 Step 1 提升到模块作用域）里加：
 
 ```ts
     if (node.parentId !== undefined) {
