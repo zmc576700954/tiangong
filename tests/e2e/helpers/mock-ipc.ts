@@ -189,6 +189,16 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
           ? { invocationId: 'inv_test_001', resultText: mockState.invocationResultText ?? 'E2E subagent result', resultFiles: [], tokensUsed: 0, durationMs: 100 }
           : null,
 
+      // Realtime (Yjs awareness) —— GraphCanvas 挂载时**必调**这两个通道。
+      // 缺通道不是「少个功能」：`window.electronAPI['realtime:getIdentity']` 是 undefined，
+      // 调用它会**同步**抛 TypeError（`.catch()` 接不住同步 throw）→ React 卸载整棵树
+      // → 画布白屏 → 所有等 `[data-testid="graph-canvas"]` 的用例全部超时。
+      // 这两个通道是 `73700b3`（Yjs Awareness）引入的，mock 当时没跟上，
+      // 于是浏览器 e2e 从那以后就一直是坏的 —— 与结构编辑批次无关。
+      // `started: false` = 主进程没起 awareness server → 渲染端不建连接，e2e 不需要它。
+      'realtime:getIdentity': async () => ({ userId: 'e2e-user', userName: 'E2E User', colorIndex: 0 }),
+      'realtime:getConnectionInfo': async () => ({ wsUrl: '', port: 0, started: false }),
+
       // Settings
       'settings:read': async () => ({ defaultModel: 'sonnet' }),
       'settings:getAdapterPreferences': async () => ({
