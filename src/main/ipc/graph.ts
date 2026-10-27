@@ -15,6 +15,7 @@ import type { GraphNode, BugNode, GraphType, NodeStatus, GraphFetchOptions } fro
 import { validateBugTransition } from '@shared/state-machine'
 import { WikiIndexService } from '../services/wiki-index-service'
 import { WikiLinkService } from '../services/wiki-link-service'
+import { HierarchyService } from '../services/hierarchy-service'
 import { GraphComputeService } from '../wiki/graph-compute-service'
 import { GraphLintService } from '../wiki/graph-lint-service'
 import { LintFixService } from '../wiki/lint-fix-service'
@@ -204,6 +205,15 @@ export function registerGraphHandlers(
 
   typedHandle('graph:derive', async (_, sourceGraphId: string, name?: string) => {
     return graphService.deriveGraph(sourceGraphId, name)
+  })
+
+  // 换父 —— 父子关系变更的唯一入口。
+  // 校验（自环 / 跨图 / 防环 / 父子类型）与事务都在 HierarchyService 里，
+  // 渲染层不再自己拼 parent_id + sort_index + 层级边的写操作。
+  typedHandle('graph:reparent', async (_, nodeId: string, newParentId: string) => {
+    ensureString('nodeId', nodeId, MAX_ID_LEN)
+    ensureString('newParentId', newParentId, MAX_ID_LEN)
+    return new HierarchyService(db).reparent(nodeId, newParentId)
   })
 
   // ---------- 节点操作 ----------

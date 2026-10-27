@@ -182,6 +182,22 @@ export interface GraphEdge {
   content?: EdgeContent
 }
 
+/**
+ * reparent 结果 —— 父子关系变更后的落点
+ *
+ * 渲染层用它做动画：movedPositions 列出被移动的节点**及其全部后代**的最新坐标。
+ */
+export interface ReparentResult {
+  /** 被移动的节点 */
+  nodeId: string
+  /** 原来的父节点（根节点为 null） */
+  oldParentId: string | null
+  /** 新的父节点 */
+  newParentId: string
+  /** 被移动的节点及其全部后代的最新位置 */
+  movedPositions: Array<{ id: string; x: number; y: number }>
+}
+
 /** 图定义 */
 export interface Graph {
   id: string

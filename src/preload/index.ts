@@ -21,6 +21,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'graph:get',
   'graph:delete',
   'graph:derive',
+  'graph:reparent',
 
   // Node operations
   'node:create',
