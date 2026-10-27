@@ -32,4 +32,9 @@ describe('edge-utils', () => {
     const marker = getEdgeMarkerEnd('success') as { color: string }
     expect(marker.color).toBe(edgeTypeConfig.success.color)
   })
+
+  it('supports hierarchical edge type in config', () => {
+    expect(edgeTypeConfig.hierarchical).toBeDefined()
+    expect(edgeTypeConfig.hierarchical.color).toMatch(/^#/)
+  })
 })

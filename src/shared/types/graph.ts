@@ -49,7 +49,7 @@ export type NodeType =
 export type GraphType = 'online' | 'dev'
 
 /** 边类型 */
-export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change' | 'wiki-link'
+export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change' | 'wiki-link' | 'hierarchical'
 
 /** 业务规则（作为流程节点的属性） */
 export interface BusinessRule {
@@ -372,7 +372,7 @@ export interface ProjectMemory {
 export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
 export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page'] as const
 export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
-export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link'] as const
+export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
 

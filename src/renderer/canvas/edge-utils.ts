@@ -12,6 +12,7 @@ export const edgeTypeConfig: Record<EdgeType, { color: string; animated?: boolea
   dependency: { color: '#22c55e' },
   'co-change': { color: '#f97316', strokeDasharray: '2 4' },
   'wiki-link': { color: '#8b5cf6', strokeDasharray: '4 4' },
+  hierarchical: { color: '#94a3b8' },
 }
 
 export function createMarkerEnd(color: string): Edge['markerEnd'] {
