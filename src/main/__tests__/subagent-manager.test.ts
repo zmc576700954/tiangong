@@ -240,6 +240,49 @@ describe('SubagentManager', () => {
     expect(callArg.allowedFiles).toEqual(['src/a.ts', 'src/b.ts'])
   })
 
+  it('子会话继承父会话黑名单（黑名单靠提示词执行，不能在派发时丢掉）', async () => {
+    mockManager.getSessionState.mockReturnValue({
+      config: {
+        workingDirectory: '/tmp',
+        allowedFiles: ['src/a.ts', 'src/b.ts'],
+        forbiddenFiles: ['src/secret.ts'],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: '',
+        acceptanceCriteria: [],
+      },
+      broadcastName: 'mock',
+      adapterName: 'mock',
+      startTime: Date.now(),
+    })
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', {
+            type: 'complete',
+            data: 'done',
+            timestamp: 0,
+          }),
+        0,
+      )
+    })
+
+    await mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'implement', // subset 策略 + 可写工具
+      description: 'd',
+      prompt: 'p',
+      allowedFiles: ['src/a.ts'],
+    })
+
+    const callArg = mockManager.startSession.mock.calls[0][1]
+    // 子会话的白名单收敛到父白名单的子集
+    expect(callArg.allowedFiles).toEqual(['src/a.ts'])
+    // 黑名单必须继承 —— 它唯一的执行手段就是随 prompt 下发
+    expect(callArg.forbiddenFiles).toEqual(['src/secret.ts'])
+  })
+
   it('cancel terminates active session and updates repo', async () => {
     // Start an invocation that won't complete on its own
     const promise = mgr

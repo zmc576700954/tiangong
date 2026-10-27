@@ -905,8 +905,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
-   * 稳定前缀：系统指令 + 会话摘要 + scope 约束 + 项目记忆。
+   * 稳定前缀：系统指令 + scope 约束 + 项目记忆。
    * 跨轮逐字节一致，可被 KV-cache 复用 —— 进 system 通道。
+   *
+   * 优先用编排器投递的 promptContext.stable；**没有投递时**（子代理派发 /
+   * 直接 sendCommand / 替换会话恢复等路径）从 session.config 自建 scope ——
+   * 白名单 / 黑名单这类约束必须随 prompt 下发：黑名单唯一的执行手段就是提示词
+   * （没有 OS 级兜底），提示词一丢这条安全约束就静默消失。
    *
    * 透明转发会话（A2A 入站）返回空串：不注入任何 BizGraph 内部状态
    * （CLAUDE.md Boundaries §3）。
@@ -914,7 +919,11 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   protected buildScopePromptForSession(session: AgentSession): string {
     if (session.config.transparentForward) return ''
-    return session.promptContext?.stable ?? ''
+    const stable = session.promptContext?.stable
+    if (stable) return stable
+    const scope = this.buildScopePrompt(session.config)
+    const summary = session.config.contextSummary
+    return summary ? `${summary}\n\n${scope}` : scope
   }
 
   /**

@@ -55,7 +55,11 @@ class TestAdapter extends BaseAdapter {
     return session
   }
 
-  protected async doSendCommand(): Promise<void> {
+  /** 每次投递实际构造出的 prompt —— 用于断言「投递给 Agent 的内容」而非内部构造器 */
+  public lastPrompts: string[] = []
+
+  protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
+    this.lastPrompts.push(this.buildFullPrompt(session, command))
     this.emitOutput({
       type: 'stdout',
       data: `${this.name} output`,
@@ -273,6 +277,73 @@ describe('AgentManager', () => {
     it('should throw for unknown session', async () => {
       await expect(manager.sendCommand('unknown', { type: 'implement', description: 'test', targetNodeId: 'n1' }))
         .rejects.toThrow(SessionNotFoundError)
+    })
+
+    it('直接 sendCommand 也投递 scope 约束（白名单 / 黑名单 / 业务不变量）', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession(
+        'test-adapter',
+        mockConfig({
+          allowedFiles: ['src/index.ts'],
+          forbiddenFiles: ['src/secret.ts'],
+          invariantRules: ['INV-RULE-XYZ'],
+        }),
+      )
+
+      // 会话历史记忆走 MemoryStore → 需要 DB；单测没有 DB，短路这一段。
+      const historySpy = vi
+        .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+        .mockResolvedValue(undefined)
+
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'cmd',
+        targetNodeId: 'n1',
+      })
+
+      // 断言的是**投递给 Agent 的 prompt**，不是内部构造器 ——
+      // scope 提示词整体消失正是投递路径上的回归。
+      const prompt = adapter.lastPrompts.at(-1) ?? ''
+      expect(prompt).toContain('## 允许修改的文件（白名单）')
+      expect(prompt).toContain('src/index.ts')
+      expect(prompt).toContain('## 禁止修改的文件（黑名单）')
+      expect(prompt).toContain('src/secret.ts')
+      expect(prompt).toContain('INV-RULE-XYZ')
+      expect(prompt).toContain('Test Node')
+
+      historySpy.mockRestore()
+    })
+
+    it('上一轮的 turn 段不会被下一轮复用（直接投递路径重新装配）', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+
+      const historySpy = vi
+        .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+        .mockResolvedValueOnce('TURN-MARK-FIRST')
+        .mockResolvedValue('TURN-MARK-SECOND')
+
+      await manager.resolveAndSendCommand(sessionId, {
+        type: 'implement',
+        description: 'first',
+        targetNodeId: 'n1',
+      })
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'second',
+        targetNodeId: 'n1',
+      })
+
+      const prompts = adapter.lastPrompts
+      expect(prompts).toHaveLength(2)
+      expect(prompts[0]).toContain('TURN-MARK-FIRST')
+      // turn 是「本轮上下文」，跨命令复用会把上一轮的编译上下文带进下一轮。
+      expect(prompts[1]).not.toContain('TURN-MARK-FIRST')
+      expect(prompts[1]).toContain('TURN-MARK-SECOND')
+
+      historySpy.mockRestore()
     })
   })
 

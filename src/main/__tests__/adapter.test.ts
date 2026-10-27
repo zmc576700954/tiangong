@@ -40,9 +40,12 @@ class TestAdapter extends BaseAdapter {
     return session
   }
 
-  protected async doSendCommand(): Promise<void> {
-    // no-op for test
+  protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
+    // 捕获真正投递给 Agent 的 prompt —— 断言投递内容，而不是构造器
+    this.lastPrompt = this.buildFullPrompt(session, command)
   }
+
+  public lastPrompt = ''
 
   getMockProcess(): ChildProcess | undefined {
     return this.mockProc
@@ -229,6 +232,67 @@ describe('BaseAdapter - Scope Prompt', () => {
     expect(prompt).not.toContain('上游契约')
     expect(prompt).not.toContain('下游契约')
     expect(prompt).not.toContain('待修复 Bug')
+  })
+})
+
+describe('BaseAdapter — scope 兜底（编排器未投递 promptContext 时）', () => {
+  let adapter: TestAdapter
+
+  beforeEach(() => {
+    adapter = new TestAdapter()
+  })
+
+  afterEach(() => {
+    adapter.cleanup()
+  })
+
+  it('没有 promptContext 时，sendCommand 仍从 session.config 自建 scope', async () => {
+    const session = await adapter.startSession({
+      workingDirectory: '/project',
+      nodeTitle: 'Auth Module',
+      acceptanceCriteria: [],
+      allowedFiles: ['src/auth.ts'],
+      forbiddenFiles: ['src/payment.ts'],
+      invariantRules: ['Must use JWT'],
+      upstreamContext: '',
+      downstreamContext: '',
+    })
+
+    await adapter.sendCommand(session.id, {
+      type: 'implement',
+      description: 'cmd',
+      targetNodeId: 'n1',
+    })
+
+    // 黑名单唯一的执行手段就是提示词 —— 提示词一丢这条安全约束就静默消失。
+    expect(adapter.lastPrompt).toContain('## 允许修改的文件（白名单）')
+    expect(adapter.lastPrompt).toContain('src/auth.ts')
+    expect(adapter.lastPrompt).toContain('## 禁止修改的文件（黑名单）')
+    expect(adapter.lastPrompt).toContain('src/payment.ts')
+    expect(adapter.lastPrompt).toContain('Must use JWT')
+  })
+
+  it('透明转发会话不注入任何 scope', async () => {
+    const session = await adapter.startSession({
+      workingDirectory: '/project',
+      nodeTitle: 'Auth Module',
+      acceptanceCriteria: [],
+      allowedFiles: ['src/auth.ts'],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      transparentForward: true,
+    })
+
+    await adapter.sendCommand(session.id, {
+      type: 'implement',
+      description: 'cmd',
+      targetNodeId: 'n1',
+    })
+
+    expect(adapter.lastPrompt).not.toContain('白名单')
+    expect(adapter.lastPrompt).not.toContain('src/auth.ts')
   })
 })
 

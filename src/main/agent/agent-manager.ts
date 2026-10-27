@@ -559,10 +559,20 @@ export class AgentManager {
   //                     Public: sendCommand / resolveAndSendCommand
   // ===================================================================
 
-  async sendCommand(sessionId: string, command: AgentCommand): Promise<void> {
+  async sendCommand(
+    sessionId: string,
+    command: AgentCommand,
+    options?: { contextAssembled?: boolean },
+  ): Promise<void> {
     const adapter = this.router.resolve(sessionId)
     if (!adapter) {
       throw new SessionNotFoundError(sessionId)
+    }
+    // 框架级不变量：任何投递给 Agent 的路径都必须携带 scope 约束与**当轮**上下文。
+    // resolveAndSendCommand 已在调用前装配过 —— 标记跳过，避免重复装配覆盖它那份
+    // 更完整的上下文（带 contextRefs 解析出的附加上下文）。
+    if (!options?.contextAssembled) {
+      await this.ensurePromptContext(sessionId, command, adapter)
     }
     return withSpan(
       'bizgraph.agent.command',
@@ -648,7 +658,7 @@ export class AgentManager {
       adapter.setPromptContext(sessionId, assembled.context)
     }
 
-    await this.sendCommand(sessionId, command)
+    await this.sendCommand(sessionId, command, { contextAssembled: true })
 
     const state = this.sessionStates.get(sessionId)
     if (state) {
@@ -658,6 +668,54 @@ export class AgentManager {
         promptTokenEstimate: assembled.totalTokens,
         contextCount: resolvedContexts.length,
       })
+    }
+  }
+
+  /**
+   * 兜底装配 prompt 上下文。
+   *
+   * 直接走 sendCommand 的路径（子代理派发 / 校验 / 替换会话恢复 / 无附加上下文的
+   * 聊天）不经过 resolveAndSendCommand 的装配 —— 结果是 scope 约束（白名单 /
+   * 黑名单 / 业务不变量 / 验收标准）整体不投递。而黑名单没有 OS 级兜底，
+   * 提示词一丢这条安全约束就静默消失。
+   *
+   * 这里补上装配，把「任何投递路径都带 scope」从调用方的自觉变成框架的保证；
+   * 同时每轮重新装配，turn 段（编译上下文 / 会话历史 / 水位线）不会跨轮复用。
+   */
+  private async ensurePromptContext(
+    sessionId: string,
+    command: AgentCommand,
+    adapter: AgentAdapter,
+  ): Promise<void> {
+    const state = this.sessionStates.get(sessionId)
+    // 适配器实时配置里可能有 manager 启动快照没有的 contextSummary（压缩摘要）。
+    const liveConfig = adapter.getSessionConfig?.(sessionId)
+    const sessionConfig = liveConfig ?? state?.config
+    // A2A 透明转发：不注入任何 BizGraph 内部状态（CLAUDE.md Boundaries §3）
+    if (!sessionConfig || sessionConfig.transparentForward) return
+    try {
+      const { resolvedContexts, assembled } = await this.assembler.assemble({
+        sessionId,
+        command,
+        adapterName: state?.adapterName ?? adapter.name,
+        sessionConfig,
+        contextRefs: undefined,
+        nodes: undefined,
+        optimalBudget: this.getOptimalPromptBudget(command.type),
+      })
+      adapter.setPromptContext(sessionId, assembled.context)
+      if (state) {
+        state.promptTokenEstimate = assembled.totalTokens
+        state.contextCount = resolvedContexts.length
+      }
+    } catch (err) {
+      logger.warn(`[Prompt] fallback assembly failed for ${sessionId}: ${err}`)
+      // 装配失败：清空可能过期的上下文，让适配器退回 session.config 自建的 scope。
+      try {
+        adapter.setPromptContext(sessionId, { stable: '', turn: '' })
+      } catch {
+        // 适配器里没有这个会话 —— 适配器层会用它自己的兜底
+      }
     }
   }
 
