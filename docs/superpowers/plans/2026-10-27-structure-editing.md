@@ -64,10 +64,11 @@
 | `src/shared/i18n/index.ts` | `HandBuiltEdgeType` 排除 `'hierarchical'`（内部类型，不进用户可选下拉） |
 | `src/main/database.ts` | `edges` CHECK 增 `'hierarchical'`；`nodes` 加 `sort_index` / `collapsed` 列；`CURRENT_SCHEMA_VERSION` 16→17；接入迁移调用 |
 | `src/main/errors.ts` | 新增 4 个 `HIERARCHY_*` 错误码 + `HierarchyError` 类 |
-| `src/main/repositories/node-repository.ts` | `rowToNode` 映射新列；`update()` 支持写新列；`delete()` 处理子节点；删 `updateParentId` |
+| `src/main/repositories/node-repository.ts` | `rowToNode` 映射新列；`update()` 支持写新列，且写 `parent_id` 前做防环校验；`delete()` 处理子节点；删 `updateParentId` |
 | `src/main/repositories/graph-repository.ts` | `cloneGraphNodes` 补新列 + `hierarchical` 边重映射；`rowToNode` 映射新列 |
 | `src/main/shared/node-type-registry.ts` | 补全 `feature` / `bug` 的 `allowedChildTypes` |
 | `src/main/ipc/graph.ts` | 注册 `graph:reparent`；`validateNodeUpdate` 拒绝 `parentId` |
+| `src/main/realtime/yjs-manager.ts` | 远端插入拒绝自环（`insertRemoteNode`） |
 | `src/main/ipc-handlers.ts` | 调用 `registerNodeTypeIpcHandlers(typedHandle)` |
 | `src/shared/types/ipc.ts` | `IpcApi` 增两个通道签名 |
 | `src/preload/index.ts` | `exposedChannels` 增两个通道 |
@@ -1062,20 +1063,22 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 
 ---
 
-## Task 7: 关闭 `node:update` 的 parentId 旁路
+## Task 7: 关闭 `node:update` 与 Yjs 远端路径的 parentId 旁路
 
 **Files:**
 - Modify: `src/main/ipc/graph.ts`（`validateNodeUpdate`，:131）
-- Modify: `src/main/repositories/node-repository.ts`（清理 `updateParentId`，:210）
+- Modify: `src/main/repositories/node-repository.ts`（清理 `updateParentId`，:210；给 `update()` 加防环校验）
+- Modify: `src/main/realtime/yjs-manager.ts`（`insertRemoteNode`，:212）
 - Test: `src/main/ipc/__tests__/graph-node-update.test.ts`（新建）
+- Test: `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`（新建）
 
 **Interfaces:**
-- Consumes: Task 6 的 `ErrorCode.HIERARCHY_*`
-- Produces: `node:update` 拒绝携带 `parentId`；`nodeRepository.updateParentId` 移除
+- Consumes: Task 6 的 `ErrorCode.HIERARCHY_*`、`HierarchyError`（`src/main/errors.ts`）、`isDescendant`（`src/main/shared/hierarchy-utils.ts`）
+- Produces: `node:update` 拒绝携带 `parentId`；`nodeRepository.updateParentId` 移除；**Yjs 远端写入路径也过防环校验**
 
 已核实：仓库内**无任何现有调用方**传 `parentId` 给 `node:update`（`useNodeOperations.ts` 的 `handleEnrichNode` 只传 metadata/acceptanceCriteria/rules、`handleStartDev` 只传 status、NodeEditor 只读）。`nodeRepository.updateParentId` 零调用方，可直接删。
 
-⚠️ `node-repository.ts:163` 的 `if (data.parentId !== undefined) { updates.push('parent_id = ?') }` **要保留**——`graph:reparent` 走的是 `hierarchy-service.ts` 的裸 SQL，但 Yjs 远端更新路径（`bidirectional-sync.ts:67` → `nodeRepo.update`）仍经由 repository 层，删了会打断协作同步。
+⚠️ `node-repository.ts:163` 的 `if (data.parentId !== undefined) { updates.push('parent_id = ?') }` **要保留**——`graph:reparent` 走的是 `hierarchy-service.ts` 的裸 SQL，但 Yjs 远端更新路径（`bidirectional-sync.ts:67` → `nodeRepo.update`）仍经由 repository 层，删了会打断协作同步。**但要在这一处补防环校验**（Step 5）：这条分支是本地 `graph:reparent` 之外唯一能改 `parent_id` 的地方（另一处是 `yjs-manager.ts` 的远端插入），远端 peer 可以任意指定 `parentId`（spec §4.4.2）。
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1122,16 +1125,107 @@ Expected: FAIL —— 当前 `node:update` 接受 `parentId`
 
 删除 `src/main/repositories/node-repository.ts:210` 的 `updateParentId` 方法（零调用方）。
 
-- [ ] **Step 5: Verify no caller broke**
+- [ ] **Step 5: Guard the Yjs remote write paths against cycles**
 
-Run: `npx tsc --noEmit && npx vitest run src/main/ipc/__tests__/ src/renderer/store/__tests__/`
+spec §4.4.2 与批次 2 第 14 项要求「Yjs / AI 写入路径补防环校验」。AI 路径由 Task 8 覆盖；**Yjs 路径在本任务补上**（计划原先漏了这个任务，此处补齐）。
+
+仓库里写 `parent_id` 的地方一共四处，本任务之前只剩这一处没有护栏：
+
+| 路径 | 位置 | 本任务之后 |
+|---|---|---|
+| `node:update` IPC | `ipc/graph.ts:246` → `nodeRepo.update` | Step 3 在 IPC 层拒绝 `parentId` ✓ |
+| Yjs 远端**更新** | `realtime/yjs-manager.ts:200` → `nodeRepo.update(id, payload)` | **本步（repository 层）** ✓ |
+| 快照双向同步 | `realtime/snapshot/bidirectional-sync.ts:67` → `target.nodeRepo.update(change.id, nodeData)` | **本步（同一个 repository 方法）** ✓ |
+| Yjs 远端**插入** | `realtime/yjs-manager.ts:255`（`insertRemoteNode` 的裸 INSERT） | **本步（自环）** ✓ |
+
+**改法 A —— `NodeRepository.update()` 加校验（覆盖两条更新路径）**
+
+`src/main/repositories/node-repository.ts:163` 的分支保留（Yjs 远端同步要能改 parent），但在 push 进 `updates` **之前**加校验：
+
+```ts
+if (data.parentId !== undefined) {
+  // 防环：远端 peer 可以任意指定 parentId（spec §4.4.2）。
+  // 本地 graph:reparent 已收敛到 hierarchy-service.ts 的单一入口，
+  // 这里是剩下最后一个未受控的 parent_id 写入点。
+  if (data.parentId === id) {
+    throw new HierarchyError(
+      `Node cannot be its own parent: ${id}`,
+      ErrorCode.HIERARCHY_SELF_PARENT,
+    )
+  }
+  if (
+    data.parentId &&
+    isDescendant(id, data.parentId, (nid) => this.getParentId(nid))
+  ) {
+    throw new HierarchyError(
+      `Reparent would create a cycle: ${id} -> ${data.parentId}`,
+      ErrorCode.HIERARCHY_CYCLE,
+    )
+  }
+  updates.push('parent_id = ?'); args.push(data.parentId)
+}
+```
+
+⚠️ `isDescendant(ancestorId, childId, parentOf)` 的**参数顺序**见 Task 6 Step 4：先「祖先」后「后代」。这里问的是「`data.parentId` 是不是 `id` 的后代」→ 传 `(id, data.parentId)`。
+
+本文件加一个取父节点的私有方法：
+
+```ts
+private getParentId(id: string): string | null {
+  const row = this.db.prepare('SELECT parent_id FROM nodes WHERE id = ?').get(id) as
+    | { parent_id: string | null }
+    | undefined
+  return row?.parent_id ?? null
+}
+```
+
+导入：`import { isDescendant } from '../shared/hierarchy-utils'`、`import { ErrorCode, HierarchyError } from '../errors'`（`ErrorCode` 与 `HierarchyError` 都加在 `src/main/errors.ts`）。
+
+⚠️ **只加防环，不加类型校验**（spec §4.4.2 的取舍）：远端 peer 的父子类型组合留待协作功能真正启用时再校验。
+
+⚠️ **不要**在这里加类型/跨图校验——那是 `graph:reparent` 的职责（Task 6）。Step 3 已经在 IPC 层挡掉了 `parentId`，本步的校验只是给 Yjs 路径兜底。
+
+**改法 B —— 远端插入的自环防护**
+
+`src/main/realtime/yjs-manager.ts` 的 `insertRemoteNode`（:212）把远端 payload 直接 INSERT。**新节点还没有后代**，所以远端插入不可能造成「指向自己后代」的环——唯一可能的环是**自环**（`payload.parentId === payload.id`）。
+
+自环一旦写进去就**永久卡死**该节点：迁移的孤儿清理（`hierarchy-migration.ts:60-62`）不会清它（父节点就是它自己，存在），而之后任何 `graph:reparent` 都会被防环判成环 → 这个节点永远改不动。所以在 INSERT 之前拒绝：
+
+```ts
+if (node.parentId && node.parentId === node.id) {
+  throw new HierarchyError(
+    `Remote node cannot be its own parent: ${node.id}`,
+    ErrorCode.HIERARCHY_SELF_PARENT,
+  )
+}
+```
+
+`handleRemoteNodeChange` 的 `try/catch`（:195-205）会接住这个异常并记日志，**不会**写库。
+
+**测试**
+
+新建 `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`。用**真实 better-sqlite3**（electron mock + `initDatabase()`，照 `src/main/repositories/__tests__/node-repository.test.ts` 的现成模式）——防环要真的走 `nodes.parent_id` 查询，mock db 测不出来。
+
+用例（5 条）：
+
+1. `nodeRepo.update('c1', { parentId: 'f1' })`（`f1` 是 `c1` 的后代）→ 抛 `HIERARCHY_CYCLE`，且库里 `c1.parent_id` **没变**
+2. `nodeRepo.update('c1', { parentId: 'c1' })` → 抛 `HIERARCHY_SELF_PARENT`
+3. `nodeRepo.update('c1', { parentId: 's1' })`（合法的新父节点）→ 成功，`c1.parent_id` 落库为 `'s1'`
+4. `nodeRepo.update('c1', { title: 'x' })`（不带 `parentId`）→ 成功，且 `c1.parent_id` 不变
+5. `new YjsManager({ db, nodeRepo, edgeRepo })` 后调用 `manager['insertRemoteNode']({ id: 'X', parentId: 'X', ... })` → 抛 `HIERARCHY_SELF_PARENT`，且 `nodes` 表里**没有** `X` 这一行
+
+⚠️ 第 5 条用 `manager['insertRemoteNode'](...)` 的方括号写法访问 private 方法——TS 的方括号索引访问不受 private 限制，运行时可调。`YjsManager` 是 `export class`（`yjs-manager.ts:52`），也可以用 `createYjsManager(deps).manager` 拿到实例。
+
+- [ ] **Step 6: Verify no caller broke**
+
+Run: `npx tsc --noEmit && npx vitest run src/main/ipc/__tests__/ src/main/realtime/__tests__/ src/renderer/store/__tests__/`
 Expected: 零错误，测试全绿
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/main/ipc/graph.ts src/main/repositories/node-repository.ts src/main/ipc/__tests__/graph-node-update.test.ts
-git commit -m "refactor(canvas): 关闭 node:update 的 parentId 旁路"
+git add src/main/ipc/graph.ts src/main/repositories/node-repository.ts src/main/realtime/yjs-manager.ts src/main/ipc/__tests__/graph-node-update.test.ts src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts
+git commit -m "refactor(canvas): 关闭 node:update 与 Yjs 远端路径的 parentId 旁路"
 ```
 
 ---
@@ -2025,7 +2119,7 @@ git commit -m "feat(canvas): 布局选择按项目持久化"
 | 撤销/重做 | 用户明确推迟到项目稳定后。结构写操作已收敛到 `graph:reparent`，届时挂命令栈即可（批次 4） |
 | 跨图结构同步 | online 图改结构后 dev 图不自动跟随。dev 图是一次性克隆，现有产品语义如此（批次 4） |
 | Yjs 双向镜像 | 本地 `graph:reparent` 不写 Yjs 文档，远端 peer 的全量同步可能覆盖本地改动。本期只加防环校验，不做镜像（spec §4.4.2） |
-| Yjs 远端写入的类型校验 | 远端 peer 可以任意指定 parentId；本期在 repository 侧补防环校验，类型校验留待协作功能真正启用时再加 |
+| Yjs 远端写入的类型校验 | 远端 peer 可以任意指定 parentId；本期在 repository 侧补防环校验（Task 7 Step 5），类型校验留待协作功能真正启用时再加 |
 | AI 写入路径的类型校验 | AI 批量生成，逐个校验可能让整次生成失败。本期只给 AI 路径加防环校验（spec §4.4.3） |
 | 内联改名、快捷键体系 | 不在本次范围（spec §一非目标） |
 | 框选批量操作 | 不在本次范围 |
