@@ -319,28 +319,69 @@ export function parseSseChunk(
   while (cursor < combined.length) {
     // Find the next double newline (record terminator).
     const terminator = findRecordEnd(combined, cursor)
-    if (terminator === -1) break
-    const record = combined.slice(recordStart, terminator)
+    if (!terminator) break
+    const record = combined.slice(recordStart, terminator.index)
     const ev = parseSseRecord(record)
     if (ev !== null) events.push(ev)
-    cursor = terminator + 2 // skip '\n\n'
+    cursor = terminator.index + terminator.length
     recordStart = cursor
   }
   return { events, rest: combined.slice(recordStart) }
 }
 
-function findRecordEnd(haystack: string, from: number): number {
-  // Search for either '\n\n' or '\r\n\r\n'.
-  let idx = haystack.indexOf('\n\n', from)
-  if (idx === -1) {
-    idx = haystack.indexOf('\r\n\r\n', from)
+/**
+ * 冲刷残留缓冲。SSE 允许发送方省略最后一条记录后的空行，接收方必须在 EOF
+ * 时分派剩余数据 —— 否则终态事件会被静默丢弃，调用方永远等不到完成信号。
+ *
+ * 残留缓冲里可能有多条完整记录（发送方把空行全省了）+ 一条末尾的半条记录，
+ * 因此要逐条切开，而不是当成一条整体解析。
+ */
+export function flushSseBuffer(buffer: string): SseEvent[] {
+  const events: SseEvent[] = []
+  let rest = buffer
+  for (;;) {
+    const terminator = findRecordEnd(rest, 0)
+    if (!terminator) break
+    const ev = parseSseRecord(rest.slice(0, terminator.index))
+    if (ev !== null) events.push(ev)
+    rest = rest.slice(terminator.index + terminator.length)
   }
-  return idx
+  // 末尾那条没有分隔符的记录：去掉尾部残留的行终止符后单独解析
+  const tail = rest.replace(/[\r\n]+$/, '')
+  if (tail.trim()) {
+    const ev = parseSseRecord(tail)
+    if (ev !== null) events.push(ev)
+  }
+  return events
+}
+
+/**
+ * SSE 记录分隔符 = 连续两个行终止符。
+ *
+ * 规范允许 CRLF / LF / CR 三种行终止符，两两组合共 8 种字节形态。只认
+ * '\n\n' 与 '\r\n\r\n' 的话，'\r\r'（CR+CR）、'\r\n\n'（CRLF+LF）这类合法
+ * 分隔符会被漏掉 —— 记录永远断不开，整条流解析不出任何事件。
+ *
+ * 顺序按「同一起点处先长后短」排列，正则取最左匹配。
+ */
+const RECORD_SEPARATOR_RE =
+  /\r\n\r\n|\r\n\r|\r\n\n|\r\r\n|\n\r\n|\r\r|\n\r|\n\n/
+
+function findRecordEnd(
+  haystack: string,
+  from: number,
+): { index: number; length: number } | null {
+  const m = RECORD_SEPARATOR_RE.exec(haystack.slice(from))
+  if (!m) return null
+  return { index: from + m.index, length: m[0].length }
 }
 
 function parseSseRecord(record: string): SseEvent | null {
+  // 行终止符：CRLF / LF / CR 都是合法的（SSE 规范）。只按 /\r?\n/ 切分时，
+  // 「以 CRLF 结尾的行 + LF 空行分隔符」这种混排会让行尾多出一个孤立的 '\r'
+  // 粘在字段值后面（data 的 JSON 尾部凭空多一个字节，id 也会带上 \r）。
   // Skip comments and blanks.
-  const lines = record.split(/\r?\n/).filter((l) => l.length > 0 && !l.startsWith(':'))
+  const lines = record.split(/\r\n|\n|\r/).filter((l) => l.length > 0 && !l.startsWith(':'))
   if (lines.length === 0) return null
   let event: string | undefined
   const dataLines: string[] = []

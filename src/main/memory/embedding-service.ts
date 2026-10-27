@@ -88,6 +88,7 @@ export class EmbeddingService {
       })
 
       this._initTimedOut = false
+      this._initFailed = false
       logger.info(`Embedding model loaded successfully (dim=${EMBEDDING_DIM})`)
     } catch (err) {
       this.initPromise = null // 允许重试
@@ -132,8 +133,6 @@ export class EmbeddingService {
    */
   async initializeWithTimeout(timeoutMs = 60_000): Promise<boolean> {
     this._initAttempted = true
-    this._initFailed = false
-    this._initTimedOut = false
     let timeoutId: ReturnType<typeof setTimeout> | undefined
     try {
       await Promise.race([
@@ -143,6 +142,8 @@ export class EmbeddingService {
         }),
       ])
       this._initAttempted = true
+      this._initFailed = false
+      this._initTimedOut = false
       return true
     } catch (err) {
       this._initFailed = true
@@ -158,6 +159,41 @@ export class EmbeddingService {
     } finally {
       if (timeoutId) clearTimeout(timeoutId)
     }
+  }
+
+  /**
+   * 确保嵌入服务已初始化（幂等）
+   *
+   * 模型加载要几百 MB 内存 + 一次磁盘 IO，必须由明确的调用方触发，
+   * 不能混在检索路径上。这里集中承载「什么时候允许再试一次」的策略：
+   *   - 已就绪 → 直接返回
+   *   - 上次失败/超时 → 不再重试（避免每次会话结束都重下一次模型）
+   *   - 正在加载 → 等那次加载的结果，但自带上限：共享的 initPromise 在
+   *     模型下载卡住时可能永远不 settle，无上限地 await 会把调用方一起挂死。
+   */
+  async ensureInitialized(timeoutMs = 60_000): Promise<boolean> {
+    if (this.extractor) return true
+    // 顺序要紧：失败/超时标记优先于 initPromise 判断。
+    // 超时路径不会清空 initPromise（下载可能仍在后台跑），若先看 initPromise
+    // 就永远走不到这个「不再重试」的守卫。
+    if (this._initFailed || this._initTimedOut) return false
+    if (this.initPromise) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          this.initPromise,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('EmbeddingService init timeout')), timeoutMs)
+          }),
+        ])
+      } catch {
+        return false
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+      return this.extractor !== null
+    }
+    return this.initializeWithTimeout(timeoutMs)
   }
 
   /**

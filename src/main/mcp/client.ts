@@ -68,6 +68,8 @@ export class McpClient extends EventEmitter {
   private tools: McpTool[] = []
   private resources: McpResource[] = []
   private initialized = false
+  /** 子进程是否已退出。proc.killed 只在 kill() 之后为 true，崩溃退出时仍是 false。 */
+  private exited = false
   /** 连接建立耗时（毫秒），connect() 成功后可用 */
   connectTimeMs?: number
 
@@ -95,13 +97,35 @@ export class McpClient extends EventEmitter {
   private async _connectInternal(): Promise<void> {
     const connectStart = Date.now()
     return new Promise((resolve, reject) => {
+      // settle 守卫：resolve/reject 只生效一次（exit / error / 握手成功可能竞态）
+      let settled = false
+      const settleResolve = () => {
+        if (settled) return
+        settled = true
+        resolve()
+      }
+      const settleReject = (err: Error) => {
+        if (settled) return
+        settled = true
+        reject(err)
+      }
+
       const connectTimeout = setTimeout(() => {
-        reject(new AgentError('MCP connect timeout: process did not respond to initialize handshake within 10s', ErrorCode.AGENT_ADAPTER_ERROR))
+        // 握手超时：子进程必须被回收，否则每次失败连接都会留下一个孤儿进程。
+        this.killProcess()
+        settleReject(new AgentError('MCP connect timeout: process did not respond to initialize handshake within 10s', ErrorCode.AGENT_ADAPTER_ERROR))
       }, 10000)
 
+      this.exited = false
       this.proc = spawn(this.command, this.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: buildSafeEnv('mcp'),
+      })
+
+      // 对端关闭 stdin 后再次写入会抛 EPIPE；没有监听器时它是未捕获异常，
+      // 会直接带走 Electron 主进程。
+      this.proc.stdin?.on('error', (err) => {
+        this.rejectAll(new AgentError(`MCP stdin error: ${err.message}`, ErrorCode.AGENT_ADAPTER_ERROR))
       })
 
       this.proc.stdout?.on('data', (data: Buffer) => {
@@ -114,13 +138,25 @@ export class McpClient extends EventEmitter {
 
       this.proc.on('error', (err) => {
         clearTimeout(connectTimeout)
-        reject(new AgentError(`MCP process error: ${err.message}`, ErrorCode.AGENT_ADAPTER_ERROR))
+        clearTimeout(fallbackTimer)
+        this.exited = true
+        this.initialized = false
+        settleReject(new AgentError(`MCP process error: ${err.message}`, ErrorCode.AGENT_ADAPTER_ERROR))
       })
 
       this.proc.on('exit', (code) => {
         clearTimeout(connectTimeout)
+        // 进程已经死了，握手不可能再成功 —— 立刻失败。
+        // 否则要等 2 秒的 fallbackTimer 触发 startHandshake，call() 才因
+        // exited 守卫拒绝；每个坏掉的 MCP server 都要多赔 2 秒启动时间，
+        // 而且报出来的是「进程未运行」而不是真实的退出码。
+        clearTimeout(fallbackTimer)
+        this.exited = true
+        this.initialized = false
         this.emit('exit', code)
-        this.rejectAll(new AgentError(`MCP process exited with code ${code ?? 'unknown'}`, ErrorCode.AGENT_ADAPTER_ERROR))
+        const err = new AgentError(`MCP process exited with code ${code ?? 'unknown'}`, ErrorCode.AGENT_ADAPTER_ERROR)
+        this.rejectAll(err)
+        settleReject(err)
       })
 
       // 基于响应的握手：等待进程 stdout 产生数据后再发送 initialize，
@@ -142,10 +178,10 @@ export class McpClient extends EventEmitter {
           const connectTimeMs = Date.now() - connectStart
           this.connectTimeMs = connectTimeMs
           this.emit('connected', { connectTimeMs })
-          resolve()
+          settleResolve()
         } catch (err) {
           clearTimeout(connectTimeout)
-          reject(err)
+          settleReject(err instanceof Error ? err : new Error(String(err)))
         }
       }
 
@@ -164,16 +200,19 @@ export class McpClient extends EventEmitter {
   }
 
   async disconnect(): Promise<void> {
-    if (this.proc && !this.proc.killed) {
-      this.proc.kill('SIGTERM')
+    const proc = this.proc
+    if (proc && proc.exitCode === null && proc.signalCode === null) {
+      proc.kill('SIGTERM')
       await new Promise<void>((resolve) => {
         const timeout = setTimeout(() => {
-          if (this.proc && !this.proc.killed) {
-            this.proc.kill('SIGKILL')
+          // 升级判定必须看 exitCode/signalCode：proc.killed 在 kill() 调用后
+          // 即为 true，用它判断会让 SIGKILL 永远走不到。
+          if (proc.exitCode === null && proc.signalCode === null) {
+            proc.kill('SIGKILL')
           }
           resolve()
         }, 3000)
-        this.proc?.on('exit', () => {
+        proc.once('exit', () => {
           clearTimeout(timeout)
           resolve()
         })
@@ -181,6 +220,31 @@ export class McpClient extends EventEmitter {
     }
     this.proc = undefined
     this.initialized = false
+  }
+
+  /**
+   * 终止子进程并把客户端标记为不可用。
+   *
+   * 只发 SIGTERM 是不够的：npx / 包装脚本不一定把信号转发给真正的 server
+   * 进程，握手超时后包装进程死了、server 还活着 —— 每失败一次就多留一个孤儿。
+   * 因此 3 秒后若进程仍在，升级为 SIGKILL。
+   */
+  private killProcess(signal: NodeJS.Signals = 'SIGTERM'): void {
+    const proc = this.proc
+    if (!proc) return
+    this.exited = true
+    this.initialized = false
+    if (proc.exitCode !== null || proc.signalCode !== null) return
+    try {
+      proc.kill(signal)
+    } catch { /* ignore */ }
+    const escalation = setTimeout(() => {
+      // 升级判定必须看 exitCode/signalCode：proc.killed 在 kill() 调用后即为 true
+      if (proc.exitCode === null && proc.signalCode === null) {
+        try { proc.kill('SIGKILL') } catch { /* ignore */ }
+      }
+    }, 3000)
+    escalation.unref()
   }
 
   getTools(): McpTool[] {
@@ -192,7 +256,7 @@ export class McpClient extends EventEmitter {
   }
 
   isReady(): boolean {
-    return this.initialized && !!this.proc && !this.proc.killed
+    return this.initialized && !!this.proc && !this.proc.killed && !this.exited
   }
 
   async listTools(): Promise<McpTool[]> {
@@ -230,7 +294,7 @@ export class McpClient extends EventEmitter {
 
   private call(method: string, params: unknown): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      if (!this.proc || this.proc.killed) {
+      if (!this.proc || this.proc.killed || this.exited) {
         reject(new AgentError('MCP process not running', ErrorCode.AGENT_ADAPTER_ERROR))
         return
       }
@@ -263,7 +327,13 @@ export class McpClient extends EventEmitter {
       })
 
       const line = JSON.stringify(message) + '\n'
-      this.proc.stdin?.write(line)
+      try {
+        this.proc.stdin?.write(line)
+      } catch (err) {
+        clearTimeout(timeout)
+        this.pending.delete(id)
+        reject(new AgentError(`MCP write failed: ${(err as Error).message}`, ErrorCode.AGENT_ADAPTER_ERROR))
+      }
     })
   }
 

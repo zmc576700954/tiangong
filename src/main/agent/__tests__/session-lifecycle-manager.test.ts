@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { AgentAdapter, AgentCommand, AgentSessionConfig } from '@shared/types'
+import type { AgentAdapter, AgentCommand, AgentOutput, AgentSessionConfig } from '@shared/types'
 import { SessionLifecycleManager } from '../session-lifecycle-manager'
 import type { AdapterRegistry } from '../adapter-registry'
 import type { SessionRouter } from '../session-router'
@@ -470,6 +470,63 @@ describe('SessionLifecycleManager', () => {
 
       expect(newAdapter.offOutput).toHaveBeenCalled()
       expect(lifecycle.activeSessionCount).toBe(0)
+    })
+  })
+
+  describe('多会话输出路由', () => {
+    /** 捕获适配器注册的输出回调，测试里手动推送输出 */
+    function makeSharedAdapter(): { adapter: AgentAdapter; emit: (o: AgentOutput) => void } {
+      let handler: ((o: AgentOutput) => void) | undefined
+      const a = makeAdapter('claude-code', {
+        onOutput: vi.fn((h: (o: AgentOutput) => void) => { handler = h }),
+        // 真实适配器用 WeakMap 记录「这条输出来自哪个会话」，
+        // 这里用同样的语义：输出自带 sessionId。
+        resolveOutputSession: vi.fn((o: AgentOutput) => (o as { sessionId?: string }).sessionId),
+      })
+      return { adapter: a, emit: (o) => handler?.(o) }
+    }
+
+    it('同一适配器上的两个会话各自收到自己的输出，不会串台', async () => {
+      const shared = makeSharedAdapter()
+      registry.register(shared.adapter)
+      lifecycle.attachAdapter(shared.adapter)
+
+      for (const id of ['sess-A', 'sess-B']) {
+        await lifecycle.start({
+          candidate: 'claude-code',
+          adapter: shared.adapter,
+          session: { id, startTime: Date.now() },
+          config: makeConfig(),
+          isFallback: false,
+          primaryAdapter: 'claude-code',
+        })
+      }
+
+      const outA = { type: 'stdout', data: 'from-A', timestamp: Date.now(), sessionId: 'sess-A' } as unknown as AgentOutput
+      const outB = { type: 'stdout', data: 'from-B', timestamp: Date.now(), sessionId: 'sess-B' } as unknown as AgentOutput
+
+      shared.emit(outA)
+      shared.emit(outB)
+
+      const calls = (broadcaster.broadcast as ReturnType<typeof vi.fn>).mock.calls
+      const forA = calls.find((c) => c[1] === outA)
+      const forB = calls.find((c) => c[1] === outB)
+      expect(forA?.[2]).toBe('sess-A')
+      expect(forB?.[2]).toBe('sess-B')
+    })
+
+    it('解析不出会话的输出退回适配器级广播（不猜会话）', async () => {
+      const shared = makeSharedAdapter()
+      registry.register(shared.adapter)
+      lifecycle.attachAdapter(shared.adapter)
+
+      const orphan = { type: 'stdout', data: 'no-session', timestamp: Date.now() } as unknown as AgentOutput
+      shared.emit(orphan)
+
+      const calls = (broadcaster.broadcast as ReturnType<typeof vi.fn>).mock.calls
+      expect(calls).toHaveLength(1)
+      expect(calls[0][0]).toBe('claude-code')
+      expect(calls[0][2]).toBeUndefined()
     })
   })
 })

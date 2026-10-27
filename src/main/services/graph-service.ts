@@ -284,6 +284,11 @@ export class GraphService {
                   await updateAgentMessage()
                   logger.info(`完成, 耗时 ${Math.round((Date.now() - startTime) / 1000)}s, 输出 ${chunks.length} 块`)
                   resolve(chunks.join('\n'))
+                  // 回收一次性会话：否则 CLI 子进程与 AgentManager 的会话槽位
+                  // 会一直留着，直到触发「Maximum concurrent sessions exceeded」。
+                  this.agentManager!.terminateSession(sessionId, 'user').catch((err) => {
+                    logger.warn('Failed to terminate session on complete:', err)
+                  })
                 }
               }
             }

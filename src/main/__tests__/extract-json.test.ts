@@ -68,6 +68,33 @@ End of output.`
     })
   })
 
+  // ==================== 碎片 JSON 不能抢走真正的载荷 ====================
+  describe('JSON 碎片干扰', () => {
+    it('工作目录里的 [1] 不会抢走真正的载荷', () => {
+      const input = 'MindMap 开始生成，工作目录: /tmp/proj[1]/x\n{"modules":[{"name":"A"}]}'
+      const result = extractJson(input)
+      expect(result).toEqual({ modules: [{ name: 'A' }] })
+    })
+
+    it('进度标记里的 [0] 不会抢走真正的载荷', () => {
+      const input = '[0] processing\n{"modules":[{"name":"A"}]}'
+      const result = extractJson(input)
+      expect(result).toEqual({ modules: [{ name: 'A' }] })
+    })
+
+    it('模型前言里的标量数组不会抢走真正的载荷', () => {
+      const input = '分析 [1] 完成\n{"modules":[{"name":"A"}]}'
+      const result = extractJson(input)
+      expect(result).toEqual({ modules: [{ name: 'A' }] })
+    })
+
+    it('载荷是数组时，嵌套对象不会被当成载荷', () => {
+      const input = 'Result: [{"a": 1}, {"b": 2}] end'
+      const result = extractJson(input)
+      expect(result).toEqual([{ a: 1 }, { b: 2 }])
+    })
+  })
+
   // ==================== 错误情况 ====================
   describe('错误处理', () => {
     it('纯文本无 JSON → 抛出异常', () => {

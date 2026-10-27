@@ -64,10 +64,11 @@ export class MindMapAdapter extends BaseAdapter {
       ? `${scopePrompt}\n\n---\n\n${command.description}`
       : command.description
 
-    // 使用 BaseAdapter 的输出处理器模式，解析文件变更
-    this.emitOutput({
+    // 进度标记不能以 '[' / '{' 开头：这段文本会与模型输出拼在同一条 stdout
+    // 通道里，括号前缀会破坏后续的 JSON 解析。
+    this.emitOutputForSession(session.id, {
       type: 'stdout',
-      data: `[MindMap] 开始生成，工作目录: ${session.config.workingDirectory}`,
+      data: `MindMap 开始生成，工作目录: ${session.config.workingDirectory}`,
       timestamp: Date.now(),
     })
 
@@ -79,10 +80,25 @@ export class MindMapAdapter extends BaseAdapter {
         cwd: session.config.workingDirectory,
         timeoutMs: 300_000,
         outputFormat: 'text',
+        signal: controller.signal,
       })
 
+      if (result.aborted) {
+        // 已被 doTerminate 取消：子进程已随 signal 结束。
+        // 必须发一个终结性输出 —— 等待方（sendPromptViaAgent）只认 'complete'
+        // 与 'error'，不发的话那个 Promise 会一直挂到超时才失败。
+        this.emitOutputForSession(session.id, {
+          type: 'error',
+          data: 'MindMap 生成已取消',
+          timestamp: Date.now(),
+          errorCode: 'AGENT_PROCESS_ERROR',
+        })
+        this.emit('sessionEnded', session.id, 'user', null)
+        return
+      }
+
       if (result.timedOut) {
-        this.emitOutput({
+        this.emitOutputForSession(session.id, {
           type: 'error',
           data: 'MindMap 生成超时（5分钟）',
           timestamp: Date.now(),
@@ -94,7 +110,7 @@ export class MindMapAdapter extends BaseAdapter {
 
       if (result.exitCode !== 0) {
         const errorMsg = result.stderr || `Claude 进程退出码: ${result.exitCode}`
-        this.emitOutput({
+        this.emitOutputForSession(session.id, {
           type: 'error',
           data: `MindMap 生成失败: ${errorMsg}`,
           timestamp: Date.now(),
@@ -106,14 +122,14 @@ export class MindMapAdapter extends BaseAdapter {
 
       // 输出 stdout 内容（即 AI 生成的 JSON/文本）
       if (result.stdout) {
-        this.emitOutput({
+        this.emitOutputForSession(session.id, {
           type: 'stdout',
           data: result.stdout,
           timestamp: Date.now(),
         })
       }
 
-      this.emitOutput({
+      this.emitOutputForSession(session.id, {
         type: 'complete',
         data: 'MindMap 生成完成',
         timestamp: Date.now(),
@@ -121,7 +137,7 @@ export class MindMapAdapter extends BaseAdapter {
       this.emit('sessionEnded', session.id, 'success', 0)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      this.emitOutput({
+      this.emitOutputForSession(session.id, {
         type: 'error',
         data: `MindMap 适配器错误: ${msg}`,
         timestamp: Date.now(),

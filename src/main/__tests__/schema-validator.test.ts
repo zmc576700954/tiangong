@@ -292,3 +292,48 @@ describe('validateEnrichment', () => {
     })
   })
 })
+
+describe('validateEnrichment — 业务规则 id 唯一性', () => {
+  const rule = (over: Record<string, unknown>) => ({
+    title: 't',
+    description: 'd',
+    condition: 'c',
+    action: 'a',
+    ...over,
+  })
+
+  it('重复的 rule id 会被加上后缀，保证一批结果内唯一', () => {
+    const result = validateEnrichment({
+      description: 'desc',
+      businessRules: [
+        rule({ id: 'r1' }),
+        rule({ id: 'r1' }),
+        rule({ id: 'r1' }),
+      ],
+    })
+    const ids = result!.businessRules.map((r) => r.id)
+    expect(ids).toEqual(['r1', 'r1_1', 'r1_2'])
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+
+  it('被丢弃的无效规则不占掉 id（否则剩下的规则会出现跳号）', () => {
+    const result = validateEnrichment({
+      description: 'desc',
+      businessRules: [
+        rule({ id: 'r1', title: '' }),   // 无效：缺 title，被丢弃
+        rule({ id: 'r1' }),
+      ],
+    })
+    expect(result!.businessRules).toHaveLength(1)
+    expect(result!.businessRules[0].id).toBe('r1')
+  })
+
+  it('没有 id 的规则按序号生成，且生成后仍然唯一', () => {
+    const result = validateEnrichment({
+      description: 'desc',
+      businessRules: [rule({}), rule({})],
+    })
+    const ids = result!.businessRules.map((r) => r.id)
+    expect(new Set(ids).size).toBe(ids.length)
+  })
+})

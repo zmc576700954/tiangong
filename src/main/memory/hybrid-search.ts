@@ -19,7 +19,7 @@
  */
 
 import type { MemoryItem, MemoryKind } from '@shared/types'
-import type { MemoryStore } from './memory-store'
+import { getMemoryStore, type MemoryStore } from './memory-store'
 import { getEmbeddingService, EmbeddingService } from './embedding-service'
 import { getAdaptiveConfig } from '../adaptive-config'
 import { getClient } from '../database'
@@ -235,6 +235,28 @@ export class HybridSearchEngine {
   }
 
   /**
+   * 同步嵌入服务的可用性
+   *
+   * 嵌入服务是全局单例，可能在本引擎之外被加载（记忆管线持久化记忆时会
+   * 在后台初始化它）。服务一旦就绪，语义路必须跟着打开，否则库里明明有
+   * 向量，检索却永远只走关键词路。
+   *
+   * 这里只读状态、绝不触发模型加载 —— 加载要几百 MB 内存和一次磁盘 IO，
+   * 不能发生在检索路径上。
+   */
+  private syncEmbeddingAvailability(): void {
+    if (this._embeddingEnabled) return
+    const service = getEmbeddingService()
+    if (!service.isReady()) return
+    // 不覆盖已配置的服务实例 —— enableEmbedding() 失败时会把 _embeddingService
+    // 置空，这里再塞回一个全局实例会让「已禁用」的状态失效。
+    if (!this._embeddingService) {
+      this._embeddingService = service
+    }
+    this._embeddingEnabled = true
+  }
+
+  /**
    * 启用嵌入检索
    *
    * 初始化 EmbeddingService，成功后设置 _embeddingEnabled=true。
@@ -246,6 +268,7 @@ export class HybridSearchEngine {
       const ok = await service.initializeWithTimeout(60_000)
       if (!ok) {
         this._embeddingEnabled = false
+        this._embeddingService = null
         logger.warn('Embedding service initialization failed or timed out, falling back to FTS+keyword only')
         return
       }
@@ -254,6 +277,7 @@ export class HybridSearchEngine {
       logger.info('Embedding search enabled')
     } catch (err) {
       this._embeddingEnabled = false
+      this._embeddingService = null
       logger.warn('Embedding service initialization failed, falling back to FTS+keyword only:', err)
     }
   }
@@ -428,6 +452,7 @@ export class HybridSearchEngine {
 
     // 4. 嵌入检索（双路检索的第二路）：FTS5 无候选时也尝试语义召回
     let embeddingResults: RankedSearchResult[] = []
+    this.syncEmbeddingAvailability()
     if (this._embeddingEnabled) {
       embeddingResults = await this._embeddingSearch(query, options)
     }
@@ -813,12 +838,19 @@ export class HybridSearchEngine {
 /** 全局单例 */
 let _instance: HybridSearchEngine | null = null
 
+/**
+ * 获取全局 HybridSearchEngine 单例。
+ *
+ * 首次调用时用全局 MemoryStore 兜底构造 —— 此前这里在缺少显式 store 时直接
+ * 抛异常，调用方只能吞掉异常拿不到任何结果，混合检索在生产路径上等于不存在。
+ */
 export function getHybridSearchEngine(memoryStore?: MemoryStore): HybridSearchEngine {
-  if (!_instance && memoryStore) {
-    _instance = new HybridSearchEngine(memoryStore)
-  }
   if (!_instance) {
-    throw new Error('HybridSearchEngine not initialized. Provide a MemoryStore on first call.')
+    _instance = new HybridSearchEngine(memoryStore ?? getMemoryStore())
+  } else if (memoryStore && memoryStore !== getMemoryStore()) {
+    // 单例只会构造一次，第二次传入的 store 会被静默忽略 —— 调用方以为在检索
+    // 自己那份库，实际读的是全局库。至少要让它在日志里可见。
+    logger.warn('getHybridSearchEngine: engine already exists, the passed MemoryStore is ignored')
   }
   return _instance
 }

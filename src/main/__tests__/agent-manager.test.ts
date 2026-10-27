@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import os from 'node:os'
 import { AgentManager } from '../agent/agent-manager'
 import { AdapterRegistry } from '../agent/adapter-registry'
 import { SessionRouter } from '../agent/session-router'
@@ -8,6 +9,7 @@ import { BaseAdapter } from '../adapters/base'
 import type { AgentSession, AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 import { SessionNotFoundError, AdapterError } from '../errors'
 import { SessionRecoveryManager, setForTesting } from '../agent/session-recovery'
+import { generateId } from '../shared/env'
 
 // Minimal test adapter — name configurable
 class TestAdapter extends BaseAdapter {
@@ -37,7 +39,10 @@ class TestAdapter extends BaseAdapter {
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
     const session: AgentSession = {
-      id: `${this.name}-${Date.now()}`,
+      // 必须唯一：会话 id 是 router / 输出缓冲 / 恢复谱系的键。
+      // 用 Date.now() 生成时，同一毫秒内创建的两个会话会撞 id ——
+      // 新会话的 bind 覆盖旧条目，活动会话数不增长，恢复链路静默断掉。
+      id: generateId(this.name),
       adapterName: this.name,
       config,
       startTime: Date.now(),
@@ -84,6 +89,10 @@ describe('AgentManager', () => {
   let manager: AgentManager
 
   beforeEach(() => {
+    // startSession 有一道「可用内存 < 512MB 就拒绝开新会话」的资源闸门。
+    // 全量跑测试时机器内存会波动，闸门偶发触发 → 恢复流程拿不到替代会话 →
+    // 「崩溃后应创建替代会话」这类断言随负载时好时坏。测试里把内存读数固定住。
+    vi.spyOn(os, 'freemem').mockReturnValue(4 * 1024 * 1024 * 1024)
     setForTesting(new SessionRecoveryManager())
     registry = new AdapterRegistry()
     router = new SessionRouter(registry)
@@ -94,6 +103,7 @@ describe('AgentManager', () => {
   afterEach(() => {
     manager.destroy()
     setForTesting(null)
+    vi.restoreAllMocks()
   })
 
   const mockConfig = (overrides?: Partial<AgentSessionConfig>): AgentSessionConfig => ({
@@ -595,12 +605,17 @@ describe('AgentManager', () => {
       for (let i = 0; i < 3; i++) {
         const state = (manager as any).sessionStates.get(currentId)
         const outputs = (manager as any).sessionOutputBuffers.get(currentId) ?? []
+        const before = new Set(manager.getActiveSessionIds())
         await (manager as any)._handleSessionEnded(currentId, null, 'error', state, outputs)
         const active = manager.getActiveSessionIds()
         expect(active.length).toBe(initialCount + i + 1)
-        const nextId = active.find((id) => id !== currentId)
-        expect(nextId).toBeDefined()
-        currentId = nextId!
+        // 下一轮崩的必须是**刚创建**的替代会话。用「本次新增的 id」定位，
+        // 而不是 find(id !== currentId) —— 后者命中的是最早那个还没崩过的
+        // 旧会话，崩的序列变成 A→B→A→B，重试预算就不再对应
+        // 「同一条恢复谱系连续崩三次」。
+        const created = active.find((id) => !before.has(id))
+        expect(created).toBeDefined()
+        currentId = created!
       }
 
       // The fourth crash exhausts the budget: no replacement session is created.

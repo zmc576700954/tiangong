@@ -9,8 +9,10 @@ import {
   parseOpenAiResponse,
   parseGeminiResponse,
   resolveApiKey,
+  resolveModel,
   ApiRateLimiter,
   McpAdapter,
+  API_RATE_LIMIT_SHORT_MAX,
 } from '../mcp-adapter'
 import type { ApiKeyConfig } from '@shared/types'
 
@@ -256,6 +258,41 @@ describe('resolveApiKey', () => {
 })
 
 // ============================================
+// resolveModel
+// ============================================
+
+describe('resolveModel', () => {
+  it('保留属于该 provider 的模型', () => {
+    expect(resolveModel('anthropic', 'claude-3-5-sonnet-20241022')).toBe('claude-3-5-sonnet-20241022')
+    expect(resolveModel('openai', 'gpt-4o')).toBe('gpt-4o')
+  })
+
+  it('模型不属于该 provider 时退回 provider 默认模型', () => {
+    // 拿 OpenAI 的模型名去请求 Anthropic 端点必然 404
+    expect(resolveModel('anthropic', 'gpt-4o')).toBe('claude-3-5-sonnet-20241022')
+  })
+
+  it('自建网关（自定义 baseUrl）保留用户设置的模型名', () => {
+    // 网关自己决定有哪些模型，按 provider 前缀纠正会把 llama 换成 gpt-4o，
+    // 网关随即返回 model_not_found
+    expect(resolveModel('openai', 'llama-3.3-70b', true)).toBe('llama-3.3-70b')
+    expect(resolveModel('anthropic', 'qwen2.5-coder', true)).toBe('qwen2.5-coder')
+  })
+
+  it('无自定义 baseUrl 时仍会纠正网关风格的模型名', () => {
+    expect(resolveModel('openai', 'llama-3.3-70b')).toBe('gpt-4o')
+  })
+
+  it('vendor/model 形式剥掉前缀后仍能匹配 provider', () => {
+    expect(resolveModel('anthropic', 'anthropic/claude-3-5-sonnet')).toBe('claude-3-5-sonnet')
+  })
+
+  it('未设置模型时用 provider 默认模型', () => {
+    expect(resolveModel('openai')).toBe('gpt-4o')
+  })
+})
+
+// ============================================
 // ApiRateLimiter
 // ============================================
 
@@ -265,9 +302,9 @@ describe('ApiRateLimiter', () => {
     expect(limiter.check('s1').allowed).toBe(true)
   })
 
-  it('短时间内超过 3 次被限制', () => {
+  it(`短窗口内超过 ${API_RATE_LIMIT_SHORT_MAX} 次被限制`, () => {
     const limiter = new ApiRateLimiter()
-    for (let i = 0; i < 3; i++) limiter.check('s2')
+    for (let i = 0; i < API_RATE_LIMIT_SHORT_MAX; i++) limiter.check('s2')
     const result = limiter.check('s2')
     expect(result.allowed).toBe(false)
     expect(result.retryAfterMs).toBeGreaterThan(0)
@@ -275,13 +312,13 @@ describe('ApiRateLimiter', () => {
 
   it('不同 session 互不影响', () => {
     const limiter = new ApiRateLimiter()
-    for (let i = 0; i < 3; i++) limiter.check('s3')
+    for (let i = 0; i < API_RATE_LIMIT_SHORT_MAX; i++) limiter.check('s3')
     expect(limiter.check('s4').allowed).toBe(true)
   })
 
   it('cleanup 后重新允许', () => {
     const limiter = new ApiRateLimiter()
-    for (let i = 0; i < 3; i++) limiter.check('s5')
+    for (let i = 0; i < API_RATE_LIMIT_SHORT_MAX; i++) limiter.check('s5')
     expect(limiter.check('s5').allowed).toBe(false)
     limiter.cleanup('s5')
     expect(limiter.check('s5').allowed).toBe(true)
@@ -294,7 +331,7 @@ describe('ApiRateLimiter', () => {
 
   it('cleanup 后 store 被彻底清空（无残留 timestamps）', () => {
     const limiter = new ApiRateLimiter()
-    for (let i = 0; i < 3; i++) limiter.check('clear-test')
+    for (let i = 0; i < API_RATE_LIMIT_SHORT_MAX; i++) limiter.check('clear-test')
     expect(limiter.check('clear-test').allowed).toBe(false)
     limiter.cleanup('clear-test')
     // 立即 check 应该 allowed（说明 timestamps 已被清空）

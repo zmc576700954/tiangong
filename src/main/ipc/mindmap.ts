@@ -9,7 +9,7 @@
  */
 
 import { MindMapAgent } from '../mindmap-agent'
-import { buildDevPrompt } from '../mindmap-agent/synthesis/prompt-builder'
+import { buildDevPrompt, augmentWithRagExamples } from '../mindmap-agent/synthesis/prompt-builder'
 import { collectContext } from '../mindmap-agent/context-collector'
 import { buildGlobalPrompt } from '../mindmap-agent/retrieval/global'
 import { directRetrieve } from '../mindmap-agent/retrieval/direct'
@@ -20,12 +20,24 @@ import { validateProjectPath } from './utils'
 import type { TypedHandle } from './utils'
 import type { NodeType, GraphNode, ContextRef } from '@shared/types'
 import type { AgentManager } from '../agent/agent-manager'
+import type { NodeRepository } from '../repositories/node-repository'
+import type { EdgeRepository } from '../repositories/edge-repository'
+import type { GraphRepository } from '../repositories/graph-repository'
 import { IpcError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 
 const logger = createLogger('MindMap')
 
-export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: AgentManager): void {
+export function registerMindmapHandlers(
+  typedHandle: TypedHandle,
+  agentManager: AgentManager,
+  // 三个仓储是必需的：mindmap:buildDevPrompt 需要真实节点 / 边 / 图的
+  // projectPath 才能组装上下文。做成可选参数的话，调用方漏传就会静默退回
+  // 「空上下文 prompt」—— 不报错，只是生成的开发提示少了全部业务信息。
+  nodeRepo: NodeRepository,
+  edgeRepo: EdgeRepository,
+  graphRepo: GraphRepository,
+): void {
   /**
    * mindmap:generate — 生成全项目思维导图
    *
@@ -150,7 +162,31 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }
-    return buildDevPrompt({ node: placeholderNode, taskType, allNodes: [], allEdges: [], extraContext: extraContext || undefined })
+
+    // 必须从图谱加载真实节点与上下文：占位节点没有 parentId / description，
+    // allNodes / allEdges 为空时祖先链、子节点、关联边、关联节点四段上下文
+    // 永远为空，生成的开发 prompt 丢掉全部业务信息。
+    const storedNode = nodeRepo.findById(nodeId) ?? null
+    const contextGraphId = storedNode?.graphId ?? graphId
+    const allNodes = nodeRepo.listByGraph(contextGraphId) ?? []
+    const allEdges = edgeRepo.listByGraph(contextGraphId) ?? []
+
+    const prompt = buildDevPrompt({
+      node: storedNode ?? placeholderNode,
+      taskType,
+      allNodes,
+      allEdges,
+      extraContext: extraContext || undefined,
+    })
+
+    // RAG few-shot：从记忆库检索同类项目结构补进 prompt。
+    // 记忆的 project_id 就是项目工作目录，据此把检索限定在当前项目内，
+    // 语义检索才不会被其它项目的记忆污染。
+    const projectPath = graphRepo.getProjectPath(contextGraphId)
+    // 没有 project_path 的图（手工创建的图）无从判断记忆归属 —— 此时不检索。
+    // 传 undefined 进去会让检索跨所有项目，把别的项目的历史当成本项目的先例。
+    if (!projectPath) return prompt
+    return augmentWithRagExamples(prompt, storedNode ?? placeholderNode, allNodes, allEdges, projectPath)
   })
 
   /**
@@ -165,6 +201,9 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
   ) => {
     const labels: Record<string, string> = { module: '业务模块', process: '业务流程', feature: '功能点' }
     const childType: NodeType = parentNodeType === 'module' ? 'process' : 'feature'
+    // projectPath 会成为 Agent 会话的 workingDirectory（CLI cwd + ScopeGuard 根），
+    // 必须与其它 mindmap handler 一样先做校验。
+    const validatedPath = validateProjectPath(projectPath)
 
     const prompt = `请为以下${labels[parentNodeType]}生成子${labels[childType]}列表。
 
@@ -182,7 +221,7 @@ export function registerMindmapHandlers(typedHandle: TypedHandle, agentManager: 
 
 只输出 JSON，不要其他内容。`
 
-    const result = await sendPromptViaAgent(agentManager, projectPath, prompt, {
+    const result = await sendPromptViaAgent(agentManager, validatedPath, prompt, {
       nodeTitle: `AI 生成子节点: ${parentNodeTitle}`,
       timeoutMs: 60_000,
       adapterName: 'mindmap-internal',

@@ -159,24 +159,41 @@ export function validateEnrichment(raw: unknown): ValidatedEnrichment | null {
   const description = sanitizeString(obj.description, 500, '')
   if (!description) return null
 
+  // 规则 id 必须在一批结果内唯一：UI 的删除按钮按 id 过滤
+  // （rules.filter(r => r.id !== rule.id)），id 重复会一次删掉多条规则。
+  // 去重在「有效性过滤之后」做：被丢弃的规则不该占掉一个 id，
+  // 否则留下来的规则会出现 r1_2 这种跳号的 id。
+  const seenRuleIds = new Set<string>()
+  const businessRules = Array.isArray(obj.businessRules)
+    ? obj.businessRules
+        .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
+        .map((r, index) => ({
+          rawId: sanitizeString(r.id, 50, `rule_${index}`),
+          title: sanitizeString(r.title, 100, ''),
+          description: sanitizeString(r.description, 200, ''),
+          condition: sanitizeString(r.condition, 200, ''),
+          action: sanitizeString(r.action, 200, ''),
+        }))
+        .filter((r) => r.title && r.condition && r.action)
+        .map((r) => {
+          let id = r.rawId
+          if (seenRuleIds.has(id)) {
+            let suffix = 1
+            while (seenRuleIds.has(`${id}_${suffix}`)) suffix++
+            id = `${id}_${suffix}`
+          }
+          seenRuleIds.add(id)
+          return { id, title: r.title, description: r.description, condition: r.condition, action: r.action }
+        })
+        .slice(0, 10)
+    : []
+
   return {
     description,
     acceptanceCriteria: Array.isArray(obj.acceptanceCriteria)
       ? obj.acceptanceCriteria.filter(isString).slice(0, 10)
       : [],
-    businessRules: Array.isArray(obj.businessRules)
-      ? obj.businessRules
-          .filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null)
-          .map((r) => ({
-            id: sanitizeString(r.id, 50, `rule_${Date.now()}`),
-            title: sanitizeString(r.title, 100, ''),
-            description: sanitizeString(r.description, 200, ''),
-            condition: sanitizeString(r.condition, 200, ''),
-            action: sanitizeString(r.action, 200, ''),
-          }))
-          .filter((r) => r.title && r.condition && r.action)
-          .slice(0, 10)
-      : [],
+    businessRules,
     relatedFiles: Array.isArray(obj.relatedFiles)
       ? obj.relatedFiles.filter(isString).slice(0, 20)
       : [],

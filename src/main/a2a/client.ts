@@ -26,7 +26,8 @@ import {
 } from './codec'
 import type { A2AMessage, A2AStatus, A2AAgentCard, A2ARemoteAgent } from '@shared/types/a2a'
 import { A2A_DEFAULT_TIMEOUT_MS, SSE_EVENT_ARTIFACT, SSE_EVENT_STATUS, SSE_EVENT_MESSAGE } from '@shared/types/a2a'
-import { parseSseChunk } from './codec'
+import { parseSseChunk, flushSseBuffer } from './codec'
+import type { SseEvent } from './codec'
 import { BizGraphError, ErrorCode } from '../errors'
 import { assertSafeEndpoint } from './endpoint-guard'
 
@@ -157,9 +158,8 @@ export class A2AClient {
           let resultText = ''
           let finalStatus: A2AStatus = { state: 'working' }
           res.setEncoding('utf-8')
-          res.on('data', (chunk: string) => {
-            const { events, rest } = parseSseChunk(buffer, chunk)
-            buffer = rest
+
+          const handleEvents = (events: SseEvent[]): void => {
             for (const ev of events) {
               try {
                 if (ev.event === SSE_EVENT_ARTIFACT) {
@@ -214,8 +214,21 @@ export class A2AClient {
                 }
               }
             }
+          }
+
+          res.on('data', (chunk: string) => {
+            const { events, rest } = parseSseChunk(buffer, chunk)
+            buffer = rest
+            handleEvents(events)
           })
           res.on('end', () => {
+            // 发送方可以省略最后一条记录后的空行，残留缓冲里往往就是终态事件：
+            // 必须先冲刷再判失败，否则每次调用都会被判为「没有终态」。
+            if (buffer) {
+              const tail = flushSseBuffer(buffer)
+              buffer = ''
+              handleEvents(tail)
+            }
             // 远端在给出终态事件前就结束流（进程被杀 / 连接中断）——
             // 这是一次失败的调用，不能按成功结算（Promise 已结算时此 reject 是 no-op）。
             reject(new BizGraphError('Remote agent stream ended without a terminal status event', ErrorCode.A2A_REMOTE_UNREACHABLE))

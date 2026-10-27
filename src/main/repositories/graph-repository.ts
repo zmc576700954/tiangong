@@ -170,6 +170,17 @@ export class GraphRepository {
     deleteGraph()
   }
 
+  /**
+   * 只取一张图的 project_path。
+   * get() 会把整张图的节点/边/缺陷全读出来，只为了一个字段太重。
+   */
+  getProjectPath(graphId: string): string | undefined {
+    const row = this.db
+      .prepare('SELECT project_path FROM graphs WHERE id = ?')
+      .get(graphId) as { project_path?: string | null } | undefined
+    return row?.project_path ?? undefined
+  }
+
   getProjectPaths(): string[] {
     const rows = this.db.prepare(
       'SELECT DISTINCT project_path FROM graphs WHERE project_path IS NOT NULL'

@@ -340,11 +340,17 @@ const MAX_TOOL_RESULT_CHARS = 8000
 /** MCP 会话空闲超时时间（30 分钟） */
 const MCP_SESSION_TIMEOUT_MS = 30 * 60 * 1000
 
-/** API 调用频率限制：每 10 秒最多 3 次，每分钟最多 10 次 */
-const API_RATE_LIMIT_SHORT_WINDOW_MS = 10_000
-const API_RATE_LIMIT_SHORT_MAX = 3
-const API_RATE_LIMIT_LONG_WINDOW_MS = 60_000
-const API_RATE_LIMIT_LONG_MAX = 10
+/**
+ * API 调用频率限制：每 10 秒最多 12 次，每分钟最多 60 次。
+ *
+ * 计的是 **LLM 往返次数**，不是用户命令条数 —— 一条带工具的命令本身就会产生
+ * 多次模型往返（模型 → 工具 → 模型 → 工具 …）。按命令计数的老阈值
+ * （10 秒 3 次）会把正常的多轮工具调用直接判成超限。
+ */
+export const API_RATE_LIMIT_SHORT_WINDOW_MS = 10_000
+export const API_RATE_LIMIT_SHORT_MAX = 12
+export const API_RATE_LIMIT_LONG_WINDOW_MS = 60_000
+export const API_RATE_LIMIT_LONG_MAX = 60
 
 interface ApiRateLimitEntry {
   timestamps: number[]
@@ -389,6 +395,17 @@ export class ApiRateLimiter {
 }
 
 /**
+ * provider 与模型名的前缀匹配规则。
+ * 既用于「由模型名推断 provider」，也用于「校验模型是否真的属于该 provider」。
+ */
+const PROVIDER_MODEL_MATCHERS: Array<{ provider: string; test: (m: string) => boolean }> = [
+  { provider: 'anthropic', test: (m) => m.startsWith('claude') },
+  { provider: 'openai', test: (m) => m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') },
+  { provider: 'deepseek', test: (m) => m.startsWith('deepseek') },
+  { provider: 'gemini', test: (m) => m.startsWith('gemini') },
+]
+
+/**
  * 根据 provider 匹配 API Key（独立函数，便于单元测试）
  * 使用前缀匹配而非 includes，减少误匹配风险
  */
@@ -396,13 +413,7 @@ export function resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): A
   // 优先级1：根据 defaultModel 名称推断 provider（使用前缀/精确匹配）
   if (defaultModel) {
     const model = defaultModel.toLowerCase()
-    const providerMatchers: Array<{ provider: string; test: (m: string) => boolean }> = [
-      { provider: 'anthropic', test: (m) => m.startsWith('claude') },
-      { provider: 'openai', test: (m) => m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') },
-      { provider: 'deepseek', test: (m) => m.startsWith('deepseek') },
-      { provider: 'gemini', test: (m) => m.startsWith('gemini') },
-    ]
-    for (const { provider, test } of providerMatchers) {
+    for (const { provider, test } of PROVIDER_MODEL_MATCHERS) {
       if (test(model)) {
         const found = apiKeys.find((k) => k.provider === provider && k.key.length > 0)
         if (found) return found
@@ -412,6 +423,39 @@ export function resolveApiKey(apiKeys: ApiKeyConfig[], defaultModel?: string): A
 
   // 优先级2：返回第一个有对应 provider config 且 key 非空的 Key
   return apiKeys.find((k) => PROVIDER_CONFIGS[k.provider] !== undefined && k.key.length > 0)
+}
+
+/**
+ * 选定要发给 provider 的模型名。
+ *
+ * settings.defaultModel 只有在确实属于该 provider 时才可用；否则退回 provider
+ * 自己的默认模型 —— 拿 Anthropic 的模型名去请求 OpenAI 端点必然 404。
+ *
+ * 例外：**自建网关 / 代理端点**（ApiKeyConfig.baseUrl 非空）。此时模型名由网关
+ * 决定（常见的是 llama / qwen / 自训练模型），按 provider 前缀去纠正会把用户
+ * 明确配置的模型悄悄换掉，网关随即返回 model_not_found。
+ */
+export function resolveModel(
+  provider: string,
+  defaultModel?: string,
+  hasCustomBaseUrl = false,
+): string {
+  const config = PROVIDER_CONFIGS[provider]
+  if (!config) return defaultModel ?? ''
+  if (!defaultModel) return config.defaultModel
+  // 自建端点：保留用户设置，一字不改
+  if (hasCustomBaseUrl) return defaultModel
+  const matcher = PROVIDER_MODEL_MATCHERS.find((m) => m.provider === provider)
+  // 该 provider 没有前缀规则时保留用户设置。
+  if (!matcher) return defaultModel
+  if (matcher.test(defaultModel.toLowerCase())) return defaultModel
+  // OpenRouter 风格的 'vendor/model' 命名：去掉前缀再判断一次，
+  // 匹配则用不带前缀的裸名（带前缀的串官方端点不认）。
+  const bare = defaultModel.includes('/')
+    ? defaultModel.slice(defaultModel.lastIndexOf('/') + 1)
+    : defaultModel
+  if (bare !== defaultModel && matcher.test(bare.toLowerCase())) return bare
+  return config.defaultModel
 }
 
 export class McpAdapter extends BaseAdapter {
@@ -462,7 +506,11 @@ export class McpAdapter extends BaseAdapter {
 
     // Connect to enabled MCP servers
     const settings = await readSettings()
-    const enabledServers = settings.mcpServers.filter((s) => s.enabled)
+    // 透明转发（A2A 入站）不下发任何 MCP 工具，也不该把本机 MCP server 拉起来：
+    // 远端调用方用不到它们，却让每个入站请求都启动一批本地进程（其中可能有带
+    // 项目读写权限的 filesystem server），与「远端不得触达本地」的边界相悖。
+    const transparent = config.transparentForward === true
+    const enabledServers = transparent ? [] : settings.mcpServers.filter((s) => s.enabled)
     const sessionClients: McpClient[] = []
 
     // 清理连接池中的空闲超时连接
@@ -485,7 +533,9 @@ export class McpAdapter extends BaseAdapter {
     this.pushOutputSession(sessionId)
 
     try {
-      for (const server of enabledServers) {
+      // 并行建连：每个 server 独立握手，单个握手最长 10 秒。串行时 N 个 server
+      // 的启动耗时是各自身握手时长之和（最坏 N×10s），会话要干等。
+      const connected = await Promise.all(enabledServers.map(async (server) => {
         // 熔断器检查：跳过处于 open 状态的服务器
         if (this.isCircuitOpen(server.name)) {
           this.emitOutput({
@@ -493,60 +543,58 @@ export class McpAdapter extends BaseAdapter {
             data: `MCP server ${server.name} circuit breaker open (cooling down), skipping`,
             timestamp: Date.now(),
           })
-          continue
+          return null
         }
         // 优先从连接池复用
         const pooled = this.connectionPool.get(server.name)
         if (pooled && pooled.client.isReady()) {
-            pooled.refCount++
-            pooled.lastUsed = Date.now()
-            sessionClients.push(pooled.client)
-            this.emitOutput({
-              type: 'stdout',
-              data: `MCP server reused from pool: ${server.name}`,
-              timestamp: Date.now(),
-            })
-            continue
-          }
-          // 池中无可用连接，新建
-          const client = new McpClient(server.command, server.args)
-          const connectStart = Date.now()
-          try {
-            await client.connect()
-            const connectMs = Date.now() - connectStart
-            // Phase B: 握手成功 → 健康度正向记一次（mcp + server.name 双粒度）
-            adapterHealthMonitor.recordCall(`mcp:${server.name}`, true, connectMs)
-            this.recordCircuitResult(server.name, true)
-          // 池槽写入策略：
-          // 1. 无现存条目 → 直接写入。
-          // 2. 现存条目已无引用（refCount <= 0） → 可安全替换。
-          // 3. 现存条目有引用但客户端已死 (isReady() false) → 替换：
-          //    死客户端无法服务新连接，持有其引用的旧会话在清理时会通过
-          //    client-reference 匹配走非池化断开路径，不会影响引用计数。
-          //    若不替换，池槽永久被死条目占据，所有新会话退化为私有连接，丧失复用。
-          // 4. 现存条目有引用且客户端仍存活 → 保留：覆盖会丢失 refCount，
-          //    旧 client 在清理时被误判为非池化而提前 disconnect（use-after-disconnect）。
-          const existingEntry = this.connectionPool.get(server.name)
-          const shouldPoolNewClient = !existingEntry
-            || existingEntry.refCount <= 0
-            || !existingEntry.client.isReady()
-          if (shouldPoolNewClient) {
-            this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
-            sessionClients.push(client)
-          } else {
-            // case 4: 现存池条目健康且有引用（与上方首次复用检查之间 isReady() 状态翻转）。
-            // 复用现存条目而非丢弃刚 connect 的新 client，避免建连开销浪费。
-            existingEntry.refCount++
-            existingEntry.lastUsed = Date.now()
-            sessionClients.push(existingEntry.client)
-            // best-effort 关闭多余的 client，释放其底层连接
-            try { await client.disconnect() } catch { /* best-effort */ }
-          }
+          pooled.refCount++
+          pooled.lastUsed = Date.now()
           this.emitOutput({
             type: 'stdout',
-            data: `MCP server connected: ${server.name}`,
+            data: `MCP server reused from pool: ${server.name}`,
             timestamp: Date.now(),
           })
+          return pooled.client
+        }
+        // 池中无可用连接，新建
+        const client = new McpClient(server.command, server.args)
+        const connectStart = Date.now()
+        try {
+          await client.connect()
+          const connectMs = Date.now() - connectStart
+          // Phase B: 握手成功 → 健康度正向记一次（mcp + server.name 双粒度）
+          adapterHealthMonitor.recordCall(`mcp:${server.name}`, true, connectMs)
+          this.recordCircuitResult(server.name, true)
+        // 池槽写入策略：
+        // 1. 无现存条目 → 直接写入。
+        // 2. 现存条目已无引用（refCount <= 0） → 可安全替换。
+        // 3. 现存条目有引用但客户端已死 (isReady() false) → 替换：
+        //    死客户端无法服务新连接，持有其引用的旧会话在清理时会通过
+        //    client-reference 匹配走非池化断开路径，不会影响引用计数。
+        //    若不替换，池槽永久被死条目占据，所有新会话退化为私有连接，丧失复用。
+        // 4. 现存条目有引用且客户端仍存活 → 保留：覆盖会丢失 refCount，
+        //    旧 client 在清理时被误判为非池化而提前 disconnect（use-after-disconnect）。
+        const existingEntry = this.connectionPool.get(server.name)
+        const shouldPoolNewClient = !existingEntry
+          || existingEntry.refCount <= 0
+          || !existingEntry.client.isReady()
+        if (shouldPoolNewClient) {
+          this.connectionPool.set(server.name, { client, refCount: 1, lastUsed: Date.now() })
+        } else {
+          // case 4: 现存池条目健康且有引用（与上方首次复用检查之间 isReady() 状态翻转）。
+          // 复用现存条目而非丢弃刚 connect 的新 client，避免建连开销浪费。
+          existingEntry.refCount++
+          existingEntry.lastUsed = Date.now()
+          // best-effort 关闭多余的 client，释放其底层连接
+          try { await client.disconnect() } catch { /* best-effort */ }
+        }
+        this.emitOutput({
+          type: 'stdout',
+          data: `MCP server connected: ${server.name}`,
+          timestamp: Date.now(),
+        })
+        return shouldPoolNewClient ? client : existingEntry.client
         } catch (err) {
           this.recordCircuitResult(server.name, false)
           const msg = err instanceof Error ? err.message : String(err)
@@ -555,8 +603,10 @@ export class McpAdapter extends BaseAdapter {
             data: `MCP server failed (${server.name}): ${msg}`,
             timestamp: Date.now(),
           })
+          return null
         }
-      }
+      }))
+      sessionClients.push(...connected.filter((c): c is McpClient => c !== null))
     } finally {
       this.popOutputSession()
     }
@@ -609,32 +659,29 @@ export class McpAdapter extends BaseAdapter {
       add_test: 'Please add tests for the following',
     }
 
-    const userPrompt = `${typeLabels[command.type] ?? 'Please complete the task'}:\n${command.description}`
+    // 透明转发（A2A 入站）：远端调用方不应能借本机 MCP server 触达本地文件，
+    // 也不能派生本地 subagent（CLAUDE.md Boundaries §3）。
+    const transparent = session.config.transparentForward === true
+
+    // 透明转发时下发 command.description 原文，不加任何样板 —— 否则远端 LLM
+    // 看到的就不是调用方的原文，会破坏 KV-cache 复用。
+    const userPrompt = transparent
+      ? command.description
+      : `${typeLabels[command.type] ?? 'Please complete the task'}:\n${command.description}`
     const systemPrompt = this.buildScopePromptForSession(session)
 
     // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []
-    const mcpTools = clients.flatMap((c) => c.getTools())
+    const mcpTools = transparent ? [] : clients.flatMap((c) => c.getTools())
     const providerConfig = PROVIDER_CONFIGS[apiKey.provider]
     const supportsTools = providerConfig?.supportsTools ?? false
+    const canDispatchSubagent = !transparent && this.subagentManager !== undefined
 
     // Call LLM API via unified provider config
     try {
-      // 检查 API 调用频率限制
-      const rateCheck = this.apiRateLimiter.check(session.id)
-      if (!rateCheck.allowed) {
-        const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
-        this.emitOutputForSession(sessionId, {
-          type: 'error',
-          data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
-          timestamp: Date.now(),
-        })
-        return
-      }
-
       let responseText: string
 
-      if (supportsTools && (mcpTools.length > 0 || this.subagentManager)) {
+      if (supportsTools && (mcpTools.length > 0 || canDispatchSubagent)) {
         // 结构化 Tool Use 模式（Anthropic / OpenAI / DeepSeek）
         const tools: UnifiedTool[] = mcpTools.map((t) => ({
           name: t.name,
@@ -643,7 +690,7 @@ export class McpAdapter extends BaseAdapter {
         }))
 
         // Append dispatch_subagent tool when SubagentManager is set
-        if (this.subagentManager) {
+        if (canDispatchSubagent && this.subagentManager) {
           tools.unshift({
             name: DISPATCH_SUBAGENT_TOOL_NAME,
             description: DISPATCH_SUBAGENT_TOOL_SCHEMA.description,
@@ -665,10 +712,10 @@ export class McpAdapter extends BaseAdapter {
         // only. MCP adapter tools come from MCP server discovery and don't map 1:1 to
         // SubagentToolName. Phase 5+ will revisit if needed.
 
-        const messages: RichLlmMessage[] = [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ]
+        const messages: RichLlmMessage[] = []
+        // 透明转发时 systemPrompt 为空 —— 不下发空的 system 消息。
+        if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
+        messages.push({ role: 'user', content: userPrompt })
 
         responseText = await this.executeToolUseLoop(
           session,
@@ -680,6 +727,19 @@ export class McpAdapter extends BaseAdapter {
         )
       } else {
         // 纯文本模式（Gemini 或不支持 tools 时）
+        // 频率限制在这里计一次账 —— Tool Use 循环内部按每次 API 调用计账，
+        // 两条路径都只计一次，否则单条命令会吃掉双份配额。
+        const rateCheck = this.apiRateLimiter.check(session.id)
+        if (!rateCheck.allowed) {
+          const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
+          this.emitOutputForSession(sessionId, {
+            type: 'error',
+            data: `API rate limit exceeded. Please wait ${retrySec}s before sending another message.`,
+            timestamp: Date.now(),
+          })
+          return
+        }
+
         const toolDescriptions = mcpTools
           .map((t) => `- ${t.name}: ${t.description ?? 'No description'}`)
           .join('\n')
@@ -687,14 +747,15 @@ export class McpAdapter extends BaseAdapter {
           ? `${systemPrompt}\n\n## Available MCP Tools\n${toolDescriptions}`
           : systemPrompt
 
+        const plainMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
+        if (enhancedSystem) plainMessages.push({ role: 'system', content: enhancedSystem })
+        plainMessages.push({ role: 'user', content: userPrompt })
+
         responseText = await this.callLlmUnified(
           apiKey.provider,
           apiKey.key,
           apiKey.baseUrl,
-          [
-            { role: 'system', content: enhancedSystem },
-            { role: 'user', content: userPrompt },
-          ],
+          plainMessages,
           settings.defaultModel,
           session.id,
         )
@@ -853,19 +914,26 @@ export class McpAdapter extends BaseAdapter {
   // ============================================
 
   /**
-   * 带超时的 fetch 请求封装
-   * 默认 60 秒超时，防止请求挂死
+   * 带超时的 fetch 请求封装 —— 超时窗口覆盖「响应头 + 响应体」全过程。
+   *
+   * fetch() 在响应头到达时就 resolve，响应体是之后才流出来的。若把计时器放在
+   * fetch 自己的 finally 里清掉，res.text() / res.json() 就可以无限期挂着 ——
+   * 对端只发状态行然后卡住（slow drip / 半开连接）时，「60 秒超时」形同虚设，
+   * 整个调用永远不返回。
+   *
+   * @returns 状态码 + 完整响应体文本
    */
-  private async fetchWithTimeout(
+  private async fetchBodyWithTimeout(
     url: string,
     init: RequestInit,
     timeoutMs = 60000,
-  ): Promise<Response> {
+  ): Promise<{ ok: boolean; status: number; body: string }> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
     try {
       const res = await fetch(url, { ...init, signal: controller.signal })
-      return res
+      const body = await res.text()
+      return { ok: res.ok, status: res.status, body }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new AdapterError(`Request timeout after ${timeoutMs}ms`, this.name)
@@ -893,24 +961,32 @@ export class McpAdapter extends BaseAdapter {
       throw new AdapterError(`Unsupported provider: ${provider}`, this.name)
     }
 
-    const model = defaultModel ?? config.defaultModel
+    // baseUrl 非空 = 用户配的是自建网关/代理端点，模型名由网关决定，不能替换
+    const model = resolveModel(provider, defaultModel, Boolean(baseUrl))
     const url = config.buildUrl(baseUrl, key, model)
     const headers = config.buildHeaders(key, baseUrl)
     const body = config.buildBody(messages, model, tools)
 
-    const res = await this.fetchWithTimeout(url, {
+    const res = await this.fetchBodyWithTimeout(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
     })
 
     if (!res.ok) {
-      let text = '(unable to read response body)'
-      try { text = await res.text() } catch { /* ignore */ }
+      const text = res.body || '(unable to read response body)'
       throw new AdapterError(`${provider} API error ${res.status}: ${text}`, this.name)
     }
 
-    const data = await res.json()
+    let data: unknown
+    try {
+      data = JSON.parse(res.body)
+    } catch {
+      throw new AdapterError(
+        `${provider} API returned a non-JSON body: ${res.body.slice(0, 200)}`,
+        this.name,
+      )
+    }
     const parsed = config.parseResponse(data)
 
     // Report authoritative token usage to the AgentManager budget tracker
@@ -959,15 +1035,24 @@ export class McpAdapter extends BaseAdapter {
   ): Promise<string> {
     const MAX_TOOL_ITERATIONS = 10
     let iterations = 0
+    let lastText = ''
 
     while (iterations < MAX_TOOL_ITERATIONS) {
       iterations++
 
-      // 检查频率限制
+      // 检查频率限制。命中时**不能抛异常**：抛出会被 doSendCommand 的 catch
+      // 转成 sessionEnded('error') → 会话被拆 → 恢复流程新建一个会话，
+      // 新会话的配额是空的 —— 限流反而成了「无限重试」的旁路，用户在途的
+      // 工作也一起丢了。这里与纯文本分支保持一致：提示 + 收尾，不拆会话。
       const rateCheck = this.apiRateLimiter.check(session.id)
       if (!rateCheck.allowed) {
         const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
-        throw new AdapterError(`API rate limit exceeded. Wait ${retrySec}s.`, this.name)
+        this.emitOutputForSession(session.id, {
+          type: 'stderr',
+          data: `API rate limit exceeded, stopping tool loop. Please wait ${retrySec}s before sending another message.`,
+          timestamp: Date.now(),
+        })
+        return lastText
       }
 
       const response = await this.callLlmWithToolSupport(
@@ -979,6 +1064,7 @@ export class McpAdapter extends BaseAdapter {
         defaultModel,
         session.id,
       )
+      lastText = response.text
 
       // 发送 LLM 的文本输出（如果有）
       if (response.text) {
@@ -994,47 +1080,13 @@ export class McpAdapter extends BaseAdapter {
         return response.text
       }
 
-      // 执行 tool calls
-      const toolResults: ToolResult[] = []
-      for (const toolCall of response.toolCalls) {
-        // Phase 4: Intercept dispatch_subagent — route to SubagentManager instead of MCP client
-        if (toolCall.name === DISPATCH_SUBAGENT_TOOL_NAME && this.subagentManager) {
-          const args = toolCall.arguments as Record<string, unknown>
-          try {
-            const result = await this.subagentManager.invoke({
-              parentSessionId: session.id,
-              agentType: String(args.agent_type ?? ''),
-              description: String(args.description ?? ''),
-              prompt: String(args.prompt ?? ''),
-              adapterName: args.adapter_name ? String(args.adapter_name) : undefined,
-              nodeId: args.node_id ? String(args.node_id) : undefined,
-              allowedFiles: Array.isArray(args.allowed_files) ? (args.allowed_files as string[]) : undefined,
-            })
-            toolResults.push({
-              toolCallId: toolCall.id,
-              content: result.resultText,
-            })
-          } catch (err) {
-            toolResults.push({
-              toolCallId: toolCall.id,
-              content: `Subagent failed: ${err instanceof Error ? err.message : String(err)}`,
-              isError: true,
-            })
-          }
-          continue
-        }
-
-        const result = await this.executeMcpTool(clients, toolCall)
-        toolResults.push(result)
-
-        // 输出 tool 执行信息
-        const statusIcon = result.isError ? '❌' : '✅'
-        this.emitOutputForSession(session.id, {
-          type: 'stdout',
-          data: `${statusIcon} Tool: ${toolCall.name}\n${result.content.substring(0, 500)}`,
-          timestamp: Date.now(),
-        })
-      }
+      // 执行 tool calls —— 并行发起。
+      // 模型一次返回多个 tool_use 时它们本就是并列的（Claude 等 API 的语义就是
+      // 并行执行）；串行 await 会把一轮耗时拉成各工具耗时之和（单次工具调用
+      // 最长 30s）。McpClient 按 requestId 匹配响应，并发发请求是安全的。
+      const toolResults: ToolResult[] = await Promise.all(
+        response.toolCalls.map((toolCall) => this.runToolCall(session, clients, toolCall)),
+      )
 
       // 将 tool results 加入对话历史（截断过大内容防撑爆上下文）
       const truncatedRoute: ToolResult[] = toolResults.map((tr) => {
@@ -1061,6 +1113,53 @@ export class McpAdapter extends BaseAdapter {
     }
 
     return '[Max tool iterations reached]'
+  }
+
+  /**
+   * 执行单个 tool call：subagent 派发走 SubagentManager，其余走 MCP client。
+   * 返回值与传入的 toolCall 一一对应（由调用方保证顺序）。
+   */
+  private async runToolCall(
+    session: AgentSession,
+    clients: McpClient[],
+    toolCall: UnifiedToolCall,
+  ): Promise<ToolResult> {
+    // Phase 4: Intercept dispatch_subagent — route to SubagentManager instead of MCP client
+    if (toolCall.name === DISPATCH_SUBAGENT_TOOL_NAME && this.subagentManager) {
+      const args = toolCall.arguments as Record<string, unknown>
+      try {
+        const result = await this.subagentManager.invoke({
+          parentSessionId: session.id,
+          agentType: String(args.agent_type ?? ''),
+          description: String(args.description ?? ''),
+          prompt: String(args.prompt ?? ''),
+          adapterName: args.adapter_name ? String(args.adapter_name) : undefined,
+          nodeId: args.node_id ? String(args.node_id) : undefined,
+          allowedFiles: Array.isArray(args.allowed_files) ? (args.allowed_files as string[]) : undefined,
+        })
+        return {
+          toolCallId: toolCall.id,
+          content: result.resultText,
+        }
+      } catch (err) {
+        return {
+          toolCallId: toolCall.id,
+          content: `Subagent failed: ${err instanceof Error ? err.message : String(err)}`,
+          isError: true,
+        }
+      }
+    }
+
+    const result = await this.executeMcpTool(clients, toolCall)
+
+    // 输出 tool 执行信息
+    const statusIcon = result.isError ? '❌' : '✅'
+    this.emitOutputForSession(session.id, {
+      type: 'stdout',
+      data: `${statusIcon} Tool: ${toolCall.name}\n${result.content.substring(0, 500)}`,
+      timestamp: Date.now(),
+    })
+    return result
   }
 
   /**
@@ -1177,18 +1276,29 @@ ${text}
 Output: a clean text summary. No preamble, no markdown.`
 
     const settings = await readSettings()
-    const apiKey = resolveApiKey(settings.apiKeys, settings.defaultModel)
+    // Use compactModel if configured (cheaper model for summarisation),
+    // otherwise fall back to defaultModel
+    const compactModel = settings.compactModel || settings.defaultModel
+    // Key 要按「实际要用的模型」来选：用 defaultModel 选 key、再拿 compactModel
+    // 去请求，会出现 key 属于 A 家、模型属于 B 家的组合，结果是 compactModel
+    // 被静默换回 provider 默认模型 —— 压缩照样按大模型计费。
+    const apiKey = resolveApiKey(settings.apiKeys, compactModel)
     if (!apiKey) {
       throw new AdapterError('No API key configured for LLM summarisation', this.name)
     }
 
-    // Use compactModel if configured (cheaper model for summarisation),
-    // otherwise fall back to defaultModel
-    const compactModel = settings.compactModel || settings.defaultModel
-
     // Use a derived sessionId so the rate limiter covers compact sidecar calls
     // without counting against the active session's input budget.
     const compactSessionId = `${session.id}:compact`
+    // 压缩也是一次真实的 API 调用，必须计账 —— 否则自动压缩是限流器的旁路。
+    const rateCheck = this.apiRateLimiter.check(compactSessionId)
+    if (!rateCheck.allowed) {
+      const retrySec = Math.ceil((rateCheck.retryAfterMs ?? 10_000) / 1000)
+      throw new AdapterError(
+        `API rate limit exceeded during compaction. Wait ${retrySec}s.`,
+        this.name,
+      )
+    }
     const result = await this.callLlmUnified(
       apiKey.provider,
       apiKey.key,

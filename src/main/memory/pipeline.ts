@@ -216,7 +216,16 @@ export class PipelineRunner {
           }
           return {
             ...ctx,
-            memories: extractor.extract(ctx.sessionId, sourceOutputs, { adapterName: ctx.adapterName ?? 'unknown' }),
+            // projectId/nodeId 必须传下去：记忆的 project_id 决定它能否被
+            // 「同项目」检索命中（memory-store 的 FTS 过滤、RAG 少样本检索、
+            // prompt-formatter 的近期记忆都按 project_id 过滤）。
+            // 此前只传 adapterName，所有管线写入的记忆 project_id 都是空串，
+            // 检索层永远匹配不到 —— 记忆写了等于没写。
+            memories: extractor.extract(ctx.sessionId, sourceOutputs, {
+              adapterName: ctx.adapterName ?? 'unknown',
+              projectId: ctx.projectId,
+              nodeId: ctx.nodeId,
+            }),
           }
         },
       },
@@ -340,7 +349,18 @@ export class PipelineRunner {
             // Generate embeddings for stored memories (non-blocking, graceful degradation)
             const { getEmbeddingService } = await import('./embedding-service')
             const embeddingService = getEmbeddingService()
-            if (embeddingService.isReady()) {
+            if (!embeddingService.isReady()) {
+              // 嵌入服务是全局单例，除本处外没有其它入口会初始化它 —— 记忆里
+              // 的向量因此从来没有被生成过，语义检索也无从谈起。这里在后台
+              // 加载模型（首次可能较慢，不能阻塞管线），就绪之后本管线会自动
+              // 为后续记忆写入向量。
+              void embeddingService.ensureInitialized(60_000).then((ok) => {
+                if (!ok) {
+                  logger.warn('Embedding service unavailable, semantic retrieval stays disabled')
+                }
+              }).catch(() => undefined)
+              logger.info('EmbeddingService not ready, skipping embedding generation for persisted memories')
+            } else {
               const texts = safeMemories.map(m =>
                 `${m.title} ${m.narrative} ${(m.facts ?? []).join(' ')}`
               )
@@ -371,8 +391,6 @@ export class PipelineRunner {
               } catch {
                 // Batch embedding generation failure should not block the pipeline
               }
-            } else {
-              logger.info('EmbeddingService not ready, skipping embedding generation for persisted memories')
             }
           }
 

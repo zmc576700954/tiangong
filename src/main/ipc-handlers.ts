@@ -17,6 +17,8 @@ import { AgentManager } from './agent/agent-manager'
 import { GraphService } from './services/graph-service'
 import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
+import { EdgeRepository } from './repositories/edge-repository'
+import { GraphRepository } from './repositories/graph-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
 import { isPathWithinResolved } from './shared/path-utils'
@@ -400,7 +402,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerProjectHandlers(typedHandle, graphService, chatService)
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
-  registerMindmapHandlers(typedHandle, agentManager)
+  registerMindmapHandlers(typedHandle, agentManager, new NodeRepository(db), new EdgeRepository(db), new GraphRepository(db))
   registerChatHandlers(chatService, typedHandle)
   const compactHistoryRepo = new CompactHistoryRepository(db)
   // Phase 3 Task 3: wire repos into AgentManager so compactContext can persist

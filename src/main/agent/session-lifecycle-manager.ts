@@ -49,7 +49,7 @@ const CLEANUP_ASYNC_TIMEOUT_MS = 30_000
 
 type SessionEndedHandler = (
   sessionId: string,
-  reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle',
+  reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle' | 'user',
   exitCode: number | null,
 ) => void
 
@@ -242,6 +242,16 @@ export class SessionLifecycleManager {
           // full lifecycle (memory pipeline, scope commit, Phase B hooks) runs.
           logger.info(`Session ${sessionId} reclaimed by idle reaper, delegating to terminate`)
           await this.terminate(sessionId, 'idle', this.callbacks.onPhaseB)
+          return
+        }
+
+        if (reason === 'user') {
+          // 用户主动取消：与 idle 同理走 terminate，让清理 / 沙箱回收 / Phase B
+          // 全部执行。此前 'user' 落在所有分支之外 —— 会话状态、路由绑定、沙箱
+          // 索引都留在原地，直到 TTL 过期才被清掉。
+          logger.info(`Session ${sessionId} cancelled by user, delegating to terminate`)
+          await this.terminate(sessionId, 'user', this.callbacks.onPhaseB)
+          return
         }
       } catch (err) {
         logger.error(`Unhandled error in sessionEnded handler for ${sessionId}:`, err)
@@ -714,9 +724,12 @@ export class SessionLifecycleManager {
     const targetName = state.broadcastName
 
     const filteredHandler = (payload: BroadcastPayload) => {
-      if (payload.adapterName === targetName) {
-        handler(payload.output)
-      }
+      // 必须同时比对 sessionId：同一适配器名下的多个会话（父子 subagent、
+      // 多个 A2A 入站任务、多个聊天线程）只按 adapterName 过滤会互相串流。
+      // 没有 sessionId 的广播属于适配器级消息，保持原有行为。
+      if (payload.adapterName !== targetName) return
+      if (payload.sessionId !== undefined && payload.sessionId !== sessionId) return
+      handler(payload.output)
     }
     this.sessionOutputListeners.set(handler, filteredHandler)
     let indexSet = this.sessionOutputListenerIndex.get(sessionId)

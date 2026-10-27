@@ -29,6 +29,7 @@ import {
   formatMessageEvent,
   formatSseKeepalive,
   parseSseChunk,
+  flushSseBuffer,
 } from '../codec'
 import {
   SSE_EVENT_ARTIFACT,
@@ -321,5 +322,71 @@ describe('A2A codec — SSE framing', () => {
     const wire = 'event: status\ndata: {"state":"working"}\n\n'
     const { events } = parseSseChunk('', wire)
     expect(events[0].data).toBe('{"state":"working"}')
+  })
+})
+
+describe('A2A codec — SSE 记录分隔符', () => {
+  it('CRLF 行 + LF 空行：data 末尾不会多出一个孤立的 \r', () => {
+    const wire = 'event: status\r\ndata: {"state":"working"}\r\n\n'
+    const { events } = parseSseChunk('', wire)
+    expect(events).toHaveLength(1)
+    expect(events[0].data).toBe('{"state":"working"}')
+    expect(events[0].event).toBe('status')
+  })
+
+  it('CR 分隔符（\\r\\r）能切开两条记录', () => {
+    const wire = 'event: a\rdata: {"n":1}\r\rdata: {"n":2}\r\r'
+    const { events } = parseSseChunk('', wire)
+    expect(events).toHaveLength(2)
+    expect(events[0].data).toBe('{"n":1}')
+    expect(events[1].data).toBe('{"n":2}')
+  })
+
+  it('CRLF 与 LF 混排时按最早的分隔符切开，两条记录不会合并', () => {
+    const wire = 'data: {"n":1}\n\ndata: {"n":2}\r\n\r\n'
+    const { events } = parseSseChunk('', wire)
+    expect(events).toHaveLength(2)
+    expect(events[0].data).toBe('{"n":1}')
+    expect(events[1].data).toBe('{"n":2}')
+  })
+
+  it('CRLF+LF（\\r\\n\\n）也是合法分隔符', () => {
+    const wire = 'data: {"n":1}\r\n\ndata: {"n":2}\r\n\n'
+    const { events } = parseSseChunk('', wire)
+    expect(events).toHaveLength(2)
+    expect(events[0].data).toBe('{"n":1}')
+    expect(events[1].data).toBe('{"n":2}')
+  })
+
+  it('分隔符之后紧跟下一条记录，不会被误吞', () => {
+    const wire = 'data: {"n":1}\r\n\r\ndata: {"n":2}\r\n\r\n'
+    const { events, rest } = parseSseChunk('', wire)
+    expect(events).toHaveLength(2)
+    expect(rest).toBe('')
+  })
+})
+
+describe('A2A codec — flushSseBuffer', () => {
+  it('发送方省略结尾空行时，终态记录仍会被分派', () => {
+    const events = flushSseBuffer('event: status\ndata: {"state":"completed"}')
+    expect(events).toHaveLength(1)
+    expect(events[0].data).toBe('{"state":"completed"}')
+    expect(events[0].event).toBe('status')
+  })
+
+  it('残留缓冲里有完整记录 + 末尾半条记录时，逐条分派', () => {
+    const events = flushSseBuffer('data: {"n":1}\n\ndata: {"n":2}')
+    expect(events).toHaveLength(2)
+    expect(events[0].data).toBe('{"n":1}')
+    expect(events[1].data).toBe('{"n":2}')
+  })
+
+  it('空缓冲 / 纯空白 → 没有事件', () => {
+    expect(flushSseBuffer('')).toEqual([])
+    expect(flushSseBuffer('   \n\n')).toEqual([])
+  })
+
+  it('只有注释行 → 没有事件', () => {
+    expect(flushSseBuffer(': keepalive')).toEqual([])
   })
 })
