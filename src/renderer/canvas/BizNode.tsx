@@ -61,7 +61,6 @@ function FoldControl({
         type="button"
         // `nodrag` 是 react flow 的约定 class：在按钮上按下时不拖动节点
         className="nodrag rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-        title={toggleLabel}
         aria-label={toggleLabel}
         onClick={(e) => {
           // 不冒泡：否则折叠的同时会顺带触发节点选中/拖拽
@@ -69,7 +68,12 @@ function FoldControl({
           onToggle?.(nodeId)
         }}
       >
-        {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        {/* `title` 挂在**图标**这个 span 上，不挂按钮本身：按钮上的 title 会变成
+            「可访问描述」，跟可访问名（aria-label，同一句话）重复 → 读屏念两遍。
+            `aria-hidden` 只影响无障碍树的暴露，不影响渲染 —— 鼠标悬停照样出原生 tooltip。 */}
+        <span aria-hidden="true" title={toggleLabel}>
+          {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+        </span>
       </button>
     </span>
   )
