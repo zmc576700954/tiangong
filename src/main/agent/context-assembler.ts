@@ -73,7 +73,7 @@ export class ContextAssembler {
   }> {
     const { command, sessionConfig, contextRefs, nodes, optimalBudget, sessionId, adapterName } = args
 
-    const [resolvedContexts, codeContext, _memoryContext, _sessionHistoryContext] = await Promise.all([
+    const [resolvedContexts, codeContext, memoryContext, sessionHistoryContext] = await Promise.all([
       // 标准上下文解析（根据命令类型自适应 Token 预算）
       (contextRefs && contextRefs.length > 0)
         ? this.contextResolver.resolve(contextRefs, CONTEXT_COMPLEXITY_BUDGET[(command as AgentCommand).type] ?? 8000, {
@@ -132,6 +132,9 @@ export class ContextAssembler {
       sessionConfig,
       resolvedContexts,
       codeContext,
+      // 项目记忆是项目级稳定内容 → stable 段；会话历史记忆每轮检索 → turn 段。
+      projectMemory: memoryContext,
+      sessionHistory: sessionHistoryContext,
     })
 
     return { resolvedContexts, codeContext, assembled }

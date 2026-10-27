@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import os from 'node:os'
+import fs from 'node:fs'
+import path from 'node:path'
 import { AgentManager } from '../agent/agent-manager'
 import { AdapterRegistry } from '../agent/adapter-registry'
 import { SessionRouter } from '../agent/session-router'
@@ -361,6 +363,46 @@ describe('AgentManager', () => {
       expect(setPromptContextSpy.mock.calls[0][1].stable).toContain('COMPACT-SUMMARY')
 
       historySpy.mockRestore()
+    })
+
+    it('把项目记忆与会话历史记忆送进 prompt 上下文', async () => {
+      const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-mem-'))
+      try {
+        fs.mkdirSync(path.join(workDir, '.bizgraph'), { recursive: true })
+        fs.writeFileSync(
+          path.join(workDir, '.bizgraph', 'memory.json'),
+          JSON.stringify({ architecturePattern: '项目记忆标记XYZ' }),
+        )
+
+        const adapter = new TestAdapter('test-adapter')
+        manager.registerAdapter(adapter)
+        const { sessionId } = await manager.startSession(
+          'test-adapter',
+          mockConfig({ workingDirectory: workDir }),
+        )
+
+        // 会话历史记忆走 MemoryStore → 需要 DB；单测没有 DB，短路这一段。
+        const historySpy = vi
+          .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+          .mockResolvedValue('会话历史标记ABC')
+
+        const setPromptContextSpy = vi.spyOn(adapter, 'setPromptContext')
+        await manager.resolveAndSendCommand(sessionId, {
+          type: 'implement',
+          description: 'cmd',
+          targetNodeId: 'n1',
+        })
+
+        const ctx = setPromptContextSpy.mock.calls[0][1]
+        // 项目记忆是项目级稳定内容 → stable；会话历史每轮检索 → turn。
+        expect(ctx.stable).toContain('项目记忆标记XYZ')
+        expect(ctx.turn).toContain('会话历史标记ABC')
+        expect(ctx.stable).not.toContain('会话历史标记ABC')
+
+        historySpy.mockRestore()
+      } finally {
+        fs.rmSync(workDir, { recursive: true, force: true })
+      }
     })
   })
 
