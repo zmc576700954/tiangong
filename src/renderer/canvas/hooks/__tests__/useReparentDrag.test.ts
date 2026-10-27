@@ -267,6 +267,35 @@ describe('useReparentDrag', () => {
     expect(result.current.candidate).toBeNull()
   })
 
+  it('treats the current parent as "no candidate" rather than an illegal drop', () => {
+    // feature-a 的当前父节点就是 process-x。命中它**不是**一个错误，只是一个
+    // 没有意义的操作 → 按「没有候选」处理（返回 null），不给用户红框 + 理由。
+    // 若判成合法落点：主进程对「换父到当前父节点」是无操作 → 节点弹回原位，
+    // 还弹一个「已移动到 process-x」的成功提示。
+    const { result } = renderHook(() => useReparentDrag())
+
+    act(() => { result.current.onDragStart('feature-a') })
+    act(() => { result.current.onDrag(ON_PROCESS_X) })
+
+    expect(result.current.candidate).toBeNull()
+  })
+
+  it('does not reparent when the drop lands on the current parent', async () => {
+    // 命中当前父节点 → 退化成普通移动：
+    //   - 绝不调 graph:reparent（主进程那边它也是无操作）；
+    //   - 绝不抑制自由位置持久化（suppressPositions 不被调用）——
+    //     抑制了就意味着「位置权威交给主进程」，而主进程会把节点弹回原位。
+    const suppressPositions = vi.fn()
+    const releasePositions = vi.fn()
+    const { result } = renderHook(() => useReparentDrag({ suppressPositions, releasePositions }))
+
+    act(() => { result.current.onDragStart('feature-a') })
+    await act(async () => { result.current.onDragEnd(ON_PROCESS_X) })
+
+    expect(mockState.reparentNode).not.toHaveBeenCalled()
+    expect(suppressPositions).not.toHaveBeenCalled()
+  })
+
   it('picks the later node when two nodes overlap under the pointer', () => {
     // store 的数组顺序即渲染顺序，后者在上面 → 命中重叠区时取靠后的那个
     const { result } = renderHook(() => useReparentDrag())

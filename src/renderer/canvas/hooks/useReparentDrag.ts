@@ -268,6 +268,20 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       const hit = findHitNode(nodes, rectsRef.current, pointer, draggingId)
       if (!hit) return null
 
+      // ① 命中的是**当前父节点** → 「没有候选」（不是「非法」）
+      //
+      // 主进程对「换父到当前父节点」是**无操作**（hierarchy-service.ts 的短路分支：
+      // 原样返回数据库里的坐标，一个字节都不写）。若这里判成合法落点，渲染端会
+      // 先抑制自由位置持久化、再调 reparentNode → 主进程回一个「没动过」的坐标 →
+      // 节点弹回拖拽前的位置，同时弹一个「已移动到 B」的成功提示。
+      // 用户并没有做错任何事，却被告知成功了。
+      //
+      // 按「没有候选」处理（返回 null）而不是 valid:false：
+      //   - null = 拖拽退化成普通移动（A 跟随指针、位置照常持久化），没有任何红框；
+      //   - valid:false 会给用户一个「不能挂到当前父节点下」的红框 + 理由 ——
+      //     而这不是一个错误，只是一个**没有意义的操作**。
+      if (draggingNode.parentId === hit.id) return null
+
       // 规则表未就绪 → 不做任何判定。
       // loaded === false 时 configs 是空表，照常判定会把**所有**合法落点
       // 判成 type 不合法，给用户一个错误的红框。
@@ -276,19 +290,19 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       // 规则没说「不」，只是没拿到 —— 没有规则就没有红框。
       if (Object.keys(configs).length === 0) return null
 
-      // ① 命中的是自己的后代 → 成环
+      // ② 命中的是自己的后代 → 成环
       if (descendantsRef.current.has(hit.id)) {
         return { nodeId: hit.id, valid: false, reason: 'cycle' }
       }
-      // ② 跨图
+      // ③ 跨图
       if (hit.graphId !== draggingNode.graphId) {
         return { nodeId: hit.id, valid: false, reason: 'cross-graph' }
       }
-      // ③ 父子类型不合法
+      // ④ 父子类型不合法
       if (!checkTypeRule(configs, hit.type, draggingNode.type)) {
         return { nodeId: hit.id, valid: false, reason: 'type' }
       }
-      // ④ 合法
+      // ⑤ 合法
       return { nodeId: hit.id, valid: true }
     },
     [nodes, configs, loaded],
