@@ -269,6 +269,9 @@ export interface AgentAdapter {
   /** 读取会话的实时配置（适配器可能在运行期写入 contextSummary 等） */
   getSessionConfig?(sessionId: string): AgentSessionConfig | undefined
 
+  /** 读取适配器持有的 CLI 级会话 id（Claude Code 的 conversation id 等），供崩溃恢复时原生续接 */
+  getResumeSessionId?(sessionId: string): string | undefined
+
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
   on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle' | 'user', exitCode: number | null) => void): void
 

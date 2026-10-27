@@ -327,6 +327,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
+        // SDK 错误 = 会话异常终止。必须发 sessionEnded，否则恢复 / 回退 / Phase B 记忆管线整条链路不可达。
+        this.emit('sessionEnded', sessionId, 'error', null)
       }
     } finally {
       this.activeQueries.delete(session.id)

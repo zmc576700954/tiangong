@@ -168,13 +168,34 @@ describe('RecoveryOrchestrator', () => {
 
     it('returns "native" when strategy returns the same sessionId', async () => {
       const orch = makeOrchestrator()
-      const state = baseSessionState({ adapterName: 'claude-code' })
+      const state = baseSessionState({
+        adapterName: 'claude-code',
+        config: sampleSessionConfig({ resumeSessionId: 'cli-conv-1' }),
+      })
       // claude-code strategy returns ctx.sessionId
       sessionStates.set('s1', state)
       sessionBroadcastNames.set('s1', 'claude-code')
       const result = await orch.handleSessionExit('s1', 1, 'crash', state, [])
       expect(result).toBe('native')
       expect(sessionRouter.bind).toHaveBeenCalledWith('s1', 'claude-code')
+    })
+
+    it('native 恢复分支会重发上一条命令', async () => {
+      const orch = makeOrchestrator()
+      const lastCommand: AgentCommand = { type: 'implement', description: 'go', targetNodeId: 'n1' }
+      const state = baseSessionState({
+        adapterName: 'claude-code',
+        config: sampleSessionConfig({ resumeSessionId: 'cli-conv-1' }),
+        lastCommand,
+      })
+      sessionStates.set('s1', state)
+      // 重发命令要求会话已就绪且绑定着适配器
+      sessionRouter.resolve = vi.fn(() => makeAdapter('claude-code'))
+
+      const result = await orch.handleSessionExit('s1', 1, 'crash', state, [])
+
+      expect(result).toBe('native')
+      expect(sendCommandFn).toHaveBeenCalledWith('s1', lastCommand)
     })
 
     it('returns "replacement" when MCP recovery injects context and creates a new session', async () => {

@@ -423,6 +423,14 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * 返回适配器侧持有的 CLI 级会话 id（Claude Code 的 conversation id 等）。
+   * 崩溃恢复时用它判断「是否具备原生续接条件」——没有这个 id，--resume 无从谈起。
+   */
+  getResumeSessionId(sessionId: string): string | undefined {
+    return this.sessions.get(sessionId)?.config.resumeSessionId
+  }
+
+  /**
    * 注入 prompt 上下文（外部调用，sendCommand 前由 AgentManager 投递）。
    * stable 是跨轮稳定前缀（进 system 通道），turn 是每轮上下文（进 user turn）。
    */

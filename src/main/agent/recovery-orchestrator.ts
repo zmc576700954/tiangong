@@ -165,6 +165,12 @@ export class RecoveryOrchestrator {
     const threadId = await this.lookupThreadId(state.config.nodeId)
     const originSessionId = state.originSessionId ?? sessionId
 
+    // 原生恢复需要 CLI 级会话 id。适配器侧持有它（Claude Code 的 conversation id
+    // 由 SDK init 消息写入），manager 侧的 config 只是启动时快照 —— 两者取其一。
+    const adapter = this.registry.get(state.adapterName)
+    const adapterResumeId = adapter?.getResumeSessionId?.(sessionId)
+    const resumeSessionId = state.config.resumeSessionId ?? adapterResumeId
+
     const newSessionId = await this.sessionRecovery.attemptRecovery({
       sessionId,
       adapterName: state.adapterName,
@@ -173,6 +179,7 @@ export class RecoveryOrchestrator {
       lastMessages,
       threadId,
       originSessionId,
+      resumeSessionId,
     })
 
     if (newSessionId) {
@@ -190,6 +197,12 @@ export class RecoveryOrchestrator {
           this.sessionRouter.bind(sessionId, state.adapterName, originalAdapter)
         } else {
           this.sessionRouter.bind(sessionId, state.adapterName)
+        }
+        // 原生恢复只是把 CLI 会话接回去，崩溃前那条命令还没执行完 —— 必须重发。
+        if (state.lastCommand) {
+          await this.resumeLastCommand(sessionId, state.lastCommand)
+        } else {
+          logger.info(`Native resume for session ${sessionId}: no previous command to resend`)
         }
         return 'native'
       }

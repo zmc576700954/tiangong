@@ -14,6 +14,7 @@ describe('SessionRecoveryManager', () => {
       adapterName: 'claude-code',
       lastOutputs: [],
       lastMessages: [{ role: 'user', content: 'hello' }],
+      resumeSessionId: 'cli-conv-1',
     })
     expect(result).toBe('s1')
   })
@@ -107,5 +108,24 @@ describe('SessionRecoveryManager', () => {
   it('setPendingContext stores injection text', () => {
     manager.setPendingContext('s1', 'context text')
     expect(manager.consumePendingContext('s1')).toBe('context text')
+  })
+
+  it('claude-code 策略：有 resumeSessionId 时返回原 sessionId（原生恢复）', async () => {
+    const result = await manager.attemptRecovery({
+      sessionId: 's1',
+      adapterName: 'claude-code',
+      lastOutputs: [],
+      resumeSessionId: 'cli-conv-1',
+    })
+    expect(result).toBe('s1')
+  })
+
+  it('claude-code 策略：无 resumeSessionId 时返回 null（不具备原生恢复条件）', async () => {
+    const result = await manager.attemptRecovery({
+      sessionId: 's1',
+      adapterName: 'claude-code',
+      lastOutputs: [],
+    })
+    expect(result).toBeNull()
   })
 })

@@ -203,6 +203,37 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(errorOutputs[0].data).toContain('Rate limit')
   })
 
+  it('SDK 错误时发射 sessionEnded(error)，AbortError 时不发射', async () => {
+    const session = await adapter.startSession(makeConfig())
+    const ended: Array<[string, string, number | null]> = []
+    adapter.on('sessionEnded', (id: string, reason: string, code: number | null) => {
+      ended.push([id, reason, code])
+    })
+
+    mockQuery.mockReturnValue((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sdk-sess-1' }
+      throw new Error('boom')
+    })())
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(ended).toHaveLength(1)
+    expect(ended[0][1]).toBe('error')
+
+    const session2 = await adapter.startSession(makeConfig())
+    mockQuery.mockReturnValue((async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sdk-sess-2' }
+      const e = new Error('aborted')
+      e.name = 'AbortError'
+      throw e
+    })())
+
+    await adapter.sendCommand(session2.id, command)
+
+    // AbortError = 用户主动取消，不是会话异常终止 —— 不发 sessionEnded
+    expect(ended).toHaveLength(1)
+  })
+
   it('doSendCommand sets permissionMode to acceptEdits', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)

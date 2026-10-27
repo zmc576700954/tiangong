@@ -23,6 +23,11 @@ export interface RecoveryContext {
   threadId?: string
   /** Original sessionId that started the recovery lineage; used for stable retry accounting across replacement sessions. */
   originSessionId?: string
+  /**
+   * 适配器侧持有的 CLI 级会话 id（Claude Code 的 conversation id 等）。
+   * 原生 resume 靠它（--resume <id>）；没有它就不具备原生恢复条件。
+   */
+  resumeSessionId?: string
 }
 
 export interface RecoveryStrategy {
@@ -51,6 +56,14 @@ export class SessionRecoveryManager {
       adapterName: 'claude-code',
       canResume: true,
       resume: async (ctx) => {
+        // 原生恢复的前提是适配器手里有 CLI 级会话 id（--resume <id>）。
+        // 没有它就返回 null —— 让调用方走替换会话路径，而不是假装恢复了却丢上下文。
+        if (!ctx.resumeSessionId) {
+          logger.info(
+            `Claude Code native resume unavailable for session ${ctx.sessionId}: no CLI conversation id`,
+          )
+          return null
+        }
         // Claude Code supports --resume <sessionId> natively.
         // Build a context restoration hint from the last 3 messages.
         const lastMessages = ctx.lastMessages?.slice(-3) ?? []
