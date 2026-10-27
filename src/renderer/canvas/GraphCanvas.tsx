@@ -32,7 +32,7 @@ import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
-import { getEdgeMarkerEnd, createMarkerEnd, edgeTypeConfig } from './edge-utils'
+import { getEdgeMarkerEnd, createMarkerEnd, GHOST_EDGE_COLOR } from './edge-utils'
 import {
   buildReparentGhostEdge,
   deriveHierarchyEdges,
@@ -81,14 +81,6 @@ import { computeRemoteSelectionByNode } from './remote-selection'
 
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
-
-/**
- * 幽灵连线（拖拽重挂）的颜色：与合法落点的绿色高亮一致。
- *
- * 幽灵边本身由 `buildReparentGhostEdge` 构造 —— 它住在层级边派生的模块里，
- * 因为方向约定（父 → 子）跟那些边是同一条。
- */
-const GHOST_EDGE_COLOR = '#22c55e'
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
 function BizNodeWrapper({ id, data, selected }: {
@@ -764,7 +756,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
     const edges = mergedEdges.map((edge) => {
       const edgeType = edge.edgeType || 'default'
-      const config = edgeTypeConfig[edgeType]
       /** 幽灵连线（拖拽重挂的临时虚线）—— 用 id 前缀识别 */
       const isGhost = edge.id.startsWith(GHOST_EDGE_PREFIX)
       const displayLabel = edge.content?.condition
@@ -800,7 +791,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         target: edge.target,
         label: shouldHideLabel ? undefined : displayLabel,
         type: 'bizEdge',
-        data: { edgeType, content: edge.content, strength: edge.strength },
+        // isGhost 走**显式通道**（data 标记）→ BizEdge 自己决定这条边长什么样。
+        // 边对象上的 `style` 字段在这里**不写**：`@xyflow/react` 会把它透传给边组件，
+        // 但 `BizEdge` 不读它 —— 写了也只是「看起来设了颜色、实际没生效」的假象
+        // （幽灵连线曾经就是这么画成灰实线的）。
+        data: { edgeType, content: edge.content, strength: edge.strength, isGhost },
+        // 幽灵边的箭头用绿色（与合法落点的高亮同一套绿）；线本身的颜色与虚线
+        // 由 BizEdge 按 `data.isGhost` 决定（见 edge-utils 的 resolveEdgeStyle）。
         markerEnd: isGhost ? createMarkerEnd(GHOST_EDGE_COLOR) : getEdgeMarkerEnd(edgeType),
         animated: shouldAnimate,
         // 派生层级边不可选中：它没有对应的存储边对象，选中后右侧面板找不到、
@@ -808,11 +805,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         // ⚠️ 这一条挡不住 onEdgeClick —— @xyflow/react 的 EdgeWrapper 里
         // onClick 在 `if (isSelectable)` 块**外面**，所以 onEdgeClick 里还要再挡一道。
         selectable: edgeType === 'hierarchical' ? false : undefined,
-        style: {
-          stroke: isGhost ? GHOST_EDGE_COLOR : config.color,
-          strokeWidth: isSelected ? 3 : 2,
-          strokeDasharray: isGhost ? '5 5' : config.strokeDasharray,
-        },
         selected: isSelected,
       }
       cache.set(edge.id, { key, edge: flowEdge })
