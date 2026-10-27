@@ -32,7 +32,7 @@
 1. **存量图升级后打不开** — 老库里已有 `default` 边，迁移后出现 `hierarchical` 行。若 `EdgeType` 联合类型或 `assertEdgeType` 没同步，`graph:get` 直接抛 TypeError，用户的图**完全无法打开**。期望：迁移后打开含 AI 生成节点的旧图正常，连线正常，无重复线。→ Task 1 + Task 2 Step 6
 2. **连线重复画（双线）** — 存储的 `hierarchical` 边与派生边同时渲染。期望：AI 生成的节点连线只有一条；手动加的子节点**有**一条（这是本次修复的核心验收点）。→ Task 3 + Task 4
 3. **拖拽重挂后连线不更新** — `parent_id` 改了但 `hierarchical` 边没在同一事务里改，或渲染层没切到派生边。期望：松手瞬间新连线出现、旧连线消失，无需手动整理布局。→ Task 6 + Task 10
-4. **删父节点产生孤儿** — `node-repository.ts:191` 的 `delete()` 只删自身，子节点的 `parent_id` 指向已不存在的节点；后续 `graph:reparent` 的后代遍历会**死循环**。期望：子节点被置为根节点。→ Task 11
+4. **删父节点产生孤儿** — `node-repository.ts:223` 的 `delete()` 只删自身，子节点的 `parent_id` 指向已不存在的节点。孤儿在画布上不画父子线（看着像个根节点），但库里还挂着那个不存在的父，而且保留着已删父下的 `sort_index` —— 根节点的 `sort_index` 约定是 NULL（每次启动的迁移都会把 `parent_id IS NULL` 的清空），孤儿因为 `parent_id` 不是 NULL 所以清不掉 → 排序号悬空。期望：子节点被置为根节点。→ Task 11
 5. **大图折叠后布局出现空档** — 被折叠的节点必须作为叶子参与 dagre 计算，不能留空。期望：折叠后运行树形布局，节点紧凑排布。→ Task 12
 
 ---
