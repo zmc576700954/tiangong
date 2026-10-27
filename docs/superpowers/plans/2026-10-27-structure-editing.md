@@ -2779,8 +2779,12 @@ React Flow 渲染一条边要求**两端节点都存在**，隐藏节点不存�
 `src/shared/i18n/resources/domains/canvas.ts` 增（zh + en 都要）：
 ```
 'canvas.collapse.toggle': '折叠/展开子树',
-'canvas.collapse.childCount': '{count} 个子节点',
+'canvas.collapse.hiddenCount': '{count} 个节点已折叠',
 ```
+英文对应 `'canvas.collapse.hiddenCount': '{count} collapsed nodes'`。
+
+⚠️ **徽标上的数字是「被藏起来的后代总数」（传递闭包），不是直接子节点数** ——
+所以文案不能写「子节点 / child nodes」。文案与数字口径必须一致（复审已就这条提过一条 Minor）。
 
 - [ ] **Step 6: Run test to verify it passes**
 
