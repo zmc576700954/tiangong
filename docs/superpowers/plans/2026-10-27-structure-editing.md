@@ -2719,7 +2719,7 @@ React Flow 渲染一条边要求**两端节点都存在**，隐藏节点不存�
 ⚠️ `nodeCacheRef` 的清理循环（`for (const id of cache.keys()) if (!nextIds.has(id)) cache.delete(id)`）
 在 `flowNodes` 遍历 `visibleNodes` 之后**自动**移除不可见节点的缓存条目 ✓ —— 前提是
 `nextIds` 是**遍历 `visibleNodes`** 时收集的，别漏改这一处。
-⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
+⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
 
 - [ ] **Step 5: Add i18n strings**
 
