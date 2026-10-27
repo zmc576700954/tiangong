@@ -853,6 +853,8 @@ edges（4 条初始层级边，与 parent_id 一致）:
 
 ⚠️ **fixture 的 INSERT 必须写全列名**，不能写 `INSERT INTO nodes VALUES (...)`：`nodes` 表在 Task 2 之后是 **13 列**（`id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at`），省略列名的写法一加列就报「table nodes has 13 columns but 11 values were supplied」。测试里 CREATE TABLE 的列清单也要跟这 13 列一致。edges 表至少要有 `id, source, target, edge_type, graph_id` 五列。
 
+⚠️ **fixture 里的兄弟节点要写显式 `sort_index`**（同一父节点下 0,1,2,…）：不写的话全是 NULL，reparent 的 `COALESCE(MAX(sort_index), -1) + 1` 取到 0，测到的就变成「从零开始」而不是「重排」，用例会失去区分度。
+
 测试用例：
 
 ```ts
@@ -992,7 +994,7 @@ export function isDescendant(
 5. **类型校验**：`nodeTypeRegistry.validateParentChild(newParent.type, node.type)` 为 false → `HIERARCHY_TYPE_INVALID`
 6. 事务开始：
    - `UPDATE nodes SET parent_id = ? WHERE id = ?`
-   - 新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1
+   - 新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1，取值写 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL → 被移动的子节点会落到布局的「undefined 排最后」兜底里，位置不确定）
    - 旧的 `hierarchical` 边（`source = oldParentId, target = nodeId`）→ `UPDATE edges SET source = ? WHERE id = ?`；若旧父为 NULL 或无对应边则 `DELETE` / `INSERT`
    - 若目标 `hierarchical` 边不存在则 INSERT，边 ID 用 `generateId('edge')`（`src/main/shared/env.ts:78`）
    - 原父节点的其余子节点 `sort_index` 重排为连续值
@@ -1619,6 +1621,33 @@ describe('NodeRepository — 层级相关行为', () => {
     const cleared = nodeRepo.update('f1', { collapsed: false })
     expect(cleared.collapsed).toBe(false)
   })
+
+  it('assigns sort_index to a new child as max(siblings) + 1', () => {
+    // spec §4.8：新建子节点时取父节点现有子节点中最大的 sort_index + 1
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    ).run('p_sort', 'module', 'draft', 'P', 'g1', 'online', null, 0, 0, now, now)
+
+    const mk = (title: string) => nodeRepo.create({
+      type: 'feature', status: 'draft', title,
+      graphId: 'g1', graphType: 'online', parentId: 'p_sort',
+      position: { x: 0, y: 0 },
+    })
+
+    expect(mk('S1').sortIndex).toBe(0)
+    expect(mk('S2').sortIndex).toBe(1)
+    expect(mk('S3').sortIndex).toBe(2)
+  })
+
+  it('leaves sort_index unset for a root node', () => {
+    const root = nodeRepo.create({
+      type: 'project', status: 'confirmed', title: 'Root',
+      graphId: 'g1', graphType: 'online',
+      position: { x: 0, y: 0 },
+    })
+    expect(root.sortIndex).toBeUndefined()
+  })
 })
 ```
 
@@ -1670,6 +1699,13 @@ Expected: FAIL
 `src/main/repositories/node-repository.ts`：
 - `rowToNode` 映射 `sort_index` → `sortIndex`（number）、`collapsed` → `collapsed`（0/1 转 boolean）
 - `update()` 增两个分支：`if (data.sortIndex !== undefined)` 与 `if (data.collapsed !== undefined)`
+- **`create()` 与 `createBatch()` 在有 `parentId` 时分配 `sort_index`**（spec §4.8「新建子节点时取父节点现有子节点中最大的 `sort_index + 1`」）：
+  - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
+  - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
+  - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
+  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:205-220`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+
+  ⚠️ **为什么这条是承重的（不是「顺手补一下」）**：Task 6 的 reparent 规定「新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1」，而 SQL 的 `MAX(sort_index)` **忽略 NULL**。若子节点里有本次会话新建的（`sort_index` 为 NULL），`MAX` 只看得到老节点；再叠加 Task 11 布局「`sortIndex` 为 undefined 排最后」的兜底 → 目标父节点有 A(`sort_index=0`) 与 B(NULL，本次会话新建) 时把 C 挂进去，C 拿到 `sort_index=1`，布局排成 **A(0) → C(1) → B(最后)**——**先于 C 存在的 B 被挤到 C 后面**，兄弟顺序颠倒。
 
 ⚠️ **better-sqlite3 不接受 boolean 绑定**（只接受 number / string / bigint / buffer / null）。`collapsed` 落库必须显式转成 `1` / `0`：
 
