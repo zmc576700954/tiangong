@@ -14,12 +14,15 @@ vi.mock('../../../store/graphStore', () => ({
 
 describe('useNodePositionPersistence', () => {
   const batchUpdatePositions = vi.fn().mockResolvedValue(undefined)
+  /** 只改 store、不落库的位置更新（FIX-11） */
+  const applyLocalPositions = vi.fn()
 
   beforeEach(() => {
     vi.clearAllMocks()
     vi.useFakeTimers()
     ;(useGraphStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
       batchUpdatePositions,
+      applyLocalPositions,
     })
   })
 
@@ -132,6 +135,7 @@ describe('useNodePositionPersistence', () => {
     const rejectFn = vi.fn().mockRejectedValue(new Error('DB error'))
     ;(useGraphStore.getState as ReturnType<typeof vi.fn>).mockReturnValue({
       batchUpdatePositions: rejectFn,
+      applyLocalPositions,
     })
 
     const { rerender, result } = renderHook(
@@ -155,5 +159,68 @@ describe('useNodePositionPersistence', () => {
     expect(rejectFn).toHaveBeenCalledWith([
       { id: 'node-1', x: 100, y: 200 },
     ])
+  })
+
+  it('updates the store immediately when a drag ends, without waiting for the debounce', () => {
+    // 松手那一下：store 必须**立刻**跟上画布。
+    // flowNodes 的缓存键一变（被拖节点的 zIndex 变化）就会整条重建，
+    // 重建时带的是 store 里的位置 —— store 落后 300ms 就会弹回拖拽前的位置。
+    const { result } = renderHook(
+      ({ graphId }: { graphId: string }) => useNodePositionPersistence(graphId),
+      { initialProps: { graphId: 'A' } }
+    )
+
+    result.current.handleNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 100, y: 200 },
+        dragging: false,
+      } as unknown as NodeChange,
+    ])
+
+    expect(applyLocalPositions).toHaveBeenCalledWith([{ id: 'node-1', x: 100, y: 200 }])
+    // 落库仍然防抖 —— store 跟上了，DB 还没写
+    expect(batchUpdatePositions).not.toHaveBeenCalled()
+  })
+
+  it('does not touch the store while the node is still being dragged', () => {
+    // 拖拽过程中画布上的位置由 xyflow 管，不许写 store
+    const { result } = renderHook(
+      ({ graphId }: { graphId: string }) => useNodePositionPersistence(graphId),
+      { initialProps: { graphId: 'A' } }
+    )
+
+    result.current.handleNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 100, y: 200 },
+        dragging: true,
+      } as unknown as NodeChange,
+    ])
+
+    expect(applyLocalPositions).not.toHaveBeenCalled()
+  })
+
+  it('does not touch the store for a node whose position was taken over by reparent', () => {
+    // 位置被重挂接管的节点：连 store 都不许动 —— 它的位置由主进程的 movedPositions 决定
+    const { result } = renderHook(
+      ({ graphId }: { graphId: string }) => useNodePositionPersistence(graphId),
+      { initialProps: { graphId: 'A' } }
+    )
+
+    result.current.suppressPositions(['node-1'])
+    result.current.handleNodesChange([
+      {
+        type: 'position',
+        id: 'node-1',
+        position: { x: 100, y: 200 },
+        dragging: false,
+      } as unknown as NodeChange,
+    ])
+
+    expect(applyLocalPositions).not.toHaveBeenCalled()
+    expect(batchUpdatePositions).not.toHaveBeenCalled()
   })
 })

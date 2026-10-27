@@ -47,12 +47,21 @@ export function useNodePositionPersistence(graphId: string) {
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      // 检测拖拽结束相关的 position 变化
+      /** 这一批里「位置已经定下来」的节点 —— store 要立刻跟上，落库仍然防抖 */
+      const localUpdates: Array<{ id: string; x: number; y: number }> = []
       for (const change of changes) {
         if (change.type === 'position' && change.position && !change.dragging) {
           if (suppressedIdsRef.current.has(change.id)) continue
+          // store 立刻跟上画布（不落库）：松手后 memo 会因为 zIndex 变化而重建被拖节点，
+          // 重建时带的是 store 里的位置 —— store 落后 300ms 就会弹回拖拽前的位置。
+          localUpdates.push({ id: change.id, x: change.position.x, y: change.position.y })
+          // 落库仍然防抖、仍然能被 suppressPositions 摘掉（重挂的位置权威在主进程）
           pendingPositionUpdates.current.set(change.id, { ...change.position })
         }
+      }
+
+      if (localUpdates.length > 0) {
+        useGraphStore.getState().applyLocalPositions(localUpdates)
       }
 
       // 防抖：300ms 内没有新的位置变化则批量保存

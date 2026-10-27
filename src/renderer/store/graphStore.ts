@@ -49,6 +49,16 @@ interface GraphState {
   createNodeBatch: (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   updateNode: (id: string, data: Partial<GraphNode>) => Promise<void>
   batchUpdatePositions: (updates: Array<{ id: string; x: number; y: number }>) => Promise<void>
+  /**
+   * 只更新渲染端 store 里的位置，**不落库**。
+   *
+   * 拖拽结束那一下必须让 store 立刻跟上画布：`flowNodes` 的缓存键一变
+   * （被拖节点的 zIndex 变化）就会整条重建，重建时带的是 store 里的位置 ——
+   * store 落后 300ms 的话，节点松手瞬间会弹回拖拽前的位置。
+   *
+   * 落库仍然防抖、仍然能被重挂路径的抑制机制摘掉 —— 位置权威在主进程。
+   */
+  applyLocalPositions: (updates: Array<{ id: string; x: number; y: number }>) => void
   /** 拖拽重挂父节点 —— 父子关系变更的唯一入口（Task 6 的 graph:reparent） */
   reparentNode: (nodeId: string, newParentId: string) => Promise<void>
   deleteNode: (id: string) => Promise<void>
@@ -294,6 +304,26 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({ nodes: prevNodes, _nodeMap: buildNodeMap(prevNodes) })
       throw err
     }
+  },
+
+  /**
+   * 只改 store、不落库的位置更新。
+   *
+   * 拖拽结束那一下，store 必须**立刻**跟上画布：`flowNodes` 的缓存键一变
+   * （被拖节点的 zIndex 变化）就会整条重建，重建时带的是 store 里的位置 ——
+   * store 落后 300ms 的话，节点松手瞬间会弹回拖拽前的位置。
+   *
+   * 落库仍然防抖、仍然能被重挂路径的抑制机制摘掉 —— 位置权威在主进程。
+   * 所以这里**没有** IPC、**没有** try/catch、**没有**回滚：不落库，没有失败可回滚。
+   */
+  applyLocalPositions: (updates) => {
+    const updateMap = new Map(updates.map((u) => [u.id, u]))
+    setNodes((nodes) =>
+      nodes.map((n) => {
+        const u = updateMap.get(n.id)
+        return u ? { ...n, position: { x: u.x, y: u.y } } : n
+      }),
+    )
   },
 
   /**

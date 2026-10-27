@@ -232,6 +232,26 @@ describe('graphStore', () => {
       expect(useGraphStore.getState().nodes[0].position).toEqual({ x: 50, y: 50 })
       expect(useGraphStore.getState().nodes[1].position).toEqual({ x: 200, y: 200 })
     })
+
+    it('applyLocalPositions updates store positions without persisting', () => {
+      useGraphStore.setState({
+        nodes: [
+          { id: 'n1', title: 'N1', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+          { id: 'n2', title: 'N2', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 100, y: 100 }, createdAt: '', updatedAt: '' },
+        ],
+      })
+      const before = useGraphStore.getState().nodes
+
+      useGraphStore.getState().applyLocalPositions([{ id: 'n1', x: 50, y: 50 }])
+
+      // 被点名的节点：位置立刻更新
+      expect(useGraphStore.getState().nodes[0].position).toEqual({ x: 50, y: 50 })
+      // 没点名的节点：位置原样不动，且是**同一个对象引用**
+      expect(useGraphStore.getState().nodes[1].position).toEqual({ x: 100, y: 100 })
+      expect(useGraphStore.getState().nodes[1]).toBe(before[1])
+      // 只写 store，**不落库**
+      expect(window.electronAPI['node:batchUpdatePositions']).not.toHaveBeenCalled()
+    })
   })
 
   // ==========================================
