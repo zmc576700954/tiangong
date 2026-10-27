@@ -2680,7 +2680,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 **布局自动获益**：`useAutoLayout.applyLayout` 用 React Flow 的 `getNodes()`，而 `GraphCanvas` 通过 `setRfNodes(flowNodes)` 写回。只要 `flowNodes` 过滤掉隐藏后代，被折叠节点就自动作为叶子参与 dagre 计算——**不需要**在 `useAutoLayout.ts` 里单独处理。
 
 （控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
-树形布局 `computeTreeLayout`（`tree-layout.ts:226`）与
+树形布局 `computeTreeLayout`（`tree-layout.ts:261`）与
 `findConnectedComponents`（`:79`）都按「两端都在节点集合里」过滤边，
 力导向布局 `createForceSimulation`（`force-layout.ts:220-222`）也有一句
 「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
@@ -2688,7 +2688,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 ⚠️ **折叠状态必须真的进得来**（控制器核代码后补的）：
 
 - 渲染层加载节点走的是 `graph:get` → `GraphRepository.get()` 里那段**内联映射**
-  （`graph-repository.ts:109-131`）。**Task 11 会在那里加 `collapsed` 的映射** ——
+  （`graph-repository.ts:109-136`）。**Task 11 会在那里加 `collapsed` 的映射** ——
   没有它，store 里的节点对象根本不带 `collapsed` 字段 → `collapsedIds` 恒为空 →
   **折叠功能静默失效**（点了没反应，也不报错）。Task 12 的第一个前提就是 Task 11 已经落地。
 - 落库走 `node:update`（`src/main/ipc/graph.ts:260-278`）：它把 `data` **整个**交给
@@ -2939,7 +2939,7 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
    `mock-ipc.ts:101` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
    **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
-   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:352-354`）先本地执行
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:362-364`）先本地执行
 
    ```ts
    setNodes((nodes) => nodes.filter((n) => n.id !== id))
