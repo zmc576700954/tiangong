@@ -31,6 +31,14 @@ interface GraphState {
   nodes: GraphNode[]
   edges: GraphEdge[]
   bugs: BugNode[]
+  /**
+   * store 里的节点当前属于**哪张图** —— `loadGraph` 装载完成时写入。
+   *
+   * 「这张图的节点装载完了吗」必须**按图**回答：「store 里有一些节点」不是合法信号 ——
+   * `loadGraph` 是异步的，在它 resolve 之前 store 里还留着**上一张图**的节点。
+   * 拿「有没有节点」当信号，dagre 就会把上一张图的节点重排一遍并**落库**。
+   */
+  loadedGraphId: string | null
   /** 内部 Map 索引，用于 O(1) 节点/边查找（不暴露给组件订阅） */
   _nodeMap: Map<string, GraphNode>
   _edgeMap: Map<string, GraphEdge>
@@ -158,6 +166,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   nodes: [],
   edges: [],
   bugs: [],
+  loadedGraphId: null,
   _nodeMap: new Map(),
   _edgeMap: new Map(),
   selectedNodeId: null,
@@ -179,6 +188,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodes: result.nodes,
         edges,
         bugs: result.bugs,
+        // 这批节点属于哪张图 —— 「按图区分」的装载信号。
+        // 只有节点**真的被替换掉**的时候才写：result 为空时 store 里还是上一张图的节点。
+        loadedGraphId: graphId,
         _nodeMap: buildNodeMap(result.nodes),
         _edgeMap: buildEdgeMap(edges),
       })
@@ -209,7 +221,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (id) {
       get().loadGraph(id)
     } else {
-      set({ nodes: [], edges: [], bugs: [], _nodeMap: new Map(), _edgeMap: new Map() })
+      set({ nodes: [], edges: [], bugs: [], loadedGraphId: null, _nodeMap: new Map(), _edgeMap: new Map() })
     }
   },
 

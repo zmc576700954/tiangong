@@ -185,6 +185,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const { locale, t } = useI18n()
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
+  /** store 里的节点当前属于哪张图（`loadGraph` 装载完成时写入） */
+  const loadedGraphId = useGraphStore((state) => state.loadedGraphId)
   const loadGraph = useGraphStore((state) => state.loadGraph)
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId)
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId)
@@ -911,7 +913,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   })
 
   const { applyLayout } = useAutoLayout()
-  const hasAppliedInitialLayout = useRef(false)
+  /**
+   * 已经排过 dagre 版的图（**按图区分**）—— 换图自然失效，不用手动重置。
+   *
+   * ⚠️ 不能用「一次性布尔标志」：那个标志在**布局真正执行之前**就被消耗掉了，
+   * 一旦那一帧的布局因为「节点不是这张图的」而放弃，新图就永远排不上版。
+   */
+  const laidOutGraphRef = useRef<string | null>(null)
   /** 力导向布局 hook —— 提供 applyForceLayout、拖拽 pin/reheat 处理器 */
   const {
     applyForceLayout,
@@ -966,10 +974,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * 整棵子树的平移结果。要同时支持两者得把仿真按新坐标重新播种 ——
    * 那是 useForceLayout 的重构，超出本任务范围。
    *
-   * 模式还没读回来（`layoutMode === null`）时按「不是力导向」处理 —— 那只是一帧的
-   * 窗口（读回 effect 与首屏渲染几乎同时），并且重挂与否最终由读回后的模式决定。
+   * ⚠️ **必须 fail closed**（`=== 'tree'`，不是 `!== 'force'`）：
+   * 模式还没读回来（`layoutMode === null`）的那一小段时间里，重挂必须是**关着**的 ——
+   * 那正是「力导向项目」最容易被误伤的时刻（R-38 明确禁止力导向下重挂）。
+   * 代价：启动与切图时各有**一帧左右**重挂不可用（读回模式后就有了）—— 零代价。
    */
-  const reparentEnabled = layoutMode !== 'force'
+  const reparentEnabled = layoutMode === 'tree'
 
   /**
    * 拖拽回调 —— 力导向 reheat 与重挂候选检测**共存**，不是二选一。
@@ -1044,26 +1054,67 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [exitForceMode, applyLayout, persistLayoutMode])
 
   /**
-   * 首屏自动应用 dagre 布局。
+   * 首屏自动应用 dagre 布局 —— **只排当前这张图，而且只排一次**。
    *
    * ⚠️ **必须等布局模式读回来**（`layoutMode === 'tree'`）：
    * 模式还没读回就排树形 → 用户存的力导向坐标当场被覆盖，
    * 而且 `applyLayout()` 会把坐标**写回 DB**（`useAutoLayout` 里的
    * `batchUpdatePositions`）→ 用户的布局被静默毁掉。
    * 模式读回为 'force' 时**不能**跑 dagre —— 那条路走的是「恢复力导向」。
+   *
+   * ⚠️ **触发信号必须按图区分**（「store 里有一些节点」不是合法信号）：
+   * `loadGraph` 是**异步**的 —— 切图后、在它 resolve 之前，store 里还留着
+   * **上一张图**的节点。那时候跑 dagre 会把上一张图的节点重排一遍**并落库**，
+   * 用户在上一张图上摆好的布局当场被毁掉。
+   * 所以这里用三层信号：
+   *   ① `loadedGraphId === graphId` —— 这张图的节点**已经装载完**（按图的信号）；
+   *   ② ReactFlow store 里的节点**全是这张图的** —— 别的图的节点一个都不许动；
+   *   ③ `laidOutGraphRef` —— 这张图排过了就不再排。
+   *
+   * ⚠️ **为什么订阅 ReactFlow 的 store，而不是等 `graphNodes` 变化**：
+   * `flowNodes`（memo）→ `setRfNodes`（state）→ ReactFlow 的 store，节点要经过
+   * **两跳**才进 ReactFlow 的 store。拿 graph store 的节点数当信号，dagre 会在
+   * ReactFlow 还没跟上的时候就去排 —— 排的是上一张图的节点。
+   * 订阅 ReactFlow 的 store 才拿得到**真正会被排版的那一批节点**。
+   *
+   * ⚠️ 排版动作放在 `requestAnimationFrame` 里：ReactFlow 的 store 是**先写节点、
+   * 后写边**（两个 `useStoreUpdater` 各自一个 effect），同一帧里读边可能拿到上一张图的边。
+   * 晚一帧，节点和边就都齐了。
    */
   useEffect(() => {
     if (layoutMode !== 'tree') return
-    if (graphNodes.length > 0 && !hasAppliedInitialLayout.current) {
-      hasAppliedInitialLayout.current = true
-      // 延迟一帧让 ReactFlow 先完成首次渲染
-      requestAnimationFrame(() => applyLayout())
+    let rafId: number | null = null
+    const sync = () => {
+      // 这张图排过了 → 什么都不用做（顺带让拖拽时的每帧 store 变化都是 O(1)）
+      if (laidOutGraphRef.current === graphId) return
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        if (laidOutGraphRef.current === graphId) return
+        // ① 这张图的节点装载完了吗（按图区分）
+        if (loadedGraphId !== graphId) return
+        const nodes = storeApi.getState().nodes
+        // ② ReactFlow 里装着的必须**全是这张图的**节点 —— 别的图一个都不许动
+        if (nodes.length === 0) return
+        if (!nodes.every((n) => String(n.data.graphId ?? '') === graphId)) return
+        // ③ 只排这一次
+        laidOutGraphRef.current = graphId
+        applyLayout()
+      })
     }
-  }, [graphNodes.length, applyLayout, layoutMode])
+    sync()
+    const unsub = storeApi.subscribe(sync)
+    return () => {
+      unsub()
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    }
+  }, [graphId, layoutMode, loadedGraphId, applyLayout, storeApi])
 
   // 切换图时重置标记
   useEffect(() => {
-    hasAppliedInitialLayout.current = false
     creatingProjectForGraph.current = null
     // 切图时清掉 force mode（避免 simulation 引用旧节点的 simNodes）
     exitForceMode()
@@ -1117,6 +1168,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * ⚠️ **只在节点集合变化时重建** —— 位置变化不重建：
    * 拖拽过程中 store 的 nodes 数组每帧都在变（位置在动），若按数组引用判断，
    * 就会在拖拽中途重建 simulation → 钉住的状态被丢掉 → 拖拽失效。
+   *
+   * ⚠️ **恢复失败时不要把这批节点标记成「已处理」**：
+   * `restoreForceLayout()` 的返回值**必须**被用上 —— 拿不到这张图的节点时它返回
+   * false，这时若仍然把节点标记成「已处理」，那么下一次 store 事件里 id 集合
+   * 没变就不会再试 → 恢复**永远丢掉**（工具栏写着「力导向」，实际不是）。
+   * 失败时保持 `lastNodes` 不变 → 下一次 store 事件一定会再试一次。
    */
   useEffect(() => {
     if (layoutMode !== 'force') return
@@ -1128,11 +1185,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         !lastNodes ||
         nodes.length !== lastNodes.length ||
         nodes.some((n, i) => lastNodes?.[i]?.id !== n.id)
-      lastNodes = nodes
       if (!idSetChanged) return
       // 拿不到这张图的节点就返回 false —— 不能把「没建成」当成「建成」。
       // 节点稍后进 store 时，store 的订阅会再触发一次 sync。
-      restoreForceLayout(graphId)
+      const restored = restoreForceLayout(graphId)
+      // **恢复失败 → 不标记**（见上面的说明）：让下一次 store 事件再试一次。
+      if (!restored) return
+      lastNodes = nodes
     }
     sync()
     const unsub = storeApi.subscribe(sync)

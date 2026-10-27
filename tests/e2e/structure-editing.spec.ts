@@ -14,6 +14,7 @@
  *  10. 恢复成力导向 → **真的**进入力导向模式（拖拽走「钉住 + reheat + 落库」）
  *  11. 对照组：树形模式**会**跑 dagre 并把坐标写回数据库
  *  12. 没有项目路径的图 → 写进 `bizgraph.layoutMode.default`，刷新后读回仍是力导向
+ *  13. 切图 → dagre **只排当前这张图**（绝不能把上一张图的节点重排并落库）
  *
  * ⚠️ **拒绝类用例为什么必须断言「IPC 没被调用」**：
  * 只断言「连线没变」是不够的 —— 落点被默默接受、而 mock 的 `movedPositions` 是空数组时，
@@ -127,6 +128,38 @@ async function nodeCenter(page: Page, nodeId: string): Promise<{ x: number; y: n
   const box = await page.locator(`[data-id="${nodeId}"]`).boundingBox()
   if (!box) throw new Error(`节点 ${nodeId} 不在画布上`)
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+
+/**
+ * 等「坐标写回」**停下来** —— 显式的「先等稳定、再断言」。
+ *
+ * 负面断言（「一次都没写回坐标」）**没法靠轮询证明**：轮询只能证明「现在还没有」，
+ * 证明不了「以后也不会有」。唯一诚实的做法是：先等到**确实不再有新的写回**
+ * （写回批次数连续 N 次读数不变），**再**断言记录是空的。
+ *
+ * ⚠️ 以前这条断言靠 `waitForStableLayout` 顺带等了约 500ms —— 那是「画布布局稳了」
+ * 的信号，不是「不会再写坐标」的信号：两者只是**时间上**碰巧重叠，**语义上无关**。
+ * 把等待显式化，这条断言才真的站在它自己的前提上。
+ */
+async function waitForPositionWritesToSettle(
+  page: Page,
+  quietRounds = 5,
+  intervalMs = 100,
+): Promise<void> {
+  let previous = -1
+  let quiet = 0
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const count = (await getPositionUpdates(page)).length
+    if (count === previous) {
+      quiet += 1
+      if (quiet >= quietRounds) return
+    } else {
+      quiet = 0
+    }
+    previous = count
+    await page.waitForTimeout(intervalMs)
+  }
+  throw new Error('坐标写回没有停下来')
 }
 
 /**
@@ -622,6 +655,10 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
     // ① 坐标一次都没写回数据库。
     //    首屏 dagre（applyLayout）和力导向重算（applyForceLayout）**都会**写 ——
     //    恢复路径两者都不该跑：用户摆好的坐标不能被覆盖，更不能被落库。
+    //
+    //    ⚠️ 负面断言必须**先等稳定、再断言**（`waitForPositionWritesToSettle`）：
+    //    一次性读只能证明「此刻还没写」，证明不了「之后也不会写」。
+    await waitForPositionWritesToSettle(page)
     expect(await getPositionUpdates(page)).toEqual([])
 
     // ② 节点还在用户存的位置上 —— 没被 dagre 排成树形
@@ -646,14 +683,24 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
     await dragNodeBy(page, MODULE_A, 30, 20)
 
     // 力导向的拖拽收尾会**一次性写回所有节点**的仿真坐标；
-    // 树形的防抖持久化只写**被拖的那一个**节点。
-    // 所以「拖完之后出现一批多节点的坐标写回」= 真进了力导向模式的唯一可观测特征。
+    // 树形的防抖持久化只写**被拖的那一个**。
+    // 所以「拖完之后出现一批**覆盖了画布上多个已知节点**的坐标写回」=
+    // 真进了力导向模式的唯一可观测特征。
+    //
+    // ⚠️ 断言的是「**同一批**里含有画布上的多个**已知**节点 id」，
+    // 不是「多于一个节点」—— 后者只证明了「多节点」，没证明「**全图**」。
+    // ⚠️ **不钉数量**：那一批里还有自动创建的 project 根节点，它的 id 是自动生成的。
     await expect
       .poll(async () => {
         const batches = await getPositionUpdates(page)
-        return batches.filter((b) => b.length > 1).flat().map((u) => u.id)
+        return batches
+          .filter((b) => b.length > 1)
+          .some((b) => {
+            const ids = new Set(b.map((u) => u.id))
+            return [MODULE_A, PROCESS_B, MODULE_D].every((id) => ids.has(id))
+          })
       })
-      .toContain(MODULE_A)
+      .toBe(true)
   })
 
   test('对照组：树形模式会跑 dagre，并把坐标写回数据库', async ({ page }) => {
@@ -716,5 +763,111 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
     expect(
       await page.evaluate((key) => window.localStorage.getItem(key), LAYOUT_MODE_DEFAULT_KEY),
     ).toBe('force')
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // 切图 —— dagre 只能排「当前显示的这张图」
+  // ────────────────────────────────────────────────────────────────
+
+  /**
+   * 两张图 —— **布局模式按项目路径分区**，所以两张图必须有不同的 `projectPath`，
+   * 否则它们共用同一个 localStorage 键，「A 是力导向、B 是树形」根本表达不出来。
+   */
+  const FORCE_GRAPH = {
+    id: 'graph_e2e_force',
+    name: 'E2E Force Graph',
+    type: 'dev' as const,
+    projectPath: MOCK_PROJECT_PATH,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+  const TREE_GRAPH = {
+    id: 'graph_e2e_tree',
+    name: 'E2E Tree Graph',
+    type: 'dev' as const,
+    projectPath: `${MOCK_PROJECT_PATH}-b`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }
+
+  /** B 的两个业务节点 —— id 与 A 的**完全不同**，节点数与 A 相同 */
+  const B_MODULE = 'node_b_module'
+  const B_PROCESS = 'node_b_process'
+  const TREE_GRAPH_NODES: MockNode[] = [
+    { ...makeNode(B_MODULE, 'module', 'B Module', { x: 120, y: 160 }), graphId: TREE_GRAPH.id },
+    {
+      ...makeNode(B_PROCESS, 'process', 'B Process', { x: 520, y: 160 }, B_MODULE),
+      graphId: TREE_GRAPH.id,
+    },
+  ]
+
+  /**
+   * 切图竞态的回归闸门。
+   *
+   * **这条竞态是什么**：图 A 存的是 `'force'`，切到图 B（B 是 `'tree'`）时，
+   * dagre 的触发信号「store 里有一些节点」在 `graph:get(B)` 还没回来时就成立 ——
+   * 而那时 store 里躺着的是 **A 的节点** → dagre 把 A 的节点重排一遍**并落库**，
+   * 用户在 A 上摆好的力导向布局当场被毁掉。
+   *
+   * ⚠️ **必须给 `graph:get` 加延迟**（`graphGetDelayMs`）：
+   * 竞态的胜负取决于「IPC 往返」与「下一帧的 rAF」谁先到。
+   * mock 的 IPC 立刻 resolve → rAF 稳赢 → 竞态**不会复现** →
+   * 用例会「永远绿、却什么都没验」。
+   *
+   * ⚠️ **只延迟 B，不延迟 A**：
+   * 首屏那次自动 fitView 是按「最先进入画布的那批节点」定缩放的 ——
+   * 连 A 也一起延迟的话，画布上只剩那个自动创建的 project 根节点 →
+   * fitView 把它放大到 200% → A 的节点被 `onlyRenderVisibleElements` 裁掉 →
+   * 连「A 加载好了」都观测不到。
+   *
+   * ⚠️ **两张图的节点数相同**（各 2 个业务节点 + 1 个自动创建的 project 根节点）：
+   * 「A 和 B 节点数相同 → B 永远不会被排版」是一个**既有**的洞，
+   * 这条用例顺带把它钉住。
+   */
+  test('切图：dagre 绝不能把上一张图的节点重排并落库 —— 触发信号必须按图区分', async ({ page }) => {
+    await setupMockIpc(page, {
+      graphs: [FORCE_GRAPH, TREE_GRAPH],
+      nodesByGraph: {
+        [FORCE_GRAPH.id]: [
+          { ...makeNode(MODULE_A, 'module', 'Module A', { x: 150, y: 180 }), graphId: FORCE_GRAPH.id },
+          {
+            ...makeNode(PROCESS_B, 'process', 'Process B', { x: 760, y: 520 }, MODULE_A),
+            graphId: FORCE_GRAPH.id,
+          },
+        ],
+        [TREE_GRAPH.id]: TREE_GRAPH_NODES,
+      },
+      // 只有 B 的装载是慢的 → rAF 确定性地抢在 IPC 前面
+      graphGetDelayMs: { [TREE_GRAPH.id]: 300 },
+    })
+    // A 存的是力导向
+    await seedStoredForceMode(page, `bizgraph.layoutMode.${FORCE_GRAPH.projectPath}`)
+
+    // 打开 A（正常速度装载 → 画布能观测到 A 的节点）
+    await page.goto('http://127.0.0.1:5173')
+    await page.click('text=E2E Force Graph')
+    await waitForCanvas(page)
+    await waitForStableLayout(page, [MODULE_A, PROCESS_B])
+
+    // 清掉启动阶段的写回记录 —— 这条断言要验的是「切图之后」发生的事
+    await clearPositionUpdates(page)
+
+    // 切到 B（树形；B 的装载被拖慢 300ms）
+    await page.click('text=E2E Tree Graph')
+
+    // ① **B 确实被排版了** —— 有一批写回含 B 的两个已知节点 id。
+    //    这半条是防「干脆不排版」的：只断言「A 没被写」的话，
+    //    「什么都不排」也能蒙混过关。
+    await expect
+      .poll(async () => {
+        const batches = await getPositionUpdates(page)
+        return batches.some((b) => [B_MODULE, B_PROCESS].every((id) => b.some((u) => u.id === id)))
+      })
+      .toBe(true)
+
+    // ② **A 的节点一个都没被写过** —— 等写回停下来之后再做这个负面断言
+    await waitForPositionWritesToSettle(page)
+    const writtenIds = (await getPositionUpdates(page)).flat().map((u) => u.id)
+    expect(writtenIds.filter((id) => id === MODULE_A || id === PROCESS_B)).toEqual([])
   })
 })

@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { nodeTypeRegistry } from '@main/shared/node-type-registry'
+import type { NodeTypeConfig } from '@shared/types'
 
 export const MOCK_GRAPH_ID = 'graph_e2e_001'
 export const MOCK_NODE_MODULE_ID = 'node_e2e_module_001'
@@ -85,7 +86,43 @@ export type MockEdge = {
   label?: string
 }
 
-export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: MockGraph[]; nodes?: MockNode[]; edges?: MockEdge[] }) {
+/**
+ * mock 的配置项。
+ *
+ * ⚠️ **向后兼容**：`nodes` 仍然是「所有图共用的那一份节点」，
+ * 不传 `nodesByGraph` 的用例行为**一模一样**（现有 12 条用例就是这种）。
+ */
+export interface MockIpcOptions {
+  initialStatus?: SubagentStatus
+  graphs?: MockGraph[]
+  nodes?: MockNode[]
+  /**
+   * **按图区分**的节点 —— `graph:get(graphId)` 返回这张图自己的节点。
+   *
+   * ⚠️ 以前 mock 的 `graph:get` 恒返回第一张图 + 同一份节点 → **表达不了「切图」**：
+   * 切图之后 store 里拿到的还是同一批节点 → 「dagre 排到了上一张图的节点」这条竞态
+   * 根本不会发生 → 用例会「永远绿、却什么都没验」。
+   */
+  nodesByGraph?: Record<string, MockNode[]>
+  edges?: MockEdge[]
+  /**
+   * **只作用于 `graph:get`** 的延迟（毫秒）。
+   *
+   * 竞态的胜负取决于「`graph:get` 的 IPC 往返」与「下一帧的 rAF」谁先到。
+   * mock 的 IPC 立刻 resolve → rAF 稳赢 → 竞态**不会复现**。
+   * 给 `graph:get` 加一个可控延迟，测试才能**确定性地**把 rAF 排到 IPC 前面。
+   *
+   * 数字 = 所有 `graph:get` 都延迟；**映射 = 只延迟列出来的那几张图**（键是图 id）。
+   * 后者让「A 正常加载、B 慢一点」成为可能 ——
+   * 首屏那次自动 fitView 是按「最先进入画布的那批节点」定缩放的：
+   * 连 A 也一起延迟的话，画布上只剩那个自动创建的 project 根节点 →
+   * fitView 把它放大到最大（200%）→ A 的节点被 `onlyRenderVisibleElements`
+   * 裁掉 → 连「A 加载好了」都观测不到。
+   */
+  graphGetDelayMs?: number | Record<string, number>
+}
+
+export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
   const mockGraphs = options?.graphs ?? [defaultMockGraph]
   const mockNodes = options?.nodes ?? defaultMockNodes
   const mockEdges = options?.edges ?? []
@@ -99,10 +136,18 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
    * ⚠️ 以前这里是一份**手抄**的副本：真实注册表改了、副本没改，
    * 「类型不允许」那条断言照样绿 —— 闸门验的是副本，不是产品行为。
    */
-  const nodeTypeConfigs = nodeTypeRegistry
+  const nodeTypeConfigs: Omit<NodeTypeConfig, 'behavior'>[] = nodeTypeRegistry
     .listConfigs()
     .map(({ behavior: _behavior, ...rest }) => rest)
-  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: MockGraph[]; nodes: MockNode[]; edges: MockEdge[]; nodeTypeConfigs: ReturnType<typeof nodeTypeRegistry.listConfigs> }) => {
+  await page.addInitScript((opts: {
+    initialStatus: SubagentStatus
+    graphs: MockGraph[]
+    nodes: MockNode[]
+    nodesByGraph: Record<string, MockNode[]>
+    edges: MockEdge[]
+    graphGetDelayMs: number | Record<string, number>
+    nodeTypeConfigs: Omit<NodeTypeConfig, 'behavior'>[]
+  }) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
 
     function emit(channel: string, ...args: unknown[]) {
@@ -112,10 +157,12 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     const mockGraphs = opts.graphs
-    const mockGraph = mockGraphs[0]
     const mockNodes = opts.nodes
+    const mockNodesByGraph = opts.nodesByGraph
     const mockEdges = opts.edges
     const mockNodeTypeConfigs = opts.nodeTypeConfigs
+    /** 所有节点（共用那份 + 按图区分的那些）—— 查节点时用 */
+    const allMockNodes = [...mockNodes, ...Object.values(mockNodesByGraph).flat()]
 
     const mockSubagentTypes = [
       { name: 'explore', displayName: '探索者', description: 'Read-only search', allowedTools: ['Read', 'Glob', 'Grep'], scopeStrategy: 'inherit' },
@@ -153,9 +200,35 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
 
     const mockApi: Record<string, unknown> = {
       // Graph
-      'graph:get': async () => ({ graph: mockGraph, nodes: mockNodes, edges: mockEdges, bugs: [] }),
+      /**
+       * `graph:get(graphId)` —— 返回**被请求的那张图**和**它自己的节点**。
+       *
+       * ⚠️ 以前这里恒返回第一张图 + 同一份节点 → 表达不了「切图」：
+       * 切图后 store 里拿到的还是同一批节点 → 「dagre 排到上一张图的节点」这条竞态
+       * 永远不会发生 → 用例「永远绿、却什么都没验」。
+       *
+       * 延迟**只加在 `graph:get` 上**（别的通道一律不拖慢）——
+       * 竞态的胜负取决于「IPC 往返」与「下一帧的 rAF」谁先到，
+       * 有了可控延迟，测试才能确定性地把 rAF 排到 IPC 前面。
+       */
+      'graph:get': async (graphId?: string) => {
+        const delay =
+          typeof opts.graphGetDelayMs === 'number'
+            ? opts.graphGetDelayMs
+            : graphId
+              ? (opts.graphGetDelayMs[graphId] ?? 0)
+              : 0
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
+        const graph =
+          (graphId ? mockGraphs.find((g) => g.id === graphId) : undefined) ?? mockGraphs[0]
+        // 按图区分的节点优先；没有配置就退回「共用的那一份」（向后兼容）
+        const nodes = mockNodesByGraph[graph.id] ?? mockNodes
+        return { graph, nodes, edges: mockEdges, bugs: [] }
+      },
       'graph:list': async () => mockGraphs,
-      'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraph, name, type }),
+      'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraphs[0], name, type }),
       /**
        * 拖拽重挂 —— 父子关系变更的唯一入口。
        *
@@ -177,7 +250,17 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       }),
       'node:createBatch': async (items: Record<string, unknown>[]) =>
         items.map((data) => ({ ...data, id: `node_${Date.now()}_${Math.random().toString(36).slice(2)}`, createdAt: Date.now(), updatedAt: Date.now() })),
-      'node:update': async (id: string, data: Record<string, unknown>) => ({ ...mockNodes.find((n) => n.id === id), ...data }),
+      /**
+       * `node:update` —— 回一个**完整的**节点（真实实现回的是整行）。
+       *
+       * ⚠️ 必须在**所有**节点集合里找（共用的那份 + 按图区分的那些）：
+       * 找不到就只回 `data` → 渲染端会把 store 里的节点整个替换掉 →
+       * `graphId` / `type` / `title` 全丢 → 「按图区分」的判定随之失效。
+       */
+      'node:update': async (id: string, data: Record<string, unknown>) => ({
+        ...allMockNodes.find((n) => n.id === id),
+        ...data,
+      }),
       'node:delete': async () => true,
       'node:batchUpdatePositions': async (updates: Array<{ id: string; x: number; y: number }>) => {
         mockState.positionUpdates.push(updates)
@@ -313,7 +396,15 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     window.electronAPI = mockApi as Window['electronAPI']
-  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes, edges: mockEdges, nodeTypeConfigs })
+  }, {
+    initialStatus: options?.initialStatus ?? 'queued',
+    graphs: mockGraphs,
+    nodes: mockNodes,
+    nodesByGraph: options?.nodesByGraph ?? {},
+    edges: mockEdges,
+    graphGetDelayMs: options?.graphGetDelayMs ?? 0,
+    nodeTypeConfigs,
+  })
 }
 
 /**

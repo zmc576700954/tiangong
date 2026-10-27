@@ -159,7 +159,8 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
   ])
 
   /**
-   * 退出 force mode —— 在切换布局类型或卸载图时调用 */
+   * 退出 force mode —— 在切换布局类型或卸载图时调用。
+   */
   const exitForceMode = useCallback(() => {
     holderRef.current?.simulation.stop()
     holderRef.current = null
