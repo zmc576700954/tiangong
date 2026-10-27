@@ -22,7 +22,7 @@
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
-- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:516）与 `flowEdges`（:599）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:595-597）/ `useEffect(() => setRfEdges(flowEdges))`（:659-661），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:516）与 `flowEdges`（:599）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:609-611）/ `useEffect(() => setRfEdges(flowEdges))`（:659-661），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -2216,6 +2216,9 @@ Expected: FAIL —— 模块不存在
 
 ⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
 
+⚠️ **行号会再漂**：Task 10 也要改 `GraphCanvas.tsx` → 到本任务执行时上面那几行行号一定又变了。
+用 `grep -n "setRfNodes(flowNodes)\|const flowNodes = useMemo" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
+
 - [ ] **Step 4: Render the collapse control**
 
 `src/renderer/canvas/BizNode.tsx`：
@@ -2224,7 +2227,7 @@ Expected: FAIL —— 模块不存在
 
 `src/renderer/canvas/GraphCanvas.tsx`：`flowNodes` 的 useMemo 改为遍历 `visibleNodes` 而不是 `graphNodes`。
 
-⚠️ `flowNodes` 的依赖数组（:592）要加上 `visibleNodes`；`nodeCacheRef` 的清理循环（:588-590）会自动移除不可见节点的缓存条目。✓
+⚠️ `flowNodes` 的依赖数组（:606）要加上 `visibleNodes`；`nodeCacheRef` 的清理循环（:602-604）会自动移除不可见节点的缓存条目。✓
 ⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
 
 - [ ] **Step 5: Add i18n strings**
