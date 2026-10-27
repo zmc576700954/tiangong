@@ -15,7 +15,7 @@ describe('hierarchical edge type', () => {
   })
 
   it('has a translated label instead of the raw type string', () => {
-    expect(edgeTypeLabel('hierarchical')).toBeTruthy()
-    expect(edgeTypeLabel('hierarchical')).not.toBe('hierarchical')
+    expect(edgeTypeLabel('hierarchical', 'zh-CN')).toBe('层级')
+    expect(edgeTypeLabel('hierarchical', 'en-US')).toBe('Hierarchy')
   })
 })

@@ -137,7 +137,11 @@ const GRAPH_TYPE_KEYS: Record<GraphType, TranslationKey> = {
   dev: 'graph.type.dev',
 }
 
-/** 'wiki-link' 由 WikiLinkService 自动落边，不出现在手建边选项里 */
+/**
+ * 手建边类型——用户能主动选的边类型。
+ * 'wiki-link' 由 WikiLinkService 自动落边，'hierarchical' 是 parent_id 的存储层镜像，
+ * 两者都不出现在手建边选项里。
+ */
 type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical'>
 
 const EDGE_TYPE_KEYS: Record<HandBuiltEdgeType, TranslationKey> = {
