@@ -139,10 +139,132 @@ function restoreFromBackup(
   }
 }
 
+/** 表级约束（不是列定义）：PRIMARY KEY (...) / FOREIGN KEY (...) / UNIQUE / CHECK / CONSTRAINT */
+const TABLE_CONSTRAINT_PREFIX = /^(PRIMARY\s+KEY|FOREIGN\s+KEY|UNIQUE|CHECK|CONSTRAINT)\b/i
+
+/** 列定义里类型之后可能出现的约束关键字 —— 类型声明在第一个关键字处结束 */
+const COLUMN_CONSTRAINT_KEYWORD =
+  /\b(NOT\s+NULL|NULL|PRIMARY\s+KEY|PRIMARY|UNIQUE|CHECK|DEFAULT|COLLATE|REFERENCES|GENERATED|AS|CONSTRAINT)\b/i
+
+/** 合法的声明类型：TEXT / INTEGER / DOUBLE PRECISION / VARCHAR(255) 等 */
+const DECLARED_TYPE_PATTERN = /^[A-Za-z][A-Za-z0-9_ ]*(\(\s*[^()]*\))?$/
+
+/** 找到与 openIdx 处 '(' 配对的 ')' 下标；找不到返回 -1 */
+function findMatchingParen(sql: string, openIdx: number): number {
+  let depth = 0
+  let inString = false
+  for (let i = openIdx; i < sql.length; i++) {
+    const ch = sql[i]
+    if (inString) {
+      if (ch === "'") inString = false
+      continue
+    }
+    if (ch === "'") {
+      inString = true
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/** 按分隔符切分，忽略括号内与引号内的分隔符 */
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let inString = false
+  let current = ''
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      current += ch
+      if (ch === "'") inString = false
+      continue
+    }
+    if (ch === "'") {
+      inString = true
+      current += ch
+      continue
+    }
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (depth === 0 && text.startsWith(separator, i)) {
+      parts.push(current)
+      current = ''
+      i += separator.length - 1
+      continue
+    }
+    current += ch
+  }
+  parts.push(current)
+  return parts
+}
+
+/**
+ * 从 CREATE TABLE 语句解析出「列名 -> 声明类型」。
+ * 只解析顶层括号内按逗号切分的片段，跳过表级约束。
+ * 解析不出类型的列不进结果 —— 调用方据此跳过该列的类型比对，
+ * 宁可漏判也不因解析失败误判重建。
+ */
+function parseDeclaredColumnTypes(createSql: string): Map<string, string> {
+  const types = new Map<string, string>()
+  const open = createSql.indexOf('(')
+  if (open === -1) return types
+  const close = findMatchingParen(createSql, open)
+  if (close === -1) return types
+
+  for (const segment of splitTopLevel(createSql.slice(open + 1, close), ',')) {
+    const trimmed = segment.trim()
+    if (!trimmed || TABLE_CONSTRAINT_PREFIX.test(trimmed)) continue
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s+([\s\S]*)$/.exec(trimmed)
+    if (!match) continue
+    const type = extractDeclaredType(match[2])
+    if (type) types.set(match[1], type)
+  }
+  return types
+}
+
+/** 取列声明里类型部分（去掉 NOT NULL / PRIMARY KEY / DEFAULT 等修饰），归一化为大写 */
+function extractDeclaredType(rest: string): string | undefined {
+  const cut = rest.search(COLUMN_CONSTRAINT_KEYWORD)
+  const typePart = (cut === -1 ? rest : rest.slice(0, cut)).trim()
+  if (!typePart) return undefined
+  if (!DECLARED_TYPE_PATTERN.test(typePart)) return undefined
+  return typePart.replace(/\s+/g, ' ').trim().toUpperCase()
+}
+
+/**
+ * 比对实际表结构与 createSql 的列类型。
+ * 类型比较忽略大小写与首尾空白。解析不出的列跳过比对（不误判重建）。
+ */
+function columnTypesMatch(
+  db: BetterSqlite3.Database,
+  tableName: string,
+  createSql: string,
+): boolean {
+  const declared = parseDeclaredColumnTypes(createSql)
+  if (declared.size === 0) return true
+
+  const colResult = db.pragma(`table_info(${safeIdentifier(tableName)})`) as Record<string, unknown>[]
+  for (const row of colResult) {
+    const name = row.name as string
+    const expected = declared.get(name)
+    // 表里多出来的列：列名集合由 requiredColumns 负责，这里不比类型
+    if (expected === undefined) continue
+    const actual = String(row.type ?? '').trim().replace(/\s+/g, ' ').toUpperCase()
+    if (actual !== expected) return false
+  }
+  return true
+}
+
 /**
  * Check if table needs rebuilding (when schema changes)
  */
-function rebuildTableIfNeeded(
+export function rebuildTableIfNeeded(
   db: BetterSqlite3.Database,
   tableName: string,
   createSql: string,
@@ -197,7 +319,7 @@ function rebuildTableIfNeeded(
     const existingChecks = extractChecks(existingSql).join('||')
     const expectedChecks = extractChecks(createSql).join('||')
 
-    if (existingChecks === expectedChecks) {
+    if (existingChecks === expectedChecks && columnTypesMatch(db, tableName, createSql)) {
       const backupCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tempTable)
       if (backupCheck) {
         logger.info(`Found leftover backup ${tempTable}, restoring data...`)
@@ -206,7 +328,7 @@ function rebuildTableIfNeeded(
       return
     }
 
-    logger.info(`Table ${tableName} CHECK constraints changed, rebuilding...`)
+    logger.info(`Table ${tableName} CHECK constraints or column types changed, rebuilding...`)
   }
 
   logger.info(`Table ${tableName} schema outdated, rebuilding...`)
@@ -656,11 +778,13 @@ function migrate(): void {
 
   db.exec('SAVEPOINT migrate_sp')
   try {
-    if (currentVersion < CURRENT_SCHEMA_VERSION) {
-      // Full rebuild path: table definitions may have changed.
-      for (const schema of TABLE_SCHEMAS) {
-        rebuildTableIfNeeded(db, schema.name, schema.createSql, schema.requiredColumns)
-      }
+    // 慢路径（版本落后 **或** checksum 失配）一律尝试重建。
+    // 只按版本号门禁会让「改了 createSql 但忘了 bump CURRENT_SCHEMA_VERSION」的
+    // schema 变更静默失效：checksum 已经失配，却因为版本号没变而跳过重建。
+    // rebuildTableIfNeeded 内部只在列集合 / 列类型 / CHECK 变化时才真正重建，
+    // 无变化时仅做几次 pragma 查询，代价可忽略。
+    for (const schema of TABLE_SCHEMAS) {
+      rebuildTableIfNeeded(db, schema.name, schema.createSql, schema.requiredColumns)
     }
 
     // 增量补列必须先于索引创建：Phase D9 的表达式索引依赖
