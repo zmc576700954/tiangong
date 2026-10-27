@@ -693,6 +693,12 @@ git commit -m "feat(canvas): 渲染层改用派生的层级边"
 
 ⚠️ `validateParentChild`（`node-type-registry.ts:53`）是**双向**校验：父的 `allowedChildTypes` 与子的 `allowedParentTypes` 都要放行才算通过。所以只把 `feature.allowedChildTypes` 设成 `['bug']` 是不够的——`bug.allowedParentTypes` 原本只有 `['process']`，`validateParentChild('feature','bug')` 仍会因 `child.allowedParentTypes` 不含 `'feature'` 返回 false。**`bug.allowedParentTypes` 必须同步改成 `['process', 'feature']`**，否则下面「feature can have bug children」那条用例在改完 registry 后依然会失败。
 
+⚠️ **注册时归一化 `allowedChildTypes`（R-24，修复轮补的）**：上表的「缺 `allowedChildTypes` = 允许任意」只对**内置表**成立；registry 的 `register()` 接受任意配置，所以还要在**存储时**把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点）。这一步让主进程与渲染端菜单的 `?? []`（缺省 = 不给任何子节点）**不再有两套真相**——spec 的「裂缝 2」列的正是这一条。
+
+归一化带来一个**不对称**，下游必须照抄：`allowedChildTypes` 归一化（缺省 = 拒绝），`allowedParentTypes` **不**归一化（缺省 = 无限制，主进程短路放行）。Task 10 的渲染端类型判定因此必须写成 `allowedChildTypes ?? []`（缺字段 → 拒绝）与 `!allowedParentTypes || ...`（缺字段 → 放行）——见 Task 10 Step 3 的代码片段。
+
+归一化还有一个副作用：`bug` 的 `allowedChildTypes: []` 与「不写这个字段」在运行期**完全等价** → 没有任何**行为**断言能因为删掉这一行而变红。该行改由**结构**断言钉住（「每条内置规则都显式声明了 `allowedChildTypes`」），而 `feature.allowedChildTypes: ['bug']` 因为规则是「feature **可以**挂 bug」，删掉它会让 `validateParentChild('feature','bug')` 由 true 变 false → **行为**断言直接变红。
+
 - [ ] **Step 1: Write the failing test**
 
 在 `src/main/shared/__tests__/node-type-registry.test.ts` 追加：
@@ -1777,16 +1783,19 @@ Expected: FAIL —— 模块不存在
      const childCfg = configs[dragging.type]          // 拖动中的将成为子节点
      // ⚠️ 必须与主进程 validateParentChild 的语义逐条对齐：
      //   - 配置对象缺失（未知类型）→ 主进程 `if (!parent || !child) return false` → 这里也判 false
-     //   - allowedChildTypes / allowedParentTypes 字段缺失 → 主进程短路放行 → 这里也放行
-     const parentOk = !!parentCfg && (!parentCfg.allowedChildTypes || parentCfg.allowedChildTypes.includes(dragging.type))
+     //   - allowedChildTypes 缺失 → 主进程注册时已归一化成 []（= 不允许任何子节点）→ 这里也判 false
+     //   - allowedParentTypes 缺失 → 主进程短路放行（该字段未归一化）→ 这里也放行
+     const parentOk = !!parentCfg && (parentCfg.allowedChildTypes ?? []).includes(dragging.type)
      const childOk = !!childCfg && (!childCfg.allowedParentTypes || childCfg.allowedParentTypes.includes(candidate.type))
      // parentOk && childOk 为 false → reason: 'type'
      ```
-     `allowedChildTypes` 字段本身为 `undefined` 表示「无限制」，与主进程 `validateParentChild` 的短路语义一致（`node-type-registry.ts:57-58`）；但**配置对象**缺失是另一回事，主进程判拒绝，这里也必须判拒绝——否则渲染端说「可以挂」，主进程 `graph:reparent` 拒掉，用户看到的是一次莫名其妙的报错。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
+     ⚠️ **`allowedChildTypes` 与 `allowedParentTypes` 的缺省语义不对称，这是 R-24 修过的**：主进程注册时把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点，与菜单的 `?? []` 一致），但 `allowedParentTypes` **没有**归一化，缺省仍表示「无限制」。渲染端必须照抄这个不对称：`allowedChildTypes` 用 `?? []`（缺字段 → 拒绝），`allowedParentTypes` 用 `!field ||`（缺字段 → 放行）。写反了就会出现「渲染端说可以挂、主进程 `graph:reparent` 拒掉」。
+
+     但**配置对象**缺失是另一回事，主进程判拒绝，这里也必须判拒绝——否则渲染端说「可以挂」，主进程 `graph:reparent` 拒掉，用户看到的是一次莫名其妙的报错。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
   5. 否则 `valid: true`
 - `onDragEnd()`：若 `candidate?.valid` 则调 `graphStore.reparentNode(draggingNodeId, candidate.nodeId)`；失败则 toast 提示并回弹
 
-**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:187` 已有 `useReactFlow()`）。
+**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:189` 已有 `useReactFlow()`）。
 
 - [ ] **Step 4: Add the store action**
 
