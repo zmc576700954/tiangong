@@ -277,4 +277,59 @@ describe('Database Migration', () => {
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined
     expect(Number(row!.version)).toBeGreaterThanOrEqual(16)
   })
+
+  it('老库（v15 的 chat_messages CHECK）升级到 v16：行数与 status 值不变，CHECK 已含 queued', () => {
+    const db = getClient()
+
+    // 造一个 v15 形状的 chat_messages：CHECK 只允许 5 个 status 值
+    db.exec('DROP TABLE IF EXISTS chat_messages')
+    db.exec(`
+      CREATE TABLE chat_messages (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+        role TEXT NOT NULL CHECK(role IN ('user', 'agent', 'system')),
+        content TEXT NOT NULL,
+        adapter_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'error', 'pending', 'streaming', 'aborted')),
+        error TEXT,
+        session_id TEXT,
+        context_refs TEXT,
+        tool_calls TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `)
+    db.prepare(
+      'INSERT INTO chat_threads (id, title, adapter_name, status, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+    ).run('t-old', 'T', 'claude-code', 'idle', Date.now(), Date.now())
+    for (const [id, status] of [['m-1', 'success'], ['m-2', 'error'], ['m-3', 'aborted']]) {
+      db.prepare(
+        'INSERT INTO chat_messages (id, thread_id, role, content, adapter_name, status, created_at) VALUES (?,?,?,?,?,?,?)',
+      ).run(id, 't-old', 'agent', 'x', 'claude-code', status, Date.now())
+    }
+
+    // 老库状态：版本号停在 15，checksum 缓存也失效
+    db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(15)
+    fs.rmSync(schemaChecksumPath, { force: true })
+
+    closeDatabase()
+    initDatabase()
+
+    const migrated = getClient()
+    const rows = migrated.prepare('SELECT id, status FROM chat_messages ORDER BY id').all() as {
+      id: string
+      status: string
+    }[]
+    expect(rows).toHaveLength(3)
+    expect(rows.map((r) => r.status)).toEqual(['success', 'error', 'aborted'])
+
+    // CHECK 已扩容到 8 值
+    expect(() =>
+      migrated.prepare(
+        'INSERT INTO chat_messages (id, thread_id, role, content, adapter_name, status, created_at) VALUES (?,?,?,?,?,?,?)',
+      ).run('m-queued', 't-old', 'agent', 'x', 'claude-code', 'queued', Date.now()),
+    ).not.toThrow()
+
+    const version = migrated.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
+    expect(Number(version.version)).toBe(16)
+  })
 })

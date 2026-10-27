@@ -121,6 +121,36 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(callArgs.prompt.split('USER-REQ-UNIQUE').length - 1).toBe(1)
   })
 
+  it('同一会话连发两条命令：system 段逐字节一致，前一条命令原文不进后一条的 system 段', async () => {
+    const session = await adapter.startSession(makeConfig())
+    adapter.setPromptContext(session.id, { stable: 'STABLE-TEXT', turn: 'TURN-ONE' })
+
+    mockQuery.mockImplementation(() => mockMessages([
+      { type: 'system', subtype: 'init', session_id: 'sdk-sess-1' },
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'COMMAND-ONE', targetNodeId: 'n1' })
+
+    // 第二轮：编排器重装配后 stable 跨轮不变，turn 随请求变化
+    adapter.setPromptContext(session.id, { stable: 'STABLE-TEXT', turn: 'TURN-TWO' })
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'COMMAND-TWO', targetNodeId: 'n1' })
+
+    expect(mockQuery).toHaveBeenCalledTimes(2)
+    const first = mockQuery.mock.calls[0][0] as { prompt: string; options: Record<string, unknown> }
+    const second = mockQuery.mock.calls[1][0] as { prompt: string; options: Record<string, unknown> }
+
+    // system 段跨轮逐字节一致 —— 可复用 KV-cache 前缀
+    expect(second.options.systemPrompt).toBe(first.options.systemPrompt)
+    // 前一条命令原文不得出现在后一条的 system 段
+    expect(String(second.options.systemPrompt)).not.toContain('COMMAND-ONE')
+    // 每条命令原文只在自己的 user turn 里出现一次
+    expect(first.prompt.split('COMMAND-ONE').length - 1).toBe(1)
+    expect(second.prompt.split('COMMAND-TWO').length - 1).toBe(1)
+    expect(second.prompt).not.toContain('COMMAND-ONE')
+    expect(second.prompt).toContain('TURN-TWO')
+  })
+
   it('透明转发会话不下发任何 BizGraph 上下文', async () => {
     const session = await adapter.startSession(makeConfig({ transparentForward: true }))
     adapter.setPromptContext(session.id, { stable: 'STABLE-TEXT', turn: 'TURN-TEXT' })
