@@ -8,6 +8,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useStoreApi,
   useOnViewportChange,
   type Edge,
   type Node,
@@ -224,6 +225,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const currentGraphId = currentGraph?.id
 
   const { screenToFlowPosition, setCenter } = useReactFlow()
+  /** ReactFlow 内部 store —— 用来在「节点进 store 的那一刻」重试恢复力导向 */
+  const storeApi = useStoreApi()
 
   // Listen for navigation requests from components outside ReactFlowProvider (e.g., RightPanel)
   useEffect(() => {
@@ -912,13 +915,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   /** 力导向布局 hook —— 提供 applyForceLayout、拖拽 pin/reheat 处理器 */
   const {
     applyForceLayout,
+    restoreForceLayout,
     exitForceMode,
     onNodeDragStart: onForceDragStart,
     onNodeDrag: onForceDrag,
     onNodeDragStop: onForceDragStop,
   } = useForceLayout()
-  /** 当前布局模式：'tree' = dagre，'force' = d3-force。决定拖拽时是否触发 reheat。 */
-  const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
+  /**
+   * 当前布局模式 —— `null` 表示**还没从 localStorage 读回来**。
+   *
+   * ⚠️ 必须是三态，不能是 `'tree' | 'force'`：
+   * `layoutMode` 初值若写死 'tree'，首屏那个「自动跑 dagre」的 effect
+   * 会在模式读回来**之前**就把画布排成树形 → 用户存的力导向坐标当场被覆盖
+   * （而且 `applyLayout()` 会把坐标**写回 DB**）。
+   * 所以：模式未读回 → **不跑** dagre；读回为 'tree' → 照跑；读回为 'force' → 不跑，
+   * 并且要**真的**进入力导向模式（见下方 restore effect）。
+   */
+  const [layoutMode, setLayoutMode] = useState<'tree' | 'force' | null>(null)
   /** 力导向布局计算中（CPU 密集） —— 显示 spinner，禁用按钮防重入。 */
   const [forceLoading, setForceLoading] = useState(false)
 
@@ -952,6 +965,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * （useForceLayout.onNodeDragStop），那会覆盖掉重挂算出来的锚点位置与
    * 整棵子树的平移结果。要同时支持两者得把仿真按新坐标重新播种 ——
    * 那是 useForceLayout 的重构，超出本任务范围。
+   *
+   * 模式还没读回来（`layoutMode === null`）时按「不是力导向」处理 —— 那只是一帧的
+   * 窗口（读回 effect 与首屏渲染几乎同时），并且重挂与否最终由读回后的模式决定。
    */
   const reparentEnabled = layoutMode !== 'force'
 
@@ -1027,14 +1043,23 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     applyLayout()
   }, [exitForceMode, applyLayout, persistLayoutMode])
 
-  // 首次加载图时自动应用 dagre 布局
+  /**
+   * 首屏自动应用 dagre 布局。
+   *
+   * ⚠️ **必须等布局模式读回来**（`layoutMode === 'tree'`）：
+   * 模式还没读回就排树形 → 用户存的力导向坐标当场被覆盖，
+   * 而且 `applyLayout()` 会把坐标**写回 DB**（`useAutoLayout` 里的
+   * `batchUpdatePositions`）→ 用户的布局被静默毁掉。
+   * 模式读回为 'force' 时**不能**跑 dagre —— 那条路走的是「恢复力导向」。
+   */
   useEffect(() => {
+    if (layoutMode !== 'tree') return
     if (graphNodes.length > 0 && !hasAppliedInitialLayout.current) {
       hasAppliedInitialLayout.current = true
       // 延迟一帧让 ReactFlow 先完成首次渲染
       requestAnimationFrame(() => applyLayout())
     }
-  }, [graphNodes.length, applyLayout])
+  }, [graphNodes.length, applyLayout, layoutMode])
 
   // 切换图时重置标记
   useEffect(() => {
@@ -1042,7 +1067,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     creatingProjectForGraph.current = null
     // 切图时清掉 force mode（避免 simulation 引用旧节点的 simNodes）
     exitForceMode()
-    setLayoutMode('tree')
+    // ⚠️ 置成 `null`（**未读回**）而不是 'tree'：切图后必须重新读一次模式，
+    // 读回来之前不能跑 dagre（否则新图会先被排成树形，坐标还落库）。
+    setLayoutMode(null)
     setForceLoading(false)
   }, [graphId, exitForceMode])
 
@@ -1057,6 +1084,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * ⚠️ **「等它到位」用 `currentGraph` 判断，不用 `projectPath`**：
    * `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
    * 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了。
+   * 没有项目路径的图读的是 `bizgraph.layoutMode.default` 那个键 —— 读和写必须对称。
    *
    * ⚠️ **必须声明在「切图重置」effect 之后**：切图时两个 effect 会在同一次提交里跑，
    * 顺序决定谁赢 —— 读到的持久化值必须赢过重置用的 'tree'。
@@ -1064,8 +1092,52 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   useEffect(() => {
     if (!currentGraphId) return
     const stored = localStorage.getItem(layoutModeStorageKey(projectPath))
-    if (stored === 'tree' || stored === 'force') setLayoutMode(stored)
+    setLayoutMode(stored === 'force' ? 'force' : 'tree')
   }, [currentGraphId, projectPath])
+
+  /**
+   * 恢复成 'force' 时必须**真的**进入力导向模式 —— 不能只把工具栏上的字符串改成 'force'。
+   *
+   * 只改字符串的后果（三个都真实发生过）：
+   *   - 首屏 dagre 照跑 → 用户摆好的坐标被覆盖并落库；
+   *   - `isForceModeRef` 还是 false → 拖拽处理器全部提前 return →
+   *     力导向模式下的「钉住 + reheat + 落库」是死的；
+   *   - 工具栏写着「力导向」，画布却是树形，拖起来也没反应。
+   *
+   * 恢复用的是 `restoreForceLayout()`：用**当前坐标**建一个冻结的 simulation，
+   * **不重算、不落库**（`applyForceLayout()` 会重算 + 落库，恢复路径绝不能用它）。
+   *
+   * ⚠️ **必须跟着节点集合走，而不是恢复一次就完事**：
+   * 图元数据（`graph:list`）和节点（`graph:get`）是**两条独立的 IPC**，
+   * 元数据先到 → 模式先被读回 → 但那时画布上可能只有那个「自动创建的项目根节点」。
+   * 在这份残缺的节点集合上建出来的 simulation 里**没有用户的节点** →
+   * 拖它们时 `simNodes.get(id)` 落空 → 力导向拖拽照样是死的。
+   * 所以：节点集合一变就重建 simulation（用当前坐标，不重算、不落库）。
+   *
+   * ⚠️ **只在节点集合变化时重建** —— 位置变化不重建：
+   * 拖拽过程中 store 的 nodes 数组每帧都在变（位置在动），若按数组引用判断，
+   * 就会在拖拽中途重建 simulation → 钉住的状态被丢掉 → 拖拽失效。
+   */
+  useEffect(() => {
+    if (layoutMode !== 'force') return
+    let lastNodes: Node[] | null = null
+    const sync = () => {
+      const nodes = storeApi.getState().nodes
+      if (lastNodes && nodes === lastNodes) return
+      const idSetChanged =
+        !lastNodes ||
+        nodes.length !== lastNodes.length ||
+        nodes.some((n, i) => lastNodes?.[i]?.id !== n.id)
+      lastNodes = nodes
+      if (!idSetChanged) return
+      // 拿不到这张图的节点就返回 false —— 不能把「没建成」当成「建成」。
+      // 节点稍后进 store 时，store 的订阅会再触发一次 sync。
+      restoreForceLayout(graphId)
+    }
+    sync()
+    const unsub = storeApi.subscribe(sync)
+    return unsub
+  }, [layoutMode, graphId, restoreForceLayout, storeApi])
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })

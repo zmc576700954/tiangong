@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import { nodeTypeRegistry } from '@main/shared/node-type-registry'
 
 export const MOCK_GRAPH_ID = 'graph_e2e_001'
 export const MOCK_NODE_MODULE_ID = 'node_e2e_module_001'
@@ -49,6 +50,17 @@ const defaultMockNodes = [
 ]
 
 /**
+ * mock 图的形状 —— `projectPath` 可以缺省。
+ *
+ * 「这张图没有项目路径」是一条**真实的分支**：布局模式的 localStorage 键按
+ * 项目路径分区，没有路径的图落到 `bizgraph.layoutMode.default`。
+ * 读写两端必须对称，所以这条分支也要能被 e2e 覆盖。
+ */
+export type MockGraph = Omit<typeof defaultMockGraph, 'projectPath'> & {
+  projectPath?: string
+}
+
+/**
  * mock 节点的形状 —— 默认节点 + 可选的 `parentId`。
  *
  * 层级边由 `nodes.parent_id` 派生（不读 `edges` 表），所以结构编辑类用例
@@ -73,11 +85,24 @@ export type MockEdge = {
   label?: string
 }
 
-export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: typeof defaultMockGraph[]; nodes?: MockNode[]; edges?: MockEdge[] }) {
+export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: MockGraph[]; nodes?: MockNode[]; edges?: MockEdge[] }) {
   const mockGraphs = options?.graphs ?? [defaultMockGraph]
   const mockNodes = options?.nodes ?? defaultMockNodes
   const mockEdges = options?.edges ?? []
-  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: typeof defaultMockGraph[]; nodes: MockNode[]; edges: MockEdge[] }) => {
+  /**
+   * 类型规则表 —— **直接从真实注册表生成**。
+   *
+   * 投影规则与真实 handler 完全一致（`src/main/ipc/node-type.ts:14`）：
+   * `nodeTypeRegistry.listConfigs().map(({ behavior: _behavior, ...rest }) => rest)`
+   * —— `behavior` 字段含函数、不可结构化克隆，必须剥掉。
+   *
+   * ⚠️ 以前这里是一份**手抄**的副本：真实注册表改了、副本没改，
+   * 「类型不允许」那条断言照样绿 —— 闸门验的是副本，不是产品行为。
+   */
+  const nodeTypeConfigs = nodeTypeRegistry
+    .listConfigs()
+    .map(({ behavior: _behavior, ...rest }) => rest)
+  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: MockGraph[]; nodes: MockNode[]; edges: MockEdge[]; nodeTypeConfigs: ReturnType<typeof nodeTypeRegistry.listConfigs> }) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
 
     function emit(channel: string, ...args: unknown[]) {
@@ -90,6 +115,7 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     const mockGraph = mockGraphs[0]
     const mockNodes = opts.nodes
     const mockEdges = opts.edges
+    const mockNodeTypeConfigs = opts.nodeTypeConfigs
 
     const mockSubagentTypes = [
       { name: 'explore', displayName: '探索者', description: 'Read-only search', allowedTools: ['Read', 'Glob', 'Grep'], scopeStrategy: 'inherit' },
@@ -106,6 +132,15 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
        * 落点被默默接受、而 mock 返回空的 movedPositions 时，连线同样不会变。
        */
       reparentCalls: [] as Array<{ nodeId: string; newParentId: string }>,
+      /**
+       * `node:batchUpdatePositions` 的调用记录（每次调用记一整批）。
+       *
+       * 「坐标有没有被写回数据库」只能靠它判断：
+       * - 首屏 dagre（`applyLayout`）会写一批**所有**节点；
+       * - 力导向拖拽收尾（`onNodeDragStop`）也会写一批**所有**节点；
+       * - 普通（树形）拖拽的防抖持久化只写**被拖的那一个**节点。
+       */
+      positionUpdates: [] as Array<Array<{ id: string; x: number; y: number }>>,
     }
 
     // Expose mutable state and emit helper for test scripts
@@ -144,18 +179,12 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
         items.map((data) => ({ ...data, id: `node_${Date.now()}_${Math.random().toString(36).slice(2)}`, createdAt: Date.now(), updatedAt: Date.now() })),
       'node:update': async (id: string, data: Record<string, unknown>) => ({ ...mockNodes.find((n) => n.id === id), ...data }),
       'node:delete': async () => true,
-      'node:batchUpdatePositions': async () => undefined,
+      'node:batchUpdatePositions': async (updates: Array<{ id: string; x: number; y: number }>) => {
+        mockState.positionUpdates.push(updates)
+      },
 
-      // Node type rules — mirrors the real nodeType:listConfigs payload
-      // (type / allowedChildTypes / allowedParentTypes, no behavior).
-      'nodeType:listConfigs': async () => [
-        { type: 'project', allowedChildTypes: ['module'] },
-        { type: 'module', allowedParentTypes: ['project'], allowedChildTypes: ['process', 'wiki-page'] },
-        { type: 'process', allowedParentTypes: ['module'], allowedChildTypes: ['feature', 'bug', 'wiki-page'] },
-        { type: 'feature', allowedParentTypes: ['process'], allowedChildTypes: ['bug'] },
-        { type: 'bug', allowedParentTypes: ['process', 'feature'], allowedChildTypes: [] },
-        { type: 'wiki-page', allowedParentTypes: ['project', 'module', 'process', 'wiki-page'], allowedChildTypes: ['wiki-page'] },
-      ],
+      // Node type rules —— **直接来自真实注册表**（见 setupMockIpc 里的投影）。
+      'nodeType:listConfigs': async () => mockNodeTypeConfigs,
 
       // Edge
       'edge:create': async (data: Record<string, unknown>) => ({ ...data, id: `edge_${Date.now()}` }),
@@ -284,7 +313,40 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     window.electronAPI = mockApi as Window['electronAPI']
-  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes, edges: mockEdges })
+  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes, edges: mockEdges, nodeTypeConfigs })
+}
+
+/**
+ * 读 `node:batchUpdatePositions` 的调用记录（每次调用一批）。
+ *
+ * 「坐标有没有被写回数据库」只能靠它判断 —— 画布上看着没动，
+ * 落库那条路照样可能已经跑过了。
+ */
+export async function getPositionUpdates(
+  page: Page,
+): Promise<Array<Array<{ id: string; x: number; y: number }>>> {
+  return page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { positionUpdates?: Array<Array<{ id: string; x: number; y: number }>> }
+    }).__bizgraphMockState
+    return state?.positionUpdates ?? []
+  })
+}
+
+/**
+ * 清空 `node:batchUpdatePositions` 的调用记录。
+ *
+ * 「启动阶段写过」和「拖拽之后写过」必须分得开 —— 否则「拖拽产生了一批
+ * 多节点的坐标写回」这条断言会被启动阶段的 dagre 写回顶包：
+ * 树形模式下 dagre 也会写一批所有节点，那条断言就验不到「力导向拖拽」了。
+ */
+export async function clearPositionUpdates(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { positionUpdates?: Array<Array<{ id: string; x: number; y: number }>> }
+    }).__bizgraphMockState
+    if (state?.positionUpdates) state.positionUpdates = []
+  })
 }
 
 /**

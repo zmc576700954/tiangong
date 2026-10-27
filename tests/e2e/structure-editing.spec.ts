@@ -1,7 +1,7 @@
 /**
  * 结构编辑的浏览器 e2e 验收闸门。
  *
- * 覆盖八件事：
+ * 覆盖十二件事：
  *   1. 父子关系由 `nodes.parent_id` 派生 → 父子之间**恰好一条**线（存储里的层级边不重复画）
  *   2. 拖到另一个节点上 → 旧线消失、新线出现
  *   3. 拖到类型不允许的父节点上 → 被拒，`graph:reparent` **根本没被调用**
@@ -10,6 +10,10 @@
  *   6. 布局选择持久化 → 切到力导向 → 刷新后仍是力导向
  *   7. 布局选择的读回时机 → 启动时读回存着的模式，不会被首帧写成 tree
  *   8. 点层级线 → 什么都不选中（不开空白右面板、不留删不掉的选中框）
+ *   9. 恢复成力导向 → **不跑 dagre**、**不写回坐标**，节点保持用户摆好的位置
+ *  10. 恢复成力导向 → **真的**进入力导向模式（拖拽走「钉住 + reheat + 落库」）
+ *  11. 对照组：树形模式**会**跑 dagre 并把坐标写回数据库
+ *  12. 没有项目路径的图 → 写进 `bizgraph.layoutMode.default`，刷新后读回仍是力导向
  *
  * ⚠️ **拒绝类用例为什么必须断言「IPC 没被调用」**：
  * 只断言「连线没变」是不够的 —— 落点被默默接受、而 mock 的 `movedPositions` 是空数组时，
@@ -26,13 +30,22 @@
  */
 import { test, expect, type Page } from '@playwright/test'
 import { waitForCanvas } from './helpers/graph-helpers'
-import { setupMockIpc, getReparentCalls, type MockNode, type MockEdge } from './helpers/mock-ipc'
+import {
+  setupMockIpc,
+  getReparentCalls,
+  getPositionUpdates,
+  clearPositionUpdates,
+  type MockNode,
+  type MockEdge,
+} from './helpers/mock-ipc'
 import { canvasZh } from '@shared/i18n/resources/domains/canvas'
 import { projectsZh } from '@shared/i18n/resources/domains/projects'
 
 /** mock 图的项目路径 —— 布局模式的 localStorage 键按它分区 */
 const MOCK_PROJECT_PATH = '/tmp/bizgraph-e2e-project'
 const LAYOUT_MODE_KEY = `bizgraph.layoutMode.${MOCK_PROJECT_PATH}`
+/** 没有项目路径的图 —— 布局模式落到这个键上 */
+const LAYOUT_MODE_DEFAULT_KEY = 'bizgraph.layoutMode.default'
 
 const MODULE_A = 'node_mod_a'
 const MODULE_D = 'node_mod_d'
@@ -117,6 +130,67 @@ async function nodeCenter(page: Page, nodeId: string): Promise<{ x: number; y: n
 }
 
 /**
+ * 读节点在 **flow 坐标**里的位置。
+ *
+ * xyflow 把节点的绝对 flow 坐标写在节点容器的 transform 上
+ * （`translate(Xpx, Ypx)`）—— 不受视口缩放/平移影响，
+ * 所以它就是「用户摆好的那个坐标」。
+ */
+async function nodeFlowPosition(
+  page: Page,
+  nodeId: string,
+): Promise<{ x: number; y: number } | null> {
+  return page.locator(`[data-id="${nodeId}"]`).evaluate((el) => {
+    const computed = getComputedStyle(el).transform
+    if (!computed || computed === 'none') return null
+    const m = new DOMMatrixReadOnly(computed)
+    return { x: m.e, y: m.f }
+  })
+}
+
+/** 幽灵连线（拖拽重挂的临时虚线）—— 只在**合法**落点时出现 */
+const GHOST_EDGE_SELECTOR = '.react-flow__edge[data-id^="ghost-"]'
+
+/** 三条落点拒绝原因文案 —— 非法落点时出现在目标节点上 */
+const REASON_TEXTS = [
+  canvasZh['canvas.reparent.cycle'],
+  canvasZh['canvas.reparent.invalidType'],
+  canvasZh['canvas.reparent.crossGraph'],
+]
+
+/**
+ * 画布上当前的「落点反馈」数量。
+ *
+ * 反馈 = 合法落点的幽灵连线 + 非法落点的原因文案。
+ * 两者都是 `useReparentDrag` 在**拖拽过程中实时**算出来的 → 反馈出现 = 判定已完成。
+ */
+async function dropFeedbackCount(page: Page): Promise<number> {
+  const ghosts = await page.locator(GHOST_EDGE_SELECTOR).count()
+  const reasons = await page.getByText(new RegExp(REASON_TEXTS.join('|'))).count()
+  return ghosts + reasons
+}
+
+/**
+ * 等落点判定跑完 —— **靠可观测信号，不靠固定时长**。
+ *
+ * 替代原来「松手前固定等 250ms」：慢 CI 上那 250ms 可能不够（判定没跑完就松手），
+ * 快 CI 上又是白等。反馈一出现就说明判定已完成。
+ */
+async function waitForDropFeedback(page: Page): Promise<void> {
+  await expect.poll(() => dropFeedbackCount(page)).toBeGreaterThan(0)
+}
+
+/**
+ * 等拖拽收尾 —— **靠可观测信号，不靠固定时长**。
+ *
+ * 替代原来「松手后固定等 300ms」：落点反馈被清掉 = 拖拽结束、
+ * 候选已经裁决完（合法落点的 `graph:reparent` 也已经发出去了）。
+ */
+async function waitForDragEnd(page: Page): Promise<void> {
+  await expect.poll(() => dropFeedbackCount(page)).toBe(0)
+}
+
+/**
  * 把一个节点拖到另一个节点上并松手。
  *
  * @param onHover 松手**之前**的回调 —— 用来断言落点反馈（红框 / 原因提示）。
@@ -135,11 +209,27 @@ async function dragNodeOnto(
   // 先挪一点点越过 nodeDragThreshold（3px），拖拽才会真正开始
   await page.mouse.move(from.x - 15, from.y, { steps: 5 })
   await page.mouse.move(to.x, to.y, { steps: 20 })
-  // 等落点判定跑完（候选是拖拽过程中实时算的）
-  await page.waitForTimeout(250)
+  // 等落点判定跑完（候选是拖拽过程中实时算的）—— 反馈出现即判定完成
+  await waitForDropFeedback(page)
   if (onHover) await onHover()
   await page.mouse.up()
-  await page.waitForTimeout(300)
+  // 等拖拽收尾（反馈被清掉即候选已裁决）
+  await waitForDragEnd(page)
+}
+
+/**
+ * 把一个节点拖动一小段距离（落点不在任何节点上）。
+ *
+ * 力导向模式下的拖拽收尾会**一次性写回所有节点**的仿真坐标 ——
+ * 这正是「真的进了力导向模式」的可观测特征（树形的防抖持久化只写被拖的那一个）。
+ */
+async function dragNodeBy(page: Page, nodeId: string, dx: number, dy: number): Promise<void> {
+  const from = await nodeCenter(page, nodeId)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x - 15, from.y, { steps: 5 })
+  await page.mouse.move(from.x + dx, from.y + dy, { steps: 20 })
+  await page.mouse.up()
 }
 
 /** 层级边的选择器 —— 排除拖拽中的幽灵连线 */
@@ -481,5 +571,150 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
     await expect(page.getByText(canvasZh['canvas.delete.edgeHint'])).toHaveCount(0)
     // 右面板仍是「未选中」的空态，而不是一块空白面板
     await expect(page.getByText(projectsZh['right.emptyTitle'])).toBeVisible()
+  })
+
+  // ────────────────────────────────────────────────────────────────
+  // 恢复成力导向 —— 必须是**真恢复**，不是把工具栏上的字符串改一下
+  // ────────────────────────────────────────────────────────────────
+
+  /**
+   * 这组节点的位置是**故意摆乱的**：既不是 dagre 的树形布局，
+   * 也不是任何一种「巧合能对上」的排布 —— 「恢复后坐标没变」这条断言
+   * 必须能真的区分「保留了用户摆的位置」和「被重排过」。
+   */
+  const FORCE_NODES: MockNode[] = [
+    makeNode(MODULE_A, 'module', 'Module A', { x: 150, y: 180 }),
+    makeNode(PROCESS_B, 'process', 'Process B', { x: 760, y: 520 }, MODULE_A),
+    makeNode(MODULE_D, 'module', 'Module D', { x: 420, y: 840 }),
+  ]
+  const FORCE_STORED_POSITIONS: Record<string, { x: number; y: number }> = {
+    [MODULE_A]: { x: 150, y: 180 },
+    [PROCESS_B]: { x: 760, y: 520 },
+    [MODULE_D]: { x: 420, y: 840 },
+  }
+
+  /** 断言节点还在它存的位置上（flow 坐标，不受视口缩放影响） */
+  async function expectNodeAtStoredPosition(
+    page: Page,
+    nodeId: string,
+  ): Promise<void> {
+    const pos = await nodeFlowPosition(page, nodeId)
+    if (!pos) throw new Error(`节点 ${nodeId} 不在画布上`)
+    const expected = FORCE_STORED_POSITIONS[nodeId]
+    expect(pos.x).toBeCloseTo(expected.x, 0)
+    expect(pos.y).toBeCloseTo(expected.y, 0)
+  }
+
+  /** 存值**在应用脚本跑之前**写好 —— 模拟「上次退出时选了力导向」 */
+  async function seedStoredForceMode(page: Page, key: string): Promise<void> {
+    await page.addInitScript((k) => {
+      window.localStorage.setItem(k, 'force')
+    }, key)
+  }
+
+  test('恢复成力导向：不跑 dagre、不写回坐标，节点保持用户摆好的位置', async ({ page }) => {
+    await setupMockIpc(page, { nodes: FORCE_NODES })
+    await seedStoredForceMode(page, LAYOUT_MODE_KEY)
+
+    await gotoMockGraph(page)
+    await waitForStableLayout(page, [MODULE_A, PROCESS_B, MODULE_D])
+
+    // ① 坐标一次都没写回数据库。
+    //    首屏 dagre（applyLayout）和力导向重算（applyForceLayout）**都会**写 ——
+    //    恢复路径两者都不该跑：用户摆好的坐标不能被覆盖，更不能被落库。
+    expect(await getPositionUpdates(page)).toEqual([])
+
+    // ② 节点还在用户存的位置上 —— 没被 dagre 排成树形
+    await expectNodeAtStoredPosition(page, MODULE_A)
+    await expectNodeAtStoredPosition(page, PROCESS_B)
+    await expectNodeAtStoredPosition(page, MODULE_D)
+  })
+
+  test('恢复成力导向：真的进入力导向模式 —— 拖拽走「钉住 + reheat + 落库」', async ({ page }) => {
+    await setupMockIpc(page, { nodes: FORCE_NODES })
+    await seedStoredForceMode(page, LAYOUT_MODE_KEY)
+
+    await gotoMockGraph(page)
+    await waitForStableLayout(page, [MODULE_A, PROCESS_B, MODULE_D])
+
+    // 先把启动阶段的坐标写回记录清掉 —— 这一条断言要验的是**拖拽之后**发生的事。
+    // 不清的话，树形模式下 dagre 启动时写的那一批（所有节点）会把断言顶包：
+    // 那条记录跟「拖拽走的是力导向路径」毫无关系。
+    await clearPositionUpdates(page)
+
+    // 拖一下节点
+    await dragNodeBy(page, MODULE_A, 30, 20)
+
+    // 力导向的拖拽收尾会**一次性写回所有节点**的仿真坐标；
+    // 树形的防抖持久化只写**被拖的那一个**节点。
+    // 所以「拖完之后出现一批多节点的坐标写回」= 真进了力导向模式的唯一可观测特征。
+    await expect
+      .poll(async () => {
+        const batches = await getPositionUpdates(page)
+        return batches.filter((b) => b.length > 1).flat().map((u) => u.id)
+      })
+      .toContain(MODULE_A)
+  })
+
+  test('对照组：树形模式会跑 dagre，并把坐标写回数据库', async ({ page }) => {
+    await setupMockIpc(page, { nodes: FORCE_NODES })
+
+    await gotoMockGraph(page)
+    await waitForStableLayout(page, [MODULE_A, PROCESS_B, MODULE_D])
+
+    // dagre 跑过 → 有一批「所有节点」的坐标写回
+    await expect
+      .poll(async () => (await getPositionUpdates(page)).filter((b) => b.length > 1).length)
+      .toBeGreaterThan(0)
+
+    // 而且节点确实被排到了别处 —— 否则上一条断言（以及「恢复后坐标没变」那条）
+    // 就可能是在验「摆的位置恰好等于 dagre 的输出」—— 那种情况下它验不到任何东西。
+    const deviations = await Promise.all(
+      Object.keys(FORCE_STORED_POSITIONS).map(async (id) => {
+        const pos = await nodeFlowPosition(page, id)
+        if (!pos) return 0
+        const expected = FORCE_STORED_POSITIONS[id]
+        return Math.max(Math.abs(pos.x - expected.x), Math.abs(pos.y - expected.y))
+      }),
+    )
+    expect(Math.max(...deviations)).toBeGreaterThan(5)
+  })
+
+  test('没有项目路径的图：写进 default 键，刷新后读回仍是力导向', async ({ page }) => {
+    // 这张图**没有** projectPath → 布局模式落到 `bizgraph.layoutMode.default`。
+    // mock 的 `graph:get` 恒返回第一张图，所以「没有项目路径的图」就是第一张图。
+    await setupMockIpc(page, {
+      graphs: [
+        {
+          id: 'graph_e2e_001',
+          name: 'E2E Test Graph',
+          type: 'dev',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+      nodes: [makeNode(MODULE_A, 'module', 'Module A', { x: 200, y: 300 })],
+    })
+    await gotoMockGraph(page)
+    await waitForStableLayout(page, [MODULE_A])
+
+    const trigger = page.locator('[data-testid="layout-menu-trigger"]')
+    await trigger.click()
+    await page.click('[data-testid="layout-force"]')
+    await expect(trigger).toContainText(canvasZh['canvas.layout.modeForce'])
+
+    // 写进的是「没有项目路径」那个键
+    expect(
+      await page.evaluate((key) => window.localStorage.getItem(key), LAYOUT_MODE_DEFAULT_KEY),
+    ).toBe('force')
+
+    // 刷新 → 重新选图 → 读回来的仍是力导向
+    await page.reload()
+    await page.click('text=E2E Test Graph')
+    await waitForCanvas(page)
+    await expect(trigger).toContainText(canvasZh['canvas.layout.modeForce'])
+    expect(
+      await page.evaluate((key) => window.localStorage.getItem(key), LAYOUT_MODE_DEFAULT_KEY),
+    ).toBe('force')
   })
 })
