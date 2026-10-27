@@ -12,6 +12,7 @@ import { GraphRepository } from '../repositories/graph-repository'
 import { ProjectScanner } from '../project-scanner'
 import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
 import { generateId } from '../shared/env'
+import { isDescendant } from '../shared/hierarchy-utils'
 import { NodeRepository } from '../repositories/node-repository'
 import { WikiIndexService } from './wiki-index-service'
 import { MindMapAgent } from '../mindmap-agent'
@@ -441,7 +442,13 @@ export class GraphService {
       wiki_content, wiki_meta, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
-    const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
+    const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ?, sort_index = ? WHERE id = ?')
+
+    const selectParentIdStmt = executor.prepare('SELECT parent_id FROM nodes WHERE id = ?')
+
+    const selectNextSortIndexStmt = executor.prepare(
+      'SELECT COALESCE(MAX(sort_index), -1) + 1 AS next_index FROM nodes WHERE parent_id = ?',
+    )
 
     const insertEdgeStmt = executor.prepare('INSERT INTO edges (id, source, target, label, edge_type, graph_id, description, data_flow, strength) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
 
@@ -486,15 +493,51 @@ export class GraphService {
       )
     }
 
-    // 第二轮：更新 parent_id
+    // 第二轮：更新 parent_id + 分配 sort_index
+    //
+    // ⚠️ 这条路径是裸 SQL 写入，绕过了 NodeRepository.create() —— Task 11 给
+    // Repository 补的「新建子节点取 max(兄弟) + 1」覆盖不到这里，必须自己写。
+    //
+    // 防环：新父不能落在节点自己的子树里（AI 路径只做防环，不做父子类型校验 ——
+    // spec §4.4.3：批量生成，逐个校验会让整次生成失败）。
+    // 判定复用 Task 6 的 isDescendant（祖先在前，后代在后），parentOf 走数据库里
+    // 已落库的 parent_id —— 与 analyzer 的内存映射路径共用同一个函数。
+    //
+    // parentByChildId 登记**真正写下去**的父子关系：第四轮补建层级边以它为准，
+    // 避免出现「有层级边但没有 parent_id」的镜像不一致。
+    const parentByChildId = new Map<string, string>()
+    // 父节点 id → 下一个可用的 sort_index（批内递增，不逐个查库）
+    const nextSortIndexByParent = new Map<string, number>()
+    // 防环用的 parentOf：走数据库里已落库的 parent_id
+    const parentOf = (id: string): string | null => {
+      const row = selectParentIdStmt.get(id) as { parent_id: string | null } | undefined
+      return row?.parent_id ?? null
+    }
     for (const nodeData of graphResult.nodes) {
-      if (nodeData.parentTempId) {
-        const nodeId = tempIdMap.get(nodeData.tempId)
-        const parentId = tempIdMap.get(nodeData.parentTempId)
-        if (nodeId && parentId) {
-          updateParentStmt.run(parentId, nodeId)
-        }
+      if (!nodeData.parentTempId) continue
+      const nodeId = tempIdMap.get(nodeData.tempId)
+      const parentId = tempIdMap.get(nodeData.parentTempId)
+      if (!nodeId || !parentId) continue
+
+      if (isDescendant(nodeId, parentId, parentOf)) {
+        logger.warn(
+          `防环：节点 ${nodeId} 的父节点 ${parentId} 落在自己的子树里，已跳过写入 parent_id`,
+        )
+        continue
       }
+
+      // 兄弟顺序 = graphResult.nodes 里同父节点的「出现顺序」。
+      // 基准值取该父节点**已有**子节点的最大 sort_index + 1；
+      // COALESCE 不能省：兄弟全为 NULL 时 MAX 返回 NULL，NULL + 1 在 SQLite 里仍是 NULL。
+      let sortIndex = nextSortIndexByParent.get(parentId)
+      if (sortIndex === undefined) {
+        const row = selectNextSortIndexStmt.get(parentId) as { next_index: number | null } | undefined
+        sortIndex = row?.next_index ?? 0
+      }
+      nextSortIndexByParent.set(parentId, sortIndex + 1)
+
+      updateParentStmt.run(parentId, sortIndex, nodeId)
+      parentByChildId.set(nodeId, parentId)
     }
 
     // 第三轮：创建边
@@ -511,6 +554,45 @@ export class GraphService {
       } else {
         logger.warn(`Edge dropped: sourceTempId="${edgeData.sourceTempId}" or targetTempId="${edgeData.targetTempId}" not found in tempIdMap`)
       }
+    }
+
+    // 第四轮：确保每个有 parent_id 的节点都有对应的 hierarchical 边
+    //
+    // 三级判定 —— 同一对上永远只应该有一条层级边：
+    //   1. 已有 'hierarchical' → 跳过
+    //   2. 否则已有 'default' → **升级**它（不是再插一条）
+    //   3. 否则 → 插入新的 'hierarchical' 边
+    //
+    // 第 2 级是承重的：第三轮落库的层级边类型是 edgeData.edgeType ?? 'default'
+    // （AI 写入路径不区分层级边与语义边），而第二轮已经把 parent_id 写好了
+    // → (父, 子) 正是权威父子对 → 那条 'default' 就是层级边。
+    // 再插一条会在同一对上留下 'default' 残留：换父之后父子关系不再成立，
+    // 那条残留会被判成语义边并**开始渲染** → 画布上冒出一条用户没画过的线。
+    // 与启动迁移的同一套语义（hierarchy-migration.ts：父子关系唯一，不靠猜）。
+    //
+    // 遍历顺序 = graphResult.nodes 的顺序，与第二轮分配 sort_index 的顺序同源 ——
+    // 边的插入顺序（rowid）与 sort_index 一致，迁移按 rowid 派生兄弟顺序时两者不会打架。
+    const selectHierarchicalEdgeStmt = executor.prepare(
+      "SELECT id FROM edges WHERE source = ? AND target = ? AND edge_type = 'hierarchical' LIMIT 1",
+    )
+    const selectDefaultEdgeStmt = executor.prepare(
+      "SELECT id FROM edges WHERE source = ? AND target = ? AND edge_type = 'default' LIMIT 1",
+    )
+    const upgradeEdgeStmt = executor.prepare(
+      "UPDATE edges SET edge_type = 'hierarchical' WHERE id = ?",
+    )
+
+    for (const [childId, parentId] of parentByChildId) {
+      if (selectHierarchicalEdgeStmt.get(parentId, childId)) continue
+      const legacyDefault = selectDefaultEdgeStmt.get(parentId, childId) as { id: string } | undefined
+      if (legacyDefault) {
+        upgradeEdgeStmt.run(legacyDefault.id)
+        continue
+      }
+      insertEdgeStmt.run(
+        generateId('edge'), parentId, childId, null,
+        'hierarchical', graphId, null, null, null,
+      )
     }
   }
 

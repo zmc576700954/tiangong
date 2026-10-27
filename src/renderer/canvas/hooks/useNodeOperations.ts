@@ -14,6 +14,7 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
   const graphNodes = useGraphStore((state) => state.nodes)
   const createNode = useGraphStore((state) => state.createNode)
   const updateNode = useGraphStore((state) => state.updateNode)
+  const createEdge = useGraphStore((state) => state.createEdge)
 
   const { screenToFlowPosition } = useReactFlow()
 
@@ -28,7 +29,7 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     // 新节点标题按当前语言生成——类型名走共享层的标签表
     const newTitle = t('canvas.node.newTitle', { type: nodeTypeLabel(childType, locale) })
 
-    await createNode({
+    const created = await createNode({
       type: childType,
       status: 'draft',
       title: newTitle,
@@ -39,7 +40,16 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       acceptanceCriteria: [],
       wikiContent: childType === 'wiki-page' ? `# ${newTitle}\n\n` : undefined,
     })
-  }, [graphNodes, createNode, graphId, screenToFlowPosition, locale, t])
+
+    // parent_id 是父子关系的唯一事实来源，但存储层镜像（hierarchical 边）也要同步补上 ——
+    // 缺了它，迁移/克隆/画布派生都拿不到这一对的层级边。
+    await createEdge({
+      source: parentId,
+      target: created.id,
+      graphId,
+      edgeType: 'hierarchical',
+    })
+  }, [graphNodes, createNode, createEdge, graphId, screenToFlowPosition, locale, t])
 
   const handleGenerateChildren = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
@@ -56,7 +66,7 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
 
         for (let i = 0; i < result.children.length; i++) {
           const child = result.children[i]
-          await createNode({
+          const created = await createNode({
             type: result.childType,
             status: 'draft',
             title: child.title,
@@ -67,12 +77,20 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
             position: { x: baseX, y: baseY + i * 80 },
             acceptanceCriteria: [],
           })
+
+          // 每个 AI 生成的子节点都要补建层级边（parent_id 的存储层镜像）
+          await createEdge({
+            source: nodeId,
+            target: created.id,
+            graphId,
+            edgeType: 'hierarchical',
+          })
         }
       }
     } catch (err) {
       console.error('[useNodeOperations] generateChildren failed:', err)
     }
-  }, [graphNodes, projectPath, createNode, graphId])
+  }, [graphNodes, projectPath, createNode, createEdge, graphId])
 
   const handleEnrichNode = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
