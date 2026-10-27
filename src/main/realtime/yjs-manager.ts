@@ -221,7 +221,11 @@ export class YjsManager {
       acceptanceCriteria: (payload.acceptanceCriteria as GraphNode['acceptanceCriteria']) ?? [],
       graphId: String(payload.graphId),
       graphType: payload.graphType as GraphNode['graphType'],
-      parentId: (payload.parentId as string | undefined) ?? undefined,
+      // payload 来自远端 peer、不可信 —— parentId 与 id 一样要归一成字符串，
+      // 否则下面的自环比较是类型敏感的（`30 === '30'` 为 false），
+      // 且 parent_id 是 TEXT 列、better-sqlite3 把 JS number 绑成 REAL
+      // → 亲和转换后存成 `'30.0'`，与自己的 id `'30'` 不相等。
+      parentId: payload.parentId == null ? undefined : String(payload.parentId),
       rules: (payload.rules as GraphNode['rules']) ?? undefined,
       metadata: (payload.metadata as GraphNode['metadata']) ?? undefined,
       ownerRole: (payload.ownerRole as GraphNode['ownerRole']) ?? undefined,

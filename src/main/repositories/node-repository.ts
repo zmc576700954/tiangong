@@ -164,25 +164,34 @@ export class NodeRepository {
     if (data.parentId !== undefined) {
       // 防环：远端 peer 可以任意指定 parentId（spec §4.4.2）。
       // 本地 graph:reparent 已收敛到 hierarchy-service.ts 的单一入口，
-      // 这里是剩下最后一个未受控的 parent_id 写入点
+      // 这里是剩下唯一需要自己守的 parent_id **更新**路径
       // （Yjs 远端更新与快照双向同步都经由这里）。
+      // create() / createBatch() 也写 parent_id，但它们的 id 由服务端
+      // generateId('node') 生成 —— 新节点没有后代，不可能成环，无需守。
       // 只做防环 —— 父子类型 / 跨图校验是 graph:reparent 的职责，
       // 远端路径按 spec §4.4.2 的取舍不做。
-      if (data.parentId === id) {
+      //
+      // 归一一次，比较 / 判定 / 落库三处用同一个值：parent_id 是 TEXT 列，
+      // 而远端 payload 不可信（parentId 可能是 number）。不归一的话守卫是
+      // 类型敏感的（`10 === '10'` 为 false），且 better-sqlite3 把 JS number
+      // 绑成 REAL —— SQLite 对 TEXT 列做亲和转换后是 `'10.0'` 而非 `'10'`，
+      // `WHERE id = ?` 因此匹配不到任何真实节点 → 上溯链断掉 → 两条守卫同时失效。
+      const parentId = data.parentId == null ? null : String(data.parentId)
+      if (parentId === id) {
         throw new HierarchyError(
           `Node cannot be its own parent: ${id}`,
           ErrorCode.HIERARCHY_SELF_PARENT,
           { nodeId: id },
         )
       }
-      if (data.parentId && isDescendant(id, data.parentId, (nid) => this.getParentId(nid))) {
+      if (parentId && isDescendant(id, parentId, (nid) => this.getParentId(nid))) {
         throw new HierarchyError(
-          `Reparent would create a cycle: ${id} -> ${data.parentId}`,
+          `Reparent would create a cycle: ${id} -> ${parentId}`,
           ErrorCode.HIERARCHY_CYCLE,
-          { nodeId: id, newParentId: data.parentId },
+          { nodeId: id, newParentId: parentId },
         )
       }
-      updates.push('parent_id = ?'); args.push(data.parentId)
+      updates.push('parent_id = ?'); args.push(parentId)
     }
     if (data.rules !== undefined) { updates.push('rules = ?'); args.push(JSON.stringify(data.rules)) }
     if (data.metadata !== undefined) { updates.push('metadata = ?'); args.push(JSON.stringify(data.metadata)) }

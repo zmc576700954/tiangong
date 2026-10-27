@@ -93,6 +93,9 @@ describe('Yjs 远端路径的 parent_id 护栏', () => {
     insert.run('s2', 'module', 'draft', 'S2', GRAPH_ID, 'online', null, 0, 0, now, now)
     insert.run('c1', 'feature', 'draft', 'C1', GRAPH_ID, 'online', 's1', 0, 0, now, now)
     insert.run('f1', 'feature', 'draft', 'F1', GRAPH_ID, 'online', 'c1', 0, 0, now, now)
+    // 数字 id 的节点：'20' 是 '10' 的后代
+    insert.run('10', 'module', 'draft', 'N10', GRAPH_ID, 'online', null, 0, 0, now, now)
+    insert.run('20', 'feature', 'draft', 'N20', GRAPH_ID, 'online', '10', 0, 0, now, now)
     nodeRepo = new NodeRepository(db)
   })
 
@@ -169,5 +172,56 @@ describe('Yjs 远端路径的 parent_id 护栏', () => {
     expect(loggedCount).toBeGreaterThan(0)
     const row = db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE id = ?').get('Y') as { n: number }
     expect(Number(row.n)).toBe(0)
+  })
+
+  // ---------- parentId 类型归一（修复轮 1） ----------
+  //
+  // `nodes.parent_id` 是 TEXT 列，但远端 peer 的 payload 不可信：parentId 可能
+  // 是 number。守卫的比较是**类型敏感**的（`10 === '10'` 为 false），而
+  // `WHERE id = ?` 绑 JS number 时 better-sqlite3 绑的是 REAL —— SQLite 对 TEXT
+  // 列做亲和转换后是 `'10.0'` 而非 `'10'` → 匹配不到任何真实节点 → 上溯链断掉
+  // → 自环守卫与成环守卫**同时失效**。
+  //
+  // 归一一次，比较 / 判定 / 落库三处用同一个值。
+
+  it('数字 parentId 的自环被拒，且不落库', () => {
+    expectHierarchyError(
+      () => nodeRepo.update('10', { parentId: 10 } as never),
+      ErrorCode.HIERARCHY_SELF_PARENT,
+    )
+    expect(readParentId(db, '10')).toBeNull()
+  })
+
+  it('数字 parentId 的成环被拒，且不落库', () => {
+    expectHierarchyError(
+      () => nodeRepo.update('10', { parentId: 20 } as never),
+      ErrorCode.HIERARCHY_CYCLE,
+    )
+    expect(readParentId(db, '10')).toBeNull()
+  })
+
+  it('远端插入的数字自环被拒，且这一行不会落库', () => {
+    const manager = new YjsManager({ db, nodeRepo, edgeRepo: new EdgeRepository(db) })
+    const payload = {
+      id: 30,
+      type: 'feature',
+      status: 'draft',
+      title: 'remote',
+      graphId: GRAPH_ID,
+      graphType: 'online',
+      parentId: 30,
+      position: { x: 0, y: 0 },
+    }
+    expectHierarchyError(
+      () => manager['insertRemoteNode'](payload),
+      ErrorCode.HIERARCHY_SELF_PARENT,
+    )
+    const row = db.prepare('SELECT COUNT(*) AS n FROM nodes WHERE id = ?').get('30') as { n: number }
+    expect(Number(row.n)).toBe(0)
+  })
+
+  it('合法数字 parentId 落库成字符串', () => {
+    nodeRepo.update('c1', { parentId: 20 } as never)
+    expect(readParentId(db, 'c1')).toBe('20')
   })
 })
