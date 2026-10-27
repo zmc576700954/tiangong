@@ -2814,7 +2814,7 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:942` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:939` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
 
 ⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
 
@@ -2942,7 +2942,7 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`）
 
    ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
-   `mock-ipc.ts:264` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
+   `mock-ipc.ts:267` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
    **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
    `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:374-376`）先本地执行
 
