@@ -3021,7 +3021,9 @@ Step 1 的原文是 `useState<'tree' | 'force'>('tree')` + 「读放在 effect �
 现在的三层检查（全部通过才允许排版，且**通过之后**才记「已排过」）：
 1. `graphStore.loadedGraphId === graphId` —— 这张图的节点**已经装载完**（按图的装载信号）；
 2. ReactFlow store 里的节点**全是这张图的** —— 别的图的节点一个都不许动；
-3. 按图记的 `laidOutGraphRef` 里还没有这张图 —— 这张图排过了就不再排。
+3. `laidOutGraphRef` 里**最后排过的那张图**不是它 —— 排过了就不再排。
+   （它是**单值**不是集合：A → B → A 时 A 会**再排一次**；这与旧代码「切图重置布尔标志」
+   的行为逐字等价，不是回归。改成 `Set<string>` 会改变这个既有语义，本轮不动。）
 
 配套地，dagre effect 订阅的是 **ReactFlow 的 store**（`storeApi.subscribe`）而不是
 graph store 的节点数：节点要经过**两跳**（`flowNodes` memo → `setRfNodes` → `<ReactFlow nodes>`

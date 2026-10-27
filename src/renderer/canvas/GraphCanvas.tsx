@@ -914,10 +914,14 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const { applyLayout } = useAutoLayout()
   /**
-   * 已经排过 dagre 版的图（**按图区分**）—— 换图自然失效，不用手动重置。
+   * **最后排过 dagre 版的那张图**（单值，不是集合）。
    *
    * ⚠️ 不能用「一次性布尔标志」：那个标志在**布局真正执行之前**就被消耗掉了，
    * 一旦那一帧的布局因为「节点不是这张图的」而放弃，新图就永远排不上版。
+   *
+   * ⚠️ 它只记住**最后一张**：A → B → A 时 A **会**再排一次版。
+   * 这与旧代码「切图重置布尔标志」的行为**逐字等价**（不是回归），
+   * 换成 `Set<string>` 会改变这个既有语义 —— 本轮不动。
    */
   const laidOutGraphRef = useRef<string | null>(null)
   /** 力导向布局 hook —— 提供 applyForceLayout、拖拽 pin/reheat 处理器 */
@@ -1069,7 +1073,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * 所以这里用三层信号：
    *   ① `loadedGraphId === graphId` —— 这张图的节点**已经装载完**（按图的信号）；
    *   ② ReactFlow store 里的节点**全是这张图的** —— 别的图的节点一个都不许动；
-   *   ③ `laidOutGraphRef` —— 这张图排过了就不再排。
+   *   ③ `laidOutGraphRef` —— **最后排过的那张图**就是它 → 就不再排。
    *
    * ⚠️ **为什么订阅 ReactFlow 的 store，而不是等 `graphNodes` 变化**：
    * `flowNodes`（memo）→ `setRfNodes`（state）→ ReactFlow 的 store，节点要经过
@@ -1077,9 +1081,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * ReactFlow 还没跟上的时候就去排 —— 排的是上一张图的节点。
    * 订阅 ReactFlow 的 store 才拿得到**真正会被排版的那一批节点**。
    *
-   * ⚠️ 排版动作放在 `requestAnimationFrame` 里：ReactFlow 的 store 是**先写节点、
-   * 后写边**（两个 `useStoreUpdater` 各自一个 effect），同一帧里读边可能拿到上一张图的边。
-   * 晚一帧，节点和边就都齐了。
+   * ⚠️ 排版动作放在 `requestAnimationFrame` 里：ReactFlow 的 store 在**同一个 effect**
+   * 里**分两次写** —— `fieldsToTrack` 里 `nodes` 排在 `edges` 前面，所以先 `setNodes`
+   * 再 `setEdges`；两次都是**同步的** zustand 写入 → 订阅者完全可能在两次之间醒来，
+   * 读到「节点已换、边还没换」的半截状态。而 `applyLayout()` 要**同时**读节点和边
+   * （`computeTreeLayout(nodes, edges)`）→ 晚一帧再排，这一轮写完了边才齐。
    */
   useEffect(() => {
     if (layoutMode !== 'tree') return
