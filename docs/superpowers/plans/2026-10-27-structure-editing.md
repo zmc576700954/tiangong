@@ -73,7 +73,7 @@
 | `src/shared/types/ipc.ts` | `IpcApi` 增两个通道签名 |
 | `src/preload/index.ts` | `exposedChannels` 增两个通道 |
 | `src/renderer/store/graphStore.ts` | 增 `reparentNode` action |
-| `src/renderer/canvas/GraphCanvas.tsx` | 渲染层改用派生边；拖拽重挂交互；折叠过滤；布局模式持久化 |
+| `src/renderer/canvas/GraphCanvas.tsx` | 渲染层改用派生边；派生层级边不进选中路径；拖拽重挂交互；折叠过滤；布局模式持久化 |
 | `src/renderer/canvas/layouts/tree-layout.ts` | `sortChildrenByEdgeOrder` 改用 `sort_index` |
 | `src/renderer/canvas/BizNode.tsx` | 落点高亮样式 + 折叠指示器 + 徽标 |
 | `src/renderer/canvas/NodeContextMenu.tsx` | 删除 `getChildTypeOptions`，改用统一规则 |
@@ -569,7 +569,7 @@ git commit -m "feat(canvas): 按 parent_id 派生层级边的纯函数"
 
 **Interfaces:**
 - Consumes: Task 3 的 `deriveHierarchyEdges(nodes, edges) → { hierarchyEdges, semanticEdges }`
-- Produces: 画布上的父子连线由 `parent_id` 派生
+- Produces: 画布上的父子连线由 `parent_id` 派生；派生层级边**不进入** store 的「选中边」路径（Step 2）
 
 **布局层自动获益**（无需改 `useAutoLayout.ts`）：`useAutoLayout.applyLayout` 用的是 React Flow 的 `getEdges()`，而 `GraphCanvas` 通过 `useEffect(() => setRfEdges(flowEdges))` 把合并后的边集写回 React Flow。因此 `flowEdges` 一旦切到派生边，dagre 布局喂进去的就是派生边——手动加的子节点会自动排到父节点下方。**不要**在 `useAutoLayout.ts` 里再单独派生一次，会造成两套派生。
 
@@ -597,16 +597,45 @@ const flowEdges = useMemo(() => {
 - 派生边的 `id` 是 `derived-<source>-<target>`，与存储边 ID 空间隔离，`edgeCacheRef` 的 key 不会冲突
 - `flowEdges` 内部对 `edgeTypeConfig[edgeType]` 的查表、marker、动画逻辑都不需要改——`edgeTypeConfig.hierarchical` 已在 Task 1 补齐
 
-- [ ] **Step 2: Verify the store still hands raw edges to the renderer**
+- [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
+
+`onEdgeClick`（`GraphCanvas.tsx:688`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
+
+- 右侧面板 `RightPanel.tsx:55` 用 `edges.find(e => e.id === selectedEdgeId)` 找边 → 找不到 → 面板空白；
+- 按 Delete → `graphStore.deleteEdge(id)` → `edge:delete` IPC → `edgeRepo.delete('derived-...')` → `DELETE ... WHERE id = ?` 命中 0 行 → **静默无操作**（不报错，但用户以为删掉了）。
+
+而且「删掉这条层级线」在新模型下本来就是**假入口**：存储的层级边只是 `parent_id` 的镜像，删掉它 `parent_id` 还在，派生边照样画出来（`deriveHierarchyEdges` 只剔除存储的 `hierarchical` 边与重复的 `default` 边）。层级的正确改法是 **reparent（拖拽，Task 9/10）** 或 **删父节点（子节点变根，Task 11）**。
+
+所以在 `onEdgeClick` 里挡掉派生层级边：
+
+```ts
+const onEdgeClick = useCallback(
+  (_: unknown, edge: Edge) => {
+    // 派生层级边是 parent_id 的渲染产物，没有对应的存储边对象——
+    // 选中它右侧面板找不到、删除也删不掉。层级靠 reparent 改（Task 6/9/10）。
+    if (edge.data?.edgeType === 'hierarchical') return
+    selectEdge(edge.id)
+  },
+  [selectEdge],
+)
+```
+
+`edge.data.edgeType` 是 `flowEdges` memo 里写好的（`data: { edgeType, content, strength }`）；`deriveHierarchyEdges` 产出的边 `edgeType` 恒为 `'hierarchical'`，而存储的 `hierarchical` 边已被它剔除——所以合并集里 `edgeType === 'hierarchical'` ⟺ 派生边。
+
+⚠️ **`selectable: false` 不够**：@xyflow/react 12.12.0 的 `EdgeWrapper`（`node_modules/@xyflow/react/dist/esm/index.js:2977`）里 `onClick(event, edge)` 在 `if (isSelectable)` 块**外面**——不可选的边照样触发 `onEdgeClick`。守卫必须写在 app 自己的 `onEdgeClick` 里。
+
+❌ **不要**把守卫放进 store：store 只知道存储边，派生边是画布层的渲染产物，进 store 就是第二套派生。
+
+- [ ] **Step 3: Verify the store still hands raw edges to the renderer**
 
 `src/renderer/store/graphStore.ts:25` 的 `excludeWikiLinkEdges` 只过滤 `wiki-link`，**保持原样**。原因：`deriveHierarchyEdges` 需要看到原始 `default` 边才能识别并剔除「迁移残留的层级边」；存储的 `hierarchical` 边由 `deriveHierarchyEdges` 自己剔除。store 层不要提前过滤 `hierarchical`。
 
-- [ ] **Step 3: Verify with type-check and existing tests**
+- [ ] **Step 4: Verify with type-check and existing tests**
 
 Run: `npx tsc --noEmit && npx vitest run src/renderer/canvas/layouts/__tests__/ src/renderer/canvas/__tests__/`
 Expected: 零错误，现有测试全绿
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add src/renderer/canvas/GraphCanvas.tsx
@@ -2123,3 +2152,4 @@ git commit -m "feat(canvas): 布局选择按项目持久化"
 | AI 写入路径的类型校验 | AI 批量生成，逐个校验可能让整次生成失败。本期只给 AI 路径加防环校验（spec §4.4.3） |
 | 内联改名、快捷键体系 | 不在本次范围（spec §一非目标） |
 | 框选批量操作 | 不在本次范围 |
+| 层级边的「点击选中 / 删除」入口 | 派生层级边没有存储边对象：右侧面板找不到、删除命中 0 行。层级结构的改法是 reparent（Task 9/10）或删父节点（Task 11）。本期把派生层级边挡在选中路径外（Task 4 Step 2） |
