@@ -691,7 +691,7 @@ git commit -m "feat(canvas): 渲染层改用派生的层级边"
 
 `feature` / `bug` 缺 `allowedChildTypes` 意味着 `validateParentChild` 里的 `if (parent.allowedChildTypes && ...)` 短路放行——**任何类型都能挂到 feature/bug 下**。补 `bug` 为 `[]` 后，`[]` 是 truthy，`![].includes(childType)` → 拒绝全部子节点。✓
 
-⚠️ `validateParentChild`（`node-type-registry.ts:53`）是**双向**校验：父的 `allowedChildTypes` 与子的 `allowedParentTypes` 都要放行才算通过。所以只把 `feature.allowedChildTypes` 设成 `['bug']` 是不够的——`bug.allowedParentTypes` 原本只有 `['process']`，`validateParentChild('feature','bug')` 仍会因 `child.allowedParentTypes` 不含 `'feature'` 返回 false。**`bug.allowedParentTypes` 必须同步改成 `['process', 'feature']`**，否则下面「feature can have bug children」那条用例在改完 registry 后依然会失败。
+⚠️ `validateParentChild`（`node-type-registry.ts:76`）是**双向**校验：父的 `allowedChildTypes` 与子的 `allowedParentTypes` 都要放行才算通过。所以只把 `feature.allowedChildTypes` 设成 `['bug']` 是不够的——`bug.allowedParentTypes` 原本只有 `['process']`，`validateParentChild('feature','bug')` 仍会因 `child.allowedParentTypes` 不含 `'feature'` 返回 false。**`bug.allowedParentTypes` 必须同步改成 `['process', 'feature']`**，否则下面「feature can have bug children」那条用例在改完 registry 后依然会失败。
 
 ⚠️ **注册时归一化 `allowedChildTypes`（R-24，修复轮补的）**：上表的「缺 `allowedChildTypes` = 允许任意」只对**内置表**成立；registry 的 `register()` 接受任意配置，所以还要在**存储时**把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点）。这一步让主进程与渲染端菜单的 `?? []`（缺省 = 不给任何子节点）**不再有两套真相**——spec 的「裂缝 2」列的正是这一条。
 
