@@ -1,7 +1,7 @@
 # BizGraph 基座 v1 路线图
 
 > 创建日期：2026-09-30
-> 状态：基座 v1 已交付（Phase A/B/C 完成），Phase D-0 框架硬伤修复已落地，D-0 后续批次待启动
+> 状态：基座 v1 已交付（Phase A/B/C 完成），Phase D-0 框架硬伤修复已落地并完成末尾整体评审修复，D-0 后续批次待启动
 
 ## 基座 v1 已交付（Phase A + B + C）
 
@@ -55,7 +55,16 @@
 - ✅ **D4 claude-code 补齐会话终止与恢复契约**：发射 `sessionEnded`；原生恢复需真实 CLI 会话 id；原生恢复重发上一条命令
 - ✅ **D5 schema 迁移慢路径无条件重建**：补上「改了 `createSql` 没 bump 版本」的兜底；比对项扩展到列类型
 - ✅ **D6 MessageStatus 与 DB CHECK 对齐**：CHECK 扩容到 8 值（schema v16）
-- ✅ **D7 JSON 列运行时校验**：6 个形状守卫；脏数据退化为默认值而不是崩溃 / 盲转
+- ✅ **D7 JSON 列运行时校验**：形状守卫逐元素校验；脏数据退化为默认值而不是崩溃 / 盲转
+
+**末尾整体评审的修复（1 Critical + 5 Important，全部已修）**：
+
+- **C-1**（本分支引入）直接走 `AgentManager.sendCommand` 的 6 条路径上 scope 提示词整体消失 —— 黑名单唯一的执行手段就是提示词，丢了这条安全约束就静默消失。已把「任何投递路径都必须携带 scope」上升为框架级不变量
+- **I-1** `stable` 段混入会话摘要与附加上下文 → 两者移入 `turn`，稳定前缀恢复跨轮逐字节一致
+- **I-2** `safeJsonParse` 的 validator 放宽后失去编译期的「列类型 ↔ 守卫」耦合 → 恢复谓词签名，interface 一侧改用窄守卫
+- **I-3** JSON 数组列只验容器不验元素（`[null]` 能过守卫而渲染层 `.map` 崩）→ 补 9 个逐元素守卫
+- **I-4** claude-code 的 SDK `type:'result'` 错误通道未覆盖（`is_error:true` 被当成功、`error_*` subtype 不发终止事件）→ result 分支同时看 `subtype` 与 `is_error`
+- **I-5**（本分支引入）`promptContext` 永不过期 → 跨轮注入上一轮 turn 段 → 与 C-1 同一机制修
 
 > 落地记录：[`docs/tasks/2026-10-27-framework-hardening.md`](../tasks/2026-10-27-framework-hardening.md)
 
@@ -82,7 +91,7 @@
 ## 验证清单（每个 commit 前必过）
 
 - ✅ `npx tsc --noEmit` 零错误
-- ✅ `npm run test` 全绿（基座前 1914 → Phase C 后 1953+ → 框架硬伤修复后 2867）
+- ✅ `npm run test` 全绿（基座前 1914 → Phase C 后 1953+ → 框架硬伤修复后 2885）
 - ✅ `npm run lint` 零警告
 - ⏳ `npm run build:win` 成功且 bundled 资源存在（resources/recipes/*.yaml 已加入 build.files）
 - ⏳ 手动 `npm run dev`：能跑内置 `refactor-react-component` recipe

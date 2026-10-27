@@ -34,14 +34,16 @@
 
 | 内容 | 归属 |
 |------|------|
-| 系统指令 / 会话摘要 / scope 约束 / 项目记忆 | `stable`（跨轮不变） |
-| 代码上下文 / 编译上下文 / 水位线 / 会话历史记忆 | `turn`（每轮变化） |
+| 系统指令 / scope 约束 / 项目记忆 | `stable`（跨轮不变，可被 KV-cache 复用） |
+| 会话摘要 / 附加上下文 / 代码上下文 / 编译上下文 / 水位线 / 会话历史记忆 | `turn`（每轮变化） |
 | **用户请求** | **两段都不注入** —— 由适配器已有的 `buildCommandPrompt` 单独承载 |
 
 - SDK 适配器：`systemPrompt = stable`，user turn = `[turn, commandPrompt].join('\n\n')`
 - CLI 一次性适配器：单串 prompt，顺序固定 `stable → toolPrompt → turn → command`
 
 `buildScopePrompt` 删掉 `codeContext` 形参（它让 scope 每轮变化），`codeContext` 改由编排器放入 turn 段。
+
+> **收尾修正**（见文末「评审修复」）：会话摘要与附加上下文原本也归 `stable`——压缩会重写摘要、换附件会改附加上下文，两者都会让稳定前缀失效。已移入 `turn`。
 
 ### F2 / D2 — scope 段标题单一来源
 
@@ -55,9 +57,11 @@
 | `upstream` | `## 上游契约` | Level 2 移除 |
 | `downstream` | `## 下游契约` | Level 2 移除 |
 | `allowed-files` | `## 允许修改的文件（白名单）` | Level 3 压成 basename |
-| `other` | 验收标准 / **黑名单** / 待修复 Bug / 附加上下文 | 全程保留，仅受硬截断 |
+| `other` | 验收标准 / **黑名单** / 待修复 Bug | 全程保留，仅受硬截断 |
 
 黑名单是安全约束，任何预算压力下都不得被丢弃。
+
+> **收尾修正**：附加上下文（用户本轮附件）原属 scope 段，会随换附件改变 scope 文本 → 让稳定前缀失效。已拆出为 `buildAdditionalContextsPrompt`，进 `turn` 段。scope 段现在只含会话内不变的约束。
 
 同时删除 `src/main/code-intelligence/prompt-assembler.ts`（151 行）——`PromptAssembler` 类零生产消费者，却复制了第二份 scope 构造，段标题还与 `scope-prompt-builder.ts` 不一致（`## 允许修改的文件` vs `## 允许修改的文件（白名单）`）。留着它就是留一个随时会被误用的第二实现。
 
@@ -83,6 +87,8 @@
 
 > 一处更正：调研初稿把 F5 描述为「原生 resume 是坏的」。复核后更正为「恢复路径根本不会被触发」。真正起作用的续接机制是 SDK session + adapter 私有 clone 上的 `resumeSessionId`，仅在同一进程、同一 session 对象存活时有效。
 
+> **收尾修正**（见文末「评审修复」）：第 1 条原先只在 **catch 分支**成立 —— SDK 的失败主要通过 `type:'result'` 消息报告（`subtype: 'error_*'` 或 `subtype:'success'` 且 `is_error:true`），不抛异常。原实现把 `is_error:true` 的成功结果当正常完成上报、且错误 subtype 不发 `sessionEnded`，恢复链路仍然不可达。已改为 result 分支同时看 `subtype` 与 `is_error`。
+
 ### F6 / D5 — schema 迁移慢路径无条件重建 + 列类型比对
 
 **修复前**：`migrate()` 用 `currentVersion < CURRENT_SCHEMA_VERSION` 门禁重建 —— 改了 `createSql` 但忘了 bump 版本时，checksum 虽失配，但重建循环被跳过，**schema 改动静默失效**。
@@ -106,7 +112,7 @@
 - **崩溃**：脏数据把错误形状原样交给渲染层，渲染层对 `rules` / `contextRefs` 做 `.map` / `.forEach`，形状不对直接崩在画布上
 - **整页打不开**：`agent_logs` 的两列更激进 —— 脏数据让整个列表查询抛 `DatabaseError`，**一条坏日志就能让整个节点的历史面板打不开**
 
-**修复后**：新增守卫 `isRecord` / `isStringArray` / `isUnknownArray` / `isAgentCommand` / `isAgentOutput` / `isAgentOutputArray`（`src/shared/type-guards.ts`），脏数据退化为默认值：
+**修复后**：新增守卫（`src/shared/type-guards.ts`），脏数据退化为默认值：
 
 | 列 | 期望形状 | 非法值退化 |
 |----|---------|-----------|
@@ -115,11 +121,33 @@
 | `chat_messages.error` | `MessageError` | `undefined` |
 | `agent_logs.command` | `AgentCommand` | `{ type:'implement', description:'', targetNodeId:'' }` |
 | `agent_logs.outputs` | `AgentOutput[]` | `[]` |
-| `nodes.rules` / `context_refs` | 数组 | `undefined` |
-| `nodes.metadata` / `content` / `wiki_meta` | 对象 | `undefined` |
-| `edges.content` | 对象 | `undefined` |
+| `nodes.rules` | `BusinessRule[]` | `undefined` |
+| `nodes.context_refs` | `ContextRef[]` | `undefined` |
+| `nodes.metadata` | `NodeMetadata` | `undefined` |
+| `nodes.content` | `NodeContent` | `undefined` |
+| `nodes.wiki_meta` | 对象 | `undefined` |
+| `edges.content` | `EdgeContent` | `undefined` |
 
 `agent_logs` 的必填列（`id` / `session_id` / …）与 `result` 枚举仍然抛错 —— 那是数据缺失，不是形状脏。
+
+> **收尾修正**（见文末「评审修复」）：数组列原先只验「是数组」不验元素形状（`isUnknownArray`），脏数据 `[null]` 能通过守卫而渲染层 `.map` 直接崩；`safeJsonParse` 的 validator 形参也一度从类型谓词放宽为 `(val: unknown) => boolean`，丢掉了编译期的「列类型 ↔ 守卫」耦合。两者均已修正：守卫逐元素校验，validator 恢复谓词签名。
+
+---
+
+## 评审修复（末尾整体评审）
+
+计划执行完毕后做了一次**全分支评审**（评审区间 `6d03f9d..c503f80`，按 HEAD `0c41ea6` 评）。结果：**1 条 Critical、5 条 Important、5 条 Minor、8 条明确搁置**。Critical / Important 全部进入同一轮修复（每条先写出会失败的用例，再改实现，再跑完整套）；Minor 全部 deferred。
+
+其中 C-1 与 I-5 是**本分支自己引入的**（计划缺口，不是实现走偏），其余 4 条是既有实现的遗漏。
+
+| 编号 | 问题 | 修法 |
+|------|------|------|
+| **C-1** | 直接走 `AgentManager.sendCommand` 的 6 条路径（子代理派发 / `agent:sendCommand` / 校验 / `graph-service` / `send-and-wait` / 替换会话恢复）上 scope 提示词**整体消失** —— 白名单 / 黑名单 / 业务不变量 / 验收标准 / 节点标题 / 项目记忆全部不投递 | 把「任何投递路径都必须携带 scope」上升为框架级不变量：`AgentManager.sendCommand` 无条件重新装配（已装配的调用点用 `options.contextAssembled` 标记跳过），另加适配器层 `buildScopePromptForSession` 从 `session.config` 自建 scope 的兜底。**黑名单唯一的执行手段就是提示词**（`forbiddenFiles` 全仓库只有 `scope-prompt-builder.ts` 消费它，`scope-guard.ts` 只是拷进 config 从不执行），提示词一丢这条安全约束就静默消失 |
+| **I-1** | `stable` 段并非跨轮逐字节一致：会话摘要（压缩 / 恢复会重写）与附加上下文（换附件会变）被算进 stable —— 与 CLAUDE.md「不污染可复用 KV-cache prefix」冲突 | 两者移入 `turn` 段；附加上下文另拆 `buildAdditionalContextsPrompt` |
+| **I-2** | `safeJsonParse` 的 validator 被放宽为 `(val: unknown) => boolean`，丢掉编译期的「列类型 ↔ 守卫」耦合 | 恢复谓词签名 `(val: unknown) => val is NonNullable<T>`，interface 一侧用窄守卫解决 |
+| **I-3** | JSON 数组列只验容器不验元素，脏数据 `[null]` 能通过守卫而渲染层 `.map` 直接崩 | 补 9 个逐元素守卫，替换 `isUnknownArray`（只验容器的那个已删除） |
+| **I-4** | claude-code 只在抛异常时发 `sessionEnded`；SDK 的 `type:'result'` 错误通道完全没覆盖 —— `subtype:'success'` 且 `is_error:true` 被当正常完成上报，错误 subtype 不发终止事件 | result 分支同时看 `subtype` 与 `is_error`，失败一律发 `error` 输出 **并** `sessionEnded('error')`；`errors` 数组按运行时形状取（原实现读 `.length` 会抛异常，把真实失败原因替换成 `Cannot read properties of undefined`） |
+| **I-5** | `session.promptContext` 永不过期 → 同一会话第二轮会注入第一轮的 turn 段 | 与 C-1 同一机制修（每次投递都重新装配） |
 
 ---
 
@@ -128,6 +156,13 @@
 ### 提交序列
 
 ```
+53f3eeb fix(agent): claude-code 把 SDK result 错误通道当失败，恢复 sessionEnded
+746d141 fix(db): JSON 列逐元素校验，safeJsonParse 恢复编译期列↔守卫耦合
+44a8e35 fix(prompt): stable 段只留跨轮不变的内容（摘要与附加上下文移入 turn）
+ae619a6 fix(prompt): 直接投递路径也带 scope 约束，turn 段跨轮不复用
+0c41ea6 docs: 落地记录测试数更新为 2869
+68382e5 test: 补齐 plan Review Focus 的两条缺口用例
+ad9c4c8 docs: 框架硬伤修复批次 1 落地记录 + ROADMAP Phase D-0
 c503f80 fix(db): JSON 列统一走 safeJsonParse 的运行时校验，脏数据退化为默认值
 711cd60 fix(db): chat_messages.status CHECK 扩容以覆盖 MessageStatus 全集（schema v16）
 b00a9e8 fix(db): 迁移慢路径无条件重建，比对列类型防 schema 变更静默失效
@@ -143,10 +178,8 @@ d9475ea fix(prompt): scope 段标题收敛为单一常量源，修复压缩分�
 
 | 项 | 数 |
 |----|---|
-| 提交 | 9（含设计文档） |
-| 改动文件 | 49（其中源码 24 / 测试 25） |
-| 代码增删 | +2433 / -631（含 1323 行计划与设计文档） |
-| 测试用例 | 2869 全绿 / 231 个测试文件 |
+| 提交 | 16（含设计文档） |
+| 测试用例 | 2885 全绿 / 231 个测试文件 |
 
 ### 关键接口变更
 
@@ -158,11 +191,13 @@ d9475ea fix(prompt): scope 段标题收敛为单一常量源，修复压缩分�
 | `BaseAdapter.getSessionConfig()` | 新增 | D1 读适配器**实时**配置（压缩摘要写在适配器自己的 clone 上，manager 快照拿不到） |
 | `SCOPE_SECTION_HEADINGS` | 新增导出 | D2 段标题单一来源 |
 | `compressScopeByPriority` | 新增导出 | D2 压缩分类可测 |
-| `isRecord` / `isStringArray` / `isUnknownArray` / `isAgentCommand` / `isAgentOutput` / `isAgentOutputArray` | 新增导出 | D7 JSON 列守卫 |
-| `safeJsonParse(raw, fallback, validator?)` | validator 形参放宽为 `(val: unknown) => boolean` | D7 见下方说明 |
+| `buildAdditionalContextsPrompt` | 新增导出 | D1 附加上下文从 scope 拆出，进 turn 段 |
+| `isRecord` / `isStringArray` / `isAgentCommand` / `isAgentOutput` / `isAgentOutputArray` / `isMessageError` / `isContextRef(Array)` / `isToolCallBlock(Array)` / `isBusinessRule(Array)` / `isNodeMetadata` / `isNodeContent` / `isEdgeContent` | 新增导出 | D7 JSON 列守卫（数组列逐元素校验） |
+| `safeJsonParse(raw, fallback, validator?)` | validator 为类型谓词 `(val: unknown) => val is NonNullable<T>` | D7 列类型 ↔ 守卫的耦合留在编译期 |
 | `rebuildTableIfNeeded` | 改为导出 | D5 列类型比对可测 |
+| `AgentAdapter.getSessionConfig?()` | 已有（`BaseAdapter` 实现） | 读适配器**实时**配置（压缩摘要写在适配器自己的 clone 上，manager 快照拿不到） |
 
-> `safeJsonParse` 的 validator 形参从 `(val: unknown) => val is T` 放宽为 `(val: unknown) => boolean`：`isRecord` 的谓词类型是 `Record<string, unknown>`，与 `MessageError` 这类 interface 不满足 TypeScript 的谓词可赋值性（interface 没有隐式索引签名），传不进去。放宽后调用点用显式泛型指定目标类型，返回类型仍是 `T`，语义不变。
+> `safeJsonParse` 的 validator 形参：**曾经**从 `(val: unknown) => val is T` 放宽为 `(val: unknown) => boolean`（理由：`isRecord` 的谓词类型 `Record<string, unknown>` 与 `MessageError` 这类 interface 不满足谓词可赋值性）。评审指出放宽后「把单元素守卫传给数组列」这类错配不再编译报错 —— 而这正是本轮实现自己踩过的坑。已恢复谓词签名，interface 一侧改用专门的窄守卫（`isMessageError` / `isNodeMetadata` / `isNodeContent` / `isEdgeContent`）解决。
 
 ### 与 CLAUDE.md「Boundaries with Agent CLI」的对齐
 
@@ -179,7 +214,7 @@ d9475ea fix(prompt): scope 段标题收敛为单一常量源，修复压缩分�
 
 ```bash
 npx tsc --noEmit          # 零错误
-npm run test              # 2869 / 2869 通过（231 个测试文件）
+npm run test              # 2885 / 2885 通过（231 个测试文件）
 npm run lint              # 零警告
 ```
 
@@ -192,8 +227,21 @@ npm run lint              # 零警告
 
 ## 遗留
 
+### 评审 deferred 的 Minor
+
+| 项 | 说明 |
+|----|------|
+| Level 4 硬截断可能把黑名单切掉 | `compressScopeByPriority` 最后一级是无脑前缀切片，scope 段序为 验收标准 → 白名单 → 黑名单 —— 验收标准很长时切点落在黑名单之前。规格明写「黑名单任何情况下不得因预算不足被丢弃」。修法是把黑名单段排除在切片外、切片后拼回（会改变压缩阶梯的输出形状，需另起一轮） |
+| `mcp-adapter.ts` 在 `startSession` 里自建 scope 只写 stdout 日志 | 日志里的 scope 文本与真正投递的 `stable` 不一致（缺 `contextSummary`、缺项目记忆、未经压缩），会误导用户 |
+| `src/main/adapters/README.md:103,167` 仍在教新适配器用 `this.buildScopePrompt(config)` | 新契约下该模式产出的 scope 不会被投递；README 是新适配器的入口文档，应同步改成 `stable`/`turn` + `setPromptContext` 契约 |
+| `edges.content` 仍是裸 `JSON.parse`（`edge-repository.ts:17-24`） | 未加守卫 |
+| codex 与 spec D1 的适配器表不符 | `@openai/codex-sdk` 的 `ThreadOptions` 没有 system prompt 选项，codex 只能走单串 `buildFullPrompt` —— 是**规格问题**不是实现问题，应回填规格 |
+
+### 其他
+
 | 项 | 说明 |
 |----|------|
 | `snapshot-repository.ts` 的 `snapshots.data` 列 | 同为盲转，但不在 D7 表内，且快照是整库重建时写入的受控数据，本轮未动 |
+| `compressScopePrompt`（`scope-prompt-builder.ts`）已成死代码 | 编排器改用 `compressScopeByPriority` 后无生产调用点，只被自己的测试引用。删除属纯清理，未混入本轮修复 —— 但它与现行函数的压缩语义不同（前者按段落数截，会先丢黑名单），宜与 Level 4 那条一并处理 |
 | `HybridSearchEngine` 未接入 agent prompt 路径 | 设计文档的「批次 2」范围 |
 | 真实 tokenizer 替代 4 字符启发式 | 设计文档的「批次 4」范围 |
