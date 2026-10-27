@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PromptOrchestrator } from '../prompt-orchestrator'
 import * as orchestratorModule from '../prompt-orchestrator'
 import type { AssembleResult } from '../prompt-orchestrator'
+import { ContextCompiler } from '../context-compiler'
 import { estimateTokens } from '../../shared/token-utils'
 import type { AgentOutput, AgentSessionConfig, ResolvedContext } from '@shared/types'
 
@@ -207,6 +208,92 @@ describe('PromptOrchestrator', () => {
 
     // The assembled text should contain waterline content
     expect(result.text).toContain('项目水位线状态')
+  })
+})
+
+describe('PromptContext (stable / turn 分段)', () => {
+  const baseOptions = {
+    sessionId: 's-ctx',
+    adapterName: 'claude-code',
+    totalBudget: 8000,
+    sessionConfig: makeConfig(),
+  }
+
+  it('stable 段跨轮逐字节一致（用户请求变化不影响 stable）', async () => {
+    const a = await new PromptOrchestrator().assemble({ ...baseOptions, userCommand: '第一条命令' })
+    const b = await new PromptOrchestrator().assemble({ ...baseOptions, userCommand: '第二条命令' })
+    expect(a.context.stable).toBe(b.context.stable)
+  })
+
+  it('stable 与 turn 段都不含用户请求原文', async () => {
+    // 用户请求只由适配器的 buildCommandPrompt 承载（spec D1）。
+    // 带 outputs 时编译上下文也会生成，必须一并排除，否则用户请求出现两次。
+    const r = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: '绝密指令XYZ',
+      outputs: [makeOutput('some stdout output that is long enough to compile')],
+    })
+    expect(r.context.stable).not.toContain('绝密指令XYZ')
+    expect(r.context.turn).not.toContain('绝密指令XYZ')
+  })
+
+  it('项目记忆进 stable 段，会话历史记忆进 turn 段', async () => {
+    const r = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: 'cmd',
+      projectMemory: '项目记忆内容AAA',
+      sessionHistory: '历史记忆内容BBB',
+    })
+    expect(r.context.stable).toContain('项目记忆内容AAA')
+    expect(r.context.turn).toContain('历史记忆内容BBB')
+    expect(r.context.stable).not.toContain('历史记忆内容BBB')
+  })
+
+  it('会话历史记忆变化时 turn 段变化、stable 段不变', async () => {
+    const a = await new PromptOrchestrator().assemble({ ...baseOptions, userCommand: 'cmd', sessionHistory: '历史A' })
+    const b = await new PromptOrchestrator().assemble({ ...baseOptions, userCommand: 'cmd', sessionHistory: '历史B' })
+    expect(a.context.stable).toBe(b.context.stable)
+    expect(a.context.turn).not.toBe(b.context.turn)
+  })
+
+  it('会话摘要进 stable 段', async () => {
+    const r = await new PromptOrchestrator().assemble({
+      ...baseOptions,
+      userCommand: 'cmd',
+      sessionConfig: makeConfig({ contextSummary: '前序会话摘要QQQ' }),
+    })
+    expect(r.context.stable).toContain('前序会话摘要QQQ')
+  })
+
+  it('waterline 超预算时截断自身，不借用 context 层的预算', async () => {
+    const renderSpy = vi.spyOn(ContextCompiler.prototype, 'render')
+    try {
+      const totalBudget = 100
+      const result = await new PromptOrchestrator().assemble({
+        sessionId: 's-wl',
+        adapterName: 'claude-code',
+        projectId: 'project-x',
+        userCommand: 'cmd',
+        totalBudget,
+        sessionConfig: makeConfig(),
+        outputs: [makeOutput()],
+      })
+
+      const contextBudget = Math.floor(totalBudget * 0.35)
+      const waterlineBudget = Math.floor(totalBudget * 0.05)
+
+      // 水位线超预算时截断自身，而不是把预算借给 context 层
+      const waterlineLayer = result.layerBreakdown.find((l) => l.name === 'waterline')!
+      expect(waterlineLayer.tokens).toBeLessThanOrEqual(waterlineBudget)
+
+      // context 层始终按完整预算渲染，从未被水位线借走
+      expect(renderSpy).toHaveBeenCalled()
+      for (const call of renderSpy.mock.calls) {
+        expect(call[1]).toBe(contextBudget)
+      }
+    } finally {
+      renderSpy.mockRestore()
+    }
   })
 })
 

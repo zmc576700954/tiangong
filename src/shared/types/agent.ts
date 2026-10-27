@@ -206,6 +206,18 @@ export interface AgentThread {
   lastCompactedAt?: number
 }
 
+/** Prompt 注入上下文：稳定前缀与每轮上下文的分离。
+ *
+ *  stable 跨轮逐字节一致，可被 KV-cache 复用；turn 每轮随请求变化。
+ *  用户请求不进入任一段——它由适配器的 buildCommandPrompt 单独承载，
+ *  保证用户请求在整条 prompt 里只出现一次。 */
+export interface PromptContext {
+  /** 稳定前缀：系统指令 + 会话摘要 + scope 约束 + 项目记忆。跨轮不变，可被 KV-cache 复用。 */
+  stable: string
+  /** 每轮上下文：代码上下文 + 编译上下文 + 水位线 + 会话历史记忆。每轮随请求变化。 */
+  turn: string
+}
+
 /** Agent 会话（可序列化，不含 Node.js 运行时对象） */
 export interface AgentSession {
   id: string

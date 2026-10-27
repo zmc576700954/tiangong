@@ -19,6 +19,7 @@
 import type {
   AgentOutput,
   AgentSessionConfig,
+  PromptContext,
   ResolvedContext,
   TokenEconomics,
 } from '@shared/types'
@@ -47,6 +48,10 @@ export interface AssembleOptions {
   resolvedContexts?: ResolvedContext[]
   codeContext?: string
   outputs?: AgentOutput[]
+  /** 项目记忆（.bizgraph/memory.json）——项目级稳定内容，进 stable 段 */
+  projectMemory?: string
+  /** 会话历史记忆——每轮检索结果，进 turn 段 */
+  sessionHistory?: string
 }
 
 export interface LayerBreakdown {
@@ -61,6 +66,8 @@ export interface AssembleResult {
   totalTokens: number
   layerBreakdown: LayerBreakdown[]
   economics: TokenEconomics
+  /** 投递用的分段上下文：stable 进 system 通道，turn 进 user turn */
+  context: PromptContext
 }
 
 // ---------------------------------------------------------------------------
@@ -98,9 +105,23 @@ function defaultEconomics(): TokenEconomics {
   return { discoveryTokens: 0, readTokens: 0, savings: 0, savingsPct: 0 }
 }
 
-/** context 层 = 代码上下文（每轮变化）+ 编译上下文（会话产物）。 */
-function joinContextParts(codeContext: string | undefined, compiledText: string): string {
-  return [codeContext, compiledText].filter((s) => !!s && s.length > 0).join('\n\n')
+/** context 层 = 代码上下文（每轮变化）+ 会话历史记忆 + 编译上下文（会话产物）。 */
+function joinContextParts(...parts: Array<string | undefined>): string {
+  return parts.filter((s): s is string => !!s && s.length > 0).join('\n\n')
+}
+
+/** 把文本截断到不超过 maxTokens 的最长前缀。 */
+function truncateToTokenBudget(text: string, maxTokens: number): string {
+  if (maxTokens <= 0) return ''
+  if (estimateTokens(text) <= maxTokens) return text
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if (estimateTokens(text.slice(0, mid)) <= maxTokens) lo = mid
+    else hi = mid - 1
+  }
+  return text.slice(0, lo)
 }
 
 /**
@@ -217,6 +238,8 @@ export class PromptOrchestrator {
       resolvedContexts,
       codeContext,
       outputs,
+      projectMemory,
+      sessionHistory,
     } = options
 
     // Compute per-layer budgets
@@ -232,6 +255,15 @@ export class PromptOrchestrator {
     let scopeCompressionLevel = 0
     if (sessionConfig) {
       scopeText = buildScopePrompt(sessionConfig, resolvedContexts)
+    }
+    // 项目记忆是项目级稳定内容，归入 scope 段（随 scope 一起进 stable 前缀）。
+    // 追加发生在压缩之前，让压缩阶梯能处理超预算。
+    if (projectMemory) {
+      scopeText = scopeText
+        ? `${scopeText}\n${SCOPE_SECTION_HEADINGS.projectMemory}\n${projectMemory}`
+        : `${SCOPE_SECTION_HEADINGS.projectMemory}\n${projectMemory}`
+    }
+    if (scopeText) {
       scopeTokens = estimateTokens(scopeText)
       if (scopeTokens > budgets[1]) {
         logger.info(`Scope layer (${scopeTokens} tokens) exceeds budget (${budgets[1]}), compressing by priority`)
@@ -244,7 +276,10 @@ export class PromptOrchestrator {
     }
 
     // --- Layer 3: Context (compressible) ---
-    // 代码上下文每轮变化，属于 context 层；scope 是跨轮稳定前缀，不收它。
+    // 代码上下文与会话历史记忆每轮变化，属于 context 层；scope 是跨轮稳定前缀，不收它们。
+    const fixedContextText = joinContextParts(codeContext, sessionHistory)
+    const fixedContextTokens = estimateTokens(fixedContextText)
+    const compiledBudget = Math.max(0, budgets[2] - fixedContextTokens)
     let compiledText = ''
     let contextTokens = 0
     let contextEconomics = defaultEconomics()
@@ -253,17 +288,16 @@ export class PromptOrchestrator {
         const layered = await this.contextCompiler.compile(outputs, {
           sessionId,
           adapterName,
-          commandDescription: userCommand,
           projectId,
         })
-        const rendered = this.contextCompiler.render(layered, budgets[2])
+        const rendered = this.contextCompiler.render(layered, compiledBudget)
         compiledText = rendered.text
         contextEconomics = rendered.economics
       } catch (err) {
         logger.warn('Context compilation failed, skipping context layer:', err)
       }
     }
-    let contextText = joinContextParts(codeContext, compiledText)
+    let contextText = joinContextParts(fixedContextText, compiledText)
     contextTokens = estimateTokens(contextText)
 
     // --- Layer 4: Waterline (not compressible, low cost) ---
@@ -283,44 +317,11 @@ export class PromptOrchestrator {
     const userText = userCommand
     const userTokens = estimateTokens(userText)
 
-    // --- Elastic budget reallocation (post-hoc) ---
-    // If scope layer is empty, transfer its budget to context.
-    // If waterline exceeds 5% of total budget, borrow excess from context.
-    const adjustedBudgets = [...budgets]
-    if (scopeTokens === 0) {
-      adjustedBudgets[2] += adjustedBudgets[1]
-      adjustedBudgets[1] = 0
-      logger.info('Scope layer empty: transferred scope budget to context')
-    }
-    const waterlineThreshold = totalBudget * 0.05
-    if (waterlineTokens > waterlineThreshold) {
-      const excess = waterlineTokens - Math.floor(waterlineThreshold)
-      // Only borrow from context if context has budget to spare
-      const borrowable = Math.min(excess, adjustedBudgets[2])
-      if (borrowable > 0) {
-        adjustedBudgets[2] -= borrowable
-        adjustedBudgets[3] += borrowable
-        logger.info(`Waterline exceeds 5% budget: borrowed ${borrowable} tokens from context`)
-      }
-    }
-
-    // Re-compress context if its budget shrank after reallocation
-    if (contextTokens > adjustedBudgets[2] && adjustedBudgets[2] > 0 && outputs && outputs.length > 0) {
-      try {
-        const layered = await this.contextCompiler.compile(outputs, {
-          sessionId,
-          adapterName,
-          commandDescription: userCommand,
-          projectId,
-        })
-        const rendered = this.contextCompiler.render(layered, adjustedBudgets[2])
-        compiledText = rendered.text
-        contextText = joinContextParts(codeContext, compiledText)
-        contextTokens = estimateTokens(contextText)
-        contextEconomics = rendered.economics
-      } catch (err) {
-        logger.warn('Context re-compression after reallocation failed:', err)
-      }
+    // 水位线是不可压缩层：超预算时截断自身文本，不从 context 层扣预算给一个大小不会变的层。
+    if (waterlineTokens > budgets[3]) {
+      waterlineText = truncateToTokenBudget(waterlineText, budgets[3])
+      waterlineTokens = estimateTokens(waterlineText)
+      logger.info(`Waterline exceeded budget: truncated to ${waterlineTokens} tokens`)
     }
 
     // --- Inter-layer dedup: scope vs context ---
@@ -365,6 +366,7 @@ export class PromptOrchestrator {
     }))
 
     // --- Assemble final text ---
+    // text 仅用于 token 统计与 layerBreakdown，不再投递给模型。
     const parts: string[] = []
     if (systemText)    parts.push(systemText)
     if (scopeText)     parts.push(scopeText)
@@ -374,6 +376,14 @@ export class PromptOrchestrator {
 
     const text = parts.join('\n\n')
     const totalTokens = estimateTokens(text)
+
+    // --- Split into stable prefix / per-turn context ---
+    // stable：系统指令 + 会话摘要 + scope 约束（含项目记忆）。跨轮逐字节一致，可被 KV-cache 复用。
+    // turn：代码上下文 + 编译上下文 + 会话历史记忆 + 水位线。每轮随请求变化。
+    // 用户请求不进任一段——它由适配器的 buildCommandPrompt 单独承载，保证只出现一次。
+    const stable = joinContextParts(systemText, sessionConfig?.contextSummary, scopeText)
+    const turn = joinContextParts(contextText, waterlineText)
+    const context: PromptContext = { stable, turn }
 
     // Compute aggregate economics
     const economics: TokenEconomics = {
@@ -388,6 +398,6 @@ export class PromptOrchestrator {
         `(budget ${totalBudget}), layers: ${layerBreakdown.map((l) => `${l.name}=${l.tokens}`).join(', ')}`,
     )
 
-    return { text, totalTokens, layerBreakdown, economics }
+    return { text, totalTokens, layerBreakdown, economics, context }
   }
 }
