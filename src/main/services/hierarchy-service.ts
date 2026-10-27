@@ -258,10 +258,10 @@ export class HierarchyService {
    * 父子对上的 `'default'` 边**本来就不渲染** —— 渲染层
    * `src/renderer/canvas/layouts/hierarchy.ts:41` 会把落在父子对上的 `'default'`
    * 直接丢弃（不进 `semanticEdges`），画布上父子之间只有一条派生的层级线。
-   * 反过来，**四级判定只会碰到这几条 `'default'`**：新对上的（升级成 `'hierarchical'`，
-   * 多余的删掉），以及旧对**本来没有 `'hierarchical'`** 的那条（①/② 删、③ 搬）。
+   * 反过来，**四级判定只会碰到这几条 `'default'`**：新对上的（① 全删；② 升级一条、其余删掉），
+   * 以及旧对本来没有 `'hierarchical'` 的那些（①/② 全删；③ 搬第一条、其余删）。
    * 其余 `'default'` —— 旧对本来就有 `'hierarchical'` 时旧对上的那些，
-   * 以及根本不在任何父子对上的 —— 都是真正的语义边，**永远不许改类型、不许删**
+   * 以及既不在新对也不在旧对上的 —— 都是真正的语义边，**永远不许改类型、不许删**
    * （`'default'` 同时是 `EdgeEditor.tsx` 的 `SUPPORTED_EDGE_TYPES` 第一项，
    * 也是 AI 写入路径的默认类型）。
    * 仓库里已有的判据是同一个（`hierarchy-migration.ts`：「父子关系唯一，不靠猜」）。
