@@ -48,10 +48,36 @@ const defaultMockNodes = [
   },
 ]
 
-export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: typeof defaultMockGraph[]; nodes?: typeof defaultMockNodes }) {
+/**
+ * mock 节点的形状 —— 默认节点 + 可选的 `parentId`。
+ *
+ * 层级边由 `nodes.parent_id` 派生（不读 `edges` 表），所以结构编辑类用例
+ * 需要能传带 `parentId` 的节点。默认数组是**字面量数组** → 元素类型里没有
+ * `parentId` → 直接传会触发 TypeScript 的多余属性检查，因此这里显式放宽。
+ */
+export type MockNode = typeof defaultMockNodes[number] & { parentId?: string }
+
+/**
+ * mock 边的形状 —— 只带画布需要的字段。
+ *
+ * 结构编辑用例要能造出「存储里的层级边」：父子关系的事实来源是 `parent_id`，
+ * 存储里的层级边在渲染时必须被丢弃。不给 mock 这个能力，
+ * 「父子之间只画一条线」就退化成「什么都没画也只有一条线」—— 那道断言等于没写。
+ */
+export type MockEdge = {
+  id: string
+  source: string
+  target: string
+  graphId?: string
+  edgeType?: string
+  label?: string
+}
+
+export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: typeof defaultMockGraph[]; nodes?: MockNode[]; edges?: MockEdge[] }) {
   const mockGraphs = options?.graphs ?? [defaultMockGraph]
   const mockNodes = options?.nodes ?? defaultMockNodes
-  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: typeof defaultMockGraph[]; nodes: typeof defaultMockNodes }) => {
+  const mockEdges = options?.edges ?? []
+  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: typeof defaultMockGraph[]; nodes: MockNode[]; edges: MockEdge[] }) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
 
     function emit(channel: string, ...args: unknown[]) {
@@ -63,6 +89,7 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     const mockGraphs = opts.graphs
     const mockGraph = mockGraphs[0]
     const mockNodes = opts.nodes
+    const mockEdges = opts.edges
 
     const mockSubagentTypes = [
       { name: 'explore', displayName: '探索者', description: 'Read-only search', allowedTools: ['Read', 'Glob', 'Grep'], scopeStrategy: 'inherit' },
@@ -72,6 +99,13 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     const mockState = {
       invocationStatus: opts.initialStatus ?? 'queued',
       invocationResultText: null as string | null,
+      /**
+       * `graph:reparent` 的调用记录。
+       *
+       * **拒绝类用例靠它断言「IPC 根本没被调用」** —— 只断言「连线没变」是不够的：
+       * 落点被默默接受、而 mock 返回空的 movedPositions 时，连线同样不会变。
+       */
+      reparentCalls: [] as Array<{ nodeId: string; newParentId: string }>,
     }
 
     // Expose mutable state and emit helper for test scripts
@@ -84,9 +118,20 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
 
     const mockApi: Record<string, unknown> = {
       // Graph
-      'graph:get': async () => ({ graph: mockGraph, nodes: mockNodes, edges: [], bugs: [] }),
+      'graph:get': async () => ({ graph: mockGraph, nodes: mockNodes, edges: mockEdges, bugs: [] }),
       'graph:list': async () => mockGraphs,
       'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraph, name, type }),
+      /**
+       * 拖拽重挂 —— 父子关系变更的唯一入口。
+       *
+       * mock 是**无状态**的（不回写 nodes），但它**记录调用**：
+       * 测试要能断言「IPC 有没有被调用过」。合法落点时渲染端会照抄
+       * `newParentId` 更新 store 里的 parentId → 派生边随之改画。
+       */
+      'graph:reparent': async (nodeId: string, newParentId: string) => {
+        mockState.reparentCalls.push({ nodeId, newParentId })
+        return { nodeId, oldParentId: null, newParentId, movedPositions: [] }
+      },
 
       // Node
       'node:create': async (data: Record<string, unknown>) => ({
@@ -239,7 +284,22 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     window.electronAPI = mockApi as Window['electronAPI']
-  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes })
+  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes, edges: mockEdges })
+}
+
+/**
+ * 读 `graph:reparent` 的调用记录。
+ *
+ * 拒绝类用例靠它断言「IPC 根本没被调用」—— 只断言「连线没变」是不够的：
+ * 落点被默默接受、而 mock 返回空的 movedPositions 时，连线同样不会变。
+ */
+export async function getReparentCalls(page: Page): Promise<Array<{ nodeId: string; newParentId: string }>> {
+  return page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { reparentCalls?: Array<{ nodeId: string; newParentId: string }> }
+    }).__bizgraphMockState
+    return state?.reparentCalls ?? []
+  })
 }
 
 export async function setMockInvocationStatus(page: Page, status: SubagentStatus, resultText?: string) {

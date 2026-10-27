@@ -140,6 +140,17 @@ const CONNECTION_LINE_STYLE = {
 } as const
 
 /**
+ * 布局模式持久化的 localStorage 键 —— **按项目路径分区**。
+ *
+ * 读与写必须用**同一个**函数：两端只要有一端用了别的键
+ * （比如读端 `if (!projectPath) return`、写端 `projectPath ?? 'default'`），
+ * 「没有项目路径的图」就会写进 'default' 键却永远读不回来。
+ */
+function layoutModeStorageKey(projectPath: string | undefined): string {
+  return `bizgraph.layoutMode.${projectPath ?? 'default'}`
+}
+
+/**
  * 缩放百分比徽标单独成一个组件。
  * zoomLevel 在缩放过程中每帧都变，如果画布主组件订阅它，
  * 每次缩放都会重渲染整棵画布（连带 defaultEdgeOptions 写 store）。
@@ -209,6 +220,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [threads])
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
+  /** 图是否已装载完 —— 布局模式的持久化要等它才有意义（见下方 effect） */
+  const currentGraphId = currentGraph?.id
 
   const { screenToFlowPosition, setCenter } = useReactFlow()
 
@@ -977,11 +990,25 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     [onForceDragStop, reparentEnabled, toFlowPosition, onReparentDragEnd],
   )
 
+  /**
+   * 写回 localStorage —— **只在用户真的切换布局时写**。
+   *
+   * ⚠️ 千万别做成 effect（`useEffect(() => setItem(key, layoutMode), [layoutMode, projectPath])`）：
+   * 那样首帧就会把 'tree' 写进真正的键 → 正好覆盖掉用户上次的选择。
+   */
+  const persistLayoutMode = useCallback(
+    (mode: 'tree' | 'force') => {
+      localStorage.setItem(layoutModeStorageKey(projectPath), mode)
+    },
+    [projectPath],
+  )
+
   /** 进入力导向布局：显示 loading、计算、写入、退出 force mode 时清 loading。 */
   const handleApplyForceLayout = useCallback(() => {
     if (forceLoading) return
     setForceLoading(true)
     setLayoutMode('force')
+    persistLayoutMode('force')
     // 用 setTimeout 把 spinner 让出一帧再跑计算，避免 UI 不更新
     setTimeout(() => {
       try {
@@ -990,14 +1017,15 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         setForceLoading(false)
       }
     }, 16)
-  }, [applyForceLayout, forceLoading])
+  }, [applyForceLayout, forceLoading, persistLayoutMode])
 
   /** 切回树形布局：先退出 force mode，再跑 dagre。 */
   const handleApplyTreeLayout = useCallback(() => {
     exitForceMode()
     setLayoutMode('tree')
+    persistLayoutMode('tree')
     applyLayout()
-  }, [exitForceMode, applyLayout])
+  }, [exitForceMode, applyLayout, persistLayoutMode])
 
   // 首次加载图时自动应用 dagre 布局
   useEffect(() => {
@@ -1017,6 +1045,27 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setLayoutMode('tree')
     setForceLoading(false)
   }, [graphId, exitForceMode])
+
+  /**
+   * 读回布局模式（localStorage，不进 DB）。
+   *
+   * ⚠️ **不能**放进 `useState` 的初始化函数：`projectPath` 来自 store 里的 graphs，
+   * 首帧还没装载完 → 首帧读到的是 `bizgraph.layoutMode.default`（多半是空的）
+   * → 用户存的真实布局根本没被读到；等 `projectPath` 到位，写回路径又会把当前值
+   * （'tree'）写到真正的键上 → 用户存的布局被静默覆盖掉。
+   *
+   * ⚠️ **「等它到位」用 `currentGraph` 判断，不用 `projectPath`**：
+   * `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
+   * 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了。
+   *
+   * ⚠️ **必须声明在「切图重置」effect 之后**：切图时两个 effect 会在同一次提交里跑，
+   * 顺序决定谁赢 —— 读到的持久化值必须赢过重置用的 'tree'。
+   */
+  useEffect(() => {
+    if (!currentGraphId) return
+    const stored = localStorage.getItem(layoutModeStorageKey(projectPath))
+    if (stored === 'tree' || stored === 'force') setLayoutMode(stored)
+  }, [currentGraphId, projectPath])
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
