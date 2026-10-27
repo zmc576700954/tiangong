@@ -606,7 +606,7 @@ const flowEdges = useMemo(() => {
 
 - [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
 
-`onEdgeClick`（`GraphCanvas.tsx:723`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
+`onEdgeClick`（`GraphCanvas.tsx:809`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
 
 - 右侧面板 `RightPanel.tsx:55` 用 `edges.find(e => e.id === selectedEdgeId)` 找边 → 找不到 → 面板空白；
 - 按 Delete → `graphStore.deleteEdge(id)` → `edge:delete` IPC → `edgeRepo.delete('derived-...')` → `DELETE ... WHERE id = ?` 命中 0 行 → **静默无操作**（不报错，但用户以为删掉了）。
@@ -1179,14 +1179,14 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 
 | 闭包内声明 | 位置 |
 |---|---|
-| `NODE_STATUS_VALUES` | `:69` |
-| `GRAPH_TYPE_VALUES` | `:70` |
-| `MAX_TITLE_LEN` | `:71` |
-| `MAX_DESCRIPTION_LEN` | `:72` |
-| `isValidPosition` | `:74` |
-| `isValidNodeType` | `:83` |
-| `isPlainObject` | `:87` |
-| `validateNodeContent` | `:91` |
+| `NODE_STATUS_VALUES` | `:42` |
+| `GRAPH_TYPE_VALUES` | `:43` |
+| `MAX_TITLE_LEN` | `:44` |
+| `MAX_DESCRIPTION_LEN` | `:45` |
+| `isValidPosition` | `:47` |
+| `isValidNodeType` | `:56` |
+| `isPlainObject` | `:60` |
+| `validateNodeContent` | `:64` |
 
 （`ensureString` / `ensureOptionalNumber` / `MAX_ID_LEN` 来自 `./utils`，`VALID_NODE_TYPES` / `nodeTypeRegistry` /
 `IpcError` / `ErrorCode` 都是模块作用域的 import —— **不用动**。）
@@ -1617,7 +1617,7 @@ await createEdge({
 })
 ```
 
-（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:215` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
+（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:217` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
 
 `handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边（在 `createNode` 之后紧跟着建，边用同一个 `created.id` 作 target）。
 
@@ -1625,7 +1625,7 @@ await createEdge({
 
 - [ ] **Step 4: Switch the AI and scan write paths**
 
-`src/main/project-analyzer.ts` 的 `:74` / `:105` / `:132` 三处 `edgeType: 'default'` 改为 `edgeType: 'hierarchical'`。
+`src/main/project-analyzer.ts` 的 `:85` / `:119` / `:149` 三处 `edgeType: 'default'` 改为 `edgeType: 'hierarchical'`。
 
 `src/main/services/graph-service.ts`：在第二轮写完 `parent_id`（:489-498）之后、第三轮建边（:500）之后，加一步「确保每个有 parent_id 的节点都有对应的 hierarchical 边」：
 
@@ -1829,7 +1829,7 @@ Expected: **第一个用例 FAIL，第二个用例 PASS** —— 这是**正确*
 |---|---|---|
 | `clones sort_index but resets collapsed` | ❌ FAIL | `insertNodeStmt`（`graph-repository.ts:220-226`）的 20 列里**没有 `sort_index`** → 克隆出的节点 `sort_index` 是 NULL → `expect(m1.sort_index).toBe(0)` 红。**这才是本任务的 RED 驱动力。** |
 | | | `collapsed` 的断言**本来就绿**：`nodes.collapsed` 是 `INTEGER NOT NULL DEFAULT 0`（`database.ts:392`），而 `collapsed` **根本不在 INSERT 的列清单里** → 克隆出的节点默认就是 0。 |
-| `remaps hierarchical edges to the cloned node ids` | ✅ PASS | Pass 3（`:274-285`）已经用 `idMap.get(rowStr(row, 'source'))` 重映射 source/target → 层级边的重映射**现在就是对的**。 |
+| `remaps hierarchical edges to the cloned node ids` | ✅ PASS | Pass 3（`:293-307`）已经用 `idMap.get(rowStr(row, 'source'))` 重映射 source/target → 层级边的重映射**现在就是对的**。 |
 
 ⚠️ **不要为了「让测试先红」去改 `collapsed` 的行为。** `collapsed` 不在 INSERT 列清单里，
 新表默认 0 —— 这正是 spec §4.2.1 要的「折叠是开发者视角，派生出来应是展开态」。
@@ -1854,7 +1854,7 @@ Step 3b 新增的第三个用例（跨图悬挂 `parent_id`）在改之前**必�
 
 - [ ] **Step 3b: 别把跨图的悬挂 `parent_id` 一起克隆过来**（控制器补进来的第 4 条）
 
-`cloneGraphNodes` 的 Pass 2（`graph-repository.ts:263-271`）**只在新旧父节点都在 `idMap` 里时**
+`cloneGraphNodes` 的 Pass 2（`graph-repository.ts:272-291`）**只在新旧父节点都在 `idMap` 里时**
 才重映射 `parent_id`：
 
 ```ts
@@ -2123,7 +2123,7 @@ Expected: FAIL —— 模块不存在
 超出本任务范围，规格也没有要求。因此：`layoutMode === 'force'` 时
 `useReparentDrag` 不注册拖拽回调（拖拽仍是纯力导向交互），树形布局（默认）下才启用。
 
-**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:189` 已有 `useReactFlow()`）。
+**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:208` 已有 `useReactFlow()`）。
 
 - [ ] **Step 4: Add the store action**
 
@@ -2209,7 +2209,7 @@ return p ? { ...n, position: { x: p.x, y: p.y } } : n
 
 | 路径 | 触发点 | 写什么 |
 |---|---|---|
-| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:219-226` → :1172），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
+| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:236-240` → :1326），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
 | 力导向拖拽收尾 | `useForceLayout.onNodeDragStop`（:190-228） | 把**所有**节点的仿真坐标写回 DB —— **只在力导向模式下**，树形布局下直接 return |
 | 重挂（本任务新增） | `graph:reparent` → 主进程算锚点位置与整棵子树的平移 → 返回 `movedPositions` | 权威位置 |
 
@@ -2240,7 +2240,7 @@ return p ? { ...n, position: { x: p.x, y: p.y } } : n
    - **失败** → toast + **回弹**：把节点位置**写回拖拽开始时的原位** → 然后解除抑制。
 3. 回弹写回原位时，位置对象必须是**新建的字面量**（`{ x: A.x, y: A.y }`），
    不能复用旧对象引用：`flowNodes` 的缓存比的是**引用**
-   （`GraphCanvas.tsx:567`：`if (prev.position === node.position) return prev`），
+   （`GraphCanvas.tsx:634`：`if (prev.position === node.position) return prev`），
    引用相同 → 缓存命中 → 复用旧节点对象 → xyflow 不更新位置 → **看起来没回弹**。
    用 `useGraphStore.getState().batchUpdatePositions([{ id, x, y }])` 最省事
    （它内部就是 `position: { x: u.x, y: u.y }`，每次都是新对象）。
@@ -2493,7 +2493,7 @@ collapsed: row.collapsed === 1,     // 列是 NOT NULL DEFAULT 0，永远不会�
   - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
   - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
   - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
-  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:205-220`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:207-222`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
 
 ⚠️ **光算出 `sortIndex` 不够 —— INSERT 的列清单里也得加它**（控制器核代码后补的）：
 
@@ -2550,7 +2550,7 @@ function rowNum(row, key) {
 根节点的 `sort_index` 是 **NULL** → `typeof null !== 'number'` → **抛 TypeError**。
 不是返回 undefined，是**整个 `get()` 炸掉** —— 主进程一读图就崩。
 
-照抄同一个文件里 `communityLevel` 的 null 容错写法（`:123`）：
+照抄同一个文件里 `communityLevel` 的 null 容错写法（`:43`）：
 
 ```ts
 sortIndex: typeof row.sort_index === 'number' ? row.sort_index : undefined,
@@ -2567,7 +2567,7 @@ collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
 
 - [ ] **Step 5: Make tree layout honor sort_index**
 
-`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:638` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
+`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:648-649` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
 
 ⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。
 
@@ -2587,7 +2587,7 @@ const v = raw === undefined || raw === null ? undefined : Number(raw)
 但 `tree-layout.ts` 是**渲染层**的兜底 —— 存量数据、Yjs 远端写入、其它写入路径
 都可能绕过那两处映射。**渲染层不能假设上游一定干净。**）
 
-⚠️ 节点缓存 key（`GraphCanvas.tsx:598`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
+⚠️ 节点缓存 key（`GraphCanvas.tsx:607`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
 - [ ] **Step 6: 拖拽重挂后，渲染端的兄弟序号必须刷新（R-46）**
 
@@ -2681,7 +2681,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 
 （控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
 树形布局 `computeTreeLayout`（`tree-layout.ts:226`）与
-`findConnectedComponents`（`:83`）都按「两端都在节点集合里」过滤边，
+`findConnectedComponents`（`:79`）都按「两端都在节点集合里」过滤边，
 力导向布局 `createForceSimulation`（`force-layout.ts:220-222`）也有一句
 「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
 
@@ -2744,7 +2744,7 @@ Expected: FAIL —— 模块不存在
   - `hiddenDescendantCount: number` —— 该节点折叠时会隐藏的后代数
   - `onToggleCollapse: (nodeId: string) => void` —— Step 3 的 `toggle`（**引用稳定**的那个）
 - `flowNodes` 的依赖数组要加上 `visibleNodes`。
-- **`hiddenDescendantCount` 必须进缓存键**（`:544-558` 那个 `JSON.stringify([...])` 数组）：
+- **`hiddenDescendantCount` 必须进缓存键**（`:607-625` 那个 `JSON.stringify([...])` 数组）：
   给一个**已折叠**的节点新增子节点时，**该节点自己的 `updatedAt` 不会变**
   （`node:create` 只写新节点）→ 缓存命中 → 徽标上的数字停留在旧值。
   `onToggleCollapse` **不进**缓存键（它是函数，`JSON.stringify` 会把它丢掉；
@@ -2809,11 +2809,11 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:866` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:878` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
 
 ⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
 
-`GraphCanvas.tsx:200-201`：
+`GraphCanvas.tsx:205-206`：
 
 ```ts
 const currentGraph = graphs.find((g) => g.id === graphId)
@@ -2856,11 +2856,11 @@ const handleLayoutModeChange = (mode: 'tree' | 'force') => {
 `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
 （`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
-`GraphCanvas.tsx:200-201`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`GraphCanvas.tsx:205-206`，`currentGraph = graphs.find((g) => g.id === graphId)`、
 `projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
 
 （`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
-从 `:148` 开始，`projectPath` 在 `:187`、`layoutMode` 在 `:792` —— 同一个函数体，直接用。）
+从 `:167` 开始，`projectPath` 在 `:206`、`layoutMode` 在 `:878` —— 同一个函数体，直接用。）
 
 ⚠️ **别把写回做成 effect**（`useEffect(() => localStorage.setItem(key, layoutMode), [layoutMode, projectPath])`）。
 那样首帧就会把 `'tree'` 写进真正的键 → 正好覆盖掉用户上次的选择 —— 读和写必须分开，
@@ -2947,7 +2947,7 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    ```
 
    父节点因此从渲染层的节点列表里消失 → 子节点的 `parentId` 指向了一个
-   **不在列表里**的 id → `deriveHierarchyEdges`（`src/renderer/canvas/layouts/hierarchy.ts:25`）
+   **不在列表里**的 id → `deriveHierarchyEdges`（`src/renderer/canvas/layouts/hierarchy.ts:75`）
    对这种孤儿**本来就不产生边**（「孤儿不产生边」）。
 
    所以渲染层观察到的结果与生产一致：**子节点还在，且没有连着已删的父**，
