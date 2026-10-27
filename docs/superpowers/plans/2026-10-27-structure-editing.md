@@ -1214,7 +1214,7 @@ describe('useNodeOperations — 补建层级边', () => {
 
 `initFromProject` 走真实写入路径的两个前提：
 - `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:43`），mock 掉它不影响被测的写入路径。
-- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:203`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
+- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:191`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
 
 ```ts
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
