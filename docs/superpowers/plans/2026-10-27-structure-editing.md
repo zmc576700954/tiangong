@@ -1546,20 +1546,40 @@ await createEdge({
 
 ```ts
 // 第四轮：确保每个有 parent_id 的节点都有 hierarchical 边
+// 三级判定（R-28）：同一对上永远只应该有一条层级边。
+//   1. 已有 'hierarchical' → 跳过
+//   2. 否则已有 'default' → **升级**它（不是再插一条）
+//   3. 否则 → 插入新的 'hierarchical' 边
 for (const nodeData of graphResult.nodes) {
   if (!nodeData.parentTempId) continue
   const sourceId = tempIdMap.get(nodeData.parentTempId)
   const targetId = tempIdMap.get(nodeData.tempId)
   if (!sourceId || !targetId) continue
-  const exists = db.prepare(
-    "SELECT 1 FROM edges WHERE source=? AND target=? AND edge_type='hierarchical'"
+  const hasHierarchical = db.prepare(
+    "SELECT 1 FROM edges WHERE source=? AND target=? AND edge_type='hierarchical' LIMIT 1"
   ).get(sourceId, targetId)
-  if (exists) continue
+  if (hasHierarchical) continue
+  const legacyDefault = db.prepare(
+    "SELECT id FROM edges WHERE source=? AND target=? AND edge_type='default' LIMIT 1"
+  ).get(sourceId, targetId) as { id: string } | undefined
+  if (legacyDefault) {
+    db.prepare("UPDATE edges SET edge_type='hierarchical' WHERE id=?").run(legacyDefault.id)
+    continue
+  }
   insertEdgeStmt.run(generateId('edge'), sourceId, targetId, null, 'hierarchical', graphId, null, null, null)
 }
 ```
 
 这让 AI 生成路径不依赖 `graphResult.edges` 里是否带了层级边——`parent_id` 有就一定有层级边。
+
+⚠️ **第 2 级（升级而不是再插一条）不是可选的**（R-28）：AI 写入路径产出的层级边**就是 `'default'`**
+（`graph-service.ts:508` 的 `edgeData.edgeType ?? 'default'`），而第四轮跑的时候第二轮已经把
+`parent_id` 写好了 → `(父, 子)` 这一对正是权威父子对 → 按层级边的判定规则
+（Task 6 的 R-27：父子对上的 `'default'` 边 = 迁移前的层级边），那条 `'default'` **就是**层级边。
+再插一条 `'hierarchical'` 会在同一对上留下 `'default'` 残留，而残留的 `'default'` 会被判成
+**语义边** → 之后换父时父子关系不再成立 → 那条边**开始渲染** → 画布上冒出一条莫名其妙的线。
+**第 2 级与启动迁移的第 3 步是同一套语义**（`hierarchy-migration.ts:146-153` 也是把父子对上的
+`'default'` 升级成 `'hierarchical'`），两者必须一致。
 
 ⚠️ 上面的代码是**示意**。`insertEdgeStmt` 的列顺序与占位符数量必须照 `graph-service.ts` 里那条语句的**实际定义**写——照抄示意里的参数顺序会把 `edge_type` 写进别的列。实施时先读那条语句的真实绑定顺序。
 
