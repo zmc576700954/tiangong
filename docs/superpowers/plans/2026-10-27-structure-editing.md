@@ -2269,10 +2269,13 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
     collapsedIds: Set<string>
     isCollapsed: (nodeId: string) => boolean
     toggle: (nodeId: string) => Promise<void>
+    hiddenDescendantCount: (nodeId: string) => number
     visibleNodes: GraphNode[]
   }
   ```
   `visibleNodes` 过滤掉被折叠节点的整棵子树（折叠节点本身可见）。
+  `hiddenDescendantCount(nodeId)` = 折叠该节点时会被隐藏的**整棵后代的节点数**
+  （不含该节点本身；是**所有后代**，不是直接子节点数）。
 
 **布局自动获益**：`useAutoLayout.applyLayout` 用 React Flow 的 `getNodes()`，而 `GraphCanvas` 通过 `setRfNodes(flowNodes)` 写回。只要 `flowNodes` 过滤掉隐藏后代，被折叠节点就自动作为叶子参与 dagre 计算——**不需要**在 `useAutoLayout.ts` 里单独处理。
 
@@ -2299,6 +2302,18 @@ Expected: FAIL —— 模块不存在
 - `visibleNodes` = 排除所有被折叠节点的后代（折叠节点本身可见）
 - `toggle(nodeId)` 调 `graphStore.updateNode(nodeId, { collapsed: !isCollapsed(nodeId) })`
 
+⚠️ **读 store 必须用 selector 形式**：`useGraphStore((s) => s.nodes)`。
+用 `getState()` 的话组件**永远不会因节点变化而重渲染** → 折叠状态改了但画布不更新。
+（隔壁 `useNodePositionPersistence.test.ts` 的 `getState` 形式是**另一个**用法，别照抄。）
+
+⚠️ **`toggle` 必须是**引用稳定**的（`useCallback` 依赖数组为空）：它在被调用时
+从 store 的**当前**状态读该节点的 `collapsed`（`useGraphStore.getState().nodes.find(...)`），
+而不是闭包捕获 `collapsedIds`。否则：
+(a) `collapsedIds` 一变 `toggle` 就换引用 → 注入 `flowNode.data` 的回调每帧换新 →
+缓存键算不出它 → 画布节点对象被反复重建；
+(b) 用闭包里的旧 `collapsedIds` 判断「当前是不是折叠的」会算错方向。
+稳定性由「调用时读当前状态」保证，不是靠 memo。
+
 ⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
 
 ⚠️ **行号会再漂**：Task 10 也要改 `GraphCanvas.tsx` → 到本任务执行时上面那几行行号一定又变了。
@@ -2306,13 +2321,32 @@ Expected: FAIL —— 模块不存在
 
 - [ ] **Step 4: Render the collapse control**
 
+`src/renderer/canvas/GraphCanvas.tsx`：
+- `flowNodes` 的 useMemo 改为遍历 `visibleNodes` 而不是 `graphNodes`。
+- 往 `flowNode.data` 里**注入两个字段**（`BizNode` 拿不到它们，只能从这里拿）：
+  - `hiddenDescendantCount: number` —— 该节点折叠时会隐藏的后代数
+  - `onToggleCollapse: (nodeId: string) => void` —— Step 3 的 `toggle`（**引用稳定**的那个）
+- `flowNodes` 的依赖数组要加上 `visibleNodes`。
+- **`hiddenDescendantCount` 必须进缓存键**（`:544-558` 那个 `JSON.stringify([...])` 数组）：
+  给一个**已折叠**的节点新增子节点时，**该节点自己的 `updatedAt` 不会变**
+  （`node:create` 只写新节点）→ 缓存命中 → 徽标上的数字停留在旧值。
+  `onToggleCollapse` **不进**缓存键（它是函数，`JSON.stringify` 会把它丢掉；
+  它引用稳定，不会过期）。
+
 `src/renderer/canvas/BizNode.tsx`：
-- 有子节点时显示折叠指示器（`ChevronDown` / `ChevronRight` 图标），点击 `toggle`
-- 折叠时显示徽标：`⊕ {后代数量}`
+- `BizNodeProps['data']` 的类型加上 `hiddenDescendantCount?: number` 与
+  `onToggleCollapse?: (nodeId: string) => void`
+- 有子节点时显示折叠指示器（`ChevronDown` / `ChevronRight` —— `lucide-react` 已装，
+  `src/renderer/panels/TreeNodeItem.tsx:3-4` 是现成用法），点击调 `data.onToggleCollapse?.(data.id)`
+- 折叠时显示徽标：`⊕ {hiddenDescendantCount}`
 
-`src/renderer/canvas/GraphCanvas.tsx`：`flowNodes` 的 useMemo 改为遍历 `visibleNodes` 而不是 `graphNodes`。
+⚠️ **`BizNode` 不要自己去数后代**：它是 React Flow 逐节点渲染的，
+每个实例各算一次就是 O(n²)。后代集合只在 `useCollapse` 里算一次（`useMemo`），
+结果通过 `flowNode.data` 传下去。
 
-⚠️ `flowNodes` 的依赖数组（:606）要加上 `visibleNodes`；`nodeCacheRef` 的清理循环（:602-604）会自动移除不可见节点的缓存条目。✓
+⚠️ `nodeCacheRef` 的清理循环（`for (const id of cache.keys()) if (!nextIds.has(id)) cache.delete(id)`）
+在 `flowNodes` 遍历 `visibleNodes` 之后**自动**移除不可见节点的缓存条目 ✓ —— 前提是
+`nextIds` 是**遍历 `visibleNodes`** 时收集的，别漏改这一处。
 ⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
 
 - [ ] **Step 5: Add i18n strings**
