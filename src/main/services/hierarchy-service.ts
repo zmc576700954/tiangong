@@ -117,6 +117,23 @@ export class HierarchyService {
 
     const oldParentId = node.parent_id
 
+    // 换父到**当前父节点** = 无操作。
+    // 不做短路的话：sort_index 会被改成 MAX+1（把节点挪到兄弟列表末尾），
+    // 整棵子树还会按兄弟包围盒重新平移一次 —— 拖拽松手落在原地时节点会「跳一下」。
+    // Task 10 的拖拽处理器很可能把「落在当前父节点上」也当成一次合法的 drop 发过来。
+    if (oldParentId === newParentId) {
+      const descendants = this.collectDescendants(nodeId)
+      return {
+        nodeId,
+        oldParentId,
+        newParentId,
+        movedPositions: [
+          { id: nodeId, x: node.position_x, y: node.position_y },
+          ...descendants.map((d) => ({ id: d.id, x: d.x, y: d.y })),
+        ],
+      }
+    }
+
     const run = this.db.transaction((): ReparentResult => {
       // 子树要在改 parent_id **之前**收集 —— 此刻 nodeId 还挂在旧父下面
       const descendants = this.collectDescendants(nodeId)
@@ -138,8 +155,8 @@ export class HierarchyService {
       this.syncHierarchyEdge(oldParentId, newParentId, nodeId, node.graph_id)
 
       // ③ 旧父节点的其余子节点重排为连续号（空出来的位置不留洞）
-      if (oldParentId && oldParentId !== newParentId) {
-        this.renumberSiblings(oldParentId)
+      if (oldParentId) {
+        this.renumberSiblings(oldParentId, now)
       }
 
       // ④ 子树整体平移
@@ -224,17 +241,19 @@ export class HierarchyService {
   /**
    * 同步 parent_id 的存储层镜像（edges 里的层级边）。
    *
-   * 认两种形态的层级边：`'hierarchical'`（当前形态）与 `'default'`（迁移前的形态）。
-   * hierarchy-migration.ts 明确写了「库里可能同时存在两种形态的层级边」——
-   * 扫描器建出来的层级边至今仍是 `'default'`（project-analyzer.ts:74/105/132，
-   * Task 8 才改成 `'hierarchical'`）。只认 `'hierarchical'` 会让旧父那条边变成孤儿：
-   * 父子关系已改，迁移不会再把它改写成层级边，渲染层会把它**当语义边画出来**
-   * ——拖走一个节点，旧父与它之间留下一条莫名其妙的连线。
+   * **谁是层级边，靠「父子关系」判定，不靠 edge_type 猜。**
+   * 一条边 E 是「节点 N 的层级边」，当且仅当：
+   * - E 在 **N.parent_id 当前指向的那一对**（权威父子对）上，**且**
+   * - E 的 `edge_type` 是 `'hierarchical'`，**或者** E 是 `'default'` 且该对上不存在 `'hierarchical'` 边。
    *
-   * 收敛到「同一对父子恰好一条层级边」：
-   * - 目标父已有层级边 → 删掉旧父的那条，保留目标父的（并统一成 `'hierarchical'`）
-   * - 只有旧父的层级边 → 改它的 source（保住边 id 与 rowid）复用
-   * - 两边都没有 → 插入新边
+   * 为什么不看 edge_type 就完事：`'default'` 同时是**一等公民语义边类型** ——
+   * `EdgeEditor.tsx` 的 `SUPPORTED_EDGE_TYPES` 第一项就是它（用户手画连线的默认类型），
+   * AI 写入路径对没有显式类型的边也一律发 `'default'`。靠类型猜会把用户的语义边
+   * 当成层级边：改掉它的类型，或直接删掉它 —— 用户的连线就从画布上消失了。
+   * 仓库里已有的判据是同一个（`hierarchy-migration.ts:143-153`：「父子关系唯一，不靠猜」）。
+   *
+   * 目标状态：新的父子对上**恰好一条** `'hierarchical'` 边；
+   * **语义边一律原样保留** —— 不改类型、不删除。只有「自己就是层级边」的边才允许被删。
    */
   private syncHierarchyEdge(
     oldParentId: string | null,
@@ -242,36 +261,50 @@ export class HierarchyService {
     nodeId: string,
     graphId: string,
   ): void {
+    // 只看 'default' / 'hierarchical' 两种形态 —— 其余 edge_type 一律是语义边，不碰
     const selectEdges = this.db.prepare(
-      "SELECT id FROM edges WHERE source = ? AND target = ? AND edge_type IN ('default', 'hierarchical') ORDER BY rowid",
+      "SELECT id, edge_type FROM edges WHERE source = ? AND target = ? AND edge_type IN ('default', 'hierarchical') ORDER BY rowid",
     )
     const deleteEdge = this.db.prepare('DELETE FROM edges WHERE id = ?')
 
-    // 旧父的层级边：第一条可以改 source 复用，其余删掉
-    const oldEdges =
-      oldParentId && oldParentId !== newParentId
-        ? (selectEdges.all(oldParentId, nodeId) as { id: string }[])
-        : []
-    for (const extra of oldEdges.slice(1)) deleteEdge.run(extra.id)
+    // 旧父子对（= 节点 parent_id 当前指向的那一对，权威父子对）
+    const oldPair = oldParentId
+      ? (selectEdges.all(oldParentId, nodeId) as { id: string; edge_type: string }[])
+      : []
+    // 新父子对
+    const newPair = selectEdges.all(newParentId, nodeId) as { id: string; edge_type: string }[]
 
-    // 目标父的层级边：已存在就复用，多余的删掉
-    const newEdges = selectEdges.all(newParentId, nodeId) as { id: string }[]
-    for (const extra of newEdges.slice(1)) deleteEdge.run(extra.id)
-    const keep = newEdges[0]
+    const oldHierarchical = oldPair.filter((e) => e.edge_type === 'hierarchical')
+    const newHierarchical = newPair.filter((e) => e.edge_type === 'hierarchical')
+
+    // 旧对上的 'default' 边：只有「该对上不存在 'hierarchical' 边」时才是迁移前的层级边；
+    // 否则它是语义边 —— 原样保留（不删、不改类型）。
+    const oldHierarchyEdges =
+      oldHierarchical.length > 0
+        ? oldHierarchical
+        : oldPair.filter((e) => e.edge_type === 'default')
+
+    // 目标对上已有的层级边 → 复用它；真正重复的多余一条删掉
+    const keep = newHierarchical[0]
+    for (const extra of newHierarchical.slice(1)) deleteEdge.run(extra.id)
 
     if (keep) {
-      // 目标父已有层级边 —— 旧父那条成了多余的
-      if (oldEdges[0]) deleteEdge.run(oldEdges[0].id)
-      // 统一成 'hierarchical'（历史遗留可能是 'default'）
-      this.db.prepare("UPDATE edges SET edge_type = 'hierarchical' WHERE id = ?").run(keep)
+      // 目标对已有层级边 → 旧对上的层级边全部多余（它们确实是层级边，才允许删）
+      for (const edge of oldHierarchyEdges) deleteEdge.run(edge.id)
       return
     }
-    if (oldEdges[0]) {
+
+    // 目标对没有层级边 → 复用旧对的那条（保住边 id 与 rowid），其余删掉
+    const reusable = oldHierarchyEdges[0]
+    if (reusable) {
+      for (const extra of oldHierarchyEdges.slice(1)) deleteEdge.run(extra.id)
       this.db
         .prepare("UPDATE edges SET source = ?, edge_type = 'hierarchical' WHERE id = ?")
-        .run(newParentId, oldEdges[0].id)
+        .run(newParentId, reusable.id)
       return
     }
+
+    // 两边都没有层级边 → 新插一条
     this.db
       .prepare(
         "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?, ?, ?, 'hierarchical', ?)",
@@ -279,15 +312,20 @@ export class HierarchyService {
       .run(generateId('edge'), newParentId, nodeId, graphId)
   }
 
-  /** 把某个父节点的子节点 sort_index 重排为 0,1,2,…（保持既有相对顺序，NULL 的排在最后） */
-  private renumberSiblings(parentId: string): void {
+  /**
+   * 把某个父节点的子节点 sort_index 重排为 0,1,2,…（保持既有相对顺序，NULL 的排在最后）。
+   *
+   * updated_at 一并刷新：渲染端的节点缓存 key 含 updatedAt，
+   * 留着旧时间戳会让缓存失效判定与实际数据不一致。
+   */
+  private renumberSiblings(parentId: string, now: string): void {
     const children = this.db
       .prepare(
         'SELECT id FROM nodes WHERE parent_id = ? ORDER BY (sort_index IS NULL), sort_index ASC, id ASC',
       )
       .all(parentId) as { id: string }[]
-    const update = this.db.prepare('UPDATE nodes SET sort_index = ? WHERE id = ?')
-    children.forEach((child, index) => update.run(index, child.id))
+    const update = this.db.prepare('UPDATE nodes SET sort_index = ?, updated_at = ? WHERE id = ?')
+    children.forEach((child, index) => update.run(index, now, child.id))
   }
 
   /**

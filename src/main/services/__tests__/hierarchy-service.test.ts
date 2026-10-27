@@ -199,10 +199,9 @@ describe('HierarchyService.reparent', () => {
     }
   })
 
-  // brief 的 9 个用例之外补的一条：层级边的历史形态。
-  // 扫描器建出来的层级边至今是 'default'（Task 8 才改成 'hierarchical'），
-  // 只认 'hierarchical' 的话旧父那条边会变成孤儿，被渲染层当语义边画出来。
-  it('rewrites a legacy default hierarchy edge instead of orphaning it', () => {
+  // brief 的 9 个用例之外补的一条：旧父对上的层级边还是迁移前的 'default' 形态。
+  // 该对上没有 'hierarchical' 边 → 它是层级边（不是语义边），改写成 'hierarchical' 并挪到新父。
+  it('promotes a legacy default hierarchy edge on the old parent pair', () => {
     db.prepare("UPDATE edges SET edge_type = 'default' WHERE source = 'p1' AND target = 'm2'").run()
     const svc = new HierarchyService(db)
     svc.reparent('m2', 'm1')
@@ -212,5 +211,84 @@ describe('HierarchyService.reparent', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].source).toBe('m1')
     expect(rows[0].edge_type).toBe('hierarchical')
+  })
+
+  // 'default' 同时是**用户手画的语义边类型**（EdgeEditor 的 SUPPORTED_EDGE_TYPES 第一项）
+  // 与 AI 写入路径的默认类型 —— 层级边的识别必须靠「父子关系」而不是 edge_type，
+  // 否则这条语义边会被改类型或被删掉，用户的连线就从画布上消失。
+  it('keeps a user-drawn default semantic edge on the new parent pair', () => {
+    db.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+    ).run('sem1', 'm1', 'm2', 'default', 'g1')
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+
+    const semantic = db
+      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'sem1'")
+      .get() as { source: string; target: string; edge_type: string } | undefined
+    expect(semantic).toBeDefined()
+    expect(semantic?.source).toBe('m1')
+    expect(semantic?.target).toBe('m2')
+    expect(semantic?.edge_type).toBe('default')
+
+    const hierarchy = db
+      .prepare("SELECT id FROM edges WHERE source = 'm1' AND target = 'm2' AND edge_type = 'hierarchical'")
+      .all() as { id: string }[]
+    expect(hierarchy).toHaveLength(1)
+  })
+
+  it('keeps a user-drawn default semantic edge on the old parent pair', () => {
+    // 旧父对 (p1,m2) 上已有 'hierarchical' 边 e4 → 同对的 'default' 边是语义边，原样保留
+    db.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+    ).run('sem2', 'p1', 'm2', 'default', 'g1')
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+
+    const semantic = db
+      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'sem2'")
+      .get() as { source: string; target: string; edge_type: string } | undefined
+    expect(semantic).toBeDefined()
+    expect(semantic?.source).toBe('p1')
+    expect(semantic?.target).toBe('m2')
+    expect(semantic?.edge_type).toBe('default')
+  })
+
+  it('is a no-op when reparenting a node to its current parent', () => {
+    // 给子树一个非原点坐标 —— fixture 默认全在 (0,0)，
+    // 那样「坐标不变」与「坐标被写成 (0,0)」分不开，断言就没有意义
+    db.prepare("UPDATE nodes SET position_x = 10, position_y = 20 WHERE id IN ('m2','c3')").run()
+    const before = db.prepare("SELECT updated_at FROM nodes WHERE id='m2'").get() as { updated_at: string }
+
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('m2', 'p1') // m2 的当前父节点就是 p1
+    expect(res.oldParentId).toBe('p1')
+    expect(res.newParentId).toBe('p1')
+
+    const row = db
+      .prepare("SELECT parent_id, sort_index FROM nodes WHERE id='m2'")
+      .get() as { parent_id: string; sort_index: number }
+    expect(row.parent_id).toBe('p1')
+    expect(row.sort_index).toBe(1)
+
+    const positions = db
+      .prepare("SELECT id, position_x, position_y FROM nodes WHERE id IN ('m2','c3') ORDER BY id")
+      .all() as { id: string; position_x: number; position_y: number }[]
+    expect(positions).toEqual([
+      { id: 'c3', position_x: 10, position_y: 20 },
+      { id: 'm2', position_x: 10, position_y: 20 },
+    ])
+
+    // movedPositions 仍然列出该节点及其后代
+    expect(res.movedPositions.map((p) => p.id).sort()).toEqual(['c3', 'm2'])
+    expect(res.movedPositions.every((p) => p.x === 10 && p.y === 20)).toBe(true)
+
+    // 一个字节都没写：边没动、时间戳没动
+    const edges = db
+      .prepare("SELECT COUNT(*) AS n FROM edges WHERE edge_type = 'hierarchical'")
+      .get() as { n: number }
+    expect(edges.n).toBe(5)
+    const after = db.prepare("SELECT updated_at FROM nodes WHERE id='m2'").get() as { updated_at: string }
+    expect(after.updated_at).toBe(before.updated_at)
   })
 })
