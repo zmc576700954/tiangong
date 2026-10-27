@@ -9,7 +9,7 @@ import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { ChatRepository, type ChatThreadRow, type ChatMessageRow } from '../repositories/chat-repository'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
-import { isRecord, isUnknownArray } from '@shared/type-guards'
+import { isMessageError, isContextRefArray, isToolCallBlockArray } from '@shared/type-guards'
 import { estimateTokens } from '../shared/token-utils'
 import type { ContextWaterline } from '../memory/context-waterline'
 
@@ -180,10 +180,10 @@ export class ChatService {
       timestamp: row.created_at,
       adapterName: row.adapter_name || undefined,
       status: row.status as ChatMessage['status'],
-      error: safeJsonParse<MessageError | undefined>(row.error, undefined, isRecord),
+      error: safeJsonParse<MessageError | undefined>(row.error, undefined, isMessageError),
       sessionId: row.session_id ?? undefined,
-      contextRefs: safeJsonParse<ContextRef[]>(row.context_refs, [], isUnknownArray),
-      toolCalls: safeJsonParse<ToolCallBlock[]>(row.tool_calls, [], isUnknownArray),
+      contextRefs: safeJsonParse<ContextRef[]>(row.context_refs, [], isContextRefArray),
+      toolCalls: safeJsonParse<ToolCallBlock[]>(row.tool_calls, [], isToolCallBlockArray),
     }
   }
 }

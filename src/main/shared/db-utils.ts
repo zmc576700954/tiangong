@@ -28,16 +28,20 @@ export function unsafeJsonParse<T>(
 
 /**
  * 安全的 JSON 解析（泛型版本，带 fallback 和可选 validator）
- * - 传入 validator 时执行运行时类型校验（推荐）
- * - 不传 validator 时仅做 JSON.parse + 类型断言（向后兼容，不安全）
+ *
+ * validator 是**类型谓词**（`val is X`）—— 这样「哪一列用哪个守卫」由编译器
+ * 兜住：把 `isAgentOutput` 传给一个 `AgentOutput[]` 列会直接编译报错。
+ * 谓词签名还保证了元素级守卫能落到具体类型上（`isContextRefArray` 断言的是
+ * `ContextRef[]`，不是 `unknown[]`）。
+ *
  * @param raw - JSON 字符串
  * @param fallback - 解析失败或校验不通过时的默认返回值
- * @param validator - 可选的类型守卫函数（或任意 boolean 判定函数）
+ * @param validator - 可选的类型守卫函数
  */
 export function safeJsonParse<T>(
   raw: string | null | undefined,
   fallback: T,
-  validator?: (val: unknown) => boolean,
+  validator?: (val: unknown) => val is NonNullable<T>,
 ): T {
   if (!raw) return fallback
   try {

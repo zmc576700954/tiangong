@@ -8,7 +8,8 @@ import type { GraphNode } from '@shared/types'
 import type { NodeStatus } from '@shared/types'
 import {
   assertNodeType, assertNodeStatus, assertGraphType,
-  isRecord, isStringArray, isUnknownArray,
+  isStringArray, isBusinessRuleArray, isNodeMetadata, isNodeContent,
+  isContextRefArray, isRecord,
 } from '@shared/type-guards'
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { generateId } from '../shared/env'
@@ -30,14 +31,14 @@ export class NodeRepository {
       graphId: row.graph_id as string,
       graphType: assertGraphType(row.graph_type as string, 'graphType'),
       parentId: row.parent_id as string | undefined,
-      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined, isUnknownArray),
-      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined, isRecord),
-      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined, isUnknownArray),
+      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined, isBusinessRuleArray),
+      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined, isNodeMetadata),
+      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined, isContextRefArray),
       wikiContent: typeof row.wiki_content === 'string' ? row.wiki_content : undefined,
       wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined, isRecord),
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
-      content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined, isRecord),
+      content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined, isNodeContent),
       communitySummary: (row.community_summary as GraphNode['communitySummary']) ?? undefined,
       communityLevel: (row.community_level as GraphNode['communityLevel']) ?? undefined,
       communityId: (row.community_id as GraphNode['communityId']) ?? undefined,

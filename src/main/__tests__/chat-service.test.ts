@@ -406,7 +406,7 @@ describe('ChatService', () => {
           status: 'success',
           error: null,
           session_id: 'session-1',
-          context_refs: JSON.stringify([{ type: 'node', id: 'n1' }]),
+          context_refs: JSON.stringify([{ type: 'node', id: 'n1', label: 'Node 1' }]),
           tool_calls: null,
           created_at: MOCK_NOW,
           token_count: 0,
@@ -419,7 +419,7 @@ describe('ChatService', () => {
       expect(result).toHaveLength(1)
       expect(result[0].role).toBe('agent')
       expect(result[0].sessionId).toBe('session-1')
-      expect(result[0].contextRefs).toEqual([{ type: 'node', id: 'n1' }])
+      expect(result[0].contextRefs).toEqual([{ type: 'node', id: 'n1', label: 'Node 1' }])
     })
 
     it('should handle null JSON fields gracefully', async () => {
@@ -444,6 +444,33 @@ describe('ChatService', () => {
       const result = await service.listMessages('thread-123')
 
       expect(result[0].error).toBeUndefined()
+      expect(result[0].contextRefs).toEqual([])
+      expect(result[0].toolCalls).toEqual([])
+    })
+
+    it('JSON 列是「形状不对的数组」时也退化为默认值（元素级脏数据）', async () => {
+      // 元素级脏数据：容器是数组，但元素为 null / 缺字段 ——
+      // 渲染层对 contextRefs / toolCalls 做 .map 并访问元素字段，元素为 null 同样崩。
+      const rows: ChatMessageRow[] = [
+        {
+          id: 'msg-1',
+          thread_id: 'thread-123',
+          role: 'agent',
+          content: 'Result',
+          adapter_name: 'claude',
+          status: 'success',
+          error: null,
+          session_id: 'session-1',
+          context_refs: '[null]',
+          tool_calls: '[{"type":"file_edit"}]',
+          created_at: MOCK_NOW,
+          token_count: 0,
+        },
+      ]
+      mockRepo.listMessages.mockResolvedValue(rows)
+
+      const result = await service.listMessages('thread-123')
+
       expect(result[0].contextRefs).toEqual([])
       expect(result[0].toolCalls).toEqual([])
     })

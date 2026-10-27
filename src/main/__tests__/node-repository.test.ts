@@ -389,4 +389,24 @@ describe('NodeRepository with real in-memory database', () => {
     expect(node?.contextRefs).toBeUndefined()
     expect(node?.wikiMeta).toBeUndefined()
   })
+
+  it('数组列的元素是脏数据时也退化为默认值（元素级校验）', () => {
+    const created = realRepo.create({
+      graphId: 'g1',
+      graphType: 'online',
+      type: 'feature',
+      title: 'Dirty Elements',
+      status: 'draft',
+      position: { x: 0, y: 0 },
+    })
+
+    // 容器是数组，但元素形状不对 —— 渲染层 .map 元素字段时会崩
+    realDb.prepare(
+      'UPDATE nodes SET rules = ?, context_refs = ? WHERE id = ?',
+    ).run('[null]', '[{"type":"file"}]', created.id)
+
+    const node = realRepo.findById(created.id)
+    expect(node?.rules).toBeUndefined()
+    expect(node?.contextRefs).toBeUndefined()
+  })
 })

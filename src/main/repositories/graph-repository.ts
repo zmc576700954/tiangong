@@ -7,7 +7,8 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { Graph, GraphNode, GraphEdge, BugNode, GraphType, GraphFetchOptions } from '@shared/types'
 import {
   assertGraphType, assertNodeType, assertNodeStatus, assertEdgeType, assertBugSeverity, assertBugStatus,
-  isRecord, isStringArray, isUnknownArray,
+  isStringArray, isBusinessRuleArray, isNodeMetadata, isNodeContent, isEdgeContent,
+  isContextRefArray, isRecord,
 } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
@@ -116,12 +117,12 @@ export class GraphRepository {
         graphId: rowStr(row, 'graph_id'),
         graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
         parentId: rowOptStr(row, 'parent_id'),
-        rules: safeJsonParse<GraphNode['rules']>(rowOptStr(row, 'rules'), undefined, isUnknownArray),
-        metadata: safeJsonParse<GraphNode['metadata']>(rowOptStr(row, 'metadata'), undefined, isRecord),
-        content: safeJsonParse<GraphNode['content']>(rowOptStr(row, 'content'), undefined, isRecord),
+        rules: safeJsonParse<GraphNode['rules']>(rowOptStr(row, 'rules'), undefined, isBusinessRuleArray),
+        metadata: safeJsonParse<GraphNode['metadata']>(rowOptStr(row, 'metadata'), undefined, isNodeMetadata),
+        content: safeJsonParse<GraphNode['content']>(rowOptStr(row, 'content'), undefined, isNodeContent),
         communitySummary: rowOptStr(row, 'community_summary'),
         communityLevel: typeof row.community_level === 'number' ? row.community_level : undefined,
-        contextRefs: safeJsonParse<GraphNode['contextRefs']>(rowOptStr(row, 'context_refs'), undefined, isUnknownArray),
+        contextRefs: safeJsonParse<GraphNode['contextRefs']>(rowOptStr(row, 'context_refs'), undefined, isContextRefArray),
         wikiContent: rowOptStr(row, 'wiki_content'),
         wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(rowOptStr(row, 'wiki_meta'), undefined, isRecord),
         ownerRole: rowOptStr(row, 'owner_role') as GraphNode['ownerRole'],
@@ -142,7 +143,7 @@ export class GraphRepository {
         description: rowOptStr(row, 'description'),
         dataFlow: rowOptStr(row, 'data_flow'),
         strength: typeof row.strength === 'number' ? row.strength : undefined,
-        content: safeJsonParse<GraphEdge['content']>(rowOptStr(row, 'content'), undefined, isRecord),
+        content: safeJsonParse<GraphEdge['content']>(rowOptStr(row, 'content'), undefined, isEdgeContent),
       })),
       bugs: bugsRows.map((row) => ({
         id: rowStr(row, 'id'),

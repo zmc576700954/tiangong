@@ -18,14 +18,14 @@ describe('safeJsonParse', () => {
   })
 
   it('uses validator when provided', () => {
-    expect(safeJsonParse('["a","b"]', [], isStringArray)).toEqual(['a', 'b'])
-    expect(safeJsonParse('[1,2]', [], isStringArray)).toEqual([])
+    expect(safeJsonParse<string[]>('["a","b"]', [], isStringArray)).toEqual(['a', 'b'])
+    expect(safeJsonParse<string[]>('[1,2]', [], isStringArray)).toEqual([])
   })
 
   it('safeJsonParse 传 validator 时非法值退化为 fallback', () => {
-    expect(safeJsonParse('{"a":1}', [], isStringArray)).toEqual([])
-    expect(safeJsonParse('[1,2]', [], isStringArray)).toEqual([])
-    expect(safeJsonParse('["a"]', [], isStringArray)).toEqual(['a'])
+    expect(safeJsonParse<string[]>('{"a":1}', [], isStringArray)).toEqual([])
+    expect(safeJsonParse<string[]>('[1,2]', [], isStringArray)).toEqual([])
+    expect(safeJsonParse<string[]>('["a"]', [], isStringArray)).toEqual(['a'])
   })
 })
 
