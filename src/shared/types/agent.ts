@@ -226,12 +226,8 @@ export interface AgentSession {
   adapterName: string
   config: AgentSessionConfig
   startTime: number
-  /** 运行时注入的已解析上下文（不持久化） */
-  resolvedContexts?: ResolvedContext[]
-  /** 智能代码上下文（由 SmartContextResolver 生成，不持久化） */
-  codeContext?: string
-  /** 项目记忆上下文（从 .bizgraph/memory.json 加载，不持久化） */
-  memoryContext?: string
+  /** 运行时注入的 prompt 上下文（不持久化）：stable 进 system 通道，turn 进 user turn */
+  promptContext?: PromptContext
   /** Fallback 信息：当请求适配器未安装，回退到 MCP 时记录 */
   fallbackInfo?: {
     originalAdapter: string
@@ -267,14 +263,11 @@ export interface AgentAdapter {
   /** 解析输出关联的 sessionId（由 BaseAdapter 实现，用于精准广播） */
   resolveOutputSession?(output: AgentOutput): string | undefined
 
-  /** 设置会话的已解析上下文（供 AgentManager 注入上下文） */
-  setResolvedContexts(sessionId: string, contexts: ResolvedContext[]): void
+  /** 注入 prompt 上下文：stable 进 system 通道，turn 进 user turn */
+  setPromptContext(sessionId: string, ctx: PromptContext): void
 
-  /** 设置会话的智能代码上下文（供 AgentManager 注入代码分析结果） */
-  setCodeContext(sessionId: string, codeContext: string): void
-
-  /** 设置会话的项目记忆上下文（供 AgentManager 注入项目记忆） */
-  setMemoryContext(sessionId: string, memoryContext: string): void
+  /** 读取会话的实时配置（适配器可能在运行期写入 contextSummary 等） */
+  getSessionConfig?(sessionId: string): AgentSessionConfig | undefined
 
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
   on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle' | 'user', exitCode: number | null) => void): void

@@ -38,9 +38,7 @@ function makeAdapter(name: string, opts: {
     off: vi.fn(),
     emit: vi.fn(),
     getProcessCount: () => 0,
-    setResolvedContexts: vi.fn(),
-    setCodeContext: vi.fn(),
-    setMemoryContext: vi.fn(),
+    setPromptContext: vi.fn(),
   } as unknown as AgentAdapter
 }
 

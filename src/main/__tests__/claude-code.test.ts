@@ -75,13 +75,13 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(session.id).toMatch(/^claude-/)
   })
 
-  it('doSendCommand calls SDK query with scope prompt as systemPrompt', async () => {
-    const config = makeConfig({
-      nodeTitle: 'Auth Module',
-      allowedFiles: ['src/auth.ts'],
-      acceptanceCriteria: ['Users can login'],
+  it('doSendCommand 把 promptContext.stable 作为 systemPrompt 下发', async () => {
+    const session = await adapter.startSession(makeConfig())
+    // Task 3 起适配器不再自行构造 scope，而是消费编排器投递的 promptContext。
+    adapter.setPromptContext(session.id, {
+      stable: '# 业务节点：<node-title>Auth Module</node-title>\n## 允许修改的文件（白名单）\n- src/auth.ts\n<criteria>Users can login</criteria>',
+      turn: '',
     })
-    const session = await adapter.startSession(config)
 
     mockQuery.mockReturnValue(mockMessages([
       { type: 'system', subtype: 'init', session_id: 'sdk-sess-1' },
@@ -100,6 +100,42 @@ describe('ClaudeCodeAdapter (SDK)', () => {
 
     const completeOutputs = outputs.filter((o) => o.type === 'complete')
     expect(completeOutputs.length).toBe(1)
+  })
+
+  it('systemPrompt 只含 stable，user turn 含 turn + 命令原文，命令原文只出现一次', async () => {
+    const session = await adapter.startSession(makeConfig())
+    adapter.setPromptContext(session.id, { stable: 'STABLE-TEXT', turn: 'TURN-TEXT' })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'system', subtype: 'init', session_id: 'sdk-sess-1' },
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'USER-REQ-UNIQUE', targetNodeId: 'n1' })
+
+    const callArgs = mockQuery.mock.calls[0][0] as { prompt: string; options: Record<string, unknown> }
+    expect(callArgs.options.systemPrompt).toBe('STABLE-TEXT')
+    expect(String(callArgs.options.systemPrompt)).not.toContain('USER-REQ-UNIQUE')
+    expect(callArgs.prompt).toContain('TURN-TEXT')
+    expect(callArgs.prompt).toContain('USER-REQ-UNIQUE')
+    expect(callArgs.prompt.split('USER-REQ-UNIQUE').length - 1).toBe(1)
+  })
+
+  it('透明转发会话不下发任何 BizGraph 上下文', async () => {
+    const session = await adapter.startSession(makeConfig({ transparentForward: true }))
+    adapter.setPromptContext(session.id, { stable: 'STABLE-TEXT', turn: 'TURN-TEXT' })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'USER-REQ-UNIQUE', targetNodeId: 'n1' })
+
+    const callArgs = mockQuery.mock.calls[0][0] as { prompt: string; options: Record<string, unknown> }
+    expect(callArgs.options.systemPrompt).toBeUndefined()
+    expect(callArgs.prompt).not.toContain('STABLE-TEXT')
+    expect(callArgs.prompt).not.toContain('TURN-TEXT')
+    expect(callArgs.prompt).toContain('USER-REQ-UNIQUE')
   })
 
   it('doSendCommand captures SDK session ID for resume', async () => {

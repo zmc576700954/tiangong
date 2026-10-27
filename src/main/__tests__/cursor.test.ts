@@ -138,6 +138,11 @@ describe('CursorAdapter', () => {
       acceptanceCriteria: ['Handle refunds'],
     })
     const session = await adapter.startSession(config)
+    // Task 3 起适配器消费编排器投递的 promptContext，不再自行构造 scope。
+    adapter.setPromptContext(session.id, {
+      stable: '# 业务节点：Payment Module\n- Handle refunds',
+      turn: 'TURN-CTX',
+    })
 
     let capturedPrompt = ''
     const mockStdin = {
@@ -164,6 +169,7 @@ describe('CursorAdapter', () => {
 
     expect(capturedPrompt).toContain('Payment Module')
     expect(capturedPrompt).toContain('Handle refunds')
+    expect(capturedPrompt).toContain('TURN-CTX')
     expect(capturedPrompt).toContain('Add login form')
   })
 

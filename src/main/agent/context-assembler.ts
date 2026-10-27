@@ -9,8 +9,7 @@
  *  - Prompt assembly via PromptOrchestrator
  *
  * AgentManager retains the responsibility of feeding the assembled prompt
- * into the adapter (via setResolvedContexts / setCodeContext / setMemoryContext)
- * and triggering the actual send.
+ * into the adapter (via setPromptContext) and triggering the actual send.
  */
 
 import type {
@@ -19,6 +18,7 @@ import type {
   ContextRef,
   GraphNode,
   ProjectMemory,
+  PromptContext,
   ResolvedContext,
 } from '@shared/types'
 import { ContextResolver } from '../context-resolver'
@@ -69,7 +69,7 @@ export class ContextAssembler {
   }): Promise<{
     resolvedContexts: ResolvedContext[]
     codeContext: string | undefined
-    assembled: { text: string; totalTokens: number }
+    assembled: { text: string; totalTokens: number; context: PromptContext }
   }> {
     const { command, sessionConfig, contextRefs, nodes, optimalBudget, sessionId, adapterName } = args
 

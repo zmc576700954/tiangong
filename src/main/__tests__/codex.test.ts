@@ -79,6 +79,11 @@ describe('CodexAdapter (SDK)', () => {
       allowedFiles: ['src/auth.ts'],
     })
     const session = await adapter.startSession(config)
+    // Task 3 起适配器消费编排器投递的 promptContext，不再自行构造 scope。
+    adapter.setPromptContext(session.id, {
+      stable: '# 业务节点：<node-title>Auth Module</node-title>\n- src/auth.ts',
+      turn: 'TURN-CTX',
+    })
 
     await adapter.sendCommand(session.id, command)
 
@@ -90,6 +95,7 @@ describe('CodexAdapter (SDK)', () => {
     const promptArg = mockRun.mock.calls[0][0] as string
     expect(promptArg).toContain('<node-title>Auth Module</node-title>')
     expect(promptArg).toContain('src/auth.ts')
+    expect(promptArg).toContain('TURN-CTX')
     expect(promptArg).toContain('Add login form')
   })
 

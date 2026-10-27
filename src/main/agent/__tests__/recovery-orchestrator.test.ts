@@ -29,9 +29,7 @@ function makeAdapter(name: string, opts: { installed?: boolean } = {}): AgentAda
     on: vi.fn(),
     off: vi.fn(),
     getProcessCount: () => 0,
-    setResolvedContexts: vi.fn(),
-    setCodeContext: vi.fn(),
-    setMemoryContext: vi.fn(),
+    setPromptContext: vi.fn(),
     resolveOutputSession: vi.fn(),
   } as unknown as AgentAdapter
 }

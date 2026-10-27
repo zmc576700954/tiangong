@@ -11,6 +11,7 @@ import type {
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
+  PromptContext,
   ResolvedContext,
   TerminationReason,
 } from '@shared/types'
@@ -413,36 +414,24 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
-   * 设置会话的已解析上下文（外部调用，用于在 sendCommand 前注入上下文）
+   * 读取会话的实时配置。
+   * 适配器在生命周期内会写入 contextSummary（压缩摘要）/ resumeSessionId，
+   * 这些值只存在于这份实时副本里 —— manager 侧持有的是启动时的快照。
    */
-  setResolvedContexts(sessionId: string, resolvedContexts: ResolvedContext[]): void {
-    const session = this.sessions.get(sessionId)
-    if (!session) {
-      throw new SessionNotFoundError(sessionId)
-    }
-    session.resolvedContexts = resolvedContexts
+  getSessionConfig(sessionId: string): AgentSessionConfig | undefined {
+    return this.sessions.get(sessionId)?.config
   }
 
   /**
-   * 设置会话的智能代码上下文（外部调用，用于注入代码分析结果）
+   * 注入 prompt 上下文（外部调用，sendCommand 前由 AgentManager 投递）。
+   * stable 是跨轮稳定前缀（进 system 通道），turn 是每轮上下文（进 user turn）。
    */
-  setCodeContext(sessionId: string, codeContext: string): void {
+  setPromptContext(sessionId: string, ctx: PromptContext): void {
     const session = this.sessions.get(sessionId)
     if (!session) {
       throw new SessionNotFoundError(sessionId)
     }
-    session.codeContext = codeContext
-  }
-
-  /**
-   * 设置会话的项目记忆上下文（外部调用，用于注入项目记忆）
-   */
-  setMemoryContext(sessionId: string, memoryContext: string): void {
-    const session = this.sessions.get(sessionId)
-    if (!session) {
-      throw new SessionNotFoundError(sessionId)
-    }
-    session.memoryContext = memoryContext
+    session.promptContext = ctx
   }
 
   /**
@@ -908,44 +897,39 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
-   * 生成范围约束提示词
-   * 委托给 scope-prompt-builder 模块处理
+   * 稳定前缀：系统指令 + 会话摘要 + scope 约束 + 项目记忆。
+   * 跨轮逐字节一致，可被 KV-cache 复用 —— 进 system 通道。
+   *
+   * 透明转发会话（A2A 入站）返回空串：不注入任何 BizGraph 内部状态
+   * （CLAUDE.md Boundaries §3）。
    * @protected
    */
-  /**
-   * 便捷方法：从 session 中自动提取 codeContext 并构建 scope prompt
-   */
-  protected buildScopePromptForSession(
-    session: AgentSession,
-    resolvedContexts?: ResolvedContext[],
-  ): string {
-    // 透明转发会话（A2A 入站）：不注入任何 BizGraph 内部状态 ——
-    // scope 约束 / 前序摘要 / 项目记忆都不下发（CLAUDE.md Boundaries §3）。
+  protected buildScopePromptForSession(session: AgentSession): string {
     if (session.config.transparentForward) return ''
+    return session.promptContext?.stable ?? ''
+  }
 
-    const parts: string[] = []
+  /**
+   * 每轮上下文：代码上下文 + 编译上下文 + 水位线 + 会话历史记忆。
+   * 每轮随请求变化 —— 进 user turn。
+   * @protected
+   */
+  protected buildTurnContext(session: AgentSession): string {
+    if (session.config.transparentForward) return ''
+    return session.promptContext?.turn ?? ''
+  }
 
-    // 注入前序会话摘要（为不支持原生 resume 的适配器提供伪连续性）
-    if (session.config.contextSummary) {
-      parts.push(session.config.contextSummary)
-      parts.push('') // 空行分隔
-    }
-
-    parts.push(buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts))
-
-    // 注入代码上下文（每轮变化，不进 scope 段——scope 是跨轮稳定前缀）
-    if (session.codeContext) {
-      parts.push('')
-      parts.push(session.codeContext)
-    }
-
-    // 注入项目记忆上下文（与代码上下文分离）
-    if (session.memoryContext) {
-      parts.push('')
-      parts.push(session.memoryContext)
-    }
-
-    return parts.join('\n')
+  /**
+   * CLI / thread 类适配器的单串 prompt：稳定前缀 → 每轮上下文 → 用户请求。
+   * 用户请求只在这里出现一次（不进 stable / turn）。
+   * @protected
+   */
+  protected buildFullPrompt(session: AgentSession, command: AgentCommand): string {
+    return [
+      this.buildScopePromptForSession(session),
+      this.buildTurnContext(session),
+      this.buildCommandPromptForSession(session, command),
+    ].filter((s) => !!s && s.length > 0).join('\n\n')
   }
 
   /**
@@ -1059,7 +1043,7 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
 
     const history: ToolHistoryEntry[] = []
     const toolPrompt = this.buildSubagentToolPrompt(session.config.allowedDelegates)
-    const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildCommandPromptForSession(session, command)}`
+    const basePrompt = `${this.buildScopePromptForSession(session)}\n${toolPrompt}\n${this.buildTurnContext(session)}\n${this.buildCommandPromptForSession(session, command)}`
     const startTime = Date.now()
 
     for (let round = 0; round < BaseAdapter.MAX_TOOL_ROUNDS; round++) {

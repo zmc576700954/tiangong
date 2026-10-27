@@ -44,9 +44,7 @@ export class QwenCodeAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePromptForSession(session)
-    const commandPrompt = this.buildCommandPromptForSession(session, command)
-    const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
+    const fullPrompt = this.buildFullPrompt(session, command)
 
     const args = ['-p', fullPrompt]
 

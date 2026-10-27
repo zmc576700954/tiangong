@@ -113,6 +113,11 @@ describe('OpenCodeAdapter', () => {
       forbiddenFiles: ['src/legacy.ts'],
     })
     const session = await adapter.startSession(config)
+    // Task 3 起适配器消费编排器投递的 promptContext，不再自行构造 scope。
+    adapter.setPromptContext(session.id, {
+      stable: '# 业务节点：Storage Module\n## 禁止修改的文件（黑名单）\n- src/legacy.ts',
+      turn: 'TURN-CTX',
+    })
 
     let capturedPrompt = ''
     const mockStdin = {
@@ -140,6 +145,7 @@ describe('OpenCodeAdapter', () => {
     expect(capturedPrompt).toContain('⚠️ 强制约束')
     expect(capturedPrompt).toContain('src/storage.ts')
     expect(capturedPrompt).toContain('禁止修改的文件（黑名单）')
+    expect(capturedPrompt).toContain('TURN-CTX')
     expect(capturedPrompt).toContain('Fix crash on save')
   })
 

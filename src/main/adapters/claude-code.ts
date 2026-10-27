@@ -114,6 +114,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     }
 
     const scopePrompt = this.buildScopePromptForSession(session)
+    const turnContext = this.buildTurnContext(session)
     const commandPrompt = this.buildCommandPromptForSession(session, command)
     // 透明转发会话（A2A 入站）：远端调用方不应能借本机 CLI 读文件、跑 shell，
     // 或派生本地 subagent。下文据此关闭 MCP server、内置工具与文件级 settings。
@@ -207,7 +208,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       }
 
       const queryIter = query({
-        prompt: commandPrompt,
+        // 每轮上下文 + 用户请求进 user turn；稳定前缀走 systemPrompt 通道。
+        // 用户请求只出现一次 —— 它不进 stable 段。
+        prompt: [turnContext, commandPrompt].filter((s) => !!s && s.length > 0).join('\n\n'),
         options: {
           // 透明转发：不下发 BizGraph 的 scope / memory / 项目上下文。
           ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),

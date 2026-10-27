@@ -19,7 +19,7 @@
  *    compactInflight / healthMonitor / _handleSessionEnded / startRecoveryCheck）
  *
  * 边界（per CLAUDE.md "Boundaries with Agent CLI"）：
- *  - 仅编排、不替换 CLI 内部行为；任何 prompt 注入走 lifecycle 内的 setMemoryContext
+ *  - 仅编排、不替换 CLI 内部行为；任何 prompt 注入走 lifecycle 内的 setPromptContext
  *  - 不污染 KV-cache prefix；project memory / 智能代码上下文经 PromptOrchestrator 拼接
  *  - 写操作由 ScopeGuard 兜底，lifecycle.start() 中已对每个 session prepare sandbox
  */
@@ -608,31 +608,13 @@ export class AgentManager {
     contextRefs?: ContextRef[],
     nodes?: GraphNode[],
   ): Promise<void> {
-    const sessionConfig = this.sessionStates.get(sessionId)?.config
     const sessionState = this.sessionStates.get(sessionId)
+    const sessionConfig = sessionState?.config
     const commandType = (command as AgentCommand).type
-
-    const { resolvedContexts, codeContext, assembled } = await this.assembler.assemble({
-      sessionId,
-      command,
-      adapterName: sessionState?.adapterName ?? '',
-      sessionConfig,
-      contextRefs,
-      nodes,
-      optimalBudget: this.getOptimalPromptBudget(commandType),
-    })
-
     const adapter = this.router.resolve(sessionId)
-    if (adapter) {
-      if (resolvedContexts.length > 0) {
-        adapter.setResolvedContexts(sessionId, resolvedContexts)
-      }
-      if (codeContext) {
-        adapter.setCodeContext(sessionId, codeContext)
-      }
-      adapter.setMemoryContext(sessionId, assembled.text)
-    }
 
+    // 先压缩再装配：压缩会把前序摘要写进适配器的实时会话配置，
+    // 装配晚一步就会漏掉这段摘要（压缩后同会话的后续轮次会丢上下文）。
     const threadId = sessionState?.threadId
     if (threadId && this.contextWaterline?.shouldAutoCompact(threadId)) {
       try {
@@ -640,6 +622,30 @@ export class AgentManager {
       } catch (err) {
         logger.warn(`[Waterline] Auto-compact failed for ${sessionId}: ${err}`)
       }
+    }
+
+    // 适配器实时配置里可能有 manager 启动快照没有的 contextSummary（压缩摘要），
+    // 装配 stable 前缀要用最新的那份。
+    const liveConfig = adapter?.getSessionConfig?.(sessionId)
+    const effectiveConfig =
+      sessionConfig && liveConfig?.contextSummary
+        ? { ...sessionConfig, contextSummary: liveConfig.contextSummary }
+        : sessionConfig
+
+    const { resolvedContexts, assembled } = await this.assembler.assemble({
+      sessionId,
+      command,
+      adapterName: sessionState?.adapterName ?? '',
+      sessionConfig: effectiveConfig,
+      contextRefs,
+      nodes,
+      optimalBudget: this.getOptimalPromptBudget(commandType),
+    })
+
+    if (adapter) {
+      // 分段投递：stable 进 system 通道（跨轮可复用），turn 进 user turn。
+      // 用户请求不进任一段 —— 它由适配器的 buildCommandPrompt 单独承载。
+      adapter.setPromptContext(sessionId, assembled.context)
     }
 
     await this.sendCommand(sessionId, command)

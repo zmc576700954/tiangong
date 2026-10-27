@@ -59,10 +59,13 @@ export class MindMapAdapter extends BaseAdapter {
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
-    const scopePrompt = this.buildScopePromptForSession(session)
-    const fullPrompt = scopePrompt
-      ? `${scopePrompt}\n\n---\n\n${command.description}`
-      : command.description
+    const fullPrompt = [
+      this.buildScopePromptForSession(session),
+      this.buildTurnContext(session),
+      command.description,
+    ]
+      .filter((s) => !!s && s.length > 0)
+      .join('\n\n---\n\n')
 
     // 进度标记不能以 '[' / '{' 开头：这段文本会与模型输出拼在同一条 stdout
     // 通道里，括号前缀会破坏后续的 JSON 解析。

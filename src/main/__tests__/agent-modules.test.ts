@@ -15,7 +15,7 @@ function createMockAdapter(name: string, installed = true): AgentAdapter {
     onOutput: vi.fn(),
     offOutput: vi.fn(),
     terminateSession: vi.fn(),
-    setResolvedContexts: vi.fn(),
+    setPromptContext: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
   } as unknown as AgentAdapter

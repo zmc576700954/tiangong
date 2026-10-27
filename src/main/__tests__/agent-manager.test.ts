@@ -44,7 +44,9 @@ class TestAdapter extends BaseAdapter {
       // 新会话的 bind 覆盖旧条目，活动会话数不增长，恢复链路静默断掉。
       id: generateId(this.name),
       adapterName: this.name,
-      config,
+      // 真实适配器都 clone 配置（避免运行时写回调用方对象），
+      // 适配器侧的状态（如压缩摘要 contextSummary）因此与 manager 快照相互独立。
+      config: structuredClone(config),
       startTime: Date.now(),
     }
     this.registerSession(session, this.mockProc)
@@ -269,6 +271,96 @@ describe('AgentManager', () => {
     it('should throw for unknown session', async () => {
       await expect(manager.sendCommand('unknown', { type: 'implement', description: 'test', targetNodeId: 'n1' }))
         .rejects.toThrow(SessionNotFoundError)
+    })
+  })
+
+  describe('resolveAndSendCommand', () => {
+    it('通过 setPromptContext 投递 stable/turn，用户请求不进任一段', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+
+      // 会话历史记忆走 MemoryStore → 需要 DB；单测没有 DB，短路这一段。
+      const historySpy = vi
+        .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+        .mockResolvedValue(undefined)
+      const setPromptContextSpy = vi.spyOn(adapter, 'setPromptContext')
+
+      await manager.resolveAndSendCommand(sessionId, {
+        type: 'implement',
+        description: 'USER-REQ-UNIQUE',
+        targetNodeId: 'n1',
+      })
+
+      expect(setPromptContextSpy).toHaveBeenCalledTimes(1)
+      const ctx = setPromptContextSpy.mock.calls[0][1]
+      expect(ctx.stable.length).toBeGreaterThan(0)
+      expect(ctx.turn.length).toBeGreaterThan(0)
+      // 用户请求只由适配器的 buildCommandPrompt 承载，不进 stable / turn。
+      expect(ctx.stable).not.toContain('USER-REQ-UNIQUE')
+      expect(ctx.turn).not.toContain('USER-REQ-UNIQUE')
+
+      historySpy.mockRestore()
+    })
+
+    it('适配器实时配置里的压缩摘要进 stable 段', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig())
+
+      const historySpy = vi
+        .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+        .mockResolvedValue(undefined)
+
+      // 压缩后适配器把摘要写进自己的会话配置 —— manager 的启动快照看不到它。
+      const liveSession = (adapter as any).sessions.get(sessionId)
+      liveSession.config.contextSummary = 'SUMMARY-AAA'
+
+      const setPromptContextSpy = vi.spyOn(adapter, 'setPromptContext')
+      await manager.resolveAndSendCommand(sessionId, {
+        type: 'implement',
+        description: 'cmd',
+        targetNodeId: 'n1',
+      })
+
+      expect(setPromptContextSpy.mock.calls[0][1].stable).toContain('SUMMARY-AAA')
+
+      historySpy.mockRestore()
+    })
+
+    it('自动压缩产生的摘要当轮就进 stable 段', async () => {
+      const adapter = new TestAdapter('test-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('test-adapter', mockConfig({ threadId: 't-1' }))
+
+      const historySpy = vi
+        .spyOn((manager as any).promptFormatter, 'formatSessionHistoryContext')
+        .mockResolvedValue(undefined)
+
+      ;(manager as any).contextWaterline = { shouldAutoCompact: () => true }
+      vi.spyOn(manager, 'compactContext').mockImplementation(async (sid: string) => {
+        ;(adapter as any).sessions.get(sid).config.contextSummary = 'COMPACT-SUMMARY'
+        return {
+          strategy: 'summary',
+          trigger: 'auto-threshold',
+          tokensBefore: 100,
+          tokensAfter: 10,
+          summary: 'COMPACT-SUMMARY',
+          startedAt: Date.now(),
+          durationMs: 1,
+        } as any
+      })
+
+      const setPromptContextSpy = vi.spyOn(adapter, 'setPromptContext')
+      await manager.resolveAndSendCommand(sessionId, {
+        type: 'implement',
+        description: 'cmd',
+        targetNodeId: 'n1',
+      })
+
+      expect(setPromptContextSpy.mock.calls[0][1].stable).toContain('COMPACT-SUMMARY')
+
+      historySpy.mockRestore()
     })
   })
 

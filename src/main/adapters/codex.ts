@@ -75,9 +75,7 @@ export class CodexAdapter extends BaseAdapter {
       throw new AdapterError('Codex SDK not installed. Run: npm install @openai/codex-sdk', this.name)
     }
 
-    const scopePrompt = this.buildScopePromptForSession(session)
-    const commandPrompt = this.buildCommandPromptForSession(session, command)
-    const fullPrompt = `${scopePrompt}\n\n${commandPrompt}`
+    const fullPrompt = this.buildFullPrompt(session, command)
 
     try {
       let codex = this.codexInstances.get(session.id)

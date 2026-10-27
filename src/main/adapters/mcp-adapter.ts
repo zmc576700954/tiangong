@@ -669,6 +669,9 @@ export class McpAdapter extends BaseAdapter {
       ? command.description
       : `${typeLabels[command.type] ?? 'Please complete the task'}:\n${command.description}`
     const systemPrompt = this.buildScopePromptForSession(session)
+    const turnContext = this.buildTurnContext(session)
+    // 每轮上下文 + 用户请求进 user turn；稳定前缀走 system 消息。
+    const userContent = [turnContext, userPrompt].filter((s) => !!s && s.length > 0).join('\n\n')
 
     // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []
@@ -715,7 +718,7 @@ export class McpAdapter extends BaseAdapter {
         const messages: RichLlmMessage[] = []
         // 透明转发时 systemPrompt 为空 —— 不下发空的 system 消息。
         if (systemPrompt) messages.push({ role: 'system', content: systemPrompt })
-        messages.push({ role: 'user', content: userPrompt })
+        messages.push({ role: 'user', content: userContent })
 
         responseText = await this.executeToolUseLoop(
           session,
@@ -749,7 +752,7 @@ export class McpAdapter extends BaseAdapter {
 
         const plainMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = []
         if (enhancedSystem) plainMessages.push({ role: 'system', content: enhancedSystem })
-        plainMessages.push({ role: 'user', content: userPrompt })
+        plainMessages.push({ role: 'user', content: userContent })
 
         responseText = await this.callLlmUnified(
           apiKey.provider,
