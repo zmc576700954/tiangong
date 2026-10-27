@@ -3,7 +3,7 @@ import { cn } from '../lib/utils'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
-import { NODE_TYPE_VALUES } from '@shared/types'
+import { isNodeType } from '@shared/type-guards'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2, Bot } from 'lucide-react'
 import { ViewportMenu } from './components/ViewportMenu'
@@ -40,11 +40,6 @@ const statusOptions: { value: NodeStatus; color: string }[] = [
   { value: 'published', color: '#22c55e' },
 ]
 
-/** 规则表给的是类型名（不是 label）——窄化到已知的 NodeType，未知类型直接忽略 */
-function isNodeType(value: string): value is NodeType {
-  return (NODE_TYPE_VALUES as readonly string[]).includes(value)
-}
-
 export function NodeContextMenu({
   nodeId,
   x,
@@ -77,6 +72,7 @@ export function NodeContextMenu({
 
   if (!node) return null
 
+  // 规则表给的是类型名（不是 label）——用共享的 isNodeType 窄化，未知类型直接忽略
   const childTypeOptions = allowedChildTypes.filter(isNodeType)
 
   return (

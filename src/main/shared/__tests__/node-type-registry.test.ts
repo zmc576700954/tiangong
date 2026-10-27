@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { nodeTypeRegistry } from '../node-type-registry'
+import { nodeTypeRegistry, BUILTIN_NODE_TYPES } from '../node-type-registry'
 
 describe('nodeTypeRegistry', () => {
   it('has built-in types', () => {
@@ -75,11 +75,65 @@ describe('nodeTypeRegistry', () => {
 
   it('bug cannot have any children', () => {
     expect(nodeTypeRegistry.validateParentChild('bug', 'feature')).toBe(false)
-    expect(nodeTypeRegistry.validateParentChild('bug', 'process')).toBe(false)
   })
 
-  it('feature cannot be a child of module', () => {
-    expect(nodeTypeRegistry.validateParentChild('feature', 'module')).toBe(false)
+  /**
+   * 下面两条用「探针类型」把**父侧**检查单独拎出来：
+   * 探针的 allowedParentTypes 明确允许该父节点 → 子侧必然放行，
+   * 所以结果为 false 只能来自父侧的 allowedChildTypes。
+   * 没有它们的话，删掉 feature / bug 的 allowedChildTypes 这一行，
+   * 整套用例仍然全绿（子侧照样把非法父子关系拒掉）。
+   */
+  it('bug rejects a child whose allowedParentTypes permits bug', () => {
+    nodeTypeRegistry.register({
+      type: 'bug-child-probe',
+      label: 'Bug Child Probe',
+      defaultStatus: 'draft',
+      allowedParentTypes: ['bug'],
+    })
+    expect(nodeTypeRegistry.validateParentChild('bug', 'bug-child-probe')).toBe(false)
+  })
+
+  it('feature rejects a child whose allowedParentTypes permits feature', () => {
+    nodeTypeRegistry.register({
+      type: 'feature-child-probe',
+      label: 'Feature Child Probe',
+      defaultStatus: 'draft',
+      allowedParentTypes: ['feature'],
+    })
+    expect(nodeTypeRegistry.validateParentChild('feature', 'feature-child-probe')).toBe(false)
+  })
+
+  /**
+   * 归一化：注册时没写 allowedChildTypes = 没有子节点。
+   * 没有这条，校验器会放行任意子节点，而渲染端菜单的 `?? []` 一个都不给——
+   * 两套真相。
+   */
+  it('a type registered without allowedChildTypes rejects every child', () => {
+    nodeTypeRegistry.register({
+      type: 'childless-parent',
+      label: 'Childless Parent',
+      defaultStatus: 'draft',
+      allowedParentTypes: ['process'],
+    })
+    nodeTypeRegistry.register({
+      type: 'childless-child',
+      label: 'Childless Child',
+      defaultStatus: 'draft',
+      allowedParentTypes: ['childless-parent'],
+    })
+    expect(nodeTypeRegistry.validateParentChild('childless-parent', 'childless-child')).toBe(false)
+  })
+
+  /**
+   * 内置规则表必须显式声明 allowedChildTypes。
+   * 归一化之后「没写」和「写了空数组」在运行期等价，所以这条断言守的是
+   * 「规范表本身不许留空」——把这两行从表里删掉，用例会红。
+   */
+  it('every builtin type explicitly declares allowedChildTypes', () => {
+    for (const config of BUILTIN_NODE_TYPES) {
+      expect(config.allowedChildTypes, `${config.type} must declare allowedChildTypes`).toBeDefined()
+    }
   })
 
   it('validateStatusTransition returns true for same status', () => {

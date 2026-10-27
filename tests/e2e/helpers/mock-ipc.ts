@@ -101,6 +101,17 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       'node:delete': async () => true,
       'node:batchUpdatePositions': async () => undefined,
 
+      // Node type rules — mirrors the real nodeType:listConfigs payload
+      // (type / allowedChildTypes / allowedParentTypes, no behavior).
+      'nodeType:listConfigs': async () => [
+        { type: 'project', allowedChildTypes: ['module'] },
+        { type: 'module', allowedParentTypes: ['project'], allowedChildTypes: ['process', 'wiki-page'] },
+        { type: 'process', allowedParentTypes: ['module'], allowedChildTypes: ['feature', 'bug', 'wiki-page'] },
+        { type: 'feature', allowedParentTypes: ['process'], allowedChildTypes: ['bug'] },
+        { type: 'bug', allowedParentTypes: ['process', 'feature'], allowedChildTypes: [] },
+        { type: 'wiki-page', allowedParentTypes: ['project', 'module', 'process', 'wiki-page'], allowedChildTypes: ['wiki-page'] },
+      ],
+
       // Edge
       'edge:create': async (data: Record<string, unknown>) => ({ ...data, id: `edge_${Date.now()}` }),
       'edge:update': async () => undefined,
