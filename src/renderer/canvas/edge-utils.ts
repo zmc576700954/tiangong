@@ -22,15 +22,19 @@ const EDGE_TRANSITION = 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s'
  * ⚠️ 这里**只有颜色**是真实生效的外观来源：`BizEdge` 自己按
  * `edgeTypeConfig[edgeType].color` 拼 `BaseEdge` 的 style，边对象上的 `style`
  * 字段**不会被读**（`@xyflow/react` 把它透传给边组件，但边组件不接）。
- * 曾经给四种语义边写过 `strokeDasharray`，注释里写着虚线、实际画出来是实线 ——
- * 那些字段从来没生效过，已删（留着的唯一效果是骗人）。
+ * 曾经给四种语义边写过 `strokeDasharray`、给 `business-flow` 写过 `animated: true`，
+ * 注释里写着虚线/会动起来、实际画出来是实线且静止 —— 那些字段从来没生效过，已删
+ * （留着的唯一效果是骗人）。
+ *
+ * ⚠️ 真正生效的「边会动」是 `GraphCanvas` 自己算的 `shouldAnimate`
+ * （写在流式边对象上、由 xyflow 消费），**与这张表无关** —— 别往这里加 `animated`。
  */
-export const edgeTypeConfig: Record<EdgeType, { color: string; animated?: boolean }> = {
+export const edgeTypeConfig: Record<EdgeType, { color: string }> = {
   default: { color: '#94a3b8' },
   success: { color: '#22c55e' },
   failure: { color: '#ef4444' },
   condition: { color: '#f59e0b' },
-  'business-flow': { color: '#3b82f6', animated: true },
+  'business-flow': { color: '#3b82f6' },
   semantic: { color: '#3b82f6' },
   dependency: { color: '#22c55e' },
   'co-change': { color: '#f97316' },

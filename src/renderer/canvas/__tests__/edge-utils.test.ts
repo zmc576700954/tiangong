@@ -44,12 +44,14 @@ describe('edge-utils', () => {
     expect(edgeTypeConfig.hierarchical.color).toMatch(/^#/)
   })
 
-  // 类型配置里**不许**再有虚线字段：BizEdge 从来不读它，
+  // 类型配置里**不许**再有除 `color` 以外的外观字段：`BizEdge` 从来不读它们。
   // 曾经写过的 business-flow / semantic / co-change / wiki-link 虚线全是假的
-  // （注释里写着虚线、画出来是实线）。这条用例钉住「别再写永不生效的外观字段」。
-  it('carries no dash pattern in the type config', () => {
+  // （注释里写着虚线、画出来是实线）；`business-flow` 的 `animated: true` 也是假的
+  // （真正生效的动画是 `GraphCanvas` 的 `shouldAnimate`，与这张表无关）。
+  // 留着它们唯一的效果是骗人 —— 这条用例钉住「别再写永不生效的外观字段」。
+  it('carries nothing but a color in the type config', () => {
     for (const cfg of Object.values(edgeTypeConfig)) {
-      expect('strokeDasharray' in cfg).toBe(false)
+      expect(Object.keys(cfg)).toEqual(['color'])
     }
   })
 })
