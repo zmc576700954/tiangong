@@ -8,7 +8,6 @@ export { ProjectIndexer } from './project-indexer'
 export { CodeFileWatcher } from './file-watcher'
 export { EntityExtractor } from './entity-extractor'
 export { SmartContextResolver } from './smart-context-resolver'
-export { PromptAssembler } from './prompt-assembler'
 export { ExecutionPlanner } from './execution-planner'
 
 export type { ParseResult } from './ast-parser'
@@ -23,5 +22,4 @@ export type {
   SmartContextOptions,
   ResolvedCodeContext,
 } from './smart-context-resolver'
-export type { PromptAssemblyOptions } from './prompt-assembler'
 export type { ExecutionStep, ExecutionPlan } from './execution-planner'

@@ -931,7 +931,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       parts.push('') // 空行分隔
     }
 
-    parts.push(buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts, session.codeContext))
+    parts.push(buildScopePrompt(session.config, resolvedContexts ?? session.resolvedContexts))
+
+    // 注入代码上下文（每轮变化，不进 scope 段——scope 是跨轮稳定前缀）
+    if (session.codeContext) {
+      parts.push('')
+      parts.push(session.codeContext)
+    }
 
     // 注入项目记忆上下文（与代码上下文分离）
     if (session.memoryContext) {
@@ -1155,9 +1161,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   protected buildScopePrompt(
     config: AgentSessionConfig,
     resolvedContexts?: ResolvedContext[],
-    codeContext?: string,
   ): string {
-    return buildScopePrompt(config, resolvedContexts, codeContext)
+    return buildScopePrompt(config, resolvedContexts)
   }
 
   // ============================================

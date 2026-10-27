@@ -23,7 +23,7 @@ import type {
   TokenEconomics,
 } from '@shared/types'
 
-import { buildScopePrompt } from '../adapters/scope-prompt-builder'
+import { buildScopePrompt, SCOPE_SECTION_HEADINGS } from '../adapters/scope-prompt-builder'
 import { ContextCompiler } from './context-compiler'
 import { getWaterlineSync } from './waterline-sync'
 import { estimateTokens } from '../shared/token-utils'
@@ -98,6 +98,11 @@ function defaultEconomics(): TokenEconomics {
   return { discoveryTokens: 0, readTokens: 0, savings: 0, savingsPct: 0 }
 }
 
+/** context 层 = 代码上下文（每轮变化）+ 编译上下文（会话产物）。 */
+function joinContextParts(codeContext: string | undefined, compiledText: string): string {
+  return [codeContext, compiledText].filter((s) => !!s && s.length > 0).join('\n\n')
+}
+
 /**
  * Priority-ordered scope compression.
  *
@@ -113,10 +118,10 @@ function defaultEconomics(): TokenEconomics {
  *   3 — also compress allowed-files to basenames only
  *   4 — hard-truncate whatever remains
  */
-function compressScopeByPriority(
+export function compressScopeByPriority(
   scopeText: string,
   maxTokens: number,
-  estimate: (t: string) => number,
+  estimate: (t: string) => number = estimateTokens,
 ): { text: string; compressionLevel: number } {
   if (estimate(scopeText) <= maxTokens) {
     return { text: scopeText, compressionLevel: 0 }
@@ -128,10 +133,10 @@ function compressScopeByPriority(
   type SectionClass = 'invariant' | 'upstream' | 'downstream' | 'allowed-files' | 'other'
   const classify = (s: string): SectionClass => {
     const trimmed = s.trim()
-    if (trimmed.startsWith('## Invariant Rules')) return 'invariant'
-    if (trimmed.startsWith('## Upstream'))       return 'upstream'
-    if (trimmed.startsWith('## Downstream'))     return 'downstream'
-    if (trimmed.startsWith('## Allowed Files'))  return 'allowed-files'
+    if (trimmed.startsWith(SCOPE_SECTION_HEADINGS.invariants))   return 'invariant'
+    if (trimmed.startsWith(SCOPE_SECTION_HEADINGS.upstream))     return 'upstream'
+    if (trimmed.startsWith(SCOPE_SECTION_HEADINGS.downstream))   return 'downstream'
+    if (trimmed.startsWith(SCOPE_SECTION_HEADINGS.allowedFiles)) return 'allowed-files'
     return 'other'
   }
 
@@ -226,7 +231,7 @@ export class PromptOrchestrator {
     let scopeTokens = 0
     let scopeCompressionLevel = 0
     if (sessionConfig) {
-      scopeText = buildScopePrompt(sessionConfig, resolvedContexts, codeContext)
+      scopeText = buildScopePrompt(sessionConfig, resolvedContexts)
       scopeTokens = estimateTokens(scopeText)
       if (scopeTokens > budgets[1]) {
         logger.info(`Scope layer (${scopeTokens} tokens) exceeds budget (${budgets[1]}), compressing by priority`)
@@ -239,7 +244,8 @@ export class PromptOrchestrator {
     }
 
     // --- Layer 3: Context (compressible) ---
-    let contextText = ''
+    // 代码上下文每轮变化，属于 context 层；scope 是跨轮稳定前缀，不收它。
+    let compiledText = ''
     let contextTokens = 0
     let contextEconomics = defaultEconomics()
     if (outputs && outputs.length > 0) {
@@ -251,13 +257,14 @@ export class PromptOrchestrator {
           projectId,
         })
         const rendered = this.contextCompiler.render(layered, budgets[2])
-        contextText = rendered.text
-        contextTokens = estimateTokens(contextText)
+        compiledText = rendered.text
         contextEconomics = rendered.economics
       } catch (err) {
         logger.warn('Context compilation failed, skipping context layer:', err)
       }
     }
+    let contextText = joinContextParts(codeContext, compiledText)
+    contextTokens = estimateTokens(contextText)
 
     // --- Layer 4: Waterline (not compressible, low cost) ---
     let waterlineText = ''
@@ -307,7 +314,8 @@ export class PromptOrchestrator {
           projectId,
         })
         const rendered = this.contextCompiler.render(layered, adjustedBudgets[2])
-        contextText = rendered.text
+        compiledText = rendered.text
+        contextText = joinContextParts(codeContext, compiledText)
         contextTokens = estimateTokens(contextText)
         contextEconomics = rendered.economics
       } catch (err) {

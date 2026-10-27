@@ -6,7 +6,9 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { PromptOrchestrator } from '../prompt-orchestrator'
+import * as orchestratorModule from '../prompt-orchestrator'
 import type { AssembleResult } from '../prompt-orchestrator'
+import { estimateTokens } from '../../shared/token-utils'
 import type { AgentOutput, AgentSessionConfig, ResolvedContext } from '@shared/types'
 
 // ---------------------------------------------------------------------------
@@ -205,5 +207,48 @@ describe('PromptOrchestrator', () => {
 
     // The assembled text should contain waterline content
     expect(result.text).toContain('项目水位线状态')
+  })
+})
+
+describe('compressScopeByPriority', () => {
+  it('按中文标题分级：Level 1 移除业务不变量但保留黑名单', () => {
+    expect(orchestratorModule.compressScopeByPriority).toBeTypeOf('function')
+
+    // 分级依据的段落标题必须是生产者实际输出的中文标题。
+    // 历史实现按英文标题匹配，导致所有段落都落进 'other'，分级压缩形同虚设。
+    const scope = [
+      '## 业务不变量',
+      '- 恒等约束A'.repeat(20),
+      '',
+      '## 禁止修改的文件（黑名单）',
+      '- src/secret.ts',
+      '',
+      '## 上游契约',
+      'up',
+      '',
+      '## 下游契约',
+      'down',
+    ].join('\n')
+
+    // Level 1 之后剩下的文本（移除业务不变量段）必须装得下预算，
+    // 而原文本装不下 —— 这样才会正好停在 Level 1。
+    const afterLevel1 = [
+      '## 禁止修改的文件（黑名单）',
+      '- src/secret.ts',
+      '',
+      '## 上游契约',
+      'up',
+      '',
+      '## 下游契约',
+      'down',
+    ].join('\n')
+    const maxTokens = estimateTokens(afterLevel1)
+
+    const result = orchestratorModule.compressScopeByPriority(scope, maxTokens)
+
+    expect(result.compressionLevel).toBe(1)
+    expect(result.text).not.toContain('恒等约束A')
+    // 黑名单是安全约束，任何预算压力下都不得被丢弃。
+    expect(result.text).toContain('src/secret.ts')
   })
 })
