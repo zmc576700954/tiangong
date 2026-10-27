@@ -51,6 +51,7 @@ import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { useNodeTypeConfigs } from './hooks/useNodeTypeConfigs'
+import { useCollapse } from './hooks/useCollapse'
 import { useReparentDrag, extractPointerClientPoint, type ReparentReason } from './hooks/useReparentDrag'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
 import {
@@ -106,6 +107,10 @@ function BizNodeWrapper({ id, data, selected }: {
     isReparentTargetValid?: boolean
     /** 落点非法的原因 —— 徽标文案用它 */
     reparentReason?: ReparentReason
+    /** 子树折叠：折叠该节点时会被隐藏的后代数（0 = 没有子节点） */
+    hiddenDescendantCount?: number
+    /** 子树折叠：折叠/展开（引用稳定，来自 useCollapse.toggle） */
+    onToggleCollapse?: (nodeId: string) => void
   }
   selected?: boolean
 }) {
@@ -253,6 +258,19 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     onDrag: onReparentDrag,
     onDragEnd: onReparentDragEnd,
   } = useReparentDrag({ suppressPositions, releasePositions })
+
+  /**
+   * 子树折叠（Task 12）：折叠态存在 `nodes.collapsed` 里 —— 落库后跨会话保留。
+   *
+   * `visibleNodes` 过滤掉被折叠节点的**整棵**后代子树（折叠节点自己可见）。
+   * 布局自动获益：`flowNodes` 只画可见节点，被折叠的节点对 dagre 就是叶子，
+   * 不需要动 `useAutoLayout.ts`。
+   */
+  const {
+    toggle: toggleCollapse,
+    visibleNodes,
+    hiddenDescendantCount,
+  } = useCollapse()
 
   const handleNodesChange: OnNodesChange<Node> = useCallback(
     (changes) => {
@@ -580,7 +598,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     const cache = nodeCacheRef.current
     const nextIds = new Set<string>()
 
-    const nodes = graphNodes.map((node) => {
+    const nodes = visibleNodes.map((node) => {
       const threadInfo = nodeThreadMap.get(node.id)
       const bugCount = bugCountMap.get(node.id) ?? 0
       const selected = node.id === selectedNodeId || node.id === connectingSourceId
@@ -622,6 +640,13 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         isReparentTargetValid,
         nodeReparentReason ?? null,
         isReparentDragging,
+        // 子树折叠：折叠态本身 + 折叠时会被藏起来的后代数。
+        // 后代数**必须**进键：给一个已折叠的节点新增子节点时，该节点自己的
+        // `updatedAt` 不会变（`node:create` 只写新节点）→ 缓存命中 → 徽标
+        // 数字停在旧值。折叠态进键是为了让折叠指示器的方向跟「子树已隐藏」
+        // 这件事同步（乐观更新阶段 updatedAt 还没变）。
+        node.collapsed ?? false,
+        hiddenDescendantCount(node.id),
       ])
 
       nextIds.add(node.id)
@@ -662,6 +687,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           isReparentTarget,
           isReparentTargetValid,
           reparentReason: nodeReparentReason,
+          // 子树折叠：折叠指示器 + 徽标。
+          // 后代数由 useCollapse 算好传进来 —— BizNode 是逐节点渲染的，
+          // 自己数一遍就是 O(n²)。
+          hiddenDescendantCount: hiddenDescendantCount(node.id),
+          onToggleCollapse: toggleCollapse,
         },
         draggable: node.type !== 'project',
         selected,
@@ -680,7 +710,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return nodes
-  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason, reparentDraggingId])
+  }, [visibleNodes, hiddenDescendantCount, toggleCollapse, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason, reparentDraggingId])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {

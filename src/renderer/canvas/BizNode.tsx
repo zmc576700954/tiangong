@@ -5,7 +5,7 @@ import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel, wikiPageTitle } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, AgentOutput } from '@shared/types'
-import { Bug, Loader2, AlertTriangle, Check, BookOpen } from 'lucide-react'
+import { Bug, Loader2, AlertTriangle, Check, BookOpen, ChevronDown, ChevronRight } from 'lucide-react'
 import { useAgentOutputStore } from '../store/agentOutputStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
@@ -13,6 +13,60 @@ import { REPARENT_REASON_I18N_KEY } from './hooks/useReparentDrag'
 import type { ReparentReason } from './hooks/useReparentDrag'
 
 const EMPTY_OUTPUTS: AgentOutput[] = []
+
+/**
+ * 折叠指示器 + 徽标。
+ *
+ * 后代数由 `useCollapse` 算好后经 `flowNode.data` 传进来 —— BizNode 是 React Flow
+ * 逐节点渲染的，每个实例自己数一遍就是 O(n²)。
+ * 「有没有子节点」也用这个数判断：后代数 > 0 ⟺ 至少有一个直接子节点。
+ *
+ * 折叠态自己（`data.collapsed`）决定指示器朝向与徽标是否出现。
+ */
+function FoldControl({
+  nodeId,
+  collapsed,
+  descendantCount,
+  onToggle,
+}: {
+  nodeId: string
+  collapsed: boolean
+  descendantCount: number
+  onToggle?: (nodeId: string) => void
+}) {
+  const { t } = useI18n()
+  // 没有后代 = 没有子节点 = 没有可折叠的东西
+  if (descendantCount <= 0) return null
+  const childCountLabel = t('canvas.collapse.childCount', { count: descendantCount })
+  const toggleLabel = t('canvas.collapse.toggle')
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1">
+      {collapsed && (
+        <span
+          title={childCountLabel}
+          aria-label={childCountLabel}
+          className="rounded bg-muted px-1 text-[9px] leading-4 text-muted-foreground"
+        >
+          ⊕ {descendantCount}
+        </span>
+      )}
+      <button
+        type="button"
+        // `nodrag` 是 react flow 的约定 class：在按钮上按下时不拖动节点
+        className="nodrag rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+        title={toggleLabel}
+        aria-label={toggleLabel}
+        onClick={(e) => {
+          // 不冒泡：否则折叠的同时会顺带触发节点选中/拖拽
+          e.stopPropagation()
+          onToggle?.(nodeId)
+        }}
+      >
+        {collapsed ? <ChevronRight className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+      </button>
+    </span>
+  )
+}
 
 interface BizNodeProps {
   id: string
@@ -34,6 +88,10 @@ interface BizNodeProps {
     isReparentTargetValid?: boolean
     /** 拖拽重挂：落点非法的原因 */
     reparentReason?: ReparentReason
+    /** 子树折叠：折叠该节点时会被隐藏的后代数（0 = 没有子节点，不显示折叠控件） */
+    hiddenDescendantCount?: number
+    /** 子树折叠：折叠/展开（引用稳定，来自 useCollapse.toggle） */
+    onToggleCollapse?: (nodeId: string) => void
   }
   selected?: boolean
   multiSelected?: boolean
@@ -139,6 +197,12 @@ export const BizNodeComponent = memo(function BizNodeComponent({
           <span className="text-[10px] text-muted-foreground uppercase tracking-wider">
             {nodeTypeLabel(data.type, locale)}
           </span>
+          <FoldControl
+            nodeId={data.id}
+            collapsed={data.collapsed === true}
+            descendantCount={data.hiddenDescendantCount ?? 0}
+            onToggle={data.onToggleCollapse}
+          />
         </div>
         <div className="font-bold text-lg truncate">{wikiPageTitle(data.title, locale)}</div>
         {reparentReasonText && (
@@ -217,6 +281,12 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         <span className={cn("text-[10px] text-muted-foreground uppercase tracking-wider", (data.isZoomedOut || data.hideTextLabels) && "hidden")}>
           {nodeTypeLabel(data.type, locale)}
         </span>
+        <FoldControl
+          nodeId={data.id}
+          collapsed={data.collapsed === true}
+          descendantCount={data.hiddenDescendantCount ?? 0}
+          onToggle={data.onToggleCollapse}
+        />
       </div>
       <div className={cn("font-medium text-sm truncate", data.isZoomedOut && "text-[8px]", data.hideTextLabels && "text-[8px]")}>{wikiPageTitle(data.title, locale)}</div>
       {isWikiPage && data.wikiContent && (
