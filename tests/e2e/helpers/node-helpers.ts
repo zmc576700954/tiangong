@@ -50,3 +50,14 @@ export async function getNonProjectNodeIds(page: Page): Promise<string[]> {
   }
   return ids
 }
+
+/**
+ * 多选用的修饰键。
+ *
+ * macOS 上 Chromium 把 **Ctrl + 点击**当成「次要点按」（等价右键），
+ * 不会派发普通的 click —— 于是多选永远选不上，断言「没有节点被选中」。
+ * macOS 用户实际按的是 ⌘（metaKey）。应用侧两个修饰键都认
+ * （`GraphCanvas.tsx`：`isModifier = ctrlKey || metaKey`），
+ * 所以 e2e 必须按平台挑对修饰键，否则这份 spec 只在 Linux CI 上成立。
+ */
+export const MULTI_SELECT_MODIFIER = process.platform === 'darwin' ? 'Meta' : 'Control'
