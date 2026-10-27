@@ -862,7 +862,7 @@ edges（4 条初始层级边，与 parent_id 一致）:
 2. 假 `nodes` 表没有 `type` / `status` / `graph_type` 的 CHECK → 测试里能插进一个非法类型，线上会被 CHECK 拒掉。
 3. 假 `edges` 表没有外键 → 测试里能插一条指向不存在节点的边，线上会被外键拒掉。
 
-→ **测试用真实库**：electron mock + `initDatabase()`，照抄 `src/main/repositories/__tests__/node-repository.test.ts` Step 1 的现成模式（出处是 `src/main/__tests__/database-migration.test.ts`）。fixture 的 INSERT **写全列名**（只写你提供的那些列，其余靠默认值/可空）：
+→ **测试用真实库**：electron mock + `initDatabase()`，照抄 **`src/main/__tests__/database-migration.test.ts`** Step 1 的现成模式（electron mock + `initDatabase()` 都在那个文件里；`src/main/repositories/__tests__/node-repository.test.ts` 要到 Task 11 才创建，**不要**去照抄一个还不存在的文件）。fixture 的 INSERT **写全列名**（只写你提供的那些列，其余靠默认值/可空）：
 
 ```ts
 // nodes：id / type / status / title / graph_id / graph_type / parent_id / sort_index
@@ -1204,7 +1204,7 @@ if (node.parentId && node.parentId === node.id) {
 
 **测试**
 
-新建 `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`。用**真实 better-sqlite3**（electron mock + `initDatabase()`，照 `src/main/repositories/__tests__/node-repository.test.ts` 的现成模式）——防环要真的走 `nodes.parent_id` 查询，mock db 测不出来。
+新建 `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`。用**真实 better-sqlite3**（electron mock + `initDatabase()`，照 **`src/main/__tests__/database-migration.test.ts`** 的现成模式）——防环要真的走 `nodes.parent_id` 查询，mock db 测不出来。
 
 用例（5 条）：
 
@@ -1329,7 +1329,7 @@ describe('useNodeOperations — 补建层级边', () => {
 
 再新建 `src/main/services/__tests__/graph-service-sort-index.test.ts` —— 覆盖**第三条写入路径**（`initFromProject` → `graph-service.createNodes`）。
 
-⚠️ **这条路径必须用真实库**：它的 INSERT 覆盖 `nodes` 表的 21 个列（表本身是 **25 列**，见 `src/main/database.ts:381-407`），mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 Task 11 Step 1 的写法（那里已有现成模式）。
+⚠️ **这条路径必须用真实库**：它的 INSERT 覆盖 `nodes` 表的 21 个列（表本身是 **25 列**，见 `src/main/database.ts:381-407`），mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 **`src/main/__tests__/database-migration.test.ts`** 的现成模式（Task 11 才创建的 `node-repository.test.ts` 此刻还不存在，**不要**照抄一个还不存在的文件）。
 
 `initFromProject` 走真实写入路径的两个前提：
 - `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:43`），mock 掉它不影响被测的写入路径。
