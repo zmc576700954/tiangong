@@ -42,14 +42,18 @@ function FoldControl({
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1">
       {collapsed && (
-        <span
-          title={hiddenCountLabel}
-          className="rounded bg-muted px-1 text-[9px] leading-4 text-muted-foreground"
-        >
+        <span className="rounded bg-muted px-1 text-[9px] leading-4 text-muted-foreground">
           {/* 可见的「⊕ N」对读屏软件没有意义 —— 数字的含义由下面的隐藏文案给出。
               挂在普通 span 上的 aria-label 会被读屏软件忽略（没有 role 就不会
-              参与可访问名计算），所以这里用 sr-only 文本节点。 */}
-          <span aria-hidden="true">⊕ {descendantCount}</span>
+              参与可访问名计算），所以这里用 sr-only 文本节点。
+
+              `title` 挂在**字形**这个 span 上，不挂外层：外层 span 的 title 会
+              变成「可访问描述」，跟可访问名（sr-only 文本，同一句话）重复 →
+              读屏把数字念两遍。`aria-hidden` 只影响无障碍树的暴露，
+              不影响渲染 —— 鼠标悬停照样出原生 tooltip。 */}
+          <span aria-hidden="true" title={hiddenCountLabel}>
+            ⊕ {descendantCount}
+          </span>
           <span className="sr-only">{hiddenCountLabel}</span>
         </span>
       )}

@@ -222,18 +222,36 @@ describe('useCollapse', () => {
     expect(result.current.hiddenDescendantCount('b')).toBe(actuallyHidden)
   })
 
-  it('handles a 2000-level deep chain without blowing the stack', () => {
-    const depth = 2000
+  it('handles a 20000-level deep chain without blowing the stack', () => {
+    // ⚠️ 这条测试钉的是**复杂度**，不只是「不爆栈」。
+    //
+    // 修复前那版实现（865854f）给**每个节点各走一遍完整的祖先链**
+    // （`hasCollapsedAncestor`）→ O(n × 深度)。2000 层只要约 2×10⁶ 步，
+    // 照样能过 —— 也就是说仓库里没有任何东西能挡住实现退化回 O(n × 深度)。
+    //
+    // 20000 层把两件事一起钉住：
+    // - **复杂度**：O(n × 深度) ≈ 2×10⁸ 步 → 约 25 秒 → 下面的显式耗时断言必红；
+    // - **爆栈**：V8 的调用栈大约 1 万帧 —— 2000 层递归不会炸，20000 层会炸。
+    //
+    // 好的实现（一趟向下 DFS + 一趟反序累加）约 15–30 ms → 对 1000 ms 的阈值
+    // 有 30–60 倍余量，CI 慢机也不会误报。
+    const depth = 20000
     const nodes: GraphNode[] = []
     for (let i = 0; i < depth; i++) {
       nodes.push(makeNode(`n${i}`, i === 0 ? undefined : `n${i - 1}`))
     }
     mockState.nodes = nodes
 
+    const startedAt = Date.now()
     const { result } = renderHook(() => useCollapse())
+    const elapsed = Date.now() - startedAt
 
     expect(result.current.visibleNodes).toHaveLength(depth)
     expect(result.current.hiddenDescendantCount('n0')).toBe(depth - 1)
+    // 显式断言耗时：不只靠 vitest 的 5 秒超时 —— 超时的失败信息是一句干巴巴的
+    // 「Test timed out in 5000ms」，看不出是复杂度退化；这条断言的失败信息
+    // 直接指向「复杂度」。
+    expect(elapsed).toBeLessThan(1000)
   })
 
   it('re-renders with the new nodes when the store changes', () => {
