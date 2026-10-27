@@ -2341,7 +2341,9 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 **Files:**
 - Modify: `src/renderer/canvas/GraphCanvas.tsx`（`layoutMode` 持久化）
-- Test: 无新增单测（改动极小），但需全量验证
+- Modify: `tests/e2e/helpers/mock-ipc.ts`（补 `graph:reparent` 通道）
+- Create: `tests/e2e/structure-editing.spec.ts`（浏览器 e2e 验收闸门）
+- Test: 无新增单测（改动极小），但需全量验证 + 浏览器 e2e
 
 **Interfaces:**
 - Consumes: 无
@@ -2358,25 +2360,71 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 Run: `npm run lint && npx tsc --noEmit && npm run test`
 Expected: 零 lint 警告、零类型错误、全部测试通过
 
-- [ ] **Step 3: Manual verification（关键场景）**
+- [ ] **Step 3: 浏览器 e2e 验收（**这是本任务的闸门**）**
 
-Run: `npm run dev`，然后逐项确认：
+新增 `tests/e2e/structure-editing.spec.ts`，跑 `npm run test:e2e`。
 
-1. **打开一个存量项目**（含 AI 生成的旧图）→ 不报错，连线正常，**无双线**
-2. **右键手动加一个子节点** → 画布上**立刻出现父子连线**（本次核心修复）
-3. **点击「整理布局」** → 手动加的子节点排到父节点**下方**，不再是游离的
-4. **拖动节点到另一个节点上** → 目标节点高亮，松手后新连线出现、旧连线消失，无需手动整理布局
-5. **拖动节点到自己的子节点上** → 红色高亮 + tooltip「不能挂到自己的子节点下」，松手无变化
-6. **拖动 feature 到 module 上** → 红色高亮（类型不允许）
-7. **折叠一个有子节点的模块** → 子树消失，显示 `⊕ N` 徽标；**重启应用后仍是折叠状态**
-8. **删除一个父节点** → 其子节点变成根节点（不报错、不消失）
-9. **切换到力导向布局 → 重启应用** → 仍是力导向
-10. **派生 dev 图**（online → dev）→ dev 图的兄弟顺序与 online 一致；折叠状态是展开的
+⚠️ **为什么必须是 e2e 而不是人工走查**：CI 里跑的是 `npm run test:e2e`
+（`tests/e2e/playwright.browser.config.ts`，`webServer` 自动起 `npm run dev`），
+**Electron e2e 不在 CI 里**（`tests/e2e/electron/smoke.spec.ts` 要先 `npm run build`）。
+只写在计划里的人工清单不进 CI → 等于**没有闸门**；而且 SDD 循环里实施者是 subagent，
+`npm run dev` 的手动走查它做不了、也不该由它宣称做过了。
+
+**先给 mock 补一条通道**：`tests/e2e/helpers/mock-ipc.ts` **没有** `graph:reparent`。
+现有 mock 是**无状态**的（`node:update` 只回显不落库、`graph:get` 只在首屏装载时用一次），
+所以新增这一条就够：
+
+```ts
+'graph:reparent': async (nodeId: string, newParentId: string) => ({
+  nodeId,
+  oldParentId: null,
+  newParentId,
+  movedPositions: [],
+}),
+```
+
+**用例写法**照 `tests/e2e/node-interactions.spec.ts`：`setupMockIpc(page, { nodes })` →
+`page.goto('http://localhost:5173')` → `page.click('text=E2E Test Graph')` → `waitForCanvas(page)`。
+
+**要覆盖的场景**（每条一个 `it`）：
+
+1. **父子之间只画一条线**：`nodes` 里给一对有 `parentId` 的节点、`edges` 给空 →
+   断言画布上父子之间**恰好一条**边（层级边由 `parent_id` 派生，不重复画存储边）
+2. **拖到另一个节点上 → 旧线消失、新线出现** → 断言该节点 `parentId` 变了，
+   旧父的连线没了、新父的连线在
+3. **拖到非法类型上 → 被拒**：feature 拖到 module 上（mock 的 `nodeType:listConfigs` 里
+   feature 的 `allowedParentTypes` 是 `['process']`）→ 断言 **`graph:reparent` 没被调用**
+4. **拖到自己的后代上 → 被拒** → 断言 **`graph:reparent` 没被调用**
+5. **删除父节点 → 子节点变成根**：断言子节点还在、且不再连着已删的父
+6. **布局选择持久化**：切到力导向 → `page.reload()` → 断言仍是力导向
+
+⚠️ **两条**「重启后仍在」的语义**不在 e2e 里验**，因为浏览器 mock 无状态，
+拿 `localStorage` 假造一份持久化会给出**假证据**：
+
+| 场景 | 由谁覆盖 |
+|---|---|
+| 折叠状态跨进程持久化（DB 的 `collapsed` 列） | Task 11 的 `src/main/repositories/__tests__/node-repository.test.ts`（`'round-trips the collapsed flag through update'`） |
+| dev 图兄弟顺序与 online 一致、折叠被重置 | Task 9 的 `src/main/repositories/__tests__/graph-repository-clone.test.ts` |
+
+e2e 只验**渲染层行为**：折叠后子树消失 + 显示 `⊕ N` 徽标。
+
+**下面这份人工清单保留下来，作为给人看的可选清单（**不是**本任务的完成闸门）：**
+
+1. 打开一个存量项目（含 AI 生成的旧图）→ 不报错，连线正常，无双线
+2. 右键手动加一个子节点 → 画布上立刻出现父子连线（本次核心修复）
+3. 点击「整理布局」→ 手动加的子节点排到父节点下方，不再是游离的
+4. 拖动节点到另一个节点上 → 目标节点高亮，松手后新连线出现、旧连线消失，无需手动整理布局
+5. 拖动节点到自己的子节点上 → 红色高亮 + tooltip「不能挂到自己的子节点下」，松手无变化
+6. 拖动 feature 到 module 上 → 红色高亮（类型不允许）
+7. 折叠一个有子节点的模块 → 子树消失，显示 `⊕ N` 徽标；重启应用后仍是折叠状态
+8. 删除一个父节点 → 其子节点变成根节点（不报错、不消失）
+9. 切换到力导向布局 → 重启应用 → 仍是力导向
+10. 派生 dev 图（online → dev）→ dev 图的兄弟顺序与 online 一致；折叠状态是展开的
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/renderer/canvas/GraphCanvas.tsx
+git add src/renderer/canvas/GraphCanvas.tsx tests/e2e/helpers/mock-ipc.ts tests/e2e/structure-editing.spec.ts
 git commit -m "feat(canvas): 布局选择按项目持久化"
 ```
 
