@@ -22,6 +22,7 @@ import type { NodeRepository } from '../repositories/node-repository'
 import type { EdgeRepository } from '../repositories/edge-repository'
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { createLogger } from '../shared/logger'
+import { ErrorCode, HierarchyError } from '../errors'
 
 const logger = createLogger('YjsManager')
 
@@ -234,6 +235,18 @@ export class YjsManager {
       wikiMeta: (payload.wikiMeta as GraphNode['wikiMeta']) ?? undefined,
       createdAt: (payload.createdAt as string) ?? now,
       updatedAt: (payload.updatedAt as string) ?? now,
+    }
+
+    // 防环：远端插入的新节点还没有后代，唯一可能的环是**自环**。
+    // 自环一旦写进去就永久卡死该节点 —— 迁移的孤儿清理不会清它
+    // （父节点就是它自己，存在），而之后任何 graph:reparent 都会被防环判成环。
+    // 所以在 INSERT 之前拒绝。
+    if (node.parentId && node.parentId === node.id) {
+      throw new HierarchyError(
+        `Remote node cannot be its own parent: ${node.id}`,
+        ErrorCode.HIERARCHY_SELF_PARENT,
+        { nodeId: node.id },
+      )
     }
 
     this.deps.db.prepare(

@@ -39,6 +39,109 @@ const logger = createLogger('GraphIPC')
 /** wiki:parseContent 的 content 最大长度（512 KB） */
 const MAX_WIKI_CONTENT_LEN = 512 * 1024
 
+const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
+const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
+const MAX_TITLE_LEN = 200
+const MAX_DESCRIPTION_LEN = 2000
+
+function isValidPosition(pos: unknown): pos is { x: number; y: number } {
+  return (
+    pos !== null &&
+    typeof pos === 'object' &&
+    typeof (pos as Record<string, unknown>).x === 'number' &&
+    typeof (pos as Record<string, unknown>).y === 'number'
+  )
+}
+
+function isValidNodeType(type: string): boolean {
+  return VALID_NODE_TYPES.includes(type as GraphNode['type']) || nodeTypeRegistry.has(type)
+}
+
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return val !== null && typeof val === 'object' && !Array.isArray(val)
+}
+
+function validateNodeContent(label: string, val: unknown): void {
+  if (val !== undefined && !isPlainObject(val)) {
+    throw new IpcError(`${label} must be an object`, ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+}
+
+/**
+ * node:update 的入参校验。
+ *
+ * 放在模块作用域（而不是 registerGraphHandlers 闭包里）是为了能被单元测试
+ * 直接调用 —— 主进程测试跑在 vitest 的 node 环境，没有 window.electronAPI，
+ * 走不了 IPC 通道。函数本身不依赖任何闭包变量，提升是等价的重构。
+ *
+ * `parentId` 被显式拒绝：父子关系的事实来源是 `nodes.parent_id`，变更入口
+ * 唯一（`graph:reparent` → HierarchyService，校验防环 / 跨图 / 父子类型并维护
+ * 层级边）。走 node:update 直接写 parent_id 会绕过这些校验，还会留下与
+ * parent_id 不一致的 `hierarchical` 边 —— 那条边之后会被 reparent 当成
+ * "已是父子对" 分支命中。
+ */
+export function validateNodeUpdate(id: string, data: unknown): void {
+  ensureString('id', id, MAX_ID_LEN)
+  if (!data || typeof data !== 'object') {
+    throw new IpcError('Node update data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  const node = data as Record<string, unknown>
+  if (node.parentId !== undefined) {
+    throw new IpcError(
+      'parentId cannot be changed via node:update; use graph:reparent',
+      ErrorCode.IPC_INVALID_ARGUMENT,
+    )
+  }
+  if (node.wikiContent !== undefined) {
+    if (typeof node.wikiContent !== 'string') {
+      throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.wikiMeta !== undefined) {
+    if (node.wikiMeta !== null && (typeof node.wikiMeta !== 'object' || Array.isArray(node.wikiMeta))) {
+      throw new IpcError('wikiMeta must be an object or null', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.title !== undefined) ensureString('title', node.title, MAX_TITLE_LEN)
+  if (node.description !== undefined) {
+    if (typeof node.description !== 'string' || node.description.length > MAX_DESCRIPTION_LEN) {
+      throw new IpcError(`description must be a string with max length ${MAX_DESCRIPTION_LEN}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.status !== undefined) {
+    const status = ensureString('status', node.status, 32)
+    if (!NODE_STATUS_VALUES.includes(status as NodeStatus)) {
+      throw new IpcError(`Invalid node status: ${status}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.type !== undefined) {
+    const type = ensureString('type', node.type, 32)
+    if (!isValidNodeType(type)) {
+      throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.graphType !== undefined) {
+    const graphType = ensureString('graphType', node.graphType, 32)
+    if (!GRAPH_TYPE_VALUES.includes(graphType as GraphType)) {
+      throw new IpcError(`Invalid graph type: ${graphType}`, ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.position !== undefined && !isValidPosition(node.position)) {
+    throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  validateNodeContent('content', node.content)
+  if (node.communitySummary !== undefined && typeof node.communitySummary !== 'string') {
+    throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  ensureOptionalNumber('communityLevel', node.communityLevel)
+  if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
+    throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  if (node.wikiMeta !== undefined && !isPlainObject(node.wikiMeta)) {
+    throw new IpcError('wikiMeta must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+}
+
 export function registerGraphHandlers(
   db: BetterSqlite3.Database,
   typedHandle: TypedHandle,
@@ -66,34 +169,6 @@ export function registerGraphHandlers(
     }
   }
 
-  const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
-  const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
-  const MAX_TITLE_LEN = 200
-  const MAX_DESCRIPTION_LEN = 2000
-
-  function isValidPosition(pos: unknown): pos is { x: number; y: number } {
-    return (
-      pos !== null &&
-      typeof pos === 'object' &&
-      typeof (pos as Record<string, unknown>).x === 'number' &&
-      typeof (pos as Record<string, unknown>).y === 'number'
-    )
-  }
-
-  function isValidNodeType(type: string): boolean {
-    return VALID_NODE_TYPES.includes(type as GraphNode['type']) || nodeTypeRegistry.has(type)
-  }
-
-  function isPlainObject(val: unknown): val is Record<string, unknown> {
-    return val !== null && typeof val === 'object' && !Array.isArray(val)
-  }
-
-  function validateNodeContent(label: string, val: unknown): void {
-    if (val !== undefined && !isPlainObject(val)) {
-      throw new IpcError(`${label} must be an object`, ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-  }
-
   function validateNodeCreate(data: unknown): void {
     if (!data || typeof data !== 'object') {
       throw new IpcError('Node data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
@@ -114,62 +189,6 @@ export function registerGraphHandlers(
       throw new IpcError(`Invalid graph type: ${graphType}`, ErrorCode.IPC_INVALID_ARGUMENT)
     }
     if (!isValidPosition(node.position)) {
-      throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-    validateNodeContent('content', node.content)
-    if (node.communitySummary !== undefined && typeof node.communitySummary !== 'string') {
-      throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-    ensureOptionalNumber('communityLevel', node.communityLevel)
-    if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
-      throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-    if (node.wikiMeta !== undefined && !isPlainObject(node.wikiMeta)) {
-      throw new IpcError('wikiMeta must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-  }
-
-  function validateNodeUpdate(id: string, data: unknown): void {
-    ensureString('id', id, MAX_ID_LEN)
-    if (!data || typeof data !== 'object') {
-      throw new IpcError('Node update data must be an object', ErrorCode.IPC_INVALID_ARGUMENT)
-    }
-    const node = data as Record<string, unknown>
-    if (node.wikiContent !== undefined) {
-      if (typeof node.wikiContent !== 'string') {
-        throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.wikiMeta !== undefined) {
-      if (node.wikiMeta !== null && (typeof node.wikiMeta !== 'object' || Array.isArray(node.wikiMeta))) {
-        throw new IpcError('wikiMeta must be an object or null', ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.title !== undefined) ensureString('title', node.title, MAX_TITLE_LEN)
-    if (node.description !== undefined) {
-      if (typeof node.description !== 'string' || node.description.length > MAX_DESCRIPTION_LEN) {
-        throw new IpcError(`description must be a string with max length ${MAX_DESCRIPTION_LEN}`, ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.status !== undefined) {
-      const status = ensureString('status', node.status, 32)
-      if (!NODE_STATUS_VALUES.includes(status as NodeStatus)) {
-        throw new IpcError(`Invalid node status: ${status}`, ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.type !== undefined) {
-      const type = ensureString('type', node.type, 32)
-      if (!isValidNodeType(type)) {
-        throw new IpcError(`Invalid node type: ${type}. Allowed: ${VALID_NODE_TYPES.join(', ')}`, ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.graphType !== undefined) {
-      const graphType = ensureString('graphType', node.graphType, 32)
-      if (!GRAPH_TYPE_VALUES.includes(graphType as GraphType)) {
-        throw new IpcError(`Invalid graph type: ${graphType}`, ErrorCode.IPC_INVALID_ARGUMENT)
-      }
-    }
-    if (node.position !== undefined && !isValidPosition(node.position)) {
       throw new IpcError('Node position must have numeric x and y', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     validateNodeContent('content', node.content)

@@ -13,7 +13,8 @@ import {
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
-import { DatabaseError, ErrorCode } from '../errors'
+import { isDescendant } from '../shared/hierarchy-utils'
+import { DatabaseError, ErrorCode, HierarchyError } from '../errors'
 
 export class NodeRepository {
   constructor(private db: BetterSqlite3.Database) {}
@@ -160,7 +161,29 @@ export class NodeRepository {
     if (data.title !== undefined) { updates.push('title = ?'); args.push(data.title) }
     if (data.description !== undefined) { updates.push('description = ?'); args.push(data.description) }
     if (data.acceptanceCriteria !== undefined) { updates.push('acceptance_criteria = ?'); args.push(JSON.stringify(data.acceptanceCriteria)) }
-    if (data.parentId !== undefined) { updates.push('parent_id = ?'); args.push(data.parentId) }
+    if (data.parentId !== undefined) {
+      // 防环：远端 peer 可以任意指定 parentId（spec §4.4.2）。
+      // 本地 graph:reparent 已收敛到 hierarchy-service.ts 的单一入口，
+      // 这里是剩下最后一个未受控的 parent_id 写入点
+      // （Yjs 远端更新与快照双向同步都经由这里）。
+      // 只做防环 —— 父子类型 / 跨图校验是 graph:reparent 的职责，
+      // 远端路径按 spec §4.4.2 的取舍不做。
+      if (data.parentId === id) {
+        throw new HierarchyError(
+          `Node cannot be its own parent: ${id}`,
+          ErrorCode.HIERARCHY_SELF_PARENT,
+          { nodeId: id },
+        )
+      }
+      if (data.parentId && isDescendant(id, data.parentId, (nid) => this.getParentId(nid))) {
+        throw new HierarchyError(
+          `Reparent would create a cycle: ${id} -> ${data.parentId}`,
+          ErrorCode.HIERARCHY_CYCLE,
+          { nodeId: id, newParentId: data.parentId },
+        )
+      }
+      updates.push('parent_id = ?'); args.push(data.parentId)
+    }
     if (data.rules !== undefined) { updates.push('rules = ?'); args.push(JSON.stringify(data.rules)) }
     if (data.metadata !== undefined) { updates.push('metadata = ?'); args.push(JSON.stringify(data.metadata)) }
     if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
@@ -207,14 +230,18 @@ export class NodeRepository {
     return this.rowToNode(row)
   }
 
-  updateParentId(nodeId: string, parentId: string | null): void {
-    this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?').run(parentId, nodeId)
-  }
-
   /** 按图 ID 列出所有节点 */
   listByGraph(graphId: string): GraphNode[] {
     const rows = this.db.prepare('SELECT * FROM nodes WHERE graph_id = ?').all(graphId) as Record<string, unknown>[]
     return rows.map((row) => this.rowToNode(row))
+  }
+
+  /** 取父节点 id —— 防环时逐级上溯 parent_id 链用 */
+  private getParentId(id: string): string | null {
+    const row = this.db.prepare('SELECT parent_id FROM nodes WHERE id = ?').get(id) as
+      | { parent_id: string | null }
+      | undefined
+    return row?.parent_id ?? null
   }
 
   /** 批量更新节点位置（事务提交） */
