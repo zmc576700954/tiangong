@@ -1886,8 +1886,79 @@ it('rejects a candidate that is a descendant of the dragged node', () => { /* �
 it('rejects a candidate whose type is not allowed as parent', () => { /* 期望 reason === 'type' */ })
 it('rejects a candidate in another graph', () => { /* 期望 reason === 'cross-graph' */ })
 it('accepts a valid candidate', () => { /* 期望 valid === true */ })
+
 it('returns null candidate when pointer is on empty space', () => { /* 期望 candidate === null */ })
 ```
+
+⚠️ **上面只给了五个用例的名字，没给实现骨架 —— 但有三个 mock 的形状必须先定死，
+否则测试要么报 `useGraphStore is not a function`，要么根本测不到类型判定。**
+
+**1. store mock 必须是 selector 形式。** `useReparentDrag` 要读节点列表并调 `reparentNode`：
+
+```ts
+const { mockState } = vi.hoisted(() => ({
+  mockState: {
+    nodes: [] as unknown[],
+    reparentNode: vi.fn().mockResolvedValue(undefined),
+  },
+}))
+vi.mock('../../../store/graphStore', () => ({
+  useGraphStore: (selector: (s: unknown) => unknown) => selector(mockState),
+}))
+```
+
+⚠️ **隔壁 `useNodePositionPersistence.test.ts` 是 `getState` 形式**
+（`useGraphStore: { getState: vi.fn() }`）—— **照抄会直接报 `useGraphStore is not a function`**。
+（Task 8 的 brief 踩过同一个坑。）
+
+**2. `useNodeTypeConfigs` 要 mock。** 它在 `src/renderer/canvas/hooks/useNodeTypeConfigs.ts`，
+返回 `{ configs, loaded }`（真实实现走 `window.electronAPI['nodeType:listConfigs']()`）。
+mock 掉它，测试才能直接把 `loaded` 设成 `true` / `false`：
+
+```ts
+const { mockConfigs } = vi.hoisted(() => ({
+  mockConfigs: { configs: {} as Record<string, unknown>, loaded: true },
+}))
+vi.mock('../useNodeTypeConfigs', () => ({
+  useNodeTypeConfigs: () => mockConfigs,
+}))
+```
+
+`beforeEach` 里把 `mockConfigs.configs` 恢复成**真实的规则形状**、把 `loaded` 恢复成 `true`
+（类型判定用例需要 `configs` 里确实有 `module` / `feature` 的条目）。
+
+**3. 命中判定要用真实尺寸算 pointer。** `estimateNodeWidth/Height` 从
+`src/renderer/canvas/layouts/force-layout.ts` import
+（⚠️ `tree-layout.ts` 里有一份**同名但未导出**的私有副本，别 import 错文件）。
+它们吃的是 **React Flow 的 `Node`**（读 `node.data.type` / `node.data.title`），
+**不是** `GraphNode` —— 喂进去的必须是 `{ id, position, data: { type, title } }` 这种形状。
+
+尺寸是确定的（`NODE_SIZES`，`force-layout.ts:26`）：`feature` 160×60、`module` 200×80、
+`process` 180×70、`project` 220×90；标题够短时 `estimateNodeWidth` 取基准宽
+（`Math.max(base.width, Math.min(200, textWidth))`）。
+所以一个 `position = { x: 0, y: 0 }` 的 feature 节点，命中矩形是
+**x ∈ [0, 160]、y ∈ [0, 60]** —— pointer 取 `{ x: 80, y: 30 }` 必中，
+`{ x: 500, y: 500 }` 必不中。**别让用例依赖“大概是这个大小”**。
+
+**4. 补一条「规则表未就绪」的用例（现有五个用例里缺这一条）。**
+Step 3 的第 0 条（`loaded === false` → `candidate = null`）**必须有用例钉住** ——
+否则「规则表还没回来就把所有落点判成 type 不合法、给用户一个错误的红框」这个 bug 会重新长出来：
+
+```ts
+it('returns null candidate while the type rule table has not loaded', () => {
+  mockConfigs.loaded = false
+  // …onDrag 落在一个本来合法的位置上…
+  expect(result.current.candidate).toBeNull()
+})
+```
+
+**5. 坐标系：按 Interfaces 块的契约，`onDrag(pointer)` 收的是 flow 坐标。**
+所以 **`useReparentDrag` 自己不调 `screenToFlowPosition`** —— 换算由调用方（`GraphCanvas`）做。
+（Step 3 末尾那句「用 `screenToFlowPosition` 换算」说的是 `GraphCanvas` 那一侧，不是 hook 内部。）
+因此这个测试**不需要** `<ReactFlowProvider />`，也**通常不需要** mock `@xyflow/react`
+（`force-layout.ts` 只 import 了类型，类型在编译期被擦除）。
+只有当你的实现真的 import 了 `@xyflow/react` 的**运行时值**时，才需要
+`vi.mock('@xyflow/react', () => ({ useReactFlow: () => ({ screenToFlowPosition: (p: {x:number;y:number}) => p }) }))`。
 
 - [ ] **Step 2: Run test to verify it fails**
 
