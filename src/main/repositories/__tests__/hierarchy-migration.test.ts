@@ -20,8 +20,9 @@ import { runHierarchyMigration } from '../hierarchy-migration'
 
 /**
  * fixture 的 `nodes` 列清单：真实 `nodes` 表 25 列的一个**子集**。
- * 覆盖迁移读写的列（id / type / status / title / graph_id / graph_type / parent_id /
- * sort_index / position_x / position_y / created_at / updated_at），
+ * 迁移真正读写的列是 `id` / `parent_id` / `sort_index` / `created_at` / `graph_id`；
+ * `type` / `status` / `title` / `graph_type` / `position_x` / `position_y` 在这里是为了
+ * 满足 fixture 建表的 NOT NULL 约束（迁移本身不碰它们）；
  * 另带 `collapsed` 以对齐真实表的形状（真实表里它是 NOT NULL DEFAULT 0，
  * 迁移本身不碰它）。
  */
