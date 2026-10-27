@@ -89,7 +89,7 @@
 **Files:**
 - Modify: `src/shared/types/graph.ts:52`（`EdgeType` 联合类型）、`:375`（`EDGE_TYPE_VALUES`）
 - Modify: `src/renderer/canvas/edge-utils.ts`（`edgeTypeConfig`）
-- Modify: `src/shared/i18n/index.ts:141`（`HandBuiltEdgeType`）、`:211`（`edgeTypeLabel`）
+- Modify: `src/shared/i18n/index.ts:145`（`HandBuiltEdgeType`）、`:215`（`edgeTypeLabel`）
 - Modify: `src/shared/i18n/resources/domains/node.ts`（新增 `edge.hierarchical.label`，zh + en）
 - Create: `src/shared/__tests__/edge-type-hierarchical.test.ts`
 - Test: `src/renderer/canvas/__tests__/edge-utils.test.ts`（已存在，扩展）
@@ -150,7 +150,7 @@ Expected: FAIL — `'hierarchical'` 不在 `EDGE_TYPE_VALUES` 中，`edgeTypeCon
 export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change' | 'wiki-link' | 'hierarchical'
 ```
 
-`src/shared/types/graph.ts:375`：
+`src/shared/types/graph.ts:391`：
 ```ts
 export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical'] as const
 ```
@@ -160,14 +160,14 @@ export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', '
   hierarchical: { color: '#94a3b8' },
 ```
 
-`src/shared/i18n/index.ts:141`：
+`src/shared/i18n/index.ts:145`：
 ```ts
 type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical'>
 ```
 
 （这样 `EDGE_TYPE_KEYS` / `EDGE_TYPE_DESC_KEYS` / `EDGE_TYPE_COLORS` 三张 `Record<HandBuiltEdgeType, …>` 不需要为 hierarchical 补条目，`edgeTypeOptions()` 自然不返回它——层级边不进用户可选的边类型下拉。）
 
-`edgeTypeLabel()`（`src/shared/i18n/index.ts:211`）**必须**为 `hierarchical` 显式加一条分支。它的兜底是 `return key ? tIn(locale, key) : type`——不加工这条分支，画布上的连线标签会直接显示英文 `"hierarchical"`。照 `wiki-link` 的既有写法处理：
+`edgeTypeLabel()`（`src/shared/i18n/index.ts:215`）**必须**为 `hierarchical` 显式加一条分支。它的兜底是 `return key ? tIn(locale, key) : type`——不加工这条分支，画布上的连线标签会直接显示英文 `"hierarchical"`。照 `wiki-link` 的既有写法处理：
 
 ```ts
   if (type === 'hierarchical') return tIn(locale, 'edge.hierarchical.label')
@@ -606,7 +606,7 @@ const flowEdges = useMemo(() => {
 
 - [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
 
-`onEdgeClick`（`GraphCanvas.tsx:688`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
+`onEdgeClick`（`GraphCanvas.tsx:723`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
 
 - 右侧面板 `RightPanel.tsx:55` 用 `edges.find(e => e.id === selectedEdgeId)` 找边 → 找不到 → 面板空白；
 - 按 Delete → `graphStore.deleteEdge(id)` → `edge:delete` IPC → `edgeRepo.delete('derived-...')` → `DELETE ... WHERE id = ?` 命中 0 行 → **静默无操作**（不报错，但用户以为删掉了）。
@@ -767,7 +767,7 @@ export function registerNodeTypeIpcHandlers(typedHandle: TypedHandle): void {
 
 `src/main/ipc-handlers.ts`：
 - 顶部 `import { registerNodeTypeIpcHandlers } from './ipc/node-type'`
-- 在 `registerSubagentHandlers(...)`（:481）附近调用 `registerNodeTypeIpcHandlers(typedHandle)`（`typedHandle` 是 `ipc-handlers.ts:284` 创建的单一实例，被所有 handler 组共用）
+- 在 `registerSubagentHandlers(...)`（:481）附近调用 `registerNodeTypeIpcHandlers(typedHandle)`（`typedHandle` 是 `ipc-handlers.ts:285` 创建的单一实例，被所有 handler 组共用）
 
 - [ ] **Step 6: Replace the renderer's hardcoded rules**
 
@@ -806,7 +806,7 @@ export function useNodeTypeConfigs(): NodeTypeConfigsState {
 
 ⚠️ `loaded` 不是可选字段——Task 10 的拖拽重挂靠它区分「规则还没到」与「规则判定为不合法」。少了它，规则表未就绪的短暂窗口里所有落点都会被误判成红色。
 
-`NodeTypeConfig` 已经在 `@shared/types` 里（`src/shared/types/graph.ts:513`），`behavior?: unknown` 是渲染安全的——渲染端 hook 与 `src/shared/types/ipc.ts` 都从 `@shared/types` import，不用碰 `src/main/shared/node-type-registry`。
+`NodeTypeConfig` 已经在 `@shared/types` 里（`src/shared/types/graph.ts:529`），`behavior?: unknown` 是渲染安全的——渲染端 hook 与 `src/shared/types/ipc.ts` 都从 `@shared/types` import，不用碰 `src/main/shared/node-type-registry`。
 
 `src/renderer/canvas/GraphCanvas.tsx` 传入该 prop 的算法（`nodeContextMenu` 是 GraphCanvas 里已有的 state，见 :262）：
 
@@ -1169,11 +1169,11 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 
 已核实：仓库内**无任何现有调用方**传 `parentId` 给 `node:update`（`useNodeOperations.ts` 的 `handleEnrichNode` 只传 metadata/acceptanceCriteria/rules、`handleStartDev` 只传 status、NodeEditor 只读）。`nodeRepository.updateParentId` 零调用方，可直接删。
 
-⚠️ `node-repository.ts:163` 的 `if (data.parentId !== undefined) { updates.push('parent_id = ?') }` **要保留**——`graph:reparent` 走的是 `hierarchy-service.ts` 的裸 SQL，但 Yjs 远端更新路径（`bidirectional-sync.ts:67` → `nodeRepo.update`）仍经由 repository 层，删了会打断协作同步。**但要在这一处补防环校验**（Step 5）：这条分支是本地 `graph:reparent` 之外唯一能改 `parent_id` 的地方（另一处是 `yjs-manager.ts` 的远端插入），远端 peer 可以任意指定 `parentId`（spec §4.4.2）。
+⚠️ `node-repository.ts:164` 的 `if (data.parentId !== undefined) { updates.push('parent_id = ?') }` **要保留**——`graph:reparent` 走的是 `hierarchy-service.ts` 的裸 SQL，但 Yjs 远端更新路径（`bidirectional-sync.ts:67` → `nodeRepo.update`）仍经由 repository 层，删了会打断协作同步。**但要在这一处补防环校验**（Step 5）：这条分支是本地 `graph:reparent` 之外唯一能改 `parent_id` 的地方（另一处是 `yjs-manager.ts` 的远端插入），远端 peer 可以任意指定 `parentId`（spec §4.4.2）。
 
 - [ ] **Step 1: Write the failing test**
 
-`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts:132`，闭包在 `:42-` 内）。**先把它提升到模块作用域并 `export`**——它和它依赖的纯函数不依赖任何**运行时**闭包变量，提升是安全的。
+`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts`）。**先把它提升到模块作用域并 `export`**——它和它依赖的纯函数不依赖任何**运行时**闭包变量，提升是安全的。
 
 ⚠️ **要一起提升的闭包内声明有 8 个，不止 brief 早先写的 3 个**（控制器实测 `src/main/ipc/graph.ts`）：
 
@@ -1243,13 +1243,13 @@ spec §4.4.2 与批次 2 第 14 项要求「Yjs / AI 写入路径补防环校验
 | 路径 | 位置 | 本任务之后 |
 |---|---|---|
 | `node:update` IPC | `ipc/graph.ts:260` → `nodeRepo.update` | Step 3 在 IPC 层拒绝 `parentId` ✓ |
-| Yjs 远端**更新** | `realtime/yjs-manager.ts:200` → `nodeRepo.update(id, payload)` | **本步（repository 层）** ✓ |
+| Yjs 远端**更新** | `realtime/yjs-manager.ts:201` → `nodeRepo.update(id, payload)` | **本步（repository 层）** ✓ |
 | 快照双向同步 | `realtime/snapshot/bidirectional-sync.ts:67` → `target.nodeRepo.update(change.id, nodeData)` | **本步（同一个 repository 方法）** ✓ |
-| Yjs 远端**插入** | `realtime/yjs-manager.ts:255`（`insertRemoteNode` 的裸 INSERT） | **本步（自环）** ✓ |
+| Yjs 远端**插入** | `realtime/yjs-manager.ts:257`（`insertRemoteNode` 的裸 INSERT） | **本步（自环）** ✓ |
 
 **改法 A —— `NodeRepository.update()` 加校验（覆盖两条更新路径）**
 
-`src/main/repositories/node-repository.ts:163` 的分支保留（Yjs 远端同步要能改 parent），但在 push 进 `updates` **之前**加校验：
+`src/main/repositories/node-repository.ts:164` 的分支保留（Yjs 远端同步要能改 parent），但在 push 进 `updates` **之前**加校验：
 
 ```ts
 if (data.parentId !== undefined) {
@@ -1298,7 +1298,7 @@ private getParentId(id: string): string | null {
 
 `src/main/realtime/yjs-manager.ts` 的 `insertRemoteNode`（:212）把远端 payload 直接 INSERT。**新节点还没有后代**，所以远端插入不可能造成「指向自己后代」的环——唯一可能的环是**自环**（`payload.parentId === payload.id`）。
 
-自环一旦写进去就**永久卡死**该节点：迁移的孤儿清理（`hierarchy-migration.ts:60-62`）不会清它（父节点就是它自己，存在），而之后任何 `graph:reparent` 都会被防环判成环 → 这个节点永远改不动。所以在 INSERT 之前拒绝：
+自环一旦写进去就**永久卡死**该节点：迁移的孤儿清理（`hierarchy-migration.ts:61-66`）不会清它（父节点就是它自己，存在），而之后任何 `graph:reparent` 都会被防环判成环 → 这个节点永远改不动。所以在 INSERT 之前拒绝：
 
 ```ts
 if (node.parentId && node.parentId === node.id) {
@@ -1323,7 +1323,7 @@ if (node.parentId && node.parentId === node.id) {
 4. `nodeRepo.update('c1', { title: 'x' })`（不带 `parentId`）→ 成功，且 `c1.parent_id` 不变
 5. `new YjsManager({ db, nodeRepo, edgeRepo })` 后调用 `manager['insertRemoteNode']({ id: 'X', parentId: 'X', ... })` → 抛 `HIERARCHY_SELF_PARENT`，且 `nodes` 表里**没有** `X` 这一行
 
-⚠️ 第 5 条用 `manager['insertRemoteNode'](...)` 的方括号写法访问 private 方法——TS 的方括号索引访问不受 private 限制，运行时可调。`YjsManager` 是 `export class`（`yjs-manager.ts:52`），也可以用 `createYjsManager(deps).manager` 拿到实例。
+⚠️ 第 5 条用 `manager['insertRemoteNode'](...)` 的方括号写法访问 private 方法——TS 的方括号索引访问不受 private 限制，运行时可调。`YjsManager` 是 `export class`（`yjs-manager.ts:53`），也可以用 `createYjsManager(deps).manager` 拿到实例。
 
 - [ ] **Step 6: Verify no caller broke**
 
@@ -2627,7 +2627,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 **布局自动获益**：`useAutoLayout.applyLayout` 用 React Flow 的 `getNodes()`，而 `GraphCanvas` 通过 `setRfNodes(flowNodes)` 写回。只要 `flowNodes` 过滤掉隐藏后代，被折叠节点就自动作为叶子参与 dagre 计算——**不需要**在 `useAutoLayout.ts` 里单独处理。
 
 （控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
-树形布局 `computeTreeLayout`（`tree-layout.ts:249-251`）与
+树形布局 `computeTreeLayout`（`tree-layout.ts:226`）与
 `findConnectedComponents`（`:83`）都按「两端都在节点集合里」过滤边，
 力导向布局 `createForceSimulation`（`force-layout.ts:148-149`）也有一句
 「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
