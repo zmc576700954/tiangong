@@ -27,11 +27,11 @@ import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
-import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
+import type { GraphNode, GraphEdge, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
-import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
+import { getEdgeMarkerEnd, createMarkerEnd, edgeTypeConfig } from './edge-utils'
 import { deriveHierarchyEdges } from './layouts/hierarchy'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
@@ -46,6 +46,7 @@ import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { useNodeTypeConfigs } from './hooks/useNodeTypeConfigs'
+import { useReparentDrag } from './hooks/useReparentDrag'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
 import {
   DropdownMenu,
@@ -74,6 +75,16 @@ import { computeRemoteSelectionByNode } from './remote-selection'
 /** edgeTypes 定义在组件外部，避免每次渲染重建（@xyflow/react v12 最佳实践） */
 const edgeTypes = { bizEdge: BizEdge }
 
+/**
+ * 幽灵连线（拖拽重挂）的 id 前缀。
+ *
+ * 从被拖节点指向候选父节点的一条**临时**虚线 —— 不进 store、不落库，松手即消失。
+ * `flowEdges` 靠这个前缀识别它并给虚线样式。
+ */
+const GHOST_EDGE_PREFIX = 'ghost-'
+/** 幽灵连线颜色：与合法落点的绿色高亮一致 */
+const GHOST_EDGE_COLOR = '#22c55e'
+
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
 function BizNodeWrapper({ id, data, selected }: {
   id: string
@@ -87,6 +98,9 @@ function BizNodeWrapper({ id, data, selected }: {
     agentThreadId?: string
     agentStatus?: string
     agentSessionId?: string
+    /** 拖拽重挂落点高亮 */
+    isReparentTarget?: boolean
+    isReparentTargetValid?: boolean
   }
   selected?: boolean
 }) {
@@ -214,7 +228,26 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   // 节点位置持久化 Hook（防抖保存拖拽位置到数据库）
   // ────────────────────────────────────────────────────────────────
-  const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
+  const {
+    handleNodesChange: onPositionChange,
+    suppressPositions,
+    releasePositions,
+  } = useNodePositionPersistence(graphId)
+
+  /**
+   * 拖拽重挂（Task 10）：拖动节点时实时判定落点（绿=合法 / 红=非法），
+   * 松手在合法节点上就调 `graph:reparent` 改父子关系。
+   *
+   * 位置权威：重挂成功后位置由主进程返回的 `movedPositions` 决定，
+   * 自由位置持久化必须让位 —— `suppressPositions` / `releasePositions` 就是这个让位机制。
+   */
+  const {
+    draggingNodeId: reparentDraggingId,
+    candidate: reparentCandidate,
+    onDragStart: onReparentDragStart,
+    onDrag: onReparentDrag,
+    onDragEnd: onReparentDragEnd,
+  } = useReparentDrag({ suppressPositions, releasePositions })
 
   const handleNodesChange: OnNodesChange<Node> = useCallback(
     (changes) => {
@@ -527,6 +560,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     return computeRemoteSelectionByNode(remoteStates, localUserId)
   }, [remoteStates, localUserId])
 
+  /**
+   * 拖拽重挂落点高亮的**原始值**。
+   *
+   * 进 `flowNodes` 的 useMemo 依赖数组的必须是引用稳定的原始值 —— candidate 是对象，
+   * 每次指针移动都是新引用，放进依赖里会让依赖每帧变 → memo 每帧重算 →
+   * useEffect(() => setRfNodes(flowNodes)) 每帧触发 → 无限重渲染（画布白屏）。
+   */
+  const reparentTargetId = reparentCandidate?.nodeId ?? null
+  const reparentTargetValid = reparentCandidate?.valid ?? false
+  const reparentReason = reparentCandidate?.reason
+
   const flowNodes = useMemo(() => {
     const cache = nodeCacheRef.current
     const nextIds = new Set<string>()
@@ -541,6 +585,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const remoteSelectionColors = remoteEntries && remoteEntries.length > 0
         ? Array.from(new Set(remoteEntries.map((e) => e.color))).sort()
         : undefined
+      /**
+       * 落点高亮标记 —— **按节点派生**。
+       *
+       * 缓存 key 是按节点算的：把 `reparentTargetId` 塞进去会让**每个**节点的 key 都变
+       * → 每次指针移动都重建全部节点对象 → 拖拽全程掉帧。
+       * 派生的布尔值只有目标节点那一条缓存失效。
+       */
+      const isReparentTarget = reparentTargetId === node.id
+      const isReparentTargetValid = isReparentTarget && reparentTargetValid
+      const nodeReparentReason = isReparentTarget ? reparentReason : undefined
       const key = JSON.stringify([
         node.id,
         node.updatedAt,
@@ -555,6 +609,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         selected,
         multiSelected,
         remoteSelectionColors ?? null,
+        isReparentTarget,
+        isReparentTargetValid,
+        nodeReparentReason ?? null,
       ])
 
       nextIds.add(node.id)
@@ -591,6 +648,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           agentSessionId: threadInfo?.sessionId,
           // D10b: 远端选中颜色
           ...(remoteSelectionColors ? { remoteSelectionColors } : {}),
+          // 拖拽重挂落点高亮
+          isReparentTarget,
+          isReparentTargetValid,
+          reparentReason: nodeReparentReason,
         },
         draggable: node.type !== 'project',
         selected,
@@ -603,7 +664,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return nodes
-  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode])
+  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
@@ -623,8 +684,19 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    */
   const mergedEdges = useMemo(() => {
     const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
-    return [...hierarchyEdges, ...semanticEdges]
-  }, [graphNodes, graphEdges])
+    const base = [...hierarchyEdges, ...semanticEdges]
+    // 幽灵连线：被拖节点 → 候选父节点。临时边，不进 store、不落库，松手即消失。
+    // 只在**合法**落点时出现（非法落点退化成普通移动，不该有连线暗示）。
+    if (!reparentTargetId || !reparentTargetValid || !reparentDraggingId) return base
+    const ghostEdge: GraphEdge = {
+      id: `${GHOST_EDGE_PREFIX}${reparentDraggingId}-${reparentTargetId}`,
+      source: reparentDraggingId,
+      target: reparentTargetId,
+      graphId,
+      edgeType: 'hierarchical',
+    }
+    return [...base, ghostEdge]
+  }, [graphNodes, graphEdges, reparentTargetId, reparentTargetValid, reparentDraggingId, graphId])
 
   const flowEdges = useMemo(() => {
     const cache = edgeCacheRef.current
@@ -633,6 +705,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     const edges = mergedEdges.map((edge) => {
       const edgeType = edge.edgeType || 'default'
       const config = edgeTypeConfig[edgeType]
+      /** 幽灵连线（拖拽重挂的临时虚线）—— 用 id 前缀识别 */
+      const isGhost = edge.id.startsWith(GHOST_EDGE_PREFIX)
       const displayLabel = edge.content?.condition
         ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
         : edge.label
@@ -667,7 +741,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         label: shouldHideLabel ? undefined : displayLabel,
         type: 'bizEdge',
         data: { edgeType, content: edge.content, strength: edge.strength },
-        markerEnd: getEdgeMarkerEnd(edgeType),
+        markerEnd: isGhost ? createMarkerEnd(GHOST_EDGE_COLOR) : getEdgeMarkerEnd(edgeType),
         animated: shouldAnimate,
         // 派生层级边不可选中：它没有对应的存储边对象，选中后右侧面板找不到、
         // 删除也删不掉（删的只是 parent_id 的镜像，派生边照样画出来）。
@@ -675,9 +749,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         // onClick 在 `if (isSelectable)` 块**外面**，所以 onEdgeClick 里还要再挡一道。
         selectable: edgeType === 'hierarchical' ? false : undefined,
         style: {
-          stroke: config.color,
+          stroke: isGhost ? GHOST_EDGE_COLOR : config.color,
           strokeWidth: isSelected ? 3 : 2,
-          strokeDasharray: config.strokeDasharray,
+          strokeDasharray: isGhost ? '5 5' : config.strokeDasharray,
         },
         selected: isSelected,
       }
@@ -792,6 +866,70 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
   /** 力导向布局计算中（CPU 密集） —— 显示 spinner，禁用按钮防重入。 */
   const [forceLoading, setForceLoading] = useState(false)
+
+  /**
+   * 屏幕坐标 → flow 坐标。
+   *
+   * 命中判定需要 flow 坐标，`getBoundingClientRect()` 给的是屏幕坐标。
+   * `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错 —— 包 try/catch，
+   * 别让一次坐标换算异常打断拖拽。
+   */
+  const toFlowPosition = useCallback(
+    (event: MouseEvent | TouchEvent): { x: number; y: number } | null => {
+      if (!('clientX' in event)) return null
+      try {
+        return screenToFlowPosition({ x: event.clientX, y: event.clientY })
+      } catch {
+        return null
+      }
+    },
+    [screenToFlowPosition],
+  )
+
+  /**
+   * 力导向布局下**不启用**重挂。
+   *
+   * 力导向模式下一次拖拽结束会把**所有**节点的仿真坐标整体写回数据库
+   * （useForceLayout.onNodeDragStop），那会覆盖掉重挂算出来的锚点位置与
+   * 整棵子树的平移结果。要同时支持两者得把仿真按新坐标重新播种 ——
+   * 那是 useForceLayout 的重构，超出本任务范围。
+   */
+  const reparentEnabled = layoutMode !== 'force'
+
+  /**
+   * 拖拽回调 —— 力导向 reheat 与重挂候选检测**共存**，不是二选一。
+   *
+   * 位置持久化的入口不是 onNodeDragStop，而是 xyflow 的 onNodesChange
+   * （`change.type === 'position' && !change.dragging`，即拖拽结束的那一下）。
+   */
+  const handleNodeDragStart = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDragStart(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      onReparentDragStart(node.id)
+    },
+    [onForceDragStart, reparentEnabled, onReparentDragStart],
+  )
+
+  const handleNodeDrag = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDrag(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      const flow = toFlowPosition(event)
+      if (flow) onReparentDrag(flow)
+    },
+    [onForceDrag, reparentEnabled, toFlowPosition, onReparentDrag],
+  )
+
+  const handleNodeDragStop = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDragStop(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      const flow = toFlowPosition(event)
+      if (flow) onReparentDragEnd(flow)
+    },
+    [onForceDragStop, reparentEnabled, toFlowPosition, onReparentDragEnd],
+  )
 
   /** 进入力导向布局：显示 loading、计算、写入、退出 force mode 时清 loading。 */
   const handleApplyForceLayout = useCallback(() => {
@@ -1179,9 +1317,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={handleNodeContextMenu}
-        onNodeDragStart={onForceDragStart as unknown as OnNodeDrag<Node>}
-        onNodeDrag={onForceDrag as unknown as OnNodeDrag<Node>}
-        onNodeDragStop={onForceDragStop as unknown as OnNodeDrag<Node>}
+        onNodeDragStart={handleNodeDragStart}
+        onNodeDrag={handleNodeDrag}
+        onNodeDragStop={handleNodeDragStop}
         onMouseMove={(event) => {
           // D10b: 把鼠标的 flow 坐标写入 ref，让 useBroadcastLocalCursor 周期性采样
           if (screenToFlowPosition) {

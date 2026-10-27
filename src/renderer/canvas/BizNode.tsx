@@ -9,6 +9,8 @@ import { Bug, Loader2, AlertTriangle, Check, BookOpen } from 'lucide-react'
 import { useAgentOutputStore } from '../store/agentOutputStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
+import { REPARENT_REASON_I18N_KEY } from './hooks/useReparentDrag'
+import type { ReparentReason } from './hooks/useReparentDrag'
 
 const EMPTY_OUTPUTS: AgentOutput[] = []
 
@@ -26,6 +28,12 @@ interface BizNodeProps {
     agentSessionId?: string
     /** D10b: 远端用户选中本节点的颜色列表（按 colorIndex 排序去重） */
     remoteSelectionColors?: string[]
+    /** 拖拽重挂：本节点是当前落点候选 */
+    isReparentTarget?: boolean
+    /** 拖拽重挂：落点是否合法（false = 红框） */
+    isReparentTargetValid?: boolean
+    /** 拖拽重挂：落点非法的原因 */
+    reparentReason?: ReparentReason
   }
   selected?: boolean
   multiSelected?: boolean
@@ -59,10 +67,32 @@ export const BizNodeComponent = memo(function BizNodeComponent({
     return s.threadOutputs[agentThreadId] ?? EMPTY_OUTPUTS as AgentOutput[]
   })
 
+  /**
+   * 拖拽重挂落点高亮。
+   *
+   * 用 outline 而不是 border-* / ring-*：border-orange-400（agent running）/
+   * border-red-400（agent error）/ border-green-400（agent completed）已经占了
+   * border 颜色，ring-blue-400（选中）/ ring-purple-400（多选）已经占了 ring，
+   * 再加同类工具类最终谁赢由 Tailwind 产物里的 CSS 顺序决定，不由类名书写顺序决定。
+   * outline 是独立的 CSS 属性，跟 border-color 和 box-shadow 都不冲突。
+   */
+  const isReparentTarget = data.isReparentTarget === true
+  const reparentOutlineClass = isReparentTarget
+    ? data.isReparentTargetValid
+      ? 'outline-2 outline-offset-2 outline-green-500'
+      : 'outline-2 outline-offset-2 outline-red-500'
+    : undefined
+  const reparentReasonText = data.reparentReason
+    ? t(REPARENT_REASON_I18N_KEY[data.reparentReason])
+    : undefined
+
   if (isProject) {
     return (
       <div
-        className="group px-6 py-4 rounded-xl border-2 min-w-[180px] shadow-md cursor-default"
+        className={cn(
+          'group relative px-6 py-4 rounded-xl border-2 min-w-[180px] shadow-md cursor-default',
+          reparentOutlineClass,
+        )}
         style={{
           borderColor: multiSelected ? '#8b5cf6' : selected ? '#3b82f6' : typeColor,
           background: `linear-gradient(135deg, ${typeColor}08, ${typeColor}15)`,
@@ -111,6 +141,11 @@ export const BizNodeComponent = memo(function BizNodeComponent({
           </span>
         </div>
         <div className="font-bold text-lg truncate">{wikiPageTitle(data.title, locale)}</div>
+        {reparentReasonText && (
+          <div className="absolute left-0 top-full mt-1 z-10 whitespace-nowrap rounded bg-red-500 px-1.5 py-0.5 text-[10px] leading-tight text-white shadow-sm pointer-events-none">
+            {reparentReasonText}
+          </div>
+        )}
       </div>
     )
   }
@@ -132,6 +167,7 @@ export const BizNodeComponent = memo(function BizNodeComponent({
         isPreview && 'opacity-50 border-dashed border-2 border-gray-400 dark:border-gray-500',
         isPotentialTarget && 'animate-breathe',
         isFlashing && 'animate-flash-once',
+        reparentOutlineClass,
       )}
       style={{
         borderColor: multiSelected ? '#8b5cf6' : selected ? typeColor : undefined,
@@ -234,6 +270,13 @@ export const BizNodeComponent = memo(function BizNodeComponent({
 
       {agentOutputs.length > 0 && (
         <ChangeSummaryBadge outputs={agentOutputs} />
+      )}
+
+      {/* 落点非法的原因说明 —— 紧挨着红框，拖拽过程中就能看到为什么不能挂 */}
+      {reparentReasonText && (
+        <div className="absolute left-0 top-full mt-1 z-10 whitespace-nowrap rounded bg-red-500 px-1.5 py-0.5 text-[10px] leading-tight text-white shadow-sm pointer-events-none">
+          {reparentReasonText}
+        </div>
       )}
     </div>
   )

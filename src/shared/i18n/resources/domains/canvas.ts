@@ -84,6 +84,15 @@ export const canvasZh = {
   'canvas.contextMenu.status': '状态',
   'canvas.contextMenu.deleteNode': '删除节点',
 
+  // ── 拖拽重挂 ──
+  // 前三条是**落点非法时的原因提示**（红框旁的说明文字），不是 toast ——
+  // 非法落点的行为是「退化成普通移动」，不是报错。
+  'canvas.reparent.invalidType': '类型不允许此父子关系',
+  'canvas.reparent.cycle': '不能挂到自己的子节点下',
+  'canvas.reparent.crossGraph': '不能跨图移动节点',
+  'canvas.reparent.success': '已移动到 {parent}',
+  'canvas.reparent.failed': '移动失败，已回到原位',
+
   // ── 添加上下文浮层 ──
   'canvas.contextPopover.title': '添加上下文',
   'canvas.contextPopover.searchPlaceholder': '搜索项目文件...',
@@ -157,6 +166,12 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.contextMenu.fanout': 'Fan-out subagents (from selected node)',
   'canvas.contextMenu.status': 'Status',
   'canvas.contextMenu.deleteNode': 'Delete node',
+
+  'canvas.reparent.invalidType': 'This parent/child type is not allowed',
+  'canvas.reparent.cycle': 'Cannot move a node under its own child',
+  'canvas.reparent.crossGraph': 'Cannot move nodes across graphs',
+  'canvas.reparent.success': 'Moved under {parent}',
+  'canvas.reparent.failed': 'Move failed, the node went back to its original spot',
 
   'canvas.contextPopover.title': 'Add context',
   'canvas.contextPopover.searchPlaceholder': 'Search project files...',

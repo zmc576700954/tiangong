@@ -49,6 +49,8 @@ interface GraphState {
   createNodeBatch: (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   updateNode: (id: string, data: Partial<GraphNode>) => Promise<void>
   batchUpdatePositions: (updates: Array<{ id: string; x: number; y: number }>) => Promise<void>
+  /** 拖拽重挂父节点 —— 父子关系变更的唯一入口（Task 6 的 graph:reparent） */
+  reparentNode: (nodeId: string, newParentId: string) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   selectNode: (id: string | null) => void
   toggleNodeSelection: (nodeId: string) => void
@@ -292,6 +294,29 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({ nodes: prevNodes, _nodeMap: buildNodeMap(prevNodes) })
       throw err
     }
+  },
+
+  /**
+   * 拖拽重挂父节点。
+   *
+   * 主进程算好锚点位置并把整棵子树平移，返回 `movedPositions`（**包含被移动节点自己**）。
+   * 位置以主进程为准 —— 渲染端的自由位置持久化必须给这条路径让位。
+   *
+   * ⚠️ 被移动节点自己的位置也要更新：`translateSubtree` 在目标父节点已有兄弟时
+   * 会把锚点挪到兄弟包围盒的左侧 / 下方，它的坐标**确实会变**。
+   * 只改 parentId 不改 position → store 留旧坐标、DB 是新坐标 → 节点弹回原处。
+   */
+  reparentNode: async (nodeId, newParentId) => {
+    const result = await window.electronAPI['graph:reparent'](nodeId, newParentId)
+    const posMap = new Map(result.movedPositions.map((p) => [p.id, p]))
+    setNodes((nodes) =>
+      nodes.map((n) => {
+        const p = posMap.get(n.id)
+        const position = p ? { x: p.x, y: p.y } : n.position
+        if (n.id === nodeId) return { ...n, parentId: result.newParentId, position }
+        return p ? { ...n, position } : n
+      }),
+    )
   },
 
   deleteNode: async (id) => {
