@@ -22,7 +22,7 @@
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
-- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:574）与 `flowEdges`（:701）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:670-672）/ `useEffect(() => setRfEdges(flowEdges))`（:768-770），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:597）与 `flowEdges`（:743）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:716-718）/ `useEffect(() => setRfEdges(flowEdges))`（:810-812），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -2701,7 +2701,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 新建 `src/renderer/canvas/hooks/__tests__/useCollapse.test.ts`：
 
 ```ts
-it('hides the whole subtree when a node is collapsed', () => { /* p1 → m1 → c1，折叠 m1 后 visibleNodes 不含 m1/c1 */ })
+it('hides the whole subtree when a node is collapsed', () => { /* p1 → m1 → c1，折叠 m1 后 visibleNodes 含 m1、不含 c1（折叠节点自己可见） */ })
 it('persists the collapsed flag through node update', () => { /* toggle 后期望调 updateNode(id, { collapsed: true }) */ })
 it('expands when toggled again', () => { /* */ })
 ```
@@ -2809,11 +2809,11 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:878` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:908` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
 
 ⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
 
-`GraphCanvas.tsx:205-206`：
+`GraphCanvas.tsx:210-211`：
 
 ```ts
 const currentGraph = graphs.find((g) => g.id === graphId)
@@ -2856,11 +2856,11 @@ const handleLayoutModeChange = (mode: 'tree' | 'force') => {
 `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
 （`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
-`GraphCanvas.tsx:205-206`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`GraphCanvas.tsx:210-211`，`currentGraph = graphs.find((g) => g.id === graphId)`、
 `projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
 
 （`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
-从 `:167` 开始，`projectPath` 在 `:206`、`layoutMode` 在 `:878` —— 同一个函数体，直接用。）
+从 `:172` 开始，`projectPath` 在 `:211`、`layoutMode` 在 `:908` —— 同一个函数体，直接用。）
 
 ⚠️ **别把写回做成 effect**（`useEffect(() => localStorage.setItem(key, layoutMode), [layoutMode, projectPath])`）。
 那样首帧就会把 `'tree'` 写进真正的键 → 正好覆盖掉用户上次的选择 —— 读和写必须分开，
