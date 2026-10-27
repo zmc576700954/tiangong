@@ -112,6 +112,31 @@ describe('runHierarchyMigration', () => {
     expect(rows.find(r => r.id === 'e3')!.edge_type).toBe('business-flow')
   })
 
+  // R-37b：第 3 步只改类型、**不去重** —— 父子对同时有 'default' 与 'hierarchical' 时，
+  // 改写之后该对会有两条 'hierarchical'。迁移必须再走一步去重。
+  //
+  // 保留 rowid 最小的那条：第 2 步的兄弟顺序就是按父节点的边列表（rowid 序）推导的，
+  // 删掉 rowid 小的那条会把顺序整个挪位。
+  it('dedupes hierarchical edges on a parent-child pair, keeping the smallest rowid', () => {
+    addChild('m2')
+    const insertEdge = db.prepare(
+      `INSERT INTO edges (${EDGE_COLUMNS}) VALUES (?,?,?,?,?)`,
+    )
+    // 'hierarchical' 先插（rowid 更小），'default' 后插 —— 第 3 步会把后者也改成
+    // 'hierarchical'，于是该对有两条；去重必须保留 rowid 最小的那条。
+    insertEdge.run('dupHier', 'p1', 'm2', 'hierarchical', 'g1')
+    insertEdge.run('dupDef', 'p1', 'm2', 'default', 'g1')
+
+    runHierarchyMigration(db)
+
+    const rows = db
+      .prepare("SELECT id, edge_type FROM edges WHERE source = 'p1' AND target = 'm2'")
+      .all() as { id: string; edge_type: string }[]
+    expect(rows).toHaveLength(1)
+    expect(rows[0].edge_type).toBe('hierarchical')
+    expect(rows[0].id).toBe('dupHier')
+  })
+
   it('backfills sort_index in sibling order', () => {
     runHierarchyMigration(db)
     const row = db.prepare("SELECT sort_index FROM nodes WHERE id='m1'").get() as { sort_index: number | null }

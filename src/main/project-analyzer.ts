@@ -80,7 +80,8 @@ export class ProjectAnalyzer {
         edges.push({
           sourceTempId: moduleParentTempId,
           targetTempId: moduleTempId,
-          label: '包含',
+          // 层级边不带标签：画布上的层级关系由 parent_id 派生，不靠边上的文字。
+          // （渲染层剔除存储的 'hierarchical' 边、只画派生边 —— 派生边没有 label。）
           edgeType: 'hierarchical',
           graphId: '',
         })
@@ -175,6 +176,12 @@ export class ProjectAnalyzer {
    * 新父不能落在节点自己的子树里 —— 否则 parent_id 一落库就是一棵环。
    * 判定复用 `isDescendant`（祖先在前，后代在后），parentOf 传内存里的
    * tempId → parentTempId 映射；数据库路径传的是同一函数的 SQL 查询。
+   *
+   * ⚠️ 今天这道守卫够不到任何东西：analyzer 自己搭的是固定的
+   * project→module→process→feature 三层结构，逐层自顶向下建，父节点永远先于
+   * 子节点存在。它防的是**将来**可能出现的任意 parentTempId 输入。
+   * 别把它当成「已经在替 AI 路径挡环」的证明 —— 规格 §4.4.3 要求它存在，
+   * 但今天的可达性是零。
    *
    * @returns 通过检查返回父节点 tempId；成环则返回 undefined（不写父子关系）
    */

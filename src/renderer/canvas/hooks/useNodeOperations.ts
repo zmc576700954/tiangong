@@ -43,12 +43,20 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
 
     // parent_id 是父子关系的唯一事实来源，但存储层镜像（hierarchical 边）也要同步补上 ——
     // 缺了它，迁移/克隆/画布派生都拿不到这一对的层级边。
-    await createEdge({
-      source: parentId,
-      target: created.id,
-      graphId,
-      edgeType: 'hierarchical',
-    })
+    //
+    // onAddChild 的签名是 (parentId, childType) => void —— 调用方（NodeContextMenu）
+    // 既不 await 也不 catch，这里抛出去会变成 unhandled rejection。
+    // 因此失败只记日志，不往上抛（也不静默吞掉）。
+    try {
+      await createEdge({
+        source: parentId,
+        target: created.id,
+        graphId,
+        edgeType: 'hierarchical',
+      })
+    } catch (err) {
+      console.error('[useNodeOperations] createHierarchyEdge failed:', err)
+    }
   }, [graphNodes, createNode, createEdge, graphId, screenToFlowPosition, locale, t])
 
   const handleGenerateChildren = useCallback(async (nodeId: string) => {

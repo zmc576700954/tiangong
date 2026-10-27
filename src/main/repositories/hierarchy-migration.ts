@@ -5,10 +5,12 @@
  * - DDL（加列 / CHECK 约束）由 database.ts 的 runIncrementalMigrations 用 addColumnSafe 负责
  * - 本文件只做数据搬运，不碰 DDL
  *
- * 四步的顺序不可换：
+ * 五步的顺序不可换：
  *   1. 清孤儿     必须先于回填 sort_index —— 否则会给已失效的父子关系排序号
  *   2. 回填 sort_index 必须先于改写 edge_type —— 改写后父子关系才完整
  *   3. default → hierarchical
+ *   3.5 父子对上的 hierarchical 边去重（R-37b）—— 必须先于第 4 步：
+ *       第 3 步只改类型不去重，父子对同时有 'default' 与 'hierarchical' 时会变成两条
  *   4. 补齐缺失的 hierarchical 边（修「手动加的子节点没有边」这一存量问题）
  *
  * 幂等：每次启动都会跑，重复执行结果不变。
@@ -41,6 +43,7 @@ export function runHierarchyMigration(db: BetterSqlite3.Database): void {
     clearOrphanParentIds(db)
     backfillSortIndex(db)
     rewriteHierarchyEdgeTypes(db)
+    dedupeHierarchyEdges(db)
     insertMissingHierarchyEdges(db)
   })
   migrate()
@@ -151,6 +154,36 @@ function rewriteHierarchyEdgeTypes(db: BetterSqlite3.Database): void {
          SELECT 1 FROM nodes t WHERE t.id = edges.target AND t.parent_id = edges.source
        )`,
   ).run()
+}
+
+/**
+ * 第 3 步之二：父子对上的 'hierarchical' 边去重。
+ *
+ * 第 3 步只改类型、**不去重**：存量数据里某个父子对同时有 'default' 与 'hierarchical'
+ * 时，第 3 步之后该对会有**两条** 'hierarchical' —— 不变量（同一对上恰好一条层级边）被破坏。
+ *
+ * 只针对父子对（`target.parent_id = source`），其余边一律不动。
+ *
+ * 保留 **rowid 最小**的那条：第 2 步的兄弟顺序就是按父节点的边列表（rowid 序）推导的，
+ * 删掉 rowid 小的那条会把顺序整个挪位。
+ */
+function dedupeHierarchyEdges(db: BetterSqlite3.Database): void {
+  const selectPairs = db.prepare(
+    `SELECT DISTINCT e.source AS source, e.target AS target
+     FROM edges e JOIN nodes t ON t.id = e.target
+     WHERE e.edge_type = 'hierarchical' AND t.parent_id = e.source`,
+  )
+  const selectPairEdges = db.prepare(
+    "SELECT id FROM edges WHERE source = ? AND target = ? AND edge_type = 'hierarchical' ORDER BY rowid",
+  )
+  const deleteEdge = db.prepare('DELETE FROM edges WHERE id = ?')
+
+  const pairs = selectPairs.all() as { source: string; target: string }[]
+  for (const pair of pairs) {
+    const edges = selectPairEdges.all(pair.source, pair.target) as { id: string }[]
+    // 第一条 rowid 最小 —— 保留；其余删掉
+    for (const extra of edges.slice(1)) deleteEdge.run(extra.id)
+  }
 }
 
 /**

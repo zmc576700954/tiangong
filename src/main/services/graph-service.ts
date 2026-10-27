@@ -520,6 +520,11 @@ export class GraphService {
       if (!nodeId || !parentId) continue
 
       if (isDescendant(nodeId, parentId, parentOf)) {
+        // ⚠️ 今天这道守卫够不到任何东西：扫描器的层级是固定的
+        // project→module→process→feature，createNodes 是私有方法、只喂扫描器的产出。
+        // 它防的是**将来**可能出现的任意 parentTempId 输入（例如扫描结果换成
+        // AI 自由生成的父子关系）。别把它当成「已经在替 AI 路径挡环」的证明 ——
+        // 规格 §4.4.3 要求它存在，但今天的可达性是零。
         logger.warn(
           `防环：节点 ${nodeId} 的父节点 ${parentId} 落在自己的子树里，已跳过写入 parent_id`,
         )

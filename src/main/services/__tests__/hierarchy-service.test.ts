@@ -213,28 +213,53 @@ describe('HierarchyService.reparent', () => {
     expect(rows[0].edge_type).toBe('hierarchical')
   })
 
-  // 'default' 同时是**用户手画的语义边类型**（EdgeEditor 的 SUPPORTED_EDGE_TYPES 第一项）
-  // 与 AI 写入路径的默认类型 —— 层级边的识别必须靠「父子关系」而不是 edge_type，
-  // 否则这条语义边会被改类型或被删掉，用户的连线就从画布上消失。
-  it('keeps a user-drawn default semantic edge on the new parent pair', () => {
+  // R-37：父子对上的 'default' 边**就是**层级边，不是「用户语义边」。
+  //
+  // 旧实现在这一对上把旧父的层级边搬过来、把 'default' 留在原地 → 同一对上两条边
+  // （一条 'default' + 一条 'hierarchical'）。后果有二：
+  //   1. 违反「同一对上恰好一条层级边」；
+  //   2. 下次启动的迁移第 3 步会把那条 'default' 也转成 'hierarchical'（父子关系唯一，不靠猜），
+  //      而迁移原本不去重 → 该对从此有两条 'hierarchical'，不变量被永久破坏。
+  //
+  // 规格口径（design §4.2.1 / §4.3）：落在父子对上的 'default' 按层级边处理，
+  // 升级它而不是把它留在原地。
+  it('promotes the default edge on the new parent pair instead of leaving it behind', () => {
     db.prepare(
       "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
     ).run('sem1', 'm1', 'm2', 'default', 'g1')
     const svc = new HierarchyService(db)
     svc.reparent('m2', 'm1')
 
-    const semantic = db
-      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'sem1'")
-      .get() as { source: string; target: string; edge_type: string } | undefined
-    expect(semantic).toBeDefined()
-    expect(semantic?.source).toBe('m1')
-    expect(semantic?.target).toBe('m2')
-    expect(semantic?.edge_type).toBe('default')
+    // 新父对 (m1,m2) 上**恰好一条存储边**，且类型是 'hierarchical'
+    const pair = db
+      .prepare("SELECT id, edge_type FROM edges WHERE source = 'm1' AND target = 'm2'")
+      .all() as { id: string; edge_type: string }[]
+    expect(pair).toHaveLength(1)
+    expect(pair[0].edge_type).toBe('hierarchical')
 
-    const hierarchy = db
-      .prepare("SELECT id FROM edges WHERE source = 'm1' AND target = 'm2' AND edge_type = 'hierarchical'")
+    // 旧父对 (p1,m2) 上不再有层级边
+    const oldHierarchy = db
+      .prepare(
+        "SELECT id FROM edges WHERE source = 'p1' AND target = 'm2' AND edge_type = 'hierarchical'",
+      )
       .all() as { id: string }[]
-    expect(hierarchy).toHaveLength(1)
+    expect(oldHierarchy).toHaveLength(0)
+  })
+
+  // R-37 的第 1 级不许回归：新对上**已有** 'hierarchical' 时，重挂后仍是恰好一条。
+  it('keeps exactly one edge when the new parent pair already has a hierarchical edge', () => {
+    db.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+    ).run('preHier', 'm1', 'm2', 'hierarchical', 'g1')
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+
+    const pair = db
+      .prepare("SELECT id, edge_type FROM edges WHERE source = 'm1' AND target = 'm2'")
+      .all() as { id: string; edge_type: string }[]
+    expect(pair).toHaveLength(1)
+    expect(pair[0].edge_type).toBe('hierarchical')
+    expect(pair[0].id).toBe('preHier')
   })
 
   it('keeps a user-drawn default semantic edge on the old parent pair', () => {
@@ -272,7 +297,8 @@ describe('HierarchyService.reparent', () => {
     // dupEdge 是重复项，覆盖「同一对恰好留一条」的清理。
     insertEdge.run('keepEdge', 'm1', 'm2', 'hierarchical', 'g1')
     insertEdge.run('dupEdge', 'm1', 'm2', 'hierarchical', 'g1')
-    // 目标对上的语义边 —— 必须原样保留（不删、不改类型）
+    // 目标对上的 'default' 边 —— R-37：落在父子对上的 'default' 就是层级边，
+    // 留着下次启动迁移会把它转成第二条 'hierarchical' → 必须删掉
     insertEdge.run('semNew', 'm1', 'm2', 'default', 'g1')
     // 旧父对 (p1,m2) 上的语义边 —— 该对已有 fixture 的 e4('hierarchical')，
     // 所以同对的 'default' 是语义边（不是迁移前的层级边），必须原样保留
@@ -299,7 +325,8 @@ describe('HierarchyService.reparent', () => {
       .all() as { id: string }[]
     expect(oldHierarchy).toHaveLength(0)
 
-    // 两条语义边都原样保留
+    // 旧父对上的 'default' 边原样保留 —— 重挂后 (p1,m2) 不再是父子对，
+    // 那条边回到「普通语义边」的身份（迁移第 3 步也不会再改写它）
     const semOld = db
       .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'semOld'")
       .get() as { source: string; target: string; edge_type: string } | undefined
@@ -308,13 +335,12 @@ describe('HierarchyService.reparent', () => {
     expect(semOld?.target).toBe('m2')
     expect(semOld?.edge_type).toBe('default')
 
+    // 新父对上的 'default' 边必须被删掉（R-37）—— 它落在父子对上，就是层级边；
+    // 留着下次启动迁移会把它转成第二条 'hierarchical'。
     const semNew = db
-      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'semNew'")
-      .get() as { source: string; target: string; edge_type: string } | undefined
-    expect(semNew).toBeDefined()
-    expect(semNew?.source).toBe('m1')
-    expect(semNew?.target).toBe('m2')
-    expect(semNew?.edge_type).toBe('default')
+      .prepare("SELECT id FROM edges WHERE id = 'semNew'")
+      .get() as { id: string } | undefined
+    expect(semNew).toBeUndefined()
 
     // 节点确实换了父，sort_index 落在目标父的末尾（m1 的另一个孩子 c1 是 0）
     const row = db

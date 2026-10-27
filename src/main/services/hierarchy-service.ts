@@ -252,8 +252,21 @@ export class HierarchyService {
    * 当成层级边：改掉它的类型，或直接删掉它 —— 用户的连线就从画布上消失了。
    * 仓库里已有的判据是同一个（`hierarchy-migration.ts:143-153`：「父子关系唯一，不靠猜」）。
    *
-   * 目标状态：新的父子对上**恰好一条** `'hierarchical'` 边；
-   * **语义边一律原样保留** —— 不改类型、不删除。只有「自己就是层级边」的边才允许被删。
+   * **目标状态（R-37）**：新的父子对 `(newParentId, nodeId)` 上**有且只有一条存储边，
+   * 且它的 `edge_type` 是 `'hierarchical'`**；旧父子对 `(oldParentId, nodeId)` 上不再有层级边。
+   *
+   * 四级判定（与 Task 8 的写入路径 `graph-service.ts` 第四轮、启动迁移同一套判据）：
+   * 1. 新对上已有 `'hierarchical'` → 留一条，多余的删掉；**新对上的 `'default'` 也删掉**
+   *    （落在父子对上的 `'default'` 就是层级边 —— 留着下次启动迁移会把它转成第二条
+   *    `'hierarchical'`，而迁移不去重）；
+   * 2. 新对上只有 `'default'` → **把它升级成 `'hierarchical'`**（不是再插一条，
+   *    也不是把旧边的搬过来 —— 那会把 `'default'` 留在原地，同一对上就多了一条边）；
+   * 3. 新对上什么都没有 → 把旧对上的层级边**搬过来**（`UPDATE edges SET source=?`，
+   *    保住边 id 与 rowid —— rowid 参与迁移的兄弟顺序推导），旧对上的多余层级边删掉；
+   * 4. 两边都没有层级边 → 插一条新的 `'hierarchical'`。
+   *
+   * 其余语义边（business-flow / semantic / dependency …）一律原样保留 ——
+   * 不改类型、不删除。只有「自己就是层级边」的边才允许被删。
    */
   private syncHierarchyEdge(
     oldParentId: string | null,
@@ -276,6 +289,7 @@ export class HierarchyService {
 
     const oldHierarchical = oldPair.filter((e) => e.edge_type === 'hierarchical')
     const newHierarchical = newPair.filter((e) => e.edge_type === 'hierarchical')
+    const newDefaults = newPair.filter((e) => e.edge_type === 'default')
 
     // 旧对上的 'default' 边：只有「该对上不存在 'hierarchical' 边」时才是迁移前的层级边；
     // 否则它是语义边 —— 原样保留（不删、不改类型）。
@@ -284,17 +298,30 @@ export class HierarchyService {
         ? oldHierarchical
         : oldPair.filter((e) => e.edge_type === 'default')
 
-    // 目标对上已有的层级边 → 复用它；真正重复的多余一条删掉
+    // ① 新对上已有 'hierarchical' → 复用它；真正重复的多余一条删掉
     const keep = newHierarchical[0]
     for (const extra of newHierarchical.slice(1)) deleteEdge.run(extra.id)
 
     if (keep) {
-      // 目标对已有层级边 → 旧对上的层级边全部多余（它们确实是层级边，才允许删）
+      // 新对上的 'default' 也删掉 —— 落在父子对上的 'default' 就是层级边，
+      // 留着下次启动迁移会把它转成第二条 'hierarchical'。
+      for (const edge of newDefaults) deleteEdge.run(edge.id)
+      // 旧对上的层级边全部多余（它们确实是层级边，才允许删）
       for (const edge of oldHierarchyEdges) deleteEdge.run(edge.id)
       return
     }
 
-    // 目标对没有层级边 → 复用旧对的那条（保住边 id 与 rowid），其余删掉
+    // ② 新对上只有 'default' → 把它**升级**成 'hierarchical'（不是再插一条）
+    if (newDefaults.length > 0) {
+      this.db
+        .prepare("UPDATE edges SET edge_type = 'hierarchical' WHERE id = ?")
+        .run(newDefaults[0].id)
+      for (const extra of newDefaults.slice(1)) deleteEdge.run(extra.id)
+      for (const edge of oldHierarchyEdges) deleteEdge.run(edge.id)
+      return
+    }
+
+    // ③ 新对上什么都没有 → 把旧对上的层级边搬过来（保住边 id 与 rowid）
     const reusable = oldHierarchyEdges[0]
     if (reusable) {
       for (const extra of oldHierarchyEdges.slice(1)) deleteEdge.run(extra.id)
@@ -304,7 +331,7 @@ export class HierarchyService {
       return
     }
 
-    // 两边都没有层级边 → 新插一条
+    // ④ 两边都没有层级边 → 新插一条
     this.db
       .prepare(
         "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?, ?, ?, 'hierarchical', ?)",

@@ -24,10 +24,15 @@ vi.mock('@xyflow/react', () => ({
 }))
 
 describe('useNodeOperations — 补建层级边', () => {
+  // createNode 的桩必须**每次调用返回不同的 id** ——
+  // 否则「两条边共用同一个 target」这种错法也是绿的。
+  let nodeSeq = 0
+
   beforeEach(() => {
     vi.clearAllMocks()
     mockState.nodes = []
-    mockState.createNode.mockResolvedValue({ id: 'child1' })
+    nodeSeq = 0
+    mockState.createNode.mockImplementation(async () => ({ id: `child${++nodeSeq}` }))
     mockState.createEdge.mockResolvedValue({ id: 'edge1' })
   })
 
@@ -61,6 +66,15 @@ describe('useNodeOperations — 补建层级边', () => {
     expect(mockState.createEdge.mock.calls[0][0]).toMatchObject({
       source: 'parent1',
       target: 'child1',
+      edgeType: 'hierarchical',
+    })
+    // 每条边必须指向**各自**的孩子 —— 两条边共用一个 target 就是错的
+    expect(mockState.createEdge.mock.calls[1][0].target).not.toBe(
+      mockState.createEdge.mock.calls[0][0].target,
+    )
+    expect(mockState.createEdge.mock.calls[1][0]).toMatchObject({
+      source: 'parent1',
+      target: 'child2',
       edgeType: 'hierarchical',
     })
   })

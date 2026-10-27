@@ -29,7 +29,11 @@ const mockScanResult = {
   ],
 }
 
-// 一个父节点 P1 + 三个兄弟 C1/C2/C3（数组顺序 = analyzer 的输出顺序）
+// 一个父节点 P1 + 三个兄弟 C1/C2/C3。
+//
+// ⚠️ 数组顺序**故意**与标题顺序不一致（C3, C1, C2 而不是 C1, C2, C3）：
+// 兄弟顺序取的是「graphResult.nodes 里同父节点的出现顺序」，不是标题顺序。
+// 两者一致时，「按标题排序推导兄弟顺序」这种改法也是绿的 —— 断言会失去区分度。
 const mockGraphResult = {
   projectName: 'Test Project',
   projectPath: '/project',
@@ -37,9 +41,9 @@ const mockGraphResult = {
   nodes: [
     { tempId: 'root', type: 'project', status: 'confirmed', title: 'Root', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], ownerRole: 'product' },
     { tempId: 'p1', type: 'module', status: 'draft', title: 'P1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'root', ownerRole: 'product' },
+    { tempId: 'c3', type: 'process', status: 'draft', title: 'C3', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
     { tempId: 'c1', type: 'process', status: 'draft', title: 'C1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
     { tempId: 'c2', type: 'process', status: 'draft', title: 'C2', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
-    { tempId: 'c3', type: 'process', status: 'draft', title: 'C3', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
   ],
   // 类型不能省：`edges: []` 会被推成 never[]，后续用例往里塞边就编译不过
   edges: [] as Array<{
@@ -93,7 +97,8 @@ describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
       .prepare('SELECT id, title, sort_index FROM nodes WHERE parent_id = ? ORDER BY sort_index')
       .all(parent.id) as { id: string; title: string; sort_index: number }[]
 
-    expect(rows.map((r) => r.title)).toEqual(['C1', 'C2', 'C3'])
+    // 兄弟顺序 = graphResult.nodes 里同父节点的出现顺序（C3, C1, C2），**不是**标题顺序
+    expect(rows.map((r) => r.title)).toEqual(['C3', 'C1', 'C2'])
     expect(rows.map((r) => r.sort_index)).toEqual([0, 1, 2])
 
     // 第四轮补建：每个有 parent_id 的节点都必须有**且只有一条** hierarchical 边
@@ -105,6 +110,17 @@ describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
       expect(edges).toHaveLength(1)
       expect(edges[0].edge_type).toBe('hierarchical')
     }
+
+    // 模块挂在项目根节点下这一对（root, P1）同样必须**恰好一条** hierarchical 边 ——
+    // 「不再给模块父节点」的回归会让这一对彻底没有边。
+    const root = db
+      .prepare("SELECT id FROM nodes WHERE graph_id = ? AND title = 'Root'")
+      .get(onlineGraph.id) as { id: string }
+    const rootEdges = db
+      .prepare('SELECT edge_type FROM edges WHERE source = ? AND target = ?')
+      .all(root.id, parent.id) as { edge_type: string }[]
+    expect(rootEdges).toHaveLength(1)
+    expect(rootEdges[0].edge_type).toBe('hierarchical')
   })
 
   it('同一对上把已有的 default 边升级成 hierarchical，而不是再插一条', async () => {
