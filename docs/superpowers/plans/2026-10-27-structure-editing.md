@@ -2629,7 +2629,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 （控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
 树形布局 `computeTreeLayout`（`tree-layout.ts:226`）与
 `findConnectedComponents`（`:83`）都按「两端都在节点集合里」过滤边，
-力导向布局 `createForceSimulation`（`force-layout.ts:148-149`）也有一句
+力导向布局 `createForceSimulation`（`force-layout.ts:220-222`）也有一句
 「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
 
 ⚠️ **折叠状态必须真的进得来**（控制器核代码后补的）：
@@ -2639,7 +2639,7 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
   没有它，store 里的节点对象根本不带 `collapsed` 字段 → `collapsedIds` 恒为空 →
   **折叠功能静默失效**（点了没反应，也不报错）。Task 12 的第一个前提就是 Task 11 已经落地。
 - 落库走 `node:update`（`src/main/ipc/graph.ts:260-278`）：它把 `data` **整个**交给
-  `nodeRepo.update(id, data)`，**没有字段白名单**；`validateNodeUpdate`（`:83-123`）
+  `nodeRepo.update(id, data)`，**没有字段白名单**；`validateNodeUpdate`（`:83-143`）
   只拦 `parentId` 的改动与几个已知字段的类型，`collapsed` 既不会被拦也不会被丢。
   → `toggle` 调 `updateNode(id, { collapsed: boolean })` 就能落库，不需要改 IPC 层。
 
