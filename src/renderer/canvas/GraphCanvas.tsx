@@ -32,6 +32,7 @@ import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
+import { deriveHierarchyEdges } from './layouts/hierarchy'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
@@ -596,11 +597,27 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     setRfNodes(flowNodes)
   }, [flowNodes, setRfNodes])
 
+  /**
+   * 画布上真正要画的边集 = 派生的层级边 + 保留的语义边。
+   *
+   * 层级关系以 `nodes.parent_id` 为唯一事实来源，层级边由它派生；存储里的
+   * 历史层级边与迁移残留的 default 父子边在派生时就被丢弃。
+   *
+   * ⚠️ 这里必须自己包一层 useMemo —— mergedEdges 会作为 flowEdges 的依赖。
+   * 写成 useMemo 外面的一次性计算 = 每帧新数组引用 → flowEdges 每帧重算
+   * → useEffect(() => setRfEdges(flowEdges)) 每帧触发 → setRfEdges 是 useState setter
+   * → 无限重渲染循环（React: Maximum update depth exceeded），画布白屏。
+   */
+  const mergedEdges = useMemo(() => {
+    const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
+    return [...hierarchyEdges, ...semanticEdges]
+  }, [graphNodes, graphEdges])
+
   const flowEdges = useMemo(() => {
     const cache = edgeCacheRef.current
     const nextIds = new Set<string>()
 
-    const edges = graphEdges.map((edge) => {
+    const edges = mergedEdges.map((edge) => {
       const edgeType = edge.edgeType || 'default'
       const config = edgeTypeConfig[edgeType]
       const displayLabel = edge.content?.condition
@@ -639,6 +656,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         data: { edgeType, content: edge.content, strength: edge.strength },
         markerEnd: getEdgeMarkerEnd(edgeType),
         animated: shouldAnimate,
+        // 派生层级边不可选中：它没有对应的存储边对象，选中后右侧面板找不到、
+        // 删除也删不掉（删的只是 parent_id 的镜像，派生边照样画出来）。
+        // ⚠️ 这一条挡不住 onEdgeClick —— @xyflow/react 的 EdgeWrapper 里
+        // onClick 在 `if (isSelectable)` 块**外面**，所以 onEdgeClick 里还要再挡一道。
+        selectable: edgeType === 'hierarchical' ? false : undefined,
         style: {
           stroke: config.color,
           strokeWidth: isSelected ? 3 : 2,
@@ -654,7 +676,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return edges
-  }, [graphEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
+  }, [mergedEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
 
   useEffect(() => {
     setRfEdges(flowEdges)
@@ -687,6 +709,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const onEdgeClick = useCallback(
     (_: unknown, edge: Edge) => {
+      // 派生层级边是 parent_id 的渲染产物，没有对应的存储边对象——
+      // 选中它右侧面板找不到、删除也删不掉。层级靠 reparent 改（Task 6/9/10）。
+      if (edge.data?.edgeType === 'hierarchical') return
       selectEdge(edge.id)
     },
     [selectEdge],
