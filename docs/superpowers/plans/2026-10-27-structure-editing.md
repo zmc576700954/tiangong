@@ -1823,16 +1823,82 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `npx vitest run src/main/repositories/__tests__/graph-repository-clone.test.ts`
-Expected: FAIL —— 当前 INSERT 不含 `sort_index` 列，`collapsed` 也随源图复制
+Expected: **第一个用例 FAIL，第二个用例 PASS** —— 这是**正确**的预期，不要试图让第二个也红。
+
+| 用例 | 当前状态 | 为什么 |
+|---|---|---|
+| `clones sort_index but resets collapsed` | ❌ FAIL | `insertNodeStmt`（`graph-repository.ts:220-226`）的 20 列里**没有 `sort_index`** → 克隆出的节点 `sort_index` 是 NULL → `expect(m1.sort_index).toBe(0)` 红。**这才是本任务的 RED 驱动力。** |
+| | | `collapsed` 的断言**本来就绿**：`nodes.collapsed` 是 `INTEGER NOT NULL DEFAULT 0`（`database.ts:392`），而 `collapsed` **根本不在 INSERT 的列清单里** → 克隆出的节点默认就是 0。 |
+| `remaps hierarchical edges to the cloned node ids` | ✅ PASS | Pass 3（`:274-285`）已经用 `idMap.get(rowStr(row, 'source'))` 重映射 source/target → 层级边的重映射**现在就是对的**。 |
+
+⚠️ **不要为了「让测试先红」去改 `collapsed` 的行为。** `collapsed` 不在 INSERT 列清单里，
+新表默认 0 —— 这正是 spec §4.2.1 要的「折叠是开发者视角，派生出来应是展开态」。
+第一个用例里 `collapsed` 的断言是**回归护栏**（防止将来有人把 `collapsed` 加进 INSERT
+从而把 online 的折叠态复制到 dev），**不是**驱动 RED 的那一行。
+
+如果第二个用例**也**红了，那是**真 bug**（说明 `cloneGraphNodes` 的边重映射被改坏了），停下来报告。
+
+Step 3b 新增的第三个用例（跨图悬挂 `parent_id`）在改之前**必然是红的** ——
+克隆出来的节点保留了源图的 `parent_id`，断言 `parent_id === null` 会红。
 
 - [ ] **Step 3: Update cloneGraphNodes**
 
 `src/main/repositories/graph-repository.ts` 的 `cloneGraphNodes`：
 - `insertNodeStmt`（:220）的列清单加 `sort_index`（放在 `parent_id` 之后，与真实 `nodes` 表的列顺序一致），值取 `row['sort_index']`；**占位符数量同步 +1**（20 → 21），且 `insertNodeStmt.run(...)` 的实参要按同样的位置插入 `row['sort_index']`——列清单与实参顺序错位会把 `sort_index` 写进别的列
 - `collapsed` **不加入 INSERT**（新表默认 0）——折叠是开发者视角，从 online 派生出来应是展开态（spec §4.2.1）
+  （Step 2 原文写「`collapsed` 也随源图复制」是**错的** —— 它从来不在 INSERT 的列清单里。
+  本条指令不变，只是把理由说准：不是「去掉一个复制」，而是「本来就没复制，别加」）
 - 克隆边时（Pass 3，:273），若 `row['edge_type'] === 'hierarchical'`，其 source/target 必须用 `idMap` 重映射（与 `parent_id` 用同一张 map）。当前 Pass 3 用的就是 `idMap.get(rowStr(row, 'source'))`，因此**现有代码已经满足**——但要靠 Step 1 的第二个用例钉住，防止将来有人改坏
 
 ⚠️ `cloneGraphNodes` 的两轮结构（Pass 1 插节点时 `parent_id` 暂时是源图的值，Pass 2 才重映射）**保持不变**——本期不加 `parent_id` 外键，这个两段式仍然安全。
+
+- [ ] **Step 3b: 别把跨图的悬挂 `parent_id` 一起克隆过来**（控制器补进来的第 4 条）
+
+`cloneGraphNodes` 的 Pass 2（`graph-repository.ts:263-271`）**只在新旧父节点都在 `idMap` 里时**
+才重映射 `parent_id`：
+
+```ts
+const oldParentId = rowOptStr(row, 'parent_id')
+if (oldParentId && idMap.has(oldParentId)) {
+  parentUpdateStmt.run(idMap.get(oldParentId)!, newId)
+}
+```
+
+若源节点的父亲**不在源图里**（`parent_id` 指向**另一张图**的节点 —— `parent_id` 没有外键，
+Yjs 远端路径也不校验，这种脏数据是可能的），那么克隆出来的新节点**原样保留源图的 `parent_id`**
+→ dev 图里出现一条**指向别的图**的悬挂父子关系。
+
+**为什么这不只是"数据不干净"**：`hierarchy-service.collectDescendants`（`hierarchy-service.ts:218-221`）
+的子节点查询是 `SELECT id, position_x AS x, position_y AS y FROM nodes WHERE parent_id = ?` ——
+**没有 `graph_id` 过滤**。一条跨图的悬挂 `parent_id` 会让 dev 图某个节点的后代遍历**走进 online 图**，
+`graph:reparent` 于是可能把 online 的节点当成 dev 的后代一起搬走。
+
+→ **改法**：Pass 2 里，当 `oldParentId` 存在但**不在 `idMap` 里**时，把克隆节点的 `parent_id`
+置为 **NULL** —— 它在目标图里就是一个根节点（渲染层本来也按孤儿处理、不画父子线，
+所以这是让数据与渲染一致，而不是改变可见行为）。
+
+→ **测试**：加第三个用例 —— 源图里有一个节点，其 `parent_id` 指向**另一张图**的节点；
+克隆之后，dev 图里对应节点的 `parent_id` 必须是 `NULL`。
+
+⚠️ **第三个用例的夹具必须自己隔离**（控制器补的）：
+
+- 「被指向的那个节点」要放在**第三张图**里（例如 `'g_other'`），不能放在 `'g_on'`
+  （放在 `'g_on'` 的话，它就是源图里的一个正常节点，父节点映射得上，测不到「悬挂」）。
+- 那个**悬挂节点**（在 `'g_on'` 里、`parent_id` 指向 `'g_other'` 的节点）
+  **在第三个用例的用例体里插**，不要放进 `beforeAll` ——
+  放进 `beforeAll` 的话前两个用例会多克隆一个节点。按现在的断言它们**仍然会过**
+  （多出来的节点没有边，`toHaveLength(2)` 不受影响），但那是**撞巧**，
+  别让后面的改动踩这个坑。若你还是放进了 `beforeAll`，就在 `beforeEach` 里一并清掉。
+- `'g_other'` 那张图与它的节点也只在这个用例里用。
+
+判据：跑完第三个用例后，**再跑一遍前两个用例**，它们必须依然是绿的
+（`beforeEach` 会清 `'g_dev'`，但不会清 `'g_on'` —— 悬挂节点会留在源图里）。
+如果你担心这一点，最省事的做法是让第三个用例用**自己的一对图**
+（`'g_on2'` → `'g_dev2'`），完全不动 `'g_on'` / `'g_dev'`。
+
+> 连带说明：`insertNodeStmt` 的列清单里**不要**因此加 `parent_id` 的额外处理 ——
+> Pass 1 原样带过去、Pass 2 决定去留，两段式结构**保持不变**（本期不加 `parent_id` 外键，
+> 这个两段式仍然安全）。
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1847,7 +1913,6 @@ git commit -m "fix(canvas): 派生图同步兄弟顺序并重映射层级边"
 ```
 
 ---
-
 ## Task 10: 拖拽重挂交互
 
 **Files:**
@@ -1873,7 +1938,7 @@ git commit -m "fix(canvas): 派生图同步兄弟顺序并重映射层级边"
     candidate: ReparentCandidate | null
     onDragStart: (nodeId: string) => void
     onDrag: (pointer: { x: number; y: number }) => void
-    onDragEnd: () => void
+    onDragEnd: (pointer: { x: number; y: number }) => void
   }
   ```
   `onDrag` 的 `pointer` 是 **flow 坐标**（调用方用 `screenToFlowPosition` 换算）。
@@ -1898,6 +1963,24 @@ it('accepts a valid candidate', () => { /* 期望 valid === true */ })
 
 it('returns null candidate when pointer is on empty space', () => { /* 期望 candidate === null */ })
 ```
+
+⚠️ **再加两条**（原五个用例漏了「落点判定与重挂调用的契约」）：
+
+```ts
+it('does not call reparentNode when the candidate is illegal', () => {
+  // 非法落点 → 只做「普通移动」，绝不能调 graph:reparent
+  expect(mockState.reparentNode).not.toHaveBeenCalled()
+})
+
+it('calls reparentNode with the dragged node and the candidate', () => {
+  // 合法落点 → 调 graph:reparent(draggingNodeId, candidate.nodeId)
+  expect(mockState.reparentNode).toHaveBeenCalledWith('feature-a', 'module-b')
+})
+```
+
+这两条不是凑数：规格 §4.4 第 5 条写死了「命中非法或未命中：拖拽行为退化为普通移动」，
+第 6 条写死了「松手在合法 B 上：调用 `graph:reparent(A, B)`」。**「非法落点也去调重挂」**
+是本任务最容易写错的一处。
 
 ⚠️ **上面只给了五个用例的名字，没给实现骨架 —— 但有三个 mock 的形状必须先定死，
 否则测试要么报 `useGraphStore is not a function`，要么根本测不到类型判定。**
@@ -1979,12 +2062,29 @@ Expected: FAIL —— 模块不存在
 新建 `src/renderer/canvas/hooks/useReparentDrag.ts`。核心逻辑：
 
 - `onDragStart(nodeId)`：记录拖动节点与其**后代集合**（沿 `parent_id` 下行）
-- `onDrag(pointer)`：遍历当前图的节点，找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，与 `force-layout.ts` 导出的 `estimateNodeWidth/Height` 一致——注意 `tree-layout.ts` 里有一份**同名但未导出**的私有副本，要 import 请用 `force-layout.ts`），排除拖动节点自身与其后代。若无命中 → `candidate = null`。若命中 → 依次校验：
-  0. **规则表未就绪 → 直接 `candidate = null`**：`useNodeTypeConfigs()` 返回的 `loaded === false`（IPC 还没回来）时不做任何判定——此时 `configs` 是空表，照常判定会把**所有**合法落点判成 `type` 不合法，给用户一个错误的红框。`loaded === true` 之后才走下面的 1–5。
-  1. 命中的是拖动节点自身 → 跳过
-  2. 命中的是后代 → `reason: 'cycle'`
-  3. `graph_id` 不同 → `reason: 'cross-graph'`
-  4. 类型不允许 → `reason: 'type'`。**渲染进程不能 import `nodeTypeRegistry`**（它在 `src/main/shared/`，是主进程专用），所以这里用 Task 5 的 `useNodeTypeConfigs()` 拿到的配置对象做同样的判断，语义必须与主进程 `validateParentChild` 一致：
+- `onDrag(pointer)`：找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，
+  与 `force-layout.ts` 导出的 `estimateNodeWidth/Height` 一致——注意 `tree-layout.ts` 里有一份
+  **同名但未导出**的私有副本，要 import 请用 `force-layout.ts`），再按下表分类。
+
+  **命中判定（控制器修正过，原文把两个分支写成了死代码）**：
+
+  | | 原写法 | 问题 | 正确写法 |
+  |---|---|---|---|
+  | 命中集合 | 排除「拖动节点自身**与其后代**」 | 后代被排掉了 → 第 2 步的 `'cycle'` **永远判不出来**，Step 1 的 `'rejects a candidate that is a descendant'` 用例必然红 | **只排除拖动节点自身**；后代要参与命中，才能被判成 `'cycle'` |
+  | 遍历范围 | 「遍历**当前图**的节点」 | 别的图的节点根本不在集合里 → 第 3 步的 `'cross-graph'` **永远判不出来**，`'rejects a candidate in another graph'` 用例必然红 | 遍历 store 里的**全部**节点，靠第 3 步的 `graph_id` 判断来分类 |
+
+  ⚠️ **为什么只排除拖动节点自身**：拖动时指针**必然**落在被拖节点的矩形里
+  （节点跟着指针走），所以被拖节点必须排除；否则每个落点都会被它自己吃掉。
+  但**后代不能排除**——「把节点拖到自己的子节点上」是用户真的会犯的错，
+  我们要给它一个**红色反馈**（`reason: 'cycle'`），而不是当作「没命中」。
+
+  **多个节点同时命中时取最后一个**（store 的数组顺序即渲染顺序，后者在上面）。
+
+  无命中 → `candidate = null`；有命中 → 依次校验：
+  0. **规则表未就绪 → 直接 `candidate = null`**：`useNodeTypeConfigs()` 返回的 `loaded === false`（IPC 还没回来）时不做任何判定——此时 `configs` 是空表，照常判定会把**所有**合法落点判成 `type` 不合法，给用户一个错误的红框。`loaded === true` 之后才走下面的 1–4。
+  1. 命中的是**后代** → `reason: 'cycle'`
+  2. `graph_id` 不同 → `reason: 'cross-graph'`
+  3. 类型不允许 → `reason: 'type'`。**渲染进程不能 import `nodeTypeRegistry`**（它在 `src/main/shared/`，是主进程专用），所以这里用 Task 5 的 `useNodeTypeConfigs()` 拿到的配置对象做同样的判断，语义必须与主进程 `validateParentChild` 一致：
      ```ts
      const parentCfg = configs[candidate.type]        // 候选将成为父节点
      const childCfg = configs[dragging.type]          // 拖动中的将成为子节点
@@ -1999,8 +2099,29 @@ Expected: FAIL —— 模块不存在
      ⚠️ **`allowedChildTypes` 与 `allowedParentTypes` 的缺省语义不对称，这是 R-24 修过的**：主进程注册时把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点，与菜单的 `?? []` 一致），但 `allowedParentTypes` **没有**归一化，缺省仍表示「无限制」。渲染端必须照抄这个不对称：`allowedChildTypes` 用 `?? []`（缺字段 → 拒绝），`allowedParentTypes` 用 `!field ||`（缺字段 → 放行）。写反了就会出现「渲染端说可以挂、主进程 `graph:reparent` 拒掉」。
 
      但**配置对象**缺失是另一回事，主进程判拒绝，这里也必须判拒绝——否则渲染端说「可以挂」，主进程 `graph:reparent` 拒掉，用户看到的是一次莫名其妙的报错。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
-  5. 否则 `valid: true`
-- `onDragEnd()`：若 `candidate?.valid` 则调 `graphStore.reparentNode(draggingNodeId, candidate.nodeId)`；失败则 toast 提示并回弹
+  4. 否则 `valid: true`
+- `onDragEnd(pointer)`：**必须收落点坐标，并在落点重新判一次候选**（控制器修正过）。
+  为什么：最后一次 `onDrag` 的坐标与真正松手的位置**可能差一次 mousemove**
+  （用户「移动 + 松手」落在同一批事件里，或 xyflow 的拖拽事件与鼠标事件不同步）。
+  后果是「明明松在目标上，却因为最后一次候选判定是空的而没有重挂」——
+  用户看到的是「拖过去没反应」。→ `onDragEnd` 里用传入的落点坐标**重跑一次命中判定**，
+  以落点为准（`onDrag` 里的候选只是**高亮用的预判**，落点才是**裁决**）。
+- `onDragEnd(pointer)` 的其余行为：
+  - `candidate?.valid` 为真 → 调 `graphStore.reparentNode(draggingNodeId, candidate.nodeId)`；
+    **成功** → 位置由 `movedPositions` 决定（见 Step 5 的「位置权威」一节）；
+    **失败**（IPC 抛错）→ toast 提示并**回弹到原位**（规格 §6：「渲染端捕获后 toast 提示，
+    拖拽回弹到原位」）。回弹的实现见 Step 5。
+  - `candidate` 为空或 `valid` 为假 → **什么都不做**：拖拽退化成普通移动，
+    位置照常持久化（规格 §4.4 第 5 条：「命中非法或未命中：拖拽行为退化为普通移动
+    （A 跟随指针，位置持久化）」）。**注意别把「非法落点」也做成「回弹」**——
+    规格只要求 IPC 失败才回弹。
+
+⚠️ **力导向布局模式下不启用重挂**（控制器裁决 R-38）：力导向模式下一次拖拽结束会
+把**所有**节点的仿真坐标整体写回数据库（`useForceLayout.ts:217-227`），
+那会覆盖掉重挂算出来的锚点位置与整棵子树的平移结果。要同时支持两者，
+就得在重挂提交后把仿真按 store 的新坐标**重新播种**——那是 `useForceLayout` 的重构，
+超出本任务范围，规格也没有要求。因此：`layoutMode === 'force'` 时
+`useReparentDrag` 不注册拖拽回调（拖拽仍是纯力导向交互），树形布局（默认）下才启用。
 
 **坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:189` 已有 `useReactFlow()`）。
 
@@ -2019,23 +2140,147 @@ reparentNode: async (nodeId, newParentId) => {
   const result = await window.electronAPI['graph:reparent'](nodeId, newParentId)
   const posMap = new Map(result.movedPositions.map(p => [p.id, p]))
   setNodes((nodes) => nodes.map((n) => {
-    if (n.id === nodeId) return { ...n, parentId: result.newParentId }
     const p = posMap.get(n.id)
-    return p ? { ...n, position: { x: p.x, y: p.y } } : n
+    const position = p ? { x: p.x, y: p.y } : n.position
+    if (n.id === nodeId) return { ...n, parentId: result.newParentId, position }
+    return p ? { ...n, position } : n
   }))
 }
 ```
 
+⚠️ **被移动节点自己的位置也要更新 —— 别让 `n.id === nodeId` 那个分支提前 `return` 掉位置。**
+
+`ReparentResult.movedPositions` **包含被移动节点自己**
+（`hierarchy-service.ts:130-131`：`{ id: nodeId, x: node.position_x, y: node.position_y }` 加上全部后代）。
+而且**它的位置确实会变**：`translateSubtree`（`:344-375`）在目标父节点**已有兄弟**时，
+把锚点挪到兄弟包围盒的左侧 / 下方（`:362-369`），此时 `anchorX/anchorY` ≠ 原来的
+`position_x/position_y`。
+
+所以如果写成
+
+```ts
+if (n.id === nodeId) return { ...n, parentId: result.newParentId }   // ❌ 提前 return
+const p = posMap.get(n.id)
+return p ? { ...n, position: { x: p.x, y: p.y } } : n
+```
+
+被拖动的那个节点**拿不到自己的新坐标** → store 里留旧坐标、DB 里是新坐标 →
+画布上节点「弹回原处」，直到下一次全量拉取才对上。**必须两个字段一起更新。**
+
+（`GraphNode` 里**没有** `sortIndex` 字段 —— 兄弟序号是渲染层不关心的，主进程管。
+所以 store 这里只需要更新 `parentId` 和 `position`。）
+
 - [ ] **Step 5: Wire it into GraphCanvas**
 
 `src/renderer/canvas/GraphCanvas.tsx`：
-- 现有的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`（:1182-1184）已是力导向布局的钩子，**需与拖拽重挂共存**：拖拽时既跑力导向 reheat，也跑重挂候选检测
-- `onNodeDragStop` 时若候选有效，跳过原有的位置持久化逻辑（由 `reparentNode` 返回的 `movedPositions` 统一写位置）；否则走原有的位置持久化
-- 候选命中时给目标节点加高亮样式（新增 `data.isReparentTarget` / `data.isReparentTargetValid` 属性传给 `BizNode`）
+- 现有的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`（:1182-1184）接的是
+  `useForceLayout` 的回调（:787-789），**需与拖拽重挂共存**：拖拽时既跑力导向 reheat，
+  也跑重挂候选检测。注意 xyflow 的 `onNodesChange`（:1172 → :219-226）才是位置持久化的入口，
+  `onNodeDragStop` **不是**（见下面的「位置权威」）。
 
-⚠️ **高亮状态怎么进 `flowNodes`**：不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发 → 无限重渲染循环。正确做法：把 `candidate?.nodeId`（`string | null`）与 `candidate?.valid`（`boolean | undefined`）当作**原始值**放进 `flowNodes` 的 useMemo **依赖数组**和它的缓存 key 里（key 是 `JSON.stringify([...])` 的成员列表，见 :545-557），在 useMemo 内部给命中的那个节点加 `data.isReparentTarget`。原始值引用稳定，放进依赖数组安全。
+  三处回调的接线形状（`onNodeDrag*` 的事件对象带 `clientX/clientY`）：
 
-`src/renderer/canvas/BizNode.tsx`：新增高亮样式——合法候选用绿色边框，非法候选用红色边框。
+  ```ts
+  const { screenToFlowPosition } = useReactFlow()
+  const toFlow = (e: React.MouseEvent | MouseEvent) =>
+    screenToFlowPosition({ x: e.clientX, y: e.clientY })
+
+  onNodeDragStart={(e, node) => { onForceDragStart(e, node); reparentDrag.onDragStart(node.id) }}
+  onNodeDrag={(e, node) => { onForceDrag(e, node); reparentDrag.onDrag(toFlow(e)) }}
+  onNodeDragStop={(e, node) => { onForceDrag(e, node); reparentDrag.onDragEnd(toFlow(e)) }}
+  ```
+
+  ⚠️ `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错（同文件 :1190-1193 已有这个防护），
+  换算要包 try/catch 或复用那段写法，**别让一次坐标换算异常打断拖拽**。
+  ⚠️ `onForceDrag*` 现在被 `as unknown as OnNodeDrag<Node>` 断言过（:1182-1184），
+  你改成组合回调时注意保持类型能过 `tsc`（`npx tsc --noEmit` 是本任务的验收项之一）。
+- 候选命中时给目标节点加高亮样式（新增 `data.isReparentTarget` / `data.isReparentTargetValid`）
+- **幽灵连线**（规格 §4.4 第 4 条：「命中合法时：B 显示绿色高亮边框，A 与 B 之间显示幽灵连线」）：
+  从被拖节点指向候选父节点的一条**临时**虚线，松手即消失，**不进 store、不落库**。
+  做法：在 `mergedEdges`（:624-627）里追加一条 `edgeType: 'hierarchical'` 的边
+  （`hierarchical` 已在 `edgeTypeConfig`（`edge-utils.ts:15`）里，
+  且 `flowEdges` 的 `selectable: edgeType === 'hierarchical' ? false`（:676）让它天然不可选中）。
+  id 用稳定前缀（如 `ghost-<source>-<target>`），`flowEdges` 靠这个前缀识别它并给虚线样式。
+  `mergedEdges` 的依赖里要加上幽灵两端的 id（字符串，引用稳定）。
+
+#### ⚠️ 位置权威：重挂提交后，位置由谁写（控制器核对代码后补，本任务最容易做错的地方）
+
+**先看现状**（这三条路径今天就在跑）：
+
+| 路径 | 触发点 | 写什么 |
+|---|---|---|
+| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:219-226` → :1172），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
+| 力导向拖拽收尾 | `useForceLayout.onNodeDragStop`（:190-228） | 把**所有**节点的仿真坐标写回 DB —— **只在力导向模式下**，树形布局下直接 return |
+| 重挂（本任务新增） | `graph:reparent` → 主进程算锚点位置与整棵子树的平移 → 返回 `movedPositions` | 权威位置 |
+
+**冲突**：树形布局下，重挂拖拽结束时，路径 1 会把**指针松开处**的坐标写进 DB，
+路径 3 会把**锚点位置**写进 DB —— 两者必有一个被后写的覆盖，
+而路径 1 的防抖是 300ms、路径 3 的 IPC 往返是几毫秒到几十毫秒，**顺序不保证**。
+结果就是「节点落点不按层级规则，而是停在手指松开的地方」——
+**Task 6 的 `translateSubtree` 整棵子树跟随就白做了**。
+
+**规格怎么说的**：§4.4 第 5 条要求「命中非法或未命中 → 退化为普通移动（位置持久化）」，
+第 6 条要求「松手在合法 B 上 → 调用 `graph:reparent`」，
+§6 要求「渲染端捕获后 toast 提示，拖拽回弹到原位」。
+**规格没有明说「重挂成功后自由位置持久化要不要让位」—— 但让位是唯一自洽的读法**：
+重挂是层级变更，它的权威位置来自 `movedPositions`；自由位置持久化是「普通移动」的产物，
+两者在同一个节点上不能同时成立。
+
+**怎么做**（控制器给的最小实现，细节你定）：
+
+1. `useNodePositionPersistence` 增加一个「**位置已被重挂接管**」的抑制集合：
+   - 暴露一个方法把节点 id 标记进去（例如 `suppressPositions(ids)`），
+     `handleNodesChange` 里跳过被标记的 id；
+   - 同时能**把已经在队列里的那一条删掉**（拖拽结束的 position change 可能**先于**
+     我们的 `onDragEnd` 发生 —— 队列里已经躺着了，只加抑制标记不够）。
+2. `onDragEnd` 里 `candidate?.valid` 为真时：
+   - **先**抑制 + 出队（此刻还早，防抖定时器大概率还没到）；
+   - **再**调 `graph:reparent`；
+   - **成功** → 用 `movedPositions` 更新 store（Step 4 已经写好）→ 然后**解除**抑制；
+   - **失败** → toast + **回弹**：把节点位置**写回拖拽开始时的原位** → 然后解除抑制。
+3. 回弹写回原位时，位置对象必须是**新建的字面量**（`{ x: A.x, y: A.y }`），
+   不能复用旧对象引用：`flowNodes` 的缓存比的是**引用**
+   （`GraphCanvas.tsx:567`：`if (prev.position === node.position) return prev`），
+   引用相同 → 缓存命中 → 复用旧节点对象 → xyflow 不更新位置 → **看起来没回弹**。
+   用 `useGraphStore.getState().batchUpdatePositions([{ id, x, y }])` 最省事
+   （它内部就是 `position: { x: u.x, y: u.y }`，每次都是新对象）。
+
+⚠️ **非法落点不抑制**：规格 §4.4 第 5 条要求非法落点退化成普通移动、**位置照常持久化**。
+所以抑制只在 `candidate?.valid` 为真（真的要发起重挂）时才做。
+
+⚠️ **后代不受影响**：重挂移动的是整棵子树，但后代在 xyflow 里没有产生 position change
+（只有被拖的那个节点被拖了），所以队列里只有被拖节点一条 —— **只需要抑制被拖节点**。
+
+#### ⚠️ 高亮状态怎么进 `flowNodes`
+
+不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，
+`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发
+→ 无限重渲染循环（画布白屏）。
+
+**依赖数组与缓存 key 是两处，填的东西不一样**（控制器修正过原文的混写）：
+
+| 位置 | 放什么 | 为什么 |
+|---|---|---|
+| `flowNodes` 的 useMemo **依赖数组**（:606） | 原始值：`candidate?.nodeId`（`string \| null`）、`candidate?.valid`（`boolean \| undefined`） | 候选变了，memo 必须重算 |
+| 每个节点的**缓存 key**（:544-558，key 是 `JSON.stringify([...])` 的成员列表） | **每个节点自己派生出来的两个布尔值**：`isReparentTarget`（= `candidate?.nodeId === node.id`）、`isReparentTargetValid`（= 命中时取 `candidate?.valid`） | 缓存 key 是**按节点**算的。把 `candidate?.nodeId` 塞进去会让**每个**节点的 key 都变 → 每次指针移动都重建**全部**节点对象 → 拖拽全程掉帧。把派生的布尔值塞进去 → 只有目标节点那一条缓存失效 |
+
+⚠️ 缓存命中时 `return prev`（:562-567）——所以**高亮必须走缓存 key**，
+key 不变就会复用没有高亮的旧节点对象，红框/绿框根本不会出现。
+
+`src/renderer/canvas/BizNode.tsx`：
+- 高亮样式：合法候选用绿色，非法候选用红色（规格 §4.4 第 4 条写的是「绿色高亮边框」）。
+- ⚠️ **别用 `border-*`**：`BizNode.tsx:129-131` 已经在用
+  `border-orange-400`（agent running）/ `border-red-400`（agent error）/
+  `border-green-400`（agent completed），颜色撞车，且同一条 `cn()` 链上
+  两个 `border-color` 工具类谁赢由 **Tailwind 产物里的 CSS 顺序**决定，不由类名书写顺序决定。
+  也**别用 `ring-*`**：:127-128 的 `ring-blue-400`（选中）/ `ring-purple-400`（多选）已经占了。
+  → 用 **outline**（Tailwind v4 支持 `outline-2 outline-green-500` / `outline-red-500`），
+  它是独立的 CSS 属性，跟 border-color 和 box-shadow 都不冲突。
+- ⚠️ **`BizNodeProps` 的 `data` 类型要一起改**：`BizNode.tsx:15-33` 把 `data` 写成
+  `GraphNode & { bugCount: number; isZoomedOut?: boolean; ... }` 的**显式交叉类型**。
+  只往 data 对象里塞 `isReparentTarget` 而不改这个类型，TypeScript 会报
+  「对象字面量的属性不存在」。→ 在交叉类型里补上
+  `isReparentTarget?: boolean` 与 `isReparentTargetValid?: boolean`。
 
 - [ ] **Step 6: Add i18n strings**
 
@@ -2046,7 +2291,16 @@ reparentNode: async (nodeId, newParentId) => {
 'canvas.reparent.cycle': '不能挂到自己的子节点下',
 'canvas.reparent.crossGraph': '不能跨图移动节点',
 'canvas.reparent.success': '已移动到 {parent}',
+'canvas.reparent.failed': '移动失败，已回到原位',
 ```
+
+⚠️ 前三条是**落点非法时的原因提示**（红框旁的 tooltip / 说明文字），
+不是 toast —— 非法落点的行为是「退化成普通移动」（规格 §4.4 第 5 条），不是报错。
+最后一条才是 IPC 失败时的 toast（规格 §6）。
+
+`src/shared/i18n/resources/domains/canvas.ts` 里 **zh 是 key 的真值来源**，
+`en` 必须**逐条覆盖**每一个 zh key（同一个文件里的 `canvasEn`）。
+渲染层**不得**出现硬编码的中文字面量。
 
 - [ ] **Step 7: Run test to verify it passes**
 
@@ -2061,7 +2315,6 @@ git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提
 ```
 
 ---
-
 ## Task 11: 兄弟顺序与删父节点处理
 
 **Files:**
@@ -2211,12 +2464,60 @@ Expected: FAIL
 
 `src/main/repositories/node-repository.ts`：
 - `rowToNode` 映射 `sort_index` → `sortIndex`（number）、`collapsed` → `collapsed`（0/1 转 boolean）
+
+⚠️ **`sort_index` 是可空列，根节点是 NULL —— 映射必须给 `undefined`，不能给 `null`。**
+
+别照抄 `node-repository.ts:33` 的 `parentId: row.parent_id as string | undefined` ——
+那是**类型断言**，不是运行时转换：NULL 在运行时仍然是 `null`，那句 `as` 只是在骗编译器。
+照抄它，根节点拿到的就是 `sortIndex: null`，与 `GraphNode.sortIndex?: number` 不符
+（`null` 既不是 `number` 也不是 `undefined`）。
+
+同一个文件里 `:42-44` 的 `communitySummary` / `communityLevel` / `communityId`
+用的是 `?? undefined` —— **那才是正确写法**：
+
+```ts
+sortIndex: (row.sort_index as number | null) ?? undefined,
+collapsed: row.collapsed === 1,     // 列是 NOT NULL DEFAULT 0，永远不会是 NULL
+```
+
+⚠️ **`create()` 的返回值同理**：根节点（无 `parentId`）时**不要**把 `sortIndex` 设成 `null`，
+要**整个键省掉**（或给 `undefined`）。`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`
+—— 根节点的 `data` 里本来就没有 `sortIndex`，只要**别主动塞一个 `null` 进去**就对了。
+测试 `expect(root.sortIndex).toBeUndefined()` 钉的就是这一条。
 - `update()` 增两个分支：`if (data.sortIndex !== undefined)` 与 `if (data.collapsed !== undefined)`
 - **`create()` 与 `createBatch()` 在有 `parentId` 时分配 `sort_index`**（spec §4.8「新建子节点时取父节点现有子节点中最大的 `sort_index + 1`」）：
   - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
   - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
   - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
   - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:205-220`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+
+⚠️ **光算出 `sortIndex` 不够 —— INSERT 的列清单里也得加它**（控制器核代码后补的）：
+
+`create()`（`node-repository.ts:54-85`）与 `createBatch()`（`:96-133`）的 INSERT
+**当前是 23 列**（`id, type, status, title, description, acceptance_criteria, graph_id,
+graph_type, parent_id, rules, metadata, owner_role, position_x, position_y, content,
+community_summary, community_level, community_id, context_refs, wiki_content, wiki_meta,
+created_at, updated_at`）—— **没有 `sort_index`**。
+
+→ 两处都要把 `sort_index` 加进列清单（**23 → 24 列**，占位符同步 +1），
+位置放在 `parent_id` 之后（与真实 `nodes` 表的列顺序一致：`database.ts:390-391`
+是 `parent_id` → `sort_index`），实参按同样位置插入。
+**列清单与实参顺序错位会把 `sort_index` 写进别的列**（比如写成 `owner_role`）。
+
+⚠️ **`createBatch()` 的批内递增怎么算**（别每个节点都去查一次库）：
+先按父节点分组，每组**查一次** `COALESCE(MAX(sort_index), -1)` 拿到基准，
+然后在内存里逐个 +1；**同一父节点的第二个节点要接着第一个的号排**，
+不能两个都拿到同一个基准值。注意组内顺序要**稳定**（批内出现顺序）。
+
+⚠️ **返回对象里 `sortIndex` 必须写在 `...data` 之后**：
+`create()` 现在是 `return { ...data, id, createdAt: now, updatedAt: now }`。
+若把 `sortIndex` 写在 `...data` **之前**，调用方传进来的 `data.sortIndex`
+（`Omit<GraphNode,...>` 里现在有这个可选字段了）会把它覆盖掉。
+→ 写成 `return { ...data, sortIndex, id, createdAt: now, updatedAt: now }`
+（`sortIndex` 为 `undefined` 时**整个键省掉**，不要塞 `null`）。
+
+⚠️ **`collapsed` 不进 `create()` 的 INSERT**（DB 默认 0），返回值里也**不要**
+写 `collapsed: null`；`data.collapsed` 是 `undefined` 就让它 undefined。
 
   ⚠️ **为什么这条是承重的（不是「顺手补一下」）**：Task 6 的 reparent 规定「新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1」，而 SQL 的 `MAX(sort_index)` **忽略 NULL**。若子节点里有本次会话新建的（`sort_index` 为 NULL），`MAX` 只看得到老节点；再叠加 Task 11 布局「`sortIndex` 为 undefined 排最后」的兜底 → 目标父节点有 A(`sort_index=0`) 与 B(NULL，本次会话新建) 时把 C 挂进去，C 拿到 `sort_index=1`，布局排成 **A(0) → C(1) → B(最后)**——**先于 C 存在的 B 被挤到 C 后面**，兄弟顺序颠倒。
 
@@ -2230,6 +2531,28 @@ if (data.collapsed !== undefined) { updates.push('collapsed = ?'); args.push(dat
 
 `src/main/repositories/graph-repository.ts` 的 `GraphRepository.get()` 里那段**内联的节点字段映射**（:109-131）同样映射 `sort_index` → `sortIndex`、`collapsed` → `collapsed`。注意该文件**没有** `rowToNode` 函数——映射是内联在 `get()` 的 `nodesRows.map(...)` 里的。
 
+⚠️ **这里绝对不能用 `rowNum(row, 'sort_index')`。**
+
+`graph-repository.ts:28-32` 的 `rowNum` 是**严格**的：
+
+```ts
+function rowNum(row, key) {
+  const val = row[key]
+  if (typeof val !== 'number') throw new TypeError(`Expected number for ${key}, ...`)
+  return val
+}
+```
+
+根节点的 `sort_index` 是 **NULL** → `typeof null !== 'number'` → **抛 TypeError**。
+不是返回 undefined，是**整个 `get()` 炸掉** —— 主进程一读图就崩。
+
+照抄同一个文件里 `communityLevel` 的 null 容错写法（`:123`）：
+
+```ts
+sortIndex: typeof row.sort_index === 'number' ? row.sort_index : undefined,
+collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
+```
+
 `src/shared/types/graph.ts` 的 `GraphNode` 增：
 ```ts
   /** 同父节点下的兄弟顺序（升序）；根节点为 undefined */
@@ -2242,7 +2565,23 @@ if (data.collapsed !== undefined) { updates.push('collapsed = ?'); args.push(dat
 
 `src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:581` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
 
-⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。且转 number 前要判 `undefined`：`Number(undefined)` 是 `NaN`，`NaN` 参与比较恒为 false，会把兜底路径静默弄坏。
+⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。
+
+且**转 number 之前必须先判「缺失」**：
+- `Number(undefined)` 是 `NaN` —— `NaN` 参与比较恒为 false，会把兜底路径静默弄坏；
+- `Number(null)` 是 **`0`**（不是 NaN！）—— 缺失的节点会被当成 `sortIndex = 0`，
+  **排到最前面**而不是排最后。
+
+所以「缺失」的判断必须**同时覆盖 `undefined` 和 `null`**：
+
+```ts
+const raw = n.data.sortIndex
+const v = raw === undefined || raw === null ? undefined : Number(raw)
+```
+
+（`node-repository.ts` 与 `graph-repository.ts` 两处映射都保证给 `undefined`，
+但 `tree-layout.ts` 是**渲染层**的兜底 —— 存量数据、Yjs 远端写入、其它写入路径
+都可能绕过那两处映射。**渲染层不能假设上游一定干净。**）
 
 ⚠️ 节点缓存 key（`GraphCanvas.tsx:546`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
@@ -2259,7 +2598,6 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
 ```
 
 ---
-
 ## Task 12: 子树折叠/展开
 
 **Files:**
@@ -2287,6 +2625,23 @@ git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点
   （不含该节点本身；是**所有后代**，不是直接子节点数）。
 
 **布局自动获益**：`useAutoLayout.applyLayout` 用 React Flow 的 `getNodes()`，而 `GraphCanvas` 通过 `setRfNodes(flowNodes)` 写回。只要 `flowNodes` 过滤掉隐藏后代，被折叠节点就自动作为叶子参与 dagre 计算——**不需要**在 `useAutoLayout.ts` 里单独处理。
+
+（控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
+树形布局 `computeTreeLayout`（`tree-layout.ts:249-251`）与
+`findConnectedComponents`（`:83`）都按「两端都在节点集合里」过滤边，
+力导向布局 `createForceSimulation`（`force-layout.ts:148-149`）也有一句
+「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
+
+⚠️ **折叠状态必须真的进得来**（控制器核代码后补的）：
+
+- 渲染层加载节点走的是 `graph:get` → `GraphRepository.get()` 里那段**内联映射**
+  （`graph-repository.ts:109-131`）。**Task 11 会在那里加 `collapsed` 的映射** ——
+  没有它，store 里的节点对象根本不带 `collapsed` 字段 → `collapsedIds` 恒为空 →
+  **折叠功能静默失效**（点了没反应，也不报错）。Task 12 的第一个前提就是 Task 11 已经落地。
+- 落库走 `node:update`（`src/main/ipc/graph.ts:260-278`）：它把 `data` **整个**交给
+  `nodeRepo.update(id, data)`，**没有字段白名单**；`validateNodeUpdate`（`:83-123`）
+  只拦 `parentId` 的改动与几个已知字段的类型，`collapsed` 既不会被拦也不会被丢。
+  → `toggle` 调 `updateNode(id, { collapsed: boolean })` 就能落库，不需要改 IPC 层。
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2323,7 +2678,7 @@ Expected: FAIL —— 模块不存在
 (b) 用闭包里的旧 `collapsedIds` 判断「当前是不是折叠的」会算错方向。
 稳定性由「调用时读当前状态」保证，不是靠 memo。
 
-⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
+⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
 
 ⚠️ **行号会再漂**：Task 10 也要改 `GraphCanvas.tsx` → 到本任务执行时上面那几行行号一定又变了。
 用 `grep -n "setRfNodes(flowNodes)\|const flowNodes = useMemo" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
@@ -2348,6 +2703,14 @@ Expected: FAIL —— 模块不存在
 - 有子节点时显示折叠指示器（`ChevronDown` / `ChevronRight` —— `lucide-react` 已装，
   `src/renderer/panels/TreeNodeItem.tsx:3-4` 是现成用法），点击调 `data.onToggleCollapse?.(data.id)`
 - 折叠时显示徽标：`⊕ {hiddenDescendantCount}`
+
+ℹ️ **边要不要跟着裁？不必，但知道为什么更稳妥**：
+`flowEdges` 仍然从 `graphNodes`（store 的**全量**节点）派生层级边，
+所以被折叠掉的那棵子树的边**仍然在 `rfEdges` 里**。这是无害的：
+React Flow 渲染一条边要求**两端节点都存在**，隐藏节点不存在 → 那条边不会被画出来
+（@xyflow/react v12 对这种悬空边**不打印警告**，控制台是干净的）。
+真要裁也可以（保留两端都可见的边），但那不是必须的，别为了裁边多写一段逻辑。
+反过来**别忘了**折叠节点**自己**到父节点的那条边要留着 —— 折叠节点是可见的，那条边要显示。
 
 ⚠️ **`BizNode` 不要自己去数后代**：它是 React Flow 逐节点渲染的，
 每个实例各算一次就是 O(n²)。后代集合只在 `useCollapse` 里算一次（`useMemo`），
@@ -2379,7 +2742,6 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 ```
 
 ---
-
 ## Task 13: 布局选择持久化 + 全量验证
 
 **Files:**
@@ -2395,6 +2757,61 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 - [ ] **Step 1: Persist layout mode**
 
 `src/renderer/canvas/GraphCanvas.tsx:792` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+
+⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
+
+`GraphCanvas.tsx:186-187`：
+
+```ts
+const currentGraph = graphs.find((g) => g.id === graphId)
+const projectPath = currentGraph?.projectPath
+```
+
+`graphs` 来自 store，**首帧还没装载完** → 首帧 `projectPath` 是 `undefined`。
+若把读取放进 `useState(() => localStorage.getItem(key))` 的初始化函数，
+首帧读到的就是 `bizgraph.layoutMode.default`（多半是空的）→ **存下来的真实布局模式
+根本没被读到**；等 `projectPath` 到位，写回路径又会把当前值（`'tree'`）写到真正的键上
+→ **用户存的布局被静默覆盖掉**。
+
+正确形状：**读**放在一个依赖 `projectPath` 的 effect 里（`projectPath` 到位后再读），
+**写**放在切换处理函数里（不要放进 effect，否则首帧就会写一次，把用户的值冲掉）：
+
+```ts
+const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
+
+// 读：等图装载完（currentGraph 存在）再读；键与写的那一端**必须一致**
+useEffect(() => {
+  if (!currentGraph) return
+  const stored = localStorage.getItem(`bizgraph.layoutMode.${projectPath ?? 'default'}`)
+  if (stored === 'tree' || stored === 'force') setLayoutMode(stored)
+}, [currentGraph?.id, projectPath])
+
+// 写：只在用户真的切换时写
+const handleLayoutModeChange = (mode: 'tree' | 'force') => {
+  setLayoutMode(mode)
+  localStorage.setItem(`bizgraph.layoutMode.${projectPath ?? 'default'}`, mode)
+}
+```
+
+⚠️ **读与写的键必须完全一样**（控制器修正过）：
+本 brief 原先的读法是 `if (!projectPath) return`，而写的是 `projectPath ?? 'default'` ——
+**键不对称**：`projectPath` 为空时写进 `'default'` 键，却**永远不读**那个键 →
+「没有项目路径的图」布局模式**存了但读不回来**（读也是读别的键）。
+→ 两端都用 `projectPath ?? 'default'`。
+
+⚠️ **「等它到位」用 `currentGraph` 判断，不是用 `projectPath`**：
+`projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
+「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
+（`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
+`GraphCanvas.tsx:186-187`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
+
+（`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
+从 `:148` 开始，`projectPath` 在 `:187`、`layoutMode` 在 `:792` —— 同一个函数体，直接用。）
+
+⚠️ **别把写回做成 effect**（`useEffect(() => localStorage.setItem(key, layoutMode), [layoutMode, projectPath])`）。
+那样首帧就会把 `'tree'` 写进真正的键 → 正好覆盖掉用户上次的选择 —— 读和写必须分开，
+**读一次、写一次（仅在用户操作时）**。
 
 ⚠️ **按声明文本定位，不要按行号定位**：Task 10 / Task 12 也会改 `GraphCanvas.tsx`，到本任务执行时这个行号一定已经漂移。用 `grep -n "const \[layoutMode" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
 
@@ -2437,7 +2854,15 @@ TypeScript 的**多余属性检查**而报错。把选项类型放宽成能带 `
 或者引入一个显式的 `MockNode` 类型。**别用 `any` 绕过去**（全仓库禁 `any`）。
 
 **用例写法**照 `tests/e2e/node-interactions.spec.ts`：`setupMockIpc(page, { nodes })` →
-`page.goto('http://localhost:5173')` → `page.click('text=E2E Test Graph')` → `waitForCanvas(page)`。
+`page.goto('http://127.0.0.1:5173')` → `page.click('text=E2E Test Graph')` → `waitForCanvas(page)`。
+
+⚠️ **必须写 `127.0.0.1`，不能写 `localhost`**（控制器踩过的坑，见提交 `5a098a2`）：
+macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.0.0.1`；
+本机 `[::1]:5173` 常常被**别的项目**占着 → Playwright 会连到**别人的应用**上 →
+**一个永远绿、却什么都没验的假闸门**。
+`tests/e2e/*.spec.ts` 现在**全部**用 `http://127.0.0.1:5173`（7 个 spec 都改过了），
+`playwright.browser.config.ts` 的 `webServer.url` 也是 `127.0.0.1`。
+新写的 spec 若写 `localhost`，在这台机器上会连到不相干的应用上 —— **别写**。
 
 ⚠️ **节点用 `data-id` 定位**：`page.locator('[data-id].react-flow__node').filter({ has: page.locator('[role="button"]') })`
 （`tests/e2e/helpers/node-helpers.ts:43` 的 `getNonProjectNodeIds` 已有现成写法）。
@@ -2456,12 +2881,29 @@ TypeScript 的**多余属性检查**而报错。把选项类型放宽成能带 `
    feature 的 `allowedParentTypes` 是 `['process']`）→ 断言 **`graph:reparent` 没被调用**
 4. **拖到自己的后代上 → 被拒** → 断言 **`graph:reparent` 没被调用**
 5. **删除父节点 → 子节点变成根**：断言子节点还在、且不再连着已删的父
-   （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`。
-   ⚠️ **mock 不需要实现「把子节点置根」**：浏览器 mock 是无状态的，父节点被删后子节点的
-   `parentId` 会指向一个不存在的节点，而 `deriveHierarchyEdges`
-   （`src/renderer/canvas/layouts/hierarchy.ts:25`）对这种孤儿**本来就不产生边**
-   ——「孤儿不产生边」。所以渲染层观察到的结果与生产一致：**子节点还在，且没有连着已删的父**。
-   这条 e2e 验的是**渲染层的孤儿过滤**；DB 层「删父 → 子置根」由 Task 11 的单测覆盖。）
+   （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`）
+
+   ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
+   `mock-ipc.ts:101` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
+   **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:297-303`）先本地执行
+
+   ```ts
+   setNodes((nodes) => nodes.filter((n) => n.id !== id))
+   setEdges((edges) => edges.filter((e) => e.source !== id && e.target !== id))
+   ```
+
+   父节点因此从渲染层的节点列表里消失 → 子节点的 `parentId` 指向了一个
+   **不在列表里**的 id → `deriveHierarchyEdges`（`src/renderer/canvas/layouts/hierarchy.ts:25`）
+   对这种孤儿**本来就不产生边**（「孤儿不产生边」）。
+
+   所以渲染层观察到的结果与生产一致：**子节点还在，且没有连着已删的父**，
+   看上去就是一个根节点。**这条 e2e 验的是渲染层的孤儿过滤**；
+   DB 层「删父 → 子置根」由 Task 11 的单测覆盖（`'orphans become root nodes when their parent is deleted'`）。
+
+   ⚠️ 顺带注意：mock 的 `graph:get` 在首屏装载后不再被调用，所以**不能**靠改 mock 的
+   节点数组来制造「删除」——那样反而和渲染层的乐观删除重复，且 mock 的数组是
+   `addInitScript` 闭包里的 `const`，不好改。**走 UI 的删除菜单，让渲染层自己删。**
 6. **布局选择持久化**：切到力导向 → `page.reload()` → 断言仍是力导向
 
 ⚠️ **两条**「重启后仍在」的语义**不在 e2e 里验**，因为浏览器 mock 无状态，
