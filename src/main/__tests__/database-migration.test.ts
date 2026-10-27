@@ -255,4 +255,26 @@ describe('Database Migration', () => {
     const id = cols.find((c) => c.name === 'id')
     expect(String(id?.type).toUpperCase()).toBe('TEXT')
   })
+
+  it('chat_messages.status 接受 queued / sending / permanently_failed', () => {
+    const db = getClient()
+    // chat_messages.thread_id 外键指向 chat_threads —— 先建一条线程
+    db.prepare(
+      'INSERT INTO chat_threads (id, title, adapter_name, status, created_at, updated_at) VALUES (?,?,?,?,?,?)'
+    ).run('t-status-check', 'T', 'claude-code', 'idle', Date.now(), Date.now())
+
+    for (const status of ['queued', 'sending', 'permanently_failed']) {
+      expect(() =>
+        db.prepare(
+          'INSERT INTO chat_messages (id, thread_id, role, content, adapter_name, status, created_at) VALUES (?,?,?,?,?,?,?)'
+        ).run(`m-${status}`, 't-status-check', 'agent', 'x', 'claude-code', status, Date.now()),
+      ).not.toThrow()
+    }
+  })
+
+  it('schema_version 升级到 16', () => {
+    const db = getClient()
+    const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined
+    expect(Number(row!.version)).toBeGreaterThanOrEqual(16)
+  })
 })

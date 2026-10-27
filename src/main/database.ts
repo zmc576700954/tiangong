@@ -351,7 +351,7 @@ export function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 15
+const CURRENT_SCHEMA_VERSION = 16
 
 interface TableSchema {
   name: string
@@ -498,7 +498,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         role TEXT NOT NULL CHECK(role IN ('user', 'agent', 'system')),
         content TEXT NOT NULL,
         adapter_name TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'error', 'pending', 'streaming', 'aborted')),
+        status TEXT NOT NULL DEFAULT 'success' CHECK(status IN ('success', 'error', 'pending', 'streaming', 'aborted', 'queued', 'sending', 'permanently_failed')),
         error TEXT,
         session_id TEXT,
         context_refs TEXT,
