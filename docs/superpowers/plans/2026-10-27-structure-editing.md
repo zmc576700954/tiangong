@@ -1103,8 +1103,17 @@ export function isDescendant(
 6. 事务开始：
    - `UPDATE nodes SET parent_id = ? WHERE id = ?`
    - 新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1，取值写 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL → 被移动的子节点会落到布局的「undefined 排最后」兜底里，位置不确定）
-   - 旧的 `hierarchical` 边（`source = oldParentId, target = nodeId`）→ `UPDATE edges SET source = ? WHERE id = ?`；若旧父为 NULL 或无对应边则 `DELETE` / `INSERT`
-   - 若目标 `hierarchical` 边不存在则 INSERT，边 ID 用 `generateId('edge')`（`src/main/shared/env.ts:78`）
+   - 层级边的同步按 **R-27 的识别口径 + R-28 的目标状态**做（**不是**「不存在就 INSERT」——
+     那会把同一条 `'default'` 边升级成两条边）：
+     - **识别**：一条边 E 是节点 N 的层级边 ⟺ E 落在 N 当前 `parent_id` 指向的那一对上，
+       且（E 是 `'hierarchical'`，**或** E 是 `'default'` 且该对上没有 `'hierarchical'` 边）。
+       语义边（`business-flow` / `semantic` / `dependency` / `condition` …）一律不动。
+     - **目标状态**：换父完成后，**新对**（新父, 本节点）上恰好一条 `'hierarchical'`；
+       **旧对**上不再留 `'hierarchical'`。达成方式三选一：
+       ① 复用新对已有的 `'hierarchical'` 边（多条则留一条删其余）；
+       ② 旧对上的层级边（含迁移前的 `'default'`）改写并挪到新对；
+       ③ 新对**完全没有**层级边时 INSERT 一条新的，边 ID 用 `generateId('edge')`（`src/main/shared/env.ts:78`）。
+     - **新对上原有的 `'default'` 边不动**（它是语义边，不是层级边）
    - 原父节点的其余子节点 `sort_index` 重排为连续值
    - **子树跟随**：收集 `nodeId` 及其全部后代（沿 `parent_id` 下行），整体平移到新父节点的子树区域末端，计算新坐标并 `UPDATE nodes SET position_x = ?, position_y = ?`，同时返回 `movedPositions`
    - 事务提交
