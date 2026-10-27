@@ -1617,7 +1617,7 @@ await createEdge({
 })
 ```
 
-（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:217` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
+（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:227` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
 
 `handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边（在 `createNode` 之后紧跟着建，边用同一个 `created.id` 作 target）。
 
@@ -2493,7 +2493,7 @@ collapsed: row.collapsed === 1,     // 列是 NOT NULL DEFAULT 0，永远不会�
   - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
   - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
   - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
-  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:207-222`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:217-232`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
 
 ⚠️ **光算出 `sortIndex` 不够 —— INSERT 的列清单里也得加它**（控制器核代码后补的）：
 
@@ -2939,7 +2939,7 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
    `mock-ipc.ts:101` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
    **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
-   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:325-327`）先本地执行
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:352-354`）先本地执行
 
    ```ts
    setNodes((nodes) => nodes.filter((n) => n.id !== id))
