@@ -2261,7 +2261,9 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:754` 附近的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:792` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+
+⚠️ **按声明文本定位，不要按行号定位**：Task 10 / Task 12 也会改 `GraphCanvas.tsx`，到本任务执行时这个行号一定已经漂移。用 `grep -n "const \[layoutMode" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
 
 - [ ] **Step 2: Run the full verification suite**
 
