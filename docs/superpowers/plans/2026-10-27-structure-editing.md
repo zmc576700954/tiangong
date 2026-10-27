@@ -1712,7 +1712,7 @@ git commit -m "fix(canvas): 手动加子节点补建层级边，AI 与扫描路�
 被测单元是 **`GraphRepository.cloneGraphNodes(sourceGraphId, targetGraphId, targetGraphType)`**（`graph-repository.ts:214`），不是 `GraphService.deriveGraph`——后者还包了建 dev 图等与本任务无关的步骤。
 
 ```ts
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 
@@ -1761,6 +1761,16 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
     insEdge.run('e2', 'p1', 'm2', 'hierarchical', 'g_on')
   })
 
+  beforeEach(() => {
+    // `cloneGraphNodes` 是**追加**语义 —— 它不清空目标图（生产里目标图每次都是新建的，
+    // 所以没人踩到）。但测试里两个用例共用同一个 db、同一个固定的 'g_dev' 图 id：
+    // 第二个用例会看到第一个用例克隆出来的残留 → 边数翻倍 →
+    // 断言「dev 图里有 2 条 hierarchical 边」必红（4 ≠ 2）。
+    // 所以每个用例前先把 dev 图清空；edges 靠 nodes 的 ON DELETE CASCADE 一起清掉
+    // （`PRAGMA foreign_keys = ON` 在 `initDatabase()` 里已开）。
+    db.prepare("DELETE FROM nodes WHERE graph_id = 'g_dev'").run()
+  })
+
   afterAll(() => { closeDatabase() })
 
   it('clones sort_index but resets collapsed', () => {
@@ -1796,6 +1806,10 @@ describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
   })
 })
 ```
+> ⚠️ **`cloneGraphNodes` 是追加语义，不会清空目标图。** 上面的 `beforeEach` 是必需的：
+> 两个用例共用同一个固定的 `'g_dev'` 图 id，若不先清空，第二个用例会数到第一个用例克隆出来的
+> 残留边（4 条而不是 2 条）→ 断言必红，而**红的理由与本任务无关**（不是 `sort_index` 没克隆）。
+> 生产里不受影响：`GraphService.deriveGraph` 每次都新建一张 dev 图。
 
 - [ ] **Step 2: Run test to verify it fails**
 
