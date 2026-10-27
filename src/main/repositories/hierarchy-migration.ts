@@ -19,10 +19,21 @@ import { generateId } from '../shared/env'
 
 /**
  * 参与兄弟排序的边类型。
- * 迁移前层级边是 'default'，迁移后是 'hierarchical' —— 两者都要认，
- * 否则第二次运行时排序会退回 created_at 兜底，破坏幂等。
+ * 迁移前层级边是 'default'，迁移后是 'hierarchical' —— 两者都要认：
+ * 库里可能同时存在两种形态的层级边（迁移改写过一批，后续写入路径又直接写
+ * 'hierarchical'），只认其一会让仍需回填的子节点退回 created_at 兜底。
  */
 const HIERARCHY_EDGE_TYPES = new Set(['default', 'hierarchical'])
+
+/** 回填时子节点的形态 */
+interface MigrationChild {
+  id: string
+  created_at: string | null
+  sort_index: number | null
+}
+
+/** 已经显式拥有 sort_index 的子节点（用户或 reparent 写进去的值） */
+type AssignedChild = MigrationChild & { sort_index: number }
 
 /** 迁移入口：幂等，可在每次启动时安全调用 */
 export function runHierarchyMigration(db: BetterSqlite3.Database): void {
@@ -39,30 +50,36 @@ export function runHierarchyMigration(db: BetterSqlite3.Database): void {
  * 第 1 步：清孤儿。
  * parent_id 指向已删除的节点 → 置 NULL（变成根节点）。
  * 没有这一步，后续按 parent_id 遍历的后代检查会走进死循环。
+ *
+ * 用 NOT EXISTS 而不是 NOT IN：nodes.id 是 TEXT PRIMARY KEY，SQLite 允许 NULL 主键；
+ * NOT IN 的集合里只要有一个 NULL，整个谓词对每一行都变成 NULL（不是 true），
+ * 一个孤儿都清不掉 —— 而这一步失败是静默的。
  */
 function clearOrphanParentIds(db: BetterSqlite3.Database): void {
   db.prepare(
     `UPDATE nodes SET parent_id = NULL
      WHERE parent_id IS NOT NULL
-       AND parent_id NOT IN (SELECT id FROM nodes)`,
+       AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = nodes.parent_id)`,
   ).run()
 }
 
 /**
- * 第 2 步：回填 sort_index（兄弟顺序）。
+ * 第 2 步：回填 sort_index（兄弟顺序）—— **只补空位，不覆写已有值**。
  *
- * 对每个父节点，把它的**全部**孩子排出一个确定的次序：
- * - 有 default/hierarchical 边的孩子 → 取该边在「父节点边列表」中的位置
- * - 没有任何边的孩子 → 落到 created_at 兜底，排在有边的那批之后
- * 然后从 0 开始连续赋值。
+ * sort_index 是用户可控的兄弟顺序（spec §4.8）：reparent / 兄弟重排会显式写它。
+ * 迁移每次启动都跑，若在这里按边顺序重新推导，就会把用户排好的顺序改回去 ——
+ * reparent 改的是 parent_id 和 sort_index，而边的 rowid 顺序不会跟着变，
+ * 于是「拖拽挂到末尾的子节点」下次启动就会跳到最前。
+ *
+ * 所以：
+ * - 只给 sort_index IS NULL 的子节点赋值，已有值一律不动
+ * - 混合态（部分兄弟已有 sort_index）时，新填的从 max(已有) + 1 起步，接在已有值之后
+ *
+ * toFill 内部的定序规则：
+ * - 有 default/hierarchical 边的孩子 → 取该边在「父节点边列表」中的位置（tier 0）
+ * - 没有任何边的孩子 → 按 created_at 兜底，排在有边的那批之后（tier 1）
  *
  * 无 parent_id 的节点是根节点，sort_index 保持 NULL（根节点没有兄弟可言）。
- *
- * ⚠️ 迁移每次启动都会重跑（runIncrementalMigrations 在快/慢两条路径上都调用它），
- * 所以这里的排序号是「按边顺序重新推导」，不是「只填空位」。
- * 后续任务若让 sort_index 变成用户可改（兄弟重排 / reparent 重排），
- * 必须同步维护 hierarchical 边的顺序，或把本步改成只补 NULL ——
- * 否则用户排好的兄弟顺序会在下次启动时被边顺序覆盖。
  */
 function backfillSortIndex(db: BetterSqlite3.Database): void {
   db.prepare('UPDATE nodes SET sort_index = NULL WHERE parent_id IS NULL').run()
@@ -74,13 +91,26 @@ function backfillSortIndex(db: BetterSqlite3.Database): void {
     'SELECT target, edge_type FROM edges WHERE source = ? ORDER BY rowid',
   )
   const selectChildren = db.prepare(
-    'SELECT id, created_at FROM nodes WHERE parent_id = ?',
+    'SELECT id, created_at, sort_index FROM nodes WHERE parent_id = ?',
   )
   const updateSortIndex = db.prepare('UPDATE nodes SET sort_index = ? WHERE id = ?')
 
   const parents = selectParents.all() as { parent_id: string }[]
 
   for (const { parent_id } of parents) {
+    const children = selectChildren.all(parent_id) as MigrationChild[]
+
+    // 已有 sort_index 的一个都不动，只填空的
+    const toFill = children.filter((child) => child.sort_index === null)
+    if (toFill.length === 0) continue
+
+    // 基准值：全空 → 0；混合态 → 接在已有最大值之后。
+    // 不能按「在全部子节点里按边顺序的位置」填 —— 那会与已有的显式值撞号，
+    // 把用户「追加到末尾」的意图变成「插到中间」。
+    // 用 reduce 而不是 Math.max(...spread)：兄弟极多时 spread 会爆调用栈。
+    const assigned = children.filter((child): child is AssignedChild => child.sort_index !== null)
+    const base = assigned.reduce((max, child) => Math.max(max, child.sort_index), -1) + 1
+
     // 父节点的边列表：边在 edges 表中的出现顺序（rowid 序）
     const edgePositions = new Map<string, number>()
     const parentEdges = selectParentEdges.all(parent_id) as { target: string; edge_type: string | null }[]
@@ -89,9 +119,7 @@ function backfillSortIndex(db: BetterSqlite3.Database): void {
       if (!edgePositions.has(edge.target)) edgePositions.set(edge.target, index)
     })
 
-    const children = selectChildren.all(parent_id) as { id: string; created_at: string | null }[]
-
-    const ordered = children
+    const ordered = toFill
       .map((child) => {
         const edgePosition = edgePositions.get(child.id)
         return edgePosition === undefined
@@ -106,7 +134,7 @@ function backfillSortIndex(db: BetterSqlite3.Database): void {
           (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
       )
 
-    ordered.forEach((child, index) => updateSortIndex.run(index, child.id))
+    ordered.forEach((child, index) => updateSortIndex.run(base + index, child.id))
   }
 }
 
@@ -129,10 +157,16 @@ function rewriteHierarchyEdgeTypes(db: BetterSqlite3.Database): void {
  * 第 4 步：补齐缺失的 hierarchical 边。
  * 手动新建的子节点只写了 parent_id、没建边，这一步把它们补上。
  * 边已经存在（迁移前改写来的，或本来就有）则不重复插入。
+ *
+ * 跨图护栏：父节点与子节点不在同一张图时**不补** —— 存量脏数据本身不是本任务能修的，
+ * 但迁移补一条跨图层级边等于「制造」一条新的不一致（source 在别的图，
+ * 边却以子节点所在图的 graph_id 落库）。
  */
 function insertMissingHierarchyEdges(db: BetterSqlite3.Database): void {
   const selectParentedNodes = db.prepare(
-    'SELECT id, parent_id, graph_id FROM nodes WHERE parent_id IS NOT NULL',
+    `SELECT c.id, c.parent_id, c.graph_id, p.graph_id AS parent_graph_id
+     FROM nodes c JOIN nodes p ON p.id = c.parent_id
+     WHERE c.parent_id IS NOT NULL`,
   )
   const selectExistingEdge = db.prepare(
     "SELECT 1 FROM edges WHERE source = ? AND target = ? AND edge_type = 'hierarchical' LIMIT 1",
@@ -145,9 +179,11 @@ function insertMissingHierarchyEdges(db: BetterSqlite3.Database): void {
     id: string
     parent_id: string
     graph_id: string
+    parent_graph_id: string
   }[]
 
   for (const node of parentedNodes) {
+    if (node.parent_graph_id !== node.graph_id) continue
     if (selectExistingEdge.get(node.parent_id, node.id)) continue
     insertEdge.run(generateId('edge'), node.parent_id, node.id, node.graph_id)
   }
