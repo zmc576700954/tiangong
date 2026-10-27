@@ -7,14 +7,22 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import fs from 'node:fs'
+import BetterSqlite3 from 'better-sqlite3'
+
+/**
+ * electron app.getPath('userData') 的取值。
+ * 可切换，用来模拟「另一个 userData 目录下的存量库」的升级场景。
+ */
+const electronPaths = vi.hoisted(() => ({ userData: '' }))
 
 const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-test-' + process.pid)
+electronPaths.userData = TEST_USER_DATA
 
 // Mock electron app
 vi.mock('electron', () => ({
   app: {
     getPath: (name: string) => {
-      if (name === 'userData') return TEST_USER_DATA
+      if (name === 'userData') return electronPaths.userData
       return os.tmpdir()
     },
   },
@@ -272,9 +280,141 @@ describe('Database Migration', () => {
     }
   })
 
-  it('schema_version 升级到 16', () => {
+  it('schema_version 升级到 17', () => {
     const db = getClient()
     const row = db.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number } | undefined
-    expect(Number(row!.version)).toBeGreaterThanOrEqual(16)
+    expect(Number(row!.version)).toBeGreaterThanOrEqual(17)
+  })
+
+  it('accepts hierarchical edge_type and has the new node columns', () => {
+    const db = getClient()
+    // 必须先建两个真实节点：edges.source/target 有 REFERENCES nodes(id) 外键，
+    // 且 foreign_keys 常态是 ON（database.ts:45），插入不存在的 id 会先报外键违规，
+    // 根本走不到 CHECK 那一层
+    const now = new Date().toISOString()
+    const insertNode = db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+    )
+    insertNode.run('n_x1', 'module', 'draft', 'X1', 'g_x', 'online', 0, 0, now, now)
+    insertNode.run('n_x2', 'feature', 'draft', 'X2', 'g_x', 'online', 0, 0, now, now)
+
+    db.prepare("INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES ('x1','n_x1','n_x2','hierarchical','g_x')").run()
+    const row = db.prepare("SELECT edge_type FROM edges WHERE id='x1'").get() as { edge_type: string }
+    expect(row.edge_type).toBe('hierarchical')
+
+    // CHECK 约束是活的：非法 edge_type 必须被拒（历史教训：约束漏值导致落边静默失效）
+    expect(() =>
+      db.prepare("INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES ('x2','n_x1','n_x2','not-a-type','g_x')").run(),
+    ).toThrow()
+
+    const cols = (db.pragma('table_info(nodes)') as { name: string }[]).map(c => c.name)
+    expect(cols).toContain('sort_index')
+    expect(cols).toContain('collapsed')
+  })
+
+  it('存量 v16 库升级到 v17：加列不丢数据、edges 重建保留数据、层级迁移生效', () => {
+    const oldUserData = path.join(os.tmpdir(), 'bizgraph-old-schema-' + process.pid)
+    fs.rmSync(oldUserData, { recursive: true, force: true })
+    fs.mkdirSync(path.join(oldUserData, 'data'), { recursive: true })
+
+    // 造一个 v16 形态的存量库：
+    // - nodes 没有 sort_index / collapsed
+    // - edges 的 CHECK 不含 'hierarchical'
+    const oldDb = new BetterSqlite3(path.join(oldUserData, 'data', 'bizgraph.db'))
+    oldDb.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (16);
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug', 'wiki-page')),
+        status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
+        title TEXT NOT NULL,
+        description TEXT,
+        acceptance_criteria TEXT,
+        graph_id TEXT NOT NULL,
+        graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
+        parent_id TEXT,
+        rules TEXT,
+        metadata TEXT,
+        owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
+        position_x REAL NOT NULL,
+        position_y REAL NOT NULL,
+        content TEXT,
+        community_summary TEXT,
+        community_level INTEGER,
+        community_id TEXT,
+        context_refs TEXT,
+        wiki_content TEXT,
+        wiki_meta TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE edges (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        label TEXT,
+        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link')),
+        graph_id TEXT NOT NULL,
+        content TEXT,
+        description TEXT,
+        data_flow TEXT,
+        strength REAL
+      );
+    `)
+    const insertOldNode = oldDb.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+    )
+    insertOldNode.run('n_old_p', 'project', 'confirmed', '父', 'g_old', 'online', null, 0, 0, 't', 't')
+    insertOldNode.run('n_old_c1', 'module', 'draft', '子1', 'g_old', 'online', 'n_old_p', 0, 0, 't', 't')
+    insertOldNode.run('n_old_c2', 'module', 'draft', '子2', 'g_old', 'online', 'n_old_p', 0, 0, 't', 't')
+    oldDb.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES ('e_old_1','n_old_p','n_old_c1','default','g_old')",
+    ).run()
+    oldDb.close()
+
+    // 让 initDatabase 指向存量库 —— 版本号 16 < 17，走慢路径（重建 + 增量迁移）
+    electronPaths.userData = oldUserData
+    closeDatabase()
+    initDatabase()
+    const db = getClient()
+
+    try {
+      // 1. nodes 走 ALTER TABLE 增量加列，存量行一条不少
+      const cols = (db.pragma('table_info(nodes)') as { name: string }[]).map(c => c.name)
+      expect(cols).toContain('sort_index')
+      expect(cols).toContain('collapsed')
+      const nodeRows = db.prepare('SELECT COUNT(*) AS n FROM nodes').get() as { n: number }
+      expect(Number(nodeRows.n)).toBe(3)
+
+      // 2. edges 因 CHECK 变更被重建 —— 数据完整（1 条存量 + 1 条迁移补的）
+      const edgeRows = db.prepare('SELECT COUNT(*) AS n FROM edges').get() as { n: number }
+      expect(Number(edgeRows.n)).toBe(2)
+
+      // 3. default 层级边被改写为 hierarchical
+      const rewritten = db.prepare("SELECT edge_type FROM edges WHERE id='e_old_1'").get() as { edge_type: string }
+      expect(rewritten.edge_type).toBe('hierarchical')
+
+      // 4. 只有 parent_id 没有边的子节点（手动建的那种）被补上层级边
+      const inserted = db.prepare(
+        "SELECT COUNT(*) AS n FROM edges WHERE source='n_old_p' AND target='n_old_c2' AND edge_type='hierarchical'",
+      ).get() as { n: number }
+      expect(Number(inserted.n)).toBe(1)
+
+      // 5. sort_index 已回填
+      const sortIndex = db.prepare("SELECT sort_index FROM nodes WHERE id='n_old_c1'").get() as { sort_index: number | null }
+      expect(sortIndex.sort_index).toBe(0)
+
+      // 6. 重建后的 edges 带新 CHECK —— 'hierarchical' 现在能写进去
+      expect(() =>
+        db.prepare(
+          "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES ('e_old_2','n_old_p','n_old_c2','hierarchical','g_old')",
+        ).run(),
+      ).not.toThrow()
+    } finally {
+      electronPaths.userData = TEST_USER_DATA
+      closeDatabase()
+      initDatabase()
+    }
   })
 })

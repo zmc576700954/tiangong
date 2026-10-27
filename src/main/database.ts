@@ -11,6 +11,7 @@ import crypto from 'node:crypto'
 import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
+import { runHierarchyMigration } from './repositories/hierarchy-migration'
 
 const logger = createLogger('Database')
 
@@ -351,7 +352,7 @@ export function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 16
+const CURRENT_SCHEMA_VERSION = 17
 
 interface TableSchema {
   name: string
@@ -387,6 +388,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
         graph_id TEXT NOT NULL,
         graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
         parent_id TEXT,
+        sort_index INTEGER,
+        collapsed INTEGER NOT NULL DEFAULT 0,
         rules TEXT,
         metadata TEXT,
         owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
@@ -413,7 +416,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         label TEXT,
-        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link')),
+        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical')),
         graph_id TEXT NOT NULL,
         content TEXT,
         description TEXT,
@@ -881,6 +884,12 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('edges', 'updated_at', 'TEXT')
   addColumnSafe('graphs', 'writeback_disabled', 'INTEGER', '0')
 
+  // v17：结构编辑 —— 兄弟顺序 + 子树折叠状态（0=展开 / 1=折叠，跨会话保留）。
+  // 走 addColumnSafe 的 ALTER TABLE 路径：这两列**不能**进 nodes 的 requiredColumns，
+  // 加进去会让 rebuildTableIfNeeded 走 DROP TABLE 重建 nodes，风险远大于收益。
+  addColumnSafe('nodes', 'sort_index', 'INTEGER')
+  addColumnSafe('nodes', 'collapsed', 'INTEGER', '0')
+
   if (currentVersion < 3) {
     addColumnSafe('memory_items', 'version', 'INTEGER', '1')
     addColumnSafe('memory_items', 'parent_version', 'INTEGER', 'NULL')
@@ -923,4 +932,8 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // 没有它，撤回只能按标题找同名 wiki-page —— 会把同名但并非本项创建的
   // 页面一起删掉（数据丢失）。
   addColumnSafe('writeback_items', 'created_node_id', 'TEXT')
+
+  // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。
+  // 必须排在上面 addColumnSafe 之后 —— 迁移要回填 sort_index，列不存在会直接报错。
+  runHierarchyMigration(db)
 }
