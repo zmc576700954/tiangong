@@ -68,6 +68,20 @@ function validateNodeContent(label: string, val: unknown): void {
 }
 
 /**
+ * `collapsed` / `sortIndex` 的类型校验 —— create 与 update 两条路径共用。
+ *
+ * 这两个字段此前**一次都没被校验过**，而仓库层写的是 `data.collapsed ? 1 : 0`
+ * → `update(id, { collapsed: 'no' })` 会真的把节点**折叠**（'no' 是真值），
+ * 而调用方以为写的是 false。`sortIndex` 同理：非数字写进去会让兄弟顺序失去意义。
+ */
+function validateNodeFlags(node: Record<string, unknown>): void {
+  if (node.collapsed !== undefined && typeof node.collapsed !== 'boolean') {
+    throw new IpcError('collapsed must be a boolean', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  ensureOptionalNumber('sortIndex', node.sortIndex)
+}
+
+/**
  * node:update 的入参校验。
  *
  * 放在模块作用域（而不是 registerGraphHandlers 闭包里）是为了能被单元测试
@@ -134,6 +148,7 @@ export function validateNodeUpdate(id: string, data: unknown): void {
     throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
   }
   ensureOptionalNumber('communityLevel', node.communityLevel)
+  validateNodeFlags(node)
   if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
     throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
   }
@@ -196,6 +211,7 @@ export function registerGraphHandlers(
       throw new IpcError('communitySummary must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
     }
     ensureOptionalNumber('communityLevel', node.communityLevel)
+    validateNodeFlags(node)
     if (node.wikiContent !== undefined && typeof node.wikiContent !== 'string') {
       throw new IpcError('wikiContent must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
     }

@@ -37,9 +37,34 @@ describe('validateNodeUpdate', () => {
 
   it('still accepts a payload that changes collapsed', () => {
     expect(() => validateNodeUpdate('n1', { collapsed: true })).not.toThrow()
+    expect(() => validateNodeUpdate('n1', { collapsed: false })).not.toThrow()
   })
 
   it('still accepts a payload that changes sortIndex', () => {
     expect(() => validateNodeUpdate('n1', { sortIndex: 3 })).not.toThrow()
+  })
+
+  // collapsed / sortIndex 此前**一次都没被校验过** ——
+  // 仓库层写的是 `data.collapsed ? 1 : 0` → 'no' 是真值 → 节点真的被折叠，
+  // 而调用方以为写的是 false。
+  it('rejects a non-boolean collapsed', () => {
+    expect(() => validateNodeUpdate('n1', { collapsed: 'no' })).toThrow(/collapsed/)
+  })
+
+  it('rejects a non-number sortIndex', () => {
+    expect(() => validateNodeUpdate('n1', { sortIndex: 'x' })).toThrow(/sortIndex/)
+  })
+
+  it('rejects a bad collapsed / sortIndex with the IPC_INVALID_ARGUMENT code', () => {
+    for (const payload of [{ collapsed: 'no' }, { sortIndex: 'x' }]) {
+      let caught: unknown
+      try {
+        validateNodeUpdate('n1', payload)
+      } catch (err) {
+        caught = err
+      }
+      expect(caught).toBeDefined()
+      expect((caught as { code?: string }).code).toBe(ErrorCode.IPC_INVALID_ARGUMENT)
+    }
   })
 })
