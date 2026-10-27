@@ -1,8 +1,10 @@
 /**
  * 层级结构数据迁移测试
  *
- * 覆盖 runHierarchyMigration 的四步（顺序不可换）：
- *   清孤儿 → 回填 sort_index → default 边改写为 hierarchical → 补齐缺失的层级边
+ * 覆盖 runHierarchyMigration 的五步（顺序不可换）：
+ *   清孤儿 → 回填 sort_index → default 边改写为 hierarchical
+ *   → 去重（父子对上的重复 hierarchical，保留 rowid 最小的那条）
+ *   → 补齐缺失的层级边
  *
  * 用真实 better-sqlite3（内存库）跑，不 mock repo。
  *

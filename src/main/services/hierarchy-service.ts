@@ -241,26 +241,38 @@ export class HierarchyService {
   /**
    * 同步 parent_id 的存储层镜像（edges 里的层级边）。
    *
-   * **谁是层级边，靠「父子关系」判定，不靠 edge_type 猜。**
-   * 一条边 E 是「节点 N 的层级边」，当且仅当：
-   * - E 在 **N.parent_id 当前指向的那一对**（权威父子对）上，**且**
-   * - E 的 `edge_type` 是 `'hierarchical'`，**或者** E 是 `'default'` 且该对上不存在 `'hierarchical'` 边。
+   * **谁是层级边，以「重挂后的父子关系」为准，不靠 edge_type 猜。**
+   * 一条边 E 是不是「节点 N 的层级边」，看它**落在哪一对**上：
+   * - **新父子对** `(newParentId, nodeId)` 上的边：这一对**重挂后就是父子对** →
+   *   该对上的 `'default'` 按 §4.2.1 判为层级边（要么升级成 `'hierarchical'`，
+   *   要么在已有 `'hierarchical'` 时作为多余边删掉）。
+   * - **旧父子对** `(oldParentId, nodeId)` 上的边：重挂后**不再是父子对** →
+   *   该对上的 `'default'` 是**真正的语义边**，原样保留（不改类型、不删）；
+   *   **唯一例外**是「该对上本来没有 `'hierarchical'`」——那时那条 `'default'`
+   *   就是迁移前的层级边，它要跟着节点迁到新父下（被改 `source`）。
    *
-   * 为什么不看 edge_type 就完事：`'default'` 同时是**一等公民语义边类型** ——
-   * `EdgeEditor.tsx` 的 `SUPPORTED_EDGE_TYPES` 第一项就是它（用户手画连线的默认类型），
-   * AI 写入路径对没有显式类型的边也一律发 `'default'`。靠类型猜会把用户的语义边
-   * 当成层级边：改掉它的类型，或直接删掉它 —— 用户的连线就从画布上消失了。
-   * 仓库里已有的判据是同一个（`hierarchy-migration.ts:143-153`：「父子关系唯一，不靠猜」）。
+   * **为什么升级 / 删除父子对上的 `'default'` 不会让用户的线消失：**
+   * 父子对上的 `'default'` 边**本来就不渲染** —— 渲染层
+   * `src/renderer/canvas/layouts/hierarchy.ts:41` 会把落在父子对上的 `'default'`
+   * 直接丢弃（不进 `semanticEdges`），画布上父子之间只有一条派生的层级线。
+   * 反过来，**不在父子对上的 `'default'` 边是真正的语义边** ——
+   * 永远不许改类型、不许删（`'default'` 同时是 `EdgeEditor.tsx` 的
+   * `SUPPORTED_EDGE_TYPES` 第一项，也是 AI 写入路径的默认类型）。
+   * 仓库里已有的判据是同一个（`hierarchy-migration.ts`：「父子关系唯一，不靠猜」）。
    *
    * **目标状态（R-37）**：新的父子对 `(newParentId, nodeId)` 上**有且只有一条存储边，
    * 且它的 `edge_type` 是 `'hierarchical'`**；旧父子对 `(oldParentId, nodeId)` 上不再有层级边。
    *
-   * 四级判定（与 Task 8 的写入路径 `graph-service.ts` 第四轮、启动迁移同一套判据）：
+   * 四级判定是**重挂路径自己的一套**（与建图路径 `graph-service.ts` 第四轮的三级判定、
+   * 启动迁移的「改写 + 去重」不是同一套实现；它们的目标状态一致：
+   * 同一对上最终只有一条 `'hierarchical'`）：
    * 1. 新对上已有 `'hierarchical'` → 留一条，多余的删掉；**新对上的 `'default'` 也删掉**
    *    （落在父子对上的 `'default'` 就是层级边 —— 留着下次启动迁移会把它转成第二条
-   *    `'hierarchical'`，而迁移不去重）；
+   *    `'hierarchical'`，最终被迁移的去重步骤收敛掉，等于白留）；
    * 2. 新对上只有 `'default'` → **把它升级成 `'hierarchical'`**（不是再插一条，
    *    也不是把旧边的搬过来 —— 那会把 `'default'` 留在原地，同一对上就多了一条边）；
+   *    多条 `'default'` 时挑 **rowid 最小**的那条升级（`selectEdges` 是
+   *    `ORDER BY rowid`），其余删掉 —— rowid 参与启动迁移的兄弟顺序推导；
    * 3. 新对上什么都没有 → 把旧对上的层级边**搬过来**（`UPDATE edges SET source=?`，
    *    保住边 id 与 rowid —— rowid 参与迁移的兄弟顺序推导），旧对上的多余层级边删掉；
    * 4. 两边都没有层级边 → 插一条新的 `'hierarchical'`。

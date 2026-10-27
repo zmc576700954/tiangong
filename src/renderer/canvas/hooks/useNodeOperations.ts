@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import { nodeTypeLabel } from '@shared/i18n'
-import type { NodeType } from '@shared/types'
+import type { GraphNode, NodeType } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useI18n } from '../../i18n/useI18n'
@@ -29,24 +29,31 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
     // 新节点标题按当前语言生成——类型名走共享层的标签表
     const newTitle = t('canvas.node.newTitle', { type: nodeTypeLabel(childType, locale) })
 
-    const created = await createNode({
-      type: childType,
-      status: 'draft',
-      title: newTitle,
-      graphId,
-      graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
-      parentId,
-      position,
-      acceptanceCriteria: [],
-      wikiContent: childType === 'wiki-page' ? `# ${newTitle}\n\n` : undefined,
-    })
+    // onAddChild 的签名是 (parentId, childType) => void —— 调用方（NodeContextMenu）
+    // 既不 await 也不 catch，这里抛出去会变成 unhandled rejection。
+    // 所以两个 await（createNode / createEdge）都要兜住：失败只记日志，不往上抛。
+    let created: GraphNode
+    try {
+      created = await createNode({
+        type: childType,
+        status: 'draft',
+        title: newTitle,
+        graphId,
+        graphType: childType === 'feature' || childType === 'bug' ? 'dev' : 'online',
+        parentId,
+        position,
+        acceptanceCriteria: [],
+        wikiContent: childType === 'wiki-page' ? `# ${newTitle}\n\n` : undefined,
+      })
+    } catch (err) {
+      // 建节点失败就没有 created.id 可用 —— 直接返回，
+      // 绝不能拿 undefined 的 id 去建边（会造出一条指向不存在节点的边）
+      console.error('[useNodeOperations] createNode failed:', err)
+      return
+    }
 
     // parent_id 是父子关系的唯一事实来源，但存储层镜像（hierarchical 边）也要同步补上 ——
     // 缺了它，迁移/克隆/画布派生都拿不到这一对的层级边。
-    //
-    // onAddChild 的签名是 (parentId, childType) => void —— 调用方（NodeContextMenu）
-    // 既不 await 也不 catch，这里抛出去会变成 unhandled rejection。
-    // 因此失败只记日志，不往上抛（也不静默吞掉）。
     try {
       await createEdge({
         source: parentId,

@@ -78,4 +78,37 @@ describe('useNodeOperations — 补建层级边', () => {
       edgeType: 'hierarchical',
     })
   })
+
+  // F11：createNode 失败时不能变成 unhandled rejection。
+  //
+  // onAddChild 的类型是 (parentId: string, childType: NodeType) => void ——
+  // NodeContextMenu.tsx:101 的 `onClick={() => onAddChild(nodeId, type)}` 既不 await
+  // 也不 catch。这里刻意**不 await** 返回的 promise，模拟真实调用方：
+  // 实现没兜住 createNode 的失败时，被丢弃的 promise 会被 Node 判成「未处理的拒绝」。
+  it('does not produce an unhandled rejection when createNode fails', async () => {
+    const rejections: unknown[] = []
+    const onUnhandledRejection = (reason: unknown): void => {
+      rejections.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandledRejection)
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockState.createNode.mockRejectedValue(new Error('createNode boom'))
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1'))
+      // 刻意不 await —— 真实调用方（NodeContextMenu）也不 await
+      void result.current.handleAddChild('parent1', 'module')
+      // 让微任务队列跑完，并给 Node 判定「未处理的拒绝」的机会
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(rejections).toHaveLength(0)
+      // 失败被记了日志（不是静默吞掉）
+      expect(consoleError).toHaveBeenCalled()
+      // 节点都没建出来，绝不能拿 undefined 的 id 去建边
+      expect(mockState.createEdge).not.toHaveBeenCalled()
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection)
+      consoleError.mockRestore()
+    }
+  })
 })

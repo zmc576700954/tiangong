@@ -203,6 +203,14 @@ describe('HierarchyService.reparent', () => {
   // 该对上没有 'hierarchical' 边 → 它是层级边（不是语义边），改写成 'hierarchical' 并挪到新父。
   it('promotes a legacy default hierarchy edge on the old parent pair', () => {
     db.prepare("UPDATE edges SET edge_type = 'default' WHERE source = 'p1' AND target = 'm2'").run()
+
+    // 搬运**之前**那条边的 id 与 rowid —— 第 ③ 级的全部意义就是「保住边 id 与 rowid」：
+    // rowid 参与启动迁移的兄弟顺序推导（hierarchy-migration.ts 第 2 步按父节点的
+    // 边列表 rowid 序推兄弟顺序），换一条边就等于把顺序整个挪位。
+    const before = db
+      .prepare('SELECT id, rowid FROM edges WHERE source = ? AND target = ?')
+      .get('p1', 'm2') as { id: string; rowid: number }
+
     const svc = new HierarchyService(db)
     svc.reparent('m2', 'm1')
     const rows = db
@@ -211,6 +219,13 @@ describe('HierarchyService.reparent', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].source).toBe('m1')
     expect(rows[0].edge_type).toBe('hierarchical')
+
+    // 搬过来的是**同一条边** —— id 不变、rowid 不变（不是「删掉重插一条新的」）
+    const after = db
+      .prepare('SELECT id, rowid FROM edges WHERE source = ? AND target = ?')
+      .get('m1', 'm2') as { id: string; rowid: number }
+    expect(after.id).toBe(before.id)
+    expect(after.rowid).toBe(before.rowid)
   })
 
   // R-37：父子对上的 'default' 边**就是**层级边，不是「用户语义边」。
@@ -238,6 +253,49 @@ describe('HierarchyService.reparent', () => {
     expect(pair[0].edge_type).toBe('hierarchical')
 
     // 旧父对 (p1,m2) 上不再有层级边
+    const oldHierarchy = db
+      .prepare(
+        "SELECT id FROM edges WHERE source = 'p1' AND target = 'm2' AND edge_type = 'hierarchical'",
+      )
+      .all() as { id: string }[]
+    expect(oldHierarchy).toHaveLength(0)
+  })
+
+  // R-37 第 ② 级的「多条 'default'」分支：**挑哪一条升级**必须钉死。
+  //
+  // 实现里 `selectEdges` 是 `ORDER BY rowid`，`newDefaults[0]` 即 rowid 最小的那条。
+  // 挑错哪一条 → 启动迁移按 rowid 推导的兄弟顺序会变（hierarchy-migration.ts 第 2 步
+  // 按父节点的边列表 rowid 序推兄弟顺序）。
+  // 只断言「最后剩一条」不够 —— 那种改法（改成 newDefaults[newDefaults.length - 1]）
+  // 也会剩一条，但留下的是后插的那条，兄弟顺序整个反了。
+  it('promotes the rowid-smallest default edge when the new parent pair has several', () => {
+    const insertEdge = db.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+    )
+    // 新父对 (m1,m2) 上两条 'default'：defOld 先插 → rowid 更小；defNew 后插
+    insertEdge.run('defOld', 'm1', 'm2', 'default', 'g1')
+    insertEdge.run('defNew', 'm1', 'm2', 'default', 'g1')
+    // 旧父对 (p1,m2) 上的层级边是 fixture 的 e4 —— 第 ② 级要把它删掉
+
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+
+    // 新父对 (m1,m2) 上恰好一条边，且类型是 'hierarchical'
+    const pair = db
+      .prepare("SELECT id, edge_type FROM edges WHERE source = 'm1' AND target = 'm2'")
+      .all() as { id: string; edge_type: string }[]
+    expect(pair).toHaveLength(1)
+    expect(pair[0].edge_type).toBe('hierarchical')
+    // 活下来的是**先插的那条**（rowid 最小）
+    expect(pair[0].id).toBe('defOld')
+
+    // 后插的那条被删了
+    const defNew = db
+      .prepare("SELECT id FROM edges WHERE id = 'defNew'")
+      .get() as { id: string } | undefined
+    expect(defNew).toBeUndefined()
+
+    // 旧父对 (p1,m2) 上不再有 'hierarchical'
     const oldHierarchy = db
       .prepare(
         "SELECT id FROM edges WHERE source = 'p1' AND target = 'm2' AND edge_type = 'hierarchical'",
