@@ -2152,8 +2152,8 @@ reparentNode: async (nodeId, newParentId) => {
 
 `ReparentResult.movedPositions` **包含被移动节点自己**
 （`hierarchy-service.ts:130-131`：`{ id: nodeId, x: node.position_x, y: node.position_y }` 加上全部后代）。
-而且**它的位置确实会变**：`translateSubtree`（`:344-375`）在目标父节点**已有兄弟**时，
-把锚点挪到兄弟包围盒的左侧 / 下方（`:362-369`），此时 `anchorX/anchorY` ≠ 原来的
+而且**它的位置确实会变**：`translateSubtree`（`:389-420`）在目标父节点**已有兄弟**时，
+把锚点挪到兄弟包围盒的左侧 / 下方（`:407-414`），此时 `anchorX/anchorY` ≠ 原来的
 `position_x/position_y`。
 
 所以如果写成
@@ -2190,7 +2190,7 @@ return p ? { ...n, position: { x: p.x, y: p.y } } : n
   onNodeDragStop={(e, node) => { onForceDrag(e, node); reparentDrag.onDragEnd(toFlow(e)) }}
   ```
 
-  ⚠️ `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错（同文件 :1190-1193 已有这个防护），
+  ⚠️ `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错（同文件 :1187-1197 已有这个防护），
   换算要包 try/catch 或复用那段写法，**别让一次坐标换算异常打断拖拽**。
   ⚠️ `onForceDrag*` 现在被 `as unknown as OnNodeDrag<Node>` 断言过（:1182-1184），
   你改成组合回调时注意保持类型能过 `tsc`（`npx tsc --noEmit` 是本任务的验收项之一）。
@@ -2332,7 +2332,7 @@ git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提
 
 新建 `src/main/repositories/__tests__/node-repository.test.ts`。
 
-⚠️ **用真实库，不用手搓的最小 schema**：`NodeRepository.rowToNode`（`node-repository.ts:22`）读了 **23 个列**（`description` / `acceptance_criteria` / `rules` / `metadata` / `context_refs` / `wiki_content` / `wiki_meta` / `owner_role` / `content` / `community_*` …）。手写一个「够用」的 `nodes` 表，漏一列就是 `no such column` 报错、多一列就是与真实 schema 漂移。`initDatabase()` 给的是真表。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
+⚠️ **用真实库，不用手搓的最小 schema**：`NodeRepository.rowToNode`（`node-repository.ts:23`）读了 **22 个字段**（`description` / `acceptance_criteria` / `rules` / `metadata` / `context_refs` / `wiki_content` / `wiki_meta` / `owner_role` / `content` / `community_*` …）。手写一个「够用」的 `nodes` 表，漏一列就是 `no such column` 报错、多一列就是与真实 schema 漂移。`initDatabase()` 给的是真表。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
 
 ```ts
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
