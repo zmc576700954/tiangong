@@ -5,7 +5,7 @@ import { setupMockIpc, MOCK_INVOCATION_ID, setMockInvocationStatus, emitSubagent
 test.describe('Subagent Invocations Panel', () => {
   test.beforeEach(async ({ page }) => {
     await setupMockIpc(page, { initialStatus: 'queued' })
-    await page.goto('http://localhost:5173')
+    await page.goto('http://127.0.0.1:5173')
     await page.click('text=E2E Test Graph')
     await waitForCanvas(page)
     await page.click('[data-testid="right-panel-agent-tab"]')

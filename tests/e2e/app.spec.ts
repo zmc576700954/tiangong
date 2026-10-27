@@ -4,13 +4,13 @@ import { setupMockIpc } from './helpers/mock-ipc'
 test.describe('BizGraph App', () => {
   test('should display welcome message', async ({ page }) => {
     await setupMockIpc(page, { graphs: [] })
-    await page.goto('http://localhost:5173')
+    await page.goto('http://127.0.0.1:5173')
     await expect(page.locator('text=欢迎使用 BizGraph')).toBeVisible()
   })
 
   test('should create a new graph', async ({ page }) => {
     await setupMockIpc(page, { graphs: [] })
-    await page.goto('http://localhost:5173')
+    await page.goto('http://127.0.0.1:5173')
 
     // 点击新建图按钮
     await page.click('[data-testid="new-graph-btn"]')
