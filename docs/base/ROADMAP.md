@@ -1,7 +1,7 @@
 # BizGraph 基座 v1 路线图
 
 > 创建日期：2026-09-30
-> 状态：基座 v1 已交付（Phase A/B/C 完成），Phase D 待启动
+> 状态：基座 v1 已交付（Phase A/B/C 完成），Phase D-0 框架硬伤修复已落地，D-0 后续批次待启动
 
 ## 基座 v1 已交付（Phase A + B + C）
 
@@ -47,10 +47,25 @@
 | `renderer/lib/__tests__/toast.test.tsx` | +4 | 4 |
 | **Phase C 小计** | **+39** | **39** |
 
+### Phase D-0 — 框架硬伤修复（批次 1，F1–F9）
+
+- ✅ **D1 Prompt 三段拆分**：`PromptContext { stable, turn }`；用户请求移出 system 通道；`codeContext` 移出 scope 段，KV-cache 前缀跨轮稳定
+- ✅ **D2 scope 段标题单一来源**：`SCOPE_SECTION_HEADINGS` 常量表；压缩分级恢复生效（此前 Level 1/2/3 全是 no-op）；删除零消费者的第二份 scope 构造实现
+- ✅ **D3 waterline 超预算截断自身**：不再反向抢占 context 预算
+- ✅ **D4 claude-code 补齐会话终止与恢复契约**：发射 `sessionEnded`；原生恢复需真实 CLI 会话 id；原生恢复重发上一条命令
+- ✅ **D5 schema 迁移慢路径无条件重建**：补上「改了 `createSql` 没 bump 版本」的兜底；比对项扩展到列类型
+- ✅ **D6 MessageStatus 与 DB CHECK 对齐**：CHECK 扩容到 8 值（schema v16）
+- ✅ **D7 JSON 列运行时校验**：6 个形状守卫；脏数据退化为默认值而不是崩溃 / 盲转
+
+> 落地记录：[`docs/tasks/2026-10-27-framework-hardening.md`](../tasks/2026-10-27-framework-hardening.md)
+
 ## Phase D 远期清单（不在本期范围）
 
 | 项 | 工作量 | 优先级 | 备注 |
 |----|--------|--------|------|
+| 批次 2：记忆检索接线（`HybridSearchEngine` → agent prompt，`commandType` 打通） | 2-3 周 | 高 | 依赖 D1 的 stable/turn 段结构（已就绪） |
+| 批次 3：Zod 校验层（`IpcApi` 同源）+ 集中事件总线 + 统一模型注册表 | 3-4 周 | 中 | 无前置依赖 |
+| 批次 4：真实 tokenizer 替代 4 字符启发式 + `onUsage` 订阅 + 水位线按适配器真实 context window | 2 周 | 中 | 无前置依赖 |
 | Recipe DAG 多步编排（sub_recipes） | 4-6 周 | 中 | 等基座落地、用户用熟后再上 |
 | MCP 健康度面板 UI（前端实时表格） | 1 周 | 中 | 基座只暴露 IPC，UI 留待 Phase D |
 | Recipe Marketplace / 远程 catalog | 4-6 周 | 低 | 远期 |
@@ -67,7 +82,7 @@
 ## 验证清单（每个 commit 前必过）
 
 - ✅ `npx tsc --noEmit` 零错误
-- ✅ `npm run test` 全绿（基座前 1914 → 基座后 1953+，新增 39 case）
+- ✅ `npm run test` 全绿（基座前 1914 → Phase C 后 1953+ → 框架硬伤修复后 2867）
 - ✅ `npm run lint` 零警告
 - ⏳ `npm run build:win` 成功且 bundled 资源存在（resources/recipes/*.yaml 已加入 build.files）
 - ⏳ 手动 `npm run dev`：能跑内置 `refactor-react-component` recipe
