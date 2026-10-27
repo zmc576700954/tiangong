@@ -22,7 +22,7 @@
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
-- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:530）与 `flowEdges`（:629）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:609-611）/ `useEffect(() => setRfEdges(flowEdges))`（:694-696），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:574）与 `flowEdges`（:701）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:670-672）/ `useEffect(() => setRfEdges(flowEdges))`（:768-770），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -2563,7 +2563,7 @@ collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
 
 - [ ] **Step 5: Make tree layout honor sort_index**
 
-`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:581` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
+`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:638` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
 
 ⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。
 
@@ -2583,7 +2583,7 @@ const v = raw === undefined || raw === null ? undefined : Number(raw)
 但 `tree-layout.ts` 是**渲染层**的兜底 —— 存量数据、Yjs 远端写入、其它写入路径
 都可能绕过那两处映射。**渲染层不能假设上游一定干净。**）
 
-⚠️ 节点缓存 key（`GraphCanvas.tsx:546`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
+⚠️ 节点缓存 key（`GraphCanvas.tsx:598`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
 - [ ] **Step 6: Run test to verify it passes**
 
@@ -2756,11 +2756,11 @@ git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
 
 - [ ] **Step 1: Persist layout mode**
 
-`src/renderer/canvas/GraphCanvas.tsx:792` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+`src/renderer/canvas/GraphCanvas.tsx:866` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
 
 ⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
 
-`GraphCanvas.tsx:186-187`：
+`GraphCanvas.tsx:200-201`：
 
 ```ts
 const currentGraph = graphs.find((g) => g.id === graphId)
@@ -2803,7 +2803,7 @@ const handleLayoutModeChange = (mode: 'tree' | 'force') => {
 `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
 （`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
-`GraphCanvas.tsx:186-187`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`GraphCanvas.tsx:200-201`，`currentGraph = graphs.find((g) => g.id === graphId)`、
 `projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
 
 （`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
@@ -2886,7 +2886,7 @@ macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.
    ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
    `mock-ipc.ts:101` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
    **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
-   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:297-303`）先本地执行
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:325-327`）先本地执行
 
    ```ts
    setNodes((nodes) => nodes.filter((n) => n.id !== id))
