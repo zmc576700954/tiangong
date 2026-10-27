@@ -22,6 +22,7 @@
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:516）与 `flowEdges`（:599）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:595-597）/ `useEffect(() => setRfEdges(flowEdges))`（:659-661），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -203,6 +204,7 @@ git commit -m "feat(canvas): hierarchical 边类型贯通共享类型面"
 - Modify: `src/main/database.ts`（`edges` CHECK、`nodes` 列定义、`CURRENT_SCHEMA_VERSION`、迁移调用）
 - Create: `src/main/repositories/hierarchy-migration.ts`
 - Test: `src/main/repositories/__tests__/hierarchy-migration.test.ts`
+- Modify: `src/main/__tests__/database-migration.test.ts`（Step 6 的真实库 CHECK 用例）
 
 **Interfaces:**
 - Consumes: Task 1 的 `EdgeType` 含 `'hierarchical'`
@@ -575,8 +577,14 @@ git commit -m "feat(canvas): 按 parent_id 派生层级边的纯函数"
 `src/renderer/canvas/GraphCanvas.tsx` 的 `flowEdges` useMemo（:599-657）：输入数组从 `graphEdges` 换成合并集。改法是把 `graphEdges.map(...)` 改为遍历合并后的数组：
 
 ```ts
-const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
-const mergedEdges = [...hierarchyEdges, ...semanticEdges]
+// ⚠️ mergedEdges 必须自己包一层 useMemo —— 它会作为 flowEdges 的依赖数组成员。
+// 写成 useMemo 外面的一次性计算 = 每帧新数组引用 → flowEdges 每帧重算
+// → useEffect(() => setRfEdges(flowEdges)) 每帧触发 → setRfEdges 是 useState setter
+// → 无限重渲染循环（React: Maximum update depth exceeded），画布白屏。
+const mergedEdges = useMemo(() => {
+  const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
+  return [...hierarchyEdges, ...semanticEdges]
+}, [graphNodes, graphEdges])
 
 const flowEdges = useMemo(() => {
   // ...原有 cache/key 逻辑完全不变，只是把 graphEdges.map 换成 mergedEdges.map
@@ -584,7 +592,7 @@ const flowEdges = useMemo(() => {
 ```
 
 要点：
-- `mergedEdges` 必须在 useMemo **外面**算，否则每次渲染都新建数组会让下游 useMemo 失效
+- `mergedEdges` 必须**自己包一层 `useMemo`**（依赖 `[graphNodes, graphEdges]`），再作为 `flowEdges` 的依赖。见 Global Constraints 的「渲染层的引用稳定性」——写成 useMemo 外面的一次性计算会造成无限重渲染循环
 - 派生边的 `id` 是 `derived-<source>-<target>`，与存储边 ID 空间隔离，`edgeCacheRef` 的 key 不会冲突
 - `flowEdges` 内部对 `edgeTypeConfig[edgeType]` 的查表、marker、动画逻辑都不需要改——`edgeTypeConfig.hierarchical` 已在 Task 1 补齐
 
@@ -722,18 +730,47 @@ export function registerNodeTypeIpcHandlers(typedHandle: TypedHandle): void {
 新建渲染端 hook `src/renderer/canvas/hooks/useNodeTypeConfigs.ts`：
 
 ```ts
-export function useNodeTypeConfigs(): Record<string, NodeTypeConfig> {
-  const [configs, setConfigs] = useState<Record<string, NodeTypeConfig>>({})
+export interface NodeTypeConfigsState {
+  /** 类型名 → 配置。IPC 未返回前是空表 */
+  configs: Record<string, NodeTypeConfig>
+  /** 规则表是否已就绪。成功与失败都算就绪——失败时 `configs` 是空表 */
+  loaded: boolean
+}
+
+export function useNodeTypeConfigs(): NodeTypeConfigsState {
+  const [state, setState] = useState<NodeTypeConfigsState>({ configs: {}, loaded: false })
   useEffect(() => {
     let cancelled = false
     void window.electronAPI['nodeType:listConfigs']().then((list) => {
-      if (!cancelled) setConfigs(Object.fromEntries(list.map(c => [c.type, c])))
-    }).catch(() => { /* 用默认空表，菜单降级为不显示子类型 */ })
+      if (!cancelled) setState({ configs: Object.fromEntries(list.map(c => [c.type, c])), loaded: true })
+    }).catch(() => {
+      // 取不到规则表 → 空表。空表语义是「所有类型都拒绝」：宁可不给可选项，
+      // 也不放行未知规则。这与主进程 validateParentChild 对未知类型返回 false 的语义一致。
+      if (!cancelled) setState({ configs: {}, loaded: true })
+    })
     return () => { cancelled = true }
   }, [])
-  return configs
+  return state
 }
 ```
+
+⚠️ `loaded` 不是可选字段——Task 10 的拖拽重挂靠它区分「规则还没到」与「规则判定为不合法」。少了它，规则表未就绪的短暂窗口里所有落点都会被误判成红色。
+
+`NodeTypeConfig` 已经在 `@shared/types` 里（`src/shared/types/graph.ts:513`），`behavior?: unknown` 是渲染安全的——渲染端 hook 与 `src/shared/types/ipc.ts` 都从 `@shared/types` import，不用碰 `src/main/shared/node-type-registry`。
+
+`src/renderer/canvas/GraphCanvas.tsx` 传入该 prop 的算法（`nodeContextMenu` 是 GraphCanvas 里已有的 state，见 :262）：
+
+```ts
+const { configs } = useNodeTypeConfigs()
+const contextTargetNode = nodeContextMenu
+  ? graphNodes.find((n) => n.id === nodeContextMenu.nodeId)
+  : undefined
+const allowedChildTypes = contextTargetNode?.type
+  ? (configs[contextTargetNode.type]?.allowedChildTypes ?? [])
+  : []
+```
+
+然后 `<NodeContextMenu … allowedChildTypes={allowedChildTypes} />`。`NodeContextMenu` 内部用这个 prop 取代 `getChildTypeOptions(node.type)` 的返回值。
 
 - [ ] **Step 7: Type-check and test**
 
@@ -800,15 +837,21 @@ git commit -m "refactor(canvas): 类型层级规则统一到 nodeTypeRegistry �
 
 - [ ] **Step 1: Write the failing test**
 
-新建 `src/main/services/__tests__/hierarchy-service.test.ts`。用真实 better-sqlite3 建最小 schema（nodes + edges 两表，字段与 `nodes` 表一致），fixture：
+新建 `src/main/services/__tests__/hierarchy-service.test.ts`。用真实 better-sqlite3 建最小 schema（nodes + edges 两表），fixture：
 
 ```
+nodes:
 p1 (project, parent NULL)
-m1 (module, parent p1)
-m2 (module, parent p1)
+m1 (module,  parent p1)
+m2 (module,  parent p1)
 c1 (process, parent m1)
 f1 (feature, parent c1)
+
+edges（4 条初始层级边，与 parent_id 一致）:
+(p1,m1) (m1,c1) (c1,f1) (p1,m2)
 ```
+
+⚠️ **fixture 的 INSERT 必须写全列名**，不能写 `INSERT INTO nodes VALUES (...)`：`nodes` 表在 Task 2 之后是 **13 列**（`id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at`），省略列名的写法一加列就报「table nodes has 13 columns but 11 values were supplied」。测试里 CREATE TABLE 的列清单也要跟这 13 列一致。edges 表至少要有 `id, source, target, edge_type, graph_id` 五列。
 
 测试用例：
 
@@ -854,7 +897,9 @@ describe('HierarchyService.reparent', () => {
 
   it('rejects a cross-graph reparent', () => {
     const svc = new HierarchyService(db)
-    db.prepare("INSERT INTO nodes VALUES ('x1','feature','draft','跨图','g2','dev','p1',0,0,'t','t')").run()
+    db.prepare(
+      "INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    ).run('x1', 'feature', 'draft', '跨图', 'g2', 'dev', null, 0, 0, 't', 't')
     try { svc.reparent('x1', 'c1'); expect.unreachable() } catch (e) {
       expect((e as any).code).toBe(ErrorCode.HIERARCHY_CROSS_GRAPH)
     }
@@ -949,7 +994,7 @@ export function isDescendant(
    - `UPDATE nodes SET parent_id = ? WHERE id = ?`
    - 新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1
    - 旧的 `hierarchical` 边（`source = oldParentId, target = nodeId`）→ `UPDATE edges SET source = ? WHERE id = ?`；若旧父为 NULL 或无对应边则 `DELETE` / `INSERT`
-   - 若目标 `hierarchical` 边不存在则 INSERT
+   - 若目标 `hierarchical` 边不存在则 INSERT，边 ID 用 `generateId('edge')`（`src/main/shared/env.ts:78`）
    - 原父节点的其余子节点 `sort_index` 重排为连续值
    - **子树跟随**：收集 `nodeId` 及其全部后代（沿 `parent_id` 下行），整体平移到新父节点的子树区域末端，计算新坐标并 `UPDATE nodes SET position_x = ?, position_y = ?`，同时返回 `movedPositions`
    - 事务提交
@@ -995,6 +1040,7 @@ git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校
 **Files:**
 - Modify: `src/main/ipc/graph.ts`（`validateNodeUpdate`，:131）
 - Modify: `src/main/repositories/node-repository.ts`（清理 `updateParentId`，:210）
+- Test: `src/main/ipc/__tests__/graph-node-update.test.ts`（新建）
 
 **Interfaces:**
 - Consumes: Task 6 的 `ErrorCode.HIERARCHY_*`
@@ -1083,14 +1129,79 @@ git commit -m "refactor(canvas): 关闭 node:update 的 parentId 旁路"
 
 - [ ] **Step 1: Write the failing test**
 
-新建 `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`，mock `window.electronAPI` 与 `useGraphStore`：
+新建 `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`。
+
+⚠️ **两个 mock 的形状不能照抄隔壁文件**：
+
+1. `useNodeOperations` 用的是 **selector 形式**的 store——`useGraphStore((state) => state.nodes)`（`useNodeOperations.ts:14-16`）。隔壁 `useNodePositionPersistence.test.ts` mock 的是 `{ getState: vi.fn() }`（那是 `getState` 形式），照抄会直接报 `useGraphStore is not a function`。
+2. `useReactFlow()` 在没有 `<ReactFlowProvider />` 时会抛 `Please make sure that you wrap the app in a <ReactFlowProvider />`——必须 mock 掉。
+
+`useI18n` **不用 mock**——`I18nContext` 有可用的默认值（`src/renderer/i18n/context.ts:17`）。
 
 ```ts
-it('creates a hierarchical edge when adding a child', async () => {
-  const createEdge = vi.fn().mockResolvedValue({})
-  // mock useGraphStore 返回 { nodes: [], createNode: 返回 { id: 'child1' }, createEdge }
-  // 调用 handleAddChild('parent1', 'module')
-  // 期望 createEdge 被调用一次，参数含 { source: 'parent1', target: 'child1', edgeType: 'hierarchical' }
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook } from '@testing-library/react'
+import { useNodeOperations } from '../useNodeOperations'
+
+const { mockState } = vi.hoisted(() => ({
+  mockState: {
+    nodes: [] as unknown[],
+    createNode: vi.fn(),
+    createEdge: vi.fn(),
+    updateNode: vi.fn(),
+  },
+}))
+
+vi.mock('../../../store/graphStore', () => ({
+  useGraphStore: (selector: (s: unknown) => unknown) => selector(mockState),
+}))
+
+vi.mock('@xyflow/react', () => ({
+  useReactFlow: () => ({ screenToFlowPosition: (p: { x: number; y: number }) => p }),
+}))
+
+describe('useNodeOperations — 补建层级边', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockState.nodes = []
+    mockState.createNode.mockResolvedValue({ id: 'child1' })
+    mockState.createEdge.mockResolvedValue({ id: 'edge1' })
+  })
+
+  it('creates a hierarchical edge when adding a child', async () => {
+    const { result } = renderHook(() => useNodeOperations('g1'))
+    await result.current.handleAddChild('parent1', 'module')
+
+    expect(mockState.createNode).toHaveBeenCalledTimes(1)
+    expect(mockState.createNode.mock.calls[0][0]).toMatchObject({ parentId: 'parent1' })
+    expect(mockState.createEdge).toHaveBeenCalledTimes(1)
+    expect(mockState.createEdge.mock.calls[0][0]).toMatchObject({
+      source: 'parent1',
+      target: 'child1',
+      edgeType: 'hierarchical',
+    })
+  })
+
+  it('creates a hierarchical edge for each AI-generated child', async () => {
+    mockState.nodes = [{ id: 'parent1', title: 'P', type: 'module', position: { x: 0, y: 0 } }]
+    ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      'mindmap:generateModule': vi.fn().mockResolvedValue({
+        children: [{ title: 'C1' }, { title: 'C2' }],
+        childType: 'process',
+      }),
+    }
+    const { result } = renderHook(() => useNodeOperations('g1', '/proj'))
+    await result.current.handleGenerateChildren('parent1')
+
+    expect(mockState.createNode).toHaveBeenCalledTimes(2)
+    expect(mockState.createEdge).toHaveBeenCalledTimes(2)
+    expect(mockState.createEdge.mock.calls[0][0]).toMatchObject({
+      source: 'parent1',
+      target: 'child1',
+      edgeType: 'hierarchical',
+    })
+  })
 })
 ```
 
@@ -1115,7 +1226,9 @@ await createEdge({
 
 （`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:215` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
 
-`handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边。
+`handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边（在 `createNode` 之后紧跟着建，边用同一个 `created.id` 作 target）。
+
+`createEdge` 从 store 取：`const createEdge = useGraphStore((state) => state.createEdge)`——与 `createNode` / `updateNode` 同样的 selector 形式（`useNodeOperations.ts:14-16` 那一组）。
 
 - [ ] **Step 4: Switch the AI and scan write paths**
 
@@ -1168,7 +1281,7 @@ git commit -m "fix(canvas): 手动加子节点补建层级边，AI 与扫描路�
 
 **Files:**
 - Modify: `src/main/repositories/graph-repository.ts`（`cloneGraphNodes`，:214）
-- Test: `src/main/__tests__/graph-repository.test.ts`（新建或扩展）
+- Test: `src/main/repositories/__tests__/graph-repository-clone.test.ts`（新建）
 
 **Interfaces:**
 - Consumes: Task 2 的 `nodes.sort_index` / `nodes.collapsed` 列
@@ -1176,27 +1289,105 @@ git commit -m "fix(canvas): 手动加子节点补建层级边，AI 与扫描路�
 
 - [ ] **Step 1: Write the failing test**
 
-```ts
-it('clones sort_index but resets collapsed on derive', () => {
-  // 建 online 图：p1 → m1(sort_index 0) → m2(sort_index 1)，m1.collapsed = 1
-  // 调 deriveGraph
-  // 期望：dev 图的 m1.sort_index === 0，m1.collapsed === 0
-})
+⚠️ **新建 `src/main/repositories/__tests__/graph-repository-clone.test.ts`，不要往 `src/main/__tests__/graph-repository.test.ts` 里加**——后者是 **mock db** 的单元测试（`createMockDb()` 把 `prepare` 换成 `vi.fn()`），克隆路径是多语句读写，mock 测不出真实行为。必须用真实 better-sqlite3。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
 
-it('remaps hierarchical edges to the cloned node ids', () => {
-  // 期望：dev 图的 hierarchical 边的 source/target 都是新 id，且与 dev 图节点的 parent_id 一致
+被测单元是 **`GraphRepository.cloneGraphNodes(sourceGraphId, targetGraphId, targetGraphType)`**（`graph-repository.ts:214`），不是 `GraphService.deriveGraph`——后者还包了建 dev 图等与本任务无关的步骤。
+
+```ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
+
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-graph-clone-test-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { GraphRepository } from '../graph-repository'
+
+describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
+  let db: ReturnType<typeof getClient>
+  let repo: GraphRepository
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+    repo = new GraphRepository(db)
+    const now = new Date().toISOString()
+    const insGraph = db.prepare(
+      'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?,?,?,?,?,?)'
+    )
+    insGraph.run('g_on', 'Online', 'online', '/p', now, now)
+    insGraph.run('g_dev', 'Dev', 'dev', '/p', now, now)
+
+    const ins = db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    )
+    ins.run('p1', 'project', 'confirmed', 'P1', 'g_on', 'online', null, null, 0, 0, 0, now, now)
+    ins.run('m1', 'module', 'draft', 'M1', 'g_on', 'online', 'p1', 0, 1, 0, 0, now, now)
+    ins.run('m2', 'module', 'draft', 'M2', 'g_on', 'online', 'p1', 1, 0, 0, 0, now, now)
+
+    const insEdge = db.prepare(
+      'INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)'
+    )
+    insEdge.run('e1', 'p1', 'm1', 'hierarchical', 'g_on')
+    insEdge.run('e2', 'p1', 'm2', 'hierarchical', 'g_on')
+  })
+
+  afterAll(() => { closeDatabase() })
+
+  it('clones sort_index but resets collapsed', () => {
+    repo.cloneGraphNodes('g_on', 'g_dev', 'dev')
+    const rows = db.prepare(
+      "SELECT title, sort_index, collapsed FROM nodes WHERE graph_id='g_dev'"
+    ).all() as { title: string; sort_index: number | null; collapsed: number }[]
+    const m1 = rows.find((r) => r.title === 'M1')!
+    const m2 = rows.find((r) => r.title === 'M2')!
+    expect(m1.sort_index).toBe(0)
+    expect(m2.sort_index).toBe(1)
+    // 源图 M1 的 collapsed 是 1，克隆到 dev 图必须重置为 0（折叠是开发者视角）
+    expect(m1.collapsed).toBe(0)
+  })
+
+  it('remaps hierarchical edges to the cloned node ids', () => {
+    repo.cloneGraphNodes('g_on', 'g_dev', 'dev')
+    const devNodes = db.prepare(
+      "SELECT id, title, parent_id FROM nodes WHERE graph_id='g_dev'"
+    ).all() as { id: string; title: string; parent_id: string | null }[]
+    const titleById = new Map(devNodes.map((n) => [n.id, n.title]))
+    const edges = db.prepare(
+      "SELECT source, target FROM edges WHERE graph_id='g_dev' AND edge_type='hierarchical'"
+    ).all() as { source: string; target: string }[]
+
+    expect(edges).toHaveLength(2)
+    for (const e of edges) {
+      // 边的两端必须是 dev 图里的节点（id 被重映射过），且与 parent_id 自洽
+      expect(titleById.get(e.source)).toBe('P1')
+      const child = devNodes.find((n) => n.id === e.target)!
+      expect(child.parent_id).toBe(e.source)
+    }
+  })
 })
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run src/main/__tests__/graph-repository.test.ts`
-Expected: FAIL —— 当前 INSERT 不含新列，层级边不重映射
+Run: `npx vitest run src/main/repositories/__tests__/graph-repository-clone.test.ts`
+Expected: FAIL —— 当前 INSERT 不含 `sort_index` 列，`collapsed` 也随源图复制
 
 - [ ] **Step 3: Update cloneGraphNodes**
 
 `src/main/repositories/graph-repository.ts` 的 `cloneGraphNodes`：
-- `insertNodeStmt`（:220）的列清单加 `sort_index`，值取 `row['sort_index']`；占位符数量同步 +1
+- `insertNodeStmt`（:220）的列清单加 `sort_index`（放在 `parent_id` 之后，与真实 `nodes` 表的列顺序一致），值取 `row['sort_index']`；**占位符数量同步 +1**（20 → 21），且 `insertNodeStmt.run(...)` 的实参要按同样的位置插入 `row['sort_index']`——列清单与实参顺序错位会把 `sort_index` 写进别的列
 - `collapsed` **不加入 INSERT**（新表默认 0）——折叠是开发者视角，从 online 派生出来应是展开态（spec §4.2.1）
 - 克隆边时（Pass 3，:273），若 `row['edge_type'] === 'hierarchical'`，其 source/target 必须用 `idMap` 重映射（与 `parent_id` 用同一张 map）。当前 Pass 3 用的就是 `idMap.get(rowStr(row, 'source'))`，因此**现有代码已经满足**——但要靠 Step 1 的第二个用例钉住，防止将来有人改坏
 
@@ -1204,13 +1395,13 @@ Expected: FAIL —— 当前 INSERT 不含新列，层级边不重映射
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run src/main/__tests__/graph-repository.test.ts`
-Expected: PASS
+Run: `npx vitest run src/main/repositories/__tests__/graph-repository-clone.test.ts src/main/__tests__/graph-repository.test.ts`
+Expected: PASS（两个文件都绿——`src/main/__tests__/graph-repository.test.ts` 是 mock 版单元测试，本次不改动它，但它必须继续全绿）
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/main/repositories/graph-repository.ts src/main/__tests__/graph-repository.test.ts
+git add src/main/repositories/graph-repository.ts src/main/repositories/__tests__/graph-repository-clone.test.ts
 git commit -m "fix(canvas): 派生图同步兄弟顺序并重映射层级边"
 ```
 
@@ -1277,18 +1468,22 @@ Expected: FAIL —— 模块不存在
 
 - `onDragStart(nodeId)`：记录拖动节点与其**后代集合**（沿 `parent_id` 下行）
 - `onDrag(pointer)`：遍历当前图的节点，找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，与 `tree-layout.ts` 的 `estimateNodeWidth/Height` 一致），排除拖动节点自身与其后代。若无命中 → `candidate = null`。若命中 → 依次校验：
+  0. **规则表未就绪 → 直接 `candidate = null`**：`useNodeTypeConfigs()` 返回的 `loaded === false`（IPC 还没回来）时不做任何判定——此时 `configs` 是空表，照常判定会把**所有**合法落点判成 `type` 不合法，给用户一个错误的红框。`loaded === true` 之后才走下面的 1–5。
   1. 命中的是拖动节点自身 → 跳过
   2. 命中的是后代 → `reason: 'cycle'`
   3. `graph_id` 不同 → `reason: 'cross-graph'`
   4. 类型不允许 → `reason: 'type'`。**渲染进程不能 import `nodeTypeRegistry`**（它在 `src/main/shared/`，是主进程专用），所以这里用 Task 5 的 `useNodeTypeConfigs()` 拿到的配置对象做同样的判断，语义必须与主进程 `validateParentChild` 一致：
      ```ts
      const parentCfg = configs[candidate.type]        // 候选将成为父节点
-     const childCfg = configs[dragging.type]         // 拖动中的将成为子节点
-     const parentOk = !parentCfg.allowedChildTypes || parentCfg.allowedChildTypes.includes(dragging.type)
-     const childOk = !childCfg.allowedParentTypes || childCfg.allowedParentTypes.includes(candidate.type)
+     const childCfg = configs[dragging.type]          // 拖动中的将成为子节点
+     // ⚠️ 必须与主进程 validateParentChild 的语义逐条对齐：
+     //   - 配置对象缺失（未知类型）→ 主进程 `if (!parent || !child) return false` → 这里也判 false
+     //   - allowedChildTypes / allowedParentTypes 字段缺失 → 主进程短路放行 → 这里也放行
+     const parentOk = !!parentCfg && (!parentCfg.allowedChildTypes || parentCfg.allowedChildTypes.includes(dragging.type))
+     const childOk = !!childCfg && (!childCfg.allowedParentTypes || childCfg.allowedParentTypes.includes(candidate.type))
      // parentOk && childOk 为 false → reason: 'type'
      ```
-     `undefined` 表示「无限制」，与主进程 `validateParentChild` 的短路语义一致（`node-type-registry.ts:57-58`）。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
+     `allowedChildTypes` 字段本身为 `undefined` 表示「无限制」，与主进程 `validateParentChild` 的短路语义一致（`node-type-registry.ts:57-58`）；但**配置对象**缺失是另一回事，主进程判拒绝，这里也必须判拒绝——否则渲染端说「可以挂」，主进程 `graph:reparent` 拒掉，用户看到的是一次莫名其妙的报错。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
   5. 否则 `valid: true`
 - `onDragEnd()`：若 `candidate?.valid` 则调 `graphStore.reparentNode(draggingNodeId, candidate.nodeId)`；失败则 toast 提示并回弹
 
@@ -1323,6 +1518,8 @@ reparentNode: async (nodeId, newParentId) => {
 - `onNodeDragStop` 时若候选有效，跳过原有的位置持久化逻辑（由 `reparentNode` 返回的 `movedPositions` 统一写位置）；否则走原有的位置持久化
 - 候选命中时给目标节点加高亮样式（新增 `data.isReparentTarget` / `data.isReparentTargetValid` 属性传给 `BizNode`）
 
+⚠️ **高亮状态怎么进 `flowNodes`**：不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。正确做法：把 `candidate?.nodeId`（`string | null`）与 `candidate?.valid`（`boolean | undefined`）当作**原始值**放进 `flowNodes` 的 useMemo **依赖数组**和它的缓存 key 里（key 是 `JSON.stringify([...])` 的成员列表，见 :535-551），在 useMemo 内部给命中的那个节点加 `data.isReparentTarget`。原始值引用稳定，放进依赖数组安全。
+
 `src/renderer/canvas/BizNode.tsx`：新增高亮样式——合法候选用绿色边框，非法候选用红色边框。
 
 - [ ] **Step 6: Add i18n strings**
@@ -1354,7 +1551,7 @@ git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提
 
 **Files:**
 - Modify: `src/main/repositories/node-repository.ts`（`delete()`、`update()`、`rowToNode`）
-- Modify: `src/main/repositories/graph-repository.ts`（`rowToNode`，:109-131）
+- Modify: `src/main/repositories/graph-repository.ts`（`get()` 里的内联节点映射，:109-131）
 - Modify: `src/renderer/canvas/layouts/tree-layout.ts`（`sortChildrenByEdgeOrder`，:161）
 - Modify: `src/shared/types/graph.ts`（`GraphNode` 增字段）
 - Test: `src/main/repositories/__tests__/` 与 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts`
@@ -1365,35 +1562,99 @@ git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提
 
 - [ ] **Step 1: Write the failing test**
 
-在 `src/main/repositories/__tests__/` 追加：
+新建 `src/main/repositories/__tests__/node-repository.test.ts`。
+
+⚠️ **用真实库，不用手搓的最小 schema**：`NodeRepository.rowToNode`（`node-repository.ts:22`）读了 **23 个列**（`description` / `acceptance_criteria` / `rules` / `metadata` / `context_refs` / `wiki_content` / `wiki_meta` / `owner_role` / `content` / `community_*` …）。手写一个「够用」的 `nodes` 表，漏一列就是 `no such column` 报错、多一列就是与真实 schema 漂移。`initDatabase()` 给的是真表。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
 
 ```ts
-it('orphans become root nodes when their parent is deleted', () => {
-  nodeRepo.delete('c1')
-  const row = db.prepare("SELECT parent_id FROM nodes WHERE id='f1'").get() as { parent_id: string | null }
-  expect(row.parent_id).toBeNull()
-})
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
 
-it('round-trips the collapsed flag through update', () => {
-  const updated = nodeRepo.update('f1', { collapsed: true })
-  expect(updated.collapsed).toBe(true)
-  const raw = db.prepare("SELECT collapsed FROM nodes WHERE id='f1'").get() as { collapsed: number }
-  expect(raw.collapsed).toBe(1)
-  const cleared = nodeRepo.update('f1', { collapsed: false })
-  expect(cleared.collapsed).toBe(false)
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-node-repo-test-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { NodeRepository } from '../node-repository'
+
+describe('NodeRepository — 层级相关行为', () => {
+  let db: ReturnType<typeof getClient>
+  let nodeRepo: NodeRepository
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+    nodeRepo = new NodeRepository(db)
+    const now = new Date().toISOString()
+    const ins = db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    )
+    ins.run('c1', 'process', 'draft', 'C1', 'g1', 'online', 'm1', 0, 0, now, now)
+    ins.run('f1', 'feature', 'draft', 'F1', 'g1', 'online', 'c1', 0, 0, now, now)
+  })
+
+  afterAll(() => { closeDatabase() })
+
+  it('orphans become root nodes when their parent is deleted', () => {
+    nodeRepo.delete('c1')
+    const row = db.prepare("SELECT parent_id FROM nodes WHERE id='f1'").get() as { parent_id: string | null }
+    expect(row.parent_id).toBeNull()
+  })
+
+  it('round-trips the collapsed flag through update', () => {
+    const updated = nodeRepo.update('f1', { collapsed: true })
+    expect(updated.collapsed).toBe(true)
+    const raw = db.prepare("SELECT collapsed FROM nodes WHERE id='f1'").get() as { collapsed: number }
+    expect(raw.collapsed).toBe(1)
+    const cleared = nodeRepo.update('f1', { collapsed: false })
+    expect(cleared.collapsed).toBe(false)
+  })
 })
 ```
 
 第二条钉的是 boolean→INTEGER 的转换：better-sqlite3 不接受 boolean 绑定，忘了转换就会抛 `TypeError` 而不是断言失败。
 
-在 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts` 追加：
+💡 `TEST_USER_DATA` 目录名带 `process.pid`——vitest 每个测试文件跑在独立 worker 进程里，各自有自己的 userData 目录，不会互相踩。
+
+在 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts` 追加（同文件已有 `makeNode` / `makeEdge` 两个 helper，直接用）：
 
 ```ts
 it('orders siblings by sort_index rather than edge order', () => {
-  // 造两个子节点，data.sortIndex 分别为 1 和 0，但 edges 数组里顺序相反
-  // 断言布局后 sortIndex=0 的子节点 y 坐标更小
+  const withSort = (id: string, title: string, sortIndex: number): Node => ({
+    id,
+    type: 'default',
+    position: { x: 0, y: 0 },
+    data: { type: 'feature', title, sortIndex },
+  } as Node)
+
+  const nodes = [
+    makeNode('p1', 'project', 'Root'),
+    withSort('a', 'A', 1),
+    withSort('b', 'B', 0),
+  ]
+  // 边顺序与 sort_index 相反：a 在边里排前面，但它的 sort_index 是 1
+  const edges = [
+    makeEdge('e1', 'p1', 'a'),
+    makeEdge('e2', 'p1', 'b'),
+  ]
+  const result = computeTreeLayout(nodes, edges)
+  const posById = new Map(result.nodes.map((n) => [n.id, n.position]))
+  // sort_index=0 的 b 应排在 sort_index=1 的 a 之前
+  expect(posById.get('b')!.y).toBeLessThan(posById.get('a')!.y)
 })
 ```
+
+⚠️ **同文件里已有的 `'sorts children by edge order to avoid crossings'` 用例必须继续通过**——它造的节点全都没有 `sortIndex`（全是 undefined），靠的是「undefined 排最后、保持原相对顺序」这条兜底路径，才仍按边顺序排列。这条是本次语义切换的护栏：兜底路径实现错了，存量没有 `sort_index` 的节点顺序就会乱。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -1431,6 +1692,8 @@ if (data.collapsed !== undefined) { updates.push('collapsed = ?'); args.push(dat
 - [ ] **Step 5: Make tree layout honor sort_index**
 
 `src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:567` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
+
+⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。且转 number 前要判 `undefined`：`Number(undefined)` 是 `NaN`，`NaN` 参与比较恒为 false，会把兜底路径静默弄坏。
 
 ⚠️ 节点缓存 key（`GraphCanvas.tsx:530`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
@@ -1496,6 +1759,8 @@ Expected: FAIL —— 模块不存在
 - `visibleNodes` = 排除所有被折叠节点的后代（折叠节点本身可见）
 - `toggle(nodeId)` 调 `graphStore.updateNode(nodeId, { collapsed: !isCollapsed(nodeId) })`
 
+⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
+
 - [ ] **Step 4: Render the collapse control**
 
 `src/renderer/canvas/BizNode.tsx`：
@@ -1505,6 +1770,7 @@ Expected: FAIL —— 模块不存在
 `src/renderer/canvas/GraphCanvas.tsx`：`flowNodes` 的 useMemo 改为遍历 `visibleNodes` 而不是 `graphNodes`。
 
 ⚠️ `flowNodes` 的依赖数组（:592）要加上 `visibleNodes`；`nodeCacheRef` 的清理循环（:588-590）会自动移除不可见节点的缓存条目。✓
+⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:595-597）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
 
 - [ ] **Step 5: Add i18n strings**
 
