@@ -33,6 +33,7 @@ import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, createMarkerEnd, GHOST_EDGE_COLOR } from './edge-utils'
+import { isReparentEnabled } from './reparent-gate'
 import {
   buildReparentGhostEdge,
   deriveHierarchyEdges,
@@ -965,17 +966,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   /**
    * 力导向布局下**不启用**重挂。
    *
-   * 力导向模式下一次拖拽结束会把**所有**节点的仿真坐标整体写回数据库
-   * （useForceLayout.onNodeDragStop），那会覆盖掉重挂算出来的锚点位置与
-   * 整棵子树的平移结果。要同时支持两者得把仿真按新坐标重新播种 ——
-   * 那是 useForceLayout 的重构，超出本任务范围。
-   *
-   * ⚠️ **必须 fail closed**（`=== 'tree'`，不是 `!== 'force'`）：
-   * 模式还没读回来（`layoutMode === null`）的那一小段时间里，重挂必须是**关着**的 ——
-   * 那正是「力导向项目」最容易被误伤的时刻（R-38 明确禁止力导向下重挂）。
-   * 代价：启动与切图时各有**一帧左右**重挂不可用（读回模式后就有了）—— 零代价。
+   * 判定规则本身住在 `reparent-gate.ts`（纯函数，可直接单测）——
+   * 那条「模式未知时必须关着」的 R-38 不变量曾经**没有任何自动化覆盖**：
+   * 把它从 `=== 'tree'` 改成 fail-open 的 `!== 'force'`，13 条结构编辑 e2e 照样全绿。
    */
-  const reparentEnabled = layoutMode === 'tree'
+  const reparentEnabled = isReparentEnabled(layoutMode)
 
   /**
    * 拖拽回调 —— 力导向 reheat 与重挂候选检测**共存**，不是二选一。
