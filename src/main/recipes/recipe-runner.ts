@@ -430,7 +430,7 @@ export class RecipeRunner {
    * 顺序执行 def.steps）。调用方主要在内部使用；测试代码可显式调用以验证 sub_recipes 路径。
    */
   async runDAG(request: RecipeRunRequest, topDef: RecipeDefinition): Promise<RecipeRun> {
-    const runId = generateId('recipe')
+    const runId = request.runId ?? generateId('recipe')
     const ctrl = new AbortController()
     this.activeRuns.set(runId, ctrl)
 
@@ -491,7 +491,7 @@ export class RecipeRunner {
    * parentSignal 可选：DAG 调用时传入顶层 ctrl.signal，使得子 run 也能随父级一起取消。
    */
   private async runSingle(request: RecipeRunRequest, def: RecipeDefinition, parentSignal?: AbortSignal): Promise<RecipeRun> {
-    const runId = generateId('recipe')
+    const runId = request.runId ?? generateId('recipe')
     const ctrl = new AbortController()
     this.activeRuns.set(runId, ctrl)
     if (parentSignal) {
@@ -535,7 +535,7 @@ export class RecipeRunner {
   /** 当 Recipe id 找不到时，仍然要持久化一条 failed run，便于用户看到错误。 */
   private recordFailedLookup(request: RecipeRunRequest, err: unknown): RecipeRun {
     const failed: RecipeRun = {
-      id: generateId('recipe'),
+      id: request.runId ?? generateId('recipe'),
       recipe_id: request.recipeId,
       recipe_version: 'unknown',
       session_id: request.parentSessionId ?? null,

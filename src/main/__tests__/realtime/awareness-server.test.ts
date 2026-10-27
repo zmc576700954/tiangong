@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import WebSocket from 'ws'
 import { AwarenessServer } from '../../realtime/awareness-server'
 import {
+  AWARENESS_MSG_HELLO,
   AWARENESS_MSG_QUERY_AWARENESS,
   AWARENESS_MSG_REMOVE,
   AWARENESS_MSG_UPDATE,
@@ -76,6 +77,46 @@ function makeCollector(socket: WebSocket): {
       return messages.find(predicate)!
     },
     close: () => socket.close(),
+  }
+}
+
+/**
+ * 连接客户端并**同步**挂上消息收集器。
+ *
+ * 监听器必须在 socket 创建时就挂上：服务端在连接建立后的同一批数据里就把 HELLO
+ * 发过来了，等 'open' 之后再挂会漏掉这条消息。
+ */
+async function connectWithCollector(port: number): Promise<{ socket: WebSocket; collector: ReturnType<typeof makeCollector> }> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`)
+  const messages: AwarenessMessage[] = []
+  socket.on('message', (raw) => {
+    try {
+      messages.push(JSON.parse(raw.toString()) as AwarenessMessage)
+    } catch {
+      // ignore
+    }
+  })
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('ws connect timeout')), 1000)
+    socket.once('open', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    socket.once('error', (err) => {
+      clearTimeout(timer)
+      reject(err)
+    })
+  })
+  return {
+    socket,
+    collector: {
+      messages,
+      wait: async (predicate, timeoutMs = 1000) => {
+        await waitFor(() => messages.some(predicate), timeoutMs)
+        return messages.find(predicate)!
+      },
+      close: () => socket.close(),
+    },
   }
 }
 
@@ -217,7 +258,30 @@ describe('AwarenessServer — 消息校验', () => {
     const c = makeCollector(socket)
     socket.send(JSON.stringify({ type: AWARENESS_MSG_QUERY_AWARENESS, clientId: 'self' }))
     await new Promise((r) => setTimeout(r, 50))
-    expect(c.messages).toEqual([])
+    // 连接时服务端会先下发 HELLO（把 clientId 告诉客户端），这里只关心 UPDATE
+    expect(c.messages.filter((m) => m.type === AWARENESS_MSG_UPDATE)).toEqual([])
+    socket.close()
+  })
+
+  it('连接后服务端下发 HELLO，携带本次连接的 clientId', async () => {
+    const { socket, collector } = await connectWithCollector(port)
+    const hello = await collector.wait((m) => m.type === AWARENESS_MSG_HELLO)
+    expect(typeof (hello as { clientId: string }).clientId).toBe('string')
+    expect((hello as { clientId: string }).clientId.length).toBeGreaterThan(0)
+    socket.close()
+  })
+
+  it('HELLO 下发的 clientId 可以正常发 UPDATE（不被当成伪造）', async () => {
+    const { socket, collector } = await connectWithCollector(port)
+    const hello = await collector.wait((m) => m.type === AWARENESS_MSG_HELLO)
+    const clientId = (hello as { clientId: string }).clientId
+    socket.send(JSON.stringify({
+      type: AWARENESS_MSG_UPDATE,
+      clientId,
+      state: baseState('u'),
+    }))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(socket.readyState).toBe(WebSocket.OPEN)
     socket.close()
   })
 })

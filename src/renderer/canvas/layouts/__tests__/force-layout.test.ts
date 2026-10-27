@@ -111,6 +111,21 @@ describe('computeForceLayout', () => {
     }
   })
 
+  it('ignores undefined option values (显式 undefined 不能把中心拉成 (0,0))', () => {
+    const nodes = [
+      makeNode('n1', 'project', 'Root'),
+      makeNode('n2', 'module', 'A'),
+    ]
+    const edges: Edge[] = [{ id: 'e1', source: 'n1', target: 'n2' }]
+    // 调用方传了 undefined —— 展开运算符会带着 undefined 覆盖默认值，
+    // 而 forceCenter(undefined) 在 d3-force 里等于 forceCenter(0, 0)。
+    const result = computeForceLayout(nodes, edges, { centerX: undefined, centerY: undefined })
+    const cx = (result[0].position.x + result[1].position.x) / 2
+    const cy = (result[0].position.y + result[1].position.y) / 2
+    expect(cx).toBeGreaterThan(150)
+    expect(cy).toBeGreaterThan(100)
+  })
+
   it('keeps nodes spread out by repulsion (no heavy overlap for >2 isolated nodes)', () => {
     // 5 个无连接节点，应该被排斥力分散到不同象限
     const nodes = Array.from({ length: 5 }, (_, i) =>

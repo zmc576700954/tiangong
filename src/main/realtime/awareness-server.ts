@@ -18,6 +18,7 @@
  * 实现自行管理（避免主进程引入 y-protocols 的 node-only ESM 模块）：
  * - 每个客户端有唯一 server-assigned clientId（字符串 base64）
  * - 服务器持有 Map<clientId, RemoteAwarenessState>
+ * - 连接建立后服务器先下发 HELLO 把 clientId 告诉客户端（否则客户端无从得知自己的 id）
  * - 客户端首次连接后立刻 broadcast QUERY_AWARENESS 拿到现有 states
  * - 服务器在 state 变更时把 AWARENESS_MSG_UPDATE 发给其它客户端
  * - 客户端在收到 UPDATE 时按 clientId 维护本地 awareness map
@@ -27,6 +28,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { createLogger } from '../shared/logger'
 import {
+  AWARENESS_MSG_HELLO,
   AWARENESS_MSG_QUERY_AWARENESS,
   AWARENESS_MSG_REMOVE,
   AWARENESS_MSG_UPDATE,
@@ -226,6 +228,19 @@ export class AwarenessServer {
     }
     this.connections.set(clientId, conn)
     logger.info(`Client connected: ${clientId} from ${remoteAddress} (total=${this.connections.size})`)
+
+    // 握手：把服务端分配的 clientId 告诉客户端。
+    // 少了这一步客户端永远拿不到自己的 id —— UPDATE 广播会跳过发送方，
+    // 客户端自己的状态回不来，而 server 又拒绝 clientId 不匹配的 UPDATE，
+    // 于是协作光标从头到尾都是哑的。
+    try {
+      ws.send(JSON.stringify({
+        type: AWARENESS_MSG_HELLO,
+        clientId,
+      } satisfies AwarenessMessage))
+    } catch (err) {
+      logger.warn(`Failed to send hello to ${clientId}:`, err)
+    }
 
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       this.handleMessage(conn, raw).catch((err: Error) => {

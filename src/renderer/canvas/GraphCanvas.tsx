@@ -28,6 +28,7 @@ import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
+import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
@@ -55,7 +56,9 @@ import {
 import { eventBus, Events } from '../store/eventBus'
 import { LintPanel } from '../components/wiki/LintPanel'
 import { WritebackPanel } from '../components/wiki/WritebackPanel'
-import { RecipesPanel } from '../panels/RecipesPanel'
+import { RecipesPanel, type ActiveRecipeRun } from '../panels/RecipesPanel'
+import { RecipeRunProgress } from '../panels/RecipeRunProgress'
+import { FloatingPanel } from '../components/ui/FloatingPanel'
 import { toastSuccess, toastError, toastInfo } from '../lib/toast'
 import {
   useAwarenessConnection,
@@ -89,6 +92,40 @@ function BizNodeWrapper({ id, data, selected }: {
   return <BizNodeComponent id={id} data={data} selected={selected} multiSelected={multiSelected} />
 }
 const nodeTypes = { bizNode: BizNodeWrapper }
+
+/**
+ * defaultEdgeOptions / connectionLineStyle 定义在模块级。
+ * 它们是 ReactFlow 的受跟踪字段（fieldsToTrack），写成行内字面量会让
+ * StoreUpdater 每次渲染都判定引用变化并写一次 xyflow store，触发所有订阅者重渲染。
+ */
+const DEFAULT_EDGE_OPTIONS = {
+  type: 'bizEdge',
+  markerEnd: {
+    type: MarkerType.ArrowClosed,
+    width: 12,
+    height: 12,
+  },
+} as const
+
+const CONNECTION_LINE_STYLE = {
+  stroke: '#3b82f6',
+  strokeWidth: 2,
+  strokeDasharray: '5 5',
+} as const
+
+/**
+ * 缩放百分比徽标单独成一个组件。
+ * zoomLevel 在缩放过程中每帧都变，如果画布主组件订阅它，
+ * 每次缩放都会重渲染整棵画布（连带 defaultEdgeOptions 写 store）。
+ */
+function ZoomLevelBadge() {
+  const zoomLevel = useGraphRuntimeStore((s) => s.zoomLevel)
+  return (
+    <div className="bg-background/90 backdrop-blur border rounded-lg shadow-xs px-2 py-1 text-[10px] text-muted-foreground font-mono">
+      {Math.round(zoomLevel * 100)}%
+    </div>
+  )
+}
 
 interface GraphCanvasProps {
   graphId: string
@@ -191,9 +228,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
   const [importSummary, setImportSummary] = useState<{ text: string; failed: { file: string; error: string }[] } | null>(null)
   const [lintReport, setLintReport] = useState<LintReport | null>(null)
-  const [lintOpen, setLintOpen] = useState(false)
   const [lintLoading, setLintLoading] = useState(false)
-  const [writebackOpen, setWritebackOpen] = useState(false)
+  /**
+   * 右上角浮层（Lint / Writeback / Recipes）互斥：
+   * 三者都锚在 top-16 right-4，同时打开会叠在一起，谁也点不到。
+   */
+  const [cornerPanel, setCornerPanel] = useState<'lint' | 'writeback' | 'recipes' | null>(null)
   const [writebackItems, setWritebackItems] = useState<WritebackItem[]>([])
   const [writebackHistoryItems, setWritebackHistoryItems] = useState<WritebackItem[]>([])
   const [writebackCount, setWritebackCount] = useState(0)
@@ -214,7 +254,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   // Recipes panel state
   // ────────────────────────────────────────────────────────────────
-  const [recipesOpen, setRecipesOpen] = useState(false)
+  /** 当前运行的 recipe —— 进度面板挂在画布层，不随 Recipes 弹层一起消失。 */
+  const [recipeRun, setRecipeRun] = useState<ActiveRecipeRun | null>(null)
+  /** 实时 step 状态：进度面板 → DAG 上色。 */
+  const [recipeStepStatus, setRecipeStepStatus] = useState<Record<string, { status: RecipeDagNodeStatus; error?: string }>>({})
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -277,7 +320,6 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  const zoomLevel = useGraphRuntimeStore((s) => s.zoomLevel)
   const isZoomedOut = useGraphRuntimeStore((s) => s.isZoomedOut)
   const setZoomLevel = useGraphRuntimeStore((s) => s.setZoomLevel)
   const setIsZoomedOut = useGraphRuntimeStore((s) => s.setIsZoomedOut)
@@ -390,7 +432,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // 图加载/切换时刷新一次计数，让菜单角标 (N) 无需打开面板即为准确；
   // 同时重置面板状态，避免切换后短暂显示上一张图的待审项
   useEffect(() => {
-    setWritebackOpen(false)
+    setCornerPanel((prev) => (prev === 'writeback' ? null : prev))
     setWritebackItems([])
     setWritebackHistoryItems([])
     setWritebackCount(0)
@@ -504,7 +546,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       nextIds.add(node.id)
       const cached = cache.get(node.id)
       if (cached?.key === key) {
-        return cached.node
+        const prev = cached.node
+        // position 不在缓存键里，但位置变了必须换新对象：xyflow 的
+        // adoptUserNodes 只在 userNode 引用变化时才重建 internal node，
+        // 复用旧对象会让画布沿用拖拽前的坐标，节点松手后弹回原位。
+        if (prev.position === node.position) return prev
+        const moved: Node = {
+          ...prev,
+          position: node.position,
+          data: { ...prev.data, position: node.position },
+        }
+        cache.set(node.id, { key, node: moved })
+        return moved
       }
 
       const flowNode: Node = {
@@ -562,7 +615,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         edge.target,
         displayLabel,
         edgeType,
-        edge.content?.condition,
+        // 整个 content：suggested / note / trigger / guard 等字段变化都要让边重建，
+        // 否则「确认建议边」后画布仍是建议态，✓/✗ 按钮点不掉。
+        edge.content,
         edge.strength,
         isSelected,
         shouldAnimate,
@@ -793,7 +848,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     try {
       const r = await useGraphStore.getState().lintGraph()
       setLintReport(r)
-      setLintOpen(true)
+      setCornerPanel('lint')
     } catch (err) {
       console.error('[GraphCanvas] lint failed:', err)
     } finally {
@@ -807,7 +862,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       await useGraphStore.getState().computeCommunities()
       const r = await useGraphStore.getState().lintGraph()
       setLintReport(r)
-      setLintOpen(true)
+      setCornerPanel('lint')
     } catch (err) {
       console.error('[GraphCanvas] compute communities failed:', err)
     } finally {
@@ -836,15 +891,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const handleOpenWriteback = useCallback(async () => {
     await refreshWriteback()
-    setWritebackOpen(true)
+    setCornerPanel('writeback')
   }, [refreshWriteback])
 
   const handleOpenRecipes = useCallback(() => {
-    setRecipesOpen(true)
+    // 再点一次同一个按钮 = 收起
+    setCornerPanel((prev) => (prev === 'recipes' ? null : 'recipes'))
   }, [])
 
   const handleCloseRecipes = useCallback(() => {
-    setRecipesOpen(false)
+    setCornerPanel((prev) => (prev === 'recipes' ? null : prev))
   }, [])
 
   const handleAcceptWriteback = useCallback(async (itemId: string) => {
@@ -1113,19 +1169,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onlyRenderVisibleElements
         nodeDragThreshold={3}
         elevateNodesOnSelect
-        defaultEdgeOptions={{
-          type: 'bizEdge',
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            width: 12,
-            height: 12,
-          },
-        }}
-        connectionLineStyle={{
-          stroke: '#3b82f6',
-          strokeWidth: 2,
-          strokeDasharray: '5 5',
-        }}
+        defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
+        connectionLineStyle={CONNECTION_LINE_STYLE}
       >
         <Background gap={16} size={1} color="var(--canvas-bg)" />
         <Controls className="[&>button]:bg-background [&>button]:border-border [&>button]:text-foreground" />
@@ -1143,9 +1188,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         )}
 
         <Panel position="bottom-left" className="m-2">
-          <div className="bg-background/90 backdrop-blur border rounded-lg shadow-xs px-2 py-1 text-[10px] text-muted-foreground font-mono">
-            {Math.round(zoomLevel * 100)}%
-          </div>
+          <ZoomLevelBadge />
         </Panel>
 
         <Panel position="bottom-left" className="m-2 ml-12">
@@ -1401,17 +1444,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onDismissImportSummary={() => setImportSummary(null)}
       />
 
-      {lintOpen && lintReport && (
+      {cornerPanel === 'lint' && lintReport && (
         <LintPanel
           report={lintReport}
           onNavigate={handleLintNavigate}
-          onClose={() => setLintOpen(false)}
+          onClose={() => setCornerPanel(null)}
           onRecompute={handleRecompute}
           onApplyFix={handleLintApplyFix}
         />
       )}
 
-      {writebackOpen && (
+      {cornerPanel === 'writeback' && (
         <WritebackPanel
           items={writebackItems}
           historyItems={writebackHistoryItems}
@@ -1423,15 +1466,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           onBatchAccept={handleBatchAcceptWriteback}
           onBatchDiscard={handleBatchDiscardWriteback}
           onNavigate={handleWritebackNavigate}
-          onClose={() => setWritebackOpen(false)}
+          onClose={() => setCornerPanel(null)}
           onDismissError={handleDismissWritebackError}
         />
       )}
 
-      {recipesOpen && (
-        <div className="absolute top-16 right-4 z-50 w-[480px] max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 border-b">
-            <span className="text-sm font-medium">{t('recipes.title')}</span>
+      {cornerPanel === 'recipes' && (
+        <FloatingPanel
+          isOpen
+          onClose={handleCloseRecipes}
+          title={t('recipes.title')}
+          variant="corner"
+          width="xl"
+          showCloseButton={false}
+          headerActions={
             <button
               type="button"
               onClick={handleCloseRecipes}
@@ -1441,11 +1489,26 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
             >
               <X className="w-3.5 h-3.5" />
             </button>
-          </div>
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <RecipesPanel />
-          </div>
-        </div>
+          }
+        >
+          <RecipesPanel
+            onActiveRunChange={setRecipeRun}
+            liveStepStatus={recipeStepStatus}
+          />
+        </FloatingPanel>
+      )}
+
+      {/* Recipe 运行进度：挂在画布层（portal 到视口右下角），
+          关掉 Recipes 弹层也不影响进度显示。 */}
+      {recipeRun && (
+        <RecipeRunProgress
+          recipe={recipeRun.recipe}
+          runId={recipeRun.runId}
+          onStepUpdate={(stepId, status, error) =>
+            setRecipeStepStatus((prev) => ({ ...prev, [stepId]: { status, error } }))
+          }
+          onClose={() => setRecipeRun(null)}
+        />
       )}
 
       {contextPopover && (

@@ -5,7 +5,7 @@ import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
 import { Pencil, Trash2, Plus, Link, Sparkles, Play, Paperclip, Wand2, Bot } from 'lucide-react'
-import { useMenuPosition } from './hooks/useMenuPosition'
+import { ViewportMenu } from './components/ViewportMenu'
 
 interface NodeContextMenuProps {
   nodeId: string
@@ -72,7 +72,6 @@ export function NodeContextMenu({
 }: NodeContextMenuProps) {
   const { locale, t } = useI18n()
   const node = nodes.find((n) => n.id === nodeId)
-  const { ref: menuRef, adjustedPos } = useMenuPosition(x, y)
 
   // 使用 ref 避免每次渲染重新绑定事件监听器
   const onCloseRef = useRef(onClose)
@@ -89,10 +88,10 @@ export function NodeContextMenu({
   const childTypeOptions = getChildTypeOptions(node.type)
 
   return (
-    <div
-      ref={menuRef}
-      className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-52"
-      style={{ left: adjustedPos.x, top: adjustedPos.y }}
+    <ViewportMenu
+      x={x}
+      y={y}
+      className="bg-background border rounded-lg shadow-lg py-1 w-52"
       onClick={(e) => e.stopPropagation()}
     >
       <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
@@ -232,6 +231,6 @@ export function NodeContextMenu({
           </button>
         </div>
       )}
-    </div>
+    </ViewportMenu>
   )
 }

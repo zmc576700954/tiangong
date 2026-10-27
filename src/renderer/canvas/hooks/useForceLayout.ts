@@ -16,7 +16,7 @@
  * `setForceMode(false)` 或重新加载图来退出 force mode。
  */
 import { useCallback, useEffect, useRef } from 'react'
-import { useReactFlow, type NodeMouseHandler } from '@xyflow/react'
+import { useReactFlow, useStoreApi, type NodeMouseHandler } from '@xyflow/react'
 import {
   type Simulation,
 } from 'd3-force'
@@ -45,11 +45,30 @@ interface SimulationHolder {
 }
 
 export function useForceLayout(options: UseForceLayoutOptions = {}) {
-  const { getNodes, getEdges, setNodes, fitView } = useReactFlow()
+  const { getNodes, getEdges, setNodes, fitView, getViewport } = useReactFlow()
+  const storeApi = useStoreApi()
   const batchUpdatePositions = useGraphStore((s) => s.batchUpdatePositions)
 
   const holderRef = useRef<SimulationHolder | null>(null)
   const isForceModeRef = useRef(false)
+
+  /**
+   * 布局中心：显式传入优先，否则用 ReactFlow 当前 viewport 的中心。
+   * （force-layout 的默认 400/300 只在没有视口信息时兜底。）
+   */
+  const resolveCenter = useCallback((): { x: number; y: number } | null => {
+    if (options.centerX != null && options.centerY != null) {
+      return { x: options.centerX, y: options.centerY }
+    }
+    const { width, height } = storeApi.getState()
+    if (!width || !height) return null
+    const viewport = getViewport()
+    const zoom = viewport.zoom || 1
+    return {
+      x: (width / 2 - viewport.x) / zoom,
+      y: (height / 2 - viewport.y) / zoom,
+    }
+  }, [options.centerX, options.centerY, storeApi, getViewport])
 
   /**
    * 把当前 simNodes 位置写回 ReactFlow nodes 并持久化。
@@ -82,14 +101,11 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
     const edges = getEdges()
     if (nodes.length === 0) return
 
-    const center = options.centerX != null && options.centerY != null
-      ? { x: options.centerX, y: options.centerY }
-      : null
+    const center = resolveCenter()
 
     // 1. 一次性同步 200 tick 拿到初始位置
     const layouted = computeForceLayout(nodes, edges, {
-      centerX: center?.x,
-      centerY: center?.y,
+      ...(center ? { centerX: center.x, centerY: center.y } : {}),
     })
 
     // 2. 写回 ReactFlow 并持久化
@@ -119,8 +135,7 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
     }
     if (layouted.length > 0) {
       const { simulation, simNodes } = createForceSimulation(layouted, edges, {
-        centerX: center?.x,
-        centerY: center?.y,
+        ...(center ? { centerX: center.x, centerY: center.y } : {}),
       })
       holderRef.current = {
         simulation,
@@ -136,8 +151,7 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
     setNodes,
     batchUpdatePositions,
     fitView,
-    options.centerX,
-    options.centerY,
+    resolveCenter,
     options.reheatMaxTicks,
     options.reheatAlphaThreshold,
   ])
@@ -197,9 +211,17 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
 
     syncPositionsToStore(true)
 
-    // 持久化所有节点的最终位置
+    // 持久化所有节点的最终位置。
+    // 必须用仿真里的权威坐标：setNodes 是排队的（layout effect 才 flush），
+    // 此刻 getNodes() 读到的还是拖拽前的坐标 —— 存下去会让节点松手后弹回原位。
     const allNodes = getNodes()
-    const updates = allNodes.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y }))
+    const updates = allNodes.map((n) => {
+      const sn = holder.simNodes.get(n.id)
+      if (sn && sn.x != null && sn.y != null) {
+        return { id: n.id, x: sn.x, y: sn.y }
+      }
+      return { id: n.id, x: n.position.x, y: n.position.y }
+    })
     batchUpdatePositions(updates).catch((err) => {
       console.error('[useForceLayout] Failed to persist after drag-stop:', err)
     })

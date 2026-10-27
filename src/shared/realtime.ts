@@ -17,6 +17,13 @@ import type { UserIdentity } from './types'
 export const AWARENESS_MSG_QUERY_AWARENESS = 0
 export const AWARENESS_MSG_UPDATE = 1
 export const AWARENESS_MSG_REMOVE = 2
+/**
+ * 握手消息：连接建立后服务端立刻下发本次连接的 clientId。
+ *
+ * 没有它客户端就永远拿不到自己的 id —— server 的 UPDATE 广播会跳过发送方，
+ * 客户端自己发的状态回不来，clientId 只能是 null，于是所有 UPDATE 都被拒绝。
+ */
+export const AWARENESS_MSG_HELLO = 3
 
 /**
  * 单个客户端的 awareness 状态。
@@ -45,6 +52,7 @@ export interface RemoteAwarenessState {
  * 3. 与 Y.Doc sync 协议隔离：D10a 用 y-protocols/sync 二进制，D10b 用 JSON
  */
 export type AwarenessMessage =
+  | { type: typeof AWARENESS_MSG_HELLO; clientId: string }
   | { type: typeof AWARENESS_MSG_QUERY_AWARENESS; clientId: string }
   | {
     type: typeof AWARENESS_MSG_UPDATE

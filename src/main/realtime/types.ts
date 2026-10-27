@@ -16,6 +16,7 @@ export {
   AWARENESS_MSG_QUERY_AWARENESS,
   AWARENESS_MSG_UPDATE,
   AWARENESS_MSG_REMOVE,
+  AWARENESS_MSG_HELLO,
 } from '../../shared/realtime'
 
 import type { UserIdentity } from '../../shared/types'

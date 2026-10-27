@@ -29,6 +29,18 @@ export interface RecipeHandlerDeps {
   runner: RecipeRunner
 }
 
+/**
+ * 调用方可以自带 run id（UI 需要在 run 结束前就知道它，才能实时绑定进度事件）。
+ * 只接受我们自己生成的格式，其余一律丢弃 —— 主键会直接进 DB 与日志，
+ * 不能让渲染进程塞任意字符串进来。
+ */
+const RUN_ID_PATTERN = /^recipe-[a-f0-9]{32}$/
+
+function normalizeRunId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  return RUN_ID_PATTERN.test(value) ? value : undefined
+}
+
 export function registerRecipeHandlers(
   deps: RecipeHandlerDeps,
   typedHandle: TypedHandle,
@@ -83,6 +95,7 @@ export function registerRecipeHandlers(
       inputs,
       parentSessionId,
       nodeId,
+      runId: normalizeRunId(r.runId),
     }
     return runner.run(req)
   })

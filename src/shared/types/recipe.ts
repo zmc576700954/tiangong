@@ -235,6 +235,15 @@ export interface RecipeRunRequest {
   adapterName?: string
   /** 可选 description（用于子代理日志）。 */
   description?: string
+  /**
+   * 可选的 run id（由调用方生成）。
+   *
+   * 存在的理由：UI 需要在 `recipes:run` 返回**之前**就知道 run id ——
+   * 该 IPC 会一直 await 到整个 run 结束，进度事件却按 runId 过滤。
+   * 由渲染进程预先生成 id，主进程校验格式后沿用，进度面板才能实时亮起来。
+   * 缺省时主进程自行生成。
+   */
+  runId?: string
 }
 
 // ============================================

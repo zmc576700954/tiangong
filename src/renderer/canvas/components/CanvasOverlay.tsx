@@ -6,7 +6,7 @@ import { useI18n } from '../../i18n/useI18n'
 import type { Connection } from '@xyflow/react'
 import type { GraphNode, NodeType, EdgeType, EdgeContent, NodeStatus } from '@shared/types'
 import { NodeContextMenu } from '../NodeContextMenu'
-import { useMenuPosition } from '../hooks/useMenuPosition'
+import { ViewportMenu } from './ViewportMenu'
 
 interface CanvasOverlayProps {
   isEmpty: boolean
@@ -77,7 +77,6 @@ export function CanvasOverlay({
   const [selectedEdgeType, setSelectedEdgeType] = useState<EdgeType | null>(null)
   const [edgeCondition, setEdgeCondition] = useState('')
   const [edgeNote, setEdgeNote] = useState('')
-  const { ref: canvasMenuRef, adjustedPos: canvasMenuPos } = useMenuPosition(menuPosition.x, menuPosition.y)
 
   // 边类型菜单关闭时重置表单状态
   useEffect(() => {
@@ -121,10 +120,10 @@ export function CanvasOverlay({
 
       {/* 右键画布菜单 */}
       {showNodeMenu && (
-        <div
-          ref={canvasMenuRef}
-          className="absolute z-50 bg-background border rounded-lg shadow-lg py-1 w-40"
-          style={{ left: canvasMenuPos.x, top: canvasMenuPos.y }}
+        <ViewportMenu
+          x={menuPosition.x}
+          y={menuPosition.y}
+          className="bg-background border rounded-lg shadow-lg py-1 w-40"
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1">{t('canvas.overlay.addNode')}</div>
           {canvasNodeTypes.map((type) => (
@@ -175,15 +174,16 @@ export function CanvasOverlay({
               </button>
             )}
           </div>
-        </div>
+        </ViewportMenu>
       )}
 
       {/* 边类型选择菜单 */}
       {showEdgeTypeMenu && pendingConnection && (
-        <div
-          className="absolute z-50 bg-background border rounded-lg shadow-lg py-2 w-56"
+        <ViewportMenu
+          x={edgeMenuPosition.x}
+          y={edgeMenuPosition.y}
+          className="bg-background border rounded-lg shadow-lg py-2 w-56"
           data-testid="edge-type-menu"
-          style={{ left: edgeMenuPosition.x, top: edgeMenuPosition.y }}
         >
           <div className="px-3 py-1.5 text-xs text-muted-foreground border-b mb-1 flex items-center gap-1">
             <GitBranch className="w-3 h-3" />
@@ -254,7 +254,7 @@ export function CanvasOverlay({
               </button>
             </div>
           )}
-        </div>
+        </ViewportMenu>
       )}
 
       {/* 节点右键菜单 */}

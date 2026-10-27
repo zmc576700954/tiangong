@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import type { Connection } from '@xyflow/react'
+import { useReactFlow, type Connection } from '@xyflow/react'
 import type { EdgeType, EdgeContent } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
 
@@ -10,6 +10,7 @@ export function useEdgeConnection(graphId: string) {
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
   const createEdge = useGraphStore((state) => state.createEdge)
+  const { flowToScreenPosition } = useReactFlow()
 
   const [pendingConnection, setPendingConnection] = useState<Connection | null>(null)
   const [showEdgeTypeMenu, setShowEdgeTypeMenu] = useState(false)
@@ -34,13 +35,15 @@ export function useEdgeConnection(graphId: string) {
         if (sourceNode && targetNode) {
           const midX = (sourceNode.position.x + targetNode.position.x) / 2 + 100
           const midY = (sourceNode.position.y + targetNode.position.y) / 2
-          setEdgeMenuPosition({ x: midX, y: midY })
+          // 节点坐标是 flow 坐标，菜单是视口定位的（fixed），必须换算成屏幕坐标
+          const screen = flowToScreenPosition({ x: midX, y: midY })
+          setEdgeMenuPosition({ x: screen.x, y: screen.y })
         }
       }
       setPendingConnection(connection)
       setShowEdgeTypeMenu(true)
     },
-    [validateConnection, graphNodes],
+    [validateConnection, graphNodes, flowToScreenPosition],
   )
 
   const handleCreateEdge = useCallback(

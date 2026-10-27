@@ -8,7 +8,8 @@
  *   - 关闭按钮（关闭后停止监听）
  *
  * 设计哲学（参考 WritebackPanel）：
- *   - 使用 FloatingPanel shell（绝对定位 top-16 right-4 z-50）
+ *   - 使用 FloatingPanel shell，并 portal 到 document.body 贴视口右下角
+ *     （Recipes 弹层在画布右上角，进度面板贴右下角，两者不互相遮挡）
  *   - 错误条：顶部红条 + dismiss
  *   - 折叠 / 展开：可最小化只显示顶部进度条
  *   - 可选 onClose：未处理不强制阻拦（仅在不空闲时给出视觉提示）
@@ -32,6 +33,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '../i18n/useI18n'
+import { FloatingPanel } from '../components/ui/FloatingPanel'
 import type { TranslationKey } from '@shared/i18n'
 import type {
   RecipeRunProgressEvent,
@@ -104,6 +106,21 @@ const RUN_STATUS_LABEL_KEYS: Record<RecipeRunNodeStatus, TranslationKey> = {
   failed: 'recipes.status.failed',
   cancelled: 'recipes.status.cancelled',
   skipped: 'recipes.status.skipped',
+}
+
+/**
+ * 合并 DB 快照与本地实时状态。
+ * 实时事件比 DB 记录新：running 一律以本地为准；DB 还是 pending 而本地已有
+ * 终态时也以本地为准（DB 行在 run 结束时才落终态）。
+ */
+function mergeSteps(fromRun: StepDisplayState[], local: StepDisplayState[]): StepDisplayState[] {
+  return fromRun.map((s, i) => {
+    const l = local[i]
+    if (!l || l.stepId !== s.stepId) return s
+    if (l.status === 'running') return l
+    if (s.status === 'pending' && l.status !== 'pending') return l
+    return s
+  })
 }
 
 function StatusIcon({ status }: { status: RecipeRunNodeStatus }) {
@@ -180,6 +197,26 @@ export function RecipeRunProgress({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // 换 recipe / 换 run 时重置步骤表，并回填 DB 里已有的 run 状态 ——
+  // 面板可能在 run 结束之后才挂载（历史 run 回看），此时只看实时事件会全是 pending。
+  useEffect(() => {
+    setSteps(buildInitialSteps(recipe, initialRun ?? null))
+    setLastError(null)
+    const getRun = api?.['recipes:getRun']
+    if (!getRun) return
+    let cancelled = false
+    void Promise.resolve(getRun(runId))
+      .then((run) => {
+        if (cancelled || !run) return
+        setSteps((prev) => mergeSteps(buildInitialSteps(recipe, run), prev))
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recipe.id, runId])
+
   const totalSteps = steps.length
   const completedSteps = steps.filter((s) => s.status === 'completed').length
   const failedSteps = steps.filter((s) => s.status === 'failed').length
@@ -203,30 +240,40 @@ export function RecipeRunProgress({
   }, [api, runId])
 
   return (
-    <div
-      className="absolute top-16 right-4 z-50 w-80 max-h-[70vh] flex flex-col bg-background/95 backdrop-blur border rounded-lg shadow-lg"
-      data-testid="recipe-run-progress"
-      data-run-id={runId}
-      data-percent={percent}
-    >
-      {/* 标题栏 */}
-      <div className="flex items-center justify-between px-3 py-2 border-b">
-        <div className="flex items-center gap-2 min-w-0">
-          <button
-            type="button"
-            onClick={() => setCollapsed((v) => !v)}
-            aria-expanded={!collapsed}
-            aria-label={collapsed ? t('recipes.progress.expand') : t('recipes.progress.collapse')}
-            className="p-0.5 rounded hover:bg-muted text-muted-foreground transition-colors"
-            data-testid="recipe-progress-collapse-toggle"
-          >
-            {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </button>
-          <span className="text-sm font-medium truncate">{t('recipes.progress.title')}</span>
-          <span className="text-[10px] text-muted-foreground whitespace-nowrap" data-testid="recipe-progress-counter">
-            {doneCount}/{totalSteps}
-          </span>
-        </div>
+    <FloatingPanel
+      isOpen
+      onClose={onClose}
+      variant="corner"
+      width="md"
+      // portal + fixed：画布祖先的 backdrop-filter 会成为 fixed 后代的包含块，
+      // 不 portal 的话「贴右下角」会被算成「贴祖先右下角」，还会被 Recipes 弹层裁掉。
+      portal
+      className="top-auto bottom-4"
+      dataAttributes={{
+        'data-testid': 'recipe-run-progress',
+        'data-run-id': runId,
+        'data-percent': percent,
+      }}
+      icon={
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? t('recipes.progress.expand') : t('recipes.progress.collapse')}
+          className="p-0.5 rounded hover:bg-muted text-muted-foreground transition-colors"
+          data-testid="recipe-progress-collapse-toggle"
+        >
+          {collapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        </button>
+      }
+      title={t('recipes.progress.title')}
+      subtitle={
+        <span className="whitespace-nowrap" data-testid="recipe-progress-counter">
+          {doneCount}/{totalSteps}
+        </span>
+      }
+      showCloseButton={false}
+      headerActions={
         <button
           type="button"
           onClick={onClose}
@@ -237,12 +284,12 @@ export function RecipeRunProgress({
         >
           <X className="w-3.5 h-3.5" />
         </button>
-      </div>
-
+      }
+    >
       {/* 顶部进度条 + 状态徽标 */}
       {!collapsed && (
         <>
-          <div className="px-3 py-2 border-b bg-muted/30">
+          <div className="shrink-0 px-3 py-2 border-b bg-muted/30">
             <div className="flex items-center gap-2 mb-1.5">
               <span
                 className={cn(
@@ -298,7 +345,7 @@ export function RecipeRunProgress({
           {lastError && (
             <div
               role="alert"
-              className="flex items-start gap-2 px-3 py-2 bg-red-50 border-b border-red-200 text-red-700 text-xs"
+              className="shrink-0 flex items-start gap-2 px-3 py-2 bg-red-50 border-b border-red-200 text-red-700 text-xs"
               data-testid="recipe-progress-error-banner"
             >
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" aria-hidden="true" />
@@ -315,7 +362,7 @@ export function RecipeRunProgress({
           )}
 
           {/* 步骤列表 */}
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
             {steps.map((s, i) => (
               <div key={s.stepId}>
                 <div
@@ -351,6 +398,6 @@ export function RecipeRunProgress({
           </div>
         </>
       )}
-    </div>
+    </FloatingPanel>
   )
 }

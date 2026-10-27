@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { AwarenessClient } from '../awareness-client'
 import {
+  AWARENESS_MSG_HELLO,
   AWARENESS_MSG_QUERY_AWARENESS,
   AWARENESS_MSG_REMOVE,
   AWARENESS_MSG_UPDATE,
@@ -310,5 +311,62 @@ describe('AwarenessClient', () => {
     client.setLocalCursor({ x: 5, y: 6 })
     client.flush()
     expect(client.getConnected()).toBe(true)
+  })
+})
+
+describe('AwarenessClient — 握手', () => {
+  const clients: AwarenessClient[] = []
+
+  afterEach(() => {
+    for (const c of clients) c.disconnect()
+    clients.length = 0
+    lastMockSocket = null
+  })
+
+  it('收到 HELLO 后记住 clientId 并开始发送 UPDATE', async () => {
+    const client = new AwarenessClient({ identity })
+    clients.push(client)
+    client.connect('ws://localhost:1235')
+    await tick()
+    const sock = lastMockSocket!
+    sock.receiveMessage({ type: AWARENESS_MSG_HELLO, clientId: 'server-assigned-id' })
+    expect(client.getClientId()).toBe('server-assigned-id')
+
+    const updates = sock.sent
+      .map((s) => JSON.parse(s) as AwarenessMessage)
+      .filter((m) => m.type === AWARENESS_MSG_UPDATE)
+    expect(updates.length).toBeGreaterThan(0)
+    expect((updates[0] as { clientId: string }).clientId).toBe('server-assigned-id')
+  })
+
+  it('不把别人的 clientId 当成自己的（同 userId 两个窗口的场景）', async () => {
+    const client = new AwarenessClient({ identity })
+    clients.push(client)
+    client.connect('ws://localhost:1235')
+    await tick()
+    const sock = lastMockSocket!
+    sock.receiveMessage({ type: AWARENESS_MSG_HELLO, clientId: 'my-own-id' })
+    // 另一个窗口（同一个 userId）的状态
+    sock.receiveMessage({
+      type: AWARENESS_MSG_UPDATE,
+      clientId: 'other-window-id',
+      state: sampleState({ user: { ...identity } }),
+    })
+    expect(client.getClientId()).toBe('my-own-id')
+  })
+
+  it('自己的状态回灌时不会被当成远端状态', async () => {
+    const client = new AwarenessClient({ identity })
+    clients.push(client)
+    client.connect('ws://localhost:1235')
+    await tick()
+    const sock = lastMockSocket!
+    sock.receiveMessage({ type: AWARENESS_MSG_HELLO, clientId: 'my-own-id' })
+    sock.receiveMessage({
+      type: AWARENESS_MSG_UPDATE,
+      clientId: 'my-own-id',
+      state: sampleState({ user: { ...identity } }),
+    })
+    expect(client.getRemoteStates()).toEqual([])
   })
 })

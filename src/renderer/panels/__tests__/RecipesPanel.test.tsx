@@ -44,7 +44,7 @@ function makeApi(overrides: Partial<{
   'recipes:list': () => Promise<RecipeDefinition[]>
   'recipes:get': (id: string) => Promise<RecipeDefinition | null>
   'recipes:dag': (id: string) => Promise<unknown>
-  'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean> }) => Promise<RecipeRun>
+  'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean>; runId?: string }) => Promise<RecipeRun>
   'recipes:cancel': (runId: string) => Promise<boolean>
   'recipes:refresh': () => Promise<number>
   'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
@@ -123,7 +123,14 @@ describe('RecipesPanel', () => {
     })
     fireEvent.click(screen.getByText('运行 Recipe'))
     await waitFor(() => {
-      expect(api['recipes:run']).toHaveBeenCalledWith({ recipeId: 'demo', inputs: {} })
+      expect(api['recipes:run']).toHaveBeenCalledWith(
+        expect.objectContaining({
+          recipeId: 'demo',
+          inputs: {},
+          // runId 由渲染进程预先生成：进度面板要在 recipes:run 返回之前就知道 run id
+          runId: expect.stringMatching(/^recipe-[a-f0-9]{32}$/),
+        }),
+      )
     })
   })
 })

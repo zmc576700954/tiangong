@@ -16,6 +16,7 @@
  */
 
 import {
+  AWARENESS_MSG_HELLO,
   AWARENESS_MSG_QUERY_AWARENESS,
   AWARENESS_MSG_REMOVE,
   AWARENESS_MSG_UPDATE,
@@ -274,7 +275,8 @@ export class AwarenessClient {
       // 因为连接已建立，server 不接受 QUERY 之外的 clientId 自陈
       clientId: 'self',
     })
-    // 同步本地状态
+    // 同步本地状态（server 还没下发 clientId 时这次会被跳过，
+    // 收到 HELLO 后会补发一次）
     this.sendUpdate()
   }
 
@@ -287,20 +289,22 @@ export class AwarenessClient {
     }
     if (!msg || typeof msg !== 'object' || typeof msg.type !== 'number') return
 
+    if (msg.type === AWARENESS_MSG_HELLO) {
+      // 服务端下发本次连接的 clientId —— 这是客户端唯一的 id 来源。
+      // （不能从别人的 UPDATE 里推断：同一 userId 开两个窗口时会把别人的 id
+      //   当成自己的，发出去的 UPDATE 会被 server 当成伪造而断连。）
+      if (typeof msg.clientId !== 'string' || msg.clientId.length === 0) return
+      this.serverClientId = msg.clientId
+      // 拿到 id 立刻把本地状态推上去（connect 阶段的 sendUpdate 因为没有 id 被跳过了）
+      this.sendUpdate()
+      return
+    }
+
     if (msg.type === AWARENESS_MSG_UPDATE) {
       const state = msg.state
       if (!state || !validateRemoteState(state)) return
-      // 第一次收到 UPDATE 时，server 端可能附带自己的 clientId → 缓存
-      if (this.serverClientId === null && msg.clientId) {
-        // server 不会把我们的状态发回来（broadcast 会跳过 sender）
-        // 所以 serverClientId 是空的；只有当我们主动 query 后 server 回放时
-        // 才会看到别人的 states。这里不能用 UPDATE 学 clientId。
-        // （reliable clientId 需要独立消息；当前实现允许 clientId 为 null）
-      }
-      // 如果 state 的 userId 匹配自己，标记自己的 clientId
-      if (state.user.userId === this.identity.userId && this.serverClientId === null) {
-        this.serverClientId = msg.clientId
-      }
+      // 自己发出去的状态不会被广播回来；万一收到了也不要画成「远端光标」
+      if (msg.clientId === this.serverClientId) return
       this.remoteStates.set(msg.clientId, state)
       this.notifyRemoteListeners()
       return
@@ -361,8 +365,8 @@ export class AwarenessClient {
 
   private sendUpdate(): void {
     if (!this.serverClientId) {
-      // 还没拿到；连上之后 QUERY → 回放会用 UPDATE 顺便分配
-      // 此刻没 clientId 的 UPDATE server 会拒绝，先缓存不阻塞
+      // 还没收到 server 的 HELLO —— server 会拒绝 clientId 不匹配的 UPDATE。
+      // 收到 HELLO 时会补发一次本地状态。
       return
     }
     this.localState = {

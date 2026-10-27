@@ -1,11 +1,12 @@
 import { useEffect, useRef, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useI18n } from '../../i18n/useI18n'
 
 export type FloatingPanelVariant = 'corner' | 'fullscreen' | 'centered' | 'anchored'
 
-export type FloatingPanelWidth = 'sm' | 'md' | 'lg'
+export type FloatingPanelWidth = 'sm' | 'md' | 'lg' | 'xl'
 
 interface FloatingPanelProps {
   isOpen: boolean
@@ -20,6 +21,14 @@ interface FloatingPanelProps {
   headerActions?: ReactNode
   footer?: ReactNode
   closeOnEsc?: boolean
+  /**
+   * 渲染到 document.body 并改用 fixed 定位。
+   * 画布内的面板祖先带 backdrop-filter，会成为 fixed 后代的包含块，
+   * 导致「相对视口」的定位被算成「相对祖先」—— portal 是唯一的解法。
+   */
+  portal?: boolean
+  /** 透传到根节点的额外属性（测试 / 调试用）。可覆盖 data-testid。 */
+  dataAttributes?: Record<string, string | number>
   className?: string
   children: ReactNode
 }
@@ -35,9 +44,9 @@ const VARIANT_BASE_CLASSES: Record<FloatingPanelVariant, string> = {
 }
 
 const VARIANT_WIDTHS: Record<Exclude<FloatingPanelVariant, 'fullscreen'>, Record<FloatingPanelWidth, string>> = {
-  corner: { sm: 'w-72', md: 'w-80', lg: 'w-96' },
-  centered: { sm: 'w-72', md: 'w-80', lg: 'w-96' },
-  anchored: { sm: 'w-72', md: 'w-80', lg: 'w-96' },
+  corner: { sm: 'w-72', md: 'w-80', lg: 'w-96', xl: 'w-[480px]' },
+  centered: { sm: 'w-72', md: 'w-80', lg: 'w-96', xl: 'w-[480px]' },
+  anchored: { sm: 'w-72', md: 'w-80', lg: 'w-96', xl: 'w-[480px]' },
 }
 
 export function FloatingPanel({
@@ -53,6 +62,8 @@ export function FloatingPanel({
   headerActions,
   footer,
   closeOnEsc = true,
+  portal = false,
+  dataAttributes,
   className,
   children,
 }: FloatingPanelProps) {
@@ -86,7 +97,7 @@ export function FloatingPanel({
   const ariaLabel = typeof title === 'string' ? title : undefined
   const style = variant === 'anchored' && anchor ? { left: anchor.x, top: anchor.y } : undefined
 
-  return (
+  const panel = (
     <div
       ref={panelRef}
       role="dialog"
@@ -95,7 +106,8 @@ export function FloatingPanel({
       data-testid="floating-panel"
       data-variant={variant}
       style={style}
-      className={cn(variantClasses, widthClass, className)}
+      {...dataAttributes}
+      className={cn(variantClasses, widthClass, portal && 'fixed', className)}
     >
       <div className="flex items-center justify-between px-3 py-2 border-b shrink-0">
         <div className="flex items-center gap-2 min-w-0">
@@ -121,11 +133,14 @@ export function FloatingPanel({
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden min-h-0">{children}</div>
+      {/* flex 列容器：子面板用 flex-1 / h-full 撑满并滚动（block 父级里 flex-1 是失效的） */}
+      <div className="flex-1 overflow-hidden min-h-0 flex flex-col">{children}</div>
 
       {footer && (
         <div className="border-t px-3 py-1.5 shrink-0">{footer}</div>
       )}
     </div>
   )
+
+  return portal ? createPortal(panel, document.body) : panel
 }

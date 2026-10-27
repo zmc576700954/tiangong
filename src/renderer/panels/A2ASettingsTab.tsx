@@ -15,6 +15,7 @@
  */
 
 import { useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Plus, Trash2, RefreshCw, Save, X, Wifi, WifiOff,
   Power, PowerOff, Check, AlertCircle,
@@ -47,6 +48,12 @@ interface Props {
 
 function getApi(propsApi?: Props['electronAPI']) {
   return propsApi ?? (window.electronAPI as unknown as Props['electronAPI'])
+}
+
+/** 把任意抛出物转成可读文本（IPC 错误带结构化字段，Error 只有 message）。 */
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
 }
 
 const DEFAULT_AGENT_CARD: A2AAgentCard = {
@@ -192,8 +199,12 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
 
   const stopServer = async (): Promise<void> => {
     if (!api) return
-    await api['a2a:stopServer']()
-    toastSuccess(t('settings.a2a.toast.stopped'))
+    try {
+      await api['a2a:stopServer']()
+      toastSuccess(t('settings.a2a.toast.stopped'))
+    } catch (err) {
+      toastError(t('settings.a2a.toast.stopFailed', { error: errorText(err) }))
+    }
     void refreshStatus()
   }
 
@@ -211,6 +222,8 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
       } else {
         toastError(t('settings.a2a.toast.unreachable', { name, error: r.error ?? 'unknown' }))
       }
+    } catch (err) {
+      toastError(t('settings.a2a.toast.unreachable', { name, error: errorText(err) }))
     } finally {
       setTesting(null)
     }
@@ -219,12 +232,16 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
   const deleteAgent = async (name: string): Promise<void> => {
     if (!api) return
     if (!window.confirm(t('settings.a2a.confirmDelete', { name }))) return
-    const r = await api['a2a:deleteRemoteAgent'](name)
-    if (r.success) {
-      toastSuccess(t('settings.a2a.toast.deleted', { name }))
-      void refreshAgents()
-    } else {
-      toastError(t('settings.a2a.toast.deleteFailed'))
+    try {
+      const r = await api['a2a:deleteRemoteAgent'](name)
+      if (r.success) {
+        toastSuccess(t('settings.a2a.toast.deleted', { name }))
+        void refreshAgents()
+      } else {
+        toastError(t('settings.a2a.toast.deleteFailed', { error: 'unknown' }))
+      }
+    } catch (err) {
+      toastError(t('settings.a2a.toast.deleteFailed', { error: errorText(err) }))
     }
   }
 
@@ -235,7 +252,9 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
       tlsVerify: true,
       enabled: true,
       timeoutMs: 30000,
-      devAllowLocalhost: false,
+      // 预填的 endpoint 就是 loopback —— 不开这个开关的话保存必然被 SSRF 守卫拒掉，
+      // 用户会看到一个「保存失败」却不知道该勾哪个框。
+      devAllowLocalhost: true,
     })
     setAgentApiKeyInput('')
     setShowAddForm(true)
@@ -251,14 +270,20 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
       ...pendingAgent,
       apiKey: agentApiKeyInput.trim() || undefined,
     }
-    const r = await api['a2a:saveRemoteAgent'](payload)
-    if (r.success) {
-      toastSuccess(t('settings.a2a.toast.added', { name: payload.name }))
-      setShowAddForm(false)
-      setPendingAgent(null)
-      void refreshAgents()
-    } else {
-      toastError(t('settings.a2a.toast.saveFailed', { error: r.error ?? 'unknown' }))
+    try {
+      const r = await api['a2a:saveRemoteAgent'](payload)
+      if (r.success) {
+        toastSuccess(t('settings.a2a.toast.added', { name: payload.name }))
+        setShowAddForm(false)
+        setPendingAgent(null)
+        void refreshAgents()
+      } else {
+        toastError(t('settings.a2a.toast.saveFailed', { error: r.error ?? 'unknown' }))
+      }
+    } catch (err) {
+      // IPC 会把主进程的 IpcError（如 SSRF 拦截）抛到这里 —— 不接住的话
+      // 就是一个没人看见的 unhandled rejection，用户点了「保存」却毫无反馈。
+      toastError(t('settings.a2a.toast.saveFailed', { error: errorText(err) }))
     }
   }
 
@@ -433,9 +458,10 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
         )}
       </section>
 
-      {/* Add-agent modal */}
-      {showAddForm && pendingAgent && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+      {/* Add-agent modal —— portal 到 body：Settings 面板带 backdrop-filter，
+          会成为 fixed 后代的包含块，不 portal 的话遮罩只盖住面板那一小块。 */}
+      {showAddForm && pendingAgent && createPortal(
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60]">
           <div className="bg-background rounded-lg shadow-xl p-4 w-96 max-w-[90vw] space-y-2">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-medium">{t('settings.a2a.addModal.title')}</h3>
@@ -505,7 +531,8 @@ export function A2ASettingsTab({ electronAPI: apiProp }: Props) {
               <Button size="sm" onClick={submitAddForm}>{t('settings.a2a.action.save')}</Button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

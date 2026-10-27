@@ -96,6 +96,26 @@ const DEFAULT_OPTIONS: Required<ForceLayoutOptions> = {
 }
 
 /**
+ * 合并调用方选项。
+ *
+ * 不能直接 `{...DEFAULT_OPTIONS, ...options}` —— 显式的 `undefined` 会覆盖默认值，
+ * 而 `forceCenter(undefined, undefined)` 在 d3-force 里等于 `forceCenter(0, 0)`：
+ * 布局会被拉到画布左上角而不是默认中心。
+ */
+function resolveOptions(options: ForceLayoutOptions): Required<ForceLayoutOptions> {
+  return {
+    linkDistance: options.linkDistance ?? DEFAULT_OPTIONS.linkDistance,
+    chargeStrength: options.chargeStrength ?? DEFAULT_OPTIONS.chargeStrength,
+    centerX: options.centerX ?? DEFAULT_OPTIONS.centerX,
+    centerY: options.centerY ?? DEFAULT_OPTIONS.centerY,
+    collisionPadding: options.collisionPadding ?? DEFAULT_OPTIONS.collisionPadding,
+    alphaDecay: options.alphaDecay ?? DEFAULT_OPTIONS.alphaDecay,
+    ticks: options.ticks ?? DEFAULT_OPTIONS.ticks,
+    preserveInitialPositions: options.preserveInitialPositions ?? DEFAULT_OPTIONS.preserveInitialPositions,
+  }
+}
+
+/**
  * 一键式力导向布局：同步跑 N tick 后返回新位置的 nodes。
  *
  * 不修改入参，返回新的 nodes 数组（保持原引用 id 等元数据）。
@@ -108,7 +128,7 @@ export function computeForceLayout(
 ): Node[] {
   if (nodes.length === 0) return nodes
 
-  const opts = { ...DEFAULT_OPTIONS, ...options }
+  const opts = resolveOptions(options)
 
   // 1. 构建仿真节点，保留当前 position 作为初始 guess（保证布局稳定可重复）
   const simNodes: ForceNodeDatum[] = nodes.map((n) => {
@@ -185,7 +205,7 @@ export function createForceSimulation(
   simulation: Simulation<ForceNodeDatum, ForceLinkDatum>
   simNodes: ForceNodeDatum[]
 } {
-  const opts = { ...DEFAULT_OPTIONS, ...options }
+  const opts = resolveOptions(options)
 
   const simNodes: ForceNodeDatum[] = nodes.map((n) => ({
     id: n.id,

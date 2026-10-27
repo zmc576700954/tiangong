@@ -17,6 +17,7 @@ import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { ChevronDown, ChevronRight, Network } from 'lucide-react'
 import { useI18n } from '../i18n/useI18n'
+import { generateId } from '../lib/utils'
 import type { TranslationKey } from '@shared/i18n'
 import type {
   RecipeDefinition,
@@ -26,7 +27,12 @@ import type {
   RecipeDagNodeStatus,
 } from '@shared/types/recipe'
 import { RecipeDagView } from './RecipeDagView'
-import { RecipeRunProgress } from './RecipeRunProgress'
+
+/** 当前运行的 run —— 进度面板由父组件渲染（见 Props.onActiveRunChange）。 */
+export interface ActiveRecipeRun {
+  runId: string
+  recipe: RecipeDefinition
+}
 
 interface Props {
   /** 注入 electronAPI；测试可传 mock。 */
@@ -34,13 +40,24 @@ interface Props {
     'recipes:list': () => Promise<RecipeDefinition[]>
     'recipes:get': (id: string) => Promise<RecipeDefinition | null>
     'recipes:dag': (id: string) => Promise<unknown>
-    'recipes:run': (req: { recipeId: string; inputs?: Record<string, string | number | boolean> }) => Promise<RecipeRun>
+    'recipes:run': (req: {
+      recipeId: string
+      inputs?: Record<string, string | number | boolean>
+      runId?: string
+    }) => Promise<RecipeRun>
     'recipes:cancel': (runId: string) => Promise<boolean>
     'recipes:refresh': () => Promise<number>
     'recipes:listRuns': (recipeId: string, limit?: number) => Promise<RecipeRun[]>
     'recipes:getRun': (runId: string) => Promise<RecipeRun | null>
     onRecipeRunProgress?: (cb: (data: RecipeRunProgressEvent) => void) => () => void
   }
+  /**
+   * 当前运行的 run 变化时回调。进度面板由父组件渲染 ——
+   * 放在这里的话，弹层一关进度就没了，而且会被弹层的 overflow 裁掉。
+   */
+  onActiveRunChange?: (run: ActiveRecipeRun | null) => void
+  /** 实时 step 状态（父组件从进度面板回传），用于 DAG 上色。 */
+  liveStepStatus?: Record<string, { status: RecipeDagNodeStatus; error?: string }>
 }
 
 /** 来源徽标文案——user / project / builtin 是存储值，展示时按语言替换 */
@@ -78,7 +95,7 @@ function getApi(propsApi?: Props['electronAPI']) {
   return propsApi ?? (window.electronAPI as unknown as Props['electronAPI'])
 }
 
-export function RecipesPanel({ electronAPI: apiProp }: Props) {
+export function RecipesPanel({ electronAPI: apiProp, onActiveRunChange, liveStepStatus }: Props) {
   const api = getApi(apiProp)
   const { t } = useI18n()
   const [recipes, setRecipes] = useState<RecipeDefinition[]>([])
@@ -88,24 +105,31 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
   const [lastError, setLastError] = useState<string | null>(null)
   const [runs, setRuns] = useState<RecipeRun[]>([])
   const [dagExpanded, setDagExpanded] = useState(true)
-  const [activeRun, setActiveRun] = useState<{ runId: string; recipe: RecipeDefinition } | null>(null)
-  const [liveStepStatus, setLiveStepStatus] = useState<Record<string, { status: RecipeDagNodeStatus; error?: string }>>({})
 
+  /** 拉列表（不重扫磁盘）。 */
+  const loadList = useCallback(async (): Promise<void> => {
+    if (!api) return
+    const list = await api['recipes:list']()
+    setRecipes(list)
+    setSelectedId((prev) => (prev && list.some((r) => r.id === prev) ? prev : (list[0]?.id ?? null)))
+  }, [api])
+
+  /** ↻ 按钮：先让主进程重扫磁盘上的 YAML，再拉列表。 */
   const refresh = async (): Promise<void> => {
     if (!api) return
     try {
-      const list = await api['recipes:list']()
-      setRecipes(list)
-      if (list.length > 0 && !selectedId) setSelectedId(list[0]!.id)
+      await api['recipes:refresh']()
+      await loadList()
     } catch (err) {
       setLastError(err instanceof Error ? err.message : String(err))
     }
   }
 
   useEffect(() => {
-    void refresh()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    void loadList().catch((err) => {
+      setLastError(err instanceof Error ? err.message : String(err))
+    })
+  }, [loadList])
 
   const selected = useMemo(() => recipes.find((r) => r.id === selectedId), [recipes, selectedId])
 
@@ -115,23 +139,14 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
       return
     }
     setInputValues({})
-    setLiveStepStatus({})
     void api['recipes:listRuns'](selected.id, 20).then(setRuns).catch(() => setRuns([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId])
-
-  const handleStepUpdate = useCallback((stepId: string, status: RecipeDagNodeStatus, error?: string) => {
-    setLiveStepStatus((prev) => ({
-      ...prev,
-      [stepId]: { status, error },
-    }))
-  }, [])
 
   const handleRun = async (): Promise<void> => {
     if (!selected || !api) return
     setRunning(true)
     setLastError(null)
-    setLiveStepStatus({})
     try {
       const inputs: Record<string, string | number | boolean> = {}
       for (const spec of selected.inputs ?? []) {
@@ -150,12 +165,19 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
           inputs[spec.name] = v
         }
       }
-      const run = await api['recipes:run']({ recipeId: selected.id, inputs })
-      setActiveRun({ runId: run.id, recipe: selected })
+      // `recipes:run` 一直 await 到整个 run 结束 —— 进度面板必须在此之前就拿到
+      // runId 才能订阅到进度事件，所以 id 由渲染进程先生成并带过去。
+      const runId = generateId('recipe')
+      onActiveRunChange?.({ runId, recipe: selected })
+      const run = await api['recipes:run']({ recipeId: selected.id, inputs, runId })
+      // 主进程若拒收了我们生成的 id，这里换成它真正用的那个。
+      onActiveRunChange?.({ runId: run.id, recipe: selected })
       const history = await api['recipes:listRuns'](selected.id, 20)
       setRuns(history)
     } catch (err) {
       setLastError(err instanceof Error ? err.message : String(err))
+      // run 根本没起来（参数非法 / IPC 失败）—— 进度面板留着只会一直显示 pending。
+      onActiveRunChange?.(null)
     } finally {
       setRunning(false)
     }
@@ -175,7 +197,7 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
   }
 
   return (
-    <div className="relative flex h-full text-sm">
+    <div className="relative flex h-full min-h-0 text-sm">
       {/* Left: list */}
       <div className="w-64 border-r flex flex-col">
         <div className="flex items-center justify-between p-2 border-b">
@@ -425,17 +447,6 @@ export function RecipesPanel({ electronAPI: apiProp }: Props) {
           </div>
         )}
       </div>
-
-      {/* 执行进度面板（D5c-3） */}
-      {activeRun && (
-        <RecipeRunProgress
-          recipe={activeRun.recipe}
-          runId={activeRun.runId}
-          electronAPI={api}
-          onStepUpdate={handleStepUpdate}
-          onClose={() => setActiveRun(null)}
-        />
-      )}
     </div>
   )
 }
