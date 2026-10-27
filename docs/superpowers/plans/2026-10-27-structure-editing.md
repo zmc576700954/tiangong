@@ -596,6 +596,13 @@ const flowEdges = useMemo(() => {
 - `mergedEdges` 必须**自己包一层 `useMemo`**（依赖 `[graphNodes, graphEdges]`），再作为 `flowEdges` 的依赖。见 Global Constraints 的「渲染层的引用稳定性」——写成 useMemo 外面的一次性计算会造成无限重渲染循环
 - 派生边的 `id` 是 `derived-<source>-<target>`，与存储边 ID 空间隔离，`edgeCacheRef` 的 key 不会冲突
 - `flowEdges` 内部对 `edgeTypeConfig[edgeType]` 的查表、marker、动画逻辑都不需要改——`edgeTypeConfig.hierarchical` 已在 Task 1 补齐
+- **派生层级边必须同时标上 `selectable: false`**（在 `flowEdges` 构造出的边对象上）：
+
+  ```ts
+  selectable: edgeType === 'hierarchical' ? false : undefined,
+  ```
+
+  这一条**不是可选项**：@xyflow/react 的 `EdgeWrapper.onEdgeClick`（`node_modules/@xyflow/react/dist/esm/index.js:2978`）在 `isSelectable` 为真时会先调 `addSelectedEdges([id])` —— 那是 React Flow **内部**的选中路径，**不经过** app 的 `onEdgeClick`。app 侧的守卫挡不住它。后果：点一下层级线 → 内部选中 → 用户按 Backspace（React Flow 的 `deleteKeyCode` 默认值就是 `'Backspace'`，`index.js:3767`）→ `useGlobalKeyHandler`（`index.js:1245`）把**内部选中**的边从 React Flow 状态里删掉 → **画布上的层级线凭空消失，而 `parent_id` 纹丝不动**（下次 `flowEdges` 重算它又会回来）。这正是 Step 2 要挡掉的「假入口」体验。细节见 Step 2。
 
 - [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
 
@@ -622,7 +629,14 @@ const onEdgeClick = useCallback(
 
 `edge.data.edgeType` 是 `flowEdges` memo 里写好的（`data: { edgeType, content, strength }`）；`deriveHierarchyEdges` 产出的边 `edgeType` 恒为 `'hierarchical'`，而存储的 `hierarchical` 边已被它剔除——所以合并集里 `edgeType === 'hierarchical'` ⟺ 派生边。
 
-⚠️ **`selectable: false` 不够**：@xyflow/react 12.12.0 的 `EdgeWrapper`（`node_modules/@xyflow/react/dist/esm/index.js:2977`）里 `onClick(event, edge)` 在 `if (isSelectable)` 块**外面**——不可选的边照样触发 `onEdgeClick`。守卫必须写在 app 自己的 `onEdgeClick` 里。
+⚠️ **两道守卫都要有，缺一不可**（两条路径互不相通）：
+
+| 路径 | 由谁触发 | 缺了会怎样 | 挡它的手段 |
+|---|---|---|---|
+| **app 的 `onEdgeClick`** | React Flow 回调 `onClick(event, edge)`，位置在 `if (isSelectable)` 块**外面**（`index.js:2986`）——所以 `selectable: false` **挡不住**它 | store 的 `selectedEdgeId` 被设成 `derived-*` → 右侧面板空白、`deleteEdge('derived-...')` 命中 0 行 → 静默无操作 | app 自己的 `onEdgeClick` 里 `if (edge.data?.edgeType === 'hierarchical') return` |
+| **React Flow 的内部选中** | `EdgeWrapper.onEdgeClick` 在 `isSelectable` 为真时先调 `addSelectedEdges([id])`（`index.js:2980`），**不经过** app 的 `onEdgeClick` | 层级线被内部选中 → 用户按 Backspace（`deleteKeyCode` 默认 `'Backspace'`，`index.js:3767`）→ `useGlobalKeyHandler`（`index.js:1253`）把内部选中的边从 React Flow 状态里删掉 → **画布上的层级线凭空消失，`parent_id` 不变** | 边上标 `selectable: false`（`isSelectable` 由 `edge.selectable` 决定，`index.js:2939`） |
+
+所以 Step 1 的 `selectable: false` 与 Step 2 的 `onEdgeClick` 守卫**互为补充**：一个挡内部选中，一个挡 app 回调。两者都在才叫「派生层级边不进选中路径」。
 
 ❌ **不要**把守卫放进 store：store 只知道存储边，派生边是画布层的渲染产物，进 store 就是第二套派生。
 
