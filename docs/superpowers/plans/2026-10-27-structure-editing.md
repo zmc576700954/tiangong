@@ -2404,21 +2404,38 @@ Expected: 零 lint 警告、零类型错误、全部测试通过
 只写在计划里的人工清单不进 CI → 等于**没有闸门**；而且 SDD 循环里实施者是 subagent，
 `npm run dev` 的手动走查它做不了、也不该由它宣称做过了。
 
-**先给 mock 补一条通道**：`tests/e2e/helpers/mock-ipc.ts` **没有** `graph:reparent`。
-现有 mock 是**无状态**的（`node:update` 只回显不落库、`graph:get` 只在首屏装载时用一次），
-所以新增这一条就够：
+**先给 mock 补一条通道 + 一个可断言的记录点**：`tests/e2e/helpers/mock-ipc.ts`
+**没有** `graph:reparent`。现有 mock 是**无状态**的（`node:update` 只回显不落库、
+`graph:get` 只在首屏装载时用一次），所以新增这一条就够：
 
 ```ts
-'graph:reparent': async (nodeId: string, newParentId: string) => ({
-  nodeId,
-  oldParentId: null,
-  newParentId,
-  movedPositions: [],
-}),
+'graph:reparent': async (nodeId: string, newParentId: string) => {
+  mockState.reparentCalls.push({ nodeId, newParentId })
+  return { nodeId, oldParentId: null, newParentId, movedPositions: [] }
+},
 ```
+
+- `mockState` 里加一个 `reparentCalls: Array<{ nodeId: string; newParentId: string }> = []`。
+  该 mock **已经把 `mockState` 挂在 `window.__bizgraphMockState` 上**（`mock-ipc.ts:82`）→
+  测试里直接 `await page.evaluate(() => (window as ...).__bizgraphMockState?.reparentCalls)` 就能断言
+  「`graph:reparent` 有没有被调用过」。**拒绝类用例靠这个断言**（见下面第 3、4 条）。
+
+⚠️ **`nodes` 选项的类型要放宽**：`setupMockIpc` 现在的选项类型是
+`nodes?: typeof defaultMockNodes`，而 `defaultMockNodes` 是一个**字面量数组** →
+它的元素类型里**没有** `parentId` → 直接传带 `parentId` 的对象字面量会触发
+TypeScript 的**多余属性检查**而报错。把选项类型放宽成能带 `parentId` 的形状
+（例如 `Array<typeof defaultMockNodes[number] & { parentId?: string }>`），
+或者引入一个显式的 `MockNode` 类型。**别用 `any` 绕过去**（全仓库禁 `any`）。
 
 **用例写法**照 `tests/e2e/node-interactions.spec.ts`：`setupMockIpc(page, { nodes })` →
 `page.goto('http://localhost:5173')` → `page.click('text=E2E Test Graph')` → `waitForCanvas(page)`。
+
+⚠️ **节点用 `data-id` 定位**：`page.locator('[data-id].react-flow__node').filter({ has: page.locator('[role="button"]') })`
+（`tests/e2e/helpers/node-helpers.ts:43` 的 `getNonProjectNodeIds` 已有现成写法）。
+⚠️ **画布会给每张图自动建一个 project 根节点** —— 数节点时要用 `getNonProjectNodeIds`
+（它靠「业务节点内部有 `[role="button"]`、project 根节点没有」来区分），
+别把自动根节点算进去。层级边数用 `.react-flow__edge` 计数 —— 派生边的 id 形如
+`derived-<source>-<target>`。
 
 **要覆盖的场景**（每条一个 `it`）：
 
@@ -2430,6 +2447,12 @@ Expected: 零 lint 警告、零类型错误、全部测试通过
    feature 的 `allowedParentTypes` 是 `['process']`）→ 断言 **`graph:reparent` 没被调用**
 4. **拖到自己的后代上 → 被拒** → 断言 **`graph:reparent` 没被调用**
 5. **删除父节点 → 子节点变成根**：断言子节点还在、且不再连着已删的父
+   （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`。
+   ⚠️ **mock 不需要实现「把子节点置根」**：浏览器 mock 是无状态的，父节点被删后子节点的
+   `parentId` 会指向一个不存在的节点，而 `deriveHierarchyEdges`
+   （`src/renderer/canvas/layouts/hierarchy.ts:25`）对这种孤儿**本来就不产生边**
+   ——「孤儿不产生边」。所以渲染层观察到的结果与生产一致：**子节点还在，且没有连着已删的父**。
+   这条 e2e 验的是**渲染层的孤儿过滤**；DB 层「删父 → 子置根」由 Task 11 的单测覆盖。）
 6. **布局选择持久化**：切到力导向 → `page.reload()` → 断言仍是力导向
 
 ⚠️ **两条**「重启后仍在」的语义**不在 e2e 里验**，因为浏览器 mock 无状态，
