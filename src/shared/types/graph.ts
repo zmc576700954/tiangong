@@ -125,6 +125,10 @@ export interface GraphNode {
   graphType: GraphType
   /** 父节点 ID（层级结构：模块 -> 流程 -> 功能点/BUG） */
   parentId?: string
+  /** 同父节点下的兄弟顺序（升序）；根节点为 undefined */
+  sortIndex?: number
+  /** 子树是否折叠 */
+  collapsed?: boolean
   /** 业务规则（仅流程节点） */
   rules?: BusinessRule[]
   /** 元数据（API/服务/实体） */
@@ -194,6 +198,8 @@ export interface ReparentResult {
   oldParentId: string | null
   /** 新的父节点 */
   newParentId: string
+  /** 被移动节点的新兄弟序号；换父到当前父节点的空操作分支 = 原值 */
+  sortIndex?: number
   /** 被移动的节点及其全部后代的最新位置 */
   movedPositions: Array<{ id: string; x: number; y: number }>
 }

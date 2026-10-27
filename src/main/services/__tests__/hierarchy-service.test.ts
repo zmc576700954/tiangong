@@ -445,4 +445,32 @@ describe('HierarchyService.reparent', () => {
     const after = db.prepare("SELECT updated_at FROM nodes WHERE id='m2'").get() as { updated_at: string }
     expect(after.updated_at).toBe(before.updated_at)
   })
+
+  // R-46：重挂后渲染端要拿到被移动节点的新兄弟序号。
+  // 主进程给值、渲染端照抄 —— 渲染端自己算「max(兄弟)+1」会是第二份真相源
+  // （还得复刻 SQL 的「MAX 忽略 NULL」细节）。
+  it('returns the new sibling index after a reparent', () => {
+    // 目标父 m1 下再挂一个 sort_index=5 的兄弟 → MAX=5 → 新序号 6
+    db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).run('c4', 'process', 'draft', 'C4', 'g1', 'online', 'm1', 5, 0, 0, NOW, NOW)
+
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('m2', 'm1')
+
+    expect(res.sortIndex).toBe(6)
+    // 与落库的值是同一个 —— 不是回库里再查一次算出来的
+    const row = db.prepare("SELECT sort_index FROM nodes WHERE id='m2'").get() as { sort_index: number }
+    expect(row.sort_index).toBe(6)
+  })
+
+  // 空操作分支（换父到当前父节点）也必须带上序号 —— 该分支不动 sort_index，
+  // 漏了它的话拖拽落回原父节点时渲染端就与主进程不一致了。
+  it('returns the unchanged sibling index on a no-op reparent', () => {
+    // 该分支返回的是**原值**（不是 undefined，也不是重新算出来的号）
+    db.prepare("UPDATE nodes SET sort_index = 7 WHERE id = 'm2'").run()
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('m2', 'p1') // m2 的当前父节点就是 p1
+    expect(res.sortIndex).toBe(7)
+  })
 })

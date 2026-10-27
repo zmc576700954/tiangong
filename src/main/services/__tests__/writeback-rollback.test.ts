@@ -31,6 +31,8 @@ function makeDb() {
       graph_id TEXT NOT NULL,
       graph_type TEXT NOT NULL,
       parent_id TEXT,
+      sort_index INTEGER,
+      collapsed INTEGER NOT NULL DEFAULT 0,
       rules TEXT,
       metadata TEXT,
       owner_role TEXT,

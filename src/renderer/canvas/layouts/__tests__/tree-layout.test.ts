@@ -166,6 +166,62 @@ describe('computeTreeLayout', () => {
     expect(posById.get('c')!.y).toBeLessThan(posById.get('b')!.y)
   })
 
+  it('orders siblings by sort_index rather than edge order', () => {
+    const withSort = (id: string, title: string, sortIndex: number): Node => ({
+      id,
+      type: 'default',
+      position: { x: 0, y: 0 },
+      data: { type: 'feature', title, sortIndex },
+    } as Node)
+
+    const nodes = [
+      makeNode('p1', 'project', 'Root'),
+      withSort('a', 'A', 1),
+      withSort('b', 'B', 0),
+    ]
+    // 边顺序与 sort_index 相反：a 在边里排前面，但它的 sort_index 是 1
+    const edges = [
+      makeEdge('e1', 'p1', 'a'),
+      makeEdge('e2', 'p1', 'b'),
+    ]
+    const result = computeTreeLayout(nodes, edges)
+    const posById = new Map(result.nodes.map((n) => [n.id, n.position]))
+    // sort_index=0 的 b 应排在 sort_index=1 的 a 之前
+    expect(posById.get('b')!.y).toBeLessThan(posById.get('a')!.y)
+  })
+
+  // 兜底路径：没有 sort_index 的兄弟排在**最后**，且保持它们原有的相对顺序。
+  // ⚠️ Number(null) 是 0 而不是 NaN —— 直接 Number() 会把「缺失」当成序号 0
+  // 排到最前面，把存量节点（没有 sort_index 的）挤到有序节点之前。
+  it('puts siblings without a sort index last, keeping their relative order', () => {
+    const withSort = (id: string, title: string, sortIndex: number | null): Node => ({
+      id,
+      type: 'default',
+      position: { x: 0, y: 0 },
+      data: { type: 'feature', title, sortIndex },
+    } as Node)
+
+    const nodes = [
+      makeNode('p1', 'project', 'Root'),
+      makeNode('legacyA', 'feature', 'Legacy A'),   // 完全没有 sort_index
+      withSort('s0', 'S0', 0),
+      withSort('legacyB', 'Legacy B', null),        // 显式 null
+    ]
+    const edges = [
+      makeEdge('e1', 'p1', 'legacyA'),
+      makeEdge('e2', 'p1', 's0'),
+      makeEdge('e3', 'p1', 'legacyB'),
+    ]
+    const result = computeTreeLayout(nodes, edges)
+    const posById = new Map(result.nodes.map((n) => [n.id, n.position]))
+
+    // 有序号的 s0 在最前；两个缺失的排在它后面
+    expect(posById.get('s0')!.y).toBeLessThan(posById.get('legacyA')!.y)
+    expect(posById.get('s0')!.y).toBeLessThan(posById.get('legacyB')!.y)
+    // 两个缺失的保持它们原来的相对顺序（边顺序：legacyA 在 legacyB 前面）
+    expect(posById.get('legacyA')!.y).toBeLessThan(posById.get('legacyB')!.y)
+  })
+
   it('estimates width based on title length', () => {
     const short = makeNode('n1', 'feature', 'A')
     const long = makeNode('n2', 'feature', '非常长的中文标题宽度估算')

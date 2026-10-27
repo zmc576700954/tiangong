@@ -21,6 +21,12 @@ vi.stubGlobal('window', {
       updatedAt: '2024-01-01',
     })),
     'graph:delete': vi.fn().mockResolvedValue(true),
+    'graph:reparent': vi.fn().mockResolvedValue({
+      nodeId: 'n1',
+      oldParentId: 'p0',
+      newParentId: 'p1',
+      movedPositions: [],
+    }),
     'node:create': vi.fn().mockImplementation((data: Record<string, unknown>) => ({
       ...data,
       id: 'node-server-id',
@@ -251,6 +257,52 @@ describe('graphStore', () => {
       expect(useGraphStore.getState().nodes[1]).toBe(before[1])
       // 只写 store，**不落库**
       expect(window.electronAPI['node:batchUpdatePositions']).not.toHaveBeenCalled()
+    })
+
+    // R-46：重挂后渲染端要跟上主进程给的兄弟序号。
+    // 序号由主进程算（COALESCE(MAX)+1），渲染端只照抄 —— 渲染端自己算
+    // 「max(兄弟)+1」会是第二份真相源。
+    it('reparentNode applies the sibling index returned by the main process', async () => {
+      useGraphStore.setState({
+        nodes: [
+          { id: 'n1', title: 'Moved', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', parentId: 'p0', sortIndex: 0, position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+        ],
+      })
+      vi.mocked(window.electronAPI['graph:reparent']).mockResolvedValueOnce({
+        nodeId: 'n1',
+        oldParentId: 'p0',
+        newParentId: 'p1',
+        movedPositions: [{ id: 'n1', x: 10, y: 20 }],
+        sortIndex: 5,
+      })
+
+      await useGraphStore.getState().reparentNode('n1', 'p1')
+
+      const moved = useGraphStore.getState().nodes.find((n) => n.id === 'n1')
+      expect(moved?.parentId).toBe('p1')
+      expect(moved?.sortIndex).toBe(5)
+      expect(moved?.position).toEqual({ x: 10, y: 20 })
+    })
+
+    // 返回值里没有这个字段时**保留原值** —— 不能变成 undefined
+    // （undefined 在布局里意味着「排最后」，会把本来有值的节点挤到末尾）。
+    it('reparentNode keeps the existing sibling index when the result omits it', async () => {
+      useGraphStore.setState({
+        nodes: [
+          { id: 'n1', title: 'Moved', type: 'feature', status: 'draft', graphId: 'g1', graphType: 'online', parentId: 'p0', sortIndex: 3, position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' },
+        ],
+      })
+      vi.mocked(window.electronAPI['graph:reparent']).mockResolvedValueOnce({
+        nodeId: 'n1',
+        oldParentId: 'p0',
+        newParentId: 'p1',
+        movedPositions: [],
+      })
+
+      await useGraphStore.getState().reparentNode('n1', 'p1')
+
+      const moved = useGraphStore.getState().nodes.find((n) => n.id === 'n1')
+      expect(moved?.sortIndex).toBe(3)
     })
   })
 

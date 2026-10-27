@@ -343,7 +343,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodes.map((n) => {
         const p = posMap.get(n.id)
         const position = p ? { x: p.x, y: p.y } : n.position
-        if (n.id === nodeId) return { ...n, parentId: result.newParentId, position }
+        if (n.id === nodeId) {
+          // 兄弟序号由主进程算（它才知道新的 max(兄弟)+1），渲染端只照抄。
+          // 用 ?? 而不是直接赋值：返回值里没这个字段时**保留原值** ——
+          // 直接赋值会把「有值」变成 undefined，而 undefined 在布局里意味着「排最后」。
+          return {
+            ...n,
+            parentId: result.newParentId,
+            position,
+            sortIndex: result.sortIndex ?? n.sortIndex,
+          }
+        }
         return p ? { ...n, position } : n
       }),
     )

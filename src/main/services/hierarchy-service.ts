@@ -31,6 +31,7 @@ interface NodeRow {
   type: string
   graph_id: string
   parent_id: string | null
+  sort_index: number | null
   position_x: number
   position_y: number
 }
@@ -127,6 +128,9 @@ export class HierarchyService {
         nodeId,
         oldParentId,
         newParentId,
+        // 该分支不动 sort_index —— 返回**原值**（不是 undefined）：
+        // 渲染端要靠它把 store 里的兄弟序号与主进程对齐。
+        sortIndex: node.sort_index ?? undefined,
         movedPositions: [
           { id: nodeId, x: node.position_x, y: node.position_y },
           ...descendants.map((d) => ({ id: d.id, x: d.x, y: d.y })),
@@ -168,7 +172,7 @@ export class HierarchyService {
         updatePosition.run(p.x, p.y, now, p.id)
       }
 
-      return { nodeId, oldParentId, newParentId, movedPositions }
+      return { nodeId, oldParentId, newParentId, sortIndex: newSortIndex, movedPositions }
     })
 
     return run()
@@ -176,7 +180,7 @@ export class HierarchyService {
 
   private getNode(id: string): NodeRow | undefined {
     return this.db
-      .prepare('SELECT id, type, graph_id, parent_id, position_x, position_y FROM nodes WHERE id = ?')
+      .prepare('SELECT id, type, graph_id, parent_id, sort_index, position_x, position_y FROM nodes WHERE id = ?')
       .get(id) as NodeRow | undefined
   }
 

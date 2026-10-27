@@ -16,6 +16,23 @@ import { safeJsonParse } from '../shared/db-utils'
 import { isDescendant } from '../shared/hierarchy-utils'
 import { DatabaseError, ErrorCode, HierarchyError } from '../errors'
 
+/**
+ * 把主进程算出来的兄弟序号写回节点对象。
+ *
+ * 序号写在 `...data` **之后**：调用方带来的 `data.sortIndex` 只是客户端的期望值，
+ * 权威号是主进程算出来的这个（与库里的 `sort_index` 一致）。
+ * 根节点没有兄弟 → 序号为空 → **整个键省掉**（不是 null：`null` 既不是 number
+ * 也不是 undefined，与 `GraphNode.sortIndex?: number` 不符）。
+ */
+function withSortIndex(node: GraphNode, sortIndex: number | undefined): GraphNode {
+  if (sortIndex === undefined) {
+    delete node.sortIndex
+    return node
+  }
+  node.sortIndex = sortIndex
+  return node
+}
+
 export class NodeRepository {
   constructor(private db: BetterSqlite3.Database) {}
 
@@ -31,6 +48,11 @@ export class NodeRepository {
       graphId: row.graph_id as string,
       graphType: assertGraphType(row.graph_type as string, 'graphType'),
       parentId: row.parent_id as string | undefined,
+      // sort_index 是**可空**列：根节点是 NULL → 映射成 undefined（不是 null）。
+      // `as` 只是类型断言，NULL 在运行时仍然是 null —— 必须用 ?? undefined 真转换。
+      sortIndex: (row.sort_index as number | null) ?? undefined,
+      // collapsed 是 NOT NULL DEFAULT 0 → 读回来是 boolean
+      collapsed: row.collapsed === 1,
       rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined, isUnknownArray),
       metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined, isRecord),
       contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined, isUnknownArray),
@@ -51,13 +73,18 @@ export class NodeRepository {
     const id = generateId('node')
     const now = new Date().toISOString()
 
+    // 兄弟顺序（spec §4.8）：有父节点 → 该父节点现有子节点中最大的 sort_index + 1；
+    // 根节点没有兄弟可言 → sort_index 保持 NULL。
+    const parentId = data.parentId ?? null
+    const sortIndex = parentId === null ? undefined : this.nextSortIndex(parentId)
+
     this.db.prepare(
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
-        graph_id, graph_type, parent_id, rules, metadata, owner_role,
+        graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -67,7 +94,8 @@ export class NodeRepository {
       data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
       data.graphId,
       data.graphType,
-      data.parentId ?? null,
+      parentId,
+      sortIndex ?? null,
       data.rules ? JSON.stringify(data.rules) : null,
       data.metadata ? JSON.stringify(data.metadata) : null,
       data.ownerRole ?? null,
@@ -84,7 +112,7 @@ export class NodeRepository {
       now,
     )
 
-    return { ...data, id, createdAt: now, updatedAt: now }
+    return withSortIndex({ ...data, id, createdAt: now, updatedAt: now }, sortIndex)
   }
 
   /** 批量创建节点（事务提交） */
@@ -93,19 +121,26 @@ export class NodeRepository {
     const now = new Date().toISOString()
     const created: GraphNode[] = []
 
+    // 批内兄弟序号（spec §4.8）：同一父节点下的多个节点要拿**连续**的号。
+    // 逐个查库会让每个节点都拿到同一个基准值（兄弟顺序就乱了）——
+    // 基准每个父节点只查一次，组内按批内出现顺序递增。
+    const sortIndexes = this.batchSortIndexes(nodesData)
+
     const stmt = this.db.prepare(
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
-        graph_id, graph_type, parent_id, rules, metadata, owner_role,
+        graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
-      for (const data of items) {
+      for (let i = 0; i < items.length; i++) {
+        const data = items[i]
         const id = generateId('node')
-        created.push({ ...data, id, createdAt: now, updatedAt: now })
+        const sortIndex = sortIndexes[i]
+        created.push(withSortIndex({ ...data, id, createdAt: now, updatedAt: now }, sortIndex))
         stmt.run(
           id,
           data.type,
@@ -116,6 +151,7 @@ export class NodeRepository {
           data.graphId,
           data.graphType,
           data.parentId ?? null,
+          sortIndex ?? null,
           data.rules ? JSON.stringify(data.rules) : null,
           data.metadata ? JSON.stringify(data.metadata) : null,
           data.ownerRole ?? null,
@@ -136,6 +172,40 @@ export class NodeRepository {
 
     insertMany(nodesData)
     return created
+  }
+
+  /**
+   * 目标父节点下的下一个兄弟序号 = 现有子节点里最大的 sort_index + 1（spec §4.8）。
+   *
+   * COALESCE 不能省：兄弟全是 NULL 时 MAX 返回 NULL，而 NULL + 1 在 SQLite 里
+   * 仍是 NULL —— 新节点会落进布局「undefined 排最后」的兜底里，位置不确定。
+   */
+  private nextSortIndex(parentId: string): number {
+    const row = this.db
+      .prepare(
+        'SELECT COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1 AS next',
+      )
+      .get(parentId) as { next: number }
+    return row.next
+  }
+
+  /**
+   * 批内兄弟序号：同一父节点下的多个节点拿**连续**的号。
+   *
+   * 基准值（COALESCE(MAX)+1）每个父节点只查一次，组内按批内出现顺序递增 ——
+   * 逐个查库会让每个节点都拿到同一个基准值。
+   */
+  private batchSortIndexes(
+    nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[],
+  ): (number | undefined)[] {
+    const nextByParent = new Map<string, number>()
+    return nodesData.map((data) => {
+      const parentId = data.parentId ?? null
+      if (parentId === null) return undefined
+      const next = nextByParent.get(parentId) ?? this.nextSortIndex(parentId)
+      nextByParent.set(parentId, next + 1)
+      return next
+    })
   }
 
   update(id: string, data: Partial<GraphNode>): GraphNode {
@@ -193,6 +263,12 @@ export class NodeRepository {
       }
       updates.push('parent_id = ?'); args.push(parentId)
     }
+    // 兄弟顺序（spec §4.8）—— sortIndex 是 number，直接绑定即可
+    if (data.sortIndex !== undefined) { updates.push('sort_index = ?'); args.push(data.sortIndex) }
+    // ⚠️ better-sqlite3 **不能绑定 boolean**（只接受 number / string / bigint / buffer / null），
+    // 不显式转换的话 update(id, { collapsed: true }) 抛
+    // `TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null`。
+    if (data.collapsed !== undefined) { updates.push('collapsed = ?'); args.push(data.collapsed ? 1 : 0) }
     if (data.rules !== undefined) { updates.push('rules = ?'); args.push(JSON.stringify(data.rules)) }
     if (data.metadata !== undefined) { updates.push('metadata = ?'); args.push(JSON.stringify(data.metadata)) }
     if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
@@ -221,8 +297,15 @@ export class NodeRepository {
   }
 
   delete(id: string): void {
-    // 外键 ON DELETE CASCADE 会自动删除关联的 edges 和 bug_nodes
-    this.db.prepare('DELETE FROM nodes WHERE id = ?').run(id)
+    const deleteNode = this.db.transaction(() => {
+      // 删父节点 → 子节点变成**根节点**（spec §4.8 / plan §问题 4）。
+      // 不是「子节点被删掉」，也不是「留成孤儿」——孤儿的 parent_id 仍指着
+      // 已不存在的节点，排序号也悬空。先把子节点置根，再删自身。
+      this.db.prepare('UPDATE nodes SET parent_id = NULL WHERE parent_id = ?').run(id)
+      // 外键 ON DELETE CASCADE 会自动删除关联的 edges 和 bug_nodes
+      this.db.prepare('DELETE FROM nodes WHERE id = ?').run(id)
+    })
+    deleteNode()
   }
 
   /** 查询节点当前状态（用于状态转换校验） */

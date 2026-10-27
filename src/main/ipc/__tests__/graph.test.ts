@@ -697,6 +697,8 @@ function makeWritebackDb() {
       graph_id TEXT NOT NULL,
       graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
       parent_id TEXT,
+      sort_index INTEGER,
+      collapsed INTEGER NOT NULL DEFAULT 0,
       rules TEXT,
       metadata TEXT,
       owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),

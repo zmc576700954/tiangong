@@ -116,6 +116,11 @@ export class GraphRepository {
         graphId: rowStr(row, 'graph_id'),
         graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
         parentId: rowOptStr(row, 'parent_id'),
+        // ⚠️ 这里**不能**用 rowNum(row, 'sort_index')：它是严格的，
+        // 根节点的 sort_index 是 NULL → typeof null !== 'number' → 抛 TypeError
+        // → 整个 get() 炸掉，主进程一读图就崩。照抄 communityLevel 的 null 容错写法。
+        sortIndex: typeof row.sort_index === 'number' ? row.sort_index : undefined,
+        collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
         rules: safeJsonParse<GraphNode['rules']>(rowOptStr(row, 'rules'), undefined, isUnknownArray),
         metadata: safeJsonParse<GraphNode['metadata']>(rowOptStr(row, 'metadata'), undefined, isRecord),
         content: safeJsonParse<GraphNode['content']>(rowOptStr(row, 'content'), undefined, isRecord),
