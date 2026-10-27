@@ -233,6 +233,58 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(errorOutputs[0].data).toContain('Rate limit')
   })
 
+  it('result 的 is_error=true 即使 subtype=success 也按失败处理', async () => {
+    const session = await adapter.startSession(makeConfig())
+    const ended: Array<[string, string, number | null]> = []
+    adapter.on('sessionEnded', (id: string, reason: string, code: number | null) => {
+      ended.push([id, reason, code])
+    })
+
+    // SDK 的 success 结果也可能带 is_error=true —— 只看 subtype 会把失败当成功投给渲染层。
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'tool failed', is_error: true, errors: ['tool failed'] },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(outputs.filter((o) => o.type === 'complete')).toHaveLength(0)
+    expect(outputs.filter((o) => o.type === 'error')).toHaveLength(1)
+    expect(ended).toHaveLength(1)
+    expect(ended[0][1]).toBe('error')
+  })
+
+  it('result 的错误 subtype 也发 sessionEnded(error) —— 恢复 / 回退链路要可达', async () => {
+    const session = await adapter.startSession(makeConfig())
+    const ended: Array<[string, string, number | null]> = []
+    adapter.on('sessionEnded', (id: string, reason: string, code: number | null) => {
+      ended.push([id, reason, code])
+    })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['boom'] },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(outputs.filter((o) => o.type === 'error')).toHaveLength(1)
+    expect(ended).toHaveLength(1)
+    expect(ended[0][1]).toBe('error')
+  })
+
+  it('result 错误消息缺 errors 数组时不抛异常，退化为兜底文案', async () => {
+    const session = await adapter.startSession(makeConfig())
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'error_during_execution', is_error: true },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const errorOutputs = outputs.filter((o) => o.type === 'error')
+    expect(errorOutputs).toHaveLength(1)
+    expect(errorOutputs[0].data).toContain('Agent execution failed')
+  })
+
   it('SDK 错误时发射 sessionEnded(error)，AbortError 时不发射', async () => {
     const session = await adapter.startSession(makeConfig())
     const ended: Array<[string, string, number | null]> = []

@@ -123,6 +123,15 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     const abortController = new AbortController()
     this.activeQueries.set(session.id, { abort: () => abortController.abort() })
 
+    // sessionEnded 只发一次：结果消息的错误通道与 catch 分支都可能触发，
+    // 重复发会让恢复器跑两遍。
+    let sessionEndedEmitted = false
+    const emitSessionEndedOnce = () => {
+      if (sessionEndedEmitted) return
+      sessionEndedEmitted = true
+      this.emit('sessionEnded', sessionId, 'error', null)
+    }
+
     try {
       const { readSettings } = await import('../settings')
       const settings = await readSettings()
@@ -292,7 +301,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
               this.reportUsage(session.id, inputTokens)
             }
           }
-          if (message.subtype === 'success') {
+          // SDK 有两层失败信号：subtype 与 is_error。subtype='success' 但 is_error=true
+          // 仍然是失败 —— 只看 subtype 会把失败当成功投给渲染层。
+          if (message.subtype === 'success' && message.is_error !== true) {
             this.emitOutputForSession(sessionId, {
               type: 'complete',
               data: message.result || 'Completed',
@@ -300,15 +311,27 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             })
             // Idle reaper is re-armed automatically by BaseAdapter.sendCommand on return.
           } else {
-            const errorText =
-              (message.errors.length > 0 ? message.errors.join('\n') : undefined) ??
-              'Agent execution failed'
+            // errors 数组可能缺失（不同 SDK 版本 / 不同生产者）—— 按运行时形状取。
+            // 直接读 .length 会在取值时抛异常，把真实失败原因替换成 "Cannot read ..."。
+            const errors: string[] =
+              message.subtype !== 'success' && Array.isArray(message.errors)
+                ? message.errors
+                : []
+            let errorText = errors.join('\n')
+            if (!errorText && message.subtype === 'success') {
+              // subtype=success 但 is_error=true —— 失败原因在 result 里
+              errorText = message.result || ''
+            }
+            if (!errorText) errorText = 'Agent execution failed'
             this.emitOutputForSession(sessionId, {
               type: 'error',
               data: errorText,
               timestamp: Date.now(),
               errorCode: 'AGENT_CRASH',
             })
+            // SDK 错误 = 会话异常终止。必须发 sessionEnded，否则恢复 / 回退 / Phase B
+            // 记忆管线整条链路不可达（此前只有 catch 分支发）。
+            emitSessionEndedOnce()
           }
         }
       }
@@ -328,7 +351,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           errorCode: 'AGENT_CRASH',
         })
         // SDK 错误 = 会话异常终止。必须发 sessionEnded，否则恢复 / 回退 / Phase B 记忆管线整条链路不可达。
-        this.emit('sessionEnded', sessionId, 'error', null)
+        emitSessionEndedOnce()
       }
     } finally {
       this.activeQueries.delete(session.id)
