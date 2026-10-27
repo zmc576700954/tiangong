@@ -837,7 +837,7 @@ git commit -m "refactor(canvas): 类型层级规则统一到 nodeTypeRegistry �
 
 - [ ] **Step 1: Write the failing test**
 
-新建 `src/main/services/__tests__/hierarchy-service.test.ts`。用真实 better-sqlite3 建最小 schema（nodes + edges 两表），fixture：
+新建 `src/main/services/__tests__/hierarchy-service.test.ts`。用**真实 schema 的真实库**跑（`initDatabase()`，见下面「这个测试必须用真实库」一段），fixture：
 
 ```
 nodes:
@@ -851,7 +851,32 @@ edges（4 条初始层级边，与 parent_id 一致）:
 (p1,m1) (m1,c1) (c1,f1) (p1,m2)
 ```
 
-⚠️ **fixture 的 INSERT 必须写全列名**，不能写 `INSERT INTO nodes VALUES (...)`：`nodes` 表在 Task 2 之后是 **13 列**（`id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at`），省略列名的写法一加列就报「table nodes has 13 columns but 11 values were supplied」。测试里 CREATE TABLE 的列清单也要跟这 13 列一致。edges 表至少要有 `id, source, target, edge_type, graph_id` 五列。
+⚠️ **这个测试必须用真实库（`initDatabase()`），不要手搓「最小 schema」**
+
+真实的 `nodes` 表是 **25 列**（`src/main/database.ts:381-407`：`id, type, status, title, description, acceptance_criteria, graph_id, graph_type, parent_id, sort_index, collapsed, rules, metadata, owner_role, position_x, position_y, content, community_summary, community_level, community_id, context_refs, wiki_content, wiki_meta, created_at, updated_at`），`edges` 表是 **10 列**（`id, source, target, label, edge_type, graph_id, content, description, data_flow, strength`）。而且 `edges.source` / `edges.target` 上有**外键**（`REFERENCES nodes(id) ON DELETE CASCADE`），`nodes.type` / `nodes.status` / `nodes.graph_type` / `edges.edge_type` 上都有 **CHECK 约束**。
+
+手搓一张「够用」的两表 schema 会让**三类真实缺陷从测试缝里漏过去**：
+
+1. `HierarchyService` 里若出现 `INSERT INTO edges VALUES (...)`（不写列名），对着 5 列的假表能通过，对着真实的 10 列表直接报 `table edges has 10 columns but 5 values were supplied` —— **测试绿、线上炸**。
+2. 假 `nodes` 表没有 `type` / `status` / `graph_type` 的 CHECK → 测试里能插进一个非法类型，线上会被 CHECK 拒掉。
+3. 假 `edges` 表没有外键 → 测试里能插一条指向不存在节点的边，线上会被外键拒掉。
+
+→ **测试用真实库**：electron mock + `initDatabase()`，照抄 `src/main/repositories/__tests__/node-repository.test.ts` Step 1 的现成模式（出处是 `src/main/__tests__/database-migration.test.ts`）。fixture 的 INSERT **写全列名**（只写你提供的那些列，其余靠默认值/可空）：
+
+```ts
+// nodes：id / type / status / title / graph_id / graph_type / parent_id / sort_index
+//        / position_x / position_y / created_at / updated_at —— 其余列可空或有默认值
+db.prepare(
+  'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+).run('p1', 'project', 'confirmed', 'P1', 'g1', 'online', null, null, 0, 0, now, now)
+
+// edges：id / source / target / edge_type / graph_id —— 其余 5 列可空
+db.prepare(
+  "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+).run('e1', 'p1', 'm1', 'hierarchical', 'g1')
+```
+
+⚠️ `status` 在真实表上是 `NOT NULL`（取值限于 `draft/confirmed/developing/testing/review/published/placeholder`），`graph_type` 限于 `online/dev`，`edge_type` 限于 CHECK 列表（含 `hierarchical`）—— fixture 的取值必须合法，否则测试会被 CHECK 拒掉，而不是测到你想测的东西。
 
 ⚠️ **fixture 里的兄弟节点要写显式 `sort_index`**（同一父节点下 0,1,2,…）：不写的话全是 NULL，reparent 的 `COALESCE(MAX(sort_index), -1) + 1` 取到 0，测到的就变成「从零开始」而不是「重排」，用例会失去区分度。
 
@@ -1210,7 +1235,7 @@ describe('useNodeOperations — 补建层级边', () => {
 
 再新建 `src/main/services/__tests__/graph-service-sort-index.test.ts` —— 覆盖**第三条写入路径**（`initFromProject` → `graph-service.createNodes`）。
 
-⚠️ **这条路径必须用真实库**：它写的是 `nodes` 表的全部 21 个列，mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 Task 11 Step 1 的写法（那里已有现成模式）。
+⚠️ **这条路径必须用真实库**：它的 INSERT 覆盖 `nodes` 表的 21 个列（表本身是 **25 列**，见 `src/main/database.ts:381-407`），mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 Task 11 Step 1 的写法（那里已有现成模式）。
 
 `initFromProject` 走真实写入路径的两个前提：
 - `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:43`），mock 掉它不影响被测的写入路径。
