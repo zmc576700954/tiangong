@@ -223,8 +223,11 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
         }
         const graph =
           (graphId ? mockGraphs.find((g) => g.id === graphId) : undefined) ?? mockGraphs[0]
-        // 按图区分的节点优先；没有配置就退回「共用的那一份」（向后兼容）
-        const nodes = mockNodesByGraph[graph.id] ?? mockNodes
+        // 按图区分的节点优先；没有配置就退回「共用的那一份」（向后兼容）。
+        // ⚠️ `graphs: []` 时 `graph` 是 undefined —— 直接读 `graph.id` 会抛 TypeError
+        // （改前这里回的是 `{ graph: undefined, ... }`，不抛）。有些用例（如 `app.spec.ts`）
+        // 就是用空图列表起应用的 —— 别把那条路炸掉。
+        const nodes = graph ? (mockNodesByGraph[graph.id] ?? mockNodes) : mockNodes
         return { graph, nodes, edges: mockEdges, bugs: [] }
       },
       'graph:list': async () => mockGraphs,

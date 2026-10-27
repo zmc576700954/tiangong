@@ -1,7 +1,7 @@
 /**
  * 结构编辑的浏览器 e2e 验收闸门。
  *
- * 覆盖十二件事：
+ * 覆盖十三件事：
  *   1. 父子关系由 `nodes.parent_id` 派生 → 父子之间**恰好一条**线（存储里的层级边不重复画）
  *   2. 拖到另一个节点上 → 旧线消失、新线出现
  *   3. 拖到类型不允许的父节点上 → 被拒，`graph:reparent` **根本没被调用**
@@ -793,7 +793,35 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
   /** B 的两个业务节点 —— id 与 A 的**完全不同**，节点数与 A 相同 */
   const B_MODULE = 'node_b_module'
   const B_PROCESS = 'node_b_process'
+
+  /**
+   * 两张图各自的 `project` 根节点 —— **给它们是为了让两张图的节点数全程相同**。
+   *
+   * ⚠️ 这不是装饰，是一个**验收标准**：「A 和 B 节点数相同 → B 永远不会被排版」
+   * 是一个**既有**的洞（旧触发信号是 `graphNodes.length`，节点数不变 → effect 干脆不重跑）。
+   * 画布会**自动创建** `project` 根节点，而它是**异步**的 ——
+   * 若 B 没有自己的 `project` 根节点，切换期间节点数会 3 → 2 → 3 地抖，
+   * `graphNodes.length` **是变的** → 旧代码靠「长度变了」也能重跑 →
+   * 用例就**不再覆盖**那个洞了（复审实测：BASE 在这种 fixture 下红的原因
+   * 是竞态，不是节点数）。
+   *
+   * 给了自己的 `project` 根节点之后，画布不再自动创建 → 两张图都是 3 个节点 →
+   * 切换期间长度**恒定** → 旧代码那条「长度变了才重跑」的路**被彻底堵死**。
+   */
+  const A_PROJECT = 'node_a_project'
+  const B_PROJECT = 'node_b_project'
+
+  const FORCE_GRAPH_NODES: MockNode[] = [
+    { ...makeNode(A_PROJECT, 'project', 'A Project', { x: 0, y: 0 }), graphId: FORCE_GRAPH.id },
+    { ...makeNode(MODULE_A, 'module', 'Module A', { x: 150, y: 180 }), graphId: FORCE_GRAPH.id },
+    {
+      ...makeNode(PROCESS_B, 'process', 'Process B', { x: 760, y: 520 }, MODULE_A),
+      graphId: FORCE_GRAPH.id,
+    },
+  ]
+
   const TREE_GRAPH_NODES: MockNode[] = [
+    { ...makeNode(B_PROJECT, 'project', 'B Project', { x: 0, y: 0 }), graphId: TREE_GRAPH.id },
     { ...makeNode(B_MODULE, 'module', 'B Module', { x: 120, y: 160 }), graphId: TREE_GRAPH.id },
     {
       ...makeNode(B_PROCESS, 'process', 'B Process', { x: 520, y: 160 }, B_MODULE),
@@ -825,16 +853,17 @@ test.describe('结构编辑（层级派生 / 拖拽重挂 / 删除父节点 / �
    * 这条用例顺带把它钉住。
    */
   test('切图：dagre 绝不能把上一张图的节点重排并落库 —— 触发信号必须按图区分', async ({ page }) => {
+    // ⚠️ **两张图的节点数必须相同** —— 这条断言看着多余，但它是本用例的**一半**：
+    // 「A 和 B 节点数相同 → B 永远不会被排版」是一个**既有**的洞（旧触发信号是
+    // `graphNodes.length`），只有节点数全程恒定时，这条用例才**同时**钉住那个洞。
+    // 哪天有人删掉某个 `project` 根节点，这里会**响亮地**红，而不是让闸门**静默地**
+    // 不再覆盖那个洞。
+    expect(FORCE_GRAPH_NODES.length).toBe(TREE_GRAPH_NODES.length)
+
     await setupMockIpc(page, {
       graphs: [FORCE_GRAPH, TREE_GRAPH],
       nodesByGraph: {
-        [FORCE_GRAPH.id]: [
-          { ...makeNode(MODULE_A, 'module', 'Module A', { x: 150, y: 180 }), graphId: FORCE_GRAPH.id },
-          {
-            ...makeNode(PROCESS_B, 'process', 'Process B', { x: 760, y: 520 }, MODULE_A),
-            graphId: FORCE_GRAPH.id,
-          },
-        ],
+        [FORCE_GRAPH.id]: FORCE_GRAPH_NODES,
         [TREE_GRAPH.id]: TREE_GRAPH_NODES,
       },
       // 只有 B 的装载是慢的 → rAF 确定性地抢在 IPC 前面
