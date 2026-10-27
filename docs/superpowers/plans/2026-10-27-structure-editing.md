@@ -1766,7 +1766,7 @@ Expected: FAIL —— 模块不存在
 新建 `src/renderer/canvas/hooks/useReparentDrag.ts`。核心逻辑：
 
 - `onDragStart(nodeId)`：记录拖动节点与其**后代集合**（沿 `parent_id` 下行）
-- `onDrag(pointer)`：遍历当前图的节点，找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，与 `tree-layout.ts` 的 `estimateNodeWidth/Height` 一致），排除拖动节点自身与其后代。若无命中 → `candidate = null`。若命中 → 依次校验：
+- `onDrag(pointer)`：遍历当前图的节点，找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，与 `force-layout.ts` 导出的 `estimateNodeWidth/Height` 一致——注意 `tree-layout.ts` 里有一份**同名但未导出**的私有副本，要 import 请用 `force-layout.ts`），排除拖动节点自身与其后代。若无命中 → `candidate = null`。若命中 → 依次校验：
   0. **规则表未就绪 → 直接 `candidate = null`**：`useNodeTypeConfigs()` 返回的 `loaded === false`（IPC 还没回来）时不做任何判定——此时 `configs` 是空表，照常判定会把**所有**合法落点判成 `type` 不合法，给用户一个错误的红框。`loaded === true` 之后才走下面的 1–5。
   1. 命中的是拖动节点自身 → 跳过
   2. 命中的是后代 → `reason: 'cycle'`
