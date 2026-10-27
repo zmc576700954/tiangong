@@ -328,6 +328,82 @@ describe('useReparentDrag', () => {
       vi.useRealTimers()
     }
   })
+
+  it('does not let another node drag invalidate the in-flight reparent release', async () => {
+    // A 的重挂 IPC 在飞 → 用户接着拖 B → A 的 IPC 落定时**必须**释放 A 的抑制。
+    // 抑制令牌是全局计数器时，B 的拖拽会作废 A 的令牌 → A 永远留在抑制集合里
+    // → 该节点在本次会话里再也存不住位置，且没有任何提示。
+    const releasePositions = vi.fn()
+    // A 的重挂 IPC：可控的、不落定的 promise
+    let settleA = () => {}
+    mockState.reparentNode.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { settleA = () => resolve() }),
+    )
+    const { result } = renderHook(() => useReparentDrag({ releasePositions }))
+
+    act(() => { result.current.onDragStart('feature-a') })
+    // onDragStart 会解除上一次残留的抑制 —— 那不是本次要断言的
+    releasePositions.mockClear()
+    await act(async () => { result.current.onDragEnd(ON_MODULE_B) })
+
+    // 用户接着拖 B（B 落在自己的子节点上 = 成环 → B 自己不发起重挂，
+    // 但 B 的拖拽**不得**作废 A 的在飞释放）
+    act(() => { result.current.onDragStart('module-b') })
+    act(() => { result.current.onDrag(ON_FEATURE_C) })
+    await act(async () => { result.current.onDragEnd(ON_FEATURE_C) })
+
+    // A 的重挂 IPC 落定 → A 的抑制必须被释放
+    await act(async () => { settleA() })
+
+    expect(releasePositions).toHaveBeenCalledWith(['feature-a'])
+  })
+
+  it('does not let another node drag invalidate the timeout release', async () => {
+    // A 的重挂 IPC 永不落定 → 只能靠超时释放。拖 B 不得作废这条超时释放。
+    vi.useFakeTimers()
+    try {
+      const releasePositions = vi.fn()
+      mockState.reparentNode.mockReturnValueOnce(new Promise(() => {}))
+      const { result } = renderHook(() => useReparentDrag({ releasePositions }))
+
+      act(() => { result.current.onDragStart('feature-a') })
+      releasePositions.mockClear()
+      await act(async () => { result.current.onDragEnd(ON_MODULE_B) })
+
+      // 用户接着拖 B
+      act(() => { result.current.onDragStart('module-b') })
+
+      act(() => { vi.advanceTimersByTime(REPARENT_SUPPRESSION_TIMEOUT_MS) })
+
+      expect(releasePositions).toHaveBeenCalledWith(['feature-a'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still lets a repeated drag of the same node invalidate its own stale release', async () => {
+    // 与上一条成对：令牌按节点记之后，「再拖 A 一次」仍必须作废 A 自己的旧回调 ——
+    // 新拖拽刚武装的抑制要保住，不能被上一次拖拽晚到的 IPC 解掉。
+    const releasePositions = vi.fn()
+    let settleA = () => {}
+    mockState.reparentNode.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { settleA = () => resolve() }),
+    )
+    const { result } = renderHook(() => useReparentDrag({ releasePositions }))
+
+    act(() => { result.current.onDragStart('feature-a') })
+    releasePositions.mockClear()
+    await act(async () => { result.current.onDragEnd(ON_MODULE_B) })
+
+    // 用户又拖了 A 一次 → 作废 A 自己的旧回调
+    act(() => { result.current.onDragStart('feature-a') })
+    releasePositions.mockClear()
+
+    // A 的旧 IPC 现在才落定 → 不得释放（令牌已作废）
+    await act(async () => { settleA() })
+
+    expect(releasePositions).not.toHaveBeenCalled()
+  })
 })
 
 describe('extractPointerClientPoint', () => {

@@ -226,12 +226,16 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
   /** 拖拽开始时一次性算好的命中矩形 —— 见 computeRects */
   const rectsRef = useRef<Map<string, FlowRect>>(new Map())
   /**
-   * 抑制的「归属令牌」—— 只有最后一次武装的拖拽能解除它。
+   * 抑制的「归属令牌」—— 按节点记：只有**这个节点**最后一次武装的拖拽能解除它的抑制。
    *
    * 抑制是按节点记的，上一次拖拽留下的 IPC 回调如果晚到，会把**新**拖拽刚武装的
    * 抑制一起解掉 → 位置权威失效。令牌单调递增，晚到的回调发现令牌变了就不动。
+   *
+   * ⚠️ 必须**按节点**记，不能用全局计数器：全局计数器会让「拖了别的节点」也作废
+   * 掉本节点在飞重挂的待释放逻辑 → 该节点的抑制永远恢复不了 → 本次会话里再也
+   * 存不住位置，且没有任何提示。令牌的作用域就是「同一个节点」这一件事。
    */
-  const suppressionTokenRef = useRef(0)
+  const suppressionTokenRef = useRef<Map<string, number>>(new Map())
 
   const applyCandidate = useCallback((next: ReparentCandidate | null) => {
     const prev = candidateRef.current
@@ -301,8 +305,10 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       rectsRef.current = computeRects(nodes)
       // 上一次拖拽的 IPC 若一直没落定，抑制可能还留在集合里 →
       // 该节点在这个会话里就再也自由移动不了。用户再拖它一次，这里把它恢复。
-      // 同时作废上一次拖拽留下的待解除定时器（令牌前进 → 它的回调不再动抑制）。
-      suppressionTokenRef.current += 1
+      // 同时作废**这个节点**上一次拖拽留下的待解除定时器（令牌前进 → 它的回调不再动抑制）。
+      // 只作废本节点的令牌 —— 别的节点在飞的重挂不受影响。
+      const token = (suppressionTokenRef.current.get(nodeId) ?? 0) + 1
+      suppressionTokenRef.current.set(nodeId, token)
       releasePositions?.([nodeId])
       setDraggingNodeId(nodeId)
       applyCandidate(null)
@@ -352,15 +358,16 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       // 抑制必须**一定能自行恢复**：IPC 若一直不落定，这个 id 就永远留在抑制集合里 →
       // 该节点在这个会话里再也无法自由移动，而且没有任何提示。
       // 超时只负责解除抑制，不改 toast 语义，也不代替 IPC 的最终裁决。
-      const token = ++suppressionTokenRef.current
+      const token = (suppressionTokenRef.current.get(draggingId) ?? 0) + 1
+      suppressionTokenRef.current.set(draggingId, token)
       const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
-        if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
+        if (suppressionTokenRef.current.get(draggingId) === token) releasePositions?.([draggingId])
       }, REPARENT_SUPPRESSION_TIMEOUT_MS)
 
       void Promise.resolve(reparentNode(draggingId, final.nodeId))
         .then(() => {
           clearTimeout(timeoutId)
-          if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
+          if (suppressionTokenRef.current.get(draggingId) === token) releasePositions?.([draggingId])
           toastSuccess(t('canvas.reparent.success', { parent: parentTitle }))
         })
         .catch((err: unknown) => {
@@ -376,7 +383,7 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
               },
             )
           }
-          if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
+          if (suppressionTokenRef.current.get(draggingId) === token) releasePositions?.([draggingId])
         })
     },
     [
