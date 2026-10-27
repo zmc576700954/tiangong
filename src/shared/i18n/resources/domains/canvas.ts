@@ -95,7 +95,9 @@ export const canvasZh = {
 
   // ── 子树折叠 ──
   'canvas.collapse.toggle': '折叠/展开子树',
-  'canvas.collapse.childCount': '{count} 个子节点',
+  // ⚠️ 徽标上的数字是**全部后代**（传递闭包），不是直接子节点数 ——
+  //    文案必须说「节点」，说「子节点」会跟数字对不上。
+  'canvas.collapse.hiddenCount': '{count} 个节点已折叠',
 
   // ── 添加上下文浮层 ──
   'canvas.contextPopover.title': '添加上下文',
@@ -178,7 +180,7 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.reparent.failed': 'Move failed, the node went back to its original spot',
 
   'canvas.collapse.toggle': 'Collapse/expand subtree',
-  'canvas.collapse.childCount': '{count} child nodes',
+  'canvas.collapse.hiddenCount': '{count} collapsed nodes',
 
   'canvas.contextPopover.title': 'Add context',
   'canvas.contextPopover.searchPlaceholder': 'Search project files...',

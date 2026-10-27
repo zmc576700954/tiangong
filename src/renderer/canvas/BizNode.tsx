@@ -37,17 +37,20 @@ function FoldControl({
   const { t } = useI18n()
   // 没有后代 = 没有子节点 = 没有可折叠的东西
   if (descendantCount <= 0) return null
-  const childCountLabel = t('canvas.collapse.childCount', { count: descendantCount })
+  const hiddenCountLabel = t('canvas.collapse.hiddenCount', { count: descendantCount })
   const toggleLabel = t('canvas.collapse.toggle')
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1">
       {collapsed && (
         <span
-          title={childCountLabel}
-          aria-label={childCountLabel}
+          title={hiddenCountLabel}
           className="rounded bg-muted px-1 text-[9px] leading-4 text-muted-foreground"
         >
-          ⊕ {descendantCount}
+          {/* 可见的「⊕ N」对读屏软件没有意义 —— 数字的含义由下面的隐藏文案给出。
+              挂在普通 span 上的 aria-label 会被读屏软件忽略（没有 role 就不会
+              参与可访问名计算），所以这里用 sr-only 文本节点。 */}
+          <span aria-hidden="true">⊕ {descendantCount}</span>
+          <span className="sr-only">{hiddenCountLabel}</span>
         </span>
       )}
       <button

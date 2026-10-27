@@ -38,89 +38,159 @@ export interface UseCollapseResult {
   visibleNodes: GraphNode[]
 }
 
-/** 层级索引：子 → 父、父 → 子 */
+/**
+ * 层级索引 —— 一片**无环**的森林。
+ *
+ * `childrenByParent` 里不可能出现环（`buildHierarchy` 在源头就把环断了），
+ * 所以「向下数后代」和「向上找折叠祖先」读的是同一棵结构，两个口径必然一致。
+ */
 interface HierarchyIndex {
-  parentById: Map<string, string>
+  /** 父 → 子（环上的父边已断开） */
   childrenByParent: Map<string, string[]>
+  /** 森林的根 —— 没有父的节点 */
+  roots: string[]
 }
 
-/** 从节点列表建层级索引（O(n)） */
-function buildHierarchy(nodes: GraphNode[]): HierarchyIndex {
-  const parentById = new Map<string, string>()
-  const childrenByParent = new Map<string, string[]>()
-  for (const node of nodes) {
-    if (!node.parentId) continue
-    parentById.set(node.id, node.parentId)
-    const siblings = childrenByParent.get(node.parentId)
-    if (siblings) siblings.push(node.id)
-    else childrenByParent.set(node.parentId, [node.id])
-  }
-  return { parentById, childrenByParent }
+/** 折叠模型：隐藏集合 + 后代计数 —— 这两个数字必须对得上 */
+interface CollapseModel {
+  /** 被折叠的祖先藏起来的节点（折叠节点自己不在里面） */
+  hiddenIds: Set<string>
+  /** 每个节点的后代数（所有后代，不含自身） */
+  descendantCounts: Map<string, number>
 }
 
 /**
- * 每个节点的后代数（**所有**后代，不含自身）。
+ * 找出父指针图里所有环上的节点。
  *
- * 后序遍历 + 显式栈：深链（几千层）不会爆调用栈。
- * `onPath` 防环：历史脏数据里 `parent_id` 成环时，环上那条边不参与遍历 ——
- * 否则遍历永远回不到头，画布直接卡死。
+ * ⚠️ 与 `layouts/tree-layout.ts` 的 `findBackEdgeIds` 是**同一套三色 DFS**
+ * （那边是 parent → child 的边，这边是 child → parent 的父链），
+ * 两点不同，都是必须的：
+ *
+ * 1. **迭代**，不递归 —— 那边是 `function dfs(u)`，1 万层的脏链会爆栈。
+ * 2. **断掉整个环的父链接**，而不是只断「回边」那一条 ——
+ *    只断一条的话，断哪条取决于 DFS 从哪个节点起步（环上任意节点开始，
+ *    断掉的边集合不一样）。而父指针图里每个节点**至多一个父** →
+ *    每个连通分量要么是一棵树，要么**恰好含一个环**（函数图的性质），
+ *    环上的节点全部解除父链接之后，它们各自成为根，**不在环上**的孩子
+ *    仍然挂在原位 —— 这跟迭代顺序无关。
+ *
+ * 每个节点只会被走一遍 → O(n)。纯迭代，没有递归 → 深链不会爆栈。
  */
-function computeDescendantCounts(childrenByParent: Map<string, string[]>): Map<string, number> {
-  const counts = new Map<string, number>()
-  const settled = new Set<string>()
+function findCycleNodes(parentById: Map<string, string>): Set<string> {
+  const WHITE = 0
+  const GRAY = 1
+  const BLACK = 2
+  const color = new Map<string, number>()
+  const cycleNodes = new Set<string>()
 
-  for (const start of childrenByParent.keys()) {
-    if (settled.has(start)) continue
-    // 栈帧：[节点 id, 下一个待处理的孩子下标]
-    const stack: Array<[string, number]> = [[start, 0]]
-    const onPath = new Set<string>([start])
-    while (stack.length > 0) {
-      const frame = stack[stack.length - 1]
-      const [nodeId, childIndex] = frame
-      const children = childrenByParent.get(nodeId) ?? []
-      if (childIndex < children.length) {
-        frame[1] = childIndex + 1
-        const child = children[childIndex]
-        // 环上的边不参与遍历（否则出不了栈）
-        if (settled.has(child) || onPath.has(child)) continue
-        stack.push([child, 0])
-        onPath.add(child)
-        continue
-      }
-      // 孩子都结算完了 —— 后序汇总
-      let total = 0
-      for (const child of children) {
-        total += 1 + (counts.get(child) ?? 0)
-      }
-      counts.set(nodeId, total)
-      settled.add(nodeId)
-      onPath.delete(nodeId)
-      stack.pop()
+  for (const start of parentById.keys()) {
+    if ((color.get(start) ?? WHITE) === BLACK) continue
+    // 顺着父指针往上走的路径
+    const path: string[] = []
+    let current: string | undefined = start
+    while (current !== undefined && (color.get(current) ?? WHITE) === WHITE) {
+      color.set(current, GRAY)
+      path.push(current)
+      current = parentById.get(current)
+    }
+    // current 已经是 GRAY → 它就在当前路径上 → 路径上从 current 开始的那一段成环
+    if (current !== undefined && color.get(current) === GRAY) {
+      for (const id of path.slice(path.indexOf(current))) cycleNodes.add(id)
+    }
+    for (const id of path) color.set(id, BLACK)
+  }
+  return cycleNodes
+}
+
+/**
+ * 建层级索引 —— 建成一片**无环**的森林。
+ *
+ * 父子关系的事实来源是 `nodes.parent_id`。父节点不存在（脏数据）= 根节点。
+ *
+ * ⚠️ **为什么要在源头断环**：折叠节点自己必须永远可见（否则用户点完折叠就把
+ * 按钮点没了，而折叠态是**落库**的 —— 重开应用再也展不开）；徽标上的数字必须
+ * 等于实际被藏起来的节点数。这两条都要求「向上找折叠祖先」与「向下数后代」
+ * 读**同一棵无环结构** —— 两个口径才必然一致。
+ * 防环守卫只保证不死循环，不保证数字对。
+ *
+ * 断掉环上**所有**节点的父边（而不是只断一条）是为了跟迭代顺序无关：
+ * 从环上任意一个节点开始走，断掉的边集合都一样。环里的节点各自成为根，
+ * 它们那些**不在环上**的孩子仍然挂在原位。
+ */
+function buildHierarchy(nodes: GraphNode[]): HierarchyIndex {
+  const ids = new Set(nodes.map((n) => n.id))
+  /** 原始父指针 —— 只记真实存在的父（父节点不存在 = 根） */
+  const rawParent = new Map<string, string>()
+  for (const node of nodes) {
+    if (node.parentId && ids.has(node.parentId)) rawParent.set(node.id, node.parentId)
+  }
+
+  const cycleNodes = findCycleNodes(rawParent)
+
+  const childrenByParent = new Map<string, string[]>()
+  const roots: string[] = []
+  for (const node of nodes) {
+    const parentId = cycleNodes.has(node.id) ? undefined : rawParent.get(node.id)
+    if (parentId === undefined) {
+      roots.push(node.id)
+      continue
+    }
+    const siblings = childrenByParent.get(parentId)
+    if (siblings) siblings.push(node.id)
+    else childrenByParent.set(parentId, [node.id])
+  }
+  return { childrenByParent, roots }
+}
+
+/**
+ * 一趟解析出「隐藏集合」与「后代计数」。
+ *
+ * ⚠️ **不能**给每个节点各走一遍完整的祖先链 —— 那是 O(n × 深度)，一条 1 万层的
+ * 脏链就是 10⁸ 次操作，浏览器直接卡死。祖先链在这里**一趟**解析完：从森林的
+ * 根往下推，每个节点带着「有没有折叠的严格祖先」这个标记走一趟。
+ *
+ * 隐藏判定：孩子被藏起来 ⟺ 父节点自己折叠，或父节点已经被折叠的祖先藏起来了。
+ * 折叠节点自己**不隐藏**（它是那个折叠按钮所在的地方）。
+ */
+function computeCollapseModel(
+  hierarchy: HierarchyIndex,
+  collapsedIds: Set<string>,
+): CollapseModel {
+  const { childrenByParent, roots } = hierarchy
+  const hiddenIds = new Set<string>()
+  const descendantCounts = new Map<string, number>()
+  /** 访问顺序（父在子之前）—— 反过来就是后序，用来累加后代数 */
+  const order: string[] = []
+  /** 安全网：万一层级索引里还有环（不该发生），也不至于死循环 */
+  const visited = new Set<string>()
+  /** 栈帧：[节点 id, 是否有折叠的严格祖先] */
+  const stack: Array<[string, boolean]> = roots.map((id) => [id, false])
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]
+    stack.pop()
+    const [nodeId, ancestorCollapsed] = frame
+    if (visited.has(nodeId)) continue
+    visited.add(nodeId)
+    order.push(nodeId)
+    const childHidden = ancestorCollapsed || collapsedIds.has(nodeId)
+    for (const child of childrenByParent.get(nodeId) ?? []) {
+      if (childHidden) hiddenIds.add(child)
+      stack.push([child, childHidden])
     }
   }
-  return counts
-}
 
-/**
- * 该节点是否被某个**严格祖先**的折叠态藏起来了。
- *
- * 折叠节点自己**不隐藏** —— 否则用户没法把它再展开。
- * `visited` 防环：历史脏数据里 `parent_id` 成环时，链断在这里即可（不再往上找）。
- */
-function hasCollapsedAncestor(
-  nodeId: string,
-  parentById: Map<string, string>,
-  collapsedIds: Set<string>,
-): boolean {
-  const visited = new Set<string>()
-  let parentId = parentById.get(nodeId)
-  while (parentId) {
-    if (visited.has(parentId)) return false
-    visited.add(parentId)
-    if (collapsedIds.has(parentId)) return true
-    parentId = parentById.get(parentId)
+  // 反序累加：order 是前序遍历的结果，倒过来孩子一定排在父节点前面
+  for (let i = order.length - 1; i >= 0; i--) {
+    const nodeId = order[i]
+    let total = 0
+    for (const child of childrenByParent.get(nodeId) ?? []) {
+      total += 1 + (descendantCounts.get(child) ?? 0)
+    }
+    descendantCounts.set(nodeId, total)
   }
-  return false
+
+  return { hiddenIds, descendantCounts }
 }
 
 export function useCollapse(): UseCollapseResult {
@@ -137,31 +207,28 @@ export function useCollapse(): UseCollapseResult {
     return ids
   }, [nodes])
 
-  /** 层级索引 —— 跟 nodes 同生共死，引用稳定 */
+  /** 层级索引 —— 跟 nodes 同生共死，引用稳定；建成无环的森林 */
   const hierarchy = useMemo(() => buildHierarchy(nodes), [nodes])
 
-  /** 每个节点的后代数 —— 只算一次，供 O(1) 查询 */
-  const descendantCounts = useMemo(
-    () => computeDescendantCounts(hierarchy.childrenByParent),
-    [hierarchy],
-  )
+  /** 隐藏集合 + 后代计数 —— 两者读同一棵森林，口径必然一致 */
+  const model = useMemo(() => computeCollapseModel(hierarchy, collapsedIds), [hierarchy, collapsedIds])
 
   /**
    * 画布上该出现的节点。
    *
-   * `hierarchy` 跟 `nodes` 同步变化，多写进依赖数组不改变重算时机，
+   * `hierarchy` / `model` 跟 `nodes` 同步变化，多写进依赖数组不改变重算时机，
    * 但 exhaustive-deps 要求把 memo 里用到的每个值都列出来。
    */
   const visibleNodes = useMemo(
-    () => nodes.filter((node) => !hasCollapsedAncestor(node.id, hierarchy.parentById, collapsedIds)),
-    [nodes, hierarchy, collapsedIds],
+    () => nodes.filter((node) => !model.hiddenIds.has(node.id)),
+    [nodes, model],
   )
 
   const isCollapsed = useCallback((nodeId: string) => collapsedIds.has(nodeId), [collapsedIds])
 
   const hiddenDescendantCount = useCallback(
-    (nodeId: string) => descendantCounts.get(nodeId) ?? 0,
-    [descendantCounts],
+    (nodeId: string) => model.descendantCounts.get(nodeId) ?? 0,
+    [model],
   )
 
   /**
