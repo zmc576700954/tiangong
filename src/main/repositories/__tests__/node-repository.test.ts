@@ -192,4 +192,91 @@ describe('NodeRepository — 层级相关行为', () => {
       .all(created[0].id, created[1].id) as { collapsed: number }[]
     expect(rows.map((r) => r.collapsed)).toEqual([0, 0])
   })
+
+  // ---- parentId 归一 ----
+  //
+  // `parent_id` 是 TEXT 列，而 better-sqlite3 把 JS number 一律绑成 REAL ——
+  // SQLite 的 TEXT 亲和性把它转成 '12345.0'（**不是** '12345'）。
+  // 于是 `WHERE parent_id = '12345'` 匹配不到任何一行 → 悬空父指针。
+  // （实测：不归一时存进去的是 '12345.0'，用字符串 '12345' 查一条都查不到。）
+
+  /** 建一个父节点（自身是根：parent_id = NULL） */
+  function seedParent(id: string, title: string): void {
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    ).run(id, 'module', 'draft', title, 'g1', 'online', null, 0, 0, now, now)
+  }
+
+  it('stores a numeric parentId as a string on create', () => {
+    seedParent('12345', 'NumericParent')
+
+    const created = nodeRepo.create({
+      type: 'feature', status: 'draft', title: 'NumericChild',
+      graphId: 'g1', graphType: 'online',
+      // 父节点 id 是 TEXT —— 数字型入参必须被归一，否则存进去的是 '12345.0'
+      parentId: 12345 as unknown as string,
+      position: { x: 0, y: 0 },
+    })
+
+    const row = db.prepare('SELECT parent_id FROM nodes WHERE id = ?').get(created.id) as { parent_id: string | null }
+    expect(row.parent_id).toBe('12345')
+    // 返回对象也必须带归一后的值 —— 渲染端用它派生层级线，数字/字符串对不上就画不出线
+    expect(created.parentId).toBe('12345')
+  })
+
+  it('stores a numeric parentId as a string on createBatch', () => {
+    seedParent('23456', 'NumericBatchParent')
+
+    const created = nodeRepo.createBatch([
+      {
+        type: 'feature', status: 'draft', title: 'NumericBatchChild',
+        graphId: 'g1', graphType: 'online',
+        parentId: 23456 as unknown as string,
+        position: { x: 0, y: 0 },
+      },
+    ])
+
+    const row = db.prepare('SELECT parent_id FROM nodes WHERE id = ?').get(created[0].id) as { parent_id: string | null }
+    expect(row.parent_id).toBe('23456')
+    expect(created[0].parentId).toBe('23456')
+  })
+
+  it('gives batch siblings under a numeric parentId consecutive sort_index values', () => {
+    // 父节点 '34567' 已经有一个子节点（sort_index = 0，parent_id 存的是字符串 '34567'）。
+    // 批里再来两个 parentId 是**数字** 34567 的节点：
+    //   - 不归一 → base 查不到既有兄弟（SQL 拿 '34567.0' 去比 '34567'）→ 拿到 0
+    //             → 与既有兄弟**重号**；
+    //   - 归一后 → base = 既有兄弟的最大号 + 1 → 接在后面，一个号都不重。
+    seedParent('34567', 'NumericSortParent')
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+    ).run('existing_child', 'feature', 'draft', 'Existing', 'g1', 'online', '34567', 0, 0, 0, now, now)
+
+    const created = nodeRepo.createBatch([
+      {
+        type: 'feature', status: 'draft', title: 'NumericSibling1',
+        graphId: 'g1', graphType: 'online',
+        parentId: 34567 as unknown as string,
+        position: { x: 0, y: 0 },
+      },
+      {
+        type: 'feature', status: 'draft', title: 'NumericSibling2',
+        graphId: 'g1', graphType: 'online',
+        parentId: 34567 as unknown as string,
+        position: { x: 0, y: 0 },
+      },
+    ])
+
+    // 两个新节点彼此不重号
+    expect(new Set(created.map((n) => n.sortIndex)).size).toBe(2)
+    // 也不与既有兄弟重号 —— 接在既有兄弟之后
+    expect(created.map((n) => n.sortIndex)).toEqual([1, 2])
+
+    const rows = db
+      .prepare('SELECT sort_index FROM nodes WHERE parent_id = ? ORDER BY sort_index')
+      .all('34567') as { sort_index: number }[]
+    expect(rows.map((r) => r.sort_index)).toEqual([0, 1, 2])
+  })
 })

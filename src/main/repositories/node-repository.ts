@@ -44,6 +44,21 @@ function withPersistedDefaults(node: GraphNode, sortIndex: number | undefined): 
   return node
 }
 
+/**
+ * 把 parentId 归一成**字符串**（口径与 `update()` 里那一处完全一致）。
+ *
+ * `parent_id` 是 TEXT 列，而 better-sqlite3 把 JS number 绑成 REAL ——
+ * SQLite 的 TEXT 亲和性会把它转成 `'12345.0'`（**不是** `'12345'`），
+ * `WHERE id = ?` 因此匹配不到任何真实节点 → 悬空父指针。
+ *
+ * 归一还保证「同一个父」在各处是**同一个值**：批内兄弟序号拿 parentId 当
+ * Map 的键，数字键与字符串键各算各的 → 同一批里同父的兄弟序号会**重号**。
+ */
+function normalizeParentId(parentId: unknown): string | null {
+  if (parentId === undefined || parentId === null) return null
+  return String(parentId)
+}
+
 export class NodeRepository {
   constructor(private db: BetterSqlite3.Database) {}
 
@@ -86,7 +101,7 @@ export class NodeRepository {
 
     // 兄弟顺序（spec §4.8）：有父节点 → 该父节点现有子节点中最大的 sort_index + 1；
     // 根节点没有兄弟可言 → sort_index 保持 NULL。
-    const parentId = data.parentId ?? null
+    const parentId = normalizeParentId(data.parentId)
     const sortIndex = parentId === null ? undefined : this.nextSortIndex(parentId)
 
     this.db.prepare(
@@ -123,7 +138,12 @@ export class NodeRepository {
       now,
     )
 
-    return withPersistedDefaults({ ...data, id, createdAt: now, updatedAt: now }, sortIndex)
+    return withPersistedDefaults(
+      // 返回对象也要带归一后的 parentId —— 它必须等于「把刚写入的那一行读回来
+      // 会得到什么」（渲染端用 parentId 派生层级线，字符串/数字对不上就画不出线）
+      { ...data, parentId: parentId ?? data.parentId, id, createdAt: now, updatedAt: now },
+      sortIndex,
+    )
   }
 
   /** 批量创建节点（事务提交） */
@@ -151,7 +171,14 @@ export class NodeRepository {
         const data = items[i]
         const id = generateId('node')
         const sortIndex = sortIndexes[i]
-        created.push(withPersistedDefaults({ ...data, id, createdAt: now, updatedAt: now }, sortIndex))
+        // 归一后的 parentId —— 落库与返回值必须用同一个值
+        const parentId = normalizeParentId(data.parentId)
+        created.push(
+          withPersistedDefaults(
+            { ...data, parentId: parentId ?? data.parentId, id, createdAt: now, updatedAt: now },
+            sortIndex,
+          ),
+        )
         stmt.run(
           id,
           data.type,
@@ -161,7 +188,7 @@ export class NodeRepository {
           data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
           data.graphId,
           data.graphType,
-          data.parentId ?? null,
+          parentId,
           sortIndex ?? null,
           data.rules ? JSON.stringify(data.rules) : null,
           data.metadata ? JSON.stringify(data.metadata) : null,
@@ -211,7 +238,8 @@ export class NodeRepository {
   ): (number | undefined)[] {
     const nextByParent = new Map<string, number>()
     return nodesData.map((data) => {
-      const parentId = data.parentId ?? null
+      // 归一后再当 Map 的键：数字键与字符串键各算各的会让同父的兄弟序号重号
+      const parentId = normalizeParentId(data.parentId)
       if (parentId === null) return undefined
       const next = nextByParent.get(parentId) ?? this.nextSortIndex(parentId)
       nextByParent.set(parentId, next + 1)
