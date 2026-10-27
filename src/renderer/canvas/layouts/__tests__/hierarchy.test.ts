@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveHierarchyEdges } from '../hierarchy'
+import { buildReparentGhostEdge, deriveHierarchyEdges } from '../hierarchy'
 import type { GraphNode, GraphEdge, EdgeType } from '@shared/types'
 
 const mkNode = (id: string, parentId?: string): GraphNode => ({
@@ -75,5 +75,31 @@ describe('deriveHierarchyEdges', () => {
     const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges([mkNode('p'), mkNode('c', 'p')], [])
     const all = [...hierarchyEdges, ...semanticEdges]
     expect(all.filter(e => e.source === 'p' && e.target === 'c')).toHaveLength(1)
+  })
+})
+
+describe('buildReparentGhostEdge', () => {
+  it('points parent → child, the same direction as every other hierarchy edge', () => {
+    // 幽灵连线画的是「候选父节点 → 被拖节点」：箭头像所有层级边一样落在子节点那一端。
+    const ghost = buildReparentGhostEdge('child-dragged', 'parent-candidate', 'g1')
+    expect(ghost.source).toBe('parent-candidate')
+    expect(ghost.target).toBe('child-dragged')
+    expect(ghost.edgeType).toBe('hierarchical')
+    expect(ghost.graphId).toBe('g1')
+  })
+
+  it('agrees with the direction deriveHierarchyEdges produces for the same pair', () => {
+    const { hierarchyEdges } = deriveHierarchyEdges(
+      [mkNode('parent-candidate'), mkNode('child-dragged', 'parent-candidate')],
+      [],
+    )
+    const ghost = buildReparentGhostEdge('child-dragged', 'parent-candidate', 'g1')
+    expect(ghost.source).toBe(hierarchyEdges[0].source)
+    expect(ghost.target).toBe(hierarchyEdges[0].target)
+  })
+
+  it('keeps a stable id that does not depend on the edge direction', () => {
+    expect(buildReparentGhostEdge('child-dragged', 'parent-candidate', 'g1').id)
+      .toBe('ghost-child-dragged-parent-candidate')
   })
 })

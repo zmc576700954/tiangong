@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { useReparentDrag } from '../useReparentDrag'
+import {
+  checkTypeRule,
+  extractPointerClientPoint,
+  REPARENT_SUPPRESSION_TIMEOUT_MS,
+  useReparentDrag,
+} from '../useReparentDrag'
+// 出厂规则表（主进程唯一权威）。这个模块只依赖 @shared/types 与一个纯类型文件，不碰 electron，
+// 渲染端的镜像判定必须跟它逐条一致 —— 否则就是「画布说能挂、主进程拒掉」。
+import { nodeTypeRegistry } from '@main/shared/node-type-registry'
 import type { GraphNode, NodeTypeConfig } from '@shared/types'
 
 /**
@@ -67,6 +75,11 @@ const RULES: Record<string, NodeTypeConfig> = {
   },
 }
 
+/** 出厂规则表（已归一化：allowedChildTypes 一定有值，allowedParentTypes 保留缺省语义） */
+const REAL_RULES: Record<string, NodeTypeConfig> = Object.fromEntries(
+  nodeTypeRegistry.listConfigs().map((c) => [c.type, c]),
+)
+
 function makeNode(partial: Partial<GraphNode> & Pick<GraphNode, 'id' | 'type'>): GraphNode {
   return {
     title: partial.id,
@@ -92,6 +105,11 @@ const NODES: GraphNode[] = [
   makeNode({ id: 'feature-c', type: 'feature', position: { x: 800, y: 0 }, parentId: 'module-b' }),
   makeNode({ id: 'module-d', type: 'module', position: { x: 1200, y: 0 }, graphId: 'graph-2' }),
   makeNode({ id: 'process-x', type: 'process', position: { x: -400, y: 0 } }),
+  // 重叠的一对：overlap-a 占 [2000,2160]、overlap-b 占 [2100,2260] → 2130 同时命中两者
+  makeNode({ id: 'overlap-a', type: 'feature', position: { x: 2000, y: 0 } }),
+  makeNode({ id: 'overlap-b', type: 'bug', position: { x: 2100, y: 0 } }),
+  // 出厂规则表下的合法落点用例：feature → process
+  makeNode({ id: 'real-feature', type: 'feature', position: { x: 3000, y: 0 } }),
 ]
 
 /** 落在 module-b 矩形内（x ∈ [400,600]、y ∈ [0,80]） */
@@ -102,6 +120,12 @@ const ON_FEATURE_C = { x: 850, y: 30 }
 const ON_MODULE_D = { x: 1250, y: 30 }
 /** 空白处 */
 const ON_EMPTY = { x: 500, y: 500 }
+/** 落在 feature-a **自己**的矩形内（x ∈ [0,160]、y ∈ [0,60]） */
+const ON_OWN_RECT = { x: 50, y: 30 }
+/** 落在 overlap-a 与 overlap-b 的重叠区（x ∈ [2100,2160]、y ∈ [0,60]） */
+const ON_OVERLAP = { x: 2130, y: 30 }
+/** 落在 process-x 矩形内（x ∈ [-400,-220]、y ∈ [0,70]） */
+const ON_PROCESS_X = { x: -350, y: 30 }
 
 describe('useReparentDrag', () => {
   beforeEach(() => {
@@ -230,5 +254,101 @@ describe('useReparentDrag', () => {
     expect(mockState.batchUpdatePositions).toHaveBeenCalledWith([
       { id: 'feature-a', x: 0, y: 0 },
     ])
+  })
+
+  it('never treats the dragged node itself as a drop candidate', () => {
+    // 拖拽时指针必然落在被拖节点自己的矩形里 —— 它必须被排除，
+    // 否则每个落点都会被它自己吃掉。
+    const { result } = renderHook(() => useReparentDrag())
+
+    act(() => { result.current.onDragStart('feature-a') })
+    act(() => { result.current.onDrag(ON_OWN_RECT) })
+
+    expect(result.current.candidate).toBeNull()
+  })
+
+  it('picks the later node when two nodes overlap under the pointer', () => {
+    // store 的数组顺序即渲染顺序，后者在上面 → 命中重叠区时取靠后的那个
+    const { result } = renderHook(() => useReparentDrag())
+
+    act(() => { result.current.onDragStart('feature-a') })
+    act(() => { result.current.onDrag(ON_OVERLAP) })
+
+    expect(result.current.candidate?.nodeId).toBe('overlap-b')
+  })
+
+  it('accepts feature under process under the shipping rule table', () => {
+    // 出厂规则表：process.allowedChildTypes 含 feature ✓、feature.allowedParentTypes 含 process ✓
+    mockConfigs.configs = REAL_RULES
+    const { result } = renderHook(() => useReparentDrag())
+
+    act(() => { result.current.onDragStart('real-feature') })
+    act(() => { result.current.onDrag(ON_PROCESS_X) })
+
+    expect(result.current.candidate).toEqual({ nodeId: 'process-x', valid: true })
+  })
+
+  it('mirrors the shipping registry: a feature cannot be mounted under a module', () => {
+    // fixture 用的表把 feature → module 放行了，出厂表不允许 ——
+    // 渲染端的镜像必须跟出厂表一致，否则就是「画布说能挂、主进程拒掉」。
+    expect(checkTypeRule(REAL_RULES, 'process', 'feature')).toBe(true)
+    expect(checkTypeRule(REAL_RULES, 'module', 'feature')).toBe(false)
+  })
+
+  it('releases a stale position suppression when the node is dragged again', () => {
+    // 上一次拖拽的 IPC 若一直没落定，抑制会留在集合里 → 该节点再也自由移动不了。
+    // 用户再拖一次就该恢复。
+    const releasePositions = vi.fn()
+    const { result } = renderHook(() => useReparentDrag({ releasePositions }))
+
+    act(() => { result.current.onDragStart('feature-a') })
+
+    expect(releasePositions).toHaveBeenCalledWith(['feature-a'])
+  })
+
+  it('releases the position suppression when the reparent IPC never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const releasePositions = vi.fn()
+      // 永不落定的 IPC
+      mockState.reparentNode.mockReturnValueOnce(new Promise(() => {}))
+      const { result } = renderHook(() => useReparentDrag({ releasePositions }))
+
+      act(() => { result.current.onDragStart('feature-a') })
+      // onDragStart 会解除上一次残留的抑制 —— 那不是本次要断言的
+      releasePositions.mockClear()
+      await act(async () => { result.current.onDragEnd(ON_MODULE_B) })
+
+      expect(releasePositions).not.toHaveBeenCalled()
+
+      act(() => { vi.advanceTimersByTime(REPARENT_SUPPRESSION_TIMEOUT_MS) })
+
+      expect(releasePositions).toHaveBeenCalledWith(['feature-a'])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('extractPointerClientPoint', () => {
+  it('reads clientX/clientY from a mouse event', () => {
+    const event = new MouseEvent('mousemove', { clientX: 12, clientY: 34 })
+    expect(extractPointerClientPoint(event)).toEqual({ x: 12, y: 34 })
+  })
+
+  it('reads the first touch from a touch event', () => {
+    const event = { touches: [{ clientX: 5, clientY: 6 }], changedTouches: [] } as unknown as TouchEvent
+    expect(extractPointerClientPoint(event)).toEqual({ x: 5, y: 6 })
+  })
+
+  it('falls back to changedTouches when touches is empty (touchend)', () => {
+    // touchend 时 touches 已经空了，最后的触点只在 changedTouches 里
+    const event = { touches: [], changedTouches: [{ clientX: 7, clientY: 8 }] } as unknown as TouchEvent
+    expect(extractPointerClientPoint(event)).toEqual({ x: 7, y: 8 })
+  })
+
+  it('returns null when the event carries no usable point', () => {
+    const event = { touches: [], changedTouches: [] } as unknown as TouchEvent
+    expect(extractPointerClientPoint(event)).toBeNull()
   })
 })

@@ -40,6 +40,14 @@ export const REPARENT_REASON_I18N_KEY: Record<ReparentReason, TranslationKey> = 
   'cross-graph': 'canvas.reparent.crossGraph',
 }
 
+/**
+ * 重挂 IPC 迟迟不落定时的解除抑制超时（毫秒）。
+ *
+ * 抑制是「位置权威交给主进程」的凭据：武装之后，自由位置持久化就跳过这个节点。
+ * IPC 挂住不解除 → 该节点在这个会话里再也自由移动不了，而且没有任何提示。
+ */
+export const REPARENT_SUPPRESSION_TIMEOUT_MS = 10_000
+
 export interface UseReparentDragOptions {
   /**
    * 「位置已被重挂接管」的抑制入口。
@@ -48,6 +56,23 @@ export interface UseReparentDragOptions {
   suppressPositions?: (ids: string[]) => void
   /** 重挂结束（成功或失败）后解除抑制 */
   releasePositions?: (ids: string[]) => void
+}
+
+/**
+ * 从 xyflow 的拖拽事件里取出指针的视口坐标。
+ *
+ * xyflow 用 d3-drag，`onNodeDrag` / `onNodeDragStop` 收到的是 `event.sourceEvent`：
+ * 鼠标时是 DOM MouseEvent（自带 clientX/clientY），
+ * 触摸时是**裸 TouchEvent** —— 它没有 clientX/clientY，只有 touches / changedTouches。
+ * touchend 时 touches 已经空了，最后的触点只在 changedTouches 里 → 两个都要试。
+ */
+export function extractPointerClientPoint(
+  event: MouseEvent | TouchEvent,
+): { x: number; y: number } | null {
+  if ('clientX' in event) return { x: event.clientX, y: event.clientY }
+  const touch = event.touches[0] ?? event.changedTouches[0]
+  if (!touch) return null
+  return { x: touch.clientX, y: touch.clientY }
 }
 
 /** flow 坐标下的节点矩形 */
@@ -91,16 +116,20 @@ function nodeRect(node: GraphNode): FlowRect {
  *
  * 遍历 store 里的**全部**节点（不只当前图）—— 别的图的节点也要能被命中，
  * 才能被判成 cross-graph。
+ *
+ * @param rects 拖拽开始时一次性算好的命中矩形（见 onDragStart）
  */
 function findHitNode(
   nodes: GraphNode[],
+  rects: Map<string, FlowRect>,
   pointer: { x: number; y: number },
   excludeId: string | null,
 ): GraphNode | null {
   let hit: GraphNode | null = null
   for (const node of nodes) {
     if (node.id === excludeId) continue
-    const rect = nodeRect(node)
+    const rect = rects.get(node.id)
+    if (!rect) continue
     const inside =
       pointer.x >= rect.x &&
       pointer.x <= rect.x + rect.width &&
@@ -110,6 +139,21 @@ function findHitNode(
   }
   // 多个节点同时命中时取最后一个：store 的数组顺序即渲染顺序，后者在上面。
   return hit
+}
+
+/**
+ * 一次性算出所有节点的命中矩形。
+ *
+ * 拖拽期间只有**被拖节点**在动，而它被排除在命中判定之外 → 其余节点的矩形在整个
+ * 拖拽过程中不变。命中测试因此只在 onDragStart 里算一次，而不是每个指针移动都重算 ——
+ * `estimateNodeWidth` 要对标题跑一次正则并分配数组，几百个节点的画布上每秒几万次。
+ */
+function computeRects(nodes: GraphNode[]): Map<string, FlowRect> {
+  const rects = new Map<string, FlowRect>()
+  for (const node of nodes) {
+    rects.set(node.id, nodeRect(node))
+  }
+  return rects
 }
 
 /** 收集某节点的全部后代（沿 parentId 下行） */
@@ -147,7 +191,7 @@ function collectDescendants(nodes: GraphNode[], rootId: string): Set<string> {
  * 两个字段的缺省语义是**相反**的（子类型表缺省 = 拒绝 / 父类型表缺省 = 允许）。
  * 写反了就会出现「渲染端说可以挂、主进程 graph:reparent 拒掉」。
  */
-function checkTypeRule(
+export function checkTypeRule(
   configs: Record<string, NodeTypeConfig>,
   parentType: string,
   childType: string,
@@ -179,6 +223,15 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
   const originRef = useRef<{ x: number; y: number } | null>(null)
   /** 上一轮候选 —— 避免每次指针移动都 setState（拖拽全程每帧重渲染会掉帧） */
   const candidateRef = useRef<ReparentCandidate | null>(null)
+  /** 拖拽开始时一次性算好的命中矩形 —— 见 computeRects */
+  const rectsRef = useRef<Map<string, FlowRect>>(new Map())
+  /**
+   * 抑制的「归属令牌」—— 只有最后一次武装的拖拽能解除它。
+   *
+   * 抑制是按节点记的，上一次拖拽留下的 IPC 回调如果晚到，会把**新**拖拽刚武装的
+   * 抑制一起解掉 → 位置权威失效。令牌单调递增，晚到的回调发现令牌变了就不动。
+   */
+  const suppressionTokenRef = useRef(0)
 
   const applyCandidate = useCallback((next: ReparentCandidate | null) => {
     const prev = candidateRef.current
@@ -208,7 +261,7 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       const draggingNode = nodes.find((n) => n.id === draggingId)
       if (!draggingNode) return null
 
-      const hit = findHitNode(nodes, pointer, draggingId)
+      const hit = findHitNode(nodes, rectsRef.current, pointer, draggingId)
       if (!hit) return null
 
       // 规则表未就绪 → 不做任何判定。
@@ -244,10 +297,17 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       draggingIdRef.current = nodeId
       descendantsRef.current = collectDescendants(nodes, nodeId)
       originRef.current = node ? { x: node.position.x, y: node.position.y } : null
+      // 命中矩形一次性算好：拖拽期间只有被拖节点在动，而它被排除在命中判定外
+      rectsRef.current = computeRects(nodes)
+      // 上一次拖拽的 IPC 若一直没落定，抑制可能还留在集合里 →
+      // 该节点在这个会话里就再也自由移动不了。用户再拖它一次，这里把它恢复。
+      // 同时作废上一次拖拽留下的待解除定时器（令牌前进 → 它的回调不再动抑制）。
+      suppressionTokenRef.current += 1
+      releasePositions?.([nodeId])
       setDraggingNodeId(nodeId)
       applyCandidate(null)
     },
-    [nodes, applyCandidate],
+    [nodes, applyCandidate, releasePositions],
   )
 
   /** 拖拽中：更新高亮候选 */
@@ -289,12 +349,22 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
       // 顺序不保证 → 节点停在手指松开的地方，整棵子树的跟随就白做了。
       suppressPositions?.([draggingId])
 
+      // 抑制必须**一定能自行恢复**：IPC 若一直不落定，这个 id 就永远留在抑制集合里 →
+      // 该节点在这个会话里再也无法自由移动，而且没有任何提示。
+      // 超时只负责解除抑制，不改 toast 语义，也不代替 IPC 的最终裁决。
+      const token = ++suppressionTokenRef.current
+      const timeoutId: ReturnType<typeof setTimeout> = setTimeout(() => {
+        if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
+      }, REPARENT_SUPPRESSION_TIMEOUT_MS)
+
       void Promise.resolve(reparentNode(draggingId, final.nodeId))
         .then(() => {
-          releasePositions?.([draggingId])
+          clearTimeout(timeoutId)
+          if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
           toastSuccess(t('canvas.reparent.success', { parent: parentTitle }))
         })
         .catch((err: unknown) => {
+          clearTimeout(timeoutId)
           const message = err instanceof Error ? err.message : String(err)
           toastError(t('canvas.reparent.failed'), message)
           // 回弹到原位。位置必须是**新建的字面量**：flowNodes 的缓存比的是引用，
@@ -306,7 +376,7 @@ export function useReparentDrag(options: UseReparentDragOptions = {}) {
               },
             )
           }
-          releasePositions?.([draggingId])
+          if (suppressionTokenRef.current === token) releasePositions?.([draggingId])
         })
     },
     [

@@ -27,12 +27,12 @@ import { useThreadStore } from '../store/threadStore'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
-import type { GraphNode, GraphEdge, NodeType, NodeStatus, ContextRef } from '@shared/types'
+import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
 import { getEdgeMarkerEnd, createMarkerEnd, edgeTypeConfig } from './edge-utils'
-import { deriveHierarchyEdges } from './layouts/hierarchy'
+import { buildReparentGhostEdge, deriveHierarchyEdges, GHOST_EDGE_PREFIX } from './layouts/hierarchy'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
@@ -46,7 +46,7 @@ import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
 import { useNodeTypeConfigs } from './hooks/useNodeTypeConfigs'
-import { useReparentDrag } from './hooks/useReparentDrag'
+import { useReparentDrag, extractPointerClientPoint, type ReparentReason } from './hooks/useReparentDrag'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
 import {
   DropdownMenu,
@@ -76,14 +76,20 @@ import { computeRemoteSelectionByNode } from './remote-selection'
 const edgeTypes = { bizEdge: BizEdge }
 
 /**
- * 幽灵连线（拖拽重挂）的 id 前缀。
+ * 幽灵连线（拖拽重挂）的颜色：与合法落点的绿色高亮一致。
  *
- * 从被拖节点指向候选父节点的一条**临时**虚线 —— 不进 store、不落库，松手即消失。
- * `flowEdges` 靠这个前缀识别它并给虚线样式。
+ * 幽灵边本身由 `buildReparentGhostEdge` 构造 —— 它住在层级边派生的模块里，
+ * 因为方向约定（父 → 子）跟那些边是同一条。
  */
-const GHOST_EDGE_PREFIX = 'ghost-'
-/** 幽灵连线颜色：与合法落点的绿色高亮一致 */
 const GHOST_EDGE_COLOR = '#22c55e'
+
+/**
+ * 落点目标节点的 z-index —— 抬到兄弟节点之上。
+ *
+ * xyflow 在 `zIndexMode: 'basic'`（默认）下认用户给的 zIndex，并给选中的节点额外 +1000。
+ * 1001 能压过普通兄弟（0）也能压过**选中**的兄弟（1000）。
+ */
+const REPARENT_TARGET_Z_INDEX = 1001
 
 /** nodeTypes 定义在组件外部，避免每次渲染重建 */
 function BizNodeWrapper({ id, data, selected }: {
@@ -101,6 +107,8 @@ function BizNodeWrapper({ id, data, selected }: {
     /** 拖拽重挂落点高亮 */
     isReparentTarget?: boolean
     isReparentTargetValid?: boolean
+    /** 落点非法的原因 —— 徽标文案用它 */
+    reparentReason?: ReparentReason
   }
   selected?: boolean
 }) {
@@ -655,6 +663,10 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         },
         draggable: node.type !== 'project',
         selected,
+        // 落点目标抬到兄弟节点之上：原因徽标溢出到节点框外面时，
+        // 后画的兄弟节点会整个盖住它（兄弟 z-index 也是 0，靠 DOM 顺序决定谁在上面）。
+        // xyflow 在 zIndexMode 'basic' 下认用户给的 zIndex（选中节点另有 +1000）。
+        ...(isReparentTarget ? { zIndex: REPARENT_TARGET_Z_INDEX } : {}),
       }
       cache.set(node.id, { key, node: flowNode })
       return flowNode
@@ -685,16 +697,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const mergedEdges = useMemo(() => {
     const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
     const base = [...hierarchyEdges, ...semanticEdges]
-    // 幽灵连线：被拖节点 → 候选父节点。临时边，不进 store、不落库，松手即消失。
+    // 幽灵连线：候选父节点 → 被拖节点。临时边，不进 store、不落库，松手即消失。
+    // 方向跟画布上所有层级边一致（父 → 子，箭头落在子节点那端）——
+    // 反过来画的话，松手后真正的边出现时箭头会当场跳到另一端，预览与结果相反。
     // 只在**合法**落点时出现（非法落点退化成普通移动，不该有连线暗示）。
     if (!reparentTargetId || !reparentTargetValid || !reparentDraggingId) return base
-    const ghostEdge: GraphEdge = {
-      id: `${GHOST_EDGE_PREFIX}${reparentDraggingId}-${reparentTargetId}`,
-      source: reparentDraggingId,
-      target: reparentTargetId,
-      graphId,
-      edgeType: 'hierarchical',
-    }
+    const ghostEdge = buildReparentGhostEdge(reparentDraggingId, reparentTargetId, graphId)
     return [...base, ghostEdge]
   }, [graphNodes, graphEdges, reparentTargetId, reparentTargetValid, reparentDraggingId, graphId])
 
@@ -873,12 +881,16 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
    * 命中判定需要 flow 坐标，`getBoundingClientRect()` 给的是屏幕坐标。
    * `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错 —— 包 try/catch，
    * 别让一次坐标换算异常打断拖拽。
+   *
+   * 触屏：xyflow 的拖拽事件在触摸时是裸 TouchEvent，没有 clientX/clientY，
+   * 坐标要从 touches / changedTouches 里取（见 extractPointerClientPoint）。
    */
   const toFlowPosition = useCallback(
     (event: MouseEvent | TouchEvent): { x: number; y: number } | null => {
-      if (!('clientX' in event)) return null
+      const point = extractPointerClientPoint(event)
+      if (!point) return null
       try {
-        return screenToFlowPosition({ x: event.clientX, y: event.clientY })
+        return screenToFlowPosition(point)
       } catch {
         return null
       }

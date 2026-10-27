@@ -14,6 +14,35 @@ export interface DerivedHierarchyResult {
   semanticEdges: GraphEdge[]
 }
 
+/** 幽灵连线（拖拽重挂预览）的前缀 —— 画布靠它把临时边与真边区分开 */
+export const GHOST_EDGE_PREFIX = 'ghost-'
+
+/**
+ * 拖拽重挂的幽灵连线 —— **父 → 子**。
+ *
+ * 画布上所有层级边都是父 → 子（派生边见上，主进程存的那条 hierarchical 边也是），
+ * 箭头（markerEnd）落在 target 那一端。幽灵连线必须跟它们同向：
+ * 反过来画的话，拖拽时箭头指向「你将要认作父节点的那个节点」，
+ * 松手后真正的边 B → A 出现，箭头当场跳到另一端 —— 预览与结果相反。
+ *
+ * @param draggedId 被拖动的节点（将成为子节点）
+ * @param parentId  候选父节点（将成为父节点）
+ */
+export function buildReparentGhostEdge(
+  draggedId: string,
+  parentId: string,
+  graphId: string,
+): GraphEdge {
+  return {
+    // id 只用于前缀识别与缓存键，与方向无关 → 保持稳定
+    id: `${GHOST_EDGE_PREFIX}${draggedId}-${parentId}`,
+    source: parentId,
+    target: draggedId,
+    graphId,
+    edgeType: 'hierarchical',
+  }
+}
+
 export function deriveHierarchyEdges(
   nodes: GraphNode[],
   edges: GraphEdge[],
