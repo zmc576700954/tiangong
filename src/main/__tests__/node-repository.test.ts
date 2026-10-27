@@ -366,4 +366,27 @@ describe('NodeRepository with real in-memory database', () => {
     expect(listed[0]?.communityId).toBe('c2')
     expect(listed[0]?.communityLevel).toBe(1)
   })
+
+  it('JSON 列被写成非法形状时退化为默认值而不是原样返回', () => {
+    const created = realRepo.create({
+      type: 'feature',
+      status: 'draft',
+      title: 'Dirty',
+      graphId: 'g1',
+      graphType: 'online',
+      position: { x: 0, y: 0 },
+    })
+    // 模拟旧版本写入 / 手工改库留下的脏数据
+    realDb.prepare(
+      "UPDATE nodes SET acceptance_criteria = ?, rules = ?, metadata = ?, content = ?, context_refs = ?, wiki_meta = ? WHERE id = ?",
+    ).run('{"a":1}', '{"b":2}', 'not-json', '"just-a-string"', '{"c":3}', '["d"]', created.id)
+
+    const node = realRepo.findById(created.id)
+    expect(node?.acceptanceCriteria).toEqual([])
+    expect(node?.rules).toBeUndefined()
+    expect(node?.metadata).toBeUndefined()
+    expect(node?.content).toBeUndefined()
+    expect(node?.contextRefs).toBeUndefined()
+    expect(node?.wikiMeta).toBeUndefined()
+  })
 })

@@ -72,6 +72,34 @@ describe('GraphRepository', () => {
     expect(result!.nodes).toHaveLength(1)
   })
 
+  it('JSON 列被写成非法形状时退化为默认值而不是原样返回', () => {
+    stmt.get
+      .mockReturnValueOnce({ id: 'g1', name: 'G1', type: 'online', project_path: null, created_at: '2024-01-01', updated_at: '2024-01-01' })
+    stmt.all
+      .mockReturnValueOnce([{
+        id: 'n1', type: 'feature', status: 'draft', title: 'N1', description: null,
+        acceptance_criteria: '{"a":1}',
+        graph_id: 'g1', graph_type: 'online', parent_id: null,
+        rules: '{"b":2}',
+        metadata: 'not-json',
+        content: '"just-a-string"',
+        community_summary: null, community_level: null,
+        context_refs: '{"c":3}',
+        owner_role: null,
+        position_x: 0, position_y: 0, created_at: '2024-01-01', updated_at: '2024-01-01',
+      }])
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce([])
+
+    const result = repo.get('g1')
+    expect(result).not.toBeNull()
+    expect(result!.nodes[0].acceptanceCriteria).toEqual([])
+    expect(result!.nodes[0].rules).toBeUndefined()
+    expect(result!.nodes[0].metadata).toBeUndefined()
+    expect(result!.nodes[0].content).toBeUndefined()
+    expect(result!.nodes[0].contextRefs).toBeUndefined()
+  })
+
   it('delete runs cascading delete in transaction', () => {
     repo.delete('g1')
     expect(db.transaction).toHaveBeenCalled()

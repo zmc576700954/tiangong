@@ -7,6 +7,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { AgentLog } from '@shared/types'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
+import { isAgentCommand, isAgentOutputArray } from '@shared/type-guards'
 import { DatabaseError, ErrorCode } from '../errors'
 
 export class AgentLogRepository {
@@ -57,22 +58,13 @@ export class AgentLogRepository {
       return String(val)
     }
 
-    const command = safeJsonParse(row.command as string, { type: 'implement', description: '', targetNodeId: '' })
-    if (
-      command === null ||
-      typeof command !== 'object' ||
-      Array.isArray(command) ||
-      typeof (command as Record<string, unknown>).type !== 'string' ||
-      typeof (command as Record<string, unknown>).description !== 'string' ||
-      typeof (command as Record<string, unknown>).targetNodeId !== 'string'
-    ) {
-      throw new DatabaseError('Corrupted agent_logs row: command is not a valid AgentCommand', ErrorCode.DB_QUERY_FAILED)
-    }
-
-    const outputs = safeJsonParse(row.outputs as string, [])
-    if (!Array.isArray(outputs)) {
-      throw new DatabaseError('Corrupted agent_logs row: outputs is not an array', ErrorCode.DB_QUERY_FAILED)
-    }
+    // command / outputs 是 JSON 列，脏数据退化为默认值而不是让整个列表查询崩溃
+    const command = safeJsonParse<AgentLog['command']>(
+      row.command as string,
+      { type: 'implement', description: '', targetNodeId: '' },
+      isAgentCommand,
+    )
+    const outputs = safeJsonParse<AgentLog['outputs']>(row.outputs as string, [], isAgentOutputArray)
 
     const result = String(row.result ?? '')
     if (!['success', 'failure', 'cancelled'].includes(result)) {
@@ -85,8 +77,8 @@ export class AgentLogRepository {
       adapterName: requireString(row.adapter_name, 'adapter_name'),
       nodeId: requireString(row.node_id, 'node_id'),
       graphId: requireString(row.graph_id, 'graph_id'),
-      command: command as AgentLog['command'],
-      outputs: outputs as AgentLog['outputs'],
+      command,
+      outputs,
       result: result as AgentLog['result'],
       duration: Number(row.duration ?? 0),
       createdAt: requireString(row.created_at, 'created_at'),

@@ -81,7 +81,7 @@ describe('AgentLogRepository', () => {
         adapter_name: 'codex',
         node_id: 'node-3',
         graph_id: 'graph-3',
-        command: JSON.stringify({ type: 'implement', description: '' }),
+        command: JSON.stringify({ type: 'implement', description: '', targetNodeId: 'node-3' }),
         outputs: JSON.stringify([]),
         result: 'success',
         duration: 0,
@@ -98,7 +98,7 @@ describe('AgentLogRepository', () => {
         adapter_name: 'codex',
         node_id: 'node-4',
         graph_id: 'graph-4',
-        command: JSON.stringify({ type: 'implement', description: '' }),
+        command: JSON.stringify({ type: 'implement', description: '', targetNodeId: 'node-4' }),
         outputs: JSON.stringify([]),
         result: 'unknown',
         duration: 0,
@@ -108,24 +108,26 @@ describe('AgentLogRepository', () => {
       expect(() => repo.listByNode('node-4')).toThrow(DatabaseError)
     })
 
-    it('throws DatabaseError when outputs is not an array after parse', () => {
+    it('outputs 不是数组时退化为空数组而不是崩溃', () => {
       stmt.all.mockReturnValueOnce([{
         id: 'log-5',
         session_id: 'session-5',
         adapter_name: 'codex',
         node_id: 'node-5',
         graph_id: 'graph-5',
-        command: JSON.stringify({ type: 'implement', description: '' }),
+        command: JSON.stringify({ type: 'implement', description: '', targetNodeId: 'node-5' }),
         outputs: JSON.stringify({ not: 'array' }),
         result: 'success',
         duration: 0,
         created_at: '2025-01-05T00:00:00Z',
       }])
 
-      expect(() => repo.listByNode('node-5')).toThrow(DatabaseError)
+      const logs = repo.listByNode('node-5')
+      expect(logs).toHaveLength(1)
+      expect(logs[0].outputs).toEqual([])
     })
 
-    it('throws DatabaseError when command shape is invalid', () => {
+    it('command 形状非法时退化为默认命令而不是崩溃', () => {
       stmt.all.mockReturnValueOnce([{
         id: 'log-6',
         session_id: 'session-6',
@@ -139,7 +141,28 @@ describe('AgentLogRepository', () => {
         created_at: '2025-01-06T00:00:00Z',
       }])
 
-      expect(() => repo.listByNode('node-6')).toThrow(DatabaseError)
+      const logs = repo.listByNode('node-6')
+      expect(logs).toHaveLength(1)
+      expect(logs[0].command).toEqual({ type: 'implement', description: '', targetNodeId: '' })
+    })
+
+    it('outputs 元素不是 AgentOutput 时整体退化为空数组', () => {
+      stmt.all.mockReturnValueOnce([{
+        id: 'log-7',
+        session_id: 'session-7',
+        adapter_name: 'codex',
+        node_id: 'node-7',
+        graph_id: 'graph-7',
+        command: JSON.stringify({ type: 'implement', description: '', targetNodeId: 'node-7' }),
+        outputs: JSON.stringify([{ not: 'an output' }]),
+        result: 'success',
+        duration: 0,
+        created_at: '2025-01-07T00:00:00Z',
+      }])
+
+      const logs = repo.listByNode('node-7')
+      expect(logs).toHaveLength(1)
+      expect(logs[0].outputs).toEqual([])
     })
   })
 })

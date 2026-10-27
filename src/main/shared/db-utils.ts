@@ -32,9 +32,13 @@ export function unsafeJsonParse<T>(
  * - 不传 validator 时仅做 JSON.parse + 类型断言（向后兼容，不安全）
  * @param raw - JSON 字符串
  * @param fallback - 解析失败或校验不通过时的默认返回值
- * @param validator - 可选的类型守卫函数
+ * @param validator - 可选的类型守卫函数（或任意 boolean 判定函数）
  */
-export function safeJsonParse<T>(raw: string | null | undefined, fallback: T, validator?: (val: unknown) => val is T): T {
+export function safeJsonParse<T>(
+  raw: string | null | undefined,
+  fallback: T,
+  validator?: (val: unknown) => boolean,
+): T {
   if (!raw) return fallback
   try {
     const parsed = JSON.parse(raw)

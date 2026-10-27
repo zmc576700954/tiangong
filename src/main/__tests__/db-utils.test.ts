@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { safeJsonParse, safeRowId } from '../shared/db-utils'
+import { isStringArray } from '@shared/type-guards'
 import { DatabaseError } from '../errors'
 
 describe('safeJsonParse', () => {
@@ -17,9 +18,14 @@ describe('safeJsonParse', () => {
   })
 
   it('uses validator when provided', () => {
-    const isStringArray = (val: unknown): val is string[] => Array.isArray(val) && val.every((v) => typeof v === 'string')
     expect(safeJsonParse('["a","b"]', [], isStringArray)).toEqual(['a', 'b'])
     expect(safeJsonParse('[1,2]', [], isStringArray)).toEqual([])
+  })
+
+  it('safeJsonParse 传 validator 时非法值退化为 fallback', () => {
+    expect(safeJsonParse('{"a":1}', [], isStringArray)).toEqual([])
+    expect(safeJsonParse('[1,2]', [], isStringArray)).toEqual([])
+    expect(safeJsonParse('["a"]', [], isStringArray)).toEqual(['a'])
   })
 })
 

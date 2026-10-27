@@ -7,7 +7,7 @@ import {
   NODE_STATUS_VALUES, NODE_TYPE_VALUES, GRAPH_TYPE_VALUES,
   EDGE_TYPE_VALUES, BUG_SEVERITY_VALUES, BUG_STATUS_VALUES,
 } from './types'
-import type { NodeStatus, NodeType, GraphType, EdgeType, BugSeverity, BugStatus } from './types'
+import type { NodeStatus, NodeType, GraphType, EdgeType, BugSeverity, BugStatus, AgentCommand, AgentOutput } from './types'
 
 function makeGuard<T extends string>(values: readonly T[]) {
   const set = new Set<string>(values)
@@ -50,4 +50,46 @@ export function assertBugSeverity(value: string, field = 'severity'): BugSeverit
 export function assertBugStatus(value: string, field = 'status'): BugStatus {
   if (!isBugStatus(value)) throw new TypeError(`Invalid ${field}: "${value}", expected one of: ${BUG_STATUS_VALUES.join(', ')}`)
   return value
+}
+
+/**
+ * JSON 列的运行时形状守卫。
+ * DB 里的 JSON 列是「不可信输入」——旧版本写入、手工改库、外部同步都可能留下
+ * 形状不对的值。解析点必须用这些守卫把脏数据挡在类型边界之外，退化为默认值
+ * 而不是把错误形状原样交给渲染层（渲染层会 .map / .forEach，直接崩）。
+ */
+
+/** 普通对象（排除 null 与数组） */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 字符串数组 */
+export function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string')
+}
+
+/** 任意数组（只保证是数组，不校验元素形状） */
+export function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value)
+}
+
+/** AgentCommand —— type / description / targetNodeId 三个字段都必须是字符串 */
+export function isAgentCommand(value: unknown): value is AgentCommand {
+  return isRecord(value)
+    && typeof value.type === 'string'
+    && typeof value.description === 'string'
+    && typeof value.targetNodeId === 'string'
+}
+
+/** AgentOutput —— type / data 必须是字符串（timestamp 等可选字段不参与判定） */
+export function isAgentOutput(value: unknown): value is AgentOutput {
+  return isRecord(value)
+    && typeof value.type === 'string'
+    && typeof value.data === 'string'
+}
+
+/** AgentOutput 数组 —— 元素必须逐个通过 isAgentOutput */
+export function isAgentOutputArray(value: unknown): value is AgentOutput[] {
+  return Array.isArray(value) && value.every((v) => isAgentOutput(v))
 }

@@ -6,7 +6,10 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import type { GraphNode } from '@shared/types'
 import type { NodeStatus } from '@shared/types'
-import { assertNodeType, assertNodeStatus, assertGraphType } from '@shared/type-guards'
+import {
+  assertNodeType, assertNodeStatus, assertGraphType,
+  isRecord, isStringArray, isUnknownArray,
+} from '@shared/type-guards'
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
@@ -23,18 +26,18 @@ export class NodeRepository {
       status: assertNodeStatus(row.status as string),
       title: row.title as string,
       description: row.description as string | undefined,
-      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, []),
+      acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, [], isStringArray),
       graphId: row.graph_id as string,
       graphType: assertGraphType(row.graph_type as string, 'graphType'),
       parentId: row.parent_id as string | undefined,
-      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined),
-      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined),
-      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined),
+      rules: safeJsonParse<GraphNode['rules']>(row.rules as string | null, undefined, isUnknownArray),
+      metadata: safeJsonParse<GraphNode['metadata']>(row.metadata as string | null, undefined, isRecord),
+      contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined, isUnknownArray),
       wikiContent: typeof row.wiki_content === 'string' ? row.wiki_content : undefined,
-      wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined),
+      wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined, isRecord),
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
-      content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined),
+      content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined, isRecord),
       communitySummary: (row.community_summary as GraphNode['communitySummary']) ?? undefined,
       communityLevel: (row.community_level as GraphNode['communityLevel']) ?? undefined,
       communityId: (row.community_id as GraphNode['communityId']) ?? undefined,

@@ -444,8 +444,34 @@ describe('ChatService', () => {
       const result = await service.listMessages('thread-123')
 
       expect(result[0].error).toBeUndefined()
-      expect(result[0].contextRefs).toBeUndefined()
-      expect(result[0].toolCalls).toBeUndefined()
+      expect(result[0].contextRefs).toEqual([])
+      expect(result[0].toolCalls).toEqual([])
+    })
+
+    it('JSON 列被写成非法形状时退化为默认值而不是原样返回', async () => {
+      const rows: ChatMessageRow[] = [
+        {
+          id: 'msg-1',
+          thread_id: 'thread-123',
+          role: 'agent',
+          content: 'Result',
+          adapter_name: 'claude',
+          status: 'success',
+          error: 'not-json',
+          session_id: 'session-1',
+          context_refs: '{"a":1}',
+          tool_calls: '{"b":2}',
+          created_at: MOCK_NOW,
+          token_count: 0,
+        },
+      ]
+      mockRepo.listMessages.mockResolvedValue(rows)
+
+      const result = await service.listMessages('thread-123')
+
+      expect(result[0].error).toBeUndefined()
+      expect(result[0].contextRefs).toEqual([])
+      expect(result[0].toolCalls).toEqual([])
     })
   })
 })
