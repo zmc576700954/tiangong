@@ -33,6 +33,10 @@ export function deriveHierarchyEdges(
   }
   const parentChildPairs = new Set(hierarchyEdges.map(e => `${e.source} ${e.target}`))
   const semanticEdges = edges.filter((e) => {
+    // ⚠️ 下面这行是「画布层判定派生边」的前提：合并集里
+    // edgeType === 'hierarchical' ⟺ 派生边。GraphCanvas 的 onEdgeClick 守卫
+    // 与 flowEdges 的 `selectable` 都建立在这个等价上——若这里改成保留存储的
+    // hierarchical 边，那两处守卫会把**存储边**也一起判成派生边。
     if (e.edgeType === 'hierarchical') return false                      // 存储的层级边不参与渲染
     if (e.edgeType === 'default' && parentChildPairs.has(`${e.source} ${e.target}`)) return false  // 迁移残留
     return true
