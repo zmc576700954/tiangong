@@ -254,6 +254,76 @@ describe('HierarchyService.reparent', () => {
     expect(semantic?.edge_type).toBe('default')
   })
 
+  // 覆盖 syncHierarchyEdge 的 **keep 分支**（目标对上已经有一条 'hierarchical' 边）。
+  //
+  // 这条分支之前**没有任何测试碰过**：fixture 里出现过的两个新父对 (m1,m2) 与 (m2,c1)
+  // 都没有 'hierarchical' 边 → newHierarchical 恒为空 → keep 恒为假。
+  // 而它正是「绑定参数 bug」的案发现场：修复轮 1 之前的实现在这里把**行对象**
+  // 绑给了 `WHERE id = ?` 的占位符 → 抛异常 → 整个 reparent 事务回滚，
+  // 当时没有一条用例能发现它。
+  //
+  // 生产上可达：node:update 目前仍接受 parentId（Task 7 才关），
+  // 能在某个对不上父子关系的对上留下 'hierarchical' 边 —— 下一次 reparent 时 keep 就是真的。
+  it('reuses the existing hierarchy edge on the new parent pair and removes duplicates', () => {
+    const insertEdge = db.prepare(
+      "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+    )
+    // 目标对 (m1,m2) 上两条 'hierarchical'：keepEdge 先插入 → rowid 更小 → 被复用；
+    // dupEdge 是重复项，覆盖「同一对恰好留一条」的清理。
+    insertEdge.run('keepEdge', 'm1', 'm2', 'hierarchical', 'g1')
+    insertEdge.run('dupEdge', 'm1', 'm2', 'hierarchical', 'g1')
+    // 目标对上的语义边 —— 必须原样保留（不删、不改类型）
+    insertEdge.run('semNew', 'm1', 'm2', 'default', 'g1')
+    // 旧父对 (p1,m2) 上的语义边 —— 该对已有 fixture 的 e4('hierarchical')，
+    // 所以同对的 'default' 是语义边（不是迁移前的层级边），必须原样保留
+    insertEdge.run('semOld', 'p1', 'm2', 'default', 'g1')
+
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+
+    // 目标对 (m1,m2) 上恰好一条 'hierarchical'（重复的 dupEdge 被清掉）
+    const hierarchy = db
+      .prepare(
+        "SELECT id FROM edges WHERE source = 'm1' AND target = 'm2' AND edge_type = 'hierarchical'",
+      )
+      .all() as { id: string }[]
+    expect(hierarchy).toHaveLength(1)
+    // 复用的是原来那条 —— id 不变，不是删掉重插
+    expect(hierarchy[0].id).toBe('keepEdge')
+
+    // 旧父对 (p1,m2) 上不再有 'hierarchical'（fixture 的 e4 被删）
+    const oldHierarchy = db
+      .prepare(
+        "SELECT id FROM edges WHERE source = 'p1' AND target = 'm2' AND edge_type = 'hierarchical'",
+      )
+      .all() as { id: string }[]
+    expect(oldHierarchy).toHaveLength(0)
+
+    // 两条语义边都原样保留
+    const semOld = db
+      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'semOld'")
+      .get() as { source: string; target: string; edge_type: string } | undefined
+    expect(semOld).toBeDefined()
+    expect(semOld?.source).toBe('p1')
+    expect(semOld?.target).toBe('m2')
+    expect(semOld?.edge_type).toBe('default')
+
+    const semNew = db
+      .prepare("SELECT source, target, edge_type FROM edges WHERE id = 'semNew'")
+      .get() as { source: string; target: string; edge_type: string } | undefined
+    expect(semNew).toBeDefined()
+    expect(semNew?.source).toBe('m1')
+    expect(semNew?.target).toBe('m2')
+    expect(semNew?.edge_type).toBe('default')
+
+    // 节点确实换了父，sort_index 落在目标父的末尾（m1 的另一个孩子 c1 是 0）
+    const row = db
+      .prepare("SELECT parent_id, sort_index FROM nodes WHERE id = 'm2'")
+      .get() as { parent_id: string; sort_index: number }
+    expect(row.parent_id).toBe('m1')
+    expect(row.sort_index).toBe(1)
+  })
+
   it('is a no-op when reparenting a node to its current parent', () => {
     // 给子树一个非原点坐标 —— fixture 默认全在 (0,0)，
     // 那样「坐标不变」与「坐标被写成 (0,0)」分不开，断言就没有意义
