@@ -6,19 +6,29 @@
  *
  * 用真实 better-sqlite3（内存库）跑，不 mock repo。
  *
- * ⚠️ fixture 的 INSERT 一律写全列名 —— 真实 schema 加列时，位置写法的漂移会变成
- * 显眼的失败，而不是静默写错列。
+ * 本文件的 fixture 是**自包含**的最小表（`nodes` 取真实 `nodes` 表 25 列的一个子集），
+ * 真实 schema 的覆盖在 `src/main/__tests__/database-migration.test.ts`（它用 `initDatabase()`
+ * 的真表，存量升级那条用例会真跑一遍 `runHierarchyMigration`）。
+ *
+ * fixture 内的 INSERT 一律写全列名 —— 理由是**本文件自己的 fixture 会改**：
+ * 一旦加列，位置写法会静默写错列而不报错。
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import { runHierarchyMigration } from '../hierarchy-migration'
 
-/** nodes 表的完整列清单（与真实 schema 的 13 列一致） */
+/**
+ * fixture 的 `nodes` 列清单：真实 `nodes` 表 25 列的一个**子集**。
+ * 覆盖迁移读写的列（id / type / status / title / graph_id / graph_type / parent_id /
+ * sort_index / position_x / position_y / created_at / updated_at），
+ * 另带 `collapsed` 以对齐真实表的形状（真实表里它是 NOT NULL DEFAULT 0，
+ * 迁移本身不碰它）。
+ */
 const NODE_COLUMNS =
   'id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at'
 
-/** edges 表的完整列清单 */
+/** fixture 的 `edges` 列清单（真实 `edges` 表 10 列的子集） */
 const EDGE_COLUMNS = 'id, source, target, edge_type, graph_id'
 
 describe('runHierarchyMigration', () => {
@@ -250,14 +260,14 @@ describe('runHierarchyMigration', () => {
         id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
         edge_type TEXT, graph_id TEXT NOT NULL
       );
-      INSERT INTO nodes VALUES
+      INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at) VALUES
         ('p1','project','confirmed','P1','g1','online',NULL,NULL,0,0,0,'t','t'),
         ('p2','project','confirmed','P2','g1','online',NULL,NULL,0,0,0,'t','t'),
         ('a','module','draft','A','g1','online','p1',NULL,0,0,0,'t','t'),
         ('b','module','draft','B','g1','online','p1',NULL,0,0,0,'t','t'),
         ('c','module','draft','C','g1','online','p2',NULL,0,0,0,'t','t'),
         ('d','module','draft','D','g1','online','p2',NULL,0,0,0,'t','t');
-      INSERT INTO edges VALUES
+      INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES
         ('e1','p1','a','default','g1'),
         ('e2','p1','b','default','g1'),
         ('e3','p2','c','default','g1'),
