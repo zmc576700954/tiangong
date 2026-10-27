@@ -278,6 +278,27 @@ graph:reparent(nodeId, newParentId)
 
 **关键约束**：`hierarchical` 边与 `parent_id` 必须始终一致。克隆路径是最容易产生不一致的地方——`cloneGraphNodes` 有两轮（先插节点后重映射 `parent_id`），`hierarchical` 边的 source/target 必须跟着同一张 `idMap` 重映射。
 
+### 4.2.2 建图路径与重挂路径的判定机制不同
+
+「一对父子之间最终有且只有一条 `'hierarchical'` 边」这个**目标状态**只有一条，
+但**到达它的路径有两条**，两套判定机制不同、代码也不同：
+
+| 路径 | 实现 | 判定 |
+|---|---|---|
+| 建图（`graph-service.ts` 第四轮） | 一次性建图时为每个有 `parent_id` 的节点补边 | **三级**：① 已有 `'hierarchical'` → 跳过；② 否则已有 `'default'` → **升级**它；③ 否则 → 插入一条新的 |
+| 重挂（`hierarchy-service.ts` 的 `syncHierarchyEdge`） | `graph:reparent` 在同一事务里同步新旧两对 | **四级**：① 新对上已有 `'hierarchical'` → 留一条、多余的删掉；② 新对上只有 `'default'` → **升级**一条、其余删掉；③ 新对上什么都没有 → 把**旧对上的层级边搬过来**（保住边 id 与 rowid）；④ 两边都没有层级边 → 插一条新的 |
+
+多出来的那一级是 ③ —— **把旧对上的层级边搬过来**。建图路径没有这一级，
+因为建图时不存在「旧父子对」；重挂路径必须处理它，否则换父会在新对上**再插一条**边、
+把旧边留在原地（同一对上留下两条层级边）。
+
+两套机制**目标状态一致**（同一对上最终只有一条 `'hierarchical'`），
+路径不同只是路径不同 —— 不是两套真相源。判定「谁才是层级边」的依据也一致：
+**父子关系唯一，不靠猜**（落在父子对上的 `'default'` 就是层级边）。
+
+启动迁移（`hierarchy-migration.ts` 的「改写 + 去重」）是第三条路径，
+同样以父子关系为唯一判据。
+
 ### 4.3 派生层级边（渲染 + 布局共用）
 
 新增纯函数模块 `src/renderer/canvas/layouts/hierarchy.ts`：
@@ -299,6 +320,24 @@ export function deriveHierarchyEdges(
 - 其余语义边（`business-flow`/`semantic`/`dependency`/`wiki-link`/迁移后剩余的 `default`）原样保留
 
 渲染层（`GraphCanvas.tsx`）与布局层（`useAutoLayout.ts`）都用这个函数的输出替代原始 `graphEdges`。
+
+### 4.3.1 表达力边界：父子之间的 `'default'` 边永远不渲染
+
+用户在父子之间手画的一条 `'default'` 边，**在画布上永远不渲染** ——
+那一对父子本来就有派生层级线（父 → 子），渲染层把落在父子对上的 `'default'`
+直接丢弃（`deriveHierarchyEdges` 的过滤规则）。
+
+丢掉的只是「这条边的**类型**是 `'default'`」这条信息 —— **边本身还在库里**。
+
+换父之后它会**重新出现**：父子关系断了，那一对不再是父子对，
+这条 `'default'` 边就回到语义边里、重新参与渲染。
+
+这是**正确**的，不是副作用：
+- 画布上父子之间只该有一条线（那条派生层级线）—— 画两条既噪声又让用户分不清哪条是结构；
+- 换父之后父子关系没了，这条边重新变成一条**真正的语义关系** —— 让它回来才对。
+
+代价要说清楚：用户在父子之间手画的那条边，其**类型信息**在它是父子对期间
+是看不见的（画布上只呈现为层级线）。本期接受这个取舍。
 
 ### 4.4 拖拽重挂父节点
 
@@ -425,7 +464,16 @@ export function deriveHierarchyEdges(
 
 现状 `GraphCanvas.tsx:754` 的 `layoutMode` 是 `useState`，刷新即丢。
 
-存储位置：`localStorage`，key 按项目路径隔离（如 `bizgraph.layoutMode.<projectPath>`）。**不存 DB**——布局模式是纯显示偏好，不是业务语义（与折叠状态的处理不同，这是有意的区分）。
+**决定：布局选择按「项目路径」分区持久化。** 存储位置是 `localStorage`，
+key 按项目路径隔离（如 `bizgraph.layoutMode.<projectPath>`）——
+同一个应用里两个项目可以用各自的布局，互不干扰。
+
+**不存 DB**——布局模式是纯显示偏好，不是业务语义（与折叠状态的处理不同，这是有意的区分）。
+
+配套两条：
+- **没有项目路径**的图读写同一个 `bizgraph.layoutMode.default` 键 —— 读和写必须对称；
+- 模式必须**显式读回**才能用：读回之前是「未知」这一独立状态，
+  首屏不能先按 `'tree'` 跑一次 dagre 再改回来（那会把用户摆好的坐标毁掉）。
 
 ### 4.8 兄弟顺序（sort_index）
 
