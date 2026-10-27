@@ -15,14 +15,14 @@
 ## Global Constraints
 
 - **语言**：界面文案走 `@shared/i18n` 资源层（`src/shared/i18n/resources/domains/*.ts`）。zh 是 key 的真值来源，en 必须覆盖每一个 zh key。新增文案**必须**同时加 zh 和 en。
-- **`EdgeType` 是封闭联合类型**：`src/shared/types/graph.ts:52`。任何新增边类型必须同时改：联合类型、`EDGE_TYPE_VALUES`（同文件 :375）、`src/renderer/canvas/edge-utils.ts` 的 `edgeTypeConfig`（`Record<EdgeType, …>` 穷尽记录）、`src/shared/i18n/index.ts` 的 `HandBuiltEdgeType`（`Exclude<EdgeType, 'wiki-link'>`）相关记录。TS 编译期会抓到遗漏，但 `assertEdgeType` 在运行时会**抛 TypeError 导致整张图打不开**——这是本项目历史踩过的坑（`graph-repository.ts:137` 的 `assertEdgeType` 在 `graph:get` 路径上）。
+- **`EdgeType` 是封闭联合类型**：`src/shared/types/graph.ts:52`。任何新增边类型必须同时改：联合类型、`EDGE_TYPE_VALUES`（同文件 :391）、`src/renderer/canvas/edge-utils.ts` 的 `edgeTypeConfig`（`Record<EdgeType, …>` 穷尽记录）、`src/shared/i18n/index.ts` 的 `HandBuiltEdgeType`（`Exclude<EdgeType, 'wiki-link'>`）相关记录。TS 编译期会抓到遗漏，但 `assertEdgeType` 在运行时会**抛 TypeError 导致整张图打不开**——这是本项目历史踩过的坑（`graph-repository.ts:140` 的 `assertEdgeType` 在 `graph:get` 路径上）。
 - **CHECK 约束变更必须用真实 better-sqlite3 验证 INSERT**。项目历史教训：edges 表 CHECK 漏 `'wiki-link'` 导致 fresh install 下 wiki-link 落边静默失效（IPC 层 try/catch 吞错掩盖）。禁止用内存 fake repo 代替。
 - **Node 状态转换必须走 `NodeRepository.update()`**（其内部强制 `validateNodeTypeTransition`）。禁止在主进程裸写 `UPDATE nodes SET status = ...`。
 - **IPC 错误必须继承 `BizGraphError` 并覆写 `toJSON()`**，否则 `createTypedHandle` 会把自定义字段丢掉。自定义错误类还必须 `Object.setPrototypeOf(this, XxxError.prototype)`（照 `src/main/errors.ts` 里 `IpcError` / `AdapterError` 的写法）。
 - **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
 - **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
 - **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
-- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:516）与 `flowEdges`（:599）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:609-611）/ `useEffect(() => setRfEdges(flowEdges))`（:659-661），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:530）与 `flowEdges`（:629）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:609-611）/ `useEffect(() => setRfEdges(flowEdges))`（:694-696），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
 - **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
 
 ## Review Focus
@@ -224,10 +224,10 @@ git commit -m "feat(canvas): hierarchical 边类型贯通共享类型面"
 5. 补齐缺失的 `hierarchical` 边：对每个有 `parent_id` 的节点，若无对应 `hierarchical` 边则插入一条
 
 **已核实的 schema 机制**（实施者不必重新推导，但改动时不要违背）：
-- `edges` 的 CHECK 变更**会**触发 `rebuildTableIfNeeded`（`database.ts:267`）：它走 `DROP TABLE edges` → `exec(createSql)` → `restoreFromBackup`。新表带新 CHECK，**约束会生效**。`edges` 列清单没变，`restoreFromBackup` 只拷新旧列交集 → 数据完整。
-- `nodes` 表**不会**重建：加 `sort_index` / `collapsed` 是普通列，不改变 `extractChecks`（`database.ts:297`）提取到的 CHECK 列表；`nodes` 的 `requiredColumns`（`database.ts:406`）保持不变 → 走 `addColumnSafe` 的 ALTER TABLE 路径。
+- `edges` 的 CHECK 变更**会**触发 `rebuildTableIfNeeded`（`database.ts:268`）：它走 `DROP TABLE edges` → `exec(createSql)` → `restoreFromBackup`。新表带新 CHECK，**约束会生效**。`edges` 列清单没变，`restoreFromBackup` 只拷新旧列交集 → 数据完整。
+- `nodes` 表**不会**重建：加 `sort_index` / `collapsed` 是普通列，不改变 `extractChecks`（`database.ts:298`）提取到的 CHECK 列表；`nodes` 的 `requiredColumns`（`database.ts:409`）保持不变 → 走 `addColumnSafe` 的 ALTER TABLE 路径。
 - ⚠️ **不要把 `sort_index` / `collapsed` 加进 `nodes` 的 `requiredColumns`**——加了会强制重建 nodes 表，走 `DROP TABLE` 路径，风险远大于收益。
-- 迁移期间 `foreign_keys` 被关闭（`database.ts:775-825`），edges 重建时其 `REFERENCES nodes(id)` 不会报错；迁移提交前有 `foreign_key_check` 兜底。
+- 迁移期间 `foreign_keys` 被关闭（`database.ts:775-828`），edges 重建时其 `REFERENCES nodes(id)` 不会报错；迁移提交前有 `foreign_key_check` 兜底。
 
 - [ ] **Step 1: Write the failing test**
 
@@ -321,7 +321,7 @@ export function runHierarchyMigration(db: BetterSqlite3.Database): void
 
 实现要点：
 - 用 `db.transaction()` 包住全部四步，保证原子性
-- **本函数只管数据迁移，不碰 DDL**——加列由 `database.ts` 的 `runIncrementalMigrations` 用现成的 `addColumnSafe` 完成（见 Step 5）。理由：`addColumnSafe`（`database.ts:852`）已经实现了标识符校验 + 类型白名单 + "duplicate column" 吞错；在本文件里另写一份 `ALTER TABLE` + try/catch 就是把同一段逻辑抄第二遍。列的增删属于 schema 层的职责，数据迁移函数不该重复实现。
+- **本函数只管数据迁移，不碰 DDL**——加列由 `database.ts` 的 `runIncrementalMigrations` 用现成的 `addColumnSafe` 完成（见 Step 5）。理由：`addColumnSafe`（`database.ts:855`）已经实现了标识符校验 + 类型白名单 + "duplicate column" 吞错；在本文件里另写一份 `ALTER TABLE` + try/catch 就是把同一段逻辑抄第二遍。列的增删属于 schema 层的职责，数据迁移函数不该重复实现。
 - 四步的**先后顺序不可换**：清孤儿必须先于回填 `sort_index`（否则会给已失效的父子关系排序号）；回填 `sort_index` 必须先于 `default → hierarchical` 改写（改写后父子关系才完整）。
 - 清孤儿：`UPDATE nodes SET parent_id = NULL WHERE parent_id IS NOT NULL AND parent_id NOT IN (SELECT id FROM nodes)`
 - 回填 `sort_index`：先查每个父节点下按 `edges` 出现顺序排好的子节点列表，再逐个 `UPDATE nodes SET sort_index = ? WHERE id = ?`；无 `edges` 顺序可依据的节点按 `created_at` 兜底
@@ -346,7 +346,7 @@ Expected: PASS（5 个用例全绿）
   collapsed INTEGER NOT NULL DEFAULT 0,
   ```
 - `CURRENT_SCHEMA_VERSION`（:354）从 16 改为 17
-- 在 `runIncrementalMigrations`（`database.ts:851`）里用**现成的** `addColumnSafe` 加两列——与其它所有列的加法完全同构（`database.ts:873-882` 就是这些调用的所在地）：
+- 在 `runIncrementalMigrations`（`database.ts:854`）里用**现成的** `addColumnSafe` 加两列——与其它所有列的加法完全同构（`database.ts:876-891` 就是这些调用的所在地）：
   ```ts
   addColumnSafe('nodes', 'sort_index', 'INTEGER')
   addColumnSafe('nodes', 'collapsed', 'INTEGER', '0')
@@ -365,7 +365,7 @@ Expected: PASS（5 个用例全绿）
 it('accepts hierarchical edge_type and has the new node columns', () => {
   const db = getClient()
   // 必须先建两个真实节点：edges.source/target 有 REFERENCES nodes(id) 外键，
-  // 且 foreign_keys 常态是 ON（database.ts:45），插入不存在的 id 会先报外键违规，
+  // 且 foreign_keys 常态是 ON（database.ts:46），插入不存在的 id 会先报外键违规，
   // 根本走不到 CHECK 那一层
   const now = new Date().toISOString()
   const insertNode = db.prepare(
@@ -1242,7 +1242,7 @@ spec §4.4.2 与批次 2 第 14 项要求「Yjs / AI 写入路径补防环校验
 
 | 路径 | 位置 | 本任务之后 |
 |---|---|---|
-| `node:update` IPC | `ipc/graph.ts:246` → `nodeRepo.update` | Step 3 在 IPC 层拒绝 `parentId` ✓ |
+| `node:update` IPC | `ipc/graph.ts:260` → `nodeRepo.update` | Step 3 在 IPC 层拒绝 `parentId` ✓ |
 | Yjs 远端**更新** | `realtime/yjs-manager.ts:200` → `nodeRepo.update(id, payload)` | **本步（repository 层）** ✓ |
 | 快照双向同步 | `realtime/snapshot/bidirectional-sync.ts:67` → `target.nodeRepo.update(change.id, nodeData)` | **本步（同一个 repository 方法）** ✓ |
 | Yjs 远端**插入** | `realtime/yjs-manager.ts:255`（`insertRemoteNode` 的裸 INSERT） | **本步（自环）** ✓ |
@@ -1353,9 +1353,9 @@ git commit -m "refactor(canvas): 关闭 node:update 与 Yjs 远端路径的 pare
 - Produces: 三条写入路径产出的层级边类型统一为 `hierarchical`
 
 **已核实的写入点**：
-- `project-analyzer.ts:74 / :105 / :132` —— 三处 `edgeType: 'default'` **全部是层级边**（project→module、module→process、process→feature）。改为 `'hierarchical'`。同文件 `:384` 的 `'condition'` 是语义边，不动。
-- `graph-service.ts:508` —— `edgeData.edgeType ?? 'default'`，是 AI 结果的边落库处。生产者改了类型，这里自动跟随，**不需要改**。同文件 `:541` / `:605` 的 `'default'` 是 `suggestEdges` 的代码 import 语义边，**不动**。
-- `graph-service.ts:489-498` —— 第二轮写 `parent_id`，是真相源写入，保持。
+- `project-analyzer.ts:85 / :119 / :149` —— 三处 `edgeType: 'default'` **全部是层级边**（project→module、module→process、process→feature）。改为 `'hierarchical'`。同文件 `:432` 的 `'condition'` 是语义边，不动。
+- `graph-service.ts:556` —— `edgeData.edgeType ?? 'default'`，是 AI 结果的边落库处。生产者改了类型，这里自动跟随，**不需要改**。同文件 `:628` / `:692` 的 `'default'` 是 `suggestEdges` 的代码 import 语义边，**不动**。
+- `graph-service.ts:496` —— 第二轮写 `parent_id`，是真相源写入，保持。
 - `useNodeOperations.ts:handleAddChild` —— 只写 `parentId` 不建边，**这是裂缝 1 的根因**。
 
 - [ ] **Step 1: Write the failing test**
@@ -1441,8 +1441,8 @@ describe('useNodeOperations — 补建层级边', () => {
 ⚠️ **这条路径必须用真实库**：它的 INSERT 覆盖 `nodes` 表的 21 个列（表本身是 **25 列**，见 `src/main/database.ts:381-407`），mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 **`src/main/__tests__/database-migration.test.ts`** 的现成模式（Task 11 才创建的 `node-repository.test.ts` 此刻还不存在，**不要**照抄一个还不存在的文件）。
 
 `initFromProject` 走真实写入路径的两个前提：
-- `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:43`），mock 掉它不影响被测的写入路径。
-- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:191`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
+- `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:47`），mock 掉它不影响被测的写入路径。
+- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:192`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
 
 ```ts
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
@@ -1555,7 +1555,7 @@ describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
   })
 
   it('同一对上把已有的 default 边升级成 hierarchical，而不是再插一条', async () => {
-    // AI 写入路径产出的层级边**就是 'default'**（graph-service.ts:508）
+    // AI 写入路径产出的层级边**就是 'default'**（graph-service.ts:556）
     mockGraphResult.edges = [
       { sourceTempId: 'p1', targetTempId: 'c1', edgeType: 'default', graphId: '' },
     ]
@@ -1588,11 +1588,11 @@ describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
 ⚠️ `initFromProject` 给 online 与 dev 两张图**各写一遍节点**，所以查询必须限定到一张图（上面用 `graph_id` 找父节点、再按 `parent_id` 取子节点）——否则 dev 图的同名节点会混进来。
 
 ⚠️ **两个用例都调 `initFromProject`，但它们互不干扰**：每次调用都用 `generateId('graph-online')` /
-`generateId('graph-dev')` 新建两张图（`graph-service.ts:342-343`）→ 节点 id 全是新的 → 查询按 `graph_id` 限定就够。
+`generateId('graph-dev')` 新建两张图（`graph-service.ts:343-344`）→ 节点 id 全是新的 → 查询按 `graph_id` 限定就够。
 `mockGraphResult.edges` 是同一个对象引用，**每个用例开头都要显式写一遍** `mockGraphResult.edges = [...]`。
 
 ⚠️ **第二个用例盯的是 R-28 的第 2 级（升级）**，也是本任务最容易做错的一级：
-AI 写入路径产出的层级边就是 `'default'`（`graph-service.ts:508` 的 `edgeData.edgeType ?? 'default'`），
+AI 写入路径产出的层级边就是 `'default'`（`graph-service.ts:556` 的 `edgeData.edgeType ?? 'default'`），
 而第二轮已经把 `parent_id` 写好了 → `(p1, c1)` 这一对正是权威父子对 → 那条 `'default'` **就是**层级边。
 **升级**它 → 同一对上仍然只有一条边；**再插一条** → 同一对上两条边（一条 `'default'` 残留）→ 换父之后那条残留
 会被判成语义边并**开始渲染**，画布上冒出一条用户没画过的线。
@@ -1658,7 +1658,7 @@ for (const nodeData of graphResult.nodes) {
 这让 AI 生成路径不依赖 `graphResult.edges` 里是否带了层级边——`parent_id` 有就一定有层级边。
 
 ⚠️ **第 2 级（升级而不是再插一条）不是可选的**（R-28）：AI 写入路径产出的层级边**就是 `'default'`**
-（`graph-service.ts:508` 的 `edgeData.edgeType ?? 'default'`），而第四轮跑的时候第二轮已经把
+（`graph-service.ts:556` 的 `edgeData.edgeType ?? 'default'`），而第四轮跑的时候第二轮已经把
 `parent_id` 写好了 → `(父, 子)` 这一对正是权威父子对 → 按层级边的判定规则
 （Task 6 的 R-27：父子对上的 `'default'` 边 = 迁移前的层级边），那条 `'default'` **就是**层级边。
 再插一条 `'hierarchical'` 会在同一对上留下 `'default'` 残留，而残留的 `'default'` 会被判成
@@ -1672,13 +1672,13 @@ for (const nodeData of graphResult.nodes) {
 
 ⚠️ **第二轮要一起写 `sort_index`（spec §4.8）——这条路径绕过了 `NodeRepository.create()`**
 
-`graph-service.ts:428` 的 `createNodes` 是**裸 SQL 写入**：自己 `prepare` INSERT、自己 `UPDATE parent_id`，**不经过 `NodeRepository`**。所以 Task 11 给 `NodeRepository.create()` / `createBatch()` 补的「新建子节点取 `max(兄弟) + 1`」**覆盖不到这条路径**。不写的话，这条路径建出来的子节点 `sort_index` 全是 NULL，后果是**兄弟顺序错乱**：
+`graph-service.ts:429` 的 `createNodes` 是**裸 SQL 写入**：自己 `prepare` INSERT、自己 `UPDATE parent_id`，**不经过 `NodeRepository`**。所以 Task 11 给 `NodeRepository.create()` / `createBatch()` 补的「新建子节点取 `max(兄弟) + 1`」**覆盖不到这条路径**。不写的话，这条路径建出来的子节点 `sort_index` 全是 NULL，后果是**兄弟顺序错乱**：
 
 - 画布布局把 `sortIndex` 为 `undefined` 的节点排在**最后**（Task 11 的兜底规则）。用户随后手动加一个子节点 C3（Task 11 给了它 `COALESCE(MAX(sort_index), -1) + 1`——而兄弟全是 NULL，`MAX` 返回 NULL，`COALESCE` 兜到 -1 → C3 拿到 **0**）→ 布局把 C3 排到**最前**，C1/C2（undefined）排到最后 → **后建的节点跑到了前面**。
 - 下次启动的迁移（R-11 修法后只补 NULL）也救不回来：本路径的节点有层级边（第四轮补的）→ 落在 tier-0 → 按边 rowid 排出 `C1=0, C2=1`，而 C3 已经**占着 0** → 撞号，顺序仍然不确定。
 
 实现要点：
-- **第二轮**（`graph-service.ts:489-497` 写 `parent_id` 的那轮）里，同一父节点的多个子节点要拿**连续**的 `sort_index`（0, 1, 2…）——批内递增，不要每个子节点都去查一次库。
+- **第二轮**（`graph-service.ts:496` 写 `parent_id` 的那轮）里，同一父节点的多个子节点要拿**连续**的 `sort_index`（0, 1, 2…）——批内递增，不要每个子节点都去查一次库。
 - 基准值 = 该父节点**已有**子节点的最大 `sort_index` + 1，写法 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL）。本方法建的是**全新图**（`initFromProject` 每次新建 online/dev 两张图），所以通常是 0 起步，但基准值仍要按公式取，不要写死 0。
 - **兄弟顺序 = `graphResult.nodes` 里同父节点的「出现顺序」**（analyzer 的 dagre 布局顺序）。它同时也是第四轮补边的插入顺序——两者必须一致，否则迁移按边 rowid 排出的顺序会与 `sort_index` 打架（R-11 的教训：两套顺序源必须同源）。
 
