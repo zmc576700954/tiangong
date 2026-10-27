@@ -2321,12 +2321,16 @@ git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提
 - Modify: `src/main/repositories/node-repository.ts`（`delete()`、`update()`、`rowToNode`）
 - Modify: `src/main/repositories/graph-repository.ts`（`get()` 里的内联节点映射，:109-131）
 - Modify: `src/renderer/canvas/layouts/tree-layout.ts`（`sortChildrenByEdgeOrder`，:161）
-- Modify: `src/shared/types/graph.ts`（`GraphNode` 增字段）
+- Modify: `src/shared/types/graph.ts`（`GraphNode` 增字段；`ReparentResult` 增字段）
+- Modify: `src/main/services/hierarchy-service.ts`（`reparent()` 的返回值带上被移动节点的新 `sort_index`）
+- Modify: `src/renderer/store/graphStore.ts`（`reparentNode()` 应用返回值里的新 `sortIndex`）
 - Test: `src/main/repositories/__tests__/` 与 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts`
+- Test: `src/main/services/__tests__/hierarchy-service.test.ts` 与 `src/renderer/store/__tests__/graphStore.test.ts`
 
 **Interfaces:**
 - Consumes: Task 2 的 `nodes.sort_index` / `nodes.collapsed`
 - Produces: `GraphNode.sortIndex?: number` / `GraphNode.collapsed?: boolean` 在渲染端可读；删父节点时子节点被置为根
+- Produces: `ReparentResult.sortIndex?: number` —— 渲染端重挂后能拿到被移动节点的新兄弟序号（R-46）
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2585,15 +2589,64 @@ const v = raw === undefined || raw === null ? undefined : Number(raw)
 
 ⚠️ 节点缓存 key（`GraphCanvas.tsx:598`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
 
-- [ ] **Step 6: Run test to verify it passes**
+- [ ] **Step 6: 拖拽重挂后，渲染端的兄弟序号必须刷新（R-46）**
 
-Run: `npx vitest run src/main/repositories/__tests__/ src/renderer/canvas/layouts/__tests__/tree-layout.test.ts && npx tsc --noEmit`
+⚠️ **这是 Task 11 自己造出来的债，必须在 Task 11 里还掉。**
+
+Task 10 那一节写了一条前提：「`GraphNode` 里**没有** `sortIndex` 字段 —— 兄弟序号是渲染层
+不关心的，主进程管。」Task 11 把 `GraphNode.sortIndex` 放进了渲染端，还让 `tree-layout.ts`
+开始信任它 → **那条前提失效了**。
+
+具体缺口：主进程 `reparent()` 会把被移动节点的 `sort_index` 改成「新父节点现有子节点的最大值 + 1」
+（= 排在最后），但 `ReparentResult` **不带 `sort_index`** → 渲染端 store 里那个节点的
+`sortIndex` 仍是**旧父节点下的旧值**（`graphStore.reparentNode` 走 `...n` 展开，旧值被原样带过去）。
+
+→ 拖拽重挂之后点「整理布局」，布局按 `sortIndex` 排兄弟 → 被移动的节点**排错位置**
+（例：目标父 B 有 C1(0)、C2(1)，被移动的 A 旧值是 0 → 布局把 A 排到 C1 附近，
+而正确位置是 C2 之后）。
+
+**修法：主进程给值，渲染端照抄。**
+⚠️ **不许**在渲染端自己算「max(兄弟)+1」——那是**第二份真相源**，还要复刻 SQL `MAX`
+忽略 NULL 的细节（`node-repository.ts` 的 `COALESCE(MAX(sort_index), -1) + 1` 踩的就是这个坑）。
+
+1. `src/shared/types/graph.ts`：`ReparentResult` 增一个可选字段
+   ```ts
+   /** 被移动节点的新 sort_index（换父到当前父节点的空操作分支 = 原值） */
+   sortIndex?: number
+   ```
+   用**可选**而不是必填：重挂的目标一定是个父节点（必有 sort_index），但 `ReparentResult`
+   还被别处构造，留可选更稳。
+
+2. `src/main/services/hierarchy-service.ts`：`reparent()` 的**两个**返回点都要带上它 ——
+   - 「换父到当前父节点」的空操作分支：带**原值**（该分支不动 `sort_index`）；
+   - 事务分支：带事务里已经算好的那个新序号（就是 `UPDATE nodes SET parent_id = ?, sort_index = ?`
+     写进去的同一个值，**不要**再查一次库）。
+   ⚠️ **空操作分支别忘了** —— 漏了它，拖拽落回原父节点时渲染端的值就与主进程不一致。
+
+3. `src/renderer/store/graphStore.ts`：`reparentNode()` 应用它 —— 被移动节点那一支写成
+   `sortIndex: result.sortIndex ?? n.sortIndex`。
+   ⚠️ 用 `??` 而不是直接赋值：返回值里没这个字段时**保留原值**，不要塞 `undefined`
+   （那会把「有值」变成「排最后」的兜底路径）。
+
+4. 测试：
+   - `src/main/services/__tests__/hierarchy-service.test.ts`：重挂后 `result.sortIndex`
+     等于「新父节点原有子节点的最大 `sort_index` + 1」；
+   - `src/renderer/store/__tests__/graphStore.test.ts`：给 `window.electronAPI` 的 mock 补
+     `'graph:reparent'`（现在没有这个 key），断言 store 里被移动节点的 `sortIndex` 更新成
+     返回值里的值；返回值**不带** `sortIndex` 时，store 里保持原值。
+
+**旧父节点的其余子节点不用一起返**：重挂后它们的 `sort_index` 被压成 0,1,2…，
+但**相对顺序不变** → 布局按序号排出来的结果不变 → 只有**被移动节点自己**的序号有意义。
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `npx vitest run src/main/repositories/__tests__/ src/main/services/__tests__/hierarchy-service.test.ts src/renderer/canvas/layouts/__tests__/tree-layout.test.ts src/renderer/store/__tests__/graphStore.test.ts && npx tsc --noEmit`
 Expected: PASS，零类型错误
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add src/main/repositories/node-repository.ts src/main/repositories/graph-repository.ts src/shared/types/graph.ts src/renderer/canvas/layouts/tree-layout.ts src/main/repositories/__tests__/ src/renderer/canvas/layouts/__tests__/tree-layout.test.ts
+git add src/main/repositories/node-repository.ts src/main/repositories/graph-repository.ts src/shared/types/graph.ts src/renderer/canvas/layouts/tree-layout.ts src/main/services/hierarchy-service.ts src/renderer/store/graphStore.ts src/main/repositories/__tests__/ src/main/services/__tests__/hierarchy-service.test.ts src/renderer/canvas/layouts/__tests__/tree-layout.test.ts src/renderer/store/__tests__/graphStore.test.ts
 git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点置根"
 ```
 
