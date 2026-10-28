@@ -148,7 +148,13 @@ export class SnapshotStore {
 // 老 SQLite row → Y.Doc 字段映射
 // ============================================================
 
-/** 与 NodeRepository.rowToNode 字段对齐；JSON 字段原样传透。 */
+/**
+ * 与 NodeRepository.rowToNode 的字段口径对齐（限 NodeData 承载的那些字段）；JSON 字段原样传透。
+ *
+ * ⚠️ `sort_index` / `collapsed` **不**镜像进 Yjs 文档：spec §4.4.2 明确「本期不做
+ * Yjs 双向镜像」，折叠状态走普通 `node:update` IPC 持久化，不走实时协同。
+ * 将来若做双向镜像，这两个字段需要一并镜像。
+ */
 function rowToNodeData(row: Record<string, unknown>): NodeData {
   return {
     id: String(row.id),
