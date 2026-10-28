@@ -1,6 +1,6 @@
 // Prerequisite: run `npm run build` first so dist-electron/main/index.js exists
 
-import os from 'node:os'
+import fs from 'node:fs'
 import path from 'node:path'
 import { test, expect } from '@playwright/test'
 import { _electron as electron } from 'playwright'
@@ -8,10 +8,15 @@ import { _electron as electron } from 'playwright'
 function getProjectElectronPath(): string {
   // Use the Electron binary installed for this project so native modules
   // (e.g., better-sqlite3) compiled against project Electron load correctly.
+  //
+  // The binary's location is platform-specific and the electron package records
+  // it in its own `path.txt`: `electron` on Linux, `electron.exe` on Windows,
+  // `Electron.app/Contents/MacOS/Electron` on macOS. Assembling
+  // `dist/<platform name>` only works on Linux/Windows — on macOS it points at
+  // a file that does not exist and the launch fails with ENOENT.
   const electronPackageRoot = path.dirname(require.resolve('electron/package.json'))
-  const platform = os.platform()
-  const binaryName = platform === 'win32' ? 'electron.exe' : 'electron'
-  return path.join(electronPackageRoot, 'dist', binaryName)
+  const relativeBinaryPath = fs.readFileSync(path.join(electronPackageRoot, 'path.txt'), 'utf-8').trim()
+  return path.join(electronPackageRoot, 'dist', relativeBinaryPath)
 }
 
 test('Electron app process launches with project binary', async () => {

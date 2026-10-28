@@ -8,6 +8,7 @@ import {
   useNodesState,
   useEdgesState,
   useReactFlow,
+  useStoreApi,
   useOnViewportChange,
   type Edge,
   type Node,
@@ -31,7 +32,14 @@ import type { GraphNode, NodeType, NodeStatus, ContextRef } from '@shared/types'
 import type { RecipeDagNodeStatus } from '@shared/types/recipe'
 import type { LintIssue, LintReport, WritebackItem } from '@shared/types/wiki'
 import { BizEdge } from './BizEdge'
-import { getEdgeMarkerEnd, edgeTypeConfig } from './edge-utils'
+import { getEdgeMarkerEnd, createMarkerEnd, GHOST_EDGE_COLOR } from './edge-utils'
+import { isReparentEnabled } from './reparent-gate'
+import {
+  buildReparentGhostEdge,
+  deriveHierarchyEdges,
+  GHOST_EDGE_PREFIX,
+  resolveReparentZIndex,
+} from './layouts/hierarchy'
 import { cn } from '../lib/utils'
 import { BizNodeComponent } from './BizNode'
 import { CanvasOverlay } from './components/CanvasOverlay'
@@ -44,6 +52,9 @@ import { useConnectionMode } from './hooks/useConnectionMode'
 import { useNodePositionPersistence } from './hooks/useNodePositionPersistence'
 import { useNodeOperations } from './hooks/useNodeOperations'
 import { useEdgeConnection } from './hooks/useEdgeConnection'
+import { useNodeTypeConfigs } from './hooks/useNodeTypeConfigs'
+import { useCollapse } from './hooks/useCollapse'
+import { useReparentDrag, extractPointerClientPoint, type ReparentReason } from './hooks/useReparentDrag'
 import { AlignHorizontalDistributeCenter, GitBranch, X, Search, BookOpen, FileText, ScrollText, Loader2, Network } from 'lucide-react'
 import {
   DropdownMenu,
@@ -85,6 +96,15 @@ function BizNodeWrapper({ id, data, selected }: {
     agentThreadId?: string
     agentStatus?: string
     agentSessionId?: string
+    /** 拖拽重挂落点高亮 */
+    isReparentTarget?: boolean
+    isReparentTargetValid?: boolean
+    /** 落点非法的原因 —— 徽标文案用它 */
+    reparentReason?: ReparentReason
+    /** 子树折叠：折叠该节点时会被隐藏的后代数（0 = 没有子节点） */
+    hiddenDescendantCount?: number
+    /** 子树折叠：折叠/展开（引用稳定，来自 useCollapse.toggle） */
+    onToggleCollapse?: (nodeId: string) => void
   }
   selected?: boolean
 }) {
@@ -112,6 +132,17 @@ const CONNECTION_LINE_STYLE = {
   strokeWidth: 2,
   strokeDasharray: '5 5',
 } as const
+
+/**
+ * 布局模式持久化的 localStorage 键 —— **按项目路径分区**。
+ *
+ * 读与写必须用**同一个**函数：两端只要有一端用了别的键
+ * （比如读端 `if (!projectPath) return`、写端 `projectPath ?? 'default'`），
+ * 「没有项目路径的图」就会写进 'default' 键却永远读不回来。
+ */
+function layoutModeStorageKey(projectPath: string | undefined): string {
+  return `bizgraph.layoutMode.${projectPath ?? 'default'}`
+}
 
 /**
  * 缩放百分比徽标单独成一个组件。
@@ -147,6 +178,8 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const { locale, t } = useI18n()
   const graphNodes = useGraphStore((state) => state.nodes)
   const graphEdges = useGraphStore((state) => state.edges)
+  /** store 里的节点当前属于哪张图（`loadGraph` 装载完成时写入） */
+  const loadedGraphId = useGraphStore((state) => state.loadedGraphId)
   const loadGraph = useGraphStore((state) => state.loadGraph)
   const selectedNodeId = useGraphStore((state) => state.selectedNodeId)
   const selectedEdgeId = useGraphStore((state) => state.selectedEdgeId)
@@ -183,8 +216,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   }, [threads])
   const currentGraph = graphs.find((g) => g.id === graphId)
   const projectPath = currentGraph?.projectPath
+  /** 图是否已装载完 —— 布局模式的持久化要等它才有意义（见下方 effect） */
+  const currentGraphId = currentGraph?.id
 
   const { screenToFlowPosition, setCenter } = useReactFlow()
+  /** ReactFlow 内部 store —— 用来在「节点进 store 的那一刻」重试恢复力导向 */
+  const storeApi = useStoreApi()
 
   // Listen for navigation requests from components outside ReactFlowProvider (e.g., RightPanel)
   useEffect(() => {
@@ -212,7 +249,39 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   // ────────────────────────────────────────────────────────────────
   // 节点位置持久化 Hook（防抖保存拖拽位置到数据库）
   // ────────────────────────────────────────────────────────────────
-  const { handleNodesChange: onPositionChange } = useNodePositionPersistence(graphId)
+  const {
+    handleNodesChange: onPositionChange,
+    suppressPositions,
+    releasePositions,
+  } = useNodePositionPersistence(graphId)
+
+  /**
+   * 拖拽重挂（Task 10）：拖动节点时实时判定落点（绿=合法 / 红=非法），
+   * 松手在合法节点上就调 `graph:reparent` 改父子关系。
+   *
+   * 位置权威：重挂成功后位置由主进程返回的 `movedPositions` 决定，
+   * 自由位置持久化必须让位 —— `suppressPositions` / `releasePositions` 就是这个让位机制。
+   */
+  const {
+    draggingNodeId: reparentDraggingId,
+    candidate: reparentCandidate,
+    onDragStart: onReparentDragStart,
+    onDrag: onReparentDrag,
+    onDragEnd: onReparentDragEnd,
+  } = useReparentDrag({ suppressPositions, releasePositions })
+
+  /**
+   * 子树折叠（Task 12）：折叠态存在 `nodes.collapsed` 里 —— 落库后跨会话保留。
+   *
+   * `visibleNodes` 过滤掉被折叠节点的**整棵**后代子树（折叠节点自己可见）。
+   * 布局自动获益：`flowNodes` 只画可见节点，被折叠的节点对 dagre 就是叶子，
+   * 不需要动 `useAutoLayout.ts`。
+   */
+  const {
+    toggle: toggleCollapse,
+    visibleNodes,
+    hiddenDescendantCount,
+  } = useCollapse()
 
   const handleNodesChange: OnNodesChange<Node> = useCallback(
     (changes) => {
@@ -260,6 +329,18 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const [recipeStepStatus, setRecipeStepStatus] = useState<Record<string, { status: RecipeDagNodeStatus; error?: string }>>({})
 
   const [nodeContextMenu, setNodeContextMenu] = useState<{ nodeId: string; x: number; y: number } | null>(null)
+
+  /**
+   * 节点类型规则表的唯一权威在主进程 nodeTypeRegistry，渲染端经 IPC 读取。
+   * 右键菜单的「添加子节点」可选项完全由这张表决定，渲染端不再自带一份副本。
+   */
+  const { configs: nodeTypeConfigs } = useNodeTypeConfigs()
+  const contextTargetNode = nodeContextMenu
+    ? graphNodes.find((n) => n.id === nodeContextMenu.nodeId)
+    : undefined
+  const allowedChildTypes = contextTargetNode?.type
+    ? (nodeTypeConfigs[contextTargetNode.type]?.allowedChildTypes ?? [])
+    : []
 
   const [contextPopover, setContextPopover] = useState<{ nodeId: string; x: number; y: number } | null>(null)
 
@@ -513,11 +594,22 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     return computeRemoteSelectionByNode(remoteStates, localUserId)
   }, [remoteStates, localUserId])
 
+  /**
+   * 拖拽重挂落点高亮的**原始值**。
+   *
+   * 进 `flowNodes` 的 useMemo 依赖数组的必须是引用稳定的原始值 —— candidate 是对象，
+   * 每次指针移动都是新引用，放进依赖里会让依赖每帧变 → memo 每帧重算 →
+   * useEffect(() => setRfNodes(flowNodes)) 每帧触发 → 无限重渲染（画布白屏）。
+   */
+  const reparentTargetId = reparentCandidate?.nodeId ?? null
+  const reparentTargetValid = reparentCandidate?.valid ?? false
+  const reparentReason = reparentCandidate?.reason
+
   const flowNodes = useMemo(() => {
     const cache = nodeCacheRef.current
     const nextIds = new Set<string>()
 
-    const nodes = graphNodes.map((node) => {
+    const nodes = visibleNodes.map((node) => {
       const threadInfo = nodeThreadMap.get(node.id)
       const bugCount = bugCountMap.get(node.id) ?? 0
       const selected = node.id === selectedNodeId || node.id === connectingSourceId
@@ -527,6 +619,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       const remoteSelectionColors = remoteEntries && remoteEntries.length > 0
         ? Array.from(new Set(remoteEntries.map((e) => e.color))).sort()
         : undefined
+      /**
+       * 落点高亮标记 —— **按节点派生**。
+       *
+       * 缓存 key 是按节点算的：把 `reparentTargetId` 塞进去会让**每个**节点的 key 都变
+       * → 每次指针移动都重建全部节点对象 → 拖拽全程掉帧。
+       * 派生的布尔值只有目标节点那一条缓存失效。
+       */
+      const isReparentTarget = reparentTargetId === node.id
+      const isReparentTargetValid = isReparentTarget && reparentTargetValid
+      const nodeReparentReason = isReparentTarget ? reparentReason : undefined
+      /** 被拖节点 —— 绘制层级要抬到落点目标之上（见 resolveReparentZIndex） */
+      const isReparentDragging = reparentDraggingId === node.id
+      /** 本节点的绘制层级（普通节点 undefined → 不设 zIndex） */
+      const reparentZIndex = resolveReparentZIndex(isReparentTarget, isReparentDragging)
       const key = JSON.stringify([
         node.id,
         node.updatedAt,
@@ -541,6 +647,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         selected,
         multiSelected,
         remoteSelectionColors ?? null,
+        isReparentTarget,
+        isReparentTargetValid,
+        nodeReparentReason ?? null,
+        isReparentDragging,
+        // 子树折叠：折叠态本身 + 折叠时会被藏起来的后代数。
+        // 后代数**必须**进键：给一个已折叠的节点新增子节点时，该节点自己的
+        // `updatedAt` 不会变（`node:create` 只写新节点）→ 缓存命中 → 徽标
+        // 数字停在旧值。折叠态进键是为了让折叠指示器的方向跟「子树已隐藏」
+        // 这件事同步（乐观更新阶段 updatedAt 还没变）。
+        node.collapsed ?? false,
+        hiddenDescendantCount(node.id),
       ])
 
       nextIds.add(node.id)
@@ -577,9 +694,24 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
           agentSessionId: threadInfo?.sessionId,
           // D10b: 远端选中颜色
           ...(remoteSelectionColors ? { remoteSelectionColors } : {}),
+          // 拖拽重挂落点高亮
+          isReparentTarget,
+          isReparentTargetValid,
+          reparentReason: nodeReparentReason,
+          // 子树折叠：折叠指示器 + 徽标。
+          // 后代数由 useCollapse 算好传进来 —— BizNode 是逐节点渲染的，
+          // 自己数一遍就是 O(n²)。
+          hiddenDescendantCount: hiddenDescendantCount(node.id),
+          onToggleCollapse: toggleCollapse,
         },
         draggable: node.type !== 'project',
         selected,
+        // 重挂拖拽期间的绘制层级：普通节点 < 落点目标 < 被拖节点。
+        // 落点目标要抬到兄弟之上（原因徽标溢出到节点框外面，会被后画的兄弟盖住）；
+        // 被拖节点要抬到落点目标之上（用户正在拖的节点不能被它要放上去的节点埋掉）。
+        // xyflow 在 zIndexMode 'basic' 下认用户给的 zIndex（选中节点另有 +1000）。
+        // 普通节点不带 zIndex 这个 key → 走 xyflow 的默认值 0。
+        ...(reparentZIndex !== undefined ? { zIndex: reparentZIndex } : {}),
       }
       cache.set(node.id, { key, node: flowNode })
       return flowNode
@@ -589,20 +721,44 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return nodes
-  }, [graphNodes, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode])
+  }, [visibleNodes, hiddenDescendantCount, toggleCollapse, bugCountMap, isZoomedOut, degradation.hideNodeTextLabels, connectingFrom, flashedNodeId, nodeThreadMap, selectedNodeId, connectingSourceId, selectedNodeIds, remoteSelectionByNode, reparentTargetId, reparentTargetValid, reparentReason, reparentDraggingId])
 
   // Sync computed flowNodes into ReactFlow's internal node state
   useEffect(() => {
     setRfNodes(flowNodes)
   }, [flowNodes, setRfNodes])
 
+  /**
+   * 画布上真正要画的边集 = 派生的层级边 + 保留的语义边。
+   *
+   * 层级关系以 `nodes.parent_id` 为唯一事实来源，层级边由它派生；存储里的
+   * 历史层级边与迁移残留的 default 父子边在派生时就被丢弃。
+   *
+   * ⚠️ 这里必须自己包一层 useMemo —— mergedEdges 会作为 flowEdges 的依赖。
+   * 写成 useMemo 外面的一次性计算 = 每帧新数组引用 → flowEdges 每帧重算
+   * → useEffect(() => setRfEdges(flowEdges)) 每帧触发 → setRfEdges 是 useState setter
+   * → 无限重渲染循环（React: Maximum update depth exceeded），画布白屏。
+   */
+  const mergedEdges = useMemo(() => {
+    const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
+    const base = [...hierarchyEdges, ...semanticEdges]
+    // 幽灵连线：候选父节点 → 被拖节点。临时边，不进 store、不落库，松手即消失。
+    // 方向跟画布上所有层级边一致（父 → 子，箭头落在子节点那端）——
+    // 反过来画的话，松手后真正的边出现时箭头会当场跳到另一端，预览与结果相反。
+    // 只在**合法**落点时出现（非法落点退化成普通移动，不该有连线暗示）。
+    if (!reparentTargetId || !reparentTargetValid || !reparentDraggingId) return base
+    const ghostEdge = buildReparentGhostEdge(reparentDraggingId, reparentTargetId, graphId)
+    return [...base, ghostEdge]
+  }, [graphNodes, graphEdges, reparentTargetId, reparentTargetValid, reparentDraggingId, graphId])
+
   const flowEdges = useMemo(() => {
     const cache = edgeCacheRef.current
     const nextIds = new Set<string>()
 
-    const edges = graphEdges.map((edge) => {
+    const edges = mergedEdges.map((edge) => {
       const edgeType = edge.edgeType || 'default'
-      const config = edgeTypeConfig[edgeType]
+      /** 幽灵连线（拖拽重挂的临时虚线）—— 用 id 前缀识别 */
+      const isGhost = edge.id.startsWith(GHOST_EDGE_PREFIX)
       const displayLabel = edge.content?.condition
         ? (edge.content.condition.length > 20 ? edge.content.condition.slice(0, 20) + '…' : edge.content.condition)
         : edge.label
@@ -636,14 +792,20 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         target: edge.target,
         label: shouldHideLabel ? undefined : displayLabel,
         type: 'bizEdge',
-        data: { edgeType, content: edge.content, strength: edge.strength },
-        markerEnd: getEdgeMarkerEnd(edgeType),
+        // isGhost 走**显式通道**（data 标记）→ BizEdge 自己决定这条边长什么样。
+        // 边对象上的 `style` 字段在这里**不写**：`@xyflow/react` 会把它透传给边组件，
+        // 但 `BizEdge` 不读它 —— 写了也只是「看起来设了颜色、实际没生效」的假象
+        // （幽灵连线曾经就是这么画成灰实线的）。
+        data: { edgeType, content: edge.content, strength: edge.strength, isGhost },
+        // 幽灵边的箭头用绿色（与合法落点的高亮同一套绿）；线本身的颜色与虚线
+        // 由 BizEdge 按 `data.isGhost` 决定（见 edge-utils 的 resolveEdgeStyle）。
+        markerEnd: isGhost ? createMarkerEnd(GHOST_EDGE_COLOR) : getEdgeMarkerEnd(edgeType),
         animated: shouldAnimate,
-        style: {
-          stroke: config.color,
-          strokeWidth: isSelected ? 3 : 2,
-          strokeDasharray: config.strokeDasharray,
-        },
+        // 派生层级边不可选中：它没有对应的存储边对象，选中后右侧面板找不到、
+        // 删除也删不掉（删的只是 parent_id 的镜像，派生边照样画出来）。
+        // ⚠️ 这一条挡不住 onEdgeClick —— @xyflow/react 的 EdgeWrapper 里
+        // onClick 在 `if (isSelectable)` 块**外面**，所以 onEdgeClick 里还要再挡一道。
+        selectable: edgeType === 'hierarchical' ? false : undefined,
         selected: isSelected,
       }
       cache.set(edge.id, { key, edge: flowEdge })
@@ -654,7 +816,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       if (!nextIds.has(id)) cache.delete(id)
     }
     return edges
-  }, [graphEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
+  }, [mergedEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
 
   useEffect(() => {
     setRfEdges(flowEdges)
@@ -687,6 +849,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
 
   const onEdgeClick = useCallback(
     (_: unknown, edge: Edge) => {
+      // 派生层级边是 parent_id 的渲染产物，没有对应的存储边对象——
+      // 选中它右侧面板找不到、删除也删不掉。层级靠 reparent 改（Task 6/9/10）。
+      if (edge.data?.edgeType === 'hierarchical') return
       selectEdge(edge.id)
     },
     [selectEdge],
@@ -741,25 +906,126 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   })
 
   const { applyLayout } = useAutoLayout()
-  const hasAppliedInitialLayout = useRef(false)
+  /**
+   * **最后排过 dagre 版的那张图**（单值，不是集合）。
+   *
+   * ⚠️ 不能用「一次性布尔标志」：那个标志在**布局真正执行之前**就被消耗掉了，
+   * 一旦那一帧的布局因为「节点不是这张图的」而放弃，新图就永远排不上版。
+   *
+   * ⚠️ 它只记住**最后一张**：A → B → A 时 A **会**再排一次版。
+   * 这与旧代码「切图重置布尔标志」的行为**逐字等价**（不是回归），
+   * 换成 `Set<string>` 会改变这个既有语义 —— 本轮不动。
+   */
+  const laidOutGraphRef = useRef<string | null>(null)
   /** 力导向布局 hook —— 提供 applyForceLayout、拖拽 pin/reheat 处理器 */
   const {
     applyForceLayout,
+    restoreForceLayout,
     exitForceMode,
     onNodeDragStart: onForceDragStart,
     onNodeDrag: onForceDrag,
     onNodeDragStop: onForceDragStop,
   } = useForceLayout()
-  /** 当前布局模式：'tree' = dagre，'force' = d3-force。决定拖拽时是否触发 reheat。 */
-  const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
+  /**
+   * 当前布局模式 —— `null` 表示**还没从 localStorage 读回来**。
+   *
+   * ⚠️ 必须是三态，不能是 `'tree' | 'force'`：
+   * `layoutMode` 初值若写死 'tree'，首屏那个「自动跑 dagre」的 effect
+   * 会在模式读回来**之前**就把画布排成树形 → 用户存的力导向坐标当场被覆盖
+   * （而且 `applyLayout()` 会把坐标**写回 DB**）。
+   * 所以：模式未读回 → **不跑** dagre；读回为 'tree' → 照跑；读回为 'force' → 不跑，
+   * 并且要**真的**进入力导向模式（见下方 restore effect）。
+   */
+  const [layoutMode, setLayoutMode] = useState<'tree' | 'force' | null>(null)
   /** 力导向布局计算中（CPU 密集） —— 显示 spinner，禁用按钮防重入。 */
   const [forceLoading, setForceLoading] = useState(false)
+
+  /**
+   * 屏幕坐标 → flow 坐标。
+   *
+   * 命中判定需要 flow 坐标，`getBoundingClientRect()` 给的是屏幕坐标。
+   * `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错 —— 包 try/catch，
+   * 别让一次坐标换算异常打断拖拽。
+   *
+   * 触屏：xyflow 的拖拽事件在触摸时是裸 TouchEvent，没有 clientX/clientY，
+   * 坐标要从 touches / changedTouches 里取（见 extractPointerClientPoint）。
+   */
+  const toFlowPosition = useCallback(
+    (event: MouseEvent | TouchEvent): { x: number; y: number } | null => {
+      const point = extractPointerClientPoint(event)
+      if (!point) return null
+      try {
+        return screenToFlowPosition(point)
+      } catch {
+        return null
+      }
+    },
+    [screenToFlowPosition],
+  )
+
+  /**
+   * 力导向布局下**不启用**重挂。
+   *
+   * 判定规则本身住在 `reparent-gate.ts`（纯函数，可直接单测）——
+   * 那条「模式未知时必须关着」的 R-38 不变量曾经**没有任何自动化覆盖**：
+   * 把它从 `=== 'tree'` 改成 fail-open 的 `!== 'force'`，13 条结构编辑 e2e 照样全绿。
+   */
+  const reparentEnabled = isReparentEnabled(layoutMode)
+
+  /**
+   * 拖拽回调 —— 力导向 reheat 与重挂候选检测**共存**，不是二选一。
+   *
+   * 位置持久化的入口不是 onNodeDragStop，而是 xyflow 的 onNodesChange
+   * （`change.type === 'position' && !change.dragging`，即拖拽结束的那一下）。
+   */
+  const handleNodeDragStart = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDragStart(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      onReparentDragStart(node.id)
+    },
+    [onForceDragStart, reparentEnabled, onReparentDragStart],
+  )
+
+  const handleNodeDrag = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDrag(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      const flow = toFlowPosition(event)
+      if (flow) onReparentDrag(flow)
+    },
+    [onForceDrag, reparentEnabled, toFlowPosition, onReparentDrag],
+  )
+
+  const handleNodeDragStop = useCallback<OnNodeDrag<Node>>(
+    (event, node) => {
+      onForceDragStop(event as unknown as React.MouseEvent, node)
+      if (!reparentEnabled) return
+      const flow = toFlowPosition(event)
+      if (flow) onReparentDragEnd(flow)
+    },
+    [onForceDragStop, reparentEnabled, toFlowPosition, onReparentDragEnd],
+  )
+
+  /**
+   * 写回 localStorage —— **只在用户真的切换布局时写**。
+   *
+   * ⚠️ 千万别做成 effect（`useEffect(() => setItem(key, layoutMode), [layoutMode, projectPath])`）：
+   * 那样首帧就会把 'tree' 写进真正的键 → 正好覆盖掉用户上次的选择。
+   */
+  const persistLayoutMode = useCallback(
+    (mode: 'tree' | 'force') => {
+      localStorage.setItem(layoutModeStorageKey(projectPath), mode)
+    },
+    [projectPath],
+  )
 
   /** 进入力导向布局：显示 loading、计算、写入、退出 force mode 时清 loading。 */
   const handleApplyForceLayout = useCallback(() => {
     if (forceLoading) return
     setForceLoading(true)
     setLayoutMode('force')
+    persistLayoutMode('force')
     // 用 setTimeout 把 spinner 让出一帧再跑计算，避免 UI 不更新
     setTimeout(() => {
       try {
@@ -768,33 +1034,162 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         setForceLoading(false)
       }
     }, 16)
-  }, [applyForceLayout, forceLoading])
+  }, [applyForceLayout, forceLoading, persistLayoutMode])
 
   /** 切回树形布局：先退出 force mode，再跑 dagre。 */
   const handleApplyTreeLayout = useCallback(() => {
     exitForceMode()
     setLayoutMode('tree')
+    persistLayoutMode('tree')
     applyLayout()
-  }, [exitForceMode, applyLayout])
+  }, [exitForceMode, applyLayout, persistLayoutMode])
 
-  // 首次加载图时自动应用 dagre 布局
+  /**
+   * 首屏自动应用 dagre 布局 —— **只排当前这张图，而且只排一次**。
+   *
+   * ⚠️ **必须等布局模式读回来**（`layoutMode === 'tree'`）：
+   * 模式还没读回就排树形 → 用户存的力导向坐标当场被覆盖，
+   * 而且 `applyLayout()` 会把坐标**写回 DB**（`useAutoLayout` 里的
+   * `batchUpdatePositions`）→ 用户的布局被静默毁掉。
+   * 模式读回为 'force' 时**不能**跑 dagre —— 那条路走的是「恢复力导向」。
+   *
+   * ⚠️ **触发信号必须按图区分**（「store 里有一些节点」不是合法信号）：
+   * `loadGraph` 是**异步**的 —— 切图后、在它 resolve 之前，store 里还留着
+   * **上一张图**的节点。那时候跑 dagre 会把上一张图的节点重排一遍**并落库**，
+   * 用户在上一张图上摆好的布局当场被毁掉。
+   * 所以这里用三层信号：
+   *   ① `loadedGraphId === graphId` —— 这张图的节点**已经装载完**（按图的信号）；
+   *   ② ReactFlow store 里的节点**全是这张图的** —— 别的图的节点一个都不许动；
+   *   ③ `laidOutGraphRef` —— **最后排过的那张图**就是它 → 就不再排。
+   *
+   * ⚠️ **为什么订阅 ReactFlow 的 store，而不是等 `graphNodes` 变化**：
+   * `flowNodes`（memo）→ `setRfNodes`（state）→ ReactFlow 的 store，节点要经过
+   * **两跳**才进 ReactFlow 的 store。拿 graph store 的节点数当信号，dagre 会在
+   * ReactFlow 还没跟上的时候就去排 —— 排的是上一张图的节点。
+   * 订阅 ReactFlow 的 store 才拿得到**真正会被排版的那一批节点**。
+   *
+   * ⚠️ 排版动作放在 `requestAnimationFrame` 里：ReactFlow 的 store 在**同一个 effect**
+   * 里**分两次写** —— `fieldsToTrack` 里 `nodes` 排在 `edges` 前面，所以先 `setNodes`
+   * 再 `setEdges`；两次都是**同步的** zustand 写入 → 订阅者完全可能在两次之间醒来，
+   * 读到「节点已换、边还没换」的半截状态。而 `applyLayout()` 要**同时**读节点和边
+   * （`computeTreeLayout(nodes, edges)`）→ 晚一帧再排，这一轮写完了边才齐。
+   */
   useEffect(() => {
-    if (graphNodes.length > 0 && !hasAppliedInitialLayout.current) {
-      hasAppliedInitialLayout.current = true
-      // 延迟一帧让 ReactFlow 先完成首次渲染
-      requestAnimationFrame(() => applyLayout())
+    if (layoutMode !== 'tree') return
+    let rafId: number | null = null
+    const sync = () => {
+      // 这张图排过了 → 什么都不用做（顺带让拖拽时的每帧 store 变化都是 O(1)）
+      if (laidOutGraphRef.current === graphId) return
+      if (rafId !== null) return
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        if (laidOutGraphRef.current === graphId) return
+        // ① 这张图的节点装载完了吗（按图区分）
+        if (loadedGraphId !== graphId) return
+        const nodes = storeApi.getState().nodes
+        // ② ReactFlow 里装着的必须**全是这张图的**节点 —— 别的图一个都不许动
+        if (nodes.length === 0) return
+        if (!nodes.every((n) => String(n.data.graphId ?? '') === graphId)) return
+        // ③ 只排这一次
+        laidOutGraphRef.current = graphId
+        applyLayout()
+      })
     }
-  }, [graphNodes.length, applyLayout])
+    sync()
+    const unsub = storeApi.subscribe(sync)
+    return () => {
+      unsub()
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId)
+        rafId = null
+      }
+    }
+  }, [graphId, layoutMode, loadedGraphId, applyLayout, storeApi])
 
   // 切换图时重置标记
   useEffect(() => {
-    hasAppliedInitialLayout.current = false
     creatingProjectForGraph.current = null
     // 切图时清掉 force mode（避免 simulation 引用旧节点的 simNodes）
     exitForceMode()
-    setLayoutMode('tree')
+    // ⚠️ 置成 `null`（**未读回**）而不是 'tree'：切图后必须重新读一次模式，
+    // 读回来之前不能跑 dagre（否则新图会先被排成树形，坐标还落库）。
+    setLayoutMode(null)
     setForceLoading(false)
   }, [graphId, exitForceMode])
+
+  /**
+   * 读回布局模式（localStorage，不进 DB）。
+   *
+   * ⚠️ **不能**放进 `useState` 的初始化函数：`projectPath` 来自 store 里的 graphs，
+   * 首帧还没装载完 → 首帧读到的是 `bizgraph.layoutMode.default`（多半是空的）
+   * → 用户存的真实布局根本没被读到；等 `projectPath` 到位，写回路径又会把当前值
+   * （'tree'）写到真正的键上 → 用户存的布局被静默覆盖掉。
+   *
+   * ⚠️ **「等它到位」用 `currentGraph` 判断，不用 `projectPath`**：
+   * `projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
+   * 「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了。
+   * 没有项目路径的图读的是 `bizgraph.layoutMode.default` 那个键 —— 读和写必须对称。
+   *
+   * ⚠️ **必须声明在「切图重置」effect 之后**：切图时两个 effect 会在同一次提交里跑，
+   * 顺序决定谁赢 —— 读到的持久化值必须赢过重置用的 'tree'。
+   */
+  useEffect(() => {
+    if (!currentGraphId) return
+    const stored = localStorage.getItem(layoutModeStorageKey(projectPath))
+    setLayoutMode(stored === 'force' ? 'force' : 'tree')
+  }, [currentGraphId, projectPath])
+
+  /**
+   * 恢复成 'force' 时必须**真的**进入力导向模式 —— 不能只把工具栏上的字符串改成 'force'。
+   *
+   * 只改字符串的后果（三个都真实发生过）：
+   *   - 首屏 dagre 照跑 → 用户摆好的坐标被覆盖并落库；
+   *   - `isForceModeRef` 还是 false → 拖拽处理器全部提前 return →
+   *     力导向模式下的「钉住 + reheat + 落库」是死的；
+   *   - 工具栏写着「力导向」，画布却是树形，拖起来也没反应。
+   *
+   * 恢复用的是 `restoreForceLayout()`：用**当前坐标**建一个冻结的 simulation，
+   * **不重算、不落库**（`applyForceLayout()` 会重算 + 落库，恢复路径绝不能用它）。
+   *
+   * ⚠️ **必须跟着节点集合走，而不是恢复一次就完事**：
+   * 图元数据（`graph:list`）和节点（`graph:get`）是**两条独立的 IPC**，
+   * 元数据先到 → 模式先被读回 → 但那时画布上可能只有那个「自动创建的项目根节点」。
+   * 在这份残缺的节点集合上建出来的 simulation 里**没有用户的节点** →
+   * 拖它们时 `simNodes.get(id)` 落空 → 力导向拖拽照样是死的。
+   * 所以：节点集合一变就重建 simulation（用当前坐标，不重算、不落库）。
+   *
+   * ⚠️ **只在节点集合变化时重建** —— 位置变化不重建：
+   * 拖拽过程中 store 的 nodes 数组每帧都在变（位置在动），若按数组引用判断，
+   * 就会在拖拽中途重建 simulation → 钉住的状态被丢掉 → 拖拽失效。
+   *
+   * ⚠️ **恢复失败时不要把这批节点标记成「已处理」**：
+   * `restoreForceLayout()` 的返回值**必须**被用上 —— 拿不到这张图的节点时它返回
+   * false，这时若仍然把节点标记成「已处理」，那么下一次 store 事件里 id 集合
+   * 没变就不会再试 → 恢复**永远丢掉**（工具栏写着「力导向」，实际不是）。
+   * 失败时保持 `lastNodes` 不变 → 下一次 store 事件一定会再试一次。
+   */
+  useEffect(() => {
+    if (layoutMode !== 'force') return
+    let lastNodes: Node[] | null = null
+    const sync = () => {
+      const nodes = storeApi.getState().nodes
+      if (lastNodes && nodes === lastNodes) return
+      const idSetChanged =
+        !lastNodes ||
+        nodes.length !== lastNodes.length ||
+        nodes.some((n, i) => lastNodes?.[i]?.id !== n.id)
+      if (!idSetChanged) return
+      // 拿不到这张图的节点就返回 false —— 不能把「没建成」当成「建成」。
+      // 节点稍后进 store 时，store 的订阅会再触发一次 sync。
+      const restored = restoreForceLayout(graphId)
+      // **恢复失败 → 不标记**（见上面的说明）：让下一次 store 事件再试一次。
+      if (!restored) return
+      lastNodes = nodes
+    }
+    sync()
+    const unsub = storeApi.subscribe(sync)
+    return unsub
+  }, [layoutMode, graphId, restoreForceLayout, storeApi])
 
   const handleCreateNode = useCallback(async (type: NodeType) => {
     const position = screenToFlowPosition({ x: menuPosition.x, y: menuPosition.y })
@@ -1141,9 +1536,9 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onPaneClick={onPaneClick}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={handleNodeContextMenu}
-        onNodeDragStart={onForceDragStart as unknown as OnNodeDrag<Node>}
-        onNodeDrag={onForceDrag as unknown as OnNodeDrag<Node>}
-        onNodeDragStop={onForceDragStop as unknown as OnNodeDrag<Node>}
+        onNodeDragStart={handleNodeDragStart}
+        onNodeDrag={handleNodeDrag}
+        onNodeDragStop={handleNodeDragStop}
         onMouseMove={(event) => {
           // D10b: 把鼠标的 flow 坐标写入 ref，让 useBroadcastLocalCursor 周期性采样
           if (screenToFlowPosition) {
@@ -1422,6 +1817,7 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
         onCreateEdge={handleCreateEdge}
         nodeContextMenu={nodeContextMenu}
         nodes={graphNodes}
+        allowedChildTypes={allowedChildTypes}
         onNodeStatusChange={handleNodeStatusChange}
         onNodeDelete={handleNodeDelete}
         onCloseNodeContextMenu={() => setNodeContextMenu(null)}

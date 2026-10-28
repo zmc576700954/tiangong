@@ -21,6 +21,7 @@ const exposedChannels: (keyof IpcApi)[] = [
   'graph:get',
   'graph:delete',
   'graph:derive',
+  'graph:reparent',
 
   // Node operations
   'node:create',
@@ -28,6 +29,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   'node:update',
   'node:delete',
   'node:batchUpdatePositions',
+
+  // Node type rules (single authority: main-process nodeTypeRegistry)
+  'nodeType:listConfigs',
 
   // Edge operations
   'edge:create',

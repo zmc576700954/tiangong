@@ -137,8 +137,12 @@ const GRAPH_TYPE_KEYS: Record<GraphType, TranslationKey> = {
   dev: 'graph.type.dev',
 }
 
-/** 'wiki-link' 由 WikiLinkService 自动落边，不出现在手建边选项里 */
-type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link'>
+/**
+ * 手建边类型——用户能主动选的边类型。
+ * 'wiki-link' 由 WikiLinkService 自动落边，'hierarchical' 是 parent_id 的存储层镜像，
+ * 两者都不出现在手建边选项里。
+ */
+type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical'>
 
 const EDGE_TYPE_KEYS: Record<HandBuiltEdgeType, TranslationKey> = {
   default: 'edge.default.label',
@@ -210,6 +214,7 @@ export function edgeTypeOptions(locale: Locale = getLocale()): { type: EdgeType;
 /** 连线类型在画布上的短标签——wiki-link 也要有，所以不能只查 EDGE_TYPE_KEYS */
 export function edgeTypeLabel(type: EdgeType, locale: Locale = getLocale()): string {
   if (type === 'wiki-link') return tIn(locale, 'edge.wikiLink.label')
+  if (type === 'hierarchical') return tIn(locale, 'edge.hierarchical.label')
   const key = EDGE_TYPE_KEYS[type]
   return key ? tIn(locale, key) : type
 }

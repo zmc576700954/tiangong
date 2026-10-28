@@ -22,6 +22,7 @@ import type { NodeRepository } from '../repositories/node-repository'
 import type { EdgeRepository } from '../repositories/edge-repository'
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { createLogger } from '../shared/logger'
+import { ErrorCode, HierarchyError } from '../errors'
 
 const logger = createLogger('YjsManager')
 
@@ -220,7 +221,11 @@ export class YjsManager {
       acceptanceCriteria: (payload.acceptanceCriteria as GraphNode['acceptanceCriteria']) ?? [],
       graphId: String(payload.graphId),
       graphType: payload.graphType as GraphNode['graphType'],
-      parentId: (payload.parentId as string | undefined) ?? undefined,
+      // payload 来自远端 peer、不可信 —— parentId 与 id 一样要归一成字符串，
+      // 否则下面的自环比较是类型敏感的（`30 === '30'` 为 false），
+      // 且 parent_id 是 TEXT 列、better-sqlite3 把 JS number 绑成 REAL
+      // → 亲和转换后存成 `'30.0'`，与自己的 id `'30'` 不相等。
+      parentId: payload.parentId == null ? undefined : String(payload.parentId),
       rules: (payload.rules as GraphNode['rules']) ?? undefined,
       metadata: (payload.metadata as GraphNode['metadata']) ?? undefined,
       ownerRole: (payload.ownerRole as GraphNode['ownerRole']) ?? undefined,
@@ -234,6 +239,18 @@ export class YjsManager {
       wikiMeta: (payload.wikiMeta as GraphNode['wikiMeta']) ?? undefined,
       createdAt: (payload.createdAt as string) ?? now,
       updatedAt: (payload.updatedAt as string) ?? now,
+    }
+
+    // 防环：远端插入的新节点还没有后代，唯一可能的环是**自环**。
+    // 自环一旦写进去就永久卡死该节点 —— 迁移的孤儿清理不会清它
+    // （父节点就是它自己，存在），而之后任何 graph:reparent 都会被防环判成环。
+    // 所以在 INSERT 之前拒绝。
+    if (node.parentId && node.parentId === node.id) {
+      throw new HierarchyError(
+        `Remote node cannot be its own parent: ${node.id}`,
+        ErrorCode.HIERARCHY_SELF_PARENT,
+        { nodeId: node.id },
+      )
     }
 
     this.deps.db.prepare(

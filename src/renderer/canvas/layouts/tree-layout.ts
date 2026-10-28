@@ -5,7 +5,7 @@
  * 在调用 dagre 之前先做循环检测，将回边从边集合中剔除，
  * 避免 dagre 在遇到环时抛出异常或产生不可预测的位置。
  *
- * 布局后按边的连接顺序修正子节点的垂直排列，消除连线交叉。
+ * 布局后按兄弟序号修正子节点的垂直排列，消除连线交叉。
  * 多连通分量分别跑 dagre 再横向并排，避免分量重叠在同一原点。
  */
 import dagre from '@dagrejs/dagre'
@@ -152,13 +152,17 @@ export function findBackEdgeIds(nodes: Node[], edges: Edge[]): Set<string> {
 }
 
 /**
- * 按边的连接顺序修正子节点的垂直排列，消除连线交叉。
+ * 按兄弟序号修正子节点的垂直排列，消除连线交叉。
  *
- * dagre 的 barycenter 启发式不尊重边的原始顺序，
+ * dagre 的 barycenter 启发式不尊重兄弟顺序，
  * 导致子节点的垂直顺序和连线顺序不一致，线头缠绕。
- * 此函数按 edges 数组中的出现顺序重排每个父节点的子节点。
+ * 此函数按子节点的 `sortIndex`（同父节点下的兄弟序号，spec §4.8）重排。
+ *
+ * **兜底路径是承重的**：没有 `sortIndex` 的兄弟（存量节点 / 绕过了主进程写入的路径）
+ * 排在**最后**，且保持它们原有的相对顺序。渲染层不能假设上游一定干净 ——
+ * `Number(null)` 是 0（不是 NaN！），直接 Number() 会把「缺失」当成序号 0 排到最前面。
  */
-function sortChildrenByEdgeOrder(
+function sortChildrenBySortIndex(
   layoutNodes: Node[],
   edges: Edge[],
   nodesep: number,
@@ -176,28 +180,59 @@ function sortChildrenByEdgeOrder(
   for (const [, childIds] of childrenByParent) {
     if (childIds.length <= 1) continue
 
+    // 同一个孩子可能有多条边（父子对 + 语义边）—— 去重，别让它占两个位置
+    const seen = new Set<string>()
     const children = childIds
       .map((id) => nodeMap.get(id))
-      .filter((n): n is Node => n !== undefined)
+      .filter((n): n is Node => {
+        if (n === undefined) return false
+        if (seen.has(n.id)) return false
+        seen.add(n.id)
+        return true
+      })
 
     if (children.length <= 1) continue
 
-    const ys = children.map((n) => n.position.y)
+    // 有序号的按序号升序在前；没序号的排在后面，保持原相对顺序
+    const ordered = children
+      .map((node, index) => ({ node, index, sortIndex: readSortIndex(node) }))
+      .sort((a, b) => {
+        if (a.sortIndex === undefined && b.sortIndex === undefined) return a.index - b.index
+        if (a.sortIndex === undefined) return 1
+        if (b.sortIndex === undefined) return -1
+        return a.sortIndex - b.sortIndex || a.index - b.index
+      })
+      .map((entry) => entry.node)
+
+    const ys = ordered.map((n) => n.position.y)
+    // 行高取**原顺序**里第一个孩子的类型 —— 与改序前的行为一致（只改顺序，不改间距）
     const height = estimateNodeHeight(children[0])
     const groupMinY = Math.min(...ys)
 
-    for (let i = 0; i < children.length; i++) {
-      const child = children[i]
-      const idx = childIds.indexOf(child.id)
-      if (idx < 0) continue
+    ordered.forEach((child, idx) => {
       child.position = {
         ...child.position,
         y: groupMinY + idx * (height + nodesep),
       }
-    }
+    })
   }
 
   return layoutNodes
+}
+
+/**
+ * 读节点上的兄弟序号。
+ *
+ * `Node['data']` 是 `Record<string, unknown>` → 取出来是 unknown。
+ * ⚠️ **缺失的判断必须同时覆盖 undefined 与 null**：
+ * `Number(undefined)` 是 NaN（比较恒为 false，静默弄坏兜底路径），
+ * `Number(null)` 是 **0**（缺失的节点会被当成序号 0 排到最前面）。
+ */
+function readSortIndex(node: Node): number | undefined {
+  const raw = (node.data as Record<string, unknown> | undefined)?.sortIndex
+  if (raw === undefined || raw === null) return undefined
+  const value = Number(raw)
+  return Number.isNaN(value) ? undefined : value
 }
 
 function componentNodesByIds(
@@ -218,7 +253,7 @@ function componentNodesByIds(
  * 流程：
  * 1. 求连通分量；每个分量单独跑一次 dagre（避免分量重叠在同一原点）
  * 2. 每个分量内部做循环检测，剔除回边
- * 3. 按边的原始顺序修正子节点垂直排列
+ * 3. 按兄弟序号（sortIndex）修正子节点垂直排列
  * 4. 把各分量的结果横向并排，分量之间留 COL_GAP
  *
  * 返回包含剔除回边 ID 列表的 TreeLayoutResult。
@@ -317,9 +352,9 @@ export function computeTreeLayout(
     }
   }
 
-  // 按边顺序修正子节点垂直排列（用全部安全边，保证一致性）
+  // 按兄弟序号修正子节点垂直排列（用全部安全边，保证一致性）
   const safeEdgesAll = edges.filter((e) => !allBackEdgeIds.has(e.id))
-  const sorted = sortChildrenByEdgeOrder(layouted, safeEdgesAll, opts.nodesep)
+  const sorted = sortChildrenBySortIndex(layouted, safeEdgesAll, opts.nodesep)
 
   return {
     nodes: sorted,

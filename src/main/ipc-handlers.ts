@@ -89,6 +89,7 @@ import { registerCodeIntelHandlers, initCodeIntelligence, getSymbolIndex } from 
 import { registerMemoryHandlers } from './ipc/memory'
 import { registerModeHandlers } from './ipc/mode'
 import { registerSubagentHandlers } from './ipc/subagent'
+import { registerNodeTypeIpcHandlers } from './ipc/node-type'
 import { getIpcContext } from './ipc/context'
 import { ChatService } from './services/chat-service'
 import { ChatRepository } from './repositories/chat-repository'
@@ -479,6 +480,9 @@ export async function registerIpcHandlers(): Promise<void> {
   }
   // Phase 4 Task 7: subagent:* channels + progress push events
   registerSubagentHandlers(subagentManager, subagentInvocationRepo, typedHandle, getMainWindow)
+
+  // 节点类型规则表：渲染端不再自带一份副本，右键菜单的可选子类型以注册表为准
+  registerNodeTypeIpcHandlers(typedHandle)
 
   // D10b: realtime (awareness / user identity)
   registerRealtimeHandlers(typedHandle)

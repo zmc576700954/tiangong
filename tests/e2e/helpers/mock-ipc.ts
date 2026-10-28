@@ -1,4 +1,6 @@
 import type { Page } from '@playwright/test'
+import { nodeTypeRegistry } from '@main/shared/node-type-registry'
+import type { NodeTypeConfig } from '@shared/types'
 
 export const MOCK_GRAPH_ID = 'graph_e2e_001'
 export const MOCK_NODE_MODULE_ID = 'node_e2e_module_001'
@@ -48,10 +50,104 @@ const defaultMockNodes = [
   },
 ]
 
-export async function setupMockIpc(page: Page, options?: { initialStatus?: SubagentStatus; graphs?: typeof defaultMockGraph[]; nodes?: typeof defaultMockNodes }) {
+/**
+ * mock 图的形状 —— `projectPath` 可以缺省。
+ *
+ * 「这张图没有项目路径」是一条**真实的分支**：布局模式的 localStorage 键按
+ * 项目路径分区，没有路径的图落到 `bizgraph.layoutMode.default`。
+ * 读写两端必须对称，所以这条分支也要能被 e2e 覆盖。
+ */
+export type MockGraph = Omit<typeof defaultMockGraph, 'projectPath'> & {
+  projectPath?: string
+}
+
+/**
+ * mock 节点的形状 —— 默认节点 + 可选的 `parentId`。
+ *
+ * 层级边由 `nodes.parent_id` 派生（不读 `edges` 表），所以结构编辑类用例
+ * 需要能传带 `parentId` 的节点。默认数组是**字面量数组** → 元素类型里没有
+ * `parentId` → 直接传会触发 TypeScript 的多余属性检查，因此这里显式放宽。
+ */
+export type MockNode = typeof defaultMockNodes[number] & { parentId?: string }
+
+/**
+ * mock 边的形状 —— 只带画布需要的字段。
+ *
+ * 结构编辑用例要能造出「存储里的层级边」：父子关系的事实来源是 `parent_id`，
+ * 存储里的层级边在渲染时必须被丢弃。不给 mock 这个能力，
+ * 「父子之间只画一条线」就退化成「什么都没画也只有一条线」—— 那道断言等于没写。
+ */
+export type MockEdge = {
+  id: string
+  source: string
+  target: string
+  graphId?: string
+  edgeType?: string
+  label?: string
+}
+
+/**
+ * mock 的配置项。
+ *
+ * ⚠️ **向后兼容**：`nodes` 仍然是「所有图共用的那一份节点」，
+ * 不传 `nodesByGraph` 的用例行为**一模一样**（现有 12 条用例就是这种）。
+ */
+export interface MockIpcOptions {
+  initialStatus?: SubagentStatus
+  graphs?: MockGraph[]
+  nodes?: MockNode[]
+  /**
+   * **按图区分**的节点 —— `graph:get(graphId)` 返回这张图自己的节点。
+   *
+   * ⚠️ 以前 mock 的 `graph:get` 恒返回第一张图 + 同一份节点 → **表达不了「切图」**：
+   * 切图之后 store 里拿到的还是同一批节点 → 「dagre 排到了上一张图的节点」这条竞态
+   * 根本不会发生 → 用例会「永远绿、却什么都没验」。
+   */
+  nodesByGraph?: Record<string, MockNode[]>
+  edges?: MockEdge[]
+  /**
+   * **只作用于 `graph:get`** 的延迟（毫秒）。
+   *
+   * 竞态的胜负取决于「`graph:get` 的 IPC 往返」与「下一帧的 rAF」谁先到。
+   * mock 的 IPC 立刻 resolve → rAF 稳赢 → 竞态**不会复现**。
+   * 给 `graph:get` 加一个可控延迟，测试才能**确定性地**把 rAF 排到 IPC 前面。
+   *
+   * 数字 = 所有 `graph:get` 都延迟；**映射 = 只延迟列出来的那几张图**（键是图 id）。
+   * 后者让「A 正常加载、B 慢一点」成为可能 ——
+   * 首屏那次自动 fitView 是按「最先进入画布的那批节点」定缩放的：
+   * 连 A 也一起延迟的话，画布上只剩那个自动创建的 project 根节点 →
+   * fitView 把它放大到最大（200%）→ A 的节点被 `onlyRenderVisibleElements`
+   * 裁掉 → 连「A 加载好了」都观测不到。
+   */
+  graphGetDelayMs?: number | Record<string, number>
+}
+
+export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
   const mockGraphs = options?.graphs ?? [defaultMockGraph]
   const mockNodes = options?.nodes ?? defaultMockNodes
-  await page.addInitScript((opts: { initialStatus: SubagentStatus; graphs: typeof defaultMockGraph[]; nodes: typeof defaultMockNodes }) => {
+  const mockEdges = options?.edges ?? []
+  /**
+   * 类型规则表 —— **直接从真实注册表生成**。
+   *
+   * 投影规则与真实 handler 完全一致（`src/main/ipc/node-type.ts:14`）：
+   * `nodeTypeRegistry.listConfigs().map(({ behavior: _behavior, ...rest }) => rest)`
+   * —— `behavior` 字段含函数、不可结构化克隆，必须剥掉。
+   *
+   * ⚠️ 以前这里是一份**手抄**的副本：真实注册表改了、副本没改，
+   * 「类型不允许」那条断言照样绿 —— 闸门验的是副本，不是产品行为。
+   */
+  const nodeTypeConfigs: Omit<NodeTypeConfig, 'behavior'>[] = nodeTypeRegistry
+    .listConfigs()
+    .map(({ behavior: _behavior, ...rest }) => rest)
+  await page.addInitScript((opts: {
+    initialStatus: SubagentStatus
+    graphs: MockGraph[]
+    nodes: MockNode[]
+    nodesByGraph: Record<string, MockNode[]>
+    edges: MockEdge[]
+    graphGetDelayMs: number | Record<string, number>
+    nodeTypeConfigs: Omit<NodeTypeConfig, 'behavior'>[]
+  }) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {}
 
     function emit(channel: string, ...args: unknown[]) {
@@ -61,8 +157,12 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     const mockGraphs = opts.graphs
-    const mockGraph = mockGraphs[0]
     const mockNodes = opts.nodes
+    const mockNodesByGraph = opts.nodesByGraph
+    const mockEdges = opts.edges
+    const mockNodeTypeConfigs = opts.nodeTypeConfigs
+    /** 所有节点（共用那份 + 按图区分的那些）—— 查节点时用 */
+    const allMockNodes = [...mockNodes, ...Object.values(mockNodesByGraph).flat()]
 
     const mockSubagentTypes = [
       { name: 'explore', displayName: '探索者', description: 'Read-only search', allowedTools: ['Read', 'Glob', 'Grep'], scopeStrategy: 'inherit' },
@@ -72,6 +172,22 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     const mockState = {
       invocationStatus: opts.initialStatus ?? 'queued',
       invocationResultText: null as string | null,
+      /**
+       * `graph:reparent` 的调用记录。
+       *
+       * **拒绝类用例靠它断言「IPC 根本没被调用」** —— 只断言「连线没变」是不够的：
+       * 落点被默默接受、而 mock 返回空的 movedPositions 时，连线同样不会变。
+       */
+      reparentCalls: [] as Array<{ nodeId: string; newParentId: string }>,
+      /**
+       * `node:batchUpdatePositions` 的调用记录（每次调用记一整批）。
+       *
+       * 「坐标有没有被写回数据库」只能靠它判断：
+       * - 首屏 dagre（`applyLayout`）会写一批**所有**节点；
+       * - 力导向拖拽收尾（`onNodeDragStop`）也会写一批**所有**节点；
+       * - 普通（树形）拖拽的防抖持久化只写**被拖的那一个**节点。
+       */
+      positionUpdates: [] as Array<Array<{ id: string; x: number; y: number }>>,
     }
 
     // Expose mutable state and emit helper for test scripts
@@ -84,9 +200,49 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
 
     const mockApi: Record<string, unknown> = {
       // Graph
-      'graph:get': async () => ({ graph: mockGraph, nodes: mockNodes, edges: [], bugs: [] }),
+      /**
+       * `graph:get(graphId)` —— 返回**被请求的那张图**和**它自己的节点**。
+       *
+       * ⚠️ 以前这里恒返回第一张图 + 同一份节点 → 表达不了「切图」：
+       * 切图后 store 里拿到的还是同一批节点 → 「dagre 排到上一张图的节点」这条竞态
+       * 永远不会发生 → 用例「永远绿、却什么都没验」。
+       *
+       * 延迟**只加在 `graph:get` 上**（别的通道一律不拖慢）——
+       * 竞态的胜负取决于「IPC 往返」与「下一帧的 rAF」谁先到，
+       * 有了可控延迟，测试才能确定性地把 rAF 排到 IPC 前面。
+       */
+      'graph:get': async (graphId?: string) => {
+        const delay =
+          typeof opts.graphGetDelayMs === 'number'
+            ? opts.graphGetDelayMs
+            : graphId
+              ? (opts.graphGetDelayMs[graphId] ?? 0)
+              : 0
+        if (delay > 0) {
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        }
+        const graph =
+          (graphId ? mockGraphs.find((g) => g.id === graphId) : undefined) ?? mockGraphs[0]
+        // 按图区分的节点优先；没有配置就退回「共用的那一份」（向后兼容）。
+        // ⚠️ `graphs: []` 时 `graph` 是 undefined —— 直接读 `graph.id` 会抛 TypeError
+        // （改前这里回的是 `{ graph: undefined, ... }`，不抛）。有些用例（如 `app.spec.ts`）
+        // 就是用空图列表起应用的 —— 别把那条路炸掉。
+        const nodes = graph ? (mockNodesByGraph[graph.id] ?? mockNodes) : mockNodes
+        return { graph, nodes, edges: mockEdges, bugs: [] }
+      },
       'graph:list': async () => mockGraphs,
-      'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraph, name, type }),
+      'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraphs[0], name, type }),
+      /**
+       * 拖拽重挂 —— 父子关系变更的唯一入口。
+       *
+       * mock 是**无状态**的（不回写 nodes），但它**记录调用**：
+       * 测试要能断言「IPC 有没有被调用过」。合法落点时渲染端会照抄
+       * `newParentId` 更新 store 里的 parentId → 派生边随之改画。
+       */
+      'graph:reparent': async (nodeId: string, newParentId: string) => {
+        mockState.reparentCalls.push({ nodeId, newParentId })
+        return { nodeId, oldParentId: null, newParentId, movedPositions: [] }
+      },
 
       // Node
       'node:create': async (data: Record<string, unknown>) => ({
@@ -97,9 +253,24 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
       }),
       'node:createBatch': async (items: Record<string, unknown>[]) =>
         items.map((data) => ({ ...data, id: `node_${Date.now()}_${Math.random().toString(36).slice(2)}`, createdAt: Date.now(), updatedAt: Date.now() })),
-      'node:update': async (id: string, data: Record<string, unknown>) => ({ ...mockNodes.find((n) => n.id === id), ...data }),
+      /**
+       * `node:update` —— 回一个**完整的**节点（真实实现回的是整行）。
+       *
+       * ⚠️ 必须在**所有**节点集合里找（共用的那份 + 按图区分的那些）：
+       * 找不到就只回 `data` → 渲染端会把 store 里的节点整个替换掉 →
+       * `graphId` / `type` / `title` 全丢 → 「按图区分」的判定随之失效。
+       */
+      'node:update': async (id: string, data: Record<string, unknown>) => ({
+        ...allMockNodes.find((n) => n.id === id),
+        ...data,
+      }),
       'node:delete': async () => true,
-      'node:batchUpdatePositions': async () => undefined,
+      'node:batchUpdatePositions': async (updates: Array<{ id: string; x: number; y: number }>) => {
+        mockState.positionUpdates.push(updates)
+      },
+
+      // Node type rules —— **直接来自真实注册表**（见 setupMockIpc 里的投影）。
+      'nodeType:listConfigs': async () => mockNodeTypeConfigs,
 
       // Edge
       'edge:create': async (data: Record<string, unknown>) => ({ ...data, id: `edge_${Date.now()}` }),
@@ -178,6 +349,16 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
           ? { invocationId: 'inv_test_001', resultText: mockState.invocationResultText ?? 'E2E subagent result', resultFiles: [], tokensUsed: 0, durationMs: 100 }
           : null,
 
+      // Realtime (Yjs awareness) —— GraphCanvas 挂载时**必调**这两个通道。
+      // 缺通道不是「少个功能」：`window.electronAPI['realtime:getIdentity']` 是 undefined，
+      // 调用它会**同步**抛 TypeError（`.catch()` 接不住同步 throw）→ React 卸载整棵树
+      // → 画布白屏 → 所有等 `[data-testid="graph-canvas"]` 的用例全部超时。
+      // 这两个通道是 `73700b3`（Yjs Awareness）引入的，mock 当时没跟上，
+      // 于是浏览器 e2e 从那以后就一直是坏的 —— 与结构编辑批次无关。
+      // `started: false` = 主进程没起 awareness server → 渲染端不建连接，e2e 不需要它。
+      'realtime:getIdentity': async () => ({ userId: 'e2e-user', userName: 'E2E User', colorIndex: 0 }),
+      'realtime:getConnectionInfo': async () => ({ wsUrl: '', port: 0, started: false }),
+
       // Settings
       'settings:read': async () => ({ defaultModel: 'sonnet' }),
       'settings:getAdapterPreferences': async () => ({
@@ -218,7 +399,63 @@ export async function setupMockIpc(page: Page, options?: { initialStatus?: Subag
     }
 
     window.electronAPI = mockApi as Window['electronAPI']
-  }, { initialStatus: options?.initialStatus ?? 'queued', graphs: mockGraphs, nodes: mockNodes })
+  }, {
+    initialStatus: options?.initialStatus ?? 'queued',
+    graphs: mockGraphs,
+    nodes: mockNodes,
+    nodesByGraph: options?.nodesByGraph ?? {},
+    edges: mockEdges,
+    graphGetDelayMs: options?.graphGetDelayMs ?? 0,
+    nodeTypeConfigs,
+  })
+}
+
+/**
+ * 读 `node:batchUpdatePositions` 的调用记录（每次调用一批）。
+ *
+ * 「坐标有没有被写回数据库」只能靠它判断 —— 画布上看着没动，
+ * 落库那条路照样可能已经跑过了。
+ */
+export async function getPositionUpdates(
+  page: Page,
+): Promise<Array<Array<{ id: string; x: number; y: number }>>> {
+  return page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { positionUpdates?: Array<Array<{ id: string; x: number; y: number }>> }
+    }).__bizgraphMockState
+    return state?.positionUpdates ?? []
+  })
+}
+
+/**
+ * 清空 `node:batchUpdatePositions` 的调用记录。
+ *
+ * 「启动阶段写过」和「拖拽之后写过」必须分得开 —— 否则「拖拽产生了一批
+ * 多节点的坐标写回」这条断言会被启动阶段的 dagre 写回顶包：
+ * 树形模式下 dagre 也会写一批所有节点，那条断言就验不到「力导向拖拽」了。
+ */
+export async function clearPositionUpdates(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { positionUpdates?: Array<Array<{ id: string; x: number; y: number }>> }
+    }).__bizgraphMockState
+    if (state?.positionUpdates) state.positionUpdates = []
+  })
+}
+
+/**
+ * 读 `graph:reparent` 的调用记录。
+ *
+ * 拒绝类用例靠它断言「IPC 根本没被调用」—— 只断言「连线没变」是不够的：
+ * 落点被默默接受、而 mock 返回空的 movedPositions 时，连线同样不会变。
+ */
+export async function getReparentCalls(page: Page): Promise<Array<{ nodeId: string; newParentId: string }>> {
+  return page.evaluate(() => {
+    const state = (window as unknown as {
+      __bizgraphMockState?: { reparentCalls?: Array<{ nodeId: string; newParentId: string }> }
+    }).__bizgraphMockState
+    return state?.reparentCalls ?? []
+  })
 }
 
 export async function setMockInvocationStatus(page: Page, status: SubagentStatus, resultText?: string) {

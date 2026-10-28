@@ -5,7 +5,7 @@
 
 import type {
   Graph, GraphType, GraphNode, GraphEdge, BugNode, GraphSnapshot, GraphFetchOptions,
-  NodeStatus, ContextRef,
+  NodeStatus, ContextRef, NodeTypeConfig, ReparentResult,
   ProjectScanResult, ScanModule, NodeEnrichment, NodeType,
 } from './graph'
 import type {
@@ -59,6 +59,8 @@ export interface IpcApi {
   'graph:get': (id: string, options?: GraphFetchOptions) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>
   'graph:derive': (sourceGraphId: string, name?: string) => Promise<Graph>
+  /** 换父 —— 父子关系变更的唯一入口（主进程 HierarchyService 负责校验与事务） */
+  'graph:reparent': (nodeId: string, newParentId: string) => Promise<ReparentResult>
 
   // 节点操作
   'node:create': (data: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>) => Promise<GraphNode>
@@ -66,6 +68,9 @@ export interface IpcApi {
   'node:update': (id: string, data: Partial<GraphNode>) => Promise<GraphNode & { warnings?: string[] }>
   'node:delete': (id: string) => Promise<boolean>
   'node:batchUpdatePositions': (updates: Array<{ id: string; x: number; y: number }>) => Promise<boolean>
+
+  // 节点类型规则 —— 单一权威在主进程 nodeTypeRegistry，渲染端只读
+  'nodeType:listConfigs': () => Promise<NodeTypeConfig[]>
 
   // 边操作
   'edge:create': (data: Omit<GraphEdge, 'id'>) => Promise<GraphEdge>

@@ -13,6 +13,10 @@ import type {
   NodeMetadata,
   NodeType,
 } from '@shared/types'
+import { isDescendant } from './shared/hierarchy-utils'
+import { createLogger } from './shared/logger'
+
+const logger = createLogger('ProjectAnalyzer')
 
 // ============================================
 // 节点尺寸配置（与 renderer 端 layout.ts 保持一致）
@@ -43,6 +47,9 @@ export class ProjectAnalyzer {
   analyze(scanResult: ProjectScanResult): ProjectGraphResult {
     const nodes: ProjectGraphResult['nodes'] = []
     const edges: ProjectGraphResult['edges'] = []
+    // tempId → parentTempId 的内存映射：防环检查的 parentOf 回调。
+    // 与数据库路径共用同一个 isDescendant —— 防环逻辑只有一份。
+    const parentByTempId = new Map<string, string>()
 
     // 1. 构建节点和边（先用占位 position，后面由 dagre 统一计算）
     const rootNode = this.createRootNode(scanResult)
@@ -52,6 +59,7 @@ export class ProjectAnalyzer {
       const module = scanResult.modules[i]
       const moduleTempId = `module-${i}`
       const moduleMetadata = this.buildModuleMetadata(module)
+      const moduleParentTempId = this.resolveParent(parentByTempId, moduleTempId, rootNode.tempId)
 
       nodes.push({
         tempId: moduleTempId,
@@ -64,16 +72,20 @@ export class ProjectAnalyzer {
         position: { x: 0, y: 0 }, // dagre 会覆盖
         metadata: moduleMetadata,
         acceptanceCriteria: [],
+        parentTempId: moduleParentTempId,
         ownerRole: 'product',
       })
 
-      edges.push({
-        sourceTempId: rootNode.tempId,
-        targetTempId: moduleTempId,
-        label: '包含',
-        edgeType: 'default',
-        graphId: '',
-      })
+      if (moduleParentTempId) {
+        edges.push({
+          sourceTempId: moduleParentTempId,
+          targetTempId: moduleTempId,
+          // 层级边不带标签：画布上的层级关系由 parent_id 派生，不靠边上的文字。
+          // （渲染层剔除存储的 'hierarchical' 边、只画派生边 —— 派生边没有 label。）
+          edgeType: 'hierarchical',
+          graphId: '',
+        })
+      }
 
       for (let j = 0; j < module.processes.length; j++) {
         const process = module.processes[j]
@@ -82,6 +94,7 @@ export class ProjectAnalyzer {
           ? `${module.name} · ${process.name}`
           : process.name
         const processMetadata = this.buildProcessMetadata(process)
+        const processParentTempId = this.resolveParent(parentByTempId, processTempId, moduleTempId)
 
         nodes.push({
           tempId: processTempId,
@@ -94,21 +107,24 @@ export class ProjectAnalyzer {
           position: { x: 0, y: 0 },
           metadata: processMetadata,
           acceptanceCriteria: [],
-          parentTempId: moduleTempId,
+          parentTempId: processParentTempId,
           ownerRole: 'product',
         })
 
-        edges.push({
-          sourceTempId: moduleTempId,
-          targetTempId: processTempId,
-          label: '',
-          edgeType: 'default',
-          graphId: '',
-        })
+        if (processParentTempId) {
+          edges.push({
+            sourceTempId: processParentTempId,
+            targetTempId: processTempId,
+            label: '',
+            edgeType: 'hierarchical',
+            graphId: '',
+          })
+        }
 
         for (let k = 0; k < process.features.length; k++) {
           const feature = process.features[k]
           const featureTempId = `${processTempId}-feature-${k}`
+          const featureParentTempId = this.resolveParent(parentByTempId, featureTempId, processTempId)
 
           nodes.push({
             tempId: featureTempId,
@@ -121,17 +137,19 @@ export class ProjectAnalyzer {
             position: { x: 0, y: 0 },
             metadata: {},
             acceptanceCriteria: [],
-            parentTempId: processTempId,
+            parentTempId: featureParentTempId,
             ownerRole: 'developer',
           })
 
-          edges.push({
-            sourceTempId: processTempId,
-            targetTempId: featureTempId,
-            label: '',
-            edgeType: 'default',
-            graphId: '',
-          })
+          if (featureParentTempId) {
+            edges.push({
+              sourceTempId: featureParentTempId,
+              targetTempId: featureTempId,
+              label: '',
+              edgeType: 'hierarchical',
+              graphId: '',
+            })
+          }
         }
       }
     }
@@ -150,6 +168,36 @@ export class ProjectAnalyzer {
       nodes,
       edges,
     }
+  }
+
+  /**
+   * 解析并登记一个节点的父节点（写入前做防环检查）。
+   *
+   * 新父不能落在节点自己的子树里 —— 否则 parent_id 一落库就是一棵环。
+   * 判定复用 `isDescendant`（祖先在前，后代在后），parentOf 传内存里的
+   * tempId → parentTempId 映射；数据库路径传的是同一函数的 SQL 查询。
+   *
+   * ⚠️ 今天这道守卫够不到任何东西：analyzer 自己搭的是固定的
+   * project→module→process→feature 三层结构，逐层自顶向下建，父节点永远先于
+   * 子节点存在。它防的是**将来**可能出现的任意 parentTempId 输入。
+   * 别把它当成「已经在替 AI 路径挡环」的证明 —— 规格 §4.4.3 要求它存在，
+   * 但今天的可达性是零。
+   *
+   * @returns 通过检查返回父节点 tempId；成环则返回 undefined（不写父子关系）
+   */
+  private resolveParent(
+    parentByTempId: Map<string, string>,
+    nodeTempId: string,
+    parentTempId: string,
+  ): string | undefined {
+    if (isDescendant(nodeTempId, parentTempId, (id) => parentByTempId.get(id) ?? null)) {
+      logger.warn(
+        `层级防环：${nodeTempId} 的父节点 ${parentTempId} 落在自己的子树里，已断开该父子关系`,
+      )
+      return undefined
+    }
+    parentByTempId.set(nodeTempId, parentTempId)
+    return parentTempId
   }
 
   /**

@@ -5,7 +5,7 @@ import { setupMockIpc, MOCK_NODE_MODULE_ID, MOCK_NODE_PROCESS_ID } from './helpe
 test.describe('Edge Creation', () => {
   test.beforeEach(async ({ page }) => {
     await setupMockIpc(page)
-    await page.goto('http://localhost:5173')
+    await page.goto('http://127.0.0.1:5173')
     await page.click('text=E2E Test Graph')
     await waitForCanvas(page)
   })

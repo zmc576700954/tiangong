@@ -6,7 +6,7 @@ import { setupMockIpc } from './helpers/mock-ipc'
 test.describe('Node Interactions', () => {
   test.beforeEach(async ({ page }) => {
     await setupMockIpc(page, { nodes: [] })
-    await page.goto('http://localhost:5173')
+    await page.goto('http://127.0.0.1:5173')
     await page.click('text=E2E Test Graph')
     await waitForCanvas(page)
   })

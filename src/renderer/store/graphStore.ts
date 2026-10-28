@@ -31,6 +31,14 @@ interface GraphState {
   nodes: GraphNode[]
   edges: GraphEdge[]
   bugs: BugNode[]
+  /**
+   * store 里的节点当前属于**哪张图** —— `loadGraph` 装载完成时写入。
+   *
+   * 「这张图的节点装载完了吗」必须**按图**回答：「store 里有一些节点」不是合法信号 ——
+   * `loadGraph` 是异步的，在它 resolve 之前 store 里还留着**上一张图**的节点。
+   * 拿「有没有节点」当信号，dagre 就会把上一张图的节点重排一遍并**落库**。
+   */
+  loadedGraphId: string | null
   /** 内部 Map 索引，用于 O(1) 节点/边查找（不暴露给组件订阅） */
   _nodeMap: Map<string, GraphNode>
   _edgeMap: Map<string, GraphEdge>
@@ -49,6 +57,18 @@ interface GraphState {
   createNodeBatch: (nodesData: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => Promise<GraphNode[]>
   updateNode: (id: string, data: Partial<GraphNode>) => Promise<void>
   batchUpdatePositions: (updates: Array<{ id: string; x: number; y: number }>) => Promise<void>
+  /**
+   * 只更新渲染端 store 里的位置，**不落库**。
+   *
+   * 拖拽结束那一下必须让 store 立刻跟上画布：`flowNodes` 的缓存键一变
+   * （被拖节点的 zIndex 变化）就会整条重建，重建时带的是 store 里的位置 ——
+   * store 落后 300ms 的话，节点松手瞬间会弹回拖拽前的位置。
+   *
+   * 落库仍然防抖、仍然能被重挂路径的抑制机制摘掉 —— 位置权威在主进程。
+   */
+  applyLocalPositions: (updates: Array<{ id: string; x: number; y: number }>) => void
+  /** 拖拽重挂父节点 —— 父子关系变更的唯一入口（Task 6 的 graph:reparent） */
+  reparentNode: (nodeId: string, newParentId: string) => Promise<void>
   deleteNode: (id: string) => Promise<void>
   selectNode: (id: string | null) => void
   toggleNodeSelection: (nodeId: string) => void
@@ -146,6 +166,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   nodes: [],
   edges: [],
   bugs: [],
+  loadedGraphId: null,
   _nodeMap: new Map(),
   _edgeMap: new Map(),
   selectedNodeId: null,
@@ -167,6 +188,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodes: result.nodes,
         edges,
         bugs: result.bugs,
+        // 这批节点属于哪张图 —— 「按图区分」的装载信号。
+        // 只有节点**真的被替换掉**的时候才写：result 为空时 store 里还是上一张图的节点。
+        loadedGraphId: graphId,
         _nodeMap: buildNodeMap(result.nodes),
         _edgeMap: buildEdgeMap(edges),
       })
@@ -197,7 +221,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (id) {
       get().loadGraph(id)
     } else {
-      set({ nodes: [], edges: [], bugs: [], _nodeMap: new Map(), _edgeMap: new Map() })
+      set({ nodes: [], edges: [], bugs: [], loadedGraphId: null, _nodeMap: new Map(), _edgeMap: new Map() })
     }
   },
 
@@ -292,6 +316,59 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({ nodes: prevNodes, _nodeMap: buildNodeMap(prevNodes) })
       throw err
     }
+  },
+
+  /**
+   * 只改 store、不落库的位置更新。
+   *
+   * 拖拽结束那一下，store 必须**立刻**跟上画布：`flowNodes` 的缓存键一变
+   * （被拖节点的 zIndex 变化）就会整条重建，重建时带的是 store 里的位置 ——
+   * store 落后 300ms 的话，节点松手瞬间会弹回拖拽前的位置。
+   *
+   * 落库仍然防抖、仍然能被重挂路径的抑制机制摘掉 —— 位置权威在主进程。
+   * 所以这里**没有** IPC、**没有** try/catch、**没有**回滚：不落库，没有失败可回滚。
+   */
+  applyLocalPositions: (updates) => {
+    const updateMap = new Map(updates.map((u) => [u.id, u]))
+    setNodes((nodes) =>
+      nodes.map((n) => {
+        const u = updateMap.get(n.id)
+        return u ? { ...n, position: { x: u.x, y: u.y } } : n
+      }),
+    )
+  },
+
+  /**
+   * 拖拽重挂父节点。
+   *
+   * 主进程算好锚点位置并把整棵子树平移，返回 `movedPositions`（**包含被移动节点自己**）。
+   * 位置以主进程为准 —— 渲染端的自由位置持久化必须给这条路径让位。
+   *
+   * ⚠️ 被移动节点自己的位置也要更新：`translateSubtree` 在目标父节点已有兄弟时
+   * 会把锚点挪到兄弟包围盒的左侧 / 下方，它的坐标**确实会变**。
+   * 只改 parentId 不改 position → store 留旧坐标、DB 是新坐标 → 节点弹回原处。
+   */
+  reparentNode: async (nodeId, newParentId) => {
+    const result = await window.electronAPI['graph:reparent'](nodeId, newParentId)
+    const posMap = new Map(result.movedPositions.map((p) => [p.id, p]))
+    setNodes((nodes) =>
+      nodes.map((n) => {
+        const p = posMap.get(n.id)
+        const position = p ? { x: p.x, y: p.y } : n.position
+        if (n.id === nodeId) {
+          // 兄弟序号由主进程算（它才知道新的 max(兄弟)+1），渲染端只照抄。
+          // 用 ?? 而不是直接赋值：返回值里没这个字段时**保留原值** ——
+          // 直接赋值会把「有值」变成 undefined，而 undefined 在布局里意味着「排最后」。
+          return {
+            ...n,
+            parentId: result.newParentId,
+            position,
+            sortIndex: result.sortIndex ?? n.sortIndex,
+          }
+        }
+        return p ? { ...n, position } : n
+      }),
+    )
   },
 
   deleteNode: async (id) => {

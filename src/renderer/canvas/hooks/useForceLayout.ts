@@ -3,6 +3,8 @@
  *
  * 提供：
  * - `applyForceLayout()` —— 一键布局：同步 200 tick 后写入 store 并持久化
+ * - `restoreForceLayout(graphId)` —— **恢复**力导向模式：用当前坐标建一个冻结的
+ *   simulation，**不重算、不落库**（恢复路径绝不能碰 `applyForceLayout()`）
  * - 拖拽事件处理器（start / move / stop） —— 在 force mode 下与 d3 仿真协作
  * - `isForceMode` ref —— 供 UI 判断当前是否处于 force mode
  *
@@ -156,12 +158,75 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
     options.reheatAlphaThreshold,
   ])
 
-  /** 退出 force mode —— 在切换布局类型或卸载图时调用 */
+  /**
+   * 退出 force mode —— 在切换布局类型或卸载图时调用。
+   */
   const exitForceMode = useCallback(() => {
     holderRef.current?.simulation.stop()
     holderRef.current = null
     isForceModeRef.current = false
   }, [])
+
+  /**
+   * **恢复**力导向模式 —— 不重算、不落库。
+   *
+   * 与 `applyForceLayout()` 的差别就是这两点，缺一不可：
+   *   - `applyForceLayout()` 会 `computeForceLayout` **重算**一遍布局；
+   *   - `applyForceLayout()` 会 `batchUpdatePositions` **把坐标落库**。
+   * 恢复路径两件事都不能做 —— 用户上次摆好的坐标必须原样保留。
+   *
+   * 用 `createForceSimulation(nodes, edges, opts)` 建一个**冻结**的 simulation：
+   * 它把传入节点的**当前 position 直接当作 simulation 的初始坐标**，
+   * 并且 `.alpha(0)` 冻结（等用户拖拽时才 reheat）。
+   *
+   * ⚠️ **力的中心用当前节点的质心，而不是视口中心**：
+   * d3-force 的 `forceCenter` **不乘 alpha** —— 只要 simulation 跑一个 tick，
+   * 它就把整组节点平移到 `(centerX, centerY)`。恢复时若用视口中心，
+   * 这一平移会让 simulation 的坐标系和画布坐标系错开 →
+   * 用户拖第一个节点时，节点会被弹簧猛拽到别处。
+   * 用质心做中心 → 这一步平移约等于 0 → simulation 留在画布坐标系里。
+   *
+   * @param graphId 只恢复这张图的节点 —— 切图时 ReactFlow 里还留着上一张图的节点。
+   * @returns 是否真的进入了力导向模式。**节点还没进 ReactFlow 的 store 时返回 false** ——
+   *          调用方必须等节点就绪后重试，不能把「没建成」当成「建成」。
+   */
+  const restoreForceLayout = useCallback(
+    (graphId: string): boolean => {
+      const { nodes, edges } = storeApi.getState()
+      const scoped = nodes.filter((n) => String(n.data.graphId ?? '') === graphId)
+      if (scoped.length === 0) return false
+
+      const scopedIds = new Set(scoped.map((n) => n.id))
+      const scopedEdges = edges.filter(
+        (e) => scopedIds.has(e.source) && scopedIds.has(e.target),
+      )
+
+      let centerX = 0
+      let centerY = 0
+      for (const n of scoped) {
+        centerX += n.position.x
+        centerY += n.position.y
+      }
+      centerX /= scoped.length
+      centerY /= scoped.length
+
+      const { simulation, simNodes } = createForceSimulation(scoped, scopedEdges, {
+        centerX,
+        centerY,
+      })
+
+      holderRef.current?.simulation.stop()
+      holderRef.current = {
+        simulation,
+        simNodes: new Map(simNodes.map((sn) => [sn.id, sn])),
+        reheatMaxTicks: options.reheatMaxTicks ?? DEFAULT_REHEAT_MAX_TICKS,
+        reheatAlphaThreshold: options.reheatAlphaThreshold ?? DEFAULT_REHEAT_ALPHA_THRESHOLD,
+      }
+      isForceModeRef.current = true
+      return true
+    },
+    [storeApi, options.reheatMaxTicks, options.reheatAlphaThreshold],
+  )
 
   // 拖拽开始：pin 当前节点，simulation 冻结
   const onNodeDragStart: NodeMouseHandler = useCallback((_event, node) => {
@@ -238,6 +303,7 @@ export function useForceLayout(options: UseForceLayoutOptions = {}) {
 
   return {
     applyForceLayout,
+    restoreForceLayout,
     exitForceMode,
     onNodeDragStart,
     onNodeDrag,

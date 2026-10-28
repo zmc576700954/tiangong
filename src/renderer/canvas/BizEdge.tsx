@@ -12,10 +12,13 @@ import { useI18n } from '../i18n/useI18n'
 import { edgeTypeLabel } from '@shared/i18n'
 import type { EdgeType, EdgeContent } from '@shared/types'
 import { X, Check, Pencil, Plus } from 'lucide-react'
-import { edgeTypeConfig } from './edge-utils'
+import { edgeTypeConfig, resolveEdgeStyle } from './edge-utils'
 
 /** 自定义边类型：携带 edgeType、content 和 strength 信息 */
-type BizEdgeType = Edge<{ edgeType?: EdgeType; content?: EdgeContent; strength?: number }, 'bizEdge'>
+type BizEdgeType = Edge<
+  { edgeType?: EdgeType; content?: EdgeContent; strength?: number; isGhost?: boolean },
+  'bizEdge'
+>
 
 export const BizEdge = memo(function BizEdge({
   id,
@@ -71,21 +74,17 @@ export const BizEdge = memo(function BizEdge({
   )
 
   const isInteractive = selected
-  const strokeColor = selected ? '#3b82f6' : config.color
 
-  // Task 4.1.2: strength-based visual encoding
-  const strength = data?.strength ?? 0.5
-  const strengthStrokeWidth = 1 + strength * 2  // range 1-3px
-  const isWeak = strength < 0.4
-
-  // Task 4.1.1: suggested edge style + strength encoding
-  const suggestedStyle = isSuggested
-    ? { strokeDasharray: '5 5', opacity: 0.4 }
-    : isWeak
-      ? { strokeDasharray: '4 3' }
-      : {}
-
-  const strokeWidth = selected ? 3 : strengthStrokeWidth
+  // Task 4.1.2: strength-based visual encoding —— 强度决定线宽（1~3px）。
+  // 「这条边长什么样」由 resolveEdgeStyle 独家决定（纯函数，可单测）。
+  // 幽灵连线（拖拽重挂的临时预览边）走独立通道：绿色虚线，不与真实层级边混同。
+  const edgeStyle = resolveEdgeStyle({
+    edgeType,
+    isGhost: data?.isGhost === true,
+    isSelected: selected,
+    strength: data?.strength,
+    isSuggested,
+  })
 
   // Suggested edges have no arrow marker
   const effectiveMarkerEnd = isSuggested ? undefined : markerEnd
@@ -102,12 +101,7 @@ export const BizEdge = memo(function BizEdge({
       <BaseEdge
         path={edgePath}
         markerEnd={effectiveMarkerEnd}
-        style={{
-          stroke: strokeColor,
-          strokeWidth,
-          transition: 'stroke 0.2s, stroke-width 0.2s, opacity 0.2s',
-          ...suggestedStyle,
-        }}
+        style={edgeStyle}
       />
       <EdgeLabelRenderer>
         <div

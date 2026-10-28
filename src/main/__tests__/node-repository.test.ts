@@ -64,10 +64,13 @@ describe('NodeRepository', () => {
     expect(node.communityLevel).toBe(1)
 
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[14]).toBe(JSON.stringify(content)) // position_x=12, position_y=13, content=14
-    expect(callArgs[15]).toBe('summary') // community_summary=15
-    expect(callArgs[16]).toBe(1) // community_level=16
-    expect(callArgs[17]).toBeNull() // community_id=17
+    // 列序：…parent_id=8, sort_index=9, rules=10, metadata=11, owner_role=12,
+    //      position_x=13, position_y=14, content=15, community_summary=16,
+    //      community_level=17, community_id=18, context_refs=19, wiki_content=20, wiki_meta=21
+    expect(callArgs[15]).toBe(JSON.stringify(content)) // content=15
+    expect(callArgs[16]).toBe('summary') // community_summary=16
+    expect(callArgs[17]).toBe(1) // community_level=17
+    expect(callArgs[18]).toBeNull() // community_id=18
   })
 
   it('create persists wikiContent and wikiMeta', () => {
@@ -77,19 +80,19 @@ describe('NodeRepository', () => {
     expect(node.wikiMeta).toEqual(wikiMeta)
 
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[19]).toBe('# Hello') // wiki_content=19
-    expect(callArgs[20]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=20
+    expect(callArgs[20]).toBe('# Hello') // wiki_content=20
+    expect(callArgs[21]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=21
   })
 
   it('create stores optional fields as null when omitted', () => {
     repo.create(makeNodeData())
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[14]).toBeNull() // content
-    expect(callArgs[15]).toBeNull() // community_summary
-    expect(callArgs[16]).toBeNull() // community_level
-    expect(callArgs[17]).toBeNull() // community_id
-    expect(callArgs[19]).toBeNull() // wiki_content
-    expect(callArgs[20]).toBeNull() // wiki_meta
+    expect(callArgs[15]).toBeNull() // content
+    expect(callArgs[16]).toBeNull() // community_summary
+    expect(callArgs[17]).toBeNull() // community_level
+    expect(callArgs[18]).toBeNull() // community_id
+    expect(callArgs[20]).toBeNull() // wiki_content
+    expect(callArgs[21]).toBeNull() // wiki_meta
   })
 
   it('createBatch returns empty for empty input', () => {
@@ -309,6 +312,8 @@ describe('NodeRepository with real in-memory database', () => {
         graph_id TEXT NOT NULL,
         graph_type TEXT NOT NULL,
         parent_id TEXT,
+        sort_index INTEGER,
+        collapsed INTEGER NOT NULL DEFAULT 0,
         rules TEXT,
         metadata TEXT,
         owner_role TEXT,

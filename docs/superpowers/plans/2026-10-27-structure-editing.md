@@ -1,0 +1,3078 @@
+# 结构编辑优化 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 让 BizGraph 画布上的"改结构"成为最顺手的动作——拖拽即可重挂父节点、子树跟随移动、大图可折叠、类型规则全局统一。
+
+**Architecture:** `nodes.parent_id` 是父子关系的唯一真相源。渲染层与布局层按 `parent_id` 派生虚拟层级边（`deriveHierarchyEdges`），不读存储的边——这样即使某条写入路径漏建边，画布也不会少画连线。存储层保留 `edge_type='hierarchical'` 的边作为 `parent_id` 的索引副本，仅供主进程查询；所有结构写操作收敛到单一入口 `graph:reparent`，在同一事务内更新 `parent_id`、`sort_index` 与 `hierarchical` 边。
+
+**Tech Stack:** Electron / TypeScript（strict）/ better-sqlite3 / React 18 / @xyflow/react 12.12.0 / Zustand / Vitest
+
+**Spec:** `docs/superpowers/specs/2026-10-27-structure-editing-design.md` —— 实施者必须先读这份设计文档，本计划从中推导；两者冲突时以 spec 为准。
+
+---
+
+## Global Constraints
+
+- **语言**：界面文案走 `@shared/i18n` 资源层（`src/shared/i18n/resources/domains/*.ts`）。zh 是 key 的真值来源，en 必须覆盖每一个 zh key。新增文案**必须**同时加 zh 和 en。
+- **`EdgeType` 是封闭联合类型**：`src/shared/types/graph.ts:52`。任何新增边类型必须同时改：联合类型、`EDGE_TYPE_VALUES`（同文件 :391）、`src/renderer/canvas/edge-utils.ts` 的 `edgeTypeConfig`（`Record<EdgeType, …>` 穷尽记录）、`src/shared/i18n/index.ts` 的 `HandBuiltEdgeType`（`Exclude<EdgeType, 'wiki-link'>`）相关记录。TS 编译期会抓到遗漏，但 `assertEdgeType` 在运行时会**抛 TypeError 导致整张图打不开**——这是本项目历史踩过的坑（`graph-repository.ts:140` 的 `assertEdgeType` 在 `graph:get` 路径上）。
+- **CHECK 约束变更必须用真实 better-sqlite3 验证 INSERT**。项目历史教训：edges 表 CHECK 漏 `'wiki-link'` 导致 fresh install 下 wiki-link 落边静默失效（IPC 层 try/catch 吞错掩盖）。禁止用内存 fake repo 代替。
+- **Node 状态转换必须走 `NodeRepository.update()`**（其内部强制 `validateNodeTypeTransition`）。禁止在主进程裸写 `UPDATE nodes SET status = ...`。
+- **IPC 错误必须继承 `BizGraphError` 并覆写 `toJSON()`**，否则 `createTypedHandle` 会把自定义字段丢掉。自定义错误类还必须 `Object.setPrototypeOf(this, XxxError.prototype)`（照 `src/main/errors.ts` 里 `IpcError` / `AdapterError` 的写法）。
+- **不改 `parent_id` 外键**：本批不做（spec §4.1.2 已论证会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入）。防环靠应用层校验。
+- **不实现撤销/重做**：用户明确推迟。结构写操作已收敛到 `graph:reparent` 单一入口，未来在此前挂命令栈即可。
+- **`parent_id` 是唯一真相源**：渲染与布局都从它派生，不读存储的 `hierarchical` 边。
+- **渲染层的引用稳定性（无限重渲染循环）**：任何进入 `useMemo` 依赖数组的值必须**引用稳定**。`GraphCanvas.tsx` 的 `flowNodes`（:615）与 `flowEdges`（:761）各自配一个 `useEffect(() => setRfNodes(flowNodes))`（:734-736）/ `useEffect(() => setRfEdges(flowEdges))`（:828-830），而 `setRfNodes` / `setRfEdges` 是 React `useState` 的 setter——**新数组引用即状态更新即重渲染**。若依赖数组里放的是每帧新建的数组（写在 `useMemo` 外面算出来的过滤/合并结果），会形成「重渲染 → 新数组 → effect 再触发 → 再重渲染」的无限循环，React 抛 *Maximum update depth exceeded*，画布白屏。凡是要进依赖数组的派生数组，必须自己包一层 `useMemo`；原始值（string / boolean / null）可以直接进依赖数组——它们引用稳定。
+- **禁止 `--no-verify`** 跳过 git hooks。提交信息用中文，遵循现有风格：`feat(canvas): ...` / `fix(canvas): ...` / `refactor(db): ...`。
+
+## Review Focus
+
+以下六个场景 spec 暗示了、但没有任务直接覆盖，是最可能咬到人的地方。按重要性排序，每个都由对应任务的测试钉住：
+
+1. **存量图升级后打不开** — 老库里已有 `default` 边，迁移后出现 `hierarchical` 行。若 `EdgeType` 联合类型或 `assertEdgeType` 没同步，`graph:get` 直接抛 TypeError，用户的图**完全无法打开**。期望：迁移后打开含 AI 生成节点的旧图正常，连线正常，无重复线。→ Task 1 + Task 2 Step 6
+2. **连线重复画（双线）** — 存储的 `hierarchical` 边与派生边同时渲染。期望：AI 生成的节点连线只有一条；手动加的子节点**有**一条（这是本次修复的核心验收点）。→ Task 3 + Task 4
+3. **拖拽重挂后连线不更新** — `parent_id` 改了但 `hierarchical` 边没在同一事务里改，或渲染层没切到派生边。期望：松手瞬间新连线出现、旧连线消失，无需手动整理布局。→ Task 6 + Task 10
+4. **删父节点产生孤儿** — `node-repository.ts:223` 的 `delete()` 只删自身，子节点的 `parent_id` 指向已不存在的节点。孤儿在画布上不画父子线（看着像个根节点），但库里还挂着那个不存在的父，而且保留着已删父下的 `sort_index` —— 根节点的 `sort_index` 约定是 NULL（每次启动的迁移都会把 `parent_id IS NULL` 的清空），孤儿因为 `parent_id` 不是 NULL 所以清不掉 → 排序号悬空。期望：子节点被置为根节点。→ Task 11
+5. **大图折叠后布局出现空档** — 被折叠的节点必须作为叶子参与 dagre 计算，不能留空。期望：折叠后运行树形布局，节点紧凑排布。→ Task 12
+6. **切图时 dagre 排到上一张图的节点上** — `graph:get` 是**异步**的：切到新图后、在它的节点进 store 之前，store 里还躺着**上一张图**的节点。若 dagre 的触发信号是「store 里有一些节点」，它会对上一张图跑树形排版、并**把坐标写回数据库** → 用户在上一张图上摆好的布局被静默毁掉；同一时刻「已排过」的标志被消耗 → **新图永远排不上版**（两张图节点数相同时尤其明显）。期望：dagre 只排、也只落库**当前显示的这张图**的节点；当前图**必须**被排版一次（哪怕它与上一张图节点数相同）；力导向模式下**一次 dagre 都不跑**。→ Task 13（修复轮 2）
+
+---
+
+## 文件结构
+
+**新建**
+
+| 路径 | 职责 |
+|---|---|
+| `src/renderer/canvas/layouts/hierarchy.ts` | `deriveHierarchyEdges` 纯函数——按 `parent_id` 派生层级边，过滤存储的 `hierarchical` 边。渲染层与布局层共用 |
+| `src/renderer/canvas/layouts/__tests__/hierarchy.test.ts` | 上者的单元测试 |
+| `src/main/repositories/hierarchy-migration.ts` | 增量迁移的四个步骤（清孤儿 / 回填 sort_index / default→hierarchical / 补齐缺失边）。独立成文件便于单测 |
+| `src/main/repositories/__tests__/hierarchy-migration.test.ts` | 迁移的集成测试（真实 better-sqlite3） |
+| `src/main/shared/hierarchy-utils.ts` | `isDescendant` 纯函数——防环判定。`parentOf` 是回调，数据库查询与内存映射共用 |
+| `src/main/services/hierarchy-service.ts` | `graph:reparent` 的业务逻辑：校验（存在/自环/环/类型/同图）+ 事务写入 + 子树位置重排 |
+| `src/main/services/__tests__/hierarchy-service.test.ts` | `graph:reparent` 的集成测试 |
+| `src/main/ipc/node-type.ts` | `nodeType:listConfigs` IPC handler |
+| `src/renderer/canvas/hooks/useNodeTypeConfigs.ts` | 渲染端拉取并缓存类型规则 |
+| `src/renderer/canvas/hooks/useReparentDrag.ts` | 拖拽重挂的候选检测与落点校验 |
+| `src/renderer/canvas/hooks/useCollapse.ts` | 折叠状态与可见节点计算 |
+
+**修改**
+
+| 路径 | 改动 |
+|---|---|
+| `src/shared/types/graph.ts` | `EdgeType` 增 `'hierarchical'`；`EDGE_TYPE_VALUES` 同步；`GraphNode` 增 `sortIndex?` / `collapsed?`；新增 `ReparentResult` |
+| `src/renderer/canvas/edge-utils.ts` | `edgeTypeConfig` 增 `hierarchical` 样式项 |
+| `src/shared/i18n/index.ts` | `HandBuiltEdgeType` 排除 `'hierarchical'`（内部类型，不进用户可选下拉） |
+| `src/main/database.ts` | `edges` CHECK 增 `'hierarchical'`；`nodes` 加 `sort_index` / `collapsed` 列；`CURRENT_SCHEMA_VERSION` 16→17；接入迁移调用 |
+| `src/main/errors.ts` | 新增 4 个 `HIERARCHY_*` 错误码 + `HierarchyError` 类 |
+| `src/main/repositories/node-repository.ts` | `rowToNode` 映射新列；`update()` 支持写新列，且写 `parent_id` 前做防环校验；`delete()` 处理子节点；删 `updateParentId` |
+| `src/main/repositories/graph-repository.ts` | `cloneGraphNodes` 补新列 + `hierarchical` 边重映射；`rowToNode` 映射新列 |
+| `src/main/shared/node-type-registry.ts` | 补全 `feature` / `bug` 的 `allowedChildTypes` |
+| `src/main/ipc/graph.ts` | 注册 `graph:reparent`；`validateNodeUpdate` 拒绝 `parentId` |
+| `src/main/realtime/yjs-manager.ts` | 远端插入拒绝自环（`insertRemoteNode`） |
+| `src/main/ipc-handlers.ts` | 调用 `registerNodeTypeIpcHandlers(typedHandle)` |
+| `src/shared/types/ipc.ts` | `IpcApi` 增两个通道签名 |
+| `src/preload/index.ts` | `exposedChannels` 增两个通道 |
+| `src/renderer/store/graphStore.ts` | 增 `reparentNode` action |
+| `src/renderer/canvas/GraphCanvas.tsx` | 渲染层改用派生边；派生层级边不进选中路径；拖拽重挂交互；折叠过滤；布局模式持久化 |
+| `src/renderer/canvas/layouts/tree-layout.ts` | `sortChildrenByEdgeOrder` 改用 `sort_index` |
+| `src/renderer/canvas/BizNode.tsx` | 落点高亮样式 + 折叠指示器 + 徽标 |
+| `src/renderer/canvas/NodeContextMenu.tsx` | 删除 `getChildTypeOptions`，改用统一规则 |
+| `src/renderer/canvas/hooks/useNodeOperations.ts` | `handleAddChild` / `handleGenerateChildren` 补建 `hierarchical` 边 |
+| `src/main/project-analyzer.ts` | 层级边改写 `edgeType:'hierarchical'` |
+| `src/main/services/graph-service.ts` | 同上；AI 写入路径补建层级边 + 防环校验 |
+| `src/shared/i18n/resources/domains/canvas.ts` | 新增折叠/拖拽相关文案（zh + en） |
+
+---
+
+## Task 1: `hierarchical` 边类型贯通全类型面
+
+**Files:**
+- Modify: `src/shared/types/graph.ts:52`（`EdgeType` 联合类型）、`:375`（`EDGE_TYPE_VALUES`）
+- Modify: `src/renderer/canvas/edge-utils.ts`（`edgeTypeConfig`）
+- Modify: `src/shared/i18n/index.ts:145`（`HandBuiltEdgeType`）、`:215`（`edgeTypeLabel`）
+- Modify: `src/shared/i18n/resources/domains/node.ts`（新增 `edge.hierarchical.label`，zh + en）
+- Create: `src/shared/__tests__/edge-type-hierarchical.test.ts`
+- Test: `src/renderer/canvas/__tests__/edge-utils.test.ts`（已存在，扩展）
+
+**Interfaces:**
+- Consumes: 无（首个任务）
+- Produces:
+  - `EdgeType` 联合类型含 `'hierarchical'`；`EDGE_TYPE_VALUES` 含 `'hierarchical'`
+  - `edgeTypeConfig.hierarchical` 存在，`color: '#94a3b8'`（与 default 同色——层级线是背景结构，不该抢语义边的视觉权重）
+  - `HandBuiltEdgeType` 排除 `'hierarchical'`，因此 `edgeTypeOptions()`（用户可选边类型下拉）不返回它
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/shared/__tests__/edge-type-hierarchical.test.ts`：
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { EDGE_TYPE_VALUES } from '../types/graph'
+import { assertEdgeType, isEdgeType } from '../type-guards'
+import { edgeTypeLabel } from '../i18n'
+
+describe('hierarchical edge type', () => {
+  it('is a legal EdgeType value', () => {
+    expect(EDGE_TYPE_VALUES).toContain('hierarchical')
+    expect(isEdgeType('hierarchical')).toBe(true)
+  })
+
+  it('assertEdgeType accepts hierarchical without throwing', () => {
+    expect(() => assertEdgeType('hierarchical')).not.toThrow()
+    expect(assertEdgeType('hierarchical')).toBe('hierarchical')
+  })
+
+  it('has a translated label instead of the raw type string', () => {
+    expect(edgeTypeLabel('hierarchical')).toBeTruthy()
+    expect(edgeTypeLabel('hierarchical')).not.toBe('hierarchical')
+  })
+})
+```
+
+在 `src/renderer/canvas/__tests__/edge-utils.test.ts` 追加：
+
+```ts
+it('supports hierarchical edge type in config', () => {
+  expect(edgeTypeConfig.hierarchical).toBeDefined()
+  expect(edgeTypeConfig.hierarchical.color).toMatch(/^#/)
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/shared/__tests__/edge-type-hierarchical.test.ts src/renderer/canvas/__tests__/edge-utils.test.ts`
+Expected: FAIL — `'hierarchical'` 不在 `EDGE_TYPE_VALUES` 中，`edgeTypeConfig.hierarchical` 为 undefined，TS 编译报错
+
+- [ ] **Step 3: Extend the shared type surface**
+
+`src/shared/types/graph.ts:52`：
+```ts
+export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change' | 'wiki-link' | 'hierarchical'
+```
+
+`src/shared/types/graph.ts:391`：
+```ts
+export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical'] as const
+```
+
+`src/renderer/canvas/edge-utils.ts` 的 `edgeTypeConfig` 增一项：
+```ts
+  hierarchical: { color: '#94a3b8' },
+```
+
+`src/shared/i18n/index.ts:145`：
+```ts
+type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical'>
+```
+
+（这样 `EDGE_TYPE_KEYS` / `EDGE_TYPE_DESC_KEYS` / `EDGE_TYPE_COLORS` 三张 `Record<HandBuiltEdgeType, …>` 不需要为 hierarchical 补条目，`edgeTypeOptions()` 自然不返回它——层级边不进用户可选的边类型下拉。）
+
+`edgeTypeLabel()`（`src/shared/i18n/index.ts:215`）**必须**为 `hierarchical` 显式加一条分支。它的兜底是 `return key ? tIn(locale, key) : type`——不加工这条分支，画布上的连线标签会直接显示英文 `"hierarchical"`。照 `wiki-link` 的既有写法处理：
+
+```ts
+  if (type === 'hierarchical') return tIn(locale, 'edge.hierarchical.label')
+```
+
+并在 `src/shared/i18n/resources/domains/node.ts` 补 key（zh 是真值来源，en 必须覆盖；`edge.wikiLink.label` 就在这个文件里）：
+
+```ts
+  'edge.hierarchical.label': '层级',        // zh
+  'edge.hierarchical.label': 'Hierarchy',    // en
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/shared/__tests__/edge-type-hierarchical.test.ts src/renderer/canvas/__tests__/edge-utils.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Type-check**
+
+Run: `npx tsc --noEmit`
+Expected: 零错误。若报 `edgeTypeConfig` 缺 hierarchical，说明上一步漏了；`EDGE_TYPE_KEYS` 报缺 hierarchical，说明 `HandBuiltEdgeType` 的 `Exclude` 没生效
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/shared/types/graph.ts src/renderer/canvas/edge-utils.ts src/shared/i18n/index.ts src/shared/i18n/resources/domains/node.ts src/shared/__tests__/edge-type-hierarchical.test.ts src/renderer/canvas/__tests__/edge-utils.test.ts
+git commit -m "feat(canvas): hierarchical 边类型贯通共享类型面"
+```
+
+---
+
+## Task 2: schema 变更与增量迁移
+
+**Files:**
+- Modify: `src/main/database.ts`（`edges` CHECK、`nodes` 列定义、`CURRENT_SCHEMA_VERSION`、迁移调用）
+- Create: `src/main/repositories/hierarchy-migration.ts`
+- Test: `src/main/repositories/__tests__/hierarchy-migration.test.ts`
+- Modify: `src/main/__tests__/database-migration.test.ts`（Step 6 的真实库 CHECK 用例）
+
+**Interfaces:**
+- Consumes: Task 1 的 `EdgeType` 含 `'hierarchical'`
+- Produces:
+  - `runHierarchyMigration(db: BetterSqlite3.Database): void` in `src/main/repositories/hierarchy-migration.ts`——幂等，导出供 `database.ts` 调用与单测
+  - `nodes.sort_index`（INTEGER，可空）、`nodes.collapsed`（INTEGER NOT NULL DEFAULT 0）
+  - `edges.edge_type` CHECK 含 `'hierarchical'`
+  - `CURRENT_SCHEMA_VERSION` = 17
+
+**迁移步骤顺序不可调换**（spec §4.2）：
+
+1. 加列 `sort_index`、`collapsed`
+2. 清孤儿：`parent_id` 指向不存在节点 → 置 NULL
+3. 回填 `sort_index`：按同父节点下子节点在 `edges` 数组中的出现顺序递增赋值；无 `parent_id` 的节点保持 NULL
+4. `default` → `hierarchical`：`UPDATE edges SET edge_type='hierarchical' WHERE edge_type='default' AND EXISTS(SELECT 1 FROM nodes t WHERE t.id = edges.target AND t.parent_id = edges.source)`
+5. 补齐缺失的 `hierarchical` 边：对每个有 `parent_id` 的节点，若无对应 `hierarchical` 边则插入一条
+
+**已核实的 schema 机制**（实施者不必重新推导，但改动时不要违背）：
+- `edges` 的 CHECK 变更**会**触发 `rebuildTableIfNeeded`（`database.ts:268`）：它走 `DROP TABLE edges` → `exec(createSql)` → `restoreFromBackup`。新表带新 CHECK，**约束会生效**。`edges` 列清单没变，`restoreFromBackup` 只拷新旧列交集 → 数据完整。
+- `nodes` 表**不会**重建：加 `sort_index` / `collapsed` 是普通列，不改变 `extractChecks`（`database.ts:298`）提取到的 CHECK 列表；`nodes` 的 `requiredColumns`（`database.ts:409`）保持不变 → 走 `addColumnSafe` 的 ALTER TABLE 路径。
+- ⚠️ **不要把 `sort_index` / `collapsed` 加进 `nodes` 的 `requiredColumns`**——加了会强制重建 nodes 表，走 `DROP TABLE` 路径，风险远大于收益。
+- 迁移期间 `foreign_keys` 被关闭（`database.ts:775-828`），edges 重建时其 `REFERENCES nodes(id)` 不会报错；迁移提交前有 `foreign_key_check` 兜底。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/main/repositories/__tests__/hierarchy-migration.test.ts`。用真实 better-sqlite3，建一个最小 schema：
+
+```ts
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import Database from 'better-sqlite3'
+import { runHierarchyMigration } from '../hierarchy-migration'
+
+describe('runHierarchyMigration', () => {
+  let db: Database.Database
+
+  beforeEach(() => {
+    db = new Database(':memory:')
+    db.exec(`
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, status TEXT NOT NULL,
+        title TEXT NOT NULL, graph_id TEXT NOT NULL, graph_type TEXT NOT NULL,
+        parent_id TEXT, sort_index INTEGER, collapsed INTEGER NOT NULL DEFAULT 0,
+        position_x REAL NOT NULL, position_y REAL NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE edges (
+        id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+        edge_type TEXT, graph_id TEXT NOT NULL
+      );
+      INSERT INTO nodes VALUES
+        ('p1','project','confirmed','项目','g1','online',NULL,NULL,0,0,0,'t','t'),
+        ('m1','module','draft','模块','g1','online','p1',NULL,0,0,0,'t','t'),
+        ('c1','process','draft','流程','g1','online','m1',NULL,0,0,0,'t','t'),
+        ('orphan','feature','draft','孤儿','g1','online','gone',NULL,0,0,0,'t','t');
+      INSERT INTO edges VALUES
+        ('e1','p1','m1','default','g1'),
+        ('e2','m1','c1','default','g1'),
+        ('e3','p1','c1','business-flow','g1');
+    `)
+  })
+
+  afterEach(() => { db.close() })
+
+  it('clears orphan parent_id', () => {
+    runHierarchyMigration(db)
+    const row = db.prepare("SELECT parent_id FROM nodes WHERE id='orphan'").get() as { parent_id: string | null }
+    expect(row.parent_id).toBeNull()
+  })
+
+  it('migrates parent-child default edges to hierarchical', () => {
+    runHierarchyMigration(db)
+    const rows = db.prepare("SELECT id, edge_type FROM edges ORDER BY id").all() as { id: string; edge_type: string }[]
+    expect(rows.find(r => r.id === 'e1')!.edge_type).toBe('hierarchical')
+    expect(rows.find(r => r.id === 'e2')!.edge_type).toBe('hierarchical')
+    expect(rows.find(r => r.id === 'e3')!.edge_type).toBe('business-flow')
+  })
+
+  it('backfills sort_index in sibling order', () => {
+    runHierarchyMigration(db)
+    const row = db.prepare("SELECT sort_index FROM nodes WHERE id='m1'").get() as { sort_index: number | null }
+    expect(row.sort_index).toBe(0)
+  })
+
+  it('adds missing hierarchical edge for parented node', () => {
+    db.prepare("INSERT INTO nodes VALUES ('m2','module','draft','模块2','g1','online','p1',NULL,0,0,0,'t','t')").run()
+    runHierarchyMigration(db)
+    const row = db.prepare("SELECT COUNT(*) AS n FROM edges WHERE edge_type='hierarchical' AND source='p1' AND target='m2'").get() as { n: number }
+    expect(row.n).toBe(1)
+  })
+
+  it('is idempotent', () => {
+    runHierarchyMigration(db)
+    const before = db.prepare('SELECT COUNT(*) AS n FROM edges').get() as { n: number }
+    runHierarchyMigration(db)
+    const after = db.prepare('SELECT COUNT(*) AS n FROM edges').get() as { n: number }
+    expect(after.n).toBe(before.n)
+  })
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/repositories/__tests__/hierarchy-migration.test.ts`
+Expected: FAIL — 模块 `../hierarchy-migration` 不存在
+
+- [ ] **Step 3: Implement `runHierarchyMigration`**
+
+新建 `src/main/repositories/hierarchy-migration.ts`。签名：
+
+```ts
+export function runHierarchyMigration(db: BetterSqlite3.Database): void
+```
+
+实现要点：
+- 用 `db.transaction()` 包住全部四步，保证原子性
+- **本函数只管数据迁移，不碰 DDL**——加列由 `database.ts` 的 `runIncrementalMigrations` 用现成的 `addColumnSafe` 完成（见 Step 5）。理由：`addColumnSafe`（`database.ts:855`）已经实现了标识符校验 + 类型白名单 + "duplicate column" 吞错；在本文件里另写一份 `ALTER TABLE` + try/catch 就是把同一段逻辑抄第二遍。列的增删属于 schema 层的职责，数据迁移函数不该重复实现。
+- 四步的**先后顺序不可换**：清孤儿必须先于回填 `sort_index`（否则会给已失效的父子关系排序号）；回填 `sort_index` 必须先于 `default → hierarchical` 改写（改写后父子关系才完整）。
+- 清孤儿：`UPDATE nodes SET parent_id = NULL WHERE parent_id IS NOT NULL AND parent_id NOT IN (SELECT id FROM nodes)`
+- 回填 `sort_index`：先查每个父节点下按 `edges` 出现顺序排好的子节点列表，再逐个 `UPDATE nodes SET sort_index = ? WHERE id = ?`；无 `edges` 顺序可依据的节点按 `created_at` 兜底
+- 迁移 `edge_type`：按上面步骤 4 的 SQL
+- 补齐缺失边：对每个有 `parent_id` 的节点，`SELECT 1 FROM edges WHERE source=? AND target=? AND edge_type='hierarchical'` 不存在则 INSERT。生成的边 ID 用 `generateId('edge')`（`src/main/shared/env.ts`）
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/main/repositories/__tests__/hierarchy-migration.test.ts`
+Expected: PASS（5 个用例全绿）
+
+- [ ] **Step 5: Wire the schema change into `database.ts`**
+
+`src/main/database.ts`：
+- `edges` 表 `createSql`（:416）的 CHECK 增 `'hierarchical'`：
+  ```sql
+  edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical')),
+  ```
+- `nodes` 表 `createSql`（:389）加两列，紧跟 `parent_id TEXT,` 之后：
+  ```sql
+  sort_index INTEGER,
+  collapsed INTEGER NOT NULL DEFAULT 0,
+  ```
+- `CURRENT_SCHEMA_VERSION`（:354）从 16 改为 17
+- 在 `runIncrementalMigrations`（`database.ts:854`）里用**现成的** `addColumnSafe` 加两列——与其它所有列的加法完全同构（`database.ts:876-891` 就是这些调用的所在地）：
+  ```ts
+  addColumnSafe('nodes', 'sort_index', 'INTEGER')
+  addColumnSafe('nodes', 'collapsed', 'INTEGER', '0')
+  ```
+  ⚠️ `collapsed` 的 DEFAULT 写成字符串 `'0'`，`addColumnSafe` 会用 `validateDefaultValue` 校验后拼进 SQL——照 `addColumnSafe('graphs', 'writeback_disabled', 'INTEGER', '0')` 的既有写法。
+- 在 `runIncrementalMigrations` 末尾调用 `runHierarchyMigration(db)`（加列必须排在它前面——迁移要回填 `sort_index`）
+
+⚠️ `nodes` 的 `requiredColumns`（:406）**不要**加 `sort_index` / `collapsed`——加了会触发 `rebuildTableIfNeeded` 重建 nodes 表，走 `DROP TABLE` 路径。新增列走 `addColumnSafe` 的 ALTER TABLE 路径即可。
+
+- [ ] **Step 6: Verify CHECK constraint and new columns on a real fresh DB**
+
+这个用例**加在 `src/main/__tests__/database-migration.test.ts`**（不要放进新的 `hierarchy-migration.test.ts`）——那个文件已经 mock 了 `electron` 并调用 `initDatabase()`，照抄它的模式（`vi.mock('electron', () => ({ app: { getPath: ... } }))` + `beforeAll(initDatabase)`）。主进程测试跑在 vitest 的 `node` 环境，`electron` 的 `app` 不存在，`initDatabase()` 会直接抛错——没有 mock 就跑不起来。
+
+```ts
+// 追加到 src/main/__tests__/database-migration.test.ts 的 describe 里
+it('accepts hierarchical edge_type and has the new node columns', () => {
+  const db = getClient()
+  // 必须先建两个真实节点：edges.source/target 有 REFERENCES nodes(id) 外键，
+  // 且 foreign_keys 常态是 ON（database.ts:46），插入不存在的 id 会先报外键违规，
+  // 根本走不到 CHECK 那一层
+  const now = new Date().toISOString()
+  const insertNode = db.prepare(
+    'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
+  )
+  insertNode.run('n_x1', 'module', 'draft', 'X1', 'g_x', 'online', 0, 0, now, now)
+  insertNode.run('n_x2', 'feature', 'draft', 'X2', 'g_x', 'online', 0, 0, now, now)
+
+  db.prepare("INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES ('x1','n_x1','n_x2','hierarchical','g_x')").run()
+  const row = db.prepare("SELECT edge_type FROM edges WHERE id='x1'").get() as { edge_type: string }
+  expect(row.edge_type).toBe('hierarchical')
+
+  const cols = (db.pragma('table_info(nodes)') as { name: string }[]).map(c => c.name)
+  expect(cols).toContain('sort_index')
+  expect(cols).toContain('collapsed')
+})
+```
+
+⚠️ 这个用例必须在**真实 better-sqlite3** 上跑——CHECK 约束漏值的历史教训（spec §4.1），禁止用内存 fake repo 代替。
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `npx vitest run src/main/repositories/__tests__/hierarchy-migration.test.ts src/main/__tests__/database-migration.test.ts src/main/__tests__/database.test.ts`
+Expected: PASS —— 包括真实新库 INSERT hierarchical 成功
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/database.ts src/main/repositories/hierarchy-migration.ts src/main/repositories/__tests__/hierarchy-migration.test.ts src/main/__tests__/database-migration.test.ts
+git commit -m "feat(db): 节点兄弟顺序与折叠状态列，层级边类型化，存量迁移"
+```
+
+---
+
+## Task 3: `deriveHierarchyEdges` 纯函数
+
+**Files:**
+- Create: `src/renderer/canvas/layouts/hierarchy.ts`
+- Test: `src/renderer/canvas/layouts/__tests__/hierarchy.test.ts`
+
+**Interfaces:**
+- Consumes: `GraphNode` / `GraphEdge`（`@shared/types`）
+- Produces:
+  ```ts
+  // src/renderer/canvas/layouts/hierarchy.ts
+  export interface DerivedHierarchyResult {
+    /** 按 parent_id 派生的层级边；id 形如 `derived-<source>-<target>` */
+    hierarchyEdges: GraphEdge[]
+    /** 原样保留的语义边（已剔除存储的 hierarchical 边与重复的 default 层级边） */
+    semanticEdges: GraphEdge[]
+  }
+  export function deriveHierarchyEdges(
+    nodes: GraphNode[],
+    edges: GraphEdge[],
+  ): DerivedHierarchyResult
+  ```
+  返回值分成两半，渲染层与布局层把两半合并后使用。返回的是**完整 `GraphEdge` 对象**（不是精简形状），这样 `flowEdges` 的 useMemo 除了换输入数组之外不需要改。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/renderer/canvas/layouts/__tests__/hierarchy.test.ts`：
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { deriveHierarchyEdges } from '../hierarchy'
+import type { GraphNode, GraphEdge } from '@shared/types'
+
+const mkNode = (id: string, parentId?: string): GraphNode => ({
+  id, type: 'feature', status: 'draft', title: id,
+  graphId: 'g1', graphType: 'online', parentId,
+  position: { x: 0, y: 0 }, createdAt: 't', updatedAt: 't',
+})
+
+const mkEdge = (id: string, source: string, target: string, edgeType: any): GraphEdge => ({
+  id, source, target, edgeType, graphId: 'g1',
+})
+
+describe('deriveHierarchyEdges', () => {
+  it('derives one hierarchy edge per parented node', () => {
+    const { hierarchyEdges } = deriveHierarchyEdges([mkNode('p'), mkNode('c', 'p')], [])
+    expect(hierarchyEdges).toHaveLength(1)
+    expect(hierarchyEdges[0]).toMatchObject({ source: 'p', target: 'c', edgeType: 'hierarchical' })
+    expect(hierarchyEdges[0].id).toBe('derived-p-c')
+  })
+
+  it('excludes stored hierarchical edges from semantic edges', () => {
+    const { semanticEdges } = deriveHierarchyEdges(
+      [mkNode('p'), mkNode('c', 'p')],
+      [mkEdge('e1', 'p', 'c', 'hierarchical')],
+    )
+    expect(semanticEdges.find(e => e.id === 'e1')).toBeUndefined()
+  })
+
+  it('keeps semantic edges that are not parent-child pairs', () => {
+    const { semanticEdges } = deriveHierarchyEdges(
+      [mkNode('p'), mkNode('a'), mkNode('b')],
+      [mkEdge('e1', 'a', 'b', 'business-flow')],
+    )
+    expect(semanticEdges.map(e => e.id)).toEqual(['e1'])
+  })
+
+  it('keeps default edges that are not parent-child pairs', () => {
+    const { semanticEdges } = deriveHierarchyEdges(
+      [mkNode('p'), mkNode('a'), mkNode('b')],
+      [mkEdge('e1', 'a', 'b', 'default')],
+    )
+    expect(semanticEdges.map(e => e.id)).toEqual(['e1'])
+  })
+
+  it('drops default edges that duplicate a parent-child pair', () => {
+    const { semanticEdges } = deriveHierarchyEdges(
+      [mkNode('p'), mkNode('c', 'p')],
+      [mkEdge('e1', 'p', 'c', 'default')],
+    )
+    expect(semanticEdges.map(e => e.id)).toEqual([])
+  })
+
+  it('produces no edge for a node whose parent is missing', () => {
+    const { hierarchyEdges } = deriveHierarchyEdges([mkNode('orphan', 'gone')], [])
+    expect(hierarchyEdges).toEqual([])
+  })
+
+  it('produces no edge for a root node', () => {
+    const { hierarchyEdges } = deriveHierarchyEdges([mkNode('root')], [])
+    expect(hierarchyEdges).toEqual([])
+  })
+
+  it('produces exactly one edge for a parented node that also has a stored edge', () => {
+    const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(
+      [mkNode('p'), mkNode('c', 'p')],
+      [mkEdge('e1', 'p', 'c', 'default')],
+    )
+    const all = [...hierarchyEdges, ...semanticEdges]
+    expect(all.filter(e => e.source === 'p' && e.target === 'c')).toHaveLength(1)
+  })
+
+  it('produces exactly one edge for a parented node with no stored edge', () => {
+    const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges([mkNode('p'), mkNode('c', 'p')], [])
+    const all = [...hierarchyEdges, ...semanticEdges]
+    expect(all.filter(e => e.source === 'p' && e.target === 'c')).toHaveLength(1)
+  })
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/renderer/canvas/layouts/__tests__/hierarchy.test.ts`
+Expected: FAIL — 模块 `../hierarchy` 不存在
+
+- [ ] **Step 3: Implement `deriveHierarchyEdges`**
+
+新建 `src/renderer/canvas/layouts/hierarchy.ts`。算法：
+
+```ts
+export function deriveHierarchyEdges(
+  nodes: GraphNode[],
+  edges: GraphEdge[],
+): DerivedHierarchyResult {
+  const nodeIds = new Set(nodes.map(n => n.id))
+  const hierarchyEdges: GraphEdge[] = []
+  for (const node of nodes) {
+    if (!node.parentId) continue
+    if (!nodeIds.has(node.parentId)) continue   // 孤儿不产生边
+    hierarchyEdges.push({
+      id: `derived-${node.parentId}-${node.id}`,
+      source: node.parentId,
+      target: node.id,
+      graphId: node.graphId,
+      edgeType: 'hierarchical',
+    })
+  }
+  const parentChildPairs = new Set(hierarchyEdges.map(e => `${e.source} ${e.target}`))
+  const semanticEdges = edges.filter((e) => {
+    if (e.edgeType === 'hierarchical') return false                      // 存储的层级边不参与渲染
+    if (e.edgeType === 'default' && parentChildPairs.has(`${e.source} ${e.target}`)) return false  // 迁移残留
+    return true
+  })
+  return { hierarchyEdges, semanticEdges }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/renderer/canvas/layouts/__tests__/hierarchy.test.ts`
+Expected: PASS（9 个用例全绿）
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/renderer/canvas/layouts/hierarchy.ts src/renderer/canvas/layouts/__tests__/hierarchy.test.ts
+git commit -m "feat(canvas): 按 parent_id 派生层级边的纯函数"
+```
+
+---
+
+## Task 4: 渲染层切换到派生边
+
+**Files:**
+- Modify: `src/renderer/canvas/GraphCanvas.tsx`（`flowEdges` useMemo，:599）
+- Test: `src/renderer/canvas/layouts/__tests__/hierarchy.test.ts`（已存在，Task 3 已含验收用例）
+
+**Interfaces:**
+- Consumes: Task 3 的 `deriveHierarchyEdges(nodes, edges) → { hierarchyEdges, semanticEdges }`
+- Produces: 画布上的父子连线由 `parent_id` 派生；派生层级边**不进入** store 的「选中边」路径（Step 2）
+
+**布局层自动获益**（无需改 `useAutoLayout.ts`）：`useAutoLayout.applyLayout` 用的是 React Flow 的 `getEdges()`，而 `GraphCanvas` 通过 `useEffect(() => setRfEdges(flowEdges))` 把合并后的边集写回 React Flow。因此 `flowEdges` 一旦切到派生边，dagre 布局喂进去的就是派生边——手动加的子节点会自动排到父节点下方。**不要**在 `useAutoLayout.ts` 里再单独派生一次，会造成两套派生。
+
+- [ ] **Step 1: Switch the renderer to derived edges**
+
+`src/renderer/canvas/GraphCanvas.tsx` 的 `flowEdges` useMemo（:599-657）：输入数组从 `graphEdges` 换成合并集。改法是把 `graphEdges.map(...)` 改为遍历合并后的数组：
+
+```ts
+// ⚠️ mergedEdges 必须自己包一层 useMemo —— 它会作为 flowEdges 的依赖数组成员。
+// 写成 useMemo 外面的一次性计算 = 每帧新数组引用 → flowEdges 每帧重算
+// → useEffect(() => setRfEdges(flowEdges)) 每帧触发 → setRfEdges 是 useState setter
+// → 无限重渲染循环（React: Maximum update depth exceeded），画布白屏。
+const mergedEdges = useMemo(() => {
+  const { hierarchyEdges, semanticEdges } = deriveHierarchyEdges(graphNodes, graphEdges)
+  return [...hierarchyEdges, ...semanticEdges]
+}, [graphNodes, graphEdges])
+
+const flowEdges = useMemo(() => {
+  // ...原有 cache/key 逻辑完全不变，只是把 graphEdges.map 换成 mergedEdges.map
+}, [mergedEdges, selectedEdgeId, degradation.simplifyEdges, degradation.hideEdgeLabels])
+```
+
+要点：
+- `mergedEdges` 必须**自己包一层 `useMemo`**（依赖 `[graphNodes, graphEdges]`），再作为 `flowEdges` 的依赖。见 Global Constraints 的「渲染层的引用稳定性」——写成 useMemo 外面的一次性计算会造成无限重渲染循环
+- 派生边的 `id` 是 `derived-<source>-<target>`，与存储边 ID 空间隔离，`edgeCacheRef` 的 key 不会冲突
+- `flowEdges` 内部对 `edgeTypeConfig[edgeType]` 的查表、marker、动画逻辑都不需要改——`edgeTypeConfig.hierarchical` 已在 Task 1 补齐
+- **派生层级边必须同时标上 `selectable: false`**（在 `flowEdges` 构造出的边对象上）：
+
+  ```ts
+  selectable: edgeType === 'hierarchical' ? false : undefined,
+  ```
+
+  这一条**不是可选项**：@xyflow/react 的 `EdgeWrapper.onEdgeClick`（`node_modules/@xyflow/react/dist/esm/index.js:2978`）在 `isSelectable` 为真时会先调 `addSelectedEdges([id])` —— 那是 React Flow **内部**的选中路径，**不经过** app 的 `onEdgeClick`。app 侧的守卫挡不住它。后果：点一下层级线 → 内部选中 → 用户按 Backspace（React Flow 的 `deleteKeyCode` 默认值就是 `'Backspace'`，`index.js:3767`）→ `useGlobalKeyHandler`（`index.js:1245`）把**内部选中**的边从 React Flow 状态里删掉 → **画布上的层级线凭空消失，而 `parent_id` 纹丝不动**（下次 `flowEdges` 重算它又会回来）。这正是 Step 2 要挡掉的「假入口」体验。细节见 Step 2。
+
+- [ ] **Step 2: 派生层级边不进入 store 的「选中边」路径**
+
+`onEdgeClick`（`GraphCanvas.tsx:857`）会把点到的边的 id 交给 `selectEdge(edge.id)`。派生层级边的 id 是 `derived-<parent>-<child>`，store 里**没有**对应的边对象：
+
+- 右侧面板 `RightPanel.tsx:55` 用 `edges.find(e => e.id === selectedEdgeId)` 找边 → 找不到 → 面板空白；
+- 按 Delete → `graphStore.deleteEdge(id)` → `edge:delete` IPC → `edgeRepo.delete('derived-...')` → `DELETE ... WHERE id = ?` 命中 0 行 → **静默无操作**（不报错，但用户以为删掉了）。
+
+而且「删掉这条层级线」在新模型下本来就是**假入口**：存储的层级边只是 `parent_id` 的镜像，删掉它 `parent_id` 还在，派生边照样画出来（`deriveHierarchyEdges` 只剔除存储的 `hierarchical` 边与重复的 `default` 边）。层级的正确改法是 **reparent（拖拽，Task 9/10）** 或 **删父节点（子节点变根，Task 11）**。
+
+所以在 `onEdgeClick` 里挡掉派生层级边：
+
+```ts
+const onEdgeClick = useCallback(
+  (_: unknown, edge: Edge) => {
+    // 派生层级边是 parent_id 的渲染产物，没有对应的存储边对象——
+    // 选中它右侧面板找不到、删除也删不掉。层级靠 reparent 改（Task 6/9/10）。
+    if (edge.data?.edgeType === 'hierarchical') return
+    selectEdge(edge.id)
+  },
+  [selectEdge],
+)
+```
+
+`edge.data.edgeType` 是 `flowEdges` memo 里写好的（`data: { edgeType, content, strength }`）；`deriveHierarchyEdges` 产出的边 `edgeType` 恒为 `'hierarchical'`，而存储的 `hierarchical` 边已被它剔除——所以合并集里 `edgeType === 'hierarchical'` ⟺ 派生边。
+
+⚠️ **两道守卫都要有，缺一不可**（两条路径互不相通）：
+
+| 路径 | 由谁触发 | 缺了会怎样 | 挡它的手段 |
+|---|---|---|---|
+| **app 的 `onEdgeClick`** | React Flow 回调 `onClick(event, edge)`，位置在 `if (isSelectable)` 块**外面**（`index.js:2986`）——所以 `selectable: false` **挡不住**它 | store 的 `selectedEdgeId` 被设成 `derived-*` → 右侧面板空白、`deleteEdge('derived-...')` 命中 0 行 → 静默无操作 | app 自己的 `onEdgeClick` 里 `if (edge.data?.edgeType === 'hierarchical') return` |
+| **React Flow 的内部选中** | `EdgeWrapper.onEdgeClick` 在 `isSelectable` 为真时先调 `addSelectedEdges([id])`（`index.js:2980`），**不经过** app 的 `onEdgeClick` | 层级线被内部选中 → 用户按 Backspace（`deleteKeyCode` 默认 `'Backspace'`，`index.js:3767`）→ `useGlobalKeyHandler`（`index.js:1253`）把内部选中的边从 React Flow 状态里删掉 → **画布上的层级线凭空消失，`parent_id` 不变** | 边上标 `selectable: false`（`isSelectable` 由 `edge.selectable` 决定，`index.js:2939`） |
+
+所以 Step 1 的 `selectable: false` 与 Step 2 的 `onEdgeClick` 守卫**互为补充**：一个挡内部选中，一个挡 app 回调。两者都在才叫「派生层级边不进选中路径」。
+
+❌ **不要**把守卫放进 store：store 只知道存储边，派生边是画布层的渲染产物，进 store 就是第二套派生。
+
+- [ ] **Step 3: Verify the store still hands raw edges to the renderer**
+
+`src/renderer/store/graphStore.ts:25` 的 `excludeWikiLinkEdges` 只过滤 `wiki-link`，**保持原样**。原因：`deriveHierarchyEdges` 需要看到原始 `default` 边才能识别并剔除「迁移残留的层级边」；存储的 `hierarchical` 边由 `deriveHierarchyEdges` 自己剔除。store 层不要提前过滤 `hierarchical`。
+
+- [ ] **Step 4: Verify with type-check and existing tests**
+
+Run: `npx tsc --noEmit && npx vitest run src/renderer/canvas/layouts/__tests__/ src/renderer/canvas/__tests__/`
+Expected: 零错误，现有测试全绿
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/renderer/canvas/GraphCanvas.tsx
+git commit -m "feat(canvas): 渲染层改用派生的层级边"
+```
+
+---
+
+## Task 5: 类型规则单一权威
+
+**Files:**
+- Modify: `src/main/shared/node-type-registry.ts`（补全 `allowedChildTypes`）
+- Create: `src/main/ipc/node-type.ts`
+- Modify: `src/main/ipc-handlers.ts`（注册新 handler 文件）
+- Modify: `src/shared/types/ipc.ts`
+- Modify: `src/preload/index.ts`
+- Modify: `src/renderer/canvas/NodeContextMenu.tsx`（删 `getChildTypeOptions`）
+- Modify: `src/renderer/canvas/GraphCanvas.tsx`（传 prop）
+- Create: `src/renderer/canvas/hooks/useNodeTypeConfigs.ts`
+- Test: `src/main/shared/__tests__/node-type-registry.test.ts`（已存在，扩展）
+
+**Interfaces:**
+- Consumes: 无
+- Produces:
+  - IPC `nodeType:listConfigs: () => Promise<NodeTypeConfig[]>`——返回主进程 registry 的全部类型配置
+  - `nodeTypeRegistry.validateParentChild(parentType, childType)` 补全后成为唯一权威
+  - 渲染端通过 `useNodeTypeConfigs()` hook 获取规则
+
+**registry 补全后的权威规则表**（spec §4.6，实施时按此表逐字对齐）：
+
+| 类型 | allowedChildTypes | allowedParentTypes | 现状 |
+|---|---|---|---|
+| project | `['module']` | — | 已符合 |
+| module | `['process', 'wiki-page']` | `['project']` | 已符合 |
+| process | `['feature', 'bug', 'wiki-page']` | `['module']` | 已符合 |
+| feature | `['bug']` | `['process']` | **缺 allowedChildTypes** |
+| bug | `[]` | `['process', 'feature']` | **缺 allowedChildTypes**；且 `allowedParentTypes` 要补 `'feature'` |
+| wiki-page | `['wiki-page']` | `['project', 'module', 'process', 'wiki-page']` | 已符合 |
+
+`feature` / `bug` 缺 `allowedChildTypes` 意味着 `validateParentChild` 里的 `if (parent.allowedChildTypes && ...)` 短路放行——**任何类型都能挂到 feature/bug 下**。补 `bug` 为 `[]` 后，`[]` 是 truthy，`![].includes(childType)` → 拒绝全部子节点。✓
+
+⚠️ `validateParentChild`（`node-type-registry.ts:76`）是**双向**校验：父的 `allowedChildTypes` 与子的 `allowedParentTypes` 都要放行才算通过。所以只把 `feature.allowedChildTypes` 设成 `['bug']` 是不够的——`bug.allowedParentTypes` 原本只有 `['process']`，`validateParentChild('feature','bug')` 仍会因 `child.allowedParentTypes` 不含 `'feature'` 返回 false。**`bug.allowedParentTypes` 必须同步改成 `['process', 'feature']`**，否则下面「feature can have bug children」那条用例在改完 registry 后依然会失败。
+
+⚠️ **注册时归一化 `allowedChildTypes`（R-24，修复轮补的）**：上表的「缺 `allowedChildTypes` = 允许任意」只对**内置表**成立；registry 的 `register()` 接受任意配置，所以还要在**存储时**把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点）。这一步让主进程与渲染端菜单的 `?? []`（缺省 = 不给任何子节点）**不再有两套真相**——spec 的「裂缝 2」列的正是这一条。
+
+归一化带来一个**不对称**，下游必须照抄：`allowedChildTypes` 归一化（缺省 = 拒绝），`allowedParentTypes` **不**归一化（缺省 = 无限制，主进程短路放行）。Task 10 的渲染端类型判定因此必须写成 `allowedChildTypes ?? []`（缺字段 → 拒绝）与 `!allowedParentTypes || ...`（缺字段 → 放行）——见 Task 10 Step 3 的代码片段。
+
+归一化还有一个副作用：`bug` 的 `allowedChildTypes: []` 与「不写这个字段」在运行期**完全等价** → 没有任何**行为**断言能因为删掉这一行而变红。该行改由**结构**断言钉住（「每条内置规则都显式声明了 `allowedChildTypes`」），而 `feature.allowedChildTypes: ['bug']` 因为规则是「feature **可以**挂 bug」，删掉它会让 `validateParentChild('feature','bug')` 由 true 变 false → **行为**断言直接变红。
+
+- [ ] **Step 1: Write the failing test**
+
+在 `src/main/shared/__tests__/node-type-registry.test.ts` 追加：
+
+```ts
+it('module cannot have feature children', () => {
+  expect(nodeTypeRegistry.validateParentChild('module', 'feature')).toBe(false)
+})
+
+it('feature can have bug children', () => {
+  expect(nodeTypeRegistry.validateParentChild('feature', 'bug')).toBe(true)
+})
+
+it('bug cannot have any children', () => {
+  expect(nodeTypeRegistry.validateParentChild('bug', 'feature')).toBe(false)
+  expect(nodeTypeRegistry.validateParentChild('bug', 'process')).toBe(false)
+})
+
+it('feature cannot be a child of module', () => {
+  expect(nodeTypeRegistry.validateParentChild('feature', 'module')).toBe(false)
+})
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/shared/__tests__/node-type-registry.test.ts`
+Expected: FAIL —— `feature` 的 `allowedChildTypes` 未定义（允许任意），`bug` 同理
+
+- [ ] **Step 3: Complete the registry**
+
+`src/main/shared/node-type-registry.ts` 的 `builtin` 数组（:19-41），改两行：
+
+```ts
+{ type: 'feature', label: '功能点', defaultStatus: 'placeholder', allowedParentTypes: ['process'], allowedChildTypes: ['bug'] },
+{ type: 'bug', label: 'BUG点', defaultStatus: 'draft', allowedParentTypes: ['process', 'feature'], allowedChildTypes: [] },
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/main/shared/__tests__/node-type-registry.test.ts`
+Expected: PASS
+
+- [ ] **Step 5: Expose the registry over IPC**
+
+新建 `src/main/ipc/node-type.ts`：
+
+```ts
+import type { TypedHandle } from './utils'
+import { nodeTypeRegistry } from '../shared/node-type-registry'
+
+export function registerNodeTypeIpcHandlers(typedHandle: TypedHandle): void {
+  typedHandle('nodeType:listConfigs', async () =>
+    // behavior 字段含函数（NodeTypeBehavior），不可结构化克隆 —— 必须剥掉
+    nodeTypeRegistry.listConfigs().map(({ behavior: _behavior, ...rest }) => rest),
+  )
+}
+```
+
+`src/shared/types/ipc.ts` 的 `IpcApi` 增：
+```ts
+  'nodeType:listConfigs': () => Promise<NodeTypeConfig[]>
+```
+（`NodeTypeConfig` 需要加入该文件顶部 `@shared/types/graph` 的 import 列表。）
+
+`src/preload/index.ts` 的 `exposedChannels` 数组增 `'nodeType:listConfigs',`。
+
+`src/main/ipc-handlers.ts`：
+- 顶部 `import { registerNodeTypeIpcHandlers } from './ipc/node-type'`
+- 在 `registerSubagentHandlers(...)`（:481）附近调用 `registerNodeTypeIpcHandlers(typedHandle)`（`typedHandle` 是 `ipc-handlers.ts:285` 创建的单一实例，被所有 handler 组共用）
+
+- [ ] **Step 6: Replace the renderer's hardcoded rules**
+
+`src/renderer/canvas/NodeContextMenu.tsx`：
+- 删除 `getChildTypeOptions` 函数（:38-55）
+- 改为接收 `allowedChildTypes: string[]` prop
+
+`src/renderer/canvas/GraphCanvas.tsx` 传入该 prop。
+
+新建渲染端 hook `src/renderer/canvas/hooks/useNodeTypeConfigs.ts`：
+
+```ts
+export interface NodeTypeConfigsState {
+  /** 类型名 → 配置。IPC 未返回前是空表 */
+  configs: Record<string, NodeTypeConfig>
+  /** 规则表是否已就绪。成功与失败都算就绪——失败时 `configs` 是空表 */
+  loaded: boolean
+}
+
+export function useNodeTypeConfigs(): NodeTypeConfigsState {
+  const [state, setState] = useState<NodeTypeConfigsState>({ configs: {}, loaded: false })
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI['nodeType:listConfigs']().then((list) => {
+      if (!cancelled) setState({ configs: Object.fromEntries(list.map(c => [c.type, c])), loaded: true })
+    }).catch(() => {
+      // 取不到规则表 → 空表。空表语义是「所有类型都拒绝」：宁可不给可选项，
+      // 也不放行未知规则。这与主进程 validateParentChild 对未知类型返回 false 的语义一致。
+      if (!cancelled) setState({ configs: {}, loaded: true })
+    })
+    return () => { cancelled = true }
+  }, [])
+  return state
+}
+```
+
+⚠️ `loaded` 不是可选字段——Task 10 的拖拽重挂靠它区分「规则还没到」与「规则判定为不合法」。少了它，规则表未就绪的短暂窗口里所有落点都会被误判成红色。
+
+`NodeTypeConfig` 已经在 `@shared/types` 里（`src/shared/types/graph.ts:529`），`behavior?: unknown` 是渲染安全的——渲染端 hook 与 `src/shared/types/ipc.ts` 都从 `@shared/types` import，不用碰 `src/main/shared/node-type-registry`。
+
+`src/renderer/canvas/GraphCanvas.tsx` 传入该 prop 的算法（`nodeContextMenu` 是 GraphCanvas 里已有的 state，见 :262）：
+
+```ts
+const { configs } = useNodeTypeConfigs()
+const contextTargetNode = nodeContextMenu
+  ? graphNodes.find((n) => n.id === nodeContextMenu.nodeId)
+  : undefined
+const allowedChildTypes = contextTargetNode?.type
+  ? (configs[contextTargetNode.type]?.allowedChildTypes ?? [])
+  : []
+```
+
+然后 `<NodeContextMenu … allowedChildTypes={allowedChildTypes} />`。`NodeContextMenu` 内部用这个 prop 取代 `getChildTypeOptions(node.type)` 的返回值。
+
+- [ ] **Step 7: Type-check and test**
+
+Run: `npx tsc --noEmit && npx vitest run src/main/shared/__tests__/node-type-registry.test.ts`
+Expected: 零错误，测试全绿
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/shared/node-type-registry.ts src/main/ipc/node-type.ts src/main/ipc-handlers.ts src/shared/types/ipc.ts src/preload/index.ts src/renderer/canvas/NodeContextMenu.tsx src/renderer/canvas/GraphCanvas.tsx src/renderer/canvas/hooks/useNodeTypeConfigs.ts src/main/shared/__tests__/node-type-registry.test.ts
+git commit -m "refactor(canvas): 类型层级规则统一到 nodeTypeRegistry 并经 IPC 暴露"
+```
+
+---
+
+## Task 6: `graph:reparent` 服务与校验
+
+**Files:**
+- Create: `src/main/shared/hierarchy-utils.ts`
+- Create: `src/main/services/hierarchy-service.ts`
+- Create: `src/main/services/__tests__/hierarchy-service.test.ts`
+- Modify: `src/main/errors.ts`（新错误码 + `HierarchyError`）
+- Modify: `src/main/ipc/graph.ts`（注册 IPC）
+- Modify: `src/shared/types/graph.ts`（`ReparentResult`）
+- Modify: `src/shared/types/ipc.ts`
+- Modify: `src/preload/index.ts`
+
+**Interfaces:**
+- Consumes: Task 5 的 `nodeTypeRegistry.validateParentChild(parentType, childType)`
+- Produces:
+  ```ts
+  // src/main/services/hierarchy-service.ts
+  export interface ReparentResult {
+    nodeId: string
+    oldParentId: string | null
+    newParentId: string
+    /** 被移动的节点及其全部后代的最新位置 */
+    movedPositions: Array<{ id: string; x: number; y: number }>
+  }
+
+  export class HierarchyService {
+    constructor(private readonly db: BetterSqlite3.Database) {}
+    reparent(nodeId: string, newParentId: string): ReparentResult
+  }
+  ```
+  校验失败抛 `HierarchyError`（继承 `BizGraphError`，覆写 `toJSON()`），`code` 取自新增的 `ErrorCode.HIERARCHY_*`。
+
+  `ReparentResult` 定义在 `src/shared/types/graph.ts`（renderer 也要用），**不要**定义在 `@main`。
+
+  ```ts
+  // src/main/shared/hierarchy-utils.ts
+  /**
+   * ancestorId 是否为 childId 的后代（含自身）。
+   * parentOf 由调用方提供——可以是数据库查询，也可以是内存映射。
+   * 沿 parentId 上溯，带 visited 集合防死循环（存量孤儿数据可能成环）。
+   */
+  export function isDescendant(
+    ancestorId: string,
+    childId: string,
+    parentOf: (id: string) => string | null | undefined,
+  ): boolean
+  ```
+  纯函数、不碰数据库。Task 6 与 Task 8 共用它——防环逻辑只写一份，Task 8 的 AI 写入路径把 `parentOf` 换成内存映射即可复用。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/main/services/__tests__/hierarchy-service.test.ts`。用**真实 schema 的真实库**跑（`initDatabase()`，见下面「这个测试必须用真实库」一段），fixture：
+
+```
+nodes:
+p1 (project,  parent NULL)
+m1 (project,  parent p1)
+m2 (module,   parent p1)
+c1 (process,  parent m1)
+f1 (feature,  parent c1)
+c3 (process,  parent m2)
+
+edges（5 条初始层级边，与 parent_id 一致）:
+(p1,m1) (m1,c1) (c1,f1) (p1,m2) (m2,c3)
+
+⚠️ **m1 的类型是 `project` 而不是 `module`（R-26 修正）**：本 fixture 里有三次「成功的
+reparent」，其中 `reparent('m2','m1')` 要求 `validateParentChild(T(m1), T(m2))` 为真。
+按原始写法（T(m1)=module、T(m2)=module）这一对是**类型非法**的——`module.allowedChildTypes
+= ['process','wiki-page']` 不含 `module`，`module.allowedParentTypes = ['project']` 也不含
+`module`——于是这条调用会抛 `HIERARCHY_TYPE_INVALID`，三个用例直接挂。
+
+穷举 6 种内置类型的全部 6^6 = 46656 种组合的结论：**没有任何**组合能同时满足
+「9 个用例全过」与「fixture 的 5 条父子边全部类型合法」。原因是一对矛盾：
+要让 `reparent('m2','m1')` 合法，`T(m1)` 只能是能容纳 `module` 的 `project`
+（只有 `project.allowedChildTypes` 含 `module`）；而要让 `m1→c1` 这条既有边类型合法，
+`T(c1)` 又必须落在 `project.allowedChildTypes` 里 —— 只能是 `module` —— 于是
+`reparent('c1','m2')`（`module` 挂 `module`）变成非法。
+
+所以 fixture 的**既有边**不需要类型合法（fixture 是用裸 SQL 插进去的，本来就绕过校验；
+真正参与类型判定的是三次 reparent 调用），而三次调用的类型组合是存在的：`T(m1)=project`。
+这是唯一一处偏离，且 9 个用例的调用、断言、错误码**全部原样保留**。
+```
+
+⚠️ `c3` 存在的唯一理由：它给 `m2` 提供了**另一个**子节点。Step 4 的验收条件之一是「平移后的子树**不与目标父节点的其他子节点重叠**」——没有 `c3` 这条条件就是空断言，测不出任何东西。`c3` 的 `sort_index` 为 0（它是 `m2` 的第一个子节点）。
+
+⚠️ **这个测试必须用真实库（`initDatabase()`），不要手搓「最小 schema」**
+
+真实的 `nodes` 表是 **25 列**（`src/main/database.ts:381-407`：`id, type, status, title, description, acceptance_criteria, graph_id, graph_type, parent_id, sort_index, collapsed, rules, metadata, owner_role, position_x, position_y, content, community_summary, community_level, community_id, context_refs, wiki_content, wiki_meta, created_at, updated_at`），`edges` 表是 **10 列**（`id, source, target, label, edge_type, graph_id, content, description, data_flow, strength`）。而且 `edges.source` / `edges.target` 上有**外键**（`REFERENCES nodes(id) ON DELETE CASCADE`），`nodes.type` / `nodes.status` / `nodes.graph_type` / `edges.edge_type` 上都有 **CHECK 约束**。
+
+手搓一张「够用」的两表 schema 会让**三类真实缺陷从测试缝里漏过去**：
+
+1. `HierarchyService` 里若出现 `INSERT INTO edges VALUES (...)`（不写列名），对着 5 列的假表能通过，对着真实的 10 列表直接报 `table edges has 10 columns but 5 values were supplied` —— **测试绿、线上炸**。
+2. 假 `nodes` 表没有 `type` / `status` / `graph_type` 的 CHECK → 测试里能插进一个非法类型，线上会被 CHECK 拒掉。
+3. 假 `edges` 表没有外键 → 测试里能插一条指向不存在节点的边，线上会被外键拒掉。
+
+→ **测试用真实库**：electron mock + `initDatabase()`，照抄 **`src/main/__tests__/database-migration.test.ts`** Step 1 的现成模式（electron mock + `initDatabase()` 都在那个文件里；`src/main/repositories/__tests__/node-repository.test.ts` 要到 Task 11 才创建，**不要**去照抄一个还不存在的文件）。fixture 的 INSERT **写全列名**（只写你提供的那些列，其余靠默认值/可空）：
+
+```ts
+// nodes：id / type / status / title / graph_id / graph_type / parent_id / sort_index
+//        / position_x / position_y / created_at / updated_at —— 其余列可空或有默认值
+db.prepare(
+  'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
+).run('p1', 'project', 'confirmed', 'P1', 'g1', 'online', null, null, 0, 0, now, now)
+
+// edges：id / source / target / edge_type / graph_id —— 其余 5 列可空
+db.prepare(
+  "INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)"
+).run('e1', 'p1', 'm1', 'hierarchical', 'g1')
+```
+
+⚠️ `status` 在真实表上是 `NOT NULL`（取值限于 `draft/confirmed/developing/testing/review/published/placeholder`），`graph_type` 限于 `online/dev`，`edge_type` 限于 CHECK 列表（含 `hierarchical`）—— fixture 的取值必须合法，否则测试会被 CHECK 拒掉，而不是测到你想测的东西。
+
+⚠️ **fixture 里的兄弟节点要写显式 `sort_index`**（同一父节点下 0,1,2,…）：不写的话全是 NULL，reparent 的 `COALESCE(MAX(sort_index), -1) + 1` 取到 0，测到的就变成「从零开始」而不是「重排」，用例会失去区分度。
+
+测试用例：
+
+```ts
+describe('HierarchyService.reparent', () => {
+  it('moves a node to a new parent', () => {
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('m2', 'm1')
+    expect(res.newParentId).toBe('m1')
+    const row = db.prepare("SELECT parent_id FROM nodes WHERE id='m2'").get() as { parent_id: string }
+    expect(row.parent_id).toBe('m1')
+  })
+
+  it('updates the hierarchical edge in the same transaction', () => {
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+    const rows = db.prepare("SELECT source, target FROM edges WHERE edge_type='hierarchical'").all() as { source: string; target: string }[]
+    expect(rows).toContainEqual({ source: 'm1', target: 'm2' })
+    expect(rows).not.toContainEqual({ source: 'p1', target: 'm2' })
+  })
+
+  it('rejects reparenting a node under its own descendant', () => {
+    const svc = new HierarchyService(db)
+    expect(() => svc.reparent('m1', 'f1')).toThrow()
+    try { svc.reparent('m1', 'f1') } catch (e) {
+      expect((e as any).code).toBe(ErrorCode.HIERARCHY_CYCLE)
+    }
+  })
+
+  it('rejects reparenting a node under itself', () => {
+    const svc = new HierarchyService(db)
+    try { svc.reparent('m1', 'm1'); expect.unreachable() } catch (e) {
+      expect((e as any).code).toBe(ErrorCode.HIERARCHY_SELF_PARENT)
+    }
+  })
+
+  it('rejects a type-invalid reparent', () => {
+    const svc = new HierarchyService(db)
+    try { svc.reparent('f1', 'm1'); expect.unreachable() } catch (e) {
+      expect((e as any).code).toBe(ErrorCode.HIERARCHY_TYPE_INVALID)
+    }
+  })
+
+  it('rejects a cross-graph reparent', () => {
+    const svc = new HierarchyService(db)
+    db.prepare(
+      "INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+    ).run('x1', 'feature', 'draft', '跨图', 'g2', 'dev', null, 0, 0, 't', 't')
+    try { svc.reparent('x1', 'c1'); expect.unreachable() } catch (e) {
+      expect((e as any).code).toBe(ErrorCode.HIERARCHY_CROSS_GRAPH)
+    }
+  })
+
+  it('moves the whole subtree when reparenting', () => {
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('c1', 'm2')
+    const ids = res.movedPositions.map(p => p.id).sort()
+    expect(ids).toEqual(['c1', 'f1'])
+  })
+
+  it('renumbers sibling sort_index', () => {
+    const svc = new HierarchyService(db)
+    svc.reparent('m2', 'm1')
+    const row = db.prepare("SELECT sort_index FROM nodes WHERE id='m2'").get() as { sort_index: number }
+    expect(row.sort_index).toBeGreaterThan(0)
+  })
+
+  it('places the moved subtree clear of the new parent other children', () => {
+    const svc = new HierarchyService(db)
+    const res = svc.reparent('c1', 'm2')
+    const sibling = db.prepare(
+      "SELECT position_x, position_y FROM nodes WHERE id='c3'"
+    ).get() as { position_x: number; position_y: number }
+    for (const moved of res.movedPositions) {
+      expect(moved.x === sibling.position_x && moved.y === sibling.position_y).toBe(false)
+    }
+  })
+})
+```
+
+⚠️ 最后这个用例断言的是 Step 4 的验收条件「**不与目标父节点的其他子节点重叠**」——它只断言「**坐标不完全相同**」，**不**指定平移方向或具体落点（向下、向右都行），所以它约束的是**验收条件**而不是**实现方式**。子节点间相对位置是否保持（刚性平移）由复审读代码判断，不在测试里钉死。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/services/__tests__/hierarchy-service.test.ts`
+Expected: FAIL — 模块不存在
+
+- [ ] **Step 3: Add error codes and the error class**
+
+`src/main/errors.ts` 的 `ErrorCode` 增：
+
+```ts
+  // 层级结构（父子关系）
+  HIERARCHY_CYCLE: 'HIERARCHY_CYCLE',
+  HIERARCHY_TYPE_INVALID: 'HIERARCHY_TYPE_INVALID',
+  HIERARCHY_CROSS_GRAPH: 'HIERARCHY_CROSS_GRAPH',
+  HIERARCHY_SELF_PARENT: 'HIERARCHY_SELF_PARENT',
+```
+
+并在 `IpcError` 类之后新增：
+
+```ts
+/** 层级结构操作失败（防环 / 类型 / 跨图 / 自环） */
+export class HierarchyError extends BizGraphError {
+  readonly details?: Record<string, unknown>
+
+  constructor(message: string, code: ErrorCodeType, details?: Record<string, unknown>) {
+    super(message, code)
+    this.name = 'HierarchyError'
+    this.details = details
+    Object.setPrototypeOf(this, HierarchyError.prototype)
+  }
+
+  toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), details: this.details }
+  }
+}
+```
+
+（`Object.setPrototypeOf` 是必须的——照 `IpcError` / `AdapterError` 的写法，不修原型链会导致 `instanceof` 失效。）
+
+- [ ] **Step 4: Implement `isDescendant` and `HierarchyService`**
+
+先新建 `src/main/shared/hierarchy-utils.ts`（纯函数，无数据库依赖）：
+
+```ts
+export function isDescendant(
+  ancestorId: string,
+  childId: string,
+  parentOf: (id: string) => string | null | undefined,
+): boolean {
+  if (ancestorId === childId) return true
+  const visited = new Set<string>()
+  let cur: string | null | undefined = parentOf(childId)
+  while (cur) {
+    if (visited.has(cur)) return false
+    visited.add(cur)
+    if (cur === ancestorId) return true
+    cur = parentOf(cur)
+  }
+  return false
+}
+```
+
+再新建 `src/main/services/hierarchy-service.ts`。`reparent(nodeId, newParentId)` 的执行顺序：
+
+1. 读节点与新父节点，都不存在则抛 `IpcError`
+2. `nodeId === newParentId` → `HIERARCHY_SELF_PARENT`
+3. `graph_id` 不同 → `HIERARCHY_CROSS_GRAPH`（**比 `graph_id`，不是 `graph_type`**——同一张图里可以同时有 `graph_type='online'` 和 `'dev'` 的节点，spec §4.4.1）
+4. **防环**：调 `isDescendant(nodeId, newParentId, parentOf)`（`src/main/shared/hierarchy-utils.ts`），`parentOf` 是查 `nodes.parent_id` 的函数。返回 true → `HIERARCHY_CYCLE`。上溯自带 `visited` 集合，存量孤儿数据成环时不会死循环
+5. **类型校验**：`nodeTypeRegistry.validateParentChild(newParent.type, node.type)` 为 false → `HIERARCHY_TYPE_INVALID`
+6. 事务开始：
+   - `UPDATE nodes SET parent_id = ? WHERE id = ?`
+   - 新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1，取值写 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL → 被移动的子节点会落到布局的「undefined 排最后」兜底里，位置不确定）
+   - 层级边的同步按 **R-27 的识别口径 + R-28 的目标状态**做（**不是**「不存在就 INSERT」——
+     那会把同一条 `'default'` 边升级成两条边）：
+     - **识别**：一条边 E 是节点 N 的层级边 ⟺ E 落在 N 当前 `parent_id` 指向的那一对上，
+       且（E 是 `'hierarchical'`，**或** E 是 `'default'` 且该对上没有 `'hierarchical'` 边）。
+       语义边（`business-flow` / `semantic` / `dependency` / `condition` …）一律不动。
+     - **目标状态**：换父完成后，**新对**（新父, 本节点）上恰好一条 `'hierarchical'`；
+       **旧对**上不再留 `'hierarchical'`。达成方式三选一：
+       ① 复用新对已有的 `'hierarchical'` 边（多条则留一条删其余）；
+       ② 旧对上的层级边（含迁移前的 `'default'`）改写并挪到新对；
+       ③ 新对**完全没有**层级边时 INSERT 一条新的，边 ID 用 `generateId('edge')`（`src/main/shared/env.ts:78`）。
+     - **新对上原有的 `'default'` 边不动**（它是语义边，不是层级边）
+   - 原父节点的其余子节点 `sort_index` 重排为连续值
+   - **子树跟随**：收集 `nodeId` 及其全部后代（沿 `parent_id` 下行），整体平移到新父节点的子树区域末端，计算新坐标并 `UPDATE nodes SET position_x = ?, position_y = ?`，同时返回 `movedPositions`
+   - 事务提交
+
+子树平移的具体算法由实施者决定，只要满足：整体保持相对位置、不与目标父节点的其他子节点重叠。推荐做法：以目标父节点现有子节点的包围盒为基准，把子树整体放到该包围盒下方。
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `npx vitest run src/main/services/__tests__/hierarchy-service.test.ts`
+Expected: PASS（9 个用例全绿）
+
+- [ ] **Step 6: Register the IPC**
+
+`src/main/ipc/graph.ts` 增 handler（`registerGraphHandlers` 内部，`node:update` 附近）：
+
+```ts
+typedHandle('graph:reparent', async (_, nodeId: string, newParentId: string) => {
+  return new HierarchyService(db).reparent(nodeId, newParentId)
+})
+```
+
+`src/shared/types/graph.ts` 增 `ReparentResult` 接口（同文件 `GraphEdge` 附近）。
+
+`src/shared/types/ipc.ts` 的 `IpcApi` 增：
+```ts
+  'graph:reparent': (nodeId: string, newParentId: string) => Promise<ReparentResult>
+```
+（`ReparentResult` 需要加入该文件顶部 `@shared/types/graph` 的 import 列表。）
+
+`src/preload/index.ts` 的 `exposedChannels` 数组增 `'graph:reparent',`。
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/shared/hierarchy-utils.ts src/main/services/hierarchy-service.ts src/main/services/__tests__/hierarchy-service.test.ts src/main/errors.ts src/main/ipc/graph.ts src/shared/types/graph.ts src/shared/types/ipc.ts src/preload/index.ts
+git commit -m "feat(canvas): graph:reparent 单一入口，含防环与类型校验"
+```
+
+---
+
+## Task 7: 关闭 `node:update` 与 Yjs 远端路径的 parentId 旁路
+
+**Files:**
+- Modify: `src/main/ipc/graph.ts`（`validateNodeUpdate`，:132）
+- Modify: `src/main/repositories/node-repository.ts`（清理 `updateParentId`，:210；给 `update()` 加防环校验）
+- Modify: `src/main/realtime/yjs-manager.ts`（`insertRemoteNode`，:212）
+- Test: `src/main/ipc/__tests__/graph-node-update.test.ts`（新建）
+- Test: `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`（新建）
+
+**Interfaces:**
+- Consumes: Task 6 的 `ErrorCode.HIERARCHY_*`、`HierarchyError`（`src/main/errors.ts`）、`isDescendant`（`src/main/shared/hierarchy-utils.ts`）
+- Produces: `node:update` 拒绝携带 `parentId`；`nodeRepository.updateParentId` 移除；**Yjs 远端写入路径也过防环校验**
+
+已核实：仓库内**无任何现有调用方**传 `parentId` 给 `node:update`（`useNodeOperations.ts` 的 `handleEnrichNode` 只传 metadata/acceptanceCriteria/rules、`handleStartDev` 只传 status、NodeEditor 只读）。`nodeRepository.updateParentId` 零调用方，可直接删。
+
+⚠️ `node-repository.ts:164` 的 `if (data.parentId !== undefined) { updates.push('parent_id = ?') }` **要保留**——`graph:reparent` 走的是 `hierarchy-service.ts` 的裸 SQL，但 Yjs 远端更新路径（`bidirectional-sync.ts:67` → `nodeRepo.update`）仍经由 repository 层，删了会打断协作同步。**但要在这一处补防环校验**（Step 5）：这条分支是本地 `graph:reparent` 之外唯一能改 `parent_id` 的地方（另一处是 `yjs-manager.ts` 的远端插入），远端 peer 可以任意指定 `parentId`（spec §4.4.2）。
+
+- [ ] **Step 1: Write the failing test**
+
+`validateNodeUpdate` 目前是 `registerGraphHandlers` 里的**内部函数**（`src/main/ipc/graph.ts`）。**先把它提升到模块作用域并 `export`**——它和它依赖的纯函数不依赖任何**运行时**闭包变量，提升是安全的。
+
+⚠️ **要一起提升的闭包内声明有 8 个，不止 brief 早先写的 3 个**（控制器实测 `src/main/ipc/graph.ts`）：
+
+| 闭包内声明 | 位置 |
+|---|---|
+| `NODE_STATUS_VALUES` | `:42` |
+| `GRAPH_TYPE_VALUES` | `:43` |
+| `MAX_TITLE_LEN` | `:44` |
+| `MAX_DESCRIPTION_LEN` | `:45` |
+| `isValidPosition` | `:47` |
+| `isValidNodeType` | `:56` |
+| `isPlainObject` | `:60` |
+| `validateNodeContent` | `:64` |
+
+（`ensureString` / `ensureOptionalNumber` / `MAX_ID_LEN` 来自 `./utils`，`VALID_NODE_TYPES` / `nodeTypeRegistry` /
+`IpcError` / `ErrorCode` 都是模块作用域的 import —— **不用动**。）
+
+`validateNodeCreate` 仍在闭包内，它引用这些提升后的模块级常量没有问题。
+
+然后在 `src/main/ipc/__tests__/` 下新建 `graph-node-update.test.ts` 直接测它——主进程测试跑在 vitest 的 `node` 环境，没有 `window`，走 `window.electronAPI` 的写法跑不起来：
+
+```ts
+import { describe, it, expect } from 'vitest'
+import { validateNodeUpdate } from '../graph'
+
+describe('validateNodeUpdate', () => {
+  it('rejects a payload that changes parentId', () => {
+    expect(() => validateNodeUpdate('n1', { parentId: 'n2' })).toThrow(/parentId/)
+  })
+
+  it('still accepts a payload that changes collapsed', () => {
+    expect(() => validateNodeUpdate('n1', { collapsed: true })).not.toThrow()
+  })
+})
+```
+
+第二条是护栏：`collapsed` / `sortIndex` 必须能经 `node:update` 落库（Task 12 的折叠持久化走这条路），不能被这条新规则误伤。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/ipc/__tests__/`
+Expected: FAIL —— 当前 `node:update` 接受 `parentId`
+
+- [ ] **Step 3: Block parentId in validateNodeUpdate**
+
+`src/main/ipc/graph.ts` 的 `validateNodeUpdate`（:132，已在 Step 1 提升到模块作用域）里加：
+
+```ts
+    if (node.parentId !== undefined) {
+      throw new IpcError(
+        'parentId cannot be changed via node:update; use graph:reparent',
+        ErrorCode.IPC_INVALID_ARGUMENT,
+      )
+    }
+```
+
+- [ ] **Step 4: Remove the unused repository method**
+
+删除 `src/main/repositories/node-repository.ts:210` 的 `updateParentId` 方法（零调用方）。
+
+- [ ] **Step 5: Guard the Yjs remote write paths against cycles**
+
+spec §4.4.2 与批次 2 第 14 项要求「Yjs / AI 写入路径补防环校验」。AI 路径由 Task 8 覆盖；**Yjs 路径在本任务补上**（计划原先漏了这个任务，此处补齐）。
+
+仓库里写 `parent_id` 的地方一共四处，本任务之前只剩这一处没有护栏：
+
+| 路径 | 位置 | 本任务之后 |
+|---|---|---|
+| `node:update` IPC | `ipc/graph.ts:260` → `nodeRepo.update` | Step 3 在 IPC 层拒绝 `parentId` ✓ |
+| Yjs 远端**更新** | `realtime/yjs-manager.ts:201` → `nodeRepo.update(id, payload)` | **本步（repository 层）** ✓ |
+| 快照双向同步 | `realtime/snapshot/bidirectional-sync.ts:67` → `target.nodeRepo.update(change.id, nodeData)` | **本步（同一个 repository 方法）** ✓ |
+| Yjs 远端**插入** | `realtime/yjs-manager.ts:257`（`insertRemoteNode` 的裸 INSERT） | **本步（自环）** ✓ |
+
+**改法 A —— `NodeRepository.update()` 加校验（覆盖两条更新路径）**
+
+`src/main/repositories/node-repository.ts:164` 的分支保留（Yjs 远端同步要能改 parent），但在 push 进 `updates` **之前**加校验：
+
+```ts
+if (data.parentId !== undefined) {
+  // 防环：远端 peer 可以任意指定 parentId（spec §4.4.2）。
+  // 本地 graph:reparent 已收敛到 hierarchy-service.ts 的单一入口，
+  // 这里是剩下最后一个未受控的 parent_id 写入点。
+  if (data.parentId === id) {
+    throw new HierarchyError(
+      `Node cannot be its own parent: ${id}`,
+      ErrorCode.HIERARCHY_SELF_PARENT,
+    )
+  }
+  if (
+    data.parentId &&
+    isDescendant(id, data.parentId, (nid) => this.getParentId(nid))
+  ) {
+    throw new HierarchyError(
+      `Reparent would create a cycle: ${id} -> ${data.parentId}`,
+      ErrorCode.HIERARCHY_CYCLE,
+    )
+  }
+  updates.push('parent_id = ?'); args.push(data.parentId)
+}
+```
+
+⚠️ `isDescendant(ancestorId, childId, parentOf)` 的**参数顺序**见 Task 6 Step 4：先「祖先」后「后代」。这里问的是「`data.parentId` 是不是 `id` 的后代」→ 传 `(id, data.parentId)`。
+
+本文件加一个取父节点的私有方法：
+
+```ts
+private getParentId(id: string): string | null {
+  const row = this.db.prepare('SELECT parent_id FROM nodes WHERE id = ?').get(id) as
+    | { parent_id: string | null }
+    | undefined
+  return row?.parent_id ?? null
+}
+```
+
+导入：`import { isDescendant } from '../shared/hierarchy-utils'`、`import { ErrorCode, HierarchyError } from '../errors'`（`ErrorCode` 与 `HierarchyError` 都加在 `src/main/errors.ts`）。
+
+⚠️ **只加防环，不加类型校验**（spec §4.4.2 的取舍）：远端 peer 的父子类型组合留待协作功能真正启用时再校验。
+
+⚠️ **不要**在这里加类型/跨图校验——那是 `graph:reparent` 的职责（Task 6）。Step 3 已经在 IPC 层挡掉了 `parentId`，本步的校验只是给 Yjs 路径兜底。
+
+**改法 B —— 远端插入的自环防护**
+
+`src/main/realtime/yjs-manager.ts` 的 `insertRemoteNode`（:212）把远端 payload 直接 INSERT。**新节点还没有后代**，所以远端插入不可能造成「指向自己后代」的环——唯一可能的环是**自环**（`payload.parentId === payload.id`）。
+
+自环一旦写进去就**永久卡死**该节点：迁移的孤儿清理（`hierarchy-migration.ts:61-66`）不会清它（父节点就是它自己，存在），而之后任何 `graph:reparent` 都会被防环判成环 → 这个节点永远改不动。所以在 INSERT 之前拒绝：
+
+```ts
+if (node.parentId && node.parentId === node.id) {
+  throw new HierarchyError(
+    `Remote node cannot be its own parent: ${node.id}`,
+    ErrorCode.HIERARCHY_SELF_PARENT,
+  )
+}
+```
+
+`handleRemoteNodeChange` 的 `try/catch`（:195-205）会接住这个异常并记日志，**不会**写库。
+
+**测试**
+
+新建 `src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts`。用**真实 better-sqlite3**（electron mock + `initDatabase()`，照 **`src/main/__tests__/database-migration.test.ts`** 的现成模式）——防环要真的走 `nodes.parent_id` 查询，mock db 测不出来。
+
+用例（5 条）：
+
+1. `nodeRepo.update('c1', { parentId: 'f1' })`（`f1` 是 `c1` 的后代）→ 抛 `HIERARCHY_CYCLE`，且库里 `c1.parent_id` **没变**
+2. `nodeRepo.update('c1', { parentId: 'c1' })` → 抛 `HIERARCHY_SELF_PARENT`
+3. `nodeRepo.update('c1', { parentId: 's1' })`（合法的新父节点）→ 成功，`c1.parent_id` 落库为 `'s1'`
+4. `nodeRepo.update('c1', { title: 'x' })`（不带 `parentId`）→ 成功，且 `c1.parent_id` 不变
+5. `new YjsManager({ db, nodeRepo, edgeRepo })` 后调用 `manager['insertRemoteNode']({ id: 'X', parentId: 'X', ... })` → 抛 `HIERARCHY_SELF_PARENT`，且 `nodes` 表里**没有** `X` 这一行
+
+⚠️ 第 5 条用 `manager['insertRemoteNode'](...)` 的方括号写法访问 private 方法——TS 的方括号索引访问不受 private 限制，运行时可调。`YjsManager` 是 `export class`（`yjs-manager.ts:53`），也可以用 `createYjsManager(deps).manager` 拿到实例。
+
+- [ ] **Step 6: Verify no caller broke**
+
+Run: `npx tsc --noEmit && npx vitest run src/main/ipc/__tests__/ src/main/realtime/__tests__/ src/renderer/store/__tests__/`
+Expected: 零错误，测试全绿
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/main/ipc/graph.ts src/main/repositories/node-repository.ts src/main/realtime/yjs-manager.ts src/main/ipc/__tests__/graph-node-update.test.ts src/main/realtime/__tests__/yjs-hierarchy-guard.test.ts
+git commit -m "refactor(canvas): 关闭 node:update 与 Yjs 远端路径的 parentId 旁路"
+```
+
+---
+
+## Task 8: 补建层级边（手动 / AI / 扫描三条写入路径）
+
+**Files:**
+- Modify: `src/renderer/canvas/hooks/useNodeOperations.ts`（`handleAddChild`、`handleGenerateChildren`）
+- Modify: `src/main/project-analyzer.ts`（层级边改写 `hierarchical`）
+- Modify: `src/main/services/graph-service.ts`（AI 路径补建层级边 + 防环校验 + 分配 `sort_index`）
+- Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（新建）
+- Test: `src/main/services/__tests__/graph-service-sort-index.test.ts`（新建）
+
+**Interfaces:**
+- Consumes: Task 1 的 `EdgeType` 含 `'hierarchical'`；Task 3 的 `deriveHierarchyEdges`（渲染侧保证即使漏建边也有连线）
+- Produces: 三条写入路径产出的层级边类型统一为 `hierarchical`
+
+**已核实的写入点**：
+- `project-analyzer.ts:85 / :119 / :149` —— 三处 `edgeType: 'default'` **全部是层级边**（project→module、module→process、process→feature）。改为 `'hierarchical'`。同文件 `:432` 的 `'condition'` 是语义边，不动。
+- `graph-service.ts:556` —— `edgeData.edgeType ?? 'default'`，是 AI 结果的边落库处。生产者改了类型，这里自动跟随，**不需要改**。同文件 `:628` / `:692` 的 `'default'` 是 `suggestEdges` 的代码 import 语义边，**不动**。
+- `graph-service.ts:496` —— 第二轮写 `parent_id`，是真相源写入，保持。
+- `useNodeOperations.ts:handleAddChild` —— 只写 `parentId` 不建边，**这是裂缝 1 的根因**。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`。
+
+⚠️ **两个 mock 的形状不能照抄隔壁文件**：
+
+1. `useNodeOperations` 用的是 **selector 形式**的 store——`useGraphStore((state) => state.nodes)`（`useNodeOperations.ts:14-16`）。隔壁 `useNodePositionPersistence.test.ts` mock 的是 `{ getState: vi.fn() }`（那是 `getState` 形式），照抄会直接报 `useGraphStore is not a function`。
+2. `useReactFlow()` 在没有 `<ReactFlowProvider />` 时会抛 `Please make sure that you wrap the app in a <ReactFlowProvider />`——必须 mock 掉。
+
+`useI18n` **不用 mock**——`I18nContext` 有可用的默认值（`src/renderer/i18n/context.ts:17`）。
+
+```ts
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { renderHook } from '@testing-library/react'
+import { useNodeOperations } from '../useNodeOperations'
+
+const { mockState } = vi.hoisted(() => ({
+  mockState: {
+    nodes: [] as unknown[],
+    createNode: vi.fn(),
+    createEdge: vi.fn(),
+    updateNode: vi.fn(),
+  },
+}))
+
+vi.mock('../../../store/graphStore', () => ({
+  useGraphStore: (selector: (s: unknown) => unknown) => selector(mockState),
+}))
+
+vi.mock('@xyflow/react', () => ({
+  useReactFlow: () => ({ screenToFlowPosition: (p: { x: number; y: number }) => p }),
+}))
+
+describe('useNodeOperations — 补建层级边', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockState.nodes = []
+    mockState.createNode.mockResolvedValue({ id: 'child1' })
+    mockState.createEdge.mockResolvedValue({ id: 'edge1' })
+  })
+
+  it('creates a hierarchical edge when adding a child', async () => {
+    const { result } = renderHook(() => useNodeOperations('g1'))
+    await result.current.handleAddChild('parent1', 'module')
+
+    expect(mockState.createNode).toHaveBeenCalledTimes(1)
+    expect(mockState.createNode.mock.calls[0][0]).toMatchObject({ parentId: 'parent1' })
+    expect(mockState.createEdge).toHaveBeenCalledTimes(1)
+    expect(mockState.createEdge.mock.calls[0][0]).toMatchObject({
+      source: 'parent1',
+      target: 'child1',
+      edgeType: 'hierarchical',
+    })
+  })
+
+  it('creates a hierarchical edge for each AI-generated child', async () => {
+    mockState.nodes = [{ id: 'parent1', title: 'P', type: 'module', position: { x: 0, y: 0 } }]
+    ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      'mindmap:generateModule': vi.fn().mockResolvedValue({
+        children: [{ title: 'C1' }, { title: 'C2' }],
+        childType: 'process',
+      }),
+    }
+    const { result } = renderHook(() => useNodeOperations('g1', '/proj'))
+    await result.current.handleGenerateChildren('parent1')
+
+    expect(mockState.createNode).toHaveBeenCalledTimes(2)
+    expect(mockState.createEdge).toHaveBeenCalledTimes(2)
+    expect(mockState.createEdge.mock.calls[0][0]).toMatchObject({
+      source: 'parent1',
+      target: 'child1',
+      edgeType: 'hierarchical',
+    })
+  })
+})
+```
+
+再新建 `src/main/services/__tests__/graph-service-sort-index.test.ts` —— 覆盖**第三条写入路径**（`initFromProject` → `graph-service.createNodes`）。
+
+⚠️ **这条路径必须用真实库**：它的 INSERT 覆盖 `nodes` 表的 21 个列（表本身是 **25 列**，见 `src/main/database.ts:381-407`），mock DB 断言不到「写进去的 `sort_index` 是几」。electron mock + `initDatabase()` 照抄 **`src/main/__tests__/database-migration.test.ts`** 的现成模式（Task 11 才创建的 `node-repository.test.ts` 此刻还不存在，**不要**照抄一个还不存在的文件）。
+
+`initFromProject` 走真实写入路径的两个前提：
+- `ProjectScanner` 与 `ProjectAnalyzer` 都要 mock（相对本测试文件的路径：`'../../project-scanner'` / `'../../project-analyzer'`）——`ProjectAnalyzer.analyze()` 是**纯函数**（`project-analyzer.ts:47`），mock 掉它不影响被测的写入路径。
+- **不要传 `agentManager`**：`initFromProject` 只有在 `agentManager` 存在时才走 L3 AI 增强（`graph-service.ts:192`），不传就跳过，模块列表直接用扫描结果 → 写入路径是确定性的。
+
+```ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
+
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-graph-svc-sort-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+const mockScanResult = {
+  projectName: 'Test Project',
+  projectPath: '/project',
+  framework: 'react',
+  packageJson: null,
+  modules: [
+    {
+      name: 'M1',
+      description: 'module one',
+      processes: [{ name: 'P1', description: 'process one', features: [] }],
+    },
+  ],
+}
+
+// 一个父节点 P1 + 三个兄弟 C1/C2/C3（数组顺序 = analyzer 的输出顺序）
+const mockGraphResult = {
+  projectName: 'Test Project',
+  projectPath: '/project',
+  framework: 'react',
+  nodes: [
+    { tempId: 'root', type: 'project', status: 'confirmed', title: 'Root', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], ownerRole: 'product' },
+    { tempId: 'p1', type: 'module', status: 'draft', title: 'P1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'root', ownerRole: 'product' },
+    { tempId: 'c1', type: 'process', status: 'draft', title: 'C1', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+    { tempId: 'c2', type: 'process', status: 'draft', title: 'C2', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+    { tempId: 'c3', type: 'process', status: 'draft', title: 'C3', description: '', graphId: '', graphType: 'online', position: { x: 0, y: 0 }, metadata: {}, acceptanceCriteria: [], parentTempId: 'p1', ownerRole: 'product' },
+  ],
+  // 类型不能省：`edges: []` 会被推成 never[]，后续用例往里塞边就编译不过
+  edges: [] as Array<{
+    sourceTempId: string
+    targetTempId: string
+    edgeType?: string
+    graphId: string
+  }>,
+}
+
+vi.mock('../../project-scanner', () => ({
+  ProjectScanner: vi.fn().mockImplementation(function () {
+    return { scan: vi.fn().mockResolvedValue(mockScanResult) }
+  }),
+}))
+
+vi.mock('../../project-analyzer', () => ({
+  ProjectAnalyzer: vi.fn().mockImplementation(function () {
+    return { analyze: vi.fn().mockReturnValue(mockGraphResult) }
+  }),
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { GraphService } from '../graph-service'
+
+describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
+  let db: ReturnType<typeof getClient>
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+  })
+
+  afterAll(() => {
+    closeDatabase()
+  })
+
+  it('assigns consecutive sort_index to siblings written by the scan path', async () => {
+    mockGraphResult.edges = []
+
+    const service = new GraphService(db)
+    const { onlineGraph } = await service.initFromProject({
+      projectPath: '/project',
+      projectName: 'Test Project',
+    })
+
+    const parent = db
+      .prepare("SELECT id FROM nodes WHERE graph_id = ? AND title = 'P1'")
+      .get(onlineGraph.id) as { id: string }
+    const rows = db
+      .prepare('SELECT id, title, sort_index FROM nodes WHERE parent_id = ? ORDER BY sort_index')
+      .all(parent.id) as { id: string; title: string; sort_index: number }[]
+
+    expect(rows.map((r) => r.title)).toEqual(['C1', 'C2', 'C3'])
+    expect(rows.map((r) => r.sort_index)).toEqual([0, 1, 2])
+
+    // 第四轮补建：每个有 parent_id 的节点都必须有**且只有一条** hierarchical 边
+    // （这一段是本任务的主要交付物 —— 没有它，第四轮整个删掉测试照样绿）
+    for (const child of rows) {
+      const edges = db
+        .prepare('SELECT edge_type FROM edges WHERE source = ? AND target = ?')
+        .all(parent.id, child.id) as { edge_type: string }[]
+      expect(edges).toHaveLength(1)
+      expect(edges[0].edge_type).toBe('hierarchical')
+    }
+  })
+
+  it('同一对上把已有的 default 边升级成 hierarchical，而不是再插一条', async () => {
+    // AI 写入路径产出的层级边**就是 'default'**（graph-service.ts:556）
+    mockGraphResult.edges = [
+      { sourceTempId: 'p1', targetTempId: 'c1', edgeType: 'default', graphId: '' },
+    ]
+
+    const service = new GraphService(db)
+    const { onlineGraph } = await service.initFromProject({
+      projectPath: '/project',
+      projectName: 'Test Project',
+    })
+
+    const parent = db
+      .prepare("SELECT id FROM nodes WHERE graph_id = ? AND title = 'P1'")
+      .get(onlineGraph.id) as { id: string }
+    const child = db
+      .prepare("SELECT id FROM nodes WHERE graph_id = ? AND title = 'C1'")
+      .get(onlineGraph.id) as { id: string }
+
+    const edges = db
+      .prepare('SELECT edge_type FROM edges WHERE source = ? AND target = ?')
+      .all(parent.id, child.id) as { edge_type: string }[]
+
+    // 升级（而不是再插一条）：同一对上仍然**只有一条**边，且类型变成 hierarchical
+    // 少了「升级」这一级，这一对会变成两条边（一条 default + 一条 hierarchical）
+    expect(edges).toHaveLength(1)
+    expect(edges[0].edge_type).toBe('hierarchical')
+  })
+})
+```
+
+⚠️ `initFromProject` 给 online 与 dev 两张图**各写一遍节点**，所以查询必须限定到一张图（上面用 `graph_id` 找父节点、再按 `parent_id` 取子节点）——否则 dev 图的同名节点会混进来。
+
+⚠️ **两个用例都调 `initFromProject`，但它们互不干扰**：每次调用都用 `generateId('graph-online')` /
+`generateId('graph-dev')` 新建两张图（`graph-service.ts:343-344`）→ 节点 id 全是新的 → 查询按 `graph_id` 限定就够。
+`mockGraphResult.edges` 是同一个对象引用，**每个用例开头都要显式写一遍** `mockGraphResult.edges = [...]`。
+
+⚠️ **第二个用例盯的是 R-28 的第 2 级（升级）**，也是本任务最容易做错的一级：
+AI 写入路径产出的层级边就是 `'default'`（`graph-service.ts:556` 的 `edgeData.edgeType ?? 'default'`），
+而第二轮已经把 `parent_id` 写好了 → `(p1, c1)` 这一对正是权威父子对 → 那条 `'default'` **就是**层级边。
+**升级**它 → 同一对上仍然只有一条边；**再插一条** → 同一对上两条边（一条 `'default'` 残留）→ 换父之后那条残留
+会被判成语义边并**开始渲染**，画布上冒出一条用户没画过的线。
+所以断言是 `toHaveLength(1)` **且** `edge_type === 'hierarchical'` —— 两者缺一，bug 都抓不住。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/main/services/__tests__/graph-service-sort-index.test.ts`
+Expected: 三个都 FAIL —— 渲染层当前不建边；主进程扫描路径当前不写 `sort_index`（兄弟的 `sort_index` 全是 NULL）；扫描路径当前也**不补建层级边**（这些父子对在 `edges` 表里一条边都没有 → 断言 `toHaveLength(1)` 失败）
+
+- [ ] **Step 3: Make handleAddChild build the edge**
+
+`src/renderer/canvas/hooks/useNodeOperations.ts` 的 `handleAddChild`：把 `await createNode({...})` 的返回值接住，然后建边：
+
+```ts
+const created = await createNode({ ... })
+await createEdge({
+  source: parentId,
+  target: created.id,
+  graphId,
+  edgeType: 'hierarchical',
+})
+```
+
+（`createNode` 返回 `Promise<GraphNode>`，见 `graphStore.ts:239` 的 `return serverItem`。`createEdge` 的入参是 `Omit<GraphEdge, 'id'>`。）
+
+`handleGenerateChildren` 同理——每个 AI 生成的子节点都要建 `hierarchical` 边（在 `createNode` 之后紧跟着建，边用同一个 `created.id` 作 target）。
+
+`createEdge` 从 store 取：`const createEdge = useGraphStore((state) => state.createEdge)`——与 `createNode` / `updateNode` 同样的 selector 形式（`useNodeOperations.ts:14-16` 那一组）。
+
+- [ ] **Step 4: Switch the AI and scan write paths**
+
+`src/main/project-analyzer.ts` 的 `:85` / `:119` / `:149` 三处 `edgeType: 'default'` 改为 `edgeType: 'hierarchical'`。
+
+`src/main/services/graph-service.ts`：在第二轮写完 `parent_id`（:489-498）之后、第三轮建边（:500）之后，加一步「确保每个有 parent_id 的节点都有对应的 hierarchical 边」：
+
+```ts
+// 第四轮：确保每个有 parent_id 的节点都有 hierarchical 边
+// 三级判定（R-28）：同一对上永远只应该有一条层级边。
+//   1. 已有 'hierarchical' → 跳过
+//   2. 否则已有 'default' → **升级**它（不是再插一条）
+//   3. 否则 → 插入新的 'hierarchical' 边
+for (const nodeData of graphResult.nodes) {
+  if (!nodeData.parentTempId) continue
+  const sourceId = tempIdMap.get(nodeData.parentTempId)
+  const targetId = tempIdMap.get(nodeData.tempId)
+  if (!sourceId || !targetId) continue
+  const hasHierarchical = db.prepare(
+    "SELECT 1 FROM edges WHERE source=? AND target=? AND edge_type='hierarchical' LIMIT 1"
+  ).get(sourceId, targetId)
+  if (hasHierarchical) continue
+  const legacyDefault = db.prepare(
+    "SELECT id FROM edges WHERE source=? AND target=? AND edge_type='default' LIMIT 1"
+  ).get(sourceId, targetId) as { id: string } | undefined
+  if (legacyDefault) {
+    db.prepare("UPDATE edges SET edge_type='hierarchical' WHERE id=?").run(legacyDefault.id)
+    continue
+  }
+  insertEdgeStmt.run(generateId('edge'), sourceId, targetId, null, 'hierarchical', graphId, null, null, null)
+}
+```
+
+这让 AI 生成路径不依赖 `graphResult.edges` 里是否带了层级边——`parent_id` 有就一定有层级边。
+
+⚠️ **第 2 级（升级而不是再插一条）不是可选的**（R-28）：AI 写入路径产出的层级边**就是 `'default'`**
+（`graph-service.ts:556` 的 `edgeData.edgeType ?? 'default'`），而第四轮跑的时候第二轮已经把
+`parent_id` 写好了 → `(父, 子)` 这一对正是权威父子对 → 按层级边的判定规则
+（Task 6 的 R-27：父子对上的 `'default'` 边 = 迁移前的层级边），那条 `'default'` **就是**层级边。
+再插一条 `'hierarchical'` 会在同一对上留下 `'default'` 残留，而残留的 `'default'` 会被判成
+**语义边** → 之后换父时父子关系不再成立 → 那条边**开始渲染** → 画布上冒出一条莫名其妙的线。
+**第 2 级与启动迁移的第 3 步是同一套语义**（`hierarchy-migration.ts:146-153` 也是把父子对上的
+`'default'` 升级成 `'hierarchical'`），两者必须一致。
+
+⚠️ 上面的代码是**示意**。`insertEdgeStmt` 的列顺序与占位符数量必须照 `graph-service.ts` 里那条语句的**实际定义**写——照抄示意里的参数顺序会把 `edge_type` 写进别的列。实施时先读那条语句的真实绑定顺序。
+
+---
+
+⚠️ **第二轮要一起写 `sort_index`（spec §4.8）——这条路径绕过了 `NodeRepository.create()`**
+
+`graph-service.ts:429` 的 `createNodes` 是**裸 SQL 写入**：自己 `prepare` INSERT、自己 `UPDATE parent_id`，**不经过 `NodeRepository`**。所以 Task 11 给 `NodeRepository.create()` / `createBatch()` 补的「新建子节点取 `max(兄弟) + 1`」**覆盖不到这条路径**。不写的话，这条路径建出来的子节点 `sort_index` 全是 NULL，后果是**兄弟顺序错乱**：
+
+- 画布布局把 `sortIndex` 为 `undefined` 的节点排在**最后**（Task 11 的兜底规则）。用户随后手动加一个子节点 C3（Task 11 给了它 `COALESCE(MAX(sort_index), -1) + 1`——而兄弟全是 NULL，`MAX` 返回 NULL，`COALESCE` 兜到 -1 → C3 拿到 **0**）→ 布局把 C3 排到**最前**，C1/C2（undefined）排到最后 → **后建的节点跑到了前面**。
+- 下次启动的迁移（R-11 修法后只补 NULL）也救不回来：本路径的节点有层级边（第四轮补的）→ 落在 tier-0 → 按边 rowid 排出 `C1=0, C2=1`，而 C3 已经**占着 0** → 撞号，顺序仍然不确定。
+
+实现要点：
+- **第二轮**（`graph-service.ts:496` 写 `parent_id` 的那轮）里，同一父节点的多个子节点要拿**连续**的 `sort_index`（0, 1, 2…）——批内递增，不要每个子节点都去查一次库。
+- 基准值 = 该父节点**已有**子节点的最大 `sort_index` + 1，写法 `COALESCE(MAX(sort_index), -1) + 1`（`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL）。本方法建的是**全新图**（`initFromProject` 每次新建 online/dev 两张图），所以通常是 0 起步，但基准值仍要按公式取，不要写死 0。
+- **兄弟顺序 = `graphResult.nodes` 里同父节点的「出现顺序」**（analyzer 的 dagre 布局顺序）。它同时也是第四轮补边的插入顺序——两者必须一致，否则迁移按边 rowid 排出的顺序会与 `sort_index` 打架（R-11 的教训：两套顺序源必须同源）。
+
+- [ ] **Step 5: Add cycle checks to the AI write path**
+
+`src/main/services/graph-service.ts` 的第二轮（写 `parent_id`）与 `project-analyzer.ts` 写 `parentTempId` 处：写入前检查新父节点不是自己的后代。AI 路径**不加类型校验**（spec §4.4.3：批量生成，逐个校验会让整次生成失败）。
+
+防环检查**必须复用 Task 6 的 `isDescendant`**（`src/main/shared/hierarchy-utils.ts`），不要在这里另写一份上溯逻辑：
+- `graph-service.ts`：`isDescendant(nodeId, parentId, (id) => 已落库节点的 parent_id)`
+- `project-analyzer.ts`：`isDescendant(nodeId, parentTempId, (id) => 内存里 tempId → parentTempId 的映射)`——`parentOf` 做成回调正是为了让内存映射与数据库查询共用同一个函数
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/ src/main/ipc/__tests__/mindmap.test.ts src/main/services/__tests__/graph-service-sort-index.test.ts`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/hooks/__tests__/ src/main/project-analyzer.ts src/main/services/graph-service.ts src/main/services/__tests__/graph-service-sort-index.test.ts
+git commit -m "fix(canvas): 手动加子节点补建层级边，AI 与扫描路径边类型化"
+```
+
+---
+
+## Task 9: 克隆路径同步新列与层级边
+
+**Files:**
+- Modify: `src/main/repositories/graph-repository.ts`（`cloneGraphNodes`，:214）
+- Test: `src/main/repositories/__tests__/graph-repository-clone.test.ts`（新建）
+
+**Interfaces:**
+- Consumes: Task 2 的 `nodes.sort_index` / `nodes.collapsed` 列
+- Produces: `graph:derive` 产出的 dev 图保留 `sort_index`、`collapsed` 重置为 0、`hierarchical` 边与 `parent_id` 一致
+
+- [ ] **Step 1: Write the failing test**
+
+⚠️ **新建 `src/main/repositories/__tests__/graph-repository-clone.test.ts`，不要往 `src/main/__tests__/graph-repository.test.ts` 里加**——后者是 **mock db** 的单元测试（`createMockDb()` 把 `prepare` 换成 `vi.fn()`），克隆路径是多语句读写，mock 测不出真实行为。必须用真实 better-sqlite3。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
+
+被测单元是 **`GraphRepository.cloneGraphNodes(sourceGraphId, targetGraphId, targetGraphType)`**（`graph-repository.ts:214`），不是 `GraphService.deriveGraph`——后者还包了建 dev 图等与本任务无关的步骤。
+
+```ts
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
+
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-graph-clone-test-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { GraphRepository } from '../graph-repository'
+
+describe('GraphRepository.cloneGraphNodes — 新列与层级边', () => {
+  let db: ReturnType<typeof getClient>
+  let repo: GraphRepository
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+    repo = new GraphRepository(db)
+    const now = new Date().toISOString()
+    const insGraph = db.prepare(
+      'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?,?,?,?,?,?)'
+    )
+    insGraph.run('g_on', 'Online', 'online', '/p', now, now)
+    insGraph.run('g_dev', 'Dev', 'dev', '/p', now, now)
+
+    const ins = db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, sort_index, collapsed, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)'
+    )
+    ins.run('p1', 'project', 'confirmed', 'P1', 'g_on', 'online', null, null, 0, 0, 0, now, now)
+    ins.run('m1', 'module', 'draft', 'M1', 'g_on', 'online', 'p1', 0, 1, 0, 0, now, now)
+    ins.run('m2', 'module', 'draft', 'M2', 'g_on', 'online', 'p1', 1, 0, 0, 0, now, now)
+
+    const insEdge = db.prepare(
+      'INSERT INTO edges (id, source, target, edge_type, graph_id) VALUES (?,?,?,?,?)'
+    )
+    insEdge.run('e1', 'p1', 'm1', 'hierarchical', 'g_on')
+    insEdge.run('e2', 'p1', 'm2', 'hierarchical', 'g_on')
+  })
+
+  beforeEach(() => {
+    // `cloneGraphNodes` 是**追加**语义 —— 它不清空目标图（生产里目标图每次都是新建的，
+    // 所以没人踩到）。但测试里两个用例共用同一个 db、同一个固定的 'g_dev' 图 id：
+    // 第二个用例会看到第一个用例克隆出来的残留 → 边数翻倍 →
+    // 断言「dev 图里有 2 条 hierarchical 边」必红（4 ≠ 2）。
+    // 所以每个用例前先把 dev 图清空；edges 靠 nodes 的 ON DELETE CASCADE 一起清掉
+    // （`PRAGMA foreign_keys = ON` 在 `initDatabase()` 里已开）。
+    db.prepare("DELETE FROM nodes WHERE graph_id = 'g_dev'").run()
+  })
+
+  afterAll(() => { closeDatabase() })
+
+  it('clones sort_index but resets collapsed', () => {
+    repo.cloneGraphNodes('g_on', 'g_dev', 'dev')
+    const rows = db.prepare(
+      "SELECT title, sort_index, collapsed FROM nodes WHERE graph_id='g_dev'"
+    ).all() as { title: string; sort_index: number | null; collapsed: number }[]
+    const m1 = rows.find((r) => r.title === 'M1')!
+    const m2 = rows.find((r) => r.title === 'M2')!
+    expect(m1.sort_index).toBe(0)
+    expect(m2.sort_index).toBe(1)
+    // 源图 M1 的 collapsed 是 1，克隆到 dev 图必须重置为 0（折叠是开发者视角）
+    expect(m1.collapsed).toBe(0)
+  })
+
+  it('remaps hierarchical edges to the cloned node ids', () => {
+    repo.cloneGraphNodes('g_on', 'g_dev', 'dev')
+    const devNodes = db.prepare(
+      "SELECT id, title, parent_id FROM nodes WHERE graph_id='g_dev'"
+    ).all() as { id: string; title: string; parent_id: string | null }[]
+    const titleById = new Map(devNodes.map((n) => [n.id, n.title]))
+    const edges = db.prepare(
+      "SELECT source, target FROM edges WHERE graph_id='g_dev' AND edge_type='hierarchical'"
+    ).all() as { source: string; target: string }[]
+
+    expect(edges).toHaveLength(2)
+    for (const e of edges) {
+      // 边的两端必须是 dev 图里的节点（id 被重映射过），且与 parent_id 自洽
+      expect(titleById.get(e.source)).toBe('P1')
+      const child = devNodes.find((n) => n.id === e.target)!
+      expect(child.parent_id).toBe(e.source)
+    }
+  })
+})
+```
+> ⚠️ **`cloneGraphNodes` 是追加语义，不会清空目标图。** 上面的 `beforeEach` 是必需的：
+> 两个用例共用同一个固定的 `'g_dev'` 图 id，若不先清空，第二个用例会数到第一个用例克隆出来的
+> 残留边（4 条而不是 2 条）→ 断言必红，而**红的理由与本任务无关**（不是 `sort_index` 没克隆）。
+> 生产里不受影响：`GraphService.deriveGraph` 每次都新建一张 dev 图。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/repositories/__tests__/graph-repository-clone.test.ts`
+Expected: **第一个用例 FAIL，第二个用例 PASS** —— 这是**正确**的预期，不要试图让第二个也红。
+
+| 用例 | 当前状态 | 为什么 |
+|---|---|---|
+| `clones sort_index but resets collapsed` | ❌ FAIL | `insertNodeStmt`（`graph-repository.ts:220-226`）的 20 列里**没有 `sort_index`** → 克隆出的节点 `sort_index` 是 NULL → `expect(m1.sort_index).toBe(0)` 红。**这才是本任务的 RED 驱动力。** |
+| | | `collapsed` 的断言**本来就绿**：`nodes.collapsed` 是 `INTEGER NOT NULL DEFAULT 0`（`database.ts:392`），而 `collapsed` **根本不在 INSERT 的列清单里** → 克隆出的节点默认就是 0。 |
+| `remaps hierarchical edges to the cloned node ids` | ✅ PASS | Pass 3（`:293-307`）已经用 `idMap.get(rowStr(row, 'source'))` 重映射 source/target → 层级边的重映射**现在就是对的**。 |
+
+⚠️ **不要为了「让测试先红」去改 `collapsed` 的行为。** `collapsed` 不在 INSERT 列清单里，
+新表默认 0 —— 这正是 spec §4.2.1 要的「折叠是开发者视角，派生出来应是展开态」。
+第一个用例里 `collapsed` 的断言是**回归护栏**（防止将来有人把 `collapsed` 加进 INSERT
+从而把 online 的折叠态复制到 dev），**不是**驱动 RED 的那一行。
+
+如果第二个用例**也**红了，那是**真 bug**（说明 `cloneGraphNodes` 的边重映射被改坏了），停下来报告。
+
+Step 3b 新增的第三个用例（跨图悬挂 `parent_id`）在改之前**必然是红的** ——
+克隆出来的节点保留了源图的 `parent_id`，断言 `parent_id === null` 会红。
+
+- [ ] **Step 3: Update cloneGraphNodes**
+
+`src/main/repositories/graph-repository.ts` 的 `cloneGraphNodes`：
+- `insertNodeStmt`（:220）的列清单加 `sort_index`（放在 `parent_id` 之后，与真实 `nodes` 表的列顺序一致），值取 `row['sort_index']`；**占位符数量同步 +1**（20 → 21），且 `insertNodeStmt.run(...)` 的实参要按同样的位置插入 `row['sort_index']`——列清单与实参顺序错位会把 `sort_index` 写进别的列
+- `collapsed` **不加入 INSERT**（新表默认 0）——折叠是开发者视角，从 online 派生出来应是展开态（spec §4.2.1）
+  （Step 2 原文写「`collapsed` 也随源图复制」是**错的** —— 它从来不在 INSERT 的列清单里。
+  本条指令不变，只是把理由说准：不是「去掉一个复制」，而是「本来就没复制，别加」）
+- 克隆边时（Pass 3，:273），若 `row['edge_type'] === 'hierarchical'`，其 source/target 必须用 `idMap` 重映射（与 `parent_id` 用同一张 map）。当前 Pass 3 用的就是 `idMap.get(rowStr(row, 'source'))`，因此**现有代码已经满足**——但要靠 Step 1 的第二个用例钉住，防止将来有人改坏
+
+⚠️ `cloneGraphNodes` 的两轮结构（Pass 1 插节点时 `parent_id` 暂时是源图的值，Pass 2 才重映射）**保持不变**——本期不加 `parent_id` 外键，这个两段式仍然安全。
+
+- [ ] **Step 3b: 别把跨图的悬挂 `parent_id` 一起克隆过来**（控制器补进来的第 4 条）
+
+`cloneGraphNodes` 的 Pass 2（`graph-repository.ts:272-291`）**只在新旧父节点都在 `idMap` 里时**
+才重映射 `parent_id`：
+
+```ts
+const oldParentId = rowOptStr(row, 'parent_id')
+if (oldParentId && idMap.has(oldParentId)) {
+  parentUpdateStmt.run(idMap.get(oldParentId)!, newId)
+}
+```
+
+若源节点的父亲**不在源图里**（`parent_id` 指向**另一张图**的节点 —— `parent_id` 没有外键，
+Yjs 远端路径也不校验，这种脏数据是可能的），那么克隆出来的新节点**原样保留源图的 `parent_id`**
+→ dev 图里出现一条**指向别的图**的悬挂父子关系。
+
+**为什么这不只是"数据不干净"**：`hierarchy-service.collectDescendants`（`hierarchy-service.ts:218-221`）
+的子节点查询是 `SELECT id, position_x AS x, position_y AS y FROM nodes WHERE parent_id = ?` ——
+**没有 `graph_id` 过滤**。一条跨图的悬挂 `parent_id` 会让 dev 图某个节点的后代遍历**走进 online 图**，
+`graph:reparent` 于是可能把 online 的节点当成 dev 的后代一起搬走。
+
+→ **改法**：Pass 2 里，当 `oldParentId` 存在但**不在 `idMap` 里**时，把克隆节点的 `parent_id`
+置为 **NULL** —— 它在目标图里就是一个根节点（渲染层本来也按孤儿处理、不画父子线，
+所以这是让数据与渲染一致，而不是改变可见行为）。
+
+→ **测试**：加第三个用例 —— 源图里有一个节点，其 `parent_id` 指向**另一张图**的节点；
+克隆之后，dev 图里对应节点的 `parent_id` 必须是 `NULL`。
+
+⚠️ **第三个用例的夹具必须自己隔离**（控制器补的）：
+
+- 「被指向的那个节点」要放在**第三张图**里（例如 `'g_other'`），不能放在 `'g_on'`
+  （放在 `'g_on'` 的话，它就是源图里的一个正常节点，父节点映射得上，测不到「悬挂」）。
+- 那个**悬挂节点**（在 `'g_on'` 里、`parent_id` 指向 `'g_other'` 的节点）
+  **在第三个用例的用例体里插**，不要放进 `beforeAll` ——
+  放进 `beforeAll` 的话前两个用例会多克隆一个节点。按现在的断言它们**仍然会过**
+  （多出来的节点没有边，`toHaveLength(2)` 不受影响），但那是**撞巧**，
+  别让后面的改动踩这个坑。若你还是放进了 `beforeAll`，就在 `beforeEach` 里一并清掉。
+- `'g_other'` 那张图与它的节点也只在这个用例里用。
+
+判据：跑完第三个用例后，**再跑一遍前两个用例**，它们必须依然是绿的
+（`beforeEach` 会清 `'g_dev'`，但不会清 `'g_on'` —— 悬挂节点会留在源图里）。
+如果你担心这一点，最省事的做法是让第三个用例用**自己的一对图**
+（`'g_on2'` → `'g_dev2'`），完全不动 `'g_on'` / `'g_dev'`。
+
+> 连带说明：`insertNodeStmt` 的列清单里**不要**因此加 `parent_id` 的额外处理 ——
+> Pass 1 原样带过去、Pass 2 决定去留，两段式结构**保持不变**（本期不加 `parent_id` 外键，
+> 这个两段式仍然安全）。
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `npx vitest run src/main/repositories/__tests__/graph-repository-clone.test.ts src/main/__tests__/graph-repository.test.ts`
+Expected: PASS（两个文件都绿——`src/main/__tests__/graph-repository.test.ts` 是 mock 版单元测试，本次不改动它，但它必须继续全绿）
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/main/repositories/graph-repository.ts src/main/repositories/__tests__/graph-repository-clone.test.ts
+git commit -m "fix(canvas): 派生图同步兄弟顺序并重映射层级边"
+```
+
+---
+## Task 10: 拖拽重挂交互
+
+**Files:**
+- Modify: `src/renderer/canvas/GraphCanvas.tsx`
+- Create: `src/renderer/canvas/hooks/useReparentDrag.ts`
+- Create: `src/renderer/canvas/hooks/__tests__/useReparentDrag.test.ts`
+- Modify: `src/renderer/canvas/BizNode.tsx`（落点高亮样式）
+- Modify: `src/renderer/store/graphStore.ts`（`reparentNode` action）
+- Modify: `src/shared/i18n/resources/domains/canvas.ts`（文案 zh + en）
+
+**Interfaces:**
+- Consumes: Task 5 的 `useNodeTypeConfigs()`；Task 6 的 `graph:reparent` IPC
+- Produces:
+  ```ts
+  // src/renderer/canvas/hooks/useReparentDrag.ts
+  export interface ReparentCandidate {
+    nodeId: string
+    valid: boolean
+    reason?: 'cycle' | 'type' | 'cross-graph'
+  }
+  export function useReparentDrag(): {
+    draggingNodeId: string | null
+    candidate: ReparentCandidate | null
+    onDragStart: (nodeId: string) => void
+    onDrag: (pointer: { x: number; y: number }) => void
+    onDragEnd: (pointer: { x: number; y: number }) => void
+  }
+  ```
+  `onDrag` 的 `pointer` 是 **flow 坐标**（调用方用 `screenToFlowPosition` 换算）。
+
+  `useReparentDrag` 内部调用 Task 5 的 `useNodeTypeConfigs()` 取类型规则，不接受外部传入——类型规则的唯一权威是主进程的 registry，渲染端只能通过 IPC 拿。
+
+  ```ts
+  // src/renderer/store/graphStore.ts
+  reparentNode: (nodeId: string, newParentId: string) => Promise<void>
+  ```
+  动作内部：调 `graph:reparent` IPC → 用返回的 `movedPositions` 更新 store 里对应节点的 `parentId` 与 `position`。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/renderer/canvas/hooks/__tests__/useReparentDrag.test.ts`：
+
+```ts
+it('rejects a candidate that is a descendant of the dragged node', () => { /* 期望 reason === 'cycle' */ })
+it('rejects a candidate whose type is not allowed as parent', () => { /* 期望 reason === 'type' */ })
+it('rejects a candidate in another graph', () => { /* 期望 reason === 'cross-graph' */ })
+it('accepts a valid candidate', () => { /* 期望 valid === true */ })
+
+it('returns null candidate when pointer is on empty space', () => { /* 期望 candidate === null */ })
+```
+
+⚠️ **再加两条**（原五个用例漏了「落点判定与重挂调用的契约」）：
+
+```ts
+it('does not call reparentNode when the candidate is illegal', () => {
+  // 非法落点 → 只做「普通移动」，绝不能调 graph:reparent
+  expect(mockState.reparentNode).not.toHaveBeenCalled()
+})
+
+it('calls reparentNode with the dragged node and the candidate', () => {
+  // 合法落点 → 调 graph:reparent(draggingNodeId, candidate.nodeId)
+  expect(mockState.reparentNode).toHaveBeenCalledWith('feature-a', 'module-b')
+})
+```
+
+这两条不是凑数：规格 §4.4 第 5 条写死了「命中非法或未命中：拖拽行为退化为普通移动」，
+第 6 条写死了「松手在合法 B 上：调用 `graph:reparent(A, B)`」。**「非法落点也去调重挂」**
+是本任务最容易写错的一处。
+
+⚠️ **上面只给了五个用例的名字，没给实现骨架 —— 但有三个 mock 的形状必须先定死，
+否则测试要么报 `useGraphStore is not a function`，要么根本测不到类型判定。**
+
+**1. store mock 必须是 selector 形式。** `useReparentDrag` 要读节点列表并调 `reparentNode`：
+
+```ts
+const { mockState } = vi.hoisted(() => ({
+  mockState: {
+    nodes: [] as unknown[],
+    reparentNode: vi.fn().mockResolvedValue(undefined),
+  },
+}))
+vi.mock('../../../store/graphStore', () => ({
+  useGraphStore: (selector: (s: unknown) => unknown) => selector(mockState),
+}))
+```
+
+⚠️ **隔壁 `useNodePositionPersistence.test.ts` 是 `getState` 形式**
+（`useGraphStore: { getState: vi.fn() }`）—— **照抄会直接报 `useGraphStore is not a function`**。
+（Task 8 的 brief 踩过同一个坑。）
+
+**2. `useNodeTypeConfigs` 要 mock。** 它在 `src/renderer/canvas/hooks/useNodeTypeConfigs.ts`，
+返回 `{ configs, loaded }`（真实实现走 `window.electronAPI['nodeType:listConfigs']()`）。
+mock 掉它，测试才能直接把 `loaded` 设成 `true` / `false`：
+
+```ts
+const { mockConfigs } = vi.hoisted(() => ({
+  mockConfigs: { configs: {} as Record<string, unknown>, loaded: true },
+}))
+vi.mock('../useNodeTypeConfigs', () => ({
+  useNodeTypeConfigs: () => mockConfigs,
+}))
+```
+
+`beforeEach` 里把 `mockConfigs.configs` 恢复成**真实的规则形状**、把 `loaded` 恢复成 `true`
+（类型判定用例需要 `configs` 里确实有 `module` / `feature` 的条目）。
+
+**3. 命中判定要用真实尺寸算 pointer。** `estimateNodeWidth/Height` 从
+`src/renderer/canvas/layouts/force-layout.ts` import
+（⚠️ `tree-layout.ts` 里有一份**同名但未导出**的私有副本，别 import 错文件）。
+它们吃的是 **React Flow 的 `Node`**（读 `node.data.type` / `node.data.title`），
+**不是** `GraphNode` —— 喂进去的必须是 `{ id, position, data: { type, title } }` 这种形状。
+
+尺寸是确定的（`NODE_SIZES`，`force-layout.ts:26`）：`feature` 160×60、`module` 200×80、
+`process` 180×70、`project` 220×90；标题够短时 `estimateNodeWidth` 取基准宽
+（`Math.max(base.width, Math.min(200, textWidth))`）。
+所以一个 `position = { x: 0, y: 0 }` 的 feature 节点，命中矩形是
+**x ∈ [0, 160]、y ∈ [0, 60]** —— pointer 取 `{ x: 80, y: 30 }` 必中，
+`{ x: 500, y: 500 }` 必不中。**别让用例依赖“大概是这个大小”**。
+
+**4. 补一条「规则表未就绪」的用例（现有五个用例里缺这一条）。**
+Step 3 的第 0 条（`loaded === false` → `candidate = null`）**必须有用例钉住** ——
+否则「规则表还没回来就把所有落点判成 type 不合法、给用户一个错误的红框」这个 bug 会重新长出来：
+
+```ts
+it('returns null candidate while the type rule table has not loaded', () => {
+  mockConfigs.loaded = false
+  // …onDrag 落在一个本来合法的位置上…
+  expect(result.current.candidate).toBeNull()
+})
+```
+
+**5. 坐标系：按 Interfaces 块的契约，`onDrag(pointer)` 收的是 flow 坐标。**
+所以 **`useReparentDrag` 自己不调 `screenToFlowPosition`** —— 换算由调用方（`GraphCanvas`）做。
+（Step 3 末尾那句「用 `screenToFlowPosition` 换算」说的是 `GraphCanvas` 那一侧，不是 hook 内部。）
+因此这个测试**不需要** `<ReactFlowProvider />`，也**通常不需要** mock `@xyflow/react`
+（`force-layout.ts` 只 import 了类型，类型在编译期被擦除）。
+只有当你的实现真的 import 了 `@xyflow/react` 的**运行时值**时，才需要
+`vi.mock('@xyflow/react', () => ({ useReactFlow: () => ({ screenToFlowPosition: (p: {x:number;y:number}) => p }) }))`。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useReparentDrag.test.ts`
+Expected: FAIL —— 模块不存在
+
+- [ ] **Step 3: Implement the drag hook**
+
+新建 `src/renderer/canvas/hooks/useReparentDrag.ts`。核心逻辑：
+
+- `onDragStart(nodeId)`：记录拖动节点与其**后代集合**（沿 `parent_id` 下行）
+- `onDrag(pointer)`：找到**包含 pointer 的矩形**的节点（用 flow 坐标的 `position` + 节点尺寸估算，
+  与 `force-layout.ts` 导出的 `estimateNodeWidth/Height` 一致——注意 `tree-layout.ts` 里有一份
+  **同名但未导出**的私有副本，要 import 请用 `force-layout.ts`），再按下表分类。
+
+  **命中判定（控制器修正过，原文把两个分支写成了死代码）**：
+
+  | | 原写法 | 问题 | 正确写法 |
+  |---|---|---|---|
+  | 命中集合 | 排除「拖动节点自身**与其后代**」 | 后代被排掉了 → 第 2 步的 `'cycle'` **永远判不出来**，Step 1 的 `'rejects a candidate that is a descendant'` 用例必然红 | **只排除拖动节点自身**；后代要参与命中，才能被判成 `'cycle'` |
+  | 遍历范围 | 「遍历**当前图**的节点」 | 别的图的节点根本不在集合里 → 第 3 步的 `'cross-graph'` **永远判不出来**，`'rejects a candidate in another graph'` 用例必然红 | 遍历 store 里的**全部**节点，靠第 3 步的 `graph_id` 判断来分类 |
+
+  ⚠️ **为什么只排除拖动节点自身**：拖动时指针**必然**落在被拖节点的矩形里
+  （节点跟着指针走），所以被拖节点必须排除；否则每个落点都会被它自己吃掉。
+  但**后代不能排除**——「把节点拖到自己的子节点上」是用户真的会犯的错，
+  我们要给它一个**红色反馈**（`reason: 'cycle'`），而不是当作「没命中」。
+
+  **多个节点同时命中时取最后一个**（store 的数组顺序即渲染顺序，后者在上面）。
+
+  无命中 → `candidate = null`；有命中 → 依次校验：
+  0. **规则表未就绪 → 直接 `candidate = null`**：`useNodeTypeConfigs()` 返回的 `loaded === false`（IPC 还没回来）时不做任何判定——此时 `configs` 是空表，照常判定会把**所有**合法落点判成 `type` 不合法，给用户一个错误的红框。`loaded === true` 之后才走下面的 1–4。
+  1. 命中的是**后代** → `reason: 'cycle'`
+  2. `graph_id` 不同 → `reason: 'cross-graph'`
+  3. 类型不允许 → `reason: 'type'`。**渲染进程不能 import `nodeTypeRegistry`**（它在 `src/main/shared/`，是主进程专用），所以这里用 Task 5 的 `useNodeTypeConfigs()` 拿到的配置对象做同样的判断，语义必须与主进程 `validateParentChild` 一致：
+     ```ts
+     const parentCfg = configs[candidate.type]        // 候选将成为父节点
+     const childCfg = configs[dragging.type]          // 拖动中的将成为子节点
+     // ⚠️ 必须与主进程 validateParentChild 的语义逐条对齐：
+     //   - 配置对象缺失（未知类型）→ 主进程 `if (!parent || !child) return false` → 这里也判 false
+     //   - allowedChildTypes 缺失 → 主进程注册时已归一化成 []（= 不允许任何子节点）→ 这里也判 false
+     //   - allowedParentTypes 缺失 → 主进程短路放行（该字段未归一化）→ 这里也放行
+     const parentOk = !!parentCfg && (parentCfg.allowedChildTypes ?? []).includes(dragging.type)
+     const childOk = !!childCfg && (!childCfg.allowedParentTypes || childCfg.allowedParentTypes.includes(candidate.type))
+     // parentOk && childOk 为 false → reason: 'type'
+     ```
+     ⚠️ **`allowedChildTypes` 与 `allowedParentTypes` 的缺省语义不对称，这是 R-24 修过的**：主进程注册时把 `allowedChildTypes` 归一化成 `[]`（缺省 = 没有子节点，与菜单的 `?? []` 一致），但 `allowedParentTypes` **没有**归一化，缺省仍表示「无限制」。渲染端必须照抄这个不对称：`allowedChildTypes` 用 `?? []`（缺字段 → 拒绝），`allowedParentTypes` 用 `!field ||`（缺字段 → 放行）。写反了就会出现「渲染端说可以挂、主进程 `graph:reparent` 拒掉」。
+
+     但**配置对象**缺失是另一回事，主进程判拒绝，这里也必须判拒绝——否则渲染端说「可以挂」，主进程 `graph:reparent` 拒掉，用户看到的是一次莫名其妙的报错。`useReparentDrag` **内部调用** `useNodeTypeConfigs()`，不通过参数传入。
+  4. 否则 `valid: true`
+- `onDragEnd(pointer)`：**必须收落点坐标，并在落点重新判一次候选**（控制器修正过）。
+  为什么：最后一次 `onDrag` 的坐标与真正松手的位置**可能差一次 mousemove**
+  （用户「移动 + 松手」落在同一批事件里，或 xyflow 的拖拽事件与鼠标事件不同步）。
+  后果是「明明松在目标上，却因为最后一次候选判定是空的而没有重挂」——
+  用户看到的是「拖过去没反应」。→ `onDragEnd` 里用传入的落点坐标**重跑一次命中判定**，
+  以落点为准（`onDrag` 里的候选只是**高亮用的预判**，落点才是**裁决**）。
+- `onDragEnd(pointer)` 的其余行为：
+  - `candidate?.valid` 为真 → 调 `graphStore.reparentNode(draggingNodeId, candidate.nodeId)`；
+    **成功** → 位置由 `movedPositions` 决定（见 Step 5 的「位置权威」一节）；
+    **失败**（IPC 抛错）→ toast 提示并**回弹到原位**（规格 §6：「渲染端捕获后 toast 提示，
+    拖拽回弹到原位」）。回弹的实现见 Step 5。
+  - `candidate` 为空或 `valid` 为假 → **什么都不做**：拖拽退化成普通移动，
+    位置照常持久化（规格 §4.4 第 5 条：「命中非法或未命中：拖拽行为退化为普通移动
+    （A 跟随指针，位置持久化）」）。**注意别把「非法落点」也做成「回弹」**——
+    规格只要求 IPC 失败才回弹。
+
+⚠️ **力导向布局模式下不启用重挂**（控制器裁决 R-38）：力导向模式下一次拖拽结束会
+把**所有**节点的仿真坐标整体写回数据库（`useForceLayout.ts:282-292`），
+那会覆盖掉重挂算出来的锚点位置与整棵子树的平移结果。要同时支持两者，
+就得在重挂提交后把仿真按 store 的新坐标**重新播种**——那是 `useForceLayout` 的重构，
+超出本任务范围，规格也没有要求。因此：`layoutMode === 'force'` 时
+`useReparentDrag` 不注册拖拽回调（拖拽仍是纯力导向交互），树形布局（默认）下才启用。
+
+**坐标系注意**：`getBoundingClientRect()` 返回屏幕坐标，命中判定需要 flow 坐标——用 `screenToFlowPosition` 换算（`GraphCanvas.tsx:229` 已有 `useReactFlow()`）。
+
+- [ ] **Step 4: Add the store action**
+
+`src/renderer/store/graphStore.ts` 的 `GraphState` 接口加：
+
+```ts
+reparentNode: (nodeId: string, newParentId: string) => Promise<void>
+```
+
+实现：调 `window.electronAPI['graph:reparent'](nodeId, newParentId)`，成功后用返回的 `movedPositions` 更新 store：
+
+```ts
+reparentNode: async (nodeId, newParentId) => {
+  const result = await window.electronAPI['graph:reparent'](nodeId, newParentId)
+  const posMap = new Map(result.movedPositions.map(p => [p.id, p]))
+  setNodes((nodes) => nodes.map((n) => {
+    const p = posMap.get(n.id)
+    const position = p ? { x: p.x, y: p.y } : n.position
+    if (n.id === nodeId) return { ...n, parentId: result.newParentId, position }
+    return p ? { ...n, position } : n
+  }))
+}
+```
+
+⚠️ **被移动节点自己的位置也要更新 —— 别让 `n.id === nodeId` 那个分支提前 `return` 掉位置。**
+
+`ReparentResult.movedPositions` **包含被移动节点自己**
+（`hierarchy-service.ts:130-131`：`{ id: nodeId, x: node.position_x, y: node.position_y }` 加上全部后代）。
+而且**它的位置确实会变**：`translateSubtree`（`:389-420`）在目标父节点**已有兄弟**时，
+把锚点挪到兄弟包围盒的左侧 / 下方（`:407-414`），此时 `anchorX/anchorY` ≠ 原来的
+`position_x/position_y`。
+
+所以如果写成
+
+```ts
+if (n.id === nodeId) return { ...n, parentId: result.newParentId }   // ❌ 提前 return
+const p = posMap.get(n.id)
+return p ? { ...n, position: { x: p.x, y: p.y } } : n
+```
+
+被拖动的那个节点**拿不到自己的新坐标** → store 里留旧坐标、DB 里是新坐标 →
+画布上节点「弹回原处」，直到下一次全量拉取才对上。**必须两个字段一起更新。**
+
+（`GraphNode` 里**没有** `sortIndex` 字段 —— 兄弟序号是渲染层不关心的，主进程管。
+所以 store 这里只需要更新 `parentId` 和 `position`。）
+
+- [ ] **Step 5: Wire it into GraphCanvas**
+
+`src/renderer/canvas/GraphCanvas.tsx`：
+- 现有的 `onNodeDragStart` / `onNodeDrag` / `onNodeDragStop`（:1182-1184）接的是
+  `useForceLayout` 的回调（:787-789），**需与拖拽重挂共存**：拖拽时既跑力导向 reheat，
+  也跑重挂候选检测。注意 xyflow 的 `onNodesChange`（:1172 → :219-226）才是位置持久化的入口，
+  `onNodeDragStop` **不是**（见下面的「位置权威」）。
+
+  三处回调的接线形状（`onNodeDrag*` 的事件对象带 `clientX/clientY`）：
+
+  ```ts
+  const { screenToFlowPosition } = useReactFlow()
+  const toFlow = (e: React.MouseEvent | MouseEvent) =>
+    screenToFlowPosition({ x: e.clientX, y: e.clientY })
+
+  onNodeDragStart={(e, node) => { onForceDragStart(e, node); reparentDrag.onDragStart(node.id) }}
+  onNodeDrag={(e, node) => { onForceDrag(e, node); reparentDrag.onDrag(toFlow(e)) }}
+  onNodeDragStop={(e, node) => { onForceDrag(e, node); reparentDrag.onDragEnd(toFlow(e)) }}
+  ```
+
+  ⚠️ `screenToFlowPosition` 在 ReactFlow 上下文外可能抛错（同文件 :1187-1197 已有这个防护），
+  换算要包 try/catch 或复用那段写法，**别让一次坐标换算异常打断拖拽**。
+  ⚠️ `onForceDrag*` 现在被 `as unknown as OnNodeDrag<Node>` 断言过（:1182-1184），
+  你改成组合回调时注意保持类型能过 `tsc`（`npx tsc --noEmit` 是本任务的验收项之一）。
+- 候选命中时给目标节点加高亮样式（新增 `data.isReparentTarget` / `data.isReparentTargetValid`）
+- **幽灵连线**（规格 §4.4 第 4 条：「命中合法时：B 显示绿色高亮边框，A 与 B 之间显示幽灵连线」）：
+  从被拖节点指向候选父节点的一条**临时**虚线，松手即消失，**不进 store、不落库**。
+  做法：在 `mergedEdges`（:624-627）里追加一条 `edgeType: 'hierarchical'` 的边
+  （`hierarchical` 已在 `edgeTypeConfig`（`edge-utils.ts:15`）里，
+  且 `flowEdges` 的 `selectable: edgeType === 'hierarchical' ? false`（:676）让它天然不可选中）。
+  id 用稳定前缀（如 `ghost-<source>-<target>`），`flowEdges` 靠这个前缀识别它并给虚线样式。
+  `mergedEdges` 的依赖里要加上幽灵两端的 id（字符串，引用稳定）。
+
+#### ⚠️ 位置权威：重挂提交后，位置由谁写（控制器核对代码后补，本任务最容易做错的地方）
+
+**先看现状**（这三条路径今天就在跑）：
+
+| 路径 | 触发点 | 写什么 |
+|---|---|---|
+| 自由位置持久化 | `useNodePositionPersistence.handleNodesChange` —— 挂在 xyflow 的 `onNodesChange`（`GraphCanvas.tsx:293-301` → :1536），条件是 `change.type === 'position' && !change.dragging`，即**拖拽结束的那一下** | 把**指针松开处的坐标**写进 DB（300ms 防抖后） |
+| 力导向拖拽收尾 | `useForceLayout.onNodeDragStop`（:255-293） | 把**所有**节点的仿真坐标写回 DB —— **只在力导向模式下**，树形布局下直接 return |
+| 重挂（本任务新增） | `graph:reparent` → 主进程算锚点位置与整棵子树的平移 → 返回 `movedPositions` | 权威位置 |
+
+**冲突**：树形布局下，重挂拖拽结束时，路径 1 会把**指针松开处**的坐标写进 DB，
+路径 3 会把**锚点位置**写进 DB —— 两者必有一个被后写的覆盖，
+而路径 1 的防抖是 300ms、路径 3 的 IPC 往返是几毫秒到几十毫秒，**顺序不保证**。
+结果就是「节点落点不按层级规则，而是停在手指松开的地方」——
+**Task 6 的 `translateSubtree` 整棵子树跟随就白做了**。
+
+**规格怎么说的**：§4.4 第 5 条要求「命中非法或未命中 → 退化为普通移动（位置持久化）」，
+第 6 条要求「松手在合法 B 上 → 调用 `graph:reparent`」，
+§6 要求「渲染端捕获后 toast 提示，拖拽回弹到原位」。
+**规格没有明说「重挂成功后自由位置持久化要不要让位」—— 但让位是唯一自洽的读法**：
+重挂是层级变更，它的权威位置来自 `movedPositions`；自由位置持久化是「普通移动」的产物，
+两者在同一个节点上不能同时成立。
+
+**怎么做**（控制器给的最小实现，细节你定）：
+
+1. `useNodePositionPersistence` 增加一个「**位置已被重挂接管**」的抑制集合：
+   - 暴露一个方法把节点 id 标记进去（例如 `suppressPositions(ids)`），
+     `handleNodesChange` 里跳过被标记的 id；
+   - 同时能**把已经在队列里的那一条删掉**（拖拽结束的 position change 可能**先于**
+     我们的 `onDragEnd` 发生 —— 队列里已经躺着了，只加抑制标记不够）。
+2. `onDragEnd` 里 `candidate?.valid` 为真时：
+   - **先**抑制 + 出队（此刻还早，防抖定时器大概率还没到）；
+   - **再**调 `graph:reparent`；
+   - **成功** → 用 `movedPositions` 更新 store（Step 4 已经写好）→ 然后**解除**抑制；
+   - **失败** → toast + **回弹**：把节点位置**写回拖拽开始时的原位** → 然后解除抑制。
+3. 回弹写回原位时，位置对象必须是**新建的字面量**（`{ x: A.x, y: A.y }`），
+   不能复用旧对象引用：`flowNodes` 的缓存比的是**引用**
+   （`GraphCanvas.tsx:677`：`if (prev.position === node.position) return prev`），
+   引用相同 → 缓存命中 → 复用旧节点对象 → xyflow 不更新位置 → **看起来没回弹**。
+   用 `useGraphStore.getState().batchUpdatePositions([{ id, x, y }])` 最省事
+   （它内部就是 `position: { x: u.x, y: u.y }`，每次都是新对象）。
+
+⚠️ **非法落点不抑制**：规格 §4.4 第 5 条要求非法落点退化成普通移动、**位置照常持久化**。
+所以抑制只在 `candidate?.valid` 为真（真的要发起重挂）时才做。
+
+⚠️ **后代不受影响**：重挂移动的是整棵子树，但后代在 xyflow 里没有产生 position change
+（只有被拖的那个节点被拖了），所以队列里只有被拖节点一条 —— **只需要抑制被拖节点**。
+
+#### ⚠️ 高亮状态怎么进 `flowNodes`
+
+不要「在 `flowNodes` 的 useMemo 外面 map 一遍节点再传进去」——那会每帧新建数组，
+`flowNodes` 的依赖数组随即每帧变化，`useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发
+→ 无限重渲染循环（画布白屏）。
+
+**依赖数组与缓存 key 是两处，填的东西不一样**（控制器修正过原文的混写）：
+
+| 位置 | 放什么 | 为什么 |
+|---|---|---|
+| `flowNodes` 的 useMemo **依赖数组**（:606） | 原始值：`candidate?.nodeId`（`string \| null`）、`candidate?.valid`（`boolean \| undefined`） | 候选变了，memo 必须重算 |
+| 每个节点的**缓存 key**（:544-558，key 是 `JSON.stringify([...])` 的成员列表） | **每个节点自己派生出来的两个布尔值**：`isReparentTarget`（= `candidate?.nodeId === node.id`）、`isReparentTargetValid`（= 命中时取 `candidate?.valid`） | 缓存 key 是**按节点**算的。把 `candidate?.nodeId` 塞进去会让**每个**节点的 key 都变 → 每次指针移动都重建**全部**节点对象 → 拖拽全程掉帧。把派生的布尔值塞进去 → 只有目标节点那一条缓存失效 |
+
+⚠️ 缓存命中时 `return prev`（:562-567）——所以**高亮必须走缓存 key**，
+key 不变就会复用没有高亮的旧节点对象，红框/绿框根本不会出现。
+
+`src/renderer/canvas/BizNode.tsx`：
+- 高亮样式：合法候选用绿色，非法候选用红色（规格 §4.4 第 4 条写的是「绿色高亮边框」）。
+- ⚠️ **别用 `border-*`**：`BizNode.tsx:239-241` 已经在用
+  `border-orange-400`（agent running）/ `border-red-400`（agent error）/
+  `border-green-400`（agent completed），颜色撞车，且同一条 `cn()` 链上
+  两个 `border-color` 工具类谁赢由 **Tailwind 产物里的 CSS 顺序**决定，不由类名书写顺序决定。
+  也**别用 `ring-*`**：:237-238 的 `ring-blue-400`（选中）/ `ring-purple-400`（多选）已经占了。
+  → 用 **outline**（Tailwind v4 支持 `outline-2 outline-green-500` / `outline-red-500`），
+  它是独立的 CSS 属性，跟 border-color 和 box-shadow 都不冲突。
+- ⚠️ **`BizNodeProps` 的 `data` 类型要一起改**：`BizNode.tsx:84-106` 把 `data` 写成
+  `GraphNode & { bugCount: number; isZoomedOut?: boolean; ... }` 的**显式交叉类型**。
+  只往 data 对象里塞 `isReparentTarget` 而不改这个类型，TypeScript 会报
+  「对象字面量的属性不存在」。→ 在交叉类型里补上
+  `isReparentTarget?: boolean` 与 `isReparentTargetValid?: boolean`。
+
+- [ ] **Step 6: Add i18n strings**
+
+`src/shared/i18n/resources/domains/canvas.ts` 增（zh 是真值来源，en 必须覆盖）：
+
+```
+'canvas.reparent.invalidType': '类型不允许此父子关系',
+'canvas.reparent.cycle': '不能挂到自己的子节点下',
+'canvas.reparent.crossGraph': '不能跨图移动节点',
+'canvas.reparent.success': '已移动到 {parent}',
+'canvas.reparent.failed': '移动失败，已回到原位',
+```
+
+⚠️ 前三条是**落点非法时的原因提示**（红框旁的 tooltip / 说明文字），
+不是 toast —— 非法落点的行为是「退化成普通移动」（规格 §4.4 第 5 条），不是报错。
+最后一条才是 IPC 失败时的 toast（规格 §6）。
+
+`src/shared/i18n/resources/domains/canvas.ts` 里 **zh 是 key 的真值来源**，
+`en` 必须**逐条覆盖**每一个 zh key（同一个文件里的 `canvasEn`）。
+渲染层**不得**出现硬编码的中文字面量。
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useReparentDrag.test.ts && npx tsc --noEmit`
+Expected: PASS，零类型错误
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/renderer/canvas/GraphCanvas.tsx src/renderer/canvas/hooks/useReparentDrag.ts src/renderer/canvas/hooks/__tests__/useReparentDrag.test.ts src/renderer/canvas/BizNode.tsx src/renderer/store/graphStore.ts src/shared/i18n/resources/domains/canvas.ts
+git commit -m "feat(canvas): 拖拽重挂父节点，含落点高亮与类型提示"
+```
+
+---
+## Task 11: 兄弟顺序与删父节点处理
+
+**Files:**
+- Modify: `src/main/repositories/node-repository.ts`（`delete()`、`update()`、`rowToNode`）
+- Modify: `src/main/repositories/graph-repository.ts`（`get()` 里的内联节点映射，:109-131）
+- Modify: `src/renderer/canvas/layouts/tree-layout.ts`（`sortChildrenByEdgeOrder`，:161）
+- Modify: `src/shared/types/graph.ts`（`GraphNode` 增字段；`ReparentResult` 增字段）
+- Modify: `src/main/services/hierarchy-service.ts`（`reparent()` 的返回值带上被移动节点的新 `sort_index`）
+- Modify: `src/renderer/store/graphStore.ts`（`reparentNode()` 应用返回值里的新 `sortIndex`）
+- Test: `src/main/repositories/__tests__/` 与 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts`
+- Test: `src/main/services/__tests__/hierarchy-service.test.ts` 与 `src/renderer/store/__tests__/graphStore.test.ts`
+
+**Interfaces:**
+- Consumes: Task 2 的 `nodes.sort_index` / `nodes.collapsed`
+- Produces: `GraphNode.sortIndex?: number` / `GraphNode.collapsed?: boolean` 在渲染端可读；删父节点时子节点被置为根
+- Produces: `ReparentResult.sortIndex?: number` —— 渲染端重挂后能拿到被移动节点的新兄弟序号（R-46）
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/main/repositories/__tests__/node-repository.test.ts`。
+
+⚠️ **用真实库，不用手搓的最小 schema**：`NodeRepository.rowToNode`（`node-repository.ts:23`）读了 **22 个字段**（`description` / `acceptance_criteria` / `rules` / `metadata` / `context_refs` / `wiki_content` / `wiki_meta` / `owner_role` / `content` / `community_*` …）。手写一个「够用」的 `nodes` 表，漏一列就是 `no such column` 报错、多一列就是与真实 schema 漂移。`initDatabase()` 给的是真表。electron mock 照抄 `src/main/__tests__/database-migration.test.ts`（那里已有现成模式）。
+
+```ts
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
+import path from 'node:path'
+import os from 'node:os'
+
+const TEST_USER_DATA = path.join(os.tmpdir(), 'bizgraph-node-repo-test-' + process.pid)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => (name === 'userData' ? TEST_USER_DATA : os.tmpdir()),
+  },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: vi.fn(),
+    decryptString: vi.fn(),
+  },
+}))
+
+import { initDatabase, closeDatabase, getClient } from '../../database'
+import { NodeRepository } from '../node-repository'
+
+describe('NodeRepository — 层级相关行为', () => {
+  let db: ReturnType<typeof getClient>
+  let nodeRepo: NodeRepository
+
+  beforeAll(() => {
+    initDatabase()
+    db = getClient()
+    nodeRepo = new NodeRepository(db)
+    const now = new Date().toISOString()
+    const ins = db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    )
+    ins.run('c1', 'process', 'draft', 'C1', 'g1', 'online', 'm1', 0, 0, now, now)
+    ins.run('f1', 'feature', 'draft', 'F1', 'g1', 'online', 'c1', 0, 0, now, now)
+  })
+
+  afterAll(() => { closeDatabase() })
+
+  it('orphans become root nodes when their parent is deleted', () => {
+    nodeRepo.delete('c1')
+    const row = db.prepare("SELECT parent_id FROM nodes WHERE id='f1'").get() as { parent_id: string | null }
+    expect(row.parent_id).toBeNull()
+  })
+
+  it('round-trips the collapsed flag through update', () => {
+    const updated = nodeRepo.update('f1', { collapsed: true })
+    expect(updated.collapsed).toBe(true)
+    const raw = db.prepare("SELECT collapsed FROM nodes WHERE id='f1'").get() as { collapsed: number }
+    expect(raw.collapsed).toBe(1)
+    const cleared = nodeRepo.update('f1', { collapsed: false })
+    expect(cleared.collapsed).toBe(false)
+  })
+
+  it('assigns sort_index to a new child as max(siblings) + 1', () => {
+    // spec §4.8：新建子节点时取父节点现有子节点中最大的 sort_index + 1
+    const now = new Date().toISOString()
+    db.prepare(
+      'INSERT INTO nodes (id, type, status, title, graph_id, graph_type, parent_id, position_x, position_y, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
+    ).run('p_sort', 'module', 'draft', 'P', 'g1', 'online', null, 0, 0, now, now)
+
+    const mk = (title: string) => nodeRepo.create({
+      type: 'feature', status: 'draft', title,
+      graphId: 'g1', graphType: 'online', parentId: 'p_sort',
+      position: { x: 0, y: 0 },
+    })
+
+    expect(mk('S1').sortIndex).toBe(0)
+    expect(mk('S2').sortIndex).toBe(1)
+    expect(mk('S3').sortIndex).toBe(2)
+  })
+
+  it('leaves sort_index unset for a root node', () => {
+    const root = nodeRepo.create({
+      type: 'project', status: 'confirmed', title: 'Root',
+      graphId: 'g1', graphType: 'online',
+      position: { x: 0, y: 0 },
+    })
+    expect(root.sortIndex).toBeUndefined()
+  })
+})
+```
+
+第二条钉的是 boolean→INTEGER 的转换：better-sqlite3 不接受 boolean 绑定，忘了转换就会抛 `TypeError` 而不是断言失败。
+
+💡 `TEST_USER_DATA` 目录名带 `process.pid`——vitest 每个测试文件跑在独立 worker 进程里，各自有自己的 userData 目录，不会互相踩。
+
+在 `src/renderer/canvas/layouts/__tests__/tree-layout.test.ts` 追加（同文件已有 `makeNode` / `makeEdge` 两个 helper，直接用）：
+
+```ts
+it('orders siblings by sort_index rather than edge order', () => {
+  const withSort = (id: string, title: string, sortIndex: number): Node => ({
+    id,
+    type: 'default',
+    position: { x: 0, y: 0 },
+    data: { type: 'feature', title, sortIndex },
+  } as Node)
+
+  const nodes = [
+    makeNode('p1', 'project', 'Root'),
+    withSort('a', 'A', 1),
+    withSort('b', 'B', 0),
+  ]
+  // 边顺序与 sort_index 相反：a 在边里排前面，但它的 sort_index 是 1
+  const edges = [
+    makeEdge('e1', 'p1', 'a'),
+    makeEdge('e2', 'p1', 'b'),
+  ]
+  const result = computeTreeLayout(nodes, edges)
+  const posById = new Map(result.nodes.map((n) => [n.id, n.position]))
+  // sort_index=0 的 b 应排在 sort_index=1 的 a 之前
+  expect(posById.get('b')!.y).toBeLessThan(posById.get('a')!.y)
+})
+```
+
+⚠️ **同文件里已有的 `'sorts children by edge order to avoid crossings'` 用例必须继续通过**——它造的节点全都没有 `sortIndex`（全是 undefined），靠的是「undefined 排最后、保持原相对顺序」这条兜底路径，才仍按边顺序排列。这条是本次语义切换的护栏：兜底路径实现错了，存量没有 `sort_index` 的节点顺序就会乱。
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/main/repositories/__tests__/ src/renderer/canvas/layouts/__tests__/tree-layout.test.ts`
+Expected: FAIL
+
+- [ ] **Step 3: Handle children on delete**
+
+`src/main/repositories/node-repository.ts` 的 `delete(id)`：在删除前先 `UPDATE nodes SET parent_id = NULL WHERE parent_id = ?`（子节点变根节点），再删自身。
+
+- [ ] **Step 4: Map and write the new columns**
+
+`src/main/repositories/node-repository.ts`：
+- `rowToNode` 映射 `sort_index` → `sortIndex`（number）、`collapsed` → `collapsed`（0/1 转 boolean）
+
+⚠️ **`sort_index` 是可空列，根节点是 NULL —— 映射必须给 `undefined`，不能给 `null`。**
+
+别照抄 `node-repository.ts:33` 的 `parentId: row.parent_id as string | undefined` ——
+那是**类型断言**，不是运行时转换：NULL 在运行时仍然是 `null`，那句 `as` 只是在骗编译器。
+照抄它，根节点拿到的就是 `sortIndex: null`，与 `GraphNode.sortIndex?: number` 不符
+（`null` 既不是 `number` 也不是 `undefined`）。
+
+同一个文件里 `:42-44` 的 `communitySummary` / `communityLevel` / `communityId`
+用的是 `?? undefined` —— **那才是正确写法**：
+
+```ts
+sortIndex: (row.sort_index as number | null) ?? undefined,
+collapsed: row.collapsed === 1,     // 列是 NOT NULL DEFAULT 0，永远不会是 NULL
+```
+
+⚠️ **`create()` 的返回值同理**：根节点（无 `parentId`）时**不要**把 `sortIndex` 设成 `null`，
+要**整个键省掉**（或给 `undefined`）。`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`
+—— 根节点的 `data` 里本来就没有 `sortIndex`，只要**别主动塞一个 `null` 进去**就对了。
+测试 `expect(root.sortIndex).toBeUndefined()` 钉的就是这一条。
+- `update()` 增两个分支：`if (data.sortIndex !== undefined)` 与 `if (data.collapsed !== undefined)`
+- **`create()` 与 `createBatch()` 在有 `parentId` 时分配 `sort_index`**（spec §4.8「新建子节点时取父节点现有子节点中最大的 `sort_index + 1`」）：
+  - 取值 `COALESCE((SELECT MAX(sort_index) FROM nodes WHERE parent_id = ?), -1) + 1`——`COALESCE` 不能省：兄弟全为 NULL 时 `MAX` 返回 NULL，`NULL + 1` 在 SQLite 里仍是 NULL。
+  - 无 `parentId`（根节点）→ `sort_index` 保持 NULL（spec §4.8：根节点没有兄弟可言）。
+  - `createBatch()` 里**同一父节点**的多个节点要拿**连续**的号，不能拿同一个号——批内递增，不能每个都去查一次库。
+  - 返回值要把 `sortIndex` 带回去（`create()` 现在是 `return { ...data, id, createdAt, updatedAt }`）。渲染层的 `graphStore.createNode`（`src/renderer/store/graphStore.ts:229-245`）是「乐观插入 → 用 server 返回的节点替换」，server 带上 `sortIndex`，前端就自动同步上了 ✓。
+
+⚠️ **光算出 `sortIndex` 不够 —— INSERT 的列清单里也得加它**（控制器核代码后补的）：
+
+`create()`（`node-repository.ts:54-85`）与 `createBatch()`（`:96-133`）的 INSERT
+**当前是 23 列**（`id, type, status, title, description, acceptance_criteria, graph_id,
+graph_type, parent_id, rules, metadata, owner_role, position_x, position_y, content,
+community_summary, community_level, community_id, context_refs, wiki_content, wiki_meta,
+created_at, updated_at`）—— **没有 `sort_index`**。
+
+→ 两处都要把 `sort_index` 加进列清单（**23 → 24 列**，占位符同步 +1），
+位置放在 `parent_id` 之后（与真实 `nodes` 表的列顺序一致：`database.ts:390-391`
+是 `parent_id` → `sort_index`），实参按同样位置插入。
+**列清单与实参顺序错位会把 `sort_index` 写进别的列**（比如写成 `owner_role`）。
+
+⚠️ **`createBatch()` 的批内递增怎么算**（别每个节点都去查一次库）：
+先按父节点分组，每组**查一次** `COALESCE(MAX(sort_index), -1)` 拿到基准，
+然后在内存里逐个 +1；**同一父节点的第二个节点要接着第一个的号排**，
+不能两个都拿到同一个基准值。注意组内顺序要**稳定**（批内出现顺序）。
+
+⚠️ **返回对象里 `sortIndex` 必须写在 `...data` 之后**：
+`create()` 现在是 `return { ...data, id, createdAt: now, updatedAt: now }`。
+若把 `sortIndex` 写在 `...data` **之前**，调用方传进来的 `data.sortIndex`
+（`Omit<GraphNode,...>` 里现在有这个可选字段了）会把它覆盖掉。
+→ 写成 `return { ...data, sortIndex, id, createdAt: now, updatedAt: now }`
+（`sortIndex` 为 `undefined` 时**整个键省掉**，不要塞 `null`）。
+
+⚠️ **`collapsed` 不进 `create()` 的 INSERT**（DB 默认 0），返回值里也**不要**
+写 `collapsed: null`；`data.collapsed` 是 `undefined` 就让它 undefined。
+
+  ⚠️ **为什么这条是承重的（不是「顺手补一下」）**：Task 6 的 reparent 规定「新的 `sort_index` = 目标父节点现有子节点最大 `sort_index` + 1」，而 SQL 的 `MAX(sort_index)` **忽略 NULL**。若子节点里有本次会话新建的（`sort_index` 为 NULL），`MAX` 只看得到老节点；再叠加 Task 11 布局「`sortIndex` 为 undefined 排最后」的兜底 → 目标父节点有 A(`sort_index=0`) 与 B(NULL，本次会话新建) 时把 C 挂进去，C 拿到 `sort_index=1`，布局排成 **A(0) → C(1) → B(最后)**——**先于 C 存在的 B 被挤到 C 后面**，兄弟顺序颠倒。
+
+⚠️ **better-sqlite3 不接受 boolean 绑定**（只接受 number / string / bigint / buffer / null）。`collapsed` 落库必须显式转成 `1` / `0`：
+
+```ts
+if (data.collapsed !== undefined) { updates.push('collapsed = ?'); args.push(data.collapsed ? 1 : 0) }
+```
+
+不转的话 `update(id, { collapsed: true })` 抛 `TypeError: SQLite3 can only bind numbers, strings, bigints, buffers, and null`。`sortIndex` 是 number，直接绑定即可。
+
+`src/main/repositories/graph-repository.ts` 的 `GraphRepository.get()` 里那段**内联的节点字段映射**（:109-131）同样映射 `sort_index` → `sortIndex`、`collapsed` → `collapsed`。注意该文件**没有** `rowToNode` 函数——映射是内联在 `get()` 的 `nodesRows.map(...)` 里的。
+
+⚠️ **这里绝对不能用 `rowNum(row, 'sort_index')`。**
+
+`graph-repository.ts:28-32` 的 `rowNum` 是**严格**的：
+
+```ts
+function rowNum(row, key) {
+  const val = row[key]
+  if (typeof val !== 'number') throw new TypeError(`Expected number for ${key}, ...`)
+  return val
+}
+```
+
+根节点的 `sort_index` 是 **NULL** → `typeof null !== 'number'` → **抛 TypeError**。
+不是返回 undefined，是**整个 `get()` 炸掉** —— 主进程一读图就崩。
+
+照抄同一个文件里 `communityLevel` 的 null 容错写法（`:43`）：
+
+```ts
+sortIndex: typeof row.sort_index === 'number' ? row.sort_index : undefined,
+collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
+```
+
+`src/shared/types/graph.ts` 的 `GraphNode` 增：
+```ts
+  /** 同父节点下的兄弟顺序（升序）；根节点为 undefined */
+  sortIndex?: number
+  /** 子树是否折叠 */
+  collapsed?: boolean
+```
+
+- [ ] **Step 5: Make tree layout honor sort_index**
+
+`src/renderer/canvas/layouts/tree-layout.ts` 的 `sortChildrenByEdgeOrder`（:161）：改为按子节点的 `sortIndex` 排序——React Flow `Node` 的 `data` 里带有 GraphNode 展开字段（`GraphCanvas.tsx:691-692` 的 `data: { ...node, ... }`），所以读 `node.data.sortIndex`。`sortIndex` 为 undefined 的排在最后，保持原有相对顺序作为兜底。函数名可改为 `sortChildrenBySortIndex`。
+
+⚠️ `Node['data']` 在 @xyflow/react 里是 `Record<string, unknown>`，`node.data.sortIndex` 取出来是 `unknown`——比较前必须转 number（`Number(n.data.sortIndex)`），否则 `tsc` 报 `Operator '<' cannot be applied to types 'unknown'`。
+
+且**转 number 之前必须先判「缺失」**：
+- `Number(undefined)` 是 `NaN` —— `NaN` 参与比较恒为 false，会把兜底路径静默弄坏；
+- `Number(null)` 是 **`0`**（不是 NaN！）—— 缺失的节点会被当成 `sortIndex = 0`，
+  **排到最前面**而不是排最后。
+
+所以「缺失」的判断必须**同时覆盖 `undefined` 和 `null`**：
+
+```ts
+const raw = n.data.sortIndex
+const v = raw === undefined || raw === null ? undefined : Number(raw)
+```
+
+（`node-repository.ts` 与 `graph-repository.ts` 两处映射都保证给 `undefined`，
+但 `tree-layout.ts` 是**渲染层**的兜底 —— 存量数据、Yjs 远端写入、其它写入路径
+都可能绕过那两处映射。**渲染层不能假设上游一定干净。**）
+
+⚠️ 节点缓存 key（`GraphCanvas.tsx:645`）含 `node.updatedAt`，`sort_index` / `collapsed` 变更会更新 `updated_at` → 缓存自动失效。✓
+
+- [ ] **Step 6: 拖拽重挂后，渲染端的兄弟序号必须刷新（R-46）**
+
+⚠️ **这是 Task 11 自己造出来的债，必须在 Task 11 里还掉。**
+
+Task 10 那一节写了一条前提：「`GraphNode` 里**没有** `sortIndex` 字段 —— 兄弟序号是渲染层
+不关心的，主进程管。」Task 11 把 `GraphNode.sortIndex` 放进了渲染端，还让 `tree-layout.ts`
+开始信任它 → **那条前提失效了**。
+
+具体缺口：主进程 `reparent()` 会把被移动节点的 `sort_index` 改成「新父节点现有子节点的最大值 + 1」
+（= 排在最后），但 `ReparentResult` **不带 `sort_index`** → 渲染端 store 里那个节点的
+`sortIndex` 仍是**旧父节点下的旧值**（`graphStore.reparentNode` 走 `...n` 展开，旧值被原样带过去）。
+
+→ 拖拽重挂之后点「整理布局」，布局按 `sortIndex` 排兄弟 → 被移动的节点**排错位置**
+（例：目标父 B 有 C1(0)、C2(1)，被移动的 A 旧值是 0 → 布局把 A 排到 C1 附近，
+而正确位置是 C2 之后）。
+
+**修法：主进程给值，渲染端照抄。**
+⚠️ **不许**在渲染端自己算「max(兄弟)+1」——那是**第二份真相源**，还要复刻 SQL `MAX`
+忽略 NULL 的细节（`node-repository.ts` 的 `COALESCE(MAX(sort_index), -1) + 1` 踩的就是这个坑）。
+
+1. `src/shared/types/graph.ts`：`ReparentResult` 增一个可选字段
+   ```ts
+   /** 被移动节点的新 sort_index（换父到当前父节点的空操作分支 = 原值） */
+   sortIndex?: number
+   ```
+   用**可选**而不是必填：重挂的目标一定是个父节点（必有 sort_index），但 `ReparentResult`
+   还被别处构造，留可选更稳。
+
+2. `src/main/services/hierarchy-service.ts`：`reparent()` 的**两个**返回点都要带上它 ——
+   - 「换父到当前父节点」的空操作分支：带**原值**（该分支不动 `sort_index`）；
+   - 事务分支：带事务里已经算好的那个新序号（就是 `UPDATE nodes SET parent_id = ?, sort_index = ?`
+     写进去的同一个值，**不要**再查一次库）。
+   ⚠️ **空操作分支别忘了** —— 漏了它，拖拽落回原父节点时渲染端的值就与主进程不一致。
+
+3. `src/renderer/store/graphStore.ts`：`reparentNode()` 应用它 —— 被移动节点那一支写成
+   `sortIndex: result.sortIndex ?? n.sortIndex`。
+   ⚠️ 用 `??` 而不是直接赋值：返回值里没这个字段时**保留原值**，不要塞 `undefined`
+   （那会把「有值」变成「排最后」的兜底路径）。
+
+4. 测试：
+   - `src/main/services/__tests__/hierarchy-service.test.ts`：重挂后 `result.sortIndex`
+     等于「新父节点原有子节点的最大 `sort_index` + 1」；
+   - `src/renderer/store/__tests__/graphStore.test.ts`：给 `window.electronAPI` 的 mock 补
+     `'graph:reparent'`（现在没有这个 key），断言 store 里被移动节点的 `sortIndex` 更新成
+     返回值里的值；返回值**不带** `sortIndex` 时，store 里保持原值。
+
+**旧父节点的其余子节点不用一起返**：重挂后它们的 `sort_index` 被压成 0,1,2…，
+但**相对顺序不变** → 布局按序号排出来的结果不变 → 只有**被移动节点自己**的序号有意义。
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `npx vitest run src/main/repositories/__tests__/ src/main/services/__tests__/hierarchy-service.test.ts src/renderer/canvas/layouts/__tests__/tree-layout.test.ts src/renderer/store/__tests__/graphStore.test.ts && npx tsc --noEmit`
+Expected: PASS，零类型错误
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/repositories/node-repository.ts src/main/repositories/graph-repository.ts src/shared/types/graph.ts src/renderer/canvas/layouts/tree-layout.ts src/main/services/hierarchy-service.ts src/renderer/store/graphStore.ts src/main/repositories/__tests__/ src/main/services/__tests__/hierarchy-service.test.ts src/renderer/canvas/layouts/__tests__/tree-layout.test.ts src/renderer/store/__tests__/graphStore.test.ts
+git commit -m "feat(canvas): 兄弟顺序显式化，删除父节点时子节点置根"
+```
+
+---
+## Task 12: 子树折叠/展开
+
+**Files:**
+- Modify: `src/renderer/canvas/BizNode.tsx`（折叠指示器 + 徽标）
+- Modify: `src/renderer/canvas/GraphCanvas.tsx`（折叠节点隐藏子树）
+- Create: `src/renderer/canvas/hooks/useCollapse.ts`
+- Create: `src/renderer/canvas/hooks/__tests__/useCollapse.test.ts`
+- Modify: `src/shared/i18n/resources/domains/canvas.ts`
+
+**Interfaces:**
+- Consumes: Task 11 的 `GraphNode.collapsed`
+- Produces:
+  ```ts
+  // src/renderer/canvas/hooks/useCollapse.ts
+  export function useCollapse(): {
+    collapsedIds: Set<string>
+    isCollapsed: (nodeId: string) => boolean
+    toggle: (nodeId: string) => Promise<void>
+    hiddenDescendantCount: (nodeId: string) => number
+    visibleNodes: GraphNode[]
+  }
+  ```
+  `visibleNodes` 过滤掉被折叠节点的整棵子树（折叠节点本身可见）。
+  `hiddenDescendantCount(nodeId)` = 折叠该节点时会被隐藏的**整棵后代的节点数**
+  （不含该节点本身；是**所有后代**，不是直接子节点数）。
+
+**布局自动获益**：`useAutoLayout.applyLayout` 用 React Flow 的 `getNodes()`，而 `GraphCanvas` 通过 `setRfNodes(flowNodes)` 写回。只要 `flowNodes` 过滤掉隐藏后代，被折叠节点就自动作为叶子参与 dagre 计算——**不需要**在 `useAutoLayout.ts` 里单独处理。
+
+（控制器已核过两条布局路径，**隐藏掉的节点不会让布局崩**：
+树形布局 `computeTreeLayout`（`tree-layout.ts:261`）与
+`findConnectedComponents`（`:79`）都按「两端都在节点集合里」过滤边，
+力导向布局 `createForceSimulation`（`force-layout.ts:220-222`）也有一句
+「过滤掉悬空边，避免 forceLink 抛错」。所以**不需要**在布局侧做任何额外处理。）
+
+⚠️ **折叠状态必须真的进得来**（控制器核代码后补的）：
+
+- 渲染层加载节点走的是 `graph:get` → `GraphRepository.get()` 里那段**内联映射**
+  （`graph-repository.ts:109-136`）。**Task 11 会在那里加 `collapsed` 的映射** ——
+  没有它，store 里的节点对象根本不带 `collapsed` 字段 → `collapsedIds` 恒为空 →
+  **折叠功能静默失效**（点了没反应，也不报错）。Task 12 的第一个前提就是 Task 11 已经落地。
+- 落库走 `node:update`（`src/main/ipc/graph.ts:260-278`）：它把 `data` **整个**交给
+  `nodeRepo.update(id, data)`，**没有字段白名单**；`validateNodeUpdate`（`:83-143`）
+  只拦 `parentId` 的改动与几个已知字段的类型，`collapsed` 既不会被拦也不会被丢。
+  → `toggle` 调 `updateNode(id, { collapsed: boolean })` 就能落库，不需要改 IPC 层。
+
+- [ ] **Step 1: Write the failing test**
+
+新建 `src/renderer/canvas/hooks/__tests__/useCollapse.test.ts`：
+
+```ts
+it('hides the whole subtree when a node is collapsed', () => { /* p1 → m1 → c1，折叠 m1 后 visibleNodes 含 m1、不含 c1（折叠节点自己可见） */ })
+it('persists the collapsed flag through node update', () => { /* toggle 后期望调 updateNode(id, { collapsed: true }) */ })
+it('expands when toggled again', () => { /* */ })
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useCollapse.test.ts`
+Expected: FAIL —— 模块不存在
+
+- [ ] **Step 3: Implement the collapse hook**
+
+新建 `src/renderer/canvas/hooks/useCollapse.ts`：
+- 从 `graphStore` 读节点，算出每个节点的**后代集合**（沿 `parent_id` 下行）
+- `collapsedIds` = 所有 `collapsed === true` 的节点 id
+- `visibleNodes` = 排除所有被折叠节点的后代（折叠节点本身可见）
+- `toggle(nodeId)` 调 `graphStore.updateNode(nodeId, { collapsed: !isCollapsed(nodeId) })`
+
+⚠️ **读 store 必须用 selector 形式**：`useGraphStore((s) => s.nodes)`。
+用 `getState()` 的话组件**永远不会因节点变化而重渲染** → 折叠状态改了但画布不更新。
+（隔壁 `useNodePositionPersistence.test.ts` 的 `getState` 形式是**另一个**用法，别照抄。）
+
+⚠️ **`toggle` 必须是**引用稳定**的（`useCallback` 依赖数组为空）：它在被调用时
+从 store 的**当前**状态读该节点的 `collapsed`（`useGraphStore.getState().nodes.find(...)`），
+而不是闭包捕获 `collapsedIds`。否则：
+(a) `collapsedIds` 一变 `toggle` 就换引用 → 注入 `flowNode.data` 的回调每帧换新 →
+缓存键算不出它 → 画布节点对象被反复重建；
+(b) 用闭包里的旧 `collapsedIds` 判断「当前是不是折叠的」会算错方向。
+稳定性由「调用时读当前状态」保证，不是靠 memo。
+
+⚠️ `collapsedIds` 与 `visibleNodes` 都必须用 `useMemo` 算（`visibleNodes` 依赖 `[nodes, collapsedIds]`），**不能**每次渲染重新算出一个新数组返回——`visibleNodes` 会进 `GraphCanvas` 的 `flowNodes` 依赖数组（Step 4），每帧新建数组会导致 `useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发，`setRfNodes` 是 React `useState` setter → 无限重渲染循环，React 抛 *Maximum update depth exceeded*，画布白屏。
+
+⚠️ **行号会再漂**：Task 10 也要改 `GraphCanvas.tsx` → 到本任务执行时上面那几行行号一定又变了。
+用 `grep -n "setRfNodes(flowNodes)\|const flowNodes = useMemo" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
+
+- [ ] **Step 4: Render the collapse control**
+
+`src/renderer/canvas/GraphCanvas.tsx`：
+- `flowNodes` 的 useMemo 改为遍历 `visibleNodes` 而不是 `graphNodes`。
+- 往 `flowNode.data` 里**注入两个字段**（`BizNode` 拿不到它们，只能从这里拿）：
+  - `hiddenDescendantCount: number` —— 该节点折叠时会隐藏的后代数
+  - `onToggleCollapse: (nodeId: string) => void` —— Step 3 的 `toggle`（**引用稳定**的那个）
+- `flowNodes` 的依赖数组要加上 `visibleNodes`。
+- **`hiddenDescendantCount` 必须进缓存键**（`:607-625` 那个 `JSON.stringify([...])` 数组）：
+  给一个**已折叠**的节点新增子节点时，**该节点自己的 `updatedAt` 不会变**
+  （`node:create` 只写新节点）→ 缓存命中 → 徽标上的数字停留在旧值。
+  `onToggleCollapse` **不进**缓存键（它是函数，`JSON.stringify` 会把它丢掉；
+  它引用稳定，不会过期）。
+
+`src/renderer/canvas/BizNode.tsx`：
+- `BizNodeProps['data']` 的类型加上 `hiddenDescendantCount?: number` 与
+  `onToggleCollapse?: (nodeId: string) => void`
+- 有子节点时显示折叠指示器（`ChevronDown` / `ChevronRight` —— `lucide-react` 已装，
+  `src/renderer/panels/TreeNodeItem.tsx:3-4` 是现成用法），点击调 `data.onToggleCollapse?.(data.id)`
+- 折叠时显示徽标：`⊕ {hiddenDescendantCount}`
+
+ℹ️ **边要不要跟着裁？不必，但知道为什么更稳妥**：
+`flowEdges` 仍然从 `graphNodes`（store 的**全量**节点）派生层级边，
+所以被折叠掉的那棵子树的边**仍然在 `rfEdges` 里**。这是无害的：
+React Flow 渲染一条边要求**两端节点都存在**，隐藏节点不存在 → 那条边不会被画出来
+（@xyflow/react v12 对这种悬空边**不打印警告**，控制台是干净的）。
+真要裁也可以（保留两端都可见的边），但那不是必须的，别为了裁边多写一段逻辑。
+反过来**别忘了**折叠节点**自己**到父节点的那条边要留着 —— 折叠节点是可见的，那条边要显示。
+
+⚠️ **`BizNode` 不要自己去数后代**：它是 React Flow 逐节点渲染的，
+每个实例各算一次就是 O(n²)。后代集合只在 `useCollapse` 里算一次（`useMemo`），
+结果通过 `flowNode.data` 传下去。
+
+⚠️ `nodeCacheRef` 的清理循环（`for (const id of cache.keys()) if (!nextIds.has(id)) cache.delete(id)`）
+在 `flowNodes` 遍历 `visibleNodes` 之后**自动**移除不可见节点的缓存条目 ✓ —— 前提是
+`nextIds` 是**遍历 `visibleNodes`** 时收集的，别漏改这一处。
+⚠️ `visibleNodes` 必须是 `useCollapse` 里 `useMemo` 出来的**稳定引用**（Step 3）——依赖数组里放每帧新建的数组会让 `useEffect(() => setRfNodes(flowNodes))`（:609-611）每帧触发 → 无限重渲染循环。见 Global Constraints 的「渲染层的引用稳定性」。
+
+- [ ] **Step 5: Add i18n strings**
+
+`src/shared/i18n/resources/domains/canvas.ts` 增（zh + en 都要）：
+```
+'canvas.collapse.toggle': '折叠/展开子树',
+'canvas.collapse.hiddenCount': '{count} 个节点已折叠',
+```
+英文对应 `'canvas.collapse.hiddenCount': '{count} collapsed nodes'`。
+
+⚠️ **徽标上的数字是「被藏起来的后代总数」（传递闭包），不是直接子节点数** ——
+所以文案不能写「子节点 / child nodes」。文案与数字口径必须一致（复审已就这条提过一条 Minor）。
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useCollapse.test.ts && npx tsc --noEmit`
+Expected: PASS，零类型错误
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/renderer/canvas/hooks/useCollapse.ts src/renderer/canvas/hooks/__tests__/useCollapse.test.ts src/renderer/canvas/BizNode.tsx src/renderer/canvas/GraphCanvas.tsx src/shared/i18n/resources/domains/canvas.ts
+git commit -m "feat(canvas): 子树折叠展开，跨会话持久化"
+```
+
+---
+## Task 13: 布局选择持久化 + 全量验证
+
+**Files:**
+- Modify: `src/renderer/canvas/GraphCanvas.tsx`（`layoutMode` 持久化）
+- Modify: `tests/e2e/helpers/mock-ipc.ts`（补 `graph:reparent` 通道）
+- Create: `tests/e2e/structure-editing.spec.ts`（浏览器 e2e 验收闸门）
+- Test: 无新增单测（改动极小），但需全量验证 + 浏览器 e2e
+
+**Interfaces:**
+- Consumes: 无
+- Produces: `localStorage` key `bizgraph.layoutMode.<projectPath>` 存 `'tree' | 'force'`
+
+- [ ] **Step 1: Persist layout mode**
+
+`src/renderer/canvas/GraphCanvas.tsx:939` 的 `const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')` 改为从 localStorage 读初值，并在 `setLayoutMode` 时写回。key 规则：`bizgraph.layoutMode.${projectPath ?? 'default'}`。projectPath 为空时用 `'default'`。
+
+⚠️ **`projectPath` 是异步拿到的 —— 不能用 `useState` 的初始化函数读初值。**
+
+`GraphCanvas.tsx:224-225`：
+
+```ts
+const currentGraph = graphs.find((g) => g.id === graphId)
+const projectPath = currentGraph?.projectPath
+```
+
+`graphs` 来自 store，**首帧还没装载完** → 首帧 `projectPath` 是 `undefined`。
+若把读取放进 `useState(() => localStorage.getItem(key))` 的初始化函数，
+首帧读到的就是 `bizgraph.layoutMode.default`（多半是空的）→ **存下来的真实布局模式
+根本没被读到**；等 `projectPath` 到位，写回路径又会把当前值（`'tree'`）写到真正的键上
+→ **用户存的布局被静默覆盖掉**。
+
+正确形状：**读**放在一个依赖 `projectPath` 的 effect 里（`projectPath` 到位后再读），
+**写**放在切换处理函数里（不要放进 effect，否则首帧就会写一次，把用户的值冲掉）：
+
+```ts
+const [layoutMode, setLayoutMode] = useState<'tree' | 'force'>('tree')
+
+// 读：等图装载完（currentGraph 存在）再读；键与写的那一端**必须一致**
+useEffect(() => {
+  if (!currentGraph) return
+  const stored = localStorage.getItem(`bizgraph.layoutMode.${projectPath ?? 'default'}`)
+  if (stored === 'tree' || stored === 'force') setLayoutMode(stored)
+}, [currentGraph?.id, projectPath])
+
+// 写：只在用户真的切换时写
+const handleLayoutModeChange = (mode: 'tree' | 'force') => {
+  setLayoutMode(mode)
+  localStorage.setItem(`bizgraph.layoutMode.${projectPath ?? 'default'}`, mode)
+}
+```
+
+⚠️ **读与写的键必须完全一样**（控制器修正过）：
+本 brief 原先的读法是 `if (!projectPath) return`，而写的是 `projectPath ?? 'default'` ——
+**键不对称**：`projectPath` 为空时写进 `'default'` 键，却**永远不读**那个键 →
+「没有项目路径的图」布局模式**存了但读不回来**（读也是读别的键）。
+→ 两端都用 `projectPath ?? 'default'`。
+
+⚠️ **「等它到位」用 `currentGraph` 判断，不是用 `projectPath`**：
+`projectPath` 为空有两种含义 —— 「图还没装载完」（该等）和
+「这张图**真的**没有项目路径」（不该等）。`currentGraph` 存在即表示图装载完了 ✅。
+（`currentGraph` 与 `projectPath` 在 `GraphCanvasInner` 同一作用域：
+`GraphCanvas.tsx:224-225`，`currentGraph = graphs.find((g) => g.id === graphId)`、
+`projectPath = currentGraph?.projectPath` —— 到本任务时行号会漂，用 `grep -n "const currentGraph" src/renderer/canvas/GraphCanvas.tsx` 现场确认。）
+
+（`projectPath` 与 `layoutMode` 在**同一个**组件作用域里：`GraphCanvasInner`
+从 `:184` 开始，`projectPath` 在 `:225`、`layoutMode` 在 `:942` —— 同一个函数体，直接用。）
+
+⚠️ **别把写回做成 effect**（`useEffect(() => localStorage.setItem(key, layoutMode), [layoutMode, projectPath])`）。
+那样首帧就会把 `'tree'` 写进真正的键 → 正好覆盖掉用户上次的选择 —— 读和写必须分开，
+**读一次、写一次（仅在用户操作时）**。
+
+⚠️ **按声明文本定位，不要按行号定位**：Task 10 / Task 12 也会改 `GraphCanvas.tsx`，到本任务执行时这个行号一定已经漂移。用 `grep -n "const \[layoutMode" src/renderer/canvas/GraphCanvas.tsx` 现场确认。
+
+- [ ] **Step 2: Run the full verification suite**
+
+Run: `npm run lint && npx tsc --noEmit && npm run test`
+Expected: 零 lint 警告、零类型错误、全部测试通过
+
+- [ ] **Step 3: 浏览器 e2e 验收（**这是本任务的闸门**）**
+
+新增 `tests/e2e/structure-editing.spec.ts`，跑 `npm run test:e2e`。
+
+⚠️ **为什么必须是 e2e 而不是人工走查**：CI 里跑的是 `npm run test:e2e`
+（`tests/e2e/playwright.browser.config.ts`，`webServer` 自动起 `npm run dev`），
+**Electron e2e 不在 CI 里**（`tests/e2e/electron/smoke.spec.ts` 要先 `npm run build`）。
+只写在计划里的人工清单不进 CI → 等于**没有闸门**；而且 SDD 循环里实施者是 subagent，
+`npm run dev` 的手动走查它做不了、也不该由它宣称做过了。
+
+**先给 mock 补一条通道 + 一个可断言的记录点**：`tests/e2e/helpers/mock-ipc.ts`
+**没有** `graph:reparent`。现有 mock 是**无状态**的（`node:update` 只回显不落库、
+`graph:get` 只在首屏装载时用一次），所以新增这一条就够：
+
+```ts
+'graph:reparent': async (nodeId: string, newParentId: string) => {
+  mockState.reparentCalls.push({ nodeId, newParentId })
+  return { nodeId, oldParentId: null, newParentId, movedPositions: [] }
+},
+```
+
+- `mockState` 里加一个 `reparentCalls: Array<{ nodeId: string; newParentId: string }> = []`。
+  该 mock **已经把 `mockState` 挂在 `window.__bizgraphMockState` 上**（`mock-ipc.ts:198`）→
+  测试里直接 `await page.evaluate(() => (window as ...).__bizgraphMockState?.reparentCalls)` 就能断言
+  「`graph:reparent` 有没有被调用过」。**拒绝类用例靠这个断言**（见下面第 3、4 条）。
+
+⚠️ **`nodes` 选项的类型要放宽**：`setupMockIpc` 现在的选项类型是
+`nodes?: typeof defaultMockNodes`，而 `defaultMockNodes` 是一个**字面量数组** →
+它的元素类型里**没有** `parentId` → 直接传带 `parentId` 的对象字面量会触发
+TypeScript 的**多余属性检查**而报错。把选项类型放宽成能带 `parentId` 的形状
+（例如 `Array<typeof defaultMockNodes[number] & { parentId?: string }>`），
+或者引入一个显式的 `MockNode` 类型。**别用 `any` 绕过去**（全仓库禁 `any`）。
+
+**用例写法**照 `tests/e2e/node-interactions.spec.ts`：`setupMockIpc(page, { nodes })` →
+`page.goto('http://127.0.0.1:5173')` → `page.click('text=E2E Test Graph')` → `waitForCanvas(page)`。
+
+⚠️ **必须写 `127.0.0.1`，不能写 `localhost`**（控制器踩过的坑，见提交 `5a098a2`）：
+macOS 上 `localhost` 优先解析成 IPv6 `::1`，而 vite 绑的是 IPv4 `127.0.0.1`；
+本机 `[::1]:5173` 常常被**别的项目**占着 → Playwright 会连到**别人的应用**上 →
+**一个永远绿、却什么都没验的假闸门**。
+`tests/e2e/*.spec.ts` 现在**全部**用 `http://127.0.0.1:5173`（7 个 spec 都改过了），
+`playwright.browser.config.ts` 的 `webServer.url` 也是 `127.0.0.1`。
+新写的 spec 若写 `localhost`，在这台机器上会连到不相干的应用上 —— **别写**。
+
+⚠️ **节点用 `data-id` 定位**：`page.locator('[data-id].react-flow__node').filter({ has: page.locator('[role="button"]') })`
+（`tests/e2e/helpers/node-helpers.ts:43` 的 `getNonProjectNodeIds` 已有现成写法）。
+⚠️ **画布会给每张图自动建一个 project 根节点** —— 数节点时要用 `getNonProjectNodeIds`
+（它靠「业务节点内部有 `[role="button"]`、project 根节点没有」来区分），
+别把自动根节点算进去。层级边数用 `.react-flow__edge` 计数 —— 派生边的 id 形如
+`derived-<source>-<target>`。
+
+**要覆盖的场景**（每条一个 `it`）：
+
+1. **父子之间只画一条线**：`nodes` 里给一对有 `parentId` 的节点、`edges` 给空 →
+   断言画布上父子之间**恰好一条**边（层级边由 `parent_id` 派生，不重复画存储边）
+2. **拖到另一个节点上 → 旧线消失、新线出现** → 断言该节点 `parentId` 变了，
+   旧父的连线没了、新父的连线在
+3. **拖到非法类型上 → 被拒**：feature 拖到 module 上（mock 的 `nodeType:listConfigs` 里
+   feature 的 `allowedParentTypes` 是 `['process']`）→ 断言 **`graph:reparent` 没被调用**
+4. **拖到自己的后代上 → 被拒** → 断言 **`graph:reparent` 没被调用**
+5. **删除父节点 → 子节点变成根**：断言子节点还在、且不再连着已删的父
+   （用现成的 `deleteNodeViaMenu(page, nodeId)` —— `tests/e2e/helpers/node-helpers.ts:17`）
+
+   ⚠️ **机制在渲染层，不在 mock —— 不要去改 mock 的 `node:delete`。**
+   `mock-ipc.ts:267` 的 `'node:delete': async () => true` 是个**空壳**，它什么都不删，
+   **而这就够了**：真正让父节点从渲染层消失的是**渲染器自己的乐观删除** ——
+   `graphStore.deleteNode`（`src/renderer/store/graphStore.ts:374-376`）先本地执行
+
+   ```ts
+   setNodes((nodes) => nodes.filter((n) => n.id !== id))
+   setEdges((edges) => edges.filter((e) => e.source !== id && e.target !== id))
+   ```
+
+   父节点因此从渲染层的节点列表里消失 → 子节点的 `parentId` 指向了一个
+   **不在列表里**的 id → `deriveHierarchyEdges`（`src/renderer/canvas/layouts/hierarchy.ts:75`）
+   对这种孤儿**本来就不产生边**（「孤儿不产生边」）。
+
+   所以渲染层观察到的结果与生产一致：**子节点还在，且没有连着已删的父**，
+   看上去就是一个根节点。**这条 e2e 验的是渲染层的孤儿过滤**；
+   DB 层「删父 → 子置根」由 Task 11 的单测覆盖（`'orphans become root nodes when their parent is deleted'`）。
+
+   ⚠️ 顺带注意：mock 的 `graph:get` 在首屏装载后不再被调用，所以**不能**靠改 mock 的
+   节点数组来制造「删除」——那样反而和渲染层的乐观删除重复，且 mock 的数组是
+   `addInitScript` 闭包里的 `const`，不好改。**走 UI 的删除菜单，让渲染层自己删。**
+6. **布局选择持久化**：切到力导向 → `page.reload()` → 断言仍是力导向
+
+⚠️ **两条**「重启后仍在」的语义**不在 e2e 里验**，因为浏览器 mock 无状态，
+拿 `localStorage` 假造一份持久化会给出**假证据**：
+
+| 场景 | 由谁覆盖 |
+|---|---|
+| 折叠状态跨进程持久化（DB 的 `collapsed` 列） | Task 11 的 `src/main/repositories/__tests__/node-repository.test.ts`（`'round-trips the collapsed flag through update'`） |
+| dev 图兄弟顺序与 online 一致、折叠被重置 | Task 9 的 `src/main/repositories/__tests__/graph-repository-clone.test.ts` |
+
+e2e 只验**渲染层行为**：折叠后子树消失 + 显示 `⊕ N` 徽标。
+
+**下面这份人工清单保留下来，作为给人看的可选清单（**不是**本任务的完成闸门）：**
+
+1. 打开一个存量项目（含 AI 生成的旧图）→ 不报错，连线正常，无双线
+2. 右键手动加一个子节点 → 画布上立刻出现父子连线（本次核心修复）
+3. 点击「整理布局」→ 手动加的子节点排到父节点下方，不再是游离的
+4. 拖动节点到另一个节点上 → 目标节点高亮，松手后新连线出现、旧连线消失，无需手动整理布局
+5. 拖动节点到自己的子节点上 → 红色高亮 + tooltip「不能挂到自己的子节点下」，松手无变化
+6. 拖动 feature 到 module 上 → 红色高亮（类型不允许）
+7. 折叠一个有子节点的模块 → 子树消失，显示 `⊕ N` 徽标；重启应用后仍是折叠状态
+8. 删除一个父节点 → 其子节点变成根节点（不报错、不消失）
+9. 切换到力导向布局 → 重启应用 → 仍是力导向
+10. 派生 dev 图（online → dev）→ dev 图的兄弟顺序与 online 一致；折叠状态是展开的
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/renderer/canvas/GraphCanvas.tsx tests/e2e/helpers/mock-ipc.ts tests/e2e/structure-editing.spec.ts
+git commit -m "feat(canvas): 布局选择按项目持久化"
+```
+
+---
+
+### Task 13 实施补记（控制器在修复轮 1 / 2 / 3 后补记，2026-10-28）
+
+本节记录**实现与本任务原文的三处偏离**及其理由 —— 计划是权威，
+所以偏离必须写回计划，而不是只留在 ledger 里。
+（另有 ④ / ⑤ / ⑥ 三处闸门与行为契约的补记，不算偏离，只是把实际落地形态写清楚。）
+
+**① `layoutMode` 从两态变成三态：`'tree' | 'force' | null`（`null` = 「还没从 localStorage 读回来」）。**
+
+Step 1 的原文是 `useState<'tree' | 'force'>('tree')` + 「读放在 effect 里」。
+两态不够用的原因是：**读回之前的那一小段时间里，模式是未知的**，
+而 dagre effect 与重挂开关都要拿模式做判断。两态下这个未知态只能被当成
+「树形」→ 力导向项目在首屏那一瞬会被 dagre 排掉并落库（用户摆好的坐标被毁）。
+三态下 `null` 是**独立的第三种状态**：dagre 与重挂都对它**关门**。
+
+**② dagre 的触发信号从「store 里有一些节点」换成「按图区分」的三层检查。**
+
+触发条件原本是 `graphNodes.length > 0` + 一个**一次性布尔标志**。两个问题：
+一是 `loadGraph` 是异步的 → 切图后 store 里还留着**上一张图**的节点，
+信号会在新图装载完之前就成立 → 对上一张图跑 dagre 并**落库**；
+二是标志在布局**真正执行之前**就被消耗 → 布局若因「节点不是这张图的」而放弃，
+标志也已经没了 → **新图永远排不上版**（两张图节点数相同时更是必然）。
+
+现在的三层检查（全部通过才允许排版，且**通过之后**才记「已排过」）：
+1. `graphStore.loadedGraphId === graphId` —— 这张图的节点**已经装载完**（按图的装载信号）；
+2. ReactFlow store 里的节点**全是这张图的** —— 别的图的节点一个都不许动；
+3. `laidOutGraphRef` 里**最后排过的那张图**不是它 —— 排过了就不再排。
+   （它是**单值**不是集合：A → B → A 时 A 会**再排一次**；这与旧代码「切图重置布尔标志」
+   的行为逐字等价，不是回归。改成 `Set<string>` 会改变这个既有语义，本轮不动。）
+
+配套地，dagre effect 订阅的是 **ReactFlow 的 store**（`storeApi.subscribe`）而不是
+graph store 的节点数：节点要经过**两跳**（`flowNodes` memo → `setRfNodes` → `<ReactFlow nodes>`
+→ RF store）才进 RF store，拿 graph store 的节点数当信号会排到上一张图的节点。
+
+**③ `reparentEnabled` 改成 fail closed：`layoutMode === 'tree'`（不是 `!== 'force'`）。**
+
+R-38 禁止力导向模式下重挂。模式未知（`null`）的那一小段时间里，
+`!== 'force'` 会把它当成树形 → **力导向项目的重挂在那段时间里是开着的**。
+`=== 'tree'` 让它在这段时间里**关着**。代价：启动与切图时各有**一帧左右**重挂不可用。
+
+**④ 验收闸门**：浏览器 e2e 从 12 条增加到 13 条 —— 新增的「切图：dagre 绝不能把上一张图的
+节点重排并落库」必须能在 mock 上表达**两张图 + 不同的节点集合 + 可控的 `graph:get` 延迟**
+（竞态的胜负取决于 IPC 往返与下一帧 rAF 谁先到；没有延迟 → 用例「永远绿、却什么都没验」）。
+
+**⑤ 闸门的能力边界**：浏览器 e2e 验的是**渲染端从 `parent_id` 派生层级线**与
+**IPC 的调用契约**（拖到合法落点就调 `graph:reparent`、不合法就不调）；
+主进程那半（R-37 的镜像边同步、「换父到当前父节点 = 无操作」的短路分支、
+`sort_index` 的分配与旧父兄弟重排）是由
+`src/main/services/__tests__/hierarchy-service.test.ts` 与
+`src/main/__tests__/database-migration.test.ts` 覆盖的。
+
+**两半的衔接**（同一个动作在渲染端与主进程两端被理解成同一件事）目前**没有端到端闸门** ——
+所以「13 条场景全绿」**不等于**「重挂语义整体被验过」。
+这句话本身就是结论的一部分：别把 e2e 的绿当成整条链路的绿。
+
+**⑥ 拖到「当前父节点」上按「没有候选」处理**（修复轮 3 补记，行为契约见 spec §4.4 第 3 步）：
+把节点拖到**它自己的父节点**上松手时，渲染端**不**把它当成合法落点 ——
+不调 `graph:reparent`、**不**抑制自由位置持久化，拖拽退化成普通移动（A 跟随指针、位置照常落库）。
+
+理由：主进程对「换父到当前父节点」是**无操作**（原样返回库里的坐标，一个字节都不写）。
+若当成合法落点，用户看到的是「绿色高亮 + 幽灵连线」（= 合法落点的承诺）→
+节点却弹回拖拽前的位置，同时弹一个「已移动到 B」的成功提示。
+按「没有候选」处理而不是「非法」：用户并没有做错任何事，不该给他红框 + 理由。
+
+主进程那个无操作分支**原样保留** —— 它对直接调 IPC 的调用者仍然正确。
+
+---
+
+## 附录：本期不做的事（记录，避免后续误以为遗漏）
+
+| 项 | 原因 |
+|---|---|
+| `nodes.parent_id` 外键 | 会打断 `cloneGraphNodes` 与 `yjs-manager.ts` 的两段式写入，需先重构（spec §4.1.2、批次 4） |
+| 撤销/重做 | 用户明确推迟到项目稳定后。结构写操作已收敛到 `graph:reparent`，届时挂命令栈即可（批次 4） |
+| 跨图结构同步 | online 图改结构后 dev 图不自动跟随。dev 图是一次性克隆，现有产品语义如此（批次 4） |
+| Yjs 双向镜像 | 本地 `graph:reparent` 不写 Yjs 文档，远端 peer 的全量同步可能覆盖本地改动。本期只加防环校验，不做镜像（spec §4.4.2） |
+| Yjs 远端写入的类型校验 | 远端 peer 可以任意指定 parentId；本期在 repository 侧补防环校验（Task 7 Step 5），类型校验留待协作功能真正启用时再加 |
+| AI 写入路径的类型校验 | AI 批量生成，逐个校验可能让整次生成失败。本期只给 AI 路径加防环校验（spec §4.4.3） |
+| 内联改名、快捷键体系 | 不在本次范围（spec §一非目标） |
+| 框选批量操作 | 不在本次范围 |
+| 层级边的「点击选中 / 删除」入口 | 派生层级边没有存储边对象：右侧面板找不到、删除命中 0 行。层级结构的改法是 reparent（Task 9/10）或删父节点（Task 11）。本期把派生层级边挡在选中路径外（Task 4 Step 2） |

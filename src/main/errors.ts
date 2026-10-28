@@ -52,6 +52,12 @@ export const ErrorCode = {
   // 状态机
   STATE_TRANSITION_INVALID: 'STATE_TRANSITION_INVALID',
 
+  // 层级结构（父子关系）
+  HIERARCHY_CYCLE: 'HIERARCHY_CYCLE',
+  HIERARCHY_TYPE_INVALID: 'HIERARCHY_TYPE_INVALID',
+  HIERARCHY_CROSS_GRAPH: 'HIERARCHY_CROSS_GRAPH',
+  HIERARCHY_SELF_PARENT: 'HIERARCHY_SELF_PARENT',
+
   // A2A 协议（Phase D9）
   A2A_SERVER_DISABLED: 'A2A_SERVER_DISABLED',
   A2A_PORT_IN_USE: 'A2A_PORT_IN_USE',
@@ -108,6 +114,22 @@ export class IpcError extends BizGraphError {
     super(message, code)
     this.name = 'IpcError'
     Object.setPrototypeOf(this, IpcError.prototype)
+  }
+}
+
+/** 层级结构操作失败（防环 / 类型 / 跨图 / 自环） */
+export class HierarchyError extends BizGraphError {
+  readonly details?: Record<string, unknown>
+
+  constructor(message: string, code: ErrorCodeType, details?: Record<string, unknown>) {
+    super(message, code)
+    this.name = 'HierarchyError'
+    this.details = details
+    Object.setPrototypeOf(this, HierarchyError.prototype)
+  }
+
+  toJSON(): Record<string, unknown> {
+    return { ...super.toJSON(), details: this.details }
   }
 }
 

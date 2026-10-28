@@ -117,6 +117,11 @@ export class GraphRepository {
         graphId: rowStr(row, 'graph_id'),
         graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
         parentId: rowOptStr(row, 'parent_id'),
+        // ⚠️ 这里**不能**用 rowNum(row, 'sort_index')：它是严格的，
+        // 根节点的 sort_index 是 NULL → typeof null !== 'number' → 抛 TypeError
+        // → 整个 get() 炸掉，主进程一读图就崩。照抄 communityLevel 的 null 容错写法。
+        sortIndex: typeof row.sort_index === 'number' ? row.sort_index : undefined,
+        collapsed: typeof row.collapsed === 'number' ? row.collapsed === 1 : false,
         rules: safeJsonParse<GraphNode['rules']>(rowOptStr(row, 'rules'), undefined, isBusinessRuleArray),
         metadata: safeJsonParse<GraphNode['metadata']>(rowOptStr(row, 'metadata'), undefined, isNodeMetadata),
         content: safeJsonParse<GraphNode['content']>(rowOptStr(row, 'content'), undefined, isNodeContent),
@@ -221,9 +226,9 @@ export class GraphRepository {
     const insertNodeStmt = this.db.prepare(
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
-        graph_id, graph_type, parent_id, rules, metadata, content, owner_role,
+        graph_id, graph_type, parent_id, sort_index, rules, metadata, content, owner_role,
         position_x, position_y, context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
     const insertEdgeStmt = this.db.prepare(
@@ -246,12 +251,21 @@ export class GraphRepository {
           ? 'placeholder'
           : assertNodeStatus(rawStatus)
 
+        // `collapsed` 故意**不**进 INSERT：新行拿列默认值 0（展开态）——
+        // 折叠是开发者视角，从 online 派生出来的 dev 图应当是展开的（spec §4.2.1）。
+        //
+        // `parent_id` 用 `|| null` 归一：空串不是真实的节点 id，但在正常写入路径上可达
+        // （node-repository 的 `data.parentId ?? null` 与 `String(data.parentId)` 都放行 ''），
+        // 原样带过去会让目标图里出现 `parent_id = ''` 的节点，而 hierarchy-service 的
+        // 子节点查询（getChildren / collectDescendants）没有 graph_id 过滤 ——
+        // `WHERE parent_id = ''` 会命中**每一张图**里父 id 为空串的节点。
         insertNodeStmt.run(
           newId, nodeType, status, rowStr(row, 'title'),
           rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
           targetGraphId, assertGraphType(targetGraphType),
-          row['parent_id'],
+          row['parent_id'] || null,
+          row['sort_index'],
           row['rules'], row['metadata'], row['content'], row['owner_role'],
           rowNum(row, 'position_x'), rowNum(row, 'position_y') + 20,
           row['context_refs'],
@@ -266,13 +280,26 @@ export class GraphRepository {
         const row = nodesRows.find((r) => rowStr(r, 'id') === oldId)
         if (!row) continue
         const oldParentId = rowOptStr(row, 'parent_id')
-        if (oldParentId && idMap.has(oldParentId)) {
+        // 没有父节点（NULL 或空串）：Pass 1 已经把它归一成 NULL 落库了，这里无需再 UPDATE。
+        // 真实 id 但不在 idMap 里（父节点住在另一张图）的，落到下面的 else 分支置 NULL。
+        if (!oldParentId) continue
+        if (idMap.has(oldParentId)) {
           parentUpdateStmt.run(idMap.get(oldParentId)!, newId)
+        } else {
+          // 父节点不在源图里 —— parent_id 没有外键，Yjs 远端路径也不校验，
+          // 所以「父节点住在另一张图」的脏数据是可能存在的。
+          // 原样带过去会让目标图出现一条**跨图悬挂**的父子关系：
+          // hierarchy-service.collectDescendants 的子节点查询没有 graph_id 过滤，
+          // 顺着它会把目标图节点的后代遍历走进源图，graph:reparent 便可能把源图节点一起搬走。
+          // 置 NULL —— 它在目标图里就是一个根节点（渲染层本来就按孤儿处理、不画父子线）。
+          parentUpdateStmt.run(null, newId)
         }
       }
 
       // Pass 3: Copy edges
       for (const row of edgesRows) {
+        // hierarchical 边必须与 parent_id 用**同一张** idMap 重映射，
+        // 否则边会指向源图节点，与克隆出来的 parent_id 对不上。
         const newSourceId = idMap.get(rowStr(row, 'source'))
         const newTargetId = idMap.get(rowStr(row, 'target'))
         if (!newSourceId || !newTargetId) continue

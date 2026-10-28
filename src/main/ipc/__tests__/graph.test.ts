@@ -309,6 +309,45 @@ describe('registerGraphHandlers', () => {
         communityLevel: '1',
       })).rejects.toThrow(IpcError)
     })
+
+    // collapsed / sortIndex 此前一次都没被校验过（仓库层 `data.collapsed ? 1 : 0`
+    // → 'no' 是真值 → 节点真的被折叠）。create 与 update 两条路径都要拦。
+    it('rejects non-boolean collapsed', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        collapsed: 'no',
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('rejects non-number sortIndex', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        sortIndex: 'x',
+      })).rejects.toThrow(IpcError)
+    })
+
+    it('accepts a boolean collapsed and a numeric sortIndex', async () => {
+      await expect(handlers['node:create']({}, {
+        type: 'module',
+        status: 'confirmed',
+        title: 'Module',
+        graphId: 'graph-1',
+        graphType: 'online',
+        position: { x: 0, y: 0 },
+        collapsed: true,
+        sortIndex: 0,
+      })).resolves.not.toThrow()
+    })
   })
 
   describe('node:createBatch', () => {
@@ -697,6 +736,8 @@ function makeWritebackDb() {
       graph_id TEXT NOT NULL,
       graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
       parent_id TEXT,
+      sort_index INTEGER,
+      collapsed INTEGER NOT NULL DEFAULT 0,
       rules TEXT,
       metadata TEXT,
       owner_role TEXT CHECK(owner_role IN ('product', 'developer', 'tester')),
