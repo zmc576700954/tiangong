@@ -418,7 +418,7 @@ describe('Database Migration', () => {
     }
   })
 
-  it('老库（v15 的 chat_messages CHECK）升级到 v16：行数与 status 值不变，CHECK 已含 queued', () => {
+  it('老库（v15 的 chat_messages CHECK）经 v16 迁移升级：行数与 status 值不变，CHECK 已含 queued', () => {
     const db = getClient()
 
     // 造一个 v15 形状的 chat_messages：CHECK 只允许 5 个 status 值
