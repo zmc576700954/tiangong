@@ -370,28 +370,44 @@ git commit -m "feat(settings): 新增「默认值」页签，接上适配器/回
 - Test: `src/renderer/components/agent/__tests__/ChatHeader.test.tsx`（新建）
 
 **Interfaces:**
-- Consumes: `ChatHeader` 现有的 adapters props（先读该文件确认 props 形状）。
-- Produces: `ChatHeader` 在 `installed` 数量为 0 / 1 / ≥2 时分别渲染三种形态，**不新增导出**。
+- Consumes: `ChatHeader` 现有的 props（已核实，**不要改 props 形状**）：
+  ```ts
+  interface ChatHeaderProps {
+    adapterName: string
+    adapters: { name: string; installed: boolean }[]
+    noAdaptersInstalled?: boolean
+    onSelectAdapter: (name: string) => void
+    onOpenSettings?: () => void
+    // …其余与本任务无关
+  }
+  ```
+  `installed` 信息**已经在 props 里**，本任务不需要新增任何 prop 或 IPC。
+- Produces: `ChatHeader` 在已安装数量为 0 / 1 / ≥2 时分别渲染三种形态，**不新增导出**。
 
 - [ ] **Step 1: 写失败的测试**
 
 新建 `src/renderer/components/agent/__tests__/ChatHeader.test.tsx`（文件头 `// @vitest-environment jsdom`）。三条用例：
-1. 传入两个已安装适配器 → 渲染出下拉，**下拉里没有**未安装的那个（断言 `screen.queryByText('cline')` 为 `null`）。
-2. 传入**一个**已安装适配器 → **不渲染下拉**，只渲染一个静态标签显示该适配器名（断言 `screen.queryByRole('combobox')` 为 `null`，且适配器名可见）。
-3. 传入零个已安装适配器 → 渲染现有的 `AdapterSetupGuide` 空态入口（`AgentChatPanel.tsx:409-427` 那一套，或本组件内既有的空态）。
+
+1. 传入两个已安装适配器 → **点开下拉后**，菜单里**没有**未安装的那个（断言 `screen.queryByText('cline')` 为 `null`）。
+2. 传入**一个**已安装适配器 → **不渲染下拉触发按钮**，只渲染一个静态标签显示该适配器名。
+3. 传入零个已安装适配器 → 保留现有的空态引导（`noAdaptersInstalled` 为 true 时那个 `AlertCircle` 形态）。
+
+> **断言不要用 `queryByRole('combobox')`** —— 这个组件的下拉是**自定义的**（一个 `<button>` + 一个浮层 div，见 `ChatHeader.tsx:65-80` 与 `:81-123`），**不是 `<select>`**，也就不是 `combobox` 角色。那样断言会**假绿**（下拉还在，但断言照样通过）。要断言的是**下拉触发按钮本身不存在** —— 例如给触发按钮加一个 `data-testid`（如 `data-testid="adapter-menu-trigger"`），然后断言 `screen.queryByTestId('adapter-menu-trigger')` 为 `null`；用例 1 则断言该 testid **存在**、点击后菜单里没有未安装项。
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run src/renderer/components/agent/__tests__/ChatHeader.test.tsx`
-Expected: FAIL —— 现在三个用例都不满足（未安装项仍在列表里；单个已装时仍有下拉）。
+Expected: FAIL —— 现在未安装项仍在菜单里；单个已装时仍有下拉触发按钮。
 
 - [ ] **Step 3: 实现三种形态**
 
 在 `ChatHeader.tsx` 里：
 - 过滤出 `installed = adapters.filter(a => a.installed)`。
-- `installed.length === 0` → 保留现有行为（引导去设置页）。
-- `installed.length === 1` → 用一个不可点的 `<span>`/badge 展示该适配器名，**不渲染 `<select>`**。
-- `installed.length >= 2` → 渲染 `<select>`，选项只有已安装的；列表底部加一项「安装更多适配器…」，点击走现有跳设置页的路径（`ChatHeader.tsx:100-103` 那条）。
+- `installed.length === 0` → **保留现有行为**（`noAdaptersInstalled` 时的 `AlertCircle` 形态 + 引导去设置页）。
+- `installed.length === 1` → 用一个**不可点**的静态标签展示该适配器名，**不渲染下拉触发按钮**（那个带 `ChevronDown` 的 `<button>` 和浮层菜单都不渲染）。
+- `installed.length >= 2` → 渲染现有的**自定义下拉**（沿用 `ChatHeader.tsx:65-123` 的结构，不要换成 `<select>`），菜单里只列已安装的适配器；列表底部加一项「安装更多适配器…」，点击走现有的 `onOpenSettings?.()` 路径（`ChatHeader.tsx:100-103` 现在就是未安装项点击时走的这条）。
+- 「auto」项保留（`:84-94`）—— 它就是"用默认适配器"，语义清晰；只有已安装 0 个时才不显示整个下拉。
+- 给下拉触发按钮加 `data-testid="adapter-menu-trigger"`（测试用）。
 
 - [ ] **Step 4: 跑测试确认通过**
 
