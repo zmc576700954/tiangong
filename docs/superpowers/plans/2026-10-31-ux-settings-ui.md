@@ -19,7 +19,7 @@
 - **TypeScript strict，全局禁止 `any`**：`@typescript-eslint/no-explicit-any` 在 `src/shared/**` 是 `error`、其余目录是 `warn`，而 `npm run lint` 带 `--max-warnings 0`——**实际全局禁止 `any`**，测试代码里的类型标注同样算。
 - **Toast 唯一实现**在 `src/renderer/lib/toast.tsx`，导出 `pushToast` / `toastSuccess` / `toastError` / `toastInfo` / `ToastContainer` / `useToastStore`。**不要**新建 `src/renderer/lib/toast.ts` 或 `src/renderer/components/ui/ToastContainer.tsx`——同路径下 `.ts` 会先于 `.tsx` 被解析并遮蔽实现。
 - **所有新文案走 `t()`**，i18n 资源加在 `src/shared/i18n/resources/domains/` 下对应域文件（settings / canvas / agent 等），中英两份都要加。查表用 `Record<NodeType, TranslationKey>` 静态映射，**禁止模板拼接 key**。
-- **`BizGraphSettings` 新增字段必须同时登记到 `src/main/settings.ts` 的 `mergeSettings`**，否则被静默丢弃（见 Task 1）。
+- **`BizGraphSettings` 新增字段会被自动保留**——Task 1 起 `src/main/settings.ts` 的 `mergeSettings` 改为**通用合并**（不再逐字段列举），所以新字段**不需要**再到 `mergeSettings` 里登记。但仍必须：① 在 `BizGraphSettings` 类型里声明；② 在 `DEFAULT_SETTINGS` 里给出默认值。
 - **节点状态变更必须走 `NodeRepository.update()`**（内部强制 `validateNodeTypeTransition`）；**不要**在别处直接 `UPDATE nodes SET status = ...`。
 - **不改 `graph_type` 语义**（`2026-10-27` spec §4.4.1 已定：`graph_type` = 节点语义类别，不是图归属）。不要加 `graphType === graphs.type` 的校验，不要迁移存量 `graph_type`。
 - **不改 Agent CLI 行为、不改适配器协议**（CLAUDE.md《与 Agent CLI 的边界》）。
