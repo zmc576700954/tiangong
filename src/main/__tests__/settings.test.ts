@@ -660,3 +660,64 @@ describe('Settings - invalidateSettingsCache', () => {
     expect(fresh.a2aServer?.port).toBe(9999)
   })
 })
+
+// ============================================
+// mergeSettings 通用合并：不得静默丢弃未登记字段
+// ============================================
+
+describe('Settings - mergeSettings 通用合并', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('mergeSettings 保留 saved 里未登记到 defaults 的字段（compactModel 不再被丢弃）', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    await writeSettings({
+      version: 1, cliTools: [], apiKeys: [], defaultModel: 'x', mcpServers: [],
+      compactModel: 'claude-haiku-4-5',
+    } as unknown as BizGraphSettings)
+    // 绕过内存缓存：断言的是「磁盘 → mergeSettings」的结果，而不是刚写入的那个对象
+    invalidateSettingsCache()
+    const loaded = await readSettings()
+    expect(loaded.compactModel).toBe('claude-haiku-4-5')
+  })
+
+  it('mergeSettings 是通用合并：类型里还没有的新字段同样被保留', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    await writeSettings({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [],
+      futureField: 'keep-me',
+    } as unknown as BizGraphSettings)
+    invalidateSettingsCache()
+    const loaded = await readSettings() as unknown as Record<string, unknown>
+    expect(loaded.futureField).toBe('keep-me')
+  })
+
+  it('contextWaterline 未保存过时也有默认值', async () => {
+    const { readSettings } = await import('../settings')
+    const loaded = await readSettings()
+    expect(loaded.contextWaterline).toEqual({
+      autoCompactEnabled: true,
+      autoCompactThreshold: 0.75,
+      minCompactInterval: 60_000,
+    })
+  })
+
+  it('userIdentity 不进默认值：未保存时为 undefined，保存后原样透传', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    await writeSettings({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [],
+    } as unknown as BizGraphSettings)
+    invalidateSettingsCache()
+    expect((await readSettings()).userIdentity).toBeUndefined()
+
+    const userIdentity = { userId: 'user-1', userName: 'Tester', colorIndex: 2 }
+    await writeSettings({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [], userIdentity,
+    } as unknown as BizGraphSettings)
+    invalidateSettingsCache()
+    expect((await readSettings()).userIdentity).toEqual(userIdentity)
+  })
+})

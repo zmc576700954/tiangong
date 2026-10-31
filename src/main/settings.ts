@@ -103,6 +103,13 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
   adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   writeback: { enabled: true },
+  // 上下文水位（自动压缩）默认值 —— 与 ContextWaterlineTab 的兜底值保持一致，
+  // 避免「界面显示已开启、主进程却是关闭的」这种两边不一致。
+  contextWaterline: {
+    autoCompactEnabled: true,
+    autoCompactThreshold: 0.75,
+    minCompactInterval: 60_000,
+  },
   locale: 'zh-CN',
   realtime: { enabled: false, port: 1234, host: '127.0.0.1' },
   // D10b: userIdentity 不在默认配置里初始化 — 由 realtime IPC 的
@@ -553,30 +560,35 @@ export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   fireChange(prev ?? settings, settings)
 }
 
+/**
+ * 合并「默认值」与「磁盘上读到的配置」。
+ *
+ * 通用合并：saved 里出现的字段一律保留。**不要**再逐字段列举 —— 之前那种写法
+ * 会把没被列举到的字段在每次 readSettings() 时悄悄丢掉（用户以为保存成功，
+ * 重启后改动却没了，且没有任何报错）。以后新增设置字段不需要在这里登记。
+ */
 function mergeSettings(
   defaults: BizGraphSettings,
   saved: Partial<BizGraphSettings>,
 ): BizGraphSettings {
-  return {
-    version: saved.version ?? defaults.version,
-    cliTools: mergeCliTools(defaults.cliTools, saved.cliTools ?? []),
-    apiKeys: saved.apiKeys ?? defaults.apiKeys,
-    defaultModel: saved.defaultModel ?? defaults.defaultModel,
-    mcpServers: saved.mcpServers ?? defaults.mcpServers,
-    adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
-    customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
-    contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
-    writeback: saved.writeback ?? defaults.writeback,
-    locale: resolveLocale(saved.locale ?? defaults.locale),
-    realtime: saved.realtime ?? defaults.realtime,
-    // D10b: userIdentity 不在默认值里（避免重装复用旧 userId），
-    // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
-    userIdentity: saved.userIdentity,
-    telemetry: saved.telemetry ?? defaults.telemetry,
-    // Phase D9: a2aServer / a2a 整体替换（不深合并）；未在 saved 中保留 undefined 以便后续 null 检查
-    a2aServer: saved.a2aServer ?? defaults.a2aServer,
-    a2a: saved.a2a ?? defaults.a2a,
-  }
+  // 先剔除 saved 里显式的 undefined：直接展开会用 undefined 盖掉 defaults 里的真实默认值。
+  const defined = Object.fromEntries(
+    Object.entries(saved).filter(([, v]) => v !== undefined),
+  ) as Partial<BizGraphSettings>
+  const merged: BizGraphSettings = { ...defaults, ...defined }
+  // cliTools 是「按名字合并」的数组（saved 覆盖同名项，defaults 补全缺失项），
+  // 不走整体替换 —— 用户装过的 CLI 条目不能被默认清单吞掉。
+  merged.cliTools = mergeCliTools(defaults.cliTools, defined.cliTools ?? [])
+  // 三个刻意例外，不能被通用合并覆盖：
+  // userIdentity 不在默认值里（见 DEFAULT_SETTINGS 注释，避免重装复用旧 userId），
+  // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
+  merged.userIdentity = saved.userIdentity
+  // a2aServer / a2a 整体替换（不深合并）
+  merged.a2aServer = saved.a2aServer ?? defaults.a2aServer
+  merged.a2a = saved.a2a ?? defaults.a2a
+  // locale 必须过 resolveLocale 归一化（未知值回落 zh-CN）
+  merged.locale = resolveLocale(saved.locale ?? defaults.locale)
+  return merged
 }
 
 function mergeCliTools(
