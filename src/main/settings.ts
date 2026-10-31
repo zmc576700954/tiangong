@@ -18,6 +18,7 @@ import type {
   AdapterPreferences,
 } from '@shared/types'
 import type { A2AServerConfig, A2ARemoteAgent } from '@shared/types/a2a'
+import { DEFAULT_ADAPTER_PREFERENCES, ALLOWED_API_PROVIDERS } from '@shared/adapter-defaults'
 import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { t } from '@shared/i18n'
 import { getPlatformProvider } from './platform'
@@ -49,11 +50,6 @@ function restrictFileAcl(filePath: string): void {
 
 // Re-export types for backward compatibility
 export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences, A2AServerConfig, A2ARemoteAgent }
-
-const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
-  defaultAdapter: 'claude-code',
-  fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
-}
 
 /** Known adapter names registered in the adapter registry.
  *  Kept in sync with src/main/adapters/registry.ts ADAPTER_REGISTRY.
@@ -787,7 +783,8 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
   return settings.apiKeys.find((k) => k.provider === provider)?.key
 }
 
-const ALLOWED_PROVIDERS: ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']
+/** provider 白名单 —— 单一真相源在 @shared/adapter-defaults（渲染层也要用同一份）。 */
+const ALLOWED_PROVIDERS = ALLOWED_API_PROVIDERS
 
 export async function setApiKey(
   provider: string,

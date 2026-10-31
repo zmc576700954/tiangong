@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { Bot, Server, RefreshCw, Download, Check, AlertCircle } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
@@ -9,6 +9,7 @@ import type { Locale } from '@shared/i18n/types'
 import type { TranslationKey } from '@shared/i18n'
 import { AdapterHealthPanel } from './AdapterHealthPanel'
 import { A2ASettingsTab } from './A2ASettingsTab'
+import { DefaultsTab } from './DefaultsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
@@ -119,6 +120,25 @@ export function SettingsPanel() {
     setTimeout(() => setToast(null), 4000)
   }
 
+  /** 已安装的 CLI 工具名 —— 「默认值」页签的默认适配器下拉只列这些。 */
+  const installedNames = useMemo(
+    () => (settings?.cliTools ?? []).filter((tool) => tool.installed).map((tool) => tool.name),
+    [settings?.cliTools],
+  )
+
+  /**
+   * 「默认值」页签的保存回调。
+   *
+   * `settings:write` 在主进程做的是顶层浅合并，所以这里必须把**整个** settings
+   * 连同补丁一起发过去 —— 只发补丁会把 cliTools / apiKeys 等字段整体丢掉。
+   */
+  const persistDefaults = async (patch: Partial<BizGraphSettings>) => {
+    if (!ipc || !settings) return
+    const next: BizGraphSettings = { ...settings, ...patch }
+    await ipc['settings:write'](next)
+    setSettings(next)
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -146,6 +166,7 @@ export function SettingsPanel() {
           <TabsTrigger value="subagents">{t('settings.tab.subagents')}</TabsTrigger>
           <TabsTrigger value="waterline">{t('settings.tab.waterline')}</TabsTrigger>
           <TabsTrigger value="health">{t('settings.tab.health')}</TabsTrigger>
+          <TabsTrigger value="defaults">{t('settings.tab.defaults')}</TabsTrigger>
           <TabsTrigger value="a2a">{t('settings.tab.a2a')}</TabsTrigger>
         </TabsList>
 
@@ -287,6 +308,16 @@ export function SettingsPanel() {
 
         <TabsContent value="health">
           <AdapterHealthPanel />
+        </TabsContent>
+
+        <TabsContent value="defaults">
+          {settings && (
+            <DefaultsTab
+              settings={settings}
+              installedAdapters={installedNames}
+              onSave={persistDefaults}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="a2a">

@@ -1,15 +1,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useAdapterStore } from '../adapterStore'
+import { DEFAULT_ADAPTER_PREFERENCES } from '@shared/adapter-defaults'
+
+/** 后端返回的偏好 —— 刻意与 DEFAULT_ADAPTER_PREFERENCES 不同，方便区分两者。 */
+const BACKEND_PREFS = {
+  defaultAdapter: 'claude-code',
+  fallbackOrder: ['codex', 'opencode', 'mcp'],
+}
+
+const getAdapterPreferences = vi.fn().mockResolvedValue(BACKEND_PREFS)
 
 vi.stubGlobal('window', {
   electronAPI: {
     'agent:listAdapters': vi.fn().mockResolvedValue([
       { name: 'claude-code', version: '1.0.0', installed: true },
     ]),
-    'settings:getAdapterPreferences': vi.fn().mockResolvedValue({
-      defaultAdapter: 'claude-code',
-      fallbackOrder: ['codex', 'opencode', 'mcp'],
-    }),
+    'settings:getAdapterPreferences': getAdapterPreferences,
     'settings:setAdapterPreferences': vi.fn().mockResolvedValue(undefined),
     'agent:getAdapterMarketplace': vi.fn().mockResolvedValue([
       { name: 'claude-code', installed: true, installMethod: 'npm' },
@@ -19,9 +25,11 @@ vi.stubGlobal('window', {
 
 describe('adapterStore', () => {
   beforeEach(() => {
+    getAdapterPreferences.mockReset()
+    getAdapterPreferences.mockResolvedValue(BACKEND_PREFS)
     useAdapterStore.setState({
       adapters: [],
-      adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] },
+      adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
       lastFallbackHistory: [],
       marketplaceItems: [],
       openSettingsPanel: false,
@@ -57,6 +65,19 @@ describe('adapterStore', () => {
     const state = useAdapterStore.getState()
     expect(state.adapterPreferences.defaultAdapter).toBe('claude-code')
     expect(state.adapterPreferences.fallbackOrder).toEqual(['codex', 'opencode', 'mcp'])
+  })
+
+  it('loadAdapterPreferences 用后端返回值覆盖默认占位，而不是硬编码字面量', async () => {
+    getAdapterPreferences.mockResolvedValue({
+      defaultAdapter: 'codex',
+      fallbackOrder: ['claude-code', 'mcp'],
+    })
+    await useAdapterStore.getState().loadAdapterPreferences()
+    const state = useAdapterStore.getState()
+    expect(state.adapterPreferences.defaultAdapter).toBe('codex')
+    expect(state.adapterPreferences.fallbackOrder).toEqual(['claude-code', 'mcp'])
+    // 不能停在默认占位上
+    expect(state.adapterPreferences).not.toEqual(DEFAULT_ADAPTER_PREFERENCES)
   })
 
   it('setAdapterPreferences saves and updates state', async () => {

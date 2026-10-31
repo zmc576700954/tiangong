@@ -15,6 +15,7 @@
 
 import { create } from 'zustand'
 import type { AgentOutput, AgentSessionConfig, AgentCommand, ChatMessage, AgentThread, ContextRef, MessageStatus, MessageError, ToolCallBlock, AdapterPreferences, AdapterFallbackAttempt, AdapterMarketplaceItem } from '@shared/types'
+import { DEFAULT_ADAPTER_PREFERENCES } from '@shared/adapter-defaults'
 import type { AdapterState } from './adapterStore'
 import { useAgentOutputStore } from './agentOutputStore'
 import { useAdapterStore } from './adapterStore'
@@ -129,7 +130,9 @@ export const useAgentStore = create<AgentState>(() => ({
   adapters: [],
   threads: [],
   currentThreadId: null,
-  adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'] },
+  // 初始占位：真值由 adapterStore.loadAdapterPreferences() 从主进程灌进来。
+  // 之前这里硬编码了一份字面量，把用户的设置挡在了外面。
+  adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   lastFallbackHistory: [],
   marketplaceItems: [],
   openSettingsPanel: false,
