@@ -12,6 +12,13 @@ import { useToastStore } from '../../lib/toast'
 
 const writeSettings = vi.fn().mockResolvedValue(undefined)
 
+/** 实时检测的默认结果：claude-code 与 mcp 已装，codex 没装。 */
+const DEFAULT_MARKETPLACE = [
+  { name: 'claude-code', installed: true },
+  { name: 'codex', installed: false },
+  { name: 'mcp', installed: true },
+]
+
 const mockElectronAPI = {
   'settings:read': vi.fn().mockResolvedValue({
     version: 1,
@@ -30,11 +37,7 @@ const mockElectronAPI = {
   'settings:installCli': vi.fn().mockResolvedValue({ success: true, message: 'ok' }),
   'settings:setApiKey': vi.fn().mockResolvedValue(undefined),
   // 实时检测（agent:getAdapterMarketplace 内部走 registry.checkAllInstalled）
-  'agent:getAdapterMarketplace': vi.fn().mockResolvedValue([
-    { name: 'claude-code', installed: true },
-    { name: 'codex', installed: false },
-    { name: 'mcp', installed: true },
-  ]),
+  'agent:getAdapterMarketplace': vi.fn().mockResolvedValue(DEFAULT_MARKETPLACE),
   'settings:getContextWaterlineConfig': vi.fn().mockResolvedValue({
     autoCompactEnabled: true,
     autoCompactThreshold: 0.75,
@@ -48,6 +51,9 @@ const mockElectronAPI = {
 beforeEach(() => {
   writeSettings.mockClear()
   writeSettings.mockResolvedValue(undefined)
+  const marketplace = mockElectronAPI['agent:getAdapterMarketplace']
+  marketplace.mockReset()
+  marketplace.mockResolvedValue(DEFAULT_MARKETPLACE)
   useToastStore.getState().clear()
   ;(window as unknown as { electronAPI?: unknown }).electronAPI = mockElectronAPI
 })
@@ -145,5 +151,48 @@ describe('SettingsPanel 默认值页签', () => {
       expect(toasts.some((toast) => toast.kind === 'error')).toBe(true)
     })
     expect(useToastStore.getState().toasts.some((toast) => toast.kind === 'success')).toBe(false)
+  })
+})
+
+describe('SettingsPanel 默认值页签 · 安装检测的失败路径', () => {
+  it('探测永不 settle 时，面板照常渲染，且不谎称「一个都没装」', async () => {
+    // CLI 的 --version 探测可能永远不返回（认证向导、装坏的 CLI……）
+    mockElectronAPI['agent:getAdapterMarketplace'].mockImplementation(() => new Promise(() => {}))
+    await mountSettingsPanel()
+    // 首屏没有被外部 CLI 探测卡住
+    await waitFor(() => expect(screen.getByText('界面语言')).toBeTruthy())
+    switchTab('默认值')
+    expect(screen.queryByText(/未检测到已安装的 CLI 工具/)).toBe(null)
+    // 只能说「还在检测」，不能说「一个都没装」
+    expect(screen.getAllByText(/正在检测已安装的 CLI 工具/).length).toBeGreaterThan(0)
+  })
+
+  it('探测失败时提示「无法确认」，而不是谎称「一个都没装」', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockElectronAPI['agent:getAdapterMarketplace'].mockRejectedValueOnce(new Error('boom'))
+      await mountSettingsPanel()
+      await waitFor(() => expect(screen.getByText(/安装检测失败或超时/)).toBeTruthy())
+      expect(screen.queryByText(/未检测到已安装的 CLI 工具/)).toBe(null)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('探测超时后转为「无法确认」，面板不停在 spinner 上', async () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockElectronAPI['agent:getAdapterMarketplace'].mockImplementation(() => new Promise(() => {}))
+      const { SettingsPanel } = await import('../SettingsPanel')
+      render(<SettingsPanel />)
+      // 推进超过检测上界
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(screen.getByText(/安装检测失败或超时/)).toBeTruthy()
+      expect(screen.queryByText(/未检测到已安装的 CLI 工具/)).toBe(null)
+    } finally {
+      errorSpy.mockRestore()
+      vi.useRealTimers()
+    }
   })
 })

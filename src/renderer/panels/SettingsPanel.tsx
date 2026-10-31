@@ -10,11 +10,48 @@ import type { TranslationKey } from '@shared/i18n'
 import { AdapterHealthPanel } from './AdapterHealthPanel'
 import { A2ASettingsTab } from './A2ASettingsTab'
 import { DefaultsTab } from './DefaultsTab'
+import type { AdapterDetection } from './DefaultsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : null
+
+/**
+ * 已安装适配器的实时检测上界。
+ *
+ * CLI 探测是 `execFile(cmd, ['--version'])`，**没有超时**
+ * （src/main/adapters/cline.ts:26、cursor.ts:25、qoder.ts:25 等）：一个在
+ * `--version` 上等待交互输入的 CLI（首次运行的认证向导）、装坏了的 CLI、
+ * 或者往满管道写的 CLI，都可能让探测永不 settle。而
+ * `AdapterRegistry.checkAllInstalled()` 用 `Promise.allSettled` 包着
+ * （src/main/agent/adapter-registry.ts:35-50）—— 只要有一个不 settle，
+ * 整个 IPC 就不会返回。
+ *
+ * 5s 的依据：一次健康检测最多 11 个进程 spawn，即使安装缓存失效（要真探测），
+ * 通常也在 0.2–1s 内跑完。5s 是健康最坏情况的数倍余量，慢机器/冷启动上不会
+ * 误报「无法确认」；同时又足够短 —— 挂死的探测不会让下拉长时间停在「检测中」。
+ *
+ * 注意：这个上界只管**渲染层不再等**。主进程那边的 execFile 仍然没有超时，
+ * 挂死的子进程会留在那儿（既有行为，marketplace 路径同样受影响）。
+ */
+const ADAPTER_DETECTION_TIMEOUT_MS = 5000
+
+/**
+ * 给探测加一个上界。
+ *
+ * 超时后原 promise 仍可能永远挂着，但渲染层不再等它：race 落定之后，
+ * 迟到的 resolve 不会再触发 setState。
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}超时（${ms}ms）`)), ms)
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value) },
+      (err) => { clearTimeout(timer); reject(err) },
+    )
+  })
+}
 
 export function SettingsPanel() {
   const { locale, setLocale: setUiLocale, t } = useI18n()
@@ -31,12 +68,14 @@ export function SettingsPanel() {
   const [activeTab, setActiveTab] = useState('general')
   // 实时检测到的已安装适配器（见 loadDetectedAdapters）
   const [detectedAdapters, setDetectedAdapters] = useState<string[]>([])
+  // 实时检测的状态：pending / ready / unavailable
+  const [detection, setDetection] = useState<AdapterDetection>('pending')
 
   useEffect(() => {
-    // 两个加载都落定再收 spinner：「默认值」页签的下拉依赖实时检测结果，
-    // 先渲染再补数据会让下拉短暂停在「禁用 + 未安装告警」的假状态上。
-    void Promise.allSettled([loadSettings(), loadDetectedAdapters()])
-      .then(() => setLoading(false))
+    // 首屏只等 settings:read —— 外部 CLI 探测可能永不 settle（见
+    // ADAPTER_DETECTION_TIMEOUT_MS），绝不能让它把整个设置面板卡在 spinner 上。
+    void loadSettings()
+    void loadDetectedAdapters()
   }, [])
 
   // 主进程推送语言变更时同步下拉框
@@ -56,14 +95,27 @@ export function SettingsPanel() {
    * `registry.checkAllInstalled()`（对每个注册适配器实时探测），
    * 并顺带套用 marketplace 既有的 `hidden` 过滤 —— 内部适配器
    * （mindmap-internal）不该出现在用户可选的列表里。
+   *
+   * 探测带一个上界：CLI 的 --version 探测可能永不 settle（见
+   * ADAPTER_DETECTION_TIMEOUT_MS）。到界后按「无法确认」处理，面板照常用
+   * cliTools 里的已知信息，绝不停在 spinner 上。
    */
   const loadDetectedAdapters = async () => {
-    if (!ipc) return
+    if (!ipc) {
+      setDetection('unavailable')
+      return
+    }
     try {
-      const items = await ipc['agent:getAdapterMarketplace']()
+      const items = await withTimeout(
+        ipc['agent:getAdapterMarketplace'](),
+        ADAPTER_DETECTION_TIMEOUT_MS,
+        '已安装适配器检测',
+      )
       setDetectedAdapters(items.filter((item) => item.installed).map((item) => item.name))
+      setDetection('ready')
     } catch (err) {
       console.error('Failed to detect installed adapters:', err)
+      setDetection('unavailable')
     }
   }
 
@@ -83,6 +135,8 @@ export function SettingsPanel() {
       if (data.customAgentTypes) setCustomTypes(data.customAgentTypes)
     } catch (err) {
       console.error('Failed to load settings:', err)
+    } finally {
+      setLoading(false)
     }
   }
 
@@ -360,6 +414,7 @@ export function SettingsPanel() {
               settings={settings}
               installedAdapters={installedNames}
               onSave={persistDefaults}
+              detection={detection}
             />
           )}
         </TabsContent>

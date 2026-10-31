@@ -61,6 +61,9 @@ export const settingsZh = {
   'settings.defaults.defaultAdapter.hint': '默认适配器失败时，按「回退顺序」依次尝试其它适配器。',
   'settings.defaults.defaultAdapter.none':
     '未检测到已安装的 CLI 工具。请先在「基础设置」里安装一个，再回到这里选择默认适配器。',
+  'settings.defaults.defaultAdapter.detecting': '正在检测已安装的 CLI 工具…',
+  'settings.defaults.defaultAdapter.detectFailed':
+    '安装检测失败或超时，暂时无法确认已安装的 CLI 工具。请到「基础设置」查看状态并点「刷新状态」。',
   'settings.defaults.defaultAdapter.uninstalled': '当前默认适配器「{name}」未安装。',
   'settings.defaults.fallbackOrder': '回退顺序',
   'settings.defaults.fallbackOrder.hint': '默认适配器失败后，按此顺序依次尝试。',
@@ -212,6 +215,9 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
     'When the default adapter fails, other adapters are tried in the fallback order below.',
   'settings.defaults.defaultAdapter.none':
     'No installed CLI tool detected. Install one in General settings, then come back to pick a default adapter.',
+  'settings.defaults.defaultAdapter.detecting': 'Detecting installed CLI tools…',
+  'settings.defaults.defaultAdapter.detectFailed':
+    'The installation check failed or timed out, so the installed CLI tools cannot be confirmed. Check the status in General settings and click Refresh.',
   'settings.defaults.defaultAdapter.uninstalled': 'The current default adapter "{name}" is not installed.',
   'settings.defaults.fallbackOrder': 'Fallback Order',
   'settings.defaults.fallbackOrder.hint': 'Tried in this order after the default adapter fails.',

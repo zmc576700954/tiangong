@@ -29,7 +29,25 @@ export interface DefaultsTabProps {
   installedAdapters: string[]
   /** 保存补丁。失败时应 reject，组件会转成 error toast。 */
   onSave: (patch: Partial<BizGraphSettings>) => Promise<void>
+  /**
+   * 实时安装检测的状态。
+   *
+   * - `'pending'`：还在探测 —— 不能断言「一个都没装」
+   * - `'ready'`：探测完成（结果可能为空）
+   * - `'unavailable'`：探测失败或超时 —— 只能提示「无法确认」
+   *
+   * 省略时按 `'ready'` 处理（调用方没有做检测的场景）。
+   */
+  detection?: AdapterDetection
 }
+
+/**
+ * 已安装适配器的实时检测状态。
+ *
+ * 「一个都没装」是**检测完成且结果为空**的事实陈述；检测还在跑、或者探测挂了，
+ * 都不能这么说 —— 那是「我还没测完」，不是「确实没有」。
+ */
+export type AdapterDetection = 'pending' | 'ready' | 'unavailable'
 
 /** `defaultModels` 的三个档位。键名与 `BizGraphSettings['defaultModels']` 一一对应。 */
 type ModelTier = 'claudeCode' | 'codex' | 'mcp'
@@ -68,7 +86,7 @@ function errorText(err: unknown): string {
   return String(err)
 }
 
-export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTabProps) {
+export function DefaultsTab({ settings, installedAdapters, onSave, detection = 'ready' }: DefaultsTabProps) {
   const { t } = useI18n()
 
   const prefs = settings.adapterPreferences ?? DEFAULT_ADAPTER_PREFERENCES
@@ -154,19 +172,36 @@ export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTab
             disabled={installedAdapters.length === 0}
             className="w-full px-2 py-1.5 text-xs border rounded bg-background disabled:opacity-50"
           >
+            {/* 还在探测：先占位，别说「一个都没装」 */}
+            {detection === 'pending' && (
+              <option value="">{t('settings.defaults.defaultAdapter.detecting')}</option>
+            )}
             {/* 存量的默认适配器没装时仍然列出来 —— 静默丢掉等于把用户的设置改了。 */}
-            {!defaultInstalled && <option value="">{defaultAdapter}</option>}
+            {detection !== 'pending' && !defaultInstalled && (
+              <option value="">{defaultAdapter}</option>
+            )}
             {installedAdapters.map((name) => (
               <option key={name} value={name}>{name}</option>
             ))}
           </select>
-          {installedAdapters.length === 0 && (
+          {detection === 'pending' && (
+            <p className="text-[10px] text-muted-foreground">
+              {t('settings.defaults.defaultAdapter.detecting')}
+            </p>
+          )}
+          {detection === 'unavailable' && (
+            <div className="flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
+              <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+              <span>{t('settings.defaults.defaultAdapter.detectFailed')}</span>
+            </div>
+          )}
+          {detection === 'ready' && installedAdapters.length === 0 && (
             <div className="flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
               <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
               <span>{t('settings.defaults.defaultAdapter.none')}</span>
             </div>
           )}
-          {!defaultInstalled && installedAdapters.length > 0 && (
+          {detection === 'ready' && !defaultInstalled && installedAdapters.length > 0 && (
             <div className="flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
               <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
               <span>{t('settings.defaults.defaultAdapter.uninstalled', { name: defaultAdapter })}</span>
