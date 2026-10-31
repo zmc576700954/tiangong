@@ -6,10 +6,11 @@
  */
 
 import { BaseAdapter } from './base'
+import { resolveModelForAdapter } from './model-selection'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
-import type { Codex } from '@openai/codex-sdk'
+import type { Codex, ThreadOptions } from '@openai/codex-sdk'
 import type { ChildProcess } from 'node:child_process'
 import { createLogger } from '../shared/logger'
 
@@ -92,16 +93,19 @@ export class CodexAdapter extends BaseAdapter {
       let thread = this.threads.get(session.id)
 
       if (!thread) {
+        // codex 档位为空时传 undefined —— SDK 用它自己的默认模型。
+        const { readSettings } = await import('../settings')
+        const settings = await readSettings()
+        const model = resolveModelForAdapter(settings, 'codex')
+        const threadOptions: ThreadOptions = {
+          workingDirectory: session.config.workingDirectory,
+          sandboxMode: 'workspace-write',
+          model,
+        }
         if (isResume && session.config.resumeSessionId) {
-          thread = codex.resumeThread(session.config.resumeSessionId, {
-            workingDirectory: session.config.workingDirectory,
-            sandboxMode: 'workspace-write',
-          })
+          thread = codex.resumeThread(session.config.resumeSessionId, threadOptions)
         } else {
-          thread = codex.startThread({
-            workingDirectory: session.config.workingDirectory,
-            sandboxMode: 'workspace-write',
-          })
+          thread = codex.startThread(threadOptions)
         }
         this.threads.set(session.id, thread)
       }

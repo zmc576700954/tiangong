@@ -12,6 +12,7 @@
 
 import { z } from 'zod'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
+import { resolveModelForAdapter } from './model-selection'
 import { generateId } from '../shared/env'
 import type {
   AgentSession,
@@ -224,7 +225,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           // 透明转发：不下发 BizGraph 的 scope / memory / 项目上下文。
           ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),
           cwd: session.config.workingDirectory,
-          model: settings.defaultModel || 'sonnet',
+          model: resolveModelForAdapter(settings, 'claude-code') || 'sonnet',
           env: this.buildSafeEnv(),
           permissionMode: transparent ? 'default' : 'acceptEdits',
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，

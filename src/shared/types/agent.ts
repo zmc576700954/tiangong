@@ -523,6 +523,15 @@ export interface BizGraphSettings {
   defaultModel?: string
   /** Model used for context compaction summaries; falls back to defaultModel if unset */
   compactModel?: string
+  /** 按适配器分开的默认模型；缺档时各自回落（见 resolveModelForAdapter） */
+  defaultModels?: {
+    /** claude-code 适配器的模型；缺档时回落到旧的 defaultModel */
+    claudeCode?: string
+    /** codex 适配器的模型；缺档时由 codex SDK 自己决定 */
+    codex?: string
+    /** MCP 适配器的模型；缺档时由 provider 默认决定（**不回落到 defaultModel**） */
+    mcp?: string
+  }
   mcpServers: McpServerConfig[]
   adapterPreferences?: AdapterPreferences
   /** Phase 5: user-defined subagent types persisted in settings.json. */

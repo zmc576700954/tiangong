@@ -87,6 +87,9 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
   apiKeys: [],
   defaultModel: 'claude-3-7-sonnet-20250219',
+  // 按适配器分开的默认模型。空对象 = 全部走各自回落（见 adapters/model-selection.ts）：
+  // claude-code 回落到旧的 defaultModel，codex / mcp 用各自的默认模型。
+  defaultModels: {},
   mcpServers: [
     {
       name: 'filesystem',

@@ -14,8 +14,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }))
 
 // Mock settings to provide defaultModel
+const mockReadSettings = vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+
 vi.mock('../settings', () => ({
-  readSettings: vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] }),
+  readSettings: (...args: unknown[]) => mockReadSettings(...args),
 }))
 
 import { ClaudeCodeAdapter } from '../adapters/claude-code'
@@ -48,6 +50,7 @@ describe('ClaudeCodeAdapter (SDK)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
     outputs.length = 0
     adapter = new ClaudeCodeAdapter()
     adapter.onOutput((o) => outputs.push(o))
@@ -345,6 +348,42 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(hooks.PostToolUse).toBeDefined()
     expect(hooks.PostToolUse.length).toBe(1)
     expect((hooks.PostToolUse[0] as { matcher: string }).matcher).toBe('Edit|Write')
+  })
+
+  it('doSendCommand 用 claudeCode 档位的模型（不读其它适配器的档位）', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'legacy-model',
+      apiKeys: [],
+      defaultModels: { claudeCode: 'opus-4-1', codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig())
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.model).toBe('opus-4-1')
+  })
+
+  it('doSendCommand 在 claudeCode 档位为空时回落到旧的 defaultModel', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'legacy-model',
+      apiKeys: [],
+      defaultModels: { codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig())
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.model).toBe('legacy-model')
   })
 
   it('terminateSession aborts active query', async () => {

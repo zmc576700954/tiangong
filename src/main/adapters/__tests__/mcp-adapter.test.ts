@@ -14,6 +14,7 @@ import {
   McpAdapter,
   API_RATE_LIMIT_SHORT_MAX,
 } from '../mcp-adapter'
+import { resolveModelForAdapter } from '../model-selection'
 import type { ApiKeyConfig } from '@shared/types'
 
 // ============================================
@@ -921,5 +922,45 @@ describe('McpAdapter.cleanupMcpResources()', () => {
 
   it('清理 mcpClients 中不存在的 sessionId 不抛错', () => {
     expect(() => adapter['cleanupMcpResources']('never-existed')).not.toThrow()
+  })
+})
+
+// ============================================
+// MCP 档位与 provider 推断
+// ============================================
+
+describe('MCP 档位（defaultModels.mcp）决定 provider', () => {
+  // openai 排在前面：这样「按第一个有效 key 回退」与「按模型名前缀匹配」
+  // 会选出不同的 provider，从而能区分两种行为。
+  const keys: ApiKeyConfig[] = [
+    { provider: 'openai', key: 'sk-openai' },
+    { provider: 'anthropic', key: 'sk-anthropic' },
+  ]
+
+  it('mcp 档位为空时不再用旧的 defaultModel 推断 provider', () => {
+    const settings = { defaultModel: 'claude-3-7-sonnet-20250219' }
+    const model = resolveModelForAdapter(settings, 'mcp')
+    expect(model).toBeUndefined()
+    // 旧行为会按 claude 前缀选到 anthropic；新行为不再被全局旧字段带偏。
+    expect(resolveApiKey(keys, model)?.provider).toBe('openai')
+  })
+
+  it('mcp 档位有值时按它的前缀选 provider', () => {
+    const settings = { defaultModel: 'claude-3-7-sonnet-20250219', defaultModels: { mcp: 'gpt-4o' } }
+    const model = resolveModelForAdapter(settings, 'mcp')
+    expect(model).toBe('gpt-4o')
+    expect(resolveApiKey(keys, model)?.provider).toBe('openai')
+  })
+
+  it('mcp 档位指定 anthropic 模型时选 anthropic 的 key', () => {
+    const settings = { defaultModels: { mcp: 'claude-3-7-sonnet-20250219' } }
+    const model = resolveModelForAdapter(settings, 'mcp')
+    expect(resolveApiKey(keys, model)?.provider).toBe('anthropic')
+  })
+
+  it('mcp 档位为空时模型退回 provider 自己的默认模型', () => {
+    const settings = { defaultModel: 'claude-3-7-sonnet-20250219' }
+    const model = resolveModelForAdapter(settings, 'mcp')
+    expect(resolveModel('openai', model, false)).toBe('gpt-4o')
   })
 })

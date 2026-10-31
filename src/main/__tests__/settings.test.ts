@@ -705,6 +705,23 @@ describe('Settings - mergeSettings 通用合并', () => {
     })
   })
 
+  it('defaultModels 未保存过时是空对象（全部走各自回落）', async () => {
+    const { readSettings } = await import('../settings')
+    const loaded = await readSettings()
+    expect(loaded.defaultModels).toEqual({})
+  })
+
+  it('defaultModels 存档后原样读回（按适配器分档不丢）', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    await writeSettings({
+      version: 1, cliTools: [], apiKeys: [], mcpServers: [],
+      defaultModels: { claudeCode: 'opus-4-1', codex: 'gpt-5', mcp: 'gpt-4o' },
+    } as unknown as BizGraphSettings)
+    invalidateSettingsCache()
+    const loaded = await readSettings()
+    expect(loaded.defaultModels).toEqual({ claudeCode: 'opus-4-1', codex: 'gpt-5', mcp: 'gpt-4o' })
+  })
+
   it('userIdentity 不进默认值：未保存时为 undefined，保存后原样透传', async () => {
     const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
     await writeSettings({
