@@ -83,7 +83,8 @@ export const settingsZh = {
   'settings.defaults.model.mcp.gateway':
     '自建网关（自定义 baseUrl）必须在这里填网关自己的模型 id，否则网关会收到错误的模型名。',
   'settings.defaults.compactModel': '压缩模型',
-  'settings.defaults.compactModel.hint': '仅对 MCP 兜底适配器生效；Claude Code 走 SDK 自身的压缩机制，不读这一档。',
+  'settings.defaults.compactModel.hint':
+    '仅对 MCP 兜底适配器生效；Claude Code 走 SDK 自身的压缩机制，不读这一档。压缩请求的 provider 按模型名前缀推断 —— 填一个像某家厂商的模型名，压缩就会打到那家厂商去。',
   'settings.defaults.compactModel.placeholder': '留空则回落到 MCP 档位的默认模型',
   'settings.defaults.action.save': '保存',
   'settings.defaults.saved': '默认值已保存',
@@ -237,7 +238,7 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
     'A self-hosted gateway (custom baseUrl) requires its own model id here — otherwise the gateway receives a wrong model name.',
   'settings.defaults.compactModel': 'Compaction Model',
   'settings.defaults.compactModel.hint':
-    'Only applies to the MCP fallback adapter; Claude Code uses the SDK\'s own compaction and ignores this field.',
+    'Only applies to the MCP fallback adapter; Claude Code uses the SDK\'s own compaction and ignores this field. The provider of the compaction request is inferred from the model-name prefix — a name that looks like another vendor\'s sends the compaction call to that vendor.',
   'settings.defaults.compactModel.placeholder': 'Empty falls back to the MCP default model',
   'settings.defaults.action.save': 'Save',
   'settings.defaults.saved': 'Defaults saved',

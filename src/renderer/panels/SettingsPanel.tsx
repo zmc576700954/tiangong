@@ -27,15 +27,46 @@ export function SettingsPanel() {
   const [toast, setToast] = useState<{ key?: TranslationKey; message?: string; type: 'success' | 'error' } | null>(null)
   const [customTypes, setCustomTypes] = useState<AgentTypeDefinition[]>([])
   const [localeDraft, setLocaleDraft] = useState<Locale>(locale)
+  // 受控页签：默认值页签需要知道当前是否激活，才能给它挂 hidden（forceMount 常驻）
+  const [activeTab, setActiveTab] = useState('general')
+  // 实时检测到的已安装适配器（见 loadDetectedAdapters）
+  const [detectedAdapters, setDetectedAdapters] = useState<string[]>([])
 
   useEffect(() => {
-    loadSettings()
+    // 两个加载都落定再收 spinner：「默认值」页签的下拉依赖实时检测结果，
+    // 先渲染再补数据会让下拉短暂停在「禁用 + 未安装告警」的假状态上。
+    void Promise.allSettled([loadSettings(), loadDetectedAdapters()])
+      .then(() => setLoading(false))
   }, [])
 
   // 主进程推送语言变更时同步下拉框
   useEffect(() => {
     setLocaleDraft(locale)
   }, [locale])
+
+  /**
+   * 实时检测已安装的适配器。
+   *
+   * `settings.cliTools[].installed` 只有用户手动点「刷新状态」后才会更新 ——
+   * 启动时没人调用刷新，于是这个标记是陈旧的（默认全是 false）。
+   * 「默认适配器」下拉必须用实时检测，否则新装的用户会看到一个永久禁用、
+   * 还提示他去安装自己已经装了 CLI 的下拉。
+   *
+   * `agent:getAdapterMarketplace` 内部走 `agentManager.listAdapters()` →
+   * `registry.checkAllInstalled()`（对每个注册适配器实时探测），
+   * 并顺带套用 marketplace 既有的 `hidden` 过滤 —— 内部适配器
+   * （mindmap-internal）不该出现在用户可选的列表里。
+   */
+  const loadDetectedAdapters = async () => {
+    if (!ipc) return
+    try {
+      const items = await ipc['agent:getAdapterMarketplace']()
+      setDetectedAdapters(items.filter((item) => item.installed).map((item) => item.name))
+    } catch (err) {
+      console.error('Failed to detect installed adapters:', err)
+    }
+  }
+
   const loadSettings = async () => {
     if (!ipc) return
     try {
@@ -52,8 +83,6 @@ export function SettingsPanel() {
       if (data.customAgentTypes) setCustomTypes(data.customAgentTypes)
     } catch (err) {
       console.error('Failed to load settings:', err)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -120,11 +149,19 @@ export function SettingsPanel() {
     setTimeout(() => setToast(null), 4000)
   }
 
-  /** 已安装的 CLI 工具名 —— 「默认值」页签的默认适配器下拉只列这些。 */
-  const installedNames = useMemo(
-    () => (settings?.cliTools ?? []).filter((tool) => tool.installed).map((tool) => tool.name),
-    [settings?.cliTools],
-  )
+  /**
+   * 已安装的适配器名 —— 「默认值」页签的默认适配器下拉只列这些。
+   *
+   * 两个来源取并集：实时检测的结果（准）+ cliTools 里 `installed === true` 的名字
+   * （用户手动点过「刷新状态」后确认过的状态）。
+   */
+  const installedNames = useMemo(() => {
+    const names = new Set(detectedAdapters)
+    for (const tool of settings?.cliTools ?? []) {
+      if (tool.installed) names.add(tool.name)
+    }
+    return [...names]
+  }, [detectedAdapters, settings?.cliTools])
 
   /**
    * 「默认值」页签的保存回调。
@@ -132,8 +169,11 @@ export function SettingsPanel() {
    * `settings:write` 在主进程做的是顶层浅合并，所以这里必须把**整个** settings
    * 连同补丁一起发过去 —— 只发补丁会把 cliTools / apiKeys 等字段整体丢掉。
    */
-  const persistDefaults = async (patch: Partial<BizGraphSettings>) => {
-    if (!ipc || !settings) return
+  const persistDefaults = async (patch: Partial<BizGraphSettings>): Promise<void> => {
+    if (!ipc || !settings) {
+      // 不能静默 resolve —— 调用方会据此弹「已保存」的成功提示，实际什么都没写。
+      throw new Error('设置尚未加载完成，无法保存。请稍后重试。')
+    }
     const next: BizGraphSettings = { ...settings, ...patch }
     await ipc['settings:write'](next)
     setSettings(next)
@@ -160,7 +200,7 @@ export function SettingsPanel() {
         </div>
       )}
 
-      <Tabs defaultValue="general">
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
           <TabsTrigger value="general">{t('settings.tab.general')}</TabsTrigger>
           <TabsTrigger value="subagents">{t('settings.tab.subagents')}</TabsTrigger>
@@ -310,7 +350,11 @@ export function SettingsPanel() {
           <AdapterHealthPanel />
         </TabsContent>
 
-        <TabsContent value="defaults">
+        {/* forceMount：常驻挂载，切走再切回来时未保存的草稿不丢。
+            hidden 由我们控制 —— Radix 1.1 的 forceMount 只保证「不卸载」，
+            不会自动隐藏未激活的面板（它把 hidden 写成 false），
+            所以这里用 HTML hidden 属性把它藏起来。 */}
+        <TabsContent value="defaults" forceMount hidden={activeTab !== 'defaults'}>
           {settings && (
             <DefaultsTab
               settings={settings}

@@ -158,4 +158,22 @@ describe('DefaultsTab', () => {
     )
     expect(screen.getByText(/自建网关/)).toBeTruthy()
   })
+
+  it('保存一个区块不会清空另一个区块里尚未保存的输入', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    renderWithToast(
+      <DefaultsTab
+        settings={makeSettings({ compactModel: 'haiku' })}
+        installedAdapters={['claude-code']}
+        onSave={onSave}
+      />,
+    )
+    const compact = screen.getByTestId('defaults-compact-model') as HTMLInputElement
+    fireEvent.change(compact, { target: { value: 'draft-compact-model' } })
+    // 去保存「默认模型」区块
+    fireEvent.click(screen.getByTestId('defaults-models-save'))
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+    expect((screen.getByTestId('defaults-compact-model') as HTMLInputElement).value)
+      .toBe('draft-compact-model')
+  })
 })

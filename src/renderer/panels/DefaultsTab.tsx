@@ -13,7 +13,7 @@
  * 严格遵守 CLAUDE.md：不碰 Agent CLI 内部行为，只在设置边界上组装偏好。
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AlertCircle, ArrowDown, ArrowUp, Plus, Save, X } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { toastError, toastSuccess } from '../lib/toast'
@@ -83,19 +83,11 @@ export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTab
   const [pendingAdd, setPendingAdd] = useState('')
   const [saving, setSaving] = useState<string | null>(null)
 
-  // 主进程写回后 settings 会换新对象 —— 重新同步一次本地草稿。
-  // 依赖整个 settings 对象：只有它真的换了才重置，避免打字过程中被重置。
-  useEffect(() => {
-    const p = settings.adapterPreferences ?? DEFAULT_ADAPTER_PREFERENCES
-    setDefaultAdapter(p.defaultAdapter)
-    setFallbackOrder([...p.fallbackOrder])
-    setModels({
-      claudeCode: settings.defaultModels?.claudeCode ?? '',
-      codex: settings.defaultModels?.codex ?? '',
-      mcp: settings.defaultModels?.mcp ?? '',
-    })
-    setCompactModel(settings.compactModel ?? '')
-  }, [settings])
+  // 注意：**没有**「settings 变了就重置本地草稿」的同步 effect。
+  // 每个区块各带一个保存按钮，重置会静默吃掉用户没保存的输入
+  // （保存 A 抹掉 B 的草稿、切页签回来发现白填了）。
+  // 组件被 forceMount 常驻，草稿由 useState 初值持有，跨页签切换不丢。
+  // 设置本身也没有从主进程推回渲染进程的通道，不存在「外部改了要同步」的场景。
 
   /** 还没进回退链的候选：已安装的适配器减去链里已有的。 */
   const addCandidates = useMemo(
@@ -156,6 +148,7 @@ export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTab
         <div className="space-y-1.5">
           <select
             data-testid="defaults-default-adapter"
+            aria-label={t('settings.defaults.defaultAdapter')}
             value={defaultInstalled ? defaultAdapter : ''}
             onChange={(e) => handleDefaultAdapterChange(e.target.value)}
             disabled={installedAdapters.length === 0}
@@ -259,6 +252,7 @@ export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTab
           <div className="flex gap-1.5 mt-2">
             <select
               data-testid="defaults-fallback-add"
+              aria-label={t('settings.defaults.fallbackOrder.add')}
               value={pendingAdd}
               onChange={(e) => setPendingAdd(e.target.value)}
               className="flex-1 px-2 py-1.5 text-xs border rounded bg-background"
@@ -303,9 +297,12 @@ export function DefaultsTab({ settings, installedAdapters, onSave }: DefaultsTab
         <div className="space-y-2.5">
           {MODEL_TIERS.map(({ tier, labelKey, hintKey, placeholderKey }) => (
             <div key={tier} className="space-y-1">
-              <label className="text-xs text-muted-foreground">{t(labelKey)}</label>
+              <label className="text-xs text-muted-foreground" htmlFor={`defaults-model-${tier}`}>
+                {t(labelKey)}
+              </label>
               <input
                 type="text"
+                id={`defaults-model-${tier}`}
                 data-testid={`defaults-model-${tier}`}
                 value={models[tier]}
                 placeholder={t(placeholderKey)}
