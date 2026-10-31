@@ -1060,6 +1060,37 @@ describe('Settings - 渲染进程不能决定主进程执行什么命令', () =>
 
     expect(fresh.apiKeys).toEqual([])
   })
+
+  it('detectArgs 是拷贝，不是与事实源共享的同一个引用', async () => {
+    const { readSettings, invalidateSettingsCache } = await import('../settings')
+    const first = await readSettings()
+    const cursor = first.cliTools.find((c) => c.name === 'cursor')
+    expect(cursor?.detectArgs).toEqual(['agent', '--version'])
+
+    // 就地改写拿到的那份拷贝 —— 它决定主进程执行什么，绝不能影响事实源
+    cursor?.detectArgs?.push('--evil')
+
+    invalidateSettingsCache()
+    const second = await readSettings()
+    expect(second.cliTools.find((c) => c.name === 'cursor')?.detectArgs).toEqual(['agent', '--version'])
+  })
+
+  it('存档里缺 installed 时，合并后仍是一个布尔值（不是 undefined）', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    const base = await readSettings()
+    // 模拟老版本存档：条目里没有 installed 这个键
+    await writeSettings({
+      ...base,
+      cliTools: [
+        { name: 'cursor', command: 'cursor', npmPackage: '' } as unknown as typeof base.cliTools[number],
+      ],
+    })
+    invalidateSettingsCache()
+
+    const reread = await readSettings()
+    const cursor = reread.cliTools.find((c) => c.name === 'cursor')
+    expect(cursor?.installed).toBe(false)
+  })
 })
 
 describe('Settings - API Key 的删除语义', () => {

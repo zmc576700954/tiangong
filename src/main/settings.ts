@@ -22,6 +22,7 @@ import { DEFAULT_ADAPTER_PREFERENCES, ALLOWED_API_PROVIDERS } from '@shared/adap
 import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { t } from '@shared/i18n'
 import { getPlatformProvider } from './platform'
+import { validateNpmPackageName } from './shared/npm-package'
 import { createLogger } from './shared/logger'
 import { resolveLocale } from '@shared/i18n'
 
@@ -571,11 +572,22 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
  * `settings.cliTools[idx] = ...`、setApiKey 的 `settings.apiKeys.push(...)`），
  * 就会把**事实源**改掉：探测命令、npm 包名、甚至 API Key 都被污染了。
  * 这里必须复制一层。
+ *
+ * cliTools 的 detectArgs 要复制**两层**：它恰恰是决定主进程执行什么的那个字段，
+ * 一旦与常量共享同一个数组，将来任何一句 `tool.detectArgs.push(...)` 就会
+ * 悄悄改变要 spawn 的东西。
+ *
+ * defaultModels / writeback / contextWaterline / realtime / adapterPreferences
+ * 这些**非数组**字段目前是按引用共享的 —— 今天没有就地改写点（唯一的写是整对象
+ * 替换），所以是纯潜伏。若将来出现就地改写，必须改成深拷贝。
  */
 function freshDefaults(): BizGraphSettings {
   return {
     ...DEFAULT_SETTINGS,
-    cliTools: DEFAULT_SETTINGS.cliTools.map((tool) => ({ ...tool })),
+    cliTools: DEFAULT_SETTINGS.cliTools.map((tool) => ({
+      ...tool,
+      detectArgs: tool.detectArgs ? [...tool.detectArgs] : undefined,
+    })),
     apiKeys: DEFAULT_SETTINGS.apiKeys.map((key) => ({ ...key })),
     mcpServers: DEFAULT_SETTINGS.mcpServers.map((server) => ({
       ...server,
@@ -702,13 +714,26 @@ function mergeCliTools(
     const found = saved.find((s) => s.name === def.name)
     result.push(
       found
-        ? { ...def, ...found, command: def.command, npmPackage: def.npmPackage, detectArgs: def.detectArgs }
-        : { ...def },
+        ? {
+            ...def,
+            ...found,
+            // installed 在类型上是必填的，但存档里可能缺这一项 ——
+            // 展开合并会留下 installed: undefined（序列化成缺失的键）
+            installed: found.installed ?? def.installed,
+            command: def.command,
+            npmPackage: def.npmPackage,
+            // detectArgs 复制两层：它决定主进程执行什么，不能与事实源共享引用
+            detectArgs: def.detectArgs ? [...def.detectArgs] : undefined,
+          }
+        : {
+            ...def,
+            detectArgs: def.detectArgs ? [...def.detectArgs] : undefined,
+          },
     )
   }
   for (const s of saved) {
     if (defaults.some((d) => d.name === s.name)) continue
-    result.push({ ...s })
+    result.push({ ...s, detectArgs: s.detectArgs ? [...s.detectArgs] : undefined })
   }
   return result
 }
@@ -778,11 +803,6 @@ export async function refreshAllCliStatus(): Promise<CliToolConfig[]> {
   settings.cliTools = updated
   await writeSettings(settings)
   return updated
-}
-
-function validateNpmPackageName(pkg: string): boolean {
-  // npm 包名格式验证：防命令注入
-  return /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/.test(pkg)
 }
 
 /** Resolve the absolute path to the npm executable without relying on shell resolution.

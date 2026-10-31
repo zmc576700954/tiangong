@@ -12,6 +12,7 @@ import { getLocale, resolveLocale, setLocale } from '@shared/i18n'
 import type { Locale } from '@shared/i18n/types'
 import type { BizGraphSettings } from '@shared/types/agent'
 import type { A2ARemoteAgent } from '@shared/types/a2a'
+import { validateNpmPackageName } from '../shared/npm-package'
 
 const logger = createLogger('SettingsIPC')
 
@@ -150,6 +151,23 @@ export function registerSettingsHandlers(
           throw new IpcError('Each cliTool must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
         }
         assertSafeCommand(tool.command, `cliTool '${tool.name}'`)
+        // 探测参数：渲染进程送来的参数不能是能执行内联代码的参数
+        // （-c / -e / --eval …）。这里只校验「安不安全」——
+        // 「必须等于注册表的值」是主进程归一化（writeSettings）的职责，
+        // 否则渲染进程回显自己送来的值时会被自己的校验挡回去。
+        if (tool.detectArgs !== undefined) {
+          if (!Array.isArray(tool.detectArgs) || tool.detectArgs.some((a: unknown) => typeof a !== 'string')) {
+            throw new IpcError(`cliTool '${tool.name}': detectArgs must be an array of strings`, ErrorCode.IPC_INVALID_ARGUMENT)
+          }
+          assertSafeArgs(tool.detectArgs as string[], `cliTool '${tool.name}' detectArgs`)
+        }
+        // npm 包名：渲染进程送来的包名会进 `npm install -g <pkg>`。
+        // 空串是合法的（cursor 没有 npm 包 —— 渲染进程回显时会带上它）。
+        if (tool.npmPackage !== undefined && tool.npmPackage !== '') {
+          if (typeof tool.npmPackage !== 'string' || !validateNpmPackageName(tool.npmPackage)) {
+            throw new IpcError(`cliTool '${tool.name}': invalid npm package name`, ErrorCode.IPC_INVALID_ARGUMENT)
+          }
+        }
       }
     }
     // 校验 MCP server 命令与参数：command 必须安全、args 必须全为字符串
