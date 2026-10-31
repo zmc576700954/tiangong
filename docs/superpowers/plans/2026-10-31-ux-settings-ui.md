@@ -98,20 +98,22 @@
 
 - [ ] **Step 1: 写失败的测试**
 
-在 `src/main/__tests__/settings.test.ts` 追加：
+在 `src/main/__tests__/settings.test.ts` 追加。**注意本文件既有的 mock 约定**：`readSettings()` / `writeSettings(settings)` **都不接受路径参数**——文件顶部已经 mock 了 `electron` 的 `app.getPath('userData')`（返回 `/tmp/bizgraph-test`）与 `node:fs/promises`，直接照既有用例的写法调用即可，**不要传路径参数**：
 
 ```ts
 it('mergeSettings 保留 saved 里未登记到 defaults 的字段（compactModel 不再被丢弃）', async () => {
   const { writeSettings, readSettings } = await import('../settings')
-  const settingsPath = join(tmpDir, 'settings.json')
-  await writeSettings({ compactModel: 'claude-haiku-4-5' } as never, settingsPath)
-  const loaded = await readSettings(settingsPath)
+  await writeSettings({
+    version: 1, cliTools: [], apiKeys: [], defaultModel: 'x', mcpServers: [],
+    compactModel: 'claude-haiku-4-5',
+  } as unknown as BizGraphSettings)
+  const loaded = await readSettings()
   expect(loaded.compactModel).toBe('claude-haiku-4-5')
 })
 
 it('contextWaterline 未保存过时也有默认值', async () => {
   const { readSettings } = await import('../settings')
-  const loaded = await readSettings(join(tmpDir, 'settings.json'))
+  const loaded = await readSettings()
   expect(loaded.contextWaterline).toEqual({
     autoCompactEnabled: true,
     autoCompactThreshold: 0.75,
@@ -119,8 +121,6 @@ it('contextWaterline 未保存过时也有默认值', async () => {
   })
 })
 ```
-
-（`writeSettings` / `readSettings` 的路径参数与测试文件里既有调用方式保持一致——先读该文件确认现有签名再写。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -420,12 +420,12 @@ git commit -m "feat(agent): 适配器下拉只列已安装项，只装一个时�
 
 - [ ] **Step 1: 写失败的测试（主进程侧）**
 
-在 `src/main/__tests__/settings.test.ts` 追加：
+在 `src/main/__tests__/settings.test.ts` 追加（同样**不传路径参数**——沿用该文件既有的 electron / fs mock）：
 
 ```ts
 it('DEFAULT_SETTINGS.cliTools 覆盖全部真 CLI 适配器', async () => {
   const { readSettings } = await import('../settings')
-  const s = await readSettings(join(tmpDir, 'settings.json'))
+  const s = await readSettings()
   const names = s.cliTools.map(c => c.name)
   for (const n of ['claude-code','codex','opencode','cline','kilo-code','kimi-code','codebuddy','qoder','qwen-code','cursor']) {
     expect(names).toContain(n)
@@ -435,8 +435,9 @@ it('DEFAULT_SETTINGS.cliTools 覆盖全部真 CLI 适配器', async () => {
 })
 
 it('mergeCliTools 保留 defaults 里没有但用户装过的条目', async () => {
-  const { mergeCliToolsForTest } = await import('../settings')  // 若未导出，改为通过 readSettings 间接验证
-  // ...
+  // 通过 writeSettings + readSettings 间接验证：
+  // 写入一个 defaults 里没有的条目（如 { name: 'some-cli', command: 'some-cli' }），
+  // readSettings() 读回后该条目仍在。
 })
 ```
 
@@ -573,7 +574,7 @@ git commit -m "feat(graph): 新建图收敛为工作图并绑定 project_path，
     to: NodeStatus,
   ): boolean
   ```
-  语义：按 `NODE_STATUS_TRANSITIONS[nodeType]` 判定，与主进程 `validateNodeTypeTransition(type, from, to)` **同源同义**。
+  语义：与 `validateNodeTypeTransition(type, from, to)` **同源同义**——`NODE_STATUS_TRANSITIONS[type]` 的元素形状是 `{ from, to }` **配对数组**（不是目标状态集合），判定写作 `allowed.some(t => t.from === from && t.to === to)`；`from === to` 直接返回 `true`（与 `validateNodeTypeTransition` 一致）；未知 NodeType 返回 `false`（保守拒绝）。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -581,15 +582,15 @@ git commit -m "feat(graph): 新建图收敛为工作图并绑定 project_path，
 
 ```ts
 it('canTransitionForType 按节点类型判定，而非只看状态', () => {
-  // module 节点的合法迁移以 NODE_STATUS_TRANSITIONS.module 为准
-  expect(canTransitionForType('module', 'draft', 'developing')).toBe(
-    NODE_STATUS_TRANSITIONS.module.includes('developing')
+  const moduleAllows = NODE_STATUS_TRANSITIONS.module.some(
+    t => t.from === 'draft' && t.to === 'developing',
   )
+  expect(canTransitionForType('module', 'draft', 'developing')).toBe(moduleAllows)
   expect(canTransitionForType('feature', 'draft', 'developing')).toBe(true)
 })
 ```
 
-再加一条**对照主进程**的一致性断言：对每种 `NodeType` × 每对状态，`canTransitionForType` 的结果必须等于 `validateNodeTypeTransition` 的结果（后者可能抛异常，用 try/catch 转成 false）。这条断言是本任务的核心价值——它把两张表钉在一起。
+再加一条**对照主进程**的一致性断言：对每种 `NodeType` × 每对状态，`canTransitionForType(type, from, to)` 的结果必须等于「`validateNodeTypeTransition(type, from, to)` 不抛异常」（后者抛异常时视为 false）。这条断言是本任务的核心价值——它把两张表钉在一起。
 
 - [ ] **Step 2: 跑测试确认失败**
 
