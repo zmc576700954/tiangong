@@ -10,6 +10,7 @@ export const agentZh = {
   'agent.adapter.select': '选择 Agent',
   'agent.adapter.default': '默认',
   'agent.adapter.notInstalled': '未安装',
+  'agent.adapter.installMore': '安装更多适配器…',
   'agent.adapter.ready': '就绪',
   'agent.adapter.recovered': '✓ 适配器已恢复',
 
@@ -203,6 +204,7 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.adapter.select': 'Select Agent',
   'agent.adapter.default': 'default',
   'agent.adapter.notInstalled': 'not installed',
+  'agent.adapter.installMore': 'Install more adapters…',
   'agent.adapter.ready': 'Ready',
   'agent.adapter.recovered': '✓ Adapter recovered',
 
