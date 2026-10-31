@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Bot, Server, RefreshCw, Download, Check, AlertCircle } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
@@ -38,17 +38,36 @@ const ipc = typeof window !== 'undefined' && window.electronAPI
 const ADAPTER_DETECTION_TIMEOUT_MS = 5000
 
 /**
- * 给探测加一个上界。
+ * 给探测加一个上界，并允许取消。
  *
- * 超时后原 promise 仍可能永远挂着，但渲染层不再等它：race 落定之后，
- * 迟到的 resolve 不会再触发 setState。
+ * - 超时：reject 一个带说明的 Error（渲染层据此转成「无法确认」）
+ * - abort：clearTimeout + reject。组件卸载时调用 —— 否则会留下一个悬挂的
+ *   定时器，还会在组件卸载后触发迟到的 setState 与日志。
  */
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  label: string,
+  signal: AbortSignal,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label}超时（${ms}ms）`)), ms)
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new Error(`${label}已取消`))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
     promise.then(
-      (value) => { clearTimeout(timer); resolve(value) },
-      (err) => { clearTimeout(timer); reject(err) },
+      (value) => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      },
     )
   })
 }
@@ -70,12 +89,15 @@ export function SettingsPanel() {
   const [detectedAdapters, setDetectedAdapters] = useState<string[]>([])
   // 实时检测的状态：pending / ready / unavailable
   const [detection, setDetection] = useState<AdapterDetection>('pending')
+  // 探测的取消句柄：组件卸载时 abort，不留悬挂定时器、不打到已卸载的组件
+  const detectionAbortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     // 首屏只等 settings:read —— 外部 CLI 探测可能永不 settle（见
     // ADAPTER_DETECTION_TIMEOUT_MS），绝不能让它把整个设置面板卡在 spinner 上。
     void loadSettings()
     void loadDetectedAdapters()
+    return () => { detectionAbortRef.current?.abort() }
   }, [])
 
   // 主进程推送语言变更时同步下拉框
@@ -99,29 +121,43 @@ export function SettingsPanel() {
    * 探测带一个上界：CLI 的 --version 探测可能永不 settle（见
    * ADAPTER_DETECTION_TIMEOUT_MS）。到界后按「无法确认」处理，面板照常用
    * cliTools 里的已知信息，绝不停在 spinner 上。
+   *
+   * 可重入：检测失败/超时后，用户可以在「默认值」页签内点「重新检测」再跑一次
+   * （重试入口在页签内部，跳去「基础设置」会卸载整个 Tabs 子树、丢掉草稿）。
    */
   const loadDetectedAdapters = async () => {
     if (!ipc) {
       setDetection('unavailable')
       return
     }
+    // 取消上一次还没结束的探测（重试时用）
+    detectionAbortRef.current?.abort()
+    const controller = new AbortController()
+    detectionAbortRef.current = controller
+    setDetection('pending')
     try {
       const items = await withTimeout(
         ipc['agent:getAdapterMarketplace'](),
         ADAPTER_DETECTION_TIMEOUT_MS,
         '已安装适配器检测',
+        controller.signal,
       )
+      if (controller.signal.aborted) return
       setDetectedAdapters(items.filter((item) => item.installed).map((item) => item.name))
       setDetection('ready')
     } catch (err) {
+      // 已取消 = 组件卸载，或被一次新的探测取代：不记日志、不 setState
+      if (controller.signal.aborted) return
       console.error('Failed to detect installed adapters:', err)
       setDetection('unavailable')
     }
   }
 
   const loadSettings = async () => {
-    if (!ipc) return
     try {
+      // 没有 electronAPI（用普通浏览器打开开发服务器）时也要走到 finally ——
+      // 否则 loading 永远是 true，面板会永远转圈。
+      if (!ipc) return
       const data = await ipc['settings:read']()
       setSettings(data)
       const keys: Record<string, string> = {}
@@ -237,6 +273,20 @@ export function SettingsPanel() {
     return (
       <div className="flex items-center justify-center h-full">
         <RefreshCw className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  // 设置读不出来（没有 electronAPI，或读取失败）：降级渲染 + 说清楚为什么。
+  // 加载状态必须有终态 —— 成功、失败或降级都行，但不能永远转圈。
+  // 也不能渲染成「一个 CLI 都没装」的假象：那是「没读到」，不是「确实没有」。
+  if (!settings) {
+    return (
+      <div className="p-3">
+        <div className="flex items-start gap-1.5 text-xs text-amber-700 bg-amber-50 border border-amber-200 p-3 rounded">
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <span>{ipc ? t('settings.loadFailed') : t('settings.requiresElectron')}</span>
+        </div>
       </div>
     )
   }
@@ -415,6 +465,7 @@ export function SettingsPanel() {
               installedAdapters={installedNames}
               onSave={persistDefaults}
               detection={detection}
+              onRetryDetection={() => { void loadDetectedAdapters() }}
             />
           )}
         </TabsContent>

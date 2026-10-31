@@ -28,6 +28,11 @@ export const settingsZh = {
   'settings.language.saved': '语言已保存',
   'settings.language.saveFailed': '语言保存失败，已恢复原设置',
 
+  // 设置读不出来时的降级渲染（不能停在 spinner 上）
+  'settings.loadFailed': '读取设置失败，无法显示设置面板。请重启应用后重试。',
+  'settings.requiresElectron':
+    '设置面板需要在桌面应用里使用：直接用浏览器打开开发服务器时无法读写本地配置。',
+
   'settings.subagents.title': '子代理类型',
   'settings.subagents.new': '+ 新建自定义类型',
   'settings.subagents.builtIn': '内置',
@@ -63,7 +68,8 @@ export const settingsZh = {
     '未检测到已安装的 CLI 工具。请先在「基础设置」里安装一个，再回到这里选择默认适配器。',
   'settings.defaults.defaultAdapter.detecting': '正在检测已安装的 CLI 工具…',
   'settings.defaults.defaultAdapter.detectFailed':
-    '安装检测失败或超时，暂时无法确认已安装的 CLI 工具。请到「基础设置」查看状态并点「刷新状态」。',
+    '安装检测失败或超时，暂时无法确认已安装的 CLI 工具。点下面的「重新检测」再试一次。',
+  'settings.defaults.defaultAdapter.retry': '重新检测',
   'settings.defaults.defaultAdapter.uninstalled': '当前默认适配器「{name}」未安装。',
   'settings.defaults.fallbackOrder': '回退顺序',
   'settings.defaults.fallbackOrder.hint': '默认适配器失败后，按此顺序依次尝试。',
@@ -181,6 +187,11 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.language.saved': 'Language saved',
   'settings.language.saveFailed': 'Failed to save language, previous setting restored',
 
+  // Degraded render when the settings cannot be read (must never spin forever)
+  'settings.loadFailed': 'Failed to load the settings, so the panel cannot be shown. Restart the app and try again.',
+  'settings.requiresElectron':
+    'The settings panel needs the desktop app: opening the dev server in a plain browser cannot read or write the local configuration.',
+
   'settings.subagents.title': 'Subagent Types',
   'settings.subagents.new': '+ New Custom Type',
   'settings.subagents.builtIn': 'built-in',
@@ -217,7 +228,8 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
     'No installed CLI tool detected. Install one in General settings, then come back to pick a default adapter.',
   'settings.defaults.defaultAdapter.detecting': 'Detecting installed CLI tools…',
   'settings.defaults.defaultAdapter.detectFailed':
-    'The installation check failed or timed out, so the installed CLI tools cannot be confirmed. Check the status in General settings and click Refresh.',
+    'The installation check failed or timed out, so the installed CLI tools cannot be confirmed. Click "Re-check" below to try again.',
+  'settings.defaults.defaultAdapter.retry': 'Re-check',
   'settings.defaults.defaultAdapter.uninstalled': 'The current default adapter "{name}" is not installed.',
   'settings.defaults.fallbackOrder': 'Fallback Order',
   'settings.defaults.fallbackOrder.hint': 'Tried in this order after the default adapter fails.',

@@ -14,7 +14,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { AlertCircle, ArrowDown, ArrowUp, Plus, Save, X } from 'lucide-react'
+import { AlertCircle, ArrowDown, ArrowUp, Plus, RefreshCw, Save, X } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { toastError, toastSuccess } from '../lib/toast'
 import { useI18n } from '../i18n/useI18n'
@@ -39,6 +39,14 @@ export interface DefaultsTabProps {
    * 省略时按 `'ready'` 处理（调用方没有做检测的场景）。
    */
   detection?: AdapterDetection
+  /**
+   * 重新做一次实时安装检测。
+   *
+   * 入口必须留在**这个页签内部**：让用户跳去「基础设置」点「刷新状态」会
+   * `setLoading(true)` → 卸载整个 Tabs 子树 → 这里未保存的输入全丢，
+   * 而且「刷新状态」根本不重跑安装检测，状态标签不会变。
+   */
+  onRetryDetection?: () => void
 }
 
 /**
@@ -86,7 +94,13 @@ function errorText(err: unknown): string {
   return String(err)
 }
 
-export function DefaultsTab({ settings, installedAdapters, onSave, detection = 'ready' }: DefaultsTabProps) {
+export function DefaultsTab({
+  settings,
+  installedAdapters,
+  onSave,
+  detection = 'ready',
+  onRetryDetection,
+}: DefaultsTabProps) {
   const { t } = useI18n()
 
   const prefs = settings.adapterPreferences ?? DEFAULT_ADAPTER_PREFERENCES
@@ -190,9 +204,22 @@ export function DefaultsTab({ settings, installedAdapters, onSave, detection = '
             </p>
           )}
           {detection === 'unavailable' && (
-            <div className="flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
-              <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
-              <span>{t('settings.defaults.defaultAdapter.detectFailed')}</span>
+            <div className="space-y-1.5">
+              <div className="flex items-start gap-1.5 text-[10px] text-amber-600 bg-amber-50 p-2 rounded">
+                <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />
+                <span>{t('settings.defaults.defaultAdapter.detectFailed')}</span>
+              </div>
+              {onRetryDetection && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  data-testid="defaults-detection-retry"
+                  onClick={onRetryDetection}
+                >
+                  <RefreshCw className="w-3 h-3 mr-1" />
+                  {t('settings.defaults.defaultAdapter.retry')}
+                </Button>
+              )}
             </div>
           )}
           {detection === 'ready' && installedAdapters.length === 0 && (

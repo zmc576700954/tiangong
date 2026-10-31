@@ -195,4 +195,51 @@ describe('SettingsPanel 默认值页签 · 安装检测的失败路径', () => {
       vi.useRealTimers()
     }
   })
+
+  it('可以在页签内重试：状态会更新，且不丢未保存的输入', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const marketplace = mockElectronAPI['agent:getAdapterMarketplace']
+      marketplace.mockReset()
+      marketplace.mockRejectedValueOnce(new Error('boom'))
+      marketplace.mockResolvedValue(DEFAULT_MARKETPLACE)
+      await mountSettingsPanel()
+      await waitFor(() => expect(screen.getByText(/安装检测失败或超时/)).toBeTruthy())
+      // 先在页签里留一个未保存的输入
+      fireEvent.change(screen.getByTestId('defaults-compact-model'), {
+        target: { value: 'draft-compact-model' },
+      })
+      // 页签内的重试入口
+      fireEvent.click(screen.getByTestId('defaults-detection-retry'))
+      // 状态标签必须更新
+      await waitFor(() => expect(screen.queryByText(/安装检测失败或超时/)).toBe(null))
+      expect(screen.queryByText(/正在检测已安装的 CLI 工具/)).toBe(null)
+      // 下拉恢复
+      const select = screen.getByTestId('defaults-default-adapter') as HTMLSelectElement
+      expect(Array.from(select.options).map((o) => o.value)).toContain('claude-code')
+      // 未保存的输入不能丢
+      expect((screen.getByTestId('defaults-compact-model') as HTMLInputElement).value)
+        .toBe('draft-compact-model')
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('卸载后不留悬挂定时器：探测挂死也不会在卸载后触发任何输出', async () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      mockElectronAPI['agent:getAdapterMarketplace'].mockImplementation(() => new Promise(() => {}))
+      const { SettingsPanel } = await import('../SettingsPanel')
+      const { unmount } = render(<SettingsPanel />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      unmount()
+      // 卸载后再推进超过检测上界：定时器已被清掉，不该有任何日志或 setState
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(errorSpy).not.toHaveBeenCalled()
+    } finally {
+      errorSpy.mockRestore()
+      vi.useRealTimers()
+    }
+  })
 })
