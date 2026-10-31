@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { useToastStore } from '../../lib/toast'
+import { ALLOWED_API_PROVIDERS } from '@shared/adapter-defaults'
 
 /**
  * SettingsPanel「基础设置」页签的 API key 与 CLI 工具清单测试。
@@ -83,9 +84,16 @@ describe('SettingsPanel API key', () => {
     await waitFor(() => expect(setApiKey).toHaveBeenCalledWith('anthropic', 'sk-xxx'))
   })
 
-  it('provider 列表与后端白名单一致（含 gemini）', async () => {
+  it('provider 列表与后端白名单一致（白名单是唯一真相源）', async () => {
     await mountSettingsPanel()
-    for (const provider of ['anthropic', 'openai', 'deepseek', 'gemini']) {
+    // 直接跟后端的 ALLOWED_API_PROVIDERS 比 —— 硬编码一份列表的话，
+    // 后端再加一个 provider 这条用例会一直是绿的。
+    const rendered = Array.from(
+      document.querySelectorAll('[data-testid^="api-key-input-"]'),
+    ).map((el) => el.getAttribute('data-testid')?.replace('api-key-input-', ''))
+    expect(rendered.sort()).toEqual([...ALLOWED_API_PROVIDERS].sort())
+    // 逐个也确认一遍输入框都在
+    for (const provider of ALLOWED_API_PROVIDERS) {
       expect(screen.getByTestId(`api-key-input-${provider}`), provider).toBeTruthy()
     }
   })

@@ -6,7 +6,6 @@ import { SubagentTypesTab } from './SubagentTypesTab'
 import { ContextWaterlineTab } from './ContextWaterlineTab'
 import { useI18n } from '../i18n/useI18n'
 import type { Locale } from '@shared/i18n/types'
-import type { TranslationKey } from '@shared/i18n'
 import { AdapterHealthPanel } from './AdapterHealthPanel'
 import { A2ASettingsTab } from './A2ASettingsTab'
 import { DefaultsTab } from './DefaultsTab'
@@ -86,8 +85,6 @@ export function SettingsPanel() {
   const [installing, setInstalling] = useState<string | null>(null)
   const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
   const [maskedKeys, setMaskedKeys] = useState<Record<string, string>>({})
-  // key 形式在渲染时才按当前语言取值——切换语言的那一帧不能用旧语言拼文案
-  const [toast, setToast] = useState<{ key?: TranslationKey; message?: string; type: 'success' | 'error' } | null>(null)
   const [customTypes, setCustomTypes] = useState<AgentTypeDefinition[]>([])
   const [localeDraft, setLocaleDraft] = useState<Locale>(locale)
   // 受控页签：默认值页签需要知道当前是否激活，才能给它挂 hidden（forceMount 常驻）
@@ -199,8 +196,14 @@ export function SettingsPanel() {
     setInstalling(name)
     try {
       const result = await ipc['settings:installCli'](name)
-      setToast({ message: result.message, type: result.success ? 'success' : 'error' })
-      setTimeout(() => setToast(null), 4000)
+      // 面板内的反馈统一走全局 toast（src/renderer/lib/toast.tsx）——
+      // 同一个面板里混两套反馈样式（本地横幅 + 全局 toast）会让用户以为
+      // 是两种不同的提示。DefaultsTab 也是这么做的。
+      if (result.success) {
+        toastSuccess(result.message)
+      } else {
+        toastError(result.message)
+      }
       if (result.success) await refreshCli()
     } finally {
       setInstalling(null)
@@ -289,14 +292,13 @@ export function SettingsPanel() {
       const updated: BizGraphSettings = { ...settings, locale: next }
       await ipc['settings:write'](updated)
       setSettings(updated)
-      setToast({ key: 'settings.language.saved', type: 'success' })
+      toastSuccess(t('settings.language.saved'))
     } catch (err) {
       console.error('Failed to persist locale:', err)
       setLocaleDraft(previous)
       setUiLocale(previous)
-      setToast({ key: 'settings.language.saveFailed', type: 'error' })
+      toastError(t('settings.language.saveFailed'))
     }
-    setTimeout(() => setToast(null), 4000)
   }
 
   /**
@@ -353,16 +355,6 @@ export function SettingsPanel() {
 
   return (
     <div className="h-full overflow-y-auto p-3 relative">
-      {/* Toast 通知 */}
-      {toast && (
-        <div className={`absolute top-3 left-3 right-3 z-50 px-3 py-2 rounded-md text-xs shadow-lg border ${
-          toast.type === 'success'
-            ? 'bg-green-50 text-green-700 border-green-200'
-            : 'bg-red-50 text-red-700 border-red-200'
-        }`}>
-          {toast.key ? t(toast.key) : toast.message}
-        </div>
-      )}
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">

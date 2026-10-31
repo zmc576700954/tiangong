@@ -70,6 +70,13 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   // 默认就是 ['--version']，把 8 条一模一样的值抄一遍只会多一份会悄悄过期的
   // 副本。注册表改了任何一个适配器的探测参数，settings.test.ts 里的
   // 「与适配器注册表一致」那条用例会红。
+  //
+  // ⚠️ 这份清单同时是**主进程的事实源**：探测（detectCliTool）与安装
+  // （installCliTool）用的 command / detectArgs / npmPackage 一律只认这里，
+  // **绝不**从 settings.json 里取 —— settings.json 是渲染进程能写的数据，
+  // 拿它来 spawn 等于把「主进程执行什么命令」的决定权交给渲染进程。
+  // 它是模块级常量，渲染进程写不进去；与 ADAPTER_REGISTRY 的一致性由
+  // settings.test.ts 的注册表一致性用例守着。
   cliTools: [
     {
       name: 'claude-code',
@@ -556,6 +563,27 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
 // 配置读写
 // ============================================
 
+/**
+ * 拿一份**独立**的默认配置。
+ *
+ * `{ ...DEFAULT_SETTINGS }` 只是浅拷贝 —— 它的 cliTools / apiKeys / mcpServers
+ * 仍然是常量里的同一个数组。调用方一旦就地改这些数组（installCliTool 的
+ * `settings.cliTools[idx] = ...`、setApiKey 的 `settings.apiKeys.push(...)`），
+ * 就会把**事实源**改掉：探测命令、npm 包名、甚至 API Key 都被污染了。
+ * 这里必须复制一层。
+ */
+function freshDefaults(): BizGraphSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    cliTools: DEFAULT_SETTINGS.cliTools.map((tool) => ({ ...tool })),
+    apiKeys: DEFAULT_SETTINGS.apiKeys.map((key) => ({ ...key })),
+    mcpServers: DEFAULT_SETTINGS.mcpServers.map((server) => ({
+      ...server,
+      args: [...server.args],
+    })),
+  }
+}
+
 export async function getSettingsPath(): Promise<string> {
   const userDataPath = app.getPath('userData')
   return path.join(userDataPath, SETTINGS_FILENAME)
@@ -570,7 +598,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
     // 验证 JSON 结构合法性，防止恶意或损坏的配置导致运行时异常
     if (!validateSettingsShape(parsed)) {
       logger.warn('Settings file has invalid structure, using defaults')
-      cachedSettings = { ...DEFAULT_SETTINGS }
+      cachedSettings = freshDefaults()
       cachedAt = Date.now()
       return cachedSettings
     }
@@ -583,12 +611,12 @@ export async function readSettings(): Promise<BizGraphSettings> {
     if (isEnoent) {
       // 首次启动：写入默认配置，后续读取不再触发 ENOENT
       logger.info('Settings file not found, creating with defaults')
-      const defaults = { ...DEFAULT_SETTINGS }
+      const defaults = freshDefaults()
       try { await writeSettings(defaults) } catch (e) { logger.warn('Failed to write initial default settings:', e) }
       cachedSettings = defaults
     } else {
       logger.warn('Failed to read settings file, using defaults:', err)
-      cachedSettings = { ...DEFAULT_SETTINGS }
+      cachedSettings = freshDefaults()
     }
     cachedAt = Date.now()
     return cachedSettings
@@ -602,17 +630,25 @@ export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   if (!validateSettingsShape(settings)) {
     throw new BizGraphError('Invalid settings shape', ErrorCode.SETTINGS_INVALID_FORMAT)
   }
+  // 归一化：cliTools 里的 command / npmPackage / detectArgs 是**事实源的事实**，
+  // 不能由渲染进程决定。settings:write 能把任意裸命令名和任意参数写进来 ——
+  // 写进文件之前先按事实源纠正，文件和 30 秒内存缓存里就都只剩事实源的值。
+  // 用户态字段（installed / version / path）照旧保留。
+  const normalized: BizGraphSettings = {
+    ...settings,
+    cliTools: mergeCliTools(DEFAULT_SETTINGS.cliTools, settings.cliTools ?? []),
+  }
   const settingsPath = await getSettingsPath()
   const prev = cachedSettings
-  const encrypted = await encryptSettings(settings)
+  const encrypted = await encryptSettings(normalized)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
   // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）。
   // settings.json 可能含 fbk: 回退加密的 API Key，回退方案本身仅为混淆，
   // 收紧 ACL 可在 safeStorage 不可用时降低本地同主机其他用户读取的风险。
   restrictFileAcl(settingsPath)
-  cachedSettings = settings
+  cachedSettings = normalized
   // Phase D9: settings.onChange 热重载。prev 可能为 null（首次写入）。
-  fireChange(prev ?? settings, settings)
+  fireChange(prev ?? normalized, normalized)
 }
 
 /**
@@ -696,8 +732,12 @@ export async function detectCliTool(name: string): Promise<{
   version?: string
   path?: string
 }> {
-  const settings = await readSettings()
-  const tool = settings.cliTools.find((t) => t.name === name)
+  // ⚠️ 探测用的 command / args **只认主进程常量** DEFAULT_SETTINGS.cliTools。
+  // settings.json 里的同名字段是渲染进程能写的数据（settings:write 能写
+  // 任意裸命令名 + 任意参数），拿它来 spawn 等于让渲染进程决定主进程执行
+  // 什么命令 —— `sh -c '…'` 就能变成任意命令执行。
+  // 事实源里没有的名字一律不 spawn。
+  const tool = DEFAULT_SETTINGS.cliTools.find((t) => t.name === name)
   if (!tool) return { installed: false }
   try {
     const result = spawnSync(tool.command, tool.detectArgs ?? DEFAULT_DETECT_ARGS, {
@@ -728,6 +768,9 @@ export async function refreshAllCliStatus(): Promise<CliToolConfig[]> {
   const settings = await readSettings()
   const updated = await Promise.all(
     settings.cliTools.map(async (tool) => {
+      // 只探测事实源里有的工具：名字不在事实源里 → 我们不知道它的探测命令，
+      // 既不 spawn，也不谎称「未安装」—— 保留存档里的状态不动。
+      if (!DEFAULT_SETTINGS.cliTools.some((t) => t.name === tool.name)) return { ...tool }
       const detected = await detectCliTool(tool.name)
       return { ...tool, ...detected }
     }),
@@ -768,8 +811,16 @@ export async function installCliTool(name: string): Promise<{
   message: string
 }> {
   const settings = await readSettings()
-  const tool = settings.cliTools.find((t) => t.name === name)
+  // ⚠️ 装哪个 npm 包**只认主进程常量** DEFAULT_SETTINGS.cliTools。
+  // settings.json 里的条目是渲染进程能写的数据 —— 拿它来 `npm install -g <pkg>`
+  // 等于让渲染进程往用户的全局 npm 里塞任意包。
+  const tool = DEFAULT_SETTINGS.cliTools.find((t) => t.name === name)
   if (!tool) return { success: false, message: t('settings.install.unknownTool', { name }) }
+
+  // 有些工具没有 npm 包（cursor 只能从官网下载）—— 说清楚，别报「非法的包名」
+  if (!tool.npmPackage) {
+    return { success: false, message: t('settings.install.manualOnly', { name }) }
+  }
 
   if (!validateNpmPackageName(tool.npmPackage)) {
     return { success: false, message: t('settings.install.invalidPackage', { package: tool.npmPackage }) }
@@ -837,7 +888,11 @@ export async function installCliTool(name: string): Promise<{
       try {
         const detected = await detectCliTool(name)
         const idx = settings.cliTools.findIndex((t) => t.name === name)
-        settings.cliTools[idx] = { ...tool, ...detected }
+        if (idx >= 0) {
+          settings.cliTools[idx] = { ...settings.cliTools[idx], ...detected }
+        } else {
+          settings.cliTools.push({ ...tool, ...detected })
+        }
         await writeSettings(settings)
         resolve({
           success: detected.installed,
