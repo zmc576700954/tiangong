@@ -59,6 +59,7 @@
 | `src/renderer/panels/DefaultsTab.tsx` | 「默认值」设置页签的全部 UI：默认适配器、回退顺序、按适配器分开的默认模型、压缩模型 |
 | `src/renderer/panels/__tests__/DefaultsTab.test.tsx` | 上述组件的渲染层测试 |
 | `src/shared/adapter-defaults.ts` | 跨进程共享的适配器相关常量：`DEFAULT_ADAPTER_PREFERENCES` 的唯一副本、`ALLOWED_PROVIDERS` 的唯一副本、只读支持的适配器名单 |
+| `src/main/adapters/cli-probe.ts` | CLI 安装探测的共享 helper（带超时上界），供 8 个 CLI 适配器复用（Task 12 新增） |
 
 **修改：**
 
@@ -788,6 +789,109 @@ Expected: PASS。
 npx tsc --noEmit
 git add src/renderer/panels/SubagentTypesTab.tsx src/renderer/panels/__tests__/SubagentTypesTab.test.tsx
 git commit -m "feat(subagent): scope 策略默认选中 subset"
+```
+
+---
+
+## Task 12: 给 CLI 适配器的安装探测加超时上界
+
+> **这个任务是执行过程中补进来的**（Task 3 的审查发现），不在初始计划里。补它的原因见下方"为什么补"。
+
+**Files:**
+- Create: `src/main/adapters/cli-probe.ts`
+- Modify: `src/main/adapters/cline.ts:16,26`、`cursor.ts:15,25`、`qoder.ts:15,25`、`kilo-code.ts:16,26`、`kimi-code.ts:16,26`、`codebuddy.ts:15,25,30`、`opencode.ts:15,25`、`qwen-code.ts:16,26`
+- Test: `src/main/adapters/__tests__/cli-probe.test.ts`（新建）
+
+**Interfaces:**
+- Consumes: 无。
+- Produces: `src/main/adapters/cli-probe.ts` 新增导出：
+  ```ts
+  /**
+   * 探测一个 CLI 是否已安装。带超时上界 —— 超时视为「未安装 / 无法确认」，
+   * 并由 execFile 的 timeout 选项终止子进程（避免泄漏挂住的子进程）。
+   */
+  export async function probeCliInstalled(
+    command: string,
+    args?: string[],
+  ): Promise<boolean>
+  ```
+
+**为什么补这个任务** — Task 3 把设置面板首屏改为依赖 `agent:getAdapterMarketplace` 的实时检测，而 `checkAllInstalled`（`src/main/agent/adapter-registry.ts:31-51`）用 `Promise.allSettled` 包着各适配器的 `checkInstalled()`。那 8 个适配器各自的探测是 `promisify(execFile)` 且**没有超时**，一个在 `--version` 上挂住的 CLI（首次运行等交互输入、安装损坏、往满管道写）会让整个探测永不 settle。Task 3 的第 2 轮修复只在**渲染层**加了 5 秒上界，主进程里的挂住子进程仍会泄漏、marketplace 路径仍会被卡住 —— 根因在这里。
+
+**同一层里已有先例**：`src/main/adapters/mindmap-adapter.ts:36` 的 `execFileSync('claude', ['--version'], { timeout: 5000, ... })` **已经**设了 5000 毫秒。本任务与之对齐。
+
+**为什么用共享 helper 而不是给 8 处各加一个 timeout 选项** — 8 个适配器逐字复制了 `const execFileAsync = promisify(execFile)` 与探测调用（最终审查会把这种逐字重复判为 Important）。共享 helper 让超时值**只存在一处**，第 9 个适配器也不会漏掉。
+
+- [ ] **Step 1: 写失败的测试**
+
+新建 `src/main/adapters/__tests__/cli-probe.test.ts`：
+
+```ts
+it('命令不存在时返回 false', async () => {
+  expect(await probeCliInstalled('definitely-not-a-real-cli-xyz')).toBe(false)
+})
+
+it('命令挂住时在超时上界内返回 false，不无限等待', async () => {
+  // 用一个会挂住的命令（例如 sh -c 'sleep 30'）验证它不会一直等
+  const started = Date.now()
+  expect(await probeCliInstalled('sh', ['-c', 'sleep 30'])).toBe(false)
+  expect(Date.now() - started).toBeLessThan(10_000)
+})
+```
+
+（超时上界取 5000 毫秒，因此断言用 10 秒作为上界。）
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `npx vitest run src/main/adapters/__tests__/cli-probe.test.ts`
+Expected: FAIL —— 模块不存在。
+
+- [ ] **Step 3: 实现 `probeCliInstalled`**
+
+新建 `src/main/adapters/cli-probe.ts`：
+
+```ts
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
+
+/** 探测超时上界 —— 与 mindmap-adapter.ts 的 execFileSync timeout 对齐 */
+export const CLI_PROBE_TIMEOUT_MS = 5000
+
+export async function probeCliInstalled(command: string, args: string[] = ['--version']): Promise<boolean> {
+  try {
+    await execFileAsync(command, args, { timeout: CLI_PROBE_TIMEOUT_MS })
+    return true
+  } catch {
+    return false
+  }
+}
+```
+
+`execFile` 的 `timeout` 选项到期会终止子进程 —— 这同时解决了**挂住的子进程泄漏**，不只是等待时间。
+
+- [ ] **Step 4: 八个适配器改用共享 helper**
+
+逐个改 `cline.ts` / `cursor.ts` / `qoder.ts` / `kilo-code.ts` / `kimi-code.ts` / `codebuddy.ts` / `opencode.ts` / `qwen-code.ts`：
+- 删掉本文件里的 `const execFileAsync = promisify(execFile)` 与对应的 `import { execFile } from 'node:child_process'` / `import { promisify } from 'node:util'`（若该 import 只用于这一处）。
+- `checkInstalled()` 改为调用 `probeCliInstalled(...)`。
+- **保留各自原有的 logger 警告** —— 例如 `cline.ts:29` 的 `this.logger.warn('cline CLI not found')`。helper 吞掉错误，所以适配器层要自己记日志，否则会丢掉现有的诊断信息。
+- `codebuddy.ts` 有两级回退（先试 `codebuddy`，再试 `cbc`），两级都要走 helper。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: `npx vitest run src/main/adapters/__tests__/cli-probe.test.ts src/main/__tests__/adapter.test.ts`
+Expected: PASS。
+
+- [ ] **Step 6: 全量测试 + 类型检查 + 提交**
+
+```bash
+npx tsc --noEmit
+npm run lint
+npm run test
+git add src/main/adapters/cli-probe.ts src/main/adapters/cline.ts src/main/adapters/cursor.ts src/main/adapters/qoder.ts src/main/adapters/kilo-code.ts src/main/adapters/kimi-code.ts src/main/adapters/codebuddy.ts src/main/adapters/opencode.ts src/main/adapters/qwen-code.ts src/main/adapters/__tests__/cli-probe.test.ts
+git commit -m "fix(adapters): CLI 安装探测加超时上界，挂住的子进程不再泄漏"
 ```
 
 ---
