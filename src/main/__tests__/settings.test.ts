@@ -1075,6 +1075,49 @@ describe('Settings - 渲染进程不能决定主进程执行什么命令', () =>
     expect(second.cliTools.find((c) => c.name === 'cursor')?.detectArgs).toEqual(['agent', '--version'])
   })
 
+  it('读路径（mergeCliTools）给出的 detectArgs 也是拷贝', async () => {
+    const { readSettings, invalidateSettingsCache } = await import('../settings')
+    // 磁盘上放一个 settings.json —— 走的是 mergeSettings → mergeCliTools 那条路
+    // （上面那条用例走的是首次启动的 freshDefaults，两条路径要分别守着）
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [
+        { name: 'cursor', command: 'cursor', npmPackage: '', detectArgs: ['agent', '--version'], installed: false },
+      ],
+      apiKeys: [],
+      mcpServers: [],
+    }))
+
+    const first = await readSettings()
+    first.cliTools.find((c) => c.name === 'cursor')?.detectArgs?.push('--evil')
+
+    invalidateSettingsCache()
+    const second = await readSettings()
+
+    // 事实源没被污染 —— 下次读出来还是注册表里那一份
+    expect(second.cliTools.find((c) => c.name === 'cursor')?.detectArgs).toEqual(['agent', '--version'])
+  })
+
+  it('未知条目的 detectArgs 是「真值但不可迭代」时不抛（抛了会连累整份配置）', async () => {
+    const { readSettings } = await import('../settings')
+    // detectArgs: 5 —— 展开会抛 TypeError，而这个抛错发生在 readSettings 的 try 里：
+    // 整份配置会回落成默认值（用户存的 API key 当场丢失），下一次写入还会把
+    // 默认值盖回真实文件。
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [{ name: 'evil', command: 'evil', npmPackage: 'evil', detectArgs: 5, installed: false }],
+      apiKeys: [{ provider: 'anthropic', key: 'sk-must-survive' }],
+      mcpServers: [],
+    }))
+
+    const read = await readSettings()
+
+    // 不能回落成默认值 —— 用户的 API key 必须还在
+    expect(read.apiKeys).toEqual([{ provider: 'anthropic', key: 'sk-must-survive' }])
+    const evil = read.cliTools.find((c) => c.name === 'evil')
+    expect(evil?.detectArgs).toBeUndefined()
+  })
+
   it('存档里缺 installed 时，合并后仍是一个布尔值（不是 undefined）', async () => {
     const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
     const base = await readSettings()

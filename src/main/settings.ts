@@ -733,7 +733,11 @@ function mergeCliTools(
   }
   for (const s of saved) {
     if (defaults.some((d) => d.name === s.name)) continue
-    result.push({ ...s, detectArgs: s.detectArgs ? [...s.detectArgs] : undefined })
+    // ⚠️ s 来自磁盘 —— 是渲染进程能写的数据。detectArgs 可能是「真值但不可迭代」
+    // （比如 5），展开会抛 TypeError；而这个抛错发生在 readSettings 的 try 里，
+    // 会让整份配置回落成默认值 —— 用户存的 API key 当场丢失，
+    // 下一次写入还会把默认值盖回真实文件。所以必须用 Array.isArray 守卫。
+    result.push({ ...s, detectArgs: Array.isArray(s.detectArgs) ? [...s.detectArgs] : undefined })
   }
   return result
 }
