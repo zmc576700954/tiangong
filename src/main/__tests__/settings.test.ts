@@ -738,3 +738,144 @@ describe('Settings - mergeSettings 通用合并', () => {
     expect((await readSettings()).userIdentity).toEqual(userIdentity)
   })
 })
+
+// ============================================
+// CLI 工具清单：与适配器注册表对齐
+// ============================================
+
+/** 从注册表的 npm 安装方式里取出包名（去掉 @latest —— 包名校验不接受它）。 */
+function npmPackageOf(descriptor: {
+  installMethods: Array<{ type: string; command: string }>
+}): string | undefined {
+  const npm = descriptor.installMethods.find((m) => m.type === 'npm')
+  if (!npm) return undefined
+  const parts = npm.command.split(/\s+/)
+  const idx = parts.indexOf('-g')
+  const raw = idx >= 0 ? parts[idx + 1] : undefined
+  if (!raw) return undefined
+  return raw.endsWith('@latest') ? raw.slice(0, -'@latest'.length) : raw
+}
+
+describe('Settings - CLI 工具清单', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('DEFAULT_SETTINGS.cliTools 覆盖全部真 CLI 适配器', async () => {
+    const { readSettings } = await import('../settings')
+    const s = await readSettings()
+    const names = s.cliTools.map((c) => c.name)
+    for (const n of [
+      'claude-code', 'codex', 'opencode', 'cline', 'kilo-code',
+      'kimi-code', 'codebuddy', 'qoder', 'qwen-code', 'cursor',
+    ]) {
+      expect(names).toContain(n)
+    }
+    // mcp 没有 CLI 二进制，mindmap-internal 是内置适配器 —— 两者都不是 CLI 工具
+    expect(names).not.toContain('mcp')
+    expect(names).not.toContain('mindmap-internal')
+  })
+
+  it('cliTools 的 command / npmPackage 与适配器注册表一致', async () => {
+    const { ADAPTER_REGISTRY } = await import('../adapters/registry')
+    const { readSettings } = await import('../settings')
+    const tools = (await readSettings()).cliTools
+
+    for (const d of ADAPTER_REGISTRY) {
+      if (d.name === 'mcp' || d.hidden) continue
+      const tool = tools.find((t) => t.name === d.name)
+      expect(tool, `cliTools 里缺少适配器 ${d.name}`).toBeDefined()
+      if (!tool) continue
+      if (d.detectCommand) {
+        expect(tool.command, `${d.name} 的 detectCommand 不一致`).toBe(d.detectCommand)
+      }
+      const pkg = npmPackageOf(d)
+      if (pkg) {
+        expect(tool.npmPackage, `${d.name} 的 npm 包名不一致`).toBe(pkg)
+        // validateNpmPackageName 不接受 @latest —— 直接抄注册表会装不上
+        expect(tool.npmPackage).not.toContain('@latest')
+      } else {
+        // 没有 npm 安装方式（cursor 走官网下载）：不能给一个会失败的包名
+        expect(tool.npmPackage, `${d.name} 没有 npm 安装方式，npmPackage 应为空`).toBe('')
+      }
+    }
+  })
+
+  it('mergeCliTools 保留 defaults 里没有但用户装过的条目', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    const base = await readSettings()
+    await writeSettings({
+      ...base,
+      cliTools: [
+        ...base.cliTools,
+        { name: 'some-new-cli', npmPackage: 'some-new-cli', command: 'some-new-cli', installed: true },
+      ],
+    })
+    // 绕过内存缓存：断言的是「磁盘 → mergeSettings」的结果
+    invalidateSettingsCache()
+    const reread = await readSettings()
+    const names = reread.cliTools.map((c) => c.name)
+    expect(names).toContain('some-new-cli')
+    // 默认清单里的条目一个都不能少
+    expect(names).toContain('claude-code')
+    expect(names).toContain('cursor')
+  })
+
+  it('mergeCliTools 用注册表的 command / npmPackage 纠正存档里的旧值', async () => {
+    const { writeSettings, readSettings, invalidateSettingsCache } = await import('../settings')
+    const base = await readSettings()
+    // 模拟老版本存档：opencode 的 npmPackage 曾误写成 'opencode'，installed 是真实状态
+    const stale = base.cliTools.map((c) =>
+      c.name === 'opencode'
+        ? { ...c, npmPackage: 'opencode', installed: true, version: '0.5.0' }
+        : c,
+    )
+    await writeSettings({ ...base, cliTools: stale })
+    invalidateSettingsCache()
+    const reread = await readSettings()
+    const opencode = reread.cliTools.find((c) => c.name === 'opencode')
+    expect(opencode?.npmPackage).toBe('opencode-ai')
+    // 用户机器上的真实状态不能被默认值抹掉
+    expect(opencode?.installed).toBe(true)
+    expect(opencode?.version).toBe('0.5.0')
+  })
+})
+
+describe('Settings - API Key 的删除语义', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('setApiKey 传空串时删除该 provider 的条目（而不是写入一个空 key）', async () => {
+    const { setApiKey, getApiKey, readSettings } = await import('../settings')
+
+    await setApiKey('anthropic', 'sk-real-key')
+    expect(await getApiKey('anthropic')).toBe('sk-real-key')
+
+    await setApiKey('anthropic', '')
+    expect(await getApiKey('anthropic')).toBeUndefined()
+    const s = await readSettings()
+    expect(s.apiKeys.find((k) => k.provider === 'anthropic')).toBeUndefined()
+  })
+
+  it('setApiKey 传空串只删该 provider，其它 provider 不受影响', async () => {
+    const { setApiKey, getApiKey } = await import('../settings')
+
+    await setApiKey('anthropic', 'sk-anthropic')
+    await setApiKey('openai', 'sk-openai')
+    await setApiKey('anthropic', '')
+
+    expect(await getApiKey('anthropic')).toBeUndefined()
+    expect(await getApiKey('openai')).toBe('sk-openai')
+  })
+
+  it('setApiKey 删一个不存在的 provider 不报错', async () => {
+    const { setApiKey, getApiKey } = await import('../settings')
+    await expect(setApiKey('deepseek', '')).resolves.toBeUndefined()
+    expect(await getApiKey('deepseek')).toBeUndefined()
+  })
+})

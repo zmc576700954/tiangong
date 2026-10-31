@@ -261,9 +261,12 @@ export function registerSettingsHandlers(
 
   typedHandle('settings:setApiKey', async (_, provider, key, baseUrl) => {
     const { setApiKey, readSettings } = await import('../settings')
+    if (typeof key !== 'string') {
+      throw new IpcError('key must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
     // 渲染进程只持有遮蔽后的 key（settings:read 返回的形式）。若把遮蔽值原样写回，
     // 会用 mask 字符串覆盖真实 key。检测到遮蔽值时保留现有真实 key（与 settings:write 一致）。
-    if (typeof key === 'string' && MASKED_KEY_PATTERN.test(key)) {
+    if (MASKED_KEY_PATTERN.test(key)) {
       const current = await readSettings()
       const existing = current.apiKeys.find((k) => k.provider === provider)
       if (existing && existing.key) {
@@ -278,6 +281,7 @@ export function registerSettingsHandlers(
       // 无现有真实 key 可保留：拒绝写入遮蔽值，避免污染存储
       throw new IpcError('Cannot set a masked API key value', ErrorCode.IPC_INVALID_ARGUMENT)
     }
+    // 空串 = 删除该 provider 的 key（setApiKey 里移除条目，不写入空 key）
     await setApiKey(provider, key, baseUrl ?? undefined)
   })
 

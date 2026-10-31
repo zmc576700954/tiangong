@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Bot, Server, RefreshCw, Download, Check, AlertCircle } from 'lucide-react'
+import { Bot, Server, RefreshCw, Download, Check, AlertCircle, Trash2 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { SubagentTypesTab } from './SubagentTypesTab'
@@ -12,6 +12,8 @@ import { A2ASettingsTab } from './A2ASettingsTab'
 import { DefaultsTab } from './DefaultsTab'
 import type { AdapterDetection } from './DefaultsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
+import { ALLOWED_API_PROVIDERS } from '@shared/adapter-defaults'
+import { toastError, toastSuccess } from '../lib/toast'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -70,6 +72,11 @@ function withTimeout<T>(
       },
     )
   })
+}
+
+/** 把 catch 到的未知异常变成一句能直接展示给用户的文本。 */
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
 }
 
 export function SettingsPanel() {
@@ -200,13 +207,66 @@ export function SettingsPanel() {
     }
   }
 
+  /**
+   * 保存某个 provider 的 API Key。
+   *
+   * 空输入**不能**保存：输入框保存后就被清空（不把明文留在 state 里），
+   * 用户什么都不改、只是又点了一次「保存」，就会把已存的密钥覆盖成空串。
+   * 所以空输入直接报错返回 —— 真正的「删除」走 deleteApiKey 那条独立动作。
+   */
   const saveApiKey = async (provider: string) => {
     if (!ipc) return
-    const key = apiKeys[provider]
-    await ipc['settings:setApiKey'](provider, key)
+    const key = (apiKeys[provider] ?? '').trim()
+    if (!key) {
+      toastError(t('settings.apiKeys'), t('settings.apiKeys.emptyKey'))
+      return
+    }
+    try {
+      await ipc['settings:setApiKey'](provider, key)
+    } catch (err) {
+      toastError(t('settings.apiKeys'), t('settings.apiKeys.saveFailed', { error: errorText(err) }))
+      return
+    }
     // C-2-FIX: 保存后立即清除本地明文 state，减少敏感信息驻留时间
     setApiKeys((prev) => ({ ...prev, [provider]: '' }))
+    // 该 provider 现在有 key 了 —— 占位符从「输入 API 密钥…」变成「当前：****」
+    // （maskedKeys 只被当作「这个 provider 有没有 key」的标记用，不展示具体值）
+    setMaskedKeys((prev) => ({ ...prev, [provider]: '****' }))
   }
+
+  /**
+   * 删除某个 provider 已存的 API Key。
+   *
+   * 空串 = 主进程从 apiKeys 里移除该条目（不是写入一个空 key）。
+   * 二次确认是必须的：密钥删掉后只能重新输入，找不回来。
+   */
+  const deleteApiKey = async (provider: string) => {
+    if (!ipc) return
+    if (!window.confirm(t('settings.apiKeys.confirmDelete', { provider }))) return
+    try {
+      await ipc['settings:setApiKey'](provider, '')
+    } catch (err) {
+      toastError(t('settings.apiKeys'), t('settings.apiKeys.deleteFailed', { error: errorText(err) }))
+      return
+    }
+    setApiKeys((prev) => ({ ...prev, [provider]: '' }))
+    setMaskedKeys((prev) => {
+      const next = { ...prev }
+      delete next[provider]
+      return next
+    })
+    toastSuccess(t('settings.apiKeys.deleted', { provider }))
+  }
+
+  /**
+   * 该 provider 是否已经存了 key。
+   *
+   * 看的是「有没有这条记录」，不是「遮蔽后的值是否非空」——
+   * 老版本可能存过空 key，那条记录存在但没有内容，仍然要给删除入口。
+   * maskedKeys 的值只当「有没有 key」的标记用，不展示具体内容。
+   */
+  const hasStoredKey = (provider: string): boolean =>
+    Object.prototype.hasOwnProperty.call(maskedKeys, provider)
 
   const persistCustomTypes = async (types: AgentTypeDefinition[]) => {
     if (!ipc || !settings) return
@@ -361,8 +421,9 @@ export function SettingsPanel() {
                     <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700 flex items-center gap-1">
                       <Check className="w-3 h-3" /> {t('settings.ready')}
                     </span>
-                  ) : (
+                  ) : tool.npmPackage ? (
                     <button
+                      data-testid={`cli-install-${tool.name}`}
                       onClick={() => installCli(tool.name)}
                       disabled={!!installing}
                       className="text-xs px-2.5 py-1 bg-primary text-primary-foreground rounded hover:bg-primary/90 flex items-center gap-1 disabled:opacity-50"
@@ -370,6 +431,12 @@ export function SettingsPanel() {
                       <Download className="w-3 h-3" />
                       {installing === tool.name ? t('settings.installing') : t('settings.install')}
                     </button>
+                  ) : (
+                    // 没有 npm 安装方式（cursor 只能官网下载）——
+                    // 给一个点了必然失败的「安装」按钮只会误导用户。
+                    <span className="text-[10px] text-muted-foreground">
+                      {t('settings.cliTools.manualInstall')}
+                    </span>
                   )}
                 </div>
               ))}
@@ -381,23 +448,36 @@ export function SettingsPanel() {
               {t('settings.apiKeys')}
             </h3>
             <div className="space-y-2">
-              {['anthropic', 'openai', 'deepseek'].map((provider) => (
+              {ALLOWED_API_PROVIDERS.map((provider) => (
                 <div key={provider} className="space-y-1">
                   <label className="text-xs text-muted-foreground capitalize">{provider}</label>
                   <div className="flex gap-1.5">
                     <input
                       type="password"
+                      data-testid={`api-key-input-${provider}`}
                       value={apiKeys[provider] || ''}
                       onChange={(e) => setApiKeys((prev) => ({ ...prev, [provider]: e.target.value }))}
-                      placeholder={maskedKeys[provider] ? t('settings.currentKey') : t('settings.enterApiKey')}
+                      placeholder={hasStoredKey(provider) ? t('settings.currentKey') : t('settings.enterApiKey')}
                       className="flex-1 px-2 py-1.5 text-xs border rounded bg-background"
                     />
                     <button
+                      data-testid={`api-key-save-${provider}`}
                       onClick={() => saveApiKey(provider)}
                       className="px-2.5 py-1.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
                     >
                       {t('settings.save')}
                     </button>
+                    {hasStoredKey(provider) && (
+                      <button
+                        data-testid={`api-key-delete-${provider}`}
+                        onClick={() => deleteApiKey(provider)}
+                        title={t('settings.apiKeys.delete')}
+                        aria-label={t('settings.apiKeys.delete')}
+                        className="px-2 py-1.5 text-xs border rounded hover:bg-muted text-muted-foreground flex items-center"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

@@ -61,6 +61,10 @@ const KNOWN_ADAPTER_NAMES = new Set([
 
 const DEFAULT_SETTINGS: BizGraphSettings = {
   version: 1,
+  // 全部 10 个真 CLI 适配器。command / npmPackage 来自 ADAPTER_REGISTRY
+  // （src/main/adapters/registry.ts）—— 少了任何一个，用户装了也检测不到、
+  // 也没法从设置页安装。mcp（API 兜底）与 mindmap-internal（内置）不是 CLI
+  // 工具，不在这里。
   cliTools: [
     {
       name: 'claude-code',
@@ -76,8 +80,52 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
     },
     {
       name: 'opencode',
-      npmPackage: 'opencode',
+      npmPackage: 'opencode-ai',
       command: 'opencode',
+      installed: false,
+    },
+    {
+      name: 'cline',
+      npmPackage: 'cline',
+      command: 'cline',
+      installed: false,
+    },
+    {
+      name: 'kilo-code',
+      npmPackage: '@kilocode/cli',
+      command: 'kilo',
+      installed: false,
+    },
+    {
+      name: 'kimi-code',
+      npmPackage: '@moonshot-ai/kimi-code',
+      command: 'kimi',
+      installed: false,
+    },
+    {
+      name: 'codebuddy',
+      npmPackage: '@tencent-ai/codebuddy-code',
+      command: 'codebuddy',
+      installed: false,
+    },
+    {
+      name: 'qoder',
+      npmPackage: '@qoder-ai/qodercli',
+      command: 'qodercli',
+      installed: false,
+    },
+    {
+      name: 'qwen-code',
+      npmPackage: '@qwen-code/qwen-code',
+      command: 'qwen',
+      installed: false,
+    },
+    {
+      // cursor 只有官网下载这一种安装方式，没有 npm 包 ——
+      // 空包名让界面不渲染「安装」按钮（点了必然失败）。
+      name: 'cursor',
+      npmPackage: '',
+      command: 'cursor',
       installed: false,
     },
   ],
@@ -590,6 +638,17 @@ function mergeSettings(
   return merged
 }
 
+/**
+ * 按名字合并 CLI 工具清单。
+ *
+ * - defaults 里有的：名字对齐，**command / npmPackage 取 defaults 的值** ——
+ *   这两个字段是适配器注册表的事实（ADAPTER_REGISTRY），不是用户状态。
+ *   存档里的旧值（例如 opencode 的 npmPackage 曾误写成 'opencode'）必须被
+ *   注册表纠正，否则老用户永远装错包。installed / version / path 保留存档里的
+ *   值 —— 那是用户机器上的真实状态，不能被默认值抹掉。
+ * - defaults 里没有的：原样追加 —— 用户装的 marketplace CLI 不能被吞掉
+ *   （旧实现只遍历 defaults，保存一次就丢一批条目）。
+ */
 function mergeCliTools(
   defaults: CliToolConfig[],
   saved: CliToolConfig[],
@@ -597,7 +656,15 @@ function mergeCliTools(
   const result: CliToolConfig[] = []
   for (const def of defaults) {
     const found = saved.find((s) => s.name === def.name)
-    result.push(found ? { ...def, ...found } : { ...def })
+    result.push(
+      found
+        ? { ...def, ...found, command: def.command, npmPackage: def.npmPackage }
+        : { ...def },
+    )
+  }
+  for (const s of saved) {
+    if (defaults.some((d) => d.name === s.name)) continue
+    result.push({ ...s })
   }
   return result
 }
@@ -786,6 +853,14 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
 /** provider 白名单 —— 单一真相源在 @shared/adapter-defaults（渲染层也要用同一份）。 */
 const ALLOWED_PROVIDERS = ALLOWED_API_PROVIDERS
 
+/**
+ * 写入某个 provider 的 API Key。
+ *
+ * `key` 为空串 = **删除**该 provider 的条目，而不是写入一个空 key。
+ * 写入空 key 会留下一个「看起来存在、实际不可用」的凭据：
+ * 界面把它当成已配置（占位符显示「当前：****」），
+ * 而真正取 key 的地方（resolveApiKey）会跳过空 key —— 两边对不上。
+ */
 export async function setApiKey(
   provider: string,
   key: string,
@@ -796,6 +871,12 @@ export async function setApiKey(
   }
   const settings = await readSettings()
   const idx = settings.apiKeys.findIndex((k) => k.provider === provider)
+  if (key === '') {
+    if (idx < 0) return
+    settings.apiKeys.splice(idx, 1)
+    await writeSettings(settings)
+    return
+  }
   if (idx >= 0) {
     settings.apiKeys[idx] = { provider: provider as ApiKeyConfig['provider'], key, baseUrl }
   } else {
