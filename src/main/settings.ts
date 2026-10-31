@@ -65,6 +65,11 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   // （src/main/adapters/registry.ts）—— 少了任何一个，用户装了也检测不到、
   // 也没法从设置页安装。mcp（API 兜底）与 mindmap-internal（内置）不是 CLI
   // 工具，不在这里。
+  //
+  // detectArgs 只在**与默认值不同**时写出来（目前只有 cursor）：
+  // 默认就是 ['--version']，把 8 条一模一样的值抄一遍只会多一份会悄悄过期的
+  // 副本。注册表改了任何一个适配器的探测参数，settings.test.ts 里的
+  // 「与适配器注册表一致」那条用例会红。
   cliTools: [
     {
       name: 'claude-code',
@@ -123,9 +128,12 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
     {
       // cursor 只有官网下载这一种安装方式，没有 npm 包 ——
       // 空包名让界面不渲染「安装」按钮（点了必然失败）。
+      // 探测参数也不是默认的 --version：注册表用的是 `cursor agent --version`
+      // （`cursor --version` 探不到，会显示一个假的「未安装」）。
       name: 'cursor',
       npmPackage: '',
       command: 'cursor',
+      detectArgs: ['agent', '--version'],
       installed: false,
     },
   ],
@@ -641,8 +649,8 @@ function mergeSettings(
 /**
  * 按名字合并 CLI 工具清单。
  *
- * - defaults 里有的：名字对齐，**command / npmPackage 取 defaults 的值** ——
- *   这两个字段是适配器注册表的事实（ADAPTER_REGISTRY），不是用户状态。
+ * - defaults 里有的：名字对齐，**command / npmPackage / detectArgs 取 defaults 的值** ——
+ *   这三个字段是适配器注册表的事实（ADAPTER_REGISTRY），不是用户状态。
  *   存档里的旧值（例如 opencode 的 npmPackage 曾误写成 'opencode'）必须被
  *   注册表纠正，否则老用户永远装错包。installed / version / path 保留存档里的
  *   值 —— 那是用户机器上的真实状态，不能被默认值抹掉。
@@ -658,7 +666,7 @@ function mergeCliTools(
     const found = saved.find((s) => s.name === def.name)
     result.push(
       found
-        ? { ...def, ...found, command: def.command, npmPackage: def.npmPackage }
+        ? { ...def, ...found, command: def.command, npmPackage: def.npmPackage, detectArgs: def.detectArgs }
         : { ...def },
     )
   }
@@ -673,6 +681,16 @@ function mergeCliTools(
 // CLI 工具检测
 // ============================================
 
+/**
+ * 探测 CLI 工具时的默认参数。
+ *
+ * 绝大多数 CLI 都是 `<command> --version`；cursor 是例外（`agent --version`），
+ * 走 CliToolConfig.detectArgs。写死 ['--version'] 会让装了 Cursor 的用户在
+ * 设置页看到假的「未安装」，而「默认值」页签的实时检测（走注册表的 detectArgs）
+ * 又说它装了 —— 同一个应用里自相矛盾。
+ */
+const DEFAULT_DETECT_ARGS = ['--version']
+
 export async function detectCliTool(name: string): Promise<{
   installed: boolean
   version?: string
@@ -682,7 +700,7 @@ export async function detectCliTool(name: string): Promise<{
   const tool = settings.cliTools.find((t) => t.name === name)
   if (!tool) return { installed: false }
   try {
-    const result = spawnSync(tool.command, ['--version'], {
+    const result = spawnSync(tool.command, tool.detectArgs ?? DEFAULT_DETECT_ARGS, {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'ignore'],

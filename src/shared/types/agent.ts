@@ -490,6 +490,13 @@ export interface CliToolConfig {
   name: string
   npmPackage: string
   command: string
+  /**
+   * 探测命令的参数。缺省为 `['--version']`。
+   *
+   * cursor 是例外：它要 `cursor agent --version`（`cursor --version` 探测不到）——
+   * 写错就会在设置页显示一个假的「未安装」。
+   */
+  detectArgs?: string[]
   installed: boolean
   version?: string
   path?: string

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { BizGraphSettings, AdapterPreferences } from '../settings'
 import type { A2AServerConfig, A2ARemoteAgent, A2AAgentCard } from '@shared/types/a2a'
+import type * as ChildProcess from 'node:child_process'
 
 const mockUserDataPath = '/tmp/bizgraph-test'
 const mockFsData = new Map<string, string>()
@@ -37,6 +38,27 @@ vi.mock('node:fs/promises', () => ({
     }),
   },
 }))
+
+/**
+ * spawnSync 的替身 —— 用来断言「探测某个 CLI 时到底跑了什么命令」。
+ * 其余导出（execSync 等）保持真实实现。
+ */
+const mockSpawnSync = vi.fn()
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcess>()
+  return {
+    ...actual,
+    spawnSync: (...args: Parameters<typeof ChildProcess.spawnSync>) =>
+      mockSpawnSync(...args) as ReturnType<typeof ChildProcess.spawnSync>,
+  }
+})
+
+beforeEach(() => {
+  mockSpawnSync.mockReset()
+  // 默认「没装」：探测失败（status !== 0）
+  mockSpawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '', error: undefined })
+})
 
 describe('Settings - Encryption', () => {
   beforeEach(() => {
@@ -791,6 +813,11 @@ describe('Settings - CLI 工具清单', () => {
       if (d.detectCommand) {
         expect(tool.command, `${d.name} 的 detectCommand 不一致`).toBe(d.detectCommand)
       }
+      // 探测参数：默认 ['--version']，注册表里改了就得跟上
+      expect(
+        tool.detectArgs ?? ['--version'],
+        `${d.name} 的探测参数不一致`,
+      ).toEqual(d.detectArgs ?? ['--version'])
       const pkg = npmPackageOf(d)
       if (pkg) {
         expect(tool.npmPackage, `${d.name} 的 npm 包名不一致`).toBe(pkg)
@@ -840,6 +867,35 @@ describe('Settings - CLI 工具清单', () => {
     // 用户机器上的真实状态不能被默认值抹掉
     expect(opencode?.installed).toBe(true)
     expect(opencode?.version).toBe('0.5.0')
+  })
+})
+
+describe('Settings - CLI 工具探测参数', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('探测 cursor 时用注册表的 agent --version（不是 --version）', async () => {
+    const { detectCliTool } = await import('../settings')
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: '0.42.0\n', stderr: '', error: undefined })
+
+    const detected = await detectCliTool('cursor')
+
+    // `cursor --version` 探不到 —— 用了错的参数就会给用户一个假的「未安装」
+    expect(mockSpawnSync).toHaveBeenCalledWith('cursor', ['agent', '--version'], expect.anything())
+    expect(detected.installed).toBe(true)
+    expect(detected.version).toBe('0.42.0')
+  })
+
+  it('其余 CLI 工具用默认的 --version 探测', async () => {
+    const { detectCliTool } = await import('../settings')
+    mockSpawnSync.mockReturnValue({ status: 0, stdout: '1.0.0\n', stderr: '', error: undefined })
+
+    await detectCliTool('claude-code')
+
+    expect(mockSpawnSync).toHaveBeenCalledWith('claude', ['--version'], expect.anything())
   })
 })
 
