@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   canTransition,
+  canTransitionForType,
   validateTransition,
+  validateNodeTypeTransition,
   getAllowedTransitions,
   findTransitionPath,
   InvalidStateTransitionError,
@@ -9,6 +11,12 @@ import {
   validateBugTransition,
   validateTransitionConsistency,
 } from '../state-machine'
+import {
+  NODE_STATUS_TRANSITIONS,
+  NODE_STATUS_VALUES,
+  NODE_TYPE_VALUES,
+} from '../types'
+import type { NodeType } from '../types'
 
 describe('canTransition', () => {
   it('allows draft → confirmed', () => {
@@ -124,6 +132,73 @@ describe('validateBugTransition', () => {
 
   it('includes bugId in error message when provided', () => {
     expect(() => validateBugTransition('open', 'verified', 'bug-1')).toThrow('bug-1')
+  })
+})
+
+describe('canTransitionForType', () => {
+  it('按节点类型判定，而非只看状态', () => {
+    const moduleAllows = NODE_STATUS_TRANSITIONS.module.some(
+      t => t.from === 'draft' && t.to === 'developing',
+    )
+    expect(canTransitionForType('module', 'draft', 'developing')).toBe(moduleAllows)
+    expect(canTransitionForType('feature', 'draft', 'developing')).toBe(true)
+  })
+
+  it('同一状态恒等允许（无需转换）', () => {
+    for (const type of NODE_TYPE_VALUES) {
+      for (const status of NODE_STATUS_VALUES) {
+        expect(canTransitionForType(type, status, status)).toBe(true)
+      }
+    }
+  })
+
+  it('未知 NodeType 保守拒绝', () => {
+    expect(canTransitionForType('not-a-real-type' as NodeType, 'draft', 'confirmed')).toBe(false)
+    expect(canTransitionForType('not-a-real-type' as NodeType, 'draft', 'draft')).toBe(true)
+  })
+
+  it('published 对非 wiki-page 类型是终态', () => {
+    for (const type of NODE_TYPE_VALUES) {
+      if (type === 'wiki-page') continue
+      expect(canTransitionForType(type, 'published', 'confirmed')).toBe(false)
+      expect(canTransitionForType(type, 'published', 'draft')).toBe(false)
+      expect(canTransitionForType(type, 'published', 'placeholder')).toBe(false)
+    }
+    // wiki-page 是唯一允许 published → X 的类型
+    expect(canTransitionForType('wiki-page', 'published', 'confirmed')).toBe(true)
+  })
+
+  /**
+   * 核心断言：把「渲染端判定」与「主进程校验」钉在一起。
+   *
+   * 渲染端放行、主进程抛 IpcError —— 就是「右键改状态点了没反应」的根因。
+   * 这里穷举 NodeType × NodeStatus × NodeStatus，逐格比对两条路径的结论。
+   */
+  it('与 validateNodeTypeTransition 的结论完全一致', () => {
+    const mismatches: string[] = []
+    for (const type of NODE_TYPE_VALUES) {
+      for (const from of NODE_STATUS_VALUES) {
+        for (const to of NODE_STATUS_VALUES) {
+          const allowed = canTransitionForType(type, from, to)
+          let mainProcessAllows = true
+          try {
+            validateNodeTypeTransition(type, from, to, 'node-consistency')
+          } catch {
+            mainProcessAllows = false
+          }
+          if (allowed !== mainProcessAllows) {
+            mismatches.push(`${type}: ${from} → ${to} (判定=${allowed}, 主进程=${mainProcessAllows})`)
+          }
+        }
+      }
+    }
+    expect(mismatches).toEqual([])
+  })
+
+  it('validateNodeTypeTransition 抛错时判定为 false', () => {
+    expect(() => validateNodeTypeTransition('module', 'draft', 'published', 'node-1'))
+      .toThrow(InvalidStateTransitionError)
+    expect(canTransitionForType('module', 'draft', 'published')).toBe(false)
   })
 })
 

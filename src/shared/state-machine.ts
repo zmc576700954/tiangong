@@ -108,6 +108,33 @@ export function validateTransition(
 }
 
 /**
+ * Per-NodeType 判定：基于 NODE_STATUS_TRANSITIONS[type] 矩阵
+ *
+ * 与 `validateNodeTypeTransition` **同源同义** —— 后者只是本函数加上"非法就抛错"。
+ * 渲染端用它过滤菜单/药丸组里的状态选项，主进程用它兜底，两边结论必须一致，
+ * 否则就会出现"渲染端放行 → 主进程抛 IpcError → 用户看到点了没反应"。
+ *
+ * 规则：
+ * - `from === to` → true（同状态无需转换，与 `validateNodeTypeTransition` 一致）
+ * - 未知 NodeType → false（保守拒绝）
+ * - 否则查 `NODE_STATUS_TRANSITIONS[nodeType]` 里的 `{ from, to }` 配对
+ *
+ * @param nodeType 节点类型（如 'project' / 'feature' / 'wiki-page'）
+ * @param from 当前状态
+ * @param to 目标状态
+ */
+export function canTransitionForType(
+  nodeType: NodeType,
+  from: NodeStatus,
+  to: NodeStatus,
+): boolean {
+  if (from === to) return true
+  const allowed = NODE_STATUS_TRANSITIONS[nodeType]
+  if (!allowed) return false
+  return allowed.some((t) => t.from === from && t.to === to)
+}
+
+/**
  * Per-NodeType 校验：基于 NODE_STATUS_TRANSITIONS[type] 矩阵
  *
  * 与全局 `validateTransition(from, to)` 的差异：
@@ -131,16 +158,8 @@ export function validateNodeTypeTransition(
   to: NodeStatus,
   nodeId?: string,
 ): void {
-  if (from === to) return
-  const allowed = NODE_STATUS_TRANSITIONS[type]
-  if (!allowed) {
-    // 未知 NodeType：保守拒绝
-    throw new InvalidStateTransitionError(from, to, nodeId, type)
-  }
-  const isAllowed = allowed.some((t) => t.from === from && t.to === to)
-  if (!isAllowed) {
-    throw new InvalidStateTransitionError(from, to, nodeId, type)
-  }
+  if (canTransitionForType(type, from, to)) return
+  throw new InvalidStateTransitionError(from, to, nodeId, type)
 }
 
 /**

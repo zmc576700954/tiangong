@@ -19,10 +19,12 @@ import {
   NODE_TYPE_COLORS,
 } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
+import { canTransitionForType } from '@shared/state-machine'
 import { useI18n } from '../i18n/useI18n'
 import type {
   GraphNode,
   NodeStatus,
+  NodeType,
   BusinessRule,
   NodeMetadata,
 } from '@shared/types'
@@ -85,14 +87,17 @@ export function EditableTitle({ title, onSave }: { title: string; onSave: (v: st
 
 function StatusSelector({
   status,
+  nodeType,
   onChange,
 }: {
   status: NodeStatus
+  nodeType: NodeType
   onChange: (s: NodeStatus) => void
 }) {
   const { t, locale } = useI18n()
 
   const options: { value: NodeStatus; label: string; color: string }[] = [
+    { value: 'placeholder', label: nodeStatusLabel('placeholder', locale), color: '#64748b' },
     { value: 'draft', label: nodeStatusLabel('draft', locale), color: '#94a3b8' },
     { value: 'confirmed', label: nodeStatusLabel('confirmed', locale), color: '#3b82f6' },
     { value: 'developing', label: nodeStatusLabel('developing', locale), color: '#f59e0b' },
@@ -101,14 +106,25 @@ function StatusSelector({
     { value: 'published', label: nodeStatusLabel('published', locale), color: '#22c55e' },
   ]
 
+  // 按 per-type 矩阵过滤 —— 与主进程 NodeRepository.update() 同一张表。
+  // 放出不可达的药丸只会让用户点了没反应（主进程抛 IpcError 被 renderer 吞掉）。
+  // 当前状态恒在（from === to 允许），所以过滤后至少剩一个药丸。
+  const reachable = options.filter((opt) =>
+    canTransitionForType(nodeType, status, opt.value),
+  )
+
+  // 终态：当前状态没有任何合法迁出（药丸组只剩自己一个）
+  const isTerminal = reachable.every((opt) => opt.value === status)
+
   return (
     <div className="space-y-1.5">
       <label className="text-xs font-medium text-muted-foreground">{t('node.editor.status')}</label>
       <div className="flex flex-wrap gap-1.5">
-        {options.map((opt) => (
+        {reachable.map((opt) => (
           <button
             key={opt.value}
             onClick={() => onChange(opt.value)}
+            data-testid={`node-status-pill-${opt.value}`}
             className={cn(
               'px-2 py-0.5 text-[11px] rounded-full border transition-colors',
               status === opt.value
@@ -121,6 +137,14 @@ function StatusSelector({
           </button>
         ))}
       </div>
+      {isTerminal && (
+        <p
+          className="text-[10px] text-muted-foreground"
+          data-testid="node-status-terminal-hint"
+        >
+          {t('status.terminalHint', { status: nodeStatusLabel(status, locale) })}
+        </p>
+      )}
     </div>
   )
 }
@@ -542,7 +566,11 @@ export function NodeEditor({
 
       {/* 功能点 / BUG 的状态选择器 */}
       {(node.type === 'feature' || node.type === 'bug') && (
-        <StatusSelector status={node.status} onChange={(s) => onUpdate({ status: s })} />
+        <StatusSelector
+          status={node.status}
+          nodeType={node.type}
+          onChange={(s) => onUpdate({ status: s })}
+        />
       )}
 
       {/* Wiki 页面编辑器 */}

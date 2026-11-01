@@ -3,7 +3,7 @@ import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeCo
 import type { IngestResult, IngestMode, LintReport, LintFixAction, LintFixResult, ComputeResult, WritebackItem, RollbackResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
-import { canTransition } from '@shared/state-machine'
+import { canTransitionForType } from '@shared/state-machine'
 
 // ============================================
 // Store 定义
@@ -288,8 +288,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!prevNode) return
 
     // 状态机校验：如果更新包含 status，验证转换是否合法
+    // 用 per-type 矩阵 —— 主进程 NodeRepository.update() 走的是同一张表，
+    // 这里放宽就会变成"渲染端放行、主进程抛错"。
     if (data.status && data.status !== prevNode.status) {
-      if (!canTransition(prevNode.status, data.status)) {
+      if (!canTransitionForType(prevNode.type, prevNode.status, data.status)) {
         const err = new Error(
           `非法状态转换: "${prevNode.status}" → "${data.status}" 不被允许`,
         )
