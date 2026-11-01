@@ -193,6 +193,9 @@ describe('PipelineRunner', () => {
     const runner = new PipelineRunner(stages)
     const result = await runner.run(makeCtx())
 
-    expect(result.durationMs).toBeGreaterThanOrEqual(10)
+    // setTimeout 的延迟按毫秒整数计量，而 performance.now() 是亚毫秒精度 ——
+    // 两者错位时这段 10ms 的等待会被测成 9.95ms 左右。断言留 1ms 容差，
+    // 仍然验证「时长被记录下来了」这件事本身。
+    expect(result.durationMs).toBeGreaterThanOrEqual(9)
   })
 })
