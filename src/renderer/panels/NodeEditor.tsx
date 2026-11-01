@@ -22,6 +22,7 @@ import {
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import { canTransitionForType } from '@shared/state-machine'
 import { useI18n } from '../i18n/useI18n'
+import { toastError } from '../lib/toast'
 import type {
   GraphNode,
   NodeStatus,
@@ -36,11 +37,16 @@ import { WikiPageEditor } from '../components/wiki/WikiPageEditor'
 export function EditableTitle({ title, onSave }: { title: string; onSave: (v: string) => void }) {
   const [isEditing, setIsEditing] = useState(false)
   const [value, setValue] = useState(title)
+  const { t } = useI18n()
 
   const handleSave = () => {
-    if (value.trim()) {
-      onSave(value.trim())
+    const trimmed = value.trim()
+    if (!trimmed) {
+      // 空标题：给出明确提示，并**留在编辑态** —— 用户刚输入的内容不该被静默丢弃
+      toastError(t('node.toast.titleRequired'))
+      return
     }
+    onSave(trimmed)
     setIsEditing(false)
   }
 
@@ -52,6 +58,7 @@ export function EditableTitle({ title, onSave }: { title: string; onSave: (v: st
           value={value}
           onChange={(e) => setValue(e.target.value)}
           className="flex-1 px-2 py-1 text-sm border rounded bg-background"
+          data-testid="node-title-input"
           autoFocus
           onKeyDown={(e) => {
             if (e.key === 'Enter') handleSave()
@@ -61,11 +68,16 @@ export function EditableTitle({ title, onSave }: { title: string; onSave: (v: st
             }
           }}
         />
-        <button onClick={handleSave} className="p-1 rounded hover:bg-green-100 text-green-600">
+        <button
+          onClick={handleSave}
+          data-testid="node-title-save"
+          className="p-1 rounded hover:bg-green-100 text-green-600"
+        >
           <Check className="w-3.5 h-3.5" />
         </button>
         <button
           onClick={() => { setValue(title); setIsEditing(false) }}
+          data-testid="node-title-cancel"
           className="p-1 rounded hover:bg-red-100 text-red-600"
         >
           <X className="w-3.5 h-3.5" />
@@ -77,7 +89,11 @@ export function EditableTitle({ title, onSave }: { title: string; onSave: (v: st
   return (
     <div className="flex items-center gap-2">
       <h3 className="text-base font-semibold flex-1 truncate">{title}</h3>
-      <button onClick={() => setIsEditing(true)} className="p-1 rounded hover:bg-muted transition-colors">
+      <button
+        onClick={() => setIsEditing(true)}
+        data-testid="node-title-edit"
+        className="p-1 rounded hover:bg-muted transition-colors"
+      >
         <Pencil className="w-3.5 h-3.5 text-muted-foreground" />
       </button>
     </div>
@@ -230,7 +246,11 @@ function RulesEditor({
   const { t } = useI18n()
 
   const handleAdd = () => {
-    if (!newTitle.trim()) return
+    if (!newTitle.trim()) {
+      // 规则名是必填的 —— 给出提示，表单与已填内容都留着（不静默丢弃）
+      toastError(t('node.toast.ruleTitleRequired'))
+      return
+    }
     const rule: BusinessRule = {
       id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: newTitle.trim(),
@@ -251,6 +271,7 @@ function RulesEditor({
         <label className="text-xs font-medium text-muted-foreground">{t('node.editor.businessRules')}</label>
         <button
           onClick={() => setShowForm(!showForm)}
+          data-testid="node-rules-toggle"
           className="p-0.5 rounded hover:bg-muted"
         >
           <Plus className="w-3.5 h-3.5 text-muted-foreground" />
@@ -291,6 +312,7 @@ function RulesEditor({
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder={t('node.editor.ruleNamePlaceholder')}
+            data-testid="node-rules-title"
             className="w-full px-2 py-1 text-xs border rounded bg-background"
           />
           <input
@@ -310,6 +332,7 @@ function RulesEditor({
           <div className="flex gap-1">
             <button
               onClick={handleAdd}
+              data-testid="node-rules-add"
               className="px-2 py-0.5 text-xs bg-primary text-primary-foreground rounded hover:bg-primary/90"
             >
               {t('node.editor.add')}
@@ -377,6 +400,7 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
+          testId="node-meta-add-apis"
           placeholder={t('node.editor.addApiPlaceholder')}
           onAdd={(name) => addItem('apis', { name })}
         />
@@ -400,6 +424,7 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
+          testId="node-meta-add-services"
           placeholder={t('node.editor.addServicePlaceholder')}
           onAdd={(name) => addItem('services', { name })}
         />
@@ -423,6 +448,7 @@ function MetadataEditor({
           </div>
         ))}
         <AddItemInput
+          testId="node-meta-add-entities"
           placeholder={t('node.editor.addEntityPlaceholder')}
           onAdd={(name) => addItem('entities', { name })}
         />
@@ -431,8 +457,28 @@ function MetadataEditor({
   )
 }
 
-function AddItemInput({ placeholder, onAdd }: { placeholder: string; onAdd: (name: string) => void }) {
+function AddItemInput({
+  placeholder,
+  onAdd,
+  testId,
+}: {
+  placeholder: string
+  onAdd: (name: string) => void
+  testId: string
+}) {
   const [value, setValue] = useState('')
+  const { t } = useI18n()
+
+  const handleAdd = () => {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      // 空输入：给出提示，输入内容留着（不静默丢弃）
+      toastError(t('node.toast.itemRequired'))
+      return
+    }
+    onAdd(trimmed)
+    setValue('')
+  }
 
   return (
     <div className="flex items-center gap-1">
@@ -443,19 +489,12 @@ function AddItemInput({ placeholder, onAdd }: { placeholder: string; onAdd: (nam
         placeholder={placeholder}
         className="flex-1 px-2 py-0.5 text-xs border rounded bg-background"
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && value.trim()) {
-            onAdd(value.trim())
-            setValue('')
-          }
+          if (e.key === 'Enter') handleAdd()
         }}
       />
       <button
-        onClick={() => {
-          if (value.trim()) {
-            onAdd(value.trim())
-            setValue('')
-          }
-        }}
+        onClick={handleAdd}
+        data-testid={testId}
         className="p-0.5 rounded bg-primary text-primary-foreground hover:bg-primary/90"
       >
         <Plus className="w-3 h-3" />
@@ -477,7 +516,11 @@ function CriteriaEditor({
   const { t } = useI18n()
 
   const handleAdd = () => {
-    if (!newValue.trim()) return
+    if (!newValue.trim()) {
+      // 空内容：给出提示，输入框内容留着（不静默丢弃）
+      toastError(t('node.toast.criterionRequired'))
+      return
+    }
     onUpdate([...criteria, newValue.trim()])
     setNewValue('')
   }
@@ -504,11 +547,13 @@ function CriteriaEditor({
             value={newValue}
             onChange={(e) => setNewValue(e.target.value)}
             placeholder={t('node.editor.addCriterionPlaceholder')}
+            data-testid="node-criteria-input"
             className="flex-1 px-2 py-1 text-sm border rounded bg-background"
             onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
           />
           <button
             onClick={handleAdd}
+            data-testid="node-criteria-add"
             className="p-1 rounded bg-primary text-primary-foreground hover:bg-primary/90"
           >
             <Plus className="w-3.5 h-3.5" />

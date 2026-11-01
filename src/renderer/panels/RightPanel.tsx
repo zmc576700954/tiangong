@@ -9,10 +9,17 @@ import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { eventBus, Events } from '../store/eventBus'
 import { cn } from '../lib/utils'
+import { toastError } from '../lib/toast'
 import { AgentChatPanel } from '../components/agent/AgentChatPanel'
 import { NodeEditor } from './NodeEditor'
 import { EdgeEditor } from './EdgeEditor'
 import { useI18n } from '../i18n/useI18n'
+
+/** 把任意抛出物转成可读文本（Error 只有 message，其余按 String 处理）。 */
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err)
+}
 
 export function RightPanel({
   expandedAgent,
@@ -108,9 +115,17 @@ export function RightPanel({
             {selectedNode ? (
               <NodeEditor
                 node={selectedNode}
-                onUpdate={(data) => updateNode(selectedNode.id, data)}
+                onUpdate={(data) => {
+                  // updateNode 会在非法状态转换 / IPC 失败时 reject —— 不接住就是
+                  // unhandled rejection，用户只看到"点了没反应"。接住并给出提示。
+                  void updateNode(selectedNode.id, data).catch((err: unknown) => {
+                    toastError(t('node.toast.updateFailed'), errorText(err))
+                  })
+                }}
                 onDelete={() => {
-                  deleteNode(selectedNode.id)
+                  void deleteNode(selectedNode.id).catch((err: unknown) => {
+                    toastError(t('node.toast.deleteFailed'), errorText(err))
+                  })
                   selectNode(null)
                 }}
                 onStartAgent={() => setActiveTab('agent')}

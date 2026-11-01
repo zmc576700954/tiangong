@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { NodeEditor } from '../NodeEditor'
+import { RightPanel } from '../RightPanel'
+import { ToastContainer, useToastStore } from '../../lib/toast'
+import { useGraphStore } from '../../store/graphStore'
 import type { GraphNode, NodeStatus, NodeType } from '@shared/types'
 
 function makeNode(overrides: Partial<GraphNode> & { type: NodeType; status: NodeStatus }): GraphNode {
@@ -35,6 +38,27 @@ function renderEditor(node: GraphNode, onUpdate = vi.fn()) {
     />,
   )
   return { onUpdate }
+}
+
+/** 挂上全局 Toast 容器 —— 静默失败的提示走的就是它。 */
+function renderEditorWithToast(node: GraphNode, onUpdate = vi.fn()) {
+  render(
+    <>
+      <NodeEditor
+        node={node}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+        onStartAgent={vi.fn()}
+      />
+      <ToastContainer />
+    </>,
+  )
+  return { onUpdate }
+}
+
+/** 当前 toast 列表（按 kind 过滤，'error' 与 'success' 必须能区分）。 */
+function toastsOf(kind: 'error' | 'success' | 'info') {
+  return useToastStore.getState().toasts.filter((t) => t.kind === kind)
 }
 
 describe('NodeEditor — 状态药丸组按 per-type 矩阵过滤', () => {
@@ -114,5 +138,166 @@ describe('NodeEditor — 终态提示', () => {
     expect(screen.queryByTestId('node-status-terminal-hint')).toBeNull()
     // review 的迁出：testing / published
     expect(renderedStatuses().sort()).toEqual(['published', 'review', 'testing'].sort())
+  })
+})
+
+// ============================================================
+// 静默失败归零：用户触发了动作却什么都没发生 —— 界面必须给一句提示
+// ============================================================
+
+describe('NodeEditor — 空输入给出明确提示', () => {
+  beforeEach(() => {
+    useToastStore.getState().clear()
+  })
+
+  it('标题清空点保存：给 error toast，且留在编辑态、输入内容保留', () => {
+    const onUpdate = vi.fn()
+    renderEditorWithToast(makeNode({ type: 'feature', status: 'draft' }), onUpdate)
+
+    fireEvent.click(screen.getByTestId('node-title-edit'))
+    const input = screen.getByTestId('node-title-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(screen.getByTestId('node-title-save'))
+
+    // 有提示，且是 error（不是 success）
+    const errors = toastsOf('error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].title).toContain('标题不能为空')
+    expect(toastsOf('success')).toHaveLength(0)
+
+    // 保存被跳过
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    // 关键：没有静默丢弃 —— 仍留在编辑态，输入内容原样保留
+    const stillEditing = screen.getByTestId('node-title-input') as HTMLInputElement
+    expect(stillEditing.value).toBe('   ')
+  })
+
+  it('业务规则空标题点添加：给 error toast，不新增规则，输入内容保留', () => {
+    const onUpdate = vi.fn()
+    renderEditorWithToast(makeNode({ type: 'process', status: 'draft' }), onUpdate)
+
+    fireEvent.click(screen.getByTestId('node-rules-toggle'))
+    const title = screen.getByTestId('node-rules-title') as HTMLInputElement
+    fireEvent.change(title, { target: { value: '   ' } })
+    fireEvent.click(screen.getByTestId('node-rules-add'))
+
+    const errors = toastsOf('error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].title).toContain('规则名称不能为空')
+
+    // 没有新增规则
+    expect(onUpdate).not.toHaveBeenCalled()
+
+    // 表单还开着，输入内容保留
+    expect((screen.getByTestId('node-rules-title') as HTMLInputElement).value).toBe('   ')
+  })
+
+  it('验收标准空内容点添加：给 error toast，不新增标准，输入内容保留', () => {
+    const onUpdate = vi.fn()
+    renderEditorWithToast(makeNode({ type: 'feature', status: 'draft' }), onUpdate)
+
+    const input = screen.getByTestId('node-criteria-input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '   ' } })
+    fireEvent.click(screen.getByTestId('node-criteria-add'))
+
+    const errors = toastsOf('error')
+    expect(errors).toHaveLength(1)
+    expect(errors[0].title).toContain('验收标准不能为空')
+
+    expect(onUpdate).not.toHaveBeenCalled()
+    expect((screen.getByTestId('node-criteria-input') as HTMLInputElement).value).toBe('   ')
+  })
+
+  it('API / 服务 / 实体空输入点添加：三处都给出 error toast', () => {
+    const onUpdate = vi.fn()
+    renderEditorWithToast(makeNode({ type: 'process', status: 'draft' }), onUpdate)
+
+    for (const testId of ['node-meta-add-apis', 'node-meta-add-services', 'node-meta-add-entities']) {
+      fireEvent.click(screen.getByTestId(testId))
+    }
+
+    const errors = toastsOf('error')
+    expect(errors).toHaveLength(3)
+    for (const toast of errors) {
+      expect(toast.title).toContain('不能为空')
+    }
+    expect(toastsOf('success')).toHaveLength(0)
+
+    // 一条都没新增
+    expect(onUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe('RightPanel — 节点更新失败不再静默', () => {
+  const originalUpdateNode = useGraphStore.getState().updateNode
+  const originalElectronAPI = window.electronAPI
+
+  beforeEach(() => {
+    useToastStore.getState().clear()
+  })
+
+  afterEach(() => {
+    useToastStore.getState().clear()
+    useGraphStore.setState({
+      updateNode: originalUpdateNode,
+      nodes: [],
+      selectedNodeId: null,
+    })
+    window.electronAPI = originalElectronAPI
+  })
+
+  it('updateNode 拒绝时给出 error toast，且面板不崩', async () => {
+    const node = makeNode({ type: 'feature', status: 'draft' })
+    // 用真实的 store 实现，只把 IPC 层打掉 —— 走的是生产路径
+    useGraphStore.setState({ nodes: [node], selectedNodeId: node.id })
+    window.electronAPI = {
+      ...originalElectronAPI,
+      'node:update': vi.fn().mockRejectedValue(new Error('节点保存失败')),
+    } as typeof window.electronAPI
+
+    render(
+      <>
+        <RightPanel />
+        <ToastContainer />
+      </>,
+    )
+
+    fireEvent.click(screen.getByTestId('node-status-pill-confirmed'))
+
+    await waitFor(() => {
+      expect(toastsOf('error')).toHaveLength(1)
+    })
+    expect(toastsOf('error')[0].title).toContain('节点更新失败')
+    // 失败原因也带出来了
+    expect(toastsOf('error')[0].message).toContain('节点保存失败')
+    expect(toastsOf('success')).toHaveLength(0)
+
+    // 界面没崩 —— 节点标题仍在
+    expect(screen.getByText('示例节点')).toBeTruthy()
+  })
+
+  it('deleteNode 拒绝时给出 error toast', async () => {
+    const node = makeNode({ type: 'feature', status: 'draft' })
+    useGraphStore.setState({ nodes: [node], selectedNodeId: node.id })
+    window.electronAPI = {
+      ...originalElectronAPI,
+      'node:delete': vi.fn().mockRejectedValue(new Error('节点删除失败原因')),
+    } as typeof window.electronAPI
+
+    render(
+      <>
+        <RightPanel />
+        <ToastContainer />
+      </>,
+    )
+
+    fireEvent.click(screen.getByText('删除节点'))
+
+    await waitFor(() => {
+      expect(toastsOf('error')).toHaveLength(1)
+    })
+    expect(toastsOf('error')[0].title).toContain('节点删除失败')
+    expect(toastsOf('error')[0].message).toContain('节点删除失败原因')
   })
 })
