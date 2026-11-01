@@ -55,7 +55,14 @@ export class GraphService {
     this.cachedProjectPaths = null
   }
 
-  async createGraph(data: { name: string; type: GraphType }): Promise<Graph> {
+  /**
+   * 新建一张图。
+   *
+   * `projectPath` 是**项目根目录**：它决定 Agent 会话的 workingDirectory、
+   * 项目级默认值的归属、以及这张图是否在 IPC 路径白名单里
+   * （见 CLAUDE.md「双图模型」与 spec §四.B2）—— 新建的图必须带上它。
+   */
+  async createGraph(data: { name: string; type: GraphType; projectPath?: string }): Promise<Graph> {
     const result = this.graphRepo.create(data)
     await WikiIndexService.createSpecialPages(result.id, data.type, new NodeRepository(this.db))
     this.invalidateProjectPathsCache()

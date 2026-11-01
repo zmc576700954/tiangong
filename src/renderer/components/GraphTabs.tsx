@@ -1,31 +1,99 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Plus, X, GitBranch, Map } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
+import { useFileTreeStore } from '../store/fileTreeStore'
 import { cn } from '../lib/utils'
 import { localizeGraphName } from '@shared/i18n'
+import type { TranslationKey } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import { FloatingPanel } from './ui/FloatingPanel'
+import { toastError } from '../lib/toast'
 import type { Graph } from '@shared/types'
+
+/**
+ * 新建图固定为「工作图（dev）」。
+ *
+ * 每个项目本来就有固定的两张图（online 蓝图 + dev 场景，项目导入时在一个事务里建好），
+ * 让用户「选类型」等于允许造出一张重复的废图 —— 类型选择器整体移除（spec §四.B2）。
+ */
+const NEW_GRAPH_TYPE = 'dev' as const
 
 interface GraphTabsProps {
   graphs: Graph[]
   currentGraphId: string | null
 }
 
+type Translate = (key: TranslationKey, vars?: Record<string, string | number>) => string
+
+/** 默认名：新工作图 N（N = 已有 dev 图数 + 1；撞名则继续递增） */
+function defaultGraphName(graphs: Graph[], t: Translate): string {
+  const taken = new Set(graphs.map((g) => g.name))
+  let n = graphs.filter((g) => g.type === 'dev').length + 1
+  let name = t('graph.tab.defaultName', { n })
+  while (taken.has(name)) {
+    n += 1
+    name = t('graph.tab.defaultName', { n })
+  }
+  return name
+}
+
+/** 项目已从侧边栏移除时的兜底显示名（取路径尾段） */
+function projectNameFromPath(projectPath: string): string {
+  const segments = projectPath.split(/[\\/]/).filter(Boolean)
+  return segments[segments.length - 1] ?? projectPath
+}
+
 export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   const { locale, t } = useI18n()
   const { setCurrentGraph, createGraph, deleteGraph } = useGraphStore()
+  const projects = useFileTreeStore((s) => s.projects)
   const [showNewDialog, setShowNewDialog] = useState(false)
   const [newGraphName, setNewGraphName] = useState('')
-  const [newGraphType, setNewGraphType] = useState<'online' | 'dev'>('online')
   const [deriveFromGraphId, setDeriveFromGraphId] = useState<string | null>(null)
+  const [selectedProjectPath, setSelectedProjectPath] = useState('')
 
   const onlineGraphs = graphs.filter(g => g.type === 'online')
+  const currentGraph = graphs.find(g => g.id === currentGraphId)
+  /** 「当前项目」= 当前打开的图所属项目 */
+  const currentProjectPath = currentGraph?.projectPath
+  const deriveSource = deriveFromGraphId ? graphs.find(g => g.id === deriveFromGraphId) : undefined
+  const isDeriving = !!deriveSource
+  /**
+   * 派生图**继承源图的 projectPath**（主进程 deriveGraph 就是这么写的）——
+   * 所以选了派生源之后，项目由源图决定，不能再让用户选别的（否则「选了也没用」）。
+   */
+  const effectiveProjectPath = isDeriving ? deriveSource?.projectPath : selectedProjectPath
+
+  const projectOptions = useMemo(() => {
+    const options = projects.map(p => ({ path: p.path, name: p.name }))
+    // 当前图所属项目可能已从侧边栏移除，但绑定仍然有效 —— 保留为可选项
+    if (effectiveProjectPath && !options.some(o => o.path === effectiveProjectPath)) {
+      options.push({ path: effectiveProjectPath, name: projectNameFromPath(effectiveProjectPath) })
+    }
+    return options
+  }, [projects, effectiveProjectPath])
+
+  const openNewDialog = () => {
+    setNewGraphName(defaultGraphName(graphs, t))
+    setDeriveFromGraphId(null)
+    // 单项目时自动带入当前项目；当前图没有项目时退到第一个项目
+    setSelectedProjectPath(currentProjectPath ?? projects[0]?.path ?? '')
+    setShowNewDialog(true)
+  }
 
   const handleCreate = async () => {
-    if (!newGraphName.trim()) return
-    const sourceId = newGraphType === 'dev' && deriveFromGraphId ? deriveFromGraphId : undefined
-    await createGraph(newGraphName.trim(), newGraphType, sourceId)
+    const name = newGraphName.trim()
+    if (!name) {
+      // 空名不再静默失败：给出提示，且对话框保持打开（改完名字就能重试）
+      toastError(t('graph.tab.nameRequired'))
+      return
+    }
+    await createGraph(
+      name,
+      NEW_GRAPH_TYPE,
+      deriveFromGraphId ?? undefined,
+      effectiveProjectPath || undefined,
+    )
     setNewGraphName('')
     setDeriveFromGraphId(null)
     setShowNewDialog(false)
@@ -65,7 +133,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
       {/* 新建图按钮 */}
       <button
         data-testid="new-graph-btn"
-        onClick={() => setShowNewDialog(true)}
+        onClick={openNewDialog}
         className="flex items-center gap-1 px-2 py-1.5 rounded-md text-sm text-muted-foreground hover:text-foreground hover:bg-background/50 transition-colors"
       >
         <Plus className="w-3.5 h-3.5" />
@@ -107,36 +175,15 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
             onChange={(e) => setNewGraphName(e.target.value)}
             className="w-full px-3 py-2 border rounded-md text-sm mb-3 bg-background"
             autoFocus
+            // 默认名已预填 —— 聚焦时全选，直接打字就是改名而不是追加
+            onFocus={(e) => e.target.select()}
             onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
           />
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setNewGraphType('online')}
-              className={cn(
-                'flex-1 px-3 py-2 text-sm rounded-md border transition-colors',
-                newGraphType === 'online'
-                  ? 'border-primary bg-primary/5 text-primary'
-                  : 'hover:bg-muted',
-              )}
-            >
-              {t('graph.tab.type.online')}
-            </button>
-            <button
-              onClick={() => setNewGraphType('dev')}
-              className={cn(
-                'flex-1 px-3 py-2 text-sm rounded-md border transition-colors',
-                newGraphType === 'dev'
-                  ? 'border-primary bg-primary/5 text-primary'
-                  : 'hover:bg-muted',
-              )}
-            >
-              {t('graph.tab.type.dev')}
-            </button>
-          </div>
-          {newGraphType === 'dev' && onlineGraphs.length > 0 && (
+          {onlineGraphs.length > 0 && (
             <div className="mb-3">
               <label className="text-xs text-muted-foreground mb-1 block">{t('graph.tab.deriveFrom')}</label>
               <select
+                data-testid="graph-derive-select"
                 value={deriveFromGraphId ?? ''}
                 onChange={(e) => setDeriveFromGraphId(e.target.value || null)}
                 className="w-full px-3 py-2 border rounded-md text-sm bg-background"
@@ -148,6 +195,34 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
               </select>
             </div>
           )}
+          <div className="mb-3">
+            <label className="text-xs text-muted-foreground mb-1 block">{t('graph.tab.project')}</label>
+            {projectOptions.length > 1 || isDeriving ? (
+              <select
+                data-testid="graph-project-select"
+                value={effectiveProjectPath ?? ''}
+                disabled={isDeriving}
+                onChange={(e) => setSelectedProjectPath(e.target.value)}
+                className="w-full px-3 py-2 border rounded-md text-sm bg-background disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {!effectiveProjectPath && <option value="">{t('graph.tab.noProject')}</option>}
+                {projectOptions.map(o => (
+                  <option key={o.path} value={o.path}>{o.name}</option>
+                ))}
+              </select>
+            ) : (
+              <div className="w-full px-3 py-2 border rounded-md text-sm bg-muted/30 text-muted-foreground">
+                {projectOptions[0]?.name ?? t('graph.tab.noProject')}
+              </div>
+            )}
+            {isDeriving && (
+              <p className="text-xs text-muted-foreground mt-1">
+                {deriveSource?.projectPath
+                  ? t('graph.tab.deriveProjectLocked')
+                  : t('graph.tab.deriveNoProject')}
+              </p>
+            )}
+          </div>
         </div>
       </FloatingPanel>
     </div>

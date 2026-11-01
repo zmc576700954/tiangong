@@ -23,10 +23,11 @@ function createMockDb() {
 
 vi.mock('../repositories/graph-repository', () => ({
   GraphRepository: vi.fn().mockImplementation(function (this: GraphRepository) {
-    this.create = vi.fn((data: { name: string; type: GraphType }) => ({
+    this.create = vi.fn((data: { name: string; type: GraphType; projectPath?: string }) => ({
       id: 'graph-id',
       name: data.name,
       type: data.type,
+      projectPath: data.projectPath,
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',
     }))
@@ -52,6 +53,13 @@ describe('GraphService', () => {
     const graph = await service.createGraph({ name: 'G1', type: 'online' })
     expect(graph.name).toBe('G1')
     expect(graph.type).toBe('online')
+  })
+
+  it('createGraph 带 projectPath 时透传给 repository（落库保留该路径）', async () => {
+    const repo = (service as unknown as { graphRepo: { create: ReturnType<typeof vi.fn> } }).graphRepo
+    const graph = await service.createGraph({ name: 'G2', type: 'dev', projectPath: '/tmp/proj' })
+    expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ projectPath: '/tmp/proj' }))
+    expect(graph.projectPath).toBe('/tmp/proj')
   })
 
   it('deriveGraph throws when source not found', async () => {

@@ -231,7 +231,12 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
         return { graph, nodes, edges: mockEdges, bugs: [] }
       },
       'graph:list': async () => mockGraphs,
-      'graph:create': async ({ name, type }: { name: string; type: string }) => ({ ...mockGraphs[0], name, type }),
+      'graph:create': async ({ name, type, projectPath }: { name: string; type: string; projectPath?: string }) => ({
+        ...mockGraphs[0],
+        name,
+        type,
+        ...(projectPath ? { projectPath } : {}),
+      }),
       /**
        * 拖拽重挂 —— 父子关系变更的唯一入口。
        *

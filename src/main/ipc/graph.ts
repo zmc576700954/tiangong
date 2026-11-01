@@ -222,7 +222,13 @@ export function registerGraphHandlers(
 
   // ---------- 图操作 ----------
   typedHandle('graph:create', async (_, data) => {
-    return graphService.createGraph(data)
+    // projectPath 会进 graphs.project_path → getProjectPaths() 的 IPC 路径白名单，
+    // 所以和 graph:initFromProject 走同一道防线（拒绝系统目录 / 非字符串）。
+    const projectPath =
+      data.projectPath === undefined || data.projectPath === null
+        ? undefined
+        : validateProjectPath(ensureString('projectPath', data.projectPath, 1024))
+    return graphService.createGraph({ name: data.name, type: data.type, projectPath })
   })
 
   typedHandle('graph:list', async () => {

@@ -54,7 +54,7 @@ export interface RealtimeConnectionInfo {
 
 export interface IpcApi {
   // 图操作
-  'graph:create': (data: { name: string; type: GraphType }) => Promise<Graph>
+  'graph:create': (data: { name: string; type: GraphType; projectPath?: string }) => Promise<Graph>
   'graph:list': () => Promise<Graph[]>
   'graph:get': (id: string, options?: GraphFetchOptions) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>

@@ -49,7 +49,15 @@ interface GraphState {
   loadGraphs: () => Promise<void>
   loadGraph: (graphId: string) => Promise<void>
 
-  createGraph: (name: string, type: 'online' | 'dev', sourceGraphId?: string) => Promise<Graph>
+  /**
+   * 新建图。
+   *
+   * `projectPath` = 图所属项目的根目录。给了 `sourceGraphId`（从蓝图派生）时
+   * 走 `graph:derive` —— 派生图**继承源图的 projectPath**，这里的 projectPath 不用；
+   * 否则走 `graph:create`，必须把 projectPath 带上：它决定 Agent 会话的
+   * workingDirectory、项目级默认值归属和 IPC 路径白名单（spec §四.B2）。
+   */
+  createGraph: (name: string, type: 'online' | 'dev', sourceGraphId?: string, projectPath?: string) => Promise<Graph>
   deleteGraph: (id: string) => Promise<void>
   setCurrentGraph: (id: string | null) => void
 
@@ -197,13 +205,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     }
   },
 
-  createGraph: async (name, type, sourceGraphId) => {
+  createGraph: async (name, type, sourceGraphId, projectPath) => {
     if (sourceGraphId) {
       const graph = await window.electronAPI['graph:derive'](sourceGraphId, name)
       set((state) => ({ graphs: [graph, ...state.graphs] }))
       return graph
     }
-    const graph = await window.electronAPI['graph:create']({ name, type })
+    const graph = await window.electronAPI['graph:create']({ name, type, projectPath })
     set((state) => ({ graphs: [graph, ...state.graphs] }))
     return graph
   },
