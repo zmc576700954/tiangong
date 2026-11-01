@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { Plus, X, GitBranch, Map as MapIcon } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { useFileTreeStore } from '../store/fileTreeStore'
-import { cn } from '../lib/utils'
+import { cn, normalizeProjectPath, projectNameFromPath } from '../lib/utils'
 import { localizeGraphName } from '@shared/i18n'
 import type { TranslationKey } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
@@ -39,36 +39,6 @@ function defaultGraphName(graphs: Graph[], t: Translate): string {
   return name
 }
 
-/** 项目已从侧边栏移除时的兜底显示名（取路径尾段） */
-function projectNameFromPath(projectPath: string): string {
-  const segments = projectPath.split(/[\\/]/).filter(Boolean)
-  return segments[segments.length - 1] ?? projectPath
-}
-
-/**
- * 归一化项目路径：统一分隔符、解析 `.` / `..`、去掉尾斜杠。
- *
- * 主进程存的是 `validateProjectPath` 里 `path.resolve()` 过的路径，侧边栏存的是
- * 用户挑目录时的原始路径 —— 两者文本可能不同（尾斜杠、`.\`、正反斜杠）。
- * 不归一化的话，同一个目录会在项目选择器里**列成两条**。
- * 渲染进程用不了 node:path，这里做一份词法归一（项目路径都是绝对路径，
- * 与 `path.resolve` 的结果一致）。
- */
-function normalizeProjectPath(projectPath: string): string {
-  const segments = projectPath.replace(/\\/g, '/').split('/')
-  const out: string[] = []
-  for (const segment of segments) {
-    if (!segment || segment === '.') continue
-    if (segment === '..') {
-      out.pop()
-      continue
-    }
-    out.push(segment)
-  }
-  const prefix = projectPath.startsWith('/') ? '/' : ''
-  return prefix + out.join('/')
-}
-
 export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   const { locale, t } = useI18n()
   const { setCurrentGraph, createGraph, deleteGraph } = useGraphStore()
@@ -87,36 +57,42 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   /**
    * 派生图**继承源图的 projectPath**（主进程 deriveGraph 就是这么写的）——
    * 所以选了派生源之后，项目由源图决定，不能再让用户选别的（否则「选了也没用」）。
+   *
+   * ⚠️ 这里存的是**原始路径**（侧边栏给什么就存什么），不是归一化后的：
+   * 归一化不可能和主进程的 `path.resolve` 完全等价（POSIX 目录名里的反斜杠、
+   * Windows UNC / 盘符根），拿归一化值去落库会让图**绑到错的目录**。
+   * 归一化只用来做「同一个目录」的比较（见 projectOptions）。
    */
-  const effectiveProjectPath = isDeriving
-    ? (deriveSource?.projectPath ? normalizeProjectPath(deriveSource.projectPath) : undefined)
-    : selectedProjectPath
+  const effectiveProjectPath = isDeriving ? deriveSource?.projectPath : selectedProjectPath
 
   const projectOptions = useMemo(() => {
     // 按归一化后的路径去重：同一个目录只出现一次（主进程存的路径是 resolve 过的，
-    // 侧边栏是原始路径，文本可能不同）
-    const byKey = new Map<string, { path: string; name: string }>()
+    // 侧边栏是原始路径，文本可能不同）。
+    // id = 归一化路径（只做比较用），path = **原始路径**（真正发出去的那条）。
+    const byId = new Map<string, { id: string; path: string; name: string }>()
     for (const p of projects) {
-      const key = normalizeProjectPath(p.path)
-      if (!key || byKey.has(key)) continue
-      byKey.set(key, { path: key, name: p.name })
+      const id = normalizeProjectPath(p.path)
+      if (!id || byId.has(id)) continue
+      byId.set(id, { id, path: p.path, name: p.name })
     }
     // 当前图所属项目可能已从侧边栏移除，但绑定仍然有效 —— 保留为可选项
-    if (effectiveProjectPath && !byKey.has(effectiveProjectPath)) {
-      byKey.set(effectiveProjectPath, { path: effectiveProjectPath, name: projectNameFromPath(effectiveProjectPath) })
+    if (effectiveProjectPath) {
+      const id = normalizeProjectPath(effectiveProjectPath)
+      if (id && !byId.has(id)) {
+        byId.set(id, { id, path: effectiveProjectPath, name: projectNameFromPath(effectiveProjectPath) })
+      }
     }
-    return [...byKey.values()]
+    return [...byId.values()]
   }, [projects, effectiveProjectPath])
+
+  /** 当前生效的项目在选择器里的 id（= 归一化路径），用来让 select 选中正确项 */
+  const effectiveProjectId = effectiveProjectPath ? normalizeProjectPath(effectiveProjectPath) : ''
 
   const openNewDialog = () => {
     setNewGraphName(defaultGraphName(graphs, t))
     setDeriveFromGraphId(null)
-    // 单项目时自动带入当前项目；当前图没有项目时退到第一个项目
-    setSelectedProjectPath(
-      currentProjectPath
-        ? normalizeProjectPath(currentProjectPath)
-        : (projects[0] ? normalizeProjectPath(projects[0].path) : ''),
-    )
+    // 单项目时自动带入当前项目；当前图没有项目时退到第一个项目（都存原始路径）
+    setSelectedProjectPath(currentProjectPath ?? projects[0]?.path ?? '')
     setShowNewDialog(true)
   }
 
@@ -248,14 +224,19 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
             {projectOptions.length > 1 || isDeriving ? (
               <select
                 data-testid="graph-project-select"
-                value={effectiveProjectPath ?? ''}
+                value={effectiveProjectId}
                 disabled={isDeriving}
-                onChange={(e) => setSelectedProjectPath(e.target.value)}
+                onChange={(e) => {
+                  // 存的是**原始路径**（不是归一化值）—— 真正落库的路径由主进程的
+                  // path.resolve 还原，这里不替它做决定
+                  const picked = projectOptions.find(o => o.id === e.target.value)
+                  setSelectedProjectPath(picked?.path ?? '')
+                }}
                 className="w-full px-3 py-2 border rounded-md text-sm bg-background disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {!effectiveProjectPath && <option value="">{t('graph.tab.noProject')}</option>}
+                {!effectiveProjectId && <option value="">{t('graph.tab.noProject')}</option>}
                 {projectOptions.map(o => (
-                  <option key={o.path} value={o.path}>{o.name}</option>
+                  <option key={o.id} value={o.id}>{o.name}</option>
                 ))}
               </select>
             ) : (

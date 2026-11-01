@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import path from 'node:path'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { GraphTabs } from '../GraphTabs'
+import { normalizeProjectPath } from '../../lib/utils'
 import { useFileTreeStore } from '../../store/fileTreeStore'
 import { useGraphStore } from '../../store/graphStore'
 import { ToastContainer, useToastStore } from '../../lib/toast'
@@ -273,5 +275,58 @@ describe('GraphTabs · 新建图对话框', () => {
       })
     })
     expect(deriveIpc).not.toHaveBeenCalled()
+  })
+
+  it('发给 graph:create 的是原始路径，不是归一化后的（归一化错了会绑到错的目录）', async () => {
+    // 侧边栏给的是带反斜杠的 POSIX 目录名 —— 反斜杠在 Linux/macOS 上是合法文件名字符，
+    // 把它归一化成 '/work/my/dir' 会让图绑到一个**不存在的**目录。
+    useFileTreeStore.setState({ projects: [{ ...ALPHA, path: '/work/my\\dir' }, BETA] })
+    renderTabs(<GraphTabs graphs={[makeGraph('g-dev')]} currentGraphId="g-dev" />)
+    openDialog()
+
+    fireEvent.click(screen.getByTestId('create-graph-btn'))
+    await waitFor(() => {
+      expect(createIpc).toHaveBeenCalledWith({
+        name: expect.any(String),
+        type: 'dev',
+        projectPath: '/work/my\\dir',
+      })
+    })
+  })
+})
+
+/**
+ * 归一化**只能用于比较**（判断「是不是同一个目录」）——
+ * 它必须和主进程 `path.resolve` 指向同一个目录，否则会把两个不同目录合并、
+ * 或把一个目录拆成两条。
+ */
+describe('normalizeProjectPath —— 与 path.resolve 指向同一个目录', () => {
+  it('POSIX 目录名里的反斜杠是合法字符，一个都不能改', () => {
+    const raw = '/work/my\\dir'
+    const normalized = normalizeProjectPath(raw)
+    expect(normalized).toBe('/work/my\\dir')
+    expect(path.posix.resolve(normalized)).toBe(path.posix.resolve(raw))
+  })
+
+  it('Windows UNC 保留根前缀，绝不能变成相对路径', () => {
+    const raw = '\\\\server\\share\\dir'
+    const normalized = normalizeProjectPath(raw)
+    expect(normalized).toBe('//server/share/dir')
+    expect(path.win32.isAbsolute(normalized)).toBe(true)
+    expect(path.win32.resolve(normalized)).toBe(path.win32.resolve(raw))
+  })
+
+  it('Windows 盘符根保留盘符，不能退化成盘符相对路径', () => {
+    const raw = 'C:\\'
+    const normalized = normalizeProjectPath(raw)
+    expect(normalized).toBe('C:/')
+    expect(path.win32.isAbsolute(normalized)).toBe(true)
+    expect(path.win32.resolve(normalized)).toBe(path.win32.resolve(raw))
+  })
+
+  it('尾斜杠与 . / .. 的词法归一仍指向同一个目录', () => {
+    expect(path.posix.resolve(normalizeProjectPath('/work/alpha/'))).toBe('/work/alpha')
+    expect(path.posix.resolve(normalizeProjectPath('/work/./alpha'))).toBe('/work/alpha')
+    expect(path.posix.resolve(normalizeProjectPath('/work/x/../alpha'))).toBe('/work/alpha')
   })
 })
