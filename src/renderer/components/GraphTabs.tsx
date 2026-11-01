@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Plus, X, GitBranch, Map } from 'lucide-react'
+// `Map` 图标改名 —— 直接 import `Map` 会遮蔽全局的 Map 构造器，
+// 本文件里 `new Map(...)` 会变成 "Map is not a constructor"
+import { Plus, X, GitBranch, Map as MapIcon } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { useFileTreeStore } from '../store/fileTreeStore'
 import { cn } from '../lib/utils'
@@ -43,6 +45,30 @@ function projectNameFromPath(projectPath: string): string {
   return segments[segments.length - 1] ?? projectPath
 }
 
+/**
+ * 归一化项目路径：统一分隔符、解析 `.` / `..`、去掉尾斜杠。
+ *
+ * 主进程存的是 `validateProjectPath` 里 `path.resolve()` 过的路径，侧边栏存的是
+ * 用户挑目录时的原始路径 —— 两者文本可能不同（尾斜杠、`.\`、正反斜杠）。
+ * 不归一化的话，同一个目录会在项目选择器里**列成两条**。
+ * 渲染进程用不了 node:path，这里做一份词法归一（项目路径都是绝对路径，
+ * 与 `path.resolve` 的结果一致）。
+ */
+function normalizeProjectPath(projectPath: string): string {
+  const segments = projectPath.replace(/\\/g, '/').split('/')
+  const out: string[] = []
+  for (const segment of segments) {
+    if (!segment || segment === '.') continue
+    if (segment === '..') {
+      out.pop()
+      continue
+    }
+    out.push(segment)
+  }
+  const prefix = projectPath.startsWith('/') ? '/' : ''
+  return prefix + out.join('/')
+}
+
 export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
   const { locale, t } = useI18n()
   const { setCurrentGraph, createGraph, deleteGraph } = useGraphStore()
@@ -62,22 +88,35 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
    * 派生图**继承源图的 projectPath**（主进程 deriveGraph 就是这么写的）——
    * 所以选了派生源之后，项目由源图决定，不能再让用户选别的（否则「选了也没用」）。
    */
-  const effectiveProjectPath = isDeriving ? deriveSource?.projectPath : selectedProjectPath
+  const effectiveProjectPath = isDeriving
+    ? (deriveSource?.projectPath ? normalizeProjectPath(deriveSource.projectPath) : undefined)
+    : selectedProjectPath
 
   const projectOptions = useMemo(() => {
-    const options = projects.map(p => ({ path: p.path, name: p.name }))
-    // 当前图所属项目可能已从侧边栏移除，但绑定仍然有效 —— 保留为可选项
-    if (effectiveProjectPath && !options.some(o => o.path === effectiveProjectPath)) {
-      options.push({ path: effectiveProjectPath, name: projectNameFromPath(effectiveProjectPath) })
+    // 按归一化后的路径去重：同一个目录只出现一次（主进程存的路径是 resolve 过的，
+    // 侧边栏是原始路径，文本可能不同）
+    const byKey = new Map<string, { path: string; name: string }>()
+    for (const p of projects) {
+      const key = normalizeProjectPath(p.path)
+      if (!key || byKey.has(key)) continue
+      byKey.set(key, { path: key, name: p.name })
     }
-    return options
+    // 当前图所属项目可能已从侧边栏移除，但绑定仍然有效 —— 保留为可选项
+    if (effectiveProjectPath && !byKey.has(effectiveProjectPath)) {
+      byKey.set(effectiveProjectPath, { path: effectiveProjectPath, name: projectNameFromPath(effectiveProjectPath) })
+    }
+    return [...byKey.values()]
   }, [projects, effectiveProjectPath])
 
   const openNewDialog = () => {
     setNewGraphName(defaultGraphName(graphs, t))
     setDeriveFromGraphId(null)
     // 单项目时自动带入当前项目；当前图没有项目时退到第一个项目
-    setSelectedProjectPath(currentProjectPath ?? projects[0]?.path ?? '')
+    setSelectedProjectPath(
+      currentProjectPath
+        ? normalizeProjectPath(currentProjectPath)
+        : (projects[0] ? normalizeProjectPath(projects[0].path) : ''),
+    )
     setShowNewDialog(true)
   }
 
@@ -88,12 +127,21 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
       toastError(t('graph.tab.nameRequired'))
       return
     }
-    await createGraph(
-      name,
-      NEW_GRAPH_TYPE,
-      deriveFromGraphId ?? undefined,
-      effectiveProjectPath || undefined,
-    )
+    try {
+      // 源图可能在这个对话框开着的时候被删掉 —— 那种情况下别去派生（否则主进程报
+      // "Source graph not found"），按当前选择建一张空白图。
+      await createGraph(
+        name,
+        NEW_GRAPH_TYPE,
+        deriveSource?.id,
+        effectiveProjectPath || undefined,
+      )
+    } catch (err) {
+      // 创建失败（IPC 校验拒绝、源图不存在、DB 报错……）必须说出来，
+      // 否则又变成「点了没反应」的那类静默失败
+      toastError(t('graph.tab.createFailed'), err instanceof Error ? err.message : String(err))
+      return
+    }
     setNewGraphName('')
     setDeriveFromGraphId(null)
     setShowNewDialog(false)
@@ -113,7 +161,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
           )}
         >
           {graph.type === 'online' ? (
-            <Map className="w-3.5 h-3.5" />
+            <MapIcon className="w-3.5 h-3.5" />
           ) : (
             <GitBranch className="w-3.5 h-3.5" />
           )}

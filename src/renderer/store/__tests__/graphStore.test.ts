@@ -107,9 +107,18 @@ describe('graphStore', () => {
     })
 
     it('createGraph adds graph to state', async () => {
-      const graph = await useGraphStore.getState().createGraph('Test Graph', 'online')
+      const graph = await useGraphStore.getState().createGraph('Test Graph', 'dev')
       expect(graph.id).toBe('graph-server-id')
       expect(useGraphStore.getState().graphs).toHaveLength(1)
+    })
+
+    it('createGraph 把 projectPath 交给 graph:create（新建图必须绑定项目）', async () => {
+      await useGraphStore.getState().createGraph('Bound Graph', 'dev', undefined, '/work/beta')
+      expect(window.electronAPI['graph:create']).toHaveBeenCalledWith({
+        name: 'Bound Graph',
+        type: 'dev',
+        projectPath: '/work/beta',
+      })
     })
 
     it('createGraph with sourceGraphId calls derive', async () => {
@@ -119,7 +128,7 @@ describe('graphStore', () => {
     })
 
     it('deleteGraph removes graph and clears currentGraphId if matching', async () => {
-      await useGraphStore.getState().createGraph('To Delete', 'online')
+      await useGraphStore.getState().createGraph('To Delete', 'dev')
       useGraphStore.setState({ currentGraphId: 'graph-server-id' })
       await useGraphStore.getState().deleteGraph('graph-server-id')
       expect(useGraphStore.getState().graphs).toHaveLength(0)

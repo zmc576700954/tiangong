@@ -93,9 +93,12 @@ describe('GraphTabs · 新建图对话框', () => {
     )
     openDialog()
 
-    // 旧的类型选择器是两个按钮（文案取自已删除的 graph.tab.type.*）
-    expect(within(dialog()).queryByText('已上线')).toBeNull()
-    expect(within(dialog()).queryByText('开发中')).toBeNull()
+    // 断言的是**控件不存在**，不是某段文案不存在 —— 「graph-type-selector」是留给
+    // 类型选择器的稳定 testid：将来有人把它加回来（哪怕换了文案）这条断言也会红。
+    expect(within(dialog()).queryByTestId('graph-type-selector')).toBeNull()
+    // 结构上再钉一道：对话框里只剩页脚的「取消 / 创建」两个按钮
+    // （旧的类型选择器是正文里的一对按钮）
+    expect(within(dialog()).getAllByRole('button').length).toBe(2)
     // 剩下的控件：名称输入 + 项目选择
     expect(within(dialog()).getByTestId('graph-name-input')).toBeTruthy()
     expect(within(dialog()).getByTestId('graph-project-select')).toBeTruthy()
@@ -204,5 +207,71 @@ describe('GraphTabs · 新建图对话框', () => {
       expect(deriveIpc).toHaveBeenCalledWith('g-online', expect.any(String))
     })
     expect(createIpc).not.toHaveBeenCalled()
+  })
+
+  it('同一个目录只列一次（侧边栏原始路径 vs 已存 resolve 过的路径）', () => {
+    // 主进程存的是 path.resolve 过的 '/work/alpha'，侧边栏是原始的 '/work/alpha/'
+    useFileTreeStore.setState({ projects: [{ ...ALPHA, path: '/work/alpha/' }, BETA] })
+    renderTabs(
+      <GraphTabs
+        graphs={[makeGraph('g-dev', { projectPath: '/work/alpha' })]}
+        currentGraphId="g-dev"
+      />,
+    )
+    openDialog()
+
+    const select = within(dialog()).getByTestId('graph-project-select') as HTMLSelectElement
+    expect(Array.from(select.options).map(o => o.value)).toEqual(['/work/alpha', '/work/beta'])
+    expect(select.value).toBe('/work/alpha')
+  })
+
+  it('创建失败 → 错误 toast 且对话框不关闭（不再静默失败）', async () => {
+    useFileTreeStore.setState({ projects: [ALPHA] })
+    createIpc.mockRejectedValueOnce(new Error('boom'))
+    renderTabs(<GraphTabs graphs={[makeGraph('g-dev')]} currentGraphId="g-dev" />)
+    openDialog()
+
+    fireEvent.click(screen.getByTestId('create-graph-btn'))
+    await waitFor(() => {
+      expect(screen.getByTestId('toast-error')).toBeTruthy()
+    })
+    expect(screen.getByText('boom')).toBeTruthy()
+    // 失败时对话框保持打开，用户改完还能重试
+    expect(screen.getByTestId('floating-panel')).toBeTruthy()
+  })
+
+  it('派生源在对话框开着时被删掉 → 不去派生，按空白图建', async () => {
+    useFileTreeStore.setState({ projects: [ALPHA, BETA] })
+    const { rerender } = renderTabs(
+      <GraphTabs
+        graphs={[
+          makeGraph('g-online', { type: 'online', projectPath: '/work/alpha' }),
+          makeGraph('g-dev', { projectPath: '/work/beta' }),
+        ]}
+        currentGraphId="g-dev"
+      />,
+    )
+    openDialog()
+
+    const deriveSelect = within(dialog()).getByTestId('graph-derive-select') as HTMLSelectElement
+    fireEvent.change(deriveSelect, { target: { value: 'g-online' } })
+
+    // 源图被删掉了（graphs 里没有了）—— 陈旧的 id 不能拿去 graph:derive
+    rerender(
+      <>
+        <GraphTabs graphs={[makeGraph('g-dev', { projectPath: '/work/beta' })]} currentGraphId="g-dev" />
+        <ToastContainer />
+      </>,
+    )
+
+    fireEvent.click(screen.getByTestId('create-graph-btn'))
+    await waitFor(() => {
+      expect(createIpc).toHaveBeenCalledWith({
+        name: expect.any(String),
+        type: 'dev',
+        projectPath: '/work/beta',
+      })
+    })
+    expect(deriveIpc).not.toHaveBeenCalled()
   })
 })

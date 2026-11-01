@@ -13,6 +13,8 @@ export const graphZh = {
   'graph.tab.defaultName': '新工作图 {n}',
   /** 名称为空时的提示（空名不再静默失败） */
   'graph.tab.nameRequired': '请输入图名称',
+  /** 创建失败时的提示（IPC 校验拒绝 / 源图已被删除 / DB 报错……） */
+  'graph.tab.createFailed': '创建图失败',
   'graph.tab.project': '项目',
   'graph.tab.noProject': '未绑定项目',
   /** 选了派生源 → 项目由源图决定，锁定并说明原因 */
@@ -33,6 +35,7 @@ export const graphEn: Record<keyof typeof graphZh, string> = {
   'graph.tab.create': 'Create',
   'graph.tab.defaultName': 'New Work Graph {n}',
   'graph.tab.nameRequired': 'Please enter a graph name',
+  'graph.tab.createFailed': 'Failed to create graph',
   'graph.tab.project': 'Project',
   'graph.tab.noProject': 'No project',
   'graph.tab.deriveProjectLocked': 'The derived graph inherits the project of the source blueprint and cannot be changed here',
