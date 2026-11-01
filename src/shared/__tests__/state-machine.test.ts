@@ -175,7 +175,8 @@ describe('canTransitionForType', () => {
 
   /**
    * 核心回归断言：期望值直接来自 per-type 矩阵，而不是另一个被测函数。
-   * 如果把 predicate 错改回 loose 表，project: draft→developing 等 40 格会立即变红。
+   * 如果把 predicate 错改回 loose 表，恰好 49 格会立即变红 ——
+   * 也就是「loose 表放行、per-type 矩阵拒绝」的那 49 格（反向 0 格）。
    */
   it('每个格子都服从 NODE_STATUS_TRANSITIONS，validator 的抛错行为也服从同一期望', () => {
     for (const type of NODE_TYPE_VALUES) {

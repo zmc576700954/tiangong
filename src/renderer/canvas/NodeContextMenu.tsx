@@ -216,7 +216,7 @@ export function NodeContextMenu({
           {isTerminal && (
             <p
               className="px-3 pb-1 text-[10px] text-muted-foreground"
-              data-testid="node-menu-status-terminal-hint"
+              data-testid="node-menu-terminal-hint"
             >
               {t('status.terminalHint', { status: nodeStatusLabel(node.status, locale) })}
             </p>
