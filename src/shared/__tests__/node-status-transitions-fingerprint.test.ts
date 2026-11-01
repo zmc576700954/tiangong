@@ -19,6 +19,11 @@
  * ⚠️ 这份字面量是从 src/shared/types/graph.ts 的 NODE_STATUS_TRANSITIONS
  * 逐行抄下来的，**不是从矩阵计算出来的**（从矩阵算就等于自我循环，
  * 和被测对象同源，抓不到任何回归）。改动矩阵时必须同步更新本文件。
+ *
+ * ⚠️ 指纹只覆盖 `from→to` 这一对：`NodeStatusTransition` 上的 `auto` / `condition`
+ * 字段目前没有任何消费方（全仓库无读取），矩阵的 77 行也都没设这两个字段，
+ * 因此指纹对它们不构成约束 —— 改了它们这份测试照样全绿。
+ * 若将来这两个字段真正被使用，需要同步扩展指纹。
  */
 
 import { describe, it, expect } from 'vitest'
