@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { useGraphStore } from '../store/graphStore'
 import { cn } from '../lib/utils'
+import { isTerminalStatus } from '../lib/node-status'
 import {
   NODE_TYPE_COLORS,
 } from '@shared/constants'
@@ -114,7 +115,7 @@ function StatusSelector({
   )
 
   // 终态：当前状态没有任何合法迁出（药丸组只剩自己一个）
-  const isTerminal = reachable.every((opt) => opt.value === status)
+  const isTerminal = isTerminalStatus(status, reachable.map((opt) => opt.value))
 
   return (
     <div className="space-y-1.5">

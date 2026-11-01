@@ -60,7 +60,7 @@ export class InvalidStateTransitionError extends Error {
 }
 
 /** 状态转换规则图：from → Set<to> */
-const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
+export const TRANSITION_RULES: Record<NodeStatus, Set<NodeStatus>> = {
   // 草稿：可确认、删除（回到占位）
   draft: new Set<NodeStatus>(['confirmed', 'developing', 'placeholder']),
 
@@ -129,6 +129,7 @@ export function canTransitionForType(
   to: NodeStatus,
 ): boolean {
   if (from === to) return true
+  if (!Object.prototype.hasOwnProperty.call(NODE_STATUS_TRANSITIONS, nodeType)) return false
   const allowed = NODE_STATUS_TRANSITIONS[nodeType]
   if (!allowed) return false
   return allowed.some((t) => t.from === from && t.to === to)

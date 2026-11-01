@@ -401,15 +401,23 @@ describe('graphStore', () => {
       expect(useGraphStore.getState().nodes[0].status).toBe('confirmed')
     })
 
-    it('updateNode 按节点类型判定 —— 全局规则放行但 per-type 矩阵拒绝的也要拒', async () => {
-      // module 的 draft→developing 全局规则允许，但 module 的 per-type 矩阵不允许
-      // （module 只能 draft→confirmed→developing）。主进程走同一张矩阵，
-      // 渲染端不放行才不会出现「点了没反应」。
+    // 每个类型至少覆盖一个「loose 表放行、per-type 矩阵拒绝」的原始 bug 场景。
+    // 必须在 renderer 本地拒绝，不能发 IPC 后让主进程拒绝而表现为「点了没反应」。
+    it.each([
+      { type: 'project', from: 'draft', to: 'developing' },
+      { type: 'module', from: 'draft', to: 'developing' },
+      { type: 'process', from: 'draft', to: 'developing' },
+      { type: 'feature', from: 'confirmed', to: 'published' },
+      { type: 'bug', from: 'placeholder', to: 'draft' },
+      { type: 'wiki-page', from: 'developing', to: 'testing' },
+    ] as const)('updateNode 拒绝 $type 的 $from→$to（loose 放行、per-type 拒绝）', async ({ type, from, to }) => {
       useGraphStore.setState({
-        nodes: [{ id: 'n1', title: 'N1', type: 'module', status: 'draft', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+        nodes: [{ id: 'n1', title: 'N1', type, status: from, graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
       })
-      await expect(useGraphStore.getState().updateNode('n1', { status: 'developing' })).rejects.toThrow('非法状态转换')
-      expect(useGraphStore.getState().nodes[0].status).toBe('draft')
+
+      await expect(useGraphStore.getState().updateNode('n1', { status: to })).rejects.toThrow('非法状态转换')
+      expect(useGraphStore.getState().nodes[0].status).toBe(from)
+      expect(window.electronAPI['node:update']).not.toHaveBeenCalled()
     })
 
     it('updateNode 允许该节点类型独有的迁移（feature 的 placeholder→developing）', async () => {

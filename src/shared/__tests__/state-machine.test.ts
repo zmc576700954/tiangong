@@ -10,6 +10,7 @@ import {
   canBugTransition,
   validateBugTransition,
   validateTransitionConsistency,
+  TRANSITION_RULES,
 } from '../state-machine'
 import {
   NODE_STATUS_TRANSITIONS,
@@ -152,10 +153,14 @@ describe('canTransitionForType', () => {
     }
   })
 
-  it('未知 NodeType 保守拒绝', () => {
-    expect(canTransitionForType('not-a-real-type' as NodeType, 'draft', 'confirmed')).toBe(false)
-    expect(canTransitionForType('not-a-real-type' as NodeType, 'draft', 'draft')).toBe(true)
-  })
+  it.each(['not-a-real-type', 'constructor', 'toString', '__proto__'])(
+    '未知或原型属性 NodeType 保守拒绝：%s',
+    (type) => {
+      const nodeType = type as NodeType
+      expect(canTransitionForType(nodeType, 'draft', 'confirmed')).toBe(false)
+      expect(canTransitionForType(nodeType, 'draft', 'draft')).toBe(true)
+    },
+  )
 
   it('published 对非 wiki-page 类型是终态', () => {
     for (const type of NODE_TYPE_VALUES) {
@@ -169,10 +174,54 @@ describe('canTransitionForType', () => {
   })
 
   /**
-   * 核心断言：把「渲染端判定」与「主进程校验」钉在一起。
-   *
-   * 渲染端放行、主进程抛 IpcError —— 就是「右键改状态点了没反应」的根因。
-   * 这里穷举 NodeType × NodeStatus × NodeStatus，逐格比对两条路径的结论。
+   * 核心回归断言：期望值直接来自 per-type 矩阵，而不是另一个被测函数。
+   * 如果把 predicate 错改回 loose 表，project: draft→developing 等 40 格会立即变红。
+   */
+  it('每个格子都服从 NODE_STATUS_TRANSITIONS，validator 的抛错行为也服从同一期望', () => {
+    for (const type of NODE_TYPE_VALUES) {
+      for (const from of NODE_STATUS_VALUES) {
+        for (const to of NODE_STATUS_VALUES) {
+          const expected = from === to || NODE_STATUS_TRANSITIONS[type].some(
+            (transition) => transition.from === from && transition.to === to,
+          )
+          const cell = `${type}: ${from} → ${to}`
+
+          expect(canTransitionForType(type, from, to), cell).toBe(expected)
+
+          const validate = () => validateNodeTypeTransition(type, from, to, 'node-oracle')
+          if (expected) {
+            expect(validate, cell).not.toThrow()
+          } else {
+            expect(validate, cell).toThrow(InvalidStateTransitionError)
+          }
+        }
+      }
+    }
+  })
+
+  it('per-type 矩阵是 loose 表的子集，不会新拒绝主进程允许的操作', () => {
+    const unsafeCells: string[] = []
+
+    for (const type of NODE_TYPE_VALUES) {
+      for (const from of NODE_STATUS_VALUES) {
+        for (const to of NODE_STATUS_VALUES) {
+          const perTypeAllows = from === to || NODE_STATUS_TRANSITIONS[type].some(
+            (transition) => transition.from === from && transition.to === to,
+          )
+          const looseAllows = from === to || TRANSITION_RULES[from].has(to)
+          if (perTypeAllows && !looseAllows) {
+            unsafeCells.push(`${type}: ${from} → ${to}`)
+          }
+        }
+      }
+    }
+
+    expect(unsafeCells).toEqual([])
+  })
+
+  /**
+   * 次级断言：只记录 predicate 与 validator 的委托接线。
+   * 因为 validator 直接复用 predicate，本比较不能充当独立回归保障。
    */
   it('与 validateNodeTypeTransition 的结论完全一致', () => {
     const mismatches: string[] = []

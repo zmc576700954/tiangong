@@ -1,5 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
+import { isTerminalStatus } from '../lib/node-status'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
 import { canTransitionForType } from '@shared/state-machine'
@@ -81,6 +82,7 @@ export function NodeContextMenu({
   const reachableStatuses = statusOptions.filter((opt) =>
     canTransitionForType(node.type, node.status, opt.value),
   )
+  const isTerminal = isTerminalStatus(node.status, reachableStatuses.map((opt) => opt.value))
 
   return (
     <ViewportMenu
@@ -211,6 +213,14 @@ export function NodeContextMenu({
               </button>
             ))}
           </div>
+          {isTerminal && (
+            <p
+              className="px-3 pb-1 text-[10px] text-muted-foreground"
+              data-testid="node-menu-status-terminal-hint"
+            >
+              {t('status.terminalHint', { status: nodeStatusLabel(node.status, locale) })}
+            </p>
+          )}
         </div>
       )}
 

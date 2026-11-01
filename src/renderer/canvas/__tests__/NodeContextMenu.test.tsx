@@ -21,7 +21,7 @@ function makeNode(overrides: Partial<GraphNode> & { type: NodeType; status: Node
 /** 右键菜单里渲染出来的状态格子 */
 function renderedStatuses(): NodeStatus[] {
   return Array.from(
-    document.querySelectorAll<HTMLElement>('[data-testid^="node-menu-status-"]'),
+    document.querySelectorAll<HTMLButtonElement>('button[data-testid^="node-menu-status-"]'),
   ).map(el => el.getAttribute('data-testid')!.replace('node-menu-status-', '') as NodeStatus)
 }
 
@@ -55,6 +55,7 @@ describe('NodeContextMenu — 状态格子按 per-type 矩阵过滤', () => {
     expect(screen.queryByTestId('node-menu-status-review')).toBeNull()
     expect(screen.queryByTestId('node-menu-status-published')).toBeNull()
     expect(screen.queryByTestId('node-menu-status-testing')).toBeNull()
+    expect(screen.queryByTestId('node-menu-status-terminal-hint')).toBeNull()
   })
 
   it('同状态、不同节点类型给出不同格子集合', () => {
@@ -62,6 +63,16 @@ describe('NodeContextMenu — 状态格子按 per-type 矩阵过滤', () => {
     // bug 的矩阵里 placeholder 没有任何迁出 —— 判定确实读的是 per-type 矩阵
     renderMenu(makeNode({ type: 'bug', status: 'placeholder' }))
     expect(renderedStatuses()).toEqual(['placeholder'])
+    expect(screen.getByTestId('node-menu-status-terminal-hint')).toBeTruthy()
+  })
+
+  it('feature@published 只剩当前状态时显示终态解释', () => {
+    renderMenu(makeNode({ type: 'feature', status: 'published' }))
+
+    expect(renderedStatuses()).toEqual(['published'])
+    const hint = screen.getByTestId('node-menu-status-terminal-hint')
+    expect(hint.textContent).toContain('终态')
+    expect(hint.textContent).toContain('已发布')
   })
 
   it('wiki-page@published 仍可迁回 confirmed（唯一允许 published→X 的类型）', () => {
