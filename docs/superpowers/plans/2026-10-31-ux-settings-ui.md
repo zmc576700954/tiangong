@@ -642,12 +642,24 @@ git commit -m "fix(graph): 状态转换判定与主进程对齐为 per-type 矩�
 ## Task 8: 静默失败归零（一）——节点编辑器
 
 **Files:**
-- Modify: `src/renderer/panels/NodeEditor.tsx:37-42`（标题）、`:207-208`（业务规则）、`:454-455`（验收标准）、`:427-433`（API/服务/实体）、`:544-546` + `src/renderer/panels/RightPanel.tsx:111`（状态更新）
-- Test: `src/renderer/panels/__tests__/NodeEditor.test.tsx`（Task 7 已新建）
+- Modify: `src/renderer/panels/NodeEditor.tsx` —— 四处静默点，**按函数名定位（行号会随 Task 7 的修复再移，不要按行号找）**：
+  - `EditableTitle.handleSave` —— `if (value.trim()) { onSave(...) }` 之后**无条件 `setIsEditing(false)`** → 清空标题点 ✓ 会**静默丢弃输入**并退出编辑态
+  - 业务规则区块的 `handleAdd` —— `if (!newTitle.trim()) return`
+  - 验收标准区块的 `handleAdd` —— `if (!newValue.trim()) return`
+  - `AddItemInput` —— 空输入时 `if (value.trim())` 静默不做事（该组件被 API / 服务 / 实体三处复用）
+- Modify: `src/renderer/panels/RightPanel.tsx` —— `onUpdate={(data) => updateNode(selectedNode.id, data)}`：**返回的 promise 没有 catch**，而 `graphStore.updateNode` 对非法转换是 `throw` → **unhandled rejection**
+- Modify: `src/shared/i18n/resources/domains/node.ts` —— 新增提示文案
+- Test: `src/renderer/panels/__tests__/NodeEditor.test.tsx`（**Task 7 已新建，往里追加，不要新建同名文件**）
 
 **Interfaces:**
 - Consumes: Task 7 的 `canTransitionForType`。
 - Produces: 无新导出。
+
+**已核实的事实**：
+- `src/renderer/panels/NodeEditor.tsx` 目前 **"toast" 出现 0 次** —— 四处静默确认无疑，实现者需要自己加 `import { toastError } from '../lib/toast'`。
+- toast 的唯一实现是 `src/renderer/lib/toast.tsx`（既有先例：`DefaultsTab.tsx:19`、`AdapterHealthPanel.tsx:15`、`A2ASettingsTab.tsx:26` 都是这个 import 路径）。
+- `src/shared/i18n/resources/domains/node.ts` 目前**没有任何 toast / error 类 key**，要新开一组（zh + en 各一份；en 侧类型由 zh 侧派生，只加一边 `tsc` 会报错）。
+- `status.terminalHint`（zh `:15` / en `:61`）**已存在**，带 `{status}` 插值 —— 那是终态提示，本任务要的是另一组文案（"标题不能为空"之类），**不要复用它**。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -689,12 +701,19 @@ git commit -m "fix(node): 节点编辑器的静默失败改为明确提示"
 ## Task 9: 静默失败归零（二）——建图 / 建节点 / 建边 / 状态更新
 
 **Files:**
-- Modify: `src/renderer/components/GraphTabs.tsx`（建图空名）、`src/renderer/canvas/hooks/useNodeOperations.ts:48-53,64-66`（建节点/建边）、`src/renderer/canvas/GraphCanvas.tsx:1503-1511`（右键菜单改状态）
-- Test: `src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建）、`src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在）
+- Modify: `src/renderer/canvas/hooks/useNodeOperations.ts` —— 建节点失败（约 `:51`）与建层级边失败（约 `:65`）两处 `console.error`
+- Modify: `src/renderer/canvas/GraphCanvas.tsx` —— `handleNodeStatusChange`（约 `:1503-1510`）：`catch { console.error(...) }` 之后**无条件 `setNodeContextMenu(null)`**
+- **不改** `src/renderer/components/GraphTabs.tsx` —— 建图空名的 toast **已由 Task 6 实现**，Task 9 只在自己的测试里断言该行为（见 Ruling 1）
+- Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在，追加）、`src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建，只追加断言）
 
 **Interfaces:**
 - Consumes: 无新依赖。
 - Produces: 无新导出。
+
+**已核实的事实**：
+- `useNodeOperations.ts` 里**还有三处** `console.error`（generateChildren / enrichNode / startDev）—— **不在本任务范围**，别顺手改。
+- 建节点失败时**不建边**是正确逻辑（拿不到 `created.id` 去建边会造出指向不存在节点的边）—— **保住它**，只加提示。
+- toast 走 `src/renderer/lib/toast.tsx` 的 `toastError`。
 
 - [ ] **Step 1: 写失败的测试**
 
