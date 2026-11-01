@@ -703,12 +703,26 @@ git commit -m "fix(node): 节点编辑器的静默失败改为明确提示"
 **Files:**
 - Modify: `src/renderer/canvas/hooks/useNodeOperations.ts` —— 建节点失败（约 `:51`）与建层级边失败（约 `:65`）两处 `console.error`
 - Modify: `src/renderer/canvas/GraphCanvas.tsx` —— `handleNodeStatusChange`（约 `:1503-1510`）：`catch { console.error(...) }` 之后**无条件 `setNodeContextMenu(null)`**
+- Modify: `src/renderer/panels/RightPanel.tsx` —— **同类缺口**：`EdgeEditor` 的 `onUpdate={(data) => updateEdge(selectedEdge.id, data)}` 与 `onDelete` 同样**返回未接住的 promise**，而 `updateEdge` 会回滚并重新抛错（`graphStore.ts:438-451`）
+- Create: `src/renderer/lib/error-text.ts` —— 共享的错误文本提取（见下方"Ruling 36"）
 - **不改** `src/renderer/components/GraphTabs.tsx` —— 建图空名的 toast **已由 Task 6 实现**，Task 9 只在自己的测试里断言该行为（见 Ruling 1）
-- Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在，追加）、`src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建，只追加断言）
+- Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在，追加）、`src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建，只追加断言）、`src/renderer/panels/__tests__/RightPanel.test.tsx`（**新建**）
 
 **Interfaces:**
-- Consumes: 无新依赖。
-- Produces: 无新导出。
+- Consumes: Task 8 的 `node.toast.*` 文案组与 `RightPanel` 的 catch 模式。
+- Produces:
+  ```ts
+  // src/renderer/lib/error-text.ts
+  /**
+   * 把任意抛出物转成可读文本。
+   *
+   * 主进程把 BizGraphError / InvalidStateTransitionError 以 `toJSON()` 的
+   * **plain object** 抛过 IPC（src/main/ipc/utils.ts:227-230），preload 原样透传 ——
+   * 所以 renderer 端拿到的往往不是 Error 实例，而是带 `message` 字段的普通对象。
+   * 只处理 Error 实例会让这类错误的提示渲染成 "[object Object]"。
+   */
+  export function errorText(err: unknown): string
+  ```
 
 **已核实的事实**：
 - `useNodeOperations.ts` 里**还有三处** `console.error`（generateChildren / enrichNode / startDev）—— **不在本任务范围**，别顺手改。
@@ -719,29 +733,41 @@ git commit -m "fix(node): 节点编辑器的静默失败改为明确提示"
 
 - `useNodeOperations.test.ts` 追加：`createNode` reject → 断言 toast 出现 error，且 `createEdge` **没有被调用**（现有逻辑是对的：建节点失败就不建边，测试要把这条钉住）。
 - `GraphTabs.test.tsx` 追加：新建图空名点保存 → error toast + 面板不关（Task 6 已加过则不重复加）。
+- **新建** `src/renderer/panels/__tests__/RightPanel.test.tsx`：`EdgeEditor` 的更新/删除失败 → error toast。
+- **新建** `src/renderer/lib/__tests__/error-text.test.ts`：`errorText` 对三种形状都给出可读文本 —— `Error` 实例、普通对象带 `message`、以及无 `message` 的对象。
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx`
-Expected: FAIL —— 建节点失败只 `console.error`。
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx src/renderer/panels/__tests__/RightPanel.test.tsx src/renderer/lib/__tests__/error-text.test.ts`
+Expected: FAIL —— 建节点失败只 `console.error`；`errorText` 模块不存在。
 
 - [ ] **Step 3: 补 toast**
 
-- `useNodeOperations.ts:48-53`：`console.error` 之后补 `toastError`（保留 `return`，不建边）。
-- `useNodeOperations.ts:64-66`：建层级边失败 → `toastError`（节点已建成、边没建成，用户要知道图上少了一根线）。
-- `GraphCanvas.tsx:1503-1511`：右键菜单改状态失败 → 从 `console.error` 改为 `toastError`（菜单关闭行为不变）。
+- `useNodeOperations.ts` 建节点失败：`console.error` 之后补 `toastError`（保留 `return`，不建边）。
+- `useNodeOperations.ts` 建层级边失败 → `toastError`（节点已建成、边没建成，用户要知道图上少了一根线）。
+- `GraphCanvas.tsx` 的 `handleNodeStatusChange`：从 `console.error` 改为 `toastError`（菜单关闭行为不变）。
+- `RightPanel.tsx` 的 `EdgeEditor` 分支：`updateEdge` / `deleteEdge` 的 promise 接住 → `toastError`（与 Task 8 对 `NodeEditor` 的处理同模式）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: 提取共享的 `errorText`**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx`
+新建 `src/renderer/lib/error-text.ts`（接口见上），然后把**已存在的重复副本**改为 import 它：
+`DefaultsTab.tsx:92`、`A2ASettingsTab.tsx:54`、`SettingsPanel.tsx:77`、`AdapterHealthPanel.tsx:81`、`RightPanel.tsx:19`、`GraphTabs.tsx:118`。
+**不要**动 `RecipesPanel.tsx` / `RecipeRunProgress.tsx` 里的内联变体（形状可能不同，超出本任务范围）。
+
+**关键**：新实现必须**也读非 Error 对象的 `.message`** —— 主进程把 `BizGraphError` / `InvalidStateTransitionError` 以 `err.toJSON()` 的 **plain object** 抛过 IPC（`src/main/ipc/utils.ts:227-230`），preload 原样透传（`src/preload/index.ts:215-219`），所以 renderer 端拿到的**不是 Error 实例**。`toJSON()` 里带 `message`（`src/main/errors.ts:91-99`），但只处理 `instanceof Error` 会让它渲染成 `"[object Object]"`。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx src/renderer/panels/__tests__/RightPanel.test.tsx src/renderer/lib/__tests__/error-text.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 npx tsc --noEmit
-git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/GraphCanvas.tsx
-git commit -m "fix(canvas): 建节点/建边/改状态失败改为明确提示"
+npm run lint
+git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/GraphCanvas.tsx src/renderer/panels/RightPanel.tsx src/renderer/lib/error-text.ts src/renderer/panels/DefaultsTab.tsx src/renderer/panels/A2ASettingsTab.tsx src/renderer/panels/SettingsPanel.tsx src/renderer/components/agent/AdapterHealthPanel.tsx src/renderer/components/GraphTabs.tsx
+git commit -m "fix(canvas): 建节点/建边/改状态/改连线失败改为明确提示，并统一错误文本提取"
 ```
 
 ---
