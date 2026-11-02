@@ -400,3 +400,73 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     await sendPromise.catch(() => {})
   })
 })
+
+/**
+ * 只读会话：Agent **物理上**拿不到写工具。
+ *
+ * 只读不能靠 ScopeGuard 的空白名单沙箱实现 —— 那条路的 watcher 监听整棵项目树，
+ * 分不清「Agent 写的」和「用户写的」，在真实项目目录上会把用户自己改的文件
+ * 判为越界并回滚删除。所以只读做在适配器层：SDK 的 `tools` 白名单。
+ */
+describe('ClaudeCodeAdapter — 只读会话', () => {
+  let adapter: ClaudeCodeAdapter
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+    adapter = new ClaudeCodeAdapter()
+  })
+
+  afterEach(() => {
+    adapter.removeAllListeners('output')
+  })
+
+  async function sendWith(config: AgentSessionConfig): Promise<Record<string, unknown>> {
+    const session = await adapter.startSession(config)
+    adapter.setPromptContext(session.id, { stable: 'S', turn: '' })
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+    await adapter.sendCommand(session.id, command)
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    return callArgs.options
+  }
+
+  it('只读会话的 tools 白名单里没有任何写工具或命令执行', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+
+    const tools = options.tools as string[]
+    expect(Array.isArray(tools)).toBe(true)
+    expect(tools.length).toBeGreaterThan(0)
+    // 关键断言：白名单里**不能**出现能改文件或跑命令的工具
+    for (const forbidden of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'BashOutput']) {
+      expect(tools).not.toContain(forbidden)
+    }
+    // 但读与查必须在 —— 否则 Agent 连代码都看不了
+    expect(tools).toContain('Read')
+  })
+
+  it('只读会话的 permissionMode 是 default（不是 acceptEdits）', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+    expect(options.permissionMode).toBe('default')
+  })
+
+  it('非只读会话不受影响：tools 不设、permissionMode 仍是 acceptEdits', async () => {
+    const options = await sendWith(makeConfig())
+    expect(options.tools).toBeUndefined()
+    expect(options.permissionMode).toBe('acceptEdits')
+  })
+
+  it('只读会话同时是子代理时，tools 取白名单与子代理 allowedTools 的交集', async () => {
+    // 子代理被允许 Edit —— 若不取交集，父会话的只读保证就被破坏了
+    const options = await sendWith(makeConfig({
+      readOnly: true,
+      subagentAllowedTools: ['Read', 'Edit', 'Bash'],
+    }))
+
+    const tools = options.tools as string[]
+    expect(tools).toContain('Read')
+    expect(tools).not.toContain('Edit')
+    expect(tools).not.toContain('Bash')
+  })
+})

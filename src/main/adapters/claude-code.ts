@@ -13,6 +13,7 @@
 import { z } from 'zod'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
 import { resolveModelForAdapter } from './model-selection'
+import { READONLY_TOOLS } from '@shared/readonly-tools'
 import { generateId } from '../shared/env'
 import type {
   AgentSession,
@@ -209,7 +210,16 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       // to the agent type's allowed set.
       let toolsOption: string[] | undefined
       const allowedTools = session.config.subagentAllowedTools
-      if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
+      if (session.config.readOnly) {
+        // 只读会话：只放行读与查，**拿不到任何能改文件或执行命令的工具**。
+        // 若同时是子代理（有自己的 allowedTools），取两者交集 ——
+        // 否则子代理被允许的 Edit/Write 会破坏父会话的只读保证。
+        const readonly = [...READONLY_TOOLS]
+        toolsOption =
+          allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)
+            ? readonly.filter((t) => allowedTools.includes(t))
+            : readonly
+      } else if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
         toolsOption = allowedTools
       } else if (transparent) {
         // SDK 语义：tools: [] = 禁用全部内置工具（Read / Write / Edit / Bash …）。
@@ -227,7 +237,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           cwd: session.config.workingDirectory,
           model: resolveModelForAdapter(settings, 'claude-code') || 'sonnet',
           env: this.buildSafeEnv(),
-          permissionMode: transparent ? 'default' : 'acceptEdits',
+          permissionMode: transparent || session.config.readOnly ? 'default' : 'acceptEdits',
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
           // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
           ...(transparent ? { settingSources: [] } : {}),
