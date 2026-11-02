@@ -37,6 +37,7 @@ import type {
   TerminationReason,
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
+import { resolveReadonly } from '@shared/readonly'
 import { type SessionRouter } from './session-router'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
@@ -419,6 +420,11 @@ export class AgentManager {
     config: AgentSessionConfig,
     span?: Span,
   ): Promise<StartSessionResult> {
+    // 只读推导：**没圈定可改范围 = 只读**。
+    // 在这里统一施加，renderer 之外的调用方（子代理、recipe、A2A）也受同一约束。
+    const readOnly = resolveReadonly(config)
+    const effectiveConfig: AgentSessionConfig = { ...config, readOnly }
+
     // 确定回退链：首选适配器 + 回退顺序（去重 + 健康度优先重排）
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
@@ -449,7 +455,7 @@ export class AgentManager {
 
     let resolved: ResolvedAdapterSession
     try {
-      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, config, {
+      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, effectiveConfig, {
         onSessionStarted: async (candidate, candidateConfig, session) => {
           const adapter = this.registry.get(candidate)
           if (!adapter) {

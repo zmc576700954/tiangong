@@ -57,6 +57,18 @@ export interface AgentSessionConfig {
   /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
   verifyOnly?: boolean
   /**
+   * 只读会话：Agent **物理上**写不了文件。
+   *
+   * 由 `resolveReadonly()` 推导（未显式指定时 = `allowedFiles` 为空）。
+   * 「用户没圈定可改范围」不会被解读成「可以随便改」。
+   *
+   * 注意：只读由**适配器层**保证（禁掉写工具），**不建 ScopeGuard 沙箱** ——
+   * 空白名单沙箱的 watcher 监听整棵项目树，分不清「Agent 写的」和「用户写的」，
+   * 在真实项目目录上会把用户自己改的文件判为越界并回滚删除
+   * （见 src/main/agent/send-and-wait.ts 的注释）。
+   */
+  readOnly?: boolean
+  /**
    * 透明转发会话（A2A 入站）：**不**注入 BizGraph 内部 scope / memory / 项目上下文，
    * prompt 原文下发（CLAUDE.md Boundaries §3 —— 远端 LLM 视角下 BizGraph 是透明转发方）。
    * 适配器据此省略 system prompt 与命令样板，并关闭文件 / shell 工具。
