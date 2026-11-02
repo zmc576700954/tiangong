@@ -33,7 +33,7 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
   const clearToast = useFileTreeStore((s) => s.clearToast)
   const { t } = useI18n()
 
-  const { loadGraphs } = useGraphStore()
+  const { loadGraphs, graphs } = useGraphStore()
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
@@ -239,6 +239,8 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         <div className="flex-1 overflow-y-auto p-2">
           {projects.map((project) => {
             const isProjectExpanded = expandedPaths.has(project.path)
+            // 该项目是否已经扫描过（有属于它的图）—— 没扫描过就把入口做成带文字的引导态
+            const isScanned = graphs.some((g) => g.projectPath === project.path)
             return (
               <div key={project.id} className="mb-2">
                 {/* 项目行 */}
@@ -259,20 +261,41 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
                   </button>
                   <Sparkles className="w-3.5 h-3.5 text-primary shrink-0" />
                   <span className="text-sm font-medium truncate flex-1">{project.name}</span>
-                  <button
-                    onClick={() => handleScanProject(project.id)}
-                    disabled={scanningId === project.id}
-                    className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-primary/10 text-primary transition-opacity"
-                    title={t('projects.generateMindMap')}
-                  >
-                    {scanningId === project.id ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Sparkles className="w-3 h-3" />
-                    )}
-                  </button>
+                  {isScanned ? (
+                    // 已扫描过：图标按钮，常显（原先要 hover 才出现，等于藏起来）
+                    <button
+                      onClick={() => handleScanProject(project.id)}
+                      disabled={scanningId === project.id}
+                      data-testid={`scan-project-${project.id}`}
+                      className="p-0.5 rounded hover:bg-primary/10 text-primary transition-colors"
+                      title={t('projects.generateMindMap')}
+                    >
+                      {scanningId === project.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                    </button>
+                  ) : (
+                    // 还没扫描：这是项目导入后最有价值的动作，给一个说人话的入口
+                    <button
+                      onClick={() => handleScanProject(project.id)}
+                      disabled={scanningId === project.id}
+                      data-testid={`scan-project-${project.id}`}
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+                      title={t('projects.scanHint')}
+                    >
+                      {scanningId === project.id ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3 h-3" />
+                      )}
+                      <span>{t('projects.generateMindMap')}</span>
+                    </button>
+                  )}
                   <button
                     onClick={() => removeProject(project.id)}
+                    data-testid={`remove-project-${project.id}`}
                     className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 focus:opacity-100 p-0.5 rounded hover:bg-destructive/10 text-destructive transition-opacity"
                     title={t('projects.remove')}
                   >

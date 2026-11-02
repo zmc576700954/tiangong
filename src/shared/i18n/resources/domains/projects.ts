@@ -13,6 +13,7 @@ export const projectsZh = {
   'projects.emptyTitle': '还没有项目',
   'projects.emptyHint': '点击 + 打开目录',
   'projects.generateMindMap': '生成思维导图',
+  'projects.scanHint': '扫描项目，生成产品蓝图与开发场景两张图',
   'projects.remove': '移除',
 
   // ---- 树视图筛选与排序 ----
@@ -131,6 +132,7 @@ export const projectsEn: Record<keyof typeof projectsZh, string> = {
   'projects.emptyTitle': 'No projects yet',
   'projects.emptyHint': 'Click + to open a directory',
   'projects.generateMindMap': 'Generate mind map',
+  'projects.scanHint': 'Scan the project to generate the blueprint and dev graphs',
   'projects.remove': 'Remove',
 
   'projects.tree.filterAllStatus': 'All Status',
