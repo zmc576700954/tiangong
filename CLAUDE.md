@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-> 最后更新：2026-10-01
+> 最后更新：2026-11-02
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -165,11 +165,64 @@ Defined in both `tsconfig.json` and `vite.config.ts`:
 
 This file is the single source of truth for all types shared between main and renderer processes. It must NOT import Node.js-specific types (ChildProcess, etc.) since it is loaded in the renderer. The `IpcApi` interface defines all IPC channel signatures. Domain types are split into `src/shared/types/graph.ts`, `src/shared/types/agent.ts`, `src/shared/types/ipc.ts`, and `src/shared/types/subagent.ts`.
 
+## 开发强制规则 (Development Rules)
+
+以下规则对**任何**改动生效，没有例外。
+
+### 1. 改动必须与单元测试同步落地
+
+功能、修复、重构 —— 每一处**行为**改动都要有对应的单元测试。
+
+- 测试不是收尾工作，是改动的一部分；先写测试再写实现。
+- **断言必须能失败**：把实现删掉就会变红的测试才叫测试。「断言某对象不存在」「断言没抛错」这类恒真的写法不算数。
+- 行为改了，**已有的测试也要跟着改** —— 留着断言旧行为的测试比没有测试更糟：它会绿着骗人。
+- 确实无法用单元测试覆盖的改动，在提交说明里写清原因。
+
+### 2. 非全局改动时，不许运行全量测试套件
+
+`npm run test`（全量）**只在全局改动时**才跑。其余时候只跑本次改动覆盖到的测试文件。
+
+**算全局改动**（波及面大，跑一次全量划算）：
+
+| 范围 | 例子 |
+|---|---|
+| 共享类型契约 | `src/shared/types/**`、`src/shared/types.ts` |
+| IPC 契约 | `src/shared/types/ipc.ts`、`src/preload/index.ts` 的暴露面 |
+| 数据库 schema | `src/main/database.ts` 的 `CURRENT_SCHEMA_VERSION` / `TABLE_SCHEMAS` |
+| 构建与配置 | `package.json`、`vite.config.ts`、`tsconfig*.json`、eslint 配置 |
+| 跨层重构 | 一个改动同时触及 main / renderer / shared 的多个模块 |
+
+**不算全局改动**（只跑相关测试文件）：
+
+- 单个适配器、单个面板、单个 repository、单个 hook 的改动
+- 新增或修改文案（i18n key）
+- 修一个具体的 bug
+
+### 3. 每个 task 完成后，跑该 task 的单元测试验证
+
+一个 task 的「完成」= 实现 + 测试 + **该 task 的测试全绿**。
+
+```bash
+# 迭代过程中 —— 只跑相关的
+npx vitest run src/main/adapters/__tests__/cli-probe.test.ts
+
+# 提交前 —— 跑本次改动覆盖到的全部测试文件（可传多个路径）
+npx vitest run src/main/__tests__/settings.test.ts src/renderer/panels/__tests__/DefaultsTab.test.tsx
+
+# 全量 —— 仅在第 2 条列出的全局改动时才跑
+npm run test
+```
+
+### 4. 类型检查与 lint 是每次改动的门禁
+
+`npx tsc --noEmit` 与 `npm run lint` 比全量测试快得多，且 `lint` 带 `--max-warnings 0`（`any` 会直接挂）。**每次**改动后都要过，不要留到提交前。
+
 ## Testing
 
 - **Unit tests**: Vitest with `globals: true`, environment `node`, files in `src/**/*.test.ts`. Tests live alongside source in `__tests__/` directories. Coverage targets `src/main/**/*.ts`.
 - **E2E tests**: Playwright configs in `tests/e2e/playwright.browser.config.ts` and `tests/e2e/playwright.electron.config.ts`.
 - Run a single test file: `npx vitest run src/main/__tests__/scope-guard.test.ts`
+- **跑哪些测试** 遵循上面的「开发强制规则」：非全局改动只跑相关的测试文件，全量套件留给全局改动。
 
 ## CI
 
@@ -177,6 +230,8 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `devel
 - `lint` (ubuntu) — `npm run lint` + `npx tsc --noEmit`
 - `build` (macOS/Windows/Linux, x64 + arm64 matrix) — production build with artifact upload
 - `e2e` (ubuntu/windows/macos) — Playwright browser E2E tests
+
+> ⚠️ **单元测试目前不在 CI 里跑**（没有 `npm run test` 这一步）。所以「开发强制规则」第 3 条的单元测试验证，目前**只靠本地执行**保证 —— 提交前务必自己跑过。补一个 unit CI job 是明确的待办。
 
 ## Key Conventions
 
