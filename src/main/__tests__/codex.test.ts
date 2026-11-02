@@ -211,6 +211,33 @@ describe('CodexAdapter (SDK)', () => {
     )
   })
 
+  it('只读会话 → sandboxMode 传 read-only（startThread 与 resumeThread 两条路）', async () => {
+    const session = await adapter.startSession(makeConfig({ readOnly: true }))
+    await adapter.sendCommand(session.id, command)
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxMode: 'read-only' }),
+    )
+
+    vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+    const resumeSession = await adapter.startSession(
+      makeConfig({ readOnly: true, resumeSessionId: 'thread-existing' }),
+    )
+    await adapter.sendCommand(resumeSession.id, command)
+    expect(mockResumeThread).toHaveBeenCalledWith(
+      'thread-existing',
+      expect.objectContaining({ sandboxMode: 'read-only' }),
+    )
+  })
+
+  it('非只读会话仍是 workspace-write', async () => {
+    const session = await adapter.startSession(makeConfig())
+    await adapter.sendCommand(session.id, command)
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxMode: 'workspace-write' }),
+    )
+  })
+
   it('codex 档位为空时不传模型（由 SDK 自己决定），且不回落到旧的 defaultModel', async () => {
     const session = await adapter.startSession(makeConfig())
 

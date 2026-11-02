@@ -99,7 +99,8 @@ export class CodexAdapter extends BaseAdapter {
         const model = resolveModelForAdapter(settings, 'codex')
         const threadOptions: ThreadOptions = {
           workingDirectory: session.config.workingDirectory,
-          sandboxMode: 'workspace-write',
+          // 只读会话 → SDK 的 'read-only' 档位（'read-only' | 'workspace-write' | 'danger-full-access'）
+          sandboxMode: session.config.readOnly ? 'read-only' : 'workspace-write',
           model,
         }
         if (isResume && session.config.resumeSessionId) {

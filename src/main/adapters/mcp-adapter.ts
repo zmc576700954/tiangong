@@ -511,7 +511,12 @@ export class McpAdapter extends BaseAdapter {
     // 远端调用方用不到它们，却让每个入站请求都启动一批本地进程（其中可能有带
     // 项目读写权限的 filesystem server），与「远端不得触达本地」的边界相悖。
     const transparent = config.transparentForward === true
-    const enabledServers = transparent ? [] : settings.mcpServers.filter((s) => s.enabled)
+    // 只读会话同样不接 MCP server：MCP 工具没有「只读」标记可筛，默认的
+    // filesystem server 是能写的 —— 只读会话连它都不该拉起来。
+    const readOnly = config.readOnly === true
+    const enabledServers = transparent || readOnly
+      ? []
+      : settings.mcpServers.filter((s) => s.enabled)
     const sessionClients: McpClient[] = []
 
     // 清理连接池中的空闲超时连接
@@ -679,10 +684,13 @@ export class McpAdapter extends BaseAdapter {
 
     // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []
-    const mcpTools = transparent ? [] : clients.flatMap((c) => c.getTools())
+    // 只读会话：不给任何 MCP 工具（MCP 工具无法按只读筛），也不允许派生
+    // subagent —— 子代理可能带着写权限。
+    const readOnly = session.config.readOnly === true
+    const mcpTools = transparent || readOnly ? [] : clients.flatMap((c) => c.getTools())
     const providerConfig = PROVIDER_CONFIGS[apiKey.provider]
     const supportsTools = providerConfig?.supportsTools ?? false
-    const canDispatchSubagent = !transparent && this.subagentManager !== undefined
+    const canDispatchSubagent = !transparent && !readOnly && this.subagentManager !== undefined
 
     // Call LLM API via unified provider config
     try {
