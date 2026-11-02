@@ -92,6 +92,7 @@ export function SubagentTypesTab({ customTypes, onSave }: Props) {
             <div>
               <label className="text-[10px]">{t('settings.subagents.name')}</label>
               <input
+                data-testid="subagent-name"
                 className="w-full border rounded px-2 py-1 text-xs"
                 value={editing.name}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
@@ -119,6 +120,7 @@ export function SubagentTypesTab({ customTypes, onSave }: Props) {
             <div>
               <label className="text-[10px]">{t('settings.subagents.scopeStrategy')}</label>
               <select
+                data-testid="subagent-scope-strategy"
                 className="w-full border rounded px-2 py-1 text-xs"
                 value={editing.scopeStrategy}
                 onChange={(e) => setEditing({ ...editing, scopeStrategy: e.target.value as SubagentScopeStrategy })}
