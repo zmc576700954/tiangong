@@ -46,7 +46,7 @@ export type {
   AgentLog,
   VerificationResult, VerificationReport,
   CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings,
-  AdapterFallbackAttempt, AdapterPreferences,
+  AdapterFallbackAttempt, AdapterPreferences, ProjectDefaults,
   InstallMethod, AdapterMarketplaceItem,
   SymbolKind, SymbolInfo, ImportEdge, SymbolReference, SymbolQueryResult,
   CodeIntelExecutionPlan,
