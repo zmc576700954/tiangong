@@ -28,6 +28,13 @@ export const ErrorCode = {
   AGENT_SESSION_LIMIT: 'AGENT_SESSION_LIMIT',
   AGENT_RESOURCE_EXHAUSTED: 'AGENT_RESOURCE_EXHAUSTED',
   AGENT_COMPACT_FAILED: 'AGENT_COMPACT_FAILED',
+  /**
+   * 只读会话选中的适配器无法保证只读。
+   *
+   * 只读会话**不自动换适配器**（决定 D3）—— 回退到能写的适配器等于把写权限
+   * 在用户不知情的情况下交出去。
+   */
+  ADAPTER_READONLY_UNSUPPORTED: 'ADAPTER_READONLY_UNSUPPORTED',
 
   // 范围守卫
   SCOPE_PATH_TRAVERSAL: 'SCOPE_PATH_TRAVERSAL',

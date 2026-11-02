@@ -38,6 +38,7 @@ import type {
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
 import { resolveReadonly } from '@shared/readonly'
+import { getReadonlySupport, listReadonlyCapableAdapters } from '@shared/readonly-support'
 import { type SessionRouter } from './session-router'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
@@ -428,11 +429,28 @@ export class AgentManager {
     // 确定回退链：首选适配器 + 回退顺序（去重 + 健康度优先重排）
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
-    const uniqueChain = this.fallbackRouter.buildChain(
+    let uniqueChain = this.fallbackRouter.buildChain(
       primary,
       preferences.fallbackOrder,
       preferences.forceAdapter,
     )
+
+    // 只读会话：回退链只保留**保证只读**的适配器。
+    // 原因：fallback-router 给链上每个候选者传**同一份** config（只改 timeout），
+    // 回退到能写的适配器 = 把写权限在用户不知情的情况下交出去。
+    if (readOnly) {
+      // 首选适配器自己必须支持只读 —— **不自动换适配器**（决定 D3）：
+      // 换过去虽然保住了只读保证，却用掉了用户选的适配器，用户未必知道。
+      if (getReadonlySupport(primary) !== 'enforced') {
+        throw new AdapterError(
+          `Adapter ${primary} does not support read-only sessions. ` +
+          `Choose an adapter that guarantees read-only, or give the session an explicit file scope.`,
+          primary,
+          ErrorCode.ADAPTER_READONLY_UNSUPPORTED,
+        )
+      }
+      uniqueChain = listReadonlyCapableAdapters(uniqueChain)
+    }
 
     if (os.freemem() < 512 * 1024 * 1024) {
       logger.error('Insufficient free memory (<512MB), refusing to create new session')

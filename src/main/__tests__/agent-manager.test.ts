@@ -264,6 +264,117 @@ describe('AgentManager', () => {
     })
   })
 
+  /**
+   * 只读会话的回退链裁剪。
+   *
+   * 背景：fallback-router 给链上每个候选者传**同一份** config（只改 timeout），
+   * 所以回退到能写的适配器 = 把写权限在用户不知情的情况下交出去。
+   */
+  describe('只读会话的回退链', () => {
+    it('回退链被裁到只保留保证只读的适配器', async () => {
+      const claude = new TestAdapter('claude-code')
+      const cline = new TestAdapter('cline')        // 不支持只读
+      const codex = new TestAdapter('codex')          // 支持只读
+      // 主适配器启动失败 → 才会走到回退链
+      vi.spyOn(claude, 'startSession').mockRejectedValue(new Error('spawn ENOENT'))
+      manager.registerAdapter(claude)
+      manager.registerAdapter(cline)
+      manager.registerAdapter(codex)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['cline', 'codex'],
+      }))
+
+      const result = await manager.startSession(
+        'claude-code',
+        mockConfig({ allowedFiles: [], readOnly: true }),
+      )
+
+      // 关键：cline 装得上（checkInstalled 返回 true），但只读会话**不能**回退到它 ——
+      // 回退到能写的适配器 = 把写权限在用户不知情的情况下交出去
+      expect(result.adapterUsed).toBe('codex')
+      expect(result.fallbackHistory.map((h) => h.adapter)).not.toContain('cline')
+    })
+
+    it('同一个场景在可写会话下会正常回退到 cline（证明上条不是恒真）', async () => {
+      const claude = new TestAdapter('claude-code')
+      const cline = new TestAdapter('cline')
+      vi.spyOn(claude, 'startSession').mockRejectedValue(new Error('spawn ENOENT'))
+      manager.registerAdapter(claude)
+      manager.registerAdapter(cline)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: ['cline'],
+      }))
+
+      // 可写会话（有文件范围）→ 链不被裁 → 正常回退到 cline
+      const result = await manager.startSession(
+        'claude-code',
+        mockConfig({ allowedFiles: ['a.ts'] }),
+      )
+      expect(result.adapterUsed).toBe('cline')
+    })
+
+    it('首选适配器不支持只读 → 明确报错，不自动换适配器（决定 D3）', async () => {
+      const cline = new TestAdapter('cline')
+      const codex = new TestAdapter('codex')
+      manager.registerAdapter(cline)
+      manager.registerAdapter(codex)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'cline',
+        fallbackOrder: ['codex'],
+      }))
+
+      await expect(
+        manager.startSession('cline', mockConfig({ allowedFiles: [], readOnly: true })),
+      ).rejects.toThrow(/read-only/i)
+    })
+
+    it('有文件范围（可写）的会话不受只读裁剪影响', async () => {
+      const cline = new TestAdapter('cline')
+      const codex = new TestAdapter('codex')
+      manager.registerAdapter(cline)
+      manager.registerAdapter(codex)
+
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'cline',
+        fallbackOrder: ['codex'],
+      }))
+
+      // allowedFiles 非空 → readOnly 推导为 false → 链不被裁
+      const result = await manager.startSession('cline', mockConfig({ allowedFiles: ['a.ts'] }))
+      expect(result.adapterUsed).toBe('cline')
+    })
+
+    it('fallback-router 的兜底闸门：只读会话会跳过不支持只读的候选者', async () => {
+      // 直接给 fallback-router 一条含「不支持只读」的链，绕过 AgentManager 的裁剪 ——
+      // 验证 fallback-router 自己也拦一道（防止将来有别的调用方绕过上游裁剪）。
+      // cline 装得上且能启动 —— 若闸门没拦，它就会被选中。
+      const cline = new TestAdapter('cline')
+      const claude = new TestAdapter('claude-code')
+      manager.registerAdapter(cline)
+      manager.registerAdapter(claude)
+
+      const { FallbackRouter } = await import('../agent/fallback-router')
+      const { AdapterHealthMonitor } = await import('../agent/adapter-health-monitor')
+      const fbRouter = new FallbackRouter(registry, new AdapterHealthMonitor())
+
+      const result = await fbRouter.resolveSession(
+        'cline',
+        ['cline', 'claude-code'],
+        mockConfig({ allowedFiles: [], readOnly: true }),
+      )
+
+      // cline 被跳过，落到只读适配器
+      expect(result.adapterUsed).toBe('claude-code')
+      expect(result.fallbackHistory[0]).toMatchObject({ adapter: 'cline', success: false })
+      expect(result.fallbackHistory[0]?.reason).toContain('read-only')
+    })
+  })
+
   describe('sendCommand', () => {
     it('should send command to active session', async () => {
       const adapter = new TestAdapter('test-adapter')
