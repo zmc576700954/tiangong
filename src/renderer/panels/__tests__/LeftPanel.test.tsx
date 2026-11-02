@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { LeftPanel } from '../LeftPanel'
+import { useToastStore } from '../../lib/toast'
 
 /**
  * LeftPanel 的「扫描生成脑图」按钮可发现性测试。
@@ -56,7 +57,13 @@ vi.mock('../TreeNodeItem', () => ({ TreeNodeItem: () => null }))
 vi.mock('../FileTreeContextMenu', () => ({ FileTreeContextMenu: () => null }))
 vi.mock('../SettingsPanel', () => ({ SettingsPanel: () => null }))
 
-function mockIpc() {
+/**
+ * `LeftPanel.tsx:25` 的 `ipc` 是**模块级常量** —— import 时就捕获了
+ * `window.electronAPI`。所以 mock 必须在**本模块被 import 之前**装好，
+ * 否则 `ipc` 会是 null，`handleScanProject` 在第一行就 return。
+ * `vi.hoisted` + 顶层调用保证它在 import 之前执行。
+ */
+const { api } = vi.hoisted(() => {
   const api = {
     'graph:initFromProject': vi.fn(),
     'graph:list': vi.fn(),
@@ -65,7 +72,12 @@ function mockIpc() {
     // 组件挂载时会订阅「菜单打开项目」，返回取消订阅函数
     onMenuOpenProject: vi.fn(() => () => undefined),
   }
-  ;(window as unknown as { electronAPI: unknown }).electronAPI = api
+  ;(globalThis as unknown as { electronAPI: unknown }).electronAPI = api
+  return { api }
+})
+
+function mockIpc() {
+  vi.clearAllMocks()
   return api
 }
 
@@ -116,5 +128,31 @@ describe('LeftPanel — 扫描生成脑图按钮的可发现性', () => {
 
     const remove = screen.getByTestId('remove-project-p1')
     expect(remove.className).toContain('opacity-0')
+  })
+})
+
+describe('LeftPanel — 扫描失败不再静默', () => {
+  beforeEach(() => {
+    mockProjects.length = 0
+    mockGraphs.length = 0
+    vi.clearAllMocks()
+    useToastStore.getState().clear()
+  })
+
+  it('扫描失败 → error toast（此前是空 catch，注释称「由 store 统一处理」但无人处理）', async () => {
+    mockProjects.push({ id: 'p1', name: 'demo', path: '/tmp/demo' })
+    const api = mockIpc()
+    api['graph:initFromProject'].mockRejectedValue(new Error('scan boom'))
+
+    render(<LeftPanel />)
+    fireEvent.click(screen.getByTestId('scan-project-p1'))
+
+    await waitFor(() => {
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('扫描项目失败')
+      expect(errors[0].message).toContain('scan boom')
+    })
+    expect(useToastStore.getState().toasts.filter((t) => t.kind === 'success')).toHaveLength(0)
   })
 })

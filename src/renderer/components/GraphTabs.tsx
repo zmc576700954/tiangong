@@ -146,8 +146,12 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
           <button
             onClick={(e) => {
               e.stopPropagation()
-              deleteGraph(graph.id)
+              // 删除失败必须说出来 —— 图还在，用户却以为删掉了
+              void deleteGraph(graph.id).catch((err: unknown) => {
+                toastError(t('graph.tab.deleteFailed'), errorText(err))
+              })
             }}
+            data-testid={`delete-graph-${graph.id}`}
             className="opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
           >
             <X className="w-3 h-3" />

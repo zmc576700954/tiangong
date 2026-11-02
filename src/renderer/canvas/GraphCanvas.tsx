@@ -1519,10 +1519,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       await deleteNode(nodeId)
     } catch (err) {
       console.error('[GraphCanvas] Failed to delete node:', err)
+      toastError(t('canvas.node.deleteFailed'), errorText(err))
     }
     selectNode(null)
     setNodeContextMenu(null)
-  }, [graphNodes, deleteNode, selectNode])
+  }, [graphNodes, deleteNode, selectNode, t])
 
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label={t('canvas.ariaLabel')}>

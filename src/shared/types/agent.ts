@@ -528,7 +528,14 @@ export interface BizGraphSettings {
   cliTools: CliToolConfig[]
   apiKeys: ApiKeyConfig[]
   defaultModel?: string
-  /** Model used for context compaction summaries; falls back to defaultModel if unset */
+  /**
+   * Model used for context compaction summaries.
+   *
+   * 只对 MCP 适配器生效；未设置时回落到 **MCP 自己的模型档位**
+   * （`defaultModels.mcp`），**不是**全局的 `defaultModel` —— 后者可能是
+   * claude 模型名，会让 resolveApiKey 按前缀误判 provider。
+   * Claude Code 走 SDK 自身的压缩机制，不读这个字段。
+   */
   compactModel?: string
   /** 按适配器分开的默认模型；缺档时各自回落（见 resolveModelForAdapter） */
   defaultModels?: {

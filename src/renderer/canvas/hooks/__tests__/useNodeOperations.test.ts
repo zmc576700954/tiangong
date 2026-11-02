@@ -173,3 +173,78 @@ describe('useNodeOperations — 建节点/建边失败不再静默', () => {
     }
   })
 })
+
+// ============================================================
+// 静默失败归零（Task 13）：AI 相关的三条路径此前只有 console.error
+// ============================================================
+
+describe('useNodeOperations — AI 路径失败不再静默', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useToastStore.getState().clear()
+    mockState.nodes = []
+    mockState.createNode.mockResolvedValue({ id: 'child1' })
+    mockState.createEdge.mockResolvedValue({ id: 'edge1' })
+    mockState.updateNode.mockResolvedValue(undefined)
+  })
+
+  it('generateChildren 失败 → error toast', async () => {
+    ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      'mindmap:generateModule': vi.fn().mockRejectedValue(new Error('generate boom')),
+    }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockState.nodes = [{ id: 'parent1', title: 'P', type: 'module', position: { x: 0, y: 0 } }]
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1', '/proj'))
+      await result.current.handleGenerateChildren('parent1')
+
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('生成子节点失败')
+      expect(errors[0].message).toContain('generate boom')
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('enrichNode 失败 → error toast', async () => {
+    ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      'mindmap:enrichNode': vi.fn().mockRejectedValue(new Error('enrich boom')),
+    }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockState.nodes = [{ id: 'n1', title: 'N', type: 'feature', position: { x: 0, y: 0 } }]
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1', '/proj'))
+      await result.current.handleEnrichNode('n1')
+
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('补充节点详情失败')
+      expect(errors[0].message).toContain('enrich boom')
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('startDev 失败 → error toast', async () => {
+    ;(window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
+      'mindmap:buildDevPrompt': vi.fn().mockRejectedValue(new Error('dev boom')),
+    }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    mockState.nodes = [{ id: 'n1', title: 'N', type: 'feature', status: 'draft', position: { x: 0, y: 0 } }]
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1', '/proj'))
+      await result.current.handleStartDev('n1')
+
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('开始开发失败')
+      expect(errors[0].message).toContain('dev boom')
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+})

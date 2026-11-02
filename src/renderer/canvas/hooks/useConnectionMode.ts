@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import type { Connection, Edge } from '@xyflow/react'
 import type { GraphEdge } from '@shared/types'
 import { getEdgeMarkerEnd } from '../edge-utils'
+import { useI18n } from '../../i18n/useI18n'
+import { toastError } from '../../lib/toast'
+import { errorText } from '../../lib/error-text'
 
 /** 沿 DOM 向上查找 ReactFlow 节点包裹层的 data-id */
 function findNodeIdFromDom(el: EventTarget | null): string | null {
@@ -65,6 +68,7 @@ export function useConnectionMode({
   const [connectingSourceId, setConnectingSourceId] = useState<string | null>(null)
   const connectingSourceIdRef = useRef<string | null>(null)
   const graphEdgesRef = useRef(graphEdges)
+  const { t } = useI18n()
 
   useEffect(() => {
     connectingSourceIdRef.current = connectingSourceId
@@ -129,6 +133,8 @@ export function useConnectionMode({
         edgeType: 'default',
       }).catch((err: unknown) => {
         console.error('[useConnectionMode] Failed to persist edge:', err)
+        // 连线在画布上已经画出来了，但没存进库 —— 用户以为连上了，下次打开就没了
+        toastError(t('canvas.edge.createFailed'), errorText(err))
       })
 
       setConnectingSourceId(null)
@@ -137,7 +143,7 @@ export function useConnectionMode({
 
     document.addEventListener('click', handleCaptureClick, { capture: true })
     return () => document.removeEventListener('click', handleCaptureClick, { capture: true })
-  }, [createEdge, graphId, setRfEdges, onConnect])
+  }, [createEdge, graphId, setRfEdges, onConnect, t])
 
   const startConnect = useCallback((sourceId: string) => {
     setConnectingSourceId(sourceId)

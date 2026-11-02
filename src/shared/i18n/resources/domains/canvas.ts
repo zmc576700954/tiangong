@@ -33,12 +33,22 @@ export const canvasZh = {
   'canvas.node.wikiContentTemplate': '# {title}\n\n',
   /** 添加子节点时 createNode 失败 —— 静默失败归零 */
   'canvas.node.createFailed': '新建节点失败',
+  /** 删除节点失败 —— 静默失败归零 */
+  'canvas.node.deleteFailed': '删除节点失败',
+  /** AI 生成子节点失败 —— 静默失败归零 */
+  'canvas.node.generateChildrenFailed': '生成子节点失败',
+  /** AI 补充详情失败 —— 静默失败归零 */
+  'canvas.node.enrichFailed': '补充节点详情失败',
+  /** 开始开发失败 —— 静默失败归零 */
+  'canvas.node.startDevFailed': '开始开发失败',
 
   // ── 边 ──
   'canvas.edge.confirmAssociation': '确认关联',
   'canvas.edge.rejectAssociation': '拒绝关联',
   /** 层级边的存储层镜像没建成（节点已在、图上少了一根线）—— 必须说出来 */
   'canvas.edge.createHierarchyFailed': '创建层级连线失败',
+  /** 连线持久化失败 —— 静默失败归零 */
+  'canvas.edge.createFailed': '创建连线失败',
 
   // ── 工具栏 / 布局 ──
   'canvas.layout.arrange': '整理布局',
@@ -133,9 +143,14 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.node.previewClear': 'Clear',
   'canvas.node.wikiContentTemplate': '# {title}\n\n',
   'canvas.node.createFailed': 'Failed to create node',
+  'canvas.node.deleteFailed': 'Failed to delete node',
+  'canvas.node.generateChildrenFailed': 'Failed to generate child nodes',
+  'canvas.node.enrichFailed': 'Failed to enrich node details',
+  'canvas.node.startDevFailed': 'Failed to start development',
   'canvas.edge.confirmAssociation': 'Confirm association',
   'canvas.edge.rejectAssociation': 'Reject association',
   'canvas.edge.createHierarchyFailed': 'Failed to create hierarchy link',
+  'canvas.edge.createFailed': 'Failed to create connection',
 
   'canvas.layout.arrange': 'Arrange layout',
   'canvas.layout.menuTooltip': 'Auto layout (tree / force-directed)',

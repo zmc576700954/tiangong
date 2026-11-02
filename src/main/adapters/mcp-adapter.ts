@@ -641,7 +641,7 @@ export class McpAdapter extends BaseAdapter {
     // 那里的 finally，因此无需在每个分支手动 restore。
     const settings = await readSettings()
 
-    // W4-FIX: 根据 session config 或 MCP 自己的模型档位匹配 provider 的 API Key。
+    // W4-FIX: 按 MCP 自己的模型档位匹配 provider 的 API Key。
     // 注意这里**不能**用 settings.defaultModel —— 那是全局旧字段，可能是 claude
     // 模型名，会让 resolveApiKey 按前缀误判 provider（见 adapters/model-selection.ts）。
     const mcpModel = resolveModelForAdapter(settings, 'mcp')

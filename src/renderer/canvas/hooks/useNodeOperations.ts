@@ -110,8 +110,9 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       }
     } catch (err) {
       console.error('[useNodeOperations] generateChildren failed:', err)
+      toastError(t('canvas.node.generateChildrenFailed'), errorText(err))
     }
-  }, [graphNodes, projectPath, createNode, createEdge, graphId])
+  }, [graphNodes, projectPath, createNode, createEdge, graphId, t])
 
   const handleEnrichNode = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
@@ -131,8 +132,9 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       }
     } catch (err) {
       console.error('[useNodeOperations] enrichNode failed:', err instanceof Error ? err.message : err)
+      toastError(t('canvas.node.enrichFailed'), errorText(err))
     }
-  }, [graphNodes, projectPath, updateNode])
+  }, [graphNodes, projectPath, updateNode, t])
 
   const handleStartDev = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
@@ -155,8 +157,9 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       }
     } catch (err) {
       console.error('[useNodeOperations] startDev failed:', err)
+      toastError(t('canvas.node.startDevFailed'), errorText(err))
     }
-  }, [graphNodes, projectPath, graphId, updateNode])
+  }, [graphNodes, projectPath, graphId, updateNode, t])
 
   return {
     handleAddChild,

@@ -19,6 +19,8 @@ import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
 import { useI18n } from '../i18n/useI18n'
 import { FloatingPanel } from '../components/ui/FloatingPanel'
+import { toastError } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -125,12 +127,14 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         useAgentStore.getState().selectThread(result.threadId)
         useAppStore.getState().setActiveRightPanel('agent')
       }
-    } catch {
-      // 由 store 统一处理
+    } catch (err) {
+      // 扫描失败要说出来 —— 用户点了「生成思维导图」，什么都没发生却没有任何解释。
+      // （此前这里是个空 catch，注释称「由 store 统一处理」，但 store 并不处理。）
+      toastError(t('projects.scanFailed'), errorText(err))
     } finally {
       setScanningId(null)
     }
-  }, [projects, loadGraphs])
+  }, [projects, loadGraphs, t])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()

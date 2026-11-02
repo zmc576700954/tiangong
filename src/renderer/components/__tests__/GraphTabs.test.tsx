@@ -55,6 +55,8 @@ const deriveIpc = vi.fn(async (_sourceId: string, name?: string) => ({
   updatedAt: '2024-01-02',
 }))
 
+const deleteIpc = vi.fn(async (_id: string) => true)
+
 function renderTabs(ui: React.ReactElement) {
   return render(
     <>
@@ -292,6 +294,35 @@ describe('GraphTabs · 新建图对话框', () => {
         projectPath: '/work/my\\dir',
       })
     })
+  })
+})
+
+describe('GraphTabs · 删除图失败不再静默', () => {
+  beforeEach(() => {
+    useToastStore.getState().clear()
+    vi.clearAllMocks()
+    ;(window as unknown as { electronAPI: unknown }).electronAPI = {
+      'graph:create': createIpc,
+      'graph:derive': deriveIpc,
+      'graph:delete': deleteIpc,
+    }
+    useGraphStore.setState({ graphs: [], currentGraphId: null })
+    useFileTreeStore.setState({ projects: [] })
+  })
+
+  it('删除失败 → 错误 toast（此前 deleteGraph 是 fire-and-forget，图还在、用户却以为删掉了）', async () => {
+    deleteIpc.mockRejectedValueOnce(new Error('delete boom'))
+    renderTabs(<GraphTabs graphs={[makeGraph('g-dev')]} currentGraphId="g-dev" />)
+
+    fireEvent.click(screen.getByTestId('delete-graph-g-dev'))
+
+    await waitFor(() => {
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('删除图失败')
+      expect(errors[0].message).toContain('delete boom')
+    })
+    expect(useToastStore.getState().toasts.filter((t) => t.kind === 'success')).toHaveLength(0)
   })
 })
 

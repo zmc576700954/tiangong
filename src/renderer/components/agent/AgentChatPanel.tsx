@@ -24,6 +24,8 @@ import { SubagentInvocationsPanel } from './SubagentInvocationsPanel'
 import { eventBus, Events } from '../../store/eventBus'
 import { threadTitle as localizeThreadTitle } from '@shared/i18n'
 import { useI18n } from '../../i18n/useI18n'
+import { toastError } from '../../lib/toast'
+import { errorText } from '../../lib/error-text'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 
 const DiffReviewPanel = lazy(() => import('./DiffReviewPanel').then(m => ({ default: m.DiffReviewPanel })))
@@ -607,7 +609,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 }}
                 onMarkComplete={() => {
                   if (selectedNode) {
-                    useGraphStore.getState().updateNode(selectedNode.id, { status: 'review' })
+                    // 状态推进失败要说出来 —— 否则界面回到「编辑中」，用户以为没生效
+                    void useGraphStore.getState()
+                      .updateNode(selectedNode.id, { status: 'review' })
+                      .catch((err: unknown) => {
+                        toastError(t('node.toast.updateFailed'), errorText(err))
+                      })
                   }
                   resetVerification()
                   setRetryCount(0)
