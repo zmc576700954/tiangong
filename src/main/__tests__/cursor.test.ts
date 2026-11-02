@@ -59,7 +59,7 @@ describe('CursorAdapter', () => {
   it('checkInstalled returns true when cursor agent --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('cursor', ['agent', '--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('cursor', ['agent', '--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when cursor not found', async () => {

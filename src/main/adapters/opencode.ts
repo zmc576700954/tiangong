@@ -5,14 +5,12 @@
  * 每次 sendCommand() 启动新进程，传入完整 prompt。
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class OpenCodeAdapter extends BaseAdapter {
   readonly name = 'opencode'
@@ -21,13 +19,9 @@ export class OpenCodeAdapter extends BaseAdapter {
   protected logger = createLogger('OpenCodeAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('opencode', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('opencode CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('opencode', ['--version'])) return true
+    this.logger.warn('opencode CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

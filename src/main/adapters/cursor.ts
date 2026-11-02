@@ -5,14 +5,12 @@
  * 支持 --resume 实现多轮对话续接。
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class CursorAdapter extends BaseAdapter {
   readonly name = 'cursor'
@@ -21,13 +19,9 @@ export class CursorAdapter extends BaseAdapter {
   protected logger = createLogger('CursorAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('cursor', ['agent', '--version'])
-      return true
-    } catch {
-      this.logger.warn('cursor CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('cursor', ['agent', '--version'])) return true
+    this.logger.warn('cursor CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

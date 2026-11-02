@@ -63,7 +63,7 @@ describe('OpenCodeAdapter', () => {
   it('checkInstalled returns true when opencode --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '0.2.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('opencode', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('opencode', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when opencode not found', async () => {

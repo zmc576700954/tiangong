@@ -6,14 +6,12 @@
  * 非交互模式: kimi -p "prompt"
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class KimiCodeAdapter extends BaseAdapter {
   readonly name = 'kimi-code'
@@ -22,13 +20,9 @@ export class KimiCodeAdapter extends BaseAdapter {
   protected logger = createLogger('KimiCodeAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('kimi', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('kimi CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('kimi', ['--version'])) return true
+    this.logger.warn('kimi CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

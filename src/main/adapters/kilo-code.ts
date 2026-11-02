@@ -6,14 +6,12 @@
  * 非交互模式: kilo run "prompt"  |  kilo run --auto "prompt"
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class KiloCodeAdapter extends BaseAdapter {
   readonly name = 'kilo-code'
@@ -22,13 +20,9 @@ export class KiloCodeAdapter extends BaseAdapter {
   protected logger = createLogger('KiloCodeAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('kilo', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('kilo CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('kilo', ['--version'])) return true
+    this.logger.warn('kilo CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {
