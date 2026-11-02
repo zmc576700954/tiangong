@@ -352,7 +352,7 @@ export function rebuildTableIfNeeded(
 }
 
 /** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 17
+const CURRENT_SCHEMA_VERSION = 18
 
 interface TableSchema {
   name: string
@@ -666,6 +666,19 @@ const TABLE_SCHEMAS: TableSchema[] = [
       )
     `,
     requiredColumns: ['graph_id', 'doc_state', 'schema_version', 'updated_at'],
+  },
+  // 项目级默认（适配器 / 模型 / 可改文件范围）。
+  // 按 project_path 存 —— 一个项目有 online + dev 两张图，放 graphs 上会重复两份。
+  {
+    name: 'project_settings',
+    createSql: `
+      CREATE TABLE project_settings (
+        project_path TEXT PRIMARY KEY,
+        defaults_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['project_path', 'defaults_json', 'updated_at'],
   },
 ]
 

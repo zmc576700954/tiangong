@@ -631,6 +631,25 @@ export interface AdapterPreferences {
 }
 
 /**
+ * 项目级默认 —— 覆盖全局默认。
+ *
+ * 作用域优先级：**节点临时值 > 项目级覆盖 > 全局默认**。
+ */
+export interface ProjectDefaults {
+  /** 该项目默认用哪个适配器 */
+  defaultAdapter?: string
+  /** 该项目默认用哪个模型 */
+  defaultModel?: string
+  /**
+   * 该项目默认可改哪些文件 —— **相对项目根的相对路径**。
+   *
+   * 存相对路径而非绝对路径：项目搬家/改名后绝对路径会失效。
+   * 空数组 = 只读（没有圈定范围就是只读）。
+   */
+  allowedFiles?: string[]
+}
+
+/**
  * 适配器健康度指标（运行时累计，由 AdapterHealthMonitor 维护）。
  * 类型在 shared/types 中定义为渲染端可见，main 侧通过 @shared/types 引用同一份定义。
  */
