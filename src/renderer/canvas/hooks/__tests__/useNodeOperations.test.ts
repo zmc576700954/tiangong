@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook } from '@testing-library/react'
 import { useNodeOperations } from '../useNodeOperations'
+import { useToastStore } from '../../../lib/toast'
 
 const { mockState } = vi.hoisted(() => ({
   mockState: {
@@ -108,6 +109,66 @@ describe('useNodeOperations — 补建层级边', () => {
       expect(mockState.createEdge).not.toHaveBeenCalled()
     } finally {
       process.off('unhandledRejection', onUnhandledRejection)
+      consoleError.mockRestore()
+    }
+  })
+})
+
+// ============================================================
+// 静默失败归零（Task 9）：失败给出 error toast，但正确逻辑不许动
+// ============================================================
+
+describe('useNodeOperations — 建节点/建边失败不再静默', () => {
+  let nodeSeq = 0
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    useToastStore.getState().clear()
+    mockState.nodes = []
+    nodeSeq = 0
+    mockState.createNode.mockImplementation(async () => ({ id: `child${++nodeSeq}` }))
+    mockState.createEdge.mockResolvedValue({ id: 'edge1' })
+  })
+
+  it('createNode 失败 → error toast，且绝不建边', async () => {
+    mockState.createNode.mockRejectedValueOnce(new Error('createNode boom'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1'))
+      await result.current.handleAddChild('parent1', 'module')
+
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('新建节点失败')
+      expect(errors[0].message).toContain('createNode boom')
+      expect(useToastStore.getState().toasts.filter((t) => t.kind === 'success')).toHaveLength(0)
+
+      // 现有正确逻辑必须钉住：建节点失败就拿不到 created.id，
+      // 绝不能去建边（会造出一条指向不存在节点的边）
+      expect(mockState.createEdge).not.toHaveBeenCalled()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  it('createNode 成功但层级边失败 → error toast（节点已建成、图上少了一根线）', async () => {
+    mockState.createEdge.mockRejectedValueOnce(new Error('edge boom'))
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    try {
+      const { result } = renderHook(() => useNodeOperations('g1'))
+      await result.current.handleAddChild('parent1', 'module')
+
+      // 节点确实建成了 —— 失败的只是那条层级边
+      expect(mockState.createNode).toHaveBeenCalledTimes(1)
+
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors).toHaveLength(1)
+      expect(errors[0].title).toContain('创建层级连线失败')
+      expect(errors[0].message).toContain('edge boom')
+      expect(useToastStore.getState().toasts.filter((t) => t.kind === 'success')).toHaveLength(0)
+    } finally {
       consoleError.mockRestore()
     }
   })

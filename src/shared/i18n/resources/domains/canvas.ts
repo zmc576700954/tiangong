@@ -31,10 +31,14 @@ export const canvasZh = {
   'canvas.node.previewConfirm': '确认',
   'canvas.node.previewClear': '清除',
   'canvas.node.wikiContentTemplate': '# {title}\n\n',
+  /** 添加子节点时 createNode 失败 —— 静默失败归零 */
+  'canvas.node.createFailed': '新建节点失败',
 
   // ── 边 ──
   'canvas.edge.confirmAssociation': '确认关联',
   'canvas.edge.rejectAssociation': '拒绝关联',
+  /** 层级边的存储层镜像没建成（节点已在、图上少了一根线）—— 必须说出来 */
+  'canvas.edge.createHierarchyFailed': '创建层级连线失败',
 
   // ── 工具栏 / 布局 ──
   'canvas.layout.arrange': '整理布局',
@@ -128,8 +132,10 @@ export const canvasEn: Record<keyof typeof canvasZh, string> = {
   'canvas.node.previewConfirm': 'Confirm',
   'canvas.node.previewClear': 'Clear',
   'canvas.node.wikiContentTemplate': '# {title}\n\n',
+  'canvas.node.createFailed': 'Failed to create node',
   'canvas.edge.confirmAssociation': 'Confirm association',
   'canvas.edge.rejectAssociation': 'Reject association',
+  'canvas.edge.createHierarchyFailed': 'Failed to create hierarchy link',
 
   'canvas.layout.arrange': 'Arrange layout',
   'canvas.layout.menuTooltip': 'Auto layout (tree / force-directed)',

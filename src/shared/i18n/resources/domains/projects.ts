@@ -110,6 +110,9 @@ export const projectsZh = {
   'edge.editor.descPlaceholder': '简要说明（可选）',
   'edge.editor.addAssociation': '+ 添加关联',
   'edge.editor.add': '添加',
+  /** 连接线编辑器的失败提示（静默失败归零）—— 与 node.toast.* 同构 */
+  'edge.toast.updateFailed': '连线更新失败',
+  'edge.toast.deleteFailed': '连线删除失败',
 
   // ---- 右侧面板 ----
   'right.tab.node': '节点',
@@ -221,6 +224,8 @@ export const projectsEn: Record<keyof typeof projectsZh, string> = {
   'edge.editor.descPlaceholder': 'Brief description (optional)',
   'edge.editor.addAssociation': '+ Add association',
   'edge.editor.add': 'Add',
+  'edge.toast.updateFailed': 'Failed to update connection',
+  'edge.toast.deleteFailed': 'Failed to delete connection',
 
   'right.tab.node': 'Node',
   'right.tab.agent': 'Agent',

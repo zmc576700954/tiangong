@@ -10,16 +10,11 @@ import { useAppStore } from '../store/appStore'
 import { eventBus, Events } from '../store/eventBus'
 import { cn } from '../lib/utils'
 import { toastError } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import { AgentChatPanel } from '../components/agent/AgentChatPanel'
 import { NodeEditor } from './NodeEditor'
 import { EdgeEditor } from './EdgeEditor'
 import { useI18n } from '../i18n/useI18n'
-
-/** 把任意抛出物转成可读文本（Error 只有 message，其余按 String 处理）。 */
-function errorText(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return String(err)
-}
 
 export function RightPanel({
   expandedAgent,
@@ -135,9 +130,17 @@ export function RightPanel({
               <EdgeEditor
                 edge={selectedEdge}
                 nodes={nodes}
-                onUpdate={(data) => updateEdge(selectedEdge.id, data)}
+                onUpdate={(data) => {
+                  // updateEdge 失败会回滚并重新抛错（graphStore）—— 不接住就是
+                  // unhandled rejection，用户只看到「点了没反应」。与 NodeEditor 分支同模式。
+                  void updateEdge(selectedEdge.id, data).catch((err: unknown) => {
+                    toastError(t('edge.toast.updateFailed'), errorText(err))
+                  })
+                }}
                 onDelete={() => {
-                  deleteEdge(selectedEdge.id)
+                  void deleteEdge(selectedEdge.id).catch((err: unknown) => {
+                    toastError(t('edge.toast.deleteFailed'), errorText(err))
+                  })
                   selectEdge(null)
                 }}
               />

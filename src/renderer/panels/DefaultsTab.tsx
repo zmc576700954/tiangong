@@ -17,6 +17,7 @@ import { useMemo, useState } from 'react'
 import { AlertCircle, ArrowDown, ArrowUp, Plus, RefreshCw, Save, X } from 'lucide-react'
 import { Button } from '../components/ui/button'
 import { toastError, toastSuccess } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import { useI18n } from '../i18n/useI18n'
 import { DEFAULT_ADAPTER_PREFERENCES } from '@shared/adapter-defaults'
 import type { BizGraphSettings } from '@shared/types'
@@ -87,12 +88,6 @@ const MODEL_TIERS: ModelTierSpec[] = [
     placeholderKey: 'settings.defaults.model.mcp.placeholder',
   },
 ]
-
-/** 把任意抛出物转成可读文本（IPC 错误带结构化字段，Error 只有 message）。 */
-function errorText(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return String(err)
-}
 
 export function DefaultsTab({
   settings,

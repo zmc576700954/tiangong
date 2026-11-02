@@ -13,6 +13,7 @@ import type { AdapterDetection } from './DefaultsTab'
 import type { BizGraphSettings, AgentTypeDefinition } from '@shared/types'
 import { ALLOWED_API_PROVIDERS } from '@shared/adapter-defaults'
 import { toastError, toastSuccess } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -71,11 +72,6 @@ function withTimeout<T>(
       },
     )
   })
-}
-
-/** 把 catch 到的未知异常变成一句能直接展示给用户的文本。 */
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
 }
 
 export function SettingsPanel() {

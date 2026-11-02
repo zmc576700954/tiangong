@@ -10,6 +10,7 @@ import type { TranslationKey } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
 import { FloatingPanel } from './ui/FloatingPanel'
 import { toastError } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import type { Graph } from '@shared/types'
 
 /**
@@ -115,7 +116,7 @@ export function GraphTabs({ graphs, currentGraphId }: GraphTabsProps) {
     } catch (err) {
       // 创建失败（IPC 校验拒绝、源图不存在、DB 报错……）必须说出来，
       // 否则又变成「点了没反应」的那类静默失败
-      toastError(t('graph.tab.createFailed'), err instanceof Error ? err.message : String(err))
+      toastError(t('graph.tab.createFailed'), errorText(err))
       return
     }
     setNewGraphName('')

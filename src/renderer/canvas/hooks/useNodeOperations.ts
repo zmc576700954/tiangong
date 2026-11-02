@@ -5,6 +5,8 @@ import type { GraphNode, NodeType } from '@shared/types'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useI18n } from '../../i18n/useI18n'
+import { toastError } from '../../lib/toast'
+import { errorText } from '../../lib/error-text'
 
 /**
  * 封装节点相关的业务操作：添加子节点、AI 生成、AI 补充详情、生成开发 Prompt。
@@ -49,6 +51,8 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       // 建节点失败就没有 created.id 可用 —— 直接返回，
       // 绝不能拿 undefined 的 id 去建边（会造出一条指向不存在节点的边）
       console.error('[useNodeOperations] createNode failed:', err)
+      // 只记日志 = 用户点了「添加子节点」却什么都没发生 —— 给一句明确提示
+      toastError(t('canvas.node.createFailed'), errorText(err))
       return
     }
 
@@ -63,6 +67,8 @@ export function useNodeOperations(graphId: string, projectPath?: string) {
       })
     } catch (err) {
       console.error('[useNodeOperations] createHierarchyEdge failed:', err)
+      // 节点已建成、层级边没建成 —— 图上少了一根线，必须让用户知道
+      toastError(t('canvas.edge.createHierarchyFailed'), errorText(err))
     }
   }, [graphNodes, createNode, createEdge, graphId, screenToFlowPosition, locale, t])
 

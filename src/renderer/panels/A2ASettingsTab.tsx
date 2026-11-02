@@ -24,6 +24,7 @@ import { cn } from '../lib/utils'
 import { Button } from '../components/ui/button'
 import { Badge } from '../components/ui/badge'
 import { toastError, toastSuccess } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import { useI18n } from '../i18n/useI18n'
 import type {
   A2ARemoteAgent, A2AServerConfig, A2AAgentCard, A2AServerStatus,
@@ -48,12 +49,6 @@ interface Props {
 
 function getApi(propsApi?: Props['electronAPI']) {
   return propsApi ?? (window.electronAPI as unknown as Props['electronAPI'])
-}
-
-/** 把任意抛出物转成可读文本（IPC 错误带结构化字段，Error 只有 message）。 */
-function errorText(err: unknown): string {
-  if (err instanceof Error) return err.message
-  return String(err)
 }
 
 const DEFAULT_AGENT_CARD: A2AAgentCard = {
