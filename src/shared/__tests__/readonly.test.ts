@@ -3,6 +3,7 @@ import { resolveReadonly } from '../readonly'
 import {
   getReadonlySupport,
   listReadonlyCapableAdapters,
+  isReadonlyOptOutAdapter,
 } from '../readonly-support'
 
 describe('resolveReadonly', () => {
@@ -24,11 +25,17 @@ describe('resolveReadonly', () => {
 })
 
 describe('getReadonlySupport', () => {
-  it('claude-code / codex / mcp / mindmap-internal 保证只读', () => {
+  it('claude-code / codex / mcp 保证只读', () => {
     expect(getReadonlySupport('claude-code')).toBe('enforced')
     expect(getReadonlySupport('codex')).toBe('enforced')
     expect(getReadonlySupport('mcp')).toBe('enforced')
-    expect(getReadonlySupport('mindmap-internal')).toBe('enforced')
+  })
+
+  it('mindmap-internal **不**保证只读（它的禁写清单漏了 Bash，且探测失败时 fail-open）', () => {
+    // 它 spawn 的是 claude CLI，写工具靠 CLI 的 --disallowedTools 挡，
+    // 而那个黑名单既漏了 Bash / MultiEdit，探测失败时还会一个禁用参数都不加。
+    // 保证名单里不能有它。
+    expect(getReadonlySupport('mindmap-internal')).toBe('unsupported')
   })
 
   it('其余 CLI 适配器无法保证只读', () => {
@@ -40,6 +47,20 @@ describe('getReadonlySupport', () => {
   it('未注册的适配器一律视为不支持（未知不能被信任为只读）', () => {
     expect(getReadonlySupport('some-unknown-adapter')).toBe('unsupported')
     expect(getReadonlySupport('')).toBe('unsupported')
+  })
+})
+
+describe('isReadonlyOptOutAdapter', () => {
+  it('mindmap-internal 需要显式退出只读推导', () => {
+    // 内部一次性生成流程的写保护由适配器自己负责，
+    // 不能让它从「空的 allowedFiles」偶然推导出只读（那样会直接抛错、生成起不来）
+    expect(isReadonlyOptOutAdapter('mindmap-internal')).toBe(true)
+  })
+
+  it('用户会话用的适配器不退出（它们必须服从只读推导）', () => {
+    expect(isReadonlyOptOutAdapter('claude-code')).toBe(false)
+    expect(isReadonlyOptOutAdapter('codex')).toBe(false)
+    expect(isReadonlyOptOutAdapter('mcp')).toBe(false)
   })
 })
 

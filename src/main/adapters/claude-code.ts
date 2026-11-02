@@ -121,6 +121,21 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     // 透明转发会话（A2A 入站）：远端调用方不应能借本机 CLI 读文件、跑 shell，
     // 或派生本地 subagent。下文据此关闭 MCP server、内置工具与文件级 settings。
     const transparent = session.config.transparentForward === true
+    // 只读会话：同样要关掉外部 MCP 与文件级 settings。
+    //
+    // SDK 的 `tools` 白名单**只管内置工具**，管不到 MCP 工具（sdk.d.ts:1630-1641）：
+    // 用户配的 filesystem MCP、项目 .mcp.json、或设置里的 command hook
+    // （sdk.d.ts:6923-6946，能独立执行 shell）都能在只读会话里写文件。
+    // 所以只读会话必须：
+    // - strictMcpConfig: true → 只用 mcpServers 选项里显式传入的 server
+    //   （= BizGraph 自己的 dispatch_subagent），忽略项目 .mcp.json / 用户设置 / 插件；
+    // - settingSources: [] → 不加载 user/project/local 的 settings.json（无 hook）。
+    //
+    // 注意：strictMcpConfig **不影响** mcpServers 选项里的 server（sdk.d.ts:2293-2299），
+    // 所以 dispatch_subagent 仍然可用 —— 它是 BizGraph 自己的 in-process MCP server，
+    // 不是「外部配置的 MCP」。子会话的只读保证由父会话的 readOnly 继承保证
+    // （子会话展开 parentConfig，见 subagent-manager.ts 的 _runInvocation）。
+    const readOnly = session.config.readOnly === true
 
     const abortController = new AbortController()
     this.activeQueries.set(session.id, { abort: () => abortController.abort() })
@@ -241,6 +256,11 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
           // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
           ...(transparent ? { settingSources: [] } : {}),
+          // 只读会话：同上，且额外忽略**外部**配置的 MCP server
+          // （项目 .mcp.json / 用户设置 / 插件）—— strictMcpConfig 只保留
+          // mcpServers 选项里显式传入的 server（即 BizGraph 自己的 dispatch_subagent）。
+          // 没有这两项，用户配的 filesystem MCP 或设置里的 hook 就能在只读会话里写文件。
+          ...(readOnly ? { settingSources: [], strictMcpConfig: true } : {}),
           ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),
           ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
           ...(mcpServers ? { mcpServers } : {}),

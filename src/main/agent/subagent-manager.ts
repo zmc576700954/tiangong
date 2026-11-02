@@ -259,6 +259,25 @@ export class SubagentManager extends EventEmitter {
           ErrorCode.AGENT_ADAPTER_ERROR,
         )
       }
+      // 只读父会话**不得**执行 recipe。
+      //
+      // recipe 的 shell 步直接 spawn 子进程（recipe-runner.ts 的 runShellStep），
+      // 完全在适配器层之外 —— claude-code 的 tools 白名单、strictMcpConfig
+      // 都管不到它。所以整个 recipe 被拒绝，而不是只挡 shell 步：
+      // recipe 的 agent 步同样能带 allowed_files（yaml-loader 允许），
+      // 半执行（agent 步跑完、shell 步被拒）会留下不一致的中间状态。
+      //
+      // 这一段**必须**在 parentState 解析之前查 —— 之前 recipe 分支排在
+      // getSessionState() 之前，父会话的 readOnly 从来没被看过。
+      const parentState = this.agentManager.getSessionState(args.parentSessionId)
+      if (parentState?.config.readOnly === true) {
+        throw new AgentError(
+          `Recipe "${args.agentType.slice('recipe:'.length).trim()}" cannot run in a read-only session: ` +
+          `recipe steps execute commands directly in the project directory, bypassing the session's read-only tools. ` +
+          `Give the session an explicit file scope, or run the recipe from a writable session.`,
+          ErrorCode.RECIPE_READONLY_REFUSED,
+        )
+      }
       const startedAt = Date.now()
       const run = await this.recipeRunner.run({
         recipeId: args.agentType.slice('recipe:'.length).trim(),

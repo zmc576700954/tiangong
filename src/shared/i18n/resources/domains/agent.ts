@@ -74,6 +74,12 @@ export const agentZh = {
   'agent.error.showRaw': '查看原始错误',
   'agent.error.hideRaw': '隐藏原始错误',
 
+  // —— 会话启动失败 ——
+  'agent.session.noAdapter': '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。',
+  'agent.session.startFailed': '无法启动 Agent 会话，请检查适配器是否可用。',
+  'agent.session.readonlyUnsupported':
+    '当前适配器无法保证只读，会话未启动。请换一个保证只读的适配器，或给会话指定可修改的文件范围。',
+
   // —— 上下文 ——
   'agent.context.label': '上下文',
   'agent.context.injected': '已注入上下文',
@@ -261,6 +267,11 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.details.hide': 'Hide details',
   'agent.error.showRaw': 'Show raw error',
   'agent.error.hideRaw': 'Hide raw error',
+
+  'agent.session.noAdapter': 'No Agent tool is available. Install or configure an adapter in Settings first.',
+  'agent.session.startFailed': 'Could not start the Agent session. Check whether the adapter is available.',
+  'agent.session.readonlyUnsupported':
+    'This adapter cannot guarantee read-only, so the session was not started. Switch to a read-only-capable adapter, or give the session an explicit file scope.',
 
   'agent.context.label': 'Context',
   'agent.context.injected': 'Context injected',

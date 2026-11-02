@@ -55,6 +55,13 @@ export const ErrorCode = {
   RECIPE_NOT_FOUND: 'RECIPE_NOT_FOUND',
   RECIPE_INVALID_STEP: 'RECIPE_INVALID_STEP',
   RECIPE_RUN_FAILED: 'RECIPE_RUN_FAILED',
+  /**
+   * 只读父会话试图执行 recipe。
+   *
+   * recipe 的 shell 步直接在真实项目目录里 spawn 子进程 —— 绕开了适配器层的
+   * 只读保证（tools 白名单 / MCP 隔离都管不到它），所以整个 recipe 被拒绝。
+   */
+  RECIPE_READONLY_REFUSED: 'RECIPE_READONLY_REFUSED',
 
   // 状态机
   STATE_TRANSITION_INVALID: 'STATE_TRANSITION_INVALID',

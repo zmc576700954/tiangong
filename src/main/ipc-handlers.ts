@@ -19,6 +19,7 @@ import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { EdgeRepository } from './repositories/edge-repository'
 import { GraphRepository } from './repositories/graph-repository'
+import { ProjectSettingsRepository } from './repositories/project-settings-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
 import { isPathWithinResolved } from './shared/path-utils'
@@ -400,7 +401,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db))
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
-  registerProjectHandlers(typedHandle, graphService, chatService)
+  registerProjectHandlers(typedHandle, graphService, chatService, new ProjectSettingsRepository(db))
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager, new NodeRepository(db), new EdgeRepository(db), new GraphRepository(db))

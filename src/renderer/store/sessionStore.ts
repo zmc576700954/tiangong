@@ -1,7 +1,9 @@
 import { create } from 'zustand'
 import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage } from '@shared/types'
 import { DEFAULT_THREAD_TITLE } from '@shared/constants'
+import { t } from '@shared/i18n'
 import { generateId } from '../lib/utils'
+import { errorText } from '../lib/error-text'
 import { useGraphStore } from './graphStore'
 import { useAgentOutputStore } from './agentOutputStore'
 import { useAdapterStore } from './adapterStore'
@@ -333,8 +335,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         await window.electronAPI['agent:sendCommand'](sessionId, command)
       }
     } catch (err) {
-      const errMsg = String(err)
+      // 主进程把 BizGraphError 等以 toJSON() 的 plain object 抛过 IPC，
+      // 直接 String(err) 会得到 "[object Object]" —— 用户看不到能做什么。
+      // errorText 会读普通对象上的 .message。
+      const errMsg = errorText(err)
       const isNoAdapter = errMsg.includes('No adapter available')
+      const isReadonlyUnsupported =
+        typeof err === 'object' && err !== null &&
+        (err as { code?: unknown }).code === 'ADAPTER_READONLY_UNSUPPORTED'
       useThreadStore.getState().appendChatMessage(resolvedThreadId, {
         id: generateId('msg'),
         role: 'agent',
@@ -342,10 +350,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         timestamp: Date.now(),
         status: 'error',
         error: {
-          code: isNoAdapter ? 'NO_ADAPTER_AVAILABLE' : 'SESSION_START_FAILED',
+          code: isNoAdapter
+            ? 'NO_ADAPTER_AVAILABLE'
+            : isReadonlyUnsupported ? 'READONLY_UNSUPPORTED' : 'SESSION_START_FAILED',
           message: isNoAdapter
-            ? '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。'
-            : '无法启动 Agent 会话，请检查适配器是否可用。',
+            ? t('agent.session.noAdapter')
+            : isReadonlyUnsupported
+              ? t('agent.session.readonlyUnsupported')
+              : t('agent.session.startFailed'),
           raw: errMsg,
         },
       })

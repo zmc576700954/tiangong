@@ -23,14 +23,40 @@ export type ReadonlySupportLevel =
  * - claude-code：SDK 的 `tools` 白名单（不含 Write/Edit/NotebookEdit/Bash）
  * - codex：SDK 的 `sandboxMode: 'read-only'`
  * - mcp：工具集置空（与它的 transparent 分支同一手法）
- * - mindmap-internal：本来就禁掉了写工具（`claude-runner.ts` 的 `--disallowedTools`）
+ *
+ * **mindmap-internal 不在此列**：它 spawn 的是 `claude` CLI，写工具靠 CLI 的
+ * `--disallowedTools` 挡（见 mindmap-agent/claude-runner.ts 的 buildClaudeArgs），
+ * 而那个黑名单既漏了 Bash / MultiEdit，探测失败时还会**一个禁用参数都不加**
+ * （fail-open）。它保证不了只读，就不能进这份保证名单。
  */
 const READONLY_CAPABLE_ADAPTERS = new Set([
   'claude-code',
   'codex',
   'mcp',
-  'mindmap-internal',
 ])
+
+/**
+ * 内部一次性生成适配器 —— 它们的写保护由**自己的 CLI 层**负责
+ * （mindmap-internal 的 `--disallowedTools`），因此**不保证**只读。
+ *
+ * 用它们起会话时必须**显式**退出只读推导（`resolveReadonly`）：
+ * 「空的 allowedFiles」会被推成只读，而 AgentManager 会因为适配器
+ * 不保证只读而直接拒绝启动（ADAPTER_READONLY_UNSUPPORTED）
+ * → 思维导图生成整个起不来。
+ */
+const READONLY_OPT_OUT_ADAPTERS = new Set(['mindmap-internal'])
+
+/**
+ * 该适配器是否需要**显式**退出只读推导。
+ *
+ * 只读推导（空 allowedFiles ⇒ 只读）是给**用户会话**的语义：
+ * 「用户没圈定可改范围 ⇒ 别乱改」。内部一次性生成流程不是用户会话 ——
+ * 它的写保护由适配器自己负责，所以必须显式声明，别让它从
+ * 「空的 allowedFiles」偶然推导出只读。
+ */
+export function isReadonlyOptOutAdapter(adapterName: string): boolean {
+  return READONLY_OPT_OUT_ADAPTERS.has(adapterName)
+}
 
 /**
  * 该适配器是否保证只读。

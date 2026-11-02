@@ -446,6 +446,23 @@ describe('ClaudeCodeAdapter — 只读会话', () => {
     expect(tools).toContain('Read')
   })
 
+  it('只读会话隔离外部 MCP 配置与文件级 settings（否则外部 MCP / hook 能写盘）', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+
+    // strictMcpConfig：只用 mcpServers 选项里显式传入的 server，
+    // 忽略项目 .mcp.json / 用户设置 / 插件里的 MCP
+    expect(options.strictMcpConfig).toBe(true)
+    // settingSources: [] —— 不加载 user/project/local 的 settings.json（无 hook）
+    expect(options.settingSources).toEqual([])
+  })
+
+  it('非只读会话不改变 MCP 与 settings 的加载方式', async () => {
+    const options = await sendWith(makeConfig())
+    // 可写会话保持既有行为 —— 不能因为加了只读分支就收紧普通会话
+    expect(options.strictMcpConfig).toBeUndefined()
+    expect(options.settingSources).toBeUndefined()
+  })
+
   it('只读会话的 permissionMode 是 default（不是 acceptEdits）', async () => {
     const options = await sendWith(makeConfig({ readOnly: true }))
     expect(options.permissionMode).toBe('default')

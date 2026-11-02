@@ -12,7 +12,7 @@ import type {
   AgentSessionConfig, AgentCommand, AgentOutput, AgentLog, AgentThread,
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
-  SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
+  SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences, ProjectDefaults,
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
   CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
   AdapterHealthScore,                                                    // D4 健康度面板
@@ -175,6 +175,10 @@ export interface IpcApi {
 
   // 项目扫描
   'project:scan': (projectPath: string) => Promise<ProjectScanResult>
+
+  // 项目级默认（覆盖全局默认）
+  'project:getDefaults': (projectPath: string) => Promise<ProjectDefaults | null>
+  'project:setDefaults': (projectPath: string, defaults: ProjectDefaults) => Promise<void>
 
   // 从项目初始化图
   'graph:initFromProject': (data: { projectPath: string; projectName: string }) => Promise<{

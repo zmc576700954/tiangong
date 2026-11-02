@@ -211,6 +211,30 @@ describe('sessionStore', () => {
     expect(useAdapterStore.getState().lastFallbackHistory).toHaveLength(2)
   })
 
+  /**
+   * 主进程把 BizGraphError 等以 toJSON() 的 **plain object** 抛过 IPC，
+   * 直接 String(err) 会得到 "[object Object]" —— 用户看不到能做什么。
+   */
+  it('只读不受支持的错误给出可操作的原因，而不是 [object Object]', async () => {
+    vi.mocked(window.electronAPI['agent:startSession']).mockRejectedValueOnce({
+      name: 'AdapterError',
+      message: 'Adapter cline does not support read-only sessions.',
+      code: 'ADAPTER_READONLY_UNSUPPORTED',
+      details: undefined,
+    })
+    useThreadStore.getState().createThread('cline')
+    const threadId = await waitForThreadStable()
+    await useSessionStore.getState().sendMessage(threadId, 'Hello')
+
+    const errMsg = useThreadStore.getState().threads.find((t) => t.id === threadId)!.messages[1]
+    expect(errMsg.error?.code).toBe('READONLY_UNSUPPORTED')
+    // raw 要带上真实的 message —— 不是 "[object Object]"
+    expect(errMsg.error?.raw).toContain('does not support read-only')
+    expect(errMsg.error?.raw).not.toContain('[object Object]')
+    // 提示文案要说清用户能做什么
+    expect(errMsg.error?.message).not.toContain('[object Object]')
+  })
+
   it('listenForStatusChanges returns a cleanup function', () => {
     const cleanup = useSessionStore.getState().listenForStatusChanges()
     expect(typeof cleanup).toBe('function')
