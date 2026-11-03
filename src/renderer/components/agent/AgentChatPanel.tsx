@@ -5,6 +5,10 @@ import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useSessionStore } from '../../store/sessionStore'
+import { useAdapterStore } from '../../store/adapterStore'
+import { getReadonlySupport } from '@shared/readonly-support'
+import { toProjectRelative, fromProjectRelative } from '../../lib/project-paths'
+import { ScopeEditor } from './ScopeEditor'
 import { useSubagentStore } from '../../store/subagentStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
@@ -91,6 +95,59 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const requestStatuses = useSessionStore((s) => s.requestStatuses)
   const queuedCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'queued').length, [requestStatuses])
   const executingCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'executing').length, [requestStatuses])
+
+  // —— 文件范围（只读默认）——
+  const projectDefaults = useSessionStore((s) => s.projectDefaults)
+  const loadProjectDefaults = useSessionStore((s) => s.loadProjectDefaults)
+  const saveProjectDefaults = useSessionStore((s) => s.saveProjectDefaults)
+  const [sessionScope, setSessionScope] = useState<string[]>([])
+
+  // 切项目 / 切图 → 重载项目级默认
+  useEffect(() => {
+    void loadProjectDefaults(projectPath ?? '')
+  }, [projectPath, loadProjectDefaults])
+
+  // 生效范围 = 项目级默认 ∪ 本次会话显式加的
+  const scopeEffectiveFiles = useMemo(() => {
+    const fromProject = (projectDefaults?.allowedFiles ?? []).map((rel) =>
+      fromProjectRelative(projectPath ?? '', rel),
+    )
+    return [...new Set([...fromProject, ...sessionScope])]
+  }, [projectDefaults, sessionScope, projectPath])
+
+  // 范围为空 ⇒ 只读（与主进程 resolveReadonly 同一套语义）
+  const scopeReadonly = scopeEffectiveFiles.length === 0
+  // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
+  const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
+  const scopeAdapterSupportsReadonly = getReadonlySupport(
+    selectedAdapter === 'auto'
+      ? adapterPreferences.defaultAdapter
+      : selectedAdapter,
+  ) === 'enforced'
+
+  const handleScopeAddFile = (relPath: string) => {
+    setSessionScope((prev) => [...new Set([...prev, relPath])])
+    // 同时写进项目级默认 → 下次自动带上（用户不必每次重选）
+    void saveProjectDefaults({
+      ...projectDefaults,
+      allowedFiles: [...new Set([...(projectDefaults?.allowedFiles ?? []), relPath])],
+    })
+  }
+
+  const handleScopeRemoveFile = (file: string) => {
+    setSessionScope((prev) => prev.filter((f) => f !== file))
+    const rel = toProjectRelative(projectPath ?? '', file)
+    void saveProjectDefaults({
+      ...projectDefaults,
+      allowedFiles: (projectDefaults?.allowedFiles ?? []).filter((f) => f !== rel),
+    })
+  }
+
+  const handleScopeClearAll = () => {
+    setSessionScope([])
+    // 清掉项目级默认 → 下一次会话回到只读（否则用户会以为「我明明关了它又开了」）
+    void saveProjectDefaults({ ...projectDefaults, allowedFiles: [] })
+  }
 
   const rawOutputs = useMemo(
     () => (currentThread ? (threadOutputs[currentThread.id] ?? []) : []),
@@ -254,14 +311,31 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   }
 
   const handleSend = async (content: string, contextRefs: ContextRef[]) => {
+    // 用户**主动**选了一个不保证只读的适配器 + 范围为空 → 发送前二次确认。
+    // 注意与回退链那处的语义区别：回退链那处是**直接拒绝**（不能把写权限
+    // 在用户不知情的情况下交出去）；这里是用户自己选的，给一次确认机会。
+    if (scopeReadonly && !scopeAdapterSupportsReadonly) {
+      const ok = window.confirm(t('agent.scope.confirmWritable'))
+      if (!ok) return
+    }
+
     let threadId = currentThreadId
     if (!threadId) {
       threadId = createThread(selectedAdapter, selectedNode?.id)
     }
 
+    const projectPath = currentGraph?.projectPath ?? ''
+    // 范围 = 项目级默认 ∪ 本次会话显式引用的文件
+    // （项目级默认存的是**相对项目根**的相对路径；引用给的是绝对路径 → 统一成绝对）
+    const projectFiles = (projectDefaults?.allowedFiles ?? []).map((rel) =>
+      fromProjectRelative(projectPath, rel),
+    )
+    const refFiles = contextRefs.filter((r) => r.type === 'file').map((r) => r.id)
+    const allowedFiles = [...new Set([...projectFiles, ...refFiles])]
+
     const sessionConfig: AgentSessionConfig = {
-      workingDirectory: currentGraph?.projectPath ?? '',
-      allowedFiles: contextRefs.filter((r) => r.type === 'file').map((r) => r.id),
+      workingDirectory: projectPath,
+      allowedFiles,
       forbiddenFiles: [],
       invariantRules: selectedNode?.rules?.map((r) => r.title) ?? [],
       upstreamContext: '',
@@ -645,6 +719,15 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           {executingCount > 0 && <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" />{t('agent.queue.executing', { count: executingCount })}</span>}
         </div>
       )}
+
+      <ScopeEditor
+        effectiveFiles={scopeEffectiveFiles}
+        readonly={scopeReadonly}
+        adapterSupportsReadonly={scopeAdapterSupportsReadonly}
+        onAddFile={handleScopeAddFile}
+        onRemoveFile={handleScopeRemoveFile}
+        onClearAll={handleScopeClearAll}
+      />
 
       <ChatInput
         onSend={handleSend}

@@ -24,6 +24,8 @@ vi.stubGlobal('window', {
     'message:saveBatch': vi.fn().mockResolvedValue(undefined),
     'settings:getAdapterPreferences': vi.fn().mockResolvedValue({ defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'mcp'] }),
     'settings:setAdapterPreferences': vi.fn().mockResolvedValue(undefined),
+    'project:getDefaults': vi.fn().mockResolvedValue(null),
+    'project:setDefaults': vi.fn().mockResolvedValue(undefined),
     onAgentStatusChange: vi.fn().mockReturnValue(() => {}),
   },
 })
@@ -48,7 +50,10 @@ describe('sessionStore', () => {
 
   beforeEach(() => {
     threadCounter = 0
-    useSessionStore.setState({ activeSessions: new Map(), sendingThreads: new Set(), sessionSnapshots: new Map(), requestStatuses: new Map() })
+    // 清调用记录（不动 mock 的实现 —— clearAllMocks 不重置 mockResolvedValue）
+    vi.clearAllMocks()
+    useSessionStore.setState({ activeSessions: new Map(), sendingThreads: new Set(), sessionSnapshots: new Map(), requestStatuses: new Map(), projectDefaults: null })
+    vi.mocked(window.electronAPI['project:getDefaults']).mockResolvedValue(null)
     useThreadStore.setState({ threads: [], currentThreadId: null, threadIdResolvers: new Map() })
     useAdapterStore.setState({
       adapters: [],
@@ -333,6 +338,63 @@ describe('sessionStore', () => {
       expect(useSessionStore.getState().requestStatuses.get('r1')?.status).toBe('executing')
       useSessionStore.getState().removeRequestStatus('r1')
       expect(useSessionStore.getState().requestStatuses.has('r1')).toBe(false)
+    })
+  })
+
+  /**
+   * 项目级默认（范围记忆）。
+   *
+   * 「用户没圈定可改范围 ⇒ 只读」是这个特性的核心语义，所以项目级默认里的
+   * allowedFiles 必须在会话里生效 —— 否则用户每次开新会话都要重新圈一遍。
+   */
+  describe('项目级默认（范围记忆）', () => {
+    it('loadProjectDefaults 读回项目级默认并存进 store', async () => {
+      vi.mocked(window.electronAPI['project:getDefaults']).mockResolvedValueOnce({
+        defaultAdapter: 'codex',
+        allowedFiles: ['src/a.ts'],
+      })
+
+      await useSessionStore.getState().loadProjectDefaults('/work/proj')
+
+      expect(window.electronAPI['project:getDefaults']).toHaveBeenCalledWith('/work/proj')
+      expect(useSessionStore.getState().projectDefaults?.allowedFiles).toEqual(['src/a.ts'])
+    })
+
+    it('projectPath 为空时不调 IPC（图没绑定项目就没有项目级默认）', async () => {
+      await useSessionStore.getState().loadProjectDefaults('')
+
+      expect(window.electronAPI['project:getDefaults']).not.toHaveBeenCalled()
+      expect(useSessionStore.getState().projectDefaults).toBeNull()
+    })
+
+    it('读取失败时退回「没有项目级默认」（会话退回只读 —— 安全方向）', async () => {
+      vi.mocked(window.electronAPI['project:getDefaults']).mockRejectedValueOnce(new Error('db down'))
+
+      await useSessionStore.getState().loadProjectDefaults('/work/proj')
+
+      expect(useSessionStore.getState().projectDefaults).toBeNull()
+    })
+
+    it('saveProjectDefaults 写回主进程并更新本地状态', async () => {
+      useGraphStore.setState({
+        currentGraphId: 'g1',
+        graphs: [{ id: 'g1', name: 'g', type: 'dev', projectPath: '/work/proj', createdAt: '', updatedAt: '' }],
+      })
+
+      await useSessionStore.getState().saveProjectDefaults({ allowedFiles: ['src/a.ts'] })
+
+      expect(window.electronAPI['project:setDefaults']).toHaveBeenCalledWith('/work/proj', {
+        allowedFiles: ['src/a.ts'],
+      })
+      expect(useSessionStore.getState().projectDefaults?.allowedFiles).toEqual(['src/a.ts'])
+    })
+
+    it('没有绑定项目的图不写回（无处可写）', async () => {
+      useGraphStore.setState({ currentGraphId: 'g1', graphs: [{ id: 'g1', name: 'g', type: 'dev', createdAt: '', updatedAt: '' }] })
+
+      await useSessionStore.getState().saveProjectDefaults({ allowedFiles: ['src/a.ts'] })
+
+      expect(window.electronAPI['project:setDefaults']).not.toHaveBeenCalled()
     })
   })
 })

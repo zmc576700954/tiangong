@@ -80,6 +80,18 @@ export const agentZh = {
   'agent.session.readonlyUnsupported':
     '当前适配器无法保证只读，会话未启动。请换一个保证只读的适配器，或给会话指定可修改的文件范围。',
 
+  // —— 会话的文件范围 ——
+  'agent.scope.readonlyHint': '本次只读，Agent 不能修改文件',
+  'agent.scope.writableHint': '可修改 {count} 个文件',
+  'agent.scope.openScope': '放开范围',
+  'agent.scope.addFile': '添加文件',
+  'agent.scope.clearAll': '清空全部',
+  'agent.scope.addPlaceholder': '相对项目根的路径，如 src/app.ts',
+  'agent.scope.addConfirm': '添加',
+  'agent.scope.removeFile': '移出范围',
+  'agent.scope.adapterUnsupported': '当前适配器无法保证只读：范围为空时 Agent 仍可能改动文件。',
+  'agent.scope.confirmWritable': '当前适配器无法保证只读，本次会话可能改动项目文件。继续吗？',
+
   // —— 上下文 ——
   'agent.context.label': '上下文',
   'agent.context.injected': '已注入上下文',
@@ -274,6 +286,18 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
     'This adapter cannot guarantee read-only, so the session was not started. Switch to a read-only-capable adapter, or give the session an explicit file scope.',
 
   'agent.context.label': 'Context',
+  'agent.scope.readonlyHint': 'Read-only — the agent cannot modify files',
+  'agent.scope.writableHint': 'Can modify {count} file(s)',
+  'agent.scope.openScope': 'Open scope',
+  'agent.scope.addFile': 'Add file',
+  'agent.scope.clearAll': 'Clear all',
+  'agent.scope.addPlaceholder': 'Path relative to the project root, e.g. src/app.ts',
+  'agent.scope.addConfirm': 'Add',
+  'agent.scope.removeFile': 'Remove from scope',
+  'agent.scope.adapterUnsupported':
+    'This adapter cannot guarantee read-only — the agent may still modify files even with an empty scope.',
+  'agent.scope.confirmWritable':
+    'This adapter cannot guarantee read-only; this session may modify project files. Continue?',
   'agent.context.injected': 'Context injected',
   'agent.context.tokens': '~{count} tokens',
   'agent.contextBar.label': 'Context:',

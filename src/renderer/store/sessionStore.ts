@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage, ProjectDefaults } from '@shared/types'
 import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { t } from '@shared/i18n'
 import { generateId } from '../lib/utils'
@@ -62,6 +62,12 @@ interface SessionState {
   updateRequestStatus: (requestId: string, status: 'queued' | 'executing' | 'done') => void
   /** Remove a tracked request */
   removeRequestStatus: (requestId: string) => void
+  /** 项目级默认（适配器 / 模型 / 可改文件范围）—— 覆盖全局默认 */
+  projectDefaults: ProjectDefaults | null
+  /** 载入项目级默认；projectPath 为空时不调（图没绑定项目就没有项目级默认） */
+  loadProjectDefaults: (projectPath: string) => Promise<void>
+  /** 写回项目级默认 */
+  saveProjectDefaults: (defaults: ProjectDefaults) => Promise<void>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -69,6 +75,31 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionSnapshots: new Map(),
   requestStatuses: new Map(),
   sendingThreads: new Set(),
+  projectDefaults: null,
+
+  loadProjectDefaults: async (projectPath) => {
+    // 图没绑定项目就没有项目级默认 —— 不调 IPC
+    if (!projectPath) {
+      set({ projectDefaults: null })
+      return
+    }
+    try {
+      const defaults = await window.electronAPI['project:getDefaults'](projectPath)
+      set({ projectDefaults: defaults ?? null })
+    } catch {
+      // 读不到就用「没有项目级默认」——会话退回只读（安全方向）
+      set({ projectDefaults: null })
+    }
+  },
+
+  saveProjectDefaults: async (defaults) => {
+    const projectPath = useGraphStore.getState().graphs.find(
+      (g) => g.id === useGraphStore.getState().currentGraphId,
+    )?.projectPath
+    if (!projectPath) return
+    await window.electronAPI['project:setDefaults'](projectPath, defaults)
+    set({ projectDefaults: defaults })
+  },
 
   startSession: async (adapterName, config) => {
     const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
