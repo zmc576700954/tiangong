@@ -64,13 +64,22 @@ describe('ProjectSettingsRepository', () => {
     expect(repo.get('/work/never-set')).toBeUndefined()
   })
 
-  it('再次 set 覆盖旧值（不是追加）', () => {
+  it('再次 set 按字段合并（两个窗口各改各的字段，互不覆盖）', () => {
+    // 整条替换会让「最后写者赢」：窗口 A 改了 allowedFiles、窗口 B 改了
+    // defaultAdapter，B 会把 A 的改动悄悄丢掉。
     repo.set('/work/alpha', { defaultAdapter: 'codex', allowedFiles: ['a.ts'] })
-    repo.set('/work/alpha', { defaultAdapter: 'claude-code' })
+    repo.set('/work/alpha', { allowedFiles: ['b.ts'] })
 
     const got = repo.get('/work/alpha')
-    expect(got?.defaultAdapter).toBe('claude-code')
-    expect(got?.allowedFiles).toBeUndefined()
+    expect(got?.allowedFiles).toEqual(['b.ts'])
+    // 另一个窗口改的字段仍在
+    expect(got?.defaultAdapter).toBe('codex')
+  })
+
+  it('显式清空 allowedFiles 会真的清空（合并语义对数组不成立）', () => {
+    repo.set('/work/alpha', { allowedFiles: ['a.ts'] })
+    repo.set('/work/alpha', { allowedFiles: [] })
+    expect(repo.get('/work/alpha')?.allowedFiles).toEqual([])
   })
 
   it('clear 删除该项目的设置', () => {

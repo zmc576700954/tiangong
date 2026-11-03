@@ -47,17 +47,37 @@ export class ProjectSettingsRepository {
     return safeJsonParse<ProjectDefaults | undefined>(row.defaults_json, undefined, isProjectDefaults)
   }
 
+  /**
+   * 写回项目级默认。
+   *
+   * **字段级合并**，不是整条替换 —— 两个窗口同时改同一个项目的默认时，
+   * 一方只改了 allowedFiles、另一方只改了 defaultAdapter，整条替换会让
+   * 后者丢掉前者的改动（"最后写者赢"）。合并后各改各的字段，互不覆盖。
+   *
+   * 注意：`allowedFiles` 本身是**整体**替换的（它是数组，合并语义不成立）——
+   * 用户「清空全部」要真的清空。
+   */
   set(projectPath: string, defaults: ProjectDefaults): void {
     const key = normalizeProjectPath(projectPath)
     if (!key) return
     const now = new Date().toISOString()
+    const existing = this.get(projectPath) ?? {}
+    // 过滤掉 undefined —— `{...existing, ...{a: undefined}}` 会把 a 覆盖成
+    // undefined（展开语义），那样"没提到这个字段"就变成了"把这个字段清掉"。
+    const defined = Object.fromEntries(
+      Object.entries(defaults).filter(([, v]) => v !== undefined),
+    ) as ProjectDefaults
+    const merged: ProjectDefaults = {
+      ...existing,
+      ...defined,
+    }
     this.db.prepare(
       `INSERT INTO project_settings (project_path, defaults_json, updated_at)
        VALUES (?, ?, ?)
        ON CONFLICT(project_path) DO UPDATE SET
          defaults_json = excluded.defaults_json,
          updated_at = excluded.updated_at`,
-    ).run(key, JSON.stringify(defaults), now)
+    ).run(key, JSON.stringify(merged), now)
   }
 
   clear(projectPath: string): void {

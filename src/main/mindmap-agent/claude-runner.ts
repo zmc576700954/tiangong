@@ -50,8 +50,14 @@ export interface ClaudeRunResult {
 
 const ALLOWED_MODELS = new Set(['sonnet', 'opus', 'haiku', 'sonnet-4', 'claude-sonnet-4-6'])
 
-/** 生成类流程用不到的工具：写文件与改文件 */
-const WRITE_TOOLS = 'Write Edit NotebookEdit'
+/**
+ * 生成类流程用不到的工具：写文件、改文件、执行命令。
+ *
+ * **Bash 必须在名单里** —— 只禁 Write/Edit 挡不住
+ * `bash -c 'echo x > ~/.ssh/authorized_keys'`。而这些流程全是「读项目 →
+ * 输出 JSON」，从不需要写盘也不需要跑命令。
+ */
+const WRITE_TOOLS = 'Write Edit MultiEdit NotebookEdit Bash BashOutput KillShell'
 
 const logger = createLogger('ClaudeRunner')
 
@@ -71,7 +77,16 @@ export function buildClaudeArgs(options: ClaudeRunOptions): string[] {
   if (safeFormat === 'json') {
     args.push('--output-format', 'json')
   }
-  if (!options.allowWrites && supportsDisallowedTools()) {
+  if (!options.allowWrites) {
+    // **fail-closed**：探测不到 --disallowedTools 时**不能**就这么跑 ——
+    // 那样等于一个禁写参数都不加，CLI 默认带着 Write/Edit/Bash，
+    // 被扫描到的项目文本（README 里的注入）就能借模型的工具真的写进磁盘。
+    // 跑不了生成流程，比带着写权限跑安全得多。
+    if (!supportsDisallowedTools()) {
+      throw new Error(
+        'Claude CLI does not support --disallowedTools; refusing to run a flow that must not write files.',
+      )
+    }
     args.push('--disallowedTools', WRITE_TOOLS)
   }
   return args

@@ -7,8 +7,10 @@
 
 import { describe, it, expect, vi } from 'vitest'
 
+const mockSupportsDisallowedTools = vi.fn(() => true)
+
 vi.mock('../cli-capabilities', () => ({
-  supportsDisallowedTools: () => true,
+  supportsDisallowedTools: () => mockSupportsDisallowedTools(),
 }))
 
 import { buildClaudeArgs } from '../claude-runner'
@@ -20,6 +22,20 @@ describe('buildClaudeArgs', () => {
     const idx = args.indexOf('--disallowedTools')
     expect(args[idx + 1]).toContain('Write')
     expect(args[idx + 1]).toContain('Edit')
+  })
+
+  it('禁写名单里必须有 Bash —— 只禁 Write/Edit 挡不住 bash -c 的重定向', () => {
+    const args = buildClaudeArgs({ cwd: '/tmp/project' })
+    const tools = args[args.indexOf('--disallowedTools') + 1]
+    expect(tools).toContain('Bash')
+    expect(tools).toContain('MultiEdit')
+  })
+
+  it('CLI 不支持 --disallowedTools 时 fail-closed（宁可不跑，也不能带着写权限跑）', () => {
+    mockSupportsDisallowedTools.mockReturnValueOnce(false)
+    // 探测失败时如果照跑，就是一个禁写参数都不加 ——
+    // CLI 默认带着 Write/Edit/Bash，被扫描到的项目文本能借模型的工具写进磁盘。
+    expect(() => buildClaudeArgs({ cwd: '/tmp/project' })).toThrow(/disallowedTools/)
   })
 
   it('allowWrites=true 时不传禁写参数', () => {
