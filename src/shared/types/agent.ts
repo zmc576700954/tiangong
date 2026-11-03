@@ -54,6 +54,19 @@ export interface AgentSessionConfig {
   threadId?: string
   /** Phase 4: subagent tool restriction (consumed by adapters in Claude Code / MCP). */
   subagentAllowedTools?: string[] | '*'
+  /**
+   * 本次会话要用的模型 —— 覆盖适配器从全局设置解析出来的模型。
+   *
+   * 项目级默认里的模型由渲染层解析后放进这里（项目级覆盖 > 全局默认）。
+   * 不设就用适配器自己从 settings 解析的那个。
+   */
+  model?: string
+  /**
+   * 本次会话要用的适配器 —— 覆盖「auto → 主进程用全局默认适配器」的路径。
+   *
+   * 渲染层解析（含项目级覆盖）后放进这里。不设就按原来的规则走。
+   */
+  adapterName?: string
   /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
   verifyOnly?: boolean
   /**

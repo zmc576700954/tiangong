@@ -415,5 +415,50 @@ describe('sessionStore', () => {
 
       expect(window.electronAPI['project:setDefaults']).not.toHaveBeenCalled()
     })
+
+    it('config 里的 adapterName 优先于「auto → 主进程用全局默认」', async () => {
+      // 项目级默认里的适配器由渲染层解析好放进 config —— 它必须真的被用上，
+      // 否则「项目级默认」就只是存了没人读
+      useThreadStore.getState().createThread('auto')
+      const threadId = await waitForThreadStable()
+
+      await useSessionStore.getState().sendMessage(threadId, 'Hello', [], {
+        workingDirectory: '/work/proj',
+        allowedFiles: [],
+        forbiddenFiles: [],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: '',
+        acceptanceCriteria: [],
+        adapterName: 'codex',
+      })
+
+      expect(window.electronAPI['agent:startSession']).toHaveBeenCalledWith(
+        'codex',
+        expect.objectContaining({ adapterName: 'codex' }),
+      )
+    })
+
+    it('config 里没有 adapterName 时，auto 仍走原来的路（交给主进程用全局默认）', async () => {
+      useThreadStore.getState().createThread('auto')
+      const threadId = await waitForThreadStable()
+
+      await useSessionStore.getState().sendMessage(threadId, 'Hello', [], {
+        workingDirectory: '/work/proj',
+        allowedFiles: [],
+        forbiddenFiles: [],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: '',
+        acceptanceCriteria: [],
+      })
+
+      expect(window.electronAPI['agent:startSession']).toHaveBeenCalledWith(
+        null,
+        expect.anything(),
+      )
+    })
   })
 })

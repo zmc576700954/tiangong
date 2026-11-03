@@ -649,7 +649,7 @@ export class McpAdapter extends BaseAdapter {
     // W4-FIX: 按 MCP 自己的模型档位匹配 provider 的 API Key。
     // 注意这里**不能**用 settings.defaultModel —— 那是全局旧字段，可能是 claude
     // 模型名，会让 resolveApiKey 按前缀误判 provider（见 adapters/model-selection.ts）。
-    const mcpModel = resolveModelForAdapter(settings, 'mcp')
+    const mcpModel = session.config.model ?? resolveModelForAdapter(settings, 'mcp')
     const apiKey = resolveApiKey(settings.apiKeys, mcpModel)
 
     if (!apiKey) {

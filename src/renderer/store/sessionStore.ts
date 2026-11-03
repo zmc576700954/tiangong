@@ -112,7 +112,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   startSession: async (adapterName, config) => {
-    const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
+    // config.adapterName 是渲染层解析好的**实际**适配器（含项目级覆盖）——
+    // 它优先于「auto → 主进程用全局默认」的路径。
+    const explicit = config.adapterName
+    const effectiveAdapterName =
+      explicit ?? (adapterName === 'auto' ? null : adapterName)
     const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
     const sessionId = result.sessionId
 
@@ -316,8 +320,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Reuse existing session
         sessionId = existingSessionId
       } else {
-        // First send: create a session. Use null for 'auto' to trigger fallback chain.
-        const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
+        // First send: create a session.
+        // 用 null 触发回退链；**但** config.adapterName 是渲染层解析好的实际
+        // 适配器（含项目级覆盖）—— 它优先，'auto' 才交给主进程用全局默认。
+        const explicitAdapter = config.adapterName
+        const effectiveAdapterName =
+          explicitAdapter ?? (thread.adapterName === 'auto' ? null : thread.adapterName)
         const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
         sessionId = result.sessionId
 

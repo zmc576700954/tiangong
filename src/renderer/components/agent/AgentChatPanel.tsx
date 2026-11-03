@@ -137,11 +137,21 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const scopeReadonly = scope.readonly
   // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
   const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
-  const scopeAdapterSupportsReadonly = getReadonlySupport(
-    selectedAdapter === 'auto'
-      ? adapterPreferences.defaultAdapter
-      : selectedAdapter,
-  ) === 'enforced'
+
+  /**
+   * 本次会话实际用哪个适配器 —— **项目级覆盖 > 全局默认**。
+   *
+   * 'auto' 之前由主进程解析成全局默认适配器；项目级默认存了却没人读 ——
+   * 用户设了，什么都没发生（正是本工作流要消灭的那类静默失效）。
+   * 现在渲染层就把项目级覆盖解析出来，**显式**传下去。
+   */
+  const effectiveAdapter = useMemo(() => {
+    if (selectedAdapter !== 'auto') return selectedAdapter
+    return projectDefaults?.defaultAdapter ?? adapterPreferences.defaultAdapter
+  }, [selectedAdapter, projectDefaults, adapterPreferences.defaultAdapter])
+
+  const scopeAdapterSupportsReadonly =
+    getReadonlySupport(effectiveAdapter) === 'enforced'
 
   const handleScopeAddFile = (input: string) => {
     // 入库前规范化 + 拦下越界路径 —— 一条坏路径会让**整个项目的所有会话**
@@ -359,6 +369,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     const sessionConfig: AgentSessionConfig = {
       workingDirectory: projectPath,
       allowedFiles,
+      // 项目级默认里的适配器 / 模型 —— 之前**只写不读**（存了但没人用）。
+      // 优先级：项目级覆盖 > 全局默认 > 用户本次手动选的。
+      adapterName: effectiveAdapter,
+      ...(projectDefaults?.defaultModel ? { model: projectDefaults.defaultModel } : {}),
       forbiddenFiles: [],
       invariantRules: selectedNode?.rules?.map((r) => r.title) ?? [],
       upstreamContext: '',

@@ -96,7 +96,7 @@ export class CodexAdapter extends BaseAdapter {
         // codex 档位为空时传 undefined —— SDK 用它自己的默认模型。
         const { readSettings } = await import('../settings')
         const settings = await readSettings()
-        const model = resolveModelForAdapter(settings, 'codex')
+        const model = session.config.model ?? resolveModelForAdapter(settings, 'codex')
         const threadOptions: ThreadOptions = {
           workingDirectory: session.config.workingDirectory,
           // 只读会话 → SDK 的 'read-only' 档位（'read-only' | 'workspace-write' | 'danger-full-access'）
