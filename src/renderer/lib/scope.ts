@@ -7,6 +7,7 @@
  */
 
 import type { ProjectDefaults } from '@shared/types'
+import { resolveReadonly } from '@shared/readonly'
 import { toRelative } from './project-paths'
 
 export interface ScopeInput {
@@ -47,5 +48,7 @@ export function computeScope(input: ScopeInput): ScopeResult {
 
   const relativeFiles = [...new Set([...fromProject, ...sessionScope, ...fromRefs])]
 
-  return { relativeFiles, readonly: relativeFiles.length === 0 }
+  // 只读判定用**主进程同一份** `resolveReadonly` —— 渲染层与主进程不能各写
+  // 一遍「空即只读」，否则改了一边另一边不跟着变，界面就会与实际会话不一致。
+  return { relativeFiles, readonly: resolveReadonly({ allowedFiles: relativeFiles }) }
 }
