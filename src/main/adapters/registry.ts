@@ -292,6 +292,17 @@ export function getFilteredRegistry(): AdapterDescriptor[] {
   })
 }
 
+/**
+ * 内部适配器名 —— **不对用户暴露**。
+ *
+ * 目前是 `mindmap-internal`（内置的思维导图生成适配器）。它由
+ * `src/main/ipc/mindmap.ts` 内部调用，不该出现在聊天的适配器下拉里 ——
+ * 用户选了它 + 空范围就会撞上「该适配器无法保证只读」，报错费解。
+ */
+export const INTERNAL_ADAPTER_NAMES: ReadonlySet<string> = new Set(
+  ADAPTER_REGISTRY.filter((d) => d.hidden).map((d) => d.name),
+)
+
 /** 获取适配器市场数据（用于前端渲染） */
 export async function buildMarketplaceItems(
   installedMap: Record<string, boolean>,

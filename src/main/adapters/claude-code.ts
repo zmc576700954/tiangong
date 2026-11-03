@@ -225,7 +225,15 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       // to the agent type's allowed set.
       let toolsOption: string[] | undefined
       const allowedTools = session.config.subagentAllowedTools
-      if (session.config.readOnly) {
+      if (transparent) {
+        // SDK 语义：tools: [] = 禁用全部内置工具（Read / Write / Edit / Bash …）。
+        // 透明转发的远端调用方只应拿到模型回答，拿不到本机文件与 shell。
+        //
+        // **必须排在 readOnly 之前**：A2A 入站会话也是空的 allowedFiles → 会被推导
+        // 成只读；若先命中只读分支，远端调用方就多拿到了本机 Read/Glob/Grep 与
+        // **WebFetch（出网）** —— 那违反了 CLAUDE.md Boundaries §3 的透明转发边界。
+        toolsOption = []
+      } else if (session.config.readOnly) {
         // 只读会话：只放行读与查，**拿不到任何能改文件或执行命令的工具**。
         // 若同时是子代理（有自己的 allowedTools），取两者交集 ——
         // 否则子代理被允许的 Edit/Write 会破坏父会话的只读保证。
@@ -236,10 +244,6 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             : readonly
       } else if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
         toolsOption = allowedTools
-      } else if (transparent) {
-        // SDK 语义：tools: [] = 禁用全部内置工具（Read / Write / Edit / Bash …）。
-        // 透明转发的远端调用方只应拿到模型回答，拿不到本机文件与 shell。
-        toolsOption = []
       }
 
       const queryIter = query({

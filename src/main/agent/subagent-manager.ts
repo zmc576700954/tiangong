@@ -196,6 +196,17 @@ export class SubagentManager extends EventEmitter {
           ErrorCode.AGENT_ADAPTER_ERROR,
         )
       }
+      // 只读父会话**不得**派工给远端 A2A 代理 ——
+      // 远端机器的写能力与出网都不受本机的只读保证约束，
+      // 而提示词里可能带着它读到的项目内容。这与 recipe 守卫是同一个道理。
+      const a2aParentState = this.agentManager.getSessionState(args.parentSessionId)
+      if (a2aParentState?.config.readOnly === true) {
+        throw new AgentError(
+          `A2A agent "${name}" cannot run in a read-only session: ` +
+          `a remote agent's write access and network egress are not covered by this session's read-only guarantee.`,
+          ErrorCode.AGENT_ADAPTER_ERROR,
+        )
+      }
       const startedAt = Date.now()
       const invocationId = `a2a_${generateId('subinv')}`
       // 取消信号必须是真的：注册进 activeInvocations 后，cancel() 才能找到

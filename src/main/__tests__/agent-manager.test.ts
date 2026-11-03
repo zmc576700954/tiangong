@@ -349,6 +349,44 @@ describe('AgentManager', () => {
       expect(result.adapterUsed).toBe('cline')
     })
 
+    it('渲染层不能要到「可写且没有沙箱」的会话（空范围一律只读）', async () => {
+      // 空 allowedFiles ⇒ 不建 ScopeGuard 沙箱（session-lifecycle-manager 只在
+      // allowedFiles 非空时建）。所以若渲染层能带 readOnly:false 拿到空范围的
+      // 可写会话，就等于拿到一个**完全不受限**的会话。
+      // 会话仍能起（claude-code 支持只读），但**必须是只读**。
+      const claude = new TestAdapter('claude-code')
+      manager.registerAdapter(claude)
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'claude-code',
+        fallbackOrder: [],
+      }))
+
+      const result = await manager.startSession(
+        'claude-code',
+        mockConfig({ allowedFiles: [], readOnly: false }),
+      )
+
+      const state = manager.getSessionState(result.sessionId)
+      expect(state?.config.readOnly).toBe(true)
+    })
+
+    it('verifyOnly 会话不受只读推导影响（它有自己���强制机制）', async () => {
+      // agent:verify 挑的是「第一个已装的适配器」—— 可能不是只读型的。
+      // 若它也被推成只读，节点验证会对既有功能造成回归。
+      const cline = new TestAdapter('cline')
+      manager.registerAdapter(cline)
+      manager.setAdapterPreferencesLoader(async () => ({
+        defaultAdapter: 'cline',
+        fallbackOrder: [],
+      }))
+
+      const result = await manager.startSession(
+        'cline',
+        mockConfig({ allowedFiles: [], verifyOnly: true }),
+      )
+      expect(result.adapterUsed).toBe('cline')
+    })
+
     it('fallback-router 的兜底闸门：只读会话会跳过不支持只读的候选者', async () => {
       // 直接给 fallback-router 一条含「不支持只读」的链，绕过 AgentManager 的裁剪 ——
       // 验证 fallback-router 自己也拦一道（防止将来有别的调用方绕过上游裁剪）。

@@ -37,8 +37,7 @@ import type {
   TerminationReason,
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
-import { resolveReadonly } from '@shared/readonly'
-import { getReadonlySupport, listReadonlyCapableAdapters } from '@shared/readonly-support'
+import { getReadonlySupport, listReadonlyCapableAdapters, isReadonlyOptOutAdapter } from '@shared/readonly-support'
 import { type SessionRouter } from './session-router'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
@@ -55,6 +54,7 @@ import type { CompactHistoryRepository } from '../repositories/compact-history-r
 import type { ChatRepository } from '../repositories/chat-repository'
 import type { SubagentManager } from './subagent-manager'
 import type { BaseAdapter } from '../adapters/base'
+import { INTERNAL_ADAPTER_NAMES } from '../adapters/registry'
 import { createLogger } from '../shared/logger'
 import { withSpan } from '../telemetry'
 import { SpanKind, type Span } from '@opentelemetry/api'
@@ -379,7 +379,9 @@ export class AgentManager {
   }
 
   async listAdapters(): Promise<{ name: string; version: string; installed: boolean }[]> {
-    return this.registry.checkAllInstalled()
+    // 内部适配器（mindmap-internal）不对用户暴露
+    const all = await this.registry.checkAllInstalled()
+    return all.filter((a) => !INTERNAL_ADAPTER_NAMES.has(a.name))
   }
 
   getAdapter(name: string): AgentAdapter | undefined {
@@ -421,14 +423,29 @@ export class AgentManager {
     config: AgentSessionConfig,
     span?: Span,
   ): Promise<StartSessionResult> {
-    // 只读推导：**没圈定可改范围 = 只读**。
-    // 在这里统一施加，renderer 之外的调用方（子代理、recipe、A2A）也受同一约束。
-    const readOnly = resolveReadonly(config)
-    const effectiveConfig: AgentSessionConfig = { ...config, readOnly }
-
     // 确定回退链：首选适配器 + 回退顺序（去重 + 健康度优先重排）
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
+
+    // 只读推导 —— **由主进程决定，不信渲染层传来的字段**。
+    //
+    // 规则：
+    // 1. 空的 allowedFiles ⇒ 只读。**即使**调用方带了 readOnly:false 也不行 ——
+    //    否则渲染层可以要到「可写且**没有沙箱**」的会话
+    //    （session-lifecycle-manager 只在 allowedFiles 非空时建沙箱）。
+    // 2. 唯一例外：CLI 层自带写保护的适配器（mindmap-internal）—— 它的写保护
+    //    不靠 ScopeGuard，靠 CLI 的 --disallowedTools，所以它**显式**退出推导。
+    //    这个例外由**主进程按适配器名**判定，不接受渲染层指定。
+    // 3. verifyOnly 会话也退出推导 —— 它有**自己**的强制机制（空名单 ScopeGuard
+    //    沙箱：任何写入都是越界）。若不退出，`agent:verify` 挑到第一个已装的
+    //    适配器（可能不是只读型的）就会直接起不来 —— 那是对既有功能的回归。
+    const readOnly = config.verifyOnly || isReadonlyOptOutAdapter(primary)
+      ? false
+      : config.allowedFiles.length === 0
+        ? true
+        : (config.readOnly ?? false)
+    const effectiveConfig: AgentSessionConfig = { ...config, readOnly }
+
     let uniqueChain = this.fallbackRouter.buildChain(
       primary,
       preferences.fallbackOrder,

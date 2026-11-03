@@ -17,6 +17,7 @@ export function ScopeEditor({
   effectiveFiles,
   readonly,
   adapterSupportsReadonly,
+  frozen = false,
   onAddFile,
   onRemoveFile,
   onClearAll,
@@ -24,6 +25,11 @@ export function ScopeEditor({
   effectiveFiles: string[]
   readonly: boolean
   adapterSupportsReadonly: boolean
+  /**
+   * 会话已在运行 —— 范围在 startSession 时就被主进程**冻结**了，
+   * 此时编辑对在跑的会话不生效（改动对下一次会话生效）。
+   */
+  frozen?: boolean
   onAddFile: (relPath: string) => void
   onRemoveFile: (relPath: string) => void
   onClearAll: () => void
@@ -55,20 +61,32 @@ export function ScopeEditor({
         </div>
       )}
 
+      {frozen && (
+        <div
+          data-testid="scope-editor-frozen"
+          className="flex items-start gap-1.5 mb-1.5 p-1.5 rounded bg-muted text-muted-foreground"
+        >
+          <Lock className="w-3 h-3 shrink-0 mt-0.5" />
+          <span>{t('agent.scope.frozenHint')}</span>
+        </div>
+      )}
+
       {readonly ? (
         <div className="flex items-center gap-1.5">
           <Lock className="w-3 h-3 shrink-0" />
           <span data-testid="scope-editor-readonly" className="flex-1">
             {t('agent.scope.readonlyHint')}
           </span>
-          <button
-            data-testid="scope-editor-open-scope"
-            onClick={() => setAdding((v) => !v)}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted transition-colors"
-          >
-            <Plus className="w-3 h-3" />
-            {t('agent.scope.openScope')}
-          </button>
+          {!frozen && (
+            <button
+              data-testid="scope-editor-open-scope"
+              onClick={() => setAdding((v) => !v)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              {t('agent.scope.openScope')}
+            </button>
+          )}
         </div>
       ) : (
         <div className="flex items-center gap-1.5">
@@ -76,22 +94,26 @@ export function ScopeEditor({
           <span data-testid="scope-editor-writable" className="flex-1">
             {t('agent.scope.writableHint', { count: effectiveFiles.length })}
           </span>
-          <button
-            data-testid="scope-editor-open-scope"
-            onClick={() => setAdding((v) => !v)}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted transition-colors"
-          >
-            <Plus className="w-3 h-3" />
-            {t('agent.scope.addFile')}
-          </button>
-          <button
-            data-testid="scope-editor-clear-all"
-            onClick={onClearAll}
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-destructive/10 text-destructive transition-colors"
-          >
-            <Trash2 className="w-3 h-3" />
-            {t('agent.scope.clearAll')}
-          </button>
+          {!frozen && (
+            <button
+              data-testid="scope-editor-open-scope"
+              onClick={() => setAdding((v) => !v)}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-muted transition-colors"
+            >
+              <Plus className="w-3 h-3" />
+              {t('agent.scope.addFile')}
+            </button>
+          )}
+          {!frozen && (
+            <button
+              data-testid="scope-editor-clear-all"
+              onClick={onClearAll}
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-destructive/10 text-destructive transition-colors"
+            >
+              <Trash2 className="w-3 h-3" />
+              {t('agent.scope.clearAll')}
+            </button>
+          )}
         </div>
       )}
 

@@ -171,6 +171,26 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(callArgs.prompt).toContain('USER-REQ-UNIQUE')
   })
 
+  it('透明转发会话拿不到任何内置工具（A2A 入站的边界）', async () => {
+    // A2A 入站会话也是空的 allowedFiles → 会被推导成只读。若只读分支排在
+    // transparent 之前，远端调用方就多拿到了本机 Read/Glob/Grep 与 **WebFetch
+    // （出网）** —— 违反 CLAUDE.md Boundaries §3 的透明转发边界。
+    const session = await adapter.startSession(
+      makeConfig({ transparentForward: true, readOnly: true }),
+    )
+    adapter.setPromptContext(session.id, { stable: '', turn: '' })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'X', targetNodeId: 'n1' })
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    // tools: [] = 禁用全部内置工具
+    expect(callArgs.options.tools).toEqual([])
+  })
+
   it('doSendCommand captures SDK session ID for resume', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)

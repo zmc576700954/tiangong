@@ -133,6 +133,27 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   )
   const scopeRelativeFiles = scope.relativeFiles
 
+  /**
+   * 这个线程**是否已有在跑的会话**。
+   *
+   * 有的话，主进程在 startSession 时就把范围**冻结**了 —— 复用会话时新算出来的
+   * config 会被丢弃（只留 resumeSessionId）。所以此时：
+   * - 面板必须显示**会话启动时**的范围（否则会「面板说只读、会话仍可写」）
+   * - 范围编辑必须禁用（改了对在跑的会话不生效）
+   */
+  const activeSession = useSessionStore((s) =>
+    currentThread?.sessionId ? s.activeSessions.get(currentThread.sessionId) : undefined,
+  )
+  const sessionIsRunning = !!activeSession && activeSession.status === 'active'
+
+  // 在跑会话 → 显示它启动时的范围（冻结的那一份）；否则显示当前算出来的
+  const displayedRelativeFiles = sessionIsRunning
+    ? activeSession.allowedFiles
+    : scopeRelativeFiles
+  const displayedReadonly = sessionIsRunning
+    ? activeSession.allowedFiles.length === 0
+    : scope.readonly
+
   // 范围为空 ⇒ 只读（与主进程 resolveReadonly 同一套语义）
   const scopeReadonly = scope.readonly
   // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
@@ -758,9 +779,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       )}
 
       <ScopeEditor
-        effectiveFiles={scopeRelativeFiles}
-        readonly={scopeReadonly}
+        effectiveFiles={displayedRelativeFiles}
+        readonly={displayedReadonly}
         adapterSupportsReadonly={scopeAdapterSupportsReadonly}
+        frozen={sessionIsRunning}
         onAddFile={handleScopeAddFile}
         onRemoveFile={handleScopeRemoveFile}
         onClearAll={handleScopeClearAll}

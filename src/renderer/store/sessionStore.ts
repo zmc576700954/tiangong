@@ -23,6 +23,13 @@ interface SessionInfo {
   adapterName: string
   startTime: number
   status: 'starting' | 'active' | 'terminated' | 'crashed'
+  /**
+   * 这个会话**启动时**的范围 —— 主进程在 startSession 时就把它冻结了。
+   *
+   * 复用会话时新算出来的 config 会被丢弃（只留 resumeSessionId），所以面板
+   * 必须显示**这一份**才准确 —— 否则会出现「面板显示只读、会话仍可写」。
+   */
+  allowedFiles: string[]
 }
 
 interface RequestStatusEntry {
@@ -133,6 +140,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         adapterName: result.adapterUsed ?? adapterName,
         startTime: Date.now(),
         status: 'active',
+        allowedFiles: [...(config.allowedFiles ?? [])],
       })
       return { activeSessions: next }
     })
@@ -149,6 +157,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         adapterName: '',
         startTime: Date.now(),
         status: 'active',
+        allowedFiles: [],
       })
       return { activeSessions: next }
     })
@@ -354,6 +363,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             adapterName: result.adapterUsed ?? thread.adapterName,
             startTime: Date.now(),
             status: 'active',
+            allowedFiles: [...(config.allowedFiles ?? [])],
           })
           return { activeSessions: next }
         })
