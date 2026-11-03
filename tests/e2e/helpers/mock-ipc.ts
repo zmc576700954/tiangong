@@ -126,6 +126,8 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
   const mockGraphs = options?.graphs ?? [defaultMockGraph]
   const mockNodes = options?.nodes ?? defaultMockNodes
   const mockEdges = options?.edges ?? []
+  /** 项目级默认（范围记忆）—— 可变，让 e2e 能断言写入与清空 */
+  let mockProjectDefaults: { defaultAdapter?: string; defaultModel?: string; allowedFiles?: string[] } | null = null
   /**
    * 类型规则表 —— **直接从真实注册表生成**。
    *
@@ -371,6 +373,13 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
         fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
       }),
       'settings:setAdapterPreferences': async () => undefined,
+
+      // 项目级默认（范围记忆）—— 没有它，Agent 面板的范围编辑器会降级成
+      // 「没有项目级默认」，e2e 就测不到只读/可写两态了
+      'project:getDefaults': async () => mockProjectDefaults,
+      'project:setDefaults': async (_projectPath: string, defaults: unknown) => {
+        mockProjectDefaults = defaults as typeof mockProjectDefaults
+      },
 
       // Context waterline
       'context:getWaterline': async () => null,
