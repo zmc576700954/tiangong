@@ -97,8 +97,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       (g) => g.id === useGraphStore.getState().currentGraphId,
     )?.projectPath
     if (!projectPath) return
-    await window.electronAPI['project:setDefaults'](projectPath, defaults)
-    set({ projectDefaults: defaults })
+    try {
+      await window.electronAPI['project:setDefaults'](projectPath, defaults)
+      set({ projectDefaults: defaults })
+    } catch {
+      // 写不回也要更新本地状态 —— 否则界面显示的范围与实际存下的不一致
+      set({ projectDefaults: defaults })
+    }
   },
 
   startSession: async (adapterName, config) => {
