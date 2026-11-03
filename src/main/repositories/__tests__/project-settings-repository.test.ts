@@ -106,15 +106,27 @@ describe('ProjectSettingsRepository', () => {
 })
 
 describe('normalizeProjectPath', () => {
-  it('统一分隔符、去掉尾斜杠、解析 . 与 .. 段', () => {
+  it('去掉尾斜杠、解析 . 与 .. 段', () => {
     expect(normalizeProjectPath('/work/alpha/')).toBe('/work/alpha')
     expect(normalizeProjectPath('/work/./alpha')).toBe('/work/alpha')
     expect(normalizeProjectPath('/work/b/../alpha')).toBe('/work/alpha')
-    expect(normalizeProjectPath('C:\\work\\alpha')).toBe('C:/work/alpha')
   })
 
-  it('保留 UNC 路径的根前缀', () => {
-    expect(normalizeProjectPath('\\\\server\\share\\dir')).toBe('//server/share/dir')
+  it('Windows 盘符路径保留盘符根', () => {
+    // 主进程按平台语义处理：Windows 上 '\' 是分隔符
+    expect(normalizeProjectPath('C:\\work\\alpha', true)).toBe('C:/work/alpha')
+  })
+
+  it('UNC 路径保留根前缀', () => {
+    expect(normalizeProjectPath('\\\\server\\share\\dir', true)).toBe('//server/share/dir')
+  })
+
+  it('POSIX 上反斜杠是合法文件名字符，不能与目录分隔符混同', () => {
+    // `/work/my\dir` 与 `/work/my/dir` 是**两个不同的目录** ——
+    // 归一到同一个键会让 A 项目的范围默认值出现在 B 项目上
+    expect(normalizeProjectPath('/work/my\\dir', false)).not.toBe(
+      normalizeProjectPath('/work/my/dir', false),
+    )
   })
 
   it('根路径不被吃成空串', () => {
@@ -123,7 +135,7 @@ describe('normalizeProjectPath', () => {
 
   it('同一个目录的不同写法归一到同一个键', () => {
     const forms = ['/work/alpha', '/work/alpha/', '/work/./alpha', '/work/x/../alpha']
-    const keys = new Set(forms.map(normalizeProjectPath))
+    const keys = new Set(forms.map((f) => normalizeProjectPath(f)))
     expect(keys.size).toBe(1)
   })
 })

@@ -4,6 +4,7 @@ import { DEFAULT_THREAD_TITLE } from '@shared/constants'
 import { t } from '@shared/i18n'
 import { generateId } from '../lib/utils'
 import { errorText } from '../lib/error-text'
+import { toastError } from '../lib/toast'
 import { useGraphStore } from './graphStore'
 import { useAgentOutputStore } from './agentOutputStore'
 import { useAdapterStore } from './adapterStore'
@@ -66,8 +67,8 @@ interface SessionState {
   projectDefaults: ProjectDefaults | null
   /** 载入项目级默认；projectPath 为空时不调（图没绑定项目就没有项目级默认） */
   loadProjectDefaults: (projectPath: string) => Promise<void>
-  /** 写回项目级默认 */
-  saveProjectDefaults: (defaults: ProjectDefaults) => Promise<void>
+  /** 写回项目级默认；写失败时**不改本地状态**并提示，返回是否成功 */
+  saveProjectDefaults: (defaults: ProjectDefaults) => Promise<boolean>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -96,14 +97,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const projectPath = useGraphStore.getState().graphs.find(
       (g) => g.id === useGraphStore.getState().currentGraphId,
     )?.projectPath
-    if (!projectPath) return
+    if (!projectPath) return false
     try {
       await window.electronAPI['project:setDefaults'](projectPath, defaults)
-      set({ projectDefaults: defaults })
-    } catch {
-      // 写不回也要更新本地状态 —— 否则界面显示的范围与实际存下的不一致
-      set({ projectDefaults: defaults })
+    } catch (err) {
+      // 写失败**不改本地状态** —— 否则 DB 里是旧值、界面显示新值，
+      // 下次读回旧值就变成「我关了它，它又自己开了」。
+      // （这正是本特性要修的那个投诉本身。）
+      toastError(t('agent.scope.saveFailed'), errorText(err))
+      return false
     }
+    set({ projectDefaults: defaults })
+    return true
   },
 
   startSession: async (adapterName, config) => {

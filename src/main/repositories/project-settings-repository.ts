@@ -13,40 +13,13 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import type { ProjectDefaults } from '@shared/types'
 import { safeJsonParse } from '../shared/db-utils'
+import { normalizeProjectPath } from '@shared/project-path'
 
-/**
- * 规范化项目路径 —— 作为主键。
- *
- * 同一个目录若因写法不同（尾斜杠、`.`/`..` 段、分隔符差异）落到两行，
- * 用户就会看到「这个项目的设置没生效」。所以存取两侧都要过这个函数。
- */
-export function normalizeProjectPath(projectPath: string): string {
-  if (!projectPath) return ''
-  // 统一分隔符为 '/'
-  const p = projectPath.replace(/\\/g, '/')
-  // UNC 路径以 '//' 开头 —— 保留这个根前缀（去掉重复斜杠会把 '//server' 压成 '/server'）
-  const isUnc = p.startsWith('//')
-  const withoutDup = isUnc ? p.slice(2) : p.replace(/\/{2,}/g, '/')
-  // 去掉尾斜杠（根路径除外）
-  const trimmed = withoutDup.length > 1 ? withoutDup.replace(/\/+$/, '') : withoutDup
-  // POSIX 绝对路径的根前缀
-  const isAbsolute = trimmed.startsWith('/')
-  // 解析 '.' 与 '..' 段（词法解析，不碰文件系统 —— 目录可能还不存在）
-  const segments = trimmed.split('/')
-  const out: string[] = []
-  for (const seg of segments) {
-    if (seg === '.' || seg === '') continue
-    if (seg === '..') {
-      if (out.length > 0) out.pop()
-      continue
-    }
-    out.push(seg)
-  }
-  const resolved = out.join('/')
-  if (isUnc) return `//${resolved}`
-  if (isAbsolute) return `/${resolved}`
-  return resolved || '/'
-}
+// 规范化实现在 @shared/project-path —— **主进程与渲染层必须用同一份**。
+// 曾经两边各有一份而语义不同（渲染层把 `\` 换成 `/`、主进程不换），
+// 于是 POSIX 上 `/work/my\dir` 与 `/work/my/dir` 落到同一行 → A 项目的范围
+// 默认值出现在 B 项目上。
+export { normalizeProjectPath }
 
 function isProjectDefaults(val: unknown): val is ProjectDefaults {
   if (typeof val !== 'object' || val === null) return false

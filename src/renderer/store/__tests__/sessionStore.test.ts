@@ -3,6 +3,7 @@ import { useSessionStore } from '../sessionStore'
 import { useThreadStore } from '../threadStore'
 import { useAdapterStore } from '../adapterStore'
 import { useGraphStore } from '../graphStore'
+import { useToastStore } from '../../lib/toast'
 
 let threadCounter = 0
 vi.stubGlobal('window', {
@@ -387,6 +388,24 @@ describe('sessionStore', () => {
         allowedFiles: ['src/a.ts'],
       })
       expect(useSessionStore.getState().projectDefaults?.allowedFiles).toEqual(['src/a.ts'])
+    })
+
+    it('写失败 → 不更新本地状态并给出提示（否则 DB 是旧值、界面是新值 → 「我关了它，它又自己开了」）', async () => {
+      useGraphStore.setState({
+        currentGraphId: 'g1',
+        graphs: [{ id: 'g1', name: 'g', type: 'dev', projectPath: '/work/proj', createdAt: '', updatedAt: '' }],
+      })
+      vi.mocked(window.electronAPI['project:setDefaults']).mockRejectedValueOnce(
+        new Error('IPC_RATE_LIMITED'),
+      )
+
+      const ok = await useSessionStore.getState().saveProjectDefaults({ allowedFiles: [] })
+
+      expect(ok).toBe(false)
+      // 本地状态**不能**变 —— 否则下次读回旧值，用户看到「自己开了」
+      expect(useSessionStore.getState().projectDefaults).toBeNull()
+      const errors = useToastStore.getState().toasts.filter((t) => t.kind === 'error')
+      expect(errors.length).toBeGreaterThan(0)
     })
 
     it('没有绑定项目的图不写回（无处可写）', async () => {

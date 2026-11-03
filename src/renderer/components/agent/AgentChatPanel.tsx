@@ -7,7 +7,8 @@ import { useAppStore } from '../../store/appStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { useAdapterStore } from '../../store/adapterStore'
 import { getReadonlySupport } from '@shared/readonly-support'
-import { toProjectRelative, fromProjectRelative } from '../../lib/project-paths'
+import { fromRelative, toSafeRelative } from '../../lib/project-paths'
+import { computeScope } from '../../lib/scope'
 import { ScopeEditor } from './ScopeEditor'
 import { useSubagentStore } from '../../store/subagentStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
@@ -100,6 +101,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const projectDefaults = useSessionStore((s) => s.projectDefaults)
   const loadProjectDefaults = useSessionStore((s) => s.loadProjectDefaults)
   const saveProjectDefaults = useSessionStore((s) => s.saveProjectDefaults)
+  /** 本次会话显式加的范围 —— **相对项目根的相对路径**（规范形态） */
   const [sessionScope, setSessionScope] = useState<string[]>([])
 
   // 切项目 / 切图 → 重载项目级默认
@@ -107,16 +109,32 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     void loadProjectDefaults(projectPath ?? '')
   }, [projectPath, loadProjectDefaults])
 
-  // 生效范围 = 项目级默认 ∪ 本次会话显式加的
-  const scopeEffectiveFiles = useMemo(() => {
-    const fromProject = (projectDefaults?.allowedFiles ?? []).map((rel) =>
-      fromProjectRelative(projectPath ?? '', rel),
-    )
-    return [...new Set([...fromProject, ...sessionScope])]
-  }, [projectDefaults, sessionScope, projectPath])
+  // 切项目 → 本次会话的范围要重置（否则 A 项目加过的文件会串到 B 项目）
+  useEffect(() => {
+    setSessionScope([])
+  }, [projectPath])
+
+  /**
+   * 生效范围 —— **相对路径**（规范形态）。
+   *
+   * 显示与发送**必须是同一个集合**（`computeScope` 算一次，两处都用）。
+   * 之前显示集合与发送集合各算各的（sessionScope 只显示不发送、@ 引用只发送
+   * 不显示）→ 面板可能显示「本次只读」而会话实际可写。
+   */
+  const scope = useMemo(
+    () =>
+      computeScope({
+        projectPath: projectPath ?? '',
+        projectDefaults,
+        sessionScope,
+        referencedFiles: attachedContexts.filter((r) => r.type === 'file').map((r) => r.id),
+      }),
+    [projectDefaults, sessionScope, attachedContexts, projectPath],
+  )
+  const scopeRelativeFiles = scope.relativeFiles
 
   // 范围为空 ⇒ 只读（与主进程 resolveReadonly 同一套语义）
-  const scopeReadonly = scopeEffectiveFiles.length === 0
+  const scopeReadonly = scope.readonly
   // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
   const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
   const scopeAdapterSupportsReadonly = getReadonlySupport(
@@ -125,18 +143,26 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       : selectedAdapter,
   ) === 'enforced'
 
-  const handleScopeAddFile = (relPath: string) => {
-    setSessionScope((prev) => [...new Set([...prev, relPath])])
+  const handleScopeAddFile = (input: string) => {
+    // 入库前规范化 + 拦下越界路径 —— 一条坏路径会让**整个项目的所有会话**
+    // 都启动失败（主进程 ScopeGuard 拒绝对每个候选适配器都失败）
+    const rel = toSafeRelative(projectPath ?? '', input)
+    if (!rel) {
+      toastError(t('agent.scope.invalidPath'))
+      return
+    }
+    setSessionScope((prev) => [...new Set([...prev, rel])])
     // 同时写进项目级默认 → 下次自动带上（用户不必每次重选）
     void saveProjectDefaults({
       ...projectDefaults,
-      allowedFiles: [...new Set([...(projectDefaults?.allowedFiles ?? []), relPath])],
+      allowedFiles: [...new Set([...(projectDefaults?.allowedFiles ?? []), rel])],
     })
   }
 
-  const handleScopeRemoveFile = (file: string) => {
-    setSessionScope((prev) => prev.filter((f) => f !== file))
-    const rel = toProjectRelative(projectPath ?? '', file)
+  const handleScopeRemoveFile = (rel: string) => {
+    // 按**规范形态**比对 —— 之前拿绝对路径去反推相对路径，非规范写法删不掉，
+    // 于是「我关了它，它又自己开了」
+    setSessionScope((prev) => prev.filter((f) => f !== rel))
     void saveProjectDefaults({
       ...projectDefaults,
       allowedFiles: (projectDefaults?.allowedFiles ?? []).filter((f) => f !== rel),
@@ -325,13 +351,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     }
 
     const projectPath = currentGraph?.projectPath ?? ''
-    // 范围 = 项目级默认 ∪ 本次会话显式引用的文件
-    // （项目级默认存的是**相对项目根**的相对路径；引用给的是绝对路径 → 统一成绝对）
-    const projectFiles = (projectDefaults?.allowedFiles ?? []).map((rel) =>
-      fromProjectRelative(projectPath, rel),
-    )
-    const refFiles = contextRefs.filter((r) => r.type === 'file').map((r) => r.id)
-    const allowedFiles = [...new Set([...projectFiles, ...refFiles])]
+    // 发送的范围 = **与面板显示的完全同一个集合**（scopeRelativeFiles）。
+    // 之前显示集合与发送集合各算各的（sessionScope 只显示不发送、@ 引用只发送
+    // 不显示）→ 面板可能显示「本次只读」而会话实际可写。
+    const allowedFiles = scopeRelativeFiles.map((rel) => fromRelative(projectPath, rel))
 
     const sessionConfig: AgentSessionConfig = {
       workingDirectory: projectPath,
@@ -721,7 +744,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       )}
 
       <ScopeEditor
-        effectiveFiles={scopeEffectiveFiles}
+        effectiveFiles={scopeRelativeFiles}
         readonly={scopeReadonly}
         adapterSupportsReadonly={scopeAdapterSupportsReadonly}
         onAddFile={handleScopeAddFile}

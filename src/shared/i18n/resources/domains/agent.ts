@@ -90,6 +90,8 @@ export const agentZh = {
   'agent.scope.addConfirm': '添加',
   'agent.scope.removeFile': '移出范围',
   'agent.scope.adapterUnsupported': '当前适配器无法保证只读：范围为空时 Agent 仍可能改动文件。',
+  'agent.scope.invalidPath': '路径必须位于项目目录之内（相对项目根，如 src/app.ts）',
+  'agent.scope.saveFailed': '保存文件范围失败',
   'agent.scope.confirmWritable': '当前适配器无法保证只读，本次会话可能改动项目文件。继续吗？',
 
   // —— 上下文 ——
@@ -294,6 +296,9 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.scope.addPlaceholder': 'Path relative to the project root, e.g. src/app.ts',
   'agent.scope.addConfirm': 'Add',
   'agent.scope.removeFile': 'Remove from scope',
+  'agent.scope.invalidPath':
+    'The path must be inside the project directory (relative to the project root, e.g. src/app.ts)',
+  'agent.scope.saveFailed': 'Failed to save the file scope',
   'agent.scope.adapterUnsupported':
     'This adapter cannot guarantee read-only — the agent may still modify files even with an empty scope.',
   'agent.scope.confirmWritable':
