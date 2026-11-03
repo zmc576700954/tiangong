@@ -19,6 +19,11 @@ export interface ScopeInput {
   sessionScope: string[]
   /** 本次消息里 `@` 引用的文件（**绝对**路径） */
   referencedFiles: string[]
+  /**
+   * 该适配器自带写保护（不靠 ScopeGuard）⇒ 退出只读推导。
+   * 与主进程同一份判定依据（`isReadonlyOptOutAdapter`）。
+   */
+  optOutAdapter?: boolean
 }
 
 export interface ScopeResult {
@@ -38,7 +43,7 @@ export interface ScopeResult {
  * 「本次只读」而会话其实可写。
  */
 export function computeScope(input: ScopeInput): ScopeResult {
-  const { projectPath, projectDefaults, sessionScope, referencedFiles } = input
+  const { projectPath, projectDefaults, sessionScope, referencedFiles, optOutAdapter } = input
 
   const fromProject = projectDefaults?.allowedFiles ?? []
 
@@ -50,5 +55,12 @@ export function computeScope(input: ScopeInput): ScopeResult {
 
   // 只读判定用**主进程同一份** `resolveReadonly` —— 渲染层与主进程不能各写
   // 一遍「空即只读」，否则改了一边另一边不跟着变，界面就会与实际会话不一致。
-  return { relativeFiles, readonly: resolveReadonly({ allowedFiles: relativeFiles }) }
+  // optOut 也传过去：适配器自带写保护时（mindmap-internal），两边都退出推导。
+  return {
+    relativeFiles,
+    readonly: resolveReadonly({
+      allowedFiles: relativeFiles,
+      optOut: optOutAdapter === true,
+    }),
+  }
 }

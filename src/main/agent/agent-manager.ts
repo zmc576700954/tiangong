@@ -38,6 +38,7 @@ import type {
 } from '@shared/types'
 import { type AdapterRegistry } from './adapter-registry'
 import { getReadonlySupport, listReadonlyCapableAdapters, isReadonlyOptOutAdapter } from '@shared/readonly-support'
+import { resolveReadonly } from '@shared/readonly'
 import { type SessionRouter } from './session-router'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
@@ -429,21 +430,19 @@ export class AgentManager {
 
     // 只读推导 —— **由主进程决定，不信渲染层传来的字段**。
     //
-    // 规则：
-    // 1. 空的 allowedFiles ⇒ 只读。**即使**调用方带了 readOnly:false 也不行 ——
-    //    否则渲染层可以要到「可写且**没有沙箱**」的会话
-    //    （session-lifecycle-manager 只在 allowedFiles 非空时建沙箱）。
-    // 2. 唯一例外：CLI 层自带写保护的适配器（mindmap-internal）—— 它的写保护
-    //    不靠 ScopeGuard，靠 CLI 的 --disallowedTools，所以它**显式**退出推导。
-    //    这个例外由**主进程按适配器名**判定，不接受渲染层指定。
-    // 3. verifyOnly 会话也退出推导 —— 它有**自己**的强制机制（空名单 ScopeGuard
-    //    沙箱：任何写入都是越界）。若不退出，`agent:verify` 挑到第一个已装的
-    //    适配器（可能不是只读型的）就会直接起不来 —— 那是对既有功能的回归。
-    const readOnly = config.verifyOnly || isReadonlyOptOutAdapter(primary)
-      ? false
-      : config.allowedFiles.length === 0
-        ? true
-        : (config.readOnly ?? false)
+    // 规则见 @shared/readonly 的 resolveReadonly（渲染层用同一份）：
+    // - 空 allowedFiles ⇒ 只读（即使调用方带 readOnly:false —— 那样会拿到
+    //   一个**没有沙箱**的可写会话）
+    // - 例外（由主进程按适配器名/机制判定，不接受渲染层指定）：
+    //   · mindmap-internal —— 写保护靠 CLI 的 --disallowedTools
+    //   · verifyOnly —— 写保护靠空名单 ScopeGuard 沙箱
+    //   verifyOnly 退出推导很重要：agent:verify 挑的是「第一个已装的适配器」，
+    //   可能不是只读型的；若被推成只读，节点验证会对既有功能造成回归。
+    const readOnly = resolveReadonly({
+      allowedFiles: config.allowedFiles,
+      readOnly: config.readOnly,
+      optOut: config.verifyOnly === true || isReadonlyOptOutAdapter(primary),
+    })
     const effectiveConfig: AgentSessionConfig = { ...config, readOnly }
 
     let uniqueChain = this.fallbackRouter.buildChain(

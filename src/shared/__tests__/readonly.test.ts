@@ -15,8 +15,16 @@ describe('resolveReadonly', () => {
     expect(resolveReadonly({ allowedFiles: ['/tmp/a.ts'] })).toBe(false)
   })
 
-  it('显式 readOnly: false 覆盖推导（允许强制放开）', () => {
-    expect(resolveReadonly({ allowedFiles: [], readOnly: false })).toBe(false)
+  it('空的 allowedFiles 一律只读 —— 即使显式 readOnly:false 也不行', () => {
+    // 空范围 ⇒ 主进程**不建 ScopeGuard 沙箱**（沙箱只在 allowedFiles 非空时建）
+    // —— 放行「空范围 + 可写」等于给出一个完全不受限的可写会话。
+    expect(resolveReadonly({ allowedFiles: [], readOnly: false })).toBe(true)
+  })
+
+  it('optOut：适配器自带写保护 ⇒ 退出只读推导', () => {
+    // mindmap-internal 靠 CLI 的 --disallowedTools、verifyOnly 靠空名单沙箱 ——
+    // 它们的写保护不靠 ScopeGuard，所以要显式退出推导。
+    expect(resolveReadonly({ allowedFiles: [], optOut: true })).toBe(false)
   })
 
   it('显式 readOnly: true 覆盖推导（即使有文件范围也只读）', () => {

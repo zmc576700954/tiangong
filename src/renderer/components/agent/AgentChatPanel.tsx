@@ -6,7 +6,7 @@ import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useSessionStore } from '../../store/sessionStore'
 import { useAdapterStore } from '../../store/adapterStore'
-import { getReadonlySupport } from '@shared/readonly-support'
+import { getReadonlySupport, isReadonlyOptOutAdapter } from '@shared/readonly-support'
 import { fromRelative, toSafeRelative } from '../../lib/project-paths'
 import { computeScope } from '../../lib/scope'
 import { ScopeEditor } from './ScopeEditor'
@@ -103,6 +103,8 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const saveProjectDefaults = useSessionStore((s) => s.saveProjectDefaults)
   /** 本次会话显式加的范围 —— **相对项目根的相对路径**（规范形态） */
   const [sessionScope, setSessionScope] = useState<string[]>([])
+  // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
+  const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
 
   // 切项目 / 切图 → 重载项目级默认
   useEffect(() => {
@@ -113,6 +115,18 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   useEffect(() => {
     setSessionScope([])
   }, [projectPath])
+
+  /**
+   * 本次会话实际用哪个适配器 —— **项目级覆盖 > 全局默认**。
+   *
+   * 'auto' 之前由主进程解析成全局默认适配器；项目级默认存了却没人读 ——
+   * 用户设了，什么都没发生（正是本工作流要消灭的那类静默失效）。
+   * 现在渲染层就把项目级覆盖解析出来，**显式**传下去。
+   */
+  const effectiveAdapter = useMemo(() => {
+    if (selectedAdapter !== 'auto') return selectedAdapter
+    return projectDefaults?.defaultAdapter ?? adapterPreferences.defaultAdapter
+  }, [selectedAdapter, projectDefaults, adapterPreferences.defaultAdapter])
 
   /**
    * 生效范围 —— **相对路径**（规范形态）。
@@ -128,8 +142,9 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         projectDefaults,
         sessionScope,
         referencedFiles: attachedContexts.filter((r) => r.type === 'file').map((r) => r.id),
+        optOutAdapter: isReadonlyOptOutAdapter(effectiveAdapter),
       }),
-    [projectDefaults, sessionScope, attachedContexts, projectPath],
+    [projectDefaults, sessionScope, attachedContexts, projectPath, effectiveAdapter],
   )
   const scopeRelativeFiles = scope.relativeFiles
 
@@ -156,20 +171,6 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
 
   // 范围为空 ⇒ 只读（与主进程 resolveReadonly 同一套语义）
   const scopeReadonly = scope.readonly
-  // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
-  const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
-
-  /**
-   * 本次会话实际用哪个适配器 —— **项目级覆盖 > 全局默认**。
-   *
-   * 'auto' 之前由主进程解析成全局默认适配器；项目级默认存了却没人读 ——
-   * 用户设了，什么都没发生（正是本工作流要消灭的那类静默失效）。
-   * 现在渲染层就把项目级覆盖解析出来，**显式**传下去。
-   */
-  const effectiveAdapter = useMemo(() => {
-    if (selectedAdapter !== 'auto') return selectedAdapter
-    return projectDefaults?.defaultAdapter ?? adapterPreferences.defaultAdapter
-  }, [selectedAdapter, projectDefaults, adapterPreferences.defaultAdapter])
 
   const scopeAdapterSupportsReadonly =
     getReadonlySupport(effectiveAdapter) === 'enforced'
