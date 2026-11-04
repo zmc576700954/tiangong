@@ -81,7 +81,7 @@ export const agentZh = {
     '当前适配器无法保证只读，会话未启动。请换一个保证只读的适配器，或给会话指定可修改的文件范围。',
 
   // —— 会话的文件范围 ——
-  'agent.scope.readonlyHint': '本次只读，Agent 不能修改文件',
+  'agent.scope.readonlyHint': '本次只读：不能改文件，但可读代码、联网检索',
   'agent.scope.writableHint': '可修改 {count} 个文件',
   'agent.scope.openScope': '放开范围',
   'agent.scope.addFile': '添加文件',
@@ -89,11 +89,11 @@ export const agentZh = {
   'agent.scope.addPlaceholder': '相对项目根的路径，如 src/app.ts',
   'agent.scope.addConfirm': '添加',
   'agent.scope.removeFile': '移出范围',
-  'agent.scope.adapterUnsupported': '当前适配器无法保证只读：范围为空时 Agent 仍可能改动文件。',
+  'agent.scope.adapterUnsupported':
+    '当前适配器无法保证只读：范围为空时，会话将拒绝启动。请换一个保证只读的适配器（如 claude-code / codex），或在下方圈定可修改的文件。',
   'agent.scope.invalidPath': '路径必须位于项目目录之内（相对项目根，如 src/app.ts）',
   'agent.scope.saveFailed': '保存文件范围失败',
   'agent.scope.frozenHint': '本会话的范围在启动时已确定；改动对下一次会话生效。',
-  'agent.scope.confirmWritable': '当前适配器无法保证只读，本次会话可能改动项目文件。继续吗？',
 
   // —— 上下文 ——
   'agent.context.label': '上下文',
@@ -289,7 +289,7 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
     'This adapter cannot guarantee read-only, so the session was not started. Switch to a read-only-capable adapter, or give the session an explicit file scope.',
 
   'agent.context.label': 'Context',
-  'agent.scope.readonlyHint': 'Read-only — the agent cannot modify files',
+  'agent.scope.readonlyHint': 'Read-only — no file edits, but the agent can read code and search the web',
   'agent.scope.writableHint': 'Can modify {count} file(s)',
   'agent.scope.openScope': 'Open scope',
   'agent.scope.addFile': 'Add file',
@@ -303,9 +303,7 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.scope.frozenHint':
     'This session\'s scope was fixed when it started; changes apply to the next session.',
   'agent.scope.adapterUnsupported':
-    'This adapter cannot guarantee read-only — the agent may still modify files even with an empty scope.',
-  'agent.scope.confirmWritable':
-    'This adapter cannot guarantee read-only; this session may modify project files. Continue?',
+    'This adapter cannot guarantee read-only — with an empty scope, the session will refuse to start. Switch to a read-only-capable adapter (e.g. claude-code / codex), or pick the files to modify below.',
   'agent.context.injected': 'Context injected',
   'agent.context.tokens': '~{count} tokens',
   'agent.contextBar.label': 'Context:',

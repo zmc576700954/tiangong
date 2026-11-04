@@ -426,6 +426,10 @@ export function registerGraphHandlers(
           sendPromptViaAgent(agentManager, projectPath, prompt, {
             nodeTitle: 'Wiki LLM 提炼导入',
             timeoutMs: 120_000,
+            // 该流程「读文件 → 输出 markdown」，不写盘 —— 不需要退出只读推导。
+            // 空的 allowedFiles 会让它被推成只读（Read/Glob/Grep/WebFetch），
+            // 功能够用且更安全；与 mindmap 三条流（显式 optOut）不同，这里
+            // **有意**接受只读推导，留此注释以免将来误加 optOut。
           }))
       return LlmIngestService.ingestWithLlm(
         graphId, validated, graphData.graph.type, nodeRepo, edgeRepo,

@@ -150,17 +150,19 @@ export function ScopeEditor({
               <span className="truncate flex-1" title={file}>
                 {file}
               </span>
-              <button
-                data-testid={`scope-editor-remove-${file}`}
-                onClick={() => onRemoveFile(file)}
-                className={cn(
-                  'p-0.5 rounded hover:bg-destructive/10 text-destructive',
-                  'opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity',
-                )}
-                title={t('agent.scope.removeFile')}
-              >
-                <X className="w-3 h-3" />
-              </button>
+              {!frozen && (
+                <button
+                  data-testid={`scope-editor-remove-${file}`}
+                  onClick={() => onRemoveFile(file)}
+                  className={cn(
+                    'p-0.5 rounded hover:bg-destructive/10 text-destructive',
+                    'opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity',
+                  )}
+                  title={t('agent.scope.removeFile')}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
             </li>
           ))}
         </ul>

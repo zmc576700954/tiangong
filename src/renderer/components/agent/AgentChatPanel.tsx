@@ -169,8 +169,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     ? activeSession.allowedFiles.length === 0
     : scope.readonly
 
-  // 范围为空 ⇒ 只读（与主进程 resolveReadonly 同一套语义）
-  const scopeReadonly = scope.readonly
+  // 显示/编辑态的只读判定见 displayedReadonly —— 它在会话运行中取**冻结**的范围
 
   const scopeAdapterSupportsReadonly =
     getReadonlySupport(effectiveAdapter) === 'enforced'
@@ -369,13 +368,10 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   }
 
   const handleSend = async (content: string, contextRefs: ContextRef[]) => {
-    // 用户**主动**选了一个不保证只读的适配器 + 范围为空 → 发送前二次确认。
-    // 注意与回退链那处的语义区别：回退链那处是**直接拒绝**（不能把写权限
-    // 在用户不知情的情况下交出去）；这里是用户自己选的，给一次确认机会。
-    if (scopeReadonly && !scopeAdapterSupportsReadonly) {
-      const ok = window.confirm(t('agent.scope.confirmWritable'))
-      if (!ok) return
-    }
+    // 用户选了不保证只读的适配器 + 范围为空 → 主进程会**直接拒绝启动**
+    // （agent-manager：空范围一律只读，非 enforced 适配器不能跑只读会话）。
+    // 不做「二次确认后照发」——那是一条死路：确认了也起不来。
+    // 警告条（ScopeEditor 里）已说明原因与出路：换只读型适配器，或圈定范围。
 
     let threadId = currentThreadId
     if (!threadId) {
