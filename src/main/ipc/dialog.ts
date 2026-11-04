@@ -5,6 +5,7 @@
 
 import { dialog } from 'electron'
 import type { TypedHandle } from './utils'
+import { addTrustedProjectRoot } from '../services/project-roots'
 
 export function registerDialogHandlers(typedHandle: TypedHandle): void {
   typedHandle('dialog:openDirectory', async () => {
@@ -15,7 +16,10 @@ export function registerDialogHandlers(typedHandle: TypedHandle): void {
     if (result.canceled || result.filePaths.length === 0) {
       return null
     }
-    return result.filePaths[0]
+    const picked = result.filePaths[0]
+    // 用户亲手选中的目录 → 记入主进程信任根（fs 白名单校验基准之一）
+    await addTrustedProjectRoot(picked).catch(() => {})
+    return picked
   })
 
   typedHandle('dialog:openFiles', async (_, options?: { extensions?: string[] }) => {

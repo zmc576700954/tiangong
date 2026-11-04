@@ -29,6 +29,16 @@ import {
 
 export type { TreeNode } from './fileTreeUtils'
 
+/**
+ * 项目 id 生成器：Date.now() 同一毫秒内会撞号 —— LeftPanel 启动水合在同一个
+ * 同步循环里连发 addProject，两个项目会拿到同一个 `proj-<ms>`，React 直接报
+ * duplicate key。追加进程内自增序号保证唯一。
+ */
+let projectIdSeq = 0
+export function nextProjectId(): string {
+  return `proj-${Date.now()}-${projectIdSeq++}`
+}
+
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
   : null
@@ -150,7 +160,7 @@ export const useFileTreeStore = create<FileTreeState>()(
       if (projects.some((p) => p.path === dirPath)) return
 
       const name = dirPath.split(/[\\/]/).pop() || dirPath
-      const id = `proj-${Date.now()}`
+      const id = nextProjectId()
 
       set((s) => {
         s.projects.push({ id, name, path: dirPath, root: null, loading: true })

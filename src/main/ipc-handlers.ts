@@ -15,6 +15,7 @@ import { SessionRouter } from './agent/session-router'
 import { OutputBroadcaster } from './agent/output-broadcaster'
 import { AgentManager } from './agent/agent-manager'
 import { GraphService } from './services/graph-service'
+import { getTrustedProjectRoots } from './services/project-roots'
 import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { EdgeRepository } from './repositories/edge-repository'
@@ -548,11 +549,20 @@ export async function registerIpcHandlers(): Promise<void> {
   typedHandle('fs:registerProjectPaths', async (_event, paths: unknown) => {
     if (!Array.isArray(paths)) return
     const { senderId } = getIpcContext()
-    // 获取所有已注册的项目路径作为允许根目录
+    // 获取所有已注册的项目路径作为允许根目录：
+    // ① graphs 表的 project_path（历史行为，兼容已有图的项目）
+    // ② 主进程信任根（用户经原生对话框亲手选中的目录，含没生成过图的项目 ——
+    //    否则这类项目文件树永远拿不到子目录，见 services/project-roots.ts）
     let projectRoots: string[] = []
     try {
-      const projectPaths = await graphService.getProjectPaths()
-      projectRoots = projectPaths.map((p: string) => path.resolve(p))
+      const [projectPaths, trustedRoots] = await Promise.all([
+        graphService.getProjectPaths(),
+        getTrustedProjectRoots(),
+      ])
+      projectRoots = [
+        ...projectPaths.map((p: string) => path.resolve(p)),
+        ...trustedRoots,
+      ]
     } catch {
       logger.warn('fs:registerProjectPaths: failed to load project paths, rejecting all')
     }

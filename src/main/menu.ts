@@ -34,6 +34,10 @@ export function buildMenuTemplate(deps: {
               title: t('menu.selectProjectDir'),
             })
             if (result.canceled || result.filePaths.length === 0) return
+            // 同 dialog:openDirectory：用户亲手选中的目录记入主进程信任根。
+            // 动态 import：本文件运行时依赖一律放回调内取（见文件头注释）
+            const { addTrustedProjectRoot } = await import('./services/project-roots')
+            await addTrustedProjectRoot(result.filePaths[0]).catch(() => {})
             win.webContents.send('menu:openProject', result.filePaths[0])
           },
         },

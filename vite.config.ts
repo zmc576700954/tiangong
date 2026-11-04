@@ -28,7 +28,10 @@ export default defineConfig(async () => ({
             minify: process.env.NODE_ENV === 'production',
             outDir: 'dist-electron/main',
             rollupOptions: {
-              external: ['electron', 'better-sqlite3', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', 'onnxruntime-node', 'sharp'],
+              // bufferutil / utf-8-validate 是 ws 的可选 peer 依赖（纯性能加速，
+              // 缺失时 ws 自带 try/catch 回退纯 JS）。不能被 externalize 时 Vite
+              // 会给未安装的可选 peer 依赖生成顶层 throw 的 stub，主进程加载即崩。
+              external: ['electron', 'better-sqlite3', '@anthropic-ai/claude-agent-sdk', '@openai/codex-sdk', 'onnxruntime-node', 'sharp', 'bufferutil', 'utf-8-validate'],
             },
           },
           resolve: {

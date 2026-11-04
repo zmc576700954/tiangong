@@ -14,6 +14,29 @@ export function buildSafeEnv(adapterType?: string): NodeJS.ProcessEnv {
   const blockedPrefixes = ['BIZGRAPH_', 'ELECTRON_', 'NODE_', 'npm_']
   // 精确前缀：仅 CLAUDE_CODE_ 允许宽匹配（CLI 自身环境变量）
   const allowedPrefixes = ['CLAUDE_CODE_']
+  // 但宿主会话管道变量必须拦下：Claude 桌面 App 注入的这些变量声明「认证由
+  // 宿主管理」（CLAUDE_CODE_HOST_AUTH_ENV_VAR / PROVIDER_MANAGED_BY_HOST /
+  // SDK_HAS_HOST_AUTH_REFRESH），被生成的 claude CLI 继承后会放弃自身认证
+  // （settings.json 的网关 env、keychain），直接报 "Not logged in" exit 1
+  // —— 思维导图生成等子进程流程全部静默降级。其余是父会话身份/通讯管道，
+  // 对子进程同样是噪音。其余 CLAUDE_CODE_* 配置类变量照常放行。
+  const blockedKeys = new Set([
+    'CLAUDE_CODE_HOST_AUTH_ENV_VAR',
+    'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+    'CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH',
+    'CLAUDE_CODE_SESSION_ID',
+    'CLAUDE_CODE_HOST_SESSION_ID',
+    'CLAUDE_CODE_SESSION_ATTENDED',
+    'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN',
+    'CLAUDE_CODE_AUTO_MODE_SERVER',
+    'CLAUDE_CODE_ENTRYPOINT',
+    'CLAUDE_CODE_EXECPATH',
+    'CLAUDE_CODE_STARTUP_FAILURE_RESULTS',
+    'CLAUDE_CODE_DIAGNOSTICS_FILE',
+    'CLAUDE_CODE_SIMPLE',
+  ])
   // 仅对已知一方适配器暴露 ANTHROPIC_ 密钥，防止第三方 MCP 服务器窃取
   const FIRST_PARTY_ADAPTERS = new Set(['claude-code', 'codex', 'opencode', 'mcp'])
   const includeAnthropic = FIRST_PARTY_ADAPTERS.has(adapterType ?? '')
@@ -64,6 +87,7 @@ export function buildSafeEnv(adapterType?: string): NodeJS.ProcessEnv {
   for (const [key, value] of Object.entries(process.env)) {
     if (value === undefined) continue
     if (blockedPrefixes.some((p) => key.startsWith(p))) continue
+    if (blockedKeys.has(key)) continue
     if (allowedPrefixes.some((p) => key.startsWith(p))) { safeEnv[key] = value; continue }
     if (allowedKeys.has(key)) { safeEnv[key] = value; continue }
     // 未在白名单中的变量不传递给子进程

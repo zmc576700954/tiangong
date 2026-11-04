@@ -109,3 +109,16 @@ describe('fileTreeStore toggleExpand', () => {
     })
   })
 })
+
+describe('nextProjectId', () => {
+  it('returns unique ids even for consecutive calls within the same millisecond', async () => {
+    // LeftPanel 启动水合在同一个同步循环里连发 addProject：
+    // 纯 Date.now() 会让多个项目拿到同一个 id，React 报 duplicate key。
+    const { nextProjectId } = await import('../fileTreeStore')
+    const ids = Array.from({ length: 5 }, () => nextProjectId())
+    expect(new Set(ids).size).toBe(5)
+    ids.forEach((id) => {
+      expect(id).toMatch(/^proj-\d+-\d+$/)
+    })
+  })
+})

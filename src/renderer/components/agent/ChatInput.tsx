@@ -175,7 +175,9 @@ export function ChatInput({ onSend, onStop, onMentionAdd, disabled, isRunning, a
           disabled={disabled && !isRunning}
           rows={1}
           className={cn(
-            'flex-1 px-3 py-2 text-sm bg-background border border-border rounded-lg resize-none',
+            // min-w-0：textarea 有固有最小宽度（cols），不放开的话整个 flex 链
+            // 在窄面板下会溢出裁切（输入框/消息区被遮挡的根因之一）
+            'flex-1 min-w-0 px-3 py-2 text-sm bg-background border border-border rounded-lg resize-none',
             'placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring',
             'disabled:opacity-50 disabled:cursor-not-allowed',
             containerHeight ? 'h-full overflow-y-auto' : '',

@@ -65,9 +65,11 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return
       const paths = JSON.parse(raw) as string[]
-      if (paths.length > 0) {
-        ipc?.['fs:registerProjectPaths'](paths).then(() => {
-          for (const dirPath of paths) {
+      // 去重：localStorage 可能被手工编辑出重复路径；同批 addProject 不去重 path 之外的东西
+      const uniquePaths = [...new Set(paths)]
+      if (uniquePaths.length > 0) {
+        ipc?.['fs:registerProjectPaths'](uniquePaths).then(() => {
+          for (const dirPath of uniquePaths) {
             useFileTreeStore.getState().addProject(dirPath)
           }
         })

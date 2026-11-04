@@ -40,6 +40,29 @@ describe('env utils', () => {
       process.env.ANTHROPIC_API_KEY = 'key'
       expect(buildSafeEnv('unknown').ANTHROPIC_API_KEY).toBeUndefined()
     })
+
+    it('blocks host-session plumbing CLAUDE_CODE_ vars', () => {
+      // 宿主（桌面 App）会话管道变量：声明「认证由宿主管理」。若传给被生成的
+      // claude CLI，它会放弃自身认证直接报 Not logged in 退出（实测 exit 1）。
+      process.env.CLAUDE_CODE_HOST_AUTH_ENV_VAR = 'ANTHROPIC_AUTH_TOKEN'
+      process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1'
+      process.env.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH = 'true'
+      process.env.CLAUDE_CODE_SESSION_ID = 'sess-1'
+      process.env.CLAUDE_CODE_HOST_SESSION_ID = 'host-sess-1'
+      process.env.CLAUDE_CODE_MESSAGING_SOCKET = '/tmp/sock'
+      const env = buildSafeEnv('claude-code')
+      expect(env.CLAUDE_CODE_HOST_AUTH_ENV_VAR).toBeUndefined()
+      expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined()
+      expect(env.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH).toBeUndefined()
+      expect(env.CLAUDE_CODE_SESSION_ID).toBeUndefined()
+      expect(env.CLAUDE_CODE_HOST_SESSION_ID).toBeUndefined()
+      expect(env.CLAUDE_CODE_MESSAGING_SOCKET).toBeUndefined()
+    })
+
+    it('still passes non-plumbing CLAUDE_CODE_ config vars', () => {
+      process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1'
+      expect(buildSafeEnv('claude-code').CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1')
+    })
   })
 
   describe('generateId', () => {

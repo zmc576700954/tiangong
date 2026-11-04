@@ -356,7 +356,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   }, [rawOutputs, t])
 
   return (
-    <div className="h-full flex flex-col relative" ref={chatContainerRef}>
+    <div className="@container h-full flex flex-col relative" ref={chatContainerRef}>
       <ChatHeader
         adapterName={selectedAdapter}
         adapters={adapters}
@@ -378,7 +378,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onOpenSubagents={() => setShowSubagentPanel(true)}
       />
 
-      <div className="flex-1 min-h-0 flex">
+      <div className="flex-1 min-h-0 min-w-0 flex">
         <ThreadListSidebar
           threads={threads}
           currentThreadId={currentThreadId}
@@ -390,7 +390,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           onRename={renameThread}
         />
 
-        <div className="flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0 min-w-0 flex flex-col">
           <div className="relative">
             <ContextBar
               contexts={attachedContexts}

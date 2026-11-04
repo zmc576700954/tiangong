@@ -69,7 +69,9 @@ export function ThreadListSidebar({
     <div
       className={cn(
         'shrink-0 border-r border-border bg-muted/30 flex flex-col transition-all duration-200',
-        collapsed ? 'w-12' : 'w-56',
+        // 容器查询自适应：面板窄于 460px 时自动折叠到 w-12（图标态），
+        // 把宽度让给聊天列 —— 见 AgentChatPanel 根节点上的 @container。
+        collapsed ? 'w-12' : 'w-12 @min-[460px]:w-56',
       )}
     >
       <div className="flex items-center justify-between px-2 py-2 border-b border-border h-9">
