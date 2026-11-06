@@ -6,7 +6,17 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -1661,7 +1671,7 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
     })
   })
 
-  it('H3 配置面：gpg.program / gpg.ssh.program / gpg.x509.program → log/show/whatchanged ask', () => {
+  it('H3 收敛：gpg.program 单独存在不再 ask（无 %G / showSignature 时不调用 gpg）', () => {
     const configs: Array<[string, string]> = [
       ['gpg', '[gpg]\n\tprogram = /bin/sh\n'],
       ['gpg-ssh', '[gpg "ssh"]\n\tprogram = /bin/sh\n'],
@@ -1671,12 +1681,9 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
       const repo = makeGitRepo(`bizgraph-h3-${suffix}-`, configText)
       for (const command of ['git log -1', 'git show HEAD', 'git whatchanged -1']) {
         expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-          decision: 'ask',
-          rule: 'git-repo-config-exec',
-          risk: 'high',
+          decision: 'allow',
         })
       }
-      // 只读但不消费 gpg 的命令不额外弹窗（rev-list 走参数面）。
       expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
         decision: 'allow',
       })
@@ -1684,6 +1691,13 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
         decision: 'allow',
       })
     }
+    // 真正会调用 gpg 的两条配置路径仍然 ask：
+    // 1) log.showSignature=true（即使没有 gpg.program 也会调用默认 gpg）。
+    const showSig = makeGitRepo('bizgraph-h3-showsig-', '[log]\n\tshowSignature = true\n')
+    expect(decide('git log -1', { cwd: showSig, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
   })
 
   it('H3 配置面：format.pretty / pretty.<name> 含 %G → ask', () => {
@@ -1767,10 +1781,15 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
     // %G 占位符才会验证签名并执行 gpg.program。
     runRealGit(repo, ['log', '-1', '--format=%GS'])
     expect(existsSync(marker)).toBe(true)
-    // 策略侧：仓库配置含 gpg.program → ask。
+    // 策略侧：gpg.program 单独存在但未请求签名展示 → allow（收敛，不再每命令弹窗）；
+    // 请求 %G 时由参数面拦截。
     expect(decide('git log -1', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+    expect(decide('git log -1 --format=%GS', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
       decision: 'ask',
-      rule: 'git-repo-config-exec',
+      rule: 'git-gpg-format',
     })
 
     // 对照：无签名对象时，%G 不执行 gpg。
@@ -1783,5 +1802,325 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
     const beforeUnsigned = existsSync(marker)
     runRealGit(unsigned, ['log', '-1', '--format=%GS'])
     expect(existsSync(marker)).toBe(beforeUnsigned)
+  })
+})
+
+type NestedLayout = 'external' | 'old-style'
+
+/**
+ * 构造「一级子模块 + 嵌套子模块」的真实仓库，用于 H6。
+ * - external：sub1 的 gitdir 在仓库外（`sub1/.git` 是 gitdir 文件），sub2 在 `<gitdir>/modules/sub2`；
+ * - old-style：`sub1/.git` 是目录，sub2 在 `sub1/.git/modules/sub2`。
+ */
+function makeNestedSubmoduleRepo(
+  prefix: string,
+  layout: NestedLayout,
+): { main: string; sub2Worktree: string; marker: string } {
+  const root = mkdtempSync(join(tmpdir(), prefix))
+  const main = join(root, 'main')
+  mkdirSync(main, { recursive: true })
+  runRealGit(main, ['init', '-q'])
+  writeFileSync(join(main, 'm.txt'), 'm\n')
+  runRealGit(main, ['add', 'm.txt'])
+  runRealGit(main, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'main'])
+
+  // sub2：独立仓库，稍后把它的 gitdir 移到目标布局位置。
+  const s2 = join(root, 's2')
+  mkdirSync(s2)
+  runRealGit(s2, ['init', '-q'])
+  writeFileSync(join(s2, 's2.txt'), 's2\n')
+  runRealGit(s2, ['add', 's2.txt'])
+  runRealGit(s2, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 's2'])
+  const sha2 = gitCapture(s2, ['rev-parse', 'HEAD'])
+  const sub2GitDir = join(root, 'sub2git')
+  renameSync(join(s2, '.git'), sub2GitDir)
+
+  // sub1：把 sub2 作为 gitlink 写入索引。
+  const sub1 = join(main, 'sub1')
+  mkdirSync(sub1)
+  runRealGit(sub1, ['init', '-q'])
+  writeFileSync(join(sub1, 's1.txt'), 's1\n')
+  writeFileSync(join(sub1, '.gitmodules'), '[submodule "sub2"]\n\tpath = sub2\n\turl = ./sub2\n')
+  runRealGit(sub1, ['add', '.gitmodules', 's1.txt'])
+  runRealGit(sub1, ['update-index', '--add', '--cacheinfo', `160000,${sha2},sub2`])
+  mkdirSync(join(sub1, 'sub2'))
+  writeFileSync(join(sub1, 'sub2', 's2.txt'), 's2\n')
+  writeFileSync(join(sub1, 'sub2', '.git'), `gitdir: ${sub2GitDir}\n`)
+  runRealGit(sub1, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'sub1'])
+
+  // main：把 sub1 作为 gitlink 写入索引。
+  const sha1 = gitCapture(sub1, ['rev-parse', 'HEAD'])
+  writeFileSync(join(main, '.gitmodules'), '[submodule "sub1"]\n\tpath = sub1\n\turl = ./sub1\n')
+  runRealGit(main, ['add', '.gitmodules'])
+  runRealGit(main, ['update-index', '--add', '--cacheinfo', `160000,${sha1},sub1`])
+  runRealGit(main, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'add-sub1'])
+  runRealGit(main, ['config', 'diff.submodule', 'diff'])
+  runRealGit(sub1, ['config', 'diff.submodule', 'diff'])
+
+  let nestedGitDir = sub2GitDir
+  if (layout === 'external') {
+    const external = join(root, 'ext1')
+    renameSync(join(sub1, '.git'), external)
+    writeFileSync(join(sub1, '.git'), `gitdir: ${external}\n`)
+    mkdirSync(join(external, 'modules'), { recursive: true })
+    renameSync(sub2GitDir, join(external, 'modules', 'sub2'))
+    nestedGitDir = join(external, 'modules', 'sub2')
+  } else {
+    mkdirSync(join(sub1, '.git', 'modules'), { recursive: true })
+    renameSync(sub2GitDir, join(sub1, '.git', 'modules', 'sub2'))
+    nestedGitDir = join(sub1, '.git', 'modules', 'sub2')
+  }
+  writeFileSync(join(sub1, 'sub2', '.git'), `gitdir: ${nestedGitDir}\n`)
+
+  const marker = join(root, 'marker.log')
+  const script = join(root, 'external-diff.sh')
+  writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\n`)
+  chmodSync(script, 0o755)
+  runRealGit(join(sub1, 'sub2'), ['config', 'diff.external', script])
+  writeFileSync(join(sub1, 'sub2', 's2.txt'), 'dirty\n')
+  return { main, sub2Worktree: join(sub1, 'sub2'), marker }
+}
+
+describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · 模块预算', () => {
+  it('H4 策略：%(signature)/%(*signature) 家族 → ask / git-signature-atom；无害 atom 仍 allow', () => {
+    const repo = makeGitRepo('bizgraph-h4-atom-', '[core]\n\trepositoryformatversion = 1\n')
+    for (const command of [
+      "git for-each-ref --format='%(signature)' refs/heads",
+      "git for-each-ref --format='%(signature:grade)' refs/heads",
+      "git for-each-ref --format='%(signature:key)' refs/heads",
+      "git for-each-ref --format='%(*signature)' refs/tags",
+      "git for-each-ref --format='%(*signature:grade)' refs/tags",
+      // `--format` 与值分开传的形态。
+      "git for-each-ref --format '%(signature)' refs/heads",
+      // 整个 token 被引号包住的形态。
+      "git for-each-ref '--format=%(signature:key)' refs/heads",
+      // --sort 也会求值 atom。
+      "git for-each-ref --sort='%(signature)' refs/heads",
+      "git branch --format='%(signature)'",
+      "git branch -v --format='%(signature:grade)'",
+      "git tag -l --format='%(*signature)'",
+      "git tag -n --format='%(*signature:grade)'",
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-signature-atom',
+        risk: 'high',
+      })
+    }
+
+    // 无害 atom（实测不调用 gpg）不得误伤。
+    for (const command of [
+      "git for-each-ref --format='%(refname)' refs/heads",
+      "git for-each-ref --format='%(objectname)' refs/heads",
+      "git for-each-ref --format='%(contents)' refs/heads",
+      "git for-each-ref --format='%(contents:signature)' refs/heads",
+      "git for-each-ref --format='%(body)' refs/heads",
+      "git branch --format='%(objectname)'",
+      "git tag -l --format='%(refname)'",
+      'git tag -l',
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+    }
+  })
+
+  it('H4 执行面：签名提交 + gpg.program → 真实 for-each-ref/branch 执行；%(objectname) 不执行', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-h4-real-'))
+    const repo = join(root, 'repo')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'gpg.sh')
+    writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\nexit 0\n`)
+    chmodSync(script, 0o755)
+
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+    const base = gitCapture(repo, ['rev-parse', 'HEAD'])
+    const raw = gitCapture(repo, ['cat-file', '-p', base])
+    const signedText = `${raw
+      .split('\n')
+      .flatMap((line) =>
+        line.startsWith('committer ')
+          ? [
+              line,
+              'gpgsig -----BEGIN PGP SIGNATURE-----',
+              ' ',
+              ' fake',
+              ' -----END PGP SIGNATURE-----',
+            ]
+          : [line],
+      )
+      .join('\n')}\n`
+    const signed = gitCapture(repo, ['hash-object', '-t', 'commit', '-w', '--stdin'], signedText)
+    runRealGit(repo, ['update-ref', 'refs/heads/main', signed])
+    runRealGit(repo, ['config', 'gpg.program', script])
+
+    runRealGit(repo, ['for-each-ref', '--format=%(signature)', 'refs/heads'])
+    expect(readFileSync(marker, 'utf8')).not.toBe('')
+
+    // 无害 atom 不执行 gpg。
+    writeFileSync(marker, '')
+    runRealGit(repo, ['for-each-ref', '--format=%(objectname)', 'refs/heads'])
+    expect(readFileSync(marker, 'utf8')).toBe('')
+
+    // branch 的 --format 同样会验证签名。
+    writeFileSync(marker, '')
+    runRealGit(repo, ['branch', '--format=%(signature)'])
+    expect(readFileSync(marker, 'utf8')).not.toBe('')
+
+    expect(
+      decide("git for-each-ref --format='%(signature)' refs/heads", {
+        cwd: repo,
+        includeGlobalGitConfig: false,
+      }),
+    ).toMatchObject({ decision: 'ask', rule: 'git-signature-atom' })
+    expect(
+      decide("git for-each-ref --format='%(objectname)' refs/heads", {
+        cwd: repo,
+        includeGlobalGitConfig: false,
+      }),
+    ).toMatchObject({ decision: 'allow' })
+  })
+
+  it('H5 策略：core.hooksPath + 工作区 diff → ask；--cached/--staged/--no-index 仍 allow', () => {
+    const repo = makeGitRepo(
+      'bizgraph-h5-hooks-',
+      '[core]\n\thooksPath = /tmp/bizgraph-hooks-not-used\n',
+    )
+    for (const command of [
+      'git diff',
+      'git diff --stat',
+      'git diff --name-only',
+      'git diff --quiet',
+      'git diff --check',
+      'git diff HEAD',
+      'git diff --exit-code',
+      'git diff -- a.txt',
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+        risk: 'high',
+      })
+    }
+    // 这些形态不刷新索引，实测不触发 post-index-change，不弹窗。
+    for (const command of [
+      'git diff --cached',
+      'git diff --staged',
+      'git diff --cached --stat',
+      'git diff --no-index a.txt b.txt',
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+    }
+
+    const probe = probeGitConfig(repo, false, 500)
+    expect(probe.failure).toBeNull()
+    expect(probeGitConfigExecutes(probe, 'diff', [])).toBe(true)
+    expect(probeGitConfigExecutes(probe, 'diff', ['--cached'])).toBe(false)
+    expect(probeGitConfigExecutes(probe, 'diff', ['--staged'])).toBe(false)
+    expect(probeGitConfigExecutes(probe, 'diff', ['--no-index', 'a', 'b'])).toBe(false)
+    expect(probeGitConfigExecutes(probe, 'status', [])).toBe(true)
+  })
+
+  it('H5 执行面：stat 过期后真实 git diff 触发 post-index-change；--cached 不触发', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-h5-real-'))
+    const repo = join(root, 'repo')
+    const hookDir = join(root, 'hooks')
+    const marker = join(root, 'hook.log')
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+
+    mkdirSync(hookDir, { recursive: true })
+    const hook = join(hookDir, 'post-index-change')
+    writeFileSync(hook, `#!/bin/sh\nprintf 'hook\\n' >> '${marker}'\nexit 0\n`)
+    chmodSync(hook, 0o755)
+    runRealGit(repo, ['config', 'core.hooksPath', hookDir])
+
+    // 内容不变、只有 mtime 变化（stat 过期）时 diff 会回写 index，触发钩子；
+    // 实测只改内容时 git 不重写 index，不能用于复现。
+    const future = new Date(Date.now() + 2000)
+    utimesSync(join(repo, 'a.txt'), future, future)
+    runRealGit(repo, ['diff'])
+    expect(readFileSync(marker, 'utf8')).not.toBe('')
+
+    // --cached 不刷新索引：再次制造 stat 变化后仍不应触发。
+    writeFileSync(marker, '')
+    const later = new Date(Date.now() + 4000)
+    utimesSync(join(repo, 'a.txt'), later, later)
+    runRealGit(repo, ['diff', '--cached'])
+    expect(readFileSync(marker, 'utf8')).toBe('')
+
+    expect(decide('git diff', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(
+      decide('git diff --cached', { cwd: repo, includeGlobalGitConfig: false }),
+    ).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+  })
+
+  for (const layout of ['external', 'old-style'] as const) {
+    it(`H6 执行面（${layout}）：外部/旧式 gitdir 的嵌套子模块 diff.external → 真实执行且 ask`, () => {
+      const { main, sub2Worktree, marker } = makeNestedSubmoduleRepo(
+        `bizgraph-h6-${layout}-`,
+        layout,
+      )
+      // 修复前只读一级 gitdir 的 config，漏掉 <gitdir>/modules/sub2/config。
+      const modules = probeGitSubmoduleConfigs(main)
+      expect(modules.failure).toBeNull()
+      expect(modules.results).toHaveLength(2)
+      expect(
+        modules.results.some((result) =>
+          result.entries.some((entry) => entry.key === 'diff.external'),
+        ),
+      ).toBe(true)
+
+      runRealGit(main, ['diff'])
+      expect(readFileSync(marker, 'utf8')).not.toBe('')
+
+      expect(decide('git diff', { cwd: main, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+
+      // 移除嵌套模块的 diff.external 后必须回到 allow（不误伤）。
+      runRealGit(sub2Worktree, ['config', '--unset', 'diff.external'])
+      expect(decide('git diff', { cwd: main, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+        rule: 'git:diff',
+      })
+    })
+  }
+
+  it('可用性预算：模块数超过 32 → fail-closed ask，耗时远低于无预算基线', () => {
+    resetGitConfigProbeDiagnostics()
+    const repo = makeGitRepo('bizgraph-h6-budget-', '[diff]\n\tsubmodule = diff\n')
+    for (let index = 0; index < 40; index += 1) {
+      const moduleDir = join(repo, '.git', 'modules', `m${index}`)
+      mkdirSync(moduleDir, { recursive: true })
+      writeFileSync(join(moduleDir, 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    }
+    const startedAt = Date.now()
+    const scan = probeGitSubmoduleConfigs(repo)
+    const elapsedMs = Date.now() - startedAt
+    expect(scan.failure).toBe('budget-exceeded')
+    // 基线（无预算）40 模块约 320 ms；预算生效后应在上限附近。
+    expect(elapsedMs).toBeLessThan(600)
+
+    const decision = decide('git diff', { cwd: repo, includeGlobalGitConfig: false })
+    expect(decision).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
+    expect(decision.reason).toContain('budget-exceeded')
+
+    const diagnostics = getGitConfigProbeDiagnostics()
+    expect(diagnostics.moduleScanBudgetExceeded).toBeGreaterThan(0)
+    expect(diagnostics.moduleScans).toBeGreaterThan(0)
   })
 })

@@ -3912,3 +3912,341 @@ P2/P3 不需要再改。新增用例应覆盖：`fsck`+fsmonitor（含 `/bin/sh`
 | 失败文件 | 26 个，集合与基线一致；逐文件核对均为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`），无业务失败 |
 
 `+10 passed` 全部来自新增用例（H1 2、H2 4、H3 4）；失败数与失败文件集合未变。
+
+---
+
+## 二十五、c1cdfe0 对抗性复验：H1/H2/H3 生效，但同族仍有 3 个零审批执行面（2026-11-06）
+
+> 复验对象：`c1cdfe0`（父 `907c4d8`），未 amend、未 push，工作树干净。全程只读：未改源码、未 commit、未 push。文档追加前 sha256 `4200d05eae991c96b9ad241c65710b96e7b3ae79a907380006e2b273be3d1db3`（追加后见 §25.8）。
+>
+> 基线文件 sha256（`c1cdfe0`）：
+> - `src/main/agent/runtime/approval/bash-readonly.ts` = `ac9881dcc16038e2bc175b3dd462d1ce2157f089ca14f4ac56c0ee4e4c277344`
+> - `src/main/agent/runtime/approval/__tests__/bash-readonly.test.ts` = `5709715cb4af0578da9946ae4d09ff76345524647d8c55cd2175aeb8b02f525c`
+> - `src/main/__tests__/claude-code.test.ts` = `201cb14d2dc7c3241e0271e7a1a30d869b3564757caefa198b9b121d52a6f465`
+>
+> `git diff --numstat 907c4d8..c1cdfe0`：`bash-readonly.ts +386/-21`、`bash-readonly.test.ts +288/-0`、`agent-audit-2026-11-05.md +243/-0`、`agent-architecture.md +33/-10`。`+0` 删除说明定向用例是「只增不改」，没有改写既有断言。
+>
+> 复验脚手架：`/tmp/audit11`（`head` = `c1cdfe0` 导出、`parent` = `907c4d8` 导出，esbuild 打包为 ESM；`policy.mjs` 直接调用 `evaluateBashPolicy`）。真实执行证据统一用 `/tmp/audit11/marker-extdiff.sh`（向 `/tmp/audit11/exec.log` 追加一行）与 `/tmp/audit10/marker-gpg.sh`，真实 git 2.50.1 (Apple Git-154)。
+
+### 25.1 三处修复：HEAD 与父提交对照 + 真实执行
+
+判定方法：同一夹具、同一命令，分别跑 `head` / `parent` 两套策略（只看 decision），再**绕过策略**直接跑真实 `git`，检查 marker 是否落盘。仅凭策略输出不算证据。
+
+| # | 夹具 / 命令 | 父 `907c4d8` | HEAD `c1cdfe0` | 真实 git 执行 |
+|---|---|---|---|---|
+| H1 | `fx/fsmon`（`core.fsmonitor=/bin/sh`，仓库根文件 `2`）+ `git fsck` | allow `git:fsck` | **ask** `git-repo-config-exec` | 父分支语义下真实执行：`/tmp/audit10/pwned` 生成；HEAD 只是拦在策略层 |
+| H1 对照 | 同上但 `core.fsmonitor=false` + `git fsck` | allow | **allow** | 不执行 |
+| H1 消费面 | `fsmon` 下 `status/diff/blame/ls-files/fsck` | allow | **ask** | 实测均能执行 fsmonitor |
+| H2-A | 标准 `.git/modules/sub/config` 有 `diff.external` + 顶层 `diff.submodule=diff` + 子文件改动 | allow | **ask** `git-repo-config-exec` | `git diff`、`git show` 均生成 marker |
+| H2-B | 子模块 `.git` 是 gitdir 文件，指向 `.git/modules` **之外**的 `ext-b` | allow | **ask** | `git diff` 生成 marker |
+| H2-C | 旧式 `sub/.git` 是目录，配置在其中 | allow | **ask** | `git diff` 生成 marker |
+| H2-D | `diff.submodule=diff` 但子模块配置干净 | allow | **allow** | 不执行（无多弹） |
+| H2-E | 顶层**没有** `diff.submodule`，子模块配置有 `diff.external` | allow | **allow** | 不执行（git 不递归） |
+| H2-参数面 | `git diff --submodule=diff` | allow | **ask** `git-submodule-diff` | 真实执行（`--submodule=diff` 可直接触发） |
+| H2-深度 | `.git/modules/m1/modules/m2/...` 第 4 层配置 `diff.external` | allow | **ask** | 探针 depth 7 命中 |
+| H2-深度上限 | 第 9 层配置 `diff.external`（depth 17） | allow | **ask** | fail-closed（`io-error`），不是漏 |
+| H2-链接 worktree | `git worktree add` + `submodule update --init --recursive`，worktree 自己的 `.git/worktrees/wt/modules/...` 嵌套配置 | allow | **ask** | `git -C wt diff` 真实执行 |
+| H3-配置面 | 签名提交 + `gpg.program=marker` + `format.pretty=format:%GS` | allow | **ask** | `git log -1`、`git show` 真实执行 gpg |
+| H3-参数面 | 签名提交 + `git log -1 --format=%GS` / `git show --format=%GS` | allow | **ask** | 真实执行 |
+| H3-不在集合 | 同上配置下 `git rev-list -1 HEAD` | allow | **allow** | 不执行（rev-list 不读 `format.pretty`，设计如此） |
+| H3-无签名对照 1 | 无签名历史、无 `gpg.program`、`git log -1` | allow | **allow** | 不执行（没有多弹） |
+| H3-无签名对照 2 | 无签名历史、但仓库配了 `gpg.program`、`git log -1` | allow | **ask** | 不执行（只多弹一次，非安全洞） |
+
+结论：三处修复**在策略层全部生效**，且父提交对应路径确有真实执行；H2 的子模块递归覆盖了标准、gitdir 文件、旧式目录、链接 worktree 与嵌套；失败一律 ask（深度超限、模块缺失均如此）。H3 的「无签名历史不应多弹」只在「没有 `gpg.program`」时成立；一旦仓库/全局配了 `gpg.program`，`log/show/whatchanged` 会无条件 ask（§24.6 自述的取舍）。这对装了 GPG 但从不 `log --show-signature` 的用户是每命令一次弹窗，代价偏大，建议后续只在 `log.showSignature=true` 或 `format.pretty/pretty.*` 含 `%G` 时才 ask（`gpg.program` 单键改为「仅当同仓库存在签名对象」无法低成本判定，可接受现状）。
+
+### 25.2 对抗找洞：本轮新发现 3 个可执行面（均 HEAD allow + 父提交 allow）
+
+#### H4（阻断）`for-each-ref` / `branch` / `tag -l` 的 signature atom 家族
+
+`%(signature)`（及 `%(signature:grade)`、`%(signature:key)`、`%(*signature)`、`%(*signature:grade)`）在存在签名提交/签名 tag 时会调用 `gpg.program`。策略把 `for-each-ref` 整条放行、`branch --format` 与 `tag -l --format` 均放行，且这些子命令不在 `GIT_CONFIG_EXEC_SUBCOMMANDS` 里，**连配置探针都不会跑**。
+
+```text
+# 夹具：/tmp/audit10/fx/signed（伪造 gpgsig commit + 本地 gpg.program=marker）
+git for-each-ref --format='%(signature)' refs/heads        # 真实执行 1 次；策略 allow git:for-each-ref
+git for-each-ref --format='%(signature:grade)' refs/heads  # 真实执行
+git branch --format='%(signature)'                         # 真实执行；策略 allow git:branch:list
+git branch -v --format='%(signature)'                      # 真实执行
+git tag -l --format='%(*signature)'                        # 真实执行 2 次（peeled 到签名 commit）
+git for-each-ref --format='%(*signature)' refs/tags        # 真实执行 2 次
+```
+
+注意：不加引号的 `%(*signature)` 会命中 lexer 的 `subshell` 而 ask；**加单引号即 allow**，所以「引号」不是边界。`%(contents:signature)` 只输出原文、不执行；`%(signature)` 作用于 tag 对象本身在本机 git 不执行（`%(signature)` over `refs/tags` exec=0），但 `%(*signature)`（peeled 到 commit）执行——H4 的覆盖面比修复方自报的「for-each-ref/branch %(signature)」更宽。
+
+利用条件与 H1–H3 同类：一次被批准的写把 `gpg.program` 指到仓库内脚本（或指向 `/bin/sh` + 仓库文件），随后任何一次带 atom 的 `for-each-ref`/`branch`/`tag -l` 零审批执行。与 H3 的差别只在「触发命令需要显式 atom」；攻击者可通过 README/AGENTS.md 之类的仓库内容引导 agent 运行该命令，不能当作低风险忽略。**最小修法**：对 `for-each-ref`/`branch`/`tag` 的所有参数做子串扫描，命中 `%(signature` 或 `%(*signature` → ask（这三条命令的 atom 語法只在这里出现）。
+
+#### H5（阻断）`core.hooksPath` 在 `git diff` 上可达（不止 `status`）
+
+策略里 `core.hooksPath` 只在 `sub === 'status'` 时判 ask（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts) 的 `probeGitConfigExecutes`）。实测：只要索引 stat 过期（正常编辑文件后就会发生），`git diff` 会刷新并回写 `.git/index`，从而触发 `post-index-change` hook。
+
+```text
+# 夹具 /tmp/audit10/fx/hooks：core.hooksPath=/tmp/audit10/hooksdir
+# hooksdir/post-index-change = sh 脚本，向 /tmp/audit10/exec.log 追加 marker
+sleep 1; touch a.txt; git diff            # exec=1（post-index-change 被执行）
+git diff --stat / --name-only / --quiet / --check / diff HEAD   # 同样触发
+git diff --cached                        # 不触发（不刷新索引）
+git fsck / blame a.txt / ls-files / log / show  # 不触发
+# 策略：git diff → allow git:diff（HEAD 与父提交均 allow）
+```
+
+`core.hooksPath` 若已被用户/仓库设置为受版本控制的目录（例如 husky 的 `.husky/_`，其 hook 文件随仓库提交），攻击者只需仓库内容即可，甚至不需要另写 `.git`。**最小修法**：把 `core.hooksPath` 的判定命令集合从 `status` 扩到 `status`/`diff`（其余命令实测不触发；一并加上不增加误弹，因为该键本身少见）。
+
+#### H6（阻断）外部/旧式 gitdir 下的**嵌套**子模块配置未被递归
+
+H2 的递归路径有两处：扫描 `<absolute-git-dir>/modules`（walk），以及通过 gitlink worktree 的 `.git` 文件/目录读 `<gitdir>/config`。后者**只读了一层 config，没有继续扫 `<gitdir>/modules`**。因此当一级子模块的 gitdir 位于 `.git/modules` 之外（gitdir 文件指向外部目录），或为旧式 `sub/.git` 目录时，其嵌套子模块的 `diff.external` 不会被读到。
+
+```text
+# 夹具 A：/tmp/audit11/fx2/extnest/main（sub1 的 gitdir 在 .git/modules 之外，sub2 在 ext1/modules/sub2）
+#   top: diff.submodule=diff；ext1: diff.submodule=diff；ext1/modules/sub2: diff.external=marker
+printf dirty >> main/sub1/sub2/s2.txt
+git -C main diff        # 真实执行 marker（1 次）
+# 策略 HEAD：allow git:diff；父提交：allow
+# 夹具 B：/tmp/audit11/fx2/oldnest（sub1/.git 是目录，嵌套 sub2 在 sub1/.git/modules/sub2）
+git -C oldnest diff     # 真实执行 marker；策略 allow
+```
+
+标准嵌套（`.git/modules/sub1/modules/sub2`）与链接 worktree 的嵌套（`.git/worktrees/wt/modules/...`）**已被覆盖**（实测 ask），所以 H6 的边界只在「gitdir 文件/目录指向非 `absolute-git-dir/modules`」的布局。**最小修法**：`probeModuleGitDir` 在读完 `<gitdir>/config`（及 `config.worktree`）后，对 `<gitdir>/modules` 复用同一 walk（同一 depth 预算与 fail-closed 口径），而不是只读一层。
+
+#### 并发/性能副作用（非安全洞，但可被滥用）
+
+`probeGitSubmoduleConfigs` 对每个模块串行 `git config --file`，没有模块数量上限：
+
+| 场景 | HEAD 单次判定 p50 |
+|---|---|
+| 干净仓库 `git status/diff/log` | 7.7–8.1 ms（父 7.6–7.9 ms，无回退） |
+| `diff.submodule=diff` + 1 个子模块 | 37.0 ms（父 7.8 ms） |
+| `diff.submodule=diff` + 200 个模块目录 | **1433 ms** |
+| 模块 config 是 FIFO | 每个 250 ms 超时 → N×250 ms |
+| 10 层 include | 8.5 ms（与父持平） |
+| 本仓库五命令 | 8.0–8.1 ms |
+
+一次获批的写可创建大量模块目录，让后续每个 `git diff` 阻塞数秒（DoS），建议加模块数上限（例如 >64 直接 ask，或总预算 250 ms 共享）。
+
+#### 其它方向的否证（已测，不成立）
+
+- `git archive` / `git bundle` / `git grep` / `git difftool` / `git verify-commit` / `git tag -v` / `git -C` / `git --git-dir=` / `git config --get` → 均 `ask`，没有间接执行路径。
+- `blame` + `diff.<driver>.textconv` → 真实执行（marker=1），策略 `ask`（textconv 检查对全部消费子命令生效）；代价是 `status`/`ls-files`/`fsck` 也会因同一键被 ask（过度拦截，可接受）。
+- `core.hooksPath` 对 `fsck`/`blame`/`ls-files`/`log`/`show`：实测不触发；只有 `status`/`diff` 触发。
+- `submodule.<name>.update=!cmd` / `ext::` URL：需要 `submodule update`/`fetch`（本身 ask），`git diff` 不消费。
+- `format.pretty`/`pretty.*` 之外未发现新的「配置里带格式化字符串」执行键；`git shortlog --format=%GS`、`git log --format='%(signature)'`、`describe` 均不执行。
+- 无签名历史时有 `gpg.program` 只多弹、不执行（§25.1 最后一行）。
+
+### 25.3 收敛性判断：**不会收敛**
+
+直接回答：**「清单式覆盖 + 逐轮审计」不会收敛。** 依据不是主观判断，而是这五轮的净账：
+
+| 轮次 | 关闭 | 新开 |
+|---|---|---|
+| 配置驱动 → 裸键 | 配置值类型（`!cmd`/`ext::`） | 裸键形式（`true`/路径） |
+| 裸键 → include 深度 | 裸键 | include 深度/转义 |
+| include → alternateRefs | 深度/转义 | `core.alternateRefsCommand` |
+| alternateRefs → hooksPath | alternateRefs | `core.hooksPath` |
+| hooksPath → fsck/fsmonitor | hooksPath(status) | fsck、fsmonitor |
+| fsck/fsmonitor → 子模块 | 两个子命令 | `diff.submodule` + 子模块布局 |
+| 子模块 → pretty | 子模块 | `format.pretty`/`pretty.*` |
+| pretty → signature atom | `%G` 参数面 | H4/H5/H6（本轮） |
+
+原因是结构性的：
+
+1. **默认极性错了。** 策略默认 `allow`，执行面是「命令 × 配置键 × 参数 × 仓库布局 × 索引状态」的笛卡尔积；审计只能采样，采样之外的组合天然是 allow。H4/H5/H6 都不是新配置键，而是既有键在**新命令/新布局/新触发条件**上的组合——证明收敛点不在“键表”，而在“组合表”，后者不可穷举。
+2. **git 自己在扩张。** `%(signature)` 这类 atom、`post-index-change` 这类 hook、`--submodule` 这类参数，都是上游新增或未文档化的消费者；清单只能追着历史跑。
+3. **没有停止判据。** A 路线无法给出「本轮之后不会再有洞」的可验证条件；每一轮都能用「真实 git + marker」再找到一个 allow→exec，且本轮 3 个与上轮 3 个同类。
+4. **修复与发现的速率没有剪刀差。** 本轮关闭 3、发现 3，净持平；上一轮关闭 3、发现 3。只要审计强度不变，期望净值为 0。
+
+因此 A 不是“再补几轮就好了”，而是“每一轮都要重新证明”。这直接支撑下面把默认极性倒过来（B）与从写入源头切断（D）。
+
+### 25.4 对 C 方案（会话内写过 `.git` → 后续 git 全 ask）的评估
+
+结论先行：**C 方向正确但表述不可实现，单独使用掐不死链路。** 分四问回答。
+
+**（1）能否掐死“一次 Write 改配置 → 零审批执行”？**
+- 如果 C 的“写”只统计 Write/Edit 类工具，且目标路径解析后落在 gitdir 内：能覆盖主链（本仓库的会话授权正是「批准一次工作区内写 → 之后工作区内写全部静默」，`.git/config` 也在 cwd 内，见 [gateway.ts:96-109](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L96-L109)、[gateway.ts:359-371](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L359-L371)）。
+- 如果 C 按字面用文件系统监听“写过 `.git` 下任何文件”：**不可用**。实测 `git status` 与 `git diff` 在索引 stat 过期时会回写 `.git/index`（`.git/index` mtime `1793972933 → 1793973152`）。也就是说，会话里第一次 `git status`/`git diff` 就会把 flag 置上，之后所有 git 命令全 ask——这不是安全收益，是产品不可用。
+
+**（2）绕过面（按可行性排序）**
+1. **Bash 内的写**：`mv /tmp/x .git/config`、`cp`、`ln`、`sed -i`、`tee`、`git config`、`sh -c` 都会先 ask；但用户一旦批准，写就发生。若 C 只看 Write 工具，这条完全绕过；若在“批准后解析命令 token”里补，仍可被 `sh -c 'printf … >> "$1"' _ .git/config` 这类间接写法绕过。
+2. **非 Write 命名的工具**：`mcp__*`、自定义文件工具不在 `WRITE_TOOL_PATTERN` 内（[gateway.ts:96-100](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L96-L100)），不会走会话授权，但用户逐次批准后同样能写；C 收不到事件。
+3. **符号链接 / 硬链接**：`.git/config` 或 include 目标可以链到工作区普通文件；写“普通文件”不触发 `.git` 规则，却改了配置。`isPathInside` 的 realpath 只解决“写到工作区外”，不解决“内容被当作配置读”。
+4. **include 目标在工作区外**：`.git/config` 里 `include.path=/tmp/evil.cfg`，写 `/tmp/evil.cfg` 不在 `.git` 下。
+5. **外部 gitdir**：子模块 `.git` 是 gitdir 文件指向 `.git/modules` 之外（H6 夹具）；该 gitdir 的 config、`modules/*` 都不在 `.git` 下。
+6. **会话外写入**：用户在编辑器/IDE/别的终端改 `.git/config`；或仓库本身以压缩包交付、`.git/` 已含恶意配置（没有本会话写入）。此时 C 永不触发，而 H1–H6 全部可用。
+7. **git 自己写 `.git`**：`commit/fetch/pull/clone/gc` 都会写；若按 fs 口径统计，见（1）的不可用结论。
+
+**（3）弹窗代价（实测/推算）**
+- 工具面触发（只在 agent 真写 `.git` 时）：正常会话几乎为 0；代价可接受。
+- 但一旦触发，本仓库 52 条常见只读命令抽样中 **52/52 全部变 ask**（原本 51/52 allow），即一次触发 = 会话剩余时间每次 git 都弹。
+- 触发概率并不低：同一会话授权会把**任意工作区内写**静默化（`.git/config` 在内），而 `git config`/`git commit`/`git fetch` 这些合法操作也会写 `.git`；如果把“git 子进程写”也算进去，就是「commit 一次，之后全弹」。
+- 因此 C 的正确形态只能是「工具面写 → 只对**后续 git 命令**加 ask，且不把 git 自身写计入」，并且必须接受（2）里的 1/2/3/4/5/6 绕过。
+
+**（4）判定**：C 是有效的第二道闸（把静默执行变成“至少弹一次”，给用户拦截机会），但**不能作为唯一结构性方案**，也不应阻塞 H4/H5/H6 的修补（那些洞在“不写 .git”的仓库里同样成立，例如压缩包交付的 `.git`、用户已有的 `core.hooksPath`/`gpg.program`）。
+
+### 25.5 路线建议：D 为主，B 为默认极性，A 只做本轮修补
+
+| 路线 | 判断 | 理由与代价 |
+|---|---|---|
+| **A 继续补洞** | 不推荐作为路线，只做本轮收尾 | 不收敛（§25.3）；本轮净持平。可立即修 H4/H5/H6（各 ~10–30 行），但不能宣称“补完”。 |
+| **B 配置反向白名单**（未知键 → ask） | **推荐作为默认极性** | 把默认从 allow 倒成 ask：新执行键退化为弹窗而不是洞，从根上结束“键表追着 git 跑”。代价：需要维护一份“安全键族”白名单（core./user./branch./remote./init./filter.lfs/lfs./http./safe.directory 等，本仓库 + 全局共约 20–30 个键，实测本仓库无未知键）；对少见自定义键（`feature.*`、第三方工具键）会多弹。值敏感键（`format.pretty`、`diff.submodule`、`core.fsmonitor`、`core.hooksPath`、`gpg.*`）继续做值判定。 |
+| **C 状态化规则** | 作为**兜底**，不作为主方案 | 见 §25.4：工具面可实现、成本近零，但 Bash/MCP/链接/include/外部 gitdir/会话外写入均可绕过；fs 口径会因 `status`/`diff` 回写 index 而全面误伤。 |
+| **D（本报告新增）写保护 + 会话 taint** | **推荐作为主方案** | 两条：① **D1 写类工具目标落在解析后的 gitdir 内一律 block（不是 ask）**：含 `.git/config`、`.git/config.worktree`、`.git/modules/*/config`、`.git/hooks/*`、外部 gitdir；从源头断掉“会话授权静默改配置”，成本近零（agent 正常不写 `.git`）。② **D2 Bash 已批准命令若含 gitdir 路径/`git config` 等写配置动作 → 置会话 taint，后续 git 全 ask**：兜住 Bash/MCP 写路径；实现只需在批准回调里做 token/路径检查，不依赖 fs 监听，避免 index 误伤。D 不能替代 B/H4–H6 对“仓库自带 `.git`/用户全局配置”的覆盖，所以四者叠加：**D1+D2（源头）+ B（极性）+ H4/H5/H6（当前洞）**。 |
+
+如果只能选一条：**D1（禁止 agent 工具写 gitdir）**——它最小、可验证、零日常成本，且直接掐死本威胁模型的主链；但必须同时修 H4/H5/H6，否则“压缩包交付的恶意 `.git`”与用户已有 `hooksPath`/`gpg.program` 仍可零审批执行。
+
+### 25.6 回归、性能与弹窗代价
+
+| 项 | HEAD `c1cdfe0` | 父 `907c4d8` |
+|---|---|---|
+| 干净仓库 `status/diff/log` p50 | 7.7–8.1 ms | 7.6–7.9 ms |
+| 干净仓库 `fsck` p50 | 7.7 ms（新增探针） | 0 ms（不探针，allow） |
+| `diff.submodule=diff` + 1 模块 `diff` p50 | 37.0 ms | 7.8 ms |
+| 同上 + 200 模块 | 1433 ms | 7.8 ms |
+| 10 层 include `status` p50 | 8.5 ms | 8.3 ms |
+| 本仓库五命令 | 8.0–8.1 ms | 7.9–8.0 ms |
+| FIFO 配置探针 | 253 ms（同步 `execFileSync`，仍在同步路径） | 253 ms（同） |
+| 抽样 allow 比例（本仓库 52 条常见只读命令） | **51/52 = 98.1%**（唯一 ask 是 `git tag --points-at HEAD`，`tagRule` 只认 `-l/-n`，过度拦截） | 51/52 |
+
+补充观察（过度拦截，非洞）：仓库定义任一 `diff.<driver>.textconv` 时，`status`/`ls-files`/`fsck` 也会 ask（它们并不消费 textconv）；`gpg.program` 存在时 `log/show/whatchanged` 无条件 ask；`git branch --show-current`、`git reflog`、`git submodule status` 也 ask（保守）。
+
+### 25.7 测试基线
+
+| 项 | 结果 |
+|---|---|
+| `npx vitest run`（全量） | `173 failed / 3145 passed / 93 skipped (3411)`；26 个失败文件 |
+| 与基线一致性 | 与用户报告的 `173 failed / 3145 passed` **一致**；失败文件全部为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`），无业务断言失败 |
+| 定向 `bash-readonly.test.ts` | 71 条通过 |
+| 定向 `bash-readonly.test.ts` + `claude-code.test.ts` | **92 条通过**（71 + 21） |
+| 断言是否放宽 | 测试文件 `+288/-0`，没有修改/删除既有断言；新增 10 条均为真实断言（H1 2、H2 4、H3 4），H3 的“无签名不执行”用真实 `git log` + marker 断言 |
+| 覆盖缺口 | 新增用例只覆盖 H2 的标准布局与旧式布局；gitdir 文件外部布局、嵌套外部 gitdir、H4、H5、H6 均**无**用例（本报告用真实 git 补测） |
+
+### 25.8 结论
+
+**不可发布。** 阻断项 **3 个**，性质相同：**配置/仓库布局驱动、零审批、真实执行**——
+
+1. **H4**：`for-each-ref`/`branch`/`tag -l` 的 `%(signature)`、`%(*signature)` 家族（HEAD allow + marker 执行；父提交同样 allow）。
+2. **H5**：`core.hooksPath` + `git diff`（索引 stat 过期即触发 `post-index-change`；HEAD allow + marker 执行）。
+3. **H6**：外部/旧式 gitdir 下**嵌套**子模块 `diff.external` 未被递归（HEAD allow + marker 执行）。
+
+另有 1 个可用性风险（子模块扫描 O(N)：200 模块 1.43 s、FIFO 每模块 250 ms）与若干过度拦截（`gpg.program` 无条件 ask、textconv 波及 status/ls-files/fsck）。H1/H2/H3 修复本身**已验证生效**，但同族仍有洞，且本轮关闭 3、新开 3。
+
+修改记录（只读复验）：未改源码、未 commit、未 push。本文档就地追加本节；追加后 sha256 见下方复算值。
+
+- 正文（截至本节 §25.8，不含本行）sha256：`a33f4ba83d0f92410d260aa746977b9f4d66a7fe8a48933a722b264be9e6907a`
+- 整文件哈希含本行会自指，故不写入；复核时以 `shasum -a 256 docs/architecture/agent-audit-2026-11-05.md` 现算值为准。
+
+---
+
+## 26. 复验第二轮修复：H4 / H5 / H6 / 可用性预算 / H3 收敛（2026-11-06）
+
+> 修复对象：父提交 `c1cdfe0`；本轮修复 commit 见 `git log -1`（本节随该提交入库），未 amend、未 push，提交后工作树干净。
+> 纪律：每个洞都用**真实 git + marker** 复现「修复前 allow 且真实执行」，再验证「修复后 ask 拦截」；每个修复都验证无害形态仍 allow。
+> 本轮**未动** D1（写类工具禁写 gitdir）与 B（未知键 ask）：用户仍在决策，未获批准不实现。
+
+### 26.1 H4 `%(signature)` 家族
+
+复现仓库：git 2.50.1，`refs/heads/master` 带伪造 gpgsig 的签名 commit，`gpg.program` 指向 marker 脚本；`refs/tags` 中 4 个 tag peeled 到签名 commit。策略均 `includeGlobalGitConfig:false`。
+
+| 命令 | 修复前 | 修复后 |
+|---|---|---|
+| `git for-each-ref --format='%(signature)' refs/heads` | allow `git:for-each-ref`，gpg **1 次** | ask `git-signature-atom` |
+| `… --format='%(signature:grade)' refs/heads` | allow，gpg **1 次** | ask `git-signature-atom` |
+| `… --format='%(signature:key)' refs/heads` | allow，gpg **1 次** | ask `git-signature-atom` |
+| `… --format='%(signature:signer)' refs/heads` | allow，gpg **1 次** | ask `git-signature-atom` |
+| `… --format='%(*signature)' refs/tags` | allow，gpg **4 次**（每个 peeled 签名 commit） | ask `git-signature-atom` |
+| `… --format='%(*signature:grade)' refs/tags` | allow，gpg **4 次** | ask `git-signature-atom` |
+| `git branch --format='%(signature)'` | allow `git:branch:list`，gpg **1 次** | ask `git-signature-atom` |
+| `git branch -v --format='%(signature)'` | allow，gpg **1 次** | ask `git-signature-atom` |
+| `git tag -l --format='%(*signature)'` | allow `git:tag:list`，gpg **4 次** | ask `git-signature-atom` |
+| `git tag -n --format='%(*signature:grade)'` | allow，gpg **4 次** | ask `git-signature-atom` |
+| `… --format='%(if)%(signature)%(then)S%(end)' refs/heads` | allow，gpg **1 次** | ask `git-signature-atom` |
+
+无害形态（必须仍 allow，实测 gpg=0）：`%(refname)`、`%(objectname)`、`%(objecttype)`、`%(subject)`、`%(body)`、`%(contents)`、`%(contents:subject)`、`%(contents:body)`、`%(contents:signature)`、`%(*contents)`、`%(*contents:signature)`、`%(taggername)`、`%(authorname)`、`%(creatordate)`；`git branch --format='%(objectname)'`、`git tag -l --format='%(refname)'`、`git tag -l` 均 allow。
+
+**执行型 atom 清单（实测，git 2.50.1）**
+
+| atom | refs/heads（签名 commit） | refs/tags（未签名 tag 对象 / peeled 到签名 commit） |
+|---|---|---|
+| `%(signature)` | **执行 gpg 1 次** | tag 对象本身 **0 次**（`%(signature)` 只返回文本；`git tag -v` 才执行） |
+| `%(signature:grade)` / `:key` / `:signer` | **执行** | tag 对象本身 **0 次** |
+| `%(*signature)` / `%(*signature:grade)` / `%(*signature:key)` | 0 次（head 无需 peel） | **执行**（peeled 到签名 commit，4 个 tag → 4 次） |
+| `%(if)%(signature)%(then)…` | **执行** | — |
+| `%(contents)` / `%(contents:signature)` / `%(*contents:signature)` | 0 | 0 |
+| `%(objectname)` / `%(refname)` / `%(body)` / `%(taggername)` | 0 | 0 |
+
+**已知过度拦截（可接受）**：扫描整段参数，因此 `--sort='%(signature)'` 也会 ask（实测 sort 不执行 gpg，0 次）；`%(SIGNATURE)`（大写，git 判为无效 atom，0 次）也会 ask；`git tag -m '含有 %(signature)'` 这类写命令本来就会 ask。`%( signature )`（atom 内空格）实测无效且仍 allow。
+
+实现：`gitSignatureAtomUsesGpg(args)` 对 `for-each-ref`/`branch`/`tag` 做大小写不敏感扫描（`%(signature` 或 `%(*signature`），在 `gitRule` 的命令分派前拦截；`--format=`、`--format <val>`、引号整包、`--sort=` 一律覆盖。
+
+### 26.2 H5 `core.hooksPath` 在 `git diff` 上可达
+
+复现：`core.hooksPath=<hookdir>`，hook 为 `post-index-change` 写 marker；索引 stat 过期（`sleep 1; touch a.txt` 或 `utimes` 到未来）后执行。**注意**：实测只有 mtime 变化（内容不变）才会触发 index 回写；只改内容时 git 不重写 index，不能用于复现。
+
+| 命令 | 真实 hook | 修复前 | 修复后 |
+|---|---|---|---|
+| `git diff` | **1** | allow `git:diff` | ask `git-repo-config-exec` |
+| `git diff --stat` / `--name-only` / `--quiet` / `--check` | **1** | allow | ask |
+| `git diff HEAD` / `--exit-code` / `--raw` / `--numstat` / `-- a.txt` | **1** | allow | ask |
+| `git diff --cached` / `--staged` / `--cached --stat` | 0 | allow | **allow**（不误伤） |
+| `git diff --no-index a.txt b.txt` | 0 | allow | **allow**（不误伤） |
+
+`git diff HEAD~1` 在只有 1 个提交的 fixture 中 hook=0（rev 不存在、命令立即失败）；该形态在有历史的仓库会触发，静态无法判断 rev 是否存在，因此 ask（仅对必然失败的输入多弹一次）。
+
+实现：`probeGitConfigExecutes(result, sub, args)` 新增可选 `args`；`core.hooksPath` 在 `status` 与「工作区 vs 索引」的 `diff` 下 ask；`gitDiffRefreshesIndex(args)` 排除 `--cached`/`--staged`/`--no-index`。husky `.husky/_` 正属该布局，真实用户会命中。
+
+### 26.3 H6 外部/旧式 gitdir 下的嵌套子模块
+
+复现（两套真实仓库，`diff.submodule=diff`）：
+- external：`main/sub1/.git` 是 gitdir 文件 → `ext1`（在 `.git/modules` 之外），`ext1/modules/sub2/config` 写 `diff.external`；
+- old-style：`main/sub1/.git` 是目录，`main/sub1/.git/modules/sub2/config` 写 `diff.external`。
+
+| 布局 | 真实 `git diff` | 修复前 | 修复后 |
+|---|---|---|---|
+| external | `diff.external` marker **1 次** | allow `git:diff`（只读 `ext1/config`，漏 `ext1/modules/sub2`） | ask `git-repo-config-exec` |
+| old-style | **1 次** | allow（只读 `sub1/.git/config`，漏 `sub1/.git/modules/sub2`） | ask |
+
+实现：`probeModuleGitDir` 读完 `<gitdir>/config` 后，`probeGitDirAndNestedModules` 对 `<gitdir>/modules` 复用同一 `walk`（同一 depth=8、同一符号链接/IO 失败 fail-closed、同一模块计数与预算）。若该目录已在顶层 `modules` 树内则跳过（顶层 walk 已覆盖，避免重复枚举）。单测覆盖三种布局：标准 `.git/modules`（既有）、gitdir 文件外部、旧式目录；后两种均断言 marker 真实执行 + ask + 移除 `diff.external` 后回到 allow。
+
+### 26.4 可用性预算（必修）
+
+实测（`probeGitSubmoduleConfigs` + `evaluateBashPolicy` 同步路径）：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| 200 个模块 | scan **1544 ms** / policy **1533 ms**，allow | scan **274 ms** / policy **266 ms**，`budget-exceeded` → ask |
+| 10 个模块 `config.worktree` 为 FIFO | 首个 FIFO 250 ms 超时后中止（约 285 ms），ask | 约 285 ms，ask（同一 `timeout` 失败） |
+| 正常仓库（<10 模块） | ~8 ms/模块 | 不变（未触上限） |
+
+选值：**模块数 32 / 总预算 300 ms**。
+- 正常项目子模块数 < 10，32 留 3 倍余量；每模块实测 ~8 ms，32 个 ≈ 250 ms，仍在 300 ms 内。
+- 单次探针上限 250 ms；预算耗尽前最多发起一次慢探针，并把它自己的超时压到「剩余预算」，因此总耗时上限 ≈ 300 ms（实测 274–300 ms）。
+- 超限行为：不返回部分结果，直接 `failure='budget-exceeded'`（fail-closed）→ `ask`，reason 写明「模块数 > 32 或扫描总耗时 > 300 ms」；诊断计数 `moduleScans` / `moduleScanBudgetExceeded` 记录，供运营观察。
+- 代价：真有 >32 个子模块且配了 `diff.submodule=diff` 的仓库会每次 ask（可用性换确定性；该配置本身极少见，且这是唯一能防止「一次获批的写把后续 diff 变成数秒阻塞」的静态上限）。
+
+### 26.5 H3 过度 ask 收敛
+
+| 配置 / 命令 | 真实 gpg | 修复前 | 修复后 |
+|---|---|---|---|
+| 仅 `gpg.program`：`git log -1` / `git show HEAD` | 0 | ask | **allow** |
+| 仅 `gpg.program`：`git rev-list -1 HEAD` | 0 | allow | allow |
+| `format.pretty=format:%GS`：`git log -1` | 1 | ask | ask |
+| `--format=%GS`：`git log -1` / `git show HEAD` | 1 | ask | ask（`git-gpg-format`） |
+| `log.showSignature=true`：`git log -1` | 1 | ask | ask |
+
+实现：删除 `probeGitConfigExecutes` 中「`gpg.*.program` 存在即 ask」分支；保留 `log.showSignature`、`format.pretty`/`pretty.*` 的 `%G`、命令行 `%G` 三条触发路径。`gpg.ssh.program` / `gpg.x509.program` 同口径。
+
+### 26.6 门禁与测试
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过，0 错误 |
+| `npx eslint src` | 通过，0 错误 |
+| `npx vite build` | 通过 |
+| 定向 `bash-readonly.test.ts` | **78 passed**（原 71 + 7 新增） |
+| 全量 `npx vitest run` | `173 failed / 3152 passed / 93 skipped (3411)` |
+| 与基线对比 | 失败数 **173 不变**；通过数 3145→3152（正好 +7 新增用例）；26 个失败文件集合一致，全部为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`） |
+
+新增用例均为真实断言（无放宽）：H4 策略 12 条 + 无害 8 条 + 执行面真实 marker；H5 策略 12 条 + 执行面真实 hook + `probeGitConfigExecutes` 形态；H6 external/old-style 各 1 条（真实 marker + 探针结果 + 移除配置后 allow）；预算 1 条（40 模块、`budget-exceeded`、耗时 <600 ms、诊断计数）。
+
+### 26.7 结论
+
+- H4/H5/H6 三个「配置/布局驱动、零审批、真实执行」洞已关闭，均有修复前 allow+执行、修复后 ask 证据。
+- 可用性风险已加硬上限（32/300 ms），200 模块从 1.5 s 降到 274 ms，且超限 fail-closed。
+- H3 过度 ask 已收敛：`gpg.program` 单独存在不再弹窗；真实执行的三条路径仍拦截。
+- D1 / B 未实现（等待用户决策）。

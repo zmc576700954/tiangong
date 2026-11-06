@@ -28,7 +28,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { buildSafeEnv } from '../../../shared/env'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
@@ -488,6 +488,8 @@ export type GitConfigProbeFailure =
   | 'empty-output'
   | 'invalid-nul-record'
   | 'io-error'
+  /** 子模块扫描超出模块数上限或总时间预算（fail-closed，理由见 §4.6）。 */
+  | 'budget-exceeded'
 
 export interface GitConfigProbeEntry {
   /** `git config --list` 的扁平键名（小写），如 `diff.evil.textconv`。 */
@@ -736,6 +738,24 @@ const GIT_SUBMODULE_DIFF_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'whatchan
 
 const GIT_MODULE_SCAN_MAX_DEPTH = 8
 
+/**
+ * 子模块扫描预算（模块数 + 总时间）。
+ *
+ * 选值理由：判定发生在同步的 PreToolUse 路径上，一次获批的写可以创建大量模块目录或
+ * FIFO 配置，把后续每次 `git diff` 变成数秒阻塞（实测 200 模块 1.5 s）。正常仓库
+ * 子模块数 < 10，32 留 3 倍余量；每模块实测 ~8 ms，32 个 ≈ 250 ms，仍在 300 ms 预算内。
+ * 单次 `git config --file` 探针上限 250 ms，预算内最坏只发起一次慢探针，因此
+ * 总耗时上限 ≈ 300 ms（预算耗尽后不再发起新探针）。
+ */
+const GIT_MODULE_SCAN_MAX_MODULES = 32
+const GIT_MODULE_SCAN_BUDGET_MS = 300
+
+/** `child` 是否在 `parent` 目录树内（用于跳过已被主 modules walk 覆盖的嵌套目录）。 */
+function isInsideDirectory(parent: string, child: string): boolean {
+  const rel = relative(resolve(parent), resolve(child))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
 /** 子模块 gitdir 内不可能是「模块命名空间」的目录，避免把对象库当配置扫。 */
 const GIT_MODULE_SKIP_DIRS = new Set([
   'objects', 'refs', 'logs', 'hooks', 'info', 'branches', 'worktrees', 'index', 'pack',
@@ -833,10 +853,13 @@ export function probeGitSubmoduleConfigs(
   cwd: string,
   timeoutMs: number = GIT_CONFIG_PROBE_TIMEOUT_MS,
 ): GitSubmoduleConfigProbeResult {
-  const failed = (failure: GitConfigProbeFailure): GitSubmoduleConfigProbeResult => ({
-    results: [],
-    failure,
-  })
+  gitConfigProbeDiagnosticsState.moduleScans += 1
+  const failed = (failure: GitConfigProbeFailure): GitSubmoduleConfigProbeResult => {
+    if (failure === 'budget-exceeded') {
+      gitConfigProbeDiagnosticsState.moduleScanBudgetExceeded += 1
+    }
+    return { results: [], failure }
+  }
 
   const gitPath = resolveGitExecutable()
   if (!gitPath) return failed('missing-git')
@@ -868,16 +891,28 @@ export function probeGitSubmoduleConfigs(
 
   const results: GitConfigProbeResult[] = []
   const seen = new Set<string>()
+  const scanStartedAt = Date.now()
+  let probedModules = 0
+  const remainingBudgetMs = (): number => GIT_MODULE_SCAN_BUDGET_MS - (Date.now() - scanStartedAt)
+
   const probeGitDirOnce = (gitDirPath: string): GitConfigProbeFailure | null => {
     const key = resolve(gitDirPath)
     if (seen.has(key)) return null
+    // 上限先于探针判定：超限直接 fail-closed，不再发起新的同步子进程。
+    if (probedModules >= GIT_MODULE_SCAN_MAX_MODULES) return 'budget-exceeded'
+    const remaining = remainingBudgetMs()
+    if (remaining <= 0) return 'budget-exceeded'
     seen.add(key)
-    return probeModuleGitDir(gitDirPath, timeoutMs, results)
+    probedModules += 1
+    // 把剩余预算作为本次探针超时，保证总耗时不超过总预算。
+    const effectiveTimeout = Math.max(1, Math.min(timeoutMs, remaining))
+    return probeModuleGitDir(gitDirPath, effectiveTimeout, results)
   }
 
   const modulesDir = join(gitDir, 'modules')
   const walk = (dir: string, depth: number): GitConfigProbeFailure | null => {
     if (depth > GIT_MODULE_SCAN_MAX_DEPTH) return 'io-error'
+    if (remainingBudgetMs() <= 0) return 'budget-exceeded'
     let info: ReturnType<typeof lstatSync>
     try {
       info = lstatSync(dir)
@@ -907,6 +942,24 @@ export function probeGitSubmoduleConfigs(
     return isModuleRoot ? probeGitDirOnce(dir) : null
   }
 
+  /**
+   * 读一个 gitdir 的配置，并继续递归它的 `<gitdir>/modules`。
+   *
+   * 这是 H6 的修复点：一级子模块 gitdir 可能来自 gitdir 文件（外部目录）或旧式
+   * `sub/.git` 目录，不在顶层 `<git-dir>/modules` 里；只读一层 config 会漏掉其
+   * 嵌套子模块（`<gitdir>/modules/sub2/config`）的 diff.external。
+   * 复用同一个 walk（同一 depth 预算、同一 fail-closed 口径）。
+   * 若嵌套目录已在顶层 modules 树内，则 walk 已覆盖，跳过以免重复枚举。
+   */
+  const probeGitDirAndNestedModules = (gitDirPath: string): GitConfigProbeFailure | null => {
+    const failure = probeGitDirOnce(gitDirPath)
+    if (failure) return failure
+    const nestedModules = join(gitDirPath, 'modules')
+    if (!existsSync(nestedModules)) return null
+    if (isInsideDirectory(modulesDir, nestedModules)) return null
+    return walk(nestedModules, 0)
+  }
+
   if (existsSync(modulesDir)) {
     const failure = walk(modulesDir, 0)
     if (failure) return failed(failure)
@@ -927,7 +980,7 @@ export function probeGitSubmoduleConfigs(
     }
     if (info.isSymbolicLink()) return failed('io-error')
     if (info.isDirectory()) {
-      const failure = probeGitDirOnce(dotGit)
+      const failure = probeGitDirAndNestedModules(dotGit)
       if (failure) return failed(failure)
       continue
     }
@@ -941,7 +994,7 @@ export function probeGitSubmoduleConfigs(
     const match = /^gitdir:\s*(.+?)\s*$/m.exec(content)
     if (!match) return failed('io-error')
     const moduleGitDir = resolve(worktreeDir, match[1])
-    const failure = probeGitDirOnce(moduleGitDir)
+    const failure = probeGitDirAndNestedModules(moduleGitDir)
     if (failure) return failed(failure)
   }
 
@@ -981,9 +1034,47 @@ export function gitPrettyUsesGpg(args: readonly string[]): boolean {
 }
 
 /**
- * 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。
+ * `git diff` 是否会刷新并回写 index（从而触发 `post-index-change` 钩子）。
+ * 实测 `--cached` / `--staged` / `--no-index` 不刷新索引；其余形态（含 `--stat`、
+ * `--name-only`、`--quiet`、`--check`、`HEAD`、`--exit-code`、pathspec）在 stat
+ * 过期时都会回写 `.git/index` 并触发钩子。
  */
-export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string): boolean {
+function gitDiffRefreshesIndex(args: readonly string[]): boolean {
+  return !args.some((arg) => arg === '--cached' || arg === '--staged' || arg === '--no-index')
+}
+
+/**
+ * 支持 ref-filter atom 且 `%(signature)` / `%(*signature)` 会调用 gpg 的子命令。
+ * `for-each-ref` 属只读白名单；`branch` / `tag` 走各自的列举规则。
+ */
+const GIT_SIGNATURE_ATOM_SUBCOMMANDS = new Set(['for-each-ref', 'branch', 'tag'])
+
+/**
+ * 参数里是否出现签名 atom：`%(signature)`、`%(signature:grade)`、`%(signature:key)`、
+ * `%(*signature)`、`%(*signature:grade)`，以及嵌在 `%(if)%(signature)%(then)` 里的形态。
+ *
+ * 实测（git 2.50.1）：`%(signature)` 在有签名提交/签名 tag 时调用 `gpg.program`；
+ * `%(*signature)` 在 tag 被 peel 到签名提交时调用；`%(contents)` / `%(body)` /
+ * `%(contents:signature)` / `%(objectname)` 等不执行。atom 名大小写敏感（`%(SIGNATURE)`
+ * 无效），这里按小写扫描，宁可对无效 atom 多弹一次，也不漏未来可能的大小写变体。
+ * 扫描整段参数同时覆盖 `--format=<val>`、`--format <val>` 与 `--sort=<atom>`。
+ */
+export function gitSignatureAtomUsesGpg(args: readonly string[]): boolean {
+  return args.some((arg) => {
+    const normalized = arg.toLowerCase()
+    return normalized.includes('%(signature') || normalized.includes('%(*signature')
+  })
+}
+
+/**
+ * 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。
+ * `args` 是子命令参数（不含子命令名），用于区分同名子命令的不同形态（如 `git diff --cached`）。
+ */
+export function probeGitConfigExecutes(
+  result: GitConfigProbeResult,
+  sub: string,
+  args: readonly string[] = [],
+): boolean {
   // 探针失败 = 不可判定：S2 起必须 ask，不能把「没看到危险配置」当成安全。
   if (result.failure) return true
   for (const entry of result.entries) {
@@ -1014,10 +1105,12 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
     ) {
       return true
     }
-    // core.hooksPath：status 刷新并回写 index 时会触发 post-index-change 钩子
-    // （实测 marker 生成）；diff/blame/ls-files/log 实测不触发，不额外判。
-    if (entry.key === 'core.hookspath' && sub === 'status') {
-      return true
+    // core.hooksPath：status 与「工作区 vs 索引」形态的 diff 会刷新并回写 index，
+    // 触发 post-index-change 钩子（实测 marker 生成）。blame/ls-files/log/show/fsck
+    // 实测不触发；diff --cached/--staged/--no-index 也不刷新索引，不额外判。
+    if (entry.key === 'core.hookspath') {
+      if (sub === 'status') return true
+      if (sub === 'diff' && gitDiffRefreshesIndex(args)) return true
     }
     // core.alternateRefsCommand：rev-list --alternate-refs 会用 shell 执行该命令。
     // 只对 rev-list 判定；其它只读子命令不会消费它。
@@ -1039,16 +1132,12 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
     if (entry.key === 'log.showsignature' && gitConfigBoolean(value) && GIT_GPG_CONFIG_SUBCOMMANDS.has(sub)) {
       return true
     }
-    // gpg.program / gpg.ssh.program / gpg.x509.program：`%G` 占位符或签名展示路径
-    // 会调用它们。对象是否带签名无法静态判断，配置存在即 ask（宁多弹一次）。
-    if (
-      GIT_GPG_CONFIG_SUBCOMMANDS.has(sub) &&
-      (entry.key === 'gpg.program' ||
-        entry.key === 'gpg.ssh.program' ||
-        entry.key === 'gpg.x509.program')
-    ) {
-      return true
-    }
+    // gpg.program / gpg.ssh.program / gpg.x509.program 单独存在不再 ask：
+    // 实测无签名历史且未请求签名展示时 `git log/show` 不会调用它们，无条件 ask
+    // 只对「装了 GPG 但不看签名」的用户造成每命令一次弹窗（§25.1 H3-无签名对照 2）。
+    // 真正会调用 gpg 的三条路径已分别覆盖：`log.showSignature=true`（上一分支）、
+    // `format.pretty`/`pretty.*` 含 `%G`（下一分支）、命令行 `--format`/`--pretty`
+    // 含 `%G`（参数面 `gitPrettyUsesGpg`）。
     // format.pretty / pretty.<name> 含 `%G` 时同样会走 gpg。
     if (
       GIT_GPG_CONFIG_SUBCOMMANDS.has(sub) &&
@@ -1070,12 +1159,15 @@ const GIT_CONFIG_PROBE_FAILURES: readonly GitConfigProbeFailure[] = [
   'empty-output',
   'invalid-nul-record',
   'io-error',
+  'budget-exceeded',
 ]
 
 interface GitConfigProbeDiagnosticsState {
   samples: number
   failures: Record<GitConfigProbeFailure, number>
   latencies: number[]
+  moduleScans: number
+  moduleScanBudgetExceeded: number
 }
 
 const gitConfigProbeDiagnosticsState: GitConfigProbeDiagnosticsState = {
@@ -1084,6 +1176,8 @@ const gitConfigProbeDiagnosticsState: GitConfigProbeDiagnosticsState = {
     GIT_CONFIG_PROBE_FAILURES.map((failure) => [failure, 0]),
   ) as Record<GitConfigProbeFailure, number>,
   latencies: [],
+  moduleScans: 0,
+  moduleScanBudgetExceeded: 0,
 }
 
 const GIT_CONFIG_PROBE_LATENCY_WINDOW = 500
@@ -1106,6 +1200,10 @@ export interface GitConfigProbeDiagnostics {
   failures: Record<GitConfigProbeFailure, number>
   p95LatencyMs: number
   maxLatencyMs: number
+  /** 子模块配置扫描次数（diff.submodule=diff 时才会发生）。 */
+  moduleScans: number
+  /** 其中因模块数上限/总预算触发 fail-closed 的次数。 */
+  moduleScanBudgetExceeded: number
 }
 
 /** 探针观测快照：失败分类、延迟分布（只读）。 */
@@ -1117,6 +1215,8 @@ export function getGitConfigProbeDiagnostics(): GitConfigProbeDiagnostics {
     failures: { ...gitConfigProbeDiagnosticsState.failures },
     p95LatencyMs: index < 0 ? 0 : sorted[index],
     maxLatencyMs: sorted.length === 0 ? 0 : sorted[sorted.length - 1],
+    moduleScans: gitConfigProbeDiagnosticsState.moduleScans,
+    moduleScanBudgetExceeded: gitConfigProbeDiagnosticsState.moduleScanBudgetExceeded,
   }
 }
 
@@ -1127,6 +1227,8 @@ export function resetGitConfigProbeDiagnostics(): void {
   for (const failure of GIT_CONFIG_PROBE_FAILURES) {
     gitConfigProbeDiagnosticsState.failures[failure] = 0
   }
+  gitConfigProbeDiagnosticsState.moduleScans = 0
+  gitConfigProbeDiagnosticsState.moduleScanBudgetExceeded = 0
 }
 
 /** 下载内容直接交给解释器执行：最高风险（只认命令位，避免把引号里的示例文本当成真实执行）。 */
@@ -1260,6 +1362,16 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
   if (sub === 'grep') {
     return askRule('git-grep', 'git grep 支持 -O/--open-files-in-pager 执行外部 pager，不纳入只读白名单', CRITICAL)
   }
+  // H4：`%(signature)` / `%(*signature)` 家族会调用 gpg.program 验证签名。
+  // 这三条命令此前整体放行（且不在配置探针集合里），参数扫描是唯一覆盖点；
+  // 覆盖 `--format=<val>`、`--format <val>`、`--sort=<atom>` 与引号内形态。
+  if (GIT_SIGNATURE_ATOM_SUBCOMMANDS.has(sub) && gitSignatureAtomUsesGpg(args.slice(1))) {
+    return askRule(
+      'git-signature-atom',
+      '格式串含 %(signature)/%(*signature) 会调用 gpg.program 验证签名，需人工审批',
+      HIGH,
+    )
+  }
   if (GIT_READ_SUBCOMMANDS.has(sub)) {
     const subArgs = args.slice(1)
     // `--format/--pretty` 含 %G 时，git 会调用 gpg 验证签名（gpg 程序还可能是默认的
@@ -1291,10 +1403,10 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
           HIGH,
         )
       }
-      if (probeGitConfigExecutes(probe, sub)) {
+      if (probeGitConfigExecutes(probe, sub, subArgs)) {
         return askRule(
           'git-repo-config-exec',
-          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / gpg.program / showSignature，git 会执行外部程序',
+          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / log.showSignature / %G 格式，git 会执行外部程序',
           HIGH,
         )
       }
@@ -1303,13 +1415,17 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
       if (GIT_SUBMODULE_DIFF_SUBCOMMANDS.has(sub) && gitConfigRequestsSubmoduleDiff(probe)) {
         const modules = probeGitSubmoduleConfigs(ctx.cwd)
         if (modules.failure) {
+          const detail =
+            modules.failure === 'budget-exceeded'
+              ? 'budget-exceeded：模块数 > 32 或扫描总耗时 > 300 ms'
+              : modules.failure
           return askRule(
             'git-repo-config-exec',
-            `diff.submodule=diff 且子模块配置不可判定（${modules.failure}），按 fail-closed ask`,
+            `diff.submodule=diff 且子模块配置不可判定（${detail}），按 fail-closed ask`,
             HIGH,
           )
         }
-        if (modules.results.some((moduleProbe) => probeGitConfigExecutes(moduleProbe, sub))) {
+        if (modules.results.some((moduleProbe) => probeGitConfigExecutes(moduleProbe, sub, subArgs))) {
           return askRule(
             'git-repo-config-exec',
             'diff.submodule=diff 且子模块配置含 diff.external / textconv / filter / fsmonitor 等执行型键，git 会执行外部程序',
