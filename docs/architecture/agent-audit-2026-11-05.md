@@ -3299,3 +3299,56 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
 - `tsc --noEmit` / `eslint src` / `vite build` 全过（见提交前记录）。
 - 全量失败集合与基线一致（26 个 `better-sqlite3` ABI 文件）。
 - 未 push、未 amend；未开始 S2。
+
+## 十九、迁移 S2：探针切门控（起点 `d3df13d`）
+
+### 19.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `d3df13dda6313c29ad379b2c0e1bd3c70e18287c`（S1 提交，未 amend、未 push） |
+| 工作树 | 仅 `bash-readonly.ts`、其测试、本文件与 `agent-architecture.md` |
+| 定向基线 | `bash-readonly` 51 passed |
+
+### 19.1 实现
+
+- **探针成为权威**：判定改为 `probeGitConfigExecutes(probe, sub) || manualExecutes`。手写解析器降级为「只能把结果变得更严」：探针 allow / 手写 ask → 仍 ask；探针 ask / 手写 allow → ask（不得由手写提升为 allow）。
+- **探针失败一律 fail-closed**：`missing-git` / `timeout` / `non-zero-exit` / `show-scope-unsupported` / `empty-output` / `invalid-nul-record` / `io-error` 全部返回 `ask / git-repo-config-exec`，reason 带失败分类，不 fail-open。
+- **运行时开关**：`BIZGRAPH_GIT_CONFIG_PROBE=off` 时，`status/diff/log/show/blame/whatchanged` 五个配置执行面子命令一律 `ask / git-repo-config-exec`（「手写 + 一律 ask」，不退回「手写 allow」）；非 git 白名单命令不受影响。
+- **影子观测保留**：S1 的差异计数 / 失败分类 / p95 继续记录，供 §17.3 的 7 天运营观察；S2 起它只作观测，不再影响判定。
+
+### 19.2 门控后的回归判定
+
+| 用例组 | 实测 |
+|---|---|
+| B-14-1 `include.path = evil\\cfg` / `evil\"cfg`（status、diff） | 全 `ask / git-repo-config-exec` |
+| 17.2 的五类转义 + 第 7 层 include 叠加 | 全 `ask / git-repo-config-exec` |
+| 七类真实配置（`excludesFile` / `safe.directory` / `remote.url` / `sshCommand` / `hooksPath` / `alias` 内 `\"` / `[diff "go"] xfuncname`） | 全 `allow` |
+| 干净仓库的 `status/diff/log/show/blame` | 全 `allow` |
+| 标准 LFS（全局 `filter.lfs` 三项标准写法） | 全 `allow` |
+| 本仓库真实 `.git/config` 的五命令 | 全 `allow` |
+| 注入故障：git 缺失 / 超时 / exit 128 / 空输出 / 非法 NUL / `--show-scope` 不支持 | 全 `ask / git-repo-config-exec` |
+| `BIZGRAPH_GIT_CONFIG_PROBE=off` 的五命令 | 全 `ask / git-repo-config-exec`（`ls` 仍 `allow`） |
+
+**已知语义变化**：`[include]\n\tpath`（裸 `include.path`）从 S1 的 `allow` 变为 `ask`。原因是 Git 自己对 missing value 报 `error: missing value for 'include.path'` / `fatal: bad config line`，`git config --list` 退出码 128；S2 按「非零退出 → fail-closed ask」处理。Git 在该配置下执行 `status` 同样 fatal，因此不是可利用的 allow+exec。
+
+### 19.3 「修复前会失败」证据
+
+临时把 `gitRule` 还原为 S1 口径（手写权威、探针失败 fail-open），运行 `-t S2`：
+
+| 用例 | 结果 |
+|---|---|
+| `S2：探针权威，手写漏读的 GIT_CONFIG_COUNT 注入项由探针判 ask` | `expected {decision:'ask'} / received {decision:'allow'}` |
+| `S2：探针失败一律 fail-closed ask` | 首个「git 缺失」用例即 `expected {decision:'ask'} / received {decision:'allow'}` |
+
+即 S2 之前注入故障确实会 fail-open 成 `allow`。恢复 S2 实现后同一批用例全绿（19.4）。
+
+### 19.4 校验与提交
+
+- 定向 `bash-readonly` **53 passed**（S1 的 51 条 + 2 条 S2 用例；S1 影子用例改写为 S2 语义）。
+- 探针失败分类用例改为「非超时用例给 5000 ms、超时用例给 100 ms」，避免全量并行调度把快速退出误判为 `timeout`（首轮全量曾出现一次该抖动）。
+- `tsc --noEmit` / `eslint src` / `vite build` 全过。
+- 全量：`27 failed 文件 / 252 passed`，`174 failed / 3126 passed / 93 skipped (3393)`。
+  - 其中 26 个文件 / 173 条为既有 `better-sqlite3` ABI（与基线一致）。
+  - **新增 1 个非 ABI 失败**：`src/main/__tests__/claude-code.test.ts` 的 hook 用例使用 `workingDirectory: '/project'`（本机不存在）。S2 探针在该 cwd spawn 失败（ENOENT）按 fail-closed 判 `ask`，用例仍断言 `allow`。这是测试 fixture 使用不存在目录导致，不是 allow+exec 回归；本轮范围只允许改 `bash-readonly.ts` 及其测试，故未改该文件。**待办：把该 fixture 的 workingDirectory 换成真实临时仓库**。
+- 未 push、未 amend；S3 未开始。

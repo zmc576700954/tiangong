@@ -823,6 +823,16 @@ const GIT_CONFIG_PROBE_TIMEOUT_MS = 250
 const GIT_CONFIG_PROBE_MAX_BUFFER = 1024 * 1024
 
 /**
+ * 运行时止血开关：设为 `off` 时停用探针，退回「手写 + 一律 ask」。
+ * 注意退不回到「手写 allow」——手写解析器自身有已知漏判，不能作为放行依据。
+ */
+const GIT_CONFIG_PROBE_DISABLE_ENV = 'BIZGRAPH_GIT_CONFIG_PROBE'
+
+function gitConfigProbeDisabled(): boolean {
+  return (process.env[GIT_CONFIG_PROBE_DISABLE_ENV] ?? '').trim().toLowerCase() === 'off'
+}
+
+/**
  * 用与应用同一执行环境的 PATH 解析 git 绝对路径（不写死 `/usr/bin/git`）。
  * Bash 工具里的 `git` 也是按 PATH 查找的，因此这里选到的就是实际会被调用的那一个。
  */
@@ -1212,14 +1222,26 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
     // 让 status 执行 fsmonitor/filter，让 log 调用 gpg；一次被批准的 Write 改写
     // .git/config 即可换取零审批执行，因此读配置后再决定。
     if (GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub)) {
+      if (gitConfigProbeDisabled()) {
+        return askRule(
+          'git-repo-config-exec',
+          'git 配置探针被运行时开关（BIZGRAPH_GIT_CONFIG_PROBE=off）关闭，回退口径为一律 ask',
+          HIGH,
+        )
+      }
       const manualExecutes = gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig, sub)
-      // S1 影子对照：探针只记录差异，不改用户可见判定（手写结果继续生效）。
-      recordGitConfigShadow(
-        manualExecutes,
-        probeGitConfig(ctx.cwd, ctx.includeGlobalGitConfig),
-        sub,
-      )
-      if (manualExecutes) {
+      const probe = probeGitConfig(ctx.cwd, ctx.includeGlobalGitConfig)
+      // 影子观测继续保留（S3 的 7 天观察项），但 S2 起探针是权威。
+      recordGitConfigShadow(manualExecutes, probe, sub)
+      if (probe.failure) {
+        return askRule(
+          'git-repo-config-exec',
+          `git 配置探针不可判定（${probe.failure}），按 fail-closed ask`,
+          HIGH,
+        )
+      }
+      // 探针权威；手写只能把结果变得更严（ask 优先），不得把探针的 ask 提升为 allow。
+      if (probeGitConfigExecutes(probe, sub) || manualExecutes) {
         return askRule(
           'git-repo-config-exec',
           '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',

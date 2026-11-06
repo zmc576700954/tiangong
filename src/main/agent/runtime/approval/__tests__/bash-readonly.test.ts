@@ -52,6 +52,15 @@ function withIsolatedGlobalConfig(configText: string, run: () => void): void {
   }
 }
 
+/** Git 认可的仓库需要 HEAD + objects + refs/heads；只有 `.git/config` 时 Git 不读取本地配置。 */
+function makeGitDir(repo: string): string {
+  const gitDir = join(repo, '.git')
+  mkdirSync(join(gitDir, 'objects'), { recursive: true })
+  mkdirSync(join(gitDir, 'refs', 'heads'), { recursive: true })
+  writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
+  return gitDir
+}
+
 describe('evaluateBashPolicy (Bash 两档)', () => {
   it('白名单只读命令 → allow（免弹执行，风险低）', () => {
     expect(decide('ls -la')).toMatchObject({ decision: 'allow', rule: 'ls', risk: 'low' })
@@ -506,7 +515,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('阻断：仓库/用户 git 配置含 textconv/external/fsmonitor → 只读 git 子命令 ask', () => {
     const root = mkdtempSync(join(tmpdir(), 'bizgraph-gitcfg-'))
-    mkdirSync(join(root, '.git'), { recursive: true })
+    makeGitDir(root)
     const options = { cwd: root, includeGlobalGitConfig: false }
 
     writeFileSync(join(root, '.git', 'config'), '[diff "evil"]\n\ttextconv = /bin/rm\n')
@@ -537,7 +546,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('阻断 P1-1：diff.<driver>.command 与 diff.external / textconv 一样会执行外部程序', () => {
     const root = mkdtempSync(join(tmpdir(), 'bizgraph-diff-command-'))
-    mkdirSync(join(root, '.git'), { recursive: true })
+    makeGitDir(root)
     writeFileSync(join(root, '.git', 'config'), '[diff "evil"]\n\tcommand = /bin/echo pwned\n')
     expect(decide('git diff HEAD', { cwd: root, includeGlobalGitConfig: false })).toMatchObject({
       decision: 'ask',
@@ -547,7 +556,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('阻断 P1-2：旧式子节 [diff.evil]（git config --get 可读）同样命中', () => {
     const root = mkdtempSync(join(tmpdir(), 'bizgraph-diff-legacy-'))
-    mkdirSync(join(root, '.git'), { recursive: true })
+    makeGitDir(root)
     writeFileSync(join(root, '.git', 'config'), '[diff.evil]\n\ttextconv = /bin/echo\n')
     expect(decide('git diff HEAD', { cwd: root, includeGlobalGitConfig: false })).toMatchObject({
       decision: 'ask',
@@ -557,7 +566,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('阻断：仓库本地 filter.clean/smudge 与 log.showSignature 也是命令执行面', () => {
     const root = mkdtempSync(join(tmpdir(), 'bizgraph-filter-log-'))
-    mkdirSync(join(root, '.git'), { recursive: true })
+    makeGitDir(root)
     const options = { cwd: root, includeGlobalGitConfig: false }
 
     writeFileSync(join(root, '.git', 'config'), '[filter "evil"]\n\tclean = /bin/rm\n')
@@ -586,8 +595,11 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
   it('阻断 P1-3：策略按会话工作目录读取仓库配置，而不是主进程 cwd', () => {
     const sessionRoot = mkdtempSync(join(tmpdir(), 'bizgraph-session-cwd-'))
     const outside = mkdtempSync(join(tmpdir(), 'bizgraph-outside-cwd-'))
-    mkdirSync(join(sessionRoot, '.git'), { recursive: true })
+    makeGitDir(sessionRoot)
     writeFileSync(join(sessionRoot, '.git', 'config'), '[diff]\n\texternal = /bin/rm\n')
+    // 外部目录也必须是 Git 认可的干净仓库：探针在非仓库目录读到空输出时按 fail-closed ask。
+    makeGitDir(outside)
+    writeFileSync(join(outside, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
 
     const args = { command: 'git diff HEAD' }
     // 会话目录之外（干净目录）仍 allow
@@ -634,7 +646,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('全局 filter 为 git-lfs 标准写法 → allow（不给 LFS 用户加摩擦）', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-global-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
     // LFS 仓库通过 .gitattributes 指向 filter=lfs；这里断言策略仍放行。
     writeFileSync(join(repo, '.gitattributes'), '* filter=lfs diff=lfs merge=lfs -text\n')
@@ -656,7 +668,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('全局 filter 的 git-lfs 路径 / Windows / 引号写法也放行', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-variant-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
 
     withIsolatedGlobalConfig(
@@ -672,7 +684,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('阻断：仓库 .gitattributes 指向全局自定义 filter → ask', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-global-filter-gap-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
     // 打开不可信仓库时，仓库内就能提供这两份文件；全局 filter 由用户环境已存在。
     writeFileSync(join(repo, '.gitattributes'), '* filter=mine\n')
@@ -693,7 +705,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('core.fsmonitor 只在 status/diff/blame 判定，log/show 不多弹', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-fsmonitor-scope-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\tfsmonitor = /tmp/hook\n')
     const options = { cwd: repo, includeGlobalGitConfig: false }
 
@@ -722,7 +734,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('config.worktree 仅在 extensions.worktreeConfig 开启时读取', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-worktree-config-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
     writeFileSync(join(repo, '.git', 'config.worktree'), '[core]\n\tfsmonitor = /tmp/hook\n')
     const options = { cwd: repo, includeGlobalGitConfig: false }
@@ -745,7 +757,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('extensions.worktreeConfig 裸键等价 true，config.worktree 仍被读取', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-worktree-bare-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(
       join(repo, '.git', 'config'),
       '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig\n',
@@ -772,7 +784,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('log.showSignature 裸键等价 true → git log ask（gpg.program 可执行）', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-showsignature-bare-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     writeFileSync(
       join(repo, '.git', 'config'),
       '[log]\n\tshowSignature\n[gpg]\n\tprogram = /tmp/r12-b2/marker.sh\n',
@@ -796,7 +808,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
   it('裸布尔键归一化覆盖 core/diff/filter，解析细节对齐 git', () => {
     const run = (config: string, command: string, files: Record<string, string> = {}) => {
       const repo = mkdtempSync(join(tmpdir(), 'bizgraph-bare-key-'))
-      mkdirSync(join(repo, '.git'), { recursive: true })
+      makeGitDir(repo)
       writeFileSync(join(repo, '.git', 'config'), config)
       for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, '.git', name), text)
       return decide(command, { cwd: repo, includeGlobalGitConfig: false })
@@ -840,10 +852,11 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       decision: 'allow',
       rule: 'git:status',
     })
-    // 裸 `include.path` 在 git 里是 missing value，不是合法 include，不能当路径
+    // 裸 `include.path` 在 Git 里是 missing value：`git config --list` 直接 fatal（exit 128）。
+    // S2 起探针非零退出按 fail-closed ask；S1 之前手写把它当「未设置」→ allow。
     expect(run('[include]\n\tpath\n', 'git status')).toMatchObject({
-      decision: 'allow',
-      rule: 'git:status',
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
     })
     // 合法 include 后仍按裸键归一化探测
     expect(
@@ -860,8 +873,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
   it('include 深度：1–10 层危险配置 ask，第 11 层按不可判定 ask（Git 自身 fatal）', () => {
     const buildChain = (levels: number, leaf: string) => {
       const repo = mkdtempSync(join(tmpdir(), 'bizgraph-depth-'))
-      const gitDir = join(repo, '.git')
-      mkdirSync(gitDir, { recursive: true })
+      const gitDir = makeGitDir(repo)
       writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
       for (let i = 1; i < levels; i += 1) {
         writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
@@ -884,8 +896,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
   it('第 7 层 include 的仓库本地 filter / diff.textconv 仍 ask', () => {
     const buildChain = (leaf: string) => {
       const repo = mkdtempSync(join(tmpdir(), 'bizgraph-depth7-'))
-      const gitDir = join(repo, '.git')
-      mkdirSync(gitDir, { recursive: true })
+      const gitDir = makeGitDir(repo)
       writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
       for (let i = 1; i < 7; i += 1) {
         writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
@@ -910,7 +921,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('不可解析行 fail-closed：存在即 ask，移除后回到 allow', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-invalid-config-'))
-    mkdirSync(join(repo, '.git'), { recursive: true })
+    makeGitDir(repo)
     const config = join(repo, '.git', 'config')
     const options = { cwd: repo, includeGlobalGitConfig: false }
 
@@ -939,8 +950,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
   it('include.path 值内含转义 → 整份配置不可解析，status/diff ask', () => {
     const build = (configLine: string, fileName: string) => {
       const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-include-'))
-      const gitDir = join(repo, '.git')
-      mkdirSync(gitDir, { recursive: true })
+      const gitDir = makeGitDir(repo)
       writeFileSync(join(gitDir, 'config'), `[include]\n\tpath = ${configLine}\n`)
       writeFileSync(join(gitDir, fileName), '[core]\n\tfsmonitor = /tmp/hook\n')
       return repo
@@ -969,8 +979,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('第 7 层 include 使用转义路径的叠加形态仍 ask', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-depth7-'))
-    const gitDir = join(repo, '.git')
-    mkdirSync(gitDir, { recursive: true })
+    const gitDir = makeGitDir(repo)
     writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
     for (let i = 1; i < 6; i += 1) {
       writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
@@ -988,8 +997,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('收敛：反斜杠 invalid 只作用于 include.path / includeIf.path，七类真实配置不误伤', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-scope-'))
-    const gitDir = join(repo, '.git')
-    mkdirSync(gitDir, { recursive: true })
+    const gitDir = makeGitDir(repo)
     const options = { cwd: repo, includeGlobalGitConfig: false }
     const commands = ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.txt']
 
@@ -1032,8 +1040,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('反向：普通/带引号无转义 include、标准 LFS、本仓库真实 .git/config 均 allow', () => {
     const plainRepo = mkdtempSync(join(tmpdir(), 'bizgraph-plain-include-'))
-    const plainGitDir = join(plainRepo, '.git')
-    mkdirSync(plainGitDir, { recursive: true })
+    const plainGitDir = makeGitDir(plainRepo)
     writeFileSync(join(plainGitDir, 'config'), '[include]\n\tpath = clean.cfg\n')
     writeFileSync(join(plainGitDir, 'clean.cfg'), '[core]\n\trepositoryformatversion = 1\n')
     expect(decide('git status --short', { cwd: plainRepo, includeGlobalGitConfig: false })).toMatchObject({
@@ -1055,7 +1062,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
     // 标准 LFS 配置仍 allow
     const lfsRepo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-escape-'))
-    mkdirSync(join(lfsRepo, '.git'), { recursive: true })
+    makeGitDir(lfsRepo)
     writeFileSync(join(lfsRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
     writeFileSync(join(lfsRepo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n')
     withIsolatedGlobalConfig(
@@ -1069,7 +1076,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
 
   it('反向：干净仓库与标准 LFS 仓库的 status/diff/log/show/blame 均 allow', () => {
     const cleanRepo = mkdtempSync(join(tmpdir(), 'bizgraph-clean-'))
-    mkdirSync(join(cleanRepo, '.git'), { recursive: true })
+    makeGitDir(cleanRepo)
     writeFileSync(join(cleanRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
     const cleanOptions = { cwd: cleanRepo, includeGlobalGitConfig: false }
     for (const command of ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.txt']) {
@@ -1077,7 +1084,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     }
 
     const lfsRepo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-reverse-'))
-    mkdirSync(join(lfsRepo, '.git'), { recursive: true })
+    makeGitDir(lfsRepo)
     writeFileSync(join(lfsRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
     writeFileSync(join(lfsRepo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n')
     withIsolatedGlobalConfig(
@@ -1156,7 +1163,7 @@ function makeGitRepo(prefix: string, configText: string): string {
   return repo
 }
 
-describe('git 配置探针（S1 影子对照）', () => {
+describe('git 配置探针（S1 影子 / S2 门控）', () => {
   it('探针读取 Git 自己解析的配置：fsmonitor 只对 status/diff/blame 生效', () => {
     const repo = makeGitRepo('bizgraph-probe-fsmonitor-', '[core]\n\tfsmonitor = /tmp/hook\n')
     const result = probeGitConfig(repo, false, 500)
@@ -1197,28 +1204,30 @@ describe('git 配置探针（S1 影子对照）', () => {
 
   it('探针失败分类：缺失 / 超时 / 非零退出 / 空输出 / 非法 NUL / --show-scope 不支持', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-probe-failure-'))
+    // 非超时用例给足超时，避免全量并行调度把「快速退出」误判成 timeout。
+    const ampleTimeout = 5000
 
     withFakeGit(null, () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('missing-git')
+      expect(probeGitConfig(repo, false, ampleTimeout).failure).toBe('missing-git')
     })
     withFakeGit('#!/bin/sh\n/bin/sleep 2\n', () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('timeout')
+      expect(probeGitConfig(repo, false, 100).failure).toBe('timeout')
     })
     withFakeGit('#!/bin/sh\nexit 2\n', () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('non-zero-exit')
+      expect(probeGitConfig(repo, false, ampleTimeout).failure).toBe('non-zero-exit')
     })
     withFakeGit('#!/bin/sh\nexit 0\n', () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('empty-output')
+      expect(probeGitConfig(repo, false, ampleTimeout).failure).toBe('empty-output')
     })
     withFakeGit("#!/bin/sh\nprintf 'only-one-field\\0'\n", () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('invalid-nul-record')
+      expect(probeGitConfig(repo, false, ampleTimeout).failure).toBe('invalid-nul-record')
     })
     withFakeGit("#!/bin/sh\necho \"error: unknown option 'show-scope'\" >&2\nexit 129\n", () => {
-      expect(probeGitConfig(repo, false, 500).failure).toBe('show-scope-unsupported')
+      expect(probeGitConfig(repo, false, ampleTimeout).failure).toBe('show-scope-unsupported')
     })
   })
 
-  it('影子对照：手写 allow / 探针 ask 只记录差异，不改用户可见判定', () => {
+  it('S2：探针权威，手写漏读的 GIT_CONFIG_COUNT 注入项由探针判 ask', () => {
     const repo = makeGitRepo('bizgraph-shadow-stricter-', '[core]\n\trepositoryformatversion = 1\n')
     const previous = {
       GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
@@ -1231,10 +1240,10 @@ describe('git 配置探针（S1 影子对照）', () => {
       process.env.GIT_CONFIG_KEY_0 = 'diff.external'
       process.env.GIT_CONFIG_VALUE_0 = '/tmp/evil-diff'
       try {
-        // 手写解析器不读 GIT_CONFIG_COUNT → allow；探针能读到 command 作用域 → ask。
+        // 手写解析器不读 GIT_CONFIG_COUNT → allow；S2 起探针权威 → ask。
         expect(decide('git diff HEAD', { cwd: repo })).toMatchObject({
-          decision: 'allow',
-          rule: 'git:diff',
+          decision: 'ask',
+          rule: 'git-repo-config-exec',
         })
         const diagnostics = getGitConfigShadowDiagnostics()
         expect(diagnostics.samples).toBe(1)
@@ -1286,5 +1295,45 @@ describe('git 配置探针（S1 影子对照）', () => {
     expect(diagnostics.failures['invalid-nul-record']).toBe(0)
     expect(diagnostics.failures['io-error']).toBe(0)
     expect(diagnostics.p95LatencyMs).toBeLessThanOrEqual(30)
+  })
+
+  it('S2：探针失败一律 fail-closed ask / git-repo-config-exec', () => {
+    const repo = makeGitRepo('bizgraph-s2-probe-failure-', '[core]\n\trepositoryformatversion = 1\n')
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+    const failedProbes: Array<string | null> = [
+      null, // git 缺失
+      '#!/bin/sh\n/bin/sleep 2\n', // 超时
+      '#!/bin/sh\nexit 128\n', // 非零退出
+      '#!/bin/sh\nexit 0\n', // 空输出
+      "#!/bin/sh\nprintf 'only-one-field\\0'\n", // 非法 NUL 记录
+      "#!/bin/sh\necho \"error: unknown option 'show-scope'\" >&2\nexit 129\n", // --show-scope 不支持
+    ]
+    for (const script of failedProbes) {
+      withFakeGit(script, () => {
+        expect(decide('git status', options)).toMatchObject({
+          decision: 'ask',
+          rule: 'git-repo-config-exec',
+        })
+      })
+    }
+  })
+
+  it('S2：运行时开关 BIZGRAPH_GIT_CONFIG_PROBE=off 退回「手写 + 一律 ask」', () => {
+    const repo = makeGitRepo('bizgraph-s2-switch-', '[core]\n\trepositoryformatversion = 1\n')
+    const previous = process.env.BIZGRAPH_GIT_CONFIG_PROBE
+    process.env.BIZGRAPH_GIT_CONFIG_PROBE = 'off'
+    try {
+      for (const command of ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.txt']) {
+        expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+          decision: 'ask',
+          rule: 'git-repo-config-exec',
+        })
+      }
+      // 开关只影响 git 配置探测，不波及其它白名单命令。
+      expect(decide('ls -la', { cwd: repo }).decision).toBe('allow')
+    } finally {
+      if (previous === undefined) delete process.env.BIZGRAPH_GIT_CONFIG_PROBE
+      else process.env.BIZGRAPH_GIT_CONFIG_PROBE = previous
+    }
   })
 })
