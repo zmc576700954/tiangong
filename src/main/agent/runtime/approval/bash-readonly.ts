@@ -446,11 +446,18 @@ const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
  *
  * 差集必须为空；`bash-readonly.test.ts` 的覆盖用例会断言这一点，
  * 新增只读子命令时若忘记归类会直接失败。
+ *
+ * **注意这只是「漏项」校验，不是「错项」校验**：命令归进本集合后，
+ * 仍可能通过**参数面**（`--format`/`--pretty` 里的 `%G`、ref-filter 的
+ * `%(signature)`）触发外部程序。参数面由 `GIT_GPG_PRETTY_SUBCOMMANDS` /
+ * `GIT_SIGNATURE_ATOM_SUBCOMMANDS` 单独覆盖；两者必须同时成立。
+ * `shortlog` 就曾因「默认参数无 marker」被归进本集合，却漏了参数面。
  */
 export const GIT_READ_PROVEN_NO_EXEC_CONFIG: ReadonlySet<string> = new Set([
   // 实测（git 2.50.1，fsmonitor + hooksPath + diff.external 全开）：
-  // 下列命令不刷新 index、不调用 fsmonitor、不触发 post-index-change、
+  // 下列命令在默认参数下不刷新 index、不调用 fsmonitor、不触发 post-index-change、
   // 不消费 filter/textconv/diff.external，也不读取 alternateRefsCommand。
+  // 参数面执行另见上面的说明：`shortlog` 的 `--format=%G` 会执行 gpg.program。
   'rev-parse',
   'shortlog',
   'cat-file',
@@ -1060,8 +1067,16 @@ export function probeGitSubmoduleConfigs(
  */
 const GIT_GPG_CONFIG_SUBCOMMANDS = new Set(['log', 'show', 'whatchanged'])
 
-/** 支持 `--format` / `--pretty` 且 `%G` 占位符会触发 gpg 的只读子命令。 */
-const GIT_GPG_PRETTY_SUBCOMMANDS = new Set(['log', 'show', 'whatchanged', 'rev-list'])
+/**
+ * 支持 `--format` / `--pretty` 且 `%G` 占位符会触发 gpg 的只读子命令。
+ *
+ * `shortlog` 此前被登记为「不消费任何执行型配置键」，但那是**默认参数**下的结论：
+ * 它接受 `--format` / `--pretty`，`%G` 会调用 `gpg.program`（`git shortlog --format='%G?' HEAD`
+ * 实测生成 marker）。这属于「归类错误」而不是漏项——`gitReadExecCoverageGaps()` 只能
+ * 发现「没归类」，发现不了「归错了」。普查表见 `docs/architecture/agent-architecture.md`
+ * §4.6「命令 → format 参数消费关系」。
+ */
+const GIT_GPG_PRETTY_SUBCOMMANDS = new Set(['log', 'show', 'whatchanged', 'rev-list', 'shortlog'])
 
 /**
  * `--format` / `--pretty` 的取值含 `%G`（`%G?`、`%GS` 等）时会调用 gpg 验证签名。

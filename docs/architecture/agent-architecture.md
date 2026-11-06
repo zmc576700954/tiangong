@@ -682,10 +682,10 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `core.hooksPath`（`post-index-change`） | **探针覆盖的全部只读子命令** | 非空 → 无条件 ask（H7：不再按 sub/参数形态） | 是（H7 实测 `describe --dirty` marker 生成；`status`/工作区 `diff` 此前已实测；`--cached/--no-index` 真实 git 不触发，但策略仍 ask——有意过度询问） |
 | `core.alternateRefsCommand` | `rev-list --alternate-refs` | 参数面 + 配置面均 ask | 是（marker 生成；`--alternate-ref` 缩写被 git 拒绝且不执行；`for-each-ref`/`rev-parse` 不执行） |
 | `diff.submodule=diff` + 子模块执行型键 | `diff/log/show/whatchanged`（仅展示 patch 时） | 递归读子模块配置（含外部/旧式 gitdir 的 `<gitdir>/modules`）；命中、不可枚举或超预算（32 模块 / 300 ms）→ ask | 是（标准 `.git/modules/*`、旧式 `sub/.git`、gitdir 文件外部目录 + 嵌套 `ext1/modules/sub2` 均生成 marker；`status` 不消费） |
-| `gpg.program` | `log/show/whatchanged`（`%G` 或 `log.showSignature` 时） | **单独存在 → allow**；仅当 `log.showSignature=true` 或 `format.pretty`/`pretty.*`/命令行 `--format` 含 `%G` → ask | 是（有签名提交 + `%G` marker 生成；无签名/无 `%G` 时配了 `gpg.program` 也不执行） |
+| `gpg.program` | `log/show/whatchanged/shortlog`（`%G` 时；`log.showSignature` 仅前三条） | **单独存在 → allow**；仅当 `log.showSignature=true` 或 `format.pretty`/`pretty.*`/命令行 `--format` 含 `%G` → ask | 是（有签名提交 + `%G` marker 生成；`shortlog --format='%G?'` 亦生成；无签名/无 `%G` 时不执行） |
 | `gpg.ssh.program` / `gpg.x509.program` | 同上 | 同上 | 否（与 `gpg.program` 同路径，保守登记） |
 | `format.pretty` / `pretty.<name>` 值含 `%G` | `log/show/whatchanged` | 命中 → ask | 是（`format.pretty=format:%GS` + `git log -1` marker 生成） |
-| 命令行 `--format`/`--pretty` 值含 `%G`（参数面） | `log/show/whatchanged/rev-list` | ask / `git-gpg-format` | 是（`--format=%GS`、`--pretty=format:%GS` 均生成 marker） |
+| 命令行 `--format`/`--pretty` 值含 `%G`（参数面） | `log/show/whatchanged/rev-list/shortlog` | ask / `git-gpg-format`（`shortlog` 为 2026-11-06 修复项，此前 allow） | 是（`--format=%GS`、`--pretty=format:%GS`、`shortlog --format='%G?' HEAD` 均生成 marker） |
 | `log.showSignature` | `log/show/whatchanged` | 为真 → ask | 是（有签名提交时调用 gpg） |
 | `%(signature)` / `%(*signature)` atom（参数面） | `for-each-ref` / `branch` / `tag` | 参数扫描命中 → `git-signature-atom` ask（H4） | 是：有签名提交时 `for-each-ref`/`branch` 执行 `gpg.program`；`tag -l --format='%(*signature)'` 在 tag peeled 到签名 commit 时执行 |
 | `core.sshCommand` | `fetch/push/clone/ls-remote/remote show` | 写子命令与 `remote show` 均已 ask；其余只读命令不消费 → allow | 否（需 ssh 远端，未构造） |
@@ -708,17 +708,37 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `blame` | `diff.*`、`core.fsmonitor`、`core.hooksPath` | H7 起 fsmonitor/hooksPath 无条件判 |
 | `ls-files` | `core.fsmonitor`、`core.hooksPath` | H1/H7 |
 | `fsck` | `core.fsmonitor`、`core.hooksPath` | H1 新增；实测刷新 index |
-| `rev-list` | `core.alternateRefsCommand`（`--alternate-refs`）、`log.showSignature` | `%G` 仅参数面，配置无默认格式 |
+| `rev-list` | `core.alternateRefsCommand`（`--alternate-refs`） | `%G` 仅参数面；实测 `rev-list --pretty` 不读 `format.pretty`（无 marker），**不**登记 `log.showSignature` |
 | `describe` | `core.fsmonitor`、`core.hooksPath` | **H7 新增进探针集合**；实测 `--dirty/--broken` 执行外部程序 |
 | `for-each-ref` | 配置无默认触发键；`%(signature)` / `%(*signature)` atom 走参数面 `git-signature-atom` | H4；已证明不消费 fsmonitor/hooksPath |
 | `branch` / `tag`（列举形态） | 配置无默认触发键；signature atom 走参数面 `git-signature-atom` | H4；`tag`/`branch` 的创建/写入形态本身 ask |
-| 其余只读子命令（`cat-file` / `rev-parse` / `shortlog` / `show-ref` / `merge-base` / `name-rev` / `count-objects`） | 本轮已实测不消费任何执行型配置键（fsmonitor/hooksPath/diff/filter/diff.external 全开时均无 marker、不刷新 index） | 由 `GIT_READ_PROVEN_NO_EXEC_CONFIG` 显式登记；`gitReadExecCoverageGaps()` 断言差集为空 |
+| 其余只读子命令（`cat-file` / `rev-parse` / `shortlog` / `show-ref` / `merge-base` / `name-rev` / `count-objects`） | 默认参数下实测不消费执行型配置键（fsmonitor/hooksPath/diff/filter/diff.external 全开时均无 marker、不刷新 index） | 由 `GIT_READ_PROVEN_NO_EXEC_CONFIG` 显式登记；`gitReadExecCoverageGaps()` 断言差集为空。**该证明只覆盖默认参数**：`shortlog` 的 `--format` 走参数面（见表下「命令 → format 参数消费关系」） |
+
+#### 命令 → format 参数消费关系（「错项」防复发普查，2026-11-06）
+
+> **为什么需要这张表**：`gitReadExecCoverageGaps()` 只能发现「命令没归类」（漏项），发现不了「归错了类」（错项）。`git shortlog` 曾被登记进 `GIT_READ_PROVEN_NO_EXEC_CONFIG`（默认参数下确实不碰配置执行键），但 `git shortlog --format='%G?' HEAD` 在真实 git 2.50.1 上会调用 `gpg.program` 并生成 marker，策略却是 `allow / git:shortlog`。同类风险存在于所有接受 `--format`/`--pretty`/ref-filter atom 的只读命令，因此逐条普查并锁进单测。
+
+| 命令 | 接受的 format 类参数形态 | 是否触发外部程序 | 当前处置 | 实测依据（git 2.50.1，签名提交 + `gpg.program` marker） |
+| --- | --- | --- | --- | --- |
+| `log` / `show` / `whatchanged` | `--format[=<val>]`、`--pretty[=<val>]`；配置 `format.pretty` / `pretty.<name>`、`log.showSignature`；`--show-signature` | `%G`/`%g` → gpg；三项配置均会触发 gpg | ask（`git-gpg-format` / `git-repo-config-exec` / `git-show-signature`） | 是：`-1 --format=%G?`、`show -s --format=%G?`、`whatchanged -1 --format=%G?`、`format.pretty`、`pretty.sig` 均生成 marker |
+| `rev-list` | `--format[=<val>]`、`--pretty[=<val>]` | `%G` → gpg；**不读** `format.pretty`；`--alternate-refs` → `core.alternateRefsCommand` | ask（`git-gpg-format` / `git-alternate-refs`） | 是：`rev-list -n 1 --format=%G?` marker；`--pretty` + `format.pretty=format:%G?` 无 marker |
+| `shortlog` | `--format[=<val>]`、`--pretty[=<val>]`（需带 revision，否则从 stdin 读） | `%G` → gpg（`-s` 汇总形态忽略 format，但策略仍 ask=fail-closed）；**不读** `format.pretty` / `log.showSignature` | ask（`git-gpg-format`，**本轮修复；修复前为 allow**） | 是：`shortlog --format='%G?' HEAD` 与 `--pretty='%G?' HEAD` 均生成 marker；`-sn` 与 `--format=%s` 无 marker |
+| `for-each-ref` | `--format=<ref-filter atom>`、`--sort=<atom>` | `%(signature)` / `%(*signature)` → gpg | 参数扫描命中 → ask（`git-signature-atom`） | 是：`--format=%(signature)` marker；`%(objectname)` / `%(contents:signature)` 无 marker |
+| `branch`（仅列举形态） | `--format=<ref-filter atom>`、`--sort=<atom>` | 同上 | 同上 | 是：`branch --format=%(signature)` marker；写形态本身 ask |
+| `tag`（仅 `-l/--list/-n`） | `--format=<ref-filter atom>` | 同上（`%(*signature)` 在 tag peeled 到签名 commit 时执行） | 同上 | 是（H4 已有 marker 用例）；创建/删除形态本身 ask |
+| `ls-files` | `--format=<ls-files atom>` | 无 signature atom；`%(signature)` 直接被 git 拒绝（`fatal: bad ls-files format`） | allow | 否：`--format=%(objectname)` 无 marker |
+| `cat-file` | `--batch` / `--batch-check[=<自定义 format>]` | atom 集合不含签名验证 | allow | 否：`--batch-check='%(objectname)'` 无 marker |
+| `blame` | 无 `--format`/`--pretty`（`--format` 为 unknown option） | 配置侧 `diff.external` / `diff.*.textconv` 已在探针集合 | allow / 配置命中 ask | 否：`blame --format=%G?` 无 marker；配置面另测 |
+| `describe` / `status` / `diff` / `show-ref` / `merge-base` / `name-rev` / `count-objects` / `fsck` / `rev-parse` | 无 format 类参数（`show-ref --format`、`status --format` 等均 `unknown option`） | 无 | allow / 配置命中 ask | 否：全部无 marker |
+
+**结论**：只读集合里真正接受「format 类」参数的是 `log/show/whatchanged/rev-list/shortlog`（`--format`/`--pretty`，`%G` 触发 gpg）与 `for-each-ref/branch/tag`（ref-filter atom，`%(signature)` 触发 gpg）。前者统一由 `GIT_GPG_PRETTY_SUBCOMMANDS` + `gitPrettyUsesGpg()` 覆盖，后者统一由 `GIT_SIGNATURE_ATOM_SUBCOMMANDS` + `gitSignatureAtomUsesGpg()` 覆盖。`ls-files` / `cat-file` 的 format atom 不执行外部程序；其余命令不接受 format 参数。新增白名单命令时，必须在上表补一行；`bash-readonly.test.ts` 的 `H7-Ⅱ` 用例同时断言「触发形态 ask + 真实 marker」与「无害形态 allow」。
 
 **命令集双向校验（H7 根因修复）**：只读白名单有 18 条，探针集合只有 10 条（原 9 + `describe`）。差集曾包含 `describe`，导致「白名单放行但没有任何配置判定」——`git describe --dirty` 在 `core.fsmonitor` / `core.hooksPath` 下真实执行外部程序却 `allow`。现在：
 
 - `GIT_READ_SUBCOMMANDS` 的每一条都必须**要么**在 `GIT_CONFIG_EXEC_SUBCOMMANDS`（探针集合）里，**要么**在 `GIT_READ_PROVEN_NO_EXEC_CONFIG`（有实测「不消费」依据）里；`gitReadExecCoverageGaps()` 返回非空即测试失败，新增白名单命令忘记归类会直接在 CI 暴露；
-- 差集内 8 条（`rev-parse` / `shortlog` / `cat-file` / `show-ref` / `for-each-ref` / `merge-base` / `name-rev` / `count-objects`）在 git 2.50.1 上以 fsmonitor + hooksPath + diff.external 全开实测无 marker、不刷新 index，登记为「不消费」；
+- 差集内 8 条（`rev-parse` / `shortlog` / `cat-file` / `show-ref` / `for-each-ref` / `merge-base` / `name-rev` / `count-objects`）在 git 2.50.1 上以 fsmonitor + hooksPath + diff.external 全开、**默认参数**实测无 marker、不刷新 index，登记为「不消费」；
 - `describe` 实测 `--dirty` / `--broken` / `--always --dirty` / `--tags --dirty` 会执行 fsmonitor 与 post-index-change；`--all` / `--tags` / `--long` / `--abbrev=0` / `--exact-match` / `--contains` 不执行。**策略不做形态细分**：只要仓库配置里有 fsmonitor/hooksPath，`describe` 的任何形态都 ask（见 §29 形态表）。
+- **双向校验只防「漏项」，不防「错项」**：`shortlog` 曾在差集内、被证明「默认参数不消费」，但 `--format='%G?'` 会执行 gpg，策略却是 allow。现在额外要求「凡接受 format 类参数的命令」都进 `GIT_GPG_PRETTY_SUBCOMMANDS` 或 `GIT_SIGNATURE_ATOM_SUBCOMMANDS`；普查表与实测见上一节。新增命令/新增 format 形态时，这张表是防复发依据。
 
 **代价（有意选择）**：husky 用户（`core.hooksPath=.husky/_`）以及启用 fsmonitor 的用户，`git log/show/describe` 等只读命令也都要一次审批。此前 `husky → git log allow` 的优化被移除；这是为了不再依赖「谁消费」名单，宁可多问。`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 只回退 B 的未知键判定，不回退 H7（H7 属于执行面，不是未知键）。
 

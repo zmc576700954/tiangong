@@ -1653,6 +1653,135 @@ describe('H7 · describe / 命令集双向校验 / LFS textconv 值判定', () =
   })
 })
 
+/**
+ * H7-Ⅱ（2026-11-06 复验 P0）：`git shortlog --format='%G?'` 曾被 allow 并真实执行
+ * `gpg.program`。根因不是漏项（`shortlog` 在只读集合里），而是**归类错误**：
+ * 它被登记进 `GIT_READ_PROVEN_NO_EXEC_CONFIG`（「不消费执行型配置键」），而该结论
+ * 只在默认参数下成立；`--format/--pretty` 的 `%G` 属于参数面，会调用 gpg。
+ *
+ * 这里同时锁住「所有接受 format/pretty 类参数的只读子命令」的普查结论，
+ * 防止下一次再出现同类错项。
+ */
+describe('H7-Ⅱ 命令 → format 参数消费关系（错项防复发）', () => {
+  function makeSignedRepo(prefix: string): { root: string; repo: string; marker: string } {
+    const root = mkdtempSync(join(tmpdir(), prefix))
+    const repo = join(root, 'repo')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'gpg.sh')
+    writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\nexit 0\n`)
+    chmodSync(script, 0o755)
+
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+
+    // 构造带 gpgsig 头的 commit 对象（模拟仓库历史里已有的签名提交），
+    // 让 `%G` 真正调用 gpg.program；否则无签名对象不执行 gpg，marker 无法证伪。
+    const base = gitCapture(repo, ['rev-parse', 'HEAD'])
+    const raw = gitCapture(repo, ['cat-file', '-p', base])
+    const signedText =
+      `${raw
+        .split('\n')
+        .flatMap((line) =>
+          line.startsWith('committer ')
+            ? [
+                line,
+                'gpgsig -----BEGIN PGP SIGNATURE-----',
+                ' ',
+                ' fake',
+                ' -----END PGP SIGNATURE-----',
+              ]
+            : [line],
+        )
+        .join('\n')}\n`
+    const signed = gitCapture(repo, ['hash-object', '-t', 'commit', '-w', '--stdin'], signedText)
+    // 用当前分支名更新 ref，避免依赖 init.defaultBranch。
+    const branch = gitCapture(repo, ['symbolic-ref', '--short', 'HEAD'])
+    runRealGit(repo, ['update-ref', `refs/heads/${branch}`, signed])
+    runRealGit(repo, ['config', 'gpg.program', script])
+    return { root, repo, marker }
+  }
+
+  function runGit(repo: string, args: string[]): void {
+    try {
+      execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' })
+    } catch {
+      /* 只要外部程序被执行即算命中；git 退出码不参与判定 */
+    }
+  }
+
+  it('P0 真实证据：shortlog --format=%G? HEAD 执行 gpg.program → 策略从 allow 收紧为 ask', () => {
+    const { repo, marker } = makeSignedRepo('bizgraph-h7b-shortlog-')
+    // 先确认无 %G 时不会执行，排除「配了 gpg.program 就总是执行」的误判。
+    runGit(repo, ['shortlog', '-sn', 'HEAD'])
+    expect(existsSync(marker)).toBe(false)
+
+    // 修复前：策略 allow / git:shortlog，真实 git 却执行了 gpg.program（marker 生成）。
+    runGit(repo, ['shortlog', '--format=%G?', 'HEAD'])
+    expect(existsSync(marker)).toBe(true)
+    expect(readFileSync(marker, 'utf8')).not.toBe('')
+
+    // 修复后：参数面命中 → ask / git-gpg-format。
+    expect(decide("git shortlog '--format=%G?' HEAD", { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-gpg-format',
+      risk: 'high',
+    })
+  })
+
+  it('普查：log/show/whatchanged/rev-list/shortlog 的 --format/--pretty %G 均真实执行且均 ask', () => {
+    const { repo, marker } = makeSignedRepo('bizgraph-h7b-survey-')
+    const cases: Array<{ args: string[]; command: string }> = [
+      { args: ['log', '-1', '--format=%G?'], command: "git log -1 '--format=%G?'" },
+      { args: ['show', '-s', '--format=%G?'], command: "git show -s '--format=%G?'" },
+      { args: ['whatchanged', '-1', '--format=%G?'], command: "git whatchanged -1 '--format=%G?'" },
+      { args: ['rev-list', '-n', '1', '--format=%G?', 'HEAD'], command: "git rev-list -n 1 '--format=%G?' HEAD" },
+      { args: ['shortlog', '--format=%G?', 'HEAD'], command: "git shortlog '--format=%G?' HEAD" },
+      { args: ['shortlog', '--pretty=%G?', 'HEAD'], command: "git shortlog '--pretty=%G?' HEAD" },
+    ]
+    for (const item of cases) {
+      if (existsSync(marker)) unlinkSync(marker)
+      runGit(repo, item.args)
+      expect(existsSync(marker), `真实 git 执行: ${item.command}`).toBe(true)
+      expect(decide(item.command, { cwd: repo, includeGlobalGitConfig: false }), item.command).toMatchObject({
+        decision: 'ask',
+        rule: 'git-gpg-format',
+        risk: 'high',
+      })
+    }
+  })
+
+  it('普查对照：不含 %G 的 format 参数与非 format 形态仍 allow（不把既有 ask 降为 allow，也不过度拦截）', () => {
+    const { repo } = makeSignedRepo('bizgraph-h7b-control-')
+    for (const command of [
+      'git shortlog -sn HEAD',
+      'git shortlog --format=%s HEAD',
+      'git log -1 --format=%s',
+      "git for-each-ref '--format=%(objectname)'",
+      "git ls-files '--format=%(objectname)'",
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false }), command).toMatchObject({
+        decision: 'allow',
+      })
+    }
+  })
+
+  it('普查边界：ref-filter 的 %(signature) 走 git-signature-atom；无 signature atom 不执行', () => {
+    const { repo, marker } = makeSignedRepo('bizgraph-h7b-atom-')
+    if (existsSync(marker)) unlinkSync(marker)
+    runGit(repo, ['for-each-ref', '--format=%(objectname)'])
+    expect(existsSync(marker)).toBe(false)
+
+    runGit(repo, ['for-each-ref', '--format=%(signature)'])
+    expect(existsSync(marker)).toBe(true)
+    expect(
+      decide("git for-each-ref '--format=%(signature)'", { cwd: repo, includeGlobalGitConfig: false }),
+    ).toMatchObject({ decision: 'ask', rule: 'git-signature-atom', risk: 'high' })
+  })
+})
+
 describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
   it('H1 策略：core.fsmonitor 下 git fsck → ask / git-repo-config-exec（修复前 allow / git:fsck）', () => {
     const repo = makeGitRepo('bizgraph-h1-fsmonitor-', '[core]\n\tfsmonitor = /bin/sh\n')
