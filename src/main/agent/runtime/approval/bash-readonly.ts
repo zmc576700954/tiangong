@@ -493,6 +493,8 @@ interface GitConfigEntry {
  * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，标记为不可解析。
  * - 键名只含字母/数字/连字符：Git 不接受带点或下划线的键名（`a.b=1`、`a_b=1` 均 fatal）。
  * - 行尾未转义反斜杠（Git 的续行语法）与无法归一的杂行一律标记为不可解析，由调用方 fail-closed。
+ * - 值内任何反斜杠（`\\` / `\"` / `\n` / `\t` / `\b` 与尾部续行）一律标记为不可解析：
+ *   本轮不做转义语义归一，用未归一原值算 include 路径会与 Git 实际读取路径不一致。
  */
 const GIT_CONFIG_SECTION_HEADER = /^\[\s*([^\s\]]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$/
 const GIT_CONFIG_KEY_VALUE = /^([A-Za-z0-9-]+)(?:\s*=\s*(.*))?$/
@@ -503,11 +505,15 @@ interface ParsedGitConfig {
   invalid: boolean
 }
 
-/** Git 用行尾反斜杠续行；未建模的续行与 EOF 裸尾随反斜杠都按不可解析处理。 */
-function gitConfigHasContinuation(value: string): boolean {
-  let trailing = 0
-  for (let i = value.length - 1; i >= 0 && value[i] === '\\'; i -= 1) trailing += 1
-  return trailing % 2 === 1
+/**
+ * 止血口径：值内出现反斜杠即不可解析。
+ *
+ * - 尾部反斜杠是 Git 的续行（未被建模，EOF 时 Git 直接 fatal）；
+ * - `\\`、`\"`、`\n`、`\t`、`\b` 等转义本轮不归一，原值算出的 include 路径会与 Git 不同；
+ * 宁可整份配置 ask，也不能按未归一原值漏读。
+ */
+function gitConfigHasEscape(value: string): boolean {
+  return value.includes('\\')
 }
 
 function parseGitConfigEntries(text: string): ParsedGitConfig {
@@ -534,15 +540,15 @@ function parseGitConfigEntries(text: string): ParsedGitConfig {
       continue
     }
     const bare = kv[2] === undefined
-    const value = bare ? '' : kv[2]
-    if (!bare && gitConfigHasContinuation(value.trim())) {
-      invalid = true // 续行语义未建模；EOF 裸尾随反斜杠 Git fatal
+    const value = bare ? 'true' : stripGitConfigComment(kv[2])
+    if (!bare && gitConfigHasEscape(value)) {
+      invalid = true // 转义/续行语义未建模，不能拿原值算 include 路径
       continue
     }
     entries.push({
       section,
       key: kv[1].toLowerCase(),
-      value: bare ? 'true' : stripGitConfigComment(value),
+      value,
       bare,
     })
   }

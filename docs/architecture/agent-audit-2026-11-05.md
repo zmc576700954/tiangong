@@ -2813,3 +2813,212 @@ Git 行为对照（本机实测，`git config --file … --list`）：
 **回归**：`extensions.worktreeConfig` 门控保持——未开启（无裸键或 `= false`）不读 `config.worktree` → `allow`；开启（裸键或 `= true`）→ `ask`。第 4 轮裸键用例全量通过。
 
 **校验**：定向 `bash-readonly` 41 passed；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3115 passed / 93 skipped (3381)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。
+
+## 十四、B-13 修复复验（第六轮，2026-11-06）
+
+### 14.0 冻结基线（追加本文件前）
+
+| 项 | 值 |
+|---|---|
+| HEAD | `c0dbf8e5734c7100adf9742a7fc00843f243da60`（父 `0991465`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes` | 123 |
+| `bash-readonly.ts` | `f6c10e704836063d19f87b699a446a1b55db73c487b17850c2d5cf29095df1cf` |
+| `bash-readonly.test.ts` | `9250337419e12a26521511534eef0d2ad6158d39329b91b50851b4544506d4cd` |
+| `agent-architecture.md` | `39ae14f5ca90c8bc911e905efd3831fe753185aa49cb0f318650208d9d270c7a` |
+| `agent-rollout.md` | `7b948a2c62fcc742e956245622e8863f8723cc5edf9bf5ed93ad255b9c2fccd0` |
+| 本文件 | `3e99f67e3089f89e9752130c9629e6596414b019d7c576992d8b4f416ddaa186` |
+
+### 14.1 结论：**不可发布**
+
+声称的两处修复都成立并已实测：include 深度对齐 10（1–10 层危险配置全 `ask`）、超限/成环 `undecidable` → `ask`、不可解析行 fail-closed。父提交 `0991465` 对照也符合预期（第 7 层由 `allow` 变 `ask`）。
+
+但**同一条 include 链上仍有一处 under-ask**：策略手写解析器不做 Git 的反斜杠解转义，`include.path` 的转义写法会让 Git 读到、策略读不到 —— `allow` 后由 Git 真实执行外部程序。仍属 B2 威胁模型（一次被批准的 Write 改写 `.git/config` 即可），因此本轮判**不可发布**（1 项 P1 阻断，见 14.2）。
+
+### 14.2 阻断清单
+
+#### B-14-1（既有，非本轮引入）：`include.path` 反斜杠转义未归一 → 策略漏读、Git 真读 → `allow` + 执行
+
+复现（本机实测；`git status` 与 `git diff` 两条路径都验证）：
+
+```sh
+# 1) 双反斜杠：.git/config 里是两个 `\` 字符，Git 解转义后是单个 `\` 的文件名
+rm -rf /tmp/verify14-demo && mkdir /tmp/verify14-demo && cd /tmp/verify14-demo && git init -q .
+printf '%s\n' '[include]' '	path = evil\\cfg' > .git/config
+printf '%s\n' '[core]' '	fsmonitor = /tmp/verify14-hook.sh' > '.git/evil\cfg'
+printf '%s\n' '#!/bin/sh' 'touch /tmp/verify14-marker' 'exit 1' > /tmp/verify14-hook.sh && chmod +x /tmp/verify14-hook.sh
+git status --short                 # exit 0；随后 /tmp/verify14-marker 存在 → fsmonitor 被真实执行
+```
+
+实测输出：
+
+```
+真实 git status（应触发 hook）: exit=0
+marker: -rw-r--r--  ...  /tmp/verify14-marker      # 时间戳为本次运行
+```
+
+同一构造换成 `[filter "evil"] clean = /tmp/verify14-filter.sh` + `.gitattributes` 标记 `*.txt`，`git diff` 也会创建 `/tmp/verify14-filter-marker`（已实测）。而策略侧对同一个 `cwd` 的判定是：
+
+```
+escaped include: allow git:status
+escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义为 evil"cfg
+```
+
+根因（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L513-L550)、[:609-L636](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L609-L636)）：
+
+- `parseGitConfigEntries` 只做 `trim`、节头归一、注释剥离，**不实现 Git 的转义归一**（`\\`→`\`、`\"`→`"`、`\n`→换行、`\t`→Tab、`\b`→退格）；
+- `gitConfigPaths` 直接把原值当路径：`resolve(dirname(file), 'evil\\cfg')` → 找的是一份含两个反斜杠的文件名，实际 Git 读的是含一个反斜杠的文件；
+- 该文件因此不在 `scan.files` 里，`gitConfigFilesExecute` 看不到任何危险键 → `allow`；
+- `invalid` fail-closed 也拦不住：这一行**按策略的语法是合法的**（值以 `g` 结尾，不是续行），只是与 Git 的语法不同。
+
+可达性：`.git/config` 与 `evil\cfg` 都在会话工作目录内，一次被批准的 Write 即建立会话写授权（[gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L512-L515) 只校验 `isPathInside(grant.cwd, target)`，**没有 `.git` 例外**），随后 `git status` / `git diff` 走 [claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts#L349-L367) 的 `permissionDecision: 'allow'` 免弹执行。与第五轮的 B-13-1 同一威胁模型，只是绕过的层从“深度”换成了“转义”。
+
+影响范围：只影响 `include.path` / `includeIf.path` 的解析（危险键本身的值不需要解转义：布尔类按“非 false 即真”判定，`diff.*`/`filter.*` 按“非空即危险”判定，转义不会把它们从危险变成安全）。但 include 路径被绕过等价于整条配置链被绕过。
+
+最小改法（二选一，建议先做 1）：
+
+1. **止血（最小改动、最保守）**：`parseGitConfigEntries` 中只要值的**非尾部**出现 `\`，就置 `invalid = true`（Git 允许的转义只有 `\\`、`\"`、`\n`、`\t`、`\b`，日常配置极少用；代价是这类配置一律多一次 ask，方向安全）。改动约 3 行，且能同时覆盖 `\n`/`\t` 造出的换行/Tab 文件名变体。
+2. **对齐语义（后续）**：实现 `gitConfigUnescape`（只处理上述 5 种转义，其余视为不可解析），在存储 `value` 前归一；include 路径、`filter` 值、`showSignature` 布尔全部走同一份归一值。改动更大，需要补 Git 对照用例。
+
+复验判据：同一复现里，`evaluateBashPolicy('git status --short', { cwd })` 必须返回 `ask / git-repo-config-exec`，且真实 `git status` 的 marker 只在人工批准后才出现。
+
+### 14.3 本轮五项判定
+
+#### 1）include 深度 1–10 与 11：**通过**
+
+自建链（`config → inc1 … → incN`，危险叶子 `[filter "evil"] clean = /bin/sh …`）：
+
+| 深度 | 当前树 `git status` | 当前树 `git diff` | 父提交 `0991465` |
+|---|---|---|---|
+| 1–6 | `ask / git-repo-config-exec` | `ask / git-repo-config-exec` | `ask` |
+| 7–10 | `ask / git-repo-config-exec` | `ask / git-repo-config-exec` | **`allow / git:status`** |
+| 11（及 12） | `ask / git-repo-config-exec`（`undecidable`） | 同左 | `allow` |
+
+真实 Git 对照（文件都放在 `.git/` 内，路径才解析正确）：
+
+```
+危险在第 10 层：git status exit=0；git config --list --includes 输出 core.fsmonitor=true
+危险在第 11 层：fatal: exceeded maximum include depth (10) while including .git/inc11.cfg
+```
+
+“策略 ask 时不落地”：`evaluateBashPolicy` 是纯函数，`ask` 在 [claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts#L360-L367) 被映射为 `permissionDecision: 'ask'`，强制回到审批网关；只有 `allow` 才免弹直接执行。1–10 层均为 `ask`，故都不会落地。
+
+#### 2）成环与超限的其它形态：**通过（1 项与任务书预期不同，但语义正确）**
+
+| 形态 | 策略 | 真实 Git | 说明 |
+|---|---|---|---|
+| `include` 自我引用 | `ask` | `fatal: exceeded maximum include depth (10) … circular includes` | 策略 `chain.includes` 命中 |
+| 两文件互相 include | `ask` | 同上（`fatal ...`） | 同上 |
+| `includeIf` 嵌套两层 | `ask` | 条件匹配时同样读取 | 条件不复判，安全侧 |
+| 目标文件不存在 | **`allow`** | **静默忽略，exit 0，不执行** | **与 Git 语义一致**；任务书要求 “ask”，但放行不产生执行面。如需一致性可改成 ask（低优先） |
+| 目标不可读（`chmod 000`） | `ask` | `fatal: unable to access ... Permission denied` | fail-closed |
+| 目标是指向目录 | `ask` | `fatal: bad config line ... Is a directory` | fail-closed |
+| 裸 `include.path`（无 `=`） | `allow` | missing value，不会 include | 与 Git 一致 |
+
+#### 3）解析失败 fail-closed 的反向验证：**通过**
+
+抽查 12 份“合法且常见”的配置，`git status` 判定如下（`includeGlobalGitConfig:false`）：
+
+| 配置 | 判定 |
+|---|---|
+| 本仓库真实 `.git/config`（含 `[remote "origin"]`、`[branch "main"]`、`[submodule]`、`[lfs]`） | `allow / git:status` |
+| 标准 LFS 仓库形态（`[core] repositoryformatversion` + `[lfs]`） | `allow` |
+| `user.name/email` + `remote` + `branch` 全套 | `allow` |
+| CRLF 行尾 | `allow` |
+| 行首 BOM | `allow`（`trim` 会去掉 U+FEFF） |
+| Tab / 多空格缩进 | `allow` |
+| `[section]key=value` 同行 | `allow` |
+| `#` / `;` 注释 + 值尾注释 | `allow` |
+| 值内引号（`editor = "code --wait"`） | `allow` |
+| `[diff.evil] textconv`（旧式子节） | `ask`（本应 ask，非误判） |
+| 键名含数字（`fsmonitor2`） | `allow` |
+| `[alias] x = !echo "a;b"`（引号内分号） | `allow` |
+
+另用本机真实全局配置（`~/.gitconfig`：`[user]`、`[core] autocrlf`、`[filter "lfs"]` 标准三项 + `required`、`[http] version`、`[safe] directory = *`）跑默认 `includeGlobalGitConfig:true` → 全部 `allow`，**没有把标准 LFS 误判成 invalid**。
+
+#### 4）合法值续行：**ask，摩擦可接受**
+
+`[alias] lg = log --graph --pretty=format:'%h \` + 换行 + `%s'` → 真实 Git `git config --get alias.lg` 接受（exit 0），策略 `ask / git-repo-config-exec`。属安全侧多 ask；抽查主流写法（长 alias、`url.*.insteadOf`、LFS、`core.editor`、`[commit] template`）里只有多行 alias 命中，本机/常规仓库默认配置不命中。
+
+#### 5）回归 / 摩擦 / 成本：**通过**
+
+- 本仓库（含真实全局配置）25 条常用只读命令：**25/25 `allow`**（`status`/`diff`/`log`/`show`/`blame`/`rev-parse`/`ls-files`/`describe`/`shortlog`/`show-ref`/`for-each-ref`/`rev-list`/`merge-base`/`cat-file`/`count-objects`/`branch`/`remote -v`/`tag`）。
+- 干净仓库五命令与标准 LFS 形态五命令全 `allow`（既有 41 条定向用例全绿）。
+- 单次策略开销（200 次平均）：干净仓库 **0.048 ms**；10 层 include 链 **0.399 ms**。
+- `git-lfs` 二进制本机仍不存在，故 LFS 只做了配置形态验证，**未做真机 LFS 仓库**。
+
+### 14.4 战略问题：继续手写解析 vs 交回 Git 自己解析
+
+**结论：建议把“配置探测”这一层迁到 Git 自身解析，手写解析器只保留为 fail-closed 的降级路径。** 依据是这六轮的证据形态：每一轮都能找到“Git 接受、解析器理解不同”的新差异（参数缩写 → shell 展开 → 配置驱动 → 裸键 → include 深度 → 续行 → 转义）。差异不是靠加用例收敛的，而是**语法所有权不在我们手里**：只要 Git 继续演进配置语法，手写解析器就有结构性漏判风险，而漏判的代价是零审批执行。
+
+**三条对比**
+
+| 维度 | 继续手写修补 | 交回 `git config` 解析 |
+|---|---|---|
+| 风险 | 每次 Git 语法演进/边角语法都可能再开一个 under-ask；已实测漏判 7 类 | 语义由 Git 保证，include 深度/成环/转义/条件/大小写等一次性对齐；剩余风险转为“探针本身”的风险（见下） |
+| 成本 | 每轮 1–3 天复审 + 修复 + 用例；长期反复 | 一次性：进程封装（`execFile` 固定 argv + 超时 + 输出上限）、scope 解析、缓存、测试替身；约 1–2 天 |
+| 可控性 | 高：纯函数、可单测、0.05 ms、无子进程 | 中：行为随 Git 版本；需处理 git 缺失/超时/非零退出；约 10 ms/次（本机实测 `git config --list --show-origin --includes` 与 `git status` 同量级） |
+| 失败模式 | 静默漏判（最危险） | 显式失败（可 fail-closed 成 ask） |
+
+**最小可行迁移边界（如果改路线）**
+
+1. **只迁探测，不动 shell 词法器**。`include/转义/裸键/深度` 属于配置语法问题；命令词法（`-c`、`--git-dir`、展开、管道）是另一个问题域，继续留在 `bash-readonly.ts`。
+2. **只对已门控的 6 个子命令**（`diff/log/show/status/blame/whatchanged`）做探测；其余命令不探测，避免把延迟扩散到全部只读命令。
+3. **探针形态**：`execFile(gitPath, ['--no-pager','config','--list','--null','--show-origin','--show-scope','--includes'])`，不经过 shell、不接受用户输入、不拼 `-c`；固定超时（建议 250 ms）+ 输出上限（建议 1 MB）+ 失败即 `ask`。
+4. **fail-closed 规则**：spawn 失败 / 超时 / 退出码非 0 / 输出无法按 NUL 记录解析 / `--show-scope` 不被支持（老 Git）→ 一律 `ask`，绝不 `allow`。若保留手写解析器作降级，也只能“降级为 ask”，不能“降级为 allow”。
+5. **避免探针变成新攻击面**：
+   - 用与应用执行命令时**同一个** git 可执行文件（启动时解析一次绝对路径），不要每次按 `PATH` 现查；
+   - `--no-pager`，且不设置 `GIT_PAGER`；
+   - include 指向 FIFO/设备文件时靠超时兜底（这是新增的挂起风险，必须显式处理）；
+   - 探针的环境要与真实命令一致（`GIT_CONFIG_GLOBAL/SYSTEM`、`XDG`），否则“探针看到的”与“命令执行的”不是同一份配置；这也顺带补上 `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` 这类环境注入配置（手写解析器完全看不见）。
+   - 探针与真实执行之间仍有 TOCTOU，但它不因迁移而变大，也不因迁移而变小；若要收窄，只能对配置做“执行前快照 + 比对”，属另一项设计。
+6. **缓存**：用探针返回的 `--show-origin` 文件集合 + 各自 mtime/size（含 git 可执行文件 mtime）做键；任一变化即重跑。先不上缓存，实测 10 ms 可接受再决定。
+
+**如果维持现状**，我能接受的残余风险清单（按重要性）：
+
+- R1 `include.path` 转义差异（当前阻断，必须先修）；
+- R2 其它值级转义/编码差异（非 UTF-8 配置会被 `readFileSync(utf8)` 改写字节；目前只影响 include 路径命中的可能性）；
+- R3 环境注入配置（`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_PARAMETERS`）未被检查；
+- R4 Git 未来新增“只读命令会执行”的配置键（例如新的 hook/driver 类键），白名单清单会过期；
+- R5 `%(prefix)` 等路径展开语法（本机 2.50 实测 `include.path` 不展开，但不同版本/不同键可能不同）；
+- R6 探针与执行之间的 TOCTOU；
+- R7 非 TTY 假设（`core.pager` 在 agent 的管道里不会被执行；一旦执行环境变成 TTY 就需要重新评估）；
+- R8 `includeIf` 条件不复判带来的摩擦（不是风险，是体验）。
+
+**重估触发条件**（任一出现就应启动迁移）：① 再出现一次“Git 接受、解析器漏读”的 under-ask（本轮已是第二次同族）；② Git 发布说明出现新的“读命令会执行外部程序”的配置键；③ 需要把“无已知 allow+exec 绕过”写进发布标准；④ 摩擦抽样中合法续行/转义配置导致的 ask 超过可接受比例（例如常用仓库 >1%）。
+
+### 14.5 仍未验证项
+
+- `git-lfs` 真机仓库（本机无 `git-lfs` 二进制；只验证了配置形态与全局标准写法）。
+- `GIT_CONFIG_SYSTEM` 指向非默认路径的真机行为（代码路径已含该候选，未单独构造）。
+- `includeIf` 条件（`gitdir:`/`onbranch:`/`hasconfig:remote.*.url`）的真实求值差异（策略一概不复判，只多 ask）。
+- `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` 环境注入配置（策略完全不读，未构造）。
+- 非 UTF-8 编码的 `.git/config`（策略按 UTF-8 读，未构造）。
+- `.git/config` 指向 FIFO 时手写解析器的阻塞行为（`readFileSync` 会阻塞；实际仓库不常见，未构造）。
+
+### 14.6 冻结复算（追加本文件后）
+
+- HEAD 仍为 `c0dbf8e5734c7100adf9742a7fc00843f243da60`（未 commit、未 push、未 amend）。
+- 源码与测试文件 sha256 与本轮 14.0 记录一致（本轮只追加本文件、未改源码）。
+- 本文件追加前 `3e99f67e…`；追加后哈希在复验回复中给出（写入正文会自指，故不内嵌）。
+- `git status --short` 仅本文件为 `M`。
+
+### 14.7 修复记录（第六轮复审后，基线 `c0dbf8e`，止血补丁）
+
+**B-14-1（阻断，代码）**：`include.path` 的值含转义（两个反斜杠、`\"` 等）时，Git 会归一后读取真实路径，而策略用**未归一原值**算路径：`.git/config` 写 `path = evil\\cfg`、实际危险文件是 `.git/evil\cfg`，策略找 `.git/evil\\cfg`（不存在）→ 静默漏读 → `allow / git:status` + fsmonitor 真实执行。`git diff` 同路径同样可达。
+
+**止血口径（本轮不做完整转义归一，迁移路线待用户拍板）**：`parseGitConfigEntries` 在取值后直接检查——**值内出现任何反斜杠即 `invalid = true`**，覆盖 `\\`、`\"`、`\n`、`\t`、`\b` 与尾部续行/EOF 裸尾随反斜杠。方向是安全侧：整份配置判不可解析 → 命中 `status`/`diff`/`log`/`show`/`blame` 等命令时 `ask / git-repo-config-exec`，不再用未归一原值算 include 路径。没有实现转义语义归一。
+
+**复现与“修复前会失败”**（临时把 `gitConfigHasEscape` 改为恒 `false`，跑新增用例：3 failed / 2 passed / 39 skipped）：
+
+| 用例 | 修复前 | 修复后 |
+|---|---|---|
+| `include.path = evil\\cfg`（Git 读取 `evil\cfg`），`git status` | `allow / git:status` | `ask / git-repo-config-exec` |
+| 同上，`git diff HEAD` | `allow / git:diff` | `ask / git-repo-config-exec` |
+| `include.path = evil\"cfg`（Git 读取 `evil"cfg`），`git status` | `allow / git:status` | `ask / git-repo-config-exec` |
+| 第 7 层 include 使用 `evil\\cfg`（叠加形态） | `allow / git:status` | `ask / git-repo-config-exec` |
+| 不可解析行（含 EOF 尾随反斜杠） | `allow / git:status` | `ask / git-repo-config-exec` |
+
+**反向（不误伤）**：普通 include 路径（`clean.cfg`）、带引号但无转义（`"clean.cfg"`）、标准 LFS 配置（全局 `git-lfs clean/smudge/process`）、本仓库真实 `.git/config` 的 `git status` 均保持 `allow`；干净仓库与标准 LFS 仓库的 `status/diff/log/show/blame` 仍全 allow。反斜杠只出现在行内注释时不会触发（检查对象是去注释后的值）。
+
+**校验**：定向 `bash-readonly` 44 passed，`approval-gateway` 28 + `approval-startup-reconcile` 4 通过；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3118 passed / 93 skipped (3384)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。

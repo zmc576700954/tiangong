@@ -932,6 +932,93 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     })
   })
 
+  it('include.path 值内含转义 → 整份配置不可解析，status/diff ask', () => {
+    const build = (configLine: string, fileName: string) => {
+      const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-include-'))
+      const gitDir = join(repo, '.git')
+      mkdirSync(gitDir, { recursive: true })
+      writeFileSync(join(gitDir, 'config'), `[include]\n\tpath = ${configLine}\n`)
+      writeFileSync(join(gitDir, fileName), '[core]\n\tfsmonitor = /tmp/hook\n')
+      return repo
+    }
+
+    // 文件里两个反斜杠 `evil\\cfg`，Git 归一后读取 `evil\cfg`
+    const backslashRepo = build('evil\\\\cfg', 'evil\\cfg')
+    const backslashOptions = { cwd: backslashRepo, includeGlobalGitConfig: false }
+    // 修复前：策略按原值找 `.git/evil\\cfg`（不存在）→ 漏读 → allow，fsmonitor 真实执行
+    expect(decide('git status --short', backslashOptions)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git diff HEAD', backslashOptions)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 文件里 `evil\"cfg`，Git 归一后读取 `evil"cfg`
+    const quoteRepo = build('evil\\"cfg', 'evil"cfg')
+    expect(decide('git status --short', { cwd: quoteRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('第 7 层 include 使用转义路径的叠加形态仍 ask', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-depth7-'))
+    const gitDir = join(repo, '.git')
+    mkdirSync(gitDir, { recursive: true })
+    writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
+    for (let i = 1; i < 6; i += 1) {
+      writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
+    }
+    // 第 7 层 include 用转义路径指向危险文件
+    writeFileSync(join(gitDir, 'inc6.cfg'), '[include]\n\tpath = evil\\\\cfg\n')
+    writeFileSync(join(gitDir, 'evil\\cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
+
+    // 修复前：深度未超限但转义路径被按原值查找 → 漏读 → allow
+    expect(decide('git status --short', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('反向：普通/带引号无转义 include、标准 LFS、本仓库真实 .git/config 均 allow', () => {
+    const plainRepo = mkdtempSync(join(tmpdir(), 'bizgraph-plain-include-'))
+    const plainGitDir = join(plainRepo, '.git')
+    mkdirSync(plainGitDir, { recursive: true })
+    writeFileSync(join(plainGitDir, 'config'), '[include]\n\tpath = clean.cfg\n')
+    writeFileSync(join(plainGitDir, 'clean.cfg'), '[core]\n\trepositoryformatversion = 1\n')
+    expect(decide('git status --short', { cwd: plainRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+
+    // 带引号但无转义
+    writeFileSync(join(plainGitDir, 'config'), '[include]\n\tpath = "clean.cfg"\n')
+    expect(decide('git status --short', { cwd: plainRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+
+    // 本仓库真实 .git/config（无转义、无危险探针）
+    expect(
+      decide('git status --short', { cwd: process.cwd(), includeGlobalGitConfig: false }),
+    ).toMatchObject({ decision: 'allow', rule: 'git:status' })
+
+    // 标准 LFS 配置仍 allow
+    const lfsRepo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-escape-'))
+    mkdirSync(join(lfsRepo, '.git'), { recursive: true })
+    writeFileSync(join(lfsRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
+    writeFileSync(join(lfsRepo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n')
+    withIsolatedGlobalConfig(
+      '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n',
+      () => {
+        expect(decide('git status', { cwd: lfsRepo })).toMatchObject({ decision: 'allow', rule: 'git:status' })
+        expect(decide('git diff', { cwd: lfsRepo })).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+      },
+    )
+  })
+
   it('反向：干净仓库与标准 LFS 仓库的 status/diff/log/show/blame 均 allow', () => {
     const cleanRepo = mkdtempSync(join(tmpdir(), 'bizgraph-clean-'))
     mkdirSync(join(cleanRepo, '.git'), { recursive: true })
