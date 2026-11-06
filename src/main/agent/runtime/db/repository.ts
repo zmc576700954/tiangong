@@ -978,7 +978,7 @@ export class AgentRepository {
     return this.db.prepare('SELECT * FROM agent_approvals WHERE turn_id = ? ORDER BY created_at ASC').all(turnId) as AgentApprovalRow[]
   }
 
-  /** 重启重推：保留 pending 行，重置有效期并重新计时。 */
+  /** 仅用于「所属 turn 仍存活」的审批重推；启动对账的常规路径不会走到这里（turn 已 orphaned）。 */
   refreshApprovalExpiry(approvalId: string, expiresAt: number, timeoutMs: number): void {
     this.db
       .prepare("UPDATE agent_approvals SET expires_at = ?, timeout_ms = ? WHERE id = ? AND status = 'pending'")
@@ -1287,7 +1287,8 @@ export class AgentRepository {
         this.projectRunStatus(plan.runId, now)
         break
       case 'keep_pending_approval':
-        // 重启重推由 ApprovalGateway 负责，不在这里改写事实
+        // 只保留 pending 行供审计；真实处置在 ApprovalGateway.reconcileStartup：
+        // turn 已 orphaned → deny(decided_by='startup')，不重推、不重计时。
         break
     }
   }

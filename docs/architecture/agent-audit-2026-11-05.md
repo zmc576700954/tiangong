@@ -2069,7 +2069,7 @@ if (boundSender !== undefined && boundSender !== senderId) {
 
 ## B5：§7.4 承诺 → 改文档（不改代码）
 
-实际行为是「启动先扫过期 pending → 其余统一 deny(`decided_by='startup'`) → 不推 UI、`replayed` 恒空」；`mode='unattended'` 的 30s 分支无生产调用方，不可达。§7.4 与 V7 表述已降级为实际行为，并明确标注「改的是承诺，不是代码」。
+实际行为是「启动先扫过期 pending → 其余统一 deny(`decided_by='startup'`) → 不推 UI」；`RecoveryReport.pendingApprovals`（取 `reconcileStartup().replayed.length`）恒为 0，陈旧审批数记 `RecoveryReport.deniedStaleApprovals`；`mode='unattended'` 的 30s 分支无生产调用方，不可达。§7.4 与 V7 表述已降级为实际行为，并明确标注「改的是承诺，不是代码」。
 
 ## P3
 
@@ -2084,3 +2084,169 @@ if (boundSender !== undefined && boundSender !== senderId) {
 - `tsc --noEmit` / `eslint src` / `vite build` 全过。
 - 全量：`173 failed / 3098 passed / 93 skipped`（3364），失败 26 文件与基线集合一致；日志无 `AssertionError`，95 处 ABI 主错 + 级联，属既有 `better-sqlite3` ABI。
 
+
+---
+
+## 10. 第十轮独立复审（2026-11-06）
+
+### 10.0 基线（复算）
+
+| 项 | 值 |
+|---|---|
+| HEAD | `aa1fa49647e3d27cfddc60c9ee9fd97d8ebe7753`（父 `9ef5c57`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes \| wc -l` | 123 |
+| `bash-readonly.ts` sha256 | `de81d4bf8e327ea64ec981e3568e8490201a5e3cdf183c65d2c9024a66b259a5` |
+| `runtime.ts` sha256 | `0f820b2bab5b7ed3cfa41f97b7fc3dfe223764cab0e6736a81db01cd1654e296` |
+| `repository.ts` sha256 | `faa6c1635a68e2e0132ab60bb18dafc787d98708c65b723f0707f2d4b3fda6d3` |
+| 本文档（追加前） | `27f595c0c73272d1c589c78fb6a5c338697e5f0301d66db7cdb79bb4b6566cbf` |
+
+### 10.1 结论：**不可发布**
+
+B1、B3 已闭合；B4/B5 的"文档处置"基本成立；**B2 只修了一半**：新增探针覆盖了常规配置，但仍有三条可实测绕过，其中两条能让 `git diff` 在 **allow 判定下**执行配置里的任意命令。按第九轮把 B2 定为 P1 的口径，本轮维持**不可发布**。
+
+### 10.2 阻断项（均本轮实测）
+
+#### P1-1 `diff.<driver>.command` 未被探针识别（零审批执行）
+
+复现（真实 git 仓库）：
+
+```bash
+git init /tmp/r10-git && cd /tmp/r10-git
+# 提交 a.txt 与 .gitattributes（*.txt diff=evil），修改 a.txt 后：
+git config diff.evil.command '/bin/sh -c "echo EXEC_COMMAND > /tmp/r10-marker-command"'
+git diff -- a.txt
+ls -l /tmp/r10-marker-command      # 文件已生成 → 命令确实被执行
+```
+
+策略判定：`git diff HEAD` 返回 `allow / git:diff`。原因是 [bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts) 的 `gitConfigTextExecutes()` 对 `[diff ...]` 只认 `textconv` 与 `external`，漏了 git 同样会执行的 `command`（`diff.<driver>.command` 与 `diff.<driver>.textconv` 并列存在于 gitattributes 文档）。
+
+最小改法：diff 节内把 `key === 'command'` 一并判危险（一行）。
+
+#### P1-2 旧式子节语法 `[diff.<driver>]` 未被解析（零审批执行）
+
+复现：
+
+```bash
+git init /tmp/r10-dot2 && cd /tmp/r10-dot2
+printf '\n[diff.evil]\n\ttextconv = /bin/echo\n' >> .git/config
+git config --get diff.evil.textconv   # 输出 /bin/echo（git 认可旧式语法）
+```
+
+在带 `.gitattributes: *.txt diff=evil` 的仓库中，把该行换成写 marker 的 textconv，`git diff -- a.txt` 实际生成了 `/tmp/r10-marker-legacy`；而策略对同一 `git diff HEAD` 返回 `allow / git:diff`。原因是 `[diff.evil]` 的 section 被解析成 `diff.evil`，`section.split(/\s+/)[0]` 不等于 `diff`。
+
+最小改法：section 名按前缀判定（`/^diff(\.|\s|$)/` 视为 diff 节；`core` 同理），而不是只取第一个空格前的整串。
+
+#### P1-3 生产路径的探针读的是 `process.cwd()`，不是会话工作目录
+
+[claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts) 的 PreToolUse 钩子直接 `evaluateBashPolicy(bashCommandOf(toolInput))`，未传 `cwd`，于是 `cwd` 默认 `process.cwd()`（Electron 主进程启动目录），而 SDK 实际在 `session.config.workingDirectory` 里执行 Bash。
+
+实测（临时用例，走真实 `ClaudeCodeAdapter` + mock SDK）：会话目录是一个 `.git/config` 含 `[diff] external=/bin/rm` 的仓库，hook 对 `git diff HEAD` 返回 `permissionDecision: 'allow'`；同一命令在 `cwd` 指向该仓库时策略返回 `ask`。也就是说，**只要会话不在主进程 cwd，B2 的整套探针都不生效**。
+
+最小改法：给 `evaluateBashPolicy`/`bashPolicyForTool` 增加可选的 `{ cwd }`，在 [claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts) 传 `session.config.workingDirectory`，在 [adapter-driver.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/executors/adapter-driver.ts) 与 [gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts) 传 `request.workingDirectory`（否则审批卡片上的 rule 也会与钩子不一致）。
+
+#### P2-1 全局配置缓存永不失效（长进程内 TOCTOU）
+
+`globalGitConfigCache` 是模块级一次算好、永不更新。实测：进程内第一次（全局配置干净）`git diff HEAD` → `allow`；随后把 `$GIT_CONFIG_GLOBAL` 指向的配置写入 `[diff] external=/bin/true`，同一进程内再判 → 仍 `allow`；只有重新加载模块才 `ask`。Electron 是长驻进程，一次先安全的评估会让后续所有 `git diff` 放行。
+
+最小改法：缓存按 `mtime + size` 失效，或直接去掉缓存（实测单次判定 0.047 ms，见 10.5，去掉缓存也无感）。
+
+#### P3-1 `core.fsmonitor` 对 `git diff` 过度 ask
+
+`git diff` 不使用 fsmonitor，但探针按"任一执行型键命中即 ask"，导致 `[core] fsmonitor=...` 的仓库连 `git diff` 也弹。只增加摩擦，无安全损失；可不改。
+
+### 10.3 对 B1–B5 的独立判定
+
+| 项 | 判定 | 依据（本轮实测） |
+|---|---|---|
+| B1 | **确认** | 7/7 原始命令策略判 `ask`；再经真实 `ClaudeCodeAdapter` 的 PreToolUse 钩子，7/7 返回 `permissionDecision: 'ask'`。见 10.4 的"没落地"方法说明。 |
+| B2 | **部分（推翻"已闭合"）** | 常规矩阵全部正确：`diff.*.textconv`、`diff.external`、`core.fsmonitor`、`include.path`、`.git` 文件 + commondir、不可读配置、全局/系统配置均 `allow→ask`；干净配置不误 ask；探针不被 `'${X}'`/`'$X'` 绕过。但 P1-1/2/3、P2-1 仍开放。 |
+| B3 | **确认** | 双向 + `cancel→complete→cancel` 三连：状态只写一次；取消先到时 `status` 保持 `cancelled`，`mergeTurnOutput` 补记 `real-final`，`ended_at` 保持取消时刻；第二次取消返回 `false`。既有两条用例 + 本轮临时三连用例均通过。 |
+| B4 | **确认（文档可复现）** | `spikes/agent-core/package.json` 已入库（含 `better-sqlite3 ^12.11.1`）；根 `better-sqlite3` 实例化报 `NODE_MODULE_VERSION 130 vs 115`，`spikes/agent-core/node_modules` 版本可正常建库；本轮走 fallback 的 47 条定向用例通过。文档数字写 3098，用户基线 3094，属近似口径，非阻断。 |
+| B5 | **部分（行为一致，字段名错）** | §7.4 的"启动扫描过期 pending → 其余 deny(`decided_by='startup'`) → 不推 UI"与 `reconcileStartup` 一致；`mode='unattended'` 仅测试使用，30s 分支不可达属实。但文档写 `RecoveryReport.replayed` 恒空——该类型**没有 `replayed` 字段**，实际字段是 `pendingApprovals`（`replayed.length`，启动后恒 0）。另外 [planner.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/recovery/planner.ts) 仍保留 `keep_pending_approval` 的误导注释，`agent-decisions.md` D-B 仍写"重启重推即重计时"，与 §7.4 新表述冲突。 |
+
+### 10.4 B1"没落地"的验证方法与边界
+
+- **策略层**：7 条命令逐条 `evaluateBashPolicy` → `ask`（规则分别为 `shell-expansion` / `shell-brace` / `file-compile`）。
+- **真实钩子层**：用真实 `ClaudeCodeAdapter`（SDK `query` 仅 mock，不调模型）构建 PreToolUse 钩子，7 条全部返回 `permissionDecision: 'ask'`，未出现 `allow`。
+- **无第二条执行路径**：`src/main/agent` 内 grep `execFile|execSync|spawn(|child_process`，只命中进程回收（`ps`/`taskkill`/`codex doctor`），没有任何"把 Bash 工具命令在宿主侧执行"的代码；Bash 实际由 Claude CLI 子进程执行，唯一闸门就是这个钩子。
+- **ask 不可被自动放行**：审批网关的 `sessionGrants` 只对写类工具生效（授予工具与请求工具都必须是 write-scoped），Bash 永远无法命中会话级 grant。
+- **边界（诚实说明）**：本轮没有可用的模型 API，未跑真实 CLI 回合；"无人审批即不落地"依据的是 SDK 契约（`permissionDecision: ask` 必须经 `canUseTool` 批准才执行）+ 上述无宿主侧执行路径，而不是端到端观察。该条列为仍未验证项。
+
+### 10.5 新模型语法面与代价
+
+语法面（自建临时用例，全部实测）：
+
+- 相邻拼接 `a'b'c`、`"x"'y'`、`rg '"$X"'`、单引号内 `$(...)`/反引号/`${x:-y}` → **allow**，且真实 shell 下均为字面量，安全。
+- `\'` → `shell-backslash` ask；`$((...))`、`$(<file)` → `shell-escape` ask；`${x:-y}` → `shell-expansion` ask。
+- `!`、`case`、`for`、数组 `a=(x y)`、`;`/`&&`/`||`/`|`/换行、重定向、heredoc → 全部 ask（`not-in-whitelist` / `command-chain` / `and-chain` / `or-chain` / `pipe` / `newline` / `redirect` / `subshell`）。
+- 注释 `ls -la # x` → allow（`#` 作为普通 token，真实 shell 忽略注释，无副作用）；`git diff HEAD~1` → allow（`~` 不在 token 首，不展开，判定正确）。
+- 探针不被花括号绕过：evil 仓库中 `git diff '${X}'`、`git diff '$X'` 仍判 `git-repo-config-exec`；`git diff ${X}` 在进探针前就 `shell-expansion` ask。
+
+代价回归（38 条常见命令抽样）：allow 30 / ask 8（78.9% allow）。ask 的 8 条为 `rg TODO *`、`cat ~/.zshrc`、`ls *.ts`（未加引号的 glob/tilde）、`npm test`、`rm -rf`、`find -delete`、`git commit`、`curl | sh`。常态只读命令（`ls -la`、`git log --oneline -5`、`git diff`、`rg TODO .`、`find . -name "*.ts"`）均 allow，未出现"绝大多数都 ask"的摩擦。主要新增摩擦是**未加引号的 `*`/`~`**，属有意保守。
+
+探针成本：无子进程；同步 `existsSync` 向上最多 30 层 + 读取 `.git/config`/commondir/全局/系统配置（全局有缓存）。本机 200 次 `git diff HEAD` 平均 **0.047 ms/次**，可忽略；没有新增异步阻塞，TOCTOU 仅剩"策略判定 → CLI 执行"之间的毫秒级窗口（任何配置型防护都有）。
+
+### 10.6 新发现汇总
+
+| 级别 | 项 | 状态 |
+|---|---|---|
+| P1 | `diff.<driver>.command` 未识别 | 实测，阻断 |
+| P1 | 旧式 `[diff.<driver>]` 子节语法未解析 | 实测，阻断 |
+| P1 | 生产钩子用 `process.cwd()` 而非会话目录 | 实测，阻断 |
+| P2 | 全局配置缓存永不过期（长进程 TOCTOU） | 实测 |
+| P3 | §7.4 字段名 `RecoveryReport.replayed` 不存在（应为 `pendingApprovals`） | 实测（读类型定义） |
+| P3 | `planner.ts` 的 `keep_pending_approval` 注释仍与行为不符 | 实测（读码） |
+| P3 | `agent-decisions.md` D-B 仍承诺"重启重推即重计时" | 实测（读文档） |
+| P3 | `core.fsmonitor` 对 `git diff` 过度 ask | 实测，仅摩擦 |
+| P3 | 取消先到时 `status=cancelled` 而 `output_json.finalStatus=completed` | 语义不一致，需产品确认是否可接受 |
+
+### 10.7 仍未验证项
+
+1. **B1 端到端"没落地"**：无模型 API，未跑真实 CLI 回合；仅由"钩子 ask + 无宿主执行路径 + SDK 契约"推断。
+2. **`log.showSignature` + `gpg.program` 配置触发执行**：`git log` 在不带 `--show-signature` 时会读取 `log.showSignature`，理论上可执行 `gpg.program`；探针未覆盖。需要带签名的提交与可用 gpg 才能实测，本轮未构造。
+3. **per-worktree `config.worktree`**：启用 `extensions.worktreeConfig` 时 `core.fsmonitor` 可写在 `.git/config.worktree`，当前探针未读该文件；未实测。
+4. **全量测试基线**：本轮只跑了走 fallback 的 47 条定向用例，未重跑 3094/173 全量；B4 的"同一基线"依赖 10.3 的组件级验证。
+5. **`pipeline.test.ts` 时长断言 flaky**：本轮未复现并发下的 174/27 抖动。
+
+### 10.8 冻结复算
+
+追加后复算：源码三文件哈希与 10.0 一致；工作区仅有本文件 `M`。
+
+- `bash-readonly.ts` = `de81d4bf…`（同 10.0）
+- `runtime.ts` = `0f820b2b…`（同 10.0）
+- `repository.ts` = `faa6c163…`（同 10.0）
+- 本文档追加前 = `27f595c0…`（10.0）；写入第十轮后哈希按定义变化，文档自身不参与冻结漂移判定。
+- `git status --short` = 仅 ` M docs/architecture/agent-audit-2026-11-05.md`
+
+### 10.9 修复记录（基线 `aa1fa49`）
+
+**B2（代码，四条全修）**
+
+- P1-1：`gitConfigTextExecutes()` 的 diff 节判定加入 `command`；`[diff "evil"] command` 现为 `ask / git-repo-config-exec`。
+- P1-2：节名改为前缀判定 `section === name || section.startsWith(name + '.') || section.startsWith(name + ' ')`；`[diff.evil]` 与 `[diff "evil"]` 同等命中，`core` / `filter` / `log` 也走同一 helper。节头允许尾随注释（`[diff "evil"] # note`）。
+- P1-3：`bashPolicyForTool` 接收可选的 `{ cwd }` 并透传 `evaluateBashPolicy`；生产路径三处接线：`claude-code.ts` 取 `session.config.workingDirectory`，`adapter-driver.ts` 取 `request.workingDirectory`，`gateway.ts` 取请求 `cwd`（审批重放用 `row.cwd`）。
+- P2-1：删除全局配置缓存，每次现读。选择「去缓存」而非 mtime+size：单次约 0.05 ms，mtime 失效仍受时间戳精度与同尺寸改写竞态影响。
+- 顺带（可安全修）：仓库本地 `filter.<driver>.clean|smudge|process` 在 `status`/`diff` 判定；`log.showSignature=true` 在 `log`/`show`/`whatchanged` 判定；新增读取 `.git/config.worktree`（per-worktree `core.fsmonitor`）。全局 `filter` 刻意排除：`git lfs install` 会写 `clean/smudge/process`，纳入会让所有 LFS 用户的每次 `status`/`diff` 弹窗；仓库本地配置才是「一次 Write 改写 `.git/config`」的直接威胁面。`gpg.program` 单独不执行，故只探测 `log.showSignature`。
+- 保留：`core.fsmonitor` 对 `git diff` 仍 ask（10.2 P3-1 已判「仅摩擦、可不改」；按安全侧保留）。
+
+**B5（承诺/字段名，不改行为代码）**
+
+- `agent-architecture.md §7.4`：`RecoveryReport.replayed` → `pendingApprovals`（取 `reconcileStartup().replayed.length`，恒 0）；陈旧审批数记 `deniedStaleApprovals`。
+- `planner.ts` 的 `keep_pending_approval` 注释改为「保留供审计，启动对账 deny(startup)，不重推」；`gateway.ts` / `repository.ts` 同类误导注释同步。
+- `agent-decisions.md` D-B 及 IPC/UI/依赖/时间点表述统一为「重启不重推、不重计时，启动即 deny」。
+
+**修复前会失败（临时回退实测）**
+
+| 用例 | 回退后实际 | 期望 |
+|---|---|---|
+| P1-1 `diff.evil.command` | `allow / git:diff` | `ask / git-repo-config-exec` |
+| P1-2 `[diff.evil] textconv` | `allow / git:diff` | `ask / git-repo-config-exec` |
+| P1-3 会话 cwd ≠ 主进程 cwd | `allow / git:diff` | `ask / git-repo-config-exec` |
+| P2-1 同进程改写全局配置 | 第二次仍 `allow` | `ask / git-repo-config-exec` |
+
+**校验**
+
+- 定向：`bash-readonly` 29 passed；三个套件共 57 passed。
+- `tsc --noEmit` / `eslint src` / `vite build` 全过。
+- 全量：`26 failed 文件 / 253 passed`；`173 failed / 3103 passed / 93 skipped (3369)`，失败文件集合与基线 26 个 ABI 文件一致。

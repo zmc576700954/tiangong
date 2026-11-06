@@ -13,7 +13,7 @@
 | # | 决策 | 推荐默认值 | 是否必须现在定 | 依据强度 |
 |---|---|---|---|---|
 | D-A | 排队 | **M0 不排队，保持 fail-fast**；保留 `queued` 枚举，但不上线晋升逻辑 | **是**（决定 CHECK 枚举、索引与 busy 契约） | fail-fast [实测]；排队 [未验证] |
-| D-B | 审批超时 | **交互 120s / 无人值守 30s**；计时从「推送到可见窗口」开始，重启重推即重计时 | **是**（决定 `expires_at` 语义与 D4 实现） | 30ms 只验证时序 [实测]；120/30s 是 [推断] |
+| D-B | 审批超时 | **交互 120s / 无人值守 30s**；计时从「推送到可见窗口」开始；重启不重推、不重计时，残留 `pending` 统一 `deny(decided_by='startup')` | **是**（决定 `expires_at` 语义与 D4 实现） | 30ms 只验证时序 [实测]；120/30s 是 [推断] |
 | D-C | Codex `runStreamed()` | **有条件默认开启**：C1–C7 同批交付后默认走流式；任一未达成则用开关回退 `run()` | **部分必须现在定**：取消语义/进程组回收（C3）与 aborted 对账（C2）现在定；默认值随 C3 交付 | 真机 [实测] |
 | D-D | 成本上限 | **项目（graph）× 本地日** 双层额度，**准入拦截**；超限拒新 turn，不杀在途 turn，人工审批可单次放行 | **是**（`agent_usage` 必须补 `graph_id/day_key`） | 现状只有估算、权威 usage 未落库 [代码] |
 | D-E | 长尾 CLI 工具事件 | **M0 如实声明 `none`；M1 只投「合成文件变更证据」**，不为 7 个 CLI 逐一写 parser | 声明现在定；投入可延后到 M1 | 现状 `parseFileChanges:false` [代码]；CLI 结构化输出 [未验证] |
@@ -82,11 +82,11 @@ fail-closed 的超时，本质是**「人还没看」多久之后被判成「人
 |---|---|---|
 | DB | `agent_approvals.expires_at NOT NULL`；超时写 `denied + decided_by='timeout'` | 设计 §4.2/§7.4 |
 | 状态机 | `waiting_approval` 期间 turn 是否继续占 session 锁 | 设计 §5.1/§6.1；`[推断]` 若占锁，超时值就是「会话被冻结」的上限 |
-| IPC | 审批推送、`onApprovalResolved`、重启重推 | 设计 §7.1/§7.4 |
+| IPC | 审批推送、`onApprovalResolved`、启动对账（不重推） | 设计 §7.1/§7.4 |
 | 实现参考 | spike 网关**代码默认 60s**，但测试实际只跑过 30ms | `[实测]` [gateway.ts](file:///Users/zhumingchen/tiangong/spikes/agent-core/src/approval/gateway.ts#L53)、V7 |
-| UI | 倒计时、窗口销毁时 `deny(system)`、重启后 pending 重推 | 设计 §7.4 |
+| UI | 倒计时、窗口销毁时 `deny(system)`、重启后陈旧 pending 不重推（启动即 deny） | 设计 §7.4 |
 
-**现在不定、以后返工的**：`expires_at` 的语义（固定写入 vs 重推时重写）、以及「无可见窗口时是否起表」。这两条一旦按 60s 写死进 D4，后面改成「交互长、无人值守短」要改校验顺序与重推逻辑。
+**现在不定、以后返工的**：`expires_at` 的语义（固定写入，重启不重写）、以及「无可见窗口时是否起表」。这两条一旦按 60s 写死进 D4，后面改成「交互长、无人值守短」要改校验顺序与启动对账逻辑。
 
 ### 2.3 选项
 
@@ -101,16 +101,17 @@ fail-closed 的超时，本质是**「人还没看」多久之后被判成「人
 **B2：交互 120s，无人值守 30s，二者都不得超过 turn 的 `deadline_at`。** 理由：60s 对「打开 diff、滚动、判断」偏紧；而 120s 的额外占锁代价在单用户交互场景里几乎为零——用户此刻本来就被这一项挡住，不会在同一会话里做别的事。对无人值守，30s 足够覆盖脚本轮询，且能快速失败。
 
 **关键实现约束**（现在定）：
-- 计时从**审批被推送到可见窗口**开始，而非 row 创建；无可见窗口时保持 `pending`、不起表（重启重推时重写 `expires_at`）。
+- 计时从**审批被推送到可见窗口**开始，而非 row 创建；无可见窗口时保持 `pending`、不起表。
+- **重启的实际行为**：启动先 `sweepExpired`（`denied/timeout`），再把剩余 `pending` 统一 `deny`、`decided_by='startup'`；不重推 UI、不重写 `expires_at`。所属 turn 已在启动对账中 `orphaned`，`RecoveryReport.pendingApprovals` 恒为 0，陈旧审批数记 `deniedStaleApprovals`。原「重推 + 批准后 replay」承诺未实现。
 - 超时只写 `denied + timeout`，不新增 `expired` 状态（沿用 §7.4）。
 - 迟到的 `allow` 不执行（V7 已验）。
 
-**如果错了**：超时值是配置项，改值不需要迁移；但「起表时机」如果写错，要改 D4 与重推路径。风险等级：低（值）/ 中（语义）。
+**如果错了**：超时值是配置项，改值不需要迁移；但「起表时机」如果写错，要改 D4 与启动对账路径。风险等级：低（值）/ 中（语义）。
 
 ### 2.5 验证方式
 
-- 指标：`approval_decision_latency_p50/p95`（`decided_at - created_at`）、`approval_timeout_rate`（目标 < 2%）、`approval_repush_after_restart`。
-- 测试：30ms 超时下迟到 allow 不执行（已有 V7）；新增「无窗口不起表」「重启重推后时钟重置」两条。
+- 指标：`approval_decision_latency_p50/p95`（`decided_at - created_at`）、`approval_timeout_rate`（目标 < 2%）、`approval_stale_denied_at_startup`（启动对账拒绝的陈旧 pending 数）。
+- 测试：30ms 超时下迟到 allow 不执行（已有 V7）；「无窗口不起表」；「重启后残留 pending 统一 deny、`pendingApprovals=0`、`deniedStaleApprovals` 计数」。
 - 上线后按真实 p95 回调一次默认值；不要用拍脑袋的 60s 直接锁死。
 
 ### 2.6 需要负责人提供
@@ -322,7 +323,7 @@ D-D 成本口径 ────────┼─► agent_usage 补 graph_id / da
                      ├─► 熔断层=turn 准入（与 INSERT 同事务）
                      └─► 额度值 / 价格表 / 硬拦开关（值可后调）
 
-D-B 审批超时 ────────┼─► expires_at 起表时机 + 重启重推重计时（语义，现在定）
+D-B 审批超时 ────────┼─► expires_at 起表时机 + 启动即 deny（不重推不重计时）（语义，现在定）
                      └─► 120s/30s 具体值（配置，可后调）
 
 D-C Codex 流式 ──────┼─► 默认 runStreamed，以 turn.completed 判完成（现在定）
@@ -344,7 +345,7 @@ D-E 长尾工具事件 ────┼─► capabilities 初始声明（M0 写 
 | D-A → D-B | **锁死** | `waiting_approval` 若占 session 锁，超时值就是会话冻结上限；不先定 A 的锁语义，B 的「120s」没有意义 |
 | D-A → D-D | **锁死（若开排队）** | 队首晋升必须重新做预算准入，否则「排队时没超、开跑就超」 |
 | D-D → D1 schema | **锁死** | `graph_id/day_key` 缺失后无法补算历史项目成本 |
-| D-B → D4 | **锁死** | `expires_at` 语义、重推重计时、无窗口不起表都要进 D4 |
+| D-B → D4 | **锁死** | `expires_at` 语义、启动即 deny（不重推不重计时）、无窗口不起表都要进 D4 |
 | D-A → D1 schema | **锁死** | `queued` 是否进 CHECK 决定迁移形态；索引可后加 |
 | **D-C → D4/D5/D6** | **锁死** | C3 的进程组回收、C2 的 aborted/unknown 对账、C1 的 `turn.completed` 完成判定，会同时改取消 IPC、stepOutcomes 与崩溃恢复；现在不做，默认流式就是带病上线 |
 | D-C → D3 | 弱耦合 | 默认流式后 normalizer 直接消费 `item.*`；若回退 `run()`，同一 normalizer 仍兼容 |
@@ -359,9 +360,9 @@ D-E 长尾工具事件 ────┼─► capabilities 初始声明（M0 写 
 
 | 时间点 | 必须做的决定 | 推迟的后果 |
 |---|---|---|
-| **D1 建表前（现在）** | D-A 的 `queued` 枚举去留 + busy 错误契约；D-D 的 `agent_usage` 维度列与熔断层；D-B 的 `expires_at` 语义；**D-C 的取消语义（C3 进程组回收 + C2 aborted/unknown 对账 + C1 完成判定）**；D-E 的初始 capability 与 D5 快照口径 | 改 CHECK 要迁表；成本无法按项目回填；审批重推逻辑返工；**孤儿进程/中断对账要贯穿 D4/D5/D6 返工**；恢复证据缺失 |
+| **D1 建表前（现在）** | D-A 的 `queued` 枚举去留 + busy 错误契约；D-D 的 `agent_usage` 维度列与熔断层；D-B 的 `expires_at` 语义 + 启动即 deny；**D-C 的取消语义（C3 进程组回收 + C2 aborted/unknown 对账 + C1 完成判定）**；D-E 的初始 capability 与 D5 快照口径 | 改 CHECK 要迁表；成本无法按项目回填；启动对账拒绝语义返工；**孤儿进程/中断对账要贯穿 D4/D5/D6 返工**；恢复证据缺失 |
 | **D3 之前** | D-C 的默认流式分支与 capabilities（`item/derived`）；C6 环境前置校验接入 adapter 启动 | 先写死 `run()` 再改，normalizer 与 UI 能力位会漂移 |
-| **M0 期间** | D-A 只做 fail-fast；D-B 只做「交互 120s / 无人值守 30s + 重推重计时」；D-E 只声明 `none`；**D-C 交付 C1–C7（C3 必须在本阶段闭环）** | 不影响 M0 验收，但 C3 不闭环则流式不能默认开 |
+| **M0 期间** | D-A 只做 fail-fast；D-B 只做「交互 120s / 无人值守 30s + 启动即 deny」；D-E 只声明 `none`；**D-C 交付 C1–C7（C3 必须在本阶段闭环）** | 不影响 M0 验收，但 C3 不闭环则流式不能默认开 |
 | **M1 之前（拿到数据后）** | D-A 是否开启排队（先跑 U6 spike）；D-C 的 20-turn 取消长跑与孤儿回收 soak；D-D 额度数值与硬拦开关；D-E 是否做 E2 | 过早开启 = 未验证的晋升进入生产；流式未 soak 就默认开 = 残留进程进用户机器 |
 | **M1 之后** | D-E 的 E3（按适配器用量）；D-C 的 E3（绕过 SDK）仅在强沙箱需求出现时评估 | 不影响主线 |
 

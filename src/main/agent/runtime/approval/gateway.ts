@@ -3,7 +3,8 @@
  *
  * 约束（agent-decisions.md D-B）：
  * - 交互 120s / 无人值守 30s；
- * - pending 保留，重启重推并重计时；
+ * - pending 保留；启动对账只重推所属 turn 仍存活的审批（生产上在途 turn 已被
+ *   orphaned，实际是统一 deny + decided_by='startup'，不推 UI、不重计时）；
  * - 超时写 denied + decided_by='timeout'；
  * - 决定幂等；
  * - argsHash 必须参与匹配（防 TOCTOU）。
@@ -57,8 +58,9 @@ function parseArgsJson(argsJson: string): Record<string, unknown> {
 function bashPolicyFields(
   toolName: string,
   args: Record<string, unknown>,
+  cwd?: string,
 ): { policyRule: string; policyReason: string; risk: RiskLevel } | undefined {
-  const policy = bashPolicyForTool(toolName, args)
+  const policy = bashPolicyForTool(toolName, args, { cwd })
   if (!policy) return undefined
   return { policyRule: policy.rule, policyReason: policy.reason, risk: policy.risk }
 }
@@ -253,7 +255,8 @@ export class ApprovalGateway {
     const timeoutMs = this.timeoutFor(mode)
     const argsHash = hashArgs(input.toolName, input.args)
     const policyDecision = input.policyDecision ?? 'ask'
-    const bashPolicy = bashPolicyFields(input.toolName, input.args)
+    // 配置探针按审批请求所属会话的工作目录读取仓库配置，不能用进程 cwd。
+    const bashPolicy = bashPolicyFields(input.toolName, input.args, input.cwd)
     const risk = input.risk ?? bashPolicy?.risk ?? classifyToolRisk(input.toolName, input.args)
     const id = newId('appr')
     const createdAt = this.now()
@@ -616,7 +619,9 @@ export class ApprovalGateway {
     this.repo.refreshApprovalExpiry(row.id, expiresAt, row.timeout_ms)
     const redacted = hasRedactionMeta(row.args_json)
     // 脱敏后的参数无法可靠复算策略规则，重放时不展示规则，避免给出误导性的「命中规则」。
-    const policy = redacted ? null : bashPolicyFields(row.tool_name, parseArgsJson(row.args_json))
+    const policy = redacted
+      ? null
+      : bashPolicyFields(row.tool_name, parseArgsJson(row.args_json), row.cwd ?? undefined)
     const payload: ApprovalRequestPayload = {
       approvalId: row.id,
       runId: row.run_id,
@@ -650,7 +655,7 @@ export class ApprovalGateway {
   listPendingPayloads(): ApprovalRequestPayload[] {
     return this.repo.listPendingApprovals().map((row) => {
       const redacted = hasRedactionMeta(row.args_json)
-      const policy = redacted ? null : bashPolicyFields(row.tool_name, parseArgsJson(row.args_json))
+      const policy = redacted ? null : bashPolicyFields(row.tool_name, parseArgsJson(row.args_json), row.cwd ?? undefined)
       return {
         approvalId: row.id,
         runId: row.run_id,

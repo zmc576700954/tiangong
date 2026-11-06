@@ -599,7 +599,7 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `git log/show --show-signature` | 新增 → ask（`git-show-signature`） | 会拉起 `gpg` 验证签名 |
 | `git help` / `git --help`/`-h` / `<子命令> --help`/`-h` | 一律 → ask（`git-help`） | 调 man/pager；`--web` 会按配置执行 browser 命令 |
 | 单引号外的 `$` / `{` `}` / 反斜杠续行 / 语义转义 / unquoted glob / `~` | 一律 → ask（`shell-expansion` / `shell-brace` / `shell-continuation` / `shell-backslash` / `shell-glob` / `shell-tilde`） | 策略看到的是展开前字面量，运行时可能拼出危险参数 |
-| `git diff/log/show/status/blame/whatchanged` 且仓库/用户配置命中执行型键 | 一律 → ask（`git-repo-config-exec`） | 读 `.git/config`（含 include）与全局配置的 `diff.*.textconv` / `diff.external` / `core.fsmonitor` |
+| `git diff/log/show/status/blame/whatchanged` 且仓库/用户配置命中执行型键 | 一律 → ask（`git-repo-config-exec`） | 读会话工作目录所属仓库的 `.git/config`（含 include / `config.worktree`）与全局配置：`diff.*.textconv` / `diff.*.command` / `diff.external` / `core.fsmonitor` / 仓库本地 `filter.*.clean|smudge|process` / `log.showSignature` |
 | `rg --pre`、`rg -z`/`--search-zip` | 已在危险参数表 → ask | 逐文件执行外部程序 / 解压程序 |
 | `find -exec*`/`-delete`/`-fprint*`/`-fls` | 已在危险参数表 → ask | 执行 / 写盘 |
 | `node --check` | **仅严格形态 allow** | 只放行 `node --check <file>`（恰好两个参数）；多出任何参数一律 ask |
@@ -646,7 +646,17 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 顺序上先判危险参数再判展开：`find . -exec rm {} \;` 仍报 `find-dangerous`（`-exec` 优先），`file --comp\` + 换行拼出的 `--compile` 仍报 `file-compile`；其余展开形态分别报上面的规则。反向对照：单引号内不展开 —— `rg '$HOME' file`、`grep '$PATH' file` 仍 allow，`find . -name "*.ts"`（glob 在双引号内）仍 allow。
 
-**仓库/用户 git 配置驱动的执行（B2）**：`git diff` / `git log -p` / `git show` / `git status` / `git blame` / `git whatchanged` 会按配置执行 `diff.*.textconv`、`diff.external`、`core.fsmonitor`；一次被批准的 Write 改写 `.git/config` 即可换取零审批执行。策略侧现在会：从 cwd 向上定位 `.git`（支持 worktree 的 gitdir/commondir），递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理），并读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；任一文件出现上述键的非空值即 `git-repo-config-exec` ask。文件存在但不可读按危险处理（fail-closed）；无仓库或配置干净时保持 allow。全局配置在进程内只读一次缓存。
+**仓库/用户 git 配置驱动的执行（B2）**：`git diff` / `git log -p` / `git show` / `git status` / `git blame` / `git whatchanged` 会按配置执行 `diff.*.textconv`、`diff.*.command`、`diff.external`、`filter.*.clean|smudge|process`、`core.fsmonitor`，`log.showSignature` 还会拉起 gpg；一次被批准的 Write 改写 `.git/config` 即可换取零审批执行。策略侧现在会：
+
+- **用会话/请求的工作目录**（Claude 钩子取 `session.config.workingDirectory`，driver 取 `request.workingDirectory`，审批网关切到请求的 `cwd`），不是主进程 `process.cwd()`；
+- 从该目录向上定位 `.git`（支持 worktree 的 gitdir/commondir），读取 `.git/config`、`.git/config.worktree`（`extensions.worktreeConfig` 的 per-worktree `core.fsmonitor`），递归跟随 `include.path` / `includeIf.path`（条件不复判，按可能命中处理）；
+- 读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；
+- 节名按 `diff` / `diff.` / `diff ` 前缀匹配，因此现代写法 `[diff "evil"]` 与旧式子节 `[diff.evil]`（`git config --get diff.evil.textconv` 认可）都会命中；
+- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor` 按 git 布尔语义（`false/no/off/0` 为关闭）判定；仓库本地 `filter` 的 `clean/smudge/process` 只在 `status`/`diff` 判定；`log.showSignature=true` 只在 `log`/`show`/`whatchanged` 判定；
+- 任一命中即 `git-repo-config-exec` ask；文件存在但不可读按危险处理（fail-closed）；无仓库或配置干净时保持 allow；
+- **全局配置每次现读、不做进程内缓存**：缓存会让「先判干净、随后配置被改写」在同一进程内永远看不见；单次读取约 0.05 ms，去掉无明显开销（mtime+size 失效还受时间戳精度与同尺寸改写竞态影响）。
+
+刻意不纳入的点：全局 `filter` 通常来自 `git lfs install`（`clean/smudge/process` 三项都有），若把全局也计入，任何装过 LFS 的用户每次 `status`/`diff` 都会被弹窗；仓库本地 `filter` 才是「一次 Write 改写 `.git/config`」的直接威胁面，因此只探测仓库本地。`gpg.program` 本身不会在只读命令里执行，只有 `log.showSignature` 打开后才会调用，故只探测后者。
 
 
 **判定是「命令名 + 参数」两段式，不是命令名匹配**（`DANGEROUS_ARGS_BY_COMMAND` + `WHITELIST_COMMANDS`）：
@@ -801,7 +811,7 @@ UPDATE agent_turns SET status='orphaned', ended_at=?
 UPDATE agent_steps SET status='unknown'
   WHERE status='running' OR (status='approved' AND executing_at IS NOT NULL);
 COMMIT
--- 注意：agent_approvals 的 pending 保持不动，重启后逐条重推（见 §7.4）
+-- 注意：agent_approvals 的 pending 保留供审计；启动对账随后统一 deny(decided_by='startup')，不重推（见 §7.4）
 ```
 
 对账后按 §5.5 计算每个 orphan 的 `RecoveryPlan`，并广播一次全量快照。M0 验收「无悬空 running」由这一步交付。同一入口随后执行 §6.5 的残留进程扫描（并入 D5）。
@@ -1003,7 +1013,7 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 ### 7.4 生命周期：pending 保留 + 启动即 deny + 超时拒绝
 
 - 超时：交互 **120s**；`mode='unattended'` 的 **30s** 分支已实现，但**当前没有生产调用方传入 `unattended`**（默认恒为 `interactive`），因此 30s 在生产不可达；spike 用 30ms 验证时序。写 `denied` + `decided_by='timeout'`，且**迟到的 allow 不执行**（V7 已实测）。
-- 重启（**实际行为**）：启动先扫描过期的 `pending` 并写 `denied/decided_by='timeout'`，再把剩余 `pending` 统一 `deny`、`decided_by='startup'`；**不重推 UI，也不进入 replay**。其所属 turn 在启动对账中已标为 `orphaned`，`RecoveryReport.replayed` 恒为空。此前文档承诺的「重推审批 + 批准后 replay」**并未实现**，本版以实际行为为准（改的是承诺，不是代码）。
+- 重启（**实际行为**）：启动先扫描过期的 `pending` 并写 `denied/decided_by='timeout'`，再把剩余 `pending` 统一 `deny`、`decided_by='startup'`；**不重推 UI，也不进入 replay**。其所属 turn 在启动对账中已标为 `orphaned`，因此没有可重推的审批：`RecoveryReport.pendingApprovals`（实现取 `reconcileStartup().replayed.length`）恒为 0；被启动对账置为 `denied` 的陈旧审批数记在 `RecoveryReport.deniedStaleApprovals`。此前文档承诺的「重推审批 + 批准后 replay」**并未实现**，本版以实际行为为准（改的是承诺，不是代码）。
 - 重复决定：幂等，只执行 1 次（V7 已实测）。
 - 决定与 `approval.resolved` 事件**同一事务**写入（V7 已实测）。
 - 窗口销毁 / renderer 崩溃：该窗口 `pending` → `deny(system)` 并广播 resolved，随后取消对应 turn（进程还活着，不走 `orphaned`）。
@@ -1156,7 +1166,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 | D1 | 类型迁移 + 迁移 17→20（M1 再到 v23）+ 9 表 + 活跃唯一索引 + 进程登记列 + `residual_risk` | 旧库副本行数/hash 不变；单测全绿 |
 | D2 | `SessionLockRegistry`（`tryAcquire`/`acquire`/ALS/环检测）+ 显式归属 | `SESSION_BUSY`/`NODE_BUSY`、重入不死锁、归属零错误、P99 < 0.1 ms |
 | D3 | 3 个 Normalizer + 最小契约 + OpenCode 无工具轨迹降级 + **`turn.completed` 完成判定** | 三后端 checkpoint 序列一致、seq 连续；Codex 在 `turn.completed` 后 100 ms 内完成，不等迭代器 |
-| D4 | 审批三段式 + `argsHash` + fail-closed + pending 重推 | 幂等只执行 1 次、超时后迟到 allow 不执行、重启重放不自动批准 |
+| D4 | 审批三段式 + `argsHash` + fail-closed + 启动即 deny（不重推） | 幂等只执行 1 次、超时后迟到 allow 不执行、重启不放行陈旧 pending |
 | D5 | 启动对账（`AgentManager` 调用仓储）+ `executing_at` 三阶段 + turn 起始快照 + `stepOutcomes` + **分层进程回收** | 真 SIGKILL 后零悬空；五行判定全部命中；OpenCode 取消后 2 s 残留为 0；Claude 按本轮真实句柄回收（只有未登记句柄才 `unconfirmed`）；Codex 旧路径不承诺 0 残留但 `residual_risk` 可见；无法证明归属时 kill 调用数 = 0；同 uid 不作防伪造验收；`aborted` step 全部进 `stepOutcomes` |
 
 依赖顺序：**D1 → D2 → D3（可与 D4 并行）→ D4 → D5**。D5 依赖 D2 的锁与 D4 的审批行，必须在最后；分层进程回收与启动扫描（仅可证明归属）并入 D5，不单独新增编号。

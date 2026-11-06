@@ -405,12 +405,28 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
- * `diff.*.textconv`、`diff.external`（diff/log/show/blame/whatchanged）
- * 与 `core.fsmonitor`（status 等）。配置命中即 ask。
+ * `diff.*.textconv` / `diff.*.command` / `diff.external` / `filter.*.clean|smudge|process`
+ * （diff/log/show/blame/whatchanged/status）、`core.fsmonitor`（status 等）
+ * 与 `log.showSignature`（log/show/whatchanged 自动调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
   'diff', 'log', 'show', 'status', 'blame', 'whatchanged',
 ])
+
+/**
+ * 节名可能写成 `[diff]`、`[diff "evil"]`（现代式子节）或 `[diff.evil]`
+ * （旧式子节，`git config --get diff.evil.textconv` 认可）。因此不能只取空格前的整串，
+ * 必须按 `name` 后跟 `.` / 空白 / 结束 的前缀判定（`/^diff(\.|\s|$)/`）。
+ */
+function gitConfigSectionIs(section: string, name: string): boolean {
+  return new RegExp(`^${name}(?:\\.|\\s|$)`).test(section)
+}
+
+/** git 布尔配置：false/no/off/0（含空值）为假；其余为真（路径类配置同样按真处理）。 */
+function gitConfigBoolean(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return normalized !== '' && normalized !== 'false' && normalized !== 'no' && normalized !== 'off' && normalized !== '0'
+}
 
 /** git 配置值里的行内注释：`#`/`;` 只有在行首或前有空白时才是注释。 */
 function stripGitConfigComment(value: string): string {
@@ -426,12 +442,13 @@ function stripGitConfigComment(value: string): string {
 }
 
 /** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
-function gitConfigTextExecutes(text: string): boolean {
+function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'global'): boolean {
   let section = ''
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const sectionMatch = /^\[\s*([^\]]+?)\s*\]$/.exec(line)
+    // 节头允许尾随注释：`[diff "evil"] # note`（Git 同样接受）。
+    const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
     if (sectionMatch) {
       section = sectionMatch[1].toLowerCase()
       continue
@@ -441,9 +458,32 @@ function gitConfigTextExecutes(text: string): boolean {
     const key = kv[1].toLowerCase()
     const value = stripGitConfigComment(kv[2])
     if (!value) continue
-    const sectionName = section.split(/\s+/)[0]
-    if (sectionName === 'diff' && (key === 'textconv' || key === 'external')) return true
-    if (sectionName === 'core' && key === 'fsmonitor' && value.toLowerCase() !== 'false') return true
+    // `diff.<driver>.command` 与 `diff.external` / `textconv` 一样会执行外部程序。
+    if (gitConfigSectionIs(section, 'diff') && (key === 'textconv' || key === 'external' || key === 'command')) {
+      return true
+    }
+    if (gitConfigSectionIs(section, 'core') && key === 'fsmonitor' && gitConfigBoolean(value)) return true
+    // filter.<driver>.clean/smudge/process：status/diff 读取工作区时会调用外部过滤器。
+    // 只看仓库本地配置：全局 filter 通常是 git-lfs（clean/smudge/process 都有），
+    // 若把全局也算进来，任何装过 LFS 的用户每次 status/diff 都会被弹窗。
+    // 仓库本地配置可在一次被批准的 Write 后改写，才是 B2 的实际威胁面。
+    if (
+      source === 'repo' &&
+      (sub === 'status' || sub === 'diff') &&
+      gitConfigSectionIs(section, 'filter') &&
+      (key === 'clean' || key === 'smudge' || key === 'process')
+    ) {
+      return true
+    }
+    // log.showSignature=true 让 log/show/whatchanged 自动调用 gpg（gpg.program 可指向任意程序）。
+    if (
+      gitConfigSectionIs(section, 'log') &&
+      key === 'showsignature' &&
+      gitConfigBoolean(value) &&
+      (sub === 'log' || sub === 'show' || sub === 'whatchanged')
+    ) {
+      return true
+    }
   }
   return false
 }
@@ -466,7 +506,7 @@ function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): stri
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const sectionMatch = /^\[\s*([^\]]+?)\s*\]$/.exec(line)
+    const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
     if (sectionMatch) {
       section = sectionMatch[1].toLowerCase()
       continue
@@ -484,11 +524,11 @@ function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): stri
 }
 
 /** 任一配置文件登记了执行型配置即危险；文件存在但不可读按危险处理（fail-closed）。 */
-function gitConfigFilesExecute(files: string[]): boolean {
+function gitConfigFilesExecute(files: string[], sub: string, source: 'repo' | 'global'): boolean {
   for (const file of files) {
     if (!existsSync(file)) continue
     try {
-      if (gitConfigTextExecutes(readFileSync(file, 'utf8'))) return true
+      if (gitConfigTextExecutes(readFileSync(file, 'utf8'), sub, source)) return true
     } catch {
       return true
     }
@@ -519,9 +559,12 @@ function findGitDir(root: string): string | null {
   return null
 }
 
-/** 仓库配置（worktree 走 commondir）+ 递归 include。 */
+/** 仓库配置（worktree 走 commondir + config.worktree）+ 递归 include。 */
 function repoGitConfigFiles(gitDir: string): string[] {
   const files = gitConfigPaths(join(gitDir, 'config'))
+  // extensions.worktreeConfig 开启后，per-worktree 配置在 config.worktree；
+  // core.fsmonitor 可按 worktree 设置，漏读该文件会放过配置驱动的执行。
+  files.push(...gitConfigPaths(join(gitDir, 'config.worktree')))
   try {
     const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
     if (common) {
@@ -534,11 +577,13 @@ function repoGitConfigFiles(gitDir: string): string[] {
   return files
 }
 
-let globalGitConfigCache: boolean | null = null
-
-/** 用户/系统配置只读一次；它们在一次进程生命周期内基本不变。 */
-function globalGitConfigExecutes(): boolean {
-  if (globalGitConfigCache !== null) return globalGitConfigCache
+/**
+ * 用户/系统配置每次现读，不做进程内缓存：
+ * 缓存会让「先判干净 allow、随后配置被改写」在同一进程内永远看不见，
+ * 而单次读取实测约 0.05 ms，对交互路径无感。用 mtime+size 失效又会受
+ * 文件系统时间戳精度与同尺寸改写的竞态影响，直接去缓存更简单且正确。
+ */
+function globalGitConfigExecutes(sub: string): boolean {
   const candidates = [
     process.env.GIT_CONFIG_GLOBAL,
     join(homedir(), '.gitconfig'),
@@ -546,15 +591,14 @@ function globalGitConfigExecutes(): boolean {
     process.env.GIT_CONFIG_SYSTEM,
     '/etc/gitconfig',
   ].filter((value): value is string => Boolean(value))
-  globalGitConfigCache = candidates.some((file) => gitConfigFilesExecute(gitConfigPaths(file)))
-  return globalGitConfigCache
+  return candidates.some((file) => gitConfigFilesExecute(gitConfigPaths(file), sub, 'global'))
 }
 
-function gitRepoConfigExecutes(root: string, includeGlobal: boolean): boolean {
-  if (includeGlobal && globalGitConfigExecutes()) return true
+function gitRepoConfigExecutes(root: string, includeGlobal: boolean, sub: string): boolean {
+  if (includeGlobal && globalGitConfigExecutes(sub)) return true
   const gitDir = findGitDir(root)
   if (!gitDir) return false
-  return gitConfigFilesExecute(repoGitConfigFiles(gitDir))
+  return gitConfigFilesExecute(repoGitConfigFiles(gitDir), sub, 'repo')
 }
 
 /** 下载内容直接交给解释器执行：最高风险（只认命令位，避免把引号里的示例文本当成真实执行）。 */
@@ -679,15 +723,16 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
     return askRule('git-grep', 'git grep 支持 -O/--open-files-in-pager 执行外部 pager，不纳入只读白名单', CRITICAL)
   }
   if (GIT_READ_SUBCOMMANDS.has(sub)) {
-    // 仓库/用户配置可让 diff/log/show 执行 textconv/external，让 status 执行 fsmonitor。
-    // 一次被批准的 Write 改写 .git/config 即可换取零审批执行，因此读配置后再决定。
+    // 仓库/用户配置可让 diff/log/show 执行 textconv/diff.command/external/filter，
+    // 让 status 执行 fsmonitor/filter，让 log 调用 gpg；一次被批准的 Write 改写
+    // .git/config 即可换取零审批执行，因此读配置后再决定。
     if (
       GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub) &&
-      gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig)
+      gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig, sub)
     ) {
       return askRule(
         'git-repo-config-exec',
-        '仓库或用户 git 配置含 textconv / diff.external / fsmonitor，git 会执行外部程序',
+        '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',
         HIGH,
       )
     }
@@ -1045,7 +1090,10 @@ function shellExpansionVerdict(
 export function bashPolicyForTool(
   toolName: string,
   args: Record<string, unknown>,
+  options?: BashPolicyOptions,
 ): BashPolicyDecision | undefined {
   if (toolName.trim().toLowerCase() !== 'bash') return undefined
-  return evaluateBashPolicy(args.command)
+  // cwd 必须是**会话/请求的工作目录**，不是主进程 process.cwd()：
+  // 否则会话所在仓库的 .git/config 被读漏，配置驱动的执行会零审批放行。
+  return evaluateBashPolicy(args.command, options)
 }

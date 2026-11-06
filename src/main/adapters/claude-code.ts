@@ -347,7 +347,11 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                           // allow → 免弹执行；ask → 强制回到我们的审批网关（用户决定）；
                           // blocked-empty（唯一例外：空命令）→ deny，因为没有内容可审批。
                           if (isBashTool(toolName)) {
-                            const decision = evaluateBashPolicy(bashCommandOf(toolInput))
+                            // 必须用会话工作目录：主进程 cwd 可能不在会话仓库内，
+                            // 否则会漏读该仓库 .git/config 里的 textconv/diff.command 等执行型配置。
+                            const decision = evaluateBashPolicy(bashCommandOf(toolInput), {
+                              cwd: session.config.workingDirectory,
+                            })
                             // 审计要按 step 关联：优先用 hook 回调的 toolUseID，
                             // 缺失时回退到 hook 输入里的 tool_use_id（两者都缺则无法归属）。
                             const toolUseId =

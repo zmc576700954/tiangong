@@ -98,7 +98,7 @@ export function planRecovery(repo: AgentRepository, options: RecoveryPlannerOpti
       runId: approval.run_id,
       turnId: approval.turn_id,
       action: 'keep_pending_approval',
-      reason: 'pending approvals survive restart and are re-emitted by ApprovalGateway',
+      reason: 'pending approvals survive restart for audit, then startup reconcile denies them (decided_by=startup); they are not re-emitted',
     })
   }
 

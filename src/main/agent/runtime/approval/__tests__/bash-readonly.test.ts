@@ -12,6 +12,7 @@ import { describe, expect, it } from 'vitest'
 import {
   DANGEROUS_ARGS_BY_COMMAND,
   WHITELIST_COMMANDS,
+  bashPolicyForTool,
   evaluateBashPolicy,
 } from '../bash-readonly'
 
@@ -503,6 +504,103 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       decision: 'allow',
       rule: 'git:diff',
     })
+  })
+
+  it('阻断 P1-1：diff.<driver>.command 与 diff.external / textconv 一样会执行外部程序', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-diff-command-'))
+    mkdirSync(join(root, '.git'), { recursive: true })
+    writeFileSync(join(root, '.git', 'config'), '[diff "evil"]\n\tcommand = /bin/echo pwned\n')
+    expect(decide('git diff HEAD', { cwd: root, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('阻断 P1-2：旧式子节 [diff.evil]（git config --get 可读）同样命中', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-diff-legacy-'))
+    mkdirSync(join(root, '.git'), { recursive: true })
+    writeFileSync(join(root, '.git', 'config'), '[diff.evil]\n\ttextconv = /bin/echo\n')
+    expect(decide('git diff HEAD', { cwd: root, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('阻断：仓库本地 filter.clean/smudge 与 log.showSignature 也是命令执行面', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-filter-log-'))
+    mkdirSync(join(root, '.git'), { recursive: true })
+    const options = { cwd: root, includeGlobalGitConfig: false }
+
+    writeFileSync(join(root, '.git', 'config'), '[filter "evil"]\n\tclean = /bin/rm\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    writeFileSync(join(root, '.git', 'config'), '[filter.evil]\n\tsmudge = /bin/rm\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // log.showSignature=true 会让 log/show/whatchanged 自动调用 gpg；status 不受影响
+    writeFileSync(join(root, '.git', 'config'), '[log]\n\tshowSignature = true\n')
+    expect(decide('git log -1', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+
+  it('阻断 P1-3：策略按会话工作目录读取仓库配置，而不是主进程 cwd', () => {
+    const sessionRoot = mkdtempSync(join(tmpdir(), 'bizgraph-session-cwd-'))
+    const outside = mkdtempSync(join(tmpdir(), 'bizgraph-outside-cwd-'))
+    mkdirSync(join(sessionRoot, '.git'), { recursive: true })
+    writeFileSync(join(sessionRoot, '.git', 'config'), '[diff]\n\texternal = /bin/rm\n')
+
+    const args = { command: 'git diff HEAD' }
+    // 会话目录之外（干净目录）仍 allow
+    expect(bashPolicyForTool('Bash', args, { cwd: outside, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:diff',
+    })
+    // 会话目录是该仓库 → 必须 ask；修复前忽略 cwd，按主进程 cwd 判定会 allow
+    expect(bashPolicyForTool('Bash', args, { cwd: sessionRoot, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('阻断 P2-1：全局 git 配置每次现读，同进程改写后必须重新判定', () => {
+    const home = mkdtempSync(join(tmpdir(), 'bizgraph-global-cfg-'))
+    const globalConfig = join(home, '.gitconfig')
+    writeFileSync(globalConfig, '[core]\n\trepositoryformatversion = 0\n')
+    const previous = {
+      HOME: process.env.HOME,
+      XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+      GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+      GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+    }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = home
+    process.env.GIT_CONFIG_GLOBAL = globalConfig
+    process.env.GIT_CONFIG_SYSTEM = join(home, 'missing-system-config')
+    try {
+      expect(decide('git diff HEAD')).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+      // 同一进程内改写全局配置：缓存实现会一直返回 allow
+      writeFileSync(globalConfig, '[diff]\n\texternal = /bin/rm\n')
+      expect(decide('git diff HEAD')).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
   })
 
   it('参数白名单表：每个白名单命令都必须登记危险参数（新增命令漏登记会失败）', () => {
