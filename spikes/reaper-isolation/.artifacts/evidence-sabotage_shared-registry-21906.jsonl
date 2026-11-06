@@ -1,0 +1,13 @@
+{"clause":"C1","impl":"sabotage:shared-registry","at":"2026-11-04T15:53:56.811Z","sends":0,"aAlive":true,"bAlive":true}
+{"clause":"C2","impl":"sabotage:shared-registry","at":"2026-11-04T15:53:57.904Z","killed":2,"killedPids":[21954,21957],"killedGroups":[],"unresolved":[],"signalsToB":1,"signalsToBGroup":0,"signalsToShort":0,"groupSignals":0}
+{"clause":"C3.legacy","impl":"sabotage:shared-registry","at":"2026-11-04T15:53:58.580Z","killed":0,"missing":[22046],"unresolved":[],"signalsToB":0,"signalsToCanary":0,"orphanGrandchildAlive":true}
+{"clause":"C3.registry","impl":"sabotage:shared-registry","at":"2026-11-04T15:53:59.057Z","marker":"bizgraph-turn:C3-registry","cliPid":22070,"cliLongPid":22134,"record":{"marker":"bizgraph-turn:C3-registry","pid":22070,"pgid":22070,"startedAt":"Nov 4 23:53:58 2026","command":"/Users/zhumingchen/.nvm/versions/node/v20.20.2/bin/node /Users/zhumingchen/tiangong/spikes/reaper-isolation/src/probes/probe.mjs long","shimPid":22069,"createdAt":1793807638605},"killed":1,"killedPids":[22070],"killedGroups":[],"unresolved":[],"signalsToB":0,"signalsToBGroup":0,"signalsToOtherGroups":[]}
+{"clause":"C4","impl":"sabotage:shared-registry","at":"2026-11-04T15:53:59.578Z","signalsToCanary":3,"reports":[{"case":"bare-pid","killed":1,"unresolved":[]},{"case":"marker-only","killed":1,"unresolved":[]},{"case":"stale-identity","killed":1,"unresolved":[]}],"canaryAlive":false}
+{"clause":"C5","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:00.105Z","pgidA":22222,"pgidB":22224,"groupSignals":[],"killedGroups":[],"signalsToBGroup":0}
+{"clause":"C5b","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:00.567Z","observedPgid":21877,"groupSignals":[],"killedGroups":[],"killedPids":[22274]}
+{"clause":"C6","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:01.017Z","killed":1,"unresolved":[],"signals":1,"expectedResidualRisk":"unconfirmed"}
+{"clause":"C7","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:01.953Z","killedPids":[22321],"killedGroups":[],"shortPid":22323,"signalsToShort":0,"shortSignalEntries":[]}
+{"clause":"C8","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:02.440Z","register":null,"discovered":0,"killed":0,"diagnosticCount":1,"scanHits":1,"signals":0}
+{"clause":"C9","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:03.182Z","signalsToProtected":2,"signalsToCancelled":2,"groupSignals":[]}
+{"clause":"C10","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:03.755Z","turn1Discovered":2,"turn1Killed":2,"turn2KilledPids":[],"signalsToStale":1,"signalsToCanary":0}
+{"clause":"C11","impl":"sabotage:shared-registry","at":"2026-11-04T15:54:04.110Z","discoverSelf":0,"killed":0,"unresolved":[],"signals":0}

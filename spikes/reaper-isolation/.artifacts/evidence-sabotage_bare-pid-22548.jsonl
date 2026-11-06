@@ -1,0 +1,13 @@
+{"clause":"C1","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:04.921Z","sends":0,"aAlive":true,"bAlive":true}
+{"clause":"C2","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:06.002Z","killed":1,"killedPids":[22595],"killedGroups":[],"unresolved":[],"signalsToB":0,"signalsToBGroup":0,"signalsToShort":0,"groupSignals":0}
+{"clause":"C3.legacy","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:06.680Z","killed":0,"missing":[22690],"unresolved":[],"signalsToB":0,"signalsToCanary":0,"orphanGrandchildAlive":true}
+{"clause":"C3.registry","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:07.154Z","marker":"bizgraph-turn:C3-registry","cliPid":22714,"cliLongPid":22780,"record":{"marker":"bizgraph-turn:C3-registry","pid":22714,"pgid":22714,"startedAt":"Nov 4 23:54:06 2026","command":"/Users/zhumingchen/.nvm/versions/node/v20.20.2/bin/node /Users/zhumingchen/tiangong/spikes/reaper-isolation/src/probes/probe.mjs long","shimPid":22713,"createdAt":1793807646705},"killed":1,"killedPids":[22714],"killedGroups":[],"unresolved":[],"signalsToB":0,"signalsToBGroup":0,"signalsToOtherGroups":[]}
+{"clause":"C4","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:07.645Z","signalsToCanary":3,"reports":[{"case":"bare-pid","killed":1,"unresolved":[]},{"case":"marker-only","killed":1,"unresolved":[]},{"case":"stale-identity","killed":1,"unresolved":[]}],"canaryAlive":false}
+{"clause":"C5","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:08.174Z","pgidA":22875,"pgidB":22877,"groupSignals":[],"killedGroups":[],"signalsToBGroup":0}
+{"clause":"C5b","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:08.638Z","observedPgid":21877,"groupSignals":[],"killedGroups":[],"killedPids":[22921]}
+{"clause":"C6","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:09.064Z","killed":1,"unresolved":[],"signals":1,"expectedResidualRisk":"unconfirmed"}
+{"clause":"C7","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:09.999Z","killedPids":[22966],"killedGroups":[],"shortPid":22968,"signalsToShort":0,"shortSignalEntries":[]}
+{"clause":"C8","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:10.488Z","register":null,"discovered":0,"killed":0,"diagnosticCount":1,"scanHits":1,"signals":0}
+{"clause":"C9","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:11.228Z","signalsToProtected":0,"signalsToCancelled":2,"groupSignals":[]}
+{"clause":"C10","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:15.756Z","turn1Discovered":0,"turn1Killed":0,"turn2KilledPids":[23128],"signalsToStale":0,"signalsToCanary":0}
+{"clause":"C11","impl":"sabotage:bare-pid","at":"2026-11-04T15:54:16.113Z","discoverSelf":0,"killed":0,"unresolved":[],"signals":0}

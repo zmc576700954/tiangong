@@ -1,0 +1,94 @@
+{
+  "runId": "r2",
+  "mode": "runStreamed + AbortController",
+  "prompt": "Run this exact shell command and wait for it to finish: sleep 30. After it finishes, reply with the word DONE.",
+  "abortAfterMs": 6000,
+  "threadId": "01a1a624-81d6-7f62-8aa0-7ea5029a07a5",
+  "tAbortMs": 6001,
+  "tThrowMs": 6005,
+  "abortToThrowMs": 4,
+  "abortToCodexGoneMs": 133,
+  "abortToAllGoneMs": 25900,
+  "thrown": {
+    "name": "AbortError",
+    "message": "The operation was aborted",
+    "code": "ABORT_ERR"
+  },
+  "eventsBeforeAbort": 4,
+  "eventsAfterAbort": 0,
+  "unfinishedItemIds": [
+    "item_1"
+  ],
+  "events": [
+    {
+      "tMs": 107,
+      "summary": {
+        "type": "thread.started",
+        "thread_id": "01a1a624-81d6-7f62-8aa0-7ea5029a07a5"
+      }
+    },
+    {
+      "tMs": 144,
+      "summary": {
+        "type": "turn.started"
+      }
+    },
+    {
+      "tMs": 1766,
+      "summary": {
+        "type": "item.completed",
+        "itemId": "item_0",
+        "itemType": "agent_message",
+        "text": "Running the sleep now."
+      }
+    },
+    {
+      "tMs": 1998,
+      "summary": {
+        "type": "item.started",
+        "itemId": "item_1",
+        "itemType": "command_execution",
+        "status": "in_progress",
+        "command": "/bin/zsh -lc 'sleep 30'",
+        "aggregated_output": "",
+        "exit_code": null
+      }
+    }
+  ],
+  "processAtThrow": [
+    "23274     1 sleep 30"
+  ],
+  "processFinal": [],
+  "leaked": 0,
+  "spawnedProcesses": [
+    "22208 22191 /Users/zhumingchen/tiangong/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --experimental-json --sandbox workspace-write --cd /Users/zhumingchen/tiangong/spikes/codex-stream/work/abort --skip-git-repo-check --config approval_policy=\"never\"",
+    "23274 22208 sleep 30",
+    "23274     1 sleep 30"
+  ],
+  "timeline": [
+    {
+      "tMs": 107,
+      "event": "thread.started"
+    },
+    {
+      "tMs": 144,
+      "event": "turn.started"
+    },
+    {
+      "tMs": 1766,
+      "event": "item.completed / agent_message"
+    },
+    {
+      "tMs": 1998,
+      "event": "item.started / command_execution"
+    },
+    {
+      "tMs": 6001,
+      "event": "abort() called"
+    },
+    {
+      "tMs": 6005,
+      "event": "iterator threw: AbortError: The operation was aborted"
+    }
+  ]
+}

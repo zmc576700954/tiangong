@@ -1,0 +1,19 @@
+# 第六轮 settings.json 备份/还原核对（2026-11-05 15:32:17 +0800）
+
+## 测试前备份
+backup=/tmp/bizgraph-realdevice/settings.original.json
+
+## hash 对比
+c59975a30637e1d02bd64c086da3b7b492f9254ac2c8ef30625868ff9b249625  /tmp/bizgraph-realdevice/settings.original.json
+c59975a30637e1d02bd64c086da3b7b492f9254ac2c8ef30625868ff9b249625  /Users/zhumingchen/.claude/settings.json
+
+## 字节级比对
+cmp: identical
+
+## 还原后 permissions 字段
+permissions = undefined
+
+## 测试期间临时值（已还原）
+allow only : 82a2f3a7fdc835206a366b638cefa6c0bc9fe0f891a869594a3ac4f07e48f8cc
+allow+deny : 9900cebf3a0a5edc9313332bd00bc7216ab71a4f2279b2ba3c54e4327f016ba9
+permissions: allow ["Write"] ; deny ["Bash"]

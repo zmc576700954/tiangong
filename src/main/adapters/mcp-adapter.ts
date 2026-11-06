@@ -992,12 +992,15 @@ export class McpAdapter extends BaseAdapter {
     }
     const parsed = config.parseResponse(data)
 
-    // Report authoritative token usage to the AgentManager budget tracker
+    // Report authoritative token usage（M1：全量真实用量，供 UsageLedger 计价落库）
     if (sessionId && parsed.usage) {
       const inputTokens = parsed.usage.input_tokens ?? parsed.usage.prompt_tokens ?? 0
       if (inputTokens > 0) {
         // Default to Claude's 200k context window; provider-specific limits can be wired later
-        this.reportUsage(sessionId, inputTokens, 200_000)
+        this.reportUsage(sessionId, inputTokens, 200_000, {
+          outputTokens: parsed.usage.output_tokens ?? parsed.usage.completion_tokens ?? 0,
+          source: 'provider',
+        })
       }
     }
 

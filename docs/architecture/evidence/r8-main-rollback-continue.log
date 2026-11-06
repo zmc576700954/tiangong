@@ -1,0 +1,80 @@
+[2026-11-05T08:53:10.816Z] [IPC] [kernel] claude-code: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:10.817Z] [IPC] [kernel] codex: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:10.817Z] [IPC] [kernel] opencode: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:10.817Z] [IPC] [kernel] 总开关=off 白名单=[claude]
+[2026-11-05T08:53:10.817Z] [AgentRuntime] startup reclaim: marker=none pids=- groups=- missing=- unresolved=- residualRisk=none
+[2026-11-05T08:53:10.821Z] [YjsRealtime] legacy migration: 1 backfilled / 0 skipped / 0 errors (scanned 1)
+[2026-11-05T08:53:10.824Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:53:10.825Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:53:10.827Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:53:10.827Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:53:11.050Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:53:11.054Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:53:11.054Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:53:11.054Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:53:11.056Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:53:11.056Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:53:11.056Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:53:11.071Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:53:17.583Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T08:53:19.138Z] [AgentManager] [legacy-restore] session=claude-97ae13f5c5854c668e50cb8fd3ace5b4 found agent_sessions row (claude-code); trying native resume
+[2026-11-05T08:53:19.138Z] [AgentManager] Restored persisted session claude-97ae13f5c5854c668e50cb8fd3ace5b4 (claude-code) via native resume
+[2026-11-05T08:53:19.140Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:53:19.146Z] [prompt-orchestrator] Assembled prompt for session claude-97ae13f5c5854c668e50cb8fd3ace5b4: 134 tokens (budget 12000), layers: system=65, scope=10, context=0, waterline=22, user=35
+[2026-11-05T08:53:31.251Z] [ClaudeCodeAdapter] Built context summary for session claude-97ae13f5c5854c668e50cb8fd3ace5b4: 9 chars
+[2026-11-05T08:53:31.253Z] [PipelineRunner] Compress stage: threshold=4000, outputTokens≈86
+[2026-11-05T08:53:31.254Z] [MemoryExtractor] Extracted 1 memory items from session claude-97ae13f5c5854c668e50cb8fd3ace5b4
+[2026-11-05T08:53:31.256Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:53:31.256Z] [WaterlineSync] Waterline advanced for /tmp/bizgraph-realdevice/ws-r8: 1 sessions, 1 fixes
+[2026-11-05T08:53:31.256Z] [WaterlineSync] Waterline persisted for /tmp/bizgraph-realdevice/ws-r8
+[2026-11-05T08:53:31.257Z] [EmbeddingService] Loading embedding model from cache: /tmp/bizgraph-realdevice/ud-r8a/models
+[2026-11-05T08:53:31.266Z] [PipelineRunner] EmbeddingService not ready, skipping embedding generation for persisted memories
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+Error occurred in handler for 'message:saveBatch': Error: __BIZGRAPH_IPC_ERROR__:{"code":"IPC_HANDLER_ERROR","message":"The database connection is not open"}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:28015
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+[2026-11-05T08:53:31.412Z] [EmbeddingService] Failed to load embedding model: TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async getModelFile (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19062)
+    at async getModelJSON (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19965)
+    at async Promise.all (index 1)
+    at async loadTokenizer (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2583:28305)
+    at async AutoTokenizer.from_pretrained (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:13003)
+    at async Promise.all (index 0)
+    at async loadItems (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:164156)
+    at async pipeline (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:163691) {
+  [cause]: Error: read ECONNRESET
+      at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)
+      at TLSWrap.callbackTrampoline (node:internal/async_hooks:130:17) {
+    errno: -54,
+    code: 'ECONNRESET',
+    syscall: 'read'
+  }
+}
+[2026-11-05T08:53:31.413Z] [EmbeddingService] EmbeddingService initialization failed, falling back to keyword-only search: TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async getModelFile (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19062)
+    at async getModelJSON (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19965)
+    at async Promise.all (index 1)
+    at async loadTokenizer (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2583:28305)
+    at async AutoTokenizer.from_pretrained (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:13003)
+    at async Promise.all (index 0)
+    at async loadItems (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:164156)
+    at async pipeline (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:163691) {
+  [cause]: Error: read ECONNRESET
+      at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)
+      at TLSWrap.callbackTrampoline (node:internal/async_hooks:130:17) {
+    errno: -54,
+    code: 'ECONNRESET',
+    syscall: 'read'
+  }
+}
+[2026-11-05T08:53:31.413Z] [PipelineRunner] Embedding service unavailable, semantic retrieval stays disabled

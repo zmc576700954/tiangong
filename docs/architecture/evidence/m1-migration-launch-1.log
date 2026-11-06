@@ -1,0 +1,68 @@
+[main] [2026-11-05T14:50:08.242Z] [Database] Migrating schema from v21 to v23...
+[main] [2026-11-05T14:50:08.247Z] [Database] Table graphs CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.247Z] [Database] Table graphs schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.247Z] [Database] Restored graphs data from backup
+[main] [2026-11-05T14:50:08.247Z] [Database] Table graphs rebuilt successfully
+[main] [2026-11-05T14:50:08.247Z] [Database] Table nodes CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.247Z] [Database] Table nodes schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.248Z] [Database] Restored nodes data from backup
+[main] [2026-11-05T14:50:08.248Z] [Database] Table nodes rebuilt successfully
+[main] [2026-11-05T14:50:08.248Z] [Database] Table chat_threads CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.248Z] [Database] Table chat_threads schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.248Z] [Database] Restored chat_threads data from backup
+[main] [2026-11-05T14:50:08.248Z] [Database] Table chat_threads rebuilt successfully
+[main] [2026-11-05T14:50:08.248Z] [Database] Table agent_runs CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.248Z] [Database] Table agent_runs schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.248Z] [Database] Restored agent_runs data from backup
+[main] [2026-11-05T14:50:08.248Z] [Database] Table agent_runs rebuilt successfully
+[main] [2026-11-05T14:50:08.248Z] [Database] Table agent_sessions schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.249Z] [Database] Restored agent_sessions data from backup
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_sessions rebuilt successfully
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_turns schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.249Z] [Database] Restored agent_turns data from backup
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_turns rebuilt successfully
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_steps CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_steps schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.249Z] [Database] Restored agent_steps data from backup
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_steps rebuilt successfully
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_events schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.249Z] [Database] Restored agent_events data from backup
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_events rebuilt successfully
+[main] [2026-11-05T14:50:08.249Z] [Database] Table agent_approvals schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.250Z] [Database] Restored agent_approvals data from backup
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_approvals rebuilt successfully
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_artifacts CHECK constraints or column types changed, rebuilding...
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_artifacts schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.250Z] [Database] Restored agent_artifacts data from backup
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_artifacts rebuilt successfully
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_usage schema outdated, rebuilding...
+[main] [2026-11-05T14:50:08.250Z] [Database] Restored agent_usage data from backup
+[main] [2026-11-05T14:50:08.250Z] [Database] Table agent_usage rebuilt successfully
+[main] [2026-11-05T14:50:08.253Z] [Database] Schema migrated to v23
+[main] [2026-11-05T14:50:08.254Z] [Settings] Settings file not found, creating with defaults
+[main] [2026-11-05T14:50:08.255Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）
+[main] [2026-11-05T14:50:08.255Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[main] [2026-11-05T14:50:08.255Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[main] [2026-11-05T14:50:08.255Z] [IPC] [kernel] 总开关=on 白名单=[claude]
+[main] [2026-11-05T14:50:08.257Z] [YjsRealtime] legacy migration: 1 backfilled / 0 skipped / 0 errors (scanned 1)
+[main] [2026-11-05T14:50:08.260Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[main] [2026-11-05T14:50:08.261Z] [IPC] RecipeManager loaded 0 recipes from userData
+[main] [2026-11-05T14:50:08.262Z] [CodeIntelIPC] Code intelligence initialized
+[main] [2026-11-05T14:50:08.262Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[main:err] [72494:1105/225008.265139:WARNING:viz_main_impl.cc(85)] VizNullHypothesis is disabled (not a warning)
+[main:err] [2026-11-05T14:50:08.431Z] [OpenCodeAdapter] opencode CLI not found
+[main:err] [2026-11-05T14:50:08.431Z] [ClineAdapter] cline CLI not found
+[main:err] [2026-11-05T14:50:08.431Z] [KiloCodeAdapter] kilo CLI not found
+[main:err] [2026-11-05T14:50:08.431Z] [KimiCodeAdapter] kimi CLI not found
+[main:err] [2026-11-05T14:50:08.432Z] [QoderAdapter] qodercli CLI not found
+[main:err] [2026-11-05T14:50:08.432Z] [QwenCodeAdapter] qwen CLI not found
+[main:err] [2026-11-05T14:50:08.432Z] [CursorAdapter] cursor CLI not found
+[main:err] [2026-11-05T14:50:08.445Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[main:err] Debugger ending on ws://127.0.0.1:63574/4a762ec6-c8f7-4e06-8b9c-8c483762d066
+[main:err] For help, see: https://nodejs.org/en/docs/inspector
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.

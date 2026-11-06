@@ -561,6 +561,74 @@ describe('Settings - A2A defaults merge', () => {
   })
 })
 
+describe('Settings - legacy agentRuntime.limits compatibility', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('ignores a legacy agentRuntime.limits block instead of failing to start', async () => {
+    mockFsData.set(`${mockUserDataPath}/settings.json`, JSON.stringify({
+      version: 1,
+      cliTools: [],
+      apiKeys: [],
+      mcpServers: [],
+      // M0 遗留配置：产品已决定只记账，limits 必须被忽略且不影响读取。
+      agentRuntime: { limits: { perGraph: 1, perDay: 1 } },
+    }))
+
+    const { readSettings } = await import('../settings')
+    const read = await readSettings()
+    // 只验证「读取成功且不因 limits 字段报错」；limits 已不在类型与运行时中。
+    expect(read.version).toBe(1)
+  })
+})
+
+describe('Settings - agentRuntime.costRates', () => {
+  beforeEach(() => {
+    mockFsData.clear()
+    vi.clearAllMocks()
+    vi.resetModules()
+  })
+
+  it('round-trips agentRuntime.costRates written by writeSettings', async () => {
+    const { writeSettings, readSettings } = await import('../settings')
+    await writeSettings({
+      version: 1,
+      cliTools: [],
+      apiKeys: [],
+      mcpServers: [],
+      agentRuntime: {
+        costRates: {
+          currency: 'CNY',
+          inputPerMillion: 2,
+          outputPerMillion: 8,
+          cachedInputPerMillion: 0.2,
+          models: [{ executor: 'codex', model: 'gpt-5', inputPerMillion: 1, outputPerMillion: 4 }],
+        },
+      },
+    } as BizGraphSettings)
+
+    const read = await readSettings()
+    // 修复前 mergeSettings 丢掉整个 agentRuntime，这里会读到 undefined。
+    expect(read.agentRuntime?.costRates).toEqual({
+      currency: 'CNY',
+      inputPerMillion: 2,
+      outputPerMillion: 8,
+      cachedInputPerMillion: 0.2,
+      models: [{ executor: 'codex', model: 'gpt-5', inputPerMillion: 1, outputPerMillion: 4 }],
+    })
+  })
+
+  it('does not inject an empty agentRuntime object when the setting is absent', async () => {
+    const { readSettings } = await import('../settings')
+    const read = await readSettings()
+    expect(read.agentRuntime).toBeUndefined()
+    expect(JSON.stringify(read)).not.toContain('agentRuntime')
+  })
+})
+
 describe('Settings - onChange event', () => {
   beforeEach(() => {
     mockFsData.clear()

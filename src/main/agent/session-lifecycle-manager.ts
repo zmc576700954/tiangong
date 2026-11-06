@@ -26,6 +26,7 @@ import type {
   AgentCommandType,
   AgentOutput,
   AgentSessionConfig,
+  AdapterUsageReport,
   Sandbox,
   TerminationReason,
 } from '@shared/types'
@@ -74,6 +75,12 @@ export class SessionLifecycleManager {
   private adapterOutputHandlers = new Map<string, (output: AgentOutput) => void>()
   /** 每个 adapter 绑定的 sessionEnded handler */
   private adapterSessionEndedHandlers = new Map<string, SessionEndedHandler>()
+  /** 每个 adapter 绑定的 usage handler（M1 成本账本） */
+  private adapterUsageHandlers = new Map<string, (data: AdapterUsageReport) => void>()
+  /** complete 前已见 usage 的 session（turn 粒度：complete 消费后清除） */
+  private usageSeen = new Set<string>()
+  /** legacy 路径每 session 的轮次序号（生成 turn 级幂等键） */
+  private turnSeq = new Map<string, number>()
   /** 当前 scope guard 引用（支持 setScopeGuard 重新绑定） */
   private scopeGuardRef: ScopeGuard
   /** TTL 过期回调：孤立会话超时时自动清理沙箱等资源 */
@@ -182,6 +189,20 @@ export class SessionLifecycleManager {
           !this.cleanupInProgress.has(sessionId) &&
           this.sessionStates.has(sessionId)
         ) {
+          // M1：本轮 complete 前未收到任何 usage → 后端未上报，合成 unknown 占位，
+          // 不静默丢（账本据此区分「真实/估算/未上报」）。usageSeen 按 turn 消费。
+          const hadUsage = this.usageSeen.delete(sessionId)
+          const turnSeq = this.turnSeq.get(sessionId) ?? 0
+          if (!hadUsage) {
+            this.callbacks.onAdapterUsage?.(adapter.name, {
+              sessionId,
+              inputTokens: 0,
+              source: 'unknown',
+              turnKey: `${adapter.name}:${sessionId}:${turnSeq}`,
+            })
+          }
+          // 一轮结束：轮次序号 +1，后续 usage 归入下一轮。
+          this.turnSeq.set(sessionId, turnSeq + 1)
           this.callbacks.onTurnComplete?.(sessionId)
         }
         return
@@ -190,6 +211,23 @@ export class SessionLifecycleManager {
     }
     this.adapterOutputHandlers.set(adapter.name, outputHandler)
     adapter.onOutput(outputHandler)
+
+    // ---- Usage handler: 透传给 AgentManager 的成本账本（M1） ----
+    // 仅当适配器实现了 onUsage 才登记，避免 detach 时对无能力的适配器空调用
+    if (adapter.onUsage) {
+      const usageHandler = (data: AdapterUsageReport) => {
+        if (data.source !== 'unknown') this.usageSeen.add(data.sessionId)
+        const turnSeq = this.turnSeq.get(data.sessionId) ?? 0
+        // legacy 无 turn id：用 session 内轮次序号构造 turn 级幂等键，
+        // 同一 turn 的重复上报不会重复计费。
+        this.callbacks.onAdapterUsage?.(adapter.name, {
+          ...data,
+          turnKey: data.turnKey ?? `${adapter.name}:${data.sessionId}:${turnSeq}`,
+        })
+      }
+      this.adapterUsageHandlers.set(adapter.name, usageHandler)
+      adapter.onUsage(usageHandler)
+    }
 
     // ---- Session ended handler: dispatch to cleanup / recovery / idle path ----
     const sessionEndedHandler: SessionEndedHandler = async (sessionId, reason, exitCode) => {
@@ -275,6 +313,11 @@ export class SessionLifecycleManager {
     if (prevEnded) {
       adapter.off('sessionEnded', prevEnded)
       this.adapterSessionEndedHandlers.delete(adapter.name)
+    }
+    const prevUsage = this.adapterUsageHandlers.get(adapter.name)
+    if (prevUsage) {
+      adapter.offUsage?.(prevUsage)
+      this.adapterUsageHandlers.delete(adapter.name)
     }
   }
 
@@ -848,8 +891,17 @@ export class SessionLifecycleManager {
         adapter.off('sessionEnded', handler)
       }
     }
+    for (const [name, handler] of this.adapterUsageHandlers) {
+      const adapter = this.registry.get(name)
+      if (adapter) {
+        adapter.offUsage?.(handler)
+      }
+    }
     this.adapterOutputHandlers.clear()
     this.adapterSessionEndedHandlers.clear()
+    this.adapterUsageHandlers.clear()
+    this.usageSeen.clear()
+    this.turnSeq.clear()
     this.sessionStates.clear()
     this.sessionBroadcastNames.clear()
     this.sandboxSessionIndex.clear()

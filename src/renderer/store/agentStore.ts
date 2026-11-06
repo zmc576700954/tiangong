@@ -21,6 +21,7 @@ import { useAdapterStore } from './adapterStore'
 import { useThreadStore } from './threadStore'
 import { useMessageStore } from './messageStore'
 import { useSessionStore } from './sessionStore'
+import { unwrapIpcResult } from '../lib/ipcResult'
 
 interface AgentState {
   adapters: { name: string; version: string; installed: boolean }[]
@@ -155,7 +156,7 @@ export const useAgentStore = create<AgentState>(() => ({
   },
 
   sendCommand: async (sessionId, command) => {
-    await window.electronAPI['agent:sendCommand'](sessionId, command)
+    unwrapIpcResult(await window.electronAPI['agent:sendCommand'](sessionId, command))
   },
 
   appendOutput: (threadId, output, activeThreadId?) => {

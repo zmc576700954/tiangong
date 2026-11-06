@@ -61,6 +61,15 @@ export default defineConfig(async () => ({
               external: ['electron'],
             },
           },
+          resolve: {
+            // 与 main 子配置同口径：preload 也通过 `@shared/*` 引用共享类型/工具
+            // （如 @shared/ipc-error 的结构化错误编解码），缺少 alias 会让
+            // `vite build` 的 preload 子构建直接失败。
+            alias: {
+              '@main': path.join(__dirname, 'src/main'),
+              '@shared': path.join(__dirname, 'src/shared'),
+            },
+          },
         },
       },
     ]),

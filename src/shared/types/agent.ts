@@ -89,9 +89,56 @@ export interface AgentCommand {
   targetNodeId: string
 }
 
+export type WorkspaceScanTruncatedReason =
+  | 'file_limit'
+  | 'time_budget'
+  | 'depth_limit'
+  | 'root_unreadable'
+
+export interface FileChangeEvidenceChange {
+  path: string
+  changeType: 'add' | 'modify' | 'delete'
+}
+
+/**
+ * 工作区快照差分证据。
+ *
+ * 语义边界：只能证明这些文件发生了变化，不能证明是哪个工具改的；
+ * 项目目录之外的写入（如 /tmp）不在证据范围。
+ */
+export interface FileChangeEvidence {
+  kind: 'workspace-snapshot-diff'
+  changes: FileChangeEvidenceChange[]
+  totalCount: number
+  displayedCount: number
+  limit: number
+  truncated: boolean
+  scanTruncated: boolean
+  scanTruncatedReason?: WorkspaceScanTruncatedReason
+  scannedFiles: number
+  /** 未做内容指纹、仅按 size+mtime 判定的文件数（默认全部） */
+  unhashedFiles: number
+  durationMs: number
+  root: string
+  toolAttribution: 'unknown'
+  outOfWorkspaceChanges: 'not-included'
+}
+
 /** Agent 输出 */
 export interface AgentOutput {
-  type: 'stdout' | 'stderr' | 'file_change' | 'error' | 'complete' | 'system' | 'progress' | 'thinking' | 'tool_call' | 'context_injection'
+  type:
+    | 'stdout'
+    | 'stderr'
+    | 'file_change'
+    | 'error'
+    | 'complete'
+    | 'system'
+    | 'progress'
+    | 'thinking'
+    | 'tool_call'
+    | 'context_injection'
+    /** M1 ②：长尾 CLI 的工作区差分证据（独立通道，不是工具调用记录） */
+    | 'file_change_evidence'
   data: string
   timestamp: number
   /** 如果是 file_change，记录变更的文件路径 */
@@ -114,6 +161,12 @@ export interface AgentOutput {
   contextRefs?: ContextRef[]
   /** 该输出条目的 token 估算 */
   tokenEstimate?: number
+  /** file_change_evidence：工作区差分证据详情 */
+  fileChangeEvidence?: FileChangeEvidence
+  /** file_change_evidence：证据来源（synthetic 表示由本机推断，不是后端上报） */
+  evidenceSource?: 'backend' | 'kernel' | 'synthetic'
+  /** file_change_evidence：证据可信档位 */
+  evidenceFidelity?: 'token' | 'turn' | 'session'
 }
 
 /** 已解析的上下文（含实际内容，用于注入 prompt） */
@@ -235,6 +288,14 @@ export interface AgentSession {
   }
 }
 
+/** 适配器透传的原始厂商事件（D3 Driver 的归一化输入；不改变旧路径行为） */
+export interface AdapterRawEvent {
+  sessionId: string
+  vendor: 'claude' | 'codex' | 'opencode' | string
+  payload: unknown
+  receivedAt: number
+}
+
 /** Agent 适配器接口 */
 export interface AgentAdapter {
   /** 适配器名称 */
@@ -257,6 +318,36 @@ export interface AgentAdapter {
   /** 移除输出流监听 */
   offOutput(handler: (output: AgentOutput) => void): void
 
+  /** 监听原始厂商事件（可选能力；Driver 用，旧路径不用） */
+  onRawEvent?(handler: (event: AdapterRawEvent) => void): void
+
+  /** 移除原始厂商事件监听 */
+  offRawEvent?(handler: (event: AdapterRawEvent) => void): void
+
+  /**
+   * 监听子进程 spawn（可选能力；Driver 用）。
+   * 只上报适配器自己真正 spawn 的句柄，供 Runtime 落库并在取消时精确回收。
+   */
+  onProcessSpawn?(handler: (sessionId: string, proc: { pid: number; pgid?: number }) => void): void
+
+  offProcessSpawn?(handler: (sessionId: string, proc: { pid: number; pgid?: number }) => void): void
+
+  /** 设置本轮进程环境标记（可选能力；未实现的适配器仍由 Runtime 落库标记） */
+  setEnvMarker?(sessionId: string, marker: string | null): void
+
+  /**
+   * 切换「原始事件流式模式」（可选能力，仅 Runtime/Kernel 路径使用）。
+   * 旧 AgentOutput 路径保持各适配器原有阻塞语义，不得被该模式改变。
+   */
+  setRawStreamMode?(sessionId: string, enabled: boolean): void
+
+  /**
+   * 切换「受控 spawn 模式」（D5 修复，可选能力）：
+   * 开启后适配器必须让我们持有真实 CLI 的 pid/pgid（自有进程组），
+   * 使跨重启回收有可证明、可执行的依据。旧 AgentOutput 路径不开启。
+   */
+  setProcessSupervision?(sessionId: string, enabled: boolean): void
+
   /** 终止会话 */
   terminateSession(sessionId: string, reason?: TerminationReason): Promise<void>
 
@@ -272,6 +363,15 @@ export interface AgentAdapter {
   /** 读取适配器持有的 CLI 级会话 id（Claude Code 的 conversation id 等），供崩溃恢复时原生续接 */
   getResumeSessionId?(sessionId: string): string | undefined
 
+  /** 本适配器是否支持原生会话续接（进程重启后可用 CLI/SDK 会话 id 接着聊） */
+  supportsNativeResume?(): boolean
+
+  /**
+   * 进程重启后从持久化状态重建内存会话句柄（不启动进程、不发起新回合）。
+   * 供 AgentManager 的 Kernel 恢复路径使用。
+   */
+  restoreSession?(sessionId: string, config: AgentSessionConfig): boolean
+
   /** 监听会话结束事件（BaseAdapter 继承 EventEmitter 提供） */
   on(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle' | 'user', exitCode: number | null) => void): void
 
@@ -279,11 +379,35 @@ export interface AgentAdapter {
   off(event: 'sessionEnded', handler: (sessionId: string, reason: 'success' | 'crash' | 'error' | 'timeout' | 'idle' | 'user', exitCode: number | null) => void): void
 
   /** 订阅 Token 使用事件（可选，未实现时 AgentManager 会记录警告） */
-  onUsage?(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void
+  onUsage?(handler: (data: AdapterUsageReport) => void): void
 
   /** 取消 Token 使用事件订阅（可选） */
-  offUsage?(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void
+  offUsage?(handler: (data: AdapterUsageReport) => void): void
 }
+
+/** 适配器上报的用量事件（M1：扩展为全量真实用量 + 真伪标记）。 */
+export interface AdapterUsageReport {
+  sessionId: string
+  inputTokens: number
+  maxTokens?: number
+  outputTokens?: number
+  cachedInputTokens?: number
+  /** 缓存写入 token（Claude cache_creation_input_tokens），账本单列 */
+  cacheCreationInputTokens?: number
+  /** 计价维度：后端实际使用的模型；取不到则账本按缺价处理（cost=NULL） */
+  model?: string
+  /** provider=后端真实用量 / estimated=估算 / unknown=后端未上报（lifecycle 合成的占位） */
+  source?: 'provider' | 'estimated' | 'unknown'
+  /** 后端事件 id（幂等去重；如 Codex turn.completed 的 turn id） */
+  backendEventId?: string
+  /**
+   * legacy 路径的 turn 级幂等键（由 lifecycle 按 session 内的轮次序号生成），
+   * 保证同一 turn 的重复上报不重复计费。
+   */
+  turnKey?: string
+}
+
+
 
 // ============================================
 // 范围守卫类型
@@ -562,6 +686,27 @@ export interface BizGraphSettings {
   }
   /** Phase D9: A2A Server 配置（HTTP + SSE 端点；持久化到 settings.json） */
   a2aServer?: A2AServerConfig
+  /**
+   * M0/M1 Agent Runtime 成本配置。全部可选：未配置时只记账，不限额也不拒单。
+   * 不内置任何汇率或模型单价，由用户显式填写。
+   * 注意：这里没有 limits 字段——M1 只记账，任何情况下都不因成本拒绝 turn。
+   */
+  agentRuntime?: {
+    costRates?: {
+      currency?: string
+      inputPerMillion?: number
+      outputPerMillion?: number
+    }
+    /**
+     * 事件保留策略（只管 agent_events；成本账本/审批台账/会话/turn 永不清理）。
+     * 默认 90 天、每批 500 行。启动时执行一次，之后每 24h 一次。
+     */
+    retention?: {
+      enabled?: boolean
+      retentionDays?: number
+      batchSize?: number
+    }
+  }
   /** Phase D9: A2A 远程 Agent 列表（注册为 `a2a:<name>` 子代理类型） */
   a2a?: {
     remoteAgents: A2ARemoteAgent[]

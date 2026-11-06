@@ -576,6 +576,9 @@ function mergeSettings(
     // Phase D9: a2aServer / a2a 整体替换（不深合并）；未在 saved 中保留 undefined 以便后续 null 检查
     a2aServer: saved.a2aServer ?? defaults.a2aServer,
     a2a: saved.a2a ?? defaults.a2a,
+    // M1: agentRuntime 必须真的透传，否则 settings 里的 costRates 永远到不了
+    // AgentRuntime（价格只会走内置表）。缺省时保持 undefined，不注入空对象。
+    agentRuntime: saved.agentRuntime ?? defaults.agentRuntime,
   }
 }
 

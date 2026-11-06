@@ -1,0 +1,13 @@
+{"clause":"C1","impl":"sabotage:group-wide","at":"2026-11-04T15:54:16.955Z","sends":0,"aAlive":true,"bAlive":true}
+{"clause":"C2","impl":"sabotage:group-wide","at":"2026-11-04T15:54:18.060Z","killed":1,"killedPids":[23227],"killedGroups":[23227],"unresolved":[],"signalsToB":0,"signalsToBGroup":0,"signalsToShort":0,"groupSignals":1}
+{"clause":"C2.reception","impl":"sabotage:group-wide","at":"2026-11-04T15:54:18.061Z","aSignals":[{"label":"C2.A.long","signal":"SIGTERM"},{"label":"C2.A","signal":"SIGTERM"}],"shortEntries":["ready","natural-exit"]}
+{"clause":"C3.legacy","impl":"sabotage:group-wide","at":"2026-11-04T15:54:18.798Z","killed":1,"missing":[],"unresolved":[],"signalsToB":0,"signalsToCanary":0,"orphanGrandchildAlive":false}
+{"clause":"C4","impl":"sabotage:group-wide","at":"2026-11-04T15:54:19.354Z","signalsToCanary":1,"reports":[{"case":"bare-pid","killed":0,"unresolved":[]},{"case":"marker-only","killed":0,"unresolved":[]},{"case":"stale-identity","killed":1,"unresolved":[]}],"canaryAlive":false}
+{"clause":"C5","impl":"sabotage:group-wide","at":"2026-11-04T15:54:19.888Z","pgidA":23473,"pgidB":23475,"groupSignals":[{"pid":-23473,"signal":"SIGTERM","at":1793807659736}],"killedGroups":[23473],"signalsToBGroup":0}
+{"clause":"C5b","impl":"sabotage:group-wide","at":"2026-11-04T15:54:20.388Z","observedPgid":21877,"groupSignals":[],"killedGroups":[],"killedPids":[]}
+{"clause":"C6","impl":"sabotage:group-wide","at":"2026-11-04T15:54:24.896Z","killed":0,"unresolved":[],"signals":0,"expectedResidualRisk":"unconfirmed"}
+{"clause":"C7","impl":"sabotage:group-wide","at":"2026-11-04T15:54:25.858Z","killedPids":[23629],"killedGroups":[23629],"shortPid":23631,"signalsToShort":0,"shortSignalEntries":[]}
+{"clause":"C8","impl":"sabotage:group-wide","at":"2026-11-04T15:54:26.377Z","register":null,"discovered":0,"killed":0,"diagnosticCount":1,"scanHits":1,"signals":0}
+{"clause":"C9","impl":"sabotage:group-wide","at":"2026-11-04T15:54:27.199Z","signalsToProtected":0,"signalsToCancelled":2,"groupSignals":[{"pid":-23741,"signal":"SIGTERM","at":1793807666969},{"pid":-23745,"signal":"SIGTERM","at":1793807666997}]}
+{"clause":"C10","impl":"sabotage:group-wide","at":"2026-11-04T15:54:27.761Z","turn1Discovered":0,"turn1Killed":0,"turn2KilledPids":[23875],"signalsToStale":0,"signalsToCanary":0}
+{"clause":"C11","impl":"sabotage:group-wide","at":"2026-11-04T15:54:28.177Z","discoverSelf":0,"killed":0,"unresolved":[],"signals":0}

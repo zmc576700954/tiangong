@@ -1,0 +1,93 @@
+{
+  "note": "agent_events 无 step_id 列；用 turn_id + 相邻 seq + command 与 agent_approvals.step_id 对齐",
+  "agentEventsColumns": [
+    "id",
+    "run_id",
+    "turn_id",
+    "seq",
+    "turn_seq",
+    "type",
+    "source",
+    "fidelity",
+    "payload_version",
+    "payload_json",
+    "created_at"
+  ],
+  "rows": [
+    {
+      "stepId": "turn_973d1557-6f03-45e2-9829-eeee7e745229:step-chatcmpl-tool-a3a59e0007a54ae0",
+      "command": "printf 'X' > /tmp/bizgraph-realdevice/ws-r9/canary.txt",
+      "policyRule": "redirect",
+      "policyDecision": "ask",
+      "bashPolicySeq": 2,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 4,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_6464ad17-e764-4e28-aae5-d1ddb3a1a8b6:step-chatcmpl-tool-b7ebd6c623f53ae0",
+      "command": "sudo -n true",
+      "policyRule": "shell-escape:sudo",
+      "policyDecision": "ask",
+      "bashPolicySeq": 2,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 4,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_59d68763-bc41-4b8d-92b5-b99481c7ddf2:step-chatcmpl-tool-a3ba9532bfd7e989",
+      "command": "rm -rf /tmp/r9-rm-target",
+      "policyRule": "write-command:rm",
+      "policyDecision": "ask",
+      "bashPolicySeq": 2,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 4,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_e33f8082-72cc-4f1a-a943-7491a28f07b1:step-chatcmpl-tool-abfdd3b0b35c9041",
+      "command": "ls && printf 'Y' > /tmp/bizgraph-realdevice/ws-r9/canary2.txt",
+      "policyRule": "and-chain",
+      "policyDecision": "ask",
+      "bashPolicySeq": 2,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 4,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_a1372f7b-61c7-4472-bd9d-ca4a7c11f2ee:step-chatcmpl-tool-b522e258bad08775",
+      "command": "ls && printf 'Z' > /tmp/bizgraph-realdevice/ws-r9/canary3.txt",
+      "policyRule": "and-chain",
+      "policyDecision": "ask",
+      "bashPolicySeq": 2,
+      "approvalDecision": "deny",
+      "approvalResolvedSeq": 4,
+      "dbApprovalStatus": "denied",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_e720b2a0-11cc-474b-a7d6-048bd206a732:step-chatcmpl-tool-8002d981ddaf9385",
+      "policyRule": null,
+      "policyDecision": null,
+      "bashPolicySeq": null,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 3,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "user"
+    },
+    {
+      "stepId": "turn_66725822-f646-4014-861c-5e1ee746b538:step-chatcmpl-tool-a0712d2ea21e62b5",
+      "policyRule": null,
+      "policyDecision": null,
+      "bashPolicySeq": null,
+      "approvalDecision": "allow",
+      "approvalResolvedSeq": 2,
+      "dbApprovalStatus": "allowed",
+      "decidedBy": "policy"
+    }
+  ]
+}

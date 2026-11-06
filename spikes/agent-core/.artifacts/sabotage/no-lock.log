@@ -1,0 +1,46 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0008932599999999979,"p50Ms":0.0005000000000023874,"p99Ms":0.005958000000006791,"totalMs":1.1397500000000065},{"round":2,"iterations":1000,"meanMs":0.0008427060000002342,"p50Ms":0.0005840000000034706,"p99Ms":0.008875000000003297,"totalMs":1.4550830000000161},{"round":3,"iterations":1000,"meanMs":0.000515038999999689,"p50Ms":0.00045800000000895125,"p99Ms":0.0015830000000107702,"totalMs":0.5548330000000021}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [31m❯[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 15[2mms[22m[39m
+[31m     [31m×[31m 同一 run 并发两个 turn：第二个立即 SESSION_BUSY，结束后可再次派发[39m[32m 4[2mms[22m[39m
+     [32m✓[39m 防重入：同一调用链里二次加锁不会死锁[32m 0[2mms[22m[39m
+     [32m✓[39m 同一节点最多一个非终态 run：第二个返回 NODE_BUSY，第一个结束后才可再建[32m 3[2mms[22m[39m
+     [32m✓[39m 两个 run 并发产生事件：归属零错误，各自 seq 连续[32m 7[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 135[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v4-concurrency.test.ts[2m > [22mV4 并发不串台[2m > [22m同一 run 并发两个 turn：第二个立即 SESSION_BUSY，结束后可再次派发
+[31m[1mAssertionError[22m: promise resolved "'second'" instead of rejecting[39m
+
+[32m- Expected:[39m
+Error {
+  "message": "rejected promise",
+}
+
+[31m+ Received:[39m
+"second"
+
+[36m [2m❯[22m tests/v4-concurrency.test.ts:[2m29:77[22m[39m
+    [90m 27|[39m       [35mreturn[39m [32m'first'[39m
+    [90m 28|[39m     })
+    [90m 29|[39m     await expect(executor.submit('run-lock', 'turn-b', async () => 'se…
+    [90m   |[39m                                                                             [31m^[39m
+    [90m 30|[39m       [33mSessionBusyError[39m[33m,[39m
+    [90m 31|[39m     )
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m23 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:11
+[2m   Duration [22m 297ms[2m (transform 369ms, setup 0ms, import 489ms, tests 214ms, environment 0ms)[22m
+

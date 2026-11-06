@@ -8,6 +8,7 @@ import { useAdapterStore } from './adapterStore'
 import { useThreadStore } from './threadStore'
 import { useMessageStore } from './messageStore'
 import { eventBus, Events } from './eventBus'
+import { unwrapIpcResult } from '../lib/ipcResult'
 
 interface SessionSnapshot {
   messages: Array<{ role: string; content: string }>
@@ -70,7 +71,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   startSession: async (adapterName, config) => {
     const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
-    const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
+    const result = unwrapIpcResult<{
+      sessionId: string
+      adapterUsed?: string
+      fallbackHistory?: AdapterFallbackAttempt[]
+    }>(await window.electronAPI['agent:startSession'](effectiveAdapterName, config))
     const sessionId = result.sessionId
 
     // Record fallback history
@@ -128,6 +133,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     // Save snapshot before terminating for interrupt recovery
     get().saveSnapshot(threadId)
+
+    // A1：Kernel 路径下先按会话取消当前 turn，让 turn 正常收口为 cancelled，
+    // 而不是只杀进程、留下一个 failed turn。开关关闭时该调用返回 false，无副作用。
+    const cancelSessionTurn = window.electronAPI['agent:cancelSessionTurn']
+    if (typeof cancelSessionTurn === 'function') {
+      try {
+        unwrapIpcResult(await cancelSessionTurn(thread.sessionId))
+      } catch {
+        // 取消失败不阻塞终止流程
+      }
+    }
 
     await window.electronAPI['agent:terminateSession'](thread.sessionId)
 
@@ -261,10 +277,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return
       }
 
-      // Resume existing session when thread already has a sessionId
-      if (thread.sessionId) {
-        config.resumeSessionId = thread.sessionId
-      }
+      // 不要用内部 sessionId 冒充原生会话 id：重启后由 main 从持久化的
+      // `agent_events.run.started.session_id` 取可信 id。内部 id（claude-xxx）
+      // 传给 CLI 的 `--resume` 会被拒绝，是 P1-1 的根因。
 
       let sessionId: string
       const existingSessionId = thread.sessionId
@@ -275,7 +290,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       } else {
         // First send: create a session. Use null for 'auto' to trigger fallback chain.
         const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
-        const result = await window.electronAPI['agent:startSession'](effectiveAdapterName, config)
+        const result = unwrapIpcResult<{
+          sessionId: string
+          adapterUsed?: string
+          fallbackHistory?: AdapterFallbackAttempt[]
+        }>(await window.electronAPI['agent:startSession'](effectiveAdapterName, config))
         sessionId = result.sessionId
 
         // Record fallback history
@@ -323,18 +342,37 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // Use resolveAndSendCommand if contextRefs exist, otherwise fall back to sendCommand
       if (contextRefs && contextRefs.length > 0) {
         const nodeIds = contextRefs.filter((r) => r.type === 'node').map((r) => r.id)
-        await window.electronAPI['agent:resolveAndSendCommand'](
-          sessionId,
-          command,
-          contextRefs,
-          nodeIds,
+        unwrapIpcResult(
+          await window.electronAPI['agent:resolveAndSendCommand'](
+            sessionId,
+            command,
+            contextRefs,
+            nodeIds,
+          ),
         )
       } else {
-        await window.electronAPI['agent:sendCommand'](sessionId, command)
+        unwrapIpcResult(await window.electronAPI['agent:sendCommand'](sessionId, command))
       }
     } catch (err) {
-      const errMsg = String(err)
-      const isNoAdapter = errMsg.includes('No adapter available')
+      // 错误链：main 抛 Error(encoded) → preload 解码为 plain object → unwrapIpcResult
+      // 还原成同 realm 的 IpcCallError。这里能同时拿到 code 与可读 message。
+      const structured = (typeof err === 'object' && err !== null ? err : {}) as {
+        code?: unknown
+        message?: unknown
+      }
+      const errMsg = typeof structured.message === 'string' ? structured.message : String(err)
+      const isNoAdapter =
+        structured.code === 'AGENT_ADAPTER_NOT_FOUND' || errMsg.includes('No adapter available')
+      const isRestoreFailed =
+        structured.code === 'AGENT_SESSION_RESTORE_FAILED' || errMsg.includes('新建会话可继续')
+      if (isRestoreFailed) {
+        // 原会话不可续接：解除绑定，下一次发送即走新建会话（与错误文案一致）。
+        useThreadStore.setState((state) => ({
+          threads: state.threads.map((t) =>
+            t.id === resolvedThreadId ? { ...t, sessionId: undefined } : t,
+          ),
+        }))
+      }
       useThreadStore.getState().appendChatMessage(resolvedThreadId, {
         id: generateId('msg'),
         role: 'agent',
@@ -342,10 +380,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         timestamp: Date.now(),
         status: 'error',
         error: {
-          code: isNoAdapter ? 'NO_ADAPTER_AVAILABLE' : 'SESSION_START_FAILED',
+          code: isNoAdapter
+            ? 'NO_ADAPTER_AVAILABLE'
+            : isRestoreFailed
+              ? 'SESSION_RESTORE_FAILED'
+              : 'SESSION_START_FAILED',
           message: isNoAdapter
             ? '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。'
-            : '无法启动 Agent 会话，请检查适配器是否可用。',
+            : isRestoreFailed
+              ? errMsg
+              : '无法启动 Agent 会话，请检查适配器是否可用。',
           raw: errMsg,
         },
       })

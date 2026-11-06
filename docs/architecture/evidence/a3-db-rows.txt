@@ -1,0 +1,49 @@
+# A3 真机自测 DB 证据（2026-11-05，开关 BIZGRAPH_AGENT_KERNEL=1）
+
+数据库：Playwright 启动的真实 Electron 实例 userData
+`~/Library/Application Support/Electron/data/bizgraph.db`
+
+## agent_approvals（按 created_at 倒序）
+
+```
+tool_name|status |decided_by|grant_source                      |cwd
+Write    |allowed|user      |-                                 |/tmp/bizgraph-e2e-a3   # 新会话首次授权 appr_cfa9d69b-5f3b-4d1a-9025-5ee88fe5cf2e
+Write    |allowed|policy    |appr_8cd90583-22d6-4fed-9019-...  |/tmp/bizgraph-e2e-a3   # 同会话第二次写：自动放行 + 留痕
+Write    |allowed|user      |-                                 |/tmp/bizgraph-e2e-a3   # 首次授权 appr_8cd90583-22d6-4fed-9019-46fb459b2ce5
+```
+
+## agent:getSessionGrants（内存授权）
+
+```
+[
+  { sessionId: 'claude-f54c771db8df49f1843a5177b3c4db78', approvalId: 'appr_8cd90583-22d6-4fed-9019-46fb459b2ce5', toolScope: 'write', cwd: '/tmp/bizgraph-e2e-a3' },
+  { sessionId: 'claude-3719596e2e4c44fea475e143757d9862', approvalId: 'appr_cfa9d69b-5f3b-4d1a-9025-5ee88fe5cf2e', toolScope: 'write', cwd: '/tmp/bizgraph-e2e-a3' }
+]
+```
+
+## agent_events（同一 turn 内 seq 连续，审批在 run.completed 之前）
+
+```
+turn_9cd333bc-66c2-43ec-9fac-249436b3722d（首次，用户放行）
+  approval.required  seq=2
+  approval.resolved  seq=3
+  run.completed      seq=12
+
+turn_d10c9c9a-4777-4040-a9fa-ca6792a390df（同会话第二次，session grant 命中）
+  approval.resolved  seq=2      # 无 approval.required
+  run.completed      seq=10
+
+turn_2caa6de9-a967-41c3-8dfb-0df1e5b359cb（新会话首次）
+  approval.required  seq=2
+  approval.resolved  seq=3
+  run.completed      seq=11
+```
+
+## 产物文件
+
+```
+/tmp/bizgraph-e2e-a3/README.md
+/tmp/bizgraph-e2e-a3/a3-first.txt        # 第一次写：用户点「允许本次会话」
+/tmp/bizgraph-e2e-a3/a3-second.txt       # 第二次写：无弹窗（grant 自动放行）
+/tmp/bizgraph-e2e-a3/a3-newsession.txt   # 新会话写：重新弹窗，允许后创建
+```

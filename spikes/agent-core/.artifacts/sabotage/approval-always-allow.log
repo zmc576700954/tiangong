@@ -1,0 +1,58 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0042314130000001594,"p50Ms":0.002291999999997074,"p99Ms":0.018833000000000766,"totalMs":4.408000000000001},{"round":2,"iterations":1000,"meanMs":0.00354109399999966,"p50Ms":0.00245800000000429,"p99Ms":0.01983300000000554,"totalMs":3.655332999999999},{"round":3,"iterations":1000,"meanMs":0.0028564679999999072,"p50Ms":0.0024999999999977263,"p99Ms":0.01245899999999267,"totalMs":2.9329999999999927}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [31m❯[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 49[2mms[22m[39m
+     [32m✓[39m 重复决定幂等：第二次返回首次 allow，不覆盖、不重记、不重复执行[32m 4[2mms[22m[39m
+[31m     [31m×[31m 超时默认拒绝：迟到的 allow 不得执行，且拒绝事件已落库[39m[32m 35[2mms[22m[39m
+     [32m✓[39m 拒绝后不得执行：deny 决定下 execute 永不调用[32m 1[2mms[22m[39m
+     [32m✓[39m 重启后未决审批可重放且不自动批准；用户决定与事件同事务落库[32m 5[2mms[22m[39m
+[31m     [31m×[31m 重启时审批已过期：迟到决定按 deny 处理，不执行、留痕[39m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 127[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v7-approval.test.ts[2m > [22mV7 fail-closed 审批[2m > [22m超时默认拒绝：迟到的 allow 不得执行，且拒绝事件已落库
+[31m[1mAssertionError[22m: expected 'allow' to be 'deny' // Object.is equality[39m
+
+Expected: [32m"deny"[39m
+Received: [31m"allow"[39m
+
+[36m [2m❯[22m tests/v7-approval.test.ts:[2m92:33[22m[39m
+    [90m 90|[39m       const { waitForDecision } = gateway.request({ ...baseRequest, ap…
+    [90m 91|[39m       [35mconst[39m timedOut [33m=[39m [35mawait[39m waitForDecision
+    [90m 92|[39m       [34mexpect[39m(timedOut[33m.[39mdecision)[33m.[39m[34mtoBe[39m([32m'deny'[39m)
+    [90m   |[39m                                 [31m^[39m
+    [90m 93|[39m       [34mexpect[39m(timedOut[33m.[39mresolvedBy)[33m.[39m[34mtoBe[39m([32m'timeout'[39m)
+    [90m 94|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v7-approval.test.ts[2m > [22mV7 fail-closed 审批[2m > [22m重启时审批已过期：迟到决定按 deny 处理，不执行、留痕
+[31m[1mAssertionError[22m: expected 'allow' to be 'deny' // Object.is equality[39m
+
+Expected: [32m"deny"[39m
+Received: [31m"allow"[39m
+
+[36m [2m❯[22m tests/v7-approval.test.ts:[2m191:36[22m[39m
+    [90m189|[39m         executions [33m+=[39m [34m1[39m
+    [90m190|[39m       })
+    [90m191|[39m       [34mexpect[39m(late[33m.[39mresult[33m.[39mdecision)[33m.[39m[34mtoBe[39m([32m'deny'[39m)
+    [90m   |[39m                                    [31m^[39m
+    [90m192|[39m       [34mexpect[39m(late[33m.[39mresult[33m.[39mresolvedBy)[33m.[39m[34mtoBe[39m([32m'timeout'[39m)
+    [90m193|[39m       [34mexpect[39m(late[33m.[39mexecuted)[33m.[39m[34mtoBe[39m([35mfalse[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m22 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:33
+[2m   Duration [22m 265ms[2m (transform 307ms, setup 0ms, import 405ms, tests 210ms, environment 0ms)[22m
+

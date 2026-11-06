@@ -8,6 +8,7 @@ import { isPathWithinSync } from '../shared/path-utils'
 import { getPlatformProvider } from '../platform'
 import { BizGraphError, IpcError, ErrorCode } from '../errors'
 import { InvalidStateTransitionError } from '@shared/state-machine'
+import { encodeIpcError, type IpcErrorPayload } from '@shared/ipc-error'
 import { ipcContext } from './context'
 import type { IpcMiddlewarePipeline } from './middleware'
 
@@ -194,6 +195,15 @@ export function createTypedHandle(
   ipcMain: Electron.IpcMain,
   pipeline?: IpcMiddlewarePipeline,
 ): TypedHandle {
+  /**
+   * 把结构化错误编码进真实 `Error.message`。
+   * Electron 只可靠透传 Error.message；直接抛 plain object 会被压平成
+   * `[object Object]`，这是上一轮「renderer 只收到 [object Object]」的根因。
+   */
+  const throwStructured = (payload: IpcErrorPayload): never => {
+    throw new Error(encodeIpcError(payload))
+  }
+
   return (
     channel: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -214,32 +224,38 @@ export function createTypedHandle(
         )
       } catch (err) {
         // 透传链（顺序很重要）：
-        // 1) 已经是 `IpcError`：原样抛出（保留 code / message / details）
+        // 1) 已经是 `IpcError`：编码后抛出（保留 code / message / details）
         // 2) `BizGraphError` 子类（含 `DatabaseError` / `AgentError` / `ScopeGuardError`
-        //    / `SessionNotFoundError` / `AdapterError` / `GitError` 等）：
-        //    用 `err.toJSON()` 重建，普通 Error 字段会被 IPC 结构化克隆丢失
+        //    / `SessionNotFoundError` / `SessionRestoreError` / `AdapterError` / `GitError` 等）：
+        //    用 `err.toJSON()` 重建并编码进 Error.message（plain object 过不了 IPC）
         // 3) `InvalidStateTransitionError`（来自 `@shared/state-machine`，不继承
         //    `BizGraphError` 但 `toJSON()` 输出标准 code + details）：
         //    通过 `err.name` 识别后透传 `toJSON()`
-        // 4) 其他裸 Error / 未知值：原 `IPC_HANDLER_ERROR` 包装（降级路径）
-        if (err instanceof IpcError) throw err
-        if (err instanceof BizGraphError) {
-          // 结构化克隆会丢 `Error` 原型与自定义 getter；抛 plain object 让
-          // Electron IPC 把它当数据传给 renderer，renderer 端可读 code/details
-          throw err.toJSON() as never
-        }
+        // 4) 带字符串 `code` 的领域错误（如 `AgentRuntimeError`）：保留 code
+        // 5) 其他裸 Error / 未知值：原 `IPC_HANDLER_ERROR` 包装（降级路径）
+        if (err instanceof IpcError) throwStructured(err.toJSON() as IpcErrorPayload)
+        if (err instanceof BizGraphError) throwStructured(err.toJSON() as IpcErrorPayload)
         if (err instanceof InvalidStateTransitionError) {
-          throw err.toJSON() as never
+          throwStructured(err.toJSON() as unknown as IpcErrorPayload)
         }
         // 兼容按 name 字符串识别的旧式 InvalidStateTransitionError（防御性）
         if (err instanceof Error && err.name === 'InvalidStateTransitionError'
           && typeof (err as InvalidStateTransitionError).toJSON === 'function') {
-          throw (err as InvalidStateTransitionError).toJSON() as never
+          throwStructured((err as InvalidStateTransitionError).toJSON() as unknown as IpcErrorPayload)
         }
-        throw new IpcError(
-          err instanceof Error ? err.message : String(err),
-          ErrorCode.IPC_HANDLER_ERROR,
-        )
+        if (err instanceof Error && typeof (err as Error & { code?: unknown }).code === 'string') {
+          throwStructured({
+            code: (err as Error & { code: string }).code,
+            message: err.message,
+            ...((err as Error & { details?: unknown }).details !== undefined
+              ? { details: (err as Error & { details?: unknown }).details }
+              : {}),
+          })
+        }
+        throwStructured({
+          code: ErrorCode.IPC_HANDLER_ERROR,
+          message: err instanceof Error ? err.message : String(err),
+        })
       }
     })
   }

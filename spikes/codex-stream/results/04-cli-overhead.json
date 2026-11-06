@@ -1,0 +1,30 @@
+{
+  "mode": "raw codex exec --experimental-json",
+  "bin": "/Users/zhumingchen/tiangong/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+  "prompt": "Reply with exactly: PONG",
+  "lineCount": 4,
+  "lines": [
+    {
+      "tMs": 94,
+      "line": "{\"type\":\"thread.started\",\"thread_id\":\"01a1a629-a562-7411-9eb7-77bb5e7bc8c1\"}"
+    },
+    {
+      "tMs": 120,
+      "line": "{\"type\":\"turn.started\"}"
+    },
+    {
+      "tMs": 1169,
+      "line": "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"PONG\"}}"
+    },
+    {
+      "tMs": 1298,
+      "line": "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":10413,\"cached_input_tokens\":194,\"output_tokens\":4,\"reasoning_output_tokens\":0}}"
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "tMs": 11313
+  },
+  "lastEventToExitMs": 10015
+}

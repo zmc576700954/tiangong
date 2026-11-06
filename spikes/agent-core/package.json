@@ -1,0 +1,14 @@
+{
+  "name": "@bizgraph/agent-core-spike",
+  "private": true,
+  "description": "Agent 核心机制可执行 spike：事件归一化 / 崩溃恢复 / 会话并发",
+  "type": "module",
+  "scripts": {
+    "test": "../../node_modules/.bin/vitest run --config vitest.config.ts",
+    "test:sabotage": "bash scripts/sabotage.sh"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.11.1"
+  }
+}

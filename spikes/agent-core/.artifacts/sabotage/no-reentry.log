@@ -1,0 +1,43 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.004275258000000264,"p50Ms":0.0022910000000138098,"p99Ms":0.023333000000008042,"totalMs":4.406083999999993},{"round":2,"iterations":1000,"meanMs":0.0037224610000002657,"p50Ms":0.0024999999999977263,"p99Ms":0.01762500000000955,"totalMs":3.8603339999999946},{"round":3,"iterations":1000,"meanMs":0.002588180999999679,"p50Ms":0.0018340000000023338,"p99Ms":0.01720800000001077,"totalMs":2.6384579999999858}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [31m❯[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 16[2mms[22m[39m
+     [32m✓[39m 同一 run 并发两个 turn：第二个立即 SESSION_BUSY，结束后可再次派发[32m 2[2mms[22m[39m
+[31m     [31m×[31m 防重入：同一调用链里二次加锁不会死锁[39m[32m 2[2mms[22m[39m
+     [32m✓[39m 同一节点最多一个非终态 run：第二个返回 NODE_BUSY，第一个结束后才可再建[32m 3[2mms[22m[39m
+     [32m✓[39m 两个 run 并发产生事件：归属零错误，各自 seq 连续[32m 8[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 133[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v4-concurrency.test.ts[2m > [22mV4 并发不串台[2m > [22m防重入：同一调用链里二次加锁不会死锁
+[31m[1mSessionBusyError[22m: SESSION_BUSY: run-reentrant[39m
+[36m [2m❯[22m RunLockRegistry.tryAcquire src/concurrency/run-lock.ts:[2m35:37[22m[39m
+    [90m 33|[39m     }
+    [90m 34|[39m
+    [90m 35|[39m     [35mif[39m ([35mthis[39m[33m.[39mactive[33m.[39m[34mhas[39m(key)) [35mthrow[39m [35mnew[39m [33mSessionBusyError[39m(key)
+    [90m   |[39m                                     [31m^[39m
+    [90m 36|[39m     [35mthis[39m[33m.[39mactive[33m.[39m[34madd[39m(key)
+    [90m 37|[39m     [35mlet[39m released [33m=[39m [35mfalse[39m
+[90m [2m❯[22m RunLockRegistry.runExclusive src/concurrency/run-lock.ts:[2m59:25[22m[39m
+[90m [2m❯[22m SessionExecutor.submit src/concurrency/session-executor.ts:[2m11:23[22m[39m
+[90m [2m❯[22m tests/v4-concurrency.test.ts:[2m41:23[22m[39m
+[90m [2m❯[22m RunLockRegistry.runExclusive src/concurrency/run-lock.ts:[2m64:31[22m[39m
+[90m [2m❯[22m SessionExecutor.submit src/concurrency/session-executor.ts:[2m11:23[22m[39m
+[90m [2m❯[22m tests/v4-concurrency.test.ts:[2m40:35[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m23 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:11
+[2m   Duration [22m 302ms[2m (transform 415ms, setup 0ms, import 532ms, tests 219ms, environment 0ms)[22m
+

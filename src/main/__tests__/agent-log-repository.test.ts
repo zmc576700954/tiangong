@@ -165,4 +165,34 @@ describe('AgentLogRepository', () => {
       expect(logs[0].outputs).toEqual([])
     })
   })
+
+  describe('create 落库脱敏', () => {
+    it('command 描述与 stdout/stderr 中的密钥在写库前被替换', () => {
+      const token = 'sk-proj-abcdefghijklmnop1234567890'
+      const password = 'S3cr3t-Passw0rd!'
+      repo.create({
+        sessionId: 'session-1',
+        adapterName: 'claude-code',
+        nodeId: 'node-1',
+        graphId: 'graph-1',
+        command: { type: 'implement', description: `deploy --token=${token}`, targetNodeId: 'node-1' },
+        outputs: [
+          { type: 'stdout', data: 'ok', timestamp: 1 },
+          { type: 'stderr', data: `Authorization: Bearer ${token}`, timestamp: 2 },
+          { type: 'stderr', data: `--password=${password}`, timestamp: 3 },
+        ],
+        result: 'failure',
+        duration: 1234,
+      })
+
+      const params = stmt.run.mock.calls[0] as unknown[]
+      const commandJson = params[5] as string
+      const outputsJson = params[6] as string
+      expect(commandJson.includes(token)).toBe(false)
+      expect(outputsJson.includes(token)).toBe(false)
+      expect(outputsJson.includes(password)).toBe(false)
+      expect(commandJson).toContain('***REDACTED(')
+      expect(outputsJson).toContain('***REDACTED(')
+    })
+  })
 })

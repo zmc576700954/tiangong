@@ -12,6 +12,7 @@ import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 import { runHierarchyMigration } from './repositories/hierarchy-migration'
+import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
 
@@ -126,6 +127,10 @@ function restoreFromBackup(
         }
         if (tableName === 'nodes' && col === 'type') {
           return `CASE ${safeCol} WHEN 'rule' THEN 'process' WHEN 'api' THEN 'feature' WHEN 'service' THEN 'feature' WHEN 'entity' THEN 'feature' ELSE ${safeCol} END AS ${safeCol}`
+        }
+        if (tableName === 'agent_usage' && col === 'source') {
+          // v21：source 语义重定义 'executor' → 'provider'（真实用量 vs 估算分列）
+          return `CASE ${safeCol} WHEN 'executor' THEN 'provider' ELSE ${safeCol} END AS ${safeCol}`
         }
         return safeCol
       }).join(', ')
@@ -351,8 +356,14 @@ export function rebuildTableIfNeeded(
   }
 }
 
-/** 当前 Schema 版本号，每次迁移时递增 */
-const CURRENT_SCHEMA_VERSION = 17
+/**
+ * 当前 Schema 版本号，每次迁移时递增。
+ * v21：agent_usage 成本账本扩展（M1）。
+ * v22：agent_events 增加 step_id（按步骤 join 策略/审批事件；历史行留 NULL）。
+ * v23：agent_usage 增加 cost_status / tokens_reported（可查的分类字段；
+ *      历史行留 NULL，不从 attribution_note 文本反推）。
+ */
+const CURRENT_SCHEMA_VERSION = 23
 
 interface TableSchema {
   name: string
@@ -667,6 +678,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['graph_id', 'doc_state', 'schema_version', 'updated_at'],
   },
+  // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
+  ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
 
 const INDEX_SQLS: string[] = [
@@ -708,6 +721,8 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_yjs_snapshots_updated_at ON yjs_snapshots(updated_at DESC)`,
   // Phase D9: A2A 任务查询 — json_extract 表达式索引加速 task_kind='a2a' 过滤。
   `CREATE INDEX IF NOT EXISTS idx_chat_threads_task_kind ON chat_threads(json_extract(metadata, '$.task_kind'))`,
+  // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
+  ...AGENT_INDEX_SQLS,
 ]
 
 function getSchemaChecksumPath(): string {

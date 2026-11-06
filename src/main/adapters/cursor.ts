@@ -9,6 +9,7 @@ import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
+import { isTrustedNativeSessionId } from '@shared/native-session-id'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
 
@@ -42,12 +43,17 @@ export class CursorAdapter extends BaseAdapter {
     return session
   }
 
+  /** Cursor CLI 支持 `--resume`，重启后可用原生续接。 */
+  supportsNativeResume(): boolean {
+    return true
+  }
+
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
     const fullPrompt = this.buildFullPrompt(session, command)
 
     const args = ['agent']
 
-    if (session.config.resumeSessionId) {
+    if (isTrustedNativeSessionId(session.config.resumeSessionId)) {
       args.push('--resume', session.config.resumeSessionId)
     }
 

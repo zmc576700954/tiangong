@@ -1,0 +1,30 @@
+[2026-11-05T08:57:32.734Z] [Database] Migrating schema from v0 to v20...
+[2026-11-05T08:57:32.738Z] [Database] Schema migrated to v20
+[2026-11-05T08:57:32.744Z] [Settings] Settings file not found, creating with defaults
+[2026-11-05T08:57:32.748Z] [IPC] [kernel] claude-code: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:57:32.748Z] [IPC] [kernel] codex: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:57:32.748Z] [IPC] [kernel] opencode: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:57:32.748Z] [IPC] [kernel] 总开关=off 白名单=[claude]
+[2026-11-05T08:57:32.749Z] [YjsRealtime] legacy migration: 0 backfilled / 0 skipped / 0 errors (scanned 0)
+[2026-11-05T08:57:32.751Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:57:32.752Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:57:32.755Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:57:32.755Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:57:32.948Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:57:32.953Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:57:32.953Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:57:32.953Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:57:32.954Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:57:32.954Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:57:32.954Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:57:33.063Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:57:44.059Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T08:57:44.061Z] [RealtimeIPC] Generated new user identity: 1188a6f8-662e-432c-bbdb-ee5e9a322d8d (colorIndex=3)
+Error occurred in handler for 'message:save': Error: __BIZGRAPH_IPC_ERROR__:{"code":"SQLITE_CONSTRAINT_FOREIGNKEY","message":"FOREIGN KEY constraint failed"}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27931
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+Error occurred in handler for 'agent:sendCommand': Error: __BIZGRAPH_IPC_ERROR__:{"name":"SessionRestoreError","message":"无法恢复会话 session-r8-ui-ghost-1793869059464：持久化记录里找不到该会话（可能已被清理）。新建会话可继续。","code":"AGENT_SESSION_RESTORE_FAILED","stack":"SessionRestoreError: 无法恢复会话 session-r8-ui-ghost-1793869059464：持久化记录里找不到该会话（可能已被清理）。新建会话可继续。\n    at AgentManager.restoreLegacySession (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:191757)\n    at AgentManager.resolveLegacyAdapter (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:190979)\n    at AgentManager.sendCommandInner (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:195866)\n    at AgentManager.sendCommand (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:195771)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2941:2237\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27613\n    at AsyncLocalStorage.run (node:async_hooks:346:14)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27581\n    at WebContents.<anonymous> (node:electron/js2c/browser_init:2:87039)\n    at WebContents.emit (node:events:518:28)","sessionId":"session-r8-ui-ghost-1793869059464","reason":"持久化记录里找不到该会话（可能已被清理）","canStartNewSession":true}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27704
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)

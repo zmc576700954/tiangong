@@ -1,0 +1,15 @@
+{
+  "name": "@bizgraph/reaper-isolation-spike",
+  "private": true,
+  "description": "进程回收跨会话隔离契约的独立对抗测试台（真实进程 + 信号计数探针）",
+  "type": "module",
+  "scripts": {
+    "test": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/isolation.test.ts tests/sabotage-detection.test.ts tests/hardening.test.ts tests/abnormal-exit.test.ts",
+    "test:contracts": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/isolation.test.ts",
+    "test:hardening": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/hardening.test.ts",
+    "test:attack": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/attack-surface.test.ts",
+    "test:abnormal": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/abnormal-exit.test.ts",
+    "test:sabotage-detection": "../../node_modules/.bin/vitest run --config vitest.config.ts tests/sabotage-detection.test.ts",
+    "sabotage": "bash scripts/sabotage.sh"
+  }
+}

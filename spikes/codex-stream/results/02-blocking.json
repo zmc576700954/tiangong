@@ -1,0 +1,69 @@
+{
+  "mode": "run (blocking)",
+  "prompt": "Do exactly this, nothing more:\n1) Create a file named stream-probe.txt in the current working directory with the single line: hello-codex\n2) Then read that file back with a shell command (cat) and reply with its exact content.",
+  "workdir": "/Users/zhumingchen/tiangong/spikes/codex-stream/work/blocking",
+  "threadId": "01a1a620-e4a3-7070-8e60-a890e2d032c3",
+  "totalMs": 12499,
+  "error": null,
+  "usage": {
+    "input_tokens": 21214,
+    "cached_input_tokens": 10735,
+    "output_tokens": 109,
+    "reasoning_output_tokens": 0
+  },
+  "finalResponse": "Created `stream-probe.txt` in the working directory and read it back with `cat`.\n\nExact content:\n\n```\nhello-codex\n```",
+  "itemCount": 3,
+  "items": [
+    {
+      "itemId": "item_0",
+      "itemType": "agent_message",
+      "text": "I'll create the file and read it back."
+    },
+    {
+      "itemId": "item_1",
+      "itemType": "command_execution",
+      "status": "completed",
+      "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+      "aggregated_output": "hello-codex\n",
+      "exit_code": 0
+    },
+    {
+      "itemId": "item_2",
+      "itemType": "agent_message",
+      "text": "Created `stream-probe.txt` in the working directory and read it back with `cat`.\n\nExact content:\n\n```\nhello-codex\n```"
+    }
+  ],
+  "itemFieldAudit": [
+    {
+      "type": "agent_message",
+      "fields": [
+        "id",
+        "text",
+        "type"
+      ]
+    },
+    {
+      "type": "command_execution",
+      "fields": [
+        "aggregated_output",
+        "command",
+        "exit_code",
+        "id",
+        "status",
+        "type"
+      ]
+    },
+    {
+      "type": "agent_message",
+      "fields": [
+        "id",
+        "text",
+        "type"
+      ]
+    }
+  ],
+  "spawnedProcesses": [
+    "69268 69252 /Users/zhumingchen/tiangong/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --experimental-json --sandbox workspace-write --cd /Users/zhumingchen/tiangong/spikes/codex-stream/work/blocking --skip-git-repo-check --config approval_policy=\"never\""
+  ],
+  "fileContent": "hello-codex\n"
+}

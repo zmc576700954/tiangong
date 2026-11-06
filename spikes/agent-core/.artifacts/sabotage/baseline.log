@@ -1,0 +1,18 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.004743529000000094,"p50Ms":0.0025420000000053733,"p99Ms":0.0297909999999888,"totalMs":4.898124999999993},{"round":2,"iterations":1000,"meanMs":0.003616587000000152,"p50Ms":0.0027499999999918145,"p99Ms":0.012708000000003494,"totalMs":3.734250000000003},{"round":3,"iterations":1000,"meanMs":0.003152791999999721,"p50Ms":0.0027079999999841675,"p99Ms":0.02208300000000918,"totalMs":3.2251660000000015}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 55[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 156[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m6 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[32m24 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:08
+[2m   Duration [22m 309ms[2m (transform 364ms, setup 0ms, import 468ms, tests 249ms, environment 0ms)[22m
+

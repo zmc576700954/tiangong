@@ -1,0 +1,45 @@
+[2026-11-05T12:10:06.627Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）
+[2026-11-05T12:10:06.628Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T12:10:06.628Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T12:10:06.628Z] [IPC] [kernel] 总开关=on 白名单=[claude]
+[2026-11-05T12:10:06.629Z] [AgentRuntime] startup reclaim: marker=none pids=- groups=- missing=- unresolved=- residualRisk=none
+[2026-11-05T12:10:06.631Z] [YjsRealtime] legacy migration: 1 backfilled / 0 skipped / 0 errors (scanned 1)
+[2026-11-05T12:10:06.635Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T12:10:06.635Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T12:10:06.636Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T12:10:06.637Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T12:10:06.819Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T12:10:06.823Z] [ClineAdapter] cline CLI not found
+[2026-11-05T12:10:06.824Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T12:10:06.824Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T12:10:06.825Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T12:10:06.825Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T12:10:06.825Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T12:10:06.839Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T12:10:13.366Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T12:10:14.883Z] [AgentManager] Restored persisted session claude-390397e5bfa246e792bef5c71a9bdfdb (claude-code) via native resume
+[2026-11-05T12:10:14.885Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T12:10:14.887Z] [prompt-orchestrator] Assembled prompt for session claude-390397e5bfa246e792bef5c71a9bdfdb: 120 tokens (budget 12000), layers: system=65, scope=10, context=0, waterline=22, user=21
+[2026-11-05T12:10:24.093Z] [ClaudeCodeAdapter] Built context summary for session claude-390397e5bfa246e792bef5c71a9bdfdb: 9 chars
+[2026-11-05T12:10:24.096Z] [PipelineRunner] Compress stage: threshold=4000, outputTokens≈138
+[2026-11-05T12:10:24.097Z] [MemoryExtractor] Extracted 0 memory items from session claude-390397e5bfa246e792bef5c71a9bdfdb
+[2026-11-05T12:10:24.098Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T12:10:24.098Z] [WaterlineSync] Waterline persisted for /tmp/bizgraph-realdevice/ws-r9
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+Error occurred in handler for 'message:saveBatch': Error: __BIZGRAPH_IPC_ERROR__:{"code":"IPC_HANDLER_ERROR","message":"The database connection is not open"}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:823:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:823:28015
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+[2026-11-05T12:10:24.239Z] [ContextWaterline] dbWriteback failed for thread thread-26019fdd9cbc48b8b13a243093281d19: TypeError: The database connection is not open
+    at Database.prepare (/Users/zhumingchen/tiangong/node_modules/better-sqlite3/lib/methods/wrappers.js:5:21)
+    at ChatRepository.resetContextTokens (/Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:3528:1134)
+    at ContextWaterline.dbWriteback (/Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:3586:10972)
+    at ContextWaterline.persistTokensNow (/Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:3528:6697)
+    at Timeout._onTimeout (/Users/zhumingchen/tiangong/dist-electron/main/index-Bt9FLKuh.js:3528:6486)
+    at listOnTimeout (node:internal/timers:581:17)
+    at process.processTimers (node:internal/timers:519:7)

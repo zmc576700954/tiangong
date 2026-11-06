@@ -1,0 +1,69 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0036465650000002086,"p50Ms":0.002042000000002986,"p99Ms":0.01850000000000307,"totalMs":3.7522500000000036},{"round":2,"iterations":1000,"meanMs":0.00368352800000072,"p50Ms":0.002290999999999599,"p99Ms":0.029124999999993406,"totalMs":3.7902500000000146},{"round":3,"iterations":1000,"meanMs":0.002289907999999798,"p50Ms":0.0019159999999942556,"p99Ms":0.01170799999999872,"totalMs":2.3325840000000255}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [31m❯[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 7[2mms[22m[39m
+[31m     [31m×[31m 三种后端产出相同的 checkpoint 序列，seq 连续无断号，归属 100% 正确[39m[32m 3[2mms[22m[39m
+     [32m✓[39m 允许 fidelity 不同，但同一后端的全部事件保真度一致且符合能力矩阵[32m 2[2mms[22m[39m
+     [32m✓[39m 每个 turn 以终态事件收尾，终态之后没有事件[32m 1[2mms[22m[39m
+[31m     [31m×[31m OpenCode 无工具轨迹时降级为最小契约，不伪造 tool 事件[39m[32m 0[2mms[22m[39m
+     [32m✓[39m checkpoint 过滤只排除 delta/usage 等非生命周期事件[32m 0[2mms[22m[39m
+ [31m❯[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 14[2mms[22m[39m
+     [32m✓[39m 同一 run 并发两个 turn：第二个立即 SESSION_BUSY，结束后可再次派发[32m 2[2mms[22m[39m
+     [32m✓[39m 防重入：同一调用链里二次加锁不会死锁[32m 0[2mms[22m[39m
+     [32m✓[39m 同一节点最多一个非终态 run：第二个返回 NODE_BUSY，第一个结束后才可再建[32m 3[2mms[22m[39m
+[31m     [31m×[31m 两个 run 并发产生事件：归属零错误，各自 seq 连续[39m[32m 8[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 138[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 3 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v1-normalization.test.ts[2m > [22mV1 事件归一化：三后端同一语义检查点序列[2m > [22m三种后端产出相同的 checkpoint 序列，seq 连续无断号，归属 100% 正确
+[31m[1mError[22m: seq not contiguous: actual=[1,2,4,5,6,7,8,9] expected=[1,2,3,4,5,6,7,8][39m
+[36m [2m❯[22m assertContiguousSeq tests/helpers.ts:[2m44:11[22m[39m
+    [90m 42|[39m   [35mconst[39m expected [33m=[39m seqs[33m.[39m[34mmap[39m((_[33m,[39m index) [33m=>[39m index [33m+[39m [34m1[39m)
+    [90m 43|[39m   [35mif[39m (seqs[33m.[39m[34mjoin[39m([32m','[39m) [33m!==[39m expected[33m.[39m[34mjoin[39m([32m','[39m)) {
+    [90m 44|[39m     throw new Error(`seq not contiguous: actual=[${seqs.join(',')}] ex…
+    [90m   |[39m           [31m^[39m
+    [90m 45|[39m   }
+    [90m 46|[39m }
+[90m [2m❯[22m tests/v1-normalization.test.ts:[2m58:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v1-normalization.test.ts[2m > [22mV1 事件归一化：三后端同一语义检查点序列[2m > [22mOpenCode 无工具轨迹时降级为最小契约，不伪造 tool 事件
+[31m[1mError[22m: seq not contiguous: actual=[1,2,4,5,6] expected=[1,2,3,4,5][39m
+[36m [2m❯[22m assertContiguousSeq tests/helpers.ts:[2m44:11[22m[39m
+    [90m 42|[39m   [35mconst[39m expected [33m=[39m seqs[33m.[39m[34mmap[39m((_[33m,[39m index) [33m=>[39m index [33m+[39m [34m1[39m)
+    [90m 43|[39m   [35mif[39m (seqs[33m.[39m[34mjoin[39m([32m','[39m) [33m!==[39m expected[33m.[39m[34mjoin[39m([32m','[39m)) {
+    [90m 44|[39m     throw new Error(`seq not contiguous: actual=[${seqs.join(',')}] ex…
+    [90m   |[39m           [31m^[39m
+    [90m 45|[39m   }
+    [90m 46|[39m }
+[90m [2m❯[22m tests/v1-normalization.test.ts:[2m103:5[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v4-concurrency.test.ts[2m > [22mV4 并发不串台[2m > [22m两个 run 并发产生事件：归属零错误，各自 seq 连续
+[31m[1mError[22m: seq not contiguous: actual=[1,2,4,5,6,7,8,9] expected=[1,2,3,4,5,6,7,8][39m
+[36m [2m❯[22m assertContiguousSeq tests/helpers.ts:[2m44:11[22m[39m
+    [90m 42|[39m   [35mconst[39m expected [33m=[39m seqs[33m.[39m[34mmap[39m((_[33m,[39m index) [33m=>[39m index [33m+[39m [34m1[39m)
+    [90m 43|[39m   [35mif[39m (seqs[33m.[39m[34mjoin[39m([32m','[39m) [33m!==[39m expected[33m.[39m[34mjoin[39m([32m','[39m)) {
+    [90m 44|[39m     throw new Error(`seq not contiguous: actual=[${seqs.join(',')}] ex…
+    [90m   |[39m           [31m^[39m
+    [90m 45|[39m   }
+    [90m 46|[39m }
+[90m [2m❯[22m tests/v4-concurrency.test.ts:[2m106:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m4 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m21 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:09
+[2m   Duration [22m 290ms[2m (transform 363ms, setup 0ms, import 466ms, tests 222ms, environment 0ms)[22m
+

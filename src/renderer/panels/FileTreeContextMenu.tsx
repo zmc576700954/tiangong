@@ -20,6 +20,7 @@ import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { useAgentStore } from '../store/agentStore'
 import { useI18n } from '../i18n/useI18n'
+import { unwrapIpcResult } from '../lib/ipcResult'
 import { nodeTypeLabel } from '@shared/i18n'
 import type { Locale } from '@shared/i18n'
 import type { NodeType } from '@shared/types'
@@ -208,15 +209,19 @@ export function FileTreeContextMenu() {
         acceptanceCriteria: [],
       }
 
-      const result = await window.electronAPI['agent:startSession'](null, config)
+      const result = unwrapIpcResult<{ sessionId: string }>(
+        await window.electronAPI['agent:startSession'](null, config),
+      )
 
       const prompt = `分析 ${contextMenuPath} 的代码结构，生成业务模块/流程/功能点的节点层级。返回 JSON 格式：{"modules":[{"title":"模块名","description":"描述","processes":[{"title":"流程名","description":"描述","features":["功能点名"]}]}]}`
 
-      await window.electronAPI['agent:sendCommand'](result.sessionId, {
-        type: 'implement',
-        description: prompt,
-        targetNodeId: '',
-      })
+      unwrapIpcResult(
+        await window.electronAPI['agent:sendCommand'](result.sessionId, {
+          type: 'implement',
+          description: prompt,
+          targetNodeId: '',
+        }),
+      )
 
       useFileTreeStore.setState({
         toast: { message: t('projects.context.deduceStarted'), type: 'success' },

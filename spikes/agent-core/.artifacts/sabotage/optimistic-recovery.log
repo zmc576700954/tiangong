@@ -1,0 +1,42 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.005621444000000167,"p50Ms":0.0027499999999918145,"p99Ms":0.031999999999982265,"totalMs":5.805000000000007},{"round":2,"iterations":1000,"meanMs":0.0036143090000000486,"p50Ms":0.0025829999999871234,"p99Ms":0.019749999999987722,"totalMs":3.7305419999999856},{"round":3,"iterations":1000,"meanMs":0.002910101999999682,"p50Ms":0.001958999999999378,"p99Ms":0.026582999999988033,"totalMs":2.9998329999999953}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 57[2mms[22m[39m
+ [31m❯[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 207[2mms[22m[39m
+[31m     [31m×[31m 写前审批通过但写还没落地时被杀：step 必须判 unknown，不允许标 completed[39m[32m 57[2mms[22m[39m
+     [32m✓[39m 写已落地且 hash 对账一致：step 可判 completed，可 native resume[32m 33[2mms[22m[39m
+     [32m✓[39m 写后记录与磁盘 hash 不一致：必须转人工（abandon），不得静默重跑[32m 67[2mms[22m[39m
+     [32m✓[39m RecoveryPlan 是确定的：连续调用两次结果完全一致[32m 48[2mms[22m[39m
+     [32m✓[39m 事件日志 seq 校验：断号写入必须抛 EVENT_LOG_CORRUPT[32m 1[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v2-recovery.test.ts[2m > [22mV2 崩溃恢复对账[2m > [22m写前审批通过但写还没落地时被杀：step 必须判 unknown，不允许标 completed
+[31m[1mAssertionError[22m: expected 'completed' to be 'unknown-needs-rerun' // Object.is equality[39m
+
+Expected: [32m"unknown-needs-rerun"[39m
+Received: [31m"completed"[39m
+
+[36m [2m❯[22m tests/v2-recovery.test.ts:[2m69:45[22m[39m
+    [90m 67|[39m       [34mexpect[39m(plan[33m.[39mrequiresUserConfirmation)[33m.[39m[34mtoBe[39m([35mtrue[39m)
+    [90m 68|[39m       [34mexpect[39m([34mdispositionOf[39m(plan[33m,[39m [32m'step-1'[39m))[33m.[39m[34mtoBe[39m([32m'completed'[39m)
+    [90m 69|[39m       [34mexpect[39m([34mdispositionOf[39m(plan[33m,[39m [32m'step-2'[39m))[33m.[39m[34mtoBe[39m([32m'unknown-needs-rerun'[39m)
+    [90m   |[39m                                             [31m^[39m
+    [90m 70|[39m       [34mexpect[39m(plan[33m.[39mreason)[33m.[39m[34mtoContain[39m([32m'重放'[39m)
+    [90m 71|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m23 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:10
+[2m   Duration [22m 419ms[2m (transform 553ms, setup 0ms, import 685ms, tests 306ms, environment 0ms)[22m
+

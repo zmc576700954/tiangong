@@ -1,0 +1,29 @@
+[TEST] os.freemem mocked to 4096MB (BIZGRAPH_TEST_MOCK_FREEMEM=1)
+[2026-11-05T08:21:02.977Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:21:02.977Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:21:02.977Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:21:02.977Z] [IPC] [kernel] 总开关=off 白名单=[claude]
+[2026-11-05T08:21:02.980Z] [YjsRealtime] legacy migration: 1 backfilled / 0 skipped / 0 errors (scanned 1)
+[2026-11-05T08:21:02.984Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:21:02.984Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:21:02.985Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:21:02.985Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:21:03.173Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:21:03.177Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:21:03.177Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:21:03.177Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:21:03.178Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:21:03.179Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:21:03.179Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:21:03.192Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:21:09.734Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+Error occurred in handler for 'agent:sendCommand': Error: __BIZGRAPH_IPC_ERROR__:{"name":"SessionNotFoundError","message":"Session claude-27031fbe8fa2448ea20b0b1986ffb38f not found","code":"AGENT_SESSION_NOT_FOUND","stack":"SessionNotFoundError: Session claude-27031fbe8fa2448ea20b0b1986ffb38f not found\n    at SessionRouter.resolve (/Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:594:8072)\n    at AgentManager.sendCommandInner (/Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:2601:194349)\n    at AgentManager.sendCommand (/Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:2601:194253)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:2941:2237\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:792:27613\n    at AsyncLocalStorage.run (node:async_hooks:346:14)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:792:27581\n    at WebContents.<anonymous> (node:electron/js2c/browser_init:2:87039)\n    at WebContents.emit (node:events:518:28)\n    at WebContents.callbackTrampoline (node:internal/async_hooks:130:17)","sessionId":"claude-27031fbe8fa2448ea20b0b1986ffb38f"}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-CxVckhA0.js:792:27704
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.

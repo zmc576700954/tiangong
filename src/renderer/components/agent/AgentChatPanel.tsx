@@ -12,19 +12,24 @@ import { useDiffReview } from '../../hooks/useDiffReview'
 import { useWaterline } from '../../hooks/useWaterline'
 import { ChatHeader } from './ChatHeader'
 import { ConfirmationDialog } from './ConfirmationDialog'
+import { ApprovalRequestDialog } from './ApprovalRequestDialog'
 import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
 import { ChatInput } from './ChatInput'
 import { TerminalView } from './TerminalView'
+import { FileChangeEvidenceCard } from './FileChangeEvidenceCard'
 import { ThreadListSidebar } from './ThreadListSidebar'
 import { ContextPickerPopup } from './ContextPickerPopup'
 import { HistorySidebar } from './HistorySidebar'
 import { AdapterSetupGuide } from './AdapterSetupGuide'
 import { SubagentInvocationsPanel } from './SubagentInvocationsPanel'
+import { UsagePanel } from './UsagePanel'
 import { eventBus, Events } from '../../store/eventBus'
 import { threadTitle as localizeThreadTitle } from '@shared/i18n'
 import { useI18n } from '../../i18n/useI18n'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
+import type { NormalizedEventEnvelope, SessionGrantInfo, SessionRecoveryInfo } from '@shared/types/agent-runtime'
+import { shouldRefreshSessionState } from './sessionRefresh'
 
 const DiffReviewPanel = lazy(() => import('./DiffReviewPanel').then(m => ({ default: m.DiffReviewPanel })))
 const VerificationPanel = lazy(() => import('./VerificationPanel').then(m => ({ default: m.VerificationPanel })))
@@ -68,6 +73,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const [showResumePrompt, setShowResumePrompt] = useState(false)
   const [recoveredFlash, setRecoveredFlash] = useState(false)
   const [showSubagentPanel, setShowSubagentPanel] = useState(false)
+  const [showUsagePanel, setShowUsagePanel] = useState(false)
   const subagentInvocations = useSubagentStore((s) => s.invocations)
   const activeSubagentCount = useMemo(
     () => subagentInvocations.filter((i) => i.status === 'queued' || i.status === 'running').length,
@@ -76,6 +82,74 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   // Derived data — must be declared before useVerificationFlow
   const currentThread = useMemo(() => threads.find((t) => t.id === currentThreadId), [threads, currentThreadId])
   const noAdaptersInstalled = adapters.length > 0 && adapters.every((a) => !a.installed)
+
+  // 会话级残留状态徽标（§6.5：归属无法确认时只告警不杀；turn 状态机不因此回 running）
+  const currentSessionId = currentThread?.sessionId
+  const [sessionRecovery, setSessionRecovery] = useState<SessionRecoveryInfo | null>(null)
+  // B1：同会话 turn 结束/审批解决/进程回收后必须重新拉取，不能只依赖 sessionId 变化。
+  const [sessionRevision, setSessionRevision] = useState(0)
+  useEffect(() => {
+    const api = window.electronAPI
+    const bump = () => setSessionRevision((value) => value + 1)
+    const offEvent = api.onAgentEvent?.((raw) => {
+      const type = (raw as NormalizedEventEnvelope | undefined)?.type
+      if (shouldRefreshSessionState(type)) bump()
+    })
+    const offResolved = api.onApprovalResolved?.(() => bump())
+    return () => {
+      offEvent?.()
+      offResolved?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!currentSessionId) {
+      setSessionRecovery(null)
+      return
+    }
+    void window.electronAPI['agent:getSessionRecovery'](currentSessionId)
+      .then((info) => {
+        if (!cancelled) setSessionRecovery(info as SessionRecoveryInfo | null)
+      })
+      .catch(() => {
+        if (!cancelled) setSessionRecovery(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentSessionId, sessionRevision, currentThread?.status])
+
+  // A2：会话级授权徽标（存在即说明后续同类写操作不会再弹窗，用户可随时撤销）
+  const [sessionGrant, setSessionGrant] = useState<SessionGrantInfo | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const api = window.electronAPI
+    if (!currentSessionId || typeof api['agent:getSessionGrants'] !== 'function') {
+      setSessionGrant(null)
+      return
+    }
+    void api['agent:getSessionGrants']()
+      .then((grants) => {
+        if (!cancelled) {
+          setSessionGrant((grants as SessionGrantInfo[]).find((grant) => grant.sessionId === currentSessionId) ?? null)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setSessionGrant(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [currentSessionId, sessionRevision, currentThread?.status])
+
+  const revokeSessionGrant = useCallback(async () => {
+    if (!currentSessionId) return
+    const api = window.electronAPI
+    if (typeof api['agent:revokeSessionGrant'] !== 'function') return
+    await api['agent:revokeSessionGrant'](currentSessionId)
+    setSessionGrant(null)
+  }, [currentSessionId])
 
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId)
   const nodes = useGraphStore((s) => s.nodes)
@@ -355,6 +429,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     return last?.filePath ? `${t('agent.running.editingVerb')} ${last.filePath}` : undefined
   }, [rawOutputs, t])
 
+  // M1 ②：当前 turn 的合成文件变更证据（长尾 CLI 没有工具事件时的独立通道）
+  const latestFileEvidence = useMemo(() => {
+    const items = rawOutputs.filter((o) => o.type === 'file_change_evidence' && o.fileChangeEvidence)
+    return items.length > 0 ? items[items.length - 1].fileChangeEvidence : undefined
+  }, [rawOutputs])
+
   return (
     <div className="@container h-full flex flex-col relative" ref={chatContainerRef}>
       <ChatHeader
@@ -376,6 +456,11 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         onCompact={handleCompact}
         activeSubagentCount={activeSubagentCount}
         onOpenSubagents={() => setShowSubagentPanel(true)}
+        residualRisk={sessionRecovery?.residualRisk}
+        recoveryNote={sessionRecovery?.recoveryNote}
+        sessionGrant={sessionGrant}
+        onRevokeSessionGrant={() => void revokeSessionGrant()}
+        onOpenUsage={() => setShowUsagePanel(true)}
       />
 
       <div className="flex-1 min-h-0 min-w-0 flex">
@@ -496,6 +581,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 {t('agent.adapter.recovered')}
               </div>
             )}
+            <ApprovalRequestDialog />
             <ConfirmationDialog />
             {viewMode === 'chat' ? (
               <>
@@ -517,6 +603,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
               <TerminalView outputs={rawOutputs} />
             )}
           </div>
+
+          {/* M1 ②：工作区差分证据（明确不是工具时间线） */}
+          {latestFileEvidence && (
+            <div className="shrink-0 px-3 pb-2">
+              <FileChangeEvidenceCard evidence={latestFileEvidence} />
+            </div>
+          )}
 
           {/* Review Changes button */}
           {currentThread?.status === 'idle' &&
@@ -663,6 +756,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
         open={showSubagentPanel}
         onOpenChange={setShowSubagentPanel}
         parentSessionId={currentThread?.sessionId ?? null}
+      />
+
+      <UsagePanel
+        open={showUsagePanel}
+        onOpenChange={setShowUsagePanel}
+        sessionId={currentSessionId ?? null}
+        graphId={currentGraphId ?? null}
       />
     </div>
   )

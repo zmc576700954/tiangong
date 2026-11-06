@@ -12,6 +12,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcApi, AgentOutput, ContextState } from '@shared/types'
 import type { ConflictReport } from '@shared/types/conflict'
 import type { RecipeRunProgressEvent } from '@shared/types/recipe'
+import { decodeIpcError, type IpcErrorPayload, type IpcErrorResult } from '@shared/ipc-error'
 
 // 渲染进程实际使用的 IPC 通道（最小暴露原则）
 const exposedChannels: (keyof IpcApi)[] = [
@@ -79,6 +80,18 @@ const exposedChannels: (keyof IpcApi)[] = [
   'agent:checkInstalled',
   'agent:closeAllSessions',
   'agent:getHealth',          // D4: 健康度面板
+  'agent:cancelTurn',
+  'agent:getPendingApprovals',
+  'agent:resolveApproval',
+  'agent:getExecutorCapabilities',
+  'agent:getSessionRecovery',
+  'agent:getRuntimeFlags',
+  'agent:cancelSessionTurn',
+  'agent:getSessionGrants',
+  'agent:revokeSessionGrant',
+  'agent:getUsageBySession',
+  'agent:getUsageByGraph',
+  'agent:getStorageStats',
 
   // Chat 会话记录
   'thread:list',
@@ -214,8 +227,45 @@ const exposedChannels: (keyof IpcApi)[] = [
 // Build IPC API object
 const ipcApi: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
 
+/**
+ * 需要结构化错误信封的通道。
+ *
+ * 这些通道的业务失败必须让 renderer 拿到 `{code, message}`，因此 preload 把
+ * 拒绝转换为 plain object（`{ok:false, error}`）——普通返回值能完整穿过
+ * contextBridge，而 reject 的 Error 自定义字段会被桥接层丢弃。
+ * 成功返回值保持原样，不改变现有调用方契约。
+ */
+const STRUCTURED_ERROR_CHANNELS = new Set<string>([
+  'agent:startSession',
+  'agent:sendCommand',
+  'agent:resolveAndSendCommand',
+  'agent:cancelTurn',
+  'agent:cancelSessionTurn',
+  'agent:resolveApproval',
+])
+
+function toIpcError(err: unknown): IpcErrorPayload {
+  const message = err instanceof Error ? err.message : String(err)
+  const decoded = decodeIpcError(message)
+  if (decoded) return decoded
+  // 未编码的裸错误：去掉 Electron 自动加的 `Error invoking remote method 'x': ` 前缀。
+  const readable = message.replace(/^Error invoking remote method '[^']*': /, '')
+  return { code: 'IPC_HANDLER_ERROR', message: readable }
+}
+
+async function invokeStructured(channel: string, args: unknown[]): Promise<unknown> {
+  try {
+    return await ipcRenderer.invoke(channel, ...args)
+  } catch (err) {
+    const result: IpcErrorResult = { ok: false, error: toIpcError(err) }
+    return result
+  }
+}
+
 for (const channel of exposedChannels) {
-  ipcApi[channel] = (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
+  ipcApi[channel] = STRUCTURED_ERROR_CHANNELS.has(channel)
+    ? (...args: unknown[]) => invokeStructured(channel, args)
+    : (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 }
 
 // Expose API to window.electronAPI
@@ -229,6 +279,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
     ipcRenderer.on('agent:onOutput', handler)
     return () => ipcRenderer.off('agent:onOutput', handler)
+  },
+
+  // Agent Runtime M0：审批请求/结果与归一化事件（主进程推送）
+  onApprovalRequest: (callback: (payload: unknown) => void) => {
+    const handler = (_: unknown, payload: unknown) => callback(payload)
+    ipcRenderer.on('agent:onApprovalRequest', handler)
+    return () => ipcRenderer.off('agent:onApprovalRequest', handler)
+  },
+
+  onApprovalResolved: (callback: (payload: unknown) => void) => {
+    const handler = (_: unknown, payload: unknown) => callback(payload)
+    ipcRenderer.on('agent:onApprovalResolved', handler)
+    return () => ipcRenderer.off('agent:onApprovalResolved', handler)
+  },
+
+  onAgentEvent: (callback: (event: unknown) => void) => {
+    const handler = (_: unknown, event: unknown) => callback(event)
+    ipcRenderer.on('agent:onEvent', handler)
+    return () => ipcRenderer.off('agent:onEvent', handler)
   },
 
   // Agent status change event listener
@@ -343,6 +412,9 @@ declare global {
   interface Window {
     electronAPI: ExposedApi & {
       onAgentOutput: (callback: (sessionId: string, output: AgentOutput) => void) => () => void
+      onApprovalRequest: (callback: (payload: unknown) => void) => () => void
+      onApprovalResolved: (callback: (payload: unknown) => void) => () => void
+      onAgentEvent: (callback: (event: unknown) => void) => () => void
       onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => () => void
       onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => () => void
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void

@@ -1,0 +1,2 @@
+[text] I could not inspect the file because the CLI returned no tool trace.
+[text] Please rerun without --quiet if tool visibility is required.

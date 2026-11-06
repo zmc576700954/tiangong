@@ -7,6 +7,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { AgentLog } from '@shared/types'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
+import { redactUnknown } from '../shared/redaction'
 import { isAgentCommand, isAgentOutputArray } from '@shared/type-guards'
 import { DatabaseError, ErrorCode } from '../errors'
 
@@ -22,7 +23,8 @@ export class AgentLogRepository {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, data.sessionId, data.adapterName, data.nodeId, data.graphId,
-      JSON.stringify(data.command), JSON.stringify(data.outputs),
+      // 日志同样落盘：命令描述与 stdout/stderr 可能含 token/密码，先过统一脱敏规则。
+      JSON.stringify(redactUnknown(data.command)), JSON.stringify(redactUnknown(data.outputs)),
       data.result, data.duration, now,
     )
 

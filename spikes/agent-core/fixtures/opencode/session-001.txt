@@ -1,0 +1,4 @@
+[text] I will inspect src/math.ts.
+[tool] Read {"file_path":"src/math.ts"}
+[tool-result] Read ok (1 file)
+[text] Found the bug: add subtracts instead of adds.

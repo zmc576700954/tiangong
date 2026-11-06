@@ -9,6 +9,7 @@ type MockChatRepository = { [K in keyof ChatRepository]: ReturnType<typeof vi.fn
 const mockRepo: MockChatRepository = {
   createThread: vi.fn(),
   getThread: vi.fn(),
+  getThreadBySessionId: vi.fn(),
   listThreads: vi.fn(),
   updateThread: vi.fn(),
   deleteThread: vi.fn(),

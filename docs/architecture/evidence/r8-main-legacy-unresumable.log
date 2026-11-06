@@ -1,0 +1,84 @@
+[2026-11-05T08:53:54.599Z] [IPC] [kernel] claude-code: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:54.599Z] [IPC] [kernel] codex: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:54.599Z] [IPC] [kernel] opencode: 旧路径（BIZGRAPH_AGENT_KERNEL=0 总开关关闭）
+[2026-11-05T08:53:54.600Z] [IPC] [kernel] 总开关=off 白名单=[claude]
+[2026-11-05T08:53:54.603Z] [YjsRealtime] legacy migration: 1 backfilled / 0 skipped / 0 errors (scanned 1)
+[2026-11-05T08:53:54.607Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:53:54.607Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:53:54.609Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:53:54.609Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:53:54.829Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:53:54.833Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:53:54.833Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:53:54.833Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:53:54.835Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:53:54.835Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:53:54.835Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:53:54.848Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:54:01.367Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T08:54:02.870Z] [AgentManager] [legacy-restore] session=claude-d9b8a8ccaf1b489897349b84aaed5e63 unresumable: 原会话不可续接：claude-code 的旧路径未持久化原生会话 ID，重启后无法恢复上下文
+Error occurred in handler for 'agent:sendCommand': Error: __BIZGRAPH_IPC_ERROR__:{"name":"SessionRestoreError","message":"无法恢复会话 claude-d9b8a8ccaf1b489897349b84aaed5e63：原会话不可续接：claude-code 的旧路径未持久化原生会话 ID，重启后无法恢复上下文。新建会话可继续。","code":"AGENT_SESSION_RESTORE_FAILED","stack":"SessionRestoreError: 无法恢复会话 claude-d9b8a8ccaf1b489897349b84aaed5e63：原会话不可续接：claude-code 的旧路径未持久化原生会话 ID，重启后无法恢复上下文。新建会话可继续。\n    at AgentManager.restoreLegacySession (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:192023)\n    at AgentManager.resolveLegacyAdapter (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:190979)\n    at AgentManager.sendCommandInner (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:195866)\n    at AgentManager.sendCommand (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:195771)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2941:2237\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27613\n    at AsyncLocalStorage.run (node:async_hooks:346:14)\n    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27581\n    at WebContents.<anonymous> (node:electron/js2c/browser_init:2:87039)\n    at WebContents.emit (node:events:518:28)","sessionId":"claude-d9b8a8ccaf1b489897349b84aaed5e63","reason":"原会话不可续接：claude-code 的旧路径未持久化原生会话 ID，重启后无法恢复上下文","canStartNewSession":true}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27704
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+[2026-11-05T08:54:08.973Z] [AdapterHealthMonitor] Recorded call for claude-code: success=true, time=0ms
+[2026-11-05T08:54:08.978Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:54:08.984Z] [prompt-orchestrator] Assembled prompt for session claude-ce70c63d32444034b3e848fa483c8fd6: 227 tokens (budget 12000), layers: system=65, scope=10, context=95, waterline=22, user=34
+[2026-11-05T08:54:18.556Z] [ClaudeCodeAdapter] Built context summary for session claude-ce70c63d32444034b3e848fa483c8fd6: 76 chars
+[2026-11-05T08:54:18.558Z] [PipelineRunner] Compress stage: threshold=4000, outputTokens≈76
+[2026-11-05T08:54:18.559Z] [MemoryExtractor] Extracted 1 memory items from session claude-ce70c63d32444034b3e848fa483c8fd6
+[2026-11-05T08:54:18.560Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:54:18.561Z] [WaterlineSync] Waterline advanced for /tmp/bizgraph-realdevice/ws-r8: 1 sessions, 1 fixes
+[2026-11-05T08:54:18.561Z] [WaterlineSync] Waterline persisted for /tmp/bizgraph-realdevice/ws-r8
+[2026-11-05T08:54:18.562Z] [EmbeddingService] Loading embedding model from cache: /tmp/bizgraph-realdevice/ud-r8b/models
+[2026-11-05T08:54:18.571Z] [PipelineRunner] EmbeddingService not ready, skipping embedding generation for persisted memories
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+[yjs] Tried to remove event handler that doesn't exist.
+Error occurred in handler for 'message:saveBatch': Error: __BIZGRAPH_IPC_ERROR__:{"code":"IPC_HANDLER_ERROR","message":"The database connection is not open"}
+    at u (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:27449)
+    at /Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:792:28015
+    at async WebContents.<anonymous> (node:electron/js2c/browser_init:2:87023)
+[2026-11-05T08:54:18.714Z] [EmbeddingService] Failed to load embedding model: TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async getModelFile (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19062)
+    at async getModelJSON (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19965)
+    at async Promise.all (index 1)
+    at async loadTokenizer (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2583:28305)
+    at async AutoTokenizer.from_pretrained (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:13003)
+    at async Promise.all (index 0)
+    at async loadItems (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:164156)
+    at async pipeline (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:163691) {
+  [cause]: Error: read ECONNRESET
+      at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)
+      at TLSWrap.callbackTrampoline (node:internal/async_hooks:130:17) {
+    errno: -54,
+    code: 'ECONNRESET',
+    syscall: 'read'
+  }
+}
+[2026-11-05T08:54:18.715Z] [EmbeddingService] EmbeddingService initialization failed, falling back to keyword-only search: TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async getModelFile (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19062)
+    at async getModelJSON (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2581:19965)
+    at async Promise.all (index 1)
+    at async loadTokenizer (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2583:28305)
+    at async AutoTokenizer.from_pretrained (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:13003)
+    at async Promise.all (index 0)
+    at async loadItems (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:164156)
+    at async pipeline (/Users/zhumingchen/tiangong/dist-electron/main/index-DTc1pxO_.js:2601:163691) {
+  [cause]: Error: read ECONNRESET
+      at TLSWrap.onStreamRead (node:internal/stream_base_commons:218:20)
+      at TLSWrap.callbackTrampoline (node:internal/async_hooks:130:17) {
+    errno: -54,
+    code: 'ECONNRESET',
+    syscall: 'read'
+  }
+}
+[2026-11-05T08:54:18.715Z] [PipelineRunner] Embedding service unavailable, semantic retrieval stays disabled

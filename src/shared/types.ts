@@ -41,7 +41,7 @@ export type {
   AgentCommandType, AgentCommand, AgentOutput,
   ResolvedContext, FileSearchResult, ToolCallBlock,
   MessageStatus, MessageError, ChatMessage, AgentThread, AgentSession,
-  AgentAdapter, PromptContext,
+  AgentAdapter, AdapterRawEvent, AdapterUsageReport, PromptContext,
   Sandbox, ValidationResult,
   AgentLog,
   VerificationResult, VerificationReport,

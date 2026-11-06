@@ -1,0 +1,37 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0044462420000004384,"p50Ms":0.002250000000003638,"p99Ms":0.02575000000000216,"totalMs":4.578125},{"round":2,"iterations":1000,"meanMs":0.0030444830000002127,"p50Ms":0.002207999999995991,"p99Ms":0.015041999999994005,"totalMs":3.1516670000000033},{"round":3,"iterations":1000,"meanMs":0.0022522240000005665,"p50Ms":0.0019169999999917309,"p99Ms":0.011042000000003327,"totalMs":2.301415999999989}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [31m❯[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 14[2mms[22m[39m
+     [32m✓[39m 同一 run 并发两个 turn：第二个立即 SESSION_BUSY，结束后可再次派发[32m 2[2mms[22m[39m
+     [32m✓[39m 防重入：同一调用链里二次加锁不会死锁[32m 0[2mms[22m[39m
+[31m     [31m×[31m 同一节点最多一个非终态 run：第二个返回 NODE_BUSY，第一个结束后才可再建[39m[32m 4[2mms[22m[39m
+     [32m✓[39m 两个 run 并发产生事件：归属零错误，各自 seq 连续[32m 7[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 46[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 128[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v4-concurrency.test.ts[2m > [22mV4 并发不串台[2m > [22m同一节点最多一个非终态 run：第二个返回 NODE_BUSY，第一个结束后才可再建
+[31m[1mAssertionError[22m: expected function to throw an error, but it didn't[39m
+[36m [2m❯[22m tests/v4-concurrency.test.ts:[2m63:9[22m[39m
+    [90m 61|[39m           status[33m:[39m [32m'created'[39m[33m,[39m
+    [90m 62|[39m         })[33m,[39m
+    [90m 63|[39m       )[33m.[39m[34mtoThrowError[39m([33mNodeBusyError[39m)
+    [90m   |[39m         [31m^[39m
+    [90m 64|[39m
+    [90m 65|[39m       repo[33m.[39m[34mupdateRunStatus[39m([32m'run-node-1'[39m[33m,[39m [32m'completed'[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m23 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:12
+[2m   Duration [22m 281ms[2m (transform 380ms, setup 0ms, import 480ms, tests 208ms, environment 0ms)[22m
+

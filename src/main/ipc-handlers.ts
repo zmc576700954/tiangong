@@ -3,7 +3,7 @@
  * 组装并注册所有领域 IPC handlers
  */
 
-import { BrowserWindow, app, ipcMain } from 'electron'
+import { BrowserWindow, app, ipcMain, webContents } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { getClient } from './database'
@@ -22,6 +22,14 @@ import { EdgeRepository } from './repositories/edge-repository'
 import { GraphRepository } from './repositories/graph-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
+import {
+  AGENT_KERNEL_BACKENDS_ENV,
+  AGENT_KERNEL_ENV,
+  getKernelBackendPolicy,
+  getKernelBackends,
+  isAgentKernelEnabled,
+  isKernelUnsafeOverrideEnabled,
+} from './agent/runtime/feature-flags'
 import { isPathWithinResolved } from './shared/path-utils'
 import { IpcError, ErrorCode } from './errors'
 
@@ -77,6 +85,8 @@ export async function cachedRealpath(targetPath: string, skipCache = false): Pro
 import { createTypedHandle, isBlockedSystemPath } from './ipc/utils'
 import { registerGraphHandlers } from './ipc/graph'
 import { registerAgentHandlers } from './ipc/agent'
+import { AgentRuntime } from './agent/runtime/runtime'
+import { AdapterBackendDriver } from './agent/runtime/executors/adapter-driver'
 import { registerFsHandlers } from './ipc/fs'
 import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
@@ -108,6 +118,7 @@ import { registerRealtimeHandlers } from './ipc/realtime'
 import { registerConflictHandlers } from './ipc/conflict'
 import { getConflictReporter } from './services/conflict-reporter'
 import type { A2AController } from './a2a/wiring'
+import type { BizGraphSettings } from '@shared/types'
 
 // ============================================
 // 依赖工厂：集中组装全局实例（便于测试时替换 Mock）
@@ -269,6 +280,66 @@ export async function registerIpcHandlers(): Promise<void> {
   const graphService = new GraphService(db, agentManager, chatService)
   setupAgentLogPersistence()
 
+  // ---------- M0 Agent Runtime（D1–D5） ----------
+  let runtimeSettings: BizGraphSettings | undefined
+  try {
+    const { readSettings } = await import('./settings')
+    runtimeSettings = await readSettings()
+  } catch (err) {
+    logger.warn('Failed to read agentRuntime cost rates (usage will be unpriced):', err)
+  }
+  const agentRuntime = new AgentRuntime({
+    db,
+    rates: runtimeSettings?.agentRuntime?.costRates,
+    retention: runtimeSettings?.agentRuntime?.retention,
+    approvalNotifier: {
+      onRequest: (payload) => broadcastToWindows('agent:onApprovalRequest', payload),
+      onResolved: (payload) => broadcastToWindows('agent:onApprovalResolved', payload),
+    },
+    onEvent: (event) => broadcastToWindows('agent:onEvent', event),
+  })
+  for (const executor of ['claude-code', 'codex', 'opencode']) {
+    const adapter = agentManager.getAdapter(executor)
+    if (adapter) {
+      agentRuntime.registerDriver(executor, new AdapterBackendDriver({ adapter, executor }))
+    }
+    // 后端能力矩阵必须出现在启动日志里：用户不能误以为未具备审批的后端也被保护。
+    // 三类回退原因分别打印，禁止把「总开关关闭 / 白名单排除」写成「无审批能力」。
+    const policy = getKernelBackendPolicy(executor)
+    if (policy.reasonKind === 'unsafe-degraded') {
+      logger.warn(`[kernel] ${executor}: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）`)
+    } else if (policy.reasonKind === 'enabled') {
+      logger.info(`[kernel] ${executor}: kernel 路径已启用（写前强制审批）`)
+    } else if (policy.reasonKind === 'switch-disabled') {
+      logger.info(`[kernel] ${executor}: 旧路径（${AGENT_KERNEL_ENV}=0 总开关关闭）`)
+    } else if (policy.reasonKind === 'whitelist-excluded') {
+      logger.info(
+        `[kernel] ${executor}: 旧路径（因 ${AGENT_KERNEL_BACKENDS_ENV} 未列出而回退；该变量为完全指定，未列出的能力后端同样回退）`,
+      )
+    } else {
+      logger.info(`[kernel] ${executor}: 旧路径（该后端尚未启用写前审批）`)
+    }
+  }
+  logger.info(
+    `[kernel] 总开关=${isAgentKernelEnabled() ? 'on' : 'off'} 白名单=[${getKernelBackends().join(',')}]` +
+      `${isKernelUnsafeOverrideEnabled() ? ' UNSAFE=on' : ''}`,
+  )
+  agentManager.setRuntime(agentRuntime)
+  void agentRuntime
+    .reconcileOnStartup()
+    .catch((err: unknown) => {
+      logger.error('Agent Runtime startup reconciliation failed:', err)
+    })
+    .finally(() => {
+      // P0-2：启动一次清理，之后每 24h 一次（对账完成后执行，避免误删待重推审批的 turn）
+      try {
+        agentRuntime.startEventRetention()
+      } catch (err) {
+        logger.error('Agent Runtime event retention failed:', err)
+      }
+    })
+
+
   // ---------- Y.Doc realtime (D10a + D10c) ----------
   // 老 nodes/edges 表 → yjs_snapshots 一次性迁移；为每张图加载 Y.Doc；
   // 绑定 diff→SQLite 镜像 + 防抖快照保存；可选启动 WS server。
@@ -398,7 +469,17 @@ export async function registerIpcHandlers(): Promise<void> {
   // ---------- 注册各领域 handlers ----------
   const snapshotRepo = new SnapshotRepository(db)
   registerGraphHandlers(db, typedHandle, graphService, snapshotRepo, agentManager)
-  registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db))
+  registerAgentHandlers(agentManager, typedHandle, agentLogRepo ?? undefined, new NodeRepository(db), agentRuntime, {
+    // 会话绑定的窗口生命周期：销毁即清理，决议时据此判断是否重绑（见 ipc/agent.ts）。
+    watchSender: (senderId, onDestroyed) => {
+      const sender = webContents.fromId(senderId)
+      sender?.once('destroyed', onDestroyed)
+    },
+    isSenderAlive: (senderId) => {
+      const sender = webContents.fromId(senderId)
+      return !!sender && !sender.isDestroyed()
+    },
+  })
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService, chatService)

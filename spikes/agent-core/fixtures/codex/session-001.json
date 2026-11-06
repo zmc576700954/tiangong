@@ -1,0 +1,13 @@
+{
+  "thread_id": "vendor-codex-thread-1",
+  "items": [
+    { "type": "agent_message", "text": "I will inspect src/math.ts." },
+    {
+      "type": "command_execution",
+      "command": "sed -n '1,20p' src/math.ts",
+      "output": "export function add(a, b) { return a - b }"
+    }
+  ],
+  "final_response": "Found the bug: add subtracts instead of adds.",
+  "usage": { "input_tokens": 1100, "output_tokens": 260, "cached_input_tokens": 0 }
+}

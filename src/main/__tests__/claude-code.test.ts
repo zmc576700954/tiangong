@@ -196,6 +196,123 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(callArgs.options.resume).toBe('existing-session')
   })
 
+  it('doSendCommand drops internal session id：内部 id 绝不传给 CLI resume', async () => {
+    const config = makeConfig({ resumeSessionId: 'claude-57956f9a-4b79-4c7a-9f67-1e2d3c4b5a69' })
+    const session = await adapter.startSession(config)
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.resume).toBeUndefined()
+  })
+
+  it('PreToolUse 对写类工具强制 ask：用户 settings allow(Write) 不能绕过审批', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
+      onPreToolUse: () => {},
+    })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as {
+      options: { hooks: { PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>) => unknown> }> } }
+    }
+    const hook = callArgs.options.hooks.PreToolUse[0].hooks[0]
+
+    const writeResult = (await hook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/canary.txt' },
+    })) as { hookSpecificOutput?: { permissionDecision?: string } }
+    expect(writeResult.hookSpecificOutput?.permissionDecision).toBe('ask')
+
+    const readResult = await hook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Read',
+      tool_input: { file_path: '/tmp/canary.txt' },
+    })
+    expect(readResult).toEqual({})
+  })
+
+  it('Bash 走自有两档策略：只读 allow、其余 ask，空命令才是唯一不放行例外', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    const onBashPolicy = vi.fn()
+    const onPreToolUse = vi.fn()
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
+      onPreToolUse,
+      onBashPolicy,
+    })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as {
+      options: { hooks: { PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>) => unknown> }> } }
+    }
+    const hook = callArgs.options.hooks.PreToolUse[0].hooks[0]
+    type HookResult = { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } }
+    const runHook = (cmd: string) =>
+      hook({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: cmd },
+      }) as Promise<HookResult>
+
+    // 只读命令：显式 allow（免弹执行，不再返回 `{}` 交给 SDK）
+    const allowed = await runHook('git status')
+    expect(allowed.hookSpecificOutput?.permissionDecision).toBe('allow')
+    expect(allowed.hookSpecificOutput?.permissionDecisionReason).toContain('git:status')
+
+    // 非白名单：ask，强制回到我们的审批网关
+    const asked = await runHook('npm test')
+    expect(asked.hookSpecificOutput?.permissionDecision).toBe('ask')
+
+    // 危险构造：不再是 deny，而是 ask（交给用户判断），理由带命中规则
+    const dangerous = await runHook('printf hi > /tmp/out.txt')
+    expect(dangerous.hookSpecificOutput?.permissionDecision).toBe('ask')
+    expect(dangerous.hookSpecificOutput?.permissionDecisionReason).toContain('redirect')
+
+    // 唯一例外：空命令没有内容可审批 → deny（blocked-empty）
+    const empty = await runHook('   ')
+    expect(empty.hookSpecificOutput?.permissionDecision).toBe('deny')
+    expect(empty.hookSpecificOutput?.permissionDecisionReason).toContain('empty-command')
+
+    // 审计：四次决策全部回调，且带 rule
+    expect(onBashPolicy).toHaveBeenCalledTimes(4)
+    expect(onBashPolicy.mock.calls.map((call) => (call[0] as { rule: string }).rule)).toEqual([
+      'git:status',
+      'not-in-whitelist:npm',
+      'redirect',
+      'empty-command',
+    ])
+    // Bash 不再经过 onPreToolUse（避免 SDK 的 canUseTool 时机决定放行）
+    expect(onPreToolUse).not.toHaveBeenCalled()
+
+    // 非 Bash 工具仍走 onPreToolUse，Read 仍返回 {}（不干预）
+    const readResult = (await hook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Read',
+      tool_input: { file_path: '/tmp/canary.txt' },
+    })) as HookResult
+    expect(readResult).toEqual({})
+    expect(onPreToolUse).toHaveBeenCalledTimes(1)
+  })
+
   it('doSendCommand emits assistant text as stdout', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)

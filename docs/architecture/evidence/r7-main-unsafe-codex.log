@@ -1,0 +1,33 @@
+[TEST] os.freemem mocked to 4096MB (BIZGRAPH_TEST_MOCK_FREEMEM=1)
+[2026-11-05T08:15:01.403Z] [Database] Migrating schema from v0 to v20...
+[2026-11-05T08:15:01.406Z] [Database] Schema migrated to v20
+[2026-11-05T08:15:01.409Z] [Settings] Settings file not found, creating with defaults
+[2026-11-05T08:15:01.413Z] [IPC] [kernel] claude-code: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）
+[2026-11-05T08:15:01.413Z] [IPC] [kernel] codex: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）
+[2026-11-05T08:15:01.413Z] [IPC] [kernel] opencode: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）
+[2026-11-05T08:15:01.413Z] [IPC] [kernel] 总开关=on 白名单=[codex] UNSAFE=on
+[2026-11-05T08:15:01.414Z] [YjsRealtime] legacy migration: 0 backfilled / 0 skipped / 0 errors (scanned 0)
+[2026-11-05T08:15:01.416Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:15:01.416Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:15:01.418Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:15:01.418Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:15:01.611Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:15:01.615Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:15:01.615Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:15:01.615Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:15:01.617Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:15:01.617Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:15:01.617Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:15:01.629Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:15:12.857Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T08:15:12.859Z] [RealtimeIPC] Generated new user identity: f7b06e83-2d53-492a-9329-2e60772e9d1e (colorIndex=3)
+[2026-11-05T08:15:14.378Z] [AdapterHealthMonitor] Recorded call for codex: success=true, time=0ms
+[2026-11-05T08:15:14.381Z] [AgentManager] [kernel-degraded] session=codex-bbdd81b16d344192ad48092d6841e08c backend=codex: backend "codex" has no forced pre-write approval; forced by BIZGRAPH_AGENT_KERNEL_UNSAFE=1
+[2026-11-05T08:15:14.383Z] [MemoryStore] FTS5 index rebuilt to repair legacy asymmetric-trigger corruption
+[2026-11-05T08:15:14.383Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:15:14.389Z] [prompt-orchestrator] Assembled prompt for session codex-bbdd81b16d344192ad48092d6841e08c: 133 tokens (budget 12000), layers: system=64, scope=10, context=0, waterline=22, user=36
+[2026-11-05T08:15:14.718Z] [AgentRuntime] turn failed reclaim: killed=0 unresolved=- missing=- durationMs=71 residualRisk=unconfirmed
+[2026-11-05T08:16:18.023Z] [PipelineRunner] Compress stage: threshold=4000, outputTokens≈12
+[2026-11-05T08:16:18.024Z] [MemoryExtractor] Extracted 0 memory items from session codex-bbdd81b16d344192ad48092d6841e08c
+[2026-11-05T08:16:18.025Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:16:18.026Z] [WaterlineSync] Waterline persisted for /tmp/bizgraph-realdevice/ws-r7c

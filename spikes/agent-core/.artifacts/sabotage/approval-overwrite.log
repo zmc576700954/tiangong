@@ -1,0 +1,64 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0038535250000000616,"p50Ms":0.0017920000000088976,"p99Ms":0.019458000000000197,"totalMs":3.967209000000011},{"round":2,"iterations":1000,"meanMs":0.003108052000000001,"p50Ms":0.002207999999995991,"p99Ms":0.016584000000008814,"totalMs":3.2146669999999915},{"round":3,"iterations":1000,"meanMs":0.002314623000000239,"p50Ms":0.001999999999995339,"p99Ms":0.012249999999994543,"totalMs":2.371416999999994}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [31m❯[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 50[2mms[22m[39m
+[31m     [31m×[31m 重复决定幂等：第二次返回首次 allow，不覆盖、不重记、不重复执行[39m[32m 8[2mms[22m[39m
+[31m     [31m×[31m 超时默认拒绝：迟到的 allow 不得执行，且拒绝事件已落库[39m[32m 33[2mms[22m[39m
+     [32m✓[39m 拒绝后不得执行：deny 决定下 execute 永不调用[32m 1[2mms[22m[39m
+     [32m✓[39m 重启后未决审批可重放且不自动批准；用户决定与事件同事务落库[32m 5[2mms[22m[39m
+     [32m✓[39m 重启时审批已过期：迟到决定按 deny 处理，不执行、留痕[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 116[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v7-approval.test.ts[2m > [22mV7 fail-closed 审批[2m > [22m重复决定幂等：第二次返回首次 allow，不覆盖、不重记、不重复执行
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m tests/v7-approval.test.ts:[2m71:40[22m[39m
+    [90m 69|[39m         [35mreturn[39m [32m'should-not-run'[39m
+    [90m 70|[39m       })
+    [90m 71|[39m       [34mexpect[39m(second[33m.[39mresult[33m.[39midempotent)[33m.[39m[34mtoBe[39m([35mtrue[39m)
+    [90m   |[39m                                        [31m^[39m
+    [90m 72|[39m       [34mexpect[39m(second[33m.[39mresult[33m.[39mdecision)[33m.[39m[34mtoBe[39m([32m'allow'[39m)
+    [90m 73|[39m       [34mexpect[39m(second[33m.[39mexecuted)[33m.[39m[34mtoBe[39m([35mfalse[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v7-approval.test.ts[2m > [22mV7 fail-closed 审批[2m > [22m超时默认拒绝：迟到的 allow 不得执行，且拒绝事件已落库
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m tests/v7-approval.test.ts:[2m99:38[22m[39m
+    [90m 97|[39m         executions [33m+=[39m [34m1[39m
+    [90m 98|[39m       })
+    [90m 99|[39m       [34mexpect[39m(late[33m.[39mresult[33m.[39midempotent)[33m.[39m[34mtoBe[39m([35mtrue[39m)
+    [90m   |[39m                                      [31m^[39m
+    [90m100|[39m       [34mexpect[39m(late[33m.[39mresult[33m.[39mdecision)[33m.[39m[34mtoBe[39m([32m'deny'[39m)
+    [90m101|[39m       [34mexpect[39m(late[33m.[39mexecuted)[33m.[39m[34mtoBe[39m([35mfalse[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m22 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:33
+[2m   Duration [22m 258ms[2m (transform 338ms, setup 0ms, import 427ms, tests 203ms, environment 0ms)[22m
+

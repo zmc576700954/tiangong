@@ -3,6 +3,7 @@ import { Plus, List, Maximize2, Minimize2, ChevronDown, Terminal, MessageSquare,
 import { cn } from '../../lib/utils'
 import { useI18n } from '../../i18n/useI18n'
 import type { AdapterFallbackAttempt, ContextState } from '@shared/types'
+import type { ResidualRisk, SessionGrantInfo } from '@shared/types/agent-runtime'
 import { ContextWaterlineBar } from './ContextWaterlineBar'
 
 interface ChatHeaderProps {
@@ -25,6 +26,14 @@ interface ChatHeaderProps {
   onCompact?: () => void
   activeSubagentCount?: number
   onOpenSubagents?: () => void
+  /** 会话级残留状态（none 不展示；possible/unconfirmed 展示徽标） */
+  residualRisk?: ResidualRisk
+  recoveryNote?: string | null
+  /** A2：当前会话的写操作授权（存在即展示徽标，可手动撤销） */
+  sessionGrant?: SessionGrantInfo | null
+  onRevokeSessionGrant?: () => void
+  /** M1：打开用量视图（会话级 + 图级按日） */
+  onOpenUsage?: () => void
 }
 
 export function ChatHeader({
@@ -47,6 +56,11 @@ export function ChatHeader({
   onCompact,
   activeSubagentCount,
   onOpenSubagents,
+  residualRisk,
+  recoveryNote,
+  sessionGrant,
+  onRevokeSessionGrant,
+  onOpenUsage,
 }: ChatHeaderProps) {
   const { t } = useI18n()
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
@@ -59,7 +73,8 @@ export function ChatHeader({
     : null
 
   return (
-    <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border bg-muted/30 shrink-0">
+    <div className="shrink-0 border-b border-border bg-muted/30">
+      <div className="flex items-center justify-between px-2.5 py-1.5">
       <div className="flex items-center gap-2 min-w-0">
         <div className="relative">
           <button
@@ -131,9 +146,16 @@ export function ChatHeader({
         <span className="text-[11px] text-muted-foreground truncate max-w-[120px]">
           {threadTitle}
         </span>
+        {residualRisk && residualRisk !== 'none' && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 border border-amber-500/30 whitespace-nowrap"
+            title={recoveryNote ?? undefined}
+            data-testid="session-residual-risk"
+          >
+            {t(residualRisk === 'possible' ? 'agent.residualRisk.possible' : 'agent.residualRisk.unconfirmed')}
+          </span>
+        )}
       </div>
-
-      <ContextWaterlineBar state={waterlineState ?? null} onCompact={onCompact} />
 
       <div className="flex items-center gap-0.5">
         <button
@@ -163,6 +185,16 @@ export function ChatHeader({
                 {activeSubagentCount}
               </span>
             )}
+          </button>
+        )}
+        {onOpenUsage && (
+          <button
+            className="h-6 px-1.5 rounded flex items-center justify-center hover:bg-muted transition-colors text-muted-foreground text-[10px]"
+            onClick={onOpenUsage}
+            title={t('agent.usage.open')}
+            data-testid="chat-header-usage-btn"
+          >
+            {t('agent.usage.open')}
           </button>
         )}
         {onOpenHistory && (
@@ -211,6 +243,30 @@ export function ChatHeader({
           {expanded ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
         </button>
       </div>
+      </div>
+
+      {/* A2：会话级授权必须始终可见（窄面板下也不能被挤出屏幕），并提供撤销入口 */}
+      {sessionGrant && (
+        <div
+          className="flex items-center justify-between gap-2 px-2.5 py-1 border-t border-emerald-500/20 bg-emerald-500/10 text-[10px] text-emerald-600"
+          title={`grant: ${sessionGrant.approvalId}`}
+          data-testid="session-grant-badge"
+        >
+          <span className="truncate">{t('agent.sessionGrant.badge')}</span>
+          {onRevokeSessionGrant && (
+            <button
+              type="button"
+              onClick={onRevokeSessionGrant}
+              className="underline hover:text-emerald-800 dark:hover:text-emerald-300 shrink-0"
+              data-testid="session-grant-revoke"
+            >
+              {t('agent.sessionGrant.revoke')}
+            </button>
+          )}
+        </div>
+      )}
+
+      <ContextWaterlineBar state={waterlineState ?? null} onCompact={onCompact} />
     </div>
   )
 }

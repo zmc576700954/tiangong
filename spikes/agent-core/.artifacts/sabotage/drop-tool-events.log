@@ -1,0 +1,90 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.00482016599999983,"p50Ms":0.002250000000003638,"p99Ms":0.04145800000000577,"totalMs":4.951542000000018},{"round":2,"iterations":1000,"meanMs":0.0032241109999994817,"p50Ms":0.001958999999999378,"p99Ms":0.009999999999990905,"totalMs":3.326625000000007},{"round":3,"iterations":1000,"meanMs":0.002732927000000217,"p50Ms":0.0018749999999840838,"p99Ms":0.01066600000001472,"totalMs":2.8059590000000014}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [31m❯[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 11[2mms[22m[39m
+[31m     [31m×[31m 三种后端产出相同的 checkpoint 序列，seq 连续无断号，归属 100% 正确[39m[32m 5[2mms[22m[39m
+[31m     [31m×[31m 允许 fidelity 不同，但同一后端的全部事件保真度一致且符合能力矩阵[39m[32m 1[2mms[22m[39m
+     [32m✓[39m 每个 turn 以终态事件收尾，终态之后没有事件[32m 2[2mms[22m[39m
+     [32m✓[39m OpenCode 无工具轨迹时降级为最小契约，不伪造 tool 事件[32m 0[2mms[22m[39m
+     [32m✓[39m checkpoint 过滤只排除 delta/usage 等非生命周期事件[32m 1[2mms[22m[39m
+ [31m❯[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 7[2mms[22m[39m
+[31m     [31m×[31m host-owned Kernel 执行工具并回填 tool_result 后，检查点序列与 backend-owned 一致[39m[32m 5[2mms[22m[39m
+     [32m✓[39m 两种循环归属在同一状态机中都能从 created 走到 completed[32m 0[2mms[22m[39m
+     [32m✓[39m 两者混跑：host-owned 停在 awaiting_approval 时，backend-owned 的状态不受影响[32m 1[2mms[22m[39m
+     [32m✓[39m 能力矩阵（BackendCapabilities）：Claude/Codex 为 backend-owned，OpenCode 为 host-owned[32m 0[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 54[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 165[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 3 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v1-normalization.test.ts[2m > [22mV1 事件归一化：三后端同一语义检查点序列[2m > [22m三种后端产出相同的 checkpoint 序列，seq 连续无断号，归属 100% 正确
+[31m[1mAssertionError[22m: claude (逐消息流) checkpoint 序列: expected [ 'run.started', …(2) ] to deeply equal [ 'run.started', …(4) ][39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  [[22m
+[2m    "run.started",[22m
+[2m    "message.completed",[22m
+[32m-   "tool.requested",[39m
+[32m-   "tool.result",[39m
+[2m    "run.completed",[22m
+[2m  ][22m
+
+[36m [2m❯[22m tests/v1-normalization.test.ts:[2m59:78[22m[39m
+    [90m 57|[39m     [35mfor[39m ([35mconst[39m sample [35mof[39m [34mmakeSamples[39m()) {
+    [90m 58|[39m       [34massertContiguousSeq[39m(sample[33m.[39mevents)
+    [90m 59|[39m       expect(checkpointTypes(sample.events), `${sample.name} checkpoin…
+    [90m   |[39m                                                                              [31m^[39m
+    [90m 60|[39m       [34massertOwnership[39m(sample[33m.[39mevents[33m,[39m {
+    [90m 61|[39m         runId[33m:[39m [33mMETA[39m[33m.[39mrunId[33m,[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v1-normalization.test.ts[2m > [22mV1 事件归一化：三后端同一语义检查点序列[2m > [22m允许 fidelity 不同，但同一后端的全部事件保真度一致且符合能力矩阵
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'source')[39m
+[36m [2m❯[22m tests/v1-normalization.test.ts:[2m82:23[22m[39m
+    [90m 80|[39m     [35mconst[39m ocTool [33m=[39m opencode[33m.[39m[34mfind[39m((e) [33m=>[39m e[33m.[39mtype [33m===[39m [32m'tool.requested'[39m)[33m![39m
+    [90m 81|[39m     [35mconst[39m claudeTool [33m=[39m claude[33m.[39m[34mfind[39m((e) [33m=>[39m e[33m.[39mtype [33m===[39m [32m'tool.requested'[39m)[33m![39m
+    [90m 82|[39m     [34mexpect[39m(claudeTool[33m.[39msource)[33m.[39m[34mtoBe[39m([32m'backend'[39m)
+    [90m   |[39m                       [31m^[39m
+    [90m 83|[39m     [34mexpect[39m(codexTool[33m.[39msource)[33m.[39m[34mtoBe[39m([32m'synthetic'[39m)
+    [90m 84|[39m     [34mexpect[39m(ocTool[33m.[39msource)[33m.[39m[34mtoBe[39m([32m'synthetic'[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v6-loop-ownership.test.ts[2m > [22mV6 循环归属：backend-owned 与 host-owned 产出同一语义序列[2m > [22mhost-owned Kernel 执行工具并回填 tool_result 后，检查点序列与 backend-owned 一致
+[31m[1mAssertionError[22m: expected [ 'run.started', …(2) ] to deeply equal [ 'run.started', …(4) ][39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  [[22m
+[2m    "run.started",[22m
+[2m    "message.completed",[22m
+[32m-   "tool.requested",[39m
+[32m-   "tool.result",[39m
+[2m    "run.completed",[22m
+[2m  ][22m
+
+[36m [2m❯[22m tests/v6-loop-ownership.test.ts:[2m47:41[22m[39m
+    [90m 45|[39m
+    [90m 46|[39m     expect(checkpointTypes(hostEvents)).toEqual(checkpointTypes(backen…
+    [90m 47|[39m     [34mexpect[39m([34mcheckpointTypes[39m(hostEvents))[33m.[39m[34mtoEqual[39m([
+    [90m   |[39m                                         [31m^[39m
+    [90m 48|[39m       [32m'run.started'[39m[33m,[39m
+    [90m 49|[39m       [32m'message.completed'[39m[33m,[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m2 failed[39m[22m[2m | [22m[1m[32m4 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m21 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:09
+[2m   Duration [22m 334ms[2m (transform 416ms, setup 0ms, import 531ms, tests 266ms, environment 0ms)[22m
+

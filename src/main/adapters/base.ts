@@ -11,6 +11,8 @@ import type {
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
+  AdapterRawEvent,
+  AdapterUsageReport,
   PromptContext,
   TerminationReason,
 } from '@shared/types'
@@ -26,6 +28,12 @@ import { estimateTokens } from '../shared/token-utils'
 import type { CompactResult, CompactStrategy, CompactTrigger } from '@shared/types'
 import type { SubagentManager } from '../agent/subagent-manager'
 import { SUBAGENT_AGENT_TYPE_PATTERN } from '@shared/types/a2a'
+import {
+  captureWorkspaceSnapshot,
+  diffWorkspaceSnapshots,
+  shouldCaptureSyntheticFileEvidence,
+  type WorkspaceSnapshot,
+} from '../agent/runtime/evidence/workspace-snapshot'
 import os from 'node:os'
 
 /**
@@ -55,6 +63,20 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   private outputSessionStack: string[] = []
   /** 会话输出缓冲区：为不支持 resume 的适配器收集历史输出，用于生成上下文摘要 */
   protected sessionOutputBuffers = new Map<string, string[]>()
+  /** D5/P0-1：子进程 spawn 监听（Driver 用于落库并精确回收） */
+  private processSpawnHandlers = new Set<(sessionId: string, proc: { pid: number; pgid?: number }) => void>()
+  /**
+   * 本轮唯一进程标记（由 Runtime 设置，注入子进程 env）。
+   * 只用于同进程轮次关联/日志排障；macOS `ps` 读不到 env，故**不作为跨重启认领依据**。
+   */
+  private envMarkers = new Map<string, string>()
+  /**
+   * 原始事件流式模式：仅 Runtime/Kernel 路径开启。
+   * 未开启时适配器保持旧的 AgentOutput 阻塞语义（如 Codex `thread.run()`）。
+   */
+  private rawStreamSessions = new Set<string>()
+  /** D5：需要「自有进程组 + 真实 pid」的会话（仅 Runtime/Kernel 路径）。 */
+  private supervisedSessions = new Set<string>()
   /** 单会话输出条数上限，根据可用内存自适应，防止内存无限增长 */
   private static getMaxOutputBufferSize(): number {
     try {
@@ -198,9 +220,13 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       if (this.autoManageIdleReaper) {
         this.clearIdleReaper(sessionId)
       }
+      // M1 ②：长尾 CLI 没有工具事件，用 turn 前后的工作区差分给出「文件变更」证据。
+      // 采集失败/超限都不影响 turn 本身。
+      const evidenceBaseline = await this.beginSyntheticFileEvidence(session)
       try {
         await this.doSendCommand(session, command, proc)
       } finally {
+        await this.finishSyntheticFileEvidence(session, evidenceBaseline)
         this.popOutputSession()
         // Re-arm on ALL exits (success, thrown error) — subclasses' internal early-return
         // branches also fall through here because they return normally to doSendCommand's caller.
@@ -224,6 +250,53 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
+   * M1 ②：长尾 CLI 的合成文件变更证据（turn 前快照）。
+   *
+   * 只有声明 toolEvents: none、且没有自带文件解析的长尾 CLI 才采集；
+   * Claude/Codex 等有真实工具事件的后端完全不进入此路径，避免重复证据。
+   */
+  private async beginSyntheticFileEvidence(session: AgentSession): Promise<WorkspaceSnapshot | null> {
+    if (!shouldCaptureSyntheticFileEvidence(this.name)) return null
+    const cwd = session.config.workingDirectory
+    if (!cwd) return null
+    try {
+      const snapshot = await captureWorkspaceSnapshot(cwd)
+      // 根目录不可读时不产出证据，避免把「没扫到」伪装成「没有变更」
+      if (snapshot.truncatedReason === 'root_unreadable' && snapshot.files.size === 0) return null
+      return snapshot
+    } catch (error) {
+      this.logger.warn(`workspace snapshot (before) failed for ${this.name}: ${(error as Error).message}`)
+      return null
+    }
+  }
+
+  /** turn 后快照并产出 evidence.file_change（独立通道，不是工具调用记录）。 */
+  private async finishSyntheticFileEvidence(
+    session: AgentSession,
+    baseline: WorkspaceSnapshot | null,
+  ): Promise<void> {
+    if (!baseline) return
+    const cwd = session.config.workingDirectory
+    if (!cwd) return
+    try {
+      const after = await captureWorkspaceSnapshot(cwd)
+      const evidence = diffWorkspaceSnapshots(baseline, after)
+      // 没有任何变更且扫描完整时不打扰用户；扫描不完整时仍上报，以便如实标注
+      if (evidence.totalCount === 0 && !evidence.scanTruncated) return
+      this.emitOutput({
+        type: 'file_change_evidence',
+        data: `workspace diff: ${evidence.totalCount} change(s)`,
+        timestamp: Date.now(),
+        fileChangeEvidence: evidence,
+        evidenceSource: 'synthetic',
+        evidenceFidelity: 'turn',
+      })
+    } catch (error) {
+      this.logger.warn(`workspace snapshot (after) failed for ${this.name}: ${(error as Error).message}`)
+    }
+  }
+
+  /**
    * 注册输出监听处理器
    */
   onOutput(handler: (output: AgentOutput) => void): void {
@@ -235,6 +308,78 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   offOutput(handler: (output: AgentOutput) => void): void {
     this.off('output', handler)
+  }
+
+  /**
+   * 监听原始厂商事件（D3 Driver 用）。
+   * 该通道是只读旁路：不改变任何输出、终止或会话行为。
+   */
+  onRawEvent(handler: (event: AdapterRawEvent) => void): void {
+    this.on('rawEvent', handler)
+  }
+
+  offRawEvent(handler: (event: AdapterRawEvent) => void): void {
+    this.off('rawEvent', handler)
+  }
+
+  /** P0-1：监听适配器真正 spawn 的子进程（只读旁路）。 */
+  onProcessSpawn(handler: (sessionId: string, proc: { pid: number; pgid?: number }) => void): void {
+    this.processSpawnHandlers.add(handler)
+  }
+
+  offProcessSpawn(handler: (sessionId: string, proc: { pid: number; pgid?: number }) => void): void {
+    this.processSpawnHandlers.delete(handler)
+  }
+
+  /** 子类 spawn 成功后调用；Driver 会把它落库到 executor_pid / executor_pgid。 */
+  protected emitProcessSpawn(sessionId: string, proc: { pid: number; pgid?: number }): void {
+    for (const handler of this.processSpawnHandlers) {
+      try {
+        handler(sessionId, proc)
+      } catch {
+        // 监听方异常不影响会话
+      }
+    }
+  }
+
+  /** 设置本轮唯一标记；空值表示清理。 */
+  setEnvMarker(sessionId: string, marker: string | null): void {
+    if (marker) this.envMarkers.set(sessionId, marker)
+    else this.envMarkers.delete(sessionId)
+  }
+
+  /** 在安全 env 上叠加本轮 marker，供适配器 spawn 时使用。 */
+  protected buildSessionEnv(sessionId: string): NodeJS.ProcessEnv {
+    const marker = this.envMarkers.get(sessionId)
+    return marker ? { ...this.buildSafeEnv(), BIZGRAPH_TURN_ID: marker } : this.buildSafeEnv()
+  }
+
+  /** Runtime/Kernel 路径显式开启/关闭原始事件流式模式。 */
+  setRawStreamMode(sessionId: string, enabled: boolean): void {
+    if (enabled) this.rawStreamSessions.add(sessionId)
+    else this.rawStreamSessions.delete(sessionId)
+  }
+
+  /** 子类据此选择双路径（旧 AgentOutput vs 新 Runtime 流式）。 */
+  protected isRawStreamMode(sessionId: string): boolean {
+    return this.rawStreamSessions.has(sessionId)
+  }
+
+  /** D5：受控 spawn 模式。开启后子类必须用自有进程组拉起 CLI 并上报真实 pid。 */
+  setProcessSupervision(sessionId: string, enabled: boolean): void {
+    if (enabled) this.supervisedSessions.add(sessionId)
+    else this.supervisedSessions.delete(sessionId)
+  }
+
+  protected isProcessSupervised(sessionId: string): boolean {
+    return this.supervisedSessions.has(sessionId)
+  }
+
+  /** 子类在收到厂商原始消息时调用；无监听者时开销仅为一次 EventEmitter emit。 */
+  protected emitRawEvent(sessionId: string, vendor: string, payload: unknown): void {
+    if (this.listenerCount('rawEvent') === 0) return
+    const event: AdapterRawEvent = { sessionId, vendor, payload, receivedAt: Date.now() }
+    this.emit('rawEvent', event)
   }
 
   /**
@@ -427,6 +572,31 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
    */
   getResumeSessionId(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.config.resumeSessionId
+  }
+
+  /**
+   * 本适配器是否支持「原生会话续接」：给定 CLI 级会话 id 时，下一条指令能接着
+   * 原来的对话上下文继续，而不是从零开始。
+   * 默认 false；claude-code / codex / cursor 覆写为 true。
+   */
+  supportsNativeResume(): boolean {
+    return false
+  }
+
+  /**
+   * 进程重启后从持久化状态重建内存会话句柄。
+   *
+   * 只登记会话元数据与配置，**不启动新进程、不发起新回合**；真正的执行发生在
+   * 下一轮 sendCommand（SDK/CLI 适配器都会在 doSendCommand 里懒启动）。
+   * 返回 false 表示该 sessionId 已登记过（幂等重入）。
+   */
+  restoreSession(sessionId: string, config: AgentSessionConfig): boolean {
+    if (this.sessions.has(sessionId)) return false
+    this.registerSession({ id: sessionId, adapterName: this.name, config, startTime: Date.now() })
+    // 恢复的会话暂无进程；先清掉 registerSession 自动 arm 的空闲回收，
+    // 避免用户还没发第一条消息就被当成空闲会话回收。首条指令到达后会重新 arm。
+    this.clearIdleReaper(sessionId)
+    return true
   }
 
   /**
@@ -1325,23 +1495,28 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
   }
 
   /**
-   * Subscribe to usage events emitted by reportUsage() (Phase 2 skeleton).
+   * Subscribe to usage events emitted by reportUsage().
    */
-  onUsage(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void {
+  onUsage(handler: (data: AdapterUsageReport) => void): void {
     this.on('usage', handler)
   }
 
-  offUsage(handler: (data: { sessionId: string; inputTokens: number; maxTokens?: number }) => void): void {
+  offUsage(handler: (data: AdapterUsageReport) => void): void {
     this.off('usage', handler)
   }
 
   /**
    * Report authoritative token usage from the adapter/SDK.
-   * Phase 2: skeleton; Phase 3: claude-code/codex/mcp-adapter call this
-   * after receiving real usage from their SDK/API responses.
+   * M1：extra 携带全量真实用量（output/cached/model/source/backendEventId），
+   * 由 UsageLedger 落库；无 extra 的旧调用方语义不变（仅 inputTokens）。
    */
-  protected reportUsage(sessionId: string, inputTokens: number, maxTokens?: number): void {
-    this.emit('usage', { sessionId, inputTokens, maxTokens })
+  protected reportUsage(
+    sessionId: string,
+    inputTokens: number,
+    maxTokens?: number,
+    extra?: Omit<AdapterUsageReport, 'sessionId' | 'inputTokens' | 'maxTokens'>,
+  ): void {
+    this.emit('usage', { sessionId, inputTokens, maxTokens, ...extra })
   }
 }
 

@@ -1,0 +1,326 @@
+{
+  "files": {
+    "before": "/tmp/bg-mig/legacy-before.db",
+    "after": "/tmp/bg-mig/userData-repro/data/bizgraph.db"
+  },
+  "version": {
+    "version": 23
+  },
+  "integrity": "ok",
+  "foreignKeys": [],
+  "countsBefore": {
+    "agent_usage": 4,
+    "agent_events": 2,
+    "agent_turns": 1,
+    "agent_sessions": 1,
+    "agent_steps": 1,
+    "agent_runs": 1,
+    "chat_threads": 1,
+    "graphs": 1,
+    "nodes": 1
+  },
+  "countsAfter": {
+    "agent_usage": 4,
+    "agent_events": 2,
+    "agent_turns": 1,
+    "agent_sessions": 1,
+    "agent_steps": 1,
+    "agent_runs": 1,
+    "chat_threads": 1,
+    "graphs": 1,
+    "nodes": 1
+  },
+  "usageBefore": [
+    {
+      "id": "u-legacy-priced",
+      "turn_id": "t-legacy",
+      "source": "provider",
+      "model": "claude-sonnet-4-5",
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cost_micros": 6000,
+      "price_version": "test-v1"
+    },
+    {
+      "id": "u-legacy-missing",
+      "turn_id": "t-legacy",
+      "source": "provider",
+      "model": "gpt-99-nonexistent",
+      "input_tokens": 500,
+      "output_tokens": 100,
+      "cost_micros": null,
+      "price_version": null
+    },
+    {
+      "id": "u-legacy-unknown",
+      "turn_id": "t-legacy",
+      "source": "unknown",
+      "model": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_micros": null,
+      "price_version": null
+    },
+    {
+      "id": "u-legacy-no-turn",
+      "turn_id": null,
+      "source": "provider",
+      "model": "claude-sonnet-4-5",
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micros": 1000,
+      "price_version": "test-v1"
+    }
+  ],
+  "usageAfter": [
+    {
+      "id": "u-legacy-priced",
+      "turn_id": "t-legacy",
+      "source": "provider",
+      "model": "claude-sonnet-4-5",
+      "input_tokens": 1000,
+      "output_tokens": 200,
+      "cost_micros": 6000,
+      "price_version": "test-v1",
+      "cost_status": null,
+      "tokens_reported": null,
+      "attribution_note": null
+    },
+    {
+      "id": "u-legacy-missing",
+      "turn_id": "t-legacy",
+      "source": "provider",
+      "model": "gpt-99-nonexistent",
+      "input_tokens": 500,
+      "output_tokens": 100,
+      "cost_micros": null,
+      "price_version": null,
+      "cost_status": null,
+      "tokens_reported": null,
+      "attribution_note": "missing_price:claude-code/gpt-99-nonexistent"
+    },
+    {
+      "id": "u-legacy-unknown",
+      "turn_id": "t-legacy",
+      "source": "unknown",
+      "model": null,
+      "input_tokens": null,
+      "output_tokens": null,
+      "cost_micros": null,
+      "price_version": null,
+      "cost_status": null,
+      "tokens_reported": null,
+      "attribution_note": "backend_reports_no_usage"
+    },
+    {
+      "id": "u-legacy-no-turn",
+      "turn_id": null,
+      "source": "provider",
+      "model": "claude-sonnet-4-5",
+      "input_tokens": 10,
+      "output_tokens": 5,
+      "cost_micros": 1000,
+      "price_version": "test-v1",
+      "cost_status": null,
+      "tokens_reported": null,
+      "attribution_note": "thread_not_bound"
+    }
+  ],
+  "eventsBefore": [
+    {
+      "id": "e-legacy-1",
+      "seq": 1,
+      "turn_seq": 1,
+      "type": "turn.start"
+    },
+    {
+      "id": "e-legacy-2",
+      "seq": 2,
+      "turn_seq": 2,
+      "type": "turn.complete"
+    }
+  ],
+  "eventsAfter": [
+    {
+      "id": "e-legacy-1",
+      "seq": 1,
+      "turn_seq": 1,
+      "type": "turn.start",
+      "step_id": null
+    },
+    {
+      "id": "e-legacy-2",
+      "seq": 2,
+      "turn_seq": 2,
+      "type": "turn.complete",
+      "step_id": null
+    }
+  ],
+  "turnAfter": [
+    {
+      "id": "t-legacy",
+      "branch_key": "",
+      "attempt": 1,
+      "group_id": null,
+      "parent_turn_id": null,
+      "deadline_at": null
+    }
+  ],
+  "sessionAfter": [
+    {
+      "id": "s-legacy",
+      "residual_risk": "none",
+      "recovery_kills": 0,
+      "recovery_note": null,
+      "executor_started_at": null,
+      "executor_cmd": null
+    }
+  ],
+  "stepAfter": [
+    {
+      "id": "st-legacy",
+      "test_disposition": null
+    }
+  ],
+  "colsAfter": {
+    "agent_usage": [
+      "id",
+      "turn_id",
+      "session_id",
+      "executor",
+      "graph_id",
+      "node_id",
+      "model",
+      "day_key",
+      "input_tokens",
+      "output_tokens",
+      "cached_input_tokens",
+      "currency",
+      "cost_usd",
+      "cost_micros",
+      "price_version",
+      "is_estimate",
+      "source",
+      "cost_status",
+      "tokens_reported",
+      "attribution_note",
+      "dedupe_key",
+      "recorded_at"
+    ],
+    "agent_events": [
+      "id",
+      "run_id",
+      "turn_id",
+      "seq",
+      "turn_seq",
+      "type",
+      "source",
+      "fidelity",
+      "payload_version",
+      "payload_json",
+      "created_at",
+      "step_id"
+    ],
+    "agent_turns": [
+      "id",
+      "run_id",
+      "session_id",
+      "graph_id",
+      "node_id",
+      "group_id",
+      "parent_turn_id",
+      "branch_key",
+      "attempt",
+      "status",
+      "resume_mode",
+      "idempotency_key",
+      "input_json",
+      "output_json",
+      "failure_class",
+      "error_code",
+      "started_at",
+      "ended_at",
+      "deadline_at",
+      "created_at"
+    ],
+    "agent_sessions": [
+      "id",
+      "graph_id",
+      "node_id",
+      "thread_id",
+      "executor",
+      "runtime_session_id",
+      "executor_handle",
+      "executor_pid",
+      "executor_pgid",
+      "executor_started_at",
+      "executor_cmd",
+      "executor_env_marker",
+      "residual_risk",
+      "status",
+      "workspace_mode",
+      "workspace_path",
+      "last_turn_id",
+      "last_recovery_at",
+      "recovery_kills",
+      "recovery_note",
+      "created_at",
+      "updated_at"
+    ]
+  },
+  "indexes": {
+    "agent_events": [
+      "idx_agent_events_turn_step",
+      "idx_agent_events_step",
+      "idx_agent_events_kind",
+      "sqlite_autoindex_agent_events_3",
+      "sqlite_autoindex_agent_events_2",
+      "sqlite_autoindex_agent_events_1"
+    ],
+    "agent_usage": [
+      "ux_agent_usage_dedupe",
+      "idx_agent_usage_turn",
+      "idx_agent_usage_day",
+      "idx_agent_usage_graph_day",
+      "sqlite_autoindex_agent_usage_1"
+    ]
+  },
+  "listEvents": [
+    {
+      "id": "e-legacy-1",
+      "type": "turn.start",
+      "step_id": null
+    },
+    {
+      "id": "e-legacy-2",
+      "type": "turn.complete",
+      "step_id": null
+    }
+  ],
+  "listStepEvents": [],
+  "summary": {
+    "totalRows": 4,
+    "knownCostMicros": 7000,
+    "unknownCostRows": 2,
+    "unpricedRows": 1,
+    "providerRows": 3,
+    "estimatedRows": 0,
+    "unknownRows": 1,
+    "pricedRows": 0,
+    "missingPriceRows": 0,
+    "notReportedRows": 0,
+    "costStatusUnknownRows": 4,
+    "unknownTokenRows": 1,
+    "tokensReportedRows": 0,
+    "tokensNotReportedRows": 0,
+    "tokensReportedUnknownRows": 4,
+    "inputTokens": 1510,
+    "outputTokens": 305,
+    "cachedInputTokens": 0
+  },
+  "checksumCache": {
+    "checksum": "68b04d071cea1fb4cc33b0db10fbe990cb4bc82a7a8850c369272961e97fa3e8",
+    "version": 23,
+    "createdAt": "2026-11-05T14:50:08.253Z"
+  }
+}

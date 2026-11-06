@@ -23,6 +23,7 @@ export const ErrorCode = {
   // Agent / 适配器
   AGENT_ADAPTER_NOT_FOUND: 'AGENT_ADAPTER_NOT_FOUND',
   AGENT_SESSION_NOT_FOUND: 'AGENT_SESSION_NOT_FOUND',
+  AGENT_SESSION_RESTORE_FAILED: 'AGENT_SESSION_RESTORE_FAILED',
   AGENT_ADAPTER_ERROR: 'AGENT_ADAPTER_ERROR',
   AGENT_PROCESS_ERROR: 'AGENT_PROCESS_ERROR',
   AGENT_SESSION_LIMIT: 'AGENT_SESSION_LIMIT',
@@ -155,6 +156,36 @@ export class SessionNotFoundError extends AgentError {
 
   toJSON(): Record<string, unknown> {
     return { ...super.toJSON(), sessionId: this.sessionId }
+  }
+}
+
+/**
+ * 进程重启后无法从持久化状态重建会话。
+ *
+ * 与 `SessionNotFoundError` 的区别：那条是「这个 id 不存在」，这条是
+ * 「id 存在、但续接条件不成立（后端不支持原生续接 / 没有可续接的底层会话 id /
+ * 上一轮未收口）」。message 必须给用户可行动信息 —— 说明原因 + 新建会话可继续。
+ */
+export class SessionRestoreError extends AgentError {
+  readonly sessionId: string
+  readonly reason: string
+  readonly canStartNewSession = true
+
+  constructor(sessionId: string, reason: string) {
+    super(`无法恢复会话 ${sessionId}：${reason}。新建会话可继续。`, ErrorCode.AGENT_SESSION_RESTORE_FAILED)
+    this.name = 'SessionRestoreError'
+    this.sessionId = sessionId
+    this.reason = reason
+    Object.setPrototypeOf(this, SessionRestoreError.prototype)
+  }
+
+  toJSON(): Record<string, unknown> {
+    return {
+      ...super.toJSON(),
+      sessionId: this.sessionId,
+      reason: this.reason,
+      canStartNewSession: this.canStartNewSession,
+    }
   }
 }
 

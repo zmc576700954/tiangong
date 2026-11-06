@@ -50,7 +50,7 @@ export class OpenCodeAdapter extends BaseAdapter {
 
       const proc = spawn('opencode', args, {
         cwd: session.config.workingDirectory,
-        env: this.buildSafeEnv(),
+        env: this.buildSessionEnv(session.id),
         stdio: ['pipe', 'pipe', 'pipe'],
       })
 
@@ -68,6 +68,8 @@ export class OpenCodeAdapter extends BaseAdapter {
       }
 
       this.processes.set(session.id, proc)
+      // P0-1：只上报自己真正 spawn 的句柄，Runtime 落库后取消时按它精确回收
+      if (proc.pid) this.emitProcessSpawn(session.id, { pid: proc.pid })
 
       return new Promise<string>((resolve, reject) => {
         const chunks: Buffer[] = []
@@ -80,7 +82,10 @@ export class OpenCodeAdapter extends BaseAdapter {
           if (code !== null && code !== 0) {
             this.logger.warn(`opencode exited with code ${code}`)
           }
-          resolve(Buffer.concat(chunks).toString('utf-8'))
+          const stdout = Buffer.concat(chunks).toString('utf-8')
+          // D3：one-shot stdout 整体透传（只读旁路）
+          this.emitRawEvent(session.id, 'opencode', { kind: 'stdout', text: stdout, exitCode: code })
+          resolve(stdout)
         })
       })
     })

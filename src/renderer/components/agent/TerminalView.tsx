@@ -12,6 +12,7 @@ const TYPE_STYLES: Record<string, string> = {
   stdout: '',
   stderr: 'text-red-400',
   file_change: 'text-green-400',
+  file_change_evidence: 'text-amber-400',
   error: 'text-red-400',
   complete: 'text-blue-400',
 }

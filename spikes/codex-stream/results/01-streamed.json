@@ -1,0 +1,190 @@
+{
+  "mode": "runStreamed",
+  "prompt": "Do exactly this, nothing more:\n1) Create a file named stream-probe.txt in the current working directory with the single line: hello-codex\n2) Then read that file back with a shell command (cat) and reply with its exact content.",
+  "workdir": "/Users/zhumingchen/tiangong/spikes/codex-stream/work/streamed",
+  "threadId": "01a1a620-4bab-7633-b518-a9ea50be8e6e",
+  "finished": true,
+  "error": null,
+  "totalMs": 13811,
+  "tIteratorDoneMs": 13752,
+  "tProcessGoneMs": 13781,
+  "lastEventToIteratorDoneMs": 10009,
+  "eventCount": 7,
+  "distribution": {
+    "byEvent": {
+      "thread.started": 1,
+      "turn.started": 1,
+      "item.completed": 3,
+      "item.started": 1,
+      "turn.completed": 1
+    },
+    "byItem": {
+      "agent_message": 2,
+      "command_execution": 2
+    }
+  },
+  "gapsMs": {
+    "min": 0,
+    "max": 1832,
+    "values": [
+      30,
+      1289,
+      295,
+      0,
+      1832,
+      192
+    ]
+  },
+  "hasUsage": true,
+  "usage": {
+    "input_tokens": 21220,
+    "cached_input_tokens": 10731,
+    "output_tokens": 106,
+    "reasoning_output_tokens": 0
+  },
+  "commandExecutions": [
+    {
+      "id": "item_1",
+      "status": "in_progress",
+      "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+      "exit_code": null,
+      "aggregated_output": ""
+    },
+    {
+      "id": "item_1",
+      "status": "completed",
+      "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+      "exit_code": 0,
+      "aggregated_output": "hello-codex\n"
+    }
+  ],
+  "fileChanges": [],
+  "spawnedProcesses": [
+    "65547 65531 /Users/zhumingchen/tiangong/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex exec --experimental-json --sandbox workspace-write --cd /Users/zhumingchen/tiangong/spikes/codex-stream/work/streamed --skip-git-repo-check --config approval_policy=\"never\""
+  ],
+  "leftoverProcesses": [],
+  "events": [
+    {
+      "tMs": 105,
+      "raw": {
+        "type": "thread.started",
+        "thread_id": "01a1a620-4bab-7633-b518-a9ea50be8e6e"
+      },
+      "summary": {
+        "type": "thread.started",
+        "thread_id": "01a1a620-4bab-7633-b518-a9ea50be8e6e"
+      }
+    },
+    {
+      "tMs": 135,
+      "raw": {
+        "type": "turn.started"
+      },
+      "summary": {
+        "type": "turn.started"
+      }
+    },
+    {
+      "tMs": 1424,
+      "raw": {
+        "type": "item.completed",
+        "item": {
+          "id": "item_0",
+          "type": "agent_message",
+          "text": "I'll create the file and then read it back."
+        }
+      },
+      "summary": {
+        "type": "item.completed",
+        "itemId": "item_0",
+        "itemType": "agent_message",
+        "text": "I'll create the file and then read it back."
+      }
+    },
+    {
+      "tMs": 1719,
+      "raw": {
+        "type": "item.started",
+        "item": {
+          "id": "item_1",
+          "type": "command_execution",
+          "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+          "aggregated_output": "",
+          "exit_code": null,
+          "status": "in_progress"
+        }
+      },
+      "summary": {
+        "type": "item.started",
+        "itemId": "item_1",
+        "itemType": "command_execution",
+        "status": "in_progress",
+        "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+        "aggregated_output": "",
+        "exit_code": null
+      }
+    },
+    {
+      "tMs": 1719,
+      "raw": {
+        "type": "item.completed",
+        "item": {
+          "id": "item_1",
+          "type": "command_execution",
+          "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+          "aggregated_output": "hello-codex\n",
+          "exit_code": 0,
+          "status": "completed"
+        }
+      },
+      "summary": {
+        "type": "item.completed",
+        "itemId": "item_1",
+        "itemType": "command_execution",
+        "status": "completed",
+        "command": "/bin/zsh -lc \"printf 'hello-codex\\\\n' > stream-probe.txt && cat stream-probe.txt\"",
+        "aggregated_output": "hello-codex\n",
+        "exit_code": 0
+      }
+    },
+    {
+      "tMs": 3551,
+      "raw": {
+        "type": "item.completed",
+        "item": {
+          "id": "item_2",
+          "type": "agent_message",
+          "text": "Done. Created `stream-probe.txt` and read it back.\n\nExact content:\n\n```\nhello-codex\n```"
+        }
+      },
+      "summary": {
+        "type": "item.completed",
+        "itemId": "item_2",
+        "itemType": "agent_message",
+        "text": "Done. Created `stream-probe.txt` and read it back.\n\nExact content:\n\n```\nhello-codex\n```"
+      }
+    },
+    {
+      "tMs": 3743,
+      "raw": {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 21220,
+          "cached_input_tokens": 10731,
+          "output_tokens": 106,
+          "reasoning_output_tokens": 0
+        }
+      },
+      "summary": {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 21220,
+          "cached_input_tokens": 10731,
+          "output_tokens": 106,
+          "reasoning_output_tokens": 0
+        }
+      }
+    }
+  ],
+  "fileContent": "hello-codex\n"
+}

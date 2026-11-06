@@ -22,6 +22,19 @@ import type {
   SubagentInvocation,
   SubagentResult,
 } from './subagent'
+import type {
+  ApprovalDecisionInput,
+  ApprovalRequestPayload,
+  ApprovalResolutionPayload,
+  AgentRuntimeFlags,
+  DriverCapabilities,
+  NormalizedEventEnvelope,
+  SessionGrantInfo,
+  SessionRecoveryInfo,
+  SessionUsageView,
+  GraphUsageView,
+  AgentStorageStats,
+} from './agent-runtime'
 import type { ParsedWikiContent, DanglingLink, IngestResult, IngestMode, LintReport, LintFixResult, LintFixAction, ComputeResult, WritebackItem, RollbackResult } from './wiki'
 import type {
   RecipeDefinition,
@@ -126,6 +139,33 @@ export interface IpcApi {
   'agent:getLogsByNode': (nodeId: string) => Promise<AgentLog[]>
   'agent:getLogsByGraph': (graphId: string) => Promise<AgentLog[]>
   'agent:closeAllSessions': () => Promise<void>
+
+  // Agent Runtime M0（D2–D5）
+  'agent:cancelTurn': (turnId: string) => Promise<boolean>
+  'agent:getPendingApprovals': () => Promise<ApprovalRequestPayload[]>
+  'agent:resolveApproval': (input: ApprovalDecisionInput) => Promise<{
+    approvalId: string
+    decision: 'allow' | 'deny'
+    decidedBy: string
+    sessionGranted: boolean
+    grantSourceApprovalId?: string
+  }>
+  'agent:getExecutorCapabilities': (executor: string) => Promise<DriverCapabilities>
+  'agent:getSessionRecovery': (sessionId: string) => Promise<SessionRecoveryInfo | null>
+  /** A1：Kernel 路径开关（默认 false，权威来自主进程环境变量） */
+  'agent:getRuntimeFlags': () => Promise<AgentRuntimeFlags>
+  /** A1：按 adapter session 取消当前未终态 turn */
+  'agent:cancelSessionTurn': (sessionId: string) => Promise<boolean>
+  /** A2：列出当前进程内的会话级授权 */
+  'agent:getSessionGrants': () => Promise<SessionGrantInfo[]>
+  /** A2：手动撤销某会话的授权 */
+  'agent:revokeSessionGrant': (sessionId: string) => Promise<boolean>
+  /** M1：会话用量（provider/estimated/unknown 与缺价行计数 + 明细） */
+  'agent:getUsageBySession': (sessionId: string, limit?: number) => Promise<SessionUsageView>
+  /** M1：图级按日用量（day_key 为 Asia/Shanghai 本地日，原样返回） */
+  'agent:getUsageByGraph': (graphId: string, days?: number) => Promise<GraphUsageView>
+  /** P0-2：事件存储统计（行数/占用估算/时间跨度；不触发 VACUUM） */
+  'agent:getStorageStats': () => Promise<AgentStorageStats>
 
   // Chat 会话记录
   'thread:list': (filters?: { nodeId?: string; graphId?: string }) => Promise<AgentThread[]>
@@ -289,6 +329,9 @@ export interface IpcApi {
  */
 export interface IpcEventMap {
   'agent:onOutput': (sessionId: string, output: AgentOutput) => void
+  'agent:onApprovalRequest': (payload: ApprovalRequestPayload) => void
+  'agent:onApprovalResolved': (payload: ApprovalResolutionPayload) => void
+  'agent:onEvent': (event: NormalizedEventEnvelope) => void
   'agent:onStatusChange': (sessionId: string, nodeId: string, status: NodeStatus) => void
   'agent:onSessionStarted': (threadId: string, sessionId: string) => void
   'event:NODE_STATUS_CHANGE': (nodeId: string, oldStatus: string, newStatus: string) => void

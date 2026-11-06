@@ -1,0 +1,1 @@
+{"clause":"C4b","impl":"current","at":"2026-11-04T16:03:12.414Z","signalsToCanary":[],"report":{"discovered":1,"killed":0,"killedPids":[],"killedGroups":[],"unresolved":[{"pid":40205,"proved":false,"matched":["startedAt"],"reason":"insufficient-proof"}],"missing":[],"stillAlive":[]},"canaryAlive":true,"note":"D5 后 commandMatches 已改为完整命令行精确比较，内容证据必选"}

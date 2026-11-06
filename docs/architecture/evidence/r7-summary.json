@@ -1,0 +1,440 @@
+{
+  "round": 7,
+  "generatedAt": "2026-11-05T08:24:51.577Z",
+  "defaultRun": {
+    "boot": {
+      "at": "2026-11-05T08:03:26.353Z",
+      "envSnapshot": "BIZGRAPH_AGENT_KERNEL=<unset> ; BIZGRAPH_AGENT_KERNEL_BACKENDS=<unset> ; BIZGRAPH_AGENT_KERNEL_UNSAFE=<unset>",
+      "href": "file:///Users/zhumingchen/tiangong/dist/index.html",
+      "hasApi": true,
+      "logs": {
+        "total": true,
+        "claudeKernel": true,
+        "codexLegacy": true,
+        "opencodeLegacy": true,
+        "degraded": false,
+        "raw": [
+          "[2026-11-05T08:03:19.551Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）",
+          "[2026-11-05T08:03:19.551Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+          "[2026-11-05T08:03:19.551Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+          "[2026-11-05T08:03:19.551Z] [IPC] [kernel] 总开关=on 白名单=[claude]"
+        ]
+      }
+    },
+    "claudeCase": {
+      "at": "2026-11-05T08:03:53.978Z",
+      "dialog": true,
+      "pending": [
+        {
+          "id": "appr_89940c73-1bda-4b65-a155-855eaf21b795",
+          "tool": "Write"
+        }
+      ],
+      "clicked": "2026-11-05T08:03:42.583Z",
+      "terminal": {
+        "id": "turn_b8afaa36-00a7-4708-80f6-d360e29761e7",
+        "status": "completed",
+        "failure_class": null,
+        "started_at": 1793865812568,
+        "ended_at": 1793865833864
+      },
+      "file": "DEFAULT-R7\n",
+      "approval": {
+        "status": "allowed",
+        "decided_by": "user"
+      },
+      "events": [
+        {
+          "seq": 1,
+          "type": "turn.started"
+        },
+        {
+          "seq": 2,
+          "type": "approval.required"
+        },
+        {
+          "seq": 3,
+          "type": "approval.resolved"
+        },
+        {
+          "seq": 4,
+          "type": "run.started"
+        },
+        {
+          "seq": 5,
+          "type": "reasoning.delta"
+        },
+        {
+          "seq": 6,
+          "type": "tool.requested"
+        },
+        {
+          "seq": 7,
+          "type": "tool.result"
+        },
+        {
+          "seq": 8,
+          "type": "message.completed"
+        },
+        {
+          "seq": 9,
+          "type": "usage.updated"
+        },
+        {
+          "seq": 10,
+          "type": "run.completed"
+        }
+      ]
+    },
+    "codexCase": {
+      "at": "2026-11-05T08:05:03.603Z",
+      "sawDialog": false,
+      "delta": {},
+      "before": {
+        "agent_approvals": 1,
+        "agent_artifacts": 0,
+        "agent_events": 10,
+        "agent_logs": 0,
+        "agent_runs": 1,
+        "agent_sessions": 1,
+        "agent_snapshots": 0,
+        "agent_steps": 1,
+        "agent_turns": 1,
+        "agent_usage": 1
+      },
+      "after": {
+        "agent_approvals": 1,
+        "agent_artifacts": 0,
+        "agent_events": 10,
+        "agent_logs": 0,
+        "agent_runs": 1,
+        "agent_sessions": 1,
+        "agent_snapshots": 0,
+        "agent_steps": 1,
+        "agent_turns": 1,
+        "agent_usage": 1
+      },
+      "file": false,
+      "degradedLog": false,
+      "codexLegacyLog": true,
+      "kernelLines": [
+        "[2026-11-05T08:03:19.551Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）",
+        "[2026-11-05T08:03:19.551Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:03:19.551Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:03:19.551Z] [IPC] [kernel] 总开关=on 白名单=[claude]"
+      ],
+      "uiBody": "R7-Codex-Thread | 会话 | R7-Codex-Thread | codex | 新建会话 | Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7a/codex.txt with content CODEX-R7. Do not use Bash. Do not verify. | codex16:04 | Agent 异常退出：Codex Exec exited with code 1: Error loading config.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` in `model_reasoning_effort`（请重试；若反复出现，请检查适配器与 CLI 安装状态）"
+    }
+  },
+  "rollbackKernelThread": {
+    "at": "2026-11-05T08:07:48.684Z",
+    "env": "BIZGRAPH_AGENT_KERNEL=0",
+    "href": "file:///Users/zhumingchen/tiangong/dist/index.html",
+    "logs": {
+      "totalOff": true,
+      "degraded": false,
+      "lines": [
+        "[2026-11-05T08:05:39.039Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:05:39.040Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:05:39.040Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:05:39.040Z] [IPC] [kernel] 总开关=off 白名单=[claude]"
+      ]
+    },
+    "sawDialog": false,
+    "file": false,
+    "fileContent": null,
+    "delta": {},
+    "before": {
+      "agent_approvals": 1,
+      "agent_artifacts": 0,
+      "agent_events": 10,
+      "agent_logs": 1,
+      "agent_runs": 1,
+      "agent_sessions": 1,
+      "agent_snapshots": 0,
+      "agent_steps": 1,
+      "agent_turns": 1,
+      "agent_usage": 1
+    },
+    "after": {
+      "agent_approvals": 1,
+      "agent_artifacts": 0,
+      "agent_events": 10,
+      "agent_logs": 1,
+      "agent_runs": 1,
+      "agent_sessions": 1,
+      "agent_snapshots": 0,
+      "agent_steps": 1,
+      "agent_turns": 1,
+      "agent_usage": 1
+    },
+    "replied": true,
+    "bodyTail": [
+      "我16:05",
+      "Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7a/rollback.txt with content ROLLBACK-R7. Do not use Bash. Do not verify.",
+      "Agent16:05",
+      "无法启动 Agent 会话，请检查适配器是否可用。",
+      "查看原始错误",
+      "复制",
+      "重试",
+      "Shift+Enter 换行"
+    ]
+  },
+  "rollbackNewThread": {
+    "at": "2026-11-05T08:08:46.413Z",
+    "sawDialog": false,
+    "file": true,
+    "fileContent": "ROLLBACK-NEW-R7",
+    "delta": {},
+    "replied": true,
+    "bodyTail": [
+      "Used only the Write tool (no Bash, no verification, as instructed).",
+      "No other files were modified.",
+      "file_create",
+      "/tmp/bizgraph-realdevice/ws-r7a/rollback-new.txt",
+      "1create: /tmp/bizgraph-realdevice/ws-r7a/rollback-new.txt",
+      "复制",
+      "审查变更",
+      "Shift+Enter 换行"
+    ]
+  },
+  "whitelistAndUnsafe": {
+    "backendWhitelistOnly": {
+      "boot": {
+        "label": "backends-codex",
+        "at": "2026-11-05T08:13:51.463Z",
+        "env": {
+          "BIZGRAPH_AGENT_KERNEL_BACKENDS": "codex"
+        },
+        "logs": {
+          "total": "[2026-11-05T08:13:44.762Z] [IPC] [kernel] 总开关=on 白名单=[codex]",
+          "claudeKernel": false,
+          "claudeLegacy": true,
+          "codexKernel": false,
+          "codexLegacy": true,
+          "codexDegradedBoot": false,
+          "degraded": false,
+          "lines": [
+            "[2026-11-05T08:13:44.762Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+            "[2026-11-05T08:13:44.762Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+            "[2026-11-05T08:13:44.762Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+            "[2026-11-05T08:13:44.762Z] [IPC] [kernel] 总开关=on 白名单=[codex]"
+          ]
+        }
+      },
+      "codex": {
+        "at": "2026-11-05T08:15:00.956Z",
+        "label": "R7-WL-Codex",
+        "sawDialog": false,
+        "delta": {},
+        "before": {
+          "agent_approvals": 0,
+          "agent_artifacts": 0,
+          "agent_events": 0,
+          "agent_logs": 0,
+          "agent_runs": 0,
+          "agent_sessions": 0,
+          "agent_snapshots": 0,
+          "agent_steps": 0,
+          "agent_turns": 0,
+          "agent_usage": 0
+        },
+        "after": {
+          "agent_approvals": 0,
+          "agent_artifacts": 0,
+          "agent_events": 0,
+          "agent_logs": 0,
+          "agent_runs": 0,
+          "agent_sessions": 0,
+          "agent_snapshots": 0,
+          "agent_steps": 0,
+          "agent_turns": 0,
+          "agent_usage": 0
+        },
+        "newTurn": [],
+        "approvals": 0,
+        "file": false,
+        "uiBody": "R7-WL-Codex-Thread | 会话 | R7-WL-Codex-Thread | codex | 新建会话 | Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7c/wl-codex.txt with content R7-WL-Codex. Do not use Bash. Do not verify. | codex16:13 | Agent 异常退出：Codex Exec exited with code 1: Error loading config.toml: unknown variant `max`, expected one of `none`, `minimal`, `low`, `medium`, `high`, `xhigh` in `model_reasoning_effort`（请重试；若反复出现，请检查适配器与 CLI 安装状态）",
+        "degradedLineCount": 0,
+        "degradedLines": [],
+        "kernelLines": [
+          "[2026-11-05T08:13:44.762Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+          "[2026-11-05T08:13:44.762Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+          "[2026-11-05T08:13:44.762Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+          "[2026-11-05T08:13:44.762Z] [IPC] [kernel] 总开关=on 白名单=[codex]"
+        ],
+        "codexKernelEnabled": false
+      }
+    },
+    "backendWhitelistUnsafe": {
+      "boot": {
+        "label": "backends-codex-unsafe",
+        "at": "2026-11-05T08:15:08.131Z",
+        "env": {
+          "BIZGRAPH_AGENT_KERNEL_BACKENDS": "codex",
+          "BIZGRAPH_AGENT_KERNEL_UNSAFE": "1"
+        },
+        "logs": {
+          "total": "[2026-11-05T08:15:01.413Z] [IPC] [kernel] 总开关=on 白名单=[codex] UNSAFE=on",
+          "claudeKernel": false,
+          "claudeLegacy": false,
+          "codexKernel": false,
+          "codexLegacy": false,
+          "codexDegradedBoot": true,
+          "degraded": false,
+          "lines": [
+            "[2026-11-05T08:15:01.413Z] [IPC] [kernel] claude-code: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+            "[2026-11-05T08:15:01.413Z] [IPC] [kernel] codex: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+            "[2026-11-05T08:15:01.413Z] [IPC] [kernel] opencode: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+            "[2026-11-05T08:15:01.413Z] [IPC] [kernel] 总开关=on 白名单=[codex] UNSAFE=on"
+          ]
+        }
+      },
+      "codex": {
+        "at": "2026-11-05T08:16:18.020Z",
+        "label": "R7-UNSAFE-Codex",
+        "sawDialog": false,
+        "delta": {
+          "agent_events": [
+            0,
+            2
+          ],
+          "agent_runs": [
+            0,
+            1
+          ],
+          "agent_sessions": [
+            0,
+            1
+          ],
+          "agent_turns": [
+            0,
+            1
+          ]
+        },
+        "before": {
+          "agent_approvals": 0,
+          "agent_artifacts": 0,
+          "agent_events": 0,
+          "agent_logs": 0,
+          "agent_runs": 0,
+          "agent_sessions": 0,
+          "agent_snapshots": 0,
+          "agent_steps": 0,
+          "agent_turns": 0,
+          "agent_usage": 0
+        },
+        "after": {
+          "agent_approvals": 0,
+          "agent_artifacts": 0,
+          "agent_events": 2,
+          "agent_logs": 0,
+          "agent_runs": 1,
+          "agent_sessions": 1,
+          "agent_snapshots": 0,
+          "agent_steps": 0,
+          "agent_turns": 1,
+          "agent_usage": 0
+        },
+        "newTurn": [
+          {
+            "id": "turn_fc715269-7902-4f59-8057-3f938fefbfe8",
+            "status": "failed",
+            "failure_class": "runtime",
+            "session_id": "codex-bbdd81b16d344192ad48092d6841e08c"
+          }
+        ],
+        "approvals": 0,
+        "file": false,
+        "uiBody": "R7-UNSAFE-Codex | R7-UNSAFE-Codex-Thread | 会话 | R7-UNSAFE-Codex-Thread | codex | 新建会话 | Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7c/unsafe-codex.txt with content R7-UNSAFE-Codex. Do not use Bash. Do not verify. | codex 正在工作…",
+        "degradedLineCount": 1,
+        "degradedLines": [
+          "[2026-11-05T08:15:14.381Z] [AgentManager] [kernel-degraded] session=codex-bbdd81b16d344192ad48092d6841e08c backend=codex: backend \"codex\" has no forced pre-write approval; forced by BIZGRAPH_AGENT_KERNEL_UNSAFE=1"
+        ],
+        "kernelLines": [
+          "[2026-11-05T08:15:01.413Z] [IPC] [kernel] claude-code: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+          "[2026-11-05T08:15:01.413Z] [IPC] [kernel] codex: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+          "[2026-11-05T08:15:01.413Z] [IPC] [kernel] opencode: 已通过 UNSAFE 强制启用 kernel，但该后端尚未启用写前审批（降级运行）",
+          "[2026-11-05T08:15:01.413Z] [IPC] [kernel] 总开关=on 白名单=[codex] UNSAFE=on"
+        ],
+        "codexKernelEnabled": false
+      },
+      "claudeUnsafe": {
+        "claudeDegradedBoot": true,
+        "claudeLegacyBoot": false
+      }
+    }
+  },
+  "rollbackKernelThreadRetry": {
+    "at": "2026-11-05T08:19:43.918Z",
+    "env": "BIZGRAPH_AGENT_KERNEL=0",
+    "boot": {
+      "totalOff": true,
+      "lines": [
+        "[2026-11-05T08:18:02.593Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:18:02.593Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:18:02.593Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+        "[2026-11-05T08:18:02.593Z] [IPC] [kernel] 总开关=off 白名单=[claude]"
+      ]
+    },
+    "sawDialog": false,
+    "turn": null,
+    "delta": {},
+    "file": false,
+    "fileContent": null,
+    "bodyTail": "R7-Default-Thread | claude-code | 2026/11/05 16:03 | 新建会话 | 附加上下文以聚焦 Agent 关注范围 | @ | 我16:18 | Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7a/rollback-new-2.txt with content ROLLBACK-NEW-2. Do not use Bash. Do not verify. | Agent16:18 | 无法启动 Agent 会话，请检查适配器是否可用。 | 查看原始错误 | 复制 | 重试 | Shift+Enter 换行",
+    "sessionRows": [
+      {
+        "id": "claude-600d0024bafa4e1fbf6513437822b377",
+        "thread_id": "thread-f2b550d8f1d345b2a77be5f2768ef0ce",
+        "status": "orphaned",
+        "runtime_session_id": "claude-600d0024bafa4e1fbf6513437822b377"
+      }
+    ]
+  },
+  "legacyCleanRestart": {
+    "at": "2026-11-05T08:23:41.877Z",
+    "env": {
+      "BIZGRAPH_AGENT_KERNEL": "0"
+    },
+    "boot1": [
+      "[2026-11-05T08:20:39.347Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:20:39.347Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:20:39.347Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:20:39.347Z] [IPC] [kernel] 总开关=off 白名单=[claude]"
+    ],
+    "boot2": [
+      "[2026-11-05T08:21:02.977Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:21:02.977Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:21:02.977Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）",
+      "[2026-11-05T08:21:02.977Z] [IPC] [kernel] 总开关=off 白名单=[claude]"
+    ],
+    "restoreLines": [],
+    "threadRow": {
+      "id": "thread-09580f2b5fd740e4805f2cc63588b900",
+      "title": "R7-LegacyClean-Thread",
+      "adapter_name": "claude-code",
+      "session_id": "claude-27031fbe8fa2448ea20b0b1986ffb38f"
+    },
+    "first": {
+      "sawDialog": false,
+      "file": true,
+      "delta": {},
+      "body": "claude-code16:20 | Created /tmp/bizgraph-realdevice/ws-r7e/legacy-1.txt with the content LEGACY-ONE. | Used only the Write tool (no Bash, no verification reads). | Content written exactly as LEGACY-ONE with no trailing newline, since that was the specified content. | file_create | /tmp/bizgraph-realdevice/ws-r7e/legacy-1.txt | 1create: /tmp/bizgraph-realdevice/ws-r7e/legacy-1.txt | 复制 | 审查变更 | Shift+Enter 换行"
+    },
+    "second": {
+      "sawDialog": false,
+      "file": false,
+      "delta": {},
+      "body": "附加上下文以聚焦 Agent 关注范围 | @ | 我16:21 | Use only the Write tool to create /tmp/bizgraph-realdevice/ws-r7e/legacy-2.txt with content LEGACY-TWO. Do not use Bash. Do not verify. | Agent16:21 | 无法启动 Agent 会话，请检查适配器是否可用。 | 查看原始错误 | 复制 | 重试 | Shift+Enter 换行"
+    },
+    "t1": true,
+    "t2": false,
+    "threadRowAfter": {
+      "id": "thread-09580f2b5fd740e4805f2cc63588b900",
+      "title": "R7-LegacyClean-Thread",
+      "adapter_name": "claude-code",
+      "session_id": "claude-27031fbe8fa2448ea20b0b1986ffb38f"
+    }
+  }
+}

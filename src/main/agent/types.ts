@@ -14,6 +14,7 @@ import type {
   AgentCommandType,
   AgentOutput,
   AgentSessionConfig,
+  AdapterUsageReport,
   Sandbox,
   TerminationReason,
 } from '@shared/types'
@@ -137,4 +138,9 @@ export interface LifecycleCallbacks {
    * the mirror keeps entries for every session that ended on its own.
    */
   onSessionCleanedUp?: LifecycleSessionCleanedUpCallback
+  /**
+   * M1 成本账本：适配器上报 usage（含 unknown 占位，complete 无 usage 时由
+   * lifecycle 合成）。AgentManager 负责归属 chat_threads 并写入 UsageLedger。
+   */
+  onAdapterUsage?: (adapterName: string, data: AdapterUsageReport) => void
 }

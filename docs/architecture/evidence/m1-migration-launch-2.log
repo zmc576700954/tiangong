@@ -1,0 +1,26 @@
+[main] [2026-11-05T14:50:14.328Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）
+[main] [2026-11-05T14:50:14.332Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[main] [2026-11-05T14:50:14.332Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[main] [2026-11-05T14:50:14.332Z] [IPC] [kernel] 总开关=on 白名单=[claude]
+[main] [2026-11-05T14:50:14.333Z] [YjsRealtime] legacy migration: 0 backfilled / 1 skipped / 0 errors (scanned 1)
+[main] [2026-11-05T14:50:14.337Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[main] [2026-11-05T14:50:14.337Z] [IPC] RecipeManager loaded 0 recipes from userData
+[main] [2026-11-05T14:50:14.339Z] [CodeIntelIPC] Code intelligence initialized
+[main] [2026-11-05T14:50:14.339Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[main:err] [72715:1105/225014.347826:WARNING:viz_main_impl.cc(85)] VizNullHypothesis is disabled (not a warning)
+[main:err] [2026-11-05T14:50:14.519Z] [OpenCodeAdapter] opencode CLI not found
+[main:err] [2026-11-05T14:50:14.519Z] [ClineAdapter] cline CLI not found
+[main:err] [2026-11-05T14:50:14.519Z] [KiloCodeAdapter] kilo CLI not found
+[main:err] [2026-11-05T14:50:14.519Z] [KimiCodeAdapter] kimi CLI not found
+[main:err] [2026-11-05T14:50:14.521Z] [QoderAdapter] qodercli CLI not found
+[main:err] [2026-11-05T14:50:14.521Z] [QwenCodeAdapter] qwen CLI not found
+[main:err] [2026-11-05T14:50:14.521Z] [CursorAdapter] cursor CLI not found
+[main:err] [2026-11-05T14:50:14.541Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[main:err] Debugger ending on ws://127.0.0.1:63585/3ea6bf96-7c2e-420a-a1ee-4049bdcff533
+[main:err] For help, see: https://nodejs.org/en/docs/inspector
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.
+[main:err] [yjs] Tried to remove event handler that doesn't exist.

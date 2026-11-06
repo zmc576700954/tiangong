@@ -1,0 +1,21 @@
+[TEST] os.freemem mocked to 4096MB (BIZGRAPH_TEST_MOCK_FREEMEM=1)
+[2026-11-05T08:24:29.042Z] [Database] Migrating schema from v0 to v20...
+[2026-11-05T08:24:29.046Z] [Database] Schema migrated to v20
+[2026-11-05T08:24:29.048Z] [Settings] Settings file not found, creating with defaults
+[2026-11-05T08:24:29.052Z] [IPC] [kernel] claude-code: kernel 路径已启用（写前强制审批）
+[2026-11-05T08:24:29.052Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:24:29.052Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:24:29.052Z] [IPC] [kernel] 总开关=on 白名单=[claude]
+[2026-11-05T08:24:29.052Z] [YjsRealtime] legacy migration: 0 backfilled / 0 skipped / 0 errors (scanned 0)
+[2026-11-05T08:24:29.055Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:24:29.055Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:24:29.057Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:24:29.057Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:24:29.204Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:24:29.208Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:24:29.208Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:24:29.208Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:24:29.209Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:24:29.209Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:24:29.209Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:24:29.229Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found

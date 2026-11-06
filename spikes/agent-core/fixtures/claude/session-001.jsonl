@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","model":"claude-sonnet-4-5","session_id":"vendor-claude-sess-1"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"I will inspect src/math.ts."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_01","name":"Read","input":{"file_path":"src/math.ts"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"export function add(a, b) { return a - b }"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Found the bug: add subtracts instead of adds."}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"Done","usage":{"input_tokens":1200,"output_tokens":300}}

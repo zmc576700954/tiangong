@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import os from 'node:os'
 import fs from 'node:fs'
 import path from 'node:path'
-import { AgentManager } from '../agent/agent-manager'
+import { AgentManager, isMemoryInsufficientForNewSession } from '../agent/agent-manager'
 import { AdapterRegistry } from '../agent/adapter-registry'
 import { SessionRouter } from '../agent/session-router'
 import { OutputBroadcaster } from '../agent/output-broadcaster'
@@ -11,6 +11,13 @@ import { BaseAdapter } from '../adapters/base'
 import type { AgentSession, AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 import { SessionNotFoundError, AdapterError } from '../errors'
 import { SessionRecoveryManager, setForTesting } from '../agent/session-recovery'
+import type { AgentRuntime } from '../agent/runtime/runtime'
+import { SessionLockRegistry } from '../agent/runtime/locks/session-lock'
+import {
+  AGENT_KERNEL_ENV,
+  AGENT_KERNEL_BACKENDS_ENV,
+  AGENT_KERNEL_UNSAFE_ENV,
+} from '../agent/runtime/feature-flags'
 import { generateId } from '../shared/env'
 
 // Minimal test adapter — name configurable
@@ -87,6 +94,23 @@ class TestAdapter extends BaseAdapter {
 
   public simulateExit(sessionId: string, reason: 'crash' | 'error' | 'timeout' | 'success', exitCode: number | null): void {
     this.emit('sessionEnded', sessionId, reason, exitCode)
+  }
+}
+
+/** 阻塞住 doSendCommand，用于验证同会话并发派发的 fail-fast。 */
+class BlockingTestAdapter extends TestAdapter {
+  started = false
+  private releaseFn: (() => void) | null = null
+
+  protected async doSendCommand(): Promise<void> {
+    this.started = true
+    await new Promise<void>((resolve) => {
+      this.releaseFn = resolve
+    })
+  }
+
+  release(): void {
+    this.releaseFn?.()
   }
 }
 
@@ -277,6 +301,30 @@ describe('AgentManager', () => {
     it('should throw for unknown session', async () => {
       await expect(manager.sendCommand('unknown', { type: 'implement', description: 'test', targetNodeId: 'n1' }))
         .rejects.toThrow(SessionNotFoundError)
+    })
+
+    it('fails fast when the same session is dispatched twice concurrently (P1-4)', async () => {
+      const locks = new SessionLockRegistry()
+      manager.setRuntime({ locks } as unknown as AgentRuntime)
+      const adapter = new BlockingTestAdapter('blocking-adapter')
+      manager.registerAdapter(adapter)
+      const { sessionId } = await manager.startSession('blocking-adapter', mockConfig())
+      const command: AgentCommand = { type: 'implement', description: 'test', targetNodeId: 'n1' }
+
+      const first = manager.sendCommand(sessionId, command, { contextAssembled: true })
+      const startedAt = Date.now()
+      while (!adapter.started && Date.now() - startedAt < 3000) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+      }
+      expect(adapter.started).toBe(true)
+
+      await expect(manager.sendCommand(sessionId, command, { contextAssembled: true })).rejects.toMatchObject({
+        code: 'SESSION_BUSY',
+      })
+
+      adapter.release()
+      await expect(first).resolves.toBeUndefined()
+      expect(locks.isBusy(`session:${sessionId}`)).toBe(false)
     })
 
     it('直接 sendCommand 也投递 scope 约束（白名单 / 黑名单 / 业务不变量）', async () => {
@@ -863,6 +911,113 @@ describe('AgentManager', () => {
       expect(context.lastMessages?.length).toBeGreaterThan(0)
     })
 
+    it('总开关 BIZGRAPH_AGENT_KERNEL=0：sendCommand 全部回旧适配器路径（runNode 零调用）', async () => {
+      const previous = process.env[AGENT_KERNEL_ENV]
+      process.env[AGENT_KERNEL_ENV] = '0'
+      try {
+        const adapter = new TestAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig())
+        const command: AgentCommand = { type: 'implement', description: 'legacy path', targetNodeId: 'n1' }
+        await manager.sendCommand(sessionId, command)
+
+        expect(runNode).not.toHaveBeenCalled()
+        expect(adapter.lastPrompts.at(-1)).toContain('legacy path')
+      } finally {
+        if (previous === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = previous
+      }
+    })
+
+    it('默认配置（不设环境变量）：claude 走 kernel，codex 仍走旧路径', async () => {
+      const prevKernel = process.env[AGENT_KERNEL_ENV]
+      const prevBackends = process.env[AGENT_KERNEL_BACKENDS_ENV]
+      const prevUnsafe = process.env[AGENT_KERNEL_UNSAFE_ENV]
+      delete process.env[AGENT_KERNEL_ENV]
+      delete process.env[AGENT_KERNEL_BACKENDS_ENV]
+      delete process.env[AGENT_KERNEL_UNSAFE_ENV]
+      try {
+        const claude = new TestAdapter('claude-code')
+        const codex = new TestAdapter('codex')
+        manager.registerAdapter(claude)
+        manager.registerAdapter(codex)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const claudeSession = await manager.startSession('claude-code', mockConfig())
+        await manager.sendCommand(claudeSession.sessionId, {
+          type: 'implement',
+          description: 'claude default',
+          targetNodeId: 'n1',
+        })
+        expect(runNode).toHaveBeenCalledTimes(1)
+        expect(claude.lastPrompts).toHaveLength(0)
+
+        const codexSession = await manager.startSession('codex', mockConfig())
+        await manager.sendCommand(codexSession.sessionId, {
+          type: 'implement',
+          description: 'codex legacy',
+          targetNodeId: 'n2',
+        })
+        expect(runNode).toHaveBeenCalledTimes(1)
+        expect(codex.lastPrompts.at(-1)).toContain('codex legacy')
+      } finally {
+        for (const [key, value] of [
+          [AGENT_KERNEL_ENV, prevKernel],
+          [AGENT_KERNEL_BACKENDS_ENV, prevBackends],
+          [AGENT_KERNEL_UNSAFE_ENV, prevUnsafe],
+        ] as const) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
+      }
+    })
+
+    it('A1：Kernel 开关打开时，sendCommand 改走 runNode（适配器不再被 manager 直接调用）', async () => {
+      const previous = process.env[AGENT_KERNEL_ENV]
+      process.env[AGENT_KERNEL_ENV] = '1'
+      try {
+        const adapter = new TestAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig())
+        const command: AgentCommand = { type: 'implement', description: 'kernel path', targetNodeId: 'n1' }
+        await manager.sendCommand(sessionId, command)
+
+        expect(runNode).toHaveBeenCalledTimes(1)
+        expect(runNode).toHaveBeenCalledWith(
+          expect.objectContaining({
+            agentSessionId: sessionId,
+            executor: 'claude-code',
+            prompt: 'kernel path',
+            workingDirectory: '/project',
+          }),
+        )
+        // manager 不再直接触发适配器执行；执行由 Runtime 的 driver 负责。
+        expect(adapter.lastPrompts).toHaveLength(0)
+      } finally {
+        if (previous === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = previous
+      }
+    })
+
     it('resets recovery retry counter when a recovered session completes successfully', async () => {
       const adapter = new TestAdapter('mcp')
       manager.registerAdapter(adapter)
@@ -906,5 +1061,67 @@ describe('AgentManager', () => {
 
       recoverySpy.mockRestore()
     })
+  })
+})
+
+describe('用量记账：kernel 与 legacy 同轮只记一条（高优先 1）', () => {
+  let manager: AgentManager
+
+  beforeEach(() => {
+    const registry = new AdapterRegistry()
+    const router = new SessionRouter(registry)
+    manager = new AgentManager(registry, router, new OutputBroadcaster())
+  })
+
+  afterEach(() => {
+    manager.destroy()
+    vi.restoreAllMocks()
+  })
+
+  it('kernel turn 在途时：legacy 同一条上报被丢弃（同一轮只有 1 行），其它轮不受影响', () => {
+    const record = vi.fn()
+    // 注入账本与 runtime 标记，避免依赖真实 DB / 真机后端
+    ;(manager as any)._usageLedger = { record }
+    manager.setRuntime({
+      hasActiveTurn: (sessionId: string) => sessionId === 's-live',
+    } as unknown as AgentRuntime)
+
+    const report = (sessionId: string, turnSeq: number) =>
+      manager['recordAdapterUsage']('claude-code', {
+        sessionId,
+        turnKey: `claude-code:${sessionId}:${turnSeq}`,
+        inputTokens: 500,
+        outputTokens: 200,
+        source: 'provider',
+      } as any)
+
+    // 同一轮：kernel 正在记账 → legacy 丢弃（kernel 自己会写 turn:<turnId>）
+    report('s-live', 0)
+    expect(record).not.toHaveBeenCalled()
+
+    // 不同轮/不同会话：legacy 照常记录，key 与 kernel 的 `turn:` 不同，不会被误合并
+    report('s-idle', 7)
+    expect(record).toHaveBeenCalledTimes(1)
+    expect(record.mock.calls[0][0].dedupeKey).toBe('legacy:claude-code:s-idle:7')
+  })
+})
+
+describe('新建会话的内存判据（P2：macOS 不误伤）', () => {
+  const MB = 1024 * 1024
+
+  it('macOS 只保留 64MB 硬下限：32GB 机型仅剩 300MB 空闲页时不拒绝', () => {
+    expect(isMemoryInsufficientForNewSession('darwin', { totalmem: 32 * 1024 * MB, freemem: 300 * MB })).toBe(false)
+    expect(isMemoryInsufficientForNewSession('darwin', { totalmem: 32 * 1024 * MB, freemem: 40 * MB })).toBe(true)
+  })
+
+  it('Linux/Windows 按总内存 2% 计算并按 128MB~2GB clamp', () => {
+    expect(isMemoryInsufficientForNewSession('linux', { totalmem: 8 * 1024 * MB, freemem: 170 * MB })).toBe(false)
+    expect(isMemoryInsufficientForNewSession('linux', { totalmem: 8 * 1024 * MB, freemem: 100 * MB })).toBe(true)
+    // 小内存机器：ratio 下探到 128MB 下限，不会无限抬高门槛
+    expect(isMemoryInsufficientForNewSession('linux', { totalmem: 4 * 1024 * MB, freemem: 140 * MB })).toBe(false)
+    // 大内存机器：ratio 超过 2GB 时被上限截断
+    const huge = { totalmem: 256 * 1024 * MB, freemem: 2100 * MB }
+    expect(isMemoryInsufficientForNewSession('linux', huge)).toBe(false)
+    expect(isMemoryInsufficientForNewSession('linux', { ...huge, freemem: 1900 * MB })).toBe(true)
   })
 })

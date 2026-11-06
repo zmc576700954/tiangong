@@ -1,0 +1,4 @@
+HOOK_CALLED PreToolUse Write
+CAN_USE_TOOL_CALLED Write
+RESULT {"subtype":"success","isError":false}
+SUMMARY {"scenario":"allow+disablehooks+hookask","calls":["Write"],"hookEvents":["PreToolUse:Write"],"canaryExists":true,"resultSubtype":"success"}

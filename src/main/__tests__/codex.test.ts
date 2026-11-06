@@ -7,9 +7,27 @@ const mockRun = vi.fn().mockResolvedValue({
   finalResponse: 'All done',
   usage: { input_tokens: 100, cached_input_tokens: 0, output_tokens: 50, reasoning_output_tokens: 0 },
 })
+/**
+ * P1-B 双路径：
+ * - 旧 AgentOutput 路径仍走阻塞 `thread.run()`（`mockRun`），保留原有 finalResponse 断言；
+ * - 新 Runtime/Kernel 路径显式 `setRawStreamMode(true)` 后才走 `runStreamed()`。
+ * mock 用 run() 的结果拼出流式事件。
+ */
+const mockRunStreamed = vi.fn(async (prompt: string) => ({
+  events: (async function* () {
+    yield { type: 'thread.started' }
+    yield { type: 'turn.started' }
+    const result = await mockRun(prompt)
+    for (const item of result.items as Array<Record<string, unknown>>) {
+      yield { type: 'item.completed', item }
+    }
+    yield { type: 'turn.completed', usage: result.usage }
+  })(),
+}))
 const mockThreadId = 'thread-abc-123'
 const mockThread = {
   run: mockRun,
+  runStreamed: mockRunStreamed,
   get id() { return mockThreadId },
 }
 const mockStartThread = vi.fn(() => mockThread)
@@ -91,6 +109,8 @@ describe('CodexAdapter (SDK)', () => {
       expect.objectContaining({ workingDirectory: '/project', sandboxMode: 'workspace-write' }),
     )
     expect(mockRun).toHaveBeenCalledTimes(1)
+    // 旧 AgentOutput 路径不得切换到流式语义
+    expect(mockRunStreamed).not.toHaveBeenCalled()
 
     const promptArg = mockRun.mock.calls[0][0] as string
     expect(promptArg).toContain('<node-title>Auth Module</node-title>')
@@ -107,8 +127,25 @@ describe('CodexAdapter (SDK)', () => {
 
     const stdoutOutputs = outputs.filter((o) => o.type === 'stdout')
     expect(stdoutOutputs.length).toBeGreaterThan(0)
-    expect(stdoutOutputs.some((o) => o.data.includes('Task completed'))).toBe(true)
-    expect(stdoutOutputs.some((o) => o.data.includes('All done'))).toBe(true)
+    // 旧 AgentOutput 路径保持原有语义：agent_message 一次 + run() 的 finalResponse 广播一次
+    const finalTextOutputs = stdoutOutputs.filter((o) => o.data.includes('Task completed'))
+    expect(finalTextOutputs).toHaveLength(1)
+    expect(stdoutOutputs.some((o) => o.data === 'All done')).toBe(true)
+  })
+
+  it('uses runStreamed and raw events only in runtime mode (P1-B)', async () => {
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    const raw: unknown[] = []
+    adapter.onRawEvent((event) => raw.push(event))
+
+    adapter.setRawStreamMode(session.id, true)
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockRunStreamed).toHaveBeenCalledTimes(1)
+    expect(raw.length).toBeGreaterThan(0)
+    // 流式路径无 finalResponse，不会重复广播最终文本
+    expect(outputs.some((o) => o.type === 'stdout' && o.data === 'All done')).toBe(false)
   })
 
   it('doSendCommand emits complete on success', async () => {

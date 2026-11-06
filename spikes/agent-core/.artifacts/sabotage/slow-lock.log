@@ -1,0 +1,34 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 39[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32m✓[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 131[2mms[22m[39m
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":6.738971457000004,"p50Ms":6.815541999999823,"p99Ms":7.006417000000056,"totalMs":6740.05775},{"round":2,"iterations":1000,"meanMs":6.752155860999975,"p50Ms":6.829957999998442,"p99Ms":7.029083999999784,"totalMs":6753.145042},{"round":3,"iterations":1000,"meanMs":6.752265581999991,"p50Ms":6.819166999999652,"p99Ms":6.973958999999013,"totalMs":6753.219665999999}]
+
+ [31m❯[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m | [22m[31m1 failed[39m[2m)[22m[33m 20251[2mms[22m[39m
+[31m     [31m×[31m 1000 次加锁/释放 × 3 轮：P99 < 5ms[39m[33m 20251[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/lock-overhead.test.ts[2m > [22m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[31m[1mAssertionError[22m: round 1 p99: expected 7.006417000000056 to be less than 5[39m
+[36m [2m❯[22m tests/lock-overhead.test.ts:[2m50:57[22m[39m
+    [90m 48|[39m
+    [90m 49|[39m     [35mfor[39m ([35mconst[39m result [35mof[39m results) {
+    [90m 50|[39m       [34mexpect[39m(result[33m.[39mp99Ms[33m,[39m [32m`round [39m[36m${[39mresult[33m.[39mround[36m}[39m[32m p99`[39m)[33m.[39m[34mtoBeLessThan[39m([34m5[39m)
+    [90m   |[39m                                                         [31m^[39m
+    [90m 51|[39m       expect(result.meanMs, `round ${result.round} mean`).toBeLessThan…
+    [90m 52|[39m     }
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m23 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:12
+[2m   Duration [22m 20.39s[2m (transform 333ms, setup 0ms, import 438ms, tests 20.48s, environment 0ms)[22m
+

@@ -1,0 +1,30 @@
+[TEST] os.freemem mocked to 4096MB (BIZGRAPH_TEST_MOCK_FREEMEM=1)
+[2026-11-05T08:13:44.745Z] [Database] Migrating schema from v0 to v20...
+[2026-11-05T08:13:44.753Z] [Database] Schema migrated to v20
+[2026-11-05T08:13:44.758Z] [Settings] Settings file not found, creating with defaults
+[2026-11-05T08:13:44.762Z] [IPC] [kernel] claude-code: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:13:44.762Z] [IPC] [kernel] codex: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:13:44.762Z] [IPC] [kernel] opencode: 旧路径（该后端尚未启用写前审批）
+[2026-11-05T08:13:44.762Z] [IPC] [kernel] 总开关=on 白名单=[codex]
+[2026-11-05T08:13:44.763Z] [YjsRealtime] legacy migration: 0 backfilled / 0 skipped / 0 errors (scanned 0)
+[2026-11-05T08:13:44.765Z] [YjsWsServer] YjsWsServer listening on ws://127.0.0.1:1236
+[2026-11-05T08:13:44.766Z] [IPC] RecipeManager loaded 0 recipes from userData
+[2026-11-05T08:13:44.768Z] [CodeIntelIPC] Code intelligence initialized
+[2026-11-05T08:13:44.768Z] [IPC] AgentManager and GraphService connected to SymbolIndex
+[2026-11-05T08:13:44.943Z] [OpenCodeAdapter] opencode CLI not found
+[2026-11-05T08:13:44.948Z] [ClineAdapter] cline CLI not found
+[2026-11-05T08:13:44.948Z] [KiloCodeAdapter] kilo CLI not found
+[2026-11-05T08:13:44.948Z] [KimiCodeAdapter] kimi CLI not found
+[2026-11-05T08:13:44.949Z] [QoderAdapter] qodercli CLI not found
+[2026-11-05T08:13:44.949Z] [QwenCodeAdapter] qwen CLI not found
+[2026-11-05T08:13:44.949Z] [CursorAdapter] cursor CLI not found
+[2026-11-05T08:13:44.962Z] [CodeBuddyAdapter] codebuddy/cbc CLI not found
+[2026-11-05T08:13:56.191Z] [AwarenessServer] Awareness server listening on ws://127.0.0.1:1235
+[2026-11-05T08:13:56.192Z] [RealtimeIPC] Generated new user identity: 69deb086-3600-43f2-9cb4-0e3e5b470e95 (colorIndex=0)
+[2026-11-05T08:13:57.730Z] [AdapterHealthMonitor] Recorded call for codex: success=true, time=0ms
+[2026-11-05T08:13:57.735Z] [MemoryStore] FTS5 index rebuilt to repair legacy asymmetric-trigger corruption
+[2026-11-05T08:13:57.735Z] [MemoryStore] FTS5 virtual table and triggers initialized
+[2026-11-05T08:13:57.741Z] [prompt-orchestrator] Assembled prompt for session codex-9149e56697df45beb29b2b4c4afa0c82: 131 tokens (budget 12000), layers: system=64, scope=10, context=0, waterline=22, user=34
+[2026-11-05T08:13:57.777Z] [SessionLifecycleManager] Session codex-9149e56697df45beb29b2b4c4afa0c82 ended abnormally (error, exit null), cleaning up...
+[2026-11-05T08:13:57.777Z] [session-recovery] No recovery strategy for adapter codex
+[2026-11-05T08:14:27.787Z] [SessionLifecycleManager] Session codex-9149e56697df45beb29b2b4c4afa0c82 cleanup exceeded 30000ms; force-progressing state cleanup

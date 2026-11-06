@@ -1,0 +1,70 @@
+
+[1m[30m[46m RUN [49m[39m[22m [36mv4.1.11 [39m[90m/Users/zhumingchen/tiangong/spikes/agent-core[39m
+
+[90mstdout[2m | tests/lock-overhead.test.ts[2m > [22m[2m锁开销测量（对应旧文档 V8 / 新文档 SessionExecutor）[2m > [22m[2m1000 次加锁/释放 × 3 轮：P99 < 5ms
+[22m[39m[lock-overhead] [{"round":1,"iterations":1000,"meanMs":0.0043282829999998,"p50Ms":0.002165999999988344,"p99Ms":0.023416999999994914,"totalMs":4.466000000000008},{"round":2,"iterations":1000,"meanMs":0.0032350369999996076,"p50Ms":0.002082999999998947,"p99Ms":0.015749999999997044,"totalMs":3.3134170000000154},{"round":3,"iterations":1000,"meanMs":0.0032906490000001155,"p50Ms":0.0019170000000201526,"p99Ms":0.017957999999993035,"totalMs":3.341417000000007}]
+
+ [32m✓[39m tests/lock-overhead.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/v6-loop-ownership.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 2[2mms[22m[39m
+ [32m✓[39m tests/v1-normalization.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m tests/v4-concurrency.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32m✓[39m tests/v7-approval.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [31m❯[39m tests/v2-recovery.test.ts [2m([22m[2m5 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 128[2mms[22m[39m
+[31m     [31m×[31m 写前审批通过但写还没落地时被杀：step 必须判 unknown，不允许标 completed[39m[32m 35[2mms[22m[39m
+[31m     [31m×[31m 写已落地且 hash 对账一致：step 可判 completed，可 native resume[39m[32m 31[2mms[22m[39m
+[31m     [31m×[31m 写后记录与磁盘 hash 不一致：必须转人工（abandon），不得静默重跑[39m[32m 28[2mms[22m[39m
+     [32m✓[39m RecoveryPlan 是确定的：连续调用两次结果完全一致[32m 32[2mms[22m[39m
+     [32m✓[39m 事件日志 seq 校验：断号写入必须抛 EVENT_LOG_CORRUPT[32m 1[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 3 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m tests/v2-recovery.test.ts[2m > [22mV2 崩溃恢复对账[2m > [22m写前审批通过但写还没落地时被杀：step 必须判 unknown，不允许标 completed
+[31m[1mAssertionError[22m: expected 0 to be greater than or equal to 1[39m
+[36m [2m❯[22m tests/v2-recovery.test.ts:[2m61:40[22m[39m
+    [90m 59|[39m     [35mtry[39m {
+    [90m 60|[39m       [34mexpect[39m(sweep[33m.[39mrunsMarkedInterrupted)[33m.[39m[34mtoBe[39m([34m1[39m)
+    [90m 61|[39m       [34mexpect[39m(sweep[33m.[39mstepsMarkedUnknown)[33m.[39m[34mtoBeGreaterThanOrEqual[39m([34m1[39m)
+    [90m   |[39m                                        [31m^[39m
+    [90m 62|[39m       [34mexpect[39m(() [33m=>[39m [34massertNoDangling[39m(db))[33m.[39mnot[33m.[39m[34mtoThrow[39m()
+    [90m 63|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v2-recovery.test.ts[2m > [22mV2 崩溃恢复对账[2m > [22m写已落地且 hash 对账一致：step 可判 completed，可 native resume
+[31m[1mAssertionError[22m: expected [Function] to not throw an error but 'Error: dangling state: runs=[{"id":"r…' was thrown[39m
+
+[32m- Expected:[39m
+undefined
+
+[31m+ Received:[39m
+"Error: dangling state: runs=[{\"id\":\"run-crash-1\",\"status\":\"running\"}] steps=[{\"id\":\"step-2\",\"status\":\"running\"}]"
+
+[36m [2m❯[22m tests/v2-recovery.test.ts:[2m88:46[22m[39m
+    [90m 86|[39m     [35mtry[39m {
+    [90m 87|[39m       [34mexpect[39m(sweep[33m.[39mrunsMarkedInterrupted)[33m.[39m[34mtoBe[39m([34m1[39m)
+    [90m 88|[39m       [34mexpect[39m(() [33m=>[39m [34massertNoDangling[39m(db))[33m.[39mnot[33m.[39m[34mtoThrow[39m()
+    [90m   |[39m                                              [31m^[39m
+    [90m 89|[39m       [35mconst[39m plan [33m=[39m plans[33m.[39m[34mfind[39m((p) [33m=>[39m p[33m.[39mrunId [33m===[39m [32m'run-crash-1'[39m)[33m![39m
+    [90m 90|[39m       [34mexpect[39m([34mdispositionOf[39m(plan[33m,[39m [32m'step-2'[39m))[33m.[39m[34mtoBe[39m([32m'completed'[39m)
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m tests/v2-recovery.test.ts[2m > [22mV2 崩溃恢复对账[2m > [22m写后记录与磁盘 hash 不一致：必须转人工（abandon），不得静默重跑
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'stepOutcomes')[39m
+[36m [2m❯[22m dispositionOf src/recovery/planner.ts:[2m196:15[22m[39m
+    [90m194|[39m
+    [90m195|[39m export function dispositionOf(plan: RecoveryPlan, stepId: string): Ste…
+    [90m196|[39m   return plan.stepOutcomes.find((o) => o.stepId === stepId)?.dispositi…
+    [90m   |[39m               [31m^[39m
+    [90m197|[39m }
+    [90m198|[39m
+[90m [2m❯[22m tests/v2-recovery.test.ts:[2m104:14[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m5 passed[39m[22m[90m (6)[39m
+[2m      Tests [22m [1m[31m3 failed[39m[22m[2m | [22m[1m[32m21 passed[39m[22m[90m (24)[39m
+[2m   Start at [22m 18:17:10
+[2m   Duration [22m 308ms[2m (transform 375ms, setup 0ms, import 473ms, tests 208ms, environment 0ms)[22m
+

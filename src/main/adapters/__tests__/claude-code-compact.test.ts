@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { ClaudeCodeAdapter } from '../claude-code'
+import { ClaudeCodeAdapter, parseClaudeUsage } from '../claude-code'
 import type { AgentSession } from '@shared/types'
 
 /**
@@ -76,6 +76,37 @@ describe('ClaudeCodeAdapter compaction', () => {
       adapter['doCloseQuery'](sessionId)
 
       expect(adapter['autoCompactEnabledFor'].has(sessionId)).toBe(false)
+    })
+  })
+
+  describe('parseClaudeUsage（高优先 7：cache_creation_input_tokens 不再漏记）', () => {
+    it('纯写缓存轮次：input_tokens=0 但 cache_creation>0 仍要记账', () => {
+      const parsed = parseClaudeUsage({
+        input_tokens: 0,
+        output_tokens: 120,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 4096,
+      })
+      expect(parsed).toEqual({
+        inputTokens: 0,
+        outputTokens: 120,
+        cachedInputTokens: 0,
+        cacheCreationInputTokens: 4096,
+      })
+    })
+
+    it('四个维度都解析出来，写缓存与读缓存分开（不合并）', () => {
+      const parsed = parseClaudeUsage({
+        input_tokens: 100,
+        output_tokens: 50,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 600,
+      })
+      expect(parsed).toMatchObject({ cachedInputTokens: 800, cacheCreationInputTokens: 600 })
+    })
+
+    it('四个维度全 0 → null（确实没有用量，不记空行）', () => {
+      expect(parseClaudeUsage({})).toBeNull()
     })
   })
 

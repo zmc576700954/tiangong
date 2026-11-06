@@ -529,4 +529,92 @@ describe('SessionLifecycleManager', () => {
       expect(calls[0][2]).toBeUndefined()
     })
   })
+
+  describe('M1 成本账本接线（usage → onAdapterUsage）', () => {
+    function makeUsageAdapter() {
+      let outputHandler: ((o: AgentOutput) => void) | undefined
+      let usageHandler: ((d: unknown) => void) | undefined
+      const a = makeAdapter('claude-code', {
+        onOutput: vi.fn((h: (o: AgentOutput) => void) => { outputHandler = h }),
+        resolveOutputSession: vi.fn((o: AgentOutput) => (o as { sessionId?: string }).sessionId),
+        onUsage: vi.fn((h: (d: unknown) => void) => { usageHandler = h }),
+        offUsage: vi.fn(),
+      })
+      return {
+        adapter: a,
+        emitOutput: (o: AgentOutput) => outputHandler?.(o),
+        emitUsage: (d: unknown) => usageHandler?.(d),
+      }
+    }
+
+    async function startOn(shared: ReturnType<typeof makeUsageAdapter>, sessionId: string) {
+      registry.register(shared.adapter)
+      lifecycle.attachAdapter(shared.adapter)
+      await lifecycle.start({
+        candidate: 'claude-code',
+        adapter: shared.adapter,
+        session: { id: sessionId, startTime: Date.now() },
+        config: makeConfig(),
+        isFallback: false,
+        primaryAdapter: 'claude-code',
+      })
+    }
+
+    it('适配器 onUsage 事件透传到 onAdapterUsage 回调', async () => {
+      const shared = makeUsageAdapter()
+      const onAdapterUsage = vi.fn()
+      lifecycle.setCallbacks({ onAdapterUsage })
+      await startOn(shared, 'sess-U1')
+
+      const report = { sessionId: 'sess-U1', inputTokens: 123, outputTokens: 45, model: 'claude-sonnet-4-5', source: 'provider' }
+      shared.emitUsage(report)
+
+      expect(onAdapterUsage).toHaveBeenCalledWith(
+        'claude-code',
+        expect.objectContaining({ ...report, turnKey: 'claude-code:sess-U1:0' }),
+      )
+      expect(shared.adapter.onUsage).toHaveBeenCalledTimes(1)
+    })
+
+    it('complete 前未收到 usage → 合成 unknown 占位；收到过则不合成', async () => {
+      const shared = makeUsageAdapter()
+      const onAdapterUsage = vi.fn()
+      const onTurnComplete = vi.fn()
+      lifecycle.setCallbacks({ onAdapterUsage, onTurnComplete })
+      await startOn(shared, 'sess-U2')
+
+      const complete = { type: 'complete', timestamp: Date.now(), sessionId: 'sess-U2' } as unknown as AgentOutput
+
+      // turn 1：无 usage → 合成 unknown
+      shared.emitOutput(complete)
+      // turn 2：先收到 provider usage → 不再合成
+      shared.emitUsage({ sessionId: 'sess-U2', inputTokens: 10, source: 'provider' })
+      shared.emitOutput(complete)
+
+      const unknownCalls = onAdapterUsage.mock.calls.filter(
+        (c) => (c[1] as { source?: string }).source === 'unknown',
+      )
+      expect(unknownCalls).toHaveLength(1)
+      expect(unknownCalls[0][0]).toBe('claude-code')
+      expect(unknownCalls[0][1]).toMatchObject({ sessionId: 'sess-U2', source: 'unknown' })
+      // legacy 无 turn id：用轮次序号构造幂等键（第 0 轮未上报 → unknown）
+      expect(unknownCalls[0][1]).toMatchObject({ turnKey: 'claude-code:sess-U2:0' })
+      // 第 2 轮的真实 usage 归入下一轮序号，可与第 0 轮区分
+      const providerCalls = onAdapterUsage.mock.calls.filter(
+        (c) => (c[1] as { source?: string }).source === 'provider',
+      )
+      expect(providerCalls).toHaveLength(1)
+      expect(providerCalls[0][1]).toMatchObject({ turnKey: 'claude-code:sess-U2:1' })
+      expect(onTurnComplete).toHaveBeenCalledTimes(2)
+    })
+
+    it('重复 attachAdapter 会对称解绑 usage handler', () => {
+      const shared = makeUsageAdapter()
+      registry.register(shared.adapter)
+      lifecycle.attachAdapter(shared.adapter)
+      lifecycle.attachAdapter(shared.adapter)
+      expect(shared.adapter.offUsage).toHaveBeenCalledTimes(1)
+      expect(shared.adapter.onUsage).toHaveBeenCalledTimes(2)
+    })
+  })
 })

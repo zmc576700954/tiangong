@@ -156,6 +156,14 @@ export class ChatRepository {
     return row ? toChatThreadRow(row) : null
   }
 
+  /** 进程重启后 Router 为空时，按会话 id 反查持久化的线程（恢复后端绑定用）。 */
+  getThreadBySessionId(sessionId: string): ChatThreadRow | null {
+    const row = this.db.prepare(
+      `SELECT ${THREAD_SELECT} FROM chat_threads WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1`
+    ).get(sessionId) as Record<string, unknown> | undefined
+    return row ? toChatThreadRow(row) : null
+  }
+
   listThreads(filters?: { nodeId?: string; graphId?: string; status?: string }): ChatThreadRow[] {
     let sql = `SELECT ${THREAD_SELECT} FROM chat_threads WHERE 1=1`
     const args: (string | null)[] = []

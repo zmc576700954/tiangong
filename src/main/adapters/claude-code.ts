@@ -13,6 +13,10 @@
 import { z } from 'zod'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
 import { generateId } from '../shared/env'
+import { isTrustedNativeSessionId } from '@shared/native-session-id'
+import { isWriteScopedTool } from '../agent/runtime/approval/gateway'
+import { evaluateBashPolicy, type BashPolicyDecision } from '../agent/runtime/approval/bash-readonly'
+import { humanizeAgentErrorText } from '@shared/agent-error-text'
 import type {
   AgentSession,
   AgentSessionConfig,
@@ -27,10 +31,66 @@ import { estimateTokens } from '../shared/token-utils'
 import { SUBAGENT_AGENT_TYPE_PATTERN } from '@shared/types/a2a'
 
 import type * as ClaudeAgentSdk from '@anthropic-ai/claude-agent-sdk'
+import { spawnInOwnGroup } from '../shared/process-supervisor'
 
 type QueryFn = typeof ClaudeAgentSdk.query
 type CreateSdkMcpServerFn = typeof ClaudeAgentSdk.createSdkMcpServer
 type McpServerConfig = ReturnType<CreateSdkMcpServerFn>
+
+/** Claude `result` 消息里的 usage 形状（SDK 未导出该类型，这里按协议取）。 */
+export interface ClaudeUsageShape {
+  input_tokens?: number
+  output_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+}
+
+/**
+ * 解析 Claude usage，四个维度都要。
+ *
+ * `cache_creation_input_tokens`（写缓存）此前被整段漏掉：当一轮只有写缓存、
+ * input_tokens 为 0 时，旧代码直接不记用量，账本整轮缺失。
+ * 返回值 null 表示「四个维度全为 0」，即确实没有可记账的用量。
+ */
+export function parseClaudeUsage(raw: ClaudeUsageShape): {
+  inputTokens: number
+  outputTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+} | null {
+  const inputTokens = raw.input_tokens ?? 0
+  const outputTokens = raw.output_tokens ?? 0
+  const cachedInputTokens = raw.cache_read_input_tokens ?? 0
+  const cacheCreationInputTokens = raw.cache_creation_input_tokens ?? 0
+  if (inputTokens === 0 && outputTokens === 0 && cachedInputTokens === 0 && cacheCreationInputTokens === 0) {
+    return null
+  }
+  return { inputTokens, outputTokens, cachedInputTokens, cacheCreationInputTokens }
+}
+
+/**
+ * D4：由 Runtime Driver 注入的轮次级审批钩子。
+ * 只影响本 session 当前轮次；不设置时适配器行为与旧路径完全一致。
+ */
+export interface ClaudeTurnApprovalHooks {
+  canUseTool?: ClaudeAgentSdk.CanUseTool
+  onPreToolUse?: (toolName: string, toolInput: Record<string, unknown>, toolUseId?: string) => void | Promise<void>
+  /**
+   * Bash 只读白名单决策（M1/P3）：PreToolUse 阶段由我们的规则得出 allow/ask/deny，
+   * 这里回调给 Runtime 记录审计（命中哪条规则 / 被哪条危险模式拦下）。
+   */
+  onBashPolicy?: (decision: BashPolicyDecision, toolUseId?: string) => void | Promise<void>
+}
+
+/** Claude CLI 的 shell 工具名（Bash）。 */
+function isBashTool(toolName: string): boolean {
+  return toolName.trim().toLowerCase() === 'bash'
+}
+
+/** Bash 工具参数里的命令字符串。 */
+function bashCommandOf(toolInput: Record<string, unknown>): unknown {
+  return toolInput.command
+}
 
 function isAssistantMessage(msg: unknown): msg is {
   content?: Array<{ type: string; text?: string }>
@@ -52,6 +112,17 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   readonly version = '2.0.0'
 
   protected logger = createLogger('ClaudeCodeAdapter')
+  /** D4：轮次级审批钩子（按 session 注入，轮次结束即清空） */
+  private turnApprovalHooks = new Map<string, ClaudeTurnApprovalHooks>()
+
+  /** Runtime Driver 调用；传 null 清除。旧路径不会调用。 */
+  setTurnApprovalHooks(sessionId: string, hooks: ClaudeTurnApprovalHooks | null): void {
+    if (hooks) {
+      this.turnApprovalHooks.set(sessionId, hooks)
+    } else {
+      this.turnApprovalHooks.delete(sessionId)
+    }
+  }
 
   /**
    * SDK 多轮适配器：由 BaseAdapter 自动托管空闲回收定时器。
@@ -67,6 +138,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   private activeQueries = new Map<string, { abort: () => void }>()
   /** Sessions flagged for auto-compaction on the next query() call */
   private autoCompactEnabledFor = new Set<string>()
+  /** M1：每个 session 最近一条 assistant 消息的 model（result 消息不带 model，计价用） */
+  private lastModelBySession = new Map<string, string>()
 
   private async loadSdk(): Promise<QueryFn | null> {
     if (this.sdkLoadAttempted) return this.sdkQuery
@@ -101,6 +174,11 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     // Idle reaper is armed automatically by BaseAdapter.registerSession (see
     // autoManageIdleReaper) so orphan sessions are still reclaimed.
     return session
+  }
+
+  /** Claude Code 支持 `--resume <conversation id>`，重启后可用原生续接。 */
+  supportsNativeResume(): boolean {
+    return true
   }
 
   protected async doSendCommand(session: AgentSession, command: AgentCommand): Promise<void> {
@@ -216,6 +294,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         toolsOption = []
       }
 
+      const approvalHooks = this.turnApprovalHooks.get(session.id)
+
       const queryIter = query({
         // 每轮上下文 + 用户请求进 user turn；稳定前缀走 systemPrompt 通道。
         // 用户请求只出现一次 —— 它不进 stable 段。
@@ -225,16 +305,86 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),
           cwd: session.config.workingDirectory,
           model: settings.defaultModel || 'sonnet',
-          env: this.buildSafeEnv(),
-          permissionMode: transparent ? 'default' : 'acceptEdits',
+          env: this.buildSessionEnv(session.id),
+          // D5：Runtime 路径由我们 spawn，CLI 进入自有进程组（pgid = pid），
+          // pid/pgid 当场可知并落库，跨重启回收不再依赖推断。
+          ...(this.isProcessSupervised(session.id)
+            ? {
+                spawnClaudeCodeProcess: (spawnOptions: ClaudeAgentSdk.SpawnOptions) =>
+                  this.spawnSupervisedClaude(session.id, spawnOptions),
+              }
+            : {}),
+          // Kernel 路径注入审批钩子时必须用 'default'，否则 SDK 直接按 acceptEdits 写文件，
+          // canUseTool 根本不会被调用（真机已验证）。旧路径无钩子，保持 acceptEdits 不变。
+          permissionMode: approvalHooks?.canUseTool ? 'default' : transparent ? 'default' : 'acceptEdits',
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
           // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
           ...(transparent ? { settingSources: [] } : {}),
-          ...(session.config.resumeSessionId ? { resume: session.config.resumeSessionId } : {}),
+          ...(isTrustedNativeSessionId(session.config.resumeSessionId) ? { resume: session.config.resumeSessionId } : {}),
           ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
           ...(mcpServers ? { mcpServers } : {}),
           ...(toolsOption ? { tools: toolsOption } : {}),
+          ...(approvalHooks?.canUseTool ? { canUseTool: approvalHooks.canUseTool } : {}),
           hooks: {
+            ...(approvalHooks?.onPreToolUse
+              ? {
+                  PreToolUse: [
+                    {
+                      matcher: '*',
+                      hooks: [
+                        async (input: unknown, toolUseID: string | undefined) => {
+                          const hookInput =
+                            typeof input === 'object' && input !== null
+                              ? (input as Record<string, unknown>)
+                              : {}
+                          const toolName = typeof hookInput.tool_name === 'string' ? hookInput.tool_name : ''
+                          const toolInput =
+                            typeof hookInput.tool_input === 'object' && hookInput.tool_input !== null
+                              ? (hookInput.tool_input as Record<string, unknown>)
+                              : {}
+
+                          // P3：Bash 走我们自己的两档策略，不再把放行判断交给 SDK。
+                          // allow → 免弹执行；ask → 强制回到我们的审批网关（用户决定）；
+                          // blocked-empty（唯一例外：空命令）→ deny，因为没有内容可审批。
+                          if (isBashTool(toolName)) {
+                            const decision = evaluateBashPolicy(bashCommandOf(toolInput))
+                            // 审计要按 step 关联：优先用 hook 回调的 toolUseID，
+                            // 缺失时回退到 hook 输入里的 tool_use_id（两者都缺则无法归属）。
+                            const toolUseId =
+                              toolUseID ?? (typeof hookInput.tool_use_id === 'string' ? hookInput.tool_use_id : undefined)
+                            await approvalHooks.onBashPolicy?.(decision, toolUseId)
+                            return {
+                              hookSpecificOutput: {
+                                hookEventName: 'PreToolUse' as const,
+                                permissionDecision:
+                                  decision.decision === 'blocked-empty' ? 'deny' : decision.decision,
+                                permissionDecisionReason: `BizGraph bash-policy(${decision.rule}/${decision.risk}): ${decision.reason}`,
+                              },
+                            }
+                          }
+
+                          await approvalHooks.onPreToolUse!(toolName, toolInput, toolUseID)
+                          // 强制写前审批：用户 `~/.claude/settings.json` 的
+                          // `permissions.allow`（如 "Write"）会让 CLI 直接执行工具、
+                          // 根本不调用 canUseTool，从而绕过我们的网关（已实测复现）。
+                          // PreToolUse hook 不受 allow 规则短路，返回 'ask' 会强制
+                          // CLI 回到 canUseTool，由我们的网关/会话级授权最终决定。
+                          return isWriteScopedTool(toolName)
+                            ? {
+                                hookSpecificOutput: {
+                                  hookEventName: 'PreToolUse' as const,
+                                  permissionDecision: 'ask' as const,
+                                  permissionDecisionReason:
+                                    'BizGraph policy: write tools always require host approval',
+                                },
+                              }
+                            : {}
+                        },
+                      ],
+                    },
+                  ],
+                }
+              : {}),
             PostToolUse: [
               {
                 matcher: 'Edit|Write',
@@ -271,6 +421,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
       for await (const message of queryIter) {
         if (abortController.signal.aborted) break
+        // D3：只读旁路，Driver 用它做逐消息归一化；旧路径不订阅时无副作用
+        this.emitRawEvent(sessionId, 'claude', message)
 
         if (message.type === 'system' && message.subtype === 'init') {
           // SDK 管理的 session_id，用于多轮续接
@@ -280,6 +432,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
 
         if (message.type === 'assistant') {
           if (isAssistantMessage(message.message)) {
+            // 计价维度：result 消息不带 model，从 assistant 消息缓存（M1）
+            const model = (message.message as { model?: unknown }).model
+            if (typeof model === 'string' && model) this.lastModelBySession.set(sessionId, model)
             for (const block of message.message.content ?? []) {
               if (block.type === 'text' && block.text) {
                 this.emitOutputForSession(sessionId, {
@@ -294,11 +449,17 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         }
 
         if (message.type === 'result') {
-          // Report authoritative token usage to the AgentManager budget tracker
+          // Report authoritative token usage（M1：全量真实用量 + 模型，供 UsageLedger 计价落库）
           if (message.usage) {
-            const inputTokens = (message.usage as { input_tokens?: number }).input_tokens ?? 0
-            if (inputTokens > 0) {
-              this.reportUsage(session.id, inputTokens)
+            const parsed = parseClaudeUsage(message.usage)
+            if (parsed) {
+              this.reportUsage(session.id, parsed.inputTokens, undefined, {
+                outputTokens: parsed.outputTokens,
+                cachedInputTokens: parsed.cachedInputTokens,
+                cacheCreationInputTokens: parsed.cacheCreationInputTokens,
+                model: this.lastModelBySession.get(sessionId),
+                source: 'provider',
+              })
             }
           }
           // SDK 有两层失败信号：subtype 与 is_error。subtype='success' 但 is_error=true
@@ -325,7 +486,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
             if (!errorText) errorText = 'Agent execution failed'
             this.emitOutputForSession(sessionId, {
               type: 'error',
-              data: errorText,
+              data: humanizeAgentErrorText(errorText),
               timestamp: Date.now(),
               errorCode: 'AGENT_CRASH',
             })
@@ -346,7 +507,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       } else {
         this.emitOutputForSession(sessionId, {
           type: 'error',
-          data: `SDK error: ${msg}`,
+          data: humanizeAgentErrorText(`SDK error: ${msg}`),
           timestamp: Date.now(),
           errorCode: 'AGENT_CRASH',
         })
@@ -366,6 +527,29 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     }
     // Clear the auto-compact flag when the session ends; a new session must opt in again
     this.autoCompactEnabledFor.delete(sessionId)
+  }
+
+  /**
+   * D5：受控 spawn。`detached: true` 让 CLI 成为自有进程组组长（pgid === pid），
+   * 我们当场拿到 pid 并上报，Runtime 落库后即可跨重启按组回收。
+   */
+  private spawnSupervisedClaude(
+    sessionId: string,
+    options: ClaudeAgentSdk.SpawnOptions,
+  ): ClaudeAgentSdk.SpawnedProcess {
+    const child = spawnInOwnGroup(options.command, options.args, {
+      cwd: options.cwd,
+      env: options.env,
+      signal: options.signal,
+    })
+    // stderr 必须有消费者，否则管道写满会阻塞 CLI
+    child.stderr?.on('data', (chunk: Buffer) => {
+      this.logger.debug(`claude stderr: ${chunk.toString('utf-8').slice(0, 300)}`)
+    })
+    if (child.pid) {
+      this.emitProcessSpawn(sessionId, { pid: child.pid, pgid: child.pid })
+    }
+    return child as unknown as ClaudeAgentSdk.SpawnedProcess
   }
 
   /**
