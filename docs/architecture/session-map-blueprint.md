@@ -205,6 +205,77 @@ sig(node) = sha256(
 
 **重复导入的已知局限**：新图与旧图的节点没有结构证据可以自动证明"同名即同一实体"，因此不做自动归一；且同项目重复导入本身会在入口被拒绝。指纹查重与放行规则见 **§2.6** —— 这是 S1 的硬前置，不是 S2 的增强项。
 
+#### 2.2.2 S1 施工细则（B1）
+
+> 本小节回答"S1 每一步谁写、什么时候写、写失败怎么办、怎么验收"。字段级 DDL 见 §7.2；判定顺序见 §2.6。S1 必须把 `entity_key` 回填与导入查重**放在同一个迁移批次上线**，不允许拆成两次发布。
+
+**S1-a 不变量（先写死，后实现）**
+
+| 编号 | 不变量 | 违反时 |
+|---|---|---|
+| I1 | `nodes.entity_key` 在 `createSql` 中且可空；不进 `requiredColumns` | 任何 `nodes` 重建都会丢键；拒绝发布 |
+| I2 | S1 完成后，所有非删除节点的 `entity_key` 非空；同 `(graph_id, entity_key)` 唯一 | 回填报告 `null_after > 0` 或唯一索引建不起来 → S1 `failed` |
+| I3 | 已有非空 `entity_key` 永不改写；回填只处理 `entity_key IS NULL` | 二次启动行数变化 → 回填不幂等，阻断 |
+| I4 | 新节点创建必须写 `entity_key`（UUID v4）；克隆复制源键；测试资产新键 | 新行出现 NULL → 应用层 bug，写失败并回滚事务 |
+| I5 | 导入查重在任何 graph/node 写入之前；拒绝时 `graphs`/`nodes`/`chat_threads` 新增行数为 0 | 拒绝后出现任一行 → P8 失败 |
+| I6 | 允许导入时，`project_fingerprints` 与图创建在同一个事务提交 | 只落指纹不落图 / 只落图不落指纹 → P8 失败 |
+
+**S1-b 迁移步骤（每步一个 `map_migration_reports` 行）**
+
+| 步骤 | `stage` | 操作 | 事务边界 | 失败处理 |
+|---|---|---|---|---|
+| S1.1 | `S1.tables` | 建 `project_fingerprints` / `import_rejections` / `import_allowances` | 单事务，`CREATE TABLE` + 索引 + report `ok` | 回滚；数据库保持 v24；启动阻断，修 DDL 后重跑 |
+| S1.2 | `S1.column` | `addColumnSafe('nodes','entity_key','TEXT')`，再核验 `createSql` 已含该列 | 单事务；只加列，不重建 `nodes` | 回滚；列不存在则下次重试；`createSql` 未含 → 拒绝继续 |
+| S1.3 | `S1.backfill` | 按 §2.2 对每个项目回填；**只写 `entity_key IS NULL`** | 一个项目一个事务；项目内全成功才提交 | 项目失败 → 该项目回滚、report `failed`、整体 S1 阻断；已提交项目保留，可续跑 |
+| S1.4 | `S1.indexes` | `CREATE UNIQUE INDEX ux_nodes_graph_entity_key` + `idx_nodes_entity_key` | 单事务 | 唯一冲突 → 回退到 S1.3 定位冲突行；不得用 `DROP INDEX` 掩盖冲突后继续 |
+| S1.5 | `S1.import_path` | 导入流程改为"扫描 → 指纹 → 查重 → 允许才建图"（§2.6） | 代码路径，无 schema 变更 | 旧导入路径未关闭 → 拒绝发版；这是"重导丢会话"的唯一入口 |
+| S1.6 | `S1.report` | 写回填统计与历史重复 lineage 报告（只报告，不自动删除/合并） | 单事务 | 报告失败不阻断数据，但 S1 记 `partial`，必须人工确认 |
+| S1.7 | `S1.verify` | 计数、唯一性、二次启动、P1/P8 样本 | 只读 | 任一失败 → S1 `failed`，恢复 S0 备份或修复后重跑 |
+
+**S1-c 回填精确规则（补齐 §2.2 未定的边界）**
+
+1. **项目 → 图配对**：同一 `project_path` 下取 `online` 与 `dev` 各一张。若存在多张，按 `(created_at ASC, id ASC)` 取第一张为基准，其余写入 `details_json.duplicate_graphs`，**不参与回填、不自动归档**。
+2. **签名输入**：`type` 用节点当前 `type`；`title_normalized` 按 §2.2 规则；`parent_signature_chain` 递归到根；`sibling_ordinal` 按父节点下 `(COALESCE(sort_index, 2147483647), created_at, id)` 升序从 0 开始。
+3. **候选集**：同一 `project_path` 的 online/dev 两侧节点各自计算签名。先按签名精确分组；跨图同签名且**组内各只有 1 个节点**才配对。组内多节点 → 记为 `ambiguous`，不配对。
+4. **退化匹配**：精确签名未配对的节点，按 `(type, title_normalized, parent_signature_chain)` 匹配；仅当两侧各只有 1 个候选时成立，否则 `ambiguous`。
+5. **新键**：未配对节点（含 online 侧无 dev 对应、dev 侧新增）生成新 UUID v4；同一节点只生成一次。**不允许用标题/路径哈希代替 UUID**，避免改名后键漂移。
+6. **占位节点**：`title` 为空、`type` 为 `project` 的根节点不参与跨图配对，各自新键；避免把一个项目的根误配到另一个项目。
+7. **执行方式**：单项目事务内先 `SELECT id, ... FROM nodes WHERE entity_key IS NULL ORDER BY id`，再批量 `UPDATE nodes SET entity_key=? WHERE id=? AND entity_key IS NULL`。任何一条 `changes=0`（被并发写入）→ 该项目回滚并重试一次；仍失败则 `failed`。
+8. **统计**：`stats_json` 至少含 `matched_exact` / `matched_fallback` / `unmatched` / `ambiguous` / `null_before` / `null_after` / `duplicate_graphs`；`details_json` 含每个未匹配节点的 `id/type/title/parent_id/reason`，用于人工复核。
+
+**S1-d 导入查重精确规则（补齐 §2.6 的实现边界）**
+
+- **指纹采集顺序**：`realpath(root)` → 名称/目录名规范化 → 受管文件枚举（忽略 `.git`、`node_modules`、`dist`、`build`、`.next`、`target`、`coverage`；锁文件**不忽略**，作为依赖内容信号）→ `max(mtime)` → 抽样 → 逐文件 `sha256`。
+- **抽样算法**：文件按**项目根相对 POSIX 路径**排序；设可用文件数 `M`，目标 `N=12`：
+  - `M ≥ N`：取索引 `floor(i*(M-1)/(N-1))`（`i=0..N-1`），重复索引去重；
+  - `M < N`：全部取，`sample_count=M`；相似度分母用 `M`，不把缺失当"不匹配"。
+  - 单文件读失败：记入 `errors_json` 并从可用集剔除；若可用集为空 → 走 §2.6 Step 4 抽样失败分支。
+  - 二进制判定：前 4KB 含 NUL 或扩展名在黑名单（图片/压缩/可执行/字体）→ 跳过；不因跳过而降低分母。
+- **相似度**：`similarity = 相同 sha256 的文件数 / sample_count`，保留 4 位小数写入 `matched_signals_json`；判定用未舍入值，展示用舍入值。
+- **目录名规范化**：`basename(realpath(root))` 去首尾空白、转小写；比较用规范化值，落库保留原值。
+- **mtime**：只写 `last_modified_at` 并在证据面板显示；**不参与拒绝/放行**（§2.6 规则 4）。
+- **事务与并发**：指纹计算在事务外；得到结果后 `BEGIN IMMEDIATE`，重新读取 `project_fingerprints` 与 `import_allowances` 再判定（防止 TOCTOU）；允许时同一事务插入指纹与 `graphs`/`nodes`。`UNIQUE(root_path)` 冲突 → 回滚并按"同路径重复导入"拒绝，不重试覆盖。
+- **拒绝记录**：拒绝时写 `import_rejections`，`matched_fingerprint_id` 可空（抽样失败/新项目无匹配时为空），`matched_signals_json` 必含 `dir_name_same`、`similarity`、`sample_count`、`mtime_used=false`、`decision_step`（如 `3b`）。
+- **记住规则**：`import_allowances` 只在用户显式勾选时插入；命中时 `allowance_source='remembered_rule'`，并校验 `revoked_at IS NULL`。撤销是更新 `revoked_at/revoked_by`，不物理删除。
+- **清理任务**：启动期 + 每日一次删除 `import_rejections.created_at < now-90d`（可配置）；删除前把计数汇总写入 `map_migration_reports(kind='import_dedup', stage='retention')`，聚合永久保留。`import_allowances` 不受 90 天影响。
+
+**S1-e 回滚**
+
+| 回滚点 | 动作 | 数据影响 |
+|---|---|---|
+| 刚建表、未接导入 | `DROP TABLE import_allowances/import_rejections/project_fingerprints`；`entity_key` 列保留 | 无业务数据丢失 |
+| 已接导入、未产生放行 | 关闭查重开关，恢复旧导入路径（需书面确认，会重新暴露"重导丢会话"） | 已拒绝记录保留可查 |
+| 已产生放行/回填 | 保留表与键；只回退读路径到 node id；不 `DROP INDEX` 除非唯一冲突已定位 | 键保留无害；不可回退已建图 |
+| 唯一索引冲突 | 先定位冲突行并人工处置；禁止直接删索引长期运行 | 删索引 = 放弃唯一性，必须记风险 |
+
+**S1-f 验收判据**
+
+1. 真实库副本：回填两次，`null_after=0`、`matched/ambiguous` 与报告一致、第二次运行 0 行变化。
+2. 构造 6 类导入样本：决策与 §2.6 完全一致；拒绝时三表新增 0 行；允许时指纹与图同事务。
+3. 并发：两个导入同时指向同一 root，只有一个成功；另一个得到 REJECT 且无半行。
+4. 故障注入：S1.1 后崩溃 → 重启可续跑；S1.3 中途崩溃 → 已提交项目不重写、未提交项目重跑；S1.4 冲突 → S1 `failed`，启动阻断。
+5. 90 天清理：明细删除、聚合保留；`import_allowances` 保留。
+
 ### 2.3 `node_links` 设计要点
 
 | 设计选择 | 理由 |
@@ -228,6 +299,77 @@ sig(node) = sha256(
 | `merged_into` | 源 → 目标 | 合并去向 |
 | `supersedes` | 新 → 旧 | 版本替代 |
 | `relates_to` | 对称 | 无更强语义的关联 |
+
+#### 2.3.1 S2 施工细则（B1）
+
+**不变量**
+
+| 编号 | 不变量 | 违反时 |
+|---|---|---|
+| L1 | 新写入的 `node_links` 必须带 `project_path`（规范化 realpath）；跨项目链接一律拒绝 | 写失败并返回校验错误 |
+| L2 | `from_entity_key` / `to_entity_key` 必须非空；不允许自链接 | 拒绝写入 |
+| L3 | 每条链接的两端必须能在 `nodes(graph_id, entity_key)` 解析；解析失败只能落 `status='orphan'` 并在巡检报告里出现 | 创建接口拒绝；回填/拆分等系统路径可落 orphan |
+| L4 | `(from_entity_key, to_entity_key, link_type)` 唯一；`relates_to` 按字典序规范化端点，避免 A→B 与 B→A 重复 | 冲突返回既有行，不新建 |
+| L5 | `link_type` 的图类型方向必须符合矩阵（下表）；不合法组合拒绝，不靠语义约定 | 写失败 |
+| L6 | 不建到 `nodes` 的外键；节点/图删除不得级联删除链接 | 任何 `ON DELETE CASCADE` 都驳回 |
+
+**link_type × 图类型矩阵**
+
+| `link_type` | from 允许 | to 允许 | 说明 |
+|---|---|---|---|
+| `derives_from` | dev / test | online | 开发/测试节点源自业务节点 |
+| `implements` | dev | online | 开发节点实现需求 |
+| `verifies` | test | dev | 用例验证开发节点 |
+| `covers` | test | online | 用例覆盖业务流程 |
+| `depends_on` | 任意 | 任意 | 跨图依赖；同图依赖仍用 `edges` |
+| `split_from` | 任意 | 任意 | 必须同 `project_path`，建议同图类型 |
+| `merged_into` | 任意 | 任意 | 必须同 `project_path` |
+| `supersedes` | 任意 | 任意 | 版本替代，方向为新→旧 |
+| `relates_to` | 任意 | 任意 | 对称；写入前按端点键字典序排序 |
+
+**写入流程（`LinkService.create`）**
+
+1. 规范化 `project_path`；校验 from/to 的 `graph_id` 属于该项目。
+2. 解析 from/to 节点：`SELECT id, graph_type, lifecycle_state FROM nodes WHERE graph_id=? AND entity_key=?`。任一缺失 → 拒绝（系统回填路径例外，落 `orphan` 并写报告）。
+3. 校验 link_type 矩阵、自链接、方向；`relates_to` 交换端点使 `from_entity_key <= to_entity_key`。
+4. `BEGIN IMMEDIATE`；按唯一键查既有行：存在且 `status='active'` → 返回既有 id（幂等）；存在但 `status IN ('orphan','stale')` → 复活为 active 并更新 `updated_at/reason`，不新建。
+5. 插入行：`id` 用 UUID v4；`origin` 按调用方 `human/derived/import`；`confidence` 默认 1.0；`from_node_id/to_node_id` 写解析到的当前 id；`created_at/updated_at` 同值。
+6. 提交后发 `event:map-link-changed`；事务失败则回滚且不广播。
+
+**孤儿与失效**
+
+- **orphan**：任一端 `(graph_id, entity_key)` 在 `nodes` 不可解析，或图已删除。只由巡检/删除路径写，不由创建接口写。
+- **stale**：端点仍可解析，但语义已过期（例如 `verifies` 的目标节点被新 revision 取代且链接未重建）。标记 stale 不删除，UI 显示"需复核"。
+- **巡检**：启动后一次 + 每日一次 + `admin:map:integrity-check` 手动触发。SQL 逐条解析两端；对 `status='active'` 但解析失败的置 `orphan` 并计数；对不再满足 link_type 矩阵的置 `stale`。每轮写 `map_migration_reports(kind='integrity_check', stage='node_links')`，只报告、不自动删除。
+- 巡检幂等：同一轮重复执行不改变行数；`updated_at` 只在状态真正变化时更新。
+
+**拆分 / 合并传播（补齐 §2.4 的算法）**
+
+- **拆分**：
+  1. 旧节点 `lifecycle_state='split'`，保留原键与原行。
+  2. 对每个新节点写 `split_from`（新→旧，`origin='derived'`）。
+  3. 复制旧节点的出边类型 `derives_from` / `implements` / `covers` 到每个新节点；`verifies` 只在测试资产明确覆盖新节点时复制，不默认复制。
+  4. `depends_on` / `relates_to` 不自动复制；需要时由人或派生规则显式创建。
+  5. 旧节点的入边保持 active（历史仍指向旧节点）；不搬移、不改写。
+- **合并**：
+  1. 源节点 `lifecycle_state='merged'`，写 `merged_into`（源→目标）。
+  2. 对源节点每条 active 链接（无论入边/出边），在目标节点补齐对应链接；`relates_to` 先规范化；已存在同键则跳过。
+  3. 新链接 `origin='derived'`，`reason='merged_from:<source_key>'`；旧链接保留 active，用于追溯。
+  4. 目标节点自身键不变；不把源键合并进目标键。
+- 传播在一个事务内完成；任一步失败 → 回滚，节点生命周期不变。
+
+**S2 回填（与 S1 同批上线后的只读阶段）**
+
+1. 对每个项目，取 online/dev 基准图（与 S1 的配对规则一致）。
+2. 对每个 online 节点，查同 `entity_key` 的 dev 节点；存在则插 `derives_from`（from=dev, to=online, `origin='import'`）。
+3. 测试图未上线前不回填 `verifies/covers`；S4 后由测试资产创建流程补。
+4. 回填按项目事务；重复执行按唯一键幂等；冲突行不覆盖人工链接。
+5. 回填报告写 `map_migration_reports(kind='link_backfill', stage='S2')`，统计 inserted/skipped/orphan。
+
+**回滚与验收**
+
+- 回滚：关闭读写路径即回到"无链接"；表可保留空置。已人工写入的 `relates_to` 保留（无副作用）。
+- 验收：P5 四场景（删/拆/并/删图）+ 重复链接 + 自链接 + 方向非法 + 对称重复 + 并发创建同一链接；孤儿扫描 0 误报；拆分/合并后旧链接仍可追溯、新链接可解析。
 
 ### 2.4 生命周期与完整性
 
@@ -354,6 +496,30 @@ Step 4 抽样失败（无可采文件 / 全是二进制）：
 - 提案不自动应用、不可批量静默采纳；撤销 = 人工反向编辑，不做自动回滚。
 
 本期只记录规则，不实现提案 UI；L1/L2 的 online 图仍只接受人工编辑。
+
+### 2.8 Yjs 完全拆除清单（L3，非本期）
+
+> **前置：本期已批准的是"单向只读、SQLite 权威"（§2.2.1），不是拆除。** 本节只把"如果 L3 决定完全移除 Yjs"需要覆盖的范围记全，避免漏项；不改变 L1/L2 的实现，也不替任何外部方案背书。完全拆除必须单独决策、单独施工。
+
+| 类别 | 范围 | 关键点 |
+|---|---|---|
+| 1. schema / 迁移 | Yjs 相关表与列、`snapshots` 表、schema 版本与 checksum | **`snapshots` 是另一张表，不能和迁移 `_backup` 一起删**；S0 备份按表清单逐表迭代，不假设只有 `nodes`/`edges` |
+| 2. 启动装配 | `YjsManager` / `YjsDocRegistry`、doc 池初始化、恢复入口 | 只删生产装配与调用；测试替身另行处理 |
+| 3. shutdown flush 与 debounce | 关停写回、flush 定时器、debounce 队列 | 拆除后必须确认没有遗留定时器阻止退出 |
+| 4. 冲突子系统 | `conflict-docs` + `conflict-rules` + `lamport` + `conflict-reporter`（约 946 行） | 冲突报告/审计的去留要单独决定；不能只删入口留死代码 |
+| 5. 测试 | 6 个测试文件、116 个 `it`（不是 86） | 按文件清单逐个处置：删除 / 改写成只读契约测试 / 保留为回归 |
+| 6. 依赖 | `yjs` / `y-protocols` / `lib0` + lockfile + bundle 体积 | 需重新生成 lockfile 与打包产物体积基线；不手改 lockfile |
+| 7. 旧快照数据处置 | 已有快照文件/DB 行 | 只读保留、归档或删除三选一；删除必须可恢复且有报告 |
+| 8. 远端 / 边界清理 | `127.0.0.1:1236` WS、update/sync step2 拒绝逻辑、无鉴权端点 | 与 §2.2.1 的"拒绝 update / sync step2"衔接；先只读再谈关闭端口 |
+| 9. 文档同步 | `agent-architecture.md`、本文 §2.2 / §8.11 / P6、运维说明 | 拆除后 P6 验证项改为"写回路径已不存在"；本期仍保留 Yjs 两项验证（§8.11） |
+
+**明确不能删（拆除时也必须保留）**
+
+- `ws` 依赖与 awareness 那套：`settings.realtime` 的 `1234`、`ipc/realtime.ts`、`awareness-server.ts`；它们不是 Yjs 写回路径。
+- `edges.updated_at` 的写入方是 `edge-repository`，**不是 Yjs**；拆除 Yjs 不得顺带删掉或改写该列语义。
+- `snapshots` 表不能按 `%_backup` / `%_new` 规则清理；它是业务数据表，不是迁移临时表。
+
+**判定**：以上 9 类未全部有处置结论前，L3 不得进入"拆除施工"；L1/L2 按 §2.2.1 的单向只读继续。
 
 ---
 
@@ -493,6 +659,89 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - 公式：`publishProgress = Σ(node_status_weight) / Σ(max_weight)`，权重表写配置；`stale` / `failed` 不计入分子，但单列。
 - 不落库、不写 `nodes`、不触发任何证据变更；只读查询，缓存必须带 `computed_at` 与所用权重版本。
 
+### 3.7 S6a 施工细则（B1）：证据写入与派生
+
+> 本小节把 §3.2–§3.5 的规则变成"谁在什么时机写、写失败怎么办"。E3 的测试前置条件在 L1 尚未接通时，只有 TestExecutor 上线后才能产生；L1 只需保证写入校验与字段约束先就位。
+
+#### 3.7.1 写入路径与字段校验
+
+| 等级 | 唯一合法写入方 | 必填字段 | 禁止 |
+|---|---|---|---|
+| E1 | 人（节点编辑/备注）；Agent 只能写 `evidence_suggestions` | `ref_json`、`summary` | Agent 直接写 `node_evidence` |
+| E2 | Agent（产物/变更清单候选，经接受）；TestExecutor（无 hash 测试事实） | `ref_json`、`evidence_type` | 冒充 E3；把无 hash 测试通过写成 E3 |
+| E3 | TestExecutor | `code_version`、`code_dirty=0`、`version_binding='commit'`、`reproducible=1`、`work_run_id`、`test_run_id` | 工作区 dirty 时产出 E3；无 `test_run_id` |
+| E4 | 本地用户 | `signed_by`、`signed_at`、`coverage_json`（非空且含 acceptance）、`version_binding='none'`、`code_version=NULL`、`reproducible=0` | Agent/后台任务代签；无覆盖范围；带代码 hash |
+
+- 写入前统一校验：等级合法、类型合法、`graph_id + node_entity_key` 可解析、`ref_json` 每个引用可解析（文件路径存在/提交存在/测试存在）、E4 覆盖至少一条 `acceptance_json`。
+- 写入事务：校验 → 解析节点 → 插入 `node_evidence` → 触发该节点派生重算（同一事务只做标记，重算在提交后异步执行）。
+- 唯一性：同一 `work_run_id + evidence_type + node_entity_key` 的 E2/E3 只允许一条（部分唯一索引 §7.2）；重复写入返回既有 id，不新增。
+- 写入失败：E3 测试已完成但证据写入失败 → 测试结果保留，`work_run` 记 `evidence_write_failed`，由重试任务补写；在补写成功前不得把该节点展示为 `verified`。
+- 会话/任务产生的证据候选走 `evidence_suggestions`，接受时才转 `node_evidence`；拒绝只更新建议状态，不写证据。
+
+#### 3.7.2 E3 的写入前置（与 §6.2.1 一致）
+
+1. 测试结果 `status='passed'`，且 `test_run.worktree` 非空。
+2. `code_version` = 该 worktree 的 `HEAD` commit；`code_dirty=0`（工作区 dirty 时**不得**产出 E3）。
+3. 当前项目仍在 git 仓库内，`git rev-parse HEAD` 成功。
+4. 任一条不成立 → 只能落 E2 或 `test_run` 事实，不写 E3；`dirty_tree_hash` 只用于变更面留痕，不用于把 dirty 状态洗成 E3。
+
+#### 3.7.3 E4 过期与派生的**未决冲突 U1**
+
+现有正文存在两处不同表述：
+
+- §3.3 优先级 6：存在已失效的 E4 → `stale`；
+- §3.5"时间过期"：`expires_at` 到期 → 视为过期，状态降为 `implemented`。
+
+这两条对"过期但未撤销的 E4"给出不同派生结果。**不替用户选择**，施工前必须裁决：
+
+| 候选 | 派生结果 | 代价 |
+|---|---|---|
+| U1-A（按 §3.3） | 过期 E4 → `stale`；UI 显示"签收已过期，需续签" | 与 stale 的"曾验证但锚点失效"语义一致；但一个曾人工签收的节点会显示为 stale，可能比 implemented 更刺眼 |
+| U1-B（按 §3.5） | 过期 E4 → `implemented`；E4 行保留但不再参与 `signed_off` | 与"降为 implemented"字面一致；但丢失"曾签收后过期"与"从未签收"的区分，统计上可能低估风险 |
+
+在裁决前：S6a 的其余部分可按施工；派生函数对"过期 E4"分支必须显式 `throw not_implemented` 或返回 `unknown` 并阻断发布，**不得默默按任一分支上线**。`30 天` 口径不变；"一键续签 + `renewed_from_evidence_id`"只作为减轻操作负担的方向，不改变过期判据。
+
+#### 3.7.4 派生算法（可执行定义）
+
+输入（同一 `project_path + graph_id + node_entity_key`）：
+
+- `node_evidence`：未撤销行，按 `evidence_level`、`freshness`、`verified_at`、`id` 排序；
+- `work_items`：该节点 `anchor_entity_key` 的当前 revision；
+- `work_runs`：`status IN ('queued','running')`；
+- 测试结果：L1 无 `test_*` 表，`test_fail` 恒为 false；S8 后接入。
+
+判定顺序严格按 §3.3，并补充确定性 tie-break：
+
+1. `test_fail=true` → `failed`。
+2. 存在 `work_run.status='running'` → `in_progress`。
+3. 存在当前 revision 的 `work_item` 且 `gate_status='incomplete'` 或依赖未满足 → `blocked`。
+4. 存在 `evidence_level='E3' AND freshness='fresh' AND revoked_at IS NULL` → `verified`；多条取 `verified_at DESC, id ASC` 第一条。
+5. 存在 `evidence_level='E4' AND freshness='fresh' AND revoked_at IS NULL` → `signed_off`；多条取 `signed_at DESC, id ASC` 第一条。
+6. 存在 `E3 freshness='stale'` → `stale`；存在已失效 `E4` 时按 **U1 裁决**：U1-A → `stale`；U1-B → `implemented`。未裁决时该分支不得上线（实现必须显式阻断，不得默认落任一状态）。
+7. 存在 `E2`（未撤销）→ `implemented`。
+8. 存在 `E1` 或当前 revision 的 `work_item.status IN ('draft','queued')` → `planned`。
+9. 否则 → `untouched`。
+
+- `evidence_level` 取当前参与判定的最高有效等级；`is_reproducible`：E3=1，E4=0，其余 NULL。
+- `inputs_hash = sha256(canonical_json({derivation_version, evidence_ids+levels+freshness, current_work_item_id+status+gate_status, running_run_ids, test_fail}))`。哈希未变则跳过写入。
+- 写入 `node_execution_state` 时同步写 `inputs_hash` / `computed_at` / `derivation_version`；状态变更后发 `event:map-execution-state-changed`。
+- `nodes.status` 永不参与派生、也不被派生结果回写。
+
+#### 3.7.5 重算触发、失败与重建
+
+| 触发 | 时机 | 合并策略 |
+|---|---|---|
+| 证据插入/撤销/失效 | 事务提交后 | 按节点去重，500ms 内合并 |
+| `work_item` / `work_step` / `work_run` 状态变更 | 事务提交后 | 按节点去重 |
+| 节点 `scope_files` / `acceptance_json` 变更 | 保存后 | 立即重算 |
+| E3 stale 扫描 | 启动后 + 每小时 | 批量按 `project_path` |
+| E4 过期/覆盖变化扫描 | 启动后 + 每日 | 批量；遇 U1 分支未裁决则只标记待裁决，不写状态 |
+| 手动 `admin:map:recompute` | 用户触发 | 可全量或单节点 |
+
+- 重算失败：保留上一行 `node_execution_state` 与原 `computed_at`，另写 `map_migration_reports(kind='derivation', stage='recompute')` 记失败；UI 显示"派生可能过期"。无上一行时宁可不写，不伪造 `untouched`。
+- 重建：`DELETE FROM node_execution_state` 后按项目批量重算；重算结果必须与增量结果一致（同一 `inputs_hash` 同一状态）。
+- 验收：E0–E4 样本各一条；同一输入两次重算状态一致；证据撤销后 `verified` 消失；E3 换 HEAD 后 `stale`；E4 过期分支按 U1 裁决；工作区无证据时不写 `untouched` 假行。
+
 ---
 
 ## 4. 任务对象与执行记录
@@ -524,10 +773,12 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | `needs_human` | 需要人工介入（环境/不可自动恢复失败） | 执行器 / 调度器 |
 | `paused` | 人工或基础设施原因暂停，可恢复 | 用户 / 调度器（`infra`） |
 | `interrupted` | 进程重启导致中断，等待启动对账 | 启动对账 |
-| `done` / `cancelled` | 终态 | 调度器 / 用户 |
+| `done` / `failed` / `cancelled` | 终态；父任务全叶子终态且 ≥1 failed 时为 `failed`（§5.5.1） | 调度器 / 用户 |
 | `superseded` | 被新 revision 取代，只读 | 计划流程 |
 
 **这四个新增值（`needs_input` / `needs_human` / `paused` / `interrupted`）与既有值一起写进 S5 的 `CREATE TABLE` DDL（§7.2、§8.7），不得留到后续 `ALTER` 或表重建。**
+
+> 一次性修正：为满足 §5.5.1 的父任务终态聚合（≥1 叶子 failed → 父 failed），`work_items.status` 同时补入 `failed`；否则父任务无法表达失败终态。D2 的四个新增值不受影响，状态总数由 12 调整为 13。
 
 #### 4.1.2 编排步独立建表：`work_steps`
 
@@ -603,6 +854,136 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - **`change_sets` 进 L1 最小集**（§8.12）：既然 `filesTouched` 只认 `change_sets`，L1 就不能既承诺展示文件、又不建该表；二选一后选择"建 `change_sets`"，而不是把活动流降级为"不展示文件"。
 - 一个节点有多个会话时，UI 必须展示 `{activeThreadId, threadIds[]}`，不得只保留最后一个（当前 `threadStore` 的问题）。
 - 父节点活动流聚合其子树的所有 run；聚合是查询，不是写入。
+
+### 4.7 S5a 施工细则（B1）：任务对象、步骤与执行记录
+
+> 本小节补齐 `work_items` / `work_steps` / `work_runs` / `node_session_links` / `change_sets` / `routing_decisions` 的写入者、状态迁移、事务与失败处理。字段 DDL 见 §7.2；编排执行行为见 §5.9（B2）。
+
+#### 4.7.1 写入权与事务边界
+
+| 表 | 唯一写入方 | 写入时机 | 事务要求 |
+|---|---|---|---|
+| `work_items` | `WorkItemService`（UI/planner 只能发命令） | 创建 revision、确认、状态迁移、取消 | 每次迁移一条 `UPDATE ... WHERE status=?`，受影响行数必须为 1 |
+| `work_steps` | `WorkItemService` + 执行器回调 | 计划落库、审批、启动、完成、失败、中断 | 状态迁移与 `attempt` 自增同事务 |
+| `work_runs` | `WorkRunService` | 入队、claim、完成/失败/取消、重启对账 | 入队与 `run_seq` 分配同事务；完成用条件更新 |
+| `node_session_links` | 会话挂载/结束路径 | 会话首次挂到节点、会话结束 | 幂等插入；结束只写 `ended_at` |
+| `change_sets` | 执行器/ScopeGuard | run 开始记录 base，结束记录 head + 文件面 | 与 run 终态同事务或紧随其后；失败留"未采集" |
+| `routing_decisions` | 路由服务 | run 创建时一次 | 同一 run 只写一条 |
+
+- 任何状态迁移先 `BEGIN IMMEDIATE`，再条件更新，再插事件 outbox（同事务），提交后广播。广播失败不回滚数据。
+- 事件 outbox 行必须带 `aggregate_id` + `aggregate_version`，消费者按版本去重；这是"状态变更即落库"的最小实现。
+
+#### 4.7.2 `work_items` 状态迁移表
+
+状态值：`draft` / `awaiting_confirm` / `queued` / `running` / `done` / `failed` / `blocked` / `needs_input` / `needs_human` / `paused` / `interrupted` / `cancelled` / `superseded`（`done/failed/cancelled/superseded` 为终态）。
+
+| 当前 | 事件 | 下一状态 | 写入方 | 守卫条件 |
+|---|---|---|---|---|
+| `draft` | 提交计划确认 | `awaiting_confirm` | 用户/planner | 至少 1 个 step；计划快照可序列化 |
+| `awaiting_confirm` | 确认通过 | `queued` | 用户 | gate=`pass` 或 G2 `waived`；无环；父/子 revision 一致 |
+| `awaiting_confirm` | 退回修改 | `draft` | 用户 | 生成新 revision，旧行 `superseded` |
+| `draft`/`awaiting_confirm` | 取消 | `cancelled` | 用户 | 无 running run |
+| `queued` | 调度 claim | `running` | 调度器 | 所有依赖终态且成功；无其他 running 写冲突 |
+| `queued` | 门禁失效/依赖失败 | `blocked` | 调度器 | 写 `gate_missing_json` |
+| `blocked` | 门禁通过/依赖完成 | `queued` | 调度器 | 重新跑 gate，不信任旧结果 |
+| `blocked` | 取消 | `cancelled` | 用户 | — |
+| `running` | 全部叶子成功 | `done` | 调度器 | 所有叶子终态且 ≥0 failed；无 needs_* |
+| `running` | 至少一个叶子失败且全部叶子终态 | `failed` | 调度器 | 聚合规则见 §5.5.1 |
+| `running` | 任一步 needs_input | `needs_input` | 执行器 | 写 `work_steps.input_request_json`，同事务 |
+| `running` | 任一步 needs_human/审批超时 | `needs_human` | 执行器 | 记录待人工项 |
+| `running` | 基础设施暂停 | `paused` | 执行器 | 记 `pause_reason`（如 adapter 不可用） |
+| `running` | 进程重启/租约丢失 | `interrupted` | 启动对账 | 只由启动对账写，不由心跳写 |
+| `needs_input` | 回答提交 | `queued` | 用户 | 新 attempt；清空当前 step 的待答状态前先落历史 |
+| `needs_human` | 人工放行/拒绝 | `queued` / `cancelled` | 用户 | 审批记录先落库 |
+| `paused` | 恢复 | `queued` | 用户/调度器 | 重跑 gate；不自动续跑旧 attempt |
+| `interrupted` | 恢复 | `queued` | 用户/启动策略 | 旧 run 对账为 `interrupted`；新 attempt |
+| 任一非终态 | 用户取消 | `cancelled` | 用户 | 见 §5.9.7；下游级联规则不变 |
+| 任一非终态 | 新 revision 生效 | `superseded` | WorkItemService | 旧 revision 无 running run；否则拒绝修订 |
+| 终态 | 任何事件 | 不变 | — | 条件更新 `WHERE status=?` 失败 → 返回冲突，不重试写 |
+
+- **取消与完成竞态**：两者都用 `UPDATE ... WHERE id=? AND status IN ('queued','running','needs_input','needs_human','paused','interrupted')`；只有一个能成功，失败方返回 `CONFLICT` 而不是覆盖。
+- **父任务聚合**：叶子全终态后由父 revision 聚合；全成功→`done`，≥1 `failed`→`failed`，全 `cancelled`→`cancelled`，混合成功/取消→`cancelled`（`reason='partial_cancel'`）。聚合不改变叶子状态。
+- **`done` 不自动等于验收**：`done` 只表示所有步骤完成；节点完成度仍由证据派生（§3）。
+
+#### 4.7.3 revision 与 gate
+
+- 修订事务：`BEGIN IMMEDIATE` → 校验旧 revision 无 `running` run → 旧行 `is_current=0, status='superseded'` → 插入新行 `revision+1, supersedes_id=旧id, is_current=1, lineage_id=旧lineage` → 复制 steps（`status='pending'`，清 `invocation_id/deadline_at`）→ 提交。
+- 同一 `lineage_id` 只允许一行 `is_current=1`（部分唯一索引）；插入冲突 → 回滚并提示重试。
+- gate 在 `awaiting_confirm → queued` 与 `blocked → queued` 时强制执行；G2 manual 允许 `waived`，必须同时写 `gate_waived_by / gate_waived_at / gate_waive_reason`，缺一即 `gate='incomplete'`。
+- gate 结果只存 `pass/incomplete/waived`；具体缺项写 `gate_missing_json`，不得用空数组表示"通过"。
+
+#### 4.7.4 `work_steps` 状态迁移表
+
+| 当前 | 事件 | 下一状态 | 写入方 | 说明 |
+|---|---|---|---|---|
+| `planning` | 计划确认 | `pending` | WorkItemService | 只存在于计划 revision 内；确认后不再回 `planning` |
+| `pending` | 依赖未满足/上游失败 | 保持 `pending` | 调度器 | 不 claim；由父 `work_item` 的 `blocked/failed` 聚合表达，不新增步级 `blocked` 状态 |
+| `pending` | 基础设施前置失败（尚未产生 run） | `paused` | 调度器 | 记 `pause_reason`；恢复后新 attempt |
+| `pending` | 需审批 | `waiting_approval` | 执行器 | 必须先落 `agent_approvals` 再置状态 |
+| `pending` | 可执行 | `running` | 执行器 | 写 `started_at`、`invocation_id`、`deadline_at` |
+| `waiting_approval` | 批准 | `running` | 审批回调 | 条件更新；重复回调幂等 |
+| `waiting_approval` | 拒绝/超时 | `cancelled` / `timed_out` | 审批回调 | 记原因；不自动重试 |
+| `running` | 有 checker | `review` | 执行器 | 只检查结果，不重复执行 |
+| `running` | 无 checker 且成功 | `succeeded` | 执行器 | **会话 terminate 完成后才写** |
+| `running` | 失败 | `failed` | 执行器 | 写 `failure_class`；不得写 `succeeded` |
+| `running` | 超时 | `timed_out` | 超时控制器 | 杀进程组后写；partial 先落库 |
+| `running` | 用户取消 | `cancelled` | 用户/调度器 | 与完成竞态用条件更新 |
+| `running` | 需要输入 | `needs_input` | 执行器 | 写 `input_request_json`；会话保留或挂起按 B2 |
+| `running` | 基础设施错误且当前 run 已终止 | `paused` | 执行器 | 旧 run 先落 `failed(infra)` 或 `interrupted`；恢复走新 attempt |
+| `review` | 检查通过 | `succeeded` | 执行器 | — |
+| `review` | 检查失败 | `failed` | 执行器 | 写 review 结论 |
+| `review` | 需要输入 | `needs_input` | 执行器 | — |
+| `needs_input` | 回答提交 | `pending` | WorkItemService | `attempt+1`；旧 run 已是终态 |
+| `paused` | 恢复 | `pending` | 调度器 | `attempt+1`；无论暂停发生在 run 前还是 run 后，旧 run 必须已是终态，恢复不得复用旧 run id |
+| `pending` | 可选步条件不满足 | `skipped` | 调度器 | 终态；写 `skip_reason`，不得伪装成 `succeeded` |
+| 任一非终态 | 上游取消 | `cancelled` | 调度器 | `reason='upstream_cancelled'`，不是 `blocked` |
+
+- 每次进入 `pending` 且由失败/输入/暂停恢复而来，`attempt = attempt + 1`；首次为 1。`work_runs.attempt` 必须等于同次 step attempt。
+- **步终态写入必须在 session terminate 之后**：`succeeded/failed/cancelled/timed_out` 的 DB 更新发生在执行器确认会话结束、Phase B 已执行或已明确失败之后；否则下一步可能早于 Phase B 启动。
+- `work_steps` 的终态不可回退；重试是新 attempt，不是改旧行状态。
+
+#### 4.7.5 `work_runs` 生命周期与幂等
+
+- **入队**：`BEGIN IMMEDIATE` → `SELECT COALESCE(MAX(run_seq),0)+1` → 插入 `status='queued'`，`idempotency_key = lineage:revision:step_seq:attempt`。唯一冲突 → 返回既有 run（幂等），不新建。
+- **claim**：`UPDATE work_runs SET status='running', started_at=? WHERE id=? AND status='queued'`；`changes=0` → 已被取消/其他 worker claim，直接返回。
+- **终态**：`UPDATE ... SET status=?, ended_at=?, failure_class=?, ... WHERE id=? AND status='running'`；取消先行成功时，完成更新 `changes=0`，保留 `cancelled` 与 partial 输出。
+- `run_seq` 按 `work_item_id` 单调递增；并发由 `BEGIN IMMEDIATE` + `UNIQUE(work_item_id, run_seq)` 兜底。
+- `partial_output_ref` 统一 JSON：`{stdout_tail, stderr_tail, file_changes[], errors[], artifact_refs[], captured_at, truncated}`；单字段上限由配置（默认 16KB/字段，总计 64KB），超限截断并置 `truncated=true`。F2 的 subagent partial 直接映射到此结构。
+- `failure_class` 取值至少 `agent_error / timeout / cancelled / infra / approval_denied / upstream_cancelled`；`failed` 与 `cancelled` 不得混写。
+- 重启对账：启动时把所有 `running` 且无存活进程的 run 置 `interrupted`，保留 partial；不自动重跑。
+
+#### 4.7.6 `node_session_links` 与会话时间线
+
+- 创建：会话首次挂到节点时插入 `link_role='primary'`；同一 `(thread_id,node_entity_key,link_role)` 已存在 → 返回既有行。
+- 项目级会话 `node_entity_key IS NULL` 使用部分唯一索引（§7.2），同一 thread + role 只一条。
+- `started_at` 写会话开始；`ended_at` 只在会话结束时更新，不删除行。会话切换节点新增 link，不覆盖旧 link。
+- 时间线查询：`node_session_links.created_at` + `chat_messages`；一个节点多个会话时返回 `threadIds[]`，由 UI 保留全部。
+
+#### 4.7.7 `change_sets` 采集
+
+- **base**：run claim 时记录项目 `HEAD` commit 与 `git status --porcelain`（dirty 标记）；**head**：run 终态时再记录。
+- **文件清单**：来自 ScopeGuard 工作区差分 + `file_change` 事件；路径统一按 §5.4.1 规范化；只收录项目根内文件。
+- `files_json` 元素：`{path, change:'added'|'modified'|'deleted'|'renamed', old_path?, additions, deletions}`；`file_count` 与 `additions/deletions` 为派生摘要。
+- `dirty_tree_hash`：对 run 结束时所有 dirty/untracked 文件按规范化路径排序，拼接 `path + '\0' + sha256(content)` 后取 sha256；计算失败置 NULL 并 `dirty=1`，E3 不得使用。
+- 采集失败/超时：不写空行假装"无变更"；`work_run` 标 `change_capture_failed`，活动流显示"未采集"。
+- 一个 run 默认一条 `change_sets`；`UNIQUE(work_run_id)` 保证重试不重复插入；多次快照需求留到 B2。
+
+#### 4.7.8 `routing_decisions`
+
+- 每次 run 创建时写一条：`candidate_json` 为候选数组（`{adapter, score, capabilities, gaps}`），`chosen_adapter` 必填，`policy` 必填（取值见 §7.2）。
+- 路由失败（无候选/能力不足）：run 不创建；`routing_decisions` 不写半条行（`chosen_adapter` 不允许空串）。失败原因写 `work_item.gate_missing_json` 或事件 `routing_failed`，并保留被拒候选清单。
+- 不做自动重路由；重路由必须新 run（新 `attempt`/新 `run_seq`），旧决策保留。
+
+#### 4.7.9 验收判据
+
+1. 13 个 `work_items` 状态逐条构造；非法迁移全部返回 `CONFLICT`，数据不变。
+2. 修订并发：两个修订同时提交，只有一个 `is_current=1`；另一个失败且旧行不变。
+3. gate：G1–G6 各一条反例；`waived` 缺 `gate_waived_*` 任一字段 → 拒绝。
+4. 取消 vs 完成：同一 run 并发触发，终态唯一；下游步骤 `cancelled(reason='upstream_cancelled')`。
+5. 重启对账：kill 进程后启动，`running` 全部 `interrupted`，partial 保留，无自动重跑。
+6. 幂等：同一 `idempotency_key` 入队两次只产生一条 run。
+7. `change_sets`：正常/失败/未采集三态；dirty 下 E3 被拒。
+8. 会话：同 thread 同节点重复挂载只一条；项目级 NULL 不重复；结束不删行。
 
 ---
 
@@ -831,6 +1212,8 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 
 **冷启动与回顾口径（D3）**：权重冷启动直接采用 §5.2 的默认值（0.35 / 0.25 / 0.20 / 0.15 / 0.05），不等待历史数据；`history_hit` 无历史时为 0 并归一化。校准只使用 `plan_deviations` 的以下字段：`planned_file_count` / `actual_file_count`、`planned_subtask_count` / `actual_subtask_count`、`rework_count`、`scope_violation`、`boundary_changed`、`replan_count`、`test_failures`，并按 `derivation_version` 分组。**回顾节奏：每 20 个 run（或每 2 周，取先到者）一次离线回顾；只调配置阈值/权重，不改历史计划、不做在线学习。**
 
+> **归因待定**：`plan_deviations` 是否按本表的差异字段做统一归因，**先不落**，等用户裁决（§12.5 第 8 项）。本节字段只作为候选口径保留，不得据此单方面改权重或改历史计划。
+
 ### 5.8 退化与兜底
 
 | 编号 | 触发条件 | 退化策略 |
@@ -946,6 +1329,14 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 - **`needs_input` 问题卡**：写 `input_request_json`（问题、可选项、默认值、影响范围、阻塞的后续步）；同步把 `work_items.status` 置 `needs_input`。
 - **回答后开新 attempt**：用户回答 → `attempt+1` → 状态回 `pending`；上一个 run 的产出与 `partial_output_ref` 保留，**不把等待时间计入失败**，也不消耗重试上限之外的额外次数。
 - `review` 与 `checker_work_item_id` 绑定：checker 未通过时步回 `running` 或 `needs_input`，不允许直接 `succeeded`。
+
+#### 5.9.8.1 黑板 / Phase B / L3 fanout 的边界约束
+
+> 这三条是 L3 黑板与 fanout 的前置约束；L1/L2 不实现黑板，但执行器与状态机必须先满足，否则后续并行化会把"记忆"当成正确性依赖。
+
+1. **步终态写入必须在 session terminate 之后**：`work_steps` 的 `succeeded/failed/cancelled/timed_out` 只能在执行器确认会话结束、Phase B（会话结束后的记忆提取/写回）已执行或明确失败后落库。否则下一步可能在 Phase B 之前启动，读到未写完的记忆。
+2. **Phase B 失败只影响记忆可见性，不影响正确性**：证据与验收只来自 `work_runs` + `node_evidence`；黑板/记忆写入失败不得回滚已完成的 run，也不得把 step 改回 `running`。UI 可提示"记忆未同步"，但状态机继续。
+3. **L3 fanout 只保证任务边界快照，不保证兄弟步互见**：fanout 时每个子任务拿到的是边界时刻的任务快照（scope/acceptance/依赖）；兄弟步并发产生的中间黑板内容不承诺可见、也不作为合并依据。需要跨步共享的内容必须显式落 `work_runs` / 证据，而不是依赖黑板时序。
 
 ---
 
@@ -1155,7 +1546,7 @@ subject_id TEXT
 ```sql
 CREATE TABLE node_links (
   id              TEXT PRIMARY KEY,
-  project_path    TEXT,
+  project_path    TEXT NOT NULL,
   from_entity_key TEXT NOT NULL,
   from_graph_id   TEXT NOT NULL,
   from_graph_type TEXT NOT NULL CHECK(from_graph_type IN ('online','dev','test')),
@@ -1295,12 +1686,32 @@ CREATE TABLE node_evidence (
   renewed_from_evidence_id TEXT, -- 一键续签引用的原 E4 证据
   revoked_at       TEXT,
   revoked_by       TEXT,
-  revoke_reason    TEXT
+  revoke_reason    TEXT,
+  -- E3 的字段级硬约束：缺任一条件都不能落成 E3（应用层还要校验测试与工作区状态）
+  CHECK (evidence_level <> 'E3' OR (
+    version_binding = 'commit'
+    AND code_version IS NOT NULL
+    AND code_dirty = 0
+    AND reproducible = 1
+  )),
+  -- E4 的字段级硬约束：人工签收、无代码 hash、不可复现
+  CHECK (evidence_level <> 'E4' OR (
+    version_binding = 'none'
+    AND code_version IS NULL
+    AND reproducible = 0
+    AND signed_by IS NOT NULL
+    AND signed_at IS NOT NULL
+    AND coverage_json IS NOT NULL
+  ))
 );
 
 CREATE INDEX idx_node_evidence_node    ON node_evidence(graph_id, node_entity_key);
 CREATE INDEX idx_node_evidence_level   ON node_evidence(evidence_level, freshness);
 CREATE INDEX idx_node_evidence_run     ON node_evidence(work_run_id);
+-- 同一 run 对同一节点产出的同类证据只落一条（重试幂等）；E4 人工签收不在此约束内
+CREATE UNIQUE INDEX ux_node_evidence_run_type
+  ON node_evidence(work_run_id, evidence_type, node_entity_key)
+  WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3');
 ```
 
 未存 E0：证据缺失即 E0。
@@ -1376,10 +1787,13 @@ CREATE TABLE work_items (
   status               TEXT NOT NULL DEFAULT 'draft' CHECK(status IN (
     'draft','awaiting_confirm','queued','running','blocked',
     'needs_input','needs_human','paused','interrupted',
-    'done','cancelled','superseded')),
+    'done','failed','cancelled','superseded')),
   gate_status          TEXT NOT NULL DEFAULT 'incomplete'
                        CHECK(gate_status IN ('incomplete','pass','waived')),
   gate_missing_json    TEXT,
+  gate_waived_by       TEXT,                          -- G2 manual 豁免人（仅 waived 时有值）
+  gate_waived_at       INTEGER,
+  gate_waive_reason    TEXT,                          -- 豁免理由，必填于 waived
   depends_on_json      TEXT NOT NULL DEFAULT '[]',   -- 上游 work_item id 列表
   origin               TEXT NOT NULL CHECK(origin IN ('human','derived_plan','imported')),
   plan_id              TEXT,
@@ -1445,6 +1859,7 @@ CREATE TABLE work_runs (
   step_id              TEXT REFERENCES work_steps(id),
   run_seq              INTEGER NOT NULL,
   attempt              INTEGER NOT NULL DEFAULT 1,
+  idempotency_key      TEXT NOT NULL,   -- lineage:revision:step_seq:attempt
   executor_kind        TEXT NOT NULL CHECK(executor_kind IN ('agent','test','human')),
   adapter_name         TEXT,
   route_decision_id    TEXT,
@@ -1470,7 +1885,8 @@ CREATE TABLE work_runs (
   cancel_reason        TEXT CHECK(cancel_reason IN (
     'user','upstream_cancelled','deadline','shutdown','approval_denied')),
   created_at           INTEGER NOT NULL,
-  UNIQUE(work_item_id, run_seq)
+  UNIQUE(work_item_id, run_seq),
+  UNIQUE(idempotency_key)
 );
 
 CREATE INDEX idx_work_runs_lineage ON work_runs(work_item_lineage_id, run_seq);
@@ -1483,13 +1899,13 @@ CREATE INDEX idx_work_runs_session ON work_runs(session_id);
 ```sql
 CREATE TABLE node_session_links (
   id               TEXT PRIMARY KEY,
-  project_path     TEXT,
+  project_path     TEXT NOT NULL,
   graph_id         TEXT NOT NULL,
   node_entity_key  TEXT,
   node_id          TEXT,
   work_item_id     TEXT,
   work_run_id      TEXT,
-  thread_id        TEXT,
+  thread_id        TEXT NOT NULL,
   session_id       TEXT,
   agent_run_id     TEXT,
   turn_id          TEXT,
@@ -1499,9 +1915,17 @@ CREATE TABLE node_session_links (
     'map_task','manual_panel','subagent','test')),
   started_at       INTEGER,
   ended_at         INTEGER,
-  created_at       INTEGER NOT NULL,
-  UNIQUE(thread_id, node_entity_key, link_role)
+  created_at       INTEGER NOT NULL
 );
+
+-- 节点级链接：同一 thread + 节点 + 角色只允许一条
+CREATE UNIQUE INDEX ux_node_session_links_node
+  ON node_session_links(thread_id, node_entity_key, link_role)
+  WHERE node_entity_key IS NOT NULL;
+-- 项目级链接：同一 thread + 角色只允许一条（NULL 不参与普通 UNIQUE，必须用部分索引）
+CREATE UNIQUE INDEX ux_node_session_links_project
+  ON node_session_links(thread_id, link_role)
+  WHERE node_entity_key IS NULL;
 
 CREATE INDEX idx_node_session_links_node    ON node_session_links(graph_id, node_entity_key, created_at);
 CREATE INDEX idx_node_session_links_work    ON node_session_links(work_item_id);
@@ -1528,7 +1952,7 @@ CREATE TABLE change_sets (
   captured_at     INTEGER NOT NULL
 );
 
-CREATE INDEX idx_change_sets_run     ON change_sets(work_run_id);
+CREATE UNIQUE INDEX ux_change_sets_run ON change_sets(work_run_id) WHERE work_run_id IS NOT NULL;
 CREATE INDEX idx_change_sets_project ON change_sets(project_path, captured_at DESC);
 ```
 
@@ -1547,7 +1971,8 @@ CREATE TABLE routing_decisions (
   created_at        INTEGER NOT NULL
 );
 
-CREATE INDEX idx_routing_decisions_run ON routing_decisions(work_run_id);
+CREATE UNIQUE INDEX ux_routing_decisions_run ON routing_decisions(work_run_id) WHERE work_run_id IS NOT NULL;
+CREATE INDEX idx_routing_decisions_item ON routing_decisions(work_item_id, created_at DESC);
 ```
 
 #### `boundary_candidates`
@@ -1775,12 +2200,15 @@ CREATE INDEX idx_test_results_target ON test_results(target_node_entity_key, sta
 ```sql
 CREATE TABLE map_migration_reports (
   id            TEXT PRIMARY KEY,
-  kind          TEXT NOT NULL CHECK(kind IN ('entity_key_backfill','link_backfill','integrity_check','import_dedup')),
+  kind          TEXT NOT NULL CHECK(kind IN (
+    'entity_key_backfill','link_backfill','integrity_check','import_dedup',
+    'derivation','cleanup')),
   stage         TEXT,                       -- S1..S8 或具体子步骤
   schema_version INTEGER,
   started_at    TEXT NOT NULL,
   finished_at   TEXT,
   heartbeat_at  TEXT,
+  owner_pid     INTEGER,                    -- 执行迁移的进程；用于区分"另一实例在迁移"
   status        TEXT NOT NULL CHECK(status IN ('running','ok','partial','failed')),
   stats_json    TEXT,
   details_json  TEXT,
@@ -1796,7 +2224,7 @@ CREATE TABLE map_migration_reports (
 | `NodeType` | `test-suite`、`test-case` |
 | `EdgeType` | `verifies`、`covers` |
 | `NodeStatus` | 不变（7 值） |
-| 新增 `WorkItemStatus` | 12 值（见 §4.1.1；四个新值在 S5 DDL 一次写死） |
+| 新增 `WorkItemStatus` | 13 值（见 §4.1.1；四个新值 + 为父任务失败聚合补入 `failed`，均在 S5 DDL 一次写死） |
 | 新增 `WorkStepStatus` | 12 值（见 §5.9.8） |
 | 新增 `ExecutionState` | 9 值（见 §3.3，含 `signed_off`） |
 | 新增 `EvidenceLevel` | `E0`–`E4` |
@@ -1809,7 +2237,9 @@ CREATE TABLE map_migration_reports (
 
 > 当前 `CURRENT_SCHEMA_VERSION = 24`。**v24 是既有缺陷修复**（把增量列正式写进 `createSql`，见 §8.13），不属于蓝图增量。
 > 下列 S1–S8 对应 v25–v32。
-> **通用前置**：S0 备份完成且校验通过；迁移在启动期单事务内执行；`foreign_key_check` 必须为 0。
+> **通用前置**：S0 备份完成且校验通过；迁移默认在启动期单事务内执行；`foreign_key_check` 必须为 0。
+>
+> **B1 例外（可续跑回填）**：`S1.backfill` 与 `S2.backfill` 按项目分批事务提交，便于中断后续跑；其余阶段仍按单事务执行。分批阶段必须在 `map_migration_reports` 记录进度与 `resume_from`，启动预检仍按 §8.14.1 对半迁移 fail-closed。
 
 ### 8.1 总览
 
@@ -2131,6 +2561,154 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 4. **续跑边界**：只有 `addColumnSafe`、回填、`CREATE INDEX` 等幂等操作允许续跑；S4 的 CHECK 重建、`agent_approvals` 重建等不可逆步骤一旦 `failed`，只能恢复 S0 备份，不做"部分修复后再启动"。
 5. **不静默清理**：任何 `_backup` 表的删除都必须有报告与显式动作，防止把唯一可恢复副本删掉。
 
+#### 8.14.1 B1 迁移状态机施工细则
+
+> 本小节把 §8.14 的硬规则展开为可执行的阶段表。所有记录复用 `map_migration_reports`，**不新增表**。
+
+**阶段与状态映射**
+
+| 语义 | `status` 值 | 写入时机 | 备注 |
+|---|---|---|---|
+| started | `running` | 阶段开始前先提交一行 | `owner_pid` 必填；`started_at` 与 `heartbeat_at` 同值 |
+| completed | `ok` | 阶段事务提交且校验通过后 | `finished_at` 必填；`stats_json` 必填 |
+| retryable partial | `partial` | 声明为可续跑的阶段只完成一部分 | 只允许 S1.3 / S2 回填；必须留 `details_json.resume_from` |
+| failed | `failed` | 校验失败、异常、或不可续跑阶段中断 | `error_json` + `finished_at`；启动阻断 |
+
+- 每个阶段独立一行；重跑同一阶段**新建一行**，不覆盖历史。查询"最新状态"按 `started_at DESC, id DESC`。
+- `heartbeat_at` 每 30 秒更新一次；只更新 `status='running'` 的最新行。心跳写失败不阻断阶段，但必须在 `error_json` 记 `heartbeat_lost`。
+- 阶段事务与报告：先插入 `running` 并提交；再执行阶段工作；成功后更新该行 `ok`。阶段工作与 `schema_version` 更新放在同一事务提交；崩溃后 `running` 行保留，由启动预检裁决。
+
+**B1 阶段目录**
+
+| 阶段 | 可续跑 | 校验 |
+|---|---|---|
+| `S1.tables` / `S1.column` / `S1.indexes` | 是（幂等 DDL） | 表/列/索引存在；`nodes.createSql` 含 `entity_key` |
+| `S1.backfill` | 是（只写 NULL 行） | `null_after=0`；二次运行 0 变化；唯一索引无冲突 |
+| `S1.import_path` | 否（代码路径） | 旧路径已关闭；拒绝时三表 0 新增 |
+| `S1.report` / `S1.verify` | 是（只读/可重算） | 报告计数与真实库一致 |
+| `S2.tables` / `S2.backfill` | 是 | 链接唯一键无重复；孤儿计数可解释 |
+| `S5a.tables` | 是（`CREATE TABLE IF NOT EXISTS`） | 13/12 状态值齐全；索引存在 |
+| `S6a.tables` | 是 | 证据 CHECK 约束存在；派生表索引存在 |
+| `S6a.verify` | 是（只读） | E0–E4 样本；U1 分支未裁决时显式阻断 |
+
+**启动预检顺序（fail-closed）**
+
+1. `PRAGMA integrity_check` 必须返回 `ok`；否则拒绝启动，提示恢复 S0 备份。
+2. `PRAGMA foreign_key_check` 必须为空；否则拒绝启动。
+3. 读取每个阶段最新行：
+   - `failed` → 拒绝启动，提示恢复 S0 或人工修复；
+   - `running` 且 `owner_pid` 是其他仍存活进程 → 拒绝启动（另一实例在迁移）；
+   - `running` 且心跳超过 10 分钟或 `owner_pid` 已不存在 → 判定"半迁移"，**拒绝启动**；只允许显式 `--resume-migration` 进入续跑模式；
+   - `partial` → 只允许续跑声明为可续跑的阶段；不可续跑阶段一律拒绝。
+4. 扫描 `sqlite_master` 中 `%_backup` / `%_new`（见下表）；存在歧义即拒绝启动。
+5. 校验 `schema_version`、迁移脚本 checksum、S0 备份存在且可读。
+6. 全部通过后才进入正常读写；任何一步失败都不降级为只读继续跑业务。
+
+**孤儿 `_backup` / `_new` 判定**
+
+| 现场 | 判定 | 动作 |
+|---|---|---|
+| 原表 + backup + new 同时存在 | 重建中断在 rename 前后，状态歧义 | 拒绝启动；写 `integrity_check` 报告；人工选择恢复/继续 |
+| 仅 backup + new，无原表 | 原表可能已被 rename 走 | 拒绝启动；先校验 backup 行数与 hash，人工恢复 |
+| 原表 + backup，无 new | 可能是上次重建完成但未清理 | 若原表校验通过且行数/关键列与 backup 可解释 → 写报告并允许启动；**不自动删 backup** |
+| 仅 new，无原表/backup | 严重半迁移 | 拒绝启动；不允许把 `_new` 当正式表 |
+| 仅 backup，无原表/new | 原表丢失 | 拒绝启动；提示从 backup 恢复 |
+
+- 上述判定只针对迁移重建产生的 `%_backup` / `%_new`；**Yjs 的 `snapshots` 是另一张表，不得按 `_backup` 规则一起删**（见 §2.8）。
+- 删除 backup 必须是显式管理动作，并在 `map_migration_reports(kind='cleanup')` 留痕。
+
+**回滚边界**
+
+| 阶段 | 失败回滚 | 已产生业务数据后 |
+|---|---|---|
+| S1 | 删新建表/索引；`entity_key` 列可保留 | 不回退键；只回退读路径，禁删唯一索引 |
+| S2 | 删表/索引即可 | 保留链接；关闭写入路径 |
+| S5a | 删新表（未产生任务时） | 保留任务/run；禁用功能，不 `DROP` |
+| S6a | 删新表（未产生证据时） | 保留证据；禁用派生，不删历史 |
+
+**验收（故障注入）**
+
+1. 在每个阶段"插入 running 后、工作提交前"杀进程 → 重启必须拒绝启动；`--resume-migration` 可续跑幂等阶段。
+2. 在 S1.3 中途杀进程 → 已提交项目不重写、未提交项目续跑；`entity_key` 无重复。
+3. 在 S1.4 建唯一索引时制造冲突 → `failed`，启动阻断，错误指向冲突行。
+4. 手工构造四种 `_backup` 现场 → 判定与上表一致；无自动删除。
+5. `integrity_check` / `foreign_key_check` 任一失败 → 拒绝启动。
+6. `owner_pid` 为存活的其他进程 → 当前进程拒绝启动。
+
+### 8.15 F1–F3 前置修复（B1）
+
+> 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置。
+
+#### F1 子代理拒绝路径未终止会话
+
+**事实修正**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
+
+**最小修复契约**
+
+1. 只在**拒绝路径**补 terminate，不改成功路径与既有 `cancel()` 行为。
+2. **先存输出，再 terminate**：在调用 `terminateSession` 前，把当前 `outputBuffer` / `fileChanges` / tokens 写入 invocation（见 F2），确保 terminate 触发的回调不会清空待保存数据。
+3. `terminateSession` 必须**幂等**，并覆盖非 `cancel()` 触发的 abort（timeout / error / shutdown）；重复调用不抛错、不重复发事件。
+4. 父会话终止必须级联取消其子代理；`startSession` 的耗时计入超时计时（不能等会话建好才开始计时）。
+5. 失败路径也必须执行 Phase B / 记忆提取（若产品要求"失败也提取"）；否则不得在下游把"未执行 Phase B"当成成功。
+
+**验收**：timeout / 子 agent error / abort 三条拒绝分支各一条用例，断言 terminate 被调用、invocation 已落 partial、Phase B 执行或明确标记失败、无孤儿会话。
+
+#### F2 失败路径丢失部分产出与 token
+
+**事实修正**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
+
+**最小修复契约**
+
+1. `SubagentResult` 增加 `status: 'completed'|'failed'|'cancelled'`、`error?`、`partial?`；`partial` 至少含 `resultText` / `resultFiles` / `tokensUsed` / `fileChanges`。
+2. **同步 IPC 消费方**：renderer / 主进程所有读取 `SubagentResult` 的地方必须处理 `failed/cancelled`，不得把 `partial` 当完整结果。
+3. 失败也落 `subagent_invocations`：写 `status`、`error`、`result_text`、`result_files`、`tokens_used`；不新增表。
+4. 截断与大小上限：`result_text` / `result_files` 按配置上限截断并标 `truncated`；不得因超限再次抛错。
+5. 明确区分 `failed` 与 `cancelled`：用户取消写 `cancelled`，执行错误写 `failed`；两者都保留 partial，但不得混写。
+6. 失败路径必须计 token；`tokensUsed` 在异常包装时一并带出，不能只在成功分支读取。
+
+**验收**：制造子 agent error + 已产生 stdout/fileChange；断言 invocation 行存在、`status='failed'`、`result_text/result_files` 非空、`tokensUsed>0`；取消路径 `status='cancelled'` 且 partial 保留；IPC 消费方不崩溃。
+
+#### F3 turn 截止时间没有执行者
+
+**事实修正**：代码中不存在 `agentTurnTimeoutScanner`，也没有每分钟扫描器；"现有 scan 每分钟跑并 0 命中"是错误描述。另有五处事实：
+
+- `agent_turns.status` 的 CHECK **没有 `timed_out`**；
+- `attempt` 恒为 1，退避没有意义；
+- `deadline_at` 没有索引；
+- 重启时已过期 deadline 的处置未定义；
+- 超时值有三套：subagent `timeoutMs` / send-and-wait 300s / 文档 10min + 60min。
+
+**统一来源（建议口径，施工前确认）**
+
+| 超时 | 配置键 | 默认 | 适用 |
+|---|---|---|---|
+| turn 执行截止 | `agent.timeouts.turnMs` | 10 分钟 | 单个 `agent_turn`，从 `startSession` 开始计时 |
+| step 执行截止 | `agent.timeouts.stepMs` | 10 分钟 | `work_steps.deadline_at`，覆盖整个 step |
+| task 总墙钟 | `agent.timeouts.taskMs` | 60 分钟 | `work_items` 的总时长，排队时间不计入 |
+| send-and-wait 客户端等待 | `agent.timeouts.sendWaitMs` | `turnMs + 30s` | 只是 IPC 等待，不得早于 turn deadline 触发 |
+| subagent 超时 | 不再独立配置 | — | 继承 step/turn 预算，避免第三套值 |
+
+- `attempt` 恒为 1：**不实现 turn 级退避**；重试只发生在 `work_steps.attempt` / 新 `work_run`，避免"退避但永不递增"的假机制。
+- `agent_turns.status` 无 `timed_out` 的两个候选：
+  - **F3-A（最小版，推荐）**：映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；代价是状态语义被 `failure_type` 细分，查询超时必须带字段。
+  - **F3-B（干净语义）**：重建 `agent_turns` 并加 `timed_out` 到 CHECK；代价是表重建、备份/恢复、迁移窗口更大，且本轮 B1 还要叠加 S1–S6 迁移。
+  - 若不接受 F3-A 的语义，再选 F3-B；默认按 F3-A 施工。
+- 增加索引：`CREATE INDEX idx_agent_turns_deadline ON agent_turns(deadline_at) WHERE status='running'`（只索引运行中行，避免全表）。
+- 执行者：turn 启动时写 `deadline_at`；超时用 `AbortController` + 杀进程组；先落 partial（F2），再写 `status='failed'` + `failure_type='timeout'`。审批等待期暂停 deadline（进入 `waiting_approval` 时置 NULL，恢复时重算）。
+- 重启：扫描 `status='running' AND deadline_at <= now`，无存活进程 → 写 `failed` + `failure_type='timeout'` + `error_code='DEADLINE_EXPIRED_ON_RESTART'`；**不自动重跑**。不把过期 deadline 留在 `running`。
+- 与 F1 的边界：F3 只负责"到期杀"; 取消/错误仍走 F1 的拒绝路径 terminate。
+
+**验收**：turn 到期被杀、进程组无残留、DB 终态为 `failed/failure_type=timeout`、partial 非空；`waiting_approval` 期间不误杀；重启后过期行不再 `running`；send-and-wait 不早于 turn deadline。
+
+#### F1–F3 同类漏项（一并列入前置清单）
+
+| 编号 | 漏项 | 处理 |
+|---|---|---|
+| P-F1 | 父会话终止不级联取消子代理 | 父 cancel/shutdown 显式向子会话传播 `cancelled`，子 invocation 保留 partial |
+| P-F2 | `startSession` 不在超时计时内 | 计时起点前移到 `startSession` 调用前；建会话耗时计入 |
+| P-F3 | 失败不 terminate 导致 Phase B 不执行 | F1 的 `finally` 终止 + 失败也执行 Phase B，或显式标记 `phase_b_skipped` |
+| P-F4 | 失败路径不计 token | F2 的 `tokensUsed` 随 partial 一并写入 |
+
 ---
 
 ## 9. IPC 与渲染层改动清单（只列职责，不设计 UI）
@@ -2380,6 +2958,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 5. **MVP 编排是否只 Tier 1**：审查已认定 Tier 2 写路径与审批网关冲突；当前按"仅 Tier 1"写并标注待确认（§5.9.5、§11.2）。
 6. **`published` 软阻断强度 / 流程级测试是否从 L2 起做最小版**：本文先给出可执行定义与软阻断默认实现，强度与范围待拍板（§6.5.1、§6.5.2）。
 7. **E4 过期是否延后到 P4**：**不采纳"延后"**；保持统一 30 天可配置，并补"一键续签 + 引用原 coverage"方向（§3.5）。
+8. **`plan_deviations` 归因**：**先不落，等用户裁决**。§5.7 的差异字段可以保留在"待定"清单，但不单方面改成统一归因方案，也不据此改权重。
+9. **E4 过期后的派生状态 U1**：§3.3（→`stale`）与 §3.5（→`implemented`）冲突；两个候选与代价见 §3.7.3。施工前需裁决，不得默默选一条。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -2410,8 +2990,140 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 项 | 结论 | 说明 |
 |---|---|---|
 | Yjs | 依赖/表/schema **不删不改**；处置为单向只读 | 见 §2.2.1、§8.11；完全移除不在本期；P6 原两项保留并改为验证写回路径已不存在，SQLite 镜像并行 |
-| RequestQueue 删除 | 记录不改；由 `WorkItemService` 队列取代 | 删除动作随 P2 编排脊柱落地，不在本文改源码 |
+| RequestQueue 删除 | 记录不改；由 `WorkItemService` 队列取代 | 删除动作随 **L3** 落地（P2 = L2，不得写成随 P2 删除），不在本文改源码 |
 | 进化三层与 `review_queue` | L3+ 非本期 | 不写入 L1/L2 范围 |
 | `ContextBundle` 与尾块协议 | 不在本文定义 | 交叉引用 `agent-architecture.md`（§0.1） |
 | planner 主路径 | 保持现有路径 | 但明确：模型做候选选择时输出仍需 schema 校验 + 修复 1 轮（§5.3） |
 | Windows 路径 | 明确平台范围 | 本期只验证 POSIX；Windows 规则不承诺（A9、§5.4.1） |
+
+### 12.9 待回传外部方案的异议清单
+
+> 以下只记录我方异议与依据，不把外部文档提交进仓库；等对方确认后再改其记录。
+
+| # | 外部记录 | 我方异议 | 依据 |
+|---|---|---|---|
+| Q3 | "执行期机制全采纳" | 应为 **"串行执行机制全采纳"** | 本文 L1/L2 明确不做流程级 DAG 并行、不做并行写同一节点、不做多 Agent 并行编排（§1.8）；并行/fanout 属 L3 |
+| Q6 | 章节引用错误 | 流程级测试的可执行定义在 **§6.5.1**，不是 suite 本身 | §6.5.1 定义 `test_specs.kind='flow'` 的执行口径；`test-suite` 只是资产容器 |
+| Q11 | 载体是 suite | 应为 **`test_specs.kind='flow'`** | 流程级测试要绑定多节点与步骤序列，suite 本身不承载 flow 语义 |
+| 表数 | 仍写"21 张表" | 我们已是 **22 张**；L1 最小集 **13 张** | §8.12 与 §7.2；D2 新增 `work_steps` 后总数 22 |
+| P6 / 伪节点 | 仍标"不可用" | **伪节点已取消**（§4.5 D8）；**Yjs 已单向只读**（§2.2.1），不是"不可用" | §4.5、§2.2.1、§8.11；完全拆除才属 L3（§2.8） |
+
+---
+
+## 13. 覆盖审计（2026-11-07）
+
+> 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
+
+**汇总**：共 102 行；可施工 6 节；有框架缺细节 71 节；只有结论 25 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15。
+
+| 章节 | 现有内容形态 | 缺什么 | 属于哪一批 |
+|---|---|---|---|
+| §0.1 文档分工 | 只有结论 | 无施工内容；只需保持与 `agent-architecture.md` 的引用一致 | — |
+| §0.2 链接 vs 完成度 | 只有结论 | 无；原则已可直接约束实现 | — |
+| §0.3 默认假设 | 只有结论 | A1/A2/A9 尚未逐条转成验收用例；A3/A4 未落测试超时边界 | B1 / B2 |
+| §1.1 三图 | 有框架缺细节 | `graphs.type` / `NodeType` 值域约束、跨图 edge 拒绝的 DDL 与写入校验 | B1（复用现状），S4 在 B2 |
+| §1.2 `entity_key` | 有框架缺细节 | UUID 生成点、克隆/拆分/合并的写入时机、回填事务与失败回滚 | B1 |
+| §1.3 `node_links` | 有框架缺细节 | 写入流程、方向矩阵、唯一/幂等、孤儿巡检与拆分/合并传播 | B1 |
+| §1.4 状态双轨 | 有框架缺细节 | 证据写入校验、派生输入/哈希、重算触发与失败处理 | B1 |
+| §1.5 任务对象 | 有框架缺细节 | 表间写入者、状态迁移、事务边界、取消/完成竞态 | B1 |
+| §1.6 拆解机制 | 只有结论 | 候选算法、模型输出 schema、确认接口、gate 失败分支 | B2 |
+| §1.7 TestExecutor | 只有结论 | 执行接口、审批 subject、worktree 生命周期、失败分支 | B2 |
+| §1.8 本期范围 | 只有结论 | 无；范围声明本身不需施工 | — |
+| §2.1 唯一性维度 | 有框架缺细节 | 迁移步骤、回填顺序、唯一索引失败处理、回滚边界 | B1 |
+| §2.2 生成/保留/回填 | 有框架缺细节 | 多图配对、占位节点、冲突行、二次运行幂等 | B1 |
+| §2.2.1 Yjs 写回事实 | 只有结论 | Yjs 技术改法在另一处施工，未在本蓝图展开 | —（另行施工） |
+| §2.2 旧库回填算法 | 有框架缺细节 | 项目事务、并发写冲突、ambiguous 报告、失败续跑 | B1 |
+| §2.2.2 S1 施工细则 | 可施工 | 无；导入路径仍需代码，但字段/事务/回滚/验收已齐 | B1 |
+| §2.3 `node_links` 设计 | 有框架缺细节 | 写入服务、方向矩阵、重复/自链接、孤儿/失效判定 | B1 |
+| §2.3.1 S2 施工细则 | 可施工 | 无；拆分/合并传播与回填判据已齐 | B1 |
+| §2.4 生命周期 | 有框架缺细节 | 归档/删除的状态机、图删除拒绝条件、巡检频率与报告 | B1 / B2 |
+| §2.5 链接不等于完成度 | 只有结论 | 无 | — |
+| §2.6 重复导入 | 有框架缺细节 | 抽样算法、读失败、TOCTOU、事务与拒绝落库细节 | B1 |
+| §2.6 已定规则 | 只有结论 | 无；拒绝不合并是已定口径 | B1 |
+| §2.6 指纹组成 | 有框架缺细节 | N=12 抽样索引、二进制/超大文件边界、缺失信号处理 | B1 |
+| §2.6 判定顺序 | 有框架缺细节 | 并发重查、错误分支、`matched_signals_json` 必填项 | B1 |
+| §2.6 执行位置/原子性 | 有框架缺细节 | `BEGIN IMMEDIATE`、同事务建图、冲突回滚 | B1 |
+| §2.6 数据结构 | 只有结论 | DDL 指向 §7.2；无独立施工内容 | B1 |
+| §2.6 与 S1 关系 | 只有结论 | 无；硬前置已明确 | B1 |
+| §2.7 提案机制 | 只有结论 | 提案 UI、采纳/驳回状态、撤销语义 | B3 |
+| §2.8 Yjs 拆除清单 | 只有结论 | 拆除决策、逐类处置、旧快照数据方案；本期不施工 | B3 |
+| §3.1 双轨边界 | 有框架缺细节 | 自动写 `nodes.status` 的两条路径如何关闭、验收断言 | B1 |
+| §3.2 证据等级 | 有框架缺细节 | 等级字段组合校验、写入校验、禁止先写后降级 | B1 |
+| §3.3 派生优先级 | 有框架缺细节 | 输入集合、tie-break、`inputs_hash`、过期 E4 的 U1 分支 | B1 |
+| §3.4 建议机制 | 有框架缺细节 | 建议转证据的事务、去重、接受人/时间字段 | B1 |
+| §3.5 非 git E4 | 有框架缺细节 | 写入校验、过期/覆盖变化任务、U1 冲突、续签字段语义 | B1 |
+| §3.5 硬约束/字段/撤销/关系/非 git | 只有结论 | 规则本身完整；缺执行检查与任务调度落点 | B1 |
+| §3.6 项目进度 | 只有结论 | 权重配置、只读查询、缓存与 `computed_at` | B2 |
+| §3.7 S6a 施工细则 | 有框架缺细节 | **U1 过期 E4 派生未裁决**；其余字段/校验/重算已可施工 | B1 |
+| §4.1 `work_items`/revision | 有框架缺细节 | revision 事务、`is_current` 唯一、修订与 running 冲突 | B1 |
+| §4.1.1 状态值域 | 有框架缺细节 | 迁入/迁出表、条件更新、父任务失败聚合 | B1 |
+| §4.1.2 `work_steps` | 有框架缺细节 | 字段默认值、步级唯一、attempt/invocation 写入方 | B1 |
+| §4.2 `work_runs` | 有框架缺细节 | run_seq 分配、幂等键、终态竞态、partial 结构 | B1 |
+| §4.3 `node_session_links` | 有框架缺细节 | NULL 唯一、挂载/结束时机、多会话时间线 | B1 |
+| §4.4 `change_sets`/`routing_decisions` | 有框架缺细节 | 采集算法、dirty hash、失败留"未采集"、路由失败不写半条 | B1 |
+| §4.5 与 `agent_*` 关系 | 有框架缺细节 | D8 落地后的 turn 路径、长期放宽项、无伪节点验收 | B1 |
+| §4.6 活动流 | 有框架缺细节 | `change_sets` 字段/采集、未采集展示、多 thread 聚合 | B1 |
+| §4.7 S5a 施工细则 | 可施工 | 无；写入权、13 个任务状态、12 个步状态、幂等与验收已齐 | B1 |
+| §5.1 总览 | 只有结论 | 无 | — |
+| §5.2 候选推导 | 有框架缺细节 | 候选存储、算法伪代码、权重配置、边界失败 | B2 |
+| §5.3 模型只选择 | 有框架缺细节 | 输出 schema、越界剔除、修复 1 轮的验收 | B2 |
+| §5.4 准入 gate | 有框架缺细节 | G1–G6 实现、失败分支、gate 结果落库 | B2 |
+| §5.4.1 路径规范化 | 有框架缺细节 | POSIX 边界、`realpath` 失败、NFC/大小写折叠实现 | B2 |
+| §5.5 可修订计划 | 有框架缺细节 | revision 状态、DAG 环检测、父子聚合的实现 | B2 |
+| §5.5.1 DAG 正确性 | 有框架缺细节 | Kahn 伪代码、依赖优先级冲突、终态聚合验收 | B2 |
+| §5.6 确认点 | 有框架缺细节 | C1–C4 接口、计划快照、确认/退回状态 | B2 |
+| §5.7 偏差度量 | 有框架缺细节 | **归因口径待用户裁决**；字段与回顾节奏已有，未定统一归因 | B2 / B3 |
+| §5.8 退化兜底 | 有框架缺细节 | D1–D7 触发判据、执行落点、验收 | B2 |
+| §5.9 执行编排 | 有框架缺细节 | 调度/取消/超时/路由/审批的接口级输入输出与失败分支 | B2 |
+| §5.9.1–5.9.8 子节 | 有框架缺细节 | 单步/多步分流判据、失败分类落库、忙重排、deadline、Tier 票、取消竞态、步状态迁移表 | B2 |
+| §5.9.8.1 黑板/Phase B/fanout | 只有结论 | 黑板数据结构、Phase B 接口、fanout 快照格式；本期不实现 | B3 |
+| §6.1 边界与复用 | 只有结论 | 无；复用声明本身不需施工 | B2 |
+| §6.2 执行流程 | 有框架缺细节 | 步骤接口、worktree 创建/清理、命令超时、失败分支 | B2 |
+| §6.2.1 E3 判据 | 可施工 | 无；五条判据与 dirty 降级已可执行 | B2 |
+| §6.3 审批 subject | 有框架缺细节 | `agent_approvals` 重建/迁移、subject 取值、回调幂等 | B2 |
+| §6.4 安全约束 | 有框架缺细节 | `.git` 写拒绝、cwd 固定、输出脱敏的执行检查 | B2 |
+| §6.5 测试资产与回写 | 有框架缺细节 | 资产创建/更新、结果回写事务、失败重试 | B2 |
+| §6.5.1 流程级测试 | 有框架缺细节 | `test_specs.kind='flow'` 的执行器、步骤序列、失败判定 | B2 |
+| §6.5.2 `published` 软阻断 | 有框架缺细节 | 软阻断强度待确认；测试通过的判定与回滚 | B2 |
+| §6.6 Bug 闭环 | 有框架缺细节 | bug 节点创建、定向重测、链接回写 | B2 |
+| §6.7 手工用例/E4 | 有框架缺细节 | 手工执行记录、E4 签收入口、覆盖范围 | B2 |
+| §6.8 测试命令网关 | 有框架缺细节 | 网关接口、归属校验、allow/deny 落库 | B2 |
+| §6.8.1 allow-list 纪律 | 只有结论 | "配置键消费测试"的 harness、覆盖清单、CI 门禁 | B2 |
+| §7.1 既有表变更 | 有框架缺细节 | 列迁移、回填、索引、旧库兼容、回滚 | B1 |
+| §7.2 新增表（B1 13 张） | 有框架缺细节 | 写入者/时机/失败分支/验收；DDL 已齐但缺行为契约 | B1 |
+| §7.2 新增表（B2 表） | 有框架缺细节 | 同上；`test_*` / `plan_*` / `boundary_*` 生命周期未落 | B2 |
+| §7.3 值域汇总 | 有框架缺细节 | 类型层同步、CHECK 重建、迁移顺序 | B1 / B2 |
+| §8.1 迁移总览 | 只有结论 | 无；顺序声明本身不需施工 | — |
+| §8.1.1 交付节奏 | 有框架缺细节 | 每阶段验收门、回滚演练、发布检查单 | B1 / B2 |
+| §8.2 S0 备份预检 | 可施工 | 无；备份/预检步骤可执行 | B1 |
+| §8.3 S1 | 有框架缺细节 | 施工细则引用 §2.2.2；发布前需逐条验收 | B1 |
+| §8.4 S2 | 有框架缺细节 | 施工细则引用 §2.3.1；回填与只读开关 | B1 |
+| §8.5 S3 归档 | 有框架缺细节 | 归档状态机、删除路径改造、巡检任务 | B2 |
+| §8.6 S4 CHECK 扩展 | 有框架缺细节 | 重建顺序、备份/恢复、不可逆回滚演练 | B2 |
+| §8.7 S5 任务对象 | 有框架缺细节 | 建表顺序、回滚、状态值验收 | B1 |
+| §8.8 S6 证据派生 | 有框架缺细节 | 建表顺序、CHECK 验收、派生重建 | B1 |
+| §8.9 S7 推导/计划 | 有框架缺细节 | 候选/草稿表生命周期、确认流 | B2 |
+| §8.10 S8 TestExecutor | 有框架缺细节 | 测试表生命周期、网关、worktree 清理 | B2 |
+| §8.11 验证清单 | 有框架缺细节 | P1–P9 的执行脚本/断言；P6 的 Yjs 与 SQLite 并行验证 | B1 / B2 |
+| §8.12 阶段×表矩阵 | 有框架缺细节 | L1 13 张表的边界、B2 表插入顺序、表数口径复核 | B1 / B2 |
+| §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
+| §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
+| §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
+| §8.15 F1–F3 | 有框架缺细节 | F3 `timed_out` 选型待确认；源码修复路径需单独授权 | B1 |
+| §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
+| §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
+| §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
+| §9.4 渲染层 | 有框架缺细节 | 组件职责、状态来源、空态/错态 | B2 |
+| §9.5 既有缺口 | 有框架缺细节 | 两条 `nodes.status` 写入路径的修复与验收 | B1 |
+| §10 安全模型 | 有框架缺细节 | 编排/测试/审批的执行检查与 fail-closed | B2 |
+| §11.1 三个风险 | 只有结论 | 无 | — |
+| §11.2 开放问题 | 只有结论 | 无；默认假设已给 | — |
+| §11.3 规模与保留 | 有框架缺细节 | 每节点/证据/link 上限、分页阈值、retention 任务 | B1 / B2 |
+| §12.1–12.9 对照/审查记录 | 只有结论 | 无；记录性质 | — |
+
+**审计结论**
+
+- **空挂 0**：没有"标题在、内容缺"的章节；`ContextBundle` / 尾块协议有明确外部指向，不算空挂。
+- **B1 可施工边界**：S1、S2、S5a、S6a（除 U1）、迁移状态机、F1–F3 行为契约已细化；其中 S6a 的 U1 与 F3 的 `timed_out` 选型仍需用户裁决。
+- **B1 新增一次性修正**：`work_items.status` 补 `failed`（13 值），否则 §5.5.1 的父任务失败聚合无法落库；表总数不变（22），L1 仍 13 张。
+- **B1 不动的口径**：查重 N=12 / 0.6 / 0.8、90 天、E4 30 天、记住放行、重建判据、L1 不删节点、E3/E4 可复现语义、`signed_by`、Tier2 只读、单向 Yjs 均未改写。
