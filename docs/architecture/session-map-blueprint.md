@@ -3268,7 +3268,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3432 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3441 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -3287,29 +3287,38 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 12.13 勘误清单（供 Zcode 按 R9 逐条修正）
 
-> 引用口径：被审附件 **Zcode v1.2，364 行**；对方现行勘误版 **Zcode v1.2.1，302 行（本地快照）**。下表按"会改变结论"与"仅行号偏移"分列，不混排；"对方行号"一律指 v1.2.1 本地快照（302 行）中的对应位置。
+> 引用口径：被审附件 **Zcode v1.2，364 行**（行号逐条核自该附件）；对方现行勘误版 **Zcode v1.2.1，302 行（本地快照）**。A 表只收**事实错误**；C 表收"不采纳 / 不可执行"，不混排。B 表只记行号偏移。
 
-**A. 会改变结论的 8 条**
+**A. 事实错误 8 条**
 
-| # | 对方位置（v1.2.1 行） | 原句 | 我方事实与证据 | 判定 |
+| # | 对方位置（v1.2，364 行） | 原句 | 我方证据 | 判定 |
 |---|---|---|---|---|
-| A1 | L105、L215 | "Yjs WS 前置缓解已上" | `BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options | 从未实施；`cc749ce` 已以单向只读取代，缓解项关闭 |
-| A2 | L89 | "截断上限 1MB 与现有一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:90`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 错误；F2 改两层限制（单条 10KB 既有 + partial 总量 64KB 新设） |
-| A3 | L95 | "调 `cancelTurn` → `finalizeTurnStatus(failed, timeout)`" | `runtime.ts:766-771`：`cancelTurn` 内部已做终态 CAS 写 `cancelled`/`aborted`；`finalizeTurnStatus` 二次 CAS 返回 false | 逻辑不成立；已按 F3-A 专用超时路径单次 CAS 落 `failed` |
-| A4 | L31、L262 | "Yjs 专测 86 个" | `rg -c "\bit\("`：`src/main/realtime/__tests__` 8 个文件 + `services/__tests__/conflict-reporter.test.ts`，共 **9 文件 / 119 个 `it(`**（2026-11-07） | 错误计数 |
-| A5 | L194 | "数据源全部现成" | `agent_logs` 无 `work_item_id`（`database.ts:484`）；`subagent_invocations` 无任务连接（`database.ts:592`）；`SubagentResult` 无 `status/error/partial`（`shared/types/subagent.ts:98`） | 不成立；必须经 `node_session_links` 归因 |
-| A6 | L289 | 术语映射 `task_steps` → `work_runs` | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 错误映射 |
-| A7 | L294 | "E4 在有真实测试时由 E3 替代" | 本文 §3.5 / §6.7：可复现（E3）与不可复现（E4）分离，不互相替代 | 不采纳 |
-| A8 | L224 | "drop 迁移单提交 revert 即可" | revert 只回代码，不回已 DROP 的行/列数据 | 不成立；须备份 + 演练恢复 |
+| A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | `BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代 |
+| A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:90`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
+| A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **3441 行**（2026-11-07 `wc -l`） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
+| A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
+| A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
+| A8 | L134–L135 | L1 只列 `work_items` / `work_runs` / `node_session_links` / `routing_decisions` 4 表；`change_sets` 放 L2（S5b） | 本文 §8.12：L1 **13 张**，含 `work_steps`、`change_sets`（`5b26715` 裁决） | 事实错误：L1 切分冲突 |
 
 **B. 仅行号偏移的 4 条（结论不变）**
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3432 行**（2026-11-07 `wc -l`） | 仅快照过期；结论需按现文本复核 |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3441 行**（2026-11-07 `wc -l`） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3432 行** | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3441 行** | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
+
+**C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**
+
+| # | 对方位置（v1.2，364 行） | 原句 | 我方结论 | 性质 |
+|---|---|---|---|---|
+| C1 | L119 | "调 runtime 现有 `cancelTurn` → `finalizeTurnStatus` … `status='failed'`" | `runtime.ts:766-771`：`cancelTurn` 内部已做终态 CAS 写 `cancelled`/`aborted`，二次 CAS 返回 false，超时永远落不了 `failed`；已改 F3-A 专用超时路径 | 执行方案缺陷（我方已纠正），非对方事实写错 |
+| C2 | L245 | "数据源 … 全部现成，聚合查询新造" | `agent_logs` 无 `work_item_id`（`database.ts:484`）；`subagent_invocations` 无任务连接（`database.ts:592`）；必须经 `node_session_links` 归因 | 表面具体但不可执行 |
+| C3 | L229 | "E4 仅有真实测试时由 E3 替代" | 与本文 §3.5 / §6.7"可复现（E3）与不可复现（E4）分离、不互相替代"冲突 | 口径冲突，不采纳 |
+| C4 | L291 | "单提交 revert 即可" | revert 只回代码，不回已 DROP 的行/列数据；须备份 + 演练恢复 | 错误承诺，不采纳 |
 
 ## 13. 覆盖审计（2026-11-07）
 
