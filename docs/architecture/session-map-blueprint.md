@@ -513,6 +513,21 @@ Step 4 抽样失败（无可采文件 / 全是二进制）：
 | 8. 远端 / 边界清理 | `127.0.0.1:1236` WS、update/sync step2 拒绝逻辑、无鉴权端点 | 与 §2.2.1 的"拒绝 update / sync step2"衔接；先只读再谈关闭端口 |
 | 9. 文档同步 | `agent-architecture.md`、本文 §2.2 / §8.11 / P6、运维说明 | 拆除后 P6 验证项改为"写回路径已不存在"；本期仍保留 Yjs 两项验证（§8.11） |
 
+**L3 拆除 runbook（8 步，顺序不可换）**
+
+| 步 | 动作 | 验证项 |
+|---|---|---|
+| 1 | 前置确认：备份、快照导出、schema 版本、`snapshots` 表清单 | 恢复演练通过；快照可读 |
+| 2 | 删接线：`attachDiffHandlers`、WS update / sync step2 写回入口 | 启动无写回；`1236` 拒绝写入 |
+| 3 | 删代码：`YjsManager` / `YjsDocRegistry` / conflict 子系统 | 类型检查通过；无死代码引用 |
+| 4 | drop 迁移：Yjs 表/列 + schema 版本 | 迁移可重入；`_backup` 报告齐全 |
+| 5 | 删依赖：`yjs` / `y-protocols` / `lib0` + lockfile | lockfile 由包管理器重生成；bundle 体积基线更新 |
+| 6 | 删测试：6 个文件、116 个 `it` 逐项处置 | 只读契约测试保留；无 `skip` 遗留 |
+| 7 | 文档：`agent-architecture.md`、本文 §2.2 / §8.11 / P6 | P6 改为"写回路径已不存在" |
+| 8 | 全量验证：启动、恢复、图编辑、导入、测试、打包 | 无 WS 写回；无残留定时器阻止退出 |
+
+> **拒绝口径**："drop 迁移单提交 revert 即可"不成立 —— 代码可回退，已删除的行/列数据回不来。第 4 步必须先备份并演练恢复，不能把 revert 当数据回滚。
+
 **明确不能删（拆除时也必须保留）**
 
 - `ws` 依赖与 awareness 那套：`settings.realtime` 的 `1234`、`ipc/realtime.ts`、`awareness-server.ts`；它们不是 Yjs 写回路径。
@@ -797,7 +812,8 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - **失败保留部分产出**：`partial_output_ref` 记录已收 stdout / file_change / 失败原因；失败不等于丢弃。
 - **启动对账**：启动时把所有 `running` 的 run 置为 `interrupted`，再由规则决定回 `queued` 或 `cancelled`；不自动重放需要审批的步骤。
 - **节点忙**（`SESSION_BUSY` / `NODE_BUSY`）→ 回 `queued` 重新排队，**不消耗 attempt**。
-- **结构化输出**：按所属 `work_steps.output_schema_json` 解析 `outputs_json`；解析失败降级为整块文本，标 `output_parse='fallback'`，不得当作成功。
+- **结构化输出解析链**：① 取最后一个围栏块（```json / ```）→ ② 平衡 `{...}` 扫描（从首个 `{` 起按括号计数，字符串与转义内不计）→ ③ 仍失败则 `output_parse='fallback'`。块上限 16KB，超限截断并标 `truncated`。schema 外字段**丢弃**并记 `output_extra_keys`（JSON 数组）；不因多余字段判失败。`verdict` 缺失默认 `FIX`（保守，要求返工）。
+- **`needs_input` 输出格式**：`INPUT_REQUIRED` —— `{type:'INPUT_REQUIRED', question, options?, default?, blocks[]}`；解析到即转 `needs_input`。**原会话不复活**，回答后开新 attempt（§5.9.8）。
 - **依赖失败传播**：上游 `failed` / `timed_out` → 下游 `blocked` 不执行；上游 `cancelled` → 下游落 `cancelled(reason='upstream_cancelled')`，**不得记为 `blocked`**；无关分支继续跑完（失败不掩盖已发生事实）。
 - **取消落库**：取消时先持久化已产出的 `partial_output_ref`（stdout / 文件变更 / 失败原因），再写终态；取消原因写 `cancel_reason ∈ ('user','upstream_cancelled','deadline','shutdown','approval_denied')`。
 
@@ -1215,6 +1231,8 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 
 > **归因（已定）**：`plan_deviations` 的统一归因为 `derivation_version`（计划生成时固定）+ `observed_rule_version`（记录时配置哈希）+ `task_type` / `agent_type` / `file_domain`（目录前缀，视图派生）。**`boundary_changed` / `scope_violation` 只作为路由特征**（退化判定与确认强度自适应），**不进成功率分母**；成功率分母只含正常完成/失败的 run，不含边界变更与范围越界这两个特征位。
 
+**采集时点**：run 终态事务提交后写入；字段取自 `work_items` / `work_runs` / `change_sets`；`change_sets` 未采集时 `actual_file_count=NULL`，不写 0。派生重算失败只记 `map_migration_reports(kind='derivation')`，不阻塞任务终态。
+
 ### 5.8 退化与兜底
 
 | 编号 | 触发条件 | 退化策略 |
@@ -1284,6 +1302,10 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 - **编排写路径仅 Tier 1**。Tier 2 不能"降级执行写步骤"：没有写前审批回调就无法满足"不绕过审批网关"，降级等于开后门。
 - `degraded` 状态只用于用户手动打开的会话（UI 明示"降级执行，不保证中断恢复"），**不用于编排器**；编排器不得静默换 adapter。
 - **MVP 范围（已定）**：仅 Tier 1 参与编排（读 + 写）；Tier 2 只读或排队等人工会话，Tier 3 不参与编排。
+- **审计票与审批票分离**：`KERNEL_AUDIT_CAPABLE_BACKENDS` 只决定能否执行只读审计/分析，**不**等于写前审批能力；写步骤仍只认 `approval_callback=1` 的 Tier 1。
+- 能力策略统一返回 `{allowed, tier, degraded}`：`allowed` 是本次 step 是否可执行，`tier` 是能力票，`degraded` 只允许手动会话置 1。
+- Tier 2 执行只读审计时，`routing_decisions.policy='tier2_audit'`，且该 run 不得包含写步骤；探测失败一律落 Tier 3，禁止按"未知"放行。
+- **禁止静默换 adapter**：换 adapter 必须新 run + 新 `routing_decisions`；不得在同一个 run 内改写 `chosen_adapter`。
 
 #### 5.9.6 明确不采纳的部分
 
@@ -1329,15 +1351,146 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 - **状态变更即落库**：每次迁移立即 `UPDATE work_steps` 并发出 `event:work-step-changed`；禁止只在内存中维护状态、结束才写库。
 - **`needs_input` 问题卡**：写 `input_request_json`（问题、可选项、默认值、影响范围、阻塞的后续步）；同步把 `work_items.status` 置 `needs_input`。
 - **回答后开新 attempt**：用户回答 → `attempt+1` → 状态回 `pending`；上一个 run 的产出与 `partial_output_ref` 保留，**不把等待时间计入失败**，也不消耗重试上限之外的额外次数。
-- `review` 与 `checker_work_item_id` 绑定：checker 未通过时步回 `running` 或 `needs_input`，不允许直接 `succeeded`。
+- `review` 与 `checker_work_item_id` 绑定：checker 不通过时**不得**直接 `succeeded`，按下条 maker-checker 规则处理。
+- **maker-checker 循环（B2）**：`PASS` → step `succeeded` 并解锁下游；`FIX` → 新 attempt（`attempt+1`），checker 的 `comments` 放进下一 attempt 的 `attemptContext.comments`；`INPUT_REQUIRED` → `needs_input`。`fixRounds` 默认 2（可配置），超限 → 父任务 `needs_human`，不得无限循环。
+- checker 用**独立会话**：上下文只含 `scope + diff + acceptance`，不含 maker 的推理轨迹与兄弟分支产物；只读，不占全局写闸。checker 自身 `infra` 失败按新 attempt 重试一次，不得记 maker 失败。
+- checker 的 `PASS` 只证明"产物满足 acceptance"，**不等于 E3**；证据仍按 §3 / §6 的测试与 worktree 规则产生。
 
 #### 5.9.8.1 黑板 / Phase B / L3 fanout 的边界约束
 
-> 这三条是 L3 黑板与 fanout 的前置约束；L1/L2 不实现黑板，但执行器与状态机必须先满足，否则后续并行化会把"记忆"当成正确性依赖。
+> 以下约束是 L3 黑板与 fanout 的前置条件；L1/L2 不实现黑板，但执行器与状态机必须先满足，否则后续并行化会把"记忆"当成正确性依赖。
 
 1. **步终态写入必须在 session terminate 之后**：`work_steps` 的 `succeeded/failed/cancelled/timed_out` 只能在执行器确认会话结束、Phase B（会话结束后的记忆提取/写回）已执行或明确失败后落库。否则下一步可能在 Phase B 之前启动，读到未写完的记忆。
 2. **Phase B 失败只影响记忆可见性，不影响正确性**：证据与验收只来自 `work_runs` + `node_evidence`；黑板/记忆写入失败不得回滚已完成的 run，也不得把 step 改回 `running`。UI 可提示"记忆未同步"，但状态机继续。
 3. **L3 fanout 只保证任务边界快照，不保证兄弟步互见**：fanout 时每个子任务拿到的是边界时刻的任务快照（scope/acceptance/依赖）；兄弟步并发产生的中间黑板内容不承诺可见、也不作为合并依据。需要跨步共享的内容必须显式落 `work_runs` / 证据，而不是依赖黑板时序。
+4. **上下文最小化**：不注入兄弟分支产物，不注入全图；`depsOutputs` 只含 step 声明引用的输出，按 `work_runs.outputs_json` 的引用解析，不复制全文。声明引用缺失 → `DEP_OUTPUT_MISSING`，step `failed(failure_class='infra')`，不得注入空对象冒充依赖。
+5. **检索预算**：`HybridSearchEngine` top-k=5；不可用时降级 `getRecent(3)`；检索片段计入 waterline。
+6. **水位线增量**：单步上下文增量 ≤800 tokens；超限先裁检索片段，再裁历史摘要，**不裁 scope / acceptance / 依赖声明**。
+
+#### 5.9.9 编排接口契约（B2）
+
+所有编排动作只经 `WorkItemService` / `WorkRunService`；renderer 只能发命令（§9.2）。接口返回结构化错误码，不抛裸异常。
+
+| 接口 | 输入 | 成功输出 | 失败分支 |
+|---|---|---|---|
+| `enqueue(workItemId, revision)` | 任务 id、目标 revision | `{runId, runSeq}` 或 `{queued:true, position}` | `GATE_INCOMPLETE`（写 `gate_missing_json`）；`DAG_CYCLE`（确认后计划被改坏，拒绝）；`REVISION_SUPERSEDED`（revision 已非 current）；`ALREADY_RUNNING`（同 lineage 已有 running）；`TIER_UNSUPPORTED`（无 Tier 1 候选） |
+| `claimNext(projectPath)` | 项目根 | `{runId, stepId}` 或 `null` | `BUSY`：保持 `queued`，**不消耗 attempt**；`GATE_REVOKED`：转 `blocked`；`TIER_LOST`：转 `needs_human` |
+| `startStep(runId, stepId)` | run、step | `{invocationId, sessionId?, threadId?}` | `APPROVAL_REQUIRED`：step 先落 `waiting_approval`；`ADAPTER_UNAVAILABLE`：step `paused(infra)`、run `failed(infra)`；`IDEMPOTENCY_CONFLICT`：返回既有 run |
+| `completeStep(stepId, result)` | `{status, outputsJson?, partialOutputRef?, failureClass?}` | 迁移后的 step | `SESSION_NOT_TERMINATED`：拒绝写终态，保持 `running`；`OUTPUT_SCHEMA_INVALID`：降级 `output_parse='fallback'`，成功与否以真实结果为准 |
+| `failStep(stepId, failureClass, error)` | 分类、可读原因、partial | `failed` step，并触发父任务聚合 | `INVALID_FAILURE_CLASS`（缺分类不落失败态）；partial 超限 → 截断并标 `truncated` |
+| `cancelWorkItem(workItemId, reason)` | `user` / `deadline` / `shutdown` / `approval_denied` | `{cancelledRunIds[], downstreamCancelledIds[]}` | `ALREADY_TERMINAL`：幂等返回原终态；`PROCESS_KILL_FAILED`：**不写 `cancelled`**，写 `failed(failure_class='infra')` 并转 `needs_human` |
+| `resumeWorkItem(workItemId, mode)` | `mode ∈ ('input','infra','retry')` | `{newRunId, attempt}` | `NOT_PAUSED` / `NOT_INTERRUPTED`；`GATE_INCOMPLETE`（恢复前重跑 gate）；`RUN_NOT_TERMINAL`（旧 run 未终态） |
+| `recomputeAfterRun(runId)` | run | 无（内部） | 派生重算失败只写 `map_migration_reports(kind='derivation')`，不回滚 run |
+
+**调度 tick（每 1 秒，单实例）**
+
+1. 取 `queued` 项：`ORDER BY priority DESC, created_at ASC LIMIT 1`。
+2. 重跑 gate（不信任确认时的结果）；不通过 → `blocked` + `gate_missing_json`。
+3. 校验依赖：全部上游终态且成功；否则保持 `queued`，不 claim。
+4. 路由：只接受 Tier 1；无候选 → `TIER_UNSUPPORTED`，保持 `queued`，写 `routing_failed` 事件。
+5. 取写闸：项目被占用 → 本轮跳过，**不写 run、不加 attempt**。
+6. 创建/claim run（走幂等键）→ `startStep`；失败按 §5.9.2 分类。
+
+- 同一时刻只允许一个 tick 处理一个项目；并发上限按 §5.9.3。
+- tick 内不得留下 `running` 孤儿：run 已 claim 但 step 未启动时，用条件更新 `running → queued`，不计 attempt。
+- 所有错误码必须落 `work_runs.failure_class` 或 `work_item.gate_missing_json`，不得只写日志。
+
+#### 5.9.10 路由与 Tier 能力票（B2）
+
+**能力探测**
+
+输入 `{adapter, adapterVersion}`；输出：
+
+| 字段 | 取值 | 用途 |
+|---|---|---|
+| `tier` | 1 / 2 / 3 | 编排准入 |
+| `resume` / `approval_callback` / `structured_output` / `cancel` | 0/1 | 能力明细 |
+| `probe_error` | 可空 | 探测失败原因 |
+
+判定：四项齐全 → Tier 1；缺 `approval_callback`（其余可用）→ Tier 2；其余 → Tier 3。**探测失败按 Tier 3 处理（fail-closed）**，不得默认 Tier 1。探测结果只在进程内按 `(adapter, adapterVersion)` 缓存；adapter 升级或探测失败即重探。
+
+**路由算法（单 Agent，不做并行）**
+
+1. 候选 = 已注册 adapter ∩ 满足 step 要求（写步骤要求 Tier 1 且 `approval_callback=1`）。
+2. Tier 2 只允许只读步骤（分析、评审、候选推导）；Tier 3 不进候选。
+3. 打分：`tier` 优先，其次历史成功率（无历史用默认值），平局按 `adapter` 名稳定排序。
+4. 单候选也写 `routing_decisions`（`policy='single_agent'`）；人工指定 adapter 时 `policy='manual_override'`；Tier 2 只读审计时 `policy='tier2_audit'`。
+5. 选中后先写一行 `routing_decisions`（`candidate_json` 含每个候选的 tier / gaps），再创建 run。
+
+**失败分支**
+
+| 情况 | 落点 |
+|---|---|
+| 无 Tier 1 候选 | 不建 run；`event:work-item-changed(reason='manual_session_required')`；任务保持 `queued` |
+| 写步骤只有 Tier 2 可用 | 同上；**不得降级执行** |
+| 探测失败 | 按 Tier 3；写 `routing_failed`，提示检查 adapter |
+| run 中 adapter 不可用 | 当前 step `failed(failure_class='infra')`；不静默换 adapter；恢复走新 attempt |
+| 人工覆盖到 Tier 2 的写步骤 | 直接拒绝 `TIER_UNSUPPORTED` |
+
+#### 5.9.11 StepInput / StepResult 字段级契约（B2）
+
+命名对齐：`taskId` → `work_item_id`；`stepId` → `work_steps.id`。
+
+**StepInput**
+
+```ts
+interface StepInput {
+  workItemId: string;            // 原 taskId
+  revision: number;
+  stepId: string;                // work_steps.id
+  attempt: number;
+  scope: { files: string[]; symbols: string[] };
+  acceptance: string[];
+  depsOutputRefs: Array<{ stepId: string; outputRef: string; summary: string }>; // 只注入声明引用
+  attemptContext: {
+    lastFailureClass?: string;
+    lastPartialRef?: string;
+    comments?: string[];         // checker FIX 评论
+    userAnswer?: string;         // needs_input 回答
+  };
+  adapter: { name: string; tier: 1 | 2 | 3 };
+  deadlineAt: number;
+  outputSchemaRef: string;
+}
+```
+
+- `depsOutputRefs` 只注入引用，不注入全文；解析失败 → `DEP_OUTPUT_MISSING`（§5.9.8.1）。
+- `attemptContext` 只带上一 attempt 的结论，不回放历史对话。
+
+**StepResult**
+
+```ts
+interface StepResult {
+  status: 'succeeded' | 'failed' | 'needs_input' | 'timed_out' | 'cancelled';
+  outputs?: Record<string, unknown>;
+  outputParse: 'ok' | 'fallback';
+  outputExtraKeys?: string[];
+  partial?: {
+    resultText?: string; resultFiles?: string[];
+    fileChanges?: string[]; tokensUsed?: number; truncated?: boolean;
+  };
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  failureClass?: 'infra'|'busy'|'turn_fail'|'verify_fail'|'test_fail'|'env_fail'|'timeout'|'cancel'|'denied';
+  verdict?: 'PASS' | 'FIX' | 'INPUT_REQUIRED';
+  inputRequest?: { question: string; options?: string[]; default?: string; blocks: string[] };
+}
+```
+
+**落库映射**
+
+| 结果字段 | 落点 |
+|---|---|
+| `outputs` | `work_runs.outputs_json` |
+| `outputExtraKeys` | `work_runs.output_extra_keys` |
+| `partial` | `work_runs.partial_output_ref`（统一 JSON） |
+| 文件变更 | `change_sets.files_json`（**不是** `outputs`） |
+| `usage` | 既有 `agent_usage` 成本账本 |
+| `failureClass` | `work_runs.failure_class` |
+| `inputRequest` | `work_steps.input_request_json` |
+
+- `outputs` 不得塞文件清单；文件一律走 `change_sets`，避免同一事实两套口径。
+- `usage` 缺失写 NULL 并可计费告警，不得用 0 冒充"未消耗"。
+- `status='failed'` 必须带 `failureClass`，缺失即 `INVALID_FAILURE_CLASS`；`status='cancelled'` 必须带 `cancel_reason`。
 
 ---
 
@@ -1445,6 +1598,27 @@ subject_id   TEXT
 - flow 的 `plan_hash` 包含步骤顺序与每步命令，顺序变化即视为未审批；
 - **范围（已定）**：流程级测试从 **L2 起做最小版**：框选子图 → 每个节点生成一个验证步 + 一个 shell 测试步 → 产出 `test_report`。**不做可视化编排**（拖拽排序、分支/并行编辑器属 L3）；L1 仍只做节点级测试。
 
+##### 6.5.1.1 flow 最小版执行契约（B2）
+
+**输入**：框选子图 `{graphId, nodeEntityKeys[]}`，节点必须属于 dev 图；每个节点读取 `verifies` 链接到 test-case。
+
+**生成**
+
+1. 校验选择集连通且无环；有环 → `SUBTREE_CYCLE`，拒绝生成计划。
+2. 按 `edges` 依赖做拓扑排序；无依赖时按框选顺序。
+3. 每个节点生成两步：`verify`（运行其 `verifies` 的 test-case spec）+ `shell`（该节点绑定的测试命令；无绑定 → `MISSING_TEST_COMMAND`）。
+4. 写入 `test_specs(kind='flow')`，`steps_json` 固化顺序与命令；`plan_hash` 走 §6.3 审批。
+
+**执行与产物**
+
+- 一个 `test_runs(kind='flow')`；每步一条 `test_results`。
+- 任一步 `failed` / `timed_out` / `denied` → flow `failed`，后续 `skipped`；`continue_on_failure` 默认 false；不自动重跑。
+- 产出 `test_report`（JSON）：`{flow_run_id, overall, nodes:[{node_entity_key, verify:{status,result_ids[]}, shell:{status,result_ids[]}}]}`，落 `test_runs.report_ref`。
+- 干净 worktree 且命令通过 → 对目标节点写 E3；dirty 只写 E2（§6.2.1）。
+- `manual` / `llm_acceptance` 不得进 flow（§6.5.1）。
+
+**不做**：拖拽排序、分支/并行编辑、可视化 DAG；改顺序 = 重新生成计划并重新审批。
+
 #### 6.5.2 `published` 软阻断（测试资产）
 
 test 图节点允许 `draft → confirmed → published`。`published` 增加一条**软阻断**：
@@ -1452,6 +1626,15 @@ test 图节点允许 `draft → confirmed → published`。`published` 增加一
 - 没有任何通过记录（E3 或至少一条 `test_runs.status='passed'`）时，默认按钮不得是"发布"；
 - 用户仍可显式确认发布，但必须填写理由并落库（`published_waiver_json`：`{by, at, reason, missing}`）；
 - 这是**软阻断，不是硬拒绝**：不阻止人工标记 `published`，只影响徽标与统计口径 —— 无通过记录的发布在叠加层显示"未验证发布"徽标，并计入 `published_without_evidence`（单列，不计入"已验证资产"）；不采用强制测试或二次确认。
+
+##### 6.5.2.1 `published` 判定、徽标与回滚（B2）
+
+- `has_pass_evidence`：该 test-case 节点存在未撤销 E3，或至少一条 `test_runs.status='passed'`。
+- `published` 且 `has_pass_evidence=0` → `published_without_evidence` 计数 +1，叠加层显示"未验证发布"；不计入"已验证资产"。
+- 人工发布必须写 `published_waiver_json={by, at, reason, missing[]}`；缺任一字段 → 拒绝写入。
+- 不做强制测试、不做二次确认；默认按钮可以是"先测试"，但**不得隐藏"仍然发布"入口**。
+- 回滚：`published → confirmed` 只改 `nodes.status` 与徽标；**不删除** `test_results` / 证据行。再次发布重新计算 `has_pass_evidence`。
+- 发布后测试失败：`nodes.status` 保持 `published`（人工状态不被自动改写），徽标追加"最近测试失败"；`published_without_evidence` 按当前证据重算。
 
 ### 6.6 Bug 闭环与定向重测（采纳）
 
@@ -1486,6 +1669,17 @@ test 图节点允许 `draft → confirmed → published`。`published` 增加一
 - 例：`npm test` 必须断言读取了 `package.json`（`scripts`、`workspaces`）、`.npmrc`（registry/鉴权）、`NODE_ENV`、`tsconfig`（若命令走 `tsc`）；`pytest` 必须断言 `pytest.ini` / `pyproject.toml` / 环境变量白名单。
 - 测试要能在"配置键清单变化"时失败（例如新增读取 `.env` 或 `~/.npmrc` 未列入白名单），而不是只验证命令能跑通。
 - 未补该测试的 allow 命令不得合入；这防止测试命令在无人注意时读取配置中的凭据或改变行为。
+
+#### 6.8.2 测试执行网关接口契约（B2）
+
+| 接口 | 输入 | 输出 | 失败分支 |
+|---|---|---|---|
+| `test:plan:create` | `{workItemId, graphId, projectPath, specIds[]}` | `{planId, planHash, items[]}` | `OWNERSHIP_MISMATCH`；`SPEC_NOT_EXECUTABLE`（含 manual 步骤）；`NO_COMMANDS` |
+| `test:plan:approve` | `{planId}` | `{approvalId, expiresAt}` | `HASH_MISMATCH`；`APPROVAL_PENDING`（幂等返回既有） |
+| `test:plan:run` | `{planId}` | `{testRunId}` | `NOT_APPROVED` / `APPROVAL_EXPIRED`；`HASH_MISMATCH`；`CONCURRENT_TEST`（A3 串行）；`WORKTREE_FAILED`（`env_fail`，不建 bug） |
+| `test:run:get` | `{testRunId}` | 结果与步骤状态 | 只读，无失败分支 |
+
+执行顺序：逐条 `evaluateBashPolicy` → `evaluateGitDirWriteGuard` → 以 worktree 为 `cwd` 执行 → 写 `test_results` → 聚合 `test_runs`。`policy_decision='deny'` 的命令即使计划已批准也不执行，写 `denied` 结果；计划其余命令默认停止（`continue_on_failure=false`，后续 `skipped`）。每条命令超时独立（默认 60 分钟，可配置），超时即 `timed_out`。
 
 ---
 
@@ -1878,6 +2072,7 @@ CREATE TABLE work_runs (
   result_summary       TEXT,
   outputs_json         TEXT,
   output_parse         TEXT CHECK(output_parse IN ('ok','fallback')),
+  output_extra_keys    TEXT,            -- schema 外被丢弃的键（JSON 数组）
   partial_output_ref   TEXT,
   failure_class        TEXT CHECK(failure_class IN (
     'infra','busy','turn_fail','verify_fail','test_fail',
@@ -2671,8 +2866,10 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 3. `terminateSession` 必须**幂等**，并覆盖非 `cancel()` 触发的 abort（timeout / error / shutdown）；重复调用不抛错、不重复发事件。
 4. 父会话终止必须级联取消其子代理；`startSession` 的耗时计入超时计时（不能等会话建好才开始计时）。
 5. 失败路径也必须执行 Phase B / 记忆提取（若产品要求"失败也提取"）；否则不得在下游把"未执行 Phase B"当成成功。
+6. **`terminateSession` 自身失败只记 warn**：不覆写已定终态；不得因清理失败把 `succeeded` 改成 `failed`。
+7. **terminate 收尾触发 ScopeGuard 事后校验**：越界改动按 §6.4 回滚；不可回滚时标 `scope_violation` 并保留现场，不得静默通过。
 
-**验收**：timeout / 子 agent error / abort 三条拒绝分支各一条用例，断言 terminate 被调用、invocation 已落 partial、Phase B 执行或明确标记失败、无孤儿会话。
+**验收**：timeout / 子 agent error / abort 三条拒绝分支各一条用例，断言 terminate 被调用、invocation 已落 partial、Phase B 执行或明确标记失败、**进程树确死且 proc-registry 已清空**、无孤儿会话。
 
 #### F2 失败路径丢失部分产出与 token
 
@@ -2686,6 +2883,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 4. 截断与大小上限：`result_text` / `result_files` 按配置上限截断并标 `truncated`；不得因超限再次抛错。
 5. 明确区分 `failed` 与 `cancelled`：用户取消写 `cancelled`，执行错误写 `failed`；两者都保留 partial，但不得混写。
 6. 失败路径必须计 token；`tokensUsed` 在异常包装时一并带出，不能只在成功分支读取。
+7. `repo.fail(error, partial?)`：增加可选 `partial` 参数，落 `result_text` / `result_files`；不新增表。
+8. 进度事件 `failed` 携带 `partialSummary:{resultTextChars, resultFilesCount, truncated}`；**不使用 `[partial]` 文本前缀**，partial 一律走结构化字段。
 
 **验收**：制造子 agent error + 已产生 stdout/fileChange；断言 invocation 行存在、`status='failed'`、`result_text/result_files` 非空、`tokensUsed>0`；取消路径 `status='cancelled'` 且 partial 保留；IPC 消费方不崩溃。
 
@@ -2713,7 +2912,14 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 - `agent_turns.status` 无 `timed_out`：**采用 F3-A（已定）** —— 映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；**不重建 `agent_turns`**。理由：重建表是 S4 级不可逆操作，为一个状态值不值得；UI 需要区分时在展示层由 `failure_type` 派生（"超时失败"徽标与筛选），不新增库内状态。
 - **F3-B（已否决）**：重建 `agent_turns` 并把 `timed_out` 加进 CHECK。否决原因：表重建、备份/恢复与迁移窗口成本高，且会与 S1–S6 迁移叠加；收益仅为状态枚举更干净。除用户重新裁决外不再提起。
 - 增加索引：`CREATE INDEX idx_agent_turns_deadline ON agent_turns(deadline_at) WHERE status='running'`（只索引运行中行，避免全表）。
-- 执行者：turn 启动时写 `deadline_at`；超时用 `AbortController` + 杀进程组；先落 partial（F2），再写 `status='failed'` + `failure_type='timeout'`。审批等待期暂停 deadline（进入 `waiting_approval` 时置 NULL，恢复时重算）。
+- **写入点与禁止复用（F3-A）**：`sendCommandThroughKernel` 透传 `deadlineMs`；`insertTurn` 的 `deadlineAt ?? null` 参数位已存在，写入 `0` 表示**不启用** deadline（不是"立即超时"）。超时路径**不得复用 `cancelTurn`**：后者通过 `finalizeTurnStatus('cancelled', …)` 做终态 CAS，随后再写 `failed` 会因状态已非 `running` 返回 `false`，导致超时永远落不了 `failed`。正确路径：
+  1. 超时控制器先杀进程组并 terminate 会话（满足 §5.9.8.1 的"终态在 terminate 之后"）；
+  2. 按 F2 落 partial（`result_text` / `result_files` / `tokensUsed`）；
+  3. 单次终态 CAS：`UPDATE agent_turns SET status='failed', failure_type='timeout', error_code='DEADLINE_EXCEEDED' WHERE id=? AND status='running'`；
+  4. `changes=0` → 已被完成/取消抢先，读取实际终态并保留，不覆盖；
+  5. 不调用 `cancelTurn` 的终态分支，不先写 `cancelled`。
+- **待定（用户裁决）**：超时默认值放配置键 `agent.timeouts.turnMs` 还是代码常量，本文不写死；无论放哪，必须只有一个来源。
+- **待定（用户裁决）**：审批等待期如何暂停 deadline —— 候选 A：置 NULL 并冻结原值，恢复时重算；候选 B：不置 NULL，到期检查跳过 `waiting_approval` 行。两者都要求"等待时间不计入超时"，施工前裁决，不得默默选。
 - 重启：扫描 `status='running' AND deadline_at <= now`，无存活进程 → 写 `failed` + `failure_type='timeout'` + `error_code='DEADLINE_EXPIRED_ON_RESTART'`；**不自动重跑**。不把过期 deadline 留在 `running`。
 - 与 F1 的边界：F3 只负责"到期杀"; 取消/错误仍走 F1 的拒绝路径 terminate。
 
@@ -2749,6 +2955,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | `TestExecutor` | 计划审批提交、worktree 管理、逐条命令执行与结果回写 |
 | `MapIntegrityService` | 孤儿链接、键缺失、派生状态漂移的巡检与报告 |
 
+`WorkItemService` / `WorkRunService` / `RoutingService` 的接口签名与错误码见 §5.9.9–§5.9.10；StepInput / StepResult 与落库映射见 §5.9.11。所有编排接口返回结构化错误码，调用方不得依赖异常文本分支。
+
 ### 9.2 IPC 通道（renderer → main）
 
 | 通道 | 职责 | 备注 |
@@ -2782,6 +2990,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | `event:node-execution-state` | 派生状态变化 | `{graphId, nodeEntityKey, executionState, evidenceLevel, staleCount}` |
 | `event:work-item-changed` | revision / status 变化 | `{lineageId, revision, status}` |
 | `event:work-step-changed` | 步级状态迁移 | `{workItemId, stepId, status, attempt}` |
+| `event:work-step-partial` | 失败/取消时已收 partial | `{workStepId, attempt, resultTextChars, resultFilesCount, truncated}`（结构化，不用 `[partial]` 文本前缀） |
 | `event:test-run-updated` | 测试计划/运行变化 | `{planId, runId, status, passed, failed}` |
 | `event:map-link-changed` | 链接增删/孤儿化 | `{graphId, fromEntityKey, toEntityKey, linkType, status}` |
 
@@ -2975,6 +3184,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 3. **dev→online 提案 UI 是否提前到 L2**。本文默认 L3，L1/L2 只允许人工直接编辑 online 图。
 4. **D1 计划确认强度、D4 流程节点折叠**：本次**保持现状不动**，等用户拍板后再改。
 5. **E4 过期是否延后到 P4**：**不采纳"延后"**；保持统一 30 天可配置，并补"一键续签 + 引用原 coverage"方向（§3.5）。
+6. **F3 超时默认值放哪**：配置键 `agent.timeouts.turnMs` vs 代码常量。两者都要求单一来源，本文先标待定（§8.15）。
+7. **审批等待期如何暂停 deadline**：候选 A（置 NULL + 冻结原值，恢复时重算）vs 候选 B（不置 NULL，到期检查跳过 `waiting_approval`）；都要求等待时间不计入超时，施工前裁决（§8.15）。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -3023,13 +3234,32 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 表数 | 仍写"21 张表" | 我们已是 **22 张**；L1 最小集 **13 张** | §8.12 与 §7.2；D2 新增 `work_steps` 后总数 22 |
 | P6 / 伪节点 | 仍标"不可用" | **伪节点已取消**（§4.5 D8）；**Yjs 已单向只读**（§2.2.1），不是"不可用" | §4.5、§2.2.1、§8.11；完全拆除才属 L3（§2.8） |
 
----
+### 12.10 Zcode v1.2 逐节评估：明确不采纳
+
+| 主张 | 不采纳理由 |
+|---|---|
+| Tier 2 以 `workspace-write` 执行写步骤 | 推翻"编排写路径仅 Tier 1"，等于给无写前审批的后端开后门（§5.9.5） |
+| "drop 迁移单提交 revert 即可" | 代码可回退，已删除的行/列数据回不来；必须先备份并演练恢复（§2.8） |
+| 纯百分比上下文预算 | 无总预算与 tokenizer 口径，是伪精度；按 §5.9.8.1 的固定增量 + 裁剪顺序 |
+| embedding ≥0.85 与"路径转 glob" | 无数据模型、无算法、无验证方式；不落表也不落规则 |
+| 整表术语对照 | 含错误映射（把 `task_steps` → `work_runs`，应为 `work_steps`）与陈旧主张；只按 §5.9.11 / §4.2 的字段对齐，不做整表搬运 |
+| `needs_input` 未入值域 | 已定 13 个 `work_items.status`，不重开；`needs_input` 早在 D2 建齐 |
+| 伪节点本期保留 | D8 已取消 `thread:<id>` 伪节点；不回收 |
+| 其 L1/L2 表切分 | 与我们 L1 13 表冲突；`change_sets` / `work_steps` 必须在 L1 |
+| `StageOverride.replace('extract')` | `pipeline.ts` 是字段映射而非方法调用，照写编译失败 |
+| "turn 事件流监控点" | 没说是谁跑、多久一次、如何防并发重复杀；按 F3 的单一 deadline 执行者 |
+
+### 12.11 Zcode v1.2 的事实性提醒
+
+- 该版本若干结论基于**过期快照**：它称本文约 1809 行，实际本轮前已 3129 行；章节号、表数与已裁决项均已变化。凡与本文冲突处，以本文当前版本为准。
+- 其关于 Yjs WS 缓解、输出上限、测试数量的具体数字**不采用**；Yjs 事实只以 §2.2.1 的已核实结论为准，测试范围只以 §2.8 的 6 文件 / 116 个 `it` 为准。
+- 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
 ## 13. 覆盖审计（2026-11-07）
 
-> 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
+> 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§5.7、§5.9.x、§6.5.x、§6.8.x、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1/B2 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
 
-**汇总**：共 102 行；可施工 7 节；有框架缺细节 70 节；只有结论 25 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；五条裁决已定案，相关行不再标待定。
+**汇总**：共 102 行；可施工 13 节；有框架缺细节 66 节；只有结论 23 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；B2 已落到 §5.7、§5.9.x、§6.5.x、§6.8.x；五条裁决已定案，相关行不再标待定。
 
 | 章节 | 现有内容形态 | 缺什么 | 属于哪一批 |
 |---|---|---|---|
@@ -3061,7 +3291,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §2.6 数据结构 | 只有结论 | DDL 指向 §7.2；无独立施工内容 | B1 |
 | §2.6 与 S1 关系 | 只有结论 | 无；硬前置已明确 | B1 |
 | §2.7 提案机制 | 只有结论 | 提案 UI、采纳/驳回状态、撤销语义 | B3 |
-| §2.8 Yjs 拆除清单 | 只有结论 | 拆除决策、逐类处置、旧快照数据方案；本期不施工 | B3 |
+| §2.8 Yjs 拆除清单 | 有框架缺细节 | runbook 与逐类处置已补；仍待拆除决策与旧快照数据方案，本期不施工 | B3 |
 | §3.1 双轨边界 | 有框架缺细节 | 自动写 `nodes.status` 的两条路径如何关闭、验收断言 | B1 |
 | §3.2 证据等级 | 有框架缺细节 | 等级字段组合校验、写入校验、禁止先写后降级 | B1 |
 | §3.3 派生优先级 | 有框架缺细节 | 输入集合、tie-break、`inputs_hash`；过期 E4 → `stale` 已裁决 | B1 |
@@ -3087,22 +3317,22 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §5.5 可修订计划 | 有框架缺细节 | revision 状态、DAG 环检测、父子聚合的实现 | B2 |
 | §5.5.1 DAG 正确性 | 有框架缺细节 | Kahn 伪代码、依赖优先级冲突、终态聚合验收 | B2 |
 | §5.6 确认点 | 有框架缺细节 | C1–C4 接口、计划快照、确认/退回状态 | B2 |
-| §5.7 偏差度量 | 有框架缺细节 | 归因口径与单一聚合窗口已定；字段/视图已落 §7.2，待补采集时点 | B2 |
+| §5.7 偏差度量 | 可施工 | 归因口径、单一聚合窗口、字段/视图与采集时点已齐 | B2 |
 | §5.8 退化兜底 | 有框架缺细节 | D1–D7 触发判据、执行落点、验收 | B2 |
-| §5.9 执行编排 | 有框架缺细节 | 调度/取消/超时/路由/审批的接口级输入输出与失败分支 | B2 |
-| §5.9.1–5.9.8 子节 | 有框架缺细节 | 单步/多步分流判据、失败分类落库、忙重排、deadline、Tier 票、取消竞态、步状态迁移表 | B2 |
-| §5.9.8.1 黑板/Phase B/fanout | 只有结论 | 黑板数据结构、Phase B 接口、fanout 快照格式；本期不实现 | B3 |
+| §5.9 执行编排 | 可施工 | 调度 tick、接口输入输出、错误码与失败分支已齐（§5.9.9） | B2 |
+| §5.9.1–5.9.8 子节 | 可施工 | 单步/多步、失败分类、忙重排、deadline、Tier 票、取消竞态、步状态迁移已齐 | B2 |
+| §5.9.8.1 黑板/Phase B/fanout | 有框架缺细节 | 上下文最小化、检索预算与水位线已补；黑板数据结构与 Phase B 接口仍属 B3 | B3 |
 | §6.1 边界与复用 | 只有结论 | 无；复用声明本身不需施工 | B2 |
 | §6.2 执行流程 | 有框架缺细节 | 步骤接口、worktree 创建/清理、命令超时、失败分支 | B2 |
 | §6.2.1 E3 判据 | 可施工 | 无；五条判据与 dirty 降级已可执行 | B2 |
 | §6.3 审批 subject | 有框架缺细节 | `agent_approvals` 重建/迁移、subject 取值、回调幂等 | B2 |
 | §6.4 安全约束 | 有框架缺细节 | `.git` 写拒绝、cwd 固定、输出脱敏的执行检查 | B2 |
 | §6.5 测试资产与回写 | 有框架缺细节 | 资产创建/更新、结果回写事务、失败重试 | B2 |
-| §6.5.1 流程级测试 | 有框架缺细节 | `test_specs.kind='flow'` 的执行器、步骤序列、失败判定 | B2 |
-| §6.5.2 `published` 软阻断 | 有框架缺细节 | 软阻断口径已定（不阻止人工标记，只影响徽标与统计）；待补测试通过的判定与回滚 | B2 |
+| §6.5.1 流程级测试 | 可施工 | flow 生成、拓扑序、失败判定与 `test_report` 已齐（§6.5.1.1） | B2 |
+| §6.5.2 `published` 软阻断 | 可施工 | 判定、徽标、豁免与回滚已齐（§6.5.2.1） | B2 |
 | §6.6 Bug 闭环 | 有框架缺细节 | bug 节点创建、定向重测、链接回写 | B2 |
 | §6.7 手工用例/E4 | 有框架缺细节 | 手工执行记录、E4 签收入口、覆盖范围 | B2 |
-| §6.8 测试命令网关 | 有框架缺细节 | 网关接口、归属校验、allow/deny 落库 | B2 |
+| §6.8 测试命令网关 | 可施工 | 计划创建/审批/执行接口、错误码与失败分支已齐（§6.8.2） | B2 |
 | §6.8.1 allow-list 纪律 | 只有结论 | "配置键消费测试"的 harness、覆盖清单、CI 门禁 | B2 |
 | §7.1 既有表变更 | 有框架缺细节 | 列迁移、回填、索引、旧库兼容、回滚 | B1 |
 | §7.2 新增表（B1 13 张） | 有框架缺细节 | 写入者/时机/失败分支/验收；DDL 已齐但缺行为契约 | B1 |
@@ -3134,11 +3364,13 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §11.1 三个风险 | 只有结论 | 无 | — |
 | §11.2 开放问题 | 只有结论 | 无；默认假设已给 | — |
 | §11.3 规模与保留 | 有框架缺细节 | 每节点/证据/link 上限、分页阈值、retention 任务 | B1 / B2 |
-| §12.1–12.9 对照/审查记录 | 只有结论 | 无；记录性质 | — |
+| §12.1–12.11 对照/审查记录 | 只有结论 | 无；记录性质 | — |
 
 **审计结论**
 
 - **空挂 0**：没有"标题在、内容缺"的章节；`ContextBundle` / 尾块协议有明确外部指向，不算空挂。
 - **B1 可施工边界（裁决后）**：S1、S2、S5a、S6a、迁移状态机、F1–F3 行为契约已细化；U1 与 F3 选型已定案（过期 E4 → `stale`；F3-A），F1–F3 的源码修复路径仍需单独授权。
 - **B1 一次性修正（已接受）**：`work_items.status` 补 `failed`（13 值），否则 §5.5.1 的父任务失败聚合无法落库；表总数不变（22），L1 仍 13 张。
+- **B2 可施工边界**：§5.9 及子节、§5.9.9–5.9.11、§5.7、§6.5.1/§6.5.2、§6.8 已细化到接口级输入输出与失败分支；黑板/Phase B/fanout 仍属 B3。
+- **Zcode v1.2 处理**：采纳 9 项落 §2.8 / §4.2 / §5.9.5 / §5.9.8 / §5.9.8.1 / §5.9.11 / §8.15 / §9.3；不采纳 10 项与事实性错误见 §12.10 / §12.11；两项待裁决见 §12.5 第 6、7 项。
 - **B1 不动的口径**：查重 N=12 / 0.6 / 0.8、90 天、E4 30 天、记住放行、重建判据、L1 不删节点、E3/E4 可复现语义、`signed_by`、Tier2 只读、单向 Yjs 均未改写。
