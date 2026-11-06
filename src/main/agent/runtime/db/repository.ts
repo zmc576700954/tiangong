@@ -188,6 +188,8 @@ export interface InsertApprovalInput {
   cwd?: string
   /** 会话级授权的来源 approval id（自动放行时写入，供审计） */
   grantSource?: string
+  /** 宿主策略直接否决时的可读原因（写入 decision_note，供工具 deny 消息与审计） */
+  note?: string
 }
 
 // ---------------------------------------------------------
@@ -910,8 +912,8 @@ export class AgentRepository {
       .prepare(
         `INSERT INTO agent_approvals
            (id, run_id, turn_id, step_id, tool_name, args_json, args_hash, risk, policy_decision,
-            status, decided_by, decided_at, expires_at, mode, timeout_ms, cwd, grant_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            status, decided_by, decided_at, decision_note, expires_at, mode, timeout_ms, cwd, grant_source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -926,6 +928,7 @@ export class AgentRepository {
         input.status ?? 'pending',
         input.policyDecision === 'allow' ? 'policy' : input.policyDecision === 'deny' ? 'policy' : null,
         input.policyDecision === 'allow' || input.policyDecision === 'deny' ? now : null,
+        input.note ?? null,
         input.expiresAt,
         input.mode,
         input.timeoutMs,

@@ -760,6 +760,38 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 **诚实边界**：这是可解释、可测试的规则，不是完备沙箱。只约束 Claude 的 Bash 工具入口；不阻止 CLI 经其他工具（如自定义 MCP）执行命令，也不阻止用户在审批卡片上批准任何命令。**旧路径（`BIZGRAPH_AGENT_KERNEL=0`）没有审批网关，仍沿用 SDK 自身策略**——这套两档策略只在内核路径生效。
 
+#### 4.6.1 写类工具不得写 git 元数据（D1，2026-11-06）
+
+配置探针能拦「读命令消费了危险配置」，但它拦不住**配置是怎么被写进去的**。一条已经走通的链是：
+
+```
+用户批准一次 Write .git/config（或 .git/hooks/pre-commit）
+  → 写入 core.hooksPath / core.fsmonitor / diff.external
+  → 后续 git status/diff 被探针判定为「仓库配置」而 ask……但探针只判执行型键；
+    若写的是 hooksPath 之外的新键，或 hook 文件本身，则下一次普通读命令零审批执行
+```
+
+因此 D1 在**审批决策之前**（`ApprovalGateway.request()` 入口、会话级授权匹配之前）对写类工具的目标路径做硬拦截，命中即 **deny**（`policy_decision='deny'`、`decided_by='policy'`），不是 ask。实现：`src/main/agent/runtime/approval/gitdir-write-guard.ts`，路径解析与写类工具识别与 §7.6 共用 `write-paths.ts`。
+
+拦截范围（全部 realpath 归一后比较，macOS 再折叠大小写）：
+
+| 目标 | 判定 |
+|---|---|
+| `git rev-parse --absolute-git-dir` 结果内（`config` / `config.worktree` / `hooks/*` / `index` / `packed-refs` / `info/*` / `modules/**`） | block |
+| `git rev-parse --git-common-dir` 结果内（linked worktree 的 `.git/worktrees/*`、主仓库 `config`） | block |
+| `.git` 是 gitdir 文件的仓库（外部 gitdir）及其 `modules/` | block |
+| 目标自身位于一个 bare/外部 gitdir 目录内（`HEAD` + `config|objects` 特征，不依赖 `git` 可执行文件） | block |
+| 目标 basename 恰为 `.git`（目录或指针文件） | block |
+| 与上述任一元数据文件同 inode（hardlink 到 `.git/config`） | block |
+| symlink（文件 / 目录 / 祖先目录是 symlink）指向以上任一处 | block |
+| 目标属于**另一个**仓库（cwd 仓库之外）的 gitdir | block |
+
+不得误伤（均有单测）：工作区普通文件、`.gitignore`、`.gitattributes`、`.github/workflows/*`、仓库根普通文件、`src/.git/foo`（名为 `.git` 的普通目录、且不含 `HEAD`/`config` 特征时不视为 gitdir）。
+
+**fail-closed**：git 不可用、会话 `cwd` 不存在、目标无可探测的存在目录、`git rev-parse` 非「not a git repository」的失败 → **默认 block**，reason 明写「按 fail-closed 阻止写入」。这是**有意选择**：无法证明目标不是 git 元数据时，不把「看不见危险配置」当成安全。回退开关 `BIZGRAPH_GITDIR_WRITE_GUARD=ask`（降级为弹窗，且不会被会话级授权自动放行）或 `=off`（完全停用，等价修复前行为）。
+
+审计：`agent_events.type='approval.policy_blocked'`（payload `toolName/rule/reason/targets/gitDirs`），同时落一条 `agent_approvals` denied 行（`decision_note` 存可读原因），工具返回的 deny 消息带同一原因。阻断发生在 `notifier.onRequest` 之前，用户不会看到一张「批准后仍被拒」的弹窗。
+
 ### 4.7 事件保留与存储统计（P0-2）
 
 **只清事件，不动台账**：
@@ -1046,6 +1078,7 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 
 ### 7.2 校验顺序（main 唯一权威）
 
+0. **D1 前置硬拦截**：写类工具的目标路径若命中 git 元数据目录（gitdir / commonDir / modules / 外部 gitdir / `.git` 指针 / hardlink 同一 inode），直接 `deny`（`policy`），**不进入用户审批、也不会命中会话级授权**；探测失败默认 block（fail-closed）。详见 §4.6.1。
 1. `approvalId` 存在；
 2. **归属校验**：`turnId` / `runId` / `sessionId` 必须与审批行（及其所属 turn）一致；若该会话由某个 `webContents` 发起，决议方必须是同一窗口（`sessionWindowBindings`），否则返回 `APPROVAL_NOT_OWNED`（可读错误，不静默）。
    - **窗口绑定生命周期**：`agent:startSession` 记录 `sessionId → senderId`，并向该 sender 订阅一次 `webContents.destroyed`；窗口销毁时清掉它绑定的所有会话，避免绑定永久指向不存在的窗口。
@@ -1091,7 +1124,7 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 - **范围**：只覆盖写类工具（Write / Edit / MultiEdit）。**Bash 不覆盖**——每条 Bash 仍按 §4.6 两档策略判定；网络、MCP、非写类工具也不覆盖。
 - **作用域**：per-session。同一会话内跨 turn 生效；**跨会话不继承，重启不继承**。
 - **留痕**：自动放行仍写 `agent_approvals`，字段为 `policy_decision='allow'`、`decided_by='policy'`、`grant_source=<授权来源>`、`cwd=<会话工作目录>`；审批事件与步骤事件带 `step_id`。审计上不出现「无记录的放行」。
-- **路径边界**：只对会话 `cwd` 内、且经 `realpath` 归一后的路径生效（macOS `/tmp` → `/private/tmp` 别名已处理）。
+- **路径边界**：只对会话 `cwd` 内、且经 `realpath` 归一后的路径生效（macOS `/tmp` → `/private/tmp` 别名已处理）。**即使路径在 `cwd` 内，命中 git 元数据目录时 D1 仍会先 deny**——会话授权覆盖不了 §4.6.1 的硬拦截。
 - **每次命中都重新校验（P0-1，不缓存 realpath）**：会话级授权是「作用域凭证」，不是「一次批准 = 任意写」。命中前逐项检查：
   1. 工具属于写类集合（写类之外一律不命中，Bash / 网络 / MCP 永远回到审批）；
   2. 本次调用的**每个**目标路径都做 `realpath` 后仍在授权 `cwd` 内（多路径任一越界即整体不命中；解析最近已存在祖先的 realpath，因此「工作区内 symlink 指向外部目录」同样会被识别；尾部分隔符与 macOS 大小写变体统一归一）；

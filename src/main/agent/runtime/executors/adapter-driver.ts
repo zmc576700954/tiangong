@@ -280,7 +280,10 @@ export class AdapterBackendDriver implements BackendDriver {
         )
         if (outcome.decision === 'deny') {
           context.step.update(stepId, 'denied')
-          return { behavior: 'deny', message: `Tool ${toolName} denied by ${outcome.decidedBy}` }
+          // 策略直接否决时必须把可读原因带回模型/用户；只写 decidedBy 会让人以为
+          // 「用户拒绝了」，而实际是目标路径属于 git 元数据目录一类的硬拦截。
+          const detail = outcome.reason ? `：${outcome.reason}` : ''
+          return { behavior: 'deny', message: `Tool ${toolName} denied by ${outcome.decidedBy}${detail}` }
         }
         context.step.update(stepId, 'approved', { approvedAt: Date.now() })
         return { behavior: 'allow', updatedInput: input }

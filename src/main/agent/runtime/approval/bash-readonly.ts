@@ -538,7 +538,7 @@ function gitConfigProbeDisabled(): boolean {
  * 用与应用同一执行环境的 PATH 解析 git 绝对路径（不写死 `/usr/bin/git`）。
  * Bash 工具里的 `git` 也是按 PATH 查找的，因此这里选到的就是实际会被调用的那一个。
  */
-function resolveGitExecutable(): string | null {
+export function resolveGitExecutable(): string | null {
   const pathEnv = process.env.PATH ?? ''
   const extensions =
     process.platform === 'win32'

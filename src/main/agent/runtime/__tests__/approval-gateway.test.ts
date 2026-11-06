@@ -2,10 +2,11 @@
  * D4 验收：审批写前拦截、argsHash 匹配、幂等、超时、重启重放。
  */
 
+import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { ApprovalGateway, INTERACTIVE_TIMEOUT_MS, UNATTENDED_TIMEOUT_MS, classifyToolRisk, isPathInside } from '../approval/gateway'
 import { AgentRepository } from '../db/repository'
 import { AgentRuntimeError } from '../errors'
@@ -196,7 +197,8 @@ describe('ApprovalGateway (D4)', () => {
 
   it('A2: 「允许本次会话」后同会话同类写操作自动放行，但落库保留 grant_source', async () => {
     const { gateway, repo, run, turn, requests } = setup()
-    const cwd = '/tmp/bizgraph-session'
+    // cwd 必须真实存在：D1 的 gitdir 守卫在「工作目录不存在」时 fail-closed。
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-session-'))
     const first = gateway.request({
       runId: run.id,
       turnId: turn.id,
@@ -262,7 +264,7 @@ describe('ApprovalGateway (D4)', () => {
 
   it('A2: 会话级授权不覆盖目录外路径、Bash、或其他会话', async () => {
     const { gateway, run, turn, requests } = setup()
-    const cwd = '/tmp/bizgraph-session'
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-session-'))
     const first = gateway.request({
       runId: run.id,
       turnId: turn.id,
@@ -343,7 +345,7 @@ describe('ApprovalGateway (D4)', () => {
 
   it('A2: session 结束即失效，重启不继承（新网关无授权）', async () => {
     const { db, repo, run, turn, gateway, requests } = setup()
-    const cwd = '/tmp/bizgraph-session'
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-session-'))
     const first = gateway.request({ runId: run.id, turnId: turn.id, toolName: 'Write', args: { file_path: `${cwd}/a.txt` }, cwd, sessionId: 's1' })
     gateway.decide({ approvalId: requests[0].approvalId, decision: 'allow', argsHash: requests[0].argsHash, scope: 'session' })
     await first
@@ -859,6 +861,147 @@ describe('ApprovalGateway 决议归属校验（高优先 5）', () => {
 
     gateway.decide({ approvalId: requests[0].approvalId, decision: 'deny', argsHash: requests[0].argsHash })
     await pending
+    gateway.dispose()
+  })
+})
+
+/**
+ * D1 端到端验收：真实仓库 + 真实审批网关。
+ * 关键断言是「不产生 approval.required」（用户根本看不到弹窗）且审计留痕。
+ */
+describe('D1 · 写类工具禁写 git 元数据（真实网关）', () => {
+  const tempDirs: string[] = []
+  function makeRepo(): string {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-gitdir-')))
+    tempDirs.push(repo)
+    execFileSync('git', ['init', '-q'], { cwd: repo })
+    return repo
+  }
+
+  afterEach(() => {
+    delete process.env.BIZGRAPH_GITDIR_WRITE_GUARD
+    for (const dir of tempDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('写 .git/config → 直接 deny（无弹窗）+ 可读原因 + approval.policy_blocked 审计', async () => {
+    const { gateway, repo, run, turn, requests } = setup()
+    const repoDir = makeRepo()
+    const outcome = await gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      stepId: 'step-w',
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, '.git', 'config'), content: '[core]\n\thooksPath=/bin/sh\n' },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+
+    expect(requests).toHaveLength(0)
+    expect(outcome).toMatchObject({ decision: 'deny', decidedBy: 'policy' })
+    expect(outcome.reason).toContain('git 元数据目录')
+
+    const row = repo.listApprovalsByTurn(turn.id).find((item) => item.status === 'denied')
+    expect(row?.policy_decision).toBe('deny')
+    expect(row?.decision_note).toContain('git 元数据目录')
+    const blocked = repo.listTurnEvents(turn.id).filter((event) => event.type === 'approval.policy_blocked')
+    expect(blocked).toHaveLength(1)
+    expect(blocked[0].payload).toMatchObject({ toolName: 'Write', rule: 'gitdir-write-block' })
+    gateway.dispose()
+  })
+
+  it('写工作区普通文件仍走正常审批（不误伤）', async () => {
+    const { gateway, run, turn, requests } = setup()
+    const repoDir = makeRepo()
+    const pending = gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Edit',
+      args: { file_path: path.join(repoDir, 'notes.md'), old_string: 'x', new_string: 'y' },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(1)
+    gateway.decide({ approvalId: requests[0].approvalId, decision: 'deny', argsHash: requests[0].argsHash })
+    await expect(pending).resolves.toMatchObject({ decision: 'deny', decidedBy: 'user' })
+    gateway.dispose()
+  })
+
+  it('BIZGRAPH_GITDIR_WRITE_GUARD=ask：不 deny，回到弹窗且不被会话授权自动放行', async () => {
+    process.env.BIZGRAPH_GITDIR_WRITE_GUARD = 'ask'
+    const { gateway, run, turn, requests } = setup()
+    const repoDir = makeRepo()
+    // 先建立会话级授权（普通文件）
+    const granted = gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, 'ok.txt') },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    gateway.decide({ approvalId: requests[0].approvalId, decision: 'allow', argsHash: requests[0].argsHash, scope: 'session' })
+    await granted
+
+    const pending = gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, '.git', 'config') },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(2)
+    expect(requests[1].policyRule).toBe('gitdir-write-block')
+    expect(requests[1].policyReason).toContain('git 元数据目录')
+    gateway.decide({ approvalId: requests[1].approvalId, decision: 'deny', argsHash: requests[1].argsHash })
+    await expect(pending).resolves.toMatchObject({ decision: 'deny', decidedBy: 'user' })
+    gateway.dispose()
+  })
+
+  it('对照证据：GUARD=off（等价修复前）→ .git/config 会弹窗，且可被会话授权二次自动放行', async () => {
+    process.env.BIZGRAPH_GITDIR_WRITE_GUARD = 'off'
+    const { gateway, run, turn, requests } = setup()
+    const repoDir = makeRepo()
+    const first = gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, '.git', 'config') },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(1)
+    gateway.decide({ approvalId: requests[0].approvalId, decision: 'allow', argsHash: requests[0].argsHash, scope: 'session' })
+    await first
+
+    // 同会话、同路径：修复前这就是「一次批准 → 后续零审批」的链路。
+    const again = await gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, '.git', 'config') },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(1)
+    expect(again).toMatchObject({ decision: 'allow', autoGranted: true })
+    gateway.dispose()
+  })
+
+  it('会话工作目录不存在 → fail-closed deny（有意选择）', async () => {
+    const { gateway, run, turn, requests, repo } = setup()
+    const outcome = await gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join('/nonexistent-bizgraph', 'a.txt') },
+      cwd: '/nonexistent-bizgraph',
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(0)
+    expect(outcome.decision).toBe('deny')
+    expect(outcome.reason).toContain('fail-closed')
+    expect(repo.listApprovalsByTurn(turn.id).some((item) => item.status === 'denied')).toBe(true)
     gateway.dispose()
   })
 })

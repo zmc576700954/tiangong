@@ -36,6 +36,8 @@ export type NormalizedEventType =
   | 'approval.grant_miss'
   /** P3：Bash 只读白名单决策审计（命中白名单 / 待审 / 被危险模式拦下） */
   | 'bash.policy'
+  /** D1：写类工具被 git 元数据守卫直接否决（策略 deny，非用户决定） */
+  | 'approval.policy_blocked'
   | 'file.change'
   /** M1 ②：工作区快照差分得到的合成文件变更证据（非工具调用记录） */
   | 'evidence.file_change'
@@ -199,6 +201,8 @@ export interface ApprovalOutcome {
   grantSourceApprovalId?: string
   /** 沿用会话级授权、未弹窗的自动放行 */
   autoGranted?: boolean
+  /** 宿主策略直接否决时的可读原因（如 git 元数据目录拦截），供工具 deny 消息展示 */
+  reason?: string
 }
 
 /** 会话级授权（内存态，进程重启不继承；session 结束即失效） */

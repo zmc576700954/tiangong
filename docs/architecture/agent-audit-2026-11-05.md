@@ -4250,3 +4250,55 @@ git -C oldnest diff     # 真实执行 marker；策略 allow
 - 可用性风险已加硬上限（32/300 ms），200 模块从 1.5 s 降到 274 ms，且超限 fail-closed。
 - H3 过度 ask 已收敛：`gpg.program` 单独存在不再弹窗；真实执行的三条路径仍拦截。
 - D1 / B 未实现（等待用户决策）。
+
+---
+
+## 27. D1：写类工具不得写 git 元数据（2026-11-06）
+
+### 27.1 动机：切断「一次批准 → 后续零审批执行」
+
+复验确认的链：用户批准一次 `Write .git/config`（或 `.git/hooks/*`）→ 写入 `core.hooksPath` / `core.fsmonitor` / `diff.external` / hook 脚本 → 后续普通读命令（`git status` / `git diff` / `git fsck` 等）按探针规则执行外部程序。探针只能判断「读命令消费了哪些已知执行型键」，无法阻止配置被写进去，因此必须在**写入口**硬拦截。
+
+实现：`ApprovalGateway.request()` 在匹配会话级授权之前调用 `evaluateGitDirWriteGuard()`；命中即 `policy_decision='deny'` / `decided_by='policy'`，不是 ask。
+
+### 27.2 边界实测（macOS APFS，真实 `git init` 仓库）
+
+| 场景 | 目标 | 修复前（`GUARD=off` 等价） | 修复后（默认 block） |
+|---|---|---|---|
+| 仓库自身 gitdir | `.git/config` / `config.worktree` / `hooks/pre-commit` / `index` | ask（可被会话授权二次自动放行） | **deny**（无弹窗） |
+| gitdir 目录本身 | `.git` / `.git/` | ask | **deny** |
+| 路径归一 | `.git/../.git/config`、`//.git///config`、`./.git/./config` | ask | **deny** |
+| 目标不存在 | `.git/hooks/new-hook`（父存在）、`.git/newdir/x`（父不存在） | ask | **deny** |
+| symlink | 文件/目录/祖先目录 symlink → `.git/config`、`.git`、`.git/hooks` | ask | **deny** |
+| hardlink | 仓库外路径与 `.git/config` 同 inode | ask（realpath 不同，无法识别） | **deny**（rule `gitdir-hardlink`） |
+| 大小写变体 | `.GIT/config` / `.GiT/hooks/x` | ask | **deny** |
+| 跨仓库 | cwd=repo A，目标=repo B `.git/config` | ask | **deny** |
+| 外部 gitdir | `.git` 是 `gitdir:` 文件 → 外部目录 `config` / `hooks/*` / `modules/*/config` | ask | **deny** |
+| linked worktree | commonDir `config`、`.git/worktrees/<n>/config.worktree`、`index` | ask | **deny** |
+| 探测失败 | `PATH` 清空（git 不可用）、cwd 不存在 | ask（fail-open） | **deny**（rule `gitdir-probe-failed`，reason 含 fail-closed） |
+
+不得误伤（全部仍 allow）：仓库根普通文件、`.gitignore`、`.gitattributes`、`.github/workflows/ci.yml`、`src/.git/foo`（名为 `.git` 的普通目录，无 `HEAD`/`config` 特征）、仓库外路径、多目标中第一个正常但第二个命中（整体 deny）。
+
+### 27.3 修复前/后真实流程对照（`approval-gateway.test.ts`）
+
+| 流程 | 修复前（`GUARD=off`） | 修复后（默认） |
+|---|---|---|
+| `Write .git/config`（首次） | `approval.required` 弹窗（`requests=1`） | 直接 deny；`requests=0`；`outcome.reason` 含「git 元数据目录」 |
+| 同会话再次写同一路径 | 命中会话授权 → `allow, autoGranted=true`（**零审批执行**） | 仍然 deny（授权不能覆盖 D1） |
+| `Edit notes.md`（工作区普通文件） | 正常弹窗 | 正常弹窗（不误伤） |
+| `BIZGRAPH_GITDIR_WRITE_GUARD=ask` | — | 回到弹窗，且显式跳过会话授权（`policyRule=gitdir-write-block`） |
+| cwd 不存在 | 弹窗 | deny（fail-closed） |
+
+审计：`agent_events.type='approval.policy_blocked'`（payload：`toolName/rule/reason/targets/gitDirs`）；`agent_approvals` 落 denied 行，`decision_note` 存可读原因；driver 的 deny 消息带同一原因。
+
+**fail-closed 姿态是有意选择**：git 不可用、cwd 不存在、无法解析 gitdir 时默认 block，而不是「看不见就当安全」。回退开关 `BIZGRAPH_GITDIR_WRITE_GUARD=ask|off`；`off` 即修复前行为。
+
+### 27.4 门禁
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` | 0 错误 |
+| `eslint src`（改动文件） | 0 错误 |
+| 定向：`gitdir-write-guard.test.ts` | **17 passed** |
+| 定向：`approval-gateway.test.ts` | **33 passed**（含 D1 5 条） |
+| 其余审批相关测试 | 4 文件 / 36 passed |

@@ -10,8 +10,6 @@
  * - argsHash 必须参与匹配（防 TOCTOU）。
  */
 
-import fs from 'node:fs'
-import path from 'node:path'
 import { hasRedactionMeta } from '../../../shared/redaction'
 import type BetterSqlite3 from 'better-sqlite3'
 import type {
@@ -29,6 +27,7 @@ import { createLogger } from '../../../shared/logger'
 import { AgentRuntimeError } from '../errors'
 import { eventIdFor, hashArgs, newId } from '../util'
 import { bashPolicyForTool } from './bash-readonly'
+import { evaluateGitDirWriteGuard, type GitDirGuardResult } from './gitdir-write-guard'
 
 const logger = createLogger('ApprovalGateway')
 
@@ -109,108 +108,12 @@ export function classifyToolRisk(toolName: string, args: Record<string, unknown>
 }
 
 /**
- * 会话级授权只覆盖「写类工具」，绝不覆盖 Bash/Shell/网络类工具。
- * 这是产品边界：一次会话授权不能退化成任意命令免审。
+ * 路径解析与写类工具识别集中在 `write-paths.ts`，这里只做对外导出，
+ * 保证旧的 import 路径（driver / 测试）不变，同时避免 gateway 与 gitdir 守卫循环依赖。
  */
-const WRITE_TOOL_PATTERN = /^(write|edit|multiedit|notebookedit|create|delete|remove|move|rename|patch|apply_patch|str_replace|str_replace_editor)$/i
+import { isPathInside, isWriteScopedTool, targetPathsOf } from './write-paths'
 
-export function isWriteScopedTool(toolName: string): boolean {
-  return WRITE_TOOL_PATTERN.test(toolName.trim())
-}
-
-/** 单个路径字段（Claude 用 file_path；其他适配器可能用 path/notebook_path）。 */
-const SINGLE_PATH_KEYS = ['file_path', 'notebook_path', 'path', 'target_file', 'targetPath']
-/** 多路径字段：一次调用写多个目标时，任一越界都必须重新弹窗。 */
-const MULTI_PATH_KEYS = ['paths', 'files', 'file_paths', 'targets', 'edits']
-
-function pushPath(targets: string[], value: unknown): void {
-  if (typeof value === 'string' && value.trim().length > 0) {
-    targets.push(value)
-    return
-  }
-  // edits 等数组元素可能是对象：继续按路径字段取
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    collectPaths(value as Record<string, unknown>, targets)
-  }
-}
-
-function collectPaths(args: Record<string, unknown>, targets: string[]): void {
-  for (const key of SINGLE_PATH_KEYS) {
-    const value = args[key]
-    if (typeof value === 'string' && value.trim().length > 0) targets.push(value)
-  }
-  for (const key of MULTI_PATH_KEYS) {
-    const value = args[key]
-    if (Array.isArray(value)) {
-      for (const item of value) pushPath(targets, item)
-    }
-  }
-}
-
-/**
- * 收集一次调用里的**全部**目标路径。写类工具没有可解析路径时返回空数组，
- * 调用方必须视为「不可验证」→ 回到审批（不得静默放行）。
- */
-export function targetPathsOf(args: Record<string, unknown>): string[] {
-  const targets: string[] = []
-  collectPaths(args, targets)
-  return [...new Set(targets)]
-}
-
-/**
- * realpath 归一，解析 symlink 别名（macOS 的 /tmp → /private/tmp 是最常见的例子）。
- * 路径不存在时返回 null，由调用方决定回退方式。
- */
-function tryRealpath(input: string): string | null {
-  try {
-    return fs.realpathSync(input)
-  } catch {
-    return null
-  }
-}
-
-/**
- * 解析「真实路径」：目标常常尚不存在（写新文件），因此自底向上寻找最近的
- * 已存在祖先并 realpath 归一，再把缺失后缀拼回去。
- *
- * 这样能识别**中间目录是 symlink** 的逃逸：`root/link -> /outside` 时，
- * `root/link/new.txt` 即使文件不存在也会落到 `/outside/new.txt`。
- * 注意这是调用时的快照，不跨调用缓存（两次调用之间文件系统可能变化）。
- */
-function resolveRealPath(input: string): string {
-  const abs = path.resolve(input)
-  const direct = tryRealpath(abs)
-  if (direct) return direct
-  let current = abs
-  const missing: string[] = []
-  while (true) {
-    const parent = path.dirname(current)
-    if (parent === current) return abs
-    missing.unshift(path.basename(current))
-    const realParent = tryRealpath(parent)
-    if (realParent) return path.join(realParent, ...missing)
-    current = parent
-  }
-}
-
-/** macOS 默认大小写不敏感：比较前统一小写，避免大小写变体绕过作用域。 */
-function comparablePath(value: string): string {
-  return process.platform === 'darwin' ? value.toLowerCase() : value
-}
-
-/**
- * 作用域判断：root 与目标路径都做 realpath 归一（每次调用重新计算）。
- * 尾部分隔符、大小写变体与 symlink 别名都在这里统一。
- */
-export function isPathInside(root: string, candidate: string): boolean {
-  if (root.length === 0 || candidate.length === 0) return false
-  const rootAbs = path.resolve(root)
-  const rootReal = comparablePath(resolveRealPath(rootAbs))
-  const targetAbs = path.resolve(rootAbs, candidate)
-  const targetReal = comparablePath(resolveRealPath(targetAbs))
-  const rel = path.relative(rootReal, targetReal)
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))
-}
+export { isPathInside, isWriteScopedTool, targetPathsOf }
 
 export class ApprovalGateway {
   private readonly repo: AgentRepository
@@ -261,6 +164,37 @@ export class ApprovalGateway {
     const id = newId('appr')
     const createdAt = this.now()
 
+    // D1：写类工具的目标路径必须避开 git 元数据目录。
+    // 这不是「多弹一次」：一旦允许写 `.git/config`，后续读命令就能零审批执行外部程序，
+    // 弹窗文案无法让用户看见这层因果，因此默认直接 deny（宿主策略决定），
+    // 只有 `BIZGRAPH_GITDIR_WRITE_GUARD=ask` 时才回到用户审批。
+    const gitGuard = evaluateGitDirWriteGuard(input.toolName, input.args, { cwd: input.cwd })
+    if (gitGuard.verdict === 'block') {
+      const row = this.repo.insertApproval({
+        id,
+        runId: input.runId,
+        turnId: input.turnId,
+        stepId: input.stepId,
+        toolName: input.toolName,
+        argsJson: JSON.stringify(input.args),
+        argsHash,
+        risk: 'critical',
+        policyDecision: 'deny',
+        status: 'denied',
+        expiresAt: createdAt + timeoutMs,
+        mode,
+        timeoutMs,
+        cwd: input.cwd,
+        note: gitGuard.reason,
+      })
+      this.auditPolicyBlock(input, gitGuard)
+      const outcome = this.outcomeFromRow(row)
+      this.notifier?.onResolved(this.resolutionFromRow(row))
+      return outcome
+    }
+    // 回退开关把 deny 降级为 ask 时，必须显式回到用户：不能又被会话级授权自动放行。
+    const forcedAsk = gitGuard.verdict === 'ask' && policyDecision === 'ask'
+
     // 命中会话级授权：不弹窗，但落一条 allowed 审批行并把来源 approval id 写进 grant_source。
     // 审计要求：即使是自动放行，也必须能追溯「哪一次用户授权覆盖了本次操作」。
     //
@@ -270,7 +204,7 @@ export class ApprovalGateway {
     if (policyDecision === 'ask' && match.reason) {
       this.auditGrantMiss(input, match)
     }
-    if (match.grant && policyDecision === 'ask') {
+    if (match.grant && policyDecision === 'ask' && !forcedAsk) {
       const row = this.repo.insertApproval({
         id,
         runId: input.runId,
@@ -334,6 +268,7 @@ export class ApprovalGateway {
       timeoutMs: row.timeout_ms,
       // 非写类工具不允许“允许本会话”：否则等于用一次命令授权换取写类工具免审。
       sessionGrantable: isWriteScopedTool(row.tool_name),
+      ...(forcedAsk ? { policyRule: gitGuard.rule, policyReason: gitGuard.reason } : {}),
       ...(bashPolicy ? { policyRule: bashPolicy.policyRule, policyReason: bashPolicy.policyReason } : {}),
     }
     this.notifier?.onRequest(payload)
@@ -561,6 +496,42 @@ export class ApprovalGateway {
     }
   }
 
+  /**
+   * D1 审计事件：写类工具被 git 元数据守卫直接否决。
+   * 只记录工具名、命中规则、可读原因与目标路径（不落文件内容）。
+   * 审计失败不得改变审批结果。
+   */
+  private auditPolicyBlock(input: ApprovalRequestInput, guard: GitDirGuardResult): void {
+    try {
+      const seq = this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
+      this.repo.appendEvents([
+        {
+          eventId: eventIdFor(input.turnId, seq),
+          runId: input.runId,
+          turnId: input.turnId,
+          seq,
+          type: 'approval.policy_blocked',
+          source: 'kernel',
+          fidelity: 'turn',
+          payloadVersion: 1,
+          payload: {
+            toolName: input.toolName,
+            rule: guard.rule,
+            reason: guard.reason,
+            targets: guard.targets,
+            gitDirs: guard.gitDirs,
+          },
+          timestamp: this.now(),
+          ...(input.stepId ? { stepId: input.stepId } : {}),
+        },
+      ])
+    } catch (error) {
+      logger.warn(
+        `policy block audit failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
   /** 启动/周期扫描：pending 且到期 → denied + timeout。返回处理数量。 */
   sweepExpired(at = this.now()): number {
     const expired = this.repo.listExpiredApprovals(at)
@@ -738,6 +709,7 @@ export class ApprovalGateway {
       decidedBy: row.decided_by ?? 'system',
       argsHash: row.args_hash,
       decidedAt: row.decided_at ?? row.created_at,
+      ...(row.decision_note ? { reason: row.decision_note } : {}),
       ...(this.sessionGrantedApprovals.has(row.id) ? { sessionGranted: true } : {}),
       ...(grantSourceApprovalId ? { grantSourceApprovalId } : {}),
       ...(autoGranted ? { autoGranted: true } : {}),
