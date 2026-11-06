@@ -655,7 +655,7 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 - 读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；
 - 节名按 `diff` / `diff.` / `diff ` 前缀匹配，因此现代写法 `[diff "evil"]` 与旧式子节 `[diff.evil]`（`git config --get diff.evil.textconv` 认可）都会命中；
 - **配置解析层统一归一化**：只写键名的**裸布尔键**（如 `[extensions]` 下的 `worktreeConfig`、`[log]` 下的 `showSignature`、`[core]` 下的 `fsmonitor`）等价 `true`；`key =` 显式空值等价未设置（Git 布尔判 false）。节名/键名大小写不敏感，行首 `\t`/空格缩进忽略，整行 `#`/`;` 注释与值后的行内注释均忽略，节头后同行可直接跟键值（`[log] showSignature`）。键名只含字母/数字/连字符（带点或下划线的键名 Git 会 fatal）；裸 `include.path` 在 Git 里是 missing value、不是合法 include，不按路径处理；
-- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 与显式空值为关闭）在 `status`/`diff`/`blame`/`ls-files`/`fsck` 判定（这 5 条实测会执行 fsmonitor；`log`/`show`/`rev-list` 等不刷新 index，不判）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true`（含裸键）只在 `log`/`show`/`whatchanged` 判定；
+- diff 节内 `textconv`、`external`、`command` 任一非空即危险，**但 `diff.<driver>.textconv` 的标准 LFS 值（`git-lfs textconv`，允许路径前缀/引号）放行**（同全局 filter 的 basename 取值判定；非标准值仍 ask）；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 与显式空值为关闭）与 `core.hooksPath` 在**探针覆盖的全部只读子命令**上无条件 ask（H7：不再维护「哪条子命令消费它们」的名单；见下文「命令集双向校验」）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true`（含裸键）只在 `log`/`show`/`whatchanged` 判定；
 - `diff.submodule=diff` 时，`diff`/`log`/`show`/`whatchanged` 会进入子模块并消费子模块配置的执行型键（`diff.external` / `diff.*.textconv|command` / `filter.*` / `core.fsmonitor`）。探针递归读取子模块配置：标准布局 `.git/modules/<name>/config` + `config.worktree`、gitdir 文件布局、以及旧式「子模块 worktree 内 `.git` 是目录」布局；路径由 `git ls-files --stage` 的 160000 gitlink 枚举（不依赖可伪造/缺失的 `.gitmodules`）。**gitdir 文件/旧式目录布局会继续递归其 `<gitdir>/modules`**（H6），复用同一 walk 与 depth 预算。扫描有**模块数上限 32 + 总时间预算 300 ms**（H6 可用性）：超限按 `budget-exceeded` fail-closed ask，并在观测计数 `moduleScanBudgetExceeded` 记录；单次探针超时取「剩余预算」，因此最坏总耗时约等于预算。**无法枚举、配置缺失/不可读、遇到符号链接、超预算 → fail-closed ask**，不把「没扫到」当成「没有执行键」；
 - `gpg.program` / `gpg.ssh.program` / `gpg.x509.program` **单独存在不再 ask**（H3 收敛）：只有在 `log.showSignature=true`、`format.pretty`/`pretty.<name>` 含 `%G`、或命令行 `--format`/`--pretty` 含 `%G` 时才 ask——实测无签名展示请求时 `git log/show` 不会调用 gpg。`format.pretty` 或 `pretty.<name>` 的值含 `%G` → ask；命令行 `--format`/`--pretty` 含 `%G` 时（`log`/`show`/`whatchanged`/`rev-list`）→ `git-gpg-format` ask，取值缺失/无法判定同样 ask；
 - **signature atom 参数面（H4）**：`for-each-ref` / `branch` / `tag` 的参数中出现 `%(signature` 或 `%(*signature`（含 `%(signature:grade|key)`、`%(*signature:grade)`、`%(if)%(signature)%(then)`、`--format=<val>` 与 `--format <val>`、`--sort=<atom>`）→ `git-signature-atom` ask。实测 `%(contents)`/`%(body)`/`%(contents:signature)`/`%(objectname)` 不执行，不得误伤；`%(signature)` 只对 tag 对象本身在本机 git 不执行（`%(*signature)` peeled 到 commit 时执行），但按可能执行保守拦截；
@@ -676,10 +676,10 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | 配置键族 | 消费它的只读命令（实测） | 当前策略 | 执行面证据 |
 | --- | --- | --- | --- |
 | `diff.external` | `diff/log/show/whatchanged/blame` | 命中 → ask | 是（`git diff` marker 生成；`status` 不消费） |
-| `diff.<driver>.command` / `diff.<driver>.textconv` | `diff/log/show/whatchanged/blame` | 命中 → ask | 否（与 external 同执行路径，保守登记） |
+| `diff.<driver>.command` / `diff.<driver>.textconv` | `diff/log/show/whatchanged/blame` | 命中 → ask；**仅 `diff.<driver>.textconv = git-lfs textconv` 标准 LFS 值放行** | 否（与 external 同执行路径，保守登记；LFS 值判定见 §29） |
 | `filter.<driver>.clean/smudge/process` | `status/diff` | 仓库本地命中 → ask；全局仅放行 git-lfs 标准值 | 否（按执行面登记；此前 B-14 已按等价路径处理） |
-| `core.fsmonitor` | `status/diff/blame/ls-files/fsck` | 命中 → ask | 是（5 条 allow 命令均 marker 生成；`diff-files/diff-index/update-index/checkout-index/gc` 实测也执行，但它们不在白名单或本身是写子命令；`log/show/rev-list/prune/read-tree/verify-pack/...` 不执行） |
-| `core.hooksPath`（`post-index-change`） | `status`；`diff`（仅工作区 vs 索引形态） | 命中 → ask | 是（`status` 与 `diff`/`--stat`/`--name-only`/`--quiet`/`--check`/`HEAD` marker 生成；`diff --cached`/`--staged`/`--no-index` 与 `blame/log/ls-files/fsck` 未触发，已验证不误伤） |
+| `core.fsmonitor` | **探针覆盖的全部只读子命令**（`status/diff/log/show/blame/whatchanged/ls-files/fsck/rev-list/describe`） | 命中且为真 → 无条件 ask（H7：不再按 sub 名单） | 是（H7 实测 `describe --dirty/--broken` marker 生成；此前 `status/diff/blame/ls-files/fsck` 亦已实测；`rev-parse/for-each-ref` 等已证明不消费） |
+| `core.hooksPath`（`post-index-change`） | **探针覆盖的全部只读子命令** | 非空 → 无条件 ask（H7：不再按 sub/参数形态） | 是（H7 实测 `describe --dirty` marker 生成；`status`/工作区 `diff` 此前已实测；`--cached/--no-index` 真实 git 不触发，但策略仍 ask——有意过度询问） |
 | `core.alternateRefsCommand` | `rev-list --alternate-refs` | 参数面 + 配置面均 ask | 是（marker 生成；`--alternate-ref` 缩写被 git 拒绝且不执行；`for-each-ref`/`rev-parse` 不执行） |
 | `diff.submodule=diff` + 子模块执行型键 | `diff/log/show/whatchanged`（仅展示 patch 时） | 递归读子模块配置（含外部/旧式 gitdir 的 `<gitdir>/modules`）；命中、不可枚举或超预算（32 模块 / 300 ms）→ ask | 是（标准 `.git/modules/*`、旧式 `sub/.git`、gitdir 文件外部目录 + 嵌套 `ext1/modules/sub2` 均生成 marker；`status` 不消费） |
 | `gpg.program` | `log/show/whatchanged`（`%G` 或 `log.showSignature` 时） | **单独存在 → allow**；仅当 `log.showSignature=true` 或 `format.pretty`/`pretty.*`/命令行 `--format` 含 `%G` → ask | 是（有签名提交 + `%G` marker 生成；无签名/无 `%G` 时配了 `gpg.program` 也不执行） |
@@ -702,16 +702,39 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 | 白名单命令 | 探针必须检查的键 | 备注 |
 | --- | --- | --- |
-| `status` | `filter.*`、`core.fsmonitor`、`core.hooksPath` | 会回写 index，因此 hooksPath 在 `status` 判 |
-| `diff` | `diff.external`、`diff.*.command/textconv`、`filter.*`、`core.fsmonitor`、`core.hooksPath`（仅工作区形态）、`diff.submodule`(+子模块配置) | 有 patch 即可能执行 external；`--cached/--staged/--no-index` 不回写 index，不判 hooksPath |
+| `status` | `filter.*`、`core.fsmonitor`、`core.hooksPath` | 会回写 index；H7 起 fsmonitor/hooksPath 无条件判 |
+| `diff` | `diff.external`、`diff.*.command/textconv`、`filter.*`、`core.fsmonitor`、`core.hooksPath`、`diff.submodule`(+子模块配置) | 有 patch 即可能执行 external；H7 起 hooksPath 不再区分 `--cached/--staged/--no-index` |
 | `log` / `show` / `whatchanged` | 同 `diff`；`gpg.*.program` 仅与 `log.showSignature`、`format.pretty`/`pretty.*` 的 `%G`、命令行 `%G` 联动（单独存在不判） | 无 `-p` 时 external 不执行，但配置面无法区分展示形态，保守全判 |
-| `blame` | `diff.*`、`core.fsmonitor` | |
-| `ls-files` | `core.fsmonitor` | |
-| `fsck` | `core.fsmonitor` | H1 新增；实测 `git fsck` 刷新 index 并执行 fsmonitor |
+| `blame` | `diff.*`、`core.fsmonitor`、`core.hooksPath` | H7 起 fsmonitor/hooksPath 无条件判 |
+| `ls-files` | `core.fsmonitor`、`core.hooksPath` | H1/H7 |
+| `fsck` | `core.fsmonitor`、`core.hooksPath` | H1 新增；实测刷新 index |
 | `rev-list` | `core.alternateRefsCommand`（`--alternate-refs`）、`log.showSignature` | `%G` 仅参数面，配置无默认格式 |
-| `for-each-ref` | 配置无默认触发键；`%(signature)` / `%(*signature)` atom 走参数面 `git-signature-atom` | H4 |
+| `describe` | `core.fsmonitor`、`core.hooksPath` | **H7 新增进探针集合**；实测 `--dirty/--broken` 执行外部程序 |
+| `for-each-ref` | 配置无默认触发键；`%(signature)` / `%(*signature)` atom 走参数面 `git-signature-atom` | H4；已证明不消费 fsmonitor/hooksPath |
 | `branch` / `tag`（列举形态） | 配置无默认触发键；signature atom 走参数面 `git-signature-atom` | H4；`tag`/`branch` 的创建/写入形态本身 ask |
-| 其余只读子命令（`cat-file` / `rev-parse` / `describe` / `shortlog` / …） | 本轮未发现配置默认触发的执行键 | 新增白名单命令必须按本表回答消费键 |
+| 其余只读子命令（`cat-file` / `rev-parse` / `shortlog` / `show-ref` / `merge-base` / `name-rev` / `count-objects`） | 本轮已实测不消费任何执行型配置键（fsmonitor/hooksPath/diff/filter/diff.external 全开时均无 marker、不刷新 index） | 由 `GIT_READ_PROVEN_NO_EXEC_CONFIG` 显式登记；`gitReadExecCoverageGaps()` 断言差集为空 |
+
+**命令集双向校验（H7 根因修复）**：只读白名单有 18 条，探针集合只有 10 条（原 9 + `describe`）。差集曾包含 `describe`，导致「白名单放行但没有任何配置判定」——`git describe --dirty` 在 `core.fsmonitor` / `core.hooksPath` 下真实执行外部程序却 `allow`。现在：
+
+- `GIT_READ_SUBCOMMANDS` 的每一条都必须**要么**在 `GIT_CONFIG_EXEC_SUBCOMMANDS`（探针集合）里，**要么**在 `GIT_READ_PROVEN_NO_EXEC_CONFIG`（有实测「不消费」依据）里；`gitReadExecCoverageGaps()` 返回非空即测试失败，新增白名单命令忘记归类会直接在 CI 暴露；
+- 差集内 8 条（`rev-parse` / `shortlog` / `cat-file` / `show-ref` / `for-each-ref` / `merge-base` / `name-rev` / `count-objects`）在 git 2.50.1 上以 fsmonitor + hooksPath + diff.external 全开实测无 marker、不刷新 index，登记为「不消费」；
+- `describe` 实测 `--dirty` / `--broken` / `--always --dirty` / `--tags --dirty` 会执行 fsmonitor 与 post-index-change；`--all` / `--tags` / `--long` / `--abbrev=0` / `--exact-match` / `--contains` 不执行。**策略不做形态细分**：只要仓库配置里有 fsmonitor/hooksPath，`describe` 的任何形态都 ask（见 §29 形态表）。
+
+**代价（有意选择）**：husky 用户（`core.hooksPath=.husky/_`）以及启用 fsmonitor 的用户，`git log/show/describe` 等只读命令也都要一次审批。此前 `husky → git log allow` 的优化被移除；这是为了不再依赖「谁消费」名单，宁可多问。`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 只回退 B 的未知键判定，不回退 H7（H7 属于执行面，不是未知键）。
+
+**H7 代价量化（2026-11-06，同一 44 条 git 只读命令 × 7 个环境，HEAD 旧策略 vs 当前）**：
+
+| 环境 | 旧 allow | 新 allow | 新增 ask |
+| --- | --- | --- | --- |
+| 本仓库 | 39 | 39 | 0 |
+| 干净仓库 | 39 | 39 | 0 |
+| 标准 LFS | 39 | 39 | 0 |
+| dotfiles | 39 | 39 | 0 |
+| CI | 39 | 39 | 0 |
+| husky（`core.hooksPath`） | 31 | **14** | 17（log/show/blame/rev-list/ls-files/describe/fsck 等由 allow 变 ask；另有 5 条本就 ask） |
+| exotic | 15 | **14** | 1（`describe --tags`） |
+
+git 只读样本 allow 比例 78.2% → 72.4%（全 7 环境）；剔除 husky 后 85.6% → 79.2%。成本集中在 husky/fsmonitor 用户，这是本次「键即触发」的有意选择；干净/LFS/CI 用户零新增 ask。
 
 **B（2026-11-06 实施）：未知配置键默认 ask（极性反转）**。上面的「显式执行键清单」本质是黑名单：没登记过的执行型键就是零审批洞。B 改为**安全键族白名单**：探针读到的键命中白名单且值判定安全 → 不构成 ask 理由；**未命中白名单 → ask / `git-unknown-config-key`**，把「没见过」从洞降级为弹窗。
 
@@ -793,12 +816,38 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | 与上述任一元数据文件同 inode（hardlink 到 `.git/config`） | block |
 | symlink（文件 / 目录 / 祖先目录是 symlink）指向以上任一处 | block |
 | 目标属于**另一个**仓库（cwd 仓库之外）的 gitdir | block |
+| **D1-1**：gitdir 内部任一 symlink 的**终点**（dangling 终点也算；`.git/config -> /tmp/x`、`.git/hooks -> /tmp/hooks`） | block |
+| **D1-1**：工作区 symlink 的终点落在 gitdir（即使终点不存在，如 `evil -> .git/hooks/pre-commit`） | block |
+| **D1-2**：当前/目标仓库配置中任意 `include.path` / `includeIf.*.path` 解析后的文件（含链式 include、仓库外路径、尚未创建的目标） | block |
 
 不得误伤（均有单测）：工作区普通文件、`.gitignore`、`.gitattributes`、`.github/workflows/*`、仓库根普通文件、`src/.git/foo`（名为 `.git` 的普通目录、且不含 `HEAD`/`config` 特征时不视为 gitdir）。
 
 **fail-closed**：git 不可用、会话 `cwd` 不存在、目标无可探测的存在目录、`git rev-parse` 非「not a git repository」的失败 → **默认 block**，reason 明写「按 fail-closed 阻止写入」。这是**有意选择**：无法证明目标不是 git 元数据时，不把「看不见危险配置」当成安全。回退开关 `BIZGRAPH_GITDIR_WRITE_GUARD=ask`（降级为弹窗，且不会被会话级授权自动放行）或 `=off`（完全停用，等价修复前行为）。
 
+**D1-1（symlink 终点，2026-11-06 复验修复）**：路径解析改为逐级 `lstat` + `readlink` 手工展开，**dangling symlink 也会解析终点**（`realpathSync` 对不存在终点会失败，旧实现因此把「`evil -> .git/hooks/pre-commit`（不存在）」当成普通工作区路径放行）。同时扫描 gitdir 内部（`hooks` / `info` / `worktrees` / `modules`，跳过 `objects`/`refs`/`logs`）的每个 symlink，把其终点纳入保护面：`.git/config -> /tmp/x` 时写 `/tmp/x` 等于改写配置。`.git` 自身是 symlink 的布局也按 realpath 后的 gitdir 判定；写 `.git` 指针本身一律 block。实测：旧代码 `allow` → 修复后 `block`（`gitdir-symlink-target`），且真实 git 读取注入后的文件会执行 fsmonitor（见审计文档 §30）。
+
+**D1-2（include 目标，2026-11-06 复验修复）**：`include.path=local.inc` 在工作区内时，旧 D1 允许写该文件——一次批准后它就成为配置的一部分。现在用 Git 自身解析（`git config --list --includes --show-origin`）收集所有 include 目标：链式 include 每层都会作为独立 entry 出现，相对路径按「声明文件所在目录」解析（`--show-origin` 的本地配置可能是相对路径 `file:.git/config`，已按探针 cwd 还原），`includeIf` 条件由 Git 求值、未命中的声明也保守纳入。目标等于/位于任一 include 文件 → block（`gitdir-include-target`）；include 探针失败（除「空配置」外）→ fail-closed block。实测：旧代码 `allow` → 修复后 `block`，真实 git 读取注入后的 include 文件会执行 fsmonitor。
+
 审计：`agent_events.type='approval.policy_blocked'`（payload `toolName/rule/reason/targets/gitDirs`），同时落一条 `agent_approvals` denied 行（`decision_note` 存可读原因），工具返回的 deny 消息带同一原因。阻断发生在 `notifier.onRequest` 之前，用户不会看到一张「批准后仍被拒」的弹窗。
+
+**覆盖边界（2026-11-06 复验评估，本轮未实现）**：
+
+| 路径 | D1（写 git 元数据） | B（未知配置键 ask） | 依据 |
+| --- | --- | --- | --- |
+| Claude + Kernel（默认） | ✅ 生效 | ✅ 生效 | `adapter-driver.ts` L116-118 只对 `claude` 安装 `canUseTool` + `PreToolUse`；所有工具（含 MCP 工具名）都进 `gateway.request()` |
+| Claude + legacy（`BIZGRAPH_AGENT_KERNEL=0`） | ❌ 不生效 | ❌ 不生效 | 旧路径不安装 approval hooks，`permissionMode=acceptEdits`，无 Bash 策略钩子（`claude-code.ts` L319） |
+| Codex | ❌ 不生效 | ❌ 不生效 | 适配器无 approval hooks；仅 `sandboxMode: workspace-write`（`codex.ts` L155/160）——`.git/config` 与 include 文件都在 workspace 内，沙箱不拦 |
+| OpenCode | ❌ 不生效 | ❌ 不生效 | 适配器无 approval/permission 处理；无 Bash 白名单入口 |
+| MCP 工具（Kernel + Claude） | ⚠️ 过网关但不拦 | ⚠️ 不适用 | `canUseTool` 覆盖 `mcp__<server>__<tool>`，每次都会 `ask`；但 `isWriteScopedTool` 只认 `write/edit/...` 名单，MCP 写工具不会被 D1 硬拦——**一次批准即可注入 `.git/config` / include 目标** |
+
+**方案与工作量估计（不在本轮直接改）**：
+
+1. **D1 下沉到 gateway/工具层（推荐，D1 已经在 gateway `request()` 里，与后端无关）**。真正缺的是「非 Claude 后端是否把工具调用送进 gateway」：Codex 需要接 SDK 的 approval/exec 回调，OpenCode 需要从其事件流识别工具调用并在执行前 gate。D1 本身零改动。工作量：Codex 3–5 人日（含取消/超时/回归），OpenCode 2–4 人日（若事件流不含工具执行前钩子，则只能降级为进程沙箱，工期另计）。
+2. **legacy Claude 补齐**：把 approval hooks 的安装从「仅 Kernel」放宽到 legacy，并给 legacy 注入 gateway 的 `db/repo` 上下文。工作量 2–3 人日；风险是 legacy `AgentManager` 路径没有 turn/session 映射，需要新增最小 correlation。
+3. **MCP 写工具纳入 D1**：不能只按名字猜写语义。建议引入 `mcp__*` 的「写能力声明」（用户/服务器配置），或保守规则「未知工具 + 已知路径参数 → 只要目标命中 gitdir 就 deny」。后者零配置、约 0.5–1 人日，但会把带 `path` 参数的只读 MCP 工具也 deny（可接受，因为只影响 gitdir 内路径）；前者需要每服务器元数据，约 2 人日 + 运营成本。
+4. **B 对 Codex/OpenCode**：B 是 `evaluateBashPolicy` 的一部分，前提是存在 Bash 命令拦截点（见 1）。若 1 完成且能拿到 command 字符串，B 可直接复用，额外 0.5 人日/后端；如果拿不到 command（只有已执行结果），B 无法事后补救。
+
+**明确不做**：不引入沙箱/exec 限制（C3）——用户在决定；本轮只做策略与路径判定。
 
 ### 4.7 事件保留与存储统计（P0-2）
 
@@ -1086,7 +1135,7 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 
 ### 7.2 校验顺序（main 唯一权威）
 
-0. **D1 前置硬拦截**：写类工具的目标路径若命中 git 元数据目录（gitdir / commonDir / modules / 外部 gitdir / `.git` 指针 / hardlink 同一 inode），直接 `deny`（`policy`），**不进入用户审批、也不会命中会话级授权**；探测失败默认 block（fail-closed）。详见 §4.6.1。
+0. **D1 前置硬拦截**：写类工具的目标路径若命中 git 元数据目录（gitdir / commonDir / modules / 外部 gitdir / `.git` 指针 / hardlink 同一 inode / gitdir 内 symlink 的终点 / 配置 include 目标），直接 `deny`（`policy`），**不进入用户审批、也不会命中会话级授权**；探测失败默认 block（fail-closed）。详见 §4.6.1。
 1. `approvalId` 存在；
 2. **归属校验**：`turnId` / `runId` / `sessionId` 必须与审批行（及其所属 turn）一致；若该会话由某个 `webContents` 发起，决议方必须是同一窗口（`sessionWindowBindings`），否则返回 `APPROVAL_NOT_OWNED`（可读错误，不静默）。
    - **窗口绑定生命周期**：`agent:startSession` 记录 `sessionId → senderId`，并向该 sender 订阅一次 `webContents.destroyed`；窗口销毁时清掉它绑定的所有会话，避免绑定永久指向不存在的窗口。
@@ -1132,10 +1181,10 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 - **范围**：只覆盖写类工具（Write / Edit / MultiEdit）。**Bash 不覆盖**——每条 Bash 仍按 §4.6 两档策略判定；网络、MCP、非写类工具也不覆盖。
 - **作用域**：per-session。同一会话内跨 turn 生效；**跨会话不继承，重启不继承**。
 - **留痕**：自动放行仍写 `agent_approvals`，字段为 `policy_decision='allow'`、`decided_by='policy'`、`grant_source=<授权来源>`、`cwd=<会话工作目录>`；审批事件与步骤事件带 `step_id`。审计上不出现「无记录的放行」。
-- **路径边界**：只对会话 `cwd` 内、且经 `realpath` 归一后的路径生效（macOS `/tmp` → `/private/tmp` 别名已处理）。**即使路径在 `cwd` 内，命中 git 元数据目录时 D1 仍会先 deny**——会话授权覆盖不了 §4.6.1 的硬拦截。
+- **路径边界**：只对会话 `cwd` 内、且经 `realpath` 归一后的路径生效（macOS `/tmp` → `/private/tmp` 别名已处理）。**即使路径在 `cwd` 内，命中 git 元数据目录 / symlink 终点 / include 目标时 D1 仍会先 deny**——会话授权覆盖不了 §4.6.1 的硬拦截。
 - **每次命中都重新校验（P0-1，不缓存 realpath）**：会话级授权是「作用域凭证」，不是「一次批准 = 任意写」。命中前逐项检查：
   1. 工具属于写类集合（写类之外一律不命中，Bash / 网络 / MCP 永远回到审批）；
-  2. 本次调用的**每个**目标路径都做 `realpath` 后仍在授权 `cwd` 内（多路径任一越界即整体不命中；解析最近已存在祖先的 realpath，因此「工作区内 symlink 指向外部目录」同样会被识别；尾部分隔符与 macOS 大小写变体统一归一）；
+  2. 本次调用的**每个**目标路径都做 `realpath` 后仍在授权 `cwd` 内（多路径任一越界即整体不命中；解析最近已存在祖先的 realpath，并逐级 `readlink` 展开 symlink——**包括 dangling symlink 的终点**，因此「工作区内 symlink 指向外部目录/不存在的 gitdir 文件」同样会被识别；尾部分隔符与 macOS 大小写变体统一归一）；
   3. 授权未被撤销（`agent:revokeSessionGrant`）；
   4. 会话仍存活（`agent_sessions.status ∈ starting/active/idle`，`closed/orphaned` 视为失效）。
   任一不满足 → **回到审批（`ask`）而不是静默 deny**，让用户看见「这次跑出了授权范围」，并写 `agent_events.type='approval.grant_miss'`（payload：`sessionId/toolName/reason/targets`，reason=`tool|path|revoked|session`）。未命中授权时不落任何自动放行审批行。

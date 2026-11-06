@@ -424,19 +424,52 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
   ],
 }
 
-
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
  * `diff.*.textconv` / `diff.*.command` / `diff.external`（diff/log/show/blame/whatchanged）、
- * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/blame/ls-files/fsck
- * 会刷新 index；实测这些命令会 fork hook）、`core.hooksPath`（status 回写 index 时触发
- * `post-index-change` 钩子）、`core.alternateRefsCommand`（rev-list `--alternate-refs`）
- * 与 `log.showSignature` / `gpg.*.program` / `%G` 格式（log/show/whatchanged/rev-list
- * 会调用 gpg）。配置命中即 ask。
+ * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor` / `core.hooksPath`
+ * （探针覆盖的全部子命令无条件 ask，见 H7）、`core.alternateRefsCommand`
+ * （rev-list `--alternate-refs`）与 `log.showSignature` / `gpg.*.program` / `%G`
+ * 格式（log/show/whatchanged/rev-list 会调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
   'diff', 'log', 'show', 'status', 'blame', 'whatchanged', 'rev-list', 'ls-files', 'fsck',
+  // H7：`describe --dirty/--broken` 会刷新 index，实测触发 core.fsmonitor 与
+  // post-index-change 钩子（core.hooksPath）。它此前只出现在只读集合、
+  // 不在探针集合，因此配置驱动的执行被整条放行。见 `GIT_READ_EXEC_COVERAGE`。
+  'describe',
 ])
+
+/**
+ * 双向校验（H7）：只读白名单里的每一条子命令，必须要么进入配置探针集合
+ * （由探针判定执行型键），要么有实测依据证明它不消费任何执行型配置键。
+ *
+ * 差集必须为空；`bash-readonly.test.ts` 的覆盖用例会断言这一点，
+ * 新增只读子命令时若忘记归类会直接失败。
+ */
+export const GIT_READ_PROVEN_NO_EXEC_CONFIG: ReadonlySet<string> = new Set([
+  // 实测（git 2.50.1，fsmonitor + hooksPath + diff.external 全开）：
+  // 下列命令不刷新 index、不调用 fsmonitor、不触发 post-index-change、
+  // 不消费 filter/textconv/diff.external，也不读取 alternateRefsCommand。
+  'rev-parse',
+  'shortlog',
+  'cat-file',
+  'show-ref',
+  'for-each-ref',
+  'merge-base',
+  'name-rev',
+  'count-objects',
+])
+
+/**
+ * 返回「既不在探针集合、也没有不消费证明」的只读子命令。
+ * 结果非空即为 H7 同类缺口（命令集覆盖漏项），测试必须失败。
+ */
+export function gitReadExecCoverageGaps(): string[] {
+  return [...GIT_READ_SUBCOMMANDS].filter(
+    (sub) => !GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub) && !GIT_READ_PROVEN_NO_EXEC_CONFIG.has(sub),
+  )
+}
 
 /** git 布尔配置：false/no/off/0（含空值）为假；其余为真（路径类配置同样按真处理）。 */
 function gitConfigBoolean(value: string): boolean {
@@ -468,6 +501,18 @@ function isStandardLfsFilterValue(key: string, value: string): boolean {
     return parts.length === 4 && parts[1] === key && parts[2] === '--' && parts[3] === '%f'
   }
   return false
+}
+
+/**
+ * `git lfs install` 的标准 textconv 形态：`git-lfs textconv`（可带绝对路径/引号）。
+ * 与全局 filter 的取舍相同：只比较 basename，路径伪装成 `git-lfs` 也会被放行；
+ * 但全局/仓库配置属于可控面，非标准值仍然 ask。
+ */
+function isStandardLfsTextconvValue(value: string): boolean {
+  const normalized = value.trim().replace(/^"(.*)"$/, '$1').replace(/\s+/g, ' ')
+  const parts = normalized.split(' ')
+  const binary = parts[0].split(/[\\/]/).pop()?.toLowerCase()
+  return (binary === 'git-lfs' || binary === 'git-lfs.exe') && parts.length === 2 && parts[1] === 'textconv'
 }
 
 /* ------------------------------------------------------------------------- *
@@ -750,6 +795,13 @@ const GIT_MODULE_SCAN_MAX_DEPTH = 8
 const GIT_MODULE_SCAN_MAX_MODULES = 32
 const GIT_MODULE_SCAN_BUDGET_MS = 300
 
+/**
+ * 剩余预算低于「一次 git 子进程的启动成本」时不要再发起探针：
+ * 否则会因 timeout 被错误归类为 `timeout`，掩盖真正的 `budget-exceeded`
+ * （H7 复验时在负载较高机器上暴露：预算耗尽与探针超时的语义必须分开）。
+ */
+const GIT_MODULE_PROBE_MIN_REMAINING_MS = 30
+
 /** `child` 是否在 `parent` 目录树内（用于跳过已被主 modules walk 覆盖的嵌套目录）。 */
 function isInsideDirectory(parent: string, child: string): boolean {
   const rel = relative(resolve(parent), resolve(child))
@@ -901,7 +953,7 @@ export function probeGitSubmoduleConfigs(
     // 上限先于探针判定：超限直接 fail-closed，不再发起新的同步子进程。
     if (probedModules >= GIT_MODULE_SCAN_MAX_MODULES) return 'budget-exceeded'
     const remaining = remainingBudgetMs()
-    if (remaining <= 0) return 'budget-exceeded'
+    if (remaining < GIT_MODULE_PROBE_MIN_REMAINING_MS) return 'budget-exceeded'
     seen.add(key)
     probedModules += 1
     // 把剩余预算作为本次探针超时，保证总耗时不超过总预算。
@@ -1034,16 +1086,6 @@ export function gitPrettyUsesGpg(args: readonly string[]): boolean {
 }
 
 /**
- * `git diff` 是否会刷新并回写 index（从而触发 `post-index-change` 钩子）。
- * 实测 `--cached` / `--staged` / `--no-index` 不刷新索引；其余形态（含 `--stat`、
- * `--name-only`、`--quiet`、`--check`、`HEAD`、`--exit-code`、pathspec）在 stat
- * 过期时都会回写 `.git/index` 并触发钩子。
- */
-function gitDiffRefreshesIndex(args: readonly string[]): boolean {
-  return !args.some((arg) => arg === '--cached' || arg === '--staged' || arg === '--no-index')
-}
-
-/**
  * 支持 ref-filter atom 且 `%(signature)` / `%(*signature)` 会调用 gpg 的子命令。
  * `for-each-ref` 属只读白名单；`branch` / `tag` 走各自的列举规则。
  */
@@ -1067,13 +1109,13 @@ export function gitSignatureAtomUsesGpg(args: readonly string[]): boolean {
 }
 
 /**
- * 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。
- * `args` 是子命令参数（不含子命令名），用于区分同名子命令的不同形态（如 `git diff --cached`）。
+ * 「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。
+ * `sub` 用于少数仍有形态差别的键；H7 之后 fsmonitor/hooksPath 不再按 sub 判定。
  */
 export function probeGitConfigExecutes(
   result: GitConfigProbeResult,
   sub: string,
-  args: readonly string[] = [],
+  _args: readonly string[] = [],
 ): boolean {
   // 探针失败 = 不可判定：S2 起必须 ask，不能把「没看到危险配置」当成安全。
   if (result.failure) return true
@@ -1084,34 +1126,26 @@ export function probeGitConfigExecutes(
     const parts = entry.key.split('.')
     const last = parts[parts.length - 1]
     // diff.external 与 diff.<driver>.textconv/command 会和手写口径一样执行外部程序。
+    // 例外：`git lfs install` 写入的标准 `diff.lfs.textconv = git-lfs textconv`
+    // （值判定同全局 filter，只比较 basename 与参数形态），避免 LFS 用户每条
+    // status/diff/log/show 都被 ask；非标准值（任意路径/参数）仍然 ask。
     if (entry.key === 'diff.external') return true
-    if (
-      parts.length >= 3 &&
-      parts[0] === 'diff' &&
-      (last === 'textconv' || last === 'command')
-    ) {
+    if (parts.length >= 3 && parts[0] === 'diff' && last === 'textconv') {
+      if (!isStandardLfsTextconvValue(value)) return true
+    }
+    if (parts.length >= 3 && parts[0] === 'diff' && last === 'command') {
       return true
     }
-    // fsmonitor：status/diff/blame/ls-files/fsck 实测会刷新 index 并调用 hook；
-    // log/show 不刷新 index，不判。
-    if (
-      entry.key === 'core.fsmonitor' &&
-      gitConfigBoolean(value) &&
-      (sub === 'status' ||
-        sub === 'diff' ||
-        sub === 'blame' ||
-        sub === 'ls-files' ||
-        sub === 'fsck')
-    ) {
-      return true
-    }
-    // core.hooksPath：status 与「工作区 vs 索引」形态的 diff 会刷新并回写 index，
-    // 触发 post-index-change 钩子（实测 marker 生成）。blame/ls-files/log/show/fsck
-    // 实测不触发；diff --cached/--staged/--no-index 也不刷新索引，不额外判。
-    if (entry.key === 'core.hookspath') {
-      if (sub === 'status') return true
-      if (sub === 'diff' && gitDiffRefreshesIndex(args)) return true
-    }
+    // fsmonitor / hooksPath 属于「有就危险」的键：探针覆盖的**每一条**只读子命令
+    // 都无条件 ask，不再依赖「该命令是否被登记为消费方」。
+    //
+    // 根因（H7）：此前按 sub 名单判定 who 消费它们，`describe` 不在探针集合里，
+    // 于是 `git describe --dirty` 在 fsmonitor/hooksPath 下真实执行外部程序却 allow。
+    // 逐条维护「谁消费」不可能穷尽（git 内部随时会刷新 index），这里改为键即触发。
+    // 代价：husky（core.hooksPath）与 fsmonitor 用户的所有 git 只读命令都会弹窗，
+    // 这是有意选择——宁可多问，也不让「未登记的命令」变成零审批执行面。
+    if (entry.key === 'core.fsmonitor' && gitConfigBoolean(value)) return true
+    if (entry.key === 'core.hookspath' && value.trim() !== '') return true
     // core.alternateRefsCommand：rev-list --alternate-refs 会用 shell 执行该命令。
     // 只对 rev-list 判定；其它只读子命令不会消费它。
     if (entry.key === 'core.alternaterefscommand' && sub === 'rev-list') {
@@ -1183,8 +1217,8 @@ const EXEC_KEY_SHAPE = /(command|program|hook|helper|driver|pager|editor)$/
 
 /**
  * 已由 `probeGitConfigExecutes()` / 参数面判定覆盖的键：
- * - core.hooksPath：status / 工作区 diff 已经 ask；
- * - core.fsmonitor：status/diff/blame/ls-files/fsck 已经 ask；
+ * - core.hooksPath / core.fsmonitor：探针覆盖的**全部**只读子命令无条件 ask
+ *   （H7 之后不再按 sub 名单判定消费方）；
  * - core.alternateRefsCommand：rev-list 已经 ask；
  * - core.sshCommand / core.editor / core.pager / core.gitProxy / sequence.editor
  *   / interactive.diffFilter：只读子命令在非 TTY 下不消费，现有口径不 ask；

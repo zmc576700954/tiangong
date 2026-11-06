@@ -14,6 +14,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  unlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -26,6 +27,7 @@ import {
   bashPolicyForTool,
   evaluateBashPolicy,
   getGitConfigProbeDiagnostics,
+  gitReadExecCoverageGaps,
   probeGitConfig,
   probeGitConfigExecutes,
   probeGitSubmoduleConfigs,
@@ -715,33 +717,33 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     })
   })
 
-  it('core.fsmonitor 只在 status/diff/blame 判定，log/show 不多弹', () => {
+  it('H7：fsmonitor 在探针覆盖的全部只读子命令上 ask（不再按消费方名单）', () => {
     const repo = mkdtempSync(join(tmpdir(), 'bizgraph-fsmonitor-scope-'))
     makeGitDir(repo)
     writeFileSync(join(repo, '.git', 'config'), '[core]\n\tfsmonitor = /tmp/hook\n')
     const options = { cwd: repo, includeGlobalGitConfig: false }
 
-    // 修复前 fsmonitor 命中所有配置型子命令，log/show 也会被 ask
-    expect(decide('git log --oneline -5', options)).toMatchObject({
-      decision: 'allow',
-      rule: 'git:log',
-    })
-    expect(decide('git show HEAD', options)).toMatchObject({
-      decision: 'allow',
-      rule: 'git:show',
-    })
-    expect(decide('git status --short', options)).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
-    })
-    expect(decide('git diff HEAD', options)).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
-    })
-    expect(decide('git blame file.txt', options)).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
-    })
+    // H7 修复前：只对 status/diff/blame/ls-files/fsck 判定，`describe --dirty`
+    // 不在探针集合里 → allow，但真实 git 会执行 fsmonitor。
+    // 现在「有就危险」的键对探针覆盖的每条只读子命令无条件 ask：
+    for (const command of [
+      'git log --oneline -5',
+      'git show HEAD',
+      'git status --short',
+      'git diff HEAD',
+      'git blame file.txt',
+      'git describe --dirty',
+      'git ls-files',
+      'git fsck',
+    ]) {
+      expect(decide(command, options), command).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    }
+    // 未进探针集合、已证明不消费执行型配置的只读命令仍 allow。
+    expect(decide('git rev-parse HEAD', options)).toMatchObject({ decision: 'allow' })
+    expect(decide('git for-each-ref', options)).toMatchObject({ decision: 'allow' })
   })
 
   it('config.worktree 仅在 extensions.worktreeConfig 开启时读取', () => {
@@ -1191,16 +1193,14 @@ function makeGitRepo(prefix: string, configText: string): string {
 }
 
 describe('git 配置探针（S1 影子 / S2 门控）', () => {
-  it('探针读取 Git 自己解析的配置：fsmonitor 只对 status/diff/blame 生效', () => {
+  it('探针读取 Git 自己解析的配置：fsmonitor 对探针覆盖的全部只读子命令生效（H7）', () => {
     const repo = makeGitRepo('bizgraph-probe-fsmonitor-', '[core]\n\tfsmonitor = /tmp/hook\n')
     const result = probeGitConfig(repo, false, 500)
     expect(result.failure).toBeNull()
     expect(result.entries.some((entry) => entry.key === 'core.fsmonitor')).toBe(true)
-    expect(probeGitConfigExecutes(result, 'status')).toBe(true)
-    expect(probeGitConfigExecutes(result, 'diff')).toBe(true)
-    expect(probeGitConfigExecutes(result, 'blame')).toBe(true)
-    expect(probeGitConfigExecutes(result, 'log')).toBe(false)
-    expect(probeGitConfigExecutes(result, 'show')).toBe(false)
+    for (const sub of ['status', 'diff', 'blame', 'log', 'show', 'describe', 'fsck']) {
+      expect(probeGitConfigExecutes(result, sub), sub).toBe(true)
+    }
   })
 
   it('探针把七类真实配置判为 allow（Git 自己解析，不误伤）', () => {
@@ -1474,10 +1474,10 @@ describe('P1 执行型配置键 / P2 探针环境 / P3 失败分类', () => {
       decision: 'ask',
       rule: 'git-repo-config-exec',
     })
-    // 其它只读子命令实测不触发该钩子，不额外弹窗。
+    // H7：hooksPath 不再按「该子命令是否触发钩子」判定；log 也 ask（代价见文档）。
     expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-      decision: 'allow',
-      rule: 'git:log',
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
     })
   })
 
@@ -1517,6 +1517,142 @@ describe('P1 执行型配置键 / P2 探针环境 / P3 失败分类', () => {
   })
 })
 
+describe('H7 · describe / 命令集双向校验 / LFS textconv 值判定', () => {
+  function makeDescribeRepo(prefix: string): { root: string; repo: string } {
+    const root = mkdtempSync(join(tmpdir(), prefix))
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    runRealGit(repo, ['config', 'user.email', 't@t'])
+    runRealGit(repo, ['config', 'user.name', 't'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['commit', '-qm', 'c1'])
+    runRealGit(repo, ['tag', '-a', 'v1', '-m', 'v1'])
+    return { root, repo }
+  }
+
+  function resetIndex(repo: string): void {
+    unlinkSync(join(repo, '.git', 'index'))
+    runRealGit(repo, ['read-tree', 'HEAD'])
+  }
+
+  function runAllowFailure(repo: string, args: string[]): void {
+    try {
+      execFileSync('git', ['-C', repo, ...args], { stdio: 'ignore' })
+    } catch {
+      /* 形态可能按 Git 版本非零退出；只关心是否执行了外部程序 */
+    }
+  }
+
+  it('双向校验：allow 集与探针集的差集为空（新增命令忘了归类会失败）', () => {
+    expect(gitReadExecCoverageGaps()).toEqual([])
+  })
+
+  it('真实 marker：describe --dirty + core.fsmonitor 执行外部程序 → 策略 ask', () => {
+    const { root, repo } = makeDescribeRepo('bizgraph-h7-fsmon-')
+    const marker = join(root, 'fsmon-marker')
+    const script = join(root, 'fsmon.sh')
+    writeFileSync(script, `#!/bin/sh\nprintf 'ran\\n' >> '${marker}'\necho '${repo}'\n`)
+    chmodSync(script, 0o755)
+    runRealGit(repo, ['config', 'core.fsmonitor', script])
+    resetIndex(repo)
+
+    // 修复前：describe 不在探针集合 → 策略 allow；真实 git 却执行了 fsmonitor。
+    runAllowFailure(repo, ['describe', '--dirty'])
+    expect(existsSync(marker)).toBe(true)
+
+    // 修复后：探针集合覆盖 describe + fsmonitor 无条件判定 → ask。
+    expect(decide('git describe --dirty', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+      risk: 'high',
+    })
+  })
+
+  it('真实 marker：describe --dirty + core.hooksPath 触发 post-index-change → 策略 ask', () => {
+    const { root, repo } = makeDescribeRepo('bizgraph-h7-hooks-')
+    const marker = join(root, 'hook-marker')
+    const hooks = join(root, 'hooks')
+    mkdirSync(hooks, { recursive: true })
+    const hook = join(hooks, 'post-index-change')
+    writeFileSync(hook, `#!/bin/sh\nprintf 'ran\\n' >> '${marker}'\n`)
+    chmodSync(hook, 0o755)
+    runRealGit(repo, ['config', 'core.hooksPath', hooks])
+    resetIndex(repo)
+
+    // 修复前：describe 不在探针集合 → 策略 allow；真实 git 却执行了钩子。
+    runAllowFailure(repo, ['describe', '--dirty'])
+    expect(existsSync(marker)).toBe(true)
+
+    expect(decide('git describe --dirty', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+      risk: 'high',
+    })
+  })
+
+  it('describe 形态实测：只有 --dirty/--broken 执行 fsmonitor；策略对所有形态一律 ask', () => {
+    const { root, repo } = makeDescribeRepo('bizgraph-h7-forms-')
+    const marker = join(root, 'fsmon-marker')
+    const script = join(root, 'fsmon.sh')
+    writeFileSync(script, `#!/bin/sh\nprintf 'ran\\n' >> '${marker}'\necho '${repo}'\n`)
+    chmodSync(script, 0o755)
+    runRealGit(repo, ['config', 'core.fsmonitor', script])
+
+    const forms: Array<{ args: string[]; executes: boolean }> = [
+      { args: ['describe', '--dirty'], executes: true },
+      { args: ['describe', '--broken'], executes: true },
+      { args: ['describe', '--always', '--dirty'], executes: true },
+      { args: ['describe', '--tags', '--dirty'], executes: true },
+      { args: ['describe', '--all'], executes: false },
+      { args: ['describe', '--tags'], executes: false },
+      { args: ['describe', '--long'], executes: false },
+      { args: ['describe', '--abbrev=0'], executes: false },
+      { args: ['describe', '--exact-match'], executes: false },
+      { args: ['describe', '--contains'], executes: false },
+    ]
+    for (const form of forms) {
+      if (existsSync(marker)) unlinkSync(marker)
+      resetIndex(repo)
+      runAllowFailure(repo, form.args)
+      expect(existsSync(marker), form.args.join(' ')).toBe(form.executes)
+      // H7 口径：不再按「该形态是否真的执行」二次细分，统一 ask。
+      expect(decide(`git ${form.args.join(' ')}`, { cwd: repo, includeGlobalGitConfig: false }), form.args.join(' ')).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    }
+  })
+
+  it('LFS 标准 diff.lfs.textconv 值不 ask；非标准值 ask', () => {
+    const base = '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n'
+    const repo = makeGitRepo('bizgraph-lfs-textconv-', `${base}[diff "lfs"]\n\ttextconv = git-lfs textconv\n`)
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      `${base}[diff "lfs"]\n\ttextconv = /tmp/marker.sh textconv\n`,
+    )
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      `${base}[diff "lfs"]\n\ttextconv = git-lfs textconv --extra\n`,
+    )
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+})
+
 describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
   it('H1 策略：core.fsmonitor 下 git fsck → ask / git-repo-config-exec（修复前 allow / git:fsck）', () => {
     const repo = makeGitRepo('bizgraph-h1-fsmonitor-', '[core]\n\tfsmonitor = /bin/sh\n')
@@ -1527,14 +1663,14 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
         risk: 'high',
       })
     }
-    // 探针判定：fsck 消费 fsmonitor；log 不刷新 index，不消费。
+    // 探针判定（H7）：fsmonitor 是「有就危险」的键，探针覆盖的每条只读子命令都判 true。
     const probe = probeGitConfig(repo, false, 500)
     expect(probe.failure).toBeNull()
     expect(probeGitConfigExecutes(probe, 'fsck')).toBe(true)
-    expect(probeGitConfigExecutes(probe, 'log')).toBe(false)
+    expect(probeGitConfigExecutes(probe, 'log')).toBe(true)
     expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-      decision: 'allow',
-      rule: 'git:log',
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
     })
   })
 
@@ -1985,11 +2121,13 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
     ).toMatchObject({ decision: 'allow' })
   })
 
-  it('H5 策略：core.hooksPath + 工作区 diff → ask；--cached/--staged/--no-index 仍 allow', () => {
+  it('H5/H7 策略：core.hooksPath 对探针覆盖的全部只读子命令 ask（含 --cached/--no-index）', () => {
     const repo = makeGitRepo(
       'bizgraph-h5-hooks-',
       '[core]\n\thooksPath = /tmp/bizgraph-hooks-not-used\n',
     )
+    // 修复前：只对 status 与「工作区 diff」ask，--cached/--staged/--no-index allow。
+    // H7 起 hooksPath 是无条件判定：不再依赖「哪些形态会刷新 index」的名单。
     for (const command of [
       'git diff',
       'git diff --stat',
@@ -1999,31 +2137,26 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
       'git diff HEAD',
       'git diff --exit-code',
       'git diff -- a.txt',
-    ]) {
-      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-        decision: 'ask',
-        rule: 'git-repo-config-exec',
-        risk: 'high',
-      })
-    }
-    // 这些形态不刷新索引，实测不触发 post-index-change，不弹窗。
-    for (const command of [
       'git diff --cached',
       'git diff --staged',
       'git diff --cached --stat',
       'git diff --no-index a.txt b.txt',
+      'git log --oneline',
+      'git show HEAD',
+      'git describe --dirty',
     ]) {
-      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-        decision: 'allow',
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false }), command).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+        risk: 'high',
       })
     }
 
     const probe = probeGitConfig(repo, false, 500)
     expect(probe.failure).toBeNull()
     expect(probeGitConfigExecutes(probe, 'diff', [])).toBe(true)
-    expect(probeGitConfigExecutes(probe, 'diff', ['--cached'])).toBe(false)
-    expect(probeGitConfigExecutes(probe, 'diff', ['--staged'])).toBe(false)
-    expect(probeGitConfigExecutes(probe, 'diff', ['--no-index', 'a', 'b'])).toBe(false)
+    expect(probeGitConfigExecutes(probe, 'diff', ['--cached'])).toBe(true)
+    expect(probeGitConfigExecutes(probe, 'describe', ['--dirty'])).toBe(true)
     expect(probeGitConfigExecutes(probe, 'status', [])).toBe(true)
   })
 
@@ -2064,7 +2197,7 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
     })
     expect(
       decide('git diff --cached', { cwd: repo, includeGlobalGitConfig: false }),
-    ).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+    ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
   })
 
   for (const layout of ['external', 'old-style'] as const) {
@@ -2240,19 +2373,19 @@ describe('B · 未知配置键默认 ask（极性反转）', () => {
     })
   })
 
-  it('husky 布局：core.hooksPath 仍按既有执行型判定（status ask / log allow）', () => {
+  it('husky 布局：core.hooksPath 对全部探针只读命令 ask（H7 后不再豁免 log）', () => {
     const repo = makeGitRepo(
       'bizgraph-b-husky-',
       `${BASE}\thooksPath = .husky/_\n[user]\n\tname = ZM\n`,
     )
-    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
-    })
-    expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-      decision: 'allow',
-      rule: 'git:log',
-    })
+    // 代价记录：husky 用户的 git log/show/diff 全部需要一次审批。
+    // 这是 H7 的有意选择——不再维护「谁消费 hooksPath」的名单。
+    for (const command of ['git status', 'git log --oneline', 'git show HEAD', 'git describe --dirty']) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false }), command).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    }
   })
 
   it('子模块配置里的未知键同样 ask（不因主配置干净而放行）', () => {

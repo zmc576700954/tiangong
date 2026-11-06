@@ -20,10 +20,11 @@
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync, type Dirent } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { buildSafeEnv } from '../../../shared/env'
 import { isWriteScopedTool, resolveRealPath, targetPathsOf } from './write-paths'
-import { resolveGitExecutable } from './bash-readonly'
+import { probeGitConfig, resolveGitExecutable } from './bash-readonly'
 
 export type GitDirGuardVerdict = 'allow' | 'block' | 'ask'
 
@@ -93,7 +94,8 @@ function probeGitDirs(cwd: string): GitDirsProbe {
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.length > 0)
-      .map((line) => resolve(line))
+      // git 可能回显 `.git` 这个 symlink 路径；统一 realpath 才能与目标比较。
+      .map((line) => resolveRealPath(resolve(line)))
     if (dirs.length === 0) return { dirs: [], failure: 'empty-output' }
     return { dirs, failure: null }
   } catch (error) {
@@ -174,6 +176,14 @@ function structuralGitDirs(realTarget: string): StructuralResult {
       } else if (stat.isFile()) {
         const pointer = readGitDirFile(dotGit)
         if (pointer) dirs.push(resolveRealPath(pointer))
+      } else if (stat.isSymbolicLink()) {
+        // `.git` 本身是 symlink（外部 gitdir 的另一种布局）：realpath 后按目录判定。
+        const endpoint = resolveRealPath(dotGit)
+        if (looksLikeGitDir(endpoint)) dirs.push(endpoint)
+        else {
+          const pointer = readGitDirFile(endpoint)
+          if (pointer) dirs.push(resolveRealPath(pointer))
+        }
       }
     } catch {
       /* 该祖先没有 .git，继续向上 */
@@ -237,6 +247,49 @@ function collectProtectedFiles(dirs: readonly string[]): string[] {
   return files
 }
 
+/**
+ * gitdir 内部对象目录不做配置注入，跳过以免大仓库拖慢审批。
+ * `hooks` / `info` / `worktrees` / `modules` 必须扫描。
+ */
+const SKIP_SYMLINK_SCAN_DIRS = new Set(['objects', 'refs', 'logs', 'lost-found', 'rr-cache', 'svn'])
+
+/**
+ * D1-1：收集 gitdir 内部所有 symlink 的**终点**（即使终点不存在）。
+ *
+ * 攻击形态：`.git/config -> /tmp/evil`（或工作区 symlink -> `.git/hooks/x`）。
+ * 只判定「目标是否在 gitdir 内」会漏掉「写 symlink 终点」这条路径——
+ * 终点在 gitdir 外，但写入它等于改写配置/钩子。因此把 gitdir 内每个 symlink
+ * 的终点也纳入保护面；写 symlink 本身（位于 gitdir 内）已由常规路径判定拦截。
+ */
+function collectSymlinkEndpoints(dirs: readonly string[]): string[] {
+  const endpoints: string[] = []
+  let visited = 0
+  const walk = (root: string, depth: number): void => {
+    if (depth > MAX_MODULE_DEPTH || visited >= MAX_PROTECTED_FILES) return
+    let entries: Dirent[]
+    try {
+      entries = readdirSync(root, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      visited += 1
+      if (visited > MAX_PROTECTED_FILES) return
+      const child = join(root, entry.name)
+      if (entry.isSymbolicLink()) {
+        // resolveRealPath 会逐级 readlink，dangling 终点也能解析。
+        endpoints.push(resolveRealPath(child))
+        continue
+      }
+      if (entry.isDirectory() && !SKIP_SYMLINK_SCAN_DIRS.has(entry.name)) {
+        walk(child, depth + 1)
+      }
+    }
+  }
+  for (const dir of dirs) walk(dir, 0)
+  return endpoints
+}
+
 /** 同 inode 判定：hardlink 的不同路径 realpath 不同，但 dev+ino 相同。 */
 function hardlinkedGitMetaFile(realTarget: string, dirs: readonly string[]): string | null {
   let targetStat: { dev: number; ino: number }
@@ -257,6 +310,61 @@ function hardlinkedGitMetaFile(realTarget: string, dirs: readonly string[]): str
     }
   }
   return null
+}
+
+interface IncludeProbe {
+  /** 当前仓库配置里所有 include.path / includeIf.*.path 解析后的真实路径。 */
+  targets: string[]
+  /** 非 null 即无法判定 include 面（D1 fail-closed）。 */
+  failure: string | null
+}
+
+/** `--show-origin` 的 origin 字段：`file:<path>`；其它（command line/blob）不当作文件。 */
+function fileOriginPath(origin: string): string | null {
+  const prefix = 'file:'
+  if (!origin.startsWith(prefix)) return null
+  const value = origin.slice(prefix.length).trim()
+  return value.length > 0 ? value : null
+}
+
+/** Git 会展开 `~/`；这里同样处理，避免 include 目标被误判为「不存在」。 */
+function expandHome(value: string): string {
+  if (value === '~') return homedir()
+  if (value.startsWith('~/')) return join(homedir(), value.slice(2))
+  return value
+}
+
+/**
+ * D1-2：用 Git 自己解析 include 链，收集所有 include 目标。
+ *
+ * 只用 `git config --list --includes --show-origin` 的扁平结果，不手写 INI：
+ * - 链式 include 的每一层都会作为独立 entry 出现，其 `origin` 给出声明文件；
+ * - 相对路径按「声明该 include 的文件所在目录」解析（Git 语义）；
+ * - includeIf 条件由 Git 求值；未命中的声明也会出现，按保守口径一并保护。
+ *
+ * 探针失败 = include 面不可判定 → 由调用方 fail-closed。
+ */
+function collectIncludeTargets(cwd: string): IncludeProbe {
+  const probe = probeGitConfig(cwd, true)
+  // 空配置（毫无 entry）不是失败：它就是「没有 include」。真正的失败
+  // （timeout / missing-git / 输出损坏）才 fail-closed。
+  if (probe.failure && probe.failure !== 'empty-output') {
+    return { targets: [], failure: probe.failure }
+  }
+  const targets: string[] = []
+  for (const entry of probe.entries) {
+    if (entry.key !== 'include.path' && !/^includeif\..+\.path$/.test(entry.key)) continue
+    const value = expandHome(entry.value.trim())
+    if (value === '') continue
+    const origin = fileOriginPath(entry.origin)
+    // `--show-origin` 对仓库本地配置可能输出相对路径（`file:.git/config`），
+    // 必须相对探针 cwd 还原为绝对路径，否则相对 include 会解析错目录。
+    const originPath = origin ? (isAbsolute(origin) ? origin : resolve(cwd, origin)) : null
+    const base = originPath ? dirname(originPath) : cwd
+    const target = isAbsolute(value) ? value : resolve(base, value)
+    targets.push(resolveRealPath(target))
+  }
+  return { targets: [...new Set(targets)], failure: null }
 }
 
 /** 目标最近的存在目录：git 探针必须在存在的目录里启动。 */
@@ -327,8 +435,30 @@ export function evaluateGitDirWriteGuard(
   }
 
   const allDirs = [...cwdProbe.dirs]
+  const cwdIncludes = collectIncludeTargets(baseCwd)
+  if (cwdIncludes.failure) {
+    return {
+      verdict: verdictFor(mode, 'block'),
+      rule: 'gitdir-include-probe-failed',
+      reason: `无法确认目标是否为 git 配置的 include 目标（配置探针失败：${cwdIncludes.failure}），按 fail-closed 阻止写入`,
+      targets,
+      gitDirs: allDirs,
+    }
+  }
   for (const target of targets) {
-    const realTarget = resolveRealPath(resolve(baseCwd, target))
+    const rawTarget = resolve(baseCwd, target)
+    // 目标是 `.git` 指针本身（含 symlink 形态）：即使 realpath 后 basename 变了，
+    // 改写它也能把后续 git 操作重定向到任意 gitdir。
+    if (basename(rawTarget) === '.git') {
+      return {
+        verdict: verdictFor(mode, 'block'),
+        rule: 'gitdir-pointer-write',
+        reason: `目标是 .git（gitdir 指针/目录），改写它可把后续 git 操作重定向到任意配置与钩子（目标：${target}）`,
+        targets,
+        gitDirs: allDirs,
+      }
+    }
+    const realTarget = resolveRealPath(rawTarget)
     const structural = structuralGitDirs(realTarget)
     allDirs.push(...structural.dirs)
     if (structural.blocked) {
@@ -367,6 +497,46 @@ export function evaluateGitDirWriteGuard(
           verdict: verdictFor(mode, 'block'),
           rule: 'gitdir-write-block',
           reason: `该路径属于 git 元数据目录（${dir}），可能是配置/钩子注入，已阻止（目标：${target}）`,
+          targets,
+          gitDirs: allDirs,
+        }
+      }
+    }
+    // D1-1：gitdir 内部 symlink 的终点也在保护面内（终点可以不存在）。
+    const symlinkTargets = collectSymlinkEndpoints([
+      ...cwdProbe.dirs,
+      ...targetProbe.dirs,
+      ...structural.dirs,
+    ])
+    for (const endpoint of symlinkTargets) {
+      if (isInsideDir(endpoint, realTarget)) {
+        return {
+          verdict: verdictFor(mode, 'block'),
+          rule: 'gitdir-symlink-target',
+          reason: `目标是 git 元数据 symlink 的终点（${endpoint}），写入等同改写 git 配置/钩子，已阻止（目标：${target}）`,
+          targets,
+          gitDirs: allDirs,
+        }
+      }
+    }
+    // D1-2：写 include 目标 = 一次批准后把任意内容变成配置的一部分。
+    const targetIncludes =
+      comparable(probeDir) === comparable(baseCwd) ? cwdIncludes : collectIncludeTargets(probeDir)
+    if (targetIncludes.failure) {
+      return {
+        verdict: verdictFor(mode, 'block'),
+        rule: 'gitdir-include-probe-failed',
+        reason: `无法确认目标是否为 git 配置的 include 目标（目标仓库配置探针失败：${targetIncludes.failure}，按 fail-closed 阻止写入）`,
+        targets,
+        gitDirs: allDirs,
+      }
+    }
+    for (const includeTarget of [...cwdIncludes.targets, ...targetIncludes.targets]) {
+      if (isInsideDir(includeTarget, realTarget)) {
+        return {
+          verdict: verdictFor(mode, 'block'),
+          rule: 'gitdir-include-target',
+          reason: `目标是 git 配置的 include 文件（${includeTarget}），写入会把它变成配置的一部分，已阻止（目标：${target}）`,
           targets,
           gitDirs: allDirs,
         }

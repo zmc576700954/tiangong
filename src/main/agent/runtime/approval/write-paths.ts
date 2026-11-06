@@ -74,22 +74,49 @@ function tryRealpath(input: string): string | null {
  *
  * 这样能识别**中间目录是 symlink** 的逃逸：`root/link -> /outside` 时，
  * `root/link/new.txt` 即使文件不存在也会落到 `/outside/new.txt`。
- * 注意这是调用时的快照，不跨调用缓存（两次调用之间文件系统可能变化）。
+ *
+ * 关键补充（D1-1）：`realpathSync` 遇到 **dangling symlink**（终点不存在）会失败，
+ * 于是「工作区里的 symlink 指向不存在的 `.git/hooks/x`」会被误判为普通路径。
+ * 这里改为逐级 `lstat` + `readlink` 手工解析：即使终点不存在，也会把已知的
+ * symlink 语义展开，再拼接剩余缺失后缀。采样在调用时，不跨调用缓存。
  */
 export function resolveRealPath(input: string): string {
-  const abs = path.resolve(input)
+  return resolveRealPathInner(path.resolve(input), 0)
+}
+
+const MAX_SYMLINK_HOPS = 40
+
+function resolveRealPathInner(abs: string, hops: number): string {
+  if (hops > MAX_SYMLINK_HOPS) return abs
   const direct = tryRealpath(abs)
   if (direct) return direct
-  let current = abs
-  const missing: string[] = []
-  while (true) {
-    const parent = path.dirname(current)
-    if (parent === current) return abs
-    missing.unshift(path.basename(current))
-    const realParent = tryRealpath(parent)
-    if (realParent) return path.join(realParent, ...missing)
-    current = parent
+
+  const root = path.parse(abs).root
+  const parts = abs.slice(root.length).split(path.sep).filter(Boolean)
+  let current = root
+  for (let index = 0; index < parts.length; index += 1) {
+    const next = path.join(current, parts[index])
+    let stat: fs.Stats
+    try {
+      stat = fs.lstatSync(next)
+    } catch {
+      // 该级不存在：把剩余（含本级）原样拼到已解析前缀上。
+      return path.join(next, ...parts.slice(index + 1))
+    }
+    if (stat.isSymbolicLink()) {
+      let linkTarget: string
+      try {
+        linkTarget = fs.readlinkSync(next)
+      } catch {
+        return next
+      }
+      const resolvedTarget = path.resolve(current, linkTarget)
+      const rest = parts.slice(index + 1)
+      return resolveRealPathInner(rest.length > 0 ? path.join(resolvedTarget, ...rest) : resolvedTarget, hops + 1)
+    }
+    current = next
   }
+  return current
 }
 
 /** macOS 默认大小写不敏感：比较前统一小写，避免大小写变体绕过作用域。 */

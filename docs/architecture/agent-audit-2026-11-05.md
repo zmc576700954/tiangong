@@ -4394,3 +4394,491 @@ exotic 夹具逐项（全部 24 条配置消费命令都会弹）：
 | 定向：`bash-readonly.test.ts` | **85 passed**（含 B 7 条） |
 | 全量 | **173 failed / 3181 passed / 93 skipped**；26 个失败文件与基线完全一致（better-sqlite3 ABI `NODE_MODULE_VERSION 130 vs 115`） |
 | 基线对比 | 失败文件集合一致；新增 29 passed = D1 22 + B 7 |
+
+---
+
+## 29. `8697df0` 对抗复验：D1/B 的生效面、绕过面与 H7 漏网（2026-11-06）
+
+### 29.0 基线与方法
+
+| 项 | 值 |
+|---|---|
+| HEAD | `8697df03cf870983f9d770fd35778eeaa0b36525`（`8697df0`，父 `7ae0429`） |
+| 工作树 | clean（复核开始时 `git status --porcelain` 为空） |
+| 远端 | 未 push（本地领先，无 `origin/…` 对应提交） |
+| 文档追加前 sha256 | `9dbfd709f4229f52ee6f67487fbe4e306a614c9c687de36fb5405c67a2d6819b`（4396 行） |
+| 运行时 | 真实 git 2.50.1（Apple Git-154）、macOS APFS（大小写不敏感） |
+
+方法：用 esbuild 把 HEAD 的 `bash-readonly.ts` + `gitdir-write-guard.ts` + `write-paths.ts` 打成单文件策略包（`/tmp/audit12/head/policy.mjs`），对真实 `git init` 夹具逐例调用 `evaluateBashPolicy()` / `evaluateGitDirWriteGuard()`；对每个「allow/ask」结论再用真实 git 复跑并检查 marker，确认「策略结论」与「实际是否执行」一致。除 `/tmp` 脚手架外，本轮**未改源码、未 commit、未 push**。
+
+**一句话结论：不可发布。** 阻断项 1 个（H7：`git describe --dirty/--broken` 在 `core.fsmonitor`/`core.hooksPath` 下零审批执行外部程序）；结构性缺口 2 个（D1 只覆盖「写类工具 + 标准路径键」；B 只覆盖 9 条探针子命令）。另有本轮新发现的 1 个 D1 绕过（dangling symlink 目标）与 1 处可用性放大（标准 LFS 仓库 6/9 读命令每次 ask）。
+
+### 29.1 D1 生效面（复核 §27 的声明）
+
+真实夹具上的 D1 判定（本机重跑，结论与 §27 一致；修正了 §27 未写清的一处大小写语义）：
+
+| 场景 | 目标 | 判定 | rule |
+|---|---|---|---|
+| 正常写 | `a.txt` / `newdir/new.txt` | allow | `gitdir-clean` |
+| 元数据 | `.git/config`、`.git/HEAD`、`.git/index`、`.git/hooks/pre-commit`、`.git/objects/aa/bb` | **block** | `gitdir-write-block` |
+| gitdir 本身 | `.git`、`sub/.git`（子模块指针文件） | **block** | `gitdir-pointer-write` |
+| 路径归一 | 绝对路径、`..`、`//.git///config` | **block** | `gitdir-write-block` |
+| 大小写 | `.GIT/foo`（**存在 `.git` 的仓库内**，APFS 折叠为同一目录） | **block**（正确） | `gitdir-write-block` |
+| 大小写（非仓库） | 普通目录里的 `.GIT/foo`、`.git/foo` | allow | `gitdir-clean` |
+| 跨仓库 | `../outer/.git/config` | **block** | `gitdir-write-block` |
+| bare | `bare.git/config`、`bare.git/HEAD` | **block** | `gitdir-write-block` |
+| 嵌套仓库 | `outer/inner/.git/config` | **block** | `gitdir-write-block` |
+| 外部 gitdir | `.git` 为 `gitdir:` 文件 → `extdir2/config`、`extdir2/objects/*` | **block** | `gitdir-write-block` |
+| linked worktree | `config.worktree`、`.git` | **block** | `gitdir-write-block` / `gitdir-pointer-write` |
+| symlink | 工作区内 `link-cfg -> .git/config` | **block** | `gitdir-write-block`（realpath 后落在 gitdir） |
+| hardlink | `evil.cfg` 与 `.git/config` 同 inode | **block** | `gitdir-hardlink` |
+| hardlink（symlink 形态） | `.git/config` 本身是 symlink → 工作区 `real.cfg`（目标已存在） | **block** | `gitdir-hardlink`（`stat` 跟随 symlink 后同 inode） |
+| 探测失败 | `PATH=/nonexistent`、cwd 不存在、`.git/config` 语法坏、`.git/config` 是 FIFO | **block** | `gitdir-probe-failed` |
+| 误伤面（正确放行） | `.gitignore`、`.gitattributes`、`.github/workflows/ci.yml`、`src/.git/foo`（无 `HEAD`/`config` 的普通目录）、子模块工作区普通文件 | allow | `gitdir-clean` |
+| 有意过度拦截 | `.git/config.bak`、`.git/info/exclude`（均在 gitdir 内） | **block** | `gitdir-write-block` |
+
+实现与 §27 一致：`PROTECTED_GITDIR_FILES` 含 `config/config.worktree/HEAD/index/packed-refs/shallow/commondir`，`PROTECTED_GITDIR_DIRS` 含 `hooks/info`；`walk()` 递归 `worktrees/`、`modules/`（深度 ≤4），hardlink 枚举上限 256 个文件。见 [gitdir-write-guard.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gitdir-write-guard.ts#L52-L58)、[gitdir-write-guard.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gitdir-write-guard.ts#L145-L186)、[gitdir-write-guard.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gitdir-write-guard.ts#L197-L260)。
+
+**结论：作为「写类工具直写 gitdir」的防线，D1 是成立的**（含 symlink、hardlink、大小写、外部 gitdir、bare、嵌套、fail-closed）。
+
+### 29.2 工具面之外：Bash 写 gitdir 的审批强度（必答 1 的核心问题）
+
+`echo/ cp / mv / sed -i / tee / ln / install / dd / python / node / git config` 全部 `ask`，且 **Bash 永远不可能获得会话级授权**（`sessionGrantable: isWriteScopedTool(tool_name)`，Bash 不匹配；且无 `targets` → `matchSessionGrant` 返回 null）。见 [gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L268-L272)、[gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L429-L470)、[write-paths.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/write-paths.ts#L18-L23)。
+
+| 命令 | 策略 | rule |
+|---|---|---|
+| `echo x > .git/config` | ask | `redirect` |
+| `cp /tmp/x .git/config` | ask | `write-command:cp` |
+| `mv /tmp/x .git/config` | ask | `write-command:mv` |
+| `sed -i s/a/b/ .git/config` | ask | `sed-in-place` |
+| `tee .git/config` | ask | `write-command:tee` |
+| `git config core.fsmonitor …` | ask | `git-write-subcommand:config` |
+| `ln .git/config /tmp/evil` | ask | `write-command:ln` |
+| `install /tmp/x .git/config` | ask | `write-command:install` |
+| `dd of=.git/config` | ask | `write-command:dd` |
+| `python3 -c 'open(".git/config","w")'` | ask | `not-in-whitelist:python3` |
+| `node -e 'fs.writeFileSync(".git/config","")'` | ask | `shell-backslash` |
+
+**强度不等价，这是 D1 的真实边界**：
+
+- `Write/Edit` 写 `.git/config` = **deny，不可批准**（唯一出路是主进程环境变量 `BIZGRAPH_GITDIR_WRITE_GUARD=ask|off`）；
+- `Bash` 写 `.git/config` = **每次一条 ask，可批准**，且批准后**效果持久化到磁盘**（跨会话、跨进程继续生效）；后续同一命令仍需再批准，但「配置已经被改写」这件事不需要再批准。
+- 因此 D1 封死的是「一次 Write 批准 → 配置落地」这条**最高信号、最容易在弹窗里被点过**的路径；「一次 Bash 批准 → 配置落地」仍然存在。两者都要求用户明确批准一次，所以不是零审批洞；但 D1 并不能把「git 元数据不可写」变成能力级事实。
+- 副作用（语义变化）：D1 之后 agent **无法通过 Write/Edit 修复**一个被写坏的 `.git/config`（例如用户误批准了 Bash 写入后想让 agent 撤回）。自救路径：批准 `git config --unset <key>`（Bash ask）或用户手工编辑；没有「本会话临时放行」的粒度。
+
+### 29.3 MCP / 非标准工具名（必答 1）
+
+`WRITE_TOOL_PATTERN` 是完全锚定的：`/^(write|edit|multiedit|notebookedit|create|delete|remove|move|rename|patch|apply_patch|str_replace|str_replace_editor)$/i`。因此：
+
+| 工具 / 入参 | guard | 之后 gateway | 净效果 |
+|---|---|---|---|
+| `mcp__filesystem__write_file {file_path:".git/config"}` | allow `not-write-tool` | ask（无 policy 决策） | 每次弹窗；不可会话授权；**无 deny** |
+| `mcp__filesystem__write_file {path:".git/config"}` | allow `not-write-tool` | ask | 同上 |
+| `Bash {command:"echo x > .git/config"}` | allow `not-write-tool` | ask（Bash 策略 `redirect`） | 同上 |
+| `write_file {file_path:".git/config"}` | allow `not-write-tool` | ask | 同上 |
+| `str_replace_based_edit_tool {path:".git/config"}` | allow `not-write-tool` | ask | 同上 |
+| `apply_patch {file_path:".git/config"}` | **block** | deny | 命中（工具名在正则里） |
+| `apply_patch {input:"…"}` | allow `no-target` | ask | 不命中 |
+| `move {from,to}` / `rename {old_path,new_path}` / `Write {source,destination}` / `Write {filePath}` | allow `no-target` | ask | 不命中（路径键不在 `SINGLE/MULTI_PATH_KEYS`） |
+
+结论：**MCP/非标准工具名不会绕过审批（每次仍 ask），但也不会被 D1 拦截**——D1 的 deny 语义在这类工具面上退化为「每次一条可批准 ask」。真正的绕过条件是「用户批准了那一次 MCP/自定义写调用」；批准后配置落地，效果与 Bash 相同。
+
+另外，D1/B 只挂在 Claude 的 `canUseTool` 上（[adapter-driver.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/executors/adapter-driver.ts#L232-L262)），而 Claude 只有在 kernel 路径注入钩子时 `permissionMode` 才是 `default`（[claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts#L317-L327)）。由此得到**生效范围**：
+
+- Claude + kernel（默认，白名单 = `claude`）→ D1/B 生效；
+- Claude + legacy（`BIZGRAPH_AGENT_KERNEL=0`，或 `BIZGRAPH_AGENT_KERNEL_BACKENDS` 未列出 claude）→ `acceptEdits`、无 `canUseTool` → **D1/B 全部不生效**；
+- codex / opencode / 其他适配器无 `setTurnApprovalHooks` → **D1/B 全部不生效**（这些后端本来也没有 Bash 只读白名单）。
+
+这不是本轮引入的回归，但必须在「结构性防线」的表述里写清：**它们不是全产品防线，只是 Claude-kernel 路径的防线**。见 [feature-flags.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/feature-flags.ts#L27-L50)、[feature-flags.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/feature-flags.ts#L81-L135)。
+
+### 29.4 时序 / 结构绕过（必答 1）
+
+**(a) dangling symlink：D1 的真实绕过（本轮新增，记为 D1-1）**
+
+`.git/config` 本身是 **dangling symlink**（指向尚不存在的 `../evil-new.cfg`）时：
+
+```
+.guard: Write {file_path:"<repo>/evil-new.cfg"} → allow  rule=gitdir-clean
+.real: 写入 evil-new.cfg 后，git 通过 .git/config -> ../evil-new.cfg 读到攻击者配置
+.policy: git describe --dirty → allow
+.real: git describe --dirty → exit 0，输出 v1-dirty，marker /tmp/audit12/pwned-fsmon 生成
+```
+
+原因：`resolveRealPath()` 对「最终目标不存在」只能解析到最近已存在祖先，无法 readlink 出 dangling symlink 的终点（[write-paths.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/write-paths.ts#L78-L99)）；`structuralGitDirs()` 判定「目标本身不在 gitdir」，hardlink 比对又因目标不存在直接返回 null（[gitdir-write-guard.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gitdir-write-guard.ts#L241-L249)）。目标一旦被创建，`.git/config` 自动生效。
+
+前提：`.git/config` 必须是 dangling symlink。创建它需要一次被批准的 Bash（`rm` + `ln -s` 均为 ask），或来自用户自己的仓库模板/脚本；克隆仓库不会带出这种状态。拿到前提后：第一次写 `evil-new.cfg` 是普通 Write ask（可被批准并建立会话授权），之后**同一路径的写入被会话授权自动放行** → 可反复改写配置。因此它是「2 次批准 → 无限次配置写入 + H7 零审批执行」的组合链，不是零前提绕过。
+
+**(b) `include.path` 指向工作区文件：D1 不保护（记为 D1-2）**
+
+`.git/config` 中 `[include] path = local.inc`，`local.inc` 在工作区内：
+
+```
+guard: Write {file_path:"<repo>/local.inc"} → allow (gitdir-clean)
+policy: git describe --dirty → allow
+real:   写 local.inc = [core] fsmonitor=… 后，git describe --dirty 执行 fsmonitor（marker 成立）
+```
+
+D1 的保护区只有 gitdir 自身；include 目标文件在真实路径上确实不在 gitdir 内，因此 allow。该写入一次批准后可被会话授权复用。B 只在 9 条子命令上读 include（`--includes` 展开），`describe` 不读 → 直接落到 H7。**这是「D1 + B」组合后仍然存在的实质缺口**：不需要 dangling symlink，只需要仓库已配置 include（真实世界常见：`~/.gitconfig` include 工作区私有配置）。
+
+**(c) hardlink**：直接 block（§29.1）。创建 hardlink 本身需要一次 Bash 批准；创建后用 Write 写该路径会被 `gitdir-hardlink` 拒绝。cap 层面有一个理论缺口：枚举顺序先固定文件后 `hooks/info`，且总上限 256；若会话仓库有 >256 个 hook/info 文件，靠后目录的 `modules/*/config` 可能未被枚举，指向它的 hardlink 不会被发现。构造门槛高（需跨仓库同卷 hardlink + 大量 hook 文件），记为 P3。
+
+**(d) rename / 先写后替换**：`mv /tmp/x .git/config`、`mv /tmp/x .git/hooks/pre-commit` 均为 Bash ask（`write-command:mv`），批准一次即落地；「先在 `.git` 外建目录再 mv 进去」同样是 ask。没有发现零审批路径。
+
+**(e) TOCTOU**：D1 在 `canUseTool` 时做一次快照判定，SDK 随后落盘，中间**没有二次校验**（[gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L171-L196)、[gitdir-write-guard.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gitdir-write-guard.ts#L291-L300)）。窗口为「canUseTool 返回到 SDK 写文件」的毫秒级；利用它需要另一并发写者把目标换成 symlink，而并发写者本身要先拿到一次 Bash 批准（或用户已运行的其它进程）。结论：**理论存在、实际门槛等同于「已经能在后台任意写」**，不单独构成阻断。
+
+### 29.5 探测失败面（必答 1）
+
+| 场景 | D1 | 说明 |
+|---|---|---|
+| git 不在 PATH | block `gitdir-probe-failed` | 所有写类工具受影响（含写普通文件） |
+| cwd 不存在 | block | 同上 |
+| 仓库刚 `git init`（完整） | 正常判定 | `rev-parse` 可用 |
+| `.git/config` 语法坏 | block | 所有 Write/Edit 被拒（fail-closed） |
+| `.git/config` 是 FIFO | block，192ms | `rev-parse` 150ms 超时 |
+| `.git` 是文件（gitdir 指针） | 指针本身 block；`.git/config` 因 `ENOTDIR` 实际不可达（guard allow） | 无实际写入 |
+| 嵌套仓库 | 内层 `.git/config` block | 目标侧 `rev-parse` 独立探测 |
+| `GIT_DIR` 环境 | 探针用 `buildSafeEnv()`，丢弃全部 `GIT_*` | 不受继承变量影响；目标侧按真实路径判定 |
+| bare 仓库 | `config`/`HEAD` block | `looksLikeGitDir` |
+| `.git` 在挂载点/不同卷 | 按绝对路径 + realpath 比较 | 未发现绕过 |
+| 「不是 git 仓库」 | 视为确定结论（dirs=[]），继续结构探测 | 不误判为失败 |
+
+fail-closed 的代价是实打实的：**一个坏配置会让该会话里所有 Write/Edit 都无法执行**（用户必须在弹窗外手工修）。这是 D1 与 B 的共同取向，评估为「可接受但需在 UI 上说清」。
+
+### 29.6 B 的判定顺序与值判定（必答 2）
+
+**判定顺序没有前缀误放**。实现顺序是：① `EXEC_KEY_SHAPE`（`(command|program|hook|helper|driver|pager|editor)$`）→ ② 值判定（`submodule.update` / `remote.uploadpack|receivepack` / `include.path`）→ ③ `EXEC_KEY_JUDGED_SAFE` → ④ `core.` 显式安全键 → ⑤ `branch/remote/submodule/url` 后缀白名单 → ⑥ 族前缀白名单。见 [bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L1334-L1375)。
+
+19 条命令 × 14 夹具的重跑矩阵（A=allow，K=ask；列顺序为 `status/log/diff/show/blame/whatchanged/rev-list/ls-files/fsck/rev-parse/describe/for-each-ref/branch/tag -l/cat-file/shortlog/merge-base/count-objects/name-rev`）：
+
+```
+clean        A A A A A A A A A | A A A A A A A A A A
+b-unknown    K K K K K K K K K | A A A A A A A A A A
+b-include    K A K A K A A K K | A A A A A A A A A A
+b-cred-bang  K K K K K K K K K | A A A A A A A A A A
+b-cred-ok    A A A A A A A A A | A A A A A A A A A A
+b-cred-path  K K K K K K K K K | A A A A A A A A A A
+b-upload     K K K K K K K K K | A A A A A A A A A A
+b-partial    K K K K K K K K K | A A A A A A A A A A
+b-subupd     K K K K K K K K K | A A A A A A A A A A
+b-lfslocal   K A K A A A A A A | A A A A A A A A A A
+b-husky      K A K A A A A A A | A A A A A A A A A A
+b-pager      K K K K K K K K K | A A A A A A A A A A
+b-diffcmd    K K K K K K K K K | A A A A A A A A A A
+b-pretty     A K A K A K A A A | A A A A A A A A A A
+```
+
+逐项复核（均未发现「白名单族前缀错误放行」）：
+
+| 用例 | 结果 | rule |
+|---|---|---|
+| `core.zzz`（未知键） | ask | `git-unknown-config-key`（9 条探针命令）；其余 10 条 allow |
+| `core.pager`（`core.` 族 + 执行型后缀） | ask | 执行型形态优先，未落入 `core.` 族 |
+| `remote.origin.uploadpack` | ask | 显式值判定 |
+| `credential.helper = osxkeychain --evil` | ask | 已知 helper 为整值锚定，不做前缀匹配 |
+| `credential.helper = store /tmp/x` / `/usr/local/bin/helper` / `!cmd` | ask | 同上 |
+| `credential.helper = cache --timeout=3600` | allow | 已知形态 |
+| `credential.https://x.helper = !touch …` | ask | 执行型形态 + 值判定都命中 |
+| `filter.foo.clean = 'git-lfs clean -- %f; touch …'` | ask | 非标准 LFS 值 |
+| `filter.foo.clean = cat`（无关驱动） | ask | 保守 |
+| `diff.foo.textconv` | ask（9 条探针命令） | 探针 `diff.*.textconv` 对**任意**子命令返回 true |
+| `merge.foo.driver` / `diff.foo.command` / `pretty.leak=format:%GS` | ask | 形态 / 参数面 |
+| `submodule.x.update = !cmd` | ask | 值判定；`= checkout` allow |
+| `remote.origin.promisor = true`（partial clone） | ask | **误伤**（未进 `REMOTE_SAFE_SUFFIX`） |
+| `include.path`（工作区/绝对路径） | allow，且探针 `--includes` 展开 | B 之后 include 逻辑仍生效（depth-10 复测：ask + 真实执行 marker） |
+| `pager.log` / `pager.status` | ask | 过度拦截（非 TTY 不执行） |
+| husky `core.hooksPath=.husky/_` | status/diff ask，其余 allow | 既有 `git-repo-config-exec`，非 B 新增 |
+
+**白名单族里确有一些「值是执行内容」的键，但消费面都在 ask 命令上**：`mergetool.<t>.cmd`、`difftool.<t>.cmd`（`cmd` 不在执行型后缀里，被族白名单放行；只有 `git mergetool/difftool` 会执行，而它们本身 ask）、`sequence.editor`、`core.askPass`、`interactive.difffilter`（`rebase -i` / `add -i` / 凭据提示，均为 ask）、`gc.recentObjectsHook`（`*hook` 形态 → ask，正确）、`filter.*`（值只由 status/diff 消费，且探针覆盖）。逐条复核后**未发现读命令可触发的成员**；`core.fsmonitor` / `core.hooksPath` 的唯一例外就是 H7 的 `describe`。
+
+**`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off`**：实测 `b-unknown` 的 `git status` 从 ask 变 allow —— 即回到 B 之前的未知键黑洞。开关是主进程 `process.env`（agent 的 Bash 子进程无法影响，`buildSafeEnv` 也不把该变量回灌给主进程），但用户/启动脚本可设；这是**明确的降级利用路径**（谁能改启动环境谁就能关掉兜底）。同类开关：`BIZGRAPH_GIT_CONFIG_PROBE=off`（实测所有探针命令一律 ask，安全方向）、`BIZGRAPH_GITDIR_WRITE_GUARD=off`（实测回到 allow）、`BIZGRAPH_AGENT_KERNEL=0`（D1/B 整体不运行）。**建议在安全口径里把它们归为「用户可见的降级开关」，不作为攻击面，但必须记录。**
+
+**可用性修正（对 §28.3 的补充）**：§28.3 说「标准 LFS 39/44、0 新增 ask」，其夹具只装了 `filter.lfs.*`。真实执行过 `git lfs install` 的仓库还会写 `diff.lfs.textconv = git-lfs textconv`，而探针把 `diff.*.textconv` 视为无条件执行 → 实测 `status/diff/log/show/blame/ls-files` **6 条全部 ask**。用 B 前后两个 bundle 对照，ask 结果完全一致（**是既有口径，不是 B 引入**），但 §28.3 的「LFS 0 新增 ask」应理解为「未含 diff.lfs.textconv 的 LFS 夹具」。
+
+### 29.7 H7：`git describe --dirty` 的零审批执行（阻断项）
+
+**证据（同一仓库内对照）**：
+
+```
+--- H7a: core.fsmonitor ---
+{"command":"git describe --dirty","decision":"allow","rule":"git:describe","risk":"low","reason":"只读白名单命中"}
+v1-dirty / real exit=0 / marker: /tmp/audit12/pwned-fsmon
+{"command":"git status","decision":"ask","rule":"git-repo-config-exec"}
+--- H7b: core.hooksPath ---
+{"command":"git describe --dirty","decision":"allow","rule":"git:describe"}
+v1-dirty / real exit=0 / marker: /tmp/audit12/pwned-hook
+{"command":"git diff","decision":"ask","rule":"git-repo-config-exec"}
+--- 变体（同仓库 fsmonitor）---
+git describe --broken          allow  exit=0  MARKER
+git describe --always --dirty  allow  exit=0  MARKER
+git describe                  allow  exit=0  no marker（不刷新索引，符合预期）
+```
+
+**根因（不是键判定错，是命令集覆盖缺口）**：
+
+1. `describe` 在 `GIT_READ_SUBCOMMANDS`（18 条）里，被无参数限制放行（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L327-L331)）；
+2. `GIT_CONFIG_EXEC_SUBCOMMANDS` 只有 9 条（`diff/log/show/status/blame/whatchanged/rev-list/ls-files/fsck`，[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L437-L439)）；
+3. `core.fsmonitor` / `core.hooksPath` 在 `EXEC_KEY_JUDGED_SAFE` 中直接返回 true（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L1184-L1206)）；
+4. `describe --dirty/--broken` 内部走 `diff-index --quiet` → 刷新索引 → 执行 `core.fsmonitor` / `core.hooksPath`。
+
+**影响**：B 的「未知键一律 ask」在这条命令上不成立；D1 拦不住配置进入（Bash/include/dangling symlink 任一批准一次即可）。合起来是一条**能跨会话复用的零审批执行链**。它与 H1 同族（同一个 `core.fsmonitor`），只是从 `fsck` 换成了 `describe`——说明「逐命令登记执行面」的修补方式会持续漏。
+
+**最小修复**：把 `describe` 纳入配置执行判定（只需在 `--dirty/--broken` 时判定，或统一对 `core.fsmonitor/core.hooksPath` 在**所有** allow 子命令上无条件 ask），并补一条 `describe --dirty` + 真实 marker 的单测。注意这会增加「干净仓库 + 无危险配置」以外场景的弹窗，需同时更新可用性基线。
+
+### 29.8 组合回归：既有漏洞族是否仍闭合（必答 3）
+
+| 用例 | 结论 | rule / 证据 |
+|---|---|---|
+| H1 `git fsck` + `core.fsmonitor` | ask | `git-repo-config-exec` |
+| H2 三种子模块布局 `git diff` | ask | `git-repo-config-exec`（含 `diff.submodule=diff` 提示） |
+| H3 无签名对照 | ask（log/show/log --pretty=leak）/ `%GS` ask | `git-repo-config-exec` / `git-gpg-format` |
+| H4 signature atom（`%(signature)`、`%(*signature)`、`branch/tag --format`） | ask | `git-signature-atom`；`%(contents:signature)` allow（只读内容，不执行） |
+| H5 `core.hooksPath` + 工作区 `git diff` | ask | `git-repo-config-exec`；`diff --cached` allow（不刷新索引，实测无执行） |
+| H6 外部/旧式嵌套 gitdir `git diff` | ask | `git-repo-config-exec` |
+| B-12-1 裸 `worktreeConfig` + `config.worktree` fsmonitor | ask 且真实执行（marker） | `git-repo-config-exec` |
+| B-12-2 裸 `log.showSignature` + `gpg.program` | ask 且真实执行 gpg（marker） | `git-repo-config-exec` |
+| B-13-1 include 链 depth 10 | ask 且真实执行（marker） | `git-repo-config-exec` |
+| B-14-1 转义 include.path | ask（探针 non-zero-exit；真实 git exit 128） | fail-closed |
+| `git grep -O` / `git grep` | ask | `git-grep` |
+| `rg --pre` | ask | `rg-pre` |
+| `git diff --output=` | ask | `git-output-file` |
+| `git fsck --lost-found` | ask | `git-lost-found` |
+| `git branch feature-x` / `git tag --points-at` | ask | `git-branch-create` / `git-tag-write` |
+| `node --check` | allow | `node:--check` |
+| `node -e` | ask | `node:run` |
+| `file --co` / `file -c` | ask / allow | `file-compile` / `file` |
+| `$(whoami)` / `$HOME` / `${HOME}` | ask | `shell-escape` / `shell-expansion` |
+| `find -delete` / `find -exec` | ask | `find-dangerous` |
+| `git -c core.fsmonitor=…` / `--config-env` / `GIT_CONFIG_COUNT=…` 前缀 | ask | `git-config-override` / `not-in-whitelist` |
+
+**D1 引入的语义变化**：`.git/config`、`.git/hooks/*` 从「ask 可批准」变为「deny 不可批准」。评估：
+
+- 合理性：**合理**。这两类路径是「后续所有 git 命令的信任根」，弹窗文案无法让用户理解「批准一次 Write 等于永久允许执行任意外部程序」；
+- 代价：agent 不能再用 Write/Edit 创建 hook（例如帮助用户安装 husky 的 hook 文件）、不能修坏配置；替代路径是 Bash（ask 可批准）或用户手工；
+- 自救：`git config --unset`（Bash ask）可用；或设 `BIZGRAPH_GITDIR_WRITE_GUARD=ask` 回到旧语义；没有会话级豁免。
+
+### 29.9 回归、代价、可用性（必答 4）
+
+| 项 | 结果 |
+|---|---|
+| 本仓库 52 条真实命令 allow 比例 | **51 / 52**，与 `565ff68`（D1/B 之前）完全一致；唯一 ask 为 `git tag --points-at HEAD`（既有） |
+| 44 条样本（§28.3 口径） | 本仓库/clean/LFS(无 textconv)/dotfiles/CI 39/44；husky 31/44；exotic 15/44（全部与 §28.3 一致） |
+| 真实 LFS（含 `diff.lfs.textconv`） | 6/9 探针命令 ask（**既有口径**，非 B 新增，但 §28.3 未覆盖） |
+| `evaluateBashPolicy('git status')` | 8–9 ms（本仓库/clean/husky/partial 均在 8–9 ms） |
+| D1 单目标 Write | **17 ms**（cwd 探测 1 次 + 目标探测 1 次 `rev-parse`）；`.git/config` 8.5 ms（结构判定提前 block）；Bash 0 ms（不探测） |
+| D1 8 目标 Write | ~84 ms（线性，**无缓存**，每次调用重新探测） |
+| FIFO 配置 | policy 293 ms（150 ms 探针超时 + 解析）；D1 192 ms block |
+| 子模块预算 | h2-a 76 ms / depth4 108 ms / depth9 97 ms / 200 模块 **324 ms → budget-exceeded ask** |
+| include depth 10 | 正常（ask + 真实执行） |
+| 定向测试 | 4 文件 **156 passed**（bash-readonly 85 + guard 17 + gateway 33 + claude-code 21） |
+| 全量 | **173 failed / 3181 passed / 93 skipped（3447）**，26 个失败文件全部 better-sqlite3 ABI（`NODE_MODULE_VERSION 130 vs 115`），与 §28.6 完全一致 |
+
+D1 的探测开销是**每次写都付**：一个 20 次 Edit 的回合约多 340 ms；对大仓库（多模块）hardlink 枚举可再增加数十 ms（上限 256 文件、深度 4）。未发现缓存，也没有必要缓存（跨调用文件系统可能变化），但要意识到 agent 批量写场景下的累计成本。
+
+**测试覆盖缺口**（修得对但没测）：
+
+- `git describe --dirty/--broken`（H7）无任何用例；
+- MCP / `write_file` / `move` / `rename` / `Write{filePath}` 无用例；
+- dangling symlink（`.git/config` → 不存在文件）无用例；
+- include 目标文件写入无用例；
+- hardlink 仅 1 条。
+
+### 29.10 收敛性重估：有没有可验证的停止判据？（必答 5）
+
+**没有。** 现有两条「结构性」说法都不成立为可证明的不变式：
+
+1. 「任意配置内容下，未登记键一律 ask」→ **伪**。只在 9 条探针子命令成立；allow 面共 18 条 read 子命令 + `branch/tag/remote/stash` 的列举规则，实测 `describe --dirty` 就是反例（§29.7）。
+2. 「任意写路径下 gitdir 不可写」→ **伪**。只在「`WRITE_TOOL_PATTERN` + 标准路径键 + 真实路径可解析到 gitdir」成立；Bash（ask 可批准、效果持久）、MCP/自定义工具（ask 可批准）、include 目标（不在 gitdir）、dangling symlink 目标（目标不存在）、hardlink 枚举上限、TOCTOU 都是反例或边界。
+
+可以写出的**较弱判据**（可测试，但需要持续维护，且不能覆盖 Bash/MCP 写面）：
+
+- C1（写面）：对 `WRITE_TOOL_PATTERN` 且 `targetPathsOf()` 非空的调用，若「目标 realpath 或其 dangling symlink 终点」落在 gitdir（含 include 目标与 hooks/info 全部文件）→ deny；
+- C2（命令面）：`GIT_READ_SUBCOMMANDS ∪ {branch, tag, remote, stash 的列举形态}` 中的每一条，要么强制执行配置探针 + 未知键判定，要么证明该命令不可能消费任何执行型配置（逐条附真实 marker 证据）；
+- C3（执行面）：allow 的 git 进程在 OS 层无法 `exec` 白名单外程序（sandbox/no-exec），此时配置怎么写都不构成执行洞——这是唯一**能力级**、不依赖枚举的判据。
+
+在 C1–C3 同时成立前，「停止判据」只是「本轮没找到新洞」，不是可验证的不变式。**建议把 C3 作为长期目标**（能力级 no-exec + 固定 git 二进制指纹），C1/C2 作为过渡期的不变式测试（每次扩 allow 名单必须同时补「该命令消费哪些配置键」的测试）。
+
+### 29.11 结论
+
+**不可发布**。
+
+| 项 | 性质 | 处置建议 |
+|---|---|---|
+| **H7** `git describe --dirty/--broken` + `core.fsmonitor/core.hooksPath` | **阻断**：零审批执行外部程序，可跨会话 | P0：纳入探针 / 对这两个键在所有 allow 子命令无条件 ask + 单测 |
+| D1-1 dangling symlink 目标 | 绕过（前提：一次 Bash `ln -s`）→ 批准 1 次写后会话授权复用 | P1：`readlink` 解析 dangling symlink 终点并纳入保护区 |
+| D1-2 include 目标工作区文件 | 缺口（无前提，真实常见）→ 一次批准写后可复用 | P1：解析 `include.path/includeIf.*.path`，把其指向文件纳入保护区 |
+| D1-3 工具面/命令面覆盖 | 结构缺口：MCP/自定义工具、Bash 写、非标准路径键只有「每次 ask」 | P1：明确产品口径（接受「一次批准」），或把写面判定下沉到执行层 |
+| B-1 探针子命令覆盖 9/18 | 结构缺口（H7 的根因） | 与 H7 合并修复 |
+| U-1 LFS `diff.lfs.textconv` 过度 ask | 可用性（既有，非 B 新增） | P2：LFS textconv 按标准值放行，或仅对 `--textconv` 相关形态判定 |
+| 生效范围仅 Claude-kernel | 结构事实 | P2：文档明确；legacy/其它后端不在防线内 |
+| 坏配置导致全写 deny / FIFO 192 ms | 可用性（fail-closed 的代价） | P3：UI 提示 + 允许「仅本会话」临时放行 |
+
+**「D1 + B 是否足以替代逐键枚举？」——不足以。**
+
+- B 把「未知键」从「洞」降级为「弹窗」，在**它覆盖的 9 条命令**上价值明确，且对真实配置零新增弹窗；
+- 但执行面漏在**命令维度**（`describe --dirty/--broken`），继续逐键枚举只会把洞从「未登记键」搬到「未登记命令 × 已登记键」；H7 就是活证据；
+- D1 把「写元数据」从「可批准」升级为「不可批准」，在**它覆盖的工具面**上价值明确，但 Bash/MCP/include/dangling symlink 仍然能达成同一效果（各需一次批准）；
+- 因此二者应作为**纵深防御**保留，但不能作为「执行面已闭合」的证明；真正的停止判据只能是**能力级**（allow 路径的 git 无法 exec 白名单外程序），或「命令面全覆盖 + 写面全覆盖」的可测试不变式（C1/C2）。
+
+**建议路线（短→长）**：① 立即修 H7（P0，1 条规则 + 1 条测试）；② 补 dangling symlink 与 include 目标（P1，D1 内两条规则）；③ 把 `describe/branch/tag/remote/stash` 的「执行面消费」写成表并加测试（C2 的可测试化）；④ 立项能力级 no-exec sandbox（C3），替代继续逐键/逐命令打补丁。
+
+复算：正文（文件起始至本节末，不含本哈希行）sha256 = `1ce2a9d81c3d698fb89398bc7590140b49f557f68a5172c3d2d7a27d4a93612b`；校验方式：删去本行后重新计算应等于该值。本行写入后的整文件哈希不作为自指哈希记录。
+
+---
+
+## 30. H7 修复记录（2026-11-06）：`describe` 进入探针 + 「有就危险」键无条件判定
+
+### 30.1 根因
+
+不是键判定缺口，而是**命令集覆盖缺口**：`describe` 在只读白名单（18 条）里，但不在跑配置探针的集合（9 条）里；`core.fsmonitor / core.hooksPath` 又被 `EXEC_KEY_JUDGED_SAFE` 豁免，于是 `git describe --dirty` 在真实执行外部程序时策略仍 `allow`。
+
+### 30.2 修法
+
+1. 只读集与探针集建立**双向校验**：`GIT_READ_SUBCOMMANDS` 的每条命令必须要么在 `GIT_CONFIG_EXEC_SUBCOMMANDS`，要么在 `GIT_READ_PROVEN_NO_EXEC_CONFIG`（附实测「不消费」依据）；`gitReadExecCoverageGaps()` 返回非空即单测失败。
+2. `fsmonitor` / `hooksPath` 改为**探针覆盖的全部只读子命令无条件 ask**，不再按「谁消费」名单。
+3. `describe` 加入探针集合。
+4. 补真实 marker 单测（fsmonitor / hooksPath 各一条）+ 形态表测试。
+
+### 30.3 命令集差集表（修复前 18 vs 9）
+
+| 命令 | 是否消费执行型键（实测） | 依据 | 处置 |
+|---|---|---|---|
+| `status` | 是（fsmonitor/hooksPath/filter） | 旧测试 + marker | 已在探针集 |
+| `diff` | 是（external/textconv/filter/fsmonitor/hooksPath） | 旧测试 + marker | 已在探针集 |
+| `log` | 是（fsmonitor/hooksPath，H7 后口径；gpg 另判） | H7 marker：旧策略 allow，实际执行 | 已在探针集；改为无条件判 |
+| `show` | 同上 | 同上 | 已在探针集；改为无条件判 |
+| `whatchanged` | 是（diff 同族） | 同 diff | 已在探针集 |
+| `blame` | 是（fsmonitor/hooksPath/diff） | marker（fsmon 2 次） | 已在探针集 |
+| `rev-list` | alternateRefsCommand / signature | 旧测试 | 已在探针集 |
+| `ls-files` | 是（fsmonitor/hooksPath） | 旧测试 + marker | 已在探针集 |
+| `fsck` | 是（fsmonitor/hooksPath） | H1 marker | 已在探针集 |
+| **`describe`** | **是（fsmonitor/hooksPath）** | **H7 真实 marker** | **本轮加入探针集** |
+| `rev-parse` | 否 | 全键开启下无 marker、不刷新 index | `PROVEN_NO_EXEC` |
+| `shortlog` | 否 | 同上 | `PROVEN_NO_EXEC` |
+| `cat-file` | 否 | 同上 | `PROVEN_NO_EXEC` |
+| `show-ref` | 否 | 同上 | `PROVEN_NO_EXEC` |
+| `for-each-ref` | 否（signature atom 走参数面） | 同上 + H4 | `PROVEN_NO_EXEC` |
+| `merge-base` | 否 | 同上 | `PROVEN_NO_EXEC` |
+| `name-rev` | 否 | 同上 | `PROVEN_NO_EXEC` |
+| `count-objects` | 否 | 同上 | `PROVEN_NO_EXEC` |
+
+实测环境：git 2.50.1（Apple Git-155），同时设置 `core.fsmonitor=<脚本>`、`core.hooksPath=<目录>/post-index-change`、`diff.external=<脚本>`；每条命令前重建 index（`rm .git/index && git read-tree HEAD`），以 marker 行数为准。
+
+### 30.4 `describe` 形态实测表
+
+| 形态 | fsmonitor 执行 | hooksPath 执行 | 新策略 |
+|---|---|---|---|
+| `--dirty` | 是（marker） | 是（marker） | ask |
+| `--broken` | 是（marker） | 是（marker） | ask |
+| `--always --dirty` | 是（marker） | 是（marker） | ask |
+| `--tags --dirty` | 是（marker） | 是（marker） | ask |
+| `--all` | 否 | 否 | ask（键在即触发，不细分形态） |
+| `--tags` | 否 | 否 | ask |
+| `--long` | 否 | 否 | ask |
+| `--abbrev=0` | 否 | 否 | ask |
+| `--exact-match` | 否 | 否 | ask |
+| `--contains` | 否 | 否 | ask |
+
+结论：只有 dirty/broken 系真正执行；但策略按「键即触发」统一 ask，避免再次维护形态名单。代价见 §30.6。
+
+### 30.5 修复前后真实证据
+
+同一真实仓库（`core.fsmonitor` + `core.hooksPath` 均设置），用 `git show HEAD` 的旧策略与当前策略对同一命令求值：
+
+```
+git describe --dirty   | HEAD: allow/git:describe | 修复后: ask/git-repo-config-exec
+git describe --broken  | HEAD: allow/git:describe | 修复后: ask/git-repo-config-exec
+git log --oneline      | HEAD: allow/git:log      | 修复后: ask/git-repo-config-exec
+git status             | HEAD: ask/git-repo-config-exec | 修复后: ask/git-repo-config-exec
+```
+
+真实执行证据（不是模拟）：`git describe --dirty` 在设置 `core.fsmonitor` 后 marker 文件新增 1 行；在设置 `core.hooksPath` + `post-index-change` 后 marker 新增 1 行。修复前策略对这两条均为 `allow`。
+
+### 30.6 代价量化（44 条 git 只读命令 × 7 环境）
+
+| 环境 | 旧 allow | 新 allow | 新增 ask |
+|---|---|---|---|
+| 本仓库 / 干净 / LFS / dotfiles / CI | 39 | 39 | 0 |
+| husky（`core.hooksPath`） | 31 | 14 | 17 |
+| exotic | 15 | 14 | 1 |
+
+git 只读样本：78.2% → 72.4%（全环境）；剔除 husky 后 85.6% → 79.2%。新增 ask 全部集中在 hooksPath/fsmonitor 用户。**这是有意选择**：不再维护「谁消费」名单，用一次审批换掉一整类未登记命令的零审批执行面。`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 不回退 H7（它只回退 B 的未知键判定）。
+
+另修一处预算语义：模块配置扫描剩余预算低于一次 git 启动成本时直接返回 `budget-exceeded`，不再发起注定超时的探针（避免把预算耗尽误报为 `timeout`；H7 复验的负载下稳定复现）。
+
+### 30.7 门禁
+
+- 新增单测：`gitReadExecCoverageGaps() === []`；`describe --dirty` + fsmonitor/hooksPath 真实 marker；10 种 describe 形态表；LFS textconv 值判定。
+- `bash-readonly.test.ts` 90 passed；`gitdir-write-guard.test.ts` 24 passed；`approval-gateway.test.ts` 35 passed。
+
+---
+
+## 31. D1-1 / D1-2 修复记录（2026-11-06）
+
+### 31.1 D1-1 dangling symlink
+
+**修复前**：`resolveRealPath` 用 `realpathSync`；终点不存在时失败，回退到「最近存在祖先」拼接，于是 `.git/config -> ../dangling-config` 时写 `dangling-config` 被看作工作区普通路径 → `allow`。工作区 `evil -> .git/hooks/pre-commit`（终点不存在）同样 `allow`。
+
+**修复**：
+- `write-paths.ts` 逐级 `lstat` + `readlink` 手工解析，**dangling 终点也展开**，并拼接剩余缺失后缀（40 跳上限防环）；
+- `gitdir-write-guard.ts` 扫描 gitdir 内部（`hooks` / `info` / `worktrees` / `modules`；跳过 `objects`/`refs`/`logs`）的每个 symlink，把终点（含 dangling）纳入保护面；
+- `.git` 自身是 symlink 的布局按 realpath 后的 gitdir 判定；写 raw basename 为 `.git` 的目标一律 block（`gitdir-pointer-write`）。
+
+**前后对照（同一真实仓库，旧/新 guard 对同一目标求值）**：
+
+| 场景 | HEAD | 修复后 | 真实注入证据 |
+|---|---|---|---|
+| `.git/config -> ../dangling-config`，写 `dangling-config` | `allow` | `block`（`gitdir-symlink-target`） | 写入 fsmonitor 配置后 `git status` 执行 fsmonitor：marker 1 行 |
+| 工作区 `evil -> .git/hooks/pre-commit`（终点不存在），写 `evil` | `allow` | `block`（`gitdir-write-block`） | 写 `evil` 会创建该钩子 |
+| `.git/info/exclude -> 仓库外已存在文件`，写该终点 | `allow` | `block` | — |
+| symlink 指向工作区普通文件，写 symlink | `allow` | `allow` | 不误伤 |
+| dangling symlink 指向与 gitdir 无关的外部路径 | `allow` | `allow` | 不误伤 |
+
+### 31.2 D1-2 include 目标
+
+**修复前**：`include.path=local.inc` 在工作区内，D1 只看 gitdir → 写 `local.inc` `allow`；一次批准后文件内容成为配置。
+
+**修复**：用 Git 自身解析 `git config --list --includes --show-origin -z`，收集所有 `include.path` / `includeIf.*.path`；相对路径按声明文件目录解析（`--show-origin` 的本地配置相对路径 `file:.git/config` 已按探针 cwd 还原）；链式 include 每层都是独立 entry，天然覆盖；未命中的 `includeIf` 声明保守纳入；include 探针失败（空配置除外）→ fail-closed block。
+
+**前后对照**：
+
+| 场景 | HEAD | 修复后 | 真实注入证据 |
+|---|---|---|---|
+| `include.path=../included.inc`，写 `repo/included.inc` | `allow` | `block`（`gitdir-include-target`） | 写入 `[core] fsmonitor=...` 后 `git status` 执行 fsmonitor：marker 1 行 |
+| 链式 `one.inc -> two.inc` | `allow` | 两层都 `block` | — |
+| include 目标在仓库外 / 尚未创建 | `allow` | `block` | — |
+| 同目录未被 include 的文件 | `allow` | `allow` | 不误伤 |
+
+**已知边界**：`--show-origin` 的 `includeIf` 条件由 Git 求值；未命中的声明也会被保护（保守）。空 include 文件若未被任何 entry 引用，不会被收集——但写入它不会改变当前有效配置，直到它被引用；该场景保留为残余风险。
+
+---
+
+## 32. 结构性缺口评估（2026-11-06，本轮未实现）
+
+### 32.1 生效范围（代码事实）
+
+| 路径 | D1 | B | 依据 |
+|---|---|---|---|
+| Claude + Kernel | 生效 | 生效 | `adapter-driver.ts` L116-118 只对 claude 安装 approval hooks |
+| Claude + legacy | 不生效 | 不生效 | 无 hooks，`acceptEdits`，无 Bash 策略入口 |
+| Codex | 不生效 | 不生效 | 无 approval hooks；`sandboxMode=workspace-write` 不拦 workspace 内 `.git/config` |
+| OpenCode | 不生效 | 不生效 | 无 permission/approval 处理 |
+| MCP 工具（Kernel+Claude） | 过网关但不拦 | 不适用 | `canUseTool` 覆盖 MCP 工具，每次 ask；但 `isWriteScopedTool` 不认 `mcp__*`，D1 不硬拦 |
+
+### 32.2 方案与工作量
+
+1. **D1 已在 gateway，与后端无关**；缺的是「非 Claude 后端把工具调用送进 gateway」。Codex 接 SDK approval/exec 回调 3–5 人日；OpenCode 从事件流执行前 gate 2–4 人日（无执行前钩子则只能降级沙箱）。
+2. **legacy Claude**：hooks 安装放宽到 legacy + 注入 gateway 上下文 2–3 人日。
+3. **MCP 写工具**：保守规则「未知工具 + 已知路径参数 + 命中 gitdir → deny」0.5–1 人日；按服务器声明写能力 2 人日 + 运营。
+4. **B 对 Codex/OpenCode**：依赖 1 的 command 拦截点；拿到 command 后复用 `evaluateBashPolicy` 约 0.5 人日/后端。
+
+**本轮明确不做**：不引入沙箱/exec 限制（C3）——用户在决定。
+
+### 32.3 LFS `diff.lfs.textconv` 处置
+
+**已做**。`diff.<driver>.textconv` 仍然默认 ask，唯一例外是标准值 `git-lfs textconv`（可带绝对路径/引号、basename 大小写不敏感，参数必须恰好是 `textconv`）。依据与全局 `filter.lfs` 相同：basename 伪装风险存在，但值本身只执行 git-lfs，且 LFS 用户此前 9 条探针命令中 6 条每次 ask。`diff.lfs.command` / 非标准 textconv 参数（如 `git-lfs textconv --extra`）仍 ask。新增单测覆盖标准值 allow、任意路径 ask、多余参数 ask。
+
+### 32.4 MCP / 非标准工具名结论
+
+- **是否经过 gateway**：Kernel + Claude 路径下**经过**。`canUseTool` 对 Claude SDK 的所有工具调用生效，MCP 工具名为 `mcp__<server>__<tool>`，同样进入 `ApprovalGateway.request()`，因此每次都会 `ask`，不存在零审批。
+- **能否纳入 target 提取**：当前不能可靠纳入。`isWriteScopedTool` 是固定名单，`targetPathsOf` 只提取已知路径键（`path/file_path/filePath/paths/files/...`）。未知 MCP 工具即使带 `file_path` 参数也不会进入 D1；一次批准即可写 `.git/config`。可选方案与工期见 32.2 第 3 条。
+- **结论**：MCP 不是「绕过审批」，而是「D1 硬拦不覆盖的一次性批准面」；在 C1 不变式下应作为已知例外记录，直到接入写能力声明或保守规则。

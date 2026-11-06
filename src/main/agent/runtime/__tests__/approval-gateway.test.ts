@@ -909,6 +909,49 @@ describe('D1 · 写类工具禁写 git 元数据（真实网关）', () => {
     gateway.dispose()
   })
 
+  it('D1-1：gitdir 内 symlink 的 dangling 终点 → 直接 deny（修复前 allow）', async () => {
+    const { gateway, run, turn, requests, repo } = setup()
+    const repoDir = makeRepo()
+    const endpoint = path.join(repoDir, 'sibling-target')
+    fs.rmSync(path.join(repoDir, '.git', 'config'))
+    fs.symlinkSync('../sibling-target', path.join(repoDir, '.git', 'config'))
+
+    const outcome = await gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: endpoint, content: '[core]\n\tfsmonitor=/bin/sh\n' },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(0)
+    expect(outcome).toMatchObject({ decision: 'deny', decidedBy: 'policy' })
+    expect(outcome.reason).toContain('symlink')
+    expect(repo.listApprovalsByTurn(turn.id).find((item) => item.status === 'denied')?.decision_note).toContain('symlink')
+    gateway.dispose()
+  })
+
+  it('D1-2：写 config include 目标 → 直接 deny（修复前 allow）', async () => {
+    const { gateway, run, turn, requests, repo } = setup()
+    const repoDir = makeRepo()
+    execFileSync('git', ['config', 'include.path', '../included.inc'], { cwd: repoDir })
+
+    const outcome = await gateway.request({
+      runId: run.id,
+      turnId: turn.id,
+      toolName: 'Write',
+      args: { file_path: path.join(repoDir, 'included.inc'), content: '[core]\n\tfsmonitor=/bin/sh\n' },
+      cwd: repoDir,
+      sessionId: 's1',
+    })
+    expect(requests).toHaveLength(0)
+    expect(outcome).toMatchObject({ decision: 'deny', decidedBy: 'policy' })
+    expect(outcome.reason).toContain('include')
+    const blocked = repo.listTurnEvents(turn.id).filter((event) => event.type === 'approval.policy_blocked')
+    expect(blocked.at(-1)?.payload).toMatchObject({ rule: 'gitdir-include-target' })
+    gateway.dispose()
+  })
+
   it('写工作区普通文件仍走正常审批（不误伤）', async () => {
     const { gateway, run, turn, requests } = setup()
     const repoDir = makeRepo()

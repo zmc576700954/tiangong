@@ -213,6 +213,85 @@ describe('D1 · gitdir 写保护：命中即 deny', () => {
   })
 })
 
+describe('D1-1 · dangling symlink 与 symlink 终点', () => {
+  it('gitdir 内文件是指向不存在终点的 symlink：写终点 → deny', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    const outside = join(root, 'outside-config')
+    rmSync(join(repo, '.git', 'config'))
+    // .git/config -> root/outside-config（终点不存在）
+    symlinkSync(outside, join(repo, '.git', 'config'))
+    const result = guard([outside], repo)
+    expect(result.verdict).toBe('block')
+    expect(result.rule).toBe('gitdir-symlink-target')
+  })
+
+  it('工作区 symlink 指向 gitdir 内不存在的钩子：写 symlink 本身 → deny', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    // repo/evil -> .git/hooks/pre-commit（终点不存在）
+    symlinkSync(join(repo, '.git', 'hooks', 'pre-commit'), join(repo, 'evil'))
+    const result = guard([join(repo, 'evil')], repo)
+    expect(result.verdict).toBe('block')
+    expect(result.rule).toBe('gitdir-write-block')
+  })
+
+  it('symlink 指向 gitdir 外已存在文件：写终点 → deny；指向工作区普通文件 → allow', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    const outside = join(root, 'outside-existing')
+    writeFileSync(outside, 'x\n')
+    rmSync(join(repo, '.git', 'info', 'exclude'))
+    symlinkSync(outside, join(repo, '.git', 'info', 'exclude'))
+    expect(guard([outside], repo).verdict).toBe('block')
+
+    const workspace = join(repo, 'a.txt')
+    symlinkSync(workspace, join(repo, 'alias.txt'))
+    expect(guard([join(repo, 'alias.txt')], repo).verdict).toBe('allow')
+  })
+
+  it('dangling symlink 指向与 gitdir 无关的外部路径：写 symlink 本身 → allow', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    symlinkSync(join(root, 'not-git-meta'), join(repo, 'alias2'))
+    const result = guard([join(repo, 'alias2')], repo)
+    expect(result.verdict).toBe('allow')
+  })
+})
+
+describe('D1-2 · include 目标', () => {
+  it('include.path 目标 → deny；未被 include 的同目录文件 → allow', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    git(repo, ['config', 'include.path', '../included.inc'])
+    const result = guard([join(repo, 'included.inc')], repo)
+    expect(result.verdict).toBe('block')
+    expect(result.rule).toBe('gitdir-include-target')
+    expect(guard([join(repo, 'unrelated.inc')], repo).verdict).toBe('allow')
+  })
+
+  it('链式 include：每一层目标都 deny', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    mkdirSync(join(repo, 'conf'), { recursive: true })
+    git(repo, ['config', 'include.path', '../conf/one.inc'])
+    writeFileSync(join(repo, 'conf', 'one.inc'), '[include]\n\tpath = two.inc\n')
+    expect(guard([join(repo, 'conf', 'one.inc')], repo).verdict).toBe('block')
+    expect(guard([join(repo, 'conf', 'two.inc')], repo).verdict).toBe('block')
+  })
+
+  it('include 目标在仓库外、或尚未创建 → 同样 deny', () => {
+    const root = temp()
+    const repo = makeRepo(root)
+    const outside = join(root, 'outside.inc')
+    git(repo, ['config', 'include.path', outside])
+    expect(guard([outside], repo).verdict).toBe('block')
+
+    git(repo, ['config', 'include.path', '../never.inc'])
+    expect(guard([join(repo, 'never.inc')], repo).verdict).toBe('block')
+  })
+})
+
 describe('D1 · 不得误伤普通工作区路径', () => {
   it('.gitignore / .gitattributes / .github / 普通文件 / src/.git/x → allow', () => {
     const root = temp()
