@@ -3254,3 +3254,48 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
 - `tsc --noEmit`、`eslint src`、`vite build` 全过。
 - 全量：`26 failed 文件 / 253 passed`，`173 failed / 3119 passed / 93 skipped (3385)`；26 个失败文件仍为既有 `better-sqlite3` ABI 文件，集合与基线一致（总数 +1 来自新增用例）。
 - 未 push、未 amend；提交后不再改代码。
+
+## 十八、迁移 S1：影子对照（起点 `1980eed`）
+
+### 18.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `1980eede5d6a622ff087dd20a44c9c96e0dc7659`（父 `45f527c`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes` | 123 |
+
+### 18.1 实现
+
+- 新增固定 argv 探针：`git --no-pager config --list --null --show-origin --show-scope --includes`；不做任何字符串拼接。
+- git 绝对路径按与应用相同的 `PATH` 解析（`delimiter` + `X_OK`），不写死 `/usr/bin/git`；继承 `process.env`，因此 `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`/`GIT_CONFIG_SYSTEM`/`GIT_DIR` 与真实命令一致；`includeGlobalGitConfig=false` 时用 `GIT_CONFIG_NOSYSTEM` + `GIT_CONFIG_GLOBAL=/dev/null` 隔离（仅测试口径）。
+- 250 ms 超时、1 MB 输出上限；输出按 `--null` 三字段记录（scope / origin / `key\nvalue`，裸键无换行）解析。
+- 失败分类：`missing-git` / `timeout` / `non-zero-exit` / `show-scope-unsupported` / `empty-output` / `invalid-nul-record` / `io-error`。
+- 影子模式：手写结论继续决定用户可见判定；探针只记录差异与延迟，`getGitConfigShadowDiagnostics()` 暴露样本数、两个方向的差异计数、失败分布、p95/max。
+
+### 18.2 S1 判定：**通过（附一条已解释的反向差异）**
+
+**真实仓库语料**（本仓库 `.git/config` + 本机全局配置，五命令）：
+
+| 命令 | 判定 | 差异 | p95 |
+|---|---|---|---|
+| `git status` / `git diff` / `git log` / `git show` / `git blame` | 5/5 `allow` | 0 | 11 ms |
+
+**构造语料**：
+
+| 用例 | 手写 | 探针 | 方向 |
+|---|---|---|---|
+| `GIT_CONFIG_COUNT=1` + `diff.external=/tmp/evil-diff` | `allow` | `ask` | `probeStricter`（允许方向：手写漏读 command 作用域） |
+| `[includeIf "gitdir:/nonexistent/"] path = ignored.cfg`（目标含 fsmonitor） | `ask` | `allow` | `manualStricter`（反向） |
+
+反向差异只有上述一类：Git 原生不满足 includeIf 条件、不读取目标文件，因此不会执行；手写把 includeIf 一律按「可能命中」扫描，属于已知过保守的误报。**未出现「探针 allow 但 Git 实际会执行」的形态**。`[Include "sub"]` 同理（Git 不当作 include 指令）。按验收口径记录为「解释后接受」，未据此判定回滚。
+
+**探针失败分类**（伪造 git，`timeout` 用 500 ms 口径避免用例受调度抖动影响；生产仍为 250 ms）：缺失 / 超时 / exit 2 / 空输出 / 非法 NUL / `--show-scope` 不支持 全部按预期分类。
+
+**行为零变化**：定向 `bash-readonly` **51 passed**（既有 45 + 新增 6），全部既有用例判定不变。
+
+### 18.3 校验与提交
+
+- `tsc --noEmit` / `eslint src` / `vite build` 全过（见提交前记录）。
+- 全量失败集合与基线一致（26 个 `better-sqlite3` ABI 文件）。
+- 未 push、未 amend；未开始 S2。

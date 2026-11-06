@@ -5,7 +5,7 @@
  * 所有 ask 断言同时校验 rule 与 risk —— 审批卡片与审计都要说清「命中哪条规则」。
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,6 +14,10 @@ import {
   WHITELIST_COMMANDS,
   bashPolicyForTool,
   evaluateBashPolicy,
+  getGitConfigShadowDiagnostics,
+  probeGitConfig,
+  probeGitConfigExecutes,
+  resetGitConfigShadowDiagnostics,
 } from '../bash-readonly'
 
 function decide(
@@ -1120,5 +1124,167 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     expect(ask.rule).toBe('redirect')
     expect(ask.reason).toContain('shell 元字符')
     expect(ask.command).toBe('printf hi > /tmp/x')
+  })
+})
+
+/** 把 PATH 指向一个只含伪造 git 的目录，模拟探针失败形态；`null` 表示目录里没有 git。 */
+function withFakeGit(script: string | null, run: () => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'bizgraph-fake-git-'))
+  if (script !== null) {
+    const gitPath = join(dir, 'git')
+    writeFileSync(gitPath, script)
+    chmodSync(gitPath, 0o755)
+  }
+  const previous = process.env.PATH
+  process.env.PATH = dir
+  try {
+    run()
+  } finally {
+    if (previous === undefined) delete process.env.PATH
+    else process.env.PATH = previous
+  }
+}
+
+/** Git 认可的仓库需要 HEAD + objects + refs/heads；只建 `.git/config` 时 Git 不会读取本地配置。 */
+function makeGitRepo(prefix: string, configText: string): string {
+  const repo = mkdtempSync(join(tmpdir(), prefix))
+  const gitDir = join(repo, '.git')
+  mkdirSync(join(gitDir, 'objects'), { recursive: true })
+  mkdirSync(join(gitDir, 'refs', 'heads'), { recursive: true })
+  writeFileSync(join(gitDir, 'HEAD'), 'ref: refs/heads/main\n')
+  writeFileSync(join(gitDir, 'config'), configText)
+  return repo
+}
+
+describe('git 配置探针（S1 影子对照）', () => {
+  it('探针读取 Git 自己解析的配置：fsmonitor 只对 status/diff/blame 生效', () => {
+    const repo = makeGitRepo('bizgraph-probe-fsmonitor-', '[core]\n\tfsmonitor = /tmp/hook\n')
+    const result = probeGitConfig(repo, false, 500)
+    expect(result.failure).toBeNull()
+    expect(result.entries.some((entry) => entry.key === 'core.fsmonitor')).toBe(true)
+    expect(probeGitConfigExecutes(result, 'status')).toBe(true)
+    expect(probeGitConfigExecutes(result, 'diff')).toBe(true)
+    expect(probeGitConfigExecutes(result, 'blame')).toBe(true)
+    expect(probeGitConfigExecutes(result, 'log')).toBe(false)
+    expect(probeGitConfigExecutes(result, 'show')).toBe(false)
+  })
+
+  it('探针把七类真实配置判为 allow（Git 自己解析，不误伤）', () => {
+    const repo = makeGitRepo(
+      'bizgraph-probe-realworld-',
+      [
+        '[core]',
+        '\texcludesFile = C:\\\\Users\\\\me\\\\.gitignore',
+        '\tsshCommand = ssh -i C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa',
+        '\thooksPath = C:\\\\hooks',
+        '[safe]',
+        '\tdirectory = C:\\\\work\\\\repo',
+        '[remote "origin"]',
+        '\turl = https://example.com/a\\\\b.git',
+        '[alias]',
+        '\tlg = log --pretty=format:\\"%h %s\\"',
+        '[diff "go"]',
+        '\txfuncname = ^\\\\s*func',
+        '',
+      ].join('\n'),
+    )
+    const result = probeGitConfig(repo, false, 500)
+    expect(result.failure).toBeNull()
+    for (const sub of ['status', 'diff', 'log', 'show', 'blame']) {
+      expect(probeGitConfigExecutes(result, sub)).toBe(false)
+    }
+  })
+
+  it('探针失败分类：缺失 / 超时 / 非零退出 / 空输出 / 非法 NUL / --show-scope 不支持', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-probe-failure-'))
+
+    withFakeGit(null, () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('missing-git')
+    })
+    withFakeGit('#!/bin/sh\n/bin/sleep 2\n', () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('timeout')
+    })
+    withFakeGit('#!/bin/sh\nexit 2\n', () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('non-zero-exit')
+    })
+    withFakeGit('#!/bin/sh\nexit 0\n', () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('empty-output')
+    })
+    withFakeGit("#!/bin/sh\nprintf 'only-one-field\\0'\n", () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('invalid-nul-record')
+    })
+    withFakeGit("#!/bin/sh\necho \"error: unknown option 'show-scope'\" >&2\nexit 129\n", () => {
+      expect(probeGitConfig(repo, false, 500).failure).toBe('show-scope-unsupported')
+    })
+  })
+
+  it('影子对照：手写 allow / 探针 ask 只记录差异，不改用户可见判定', () => {
+    const repo = makeGitRepo('bizgraph-shadow-stricter-', '[core]\n\trepositoryformatversion = 1\n')
+    const previous = {
+      GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+      GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+      GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+    }
+    withIsolatedGlobalConfig('', () => {
+      resetGitConfigShadowDiagnostics()
+      process.env.GIT_CONFIG_COUNT = '1'
+      process.env.GIT_CONFIG_KEY_0 = 'diff.external'
+      process.env.GIT_CONFIG_VALUE_0 = '/tmp/evil-diff'
+      try {
+        // 手写解析器不读 GIT_CONFIG_COUNT → allow；探针能读到 command 作用域 → ask。
+        expect(decide('git diff HEAD', { cwd: repo })).toMatchObject({
+          decision: 'allow',
+          rule: 'git:diff',
+        })
+        const diagnostics = getGitConfigShadowDiagnostics()
+        expect(diagnostics.samples).toBe(1)
+        expect(diagnostics.probeStricter).toBe(1)
+        expect(diagnostics.manualStricter).toBe(0)
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
+      }
+    })
+  })
+
+  it('影子对照：反向差异（手写 ask / 探针 allow）会被计数，用于 S1 回滚判断', () => {
+    // 条件不匹配任何真实仓库：Git 不会 include，手写按「可能命中」扫描 → ask。
+    const repo = makeGitRepo(
+      'bizgraph-shadow-reverse-',
+      '[includeIf "gitdir:/nonexistent/"]\n\tpath = ignored.cfg\n',
+    )
+    writeFileSync(join(repo, '.git', 'ignored.cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    resetGitConfigShadowDiagnostics()
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    const diagnostics = getGitConfigShadowDiagnostics()
+    expect(diagnostics.samples).toBe(1)
+    expect(diagnostics.manualStricter).toBe(1)
+    expect(diagnostics.probeStricter).toBe(0)
+  })
+
+  it('影子延迟：真实探针 p95 ≤ 30 ms，且无失败', () => {
+    const repo = makeGitRepo(
+      'bizgraph-shadow-latency-',
+      '[core]\n\trepositoryformatversion = 1\n',
+    )
+    resetGitConfigShadowDiagnostics()
+    for (let index = 0; index < 40; index += 1) {
+      expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false }).decision).toBe('allow')
+    }
+    const diagnostics = getGitConfigShadowDiagnostics()
+    expect(diagnostics.samples).toBe(40)
+    expect(diagnostics.failures['missing-git']).toBe(0)
+    expect(diagnostics.failures.timeout).toBe(0)
+    expect(diagnostics.failures['non-zero-exit']).toBe(0)
+    expect(diagnostics.failures['show-scope-unsupported']).toBe(0)
+    expect(diagnostics.failures['empty-output']).toBe(0)
+    expect(diagnostics.failures['invalid-nul-record']).toBe(0)
+    expect(diagnostics.failures['io-error']).toBe(0)
+    expect(diagnostics.p95LatencyMs).toBeLessThanOrEqual(30)
   })
 })

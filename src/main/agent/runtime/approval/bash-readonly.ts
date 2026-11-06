@@ -17,9 +17,10 @@
  * 也不改变 shell 本身的语义 —— 被 ask 的命令一旦批准，仍以用户权限原样执行。
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
 export type BashPolicyVerdict = 'allow' | 'ask' | 'blocked-empty'
@@ -770,6 +771,321 @@ function gitRepoConfigExecutes(root: string, includeGlobal: boolean, sub: string
   return gitConfigFilesExecute(scan.files, sub, 'repo')
 }
 
+/* ------------------------------------------------------------------------- *
+ * git 配置探针（迁移 S1：影子对照；S2 起成为权威）
+ *
+ * 手写解析器与 Git 的语法所有权不同（include 深度、转义、子节写法、裸键、条件求值），
+ * 每轮复审都要为新差异打补丁。迁移方向是让 Git 自己解析：固定 argv 起一个 `git config`
+ * 子进程，读取扁平化的最终配置，再按「哪些键会执行外部程序」判定。
+ * ------------------------------------------------------------------------- */
+
+/** 探针失败分类。S2 起任何失败都必须 ask（fail-closed），分类只用于观测与告警。 */
+export type GitConfigProbeFailure =
+  | 'missing-git'
+  | 'timeout'
+  | 'non-zero-exit'
+  | 'show-scope-unsupported'
+  | 'empty-output'
+  | 'invalid-nul-record'
+  | 'io-error'
+
+export interface GitConfigProbeEntry {
+  /** `git config --list` 的扁平键名（小写），如 `diff.evil.textconv`。 */
+  key: string
+  value: string
+  /** 裸键（无 `=`）：Git 语义等价 `true`。 */
+  bare: boolean
+  /** `--show-scope` 的 scope：local / worktree / global / system / command / unknown。 */
+  scope: string
+  /** `--show-origin` 的来源文件。 */
+  origin: string
+}
+
+export interface GitConfigProbeResult {
+  entries: GitConfigProbeEntry[]
+  /** 非 null 即不可判定：S2 起必须 ask。 */
+  failure: GitConfigProbeFailure | null
+  latencyMs: number
+}
+
+/** 固定 argv，不做任何字符串拼接：探针自身不成为注入面，也不触发 pager。 */
+const GIT_CONFIG_PROBE_ARGS = [
+  '--no-pager',
+  'config',
+  '--list',
+  '--null',
+  '--show-origin',
+  '--show-scope',
+  '--includes',
+] as const
+
+const GIT_CONFIG_PROBE_TIMEOUT_MS = 250
+const GIT_CONFIG_PROBE_MAX_BUFFER = 1024 * 1024
+
+/**
+ * 用与应用同一执行环境的 PATH 解析 git 绝对路径（不写死 `/usr/bin/git`）。
+ * Bash 工具里的 `git` 也是按 PATH 查找的，因此这里选到的就是实际会被调用的那一个。
+ */
+function resolveGitExecutable(): string | null {
+  const pathEnv = process.env.PATH ?? ''
+  const extensions =
+    process.platform === 'win32'
+      ? ['', ...(process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';')]
+      : ['']
+  for (const dir of pathEnv.split(delimiter)) {
+    if (!dir) continue
+    for (const extension of extensions) {
+      const candidate = join(dir, `git${extension}`)
+      try {
+        if (!statSync(candidate).isFile()) continue
+        accessSync(candidate, constants.X_OK)
+        return candidate
+      } catch {
+        /* 该候选不可执行，继续扫描 PATH */
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * 解析 `--null --show-origin --show-scope` 的输出：每条记录三个 NUL 结尾字段
+ * （scope / origin / `key\nvalue`，裸键无换行、值可含换行）。
+ */
+function parseGitConfigProbeOutput(text: string): {
+  entries: GitConfigProbeEntry[]
+  failure: GitConfigProbeFailure | null
+} {
+  if (text.length === 0) return { entries: [], failure: 'empty-output' }
+  const fields = text.split('\0')
+  if (fields[fields.length - 1] === '') fields.pop()
+  if (fields.length % 3 !== 0) return { entries: [], failure: 'invalid-nul-record' }
+  const entries: GitConfigProbeEntry[] = []
+  for (let index = 0; index < fields.length; index += 3) {
+    const scope = fields[index]
+    const origin = fields[index + 1]
+    const keyValue = fields[index + 2]
+    if (!keyValue) return { entries: [], failure: 'invalid-nul-record' }
+    const newline = keyValue.indexOf('\n')
+    if (newline < 0) {
+      entries.push({ key: keyValue.toLowerCase(), value: '', bare: true, scope, origin })
+    } else {
+      entries.push({
+        key: keyValue.slice(0, newline).toLowerCase(),
+        value: keyValue.slice(newline + 1),
+        bare: false,
+        scope,
+        origin,
+      })
+    }
+  }
+  return { entries, failure: null }
+}
+
+/**
+ * 跑一次探针。`includeGlobal=false` 时通过环境隔离只读仓库本地配置，
+ * 与手写口径的 `includeGlobalGitConfig=false` 对齐（供测试使用）。
+ */
+export function probeGitConfig(
+  cwd: string,
+  includeGlobal: boolean,
+  timeoutMs: number = GIT_CONFIG_PROBE_TIMEOUT_MS,
+): GitConfigProbeResult {
+  const startedAt = Date.now()
+  const elapsed = (): number => Date.now() - startedAt
+  const failed = (failure: GitConfigProbeFailure): GitConfigProbeResult => ({
+    entries: [],
+    failure,
+    latencyMs: elapsed(),
+  })
+
+  const gitPath = resolveGitExecutable()
+  if (!gitPath) return failed('missing-git')
+
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  if (!includeGlobal) {
+    env.GIT_CONFIG_NOSYSTEM = '1'
+    env.GIT_CONFIG_SYSTEM = '/dev/null'
+    env.GIT_CONFIG_GLOBAL = '/dev/null'
+    for (const key of Object.keys(env)) {
+      if (
+        key === 'GIT_CONFIG_COUNT' ||
+        key.startsWith('GIT_CONFIG_KEY_') ||
+        key.startsWith('GIT_CONFIG_VALUE_')
+      ) {
+        delete env[key]
+      }
+    }
+  }
+
+  try {
+    const stdout = execFileSync(gitPath, [...GIT_CONFIG_PROBE_ARGS], {
+      cwd,
+      env,
+      timeout: timeoutMs,
+      maxBuffer: GIT_CONFIG_PROBE_MAX_BUFFER,
+      encoding: 'buffer',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }) as Buffer
+    const parsed = parseGitConfigProbeOutput(stdout.toString('utf8'))
+    return { ...parsed, latencyMs: elapsed() }
+  } catch (error) {
+    const detail = error as NodeJS.ErrnoException & {
+      status?: number | null
+      signal?: NodeJS.Signals | null
+      stderr?: Buffer | string
+    }
+    const stderr = Buffer.isBuffer(detail.stderr)
+      ? detail.stderr.toString('utf8')
+      : (detail.stderr ?? '')
+    if (/unknown option.*show-scope|unrecognized option.*show-scope|show-scope/i.test(stderr)) {
+      return failed('show-scope-unsupported')
+    }
+    if (detail.code === 'ETIMEDOUT') return failed('timeout')
+    if (detail.code === 'ENOENT') return failed('missing-git')
+    if (detail.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return failed('io-error')
+    if (detail.signal === 'SIGTERM') return failed('timeout')
+    if (typeof detail.status === 'number' && detail.status !== 0) return failed('non-zero-exit')
+    return failed('io-error')
+  }
+}
+
+/** 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。 */
+export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string): boolean {
+  // 探针失败 = 不可判定：S2 起必须 ask，不能把「没看到危险配置」当成安全。
+  if (result.failure) return true
+  for (const entry of result.entries) {
+    const value = entry.bare ? 'true' : entry.value
+    // 显式空值（`key =`）等价未设置。
+    if (value === '') continue
+    const parts = entry.key.split('.')
+    const last = parts[parts.length - 1]
+    // diff.external 与 diff.<driver>.textconv/command 会和手写口径一样执行外部程序。
+    if (entry.key === 'diff.external') return true
+    if (
+      parts.length >= 3 &&
+      parts[0] === 'diff' &&
+      (last === 'textconv' || last === 'command')
+    ) {
+      return true
+    }
+    // fsmonitor：status 必调用；diff/blame 与 index 刷新状态相关；log/show 不判。
+    if (
+      entry.key === 'core.fsmonitor' &&
+      gitConfigBoolean(value) &&
+      (sub === 'status' || sub === 'diff' || sub === 'blame')
+    ) {
+      return true
+    }
+    // filter：仓库本地三项全 ask；全局/系统/命令作用域只放行 git-lfs 标准写法。
+    if (
+      (sub === 'status' || sub === 'diff') &&
+      parts.length >= 3 &&
+      parts[0] === 'filter' &&
+      (last === 'clean' || last === 'smudge' || last === 'process')
+    ) {
+      const repoScoped = entry.scope === 'local' || entry.scope === 'worktree'
+      if (repoScoped) return true
+      if (!isStandardLfsFilterValue(last, value)) return true
+    }
+    // log.showSignature=true 让 log/show/whatchanged 自动调用 gpg。
+    if (
+      entry.key === 'log.showsignature' &&
+      gitConfigBoolean(value) &&
+      (sub === 'log' || sub === 'show' || sub === 'whatchanged')
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+const GIT_CONFIG_PROBE_FAILURES: readonly GitConfigProbeFailure[] = [
+  'missing-git',
+  'timeout',
+  'non-zero-exit',
+  'show-scope-unsupported',
+  'empty-output',
+  'invalid-nul-record',
+  'io-error',
+]
+
+interface GitConfigShadowState {
+  samples: number
+  /** 手写 allow / 探针 ask：唯一允许出现的差异方向（说明手写漏判）。 */
+  probeStricter: number
+  /** 手写 ask / 探针 allow：反向差异，S1 的立即回滚条件。 */
+  manualStricter: number
+  failures: Record<GitConfigProbeFailure, number>
+  latencies: number[]
+}
+
+const gitConfigShadowState: GitConfigShadowState = {
+  samples: 0,
+  probeStricter: 0,
+  manualStricter: 0,
+  failures: Object.fromEntries(
+    GIT_CONFIG_PROBE_FAILURES.map((failure) => [failure, 0]),
+  ) as Record<GitConfigProbeFailure, number>,
+  latencies: [],
+}
+
+const GIT_CONFIG_SHADOW_LATENCY_WINDOW = 500
+
+/**
+ * 影子对照：手写结果继续决定用户可见判定，只记录与探针的差异。
+ * 反向差异（手写 ask / 探针 allow）说明探针更松，S1 必须立即停下。
+ */
+function recordGitConfigShadow(
+  manualExecutes: boolean,
+  probe: GitConfigProbeResult,
+  sub: string,
+): void {
+  gitConfigShadowState.samples += 1
+  if (probe.failure) gitConfigShadowState.failures[probe.failure] += 1
+  gitConfigShadowState.latencies.push(probe.latencyMs)
+  if (gitConfigShadowState.latencies.length > GIT_CONFIG_SHADOW_LATENCY_WINDOW) {
+    gitConfigShadowState.latencies.shift()
+  }
+  const probeExecutes = probeGitConfigExecutes(probe, sub)
+  if (!manualExecutes && probeExecutes) gitConfigShadowState.probeStricter += 1
+  if (manualExecutes && !probeExecutes) gitConfigShadowState.manualStricter += 1
+}
+
+export interface GitConfigShadowDiagnostics {
+  samples: number
+  probeStricter: number
+  manualStricter: number
+  failures: Record<GitConfigProbeFailure, number>
+  p95LatencyMs: number
+  maxLatencyMs: number
+}
+
+/** S1 验收观测：差异计数、失败分类、延迟分布（只读快照）。 */
+export function getGitConfigShadowDiagnostics(): GitConfigShadowDiagnostics {
+  const sorted = [...gitConfigShadowState.latencies].sort((a, b) => a - b)
+  const index = sorted.length === 0 ? -1 : Math.ceil(sorted.length * 0.95) - 1
+  return {
+    samples: gitConfigShadowState.samples,
+    probeStricter: gitConfigShadowState.probeStricter,
+    manualStricter: gitConfigShadowState.manualStricter,
+    failures: { ...gitConfigShadowState.failures },
+    p95LatencyMs: index < 0 ? 0 : sorted[index],
+    maxLatencyMs: sorted.length === 0 ? 0 : sorted[sorted.length - 1],
+  }
+}
+
+/** 仅测试使用：清空影子观测，避免用例间互相污染。 */
+export function resetGitConfigShadowDiagnostics(): void {
+  gitConfigShadowState.samples = 0
+  gitConfigShadowState.probeStricter = 0
+  gitConfigShadowState.manualStricter = 0
+  gitConfigShadowState.latencies.length = 0
+  for (const failure of GIT_CONFIG_PROBE_FAILURES) {
+    gitConfigShadowState.failures[failure] = 0
+  }
+}
+
 /** 下载内容直接交给解释器执行：最高风险（只认命令位，避免把引号里的示例文本当成真实执行）。 */
 const FETCH_AND_EXEC = /^(?:sudo\s+)?(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|fish|python[0-9.]*|node|perl|ruby)\b/
 
@@ -895,15 +1211,21 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
     // 仓库/用户配置可让 diff/log/show 执行 textconv/diff.command/external/filter，
     // 让 status 执行 fsmonitor/filter，让 log 调用 gpg；一次被批准的 Write 改写
     // .git/config 即可换取零审批执行，因此读配置后再决定。
-    if (
-      GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub) &&
-      gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig, sub)
-    ) {
-      return askRule(
-        'git-repo-config-exec',
-        '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',
-        HIGH,
+    if (GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub)) {
+      const manualExecutes = gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig, sub)
+      // S1 影子对照：探针只记录差异，不改用户可见判定（手写结果继续生效）。
+      recordGitConfigShadow(
+        manualExecutes,
+        probeGitConfig(ctx.cwd, ctx.includeGlobalGitConfig),
+        sub,
       )
+      if (manualExecutes) {
+        return askRule(
+          'git-repo-config-exec',
+          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',
+          HIGH,
+        )
+      }
     }
     return allowRule(`git:${sub}`)
   }
