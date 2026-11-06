@@ -4882,3 +4882,127 @@ git 只读样本：78.2% → 72.4%（全环境）；剔除 husky 后 85.6% → 7
 - **是否经过 gateway**：Kernel + Claude 路径下**经过**。`canUseTool` 对 Claude SDK 的所有工具调用生效，MCP 工具名为 `mcp__<server>__<tool>`，同样进入 `ApprovalGateway.request()`，因此每次都会 `ask`，不存在零审批。
 - **能否纳入 target 提取**：当前不能可靠纳入。`isWriteScopedTool` 是固定名单，`targetPathsOf` 只提取已知路径键（`path/file_path/filePath/paths/files/...`）。未知 MCP 工具即使带 `file_path` 参数也不会进入 D1；一次批准即可写 `.git/config`。可选方案与工期见 32.2 第 3 条。
 - **结论**：MCP 不是「绕过审批」，而是「D1 硬拦不覆盖的一次性批准面」；在 C1 不变式下应作为已知例外记录，直到接入写能力声明或保守规则。
+
+## 33. `4c1d714` 对抗复验：H7 修复的完备性、D1 绕过与可用性代价（2026-11-06）
+
+> 复验对象：`4c1d714`（父 `8697df0`），未 amend、未 push，工作树干净。全程只读：未改源码、未 commit、未 push。文档追加前 sha256 `337479a649a7c3a7eb16f2bd22bcdd1425c634c4b1fd13cb15809b1ba5030403`（4884 行）。复验用 HEAD 源码重建的 bundle（`esbuild`，非文件内旧产物），证据目录 `/tmp/audit13`。
+
+### 33.1 一句话结论
+
+**不可发布。** 阻断项 2 类：(1) H7 的「探针覆盖全部只读子命令」方向正确，但 `GIT_READ_PROVEN_NO_EXEC_CONFIG` 仍是人工名单，`git shortlog --format='%G?'` 在策略 **allow** 下真实执行 `gpg.program`（新增执行面，与 H7 同类）；(2) D1 仍不是文件系统级封闭：include 目标的 hardlink 孪生、MCP/自定义工具名、TOCTOU 都能在「一次批准」后改写受保护配置。可用性另有一项非阻断但影响产品体验：husky 布局下新增 18 条 ask 中约 11 条属于无条件 ask 的过度拦截。
+
+### 33.2 必答 1：H7 修法的完备性
+
+**独立重建集合（不调用 `gitReadExecCoverageGaps()`）**：直接解析源码的三个 `Set`：
+
+| 集合 | 数量 | 成员 |
+|---|---|---|
+| `GIT_READ_SUBCOMMANDS` | 18 | blame, cat-file, count-objects, describe, diff, for-each-ref, fsck, log, ls-files, merge-base, name-rev, rev-list, rev-parse, shortlog, show, show-ref, status, whatchanged |
+| `GIT_CONFIG_EXEC_SUBCOMMANDS`（探针） | 10 | blame, describe, diff, fsck, log, ls-files, rev-list, show, status, whatchanged |
+| `GIT_READ_PROVEN_NO_EXEC_CONFIG` | 8 | cat-file, count-objects, for-each-ref, merge-base, name-rev, rev-parse, shortlog, show-ref |
+
+差集：`read − probe − proven = []`，`probe − read = []`，`proven − read = []`，`probe ∩ proven = []`。**集合划分本身无遗漏**；`gitReadExecCoverageGaps()` 能挡住「新增命令忘归类」，但挡不住「归错类」。
+
+**实测复核（全配置仓库，真实 marker）**：`fsmonitor` 脚本 + `hooksPath` + `diff.external` + `filter.marker.clean/smudge` + `diff.marker.textconv` + `gpg.program` + `core.alternateRefsCommand` + `objects/info/alternates`，索引分别置为 stale / fresh。
+
+| 命令 | stale | fresh | 结论 |
+|---|---|---|---|
+| `git rev-parse HEAD` | 无 marker | 无 | 不消费 |
+| `git cat-file -p HEAD` / `--batch-check --batch-all-objects` | 无 | 无 | 不消费 |
+| `git show-ref` | 无 | 无 | 不消费 |
+| `git for-each-ref` / `--format=%(refname)` | 无 | 无 | 不消费 |
+| `git merge-base HEAD HEAD` | 无 | 无 | 不消费 |
+| `git name-rev HEAD` | 无 | 无 | 不消费 |
+| `git count-objects -v` | 无 | 无 | 不消费 |
+| `git shortlog -sn HEAD` | 无 | 无 | 不消费 |
+| **`git shortlog --format='%G?' signed`** | **gpg marker** | — | **消费 `gpg.program`；策略 allow** |
+
+同仓库对照：`git log -1 --format='%G?' signed` → `ask / git-gpg-format`；`git shortlog --format='%G?' signed` → `allow / git:shortlog`。即 `GIT_GPG_PRETTY_SUBCOMMANDS` 漏了 `shortlog`（`shortlog` 支持 `--format/--pretty`，`%G` 会调 gpg 验签）。这是「用 marker 证明这次没执行」被反驳的直接证据：marker 只能覆盖被测的配置/参数/仓库状态；`%G` 属于参数面，默认参数不触发，换参数就触发。
+
+**结论**：双向校验只能保证「两个名单没有差集」，不能保证「PROVEN 的判据正确」。只要 PROVEN 靠人工 marker 采样，就仍会漏参数面与状态面。
+
+### 33.3 必答 2：对抗找洞（新增执行面）
+
+| 命令/参数 | 策略 | 真实 git | 说明 |
+|---|---|---|---|
+| `git cat-file --textconv HEAD:data.dat` | ask `git-textconv` | textconv marker | 被 git 级危险参数拦截，安全 |
+| `git cat-file --filters HEAD:data.dat` | ask `git-filters` | filter marker | 同上 |
+| `git for-each-ref --format=%(signature)` | ask `git-signature-atom` | — | 引号写法也拦截 |
+| `git rev-list --alternate-refs --count HEAD`（配 alternates） | ask `git-alternate-refs` | altrefs marker | 只经 `rev-list`，PROVEN 8 条在带 alternates 时仍无 marker |
+| `git stash show -p` | allow | 无 external/textconv marker | 未发现执行面 |
+| **`git shortlog --format='%G?'`** | **allow** | **gpg marker** | **新洞（见 33.2）** |
+
+仍建议后续补：`GIT_GPG_PRETTY_SUBCOMMANDS` 加入 `shortlog`，或对 `shortlog` 的 `--format/--pretty` 走 `gitPrettyUsesGpg()`；并给 PROVEN 名单增加一条「参数面否定清单」（哪些 flag 会引入配置执行），否则单测只覆盖默认参数。
+
+### 33.4 必答 3：D1-1 / D1-2 绕过实测
+
+macOS APFS（大小写不敏感），guard 默认 `block`：
+
+| 场景 | 结果 | 备注 |
+|---|---|---|
+| `.git/config`（直接/多目标之一） | block | `gitdir-write-block` |
+| `.git` 指针本身 | block | `gitdir-pointer-write` |
+| gitdir 内 symlink → symlink → dangling 终点 | block | 链式逐级展开生效 |
+| `.git/info/*` 相对 dangling symlink 终点 | block | 相对路径正确 |
+| `.git` 自身是 symlink → 指向的真实 gitdir 的 `config` / 新 hook | block | probe realpath + 结构判定一致 |
+| 嵌套仓库 `sub/.git/config`、bare 仓库 `config` | block | |
+| `.git` 文件指向外部 gitdir（`--separate-git-dir`） | block | 含外部 include 目标 |
+| `include.path` 目标（仓库外、尚不存在） | block | |
+| `includeIf onbranch:nope`（未命中）目标 | block | git `--list` 会列出 includeIf 声明，按目标保守保护 |
+| include 目标是 symlink | block | 写 symlink 路径 realpath 后命中终点 |
+| `~` 展开的 include 目标 | block | 需进程 HOME 正确 |
+| **include 目标的 hardlink 孪生** | **allow** | **缺口：inode 比对只覆盖 git 元数据文件，未覆盖 include 目标** |
+| `.gitignore` / `.gitattributes` / `.github/**` / `src/.git/foo` | allow | 无误伤 |
+| `.GIT/foo` | block | APFS 大小写折叠，与 `.git/foo` 同路径；Linux 上为普通目录 |
+
+`GIT_CONFIG_GLOBAL`：`buildSafeEnv()` 是白名单制，CLI 子进程与探针都拿不到任何 `GIT_*`（仅保留 `GIT_EDITOR`），故该向量在 agent 入口不可达；`env GIT_CONFIG_GLOBAL=... git ...` 会先被 `shell-escape` ask。`git -c include.path=...` / `--config-env=...` 均 ask `git-config-override`。
+
+**仍然存在的 D1 结构性缺口**：
+1. include 目标 hardlink 孪生：`ln` 一次 ask，随后 Write 孪生路径 allow（实测）。
+2. MCP / 非标准工具名：`mcp__filesystem__write_file`、`write_file` → guard `allow / not-write-tool`；仅靠网关的每次 ask，无硬拦。
+3. TOCTOU：guard 在决策时 realpath，Write 稍后按原参数落盘；并发把祖先目录换成指向 `.git` 的 symlink 即可穿透（Bash 后台循环 + 一次批准即可布置）。窗口为「决策→执行」，含审批等待，秒级。
+4. 会话授权：`sessionGrantable=isWriteScopedTool` 对 MCP 为 false，不会退化成免审；但 Bash 写 `.git/config` 每次 ask、批准后效果持久，与 Write 的 deny 强度不等价。
+
+### 33.5 必答 4：可用性代价与收窄建议
+
+45 条只读命令、husky 布局（`core.hooksPath=.husky`）对照旧/新 bundle：**allow 32 → 14**，18 条新增 ask。
+
+**真正必需（实测触发 fsmonitor / 索引刷新）**：`diff --cached`、`blame`×2、`ls-files`×2、`fsck`、`describe --dirty`，共 7 条。
+**过度拦截**：`log`×5、`show`×3、`rev-list`×2（纯对象/提交遍历，marker 全无）、`describe --tags`（无 marker），共 11 条。
+
+可收窄方案（按「键 → 消费命令」而不是「命中键就全 ask」）：
+- `core.fsmonitor`：仅 `status, diff, blame, ls-files, fsck, describe`（`describe` 可再按 `--dirty/--broken` 参数细分）。
+- `core.hooksPath`：仅会写索引的命令：`status, diff`（工作区形态）、`describe --dirty/--broken`；保守起见可保留 `blame/ls-files/fsck`。
+- 其余执行型键（`diff.external`、`textconv`、`filter`、`gpg`、`alternateRefsCommand`、`log.showSignature`）仍按现有命令集合判定，不放宽。
+- 实现上让探针返回「命中的键」，而不是一个布尔值；`log/show/rev-list/whatchanged` 只在命中 `diff.external/textconv/filter/gpg/%G` 时 ask。
+
+风险：git 版本变化可能让 `log/show` 间接碰索引（当前 2.50.1 实测不碰）；`%(describe)` 之类的格式化原子仍可能间接调 describe（无 `--dirty` 不碰索引）。建议保留一条运行时兜底：任何未识别的新版本行为按 ask。
+
+### 33.6 必答 5：MCP 与覆盖范围
+
+- **MCP 经 gateway**：`canUseTool` 对 Claude SDK 全部工具调用生效，MCP 同样进 `ApprovalGateway.request()`；每次 `ask`，`sessionGrantable=false`。**但 D1 不硬拦**：`isWriteScopedTool` 不认 `mcp__*` / `write_file`，实测 guard 返回 `allow/not-write-tool`。
+- **Codex / OpenCode / legacy**：Kernel 白名单仍只有 `claude`（`feature-flags.ts`），三者无 D1/B。
+- **把 D1 下沉到工具层**：guard 是纯函数，可在任意工具实现里调用；但「与后端无关」只对 Claude 内置工具成立。MCP 工具名/参数无通用契约，逐个服务器声明写能力才能可靠提取目标；内置工具接入约 1–2 人日，MCP 保守规则（未知工具+已知路径参数+命中 gitdir→deny）约 1–2 人日并需运营，Codex/OpenCode 还需要执行前 gate 约 5–8 人日。**与自报的 0.5–1 人日不一致**，且仍不能消除 TOCTOU。
+
+### 33.7 必答 6 / 7：回归、代价、测试基线
+
+- 定向：`bash-readonly`(90) + `gitdir-write-guard` + `approval-gateway` + `adapter-driver-approval` = **154 passed**。
+- 全量：**173 failed / 3195 passed / 93 skipped（3461）**，与基线一致；失败仍为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130` vs `115`），26 个文件，非本轮引入。
+- 新增测试：静态 diff 增加 **18 个 `it()`、41 个 `expect()`**，含真实 git + marker（H2–H7、LFS、budget），不是空断言。
+- allow 比例：clean/LFS/dotfiles/ci/本仓库 40/45 不变；exotic 16→14（`describe` 两条转 ask）。
+- 延迟：策略 `git status` 8.3–9.4 ms；D1 普通写 33.7–36.3 ms（.git/config 16.7 ms，8 目标 155 ms）——较上轮 17 ms 单目标约翻倍（新增 gitdir 内 symlink 扫描）。
+- 子模块预算：`diff.submodule=diff` + 40 个模块 → `ask / git-repo-config-exec`，原因正确标注 `budget-exceeded`（不再误标 timeout）。
+- 回归抽查：`git grep -O`/`-iO`→ask；`node --check`→allow；`file --co`→ask；`$`/`${}`/`~`/glob/反斜杠/`&&` 全部 ask。
+
+### 33.8 发布门禁（明确回答）
+
+**当前不存在可在「编排/自动写代码」上线前检验的发布门禁。** 本轮在号称「双向校验」之后仍找到新执行面（shortlog `%G`），说明「配置键 × 子命令 × 参数 × 仓库状态」的枚举不可收敛，marker 采样只能证伪、不能证明。
+
+若必须给出可操作门禁，前提是引入 **C3（OS 级 exec/写入限制）**：
+1. 所有 allow 命令在 OS 沙箱内执行：只允许 exec `git` 二进制、禁止写 gitdir（macOS seatbelt / Linux Landlock）。
+2. CI 差分 Harness：对每条 allow 决策，在「毒化配置矩阵」（fsmonitor/hooksPath/diff.external/filter/textconv/gpg/alternateRefsCommand）×「仓库状态矩阵」（stale/fresh、bare、linked worktree、submodule、`.git` symlink）下运行，断言沙箱外无 marker。
+3. 门禁判据：`allow 集 ⊆ 沙箱安全集`；新增命令/键必须同时通过 Harness 与沙箱逃逸测试。
+没有 C3 时，只能给出保守门禁：「任意非默认配置存在 → 只读 git 命令一律 ask」，这是产品策略而非可验证的安全判据。
+
+**复验结论**：H7 的修复方向正确但不完备（新增 `shortlog %G` 执行面）；D1-1/D1-2 的主路径已闭合，但 hardlink/MCP/TOCTOU 仍让「一次批准 → 持久改写配置」成立；可用性过度拦截需要按「键 → 命令」收窄。阻断项 2 类，建议修复后再评估发布。
+复算：正文（文件起始至本节末，不含本哈希行）sha256 = `818500a818753d493255a7fd5bc077990d9f90042a5ed55f50a5a42e2555701d`；校验方式：删去本行后重新计算应等于该值。
