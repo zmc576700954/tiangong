@@ -2628,3 +2628,188 @@ git log --max-count=1
 **文档精度**：`agent-architecture.md` 探针说明补充“裸布尔键等价 true”与解析归一化规则；fsmonitor 文案改为“`status` 必调用；`diff`/`blame` 与 index 刷新状态相关”，不再写成三条都无条件调用；§11.9 的陈旧定向计数订正为 66（62 是较早一次运行的临时计数，见该节说明）。
 
 **校验**：定向 69 passed（`bash-readonly` 37 + `approval-gateway` 28 + `approval-startup-reconcile` 4）；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3111 passed / 93 skipped (3377)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。
+
+## 十三、B-12 修复复验（第五轮，2026-11-06）
+
+### 13.0 冻结基线（追加前）
+
+| 项 | 值 |
+|---|---|
+| `git rev-parse HEAD` | `09914650d35eaa5c1096c863efe9481f188325ec` |
+| `git rev-parse HEAD~1` | `938504a40458550d80b922bae967fb9e1988e745` |
+| `git status --short` | 空 |
+| `git ls-files spikes \| wc -l` | 123 |
+
+关键文件 sha256（追加前）：
+
+```
+2feb73e1f91831230bb54019d111dc9ff4aa7ba2ccb521bb301806925ee71dd6  src/main/agent/runtime/approval/bash-readonly.ts
+95d5cff4a1e99f4e3f3d38dfd0a570e4aba1f32a8d498ea38760e64853b6e5c5  src/main/agent/runtime/approval/__tests__/bash-readonly.test.ts
+d033bc2249a4bf833c2c2fcbdebca1129f39ee60f888413d199607bee558c24d  src/main/adapters/claude-code.ts
+fdbdcda730c8a8e7739aa2e5959414a3a1e991e3b1f975654d1f559460ede1d8  src/main/agent/runtime/executors/adapter-driver.ts
+1f9f6a0d3d79198fcfedf3cca66f15fb7d5d4f230c60b9e2c031cd17c23642c5  src/main/agent/runtime/approval/gateway.ts
+825ff131add8d51d5bdd0053a8fb72b5619b2663e58c1dff9ec26146900b4d07  src/main/agent/runtime/recovery/planner.ts
+00a5385f85afa83aa1a765dab064e37ee72b792f3d47b28f142ad394ede3dd3f  docs/architecture/agent-architecture.md
+7b948a2c62fcc742e956245622e8863f8723cc5edf9bf5ed93ad255b9c2fccd0  docs/architecture/agent-rollout.md
+ebe9cdfae3503b55daa422ad9c683f123ae1e4183548999ffffee91152bdb97c  docs/architecture/agent-audit-2026-11-05.md
+```
+
+### 13.1 结论：**不可发布**
+
+B-12-1 / B-12-2 两条原缺口已修复（裸布尔键归一为 `true`），显式 `= true` / `= false` / `key =` 的语义也正确。但按要求对“Git 接受而解析器丢弃”做反向排查时，发现 **`include` 递归深度上限与 Git 不一致**，构成新的零审批执行缺口：
+
+- Git 的 `MAX_INCLUDE_DEPTH = 10`（实测 10 层仍执行，11 层 `fatal`）；
+- 探针的 `MAX_GIT_CONFIG_INCLUDE_DEPTH = 6`，第 7 层起直接停止递归；
+- 因此 7–10 层 include 中的 `core.fsmonitor` / `diff.textconv` / 仓库本地 `filter` 完全不被探针看到 → 策略 `allow`，真实 `git status` 执行外部程序。
+
+### 13.2 阻断清单
+
+#### B-13-1（本轮新发现）：include 深度 7–10 漏读 → allow + 真实执行
+
+复现（`marker.sh` 只写 `marker.txt`）：
+
+```sh
+git init -q /tmp/r13-depth/repo && cd /tmp/r13-depth/repo
+# inc1..inc7：前者只 include 下一层；inc7 写 [core] fsmonitor
+for i in 1 2 3 4 5 6; do printf '[include]\n\tpath = ./inc%s\n' "$((i+1))" > "inc$i"; done
+printf '[core]\n\tfsmonitor = /tmp/r13-depth/repo/marker.sh\n' > inc7
+printf '[core]\n\trepositoryformatversion = 0\n[include]\n\tpath = ../inc1\n' > .git/config
+
+# 策略：evaluateBashPolicy('git status', { cwd, includeGlobalGitConfig:false })
+# 真实：git status
+```
+
+实测（危险文件位于第 N 层）：
+
+```
+depth=5  | policy=ask/git-repo-config-exec   | git=ok  | executed=YES
+depth=6  | policy=ask/git-repo-config-exec   | git=ok  | executed=YES
+depth=7  | policy=allow/git:status           | git=ok  | executed=YES   ← 漏判
+depth=8  | policy=allow/git:status           | git=ok  | executed=YES
+depth=9  | policy=allow/git:status           | git=ok  | executed=YES
+depth=10 | policy=allow/git:status           | git=ok  | executed=YES
+depth=11 | policy=allow/git:status           | git=ERR | executed=NO    （Git 自身拒绝）
+ depth=12 | policy=allow/git:status          | git=ERR | executed=NO
+```
+
+- 同一路径也适用于 `filter.*`（仓库本地 filter 本应三项全 ask）与 `diff.*.textconv`；即攻击者把危险配置放到第 7 层 include 即可绕过全部仓库本地判定。
+- Git 端实测 `git config --file` 的 11 层 `fatal` 证明其上限确为 10，不是本机特例。
+
+**最小改法**（一行）：把 `MAX_GIT_CONFIG_INCLUDE_DEPTH` 从 `6` 改为 `10`，与 Git `MAX_INCLUDE_DEPTH` 对齐；`depth > 10` 时 Git 自身已 `fatal`，继续返回空不会产生执行面。建议同时补一条回归用例：7/10 层必须 `ask`，11 层 `allow` 但真实 `git` 必 `fatal`。
+
+### 13.3 两项判定
+
+#### 1）B-12-1 / B-12-2 复验：**已修复**（附父提交对照）
+
+新树 `0991465` 与父提交 `938504a`（临时 worktree 实测同一用例）：
+
+| 用例 | `938504a`（父） | `0991465`（新） |
+|---|---|---|
+| 裸 `[extensions] worktreeConfig` + config.worktree fsmonitor | `allow / git:status`，真实执行 YES | **`ask / git-repo-config-exec`**，真实配置仍可执行（证明门控生效） |
+| 裸 `[log] showSignature` + `[gpg] program` + gpgsig 提交 | `allow / git:log`，真实执行 YES | **`ask / git-repo-config-exec`** |
+| 显式 `worktreeConfig = true` | `ask` | `ask` |
+| 显式 `showSignature = true` | `ask` | `ask` |
+| `= false` / `key =`（显式空值） | `allow`，不执行 | `allow`，不执行 |
+| 干净仓库 `status/diff/log/show/blame` | `allow` | `allow` |
+
+说明：“真实执行侧不落地”在本产品语义下即策略为 `ask` 时不会自动执行；绕过策略直接跑 `git` 仍会执行（说明该配置本身是活的，门控是唯一屏障），与上一轮结论一致。
+
+#### 2）反向语义：**未被误伤**
+
+- `= true` → `ask`（`worktreeConfig` / `showSignature` 均如此）。
+- `= false`、`key =`（空值）→ `allow`，且真实 `git` 不执行：`git config --bool` 对空值为 `false`，`core.fsmonitor` 为空等价未设置。
+- 干净配置 → 五个常用命令全部 `allow`。
+- 未出现“`false` 被当成 `true`”的回归。
+
+### 13.4 解析器覆盖度实测（Git 行为对照）
+
+| 形态 | 策略 | 真实 Git | 判定 |
+|---|---|---|---|
+| 裸 `fsmonitor` / 裸 `textconv` / 裸 `clean` | `ask` | 按 git 语义可执行 | 正确 |
+| `[core]fsmonitor=…` 节头同行（无空格） | `ask` | 接受并执行 | 正确 |
+| Tab/多空格缩进、CRLF、末行无换行、BOM | `ask` | 接受并执行 | 正确 |
+| 值续接 `\` + 下一行注释 | `ask`（值尾含 `\`，不匹配 LFS） | 续接后仍为评论，执行 | 正确（宁可多 ask） |
+| 值续接 + 额外参数 | `ask` | 续接为额外参数 | 正确 |
+| 值内 `\"` / `\n` | `ask` | `\n` 会拆成两条命令并执行 | 正确（未 allow） |
+| 引号内 `#` / `;` | `ask` | 引号保护，值不截断 | 正确（未 allow） |
+| `[diff "a]b"]` / `[diff.evil]` / 含数字连字符子节 | `ask` | 接受 | 正确 |
+| `include` 两层（≤6） | `ask` | 执行 | 正确 |
+| `includeIf` 条件 | `ask` | 条件若命中则执行 | 正确（多 ask 不漏） |
+| include 目标不可读 | `ask` | `git` 报错 | fail-closed 正确 |
+| include 路径带引号空格 | `ask` | 执行 | 正确 |
+| include 目标含 BOM | `ask` | 执行 | 正确（JS `trim()` 去 BOM） |
+| 引号包裹 key（`"fsmonitor" = …`） | `allow` | `fatal: bad config` | 无执行面；P3 审计保真问题 |
+| include 路径 `\ ` 转义空格 | `allow` | `fatal: bad config` | 无执行面；P3 |
+| 全局标准 LFS（含 `required=true`、旧式 `[filter.lfs]`） | `allow` | 标准 LFS | 正确 |
+| 全局 LFS + 裸 `clean` / 引号包二进制名 | `ask` | 非标准/不可执行 | 正确（过度 ask 属 P3） |
+| 全局 LFS + `clean = … %f ; echo`（`;` 前有空格） | `allow` | `git config --get` 确认 `;` 后为注释 | **正确**（非绕过） |
+| 全局 LFS + 同一节重复 `clean`（后者危险） | `ask` | 后者生效 | 正确 |
+| **include 深度 7–10** | **`allow`** | **执行** | **B-13-1 阻断** |
+
+### 13.5 新发现（按优先级）
+
+- **P1 / 阻断：B-13-1** include 深度上限 6 与 Git 10 不一致（见 13.2）。
+- ~~**P3（审计保真，无执行面）**：`"fsmonitor" = …` 与 `include.path = …\ …` 这类 Git 直接 `fatal` 的写法，策略返回 `allow`。当前不会执行，但会让“allow = 已检查且安全”的语义失真；可在解析层把“看起来像配置但无法解析的行”计为 `ask`（可选）。~~ **已关闭（见 §13.9）**：解析层已改为任何无法解析/无法归一的配置行命中相关命令时一律 `ask`（fail-closed），不再静默丢弃。
+- **P3（既有过度 ask，未恶化）**：仅二进制名带引号 `"git-lfs" clean -- %f`、值内 `\"`、引号内 `#` 会 ask；属于安全侧多余弹窗。
+- **P2（既有，未变化）**：`/tmp/git-lfs` 等任意路径 basename 放行；PATH 含仓库目录时的同名程序劫持。本机 PATH 不含 `.`。
+- **正面确认**：值续接、`;` 注释、引号保护、BOM、CRLF、旧式子节、两层 include、includeIf、不可读 include 均未产生新的 allow+exec。
+
+### 13.6 回归面 / 摩擦 / 成本
+
+- 干净仓库：`status / diff / log / show / blame` 全部 `allow`。
+- 标准 LFS 仓库（全局 clean/smudge/process）：上述五条全部 `allow`。
+- 抽样 42 条：`allow 34 / ask 8` = **81.0%**（与上轮一致）；ask 项为 `date -s`、`node --version`、`npm test`、`npm run build`、`yarn test`、`rm -rf dist`、`curl … | sh`、`cat ~/.zshrc`。
+- 单次判定成本：**0.0620 ms/op**（200 次 `git status` 均值，`includeGlobalGitConfig=false`）。
+- 定向回归：69 passed（37 + 28 + 4）。
+
+### 13.7 仍未验证项
+
+1. **真实 CLI 端到端**：仍为策略函数 + `git` 子进程级验证，未走 Claude CLI PreToolUse 全链路。
+2. **`git-lfs` 二进制**：本机仍无 `git-lfs`，`filter-process` 长驻协议未跑；LFS 结论仅来自配置值与 Git 解析对照。
+3. **Windows**：引号/路径分隔符与 `.exe` 分支未在 Windows 实测。
+4. **全量测试**：本轮未重跑；已知 `better-sqlite3` ABI 导致 173 failed。
+5. **include 深度的其他 Git 版本**：本机实测上限为 10；未跨 Git 版本验证该常量是否变化。
+
+### 13.8 冻结复算
+
+- 追加本章后：`git status --short` = 仅 ` M docs/architecture/agent-audit-2026-11-05.md`；HEAD 仍 `0991465`；无 `__tmp_r13_*` 残留；临时 worktree `/tmp/r13-old` 已移除。
+- 源码、测试与 `agent-architecture.md` / `agent-rollout.md` 的 sha256 与 13.0 一致（只追加本文档）。
+- 本轮未改源码、未 commit、未 push。
+
+### 13.9 修复记录（第五轮复审后，基线 `0991465`）
+
+**B-13-1（阻断，代码）**：include 深度上限原为 6，且超限时 `gitConfigPaths` 返回空集合，等价“没扫到危险配置”的 fail-open。修复两点：
+
+1. 常量对齐 Git：`MAX_GIT_CONFIG_INCLUDE_DEPTH = 10`（根配置为 0，第 10 层仍有效，第 11 层 Git 自身 `fatal`）。
+2. **超限与成环不再返回空，而是标记 `undecidable`，由 `gitRepoConfigExecutes` / `globalGitConfigExecutes` 直接返回 ask**。理由是 `allow` 的语义是“已检查且安全”；返回空集合会让 Git 未来调整上限或异常 include 链把洞静默重开。保留同一个 rule `git-repo-config-exec`，不新增 rule 名：审批卡片与审计已用该 rule 表示“配置面不可判定/有执行风险”，新增名字只会增加消费者分支。
+
+**解析失败 fail-closed（代码）**：`parseGitConfigEntries` 现在返回 `{ entries, invalid }`；任何非空行既不是注释、节头、合法键值，或节头缺 `]`、键名非法、值以未转义反斜杠结尾（Git 续行语义未建模 / EOF 裸尾随反斜杠），都置 `invalid = true`。`gitConfigTextExecutes` 与 `gitConfigEnablesWorktreeConfig` 见到 `invalid` 一律按危险/可能开启处理，不再静默丢弃。
+
+Git 行为对照（本机实测，`git config --file … --list`）：
+
+| 写法 | Git 结果 | 策略 |
+|---|---|---|
+| `"fsmonitor" = /tmp/hook` | `fatal: bad config line 1` | `ask` |
+| `a.b = 1` / `a_b = 1` | `fatal` | `ask` |
+| `fsmonitor # note`（裸键+注释） | `fatal` | `ask` |
+| `[core`（缺 `]`） | `fatal` | `ask` |
+| `include.path = /tmp/x\`（EOF 尾随反斜杠） | `fatal` | `ask` |
+| `this is junk` | `fatal` | `ask` |
+| `x = a\` + 换行 + `b`（合法续行） | 值 `ab` | `ask`（续行未建模，安全侧多 ask） |
+
+**复现与“修复前会失败”**（临时回退为 `MAX=6` + 超限返回空 + 忽略 `invalid`，跑新增用例：3 failed / 1 passed / 37 skipped）：
+
+| 用例 | 修复前 | 修复后 |
+|---|---|---|
+| include 第 6 / 7 / 10 / 11 层放 `core.fsmonitor`，`git status` | 第 7 层起 `allow / git:status` | 全部 `ask / git-repo-config-exec` |
+| 第 7 层放仓库本地 `filter.clean`，`git status` | `allow / git:status` | `ask / git-repo-config-exec` |
+| 第 7 层放 `diff.textconv`，`git diff` | `allow / git:diff` | `ask / git-repo-config-exec` |
+| 不可解析行（`"fsmonitor"=…`、EOF 尾随反斜杠） | `allow / git:status` | `ask / git-repo-config-exec` |
+| 移除不可解析行后 | `allow` | `allow`（不变） |
+| 干净仓库 / 标准 LFS 仓库的 `status/diff/log/show/blame` | 全 `allow` | 全 `allow`（无新弹窗） |
+
+第 11 层说明：Git 自身会在第 11 层 `fatal`、命令不执行；策略仍返回 `ask`，因为“解析链超出已建模边界”属于不可判定，不应把“Git 恰好会在执行前报错”当作安全承诺（版本差异同样适用）。
+
+**回归**：`extensions.worktreeConfig` 门控保持——未开启（无裸键或 `= false`）不读 `config.worktree` → `allow`；开启（裸键或 `= true`）→ `ask`。第 4 轮裸键用例全量通过。
+
+**校验**：定向 `bash-readonly` 41 passed；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3115 passed / 93 skipped (3381)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。

@@ -490,14 +490,29 @@ interface GitConfigEntry {
  * - `key = value` 取值；`key`（裸键）等价 `true`；`key =`（显式空值）保留空串
  *   （Git 对布尔判 false、对字符串判空，等价未设置）。
  * - 值内 `#` / `;` 只有「前有空白且不在双引号内」才是行内注释。
- * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，这里同样丢弃该行。
+ * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，标记为不可解析。
  * - 键名只含字母/数字/连字符：Git 不接受带点或下划线的键名（`a.b=1`、`a_b=1` 均 fatal）。
+ * - 行尾未转义反斜杠（Git 的续行语法）与无法归一的杂行一律标记为不可解析，由调用方 fail-closed。
  */
 const GIT_CONFIG_SECTION_HEADER = /^\[\s*([^\s\]]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$/
 const GIT_CONFIG_KEY_VALUE = /^([A-Za-z0-9-]+)(?:\s*=\s*(.*))?$/
 
-function parseGitConfigEntries(text: string): GitConfigEntry[] {
+interface ParsedGitConfig {
+  entries: GitConfigEntry[]
+  /** 存在 Git 会 fatal 的无法解析行：策略按「不可判定」处理，不允许静默丢弃。 */
+  invalid: boolean
+}
+
+/** Git 用行尾反斜杠续行；未建模的续行与 EOF 裸尾随反斜杠都按不可解析处理。 */
+function gitConfigHasContinuation(value: string): boolean {
+  let trailing = 0
+  for (let i = value.length - 1; i >= 0 && value[i] === '\\'; i -= 1) trailing += 1
+  return trailing % 2 === 1
+}
+
+function parseGitConfigEntries(text: string): ParsedGitConfig {
   const entries: GitConfigEntry[] = []
+  let invalid = false
   let section = ''
   for (const rawLine of text.split(/\r?\n/)) {
     let line = rawLine.trim()
@@ -509,23 +524,37 @@ function parseGitConfigEntries(text: string): GitConfigEntry[] {
       section = subsection === undefined ? name : `${name} "${subsection}"`
       line = sectionMatch[3].trim()
       if (!line || line.startsWith('#') || line.startsWith(';')) continue
+    } else if (line.startsWith('[')) {
+      invalid = true // 节头缺 `]` / 子节引号未闭合等，Git fatal
+      continue
     }
     const kv = GIT_CONFIG_KEY_VALUE.exec(line)
-    if (!kv) continue
+    if (!kv) {
+      invalid = true // 如 `"key" = v`、`a.b = 1`、裸键 + 注释
+      continue
+    }
     const bare = kv[2] === undefined
+    const value = bare ? '' : kv[2]
+    if (!bare && gitConfigHasContinuation(value.trim())) {
+      invalid = true // 续行语义未建模；EOF 裸尾随反斜杠 Git fatal
+      continue
+    }
     entries.push({
       section,
       key: kv[1].toLowerCase(),
-      value: bare ? 'true' : stripGitConfigComment(kv[2]),
+      value: bare ? 'true' : stripGitConfigComment(value),
       bare,
     })
   }
-  return entries
+  return { entries, invalid }
 }
 
 /** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
 function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'global'): boolean {
-  for (const { section, key, value } of parseGitConfigEntries(text)) {
+  const { entries, invalid } = parseGitConfigEntries(text)
+  // 无法解析 = 不可判定：Git 自己会 fatal，但策略不能把「没看到危险配置」当成安全。
+  if (invalid) return true
+  for (const { section, key, value } of entries) {
     // 显式空值（`key =`）等价未设置：Git 对布尔返回 false，对字符串为空。
     if (value === '') continue
     // `diff.<driver>.command` 与 `diff.external` / `textconv` 一样会执行外部程序。
@@ -567,21 +596,30 @@ function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'glob
   return false
 }
 
-const MAX_GIT_CONFIG_INCLUDE_DEPTH = 6
+/** Git 的 `MAX_INCLUDE_DEPTH = 10`：根配置为 0，第 10 层 include 仍可用，第 11 层 fatal。 */
+const MAX_GIT_CONFIG_INCLUDE_DEPTH = 10
+
+interface GitConfigScan {
+  files: string[]
+  /** include 深度超限或存在环：Git 本身会 fatal，策略按不可判定处理，必须 ask。 */
+  undecidable: boolean
+}
 
 /** 配置文件自身 + 递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理）。 */
-function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): string[] {
-  if (depth > MAX_GIT_CONFIG_INCLUDE_DEPTH || seen.has(file)) return []
-  seen.add(file)
-  const paths = [file]
-  if (!existsSync(file)) return paths
+function gitConfigPaths(file: string, depth = 0, chain: string[] = []): GitConfigScan {
+  // 超限不再返回空（那等价“没发现危险配置”的 fail-open），而是标记不可判定。
+  if (depth > MAX_GIT_CONFIG_INCLUDE_DEPTH) return { files: [], undecidable: true }
+  // include 成环在 Git 里同样会一路递归到深度上限后 fatal。
+  if (chain.includes(file)) return { files: [], undecidable: true }
+  const scan: GitConfigScan = { files: [file], undecidable: false }
+  if (!existsSync(file)) return scan
   let text: string
   try {
     text = readFileSync(file, 'utf8')
   } catch {
-    return paths
+    return scan
   }
-  for (const entry of parseGitConfigEntries(text)) {
+  for (const entry of parseGitConfigEntries(text).entries) {
     if (!(gitConfigSectionIs(entry.section, 'include') || gitConfigSectionIs(entry.section, 'includeif'))) {
       continue
     }
@@ -590,9 +628,11 @@ function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): stri
     if (!includePath) continue
     if (includePath.startsWith('~/')) includePath = join(homedir(), includePath.slice(2))
     else if (!isAbsolute(includePath)) includePath = resolve(dirname(file), includePath)
-    paths.push(...gitConfigPaths(includePath, depth + 1, seen))
+    const nested = gitConfigPaths(includePath, depth + 1, [...chain, file])
+    scan.files.push(...nested.files)
+    if (nested.undecidable) scan.undecidable = true
   }
-  return paths
+  return scan
 }
 
 /** 任一配置文件登记了执行型配置即危险；文件存在但不可读按危险处理（fail-closed）。 */
@@ -633,13 +673,15 @@ function findGitDir(root: string): string | null {
 
 /**
  * 是否开启 `extensions.worktreeConfig`。Git 只有在该扩展开启时才读 config.worktree；
- * 未开启仍去读会造成无谓 ask。文件存在但不可读按「可能开启」处理（fail-closed）。
+ * 未开启仍去读会造成无谓 ask。文件不可读或含无法解析行按「可能开启」处理（fail-closed）。
  */
 function gitConfigEnablesWorktreeConfig(files: string[]): boolean {
   for (const file of files) {
     if (!existsSync(file)) continue
     try {
-      for (const entry of parseGitConfigEntries(readFileSync(file, 'utf8'))) {
+      const { entries, invalid } = parseGitConfigEntries(readFileSync(file, 'utf8'))
+      if (invalid) return true
+      for (const entry of entries) {
         if (
           gitConfigSectionIs(entry.section, 'extensions') &&
           entry.key === 'worktreeconfig' &&
@@ -656,25 +698,27 @@ function gitConfigEnablesWorktreeConfig(files: string[]): boolean {
 }
 
 /** 仓库配置（worktree 走 commondir + 按扩展开关读取 config.worktree）+ 递归 include。 */
-function repoGitConfigFiles(gitDir: string): string[] {
-  const files = gitConfigPaths(join(gitDir, 'config'))
-  const commonFiles: string[] = []
+function repoGitConfigFiles(gitDir: string): GitConfigScan {
+  const scan = gitConfigPaths(join(gitDir, 'config'))
   try {
     const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
     if (common) {
       const commonDir = isAbsolute(common) ? common : resolve(gitDir, common)
-      commonFiles.push(...gitConfigPaths(join(commonDir, 'config')))
+      const commonScan = gitConfigPaths(join(commonDir, 'config'))
+      scan.files.push(...commonScan.files)
+      if (commonScan.undecidable) scan.undecidable = true
     }
   } catch {
     // 非 worktree，没有 commondir
   }
   // extensions.worktreeConfig 开启后，per-worktree 配置才在 config.worktree；
   // core.fsmonitor 可按 worktree 设置，漏读该文件会放过配置驱动的执行。
-  if (gitConfigEnablesWorktreeConfig([...files, ...commonFiles])) {
-    files.push(...gitConfigPaths(join(gitDir, 'config.worktree')))
+  if (gitConfigEnablesWorktreeConfig(scan.files)) {
+    const worktreeScan = gitConfigPaths(join(gitDir, 'config.worktree'))
+    scan.files.push(...worktreeScan.files)
+    if (worktreeScan.undecidable) scan.undecidable = true
   }
-  files.push(...commonFiles)
-  return files
+  return scan
 }
 
 /**
@@ -691,14 +735,20 @@ function globalGitConfigExecutes(sub: string): boolean {
     process.env.GIT_CONFIG_SYSTEM,
     '/etc/gitconfig',
   ].filter((value): value is string => Boolean(value))
-  return candidates.some((file) => gitConfigFilesExecute(gitConfigPaths(file), sub, 'global'))
+  return candidates.some((file) => {
+    const scan = gitConfigPaths(file)
+    return scan.undecidable || gitConfigFilesExecute(scan.files, sub, 'global')
+  })
 }
 
 function gitRepoConfigExecutes(root: string, includeGlobal: boolean, sub: string): boolean {
   if (includeGlobal && globalGitConfigExecutes(sub)) return true
   const gitDir = findGitDir(root)
   if (!gitDir) return false
-  return gitConfigFilesExecute(repoGitConfigFiles(gitDir), sub, 'repo')
+  const scan = repoGitConfigFiles(gitDir)
+  // include 深度超限/成环 → 不可判定，必须 ask，不能因为“没扫到危险配置”而放行。
+  if (scan.undecidable) return true
+  return gitConfigFilesExecute(scan.files, sub, 'repo')
 }
 
 /** 下载内容直接交给解释器执行：最高风险（只认命令位，避免把引号里的示例文本当成真实执行）。 */

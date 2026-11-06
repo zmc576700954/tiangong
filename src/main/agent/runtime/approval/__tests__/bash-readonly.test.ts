@@ -853,6 +853,108 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
   })
 
+  it('include 深度：1–10 层危险配置 ask，第 11 层按不可判定 ask（Git 自身 fatal）', () => {
+    const buildChain = (levels: number, leaf: string) => {
+      const repo = mkdtempSync(join(tmpdir(), 'bizgraph-depth-'))
+      const gitDir = join(repo, '.git')
+      mkdirSync(gitDir, { recursive: true })
+      writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
+      for (let i = 1; i < levels; i += 1) {
+        writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
+      }
+      writeFileSync(join(gitDir, `inc${levels}.cfg`), leaf)
+      return repo
+    }
+    const dangerous = '[core]\n\tfsmonitor = /tmp/hook\n'
+    for (const levels of [1, 6, 7, 10, 11]) {
+      const repo = buildChain(levels, dangerous)
+      const options = { cwd: repo, includeGlobalGitConfig: false }
+      // 修复前：MAX=6，第 7 层起返回空 → allow；第 11 层 Git 自己不执行，策略仍按不可判定 ask
+      expect(decide('git status --short', options)).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    }
+  })
+
+  it('第 7 层 include 的仓库本地 filter / diff.textconv 仍 ask', () => {
+    const buildChain = (leaf: string) => {
+      const repo = mkdtempSync(join(tmpdir(), 'bizgraph-depth7-'))
+      const gitDir = join(repo, '.git')
+      mkdirSync(gitDir, { recursive: true })
+      writeFileSync(join(gitDir, 'config'), '[include]\n\tpath = inc1.cfg\n')
+      for (let i = 1; i < 7; i += 1) {
+        writeFileSync(join(gitDir, `inc${i}.cfg`), `[include]\n\tpath = inc${i + 1}.cfg\n`)
+      }
+      writeFileSync(join(gitDir, 'inc7.cfg'), leaf)
+      return repo
+    }
+
+    const filterRepo = buildChain('[filter "mine"]\n\tclean = /bin/echo pwned\n')
+    // 修复前：深度 7 被截断 → allow，filter 真实执行
+    expect(decide('git status --short', { cwd: filterRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    const diffRepo = buildChain('[diff "evil"]\n\ttextconv = /bin/echo pwned\n')
+    expect(decide('git diff HEAD', { cwd: diffRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('不可解析行 fail-closed：存在即 ask，移除后回到 allow', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-invalid-config-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    const config = join(repo, '.git', 'config')
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+
+    // Git 实测 fatal 的写法：引号包裹的键名
+    writeFileSync(config, '[core]\n\t"fsmonitor" = /tmp/hook\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // Git 实测 fatal：值为 EOF 前的未转义反斜杠（续行无后续内容）
+    writeFileSync(config, '[include]\n\tpath = /tmp/x\\\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 移除不可解析行后回到 allow（不再把“解析失败”静默当成安全）
+    writeFileSync(config, '[core]\n\trepositoryformatversion = 1\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+
+  it('反向：干净仓库与标准 LFS 仓库的 status/diff/log/show/blame 均 allow', () => {
+    const cleanRepo = mkdtempSync(join(tmpdir(), 'bizgraph-clean-'))
+    mkdirSync(join(cleanRepo, '.git'), { recursive: true })
+    writeFileSync(join(cleanRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
+    const cleanOptions = { cwd: cleanRepo, includeGlobalGitConfig: false }
+    for (const command of ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.txt']) {
+      expect(decide(command, cleanOptions).decision).toBe('allow')
+    }
+
+    const lfsRepo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-reverse-'))
+    mkdirSync(join(lfsRepo, '.git'), { recursive: true })
+    writeFileSync(join(lfsRepo, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
+    writeFileSync(join(lfsRepo, '.gitattributes'), '*.bin filter=lfs diff=lfs merge=lfs -text\n')
+    withIsolatedGlobalConfig(
+      '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n',
+      () => {
+        for (const command of ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.bin']) {
+          expect(decide(command, { cwd: lfsRepo })).toMatchObject({ decision: 'allow' })
+        }
+      },
+    )
+  })
+
   it('参数白名单表：每个白名单命令都必须登记危险参数（新增命令漏登记会失败）', () => {
     const registered = Object.keys(DANGEROUS_ARGS_BY_COMMAND)
     // 双向一致：既不能漏登记白名单命令，也不能登记不存在的命令
