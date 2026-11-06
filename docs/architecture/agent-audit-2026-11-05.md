@@ -1630,3 +1630,144 @@ file --c -m test.magic        # file: option '--c' is ambiguous
 
 [agent-architecture.md](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md) §4.6 已补：长选项唯一前缀缩写规则、长度下限 `--x`（总长 3）的理由、实测缩写接受表、`git -c` 的 `name=value` 收紧、危险参数表对应行更新。
 
+
+# 第六次冻结终审（发布门禁复核）
+
+## 0. 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `c11bab81e24636a6624e3530689b0b4f754e74f7` |
+| subject | `fix(agent): 长选项唯一前缀缩写按命中处理，并收紧 git -c 误判` |
+| 提交范围 | 4 files changed, 383 insertions(+), 10 deletions(-)：`bash-readonly.ts`、`bash-readonly.test.ts`、`agent-architecture.md`、本审计文档 |
+| 工作区 | 仅 `?? spikes/spikes/`（11 file）；无修改、无暂存 |
+| 定向用例 | 4 suites / **83 tests passed**（上一轮 80） |
+
+与上一轮 `3b36fce` 同名 20 文件比对：**实际变化 2 个**——
+
+```
+5d1dc76a30d3…  src/main/agent/runtime/approval/bash-readonly.ts        （92f3eae9… → 5d1dc76a…）
+4c7889ed28aa…  src/main/agent/runtime/approval/__tests__/bash-readonly.test.ts（0456b3d1… → 4c7889ed…）
+```
+
+其余 18 个（runtime / gateway / agent-manager / ipc / preload / schema / repository / ledger / locks / 适配器 / UI）sha256 与上一轮逐字节一致 → 上两轮结论直接沿用，本轮只需审策略文件。
+
+`git show HEAD -- bash-readonly.ts` 全文 109 行 diff，只有两处：`dangerousArgOf` 增加 `isAbbreviatedLongFlag` 与 `requiresAssignment`，以及对应 `DangerousArgSpec` 注释/`-c` 的 `requiresAssignment: true`；`nodeRule`、`gitRule`、`git help` 分支、短选项簇函数均未改动。
+
+## 1. 结论
+
+**可发布。**
+
+上一轮唯一阻断（`file --comp/--compil` 长选项缩写写盘）已由通用前缀规则封闭；本轮独立复扫未发现新的可实测绕过路径。
+
+## 2. 本轮 3 项修复独立核验
+
+### 2.1 `isAbbreviatedLongFlag`（长选项唯一前缀）
+
+规则：`specFlag.startsWith('--') && flagName.startsWith('--') && flagName.length > 2 && specFlag.startsWith(flagName)`，`flagName = arg.split('=')[0]`，大小写敏感。
+
+实测判定（策略层，重建 bundle 后逐条调用 `evaluateBashPolicy`）：
+
+| 输入 | 判定 |
+|---|---|
+| `file --c` / `--co` / `--com` / `--comp` / `--compi` / `--compil` / `--compile` | 全部 `ask / file-compile` |
+| `file --compil=1` / `--compile= ` / `--compile=a=b` | 全部 `ask / file-compile` |
+| `file --brief` / `--version` / `file -b /etc/passwd` | `allow / file` |
+| `file --Compile`（大小写不同） | `allow`（正确：GNU 长选项大小写敏感） |
+| `rg --pr` / `--pre` / `--pre=` / `--search-z` | 全部 `ask` |
+| `rg --pretty` / `--pre-glob` | `allow`（不是任何危险选项的前缀） |
+| `date --se` / `--set=…` | `ask` |
+
+真实执行侧复核：`file --co -m test.magic` exit=0 并写出 `magic.mgc`（证明该前缀确实等价 `--compile`），现已被 ask 拦截。
+
+误判方向检查：规则是「参数是危险选项的前缀」，因此 `--pretty`、`--pre-glob`、`--brief` 这类独立选项不会被命中；`--flag =value`（空格）走精确匹配，`--flag=` 空值走 `flagName` 精确匹配，`--flag=value=more` 只在第一个 `=` 处切分 —— 三种形态均 ask，无漏判。
+
+### 2.2 `git fsck --lost-found` 缩写
+
+| 输入 | 策略 | 真实 git |
+|---|---|---|
+| `git fsck --lost-f` | `ask / git-lost-found` | **接受**：在 `/tmp/fsckrepo2` 造悬空对象后，`--lost-f` 与 `--lost` 都成功创建 `.git/lost-found` |
+| `git fsck --lost` | `ask / git-lost-found` | 同上，接受 |
+| `git fsck --lost-found` | `ask` | 接受 |
+| `git fsck` | `allow / git:fsck` | 只读 |
+
+结论：这是本机**确实可利用**的第二条缩写路径，现已被覆盖。
+
+### 2.3 `git -c` 的 `requiresAssignment`
+
+`hasAssignmentValue`：参数自身含 `=`，或紧邻下一 token 含 `=`。
+
+| 角色 | 输入 | 判定 | 说明 |
+|---|---|---|---|
+| 子命令选项 | `git log -c` / `git diff -c` / `git show -c` | `allow / git:log|diff|show` | combined diff，只读，放宽正确 |
+| 子命令选项（后跟路径） | `git log -c -p` | `allow` | `-p` 不是全局 paginate |
+| 全局选项（分离） | `git -c core.pager=cat status` | `ask / git-config-override` | 下一 token 含 `=` |
+| 全局选项（贴写） | `git -ccore.pager=cat status` | `ask / git-config-override` | 参数自身含 `=` |
+| 全局选项（缺 `=`） | `git -c core.pager status` | **`ask / git:unknown:-c`** | `dangerousArgOf` 放过后，`gitRule` 因 `-c` 不是读子命令仍 ask —— 放宽未产生新通道 |
+| 全局缺值 | `git -c --version` | `ask / git:unknown:-c` | 同上 |
+| `--config-env` | `git --config-env=K=V` / `--config-e=K=V` | `ask / git-config-override` | 精确 + 缩写均命中 |
+
+补充实测：`git -c <name>` 在 git 里等价 `<name>=true`（不需要等号），但 `gitRule` 的 unknown 分支仍然 ask，因此不存在“无等号即免审”的缝隙；`git log -c core.pager=cat` 这类子命令后的 `?=` 形态会被 `hasAssignmentValue` 多弹一次（安全侧过严，非缺陷）。
+
+## 3. 长选项缩写面独立复扫
+
+对每个已登记危险长选项，用本机工具实测其“少一个字符”的缩写是否被接受（接受=历史可利用，现已全部被前缀规则覆盖）：
+
+| 命令 | 危险长选项 | 缩写实测 | 策略 |
+|---|---|---|---|
+| `file` | `--compile` | **接受**（`--co` exit 0，写 `magic.mgc`） | ask |
+| `rg` | `--pre` / `--search-zip` | 拒绝（exit 2） | ask |
+| `date` | `--set` | 拒绝（BSD date 无长选项） | ask |
+| `git` | `--lost-found` | **接受**（`--lost-f` 创建 `.git/lost-found`） | ask |
+| `git` | `--output` | `git diff --outpu` 拒绝（129） | ask |
+| `git` | `--ext-diff` / `--textconv` | 拒绝（129） | ask |
+| `git` | `--filters` | `git cat-file --filter` 拒绝（128） | ask |
+| `git` | `--show-signature` | 拒绝（128） | ask |
+| `git` | `--exec-path` / `--config-env` | 拒绝（129） | ask |
+| `git` | `--upload-pack` / `--receive-pack` | 仅 fetch/clone/push 子命令，本身不在读白名单 → 恒 ask | ask |
+| `find` | `-exec/-delete/...` | 单破折号原语，不支持缩写 | ask |
+
+与修复方结论一致：本机可利用缩写仅 `file --co`（含 `--c`~`--compile`）与 `git fsck --lost-f/--lost`，两者均已覆盖。`git log --onelin`、`--outpu` 等拒绝缩写的形态被多弹一次，属安全侧误 ask。
+
+## 4. 上两轮 12 项复核
+
+| 项 | 判定 | 依据 |
+|---|---|---|
+| 1 `git grep` 整条 ask | 确认 | `--no-pager` 递归后 ask；`git grep -iOcat` 走 `git-grep` |
+| 2 `git -p/--paginate`、`rg -z/--search-zip` | 确认 | 分离与簇写（`-nz/-iz/-wz`）全 ask |
+| 3 引用计数 Map | 确认 | 文件 hash 未变 |
+| 4 `agent:runNode` 删除 | 确认 | 三处零命中；生产 `.runNode(` 仅 `agent-manager.ts:1149` |
+| 5 窗口绑定生命周期 | 确认（P3 偏差仍在） | 文件 hash 未变 |
+| 6 全 0 usage 占位 | 确认 | 文件 hash 未变 |
+| 7 `sessionGrantable` 严格布尔 | 确认 | 文件 hash 未变 |
+| 8 `retention_hold` 死列 | 确认 | 文件 hash 未变 |
+| 9 `node --check` 严格形态 | 确认 | `--check <file>` allow；`-r/--require/--import/--loader/--env-file` 全 ask；`NODE_OPTIONS=` 前缀形态 ask |
+| 10 短选项簇算法 | 确认 | `-bC/-cC/-zC/-nz/-iz` ask；`-mC/-eC/-rnz/date -df` 不误判 |
+| 11 `git help` 收紧 | 确认 | 仅 `args.length===1` allow |
+| 12 `--show-signature` | 确认 | 精确与缩写均 ask |
+
+## 5. worktree 不干净的影响
+
+`?? spikes/spikes/` 为 11 个 sabotage 日志的重复副本，未进 git 索引，不会进入构建产物或安装包。判定：**不阻断发布**。建议处置（任选其一）：删除该目录，或在 `.gitignore` 增加 `spikes/spikes/`；发布流水线以 HEAD `c11bab8` 为准。
+
+## 6. 非阻断残留与未验证
+
+- `git diff/log/show` 的 textconv 自动执行、`git status` 的 `core.fsmonitor`、`git log --format=%G?` 拉 gpg：需本机既有配置，非仓库内容可直接触发（延续上一轮 P3）。
+- `file -z`（解压查看）是否 spawn 外部解压程序未实测；`rg -z` 已登记为 ask。
+- 窗口销毁后审批可被其它窗口决议（设计取舍）。
+- 131 张 evidence 截图的画面内容仍未逐张审；DB 快照经 `.gitignore:52 *.db` 排除、未入库（与上一轮结论一致）。
+- 未验证：`git -c` 缺等号等价 `<name>=true` 在具体“命令型配置”上能否造成执行（以 `gitRule` 恒 ask 兜底，理论上不可达）。
+
+## 7. 冻结后复算
+
+写报告后重跑 HEAD、`git status --porcelain -uall`、20 文件 sha256：源码 20 项与 §0 逐字节一致；HEAD 未变；新增变化仅本审计文档自身。若出现其它漂移，以漂移后状态为准并撤回结论。
+
+## 8. 发布判定
+
+**可发布。**
+
+前提条件：
+1. 发布以 `c11bab8` 为源；`bash-readonly.ts` 与测试的 hash 与 §0 一致；
+2. 4 套件 83 用例全绿（已复核）；
+3. `spikes/spikes/` 未进索引（现状满足），建议删除或 gitignore；
+4. evidence/spikes 的处置沿用第五轮结论：私有/内网可延后；若要开源，先处理 9 个日志/JSON 中的绝对路径。

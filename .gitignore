@@ -71,3 +71,6 @@ vendor/
 
 # Test coverage reports
 coverage/
+
+# 嵌套复制产生的 sabotage 日志残留（不删除，仅不入库；不要放宽成 spikes/）
+spikes/spikes/
