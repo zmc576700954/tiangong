@@ -695,7 +695,8 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `core.gitProxy` | 网络 `fetch/clone` | 非白名单/写子命令 → 不适用；只读命令不消费 → allow | 否 |
 | `protocol.*.allow`（含 `remote.<name>.url=ext::<cmd>`） | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push 本身 ask | 是：`remote show` + `ext::` + `protocol.ext.allow=always` 实测执行 shell；默认未允许时不执行 |
 | `remote.<name>.uploadpack` | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push ask | 是（`remote show` marker 生成） |
-| `credential.helper` | `fetch/push/clone`（认证） | 写子命令 ask；只读命令不消费 → allow | 否 |
+| `credential.helper` | `fetch/push/clone`（认证） | 写子命令 ask；只读命令不消费 → allow（值判定） | 否 |
+| **未登记键（B）** | 所有配置消费命令（`status/diff/log/show/blame/rev-list/ls-files/fsck` 等） | **未命中安全键族白名单 → ask / `git-unknown-config-key`**；`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 回退 | 安全网，不依赖具体执行面 |
 
 **命令 → 键消费关系（同一事实的命令视角）**。新增白名单子命令时，先回答「这条命令会不会读下列键」，答不上来就不加白名单：
 
@@ -712,7 +713,14 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `branch` / `tag`（列举形态） | 配置无默认触发键；signature atom 走参数面 `git-signature-atom` | H4；`tag`/`branch` 的创建/写入形态本身 ask |
 | 其余只读子命令（`cat-file` / `rev-parse` / `describe` / `shortlog` / …） | 本轮未发现配置默认触发的执行键 | 新增白名单命令必须按本表回答消费键 |
 
-结构性兜底建议（本轮**未做**）：对 git 只读命令，把键名含 `command/program/helper/hook/pager/editor/exec` 一律 ask，看似能覆盖未知键，但代价实测如下——本机 `git config --list` 共 24 个键，系统级 `credential.helper=osxkeychain` 即命中 1 个；若对全作用域生效，**每个仓库的每条 `git status/diff/log` 都会变成 ask**，UX 不可接受。仓库本地配置（本仓库 12 个键）命中 0 个，若只对 repo-local 生效代价较低，但 `filter.lfs.*` 等常见键并不含上述关键词，兜底价值有限。建议：不做统一 ask；保留显式清单 + 新增执行面时补登记，可另加「未知执行语义键名」的**只记录告警**（不弹窗、不改判定）用于持续发现清单缺口。
+**B（2026-11-06 实施）：未知配置键默认 ask（极性反转）**。上面的「显式执行键清单」本质是黑名单：没登记过的执行型键就是零审批洞。B 改为**安全键族白名单**：探针读到的键命中白名单且值判定安全 → 不构成 ask 理由；**未命中白名单 → ask / `git-unknown-config-key`**，把「没见过」从洞降级为弹窗。
+
+- **白名单来源（实测采集，非猜测）**：本机仓库本地 / 全局 / 系统三层真实配置，以及 LFS、husky、dotfiles 风格、CI（GitHub Actions checkout）四类夹具；逐键判定后登记。本仓库实际出现而最初未命中的只有 `submodule.active`（已补入）。
+- **执行型形态优先**：键名以 `command` / `program` / `hook` / `helper` / `driver` / `pager` / `editor` 结尾的，即使族在白名单内也必须单独判——只有「已有执行型判定覆盖」的键豁免（`core.hooksPath|fsmonitor|alternateRefsCommand|sshCommand|editor|pager|gitProxy`、`gpg.*.program`、`sequence.editor`、`interactive.diffFilter`），其余一律 ask。后缀不要求前导点（`gc.recentObjectsHook` 归一后是 `gc.recentobjectshook`，危险语义藏在词尾）。
+- **值判定键**：`credential.*.helper`（仅已知 helper 名/`cache --timeout=` 放行，`!`/任意路径 ask）、`submodule.<name>.update`（`!cmd` ask）、`remote.<name>.uploadpack|receivepack`（外部程序 → ask）、`include.path`/`includeIf.*.path` 放行（Git 已按 include 语义展开）。
+- **探针失败/无法判定仍 fail-closed**：失败分类与 B 之前共用，一律 ask，不存在 fail-open 分支；子模块配置（`diff.submodule=diff`）同样跑未知键检查，避免从 `.git/modules/*/config` 绕过白名单。
+- **代价量化（2026-11-06，44 条 git 只读命令 × 7 个配置环境 + 20 条非 git 命令）**：本仓库 / 干净仓库 / LFS / husky / dotfiles / CI 六类环境，B 前后 allow 数量**完全相同**（44 条中 39 allow / 5 ask，且这 5 条是既有规则：`git grep`、`reflog`、`notes`、`cherry`、`for-each-ref --format` 的 sub 误判）；husky 因 `core.hooksPath` 在 `status/diff` 走既有执行型判定为 31/44，同样 B 前后不变。仅「exotic」夹具（`pager.status`、`web.browser`、`sendemail.smtpserver`、`man.viewer`、`instaweb.port`、`svn.trunk`、`gc.recentObjectsHook`）从 39 allow 降到 15 allow —— 这就是 B 的真实成本，且其中只有 `gc.recentObjectsHook` 是执行型。全样本 allow 比例 88.8% → 83.5%（含 exotic 拉低；剔除 exotic 为 88.8% → 88.8%）。
+- **未进白名单的键与建议**见 `agent-audit-2026-11-05.md` §28.4。开关 `BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 回退到 B 之前行为（只保留原有黑名单判定）。
 
 **判定是「命令名 + 参数」两段式，不是命令名匹配**（`DANGEROUS_ARGS_BY_COMMAND` + `WHITELIST_COMMANDS`）：
 

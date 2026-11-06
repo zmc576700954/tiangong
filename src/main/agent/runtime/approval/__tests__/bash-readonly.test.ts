@@ -2124,3 +2124,156 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
     expect(diagnostics.moduleScans).toBeGreaterThan(0)
   })
 })
+
+/**
+ * B：未知配置键默认 ask（极性反转）。
+ * 修复前（`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off`）这些键只被忽略；修复后一律
+ * `git-unknown-config-key`，把「没见过」从零审批洞降级为弹窗。
+ */
+describe('B · 未知配置键默认 ask（极性反转）', () => {
+  const BASE = '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n'
+
+  it('未登记键 → ask git-unknown-config-key；开关 off 回退到 allow', () => {
+    const repo = makeGitRepo('bizgraph-b-unknown-', `${BASE}\tnewfeature = on\n`)
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-unknown-config-key',
+    })
+    expect(
+      decide('git status', { cwd: repo, includeGlobalGitConfig: false }).reason,
+    ).toContain('core.newfeature')
+
+    const previous = process.env.BIZGRAPH_GIT_CONFIG_STRICT_KEYS
+    process.env.BIZGRAPH_GIT_CONFIG_STRICT_KEYS = 'off'
+    try {
+      expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+        rule: 'git:status',
+      })
+    } finally {
+      if (previous === undefined) delete process.env.BIZGRAPH_GIT_CONFIG_STRICT_KEYS
+      else process.env.BIZGRAPH_GIT_CONFIG_STRICT_KEYS = previous
+    }
+  })
+
+  it('执行型形态即使在白名单族内也必须 ask', () => {
+    const cases: Array<[string, string]> = [
+      ['[merge "evil"]\n\tdriver = /bin/sh\n', 'merge.evil.driver'],
+      ['[gc]\n\trecentObjectsHook = /bin/sh\n', 'gc.recentobjectshook'],
+      ['[remote "origin"]\n\tuploadpack = /bin/sh\n', 'remote.origin.uploadpack'],
+      ['[submodule "sub"]\n\tupdate = !sh -c "touch marker"\n', 'submodule.sub.update'],
+      ['[credential]\n\thelper = !/bin/sh\n', 'credential.helper'],
+    ]
+    for (const [config, key] of cases) {
+      const repo = makeGitRepo('bizgraph-b-exec-', `${BASE}${config}`)
+      const decision = decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })
+      expect(decision.decision, key).toBe('ask')
+      expect(decision.rule, key).toBe('git-unknown-config-key')
+      expect(decision.reason, key).toContain(key)
+    }
+  })
+
+  it('值判定：credential.helper 已知值 allow，未知路径 ask', () => {
+    const known = makeGitRepo(
+      'bizgraph-b-helper-ok-',
+      `${BASE}[credential]\n\thelper = osxkeychain\n`,
+    )
+    expect(decide('git log --oneline', { cwd: known, includeGlobalGitConfig: false }).decision).toBe('allow')
+    const unknown = makeGitRepo(
+      'bizgraph-b-helper-bad-',
+      `${BASE}[credential]\n\thelper = /tmp/steal-token\n`,
+    )
+    expect(decide('git log --oneline', { cwd: unknown, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-unknown-config-key',
+    })
+  })
+
+  it('真实世界常见配置键（本机三层 + LFS/husky/dotfiles/CI 风格）→ allow', () => {
+    const repo = makeGitRepo(
+      'bizgraph-b-realworld-',
+      `${BASE}` +
+        `[user]\n\tname = ZM\n\temail = z@example.com\n\tuseConfigOnly = false\n` +
+        `[alias]\n\tst = status\n\tlg = log --graph\n` +
+        `[color]\n\tui = auto\n` +
+        `[column]\n\tui = auto\n` +
+        `[status]\n\tshort = true\n\tbranch = true\n` +
+        `[log]\n\tdate = iso\n\tdecorate = short\n` +
+        `[format]\n\tpretty = format:%h %s\n` +
+        `[pretty]\n\tmymark = format:%h %s\n` +
+        `[tag]\n\tsort = version:refname\n` +
+        `[pull]\n\trebase = true\n\tff = only\n` +
+        `[push]\n\tdefault = current\n\tautoSetupRemote = true\n` +
+        `[rebase]\n\tautosquash = true\n` +
+        `[init]\n\tdefaultBranch = main\n` +
+        `[extensions]\n\tworktreeConfig = true\n` +
+        `[safe]\n\tdirectory = *\n` +
+        `[lfs]\n\trepositoryformatversion = 0\n\tlocksverify = true\n` +
+        `[core]\n\teditor = vim\n\tpager = less\n\texcludesFile = ~/.gitignore\n\tabbrev = 12\n` +
+        `[diff]\n\talgorithm = histogram\n\tcontext = 5\n\tsubmodule = short\n` +
+        `[merge]\n\tconflictstyle = zdiff3\n` +
+        `[gc]\n\tauto = 0\n` +
+        `[maintenance]\n\tauto = false\n` +
+        `[fetch]\n\tprune = true\n\tparallel = 8\n` +
+        `[advice]\n\tdetachedHead = false\n` +
+        `[protocol]\n\tversion = 2\n` +
+        `[http]\n\tversion = HTTP/1.1\n` +
+        `[http "https://github.com"]\n\textraHeader = AUTHORIZATION: basic x\n` +
+        `[credential]\n\thelper = osxkeychain\n` +
+        `[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n` +
+        `[remote "origin"]\n\turl = git@github.com:zmc/x.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n\tpushurl = git@github.com:zmc/x.git\n` +
+        `[branch "main"]\n\tremote = origin\n\tmerge = refs/heads/main\n\tdescription = "mainline"\n` +
+        `[submodule "sub"]\n\tpath = sub\n\turl = https://example.com/sub.git\n\tupdate = checkout\n` +
+        `[gpg]\n\tprogram = /usr/local/bin/gpg\n\tformat = ssh\n` +
+        `[gpg "ssh"]\n\tallowedSignersFile = ~/.ssh/allowed_signers\n` +
+        `[submodule]\n\trecurse = true\n\tfetchJobs = 4\n` +
+        `[remote]\n\tpushDefault = origin\n` +
+        `[i18n]\n\tcommitEncoding = utf-8\n`,
+    )
+    expect(decide('git log --oneline -3', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+    expect(decide('git diff', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:diff',
+    })
+  })
+
+  it('husky 布局：core.hooksPath 仍按既有执行型判定（status ask / log allow）', () => {
+    const repo = makeGitRepo(
+      'bizgraph-b-husky-',
+      `${BASE}\thooksPath = .husky/_\n[user]\n\tname = ZM\n`,
+    )
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+  })
+
+  it('子模块配置里的未知键同样 ask（不因主配置干净而放行）', () => {
+    const repo = makeGitRepo('bizgraph-b-subunknown-', `${BASE}[diff]\n\tsubmodule = diff\n`)
+    const moduleDir = join(repo, '.git', 'modules', 'sub')
+    mkdirSync(moduleDir, { recursive: true })
+    writeFileSync(join(moduleDir, 'config'), '[core]\n\tunknownModuleKey = on\n')
+    expect(decide('git diff', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-unknown-config-key',
+    })
+  })
+
+  it('显式空值等价未设置，不触发未知键 ask', () => {
+    const repo = makeGitRepo(
+      'bizgraph-b-empty-',
+      `${BASE}\tunknownButEmpty =\n`,
+    )
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+})

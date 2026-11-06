@@ -4302,3 +4302,95 @@ git -C oldnest diff     # 真实执行 marker；策略 allow
 | 定向：`gitdir-write-guard.test.ts` | **17 passed** |
 | 定向：`approval-gateway.test.ts` | **33 passed**（含 D1 5 条） |
 | 其余审批相关测试 | 4 文件 / 36 passed |
+
+---
+
+## 28. B：未知配置键默认 ask（极性反转，2026-11-06）
+
+### 28.1 动机
+
+B 之前的口径是**黑名单**：只拦截已登记的执行型键（`diff.external`、`filter.*`、`core.fsmonitor`、`core.hooksPath`、`gpg.*`、`%(signature)` 等）。没登记过的执行型键 = 零审批执行洞。B 反转为**安全键族白名单**：
+
+- 探针读到的键命中白名单、且值判定安全 → 不构成 ask 理由；
+- **未命中白名单 → ask（`git-unknown-config-key`）**；
+- 探针失败/无法判定 → 仍 ask（fail-closed），不存在 fail-open 分支；
+- 回退开关：`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off`（只回到 B 之前的黑名单口径）。
+
+执行型形态（`*.command|program|hook|helper|driver|pager|editor`，后缀不要求前导点）优先判定，族在白名单内也要单独判；只有「已有执行型判定覆盖」的键才豁免。子模块配置（`diff.submodule=diff`）同样跑未知键检查，不能从 `.git/modules/*/config` 绕过。
+
+### 28.2 白名单来源与覆盖
+
+采集对象：
+
+1. 本机三层真实配置：仓库本地（12 键）、全局（11 键）、系统（`/etc/gitconfig` 不存在）。
+2. 夹具：干净仓库、标准 LFS、husky（`core.hooksPath=.husky/_`）、dotfiles 风格（`core.editor/pager`、大量 `alias.*`、`color.*`、`format.pretty`、`pull.rebase`、`push.default`、`gpg.program`、`url.insteadOf` 等）、CI（`http.<url>.extraHeader`、`credential.<url>.helper`、`url.<url>.insteadOf`、`safe.directory`、`core.sparseCheckout`）。
+
+本机真实键与判定（共 23 键，系统配置缺失）：
+
+| 键 | 判定 | 依据 |
+|---|---|---|
+| `core.repositoryformatversion` / `filemode` / `bare` / `logallrefupdates` / `ignorecase` / `precomposeunicode` / `autocrlf` | 白名单 | `CORE_SAFE_KEYS` |
+| `submodule.active` | 白名单（首轮未命中，已补） | 无 `<name>` 段的全局开关 |
+| `remote.origin.url` / `fetch` | 白名单 | `REMOTE_SAFE_SUFFIX` |
+| `branch.main.remote` / `merge` | 白名单 | `BRANCH_SAFE_SUFFIX` |
+| `lfs.repositoryformatversion` | 白名单 | `lfs.` 族 |
+| `user.name` / `email` | 白名单 | `user.` 族 |
+| `init.defaultbranch` | 白名单 | `init.` 族 |
+| `filter.lfs.clean/smudge/process/required` | 白名单（值仍走既有 LFS 判定） | `filter.` 族 |
+| `http.version` | 白名单 | `http.` 族 |
+| `safe.directory` | 白名单 | `safe.` 族 |
+
+所以采集范围内「不在白名单」的真实键为 **0**（首轮唯一缺口 `submodule.active` 已补入）。
+
+白名单族（实现常量）：`user.* alias.* advice.* color.* column.* status.* log.* format.* pretty.* tag.* commit.* merge.* rebase.* pull.* push.* fetch.* gc.* maintenance.* init.* extensions.* safe.* lfs.* filter.* diff.* credential.* http.* protocol.* rerere.* notes.* index.* feature.* sparse.* sequence.* interactive.* difftool.* mergetool.* blame.* grep.* help.* pack.* repack.* transfer.* checkout.* include.* includeif.* gpg.* mailmap.* i18n.*` + 显式 `core.*` 安全键 + `branch.<name>.*` / `remote.<name>.*` / `submodule.<name>.*` / `url.<base>.*` 后缀白名单 + 少数无 `<name>` 全局开关（`submodule.active|recurse|fetchJobs`、`remote.pushDefault`）。
+
+值判定：`credential.*.helper`（`osxkeychain/libsecret/secretservice/wincred/manager(-core)/store/gpg/cache --timeout=N` 放行，`!`/任意路径 ask）；`submodule.<name>.update`（`!cmd` ask）；`remote.<name>.uploadpack|receivepack`（ask）；`include.path` / `includeIf.*.path`（放行，Git 已展开）。
+
+### 28.3 修复前/后真实夹具对照
+
+| 夹具 | 修复前（`STRICT_KEYS=off`） | 修复后（默认） | 说明 |
+|---|---|---|---|
+| 本仓库（12 本地键 + 全局 11 键） | 39 allow / 44 | 39 allow / 44 | 0 新增 ask |
+| 干净仓库 | 39 / 44 | 39 / 44 | 0 新增 ask |
+| 标准 LFS | 39 / 44 | 39 / 44 | `lfs.*` + 全局 `filter.lfs.*` 全部命中白名单 |
+| husky（`core.hooksPath`） | 31 / 44 | 31 / 44 | 13 条 ask 来自既有 `git-repo-config-exec`，与 B 无关 |
+| dotfiles 风格 | 39 / 44 | 39 / 44 | 含 `core.editor/pager`、`gpg.program`、`format.pretty` |
+| CI 风格 | 39 / 44 | 39 / 44 | `http.*`/`credential.*`/`url.*`/`safe.*` 命中 |
+| exotic（故意放非白名单键） | 39 / 44 | **15 / 44** | 24 条新增 `git-unknown-config-key` |
+
+44 条 git 命令里的 5 条既有 ask（B 前后一致）：`git grep`、`git reflog show`、`git notes list`、`git cherry`、`git for-each-ref --format=%(refname)`（后者是既有的 `%(...)` 括号误判，不在本轮范围）。20 条非 git 命令 B 前后均为 19 allow / 1 ask。
+
+全样本（7 环境 × 64 命令 = 448）：**88.8% → 83.5%**；剔除 exotic 后 **88.8% → 88.8%**（0 新增 ask）。这就是「未知即 ask」的真实代价：对已采集的真实配置为零，对含冷门键的环境为一次性弹窗。
+
+### 28.4 真实配置中未进白名单的键（将来会弹窗的部分）
+
+exotic 夹具逐项（全部 24 条配置消费命令都会弹）：
+
+| 键 | 是否执行 | 评估 / 建议 |
+|---|---|---|
+| `gc.recentObjectsHook` | **是**（`git gc`/maintenance 调用；Git 2.43+） | **不应进白名单**；当前由执行型形态 `*hook` 命中 ask，正确 |
+| `pager.status` | 是（仅 stdout 为 TTY 时拉起 pager） | 建议**保持 ask**：pager 本质是执行外部程序，TTY 与否不应由我们猜；真实用户少配 `pager.<cmd>` |
+| `web.browser` | 是（仅 `git web/help`） | 只读命令不消费，可考虑补 `web.` 族；当前建议保持 ask（冷门，弹一次可接受） |
+| `sendemail.smtpserver` | 否（仅 send-email） | 同上，可考虑补 `sendemail.`；不建议现在扩表 |
+| `man.viewer` | 是（仅 `git help`） | 同上 |
+| `instaweb.port` | 否（仅 instaweb） | 同上 |
+| `svn.trunk` | 否（仅 git-svn） | 同上 |
+
+结论：本轮**只补了真实采集到的缺口**（`submodule.active`、`gpg.format`、`submodule.recurse|fetchJobs`、`remote.pushDefault`、`core.askPass`、`i18n.*`、`mailmap.*`），不为冷门族提前扩表；扩表会削弱 B 的兜底价值。若后续运营发现某族弹窗过于频繁，按 §4.6 表头声明补登记，并补一条真实夹具用例。
+
+### 28.5 证据与开关
+
+- 单元测试（真实 git 配置夹具）：未登记键 → `git-unknown-config-key`（reason 含键名）；`merge.evil.driver`、`gc.recentObjectsHook`、`remote.origin.uploadpack`、`submodule.sub.update=!cmd`、`credential.helper=!/bin/sh` 一律 ask；`credential.helper=osxkeychain`、真实世界键族、husky 的 `log` 形态、显式空值仍 allow；子模块配置未知键同样 ask；`STRICT_KEYS=off` 时回到 allow。
+- 量化脚本（`/tmp/audit13/quant.mjs`，esbuild 打包当前策略 + 7 夹具 × 64 命令）：数据见 §28.3；`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 复现修复前结果。
+- 失败姿态：探针失败（missing-git/cwd-missing/timeout/non-zero-exit/empty-output/io-error/budget-exceeded）继续 ask，不因 B 改变；未知键 ask 不写入任何自动授权。
+
+### 28.6 门禁
+
+| 项 | 结果 |
+|---|---|
+| `tsc --noEmit` | 0 错误 |
+| `eslint src` | 0 错误 |
+| `vite build` | 成功 |
+| 定向：`bash-readonly.test.ts` | **85 passed**（含 B 7 条） |
+| 全量 | **173 failed / 3181 passed / 93 skipped**；26 个失败文件与基线完全一致（better-sqlite3 ABI `NODE_MODULE_VERSION 130 vs 115`） |
+| 基线对比 | 失败文件集合一致；新增 29 passed = D1 22 + B 7 |

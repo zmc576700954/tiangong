@@ -1150,6 +1150,253 @@ export function probeGitConfigExecutes(
   return false
 }
 
+/* ------------------------------------------------------------------------- *
+ * B：未知配置键默认 ask（极性反转）
+ *
+ * 之前的口径是「只拦截已知会执行的键」，于是任何没登记过的执行型键都是零审批洞。
+ * 这里反过来：先放行一份**安全键族白名单**，其余键一律 ask（rule
+ * `git-unknown-config-key`），把「没见过」从「洞」降级为「弹窗」。
+ *
+ * 白名单来源（2026-11-06 实测采集）：本机仓库本地 / 全局 / 系统配置，
+ * 以及 LFS、husky、dotfiles 风格、CI 四类夹具。未进白名单的键与代价见
+ * `docs/architecture/agent-audit-2026-11-05.md` §28。
+ *
+ * 注意：执行型形态（`*.command|program|hook|helper|driver|pager|editor`）
+ * 即使在白名单族内也要单独判：下面先做形态检查，只有「已有执行型判定覆盖」
+ * 的键才豁免，否则直接 ask。
+ * ------------------------------------------------------------------------- */
+
+const GIT_CONFIG_STRICT_KEYS_ENV = 'BIZGRAPH_GIT_CONFIG_STRICT_KEYS'
+
+/** `BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 回退到 B 之前（未知键只放行）的口径。 */
+function gitConfigStrictKeysDisabled(): boolean {
+  const raw = (process.env[GIT_CONFIG_STRICT_KEYS_ENV] ?? '').trim().toLowerCase()
+  return raw === 'off' || raw === 'false' || raw === '0'
+}
+
+/**
+ * 执行型键形态：名字以这些后缀结尾，即使属于白名单族也必须走执行型判定或 ask。
+ * 不要求后缀前有 `.`：`gc.recentObjectsHook` 规范化后是 `gc.recentobjectshook`，
+ * 危险语义就藏在词尾；`core.hooksPath` 以 `path` 结尾不受影响。
+ */
+const EXEC_KEY_SHAPE = /(command|program|hook|helper|driver|pager|editor)$/
+
+/**
+ * 已由 `probeGitConfigExecutes()` / 参数面判定覆盖的键：
+ * - core.hooksPath：status / 工作区 diff 已经 ask；
+ * - core.fsmonitor：status/diff/blame/ls-files/fsck 已经 ask；
+ * - core.alternateRefsCommand：rev-list 已经 ask；
+ * - core.sshCommand / core.editor / core.pager / core.gitProxy / sequence.editor
+ *   / interactive.diffFilter：只读子命令在非 TTY 下不消费，现有口径不 ask；
+ *   它们不是「未知键」，不应该把每条读命令都变成弹窗。
+ */
+const EXEC_KEY_JUDGED_SAFE = new Set([
+  'core.hookspath',
+  'core.fsmonitor',
+  'core.alternaterefscommand',
+  'core.sshcommand',
+  'core.editor',
+  'core.pager',
+  'core.gitproxy',
+  'sequence.editor',
+  'interactive.difffilter',
+  'gpg.program',
+  'gpg.ssh.program',
+  'gpg.x509.program',
+])
+
+/** 常见、明确的 credential helper；其余值（含 `!`、任意路径）→ ask。 */
+const KNOWN_CREDENTIAL_HELPERS = /^(osxkeychain|libsecret|secretservice|wincred|manager|manager-core|store|gpg|cache(?: --timeout=\d+)?)$/
+
+function isKnownCredentialHelper(value: string): boolean {
+  return KNOWN_CREDENTIAL_HELPERS.test(value.trim())
+}
+
+/** core.* 的安全键（除执行型键外）。未列出的 core.* → ask。 */
+const CORE_SAFE_KEYS = new Set([
+  'core.repositoryformatversion',
+  'core.bare',
+  'core.filemode',
+  'core.ignorecase',
+  'core.precomposeunicode',
+  'core.autocrlf',
+  'core.safecrlf',
+  'core.eol',
+  'core.symlinks',
+  'core.logallrefupdates',
+  'core.quotepath',
+  'core.untrackedcache',
+  'core.trustctime',
+  'core.checkstat',
+  'core.bigfilethreshold',
+  'core.sparsecheckout',
+  'core.sparsecheckoutcone',
+  'core.commitgraph',
+  'core.abbrev',
+  'core.compression',
+  'core.loosecompression',
+  'core.packedgitwindowsize',
+  'core.packedgitlimit',
+  'core.deltabasecachelimit',
+  'core.whitespace',
+  'core.excludesfile',
+  'core.attributesfile',
+  'core.worktree',
+  'core.commentchar',
+  'core.commentstring',
+  'core.longpaths',
+  'core.fscache',
+  'core.unicode',
+  'core.hidedotfiles',
+  'core.protecthfs',
+  'core.protectntfs',
+  'core.ignorestat',
+  'core.fsync',
+  'core.fsyncmethod',
+  'core.sharedrepository',
+  'core.checkroundtriprecoding',
+  'core.maxtreedepth',
+  'core.askpass',
+])
+
+/** 只读命令不会消费、或只影响输出/网络/交互的键族。 */
+const SAFE_KEY_FAMILIES = [
+  'user.',
+  'alias.',
+  'advice.',
+  'color.',
+  'column.',
+  'status.',
+  'log.',
+  'format.',
+  'pretty.',
+  'tag.',
+  'commit.',
+  'merge.',
+  'rebase.',
+  'pull.',
+  'push.',
+  'fetch.',
+  'gc.',
+  'maintenance.',
+  'init.',
+  'extensions.',
+  'safe.',
+  'lfs.',
+  'filter.',
+  'diff.',
+  'credential.',
+  'http.',
+  'protocol.',
+  'rerere.',
+  'notes.',
+  'index.',
+  'feature.',
+  'sparse.',
+  'sequence.',
+  'interactive.',
+  'difftool.',
+  'mergetool.',
+  'blame.',
+  'grep.',
+  'help.',
+  'pack.',
+  'repack.',
+  'transfer.',
+  'checkout.',
+  'include.',
+  'includeif.',
+  'gpg.',
+  'mailmap.',
+  'i18n.',
+] as const
+
+/** branch.<name>.<key>：只放行影响「分支元数据/上游/变基」的非执行键。 */
+const BRANCH_SAFE_SUFFIX =
+  /^branch\..+\.(remote|merge|rebase|description|pushremote|tagopt|upstream|autosetupmerge|autosetuprebase|sort|sortkey|caseinsensitive|noisy)$/
+
+/** remote.<name>.<key>：uploadpack/receivepack 是外部程序，必须 ask；其余常见键放行。 */
+const REMOTE_SAFE_SUFFIX =
+  /^remote\..+\.(url|fetch|push|pushurl|branch|tagopt|mirror|prune|prunetags|skipdefaultandfetch|partialclonefilter|lfsurl|insteadof)$/
+
+/** submodule.<name>.<key>：update=!cmd 会执行命令，单独取值判定。 */
+const SUBMODULE_SAFE_SUFFIX =
+  /^submodule\..+\.(path|url|branch|fetchrecursesubmodules|ignore|update|active|shallow|sync|singlebranch)$/
+
+/** url.<base>.insteadOf / pushInsteadOf：只做 URL 重写，不执行。 */
+const URL_SAFE_SUFFIX = /^url\..+\.(insteadof|pushinsteadof)$/
+
+/**
+ * 单个配置项是否「安全到不构成 ask 理由」。
+ * 返回 false 的项会被 `probeGitConfigUnknownKeys()` 收集并触发
+ * `git-unknown-config-key`。
+ */
+export function gitConfigKeyIsSafe(entry: { key: string; value: string; bare?: boolean }): boolean {
+  const key = entry.key.toLowerCase()
+  const value = entry.bare ? 'true' : entry.value
+  // 显式空值（`key =`）等价未设置。
+  if (value === '') return true
+
+  // 1) 执行型形态优先：即便在白名单族里也不能直接放行。
+  if (EXEC_KEY_SHAPE.test(key)) {
+    if (EXEC_KEY_JUDGED_SAFE.has(key)) return true
+    if (key.startsWith('credential.') && key.endsWith('.helper')) {
+      return isKnownCredentialHelper(value)
+    }
+    return false
+  }
+
+  // 2) 需要看值的少数键。
+  if (/^submodule\..+\.update$/.test(key)) return !value.trim().startsWith('!')
+  if (/^remote\..+\.(uploadpack|receivepack)$/.test(key)) return false
+  if (key === 'include.path' || /^includeif\..+\.path$/.test(key)) return true
+
+  // 3) 已知安全键族。
+  // 先放行「已有执行型判定覆盖」的键（core.hooksPath / fsmonitor / sshCommand 等
+  // 不一定命中上面的后缀形态，但属于已知键而不是未知键）。
+  if (EXEC_KEY_JUDGED_SAFE.has(key)) return true
+  if (key.startsWith('core.')) return CORE_SAFE_KEYS.has(key)
+  if (BRANCH_SAFE_SUFFIX.test(key) || REMOTE_SAFE_SUFFIX.test(key)) return true
+  // 少数没有 <name> 段的全局开关（真实配置里很常见）。
+  if (
+    key === 'submodule.active' ||
+    key === 'submodule.recurse' ||
+    key === 'submodule.fetchjobs' ||
+    key === 'remote.pushdefault'
+  ) {
+    return true
+  }
+  if (SUBMODULE_SAFE_SUFFIX.test(key)) return true
+  if (URL_SAFE_SUFFIX.test(key)) return true
+  for (const family of SAFE_KEY_FAMILIES) {
+    if (key.startsWith(family)) return true
+  }
+  return false
+}
+
+/** 审批卡片上最多列 6 个键，其余折叠成数量，避免卡片被长配置淹没。 */
+function describeUnknownKeys(keys: readonly string[]): string {
+  const head = keys.slice(0, 6).join('、')
+  return keys.length > 6 ? `${head} 等 ${keys.length} 项` : head
+}
+
+/**
+ * 收集本次探针里「未命中安全白名单」的键（去重，带作用域便于定位）。
+ * 结果非空 → ask（`git-unknown-config-key`），不再 fail-open。
+ */
+export function probeGitConfigUnknownKeys(result: GitConfigProbeResult): string[] {
+  const unknown: string[] = []
+  const seen = new Set<string>()
+  for (const entry of result.entries) {
+    if (gitConfigKeyIsSafe(entry)) continue
+    const label = `${entry.scope}:${entry.key}`
+    if (seen.has(label)) continue
+    seen.add(label)
+    unknown.push(label)
+  }
+  return unknown
+}
+
 const GIT_CONFIG_PROBE_FAILURES: readonly GitConfigProbeFailure[] = [
   'missing-git',
   'cwd-missing',
@@ -1429,6 +1676,28 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
           return askRule(
             'git-repo-config-exec',
             'diff.submodule=diff 且子模块配置含 diff.external / textconv / filter / fsmonitor 等执行型键，git 会执行外部程序',
+            HIGH,
+          )
+        }
+        // B：子模块配置同样按「未知键即 ask」判定，避免从 `.git/modules/*/config`
+        // 绕过主配置白名单。
+        const moduleUnknown = modules.results.flatMap((moduleProbe) => probeGitConfigUnknownKeys(moduleProbe))
+        if (!gitConfigStrictKeysDisabled() && moduleUnknown.length > 0) {
+          return askRule(
+            'git-unknown-config-key',
+            `diff.submodule=diff 且子模块配置含未登记键（${describeUnknownKeys(moduleUnknown)}），按未知即 ask 处理`,
+            HIGH,
+          )
+        }
+      }
+      // B（极性反转）：安全键族白名单之外且未命中值豁免的键 → ask。
+      // 探针失败/无法判定已在上方 fail-closed；这里不存在 fail-open 分支。
+      if (!gitConfigStrictKeysDisabled()) {
+        const unknown = probeGitConfigUnknownKeys(probe)
+        if (unknown.length > 0) {
+          return askRule(
+            'git-unknown-config-key',
+            `git 配置含未登记且未判定安全的键（${describeUnknownKeys(unknown)}），按未知即 ask 处理`,
             HIGH,
           )
         }
