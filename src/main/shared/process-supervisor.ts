@@ -32,6 +32,18 @@ export const REGISTRY_SECRET_ENV = 'BIZGRAPH_REGISTRY_SECRET'
 /** 每次 spawn 的随机 nonce，同时写入 shim env 与注册记录，绑定「记录 ↔ 本次运行」。 */
 export const SUPERVISOR_NONCE_ENV = 'BIZGRAPH_SUPERVISOR_NONCE'
 
+/**
+ * C3：shim 从中读取 SBPL profile 文本；为空表示沙箱不可用，shim 原样 exec 真实 CLI。
+ * 与 `sandboxLaunch()` 共用能力单例，启动与每次 spawn 结论一致。
+ */
+export const SANDBOX_PROFILE_ENV = 'BIZGRAPH_SANDBOX_PROFILE'
+
+/** C3：legacy（非受控）Codex wrapper 需要的 node 入口（真实 CLI 是 .js 文件）。 */
+export const SANDBOX_NODE_ENV = 'BIZGRAPH_SANDBOX_NODE'
+
+/** legacy Codex 沙箱 wrapper 文件名（与控制流无关，只做 exec 套壳）。 */
+export const CODEX_SANDBOX_WRAPPER_FILE = 'codex-sandbox-wrapper.sh'
+
 export interface ProcRegistryRecord {
   marker: string
   /** 真实 CLI 进程（进程组组长）。 */
@@ -384,6 +396,37 @@ export function ensureCodexSupervisorScript(dir = getProcRegistryDir()): string 
   return target
 }
 
+/**
+ * C3：legacy（非受控）路径的 Codex 沙箱 wrapper。
+ *
+ * legacy 分支不走监督 shim（不需要注册文件），但 SDK 的 `codexPathOverride` 只能接受
+ * 一个可执行路径，无法附带 `sandbox-exec -p ... --` 参数。因此生成一个最小 shell
+ * wrapper：`exec` 直接替换为目标命令，pid/pgid 不变，信号直通真实 CLI。
+ * profile 为空时保持原始执行路径（防御性分支，正常不会走到）。
+ */
+const CODEX_SANDBOX_WRAPPER_SOURCE = [
+  '#!/bin/sh',
+  '# C3：Codex legacy spawn 的沙箱套壳（由 @openai/codex-sdk 直接执行）',
+  'profile="${BIZGRAPH_SANDBOX_PROFILE:-}"',
+  'node="${BIZGRAPH_SANDBOX_NODE:-}"',
+  'codex="${BIZGRAPH_REAL_CODEX:-}"',
+  'if [ -z "$node" ] || [ -z "$codex" ]; then',
+  '  echo "[bizgraph-codex-sandbox] missing node or codex path" >&2',
+  '  exit 127',
+  'fi',
+  'if [ -z "$profile" ]; then',
+  '  exec "$node" "$codex" "$@"',
+  'fi',
+  'exec /usr/bin/sandbox-exec -p "$profile" -- "$node" "$codex" "$@"',
+].join('\n')
+
+export function ensureCodexSandboxWrapperScript(dir = getProcRegistryDir()): string {
+  ensureRegistryDir(dir)
+  const target = path.join(dir, CODEX_SANDBOX_WRAPPER_FILE)
+  writeFileNoFollow(target, CODEX_SANDBOX_WRAPPER_SOURCE, 0o700, { allowExistingIdentical: true })
+  return target
+}
+
 export function readProcRegistryRecord(
   marker: string,
   dir = getProcRegistryDir(),
@@ -462,6 +505,7 @@ const CODEX_SUPERVISOR_SOURCE = [
   "const realCodex = process.env.BIZGRAPH_REAL_CODEX || ''",
   "const nonce = process.env.BIZGRAPH_SUPERVISOR_NONCE || ''",
   "const secret = process.env.BIZGRAPH_REGISTRY_SECRET || ''",
+  "const sandboxProfile = process.env.BIZGRAPH_SANDBOX_PROFILE || ''",
   '',
   'function fail(message) {',
   "  process.stderr.write('[bizgraph-codex-supervisor] ' + message + '\\n')",
@@ -473,7 +517,13 @@ const CODEX_SUPERVISOR_SOURCE = [
   "if (!nonce || !secret) fail('missing supervisor nonce or registry secret')",
   '',
   'const args = process.argv.slice(2)',
-  'const child = spawn(process.execPath, [realCodex, ...args], {',
+  // C3：shim 自己保持未沙箱（要写注册文件），真正执行工具的 CLI 子进程进 profile。
+  // sandbox-exec 直接 exec node，pid/pgid 不变，`ps` 抓到的 command 仍是真实 CLI。
+  'const launchCommand = sandboxProfile ? "/usr/bin/sandbox-exec" : process.execPath',
+  'const launchArgs = sandboxProfile',
+  '  ? ["-p", sandboxProfile, "--", process.execPath, realCodex, ...args]',
+  '  : [realCodex, ...args]',
+  'const child = spawn(launchCommand, launchArgs, {',
   '  detached: true,',
   "  stdio: ['pipe', 'pipe', 'pipe'],",
   '  env: process.env,',

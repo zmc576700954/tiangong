@@ -557,8 +557,13 @@ export class McpAdapter extends BaseAdapter {
           })
           return pooled.client
         }
-        // 池中无可用连接，新建
-        const client = new McpClient(server.command, server.args)
+        // 池中无可用连接，新建（C3：MCP server 与 CLI 一样进沙箱，写面收敛到会话工作区）
+        const client = new McpClient(
+          server.command,
+          server.args,
+          undefined,
+          config.workingDirectory,
+        )
         const connectStart = Date.now()
         try {
           await client.connect()

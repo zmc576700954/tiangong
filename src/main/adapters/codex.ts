@@ -21,6 +21,7 @@ import type { ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import { createLogger } from '../shared/logger'
 import {
+  ensureCodexSandboxWrapperScript,
   ensureCodexSupervisorScript,
   getProcRegistryDir,
   getRegistrySecret,
@@ -28,8 +29,11 @@ import {
   REAL_CODEX_ENV,
   REGISTRY_SECRET_ENV,
   resolveRealCodexPath,
+  SANDBOX_NODE_ENV,
+  SANDBOX_PROFILE_ENV,
   SUPERVISOR_NONCE_ENV,
 } from '../shared/process-supervisor'
+import { sandboxProfileText } from '../shared/sandbox'
 
 type CodexConstructor = typeof Codex
 
@@ -138,9 +142,34 @@ export class CodexAdapter extends BaseAdapter {
           // C12：每次 spawn 的 nonce + 安装级签名密钥（仅经 env 注入，ps 不可见）
           env[SUPERVISOR_NONCE_ENV] = crypto.randomBytes(16).toString('hex')
           env[REGISTRY_SECRET_ENV] = getRegistrySecret()
+          // C3：profile 经 env 交给 shim，由 shim 在 spawn 真实 CLI 时套 sandbox-exec。
+          // 不可用时为空，shim 原样 exec（策略层同时把 allow 集退回 ask）。
+          const sandboxProfile = sandboxProfileText('codex', {
+            workspaceDir: session.config.workingDirectory,
+            extraExecutables: [process.execPath],
+          })
+          if (sandboxProfile) env[SANDBOX_PROFILE_ENV] = sandboxProfile
           codex = new CodexClass({ env, codexPathOverride: ensureCodexSupervisorScript() })
         } else {
-          codex = new CodexClass({ env })
+          // C3：legacy 路径不走监督 shim，但仍要把真实 CLI 裹进 profile；
+          // 决策稿 §1.3 明确要求旧路径与内核路径同点覆盖。SDK 只接受一个可执行路径，
+          // 因此用最小 shell wrapper 做 exec 套壳（pid/pgid 不变）。
+          const sandboxProfile = sandboxProfileText('codex', {
+            workspaceDir: session.config.workingDirectory,
+            extraExecutables: [process.execPath],
+          })
+          const realCodex = sandboxProfile ? resolveRealCodexPath() : undefined
+          if (sandboxProfile && realCodex) {
+            env[REAL_CODEX_ENV] = realCodex
+            env[SANDBOX_NODE_ENV] = process.execPath
+            env[SANDBOX_PROFILE_ENV] = sandboxProfile
+            codex = new CodexClass({ env, codexPathOverride: ensureCodexSandboxWrapperScript() })
+          } else {
+            if (sandboxProfile && !realCodex) {
+              this.logger.warn('无法解析真实 Codex CLI，legacy spawn 未能进入沙箱')
+            }
+            codex = new CodexClass({ env })
+          }
           this.codexInstances.set(session.id, codex)
         }
       }

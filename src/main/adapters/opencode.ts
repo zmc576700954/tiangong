@@ -9,6 +9,7 @@ import { spawn, execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
+import { sandboxLaunch } from '../shared/sandbox'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
 
@@ -47,8 +48,14 @@ export class OpenCodeAdapter extends BaseAdapter {
 
     await this.runToolAwareLoop(session, command, async (fullPrompt) => {
       const args: string[] = ['-q']
+      // C3：整个 CLI 进程（含它执行的工具）进入沙箱；不可用时原样 spawn。
+      const launch = sandboxLaunch('opencode', {
+        workspaceDir: session.config.workingDirectory,
+        command: 'opencode',
+        args,
+      })
 
-      const proc = spawn('opencode', args, {
+      const proc = spawn(launch.command, launch.args, {
         cwd: session.config.workingDirectory,
         env: this.buildSessionEnv(session.id),
         stdio: ['pipe', 'pipe', 'pipe'],

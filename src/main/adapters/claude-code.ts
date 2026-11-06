@@ -11,6 +11,7 @@
  */
 
 import { z } from 'zod'
+import { spawn } from 'node:child_process'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
@@ -32,6 +33,7 @@ import { SUBAGENT_AGENT_TYPE_PATTERN } from '@shared/types/a2a'
 
 import type * as ClaudeAgentSdk from '@anthropic-ai/claude-agent-sdk'
 import { spawnInOwnGroup } from '../shared/process-supervisor'
+import { getSandboxCapability, sandboxLaunch } from '../shared/sandbox'
 
 type QueryFn = typeof ClaudeAgentSdk.query
 type CreateSdkMcpServerFn = typeof ClaudeAgentSdk.createSdkMcpServer
@@ -308,10 +310,12 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           env: this.buildSessionEnv(session.id),
           // D5：Runtime 路径由我们 spawn，CLI 进入自有进程组（pgid = pid），
           // pid/pgid 当场可知并落库，跨重启回收不再依赖推断。
-          ...(this.isProcessSupervised(session.id)
+          // C3：沙箱可用时，旧路径也必须经同一 spawn 点套 profile（决策稿 §1.3）；
+          // 旧路径保持 SDK 原本的 spawn 语义（非 detached），只有进程组行为不变。
+          ...(this.isProcessSupervised(session.id) || getSandboxCapability().available
             ? {
                 spawnClaudeCodeProcess: (spawnOptions: ClaudeAgentSdk.SpawnOptions) =>
-                  this.spawnSupervisedClaude(session.id, spawnOptions),
+                  this.spawnClaudeProcess(session.id, spawnOptions),
               }
             : {}),
           // Kernel 路径注入审批钩子时必须用 'default'，否则 SDK 直接按 acceptEdits 写文件，
@@ -351,6 +355,10 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                             // 否则会漏读该仓库 .git/config 里的 textconv/diff.command 等执行型配置。
                             const decision = evaluateBashPolicy(bashCommandOf(toolInput), {
                               cwd: session.config.workingDirectory,
+                              // C3：沙箱不可用时 allow 集整体退回 ask（fail-closed），
+                              // 并把原因带到审批卡片/审计，回答「这台机器为什么在弹窗」。
+                              sandboxAvailable: getSandboxCapability().available,
+                              sandboxUnavailableReason: getSandboxCapability().reason,
                             })
                             // 审计要按 step 关联：优先用 hook 回调的 toolUseID，
                             // 缺失时回退到 hook 输入里的 tool_use_id（两者都缺则无法归属）。
@@ -536,21 +544,42 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   /**
    * D5：受控 spawn。`detached: true` 让 CLI 成为自有进程组组长（pgid === pid），
    * 我们当场拿到 pid 并上报，Runtime 落库后即可跨重启按组回收。
+   *
+   * C3：无论受控还是旧路径，沙箱可用时都经 `sandboxLaunch()` 包 profile。
+   * 旧路径刻意沿用 SDK 原本的非 detached spawn（不改变进程组语义）。
    */
-  private spawnSupervisedClaude(
+  private spawnClaudeProcess(
     sessionId: string,
     options: ClaudeAgentSdk.SpawnOptions,
   ): ClaudeAgentSdk.SpawnedProcess {
-    const child = spawnInOwnGroup(options.command, options.args, {
-      cwd: options.cwd,
-      env: options.env,
-      signal: options.signal,
+    // C3：CLI 连同它执行的所有工具（Bash/写文件/hooks 子进程）都在同一 profile 内。
+    // 沙箱不可用时原样 spawn；allow 集已在策略层退回 ask，不会出现「无沙箱仍免审」。
+    const launch = sandboxLaunch('claude', {
+      workspaceDir: options.cwd ?? process.cwd(),
+      command: options.command,
+      args: options.args,
     })
+    if (launch.sandboxed) {
+      this.logger.info(`claude CLI 以沙箱 profile 启动（${launch.profile?.workspace}）`)
+    }
+    const supervised = this.isProcessSupervised(sessionId)
+    const child = supervised
+      ? spawnInOwnGroup(launch.command, launch.args, {
+          cwd: options.cwd,
+          env: options.env,
+          signal: options.signal,
+        })
+      : spawn(launch.command, launch.args, {
+          cwd: options.cwd,
+          env: options.env,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          signal: options.signal,
+        })
     // stderr 必须有消费者，否则管道写满会阻塞 CLI
     child.stderr?.on('data', (chunk: Buffer) => {
       this.logger.debug(`claude stderr: ${chunk.toString('utf-8').slice(0, 300)}`)
     })
-    if (child.pid) {
+    if (supervised && child.pid) {
       this.emitProcessSpawn(sessionId, { pid: child.pid, pgid: child.pid })
     }
     return child as unknown as ClaudeAgentSdk.SpawnedProcess

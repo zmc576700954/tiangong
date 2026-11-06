@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { SpanKind } from '@opentelemetry/api'
 import { buildSafeEnv } from '../shared/env'
+import { sandboxLaunch } from '../shared/sandbox'
 import { AgentError, ErrorCode } from '../errors'
 import { withSpan } from '../telemetry'
 
@@ -77,6 +78,8 @@ export class McpClient extends EventEmitter {
     private command: string,
     private args: string[],
     private readonly callTimeoutMs = 30_000,
+    /** C3：MCP server 的会话工作目录（写白名单）；缺省退回进程 cwd。 */
+    private readonly workspaceDir?: string,
   ) {
     super()
   }
@@ -117,9 +120,17 @@ export class McpClient extends EventEmitter {
       }, 10000)
 
       this.exited = false
-      this.proc = spawn(this.command, this.args, {
+      // C3：MCP server 不在 CLI 进程树内，必须单独包 —— 只包 CLI 会留下写外部缺口。
+      // 工具名（mcp__*）不做判定依据：进程在笼子里，工具叫什么都受限。
+      const launch = sandboxLaunch('mcp', {
+        workspaceDir: this.workspaceDir,
+        command: this.command,
+        args: this.args,
+      })
+      this.proc = spawn(launch.command, launch.args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: buildSafeEnv('mcp'),
+        cwd: this.workspaceDir,
       })
 
       // 对端关闭 stdin 后再次写入会抛 EPIPE；没有监听器时它是未捕获异常，

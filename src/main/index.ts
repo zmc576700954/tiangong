@@ -140,6 +140,11 @@ app.whenReady().then(async () => {
   // Initialize database (sync with better-sqlite3)
   initDatabase()
 
+  // C3：启动期探测一次执行面沙箱（真实 canary）。结论进日志，并被所有 spawn 复用；
+  // 不可用时只读命令的 allow 集整体退回 ask（fail-closed）。
+  const { initSandboxCapability } = await import('./shared/sandbox')
+  initSandboxCapability()
+
   // Read settings once — reused by telemetry init and locale setup.
   const settings = await readSettings()
 
