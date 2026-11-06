@@ -18,9 +18,8 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
+import { accessSync, constants, statSync } from 'node:fs'
+import { delimiter, join } from 'node:path'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
 export type BashPolicyVerdict = 'allow' | 'ask' | 'blocked-empty'
@@ -415,15 +414,6 @@ const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
   'diff', 'log', 'show', 'status', 'blame', 'whatchanged',
 ])
 
-/**
- * 节名可能写成 `[diff]`、`[diff "evil"]`（现代式子节）或 `[diff.evil]`
- * （旧式子节，`git config --get diff.evil.textconv` 认可）。因此不能只取空格前的整串，
- * 必须按 `name` 后跟 `.` / 空白 / 结束 的前缀判定（`/^diff(\.|\s|$)/`）。
- */
-function gitConfigSectionIs(section: string, name: string): boolean {
-  return new RegExp(`^${name}(?:\\.|\\s|$)`).test(section)
-}
-
 /** git 布尔配置：false/no/off/0（含空值）为假；其余为真（路径类配置同样按真处理）。 */
 function gitConfigBoolean(value: string): boolean {
   const normalized = value.trim().toLowerCase()
@@ -456,327 +446,12 @@ function isStandardLfsFilterValue(key: string, value: string): boolean {
   return false
 }
 
-/** git 配置值里的行内注释：`#`/`;` 只有在行首或前有空白时才是注释。 */
-function stripGitConfigComment(value: string): string {
-  let quoted = false
-  for (let index = 0; index < value.length; index += 1) {
-    const ch = value[index]
-    if (ch === '"') quoted = !quoted
-    else if (!quoted && (ch === '#' || ch === ';') && (index === 0 || /\s/.test(value[index - 1]))) {
-      return value.slice(0, index).trim()
-    }
-  }
-  return value.trim()
-}
-
-interface GitConfigEntry {
-  /** 小写节名；现代式子节形如 `diff "evil"`，旧式子节形如 `diff.evil`。 */
-  section: string
-  /** 小写键名。 */
-  key: string
-  /** 值；裸键归一为 `true`，显式空值保留空串。 */
-  value: string
-  /** 该行只有键名、没有 `=`：Git 语义等价 `true`。 */
-  bare: boolean
-}
-
-/**
- * 把 git 配置文本解析为规范化条目，供探测与 include 复用。
- *
- * 归一化规则（与 git config 实际解析器对齐）：
- * - 节头：`[name]`、`[name "sub"]`、`[name.sub]`；节名/键名大小写不敏感（统一小写），
- *   子节内容原样保留（Git 子节本身大小写敏感，但本探针只按节名前缀判定）。
- * - 节头允许尾随注释（`[diff "evil"] # note`），也允许同一行直接跟键值（`[t] x = 1`）。
- * - 行首缩进（空格 / `\t`）忽略；整行 `#` / `;` 注释忽略。
- * - `key = value` 取值；`key`（裸键）等价 `true`；`key =`（显式空值）保留空串
- *   （Git 对布尔判 false、对字符串判空，等价未设置）。
- * - 值内 `#` / `;` 只有「前有空白且不在双引号内」才是行内注释。
- * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，标记为不可解析。
- * - 键名只含字母/数字/连字符：Git 不接受带点或下划线的键名（`a.b=1`、`a_b=1` 均 fatal）。
- * - 行尾未转义反斜杠（Git 的续行语法）与无法归一的杂行一律标记为不可解析，由调用方 fail-closed。
- * - 只有 `include.path` / `includeIf.path` 的值内出现反斜杠（`\\` / `\"` / `\n` / `\t` / `\b`
- *   与尾部续行）才标记为不可解析：本轮不做转义语义归一，用未归一原值算 include 路径会与
- *   Git 实际读取路径不一致（`evil\\cfg` → `evil\cfg`），漏读即漏判。
- * - 其余键不做转义 invalid 判定：转义不会把「危险」变「安全」——布尔按「非 false 即真」、
- *   `filter`/`diff` 按「非空即危险」，归一化与否不改变判定方向。若一并判 invalid，会把
- *   `core.excludesFile = C:\\Users\\…`、`alias` 里的 `\"`、diff driver 正则等真实配置整份误伤。
- */
-const GIT_CONFIG_SECTION_HEADER = /^\[\s*([^\s\]]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$/
-const GIT_CONFIG_KEY_VALUE = /^([A-Za-z0-9-]+)(?:\s*=\s*(.*))?$/
-
-interface ParsedGitConfig {
-  entries: GitConfigEntry[]
-  /** 存在 Git 会 fatal 的无法解析行：策略按「不可判定」处理，不允许静默丢弃。 */
-  invalid: boolean
-}
-
-/**
- * 止血口径：`include.path` / `includeIf.path` 的值内出现反斜杠即不可解析。
- *
- * - 尾部反斜杠是 Git 的续行（未被建模，EOF 时 Git 直接 fatal）；
- * - `\\`、`\"`、`\n`、`\t`、`\b` 等转义本轮不归一，原值算出的 include 路径会与 Git 不同；
- * 宁可整份配置 ask，也不能按未归一原值漏读。
- *
- * 只对 include 路径生效：其它键的转义不改变判定方向（布尔非 false 即真、filter/diff
- * 非空即危险），判 invalid 只会把 Windows 路径、alias、diff 正则等真实配置整份误伤。
- */
-function gitConfigHasEscape(value: string): boolean {
-  return value.includes('\\')
-}
-
-function parseGitConfigEntries(text: string): ParsedGitConfig {
-  const entries: GitConfigEntry[] = []
-  let invalid = false
-  let section = ''
-  for (const rawLine of text.split(/\r?\n/)) {
-    let line = rawLine.trim()
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const sectionMatch = GIT_CONFIG_SECTION_HEADER.exec(line)
-    if (sectionMatch) {
-      const name = sectionMatch[1].toLowerCase()
-      const subsection = sectionMatch[2]
-      section = subsection === undefined ? name : `${name} "${subsection}"`
-      line = sectionMatch[3].trim()
-      if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    } else if (line.startsWith('[')) {
-      invalid = true // 节头缺 `]` / 子节引号未闭合等，Git fatal
-      continue
-    }
-    const kv = GIT_CONFIG_KEY_VALUE.exec(line)
-    if (!kv) {
-      invalid = true // 如 `"key" = v`、`a.b = 1`、裸键 + 注释
-      continue
-    }
-    const bare = kv[2] === undefined
-    const key = kv[1].toLowerCase()
-    const value = bare ? 'true' : stripGitConfigComment(kv[2])
-    // 只有 include 路径的转义会改变「读哪个文件」，必须 fail-closed；
-    // 其它键的转义不改变判定方向，不判 invalid（避免误伤 Windows 路径 / alias / diff 正则）。
-    const isIncludePath =
-      key === 'path' &&
-      (gitConfigSectionIs(section, 'include') || gitConfigSectionIs(section, 'includeif'))
-    if (!bare && isIncludePath && gitConfigHasEscape(value)) {
-      invalid = true
-      continue
-    }
-    entries.push({
-      section,
-      key,
-      value,
-      bare,
-    })
-  }
-  return { entries, invalid }
-}
-
-/** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
-function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'global'): boolean {
-  const { entries, invalid } = parseGitConfigEntries(text)
-  // 无法解析 = 不可判定：Git 自己会 fatal，但策略不能把「没看到危险配置」当成安全。
-  if (invalid) return true
-  for (const { section, key, value } of entries) {
-    // 显式空值（`key =`）等价未设置：Git 对布尔返回 false，对字符串为空。
-    if (value === '') continue
-    // `diff.<driver>.command` 与 `diff.external` / `textconv` 一样会执行外部程序。
-    if (gitConfigSectionIs(section, 'diff') && (key === 'textconv' || key === 'external' || key === 'command')) {
-      return true
-    }
-    // fsmonitor：status 必调用；diff/blame 与 index 刷新状态相关（refresh index 时才调用）；
-    // log/show 不刷新 index，不判。裸键 `fsmonitor` 归一为 `true`，与 `= true` 等价。
-    if (
-      gitConfigSectionIs(section, 'core') &&
-      key === 'fsmonitor' &&
-      gitConfigBoolean(value) &&
-      (sub === 'status' || sub === 'diff' || sub === 'blame')
-    ) {
-      return true
-    }
-    // filter.<driver>.clean/smudge/process：status/diff 读取工作区时会调用外部过滤器。
-    // 仓库本地配置维持三项全 ask（可在一次被批准的 Write 后改写，是 B2 的直接威胁面）；
-    // 全局配置常见于 `git lfs install`，只放行 git-lfs 的标准写法，自定义值一律 ask
-    // ——否则「打开不可信仓库 + .gitattributes 指向全局自定义 filter」即可零审批执行。
-    if (
-      (sub === 'status' || sub === 'diff') &&
-      gitConfigSectionIs(section, 'filter') &&
-      (key === 'clean' || key === 'smudge' || key === 'process')
-    ) {
-      if (source === 'repo') return true
-      if (!isStandardLfsFilterValue(key, value)) return true
-    }
-    // log.showSignature=true 让 log/show/whatchanged 自动调用 gpg（gpg.program 可指向任意程序）。
-    if (
-      gitConfigSectionIs(section, 'log') &&
-      key === 'showsignature' &&
-      gitConfigBoolean(value) &&
-      (sub === 'log' || sub === 'show' || sub === 'whatchanged')
-    ) {
-      return true
-    }
-  }
-  return false
-}
-
-/** Git 的 `MAX_INCLUDE_DEPTH = 10`：根配置为 0，第 10 层 include 仍可用，第 11 层 fatal。 */
-const MAX_GIT_CONFIG_INCLUDE_DEPTH = 10
-
-interface GitConfigScan {
-  files: string[]
-  /** include 深度超限或存在环：Git 本身会 fatal，策略按不可判定处理，必须 ask。 */
-  undecidable: boolean
-}
-
-/** 配置文件自身 + 递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理）。 */
-function gitConfigPaths(file: string, depth = 0, chain: string[] = []): GitConfigScan {
-  // 超限不再返回空（那等价“没发现危险配置”的 fail-open），而是标记不可判定。
-  if (depth > MAX_GIT_CONFIG_INCLUDE_DEPTH) return { files: [], undecidable: true }
-  // include 成环在 Git 里同样会一路递归到深度上限后 fatal。
-  if (chain.includes(file)) return { files: [], undecidable: true }
-  const scan: GitConfigScan = { files: [file], undecidable: false }
-  if (!existsSync(file)) return scan
-  let text: string
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch {
-    return scan
-  }
-  for (const entry of parseGitConfigEntries(text).entries) {
-    if (!(gitConfigSectionIs(entry.section, 'include') || gitConfigSectionIs(entry.section, 'includeif'))) {
-      continue
-    }
-    if (entry.key !== 'path' || entry.bare) continue // 裸 `path` 在 Git 里是 missing value，不是合法 include
-    let includePath = entry.value.replace(/^"|"$/g, '')
-    if (!includePath) continue
-    if (includePath.startsWith('~/')) includePath = join(homedir(), includePath.slice(2))
-    else if (!isAbsolute(includePath)) includePath = resolve(dirname(file), includePath)
-    const nested = gitConfigPaths(includePath, depth + 1, [...chain, file])
-    scan.files.push(...nested.files)
-    if (nested.undecidable) scan.undecidable = true
-  }
-  return scan
-}
-
-/** 任一配置文件登记了执行型配置即危险；文件存在但不可读按危险处理（fail-closed）。 */
-function gitConfigFilesExecute(files: string[], sub: string, source: 'repo' | 'global'): boolean {
-  for (const file of files) {
-    if (!existsSync(file)) continue
-    try {
-      if (gitConfigTextExecutes(readFileSync(file, 'utf8'), sub, source)) return true
-    } catch {
-      return true
-    }
-  }
-  return false
-}
-
-/** 从 cwd 向上找 `.git`（支持 worktree 的 gitdir 文件）。 */
-function findGitDir(root: string): string | null {
-  let dir = resolve(root)
-  for (let depth = 0; depth < 30; depth += 1) {
-    const dotGit = join(dir, '.git')
-    if (existsSync(dotGit)) {
-      try {
-        if (!statSync(dotGit).isFile()) return dotGit
-        const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
-        if (!match) return null
-        const gitDir = match[1].trim()
-        return isAbsolute(gitDir) ? gitDir : resolve(dir, gitDir)
-      } catch {
-        return null
-      }
-    }
-    const parent = dirname(dir)
-    if (parent === dir) break
-    dir = parent
-  }
-  return null
-}
-
-/**
- * 是否开启 `extensions.worktreeConfig`。Git 只有在该扩展开启时才读 config.worktree；
- * 未开启仍去读会造成无谓 ask。文件不可读或含无法解析行按「可能开启」处理（fail-closed）。
- */
-function gitConfigEnablesWorktreeConfig(files: string[]): boolean {
-  for (const file of files) {
-    if (!existsSync(file)) continue
-    try {
-      const { entries, invalid } = parseGitConfigEntries(readFileSync(file, 'utf8'))
-      if (invalid) return true
-      for (const entry of entries) {
-        if (
-          gitConfigSectionIs(entry.section, 'extensions') &&
-          entry.key === 'worktreeconfig' &&
-          gitConfigBoolean(entry.value)
-        ) {
-          return true
-        }
-      }
-    } catch {
-      return true
-    }
-  }
-  return false
-}
-
-/** 仓库配置（worktree 走 commondir + 按扩展开关读取 config.worktree）+ 递归 include。 */
-function repoGitConfigFiles(gitDir: string): GitConfigScan {
-  const scan = gitConfigPaths(join(gitDir, 'config'))
-  try {
-    const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
-    if (common) {
-      const commonDir = isAbsolute(common) ? common : resolve(gitDir, common)
-      const commonScan = gitConfigPaths(join(commonDir, 'config'))
-      scan.files.push(...commonScan.files)
-      if (commonScan.undecidable) scan.undecidable = true
-    }
-  } catch {
-    // 非 worktree，没有 commondir
-  }
-  // extensions.worktreeConfig 开启后，per-worktree 配置才在 config.worktree；
-  // core.fsmonitor 可按 worktree 设置，漏读该文件会放过配置驱动的执行。
-  if (gitConfigEnablesWorktreeConfig(scan.files)) {
-    const worktreeScan = gitConfigPaths(join(gitDir, 'config.worktree'))
-    scan.files.push(...worktreeScan.files)
-    if (worktreeScan.undecidable) scan.undecidable = true
-  }
-  return scan
-}
-
-/**
- * 用户/系统配置每次现读，不做进程内缓存：
- * 缓存会让「先判干净 allow、随后配置被改写」在同一进程内永远看不见，
- * 而单次读取实测约 0.05 ms，对交互路径无感。用 mtime+size 失效又会受
- * 文件系统时间戳精度与同尺寸改写的竞态影响，直接去缓存更简单且正确。
- */
-function globalGitConfigExecutes(sub: string): boolean {
-  const candidates = [
-    process.env.GIT_CONFIG_GLOBAL,
-    join(homedir(), '.gitconfig'),
-    join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'git', 'config'),
-    process.env.GIT_CONFIG_SYSTEM,
-    '/etc/gitconfig',
-  ].filter((value): value is string => Boolean(value))
-  return candidates.some((file) => {
-    const scan = gitConfigPaths(file)
-    return scan.undecidable || gitConfigFilesExecute(scan.files, sub, 'global')
-  })
-}
-
-function gitRepoConfigExecutes(root: string, includeGlobal: boolean, sub: string): boolean {
-  if (includeGlobal && globalGitConfigExecutes(sub)) return true
-  const gitDir = findGitDir(root)
-  if (!gitDir) return false
-  const scan = repoGitConfigFiles(gitDir)
-  // include 深度超限/成环 → 不可判定，必须 ask，不能因为“没扫到危险配置”而放行。
-  if (scan.undecidable) return true
-  return gitConfigFilesExecute(scan.files, sub, 'repo')
-}
-
 /* ------------------------------------------------------------------------- *
- * git 配置探针（迁移 S1：影子对照；S2 起成为权威）
+ * git 配置探针（S1 影子 → S2 权威 → S3 唯一解析器）
  *
- * 手写解析器与 Git 的语法所有权不同（include 深度、转义、子节写法、裸键、条件求值），
- * 每轮复审都要为新差异打补丁。迁移方向是让 Git 自己解析：固定 argv 起一个 `git config`
- * 子进程，读取扁平化的最终配置，再按「哪些键会执行外部程序」判定。
+ * S1 影子对照 → S2 切为权威 → S3 删除手写解析器后，Git 自己解析是唯一口径：
+ * 固定 argv 起一个 `git config` 子进程，读取扁平化的最终配置，再按「哪些键会执行外部程序」
+ * 判定。include 深度、转义、子节写法、裸键、includeIf 条件求值全部交给 Git。
  * ------------------------------------------------------------------------- */
 
 /** 探针失败分类。S2 起任何失败都必须 ask（fail-closed），分类只用于观测与告警。 */
@@ -1020,79 +695,60 @@ const GIT_CONFIG_PROBE_FAILURES: readonly GitConfigProbeFailure[] = [
   'io-error',
 ]
 
-interface GitConfigShadowState {
+interface GitConfigProbeDiagnosticsState {
   samples: number
-  /** 手写 allow / 探针 ask：唯一允许出现的差异方向（说明手写漏判）。 */
-  probeStricter: number
-  /** 手写 ask / 探针 allow：反向差异，S1 的立即回滚条件。 */
-  manualStricter: number
   failures: Record<GitConfigProbeFailure, number>
   latencies: number[]
 }
 
-const gitConfigShadowState: GitConfigShadowState = {
+const gitConfigProbeDiagnosticsState: GitConfigProbeDiagnosticsState = {
   samples: 0,
-  probeStricter: 0,
-  manualStricter: 0,
   failures: Object.fromEntries(
     GIT_CONFIG_PROBE_FAILURES.map((failure) => [failure, 0]),
   ) as Record<GitConfigProbeFailure, number>,
   latencies: [],
 }
 
-const GIT_CONFIG_SHADOW_LATENCY_WINDOW = 500
+const GIT_CONFIG_PROBE_LATENCY_WINDOW = 500
 
 /**
- * 影子对照：手写结果继续决定用户可见判定，只记录与探针的差异。
- * 反向差异（手写 ask / 探针 allow）说明探针更松，S1 必须立即停下。
+ * 运行时观测（S1 影子期的差异对照已随手写解析器删除；S3 后只记录探针自身的
+ * 失败分类与延迟，供 §17 的 7 天运营观察使用）。
  */
-function recordGitConfigShadow(
-  manualExecutes: boolean,
-  probe: GitConfigProbeResult,
-  sub: string,
-): void {
-  gitConfigShadowState.samples += 1
-  if (probe.failure) gitConfigShadowState.failures[probe.failure] += 1
-  gitConfigShadowState.latencies.push(probe.latencyMs)
-  if (gitConfigShadowState.latencies.length > GIT_CONFIG_SHADOW_LATENCY_WINDOW) {
-    gitConfigShadowState.latencies.shift()
+function recordGitConfigProbe(probe: GitConfigProbeResult): void {
+  gitConfigProbeDiagnosticsState.samples += 1
+  if (probe.failure) gitConfigProbeDiagnosticsState.failures[probe.failure] += 1
+  gitConfigProbeDiagnosticsState.latencies.push(probe.latencyMs)
+  if (gitConfigProbeDiagnosticsState.latencies.length > GIT_CONFIG_PROBE_LATENCY_WINDOW) {
+    gitConfigProbeDiagnosticsState.latencies.shift()
   }
-  const probeExecutes = probeGitConfigExecutes(probe, sub)
-  if (!manualExecutes && probeExecutes) gitConfigShadowState.probeStricter += 1
-  if (manualExecutes && !probeExecutes) gitConfigShadowState.manualStricter += 1
 }
 
-export interface GitConfigShadowDiagnostics {
+export interface GitConfigProbeDiagnostics {
   samples: number
-  probeStricter: number
-  manualStricter: number
   failures: Record<GitConfigProbeFailure, number>
   p95LatencyMs: number
   maxLatencyMs: number
 }
 
-/** S1 验收观测：差异计数、失败分类、延迟分布（只读快照）。 */
-export function getGitConfigShadowDiagnostics(): GitConfigShadowDiagnostics {
-  const sorted = [...gitConfigShadowState.latencies].sort((a, b) => a - b)
+/** 探针观测快照：失败分类、延迟分布（只读）。 */
+export function getGitConfigProbeDiagnostics(): GitConfigProbeDiagnostics {
+  const sorted = [...gitConfigProbeDiagnosticsState.latencies].sort((a, b) => a - b)
   const index = sorted.length === 0 ? -1 : Math.ceil(sorted.length * 0.95) - 1
   return {
-    samples: gitConfigShadowState.samples,
-    probeStricter: gitConfigShadowState.probeStricter,
-    manualStricter: gitConfigShadowState.manualStricter,
-    failures: { ...gitConfigShadowState.failures },
+    samples: gitConfigProbeDiagnosticsState.samples,
+    failures: { ...gitConfigProbeDiagnosticsState.failures },
     p95LatencyMs: index < 0 ? 0 : sorted[index],
     maxLatencyMs: sorted.length === 0 ? 0 : sorted[sorted.length - 1],
   }
 }
 
-/** 仅测试使用：清空影子观测，避免用例间互相污染。 */
-export function resetGitConfigShadowDiagnostics(): void {
-  gitConfigShadowState.samples = 0
-  gitConfigShadowState.probeStricter = 0
-  gitConfigShadowState.manualStricter = 0
-  gitConfigShadowState.latencies.length = 0
+/** 仅测试使用：清空观测，避免用例间互相污染。 */
+export function resetGitConfigProbeDiagnostics(): void {
+  gitConfigProbeDiagnosticsState.samples = 0
+  gitConfigProbeDiagnosticsState.latencies.length = 0
   for (const failure of GIT_CONFIG_PROBE_FAILURES) {
-    gitConfigShadowState.failures[failure] = 0
+    gitConfigProbeDiagnosticsState.failures[failure] = 0
   }
 }
 
@@ -1229,10 +885,8 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
           HIGH,
         )
       }
-      const manualExecutes = gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig, sub)
       const probe = probeGitConfig(ctx.cwd, ctx.includeGlobalGitConfig)
-      // 影子观测继续保留（S3 的 7 天观察项），但 S2 起探针是权威。
-      recordGitConfigShadow(manualExecutes, probe, sub)
+      recordGitConfigProbe(probe)
       if (probe.failure) {
         return askRule(
           'git-repo-config-exec',
@@ -1240,8 +894,7 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
           HIGH,
         )
       }
-      // 探针权威；手写只能把结果变得更严（ask 优先），不得把探针的 ask 提升为 allow。
-      if (probeGitConfigExecutes(probe, sub) || manualExecutes) {
+      if (probeGitConfigExecutes(probe, sub)) {
         return askRule(
           'git-repo-config-exec',
           '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',

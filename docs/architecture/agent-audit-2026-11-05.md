@@ -3352,3 +3352,49 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
   - 其中 26 个文件 / 173 条为既有 `better-sqlite3` ABI（与基线一致）。
   - **新增 1 个非 ABI 失败**：`src/main/__tests__/claude-code.test.ts` 的 hook 用例使用 `workingDirectory: '/project'`（本机不存在）。S2 探针在该 cwd spawn 失败（ENOENT）按 fail-closed 判 `ask`，用例仍断言 `allow`。这是测试 fixture 使用不存在目录导致，不是 allow+exec 回归；本轮范围只允许改 `bash-readonly.ts` 及其测试，故未改该文件。**待办：把该 fixture 的 workingDirectory 换成真实临时仓库**。
 - 未 push、未 amend；S3 未开始。
+
+## 二十、迁移 S3：删除手写解析器（起点 `a7f4eb8`）
+
+### 20.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `a7f4eb8`（S2 提交，未 amend、未 push） |
+| 工作树 | 仅 `bash-readonly.ts`、其测试、本文件与 `agent-architecture.md` |
+| 前置 | S2 的 53 条定向用例在探针权威下全绿 |
+
+### 20.1 删除范围
+
+删除的手写逻辑：
+
+- 配置文本解析：`gitConfigSectionIs` / `stripGitConfigComment` / `GitConfigEntry` / `parseGitConfigEntries` / `gitConfigHasEscape` / `gitConfigTextExecutes`；
+- include 展开：`gitConfigPaths` / `gitConfigFilesExecute` / `findGitDir` / `gitConfigEnablesWorktreeConfig` / `repoGitConfigFiles` / `globalGitConfigExecutes` / `gitRepoConfigExecutes`；
+- 相关常量与规则：`MAX_GIT_CONFIG_INCLUDE_DEPTH`、include 深度/成环不可判定、include 路径转义 invalid、裸键归一、手写 `includeIf`「条件不匹配也按可能命中扫描」。
+
+保留：shell 词法器、命令+参数判定、`GIT_CONFIG_EXEC_SUBCOMMANDS`、`gitConfigBoolean`、`isStandardLfsFilterValue`、探针与失败分类、运行时开关。
+
+观测接口：`getGitConfigShadowDiagnostics` → `getGitConfigProbeDiagnostics`，只保留 `samples` / `failures` / `p95LatencyMs` / `maxLatencyMs`；`probeStricter` / `manualStricter` 随手写解析器删除。
+
+### 20.2 语义变化（S3 vs S2）
+
+| 形态 | S2（手写 + 探针并集） | S3（Git 唯一口径） | 理由 |
+|---|---|---|---|
+| `includeIf` 条件不匹配，目标文件含 `fsmonitor` | `ask` | `allow` | Git 不求值匹配就不读取、不执行；手写「可能命中」是过保守误报 |
+| `includeIf` 条件匹配当前仓库，路径为转义写法 | `ask` | `ask` | Git 读取转义后的危险文件（已加实测用例） |
+| `include.path` 尾部反斜杠（EOF） | `ask` | `allow` | Git exit 0，按普通字符处理；include 目标不存在，无执行面 |
+| B-14-1、五类转义（普通 `include.path`） | `ask` | `ask` | Git 自己解析转义路径并读取危险文件 |
+| 七类真实配置 / 标准 LFS / 干净仓库 / 本仓库配置 | `allow` | `allow` | 不变 |
+| 探针注入故障、`BIZGRAPH_GIT_CONFIG_PROBE=off` | `ask` | `ask` | 不变 |
+
+### 20.3 「7 天影子观察」状态
+
+- **未完成，不假装完成**：§17.3 的「影子日志连续 7 天 0 条『手写 allow / 探针 ask』」不在本次交付范围内，记为**待运营观察项**。
+- S3 删除手写解析器后，运行时不再产生「手写 vs 探针」差异计数；该观察必须在 **S1/S2 影子构建**上完成后再把 S3 推上生产。
+- `BIZGRAPH_GIT_CONFIG_PROBE=off` 回滚开关保留至观察期满（退回「一律 ask」，不退回「手写 allow」）；运行时探针失败分类与 p95 延迟观测保留。
+
+### 20.4 校验与提交
+
+- 定向 `bash-readonly` **53 passed**。
+- `tsc --noEmit` / `eslint src` / `vite build` 全过。
+- 全量：`27 failed 文件 / 252 passed`，`174 failed / 3126 passed / 93 skipped`，与 S2 一致（26 个 ABI 文件 + `claude-code.test.ts` 的 `/project` fixture 待办）。
+- 未 push、未 amend。

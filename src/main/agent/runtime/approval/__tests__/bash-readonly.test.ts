@@ -5,7 +5,7 @@
  * 所有 ask 断言同时校验 rule 与 risk —— 审批卡片与审计都要说清「命中哪条规则」。
  */
 
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -14,10 +14,10 @@ import {
   WHITELIST_COMMANDS,
   bashPolicyForTool,
   evaluateBashPolicy,
-  getGitConfigShadowDiagnostics,
+  getGitConfigProbeDiagnostics,
   probeGitConfig,
   probeGitConfigExecutes,
-  resetGitConfigShadowDiagnostics,
+  resetGitConfigProbeDiagnostics,
 } from '../bash-readonly'
 
 function decide(
@@ -862,12 +862,12 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     expect(
       run('[include]\n\tpath = extra.cfg\n', 'git status', { 'extra.cfg': '[core]\n\tfsmonitor\n' }),
     ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
-    // includeIf 条件不求值，按可能命中处理
+    // includeIf 条件由 Git 自己求值：不匹配 → 不读取 → allow（S3 不再按「可能命中」过保守）
     expect(
       run('[includeIf "gitdir:elsewhere/"]\n\tpath = extra.cfg\n', 'git status', {
         'extra.cfg': '[core]\n\tfsmonitor\n',
       }),
-    ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
+    ).toMatchObject({ decision: 'allow', rule: 'git:status' })
   })
 
   it('include 深度：1–10 层危险配置 ask，第 11 层按不可判定 ask（Git 自身 fatal）', () => {
@@ -932,11 +932,12 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       rule: 'git-repo-config-exec',
     })
 
-    // Git 实测 fatal：值为 EOF 前的未转义反斜杠（续行无后续内容）
+    // Git 实测 exit=0：EOF 前的尾部反斜杠被当作普通字符，include 目标不存在即无执行面。
+    // S1 手写曾把该写法判 invalid ask；S3 以 Git 的解析结果为准 → allow。
     writeFileSync(config, '[include]\n\tpath = /tmp/x\\\n')
     expect(decide('git status --short', options)).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
+      decision: 'allow',
+      rule: 'git:status',
     })
 
     // 移除不可解析行后回到 allow（不再把“解析失败”静默当成安全）
@@ -1029,12 +1030,26 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       decision: 'ask',
       rule: 'git-repo-config-exec',
     })
-    // includeIf.path 同样受转义 fail-closed 保护（条件不求值，按可能命中处理）
+    // includeIf.path 的转义 fail-closed 由 Git 求值条件后生效：
+    // 匹配当前仓库 → 读取转义路径指向的危险文件 → ask；
+    // 条件不匹配 → Git 不读取，allow（S3 不再按「可能命中」过保守）。
+    const matchedRepo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-includeif-'))
+    const matchedGitDir = makeGitDir(matchedRepo)
+    writeFileSync(
+      join(matchedGitDir, 'config'),
+      `[includeIf "gitdir:${realpathSync(matchedGitDir)}"]\n\tpath = evil\\\\cfg\n`,
+    )
+    writeFileSync(join(matchedGitDir, 'evil\\cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    expect(decide('git status', { cwd: matchedRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
     writeFileSync(join(gitDir, 'config'), '[includeIf "gitdir:~/work/"]\n\tpath = evil\\\\cfg\n')
     writeFileSync(join(gitDir, 'evil\\cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
     expect(decide('git status', options)).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
+      decision: 'allow',
+      rule: 'git:status',
     })
   })
 
@@ -1227,7 +1242,7 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
     })
   })
 
-  it('S2：探针权威，手写漏读的 GIT_CONFIG_COUNT 注入项由探针判 ask', () => {
+  it('S3：GIT_CONFIG_COUNT 注入的 diff.external 由 Git 自身解析 → ask', () => {
     const repo = makeGitRepo('bizgraph-shadow-stricter-', '[core]\n\trepositoryformatversion = 1\n')
     const previous = {
       GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
@@ -1235,20 +1250,14 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
       GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
     }
     withIsolatedGlobalConfig('', () => {
-      resetGitConfigShadowDiagnostics()
       process.env.GIT_CONFIG_COUNT = '1'
       process.env.GIT_CONFIG_KEY_0 = 'diff.external'
       process.env.GIT_CONFIG_VALUE_0 = '/tmp/evil-diff'
       try {
-        // 手写解析器不读 GIT_CONFIG_COUNT → allow；S2 起探针权威 → ask。
         expect(decide('git diff HEAD', { cwd: repo })).toMatchObject({
           decision: 'ask',
           rule: 'git-repo-config-exec',
         })
-        const diagnostics = getGitConfigShadowDiagnostics()
-        expect(diagnostics.samples).toBe(1)
-        expect(diagnostics.probeStricter).toBe(1)
-        expect(diagnostics.manualStricter).toBe(0)
       } finally {
         for (const [key, value] of Object.entries(previous)) {
           if (value === undefined) delete process.env[key]
@@ -1258,34 +1267,29 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
     })
   })
 
-  it('影子对照：反向差异（手写 ask / 探针 allow）会被计数，用于 S1 回滚判断', () => {
-    // 条件不匹配任何真实仓库：Git 不会 include，手写按「可能命中」扫描 → ask。
+  it('S3：includeIf 条件不匹配 → Git 不读取，判 allow', () => {
+    // 条件不匹配任何真实仓库：Git 不会 include（哪怕目标文件本身含 fsmonitor）。
     const repo = makeGitRepo(
       'bizgraph-shadow-reverse-',
       '[includeIf "gitdir:/nonexistent/"]\n\tpath = ignored.cfg\n',
     )
     writeFileSync(join(repo, '.git', 'ignored.cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
-    resetGitConfigShadowDiagnostics()
     expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
-      decision: 'ask',
-      rule: 'git-repo-config-exec',
+      decision: 'allow',
+      rule: 'git:status',
     })
-    const diagnostics = getGitConfigShadowDiagnostics()
-    expect(diagnostics.samples).toBe(1)
-    expect(diagnostics.manualStricter).toBe(1)
-    expect(diagnostics.probeStricter).toBe(0)
   })
 
-  it('影子延迟：真实探针 p95 ≤ 30 ms，且无失败', () => {
+  it('探针延迟：真实探针 p95 ≤ 30 ms，且无失败', () => {
     const repo = makeGitRepo(
       'bizgraph-shadow-latency-',
       '[core]\n\trepositoryformatversion = 1\n',
     )
-    resetGitConfigShadowDiagnostics()
+    resetGitConfigProbeDiagnostics()
     for (let index = 0; index < 40; index += 1) {
       expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false }).decision).toBe('allow')
     }
-    const diagnostics = getGitConfigShadowDiagnostics()
+    const diagnostics = getGitConfigProbeDiagnostics()
     expect(diagnostics.samples).toBe(40)
     expect(diagnostics.failures['missing-git']).toBe(0)
     expect(diagnostics.failures.timeout).toBe(0)
