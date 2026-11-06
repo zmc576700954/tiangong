@@ -3,11 +3,14 @@
  *
  * URL 形式：`ws://host:port/graph/<graphId>`。
  *
- * 协议基于 y-protocols/sync：
- *  - 客户端连上后，服务端发 sync step 1（state vector）
- *  - 客户端回 sync step 2（自身差异）
- *  - 任意一方更新 Y.Doc 后通过 sync update 通知对方
- *  - 关闭时 deleteId 或 disable cleanup
+ * 协议基于 y-protocols/sync，但本端点**只读**：
+ *  - 客户端连上后，服务端直接下发完整状态（sync step 2）
+ *  - 客户端发 sync step 1（state vector）→ 服务端回 sync step 2（缺失增量）
+ *  - 客户端发 sync step 2 / sync update（写消息）→ 以 1008 关闭，且不应用到 Y.Doc
+ *  - 服务端不主动向客户端索取本地差异（不发 step 1），避免诱发写消息
+ *
+ * 数据方向固定为 SQLite/yjs_snapshots → Y.Doc → 客户端；
+ * 客户端的任何数据都不会进入 Y.Doc，更不会进入 SQLite。
  *
  * Awareness（D10b）走不同消息类型 MESSAwareness；当前 D10a 暂不实现 awareness 通道，
  * 仅保留 MESSAGE_SYNC。
@@ -132,11 +135,12 @@ export class YjsWsServer {
     }
     set.add(ws)
 
-    // 服务端 → 客户端：sync step 1
+    // 服务端 → 客户端：直接下发完整状态（sync step 2）。
+    // 不发 step 1：那等于向客户端索取本地差异，会让写客户端回 step 2 后被关闭。
     {
       const encoder = encoding.createEncoder()
       encoding.writeVarUint(encoder, MESSAGE_SYNC)
-      syncProtocol.writeSyncStep1(encoder, doc)
+      syncProtocol.writeSyncStep2(encoder, doc)
       safeSend(ws, encoding.toUint8Array(encoder))
     }
 
@@ -159,17 +163,37 @@ export class YjsWsServer {
         const u8 = toUint8Array(data)
         const decoder = decoding.createDecoder(u8)
         const messageType = decoding.readVarUint(decoder)
-        if (messageType === MESSAGE_SYNC) {
+        if (messageType !== MESSAGE_SYNC) {
+          logger.warn(`rejecting non-sync ws message (type ${messageType}) for graph ${graphId}`)
+          ws.close(1008, 'read-only: only sync messages are accepted')
+          return
+        }
+
+        const syncSubType = decoding.readVarUint(decoder)
+
+        // 读请求：客户端发 state vector，服务端回它缺的增量。不触碰 doc。
+        if (syncSubType === syncProtocol.messageYjsSyncStep1) {
           const encoder = encoding.createEncoder()
           encoding.writeVarUint(encoder, MESSAGE_SYNC)
-          syncProtocol.readSyncMessage(decoder, encoder, doc, ws)
-          if (encoding.length(encoder) > 1) {
-            safeSend(ws, encoding.toUint8Array(encoder))
-          }
+          syncProtocol.writeSyncStep2(encoder, doc, decoding.readVarUint8Array(decoder))
+          safeSend(ws, encoding.toUint8Array(encoder))
+          return
         }
-        // MESSAGE_AWARENESS 当前 D10a 不实现，未来 D10b 扩展
+
+        // 写消息：step 2 / update 都会修改 Y.Doc，一律拒绝且不应用。
+        if (
+          syncSubType === syncProtocol.messageYjsSyncStep2 ||
+          syncSubType === syncProtocol.messageYjsUpdate
+        ) {
+          logger.warn(`rejecting write sync message (subtype ${syncSubType}) for graph ${graphId}`)
+          ws.close(1008, 'read-only: doc updates are not accepted')
+          return
+        }
+
+        ws.close(1008, `read-only: unsupported sync subtype ${syncSubType}`)
       } catch (err) {
         logger.warn('ws message handler failed:', err)
+        ws.close(1011, 'failed to process message')
       }
     })
 

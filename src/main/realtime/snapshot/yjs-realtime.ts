@@ -6,9 +6,12 @@
  *  - init(): 启动时调用一次
  *      1. 把 yjs_snapshots 老数据迁移回填（如果还没有快照）
  *      2. 给 graphs 表里每张图加载/构造 Y.Doc
- *      3. 给每张图绑上防抖保存 + 镜像写入 SQLite
+ *      3. 给每张图绑上防抖快照保存
  *  - getOrLoadDoc(graphId): 拿到当前内存中的 Y.Doc，没有就按需加载
  *  - shutdown(): 关闭所有图，flush 一次快照，停掉 WS server
+ *
+ * 单向约束：Y.Doc 只读，SQLite 的 nodes/edges 是唯一权威。
+ * 这里不再挂任何 doc → SQLite 的写回观察器，doc 变更只会更新 yjs_snapshots 快照。
  *
  * 该模块是 main 进程单例，由 ipc-handlers.ts 初始化。
  */
@@ -17,9 +20,6 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type * as Y from 'yjs'
 import { YjsDocument } from './yjs-document'
 import { SnapshotStore } from './snapshot-store'
-import { NodeRepository } from '../../repositories/node-repository'
-import { EdgeRepository } from '../../repositories/edge-repository'
-import { attachDiffHandlers } from './bidirectional-sync'
 import { attachSnapshotPersistence } from './snapshot-persistence'
 import { createYjsWsServer, type YjsWsServer } from './ws-server'
 import { createLogger } from '../../shared/logger'
@@ -76,8 +76,8 @@ export class YjsRealtime {
    * 主入口：一次性启动。
    * 1. 迁移老数据 → 写 yjs_snapshots（如有老节点/边）
    * 2. 加载每张图的 doc
-   * 3. 绑 diff → SQLite + 防抖快照保存
-   * 4. 启动 WS server（如启用）
+   * 3. 绑防抖快照保存（不绑 doc → SQLite 写回）
+   * 4. 启动只读 WS server（如启用）
    */
   async init(): Promise<YjsRealtimeInitResult> {
     if (this.initialized) {
@@ -202,18 +202,12 @@ export class YjsRealtime {
 
     this.docs.set(graphId, doc)
 
-    // 绑 diff → SQLite + 防抖 snapshot
-    const nodeRepo = new NodeRepository(this.db)
-    const edgeRepo = new EdgeRepository(this.db)
-    const disposeDiff = attachDiffHandlers(doc, { nodeRepo, edgeRepo })
+    // 只绑防抖 snapshot；不绑 doc → SQLite 写回（SQLite 是唯一权威）。
     const disposeSnapshot = attachSnapshotPersistence(graphId, doc, this.store, {
       debounceMs: this.options.snapshotDebounceMs,
       onError: (err) => logger.warn(`snapshot save error for ${graphId}:`, err),
     })
-    this.unsubscribers.set(graphId, () => {
-      disposeDiff()
-      disposeSnapshot()
-    })
+    this.unsubscribers.set(graphId, disposeSnapshot)
 
     return doc
   }
