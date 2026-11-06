@@ -124,10 +124,12 @@
 
 - 任务对象与 revision
 - 结构推导拆解 + 人工确认
-- 单 Agent 路由（按能力矩阵选一个 adapter）
+- 单 Agent 路由（能力票见 §5.9.5，本期只允许 Tier 1）
 - 节点会话时间线
-- 顺序多步执行
+- 顺序多步执行（失败分类、超时、重启对账见 §5.9）
 - 节点级测试执行与结果回写
+- 测试失败 → bug 闭环与定向重测（§6.6）
+- 手工用例走 E4 人工签收（§6.7）
 
 不做：
 
@@ -136,6 +138,7 @@
 - 自动 merge
 - 全自动 planner（无人工确认的计划不执行）
 - 多 Agent 并行编排
+- dev→online 结构变更提案 UI（§2.7，L3）
 
 ---
 
@@ -319,6 +322,23 @@ Step 4 抽样失败（无可采文件 / 全是二进制）：
 - 缺这一步的后果：重导生成新图 → 节点换新 `entity_key` → 打开新节点时间线为空 → 用户判断"会话丢了"（数据仍在旧图）。
 - 不做合并入口：入口拒绝后不会产生需要合并的第二套 lineage，因此 `lineage_links` 表取消、`graphs.project_lineage_id` 取消（§7 已移除）。
 
+### 2.7 产品图 ↔ 开发图：不做自动回写（缺口补齐）
+
+外部蓝图指出一个我们此前未明确的场景：**开发过程中发现产品图结构本身需要调整**（模块该拆、流程该改、需求该合并）。我们的默认口径是：
+
+- `online` 图是产品事实来源，**任何 dev 侧推导都不得直接写 online 图**。
+- L1/L2 只允许**人在 online 图手工修改**；系统不提供"自动同步"开关。
+- 违反时后果是什么：若不设此规则，模型很容易把"代码里长这样"当成"产品应该这样"，产品图会被实现细节反向污染，且无法区分"需求变更"与"实现偏差"。
+
+**后续（L3，非本期）提案机制**（采纳外部蓝图的"提案 → 人工采纳"方向，但不新增表）：
+
+- 提案 = 一个 `work_item`（`origin='human'` 或 `derived_plan`），`anchor_entity_key` 指向待变更的 online 实体；
+- 变更内容放 `metadata.proposal`：`{before, after, reason, evidence_refs}`；
+- 采纳时由人在 online 图执行真实编辑，并写 `work_items.status='done'` + `node_evidence(E2)`；驳回写 `cancelled` + 理由；
+- 提案不自动应用、不可批量静默采纳；撤销 = 人工反向编辑，不做自动回滚。
+
+本期只记录规则，不实现提案 UI；L1/L2 的 online 图仍只接受人工编辑。
+
 ---
 
 ## 3. 完成度真实性：状态双轨与证据
@@ -447,6 +467,15 @@ revoke_reason           TEXT
 
 E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（节点 `scope_files` 的逐文件 sha256 聚合值）可以作为 E2 的文件级证据，并用于 E4 的 stale 判据，但**不构成 E3 的代码 hash**。因此非 git 项目的最高证据等级是 E4 人工签收。
 
+### 3.6 项目进度：派生视图，不落库（采纳，但更严格）
+
+外部蓝图提出"项目进度 = 派生视图，不落库；节点状态加权（published 100 / in_progress 70 …）"。方向可采纳，但必须加两条约束，否则会重演"漂亮但说谎"：
+
+- 进度**只按人工状态加权**，叫"发布进度（publish progress）"，**不叫完成度**；不得作为验收依据。
+- 证据维度**单独展示**：`verified_count`（E3）与 `signed_off_count`（E4）分别计数，**不进入同一个百分比**。把 `signed_off` 折算进发布进度会被误读为"测试通过"。
+- 公式：`publishProgress = Σ(node_status_weight) / Σ(max_weight)`，权重表写配置；`stale` / `failed` 不计入分子，但单列。
+- 不落库、不写 `nodes`、不触发任何证据变更；只读查询，缓存必须带 `computed_at` 与所用权重版本。
+
 ---
 
 ## 4. 任务对象与执行记录
@@ -472,6 +501,13 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - 一次执行尝试一行；`executor_kind` 区分 agent / test / human。
 - `status` 与 `agent_runs.status` 不共用：`work_runs` 是任务视角，`agent_runs` 是执行器视角。
 - `work_item_revision` 固化"这次执行用的是哪一版计划"，用于偏差度量与证据归属。
+- `attempt` 每次真实重试递增；幂等键 `work_item_lineage_id:work_item_revision:attempt`，与 runtime 现有幂等机制对齐。
+- `deadline_at` 由调度器写入，到期强杀子会话并落 `timed_out`；不允许只有 schema 列、没有写入方。
+- **失败保留部分产出**：`partial_output_ref` 记录已收 stdout / file_change / 失败原因；失败不等于丢弃。
+- **启动对账**：启动时把所有 `running` 的 run 置为 `interrupted`，再由规则决定回 `queued` 或 `cancelled`；不自动重放需要审批的步骤。
+- **节点忙**（`SESSION_BUSY` / `NODE_BUSY`）→ 回 `queued` 重新排队，**不消耗 attempt**。
+- **结构化输出**：按 `work_items.output_schema_json` 解析 `outputs_json`；解析失败降级为整块文本，标 `output_parse='fallback'`，不得当作成功。
+- **依赖失败传播**：上游失败 → 下游 `blocked` 不执行；无关分支继续跑完（失败不掩盖已发生事实）。
 
 ### 4.3 `node_session_links`
 
@@ -496,6 +532,26 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | `chat_threads` / `chat_messages` | 是 | 时间线读取来源 |
 
 已知限制：`agent_turns.node_id NOT NULL`，无节点会话使用伪节点 `thread:<id>`。本期不改该表结构，`node_session_links` 用 `node_entity_key` 可空来表达"项目级会话"。
+
+### 4.6 节点活动流与 ExecutionRecord（采纳为派生视图，不新增表）
+
+外部蓝图把"执行记录（ExecutionRecord）"作为绑定原子单元。我们不新增 `execution_records` 表，而是**用现有表合成同构视图**：
+
+| ExecutionRecord 字段 | 本设计的来源 |
+|---|---|
+| `nodeId` / `graphId` | `work_items.anchor_node_id` / `node_session_links` |
+| `kind` | `work_runs.executor_kind` + `work_items.origin` + run 的上下文 |
+| `sessionId` / `taskId` / `stepId` | `work_runs.session_id` / `work_items.id` / `work_runs.id` |
+| `filesTouched` | **只来自确定性证据**：`change_sets.files_json`（file_change 事件 + ScopeGuard 工作区差分），不做推断 |
+| `diffRef` / `artifactRefs` | `change_sets` 的 base/head 与 `test_runs.report_ref` / `agent_artifacts` |
+| `status` / `startedAt` / `endedAt` | `work_runs.status` / `started_at` / `ended_at` |
+
+规则：
+
+- 节点活动流 = 以 `work_runs` 为主轴、按 `node_session_links` 折叠会话、附证据/测试/bug 链接的**只读视图**；不落新表，不产生第二套事实。
+- `filesTouched` **不得**由模型自述或摘要推导；没有 `change_set` 就是空，宁可显示"未采集"。
+- 一个节点有多个会话时，UI 必须展示 `{activeThreadId, threadIds[]}`，不得只保留最后一个（当前 `threadStore` 的问题）。
+- 父节点活动流聚合其子树的所有 run；聚合是查询，不是写入。
 
 ---
 
@@ -701,6 +757,64 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 
 ---
 
+### 5.9 执行编排机制（采纳自外部蓝图，补我们此前的空白）
+
+我们此前只定义了"计划怎么来、怎么确认"，没有定义"确认之后怎么跑"。以下机制整体采纳，并受本设计的双轨/证据规则约束。
+
+#### 5.9.1 单步与多步的分流
+
+- `simple`：单文件、无跨节点依赖、`scope_files` 只落在一个节点 → 生成单步计划；仍需一次人工确认（C1/C2 合并为一次点击），**不跳过确认**。
+- `complex`：多文件/多节点/存在依赖 → 走结构推导 → 人工确认 C1–C4 → 执行。
+- 判据取并集保守判定：任一信号为 complex 即走 complex；不允许模型自称 simple。
+
+#### 5.9.2 失败分类与策略
+
+| `failure_class` | 含义 | 策略 |
+|---|---|---|
+| `infra` | 解析/本地工具/存储异常 | 同 turn 重试 ≤2，退避 1s/4s；仍失败 → `needs_human` |
+| `busy` | 节点或会话忙 | 回 `queued`，**不计 attempt**，按优先级重排 |
+| `turn_fail` | 单轮校验失败 | 同 task 重试 ≤2，提示带失败原因 |
+| `verify_fail` | 验收未过 | 回 `running` 再产出一轮；仍失败 → `needs_human` |
+| `test_fail` | 测试失败 | 进 bug 闭环（§6.6），不重试同一命令 |
+| `env_fail` | 依赖/端口/编译环境 | `needs_human`，**不建 bug** |
+| `timeout` / `cancel` / `denied` | 超时/取消/审批拒绝 | 落对应终态；`denied` 不改写计划 |
+
+- 每个失败必须写 `failure_class` + `attempt` + 可读原因；没有分类的失败不允许进入重试。
+- 重试上限与退避写配置，不硬编码在调用点。
+
+#### 5.9.3 调度、并发与写冲突
+
+- **全局写闸 `WorkspaceWriteGate`**：agent 编排阶段的写操作按项目串行（同一工作区同一时刻只允许一个写者）；测试执行仍走 §6 的隔离 worktree，两者不共用锁。
+- 并发上限：全局 2、单图 1、单节点 1；超限任务保持 `queued`，按 `priority DESC, created_at ASC` 出队。
+- **节点忙不重试**：`SESSION_BUSY` → 重新排队；`NODE_BUSY` → 等待当前 run 结束再出队。
+- **不做自动回滚**：已通过人工审批的 diff 不自动 revert；回滚是新的 work_item。
+- 取消语义：`cancel(work_item)` → 当前 run 落 `cancelled`，下游依赖项落 `blocked`；已完成的 run 不回滚。
+
+#### 5.9.4 超时与重启
+
+- 单步 `deadline_at` 默认 10 分钟（测试命令默认 60 分钟），由调度器写入并强杀；**不允许出现"有 deadline 但没有写入者"**。
+- 启动对账：`running` → `interrupted` → 按"是否需要审批 / 是否幂等"决定 `queued` 或 `cancelled`；不自动重放需审批步骤。
+- 幂等键 `work_item_lineage_id:work_item_revision:attempt` 透传到 runtime；同一键重复提交必须幂等。
+
+#### 5.9.5 能力票（Tier）与降级
+
+| Tier | 能力 | 本期策略 |
+|---|---|---|
+| Tier 1 | 单轮 + 会话续跑 + 审批事件 + 结构化输出 | **唯一允许参与编排** |
+| Tier 2 | 部分事件/续跑不稳 | 降级为单次任务，UI 明示"降级执行，不保证中断恢复" |
+| Tier 3 | 无事件/无恢复 | 禁止编排，只能人工在会话中手动使用 |
+
+- Tier 由能力探测结果决定并写 `routing_decisions`；不允许按模型名硬编码。
+- 降级必须对用户可见，不允许静默换 adapter。
+
+#### 5.9.6 明确不采纳的部分
+
+- **不采纳"由 LLM planner 直接产出并执行 TaskDAG"**：我们的分解必须来自结构推导 + 人工确认（§5.1–5.6），模型只做选择与组织。
+- **不采纳"节点状态由任务完成事件自动推进"**：`nodes.status` 仍只允许人写（§1.4），任务完成只影响 `work_runs` / `work_item` 与派生 `node_execution_state`。
+- **不采纳"MVP 不做 worktree"**：TestExecutor 仍用隔离 worktree；全局写闸只覆盖 agent 编排的共享工作区。
+
+---
+
 ## 6. TestExecutor
 
 ### 6.1 边界与复用声明
@@ -764,6 +878,32 @@ subject_id   TEXT
 - `test_specs` 绑定 `test-case` 节点，一个节点可有多个 spec（不同命令/环境）。
 - 结果回写：`test_results` → 命中 `verifies` 目标节点的 **E3** 证据（测试通过 + 代码 hash）；`test_runs` 聚合 → `node_execution_state` 重算。
 - 失败的测试产生 E3 的反向事实（`status='failed'`），派生状态为 `failed`，但**不自动把 `nodes.status` 打回**。
+
+### 6.6 Bug 闭环与定向重测（采纳）
+
+外部蓝图给出了完整的失败→bug→修复→定向重测链路，我们此前只到"回写失败"为止。补齐如下：
+
+1. **测试失败 → 自动建 bug**：在 dev 图 `bug_nodes` 新建一条，`title` = 失败用例名，`severity` 映射：阻断性失败 → `critical`；普通断言失败 → `major`；非功能性/文案 → `minor`。`metadata` 记录 `{test_run_id, test_case_ref, verifies_entity_key, failure_class}`。
+2. **不建 bug 的例外**：`env_fail`（缺依赖/端口占用/编译环境）只记 `test_runs.failure_class`，不建 bug；否则会污染缺陷统计。
+3. **bug → 修复任务**：bug 节点自动生成一个 `work_item`（`anchor_entity_key` = 被验证的 dev 实体，`origin='derived_plan'`），仍需 C2 确认后执行。
+4. **定向重测**：修复完成后只重跑失败用例与同 suite 的相关用例（`test_plan_items.selected_by='targeted'`），不全量重跑；全量重跑是独立动作，需人触发。
+5. **回写闭环**：定向重测通过 → 新 E3 证据（新 commit）→ bug 节点 `retested_at` + `verified_by_run_id`；bug 的关闭仍由人确认（`bug_nodes.status` 人工写），系统只给建议。
+6. **证据链**：bug 行必须能反查到 `test_run` → `test_result` → 失败输出；缺任一环不允许标"已修复"。
+
+### 6.7 手工用例与"人工验收型测试"（采纳，归 E4）
+
+- `test-case` 节点 `metadata.case_kind` 取：`unit` / `integration` / `e2e` / `manual` / `llm_acceptance`（放在 `metadata` 里，不新增 `nodes` 列，避免再次触发 CHECK 重建）。
+- `unit/integration/e2e` → 可产生 E3（命令 + 退出码 + 代码 hash）。
+- `manual` → **不产生 E3**；执行时创建 `work_run(executor_kind='human')`，完成后进入 E4 签收流程（§3.5），标注"人工验收，无代码 hash、不可复现"。
+- `llm_acceptance` → 只产生 E2 或 `evidence_suggestion`；**LLM 判定不得直接成为 E3/E4**，必须有人工确认或真实测试命令。
+- 外部蓝图的"review gate（LLM 验收 + diff 接受 + 人工确认）"因此**降级映射**：LLM 部分 → E2 建议；人工确认部分 → E4；只有测试命令通过 + 代码 hash 才是 E3。
+
+### 6.8 测试命令网关与归属校验（采纳）
+
+- 统一命名 `TestCommandGateway`：所有测试相关 shell 步骤必须经过它；**禁止复用 `RecipeRunner` 的 shell 步骤**，禁止任何旁路 `child_process.spawn`。
+- 每次执行前校验：`work_item.graph_id` 与目标节点所属图一致；`test_specs.project_path` 与当前项目根一致；不属于当前会话/图的计划一律拒绝。
+- 跨会话的 `pending approvals` 必须按 `subject ownership` 过滤，不能把 A 项目的测试计划审批展示给 B 项目。
+- `recipes:run` 的 IPC 入口必须补归属校验（现有实现可被任意工程触发）。
 
 ---
 
@@ -1042,10 +1182,13 @@ CREATE TABLE work_items (
   verification_hint    TEXT,
   status               TEXT NOT NULL DEFAULT 'draft' CHECK(status IN (
     'draft','awaiting_confirm','queued','running','blocked',
-    'done','cancelled','superseded')),
+    'needs_human','done','cancelled','superseded')),
   gate_status          TEXT NOT NULL DEFAULT 'incomplete'
                        CHECK(gate_status IN ('incomplete','pass','waived')),
   gate_missing_json    TEXT,
+  depends_on_json      TEXT NOT NULL DEFAULT '[]',   -- 上游 work_item id 列表
+  output_schema_json   TEXT,                          -- 结构化输出契约
+  checker_work_item_id TEXT REFERENCES work_items(id),-- maker-checker 的审查项
   origin               TEXT NOT NULL CHECK(origin IN ('human','derived_plan','imported')),
   plan_id              TEXT,
   candidate_id         TEXT,
@@ -1071,19 +1214,28 @@ CREATE TABLE work_runs (
   work_item_lineage_id TEXT NOT NULL,
   work_item_revision   INTEGER NOT NULL,
   run_seq              INTEGER NOT NULL,
+  attempt              INTEGER NOT NULL DEFAULT 1,
   executor_kind        TEXT NOT NULL CHECK(executor_kind IN ('agent','test','human')),
   adapter_name         TEXT,
   route_decision_id    TEXT,
   status               TEXT NOT NULL CHECK(status IN (
     'queued','running','awaiting_approval','blocked',
-    'completed','failed','cancelled','superseded')),
+    'completed','failed','cancelled','superseded',
+    'interrupted','timed_out')),
   session_id           TEXT,
   thread_id            TEXT,
   agent_run_id         TEXT,
+  invocation_id        TEXT,
   started_at           INTEGER,
+  deadline_at          INTEGER,
   ended_at             INTEGER,
   result_summary       TEXT,
-  failure_class        TEXT,
+  outputs_json         TEXT,
+  output_parse         TEXT CHECK(output_parse IN ('ok','fallback')),
+  partial_output_ref   TEXT,
+  failure_class        TEXT CHECK(failure_class IN (
+    'infra','busy','turn_fail','verify_fail','test_fail',
+    'env_fail','timeout','cancel','denied')),
   created_at           INTEGER NOT NULL,
   UNIQUE(work_item_id, run_seq)
 );
@@ -1312,6 +1464,9 @@ CREATE TABLE test_plan_items (
   seq               INTEGER NOT NULL,
   command           TEXT NOT NULL,
   cwd               TEXT,
+  selected_by       TEXT NOT NULL DEFAULT 'plan'
+                    CHECK(selected_by IN ('plan','targeted','rerun')),
+  targeted_reason   TEXT,
   policy_decision   TEXT CHECK(policy_decision IN ('allow','deny','ask')),
   status            TEXT NOT NULL CHECK(status IN (
     'pending','running','passed','failed','skipped','error','timed_out')),
@@ -1343,6 +1498,7 @@ CREATE TABLE test_runs (
   passed           INTEGER NOT NULL DEFAULT 0,
   failed           INTEGER NOT NULL DEFAULT 0,
   skipped          INTEGER NOT NULL DEFAULT 0,
+  report_ref       TEXT,
   started_at       INTEGER,
   ended_at         INTEGER,
   created_at       INTEGER NOT NULL
@@ -1367,6 +1523,8 @@ CREATE TABLE test_results (
   exit_code              INTEGER,
   duration_ms            INTEGER,
   failure_summary        TEXT,
+  failure_class          TEXT CHECK(failure_class IN (
+    'assertion','timeout','env_fail','infra','cancelled')),
   output_ref             TEXT,
   created_at             INTEGER NOT NULL
 );
@@ -1780,6 +1938,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 不复用会话授权 | `session grants` 为内存态，测试执行不读取、不继承 |
 | 不使用 `unattended` | 计划审批超时即作废（`expired`），不自动重放 |
 | 审计可追溯 | 审批、路由、偏差、证据、迁移都有独立表与报告 |
+| 归属校验（采纳） | 测试计划与 bug 修复必须校验"图/项目/会话归属"；`recipes:run` 等既有 IPC 补同样校验，防止跨工程触发 |
+| 审批不串场（采纳） | 跨会话 `pending approvals` 必须按 subject ownership 过滤；不得把 A 项目的待审批计划展示到 B 项目 |
 
 需扩展的唯一安全相关结构：`agent_approvals` 的 `subject_type` / `subject_id` 与 `run_id`/`turn_id` 可空。改法见 §6.3 / §8.10；影响面为所有读取该表的查询与重启重推逻辑（测试计划审批不自动重放）。
 
@@ -1806,3 +1966,80 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | `import_rejections` 留存期 | **已定**：明细 90 天，聚合计数永久 |
 | 偏差校准的周期 | 按批次（每 20 个 run）离线统计，人工改配置 |
 | worktree 残留清理周期 | 失败现场保留 7 天，其余即时清理（可配置） |
+
+---
+
+## 12. 外部蓝图交叉验证记录（2026-11-07）
+
+**来源**：`map-orchestration-blueprint.md`（Zcode 方案，481 行，以附件形式提供，未入库）。
+**方法**：逐层对照；每层给结论；只采纳"补了缺失场景"或"把含糊处变可执行"的内容；已定口径不得被改写。
+
+### 12.1 逐层对照结论
+
+| # | 层 | 结论 | 依据与说明 |
+|---|---|---|---|
+| 1 | 概念模型 | 各有所长 | 对方以 `ExecutionRecord` 为绑定原子单元、强调节点活动流；我们以 `work_items` + `work_runs` + `node_links` + 证据为主线。已采纳其"执行记录视图"概念，但落到现有表上（§4.6），不新增表 |
+| 2 | 表结构与主键/外键 | 我们更完整 | 我们有 21 张新表、revision/supersedes、key-based `node_links`；对方 test-case 用 `targets:[{graphId,nodeId}]`，node id 在克隆/重导后失效。采纳 `work_items`/`work_runs` 的依赖、结构化输出、attempt、deadline、`failure_class` 字段（§7.2）；驳回 `targets` |
+| 3 | 迁移与版本 | 我们更完整 | 我们有 v24–v32、schema checksum、备份与回滚演练；对方无迁移/回退方案。不采纳 |
+| 4 | 任务拆解与编排 | 各有长短 | 对方的执行期机制（失败分类、波次、并发、超时、重启对账）完整且可执行；我们的"结构推导 + 人工确认 + 可修订计划"更严。采纳执行机制（§5.9），驳回"LLM planner 直接产出并执行 DAG" |
+| 5 | 路由与执行 | 对方更完整 | Tier 1/2/3 能力票比"按能力矩阵选 adapter"更可执行；节点忙排队、幂等键、deadline 写入方都是缺口。采纳（§5.9.4–5.9.5） |
+| 6 | 测试闭环 | 对方更完整 | 我们只到"回写失败"，对方补了 bug 闭环、定向重测、manual/LLM 用例分级、测试命令网关。采纳（§6.6–6.8）；但节点类型与跨图引用方式坚持我们的设计 |
+| 7 | 多图与 `entity_key` | 我们更完整 | `entity_key`、`node_links`、导入查重是我们的核心，对方没有身份层。仅采纳其"dev→online 结构变更走提案"的方向（§2.7，L3 实现） |
+| 8 | 状态机 | **直接冲突** | 对方主张"节点状态由任务完成事件自动推进"，与我们的状态双轨冲突。保持原设计：`nodes.status` 只由人写，任务完成只影响 `work_runs` 与派生状态。采纳其任务级 `failure_class` / `needs_human` / `interrupted` |
+| 9 | 并发与冲突 | 各有长短 | 对方有全局写闸、并发上限、优先级队列；我们有隔离 worktree 与"同节点不并行"。按场景分工：agent 编排用写闸，测试执行用 worktree（§5.9.3） |
+| 10 | 权限与安全边界 | 部分一致 | 都复用审批网关/Bash 策略/gitdir 保护。对方补了归属校验与"审批不串场"，这是我们的缺口。采纳（§6.8、§10） |
+| 11 | 性能与规模 | 各有长短 | 对方有并发上限、波次调度、运行记录不入图；我们有索引设计、视口分页、批量 IPC。采纳上限，保留索引方案 |
+| 12 | 交付节奏 | 不可直接映射 | 对方 P0–P4，我们 S1–S8/v24–v32。P0 的源码缺陷有价值但不属本文；Yjs 拆除与本文假设冲突，列入待拍板（§12.5） |
+
+### 12.2 采纳清单（已写入正文）
+
+| 补充内容 | 对方为什么更好 | 落到章节 |
+|---|---|---|
+| ExecutionRecord 作为派生视图 + 节点活动流 | 补了"一次执行"作为产品可见单元，且明确 filesTouched 必须是确定性证据 | §4.6 |
+| `depends_on_json` / `output_schema_json` / `checker_work_item_id` | 把 DAG 依赖、结构化输出、maker-checker 变成表结构可执行 | §7.2 |
+| `attempt` / `deadline_at` / `interrupted` / `timed_out` / `partial_output_ref` / `output_parse` | 补了重试、超时、重启、失败保留部分产出 | §4.2、§7.2 |
+| 单步/多步分流 | 避免小任务被过度拆解，同时不跳过人工确认 | §5.9.1 |
+| `failure_class` 与重试策略 | 把"失败了怎么办"从含糊变成可执行表 | §5.9.2 |
+| 全局写闸、并发上限、优先级队列、节点忙不重试 | 补了多任务并发时的写冲突与饥饿问题 | §5.9.3 |
+| 启动对账、幂等键、取消传播 | 补了崩溃恢复语义 | §5.9.4 |
+| Tier 1/2/3 能力票与降级明示 | 把"能力矩阵"从概念变成可判定规则 | §5.9.5 |
+| Bug 闭环 + 定向重测 + 环境失败不建 bug | 补了测试失败后的完整链路 | §6.6 |
+| `case_kind`（manual / llm_acceptance）分级 | 明确"人工验收型测试"只能到 E4，LLM 判定不能成为证据 | §6.7 |
+| `TestCommandGateway` + 归属校验 + 审批不串场 | 补了安全边界，且指出 `recipes:run` 的既有缺口 | §6.8、§10 |
+| dev→online 结构变更提案 | 补了"开发中发现产品结构要改"的缺失场景 | §2.7（L3） |
+| 发布进度派生视图 | 补了项目级汇总，但我们加严为"不落库、不叫完成度、证据分组" | §3.6 |
+
+### 12.3 驳回清单与理由
+
+| 对方主张 | 驳回理由 |
+|---|---|
+| LLM planner 直接产出 TaskDAG 并执行 | 与已定的"结构推导 + 人工确认 + 可修订计划"冲突；无人工确认的自动 DAG 会把模型猜测当成分解事实 |
+| 节点状态由任务完成事件自动推进 | 与状态双轨冲突；"任务完成"不等于"节点完成"，正是"漂亮但说谎"的来源 |
+| test-case `targets` 用 `graphId + nodeId` | node id 在克隆、重导、重建后都会变；必须坚持 `entity_key` + `node_links` |
+| 新增 `test-flow` 节点类型 | 与现有 `test-suite` 语义重叠，且会再次触发 `nodes.type` CHECK 重建；用 suite 表达 flow |
+| MVP 不做 worktree | 与 TestExecutor 隔离执行原则冲突；只在 agent 编排阶段采纳共享工作区 + 写闸 |
+| review gate 直接计入"已验证" | LLM 验收 + 人工确认不能等价于"测试通过 + 代码 hash"；按 §6.7 降级映射到 E2/E4 |
+| 拆除 Yjs / 改 RequestQueue | 超出本文范围，且与"Yjs 重建不得重算 `entity_key`"假设冲突；需单独决策（§12.5） |
+| 运行记录只放 artifacts、不进图 | 我们本就没有把 run 做成图节点（`test_runs`/`test_results` 是表），方向一致，无需改 |
+
+### 12.4 对已定八条口径的冲突检查
+
+| 已定口径 | 外部文档是否触及 | 结论 |
+|---|---|---|
+| 查重阈值与判定顺序 | 未触及 | 保持 |
+| 拒绝明细 90 天 + 聚合永久 | 未触及 | 保持 |
+| E4 统一 30 天过期 | 未触及 | 保持 |
+| 分支/副本"记住放行" | 未触及 | 保持 |
+| 图删除后重建判据 | 未触及 | 保持 |
+| L1 不开放删除节点 | 未定义删除语义 | 保持 |
+| E3 / E4 的"可复现 / 不可复现"语义 | **触及**（review gate、published gate 把 LLM 验收/人工确认计入进度） | **不采纳其混同**，按 §6.7 降级映射；原口径不变 |
+| `signed_by` 取值 | 未触及 | 保持 |
+
+**结论：本次交叉验证未改写任何一条已定口径，不需要重新审批。**
+
+### 12.5 仍需用户拍板
+
+1. **是否推进"拆除 Yjs、改自研 RequestQueue"**（对方 P0 主张）。若推进，本文 §2.2"图快照恢复/Yjs 重建不得重算键"与 §8 的快照相关表述需要同步修订。
+2. **是否把对方 P0 的三个源码缺陷纳入开工前置**（subagent 超时不杀会话、失败丢弃部分产出、deadline 无写入方）。属源码修复，需单独授权。
+3. **是否允许"发布进度"对外展示**。本文只允许内部只读视图，且必须与 `verified_count` / `signed_off_count` 分开；若产品要求对外，需要确认是否会造成"进度=完成度"的误读。
+4. **dev→online 提案 UI 是否提前到 L2**。本文默认 L3，L1/L2 只允许人工直接编辑 online 图。
