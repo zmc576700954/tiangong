@@ -3669,3 +3669,246 @@ git -C repo remote show origin               # → remote.origin.uploadpack 执�
 | 全量 `npx vitest run` | `173 failed / 3135 passed`，26 个失败文件全部是 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`）；基线 `174 failed / 3126 passed`（27 文件）中的 `claude-code.test.ts` 已回落，新增用例计入 passed |
 
 未 commit、未 push、未 amend。
+
+---
+
+## 二十三、907c4d8 对抗性复验：修复生效，但仍有 3 个零审批执行洞（2026-11-06）
+
+### 23.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `907c4d853380c65d1274e4f99df91edc0e2e9dc1`（父 `5a83985`） |
+| 工作树 | 干净（复验期间只有本文档被修改） |
+| `bash-readonly.ts` sha256 | `253ae55747caf67c2934e39b8c7a5623a0e78814200b64bd6fd601e5f7bbfbec` |
+| `bash-readonly.test.ts` sha256 | `45ba87158bc9b42f8438493cb338cc0daa8a714f3851f08bc4132455218502ac` |
+| `claude-code.test.ts` sha256 | `201cb14d2dc7c3241e0271e7a1a30d869b3564757caefa198b9b121d52a6f465` |
+| 本文档追加前 sha256 | `834b6ca6699f465b36d75a9bf50f0d12e26725769e765fe1200bab59d09bcdaf` |
+
+复验方法：`git archive <sha> | tar -x` 导出 HEAD 与父提交，`esbuild --bundle` 打包策略模块；夹具在 `/tmp/audit10/fx/`，marker 记录真实执行；真实 git 为 `git 2.50.1 (Apple Git-154)`。
+
+### 23.1 一句话判定
+
+**不可发布。** 代码阻断 3 个（H1、H2 为无条件任意执行；H3 为条件执行），流程阻断 1 个（S3 在 7 天观察期满前上生产、且无留档影子数据）。三条本轮修复（alternateRefs、hooksPath+post-index-change、remote show）均生效，但普查仍有洞。
+
+### 23.2 H1：`core.fsmonitor` + `git fsck` —— 无条件任意执行
+
+`GIT_CONFIG_EXEC_SUBCOMMANDS` 未包含 `fsck`（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L421-L423)），因此 `git fsck` 根本不跑探针，直接 `allow / git:fsck`。但 `git fsck` 会刷新 index 并执行 `core.fsmonitor` 指定的程序（实测 marker 参数为 `2 <timestamp>`），而探针的 fsmonitor 判定只覆盖 `status/diff/blame/ls-files`（[L686-L694](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L686-L694)）。
+
+最小复现（不需要签名对象、不需要可执行位）：
+
+```sh
+git init /tmp/h1 && cd /tmp/h1 && echo a > a.txt && git add a.txt && git commit -qm c1
+git config core.fsmonitor /bin/sh     # 把 hook 当解释器
+printf 'touch /tmp/pwned\n' > 2       # hook 工作目录为仓库根，参数首项固定是 "2"
+git fsck --no-progress                # 零审批执行；/tmp/pwned 生成
+```
+
+策略侧同一夹具：`git fsck` 与 `git fsck --no-progress` 均为 `allow / git:fsck`；`git diff`、`git ls-files`、`git blame` 为 `ask / git-repo-config-exec`（说明不是探针整体失效，而是 fsck 未被纳入）。
+
+### 23.3 H2：`diff.submodule=diff` + 子模块 `diff.external` —— 无条件任意执行
+
+探针只读**顶层**仓库配置（`git config --list` 不递归子模块），而 `diff.submodule=diff` 会让普通 `git diff` 进入子模块并调用子模块配置里的 external diff。`diff.submodule` 这个键不在判定清单里，`--submodule=diff` 也不是登记的危险参数。
+
+最小复现：
+
+```sh
+# main 含一个 sub 子模块，sub 内有未提交修改
+git -C main config -f .git/modules/sub/config diff.external /bin/sh
+printf 'touch /tmp/pwned2\n' > main/sub/s.txt
+git -C main config diff.submodule diff
+git -C main diff                       # 策略 allow / git:diff；/tmp/pwned2 生成
+```
+
+实测真实执行（marker 参数含 `s.txt <blob> ...`），并确认：
+
+| 命令 | 真实执行 |
+|---|---|
+| `git diff`（配置 `diff.submodule=diff`） | 执行 |
+| `git log -1 -p`（同配置） | 执行 |
+| `git show --stat HEAD` | 不执行（无 patch） |
+| `git status --porcelain` | 不执行 |
+| `git diff --submodule=diff`（参数形态） | 执行 |
+| `git stash show -p` | 不执行 |
+
+因此只登记 `--submodule` 参数不够，**必须同时判 `diff.submodule=diff` 配置**；否则攻击者只写配置即可，无需命令参数配合。
+
+### 23.4 H3：`gpg.program` + pretty 格式 —— 条件执行（仓库历史含签名对象）
+
+探针只覆盖 `log.showSignature`（[L716-L723](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L716-L723)），没有覆盖 `gpg.program` / `gpg.ssh.program` / `gpg.x509.program`，也没有覆盖 `format.pretty` / `pretty.<alias>` / `--format` / `--pretty` 中的 `%G` 系列占位符。`%G?/%GS/%GK/%GF/%GP/%GT/%GG` 会在渲染时验证签名并调用 gpg，不需要 `--show-signature`。
+
+实测：
+
+```sh
+# 仓库历史含带 gpgsig 头的提交（夹具用 hash-object 构造）
+git config gpg.program /tmp/audit10/marker-gpg.sh
+git config format.pretty 'format:%GS'
+git log -1                 # 策略 allow / git:log；marker-gpg.sh 执行
+git log -1 --format=%GS    # 同样执行（--format 未登记）
+git show -s --format=%GS   # 同样执行
+```
+
+条件性：同一配置在无签名提交的仓库上 `git log -1 --format=%GS` 不调用 gpg（已实测 marker 为空）。所以它需要仓库历史里存在签名提交；但一旦存在（公开仓库合并提交常见），配合可写的 `gpg.program` 就是零审批执行。`for-each-ref` 的 `%(signature)` / `%(signature:grade)`、`git tag -l --format=...` 实测不触发验证，不构成同路径。
+
+### 23.5 三条修复的真实性验证（HEAD vs 父 `5a83985`）
+
+| 路径 | 父提交 | HEAD | 真实执行证据 |
+|---|---|---|---|
+| `git rev-list --alternate-refs`（参数面） | `allow / git:rev-list` | `ask / git-alternate-refs / high` | 父提交下 `core.alternateRefsCommand` marker 执行 |
+| 仓库含 `core.alternateRefsCommand`（配置面） | 同上（allow） | `ask / git-alternate-refs`；单独探针也会在 `rev-list` 命中 | 同上 |
+| `core.hooksPath` + `git status` | `allow / git:status` | `ask / git-repo-config-exec` | 父提交下 `post-index-change` marker 在 status 触发；HEAD 被拦 |
+| `git remote show origin` | `allow / git:remote:read` | `ask / git-remote-show / high` | 父提交下 `remote.origin.uploadpack` 与 `ext::` 命令均执行；HEAD 被拦 |
+| 对照：干净仓库 `git status` | allow | allow | 无 marker |
+
+补充：`git rev-list --alternate-ref`（缩写）、`--include-alternate-refs`（git 拒绝）均被前缀匹配/unknown 覆盖；`git remote -v` / `get-url` 仍 allow 且无执行面。
+
+### 23.6 P2 环境对齐：结论正确，允许方向的语义变化是对的
+
+`probeGitConfig()` 已改为 `buildSafeEnv()`（[L602-L607](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts#L602-L607)），Bash 子进程环境同样来自 `buildSessionEnv() = buildSafeEnv() + BIZGRAPH_TURN_ID`（[base.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/base.ts#L352-L355)）。实测：
+
+| 注入 | 父提交探针 | HEAD 探针 | 真实 Bash（`buildSafeEnv`） |
+|---|---|---|---|
+| `GIT_DIR=clean/.git`，cwd=含 `diff.external` 的脏仓库 | 读 clean → `allow`（漏放） | 读脏仓库 → `ask` | `rev-parse --show-toplevel` 指向脏仓库，与 HEAD 一致 |
+| `GIT_CONFIG_COUNT=1` + `diff.external` | 看到注入 → `ask`（过度拦截） | 看不到 → `allow` | 真实 `git diff` 不执行 marker，与 HEAD 一致 |
+| `GIT_CONFIG_GLOBAL=恶意配置` | 看到 → `ask` | 看不到 → `allow` | 真实 diff 不执行 marker，与 HEAD 一致 |
+| `GIT_WORK_TREE` | 探针不消费 | 不消费 | 真实 git 忽略 |
+
+结论：第 2 条“allow 方向变化”**正确**——探针与真实 Bash 用同一个 `buildSafeEnv()`，注入变量在两边都不可见；旧探针是 fail-closed 但语义不一致的过度拦截。未来风险：若 Bash spawn 某天绕过 `buildSafeEnv` 或给 `buildSafeEnv` 增开 `GIT_CONFIG_*` 白名单，探针会同步变化（同一函数），仍对齐；但若适配器在 spawn 处再合并额外环境，就会重新错位。建议加一条环境奇偶校验测试（同一注入下 `probe` 读取的仓库 == 子进程 `rev-parse --show-toplevel`）。
+
+### 23.7 回归、性能与摩擦
+
+| 场景 | 结果 |
+|---|---|
+| 干净仓库 `status/diff/log/show/rev-list` | 5/5 allow |
+| 标准 LFS 仓库（`.gitattributes filter=lfs`，全局 `filter.lfs.*`） | `status` / `diff` allow（不误伤） |
+| 本仓库真实配置 5 命令 | 5/5 allow |
+| 抽样 43 条常见命令 | 38 allow / 5 ask = 88.4%（ask 为 `npm test`、`git push`、`rm -rf`、`git -c core.pager=...`、`git log --show-signature`） |
+| 单次判定 p50/p95 | 干净 8.1/10.7 ms；10 层 include 8.5/10.5 ms；本仓库 status 8.1/10.9 ms、log 9.1/10.4 ms；父提交本仓库 status 7.9/10.2 ms（修复几乎无额外成本） |
+| 超大配置（~0.85 MB 配置、带 origin 输出 >1 MB） | `io-error`，18 ms，ask（P3 生效） |
+| cwd 不存在 | `cwd-missing`，2 ms，ask（P3 生效） |
+| FIFO include | `timeout`，p50 252 ms，ask，无残留进程 |
+
+FIFO 252 ms 仍在同步路径上（`execFileSync` + 250 ms 超时），会阻塞主进程/UI 最多约 250 ms/次；这是既有形态，不是本轮修复引入。
+
+### 23.8 测试基线
+
+- 全量：`173 failed / 3135 passed / 93 skipped (3401)`，26 个失败文件全部是 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`），无业务失败。
+- 与父提交基线（`174 failed / 3126 passed / 93 skipped (3393)`）相比：`-1 failed / +9 passed / +8 total`，差异来自 `claude-code.test.ts` 回落与新增用例。
+- 定向 `bash-readonly.test.ts` + `claude-code.test.ts`：82 条全部通过；`claude-code.test.ts` 仍断言 `allow` 且 reason 含 `git:status`（临时真实 `.git` 仓库），不是放宽断言。
+
+### 23.9 阻断项与最小改法（交给修复方）
+
+| 编号 | 性质 | 最小改法 | 复现 |
+|---|---|---|---|
+| H1 | 无条件任意执行 | `GIT_CONFIG_EXEC_SUBCOMMANDS` 增加 `'fsck'`；`probeGitConfigExecutes` 的 fsmonitor 条件增加 `sub === 'fsck'` | 23.2 命令；修后 `git fsck` 应变 `ask / git-repo-config-exec` |
+| H2 | 无条件任意执行 | 探针增加 `diff.submodule` 值等于 `diff`（忽略大小写）且 `sub ∈ {diff, log, show}` → true；另建议把 `--submodule` 登记为危险参数（前缀匹配可覆盖 `=diff`，会连带 ask `short/log`，可接受） | 23.3 命令；修后 `git diff` 应 ask |
+| H3 | 条件执行（需签名对象） | 探针增加 `gpg.program` / `gpg.ssh.program` / `gpg.x509.program`（非空）且 `sub ∈ {log, show, whatchanged}` → true；增加 `format.pretty` / `pretty.<alias>` 值含 `%G` → true；可选：`--format`/`--pretty` 值含 `%G` 的参数面拦截 | 23.4 命令；修后 `git log -1` 应 ask |
+
+P2/P3 不需要再改。新增用例应覆盖：`fsck`+fsmonitor（含 `/bin/sh`+文件 `2` 的真实执行负例）、`diff.submodule=diff`+子模块 external diff、`format.pretty=%GS`/`--format=%GS` 与无签名对象对照。
+
+### 23.10 运营问题：7 天观察期与“离线影子批处理”
+
+- **在新 HEAD 上仍构成流程阻断**：S1→S2→S3 的实际上线间隔约 11 分钟，7 天生产影子观察没有执行；S1 的影子计数只在内存（窗口 500），生产路径从不读取、无落盘、无上报。因此 §17.3 的 S1 验收仍是“无法验证”。现在又发现 H1/H2 两个无条件执行洞，说明“探针门控已可信”这一前提本身还不成立，更不能拿“已上线”当默认验收。
+- **离线影子批处理不能替代生产影子数据**：影子对照要回答的是“真实生产命令混合、真实 cwd/仓库配置、真实 allow 决策及其后果”，这需要生产期命令语料；而这些语料没有留档（内存窗口、无持久化），离线批处理没有输入。即使改用历史 `agent_events` 重放，也缺每个会话的 cwd 与当时的仓库配置，且无法观察操作者摩擦与 allow 后的真实执行。更关键的是：影子只比较“手写口径 vs 探针口径”的判定差异，不运行 git；H1/H2 在两个口径下都可能是 allow，影子数据不会暴露执行洞。要发现它们必须做真实执行观测（本报告的做法）。
+- **最小回退形态（修正上一轮结论）**：单纯回退到 `a7f4eb8` 不安全——H1/H2 在父提交上同样存在（已实测 `git fsck`、`diff.submodule=diff` 在 `5a83985` 也是 allow）。当前最小安全姿态是二选一：① 先修 H1/H2/H3，再继续生产；② 在修复落地前设 `BIZGRAPH_GIT_CONFIG_PROBE=off`（所有 git 只读命令回退 ask），以摩擦换安全。若要补 7 天观察，应在 `a7f4eb8` 上叠加 H1/H2/H3 修复后再跑影子，而不是原样回退。
+
+### 23.11 复算记录
+
+- 源码与测试未改：`bash-readonly.ts` / `bash-readonly.test.ts` / `claude-code.test.ts` 的 sha256 在复验前后不变（见 23.0）。
+- 本文档为唯一修改文件；追加前 sha256 `834b6ca6…`；追加后的最终值由 `shasum -a 256` 现算（见聊天回复）。
+- 未 commit、未 push、未 amend；`git status --short` 仅 `M docs/architecture/agent-audit-2026-11-05.md`。
+
+---
+
+## 二十四、H1/H2/H3 修复轮（2026-11-06）
+
+本轮只修 §23.9 的三个阻断项，**不改产品行为/弹窗策略**（「写过 `.git` 就一律 ask」等方案仍在用户决策中，未实现）。
+
+### 24.1 冻结基线
+
+| 项 | 值 |
+|---|---|
+| 修复前 HEAD | `907c4d853380c65d1274e4f99df91edc0e2e9dc1` |
+| 修复前工作树 | `907c4d8` + 复验追加的本文档 §23 |
+| 真实 git | `git 2.50.1 (Apple Git-154)` |
+| 验证方法 | `git archive HEAD` 导出策略模块 + `esbuild --bundle` 打包；同一 harness 分别跑 HEAD bundle 与修复后 bundle；夹具在 `/tmp/h-fix-evidence/`，marker 记录真实执行 |
+
+### 24.2 修复前后对照（真实 git + marker 实测）
+
+同一 harness（`/tmp/h-fix-evidence/harness.cjs`）对两个 bundle 的输出：
+
+| 洞 | 修复前策略 | 修复后策略 | 真实 git 执行（两个 bundle 相同） |
+|---|---|---|---|
+| H1 `core.fsmonitor` + `git fsck` | `allow / git:fsck` | `ask / git-repo-config-exec` | `git fsck` marker 生成；同一 hook 下 `git log` 不生成 |
+| H2 `diff.submodule=diff` + 子模块 `diff.external`（旧式 `sub/.git` 布局） | `allow / git:diff` | `ask / git-repo-config-exec` | `git diff` marker 生成（参数含 `s.txt <blob> ...`） |
+| H3 有签名提交 + `gpg.program` + `format.pretty=format:%GS` | `allow / git:log` | `ask / git-repo-config-exec` | `git log -1` marker 生成 |
+| H3 同上 + 命令行 `--format=%GS` | `allow / git:log` | `ask / git-gpg-format` | `git log -1 --format=%GS` marker 生成 |
+| H3 对照：无签名提交 + `--format=%GS` | allow | ask（参数面） | **不生成 marker**（git 不调用 gpg） |
+
+修复后的策略判定不是「只看策略输出」：H1/H2/H3 的 marker 是在**未拦策略**下由真实 `git` 直接执行产生的，证明执行面客观存在；策略只负责把同一命令改成 ask。
+
+### 24.3 fsmonitor 消费矩阵（逐条实测）
+
+夹具：真实仓库（2 个提交），`core.fsmonitor=/bin/sh`，仓库根文件 `2` 内容为 `touch <marker>`；每条命令前清空 marker。
+
+| 命令 | 退出码 | 是否执行 fsmonitor | 当前策略 |
+|---|---|---|---|
+| `git fsck --no-progress` | 0 | **YES** | allow 列表内 → H1 修复后 ask |
+| `git status --porcelain` | 0 | **YES** | allow 列表内 → 已有探针 |
+| `git diff` | 0 | **YES** | allow 列表内 → 已有探针 |
+| `git ls-files` | 0 | **YES** | allow 列表内 → 已有探针 |
+| `git blame a.txt` | 0 | **YES** | allow 列表内 → 已有探针 |
+| `git diff-files` | 0 | YES | 不在白名单 → ask（无需额外判） |
+| `git diff-index HEAD` | 0 | YES | 不在白名单 → ask |
+| `git update-index --refresh` | 0 | YES | 写子命令 → ask |
+| `git checkout-index -a` | 1 | YES | 不在白名单 → ask |
+| `git gc --quiet` | 0 | YES | 写子命令 → ask |
+| `git log -1 --oneline` | 0 | no | allow（不误伤） |
+| `git show --stat HEAD` | 0 | no | allow |
+| `git rev-list HEAD` | 0 | no | allow |
+| `git cat-file -t HEAD` | 0 | no | allow |
+| `git for-each-ref` / `rev-parse HEAD` / `count-objects` / `describe` / `shortlog` / `show-ref` / `merge-base` / `name-rev` | 0 | no | allow |
+| `git read-tree HEAD` / `git prune` / `git verify-pack -v <idx>` | 0 | no | 不在白名单/写子命令 → ask |
+
+结论：allow 列表内消费 fsmonitor 的命令是 `status/diff/blame/ls-files/fsck`，五条全部纳入探针；`verify-pack`/`prune`/`read-tree` 实测不执行，不凭直觉登记。
+
+### 24.4 子模块递归读取的实现方式与失败姿态
+
+实现（[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts)）：
+
+1. `git rev-parse --show-toplevel` + `--absolute-git-dir` 定位工作区根与真实 gitdir（不手写 `.git` 文件解析）。
+2. `git -C <topLevel> -c core.fsmonitor=false ls-files --stage -z` 枚举 mode `160000` 的 gitlink 路径；`GIT_OPTIONAL_LOCKS=0` 防止读命令回写 index。**不依赖 `.gitmodules`**（可被伪造/缺失）。
+3. 覆盖三种真实布局：
+   - 标准：`.git/modules/<name>/config` + `config.worktree`（递归下钻嵌套 `modules`，深度上限 8）；
+   - gitdir 文件：子模块 worktree 的 `.git` 是 `gitdir: <path>`，解析目标后同样读取；
+   - 旧式：子模块 worktree 的 `.git` 是目录，直接读该目录的 `config` / `config.worktree`。
+4. 每个配置文件都交给 `git config --file <path> --list --null --show-origin --show-scope --includes`，与顶层探针同一解析口径（不引入手写 INI）。
+5. 失败姿态（全部 fail-closed ask，不把「没扫到」当「干净」）：
+   - gitdir / topLevel 不可得、`modules` 不可读、配置缺失、探针失败、非法 NUL、符号链接（指向无法确定）→ `git-repo-config-exec` ask；
+   - 实测旧式布局：`.git/modules` 不存在时，旧实现直接返回「无子模块」→ allow（fail-open）；新实现通过 gitlink + `sub/.git` 找到 `diff.external` 并 ask。
+
+### 24.5 参数面与配置面的取舍
+
+- **配置面（必须）**：攻击者只写 `diff.submodule=diff` 即可让普通 `git diff`/`git log -1 -p` 执行，无需命令行参数，因此配置面不可省。
+- **参数面（同时登记）**：`--submodule`（含 `=diff`/`=log`/`=short` 与裸参数、唯一前缀）→ `git-submodule-diff` ask。代价：`git diff --submodule=short`（默认行为）也会多弹一次。接受该代价，因为「配置面 + 参数面都堵」后，命令行走 `--submodule=diff` 与「配置已改但探针未覆盖该子命令」两条路径都被关闭。
+
+### 24.6 H3 的保守面与新增同类发现
+
+- `gpg.program` 存在即 ask（`log/show/whatchanged`），即使当前对象无签名；实测无签名对象不调用 gpg，但静态无法判断未来历史，按「宁多弹一次」处理。
+- `rev-list` 不读 `format.pretty`，故配置面不判它；但 `--format=%GS` 实测会执行 gpg，参数面仍拦截，避免给普通 `git rev-list HEAD` 增加弹窗。
+- **新发现（未修，列入下轮靶子）**：`git for-each-ref --format='%(signature)'` 与 `git branch --format='%(signature)'` 在有签名提交时会执行 `gpg.program`（本轮实测 marker 生成；§23.4「for-each-ref 不触发」是在无签名历史上测的）。触发需要命令行显式传 signature atom，没有 `format.pretty` 那样的配置默认值，风险低于 H3；本轮按「不改产品行为」范围未登记，已写入架构文档「探针消费键清单」的未登记行。
+
+### 24.7 门禁与测试基线
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过 |
+| `npx eslint src` | 通过 |
+| `npx vite build` | 通过 |
+| 定向 `bash-readonly.test.ts` | 71 条通过（新增 H1/H2/H3 10 条） |
+| 定向 `bash-readonly.test.ts` + `claude-code.test.ts` | 92 条通过 |
+| 全量 `npx vitest run` | `173 failed / 3145 passed / 93 skipped (3411)` |
+| 基线 `907c4d8` | `173 failed / 3135 passed / 93 skipped (3401)` |
+| 失败文件 | 26 个，集合与基线一致；逐文件核对均为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`），无业务失败 |
+
+`+10 passed` 全部来自新增用例（H1 2、H2 4、H3 4）；失败数与失败文件集合未变。

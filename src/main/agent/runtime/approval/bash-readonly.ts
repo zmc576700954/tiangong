@@ -18,8 +18,17 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { accessSync, constants, existsSync, statSync } from 'node:fs'
-import { delimiter, join } from 'node:path'
+import {
+  accessSync,
+  constants,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  type Dirent,
+} from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { buildSafeEnv } from '../../../shared/env'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
@@ -384,6 +393,12 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
   node: [],
   git: [
     { flag: '--output', rule: 'git-output-file', reason: 'git --output=<file> 会写文件', risk: HIGH },
+    {
+      flag: '--submodule',
+      rule: 'git-submodule-diff',
+      reason: 'git --submodule=diff 会递归对比子模块，并执行子模块配置里的 diff.external / textconv',
+      risk: HIGH,
+    },
     { flag: '--ext-diff', rule: 'git-ext-diff', reason: 'git --ext-diff 会执行外部 diff 程序', risk: HIGH },
     { flag: '--textconv', rule: 'git-textconv', reason: 'git --textconv 会执行配置的转换程序', risk: HIGH },
     { flag: '--filters', rule: 'git-filters', reason: 'git --filters 会执行配置的 filter 程序', risk: HIGH },
@@ -413,13 +428,14 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
  * `diff.*.textconv` / `diff.*.command` / `diff.external`（diff/log/show/blame/whatchanged）、
- * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/ls-files
+ * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/blame/ls-files/fsck
  * 会刷新 index；实测这些命令会 fork hook）、`core.hooksPath`（status 回写 index 时触发
  * `post-index-change` 钩子）、`core.alternateRefsCommand`（rev-list `--alternate-refs`）
- * 与 `log.showSignature`（log/show/whatchanged 自动调用 gpg）。配置命中即 ask。
+ * 与 `log.showSignature` / `gpg.*.program` / `%G` 格式（log/show/whatchanged/rev-list
+ * 会调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
-  'diff', 'log', 'show', 'status', 'blame', 'whatchanged', 'rev-list', 'ls-files',
+  'diff', 'log', 'show', 'status', 'blame', 'whatchanged', 'rev-list', 'ls-files', 'fsck',
 ])
 
 /** git 布尔配置：false/no/off/0（含空值）为假；其余为真（路径类配置同样按真处理）。 */
@@ -620,8 +636,23 @@ export function probeGitConfig(
     }
   }
 
+  const parsed = execGitConfigProbe(gitPath, GIT_CONFIG_PROBE_ARGS, cwd, env, timeoutMs)
+  return { ...parsed, latencyMs: elapsed() }
+}
+
+/**
+ * 真正的 spawn + 失败分类：主探针与子模块 `--file` 探针共用同一口径，
+ * 避免子模块读取路径出现一套独立的错误处理。
+ */
+function execGitConfigProbe(
+  gitPath: string,
+  argv: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): { entries: GitConfigProbeEntry[]; failure: GitConfigProbeFailure | null } {
   try {
-    const stdout = execFileSync(gitPath, [...GIT_CONFIG_PROBE_ARGS], {
+    const stdout = execFileSync(gitPath, [...argv], {
       cwd,
       env,
       timeout: timeoutMs,
@@ -629,8 +660,7 @@ export function probeGitConfig(
       encoding: 'buffer',
       stdio: ['ignore', 'pipe', 'pipe'],
     }) as Buffer
-    const parsed = parseGitConfigProbeOutput(stdout.toString('utf8'))
-    return { ...parsed, latencyMs: elapsed() }
+    return parseGitConfigProbeOutput(stdout.toString('utf8'))
   } catch (error) {
     const detail = error as NodeJS.ErrnoException & {
       status?: number | null
@@ -641,13 +671,13 @@ export function probeGitConfig(
       ? detail.stderr.toString('utf8')
       : (detail.stderr ?? '')
     if (/unknown option.*show-scope|unrecognized option.*show-scope|show-scope/i.test(stderr)) {
-      return failed('show-scope-unsupported')
+      return { entries: [], failure: 'show-scope-unsupported' }
     }
-    if (detail.code === 'ETIMEDOUT') return failed('timeout')
+    if (detail.code === 'ETIMEDOUT') return { entries: [], failure: 'timeout' }
     if (detail.code === 'ENOENT') {
       // 预检查已确认 cwd 存在；此处 ENOENT 可能是 git 可执行文件在解析后被移除，
       // 也可能是 cwd 在检查与 spawn 之间被删除。后者单独分类，不与 missing-git 混淆。
-      return failed(existsSync(cwd) ? 'missing-git' : 'cwd-missing')
+      return { entries: [], failure: existsSync(cwd) ? 'missing-git' : 'cwd-missing' }
     }
     // 超过 1 MB 的 maxBuffer 截断：execFileSync 会以 ENOBUFS /
     // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 抛出，且伴随 SIGTERM；必须先于信号判定，
@@ -656,15 +686,303 @@ export function probeGitConfig(
       detail.code === 'ENOBUFS' ||
       detail.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
     ) {
-      return failed('io-error')
+      return { entries: [], failure: 'io-error' }
     }
-    if (detail.signal === 'SIGTERM') return failed('timeout')
-    if (typeof detail.status === 'number' && detail.status !== 0) return failed('non-zero-exit')
-    return failed('io-error')
+    if (detail.signal === 'SIGTERM') return { entries: [], failure: 'timeout' }
+    if (typeof detail.status === 'number' && detail.status !== 0) {
+      return { entries: [], failure: 'non-zero-exit' }
+    }
+    return { entries: [], failure: 'io-error' }
   }
 }
 
-/** 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。 */
+/**
+ * 用 `git config --file <path>` 读取单个配置文件（子模块配置）。仍由 Git 解析
+ * include / 转义 / 裸键，不引入手写解析；环境与主探针一致（buildSafeEnv 派生）。
+ */
+export function probeGitConfigFile(
+  configPath: string,
+  timeoutMs: number = GIT_CONFIG_PROBE_TIMEOUT_MS,
+): GitConfigProbeResult {
+  const startedAt = Date.now()
+  const failed = (failure: GitConfigProbeFailure): GitConfigProbeResult => ({
+    entries: [],
+    failure,
+    latencyMs: Date.now() - startedAt,
+  })
+
+  const gitPath = resolveGitExecutable()
+  if (!gitPath) return failed('missing-git')
+  const configDir = dirname(configPath)
+  if (!existsSync(configDir)) return failed('cwd-missing')
+  if (!existsSync(configPath)) return failed('io-error')
+
+  const argv = [
+    '--no-pager',
+    'config',
+    '--file',
+    configPath,
+    ...GIT_CONFIG_PROBE_ARGS.slice(2),
+  ] as const
+  const parsed = execGitConfigProbe(gitPath, argv, configDir, buildSafeEnv(), timeoutMs)
+  // `--file` 指向空文件是合法的「没有配置」，不是探针不可判定；主探针的
+  // empty-output 仍按 fail-closed 处理（正常仓库至少会输出 core.repositoryformatversion）。
+  if (parsed.failure === 'empty-output') return { entries: [], failure: null, latencyMs: Date.now() - startedAt }
+  return { ...parsed, latencyMs: Date.now() - startedAt }
+}
+
+/** 会按 `diff.submodule=diff` 递归展示子模块差异的只读子命令。 */
+const GIT_SUBMODULE_DIFF_SUBCOMMANDS = new Set(['diff', 'log', 'show', 'whatchanged'])
+
+const GIT_MODULE_SCAN_MAX_DEPTH = 8
+
+/** 子模块 gitdir 内不可能是「模块命名空间」的目录，避免把对象库当配置扫。 */
+const GIT_MODULE_SKIP_DIRS = new Set([
+  'objects', 'refs', 'logs', 'hooks', 'info', 'branches', 'worktrees', 'index', 'pack',
+])
+
+export interface GitSubmoduleConfigProbeResult {
+  results: GitConfigProbeResult[]
+  /** 非 null 即不可枚举/不可读取：调用方必须 fail-closed ask。 */
+  failure: GitConfigProbeFailure | null
+}
+
+/** `diff.submodule=diff` 是唯一会递归执行子模块 external/textconv 的取值。 */
+export function gitConfigRequestsSubmoduleDiff(result: GitConfigProbeResult): boolean {
+  if (result.failure) return true
+  return result.entries.some(
+    (entry) =>
+      entry.key === 'diff.submodule' &&
+      !entry.bare &&
+      entry.value.trim().toLowerCase() === 'diff',
+  )
+}
+
+/**
+ * 从 index 读取 gitlink（mode 160000）路径。
+ *
+ * 只信任 Git 对 index 的解析；命令自带 `core.fsmonitor=false`，避免探针自己触发
+ * 被审计的执行面（实测 `git ls-files` 会跑 fsmonitor）。`GIT_OPTIONAL_LOCKS=0`
+ * 保证读命令不回写 index，也就不会触发 `post-index-change` 钩子。
+ */
+function listSubmoduleWorktrees(
+  gitPath: string,
+  topLevel: string,
+  timeoutMs: number,
+): { paths: string[]; failure: GitConfigProbeFailure | null } {
+  try {
+    const stdout = execFileSync(
+      gitPath,
+      ['-C', topLevel, '-c', 'core.fsmonitor=false', 'ls-files', '--stage', '-z'],
+      {
+        env: { ...buildSafeEnv(), GIT_OPTIONAL_LOCKS: '0' },
+        timeout: timeoutMs,
+        maxBuffer: 8 * 1024 * 1024,
+        encoding: 'buffer',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    ) as Buffer
+    const paths: string[] = []
+    for (const record of stdout.toString('utf8').split('\0')) {
+      if (!record) continue
+      const tab = record.indexOf('\t')
+      if (tab < 0) return { paths: [], failure: 'invalid-nul-record' }
+      const mode = record.slice(0, tab).split(' ')[0]
+      const path = record.slice(tab + 1)
+      if (mode === '160000' && path) paths.push(path)
+    }
+    return { paths, failure: null }
+  } catch {
+    return { paths: [], failure: 'io-error' }
+  }
+}
+
+/** 读一个子模块 gitdir 的 `config` 与 `config.worktree`；两者都交给 `git config --file`。 */
+function probeModuleGitDir(
+  gitDirPath: string,
+  timeoutMs: number,
+  results: GitConfigProbeResult[],
+): GitConfigProbeFailure | null {
+  const configPath = join(gitDirPath, 'config')
+  if (!existsSync(configPath)) return 'io-error'
+  const probe = probeGitConfigFile(configPath, timeoutMs)
+  if (probe.failure) return probe.failure
+  results.push(probe)
+  const worktreeConfig = join(gitDirPath, 'config.worktree')
+  if (existsSync(worktreeConfig)) {
+    const worktreeProbe = probeGitConfigFile(worktreeConfig, timeoutMs)
+    if (worktreeProbe.failure) return worktreeProbe.failure
+    results.push(worktreeProbe)
+  }
+  return null
+}
+
+/**
+ * 递归读取子模块配置，覆盖三种真实布局：
+ * 1. 标准布局：`.git/modules/<name>/config`（含嵌套子模块的 `modules/modules`）；
+ * 2. 现代 worktree 布局：子模块 worktree 的 `.git` 是 gitdir 文件，指向 1；
+ * 3. 旧式布局：子模块 worktree 的 `.git` 是目录，配置直接在该目录内。
+ *
+ * - 枚举：`rev-parse --absolute-git-dir` / `--show-toplevel` 定位 gitdir 与工作区，
+ *   `ls-files --stage`（含 mode 160000）拿 gitlink 路径，不依赖 `.gitmodules`（可被伪造/缺失）。
+ * - 读取：每个配置文件都走 `git config --file`，不引入手写 INI 解析。
+ * - 失败姿态：gitdir/topLevel/index 不可得、目录不可读、配置缺失或探针失败、
+ *   符号链接（无法确定指向）一律返回 failure，调用方按 fail-closed ask。
+ */
+export function probeGitSubmoduleConfigs(
+  cwd: string,
+  timeoutMs: number = GIT_CONFIG_PROBE_TIMEOUT_MS,
+): GitSubmoduleConfigProbeResult {
+  const failed = (failure: GitConfigProbeFailure): GitSubmoduleConfigProbeResult => ({
+    results: [],
+    failure,
+  })
+
+  const gitPath = resolveGitExecutable()
+  if (!gitPath) return failed('missing-git')
+  if (!existsSync(cwd)) return failed('cwd-missing')
+
+  let topLevel: string
+  let gitDir: string
+  try {
+    topLevel = execFileSync(gitPath, ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      env: buildSafeEnv(),
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+    gitDir = execFileSync(gitPath, ['-C', cwd, 'rev-parse', '--absolute-git-dir'], {
+      env: buildSafeEnv(),
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch {
+    return failed('io-error')
+  }
+  if (!topLevel || !gitDir || !existsSync(topLevel) || !existsSync(gitDir)) {
+    return failed('io-error')
+  }
+
+  const results: GitConfigProbeResult[] = []
+  const seen = new Set<string>()
+  const probeGitDirOnce = (gitDirPath: string): GitConfigProbeFailure | null => {
+    const key = resolve(gitDirPath)
+    if (seen.has(key)) return null
+    seen.add(key)
+    return probeModuleGitDir(gitDirPath, timeoutMs, results)
+  }
+
+  const modulesDir = join(gitDir, 'modules')
+  const walk = (dir: string, depth: number): GitConfigProbeFailure | null => {
+    if (depth > GIT_MODULE_SCAN_MAX_DEPTH) return 'io-error'
+    let info: ReturnType<typeof lstatSync>
+    try {
+      info = lstatSync(dir)
+    } catch {
+      return 'io-error'
+    }
+    if (info.isSymbolicLink() || !info.isDirectory()) return 'io-error'
+
+    let children: Dirent[]
+    try {
+      children = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return 'io-error'
+    }
+    // 有 config 的目录就是模块根；模块根只继续下钻 modules（嵌套子模块），
+    // 不再扫 objects/refs 等，避免大仓库对象库拖慢探针。
+    const isModuleRoot = children.some((child) => child.isFile() && child.name === 'config')
+    for (const child of children) {
+      if (child.isSymbolicLink()) return 'io-error'
+      if (!child.isDirectory()) continue
+      const full = join(dir, child.name)
+      if (child.name === 'modules' || (!isModuleRoot && !GIT_MODULE_SKIP_DIRS.has(child.name))) {
+        const failure = walk(full, depth + 1)
+        if (failure) return failure
+      }
+    }
+    return isModuleRoot ? probeGitDirOnce(dir) : null
+  }
+
+  if (existsSync(modulesDir)) {
+    const failure = walk(modulesDir, 0)
+    if (failure) return failed(failure)
+  }
+
+  const gitlinks = listSubmoduleWorktrees(gitPath, topLevel, timeoutMs)
+  if (gitlinks.failure) return failed(gitlinks.failure)
+  for (const relativePath of gitlinks.paths) {
+    const worktreeDir = resolve(topLevel, relativePath)
+    const dotGit = join(worktreeDir, '.git')
+    let info: ReturnType<typeof lstatSync>
+    try {
+      info = lstatSync(dotGit)
+    } catch (error) {
+      // 未初始化的子模块没有 `.git`，git 不会进入它执行 external diff。
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      return failed('io-error')
+    }
+    if (info.isSymbolicLink()) return failed('io-error')
+    if (info.isDirectory()) {
+      const failure = probeGitDirOnce(dotGit)
+      if (failure) return failed(failure)
+      continue
+    }
+    if (!info.isFile()) return failed('io-error')
+    let content: string
+    try {
+      content = readFileSync(dotGit, 'utf8')
+    } catch {
+      return failed('io-error')
+    }
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(content)
+    if (!match) return failed('io-error')
+    const moduleGitDir = resolve(worktreeDir, match[1])
+    const failure = probeGitDirOnce(moduleGitDir)
+    if (failure) return failed(failure)
+  }
+
+  return { results, failure: null }
+}
+
+/**
+ * 会消费 `gpg.*.program` 与 `format.pretty` / `pretty.<name>` 的日志展示命令。
+ * `git rev-list` 不读 `format.pretty`，但支持 `--format`（见下一组），因此分开放：
+ * 配置面只对这组命令判，避免给普通 `git rev-list HEAD` 增加无意义弹窗。
+ */
+const GIT_GPG_CONFIG_SUBCOMMANDS = new Set(['log', 'show', 'whatchanged'])
+
+/** 支持 `--format` / `--pretty` 且 `%G` 占位符会触发 gpg 的只读子命令。 */
+const GIT_GPG_PRETTY_SUBCOMMANDS = new Set(['log', 'show', 'whatchanged', 'rev-list'])
+
+/**
+ * `--format` / `--pretty` 的取值含 `%G`（`%G?`、`%GS` 等）时会调用 gpg 验证签名。
+ * 取值缺失或下一个 token 是另一个选项时无法判定，按 ask 处理（fail-closed）。
+ */
+export function gitPrettyUsesGpg(args: readonly string[]): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === '--') break
+    const equals = arg.indexOf('=')
+    const name = equals >= 0 ? arg.slice(0, equals) : arg
+    if (name !== '--format' && name !== '--pretty') continue
+    if (equals >= 0) {
+      if (arg.slice(equals + 1).includes('%G')) return true
+      continue
+    }
+    const next = args[index + 1]
+    if (!next || next.startsWith('-')) return true
+    if (next.includes('%G')) return true
+  }
+  return false
+}
+
+/**
+ * 与手写口径相同的「哪些键会执行外部程序」判定，输入是 Git 自己解析出的扁平键。
+ */
 export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string): boolean {
   // 探针失败 = 不可判定：S2 起必须 ask，不能把「没看到危险配置」当成安全。
   if (result.failure) return true
@@ -683,12 +1001,16 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
     ) {
       return true
     }
-    // fsmonitor：status/diff/ls-files 会刷新 index 并调用 hook；blame 保守纳入；
+    // fsmonitor：status/diff/blame/ls-files/fsck 实测会刷新 index 并调用 hook；
     // log/show 不刷新 index，不判。
     if (
       entry.key === 'core.fsmonitor' &&
       gitConfigBoolean(value) &&
-      (sub === 'status' || sub === 'diff' || sub === 'blame' || sub === 'ls-files')
+      (sub === 'status' ||
+        sub === 'diff' ||
+        sub === 'blame' ||
+        sub === 'ls-files' ||
+        sub === 'fsck')
     ) {
       return true
     }
@@ -714,10 +1036,24 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
       if (!isStandardLfsFilterValue(last, value)) return true
     }
     // log.showSignature=true 让 log/show/whatchanged 自动调用 gpg。
+    if (entry.key === 'log.showsignature' && gitConfigBoolean(value) && GIT_GPG_CONFIG_SUBCOMMANDS.has(sub)) {
+      return true
+    }
+    // gpg.program / gpg.ssh.program / gpg.x509.program：`%G` 占位符或签名展示路径
+    // 会调用它们。对象是否带签名无法静态判断，配置存在即 ask（宁多弹一次）。
     if (
-      entry.key === 'log.showsignature' &&
-      gitConfigBoolean(value) &&
-      (sub === 'log' || sub === 'show' || sub === 'whatchanged')
+      GIT_GPG_CONFIG_SUBCOMMANDS.has(sub) &&
+      (entry.key === 'gpg.program' ||
+        entry.key === 'gpg.ssh.program' ||
+        entry.key === 'gpg.x509.program')
+    ) {
+      return true
+    }
+    // format.pretty / pretty.<name> 含 `%G` 时同样会走 gpg。
+    if (
+      GIT_GPG_CONFIG_SUBCOMMANDS.has(sub) &&
+      (entry.key === 'format.pretty' || entry.key.startsWith('pretty.')) &&
+      value.includes('%G')
     ) {
       return true
     }
@@ -925,6 +1261,16 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
     return askRule('git-grep', 'git grep 支持 -O/--open-files-in-pager 执行外部 pager，不纳入只读白名单', CRITICAL)
   }
   if (GIT_READ_SUBCOMMANDS.has(sub)) {
+    const subArgs = args.slice(1)
+    // `--format/--pretty` 含 %G 时，git 会调用 gpg 验证签名（gpg 程序还可能是默认的
+    // 外部程序）；命令行的格式无法由配置探针看到，单独在参数面拦截。
+    if (GIT_GPG_PRETTY_SUBCOMMANDS.has(sub) && gitPrettyUsesGpg(subArgs)) {
+      return askRule(
+        'git-gpg-format',
+        '--format/--pretty 含 %G 占位符会调用 gpg 验证签名，需人工审批',
+        HIGH,
+      )
+    }
     // 仓库/用户配置可让 diff/log/show 执行 textconv/diff.command/external/filter，
     // 让 status 执行 fsmonitor/filter，让 log 调用 gpg；一次被批准的 Write 改写
     // .git/config 即可换取零审批执行，因此读配置后再决定。
@@ -948,9 +1294,28 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
       if (probeGitConfigExecutes(probe, sub)) {
         return askRule(
           'git-repo-config-exec',
-          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / showSignature，git 会执行外部程序',
+          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / gpg.program / showSignature，git 会执行外部程序',
           HIGH,
         )
+      }
+      // diff.submodule=diff 会递归对比子模块，并使用子模块自己的配置；主配置探针
+      // 读不到 `.git/modules/*/config`，必须显式递归读取，读不到就 fail-closed。
+      if (GIT_SUBMODULE_DIFF_SUBCOMMANDS.has(sub) && gitConfigRequestsSubmoduleDiff(probe)) {
+        const modules = probeGitSubmoduleConfigs(ctx.cwd)
+        if (modules.failure) {
+          return askRule(
+            'git-repo-config-exec',
+            `diff.submodule=diff 且子模块配置不可判定（${modules.failure}），按 fail-closed ask`,
+            HIGH,
+          )
+        }
+        if (modules.results.some((moduleProbe) => probeGitConfigExecutes(moduleProbe, sub))) {
+          return askRule(
+            'git-repo-config-exec',
+            'diff.submodule=diff 且子模块配置含 diff.external / textconv / filter / fsmonitor 等执行型键，git 会执行外部程序',
+            HIGH,
+          )
+        }
       }
     }
     return allowRule(`git:${sub}`)

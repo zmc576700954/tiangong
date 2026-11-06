@@ -18,6 +18,7 @@ import {
   getGitConfigProbeDiagnostics,
   probeGitConfig,
   probeGitConfigExecutes,
+  probeGitSubmoduleConfigs,
   resetGitConfigProbeDiagnostics,
 } from '../bash-readonly'
 
@@ -1355,6 +1356,14 @@ function runRealGit(cwd: string, args: string[]): void {
   }
 }
 
+/** 需要读取 git 输出的真实命令行（如 mktree/hash-object）。 */
+function gitCapture(cwd: string, args: string[], input?: string): string {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    input,
+  }).trim()
+}
+
 describe('P1 执行型配置键 / P2 探针环境 / P3 失败分类', () => {
   it('P1 参数面：rev-list --alternate-refs 及其唯一前缀缩写 → ask / git-alternate-refs', () => {
     expect(decide('git rev-list --alternate-refs')).toMatchObject({
@@ -1495,5 +1504,284 @@ describe('P1 执行型配置键 / P2 探针环境 / P3 失败分类', () => {
     withFakeGit("#!/bin/sh\nwhile :; do printf %2048s ''; done\n", () => {
       expect(probeGitConfig(repo, false, 5000).failure).toBe('io-error')
     })
+  })
+})
+
+describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
+  it('H1 策略：core.fsmonitor 下 git fsck → ask / git-repo-config-exec（修复前 allow / git:fsck）', () => {
+    const repo = makeGitRepo('bizgraph-h1-fsmonitor-', '[core]\n\tfsmonitor = /bin/sh\n')
+    for (const command of ['git fsck', 'git fsck --no-progress']) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+        risk: 'high',
+      })
+    }
+    // 探针判定：fsck 消费 fsmonitor；log 不刷新 index，不消费。
+    const probe = probeGitConfig(repo, false, 500)
+    expect(probe.failure).toBeNull()
+    expect(probeGitConfigExecutes(probe, 'fsck')).toBe(true)
+    expect(probeGitConfigExecutes(probe, 'log')).toBe(false)
+    expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+  })
+
+  it('H1 执行面：core.fsmonitor=/bin/sh + 仓库根文件 2 → 真实 git fsck 执行，git log 不执行', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-h1-real-'))
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+    runRealGit(repo, ['config', 'core.fsmonitor', '/bin/sh'])
+
+    const fsckMarker = join(root, 'fsck-marker')
+    const logMarker = join(root, 'log-marker')
+    // fsmonitor 以 `2 <timestamp>` 调用，工作目录是仓库根：文件 2 的内容就是 shell 脚本。
+    writeFileSync(join(repo, '2'), `touch '${fsckMarker}'\n`)
+    runRealGit(repo, ['fsck', '--no-progress'])
+    expect(existsSync(fsckMarker)).toBe(true)
+
+    // 负例：同一 hook 对 git log 不执行（log 不刷新 index）。
+    writeFileSync(join(repo, '2'), `touch '${logMarker}'\n`)
+    runRealGit(repo, ['log', '--oneline'])
+    expect(existsSync(logMarker)).toBe(false)
+
+    // 策略侧必须拦截同一条命令。
+    expect(decide('git fsck', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('H2 配置面：diff.submodule=diff + 子模块 diff.external → diff/log/show ask；status 不误伤', () => {
+    const repo = makeGitRepo('bizgraph-h2-submodule-', '[diff]\n\tsubmodule = diff\n')
+    mkdirSync(join(repo, '.git', 'modules', 'sub'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'modules', 'sub', 'config'), '[diff]\n\texternal = /bin/sh\n')
+
+    for (const command of ['git diff', 'git log -1 -p', 'git show HEAD']) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+        risk: 'high',
+      })
+    }
+    // status 不按 diff.submodule 递归，子模块配置不参与判定。
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+
+  it('H2 配置面：子模块配置干净 → allow；.git/modules 不可枚举 → fail-closed ask', () => {
+    const clean = makeGitRepo('bizgraph-h2-clean-', '[diff]\n\tsubmodule = diff\n')
+    mkdirSync(join(clean, '.git', 'modules', 'sub'), { recursive: true })
+    writeFileSync(join(clean, '.git', 'modules', 'sub', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    expect(decide('git diff', { cwd: clean, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:diff',
+    })
+
+    const broken = makeGitRepo('bizgraph-h2-broken-', '[diff]\n\tsubmodule = diff\n')
+    // `.git/modules` 是普通文件：无法枚举子模块 → 必须 fail-closed。
+    writeFileSync(join(broken, '.git', 'modules'), 'not a directory\n')
+    expect(decide('git diff', { cwd: broken, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+      reason: expect.stringContaining('fail-closed'),
+    })
+  })
+
+  it('H2 参数面：--submodule / --submodule=diff / 唯一前缀 → ask / git-submodule-diff', () => {
+    const repo = makeGitRepo('bizgraph-h2-args-', '[core]\n\trepositoryformatversion = 1\n')
+    for (const command of [
+      'git diff --submodule=diff',
+      'git diff --submodule',
+      'git log --submodule',
+      'git show HEAD --submodule=diff',
+      'git diff --submod=diff',
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-submodule-diff',
+      })
+    }
+    // 不误伤：普通 diff/log 参数仍 allow。
+    for (const command of ['git diff HEAD~1', 'git log --stat']) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+    }
+  })
+
+  it('H2 执行面（旧式嵌套 .git）：diff.submodule=diff + 子模块 diff.external → 真实 git diff 执行', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-h2-real-'))
+    const main = join(root, 'main')
+    const sub = join(main, 'sub')
+    mkdirSync(main, { recursive: true })
+
+    runRealGit(main, ['init', '-q'])
+    writeFileSync(join(main, 'm.txt'), 'm\n')
+    runRealGit(main, ['add', 'm.txt'])
+    runRealGit(main, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+
+    runRealGit(main, ['init', '-q', 'sub'])
+    writeFileSync(join(sub, 's.txt'), 's1\n')
+    runRealGit(sub, ['add', 's.txt'])
+    runRealGit(sub, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 's1'])
+    writeFileSync(join(main, '.gitmodules'), '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n')
+    runRealGit(main, ['add', '.gitmodules'])
+    const subHead = gitCapture(sub, ['rev-parse', 'HEAD'])
+    runRealGit(main, ['update-index', '--add', '--cacheinfo', `160000,${subHead},sub`])
+    runRealGit(main, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'add-sub'])
+    runRealGit(main, ['config', 'diff.submodule', 'diff'])
+
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'external-diff.sh')
+    writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\n`)
+    chmodSync(script, 0o755)
+    runRealGit(sub, ['config', 'diff.external', script])
+    writeFileSync(join(sub, 's.txt'), 's2\n')
+
+    // 旧式布局没有 .git/modules；探针必须通过 gitlink + sub/.git 找到配置。
+    const modules = probeGitSubmoduleConfigs(main)
+    expect(modules.failure).toBeNull()
+    expect(
+      modules.results.some((result) => result.entries.some((entry) => entry.key === 'diff.external')),
+    ).toBe(true)
+
+    runRealGit(main, ['diff'])
+    expect(existsSync(marker)).toBe(true)
+    expect(decide('git diff', { cwd: main, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('H3 配置面：gpg.program / gpg.ssh.program / gpg.x509.program → log/show/whatchanged ask', () => {
+    const configs: Array<[string, string]> = [
+      ['gpg', '[gpg]\n\tprogram = /bin/sh\n'],
+      ['gpg-ssh', '[gpg "ssh"]\n\tprogram = /bin/sh\n'],
+      ['gpg-x509', '[gpg "x509"]\n\tprogram = /bin/sh\n'],
+    ]
+    for (const [suffix, configText] of configs) {
+      const repo = makeGitRepo(`bizgraph-h3-${suffix}-`, configText)
+      for (const command of ['git log -1', 'git show HEAD', 'git whatchanged -1']) {
+        expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+          decision: 'ask',
+          rule: 'git-repo-config-exec',
+          risk: 'high',
+        })
+      }
+      // 只读但不消费 gpg 的命令不额外弹窗（rev-list 走参数面）。
+      expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+      expect(decide('git rev-list HEAD', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+    }
+  })
+
+  it('H3 配置面：format.pretty / pretty.<name> 含 %G → ask', () => {
+    const formatRepo = makeGitRepo('bizgraph-h3-format-', '[format]\n\tpretty = format:%GS\n')
+    expect(decide('git log -1', { cwd: formatRepo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    const aliasRepo = makeGitRepo('bizgraph-h3-alias-', '[pretty "sig"]\n\tformat = format:%G?\n')
+    expect(
+      decide('git log --pretty=sig', { cwd: aliasRepo, includeGlobalGitConfig: false }),
+    ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
+  })
+
+  it('H3 参数面：--format/--pretty 含 %G → ask / git-gpg-format；普通格式 allow；缺值 fail-closed', () => {
+    const repo = makeGitRepo('bizgraph-h3-args-', '[core]\n\trepositoryformatversion = 1\n')
+    for (const command of [
+      'git log -1 --format=%GS',
+      // `?` 在未加引号的 shell 里是 glob；加引号后 token 才是真实的 `%G?` 占位符。
+      "git log -1 '--format=%G?'",
+      'git log --pretty=format:%GS',
+      'git log --format %GS',
+      'git show -s --format=%GS HEAD',
+      'git rev-list -1 --format=%GS HEAD',
+      // 取值缺失：无法判定，按 ask。
+      'git log --format',
+    ]) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-gpg-format',
+        risk: 'high',
+      })
+    }
+    for (const command of ['git log --format=%s', 'git log --oneline', 'git show --stat HEAD']) {
+      expect(decide(command, { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'allow',
+      })
+    }
+  })
+
+  it('H3 执行面：带 gpgsig 的提交 + gpg.program → 真实 git log --format=%GS 执行；无签名/无 %G 不执行', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-h3-real-'))
+    const repo = join(root, 'repo')
+    const unsigned = join(root, 'unsigned')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'gpg.sh')
+    writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\nexit 0\n`)
+    chmodSync(script, 0o755)
+
+    mkdirSync(repo, { recursive: true })
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    runRealGit(repo, ['add', 'a.txt'])
+    runRealGit(repo, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+
+    // 构造带 gpgsig 头的 commit 对象（模拟仓库历史里已有的签名提交）。
+    const base = gitCapture(repo, ['rev-parse', 'HEAD'])
+    const raw = gitCapture(repo, ['cat-file', '-p', base])
+    const signedText =
+      `${raw
+        .split('\n')
+        .flatMap((line) =>
+          line.startsWith('committer ')
+            ? [
+                line,
+                'gpgsig -----BEGIN PGP SIGNATURE-----',
+                ' ',
+                ' fake',
+                ' -----END PGP SIGNATURE-----',
+              ]
+            : [line],
+        )
+        .join('\n')}\n`
+    const signed = gitCapture(repo, ['hash-object', '-t', 'commit', '-w', '--stdin'], signedText)
+    runRealGit(repo, ['update-ref', 'refs/heads/main', signed])
+    runRealGit(repo, ['config', 'gpg.program', script])
+
+    // 无 %G 的普通 log 不执行 gpg。
+    runRealGit(repo, ['log', '-1'])
+    expect(existsSync(marker)).toBe(false)
+    // %G 占位符才会验证签名并执行 gpg.program。
+    runRealGit(repo, ['log', '-1', '--format=%GS'])
+    expect(existsSync(marker)).toBe(true)
+    // 策略侧：仓库配置含 gpg.program → ask。
+    expect(decide('git log -1', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 对照：无签名对象时，%G 不执行 gpg。
+    mkdirSync(unsigned, { recursive: true })
+    runRealGit(unsigned, ['init', '-q'])
+    writeFileSync(join(unsigned, 'a.txt'), 'a\n')
+    runRealGit(unsigned, ['add', 'a.txt'])
+    runRealGit(unsigned, ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+    runRealGit(unsigned, ['config', 'gpg.program', script])
+    const beforeUnsigned = existsSync(marker)
+    runRealGit(unsigned, ['log', '-1', '--format=%GS'])
+    expect(existsSync(marker)).toBe(beforeUnsigned)
   })
 })

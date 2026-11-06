@@ -655,28 +655,38 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 - 读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；
 - 节名按 `diff` / `diff.` / `diff ` 前缀匹配，因此现代写法 `[diff "evil"]` 与旧式子节 `[diff.evil]`（`git config --get diff.evil.textconv` 认可）都会命中；
 - **配置解析层统一归一化**：只写键名的**裸布尔键**（如 `[extensions]` 下的 `worktreeConfig`、`[log]` 下的 `showSignature`、`[core]` 下的 `fsmonitor`）等价 `true`；`key =` 显式空值等价未设置（Git 布尔判 false）。节名/键名大小写不敏感，行首 `\t`/空格缩进忽略，整行 `#`/`;` 注释与值后的行内注释均忽略，节头后同行可直接跟键值（`[log] showSignature`）。键名只含字母/数字/连字符（带点或下划线的键名 Git 会 fatal）；裸 `include.path` 在 Git 里是 missing value、不是合法 include，不按路径处理；
-- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 与显式空值为关闭）只在 `status`/`diff`/`blame` 判定（`status` 必调用；`diff`/`blame` 与 index 刷新状态相关；`log`/`show` 不刷新 index，不判）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true`（含裸键）只在 `log`/`show`/`whatchanged` 判定；
+- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 与显式空值为关闭）在 `status`/`diff`/`blame`/`ls-files`/`fsck` 判定（这 5 条实测会执行 fsmonitor；`log`/`show`/`rev-list` 等不刷新 index，不判）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true`（含裸键）只在 `log`/`show`/`whatchanged` 判定；
+- `diff.submodule=diff` 时，`diff`/`log`/`show`/`whatchanged` 会进入子模块并消费子模块配置的执行型键（`diff.external` / `diff.*.textconv|command` / `filter.*` / `core.fsmonitor`）。探针递归读取子模块配置：标准布局 `.git/modules/<name>/config` + `config.worktree`、gitdir 文件布局、以及旧式「子模块 worktree 内 `.git` 是目录」布局；路径由 `git ls-files --stage` 的 160000 gitlink 枚举（不依赖可伪造/缺失的 `.gitmodules`）。**无法枚举、配置缺失/不可读、遇到符号链接 → fail-closed ask**，不把「没扫到」当成「没有执行键」；
+- `gpg.program` / `gpg.ssh.program` / `gpg.x509.program`（非空）在 `log`/`show`/`whatchanged` 即 ask（对象是否带签名无法静态判断，配置存在即保守 ask；实测无签名对象时 `%G` 不会调用 gpg）；`format.pretty` 或 `pretty.<name>` 的值含 `%G` → ask；命令行 `--format`/`--pretty` 含 `%G` 时（`log`/`show`/`whatchanged`/`rev-list`）→ `git-gpg-format` ask，取值缺失/无法判定同样 ask；
 - 任一命中即 `git-repo-config-exec` ask；文件存在但不可读按危险处理（fail-closed）；**任何无法按 Git 语法解析/归一的配置行同样 fail-closed**（引号包裹的键名、带点或下划线的键名、裸键后跟注释、缺失 `]` 的节头、值为 EOF 前未转义反斜杠等，Git 实测均 `fatal: bad config line`）——命中相关命令时 ask，不静默丢弃该行；**`include.path` / `includeIf.path` 的值内出现反斜杠（`\\`、`\"`、`\n`、`\t`、`\b` 与尾部续行）按不可解析 ask**：本轮不做转义语义归一，用未归一原值算 include 路径会与 Git 实际读取路径不一致（Git 会把 `evil\\cfg` 归一为 `evil\cfg`），漏读即漏判；**其余键不做转义 invalid 判定**——转义不会把「危险」变「安全」（布尔按「非 false 即真」、`filter`/`diff` 按「非空即危险」，归一化与否不改变判定方向），若一并判 invalid，会把 `core.excludesFile = C:\\Users\\…`、`alias` 里的 `\"`、diff driver 正则等 Git 正常接受的真实配置整份误伤；无仓库或配置干净时保持 allow；
 - **全局配置每次现读、不做进程内缓存**：缓存会让「先判干净、随后配置被改写」在同一进程内永远看不见；单次读取约 0.05 ms，去掉无明显开销（mtime+size 失效还受时间戳精度与同尺寸改写竞态影响）。
 
-全局 `filter` 的取舍：它常见于 `git lfs install`（`clean/smudge/process` 三项都有），但仓库只需自带 `.gitattributes` 指向一个**全局已存在**的自定义 filter，`status`/`diff` 就会执行该程序——这是「打开不可信仓库即零审批执行」的真实缺口，不能只靠仓库本地配置。因此全局 filter 也探测，但按值放行 LFS：归一化（去包裹引号、折叠空白）后，二进制 basename 为 `git-lfs`/`git-lfs.exe`（允许路径前缀）且参数精确为 `clean -- %f` / `smudge -- %f` / `filter-process` 才 allow；其余自定义值一律 ask。误判风险：名字伪装成 `git-lfs` 的绝对路径（如 `/tmp/git-lfs`）也会放行；但全局配置属于用户自己，能改全局配置的攻击者本就能用 `diff.external` 等键执行任意程序，不扩大威胁面。`gpg.program` 本身不会在只读命令里执行，只有 `log.showSignature` 打开后才会调用，故只探测后者。`GIT_CONFIG_SYSTEM` 同样纳入候选：它只是系统级配置文件路径，解析/不可读 fail-closed 逻辑与全局配置共用；未构造非默认路径实测，风险低。
+全局 `filter` 的取舍：它常见于 `git lfs install`（`clean/smudge/process` 三项都有），但仓库只需自带 `.gitattributes` 指向一个**全局已存在**的自定义 filter，`status`/`diff` 就会执行该程序——这是「打开不可信仓库即零审批执行」的真实缺口，不能只靠仓库本地配置。因此全局 filter 也探测，但按值放行 LFS：归一化（去包裹引号、折叠空白）后，二进制 basename 为 `git-lfs`/`git-lfs.exe`（允许路径前缀）且参数精确为 `clean -- %f` / `smudge -- %f` / `filter-process` 才 allow；其余自定义值一律 ask。误判风险：名字伪装成 `git-lfs` 的绝对路径（如 `/tmp/git-lfs`）也会放行；但全局配置属于用户自己，能改全局配置的攻击者本就能用 `diff.external` 等键执行任意程序，不扩大威胁面。`gpg.program` 并非只有 `log.showSignature` 才会调用：`%G` 系列占位符（命令行或 `format.pretty`）同样会触发签名验证；因此现在同时探测 `gpg.*.program` 与 `%G` 展示路径（见上）。`GIT_CONFIG_SYSTEM` 同样纳入候选：它只是系统级配置文件路径，解析/不可读 fail-closed 逻辑与全局配置共用；未构造非默认路径实测，风险低。
 
 **迁移状态（S3 已完成：Git 自身解析是唯一口径）**：固定 argv 探针 `git --no-pager config --list --null --show-origin --show-scope --includes` 是唯一解析器（与应用同一 PATH 解析出的绝对 git，250 ms 超时、1 MB 输出上限，**环境与真实 Bash 子进程一致：由 `buildSafeEnv()` 派生，`GIT_DIR` / `GIT_CONFIG_*` / `GIT_CONFIG_COUNT` 等被剥离，仅白名单 `GIT_EDITOR` 放行**；cwd 不存在单独分类 `cwd-missing`，超过 maxBuffer 单独分类 `io-error`（不再混进 `missing-git` / `timeout`））。S3 已删除手写 include / 转义 / 深度 / 裸键归一逻辑，只保留 shell 词法器与命令+参数判定；include 深度、转义、子节写法、裸键、`includeIf` 条件求值全部交给 Git。探针失败（缺失、cwd 不存在、超时、非零退出、空输出、非法 NUL 记录、`--show-scope` 不支持、IO 错误/超 maxBuffer）一律 `git-repo-config-exec` ask，不 fail-open（裸 `include.path` 在 Git 里是 missing value、`--list` 直接 exit 128，因此判 ask）。运行时开关 `BIZGRAPH_GIT_CONFIG_PROBE=off` 可一键退回「一律 ask」，不会退回「手写 allow」，保留至观察期满。运行时只保留探针自身的失败分类与 p95 延迟观测；S1 的「手写 vs 探针」差异对照已随手写解析器删除，§17 的「影子日志连续 7 天 0 漏判」为**待运营观察项**（须在 S1/S2 影子构建上完成），本次交付未声称完成。
 
 
-#### 执行型配置键已知清单（2026-11-06 普查）
+#### 探针消费键清单与命令→键消费关系
 
-**结论是「已知清单 + 承认可能不全」，不是「已全覆盖」。** 下表只列本轮枚举并核对过的键族；git 新增配置键、第三方 driver/filter、以及未来版本新增的执行点都可能不在此表。
+> **表头声明：这是已知清单，可能不全；发现新执行型配置键或新的消费命令时，必须按此表补登记，并补一条真实 git + marker 的执行面用例。**
+>
+> 下表是本轮（2026-11-06，H1/H2/H3 修复）逐条**实测**过执行面的键族。Git 版本升级、第三方 driver/filter、以及未来新增的执行点都可能不在此表；「表里没有」不等于「安全」。
 
-| 配置键族 | 消费它的只读命令（实测） | 当前策略 | 是否实测执行 |
+| 配置键族 | 消费它的只读命令（实测） | 当前策略 | 执行面证据 |
 | --- | --- | --- | --- |
-| `diff.external` | `diff/log/show/blame/whatchanged` | 命中 → ask | 是（`git diff` marker 生成；`status` 不消费） |
-| `diff.<driver>.command` / `diff.<driver>.textconv` | `diff/log/show/blame/whatchanged` | 命中 → ask | 否（与 external 同执行路径，保守登记） |
+| `diff.external` | `diff/log/show/whatchanged/blame` | 命中 → ask | 是（`git diff` marker 生成；`status` 不消费） |
+| `diff.<driver>.command` / `diff.<driver>.textconv` | `diff/log/show/whatchanged/blame` | 命中 → ask | 否（与 external 同执行路径，保守登记） |
 | `filter.<driver>.clean/smudge/process` | `status/diff` | 仓库本地命中 → ask；全局仅放行 git-lfs 标准值 | 否（按执行面登记；此前 B-14 已按等价路径处理） |
-| `core.fsmonitor` | `status/diff/blame/ls-files` | 命中 → ask | 是（`ls-files` marker 生成；`log/show/rev-list` 不执行） |
+| `core.fsmonitor` | `status/diff/blame/ls-files/fsck` | 命中 → ask | 是（5 条 allow 命令均 marker 生成；`diff-files/diff-index/update-index/checkout-index/gc` 实测也执行，但它们不在白名单或本身是写子命令；`log/show/rev-list/prune/read-tree/verify-pack/...` 不执行） |
 | `core.hooksPath`（`post-index-change`） | `status`（回写 index 时） | 命中 → ask | 是（`status` marker 生成；`diff/log/blame/ls-files` 未触发） |
 | `core.alternateRefsCommand` | `rev-list --alternate-refs` | 参数面 + 配置面均 ask | 是（marker 生成；`--alternate-ref` 缩写被 git 拒绝且不执行；`for-each-ref`/`rev-parse` 不执行） |
-| `log.showSignature` + `gpg.program` | `log/show/whatchanged` | `log.showSignature` 为真 → ask | 部分：无签名提交实测不调用 gpg；有签名提交会调用，故保守 ask |
+| `diff.submodule=diff` + 子模块执行型键 | `diff/log/show/whatchanged`（仅展示 patch 时） | 递归读子模块配置；命中或不可枚举 → ask | 是（标准 `.git/modules/*` 与旧式 `sub/.git` 目录布局均生成 marker；`status` 不消费） |
+| `gpg.program` | `log/show/whatchanged`（`%G` 或 `log.showSignature` 时） | 配置存在 → ask（无法静态判断对象是否签名） | 是（有签名提交 marker 生成；无签名提交实测不执行） |
+| `gpg.ssh.program` / `gpg.x509.program` | 同上 | 同上 | 否（与 `gpg.program` 同路径，保守登记） |
+| `format.pretty` / `pretty.<name>` 值含 `%G` | `log/show/whatchanged` | 命中 → ask | 是（`format.pretty=format:%GS` + `git log -1` marker 生成） |
+| 命令行 `--format`/`--pretty` 值含 `%G`（参数面） | `log/show/whatchanged/rev-list` | ask / `git-gpg-format` | 是（`--format=%GS`、`--pretty=format:%GS` 均生成 marker） |
+| `log.showSignature` | `log/show/whatchanged` | 为真 → ask | 是（有签名提交时调用 gpg） |
+| `for-each-ref --format=%(signature)` / `branch --format=%(signature)`（参数面） | `for-each-ref` / `branch` | **未登记（本轮不改产品行为）** | 是：有签名提交时会执行 `gpg.program`；触发需要命令行显式传 signature atom（无配置默认值），风险低于 H3 的 `format.pretty`，列为下轮审计靶子 |
 | `core.sshCommand` | `fetch/push/clone/ls-remote/remote show` | 写子命令与 `remote show` 均已 ask；其余只读命令不消费 → allow | 否（需 ssh 远端，未构造） |
 | `core.pager` / `pager.<cmd>` | 仅在 stdout 为终端或 `git -p` 时 | `-p/--paginate` ask；Bash 工具 stdout 为管道 → allow | 是（管道下 `git log` 不调用 pager） |
 | `core.editor` / `sequence.editor` | `commit/rebase/add -p` 等写命令 | 写子命令本身 ask → 不额外判 | 不适用（只读命令不消费） |
@@ -685,7 +695,19 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `protocol.*.allow`（含 `remote.<name>.url=ext::<cmd>`） | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push 本身 ask | 是：`remote show` + `ext::` + `protocol.ext.allow=always` 实测执行 shell；默认未允许时不执行 |
 | `remote.<name>.uploadpack` | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push ask | 是（`remote show` marker 生成） |
 | `credential.helper` | `fetch/push/clone`（认证） | 写子命令 ask；只读命令不消费 → allow | 否 |
-| `gpg.program`（单独） | 无（仅签名相关命令） | 不消费 → allow | 是（只设置 `gpg.program` 时 `log/status` 不执行） |
+
+**命令 → 键消费关系（同一事实的命令视角）**。新增白名单子命令时，先回答「这条命令会不会读下列键」，答不上来就不加白名单：
+
+| 白名单命令 | 探针必须检查的键 | 备注 |
+| --- | --- | --- |
+| `status` | `filter.*`、`core.fsmonitor`、`core.hooksPath` | 会回写 index，因此 hooksPath 只在 `status` 判 |
+| `diff` | `diff.external`、`diff.*.command/textconv`、`filter.*`、`core.fsmonitor`、`diff.submodule`(+子模块配置) | 有 patch 即可能执行 external |
+| `log` / `show` / `whatchanged` | 同 `diff`，另加 `log.showSignature`、`gpg.*.program`、`format.pretty`、`pretty.*`、命令行 `%G` | 无 `-p` 时 external 不执行，但配置面无法区分展示形态，保守全判 |
+| `blame` | `diff.*`、`core.fsmonitor` | |
+| `ls-files` | `core.fsmonitor` | |
+| `fsck` | `core.fsmonitor` | H1 新增；实测 `git fsck` 刷新 index 并执行 fsmonitor |
+| `rev-list` | `core.alternateRefsCommand`（`--alternate-refs`）、`log.showSignature` | `%G` 仅参数面，配置无默认格式 |
+| 其余只读子命令（`cat-file` / `for-each-ref` / `rev-parse` / `describe` / `shortlog` / …） | 本轮未发现配置默认触发的执行键 | `for-each-ref` 的 signature atom 需命令行显式 `--format`，见上表「未登记」 |
 
 结构性兜底建议（本轮**未做**）：对 git 只读命令，把键名含 `command/program/helper/hook/pager/editor/exec` 一律 ask，看似能覆盖未知键，但代价实测如下——本机 `git config --list` 共 24 个键，系统级 `credential.helper=osxkeychain` 即命中 1 个；若对全作用域生效，**每个仓库的每条 `git status/diff/log` 都会变成 ask**，UX 不可接受。仓库本地配置（本仓库 12 个键）命中 0 个，若只对 repo-local 生效代价较低，但 `filter.lfs.*` 等常见键并不含上述关键词，兜底价值有限。建议：不做统一 ask；保留显式清单 + 新增执行面时补登记，可另加「未知执行语义键名」的**只记录告警**（不弹窗、不改判定）用于持续发现清单缺口。
 
@@ -697,6 +719,7 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `git` | `--output=`、`--ext-diff`、`--textconv`、`--filters` | `git-output-file` / `git-ext-diff` / `git-textconv` / `git-filters` | high |
 | `git` | `fsck --lost-found` 及其唯一前缀（`--lost-f` 起） | `git-lost-found` | high |
 | `git` | `log/show --show-signature` 及其唯一前缀 | `git-show-signature` | high |
+| `git` | `--submodule`（含 `=diff`/`=log`/`=short` 与裸参数；唯一前缀如 `--submod`） | `git-submodule-diff` | high |
 | `git` | `-O` 家族不再单列：`git grep` 整条子命令已移出白名单（`git-grep`, critical） | `git-grep` | critical |
 | `git` | `-c`（**仅 `name=value` 形态**）、`--config-env`（可覆盖 `core.pager`/`diff.external`/`core.fsmonitor`；`git log -c` 是 combined diff，不误伤） | `git-config-override` | high |
 | `git` | `--exec-path`、`--upload-pack`、`--receive-pack` | `git-exec-path` / `git-upload-pack` / `git-receive-pack` | high / critical |
