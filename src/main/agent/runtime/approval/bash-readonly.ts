@@ -233,6 +233,13 @@ export interface DangerousArgSpec {
   rule: string
   reason: string
   risk?: RiskLevel
+  /**
+   * 该选项只有带 `<name>=<value>` 才是真实危险形态。
+   * 目前只有 git 全局 `-c` 用到：`git -c core.pager=cat status` 才是配置覆盖；
+   * 不带等号的 `-c` 是子命令选项（`git log -c` = combined diff，只读），
+   * 不应对它多弹一次。判定时会同时看紧邻的下一个 token。
+   */
+  requiresAssignment?: boolean
 }
 
 export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
@@ -277,7 +284,13 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
     { flag: '--filters', rule: 'git-filters', reason: 'git --filters 会执行配置的 filter 程序', risk: HIGH },
     { flag: '--lost-found', rule: 'git-lost-found', reason: 'git fsck --lost-found 会写 .git/lost-found', risk: HIGH },
     { flag: '--show-signature', rule: 'git-show-signature', reason: 'git log/show --show-signature 会拉起 gpg 验证签名', risk: HIGH },
-    { flag: '-c', rule: 'git-config-override', reason: 'git -c 可覆盖 core.pager / diff.external / core.fsmonitor 等会执行程序的配置', risk: HIGH },
+    {
+      flag: '-c',
+      rule: 'git-config-override',
+      reason: 'git -c 可覆盖 core.pager / diff.external / core.fsmonitor 等会执行程序的配置',
+      risk: HIGH,
+      requiresAssignment: true,
+    },
     { flag: '--config-env', rule: 'git-config-override', reason: 'git --config-env 可从环境注入会执行程序的配置', risk: HIGH },
     { flag: '--exec-path', rule: 'git-exec-path', reason: 'git --exec-path 会把子命令解析到任意目录', risk: HIGH },
     { flag: '--upload-pack', rule: 'git-upload-pack', reason: 'git --upload-pack 会执行指定的外部程序', risk: CRITICAL },
@@ -447,14 +460,55 @@ function dangerousArgOf(
   args: string[],
   specs: readonly DangerousArgSpec[],
 ): { spec: DangerousArgSpec; arg: string } | null {
-  for (const arg of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
     const flagName = arg.split('=')[0]
     for (const spec of specs) {
-      if (arg === spec.flag || flagName === spec.flag) return { spec, arg }
-      if (isFlagInShortCluster(command, arg, spec.flag)) return { spec, arg }
+      const matched =
+        arg === spec.flag ||
+        flagName === spec.flag ||
+        isFlagInShortCluster(command, arg, spec.flag) ||
+        isAbbreviatedLongFlag(flagName, spec.flag)
+      if (!matched) continue
+      // `git -c` 只有 `<name>=<value>` 形态才是配置覆盖；`git log -c` 的 -c 是
+      // combined diff 子命令选项，不带等号就放回子命令规则判定。
+      if (spec.requiresAssignment && !hasAssignmentValue(args, index, arg)) continue
+      return { spec, arg }
     }
   }
   return null
+}
+
+/**
+ * 选项是否携带 `<name>=<value>`：自身含 `=`（`-cname=value`）或紧邻的下一个
+ * token 含 `=`（`-c name=value`）。git 的 `-c` 语义要求等号，缺少等号时
+ * git 本身会报错，因此这里不会放走任何真实配置覆盖。
+ */
+function hasAssignmentValue(args: string[], index: number, arg: string): boolean {
+  if (arg.includes('=')) return true
+  const next = args[index + 1]
+  return !!next && next.includes('=')
+}
+
+/**
+ * 长选项唯一前缀缩写：GNU `getopt_long` 接受「无歧义前缀」，实测
+ * `file --co -m test.magic` 等价 `--compile`（写出 7,273,344B magic.mgc）。
+ * 因此精确比对不够，凡是危险长选项的前缀都按命中处理。
+ *
+ * 下限取「`--x`」（总长度 3）：
+ * - 必须排除 `--`（长度恰为 2，是选项结束分隔符）；
+ * - 再短没有意义；而两字母缩写 `--co` 已被实测接受，不能漏；
+ * - 部分工具其实不支持缩写（实测 git diff/log、rg、find 都会拒绝），
+ *   这里宁可多弹一次，也不按命令白名单逐个放宽（修一次漏一次）。
+ * 大小写保持敏感：这些工具的长选项均大小写敏感，`--Comp` 不是 `--compile`。
+ */
+function isAbbreviatedLongFlag(flagName: string, specFlag: string): boolean {
+  return (
+    specFlag.startsWith('--') &&
+    flagName.startsWith('--') &&
+    flagName.length > 2 &&
+    specFlag.startsWith(flagName)
+  )
 }
 
 /**

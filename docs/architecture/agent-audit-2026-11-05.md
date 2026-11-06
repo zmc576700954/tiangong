@@ -1422,3 +1422,211 @@ function isAttachedShortFlag(arg: string, flag: string): boolean {
 4. **P3** 窗口销毁后审批可被其它窗口决议（设计取舍，记录即可）。
 
 结论一句话：**上一轮的 `git grep` 阻断已清除，但本轮发现 `node --check` 的零审批任意代码执行通道，发布阻断项未清零，仍不可发布。**
+
+# 第五次冻结终审（发布门禁复核）
+
+## 0. 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `3b36fce54b78f25218e5bcfceb4cbf9780630982` |
+| subject | `feat(agent): 落地 M0→M1 内核运行时、审批网关与成本账本` |
+| `git show --stat` | 400 files changed, 42780 insertions(+), 177 deletions(-) |
+| 工作区 | 仅 `?? spikes/spikes/`（11 个 sabotage 日志，`-uall` 展开后 11 file） |
+| 定向用例 | 4 suites / **80 tests passed**（上一轮 77） |
+
+关键文件 sha256（写报告前后各复算一次，见 §7）：
+
+```
+0456b3d1…  src/main/agent/runtime/approval/__tests__/bash-readonly.test.ts
+05d0d7eb…  src/main/agent/runtime/approval/gateway.ts
+09c558d0…  src/main/ipc/agent.ts
+0cdcc32e…  src/main/ipc/__tests__/agent.test.ts
+0d1e221d…  src/main/adapters/claude-code.ts
+135dcfed…  src/main/ipc-handlers.ts
+1b831349…  src/main/agent/runtime/errors.ts
+1ce61499…  src/main/agent/runtime/db/repository.ts
+2263c463…  src/shared/types/agent-runtime.ts
+47475bc0…  src/shared/types/ipc.ts
+4c3c46d9…  src/main/agent/runtime/executors/adapter-driver.ts
+84637def…  src/main/agent/agent-manager.ts
+84bb2ec1…  src/renderer/components/agent/ApprovalRequestDialog.tsx
+8588636b…  src/main/agent/runtime/cost/ledger.ts
+8ae91425…  src/main/agent/runtime/runtime.ts
+92f3eae9…  src/main/agent/runtime/approval/bash-readonly.ts
+b6f5bd07…  src/main/agent/runtime/db/schema.ts
+c8c58f5a…  src/main/agent/session-lifecycle-manager.ts
+cac6258a…  src/main/agent/runtime/locks/session-lock.ts
+cc2c3afc…  src/preload/index.ts
+```
+
+与上一轮冻结 hash 逐文件比对：**只有 `bash-readonly.ts` 变化**，其余 16 个同名文件字节一致 → 上一轮 8 项结论继续成立，本轮只需复核策略文件。
+
+“已提交”对可发布性的影响：本轮基线是真实 commit，不再有“HEAD 不含被审代码”的问题；但工作区仍有 1 个 untracked 目录，严格意义上不是干净 worktree。
+
+## 1. 结论
+
+**不可发布。**
+
+上一轮的 3 个阻断（`node --check`、`file -bC`、`rg -nz`）已全部清除，但本轮重扫发现同类缺口的新形态：`file` 的长选项前缀缩写（`--comp` / `--compil`）绕过 `--compile` 登记，实测仍可免审写出 7MB `magic.mgc`。
+
+## 2. 本轮 4 项修复独立核验
+
+| # | 判定 | 证据 |
+|---|---|---|
+| 1 `node --check` 严格形态 | **确认** | `nodeRule` L359 仅 `args.length === 2 && args[0] === '--check'`；实测 `--check script.js`=allow；`-r/--require/--import/--loader/--env-file/--import=x`=ask；`NODE_OPTIONS=… node --check`=ask（`not-in-whitelist`）；`env NODE_OPTIONS=…`=ask（`shell-escape:env`） |
+| 2 短选项簇算法 | **确认** | `-bC/-cC/-zC`、`-nz/-iz/-wz` 均 ask；`-mC/-bPC/-eC/-rnz`、`date -df` 均 allow 且不误判；`git -ccore.pager=cat` ask；`git grep -iOcat` 走 `git-grep` ask |
+| 3 `git help` 收紧 | **确认** | L387 仅 `args.length === 1` 的 `--version/-v/--help/-h/help` allow；`git help log` / `git help --web` → `git:unknown:help` ask |
+| 4 `--show-signature` | **确认** | 登记为 `git-show-signature`；`git log/search` 实测 ask |
+
+簇算法本身未引入新漏判：`SHORT_OPTIONS_WITH_VALUE` 的四个值集（file: M/m/e/f/F/P；rg: A/B/C/d/e/E/f/g/j/M/m/r/t/T；git: C/c/O；date: d/f/I/r/s/v）逐项对照 `--help` 全部是“取值选项”，没有把布尔选项误收进去；命中判定先于取值截断，因此 `-c` 这种“既危险又取值”的选项仍会命中。`-bC=x`、`-nz=x` 这类 `=` 形态也命中。
+
+## 3. 阻断清单
+
+### P1 · `file` 长选项前缀缩写绕过 `--compile`
+
+- 现象：GNU `file` 走 `getopt_long`，接受**唯一前缀**。
+- 实测（策略与真实执行）：
+  ```bash
+  cd /tmp/abbr && printf '0 string TEST hello\n' > test.magic
+  file --comp -m test.magic        # exit=0，生成 magic.mgc(7.2MB) + test.magic.mgc
+  file --compil -m test.magic      # 同上
+  ```
+- 策略判定：`file --comp` / `file --compil` / `file --c` 均 `allow / file`（只有精确 `--compile` 命中 `file-compile`）。
+- 影响：与上一轮 `file -bC` 同级——免审批写盘、可覆盖工作区同名文件；且 `-m` 可指向仓库内可写的 magic 源文件。
+- 最小改法（`dangerousArgOf`，L445-458）：长选项增加前缀匹配，`if (arg.startsWith('--') && spec.flag.startsWith(flagName) && flagName.length > 2) return …`。宁可多弹（`file --c` 本来就是歧义前缀），不可漏放。
+- 同类对照已实测不可利用：`rg --search-z/--search-zi` 报 unrecognized；`git --outpu/--show-signatu` 报 unrecognized；`date --se` 在 BSD date 上直接 illegal option。
+
+## 4. 只读白名单「命令 + 参数」复扫（本轮）
+
+| 命令 | 结论 |
+|---|---|
+| `ls/pwd/cat/head/tail/wc/grep/stat/du/df/which/whoami/uname/echo` | 无危险参数登记，元字符/逃逸命令已先行拦截 |
+| `rg` | `--pre`、`-z`、`--search-zip` 及簇写全部 ask；不支持长选项缩写 |
+| `file` | 短选项已补齐；**长选项缩写漏（见 §3）** |
+| `date` | `-s/--set` 与簇写 ask；`-df` 不误判；BSD date 无长选项 |
+| `find` | `-delete/-exec/-execdir/-ok/-okdir/-fprint/-fprintf/-fls/-fprint0` 全 ask |
+| `node` | 仅严格 `--check <file>` allow；其余 ask |
+| `git` | `grep`/`-p`/`--paginate`/`--no-pager` 递归/危险参数全 ask；`git help` 收口；长选项不支持缩写 |
+| 绝对路径/提权 | `/bin/file`、`/usr/bin/rg` → `not-in-whitelist`；`sudo`/`xargs`/`env` → `shell-escape` |
+
+已知语义可执行残留（非阻断）：`git diff/log/show` 在 gitattributes + 用户 config 配置 textconv 时会自动执行外部转换程序；`git status` 的 `core.fsmonitor` 同理；`git log --format=%G?` 可能拉起 gpg。均需本机既有配置，非仓库内容可直接触发。
+
+## 5. `agent:runNode` 绕过路径复核
+
+- `agent:runNode` 在 `ipc/agent.ts`、`shared/types/ipc.ts`、`preload/index.ts` 中零命中（仅注释与断言测试）。
+- 全仓生产代码 `.runNode(` 仅 `agent-manager.ts:1149`（`sendCommandThroughKernel`）。
+- 该路径进入 `AgentRuntime.runNode` → `runNodeInner`，会话锁与审批前置未变。
+- 其余 23 个 `agent:*` handler 均不执行 turn（仅取消、查询、决议、会话开关）。
+
+## 6. 新增审计项：`docs/architecture/evidence/` 与 `spikes/` 入库
+
+实测数据：
+
+| 项 | 实测 |
+|---|---|
+| `docs/architecture/evidence` | 15 MB，154 files（131 png / 17 log / 5 json / 1 txt） |
+| `spikes`（tracked） | 0.5 MB，123 files（39 jsonl / 35 ts / 14 json / 11 log / 10 mjs …） |
+| `.git` | 约 22 MB（loose 15.09 MiB + pack 6.23 MiB） |
+| DB 快照 | **未入库**：`m1-migration-before-v21.db`(122,880B) 与 `…after-v23.db`(512,000B) 命中 `.gitignore:52 *.db`，`git ls-files` 为空 |
+| 绝对路径 | 9 个 log/json 含 `/Users/zhumingchen/tiangong/…`（最多 18 处/文件）；PNG 元数据零命中 |
+| 凭据扫描 | `sk-*` / API key / 私钥 / `ghp_*` 仅误配到构建日志里的模块路径，无真实凭据 |
+
+判定：
+
+- **信息泄露面：可延后**。当前不含凭据、不含 DB 快照；只有开发者绝对路径（用户名 + 仓库路径）。若仓库保持私有/内网，可接受；若计划开源或对外分发，发布前必须把路径替换为 `<repo>` 或直接剔除 evidence 目录。
+- **仓库体积：可延后**。当前 22 MB 不构成发布阻断，但 131 张 PNG 每轮复测新增约 15 MB，属不可 delta 压缩的二进制；建议后续迁到独立 `*-evidence` 仓库或 LFS。
+- **`spikes/`：可延后**。tracked 仅 0.5 MB，无构建产物；建议后续剥离到独立原型仓，避免与主线代码混淆，但不影响本次发布。
+- **`spikes/spikes/`（untracked 11 文件）：无需处理**（不在提交内），但建议删除以保持 worktree 干净。
+
+## 7. 冻结后复算
+
+写报告后重新执行：`git rev-parse HEAD`、`git status --porcelain -uall`、20 文件 `shasum -a 256`，与 §0 逐字节比对，结果见回复正文；若有漂移，以漂移后的状态为准并撤回结论。
+
+## 8. 发布判定
+
+**不可发布**。阻断项 1 条：`file --comp/--compil` → 免审写盘（§3，可实测复现、单行改法）。
+
+修复后预期可发布，前提：
+1. `dangerousArgOf` 增加长选项前缀匹配，并补一条 `file --comp` / `--compil` 用例；
+2. 4 套件全绿（当前 80 passed）；
+3. worktree 干净（处置 `spikes/spikes/`）；
+4. evidence/spikes 的处置按 §6 结论：可延后，但若仓库要开源则必须先处理路径泄露。
+
+# 修复记录（第五次冻结后，基线 `3b36fce`）
+
+## 1. 唯一阻断已修复：长选项唯一前缀缩写
+
+`bash-readonly.ts` 新增 `isAbbreviatedLongFlag(flagName, specFlag)` 并接入 `dangerousArgOf`：
+
+- 双方都以 `--` 开头（排除 `-` 短选项与 `--` 分隔符本身）；
+- `specFlag.startsWith(flagName)`；
+- `flagName.length > 2`（最短 `--x`）；`--flag=value` 先 `split('=')[0]`；
+- 大小写敏感。
+
+长度下限取 3（`> 2`）的理由：`--` 长度恰为 2 必须排除；`--co`（长度 4）实测已能执行 `file --compile`，不能用更长的下限；`file --c` 实测歧义报错，但按「宁可多弹」仍 ask。
+
+实测（审计方复现路径，本机 `macOS` + `file` 5.41）：
+
+```
+cd /tmp/abbr && printf '0 string TEST hello\n' > test.magic
+file --comp -m test.magic     # exit=0，生成 magic.mgc 7,273,344B
+file --compil -m test.magic   # exit=0，同上
+file --c -m test.magic        # file: option '--c' is ambiguous
+```
+
+策略判定修复后：`--compile` / `--compil` / `--compi` / `--comp` / `--com` / `--co` / `--c` / `--compil=1` 全部 `ask / file-compile`；`file /etc/passwd`、`file -b /etc/passwd`、`file --brief /etc/passwd`、`file --version` 仍 `allow / file`。
+
+**修复前会失败**（临时把 `isAbbreviatedLongFlag` 改为恒 `false` 后复跑）：`file --compil` 得到 `decision: 'allow'`（期望 `ask`），首个失败断言即 `expected { decision: 'allow', … } to match object { decision: 'ask' … }`；还原后 22 passed，`diff -q` 校验 `RESTORED_OK`。
+
+## 2. 全部登记危险参数的长选项缩写实测表
+
+| 登记项 | 工具/子命令 | 唯一前缀实测 | 是否真可绕过 |
+|---|---|---|---|
+| `file --compile` | file（GNU getopt_long） | `--compile/--compil/--comp/--com/--co` 接受；`--c` ambiguous | **是（已覆盖）** |
+| `git fsck --lost-found` | git fsck（parse-options） | `--lost-f` / `--lost` 接受 | **是（已覆盖）** |
+| `git --textconv` | git diff/log/show | `--textc/--textco` invalid option | 否 |
+| `git --ext-diff` | 同上 | `--ext/--ext-d` invalid option | 否 |
+| `git --filters` | 同上 | `--filt/--fi` invalid option | 否 |
+| `git --output=` | 同上 | `--out/--outp=` invalid option | 否 |
+| `git --show-signature` | git log/show | `--show-sig` unrecognized argument | 否 |
+| `git --paginate` | git 全局（手写解析） | `--pag` unknown option | 否 |
+| `git --config-env` | 同上 | `--config-en` unknown option | 否 |
+| `git --exec-path` | 同上 | `--exec-p` unknown option | 否 |
+| `git --upload-pack` | 同上 | `--upload-p` unknown option | 否 |
+| `git --receive-pack` | 同上 | `--receive-p` unknown option | 否 |
+| `rg --pre` | ripgrep | `--pr` unrecognized flag | 否 |
+| `rg --search-zip` | ripgrep | `--sea/--se/--search-z` unrecognized flag | 否 |
+| `find -delete` 等 | find（BSD） | `-del`/`--delete` unknown predicate | 否 |
+| `date --set` | BSD date / GNU date | BSD date illegal option；GNU date 接受唯一前缀 | 否（保守 ask） |
+| `--open-files-in-pager` | git grep | N/A | 否（整条子命令已移出白名单） |
+
+结论：**真正可被唯一前缀缩写绕过的登记项只有 `file --compile`（`--co` 起）与 `git fsck --lost-found`（`--lost-f` 起）**，两者已被通用前缀规则覆盖；其余工具拒绝缩写，通用规则只会让它们多弹一次（如 `git diff --text` 是独立真实选项，会被 `--textconv` 前缀规则误 ask，属安全侧成本，非漏判）。
+
+## 3. 收紧 `git log -c` 误判（不新增漏判）
+
+`DangerousArgSpec` 新增 `requiresAssignment?: boolean`；`dangerousArgOf` 改为索引循环，命中后若 `spec.requiresAssignment && !hasAssignmentValue(...)` 则 `continue`。`hasAssignmentValue` 同时看选项自身与紧邻下一个 token 是否含 `=`。
+
+- `git log -c` / `git diff -c` / `git show -c` → `allow / git:log|diff|show`（combined diff，只读）；
+- `git -c core.pager=cat status` / `git -ccore.pager=cat status` / `git -c core.fsmonitor=/tmp/hook status` → `ask / git-config-override`；
+- git 全局 `-c` 缺少 `=` 时 git 自身报错，因此不会放走真实配置覆盖。
+
+**修复前会失败**：临时移除 `requiresAssignment: true` 后，`git log -c -1` 得到 `decision: 'ask'` / `rule: 'git-config-override'`（期望 allow），用例首个断言失败；还原后 22 passed。
+
+## 4. 校验结果
+
+| 项 | 结果 |
+|---|---|
+| 定向套件 `approval` | 1 suite / **22 passed**（原 21 + 本轮 `git -c` 收紧 1） |
+| `npx tsc --noEmit` | 通过（无输出） |
+| `npx eslint src` | 通过（无输出） |
+| `npx vite build` | 通过（main/preload 均 built） |
+| 全量 `npx vitest run` | **173 failed / 3094 passed / 93 skipped（3360）**；26 个失败文件与既有集合一致 |
+| 失败原因核验 | 173 条均为 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130` vs 115） |
+
+补充说明：首两次全量运行出现 **174 failed / 27 files**，多出的一条是既有的时序 flaky 断言 [pipeline.test.ts](file:///Users/zhumingchen/tiangong/src/main/memory/__tests__/pipeline.test.ts) `tracks duration`（`expect(durationMs).toBeGreaterThanOrEqual(10)` 在整仓并发下偶发 9.26ms）；单独运行该文件 6/6 passed，再次全量运行恢复 173/26。该断言与本轮改动无关，未修改该测试。
+
+## 5. 文档同步
+
+[agent-architecture.md](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md) §4.6 已补：长选项唯一前缀缩写规则、长度下限 `--x`（总长 3）的理由、实测缩写接受表、`git -c` 的 `name=value` 收紧、危险参数表对应行更新。
+

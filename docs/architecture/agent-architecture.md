@@ -608,20 +608,47 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 **短选项簇按「簇内标志字符」判定**：`isFlagInShortCluster()` 从 `arg[1]` 起逐字符扫描——命中目标标志字符即 ask；遇到「需要取值」的短选项（`SHORT_OPTIONS_WITH_VALUE`，按各命令 `--help` 登记）则剩余字符是它的取值，立即停止扫描。实测边界：`file -bC` / `-cC` / `-zC` → `file-compile`，`rg -nz` / `-iz` / `-wz` / `-lz` / `-Uz` → `rg-search-zip`；而 `file -mC`（C 是 magic 文件名）、`file -bPC`（C 是 `-P` 的参数）、`rg -eC`（C 是 pattern）、`rg -rnz`（`-r` 取值 `nz`，实测 `printf 'abc\n' | rg -rnz abc` 输出 `nz`）仍 allow。
 
+**长选项按「唯一前缀缩写」判定**：GNU `getopt_long` 接受无歧义前缀。实测 `file --comp -m test.magic` / `file --compil -m test.magic` 与 `--compile` 等价（exit 0，写出 7,273,344B `magic.mgc`）。`isAbbreviatedLongFlag()` 的判定是：双方都以 `--` 开头（排除单个 `-` 短选项）、`specFlag.startsWith(flagName)`、且 `flagName.length > 2`；`--flag=value` 先 `split('=')[0]` 取选项名；**大小写敏感**（这些工具的长选项均区分大小写）。
+
+长度下限取 `> 2`（即最短 `--x`，总长 3）的理由：
+
+- `--` 本身长度恰为 2，必须排除（它是选项结束分隔符，不是选项）；
+- 长度 3 已能表达任意单字母缩写，而实测 `file --co`（长度 4）就必须覆盖，否则漏判；
+- 更长的下限（如 4）会漏掉 `file --c`（实测 file 判为歧义并报错，但策略按「宁可多弹」仍 ask）；下限放到 2 会把 `--` 拉进来并产生无意义匹配，故取 3。
+
+实测唯一前缀接受情况（决定是否真能被绕过）：
+
+| 登记项 | 工具/子命令 | 唯一前缀实测 | 结论 |
+|---|---|---|---|
+| `file --compile` | file（GNU/BSD） | `--compile`/`--compil`/`--comp`/`--com`/`--co` 均接受；`--c` 报歧义 | **真实绕过，已覆盖** |
+| `git fsck --lost-found` | git fsck（parse-options） | `--lost-f` / `--lost` 接受 | **真实绕过，已覆盖** |
+| `git --textconv`/`--ext-diff`/`--filters`/`--output=` | git diff/log/show | `--textc`/`--ext`/`--fi`/`--outp=` 均 invalid/unrecognized | 不支持缩写；统一前缀规则只多弹一次 |
+| `git --show-signature` | git log/show | `--show-sig` unrecognized | 同上 |
+| `git --paginate`/`--config-env`/`--exec-path`/`--upload-pack`/`--receive-pack` | git 全局选项（手写解析） | `--pag`/`--config-en`/`--exec-p`/`--upload-p`/`--receive-p` 均 unknown | 同上 |
+| `rg --pre`/`--search-zip` | ripgrep | `--pr`/`--sea`/`--se` unrecognized | 同上 |
+| `find -delete` 等 | find | `-del`/`--delete` unknown | 同上 |
+| `date --set` | BSD date / GNU date | BSD date 直接 illegal option；GNU date 接受唯一前缀 | 保守按前缀 ask |
+| `git --open-files-in-pager` | git grep | N/A | 整条 `git grep` 已移出白名单 |
+
+需要显式 acknowledge 的过严面：`git diff --text` 是独立真实选项（不是 `--textconv`），会被前缀规则多弹一次；这属于安全侧成本，不是漏判。
+
+**`git -c` 按「必须带赋值」收紧**：`git` 全局 `-c` 的真实语义是 `-c <name>=<value>`，不带等号的 `-c` 是子命令选项（`git log -c` = combined diff，只读）。`DangerousArgSpec.requiresAssignment` 标记后，判定会同时看选项自身与紧邻的下一个 token：含 `=` 才按 `git-config-override` ask，否则回落子命令规则。实测 `git -c core.pager=cat status` / `git -ccore.pager=cat status` → ask，`git log -c -1` / `git diff -c` / `git show -c` → allow。缺少等号时 git 自身会报错，因此不会放走任何真实配置覆盖。
+
+
 **判定是「命令名 + 参数」两段式，不是命令名匹配**（`DANGEROUS_ARGS_BY_COMMAND` + `WHITELIST_COMMANDS`）：
 
 | 命令 | 危险参数（命中即 ask） | 规则 | 风险 |
 |---|---|---|---|
 | `rg` | `--pre`（含 `--pre=`）、`-z`/`--search-zip` | `rg-pre` / `rg-search-zip` | critical / high |
 | `git` | `--output=`、`--ext-diff`、`--textconv`、`--filters` | `git-output-file` / `git-ext-diff` / `git-textconv` / `git-filters` | high |
-| `git` | `fsck --lost-found` | `git-lost-found` | high |
-| `git` | `log/show --show-signature` | `git-show-signature` | high |
+| `git` | `fsck --lost-found` 及其唯一前缀（`--lost-f` 起） | `git-lost-found` | high |
+| `git` | `log/show --show-signature` 及其唯一前缀 | `git-show-signature` | high |
 | `git` | `-O` 家族不再单列：`git grep` 整条子命令已移出白名单（`git-grep`, critical） | `git-grep` | critical |
-| `git` | `-c`、`--config-env`（可覆盖 `core.pager`/`diff.external`/`core.fsmonitor`） | `git-config-override` | high |
+| `git` | `-c`（**仅 `name=value` 形态**）、`--config-env`（可覆盖 `core.pager`/`diff.external`/`core.fsmonitor`；`git log -c` 是 combined diff，不误伤） | `git-config-override` | high |
 | `git` | `--exec-path`、`--upload-pack`、`--receive-pack` | `git-exec-path` / `git-upload-pack` / `git-receive-pack` | high / critical |
 | `git branch` | 任何位置参数（分支名）= 创建分支；写标志（`-d/-D/-m/-M/-c/-C/-u/-f/--delete/…`） | `git-branch-create` / `git-branch-write` | high |
 | `find` | `-delete`、`-exec`、`-execdir`、`-ok`、`-okdir`、`-fprint`、`-fprintf`、`-fls`、`-fprint0` | `find-dangerous` | high |
-| `file` | `-C`、`--compile`（写 magic 文件） | `file-compile` | high |
+| `file` | `-C`、`--compile` 及其唯一前缀缩写（`--co` 起；短选项簇 `-bC` 等） | `file-compile` | high |
 | `date` | `-s`、`--set`（改系统时间） | `date-set` | high |
 
 覆盖测试 `bash-readonly.test.ts` 会断言 `WHITELIST_COMMANDS`（从实际白名单派生）与 `DANGEROUS_ARGS_BY_COMMAND` **双向一致**，且登记的每个危险参数确实能触发 ask —— 以后新增白名单命令若忘记登记危险参数，测试直接失败。

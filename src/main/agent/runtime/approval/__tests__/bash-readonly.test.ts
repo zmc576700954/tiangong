@@ -306,6 +306,87 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     expect(decide('file /etc/passwd')).toMatchObject({ decision: 'allow', rule: 'file' })
   })
 
+  it('阻断：file 长选项唯一前缀缩写同样命中 --compile（--co / --com / --comp / --compil）', () => {
+    // 修复前：dangerousArgOf 只做精确比对，下列写法全部 allow / file。
+    // 实测 `file --co -m test.magic` 与 `--compile` 等价，写出 7,273,344B magic.mgc。
+    for (const command of [
+      'file --compile -m test.magic',
+      'file --compil -m test.magic',
+      'file --compi -m test.magic',
+      'file --comp -m test.magic',
+      'file --com -m test.magic',
+      'file --co -m test.magic',
+      'file --c -m test.magic', // 实测 file 判为歧义并报错；策略仍 ask（宁可多弹）
+      'file --compil=1 -m test.magic', // `--flag=value` 形态同样按前缀命中
+    ]) {
+      expect(decide(command)).toMatchObject({ decision: 'ask', rule: 'file-compile' })
+    }
+
+    // 真正的只读用法不受影响
+    expect(decide('file /etc/passwd')).toMatchObject({ decision: 'allow', rule: 'file' })
+    expect(decide('file -b /etc/passwd')).toMatchObject({ decision: 'allow', rule: 'file' })
+    expect(decide('file --brief /etc/passwd')).toMatchObject({ decision: 'allow', rule: 'file' })
+    // 非前缀的长选项不会被误伤
+    expect(decide('file --version')).toMatchObject({ decision: 'allow', rule: 'file' })
+  })
+
+  it('长选项缩写覆盖面：git fsck --lost-f 实测被接受；不支持缩写的工具最多多弹一次', () => {
+    // git fsck 走 parse-options，实测 --lost-f / --lost 都被接受 → 必须 ask
+    expect(decide('git fsck --lost-f')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-lost-found',
+    })
+    expect(decide('git fsck --lost')).toMatchObject({ decision: 'ask', rule: 'git-lost-found' })
+    // git diff/log 实测不支持缩写（invalid option / unrecognized argument），
+    // 但统一按前缀覆盖，代价只是多弹一次，不能漏。
+    expect(decide('git diff --textc HEAD')).toMatchObject({ decision: 'ask', rule: 'git-textconv' })
+    expect(decide('git log --show-sig -1')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-show-signature',
+    })
+    expect(decide('git diff --fi HEAD')).toMatchObject({ decision: 'ask', rule: 'git-filters' })
+    expect(decide('git diff --outp=/tmp/x HEAD')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-output-file',
+    })
+    // rg/date 的登记项同样按前缀覆盖（实测 rg 不接受缩写，仍保守 ask）
+    expect(decide('rg --sea TODO src')).toMatchObject({ decision: 'ask', rule: 'rg-search-zip' })
+    expect(decide('rg --pre cat TODO src')).toMatchObject({ decision: 'ask', rule: 'rg-pre' })
+    expect(decide('date --se 2020-01-01')).toMatchObject({ decision: 'ask', rule: 'date-set' })
+
+    // 常用只读用法不受影响
+    expect(decide('git status')).toMatchObject({ decision: 'allow', rule: 'git:status' })
+    expect(decide('git diff --stat')).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+    expect(decide('git log --oneline -5')).toMatchObject({ decision: 'allow', rule: 'git:log' })
+    expect(decide('rg pattern')).toMatchObject({ decision: 'allow', rule: 'rg' })
+  })
+
+  it('收紧：git log -c 是 combined diff（只读）→ allow；配置覆盖形态仍 ask', () => {
+    // 修复前：危险参数只做精确比对，`git log -c` 的 -c 被当成全局配置覆盖，多弹一次。
+    // git 全局 -c 的真实语义必须带 <name>=<value>，无等号的 -c 是子命令选项。
+    expect(decide('git log -c -1')).toMatchObject({ decision: 'allow', rule: 'git:log' })
+    expect(decide('git diff -c HEAD~1')).toMatchObject({ decision: 'allow', rule: 'git:diff' })
+    expect(decide('git show -c HEAD')).toMatchObject({ decision: 'allow', rule: 'git:show' })
+
+    // 真实配置覆盖：贴写（-cname=value）与分离（-c name=value）两种形态都 ask
+    expect(decide('git -c core.pager=cat status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-config-override',
+    })
+    expect(decide('git -ccore.pager=cat status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-config-override',
+    })
+    expect(decide('git -c core.fsmonitor=/tmp/hook status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-config-override',
+    })
+    expect(decide('git -c core.pager=cat log -1')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-config-override',
+    })
+  })
+
   it('顺带：git log/show --show-signature 拉起 gpg → ask；git help <cmd> 会调 man/browser → ask', () => {
     expect(decide('git log --show-signature -1')).toMatchObject({
       decision: 'ask',
@@ -343,8 +424,11 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
         expect(spec.flag.length).toBeGreaterThan(0)
         expect(spec.rule.length).toBeGreaterThan(0)
         expect(spec.reason.length).toBeGreaterThan(0)
-        // 登记的每个危险参数都必须真的能触发 ask（防止登记了却没接进判定）
-        expect(decide(`${command} ${spec.flag}`)).toMatchObject({
+        // 登记的每个危险参数都必须真的能触发 ask（防止登记了却没接进判定）。
+        // requiresAssignment 的选项（git -c）只有 <name>=<value> 形态才危险，
+        // 因此覆盖测试按真实语义补一个赋值，否则 `git -c` 本身不构成配置覆盖。
+        const trigger = spec.requiresAssignment ? `${command} ${spec.flag} core.pager=cat` : `${command} ${spec.flag}`
+        expect(decide(trigger)).toMatchObject({
           decision: 'ask',
           rule: spec.rule,
         })
