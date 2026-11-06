@@ -362,8 +362,14 @@ export function rebuildTableIfNeeded(
  * v22：agent_events 增加 step_id（按步骤 join 策略/审批事件；历史行留 NULL）。
  * v23：agent_usage 增加 cost_status / tokens_reported（可查的分类字段；
  *      历史行留 NULL，不从 attribution_note 文本反推）。
+ * v24：schema 对齐 —— 把 runIncrementalMigrations 补出的列正式写进 createSql，
+ *      避免表重建时 restoreFromBackup 只恢复公共列而丢值：
+ *      graphs.writeback_disabled、edges.updated_at、
+ *      chat_threads.parent_thread_id / context_tokens_used / context_window_max /
+ *      last_compacted_at / metadata、chat_messages.token_count。
+ *      纯 createSql 变更，不改列类型与 CHECK，不触发重建。
  */
-const CURRENT_SCHEMA_VERSION = 23
+const CURRENT_SCHEMA_VERSION = 24
 
 interface TableSchema {
   name: string
@@ -380,6 +386,10 @@ const TABLE_SCHEMAS: TableSchema[] = [
         name TEXT NOT NULL,
         type TEXT NOT NULL CHECK(type IN ('online', 'dev')),
         project_path TEXT,
+        -- 必须留在 createSql 里：该列由 runIncrementalMigrations 补出，
+        -- 不在 createSql 会导致表重建时 restoreFromBackup 丢掉该值，
+        -- 用户「关闭写回」的项目设置会被重置为 0。
+        writeback_disabled INTEGER DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -432,7 +442,9 @@ const TABLE_SCHEMAS: TableSchema[] = [
         content TEXT,
         description TEXT,
         data_flow TEXT,
-        strength REAL
+        strength REAL,
+        -- 同上：由增量迁移补出，必须进 createSql 才能在重建时保留。
+        updated_at TEXT
       )
     `,
     requiredColumns: ['id', 'source', 'target', 'graph_id'],
@@ -497,6 +509,14 @@ const TABLE_SCHEMAS: TableSchema[] = [
         graph_id TEXT,
         session_id TEXT,
         status TEXT NOT NULL DEFAULT 'idle' CHECK(status IN ('idle', 'running', 'error', 'reviewed', 'active', 'archived')),
+        -- 以下 5 列由 runIncrementalMigrations 补出，必须进 createSql：
+        -- 否则 chat_threads 一旦重建（如未来扩展 status CHECK），
+        -- context 水位与 metadata.task_kind（A2A 任务过滤依赖）会被静默清空。
+        parent_thread_id TEXT,
+        context_tokens_used INTEGER DEFAULT 0,
+        context_window_max INTEGER DEFAULT 0,
+        last_compacted_at INTEGER,
+        metadata TEXT DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
@@ -517,6 +537,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
         session_id TEXT,
         context_refs TEXT,
         tool_calls TEXT,
+        -- 同上：由增量迁移补出，必须进 createSql 才能在重建时保留 token 计数。
+        token_count INTEGER DEFAULT 0,
         created_at INTEGER NOT NULL
       )
     `,
