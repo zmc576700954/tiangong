@@ -3108,6 +3108,99 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
 - 迁移方案本身（本轮只做现状复验，未写原型）。
 - 误伤面的真实分布（只做了构造样例，未统计真实用户配置语料）。
 
+## 十七、转义 fail-closed 收窄复验（第八轮，2026-11-06）
+
+### 17.0 冻结基线（追加本文件前）
+
+| 项 | 值 |
+|---|---|
+| HEAD | `45f527cbf40db80fe5caed0cc2e79cff7210ca87`（父 `5e4393f`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes` | 123 |
+| `bash-readonly.ts` | `eff41811021734bde14195be829ce80cb0811cd7638d680b3b3536a42a0d0c35` |
+| `bash-readonly.test.ts` | `88ca972a1de8ba7b88e552907ceb65859573416353750ca351a29135ecc2dd52` |
+| `agent-architecture.md` | `dc58fb3217f091d141145203217f0a35bc36b2536a79f2df3e91ba219451d61d` |
+| 本文件 | `9710dd321d1b602309bef16df6f7939fb54b38f2dda3e1bc9dfab2b4f0aed8dc` |
+
+补丁：`invalid` 判定从“所有值含反斜杠”收窄为“`include`/`includeIf` 节下 `path` 键且值含反斜杠”；其余键不再因转义判 invalid。
+
+### 17.1 结论：**可发布（功能面）/ 只差迁移**
+
+收窄后闭合性没有下滑：5 类转义构造在相关命令上仍全 `ask`，与父提交 `5e4393f` 逐条对照**没有把原本 ask 的 include 类变成 allow**。唯一的 ask→allow 是 `core.fsmonitor = \\path` 在 `git log`/`git show` 上——这两条命令本来就不触发 fsmonitor（上一轮已收窄），属有意且安全的变化，不是闭合性回退。七类误伤全部回到 `allow`，回归面全绿。
+
+迁移判断不变：绕过的根因是“手写解析器与 Git 语法所有权不同”，本轮只是把误伤从 7 类压到 0，并没有改变这个结构；触发条件仍成立。
+
+### 17.2 四点判定
+
+#### 1）七类误伤回到 allow：**通过（5 命令全 allow）**
+
+| 配置（Git 实测均接受） | status / diff / log / show / blame |
+|---|---|
+| `core.excludesFile = C:\\Users\\alice\\.gitignore` | 5/5 `allow` |
+| `safe.directory = C:\\work\\repo` | 5/5 `allow` |
+| `remote.origin.url = https://example.com/a\\b.git` | 5/5 `allow` |
+| `core.sshCommand = ssh -i C:\\Users\\a\\.ssh\\id_rsa` | 5/5 `allow` |
+| `core.hooksPath = C:\\hooks` | 5/5 `allow` |
+| `[alias] fmt = log --pretty=format:\"%h %s\"` | 5/5 `allow` |
+| `[diff "go"] xfuncname = ^\\s*func` | 5/5 `allow` |
+
+**真实出现频率判断**：本产品的目标平台是 macOS。`C:\\` 形态主要出现在 Windows/macOS 双机共享 dotfiles 或从 Windows 同步过来的全局配置，macOS 单机用户少见；`xfuncname` 正则里的 `\\s` 属于自定义 diff driver 的高级用法，占比更低；alias 里写 `\"` 少见。三类合计估计在个位数百分比以内，且此前会造成“每次 git status 都弹窗”，收窄收益明显。
+
+#### 2）闭合性没有下滑：**通过**
+
+| 构造 | 当前 `45f527c` | 父 `5e4393f` |
+|---|---|---|
+| `[include] path = evil\\cfg` | 5/5 `ask` | 5/5 `ask` |
+| `[include] path = evil\"cfg` | 5/5 `ask` | 5/5 `ask` |
+| `[includeIf "gitdir:x"] path = evil\\cfg` | 5/5 `ask` | 5/5 `ask` |
+| 第 7 层 include 叶子为 `evil\\cfg` | 5/5 `ask` | 5/5 `ask` |
+| `[diff "x"] command = a\\b` | 5/5 `ask` | 5/5 `ask` |
+| `[core] fsmonitor = \\path` | status/diff/blame `ask`；log/show `allow` | 5/5 `ask` |
+
+最后一行是唯一 ask→allow。`git log`/`git show` 不读取/不调用 fsmonitor（上一轮已把探测收窄到 status/diff/blame），所以放行不产生执行面；判定依据是“命令是否真会调用该键”，不是“键是否含转义”。
+
+另核对了一条收窄的正确性前提：非 include 键的转义**不会**把危险变安全。布尔判定用“非 false 即真”——原始值只要含 `\` 就不可能归一到 `false`，只会更保守；`filter.*`/`diff.*` 按“非空即危险”，转义不改变非空性；`core.fsmonitor`/`log.showSignature`/`extensions.worktreeConfig` 同布尔口径。故无非 include 的 under-ask。
+
+#### 3）收窄边界精度：**通过（略偏保守，无漏判）**
+
+| 构造 | 当前 | 真实 Git |
+|---|---|---|
+| `[Include "sub"] path = evil\\cfg` | `ask` | **不采纳**（`include.sub.path`，不是 include 指令）→ 过度 ask，安全 |
+| `[INCLUDE] Path = evil\\cfg` | `ask` | 采纳 → 正确 |
+| `[includefoo] path = evil\\cfg` | `allow` | **不采纳** → 放行正确（无执行面） |
+| `[credential] path = a\\b` | `allow` | 只是普通键 → 不误伤 |
+| `[url "x"] path = a\\b` | `allow` | 普通键 → 不误伤 |
+| `[include] helper = a\\b`（非 `path`） | `allow` | 非 include 指令 → 不误伤 |
+| `[include] path = inc1.cfg`（正常） | `allow` | 采纳但无危险 → 正确 |
+
+节名匹配用的是 `^include(?:\.|\s|$)` / `^includeif(?:\.|\s|$)`，对 `includeIf "cond"`、`include.foo` 都命中；`includefoo` 不命中。由于 Git 对 `[include "sub"]` / `[includefoo]` 并不采纳，这两处的过度 ask/放行都不会造成漏判。`path` 键大小写经 `toLowerCase()` 归一。
+
+#### 4）回归：**通过**
+
+- 本仓库真实 `.git/config`、干净仓库、标准 LFS 形态：五命令 5/5 `allow`。
+- 定向 `bash-readonly` **45 passed**（本轮 +44 行用例）。
+- 摩擦抽样（本仓库真实全局配置）12/12 `allow`。
+- 单次策略开销 **0.060 ms**（200 次平均），与上一轮同量级。
+
+### 17.3 迁移判断与验收标准
+
+结论不变：**触发条件已满足，应启动迁移**；本轮的收窄不改变判断，反而再次说明“每轮都要为新差异打补丁”。
+
+| 阶段 | 通过条件 | 必须回滚 |
+|---|---|---|
+| S1 影子对照 | ① 行为零变化：所有命令判定与现状逐条一致；② 在真实仓库语料 + 构造语料上，探针与手写的差异**全部**是“手写 allow / 探针 ask”（即只见漏判，不见反向）；③ 探针 p95 ≤ 30 ms、无挂起、无额外进程 | 出现任一“探针 allow / 手写 ask”（说明探针更松，需先解释）；探针超时率 > 0.5%；p95 > 50 ms；出现非预期子进程 |
+| S2 切换门控 | ① B-14-1 与 17.2 的 5 类转义构造全部 `ask`；② 七类误伤全部 `allow`；③ 注入故障（git 缺失、超时、退出码 128、空输出、非法 NUL 记录）全部 `ask`，无 fail-open；④ 定向 + 新增差异用例全绿 | 任一 allow+exec 复现；任一注入故障返回 allow；崩溃/挂起 1 次即回滚到 S1 状态 |
+| S3 收尾 | ① 手写 include/转义/深度逻辑删除后，shell 词法器用例仍全绿；② 影子日志连续 7 天 0 条“手写 allow / 探针 ask”；③ 文档与审计同步 | 影子期出现新的手写漏判，或删除后出现判定漂移 |
+
+回滚方式统一：保留 `gitConfigProbe` 的开关，S2/S3 出问题时一键退回“手写 + 一律 ask”的组合（不回退到“手写 allow”）。
+
+### 17.4 本轮未验证项
+
+- `git-lfs` 真机（本机仍无二进制）。
+- 迁移原型（S1 的探针封装、超时/输出上限、缓存键）未实现，验收标准只是纸面。
+- 七类误伤与“Windows 系配置”的真实用户占比只有定性判断，无真实语料统计。
+- `[include "sub"]` 在各 Git 版本下是否始终不采纳（本机 2.50 实测不采纳；未跨版本验证）。
+
 ## 十六、B-14-1 误伤收敛（第八轮，基线 `5e4393f`）
 
 ### 16.0 冻结基线
