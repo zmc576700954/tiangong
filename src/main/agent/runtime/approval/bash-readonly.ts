@@ -18,8 +18,9 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { delimiter, join } from 'node:path'
+import { buildSafeEnv } from '../../../shared/env'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
 export type BashPolicyVerdict = 'allow' | 'ask' | 'blocked-empty'
@@ -389,6 +390,12 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
     { flag: '--lost-found', rule: 'git-lost-found', reason: 'git fsck --lost-found 会写 .git/lost-found', risk: HIGH },
     { flag: '--show-signature', rule: 'git-show-signature', reason: 'git log/show --show-signature 会拉起 gpg 验证签名', risk: HIGH },
     {
+      flag: '--alternate-refs',
+      rule: 'git-alternate-refs',
+      reason: 'git rev-list --alternate-refs 会执行 core.alternateRefsCommand 指定的外部程序',
+      risk: HIGH,
+    },
+    {
       flag: '-c',
       rule: 'git-config-override',
       reason: 'git -c 可覆盖 core.pager / diff.external / core.fsmonitor 等会执行程序的配置',
@@ -406,12 +413,13 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
  * `diff.*.textconv` / `diff.*.command` / `diff.external`（diff/log/show/blame/whatchanged）、
- * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status 必调用，
- * diff/blame 与 index 刷新状态相关）与 `log.showSignature`（log/show/whatchanged 自动
- * 调用 gpg）。配置命中即 ask。
+ * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/ls-files
+ * 会刷新 index；实测这些命令会 fork hook）、`core.hooksPath`（status 回写 index 时触发
+ * `post-index-change` 钩子）、`core.alternateRefsCommand`（rev-list `--alternate-refs`）
+ * 与 `log.showSignature`（log/show/whatchanged 自动调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
-  'diff', 'log', 'show', 'status', 'blame', 'whatchanged',
+  'diff', 'log', 'show', 'status', 'blame', 'whatchanged', 'rev-list', 'ls-files',
 ])
 
 /** git 布尔配置：false/no/off/0（含空值）为假；其余为真（路径类配置同样按真处理）。 */
@@ -457,6 +465,7 @@ function isStandardLfsFilterValue(key: string, value: string): boolean {
 /** 探针失败分类。S2 起任何失败都必须 ask（fail-closed），分类只用于观测与告警。 */
 export type GitConfigProbeFailure =
   | 'missing-git'
+  | 'cwd-missing'
   | 'timeout'
   | 'non-zero-exit'
   | 'show-scope-unsupported'
@@ -586,8 +595,16 @@ export function probeGitConfig(
 
   const gitPath = resolveGitExecutable()
   if (!gitPath) return failed('missing-git')
+  // cwd 不存在时 Git 根本起不来：与「找不到 git」分开，便于告警与排查。
+  if (!existsSync(cwd)) return failed('cwd-missing')
 
-  const env: NodeJS.ProcessEnv = { ...process.env }
+  /**
+   * 环境必须与真实 Bash 子进程一致：适配器用 buildSafeEnv() 派生环境，
+   * 其中 `GIT_DIR` / `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_COUNT` 等 `GIT_*` 均被剥离
+   * （唯一放行的是白名单键 `GIT_EDITOR`）。直接继承 process.env 会让探针读到
+   * 与真实命令不同的仓库，出现「探针 allow、真实执行 external」。
+   */
+  const env: NodeJS.ProcessEnv = buildSafeEnv()
   if (!includeGlobal) {
     env.GIT_CONFIG_NOSYSTEM = '1'
     env.GIT_CONFIG_SYSTEM = '/dev/null'
@@ -627,8 +644,20 @@ export function probeGitConfig(
       return failed('show-scope-unsupported')
     }
     if (detail.code === 'ETIMEDOUT') return failed('timeout')
-    if (detail.code === 'ENOENT') return failed('missing-git')
-    if (detail.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return failed('io-error')
+    if (detail.code === 'ENOENT') {
+      // 预检查已确认 cwd 存在；此处 ENOENT 可能是 git 可执行文件在解析后被移除，
+      // 也可能是 cwd 在检查与 spawn 之间被删除。后者单独分类，不与 missing-git 混淆。
+      return failed(existsSync(cwd) ? 'missing-git' : 'cwd-missing')
+    }
+    // 超过 1 MB 的 maxBuffer 截断：execFileSync 会以 ENOBUFS /
+    // ERR_CHILD_PROCESS_STDIO_MAXBUFFER 抛出，且伴随 SIGTERM；必须先于信号判定，
+    // 否则会被误分类为 timeout。
+    if (
+      detail.code === 'ENOBUFS' ||
+      detail.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+    ) {
+      return failed('io-error')
+    }
     if (detail.signal === 'SIGTERM') return failed('timeout')
     if (typeof detail.status === 'number' && detail.status !== 0) return failed('non-zero-exit')
     return failed('io-error')
@@ -654,12 +683,23 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
     ) {
       return true
     }
-    // fsmonitor：status 必调用；diff/blame 与 index 刷新状态相关；log/show 不判。
+    // fsmonitor：status/diff/ls-files 会刷新 index 并调用 hook；blame 保守纳入；
+    // log/show 不刷新 index，不判。
     if (
       entry.key === 'core.fsmonitor' &&
       gitConfigBoolean(value) &&
-      (sub === 'status' || sub === 'diff' || sub === 'blame')
+      (sub === 'status' || sub === 'diff' || sub === 'blame' || sub === 'ls-files')
     ) {
+      return true
+    }
+    // core.hooksPath：status 刷新并回写 index 时会触发 post-index-change 钩子
+    // （实测 marker 生成）；diff/blame/ls-files/log 实测不触发，不额外判。
+    if (entry.key === 'core.hookspath' && sub === 'status') {
+      return true
+    }
+    // core.alternateRefsCommand：rev-list --alternate-refs 会用 shell 执行该命令。
+    // 只对 rev-list 判定；其它只读子命令不会消费它。
+    if (entry.key === 'core.alternaterefscommand' && sub === 'rev-list') {
       return true
     }
     // filter：仓库本地三项全 ask；全局/系统/命令作用域只放行 git-lfs 标准写法。
@@ -687,6 +727,7 @@ export function probeGitConfigExecutes(result: GitConfigProbeResult, sub: string
 
 const GIT_CONFIG_PROBE_FAILURES: readonly GitConfigProbeFailure[] = [
   'missing-git',
+  'cwd-missing',
   'timeout',
   'non-zero-exit',
   'show-scope-unsupported',
@@ -828,7 +869,17 @@ function nodeRule(args: string[]): RuleVerdict {
 
 function remoteRule(args: string[]): RuleVerdict {
   if (args.length === 0) return allowRule('git:remote:list')
-  const readOnly = args[0] === '-v' || args[0] === '--verbose' || args[0] === 'show' || args[0] === 'get-url'
+  // `show` 会联系远端：实测会执行 `remote.<name>.uploadpack`，`protocol.ext.allow=always`
+  // 时 `remote.<name>.url=ext::<cmd>` 也会执行 shell。它虽然名字像读，但执行面由配置决定，
+  // 不在「命令 + 参数」可静态判定的范围，因此只放行不联网的列举/查询形态。
+  if (args[0] === 'show') {
+    return askRule(
+      'git-remote-show',
+      'git remote show 会联系远端并执行 remote.*.uploadpack / sshCommand / protocol.*.allow / ext:: 等配置指定的外部程序',
+      HIGH,
+    )
+  }
+  const readOnly = args[0] === '-v' || args[0] === '--verbose' || args[0] === 'get-url'
   if (readOnly) return allowRule('git:remote:read')
   return askRule('git-remote-write', `git remote ${args[0]} 会改写远端配置`, HIGH)
 }
@@ -897,7 +948,7 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
       if (probeGitConfigExecutes(probe, sub)) {
         return askRule(
           'git-repo-config-exec',
-          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / showSignature，git 会执行外部程序',
+          '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / showSignature，git 会执行外部程序',
           HIGH,
         )
       }

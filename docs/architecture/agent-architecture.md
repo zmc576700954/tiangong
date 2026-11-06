@@ -585,6 +585,8 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 白名单只含确定性只读命令：`ls/pwd/cat/head/tail/wc/grep/rg/stat/file/du/df/which/whoami/uname/date/echo/find`、`node --check`、git 读子命令（`status/log/diff/show/rev-parse/blame/ls-files/…`，`branch/remote/stash/tag` 仅放行列举形态）。
 
+`git remote show` 已改为 ask（`git-remote-show`）：它虽然名字像读，但会联系远端并消费 `remote.<name>.uploadpack`、`protocol.*.allow`（`ext::` URL）等由配置决定的外部程序；`git remote -v` / `get-url` 不联网，保持 allow。
+
 **`git grep` 已从白名单移除（一律 ask）**：它的语义本身允许把命中文件交给外部 pager 执行（`-O` / `--open-files-in-pager`），而短选项可簇写成 `-iOcat` / `-nOcat` / `-wOcat`，用正则枚举短选项簇修一次漏一次。代价只是多弹一次窗，因此整条子命令走 `git-grep`（critical）。同理 `git -p` / `git --paginate`（强制调用 `core.pager`）ask；`git --no-pager` 只是关闭分页、不执行外部程序，放行并继续判定其后的子命令。
 
 **白名单里其它「名字像只读、语义能执行/写盘」的复核结论**：
@@ -599,7 +601,7 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `git log/show --show-signature` | 新增 → ask（`git-show-signature`） | 会拉起 `gpg` 验证签名 |
 | `git help` / `git --help`/`-h` / `<子命令> --help`/`-h` | 一律 → ask（`git-help`） | 调 man/pager；`--web` 会按配置执行 browser 命令 |
 | 单引号外的 `$` / `{` `}` / 反斜杠续行 / 语义转义 / unquoted glob / `~` | 一律 → ask（`shell-expansion` / `shell-brace` / `shell-continuation` / `shell-backslash` / `shell-glob` / `shell-tilde`） | 策略看到的是展开前字面量，运行时可能拼出危险参数 |
-| `git diff/log/show/status/blame/whatchanged` 且仓库/用户配置命中执行型键 | 一律 → ask（`git-repo-config-exec`）；全局 `filter` 仅放行 git-lfs 标准写法 | 读会话工作目录所属仓库的 `.git/config`（含 include / 按扩展读取 `config.worktree`）与全局配置：`diff.*.textconv` / `diff.*.command` / `diff.external` / `core.fsmonitor`（仅 `status/diff/blame`）/ 仓库本地 `filter.*.clean|smudge|process` / 全局非 LFS `filter.*` / `log.showSignature` |
+| `git diff/log/show/status/blame/whatchanged/rev-list/ls-files` 且仓库/用户配置命中执行型键 | 一律 → ask（`git-repo-config-exec`）；全局 `filter` 仅放行 git-lfs 标准写法 | 读会话工作目录所属仓库的 `.git/config`（含 include / 按扩展读取 `config.worktree`）与全局配置：`diff.*.textconv` / `diff.*.command` / `diff.external` / `core.fsmonitor`（`status/diff/blame/ls-files`）/ `core.hooksPath`（仅 `status`，回写 index 触发 `post-index-change`）/ `core.alternateRefsCommand`（仅 `rev-list`）/ 仓库本地 `filter.*.clean|smudge|process` / 全局非 LFS `filter.*` / `log.showSignature` |
 | `rg --pre`、`rg -z`/`--search-zip` | 已在危险参数表 → ask | 逐文件执行外部程序 / 解压程序 |
 | `find -exec*`/`-delete`/`-fprint*`/`-fls` | 已在危险参数表 → ask | 执行 / 写盘 |
 | `node --check` | **仅严格形态 allow** | 只放行 `node --check <file>`（恰好两个参数）；多出任何参数一律 ask |
@@ -659,8 +661,33 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 
 全局 `filter` 的取舍：它常见于 `git lfs install`（`clean/smudge/process` 三项都有），但仓库只需自带 `.gitattributes` 指向一个**全局已存在**的自定义 filter，`status`/`diff` 就会执行该程序——这是「打开不可信仓库即零审批执行」的真实缺口，不能只靠仓库本地配置。因此全局 filter 也探测，但按值放行 LFS：归一化（去包裹引号、折叠空白）后，二进制 basename 为 `git-lfs`/`git-lfs.exe`（允许路径前缀）且参数精确为 `clean -- %f` / `smudge -- %f` / `filter-process` 才 allow；其余自定义值一律 ask。误判风险：名字伪装成 `git-lfs` 的绝对路径（如 `/tmp/git-lfs`）也会放行；但全局配置属于用户自己，能改全局配置的攻击者本就能用 `diff.external` 等键执行任意程序，不扩大威胁面。`gpg.program` 本身不会在只读命令里执行，只有 `log.showSignature` 打开后才会调用，故只探测后者。`GIT_CONFIG_SYSTEM` 同样纳入候选：它只是系统级配置文件路径，解析/不可读 fail-closed 逻辑与全局配置共用；未构造非默认路径实测，风险低。
 
-**迁移状态（S3 已完成：Git 自身解析是唯一口径）**：固定 argv 探针 `git --no-pager config --list --null --show-origin --show-scope --includes` 是唯一解析器（与应用同一 PATH 解析出的绝对 git，250 ms 超时、1 MB 输出上限，环境继承 `GIT_CONFIG_*` / `GIT_DIR`）。S3 已删除手写 include / 转义 / 深度 / 裸键归一逻辑，只保留 shell 词法器与命令+参数判定；include 深度、转义、子节写法、裸键、`includeIf` 条件求值全部交给 Git。探针失败（缺失、超时、非零退出、空输出、非法 NUL 记录、`--show-scope` 不支持、IO 错误）一律 `git-repo-config-exec` ask，不 fail-open（裸 `include.path` 在 Git 里是 missing value、`--list` 直接 exit 128，因此判 ask）。运行时开关 `BIZGRAPH_GIT_CONFIG_PROBE=off` 可一键退回「一律 ask」，不会退回「手写 allow」，保留至观察期满。运行时只保留探针自身的失败分类与 p95 延迟观测；S1 的「手写 vs 探针」差异对照已随手写解析器删除，§17 的「影子日志连续 7 天 0 漏判」为**待运营观察项**（须在 S1/S2 影子构建上完成），本次交付未声称完成。
+**迁移状态（S3 已完成：Git 自身解析是唯一口径）**：固定 argv 探针 `git --no-pager config --list --null --show-origin --show-scope --includes` 是唯一解析器（与应用同一 PATH 解析出的绝对 git，250 ms 超时、1 MB 输出上限，**环境与真实 Bash 子进程一致：由 `buildSafeEnv()` 派生，`GIT_DIR` / `GIT_CONFIG_*` / `GIT_CONFIG_COUNT` 等被剥离，仅白名单 `GIT_EDITOR` 放行**；cwd 不存在单独分类 `cwd-missing`，超过 maxBuffer 单独分类 `io-error`（不再混进 `missing-git` / `timeout`））。S3 已删除手写 include / 转义 / 深度 / 裸键归一逻辑，只保留 shell 词法器与命令+参数判定；include 深度、转义、子节写法、裸键、`includeIf` 条件求值全部交给 Git。探针失败（缺失、cwd 不存在、超时、非零退出、空输出、非法 NUL 记录、`--show-scope` 不支持、IO 错误/超 maxBuffer）一律 `git-repo-config-exec` ask，不 fail-open（裸 `include.path` 在 Git 里是 missing value、`--list` 直接 exit 128，因此判 ask）。运行时开关 `BIZGRAPH_GIT_CONFIG_PROBE=off` 可一键退回「一律 ask」，不会退回「手写 allow」，保留至观察期满。运行时只保留探针自身的失败分类与 p95 延迟观测；S1 的「手写 vs 探针」差异对照已随手写解析器删除，§17 的「影子日志连续 7 天 0 漏判」为**待运营观察项**（须在 S1/S2 影子构建上完成），本次交付未声称完成。
 
+
+#### 执行型配置键已知清单（2026-11-06 普查）
+
+**结论是「已知清单 + 承认可能不全」，不是「已全覆盖」。** 下表只列本轮枚举并核对过的键族；git 新增配置键、第三方 driver/filter、以及未来版本新增的执行点都可能不在此表。
+
+| 配置键族 | 消费它的只读命令（实测） | 当前策略 | 是否实测执行 |
+| --- | --- | --- | --- |
+| `diff.external` | `diff/log/show/blame/whatchanged` | 命中 → ask | 是（`git diff` marker 生成；`status` 不消费） |
+| `diff.<driver>.command` / `diff.<driver>.textconv` | `diff/log/show/blame/whatchanged` | 命中 → ask | 否（与 external 同执行路径，保守登记） |
+| `filter.<driver>.clean/smudge/process` | `status/diff` | 仓库本地命中 → ask；全局仅放行 git-lfs 标准值 | 否（按执行面登记；此前 B-14 已按等价路径处理） |
+| `core.fsmonitor` | `status/diff/blame/ls-files` | 命中 → ask | 是（`ls-files` marker 生成；`log/show/rev-list` 不执行） |
+| `core.hooksPath`（`post-index-change`） | `status`（回写 index 时） | 命中 → ask | 是（`status` marker 生成；`diff/log/blame/ls-files` 未触发） |
+| `core.alternateRefsCommand` | `rev-list --alternate-refs` | 参数面 + 配置面均 ask | 是（marker 生成；`--alternate-ref` 缩写被 git 拒绝且不执行；`for-each-ref`/`rev-parse` 不执行） |
+| `log.showSignature` + `gpg.program` | `log/show/whatchanged` | `log.showSignature` 为真 → ask | 部分：无签名提交实测不调用 gpg；有签名提交会调用，故保守 ask |
+| `core.sshCommand` | `fetch/push/clone/ls-remote/remote show` | 写子命令与 `remote show` 均已 ask；其余只读命令不消费 → allow | 否（需 ssh 远端，未构造） |
+| `core.pager` / `pager.<cmd>` | 仅在 stdout 为终端或 `git -p` 时 | `-p/--paginate` ask；Bash 工具 stdout 为管道 → allow | 是（管道下 `git log` 不调用 pager） |
+| `core.editor` / `sequence.editor` | `commit/rebase/add -p` 等写命令 | 写子命令本身 ask → 不额外判 | 不适用（只读命令不消费） |
+| `uploadpack.packObjectsHook` | 服务端 `upload-pack` | 客户端只读命令不消费 → allow | 否 |
+| `core.gitProxy` | 网络 `fetch/clone` | 非白名单/写子命令 → 不适用；只读命令不消费 → allow | 否 |
+| `protocol.*.allow`（含 `remote.<name>.url=ext::<cmd>`） | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push 本身 ask | 是：`remote show` + `ext::` + `protocol.ext.allow=always` 实测执行 shell；默认未允许时不执行 |
+| `remote.<name>.uploadpack` | `remote show` / `fetch/push` | `remote show` 已 ask；fetch/push ask | 是（`remote show` marker 生成） |
+| `credential.helper` | `fetch/push/clone`（认证） | 写子命令 ask；只读命令不消费 → allow | 否 |
+| `gpg.program`（单独） | 无（仅签名相关命令） | 不消费 → allow | 是（只设置 `gpg.program` 时 `log/status` 不执行） |
+
+结构性兜底建议（本轮**未做**）：对 git 只读命令，把键名含 `command/program/helper/hook/pager/editor/exec` 一律 ask，看似能覆盖未知键，但代价实测如下——本机 `git config --list` 共 24 个键，系统级 `credential.helper=osxkeychain` 即命中 1 个；若对全作用域生效，**每个仓库的每条 `git status/diff/log` 都会变成 ask**，UX 不可接受。仓库本地配置（本仓库 12 个键）命中 0 个，若只对 repo-local 生效代价较低，但 `filter.lfs.*` 等常见键并不含上述关键词，兜底价值有限。建议：不做统一 ask；保留显式清单 + 新增执行面时补登记，可另加「未知执行语义键名」的**只记录告警**（不弹窗、不改判定）用于持续发现清单缺口。
 
 **判定是「命令名 + 参数」两段式，不是命令名匹配**（`DANGEROUS_ARGS_BY_COMMAND` + `WHITELIST_COMMANDS`）：
 

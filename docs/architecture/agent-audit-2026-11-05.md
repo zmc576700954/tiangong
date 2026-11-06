@@ -3398,3 +3398,274 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
 - `tsc --noEmit` / `eslint src` / `vite build` 全过。
 - 全量：`27 failed 文件 / 252 passed`，`174 failed / 3126 passed / 93 skipped`，与 S2 一致（26 个 ABI 文件 + `claude-code.test.ts` 的 `/project` fixture 待办）。
 - 未 push、未 amend。
+
+## 二十一、迁移合并复验（S1→S2→S3，按面，2026-11-06）
+
+### 21.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| 起点 | `45f527c`（第八轮复验基线） |
+| HEAD | `5a839858a97e5ac33bc888e2ec3da41310bc0d33`（S3） |
+| 父链 | `5a83985` ← `a7f4eb8`（S2） ← `d3df13d`（S1） ← `1980eed` ← `45f527c` |
+| 工作树 | `git status --short` 为空；`git ls-files spikes` = 123 |
+| 区间变更 | 4 文件 / 772 insertions / 317 deletions（`bash-readonly.ts` 549 行变更、测试 301 行、审计文档 237 行、架构文档 2 行） |
+| 复验方式 | 全部结论来自本机实测；S1 使用 `git archive d3df13d` 导出树 + 本仓 `esbuild` 打包后重跑，未改源码、未 commit、未 push |
+
+### 21.1 面一｜S1 影子：代码存在，但“观测”无留档，只能回溯复算
+
+**结论：S1 的生产影子观测无法验证；只能在 `d3df13d` 树上复算。**
+
+- 影子模式确实存在：`d3df13d` 的 `bash-readonly.ts` 含 `gitConfigShadowState`、`recordGitConfigShadow`、`getGitConfigShadowDiagnostics()`，每次 `gitRule` 都同时算「手写」与「探针」，判定仍以手写为准（影子不影响 `decision`）。这一点有代码可查，不是自述。
+- 但**没有留下可复算的观测证据**：全仓无影子日志、无序列化产物、无 IPC/持久化；`getGitConfigShadowDiagnostics()` 只是进程内窗口（500 条）。`§18.2` 的 `5/5 allow、差异 0、p95 11 ms` 是作者自述数字，**无法用留档复核**。
+- S3 之后**影子不可运行**：HEAD 只剩 `getGitConfigProbeDiagnostics()`（`samples`/`failures`/`p95LatencyMs`/`maxLatencyMs`），没有 `probeStricter`/`manualStricter`，也没有手写解析器可比。要再产影子数据只能回退到 `d3df13d`/`a7f4eb8`。
+
+回溯复算（`git archive d3df13d` 导出 + 同一语料）：
+
+| 语料 | samples | probeStricter | manualStricter | p95 |
+|---|---|---|---|---|
+| 本仓库 `5a83985` 工作树，五命令 | 5 | 0 | 0 | 10 ms（max 10 ms） |
+| `GIT_CONFIG_COUNT` + `diff.external` | 1 | 1 | 0 | 9 ms |
+| `includeIf` 条件不匹配 | 2 | 0 | 2 | 9 ms |
+| `include.path` EOF 尾反斜杠 | 3 | 0 | 3 | 8 ms |
+| 尾部转义反斜杠、目标不存在 | 3 | 0 | 3 | 8 ms |
+| 1.8 MB 本地配置 | 3 | 3 | 0 | 17 ms |
+| `diff.external` / `textconv` / `filter` / `fsmonitor` / `showSignature` / `config.worktree` / `depth10` / `depth11` / 转义 include / 符号链接 include | 各 3 | 0 | 0 | 8–10 ms |
+
+- **差异方向不是单向**：构造语料里除 `probeStricter` 外还有 `manualStricter`（`includeIf` 不匹配、EOF 尾反斜杠、尾反斜杠目标不存在）。`§18.2`「反向差异只有 `includeIf` 一类」只对当时那份语料成立；这三类本轮都用真实 git 证明无执行面（见 21.3）。
+- **p95 / 超时率在哪查**：只在 `getGitConfigShadowDiagnostics()`（S1/S2）与 `getGitConfigProbeDiagnostics()`（HEAD）的内存返回值里；无落盘、无上报。HEAD 的探针指标也只有测试在调用，生产路径不读。因此运营侧「7 天 0 差异」缺数据源，不能事后补算。
+
+### 21.2 面二｜S2 fail-closed 注入（十类，逐项实测）
+
+| 注入 | 结果 | 分类 | 判定 |
+|---|---|---|---|
+| git 缺失（`PATH=""`） | `ask` | `missing-git` | 通过 |
+| `PATH=/nonexistent-bin` | `ask` | `missing-git` | 通过 |
+| 超时（`include.path` 指向 FIFO） | `ask`，252 ms | `timeout` | 通过（无残留子进程） |
+| 非零退出（include 深度 11，Git fatal） | `ask` | `non-zero-exit` | 通过 |
+| 非零退出（`.git/config` 语法坏） | `ask` | `non-zero-exit` | 通过 |
+| 空输出（非仓库 + 全局/系统配置指向 `/dev/null`） | `ask` | `empty-output` | 通过 |
+| 非法 NUL（伪造 git，2 字段） | `ask` | `invalid-nul-record` | 通过 |
+| 非法 NUL（4 字段） | `ask` | `invalid-nul-record` | 通过 |
+| `--show-scope` 不支持（伪造 git，exit 129） | `ask` | `show-scope-unsupported` | 通过 |
+| 输出 > 1 MB（真实 1.8 MB 配置） | `ask` | 记为 `timeout`（实为 `ENOBUFS`） | 安全通过，**分类错**（P3） |
+| 输出 > 1 MB（伪造 git 输出 2 MB） | `ask` | 记为 `timeout` | 同上 |
+| 只读目录（仓库目录 `chmod 555`） | `allow` | 无失败 | **未落 ask**，但探针读取成功、无执行面，不构成 fail-open |
+| `.git/config` `chmod 000` | `ask` | `non-zero-exit` | 通过 |
+| `.git` 目录 `chmod 000` | `allow` | 无失败 | Git 视为「非仓库」，真实命令同样读不到仓库配置；无执行面 |
+| `cwd` 不存在 | `ask` | `missing-git`（ENOENT 误标） | 安全通过，分类错（P3） |
+| `GIT_CONFIG_COUNT=1` + `diff.external`（应用进程环境） | `ask` | 探针读到 `command` 作用域 | 通过 |
+| `GIT_CONFIG_GLOBAL` 指向坏文件 | `ask` | `non-zero-exit` | 通过 |
+| `GIT_DIR` 指向含危险配置的仓库 | `ask` | 探针读到该仓库 | 通过 |
+| `GIT_WORK_TREE` 指向别处 | `allow` | 无失败 | 通过（不改变配置来源） |
+| `BIZGRAPH_GIT_CONFIG_PROBE=off` | 五类 git 读命令全 `ask`；`ls` 仍 `allow` | 运行时开关 | 通过 |
+| **应用进程环境含 `GIT_DIR` 指向干净仓库，cwd 为脏仓库** | **`allow`，真实 `git diff` 执行 `diff.external`** | 环境不一致 | **fail-open（P2）**，见 21.4 |
+
+小结：十类里 8 类稳定落 `ask`；「只读目录」不构成失败条件；真正的缺口是**探针环境与真实命令环境不一致**（21.4 第 3 条），不是失败分类本身。
+
+### 21.3 面三｜S3 删除手写逻辑后的旧洞回归（策略 + 真实 git 双验）
+
+| 族谱 | 策略 | 真实 git | 结论 |
+|---|---|---|---|
+| `git status $HOME` / `{a,b}` / `\`+换行 / `$'\x67it status'` | `ask`（`shell-expansion`/`shell-brace`/`shell-continuation`） | — | 未松 |
+| `git stat\us`（反斜杠转义普通字母） | `allow` | shell 同样得到 `status` | 等价，未松 |
+| `file --co` / `git fsck --lost-f` | `ask`（长选项缩写按前缀匹配） | — | 未松 |
+| `diff.external` | `ask` | `EXEC` 已复现 | 闭合 |
+| `diff.<drv>.textconv` | `ask` | `EXEC`（`git diff` 调用） | 闭合 |
+| `filter.<name>.clean` | `ask` | `EXEC`（`git status` 调用） | 闭合 |
+| `core.fsmonitor=<path>` | `ask`（status/diff/blame） | `EXEC`（`git status` 调用） | 闭合 |
+| `log.showSignature=true` + `gpg.program` | `ask` | `EXEC`（对含 `gpgsig` 头的提交，`git log --show-signature` 调用伪造 gpg） | 闭合 |
+| 仅 `gpg.program`，显式 `git log --show-signature` | `ask`（参数规则 `--show-signature`） | `EXEC` | 闭合 |
+| `config.worktree` + `extensions.worktreeConfig` | `ask` | `EXEC` | 闭合 |
+| include 深度 10（第 10 层含危险键） | `ask` | 探针读取成功并命中 | 闭合 |
+| include 深度 11 | `ask` | Git fatal | 闭合（与 Git 一致） |
+| `evil\\cfg`（转义反斜杠路径） | `ask` | `EXEC`（目标文件名含字面反斜杠） | 闭合 |
+| `evil\"cfg`（转义引号路径） | `ask` | `EXEC` | 闭合 |
+| 相对 `include.path=../evil-rel.cfg` | `ask` | `EXEC` | 闭合 |
+| `includeIf` 条件**匹配**当前仓库 | `ask` | `EXEC` | 闭合 |
+| **`includeIf` 条件不匹配** | `allow` | `NO`（Git 不求值就不读） | 变松但无执行面 |
+| **`include.path` EOF 尾反斜杠（目标存在）** | `allow` | `NO` | 变松但无执行面 |
+| **尾部 `\\`、目标不存在** | `allow` | `NO`；同名「字面反斜杠」文件存在时策略转 `ask` 且真实 git `EXEC` | 变松但目标不存在时无执行面 |
+
+三处变松的更正（`§20.2` 的说明需要修订）：
+
+- `include.path` 尾部反斜杠的真实机制不是「目标不存在」，而是 **Git 的 include 解析使用含尾反斜杠的原始值，因此该 include 根本不被展开**（`git config --get include.path` 只显示去掉反斜杠后的路径，容易误导）；即使目标存在（`evil-nl.cfg`，且文件以换行结尾）实测也不执行。
+- 只要存在「字面反斜杠」的同名文件（`evil\cfg`），Git 就会读取并执行；此形态策略为 `ask`（探针读到 `diff.external`），未放行。
+- `includeIf` 不匹配同理：Git 不读、不执行，`allow` 正确；`includeIf` 匹配形态为 `ask` 且执行，已实测。
+
+### 21.4 面四｜探针自身新攻击面
+
+1. **FIFO**：`include.path` 指向 FIFO 时探针阻塞到 250 ms 超时后 `ask`；未留下 `git config` 僵尸进程。副作用是**同步阻塞主进程 252 ms/次**，属可感知的 DoS 面（需要先有一次被批准的写/mkfifo）。
+2. **符号链接 include**：Git 跟随软链，探针同样跟随并读到危险键 → `ask`；未见漏放。
+3. **超大配置**：`maxBuffer` 1 MB 截断，Node 以 `ENOBUFS`/`SIGTERM` 终止子进程；内存不随输出无限增长。**分类错**：代码判 `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`，Node 实际给 `code='ENOBUFS'`，落到 `signal==='SIGTERM'` 分支被记成 `timeout`（仍是 fail-closed）。
+4. **探针环境 vs 真实命令环境（重要，P2）**：探针用 `{...process.env}`；Bash 子进程用 `buildSafeEnv()`，后者**丢弃全部 `GIT_*`（仅保留 `GIT_EDITOR`）**并丢弃 `GIT_CONFIG_*`。
+   - 方向一（只多弹）：应用环境含 `GIT_CONFIG_COUNT` → 探针读到 `command` 作用域 → `ask`，真实命令读不到 → 误 ask。
+   - 方向二（**漏放**）：应用环境含 `GIT_DIR` 指向干净仓库、cwd 为含 `diff.external` 的仓库 → 探针 `allow`；真实 Bash（`GIT_DIR` 被剥离）在 cwd 执行 `diff.external`。已复现（21.9 命令 2）。
+   - `GIT_WORK_TREE`/`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_NOSYSTEM` 同类，均可造成「探针读 A、命令读 B」。桌面端正常启动（Finder/Dock）不会带这些变量；从终端/CI/hook 启动的开发者环境可能带。
+5. **探针用绝对路径 git**：`resolveGitExecutable()` 每次按 `process.env.PATH` 解析绝对路径，未写死 `/usr/bin/git`。若 PATH 中有可写目录被投毒，探针与被测命令通常同源（同样受害），不构成额外提权；但若 shell 启动脚本改写了 PATH（nvm 等），探针与真实命令可能用的是**不同版本/不同二进制**，语义随之分叉。
+6. **TOCTOU**：探针读完配置到命令执行之间无锁。配置（或原本不存在的 include 目标）在窗口内被其他会话改写，可出现「判定 allow、执行时已变脏」。窗口为毫秒级，且需要并发写入；当前架构未消除，属已知残余。
+
+### 21.5 面五｜性能与摩擦
+
+同一语料、每条 20 次（五次 git 读命令），手写基线取 `45f527c`：
+
+| 语料 | 手写 avg / p95 | 探针 avg / p95 | 增量 |
+|---|---|---|---|
+| 干净仓库 | 0.27 / 1.38 ms | 8.27 / 10.09 ms | **+8.0 ms/次** |
+| 10 层 include | 1.47 / 1.89 ms | 9.38 / 10.21 ms | +7.9 ms/次 |
+| 1.8 MB 配置 | 39.62 / 49.81 ms | 17.30 / 18.68 ms（`ask`） | 更快，但一律 ask |
+| 本仓库 | 0.09 / 0.35 ms | 7.54 / 8.67 ms | +7.5 ms/次 |
+| FIFO（最坏） | — | 252 ms（`ask`） | 同步阻塞 |
+
+- 单次 `status`/`diff` 新增约 7–8 ms；正常人类交互不可感，但 agent 连续执行几十条 git 命令会累计约 0.2–0.5 s。
+- 非 git 命令不触发探针（`ls` 0 ms）；只有 `diff/log/show/status/blame/whatchanged` 六类子命令探测。
+- 抽样 allow 比例：本仓库五命令 5/5 allow；41 条常见命令合成样本 27 allow / 14 ask = **66%**（6 条 git 读子命令全 allow）。生产 `agent_events` 抽样不可得（本机应用库无 `agent_events` 表），未编造生产比例。
+
+### 21.6 面六｜测试基线
+
+本机复跑（HEAD `5a83985`）：
+
+- `27 failed 文件 / 252 passed`；`174 failed / 3126 passed / 93 skipped (3393)`。
+- 与迁移前基线（`45f527c`，`173 failed / 3119 passed`）相比：**+1 failed、+7 passed、+8 总数**，与 S1→S3 新增 8 条定向用例吻合。
+- 唯一新增失败文件是 `src/main/__tests__/claude-code.test.ts`：fixture `workingDirectory: '/project'` 在本机不存在；探针 `execFileSync` 以该 cwd 启动 git 得 `ENOENT` → `missing-git` → `ask`，用例仍断言 `allow`。
+  - 同一 cwd 在 `45f527c` 的手写口径下判 `allow`（`findGitDir` 找不到仓库即放行），故这是**探针引入后的行为差**。
+  - 性质：**fixture 假 cwd 导致**，不是 allow+exec 回归。生产等价场景是「会话工作目录不存在/已删除/未挂载」，此时行为是 fail-closed `ask`（摩擦变大，不是漏放）。
+  - 最小修法（测试侧）：`claude-code.test.ts` 的 `makeConfig` 用 `fs.mkdtempSync` 真实目录（或 `process.cwd()`），并同步改两处 `options.cwd === '/project'` 断言。
+- 其余 26 个失败文件均为既有 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`）；`pipeline.test.ts` 单独跑 6/6 通过，不在失败集，属全量并发下的已知抖动，不计入迁移差异。
+
+### 21.7 判定与阻断项
+
+**一句话判定：不可发布。**
+
+阻断项 **2 个**：
+
+1. **代码（P1，B2 模型内可达）**：`core.alternateRefsCommand` + `git rev-list --alternate-refs` 零审批执行外部程序。策略 `allow`（`git:rev-list`），真实 git 已复现执行。攻击面与 B2 完全同构：一次被批准的写即可写 `.git/config` 与 `.git/objects/info/alternates`。探针不检查该键，参数表也未登记 `--alternate-refs`。**非 S3 引入**（`45f527c` 同样存在），但 HEAD 仍可打。
+2. **流程（验收）**：`§17.3` 的 S3 验收要求「影子日志连续 7 天 0 条『手写 allow / 探针 ask』」。三段时间戳为 S1 `19:36` → S2 `19:47` → S3 `19:55`，影子窗口实际只有约 **11 分钟**（S2 到 S3 约 8 分钟），且 S3 已删除影子计数；没有任何留档证据。S1 验收按用户要求只能记「**无法验证**」。
+
+非阻断但必须在下一版修的 2 项：
+
+3. **P2｜探针/执行环境不一致**（21.4 第 4 条）：`GIT_DIR` 可复现 allow+exec；修法是探针改用与 Bash 子进程相同的 `buildSafeEnv()`。
+4. **P3｜失败分类可观测性**（`ENOBUFS` 记成 `timeout`；`cwd` ENOENT 记成 `missing-git`）：不影响 fail-closed，但会误导运营判断。
+
+### 21.8 运营问题：S3 在 7 天观察期满前上生产
+
+- **构成发布阻断（流程性），但不是安全阻断**：它使 `§17.3` 的 S3 验收条件不可满足，且 S3 删除影子后**无法补采**。安全面本身已由 21.3 的族谱回归兜住已知形态；未知形态仍缺观测。
+- **最小回退形态**：部署 `a7f4eb8`（S2），即「**保留探针门控 + 恢复手写影子计数**」，继续观察至 7 天/足够样本后再上 S3。
+  - **不要**回退到 `d3df13d`（S1：手写权威）——手写解析器含已闭合的 allow 洞（B-14-1、include 深度等），回退等于重开。
+  - **不要**把「降低探针阈值」当成替代：阈值只影响延迟与误 ask，不产生「手写 vs 探针」差异证据。
+  - `BIZGRAPH_GIT_CONFIG_PROBE=off` 只能退到「一律 ask」，不能用于观察。
+- 替代路径：由产品+安全书面豁免观察期，补偿证据采用 21.3 的族谱回归 + 21.2 的注入全覆盖，并在豁免单上注明「无生产影子数据」。
+
+### 21.9 最小改法（交给修复方，本轮未改源码）
+
+1. `core.alternateRefsCommand`（阻断项 1）——在 `DANGEROUS_ARGS_BY_COMMAND.git` 追加两条（长选项按前缀匹配，已覆盖缩写）：
+   ```ts
+   { flag: '--alternate-refs', rule: 'git-alternate-refs', reason: 'git rev-list --alternate-refs 会执行 core.alternateRefsCommand', risk: HIGH },
+   { flag: '--include-alternate-refs', rule: 'git-alternate-refs', reason: 'for-each-ref 的 alternate refs 选项会读取仓库配置', risk: HIGH },
+   ```
+   并补一条定向用例。复现：
+   ```sh
+   # 构造：仓库 B 的 .git/objects/info/alternates 指向另一仓库，config 写 core.alternateRefsCommand=/tmp/marker.sh
+   git -C <repo> rev-list --alternate-refs        # 真实执行 marker
+   # 策略：decision=allow, rule=git:rev-list
+   ```
+2. 探针环境一致性（P2）——`probeGitConfig()` 内把 `const env = { ...process.env }` 改为 `{ ...buildSafeEnv() }`，再叠加现有的 `includeGlobal=false` 覆盖（`GIT_CONFIG_NOSYSTEM/GIT_CONFIG_SYSTEM/GIT_CONFIG_GLOBAL` 与删除 `GIT_CONFIG_COUNT*`）。`buildSafeEnv` 位于 `src/main/shared/env.ts`，无循环依赖。复现：
+   ```sh
+   GIT_DIR=/path/clean/.git node -e "evaluateBashPolicy('git diff',{cwd:'/path/dirty'})"  # 当前 allow
+   env -u GIT_DIR git -C /path/dirty diff                                          # 真实执行 diff.external
+   ```
+3. 分类修正（P3）——`probeGitConfig` 的 catch 增加 `detail.code === 'ENOBUFS'` → `io-error`（现落到 `signal==='SIGTERM'` → `timeout`）；`cwd` 不存在可细分为独立失败码，避免与「git 缺失」混淆。
+
+### 21.10 复算记录
+
+| 文件 | 追加前 sha256 | 追加后 sha256 |
+|---|---|---|
+| `bash-readonly.ts` | `4b85e6c50f9b458484b39e0356fa346275b4017d448eca0c6c3f930911cf2a29` | 同左（未改） |
+| `bash-readonly.test.ts` | `a910d77baa3aded1db66274d7a027b6ab35117cc5cdc467a1071a9f293f64ec0` | 同左（未改） |
+| `agent-audit-2026-11-05.md` | `8ebc6488fa9a5fa0e17b0404da1ad3d869101eae760a52861a19448759ce7fa7` | `5adaccb9fa362038a06cd69247f1efc7b80cd43e7a3f134c141a5ce74c54f9da`（正文追加后、写入本表前；本表写入后最终值再变一次，以 `shasum -a 256` 现算为准） |
+
+- HEAD 复算：`5a839858a97e5ac33bc888e2ec3da41310bc0d33`；源码/测试未改（`bash-readonly.ts`、`bash-readonly.test.ts` 哈希不变）；`git status --short` 仅显示本文件 `M`；未 commit、未 push、未 amend。
+- 复验脚手架全部在 `/tmp/audit9`（`git archive` 导出树、esbuild 打包、伪造 git、FIFO/软链/深度/转义夹具），未写入工作区。
+
+## 二十二、复验阻断修复（P1/P2/P3，起点 `5a83985`，2026-11-06）
+
+### 22.1 范围
+
+按复验结论只修 P1（零审批执行）、P2（探针环境不一致）、P3（失败分类与 fixture）；**未动影子模式、未改回退策略**（等产品决定）。P1 除修 `core.alternateRefsCommand` 两层外，按普查要求实测了执行型配置键全表，并在普查中发现两个**未被复验列出、但实测零审批执行**的路径，一并修掉：
+
+| 新发现 | 复现 | 修法 |
+|---|---|---|
+| `core.hooksPath` + `post-index-change` 钩子 | `git config core.hooksPath /tmp/hooks`，`/tmp/hooks/post-index-change` 写 marker；`git status` 刷新/回写 index 时 marker 生成 | 配置面：`core.hookspath` + `status` → `git-repo-config-exec` ask |
+| `git remote show` + `remote.*.uploadpack` / `ext::` | `git config remote.origin.uploadpack /tmp/up.sh` → `git remote show origin` 执行 marker；`remote.origin.url=ext::sh -c ...` + `protocol.ext.allow=always` 同样执行 shell | 参数面：`git remote show` → `git-remote-show` ask；`-v` / `get-url` 保持 allow |
+
+### 22.2 修复前会失败（HEAD `5a83985` + 新用例）
+
+把生产文件临时还原为 HEAD、只跑新增用例（`/tmp/pre-fix.log`）：
+
+| 用例 | 修复前结果 | 修复后 |
+|---|---|---|
+| P1 参数面：`rev-list --alternate-refs` / `--alternate-ref` 缩写 | `allow`（`git:rev-list`） | `ask / git-alternate-refs / high` |
+| P1 配置面：仓库含 `core.alternateRefsCommand` + `git rev-list HEAD` | `allow` | `ask / git-repo-config-exec` |
+| P1 执行面：真实 git + alternates + marker | marker=true，但策略 `allow` | 策略 `ask / git-alternate-refs` |
+| P1 普查：`git remote show origin` | `allow / git:remote:read` | `ask / git-remote-show / high` |
+| P1 普查：`core.hooksPath` + `git status` | `allow / git:status` | `ask / git-repo-config-exec` |
+| P2：`GIT_DIR` 指向干净仓库、cwd 为含 `diff.external` 的脏仓库 | 探针读干净仓库（无 `diff.external`）→ `allow` | 探针按 `buildSafeEnv()` 读脏仓库 → `ask` |
+| P3：cwd 不存在 | `missing-git` | `cwd-missing` |
+| P3：探针输出 > 1 MB | `timeout` | `io-error` |
+
+真实 git 执行面证据（不是只断言策略输出）：
+
+```sh
+# P1 alternateRefsCommand（仓库 B 的 objects 作为 alternates）
+git -C a rev-list --alternate-refs          # → core.alternateRefsCommand 执行，marker=ran（exit 129 是「无 ref」的参数错误，执行发生在参数校验前）
+git -C a rev-list --alternate-ref        # → git 拒绝该缩写，marker=NONE（说明参数面前缀匹配是「如果 git 将来接受」的防御）
+git -C a for-each-ref --include-alternate-refs  # → git 拒绝（exit 129），marker=NONE；§21.9 建议的这条登记可不需要
+# P2 环境差异
+GIT_DIR=clean/.git git -C dirty config --list | grep -c diff.external   # → 0（探针修复前读的是 clean）
+env -u GIT_DIR git -C dirty diff                                        # → 真实执行 diff.external，marker 生成
+# remote show
+git -C repo remote show origin               # → remote.origin.uploadpack 执行，marker=ran
+```
+
+### 22.3 P1 修复内容
+
+1. 参数面：`DANGEROUS_ARGS_BY_COMMAND.git` 新增 `--alternate-refs`（`git-alternate-refs`, high）；既有 `isAbbreviatedLongFlag` 将 `--alternate-ref` 唯一前缀一并覆盖。
+2. 配置面：`probeGitConfigExecutes` 新增 `core.alternaterefscommand`（仅 `rev-list`）与 `core.hookspath`（仅 `status`）；`GIT_CONFIG_EXEC_SUBCOMMANDS` 增加 `rev-list`、`ls-files`（`ls-files` 实测会执行 `core.fsmonitor`）。
+3. 参数面：`git remote show` 由 allow 改 ask（`git-remote-show`），切断 `remote.*.uploadpack` / `ext::` / `sshCommand` 的零审批执行入口；`remote -v` / `get-url` 仍 allow。
+4. `git grep` 仍保持整条 ask（既有结论未受本轮影响）。
+
+### 22.4 P2 修复内容
+
+- `probeGitConfig()` 的 env 由 `{ ...process.env }` 改为 `buildSafeEnv()`，与真实 Bash 子进程**同一环境构造**。`buildSafeEnv` 剥离全部 `GIT_DIR` / `GIT_CONFIG_*` / `GIT_CONFIG_COUNT` / `GIT_OBJECT_DIRECTORY` / `GIT_ALTERNATE_OBJECT_DIRECTORIES` / `GIT_EXTERNAL_DIFF` / `GIT_SSH*` 等，唯一放行的 `GIT_*` 是白名单里的 `GIT_EDITOR`；该键不被只读命令消费，因此无需为语义对齐额外保留。`HOME` / `XDG_CONFIG_HOME` / `PATH` 在两边都保留，全局配置读取范围与真实命令一致。
+- 语义变化（必须记录）：应用进程若携带 `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` 注入 `diff.external`，旧探针会 ask，而真实 Bash 子进程根本看不到这些变量。修复后探针与真实命令一致 → **allow**；原用例已改为断言 allow 并注明原因。
+- 真实命令行为不变：`buildSafeEnv()` 仍是 Bash 子进程的环境来源，未改执行路径。
+
+### 22.5 P3 修复内容
+
+- catch 分类顺序：`show-scope` 不支持 → `ETIMEDOUT` → `ENOENT`（按 cwd 是否存在分 `missing-git` / `cwd-missing`）→ `ENOBUFS` / `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` → 其它 IO → `SIGTERM` → `timeout` → 非零退出 → `io-error`。`ENOBUFS` 不再因为伴随 SIGTERM 被误标为 `timeout`。
+- `GitConfigProbeFailure` 增加 `cwd-missing`（探针侧 `existsSync(cwd)` 前置判定）。
+- `src/main/__tests__/claude-code.test.ts` 的 `workingDirectory: '/project'` 改为模块级真实临时 Git 仓库（HEAD + objects + refs/heads + config），第 99 行断言同步；生产逻辑未为测试改动。
+
+### 22.6 执行型配置键普查
+
+完整表与「可能不全」结论见 `agent-architecture.md` §4.6「执行型配置键已知清单（2026-11-06 普查）」。要点：
+
+- 已实测执行：`diff.external`（diff）、`core.fsmonitor`（ls-files）、`core.hooksPath`（status 的 `post-index-change`）、`core.alternateRefsCommand`（rev-list `--alternate-refs`）、`remote.*.uploadpack` / `protocol.ext.allow+ext::`（remote show）、`core.pager`（仅终端/`-p`）。
+- 未单独实测、按同路径保守 ask：`diff.*.command/textconv`、`filter.*`。
+- 只由写子命令或网络操作消费、只读命令 allow：`core.sshCommand`、`core.editor`/`sequence.editor`、`uploadpack.packObjectsHook`、`core.gitProxy`、`credential.helper`、单独 `gpg.program`。
+- 部分实测：`log.showSignature` 在无签名提交上不调用 gpg，有签名才调用；策略仍保守 ask。
+- 结论写为「已知清单 + 承认可能不全」：git 新增键、第三方 driver/filter 与未来版本执行点均可能不在此表。
+- 结构性兜底（本轮未做）：本机 24 个配置键中系统级 `credential.helper` 命中 1 个，若全作用域按 `command|program|helper|hook|pager|editor|exec` 一律 ask，则所有仓库的每条 git 只读命令都会弹窗，代价不可接受；repo-local 命中 0，但 `filter.lfs.*` 等常见键不含关键词，兜底价值有限。建议维持显式清单，另加「未知执行语义键名」只记录告警。
+
+### 22.7 验证
+
+| 项 | 结果 |
+|---|---|
+| `npx tsc --noEmit` | 通过 |
+| `npx eslint src` | 通过 |
+| `npx vite build` | 通过 |
+| 定向 `bash-readonly.test.ts` | 61 条通过（新增 P1/P2/P3 8 条 + hooksPath 1 条） |
+| 定向 `claude-code.test.ts` | 通过（fixture 修复后恢复 allow 语义） |
+| 全量 `npx vitest run` | `173 failed / 3135 passed`，26 个失败文件全部是 `better-sqlite3` ABI（`NODE_MODULE_VERSION 130 vs 115`）；基线 `174 failed / 3126 passed`（27 文件）中的 `claude-code.test.ts` 已回落，新增用例计入 passed |
+
+未 commit、未 push、未 amend。

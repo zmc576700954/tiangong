@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 
 // Mock the SDK module before importing adapter
@@ -20,9 +23,19 @@ vi.mock('../settings', () => ({
 
 import { ClaudeCodeAdapter } from '../adapters/claude-code'
 
+/**
+ * 真实临时 Git 仓库：Bash 策略会按会话工作目录读取 `.git/config`，
+ * 挂在不存在的 `/project` 上会让探针判 cwd-missing → ask（fixture 问题，不是生产逻辑）。
+ */
+const testWorkspace = mkdtempSync(join(tmpdir(), 'bizgraph-claude-code-'))
+mkdirSync(join(testWorkspace, '.git', 'objects'), { recursive: true })
+mkdirSync(join(testWorkspace, '.git', 'refs', 'heads'), { recursive: true })
+writeFileSync(join(testWorkspace, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+writeFileSync(join(testWorkspace, '.git', 'config'), '[core]\n\trepositoryformatversion = 1\n')
+
 function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig {
   return {
-    workingDirectory: '/project',
+    workingDirectory: testWorkspace,
     nodeTitle: 'Test Node',
     acceptanceCriteria: [],
     allowedFiles: [],
@@ -96,7 +109,7 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(callArgs.options.systemPrompt).toContain('<node-title>Auth Module</node-title>')
     expect(callArgs.options.systemPrompt).toContain('src/auth.ts')
     expect(callArgs.options.systemPrompt).toContain('<criteria>Users can login</criteria>')
-    expect(callArgs.options.cwd).toBe('/project')
+    expect(callArgs.options.cwd).toBe(testWorkspace)
 
     const completeOutputs = outputs.filter((o) => o.type === 'complete')
     expect(completeOutputs.length).toBe(1)

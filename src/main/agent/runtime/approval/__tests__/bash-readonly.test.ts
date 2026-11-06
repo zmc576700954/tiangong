@@ -5,7 +5,8 @@
  * 所有 ask 断言同时校验 rule 与 risk —— 审批卡片与审计都要说清「命中哪条规则」。
  */
 
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -1008,7 +1009,7 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       '[safe]\n\tdirectory = C:\\\\work\\\\repo\n',
       '[remote "origin"]\n\turl = https://example.com/a\\\\b.git\n',
       '[core]\n\tsshCommand = ssh -i C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa\n',
-      '[core]\n\thooksPath = C:\\\\hooks\n',
+      '[core]\n\tattributesFile = C:\\\\Users\\\\me\\\\.gitattributes\n',
       '[alias]\n\tlg = log --pretty=format:\\"%h %s\\"\n',
       '[diff "go"]\n\txfuncname = ^\\\\s*func\n',
     ]
@@ -1198,7 +1199,7 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
         '[core]',
         '\texcludesFile = C:\\\\Users\\\\me\\\\.gitignore',
         '\tsshCommand = ssh -i C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa',
-        '\thooksPath = C:\\\\hooks',
+        '\tattributesFile = C:\\\\Users\\\\me\\\\.gitattributes',
         '[safe]',
         '\tdirectory = C:\\\\work\\\\repo',
         '[remote "origin"]',
@@ -1242,7 +1243,10 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
     })
   })
 
-  it('S3：GIT_CONFIG_COUNT 注入的 diff.external 由 Git 自身解析 → ask', () => {
+  it('P2：应用进程的 GIT_CONFIG_COUNT 与真实 Bash 一样被剥离 → allow（不再是执行面）', () => {
+    // 真实 Bash 子进程用 buildSafeEnv() 派生环境，GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n /
+    // GIT_CONFIG_VALUE_n 均不在白名单；探针必须同口径，否则会把真实命令看不到的配置
+    // 误判成执行面（修复前此用例为 ask / git-repo-config-exec）。
     const repo = makeGitRepo('bizgraph-shadow-stricter-', '[core]\n\trepositoryformatversion = 1\n')
     const previous = {
       GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
@@ -1255,8 +1259,8 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
       process.env.GIT_CONFIG_VALUE_0 = '/tmp/evil-diff'
       try {
         expect(decide('git diff HEAD', { cwd: repo })).toMatchObject({
-          decision: 'ask',
-          rule: 'git-repo-config-exec',
+          decision: 'allow',
+          rule: 'git:diff',
         })
       } finally {
         for (const [key, value] of Object.entries(previous)) {
@@ -1339,5 +1343,157 @@ describe('git 配置探针（S1 影子 / S2 门控）', () => {
       if (previous === undefined) delete process.env.BIZGRAPH_GIT_CONFIG_PROBE
       else process.env.BIZGRAPH_GIT_CONFIG_PROBE = previous
     }
+  })
+})
+
+/** 直接跑真实 git 的用例：非零退出不视为失败，只关心命令是否真的被执行。 */
+function runRealGit(cwd: string, args: string[]): void {
+  try {
+    execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' })
+  } catch {
+    /* 例如无 ref 的 `rev-list --alternate-refs` 会 exit 129；执行面判定看 marker */
+  }
+}
+
+describe('P1 执行型配置键 / P2 探针环境 / P3 失败分类', () => {
+  it('P1 参数面：rev-list --alternate-refs 及其唯一前缀缩写 → ask / git-alternate-refs', () => {
+    expect(decide('git rev-list --alternate-refs')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-alternate-refs',
+      risk: 'high',
+    })
+    // 长选项唯一前缀：--alternate-ref 会被 `isAbbreviatedLongFlag` 判为 --alternate-refs。
+    expect(decide('git rev-list --alternate-ref')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-alternate-refs',
+    })
+
+    // 不误伤：普通 rev-list 在无执行型配置的仓库仍 allow。
+    const repo = makeGitRepo('bizgraph-p1-rev-list-', '[core]\n\trepositoryformatversion = 1\n')
+    expect(decide('git rev-list HEAD', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:rev-list',
+    })
+  })
+
+  it('P1 配置面：仓库含 core.alternateRefsCommand → rev-list ask / git-repo-config-exec', () => {
+    const repo = makeGitRepo(
+      'bizgraph-p1-alternate-config-',
+      '[core]\n\talternateRefsCommand = /tmp/alternate-refs.sh\n',
+    )
+    expect(decide('git rev-list HEAD', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+      risk: 'high',
+    })
+    // 该键只由 rev-list 消费，其它只读子命令不额外弹窗。
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+
+  it('P1 执行面实证：真实 git rev-list --alternate-refs 会执行 core.alternateRefsCommand', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-p1-alternate-real-'))
+    const upstream = join(root, 'upstream')
+    const repo = join(root, 'repo')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'alternate-refs.sh')
+    mkdirSync(upstream, { recursive: true })
+    mkdirSync(repo, { recursive: true })
+    runRealGit(upstream, ['init', '-q'])
+    runRealGit(repo, ['init', '-q'])
+    mkdirSync(join(repo, '.git', 'objects', 'info'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'objects', 'info', 'alternates'), `${upstream}/.git/objects\n`)
+    writeFileSync(script, `#!/bin/sh\necho ran >> ${marker}\nexit 0\n`)
+    chmodSync(script, 0o755)
+    runRealGit(repo, ['config', 'core.alternateRefsCommand', script])
+
+    runRealGit(repo, ['rev-list', '--alternate-refs'])
+    // 证明执行面真实存在：marker 由 core.alternateRefsCommand 生成。
+    expect(existsSync(marker)).toBe(true)
+    // 同一命令策略侧必须拦截。
+    expect(decide('git rev-list --alternate-refs', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-alternate-refs',
+    })
+  })
+
+  it('P1 普查：git remote show 会消费 remote.*.uploadpack / ext:: 等配置 → ask', () => {
+    expect(decide('git remote show origin')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-remote-show',
+      risk: 'high',
+    })
+    // 不联网的列举/查询形态保持 allow。
+    expect(decide('git remote -v')).toMatchObject({ decision: 'allow', rule: 'git:remote:read' })
+    expect(decide('git remote get-url origin')).toMatchObject({ decision: 'allow', rule: 'git:remote:read' })
+
+    // 执行面实证：真实 git 会执行 remote.origin.uploadpack。
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-p1-uploadpack-'))
+    const upstream = join(root, 'upstream')
+    const repo = join(root, 'repo')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'upload-pack.sh')
+    mkdirSync(upstream, { recursive: true })
+    mkdirSync(repo, { recursive: true })
+    runRealGit(upstream, ['init', '-q'])
+    runRealGit(repo, ['init', '-q'])
+    writeFileSync(script, `#!/bin/sh\necho ran >> ${marker}\nexit 0\n`)
+    chmodSync(script, 0o755)
+    runRealGit(repo, ['remote', 'add', 'origin', upstream])
+    runRealGit(repo, ['config', 'remote.origin.uploadpack', script])
+
+    runRealGit(repo, ['remote', 'show', 'origin'])
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('P1 普查：仓库含 core.hooksPath → status 判 ask（post-index-change 实测会执行）', () => {
+    const repo = makeGitRepo('bizgraph-p1-hookspath-', '[core]\n\thooksPath = /tmp/hooks\n')
+    // 实测 `git status` 刷新/回写 index 时会执行 $hooksPath/post-index-change。
+    expect(decide('git status', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 其它只读子命令实测不触发该钩子，不额外弹窗。
+    expect(decide('git log --oneline', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+  })
+
+  it('P2：进程 GIT_DIR 指向干净仓库、cwd 为脏仓库 → 探针按真实命令环境判 ask', () => {
+    const dirty = makeGitRepo('bizgraph-p2-dirty-', '[diff]\n\texternal = /tmp/evil-diff\n')
+    const clean = makeGitRepo('bizgraph-p2-clean-', '[core]\n\trepositoryformatversion = 1\n')
+    const previous = process.env.GIT_DIR
+    // 修复前探针直接继承 process.env，会读到 clean 仓库 → allow；
+    // 真实 Bash 子进程用 buildSafeEnv() 派生环境（GIT_DIR 被剥离），会读到 dirty 仓库并执行 external。
+    process.env.GIT_DIR = join(clean, '.git')
+    try {
+      const probe = probeGitConfig(dirty, false, 500)
+      expect(probe.failure).toBeNull()
+      expect(probe.entries.some((entry) => entry.key === 'diff.external')).toBe(true)
+      expect(decide('git diff', { cwd: dirty, includeGlobalGitConfig: false })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    } finally {
+      if (previous === undefined) delete process.env.GIT_DIR
+      else process.env.GIT_DIR = previous
+    }
+  })
+
+  it('P3：cwd 不存在 → cwd-missing（不混进 missing-git）', () => {
+    const base = mkdtempSync(join(tmpdir(), 'bizgraph-p3-cwd-'))
+    expect(probeGitConfig(join(base, 'not-exist'), false, 500).failure).toBe('cwd-missing')
+  })
+
+  it('P3：输出超过 1 MB → io-error（不再误标 timeout）', () => {
+    const repo = makeGitRepo('bizgraph-p3-huge-', '[core]\n\trepositoryformatversion = 1\n')
+    // maxBuffer 触发后 execFileSync 以 ENOBUFS / ERR_CHILD_PROCESS_STDIO_MAXBUFFER 抛出，
+    // 且伴随 SIGTERM；修复前先判 SIGTERM 会误分类为 timeout。
+    withFakeGit("#!/bin/sh\nwhile :; do printf %2048s ''; done\n", () => {
+      expect(probeGitConfig(repo, false, 5000).failure).toBe('io-error')
+    })
   })
 })
