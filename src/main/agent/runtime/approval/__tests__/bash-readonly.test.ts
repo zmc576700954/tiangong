@@ -23,6 +23,31 @@ function decide(
   return evaluateBashPolicy(command, options)
 }
 
+/** 用临时 HOME/GIT_CONFIG_GLOBAL 跑一段判定，避免读取开发机真实全局配置。 */
+function withIsolatedGlobalConfig(configText: string, run: () => void): void {
+  const home = mkdtempSync(join(tmpdir(), 'bizgraph-global-'))
+  const globalConfig = join(home, '.gitconfig')
+  writeFileSync(globalConfig, configText)
+  const previous = {
+    HOME: process.env.HOME,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME,
+    GIT_CONFIG_GLOBAL: process.env.GIT_CONFIG_GLOBAL,
+    GIT_CONFIG_SYSTEM: process.env.GIT_CONFIG_SYSTEM,
+  }
+  process.env.HOME = home
+  process.env.XDG_CONFIG_HOME = home
+  process.env.GIT_CONFIG_GLOBAL = globalConfig
+  process.env.GIT_CONFIG_SYSTEM = join(home, 'missing-system-config')
+  try {
+    run()
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 describe('evaluateBashPolicy (Bash 两档)', () => {
   it('白名单只读命令 → allow（免弹执行，风险低）', () => {
     expect(decide('ls -la')).toMatchObject({ decision: 'allow', rule: 'ls', risk: 'low' })
@@ -601,6 +626,117 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
         else process.env[key] = value
       }
     }
+  })
+
+  it('全局 filter 为 git-lfs 标准写法 → allow（不给 LFS 用户加摩擦）', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-global-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    // LFS 仓库通过 .gitattributes 指向 filter=lfs；这里断言策略仍放行。
+    writeFileSync(join(repo, '.gitattributes'), '* filter=lfs diff=lfs merge=lfs -text\n')
+
+    withIsolatedGlobalConfig(
+      '[filter "lfs"]\n\tclean = git-lfs clean -- %f\n\tsmudge = git-lfs smudge -- %f\n\tprocess = git-lfs filter-process\n\trequired = true\n',
+      () => {
+        expect(decide('git status --short', { cwd: repo })).toMatchObject({
+          decision: 'allow',
+          rule: 'git:status',
+        })
+        expect(decide('git diff', { cwd: repo })).toMatchObject({
+          decision: 'allow',
+          rule: 'git:diff',
+        })
+      },
+    )
+  })
+
+  it('全局 filter 的 git-lfs 路径 / Windows / 引号写法也放行', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-lfs-variant-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+
+    withIsolatedGlobalConfig(
+      '[filter "lfs"]\n\tclean = /usr/local/bin/git-lfs clean -- %f\n\tsmudge = git-lfs.exe smudge -- %f\n\tprocess = "git-lfs filter-process"\n',
+      () => {
+        expect(decide('git status', { cwd: repo })).toMatchObject({
+          decision: 'allow',
+          rule: 'git:status',
+        })
+      },
+    )
+  })
+
+  it('阻断：仓库 .gitattributes 指向全局自定义 filter → ask', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-global-filter-gap-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    // 打开不可信仓库时，仓库内就能提供这两份文件；全局 filter 由用户环境已存在。
+    writeFileSync(join(repo, '.gitattributes'), '* filter=mine\n')
+    writeFileSync(join(repo, 'payload.txt'), 'x\n')
+
+    withIsolatedGlobalConfig('[filter "mine"]\n\tclean = /bin/echo pwned\n', () => {
+      // 修复前：全局 filter 完全不探测 → allow（marker 会被写入）
+      expect(decide('git status --short', { cwd: repo })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+      expect(decide('git diff', { cwd: repo })).toMatchObject({
+        decision: 'ask',
+        rule: 'git-repo-config-exec',
+      })
+    })
+  })
+
+  it('core.fsmonitor 只在 status/diff/blame 判定，log/show 不多弹', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-fsmonitor-scope-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'config'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+
+    // 修复前 fsmonitor 命中所有配置型子命令，log/show 也会被 ask
+    expect(decide('git log --oneline -5', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+    expect(decide('git show HEAD', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:show',
+    })
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git diff HEAD', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git blame file.txt', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
+  it('config.worktree 仅在 extensions.worktreeConfig 开启时读取', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-worktree-config-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    writeFileSync(join(repo, '.git', 'config.worktree'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+
+    // 未开扩展：Git 不读该文件，策略不应无谓 ask
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = true\n',
+    )
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
   })
 
   it('参数白名单表：每个白名单命令都必须登记危险参数（新增命令漏登记会失败）', () => {

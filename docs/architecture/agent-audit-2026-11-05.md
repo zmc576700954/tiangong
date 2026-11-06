@@ -2250,3 +2250,137 @@ git config --get diff.evil.textconv   # 输出 /bin/echo（git 认可旧式语�
 - 定向：`bash-readonly` 29 passed；三个套件共 57 passed。
 - `tsc --noEmit` / `eslint src` / `vite build` 全过。
 - 全量：`26 failed 文件 / 253 passed`；`173 failed / 3103 passed / 93 skipped (3369)`，失败文件集合与基线 26 个 ABI 文件一致。
+
+---
+
+## 11. 第十一轮独立复审（第三轮 B2 复验，2026-11-06）
+
+### 11.0 基线（复算）
+
+| 项 | 值 |
+|---|---|
+| HEAD | `6839fe7132f0efe2cc811deb04eefed34eac497b`（父 `aa1fa49`，未 amend、未 push） |
+| `git status --short` | 空（本轮开始前） |
+| `git ls-files spikes \| wc -l` | 123 |
+| `bash-readonly.ts` sha256 | `9069db8958084f75e8ea95649360ba007507bf5c647a3ad36237211b6f548515`（父提交 `de81d4bf…`） |
+| `claude-code.ts` sha256 | `d033bc2249a4bf833c2c2fcbdebca1129f39ee60f888413d199607bee558c24d`（父提交 `0d1e221d…`） |
+| `adapter-driver.ts` sha256 | `fdbdcda730c8a8e7739aa2e5959414a3a1e991e3b1f975654d1f559460ede1d8` |
+| `gateway.ts` sha256 | `1f9f6a0d3d79198fcfedf3cca66f15fb7d5d4f230c60b9e2c031cd17c23642c5` |
+| `planner.ts` sha256 | `825ff131add8d51d5bdd0053a8fb72b5619b2663e58c1dff9ec26146900b4d07` |
+| `repository.ts` sha256 | `8075bfccb10aab237d3462b6e45fc67878e68526d7b14531f021557419a7d2d0` |
+| 本文档（追加前） | `376b4dcf21affb24536bdc8c6d28659aa49d0f742f8d3456042cfb6cb328e869` |
+
+本轮所有判定均来自自建复现（真实 git 仓库 + 真实 `ClaudeCodeAdapter` PreToolUse 钩子 + 临时 vitest 用例），不采信“已修复”的书面声明。临时用例跑完即删除。
+
+### 11.1 结论：**可发布**（B2 四条阻断闭合）
+
+P1-1、P1-2、P1-3、P2-1 四条在上轮均为实测阻断，本轮在 `6839fe7` 上逐条复现为 `ask / git-repo-config-exec`，且真实执行侧（策略判定之外直接跑 git）仍能产生副作用——说明探针是唯一屏障，而探针现在生效。旧提交 `aa1fa49` 与新提交的对照也复现了修复前后差异。
+
+保留两条非阻断缺口，见 11.2；若产品把“全局 `filter` 驱动”也纳入 B2 威胁面，则应改判**不可发布**。本审计按“一次被批准的 Write 改写仓库本地 `.git/config`”这一既有威胁模型判**可发布**。
+
+### 11.2 阻断清单
+
+**无。** 上轮四条阻断全部闭合。
+
+非阻断残留（不改变发布判定，但建议排期）：
+
+| 级别 | 项 | 证据 |
+|---|---|---|
+| P2 | 全局 `filter.<name>.clean/smudge/process` 被刻意跳过；恶意仓库只要在 `.gitattributes` 写 `* filter=<name>`，即可让 `git status`/`git diff` 执行**全局配置里已有的**同名 filter，而策略 `allow`。不要求全局 `core.attributesFile`，比第十轮描述更宽 | 11.4 实测：全局 `filter.evil.process` + 仓库 `.gitattributes`，`git status` 写出 marker，策略 `allow` |
+| P3 | §7.4 “不重推 UI，也不进入 replay” 只在“先 `planRecovery` 把活 turn 置 orphaned、再 `reconcileStartup`”的生产顺序成立；`reconcileStartup` 自身遇到活 turn 会 `replayRow → onRequest` | 11.3 实测 `replayed=1 / pushed=1` |
+| P3 | `agent-rollout.md` D4 交付物名仍写“pending 重推”，与 D-B 已统一的“不重推”冲突 | 读文档 |
+| P3 | `core.fsmonitor` 探针未按子命令收窄：`git log`/`git show` 不执行 fsmonitor 却仍 ask（真实过度 ask）；`git diff` 反而**确实执行** fsmonitor（第十轮“diff 过度 ask”的结论应撤回） | 11.4 实测 |
+| P3 | `config.worktree` 无条件读取：未开 `extensions.worktreeConfig` 时 git 根本不读该文件，策略仍 ask（过度 ask，安全侧） | 11.4 实测 |
+
+### 11.3 对 P1-1 / P1-2 / P1-3 / P2-1 / B5 的独立判定
+
+| 项 | 判定 | 本轮实测依据 |
+|---|---|---|
+| P1-1 `diff.<driver>.command` | **确认修复** | 真实仓库 `[diff "evil"] command = /bin/sh -c "echo X > marker"`：策略 `ask / git-repo-config-exec`；绕过钩子直接 `git diff HEAD` 仍生成 marker。`diff.external` 同样。空值 `command =` 判 `allow`（git 实测不执行）；`command = ""` 判 `ask`。`include.path` 链、节头尾随注释均命中。 |
+| P1-2 旧式 `[diff.evil]` | **确认修复** | `[diff.evil] textconv = …`：策略 `ask / git-repo-config-exec`；直接 `git diff HEAD` 生成 marker。节名前缀匹配同时覆盖 `[diff "evil"]` / `[diff.evil]` / `[diff]`。 |
+| P1-3 会话 cwd ≠ 主进程 cwd | **确认修复** | 同一真实适配器钩子用例：`aa1fa49` 树 → `allow / git:diff/low`；`6839fe7` 树 → `ask / git-repo-config-exec/high`（会话目录 evil、进程 cwd clean）。DB 侧 `row.cwd` 反序列化后仍指向原仓库：`listPendingPayloads()` 复算得到 `policyRule=git-repo-config-exec`。 |
+| P2-1 全局配置缓存 | **确认修复** | 同进程先判干净全局配置 → `allow`；写入 `[diff] external` 后**立即** `ask`，无需重载模块；单次判定 0.0911 ms（200 次平均）。 |
+| B5 文档/字段/30s | **部分** | `RecoveryReport.pendingApprovals` 字段存在（`planner.ts`、`shared/types`），`runtime.ts` 取 `reconcileStartup().replayed.length`，`deniedStaleApprovals` 取 `denied`；planner 注释、D-B 主表与关键约束已改为“不重推、不重计时、启动即 deny”；生产代码中无 `mode='unattended'` 调用方（仅测试），30s 不可达属实。**但** §7.4 的“不进入 replay”是序列级而非函数级：活 turn 上 `reconcileStartup` 实测 `replayed=1、denied=0、pushed=1`；终态 turn 上才是 `replayed=0、denied=1、pushed=0`。`agent-rollout.md` D4 标题仍写“pending 重推”。 |
+
+### 11.4 顺带项真实性
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| per-worktree `config.worktree` | **真被读**；但 git 只在 `extensions.worktreeConfig=true` 时才执行 | 仓库 `.git/config.worktree` 写 `core.fsmonitor`：未开扩展时真实 `git status` 不调用（marker NO），策略仍 `ask`（过度 ask）；开启扩展后真实调用（marker YES），策略 `ask` 正确 |
+| `filter.clean/smudge/process` 仅仓库本地 | **符合代码**，且 `status`/`diff` 边界准确 | 仓库本地 `filter.evil.clean`：`git status`、`git diff` 真实调用（marker YES）；`git log -p`、`git show HEAD`、`git blame a.txt` 均不调用（marker NO）。全局 filter 不纳入判定 |
+| 全局 filter 的威胁面 | **比文档描述更宽**（P2） | 只需仓库 `.gitattributes` 指向一个**全局已存在**的 filter 名，即可在 `status`/`diff` 执行；无需全局 `core.attributesFile`。实测 marker YES，策略 `allow` |
+| `git lfs install` 不误 ask | **确认**（模拟） | 本机全局配置确有 `filter.lfs.clean/smudge/process/required`；仓库 `.gitattributes: *.bin filter=lfs …` 下 `git status` / `git diff` 判定 `allow`。本机未安装 `git-lfs` 二进制，长驻 process 协议未实跑 |
+| `log.showSignature` + `gpg.program` | **触发条件精确偏保守** | 手工构造带 `gpgsig` 头的提交 + `[log] showSignature=true` + `[gpg] program=<marker>`：普通 `git log` 真实调用 gpg 程序（marker YES）；同一配置下 unsigned 提交不调用（marker NO）。策略对 `log`/`show`/`whatchanged` 一律 ask，不看提交是否带签名 |
+| `gpg.program` 单独不执行 | **确认** | 只读子命令不设 `log.showSignature` 时，`gpg.program` 不会被拉起 |
+| `core.fsmonitor` 触发范围（**更正第十轮**） | `git diff` **会**调用 fsmonitor；`git log`/`git show` **不会**，但探针仍 ask | 真实仓库 `core.fsmonitor=<marker>`：`git diff HEAD` marker YES、`git status` YES、`git blame` YES；`git log`/`git show` NO。第十轮 P3-1 “`git diff` 过度 ask”应撤回；真实过度 ask 在 `log`/`show`/`whatchanged` |
+
+### 11.5 新模型 + B2 探针的组合绕过
+
+| 组合 | 结果 | 说明 |
+|---|---|---|
+| `git -C <evil-repo> diff HEAD` | **ask**（`git:unknown:-C`） | 探针不会跟着 `-C` 走，但整条命令在进探针前就因未知全局选项 ask，无法借此绕过 |
+| `git --git-dir=… diff` / `--work-tree=…` / `GIT_DIR=…` | **ask** | 同上（未知选项 / 未在白名单的环境赋值） |
+| `GIT_CONFIG_GLOBAL=<evil> git status` | **ask**（`not-in-whitelist`） | 环境赋值不改变判定，也不会让探针误读该文件 |
+| `git -c core.attributesFile=… diff` / `git -c core.pager=… status` | **ask**（`git-config-override`） | 带 `=` 的 `-c` 一律 ask |
+| `git log -c -1` / `git diff -c` | **allow** | 无等号的 `-c` 是子命令选项，只读 |
+| `git diff '${X}'` / `'$X'`（evil 仓库） | **ask**（`git-repo-config-exec`） | 单引号内不展开，进入探针后仍命中 |
+| `git diff ${X}` / `"$X"`（evil 仓库） | **ask**（`shell-expansion`） | 在探针之前就 fail-closed |
+| `git diff --submodule=diff`（子模块 evil） | 子模块 external **不执行**（marker NO） | 策略仍按父仓库判定；该形态不构成额外执行面 |
+
+### 11.6 摩擦与成本
+
+本轮自建 38 条常态命令抽样（含只读、git、包管理、危险样例）：
+
+- **allow 31 / ask 7（81.6%）**。
+- ask：`node --version`（`node` 只放行 `--check` 严格形态）、`npm test`、`npm run build`、`yarn test`（非只读白名单）、`rm -rf dist`、`curl … | sh`、`cat ~/.zshrc`（`~` 展开）。
+- 常态只读（`ls -la`、`git status`、`git log --oneline -5`、`git diff`、`rg TODO .`、`find . -name "*.ts"`、`git show HEAD`、`git blame` 等）均 allow。
+- 与上一轮相比比例基本持平；本轮新增的可见摩擦只在**仓库已配置 `core.fsmonitor` 时对 `git log`/`git show` 的过度 ask**（探针未按子命令收窄），以及 `config.worktree` 未开扩展时的过度 ask。`filter`/`showSignature` 探测本身没有抬高常态命令摩擦（干净仓库不命中）。
+- 成本：200 次 `git diff HEAD` 平均 **0.0911 ms/次**（同步读配置，无子进程），可忽略。
+
+### 11.7 仍未验证
+
+1. **真实 CLI 端到端**：无模型 API，未跑真实 Claude CLI 回合；ask 不落地仍由“钩子 ask + 无宿主执行路径 + SDK 契约”推断。
+2. **全量测试基线**：本轮只跑定向套件（`bash-readonly`、`approval-gateway`、`approval-startup-reconcile` 共 61 passed），未重跑 3103/173 全量。
+3. **`git-lfs` 真机**：本机未安装二进制，LFS 场景只用主机现有全局 `filter.lfs.*` + 仓库 attributes 模拟，长驻 `filter-process` 协议未实跑。
+4. **全局 filter 缺口（复验时未修）**：属文档明确取舍（LFS 摩擦 vs 威胁面）；本轮已按“全局只放行已知 LFS 值、其余 ask”修复，见 11.9。
+5. **`includeIf` 条件未求值**：探针按“可能命中”递归，未按 `gitdir:`/`onbranch:` 条件裁剪；只会过度 ask，不漏判。
+6. **`GIT_CONFIG_SYSTEM` 实环境**：代码读取该变量与 `/etc/gitconfig`，本轮未构造系统级配置实测。
+
+### 11.8 冻结复算
+
+- 源码/文档哈希与 11.0 一致（本轮未改源码、未 commit、未 push）。
+- `git status --short` = 仅 ` M docs/architecture/agent-audit-2026-11-05.md`。
+- 三个临时测试文件（策略矩阵、真实钩子、网关 `row.cwd`）与两个补充用例（LFS、成本）均已删除，工作区无 `__tmp_r11_*` 残留。
+- 定向回归：`bash-readonly.test.ts` 29 passed、`approval-gateway.test.ts` 28 passed、`approval-startup-reconcile.test.ts` 4 passed（共 61）。
+
+### 11.9 修复记录（第三轮复验后，基线 `6839fe7`）
+
+**必修：全局 `filter` 缺口（代码）**
+
+- `gitConfigTextExecutes()` 的全局分支不再跳过 `filter`：`status`/`diff` 下，`filter.*.clean|smudge|process` 仅当值匹配 git-lfs 标准写法才 allow，其余一律 `git-repo-config-exec` ask。仓库本地 filter 仍三项全 ask。
+- LFS 匹配：先归一化（去包裹双引号、折叠连续空白），再要求二进制 basename 为 `git-lfs` 或 `git-lfs.exe`（允许 `/usr/local/bin/…` 路径前缀）且参数精确为 `clean -- %f` / `smudge -- %f` / `filter-process`。误判风险：伪装成 `git-lfs` 的绝对路径（如 `/tmp/git-lfs`）也会放行；但全局配置属于用户，能改全局配置者本就能用 `diff.external` 执行任意程序，不扩大威胁面。
+- 复现：全局 `[filter "mine"] clean = /bin/echo pwned` + 仓库 `.gitattributes` `* filter=mine` → 修复前 `allow / git:status`（marker 会写入），修复后 `ask / git-repo-config-exec`；`git diff` 同样。
+- LFS 对照：标准 `git-lfs clean -- %f` / `git-lfs smudge -- %f` / `git-lfs filter-process` → `allow / git:status`、`allow / git:diff`；`/usr/local/bin/git-lfs`、`git-lfs.exe`、引号包裹写法同样 allow。
+
+**文档与探针精度（代码 + 承诺）**
+
+- `core.fsmonitor` 收窄到 `status`/`diff`/`blame`：修复前 `git log` / `git show` 被 ask，修复后 allow；`status` / `diff` / `blame` 仍 ask。依据：复审实测这三条会调用 fsmonitor，`log`/`show` 不刷新 index。
+- `config.worktree` 按 `extensions.worktreeConfig` 判定：未开启时不读该文件，修复前 `git status` 被 ask，修复后 allow；开启后仍 ask。
+- `agent-architecture.md §7.4`：明确“不进入 replay”是**生产启动序列级**语义；`reconcileStartup` 函数对活 turn 会 `replayed=1 / pushed=1`，对终态/orphaned turn 才是 `replayed=0 / denied=1 / pushed=0`。
+- `agent-rollout.md` D4 标题改为“启动即 deny（不重推）”。
+- `includeIf` 保留不求值：只多 ask 不漏判；求值需匹配 gitdir/onbranch 等条件与通配符，成本高。
+- `GIT_CONFIG_SYSTEM`：已纳入候选，解析与不可读 fail-closed 逻辑同全局配置；未构造非默认路径实测，风险低。
+
+**修复前会失败（临时回退实测）**
+
+| 用例 | 回退后实际 | 期望 |
+|---|---|---|
+| 仓库 `.gitattributes` → 全局自定义 filter | `allow / git:status` | `ask / git-repo-config-exec` |
+| `core.fsmonitor` + `git log` / `git show` | `ask / git-repo-config-exec` | `allow / git:log`、`git:show` |
+| 未开 `extensions.worktreeConfig` + `config.worktree` | `ask / git-repo-config-exec` | `allow / git:status` |
+
+**校验**
+
+- 定向：三个套件共 **62 passed**（`bash-readonly` 34 passed）。
+- `tsc --noEmit` / `eslint src` / `vite build` 全过。
+- 全量：`26 failed 文件 / 253 passed`；`173 failed / 3108 passed / 93 skipped (3374)`，失败文件集合与基线 26 个 ABI 文件一致。

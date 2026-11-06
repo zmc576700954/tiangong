@@ -9,7 +9,7 @@
 | D1 | 类型迁移 + 迁移 17→20（M1 再到 v23）+ 9 张表 + `ux_turns_active` + 进程登记/残留状态列 | 旧库副本行数/hash 不变；`npx tsc --noEmit` 通过；DDL 单测全绿 |
 | D2 | `SessionLockRegistry`（`tryAcquire`/`acquire`/ALS/环检测）+ 显式 `TurnCorrelation` | 并发第二个 run 立即 `SESSION_BUSY`；同节点第二个非终态 turn → `NODE_BUSY`；重入不死锁；归属零错误；P99 < 0.1 ms |
 | D3 | 3 个 Normalizer + 最小公共契约 + OpenCode 无工具轨迹降级 + `turn.completed` 完成判定 | 三后端 checkpoint 序列一致：`run.started → message.completed → tool.requested → tool.result → run.completed`；`seq` 连续；Codex 在 `turn.completed` 后 100 ms 内完成，不等迭代器 |
-| D4 | 审批三段式 + `argsHash` + fail-closed + pending 重推 | 重复决定只执行 1 次；超时后迟到 allow 不执行；重启重放不自动批准；决定与事件同事务 |
+| D4 | 审批三段式 + `argsHash` + fail-closed + 启动即 deny（不重推） | 重复决定只执行 1 次；超时后迟到 allow 不执行；重启残留 pending 统一 deny(startup)、不放行；决定与事件同事务 |
 | D5 | `startup-reconciler` + `executing_at` 三阶段 + turn 起始快照 + `stepOutcomes` + 分层进程回收 | 真 SIGKILL 后零悬空 `running`；崩溃窗口五行判定全部命中；`RecoveryPlan` 含 step 级结果；OpenCode 取消后 2 s 残留为 0；Claude 按本轮真实句柄回收（未登记句柄才 `unconfirmed`）；Codex 旧路径不承诺 0 残留但 `residual_risk` 可见；无法证明归属时 kill 调用数 = 0；`aborted` step 全部进 `stepOutcomes` |
 
 ## 依赖顺序

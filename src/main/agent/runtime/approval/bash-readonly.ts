@@ -405,8 +405,8 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
- * `diff.*.textconv` / `diff.*.command` / `diff.external` / `filter.*.clean|smudge|process`
- * （diff/log/show/blame/whatchanged/status）、`core.fsmonitor`（status 等）
+ * `diff.*.textconv` / `diff.*.command` / `diff.external`（diff/log/show/blame/whatchanged）、
+ * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/blame）
  * 与 `log.showSignature`（log/show/whatchanged 自动调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
@@ -426,6 +426,32 @@ function gitConfigSectionIs(section: string, name: string): boolean {
 function gitConfigBoolean(value: string): boolean {
   const normalized = value.trim().toLowerCase()
   return normalized !== '' && normalized !== 'false' && normalized !== 'no' && normalized !== 'off' && normalized !== '0'
+}
+
+/**
+ * 全局 filter 只放行 git-lfs 的标准写法，避免「打开不可信仓库 + .gitattributes 指向
+ * 全局自定义 filter」换取零审批执行，同时不给 LFS 用户增加弹窗。
+ *
+ * 匹配前做两种归一化：
+ * - 去掉包裹的双引号（Git 允许 `"git-lfs clean -- %f"`）；
+ * - 折叠连续空白（tab/多空格）。
+ *
+ * 二进制名允许路径前缀与 Windows `.exe`（`/usr/local/bin/git-lfs`、`git-lfs.exe`），
+ * 只比较 basename；arg 形态必须精确为 `clean -- %f` / `smudge -- %f` / `filter-process`。
+ * 误判风险：全局配置属于用户自己，攻击者若能改全局配置本就能用 diff.external 等键
+ * 执行任意程序，因此按 basename 放行不扩大威胁面；但名字伪装成 git-lfs 的绝对路径
+ * （如 `/tmp/git-lfs`）也会被放行，这是为了不同安装路径的 LFS 体验所做的取舍。
+ */
+function isStandardLfsFilterValue(key: string, value: string): boolean {
+  const normalized = value.trim().replace(/^"(.*)"$/, '$1').replace(/\s+/g, ' ')
+  const parts = normalized.split(' ')
+  const binary = parts[0].split(/[\\/]/).pop()?.toLowerCase()
+  if (binary !== 'git-lfs' && binary !== 'git-lfs.exe') return false
+  if (key === 'process') return parts.length === 2 && parts[1] === 'filter-process'
+  if (key === 'clean' || key === 'smudge') {
+    return parts.length === 4 && parts[1] === key && parts[2] === '--' && parts[3] === '%f'
+  }
+  return false
 }
 
 /** git 配置值里的行内注释：`#`/`;` 只有在行首或前有空白时才是注释。 */
@@ -462,18 +488,26 @@ function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'glob
     if (gitConfigSectionIs(section, 'diff') && (key === 'textconv' || key === 'external' || key === 'command')) {
       return true
     }
-    if (gitConfigSectionIs(section, 'core') && key === 'fsmonitor' && gitConfigBoolean(value)) return true
-    // filter.<driver>.clean/smudge/process：status/diff 读取工作区时会调用外部过滤器。
-    // 只看仓库本地配置：全局 filter 通常是 git-lfs（clean/smudge/process 都有），
-    // 若把全局也算进来，任何装过 LFS 的用户每次 status/diff 都会被弹窗。
-    // 仓库本地配置可在一次被批准的 Write 后改写，才是 B2 的实际威胁面。
+    // fsmonitor 只在 status/diff/blame 读取工作区时被调用；log/show 不刷新 index，不判。
     if (
-      source === 'repo' &&
+      gitConfigSectionIs(section, 'core') &&
+      key === 'fsmonitor' &&
+      gitConfigBoolean(value) &&
+      (sub === 'status' || sub === 'diff' || sub === 'blame')
+    ) {
+      return true
+    }
+    // filter.<driver>.clean/smudge/process：status/diff 读取工作区时会调用外部过滤器。
+    // 仓库本地配置维持三项全 ask（可在一次被批准的 Write 后改写，是 B2 的直接威胁面）；
+    // 全局配置常见于 `git lfs install`，只放行 git-lfs 的标准写法，自定义值一律 ask
+    // ——否则「打开不可信仓库 + .gitattributes 指向全局自定义 filter」即可零审批执行。
+    if (
       (sub === 'status' || sub === 'diff') &&
       gitConfigSectionIs(section, 'filter') &&
       (key === 'clean' || key === 'smudge' || key === 'process')
     ) {
-      return true
+      if (source === 'repo') return true
+      if (!isStandardLfsFilterValue(key, value)) return true
     }
     // log.showSignature=true 让 log/show/whatchanged 自动调用 gpg（gpg.program 可指向任意程序）。
     if (
@@ -559,21 +593,60 @@ function findGitDir(root: string): string | null {
   return null
 }
 
-/** 仓库配置（worktree 走 commondir + config.worktree）+ 递归 include。 */
+/**
+ * 是否开启 `extensions.worktreeConfig`。Git 只有在该扩展开启时才读 config.worktree；
+ * 未开启仍去读会造成无谓 ask。文件存在但不可读按「可能开启」处理（fail-closed）。
+ */
+function gitConfigEnablesWorktreeConfig(files: string[]): boolean {
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    try {
+      const text = readFileSync(file, 'utf8')
+      let section = ''
+      for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim()
+        if (!line || line.startsWith('#') || line.startsWith(';')) continue
+        const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
+        if (sectionMatch) {
+          section = sectionMatch[1].toLowerCase()
+          continue
+        }
+        const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(line)
+        if (!kv) continue
+        if (
+          gitConfigSectionIs(section, 'extensions') &&
+          kv[1].toLowerCase() === 'worktreeconfig' &&
+          gitConfigBoolean(stripGitConfigComment(kv[2]))
+        ) {
+          return true
+        }
+      }
+    } catch {
+      return true
+    }
+  }
+  return false
+}
+
+/** 仓库配置（worktree 走 commondir + 按扩展开关读取 config.worktree）+ 递归 include。 */
 function repoGitConfigFiles(gitDir: string): string[] {
   const files = gitConfigPaths(join(gitDir, 'config'))
-  // extensions.worktreeConfig 开启后，per-worktree 配置在 config.worktree；
-  // core.fsmonitor 可按 worktree 设置，漏读该文件会放过配置驱动的执行。
-  files.push(...gitConfigPaths(join(gitDir, 'config.worktree')))
+  const commonFiles: string[] = []
   try {
     const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
     if (common) {
       const commonDir = isAbsolute(common) ? common : resolve(gitDir, common)
-      files.push(...gitConfigPaths(join(commonDir, 'config')))
+      commonFiles.push(...gitConfigPaths(join(commonDir, 'config')))
     }
   } catch {
     // 非 worktree，没有 commondir
   }
+  // extensions.worktreeConfig 开启后，per-worktree 配置才在 config.worktree；
+  // core.fsmonitor 可按 worktree 设置，漏读该文件会放过配置驱动的执行。
+  if (gitConfigEnablesWorktreeConfig([...files, ...commonFiles])) {
+    files.push(...gitConfigPaths(join(gitDir, 'config.worktree')))
+  }
+  files.push(...commonFiles)
   return files
 }
 
