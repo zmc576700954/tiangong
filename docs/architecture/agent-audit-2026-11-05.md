@@ -3022,3 +3022,142 @@ escaped quote include: allow git:status   # path = evil\"cfg → Git 解转义�
 **反向（不误伤）**：普通 include 路径（`clean.cfg`）、带引号但无转义（`"clean.cfg"`）、标准 LFS 配置（全局 `git-lfs clean/smudge/process`）、本仓库真实 `.git/config` 的 `git status` 均保持 `allow`；干净仓库与标准 LFS 仓库的 `status/diff/log/show/blame` 仍全 allow。反斜杠只出现在行内注释时不会触发（检查对象是去注释后的值）。
 
 **校验**：定向 `bash-readonly` 44 passed，`approval-gateway` 28 + `approval-startup-reconcile` 4 通过；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3118 passed / 93 skipped (3384)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。
+
+## 十五、B-14-1 止血补丁限定复验（第七轮，2026-11-06）
+
+### 15.0 冻结基线（追加本文件前）
+
+| 项 | 值 |
+|---|---|
+| HEAD | `5e4393fd2232727bba30f2edd0e1a71b5da6345c`（父 `c0dbf8e`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes` | 123 |
+| `bash-readonly.ts` | `f1d24f867202a46b26b544e03e0193e8ef759d7ef76123906c1dbad30f8ecba8` |
+| `bash-readonly.test.ts` | `f187a71aaa5c24a5cbae898ff4739d137a938508de8910dc9e2e60ef91e07542` |
+| `agent-architecture.md` | `97e20b082fa35522f1f07c58764e939f0f6b80bc2444b11ddb50bd28f99c1a79` |
+| 本文件 | `e561f34c8be88e6cf607f12d6abedfb6587352ea6c0d9fdd88e24e2d338dbfc2` |
+
+补丁内容：`gitConfigHasContinuation` 改为 `gitConfigHasEscape`（`value.includes('\\')`），值内任何反斜杠一律 `invalid`；顺带把 `stripGitConfigComment` 提到赋值前（`value` 先剥注释再判转义）。
+
+### 15.1 结论：**止血成立，可进入迁移窗口**
+
+- B-14-1 闭合：两条复现（`evil\\cfg`、`evil\"cfg`）在 `git status` 与 `git diff` 上均为 `ask / git-repo-config-exec`；父提交 `c0dbf8e` 对同一构造仍是 `allow`（已实测对照），真实 Git 仍会执行（marker 已创建）。`ask` 在 [claude-code.ts](file:///Users/zhumingchen/tiangong/src/main/adapters/claude-code.ts#L349-L367) 映射为 `permissionDecision:'ask'`，不落地。
+- 误伤面存在但方向安全（纯 over-ask），macOS 主流配置不命中；Windows 系路径/自定义 diff 正则用户会每次弹窗。
+- 无新增阻断。**迁移前不需要再打止血补丁**；建议下一次改动直接走“配置探测交回 Git”的迁移，不再在手写解析器上做局部修补。
+
+### 15.2 三项判定
+
+#### 1）B-14-1 闭合：**通过**
+
+| 构造 | 当前树 `5e4393f` | 父 `c0dbf8e` | 真实 Git |
+|---|---|---|---|
+| `path = evil\\cfg` + `.git/evil\cfg` 危险 filter → `git status --short` | `ask / git-repo-config-exec` | `allow / git:status` | 读入并执行 |
+| 同上 → `git diff HEAD` | `ask / git-repo-config-exec` | `allow / git:diff` | 读入并执行 |
+| `path = evil\"cfg` + `.git/evil"cfg` → status / diff | `ask / ask` | — | 读入并执行 |
+
+真实执行侧复核：`git status` 在 `c0dbf8e` 语义下退出码 0 且创建 `/tmp/v15-marker`（fsmonitor hook 被调用）；补丁不改 Git 行为，因此 `ask` 是必要的拦截点。
+
+#### 2）误伤面：**7 类命中 over-ask（均安全方向）**
+
+| 配置值（Git 实测均 `exit=0` 接受） | 当前策略 |
+|---|---|
+| `core.excludesFile = C:\\Users\\alice\\.gitignore` | `ask` |
+| `safe.directory = C:\\work\\repo` | `ask` |
+| `remote.origin.url = https://example.com/a\\b.git` | `ask` |
+| `core.sshCommand = ssh -i C:\\Users\\a\\.ssh\\id_rsa` | `ask` |
+| `core.hooksPath = C:\\hooks` | `ask` |
+| `[alias] fmt = log --pretty=format:\"%h %s\"`（Git 解转义为 `"`） | `ask` |
+| `[diff "go"] xfuncname = ^\\s*func`（正则 | `ask` |
+| `include.path = inc1.cfg`（正常写法） | `allow` |
+| 标准 LFS 仓库（仓库侧 `[lfs]`） | `allow` |
+| 本仓库真实 `.git/config` | `allow` |
+
+**是否常见**：macOS 主流用户（Homebrew Git、LFS、`~/.gitconfig` 常规项）**不命中**——本机真实全局配置 12/12 `allow`。命中的是三类少数但真实的用户：① Windows/macOS 双机共享 dotfiles（`C:\\` 路径）；② 自定义 diff driver 的正则值（`\\s`）；③ alias 里写 `\"`。由于 `invalid` 是**整份配置级**，这类用户会在这 6 个命令上每次都弹窗，摩擦偏高。
+
+最小收敛建议（非阻断、可并入迁移）：把“值内反斜杠即 invalid”的判定**只作用于 `include.path` / `includeIf.path`**（只有这两处需要精确路径归一；其余键的转义不会把危险变安全——布尔按“非 false 即真”、`filter`/`diff` 按“非空即危险”），其余键保留现有的续行判定。约 5 行改动，可把上述 7 类误伤压到 0，同时不损失闭合性。
+
+#### 3）回归：**通过**
+
+- 干净仓库五命令（status/diff/log/show/blame）全 `allow`。
+- 标准 LFS 仓库（含 `.gitattributes → filter=lfs`、全局标准 LFS 三项）五命令全 `allow`（定向用例覆盖）。
+- 定向 `bash-readonly` **44 passed**（本轮 +87 行用例）。
+- 本仓库真实全局配置下 12 条常用只读命令 **12/12 `allow`**。
+
+### 15.3 迁移触发条件确认
+
+上一轮列出的触发条件中已满足两条：
+
+1. **“再出现一次 Git 接受、解析器漏读的 under-ask”** —— B-14-1 已实测（同族第二次：深度之后是转义）。
+2. **“需要把‘无已知 allow+exec 绕过’写进发布标准”** —— 本轮止血把已知绕过清零，但实现方式证明手写解析器仍在“逐层补洞”，该标准在现状下只能靠持续复审维持。
+
+结论：**迁移已具备启动条件**，不应再等。剩余待验项（`GIT_CONFIG_COUNT`、非 UTF-8、FIFO）都属于“迁移后由 Git 统一覆盖”的范畴，不必在手写解析器上单独补。
+
+### 15.4 迁移排期建议：一次迁移、分三段落地
+
+不建议继续“分阶段只迁一部分键”——那等于继续维护两套语义。建议**一个迁移单元**，内部三段：
+
+- **S1（影子对照，不改行为，约 1 天）**：新增 `gitConfigProbe()`（`execFile` 固定 argv + 250 ms 超时 + 1 MB 上限），在 6 个子命令上并行跑“探针判定”与“手写判定”，只记差异日志。验收：真实仓库 + 构造仓库上差异为 0 或全部指向手写漏判。
+- **S2（切换门控，约 0.5 天）**：以探针为权威；spawn 失败/超时/非零/解析失败 → `ask`；手写解析器降级为“只能返回 ask”的 fallback。验收：B-14-1 复现 + 本轮 7 类误伤全部 `allow`，定向用例 + 新增差异用例全绿。
+- **S3（收尾，约 0.5 天）**：删除手写 include/转义/深度逻辑，保留 shell 词法器；文档与审计同步。
+
+风险与边界（与上一轮一致）：探针必须用应用同一个绝对路径 git、`--no-pager`、环境与真实命令一致；FIFO include 靠超时兜底；缓存键用 `--show-origin` 文件集合 + mtime。若 `evaluateBashPolicy` 保持同步接口，`execFileSync` 每命令约 +10 ms（与 `git status` 本身同量级），可接受；若不可接受，再把接口异步化。
+
+### 15.5 本轮未验证项
+
+- `git-lfs` 真机（本机仍无二进制）。
+- 迁移方案本身（本轮只做现状复验，未写原型）。
+- 误伤面的真实分布（只做了构造样例，未统计真实用户配置语料）。
+
+## 十六、B-14-1 误伤收敛（第八轮，基线 `5e4393f`）
+
+### 16.0 冻结基线
+
+| 项 | 值 |
+|---|---|
+| HEAD | `5e4393fd2232727bba30f2edd0e1a71b5da6345c`（父 `c0dbf8e`，未 amend、未 push） |
+| `git status --short` | 空 |
+| `git ls-files spikes` | 123 |
+
+### 16.1 修复内容（收窄，不迁移）
+
+第七轮“值内任何反斜杠即 `invalid`”是**整份配置级**判定，Git 能正常接受的七类真实配置会连带让 `status`/`diff`/`log`/`show`/`blame` 全部弹窗。本轮把该判定收窄到只作用于 `include.path` / `includeIf.path`：
+
+- `parseGitConfigEntries` 增加 `isIncludePath`（`key === 'path'` 且节名命中 `include` / `includeIf`），仅该形态下的反斜杠置 `invalid = true`；
+- 其余键不再因值内反斜杠置 `invalid`，解析器照常产出条目并由既有规则判定；
+- **理由**：转义不会把「危险」变「安全」——布尔按「非 false 即真」、`filter`/`diff` 按「非空即危险」，归一化与否不改变判定方向；只有 include 路径需要精确归一（`evil\\cfg` → `evil\cfg`），归一缺失会漏读。
+- **闭合性**：B-14-1 的 `evil\\cfg`、`evil\"cfg` 与第 7 层叠加形态仍走 `invalid → ask`，既有 3 条用例保持通过。
+- 未做转义语义归一，未启动“配置探测交回 Git”的迁移（等用户拍板）。
+
+### 16.2 “修复前会失败”证据
+
+临时把 `isIncludePath &&` 从条件中移除（即回到整份配置级判定），跑新增用例：**1 failed / 44 skipped**，首个七类配置即断言失败（`expected { decision: 'ask' } to match { decision: 'allow' }`）。恢复收窄后 **45 passed**。
+
+| 用例（Git 实测均 `exit=0` 接受） | 收窄前 | 收窄后 |
+|---|---|---|
+| `core.excludesFile = C:\\Users\\me\\.gitignore` | `ask` | `allow` |
+| `safe.directory = C:\\work\\repo` | `ask` | `allow` |
+| `remote "origin".url = https://example.com/a\\b.git` | `ask` | `allow` |
+| `core.sshCommand = ssh -i C:\\Users\\me\\.ssh\\id_rsa` | `ask` | `allow` |
+| `core.hooksPath = C:\\hooks` | `ask` | `allow` |
+| `[alias] lg = log --pretty=format:\"%h %s\"` | `ask` | `allow` |
+| `[diff "go"] xfuncname = ^\\s*func` | `ask` | `allow` |
+
+七类均对 `git status` / `git diff` / `git log --oneline -5` / `git show HEAD` / `git blame a.txt` 五条命令断言 `allow`。
+
+### 16.3 自检：收窄后危险值仍 fail-closed
+
+| 用例 | 结果 |
+|---|---|
+| `[core] fsmonitor = \\path`（布尔按非 false 即真） | `ask / git-repo-config-exec` |
+| `[diff "x"] command = a\\b`（非空即危险） | `ask / git-repo-config-exec` |
+| `[includeIf "gitdir:~/work/"] path = evil\\cfg` | `ask / git-repo-config-exec` |
+| `include.path = evil\\cfg` / `evil\"cfg`（既有 B-14-1 用例） | `ask / git-repo-config-exec`（status、diff） |
+| 第 7 层 include 用转义路径（既有用例） | `ask / git-repo-config-exec` |
+| 普通 include、带引号无转义、标准 LFS、本仓库真实 `.git/config` | `allow` |
+
+### 16.4 校验结果
+
+- 定向：`bash-readonly` **45 passed**（+1 条收敛用例）；`approval-gateway` 28、`adapter-driver-approval` 5、`approval-startup-reconcile` 4 通过。
+- `tsc --noEmit`、`eslint src`、`vite build` 全过。
+- 全量：`26 failed 文件 / 253 passed`，`173 failed / 3119 passed / 93 skipped (3385)`；26 个失败文件仍为既有 `better-sqlite3` ABI 文件，集合与基线一致（总数 +1 来自新增用例）。
+- 未 push、未 amend；提交后不再改代码。

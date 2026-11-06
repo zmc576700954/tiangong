@@ -493,8 +493,12 @@ interface GitConfigEntry {
  * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，标记为不可解析。
  * - 键名只含字母/数字/连字符：Git 不接受带点或下划线的键名（`a.b=1`、`a_b=1` 均 fatal）。
  * - 行尾未转义反斜杠（Git 的续行语法）与无法归一的杂行一律标记为不可解析，由调用方 fail-closed。
- * - 值内任何反斜杠（`\\` / `\"` / `\n` / `\t` / `\b` 与尾部续行）一律标记为不可解析：
- *   本轮不做转义语义归一，用未归一原值算 include 路径会与 Git 实际读取路径不一致。
+ * - 只有 `include.path` / `includeIf.path` 的值内出现反斜杠（`\\` / `\"` / `\n` / `\t` / `\b`
+ *   与尾部续行）才标记为不可解析：本轮不做转义语义归一，用未归一原值算 include 路径会与
+ *   Git 实际读取路径不一致（`evil\\cfg` → `evil\cfg`），漏读即漏判。
+ * - 其余键不做转义 invalid 判定：转义不会把「危险」变「安全」——布尔按「非 false 即真」、
+ *   `filter`/`diff` 按「非空即危险」，归一化与否不改变判定方向。若一并判 invalid，会把
+ *   `core.excludesFile = C:\\Users\\…`、`alias` 里的 `\"`、diff driver 正则等真实配置整份误伤。
  */
 const GIT_CONFIG_SECTION_HEADER = /^\[\s*([^\s\]]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$/
 const GIT_CONFIG_KEY_VALUE = /^([A-Za-z0-9-]+)(?:\s*=\s*(.*))?$/
@@ -506,11 +510,14 @@ interface ParsedGitConfig {
 }
 
 /**
- * 止血口径：值内出现反斜杠即不可解析。
+ * 止血口径：`include.path` / `includeIf.path` 的值内出现反斜杠即不可解析。
  *
  * - 尾部反斜杠是 Git 的续行（未被建模，EOF 时 Git 直接 fatal）；
  * - `\\`、`\"`、`\n`、`\t`、`\b` 等转义本轮不归一，原值算出的 include 路径会与 Git 不同；
  * 宁可整份配置 ask，也不能按未归一原值漏读。
+ *
+ * 只对 include 路径生效：其它键的转义不改变判定方向（布尔非 false 即真、filter/diff
+ * 非空即危险），判 invalid 只会把 Windows 路径、alias、diff 正则等真实配置整份误伤。
  */
 function gitConfigHasEscape(value: string): boolean {
   return value.includes('\\')
@@ -540,14 +547,20 @@ function parseGitConfigEntries(text: string): ParsedGitConfig {
       continue
     }
     const bare = kv[2] === undefined
+    const key = kv[1].toLowerCase()
     const value = bare ? 'true' : stripGitConfigComment(kv[2])
-    if (!bare && gitConfigHasEscape(value)) {
-      invalid = true // 转义/续行语义未建模，不能拿原值算 include 路径
+    // 只有 include 路径的转义会改变「读哪个文件」，必须 fail-closed；
+    // 其它键的转义不改变判定方向，不判 invalid（避免误伤 Windows 路径 / alias / diff 正则）。
+    const isIncludePath =
+      key === 'path' &&
+      (gitConfigSectionIs(section, 'include') || gitConfigSectionIs(section, 'includeif'))
+    if (!bare && isIncludePath && gitConfigHasEscape(value)) {
+      invalid = true
       continue
     }
     entries.push({
       section,
-      key: kv[1].toLowerCase(),
+      key,
       value,
       bare,
     })

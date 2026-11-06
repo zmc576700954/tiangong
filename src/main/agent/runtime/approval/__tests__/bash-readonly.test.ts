@@ -982,6 +982,50 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     })
   })
 
+  it('收敛：反斜杠 invalid 只作用于 include.path / includeIf.path，七类真实配置不误伤', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-escape-scope-'))
+    const gitDir = join(repo, '.git')
+    mkdirSync(gitDir, { recursive: true })
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+    const commands = ['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git blame a.txt']
+
+    // 复审实测：Git 均 exit=0 接受；整份 invalid 口径会把它们在六个命令上全变 ask。
+    const realWorld = [
+      '[core]\n\texcludesFile = C:\\\\Users\\\\me\\\\.gitignore\n',
+      '[safe]\n\tdirectory = C:\\\\work\\\\repo\n',
+      '[remote "origin"]\n\turl = https://example.com/a\\\\b.git\n',
+      '[core]\n\tsshCommand = ssh -i C:\\\\Users\\\\me\\\\.ssh\\\\id_rsa\n',
+      '[core]\n\thooksPath = C:\\\\hooks\n',
+      '[alias]\n\tlg = log --pretty=format:\\"%h %s\\"\n',
+      '[diff "go"]\n\txfuncname = ^\\\\s*func\n',
+    ]
+    for (const text of realWorld) {
+      writeFileSync(join(gitDir, 'config'), text)
+      for (const command of commands) {
+        expect(decide(command, options)).toMatchObject({ decision: 'allow' })
+      }
+    }
+
+    // 自检：布尔/危险值的转义写法不因收窄变 allow（非 false 即真、非空即危险）。
+    writeFileSync(join(gitDir, 'config'), '[core]\n\tfsmonitor = \\\\path\n')
+    expect(decide('git status', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    writeFileSync(join(gitDir, 'config'), '[diff "x"]\n\tcommand = a\\\\b\n')
+    expect(decide('git diff HEAD', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // includeIf.path 同样受转义 fail-closed 保护（条件不求值，按可能命中处理）
+    writeFileSync(join(gitDir, 'config'), '[includeIf "gitdir:~/work/"]\n\tpath = evil\\\\cfg\n')
+    writeFileSync(join(gitDir, 'evil\\cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    expect(decide('git status', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+  })
+
   it('反向：普通/带引号无转义 include、标准 LFS、本仓库真实 .git/config 均 allow', () => {
     const plainRepo = mkdtempSync(join(tmpdir(), 'bizgraph-plain-include-'))
     const plainGitDir = join(plainRepo, '.git')
