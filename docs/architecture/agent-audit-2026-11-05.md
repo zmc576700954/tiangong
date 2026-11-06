@@ -1771,3 +1771,316 @@ file --c -m test.magic        # file: option '--c' is ambiguous
 2. 4 套件 83 用例全绿（已复核）；
 3. `spikes/spikes/` 未进索引（现状满足），建议删除或 gitignore；
 4. evidence/spikes 的处置沿用第五轮结论：私有/内网可延后；若要开源，先处理 9 个日志/JSON 中的绝对路径。
+
+## 9. 第九轮独立复审（新审查方，2026-11-06）
+
+本轮为独立复审：不采信前六轮结论，所有判定均来自本轮读码与实测。审查过程中一旦复现发布阻断，已先行口头报告（见 9.1）。
+
+### 9.0 冻结基线
+
+- HEAD：`9ef5c57a0465530d5434744da6a949280fa7d734`
+- 审查开始时 `git status --short` 为空（干净工作区），审查结束时仍为空。
+- 关键文件 sha256（审查开始时记录，写入本文件前又复算一次，见 9.6）：
+
+| 文件 | sha256 |
+| --- | --- |
+| `src/main/agent/runtime/approval/bash-readonly.ts` | `5d1dc76a30d32676372f2bb685e587e60eb9342e73bea4d62cd4b95cc41aeda8` |
+| `src/main/agent/runtime/runtime.ts` | `8ae91425f586accaeba5dc0938bdbc506862d895daac4ff7bf575a2b836525c1` |
+| `src/main/agent/runtime/approval/gateway.ts` | `05d0d7eb48dce8031ab4bfa307634fcf4828acaca9d00de0c1170456dd399b18` |
+| `src/main/agent/runtime/process/reaper.ts` | `d6c3594eee11b0301d2547ac20d57c2623a43cebbb5c916cdb87c6440c77fb43` |
+| `src/main/agent/runtime/db/repository.ts` | `1ce61499a4fd90c3dac08c65f70075006a447479b2b27f7dfc3420be2efbe491` |
+| `src/main/agent/runtime/db/schema.ts` | `b6f5bd073dc0db3722fd66da0e99d8719ff365d5d7270f381f2f023e5df2e990` |
+| `src/main/ipc/agent.ts` | `09c558d008704a6d565902692bddcad0d89229b8ebf47f842ddf9291d9d8fb6f` |
+| `src/main/agent/agent-manager.ts` | `84637def2907060c1c8f5dfee7b7d271b74392d716cfa8fc89ae77594ee46445` |
+| `src/main/agent/runtime/feature-flags.ts` | `cfb578e1f4f57adb03c86174fb83717393ee2154211ba13311978ad6ed8aca86` |
+| `src/main/agent/runtime/cost/ledger.ts` | `8588636b7eb82e12d6eca47b058310ed86047b6f99f3c0eb808c44c974e7d04d` |
+| `docs/architecture/agent-architecture.md` | `1e014ceb97e0a3f64d2e1b59560c9f20bdbc707227748ba8036e5cb6e8adfd5e` |
+| `docs/architecture/verification-ledger.md` | `291fb39631ee67c888a05999f1e1634377e5f2c5521b31c9239341791334211f` |
+| `docs/architecture/agent-audit-2026-11-05.md` | `b0b4c26d4826b8be758b12e0c4af69d2e5df9ede08a0c75889821df8df5ab40e` |
+
+### 9.1 结论：不可发布
+
+唯一必要阻断 **B1（P0）**：Bash 只读白名单对「shell 动态展开」完全没有建模。策略判定发生在变量/花括号/ANSI-C 展开之前，因此只要把危险参数拆成 `$VAR`、花括号或 ANSI-C 片段，策略看到的就是一个"无害字面量"并返回 `allow`，而 shell 在执行时把它拼回危险参数。本轮实测四类变体全部零审批生效：
+
+| ID | 命令原文（策略看到的文本） | 策略判定 | 实测效果 |
+| --- | --- | --- | --- |
+| A | `file --compil$UNSET -m t.magic` | `allow` | 生成 `magic.mgc`（7,273,344 字节） |
+| B | `git diff --output$UNSET=/tmp/ev-b/out.diff` | `allow` | 写出 `out.diff` |
+| C | `rg --pre$UNSET=/bin/rm TODO .` | `allow` | 目录内文件被 `/bin/rm` 删除，`remaining=0` |
+| D | `find . {-delete,-delete}` | `allow` | 目录内文件全部被删除，`remaining=0` |
+| E | `file {--comp,ile} -m t.magic` | `allow` | 生成 `magic.mgc`（7,273,344 字节） |
+| F1 | `file --comp\<换行>ile -m t.magic` | `allow` | 反斜杠续行拼回 `--compile`，生成 `magic.mgc` |
+| F2 | `file $'\x2d\x2d\x63\x6f\x6d\x70\x69\x6c\x65' -m t.magic` | `allow` | ANSI-C 引用拼回 `--compile`，生成 `magic.mgc` |
+
+- 复现环境：macOS 默认 shell；`UNSET` 为未定义变量，展开为空串；`file --compile` 在 9ef5c57 上已被 `c11bab8` 判定为危险参数并应 `ask`。
+- 影响面：`kernel` 对 Claude 默认开启（[feature-flags.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/feature-flags.ts)），Bash 白名单是当前 Claude 路径上唯一审批闸门，命中 `allow` 时**不经过** `ApprovalGateway`。因此 C/D/F 属于零审批任意执行与任意删除，不需要任何前置写权限；C 只使用系统自带 `/bin/rm` 即可完成。
+- 根因：[bash-readonly.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/bash-readonly.ts) 的 `tokenize()` 只把 `$(` 与反引号识别为替换；`$VAR`/`${VAR}`/`$'...'` 只是普通字符累积（`$` 后不是 `(` 时走普通分支），`{`/`}` 与 `,` 从不作为 metachar，反斜杠+换行被当作字面换行拼进 token；`evaluateBashPolicy` 于是对参与「命令+参数」白名单匹配的是展开前文本。
+- 最小改法：在 `tokenize()` 增加三类「动态展开」判定，命中即让 `evaluateBashPolicy` 返回 `ask`（rule 建议 `shell-expansion` / `shell-brace` / `shell-continuation`）：
+  1. 单引号外的任意 `$`（覆盖 `$VAR`、`${VAR}`、`$'...'`、`$"..."`）；
+  2. 单引号外的任意 `{` 或 `}`（brace expansion 先于分词）；
+  3. `\` 后紧跟换行（line continuation）。
+  这三项与现有「宁可多弹」原则一致，且不影响现有 allow 用例中不包含这些字符的命令。
+- 配套测试（修复前必须失败）：`file --compil$UNSET`、`file {--comp,ile}`、`file $'\\x2d...'`、`file --comp\<换行>ile`、`rg --pre$UNSET=/bin/rm`、`find . {-delete,-delete}` 全部断言 `ask`；再补 `ls -la`、`git log --oneline -5`、`file -m t.magic` 仍为 `allow` 作为反向对照。
+
+在该项修复并通过回归前，前一轮「可发布」判定（§8）作废。
+
+### 9.2 本轮新发现（除 B1 外）
+
+**B2（P1）`git status/diff/show/log -p` 默认执行仓库配置的外部程序。** 前轮已把 textconv/`core.fsmonitor` 记为 P3，但只描述了显式 `--textconv`/`--ext-diff` 参数。本轮实测：只要 `.git/config` 里存在 `diff.<driver>.textconv` 或 `core.fsmonitor` 或 `diff.external`，`git diff`（无任何危险参数）、`git log -p -1`、`git show HEAD`、`git status --porcelain` 都会以零审批执行配置中的程序（复现输出：`textconv=EXECUTED`、`fsmonitor=EXECUTED`）。该配置可由一次已批准的 Write 写入工作区 `.git/config`，随后在不触发任何审批的情况下获得任意命令执行，构成「一次写审批 → 后续零审批执行」的升级链；若打开的是带 `.git/config` 的不可信仓库目录，则无需任何前置审批。
+- 最小改法（二选一）：(a) 在 `git` 规则命中 `status|diff|show|log|blame` 前，读取该仓库 `git config --get-regexp '^(diff\..*\.(textconv|command)|core\.fsmonitor|diff\.external)'`，命中即 `ask`；(b) 直接将 `diff/show/log/blame/status` 移出只读白名单，全部 `ask`。建议 (a)，成本可控且不牺牲全部只读体验。
+
+**B3（P2）取消与完成的终态竞态，双向均可复现。** [runtime.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/runtime.ts#L560-L568) 在 driver 返回后无条件 `updateTurnStatus(finalStatus)`；`cancelTurn()` 在 [runtime.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/runtime.ts#L738-L761) 也多次无条件写 `cancelling/cancelled` 与 `output={reason}`；仓储层没有终态 CAS。两条实测：
+1. 用户先取消、driver 之后仍返回 `completed` → 终态被覆盖为 `completed`，`output_json` 为空结果，取消记录与终态矛盾；
+2. driver 已真正完成、`cancelTurn` 卡在慢速 `driver.cancel()` 时 → 终态被覆盖为 `cancelled`，`output_json` 被替换成 `{reason}`，真实最终文本丢失。
+- 最小改法：终态写入改为条件更新（`UPDATE ... WHERE status IN ('running','waiting_approval','cancelling')`），首个终态胜出；`cancelTurn` 在 `driver.cancel` 返回后再次读取 DB，若已是终态则只补审计不覆盖；`runNode` finally 若检测到 `cancelled` 只记审计不覆盖。两条竞态需各自新增用例（本轮用临时 vitest 文件复现，文件已删除，git 状态干净）。
+
+**B4（P2）测试基线依赖未入库的本地产物。** `openTestDb`（9 个测试文件使用）在 `NODE_MODULE_VERSION` 不匹配时回退到 `spikes/agent-core/node_modules/better-sqlite3`；该目录被 gitignore、`git ls-tree HEAD spikes` 中无任何 `node_modules/`。因此干净克隆无法复现「3094 passed / 173 failed」，改用 `openTestDb` 的 9 个文件会新增失败。173 条失败本身的归因成立（见 9.5）。
+
+**B5（P2）文档承诺的「重启重推审批 + 批准后 replay」未实现。** [agent-architecture.md §7.4](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md#L989-L996) 写「未过期 pending 保留并重启重推、按 mode 计时；所属 turn 已 orphaned 则批准后走 RecoveryPlan(replay)」；实际 `ApprovalGateway.reconcileStartup` 对全部 pending 直接 `deny`（因 RecoveryPlanner 已把所有非终态 turn 标 orphaned），`reported.pendingApprovals` 恒为 0，`replay` 仅有类型和报告字段、无执行路径。行为本身比文档更保守（安全方向），但契约与代码不一致，且「无人值守 30s」在 `mode` 上不可达（driver 恒传 `interactive`）。建议改文档或在 M1 实现 replay。
+
+**B6（P3）跨重启回收的「证据」合同被实现放宽。** [agent-architecture.md §6.5 b)](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md#L904) 要求「≥2 项且至少 1 项内容证据」；[reaper.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/process/reaper.ts) 额外允许 `trust==='trusted' && matched 含 startedAt && pid===pgid` 直接回收。该路径仅在「启动时 ps 可得 startedAt、但命令与记录不一致（exec 换镜像）」时可达，签名由本机运行时自铸，跨 uid 不可伪造；但按文档的定义（pid/startedAt 均属非内容证据）它不满足合同。建议或收紧实现，或把签名记录明确列为第三种内容证据并同步文档。
+
+**B7（P3）`verification-ledger.md` U10 已过时。** ledger 仍写「§14.5 未验证（受阻）」，对应 [agent-realdevice-verification.md 第 443 行 §14.1 第 5 项](file:///Users/zhumingchen/tiangong/docs/architecture/agent-realdevice-verification.md#L443) 的历史状态；但同文件 [第 579 行 §15.1 第 2 项](file:///Users/zhumingchen/tiangong/docs/architecture/agent-realdevice-verification.md#L579) 已记录「不继承授权 通过」，[第 701 行 §15.5 第 6 项](file:///Users/zhumingchen/tiangong/docs/architecture/agent-realdevice-verification.md#L701) 又做了回归闭合。属于台账未同步，不影响行为。
+
+**B8（P3）帮助类命令收紧不完整。** 文档 §4.6 声称 `git help <cmd>` 已收紧；实测 `git help status` 为 `ask`，但 `git log --help`、`git show --help`、`git status --help`、`git diff --help` 与裸 `git help` 均为 `allow`。它们会拉起 `man`/pager/`help.format=web` 配置的浏览器程序，属于 B2 同一「配置驱动执行」面，但当前未计入。
+
+**B9（P3）跨窗口控制面无归属校验。** `agent:cancelTurn`/`agent:cancelSessionTurn`/`agent:terminateSession`/`agent:revokeSessionGrant`/`agent:closeAllSessions` 不校验调用窗口；`agent:resolveApproval` 仅对 `agent:startSession` 建立过绑定的会话生效，而重启后 `resumeSession` 只恢复本地状态、不重建绑定，故恢复会话的审批可由任意窗口决定。单窗口下不可利用，多窗口下语义不一致。
+
+**B10（P3）`pipeline.test.ts` 时长断言存在理论 flaky 风险，本轮未复现。** 断言 `durationMs >= 10`，而 `durationMs` 用小数 `performance.now()` 差值，`setTimeout(10)` 的时钟域与 performance 时钟存在亚毫秒偏差；连续 12 次单跑全绿，未观察到 9.x。建议改 `toBeGreaterThanOrEqual(9)` 或去掉绝对值断言。
+
+### 9.2.1 关键原文摘录（对应上节结论）
+
+`src/main/agent/runtime/approval/bash-readonly.ts` → `tokenize()`（B1：只识别 `$(`/反引号；`\`+换行被拼进 token；`{`/`}` 从未处理）：
+```ts
+// 双引号内命令替换/反引号仍然生效
+if (ch === '$' && command[i + 1] === '(') substitution = true
+if (ch === '`') substitution = true
+current += ch
+i += 1
+continue
+...
+if (ch === '\\' && i + 1 < len) {
+  current += command[i + 1]
+  i += 2
+  continue
+}
+if (ch === '$' && command[i + 1] === '(') {
+  substitution = true
+```
+第 102 行把 `\`+换行原样拼进 token（shell 会删除该续行），第 90/107 行只识别 `$(`，`$VAR` 落入普通字符分支；花括号 `{`/`}` 全文件无处理。
+
+`src/main/agent/runtime/process/reaper.ts` → `killRegistered()`（B6：签名放宽路径不要求内容证据）：
+```ts
+const ownGroupLeader =
+  identity.pgid !== undefined &&
+  identity.pgid === identity.pid &&
+  current !== undefined &&
+  current.pgid === identity.pid
+const structurallyBound = trust === 'trusted' && proof.matched.includes('startedAt') && ownGroupLeader
+if (!proof.proved && !structurallyBound) {
+  unresolved.push(proof)
+  continue
+}
+```
+
+`src/main/agent/runtime/runtime.ts` → `runNode()` finally（B3：无条件写终态，无 CAS）：
+```ts
+this.repo.updateTurnStatus(
+  turn.id,
+  finalStatus,
+  finalStatus === 'completed'
+    ? { endedAt: this.now(), output: { finalStatus, finalText } }
+    : { endedAt: this.now(), failureClass: finalStatus === 'cancelled' ? 'aborted' : 'runtime' },
+  this.now(),
+)
+```
+
+`src/main/agent/runtime/runtime.ts` → `cancelTurn()`（B3：慢取消期间完成后仍会覆盖为 cancelled）：
+```ts
+const turn = this.repo.getTurn(turnId)
+if (!turn || TERMINAL.includes(turn.status)) return false
+this.repo.updateTurnStatus(turnId, 'cancelling', undefined, this.now())
+...
+if (driver) {
+  try { await driver.cancel(this.requestFromTurn(turn)) } catch {}
+}
+this.repo.abortOpenSteps(turnId, this.now())
+this.repo.updateTurnStatus(turnId, 'cancelled', { endedAt: this.now(), failureClass: 'aborted', output: { reason } }, this.now())
+```
+
+`src/main/agent/runtime/runtime.ts` → `reconcileOnStartup()`（B5：先 orphan 全部在途 turn，再统一 deny）：
+```ts
+const planned = planRecovery(this.repo)
+applyRecoveryPlan(this.repo, planned)
+assertNoDangling(this.repo)
+const sweptExpired = this.approvals.sweepExpired()
+...
+// P1-3：重启后旧 pending 审批已无人能兑现 → 统一 deny（decided_by=startup），
+// 且不再推 UI；只有所属 turn 仍存活的审批才会重推。
+const reconciled = this.approvals.reconcileStartup()
+```
+配合 `repository.applyRecoveryPlan()` 的 `case 'abort_turn'` 会把 `running/waiting_approval/cancelling` 写成 `orphaned`，因此 `reconcileStartup` 的 `isFulfillable()` 对所有重启前 pending 都返回 false，`replayed` 恒为空。
+
+`src/main/agent/runtime/db/repository.ts` → `applyRecoveryPlan()`（B5 的前置动作）：
+```ts
+case 'abort_turn':
+  if (!plan.turnId) return
+  this.abortOpenSteps(plan.turnId, now)
+  for (const outcome of plan.stepOutcomes ?? []) {
+    this.setStepDisposition(outcome.stepId, outcome.disposition)
+    if (outcome.disposition === 'completed') {
+      this.updateStepStatus(outcome.stepId, 'done', { endedAt: now, resultRef: 'recovery:snapshot-match' }, now)
+    }
+  }
+  this.updateTurnStatus(plan.turnId, 'orphaned', { endedAt: now, failureClass: 'crash' }, now)
+```
+
+`src/main/agent/runtime/__tests__/helpers/test-db.ts` → `openTestDb()`（B4：干净克隆无回退模块）：
+```ts
+const direct = tryConstructor('better-sqlite3')
+const fallback = path.resolve(process.cwd(), 'spikes/agent-core/node_modules/better-sqlite3')
+const candidates = [direct, tryConstructor(fallback)].filter((item): item is DatabaseConstructor => item !== null)
+...
+throw new Error(
+  'No Node-ABI better-sqlite3 available. Root module targets Electron ABI; ' +
+    'spikes/agent-core/node_modules/better-sqlite3 is the expected local fallback.',
+)
+```
+
+`src/main/ipc/agent.ts` → `agent:cancelTurn` / `agent:resolveApproval`（B9：前者无窗口归属，后者的绑定仅对 startSession 建过的会话生效）：
+```ts
+typedHandle('agent:cancelTurn', async (_, turnId) => {
+  if (typeof turnId !== 'string' || turnId.length === 0) {
+    throw new IpcError('turnId must be a non-empty string', ErrorCode.IPC_INVALID_ARGUMENT)
+  }
+  return runtime.cancelTurn(turnId)
+})
+...
+const boundSender = sessionWindowBindings.get(input.sessionId)
+if (boundSender !== undefined && boundSender !== senderId) {
+  if (!isSenderAlive(boundSender)) {
+    sessionWindowBindings.set(input.sessionId, senderId)
+  } else {
+    throw new AgentRuntimeError(...)
+  }
+}
+```
+
+### 9.3 对前轮结论的独立复核表
+
+| 前轮结论 | 本轮判定 | 本轮依据 |
+| --- | --- | --- |
+| `c11bab8` 长选项前缀缩写已阻断 `file --compile` 绕过 | **推翻** | 字面缩写确实 `ask`（`--co/--compil/--c`），但 `$UNSET`/花括号/ANSI-C/续行四类变体均 `allow` 并实测生效；见 9.1 |
+| `file -C/-bC`、`rg -z/-nz` 短选项簇已覆盖 | 确认 | 实测 `file -bC`、`rg -nz` 均 `ask`；但同属 9.1 根因可被展开绕过，覆盖不等于阻断 |
+| `git grep` 整体移出白名单 | 确认 | `git grep TODO`、`git -iOcat TODO` 均 `ask` |
+| `node --check` 严格形态 | 确认 | `node --check a.js` allow；带 `-r/--import` 均 `ask` |
+| `--show-signature` 危险参数 | 确认 | `git log --show-signature -1` 为 `ask` |
+| `git -c` 用 `requiresAssignment` 避免误判 | 确认 | `git -c core.pager=cat status` ask；`git -ccore.pager=cat` ask；`git log -c -1` allow |
+| `git help` 收敛 | **部分** | `git help status` ask；裸 `git help` 与 `git <sub> --help` 仍 allow（B8） |
+| 会话级授权与写类工具绑定（P0 阻断已修） | 确认 | `decide()` 用 `isWriteScopedTool` 拒绝非写类授予；`matchSessionGrant` 再次校验写类；Bash 恒 `interactive`/单向 |
+| 成本双记已修 | 确认（有残余窗口） | `recordAdapterUsage` 在 `hasActiveTurn` 时丢弃 legacy 用量；但 kernel 标记在 `runNode` finally 释放，迟到的 legacy 事件理论上仍可双记，未复现 |
+| `run.started` 续接锚点保留 | 确认 | 保留 SQL 显式排除 `RESUME_ANCHOR_EVENT_TYPE`；`getLatestBackendSessionId` 只读该类型 |
+| 内核派发幂等键含 run/graph/attempt 且跨会话隔离 | 确认 | `dispatched = ${agentSessionId}:${runId|kernel:session:dispatch}`，`findTurnByIdempotencyKey` 同时按 session 过滤 |
+| `resolveApproval` 归属校验 | 部分 | 有窗口绑定与 session/turn 校验；恢复会话无绑定（B9） |
+| `agent:runNode` 删除，无 renderer 直通执行路径 | 确认 | `src/main/ipc` 与 preload 均无该 handler；其余 `agent:*` 无执行型副作用 |
+| 173 失败均为 `better-sqlite3` ABI | 确认（基线可复现性另计） | 95 条 `NODE_MODULE_VERSION 130`，5 条为 setup 失败后的 `Cannot read ... 'close'` 级联，无业务断言失败；见 9.5 |
+| 正常完成只 forget 不 kill、不裸 PID 回收 | 确认 | `runNode` 正常路径仅 `forgetProcess`；`killRegistered` 需 `proveOwnership`；启动清扫只对 `executor_pid` 且无法证明时告警 |
+| 跨重启 ≥2 证据（含内容证据） | **部分** | 签名放宽路径见 B6 |
+| evidence/spikes 提交卫生 | 确认（有非阻断项） | 无密钥、无 `node_modules`、`.db` 已 ignore；`spikes` 文档含本机绝对路径（用户名可见） |
+| 当前版本可发布 | **推翻** | B1 阻断 |
+
+### 9.4 `verification-ledger.md` 未验证项复核
+
+- U1/U2/U3/U5/U6/U8/U9/U11/U12/U13/U16：本轮未做真机验证，仍按 ledger 保持「开放」；其中 U14 在 ledger 自身标注「未知」，本轮未取得新证据，仍为未知。
+- U10（会话恢复后授权不继承）：**已闭合**，依据为 `agent-realdevice-verification.md` 的「不继承授权 通过」与 §15 闭合记录；ledger 未同步（B7）。
+- U15（macOS 残留清理）：与前轮一致，属设计承诺；本轮静态复核 `proveOwnership`/`killRegistered` 路径与文档一致，但未做真实崩溃注入。
+- 结论：ledger 中除 U10 外没有「已被真机验证但台账仍写未验证」的项；不要以「文档说已验证」替代真机证据。
+
+### 9.5 测试与提交卫生
+
+- `npx tsc --noEmit`：exit 0，无输出。
+- 全量 `npx vitest run`：`3094 passed / 173 failed`，失败文件共 26 个，与基线一致。首行报错归类：95 处 `NODE_MODULE_VERSION 130 vs 115`，5 处为 setup 失败后的 `Cannot read properties of undefined (reading 'close')` 级联；日志中未出现 `AssertionError`/`expected ... to` 类业务断言失败（173 与 100 的差值来自同一测试的重复报错行，不是另一类失败）。
+- 定向套件（`session-lock` / `run-node` / `approval-gateway` / `approval-startup-reconcile` / `recovery` / `cost-ledger`）全绿。
+- 两个由本轮临时编写的复现用 vitest 文件（取消竞态、同幂等键并发）在取证后已删除，`git status` 回到空；同幂等键 + 不同 node 的并发派发实测第二个 `SESSION_BUSY`，锁语义符合约定。
+- `pipeline.test.ts` 连续 12 次单跑未失败（B10 仅理论风险）。
+- 提交卫生：HEAD 中 `spikes/` 123 文件、`docs/architecture/evidence/` 154 文件（13.6 MB），无 >2 MB 单文件、无 `node_modules`、无密钥/凭据模式、无 `Authorization` 头；`.db` 未被跟踪且 `.gitignore` 覆盖；`spikes` 文档含本机绝对路径 `/Users/zhumingchen/...`，属非阻断的卫生项。
+
+### 9.6 冻结后复算
+
+- HEAD 复算仍为 `9ef5c57a0465530d5434744da6a949280fa7d734`；`git status --short` 为空；9.0 表中 12 个源码/文档文件 sha256 逐字节复算一致，无基线漂移。
+- 唯一变化是本审计文件自身（写入前 `b0b4c26d…`，写入后按定义变化，不计为漂移）。
+- 本轮未修改源码、未 commit、未 push；`spikes/` 未改动。
+
+# 修复记录（第七次终审后，基线 `9ef5c57`）
+
+## B1（P0）：tokenize 未建模 shell 展开 → 修代码
+
+`lex()` 增加 `expansion / brace / continuation / backslash / glob / tilde` 六个标记；`evaluateBashPolicy` 在危险参数判定之后、白名单规则之前，遇任一标记即 ask：
+
+- 单引号外任何 `$`（含 `${}`、`$'...'`、`$"..."`、`$#`/`$?`/`$@`）→ `shell-expansion`；
+- 单引号外 `{`/`}` → `shell-brace`；
+- 反斜杠+换行 → `shell-continuation`；反斜杠转义空白/`-`/`${}`/glob/引号等语义字符 → `shell-backslash`；
+- 单引号外 `*`/`?`/`[` → `shell-glob`；token 首或 `=`/`:` 后的 `~` → `shell-tilde`。
+
+**glob / tilde 的取舍**：两者都能在运行时把字面 token 换成目录内容或家目录路径，且无法静态解析（`*` 甚至可能展开出名为 `-delete` 的文件，使 `find . *` 变成删除），因此按「无法静态解析就 ask」纳入；代价是 `rg TODO *` 会多弹一次。引号内的 glob/tilde 不展开，保持 allow（`find . -name "*.ts"` 仍 allow）。
+
+**修复前会失败**：临时把 `shellExpansionVerdict` 的判定关掉后，新增用例首个断言 `rg --pre$UNSET=/bin/rm TODO .` 得到 `allow / rg`（期望 `ask / shell-expansion`）。还原后 24 passed。
+
+六条原始写法全部断言 ask（其中两条因先命中已有危险参数，规则名不同但仍 ask）：
+
+| 复审写法 | 判定 |
+|---|---|
+| `rg --pre$UNSET=/bin/rm TODO .` | `shell-expansion` |
+| `git diff --output$UNSET=/tmp/out.diff` | `shell-expansion` |
+| `file --compil$UNSET -m t.magic` | `shell-expansion` |
+| `file $'\x2d\x2d\x63\x6f\x6d\x70\x69\x6c\x65' -m t.magic` | `shell-expansion` |
+| `find . {-delete,-delete}` | `shell-brace` |
+| `file {--comp,ile} -m t.magic` | `shell-brace` |
+| `file --comp\` + 换行 + `ile -m t.magic` | `file-compile`（续行拼成精确标志，先命中危险参数） |
+| `file \-\-compile -m t.magic` | `file-compile`（同上） |
+| `cat a\ b`（转义空白改变 token 边界） | `shell-backslash` |
+| `rg TODO *` / `cat ~/.zshrc` | `shell-glob` / `shell-tilde` |
+
+反向对照：`rg '$HOME' file`、`grep '$PATH' file`、`find . -name "*.ts"`、`ls -la`、`git log --oneline -5` 仍 allow。
+
+## B2（P1）：仓库配置驱动的执行 → 修代码（未移除白名单）
+
+新增策略侧配置探针（未把 `git diff/log/show/status` 移出白名单，避免显著增加弹窗）：
+
+- 从 cwd 向上定位 `.git`（支持 worktree 的 `gitdir:` 文件与 `commondir`）；
+- 递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理）；
+- 读取 `GIT_CONFIG_GLOBAL`、`~/.gitconfig`、XDG、系统配置（进程内缓存一次）；
+- 任一文件出现 `[diff] external`、`[diff "x"] textconv`、`[core] fsmonitor` 的非空值 → `git-repo-config-exec` ask；
+- 文件存在但不可读 → fail-closed（按危险处理）；配置干净 → 保持 allow。
+
+覆盖子命令：`diff` / `log` / `show` / `status` / `blame` / `whatchanged`。用例用临时 `.git/config` 验证 `textconv`、`include` 里的 `fsmonitor`、以及干净仓库仍 allow。
+
+已知边界：`includeIf` 条件未求值（读过但可能不生效 → 只会多弹）；配置值不做完整 git 语法求值（只做键值行扫描）；`git -C` / `--git-dir` 本身不在白名单（会 ask），不存在借道未扫描仓库的路径。
+
+## B3（P2）：取消/完成终态双向竞态 → 修代码
+
+`repository.finalizeTurnStatus()` 改为 CAS：`WHERE id = ? AND status NOT IN ('completed','failed','cancelled','orphaned')`，只有第一次终态写入生效。`runNode` 的 finally 与 `cancelTurn` 都改用它；若 runNode 的 `completed` 因取消先落而 CAS 失败，再用 `mergeTurnOutput()` 补记真实 `finalText`（不改状态/结束时间）。
+
+**修复前会失败**：临时去掉 CAS 守卫后，两条新用例分别得到 `completed`（期望 `cancelled`）与 `cancelled`（期望 `completed`），且后者 `output` 被 `{reason}` 覆盖。还原后两条通过。
+
+## B4：基线复现 → 改文档（不 skip）
+
+全量 173 条 ABI 失败依赖未入库的 `spikes/agent-core/node_modules/better-sqlite3`。选择在 `agent-architecture.md §16` 写清复现步骤（`spikes/agent-core` 安装依赖后回仓库根跑全量），不为 26 个 DB 文件逐个加 skip —— 那会把真实回归一起静默掉。
+
+## B5：§7.4 承诺 → 改文档（不改代码）
+
+实际行为是「启动先扫过期 pending → 其余统一 deny(`decided_by='startup'`) → 不推 UI、`replayed` 恒空」；`mode='unattended'` 的 30s 分支无生产调用方，不可达。§7.4 与 V7 表述已降级为实际行为，并明确标注「改的是承诺，不是代码」。
+
+## P3
+
+- reaper 的结构性绑定例外已在 §6.5(b) 写明：仅对 HMAC 验签通过、`pgid===pid`、实时同组长、`startedAt` 匹配的身份生效；无签名/篡改记录仍须两项内容证据。**改的是合同表述**，代码维持。
+- `verification-ledger.md` U10 已更新为「已验证（单测）+ 已关闭」。
+- `git help` / `git --help` / `-h` / `<子命令> --help` 一律 `git-help` ask（`--version`/`-v` 仍 allow）；裸 `git help` 原 allow 已收紧。
+- `cancelTurn`/`terminateSession`/`revokeSessionGrant` 三个 IPC 未校验调用窗口归属：同 uid renderer 只能取消/终止本机 agent 会话，属 DoS/UX 面，非权限提升；本轮不改，风险**中低**。
+
+## 校验
+
+- 定向：`approval` + `run-node` 共 47 passed。
+- `tsc --noEmit` / `eslint src` / `vite build` 全过。
+- 全量：`173 failed / 3098 passed / 93 skipped`（3364），失败 26 文件与基线集合一致；日志无 `AssertionError`，95 处 ABI 主错 + 级联，属既有 `better-sqlite3` ABI。
+

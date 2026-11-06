@@ -652,6 +652,47 @@ export class AgentRepository {
       )
   }
 
+  /**
+   * 终态 CAS：只有第一次终态写入生效（返回 true）。
+   * 取消与 driver 完成可能在两个方向竞态，用 status 守卫让先到者胜出；
+   * 后到者不得把 completed 的真实最终文本覆盖成 { reason }，也不得把 cancelled 改回 completed。
+   */
+  finalizeTurnStatus(
+    turnId: string,
+    status: TurnStatus,
+    extra?: { endedAt?: number; output?: Record<string, unknown>; errorCode?: string; failureClass?: string },
+    now = Date.now(),
+  ): boolean {
+    const ended = extra?.endedAt ?? (TERMINAL_TURN_STATUSES.includes(status) ? now : null)
+    const result = this.db
+      .prepare(
+        `UPDATE agent_turns
+            SET status = ?,
+                ended_at = COALESCE(?, ended_at),
+                output_json = COALESCE(?, output_json),
+                error_code = COALESCE(?, error_code),
+                failure_class = COALESCE(?, failure_class)
+          WHERE id = ?
+            AND status NOT IN ('completed','failed','cancelled','orphaned')`,
+      )
+      .run(
+        status,
+        ended,
+        extra?.output ? JSON.stringify(extra.output) : null,
+        extra?.errorCode ?? null,
+        extra?.failureClass ?? null,
+        turnId,
+      )
+    return result.changes > 0
+  }
+
+  /** 终态已由先到者写入时，仍可补记 driver 的真实最终文本（不改 status / ended_at）。 */
+  mergeTurnOutput(turnId: string, output: Record<string, unknown>): void {
+    this.db
+      .prepare('UPDATE agent_turns SET output_json = ? WHERE id = ?')
+      .run(JSON.stringify(output), turnId)
+  }
+
   countActiveTurnsByNode(nodeId: string, branchKey = ''): number {
     const row = this.db
       .prepare(

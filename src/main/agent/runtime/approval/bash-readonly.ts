@@ -17,6 +17,9 @@
  * 也不改变 shell 本身的语义 —— 被 ask 的命令一旦批准，仍以用户权限原样执行。
  */
 
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { RiskLevel } from '@shared/types/agent-runtime'
 
 export type BashPolicyVerdict = 'allow' | 'ask' | 'blocked-empty'
@@ -33,6 +36,18 @@ export interface BashPolicyDecision {
   risk: RiskLevel
 }
 
+export interface BashPolicyOptions {
+  /** 评估时的工作目录：决定读取哪个仓库的 `.git/config`；默认 process.cwd() */
+  cwd?: string
+  /** 是否同时读取用户/系统 git 配置；默认 true（测试可关闭以保证确定性） */
+  includeGlobalGitConfig?: boolean
+}
+
+interface PolicyContext {
+  cwd: string
+  includeGlobalGitConfig: boolean
+}
+
 /** 白名单/只读决定的统一风险。 */
 const LOW: RiskLevel = 'low'
 const MEDIUM: RiskLevel = 'medium'
@@ -45,15 +60,42 @@ interface Lexed {
   metachars: string[]
   /** 是否出现命令替换 `$()` 或反引号 */
   substitution: boolean
+  /** 单引号外出现 `$`：`$VAR` / `${...}` / `$'...'` / `$"..."` / `$#` 等，运行时会改写参数 */
+  expansion: boolean
+  /** 单引号外出现 `{` 或 `}`：brace expansion 与 `${}` 都覆盖 */
+  brace: boolean
+  /** 反斜杠 + 换行：续行会把两段拼成运行时参数 */
+  continuation: boolean
+  /** 单引号外反斜杠转义了会改变参数语义的字符（`\-`、`\,`、空白等） */
+  backslash: boolean
+  /** 单引号外出现 `*` / `?` / `[`：glob 由目录内容决定，静态不可知 */
+  glob: boolean
+  /** token 首或 `=`/`:` 之后的 `~`：展开为家目录 */
+  tilde: boolean
   /** 引号未闭合等无法安全解析 */
   unparseable: boolean
 }
+
+/**
+ * 反斜杠转义这些字符会改变参数语义（拼出标志、制造分隔、阻止展开等），
+ * 单引号外一律 ask。普通字母前的反斜杠（`\a` = `a`）不改变语义，不在此列。
+ */
+const BACKSLASH_SEMANTIC_CHARS = new Set([
+  ' ', '\t', '\n', '\r', '-', '{', '}', '*', '?', '[', ']', '~', '$', '"', "'",
+  '`', '\\', '(', ')', ';', '&', '|', '<', '>', '#', '!', '=',
+])
 
 /** `&&` / `||` 识别为两个字符的复合操作符，避免误判。 */
 function lex(command: string): Lexed {
   const tokens: string[] = []
   const metachars: string[] = []
   let substitution = false
+  let expansion = false
+  let brace = false
+  let continuation = false
+  let backslash = false
+  let glob = false
+  let tilde = false
   let current = ''
   let quote: "'" | '"' | null = null
   let i = 0
@@ -82,13 +124,25 @@ function lex(command: string): Lexed {
         continue
       }
       if (ch === '\\' && i + 1 < len) {
-        current += command[i + 1]
+        const next = command[i + 1]
+        if (next === '\n' || next === '\r') {
+          continuation = true
+          i += 2
+          continue
+        }
+        if (BACKSLASH_SEMANTIC_CHARS.has(next)) backslash = true
+        current += next
         i += 2
         continue
       }
-      // 双引号内命令替换/反引号仍然生效
-      if (ch === '$' && command[i + 1] === '(') substitution = true
+      // 双引号内 $ / 反引号仍然展开；花括号本身不展开，但按「单引号外一律 ask」
+      // 的保守口径仍标记（宁可多弹，也不漏 `${}` 的拼接写法）。
+      if (ch === '$') {
+        expansion = true
+        if (command[i + 1] === '(') substitution = true
+      }
       if (ch === '`') substitution = true
+      if (ch === '{' || ch === '}') brace = true
       current += ch
       i += 1
       continue
@@ -100,18 +154,46 @@ function lex(command: string): Lexed {
       continue
     }
     if (ch === '\\' && i + 1 < len) {
-      current += command[i + 1]
+      const next = command[i + 1]
+      if (next === '\n' || next === '\r') {
+        continuation = true
+        i += 2
+        continue
+      }
+      if (BACKSLASH_SEMANTIC_CHARS.has(next)) backslash = true
+      current += next
       i += 2
       continue
     }
-    if (ch === '$' && command[i + 1] === '(') {
-      substitution = true
+    if (ch === '$') {
+      expansion = true
+      if (command[i + 1] === '(') substitution = true
       current += ch
       i += 1
       continue
     }
     if (ch === '`') {
       substitution = true
+      current += ch
+      i += 1
+      continue
+    }
+    if (ch === '{' || ch === '}') {
+      brace = true
+      current += ch
+      i += 1
+      continue
+    }
+    if (ch === '*' || ch === '?' || ch === '[') {
+      glob = true
+      current += ch
+      i += 1
+      continue
+    }
+    if (ch === '~') {
+      // 只有 token 首或赋值/路径分隔之后的 ~ 会被 shell 展开。
+      const previous = current[current.length - 1]
+      if (current.length === 0 || previous === '=' || previous === ':') tilde = true
       current += ch
       i += 1
       continue
@@ -179,10 +261,32 @@ function lex(command: string): Lexed {
   }
 
   if (quote) {
-    return { tokens: [], metachars, substitution, unparseable: true }
+    return {
+      tokens: [],
+      metachars,
+      substitution,
+      expansion,
+      brace,
+      continuation,
+      backslash,
+      glob,
+      tilde,
+      unparseable: true,
+    }
   }
   flush()
-  return { tokens, metachars, substitution, unparseable: false }
+  return {
+    tokens,
+    metachars,
+    substitution,
+    expansion,
+    brace,
+    continuation,
+    backslash,
+    glob,
+    tilde,
+    unparseable: false,
+  }
 }
 
 /** 会启动子进程 / 改变执行环境的「逃逸」命令：出现在任何位置都要审批。 */
@@ -299,6 +403,160 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 }
 
 
+/**
+ * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
+ * `diff.*.textconv`、`diff.external`（diff/log/show/blame/whatchanged）
+ * 与 `core.fsmonitor`（status 等）。配置命中即 ask。
+ */
+const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
+  'diff', 'log', 'show', 'status', 'blame', 'whatchanged',
+])
+
+/** git 配置值里的行内注释：`#`/`;` 只有在行首或前有空白时才是注释。 */
+function stripGitConfigComment(value: string): string {
+  let quoted = false
+  for (let index = 0; index < value.length; index += 1) {
+    const ch = value[index]
+    if (ch === '"') quoted = !quoted
+    else if (!quoted && (ch === '#' || ch === ';') && (index === 0 || /\s/.test(value[index - 1]))) {
+      return value.slice(0, index).trim()
+    }
+  }
+  return value.trim()
+}
+
+/** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
+function gitConfigTextExecutes(text: string): boolean {
+  let section = ''
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue
+    const sectionMatch = /^\[\s*([^\]]+?)\s*\]$/.exec(line)
+    if (sectionMatch) {
+      section = sectionMatch[1].toLowerCase()
+      continue
+    }
+    const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(line)
+    if (!kv) continue
+    const key = kv[1].toLowerCase()
+    const value = stripGitConfigComment(kv[2])
+    if (!value) continue
+    const sectionName = section.split(/\s+/)[0]
+    if (sectionName === 'diff' && (key === 'textconv' || key === 'external')) return true
+    if (sectionName === 'core' && key === 'fsmonitor' && value.toLowerCase() !== 'false') return true
+  }
+  return false
+}
+
+const MAX_GIT_CONFIG_INCLUDE_DEPTH = 6
+
+/** 配置文件自身 + 递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理）。 */
+function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): string[] {
+  if (depth > MAX_GIT_CONFIG_INCLUDE_DEPTH || seen.has(file)) return []
+  seen.add(file)
+  const paths = [file]
+  if (!existsSync(file)) return paths
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return paths
+  }
+  let section = ''
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#') || line.startsWith(';')) continue
+    const sectionMatch = /^\[\s*([^\]]+?)\s*\]$/.exec(line)
+    if (sectionMatch) {
+      section = sectionMatch[1].toLowerCase()
+      continue
+    }
+    if (!section.startsWith('include')) continue
+    const kv = /^path\s*=\s*(.*)$/i.exec(line)
+    if (!kv) continue
+    let includePath = stripGitConfigComment(kv[1]).replace(/^"|"$/g, '')
+    if (!includePath) continue
+    if (includePath.startsWith('~/')) includePath = join(homedir(), includePath.slice(2))
+    else if (!isAbsolute(includePath)) includePath = resolve(dirname(file), includePath)
+    paths.push(...gitConfigPaths(includePath, depth + 1, seen))
+  }
+  return paths
+}
+
+/** 任一配置文件登记了执行型配置即危险；文件存在但不可读按危险处理（fail-closed）。 */
+function gitConfigFilesExecute(files: string[]): boolean {
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    try {
+      if (gitConfigTextExecutes(readFileSync(file, 'utf8'))) return true
+    } catch {
+      return true
+    }
+  }
+  return false
+}
+
+/** 从 cwd 向上找 `.git`（支持 worktree 的 gitdir 文件）。 */
+function findGitDir(root: string): string | null {
+  let dir = resolve(root)
+  for (let depth = 0; depth < 30; depth += 1) {
+    const dotGit = join(dir, '.git')
+    if (existsSync(dotGit)) {
+      try {
+        if (!statSync(dotGit).isFile()) return dotGit
+        const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))
+        if (!match) return null
+        const gitDir = match[1].trim()
+        return isAbsolute(gitDir) ? gitDir : resolve(dir, gitDir)
+      } catch {
+        return null
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+/** 仓库配置（worktree 走 commondir）+ 递归 include。 */
+function repoGitConfigFiles(gitDir: string): string[] {
+  const files = gitConfigPaths(join(gitDir, 'config'))
+  try {
+    const common = readFileSync(join(gitDir, 'commondir'), 'utf8').trim()
+    if (common) {
+      const commonDir = isAbsolute(common) ? common : resolve(gitDir, common)
+      files.push(...gitConfigPaths(join(commonDir, 'config')))
+    }
+  } catch {
+    // 非 worktree，没有 commondir
+  }
+  return files
+}
+
+let globalGitConfigCache: boolean | null = null
+
+/** 用户/系统配置只读一次；它们在一次进程生命周期内基本不变。 */
+function globalGitConfigExecutes(): boolean {
+  if (globalGitConfigCache !== null) return globalGitConfigCache
+  const candidates = [
+    process.env.GIT_CONFIG_GLOBAL,
+    join(homedir(), '.gitconfig'),
+    join(process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'), 'git', 'config'),
+    process.env.GIT_CONFIG_SYSTEM,
+    '/etc/gitconfig',
+  ].filter((value): value is string => Boolean(value))
+  globalGitConfigCache = candidates.some((file) => gitConfigFilesExecute(gitConfigPaths(file)))
+  return globalGitConfigCache
+}
+
+function gitRepoConfigExecutes(root: string, includeGlobal: boolean): boolean {
+  if (includeGlobal && globalGitConfigExecutes()) return true
+  const gitDir = findGitDir(root)
+  if (!gitDir) return false
+  return gitConfigFilesExecute(repoGitConfigFiles(gitDir))
+}
+
 /** 下载内容直接交给解释器执行：最高风险（只认命令位，避免把引号里的示例文本当成真实执行）。 */
 const FETCH_AND_EXEC = /^(?:sudo\s+)?(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|fish|python[0-9.]*|node|perl|ruby)\b/
 
@@ -329,7 +587,7 @@ function writeCommandRisk(name: string, args: string[]): RiskLevel {
   return HIGH
 }
 
-type RuleEvaluator = (args: string[]) => RuleVerdict
+type RuleEvaluator = (args: string[], ctx: PolicyContext) => RuleVerdict
 
 function simpleRule(name: string): RuleEvaluator {
   return () => allowRule(name)
@@ -392,18 +650,26 @@ function tagRule(args: string[]): RuleVerdict {
   return askRule('git-tag-write', 'git tag 仅放行列举（-l/--list/-n）', HIGH)
 }
 
-function gitRule(args: string[]): RuleVerdict {
+function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
   const sub = args[0]
   if (!sub) return askRule('git:no-subcommand', '未指定 git 子命令，需人工审批')
-  // 只放行「单独出现」的元信息形态。`git help <cmd>` / `git --help <cmd>` 会调用
-  // man/browser（`git help --web` 还会按仓库/用户配置执行 browser 命令），必须走审批。
-  if (args.length === 1 && (sub === '--version' || sub === '-v' || sub === '--help' || sub === '-h' || sub === 'help')) {
-    return allowRule('git:meta')
+  // 纯版本输出不拉起其它程序，保留放行。
+  if (args.length === 1 && (sub === '--version' || sub === '-v')) return allowRule('git:meta')
+  // help 形态会调用 man/browser/pager（`git help --web` 还会执行配置的 browser），一律 ask。
+  // 覆盖裸 `git help` / `git --help` / `git -h` 以及 `git log --help` / `git diff -h`。
+  if (
+    sub === 'help' ||
+    sub === '--help' ||
+    sub === '-h' ||
+    args.slice(1).includes('--help') ||
+    args.slice(1).includes('-h')
+  ) {
+    return askRule('git-help', 'git help/--help 会调用 man 或 pager，可能执行外部程序', MEDIUM)
   }
   // `--no-pager` 只关闭分页，不执行任何外部程序；`-p/--paginate` 相反：强制调用 core.pager，
   // 而 core.pager 可来自仓库/用户配置。注意 `-p` 必须在子命令之前才是全局分页选项
   //（`git log -p` 是 patch，不影响）。
-  if (sub === '--no-pager') return gitRule(args.slice(1))
+  if (sub === '--no-pager') return gitRule(args.slice(1), ctx)
   if (sub === '-p' || sub === '--paginate') {
     return askRule('git-paginate', 'git -p/--paginate 会强制调用 core.pager，可能执行外部程序', HIGH)
   }
@@ -412,7 +678,21 @@ function gitRule(args: string[]): RuleVerdict {
   if (sub === 'grep') {
     return askRule('git-grep', 'git grep 支持 -O/--open-files-in-pager 执行外部 pager，不纳入只读白名单', CRITICAL)
   }
-  if (GIT_READ_SUBCOMMANDS.has(sub)) return allowRule(`git:${sub}`)
+  if (GIT_READ_SUBCOMMANDS.has(sub)) {
+    // 仓库/用户配置可让 diff/log/show 执行 textconv/external，让 status 执行 fsmonitor。
+    // 一次被批准的 Write 改写 .git/config 即可换取零审批执行，因此读配置后再决定。
+    if (
+      GIT_CONFIG_EXEC_SUBCOMMANDS.has(sub) &&
+      gitRepoConfigExecutes(ctx.cwd, ctx.includeGlobalGitConfig)
+    ) {
+      return askRule(
+        'git-repo-config-exec',
+        '仓库或用户 git 配置含 textconv / diff.external / fsmonitor，git 会执行外部程序',
+        HIGH,
+      )
+    }
+    return allowRule(`git:${sub}`)
+  }
   if (sub === 'branch') return branchRule(args.slice(1))
   if (sub === 'remote') return remoteRule(args.slice(1))
   if (sub === 'stash') return stashRule(args.slice(1))
@@ -552,8 +832,15 @@ function isFlagInShortCluster(command: string, arg: string, flag: string): boole
  * 评估一条 Bash 命令。返回值映射到 Claude PreToolUse 的 permissionDecision：
  * allow → 免弹直接执行；ask → 强制回到我们的审批网关；blocked-empty → 不放行（无内容可批）。
  */
-export function evaluateBashPolicy(rawCommand: unknown): BashPolicyDecision {
+export function evaluateBashPolicy(
+  rawCommand: unknown,
+  options?: BashPolicyOptions,
+): BashPolicyDecision {
   const command = typeof rawCommand === 'string' ? rawCommand.trim() : ''
+  const ctx: PolicyContext = {
+    cwd: options?.cwd ?? process.cwd(),
+    includeGlobalGitConfig: options?.includeGlobalGitConfig ?? true,
+  }
 
   if (!command) {
     return {
@@ -685,8 +972,70 @@ export function evaluateBashPolicy(rawCommand: unknown): BashPolicyDecision {
     }
   }
 
-  const verdict = rule(tokens.slice(1))
+  // 策略看到的是 shell 展开前的字面量。凡是静态无法确定的展开形态，一律 ask：
+  // 参数可能在运行时被拼成 `--compile` / `--pre=...` / `-delete` 等危险形态。
+  const shellExpansion = shellExpansionVerdict(lexed)
+  if (shellExpansion) {
+    return {
+      decision: 'ask',
+      rule: shellExpansion.rule,
+      reason: shellExpansion.reason,
+      command,
+      risk: shellExpansion.risk,
+    }
+  }
+
+  const verdict = rule(tokens.slice(1), ctx)
   return { decision: verdict.decision, rule: verdict.rule, reason: verdict.reason, command, risk: verdict.risk }
+}
+
+/** shell 展开/引号外构造的判定顺序：先信任度最低（运行时拼接）的形态。 */
+function shellExpansionVerdict(
+  lexed: Lexed,
+): { rule: string; reason: string; risk: RiskLevel } | null {
+  if (lexed.expansion) {
+    return {
+      rule: 'shell-expansion',
+      reason: '含 $ 展开（$VAR / ${...} / $\'...\' 等），实际参数在运行时才确定',
+      risk: HIGH,
+    }
+  }
+  if (lexed.continuation) {
+    return {
+      rule: 'shell-continuation',
+      reason: '含反斜杠续行，运行时会把多行拼接成一个参数',
+      risk: HIGH,
+    }
+  }
+  if (lexed.brace) {
+    return {
+      rule: 'shell-brace',
+      reason: '含花括号（brace expansion / ${}），实际参数在运行时才确定',
+      risk: HIGH,
+    }
+  }
+  if (lexed.backslash) {
+    return {
+      rule: 'shell-backslash',
+      reason: '反斜杠转义会改变参数语义（可拼出标志或制造分隔）',
+      risk: HIGH,
+    }
+  }
+  if (lexed.glob) {
+    return {
+      rule: 'shell-glob',
+      reason: '含未加引号的 glob（* / ? / [），参数由目录内容决定',
+      risk: HIGH,
+    }
+  }
+  if (lexed.tilde) {
+    return {
+      rule: 'shell-tilde',
+      reason: '含 ~ 展开，参数指向运行用户的家目录',
+      risk: MEDIUM,
+    }
+  }
+  return null
 }
 
 /**

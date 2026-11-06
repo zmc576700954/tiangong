@@ -560,7 +560,7 @@ export class AgentRuntime {
           if (finalStatus !== 'completed' && openSteps.length > 0) {
             this.repo.abortOpenSteps(turn.id, this.now())
           }
-          this.repo.updateTurnStatus(
+          const applied = this.repo.finalizeTurnStatus(
             turn.id,
             finalStatus,
             finalStatus === 'completed'
@@ -568,6 +568,10 @@ export class AgentRuntime {
               : { endedAt: this.now(), failureClass: finalStatus === 'cancelled' ? 'aborted' : 'runtime' },
             this.now(),
           )
+          // 取消已先写入终态时，状态保持 cancelled，但 driver 的真实最终文本不能丢。
+          if (!applied && finalStatus === 'completed') {
+            this.repo.mergeTurnOutput(turn.id, { finalStatus, finalText })
+          }
           this.repo.projectRunStatus(run.id, this.now())
 
           // P0-1：正常完成路径**不**做全量 reap；只清理内存登记（进程由适配器/OS 收尾）。
@@ -758,7 +762,13 @@ export class AgentRuntime {
       }
     }
     this.repo.abortOpenSteps(turnId, this.now())
-    this.repo.updateTurnStatus(turnId, 'cancelled', { endedAt: this.now(), failureClass: 'aborted', output: { reason } }, this.now())
+    // 终态 CAS：若 driver 已在慢取消期间完成并写入 completed，不得把状态与真实最终文本覆盖成 cancelled。
+    this.repo.finalizeTurnStatus(
+      turnId,
+      'cancelled',
+      { endedAt: this.now(), failureClass: 'aborted', output: { reason } },
+      this.now(),
+    )
     this.repo.projectRunStatus(turn.run_id, this.now())
     return true
   }

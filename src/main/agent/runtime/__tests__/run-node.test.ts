@@ -463,6 +463,88 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
+  it('阻断 B3：用户取消后 driver 迟到完成，不得把终态改回 completed', async () => {
+    let context: DriverExecuteContext | undefined
+    let resolveExecution: ((result: DriverExecuteResult) => void) | undefined
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, ctx) {
+        context = ctx
+        ctx.record([event(request, 1, 'tool.requested', { toolName: 'Bash', args: { command: 'sleep 300' } }, 'step-1')])
+        return new Promise<DriverExecuteResult>((resolve) => {
+          resolveExecution = resolve
+        })
+      },
+      async cancel() {
+        // 取消立刻返回；driver 在取消之后才迟到完成
+      },
+    }
+    const { repo, runtime } = setup(driver)
+
+    const pending = runtime.runNode(
+      request({ nodeId: 'n-race-a', agentSessionId: 'sess-race-a', idempotencyKey: 'k-race-a' }),
+    )
+    await waitFor(() => Boolean(context))
+    const turn = repo.findTurnByIdempotencyKey('sess-race-a:k-race-a')!
+    await runtime.cancelTurn(turn.id)
+
+    // 取消先写入终态，driver 这时才迟到完成
+    resolveExecution!({ status: 'completed', finalText: 'late done', completionSignal: 'backend-turn-completed' })
+    await pending
+
+    const final = repo.getTurn(turn.id)
+    expect(final?.status).toBe('cancelled')
+    // 真实最终文本补记进 output，不因取消而丢失
+    expect(final?.output_json).toContain('late done')
+    runtime.dispose()
+  })
+
+  it('阻断 B3：driver 已完成、取消卡在慢取消，不得覆盖 completed 与真实最终文本', async () => {
+    let started = false
+    let resolveExecution: ((result: DriverExecuteResult) => void) | undefined
+    let releaseCancel: (() => void) | undefined
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, ctx) {
+        started = true
+        ctx.record([event(request, 1, 'tool.requested', { toolName: 'Bash', args: { command: 'sleep 300' } }, 'step-1')])
+        return new Promise<DriverExecuteResult>((resolve) => {
+          resolveExecution = resolve
+        })
+      },
+      async cancel() {
+        // 慢取消：直到测试放行才返回
+        await new Promise<void>((resolve) => {
+          releaseCancel = resolve
+        })
+      },
+    }
+    const { repo, runtime } = setup(driver)
+
+    const pending = runtime.runNode(
+      request({ nodeId: 'n-race-b', agentSessionId: 'sess-race-b', idempotencyKey: 'k-race-b' }),
+    )
+    await waitFor(() => started)
+    const turn = repo.findTurnByIdempotencyKey('sess-race-b:k-race-b')!
+    const cancelling = runtime.cancelTurn(turn.id)
+    await waitFor(() => Boolean(releaseCancel))
+
+    // driver 先完成，runNode 写入 completed + finalText
+    resolveExecution!({ status: 'completed', finalText: 'real final', completionSignal: 'backend-turn-completed' })
+    await pending
+    expect(repo.getTurn(turn.id)?.status).toBe('completed')
+
+    // 再放行慢取消：CAS 让先到的 completed 胜出
+    releaseCancel!()
+    await cancelling
+    const final = repo.getTurn(turn.id)
+    expect(final?.status).toBe('completed')
+    expect(final?.output_json).toContain('real final')
+    runtime.dispose()
+  })
+
   it('keeps step rows from two consecutive turns of the same node (P0-3)', async () => {
     const driver = makeInstantDriver()
     const { repo, runtime } = setup(driver)

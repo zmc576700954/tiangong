@@ -597,7 +597,9 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 | `git grep`（任何参数） | 移出白名单 → ask | 见上，`-O` 家族无法靠枚举覆盖 |
 | `git -p` / `--paginate` | 新增 → ask | 强制 pager |
 | `git log/show --show-signature` | 新增 → ask（`git-show-signature`） | 会拉起 `gpg` 验证签名 |
-| `git help <cmd>` / `--help <cmd>` / `help -w/-m/-i` | 收紧为 ask | 调 man/browser；`--web` 会按仓库/用户配置执行 browser 命令 |
+| `git help` / `git --help`/`-h` / `<子命令> --help`/`-h` | 一律 → ask（`git-help`） | 调 man/pager；`--web` 会按配置执行 browser 命令 |
+| 单引号外的 `$` / `{` `}` / 反斜杠续行 / 语义转义 / unquoted glob / `~` | 一律 → ask（`shell-expansion` / `shell-brace` / `shell-continuation` / `shell-backslash` / `shell-glob` / `shell-tilde`） | 策略看到的是展开前字面量，运行时可能拼出危险参数 |
+| `git diff/log/show/status/blame/whatchanged` 且仓库/用户配置命中执行型键 | 一律 → ask（`git-repo-config-exec`） | 读 `.git/config`（含 include）与全局配置的 `diff.*.textconv` / `diff.external` / `core.fsmonitor` |
 | `rg --pre`、`rg -z`/`--search-zip` | 已在危险参数表 → ask | 逐文件执行外部程序 / 解压程序 |
 | `find -exec*`/`-delete`/`-fprint*`/`-fls` | 已在危险参数表 → ask | 执行 / 写盘 |
 | `node --check` | **仅严格形态 allow** | 只放行 `node --check <file>`（恰好两个参数）；多出任何参数一律 ask |
@@ -633,6 +635,18 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 需要显式 acknowledge 的过严面：`git diff --text` 是独立真实选项（不是 `--textconv`），会被前缀规则多弹一次；这属于安全侧成本，不是漏判。
 
 **`git -c` 按「必须带赋值」收紧**：`git` 全局 `-c` 的真实语义是 `-c <name>=<value>`，不带等号的 `-c` 是子命令选项（`git log -c` = combined diff，只读）。`DangerousArgSpec.requiresAssignment` 标记后，判定会同时看选项自身与紧邻的下一个 token：含 `=` 才按 `git-config-override` ask，否则回落子命令规则。实测 `git -c core.pager=cat status` / `git -ccore.pager=cat status` → ask，`git log -c -1` / `git diff -c` / `git show -c` → allow。缺少等号时 git 自身会报错，因此不会放走任何真实配置覆盖。
+
+**shell 展开必须先于白名单判定**：策略读取的是 shell 展开前的字面量，而真正执行的参数可能由运行时拼接而成。复审实测 `rg --pre$UNSET=/bin/rm TODO .`、`find . {-delete,-delete}`、`file --compil$UNSET -m t.magic`、`file {--comp,ile} -m t.magic`、`git diff --output$UNSET=/tmp/out.diff`、`file $'\x2d\x2d\x63...'`、`file --comp\<换行>ile` 均能绕过逐参数比对。因此改为「只要 token 无法静态解析就 ask」：
+
+- 单引号外出现任何 `$`（`$VAR`、`${...}`、`$'...'`、`$"..."`、`$#`/`$?`/`$@` 等）→ `shell-expansion`；
+- 单引号外出现 `{` 或 `}` → `shell-brace`（双引号内的花括号按保守口径同样 ask，虽然 bash 不在双引号内做 brace expansion）；
+- 单引号外反斜杠 + 换行 → `shell-continuation`；反斜杠转义空白/`-`/`${}`/glob/引号等会改变参数语义的字符 → `shell-backslash`（`\a` 这类不改变语义的普通字母不拦）；
+- 单引号外 `*` / `?` / `[` → `shell-glob`（参数由目录内容决定，可能展开出 `-delete` 等）；
+- token 首或 `=`/`:` 之后的 `~` → `shell-tilde`。
+
+顺序上先判危险参数再判展开：`find . -exec rm {} \;` 仍报 `find-dangerous`（`-exec` 优先），`file --comp\` + 换行拼出的 `--compile` 仍报 `file-compile`；其余展开形态分别报上面的规则。反向对照：单引号内不展开 —— `rg '$HOME' file`、`grep '$PATH' file` 仍 allow，`find . -name "*.ts"`（glob 在双引号内）仍 allow。
+
+**仓库/用户 git 配置驱动的执行（B2）**：`git diff` / `git log -p` / `git show` / `git status` / `git blame` / `git whatchanged` 会按配置执行 `diff.*.textconv`、`diff.external`、`core.fsmonitor`；一次被批准的 Write 改写 `.git/config` 即可换取零审批执行。策略侧现在会：从 cwd 向上定位 `.git`（支持 worktree 的 gitdir/commondir），递归 follows `include.path` / `includeIf.path`（条件不复判，按可能命中处理），并读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；任一文件出现上述键的非空值即 `git-repo-config-exec` ask。文件存在但不可读按危险处理（fail-closed）；无仓库或配置干净时保持 allow。全局配置在进程内只读一次缓存。
 
 
 **判定是「命令名 + 参数」两段式，不是命令名匹配**（`DANGEROUS_ARGS_BY_COMMAND` + `WHITELIST_COMMANDS`）：
@@ -901,7 +915,7 @@ M0 验收阈值据此收紧为「P99 < 0.1 ms」，不再保留原来的 5 ms �
 
 a) **同进程内（可验证）**：只对宿主自己 spawn、且持有真实句柄的进程按内存中的 `pid/pgid` 回收：`SIGTERM` → 500 ms → `SIGKILL`。异常退出路径回收**本轮已登记**的句柄（`finally` 中执行，M0 第二轮已补用例）；正常完成只 `forget`，不做启发式扫描。**Claude** 由宿主受控 `spawn(..., { detached: true })` 包裹 CLI，`pid/pgid/started_at/command` 当场可知，取消走本轮真实句柄（真机多数 `residual_risk=none`）。**Codex SDK** 取消只保证「abort 已发出、turn 收敛、`cancel()` 返回」，**不保证子进程已退出**；Kernel + shim 路径由 shim 自注册句柄，旧路径没有句柄。
 
-b) **跨进程 / 跨重启（仅在可证明归属时回收）**：归属证据必须 **≥2 项，且至少 1 项是内容证据**。内容证据 = 完整命令行精确匹配（不是只比可执行名）、带 HMAC 的自注册记录且能在 DB 找到对应 turn/marker；非内容证据 = `pid`、`startedAt`。**只有 `pid` + `startedAt`、或只有 `startedAt` 一项，一律判 `insufficient-proof`，不杀**；写 `residual_risk='unconfirmed'` + `recovery_note` 并告警。宁可漏杀，不可误杀。
+b) **跨进程 / 跨重启（仅在可证明归属时回收）**：归属证据必须 **≥2 项，且至少 1 项是内容证据**。内容证据 = 完整命令行精确匹配（不是只比可执行名）、带 HMAC 的自注册记录且能在 DB 找到对应 turn/marker；非内容证据 = `pid`、`startedAt`。**只有 `pid` + `startedAt`、或只有 `startedAt` 一项，一律判 `insufficient-proof`，不杀**；写 `residual_risk='unconfirmed'` + `recovery_note` 并告警。宁可漏杀，不可误杀。**已实现的唯一例外（结构性绑定）**：注册记录 HMAC 验签通过，且 `pgid === pid`、实时 `ps` 仍是同一组长、`startedAt` 实时匹配时，视为满足归属并整组回收；该放宽**只对验签通过的身份生效**，无签名/篡改记录仍必须两项内容证据。理由是 CLI 可能 `exec` 换镜像导致命令行内容证据失效，而签名身份已保证跨用户不可伪造/不可重放。
 
 c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不可伪造、不可重放（HMAC + 0600 密钥 + 0700 目录 + DB marker 门控）；**同 uid 恶意进程不在防御范围**，不承诺防伪造（见下表）。
 
@@ -986,10 +1000,10 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 | OpenCode / 长尾 CLI | prompt 前置约束 + 事后对账 | `interception:'post'`，写入标 `postHoc=true` |
 | mcp（API 兜底） | 宿主执行工具 | `interception:'pre'`，逐工具可拦 |
 
-### 7.4 生命周期：pending 保留 + 重启重推 + 超时拒绝
+### 7.4 生命周期：pending 保留 + 启动即 deny + 超时拒绝
 
-- 超时（交互 **120s** / 无人值守 **30s**，按 `mode` 取值；spike 用 30ms 验证时序）：写 `denied` + `decided_by='timeout'`，且**迟到的 allow 不执行**（V7 已实测）。
-- 重启：`pending` **不置 expired**，启动后一次性重推给 renderer；若其所属 turn 已 `orphaned`，用户批准后不直接执行，而是进入 `RecoveryPlan`（`replay`）重跑该 turn。
+- 超时：交互 **120s**；`mode='unattended'` 的 **30s** 分支已实现，但**当前没有生产调用方传入 `unattended`**（默认恒为 `interactive`），因此 30s 在生产不可达；spike 用 30ms 验证时序。写 `denied` + `decided_by='timeout'`，且**迟到的 allow 不执行**（V7 已实测）。
+- 重启（**实际行为**）：启动先扫描过期的 `pending` 并写 `denied/decided_by='timeout'`，再把剩余 `pending` 统一 `deny`、`decided_by='startup'`；**不重推 UI，也不进入 replay**。其所属 turn 在启动对账中已标为 `orphaned`，`RecoveryReport.replayed` 恒为空。此前文档承诺的「重推审批 + 批准后 replay」**并未实现**，本版以实际行为为准（改的是承诺，不是代码）。
 - 重复决定：幂等，只执行 1 次（V7 已实测）。
 - 决定与 `approval.resolved` 事件**同一事务**写入（V7 已实测）。
 - 窗口销毁 / renderer 崩溃：该窗口 `pending` → `deny(system)` 并广播 resolved，随后取消对应 turn（进程还活着，不走 `orphaned`）。
@@ -1217,13 +1231,15 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 
 测试与代码：`spikes/agent-core/`（`tests/` 下 24 个测试全绿；10 种故障注入全部变红，日志 `.artifacts/sabotage/`）。
 
+**全量测试基线如何复现（B4）**：仓库根 `npx vitest run` 的失败集是 26 个 DB 相关文件、~173 条 `better-sqlite3` ABI 失败（`NODE_MODULE_VERSION 130` 编译 vs 当前 Node `115` 运行）。它依赖**未入库**的 `spikes/agent-core/node_modules/better-sqlite3`（Node-ABI 副本）作为兜底：[test-db.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/__tests__/helpers/test-db.ts#L30-L49) 先试仓库根模块（Electron ABI），失败后回退到该副本。复现：在 `spikes/agent-core/` 下按该目录 `package.json` 安装依赖，使副本与当前 Node ABI 匹配；再回仓库根运行全量，预期 `passed` 约 309x、`failed` 173、失败文件集合不变（本次 3098 / 173 / 26）。未选择「没有副本就显式 skip」：26 个文件都依赖 DB，逐个加 skip 会把真实回归一并静默掉，保留 ABI 失败噪声更诚实。
+
 | # | 结论 | 关键数据 | 对设计的影响 |
 |---|---|---|---|
 | V1 | **归一化通过（有条件）** | 三后端 checkpoint 序列一致：`run.started → message.completed → tool.requested → tool.result → run.completed`；seq 连续 | 补 §8.1 的「OpenCode 无工具轨迹 → 最小契约」降级 |
 | V2 | **崩溃恢复通过（真 SIGKILL）** | allow 但写未落地 → `unknown-needs-rerun + replay`；写落地且 hash 一致 → `completed + resume-native`；hash 不一致 → `needs-human + abandon`；清扫后零悬空 running | §5.5 增加第 1 行；`RecoveryPlan` 引入 step 级 `stepOutcomes` |
 | V4 | **并发通过** | 第二个并发 run 立即 `SESSION_BUSY`；重入不死锁；同节点第二非终态 run → `NODE_BUSY`；事件归属零错误；锁均值 0.0032–0.0047 ms，P99 0.0127–0.0298 ms（1000 次 × 3 轮） | M0 并发阈值收紧到 P99 < 0.1 ms；排队降级为 Phase 2 |
 | V6 | **循环归属通过** | backend-owned 与 host-owned 序列同构；混跑按 runId 隔离，host 停在 `awaiting_approval` 不影响 backend `completed` | run 状态投影保留 `awaiting_approval` |
-| V7 | **fail-closed 通过** | 重复决定幂等只执行 1 次；超时 30ms 后迟到 allow 不执行；重启重放不自动批准；决定与事件同事务 | §7.4 采用「pending 保留 + 重启重推 + 超时拒绝」 |
+| V7 | **fail-closed 通过** | 重复决定幂等只执行 1 次；超时 30ms 后迟到 allow 不执行；重启重放不自动批准；决定与事件同事务 | §7.4 采用「pending 保留 + 启动即 deny(`decided_by='startup'`) + 超时拒绝」；原「重推 + replay」未实现，已按实际行为降级文档 |
 | V8 | **Codex 流式真机通过（有条件）** | item 级非 token（`item.updated`=0）；`turn.completed` → 迭代器结束 **10009–10015 ms**；abort 3–4 ms、主进程 79–133 ms、子命令 **4/4 成孤儿**（`ppid=1`）继续跑 25.2–25.9 s；`command_execution` 有 `command` 无 argv/cwd/耗时，`file_change` 无 diff；`model_reasoning_effort="max"` 使 CLI exit 1 且 `--config` 无法覆盖 | 新增 §3.2 `BackendDriverContract`、§5.1 中断收纳、§6.5 进程回收、§8.1 完成判定；M0 扩大 D3/D5 |
 | V9 | **reaper 跨会话隔离通过（限定威胁模型）** | 契约 12/12、C4b PASS、C12 六类伪造/篡改/重放 6/6 kill=0、C13 目录/密钥收紧 PASS、C16 竞态 4/4、sabotage 3/3 变红；**C13b FAIL（修复中）**；**C14/C14b 同 uid 可伪造并触发 kill**（`-24238 SIGTERM`） | 新增 §6.5 三层边界、威胁模型与已知未修复面；对外仅承诺「跨用户不可伪造、不可重放」 |
 | — | **测试有效性** | 24 测试全绿 + 10 种故障注入全部变红 | 结论可信度可复核 |

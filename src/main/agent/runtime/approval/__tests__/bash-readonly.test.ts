@@ -5,6 +5,9 @@
  * 所有 ask 断言同时校验 rule 与 risk —— 审批卡片与审计都要说清「命中哪条规则」。
  */
 
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   DANGEROUS_ARGS_BY_COMMAND,
@@ -12,8 +15,11 @@ import {
   evaluateBashPolicy,
 } from '../bash-readonly'
 
-function decide(command: unknown) {
-  return evaluateBashPolicy(command)
+function decide(
+  command: unknown,
+  options?: Parameters<typeof evaluateBashPolicy>[1],
+) {
+  return evaluateBashPolicy(command, options)
 }
 
 describe('evaluateBashPolicy (Bash 两档)', () => {
@@ -396,9 +402,12 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
       decision: 'ask',
       rule: 'git-show-signature',
     })
-    // 单独出现的元信息仍 allow
+    // 纯版本输出仍 allow；help 一律 ask（man/browser/pager 都可能执行外部程序）
     expect(decide('git --version')).toMatchObject({ decision: 'allow', rule: 'git:meta' })
-    expect(decide('git help')).toMatchObject({ decision: 'allow', rule: 'git:meta' })
+    expect(decide('git help')).toMatchObject({ decision: 'ask', rule: 'git-help' })
+    expect(decide('git --help')).toMatchObject({ decision: 'ask', rule: 'git-help' })
+    expect(decide('git log --help')).toMatchObject({ decision: 'ask', rule: 'git-help' })
+    expect(decide('git diff -h')).toMatchObject({ decision: 'ask', rule: 'git-help' })
     // 带子命令/参数会调用 man 或浏览器（git help --web 还会按配置执行 browser 命令）
     expect(decide('git help status')).toMatchObject({ decision: 'ask' })
     expect(decide('git help --web status')).toMatchObject({ decision: 'ask' })
@@ -409,6 +418,91 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     expect(decide('git --paginate status')).toMatchObject({ decision: 'ask', rule: 'git-paginate' })
     // `git log -p` 是 patch，不是 pager；子命令后的 -p 不误伤
     expect(decide('git log -p -1')).toMatchObject({ decision: 'allow', rule: 'git:log' })
+  })
+
+  it('阻断：shell 展开无法静态解析 → 一律 ask（不能按展开前字面量放行）', () => {
+    // 复审六条原始写法：修复前全部 allow（策略看到的是展开前字面量）
+    expect(decide('rg --pre$UNSET=/bin/rm TODO .')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-expansion',
+    })
+    expect(decide('git diff --output$UNSET=/tmp/out.diff')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-expansion',
+    })
+    expect(decide('file --compil$UNSET -m t.magic')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-expansion',
+    })
+    expect(decide("file $'\\x2d\\x2d\\x63\\x6f\\x6d\\x70\\x69\\x6c\\x65' -m t.magic")).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-expansion',
+    })
+    expect(decide('find . {-delete,-delete}')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-brace',
+    })
+    expect(decide('file {--comp,ile} -m t.magic')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-brace',
+    })
+    // 反斜杠 + 换行：续行把两段拼成一个参数；拼出的 `--compile` 会先命中 file-compile
+    expect(decide('file --comp\\\nile -m t.magic')).toMatchObject({
+      decision: 'ask',
+      rule: 'file-compile',
+    })
+    // 反斜杠转义可拼出标志（\-\-compile）；拼出的 `--compile` 会先命中 file-compile
+    expect(decide('file \\-\\-compile -m t.magic')).toMatchObject({
+      decision: 'ask',
+      rule: 'file-compile',
+    })
+    // 转义空白会改变 token 边界（a\ b 是一个参数），必须按无法静态解析处理
+    expect(decide('cat a\\ b')).toMatchObject({
+      decision: 'ask',
+      rule: 'shell-backslash',
+    })
+    // glob 与 ~ 也会在运行时改写参数
+    expect(decide('rg TODO *')).toMatchObject({ decision: 'ask', rule: 'shell-glob' })
+    expect(decide('cat ~/.zshrc')).toMatchObject({ decision: 'ask', rule: 'shell-tilde' })
+
+    // 反向对照：单引号内不展开；引用后的 glob 由 shell 原样传递
+    expect(decide("rg '$HOME' file")).toMatchObject({ decision: 'allow', rule: 'rg' })
+    expect(decide("grep '$PATH' file")).toMatchObject({ decision: 'allow', rule: 'grep' })
+    expect(decide('find . -name "*.ts"')).toMatchObject({ decision: 'allow', rule: 'find' })
+    // 普通只读用法不受影响
+    expect(decide('ls -la')).toMatchObject({ decision: 'allow', rule: 'ls' })
+    expect(decide('git log --oneline -5')).toMatchObject({ decision: 'allow', rule: 'git:log' })
+  })
+
+  it('阻断：仓库/用户 git 配置含 textconv/external/fsmonitor → 只读 git 子命令 ask', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bizgraph-gitcfg-'))
+    mkdirSync(join(root, '.git'), { recursive: true })
+    const options = { cwd: root, includeGlobalGitConfig: false }
+
+    writeFileSync(join(root, '.git', 'config'), '[diff "evil"]\n\ttextconv = /bin/rm\n')
+    expect(decide('git diff HEAD', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(decide('git log -p -1', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // include.path 指向的执行型配置同样命中
+    writeFileSync(join(root, '.git', 'extra.cfg'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    writeFileSync(join(root, '.git', 'config'), '[include]\n\tpath = extra.cfg\n')
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 无执行型配置的干净仓库仍 allow
+    writeFileSync(join(root, '.git', 'config'), '[core]\n\trepositoryformatversion = 0\n')
+    expect(decide('git diff HEAD', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:diff',
+    })
   })
 
   it('参数白名单表：每个白名单命令都必须登记危险参数（新增命令漏登记会失败）', () => {
