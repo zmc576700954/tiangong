@@ -27,6 +27,7 @@ import { createLogger } from '../../../shared/logger'
 import { AgentRuntimeError } from '../errors'
 import { eventIdFor, hashArgs, newId } from '../util'
 import { bashPolicyForTool } from './bash-readonly'
+import { getSandboxCapability } from '../../../shared/sandbox'
 import { evaluateGitDirWriteGuard, type GitDirGuardResult } from './gitdir-write-guard'
 
 const logger = createLogger('ApprovalGateway')
@@ -59,7 +60,13 @@ function bashPolicyFields(
   args: Record<string, unknown>,
   cwd?: string,
 ): { policyRule: string; policyReason: string; risk: RiskLevel } | undefined {
-  const policy = bashPolicyForTool(toolName, args, { cwd })
+  // 与执行侧同一结论：沙箱不可用时 allow 集退回 ask，卡片原因也要一致。
+  const capability = getSandboxCapability()
+  const policy = bashPolicyForTool(toolName, args, {
+    cwd,
+    sandboxAvailable: capability.available,
+    sandboxUnavailableReason: capability.reason,
+  })
   if (!policy) return undefined
   return { policyRule: policy.rule, policyReason: policy.reason, risk: policy.risk }
 }

@@ -51,11 +51,23 @@ export interface BashPolicyOptions {
   cwd?: string
   /** 是否同时读取用户/系统 git 配置；默认 true（测试可关闭以保证确定性） */
   includeGlobalGitConfig?: boolean
+  /**
+   * C3：执行面沙箱是否可用。**不传 = 不启用降级门（纯策略评估）**；
+   * 生产调用点必须传真实能力探测结果：
+   * - true：allow 集照常免审，且 fsmonitor/hooksPath/alternateRefsCommand 的
+   *   存在性 ask 在沙箱内可放开；
+   * - false：allow 集整体退回 ask（fail-closed），rule=`sandbox-unavailable`。
+   */
+  sandboxAvailable?: boolean
+  /** 沙箱不可用的原因（写进审批卡片/审计，回答「这台机器为什么在弹窗」）。 */
+  sandboxUnavailableReason?: string
 }
 
 interface PolicyContext {
   cwd: string
   includeGlobalGitConfig: boolean
+  /** 只有调用方明确告知沙箱可用时才为 true；否则保持现有保守口径。 */
+  sandboxEnforced: boolean
 }
 
 /** 白名单/只读决定的统一风险。 */
@@ -1131,6 +1143,7 @@ export function probeGitConfigExecutes(
   result: GitConfigProbeResult,
   sub: string,
   _args: readonly string[] = [],
+  options: { sandboxEnforced?: boolean } = {},
 ): boolean {
   // 探针失败 = 不可判定：S2 起必须 ask，不能把「没看到危险配置」当成安全。
   if (result.failure) return true
@@ -1159,12 +1172,18 @@ export function probeGitConfigExecutes(
     // 逐条维护「谁消费」不可能穷尽（git 内部随时会刷新 index），这里改为键即触发。
     // 代价：husky（core.hooksPath）与 fsmonitor 用户的所有 git 只读命令都会弹窗，
     // 这是有意选择——宁可多问，也不让「未登记的命令」变成零审批执行面。
-    if (entry.key === 'core.fsmonitor' && gitConfigBoolean(value)) return true
-    if (entry.key === 'core.hookspath' && value.trim() !== '') return true
-    // core.alternateRefsCommand：rev-list --alternate-refs 会用 shell 执行该命令。
-    // 只对 rev-list 判定；其它只读子命令不会消费它。
-    if (entry.key === 'core.alternaterefscommand' && sub === 'rev-list') {
-      return true
+    //
+    // C3：沙箱在位时，这两类键的「存在性 ask」按对照表放开（脚本仍可被 git exec，
+    // 但 exec 白名单与写面收敛保证它拉不起白名单外程序、写不出工作区）。
+    // 未启用沙箱时行为与之前完全一致。
+    if (!options.sandboxEnforced) {
+      if (entry.key === 'core.fsmonitor' && gitConfigBoolean(value)) return true
+      if (entry.key === 'core.hookspath' && value.trim() !== '') return true
+      // core.alternateRefsCommand：rev-list --alternate-refs 会用 shell 执行该命令。
+      // 只对 rev-list 判定；其它只读子命令不会消费它。
+      if (entry.key === 'core.alternaterefscommand' && sub === 'rev-list') {
+        return true
+      }
     }
     // filter：仓库本地三项全 ask；全局/系统/命令作用域只放行 git-lfs 标准写法。
     if (
@@ -1699,7 +1718,7 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
           HIGH,
         )
       }
-      if (probeGitConfigExecutes(probe, sub, subArgs)) {
+      if (probeGitConfigExecutes(probe, sub, subArgs, { sandboxEnforced: ctx.sandboxEnforced })) {
         return askRule(
           'git-repo-config-exec',
           '仓库或用户 git 配置含 textconv / diff.command / diff.external / filter / fsmonitor / hooksPath / alternateRefsCommand / log.showSignature / %G 格式，git 会执行外部程序',
@@ -1721,7 +1740,7 @@ function gitRule(args: string[], ctx: PolicyContext): RuleVerdict {
             HIGH,
           )
         }
-        if (modules.results.some((moduleProbe) => probeGitConfigExecutes(moduleProbe, sub, subArgs))) {
+        if (modules.results.some((moduleProbe) => probeGitConfigExecutes(moduleProbe, sub, subArgs, { sandboxEnforced: ctx.sandboxEnforced }))) {
           return askRule(
             'git-repo-config-exec',
             'diff.submodule=diff 且子模块配置含 diff.external / textconv / filter / fsmonitor 等执行型键，git 会执行外部程序',
@@ -1901,6 +1920,8 @@ export function evaluateBashPolicy(
   const ctx: PolicyContext = {
     cwd: options?.cwd ?? process.cwd(),
     includeGlobalGitConfig: options?.includeGlobalGitConfig ?? true,
+    // 只有显式告知「沙箱可用」才启用放宽；未传/不可用都保持原口径。
+    sandboxEnforced: options?.sandboxAvailable === true,
   }
 
   if (!command) {
@@ -2047,6 +2068,22 @@ export function evaluateBashPolicy(
   }
 
   const verdict = rule(tokens.slice(1), ctx)
+
+  // C3 降级语义：沙箱不可用时 allow 集整体退回 ask，不做「无沙箱继续 allow」的开关。
+  // 决策里保留 rule/reason，让审批卡片与审计能回答「这台机器为什么在弹窗」。
+  if (verdict.decision === 'allow' && options?.sandboxAvailable === false) {
+    const why = options.sandboxUnavailableReason
+      ? `沙箱不可用（${options.sandboxUnavailableReason}）`
+      : '沙箱不可用'
+    return {
+      decision: 'ask',
+      rule: 'sandbox-unavailable',
+      reason: `${why}，只读命令的免审集合整体退回 ask（fail-closed）`,
+      command,
+      risk: LOW,
+    }
+  }
+
   return { decision: verdict.decision, rule: verdict.rule, reason: verdict.reason, command, risk: verdict.risk }
 }
 

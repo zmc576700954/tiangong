@@ -21,6 +21,7 @@ import type { AdapterRawEvent } from '@shared/types/agent'
 import { isWriteScopedTool } from '../approval/gateway'
 import type { BashPolicyDecision } from '../approval/bash-readonly'
 import { bashPolicyForTool } from '../approval/bash-readonly'
+import { getSandboxCapability } from '../../../shared/sandbox'
 import { getExecutorCapabilities } from '../capabilities'
 import { normalizeClaude } from '../normalize/claude'
 import { CodexStreamNormalizer } from '../normalize/codex'
@@ -235,7 +236,13 @@ export class AdapterBackendDriver implements BackendDriver {
         // Bash 的 step argsHash 与 bash.policy 事件保持同一份输入（只有 command），
         // 避免 description/timeout 等附带字段导致同一条命令出现两个 hash，审计无法对齐。
         // 会话工作目录（不是主进程 cwd）：配置探针必须读请求所属仓库的 .git/config。
-        const policy = bashPolicyForTool(toolName, input, { cwd: request.workingDirectory })
+        // C3：与执行侧共用同一份沙箱能力结论，审批卡片的 rule/reason 才不会与真实决策分叉。
+        const sandbox = getSandboxCapability()
+        const policy = bashPolicyForTool(toolName, input, {
+          cwd: request.workingDirectory,
+          sandboxAvailable: sandbox.available,
+          sandboxUnavailableReason: sandbox.reason,
+        })
         const stepArgs = policy ? { command: policy.command } : input
         context.step.ensure(stepId, {
           kind: 'tool',
