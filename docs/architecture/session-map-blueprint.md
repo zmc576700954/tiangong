@@ -625,7 +625,7 @@ revoke_reason           TEXT
 |---|---|---|
 | 覆盖文件内容变化 | 签收时对 `coverage_json.files` 逐文件记录 `sha256`；请求状态时重算，任一不一致 | `freshness='stale'`，状态从 `signed_off` 降为 `stale` |
 | 覆盖范围变化 | 节点 `scope_files` / `acceptance_json` 变更，或所属 `work_item` 产生新 revision | 自动撤销（`revoked_at`），状态降为 `implemented` |
-| 时间过期 | `expires_at` 到期（**统一 30 天，可配置**；不按项目风险/类型区分，留作后续可选扩展，不进 L1） | 视为过期，状态降为 `implemented`；**提供"一键续签"方向**：以原 `coverage_json` 为默认值生成新签收记录，并引用原证据（`renewed_from_evidence_id`），减少重复填写；但签收人与覆盖范围仍须显式确认，不允许静默续期 |
+| 时间过期 | `expires_at` 到期（**统一 30 天，可配置**；不按项目风险/类型区分，留作后续可选扩展，不进 L1） | 视为过期（`freshness='stale'`），派生状态为 **`stale`**，不降为 `implemented`。理由：过期签收是"曾经可信、现在不可信"，`implemented` 只能由新签收或新证据产生；**提供"一键续签"方向**：以原 `coverage_json` 为默认值生成新签收记录，并引用原证据（`renewed_from_evidence_id`），减少重复填写；但签收人与覆盖范围仍须显式确认，不允许静默续期 |
 | 人工撤销 | 用户显式撤销，必填 `revoke_reason` | 状态降为 `implemented` |
 | 无法计算内容哈希 | 文件不可读 / 超过阈值（默认 200 个文件） | `freshness='unknown'`，UI 显示"无法校验，请人工复核"；**不自动撤销** |
 
@@ -685,21 +685,17 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 3. 当前项目仍在 git 仓库内，`git rev-parse HEAD` 成功。
 4. 任一条不成立 → 只能落 E2 或 `test_run` 事实，不写 E3；`dirty_tree_hash` 只用于变更面留痕，不用于把 dirty 状态洗成 E3。
 
-#### 3.7.3 E4 过期与派生的**未决冲突 U1**
+#### 3.7.3 E4 过期与派生（U1，已裁决）
 
-现有正文存在两处不同表述：
+**裁决：过期 E4 派生为 `stale`，不派生 `implemented`。**
 
-- §3.3 优先级 6：存在已失效的 E4 → `stale`；
-- §3.5"时间过期"：`expires_at` 到期 → 视为过期，状态降为 `implemented`。
+| 输入 | 派生结果 |
+|---|---|
+| `expires_at` 到期、未撤销的 E4 | `stale`；UI 显示"签收已过期，需续签" |
+| 未过期、未撤销的 E4 | `signed_off` |
+| 已撤销 / 覆盖范围变化的 E4 | 不参与 `signed_off`，按 §3.5 落回 `implemented` |
 
-这两条对"过期但未撤销的 E4"给出不同派生结果。**不替用户选择**，施工前必须裁决：
-
-| 候选 | 派生结果 | 代价 |
-|---|---|---|
-| U1-A（按 §3.3） | 过期 E4 → `stale`；UI 显示"签收已过期，需续签" | 与 stale 的"曾验证但锚点失效"语义一致；但一个曾人工签收的节点会显示为 stale，可能比 implemented 更刺眼 |
-| U1-B（按 §3.5） | 过期 E4 → `implemented`；E4 行保留但不再参与 `signed_off` | 与"降为 implemented"字面一致；但丢失"曾签收后过期"与"从未签收"的区分，统计上可能低估风险 |
-
-在裁决前：S6a 的其余部分可按施工；派生函数对"过期 E4"分支必须显式 `throw not_implemented` 或返回 `unknown` 并阻断发布，**不得默默按任一分支上线**。`30 天` 口径不变；"一键续签 + `renewed_from_evidence_id`"只作为减轻操作负担的方向，不改变过期判据。
+理由：过期签收是"曾经可信、现在不可信"，与 `stale` 的"曾验证但当前锚点失效"语义一致。对**过期**这一情形，`implemented` 只能由新签收或新证据产生，不能因为时间流逝自动变成"已实现"；撤销与覆盖范围变化是主动结果，仍按 §3.5 落回 `implemented`。§3.5 原"时间过期降为 `implemented`"的表述按本条裁决修正为 `stale`。`30 天` 口径不变；"一键续签 + `renewed_from_evidence_id`"只作为减轻操作负担的方向，不改变过期判据。
 
 #### 3.7.4 派生算法（可执行定义）
 
@@ -717,7 +713,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 3. 存在当前 revision 的 `work_item` 且 `gate_status='incomplete'` 或依赖未满足 → `blocked`。
 4. 存在 `evidence_level='E3' AND freshness='fresh' AND revoked_at IS NULL` → `verified`；多条取 `verified_at DESC, id ASC` 第一条。
 5. 存在 `evidence_level='E4' AND freshness='fresh' AND revoked_at IS NULL` → `signed_off`；多条取 `signed_at DESC, id ASC` 第一条。
-6. 存在 `E3 freshness='stale'` → `stale`；存在已失效 `E4` 时按 **U1 裁决**：U1-A → `stale`；U1-B → `implemented`。未裁决时该分支不得上线（实现必须显式阻断，不得默认落任一状态）。
+6. 存在 `E3 freshness='stale'` → `stale`；存在已过期（`expires_at` 到期）且未撤销的 E4 → `stale`（U1 裁决）。已撤销 / 覆盖范围变化的 E4 不参与 `signed_off`，按 §3.5 落回 `implemented`。
 7. 存在 `E2`（未撤销）→ `implemented`。
 8. 存在 `E1` 或当前 revision 的 `work_item.status IN ('draft','queued')` → `planned`。
 9. 否则 → `untouched`。
@@ -735,12 +731,12 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | `work_item` / `work_step` / `work_run` 状态变更 | 事务提交后 | 按节点去重 |
 | 节点 `scope_files` / `acceptance_json` 变更 | 保存后 | 立即重算 |
 | E3 stale 扫描 | 启动后 + 每小时 | 批量按 `project_path` |
-| E4 过期/覆盖变化扫描 | 启动后 + 每日 | 批量；遇 U1 分支未裁决则只标记待裁决，不写状态 |
+| E4 过期/覆盖变化扫描 | 启动后 + 每日 | 批量；过期置 `freshness='stale'` 并派生 `stale`；覆盖变化按 §3.5 |
 | 手动 `admin:map:recompute` | 用户触发 | 可全量或单节点 |
 
 - 重算失败：保留上一行 `node_execution_state` 与原 `computed_at`，另写 `map_migration_reports(kind='derivation', stage='recompute')` 记失败；UI 显示"派生可能过期"。无上一行时宁可不写，不伪造 `untouched`。
 - 重建：`DELETE FROM node_execution_state` 后按项目批量重算；重算结果必须与增量结果一致（同一 `inputs_hash` 同一状态）。
-- 验收：E0–E4 样本各一条；同一输入两次重算状态一致；证据撤销后 `verified` 消失；E3 换 HEAD 后 `stale`；E4 过期分支按 U1 裁决；工作区无证据时不写 `untouched` 假行。
+- 验收：E0–E4 样本各一条；同一输入两次重算状态一致；证据撤销后 `verified` 消失；E3 换 HEAD 后 `stale`；E4 过期后派生 `stale`（不得出现 `implemented`）；工作区无证据时不写 `untouched` 假行。
 
 ---
 
@@ -778,7 +774,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 
 **这四个新增值（`needs_input` / `needs_human` / `paused` / `interrupted`）与既有值一起写进 S5 的 `CREATE TABLE` DDL（§7.2、§8.7），不得留到后续 `ALTER` 或表重建。**
 
-> 一次性修正：为满足 §5.5.1 的父任务终态聚合（≥1 叶子 failed → 父 failed），`work_items.status` 同时补入 `failed`；否则父任务无法表达失败终态。D2 的四个新增值不受影响，状态总数由 12 调整为 13。
+> **一次性修正（已接受）**：为满足 §5.5.1 的父任务终态聚合（≥1 叶子 failed → 父 failed），`work_items.status` 同时补入 `failed`；否则父任务无法表达失败终态。这是状态集的一次性修正，**不是放宽约束**：值域仍为封闭枚举，迁移与写入校验不变。D2 的四个新增值不受影响，状态总数由 12 调整为 13。
 
 #### 4.1.2 编排步独立建表：`work_steps`
 
@@ -1199,20 +1195,25 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 | `scope_violation` | 是否出现范围外写（0/1） | 判断模型是否越界 |
 | `boundary_changed` | 实际边界与计划是否不同（0/1） | 判断推导规则是否有效 |
 | `duration_ms` | 执行时长 | 辅助评估 |
-| `derivation_version` | 生成计划时的规则版本 | **归因维度** |
-| `rule_version` | 记录时的规则版本 | 校准对齐 |
+| `derivation_version` | 生成计划时固定的计划规则版本 | **归因维度**（计划生成后不可变） |
+| `observed_rule_version` | 记录时的配置哈希（阈值/权重快照） | **归因维度**；一批内配置不可变时可删 |
+| `task_type` | 记录时快照（锚点类型 / 任务来源分类） | **归因维度** |
+| `agent_type` | 记录时快照（实际执行 adapter） | **归因维度**；Tier 1 下通常为单值 |
+
+- `file_domain`（目录前缀）**不存单值**：一次 run 可跨多个目录，由视图 `v_plan_deviations_file_domain` 从 `change_sets.files_json` 展开（§7.2）；路径先按 §5.4.1 规范化再取前缀。
+- `observed_rule_version` 保留：阈值/权重允许人工在 run 之间修改，记录时哈希才能对齐配置。若后续锁定"一批内配置不可变"，则删除该列。
 
 用途（三条，不超过这三条）：
 
-1. **阈值校准**（离线）：按 `derivation_version` 聚合，若 `actual/planned` 文件数连续 3 批 > 1.5，则下调 `file_cohesion` 阈值或提高拆分粒度；若 `replan_count` 中位数 > 2，则提高候选数上限并强化 C1 展示。
+1. **阈值校准**（离线）：按 `derivation_version` + `observed_rule_version` + `task_type` / `agent_type` / `file_domain` 聚合，若 `actual/planned` 文件数连续 3 批 > 1.5，则下调 `file_cohesion` 阈值或提高拆分粒度；若 `replan_count` 中位数 > 2，则提高候选数上限并强化 C1 展示。
 2. **退化检测**：`scope_violation` 或 `rework_count` 高频的锚点类型（如 wiki-page、跨模块流程）标记为"结构不可推导"，下次直接进退化路径。
 3. **确认强度自适应**：`replan_count` 高的项目在 C1 增加"必须逐条勾选验收条件"，低风险项目可折叠次要信息 —— 但**不允许跳过确认**。
 
 校准是离线分析 + 人工改配置，不做在线自动学习、不自动修改历史计划。
 
-**冷启动与回顾口径（D3）**：权重冷启动直接采用 §5.2 的默认值（0.35 / 0.25 / 0.20 / 0.15 / 0.05），不等待历史数据；`history_hit` 无历史时为 0 并归一化。校准只使用 `plan_deviations` 的以下字段：`planned_file_count` / `actual_file_count`、`planned_subtask_count` / `actual_subtask_count`、`rework_count`、`scope_violation`、`boundary_changed`、`replan_count`、`test_failures`，并按 `derivation_version` 分组。**回顾节奏：每 20 个 run（或每 2 周，取先到者）一次离线回顾；只调配置阈值/权重，不改历史计划、不做在线学习。**
+**冷启动与回顾口径（D3）**：权重冷启动直接采用 §5.2 的默认值（0.35 / 0.25 / 0.20 / 0.15 / 0.05），不等待历史数据；`history_hit` 无历史时为 0 并归一化。校准只使用 `plan_deviations` 的以下字段：`planned_file_count` / `actual_file_count`、`planned_subtask_count` / `actual_subtask_count`、`rework_count`、`scope_violation`、`boundary_changed`、`replan_count`、`test_failures`，并按 `derivation_version` / `observed_rule_version` / `task_type` / `agent_type` / `file_domain` 分组。**聚合窗口只保留一套：每 20 个 run 或每 2 周（取先到者）一次离线回顾；只调配置阈值/权重，不改历史计划、不做在线学习。**
 
-> **归因待定**：`plan_deviations` 是否按本表的差异字段做统一归因，**先不落**，等用户裁决（§12.5 第 8 项）。本节字段只作为候选口径保留，不得据此单方面改权重或改历史计划。
+> **归因（已定）**：`plan_deviations` 的统一归因为 `derivation_version`（计划生成时固定）+ `observed_rule_version`（记录时配置哈希）+ `task_type` / `agent_type` / `file_domain`（目录前缀，视图派生）。**`boundary_changed` / `scope_violation` 只作为路由特征**（退化判定与确认强度自适应），**不进成功率分母**；成功率分母只含正常完成/失败的 run，不含边界变更与范围越界这两个特征位。
 
 ### 5.8 退化与兜底
 
@@ -1282,7 +1283,7 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 - Tier 由能力探测结果决定并写 `routing_decisions`；不允许按模型名硬编码。
 - **编排写路径仅 Tier 1**。Tier 2 不能"降级执行写步骤"：没有写前审批回调就无法满足"不绕过审批网关"，降级等于开后门。
 - `degraded` 状态只用于用户手动打开的会话（UI 明示"降级执行，不保证中断恢复"），**不用于编排器**；编排器不得静默换 adapter。
-- **MVP 范围**：当前按"仅 Tier 1 参与编排"实现（**待用户确认**，见 §11.2）。
+- **MVP 范围（已定）**：仅 Tier 1 参与编排（读 + 写）；Tier 2 只读或排队等人工会话，Tier 3 不参与编排。
 
 #### 5.9.6 明确不采纳的部分
 
@@ -1442,7 +1443,7 @@ subject_id   TEXT
 - 每步单独写一条 `test_results`；flow 聚合结果写 `test_runs`，**全部步骤通过才算 flow 通过**，任一步失败/超时则失败，后续步骤默认 `skipped`（可选 `continue_on_failure=false`）；
 - flow 内不允许 `manual` / `llm_acceptance` 步骤（人工与 LLM 判定不能混进自动化通过链）；这类步骤必须作为独立用例走 E4/E2；
 - flow 的 `plan_hash` 包含步骤顺序与每步命令，顺序变化即视为未审批；
-- **流程级测试是否从 L2 起做最小版：待用户确认**（本文先给出可执行定义，不改变 L1/L2 范围结论）。
+- **范围（已定）**：流程级测试从 **L2 起做最小版**：框选子图 → 每个节点生成一个验证步 + 一个 shell 测试步 → 产出 `test_report`。**不做可视化编排**（拖拽排序、分支/并行编辑器属 L3）；L1 仍只做节点级测试。
 
 #### 6.5.2 `published` 软阻断（测试资产）
 
@@ -1450,7 +1451,7 @@ test 图节点允许 `draft → confirmed → published`。`published` 增加一
 
 - 没有任何通过记录（E3 或至少一条 `test_runs.status='passed'`）时，默认按钮不得是"发布"；
 - 用户仍可显式确认发布，但必须填写理由并落库（`published_waiver_json`：`{by, at, reason, missing}`）；
-- 这是软阻断，不是硬拒绝；强度（警告 / 二次确认 / 强制测试）**待用户拍板**（见 §11.2）。
+- 这是**软阻断，不是硬拒绝**：不阻止人工标记 `published`，只影响徽标与统计口径 —— 无通过记录的发布在叠加层显示"未验证发布"徽标，并计入 `published_without_evidence`（单列，不计入"已验证资产"）；不采用强制测试或二次确认。
 
 ### 6.6 Bug 闭环与定向重测（采纳）
 
@@ -2040,7 +2041,10 @@ CREATE TABLE plan_deviations (
   work_item_lineage_id  TEXT,
   work_item_revision    INTEGER,
   work_run_id           TEXT,
-  derivation_version    TEXT,
+  derivation_version    TEXT NOT NULL,   -- 计划生成时固定
+  observed_rule_version TEXT NOT NULL,   -- 记录时配置哈希
+  task_type             TEXT NOT NULL,   -- 记录时快照（锚点类型/任务来源）
+  agent_type            TEXT,            -- 记录时快照（实际 adapter）
   planned_file_count    INTEGER,
   actual_file_count     INTEGER,
   planned_subtask_count INTEGER,
@@ -2053,12 +2057,29 @@ CREATE TABLE plan_deviations (
   scope_violation       INTEGER NOT NULL DEFAULT 0,
   boundary_changed      INTEGER NOT NULL DEFAULT 0,
   duration_ms           INTEGER,
-  rule_version          TEXT,
   computed_at           INTEGER NOT NULL
 );
 
-CREATE INDEX idx_plan_deviations_rule ON plan_deviations(derivation_version);
+CREATE INDEX idx_plan_deviations_rule ON plan_deviations(derivation_version, observed_rule_version);
 CREATE INDEX idx_plan_deviations_item ON plan_deviations(work_item_lineage_id);
+
+-- 目录前缀维度：一次 run 可跨多个目录，展开为一行一域；不把 file_domain 存成单值
+CREATE VIEW v_plan_deviations_file_domain AS
+SELECT d.id AS deviation_id,
+       d.work_run_id,
+       d.derivation_version,
+       d.observed_rule_version,
+       d.task_type,
+       d.agent_type,
+       json_extract(je.value, '$.path') AS file_path,
+       CASE
+         WHEN instr(json_extract(je.value, '$.path'), '/') > 0
+           THEN substr(json_extract(je.value, '$.path'), 1, instr(json_extract(je.value, '$.path'), '/'))
+         ELSE ''
+       END AS file_domain
+FROM plan_deviations d
+LEFT JOIN change_sets cs ON cs.work_run_id = d.work_run_id
+LEFT JOIN json_each(cs.files_json) je;
 ```
 
 #### `test_specs`
@@ -2229,7 +2250,7 @@ CREATE TABLE map_migration_reports (
 | 新增 `ExecutionState` | 9 值（见 §3.3，含 `signed_off`） |
 | 新增 `EvidenceLevel` | `E0`–`E4` |
 
-注意：`NODE_STATUS_TRANSITIONS` 是 `Record<NodeType, ...>`，新增 NodeType 必须补矩阵，否则类型检查失败；test 节点建议只允许 `draft → confirmed → published`（`developing/testing/review` 对测试资产无意义，作为默认假设）。`published` 的软阻断（无通过记录时需显式豁免）见 §6.5.2，强度待用户拍板。
+注意：`NODE_STATUS_TRANSITIONS` 是 `Record<NodeType, ...>`，新增 NodeType 必须补矩阵，否则类型检查失败；test 节点建议只允许 `draft → confirmed → published`（`developing/testing/review` 对测试资产无意义，作为默认假设）。`published` 采用软阻断（无通过记录时显示徽标并计入 `published_without_evidence`，不阻止人工标记），见 §6.5.2。
 
 ---
 
@@ -2589,7 +2610,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | `S2.tables` / `S2.backfill` | 是 | 链接唯一键无重复；孤儿计数可解释 |
 | `S5a.tables` | 是（`CREATE TABLE IF NOT EXISTS`） | 13/12 状态值齐全；索引存在 |
 | `S6a.tables` | 是 | 证据 CHECK 约束存在；派生表索引存在 |
-| `S6a.verify` | 是（只读） | E0–E4 样本；U1 分支未裁决时显式阻断 |
+| `S6a.verify` | 是（只读） | E0–E4 样本；过期 E4 派生为 `stale`（U1 裁决） |
 
 **启动预检顺序（fail-closed）**
 
@@ -2678,7 +2699,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 - 重启时已过期 deadline 的处置未定义；
 - 超时值有三套：subagent `timeoutMs` / send-and-wait 300s / 文档 10min + 60min。
 
-**统一来源（建议口径，施工前确认）**
+**统一来源（已定口径）**
 
 | 超时 | 配置键 | 默认 | 适用 |
 |---|---|---|---|
@@ -2689,10 +2710,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | subagent 超时 | 不再独立配置 | — | 继承 step/turn 预算，避免第三套值 |
 
 - `attempt` 恒为 1：**不实现 turn 级退避**；重试只发生在 `work_steps.attempt` / 新 `work_run`，避免"退避但永不递增"的假机制。
-- `agent_turns.status` 无 `timed_out` 的两个候选：
-  - **F3-A（最小版，推荐）**：映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；代价是状态语义被 `failure_type` 细分，查询超时必须带字段。
-  - **F3-B（干净语义）**：重建 `agent_turns` 并加 `timed_out` 到 CHECK；代价是表重建、备份/恢复、迁移窗口更大，且本轮 B1 还要叠加 S1–S6 迁移。
-  - 若不接受 F3-A 的语义，再选 F3-B；默认按 F3-A 施工。
+- `agent_turns.status` 无 `timed_out`：**采用 F3-A（已定）** —— 映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；**不重建 `agent_turns`**。理由：重建表是 S4 级不可逆操作，为一个状态值不值得；UI 需要区分时在展示层由 `failure_type` 派生（"超时失败"徽标与筛选），不新增库内状态。
+- **F3-B（已否决）**：重建 `agent_turns` 并把 `timed_out` 加进 CHECK。否决原因：表重建、备份/恢复与迁移窗口成本高，且会与 S1–S6 迁移叠加；收益仅为状态枚举更干净。除用户重新裁决外不再提起。
 - 增加索引：`CREATE INDEX idx_agent_turns_deadline ON agent_turns(deadline_at) WHERE status='running'`（只索引运行中行，避免全表）。
 - 执行者：turn 启动时写 `deadline_at`；超时用 `AbortController` + 杀进程组；先落 partial（F2），再写 `status='failed'` + `failure_type='timeout'`。审批等待期暂停 deadline（进入 `waiting_approval` 时置 NULL，恢复时重算）。
 - 重启：扫描 `status='running' AND deadline_at <= now`，无存活进程 → 写 `failed` + `failure_type='timeout'` + `error_code='DEADLINE_EXPIRED_ON_RESTART'`；**不自动重跑**。不把过期 deadline 留在 `running`。
@@ -2834,10 +2853,10 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 偏差校准的周期 | 按批次（每 20 个 run）或每 2 周（取先到者）离线统计，人工改配置（§5.7） |
 | worktree 残留清理周期 | 失败现场保留 7 天，其余即时清理（可配置） |
 | 平台范围 | 本期只验证 POSIX（macOS / Linux）；Windows 路径规则不承诺（A9） |
-| 编排 MVP 的 Tier 范围 | **待用户确认**：当前按"仅 Tier 1 参与编排写路径"实现；Tier 2 只读或排队 |
+| 编排 MVP 的 Tier 范围 | **已定**：仅 Tier 1 参与编排（读 + 写）；Tier 2 只读或排队等人工会话，Tier 3 不参与 |
 | 任务总 wall clock | 单个 `work_item` 累计 60 分钟（可配置），到期落 `timed_out`（§5.9.4） |
-| `published` 软阻断强度 | **待用户拍板**：警告 / 二次确认 / 强制测试（§6.5.2） |
-| 流程级测试是否 L2 起做最小版 | **待用户拍板**（§6.5.1） |
+| `published` 软阻断 | **已定：软阻断**。不阻止人工标记 `published`，只影响徽标与统计口径（`published_without_evidence` 单列）；不做强制测试/二次确认（§6.5.2） |
+| 流程级测试范围 | **已定：L2 起做最小版**。框选子图 → 每节点验证步 + shell 测试步 → `test_report`；不做可视化编排（§6.5.1） |
 
 ### 11.3 规模与保留策略（补充审查项）
 
@@ -2949,17 +2968,13 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 12.5 仍需用户拍板
 
-> Yjs 已完成事实核实并批准单向只读处置（§2.2.1），**不再作为待拍板项**；以下从原第 2 项起重新编号。
+> 五条裁决（U1、F3、`plan_deviations` 归因、`work_items.status`、Tier1/`published`/流程级测试）已落入正文，相关条目从本节移除。Yjs 已完成事实核实并批准单向只读处置（§2.2.1），不再作为待拍板项。
 
 1. **是否把对方 P0 的三个源码缺陷纳入开工前置**（subagent 超时不杀会话、失败丢弃部分产出、deadline 无写入方）。属源码修复，需单独授权。
 2. **是否允许"发布进度"对外展示**。本文只允许内部只读视图，且必须与 `verified_count` / `signed_off_count` 分开；若产品要求对外，需要确认是否会造成"进度=完成度"的误读。
 3. **dev→online 提案 UI 是否提前到 L2**。本文默认 L3，L1/L2 只允许人工直接编辑 online 图。
 4. **D1 计划确认强度、D4 流程节点折叠**：本次**保持现状不动**，等用户拍板后再改。
-5. **MVP 编排是否只 Tier 1**：审查已认定 Tier 2 写路径与审批网关冲突；当前按"仅 Tier 1"写并标注待确认（§5.9.5、§11.2）。
-6. **`published` 软阻断强度 / 流程级测试是否从 L2 起做最小版**：本文先给出可执行定义与软阻断默认实现，强度与范围待拍板（§6.5.1、§6.5.2）。
-7. **E4 过期是否延后到 P4**：**不采纳"延后"**；保持统一 30 天可配置，并补"一键续签 + 引用原 coverage"方向（§3.5）。
-8. **`plan_deviations` 归因**：**先不落，等用户裁决**。§5.7 的差异字段可以保留在"待定"清单，但不单方面改成统一归因方案，也不据此改权重。
-9. **E4 过期后的派生状态 U1**：§3.3（→`stale`）与 §3.5（→`implemented`）冲突；两个候选与代价见 §3.7.3。施工前需裁决，不得默默选一条。
+5. **E4 过期是否延后到 P4**：**不采纳"延后"**；保持统一 30 天可配置，并补"一键续签 + 引用原 coverage"方向（§3.5）。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -2969,7 +2984,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 2 | L1 的 `change_sets` 矛盾（§4.6 只认它，§8.12 不建） | 二选一后选择 **`change_sets` 进 L1**；活动流保留文件展示，不降级为"不展示文件" | §4.6、§8.12；L1 表数 11→13 |
 | 3 | 取消只改状态，没杀进程；排队/审批中不可取消；下游错记 `blocked` | 补真杀**进程组**（TERM→10s→KILL）、`awaiting_approval` 可撤销、取消/完成竞态用条件更新、下游 `cancelled(reason='upstream_cancelled')`、partial 先落库、取消即清 worktree；给出迁移表 | §5.9.7；`work_runs.cancel_requested_at` / `cancel_reason` |
 | 4 | DAG 无环检测，环会让队列永久 `queued`；依赖顺序与父任务聚合未定义 | 计划确认时环检测拒绝；Kahn 分层；`显式 depends_on > 隐式引用 > 数组顺序`；父任务"全部叶子终态 ∧ ≥1 failed → failed" | §5.5.1 |
-| 5 | Tier 2 降级执行写步骤与"不绕过审批网关"冲突（无写前审批回调） | **编排写路径仅 Tier 1**；Tier 2 只读或排队等人工会话；`degraded` 只用于手动会话；MVP 仅 Tier1（待确认） | §5.9.5、§10、§11.2 |
+| 5 | Tier 2 降级执行写步骤与"不绕过审批网关"冲突（无写前审批回调） | **编排写路径仅 Tier 1**；Tier 2 只读或排队等人工会话；`degraded` 只用于手动会话；MVP 仅 Tier 1（已定） | §5.9.5、§10、§11.2 |
 | 6 | allow 命令扩展无"消费哪些配置键"的测试 | 新增纪律：每条 allow 命令必须附配置键消费测试，未附不得合入 | §6.8.1、§10 |
 
 ### 12.7 第二轮审查：八项建议落点
@@ -3014,7 +3029,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 > 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
 
-**汇总**：共 102 行；可施工 6 节；有框架缺细节 71 节；只有结论 25 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15。
+**汇总**：共 102 行；可施工 7 节；有框架缺细节 70 节；只有结论 25 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；五条裁决已定案，相关行不再标待定。
 
 | 章节 | 现有内容形态 | 缺什么 | 属于哪一批 |
 |---|---|---|---|
@@ -3049,12 +3064,12 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §2.8 Yjs 拆除清单 | 只有结论 | 拆除决策、逐类处置、旧快照数据方案；本期不施工 | B3 |
 | §3.1 双轨边界 | 有框架缺细节 | 自动写 `nodes.status` 的两条路径如何关闭、验收断言 | B1 |
 | §3.2 证据等级 | 有框架缺细节 | 等级字段组合校验、写入校验、禁止先写后降级 | B1 |
-| §3.3 派生优先级 | 有框架缺细节 | 输入集合、tie-break、`inputs_hash`、过期 E4 的 U1 分支 | B1 |
+| §3.3 派生优先级 | 有框架缺细节 | 输入集合、tie-break、`inputs_hash`；过期 E4 → `stale` 已裁决 | B1 |
 | §3.4 建议机制 | 有框架缺细节 | 建议转证据的事务、去重、接受人/时间字段 | B1 |
-| §3.5 非 git E4 | 有框架缺细节 | 写入校验、过期/覆盖变化任务、U1 冲突、续签字段语义 | B1 |
+| §3.5 非 git E4 | 有框架缺细节 | 写入校验、过期/覆盖变化任务、续签字段语义；过期派生已裁决为 `stale` | B1 |
 | §3.5 硬约束/字段/撤销/关系/非 git | 只有结论 | 规则本身完整；缺执行检查与任务调度落点 | B1 |
 | §3.6 项目进度 | 只有结论 | 权重配置、只读查询、缓存与 `computed_at` | B2 |
-| §3.7 S6a 施工细则 | 有框架缺细节 | **U1 过期 E4 派生未裁决**；其余字段/校验/重算已可施工 | B1 |
+| §3.7 S6a 施工细则 | 可施工 | 无；U1 定案、字段/校验/重算/验收已齐 | B1 |
 | §4.1 `work_items`/revision | 有框架缺细节 | revision 事务、`is_current` 唯一、修订与 running 冲突 | B1 |
 | §4.1.1 状态值域 | 有框架缺细节 | 迁入/迁出表、条件更新、父任务失败聚合 | B1 |
 | §4.1.2 `work_steps` | 有框架缺细节 | 字段默认值、步级唯一、attempt/invocation 写入方 | B1 |
@@ -3072,7 +3087,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §5.5 可修订计划 | 有框架缺细节 | revision 状态、DAG 环检测、父子聚合的实现 | B2 |
 | §5.5.1 DAG 正确性 | 有框架缺细节 | Kahn 伪代码、依赖优先级冲突、终态聚合验收 | B2 |
 | §5.6 确认点 | 有框架缺细节 | C1–C4 接口、计划快照、确认/退回状态 | B2 |
-| §5.7 偏差度量 | 有框架缺细节 | **归因口径待用户裁决**；字段与回顾节奏已有，未定统一归因 | B2 / B3 |
+| §5.7 偏差度量 | 有框架缺细节 | 归因口径与单一聚合窗口已定；字段/视图已落 §7.2，待补采集时点 | B2 |
 | §5.8 退化兜底 | 有框架缺细节 | D1–D7 触发判据、执行落点、验收 | B2 |
 | §5.9 执行编排 | 有框架缺细节 | 调度/取消/超时/路由/审批的接口级输入输出与失败分支 | B2 |
 | §5.9.1–5.9.8 子节 | 有框架缺细节 | 单步/多步分流判据、失败分类落库、忙重排、deadline、Tier 票、取消竞态、步状态迁移表 | B2 |
@@ -3084,7 +3099,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §6.4 安全约束 | 有框架缺细节 | `.git` 写拒绝、cwd 固定、输出脱敏的执行检查 | B2 |
 | §6.5 测试资产与回写 | 有框架缺细节 | 资产创建/更新、结果回写事务、失败重试 | B2 |
 | §6.5.1 流程级测试 | 有框架缺细节 | `test_specs.kind='flow'` 的执行器、步骤序列、失败判定 | B2 |
-| §6.5.2 `published` 软阻断 | 有框架缺细节 | 软阻断强度待确认；测试通过的判定与回滚 | B2 |
+| §6.5.2 `published` 软阻断 | 有框架缺细节 | 软阻断口径已定（不阻止人工标记，只影响徽标与统计）；待补测试通过的判定与回滚 | B2 |
 | §6.6 Bug 闭环 | 有框架缺细节 | bug 节点创建、定向重测、链接回写 | B2 |
 | §6.7 手工用例/E4 | 有框架缺细节 | 手工执行记录、E4 签收入口、覆盖范围 | B2 |
 | §6.8 测试命令网关 | 有框架缺细节 | 网关接口、归属校验、allow/deny 落库 | B2 |
@@ -3109,7 +3124,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
 | §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
 | §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
-| §8.15 F1–F3 | 有框架缺细节 | F3 `timed_out` 选型待确认；源码修复路径需单独授权 | B1 |
+| §8.15 F1–F3 | 有框架缺细节 | F3-A 已定、F3-B 已否决；源码修复路径需单独授权 | B1 |
 | §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
 | §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
 | §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
@@ -3124,6 +3139,6 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 **审计结论**
 
 - **空挂 0**：没有"标题在、内容缺"的章节；`ContextBundle` / 尾块协议有明确外部指向，不算空挂。
-- **B1 可施工边界**：S1、S2、S5a、S6a（除 U1）、迁移状态机、F1–F3 行为契约已细化；其中 S6a 的 U1 与 F3 的 `timed_out` 选型仍需用户裁决。
-- **B1 新增一次性修正**：`work_items.status` 补 `failed`（13 值），否则 §5.5.1 的父任务失败聚合无法落库；表总数不变（22），L1 仍 13 张。
+- **B1 可施工边界（裁决后）**：S1、S2、S5a、S6a、迁移状态机、F1–F3 行为契约已细化；U1 与 F3 选型已定案（过期 E4 → `stale`；F3-A），F1–F3 的源码修复路径仍需单独授权。
+- **B1 一次性修正（已接受）**：`work_items.status` 补 `failed`（13 值），否则 §5.5.1 的父任务失败聚合无法落库；表总数不变（22），L1 仍 13 张。
 - **B1 不动的口径**：查重 N=12 / 0.6 / 0.8、90 天、E4 30 天、记住放行、重建判据、L1 不删节点、E3/E4 可复现语义、`signed_by`、Tier2 只读、单向 Yjs 均未改写。
