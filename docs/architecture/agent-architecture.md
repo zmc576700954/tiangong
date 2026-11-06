@@ -867,7 +867,7 @@ git 只读样本 allow 比例 78.2% → 72.4%（全 7 环境）；剔除 husky �
 3. **MCP 写工具纳入 D1**：不能只按名字猜写语义。建议引入 `mcp__*` 的「写能力声明」（用户/服务器配置），或保守规则「未知工具 + 已知路径参数 → 只要目标命中 gitdir 就 deny」。后者零配置、约 0.5–1 人日，但会把带 `path` 参数的只读 MCP 工具也 deny（可接受，因为只影响 gitdir 内路径）；前者需要每服务器元数据，约 2 人日 + 运营成本。
 4. **B 对 Codex/OpenCode**：B 是 `evaluateBashPolicy` 的一部分，前提是存在 Bash 命令拦截点（见 1）。若 1 完成且能拿到 command 字符串，B 可直接复用，额外 0.5 人日/后端；如果拿不到 command（只有已执行结果），B 无法事后补救。
 
-**明确不做**：不引入沙箱/exec 限制（C3）——用户在决定；本轮只做策略与路径判定。
+**明确不做（本轮）**：不引入沙箱/exec 限制（C3）——用户在决定；本轮只做策略与路径判定。C3 的平台选型、判据落地、放开/仍 ask 对照与工作量见 [agent-sandbox-c3.md](file:///Users/zhumingchen/tiangong/docs/architecture/agent-sandbox-c3.md)。
 
 ### 4.7 事件保留与存储统计（P0-2）
 
