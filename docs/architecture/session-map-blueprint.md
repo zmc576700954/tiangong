@@ -45,6 +45,20 @@
 | A8 | 允许一次较长的启动期迁移，无零停机要求 | 决定迁移采用表重建 + 启动期一次性执行 |
 | A9 | 本期实现与验证以 POSIX（macOS / Linux）为范围；Windows 路径（盘符、反斜杠、大小写不敏感语义）不在本期验证范围 | 路径规范化按 POSIX 实现（§5.4.1）；遇到非 POSIX 根时 fail-closed，不猜测 Windows 路径规则 |
 
+### 0.4 状态词与事实纪律（硬性）
+
+本文所有关于"代码现在做什么"的陈述，只允许三种状态词：
+
+| 状态词 | 含义 | 判定规则 |
+|---|---|---|
+| **已实施** | 代码里能 `git grep` 到或实测到 | 必须带 commit 或 `文件:行`；复核不到不得使用 |
+| **已批准未实施** | 有裁决/定稿，但无对应代码 | 可以写行为契约，但不得写成"现在会…" |
+| **仅建议** | 提案、候选、未决 | 不得进入验收口径 |
+
+- 数字类结论（行数、表数、测试数、上限）必须 `git grep` 或实测复核后才能写；不得沿用外部文档或旧快照的数值。
+- 引用外部文档必须标"对方版本 + 快照行数"（如 `Zcode v1.2.1，302 行`）；未标版本与行数的不引用。
+- 每次改文档时，凡新增/改写的代码行为陈述，必须在报告里说明复核命令或降级原因。
+
 ---
 
 ## 1. 已定方案
@@ -166,22 +180,26 @@ CREATE INDEX idx_nodes_entity_key ON nodes(entity_key);
 | 拆分（split） | 新节点各自新 UUID + `split_from` 链接指向旧键 |
 | 合并（merge） | 目标节点保留自己的键；源节点写 `merged_into` 链接后归档 |
 | 测试图资产 | 新 UUID（测试资产是独立实体，不做身份合并） |
-| 图快照恢复 / Yjs 重建 | **已核实（§2.2.1）**：恢复本身不写 SQLite；恢复之后 doc 若再变更，可经 `127.0.0.1:1236` 写回 `nodes`/`edges`。权威仍是 SQLite 权威列，`entity_key` 不因快照恢复而重算（P6 验证项见 §8.11） |
+| 图快照恢复 / Yjs 重建 | **已实施（cc749ce）**：恢复本身不写 SQLite；恢复之后 doc 变更也不再写回 `nodes`/`edges`，只更新 `yjs_snapshots`。权威仍是 SQLite 权威列，`entity_key` 不因快照恢复而重算（P6 验收见 §8.11） |
 
-#### 2.2.1 Yjs 写回路径：核实事实与已批准处置
+#### 2.2.1 Yjs 单向只读：已实施（cc749ce）
 
-**恢复时不写**：`src/main/realtime/snapshot/yjs-realtime.ts:181` 的 `applyUpdate` 先于 `:208` 挂载写回 observer，恢复路径没有写入方；因此启动恢复不会覆盖 `nodes`/`edges`。
+**状态：已实施（代码级，`cc749ce`）。** 2026-11-07 以 `git grep` / `sed` 复核 HEAD。
 
-**恢复之后存在条件性写回**：只要 doc 再发生变更，就按"实体级全字段载荷 + SQL 列级更新"回写 `nodes`/`edges`（17 列 + `updated_at=now`）。唯一入口是 `127.0.0.1:1236` 的 **无鉴权** WS，仓库内无客户端。相关事实：
+**（历史：`cc749ce` 之前，现已不成立）** 旧实现为双向：恢复路径先 `applyUpdate` 把快照应用到内存 doc，再在 `yjs-realtime.ts:208` 附近挂写回 observer（`attachDiffHandlers`，来自 `bidirectional-sync.ts`），把 doc 变更写回 SQLite `nodes`/`edges`；WS 端接受 `sync step2` / `sync update` 并应用。**因此"恢复之后可经 1236 写回 `nodes`/`edges`"只在 `cc749ce` 之前的旧代码成立**，HEAD 已不成立。下文"以 §2.2.1 已核实结论为准"一律指本节现状段，不再指向旧行为。
 
-- `graphs` **完全没有写回路径**，`writeback_disabled` 安全。
-- `nodes.entity_key` / `lifecycle_state` **当前代码中不存在**（只是本蓝图规划）；即便上线，也不会被该 update 路径覆盖 —— Yjs 载荷不含这两键。
-- 远端新建走 `nodeRepo.create` 会丢掉原 id 重新生成 → 会产生 id 不同的重复节点；`entity_key` 落地后这是首要风险。
-- 任意 edge 变更都会把 `edges.updated_at` 改写为 `now`（即使值未变）。
-- 生产代码没有 SQLite → doc 的镜像，doc 自首次迁移后冻结，每次重启原样恢复，**快照必然陈旧**。
-- 启动后**新建的图不进 doc 池**，连 `1236` 会被 `1008` 拒绝（已知缺陷，本轮不修）。
+**（现状：`cc749ce` 起）**
+- `src/main/realtime/snapshot/bidirectional-sync.ts` 已删除；`git grep "attachDiffHandlers|bidirectional-sync" -- src` 无命中。
+- doc → SQLite 写回已断开：`applyUpdate` 在前、`attachSnapshotPersistence` 在后，只挂快照持久化，不挂 `nodes`/`edges` 写回 observer。
+- **WS 写消息拒绝：已实施（`cc749ce`）**：客户端发 `sync update` / `sync step2` / 其他 sync 子类型 → `ws.close(1008, …)` 且不应用（`ws-server.ts:168`、`:189`、`:193`）；step1 只返回缺失增量，服务端直接下发 step2。
+- **1236 默认不启动：已批准未实施**：`yjs-realtime.ts:70` 为 `disableWebSocket: options.disableWebSocket ?? false`；`:107` 在未禁用时启动 WS；`ipc-handlers.ts:348` 为 `new YjsRealtime(db)`，未传 options；全库 `git grep BIZGRAPH_YJS_WS` 无命中。故默认仍监听 `127.0.0.1:1236`——只读靠"写消息被拒"保证，不是靠"端口关闭"。
+- `graphs` 无写回路径；doc 变更只更新 `yjs_snapshots`，不改 `nodes`/`edges`。
+- `nodes.entity_key` / `lifecycle_state` **仅建议**（本文规划，代码中不存在；`git grep` 无命中）。
+- 已知缺陷（未修）：启动后新建图不进 doc 池，连 `1236` 被 `1008` 拒绝；`node_id` 放宽仍是长期待办。
 
-**已批准处置：单向 —— Yjs 只读、SQLite 权威。** 技术改法：断开 `attachDiffHandlers` 及一切 doc → `nodes`/`edges` 的写入路径；WS 端点拒绝 update / sync step2；保留快照编解码、`applyUpdate` 恢复、shutdown flush；**不删依赖、不删表、不改 schema 版本**。**完全移除 Yjs 不在本期。**
+**验收口径（P6）**：默认启动下写消息被拒；doc 变更后 `nodes`/`edges` 无新增/改写；旧快照可读；`entity_key` 不因恢复而重算。
+
+**已批准未实施**：完全移除 Yjs（L3，§2.8）；删依赖/表、改 schema 版本不在本期。外部"拆除"方案本文不背书也不反驳。
 
 #### 旧库回填算法（一次性，幂等）
 
@@ -499,7 +517,7 @@ Step 4 抽样失败（无可采文件 / 全是二进制）：
 
 ### 2.8 Yjs 完全拆除清单（L3，非本期）
 
-> **前置：本期已批准的是"单向只读、SQLite 权威"（§2.2.1），不是拆除。** 本节只把"如果 L3 决定完全移除 Yjs"需要覆盖的范围记全，避免漏项；不改变 L1/L2 的实现，也不替任何外部方案背书。完全拆除必须单独决策、单独施工。
+> **前置：本期已实施的是"单向只读、SQLite 权威"（§2.2.1，`cc749ce`），不是拆除。** 本节只把"如果 L3 决定完全移除 Yjs"需要覆盖的范围记全，避免漏项；不改变 L1/L2 的实现，也不替任何外部方案背书。完全拆除必须单独决策、单独施工。
 
 | 类别 | 范围 | 关键点 |
 |---|---|---|
@@ -507,22 +525,22 @@ Step 4 抽样失败（无可采文件 / 全是二进制）：
 | 2. 启动装配 | `YjsManager` / `YjsDocRegistry`、doc 池初始化、恢复入口 | 只删生产装配与调用；测试替身另行处理 |
 | 3. shutdown flush 与 debounce | 关停写回、flush 定时器、debounce 队列 | 拆除后必须确认没有遗留定时器阻止退出 |
 | 4. 冲突子系统 | `conflict-docs` + `conflict-rules` + `lamport` + `conflict-reporter`（约 946 行） | 冲突报告/审计的去留要单独决定；不能只删入口留死代码 |
-| 5. 测试 | 6 个测试文件、116 个 `it`（不是 86） | 按文件清单逐个处置：删除 / 改写成只读契约测试 / 保留为回归 |
+| 5. 测试 | **9 个测试文件、119 个 `it(`**（2026-11-07 `rg -c "\bit\("` 复核：`src/main/realtime/__tests__` 8 个 + `src/main/services/__tests__/conflict-reporter.test.ts`；数字随代码变化，拆除前重测） | 按文件清单逐个处置：删除 / 改写成只读契约测试 / 保留为回归 |
 | 6. 依赖 | `yjs` / `y-protocols` / `lib0` + lockfile + bundle 体积 | 需重新生成 lockfile 与打包产物体积基线；不手改 lockfile |
 | 7. 旧快照数据处置 | 已有快照文件/DB 行 | 只读保留、归档或删除三选一；删除必须可恢复且有报告 |
-| 8. 远端 / 边界清理 | `127.0.0.1:1236` WS、update/sync step2 拒绝逻辑、无鉴权端点 | 与 §2.2.1 的"拒绝 update / sync step2"衔接；先只读再谈关闭端口 |
-| 9. 文档同步 | `agent-architecture.md`、本文 §2.2 / §8.11 / P6、运维说明 | 拆除后 P6 验证项改为"写回路径已不存在"；本期仍保留 Yjs 两项验证（§8.11） |
+| 8. 远端 / 边界清理 | `127.0.0.1:1236` WS、update/sync step2 拒绝逻辑、无鉴权端点 | §2.2.1 已实施"写消息 1008 拒绝"；先确认只读稳定，再谈关闭端口 |
+| 9. 文档同步 | `agent-architecture.md`、本文 §2.2 / §8.11 / P6、运维说明 | 拆除后 P6 改为"已无 WS 端点"；当前验收是"默认启动下写消息被拒、doc 变更不落库"（§8.11） |
 
 **L3 拆除 runbook（8 步，顺序不可换）**
 
 | 步 | 动作 | 验证项 |
 |---|---|---|
 | 1 | 前置确认：备份、快照导出、schema 版本、`snapshots` 表清单 | 恢复演练通过；快照可读 |
-| 2 | 删接线：`attachDiffHandlers`、WS update / sync step2 写回入口 | 启动无写回；`1236` 拒绝写入 |
+| 2 | 删接线：确认 `attachDiffHandlers` 已不存在；关闭 WS 端点 | 启动无写回；`1236` 写消息仍 1008 拒绝 |
 | 3 | 删代码：`YjsManager` / `YjsDocRegistry` / conflict 子系统 | 类型检查通过；无死代码引用 |
 | 4 | drop 迁移：Yjs 表/列 + schema 版本 | 迁移可重入；`_backup` 报告齐全 |
 | 5 | 删依赖：`yjs` / `y-protocols` / `lib0` + lockfile | lockfile 由包管理器重生成；bundle 体积基线更新 |
-| 6 | 删测试：6 个文件、116 个 `it` 逐项处置 | 只读契约测试保留；无 `skip` 遗留 |
+| 6 | 删测试：9 个文件、119 个 `it(` 逐项处置 | 只读契约测试保留；无 `skip` 遗留 |
 | 7 | 文档：`agent-architecture.md`、本文 §2.2 / §8.11 / P6 | P6 改为"写回路径已不存在" |
 | 8 | 全量验证：启动、恢复、图编辑、导入、测试、打包 | 无 WS 写回；无残留定时器阻止退出 |
 
@@ -841,7 +859,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 
 已知限制与修订（D8）：
 
-- **取消 `thread:<id>` 伪节点**：不再为无节点会话创建伪节点，也不再写入此类 `node_id`。
+- **取消 `thread:<id>` 伪节点：已批准未实施**：D8 裁决要求不再为无节点会话创建伪节点、不再写入此类 `node_id`；但 **HEAD 尚未落地**——`src/main/agent/agent-manager.ts:1141` 仍生成 `thread:${state.threadId}`（2026-11-07 复核）。施工点即该行：无节点会话不生成伪节点 id（改走纯 `chat_threads`），并同步清理写入侧。落地前不得按"已取消"验收。
 - **未挂载节点的自由聊天不进 kernel turn 路径**：只保留纯 `chat_threads` / `chat_messages` 会话，不产生 `agent_turns` 行；会话挂载到节点后才创建带 `node_id` 的会话与 turn。
 - `agent_turns.node_id NOT NULL` 列约束本期保留，**列为"长期放宽"待办**：待 `node_id` 可空后再允许未挂载会话进入 turn 路径；在此之前，需要 turn 但又无节点的功能按 fail-closed 处理（不启用），不得回退到伪节点方案。
 - `node_session_links.node_entity_key` 可空只表达"项目级引用"与历史数据兼容，不代表仍在生成伪节点。
@@ -2631,12 +2649,12 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 | P3 | 重建不丢非 `createSql` 列 | 重建前置 `writeback_disabled=1`、写 `edges.updated_at`，重建后校验 | 值保留 | **已由 v24 修复**（4 表 8 列补进 `createSql`，见 §8.13）；若仍失败 → 检查 `restoreFromBackup` 列映射是否遗漏，而非再补 `createSql` |
 | P4 | 升级后能否降级 | 旧二进制打开新库 | 预期**不能** | 接受"不可逆"，回退统一走备份恢复；发布流程把 S4 标为不可逆里程碑 |
 | P5 | `node_links` 完整性 | 四场景（删/拆/并/删图）脚本演练 + 孤儿扫描 | 孤儿 0；软删后会话/证据可查；重复链接被拦 | 删除路径不可改 → IPC 层删除前拦截 + 巡检报告；解析走 `node_id` 快路径 + 定时按键修复 |
-| P6 | Yjs 只读处置 / 快照 / SQLite 镜像 / IPC / 渲染兼容 | **原两项不删**（Yjs 更新后查键；两种快照恢复后查键），但在处置落地后语义改为**验证写回路径已不存在**：doc 变更后 `nodes`/`edges` 无新增/改写；`127.0.0.1:1236` 的 update / sync step2 返回拒绝。**并行保留** SQLite 权威列 ↔ 镜像一致性：repo 显式写入后查键、镜像恢复后查键、比对镜像与权威列。另测 `graph:get` 返回 `entityKey`；旧快照可读 | doc 变更不落库；WS update 被拒；键不丢不重置；旧快照可读；**镜像与权威列一致**；未知 `graphType` 不崩 | 仍能写回 → 阻断发布，说明处置未完成；快照重建 id → 快照 v2 恢复后按签名回填；镜像不一致 → 阻断发布，先修镜像同步路径；渲染拒新值 → 放宽共享类型 + 未知类型降级展示 |
+| P6 | Yjs 只读处置 / 快照 / SQLite 镜像 / IPC / 渲染兼容 | **已实施（cc749ce）**：默认启动下写消息被拒；doc 变更后 `nodes`/`edges` 无新增/改写，只更新 `yjs_snapshots`；旧快照可读；`entity_key` 不因恢复重算。**并行保留** SQLite 权威列 ↔ 镜像一致性：repo 显式写入后查键、镜像恢复后查键、比对镜像与权威列。另测 `graph:get` 返回 `entityKey` | 写消息被拒；doc 变更不落库；键不丢不重置；旧快照可读；**镜像与权威列一致**；未知 `graphType` 不崩 | 仍能写 `nodes`/`edges` → 阻断发布；写消息未被拒 → 阻断发布；快照重建 id → 快照 v2 恢复后按签名回填；镜像不一致 → 阻断发布；渲染拒新值 → 放宽共享类型 + 未知类型降级展示 |
 | P7 | 渲染底座是否需要推翻 | 叠加层原型在 1000 节点图上跑批量 IPC | 不改 React Flow 数据模型；帧率/内存劣化 < 20%；单次批量 IPC | 超出性能预算 → 叠加层改为按视口分页拉取；仍不足则改为独立只读视图（仍不推翻底座） |
 | P8 | 导入查重判定正确（§2.6） | 构造 6 类样本：同路径 / 同目录名+高相似 / 不同目录名+高相似 / 不同目录名+中相似 / 抽样失败 / 不同项目 | 每个样本决策与 §2.6 Step 表一致；拒绝时 `graphs`/`nodes` 新增行数为 0；放行时指纹与建图同事务 | 误拒率高 → 调阈值或改为"总是展示证据 + 人工确认"；误放高 → 提高相似度阈值并强制人工确认；抽样失败率高 → 增加 N 或改用目录树结构指纹 |
 | P9 | 非 git E4 不混同（§3.5） | 构造 E3（`verified`）+ E4（`signed_off`）混合数据，逐项检查地图徽标/列表/导出/看板 | 按"可复现 / 不可复现"分组；E4 标注"无代码 hash、不可复现"；无同列合并、无等价排序 | 数据层已隔离，先在导出/看板层强制分组；若仍做不到，暂时只允许 UI 展示、关闭该维度导出 |
 
-> **Yjs 处置（已批准，见 §2.2.1）**：单向只读、SQLite 权威 —— 断开 doc → `nodes`/`edges` 写路径，WS 拒绝 update / sync step2，保留快照编解码、`applyUpdate` 恢复与 shutdown flush；不删依赖/表、不改 schema 版本。**完全移除 Yjs 不在本期**；外部"拆除"方案本文既不背书也不反驳。P6 原两项保留并改为验证写回路径已不存在；SQLite 镜像一致性验证并行保留。已知缺陷：启动后新建图不进 doc 池，连 `1236` 被 `1008` 拒绝，挂待办。
+> **Yjs 处置（已实施，`cc749ce`，见 §2.2.1）**：单向只读、SQLite 权威 —— doc → `nodes`/`edges` 写回已断开，WS 写消息 1008 拒绝，快照持久化、`applyUpdate` 恢复与 shutdown flush 保留；不删依赖/表、不改 schema 版本。**完全移除 Yjs 不在本期**。验收为"默认启动下写消息被拒、doc 变更不落库"；SQLite 镜像一致性验证并行。已知缺陷：启动后新建图不进 doc 池，连 `1236` 被 `1008` 拒绝，挂待办。
 
 **结论**：在满足 P1–P9 的前提下，**可以按 A+ 走**。无任何一项要求推翻渲染底座或重建图数据模型。
 
@@ -2853,13 +2871,13 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 8.15 F1–F3 前置修复（B1）
 
-> 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置。
+> **状态：已批准未实施（R7 已授权修复）。** 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置（该处置已实施，见 §2.2.1）。
 
 #### F1 子代理拒绝路径未终止会话
 
-**事实修正**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
+**已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts`）**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
 
-**最小修复契约**
+**修复契约（已批准未实施）**
 
 1. 只在**拒绝路径**补 terminate，不改成功路径与既有 `cancel()` 行为。
 2. **先存输出，再 terminate**：在调用 `terminateSession` 前，把当前 `outputBuffer` / `fileChanges` / tokens 写入 invocation（见 F2），确保 terminate 触发的回调不会清空待保存数据。
@@ -2873,9 +2891,9 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 #### F2 失败路径丢失部分产出与 token
 
-**事实修正**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
+**已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts` / `src/shared/types/subagent.ts`）**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
 
-**最小修复契约**
+**修复契约（已批准未实施）**
 
 1. `SubagentResult` 增加 `status: 'completed'|'failed'|'cancelled'`、`error?`、`partial?`；`partial` 至少含 `resultText` / `resultFiles` / `tokensUsed` / `fileChanges`。
 2. **同步 IPC 消费方**：renderer / 主进程所有读取 `SubagentResult` 的地方必须处理 `failed/cancelled`，不得把 `partial` 当完整结果。
@@ -2890,7 +2908,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 #### F3 turn 截止时间没有执行者
 
-**事实修正**：代码中不存在 `agentTurnTimeoutScanner`，也没有每分钟扫描器；"现有 scan 每分钟跑并 0 命中"是错误描述。另有五处事实：
+**已实施现状（缺陷；2026-11-07 复核 `runtime.ts` / `repository.ts`）**：代码中不存在 `agentTurnTimeoutScanner`，也没有每分钟扫描器；"现有 scan 每分钟跑并 0 命中"是错误描述。另有五处事实：
 
 - `agent_turns.status` 的 CHECK **没有 `timed_out`**；
 - `attempt` 恒为 1，退避没有意义；
@@ -2909,7 +2927,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | subagent 超时 | 不再独立配置 | — | 继承 step/turn 预算，避免第三套值 |
 
 - `attempt` 恒为 1：**不实现 turn 级退避**；重试只发生在 `work_steps.attempt` / 新 `work_run`，避免"退避但永不递增"的假机制。
-- `agent_turns.status` 无 `timed_out`：**采用 F3-A（已定）** —— 映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；**不重建 `agent_turns`**。理由：重建表是 S4 级不可逆操作，为一个状态值不值得；UI 需要区分时在展示层由 `failure_type` 派生（"超时失败"徽标与筛选），不新增库内状态。
+- `agent_turns.status` 无 `timed_out`：**采用 F3-A（已定；与 `Zcode v1.2.1，302 行` 一致）** —— 映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；**不重建 `agent_turns`**。理由：重建表是 S4 级不可逆操作，为一个状态值不值得；UI 需要区分时在展示层由 `failure_type` 派生（"超时失败"徽标与筛选），不新增库内状态。
 - **F3-B（已否决）**：重建 `agent_turns` 并把 `timed_out` 加进 CHECK。否决原因：表重建、备份/恢复与迁移窗口成本高，且会与 S1–S6 迁移叠加；收益仅为状态枚举更干净。除用户重新裁决外不再提起。
 - 增加索引：`CREATE INDEX idx_agent_turns_deadline ON agent_turns(deadline_at) WHERE status='running'`（只索引运行中行，避免全表）。
 - **写入点与禁止复用（F3-A）**：`sendCommandThroughKernel` 透传 `deadlineMs`；`insertTurn` 的 `deadlineAt ?? null` 参数位已存在，写入 `0` 表示**不启用** deadline（不是"立即超时"）。超时路径**不得复用 `cancelTurn`**：后者通过 `finalizeTurnStatus('cancelled', …)` 做终态 CAS，随后再写 `failed` 会因状态已非 `running` 返回 `false`，导致超时永远落不了 `failed`。正确路径：
@@ -3011,7 +3029,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 9.5 必须修复的既有缺口（与本设计直接相关）
 
-1. `event:NODE_STATUS_CHANGE` 无渲染端消费者 → `testing` 自动推进丢失。本期改为：该事件只更新派生状态提示，不再承担 `nodes.status` 写入。
+1. `event:NODE_STATUS_CHANGE` **有转发链（preload 与 sessionStore 均 re-emit），但没有 `node:statusChange` 订阅者**（`src/preload/index.ts:315`、`src/renderer/store/sessionStore.ts:190`、`src/renderer/store/eventBus.ts:34`；2026-11-07 复核）→ `testing` 自动推进丢失。本期改为：该事件只更新派生状态提示，不再承担 `nodes.status` 写入。
 2. `agent-manager` 会话启动自动广播 `developing` → 改为写 `work_runs`/派生状态。
 3. `threadStore` 单 thread 映射 → 时间线查询。
 4. `AgentChatPanel` 少传 `graphId` → 必须补。
@@ -3090,7 +3108,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ## 12. 外部蓝图交叉验证记录（2026-11-07）
 
-**来源**：`map-orchestration-blueprint.md`（Zcode 方案，481 行，以附件形式提供，未入库）。
+**来源**：`map-orchestration-blueprint.md`（**Zcode v1.2，364 行**，以附件形式提供，未入库）。本节的逐层对照基于该附件；§12.10–12.13 另行引用本地 **Zcode v1.2.1（勘误版，302 行）**，两者版本与行数不同，不混用。
 **方法**：逐层对照；每层给结论；只采纳"补了缺失场景"或"把含糊处变可执行"的内容；已定口径不得被改写。
 
 ### 12.1 逐层对照结论
@@ -3100,7 +3118,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 1 | 概念模型 | 各有所长 | 对方以 `ExecutionRecord` 为绑定原子单元、强调节点活动流；我们以 `work_items` + `work_runs` + `node_links` + 证据为主线。已采纳其"执行记录视图"概念，但落到现有表上（§4.6），不新增表 |
 | 2 | 表结构与主键/外键 | 我们更完整 | 我们有 **22 张新表**、revision/supersedes、key-based `node_links`；对方 test-case 用 `targets:[{graphId,nodeId}]`，node id 在克隆/重导后失效。采纳 `work_items`/`work_runs` 的依赖、结构化输出、attempt、deadline、`failure_class` 字段（§7.2）；**采纳 D2：步专属字段另立 `work_steps`**；驳回 `targets` |
 | 3 | 迁移与版本 | 我们更完整 | 我们有 v24–v32、schema checksum、备份与回滚演练；对方无迁移/回退方案。不采纳 |
-| 4 | 任务拆解与编排 | 各有长短 | 对方的执行期机制（失败分类、波次、并发、超时、重启对账）完整且可执行；我们的"结构推导 + 人工确认 + 可修订计划"更严。采纳执行机制（§5.9），驳回"LLM planner 直接产出并执行 DAG" |
+| 4 | 任务拆解与编排 | 各有长短 | 对方的**串行**执行机制（失败分类、超时、重启对账）完整且可执行；波次/并行/fanout 属 L3。我们的"结构推导 + 人工确认 + 可修订计划"更严。采纳**串行**执行机制（§5.9）；驳回"LLM planner 直接产出并执行 DAG" |
 | 5 | 路由与执行 | 对方更完整 | Tier 1/2/3 能力票比"按能力矩阵选 adapter"更可执行；节点忙排队、幂等键、deadline 写入方都是缺口。采纳（§5.9.4–5.9.5） |
 | 6 | 测试闭环 | 对方更完整 | 我们只到"回写失败"，对方补了 bug 闭环、定向重测、manual/LLM 用例分级、测试命令网关。采纳（§6.6–6.8）；但节点类型与跨图引用方式坚持我们的设计 |
 | 7 | 多图与 `entity_key` | 我们更完整 | `entity_key`、`node_links`、导入查重是我们的核心，对方没有身份层。仅采纳其"dev→online 结构变更走提案"的方向（§2.7，L3 实现） |
@@ -3108,7 +3126,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 9 | 并发与冲突 | 各有长短 | 对方有全局写闸、并发上限、优先级队列；我们有隔离 worktree 与"同节点不并行"。按场景分工：agent 编排用写闸，测试执行用 worktree（§5.9.3） |
 | 10 | 权限与安全边界 | 部分一致 | 都复用审批网关/Bash 策略/gitdir 保护。对方补了归属校验与"审批不串场"，这是我们的缺口。采纳（§6.8、§10） |
 | 11 | 性能与规模 | 各有长短 | 对方有并发上限、波次调度、运行记录不入图；我们有索引设计、视口分页、批量 IPC。采纳上限，保留索引方案 |
-| 12 | 交付节奏 | 不可直接映射 | 对方 P0–P4，我们 S1–S8/v24–v32。**采纳 D5：交付阶段 P1 先身份层（S1/S2），P2 编排脊柱（S5/S6，内置 D1/D3 护栏）**（§8.1.1）；P0 的源码缺陷不属本文；Yjs 事实已核实并批准单向只读（§2.2.1），完全移除不在本期 |
+| 12 | 交付节奏 | 不可直接映射 | 对方 P0–P4，我们 S1–S8/v24–v32。**采纳 D5：交付阶段 P1 先身份层（S1/S2），P2 编排脊柱（S5/S6，内置 D1/D3 护栏）**（§8.1.1）；P0 的源码缺陷不属本文；Yjs 已实施单向只读（`cc749ce`，§2.2.1），完全移除不在本期 |
 
 ### 12.2 采纳清单（已写入正文）
 
@@ -3156,7 +3174,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | 新增 `test-flow` 节点类型 | 与现有 `test-suite` 语义重叠，且会再次触发 `nodes.type` CHECK 重建；用 suite 表达 flow |
 | MVP 不做 worktree | 与 TestExecutor 隔离执行原则冲突；只在 agent 编排阶段采纳共享工作区 + 写闸 |
 | review gate 直接计入"已验证" | LLM 验收 + 人工确认不能等价于"测试通过 + 代码 hash"；按 §6.7 降级映射到 E2/E4 |
-| 以"已拆除 Yjs"为前提裁剪 P6 / 改 RequestQueue | **Yjs 事实与处置已定**：恢复时不写 SQLite，恢复后经 `1236` 可写；已批准单向只读、SQLite 权威（§2.2.1），完全移除不在本期。P6 原两项保留并改为验证写回路径已不存在，SQLite 镜像验证并行。外部拆除方案本文不背书也不反驳。RequestQueue 由 `WorkItemService` 队列取代（§12.7） |
+| 以"已拆除 Yjs"为前提裁剪 P6 / 改 RequestQueue | **Yjs 已实施单向只读（`cc749ce`）**：写回已断开、WS 写消息 1008 拒绝、doc 变更不落库；SQLite 权威列不变（§2.2.1）。完全移除不在本期。P6 验收改为"默认启动下写消息被拒、doc 变更不落库"，SQLite 镜像验证并行。外部拆除方案本文不背书也不反驳。RequestQueue 由 `WorkItemService` 队列取代（§12.7） |
 | Tier 2 降级执行写步骤 | 无写前审批回调就无法满足"不绕过审批网关"；Tier 2 只能只读或排队等人工会话，`degraded` 只用于手动会话（§5.9.5） |
 | 运行记录只放 artifacts、不进图 | 我们本就没有把 run 做成图节点（`test_runs`/`test_results` 是表），方向一致，无需改 |
 
@@ -3177,15 +3195,12 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 12.5 仍需用户拍板
 
-> 五条裁决（U1、F3、`plan_deviations` 归因、`work_items.status`、Tier1/`published`/流程级测试）已落入正文，相关条目从本节移除。Yjs 已完成事实核实并批准单向只读处置（§2.2.1），不再作为待拍板项。
+> 五条裁决（U1、F3、`plan_deviations` 归因、`work_items.status`、Tier1/`published`/流程级测试）已落入正文。R7 覆盖项（F1–F3 修复授权、发布进度仅内部展示、dev→online 提案 UI 留 L3）已拍板，从待定移除；E4 过期不延后也已定。Yjs 单向只读已由 `cc749ce` 在代码层实施。
 
-1. **是否把对方 P0 的三个源码缺陷纳入开工前置**（subagent 超时不杀会话、失败丢弃部分产出、deadline 无写入方）。属源码修复，需单独授权。
-2. **是否允许"发布进度"对外展示**。本文只允许内部只读视图，且必须与 `verified_count` / `signed_off_count` 分开；若产品要求对外，需要确认是否会造成"进度=完成度"的误读。
-3. **dev→online 提案 UI 是否提前到 L2**。本文默认 L3，L1/L2 只允许人工直接编辑 online 图。
-4. **D1 计划确认强度、D4 流程节点折叠**：本次**保持现状不动**，等用户拍板后再改。
-5. **E4 过期是否延后到 P4**：**不采纳"延后"**；保持统一 30 天可配置，并补"一键续签 + 引用原 coverage"方向（§3.5）。
-6. **F3 超时默认值放哪**：配置键 `agent.timeouts.turnMs` vs 代码常量。两者都要求单一来源，本文先标待定（§8.15）。
-7. **审批等待期如何暂停 deadline**：候选 A（置 NULL + 冻结原值，恢复时重算）vs 候选 B（不置 NULL，到期检查跳过 `waiting_approval`）；都要求等待时间不计入超时，施工前裁决（§8.15）。
+1. **D1 计划确认强度**：简单单步内联 mini-C1 vs 全量 C1 对话框。
+2. **D4 流程折叠**：suite/case + `test_specs.kind='flow'`；折叠层级与默认展开方式。
+3. **F3 超时默认值来源**：配置键 `agent.timeouts.turnMs` vs 代码常量；两者都要求单一来源。
+4. **审批等待期如何暂停 deadline**：候选 A（置 NULL + 冻结原值，恢复时重算）vs 候选 B（不置 NULL，到期检查跳过 `waiting_approval`）；都要求等待时间不计入超时。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -3215,7 +3230,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 | 项 | 结论 | 说明 |
 |---|---|---|
-| Yjs | 依赖/表/schema **不删不改**；处置为单向只读 | 见 §2.2.1、§8.11；完全移除不在本期；P6 原两项保留并改为验证写回路径已不存在，SQLite 镜像并行 |
+| Yjs | 依赖/表/schema **不删不改**；单向只读 | **已实施（`cc749ce`）**：写回模块删除、WS 写消息 1008 拒绝、doc 变更只落 `yjs_snapshots`；**1236 默认启动仍为已批准未实施**（`yjs-realtime.ts:70` `?? false`、`:107` 默认启动、`ipc-handlers.ts:348` 无 options，§2.2.1）。完全移除不在本期；P6 验收＝"默认启动下写消息被拒、doc 变更不落库"，SQLite 镜像并行 |
 | RequestQueue 删除 | 记录不改；由 `WorkItemService` 队列取代 | 删除动作随 **L3** 落地（P2 = L2，不得写成随 P2 删除），不在本文改源码 |
 | 进化三层与 `review_queue` | L3+ 非本期 | 不写入 L1/L2 范围 |
 | `ContextBundle` 与尾块协议 | 不在本文定义 | 交叉引用 `agent-architecture.md`（§0.1） |
@@ -3232,9 +3247,11 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | Q6 | 章节引用错误 | 流程级测试的可执行定义在 **§6.5.1**，不是 suite 本身 | §6.5.1 定义 `test_specs.kind='flow'` 的执行口径；`test-suite` 只是资产容器 |
 | Q11 | 载体是 suite | 应为 **`test_specs.kind='flow'`** | 流程级测试要绑定多节点与步骤序列，suite 本身不承载 flow 语义 |
 | 表数 | 仍写"21 张表" | 我们已是 **22 张**；L1 最小集 **13 张** | §8.12 与 §7.2；D2 新增 `work_steps` 后总数 22 |
-| P6 / 伪节点 | 仍标"不可用" | **伪节点已取消**（§4.5 D8）；**Yjs 已单向只读**（§2.2.1），不是"不可用" | §4.5、§2.2.1、§8.11；完全拆除才属 L3（§2.8） |
+| P6 / 伪节点 | 仍标"不可用" | **Yjs 写消息拒绝：已实施（`cc749ce`）**；**伪节点取消：已批准未实施**（`agent-manager.ts:1141` 仍生成 `thread:<id>`，§4.5 D8） | §4.5、§2.2.1、§8.11；完全拆除才属 L3（§2.8） |
+| R5 汇总 | "24 可用 / 8 待商议 / 2 不可用" | 应为 **24 可用 / 5 已裁决落地（D2/D3/D5/D6/D8）、2 待拍板（D1、D4）/ 0 不可用（2 项已处置）** | §12.5；D1/D4 仍待拍板 |
+| `NODE_STATUS_CHANGE` | "无消费者" | 精确为"**有转发链（preload 与 sessionStore 均 re-emit），无 `node:statusChange` 订阅者**" | `src/preload/index.ts:315`、`src/renderer/store/sessionStore.ts:190`、`src/renderer/store/eventBus.ts:34`；2026-11-07 复核 |
 
-### 12.10 Zcode v1.2 逐节评估：明确不采纳
+### 12.10 Zcode v1.2.1（302 行，本地快照）逐节评估：明确不采纳
 
 | 主张 | 不采纳理由 |
 |---|---|
@@ -3244,16 +3261,55 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | embedding ≥0.85 与"路径转 glob" | 无数据模型、无算法、无验证方式；不落表也不落规则 |
 | 整表术语对照 | 含错误映射（把 `task_steps` → `work_runs`，应为 `work_steps`）与陈旧主张；只按 §5.9.11 / §4.2 的字段对齐，不做整表搬运 |
 | `needs_input` 未入值域 | 已定 13 个 `work_items.status`，不重开；`needs_input` 早在 D2 建齐 |
-| 伪节点本期保留 | D8 已取消 `thread:<id>` 伪节点；不回收 |
+| 伪节点本期保留 | D8 裁决要求取消（**已批准未实施**，施工点 `agent-manager.ts:1141`）；不回收该主张 |
 | 其 L1/L2 表切分 | 与我们 L1 13 表冲突；`change_sets` / `work_steps` 必须在 L1 |
 | `StageOverride.replace('extract')` | `pipeline.ts` 是字段映射而非方法调用，照写编译失败 |
 | "turn 事件流监控点" | 没说是谁跑、多久一次、如何防并发重复杀；按 F3 的单一 deadline 执行者 |
 
-### 12.11 Zcode v1.2 的事实性提醒
+### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- 该版本若干结论基于**过期快照**：它称本文约 1809 行，实际本轮前已 3129 行；章节号、表数与已裁决项均已变化。凡与本文冲突处，以本文当前版本为准。
-- 其关于 Yjs WS 缓解、输出上限、测试数量的具体数字**不采用**；Yjs 事实只以 §2.2.1 的已核实结论为准，测试范围只以 §2.8 的 6 文件 / 116 个 `it` 为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3432 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
+
+### 12.12 Zcode v1.2.1 同步项（已落正文）
+
+> 引用版本：**Zcode v1.2.1，302 行（本地快照）**。以下均已按三态词标注。
+
+| 事项 | 状态 | 落点 |
+|---|---|---|
+| D2/D3/D5/D6/D8 在对方侧已落定：`work_steps` 独立表、伪节点取消（D8）、`work_items.status` 13 值含 `needs_input` | **已批准未实施**（蓝图定稿，代码未落；D8 施工点 `agent-manager.ts:1141`）；D1/D4 仍待我方拍板 | §4.1.1、§4.5、§4.7、§12.5 |
+| U1：过期 E4 → `stale` | **已批准未实施** | §3.5、§3.7.3 |
+| Yjs 单向只读（写回删除、WS 写消息 1008） | **已实施**（`cc749ce`） | §2.2.1、§8.11 |
+| F3-A：`failed` + `failure_type='timeout'`，不碰 `cancelTurn` | **已批准未实施**；双方一致 | §8.15 |
+| D1 计划确认强度、D4 流程折叠 | **仅建议**（待用户裁决） | §12.5 |
+| F3 默认值来源、审批期 deadline 暂停机制 | **仅建议**（待用户裁决） | §8.15、§12.5 |
+
+### 12.13 勘误清单（供 Zcode 按 R9 逐条修正）
+
+> 引用口径：被审附件 **Zcode v1.2，364 行**；对方现行勘误版 **Zcode v1.2.1，302 行（本地快照）**。下表按"会改变结论"与"仅行号偏移"分列，不混排；"对方行号"一律指 v1.2.1 本地快照（302 行）中的对应位置。
+
+**A. 会改变结论的 8 条**
+
+| # | 对方位置（v1.2.1 行） | 原句 | 我方事实与证据 | 判定 |
+|---|---|---|---|---|
+| A1 | L105、L215 | "Yjs WS 前置缓解已上" | `BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options | 从未实施；`cc749ce` 已以单向只读取代，缓解项关闭 |
+| A2 | L89 | "截断上限 1MB 与现有一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:90`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 错误；F2 改两层限制（单条 10KB 既有 + partial 总量 64KB 新设） |
+| A3 | L95 | "调 `cancelTurn` → `finalizeTurnStatus(failed, timeout)`" | `runtime.ts:766-771`：`cancelTurn` 内部已做终态 CAS 写 `cancelled`/`aborted`；`finalizeTurnStatus` 二次 CAS 返回 false | 逻辑不成立；已按 F3-A 专用超时路径单次 CAS 落 `failed` |
+| A4 | L31、L262 | "Yjs 专测 86 个" | `rg -c "\bit\("`：`src/main/realtime/__tests__` 8 个文件 + `services/__tests__/conflict-reporter.test.ts`，共 **9 文件 / 119 个 `it(`**（2026-11-07） | 错误计数 |
+| A5 | L194 | "数据源全部现成" | `agent_logs` 无 `work_item_id`（`database.ts:484`）；`subagent_invocations` 无任务连接（`database.ts:592`）；`SubagentResult` 无 `status/error/partial`（`shared/types/subagent.ts:98`） | 不成立；必须经 `node_session_links` 归因 |
+| A6 | L289 | 术语映射 `task_steps` → `work_runs` | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 错误映射 |
+| A7 | L294 | "E4 在有真实测试时由 E3 替代" | 本文 §3.5 / §6.7：可复现（E3）与不可复现（E4）分离，不互相替代 | 不采纳 |
+| A8 | L224 | "drop 迁移单提交 revert 即可" | revert 只回代码，不回已 DROP 的行/列数据 | 不成立；须备份 + 演练恢复 |
+
+**B. 仅行号偏移的 4 条（结论不变）**
+
+| # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
+|---|---|---|---|---|
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3432 行**（2026-11-07 `wc -l`） | 仅快照过期；结论需按现文本复核 |
+| B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3432 行** | 仅行号偏移 |
+| B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 ## 13. 覆盖审计（2026-11-07）
 
@@ -3276,7 +3332,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §1.8 本期范围 | 只有结论 | 无；范围声明本身不需施工 | — |
 | §2.1 唯一性维度 | 有框架缺细节 | 迁移步骤、回填顺序、唯一索引失败处理、回滚边界 | B1 |
 | §2.2 生成/保留/回填 | 有框架缺细节 | 多图配对、占位节点、冲突行、二次运行幂等 | B1 |
-| §2.2.1 Yjs 写回事实 | 只有结论 | Yjs 技术改法在另一处施工，未在本蓝图展开 | —（另行施工） |
+| §2.2.1 Yjs 写回事实 | 只有结论 | 无施工内容；**已实施（`cc749ce`）**，验收口径已改为"写消息被拒、doc 变更不落库" | — |
 | §2.2 旧库回填算法 | 有框架缺细节 | 项目事务、并发写冲突、ambiguous 报告、失败续跑 | B1 |
 | §2.2.2 S1 施工细则 | 可施工 | 无；导入路径仍需代码，但字段/事务/回滚/验收已齐 | B1 |
 | §2.3 `node_links` 设计 | 有框架缺细节 | 写入服务、方向矩阵、重复/自链接、孤儿/失效判定 | B1 |
@@ -3354,7 +3410,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
 | §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
 | §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
-| §8.15 F1–F3 | 有框架缺细节 | F3-A 已定、F3-B 已否决；源码修复路径需单独授权 | B1 |
+| §8.15 F1–F3 | 有框架缺细节 | **已批准未实施**（R7 授权）；F3-A 已定且与 `Zcode v1.2.1（302 行）` 一致 | B1 |
 | §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
 | §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
 | §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
