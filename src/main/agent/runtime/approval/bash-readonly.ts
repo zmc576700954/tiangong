@@ -406,8 +406,9 @@ export const DANGEROUS_ARGS_BY_COMMAND: Record<string, DangerousArgSpec[]> = {
 /**
  * 会读取仓库/用户 git 配置并可能执行外部程序的只读子命令：
  * `diff.*.textconv` / `diff.*.command` / `diff.external`（diff/log/show/blame/whatchanged）、
- * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status/diff/blame）
- * 与 `log.showSignature`（log/show/whatchanged 自动调用 gpg）。配置命中即 ask。
+ * `filter.*.clean|smudge|process`（status/diff）、`core.fsmonitor`（status 必调用，
+ * diff/blame 与 index 刷新状态相关）与 `log.showSignature`（log/show/whatchanged 自动
+ * 调用 gpg）。配置命中即 ask。
  */
 const GIT_CONFIG_EXEC_SUBCOMMANDS = new Set([
   'diff', 'log', 'show', 'status', 'blame', 'whatchanged',
@@ -467,28 +468,72 @@ function stripGitConfigComment(value: string): string {
   return value.trim()
 }
 
-/** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
-function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'global'): boolean {
+interface GitConfigEntry {
+  /** 小写节名；现代式子节形如 `diff "evil"`，旧式子节形如 `diff.evil`。 */
+  section: string
+  /** 小写键名。 */
+  key: string
+  /** 值；裸键归一为 `true`，显式空值保留空串。 */
+  value: string
+  /** 该行只有键名、没有 `=`：Git 语义等价 `true`。 */
+  bare: boolean
+}
+
+/**
+ * 把 git 配置文本解析为规范化条目，供探测与 include 复用。
+ *
+ * 归一化规则（与 git config 实际解析器对齐）：
+ * - 节头：`[name]`、`[name "sub"]`、`[name.sub]`；节名/键名大小写不敏感（统一小写），
+ *   子节内容原样保留（Git 子节本身大小写敏感，但本探针只按节名前缀判定）。
+ * - 节头允许尾随注释（`[diff "evil"] # note`），也允许同一行直接跟键值（`[t] x = 1`）。
+ * - 行首缩进（空格 / `\t`）忽略；整行 `#` / `;` 注释忽略。
+ * - `key = value` 取值；`key`（裸键）等价 `true`；`key =`（显式空值）保留空串
+ *   （Git 对布尔判 false、对字符串判空，等价未设置）。
+ * - 值内 `#` / `;` 只有「前有空白且不在双引号内」才是行内注释。
+ * - 裸键后跟注释（`key # note`）在 Git 里是 fatal 解析错误，这里同样丢弃该行。
+ * - 键名只含字母/数字/连字符：Git 不接受带点或下划线的键名（`a.b=1`、`a_b=1` 均 fatal）。
+ */
+const GIT_CONFIG_SECTION_HEADER = /^\[\s*([^\s\]]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\](.*)$/
+const GIT_CONFIG_KEY_VALUE = /^([A-Za-z0-9-]+)(?:\s*=\s*(.*))?$/
+
+function parseGitConfigEntries(text: string): GitConfigEntry[] {
+  const entries: GitConfigEntry[] = []
   let section = ''
   for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim()
+    let line = rawLine.trim()
     if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    // 节头允许尾随注释：`[diff "evil"] # note`（Git 同样接受）。
-    const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
+    const sectionMatch = GIT_CONFIG_SECTION_HEADER.exec(line)
     if (sectionMatch) {
-      section = sectionMatch[1].toLowerCase()
-      continue
+      const name = sectionMatch[1].toLowerCase()
+      const subsection = sectionMatch[2]
+      section = subsection === undefined ? name : `${name} "${subsection}"`
+      line = sectionMatch[3].trim()
+      if (!line || line.startsWith('#') || line.startsWith(';')) continue
     }
-    const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(line)
+    const kv = GIT_CONFIG_KEY_VALUE.exec(line)
     if (!kv) continue
-    const key = kv[1].toLowerCase()
-    const value = stripGitConfigComment(kv[2])
-    if (!value) continue
+    const bare = kv[2] === undefined
+    entries.push({
+      section,
+      key: kv[1].toLowerCase(),
+      value: bare ? 'true' : stripGitConfigComment(kv[2]),
+      bare,
+    })
+  }
+  return entries
+}
+
+/** 单个 git 配置文件文本里是否登记了会执行外部程序的值。 */
+function gitConfigTextExecutes(text: string, sub: string, source: 'repo' | 'global'): boolean {
+  for (const { section, key, value } of parseGitConfigEntries(text)) {
+    // 显式空值（`key =`）等价未设置：Git 对布尔返回 false，对字符串为空。
+    if (value === '') continue
     // `diff.<driver>.command` 与 `diff.external` / `textconv` 一样会执行外部程序。
     if (gitConfigSectionIs(section, 'diff') && (key === 'textconv' || key === 'external' || key === 'command')) {
       return true
     }
-    // fsmonitor 只在 status/diff/blame 读取工作区时被调用；log/show 不刷新 index，不判。
+    // fsmonitor：status 必调用；diff/blame 与 index 刷新状态相关（refresh index 时才调用）；
+    // log/show 不刷新 index，不判。裸键 `fsmonitor` 归一为 `true`，与 `= true` 等价。
     if (
       gitConfigSectionIs(section, 'core') &&
       key === 'fsmonitor' &&
@@ -536,19 +581,12 @@ function gitConfigPaths(file: string, depth = 0, seen = new Set<string>()): stri
   } catch {
     return paths
   }
-  let section = ''
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#') || line.startsWith(';')) continue
-    const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
-    if (sectionMatch) {
-      section = sectionMatch[1].toLowerCase()
+  for (const entry of parseGitConfigEntries(text)) {
+    if (!(gitConfigSectionIs(entry.section, 'include') || gitConfigSectionIs(entry.section, 'includeif'))) {
       continue
     }
-    if (!section.startsWith('include')) continue
-    const kv = /^path\s*=\s*(.*)$/i.exec(line)
-    if (!kv) continue
-    let includePath = stripGitConfigComment(kv[1]).replace(/^"|"$/g, '')
+    if (entry.key !== 'path' || entry.bare) continue // 裸 `path` 在 Git 里是 missing value，不是合法 include
+    let includePath = entry.value.replace(/^"|"$/g, '')
     if (!includePath) continue
     if (includePath.startsWith('~/')) includePath = join(homedir(), includePath.slice(2))
     else if (!isAbsolute(includePath)) includePath = resolve(dirname(file), includePath)
@@ -601,22 +639,11 @@ function gitConfigEnablesWorktreeConfig(files: string[]): boolean {
   for (const file of files) {
     if (!existsSync(file)) continue
     try {
-      const text = readFileSync(file, 'utf8')
-      let section = ''
-      for (const rawLine of text.split(/\r?\n/)) {
-        const line = rawLine.trim()
-        if (!line || line.startsWith('#') || line.startsWith(';')) continue
-        const sectionMatch = /^\[\s*([^\]]+?)\s*\](?:\s*[#;].*)?$/.exec(line)
-        if (sectionMatch) {
-          section = sectionMatch[1].toLowerCase()
-          continue
-        }
-        const kv = /^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/.exec(line)
-        if (!kv) continue
+      for (const entry of parseGitConfigEntries(readFileSync(file, 'utf8'))) {
         if (
-          gitConfigSectionIs(section, 'extensions') &&
-          kv[1].toLowerCase() === 'worktreeconfig' &&
-          gitConfigBoolean(stripGitConfigComment(kv[2]))
+          gitConfigSectionIs(entry.section, 'extensions') &&
+          entry.key === 'worktreeconfig' &&
+          gitConfigBoolean(entry.value)
         ) {
           return true
         }

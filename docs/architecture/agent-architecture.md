@@ -652,7 +652,8 @@ Bash 的放行判断不再交给 Claude SDK/CLI 内部的分级，改由宿主�
 - 从该目录向上定位 `.git`（支持 worktree 的 gitdir/commondir），读取 `.git/config`，**仅在 `extensions.worktreeConfig` 开启时**读取 `.git/config.worktree`（Git 未开启时根本不读该文件，无条件读取会造成无谓 ask），递归跟随 `include.path` / `includeIf.path`（条件不复判，按可能命中处理；`includeIf` 求值需要匹配 `gitdir`/`onbranch`/`hasconfig:remote.*.url` 等条件与通配符，成本高；不复判只会多 ask、不会漏判，故保留）；
 - 读取 `GIT_CONFIG_GLOBAL` / `~/.gitconfig` / XDG / 系统配置；
 - 节名按 `diff` / `diff.` / `diff ` 前缀匹配，因此现代写法 `[diff "evil"]` 与旧式子节 `[diff.evil]`（`git config --get diff.evil.textconv` 认可）都会命中；
-- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 为关闭）只在 `status`/`diff`/`blame` 判定（实测这三条会调用 fsmonitor；`log`/`show` 不刷新 index，不判）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true` 只在 `log`/`show`/`whatchanged` 判定；
+- **配置解析层统一归一化**：只写键名的**裸布尔键**（如 `[extensions]` 下的 `worktreeConfig`、`[log]` 下的 `showSignature`、`[core]` 下的 `fsmonitor`）等价 `true`；`key =` 显式空值等价未设置（Git 布尔判 false）。节名/键名大小写不敏感，行首 `\t`/空格缩进忽略，整行 `#`/`;` 注释与值后的行内注释均忽略，节头后同行可直接跟键值（`[log] showSignature`）。键名只含字母/数字/连字符（带点或下划线的键名 Git 会 fatal）；裸 `include.path` 在 Git 里是 missing value、不是合法 include，不按路径处理；
+- diff 节内 `textconv`、`external`、`command` 任一非空即危险；`core.fsmonitor`（按 git 布尔语义，`false/no/off/0` 与显式空值为关闭）只在 `status`/`diff`/`blame` 判定（`status` 必调用；`diff`/`blame` 与 index 刷新状态相关；`log`/`show` 不刷新 index，不判）；仓库本地 `filter` 的 `clean/smudge/process` 在 `status`/`diff` 全 ask；全局 `filter` 同两项只在 `status`/`diff` 判定，且**只放行 git-lfs 标准写法**，自定义值 ask；`log.showSignature=true`（含裸键）只在 `log`/`show`/`whatchanged` 判定；
 - 任一命中即 `git-repo-config-exec` ask；文件存在但不可读按危险处理（fail-closed）；无仓库或配置干净时保持 allow；
 - **全局配置每次现读、不做进程内缓存**：缓存会让「先判干净、随后配置被改写」在同一进程内永远看不见；单次读取约 0.05 ms，去掉无明显开销（mtime+size 失效还受时间戳精度与同尺寸改写竞态影响）。
 

@@ -2381,6 +2381,250 @@ P1-1、P1-2、P1-3、P2-1 四条在上轮均为实测阻断，本轮在 `6839fe7
 
 **校验**
 
-- 定向：三个套件共 **62 passed**（`bash-readonly` 34 passed）。
+- 定向：三个套件实测 **66 passed**（`bash-readonly` 34、`approval-gateway` 28、`approval-startup-reconcile` 4）。§11.9 初稿写作“62 passed”是修复过程中较早一次运行的临时计数，已被本轮 §12.8 复算（66）修正；第四轮复审后追加 3 条裸键用例，定向变为 69（见 §12.9）。
 - `tsc --noEmit` / `eslint src` / `vite build` 全过。
 - 全量：`26 failed 文件 / 253 passed`；`173 failed / 3108 passed / 93 skipped (3374)`，失败文件集合与基线 26 个 ABI 文件一致。
+
+## 十二、最终轮 B2 复验（第四轮，2026-11-06）
+
+### 12.0 冻结基线（复算前）
+
+| 项 | 值 |
+|---|---|
+| `git rev-parse HEAD` | `938504a40458550d80b922bae967fb9e1988e745` |
+| `git rev-parse HEAD~1` | `6839fe7132f0efe2cc811deb04eefed34eac497b` |
+| `git status --short` | 空 |
+| `git ls-files spikes \| wc -l` | 123 |
+
+关键文件 sha256（追加前）：
+
+```
+f9e2c6dd79da3b8c7438f55bdbe9e4abe4f3ae8c93dc38abb2922060e7cc3a32  src/main/agent/runtime/approval/bash-readonly.ts
+42777f11366ff4c78a2a9cea8955490bf8a5b9b588669b174e3cdeba36796638  src/main/agent/runtime/approval/__tests__/bash-readonly.test.ts
+d033bc2249a4bf833c2c2fcbdebca1129f39ee60f888413d199607bee558c24d  src/main/adapters/claude-code.ts
+fdbdcda730c8a8e7739aa2e5959414a3a1e991e3b1f975654d1f559460ede1d8  src/main/agent/runtime/executors/adapter-driver.ts
+1f9f6a0d3d79198fcfedf3cca66f15fb7d5d4f230c60b9e2c031cd17c23642c5  src/main/agent/runtime/approval/gateway.ts
+825ff131add8d51d5bdd0053a8fb72b5619b2663e58c1dff9ec26146900b4d07  src/main/agent/runtime/recovery/planner.ts
+9f92e0a27e3864133bce6127c77821850d49dfb2b750684ece748133bb5f1887  docs/architecture/agent-architecture.md
+7b948a2c62fcc742e956245622e8863f8723cc5edf9bf5ed93ad255b9c2fccd0  docs/architecture/agent-rollout.md
+54b69b10bbb487a1c8a5733a34c838869c29a8f0aff0d0ece8e5638c441f54aa  docs/architecture/agent-decisions.md
+ed09e84d82b9953e094ebf57c3da26e63423c613e9f2a45322d4396d79482061  docs/architecture/agent-audit-2026-11-05.md
+```
+
+### 12.1 结论：**不可发布**
+
+本轮声称的两处修复（全局 filter 只放行标准 LFS、`config.worktree` 按扩展门控）本身有效；但**门控实现引入了 1 项新回归**，并保留 1 项同根因的既有漏判。两项都能在零审批下真实执行外部程序，属于 P1 阻断。
+
+共同根因：**git 配置的裸布尔键（`[section]` 下只写键名、不写 `= value`）等价于 `true`，但 `bash-readonly.ts` 的 KV 解析只认 `key = value`**。
+
+### 12.2 阻断清单
+
+#### B-12-1（本轮回归）：裸 `worktreeConfig` 使 `config.worktree` 未被读取
+
+复现（全部在本机实测；`marker.sh` 只做 `echo x >> marker.txt`）：
+
+```sh
+git init -q /tmp/r12-b1/repo && cd /tmp/r12-b1/repo
+# 裸键，注意没有 "= true"
+printf '[extensions]\n\tworktreeConfig\n' >> .git/config
+# 用被门控的文件承载 fsmonitor
+printf '[core]\n\tfsmonitor = /tmp/r12-b1/marker.sh\n' > .git/config.worktree
+git config --bool extensions.worktreeConfig   # → true
+```
+
+实测输出：
+
+```
+[B-12-1] bare policy = allow git:status
+[B-12-1] real executed = YES
+[B-12-1] explicit-true policy = ask git-repo-config-exec
+```
+
+- 策略：`evaluateBashPolicy('git status', { cwd })` → `allow / git:status`；真实 `git status` 执行 `marker.sh`。
+- 对照：同一文件改为 `worktreeConfig = true` → `ask / git-repo-config-exec`。
+- 父提交 `6839fe7` 无条件把 `config.worktree` 纳入解析，该形态在父提交下会 ask；本轮门控后漏判，属**本轮引入的回归**。
+- 根因：`gitConfigEnablesWorktreeConfig()` 的 KV 正则 `^([A-Za-z0-9_.-]+)\s*=\s*(.*)$` 不匹配裸键。
+- 附带：`[extensions]` 裸键带行内注释（`worktreeConfig # on`）会被 git 判为 `fatal: bad config line`，不可利用；但**纯裸键是合法且常见**的 Git 写法。
+
+#### B-12-2（既有）：裸 `log.showSignature` 使 `git log` 拉起 `gpg.program`
+
+复现：
+
+```sh
+git init -q /tmp/r12-b2/repo && cd /tmp/r12-b2/repo
+printf '[log]\n\tshowSignature\n[gpg]\n\tprogram = /tmp/r12-b2/marker.sh\n' > .git/config
+git config --bool log.showSignature               # → true
+# 构造带 gpgsig 的提交（hash-object -t commit -w --stdin + update-ref）
+git log --max-count=1
+```
+
+实测输出：
+
+```
+[B-12-2] bare policy = allow git:log
+[B-12-2] real executed = YES | marker content: x
+```
+
+- 策略 `allow / git:log`；真实 `git log` 调起 `gpg.program`。
+- 根因同上：`gitConfigTextExecutes()` 只认带等号的 `showsignature`，裸键漏判。
+- 与 B-12-1 同属“裸布尔键”一类；建议统一在解析层把裸键归一为 `true`（含 `diff`/`filter`/`core`/`log` 各段）。
+
+### 12.3 本轮四项独立判定
+
+#### 1）全局 filter：**修复有效，判定通过（含 1 项 P2 说明）**
+
+沿用“仓库 `.gitattributes` 指向全局已存在 filter”复现，矩阵实测（`includeGlobalGitConfig=true`）：
+
+| 场景 | 判定 |
+|---|---|
+| 全局自定义 filter（clean/process）+ 仓库 `.gitattributes` | `ask / git-repo-config-exec` |
+| 同上，`git diff` | `ask / git-repo-config-exec` |
+| 全局标准 LFS（clean/smudge/process） | `allow / git:status`、`allow / git:diff` |
+| 整值引号 `"git-lfs clean -- %f"` | `allow / git:status` |
+| 多余空白 / 制表符 | `allow / git:status` |
+| `/usr/local/bin/git-lfs` 前缀 | `allow / git:status` |
+| `git-lfs.exe` | `allow / git:status` |
+| `/tmp/git-lfs` 伪装路径 | `allow / git:status` |
+| 仅二进制名带引号 `"git-lfs" clean -- %f` | `ask / git-repo-config-exec`（过度 ask，见 P3） |
+| LFS + `required = true` | `allow / git:status` |
+| `git-lfs clean %f`（缺 `--`） | `ask` |
+| `clean = git-lfs filter-process` | `ask` |
+| `clean = /bin/sh -c "…"` | `ask` |
+| 未加引号 `;`（原始配置文件） | `allow`，且 git 视为注释、**不执行** |
+| 带引号 `;`（`git config` 写入形态） | `ask`，真实执行 |
+
+- **真实执行侧**：自定义 filter 形态下，绕过策略直接 `git status` 会写 marker；策略层 `ask` 是唯一屏障（与上轮结论一致）。
+- **`/tmp/git-lfs` allow 的理由是否认同**：**有条件认同**。全局配置属于用户，能改全局配置者已可用 `diff.external` 执行任意程序，放行“仅换二进制路径”不扩大威胁面；但代价是“把 LFS 换成一个名字正确、位置任意”的程序不会被质询。建议后续收窄到已知安装前缀（`/usr/local/bin`、`/opt/homebrew/bin`、`/usr/bin`、Windows 常见目录），把 `/tmp` 等改为 ask。这是 P2 精度问题，不作为阻断。
+- **`filter.<name>.required=true`**：无额外执行语义。它只影响“filter 失败时是报错还是静默跳过”，不改变可执行面；LFS + `required` 仍 allow 属正确。
+- **PAREN 条件缺口（P2，非阻断）**：若 PATH 含仓库目录或 `.`，恶意仓库可放置同名 `git-lfs` 且全局配置为标准 LFS，`git status` 会执行它而策略 allow（实测 YES）。本机 PATH 不含 `.`；该缺口在旧版“全局 filter 全放行”时即存在，本轮未扩大。
+
+#### 2）fsmonitor 收窄：**通过**
+
+实测 `[core] fsmonitor = <marker>`（带等号）：
+
+```
+[fsmon] log/show/status = allow allow ask
+[fsmon] after log/show invoked = NO
+[fsmon] after status invoked = YES
+```
+
+- `git log` / `git show`（含 `-p` / `--stat` / `--name-status`）/ `git whatchanged` → `allow`，且**从不调用** fsmonitor。
+- `git status` → `ask`，必调用；`git diff` / `git blame` → `ask`，调用与否与 index 刷新状态相关（fresh repo 在设置后才改动时不一定调用）。
+- 与 §11.9 “这三条会调用 fsmonitor” 的表述有偏差：应改为“`status` 必调用，`diff`/`blame` 可能调用（状态相关）”。属 P3 文档精度。
+
+#### 3）`config.worktree` 门控：**常规形态通过，裸键形态回归（见 B-12-1）**
+
+自建真实仓库与 linked worktree 实测：
+
+```
+[wt-main] gate-closed policy=allow/git:status real=NO
+[wt-main] gate-open policy=ask/git-repo-config-exec real=YES
+[wt-linked] gate-open policy=ask/git-repo-config-exec real=YES
+[wt-linked] gate-closed policy=allow/git:status real=NO
+```
+
+- 主仓库未开 `extensions.worktreeConfig`：不读 `config.worktree`，`allow` 且真实不执行。
+- 开启（`= true`）：`ask` 且真实执行。
+- linked worktree 的 per-worktree `config.worktree`：开启 → `ask`/执行；关闭 → `allow`/不执行。
+- **例外**：开启扩展用的是裸键 `[extensions]\n\tworktreeConfig`（git 合法写法）时，门控误判为关闭 → B-12-1。
+
+#### 4）文档：**§7.4 准确、D4 已修、§11.9 有 1 处陈旧**
+
+- `agent-architecture.md §7.4`：现文本明确区分“生产启动序列级语义”与 `reconcileStartup` 函数分支（活 turn `replayed=1/pushed=1`，终态/orphaned `replayed=0/denied=1/pushed=0`），与代码和 `applyRecoveryPlan` 顺序一致；**无误读风险**。
+- `agent-rollout.md` D4：已改为“启动即 deny（不重推）”，与实现一致。
+- 审计文档 §11.9：“三个套件共 **62 passed**（`bash-readonly` 34）”仍与实测 **66**（34 + 28 + 4）不一致；属陈旧/自相矛盾，按要求仅指出、不改。
+
+### 12.4 §11 遗留项状态更新
+
+| §11 项 | 原状态 | 本轮状态 |
+|---|---|---|
+| 全局 `filter` 缺口（P1） | 必修 | **已关闭**（自定义 filter → ask；标准 LFS → allow） |
+| `fsmonitor` 对 `log`/`show` 过度 ask | 必修 | **已关闭**（`log`/`show` allow 且不调用） |
+| `config.worktree` 未开扩展仍被读取 | 必修 | **常规形态已关闭**；裸键形态回归（B-12-1） |
+| `agent-architecture.md §7.4` 语义 | 待修 | **已修**，准确 |
+| `agent-rollout.md` D4 | 待修 | **已修** |
+| §11.9 “62 passed” | 陈旧 | **仍陈旧**（实测 66） |
+| `includeIf` 不求值 | 保留 | **保留**：实测 `allow`（只多 ask，不漏判） |
+| `GIT_CONFIG_SYSTEM` 非默认路径 | 未测 | **本轮已测**：`ask / git-repo-config-exec` |
+| `git-lfs` 真机 | 未测 | **仍未测**：本机无 `git-lfs` 二进制（`command -v git-lfs` 失败），仅配置级模拟 |
+
+### 12.5 仍未验证项
+
+1. **真实 CLI 端到端**：本轮全部为策略函数 + `git` 子进程级验证，未启动 Claude CLI 走 PreToolUse hook 全链路（上轮 hooks 用例已删除）。
+2. **`git-lfs` 二进制**：未安装，`filter-process` 长驻协议未跑；仅验证配置值判定。
+3. **Windows 引号路径**：`"git-lfs" clean -- %f` 在 Windows 路径含空格场景会过度 ask，未在 Windows 实测。
+4. **全量测试**：本轮未重跑全量；已知 `better-sqlite3` ABI（NODE_MODULE_VERSION 130 vs 115）导致 173 failed，与基线一致。
+5. **PATH 劫持**：条件性缺口，本机 PATH 不含 `.`，未作为默认环境结论。
+
+### 12.6 组合面复扫（本轮改动未新增开口）
+
+| 组合 | 实测 |
+|---|---|
+| `git -C <repo> status` | `ask / git:unknown:-C` |
+| `git --git-dir <path> status` | `ask / git:unknown:--git-dir` |
+| `git --work-tree <path> status` | `ask / git:unknown:--work-tree` |
+| `GIT_DIR=<path> git status` | `ask / not-in-whitelist:GIT_DIR=…` |
+| `git -c <k>=<v> status` | `ask / git-config-override` |
+| 仓库 `.gitattributes` → lfs + 全局标准 LFS | `allow / git:status` |
+| 全局 `includeIf` 条件（未求值） | `allow`（只多 ask） |
+| 全局系统配置非默认路径 | `ask / git-repo-config-exec` |
+| 子模块 | 未发现新增开口 |
+
+- `filter` 与 `.gitattributes` 路径：仓库本地 filter 仍三项全 ask；全局仅标准 LFS allow。
+- `-C` / `--git-dir` 与 cwd 传参交互：策略的 `cwd` 仍由调用方（`session.config.workingDirectory` / `request.workingDirectory`）传入，命令内的路径参数不改变 cfg 读取根；上述命令在策略层已 ask，不存在“换目录读另一份配置而免弹”的路径。
+
+### 12.7 摩擦与成本（本轮抽样）
+
+- 42 条常态命令抽样：`allow 34 / ask 8` = **81.0%**（上轮 31/38 = 81.6%）。
+- ask 项：`date -s`、`node --version`、`npm test`、`npm run build`、`yarn test`、`rm -rf dist`、`curl … | sh`、`cat ~/.zshrc`。
+- 干净仓库、标准 LFS 仓库的 `git status` / `git diff` 均 `allow`，**无新弹窗**。
+- 成本：`0.0679 ms/op`（200 次 `git status` 判定均值，`includeGlobalGitConfig=false`）。
+
+### 12.8 冻结复算
+
+- 追加本章后：`git status --short` = 仅 ` M docs/architecture/agent-audit-2026-11-05.md`；HEAD 仍 `938504a`；无 `__tmp_r12_*` 残留。
+- 源码与 `agent-architecture.md` / `agent-rollout.md` / `agent-decisions.md` 的 sha256 与 12.0 完全一致（只追加本文档）。
+- 定向回归：`bash-readonly.test.ts` 34 + `approval-gateway.test.ts` 28 + `approval-startup-reconcile.test.ts` 4 = **66 passed**。
+- 本轮未改源码、未 commit、未 push。
+
+### 12.9 修复记录（第四轮复审后，基线 `938504a`）
+
+**根因（代码）**：配置解析只认 `^key\s*=\s*value$`，只写键名的裸布尔键被整行丢弃。Git 对裸键按 `true` 处理，因此：
+
+- B-12-1：`[extensions] worktreeConfig`（裸键）+ `config.worktree` 中的 `core.fsmonitor` 未被读取 → `allow / git:status`，且真实执行；
+- B-12-2：`[log] showSignature`（裸键）+ `gpg.program=…` → `allow / git:log`，gpg 真实执行。
+
+**修复（解析层统一归一）**：新增 `parseGitConfigEntries()`，`gitConfigTextExecutes()`、`gitConfigEnablesWorktreeConfig()`、`gitConfigPaths()` 全部复用同一解析器；不是给两个键加特例。
+
+归一化表（均以本机 `git` 实测为准）：
+
+| 输入形态 | Git 实测 | 本策略归一化 |
+|---|---|---|
+| `[extensions]` + `worktreeConfig`（裸键） | `git config --bool` → `true` | `value='true'`、`bare=true` |
+| `key =`（显式空值） | `--bool` → `false` | `value=''`，等价未设置 |
+| `[CORE]` + `FSMonitor` | 节/键大小写不敏感 | section/key 统一小写 |
+| `[log] showSignature`（节头同行） | `--list` 接受 | 同一行继续解析键值 |
+| `[diff "a]b"]` | 子节可含 `]` | 引号内子节整体保留，不截断 |
+| `[diff.evil]` + `textconv` 裸键 | 旧式子节 + bool true | 归一为 `diff.evil` / `true` |
+| `value = x # note` / `x ; note` | 行内注释 | 引号外且前有空白才截断 |
+| `key # note`（裸键 + 注释） | fatal bad config | 丢弃该行（Git 本身拒绝执行） |
+| `a.b = 1` / `a_b = 1` | fatal bad config | 键名只允许字母/数字/连字符，丢弃 |
+| `[include]` + `path`（裸键） | fatal “missing value” | 裸 `path` 不按 include 路径处理 |
+| `[includeIf "gitdir:…"]` + `path = …` | 条件求值 | 仍不复判，按可能命中递归 |
+
+**复现与“修复前会失败”**（临时回退为“裸键整行丢弃”，跑新增用例）：
+
+| 用例 | 修复前 | 修复后 |
+|---|---|---|
+| B-12-1 裸 `worktreeConfig` + config.worktree fsmonitor，`git status` | `allow / git:status` | `ask / git-repo-config-exec` |
+| B-12-2 裸 `showSignature` + `gpg.program`，`git log --max-count=1` | `allow / git:log` | `ask / git-repo-config-exec` |
+| 裸键矩阵（core/diff/filter + 大小写/同行/旧式子节） | 首条 `allow / git:status` | 全部 `ask` |
+| 显式 `= true` | `ask`（不变） | `ask` |
+| 显式 `= false` / `key =` | `allow`（不变） | `allow` |
+| 未开扩展 + 干净配置 | `allow`（不变） | `allow` |
+
+`worktreeConfig` 的回归安全属性保留：未开启（无裸键或 `= false`）不读 `config.worktree` → `allow`；开启（裸键或 `= true`）→ `ask`。
+
+**文档精度**：`agent-architecture.md` 探针说明补充“裸布尔键等价 true”与解析归一化规则；fsmonitor 文案改为“`status` 必调用；`diff`/`blame` 与 index 刷新状态相关”，不再写成三条都无条件调用；§11.9 的陈旧定向计数订正为 66（62 是较早一次运行的临时计数，见该节说明）。
+
+**校验**：定向 69 passed（`bash-readonly` 37 + `approval-gateway` 28 + `approval-startup-reconcile` 4）；`tsc --noEmit` / `eslint src` / `vite build` 全过；全量 `26 failed 文件 / 253 passed`，`173 failed / 3111 passed / 93 skipped (3377)`，26 个失败文件均为既有 `better-sqlite3` ABI 文件，集合与基线一致。

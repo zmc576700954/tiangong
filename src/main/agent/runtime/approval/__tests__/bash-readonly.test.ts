@@ -739,6 +739,120 @@ describe('evaluateBashPolicy (Bash 两档)', () => {
     })
   })
 
+  it('extensions.worktreeConfig 裸键等价 true，config.worktree 仍被读取', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-worktree-bare-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig\n',
+    )
+    writeFileSync(join(repo, '.git', 'config.worktree'), '[core]\n\tfsmonitor = /tmp/hook\n')
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+
+    // 修复前：裸键被 KV 正则整行丢弃 → 视为未开启扩展 → allow，config.worktree 被漏读
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 显式 false 仍按未开启处理，不读 config.worktree
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tworktreeConfig = false\n',
+    )
+    expect(decide('git status --short', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+  })
+
+  it('log.showSignature 裸键等价 true → git log ask（gpg.program 可执行）', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'bizgraph-showsignature-bare-'))
+    mkdirSync(join(repo, '.git'), { recursive: true })
+    writeFileSync(
+      join(repo, '.git', 'config'),
+      '[log]\n\tshowSignature\n[gpg]\n\tprogram = /tmp/r12-b2/marker.sh\n',
+    )
+    const options = { cwd: repo, includeGlobalGitConfig: false }
+
+    // 修复前：裸键被整行丢弃 → allow，gpg.program 会真实执行
+    expect(decide('git log --max-count=1', options)).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+
+    // 显式 false 不应触发 ask
+    writeFileSync(join(repo, '.git', 'config'), '[log]\n\tshowSignature = false\n')
+    expect(decide('git log --max-count=1', options)).toMatchObject({
+      decision: 'allow',
+      rule: 'git:log',
+    })
+  })
+
+  it('裸布尔键归一化覆盖 core/diff/filter，解析细节对齐 git', () => {
+    const run = (config: string, command: string, files: Record<string, string> = {}) => {
+      const repo = mkdtempSync(join(tmpdir(), 'bizgraph-bare-key-'))
+      mkdirSync(join(repo, '.git'), { recursive: true })
+      writeFileSync(join(repo, '.git', 'config'), config)
+      for (const [name, text] of Object.entries(files)) writeFileSync(join(repo, '.git', name), text)
+      return decide(command, { cwd: repo, includeGlobalGitConfig: false })
+    }
+
+    // 裸键 + 节名/键名大小写不敏感 + 缩进
+    expect(run('[CORE]\n\tFSMonitor\n', 'git status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 现代式子节裸键
+    expect(run('[diff "evil"]\n\ttextconv\n', 'git diff HEAD')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 仓库本地 filter 裸键（value 归一为 true，非 LFS 标准写法）
+    expect(run('[filter "mine"]\n\tclean\n', 'git status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 节头与键值同一行
+    expect(run('[log] showSignature\n', 'git log --max-count=1')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 旧式子节裸键
+    expect(run('[diff.evil]\n\tcommand\n', 'git show HEAD')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    // 行内注释（# / ;）与显式 false / 显式空值
+    expect(run('[core]\n\tfsmonitor = true # note\n', 'git status')).toMatchObject({
+      decision: 'ask',
+      rule: 'git-repo-config-exec',
+    })
+    expect(run('[core]\n\tfsmonitor = false ; note\n', 'git status')).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+    expect(run('[core]\n\tfsmonitor =\n', 'git status')).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+    // 裸 `include.path` 在 git 里是 missing value，不是合法 include，不能当路径
+    expect(run('[include]\n\tpath\n', 'git status')).toMatchObject({
+      decision: 'allow',
+      rule: 'git:status',
+    })
+    // 合法 include 后仍按裸键归一化探测
+    expect(
+      run('[include]\n\tpath = extra.cfg\n', 'git status', { 'extra.cfg': '[core]\n\tfsmonitor\n' }),
+    ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
+    // includeIf 条件不求值，按可能命中处理
+    expect(
+      run('[includeIf "gitdir:elsewhere/"]\n\tpath = extra.cfg\n', 'git status', {
+        'extra.cfg': '[core]\n\tfsmonitor\n',
+      }),
+    ).toMatchObject({ decision: 'ask', rule: 'git-repo-config-exec' })
+  })
+
   it('参数白名单表：每个白名单命令都必须登记危险参数（新增命令漏登记会失败）', () => {
     const registered = Object.keys(DANGEROUS_ARGS_BY_COMMAND)
     // 双向一致：既不能漏登记白名单命令，也不能登记不存在的命令
