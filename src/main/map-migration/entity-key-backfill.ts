@@ -324,8 +324,10 @@ function runProjectTxn(
 }
 
 /**
- * S1.3 入口：对所有可配对项目执行回填（每项目一个事务，单项目失败不阻断其他项目，
- * 但整体阶段失败 → 启动阻断）。幂等：只处理 entity_key IS NULL 行。
+ * S1.3 入口：对所有可配对项目执行回填（每项目一个事务）。
+ * 单项目失败不再让整个阶段/启动失败：该项目事务回滚、其节点保持 entity_key
+ * IS NULL（可直接查询），失败项目与错误写入 map_migration_reports.details_json
+ * （status=partial），下次启动自动重试（回填只处理 NULL 行，幂等）。
  */
 export function runEntityKeyBackfill(db: BetterSqlite3.Database, schemaVersion: number): BackfillRunStats {
   let aggregate: BackfillRunStats | undefined
@@ -348,7 +350,7 @@ export function runEntityKeyBackfill(db: BetterSqlite3.Database, schemaVersion: 
         null_after: 0,
         unmatched_details: [],
       }
-      const failedProjects: Array<{ project_path: string; error: string }> = []
+      const failedProjects: Array<{ project_path: string; online_graph: string; dev_graph: string; error: string }> = []
       for (const pairing of pairings) {
         try {
           const stats = backfillProject(db, pairing)
@@ -366,15 +368,29 @@ export function runEntityKeyBackfill(db: BetterSqlite3.Database, schemaVersion: 
           aggregate.projects_failed += 1
           failedProjects.push({
             project_path: pairing.project_path,
+            online_graph: pairing.online,
+            dev_graph: pairing.dev,
             error: err instanceof Error ? err.message : String(err),
           })
         }
       }
       if (failedProjects.length > 0) {
-        // §2.2.2 S1.3：项目失败 → 该项目 failed、整体 S1 阻断（已提交项目保留，可续跑）
-        throw new Error(
-          `entity_key backfill failed for ${failedProjects.length} project(s): ${failedProjects.map((f) => f.project_path).join(', ')}`,
+        // 降级为 partial：应用照常启动，失败项目的节点保持 entity_key IS NULL，
+        // 下次启动自动重试；诊断写入报告表，不静默吞掉。
+        logger.error(
+          `entity_key backfill: ${failedProjects.length}/${pairings.length} project(s) failed; ` +
+            'startup continues, retry next launch',
+          failedProjects,
         )
+        return {
+          stats: { ...aggregate, unmatched_details: undefined },
+          details: {
+            unmatched_details: unmatchedDetails.slice(0, 200),
+            failed_projects: failedProjects,
+            resume_from: 'entity_key_is_null',
+          },
+          partial: true,
+        }
       }
       return { stats: { ...aggregate, unmatched_details: undefined }, details: { unmatched_details: unmatchedDetails.slice(0, 200) } }
     },

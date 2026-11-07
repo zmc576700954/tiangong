@@ -170,15 +170,21 @@ describe('preflightStartup fail-closed', () => {
     expect(() => preflightStartup(db, store, { resumeRequested: false })).not.toThrow()
   })
 
-  it('failed 阶段 → 拒绝启动（恢复备份或人工修复）', () => {
-    const id = store.startStage({ kind: 'entity_key_backfill', stage: 'S1.backfill', schemaVersion: SCHEMA_VERSION })
-    store.completeStage(id, 'failed', { error: 'x' })
-    expect(() => preflightStartup(db, store, { resumeRequested: true })).toThrowError(MapMigrationBlockedError)
+  it('failed 阶段：幂等白名单自动重试；非幂等阶段仍拒绝启动', () => {
+    const idNon = store.startStage({ kind: 'integrity_check', stage: 'S4.rebuild', schemaVersion: SCHEMA_VERSION })
+    store.completeStage(idNon, 'failed', { error: 'x' })
+    expect(() => preflightStartup(db, store, { resumeRequested: false })).toThrowError(MapMigrationBlockedError)
     try {
-      preflightStartup(db, store, { resumeRequested: true })
+      preflightStartup(db, store, { resumeRequested: false })
     } catch (err) {
       expect((err as MapMigrationBlockedError).reason).toBe('stage_failed')
     }
+
+    // 幂等白名单阶段每次启动都会重跑，不再要求 --resume-migration
+    db.prepare('DELETE FROM map_migration_reports WHERE id = ?').run(idNon)
+    const id = store.startStage({ kind: 'entity_key_backfill', stage: 'S1.backfill', schemaVersion: SCHEMA_VERSION })
+    store.completeStage(id, 'failed', { error: 'x' })
+    expect(() => preflightStartup(db, store, { resumeRequested: false })).not.toThrow()
   })
 
   it('另一存活实例持有 running 阶段 → 拒绝启动（并发互斥）', () => {
@@ -193,12 +199,17 @@ describe('preflightStartup fail-closed', () => {
     }
   })
 
-  it('半迁移（本进程 pid 但心跳过期）→ 未显式续跑时拒绝；--resume-migration 放行', () => {
+  it('半迁移：幂等白名单自动续跑；非幂等阶段仍需显式续跑', () => {
     const id = store.startStage({ kind: 'entity_key_backfill', stage: 'S1.backfill', schemaVersion: SCHEMA_VERSION })
     // 心跳拨老：超过 10 分钟
     const stale = new Date(Date.now() - HEARTBEAT_STALE_MS - 1000).toISOString()
     db.prepare('UPDATE map_migration_reports SET heartbeat_at = ? WHERE id = ?').run(stale, id)
+    // 白名单阶段每次启动重跑且幂等 → 普通用户无需 argv
+    expect(() => preflightStartup(db, store, { resumeRequested: false })).not.toThrow()
 
+    // 非幂等阶段仍 fail-closed：需显式 --resume-migration
+    const id2 = store.startStage({ kind: 'integrity_check', stage: 'S4.rebuild', schemaVersion: SCHEMA_VERSION })
+    db.prepare('UPDATE map_migration_reports SET heartbeat_at = ? WHERE id = ?').run(stale, id2)
     expect(() => preflightStartup(db, store, { resumeRequested: false })).toThrowError(MapMigrationBlockedError)
     try {
       preflightStartup(db, store, { resumeRequested: false })
@@ -213,11 +224,11 @@ describe('preflightStartup fail-closed', () => {
     store.completeStage(id, 'partial', { details: {} })
     expect(() => preflightStartup(db, store, { resumeRequested: true })).toThrowError(MapMigrationBlockedError)
 
-    // 移除不可续跑现场后,白名单内的 partial 允许续跑
+    // 移除不可续跑现场后,白名单内的 partial 允许续跑（无需 argv）
     db.prepare('DELETE FROM map_migration_reports WHERE id = ?').run(id)
     const id2 = store.startStage({ kind: 'entity_key_backfill', stage: 'S1.backfill', schemaVersion: SCHEMA_VERSION })
     store.completeStage(id2, 'partial', { details: { resume_from: 'project-b' } })
-    expect(() => preflightStartup(db, store, { resumeRequested: true })).not.toThrow()
+    expect(() => preflightStartup(db, store, { resumeRequested: false })).not.toThrow()
   })
 
   it('孤儿 backup 歧义现场 → 拒绝启动', () => {

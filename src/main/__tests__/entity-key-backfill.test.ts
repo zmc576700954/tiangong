@@ -289,4 +289,53 @@ describe('runEntityKeyBackfill 阶段集成', () => {
     expect(keysOf(db, aOnline)).toEqual(aKeysBefore)
     expect(keysOf(db, bOnline).get(bO)).toEqual(keysOf(db, bDev).get(bD))
   })
+
+  it('单项目失败降级 partial：不抛错、失败身份可查询、下次启动自动重试', () => {
+    const okOnline = insertGraph(db, { type: 'online', projectPath: '/ok' })
+    const okDev = insertGraph(db, { type: 'dev', projectPath: '/ok' })
+    insertNode(db, { graphId: okOnline, type: 'project', title: 'OK根' })
+    insertNode(db, { graphId: okDev, type: 'project', title: 'OK根' })
+
+    const badOnline = insertGraph(db, { type: 'online', projectPath: '/bad' })
+    const badDev = insertGraph(db, { type: 'dev', projectPath: '/bad' })
+    const badO = insertNode(db, { graphId: badOnline, type: 'project', title: 'BAD根' })
+    const badD = insertNode(db, { graphId: badDev, type: 'project', title: 'BAD根' })
+
+    // 模拟该项目写入时数据库拒绝（真实场景：并发写/索引冲突）→ 项目事务回滚
+    db.exec(`CREATE TRIGGER fail_bad_dev BEFORE UPDATE ON nodes
+      WHEN OLD.graph_id = '${badDev}' AND OLD.entity_key IS NULL
+      BEGIN SELECT RAISE(ABORT, 'boom'); END;`)
+
+    const stats = runEntityKeyBackfill(db, 26) // 关键：不再抛错阻断启动
+    expect(stats.projects_total).toBe(2)
+    expect(stats.projects_ok).toBe(1)
+    expect(stats.projects_failed).toBe(1)
+
+    // 失败现场可查询：报告落 partial + 失败项目/图/错误
+    const report = db
+      .prepare(
+        "SELECT status, details_json FROM map_migration_reports WHERE kind='entity_key_backfill' AND stage='S1.backfill' ORDER BY started_at DESC, id DESC LIMIT 1",
+      )
+      .get() as { status: string; details_json: string }
+    expect(report.status).toBe('partial')
+    const details = JSON.parse(report.details_json) as {
+      failed_projects: Array<{ project_path: string; online_graph: string; dev_graph: string; error: string }>
+    }
+    expect(details.failed_projects).toHaveLength(1)
+    expect(details.failed_projects[0]).toMatchObject({ project_path: '/bad', online_graph: badOnline, dev_graph: badDev })
+    expect(details.failed_projects[0].error).toMatch(/boom/)
+
+    // 失败的实体身份未被伪造：节点仍 entity_key IS NULL,可直接查询
+    const pending = db
+      .prepare('SELECT COUNT(*) AS c FROM nodes WHERE graph_id IN (?, ?) AND entity_key IS NULL')
+      .get(badOnline, badDev) as { c: number }
+    expect(pending.c).toBe(2)
+
+    // 下次启动自动重试（只处理 NULL 行）：失败项目补齐且两侧共享键
+    db.exec('DROP TRIGGER fail_bad_dev')
+    const retry = runEntityKeyBackfill(db, 26)
+    expect(retry.projects_ok).toBe(2)
+    expect(retry.projects_failed).toBe(0)
+    expect(keysOf(db, badOnline).get(badO)).toEqual(keysOf(db, badDev).get(badD))
+  })
 })

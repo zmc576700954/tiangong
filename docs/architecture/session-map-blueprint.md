@@ -2508,7 +2508,7 @@ CREATE TABLE map_migration_reports (
 > 下列 S1–S8 对应 v25–v32。
 > **通用前置**：S0 备份完成且校验通过；迁移默认在启动期单事务内执行；`foreign_key_check` 必须为 0。
 >
-> **B1 例外（可续跑回填）**：`S1.backfill` 与 `S2.backfill` 按项目分批事务提交，便于中断后续跑；其余阶段仍按单事务执行。分批阶段必须在 `map_migration_reports` 记录进度与 `resume_from`，启动预检仍按 §8.14.1 对半迁移 fail-closed。
+> **B1 例外（可续跑回填）**：`S1.backfill` 与 `S2` 按项目分批事务提交，便于中断后续跑；其余阶段仍按单事务执行。分批阶段必须在 `map_migration_reports` 记录进度与 `resume_from`；启动预检对这批幂等阶段自动续跑，非白名单阶段仍按 §8.14.1 fail-closed。
 
 ### 8.1 总览
 
@@ -2820,11 +2820,15 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | `running` | 阶段开始，写 `stage` + `schema_version` + `started_at` + `heartbeat_at` | 心跳每 30 秒更新；心跳超过 10 分钟未更新视为"半迁移" |
 | `ok` | 阶段完成且校验通过（行数 / FK / hash） | 允许进入下一阶段 |
 | `partial` | 阶段部分完成（仅限声明为可续跑的幂等阶段） | 允许续跑该阶段，不重跑已 `ok` 的阶段 |
-| `failed` | 校验失败或异常 | 阻断启动，必须恢复 S0 备份或人工修复 |
+| `failed` | 校验失败或异常 | 幂等白名单阶段（每次启动重跑）自动重试；其余阶段阻断启动，必须恢复 S0 备份或人工修复 |
+
+`entity_key_backfill` 项目级失败**不再记为阶段 failed**：失败项目的事务回滚，其节点保持
+`entity_key IS NULL`（可直接查询），报告行置 `partial`，`details_json.failed_projects` 记录项目路径、
+online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL 行重试（幂等）。
 
 硬规则：
 
-1. **半迁移拒绝启动**：启动预检发现任一阶段 `running` 且心跳过期 → 应用拒绝启动并提示"上一次迁移未完成，需恢复备份或续跑"，不得带着半迁移库继续读写。
+1. **半迁移按幂等白名单自动续跑**：启动预检发现阶段 `running` 且心跳过期时，白名单内的幂等阶段（每次启动重跑的回填/建索引类）自动续跑并记录告警；非白名单阶段拒绝启动并提示恢复备份。不得带着不可证明安全的半迁移库继续读写。
 2. **并发迁移互斥**：心跳仍在更新 → 说明另一个进程在迁移，当前进程拒绝启动（或只读），避免双写。
 3. **孤儿 `*_backup` 检测**：启动预检扫描 `sqlite_master` 中的 `%_backup` / `%_new` 表；若原表与备份表同时存在，视为中断的重建：**不自动删除任何一张**，先写 `map_migration_reports(kind='integrity_check')`，按"原表行数 / 备份行数 / 是否含新列"决定续跑或恢复；无法判定时只提示人工处理。
 4. **续跑边界**：只有 `addColumnSafe`、回填、`CREATE INDEX` 等幂等操作允许续跑；S4 的 CHECK 重建、`agent_approvals` 重建等不可逆步骤一旦 `failed`，只能恢复 S0 备份，不做"部分修复后再启动"。
@@ -2865,9 +2869,9 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 1. `PRAGMA integrity_check` 必须返回 `ok`；否则拒绝启动，提示恢复 S0 备份。
 2. `PRAGMA foreign_key_check` 必须为空；否则拒绝启动。
 3. 读取每个阶段最新行：
-   - `failed` → 拒绝启动，提示恢复 S0 或人工修复；
+   - `failed` → 幂等白名单阶段自动重试；非白名单阶段拒绝启动，提示恢复 S0 或人工修复；
    - `running` 且 `owner_pid` 是其他仍存活进程 → 拒绝启动（另一实例在迁移）；
-   - `running` 且心跳超过 10 分钟或 `owner_pid` 已不存在 → 判定"半迁移"，**拒绝启动**；只允许显式 `--resume-migration` 进入续跑模式；
+   - `running` 且心跳超过 10 分钟或 `owner_pid` 已不存在 → 判定"半迁移"：幂等白名单阶段自动续跑（无需 argv），非白名单阶段拒绝启动，仅允许显式 `--resume-migration` 或恢复备份；
    - `partial` → 只允许续跑声明为可续跑的阶段；不可续跑阶段一律拒绝。
 4. 扫描 `sqlite_master` 中 `%_backup` / `%_new`（见下表）；存在歧义即拒绝启动。
 5. 校验 `schema_version`、迁移脚本 checksum、S0 备份存在且可读。
@@ -2897,7 +2901,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 **验收（故障注入）**
 
-1. 在每个阶段"插入 running 后、工作提交前"杀进程 → 重启必须拒绝启动；`--resume-migration` 可续跑幂等阶段。
+1. 在每个阶段"插入 running 后、工作提交前"杀进程 → 重启时幂等白名单阶段自动续跑，非白名单阶段拒绝启动；`--resume-migration` 仅作为非白名单阶段的显式人工旁路。
 2. 在 S1.3 中途杀进程 → 已提交项目不重写、未提交项目续跑；`entity_key` 无重复。
 3. 在 S1.4 建唯一索引时制造冲突 → `failed`，启动阻断，错误指向冲突行。
 4. 手工构造四种 `_backup` 现场 → 判定与上表一致；无自动删除。

@@ -73,9 +73,14 @@ export function initDatabase(): BetterSqlite3.Database {
     throw err
   }
 
-  // S1.3（§2.2.2 S1-c）：entity_key 回填。幂等（只写 NULL 行）；项目级失败 →
-  // 阶段 failed → 本次启动失败、下次预检阻断（已提交项目保留，可续跑）。
-  runEntityKeyBackfill(db, CURRENT_SCHEMA_VERSION)
+  // S1.3（§2.2.2 S1-c）：entity_key 回填。幂等（只写 NULL 行）；单项目失败已在
+  // 阶段内降级为 partial 并写入报告表，这里只兜住结构性异常——回填失败只影响
+  // 实体身份（节点保持 entity_key NULL、可查询、下次启动重试），不该让应用打不开。
+  try {
+    runEntityKeyBackfill(db, CURRENT_SCHEMA_VERSION)
+  } catch (err) {
+    logger.warn('entity_key backfill failed; startup continues with unresolved identities (retry next launch):', err)
+  }
 
   // S1.5 尾项 + S1.6（§8.3 第 6/7 步）：导入决策 90 天保留（启动期一次;每日调度
   // 随 L1 交付）+ 历史 lineage 报告（只报告不删不并）。卫生任务失败只告警,
@@ -88,8 +93,13 @@ export function initDatabase(): BetterSqlite3.Database {
     logger.warn('import dedup post-migration tasks failed:', err)
   }
 
-  // S2 回填（§2.3.1）：dev→online 按 entity_key 建 derives_from（迁移阶段,fail-closed）。
-  runLinkBackfill(db, CURRENT_SCHEMA_VERSION)
+  // S2 回填（§2.3.1）：dev→online 按 entity_key 建 derives_from。链接是派生数据，
+  // 失败时保留阶段诊断并在下次启动重试（幂等），不阻断应用启动。
+  try {
+    runLinkBackfill(db, CURRENT_SCHEMA_VERSION)
+  } catch (err) {
+    logger.warn('link backfill failed; startup continues (retry next launch):', err)
+  }
 
   // S2 巡检（§2.3.1）：启动后一次 + 每日一次（unref 不阻止退出）；手动触发随
   // admin IPC 交付。巡检只报告不删除,失败不阻断启动。

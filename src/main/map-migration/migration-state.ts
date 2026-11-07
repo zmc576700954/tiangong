@@ -27,6 +27,21 @@ export const HEARTBEAT_INTERVAL_MS = 30_000
 /** 心跳超过该时长未更新视为"半迁移"（§8.14.1）。 */
 export const HEARTBEAT_STALE_MS = 10 * 60_000
 
+/**
+ * 可自动续跑/idempotent 阶段白名单（§8.14.1 B1）。半迁移与失败重试只允许这些
+ * 阶段自动进行：它们每次启动都会重跑，且操作幂等（回填/建索引/addColumnSafe）。
+ * 非白名单阶段仍阻断启动——重试无法证明安全。
+ */
+const RESUMABLE_STAGES = new Set([
+  'S1.backfill',
+  'S1.report',
+  'S1.verify',
+  'S2',
+  'S2.tables',
+  'S2.backfill',
+  'S6a.verify',
+])
+
 export type MapMigrationStageStatus = 'running' | 'ok' | 'partial' | 'failed'
 
 /** kind 值域与 map_migration_reports 的 CHECK 一致。 */
@@ -256,10 +271,16 @@ export function preflightStartup(
   const resumeRequested = options.resumeRequested ?? isResumeMigrationRequested()
   for (const row of store.latestByStage()) {
     const label = `${row.kind}/${row.stage ?? '-'}`
+    const autoResumable = RESUMABLE_STAGES.has(row.stage ?? '')
     if (row.status === 'failed') {
+      // 幂等阶段自动重试（这些阶段每次启动都会重跑）；非幂等阶段仍 fail-closed。
+      if (autoResumable) {
+        logger.warn(`阶段 ${label} 上次失败；该阶段幂等且每次启动重跑，本次自动重试`)
+        continue
+      }
       throw new MapMigrationBlockedError(
         'stage_failed',
-        `上一次迁移阶段 ${label} 失败。请恢复备份或人工修复后重试（详情见 map_migration_reports ${row.id}）。`,
+        `上一次迁移阶段 ${label} 失败，且该阶段不是幂等可重试阶段。请恢复备份或人工修复后重试（详情见 map_migration_reports ${row.id}）。`,
       )
     }
     if (row.status === 'running') {
@@ -273,20 +294,22 @@ export function preflightStartup(
       }
       const stale = !pidAlive || heartbeatAge > HEARTBEAT_STALE_MS
       if (stale) {
-        if (!resumeRequested) {
+        if (resumeRequested || autoResumable) {
+          logger.warn(
+            `${resumeRequested ? '--resume-migration' : '幂等白名单'}：自动续跑半迁移阶段 ${label}（仅幂等操作允许）`,
+          )
+        } else {
           throw new MapMigrationBlockedError(
             'half_migration',
-            `上一次迁移未完成（${label}，心跳已停止）。请恢复备份，或以 --resume-migration 进入续跑模式。`,
+            `上一次迁移未完成（${label}，心跳已停止），且该阶段不是幂等可重试阶段。请恢复备份后重试。`,
           )
         }
-        logger.warn(`--resume-migration：续跑半迁移阶段 ${label}（仅幂等操作允许）`)
       }
     }
     if (row.status === 'partial') {
       // partial 只允许续跑声明为可续跑的阶段（§8.14.1 B1 阶段目录白名单）；
       // 不可续跑阶段一律拒绝，与是否显式 --resume-migration 无关。
-      const resumable = ['S1.backfill', 'S1.report', 'S1.verify', 'S2.tables', 'S2.backfill', 'S6a.verify']
-      if (!resumable.includes(row.stage ?? '')) {
+      if (!autoResumable) {
         throw new MapMigrationBlockedError(
           'partial_not_resumable',
           `阶段 ${label} 处于 partial 且不可续跑。请恢复备份后重试。`,
@@ -313,12 +336,16 @@ export interface MigrationStageOptions {
   kind: MapMigrationKind
   stage: string
   schemaVersion: number
-  /** 阶段工作体。抛错即 failed；返回 stats 由调用方传入 completeStage('ok')。 */
-  work: () => { stats?: Record<string, unknown>; details?: Record<string, unknown> } | void
+  /**
+   * 阶段工作体。抛错即 failed；返回 stats/details 由调用方写成 ok。
+   * `partial=true` 表示可续跑阶段只完成一部分（如单项目回填失败）：调用方必须
+   * 把失败现场写入 details，启动预检据此放行并自动续跑。
+   */
+  work: () => { stats?: Record<string, unknown>; details?: Record<string, unknown>; partial?: boolean } | void
 }
 
 /**
- * 阶段执行器：先提交 running 行，再执行工作，成功后更新 ok。
+ * 阶段执行器：先提交 running 行，再执行工作，成功后更新 ok/partial。
  * 心跳每 30s 一次（§8.14.1）；崩溃后 running 行保留，由启动预检裁决。
  */
 export function runMigrationStage(db: BetterSqlite3.Database, options: MigrationStageOptions): void {
@@ -328,8 +355,9 @@ export function runMigrationStage(db: BetterSqlite3.Database, options: Migration
   heartbeatTimer.unref?.()
   try {
     const result = options.work()
-    store.completeStage(id, 'ok', { stats: result?.stats, details: result?.details })
-    logger.info(`migration stage ${options.kind}/${options.stage} ok`, result?.stats ?? {})
+    const status = result?.partial ? 'partial' : 'ok'
+    store.completeStage(id, status, { stats: result?.stats, details: result?.details })
+    logger.info(`migration stage ${options.kind}/${options.stage} ${status}`, result?.stats ?? {})
   } catch (err) {
     store.completeStage(id, 'failed', { error: err })
     logger.error(`migration stage ${options.kind}/${options.stage} failed:`, err)
