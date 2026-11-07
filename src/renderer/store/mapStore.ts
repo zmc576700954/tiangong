@@ -67,17 +67,61 @@ export interface EvidenceEntry {
   revoked_at: string | null
 }
 
+/** work_steps 只读出参（workitem:get / workitem:steps:list 的显式列集合子集）。 */
+export interface WorkStepEntry {
+  id: string
+  work_item_id: string
+  work_item_revision: number
+  seq: number
+  title: string
+  step_kind: string
+  status: string
+  attempt: number
+  depends_on_step_ids_json: string | null
+  skip_reason: string | null
+  failure_class: string | null
+  started_at: number | null
+  ended_at: number | null
+}
+
+/** work_runs 只读出参（执行事实；failure_class 来自 agent_turns 映射）。 */
+export interface WorkRunEntry {
+  id: string
+  work_item_id: string
+  work_item_lineage_id: string
+  work_item_revision: number
+  step_id: string | null
+  run_seq: number
+  attempt: number
+  executor_kind: string
+  status: string
+  failure_class: string | null
+  created_at: number
+  started_at: number | null
+  ended_at: number | null
+}
+
+/** workitem:get 的下钻闭包：item + steps + runs。 */
+export interface WorkItemDetail {
+  item: WorkItemSummary
+  steps: WorkStepEntry[]
+  runs: WorkRunEntry[]
+}
+
 interface MapState {
   /** 叠加层：按图缓存（map:overlay:get 批量,禁止按节点轮询） */
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
   nodeTimeline: TimelineEntry[]
   nodeEvidence: EvidenceEntry[]
+  /** item 下钻明细缓存（workitem:get；只读,按 item id 索引） */
+  workItemDetails: Record<string, WorkItemDetail>
   loadingNode: boolean
 
   fetchOverlay: (graphId: string) => Promise<void>
   /** §9.3 event:node-execution-state 增量更新（preload 订阅驱动） */
   applyExecutionState: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void
   fetchNodeData: (graphId: string, nodeEntityKey: string) => Promise<void>
+  fetchWorkItemDetail: (id: string) => Promise<void>
   clearNodeData: () => void
   createWorkItem: (input: { graphId: string; anchorEntityKey?: string; anchorNodeId?: string; title: string; goal?: string; projectPath?: string }) => Promise<WorkItemSummary>
   startWorkItem: (id: string) => Promise<void>
@@ -88,6 +132,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   overlayByGraph: new Map(),
   nodeTimeline: [],
   nodeEvidence: [],
+  workItemDetails: {},
   loadingNode: false,
 
   applyExecutionState: (payload) => {
@@ -146,6 +191,25 @@ export const useMapStore = create<MapState>((set, get) => ({
     } finally {
       set({ loadingNode: false })
     }
+  },
+
+  /**
+   * item 下钻（workitem:get）：item + 当前 revision 的 steps + 全部 runs。
+   * 只读；空结果(null)不写入缓存，避免用占位内容伪造"有任务"。
+   */
+  fetchWorkItemDetail: async (id) => {
+    const result = await window.electronAPI['workitem:get'](id)
+    if (!result) return
+    set((state) => ({
+      workItemDetails: {
+        ...state.workItemDetails,
+        [id]: {
+          item: result.item as unknown as WorkItemSummary,
+          steps: (result.steps ?? []) as unknown as WorkStepEntry[],
+          runs: (result.runs ?? []) as unknown as WorkRunEntry[],
+        },
+      },
+    }))
   },
 
   clearNodeData: () => set({ nodeTimeline: [], nodeEvidence: [] }),
