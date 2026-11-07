@@ -3795,16 +3795,16 @@ GateRecheckResult {
 
 ### M5.1 状态总览
 
-- **已实施**：主进程单实例异步 tick（§5.9.9 六步骨架）、`GateRecheck` 可插拔端口与生产默认 fail-closed 实现、孤儿回收（`running → queued`，不计 `attempt`）、`workitem:step:run`（只入队）与 `workitem:run:cancel`（条件更新 + 执行器真结束会话）。
-- **已批准未实施**：G1–G6 gate 引擎。按裁决 A 走可插拔端口，生产默认返回 `incomplete + ['gate_engine_unavailable']`，不伪造 pass。
-- **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）。
+- **已实施**：主进程单实例异步 tick（§5.9.9 六步骨架）、`GateRecheck` 可插拔端口、G1–G6 准入 gate 评估引擎（§14 草案的实现子集 + §14.8 各待决项的 fail-closed 默认，见 M5.7）、孤儿回收（`running → queued`，不计 `attempt`）、`workitem:step:run`（只入队）与 `workitem:run:cancel`（条件更新 + 执行器真结束会话）。
+- **已批准未实施**：§14.8 待决项的产品裁决（D1–D14）；豁免粒度（D3）与 G5/G6 可豁免性（D9）裁决前，引擎按保守默认不豁免。
+- **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）、acceptance 结构化格式迁移（D1）与预估行数来源（D7）。
 
-**重要事实**：G1–G6 落地前，生产默认 gate 一律不通过，所有 `queued` item 会被 tick 挡在 `blocked`，**真实执行不可达**。本段交付的是骨架、端口、守卫与测试链路，不得描述为「已可用」。
+**重要事实（更新）**：引擎落地后，`gate_engine_unavailable` 不再是阻断原因；但按 §14.8 的 fail-closed 默认，生产写入路径产生的 acceptance（`[{id,text}]`，D1）与无预估来源的规模评估（D7）仍会把常规任务判 `incomplete` 并挡在 `blocked`。**生产真实执行仍然不可达**，这是规格内的显式默认而非引擎缺陷；D1/D7 裁决并落地之前不得描述为「已可用」。
 
 ### M5.2 tick 六步映射
 
 1. **取候选**：`work_items.status IN ('queued','running')`，`queued` 优先，`created_at ASC`；`work_items` 无 `priority` 列，故未实现蓝图中的 `priority DESC`（已知偏离）。
-2. **重跑 gate**：每轮调用 `GateRecheck.recheck(item)`，不读取/不信任 `work_items.gate_status`；不通过时 `queued → blocked` 并写 `gate_missing_json`，running item 仅落 gate 失效（不改状态机）。重跑通过但库中仍是 `incomplete` 时，把重跑结论落为 `pass`。
+2. **重跑 gate**：每轮调用 `GateRecheck.recheck(item)`（生产 = G1–G6 引擎），不读取/不信任 `work_items.gate_status`；不通过时 `queued → blocked` 并写 `gate_missing_json`，running item 仅落 gate 失效（不改状态机）。评估器抛异常按 §14.6 与不可用同路径收口（`gate_engine_unavailable`）。重跑通过但库中仍是 `incomplete` 时，把重跑结论落为 `pass`；结论为「人工豁免视同通过」（仅 G2 manual 条目 + 三字段齐全）时保留库内 `waived` 三字段，不改写为 `pass`。
 3. **依赖校验**：先 `blockUnstartedDependents`，再用 `peekNextReadyStep`（只读）选第一个就绪步；无就绪步且全部终态时触发 item 收敛。
 4. **路由**：只接受 pinned adapter（`BIZGRAPH_MAP_EXECUTION_ADAPTER` 或写入时传入），并做 kernel/审批/驱动三项探测；不满足时保持 `queued`、发 `routing_failed` 事件、不建 run。
 5. **写闸**：进程内 `inflightRunId` 守卫，同一时刻只允许一个 turn；busy 时本轮跳过，不写 run、不加 attempt。跨进程写闸属「仅建议」。
@@ -3831,14 +3831,31 @@ GateRecheckResult {
 
 ### M5.5 验证
 
-- 新增 `src/main/__tests__/work-execution.test.ts`：10 个用例，覆盖 gate 重跑、默认 fail-closed、正常链路、孤儿回收、五类写通道拒绝、只入队、in-flight/queued 取消收敛、kernel-only 结构断言。
+- 新增 `src/main/__tests__/work-execution.test.ts`：12 个用例，覆盖 gate 重跑、默认 fail-closed、引擎抛异常收口、豁免视同通过且保留三字段、正常链路、孤儿回收、五类写通道拒绝、只入队、in-flight/queued 取消收敛、kernel-only 结构断言。
+- 新增 `src/main/__tests__/gate-engine.test.ts`：53 个用例（§14.9 实现子集，见 M5.7）。
 - `map-read-ipc.test.ts` 扩展写通道清单。
-- 全量：`309` 个测试文件、`3760` 通过、`3` 跳过、`0` 失败。
+- 全量：`310` 个测试文件、`3815` 通过、`3` 跳过、`0` 失败（连续两轮全绿；首轮有一例与本段改动无关的偶发失败，未再复现）。`tsc --noEmit` 干净。
 - 已知环境事实：本机 `node_modules/better-sqlite3` 默认按 Electron ABI 构建；跑 vitest 需临时按 Node 20 重建绑定，验证后已恢复为 Electron 绑定（sha256 校验一致）。
 
 ### M5.6 遗留风险
 
-1. 生产默认 gate 不可用 → 执行链路在生产不可达（裁决 A 的显式代价）。
+1. 生产真实执行不可达（现状）：不是引擎缺失，而是 D1/D7 的 fail-closed 默认——生产写入路径只产生 `[{id,text}]` acceptance（G2 判 `acceptance_item_not_structured`），G4 无预估行数来源（判 `line_estimate_unavailable`）。D1/D7 裁决并落地后此局面才会改变。
 2. 路由未实现 Tier 1 探测；pinned adapter 缺失时 run 不会被 claim。
 3. 跨进程项目写闸未实现，只有进程内单 turn 守卫。
 4. renderer 执行入口与运行态展示未接入（面板归另一条线）。
+
+### M5.7 G1–G6 gate 引擎实施记录（2026-11-07）
+
+**已实施**（`src/main/map/gate-engine.ts` + `src/main/map/gate-recheck.ts` 端口扩展；生产装配在 `work-execution-runtime.ts`）：
+
+- 判定范围：G1（scope 非空且经 §5.4.1 realpath/NFC/大小折叠管线校验在项目根内）、G2（≥1 条 `{type ∈ command|manual|file_check, expected 非空}` 结构化条目）、G3 可判定子集（锚点存在 + `graph_type='dev'` + `graph_id` 一致）、G4（去重后文件数与预估行数上限，默认 20/800）、G5（`depends_on_json` 传递闭包全 `done` + 当前 revision + 无环）、G6（与 `running AND is_current` 任务 scope 规范化后无交集）。
+- 豁免（§14.6/§14.9-3）：仅当全部缺失码来自 G2 且失败条目均为 `manual` 类型、三字段（`gate_waived_by/at/reason`）齐全时判 `waived` 视同通过；G1/G3/G4 不可豁免（§5.4），G5/G6 在 D9 裁决前不可豁免；manual 豁免不覆盖 command/file_check 失败（D3 保守读法）。tick 对 waived 结论保留库内三字段，不改写为 `pass`。
+- fail-closed（§14.5）：JSON 解析失败/查询异常/非 POSIX 根/阈值非法/预估来源缺失一律 `incomplete` + 具体缺失码；评估器抛异常由 tick 按 `gate_engine_unavailable` 同路径收口。
+- 只读与幂等：recheck 全程同步读（better-sqlite3 单线程，一次调用等价同一时点快照），不写四张表（测试做前后快照对比）；同输入两次评估结果一致。
+- 测试：`gate-engine.test.ts` 53 用例 + `work-execution.test.ts` 12 用例，覆盖 §14.9 断言 1–10 的实现子集（含 symlink 逃逸、NFC、darwin 大小写折叠、`./` 前缀规范化等价、零写入、幂等、生产默认注入、抛异常注入）。
+
+**采纳说明**：引擎最初来自另一条线留下的未跟踪实现；本次经逐条对照 §14 复核后采纳，并修正/补齐三处——G2 的 pass 语义（有结构化条目即通过，坏补充条目不再判 incomplete）、G4 按去重后文件数计数（§5.4）、豁免判定与 tick 的异常/waived 处理。
+
+**与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；评估器版本归因属 D12，未裁决前不落库。
+
+**依赖产品裁决才能改变的行为（仅建议→已批准前维持默认）**：D1（acceptance 结构化格式与迁移）、D7（预估行数来源）、D5/D6（G3 跨图写矩阵）、D3/D9（豁免粒度与 G5/G6 可豁免性）。
