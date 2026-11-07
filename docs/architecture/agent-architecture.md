@@ -809,7 +809,7 @@ git 只读样本 allow 比例 78.2% → 72.4%（全 7 环境）；剔除 husky �
 
 审计：每个决定写入 `agent_events.type='bash.policy'`，payload 含 `command/decision/rule/reason/risk`；对应 step 同步状态（allow→running、ask→awaiting_approval、blocked-empty→denied）。`agent_events` 自 v22 起带 `step_id`（turn 作用域，与 `agent_approvals.step_id` 同一口径，历史行 NULL）：`bash.policy`、`tool.requested/tool.result`、`approval.required/approval.resolved` 都写入同一个 stepId，可由 `AgentRepository.listStepEvents(stepId)` 一次返回该步骤完整序列，不需要调用方拼 `turn_id + seq`。索引为 `(step_id)` 与 `(turn_id, step_id, turn_seq)`。
 
-**诚实边界**：这是可解释、可测试的规则，不是完备沙箱。只约束 Claude 的 Bash 工具入口；不阻止 CLI 经其他工具（如自定义 MCP）执行命令，也不阻止用户在审批卡片上批准任何命令。**旧路径（`BIZGRAPH_AGENT_KERNEL=0`）没有审批网关，仍沿用 SDK 自身策略**——这套两档策略只在内核路径生效。
+**诚实边界**：这是可解释、可测试的规则，不是完备沙箱。只约束 Claude 的 Bash 工具入口；不阻止 CLI 经其他工具（如自定义 MCP）执行命令，也不阻止用户在审批卡片上批准任何命令。旧路径（`BIZGRAPH_AGENT_KERNEL=0`）下，Claude 通过 legacy 钩子同样调用这套两档策略（2026-11-07 起有节点会话也注册钩子）；**非 Claude 后端没有宿主策略调用点**，仍沿用 SDK/CLI 自身分级。
 
 #### 4.6.1 写类工具不得写 git 元数据（D1，2026-11-06）
 
@@ -1487,7 +1487,63 @@ Kernel 路径自第六轮起**默认开启**，但不是一刀切：只有「已
 
 ### 17.4 已知风险
 
-- 未具备审批的后端（codex/opencode）在 kernel 关闭审批能力时仍可正常工作，但**不受写前拦截**；UI/日志必须如实标注，不能宣称「已保护」。
+- 未具备审批的后端（codex/opencode/长尾 CLI）在 kernel 关闭审批能力时仍可正常工作，但**不受写前拦截**；非 Claude 的节点会话即使有节点也仍是裸 spawn，宿主没有审批点（详见 §17.6）。UI/日志必须如实标注，不能宣称「已保护」。
 - `UNSAFE=1` 属降级运行：审计里只有 warn 与 `degraded` 原因，没有审批行；不得用于默认发布。
-- Bash 的命令级风险分级由**宿主 `bash-readonly.ts` 两档策略**决定（Kernel 路径：只读放行 / 写类弹窗；真机 7/7）；旧路径仍沿用 SDK/CLI 分级，用户 `permissions.allow` 可让部分 Bash 命令免弹（写类工具已由强制 ask 封堵）。
+- Bash 的命令级风险分级由**宿主 `bash-readonly.ts` 两档策略**决定（Kernel 路径：只读放行 / 写类弹窗；真机 7/7）；Claude 旧路径（含 `BIZGRAPH_AGENT_KERNEL=0` 回退）通过 legacy 钩子调用同一份 `evaluateBashPolicy`；**非 Claude 旧路径没有宿主调用点**，仍沿用 SDK/CLI 分级，用户 `permissions.allow` 可让部分 Bash 命令免弹。写类工具只在 Claude 上被 PreToolUse 强制 `ask` 封堵。
 - 新建会话的内存判据按平台区分：macOS 的 `os.freemem()` 只统计完全空闲页，因此仅保留 64MB 硬下限；其他平台按总内存 2% 计算并 clamp 到 128MB–2GB，避免绝对阈值误伤真实用户。
+
+### 17.5 保护范围矩阵（2026-11-07 核对）
+
+口径：
+
+- **审批**：该链路每次工具执行前是否有宿主调用点（Claude = PreToolUse 强制 `ask` → `canUseTool` → 审批网关）。
+- **沙箱**：spawn 时是否经 `sandboxLaunch()` 套 SBPL profile（`getSandboxCapability().available` 为前提）。
+- **ScopeGuard**：会话是否建立 `allowedFiles` 快照沙箱（`allowedFiles.length > 0 || verifyOnly`）。
+- **有 / 无 / 部分**：`部分` 表示取决于会话配置、后端或运行环境，不是链路本身保证。
+
+| 会话形态 · 后端 | 写前审批 | 沙箱（spawn profile） | ScopeGuard |
+|---|---|---|---|
+| Claude · 节点会话（默认 kernel） | 有 | 有（可用时）；沙箱不可用时 Bash allow 集退回 ask | 部分（配置 `allowedFiles>0`/`verifyOnly` 才建；节点会话通常有） |
+| Claude · 节点会话（`BIZGRAPH_AGENT_KERNEL=0` 旧路径） | 有（2026-11-07 修复后注册 legacy 钩子；修复前为「无」） | 有（旧路径同一 `spawnClaudeProcess`） | 部分（同上） |
+| Claude · 自由聊天（thread 无节点） | 有（legacy 钩子） | 有 | 无（`allowedFiles=[]` 且非 verifyOnly，不建） |
+| Claude · 子代理（subagent，无 thread） | 有（legacy 钩子） | 有 | 部分（子代理给出 `allowedFiles` 时建） |
+| Claude · sendAndWait | 有（legacy 钩子） | 有 | 无（`allowedFiles=[]`） |
+| Claude · A2A | 部分（钩子会装，但 `transparentForward` 关闭内置工具，实际没有可审批工具） | 有（隔离空目录） | 有（`verifyOnly=true`，空白名单，任何写入都回滚） |
+| Claude · recipe step | 同子代理（子会话） | 有 | 部分（step 提供 `allowed_files` 时建） |
+| 非 Claude · 节点会话（只有旧路径） | 无（裸 `spawn`，无宿主审批点；`evaluateBashPolicy` 也无调用点） | 部分（codex/opencode/mcp 有；cline/cursor/qwen/qoder/kilo/kimi/codebuddy 直接 `spawn`，无） | 部分（配置 `allowedFiles`/`verifyOnly` 时建） |
+| 非 Claude · 自由聊天 | 无（fail-closed：直接阻断发送，不是审批） | 无（发送即阻断，不会 spawn） | 无（`allowedFiles=[]`） |
+| 非 Claude · 子代理 / sendAndWait / recipe step | 无（宿主不装钩子；内部会话保持既有行为） | 部分（同上） | 部分（子代理/recipe 有 `allowedFiles` 时建；sendAndWait 无） |
+
+A2A 入口固定 `startSession('claude-code', …)`（`src/main/a2a/wiring.ts`），因此矩阵里没有「非 Claude · A2A」一行。`sendAndWait` 与子代理的「有审批」仅指 Claude；非 Claude 对应行为是既有 SDK/CLI 策略，不能按矩阵读成受保护。
+
+**节点解析校验失败时的行为（2026-11-07 补齐）**：`resolveKernelNodeId()` 会按 `command.targetNodeId → 会话配置 nodeId → chat_threads.node_id → agent_sessions/最近 turn` 顺序取候选，每个候选都必须存在于 `nodes` 表；已知 `chat_threads.graph_id` 时还要求 `nodes.graph_id` 与之一致。校验失败的候选被丢弃并打印 `[kernel-node-invalid]` warn，**不会**写进 `agent_turns.node_id`（该列无 FK，数据库不会替我们拒绝）。如果所有候选都无效：
+
+- `sendCommand` → 不进 kernel，回旧路径；Claude 仍装 legacy 审批钩子，非 Claude 节点会话保持 §17.6 的未保护行为；
+- 直接调用 `sendCommandThroughKernel` → 抛「kernel turn 需要真实节点归属」，不落库；
+- DB 未初始化（单测 / 早期启动）时无法校验，退回既有行为并接受候选值。
+
+### 17.6 C3 已知风险（未修复，用户决定暂不处理）
+
+以下两项是**已查实、当前不修**的风险；用户已明确本轮不回收沙箱放宽、不对非 Claude 后端做阻断，只如实记录。
+
+1. **沙箱 exec 面未收敛（写面收敛不等于安全）**。`buildSandboxProfile()` 的 exec 白名单把系统工具**整目录**放行：
+
+   ```ts
+   const SYSTEM_EXEC_SUBPATHS = ['/bin', '/usr/bin', '/usr/sbin', '/usr/libexec', '/System/Library']
+   ```
+
+   （`src/main/shared/sandbox/profile.ts`）因此 `/bin/sh`、`/usr/bin/env`、系统自带的 `curl`、`python3` 都在沙箱内可执行。实测：工作区 `.git/config` 写入 `core.fsmonitor='/bin/sh -c "<payload>"'` 后，沙箱内执行一条普通 `git status` 就会拉起任意 shell 并写出 marker；`curl` 可把内容外传。结论：**「沙箱在位即放开 `fsmonitor` / `hooksPath` / `alternateRefsCommand` 存在性 ask」只收敛了写面，exec 面没有收敛**，不得表述为「安全」或「已隔离」。本轮按用户决定不回收这批放宽。
+
+2. **非 Claude 节点会话没有宿主审批**。cline / cursor / qwen / qoder / kilo / kimi / codebuddy 等适配器是裸 `spawn`，没有 `setTurnApprovalHooks`，也不走 kernel；`evaluateBashPolicy` 的「沙箱不可用 → allow 退回 ask」降级对它们**不成立**，因为宿主根本没有调用点。它们在节点会话里仍可写文件、跑 Bash，审计只有后端自身输出。本轮只标注，不改行为、不阻断使用。
+
+**结论措辞**：当前状态是「已知风险 + 用户决定暂不处理 + 暂不对外发布」。不得写成「可发布」「已收敛」「全部链路受保护」。
+
+### 17.7 审计断点：旧路径没有 turn 时间线
+
+Kernel 路径为每轮写真实 `agent_turns`，并有 `tool.requested/tool.result`、`approval.required/approval.resolved`、`bash.policy` 等 `agent_events`。旧路径（含 `BIZGRAPH_AGENT_KERNEL=0` 回退的节点会话）**只有 `agent_approvals` 行**：
+
+- 不产生 `approval.required` / `approval.resolved`；
+- Claude legacy 钩子的 `onBashPolicy` 未接线，也不产生 `bash.policy`；
+- `ApprovalGateway` 的 policy-block / grant-miss 审计对 legacy 明确跳过。
+
+原因是 `agent_events` 需要真实 `turn_id`（`NOT NULL`，且有 `UNIQUE(turn_id, turn_seq)` / `UNIQUE(run_id, seq)`），而旧路径没有 turn；用 `legacy-*` 伪 ID 写事件会制造无法与 `agent_turns` 关联的孤儿行，因此当前故意不写。**断点位置**：节点会话一旦回退旧路径，审批审计链从「turn 时间线」断开，只能按 `agent_approvals`（`run_id = legacy-run:<session>`、`turn_id = legacy-turn:<session>`）查；要补齐必须新增无 turn 的审计通道或伪造 turn，二者都不在本轮范围。
