@@ -3798,10 +3798,10 @@ GateRecheckResult {
 ### M5.1 状态总览
 
 - **已实施**：主进程单实例异步 tick（§5.9.9 六步骨架）、`GateRecheck` 可插拔端口、G1–G6 准入 gate 评估引擎（§14 草案的实现子集 + §14.8 各待决项的 fail-closed 默认，见 M5.7）、孤儿回收（`running → queued`，不计 `attempt`）、`workitem:step:run`（只入队）与 `workitem:run:cancel`（条件更新 + 执行器真结束会话）。
-- **已批准未实施**：§14.8 待决项的产品裁决（D1–D14）；豁免粒度（D3）与 G5/G6 可豁免性（D9）裁决前，引擎按保守默认不豁免。
-- **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）、acceptance 结构化格式迁移（D1）与预估行数来源（D7）。
+- **已批准未实施**：§14.8 其余待决项（D2–D6、D8–D14）；D3/D9 裁决前引擎按保守默认不豁免。
+- **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）。
 
-**重要事实（更新）**：引擎落地后，`gate_engine_unavailable` 不再是阻断原因；但按 §14.8 的 fail-closed 默认，生产写入路径产生的 acceptance（`[{id,text}]`，D1）与无预估来源的规模评估（D7）仍会把常规任务判 `incomplete` 并挡在 `blocked`。**生产真实执行仍然不可达**，这是规格内的显式默认而非引擎缺陷；D1/D7 裁决并落地之前不得描述为「已可用」。
+**重要事实（M5.8 后更新）**：D1/D7 已裁决并实施——acceptance 结构化条目 + scope 指向已存在文件的任务，G1–G6 可全绿并真实进入执行；存量自由文本 acceptance 任务仍被 G2 挡在 `blocked`（D1 不自动迁移的显式代价），直到人工重新确认计划。
 
 ### M5.2 tick 六步映射
 
@@ -3841,7 +3841,7 @@ GateRecheckResult {
 
 ### M5.6 遗留风险
 
-1. 生产真实执行不可达（现状）：不是引擎缺失，而是 D1/D7 的 fail-closed 默认——生产写入路径只产生 `[{id,text}]` acceptance（G2 判 `acceptance_item_not_structured`），G4 无预估行数来源（判 `line_estimate_unavailable`）。D1/D7 裁决并落地后此局面才会改变。
+1. 存量自由文本 acceptance 任务不可执行（D1 不自动迁移的显式代价）：G2 判 `acceptance_item_not_structured`，需人工重新确认计划结构化后入队。scope 指向目录的任务被 G4 判 `line_estimate_unavailable`（fail-closed）。
 2. 路由未实现 Tier 1 探测；pinned adapter 缺失时 run 不会被 claim。
 3. 跨进程项目写闸未实现，只有进程内单 turn 守卫。
 4. renderer 执行入口与运行态展示未接入（面板归另一条线）。
@@ -3860,4 +3860,21 @@ GateRecheckResult {
 
 **与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；评估器版本归因属 D12，未裁决前不落库。
 
-**依赖产品裁决才能改变的行为（仅建议→已批准前维持默认）**：D1（acceptance 结构化格式与迁移）、D7（预估行数来源）、D5/D6（G3 跨图写矩阵）、D3/D9（豁免粒度与 G5/G6 可豁免性）。
+**依赖产品裁决才能改变的行为**：D5/D6（G3 跨图写矩阵）、D3/D9（豁免粒度与 G5/G6 可豁免性）仍维持 fail-closed 默认。**D1/D7 已裁决并实施（2026-11-07，本段）**，见 M5.8。
+
+### M5.8 D1/D7 裁决实施记录（2026-11-07，已批准已实施）
+
+**D1（acceptance 结构化格式与迁移）**：
+- 格式冻结为 `{ id, type: 'command'|'manual'|'file_check', expected 非空, text? }`；判定只看 `type + expected`，`text` 是人读补充（`work-item-service.ts` 导出 `StructuredAcceptanceEntry`/`normalizeAcceptanceInput`/`normalizeAcceptanceJson`）。
+- 写入路径同批收紧：`createDraft` 与 `revise` 在系统边界强制结构化，缺 `type`/`expected`、未知 type、非数组/非法 JSON 一律 `WorkItemGuardError` 拒绝，不静默降级；IPC `workitem:create`/`workitem:revise` 传入的数组经同一校验（服务边界覆盖）。
+- 存量 `[{id,text}]` **不自动迁移**：仍判 G2 incomplete（`acceptance_item_not_structured`），由人工重新确认计划时结构化（复用 `awaiting_confirm → queued` gate 守卫）。显式代价：存量任务重新确认前保持 `blocked`。
+- 执行面：`agent-step-runner` 的步骤提示词与会话 `acceptance` 按结构化条目渲染为 `- [type] expected（text）`；无法识别的形状防御性跳过，不猜语义。
+
+**D7（G4 预估行数来源）**：
+- 算法定为确定性代理：`estimateLines = Σ scope 文件行数`——已存在文件按实际行数（mtime+size 缓存），将新建的文件计 0（新建规模由 G4 文件数上限约束）；scope 指向目录或读取失败 → null → 引擎 `line_estimate_unavailable`（fail-closed）。
+- 配置：`BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `BIZGRAPH_MAP_EXECUTION_G4_MAX_LINES`，默认 20/800；非法 env 值回退默认并告警。
+- 落点：仅生产装配处（`work-execution-runtime.ts` 导出 `readG4Config`/`buildEstimateLines`）；引擎不改。写明定位：这是**准入代理指标**，真实改动行数由执行后 evidence 对比（超限属执行后审计，不归准入）。
+
+**裁决后的可达性事实**：结构化 acceptance + scope 指向已存在文件的任务，G1–G6 可全绿并通过 tick claim 进入 kernel-only 执行；存量自由文本任务与 scope 指向目录的任务仍按上表 fail-closed。
+
+**测试**：`work-item-service.test.ts` +4（结构化落库/旧格式拒绝/缺 expected/revise 校验）、`work-execution-runtime.test.ts` 新增（env 阈值、Σ 行数、目录 fail-closed、缓存）、`agent-step-runner.test.ts` 断言结构化渲染。
