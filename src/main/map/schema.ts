@@ -595,6 +595,15 @@ export function applyMapS8Schema(db: { exec(sql: string): unknown }): void {
   }
 }
 
+export function applyMapS6aSchema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_S6A_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_S6A_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}
+
 export function applyMapS7Schema(db: { exec(sql: string): unknown }): void {
   for (const schema of MAP_S7_TABLE_SCHEMAS) {
     db.exec(schema.createSql)

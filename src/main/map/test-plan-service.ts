@@ -239,7 +239,13 @@ export class TestPlanService {
    * 汇总 test_runs + test_results。任一 failed → run failed（§6.2 失败分类）。
    * 返回 E3 资格判定（§6.2.1）——证据写入由调用方经 EvidenceService 执行。
    */
-  async execute(planId: string, opts?: { headCommit?: string; codeDirty?: boolean }): Promise<{
+  async execute(planId: string, opts?: {
+    headCommit?: string
+    codeDirty?: boolean
+    /** §6.8:策略门(evaluateBashPolicy+GitDirGuard,逐条调用;deny→skipped+后续停止) */
+    cwdOverride?: string
+    policyGate?: (command: string) => { decision: 'allow' | 'deny'; reason?: string }
+  }): Promise<{
     run: TestRunRow
     e3: { eligible: boolean; reason: string; codeVersion: string | null }
   }> {
@@ -260,15 +266,41 @@ export class TestPlanService {
     const items = this.listItems(planId)
     let passed = 0
     let failed = 0
-    const skipped = 0
+    let skipped = 0
 
+    let gateStopped = false
     for (const item of items) {
+      // §6.8/§6.3:策略门逐条;deny → skipped+denied 记录,后续默认停止(continue_on_failure=false)
+      if (opts?.policyGate) {
+        const verdict = opts.policyGate(item.command)
+        item.policy_decision = verdict.decision
+        if (verdict.decision === 'deny') {
+          gateStopped = true
+          this.db
+            .prepare("UPDATE test_plan_items SET status = 'skipped', policy_decision = 'deny', targeted_reason = ? WHERE id = ?")
+            .run(`policy deny:${verdict.reason ?? ''}`, item.id)
+          this.db
+            .prepare(
+              `INSERT INTO test_results (id, test_run_id, plan_item_id, status, failure_summary, created_at)
+               VALUES (?, ?, ?, 'skipped', ?, ?)`,
+            )
+            .run(`tres_${Date.now()}_${randomUUID().slice(0, 8)}`, runId, item.id, `policy deny:${verdict.reason ?? ''}`, Date.now())
+          continue
+        }
+        this.db.prepare('UPDATE test_plan_items SET policy_decision = ? WHERE id = ?').run('allow', item.id)
+      }
+      if (gateStopped && item.status === 'pending') {
+        // 前序失败/deny 后默认停止:余项 skipped(§6.8.2 continue_on_failure=false)
+        this.db.prepare("UPDATE test_plan_items SET status = 'skipped' WHERE id = ?").run(item.id)
+        skipped += 1
+        continue
+      }
       const itemStarted = Date.now()
       this.db.prepare("UPDATE test_plan_items SET status = 'running', started_at = ? WHERE id = ?").run(itemStarted, item.id)
       try {
         const result = await this.runner.runCommand({
           command: item.command,
-          cwd: item.cwd ?? plan.project_path,
+          cwd: opts?.cwdOverride ?? item.cwd ?? plan.project_path,
           timeoutMs: 300_000,
         })
         const status = result.timedOut ? 'timed_out' : result.exitCode === 0 ? 'passed' : 'failed'
@@ -281,12 +313,12 @@ export class TestPlanService {
           .run(status, result.exitCode, result.durationMs, result.outputRef ?? null, Date.now(), item.id)
         this.db
           .prepare(
-            `INSERT INTO test_results (id, test_run_id, plan_item_id, spec_id, status, exit_code, duration_ms, output_ref, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO test_results (id, test_run_id, plan_item_id, spec_id, status, exit_code, duration_ms, failure_class, output_ref, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             `tres_${Date.now()}_${randomUUID().slice(0, 8)}`, runId, item.id, item.spec_id ?? null,
-            status, result.exitCode, result.durationMs, result.outputRef ?? null, Date.now(),
+            status, result.exitCode, result.durationMs, status === 'timed_out' ? 'timeout' : 'assertion', result.outputRef ?? null, Date.now(),
           )
       } catch (err) {
         failed += 1

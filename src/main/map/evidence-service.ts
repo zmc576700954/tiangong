@@ -90,6 +90,8 @@ export interface CreateEvidenceInput {
   // E3
   codeVersion?: string
   codeDirty?: number
+  /** E2 content_hash 绑定(dirty 事实,current_hash=dirty_tree_hash,§6.2.1) */
+  currentHash?: string
   workRunId?: string
   workItemId?: string
   sessionId?: string
@@ -214,16 +216,16 @@ export class EvidenceService {
           `INSERT INTO node_evidence (
              id, project_path, graph_id, graph_type, node_entity_key, node_id,
              evidence_level, evidence_type, ref_json, summary,
-             version_binding, code_version, code_dirty, freshness, produced_by,
+             version_binding, code_version, code_dirty, current_hash, freshness, produced_by,
              work_item_id, work_run_id, session_id, turn_id,
              created_at, verified_at, signed_by, signed_by_display_name, signed_at,
              coverage_json, basis_ref_json, reproducible, expires_at, renewed_from_evidence_id
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id, input.projectPath ?? null, input.graphId, node.graph_type, input.nodeEntityKey,
           input.nodeId ?? node.id, input.level, input.evidenceType, refJson, input.summary ?? null,
-          versionBinding, codeVersion, codeDirty, producedBy,
+          versionBinding, codeVersion, codeDirty, input.currentHash ?? null, producedBy,
           input.workItemId ?? null, input.workRunId ?? null, input.sessionId ?? null, input.turnId ?? null,
           now.toISOString(), input.level === 'E3' ? now.toISOString() : null,
           signedBy, signedByDisplay, signedAt, coverageJson, basisJson, reproducible, expiresAt,
