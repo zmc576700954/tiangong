@@ -18,6 +18,7 @@ import {
   cancelPendingRecomputes,
   scheduleRecomputeForWorkItem,
   flushPendingRecomputes,
+  refreshStaleDerivationsForGraph,
 } from '../map/execution-state'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkRunService } from '../map/work-run-service'
@@ -206,12 +207,12 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     return db.prepare('SELECT * FROM node_execution_state WHERE graph_id = ? AND node_entity_key = ?').get('g1', 'key-1') as Record<string, unknown> | undefined
   }
 
-  function insertWorkItem(status: string, gateStatus = 'incomplete', depends: string[] = []): string {
+  function insertWorkItem(status: string, gateStatus = 'incomplete', depends: string[] = [], createdAt = '2026-01-01T00:00:00Z'): string {
     const id = `wi_${randomUUID().slice(0, 8)}`
     db.prepare(
       `INSERT INTO work_items (id, lineage_id, revision, is_current, graph_id, anchor_entity_key, title, status, gate_status, depends_on_json, origin, created_at, updated_at)
-       VALUES (?, ?, 1, 1, 'g1', 'key-1', '任务', ?, ?, ?, 'human', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
-    ).run(id, `wl_${randomUUID().slice(0, 8)}`, status, gateStatus, JSON.stringify(depends))
+       VALUES (?, ?, 1, 1, 'g1', 'key-1', '任务', ?, ?, ?, 'human', ?, ?)`,
+    ).run(id, `wl_${randomUUID().slice(0, 8)}`, status, gateStatus, JSON.stringify(depends), createdAt, createdAt)
     return id
   }
 
@@ -219,7 +220,7 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     const ev = (o: Partial<{ id: string; level: 'E1'|'E2'|'E3'|'E4'; freshness: string; revoked: boolean; expired: boolean }>): { id: string; level: 'E1'|'E2'|'E3'|'E4'; freshness: string; revoked: boolean; expired: boolean } => ({
       id: 'e', level: 'E2', freshness: 'fresh', revoked: false, expired: false, ...o,
     })
-    const base = { dependencyStates: [], runningRunIds: [], testFail: false, workItem: null }
+    const base = { workItems: [], runningRunIds: [], testFail: false }
     expect(deriveFromInputs({ ...base, evidence: [] }).state).toBe('untouched')
     expect(deriveFromInputs({ ...base, evidence: [ev({ level: 'E1' })] }).state).toBe('planned')
     expect(deriveFromInputs({ ...base, evidence: [ev({ level: 'E2' })] }).state).toBe('implemented')
@@ -237,7 +238,67 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     // test_fail 最高优先
     expect(deriveFromInputs({ ...base, evidence: [ev({ level: 'E3' })], testFail: true }).state).toBe('failed')
     // blocked:running item + gate incomplete
-    expect(deriveFromInputs({ ...base, evidence: [], workItem: { id: 'wi', status: 'running', gateStatus: 'incomplete', dependsOn: [] } }).state).toBe('blocked')
+    expect(deriveFromInputs({ ...base, evidence: [], workItems: [{ id: 'wi', status: 'running', gateStatus: 'incomplete', depsSatisfied: true }] }).state).toBe('blocked')
+  })
+
+  it('纯函数:多 lineage 聚合按活跃集折叠（failed > in_progress > blocked）', () => {
+    const wi = (id: string, status: string, gate = 'pass', depsSatisfied = true) => ({ id, status, gateStatus: gate, depsSatisfied })
+    const base = { evidence: [], runningRunIds: [], testFail: false, workItems: [] as ReturnType<typeof wi>[] }
+    // 旧版只看最新一条会得到 blocked；聚合后 running run 优先
+    expect(
+      deriveFromInputs({
+        ...base,
+        workItems: [wi('a', 'running'), wi('b', 'blocked', 'incomplete')],
+        runningRunIds: ['wr-1'],
+      }).state,
+    ).toBe('in_progress')
+    // 无 run 时 blocked lineage 仍然算数
+    expect(deriveFromInputs({ ...base, workItems: [wi('a', 'running'), wi('b', 'blocked', 'incomplete')] }).state).toBe('blocked')
+    // 活跃 lineage 的 test_fail 优先于其余状态
+    expect(deriveFromInputs({ ...base, testFail: true, workItems: [wi('a', 'done'), wi('b', 'failed')] }).state).toBe('failed')
+    // 全部终态时回退到最新一条（调用方保证 newest-first）
+    expect(deriveFromInputs({ ...base, workItems: [wi('newest', 'done'), wi('older', 'failed')] }).state).toBe('untouched')
+  })
+
+  it('落库:多 lineage 并存时最新一条不再吞掉其他 lineage 的 running/blocked', () => {
+    const runs = new WorkRunService(db)
+    // 较新的 blocked lineage + 较旧的 running lineage
+    insertWorkItem('blocked', 'incomplete', [], '2026-01-02T00:00:00Z')
+    const runningOlder = insertWorkItem('running', 'pass', [], '2026-01-01T00:00:00Z')
+    const { run } = runs.enqueue({ workItemId: runningOlder, executorKind: 'agent' })
+
+    recomputeExecutionState(db, 'g1', 'key-1')
+    expect(state()?.execution_state).toBe('in_progress')
+
+    runs.cancel(run.id, 'shutdown')
+  })
+
+  it('落库:较旧 failed lineage 不覆盖较新 done lineage（不永久 failed）', () => {
+    const runs = new WorkRunService(db)
+    insertWorkItem('done', 'pass', [], '2026-01-02T00:00:00Z')
+    const runningOlder = insertWorkItem('running', 'pass', [], '2026-01-01T00:00:00Z')
+    const { run } = runs.enqueue({ workItemId: runningOlder, executorKind: 'agent' })
+    runs.fail(run.id, { failureClass: 'test_fail' })
+    db.prepare("UPDATE work_items SET status = 'failed' WHERE id = ?").run(runningOlder)
+
+    recomputeExecutionState(db, 'g1', 'key-1')
+    // 无证据且无活跃 item → untouched 不写假行；若是 failed 会落行，故 undefined 即证明未被旧失败覆盖
+    expect(state()).toBeUndefined()
+  })
+
+  it('惰性刷新:derivation_version 落后的缓存会在读侧重算', () => {
+    insertWorkItem('queued', 'incomplete')
+    recomputeExecutionState(db, 'g1', 'key-1')
+    expect(state()?.execution_state).toBe('blocked')
+    expect(Number(state()?.derivation_version)).toBe(2)
+
+    // 模拟旧版本（v1）留下的缓存：版本与哈希都来自旧算法
+    db.prepare("UPDATE node_execution_state SET derivation_version = 1, inputs_hash = 'v1-stale-hash', execution_state = 'in_progress' WHERE graph_id = 'g1' AND node_entity_key = 'key-1'").run()
+    expect(refreshStaleDerivationsForGraph(db, 'g1')).toBe(1)
+    expect(Number(state()?.derivation_version)).toBe(2)
+    expect(state()?.execution_state).toBe('blocked')
+    // 已刷新后不再重复重算
+    expect(refreshStaleDerivationsForGraph(db, 'g1')).toBe(0)
   })
 
   it('落库:planned(queued item);in_progress(running run);E2→implemented;hash 未变跳过', () => {

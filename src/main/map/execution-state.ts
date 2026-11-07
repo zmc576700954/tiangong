@@ -2,21 +2,26 @@
  * 派生引擎（S6a,session-map 蓝图 §3.3/§3.7.4/§3.7.5）
  *
  * 判定顺序（自顶向下命中即止,tie-break 确定性）：
- *  1. test_fail=true → failed（生产来源：该 item 最近一次 run 终态为 failed 且
+ *  1. test_fail=true → failed（生产来源：活跃 item 最近一次 run 终态为 failed 且
  *     failure_class='test_fail';重试开始或新 run 成功即解除）
  *  2. 存在 running work_run → in_progress
- *  3. 当前 revision work_item gate_status='incomplete' 或依赖未满足 → blocked
+ *  3. 任一活跃 item gate_status='incomplete' 或依赖未满足 → blocked
  *  4. E3 fresh 未撤销 → verified
  *  5. E4 fresh 未撤销 → signed_off
  *  6. E3 stale,或过期未撤销 E4 → stale（U1 裁决;已撤销/覆盖变化 E4 不参与,
  *     落回后续规则）
  *  7. E2 未撤销 → implemented
- *  8. E1 或当前 revision work_item status ∈ draft/queued → planned
+ *  8. E1 或任一活跃 item status ∈ draft/queued → planned
  *  9. 否则 untouched
  *
- * inputs_hash = sha256(canonical_json({derivation_version, evidence…, work_item…,
- * running_run_ids, test_fail}))——哈希未变跳过写入。工作区无证据且无任务时不写
- * untouched 假行（宁缺勿伪造）。nodes.status 永不参与、也不被回写。
+ * 同一 anchor 允许多条 lineage 并存（§4.1）：derivation v2 对**活跃集**（非终态
+ * 当前 revision）聚合，而不是只取 created_at 最新的一条（v1 会吞掉其他 lineage 的
+ * running/blocked/test_fail）。活跃集为空时回退到最新一条。
+ *
+ * inputs_hash = sha256(canonical_json({derivation_version, evidence…, work_items…,
+ * running_run_ids, test_fail}))——work_items 为排序后的 (id,status,gate) 列表；
+ * 哈希未变跳过写入。工作区无证据且无任务时不写 untouched 假行（宁缺勿伪造）。
+ * nodes.status 永不参与、也不被回写。
  *
  * 重算触发（§3.7.5）：证据插入/撤销、work_item/work_run 状态变更 →
  * `scheduleRecomputeForWorkItem` 只重算「该 item 锚定的节点 + 把它列为直接依赖的
@@ -31,7 +36,13 @@ import { createLogger } from '../shared/logger'
 
 const logger = createLogger('ExecutionState')
 
-export const DERIVATION_VERSION = 1
+export const DERIVATION_VERSION = 2
+
+/** 终态 item：不参与活跃集聚合（无活跃集时才回退到最新一条）。 */
+export const WORK_ITEM_TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled', 'superseded'])
+
+/** 在途 item 状态（§3.3 规则 3 的细化）。 */
+const ITEM_IN_FLIGHT = new Set(['queued', 'running', 'blocked', 'needs_input', 'needs_human', 'paused', 'interrupted'])
 
 /** 派生态变更通知载荷（§9.3 event:node-execution-state）。 */
 export interface ExecutionStateChangePayload {
@@ -98,8 +109,8 @@ function canonicalJson(value: unknown): string {
  */
 export function deriveFromInputs(inputs: {
   evidence: Array<{ id: string; level: 'E1'|'E2'|'E3'|'E4'; freshness: string; revoked: boolean; expired: boolean; signedAt?: string | null; verifiedAt?: string | null }>
-  workItem?: { id: string; status: string; gateStatus: string; dependsOn: string[] } | null
-  dependencyStates: Array<{ id: string; status: string }>
+  /** 同一 anchor 的全部当前 revision item，按 created_at DESC, id ASC 传入。 */
+  workItems: Array<{ id: string; status: string; gateStatus: string; depsSatisfied: boolean }>
   runningRunIds: string[]
   testFail: boolean
 }): DerivationResult {
@@ -114,18 +125,22 @@ export function deriveFromInputs(inputs: {
   const effectiveStaleCount = inputs.evidence.filter((e) => !e.revoked && (e.freshness === 'stale' || (e.level === 'E4' && e.expired))).length
   const evidenceCount = active.length
 
-  const depsSatisfied = inputs.dependencyStates.every((d) => d.status === 'done')
-  const item = inputs.workItem ?? null
-  const itemPlanned = item != null && (item.status === 'draft' || item.status === 'queued')
-  // §3.3 规则 3 的"未完成 work_item"细化为确认后的在途状态——draft/awaiting_confirm
-  // 走规则 8 的 planned（否则 planned 分支不可达,与 §3.7.4 判定顺序冲突）。
-  const ITEM_IN_FLIGHT = new Set(['queued', 'running', 'blocked', 'needs_input', 'needs_human', 'paused', 'interrupted'])
-  const itemInFlight = item != null && ITEM_IN_FLIGHT.has(item.status)
+  // 同一 anchor 允许多条 lineage 并存（§4.1）。取「活跃集」聚合；全部终态时回退到
+  // 最新一条，保持单 lineage 的既有语义。只取最新一条会吞掉其他 lineage 的
+  // running/blocked/test_fail（DERIVATION_VERSION 1 的缺陷）。
+  const activeItems = inputs.workItems.filter((w) => !WORK_ITEM_TERMINAL_STATUSES.has(w.status))
+  const representative = activeItems.length > 0 ? activeItems : inputs.workItems.slice(0, 1)
+  const itemPlanned = representative.some((w) => w.status === 'draft' || w.status === 'queued')
+  // §3.3 规则 3 的"未完成 work_item"细化为在途且（gate 未过或依赖未满足）。
+  // draft/awaiting_confirm 走规则 8 的 planned。
+  const itemBlocked = representative.some(
+    (w) => ITEM_IN_FLIGHT.has(w.status) && (w.gateStatus === 'incomplete' || !w.depsSatisfied),
+  )
 
   let state: ExecutionState
   if (inputs.testFail) state = 'failed'
   else if (inputs.runningRunIds.length > 0) state = 'in_progress'
-  else if (itemInFlight && (item!.gateStatus === 'incomplete' || !depsSatisfied)) state = 'blocked'
+  else if (itemBlocked) state = 'blocked'
   else if (hasFresh('E3')) state = 'verified'
   else if (hasFresh('E4') && !staleE4) state = 'signed_off'
   else if (has('E3', 'stale') || staleE4) state = 'stale'
@@ -145,10 +160,10 @@ export function deriveFromInputs(inputs: {
     .update(canonicalJson({
       derivation_version: DERIVATION_VERSION,
       evidence: active.map((e) => ({ id: e.id, level: e.level, freshness: e.freshness, expired: e.expired })).sort((a, b) => (a.id < b.id ? -1 : 1)),
-      work_item_id: item?.id ?? null,
-      work_item_status: item?.status ?? null,
-      gate_status: item?.gateStatus ?? null,
-      deps: inputs.dependencyStates.map((d) => ({ id: d.id, status: d.status })).sort((a, b) => (a.id < b.id ? -1 : 1)),
+      // 排序后的 (item_id, status, gate) 列表：多 lineage 并存时保证确定性。
+      work_items: inputs.workItems
+        .map((w) => ({ id: w.id, status: w.status, gate_status: w.gateStatus, deps_satisfied: w.depsSatisfied ? 1 : 0 }))
+        .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
       running_run_ids: [...inputs.runningRunIds].sort(),
       test_fail: inputs.testFail,
     }))
@@ -201,33 +216,47 @@ export function recomputeExecutionState(
     verifiedAt: r.verified_at,
   }))
 
-  // 当前 revision 的 work_item（按 anchor_entity_key 锚定）
-  const item = db
-    .prepare('SELECT id, status, gate_status, depends_on_json FROM work_items WHERE graph_id = ? AND anchor_entity_key = ? AND is_current = 1 ORDER BY created_at DESC LIMIT 1')
-    .get(graphId, nodeEntityKey) as { id: string; status: string; gate_status: string; depends_on_json: string } | undefined
-  let dependencyStates: Array<{ id: string; status: string }> = []
-  if (item) {
+  // 同一 anchor 的全部当前 revision item（多 lineage 聚合，DERIVATION_VERSION 2）。
+  // 排序固定为 created_at DESC, id ASC：活跃集为空时回退到最新一条。
+  const itemRows = db
+    .prepare(
+      `SELECT id, status, gate_status, depends_on_json FROM work_items
+        WHERE graph_id = ? AND anchor_entity_key = ? AND is_current = 1
+        ORDER BY created_at DESC, id ASC`,
+    )
+    .all(graphId, nodeEntityKey) as Array<{ id: string; status: string; gate_status: string; depends_on_json: string }>
+
+  const activeRows = itemRows.filter((r) => !WORK_ITEM_TERMINAL_STATUSES.has(r.status))
+  const effectiveRows = activeRows.length > 0 ? activeRows : itemRows.slice(0, 1)
+
+  const workItems = itemRows.map((row) => {
     let depIds: string[] = []
-    try { depIds = JSON.parse(item.depends_on_json) as string[] } catch { depIds = [] }
-    dependencyStates = depIds.map((depId) => {
+    try { depIds = JSON.parse(row.depends_on_json) as string[] } catch { depIds = [] }
+    const depsSatisfied = depIds.every((depId) => {
       const dep = db
         .prepare('SELECT status FROM work_items WHERE id = ? AND is_current = 1')
         .get(depId) as { status: string } | undefined
-      return { id: depId, status: dep?.status ?? 'missing' }
+      return dep?.status === 'done'
     })
-  }
+    return { id: row.id, status: row.status, gateStatus: row.gate_status, depsSatisfied }
+  })
 
-  const runningRunIds = item
-    ? (db.prepare("SELECT id FROM work_runs WHERE work_item_id = ? AND status IN ('queued','running')").all(item.id) as Array<{ id: string }>).map((r) => r.id)
+  const effectiveIds = effectiveRows.map((r) => r.id)
+  const runningRunIds = effectiveIds.length
+    ? (db
+        .prepare(
+          `SELECT id FROM work_runs WHERE work_item_id IN (${effectiveIds.map(() => '?').join(',')})
+             AND status IN ('queued','running')`,
+        )
+        .all(...effectiveIds) as Array<{ id: string }>).map((r) => r.id)
     : []
 
   const result = deriveFromInputs({
     evidence,
-    workItem: item ? { id: item.id, status: item.status, gateStatus: item.gate_status, dependsOn: [] } : null,
-    dependencyStates,
+    workItems,
     runningRunIds,
     // options.testFail 仅供纯关联/测试覆盖;生产从 work_runs 推导。
-    testFail: options?.testFail ?? (item ? latestRunIsTestFail(db, item.id) : false),
+    testFail: options?.testFail ?? effectiveIds.some((id) => latestRunIsTestFail(db, id)),
   })
 
   const existing = db
@@ -373,6 +402,29 @@ export function flushPendingRecomputes(db: BetterSqlite3.Database, graphId?: str
       logger.warn('flushed recompute failed:', err)
     }
   }
+}
+
+/**
+ * 派生逻辑升级后的缓存刷新：把本图中 `derivation_version < CURRENT` 的行逐节点重算。
+ *
+ * 选择读侧惰性刷新而非启动全盘扫描：`node_execution_state` 的唯一消费路径是
+ * `map:overlay:get`，按被查看图刷新成本有界，且不让未被查看的节点拖慢启动。
+ * 重算后版本即更新，重复读取不再触发。
+ */
+export function refreshStaleDerivationsForGraph(db: BetterSqlite3.Database, graphId: string): number {
+  const stale = db
+    .prepare('SELECT node_entity_key FROM node_execution_state WHERE graph_id = ? AND derivation_version < ?')
+    .all(graphId, DERIVATION_VERSION) as Array<{ node_entity_key: string }>
+  let refreshed = 0
+  for (const row of stale) {
+    try {
+      recomputeExecutionState(db, graphId, row.node_entity_key)
+      refreshed++
+    } catch (err) {
+      logger.warn(`stale derivation refresh failed for ${graphId}/${row.node_entity_key.slice(0, 8)}…:`, err)
+    }
+  }
+  return refreshed
 }
 
 /** 供测试/退出前清空挂起的重算。 */

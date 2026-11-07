@@ -746,24 +746,25 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 输入（同一 `project_path + graph_id + node_entity_key`）：
 
 - `node_evidence`：未撤销行，按 `evidence_level`、`freshness`、`verified_at`、`id` 排序；
-- `work_items`：该节点 `anchor_entity_key` 的当前 revision；
-- `work_runs`：`status IN ('queued','running')`；
+- `work_items`：该节点 `anchor_entity_key` 的全部当前 revision（同一 anchor 允许多条 lineage 并存，§4.1）；判定按**活跃集**（非终态）聚合；
+- `work_runs`：活跃集 item 的 `status IN ('queued','running')`；
 - 测试结果：L1 无 `test_*` 表，`test_fail` 恒为 false；S8 后接入。
 
 判定顺序严格按 §3.3，并补充确定性 tie-break：
 
 1. `test_fail=true` → `failed`。
 2. 存在 `work_run.status='running'` → `in_progress`。
-3. 存在当前 revision 的 `work_item` 且 `gate_status='incomplete'` 或依赖未满足 → `blocked`。
+3. 活跃集中任一 item 为在途状态且 `gate_status='incomplete'` 或依赖未满足 → `blocked`。
 4. 存在 `evidence_level='E3' AND freshness='fresh' AND revoked_at IS NULL` → `verified`；多条取 `verified_at DESC, id ASC` 第一条。
 5. 存在 `evidence_level='E4' AND freshness='fresh' AND revoked_at IS NULL` → `signed_off`；多条取 `signed_at DESC, id ASC` 第一条。
 6. 存在 `E3 freshness='stale'` → `stale`；存在已过期（`expires_at` 到期）且未撤销的 E4 → `stale`（U1 裁决）。已撤销 / 覆盖范围变化的 E4 不参与 `signed_off`，按 §3.5 落回 `implemented`。
 7. 存在 `E2`（未撤销）→ `implemented`。
-8. 存在 `E1` 或当前 revision 的 `work_item.status IN ('draft','queued')` → `planned`。
+8. 存在 `E1` 或活跃集中任一 item 为 `draft/queued` → `planned`。
 9. 否则 → `untouched`。
 
+- **多 lineage 聚合（`derivation_version=2`）**：只取 `created_at DESC LIMIT 1` 会吞掉其他 lineage 的 `running/blocked/test_fail`。v2 取该 anchor 全部 `is_current=1`，先剔除终态（`done/failed/cancelled/superseded`）得到活跃集，再按上面顺序折叠；活跃集为空时回退到最新一条（`created_at DESC, id ASC`），保持单 lineage 语义。`test_fail` 只从活跃集 item 推导——终态失败不会永久压住后续成功；若唯一 lineage 已失败，走终态回退仍可呈现 `failed`。
 - `evidence_level` 取当前参与判定的最高有效等级；`is_reproducible`：E3=1，E4=0，其余 NULL。
-- `inputs_hash = sha256(canonical_json({derivation_version, evidence_ids+levels+freshness, current_work_item_id+status+gate_status, running_run_ids, test_fail}))`。哈希未变则跳过写入。
+- `inputs_hash = sha256(canonical_json({derivation_version, evidence_ids+levels+freshness, work_items: 排序后的 (item_id,status,gate_status,deps_satisfied) 列表, running_run_ids, test_fail}))`。哈希未变则跳过写入；`derivation_version` 参与哈希，保证版本升级后首次重算必写。
 - 写入 `node_execution_state` 时同步写 `inputs_hash` / `computed_at` / `derivation_version`；状态变更后发 `event:map-execution-state-changed`。
 - `nodes.status` 永不参与派生、也不被派生结果回写。
 
@@ -781,7 +782,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 
 - **触发范围（已实施）**：`work_item` 的 `createDraft/transition/setGateResult/convergeIfTerminal/revise` 与 `work_run` 的 `enqueue/claim/complete/fail/timeout/cancel/markInterrupted` 都会调 `scheduleRecomputeForWorkItem`，只重算该 item 锚定节点 + 当前 revision 中把该 item 列为直接依赖的节点；不做全图扫描、不全量重算。`work_step` 本身不改变派生输入，不单独触发（步终态经 `convergeIfTerminal` 落到 item 状态后触发）。每节点仍 500ms 合并 + `inputs_hash` 未变跳过。
 - **`test_fail` 的生产来源**：该 item 最近一次 `work_runs`（按 `run_seq`）为 `failed` 且 `failure_class='test_fail'`；重试已入队/正在跑或新 run 成功即解除。由派生时从库读取，不依赖调用方传瞬态 flag（避免 500ms 合并丢失）。
-- **读缓存一致性**：`map:overlay:get` 返回 `node_execution_state` 前调用 `flushPendingRecomputes(db, graphId)`，立即兑现挂起重算，避免状态刚变、500ms 去抖窗口内读到旧缓存。
+- **读缓存一致性**：`map:overlay:get` 返回 `node_execution_state` 前调用 `flushPendingRecomputes(db, graphId)`，立即兑现挂起重算；随后 `refreshStaleDerivationsForGraph(db, graphId)` 把 `derivation_version < CURRENT` 的行逐节点重算。选择读侧惰性刷新而非启动全盘扫描：缓存唯一消费路径是 `overlay:get`，成本按被查看图有界，且不拖慢启动。
 - 重算失败：保留上一行 `node_execution_state` 与原 `computed_at`，另写 `map_migration_reports(kind='derivation', stage='recompute')` 记失败；UI 显示"派生可能过期"。无上一行时宁可不写，不伪造 `untouched`。
 - 重建：`DELETE FROM node_execution_state` 后按项目批量重算；重算结果必须与增量结果一致（同一 `inputs_hash` 同一状态）。
 - 验收：E0–E4 样本各一条；同一输入两次重算状态一致；证据撤销后 `verified` 消失；E3 换 HEAD 后 `stale`；E4 过期后派生 `stale`（不得出现 `implemented`）；工作区无证据时不写 `untouched` 假行。

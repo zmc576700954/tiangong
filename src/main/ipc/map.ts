@@ -11,7 +11,7 @@ import { LinkService, LinkValidationError } from '../map-migration/link-service'
 import { runLinkIntegrityCheck } from '../map-migration/link-backfill'
 import { WorkItemService } from '../map/work-item-service'
 import { EvidenceService } from '../map/evidence-service'
-import { flushPendingRecomputes } from '../map/execution-state'
+import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import type { TypedHandle } from './utils'
 
@@ -31,6 +31,8 @@ export function registerMapHandlers(
     if (typeof graphId !== 'string' || graphId === '') throw new Error('graphId is required')
     // 读缓存前先兑现挂起的派生重算（500ms 去抖窗口内状态刚变、缓存还没更新）。
     flushPendingRecomputes(db, graphId)
+    // 派生逻辑版本升级后按图惰性刷新旧缓存（v2 起：多 lineage 聚合）。
+    refreshStaleDerivationsForGraph(db, graphId)
     const states = db
       .prepare('SELECT * FROM node_execution_state WHERE graph_id = ?')
       .all(graphId) as Array<Record<string, unknown>>
