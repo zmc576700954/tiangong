@@ -3550,3 +3550,240 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 - **B2 可施工边界**：§5.9 及子节、§5.9.9–5.9.11、§5.7、§6.5.1/§6.5.2、§6.8 已细化到接口级输入输出与失败分支；黑板/Phase B/fanout 仍属 B3。
 - **Zcode v1.2 处理**：采纳 9 项落 §2.8 / §4.2 / §5.9.5 / §5.9.8 / §5.9.8.1 / §5.9.11 / §8.15 / §9.3；不采纳 10 项与事实性错误见 §12.10 / §12.11；两项待裁决见 §12.5 第 6、7 项。
 - **B1 不动的口径**：查重 N=12 / 0.6 / 0.8、90 天、E4 30 天、记住放行、重建判据、L1 不删节点、E3/E4 可复现语义、`signed_by`、Tier2 只读、单向 Yjs 均未改写。
+
+---
+
+## 14. G1–G6 准入 gate 规格草案（仅建议）
+
+> **状态：仅建议。未实施、未批准。**
+> 本节的任何内容都不表示代码已存在、接口已冻结或产品已拍板；它只把 §5.4 的一句话条件展开成可施工的规格草案，供评审。凡本节无法从现有蓝图与字段推出的事项，一律列入 §14.8 待决项，不在此处替产品补值。
+>
+> 与执行触发线的关系：执行触发线已决定调度 tick 第 2 步做成可插拔 `GateRecheck`，生产默认实现 fail-closed（`gate_status='incomplete'` + `gate_missing_json` 含 `gate_engine_unavailable`）。本节只定义该接口的输入、输出与判定语义；不提供实现，也不改对方的文件或小节。
+
+### 14.1 适用范围与调用时机
+
+- 判定对象是**单个 `work_item` 的单个 revision**（`id + revision`），不是节点、不是 run、不是整个计划。
+- 同一评估器必须在以下时点复用，禁止各入口自行解释条件（§4.7.3）：
+  1. `awaiting_confirm → queued`：确认入队前强制评估（§4.7.2）。
+  2. 调度 tick 第 2 步：对 `queued` 项重跑评估，不信任确认时的旧结果（§5.9「调度 tick」第 2 步）。
+  3. `blocked → queued`：解除阻塞前重跑（§4.7.2；现有 `unblock` 只校验非 `incomplete`，不等于重跑）。
+  4. `resumeWorkItem` 的恢复路径：蓝图 §5.9.9 明确 `GATE_INCOMPLETE`（恢复前重跑 gate）。
+- 评估器**只读**：不写 `work_items` / `work_steps` / `work_runs` / `node_evidence`。结果落库与状态迁移由调度器/`WorkItemService` 完成（§4.7.1 写入权）。
+- 评估器不创建 run、不增加 `attempt`、不占用写闸；未通过时"不进队列"（§5.4）。
+
+### 14.2 通用输入契约
+
+评估输入必须是一次调用内**同源、同一时点**的只读快照；禁止评估过程中分多次读库再拼接（避免 scope 读旧值、running 集合读新值）。形状草案（类型声明，不含实现）：
+
+```text
+GateRecheckInput {
+  item: {
+    id, revision, lineageId, isCurrent,
+    projectPath, graphId, anchorNodeId, anchorEntityKey,
+    scopeFilesJson, acceptanceJson, dependsOnJson,
+    status, gateStatus, origin
+  }
+  project: { projectPathRealpath | null, pathPlatform: 'posix' | 'non_posix' }
+  graph: {
+    graphId,
+    anchorNode: { id, graphType, lifecycleState } | null,
+    referencedNodes: Array<{ id, graphType, entityKey, lifecycleState }>,
+    nodeLinks: Array<{ id, linkType, fromEntityKey, toEntityKey, fromGraphType, toGraphType, status }>
+  }
+  dependencies: Array<{ id, lineageId, revision, isCurrent, status, supersedesId }>
+  runningItems: Array<{ id, lineageId, projectPath, scopeFilesJson }>
+  policy: { g4MaxFiles, g4MaxLines, evaluatorVersion, pathPlatform }
+  waiver: { waivedBy, waivedAt, waiveReason } | null   // 人工豁免意图，不是评估结论
+}
+```
+
+| 输入 | 来源 | 用途 | 依据 |
+|---|---|---|---|
+| `scope_files` | `work_items.scope_files`（JSON 数组） | G1 非空与根内校验；G4 计数；G6 交集 | §5.4、§5.4.1、§7.2 |
+| `acceptance_json` | `work_items.acceptance_json` | G2 结构化可判定项 | §5.4 G2 |
+| `depends_on_json` | `work_items.depends_on_json` | G5 依赖闭包 | §5.4 G5、§5.5.1 |
+| `anchor_node_id` / `graph_id` | `work_items`；`nodes.graph_type` | G3 目标节点在 dev 图 | §5.4 G3、§7.2 |
+| 图节点与链接 | `nodes`、`node_links`、同图 `edges` | G3 跨图写判定 | §1.2、§2.3、§5.4 G3 |
+| 运行中任务集合 | `work_items WHERE status='running' AND is_current=1` | G6 写冲突预检 | §5.4 G6 |
+| 项目根 | `work_items.project_path`（realpath） | G1/G6 路径规范化边界 | §5.4.1 |
+| 规模阈值 | 配置（来源待决，见 D7） | G4 | §5.4 G4 |
+| 证据 | `node_evidence` / `execution_state` | **不参与 G1–G6 判定** | §5.4；见 §14.3 末条 |
+
+- `scope_files`、`acceptance_json`、`depends_on_json` 都是 TEXT 存 JSON。解析失败一律 fail-closed，不得当作空数组"看起来通过"。
+- 路径比较必须走 §5.4.1 的统一规范化管线；任一表存了未规范化路径，都在使用点重新规范化，不做字符串直接相等（§5.4.1）。
+- 非 POSIX 根（Windows 路径）按 §5.4.1 A9 直接 fail-closed，不做猜测性兼容。
+
+### 14.3 结果、落库与三态纪律
+
+`gate_status` 只允许三值（`work_items.gate_status` CHECK，§7.2）：`pass` / `incomplete` / `waived`。`gate_missing_json` 是**字符串数组**（现有 `setGateResult(id, result, { missing: string[] })` 即此形状），只写缺失项代码，不写自由文本对象。
+
+| 结论 | 落库 | 后续动作 | 约束 |
+|---|---|---|---|
+| `pass` | `gate_status='pass'`，`gate_missing_json=NULL` | 允许继续依赖校验/tick 后续步 | **不得**用 `[]` 表示通过（§4.7.3） |
+| `incomplete` | `gate_status='incomplete'`，`gate_missing_json=JSON(missing[])` | 不 claim、不建 run；tick 内 `queued → blocked` 并写缺失项（§4.7.2） | `missing` 至少 1 条；无缺失项时写 `gate_missing_unclassified` |
+| `waived` | `gate_status='waived'` 且 `gate_waived_by / gate_waived_at / gate_waive_reason` 三者齐全 | 视同通过（§4.7.2） | 缺任一字段 → 回落 `incomplete`（§4.7.3，现有 `setGateResult` 已是该行为） |
+
+- 只有 **G2 的 `manual` 类型**允许豁免；G1/G3/G4 明确不允许（§5.4）。G5/G6 是否可豁免，蓝图未写，列入 D9。
+- 评估器不写库；调度器一次写入 `gate_status + gate_missing_json`（以及 waived 三字段），写入失败按 tick 失败处理，不能保留旧 `pass` 放行。
+- **证据不参与准入**：G1–G6 是执行前条件，`node_evidence` / `execution_state` 是执行后事实（§3、§5.4）。用 stale/缺失证据阻断执行属于另一条策略；若产品需要，应新增 gate 或独立策略，不得塞进 G1–G6（见 D13）。
+
+### 14.4 逐条 gate 规格
+
+每条给出：判定、输入、`pass` 条件、`incomplete` 代码（建议命名，见 D11）、可豁免性与不确定时行为。依据均指向 §5.4 与相关章节。
+
+#### G1 · scope 非空且都在项目根内
+
+- **判定**：`scope_files` 解析为数组、去重后至少 1 项；每一项按 §5.4.1 规范化后，必须落在 `project_path` 的 realpath 之下；越界、`..`、外部绝对路径、指向根外的符号链接一律失败（§5.4、§5.4.1）。
+- **输入**：`work_items.scope_files`、`work_items.project_path`。
+- **pass**：全部条目通过规范化与根内校验，且无空串。
+- **incomplete 代码（建议）**：`scope_files_empty`、`scope_files_invalid_json`、`project_path_missing`、`scope_file_empty:<index>`、`scope_file_escape:<index>`、`scope_file_unresolvable:<index>`。
+- **可豁免**：否（§5.4 明确 G1 不允许豁免）。
+- **不确定即失败**：`project_path` 为空（schema 允许 NULL）、realpath/权限/父目录解析失败、非 POSIX 根 → `incomplete`。理由：无法证明"在根内"就不能放行（§5.4.1 第 5 条）。
+
+#### G2 · acceptance 至少 1 条结构化可判定项
+
+- **判定**：`acceptance_json` 解析为数组，且至少 1 条满足：`type ∈ ('command','manual','file_check')`，并带非空 `expected`（§5.4 G2）。
+- **输入**：`work_items.acceptance_json`。
+- **pass**：存在上述结构化条目；其余条目可以是非结构化补充，但不得让判定变成"有文字就行"。
+- **incomplete 代码（建议）**：`acceptance_json_empty`、`acceptance_json_invalid`、`acceptance_item_not_structured:<index>`、`acceptance_type_unknown:<index>`、`acceptance_expected_missing:<index>`。
+- **可豁免**：仅 `manual` 类型可人工豁免，且必须三字段齐全（§5.4、§4.7.3）；"混合了 command 项但只有 manual 项可豁免"时如何判定，见 D1/D3。
+- **不确定即失败**：类型不认识、`expected` 为空/无法解释、数组解析失败 → `incomplete`。
+- **现状差距（必须在实施前解决）**：现有写入与执行路径把 `acceptance_json` 当作 `[{ id, text }]` 使用——IPC 入参是 `Array<Record<string, unknown>>`（`src/main/ipc/map.ts`），步骤提示词按字符串数组拼接（`src/main/map/agent-step-runner.ts`），测试样本也是 `[{ id: 'acc1', text: '必须通过' }]`。也就是说，**现有写入路径不会产生 `type` / `expected` 结构化条目**；除非有人绕过接口手工写库，否则存量任务都会在 G2 被判 `incomplete`。格式与迁移方案列入 D1。
+
+#### G3 · 目标节点在 dev 图、无跨图写
+
+- **判定**：`anchor_node_id` 可解析到 `nodes` 中的真实行；该节点 `graph_type='dev'`；本任务不包含跨图写（§5.4 G3）。
+- **输入**：`work_items.anchor_node_id`、`work_items.graph_id`、`nodes(id, graph_id, graph_type, lifecycle_state)`、`node_links`（及同图 `edges`）。
+- **pass**：锚点存在、其 `graph_type='dev'`、`graph_id` 一致；且按 D5 冻结的"跨图写"判定口径未命中。
+- **incomplete 代码（建议）**：`anchor_node_missing`、`anchor_node_graph_mismatch`、`anchor_node_not_dev:<graph_type>`、`cross_graph_write:<link_id|entity_key>`。
+- **可豁免**：否（§5.4）。
+- **不确定即失败**：锚点为空、解析到多行/零行、节点生命周期不可用、链接解析失败 → `incomplete`。
+- **口径待决**：**"跨图写"在现有字段上没有唯一定义**。候选口径（D5）：a) 任务引用的所有节点必须在同一 dev 图；b) 允许只读链接（`relates_to` / `verifies`）指向 test/online，但禁止通过链接把写入范围扩到非 dev 图；c) 仅看锚点，不看链接。三种都不可从 §5.4 原文唯一推出，不自行选。
+
+#### G4 · 规模上限
+
+- **判定**：`scope_files` 去重后的文件数 ≤ 配置上限（默认 20）；预估变更行数 ≤ 配置上限（默认 800）（§5.4 G4）。
+- **输入**：G1 规范化后的文件集合；预估行数；阈值配置。
+- **pass**：两项都在阈值内。
+- **incomplete 代码（建议）**：`scope_file_count_exceeded:<n>/<max>`、`estimated_lines_exceeded:<n>/<max>`、`line_estimate_unavailable`、`gate_policy_missing`。
+- **可豁免**：否（§5.4）。
+- **不确定即失败**：拿不到预估行数时默认不能 pass（见 D7）；阈值缺失也不得回落到"无上限"。
+- **现状差距**：`work_items` / `work_steps` / `plan_drafts` 均无"预估行数"字段，`scope_files` 只有路径。预估来源、算法、配置键都是空白（D7）。若产品允许"无预估即视为 0"，会与 fail-closed 原则冲突，必须显式裁决。
+
+#### G5 · 依赖闭包无未完成前置
+
+- **判定**：沿 `depends_on_json` 做传递闭包；闭包内所有上游的**当前 revision**都处于终态成功（`status='done'`）；闭包内无环（§5.4 G5、§5.5.1 环检测）。
+- **输入**：`work_items.depends_on_json`、闭包内 `work_items(id, lineage_id, revision, is_current, status, supersedes_id)`。
+- **pass**：闭包完整可解析、无环、所有上游 `done`。
+- **incomplete 代码（建议）**：`dep_missing:<id>`、`dep_not_done:<id>:<status>`、`dep_cycle:<id>`、`dep_revision_stale:<id>`、`dep_cross_project:<id>`。
+- **可豁免**：蓝图未写（D9）。
+- **"或显式标 blocked 并给出依赖 id"的含义**：本草案按**失败分支**解释——依赖未完成时不放行，把依赖 id 写入 `gate_missing_json` 并转 `blocked`（§4.7.2 `queued → blocked`），而不是"标了 blocked 就算满足"。若原意是允许某种显式豁免，需产品澄清（D8）。
+- **不确定即失败**：依赖 id 不存在、指向非当前 revision、存在环、上游为 `failed/cancelled/superseded/blocked` 等非 `done` 终态 → `incomplete`。
+- **待决**：隐式依赖（共享 `scope_files` / `verifies` / 同锚点，§5.5.1 的依赖优先级）是否进入 G5 闭包；本草案默认只看 `depends_on_json` 显式声明，若要纳入隐式依赖，应由计划确认阶段把它们落进 `depends_on_json`（D8）。
+
+#### G6 · 与 running 任务 scope 无交集
+
+- **判定**：本任务规范化后的 `scope_files` 与所有 `status='running' AND is_current=1` 任务的 `scope_files` 逐条求交集；为空才通过（§5.4 G6）。本草案默认只比较同一 `project_path` 下的任务，跨项目是否也要比较列入 D10。
+- **输入**：本任务 `scope_files`；running 集合的 `id / lineage_id / project_path / scope_files`。
+- **pass**：无任何规范化后路径相同。
+- **incomplete 代码（建议）**：`scope_conflict:<work_item_id>:<path>`、`scope_invalid:<index>`。
+- **可豁免**：蓝图未写（D9）。
+- **不确定即失败**：任一 running 行 scope 解析失败、或本任务路径无法规范化 → `incomplete`（不能"跳过坏行"当作无冲突）。
+- **必须说明的边界**：G6 是**准入快照**，不是写锁；真正的互斥仍由 tick 第 5 步的写闸保证（§5.9「调度 tick」第 5 步）。G6 通过不代表运行期不会冲突，运行期冲突由调度与 ScopeGuard 处理（§6）。
+- **待决**：是否排除同一 lineage 的父/子任务、是否把 `queued` 也纳入冲突面（本草案只按 §5.4 原文取 `running`）（D10）。
+
+### 14.5 fail-closed 通则（适用于全部 gate）
+
+按以下顺序，任何一条成立即 `incomplete`，不允许"跳过该项继续评估后判 pass"：
+
+1. 输入缺字段/JSON 解析失败/类型不认识/枚举越界。
+2. 只读快照构建失败（含查询异常、权限错误、超时）。
+3. 规范化管线拒绝（非 POSIX 根、realpath 失败、越界）。
+4. 评估器未注入、抛异常、超出时限、或返回结构不合规。
+5. 结果自相矛盾（如 `pass` 却带 `missing` 非空、`waived` 缺三字段）。
+
+生产默认实现即第 4 条的静态版本：不做任何判定，固定返回 `incomplete + ['gate_engine_unavailable']`。这条默认值本身就是"未实施"的显式表达，不得被解释为暂时放行。
+
+### 14.6 `GateRecheck` 对接形状
+
+- 调用点：调度 tick 第 2 步（§5.9）。调用前由调度器在**同一只读事务/同一快照**内装载 §14.2 输入；调用内不再自行跨表多次读库。
+- 输出契约（类型声明，不含实现）：
+
+```text
+GateRecheckResult {
+  gateStatus: 'pass' | 'incomplete' | 'waived'
+  missing: string[]              // pass 时必须为空；incomplete 时至少 1 条
+  waiver: { waivedBy, waivedAt, waiveReason } | null   // 仅 waived 时非空，且三字段齐全
+  evaluatorVersion: string       // 归因用；配置/规则变更必须变版本
+  evaluatedAt: number
+}
+```
+
+- 调度器对结果的处置：
+
+| 结果 | tick 动作 | 库写入 |
+|---|---|---|
+| `pass` | 继续第 3 步（依赖校验） | `gate_status='pass'`，`gate_missing_json=NULL` |
+| `waived` | 视同通过继续 | `waived` + 三字段 |
+| `incomplete` | 不 claim、不建 run；`queued → blocked` | `gate_status='incomplete'` + `gate_missing_json=missing` |
+| 抛异常/超时/未知返回 | 与生产默认实现同路径 | 同上，missing 至少含 `gate_engine_unavailable` |
+
+- 评估器返回 `waived` 时，调度器仍须校验三字段与"仅 G2 manual 可豁免"；不合法则改判 `incomplete`（沿用 `setGateResult` 现有守卫）。
+- 幂等性要求：同一 `item.id + revision + evaluatorVersion + 快照` 应得到相同结论；评估本身不产生 run、不递增 attempt。
+- 可观测性：拒绝原因只进 `gate_missing_json` 代码与结构化日志/事件；不把自由文本塞进 `gate_missing_json`，避免下游按字符串数组解析崩坏。
+
+### 14.7 与现有代码/状态机的衔接点（仅指认，不改文件）
+
+- `WorkItemService.setGateResult`：已实现三态与 waived 三字段守卫，可作为落库唯一入口（`src/main/map/work-item-service.ts`）。
+- `WorkItemService.markBlocked`：已实现 `incomplete + missing[]` 与 `queued → blocked`，tick 失败分支可复用。
+- `WorkScheduler`：tick 第 2 步目前只复核已落库值，且第 116 行对非 `pass/waived` 抛 `GATE_NOT_PASSED`；这是"引擎未实现"的临时形态，`GateRecheck` 接入后应替换为"先评估、再按结果转移"。
+- `unblock`：目前只保证"不是 incomplete"，不保证"刚刚重跑过"；规格要求 blocked → queued 必须触发一次真实评估（§4.7.2）。
+- `work_items.gate_missing_json` 已是字符串数组，保持形状兼容，避免为了 gate 规格改表。
+
+### 14.8 待决项（需产品/架构拍板，本节不填值）
+
+| 编号 | 待决问题 | 为什么不能自行决定 | 关联 |
+|---|---|---|---|
+| D1 | `acceptance_json` 的结构化格式与迁移：是升级现有条目为 `{id,type,expected,...}`，还是新增列/新 plan 输出格式？存量 `[{id,text}]` 如何判定（视为无结构 → incomplete，还是迁移补齐）？ | 现有写入/提示词/测试都按 `[{id,text}]`；G2 原文要求 `type/expected`，两者不兼容 | §5.4 G2、`agent-step-runner`、`ipc/map.ts` |
+| D2 | 三类 `expected` 的判定语义：`command` 看退出码还是输出匹配？`file_check` 校验存在/内容/哈希？`manual` 的 expected 是什么形态？ | §5.4 只列类型名，未定义 expected 语义 | §5.4 G2 |
+| D3 | G2 豁免粒度：整条任务豁免还是逐验收项豁免？混合 `manual + command` 时 command 失败能否用 manual 豁免覆盖？ | §5.4 只说"G2 的 manual 允许豁免"，未说粒度 | §5.4、§4.7.3 |
+| D4 | `project_path` 为空时 G1 的处理：直接 fail-closed（本草案默认），还是允许从图/项目根兜底解析？ | schema 允许 NULL，但 G1 必须有根才能证明"根内" | §5.4.1、§7.2 |
+| D5 | "跨图写"的可操作定义（锚点/引用节点/链接三选一或组合），以及只读链接（`relates_to`/`verifies`）是否允许 | §5.4 G3 只有一句话，现有字段支持多种解释 | §1.2、§2.3、§5.4 G3 |
+| D6 | G3 对 `test` 图的处理：一律拒绝写，还是允许 test 图锚点只读派生？ | 原文只要求 dev 图，未提 test 图任务 | §5.4 G3、`GraphType` |
+| D7 | G4 的"预估行数"来源、算法、配置键与默认值；无法预估时是否 fail-closed | 现有表无该字段，蓝图只写"可配置" | §5.4 G4、§7.2 |
+| D8 | G5 是否纳入隐式依赖；上游 `superseded` 是否按当前 revision 代替；`cancelled` 上游是否算未完成；"显式标 blocked 并给出依赖 id"的准确语义 | 原文与 §5.5.1 的隐式依赖规则可能冲突，需统一 | §5.4 G5、§5.5.1 |
+| D9 | G5/G6 是否允许人工豁免；若允许，豁免字段与审计要求 | §5.4 只点名 G2，未说 G5/G6 | §5.4 |
+| D10 | G6 是否排除同 lineage 父/子任务、是否把 `queued` 纳入、是否跨项目比较 | 原文只说"其它 running 任务" | §5.4 G6、§5.9 |
+| D11 | `gate_missing_json` 条目命名是否需要冻结为稳定错误码（本节的 `g1_*` 等是建议）；是否需要携带结构化 detail | 该字段会进 IPC/UI，改名有兼容成本；现为字符串数组 | §4.7.3、`setGateResult` |
+| D12 | `evaluatorVersion` 与 G4 阈值等配置快照是否要落库/进事件，用于归因 | 蓝图有 `observed_rule_version` 思路，但 gate 侧未规定 | §5.7、§5.4 G4 |
+| D13 | 是否允许"证据 stale/缺失"影响准入（本草案明确不允许） | 会把完成度与准入门禁耦合，违背 §3/§5.4 分层 | §3、§5.4 |
+| D14 | `GateRecheck` 的时限预算与超时处置（本草案默认按不可用 fail-closed） | 蓝图未给 tick 单步预算 | §5.9 |
+
+### 14.9 建议的验收断言（实施时使用）
+
+以下只描述断言，不写实现：
+
+1. 每条 gate 至少一组正例与一组反例；反例断言 `gate_status='incomplete'` 且 `gate_missing_json` 含对应代码，并且**没有创建 run、`attempt` 未变**。
+2. G1/G6 各补一组符号链接与 NFC/大小写样本（§5.4.1 第 1–4 条），断言使用点重新规范化后比较。
+3. G2 补 `manual` 豁免：三字段齐全 → `waived`；缺任一 → `incomplete`；G1/G3/G4 即使人工豁免也仍 `incomplete`。
+4. G3 补锚点缺失、锚点非 dev、跨图链接三种反例。
+5. G5 补依赖缺失、依赖非 `done`、环三种反例；`superseded` 与隐式依赖按 D8 裁决后补样本。
+6. G6 补同路径冲突与"路径写法不同但规范化后相同"两种冲突样本，断言只作为准入快照、不写写闸状态。
+7. 注入生产默认 `GateRecheck`：所有任务均为 `incomplete + ['gate_engine_unavailable']`，tick 不 claim、不建 run。
+8. 注入抛异常/超时的评估器：结果与第 7 条一致（fail-closed）。
+9. 评估前后对 `work_items / work_steps / work_runs / node_evidence` 做快照对比，断言评估器自身零写入。
+10. 同一输入重复评估两次，断言 `gateStatus` 与 `missing` 完全一致。
+
+### 14.10 依据索引
+
+- §5.4（G1–G6 条件表、豁免限制、不进队列）
+- §5.4.1（路径规范化：realpath / NFC / 分隔符 / 大小写折叠 / 根内校验 / A9）
+- §4.7.2（`awaiting_confirm → queued`、`queued → blocked`、`blocked → queued` 的 gate 守卫）
+- §4.7.3（gate 三态、`gate_missing_json`、waived 三字段、`blocked → queued` 必须重跑）
+- §5.5.1（环检测、依赖优先级、父任务聚合）
+- §5.9「调度 tick」第 2、5 步（重跑 gate、写闸）
+- §5.9.9（`enqueue` / `resumeWorkItem` 的 `GATE_INCOMPLETE` 与 `claimNext` 的 `GATE_REVOKED`）
+- §7.2 `work_items` / `work_steps` / `work_runs` 字段（`scope_files`、`acceptance_json`、`depends_on_json`、`anchor_node_id`、`gate_*`、`status`）
+- §1.2 / §2.3（`entity_key` 与 `node_links`；跨图只走链接、不建跨图 edge）
+- §3、§3.7（证据等级与写入权；用于说明证据为何不作为准入输入）
+- 现有代码：`src/main/map/work-item-service.ts`（`setGateResult` / `markBlocked` / `unblock`）、`src/main/map/work-scheduler.ts`（tick gate 复核现状）、`src/main/ipc/map.ts`、`src/main/map/agent-step-runner.ts`（acceptance 现有用法）
