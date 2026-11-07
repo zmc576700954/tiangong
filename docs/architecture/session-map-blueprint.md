@@ -2871,13 +2871,13 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 8.15 F1–F3 前置修复（B1）
 
-> **状态：已批准未实施（R7 已授权修复）。** 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置（该处置已实施，见 §2.2.1）。
+> **状态：已实施（2026-11-07，提交 `9ce519c`/`f73abd8`/`260df58`/`fb19e07`，分支 `worktree-blueprint-f1-f3`）。** 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置（该处置已实施，见 §2.2.1）。
 
 #### F1 子代理拒绝路径未终止会话
 
 **已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts`）**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
 
-**修复契约（已批准未实施）**
+**修复契约（已实施：`9ce519c` + `fb19e07` 契约补齐）**
 
 1. 只在**拒绝路径**补 terminate，不改成功路径与既有 `cancel()` 行为。
 2. **先存输出，再 terminate**：在调用 `terminateSession` 前，把当前 `outputBuffer` / `fileChanges` / tokens 写入 invocation（见 F2），确保 terminate 触发的回调不会清空待保存数据。
@@ -2893,7 +2893,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 **已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts` / `src/shared/types/subagent.ts`）**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
 
-**修复契约（已批准未实施）**
+**修复契约（已实施：`f73abd8` + `fb19e07` 契约补齐）**
 
 1. `SubagentResult` 增加 `status: 'completed'|'failed'|'cancelled'`、`error?`、`partial?`；`partial` 至少含 `resultText` / `resultFiles` / `tokensUsed` / `fileChanges`。
 2. **同步 IPC 消费方**：renderer / 主进程所有读取 `SubagentResult` 的地方必须处理 `failed/cancelled`，不得把 `partial` 当完整结果。
@@ -2933,11 +2933,11 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 - **写入点与禁止复用（F3-A）**：`sendCommandThroughKernel` 透传 `deadlineMs`；`insertTurn` 的 `deadlineAt ?? null` 参数位已存在，写入 `0` 表示**不启用** deadline（不是"立即超时"）。超时路径**不得复用 `cancelTurn`**：后者通过 `finalizeTurnStatus('cancelled', …)` 做终态 CAS，随后再写 `failed` 会因状态已非 `running` 返回 `false`，导致超时永远落不了 `failed`。正确路径：
   1. 超时控制器先杀进程组并 terminate 会话（满足 §5.9.8.1 的"终态在 terminate 之后"）；
   2. 按 F2 落 partial（`result_text` / `result_files` / `tokensUsed`）；
-  3. 单次终态 CAS：`UPDATE agent_turns SET status='failed', failure_type='timeout', error_code='DEADLINE_EXCEEDED' WHERE id=? AND status='running'`；
+  3. 单次终态 CAS：`UPDATE agent_turns SET status='failed', failure_class='timeout', error_code='DEADLINE_EXCEEDED' WHERE id=? AND status='running'`（列名按代码实况为 `failure_class`，无 CHECK 约束，扩展无需迁移放宽）；
   4. `changes=0` → 已被完成/取消抢先，读取实际终态并保留，不覆盖；
   5. 不调用 `cancelTurn` 的终态分支，不先写 `cancelled`。
-- **待定（用户裁决）**：超时默认值放配置键 `agent.timeouts.turnMs` 还是代码常量，本文不写死；无论放哪，必须只有一个来源。
-- **待定（用户裁决）**：审批等待期如何暂停 deadline —— 候选 A：置 NULL 并冻结原值，恢复时重算；候选 B：不置 NULL，到期检查跳过 `waiting_approval` 行。两者都要求"等待时间不计入超时"，施工前裁决，不得默默选。
+- **已裁决（2026-11-07）**：超时默认值放配置键 `agent.timeouts.turnMs`（单一来源）；单步 10min / 测试 60min 由 L2 编排层消费该键给出，kernel 层不设默认值（已按此实施，`260df58`）。
+- **已裁决（2026-11-07）：候选 A（冻结重算）**——审批等待期不计入超时：进入 `waiting_approval` 时记录 `paused_at`，批准恢复时 `deadline_at += (now - paused_at)`；扫描跳过 `waiting_approval` 已随 `260df58` 实施，冻结重算的恢复侧代码随 L2 编排层实现（L1 无人写入 deadline，先行无影响）。
 - 重启：扫描 `status='running' AND deadline_at <= now`，无存活进程 → 写 `failed` + `failure_type='timeout'` + `error_code='DEADLINE_EXPIRED_ON_RESTART'`；**不自动重跑**。不把过期 deadline 留在 `running`。
 - 与 F1 的边界：F3 只负责"到期杀"; 取消/错误仍走 F1 的拒绝路径 terminate。
 
@@ -3419,7 +3419,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
 | §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
 | §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
-| §8.15 F1–F3 | 有框架缺细节 | **已批准未实施**（R7 授权）；F3-A 已定且与 `Zcode v1.2.1（302 行）` 一致 | B1 |
+| §8.15 F1–F3 | 有框架缺细节 | **已实施**（2026-11-07，`9ce519c`/`f73abd8`/`260df58`/`fb19e07`，含契约补齐 P-F1/P-F2 与 F2 契约 1/5/8；分支 `worktree-blueprint-f1-f3` 待合 main） | B1 |
 | §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
 | §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
 | §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
@@ -3434,7 +3434,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 **审计结论**
 
 - **空挂 0**：没有"标题在、内容缺"的章节；`ContextBundle` / 尾块协议有明确外部指向，不算空挂。
-- **B1 可施工边界（裁决后）**：S1、S2、S5a、S6a、迁移状态机、F1–F3 行为契约已细化；U1 与 F3 选型已定案（过期 E4 → `stale`；F3-A），F1–F3 的源码修复路径仍需单独授权。
+- **B1 可施工边界（裁决后）**：S1、S2、S5a、S6a、迁移状态机、F1–F3 行为契约已细化；U1 与 F3 选型已定案（过期 E4 → `stale`；F3-A），F1–F3 已实施（2026-11-07，见 §8.15）。
 - **B1 一次性修正（已接受）**：`work_items.status` 补 `failed`（13 值），否则 §5.5.1 的父任务失败聚合无法落库；表总数不变（22），L1 仍 13 张。
 - **B2 可施工边界**：§5.9 及子节、§5.9.9–5.9.11、§5.7、§6.5.1/§6.5.2、§6.8 已细化到接口级输入输出与失败分支；黑板/Phase B/fanout 仍属 B3。
 - **Zcode v1.2 处理**：采纳 9 项落 §2.8 / §4.2 / §5.9.5 / §5.9.8 / §5.9.8.1 / §5.9.11 / §8.15 / §9.3；不采纳 10 项与事实性错误见 §12.10 / §12.11；两项待裁决见 §12.5 第 6、7 项。
