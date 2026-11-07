@@ -392,6 +392,180 @@ function columnTypesMatch(
   return true
 }
 
+interface UniqueConstraintSpec {
+  columns: string[]
+  canonical: string
+}
+
+/**
+ * 从表 DDL 提取内联 UNIQUE 约束（表级 `UNIQUE(...)` 与列级 `col ... UNIQUE`）。
+ * 只按列清单做规范化比较：列顺序与大小写影响语义，空白不影响。
+ */
+function extractInlineUniqueConstraints(createSql: string): UniqueConstraintSpec[] {
+  const specs: UniqueConstraintSpec[] = []
+
+  // 表级 UNIQUE(...)（含 `CONSTRAINT x UNIQUE(...)`）
+  const re = /\bunique\s*\(/gi
+  let match: RegExpExecArray | null
+  while ((match = re.exec(createSql))) {
+    const open = match.index + match[0].length - 1
+    const close = findMatchingParen(createSql, open)
+    if (close === -1) break
+    const columns = splitTopLevel(createSql.slice(open + 1, close), ',')
+      .map((c) => c.trim().replace(/\s+/g, ' ').toLowerCase())
+      .filter(Boolean)
+    if (columns.length > 0) {
+      specs.push({ columns, canonical: `unique(${columns.join(',')})` })
+    }
+    re.lastIndex = close + 1
+  }
+
+  // 列级 UNIQUE（不带括号）
+  const bodyOpen = createSql.indexOf('(')
+  const bodyClose = bodyOpen === -1 ? -1 : findMatchingParen(createSql, bodyOpen)
+  if (bodyOpen !== -1 && bodyClose !== -1) {
+    for (const part of splitTopLevel(createSql.slice(bodyOpen + 1, bodyClose), ',')) {
+      const def = part.trim()
+      if (!def || TABLE_CONSTRAINT_PREFIX.test(def)) continue
+      const withoutQuoted = def.replace(/'[^']*'/g, "''")
+      if (!/\bunique\b(?!\s*\()/i.test(withoutQuoted)) continue
+      const name = /^["'`]?([A-Za-z_][A-Za-z0-9_]*)["'`]?/.exec(def)?.[1]
+      if (name) {
+        const col = name.toLowerCase()
+        specs.push({ columns: [col], canonical: `unique(${col})` })
+      }
+    }
+  }
+
+  return specs
+}
+
+function canonicalUniques(specs: UniqueConstraintSpec[]): string {
+  return specs.map((s) => s.canonical).sort().join('||')
+}
+
+/**
+ * 重建/建唯一索引前的只读体检：目标键存在重复即 fail-closed。
+ * 返回的重复组数按 SQLite UNIQUE 语义计算（键列含 NULL 的行不参与，允许多个 NULL）。
+ */
+function assertNoDuplicateUniqueKeys(
+  db: BetterSqlite3.Database,
+  tableName: string,
+  specs: UniqueConstraintSpec[],
+  context: string,
+  whereSql?: string,
+): void {
+  for (const spec of specs) {
+    const cols = spec.columns
+    if (cols.length === 0 || !cols.every(isValidIdentifier)) continue // 表达式键交由 SQLite 报错
+    const colList = cols.map(safeIdentifier).join(', ')
+    const notNull = cols.map((c) => `${safeIdentifier(c)} IS NOT NULL`).join(' AND ')
+    const where = whereSql ? `(${whereSql}) AND ${notNull}` : notNull
+    const dup = db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT 1 FROM ${safeIdentifier(tableName)} WHERE ${where}
+           GROUP BY ${colList} HAVING COUNT(*) > 1
+         )`,
+      )
+      .get() as { c: number }
+    const groups = Number(dup.c)
+    if (groups === 0) continue
+    const sample = db
+      .prepare(
+        `SELECT ${colList} FROM ${safeIdentifier(tableName)} WHERE ${where}
+         GROUP BY ${colList} HAVING COUNT(*) > 1 ORDER BY 1 LIMIT 1`,
+      )
+      .get() as Record<string, unknown> | undefined
+    throw new DatabaseError(
+      `${context}中止：表 ${tableName} 的 UNIQUE(${cols.join(', ')}) 存在 ${groups} 组重复键` +
+        `（示例 ${sample ? JSON.stringify(sample) : '{}'}）。` +
+        `拒绝按新约束重建以避免静默丢行；请先清理重复数据或回退该 schema 变更。`,
+      ErrorCode.DB_MIGRATION_FAILED,
+    )
+  }
+}
+
+interface ParsedIndexStatement {
+  name: string
+  table: string
+  columns: string[]
+  unique: boolean
+  where: string | null
+  normalized: string
+  sql: string
+}
+
+function normalizeIndexSql(sql: string): string {
+  return sql
+    .replace(/\s+if\s+not\s+exists\s+/i, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function parseIndexStatement(sql: string): ParsedIndexStatement | null {
+  const head = /^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+ON\s+(\w+)\s*(?=\()/i.exec(sql)
+  if (!head) return null
+  const open = sql.indexOf('(', head.index + head[0].length)
+  if (open === -1) return null
+  const close = findMatchingParen(sql, open)
+  if (close === -1) return null
+  const columns = splitTopLevel(sql.slice(open + 1, close), ',')
+    .map((c) => c.trim())
+    .filter(Boolean)
+  const tail = sql.slice(close + 1).trim()
+  const where = /^WHERE\s+/i.test(tail) ? tail.replace(/^WHERE\s+/i, '').trim() : null
+  return {
+    name: head[2],
+    table: head[3],
+    columns,
+    unique: Boolean(head[1]),
+    where,
+    normalized: normalizeIndexSql(sql),
+    sql: sql.trim(),
+  }
+}
+
+/**
+ * 索引对账：独立唯一索引（`CREATE UNIQUE INDEX`）与内联约束一样纳入比较。
+ * 定义变化时先 DROP 再按当前定义重建（`IF NOT EXISTS` 不会替换同名旧定义）；
+ * 唯一索引重建前同样做重复键体检。checksum 已包含 INDEX_SQLS，任一变化都会走慢路径。
+ */
+export function reconcileSchemaIndexes(
+  db: BetterSqlite3.Database,
+  indexSqls: string[] = INDEX_SQLS,
+): void {
+  for (const sql of indexSqls) {
+    const parsed = parseIndexStatement(sql)
+    if (!parsed) {
+      db.exec(sql)
+      continue
+    }
+    const existing = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='index' AND name=?")
+      .get(parsed.name) as { sql: string | null } | undefined
+    if (existing && existing.sql && normalizeIndexSql(existing.sql) === parsed.normalized) continue
+    if (existing) {
+      if (!isValidIdentifier(parsed.name)) {
+        throw new DatabaseError(`Invalid index identifier: ${parsed.name}`, ErrorCode.DB_INVALID_IDENTIFIER)
+      }
+      logger.info(`Index ${parsed.name} definition changed, rebuilding...`)
+      db.exec(`DROP INDEX ${safeIdentifier(parsed.name)}`)
+    }
+    if (parsed.unique && parsed.columns.every(isValidIdentifier)) {
+      assertNoDuplicateUniqueKeys(
+        db,
+        parsed.table,
+        [{ columns: parsed.columns, canonical: `unique(${parsed.columns.join(',')})` }],
+        `索引 ${parsed.name} 创建`,
+        parsed.where ?? undefined,
+      )
+    }
+    db.exec(parsed.sql)
+  }
+}
+
 /**
  * Check if table needs rebuilding (when schema changes)
  */
@@ -450,7 +624,12 @@ export function rebuildTableIfNeeded(
     const existingChecks = extractChecks(existingSql).join('||')
     const expectedChecks = extractChecks(createSql).join('||')
 
-    if (existingChecks === expectedChecks && columnTypesMatch(db, tableName, createSql)) {
+    // UNIQUE 也是约束语义的一部分：只在列集合/类型/CHECK 上比较会让"仅改 UNIQUE"
+    // 静默失效（IF NOT EXISTS 不换约束，旧表原封不动）。
+    const existingUniques = canonicalUniques(extractInlineUniqueConstraints(existingSql))
+    const expectedUniques = canonicalUniques(extractInlineUniqueConstraints(createSql))
+
+    if (existingChecks === expectedChecks && existingUniques === expectedUniques && columnTypesMatch(db, tableName, createSql)) {
       const backupCheck = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?").get(tempTable)
       if (backupCheck) {
         logger.info(`Found leftover backup ${tempTable}, restoring data...`)
@@ -459,10 +638,16 @@ export function rebuildTableIfNeeded(
       return
     }
 
-    logger.info(`Table ${tableName} CHECK constraints or column types changed, rebuilding...`)
+    logger.info(`Table ${tableName} CHECK/UNIQUE constraints or column types changed, rebuilding...`)
   }
 
   logger.info(`Table ${tableName} schema outdated, rebuilding...`)
+
+  // 重建前只读体检：新 UNIQUE 键在旧数据上已有重复 → fail-closed，绝不闷头重建丢行。
+  const expectedUniqueSpecs = extractInlineUniqueConstraints(createSql).filter((spec) =>
+    spec.columns.every((c) => existingCols.has(c)),
+  )
+  assertNoDuplicateUniqueKeys(db, tableName, expectedUniqueSpecs, `表 ${tableName} 重建`)
 
   db.exec('SAVEPOINT rebuild_sp')
   try {
@@ -1000,7 +1185,9 @@ const TABLE_SCHEMAS: TableSchema[] = [
         metadata        TEXT,
         created_at      TEXT NOT NULL,
         updated_at      TEXT NOT NULL,
-        UNIQUE(from_entity_key, to_entity_key, link_type)
+        -- entity_key 在 online/dev 之间共享：同一对键可能在不同图组合下各有一条
+        -- 合法链接，去重必须带两端 graph_id，否则会复用别图的 from/to_graph_id。
+        UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)
       )
     `,
     requiredColumns: [
@@ -1090,6 +1277,8 @@ function getSchemaChecksumPath(): string {
 }
 
 function computeSchemaChecksum(): string {
+  // 内联 UNIQUE 随 createSql 进入 tables，独立 UNIQUE 索引随 INDEX_SQLS 进入 indexes；
+  // 两类 UNIQUE 定义的任何变化都会让 checksum 失配 → 走慢路径，不会漏掉已有库。
   const payload = JSON.stringify({
     version: CURRENT_SCHEMA_VERSION,
     tables: TABLE_SCHEMAS.map((s) => s.createSql.trim()),
@@ -1207,10 +1396,9 @@ function migrate(): void {
     // chat_threads.metadata（由 addColumnSafe 补齐），老库上先建索引会因列不存在而失败。
     runIncrementalMigrations(db, currentVersion)
 
-    // Create indexes idempotently (cheap even when up-to-date).
-    for (const sql of INDEX_SQLS) {
-      db.exec(sql)
-    }
+    // 索引对账：新增/改定义的索引先 DROP 再建（IF NOT EXISTS 不替换旧定义）；
+    // 唯一索引重建前做重复键体检（fail-closed）。
+    reconcileSchemaIndexes(db)
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
 

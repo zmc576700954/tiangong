@@ -408,9 +408,8 @@ export const MAP_S6A_INDEX_SQLS: string[] = [
   // 同一 run 对同一节点产出的同类证据只落一条（重试幂等）;E4 人工签收不在此约束内。
   // entity_key 在 online/dev 之间共享，去重键必须带 graph_id——否则同一 run 的
   // dev 证据会被误当作 online 节点已有证据而静默复用（串图）。
-  // 旧索引定义（无 graph_id）在既有库上已存在，IF NOT EXISTS 不会替换它，
-  // 必须先显式 DROP；这是索引重建，不改表结构、不升 schema 版本。
-  `DROP INDEX IF EXISTS ux_node_evidence_run_type`,
+  // 旧定义（无 graph_id）由启动期索引对账按 checksum 变化自动 DROP+重建；
+  // 无需在此手写 DROP INDEX 语句。
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_node_evidence_run_type
      ON node_evidence(graph_id, work_run_id, evidence_type, node_entity_key)
      WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3')`,

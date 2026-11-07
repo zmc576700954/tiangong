@@ -196,9 +196,11 @@ export class LinkService {
     const created = this.db.transaction((): { outcome: 'created' | 'reused' | 'revived'; row: NodeLinkRow } => {
       const existing = this.db
         .prepare(
-          'SELECT * FROM node_links WHERE from_entity_key = ? AND to_entity_key = ? AND link_type = ?',
+          `SELECT * FROM node_links
+            WHERE from_graph_id = ? AND from_entity_key = ?
+              AND to_graph_id = ? AND to_entity_key = ? AND link_type = ?`,
         )
-        .get(fromEntityKey, toEntityKey, linkType) as NodeLinkRow | undefined
+        .get(fromGraphId, fromEntityKey, toGraphId, toEntityKey, linkType) as NodeLinkRow | undefined
       if (existing) {
         if (existing.status === 'active') {
           return { outcome: 'reused', row: existing }

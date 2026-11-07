@@ -302,7 +302,7 @@ sig(node) = sha256(
 | 不建到 `nodes` 的外键 | 外键会让"节点归档/图删除"直接抹掉关系历史；损坏应表现为 `status='orphan'` 而不是静默消失 |
 | `node_id` 冗余保留 | 常用查询走 id 快路径；解析失败再回落到键 |
 | `link_type` 固定枚举 | 防止自由文本导致语义漂移 |
-| `UNIQUE(from_entity_key, to_entity_key, link_type)` | 同一语义的关系只允许一条 |
+| `UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)` | 同一图组合下同一语义的关系只允许一条；`entity_key` 跨图共享，不带 graph_id 会复用别图的端点图信息 |
 
 语义约定：
 
@@ -1858,7 +1858,7 @@ CREATE TABLE node_links (
   metadata        TEXT,
   created_at      TEXT NOT NULL,
   updated_at      TEXT NOT NULL,
-  UNIQUE(from_entity_key, to_entity_key, link_type)
+  UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)
 );
 
 CREATE INDEX idx_node_links_from     ON node_links(from_entity_key);
@@ -2598,6 +2598,9 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 - 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 33）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
 - 动机：旧代码的慢路径会用当前版本的 `createSql` 重建表，`restoreFromBackup` 只恢复**共有列**，新版本写入的列/约束会被静默丢弃，随后 `schema_version` 被回写成更低版本——不可逆退化。v33 的 CHECK 曾因 `test` 行恢复失败偶然挡住，不能作为防线。
 - 不做启动期自动"降级"：降级不是默认行为；如确需把更高版本的库交给旧版本使用，必须人工恢复备份并留下可查询记录（本版本不提供降级入口）。
+- 结构检测维度（2026-11-07，`rebuildTableIfNeeded` + `reconcileSchemaIndexes`）：慢路径重建判定比较列集合/类型/CHECK/**内联 UNIQUE**；独立 `CREATE UNIQUE INDEX` 定义由索引对账比对，变化时先 `DROP INDEX` 再建。两类 UNIQUE 都进入 `schema-checksum`（内联随 `createSql`、独立随 `INDEX_SQLS`），因此**不升 `CURRENT_SCHEMA_VERSION` 也不会漏掉已有库**——任一 DDL 变化都会让 checksum 失配并强制走慢路径。
+- 唯一键 fail-closed：重建表或创建/替换唯一索引前，先只读统计目标键的重复组数（按 SQLite 语义忽略含 NULL 的键行）；存在重复即抛 `DB_MIGRATION_FAILED`，消息含表名、`UNIQUE(...)` 列清单、组数与样例，拒绝重建以避免静默丢行。
+- `node_links` 去重约束已带两端图：`UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)`（§7.2）；`entity_key` 跨图共享，旧的三列约束会让不同图组合的链接互相复用端点图信息。
 - 版本标记边界：`schema_version` 表是唯一权威的库结构版本；`PRAGMA user_version`（memory FTS 触发器版本，`memory-store.ts`）与 `yjs_snapshots.schema_version`（单图快照写入规则版本，`snapshot-store.ts`）是独立域，不参与本守卫，也不会被 `migrate()` 回写。
 - `schema-checksum.json` 是同一版本域的缓存标记：其记录版本高于代码上限时同样触发 `DB_SCHEMA_TOO_NEW`（否则快路径失配会进入按旧 `createSql` 重建的慢路径）。库 `schema_version` 表仍是权威判定；处理不可信缓存属于显式动作。
 

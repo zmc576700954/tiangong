@@ -52,7 +52,7 @@ function setupDb(): BetterSqlite3.Database {
       metadata        TEXT,
       created_at      TEXT NOT NULL,
       updated_at      TEXT NOT NULL,
-      UNIQUE(from_entity_key, to_entity_key, link_type)
+      UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)
     );
   `)
   return db
