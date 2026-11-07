@@ -13,6 +13,7 @@ import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
+import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -64,6 +65,10 @@ export function initDatabase(): BetterSqlite3.Database {
     }
     throw err
   }
+
+  // S1.3（§2.2.2 S1-c）：entity_key 回填。幂等（只写 NULL 行）；项目级失败 →
+  // 阶段 failed → 本次启动失败、下次预检阻断（已提交项目保留，可续跑）。
+  runEntityKeyBackfill(db, CURRENT_SCHEMA_VERSION)
 
   // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
   keepaliveTimer = setInterval(() => {
