@@ -90,7 +90,7 @@ export interface CreateEvidenceInput {
   // E3
   codeVersion?: string
   codeDirty?: number
-  /** E2 content_hash 绑定(dirty 事实,current_hash=dirty_tree_hash,§6.2.1) */
+  /** E2 content_hash 绑定(测试事实:current_hash=执行后 worktree 内容指纹,§6.2.1) */
   currentHash?: string
   workRunId?: string
   workItemId?: string

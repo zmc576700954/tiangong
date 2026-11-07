@@ -6,9 +6,9 @@
  * （命令执行器注入;worktree 管理由 runner 实现层负责）→ 逐条结果回写
  * （test_plan_items/test_runs/test_results）→ E3 资格判定（§6.2.1）。
  *
- * E3 判据（§6.2.1 五条）：passed + worktree/cwd 非空 + code_version=HEAD +
- * code_dirty=0 + git 可用;任一不成立只落 test_run 事实（最高 E2）,dirty_tree_hash
- * 不用于洗 E3。
+ * E3 判据（§6.2.1）：passed + worktree/cwd 非空 + code_version=HEAD +
+ * code_dirty=0 + git 可用;任一不成立只落 test_run 事实（最高 E2）。证据内容
+ * 绑定由 TestExecutor 在**执行后**采集 worktree 实际内容,主工作区 dirty 不参与判定。
  *
  * S4 未执行：test 图（GraphType='test'）值域未开——本服务不依赖 test 图,
  * 证据锚定走 node_entity_key（任意图）。

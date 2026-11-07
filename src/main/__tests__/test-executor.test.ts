@@ -1,8 +1,8 @@
 /**
  * TestExecutor 编排真库回归(§6.2/§6.4/§6.5/§6.6/§6.8):
- * 全过+干净 → E3 落 verifies 目标+worktree 清理;dirty → E2 content_hash;
- * 失败 → 自动建 bug+修复 work_item(draft);WORKTREE_FAILED → env_fail 不建 bug;
- * 策略门 deny → skipped+后续停止。
+ * 全过+干净 → E3 落 verifies 目标+worktree 清理;执行内容被改脏 → 只写 E2 content_hash;
+ * 零执行 / 取不到执行内容 → 不写证据;失败 → 自动建 bug+修复 work_item(draft);
+ * WORKTREE_FAILED → env_fail 不建 bug;策略门 deny → skipped+后续停止。
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
@@ -77,6 +77,7 @@ function fakeWorktrees(overrides: Partial<WorktreeManagerLike> = {}): WorktreeMa
     }),
     remove: vi.fn((p: string) => { removed.push(p) }),
     status: vi.fn(() => ({ head: 'headabc123', dirty: false, dirtyFiles: [] })),
+    executedContent: vi.fn(() => ({ treeHash: 'treeabc123', dirtyFiles: [], contentHash: 'treeabc123' })),
     ...overrides,
   } as never
 }
@@ -159,10 +160,75 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM bug_nodes').get() as { c: number }).c).toBe(0)
   })
 
-  it('dirty → 只写 E2(content_hash 绑定),不写 E3(§6.2.1 fail-closed)', async () => {
+  it('主工作区脏但 worktree 干净 → E3 绑定 baseCommit,不再用主区脏当代理', async () => {
     worktrees = fakeWorktrees({
-      status: vi.fn(() => ({ head: 'headabc123', dirty: true, dirtyFiles: ['src/auth/login.ts'] })),
+      status: vi.fn((p: string) =>
+        p.startsWith('/wt-')
+          ? { head: 'headabc123', dirty: false, dirtyFiles: [] }
+          : { head: 'headabc123', dirty: true, dirtyFiles: ['src/auth/login.ts'] },
+      ),
     })
+    const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, { evidence, workItems })
+    const plan = plans.createPlan({
+      projectPath: '/p',
+      workItemId: wi.id,
+      items: [{ command: 'npm t' }],
+      baseCommit: 'headabc123',
+      workRunId: 'wr-test',
+    })
+    await plans.approve(plan.id, 'u1')
+    const result = await executor.executeTestPlan(plan.id)
+
+    expect(result.status).toBe('passed')
+    expect(result.e3.eligible).toBe(true)
+    expect(result.evidenceWritten).toEqual([{ nodeEntityKey: 'ek-dev', level: 'E3' }])
+    const ev = db.prepare('SELECT evidence_level, code_version, code_dirty, ref_json FROM node_evidence').get() as Record<string, unknown>
+    expect(ev).toMatchObject({ evidence_level: 'E3', code_version: 'headabc123', code_dirty: 0 })
+    expect(JSON.parse(ev.ref_json as string)).toMatchObject({ worktreeCommit: 'headabc123', worktreeTree: 'treeabc123' })
+  })
+
+  it('执行后 worktree 被命令改脏 → 只写 E2,内容绑定含实际改动', async () => {
+    worktrees = fakeWorktrees({
+      executedContent: vi.fn(() => ({
+        treeHash: 'treeabc123',
+        dirtyFiles: ['build/generated.ts'],
+        contentHash: 'contentdef456',
+      })),
+    })
+    const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, { evidence, workItems })
+    const plan = plans.createPlan({
+      projectPath: '/p',
+      workItemId: wi.id,
+      items: [{ command: 'npm t' }],
+      baseCommit: 'headabc123',
+      workRunId: 'wr-test', // 执行前 E3 判据成立;执行后改脏 → 必须降级
+    })
+    await plans.approve(plan.id, 'u1')
+    const result = await executor.executeTestPlan(plan.id)
+
+    expect(result.status).toBe('passed')
+    expect(result.e3.eligible).toBe(true)
+    expect(result.evidenceWritten).toEqual([{ nodeEntityKey: 'ek-dev', level: 'E2' }])
+    const ev = db.prepare('SELECT version_binding, current_hash, code_dirty, summary, ref_json FROM node_evidence').get() as Record<string, unknown>
+    expect(ev.version_binding).toBe('content_hash')
+    // 内容绑定 = 提交树 + worktree 内实际改动;不是主工作区脏文件哈希
+    expect(ev.current_hash).toBe('contentdef456')
+    expect(ev.code_dirty).toBeNull()
+    expect(ev.summary).not.toContain('dirty 工作区')
+    expect(ev.summary).toContain('已计入内容绑定')
+    expect(JSON.parse(ev.ref_json as string)).toMatchObject({
+      worktreeCommit: 'headabc123',
+      worktreeTree: 'treeabc123',
+      executedContentHash: 'contentdef456',
+      worktreeDirtyFiles: ['build/generated.ts'],
+      workspaceChangesIncluded: false,
+    })
+  })
+
+  it('无法解析执行内容 → 不写证据(宁缺勿假)', async () => {
+    worktrees = fakeWorktrees({ executedContent: vi.fn(() => null) })
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
     const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, { evidence, workItems })
     const plan = plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }], baseCommit: 'headabc123' })
@@ -170,12 +236,8 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     const result = await executor.executeTestPlan(plan.id)
 
     expect(result.status).toBe('passed')
-    expect(result.e3.eligible).toBe(false)
-    expect(result.evidenceWritten).toEqual([{ nodeEntityKey: 'ek-dev', level: 'E2' }])
-    const ev = db.prepare('SELECT version_binding, current_hash, code_dirty FROM node_evidence').get() as Record<string, unknown>
-    expect(ev.version_binding).toBe('content_hash')
-    expect(ev.current_hash).toBeTruthy() // dirty_tree_hash
-    expect(ev.code_dirty).toBeNull() // E2 不绑 code hash
+    expect(result.evidenceWritten).toEqual([])
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_evidence').get() as { c: number }).c).toBe(0)
   })
 
   it('失败 → 自动建 bug 节点+bug_nodes+修复 work_item(draft,§6.6)', async () => {
@@ -252,10 +314,9 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     const run = db.prepare('SELECT status, passed, failed, skipped FROM test_runs WHERE plan_id = ?').get(plan.id) as Record<string, unknown>
     expect(run).toMatchObject({ status: 'failed', passed: 0, failed: 0, skipped: 3 })
     expect(plans.getPlan(plan.id)!.status).toBe('failed')
-    // 证据最高 E2（dirty/失败事实），绝不写 E3
-    const ev = db.prepare('SELECT evidence_level FROM node_evidence').get() as { evidence_level: string } | undefined
-    expect(ev?.evidence_level).toBe('E2')
-    expect(db.prepare("SELECT COUNT(*) AS c FROM node_evidence WHERE evidence_level = 'E3'").get()).toMatchObject({ c: 0 })
+    // 零执行（全 deny）→ 不写任何证据，连 E2 都不写（宁缺勿假）
+    expect(result.evidenceWritten).toEqual([])
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_evidence').get() as { c: number }).c).toBe(0)
   })
 
   it('同一失败跑两次 → 派生稳定 entity_key,只产生一个 bug 节点(P0-2)', async () => {

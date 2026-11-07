@@ -2,15 +2,17 @@
  * TestExecutor（S8 完成,session-map 蓝图 §6.2/§6.4/§6.5/§6.6/§6.8）
  *
  * 编排 TestPlanService 的完整执行流程:
- *  1. 状态采集:git status --porcelain → dirty / dirty 文件清单（§6.2 Step 1）
- *  2. worktree:主进程受控 git 能力创建（不经 Bash 工具,§6.4）,从 base_commit;
- *     dirty 场景 fail-closed——测试照跑但 dirty=1,E3 被禁只落 E2（§6.2.1 主方案;
- *     「base+应用工作区 diff」增强留 L3,不影响 fail-closed 语义）
+ *  1. 状态采集:只取项目 HEAD 作 base_commit（§6.2 Step 1）;主工作区 dirty
+ *     与本次执行无关,不参与任何判定
+ *  2. worktree:主进程受控 git 能力创建（不经 Bash 工具,§6.4）,固定 detach 在
+ *     base_commit;主工作区未提交改动不进入执行集（「base+应用 diff」增强留 L3）
  *  3. 策略门（§6.8,逐条不可跳过,§6.4）:evaluateBashPolicy（allow/ask 经计划审批
  *     提升,空命令拒）+ evaluateGitDirWriteGuard（block=硬 deny,§6.3 不豁免）;
  *     deny → 该条 skipped+denied 结果,后续默认停止（continue_on_failure=false）
- *  4. 结果回写（§6.5）:verifies 目标节点写 E3（§6.2.1 五条:干净+全过+HEAD）或
- *     E2（dirty 事实,version_binding='content_hash',current_hash=dirty_tree_hash）;
+ *  4. 结果回写（§6.5):证据只描述**实际被执行**的那份代码——worktree 的
+ *     `HEAD^{tree}` + 执行后 worktree 内未提交改动的逐文件 sha256 一起做内容绑定。
+ *     E3 需 worktree 执行后仍干净 + 全过 + work_run_id;否则只写 E2；零执行
+ *     （全 deny/全 skip/infra error）或取不到执行内容 → 不写任何证据（宁缺勿假）。
  *     失败（非 env_fail）→ 自动建 bug 节点 + bug_nodes + 修复 work_item
  *     （draft 走 C2,§6.6-3）;bug 行可反查 test_run→plan_item（§6.6-6）
  *  5. 清理:全过删 worktree;失败现场保留在项目外(tmps)最多 7 天,下次 create 惰性回收
@@ -78,13 +80,25 @@ function isLegacyWorktreePath(file: string): boolean {
   return file === LEGACY_WORKTREE_DIR || file.startsWith(`${LEGACY_WORKTREE_DIR}/`)
 }
 
+/** 本次执行实际内容的绑定指纹（执行结束后采集）。 */
+export interface ExecutedContent {
+  /** worktree HEAD 的 tree 对象哈希（提交树）。 */
+  treeHash: string
+  /** 执行结束后 worktree 内仍未提交的文件（命令自己改出来的产物/改动）。 */
+  dirtyFiles: string[]
+  /** 内容绑定：干净时 = treeHash;有未提交改动时 = treeHash + 逐文件 sha256 的聚合。 */
+  contentHash: string
+}
+
 /** worktree 管理器（主进程受控 git 能力;测试可注入 fake）。 */
 export interface WorktreeManagerLike {
   /** 从 base_commit 创建 detach worktree,返回路径;失败抛 WorktreeFailedError。 */
   create(projectPath: string, baseCommit: string): { path: string }
   remove(worktreePath: string): void
-  /** HEAD + porcelain 状态采集（§6.2 Step 1）;非 git 返回 null。 */
+  /** HEAD + porcelain 状态采集;非 git 返回 null。 */
   status(projectPath: string): { head: string; dirty: boolean; dirtyFiles: string[] } | null
+  /** 执行结束后 worktree 的真实内容指纹;取不到返回 null（调用方不得凭猜测写内容绑定）。 */
+  executedContent(worktreePath: string): ExecutedContent | null
 }
 
 export class GitWorktreeManager implements WorktreeManagerLike {
@@ -141,6 +155,35 @@ export class GitWorktreeManager implements WorktreeManagerLike {
       return { head, dirty: dirtyFiles.length > 0, dirtyFiles }
     } catch {
       return null // 非 git 项目（§3.5:到不了 E3,只能 E4 人工签收）
+    }
+  }
+
+  executedContent(worktreePath: string): ExecutedContent | null {
+    try {
+      const treeHash = execFileSync('git', ['-C', worktreePath, 'rev-parse', 'HEAD^{tree}'], { encoding: 'utf-8' }).trim()
+      // -uall：未跟踪目录展开到文件级,否则目录名读不到内容,绑定会漏掉改动。
+      const porcelain = execFileSync('git', ['-C', worktreePath, 'status', '--porcelain', '-uall'], { encoding: 'utf-8' })
+      const dirtyFiles = porcelain
+        .split('\n')
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean)
+      if (dirtyFiles.length === 0) return { treeHash, dirtyFiles, contentHash: treeHash }
+      // 执行过程中命令自己改动了 worktree 的文件：这些改动实际参与了本次执行,
+      // 必须一起纳入内容绑定。读不到内容（已删除/重命名旧路径）按 absent 计入。
+      const parts = dirtyFiles
+        .map((f) => {
+          try {
+            const content = fs.readFileSync(path.join(worktreePath, f))
+            return `${f}:${createHash('sha256').update(content).digest('hex')}`
+          } catch {
+            return `${f}:absent`
+          }
+        })
+        .sort()
+      const contentHash = createHash('sha256').update(`${treeHash}\n${parts.join('\n')}`).digest('hex')
+      return { treeHash, dirtyFiles, contentHash }
+    } catch {
+      return null // worktree 已删/非 git：调用方不得凭猜测写内容绑定
     }
   }
 
@@ -202,10 +245,9 @@ export class TestExecutor {
     const plan = this.plans.getPlan(planId)
     if (!plan) throw new TestPlanError(`test_plan ${planId} 不存在`)
 
-    // ---- Step 1:状态采集 ----
+    // ---- Step 1:状态采集（只取 base_commit;主工作区脏不参与执行判定）----
     const statusInfo = this.worktrees.status(plan.project_path)
     const baseCommit = opts?.headCommit ?? statusInfo?.head ?? null
-    const dirty = statusInfo?.dirty ?? true // 非 git → 按 dirty fail-closed（E3 禁）
 
     // ---- Step 2:worktree（WORKTREE_FAILED → env_fail 不建 bug,§6.8.2）----
     let worktreePath: string
@@ -227,6 +269,11 @@ export class TestExecutor {
       throw err
     }
     this.db.prepare('UPDATE test_plans SET worktree_path = ?, base_commit = ? WHERE id = ?').run(worktreePath, baseCommit, planId)
+
+    // E3 的 code_dirty 只认**被执行 worktree**的干净状态。新建 worktree 固定在
+    // base_commit，主工作区是否脏与本次执行无关——不能再拿它当代理指标。
+    const worktreeStatus = this.worktrees.status(worktreePath)
+    const worktreeDirty = worktreeStatus?.dirty ?? true // 无法确认 → fail-closed（E3 禁）
 
     // ---- Step 3-4:执行(策略门逐条;cwd=worktree) ----
     const policyGate = (command: string): { decision: 'allow' | 'ask' | 'deny'; reason?: string } => {
@@ -254,7 +301,7 @@ export class TestExecutor {
     try {
       result = await this.plans.execute(planId, {
         headCommit: baseCommit,
-        codeDirty: dirty,
+        codeDirty: worktreeDirty,
         cwdOverride: worktreePath,
         policyGate,
       })
@@ -264,8 +311,12 @@ export class TestExecutor {
     }
 
     // ---- Step 5:结果回写 + bug 闭环 ----
+    // 证据只描述真正执行的那份代码：worktree 固定在 baseCommit，执行结束后再采集
+    // 其 tree 与残留未提交改动；主工作区脏文件不参与（它们从未被这次执行读到）。
+    const executed = this.worktrees.executedContent(worktreePath)
+    const executedCount = this.countExecutedTestItems(result.run.id)
     const evidenceWritten = this.deps.evidence
-      ? this.writeEvidence(plan, result.e3, dirtyFilesHash(statusInfo?.dirtyFiles, plan.project_path), baseCommit)
+      ? this.writeEvidence(plan, result.e3, baseCommit, executed, executedCount)
       : null
     const bugsCreated = this.deps.autoBug === false
       ? []
@@ -285,15 +336,38 @@ export class TestExecutor {
     }
   }
 
+  /** 真实执行过的命令数（passed/failed/timed_out；skip/deny 与 infra error 不算）。 */
+  private countExecutedTestItems(runId: string): number {
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS c FROM test_results WHERE test_run_id = ? AND status IN ('passed','failed','timed_out')",
+      )
+      .get(runId) as { c: number }
+    return row.c
+  }
+
   /** §6.5:verifies 目标节点(dev 侧)写 E3/E2;无 verifies 链 → 退化为 work_item 锚。 */
   private writeEvidence(
     plan: TestPlanRow,
     e3: { eligible: boolean; reason: string; codeVersion: string | null },
-    dirtyTreeHash: string | null,
     baseCommit: string | null,
+    executed: ExecutedContent | null,
+    executedCount: number,
   ): Array<{ nodeEntityKey: string; level: 'E3' | 'E2' }> {
     const evidence = this.deps.evidence
     if (!evidence || !plan.work_item_id) return []
+    // 零执行（全 deny / 全 skip / 仅有 infra error）→ 不写任何证据（宁缺勿假）。
+    if (executedCount === 0) {
+      logger.info(`test plan ${plan.id}: 零执行，不写 E2/E3 证据`)
+      return []
+    }
+    // 取不到执行内容的指纹（worktree 已被删/git 异常）→ 同样不写：宁可没有证据,
+    // 也不能拿主工作区或猜测值冒充"被执行的那份代码"。
+    if (!executed) {
+      logger.warn(`test plan ${plan.id}: 无法解析 worktree 执行内容，不写证据`)
+      return []
+    }
+    const executedDirty = executed.dirtyFiles.length > 0
     const item = this.db
       .prepare('SELECT anchor_entity_key, graph_id FROM work_items WHERE id = ?')
       .get(plan.work_item_id) as { anchor_entity_key: string | null; graph_id: string } | undefined
@@ -305,8 +379,9 @@ export class TestExecutor {
     const written: Array<{ nodeEntityKey: string; level: 'E3' | 'E2' }> = []
 
     // §3.7.1:E3 必带 work_run_id——计划未关联 work_run(独立手工计划)时从严落 E2
-    // (§6.2.1 五条之外的执行链要求;关联 run 由编排层创建,L2 流水线自然满足)
-    const e3Allowed = e3.eligible && allPassed && Boolean(plan.work_run_id)
+    // (§6.2.1 五条之外的执行链要求;关联 run 由编排层创建,L2 流水线自然满足)。
+    // 执行后 worktree 若被命令改脏，本次验证已不再对应提交树 → 同样降级 E2。
+    const e3Allowed = e3.eligible && allPassed && Boolean(plan.work_run_id) && !executedDirty
 
     for (const target of targets) {
       try {
@@ -316,7 +391,7 @@ export class TestExecutor {
             graphId: item.graph_id,
             nodeEntityKey: target,
             evidenceType: 'test_run',
-            ref: { testRunId, planId: plan.id },
+            ref: { testRunId, planId: plan.id, worktreeCommit: baseCommit, worktreeTree: executed.treeHash },
             actor: 'test_executor',
             producedBy: 'test_executor',
             codeVersion: e3.codeVersion ?? baseCommit ?? undefined,
@@ -324,23 +399,34 @@ export class TestExecutor {
             currentHash: undefined,
             workRunId: plan.work_run_id ?? undefined,
             workItemId: plan.work_item_id ?? undefined,
-            summary: `测试通过(worktree@${(e3.codeVersion ?? '').slice(0, 8)})`,
+            summary: `测试通过(worktree@${(e3.codeVersion ?? '').slice(0, 8)} 干净提交树)`,
           })
           written.push({ nodeEntityKey: target, level: 'E3' })
         } else {
-          // dirty 事实:E2 content_hash 绑定 dirty_tree_hash(§6.2.1 表格第二行)
           evidence.create({
             level: 'E2',
             graphId: item.graph_id,
             nodeEntityKey: target,
             evidenceType: 'test_run',
-            ref: { testRunId, planId: plan.id },
+            ref: {
+              testRunId,
+              planId: plan.id,
+              worktreeCommit: baseCommit,
+              worktreeTree: executed.treeHash,
+              executedContentHash: executed.contentHash,
+              worktreeDirtyFiles: executed.dirtyFiles,
+              // 主工作区未提交改动从未进入 worktree,与本次执行无关。
+              workspaceChangesIncluded: false,
+            },
             actor: 'test_executor',
             producedBy: 'test_executor',
-            currentHash: dirtyTreeHash ?? undefined,
+            currentHash: executed.contentHash,
             workRunId: plan.work_run_id ?? undefined,
             workItemId: plan.work_item_id ?? undefined,
-            summary: `测试事实(dirty 工作区,不可复现)${e3.reason ? ':' + e3.reason : ''}`,
+            summary:
+              `测试事实(worktree@${(baseCommit ?? '').slice(0, 8)} 提交树,${allPassed ? '通过' : '未通过'}` +
+              `${executedDirty ? `;执行后 worktree 内 ${executed.dirtyFiles.length} 个未提交文件已计入内容绑定` : ''}` +
+              `;不含主工作区未提交改动)${e3.reason ? ':' + e3.reason : ''}`,
           })
           written.push({ nodeEntityKey: target, level: 'E2' })
         }
@@ -472,23 +558,5 @@ export class TestExecutor {
       .prepare('SELECT id FROM test_runs WHERE plan_id = ? ORDER BY created_at DESC LIMIT 1')
       .get(planId) as { id: string } | undefined
     return row?.id ?? ''
-  }
-}
-
-/** dirty_tree_hash(§4.7.7):dirty 文件按路径排序,拼 path+NUL+sha256(content) 取哈希。 */
-function dirtyFilesHash(dirtyFiles: string[] | undefined, projectRoot: string): string | null {
-  if (!dirtyFiles || dirtyFiles.length === 0) return null
-  try {
-    const hash = createHash('sha256')
-    for (const rel of [...dirtyFiles].sort()) {
-      let contentHash = 'unreadable'
-      try {
-        contentHash = createHash('sha256').update(fs.readFileSync(path.join(projectRoot, rel))).digest('hex')
-      } catch { /* 不可读文件按占位参与 */ }
-      hash.update(`${rel}\0${contentHash}`)
-    }
-    return hash.digest('hex')
-  } catch {
-    return null
   }
 }

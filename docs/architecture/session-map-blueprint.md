@@ -1563,44 +1563,73 @@ interface StepResult {
 ```
 1. 依据 work_item / test_specs 生成 test_plan（命令清单 + cwd + 基线 commit）
    - 基线 commit = 创建 worktree 时的 HEAD；
-   - 同时采集工作区状态：git status --porcelain（含未跟踪文件）、dirty_tree_hash、是否 dirty
-2. 计算 plan_hash = sha256(规范化命令清单 + cwd + 基线 + dirty 状态)
+   - 主工作区的 dirty 状态只作诊断信息，**不进入执行集、不参与任何通过/证据判定**
+2. 计算 plan_hash = sha256(规范化命令清单 + cwd + 基线 + 计划内容)
 3. 走 ApprovalGateway 提交 subject_type='test_plan' 的一次性审批
 4. 批准后由主进程受控 git 能力创建 worktree（不通过 Bash 工具）
-   - 干净工作区：worktree 从 base_commit 创建；
-   - dirty 工作区：worktree = base_commit + 应用工作区 diff（tracked 变更 + 未跟踪文件按 .gitignore 过滤），并把 dirty_tree_hash 写入 test_runs
+   - worktree 固定 `git worktree add --detach <base_commit>`；**不应用主工作区 diff**
 5. 逐条执行 test_plan_items：
      - evaluateBashPolicy 判定
      - evaluateGitDirWriteGuard 判定（命中即 deny）
      - cwd 固定为 worktree；超时 kill
 6. 结果写 test_results；聚合写 test_runs
-7. 证据回写按 §6.2.1 的 E3 判据：**只有干净工作区 + worktree 等于 base_commit + 全部命令通过**才写 E3；
-   dirty 工作区的测试结果只记 E2（测试事实），不得写 E3
+7. 执行结束后采集 worktree 的真实内容指纹（`HEAD^{tree}` + worktree 内未提交文件），证据回写按 §6.2.1：
+   **执行后仍干净 + worktree 等于 base_commit + 全部命令通过 + 关联 work_run** 才写 E3；
+   已真实执行但执行后 worktree 被改脏（或未关联 work_run）→ 只写 E2（内容绑定到实际执行内容）；
+   零执行或取不到执行内容 → 不写任何证据（宁缺勿假）
 8. 清理 worktree（保留失败现场 N 天，可配置）
 ```
 
-#### 6.2.1 E3 判据（修复"假 E3"）
+#### 6.2.1 E3 判据与 E2 内容绑定（修复"假 E3"与"假 E2"）
 
-**问题**：此前 worktree 从基线 commit 创建、`code_version` 也记基线 commit，工作区未提交改动不在 worktree 里，测试却通过并被写成"可复现 E3"。这是**假证据**。
+**两类假证据**：
 
-**主方案：dirty 状态禁止产出 E3（fail-closed）。**
+1. **假 E3**：worktree 从基线 commit 创建、`code_version` 也记基线 commit，而主工作区未提交改动不在 worktree 里，测试通过却被写成"可复现 E3"。
+2. **假 E2（2026-11-07 修复）**：E2 内容绑定拿**主工作区脏文件哈希**当代理，但主工作区改动从未进入 worktree；且失败分支无论是否真的执行过都写 E2。结果"从未被执行到的代码"被绑定成 E2，节点被派生成 `implemented`。
 
-| 状态 | worktree | 测试结果用途 | 证据 |
-|---|---|---|---|
-| 干净（`dirty=0`） | 从 `base_commit`（= HEAD）创建 | 可作为通过判据 | 允许 E3：`version_binding='commit'`、`code_version=base_commit`、`code_dirty=0`、`reproducible=1` |
-| dirty（`dirty=1`） | `base_commit` + 应用工作区 diff | 仅作当次测试事实 | 只写 E2：`version_binding='content_hash'`（`current_hash=dirty_tree_hash`）、`code_dirty=1`、`reproducible=0`；UI 标注"工作区有未提交改动，本次测试不可复现" |
+**L1 执行集（已实施）**：worktree 固定 `git worktree add --detach <base_commit>`，**不应用主工作区 diff**；主工作区是否 dirty 与本次执行无关，不参与任何判定。
+
+| 执行后状态 | 证据 |
+|---|---|
+| worktree 干净（`git status --porcelain -uall` 为空）+ 全部命令通过 + 关联 `work_run_id` | E3：`version_binding='commit'`、`code_version=base_commit`、`code_dirty=0`、`reproducible=1`；`ref_json.worktreeTree` = `HEAD^{tree}` |
+| 已真实执行，但 worktree 内出现未提交文件（命令自己改出来的改动），或未关联 `work_run_id`，或测试未全过 | 只写 E2：`version_binding='content_hash'`、`current_hash=executedContentHash`、`code_dirty` 留空；`ref_json` 记录 `worktreeCommit`、`worktreeTree`、`executedContentHash`、`worktreeDirtyFiles`、`workspaceChangesIncluded=false` |
+| 零执行（全 deny / 全 skip / 仅有 infra error） | **不写任何证据** |
+| 取不到执行内容指纹（worktree 已删 / git 异常） | **不写任何证据** |
+
+E2 的 `executedContentHash` 定义：worktree 干净时 = `HEAD^{tree}`；执行后 worktree 有未提交改动时 = `sha256(treeHash + "\n" + sorted(path + ':' + sha256(content)))`，其中 `path` 为规范化相对路径、删除/重命名旧路径按 `absent` 计入。这样 `current_hash` 描述的是**真正被执行的那份内容**，而不是主工作区或猜测值。
 
 E3 必须同时满足：
 
-1. 采集时 `dirty=0`（`git status --porcelain` 为空，含未跟踪文件；忽略项不算）；
+1. 执行结束后 worktree `git status --porcelain` 为空（含未跟踪文件；`.gitignore` 忽略项不算）；
 2. `worktree_commit == code_version`，且 worktree 中无额外未提交改动；
 3. test_plan 内所有命令退出码为 0，无 `timed_out` / `error`；
 4. 测试结果由本次 run 产生，未复用历史输出；
-5. `test_runs.dirty=0` 且 `dirty_tree_hash` 为空（干净状态没有需要绑定的工作区差异）。
+5. 计划关联了 `work_run_id`（E3 的 `work_run_id` 必填来源）。
 
-任一条件不满足 → 不得写 E3；测试仍通过时写 E2 `test_run` 事实，并保留 `failure_class` 与输出引用。**不允许"先记 E3、事后降级"来掩盖判据缺失。**
+任一条件不满足 → 不得写 E3；**确实执行过**时写 E2 `test_run` 事实，并保留失败分类与输出引用；零执行不写。**不允许"先记 E3、事后降级"来掩盖判据缺失。**
 
-后备方案（不采纳为主路径）：`worktree = HEAD + 工作区 diff` 后仍绑定 commit 会继续产生"工作区内容 ≠ commit 内容"的假绑定；若未来需要"可复现的 dirty 证据"，只能另立"tree hash 证据"等级，不能复用 E3 语义。
+##### 6.2.1.1 历史错误 E2 的处理
+
+旧口径写入的错误 E2 特征：`evidence_level='E2' AND evidence_type='test_run'`，`summary` 以 `测试事实(dirty 工作区` 开头（固定文案"不可复现"），`ref_json` 不含 `worktreeCommit`，`current_hash` 常为 NULL 或主工作区脏文件哈希。可用如下查询识别：
+
+```sql
+SELECT id, project_path, graph_id, node_entity_key, work_run_id, current_hash, created_at
+  FROM node_evidence
+ WHERE evidence_level = 'E2' AND evidence_type = 'test_run'
+   AND revoked_at IS NULL
+   AND ref_json NOT LIKE '%worktreeCommit%'
+   AND summary LIKE '测试事实(dirty 工作区%';
+```
+
+**本轮决定：可识别，但不自动标记/改写。** 原因：
+
+- 事后无法重建"当时真正被执行的内容"（worktree 失败现场最多保留 7 天，多数已删除；主工作区内容也已变化），任何自动重写都是新的猜测；
+- 直接撤销会丢失一条真实的"测试跑过+结果"事实，并影响历史执行态审计；
+- 仅改 `freshness` 不会改变派生规则（E2 未撤销即 `implemented`），反而制造"已标记但仍派生"的假象。
+
+处理路径：把上述查询结果作为人工审计清单；对仍依赖这些 E2 的节点，用当前代码**重跑测试计划**产出正确 E2/E3（新证据 `ref_json` 带 `worktreeCommit`）。若确认某条旧 E2 完全不可信，由人通过 `EvidenceService.revoke(id, …, revoke_reason='legacy_dirty_proxy_evidence')` 显式撤销，撤销会自动触发派生重算。
+
+> 说明：`§3.7.1` 中的 `content_hash` 对测试事实 (E2 `test_run`) 指本节的 git 内容指纹；对"变更清单/文件面"类 E2 仍指 `scope_files` 逐文件 sha256 聚合。两者都是内容绑定，但描述的物件不同。
 
 ### 6.3 审批 subject 扩展
 
@@ -1639,6 +1668,7 @@ subject_id   TEXT
 - 测试资产 = test 图节点（`test-suite` / `test-case`），通过 `node_links` 的 `verifies`（→ dev）与 `covers`（→ online）建立关联。
 - `test_specs` 绑定 `test-case` 节点，一个节点可有多个 spec（不同命令/环境）。
 - 结果回写：`test_results` → 命中 `verifies` 目标节点的 **E3** 证据（测试通过 + 代码 hash）；`test_runs` 聚合 → `node_execution_state` 重算。
+- 写证据的前提是**有真实执行**：零执行（全 deny / 全 skip / 仅有 infra error）或取不到执行内容指纹时不写 E2/E3；证据内容一律绑定 worktree 实际执行内容，主工作区 dirty 不作代理（§6.2.1）。
 - 失败的测试产生 E3 的反向事实（`status='failed'`），派生状态为 `failed`，但**不自动把 `nodes.status` 打回**。
 
 #### 6.5.1 流程级测试（flow）的可执行定义
@@ -1667,7 +1697,7 @@ subject_id   TEXT
 - 一个 `test_runs(kind='flow')`；每步一条 `test_results`。
 - 任一步 `failed` / `timed_out` / `denied` → flow `failed`，后续 `skipped`；`continue_on_failure` 默认 false；不自动重跑。
 - 产出 `test_report`（JSON）：`{flow_run_id, overall, nodes:[{node_entity_key, verify:{status,result_ids[]}, shell:{status,result_ids[]}}]}`，落 `test_runs.report_ref`。
-- 干净 worktree 且命令通过 → 对目标节点写 E3；dirty 只写 E2（§6.2.1）。
+- 执行后 worktree 仍干净且命令通过（且有 `work_run_id`）→ 对目标节点写 E3；已真实执行但执行后被改脏/未关联 run → 只写 E2；零执行不写证据（§6.2.1）。
 - `manual` / `llm_acceptance` 不得进 flow（§6.5.1）。
 
 **不做**：拖拽排序、分支/并行编辑、可视化 DAG；改顺序 = 重新生成计划并重新审批。
@@ -3098,7 +3128,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | 审批不串场（采纳） | 跨会话 `pending approvals` 必须按 subject ownership 过滤；不得把 A 项目的待审批计划展示到 B 项目 |
 | 编排写路径仅 Tier 1（采纳） | 无写前审批回调的 adapter（Tier 2）只读或排队，不得降级执行写步骤；`degraded` 只用于手动会话（§5.9.5） |
 | allow 命令的配置键测试（采纳） | 每条新增 allow 命令必须附"消费了哪些配置键"的测试，未附不得合入（§6.8.1） |
-| E3 证据不造假（采纳） | 只有干净工作区 + worktree=base commit 才能写 E3；dirty 工作区降级 E2 并记录 `dirty_tree_hash`（§6.2.1） |
+| E3/E2 证据不造假（采纳） | 只有执行后 worktree 仍干净 + worktree=base commit + 有 work_run 才能写 E3；否则确实执行过时写 E2，内容绑定 worktree 执行内容（tree + 实际改动）；零执行不写证据（§6.2.1） |
 
 需扩展的唯一安全相关结构：`agent_approvals` 的 `subject_type` / `subject_id` 与 `run_id`/`turn_id` 可空。改法见 §6.3 / §8.10；影响面为所有读取该表的查询与重启重推逻辑（测试计划审批不自动重放）。
 
@@ -3206,7 +3236,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | 路径规范化（realpath + NFC + 大小写 + 分隔符） | 统一 G1/G6/scope_files/fileAssociations/change_sets/node_links，消除"同名不同串"误判 | §5.4.1 |
 | 迁移状态机与半迁移恢复 | 逐阶段 started/completed/failed、心跳、孤儿 `_backup` 检测与续跑边界 | §8.14 |
 | 规模与保留策略 | 分页阈值、软上限、产物/建议/路由的保留期，避免叠加层被历史拖垮 | §11.3 |
-| 假 E3 修复（脏工作区禁止 E3） | 把"worktree 只含基线 commit 却记 E3"的假证据堵死，并记录 `dirty_tree_hash` | §6.2.1 |
+| 假 E3/假 E2 修复 | 把"worktree 只含基线 commit 却记 E3"和"拿主工作区 dirty 当执行内容绑定"两类假证据堵死；E2 绑定 worktree 实际执行内容，零执行不写 | §6.2.1 |
 | `change_sets` 进 L1 | 解决 §4.6 与 §8.12 的矛盾：既然 `filesTouched` 只认它，L1 必须建 | §4.6、§8.12 |
 | allow-list 配置键测试 | 防止测试命令悄悄读取凭据/改变行为而不被发现 | §6.8.1 |
 
@@ -3252,7 +3282,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 问题 | 选定改法 | 落点 |
 |---|---|---|---|
-| 1 | 假 E3：worktree 从基线 commit 创建，工作区未提交改动不在 worktree，测试通过却记 E3 | 主方案 **fail-closed**：干净工作区才允许 E3；dirty 时 worktree = HEAD + 应用工作区 diff，记录 `dirty_tree_hash`，测试只写 E2。E3 五条判据写死，禁止"先记 E3 再降级" | §6.2、§6.2.1；`test_runs.worktree_commit` / `dirty_tree_hash` |
+| 1 | 假 E3 / 假 E2：worktree 从基线 commit 创建，主工作区未提交改动不在 worktree，测试却记 E3；失败分支又拿主工作区脏哈希当 E2 内容绑定 | **fail-closed**：L1 的 worktree 固定 detach 在 `base_commit`，不应用工作区 diff；E3 五条判据写死（执行后 worktree 仍干净 + 全过 + work_run），否则真实执行过只写 E2，`current_hash` = 执行内容指纹（tree + worktree 内实际改动），零执行不写。禁止"先记 E3 再降级" | §6.2、§6.2.1；`ref_json.worktreeCommit` / `worktreeTree` / `executedContentHash` / `worktreeDirtyFiles` |
 | 2 | L1 的 `change_sets` 矛盾（§4.6 只认它，§8.12 不建） | 二选一后选择 **`change_sets` 进 L1**；活动流保留文件展示，不降级为"不展示文件" | §4.6、§8.12；L1 表数 11→13 |
 | 3 | 取消只改状态，没杀进程；排队/审批中不可取消；下游错记 `blocked` | 补真杀**进程组**（TERM→10s→KILL）、`awaiting_approval` 可撤销、取消/完成竞态用条件更新、下游 `cancelled(reason='upstream_cancelled')`、partial 先落库、取消即清 worktree；给出迁移表 | §5.9.7；`work_runs.cancel_requested_at` / `cancel_reason` |
 | 4 | DAG 无环检测，环会让队列永久 `queued`；依赖顺序与父任务聚合未定义 | 计划确认时环检测拒绝；Kahn 分层；`显式 depends_on > 隐式引用 > 数组顺序`；父任务"全部叶子终态 ∧ ≥1 failed → failed" | §5.5.1 |
