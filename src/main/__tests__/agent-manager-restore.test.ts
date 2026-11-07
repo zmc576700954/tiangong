@@ -541,7 +541,7 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
     expect(router.getAdapterName('sess-legacy')).toBeUndefined()
   })
 
-  it('KERNEL=0 + 有节点归属的会话仅路由条目丢失：从内存态重新绑定，不重放、不新建', async () => {
+  it('KERNEL=0 + 有节点归属的会话仅路由条目丢失：重新绑定且装写前审批钩子，不重放、不新建', async () => {
     const adapter = new RestoreAdapter('claude-code', true)
     manager.registerAdapter(adapter)
     const started = await manager.startSession('claude-code', {
@@ -565,8 +565,15 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
 
     expect(router.getAdapterName(started.sessionId)).toBe('claude-code')
     expect(adapter.lastPrompts.join(' | ')).toContain('same-process continue')
-    // 有节点归属：走旧路径但不需要旧路径审批钩子（节点会话由 kernel 覆盖）。
-    expect(adapter.approvalHookCalls).toHaveLength(0)
+    // 3a05ae7：KERNEL=0 回退路径下的节点会话同样必须装写前审批钩子，
+    // 不能因为“有节点”就退回零审批裸 spawn。断言完整周期：发送前安装、finally 清除。
+    expect(adapter.approvalHookCalls).toHaveLength(2)
+    expect(adapter.approvalHookCalls[0][0]).toBe(started.sessionId)
+    expect(adapter.approvalHookCalls[0][1]).toMatchObject({
+      canUseTool: expect.any(Function),
+    })
+    expect(adapter.approvalHookCalls[1][0]).toBe(started.sessionId)
+    expect(adapter.approvalHookCalls[1][1]).toBeNull()
     // 没有新建会话（旧路径自建会话不写 agent_sessions）。
     expect(repo.sessions.size).toBe(0)
   })
