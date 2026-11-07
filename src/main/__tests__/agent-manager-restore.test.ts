@@ -542,6 +542,10 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
       nodeTitle: 'Legacy Node',
       acceptanceCriteria: [],
       threadId: 'th-legacy',
+      // D8 fail-closed（§4.5）：未挂载节点的自由聊天在无宿主审批钩子的后端上
+      // 会被阻断——本测试验证的是「仅路由条目丢失 → 从内存态重绑」，故挂载
+      // 节点以通过 prepareLegacyApproval 守卫,不改变被测的恢复路径。
+      nodeId: 'n-legacy',
     })
     router.unbind(started.sessionId)
 
