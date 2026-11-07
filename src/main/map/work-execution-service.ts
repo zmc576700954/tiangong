@@ -30,7 +30,12 @@ import {
   type StepRunStatus,
 } from './agent-step-runner'
 import { isMapExecutionEnabled, MAP_EXECUTION_DISABLED_REASON } from './execution-flags'
-import { unavailableGateRecheck, type GateRecheck } from './gate-recheck'
+import {
+  GATE_ENGINE_UNAVAILABLE,
+  unavailableGateRecheck,
+  type GateRecheck,
+  type GateRecheckResult,
+} from './gate-recheck'
 import {
   WorkItemService,
   type WorkItemRow,
@@ -92,7 +97,10 @@ export interface WorkExecutionOptions {
   isEnabled?: () => boolean
   /** 开跑前能力探测；不提供则一律拒绝（fail-closed）。 */
   probeKernel?: (adapterName: string) => KernelCapabilityProbe
-  /** tick 第 2 步；生产默认 fail-closed（gate 引擎未实施）。 */
+  /**
+   * tick 第 2 步 gate 评估。服务级默认 fail-closed（gate_engine_unavailable）；
+   * 生产由 work-execution-runtime 装配 G1–G6 引擎（gate-engine.ts）。
+   */
   gateRecheck?: GateRecheck
   /** 事件出口（生产接 renderer 广播；测试可断言）。 */
   onEvent?: (event: WorkExecutionEvent) => void
@@ -300,15 +308,37 @@ export class WorkExecutionService {
 
     const candidates = this.selectCandidates(options)
     for (const item of candidates) {
-      // 第 2 步：重跑 gate（不信任库里的 gate_status）。
-      const rechecked = this.gateRecheck.recheck(item)
+      // 第 2 步：重跑 gate（不信任库里的 gate_status）。评估器抛异常按
+      // §14.6 与引擎不可用同路径：incomplete + gate_engine_unavailable（fail-closed）。
+      let rechecked: GateRecheckResult
+      try {
+        rechecked = this.gateRecheck.recheck(item)
+      } catch (error) {
+        logger.warn(`[tick] gate 引擎异常 item=${item.id}，按不可用收口：${String(error)}`)
+        rechecked = { ok: false, missing: [GATE_ENGINE_UNAVAILABLE] }
+      }
       if (!rechecked.ok) {
         this.applyGateFailure(item, rechecked.missing)
         report.gateBlockedItemIds.push(item.id)
         continue
       }
-      // 重跑通过但库里仍是旧值时，把重跑结论落库（否则 startStep 的只读复核会拒绝）。
-      if (item.gate_status === 'incomplete') {
+      if (rechecked.waived) {
+        // 人工豁免视同通过：保留库里的 waived 三字段，不改写成 pass（§14.6）。
+        // 三字段由引擎已复核；若库内状态与三字段不一致（直接写库等），以
+        // setGateResult 的守卫恢复 waived。
+        if (item.gate_status !== 'waived') {
+          try {
+            this.items.setGateResult(item.id, 'waived', {
+              waivedBy: rechecked.waived.by,
+              waiveReason: rechecked.waived.reason,
+            })
+          } catch (error) {
+            logger.warn(`[tick] item=${item.id} waived 落库未命中：${String(error)}`)
+            continue
+          }
+        }
+      } else if (item.gate_status === 'incomplete') {
+        // 重跑通过但库里仍是旧值时，把重跑结论落库（否则 startStep 的只读复核会拒绝）。
         this.items.setGateResult(item.id, 'pass')
       }
 

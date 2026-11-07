@@ -187,6 +187,55 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(JSON.parse(item.gate_missing_json ?? '[]')).toEqual([GATE_ENGINE_UNAVAILABLE])
   })
 
+  it('gate 引擎抛异常 → 与不可用同路径：blocked + gate_engine_unavailable（§14.6）', async () => {
+    const itemId = confirmedItem()
+    const exec = service({
+      gateRecheck: {
+        recheck: () => {
+          throw new Error('engine boom')
+        },
+      },
+    })
+
+    const report = await exec.tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(false)
+    expect(report.gateBlockedItemIds).toEqual([itemId])
+    const item = items.get(itemId)!
+    expect(item.status).toBe('blocked')
+    expect(JSON.parse(item.gate_missing_json ?? '[]')).toEqual([GATE_ENGINE_UNAVAILABLE])
+    expect(runs.list({ workItemId: itemId })).toHaveLength(0)
+  })
+
+  it('豁免视同通过：结果带 waived 时照常执行，且库内 waived 三字段不被改写', async () => {
+    const id = items.createDraft({
+      graphId: 'g1',
+      projectPath: '/p/a',
+      anchorNodeId: 'node-1',
+      title: '任务',
+      steps: [{ title: '步' }],
+    }).id
+    items.submitForConfirm(id)
+    items.setGateResult(id, 'waived', { waivedBy: 'alice', waiveReason: '人工确认' })
+    items.confirm(id)
+    const stepId = steps.listByItem(id, 1)[0].id
+    const exec = service({
+      gateRecheck: {
+        recheck: () => ({ ok: true, missing: [], waived: { by: 'alice', at: 123, reason: '人工确认' } }),
+      },
+    })
+
+    const report = await exec.tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(true)
+    expect(report.outcome?.status).toBe('succeeded')
+    const item = items.get(id)!
+    expect(item.gate_status).toBe('waived')
+    expect(item.gate_waived_by).toBe('alice')
+    expect(item.gate_waive_reason).toBe('人工确认')
+    expect(steps.get(stepId)?.status).toBe('succeeded')
+  })
+
   it('孤儿回收：run 已 claim、step 未启动 → running→queued，不计 attempt 后再执行', async () => {
     const itemId = confirmedItem()
     const stepId = steps.listByItem(itemId, 1)[0].id

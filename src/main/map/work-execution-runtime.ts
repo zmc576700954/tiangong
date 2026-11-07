@@ -10,6 +10,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { getKernelBackendPolicy } from '../agent/runtime/feature-flags'
 import { createLogger } from '../shared/logger'
 import { AgentManagerTurnRunner, type KernelOnlyTurnHost } from './agent-step-runner'
+import { createGateEngine } from './gate-engine'
 import { isMapExecutionEnabled, mapExecutionAdapter } from './execution-flags'
 import { setWorkExecutionService } from './work-execution-registry'
 import {
@@ -69,6 +70,8 @@ async function broadcastEvent(event: WorkExecutionEvent): Promise<void> {
 /** 装配服务并（在开关+adapter 都就绪时）启动 tick 循环。 */
 export function startWorkExecutionRuntime(options: StartWorkExecutionOptions): void {
   const service = new WorkExecutionService(options.db, new AgentManagerTurnRunner(options.host), {
+    // 生产 gate：G1–G6 引擎（只读、fail-closed；G4 无预估来源时按 D7 默认拒绝）。
+    gateRecheck: createGateEngine(options.db),
     probeKernel: buildProbe(options.hasAdapter),
     onEvent: (event) => {
       void broadcastEvent(event)
