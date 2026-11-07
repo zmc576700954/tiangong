@@ -29,6 +29,7 @@ import { eventIdFor, hashArgs, newId } from '../util'
 import { bashPolicyForTool } from './bash-readonly'
 import { getSandboxCapability } from '../../../shared/sandbox'
 import { evaluateGitDirWriteGuard, type GitDirGuardResult } from './gitdir-write-guard'
+import { legacySessionIdOf } from './legacy-ids'
 
 const logger = createLogger('ApprovalGateway')
 
@@ -141,6 +142,11 @@ export class ApprovalGateway {
   private readonly revokedGrants = new Map<string, 'revoked' | 'session-ended'>()
   /** 本次决议刚建立的授权（用于把 sessionGranted 带回 driver 事件） */
   private readonly sessionGrantedApprovals = new Set<string>()
+  /**
+   * 旧路径（无 turn）审批所属的活跃会话。仅进程内存；session 结束即移除。
+   * 会话授权存活校验在 DB 无该 session 时以此为据（见 `isSessionAlive`）。
+   */
+  private readonly legacySessions = new Set<string>()
   private notifier: ApprovalNotifier | undefined
   private disposed = false
 
@@ -164,6 +170,10 @@ export class ApprovalGateway {
     const mode: ApprovalMode = input.mode ?? 'interactive'
     const timeoutMs = this.timeoutFor(mode)
     const argsHash = hashArgs(input.toolName, input.args)
+    // 旧路径（无 turn）审批：登记活跃会话，供会话级授权的存活校验使用。
+    // 启动对账时该集合为空，残留 pending 一律不可兑现 → deny（与 turn 判据一致）。
+    const legacySessionId = legacySessionIdOf(input.runId, input.turnId)
+    if (legacySessionId) this.legacySessions.add(legacySessionId)
     const policyDecision = input.policyDecision ?? 'ask'
     // 配置探针按审批请求所属会话的工作目录读取仓库配置，不能用进程 cwd。
     const bashPolicy = bashPolicyFields(input.toolName, input.args, input.cwd)
@@ -348,7 +358,7 @@ export class ApprovalGateway {
       isWriteScopedTool(updated.tool_name)
     ) {
       const turn = this.repo.getTurn(updated.turn_id)
-      const sessionId = turn?.session_id
+      const sessionId = turn?.session_id ?? legacySessionIdOf(updated.run_id, updated.turn_id)
       if (sessionId && updated.cwd) {
         this.sessionGrants.set(sessionId, {
           sessionId,
@@ -389,7 +399,9 @@ export class ApprovalGateway {
     }
     if (input.sessionId !== undefined) {
       const turn = this.repo.getTurn(row.turn_id)
-      if (!turn || turn.session_id !== input.sessionId) {
+      // 旧路径没有 turn 行，归属从 run/turn 标识反解；反解失败则 fail-closed。
+      const ownerSessionId = turn?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id)
+      if (!ownerSessionId || ownerSessionId !== input.sessionId) {
         throw new AgentRuntimeError(
           'APPROVAL_NOT_OWNED',
           `该审批不属于指定会话（approval=${row.id}，收到 session=${input.sessionId}），可能属于其它窗口或已结束的会话。`,
@@ -421,6 +433,7 @@ export class ApprovalGateway {
 
   /** session 结束（terminateSession / 关闭会话）→ 授权立即失效。 */
   endSession(sessionId: string): boolean {
+    this.legacySessions.delete(sessionId)
     const deleted = this.sessionGrants.delete(sessionId)
     if (deleted) this.revokedGrants.set(sessionId, 'session-ended')
     return deleted
@@ -461,7 +474,9 @@ export class ApprovalGateway {
   private isSessionAlive(sessionId: string): boolean {
     try {
       const session = this.repo.getSession(sessionId)
-      return Boolean(session && LIVE_SESSION_STATUSES.has(session.status))
+      if (session) return LIVE_SESSION_STATUSES.has(session.status)
+      // 旧路径（自由聊天）不落 agent_sessions；以本进程登记且未 endSession 为准。
+      return this.legacySessions.has(sessionId)
     } catch {
       return false
     }
@@ -475,6 +490,8 @@ export class ApprovalGateway {
     input: ApprovalRequestInput,
     match: GrantMatch,
   ): void {
+    // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件。
+    if (legacySessionIdOf(input.runId, input.turnId) !== undefined) return
     try {
       const seq = this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
       this.repo.appendEvents([
@@ -509,6 +526,11 @@ export class ApprovalGateway {
    * 审计失败不得改变审批结果。
    */
   private auditPolicyBlock(input: ApprovalRequestInput, guard: GitDirGuardResult): void {
+    // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件；拦截结果本身不受影响。
+    if (legacySessionIdOf(input.runId, input.turnId) !== undefined) {
+      logger.warn(`legacy policy block: ${input.toolName} ${guard.rule}: ${guard.reason}`)
+      return
+    }
     try {
       const seq = this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
       this.repo.appendEvents([
@@ -586,10 +608,15 @@ export class ApprovalGateway {
     return { denied, replayed }
   }
 
-  /** 该 pending 是否还有可能被兑现（所属 turn 仍是活 turn）。 */
+  /** 该 pending 是否还有可能被兑现（所属 turn 仍是活 turn；旧路径则要求本进程仍在等待）。 */
   private isFulfillable(row: AgentApprovalRow): boolean {
     const turn = this.repo.getTurn(row.turn_id)
-    return Boolean(turn && LIVE_TURN_STATUSES.has(turn.status))
+    if (turn) return LIVE_TURN_STATUSES.has(turn.status)
+    // 旧路径没有 turn 行：只有本进程仍挂着 waiter 时才可能兑现。
+    // 重启后 waiters 为空 → 与 turn 版本一致地判为不可兑现。
+    return (
+      legacySessionIdOf(row.run_id, row.turn_id) !== undefined && this.waiters.has(row.id)
+    )
   }
 
   private replayRow(row: AgentApprovalRow, at: number): ApprovalRequestPayload {
@@ -604,7 +631,7 @@ export class ApprovalGateway {
       approvalId: row.id,
       runId: row.run_id,
       turnId: row.turn_id,
-      sessionId: this.repo.getTurn(row.turn_id)?.session_id,
+      sessionId: this.repo.getTurn(row.turn_id)?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id),
       stepId: row.step_id ?? undefined,
       toolName: row.tool_name,
       // 重启重放：DB 里只有脱敏后的 args_json，无法还原原文（也不提供还原）。
@@ -638,7 +665,7 @@ export class ApprovalGateway {
         approvalId: row.id,
         runId: row.run_id,
         turnId: row.turn_id,
-        sessionId: this.repo.getTurn(row.turn_id)?.session_id,
+        sessionId: this.repo.getTurn(row.turn_id)?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id),
         stepId: row.step_id ?? undefined,
         toolName: row.tool_name,
         argsJson: row.args_json,
@@ -661,6 +688,7 @@ export class ApprovalGateway {
     this.sessionGrants.clear()
     this.revokedGrants.clear()
     this.sessionGrantedApprovals.clear()
+    this.legacySessions.clear()
     for (const timer of this.timers.values()) clearTimeout(timer)
     this.timers.clear()
     for (const list of this.waiters.values()) {

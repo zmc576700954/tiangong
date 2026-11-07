@@ -50,6 +50,8 @@ import { UsageLedger } from './runtime/cost/ledger'
 import { SessionBusyError } from './runtime/errors'
 import { ROOT_LOCK_CONTEXT, sessionLockKey } from './runtime/locks/session-lock'
 import { getKernelBackendPolicy } from './runtime/feature-flags'
+import { buildLegacyApprovalHooks } from './runtime/approval/legacy-hooks'
+import type { ClaudeTurnApprovalHooks } from '../adapters/claude-code'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, SessionRestoreError, ErrorCode } from '../errors'
@@ -367,6 +369,56 @@ export class AgentManager {
     }
   }
 
+  /**
+   * 旧路径审批：自由聊天（无节点、线程绑定）也必须经过同一审批网关。
+   *
+   * - 支持审批钩子的适配器（claude-code）：注册钩子；写类工具在适配器 PreToolUse
+   *   强制 ask，再由 canUseTool 调 `ApprovalGateway.request`（与 kernel 同一套策略、
+   *   会话授权与 `agent_approvals` 落库）。
+   * - 其余适配器无法在宿主侧拦截工具调用：fail-closed，避免零审批写入。
+   * - 有节点会话与非线程绑定的内部会话不在本函数范围（行为保持不变）。
+   */
+  private prepareLegacyApproval(
+    sessionId: string,
+    command: AgentCommand,
+    adapter: AgentAdapter,
+  ): (() => void) | undefined {
+    const approvals = this.runtime?.approvals
+    if (!approvals) return undefined
+    if (this.resolveKernelNodeId(sessionId, command)) return undefined
+    if (!this.isThreadBoundSession(sessionId)) return undefined
+
+    const hooksCapable = adapter as AgentAdapter & {
+      setTurnApprovalHooks?: (sessionId: string, hooks: ClaudeTurnApprovalHooks | null) => void
+    }
+    if (typeof hooksCapable.setTurnApprovalHooks !== 'function') {
+      logger.error(
+        `[free-chat-no-approval] session=${sessionId}: adapter=${adapter.name} 无法在宿主侧拦截写类工具，已 fail-closed`,
+      )
+      throw new AgentError(
+        `自由聊天未挂载节点，后端 ${adapter.name} 无法进行写前审批；为避免零审批写入，本次发送已阻断。` +
+          '请改用支持写前审批的后端，或把会话挂载到节点。',
+        ErrorCode.AGENT_PROCESS_ERROR,
+      )
+    }
+
+    const cwd = this.sessionStates.get(sessionId)?.config.workingDirectory ?? ''
+    hooksCapable.setTurnApprovalHooks(
+      sessionId,
+      buildLegacyApprovalHooks({ approvals, sessionId, cwd }),
+    )
+    logger.info(
+      `[legacy-approval] session=${sessionId}: 旧路径已启用写前审批（adapter=${adapter.name}）`,
+    )
+    return () => hooksCapable.setTurnApprovalHooks?.(sessionId, null)
+  }
+
+  /** 用户可见的线程会话（自由聊天）；无 chat_threads 归属的内部工具会话不在此列。 */
+  private isThreadBoundSession(sessionId: string): boolean {
+    if (this.sessionStates.get(sessionId)?.config.threadId) return true
+    return this.lookupThread(sessionId) !== null
+  }
+
   /** chat_threads 归属查询：DB 未就绪时返回 null，由调用方决定降级方式（不抛）。 */
   private lookupThread(sessionId: string): { graphId: string | null; nodeId: string | null } | null {
     try {
@@ -533,6 +585,9 @@ export class AgentManager {
 
   /** Internal: keep manager.sessionStates in sync after lifecycle.terminate / cleanup. */
   private mirrorEnd(sessionId: string): void {
+    // 所有终止路径（正常收尾 / 异常退出 / 批量终止）都会走到这里：
+    // 旧路径审批没有 agent_sessions 行，会话级授权与存活判定只能靠进程内登记，必须在此失效。
+    this.runtime?.endSession(sessionId)
     this.sessionStates.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
   }
@@ -1142,42 +1197,48 @@ export class AgentManager {
     if (!options?.contextAssembled) {
       await this.ensurePromptContext(sessionId, command, adapter)
     }
-    return withSpan(
-      'bizgraph.agent.command',
-      async (span) => {
-        span.setAttribute('session.id', sessionId)
-        span.setAttribute('command.type', typeof command === 'string' ? 'text' : command.type)
-        if (typeof command !== 'string' && command.type) {
-          // 不写 prompt 内容（避免 token-cache 污染 + PII 泄漏）
-          // 只记录元数据：type / id
-          if ((command as { id?: string }).id) {
-            span.setAttribute('command.id', (command as { id?: string }).id!)
+    // 旧路径审批：自由聊天（无节点、线程绑定）也必须经过同一审批网关。
+    const cleanupLegacyApproval = this.prepareLegacyApproval(sessionId, command, adapter)
+    try {
+      return await withSpan(
+        'bizgraph.agent.command',
+        async (span) => {
+          span.setAttribute('session.id', sessionId)
+          span.setAttribute('command.type', typeof command === 'string' ? 'text' : command.type)
+          if (typeof command !== 'string' && command.type) {
+            // 不写 prompt 内容（避免 token-cache 污染 + PII 泄漏）
+            // 只记录元数据：type / id
+            if ((command as { id?: string }).id) {
+              span.setAttribute('command.id', (command as { id?: string }).id!)
+            }
           }
-        }
-        // 记录指令类型，供 terminateSession 中的记忆提取器使用
-        // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
-        //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
-        //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
-        const state = this.sessionStates.get(sessionId)
-        const prevCommandType = state?.lastCommandType
-        if (state) {
-          state.lastCommandType = command.type
-          state.lastCommand = command
-        }
-        this.lifecycle.recordLastCommand(sessionId, command, command.type)
-        try {
-          await adapter.sendCommand(sessionId, command)
-        } catch (err) {
-          // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
-          // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
-          if (state && state.lastCommandType === command.type) {
-            state.lastCommandType = prevCommandType
+          // 记录指令类型，供 terminateSession 中的记忆提取器使用
+          // 注意：lastCommandType 仅反映"最后一次"send 的类型，对并发场景做不到精确归属；
+          //       此处保持原语义但用 try/catch + CAS 回退：仅当 lastCommandType 仍等于
+          //       本次设置的值时才回退到 prev，避免覆盖后续 send 已写入的新值。
+          const state = this.sessionStates.get(sessionId)
+          const prevCommandType = state?.lastCommandType
+          if (state) {
+            state.lastCommandType = command.type
+            state.lastCommand = command
           }
-          throw err
-        }
-      },
-      { kind: SpanKind.INTERNAL },
-    )
+          this.lifecycle.recordLastCommand(sessionId, command, command.type)
+          try {
+            await adapter.sendCommand(sessionId, command)
+          } catch (err) {
+            // 发送失败时回退到之前的 commandType，避免污染后续记忆归类。
+            // CAS：仅当 lastCommandType 仍是本次写入的值时才回退；否则保留后续 send 的更新。
+            if (state && state.lastCommandType === command.type) {
+              state.lastCommandType = prevCommandType
+            }
+            throw err
+          }
+        },
+        { kind: SpanKind.INTERNAL },
+      )
+    } finally {
+      cleanupLegacyApproval?.()
+    }
   }
 
   /**

@@ -1108,6 +1108,50 @@ describe('AgentManager', () => {
       expect(runNode).not.toHaveBeenCalled()
     })
 
+    it('D8 回归：自由聊天在支持审批钩子的后端启用写前审批，并在本轮结束后清除', async () => {
+      class HookCapableAdapter extends TestAdapter {
+        readonly installHooks = vi.fn((_sessionId: string, _hooks: unknown) => undefined)
+        setTurnApprovalHooks(sessionId: string, hooks: unknown): void {
+          this.installHooks(sessionId, hooks)
+        }
+      }
+
+      const adapter = new HookCapableAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      manager.setRuntime({
+        locks: new SessionLockRegistry(),
+        approvals: { request: vi.fn() },
+      } as unknown as AgentRuntime)
+
+      const { sessionId } = await manager.startSession('claude-code', mockConfig({ threadId: 'thread-free' }))
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'free thread write approval',
+        targetNodeId: '',
+      })
+
+      // 派发前注入钩子、派发后清除（同一处复用适配器的 PreToolUse 写类强制 ask）
+      expect(adapter.installHooks).toHaveBeenCalledTimes(2)
+      expect(adapter.installHooks.mock.calls[0][0]).toBe(sessionId)
+      expect(adapter.installHooks.mock.calls[0][1]).toMatchObject({ canUseTool: expect.any(Function) })
+      expect(adapter.installHooks.mock.calls[1][1]).toBeNull()
+    })
+
+    it('D8 回归：自由聊天在无法宿主拦截的后端上 fail-closed（不投递 prompt）', async () => {
+      const adapter = new TestAdapter('codex')
+      manager.registerAdapter(adapter)
+      manager.setRuntime({
+        locks: new SessionLockRegistry(),
+        approvals: { request: vi.fn() },
+      } as unknown as AgentRuntime)
+
+      const { sessionId } = await manager.startSession('codex', mockConfig({ threadId: 'thread-free' }))
+      await expect(
+        manager.sendCommand(sessionId, { type: 'implement', description: 'free chat', targetNodeId: '' }),
+      ).rejects.toThrow(/无法进行写前审批/)
+      expect(adapter.lastPrompts).toHaveLength(0)
+    })
+
     it('resets recovery retry counter when a recovered session completes successfully', async () => {
       const adapter = new TestAdapter('mcp')
       manager.registerAdapter(adapter)

@@ -330,7 +330,10 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           ...(toolsOption ? { tools: toolsOption } : {}),
           ...(approvalHooks?.canUseTool ? { canUseTool: approvalHooks.canUseTool } : {}),
           hooks: {
-            ...(approvalHooks?.onPreToolUse
+            // 只要注入了审批钩子就装 PreToolUse：写类工具必须先在这里强制 ask，
+            // 才能确保 canUseTool 一定被调用（用户 settings.json 的 allow 会短路它）。
+            // 旧路径只有 canUseTool、没有 onPreToolUse，同样需要这一层守卫。
+            ...(approvalHooks
               ? {
                   PreToolUse: [
                     {
@@ -375,7 +378,7 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                             }
                           }
 
-                          await approvalHooks.onPreToolUse!(toolName, toolInput, toolUseID)
+                          await approvalHooks.onPreToolUse?.(toolName, toolInput, toolUseID)
                           // 强制写前审批：用户 `~/.claude/settings.json` 的
                           // `permissions.allow`（如 "Write"）会让 CLI 直接执行工具、
                           // 根本不调用 canUseTool，从而绕过我们的网关（已实测复现）。

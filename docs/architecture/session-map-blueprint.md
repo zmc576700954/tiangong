@@ -863,6 +863,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - **未挂载节点的自由聊天不进 kernel turn 路径（已按此落地，`5938001`）**：只保留纯 `chat_threads` / `chat_messages` 会话，不产生 `agent_turns` 行；会话挂载到节点后才创建带 `node_id` 的会话与 turn。
 - `agent_turns.node_id NOT NULL` 列约束本期保留，**列为"长期放宽"待办**：待 `node_id` 可空后再允许未挂载会话进入 turn 路径；在此之前，需要 turn 但又无节点的功能按 fail-closed 处理（不启用），不得回退到伪节点方案。
 - 落地时确认的直接后果（`5938001`）：自由聊天走旧路径，不经过 kernel 的写前审批（`claude-code` 旧路径为 `acceptEdits`）；重启后自由聊天没有 `agent_sessions` 记录，CLI 原生会话不可续（按既有恢复失败流程新建会话），`chat_threads` / `chat_messages` 历史仍在。
+- **审批缺口已补**：自由聊天的旧路径同样走 `ApprovalGateway`，写类工具由适配器既有 PreToolUse 强制 `ask` 后进入 `canUseTool`（与 kernel 同一套 `bashPolicyForTool` / `targetPathsOf` 规则与会话授权语义），审批落 `agent_approvals`；无 turn 时用可反解的 `legacy-run-*` / `legacy-turn-*` 标识，不伪造 turn 行、不改表结构。无法在宿主侧拦截写类工具的旧路径适配器对自由聊天 fail-closed；有节点会话与内部会话不在本次范围。
 - `node_session_links.node_entity_key` 可空只表达"项目级引用"与历史数据兼容，不代表仍在生成伪节点。
 
 ### 4.6 节点活动流与 ExecutionRecord（采纳为派生视图，不新增表）
