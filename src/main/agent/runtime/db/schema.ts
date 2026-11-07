@@ -288,6 +288,9 @@ export const AGENT_INDEX_SQLS: string[] = [
   // D2：节点/分支级活跃 turn 唯一，第二个非终态 turn 插入即 NODE_BUSY
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_turns_active ON agent_turns(node_id, branch_key)
      WHERE status IN ('running','waiting_approval','cancelling')`,
+  // F3-A：DeadlineReaper 扫描的部分索引（只看 running 且有 deadline 的行）
+  `CREATE INDEX IF NOT EXISTS idx_agent_turns_deadline ON agent_turns(deadline_at)
+     WHERE status = 'running'`,
 ]
 
 export interface AgentSchemaApplier {

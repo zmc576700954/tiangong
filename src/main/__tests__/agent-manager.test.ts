@@ -1018,6 +1018,43 @@ describe('AgentManager', () => {
       }
     })
 
+    it('F3-A：kernel 路径透传 deadlineMs，未设置时使用默认 turn 超时', async () => {
+      const previous = process.env[AGENT_KERNEL_ENV]
+      process.env[AGENT_KERNEL_ENV] = '1'
+      try {
+        const adapter = new TestAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async (_req: { deadlineMs?: number }) => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig())
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'explicit deadline',
+          targetNodeId: 'n1',
+          deadlineMs: 60_000,
+        })
+        expect(runNode.mock.calls[0][0]).toEqual(expect.objectContaining({ deadlineMs: 60_000 }))
+
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'default deadline',
+          targetNodeId: 'n1',
+        })
+        // F3-A：无显式 deadline → AgentManager 作为当前命令入口补默认 10min。
+        expect(runNode.mock.calls[1][0]).toEqual(
+          expect.objectContaining({ deadlineMs: 10 * 60 * 1000 }),
+        )
+      } finally {
+        if (previous === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = previous
+      }
+    })
+
     it('D8：未挂载节点的会话保持纯 thread，不进 kernel，也不生成 thread:/session: 伪 node id', async () => {
       const previous = process.env[AGENT_KERNEL_ENV]
       delete process.env[AGENT_KERNEL_ENV]

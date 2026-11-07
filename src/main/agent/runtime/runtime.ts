@@ -773,6 +773,95 @@ export class AgentRuntime {
     return true
   }
 
+  /**
+   * F3-A：DeadlineReaper 专用的超时收口——不复用 cancelTurn
+   * （cancelTurn 的终态 CAS 写 cancelled/aborted，会把超时永远记成用户取消）。
+   *
+   * 顺序刻意与「杀进程 → CAS」保持同 tick：
+   *  ① reaper.reap 同步杀进程组（只回收本轮内存中真实登记的句柄）；
+   *  ② 单次终态 CAS 紧跟其后（其间无 await，被杀 driver 的死亡事件最早也要
+   *     下一个事件循环才能被 runNode 处理，CAS 稳赢）——失败/取消抢先时
+   *     返回 false，读实际终态保留，不覆盖；
+   *  ③ 之后才 abort controller / await driver.cancel——runNode 的 finally 看到
+   *     CAS 已落会保留 failed/timeout 终态。会话级 terminate 由 Reaper 调用方执行。
+   *
+   * waiting_approval 的 turn 不进入此路径（扫描只取 status='running'；
+   * 本方法对非 running 状态二次拒门），deadline_at 为空/0 同样拒门。
+   */
+  async expireTimedOutTurn(turnId: string): Promise<boolean> {
+    const turn = this.repo.getTurn(turnId)
+    if (!turn || TERMINAL.includes(turn.status)) return false
+    if (turn.status !== 'running') return false
+    // 与扫描口径一致：deadline_at < now 才算过期；0/NULL/未到期一律拒门。
+    if (!turn.deadline_at || turn.deadline_at <= 0 || turn.deadline_at >= this.now()) return false
+
+    // ① 同步杀：只回收本轮内存中真实登记且归属可证明的句柄；报告交给 runNode
+    //    的 finally 统一落库/审计，避免重复判定覆盖。
+    const startedReap = this.now()
+    const report = this.reaper.reap(turnId, this.registryIdentity(turnId))
+    this.turnReapReports.set(turnId, { report, durationMs: Math.max(0, this.now() - startedReap) })
+
+    // ② 单次终态 CAS：status='failed' + failure_class='timeout' + DEADLINE_EXCEEDED。
+    const applied = this.repo.finalizeTurnStatus(
+      turnId,
+      'failed',
+      {
+        endedAt: this.now(),
+        failureClass: 'timeout',
+        errorCode: 'DEADLINE_EXCEEDED',
+        output: { reason: 'deadline_exceeded' },
+      },
+      this.now(),
+    )
+    if (!applied) return false
+
+    // ③ 终态已收口后执行剩余取消机制（runNode 的 finally 不会覆盖已落终态）。
+    this.abortControllers.get(turnId)?.abort()
+    const driver = this.drivers.get(this.executorFromSnapshot(turn))
+    if (driver) {
+      try {
+        await driver.cancel(this.requestFromTurn(turn))
+      } catch {
+        // Driver 取消失败不阻塞状态收口
+      }
+    }
+    this.repo.abortOpenSteps(turnId, this.now())
+    this.repo.projectRunStatus(turn.run_id, this.now())
+    return true
+  }
+
+  /**
+   * F3-A：启动对账时把已过期的 running turn 收口为 failed/'timeout'
+   * （DEADLINE_EXPIRED_ON_RESTART），剩余非终态 turn 交给 planRecovery；
+   * 进程残留由 reconcileOnStartup 之前的 session 回收流程处理，本方法不重启执行。
+   */
+  private expireOverdueTurnsOnStartup(): number {
+    const expired = this.repo.listExpiredRunningTurns(this.now())
+    let applied = 0
+    for (const turn of expired) {
+      const ok = this.repo.finalizeTurnStatus(
+        turn.id,
+        'failed',
+        {
+          endedAt: this.now(),
+          failureClass: 'timeout',
+          errorCode: 'DEADLINE_EXPIRED_ON_RESTART',
+          output: { reason: 'deadline_expired_on_restart' },
+        },
+        this.now(),
+      )
+      if (ok) {
+        this.repo.abortOpenSteps(turn.id, this.now())
+        this.repo.projectRunStatus(turn.run_id, this.now())
+        applied++
+      }
+    }
+    if (applied > 0) {
+      this.logger.info(`[startup] expired ${applied} running turn(s) with overdue deadline`)
+    }
+    return applied
+  }
+
   /** 启动对账：按落库的 marker/pid/pgid 回收残留 → 对账 → 断言无悬空 → 重推 pending 审批。 */
   async reconcileOnStartup(): Promise<RecoveryReport> {
     let reactiveKills = 0
@@ -928,6 +1017,9 @@ export class AgentRuntime {
       }
     }
 
+    // F3-A：启动对账时已过期的 deadline 不续跑。
+    this.expireOverdueTurnsOnStartup()
+
     const planned = planRecovery(this.repo)
     applyRecoveryPlan(this.repo, planned)
     assertNoDangling(this.repo)
@@ -976,6 +1068,12 @@ export class AgentRuntime {
     snapshot: TurnInputSnapshot,
   ): AgentTurnRow {
     try {
+      // F3-A：deadline 落库。0/undefined = 不启用（不是立即超时）。
+      // 默认值由调用方（AgentManager）以单一来源给出，kernel 层不重复设默认。
+      const deadlineAt =
+        request.deadlineMs !== undefined && request.deadlineMs > 0
+          ? this.now() + request.deadlineMs
+          : undefined
       return this.repo.insertTurn({
         runId,
         sessionId,
@@ -987,6 +1085,7 @@ export class AgentRuntime {
         resumeMode,
         idempotencyKey,
         input: snapshot as unknown as Record<string, unknown>,
+        deadlineAt,
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)

@@ -368,8 +368,11 @@ export function rebuildTableIfNeeded(
  *      chat_threads.parent_thread_id / context_tokens_used / context_window_max /
  *      last_compacted_at / metadata、chat_messages.token_count。
  *      纯 createSql 变更，不改列类型与 CHECK，不触发重建。
+ * v25：F3-A 新增部分索引 idx_agent_turns_deadline（agent_turns.deadline_at
+ *      WHERE status='running'，DeadlineReaper 扫描用）。索引变更不改表结构，
+ *      不触发重建；bump 版本号防止旧二进制因 checksum 失配误判走重建。
  */
-const CURRENT_SCHEMA_VERSION = 24
+const CURRENT_SCHEMA_VERSION = 25
 
 interface TableSchema {
   name: string

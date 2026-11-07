@@ -87,6 +87,12 @@ export interface AgentCommand {
   description: string
   /** 目标节点 ID */
   targetNodeId: string
+  /**
+   * F3-A：本轮 deadline（毫秒）。落库到 agent_turns.deadline_at，
+   * 到期由 DeadlineReaper 强杀并记 failure_class='timeout' / error_code='DEADLINE_EXCEEDED'。
+   * 0 = 不启用（不是立即超时）。
+   */
+  deadlineMs?: number
 }
 
 export type WorkspaceScanTruncatedReason =

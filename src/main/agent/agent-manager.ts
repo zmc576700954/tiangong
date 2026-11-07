@@ -43,7 +43,9 @@ import { isInternalAgentSessionId, isTrustedNativeSessionId } from '@shared/nati
 import { type AdapterRegistry } from './adapter-registry'
 import { type SessionRouter } from './session-router'
 import type { AgentRuntime } from './runtime/runtime'
+import { DeadlineReaper } from './runtime/process/deadline-reaper'
 import type { AgentSessionRow } from './runtime/db/repository'
+import { DEFAULT_AGENT_TIMEOUTS } from '@shared/types/agent-runtime'
 import { UsageLedger } from './runtime/cost/ledger'
 import { SessionBusyError } from './runtime/errors'
 import { ROOT_LOCK_CONTEXT, sessionLockKey } from './runtime/locks/session-lock'
@@ -226,6 +228,8 @@ export class AgentManager {
   private readonly MAX_PROCESSES = Math.min(this.MAX_SESSIONS, Math.max(4, os.cpus().length * 2))
   /** D2：可选的 M0 Runtime（未装配时旧路径行为不变） */
   private runtime: AgentRuntime | undefined
+  /** F3-A：到期 turn 的收割器（随 setRuntime 启动；stopDeadlineReaper 可停） */
+  private deadlineReaper: DeadlineReaper | null = null
 
   // ----- Helpers (composition root) -----
   private lifecycle: SessionLifecycleManager
@@ -613,6 +617,32 @@ export class AgentManager {
   /** D2：装配 M0 Runtime 后，sendCommand 前置 per-session 串行锁。 */
   setRuntime(runtime: AgentRuntime): void {
     this.runtime = runtime
+    // F3-A：DeadlineReaper 随 runtime 装配启动（当前无 runtime 卸载路径；
+    // timer unref，不阻止进程退出）。重复调用不叠加。
+    this.startDeadlineReaper()
+  }
+
+  /**
+   * F3-A：DeadlineReaper 每 5s 扫描 status='running' 且 deadline_at>0 且已过期的
+   * turn，逐个收口（杀进程组 + 终态 CAS failed/'timeout' + terminate 会话）。
+   * waiting_approval 不触发；deadline_at 空/0 的 turn 不参与。
+   */
+  private startDeadlineReaper(): void {
+    // 只在 runtime 持有持久化 repo 时启动（测试用 mock runtime 无 repo，不启动）。
+    if (!this.runtime?.repo || this.deadlineReaper) return
+    const reaper = new DeadlineReaper({
+      listExpiredRunningTurns: (now) => this.runtime!.repo.listExpiredRunningTurns(now),
+      expireTurn: (turnId) => this.runtime!.expireTimedOutTurn(turnId),
+      terminateSession: (sessionId, reason) => this.terminateSession(sessionId, reason),
+    })
+    reaper.start()
+    this.deadlineReaper = reaper
+  }
+
+  /** 停止 DeadlineReaper（测试 / 未来 runtime 卸载路径用）。 */
+  stopDeadlineReaper(): void {
+    this.deadlineReaper?.stop()
+    this.deadlineReaper = null
   }
 
   getAdapterHealth(adapterName: string): AdapterHealthScore | undefined {
@@ -1214,6 +1244,9 @@ export class AgentManager {
             attempt: 1,
             idempotencyKey: `kernel:${sessionId}:${dispatchId}`,
             threadId: state?.threadId,
+            // F3-A：调用方未显式给出 deadline 时使用默认 turn 超时（10min）。
+            // 0 表示显式关闭；默认值唯一落点是 DEFAULT_AGENT_TIMEOUTS.turnMs。
+            deadlineMs: command.deadlineMs ?? DEFAULT_AGENT_TIMEOUTS.turnMs,
           })
         } catch (err) {
           if (state && state.lastCommandType === commandType) {

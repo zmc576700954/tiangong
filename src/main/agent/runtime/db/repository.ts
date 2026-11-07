@@ -695,6 +695,22 @@ export class AgentRepository {
       .run(JSON.stringify(output), turnId)
   }
 
+  /**
+   * F3-A：DeadlineReaper 扫描——只取 status='running' 且 deadline_at>0 且已过期的
+   * turn。waiting_approval 天然被排除（等待审批不触发超时）。
+   * 走部分索引 idx_agent_turns_deadline。
+   */
+  listExpiredRunningTurns(now: number): AgentTurnRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM agent_turns
+          WHERE status = 'running'
+            AND deadline_at IS NOT NULL AND deadline_at > 0 AND deadline_at < ?
+          ORDER BY deadline_at ASC`,
+      )
+      .all(now) as AgentTurnRow[]
+  }
+
   countActiveTurnsByNode(nodeId: string, branchKey = ''): number {
     const row = this.db
       .prepare(

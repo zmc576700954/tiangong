@@ -339,7 +339,20 @@ export interface RunNodeRequest {
   idempotencyKey?: string
   resumeMode?: 'native' | 'replay' | 'fresh'
   mode?: ApprovalMode
+  /** F3-A：本轮 deadline（毫秒）；0/undefined = 不启用。落库 deadline_at = now + deadlineMs。 */
+  deadlineMs?: number
 }
+
+/**
+ * F3-A：执行超时默认值（蓝图已给口径：turn 10min / step 10min / task 60min）。
+ * 当前唯一消费点是 AgentManager.sendCommandThroughKernel 的 turnMs；step/task
+ * 尚无对应执行者，先集中在这里，后续改配置键时只替换此处的读取即可。
+ */
+export const DEFAULT_AGENT_TIMEOUTS = {
+  turnMs: 10 * 60 * 1000,
+  stepMs: 10 * 60 * 1000,
+  taskMs: 60 * 60 * 1000,
+} as const
 
 export interface TurnOutcome {
   runId: string
