@@ -1338,6 +1338,7 @@ export class AgentRuntime {
       finalText: typeof output.finalText === 'string' ? output.finalText : undefined,
       reused,
       errorCode: turn.error_code ?? undefined,
+      failureClass: turn.failure_class ?? undefined,
     }
   }
 

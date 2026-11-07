@@ -185,6 +185,32 @@ export class WorkRunService {
     return txn()
   }
 
+  /**
+   * 执行期回填：route_decision_id / session_id / thread_id。
+   * 只对未终态 run 生效；COALESCE 保留先写值（崩溃重放的第二次调用幂等）。
+   * 返回 undefined 表示 run 已终态（调用方不得继续执行）。
+   */
+  attachExecution(
+    id: string,
+    input: { routeDecisionId?: string; sessionId?: string; threadId?: string },
+  ): WorkRunRow | undefined {
+    const result = this.db
+      .prepare(
+        `UPDATE work_runs SET
+           route_decision_id = COALESCE(route_decision_id, ?),
+           session_id = COALESCE(session_id, ?),
+           thread_id = COALESCE(thread_id, ?)
+         WHERE id = ? AND status IN ('queued','running')`,
+      )
+      .run(
+        input.routeDecisionId ?? null,
+        input.sessionId ?? null,
+        input.threadId ?? null,
+        id,
+      )
+    return result.changes === 1 ? this.get(id) : undefined
+  }
+
   /** queued → running（claim;changes=0 → 已被取消/其他 worker claim,返回 false）。 */
   claim(id: string): WorkRunRow | undefined {
     const result = this.db

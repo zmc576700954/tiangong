@@ -80,7 +80,7 @@ import { FallbackRouter, type ResolvedAdapterSession } from './fallback-router'
 import { RecoveryOrchestrator } from './recovery-orchestrator'
 import { PromptFormatter } from './prompt-formatter'
 import type { SessionState } from './types'
-import type { SessionUsageView, GraphUsageView, UsageSummary } from '@shared/types/agent-runtime'
+import type { SessionUsageView, GraphUsageView, UsageSummary, TurnOutcome } from '@shared/types/agent-runtime'
 import { MemoryStore } from '../memory'
 
 const logger = createLogger('AgentManager')
@@ -1184,7 +1184,8 @@ export class AgentManager {
           const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
           this.warnIfKernelDegraded(adapter.name, sessionId)
           if (this.runtime.getDriver(adapter.name)) {
-            return this.sendCommandThroughKernel(sessionId, command, adapter, options)
+            await this.sendCommandThroughKernel(sessionId, command, adapter, options)
+            return
           }
         }
       }
@@ -1205,6 +1206,53 @@ export class AgentManager {
     } finally {
       lock.release()
     }
+  }
+
+  /**
+   * M3：仅 kernel 的发送入口。任一前置条件不满足**直接抛错**，不回落旧路径。
+   *
+   * 编排层（map）驱动真实 Agent turn 的唯一入口：
+   *  - 审批走 runtime 的 `context.approvals.request` → ApprovalGateway（逐工具、绑定 run/turn）；
+   *  - 返回值携带 TurnOutcome（含 failure_class），供调用方落 work_run/work_step 终态。
+   *
+   * 不允许在此处委派给 `sendCommand`：旧路径对非 Claude 节点会话没有宿主审批点
+   * （见 prepareLegacyApproval 的 C3 分支），静默回落等于零审批。
+   */
+  async sendCommandKernelOnly(
+    sessionId: string,
+    command: AgentCommand,
+    options?: { contextAssembled?: boolean },
+  ): Promise<TurnOutcome> {
+    if (!this.runtime) {
+      throw new AgentError(
+        'kernel-only 发送需要 AgentRuntime；未装配时拒绝降级到旧路径（fail-closed）',
+        ErrorCode.AGENT_PROCESS_ERROR,
+      )
+    }
+    const bound = this.tryResolveAdapter(sessionId)
+    const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
+    if (!adapter) {
+      throw new SessionNotFoundError(sessionId)
+    }
+    if (!this.canUseKernelFor(adapter.name)) {
+      throw new AgentError(
+        `kernel-only 发送拒绝：adapter=${adapter.name} 不在 kernel 审批白名单（fail-closed，不回落旧路径）`,
+        ErrorCode.AGENT_PROCESS_ERROR,
+      )
+    }
+    if (!this.resolveKernelNodeId(sessionId, command)) {
+      throw new AgentError(
+        `kernel-only 发送拒绝：session=${sessionId} 未挂载真实节点（D8 禁止伪 node id）`,
+        ErrorCode.AGENT_PROCESS_ERROR,
+      )
+    }
+    if (!this.runtime.getDriver(adapter.name)) {
+      throw new AgentError(
+        `kernel-only 发送拒绝：executor=${adapter.name} 未注册 driver（fail-closed，不回落旧路径）`,
+        ErrorCode.AGENT_ADAPTER_NOT_FOUND,
+      )
+    }
+    return this.sendCommandThroughKernel(sessionId, command, adapter, options)
   }
 
   private async sendCommandInner(
@@ -1279,7 +1327,7 @@ export class AgentManager {
     command: AgentCommand,
     adapter: AgentAdapter,
     options?: { contextAssembled?: boolean },
-  ): Promise<void> {
+  ): Promise<TurnOutcome> {
     // D8 fail-closed：node_id 列本期仍是 NOT NULL，且禁止用 thread:/session: 伪 ID 兜底。
     const nodeId = this.resolveKernelNodeId(sessionId, command)
     if (!nodeId) {
@@ -1321,7 +1369,7 @@ export class AgentManager {
           // 两次不同派发必产生两个 turn，且天然不会跨会话命中。
           const dispatchId = (command as { id?: string }).id ?? randomUUID()
           const thread = this.lookupThread(sessionId)
-          await this.runtime!.runNode({
+          return await this.runtime!.runNode({
             agentSessionId: sessionId,
             adapterSessionId: sessionId,
             executor: adapter.name,

@@ -1349,3 +1349,97 @@ describe('新建会话的内存判据（P2：macOS 不误伤）', () => {
     expect(isMemoryInsufficientForNewSession('linux', { ...huge, freemem: 1900 * MB })).toBe(true)
   })
 })
+
+/**
+ * M3 对外契约：kernel-only 发送入口。
+ * 关键性质：任一前置条件不满足必须抛错，**不得静默回落 legacy**
+ * （旧路径对非 Claude 节点会话没有宿主审批点，回落等于零审批）。
+ */
+describe('AgentManager.sendCommandKernelOnly（M3：fail-closed，不回落 legacy）', () => {
+  let manager: AgentManager
+  let adapter: TestAdapter
+
+  const config: AgentSessionConfig = {
+    workingDirectory: '/project',
+    allowedFiles: [],
+    forbiddenFiles: [],
+    invariantRules: [],
+    upstreamContext: '',
+    downstreamContext: '',
+    nodeTitle: 'M3',
+    acceptanceCriteria: [],
+  }
+  const command = (): AgentCommand => ({ type: 'implement', description: 'm3', targetNodeId: 'n1' })
+
+  beforeEach(() => {
+    vi.spyOn(os, 'freemem').mockReturnValue(4 * 1024 * 1024 * 1024)
+    const registry = new AdapterRegistry()
+    manager = new AgentManager(registry, new SessionRouter(registry), new OutputBroadcaster())
+    adapter = new TestAdapter('claude-code')
+    manager.registerAdapter(adapter)
+    process.env[AGENT_KERNEL_ENV] = '1'
+  })
+
+  afterEach(() => {
+    delete process.env[AGENT_KERNEL_ENV]
+    manager.destroy()
+    vi.restoreAllMocks()
+  })
+
+  it('runtime 缺失：抛错且适配器零调用', async () => {
+    const { sessionId } = await manager.startSession('claude-code', config)
+
+    await expect(manager.sendCommandKernelOnly(sessionId, command())).rejects.toThrow(/AgentRuntime/)
+    expect(adapter.lastPrompts).toHaveLength(0)
+  })
+
+  it('KERNEL=0（不在白名单）：抛错且不回落 legacy', async () => {
+    process.env[AGENT_KERNEL_ENV] = '0'
+    const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+    manager.setRuntime({
+      locks: new SessionLockRegistry(),
+      getDriver: () => ({}),
+      runNode,
+    } as unknown as AgentRuntime)
+    const { sessionId } = await manager.startSession('claude-code', config)
+
+    await expect(manager.sendCommandKernelOnly(sessionId, command())).rejects.toThrow(/白名单/)
+    expect(runNode).not.toHaveBeenCalled()
+    expect(adapter.lastPrompts).toHaveLength(0)
+  })
+
+  it('driver 缺失：抛错且不回落 legacy', async () => {
+    manager.setRuntime({
+      locks: new SessionLockRegistry(),
+      getDriver: () => undefined,
+    } as unknown as AgentRuntime)
+    const { sessionId } = await manager.startSession('claude-code', config)
+
+    await expect(manager.sendCommandKernelOnly(sessionId, command())).rejects.toThrow(/driver/)
+    expect(adapter.lastPrompts).toHaveLength(0)
+  })
+
+  it('前置齐备：返回 TurnOutcome，并透出 failureClass', async () => {
+    const runNode = vi.fn(async () => ({
+      runId: 'r1',
+      turnId: 't1',
+      status: 'failed' as const,
+      reused: false,
+      errorCode: 'DEADLINE_EXCEEDED',
+      failureClass: 'timeout',
+    }))
+    manager.setRuntime({
+      locks: new SessionLockRegistry(),
+      getDriver: () => ({}),
+      runNode,
+    } as unknown as AgentRuntime)
+    const { sessionId } = await manager.startSession('claude-code', config)
+
+    const outcome = await manager.sendCommandKernelOnly(sessionId, command())
+
+    expect(runNode).toHaveBeenCalledTimes(1)
+    expect(outcome.status).toBe('failed')
+    expect(outcome.failureClass).toBe('timeout')
+    expect(adapter.lastPrompts).toHaveLength(0)
+  })
+})

@@ -383,6 +383,11 @@ export interface TurnOutcome {
   finalText?: string
   reused: boolean
   errorCode?: string
+  /**
+   * 落库侧 `agent_turns.failure_class` 的透出（F3-A 超时会写 'timeout'）。
+   * 编排层据此把 run 落 failed/timed_out；不得从 finalText 猜失败类型。
+   */
+  failureClass?: string
 }
 
 /** §5.5 五行判定：每条 step 都必须落到这三种处置之一。 */
