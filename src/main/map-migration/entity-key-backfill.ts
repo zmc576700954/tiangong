@@ -329,7 +329,7 @@ function runProjectTxn(
  */
 export function runEntityKeyBackfill(db: BetterSqlite3.Database, schemaVersion: number): BackfillRunStats {
   let aggregate: BackfillRunStats | undefined
-  let unmatchedDetails: BackfillRunStats['unmatched_details'] = []
+  const unmatchedDetails: BackfillRunStats['unmatched_details'] = []
   runMigrationStage(db, {
     kind: 'entity_key_backfill',
     stage: 'S1.backfill',
