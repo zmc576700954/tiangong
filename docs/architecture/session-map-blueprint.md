@@ -2579,9 +2579,19 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 1. 退出应用，确认无残留执行器进程。
 2. `PRAGMA wal_checkpoint(TRUNCATE)` 后复制 `data/bizgraph.db` 到 `data/backups/bizgraph-v24-<ts>.db`（v24 为 §8.13 修复后的基线）。
 3. 记录基准指标：`graphs`/`nodes`/`edges` 行数、`foreign_key_check` 结果、`graphs.writeback_disabled=1` 的项目数、`edges.updated_at` 非空行数。
-4. 记录 `schema-checksum.json` 内容：**回退时该文件与新库不匹配会触发旧二进制重建**，因此回退必须配合恢复 DB，不能只回退二进制。
+4. 记录 `schema-checksum.json` 内容：回退必须配合恢复 DB，不能只回退二进制；库里记录的 schema 版本高于旧二进制上限时，旧二进制现在会**拒绝打开**（§8.2.1），不再按旧 `createSql` 重建。
 
 回退：停应用 → 用备份覆盖 `bizgraph.db` 及 `-wal`/`-shm` → 删除 `schema-checksum.json` → 启动旧版本。
+
+#### 8.2.1 版本守卫：库版本高于代码上限时 fail-closed
+
+**状态：已实施（`database.ts` `migrate()`，2026-11-07 复核 HEAD）。**
+
+- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 33）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
+- 动机：旧代码的慢路径会用当前版本的 `createSql` 重建表，`restoreFromBackup` 只恢复**共有列**，新版本写入的列/约束会被静默丢弃，随后 `schema_version` 被回写成更低版本——不可逆退化。v33 的 CHECK 曾因 `test` 行恢复失败偶然挡住，不能作为防线。
+- 不做启动期自动"降级"：降级不是默认行为；如确需把更高版本的库交给旧版本使用，必须人工恢复备份并留下可查询记录（本版本不提供降级入口）。
+- 版本标记边界：`schema_version` 表是唯一权威的库结构版本；`PRAGMA user_version`（memory FTS 触发器版本，`memory-store.ts`）与 `yjs_snapshots.schema_version`（单图快照写入规则版本，`snapshot-store.ts`）是独立域，不参与本守卫，也不会被 `migrate()` 回写。
+- `schema-checksum.json` 是同一版本域的缓存标记：其记录版本高于代码上限时同样触发 `DB_SCHEMA_TOO_NEW`（否则快路径失配会进入按旧 `createSql` 重建的慢路径）。库 `schema_version` 表仍是权威判定；处理不可信缓存属于显式动作。
 
 ### 8.3 S1：身份（`entity_key` + 导入期查重）
 
@@ -2867,6 +2877,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 3. **孤儿 `*_backup` 检测**：启动预检扫描 `sqlite_master` 中的 `%_backup` / `%_new` 表；若原表与备份表同时存在，视为中断的重建：**不自动删除任何一张**，先写 `map_migration_reports(kind='integrity_check')`，按"原表行数 / 备份行数 / 是否含新列"决定续跑或恢复；无法判定时只提示人工处理。
 4. **续跑边界**：只有 `addColumnSafe`、回填、`CREATE INDEX` 等幂等操作允许续跑；S4 的 CHECK 重建、`agent_approvals` 重建等不可逆步骤一旦 `failed`，只能恢复 S0 备份，不做"部分修复后再启动"。
 5. **不静默清理**：任何 `_backup` 表的删除都必须有报告与显式动作，防止把唯一可恢复副本删掉。
+6. **报告行保留策略（已实施）**：启动与每日任务都会追加 `map_migration_reports` 行，故按 `(kind, stage)` 每组只保留最近 20 行（`pruneMapMigrationReports`，启动后与每日各执行一次）；`running` 行永不裁剪（半迁移现场不可被掩盖）；有删除时追加 `kind='cleanup', stage='reports'` 行，`stats_json` 记录 deleted / keep_per_stage，不做静默清理。
 
 #### 8.14.1 B1 迁移状态机施工细则
 

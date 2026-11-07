@@ -366,3 +366,65 @@ export function runMigrationStage(db: BetterSqlite3.Database, options: Migration
     clearInterval(heartbeatTimer)
   }
 }
+
+/** 每个 (kind, stage) 保留的报告行数上限（见 pruneMapMigrationReports）。 */
+export const REPORT_RETENTION_PER_STAGE = 20
+
+/**
+ * 裁剪 `map_migration_reports` 的无界增长（启动与每日任务都会追加行）。
+ *
+ * 保留策略按 (kind, stage) 分组而非按时间：启动预检只读每组的**最新**一行
+ * （latestByStage），因此删除更早的同组行不会改变任何预检结论。
+ * `running` 行一律保留——那是半迁移现场，不能被裁剪掩盖。
+ *
+ * 有删除时追加一行 kind='cleanup' 的可查询记录，不做静默清理。
+ */
+export function pruneMapMigrationReports(
+  db: BetterSqlite3.Database,
+  keepPerStage = REPORT_RETENTION_PER_STAGE,
+): { deleted: number } {
+  const tableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='map_migration_reports'")
+    .get()
+  if (!tableExists) return { deleted: 0 }
+
+  const keep = Number.isInteger(keepPerStage) && keepPerStage > 0 ? keepPerStage : REPORT_RETENTION_PER_STAGE
+
+  const result = db
+    .prepare(
+      `DELETE FROM map_migration_reports
+        WHERE status <> 'running'
+          AND id IN (
+            SELECT id FROM (
+              SELECT id,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY kind, COALESCE(stage, '')
+                       ORDER BY started_at DESC, id DESC
+                     ) AS rn
+              FROM map_migration_reports
+              WHERE status <> 'running'
+            )
+            WHERE rn > ?
+          )`,
+    )
+    .run(keep)
+
+  const deleted = Number(result.changes ?? 0)
+  if (deleted > 0) {
+    const id = `mmr_${Date.now()}_${(reportIdSeq++).toString(36).padStart(4, '0')}`
+    const now = nowIso()
+    try {
+      db.prepare(
+        `INSERT INTO map_migration_reports
+           (id, kind, stage, schema_version, started_at, finished_at, owner_pid, status, stats_json)
+         VALUES (?, 'cleanup', 'reports', NULL, ?, ?, ?, 'ok', ?)`,
+      ).run(id, now, now, process.pid, JSON.stringify({ deleted, keep_per_stage: keep }))
+    } catch (err) {
+      logger.warn('failed to record map_migration_reports cleanup:', err)
+    }
+  }
+
+  logger.info(`map_migration_reports pruned: deleted=${deleted}, keep_per_stage=${keep}`)
+  return { deleted }
+}
+

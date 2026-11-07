@@ -12,7 +12,7 @@ import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 import { runHierarchyMigration } from './repositories/hierarchy-migration'
-import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
+import { MapMigrationStore, preflightStartup, pruneMapMigrationReports } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All, scanExpiredE4All } from './map/evidence-service'
@@ -57,7 +57,19 @@ export function initDatabase(): BetterSqlite3.Database {
   // 设置 WAL 自动 checkpoint 阈值（Pages），防止 WAL 文件无限增长
   db.pragma('wal_autocheckpoint = 1000')
 
-  migrate()
+  try {
+    migrate()
+  } catch (err) {
+    // 拒绝打开（含版本高于当前代码上限的 fail-closed）时关闭连接并清空模块状态，
+    // 避免半开连接/后台定时器残留。
+    try {
+      db.close()
+    } catch {
+      /* 已关闭则忽略 */
+    }
+    db = null
+    throw err
+  }
 
   // S1 迁移状态机启动预检（§8.14.1，fail-closed）：integrity/FK/半迁移/孤儿备份
   // 任一失败都拒绝启动——不得带着半迁移库继续读写，也不降级只读。
@@ -71,6 +83,14 @@ export function initDatabase(): BetterSqlite3.Database {
       /* 已关闭则忽略 */
     }
     throw err
+  }
+
+  // map_migration_reports 治理：启动和每日任务都追加报告行，按 (kind,stage) 保留最近 N 行。
+  // 必须在预检之后执行——预检读的是各组最新一行，裁剪不改变结论；running 行永不被裁。
+  try {
+    pruneMapMigrationReports(db)
+  } catch (err) {
+    logger.warn('map_migration_reports prune failed:', err)
   }
 
   // S1.3（§2.2.2 S1-c）：entity_key 回填。幂等（只写 NULL 行）；单项目失败已在
@@ -141,6 +161,11 @@ export function initDatabase(): BetterSqlite3.Database {
       scanExpiredE4All(db)
     } catch (err) {
       logger.warn('daily map integrity/retention task failed:', err)
+    }
+    try {
+      pruneMapMigrationReports(db)
+    } catch (err) {
+      logger.warn('daily map_migration_reports prune failed:', err)
     }
   }, 24 * 60 * 60 * 1000)
   if (linkCheckTimer.unref) linkCheckTimer.unref()
@@ -1088,6 +1113,31 @@ function migrate(): void {
   const currentVersion = versionRow?.version ?? 0
   const checksum = computeSchemaChecksum()
   const checksumCache = readSchemaChecksumCache()
+
+  // fail-closed（§8.2.1）：库被更高版本的代码写过时拒绝打开，不得按旧 schema 重建。
+  // 否则慢路径会用本版本的 createSql 重建表，restoreFromBackup 只恢复共有列，
+  // 新版本的列/约束被静默丢弃，随后又把 schema_version 回写成当前（更低）版本，
+  // 造成不可逆的数据退化。这里不提供启动期自动"降级"；需要降级必须显式操作并留痕。
+  if (currentVersion > CURRENT_SCHEMA_VERSION) {
+    throw new DatabaseError(
+      `数据库 schema 版本为 v${currentVersion}，高于本应用支持的 v${CURRENT_SCHEMA_VERSION}。` +
+        `为避免按旧 schema 重建并静默丢弃新版本写入的列，已拒绝打开（库文件：${db.name}）。` +
+        `请使用不低于该库版本的 BizGraph 打开，或从备份恢复；旧版本不会自动降级该库。`,
+      ErrorCode.DB_SCHEMA_TOO_NEW,
+    )
+  }
+
+  // 同一版本域的第二个标记：schema-checksum.json 由更高版本写就时，快路径必然失配、
+  // 慢路径会按本版本的 createSql 重建。即使库记录尚未 bump（异常/文件混用），也拒绝打开。
+  if (checksumCache && checksumCache.version > CURRENT_SCHEMA_VERSION) {
+    throw new DatabaseError(
+      `schema 校验缓存记录的版本为 v${checksumCache.version}，高于本应用支持的 v${CURRENT_SCHEMA_VERSION}` +
+        `（缓存文件：${getSchemaChecksumPath()}，库记录 v${currentVersion}）。` +
+        `该数据目录曾被更高版本使用；为避免按旧 schema 重建，已拒绝打开。` +
+        `请使用新版应用，或按备份流程恢复库并显式处理该缓存文件；旧版本不会自动降级。`,
+      ErrorCode.DB_SCHEMA_TOO_NEW,
+    )
+  }
 
   // Fast path: schema version and checksum are both current — skip expensive rebuild/index checks.
   if (currentVersion >= CURRENT_SCHEMA_VERSION && checksumCache?.version === CURRENT_SCHEMA_VERSION && checksumCache?.checksum === checksum) {

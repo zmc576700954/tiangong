@@ -34,6 +34,7 @@ vi.mock('electron', () => ({
 }))
 
 import { initDatabase, closeDatabase, getClient } from '../database'
+import { ErrorCode } from '../errors'
 import * as databaseModule from '../database'
 
 type RebuildTableIfNeeded = (
@@ -473,5 +474,79 @@ describe('Database Migration', () => {
     // 链会继续往上走（结构编辑那条线又加了一版），所以用「至少 16」而不是「正好 16」。
     const version = migrated.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
     expect(Number(version.version)).toBeGreaterThanOrEqual(16)
+  })
+
+  it('库记录的版本高于代码支持上限时拒绝打开，不重建、不回写低版本（fail-closed）', () => {
+    const newerUserData = path.join(os.tmpdir(), 'bizgraph-newer-schema-' + process.pid)
+    fs.rmSync(newerUserData, { recursive: true, force: true })
+    const newerDbPath = path.join(newerUserData, 'data', 'bizgraph.db')
+    fs.mkdirSync(path.dirname(newerDbPath), { recursive: true })
+
+    // 造一个「被更高版本写过」的库：版本号 34 + 一列/一表只有新版本认识。
+    const newerDb = new BetterSqlite3(newerDbPath)
+    newerDb.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (34);
+      CREATE TABLE future_only_marker (id TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO future_only_marker VALUES ('sentinel', 'kept');
+    `)
+    newerDb.close()
+
+    closeDatabase()
+    const previousUserData = electronPaths.userData
+    electronPaths.userData = newerUserData
+    let caught: unknown
+    try {
+      caught = (() => {
+        try {
+          initDatabase()
+          return null
+        } catch (err) {
+          return err
+        }
+      })()
+    } finally {
+      electronPaths.userData = previousUserData
+    }
+
+    expect(caught).not.toBeNull()
+    expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
+    expect((caught as Error).message).toMatch(/v34/)
+    expect((caught as Error).message).toMatch(/v33/)
+
+    // 拒绝打开必须是零写入的：版本仍是 34，新版本专属的表/行仍在。
+    const reopened = new BetterSqlite3(newerDbPath)
+    const version = reopened.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
+    expect(Number(version.version)).toBe(34)
+    expect(reopened.prepare("SELECT value FROM future_only_marker WHERE id='sentinel'").get()).toEqual({ value: 'kept' })
+    reopened.close()
+
+    // 恢复原测试 userData，供后续用例使用。
+    initDatabase()
+  })
+
+  it('schema-checksum 缓存记录版本高于支持上限时同样拒绝打开', () => {
+    closeDatabase()
+    const cached = JSON.parse(fs.readFileSync(schemaChecksumPath, 'utf-8')) as {
+      checksum: string
+      version: number
+      createdAt: string
+    }
+    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 34 }))
+
+    let caught: unknown
+    try {
+      initDatabase()
+    } catch (err) {
+      caught = err
+    }
+    expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
+    expect((caught as Error).message).toMatch(/v34/)
+
+    // 显式处理不可信缓存后，库本身仍可正常打开
+    fs.rmSync(schemaChecksumPath, { force: true })
+    initDatabase()
+    const version = getClient().prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
+    expect(Number(version.version)).toBeGreaterThanOrEqual(33)
   })
 })

@@ -15,6 +15,7 @@ import {
   runMigrationStage,
   preflightStartup,
   isResumeMigrationRequested,
+  pruneMapMigrationReports,
   HEARTBEAT_STALE_MS,
 } from '../map-migration/migration-state'
 
@@ -252,5 +253,61 @@ describe('isResumeMigrationRequested', () => {
   it('识别 --resume-migration', () => {
     expect(isResumeMigrationRequested(['electron', '.', '--resume-migration'])).toBe(true)
     expect(isResumeMigrationRequested(['electron', '.'])).toBe(false)
+  })
+})
+
+describe('pruneMapMigrationReports', () => {
+  function insertRow(
+    db: BetterSqlite3.Database,
+    id: string,
+    startedAt: string,
+    status: 'ok' | 'failed' | 'partial' | 'running',
+  ): void {
+    db.prepare(
+      `INSERT INTO map_migration_reports (id, kind, stage, started_at, status)
+       VALUES (?, 'link_backfill', 'S2', ?, ?)`,
+    ).run(id, startedAt, status)
+  }
+
+  it('按 (kind,stage) 保留最近 N 行；running 行不裁剪；有删除时写 cleanup 记录', () => {
+    const db = setupDb()
+    for (let i = 0; i < 25; i++) {
+      insertRow(db, `r_${String(i).padStart(2, '0')}`, `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`, 'ok')
+    }
+    // 最早的 running 行是半迁移现场，必须保留
+    insertRow(db, 'r_running_old', '2025-12-31T00:00:00.000Z', 'running')
+
+    const result = pruneMapMigrationReports(db, 20)
+    expect(result.deleted).toBe(5)
+
+    const kept = db
+      .prepare("SELECT id FROM map_migration_reports WHERE kind='link_backfill' AND status <> 'running' ORDER BY id")
+      .all() as Array<{ id: string }>
+    expect(kept).toHaveLength(20)
+    expect(kept.map((r) => r.id)).toEqual(
+      Array.from({ length: 20 }, (_, i) => `r_${String(i + 5).padStart(2, '0')}`),
+    )
+
+    expect(
+      db.prepare("SELECT status FROM map_migration_reports WHERE id='r_running_old'").get(),
+    ).toEqual({ status: 'running' })
+
+    const cleanup = db
+      .prepare("SELECT stats_json FROM map_migration_reports WHERE kind='cleanup' AND stage='reports'")
+      .get() as { stats_json: string } | undefined
+    expect(cleanup).toBeDefined()
+    expect(JSON.parse(cleanup!.stats_json)).toMatchObject({ deleted: 5, keep_per_stage: 20 })
+
+    // 裁剪不改变预检结论：最新一行仍是最近一次（ok）
+    const store2 = new MapMigrationStore(db)
+    expect(() => preflightStartup(db, store2, { resumeRequested: false })).not.toThrow()
+    db.close()
+  })
+
+  it('报告表不存在时安全返回 0（极老库）', () => {
+    const db = setupDb()
+    db.exec('DROP TABLE map_migration_reports')
+    expect(pruneMapMigrationReports(db)).toEqual({ deleted: 0 })
+    db.close()
   })
 })
