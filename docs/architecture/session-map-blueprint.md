@@ -1999,7 +1999,7 @@ CREATE INDEX idx_node_evidence_level   ON node_evidence(evidence_level, freshnes
 CREATE INDEX idx_node_evidence_run     ON node_evidence(work_run_id);
 -- 同一 run 对同一节点产出的同类证据只落一条（重试幂等）；E4 人工签收不在此约束内
 CREATE UNIQUE INDEX ux_node_evidence_run_type
-  ON node_evidence(work_run_id, evidence_type, node_entity_key)
+  ON node_evidence(graph_id, work_run_id, evidence_type, node_entity_key)
   WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3');
 ```
 

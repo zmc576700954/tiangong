@@ -205,9 +205,9 @@ export class EvidenceService {
         const existing = this.db
           .prepare(
             `SELECT * FROM node_evidence
-              WHERE work_run_id = ? AND evidence_type = ? AND node_entity_key = ?`,
+              WHERE graph_id = ? AND work_run_id = ? AND evidence_type = ? AND node_entity_key = ?`,
           )
-          .get(input.workRunId, input.evidenceType, input.nodeEntityKey) as NodeEvidenceRow | undefined
+          .get(input.graphId, input.workRunId, input.evidenceType, input.nodeEntityKey) as NodeEvidenceRow | undefined
         if (existing) return { row: existing, reused: true }
       }
       const id = `ne_${Date.now()}_${randomUUID().slice(0, 8)}`

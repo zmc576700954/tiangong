@@ -100,7 +100,7 @@ function setupDb(): BetterSqlite3.Database {
       ))
     );
     CREATE UNIQUE INDEX ux_node_evidence_run_type
-      ON node_evidence(work_run_id, evidence_type, node_entity_key)
+      ON node_evidence(graph_id, work_run_id, evidence_type, node_entity_key)
       WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3');
     CREATE TABLE node_execution_state (
       graph_id           TEXT NOT NULL,
@@ -168,6 +168,22 @@ describe('EvidenceService 写入方矩阵（§3.7.1）', () => {
     expect(row.expires_at).toBeTruthy()
     const days = (new Date(row.expires_at!).getTime() - new Date(row.signed_at!).getTime()) / 86400000
     expect(Math.round(days)).toBe(E4_EXPIRY_DAYS)
+  })
+
+  it('E2/E3 run 内唯一按 graph_id 隔离:同一 key 在两图各落一条', () => {
+    const now = '2026-01-01T00:00:00Z'
+    db.prepare('INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run('g2', 'dev 图 2', 'dev', '/p', now, now)
+    db.prepare('INSERT INTO nodes (id, type, title, graph_id, graph_type, entity_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('n2', 'module', '登录', 'g2', 'dev', 'key-1', now, now)
+    const base = {
+      level: 'E2' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'changed_files' as const,
+      ref: { files: ['src/a.ts'] }, actor: 'human' as const, workRunId: 'wr-9',
+    }
+    const a = svc.create(base).row
+    const b = svc.create({ ...base, graphId: 'g2' })
+    expect(a.graph_id).toBe('g1')
+    expect(b.reused).toBe(false)
+    expect(b.row.graph_id).toBe('g2')
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_evidence').get() as { c: number }).c).toBe(2)
   })
 
   it('E2/E3 run 内唯一:重复写入返回既有 id', () => {
