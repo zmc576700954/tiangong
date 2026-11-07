@@ -241,6 +241,7 @@ app.on('before-quit', async (event) => {
       } catch (err) {
         logger.error('Failed to shutdown telemetry:', err)
       }
+      logger.info('Quit cleanup completed')
     })(),
     new Promise<void>((resolve) => {
       const t = setTimeout(resolve, 5000)
@@ -254,5 +255,12 @@ app.on('before-quit', async (event) => {
     logger.error('Cleanup error during quit:', err)
   }
   cleanupDone = true
-  app.quit()
+
+  // Electron 33 的 quit 重入陷阱：第一次 before-quit 被 preventDefault 后，如果
+  // 在同一微任务批次内再次调用 app.quit()，第二次 quit 会发出 before-quit、关掉
+  // 窗口并触发 window-all-closed，但不会再发 will-quit / quit，浏览器进程于是
+  // 永久驻留（此时 Node 侧已无任何活跃句柄，macOS 的 window-all-closed 又不会退出）。
+  // 表现就是 SIGTERM 后清理日志打完、进程仍 S 状态不退出。把重试 quit 放到下一轮
+  // 宏任务，让被取消的第一次 quit 派发完全展开，第二次才能真正走完 will-quit → quit。
+  setImmediate(() => app.quit())
 })
