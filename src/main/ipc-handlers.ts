@@ -93,6 +93,7 @@ import { registerProjectHandlers } from './ipc/project'
 import { registerMapHandlers } from './ipc/map'
 import { setExecutionStateNotifier } from './map/execution-state'
 import { WorkRunService } from './map/work-run-service'
+import { reconcileOrphanImportThreads } from './services/chat-thread-reconcile'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
@@ -349,6 +350,14 @@ export async function registerIpcHandlers(): Promise<void> {
     new WorkRunService(db).reconcileOnStartup()
   } catch (err) {
     logger.warn('Map work_runs startup reconciliation failed:', err)
+  }
+
+  // 导入 thread 孤儿清扫：崩溃在"建 thread 后、图事务前"会留下无图的 running thread。
+  // 只清 mindmap-internal + 无 graph + running + 超过 24h 的行，并写 cleanup 报告留痕。
+  try {
+    reconcileOrphanImportThreads(db)
+  } catch (err) {
+    logger.warn('Orphan import chat thread reconciliation failed:', err)
   }
 
   // ---------- Y.Doc realtime (D10a + D10c) ----------

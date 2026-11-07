@@ -1008,6 +1008,10 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
   - item 收敛：受影响 item 仍为 `running` 且已无 `queued/running` run → `interrupted`；
   - 每次启动写一行 `map_migration_reports(kind='cleanup', stage='work_runs_reconcile')`（stats: interruptedRunning / cancelledStaleQueued / interruptedItems / queuedStaleMs）。
   - 目的：`in_progress` 只由 `queued/running` run 触发；没有对账时任何僵尸 run 都会把节点永久钉在 `in_progress`（多 lineage 并存会放大该风险）。
+- 导入 thread 孤儿清扫（**已实施**，`reconcileOrphanImportThreads`，同一启动段）：
+  - 判定：`adapter_name='mindmap-internal' AND graph_id IS NULL AND status='running' AND created_at < now-24h`。正常导入完成会把 thread 置 `idle`、失败置 `error`，只有崩溃会停在 `running`；因此再加 `running` 才不会误删成功/失败的历史 thread（导入 thread 本身从不回填 `graph_id`）。
+  - 阈值 24h（`ORPHAN_IMPORT_THREAD_STALE_MS`）与 `queued` 兜底一致：单次导入生成是分钟级，单机单实例下不存在 24h 仍合法的导入会话。
+  - 留痕：每次启动写一行 `map_migration_reports(kind='cleanup', stage='chat_threads_orphan')`（stats: deletedThreads / deletedThreadIds / staleMs / cutoffMs），不静默删除。
 
 #### 4.7.6 `node_session_links` 与会话时间线
 
