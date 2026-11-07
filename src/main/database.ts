@@ -12,6 +12,7 @@ import { DB_FILENAME } from '@shared/constants'
 import { DatabaseError, ErrorCode } from './errors'
 import { createLogger } from './shared/logger'
 import { runHierarchyMigration } from './repositories/hierarchy-migration'
+import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -49,6 +50,20 @@ export function initDatabase(): BetterSqlite3.Database {
   db.pragma('wal_autocheckpoint = 1000')
 
   migrate()
+
+  // S1 迁移状态机启动预检（§8.14.1，fail-closed）：integrity/FK/半迁移/孤儿备份
+  // 任一失败都拒绝启动——不得带着半迁移库继续读写，也不降级只读。
+  // map_migration_reports 尚不存在（极老库首次升上来）时预检自动跳过阶段类检查。
+  try {
+    preflightStartup(db, new MapMigrationStore(db))
+  } catch (err) {
+    try {
+      db.close()
+    } catch {
+      /* 已关闭则忽略 */
+    }
+    throw err
+  }
 
   // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
   keepaliveTimer = setInterval(() => {
@@ -370,9 +385,14 @@ export function rebuildTableIfNeeded(
  *      纯 createSql 变更，不改列类型与 CHECK，不触发重建。
  * v25：F3-A 新增部分索引 idx_agent_turns_deadline（agent_turns.deadline_at
  *      WHERE status='running'，DeadlineReaper 扫描用）。索引变更不改表结构，
- *      不触发重建；bump 版本号防止旧二进制因 checksum 失配误判走重建。
+ *      不触发重建；bump 版本号防止旧二进制因 checksum 失配误判重建。
+ * v26：S1 身份层 —— ①nodes.createSql 增加可空 entity_key（不进 requiredColumns，
+ *      I1；columnTypesMatch 只比既有列，不触发重建）；②新建导入查重三表
+ *      project_fingerprints / import_rejections / import_allowances + 迁移
+ *      状态机表 map_migration_reports；③索引 ux_nodes_graph_entity_key 等 5 条。
+ *      回填与导入查重逻辑见 map-migration/ 模块（§8.14.1 / §2.2.2 / §2.6）。
  */
-const CURRENT_SCHEMA_VERSION = 25
+const CURRENT_SCHEMA_VERSION = 26
 
 interface TableSchema {
   name: string
@@ -411,6 +431,12 @@ const TABLE_SCHEMAS: TableSchema[] = [
         acceptance_criteria TEXT,
         graph_id TEXT NOT NULL,
         graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
+        -- S1（session-map 蓝图 §2.1/§7.1）：项目内稳定身份。必须可空、**不进**
+        -- requiredColumns（I1）：旧库迁移走「建列 → 回填 → 建唯一索引」，写 NOT NULL
+        -- 或进 requiredColumns 都会迫使 rebuildTableIfNeeded 走重建路径。
+        -- 必须留在 createSql（而非只靠 addColumnSafe）：任何一次 nodes 重建
+        -- 都会把该列值静默丢弃。
+        entity_key TEXT,
         parent_id TEXT,
         sort_index INTEGER,
         collapsed INTEGER NOT NULL DEFAULT 0,
@@ -703,6 +729,89 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['graph_id', 'doc_state', 'schema_version', 'updated_at'],
   },
+  // v26：S1 导入查重三表 + 迁移报告表（session-map 蓝图 §7.2 DDL 逐字对齐）。
+  {
+    name: 'project_fingerprints',
+    createSql: `
+      CREATE TABLE project_fingerprints (
+        id                TEXT PRIMARY KEY,
+        project_name      TEXT,
+        dir_name          TEXT NOT NULL,
+        root_path         TEXT NOT NULL,
+        last_modified_at  INTEGER,
+        sample_files_json TEXT NOT NULL,
+        sample_count      INTEGER NOT NULL,
+        signature_hash    TEXT,
+        graph_ids_json    TEXT NOT NULL,
+        created_at        TEXT NOT NULL,
+        last_seen_at      TEXT NOT NULL,
+        UNIQUE(root_path)
+      )
+    `,
+    requiredColumns: ['id', 'dir_name', 'root_path', 'sample_files_json', 'sample_count', 'graph_ids_json', 'created_at', 'last_seen_at'],
+  },
+  {
+    // 表名沿用"拒绝"语义，但同时记录 allowed_branch / allowed_with_warning 放行决策。
+    name: 'import_rejections',
+    createSql: `
+      CREATE TABLE import_rejections (
+        id                     TEXT PRIMARY KEY,
+        attempted_root_path    TEXT NOT NULL,
+        attempted_name         TEXT,
+        attempted_dir_name     TEXT,
+        matched_fingerprint_id TEXT,
+        matched_signals_json   TEXT NOT NULL,
+        decision               TEXT NOT NULL CHECK(decision IN (
+          'rejected','allowed_branch','allowed_with_warning')),
+        allowance_source       TEXT CHECK(allowance_source IN ('this_time','remembered_rule')),
+        reason                 TEXT,
+        created_at             TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'attempted_root_path', 'matched_signals_json', 'decision', 'created_at'],
+  },
+  {
+    // 记住的分支/副本放行规则（仅用户显式勾选"对同一指纹记住"时写入；撤销置 revoked_at 不删行）
+    name: 'import_allowances',
+    createSql: `
+      CREATE TABLE import_allowances (
+        id              TEXT PRIMARY KEY,
+        fingerprint_id  TEXT NOT NULL REFERENCES project_fingerprints(id) ON DELETE CASCADE,
+        dir_name        TEXT NOT NULL,
+        granted_by      TEXT NOT NULL,
+        granted_at      TEXT NOT NULL,
+        note            TEXT,
+        revoked_at      TEXT,
+        revoked_by      TEXT,
+        UNIQUE(fingerprint_id, dir_name)
+      )
+    `,
+    requiredColumns: ['id', 'fingerprint_id', 'dir_name', 'granted_by', 'granted_at'],
+  },
+  {
+    // S1 迁移状态机（§8.14.1）：阶段记录 running/ok/partial/failed + 心跳 + owner_pid；
+    // 每个阶段独立一行，重跑新建行不覆盖历史。不新增表，所有阶段记录复用本表。
+    name: 'map_migration_reports',
+    createSql: `
+      CREATE TABLE map_migration_reports (
+        id            TEXT PRIMARY KEY,
+        kind          TEXT NOT NULL CHECK(kind IN (
+          'entity_key_backfill','link_backfill','integrity_check','import_dedup',
+          'derivation','cleanup')),
+        stage         TEXT,
+        schema_version INTEGER,
+        started_at    TEXT NOT NULL,
+        finished_at   TEXT,
+        heartbeat_at  TEXT,
+        owner_pid     INTEGER,
+        status        TEXT NOT NULL CHECK(status IN ('running','ok','partial','failed')),
+        stats_json    TEXT,
+        details_json  TEXT,
+        error_json    TEXT
+      )
+    `,
+    requiredColumns: ['id', 'kind', 'started_at', 'status'],
+  },
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -746,6 +855,13 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_yjs_snapshots_updated_at ON yjs_snapshots(updated_at DESC)`,
   // Phase D9: A2A 任务查询 — json_extract 表达式索引加速 task_kind='a2a' 过滤。
   `CREATE INDEX IF NOT EXISTS idx_chat_threads_task_kind ON chat_threads(json_extract(metadata, '$.task_kind'))`,
+  // v26：S1（session-map 蓝图 §2.1/§7.2）。唯一约束按 (graph_id, entity_key)——
+  // online 与 dev 是不同 graph_id，同一实体可共享键。
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_nodes_graph_entity_key ON nodes(graph_id, entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_nodes_entity_key ON nodes(entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_project_fingerprints_dir ON project_fingerprints(dir_name)`,
+  `CREATE INDEX IF NOT EXISTS idx_import_rejections_time ON import_rejections(created_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_import_allowances_fp ON import_allowances(fingerprint_id)`,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]
@@ -929,6 +1045,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // 加进去会让 rebuildTableIfNeeded 走 DROP TABLE 重建 nodes，风险远大于收益。
   addColumnSafe('nodes', 'sort_index', 'INTEGER')
   addColumnSafe('nodes', 'collapsed', 'INTEGER', '0')
+
+  // v26 / S1.2（session-map 蓝图 §2.2.2）：nodes.entity_key 身份列。createSql 已含该列
+  // （新建库/重建路径）；这里为存量库兜底补列——必须在 ux_nodes_graph_entity_key
+  // 索引创建之前执行（migrate() 的顺序保证：先增量补列，后建索引）。
+  addColumnSafe('nodes', 'entity_key', 'TEXT')
 
   if (currentVersion < 3) {
     addColumnSafe('memory_items', 'version', 'INTEGER', '1')
