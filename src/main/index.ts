@@ -19,6 +19,7 @@ import { getLocale, subscribeLocale } from '@shared/i18n'
 import { buildMenuTemplate } from './menu'
 import { initTelemetry, shutdownTelemetry } from './telemetry'
 import { readSettings } from './settings'
+import { stopWorkExecutionRuntime } from './map/work-execution-runtime'
 
 const logger = createLogger('Main')
 
@@ -138,7 +139,7 @@ app.whenReady().then(async () => {
   }
 
   // Initialize database (sync with better-sqlite3)
-  initDatabase()
+  const db = initDatabase()
 
   // C3：启动期探测一次执行面沙箱（真实 canary）。结论进日志，并被所有 spawn 复用；
   // 不可用时只读命令的 allow 集整体退回 ask（fail-closed）。
@@ -161,6 +162,15 @@ app.whenReady().then(async () => {
 
   // Register IPC handlers
   await registerIpcHandlers()
+
+  // L2 执行触发：单实例异步 tick（只在 BIZGRAPH_MAP_EXECUTION 开启时启动）。
+  // turn 不内联在 IPC handler 里，由这里的循环串行驱动。
+  const { startWorkExecutionRuntime } = await import('./map/work-execution-runtime')
+  startWorkExecutionRuntime({
+    db,
+    host: agentManager,
+    hasAdapter: (adapterName) => agentManager.getAdapter(adapterName) !== undefined,
+  })
 
   // Set locale before building the menu — otherwise the first-frame menu is English
   const { setLocale, resolveLocale } = await import('@shared/i18n')
@@ -200,6 +210,8 @@ app.on('before-quit', async (event) => {
   const cleanupWithTimeout = Promise.race([
     (async () => {
       try {
+        // 先停执行 tick，避免退出过程中再 claim/发送新的 turn。
+        stopWorkExecutionRuntime()
         // Phase D9: A2A server 必须先于 AgentManager 关闭。
         // 否则 server 上的 SSE 流在父 listener 已关时仍在尝试 sendCommand / terminateSession。
         await a2aServer?.destroy()

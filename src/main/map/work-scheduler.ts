@@ -3,9 +3,10 @@
  * - claimNext(projectPath)：按优先级找可运行的 (item, step)；
  * - startStep(stepId)：校验依赖 → 幂等绑定 run → claim run → 步置 running。
  *
- * 边界（M2）：
- * - 不驱动 Agent、不接 IPC、不写证据；
- * - gate 只复核已持久化的 gate_status（G1-G6 引擎未实现，见蓝图 L3-f），不重跑 gate；
+ * 边界（M2/M5）：
+ * - 本文件不驱动 Agent、不接 IPC、不写证据；
+ * - `startStep`/`enqueueStep` 只复核**已持久化**的 gate_status；真正的「重跑 gate」
+ *   由 tick 第 2 步在调用前完成（G1-G6 引擎未实现，见蓝图 L3-f 与 gate-recheck.ts）；
  * - 写闸/路由未实现，候选按 item 创建顺序串行，不并行；
  * - 幂等键由 WorkRunService 生成（lineage:revision:stepSeq:attempt），重放复用既有 run。
  */
@@ -149,6 +150,54 @@ export class WorkScheduler {
       return { item, step: started, run: claimed, reused }
     })
     return txn()
+  }
+
+  /**
+   * 只读预选：该 item 当前第一个「pending + 依赖满足 + gate 已落库通过」的步。
+   * 不做 claim、不收敛；tick 先重跑 gate，再用本方法选步并自行 startStep。
+   * 返回 null 表示没有就绪步：由调用方决定是「等」还是「收敛」。
+   */
+  peekNextReadyStep(workItemId: string): WorkStepRow | null {
+    const item = this.items.get(workItemId)
+    if (!item || item.is_current !== 1) return null
+    for (const step of this.steps.listByItem(item.id, item.revision)) {
+      if (this.isReady(item, step)) return step
+    }
+    return null
+  }
+
+  /**
+   * 只入队（不 claim run、不置 step running）：供 IPC 触发通道使用。
+   * 之后的串行 tick 会按既有幂等键复用这条 queued run 并 claim。
+   *
+   * 守卫与 startStep 的前半段一致：步存在 / 属当前 revision / gate 已落库通过 /
+   * pending / 依赖满足 / item 可执行。**不重跑 gate**——重跑由 tick 第 2 步负责。
+   */
+  enqueueStep(stepId: string, opts: SchedulerOptions = {}): { run: WorkRunRow; reused: boolean } {
+    const step = this.steps.get(stepId)
+    if (!step) throw new WorkSchedulerGuardError('STEP_NOT_FOUND', `work_step ${stepId} 不存在`)
+    const item = this.items.get(step.work_item_id)
+    if (!item) throw new WorkSchedulerGuardError('ITEM_NOT_FOUND', `work_item ${step.work_item_id} 不存在`)
+    if (item.is_current !== 1 || item.revision !== step.work_item_revision) {
+      throw new WorkSchedulerGuardError('ITEM_REVISION_STALE', 'step 不属于当前 revision')
+    }
+    if (item.gate_status !== 'pass' && item.gate_status !== 'waived') {
+      throw new WorkSchedulerGuardError('GATE_NOT_PASSED', `gate_status=${item.gate_status}`)
+    }
+    if (!STEP_RUNNABLE.has(step.status)) {
+      throw new WorkSchedulerGuardError('STEP_NOT_PENDING', `step status=${step.status}`)
+    }
+    if (item.status !== 'queued' && item.status !== 'running') {
+      throw new WorkSchedulerGuardError('ITEM_NOT_RUNNABLE', `work_item status=${item.status}`)
+    }
+    this.assertDeps(item, step)
+    return this.runs.enqueue({
+      workItemId: item.id,
+      stepId,
+      executorKind: opts.executorKind ?? 'agent',
+      adapterName: opts.adapterName,
+      deadlineAt: opts.deadlineAt ?? undefined,
+    })
   }
 
   /** 依赖全部 succeeded/skipped；缺依赖或未终态一律不可运行。 */

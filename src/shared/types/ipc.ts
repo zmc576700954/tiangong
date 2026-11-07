@@ -293,6 +293,22 @@ export interface IpcApi {
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
   'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
 
+  /** L2 执行触发（写通道；默认关闭，需 BIZGRAPH_MAP_EXECUTION=1）。只入队，不内联跑 turn。 */
+  'workitem:step:run': (data: {
+    stepId: string
+    adapterName: string
+    workItemId?: string
+    deadlineAt?: number
+  }) => Promise<{ runId: string; stepId: string; status: string; reused: boolean }>
+  /** run 取消：queued/running 条件更新；完成竞态失败方保留。 */
+  'workitem:run:cancel': (runId: string) => Promise<{
+    runId: string
+    status: string
+    cancelled: boolean
+    alreadyTerminal: boolean
+    itemStatus?: string
+  }>
+
   // S7 计划推导/草稿（§9.2 plan:*;C1 环检测拒绝带 |cycle=[...] 后缀）
   'plan:derive-candidates': (data: { graphId: string; anchorNodeId?: string; changeFiles?: string[] }) => Promise<{
     runId: string

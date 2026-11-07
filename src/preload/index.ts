@@ -227,6 +227,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   // session-map 只读查询（run / step / work_item / 证据 / 派生状态）。
   // 白名单见 @shared/types/ipc 的 MAP_READ_ONLY_CHANNELS：不得含任何写操作或执行触发。
   ...MAP_READ_ONLY_CHANNELS,
+
+  // L2 执行触发（写通道）：默认关闭，关闭时 handler 明确拒绝（EXECUTION_DISABLED），
+  // 不会静默降级。只入队/条件更新取消，turn 由主进程 tick 异步驱动。
+  'workitem:step:run',
+  'workitem:run:cancel',
 ]
 
 // Build IPC API object
@@ -247,6 +252,10 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   'agent:cancelTurn',
   'agent:cancelSessionTurn',
   'agent:resolveApproval',
+  // 执行触发写通道：reason 必须可结构化区分（关闭 / 无 kernel / 无审批），
+  // 不允许 renderer 只能看到一句模糊失败。
+  'workitem:step:run',
+  'workitem:run:cancel',
 ])
 
 function toIpcError(err: unknown): IpcErrorPayload {

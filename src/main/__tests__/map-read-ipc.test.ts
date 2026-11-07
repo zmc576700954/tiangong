@@ -83,6 +83,8 @@ describe('session-map 只读 IPC 通道', () => {
       'workitem:revise',
       'workitem:run:start',
       'workitem:cancel',
+      'workitem:step:run',
+      'workitem:run:cancel',
       'plan:draft:create',
       'plan:draft:revise',
       'plan:draft:confirm',

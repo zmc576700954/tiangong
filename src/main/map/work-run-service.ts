@@ -385,6 +385,40 @@ export class WorkRunService {
   }
 
   /**
+   * tick 第 6 步的孤儿扫描：run 已 claim（running）但 step 从未启动（仍 pending）。
+   * 本进程串行执行，这种状态只可能来自「claim 与 startStep 之间崩溃」。
+   */
+  listOrphanedClaims(): WorkRunRow[] {
+    return this.db
+      .prepare(
+        `SELECT r.* FROM work_runs r
+           JOIN work_steps s ON s.id = r.step_id
+          WHERE r.status = 'running' AND s.status = 'pending'`,
+      )
+      .all() as WorkRunRow[]
+  }
+
+  /**
+   * 孤儿回收：running → queued（条件更新，**不计 attempt**，§5.9.9 第 6 步）。
+   * 只回收 step 仍为 pending 的 run；已启动的 running step 不会被改写。
+   */
+  requeueOrphan(id: string): WorkRunRow | undefined {
+    const result = this.db
+      .prepare(
+        `UPDATE work_runs SET status = 'queued', started_at = NULL
+          WHERE id = ? AND status = 'running'
+            AND EXISTS (
+              SELECT 1 FROM work_steps s
+               WHERE s.id = work_runs.step_id AND s.status = 'pending'
+            )`,
+      )
+      .run(id)
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
+  }
+
+  /**
    * 启动对账（§4.7.5）：清偿进程崩溃/重启留下的僵尸 run，避免派生把节点永久钉在
    * `in_progress`（`in_progress` 只看 work_runs 的 queued/running）。
    *

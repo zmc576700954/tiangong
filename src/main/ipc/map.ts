@@ -18,6 +18,8 @@ import { WorkRunService, WORK_RUN_STATUSES, type WorkRunStatus } from '../map/wo
 import { EvidenceService } from '../map/evidence-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
+import { WorkExecutionError } from '../map/work-execution-service'
+import { getWorkExecutionService } from '../map/work-execution-registry'
 import type { TypedHandle } from './utils'
 
 /** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
@@ -288,6 +290,60 @@ export function registerMapHandlers(
     const row = workItems.cancel(id)
     broadcast?.('event:work-item-changed', { lineageId: row.lineage_id, revision: row.revision, status: row.status })
     return row
+  })
+
+  // ---- L2 执行触发（写通道；默认关闭，见 map/execution-flags.ts）----
+  // 与只读白名单严格分离：这两个通道会写 work_runs / work_steps，绝不能进
+  // MAP_READ_ONLY_CHANNELS。handler 只做「入队 / 条件更新取消」，turn 由主进程
+  // tick 异步驱动，不在这里内联执行。
+  function requireWorkExecution() {
+    const service = getWorkExecutionService()
+    if (!service) throw new Error('执行触发服务未装配：拒绝执行（fail-closed）')
+    return service
+  }
+
+  typedHandle('workitem:step:run', async (_, data) => {
+    const d = (data ?? {}) as {
+      stepId?: unknown
+      workItemId?: unknown
+      adapterName?: unknown
+      deadlineAt?: unknown
+    }
+    if (typeof d.stepId !== 'string' || d.stepId === '') throw new Error('stepId is required')
+    if (typeof d.adapterName !== 'string' || d.adapterName.trim() === '') {
+      throw new WorkExecutionError('ROUTE_MISSING', 'adapterName 必填：没有 pinned adapter 就没有路由结论')
+    }
+    const result = requireWorkExecution().enqueueStep({
+      stepId: d.stepId,
+      workItemId: typeof d.workItemId === 'string' ? d.workItemId : undefined,
+      adapterName: d.adapterName,
+      deadlineAt: typeof d.deadlineAt === 'number' ? d.deadlineAt : undefined,
+    })
+    broadcast?.('event:work-item-changed', {
+      lineageId: result.run.work_item_lineage_id,
+      revision: result.run.work_item_revision,
+      status: workItems.get(result.run.work_item_id)?.status ?? 'queued',
+      reason: 'run_enqueued',
+    })
+    return { runId: result.run.id, stepId: d.stepId, status: result.run.status, reused: result.reused }
+  })
+
+  typedHandle('workitem:run:cancel', async (_, id: unknown) => {
+    if (typeof id !== 'string' || id === '') throw new Error('runId is required')
+    const result = await requireWorkExecution().cancelRun(id)
+    broadcast?.('event:work-item-changed', {
+      lineageId: result.run.work_item_lineage_id,
+      revision: result.run.work_item_revision,
+      status: result.itemStatus ?? result.run.status,
+      reason: result.cancelled ? 'run_cancelled' : 'run_terminal',
+    })
+    return {
+      runId: result.run.id,
+      status: result.run.status,
+      cancelled: result.cancelled,
+      alreadyTerminal: result.alreadyTerminal,
+      itemStatus: result.itemStatus,
+    }
   })
 
   // ---- S7 计划推导/草稿（§9.2 plan:*）----
