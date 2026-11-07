@@ -26,10 +26,22 @@ import { createLogger } from '../../shared/logger'
 
 const logger = createLogger('YjsRealtime')
 
+/** 显式启动开关：默认不监听 1236，只有设置 BIZGRAPH_YJS_WS=1/true/yes/on 才启动。 */
+export const YJS_WS_ENV = 'BIZGRAPH_YJS_WS'
+
+function isYjsWsExplicitlyEnabled(): boolean {
+  const raw = process.env[YJS_WS_ENV]
+  if (raw === undefined) return false
+  return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase())
+}
+
 export interface YjsRealtimeOptions {
   /** WS server 端口；默认从 WS_PORT env 或 1236（D10c 推荐） */
   wsPort?: number
-  /** 启动时禁用 WS server（D10a 阶段允许纯内存模式） */
+  /**
+   * 启动时禁用 WS server（默认禁用）。
+   * 未显式传入时按 `BIZGRAPH_YJS_WS` 决定：只有显式开启才监听端口。
+   */
   disableWebSocket?: boolean
   /** snapshot 防抖 ms */
   snapshotDebounceMs?: number
@@ -67,7 +79,7 @@ export class YjsRealtime {
     this.store = new SnapshotStore(db)
     this.options = {
       wsPort: options.wsPort ?? Number(process.env.WS_PORT ?? '1236'),
-      disableWebSocket: options.disableWebSocket ?? false,
+      disableWebSocket: options.disableWebSocket ?? !isYjsWsExplicitlyEnabled(),
       snapshotDebounceMs: options.snapshotDebounceMs ?? 1000,
     }
   }

@@ -18,7 +18,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import { createServer, type Server as HttpServer } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import {
+  connect as connectTcp,
+  createServer as createTcpServer,
+  type AddressInfo,
+} from 'node:net'
 import { WebSocket } from 'ws'
 import * as Y from 'yjs'
 import * as encoding from 'lib0/encoding'
@@ -40,7 +44,7 @@ vi.mock('electron', () => ({
   },
 }))
 
-import { YjsRealtime } from '../yjs-realtime'
+import { YjsRealtime, YJS_WS_ENV } from '../yjs-realtime'
 import { YjsDocument, type NodeData, type EdgeData } from '../yjs-document'
 import { _attachToExistingServer } from '../ws-server'
 
@@ -282,6 +286,35 @@ function connectClient(url: string): {
   }
 }
 
+/** 取一个当前空闲端口，避免与 1236 或本机其它服务冲突。 */
+async function getFreePort(): Promise<number> {
+  const server = createTcpServer()
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  const port = (server.address() as AddressInfo).port
+  await new Promise<void>((resolve) => server.close(() => resolve()))
+  return port
+}
+
+/** 端口是否有监听：TCP 能连上即有；连接被拒/超时即无。 */
+function probePort(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connectTcp(port, '127.0.0.1')
+    let settled = false
+    const finish = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(1500, () => finish(false))
+    socket.once('connect', () => finish(true))
+    socket.once('error', () => finish(false))
+  })
+}
+
 function encodeSyncMessage(subType: number, payload?: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder()
   encoding.writeVarUint(encoder, 0) // MESSAGE_SYNC
@@ -474,5 +507,58 @@ describe('Read-only Yjs — WS 拒绝写消息', () => {
     expect(decoding.readVarUint(dec)).toBe(syncProtocol.messageYjsSyncStep2)
     // 连接未被关闭（还能再发一次读请求）
     expect(ws.readyState).toBe(WebSocket.OPEN)
+  })
+})
+
+describe('Yjs WS — 默认不监听，显式开关才启动', () => {
+  let yjs: InstanceType<typeof YjsRealtime> | undefined
+  const originalEnv = process.env[YJS_WS_ENV]
+
+  afterEach(async () => {
+    await yjs?.shutdown()
+    yjs = undefined
+    if (originalEnv === undefined) delete process.env[YJS_WS_ENV]
+    else process.env[YJS_WS_ENV] = originalEnv
+  })
+
+  it('默认（未设置 BIZGRAPH_YJS_WS）不启动 WS：init 报告 false 且端口无监听', async () => {
+    delete process.env[YJS_WS_ENV]
+    const db = new FakeDb()
+    seedDb(db)
+    const port = await getFreePort()
+    yjs = new YjsRealtime(db as unknown as BetterSqlite3.Database, {
+      wsPort: port,
+      snapshotDebounceMs: 10_000,
+    })
+
+    const result = await yjs.init()
+
+    expect(result.wsStarted).toBe(false)
+    expect(await probePort(port)).toBe(false)
+  })
+
+  it('显式 BIZGRAPH_YJS_WS=1 才启动 WS：端口可连接并下发 sync step 2', async () => {
+    process.env[YJS_WS_ENV] = '1'
+    const db = new FakeDb()
+    seedDb(db)
+    const port = await getFreePort()
+    yjs = new YjsRealtime(db as unknown as BetterSqlite3.Database, {
+      wsPort: port,
+      snapshotDebounceMs: 10_000,
+    })
+
+    const result = await yjs.init()
+    expect(result.wsStarted).toBe(true)
+    expect(await probePort(port)).toBe(true)
+
+    const { ws, nextMessage } = connectClient(`ws://127.0.0.1:${port}/graph/g1`)
+    try {
+      const hello = await nextMessage()
+      const dec = decoding.createDecoder(hello)
+      expect(decoding.readVarUint(dec)).toBe(0)
+      expect(decoding.readVarUint(dec)).toBe(syncProtocol.messageYjsSyncStep2)
+    } finally {
+      ws.close()
+    }
   })
 })
