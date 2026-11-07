@@ -116,6 +116,9 @@ export class GraphRepository {
         acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(rowOptStr(row, 'acceptance_criteria'), [], isStringArray),
         graphId: rowStr(row, 'graph_id'),
         graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
+        // S1 稳定实体身份：map 面板/画布派生徽标都按 entity_key 关联叠加层，
+        // 漏掉这一列会让 graph:get 出来的节点永远拿不到派生态（§2.1）。
+        entityKey: rowOptStr(row, 'entity_key'),
         parentId: rowOptStr(row, 'parent_id'),
         // ⚠️ 这里**不能**用 rowNum(row, 'sort_index')：它是严格的，
         // 根节点的 sort_index 是 NULL → typeof null !== 'number' → 抛 TypeError
