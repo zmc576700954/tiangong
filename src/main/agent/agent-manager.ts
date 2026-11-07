@@ -230,8 +230,6 @@ export class AgentManager {
   private runtime: AgentRuntime | undefined
   /** F3-A：到期 turn 的收割器（随 setRuntime 启动；stopDeadlineReaper 可停） */
   private deadlineReaper: DeadlineReaper | null = null
-  /** main 侧保留:NODE_STATUS_CHANGE 广播回调(发射点已随双轨收敛删除,休眠) */
-  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
   /** F1 契约 4（P-F1）：会话收尾监听器（onSessionCleanedUp 时触发） */
   private sessionEndedListeners: Array<(sessionId: string, outcome: string) => void> = []
 
@@ -1657,10 +1655,6 @@ export class AgentManager {
 
   setSessionStartedCallback(cb: (threadId: string, sessionId: string) => void): void {
     this.sessionStartedCallback = cb
-  }
-
-  setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
-    this.nodeStatusChangeCallback = cb
   }
 
   /**

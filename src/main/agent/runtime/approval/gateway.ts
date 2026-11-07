@@ -174,7 +174,7 @@ export class ApprovalGateway {
     const argsHash = hashArgs(input.toolName, input.args)
     // 旧路径（无 turn）审批：登记活跃会话，供会话级授权的存活校验使用。
     // 启动对账时该集合为空，残留 pending 一律不可兑现 → deny（与 turn 判据一致）。
-    const legacySessionId = legacySessionIdOf(input.runId, input.turnId)
+    const legacySessionId = legacySessionIdOf(input.runId ?? '', input.turnId ?? '')
     if (legacySessionId) this.legacySessions.add(legacySessionId)
     const policyDecision = input.policyDecision ?? 'ask'
     // 配置探针按审批请求所属会话的工作目录读取仓库配置，不能用进程 cwd。
@@ -418,7 +418,8 @@ export class ApprovalGateway {
       if (!row.turn_id) return
       const turn = this.repo.getTurn(row.turn_id)
       // 旧路径没有 turn 行，归属从 run/turn 标识反解；反解失败则 fail-closed。
-      const ownerSessionId = turn?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id)
+      const ownerSessionId =
+        turn?.session_id ?? legacySessionIdOf(row.run_id ?? '', row.turn_id ?? '')
       if (!ownerSessionId || ownerSessionId !== input.sessionId) {
         throw new AgentRuntimeError(
           'APPROVAL_NOT_OWNED',
@@ -509,7 +510,7 @@ export class ApprovalGateway {
     match: GrantMatch,
   ): void {
     // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件。
-    if (legacySessionIdOf(input.runId, input.turnId) !== undefined) return
+    if (legacySessionIdOf(input.runId ?? '', input.turnId ?? '') !== undefined) return
     try {
       const anchorTurn = input.turnId ?? input.subjectId ?? input.runId ?? 'no-turn'
       const seq = this.repo.listTurnEvents(anchorTurn).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
@@ -547,7 +548,7 @@ export class ApprovalGateway {
    */
   private auditPolicyBlock(input: ApprovalRequestInput, guard: GitDirGuardResult): void {
     // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件；拦截结果本身不受影响。
-    if (legacySessionIdOf(input.runId, input.turnId) !== undefined) {
+    if (legacySessionIdOf(input.runId ?? '', input.turnId ?? '') !== undefined) {
       logger.warn(`legacy policy block: ${input.toolName} ${guard.rule}: ${guard.reason}`)
       return
     }
@@ -639,7 +640,7 @@ export class ApprovalGateway {
     // 旧路径没有 turn 行：只有本进程仍挂着 waiter 时才可能兑现。
     // 重启后 waiters 为空 → 与 turn 版本一致地判为不可兑现。
     return (
-      legacySessionIdOf(row.run_id, row.turn_id) !== undefined && this.waiters.has(row.id)
+      legacySessionIdOf(row.run_id ?? '', row.turn_id ?? '') !== undefined && this.waiters.has(row.id)
     )
   }
 
