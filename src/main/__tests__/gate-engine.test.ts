@@ -192,12 +192,15 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
   })
 
   describe('G2 · acceptance 结构化可判定（§5.4 G2 / D1）', () => {
-    const run = (acceptance: string): string[] => {
+    /** 返回完整结论（ok + missing），用于断言「整体通过」而不只是某个码缺席。 */
+    const runFull = (acceptance: string): { ok: boolean; missing: string[] } => {
       const id = insertItem(db, { project_path: makeProjectRoot(), acceptance_json: acceptance })
       const engine = makeEngine(db, fullPassOptions())
       const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
-      return engine.recheck(row).missing
+      const { ok, missing } = engine.recheck(row)
+      return { ok, missing }
     }
+    const run = (acceptance: string): string[] => runFull(acceptance).missing
 
     it('空数组 → acceptance_json_empty', () => {
       expect(run('[]')).toContain('acceptance_json_empty')
@@ -205,7 +208,7 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
     it('非法 JSON → acceptance_json_invalid', () => {
       expect(run('not-json')).toContain('acceptance_json_invalid')
     })
-    it('存量 [{id,text}] → acceptance_item_not_structured:0（D1 未裁决即此判定）', () => {
+    it('存量 [{id,text}] → acceptance_item_not_structured:0（D1 裁决：不自动迁移，仍判此码）', () => {
       expect(run(JSON.stringify([{ id: 'acc1', text: '必须通过' }]))).toContain('acceptance_item_not_structured:0')
     })
     it('未知 type → acceptance_type_unknown:0', () => {
@@ -214,10 +217,22 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
     it('expected 为空串 → acceptance_expected_missing:0', () => {
       expect(run(JSON.stringify([{ type: 'command', expected: '  ' }]))).toContain('acceptance_expected_missing:0')
     })
-    it('含 1 条合法 command + 若干非结构化补充 → G2 通过', () => {
-      expect(
-        run(JSON.stringify([{ id: 'acc0', text: '备注' }, { type: 'file_check', expected: 'dist存在' }])),
-      ).not.toContain('acceptance_item_not_structured:0')
+    it('含 1 条合法 command + 若干非结构化补充 → G2 整体通过（补充条目只作诊断）', () => {
+      const result = runFull(JSON.stringify([{ id: 'acc0', text: '备注' }, { type: 'file_check', expected: 'dist存在' }]))
+      expect(result).toEqual({ ok: true, missing: [] })
+    })
+    it('含 1 条合法 command + 1 条非法结构化补充（未知 type）→ 仍整体通过', () => {
+      const result = runFull(
+        JSON.stringify([{ type: 'command', expected: 'npm test' }, { type: 'vibes', expected: '感觉对' }]),
+      )
+      expect(result).toEqual({ ok: true, missing: [] })
+    })
+    it('无任何合法结构化条目（全部非法）→ 汇总全部诊断码且整体不通过', () => {
+      const result = runFull(JSON.stringify([{ id: 'acc1', text: '备注' }, { type: 'vibes', expected: 'x' }]))
+      expect(result.ok).toBe(false)
+      expect(result.missing).toEqual(
+        expect.arrayContaining(['acceptance_item_not_structured:0', 'acceptance_type_unknown:1']),
+      )
     })
   })
 
