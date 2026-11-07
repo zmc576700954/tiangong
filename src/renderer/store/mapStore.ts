@@ -7,7 +7,18 @@
  */
 
 import { create } from 'zustand'
-import type { WorkItemRow } from '../../main/map/work-item-service'
+
+/** workitem 通道返回行(与主进程 work_items 列对应;渲染层不直接 import main 代码)。 */
+interface WorkItemRowLike {
+  id: string
+  lineage_id: string
+  revision: number
+  anchor_entity_key: string | null
+  title: string
+  status: string
+  gate_status: string
+  updated_at: string
+}
 
 export type ExecutionStateValue =
   | 'untouched' | 'planned' | 'in_progress' | 'implemented'
@@ -122,7 +133,7 @@ export const useMapStore = create<MapState>((set, get) => ({
       title: input.title,
       goal: input.goal,
       projectPath: input.projectPath,
-    })) as unknown as WorkItemRow
+    })) as unknown as WorkItemRowLike
     const summary: WorkItemSummary = {
       id: row.id,
       lineage_id: row.lineage_id,
@@ -141,7 +152,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   startWorkItem: async (id) => {
-    const row = (await window.electronAPI['workitem:run:start']({ id, gateResult: 'pass' })) as unknown as WorkItemRow
+    const row = (await window.electronAPI['workitem:run:start']({ id, gateResult: 'pass' })) as unknown as WorkItemRowLike
     set((state) => {
       const next = new Map(state.overlayByGraph)
       for (const [graphId, overlay] of next) {
@@ -158,7 +169,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   cancelWorkItem: async (id) => {
-    const row = (await window.electronAPI['workitem:cancel'](id)) as unknown as WorkItemRow
+    const row = (await window.electronAPI['workitem:cancel'](id)) as unknown as WorkItemRowLike
     set((state) => {
       const next = new Map(state.overlayByGraph)
       for (const [graphId, overlay] of next) {
