@@ -1588,7 +1588,9 @@ subject_id   TEXT
 
 - 一次性计划审批：`subject_type='test_plan'`，`subject_id=plan_id`，`tool_name='test.execute_plan'`，`args_json` 存规范化命令清单，`args_hash=plan_hash`。
 - 重复使用条件：任何一条命令变更都会改变 `args_hash`；`args_hash` 不匹配即视为未审批，必须重新提交。
-- 单条命令执行**不重复弹审批**；但 `policy_decision='deny'` 的命令即使计划已批准也不执行（计划审批只把 `ask` 提升为 `allow`，不能豁免 `deny`）。
+- 单条命令执行**逐条经过策略门**；`policy_decision='deny'` 的命令即使计划已批准也不执行（计划审批不能豁免 `deny`）。
+- **`ask` 不因计划批准而免审（P0-3 行为变更，2026-11-07）**：计划审批只批准"计划本身"（命令清单 + `plan_hash`），不等于逐条命令已获批准。测试执行时，`evaluateBashPolicy` 判为 `ask` 的命令必须逐条经 `ApprovalGateway`（`subject_type='test_plan'`）放行；未获批准按 `deny` 处理（该条 `skipped` + 后续默认停止）。原口径"计划审批把 `ask` 提升为 `allow`"已废止。
+- `execute()` 必须校验 `approval_id` 存在且指向 `subject_type='test_plan'`、`status='allowed'` 的审批行，并复算当前命令清单的 `plan_hash` 与批准时一致；不一致拒绝执行。
 - 影响面：任何读取 `agent_approvals` 的查询需处理 `run_id/turn_id` 为空；重启重推逻辑需按 `subject_type` 分流，`test_plan` 未批准则计划作废（`expired`），不自动重放。
 - 迁移方式见 §8 S8（该表需要重建，`NOT NULL` 无法用 `ALTER` 放宽）。
 
@@ -1700,7 +1702,7 @@ test 图节点允许 `draft → confirmed → published`。`published` 增加一
 | `test:plan:run` | `{planId}` | `{testRunId}` | `NOT_APPROVED` / `APPROVAL_EXPIRED`；`HASH_MISMATCH`；`CONCURRENT_TEST`（A3 串行）；`WORKTREE_FAILED`（`env_fail`，不建 bug） |
 | `test:run:get` | `{testRunId}` | 结果与步骤状态 | 只读，无失败分支 |
 
-执行顺序：逐条 `evaluateBashPolicy` → `evaluateGitDirWriteGuard` → 以 worktree 为 `cwd` 执行 → 写 `test_results` → 聚合 `test_runs`。`policy_decision='deny'` 的命令即使计划已批准也不执行，写 `denied` 结果；计划其余命令默认停止（`continue_on_failure=false`，后续 `skipped`）。每条命令超时独立（默认 60 分钟，可配置），超时即 `timed_out`。
+执行顺序：逐条 `evaluateBashPolicy` → `evaluateGitDirWriteGuard` → `ask` 命令经 `ApprovalGateway` 逐条放行 → 以 worktree 为 `cwd` 执行 → 写 `test_results` → 聚合 `test_runs`。`policy_decision='deny'` 的命令即使计划已批准也不执行，写 `denied` 结果；`ask` 命令未获网关批准同样按 `deny` 处理（P0-3：计划审批不提升 `ask`）。计划其余命令默认停止（`continue_on_failure=false`，后续 `skipped`）。每条命令超时独立（默认 60 分钟，可配置），超时即 `timed_out`。
 
 ---
 
@@ -3051,7 +3053,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 | 约束 | 本设计如何满足 |
 |---|---|
-| 不绕过审批网关 | TestExecutor 的每条 ask 类命令都由计划级审批覆盖，审批事实写 `agent_approvals`；不新增旁路 API |
+| 不绕过审批网关 | TestExecutor 的每条 `ask` 类命令在执行时逐条经 `ApprovalGateway` 放行，审批事实写 `agent_approvals`；计划审批不提升 `ask`，不新增旁路 API |
 | 不绕过 Bash 策略 | 逐条调用 `evaluateBashPolicy`；`deny` 不可被计划审批豁免 |
 | 不绕过 gitdir 写保护 | 逐条调用 `evaluateGitDirWriteGuard`，命中即 deny（fail-closed）；worktree 创建走主进程受控 git 能力，不经 Bash |
 | 不复用 `RecipeRunner` shell | 明确不复用；TestExecutor 自带执行循环 |

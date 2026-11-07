@@ -12,10 +12,11 @@ import { applyMapS5aSchema, applyMapS7Schema, applyMapS8Schema, applyMapS6aSchem
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { TestPlanService } from '../map/test-plan-service'
 import type { TestCommandRunner } from '../map/test-plan-service'
-import { TestExecutor, GitWorktreeManager, WorktreeFailedError } from '../map/test-executor'
+import { TestExecutor, GitWorktreeManager, WorktreeFailedError, deriveBugEntityKey } from '../map/test-executor'
 import type { WorktreeManagerLike } from '../map/test-executor'
 import { EvidenceService } from '../map/evidence-service'
 import { WorkItemService } from '../map/work-item-service'
+import { ApprovalGateway } from '../agent/runtime/approval/gateway'
 
 function setupDb(): BetterSqlite3.Database {
   const db = new Database(':memory:') as unknown as BetterSqlite3.Database
@@ -38,8 +39,10 @@ function setupDb(): BetterSqlite3.Database {
     CREATE TABLE edges (id TEXT PRIMARY KEY, source TEXT, target TEXT, graph_id TEXT);
     CREATE TABLE bug_nodes (
       id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
-      severity TEXT NOT NULL, status TEXT NOT NULL, node_id TEXT NOT NULL,
-      graph_id TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      severity TEXT NOT NULL CHECK(severity IN ('low', 'medium', 'high', 'critical')),
+      status TEXT NOT NULL CHECK(status IN ('open', 'fixed', 'verified')),
+      node_id TEXT NOT NULL, graph_id TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     );
     CREATE TABLE node_links (
       id TEXT PRIMARY KEY, project_path TEXT NOT NULL,
@@ -85,6 +88,25 @@ function fakeRunner(exitCodes: number[]): TestCommandRunner {
   }
 }
 
+/** 真 ApprovalGateway + 自动 allow：审批事实真的落 agent_approvals（P0-3）。 */
+function autoGateway(db: BetterSqlite3.Database): ApprovalGateway {
+  const holder: { gateway?: ApprovalGateway } = {}
+  const gateway = new ApprovalGateway({
+    db,
+    interactiveTimeoutMs: 60_000,
+    notifier: {
+      onRequest: (payload) => {
+        queueMicrotask(() => {
+          holder.gateway!.decide({ approvalId: payload.approvalId, decision: 'allow', argsHash: payload.argsHash })
+        })
+      },
+      onResolved: () => {},
+    },
+  })
+  holder.gateway = gateway
+  return gateway
+}
+
 describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
   let db: BetterSqlite3.Database
   let plans: TestPlanService
@@ -96,14 +118,14 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     db = setupDb()
     evidence = new EvidenceService(db)
     workItems = new WorkItemService(db)
-    plans = new TestPlanService(db, fakeRunner([]))
+    plans = new TestPlanService(db, fakeRunner([]), autoGateway(db))
     worktrees = fakeWorktrees()
   })
 
   it('全过+干净:E3 落 verifies 目标(dev 节点)+worktree 清理', async () => {
     // 修复任务锚=ek-dev;创建 plan(经 work_item)
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
-    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0])), worktrees, {
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, {
       evidence,
       workItems,
       autoBug: true,
@@ -117,7 +139,7 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
       baseCommit: 'headabc123',
       workRunId: 'wr-test',
     })
-    plans.approve(plan.id, 'u1')
+    await plans.approve(plan.id, 'u1')
     const result = await executor.executeTestPlan(plan.id)
 
     expect(result.status).toBe('passed')
@@ -138,9 +160,9 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
       status: vi.fn(() => ({ head: 'headabc123', dirty: true, dirtyFiles: ['src/auth/login.ts'] })),
     })
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
-    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0])), worktrees, { evidence, workItems })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, { evidence, workItems })
     const plan = plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }], baseCommit: 'headabc123' })
-    plans.approve(plan.id, 'u1')
+    await plans.approve(plan.id, 'u1')
     const result = await executor.executeTestPlan(plan.id)
 
     expect(result.status).toBe('passed')
@@ -154,9 +176,9 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
 
   it('失败 → 自动建 bug 节点+bug_nodes+修复 work_item(draft,§6.6)', async () => {
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
-    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([2])), worktrees, { evidence, workItems, autoBug: true })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([2]), autoGateway(db)), worktrees, { evidence, workItems, autoBug: true })
     const plan = plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }], baseCommit: 'headabc123' })
-    plans.approve(plan.id, 'u1')
+    await plans.approve(plan.id, 'u1')
     const result = await executor.executeTestPlan(plan.id)
     process.stdout.write(`DBG2: ${JSON.stringify({ status: result.status, bugs: result.bugsCreated, items: db.prepare('SELECT command, status FROM test_plan_items').all() })}\n`)
 
@@ -165,6 +187,8 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     const bugNode = db.prepare('SELECT * FROM nodes WHERE id = ?').get(result.bugsCreated[0].bugNodeId) as Record<string, unknown>
     expect(bugNode.type).toBe('bug')
     expect(bugNode.status).toBe('draft') // 节点值域内;bug_nodes.status 才是 open
+    // P0-2：bug 节点需带 entity_key（与图内其它节点同一身份体系）
+    expect(bugNode.entity_key).toBeTruthy()
     const meta = JSON.parse(bugNode.metadata as string)
     expect(meta).toMatchObject({ failure_class: 'assertion', test_run_id: result.testRunId })
     // bug_nodes 行 open
@@ -182,9 +206,9 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
       create: vi.fn(() => { throw new WorktreeFailedError('git worktree boom') }),
     })
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
-    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0])), worktrees, { evidence, workItems, autoBug: true })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([0]), autoGateway(db)), worktrees, { evidence, workItems, autoBug: true })
     const plan = plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }] })
-    plans.approve(plan.id, 'u1')
+    await plans.approve(plan.id, 'u1')
     const result = await executor.executeTestPlan(plan.id)
 
     expect(result.status).toBe('failed')
@@ -199,7 +223,7 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
     const executor = new TestExecutor(
       db,
-      new TestPlanService(db, fakeRunner([0, 0, 0])),
+      new TestPlanService(db, fakeRunner([0, 0, 0]), autoGateway(db)),
       worktrees,
       { evidence, workItems, autoBug: false },
     )
@@ -207,16 +231,75 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
       projectPath: '/p',
       workItemId: wi.id,
       items: [{ command: 'rm -rf .git' }, { command: 'npm t 1' }, { command: 'npm t 2' }],
+      workRunId: 'wr-denied',
     })
-    plans.approve(plan.id, 'u1')
+    await plans.approve(plan.id, 'u1')
     // gitdir guard 对 .git 写类命令 block → deny(rm -rf .git 为 critical 零审批写)
-    await executor.executeTestPlan(plan.id)
+    const result = await executor.executeTestPlan(plan.id)
 
     const items = db.prepare('SELECT seq, status, policy_decision FROM test_plan_items WHERE plan_id = ? ORDER BY seq').all(plan.id) as Array<{ seq: number; status: string; policy_decision: string | null }>
     expect(items[0]).toMatchObject({ status: 'skipped', policy_decision: 'deny' })
     expect(items[1]).toMatchObject({ status: 'skipped' }) // 后续默认停止
     expect(items[2]).toMatchObject({ status: 'skipped' })
-    // 全被 deny → 无执行无失败,聚合为 passed(零失败口径);skip 链是本测重点
+
+    // P0-1：全 deny = 零执行，即使带 work_run_id 也不得聚合为 passed、不得产出 E3
+    expect(result.status).toBe('failed')
+    expect(result.e3.eligible).toBe(false)
+    const run = db.prepare('SELECT status, passed, failed, skipped FROM test_runs WHERE plan_id = ?').get(plan.id) as Record<string, unknown>
+    expect(run).toMatchObject({ status: 'failed', passed: 0, failed: 0, skipped: 3 })
+    expect(plans.getPlan(plan.id)!.status).toBe('failed')
+    // 证据最高 E2（dirty/失败事实），绝不写 E3
+    const ev = db.prepare('SELECT evidence_level FROM node_evidence').get() as { evidence_level: string } | undefined
+    expect(ev?.evidence_level).toBe('E2')
+    expect(db.prepare("SELECT COUNT(*) AS c FROM node_evidence WHERE evidence_level = 'E3'").get()).toMatchObject({ c: 0 })
+  })
+
+  it('同一失败跑两次 → 派生稳定 entity_key,只产生一个 bug 节点(P0-2)', async () => {
+    const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([2]), autoGateway(db)), worktrees, {
+      evidence,
+      workItems,
+      autoBug: true,
+    })
+    const makePlan = () =>
+      plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }], baseCommit: 'headabc123' })
+
+    const p1 = makePlan()
+    await plans.approve(p1.id, 'u1')
+    const r1 = await executor.executeTestPlan(p1.id)
+    expect(r1.bugsCreated).toHaveLength(1)
+
+    const p2 = makePlan()
+    await plans.approve(p2.id, 'u1')
+    const r2 = await executor.executeTestPlan(p2.id)
+
+    expect(r2.bugsCreated).toEqual([]) // 同一失败复用,不新建
+    const bugs = db.prepare("SELECT id, entity_key FROM nodes WHERE type = 'bug'").all() as Array<{ id: string; entity_key: string }>
+    expect(bugs).toHaveLength(1)
+    expect(bugs[0].id).toBe(r1.bugsCreated[0].bugNodeId)
+    expect(bugs[0].entity_key).toBe(
+      deriveBugEntityKey('/p', { spec_id: null, command: 'npm t', status: 'failed', exit_code: 2 }),
+    )
+    expect((db.prepare('SELECT COUNT(*) AS c FROM bug_nodes').get() as { c: number }).c).toBe(1)
+  })
+
+  it('P0-2:bug_nodes 插入失败 → 同事务整体回滚,不留孤儿节点(§6.6)', async () => {
+    // 让 bug_nodes 写入必然失败（模拟 CHECK/约束错误），节点插入必须先回滚
+    db.exec(`CREATE TRIGGER fail_bug_nodes BEFORE INSERT ON bug_nodes BEGIN SELECT RAISE(ABORT, 'boom'); END;`)
+    const wi = workItems.createDraft({ graphId: 'g-dev', anchorEntityKey: 'ek-dev', title: '实现登录', origin: 'derived_plan' })
+    const executor = new TestExecutor(db, new TestPlanService(db, fakeRunner([2]), autoGateway(db)), worktrees, {
+      evidence,
+      workItems,
+      autoBug: true,
+    })
+    const plan = plans.createPlan({ projectPath: '/p', workItemId: wi.id, items: [{ command: 'npm t' }], baseCommit: 'headabc123' })
+    await plans.approve(plan.id, 'u1')
+    const result = await executor.executeTestPlan(plan.id)
+
+    expect(result.status).toBe('failed')
+    expect(result.bugsCreated).toEqual([])
+    expect((db.prepare("SELECT COUNT(*) AS c FROM nodes WHERE type = 'bug'").get() as { c: number }).c).toBe(0)
+    expect((db.prepare('SELECT COUNT(*) AS c FROM bug_nodes').get() as { c: number }).c).toBe(0)
   })
 })
 

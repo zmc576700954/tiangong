@@ -19,6 +19,7 @@ import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
 import type { ApprovalGateway } from '../agent/runtime/approval/gateway'
+import { hashArgs } from '../agent/runtime/util'
 import type { ApprovalOutcome } from '@shared/types/agent-runtime'
 
 const logger = createLogger('TestPlanService')
@@ -124,8 +125,14 @@ export class TestPlanService {
   constructor(
     private readonly db: BetterSqlite3.Database,
     private readonly runner: TestCommandRunner,
-    private readonly gateway?: ApprovalGateway,
-  ) {}
+    private readonly gateway: ApprovalGateway,
+  ) {
+    // §6.3/P0-3：审批网关是必需依赖，不是可选装饰。缺失即 fail-closed，
+    // 不允许退化成「本地无条件 approved」。
+    if (!gateway) {
+      throw new TestPlanError('TestPlanService 缺少 ApprovalGateway：计划审批必须走网关（fail-closed,§6.3）')
+    }
+  }
 
   getPlan(id: string): TestPlanRow | undefined {
     return this.db.prepare('SELECT * FROM test_plans WHERE id = ?').get(id) as TestPlanRow | undefined
@@ -140,7 +147,7 @@ export class TestPlanService {
   }
 
   /** plan_hash = 计划内容哈希（§6.3 C3 展示;args_hash 校验对齐）。 */
-  static hashPlan(items: Array<{ command: string; cwd?: string }>): string {
+  static hashPlan(items: Array<{ command: string; cwd?: string | null }>): string {
     const canonical = JSON.stringify(items.map((i) => ({ command: i.command, cwd: i.cwd ?? null })))
     return createHash('sha256').update(canonical).digest('hex')
   }
@@ -199,38 +206,70 @@ export class TestPlanService {
 
     this.db.prepare("UPDATE test_plans SET status = 'awaiting_approval' WHERE id = ? AND status = 'draft'").run(planId)
 
-    if (this.gateway) {
-      const outcome: ApprovalOutcome = await this.gateway.request({
-        toolName: 'test_plan',
-        args: { planId, planHash: plan.plan_hash },
-        subjectType: 'test_plan',
-        subjectId: planId,
-        risk: 'medium',
-        policyDecision: 'ask',
-        mode: 'interactive',
-        cwd: plan.project_path,
-      })
-      if (outcome.decision !== 'allow') {
-        this.db.prepare("UPDATE test_plans SET status = 'cancelled' WHERE id = ? AND status = 'awaiting_approval'").run(planId)
-        throw new TestPlanError(`测试计划审批未通过（${outcome.decision}）`)
-      }
-      this.db
-        .prepare("UPDATE test_plans SET status = 'approved', approved_at = ? WHERE id = ? AND status = 'awaiting_approval'")
-        .run(Date.now(), planId)
+    const outcome: ApprovalOutcome = await this.gateway.request({
+      toolName: 'test_plan',
+      args: { planId, planHash: plan.plan_hash },
+      subjectType: 'test_plan',
+      subjectId: planId,
+      risk: 'medium',
+      policyDecision: 'ask',
+      mode: 'interactive',
+      cwd: plan.project_path,
+    })
+    if (outcome.decision !== 'allow') {
+      this.db.prepare("UPDATE test_plans SET status = 'cancelled' WHERE id = ? AND status = 'awaiting_approval'").run(planId)
+      throw new TestPlanError(`测试计划审批未通过（${outcome.decision}）`)
     }
+    // §6.3：审批事实必须落 approval_id —— 指向 agent_approvals(subject_type='test_plan') 的行,
+    // execute 凭它校验「批准时到底批了什么」。
+    this.db
+      .prepare("UPDATE test_plans SET status = 'approved', approval_id = ?, approved_at = ? WHERE id = ? AND status = 'awaiting_approval'")
+      .run(outcome.approvalId, Date.now(), planId)
     return this.getPlan(planId)!
   }
 
-  /** 手动批准（宿主 UI 已有网关弹窗之外的显式路径;审计仍走 subject 行）。 */
-  approve(planId: string, _approvedBy: string): TestPlanRow {
+  /**
+   * 批准（P0-3）：不再本地无条件 UPDATE。
+   *  - 只允许 draft / awaiting_approval（running/completed 等终态拒绝）；
+   *  - 必须走 ApprovalGateway（subject_type='test_plan'）；
+   *  - allow → 写 approval_id + approved_at；deny → cancelled + 抛错。
+   */
+  async approve(planId: string, _approvedBy: string): Promise<TestPlanRow> {
     const plan = this.getPlan(planId)
     if (!plan) throw new TestPlanError(`test_plan ${planId} 不存在`)
     if (plan.status !== 'awaiting_approval' && plan.status !== 'draft') {
       throw new TestPlanError(`plan ${planId} 状态 ${plan.status} 不可批准`)
     }
+    // 批准前复算内容哈希：命令清单被改过就不是同一个计划。
+    if (TestPlanService.hashPlan(this.listItems(planId)) !== plan.plan_hash) {
+      throw new TestPlanError(`plan ${planId} plan_hash 与当前命令清单不一致，必须重新提交（§6.3）`)
+    }
     this.db
-      .prepare("UPDATE test_plans SET status = 'approved', approved_at = ? WHERE id = ?")
-      .run(Date.now(), planId)
+      .prepare("UPDATE test_plans SET status = 'awaiting_approval' WHERE id = ? AND status = 'draft'")
+      .run(planId)
+
+    const outcome: ApprovalOutcome = await this.gateway.request({
+      toolName: 'test_plan',
+      args: { planId, planHash: plan.plan_hash },
+      subjectType: 'test_plan',
+      subjectId: planId,
+      risk: 'medium',
+      policyDecision: 'ask',
+      mode: 'interactive',
+      cwd: plan.project_path,
+    })
+    if (outcome.decision !== 'allow') {
+      this.db
+        .prepare("UPDATE test_plans SET status = 'cancelled' WHERE id = ? AND status = 'awaiting_approval'")
+        .run(planId)
+      throw new TestPlanError(`测试计划审批未通过（${outcome.decision}）`)
+    }
+    const changed = this.db
+      .prepare("UPDATE test_plans SET status = 'approved', approval_id = ?, approved_at = ? WHERE id = ? AND status = 'awaiting_approval'")
+      .run(outcome.approvalId, Date.now(), planId)
+    if (changed.changes === 0) {
+      throw new TestPlanError(`plan ${planId} 状态已变更，批准未生效`)
+    }
     return this.getPlan(planId)!
   }
 
@@ -242,9 +281,9 @@ export class TestPlanService {
   async execute(planId: string, opts?: {
     headCommit?: string
     codeDirty?: boolean
-    /** §6.8:策略门(evaluateBashPolicy+GitDirGuard,逐条调用;deny→skipped+后续停止) */
+    /** §6.8:策略门(evaluateBashPolicy+GitDirGuard,逐条调用;ask 需网关逐条批准;deny→skipped+后续停止) */
     cwdOverride?: string
-    policyGate?: (command: string) => { decision: 'allow' | 'deny'; reason?: string }
+    policyGate?: (command: string) => { decision: 'allow' | 'ask' | 'deny'; reason?: string }
   }): Promise<{
     run: TestRunRow
     e3: { eligible: boolean; reason: string; codeVersion: string | null }
@@ -252,6 +291,31 @@ export class TestPlanService {
     const plan = this.getPlan(planId)
     if (!plan) throw new TestPlanError(`test_plan ${planId} 不存在`)
     if (plan.status !== 'approved') throw new TestPlanError(`plan ${planId} 未批准,不得执行（§6.2）`)
+
+    // P0-3：执行凭审批事实放行——approval_id 必须存在,且指向 subject=test_plan 的
+    // allowed 审批行;approved args 里绑定的 plan_hash 必须与当前内容一致。
+    if (!plan.approval_id) {
+      throw new TestPlanError(`plan ${planId} 缺少 approval_id：未获审批,不得执行（§6.2/§6.3）`)
+    }
+    const items = this.listItems(planId)
+    const currentHash = TestPlanService.hashPlan(items)
+    if (currentHash !== plan.plan_hash) {
+      throw new TestPlanError(`plan ${planId} plan_hash 与当前命令清单不一致：计划内容已变更,必须重新审批（§6.3）`)
+    }
+    const approval = this.db
+      .prepare('SELECT subject_type, subject_id, status, args_hash FROM agent_approvals WHERE id = ?')
+      .get(plan.approval_id) as
+      | { subject_type: string | null; subject_id: string | null; status: string; args_hash: string }
+      | undefined
+    if (
+      !approval ||
+      approval.subject_type !== 'test_plan' ||
+      approval.subject_id !== planId ||
+      approval.status !== 'allowed' ||
+      approval.args_hash !== hashArgs('test_plan', { planId, planHash: plan.plan_hash })
+    ) {
+      throw new TestPlanError(`plan ${planId} 的审批事实无效：approval_id=${plan.approval_id} 不存在/主体不符/未允许/哈希不符（§6.3）`)
+    }
 
     const runId = `tr_${Date.now()}_${randomUUID().slice(0, 8)}`
     const startedAt = Date.now()
@@ -263,37 +327,60 @@ export class TestPlanService {
       )
       .run(runId, planId, plan.project_path, plan.graph_id ?? null, plan.work_item_id ?? null, plan.work_run_id ?? null, plan.base_commit ?? null, startedAt)
 
-    const items = this.listItems(planId)
     let passed = 0
     let failed = 0
     let skipped = 0
 
     let gateStopped = false
     for (const item of items) {
+      // 前序失败/deny 后默认停止:余项 skipped(§6.8.2 continue_on_failure=false),
+      // 不再为不会执行的命令请求审批。
+      if (gateStopped && item.status === 'pending') {
+        this.db.prepare("UPDATE test_plan_items SET status = 'skipped' WHERE id = ?").run(item.id)
+        skipped += 1
+        continue
+      }
       // §6.8/§6.3:策略门逐条;deny → skipped+denied 记录,后续默认停止(continue_on_failure=false)
       if (opts?.policyGate) {
         const verdict = opts.policyGate(item.command)
-        item.policy_decision = verdict.decision
-        if (verdict.decision === 'deny') {
+        let decision: 'allow' | 'ask' | 'deny' = verdict.decision
+        let denyReason = verdict.reason
+        if (decision === 'ask') {
+          // P0-3：计划已批准 ≠ 命令已批准。ask 不得被策略门直接提升为 allow,
+          // 必须逐条经 ApprovalGateway 真实放行；未放行按 deny 处理。
+          const outcome: ApprovalOutcome = await this.gateway.request({
+            toolName: 'Bash',
+            args: { command: item.command },
+            subjectType: 'test_plan',
+            subjectId: planId,
+            risk: 'medium',
+            policyDecision: 'ask',
+            mode: 'interactive',
+            cwd: opts?.cwdOverride,
+          })
+          if (outcome.decision === 'allow') {
+            decision = 'allow'
+          } else {
+            decision = 'deny'
+            denyReason = `命令审批未通过（${outcome.decidedBy}）`
+          }
+        }
+        item.policy_decision = decision
+        if (decision === 'deny') {
           gateStopped = true
+          skipped += 1
           this.db
             .prepare("UPDATE test_plan_items SET status = 'skipped', policy_decision = 'deny', targeted_reason = ? WHERE id = ?")
-            .run(`policy deny:${verdict.reason ?? ''}`, item.id)
+            .run(`policy deny:${denyReason ?? ''}`, item.id)
           this.db
             .prepare(
               `INSERT INTO test_results (id, test_run_id, plan_item_id, status, failure_summary, created_at)
                VALUES (?, ?, ?, 'skipped', ?, ?)`,
             )
-            .run(`tres_${Date.now()}_${randomUUID().slice(0, 8)}`, runId, item.id, `policy deny:${verdict.reason ?? ''}`, Date.now())
+            .run(`tres_${Date.now()}_${randomUUID().slice(0, 8)}`, runId, item.id, `policy deny:${denyReason ?? ''}`, Date.now())
           continue
         }
         this.db.prepare('UPDATE test_plan_items SET policy_decision = ? WHERE id = ?').run('allow', item.id)
-      }
-      if (gateStopped && item.status === 'pending') {
-        // 前序失败/deny 后默认停止:余项 skipped(§6.8.2 continue_on_failure=false)
-        this.db.prepare("UPDATE test_plan_items SET status = 'skipped' WHERE id = ?").run(item.id)
-        skipped += 1
-        continue
       }
       const itemStarted = Date.now()
       this.db.prepare("UPDATE test_plan_items SET status = 'running', started_at = ? WHERE id = ?").run(itemStarted, item.id)
@@ -338,7 +425,10 @@ export class TestPlanService {
       }
     }
 
-    const runStatus = failed > 0 ? 'failed' : 'passed'
+    // P0-1：必须有实际执行且全过才记 passed。全 deny / 全 skip 或零执行
+    // (passed=0) 一律归为 failed —— 否则零执行计划会凭「无失败」产出 E3。
+    const allExecutedAndPassed = passed > 0 && failed === 0 && skipped === 0
+    const runStatus = allExecutedAndPassed ? 'passed' : 'failed'
     const endedAt = Date.now()
     this.db
       .prepare(
@@ -353,11 +443,17 @@ export class TestPlanService {
     // passed + cwd/worktree 非空 + HEAD 可得 + dirty=0
     const codeVersion = opts?.headCommit ?? null
     const dirty = opts?.codeDirty ?? false
-    const hasCwd = Boolean(plan.worktree_path) || Boolean(items[0]?.cwd ?? plan.project_path)
+    // P0-1：只有真实执行目录（worktree / 显式 cwd / 命令自带 cwd）才算「有 cwd」。
+    // 不得回退 plan.project_path —— 那会让 hasCwd 恒真。
+    const hasCwd = Boolean(opts?.cwdOverride || plan.worktree_path || items[0]?.cwd)
     const eligible = runStatus === 'passed' && hasCwd && codeVersion != null && !dirty
     const reason = !eligible
       ? runStatus !== 'passed'
-        ? '测试未全部通过'
+        ? passed === 0 && failed === 0
+          ? '零执行（全部 skip/deny），不得产出 E3（§6.2.1）'
+          : skipped > 0
+            ? '存在 skip/deny，测试未全部执行'
+            : '测试未全部通过'
         : !codeVersion
           ? '无 HEAD commit（非 git 项目到不了 E3,§3.5）'
           : dirty

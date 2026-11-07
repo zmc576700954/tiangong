@@ -12,6 +12,7 @@ import { applyMapS8Schema } from '../map/schema'
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { TestPlanService } from '../map/test-plan-service'
 import type { TestCommandRunner } from '../map/test-plan-service'
+import { ApprovalGateway } from '../agent/runtime/approval/gateway'
 
 function setupDb(): BetterSqlite3.Database {
   const db = new Database(':memory:') as unknown as BetterSqlite3.Database
@@ -40,13 +41,31 @@ function fakeRunner(script: Array<{ exitCode: number; timedOut?: boolean }>): Te
   }
 }
 
+function autoGateway(db: BetterSqlite3.Database): ApprovalGateway {
+  const holder: { gateway?: ApprovalGateway } = {}
+  const gateway = new ApprovalGateway({
+    db,
+    interactiveTimeoutMs: 60_000,
+    notifier: {
+      onRequest: (payload) => {
+        queueMicrotask(() => {
+          holder.gateway!.decide({ approvalId: payload.approvalId, decision: 'allow', argsHash: payload.argsHash })
+        })
+      },
+      onResolved: () => {},
+    },
+  })
+  holder.gateway = gateway
+  return gateway
+}
+
 describe('TestPlanService(§6.2/§6.3)', () => {
   let db: BetterSqlite3.Database
   let svc: TestPlanService
 
   beforeEach(() => {
     db = setupDb()
-    svc = new TestPlanService(db, fakeRunner([]))
+    svc = new TestPlanService(db, fakeRunner([]), autoGateway(db))
   })
 
   it('创建:draft + items + plan_hash(内容哈希,可复算)', () => {
@@ -81,6 +100,8 @@ describe('TestPlanService(§6.2/§6.3)', () => {
     const plan = svcAllow.createPlan({ projectPath: '/p', items: [{ command: 'npm t' }] })
     const approved = await svcAllow.submitForApproval(plan.id)
     expect(approved.status).toBe('approved')
+    // §6.3：审批事实落 approval_id（不再是「本地无条件 approved」）
+    expect(approved.approval_id).toBe('appr-1')
     // 网关以 subject=test_plan 被调用(不绕过网关,§6.3)
     expect(gatewayAllow.request).toHaveBeenCalledWith(expect.objectContaining({
       toolName: 'test_plan',
@@ -98,13 +119,13 @@ describe('TestPlanService(§6.2/§6.3)', () => {
 
   it('执行回写:全过 → run passed/results 落行/E3 eligible;有失败 → failed + E3 拒', async () => {
     const runner = fakeRunner([{ exitCode: 0 }, { exitCode: 0 }, { exitCode: 2 }])
-    const svcRun = new TestPlanService(db, runner)
+    const svcRun = new TestPlanService(db, runner, autoGateway(db))
     const plan = svcRun.createPlan({
       projectPath: '/p',
       worktreePath: '/wt',
       items: [{ command: 't1', cwd: '/p' }, { command: 't2' }, { command: 't3' }],
     })
-    svcRun.approve(plan.id, 'u1')
+    await svcRun.approve(plan.id, 'u1')
     const { run, e3 } = await svcRun.execute(plan.id, { headCommit: 'abc123', codeDirty: false })
 
     expect(run.status).toBe('failed')
@@ -124,26 +145,26 @@ describe('TestPlanService(§6.2/§6.3)', () => {
 
   it('E3 资格:全过+HEAD+非 dirty+worktree → eligible;dirty → 拒(§6.2.1)', async () => {
     const runner = fakeRunner([{ exitCode: 0 }, { exitCode: 0 }])
-    const svcRun = new TestPlanService(db, runner)
+    const svcRun = new TestPlanService(db, runner, autoGateway(db))
     const plan = svcRun.createPlan({
       projectPath: '/p',
       worktreePath: '/wt',
       items: [{ command: 't1' }, { command: 't2' }],
     })
-    svcRun.approve(plan.id, 'u1')
+    await svcRun.approve(plan.id, 'u1')
     const ok = await svcRun.execute(plan.id, { headCommit: 'abc', codeDirty: false })
     expect(ok.e3.eligible).toBe(true)
     expect(ok.e3.codeVersion).toBe('abc')
 
     const plan2 = svcRun.createPlan({ projectPath: '/p', worktreePath: '/wt', items: [{ command: 't1' }, { command: 't2' }] })
-    svcRun.approve(plan2.id, 'u1')
+    await svcRun.approve(plan2.id, 'u1')
     const dirty = await svcRun.execute(plan2.id, { headCommit: 'def', codeDirty: true })
     expect(dirty.e3.eligible).toBe(false)
     expect(dirty.e3.reason).toContain('dirty')
 
     // 无 HEAD(非 git)→ 拒(§3.5:非 git 到不了 E3)
     const plan3 = svcRun.createPlan({ projectPath: '/p', worktreePath: '/wt', items: [{ command: 't1' }, { command: 't2' }] })
-    svcRun.approve(plan3.id, 'u1')
+    await svcRun.approve(plan3.id, 'u1')
     const noGit = await svcRun.execute(plan3.id)
     expect(noGit.e3.eligible).toBe(false)
     expect(noGit.e3.reason).toContain('HEAD')
@@ -158,14 +179,87 @@ describe('TestPlanService(§6.2/§6.3)', () => {
         throw new Error('spawn ENOENT')
       },
     }
-    const svcErr = new TestPlanService(db, throwing)
+    const svcErr = new TestPlanService(db, throwing, autoGateway(db))
     const plan2 = svcErr.createPlan({ projectPath: '/p', items: [{ command: 't1' }, { command: 't2' }] })
-    svcErr.approve(plan2.id, 'u1')
+    await svcErr.approve(plan2.id, 'u1')
     const { run } = await svcErr.execute(plan2.id)
     expect(run.status).toBe('failed')
     expect(run.failed).toBe(2)
     const errRow = db.prepare("SELECT failure_class FROM test_results WHERE status = 'error'").get() as { failure_class: string }
     expect(errRow.failure_class).toBe('infra')
+  })
+
+  it('P0-1:零执行(全 deny/skip)→ 未通过,不产出 E3', async () => {
+    const plan = svc.createPlan({
+      projectPath: '/p',
+      worktreePath: '/wt',
+      items: [{ command: 't1' }, { command: 't2' }],
+    })
+    await svc.approve(plan.id, 'u1')
+    const { run, e3 } = await svc.execute(plan.id, {
+      headCommit: 'abc',
+      codeDirty: false,
+      policyGate: () => ({ decision: 'deny', reason: 'test deny' }),
+    })
+
+    expect(run.status).toBe('failed')
+    expect(run.passed).toBe(0)
+    expect(run.skipped).toBe(2)
+    expect(e3.eligible).toBe(false)
+    expect(e3.reason).toContain('零执行')
+    expect(svc.getPlan(plan.id)!.status).toBe('failed')
+  })
+
+  it('P0-1:部分 skip → 不算 passed(必须实际执行且全过)', async () => {
+    const plan = svc.createPlan({
+      projectPath: '/p',
+      worktreePath: '/wt',
+      items: [{ command: 't1' }, { command: 't2' }],
+    })
+    await svc.approve(plan.id, 'u1')
+    let n = 0
+    const { run, e3 } = await svc.execute(plan.id, {
+      headCommit: 'abc',
+      codeDirty: false,
+      policyGate: () => (n++ === 0 ? { decision: 'allow' } : { decision: 'deny', reason: 'second denied' }),
+    })
+    expect(run.status).toBe('failed')
+    expect(run.passed).toBe(1)
+    expect(run.skipped).toBe(1)
+    expect(e3.eligible).toBe(false)
+  })
+
+  it('P0-3:approve 走网关并写审批事实;非审批态拒绝', async () => {
+    const plan = svc.createPlan({ projectPath: '/p', items: [{ command: 'npm t' }] })
+    expect(plan.approval_id).toBeNull()
+    const approved = await svc.approve(plan.id, 'u1')
+    expect(approved.status).toBe('approved')
+    expect(approved.approval_id).toBeTruthy()
+    const row = db
+      .prepare('SELECT subject_type, subject_id, status FROM agent_approvals WHERE id = ?')
+      .get(approved.approval_id!) as { subject_type: string; subject_id: string; status: string }
+    expect(row).toMatchObject({ subject_type: 'test_plan', subject_id: plan.id, status: 'allowed' })
+    // 终态/已批准再批 → 拒绝（不再无条件 UPDATE）
+    await expect(svc.approve(plan.id, 'u1')).rejects.toThrow(/不可批准/)
+  })
+
+  it('P0-3:execute 校验 approval_id 与 plan_hash,不满足拒绝执行', async () => {
+    // 缺 approval_id（状态被绕过成 approved）
+    const p1 = svc.createPlan({ projectPath: '/p', worktreePath: '/wt', items: [{ command: 't1' }] })
+    db.prepare("UPDATE test_plans SET status = 'approved' WHERE id = ?").run(p1.id)
+    await expect(svc.execute(p1.id, { headCommit: 'abc', codeDirty: false })).rejects.toThrow(/approval_id/)
+
+    // 批准后命令被改 → plan_hash 不一致
+    const p2 = svc.createPlan({ projectPath: '/p', worktreePath: '/wt', items: [{ command: 't1' }] })
+    await svc.approve(p2.id, 'u1')
+    db.prepare('UPDATE test_plan_items SET command = ? WHERE plan_id = ?').run('rm -rf /', p2.id)
+    await expect(svc.execute(p2.id, { headCommit: 'abc', codeDirty: false })).rejects.toThrow(/plan_hash/)
+
+    // 审批事实被撤/非 allowed → 拒绝
+    const p3 = svc.createPlan({ projectPath: '/p', worktreePath: '/wt', items: [{ command: 't1' }] })
+    const approved3 = await svc.approve(p3.id, 'u1')
+    db.prepare("UPDATE agent_approvals SET status = 'denied' WHERE id = ?").run(approved3.approval_id!)
+    await expect(svc.execute(p3.id, { headCommit: 'abc', codeDirty: false })).rejects.toThrow(/审批事实无效/)
   })
 })
 

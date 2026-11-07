@@ -255,6 +255,10 @@ export class ApprovalGateway {
       runId: input.runId,
       turnId: input.turnId,
       stepId: input.stepId,
+      // §7.1/D6：计划/任务级审批必须落 subject，否则 test_plan 审批在
+      // agent_approvals 里会退化成无主体的 agent_turn 行，无法被 execute 校验。
+      subjectType: input.subjectType,
+      subjectId: input.subjectId,
       toolName: input.toolName,
       argsJson: JSON.stringify(input.args),
       argsHash,

@@ -27,6 +27,7 @@ import { evaluateBashPolicy } from '../agent/runtime/approval/bash-readonly'
 import { evaluateGitDirWriteGuard } from '../agent/runtime/approval/gitdir-write-guard'
 import { type TestPlanService, TestPlanError } from './test-plan-service'
 import type { TestPlanRow, TestPlanItemRow } from './test-plan-service'
+import { normalizeTitle } from '../map-migration/entity-key-backfill'
 import { type EvidenceService } from './evidence-service'
 import { type WorkItemService } from './work-item-service'
 import { scheduleExecutionRecompute } from './execution-state'
@@ -38,6 +39,22 @@ export class WorktreeFailedError extends Error {
     super(message)
     this.name = 'WorktreeFailedError'
   }
+}
+
+/**
+ * bug 节点的派生稳定身份。规范与 entity-key-backfill.ts 一致：规范化文本 + `|`
+ * 分隔组件 + sha256 hex（那里是 type|title|parent_chain|ordinal，这里是
+ * bug|project|test_item|failure_signature）。同一 (项目, 测试项, 失败签名)
+ * 反复失败复用同一实体，避免每次失败都新建 bug 节点。
+ */
+export function deriveBugEntityKey(
+  projectPath: string,
+  item: Pick<TestPlanItemRow, 'spec_id' | 'command' | 'status' | 'exit_code'>,
+): string {
+  const project = normalizeTitle(projectPath).replace(/\/+$/, '')
+  const testItem = item.spec_id ? normalizeTitle(item.spec_id) : normalizeTitle(item.command)
+  const failure = `${item.status}|exit=${item.exit_code ?? ''}`
+  return createHash('sha256').update(`bug|${project}|${testItem}|${failure}`).digest('hex')
 }
 
 /** worktree 管理器（主进程受控 git 能力;测试可注入 fake）。 */
@@ -143,9 +160,10 @@ export class TestExecutor {
     this.db.prepare('UPDATE test_plans SET worktree_path = ?, base_commit = ? WHERE id = ?').run(worktreePath, baseCommit, planId)
 
     // ---- Step 3-4:执行(策略门逐条;cwd=worktree) ----
-    const policyGate = (command: string): { decision: 'allow' | 'deny'; reason?: string } => {
-      // 复用 Agent 同一套分级(§6.1):ask 已由计划审批提升为 allow(§6.3);
-      // risk=critical 与 gitdir block 是仅有的硬 deny——计划审批不能豁免。
+    const policyGate = (command: string): { decision: 'allow' | 'ask' | 'deny'; reason?: string } => {
+      // 复用 Agent 同一套分级(§6.1)。P0-3：策略门的 ask 不再被「计划已批准」
+      // 提升为 allow——ask 交回 execute(),由 ApprovalGateway 逐条真实放行;
+      // 只有 allow 免审,critical 与 gitdir block 是硬 deny。
       const bash = evaluateBashPolicy(command, { cwd: worktreePath })
       if (bash.decision === 'blocked-empty') {
         return { decision: 'deny', reason: `bash-policy:空命令(${bash.rule})` }
@@ -156,6 +174,9 @@ export class TestExecutor {
       const guard = evaluateGitDirWriteGuard('Bash', { command }, { cwd: worktreePath })
       if (guard.verdict === 'block') {
         return { decision: 'deny', reason: `gitdir-guard:${guard.reason}` }
+      }
+      if (bash.decision === 'ask') {
+        return { decision: 'ask', reason: `bash-policy:${bash.rule}(${bash.reason})` }
       }
       return { decision: 'allow' }
     }
@@ -301,35 +322,46 @@ export class TestExecutor {
     const now = new Date().toISOString()
     for (const item of failedItems) {
       const title = `测试失败:${item.command.slice(0, 60)}`
+      // 派生稳定身份：同一失败（项目+测试项+失败签名）反复出现时复用，不重复建节点。
+      const entityKey = deriveBugEntityKey(plan.project_path, item)
+      const existing = this.db
+        .prepare("SELECT id FROM nodes WHERE graph_id = ? AND entity_key = ? AND type = 'bug'")
+        .get(devGraph.id, entityKey) as { id: string } | undefined
+      if (existing) continue
       const bugNodeId = `n-bug-${randomUUID().slice(0, 8)}`
       try {
-        // bug 图节点(status 用节点值域 'draft';证据链入 metadata,§6.6-6 可反查)
-        this.db
-          .prepare(
-            `INSERT INTO nodes (id, type, status, title, graph_id, graph_type, position_x, position_y, metadata, created_at, updated_at)
-             VALUES (?, 'bug', 'draft', ?, ?, 'dev', 0, 0, ?, ?, ?)`,
-          )
-          .run(
-            bugNodeId, title, devGraph.id,
-            JSON.stringify({
-              test_run_id: testRunId,
-              plan_id: plan.id,
-              plan_item_id: item.id,
-              failure_class: item.status === 'timed_out' ? 'timeout' : 'assertion',
-              verifies_entity_key: anchor?.anchor_entity_key ?? null,
-            }),
-            now, now,
-          )
-        this.db
-          .prepare(
-            `INSERT INTO bug_nodes (id, title, description, severity, status, node_id, graph_id, created_at, updated_at)
-             VALUES (?, ?, ?, 'major', 'open', ?, ?, ?, ?)`,
-          )
-          .run(
-            `bug_${randomUUID().slice(0, 8)}`, title,
-            `测试计划 ${plan.id} 用例失败(${item.status})。证据链:test_run=${testRunId} plan_item=${item.id}`,
-            bugNodeId, devGraph.id, now, now,
-          )
+        // P0-2：bug 节点与 bug_nodes 必须同事务——任一步失败整体回滚,
+        // 否则会留下没有 bug 记录的孤儿节点。bug 节点带 entity_key,
+        // 与图内其它节点同一身份体系(evidence/links/UNIQUE(graph_id, entity_key))。
+        const insertBug = this.db.transaction(() => {
+          this.db
+            .prepare(
+              `INSERT INTO nodes (id, type, status, title, graph_id, graph_type, entity_key, position_x, position_y, metadata, created_at, updated_at)
+               VALUES (?, 'bug', 'draft', ?, ?, 'dev', ?, 0, 0, ?, ?, ?)`,
+            )
+            .run(
+              bugNodeId, title, devGraph.id, entityKey,
+              JSON.stringify({
+                test_run_id: testRunId,
+                plan_id: plan.id,
+                plan_item_id: item.id,
+                failure_class: item.status === 'timed_out' ? 'timeout' : 'assertion',
+                verifies_entity_key: anchor?.anchor_entity_key ?? null,
+              }),
+              now, now,
+            )
+          this.db
+            .prepare(
+              `INSERT INTO bug_nodes (id, title, description, severity, status, node_id, graph_id, created_at, updated_at)
+               VALUES (?, ?, ?, 'high', 'open', ?, ?, ?, ?)`,
+            )
+            .run(
+              `bug_${randomUUID().slice(0, 8)}`, title,
+              `测试计划 ${plan.id} 用例失败(${item.status})。证据链:test_run=${testRunId} plan_item=${item.id}`,
+              bugNodeId, devGraph.id, now, now,
+            )
+        })
+        insertBug()
         // 修复 work_item:锚=被验证的 dev 实体,draft(仍需 C2 确认,§6.6-3)
         let workItemId: string | null = null
         if (anchor?.anchor_entity_key && this.deps.workItems) {
