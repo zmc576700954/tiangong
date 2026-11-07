@@ -4,6 +4,7 @@
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
+import { randomUUID } from 'node:crypto'
 import type { Graph, GraphType, NodeType, ProjectScanResult, ScanModule, GraphFetchOptions, ChatMessage, AgentOutput } from '@shared/types'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import type { AgentManager } from '../agent/agent-manager'
@@ -14,6 +15,7 @@ import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
 import { generateId } from '../shared/env'
 import { isDescendant } from '../shared/hierarchy-utils'
 import { NodeRepository } from '../repositories/node-repository'
+import { ImportDedupService, ImportRejectedError } from '../map-migration/import-dedup'
 import { WikiIndexService } from './wiki-index-service'
 import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
@@ -100,6 +102,17 @@ export class GraphService {
   async initFromProject(data: { projectPath: string; projectName: string }): Promise<InitFromProjectResult> {
     const { projectPath, projectName } = data
     const now = new Date().toISOString()
+
+    // ---- S1 导入查重门禁（session-map 蓝图 §2.6 / I5）----
+    // 必须在任何 graph/node/chat_threads 写入之前。命中即拒绝并写 import_rejections
+    // （该表不属于 I5 的三张零行表），返回结构化决策供渲染层展示"哪几项对上了"。
+    // 允许时指纹计划随图事务落库（I6：指纹与 graphs/nodes 同事务提交）。
+    const dedup = new ImportDedupService(this.db)
+    const check = await dedup.check({ projectRoot: projectPath, projectName, interactive: false })
+    if (check.decision.action === 'reject') {
+      throw new ImportRejectedError(check.decision)
+    }
+    const fingerprintPlan = check.plan
 
     // 创建 Chat 线程（阶段 1：协议与数据层入口）
     let threadId: string | undefined
@@ -345,6 +358,12 @@ export class GraphService {
 
       // better-sqlite3 transaction: auto-commit on normal return, auto-rollback on exception
       this.db.transaction(() => {
+        // I6（§2.6）：指纹行与图创建同一事务——事务失败则指纹不落库,下次可重试
+        fingerprintPlan?.commitFingerprint(this.db, [onlineGraphId, devGraphId])
+
+        // I4：online/dev 按 tempId 共享 entity_key（同一实体一张键）
+        const tempKeyMap = new Map<string, string>()
+
         // 创建 online 图（产品蓝图）
         this.db.prepare(
           'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
@@ -355,8 +374,8 @@ export class GraphService {
           'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
         ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
 
-        this.createNodes(onlineGraphId, 'online', graphResult, now, this.db)
-        this.createNodes(devGraphId, 'dev', graphResult, now, this.db)
+        this.createNodes(onlineGraphId, 'online', graphResult, now, this.db, tempKeyMap)
+        this.createNodes(devGraphId, 'dev', graphResult, now, this.db, tempKeyMap)
       })()
 
       this.invalidateProjectPathsCache()
@@ -432,6 +451,9 @@ export class GraphService {
     graphResult: ProjectGraphResult,
     now: string,
     executor: BetterSqlite3.Database = this.db,
+    /** S1 I4（§2.2）：同一 tempId 的 online/dev 两个节点共享一个 entity_key；
+     *  由 initFromProject 创建并传入，两次 createNodes 调用共用同一张表。 */
+    tempKeyMap?: Map<string, string>,
   ): void {
     const tempIdMap = new Map<string, string>()
 
@@ -439,8 +461,8 @@ export class GraphService {
       id, type, status, title, description, acceptance_criteria,
       graph_id, graph_type, parent_id, rules, metadata, owner_role,
       position_x, position_y, content, community_summary, community_level,
-      wiki_content, wiki_meta, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      wiki_content, wiki_meta, entity_key, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
     const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ?, sort_index = ? WHERE id = ?')
 
@@ -488,6 +510,14 @@ export class GraphService {
         nodeData.communityLevel ?? null,
         nodeData.wikiContent ?? null,
         nodeData.wikiMeta ? JSON.stringify(nodeData.wikiMeta) : null,
+        // I4：同一 tempId 两侧共享键（首次生成,后续调用复用）
+        (() => {
+          const existing = tempKeyMap?.get(nodeData.tempId)
+          if (existing) return existing
+          const key = randomUUID()
+          tempKeyMap?.set(nodeData.tempId, key)
+          return key
+        })(),
         now,
         now,
       )

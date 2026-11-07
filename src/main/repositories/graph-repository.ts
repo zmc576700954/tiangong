@@ -227,8 +227,8 @@ export class GraphRepository {
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, content, owner_role,
-        position_x, position_y, context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        position_x, position_y, context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
     const insertEdgeStmt = this.db.prepare(
@@ -271,6 +271,8 @@ export class GraphRepository {
           row['context_refs'],
           row['wiki_content'],
           row['wiki_meta'],
+          // S1（§2.2）：克隆直接复制源行 entity_key——node id 重新生成,键保持身份
+          (row['entity_key'] as string | null | undefined) ?? null,
           rowStr(row, 'created_at'), new Date().toISOString(),
         )
       }

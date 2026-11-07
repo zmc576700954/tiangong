@@ -750,6 +750,7 @@ function makeWritebackDb() {
       context_refs TEXT,
       wiki_content TEXT,
       wiki_meta TEXT,
+      entity_key TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );

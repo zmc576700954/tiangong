@@ -68,11 +68,26 @@ vi.mock('../../project-analyzer', () => ({
 
 import { initDatabase, closeDatabase, getClient } from '../../database'
 import { GraphService } from '../graph-service'
+import { ImportDedupService } from '../../map-migration/import-dedup'
 
 describe('GraphService.createNodes — 兄弟顺序与层级边补建', () => {
   let db: ReturnType<typeof getClient>
 
   beforeAll(() => {
+    // S1 导入查重门禁：本组测试用假项目路径,spy 掉指纹检查返回放行。
+    vi.spyOn(ImportDedupService.prototype, 'check').mockResolvedValue({
+      decision: {
+        action: 'allow',
+        step: '3c',
+        signals: { dir_name_same: false, name_same: null, similarity: null, sample_count: 0, mtime_used: false, decision_step: '3c' },
+        matchedFingerprintId: null,
+        reason: 'test bypass',
+      },
+      fingerprint: {
+        projectName: 'test', dirName: 'test', rootPath: '/project',
+        lastModifiedAt: null, samples: [], sampleCount: 0, errors: [],
+      },
+    })
     initDatabase()
     db = getClient()
   })

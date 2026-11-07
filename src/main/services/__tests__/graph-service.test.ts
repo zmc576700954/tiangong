@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { GraphService } from '../graph-service'
+import { ImportDedupService } from '../../map-migration/import-dedup'
 import type { GraphType, ProjectScanResult } from '@shared/types'
 import type { GraphRepository } from '../../repositories/graph-repository'
 import type BetterSqlite3 from 'better-sqlite3'
@@ -202,6 +203,21 @@ describe('GraphService.initFromProject Chat thread behavior', () => {
       terminateSession: vi.fn().mockResolvedValue(undefined),
     } as unknown as AgentManager
     vi.clearAllMocks()
+    // S1 导入查重门禁（initFromProject 入口）：本组测试聚焦 chat 线程行为,
+    // 项目路径是假路径 —— spy 掉指纹检查,返回放行（无指纹计划）。
+    vi.spyOn(ImportDedupService.prototype, 'check').mockResolvedValue({
+      decision: {
+        action: 'allow',
+        step: '3c',
+        signals: { dir_name_same: false, name_same: null, similarity: null, sample_count: 0, mtime_used: false, decision_step: '3c' },
+        matchedFingerprintId: null,
+        reason: 'test bypass',
+      },
+      fingerprint: {
+        projectName: 'test', dirName: 'test', rootPath: '/project',
+        lastModifiedAt: null, samples: [], sampleCount: 0, errors: [],
+      },
+    })
   })
 
   it('creates thread and writes progress messages', async () => {

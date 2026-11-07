@@ -225,6 +225,10 @@ export interface IpcApi {
     threadId?: string
   }>
 
+  // S1 导入查重：记住的分支/副本放行规则（§2.6 规则 7,可查看/可撤销）
+  'project:import:allowance:list': () => Promise<Array<Record<string, unknown>>>
+  'project:import:allowance:revoke': (id: string, revokedBy?: string) => Promise<void>
+
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
   // 只提交需要变更的字段即可；主进程与当前设置做顶层合并后再落盘。

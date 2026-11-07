@@ -12,6 +12,7 @@ import {
   isContextRefArray, isRecord,
 } from '@shared/type-guards'
 import { validateNodeTypeTransition } from '@shared/state-machine'
+import { randomUUID } from 'node:crypto'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
 import { isDescendant } from '../shared/hierarchy-utils'
@@ -105,13 +106,16 @@ export class NodeRepository {
     const parentId = normalizeParentId(data.parentId)
     const sortIndex = parentId === null ? undefined : this.nextSortIndex(parentId)
 
+    // S1 I4（§2.2）：新建节点必须写 entity_key（UUID v4）；测试资产同样是独立实体新键。
+    const entityKey = randomUUID()
+
     this.db.prepare(
       `INSERT INTO nodes (
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
-        context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -135,6 +139,7 @@ export class NodeRepository {
       data.contextRefs ? JSON.stringify(data.contextRefs) : null,
       data.wikiContent ?? null,
       data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
+      entityKey,
       now,
       now,
     )
@@ -163,8 +168,8 @@ export class NodeRepository {
         id, type, status, title, description, acceptance_criteria,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
-        context_refs, wiki_content, wiki_meta, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
@@ -203,6 +208,8 @@ export class NodeRepository {
           data.contextRefs ? JSON.stringify(data.contextRefs) : null,
           data.wikiContent ?? null,
           data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
+          // S1 I4：新节点必须写 entity_key（UUID v4）
+          randomUUID(),
           now,
           now,
         )
