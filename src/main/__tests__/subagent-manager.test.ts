@@ -456,6 +456,77 @@ describe('SubagentManager', () => {
     expect(r2.resultText).toBeDefined()
   })
 
+  it('F1：子代理 error 拒绝路径收尾子会话', async () => {
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', {
+            type: 'error',
+            data: 'boom',
+            timestamp: 0,
+          }),
+        0,
+      )
+    })
+
+    await expect(
+      mgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
+    ).rejects.toThrow(/boom/)
+
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'error')
+    const row = Array.from(mockRepo.rows.values())[0]
+    expect(row.status).toBe('failed')
+  })
+
+  it('F1：超时拒绝路径收尾子会话', async () => {
+    const timeoutMgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 50)
+
+    await expect(
+      timeoutMgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
+    ).rejects.toThrow(/timeout/i)
+
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'error')
+    const row = Array.from(mockRepo.rows.values())[0]
+    expect(row.status).toBe('failed')
+  })
+
+  it('F1：cancel 已收尾时不重复 terminate', async () => {
+    const promise = mgr
+      .invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' })
+      .catch(() => undefined)
+
+    await new Promise((r) => setTimeout(r, 10))
+    const invocationId = Array.from(mockRepo.rows.keys())[0]
+    await mgr.cancel(invocationId!)
+    await promise
+
+    expect(mockManager.terminateSession).toHaveBeenCalledTimes(1)
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'user')
+  })
+
+  it('F1：terminate 失败只告警，不覆写 failed 终态', async () => {
+    mockManager.terminateSession.mockRejectedValue(new Error('scope guard rollback'))
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', {
+            type: 'error',
+            data: 'child crashed',
+            timestamp: 0,
+          }),
+        0,
+      )
+    })
+
+    await expect(
+      mgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
+    ).rejects.toThrow(/child crashed/)
+
+    const row = Array.from(mockRepo.rows.values())[0]
+    expect(row.status).toBe('failed')
+    expect(row.error).toContain('child crashed')
+  })
+
   it('onProgress fires for status transitions', async () => {
     const events: any[] = []
     mgr.onProgress((e) => events.push(e))

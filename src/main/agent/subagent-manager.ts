@@ -36,9 +36,12 @@ import type {
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { AgentError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
+import { createLogger } from '../shared/logger'
 import { withSpan } from '../telemetry'
 import type { RecipeRunner } from '../recipes/recipe-runner'
 import type { A2AClient } from '../a2a/client'
+
+const logger = createLogger('SubagentManager')
 
 /** Derived from AgentManager.getSessionState; the struct lives inside agent-manager.ts. */
 type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
@@ -74,6 +77,16 @@ interface ActiveInvocation {
    * await — every new await now inherits cancellation semantics for free.
    */
   controller: AbortController
+  /**
+   * F1：子会话是否已经进入收尾流程（cancel() / sendCommand 失败 / 拒绝路径）。
+   * 用于让拒绝路径的补 terminate 幂等，避免与既有收尾点重复终止。
+   */
+  sessionTerminated?: boolean
+  /**
+   * F1：拒绝路径在 terminate 之前抓拍的部分输出与用量。terminate 会清空
+   * 子会话状态，先抓拍才能让上层持久化/后续阶段拿到已完成的内容。
+   */
+  partial?: { resultText: string; resultFiles: string[]; tokensUsed: number }
 }
 
 export class SubagentManager extends EventEmitter {
@@ -162,6 +175,25 @@ export class SubagentManager extends EventEmitter {
         `Subagent invocation ${invocationId ?? '(pending)'} cancelled at ${where}`,
         ErrorCode.AGENT_SESSION_NOT_FOUND,
       )
+    }
+  }
+
+  /**
+   * F1：在收尾（terminateSession）之前抓拍输出与用量。
+   * terminate 会清空子会话的 session 状态，晚了就取不到 tokensUsed 等数据。
+   */
+  private _capturePartial(
+    entry: ActiveInvocation | undefined,
+    sessionId: string,
+    outputBuffer: string[],
+    fileChanges: string[],
+  ): void {
+    if (!entry) return
+    const childState = this.agentManager.getSessionState(sessionId)
+    entry.partial = {
+      resultText: outputBuffer.join('\n').trim(),
+      resultFiles: [...fileChanges],
+      tokensUsed: childState?.tokensUsed ?? 0,
     }
   }
 
@@ -428,11 +460,26 @@ export class SubagentManager extends EventEmitter {
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
+        const active = this.activeInvocations.get(registrationKey)
         // If the error was raised because cancel() aborted the controller, cancel()
         // itself already transitions the DB row to 'cancelled' — don't overwrite it
         // with a 'failed' status here.  This is the reason we can safely add new awaits
         // above: cancellation cleanly threads through the shared signal.
-        const cancelledByAbort = this.activeInvocations.get(registrationKey)?.controller.signal.aborted
+        const cancelledByAbort = active?.controller.signal.aborted
+        // F1：拒绝路径（超时 / 子代理 error / 非 cancel() 触发的 abort）也要收尾会话，
+        // 否则子进程与 session 行会残留。cancel() 与 sendCommand 失败路径已经收尾，
+        // 用 sessionTerminated 标记幂等跳过；收尾自身失败只告警，不覆写下方终态。
+        if (active?.sessionId && !active.sessionTerminated) {
+          active.sessionTerminated = true
+          try {
+            await this.agentManager.terminateSession(active.sessionId, 'error')
+          } catch (cleanupErr) {
+            logger.warn(
+              `Subagent ${invocationId}: terminateSession(${active.sessionId}) on rejection failed:`,
+              cleanupErr,
+            )
+          }
+        }
         if (!cancelledByAbort) {
           try {
             await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
@@ -505,6 +552,7 @@ export class SubagentManager extends EventEmitter {
     // hydration) inherits the same guard by calling _throwIfCancelled — no per-await
     // bespoke flag rechecks needed.
     if (activeEntry?.controller.signal.aborted) {
+      if (activeEntry) activeEntry.sessionTerminated = true
       try {
         await this.agentManager.terminateSession(childSessionId, 'user')
       } catch {
@@ -603,17 +651,25 @@ export class SubagentManager extends EventEmitter {
     } catch (err) {
       if (timeoutHandle) clearTimeout(timeoutHandle)
       this.agentManager.removeSessionOutputListener(outputHandler)
+      // F1：terminate 前先抓拍输出/用量，避免收尾清空子会话状态后取不到内容。
+      this._capturePartial(activeEntry, childSessionId, outputBuffer, fileChanges)
       // Best-effort cleanup of the child session we just started.
       try {
         await this.agentManager.terminateSession(childSessionId, 'error')
-      } catch {
-        /* best-effort */
+      } catch (cleanupErr) {
+        logger.warn(`Subagent ${invocationId}: terminateSession on sendCommand failure failed:`, cleanupErr)
+      } finally {
+        if (activeEntry) activeEntry.sessionTerminated = true
       }
       throw err
     }
 
     try {
       await settlePromise
+    } catch (err) {
+      // F1：settle 拒绝（子代理 error / 超时 / abort）时，先抓拍再交给上层收尾。
+      this._capturePartial(activeEntry, childSessionId, outputBuffer, fileChanges)
+      throw err
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle)
       this.agentManager.removeSessionOutputListener(outputHandler)
@@ -689,10 +745,12 @@ export class SubagentManager extends EventEmitter {
       // never silently dropped.
       active.controller.abort()
       if (active.sessionId) {
+        // F1：先置位再 await，让同一 invocation 的拒绝路径把自己视为已收尾。
+        active.sessionTerminated = true
         try {
           await this.agentManager.terminateSession(active.sessionId, 'user')
-        } catch {
-          /* best-effort */
+        } catch (err) {
+          logger.warn(`Subagent ${invocationId}: terminateSession on cancel failed:`, err)
         }
       }
     }
