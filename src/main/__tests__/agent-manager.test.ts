@@ -936,6 +936,68 @@ describe('AgentManager', () => {
       }
     })
 
+    it('KERNEL=0 回退：有节点的 Claude 会话仍注册写前审批钩子（审批不因回退丢失）', async () => {
+      const previous = process.env[AGENT_KERNEL_ENV]
+      process.env[AGENT_KERNEL_ENV] = '0'
+      try {
+        class HookCapableAdapter extends TestAdapter {
+          readonly installHooks = vi.fn((_sessionId: string, _hooks: unknown) => undefined)
+          setTurnApprovalHooks(sessionId: string, hooks: unknown): void {
+            this.installHooks(sessionId, hooks)
+          }
+        }
+
+        const adapter = new HookCapableAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+          approvals: { request: vi.fn() },
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig({ nodeId: 'n1' }))
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'node legacy approval',
+          targetNodeId: 'n1',
+        })
+
+        expect(runNode).not.toHaveBeenCalled()
+        expect(adapter.lastPrompts.at(-1)).toContain('node legacy approval')
+        expect(adapter.installHooks).toHaveBeenCalledTimes(2)
+        expect(adapter.installHooks.mock.calls[0][1]).toMatchObject({ canUseTool: expect.any(Function) })
+        expect(adapter.installHooks.mock.calls[1][1]).toBeNull()
+      } finally {
+        if (previous === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = previous
+      }
+    })
+
+    it('节点解析：不存在/不属于当前图的 targetNodeId 被丢弃，回退到会话自身节点', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const runNode = vi.fn(async (_req: { nodeId?: string }) => ({ status: 'completed' as const }))
+      manager.setRuntime({
+        locks: new SessionLockRegistry(),
+        getDriver: () => ({}),
+        runNode,
+      } as unknown as AgentRuntime)
+
+      const { sessionId } = await manager.startSession('claude-code', mockConfig({ nodeId: 'session-node' }))
+      ;(manager as any).kernelNodeIsValid = (nodeId: string) => nodeId === 'session-node'
+
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'bad target node',
+        targetNodeId: 'stale-node',
+      })
+
+      expect(runNode).toHaveBeenCalledTimes(1)
+      expect(runNode.mock.calls[0][0]).toEqual(expect.objectContaining({ nodeId: 'session-node' }))
+    })
+
     it('默认配置（不设环境变量）：claude 走 kernel，codex 仍走旧路径', async () => {
       const prevKernel = process.env[AGENT_KERNEL_ENV]
       const prevBackends = process.env[AGENT_KERNEL_BACKENDS_ENV]

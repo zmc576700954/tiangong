@@ -341,17 +341,42 @@ export class AgentManager {
    * `node_id` 使用（列约束未放宽前不得回退到伪节点方案）。
    */
   private resolveKernelNodeId(sessionId: string, command: AgentCommand): string | undefined {
+    const thread = this.lookupThread(sessionId)
     const candidates = [
       command.targetNodeId,
       this.sessionStates.get(sessionId)?.config.nodeId,
-      this.lookupThread(sessionId)?.nodeId,
+      thread?.nodeId,
       this.persistedNodeBinding(sessionId),
     ]
     for (const raw of candidates) {
       const value = typeof raw === 'string' ? raw.trim() : ''
-      if (value !== '' && !isPseudoNodeId(value)) return value
+      if (value === '' || isPseudoNodeId(value)) continue
+      // 存在性/图归属校验：错误节点不得进入 turn（agent_turns.node_id 无 FK，不会替我们拒绝）。
+      if (!this.kernelNodeIsValid(value, thread?.graphId ?? null)) {
+        logger.warn(
+          `[kernel-node-invalid] session=${sessionId}: node=${value} 不存在或不属于图 ${thread?.graphId ?? '(unknown)'}，已忽略该候选`,
+        )
+        continue
+      }
+      return value
     }
     return undefined
+  }
+
+  /**
+   * 节点存在性 + 图归属校验。
+   * DB 未就绪（单测 / 早期启动）时无法校验，退回既有行为（返回 true）。
+   */
+  private kernelNodeIsValid(nodeId: string, graphId: string | null): boolean {
+    try {
+      const row = getClient()
+        .prepare('SELECT graph_id AS graphId FROM nodes WHERE id = ?')
+        .get(nodeId) as { graphId: string | null } | undefined
+      if (!row) return false
+      return graphId === null || row.graphId === graphId
+    } catch {
+      return true
+    }
   }
 
   /** 重启后内存态为空时，只读复原节点归属：agent_sessions 行 → 最近一条 turn。 */
@@ -378,7 +403,9 @@ export class AgentManager {
    * - 无法在宿主侧拦截工具调用的适配器：用户可见的自由聊天 fail-closed；
    *   内部会话（subagent / mindmap / sendAndWait）保持既有行为（其写权限由后端
    *   自身或 ScopeGuard 约束，不能一刀切阻断内部链路）。
-   * - 有节点会话仍优先走 kernel，不在本函数范围。
+   * - 有节点的 Claude 会话在 `BIZGRAPH_AGENT_KERNEL=0` 回退旧路径时同样注册钩子，
+   *   回退不能丢掉写前审批；非 Claude 的有节点会话仍是裸 spawn（无宿主审批点，
+   *   已知风险，见 docs/architecture/agent-architecture.md §17.6）。
    */
   private prepareLegacyApproval(
     sessionId: string,
@@ -387,9 +414,16 @@ export class AgentManager {
   ): (() => void) | undefined {
     const approvals = this.runtime?.approvals
     if (!approvals) return undefined
-    if (this.resolveKernelNodeId(sessionId, command)) return undefined
+    const nodeId = this.resolveKernelNodeId(sessionId, command)
 
     if (!supportsHostApproval(adapter)) {
+      if (nodeId) {
+        // 已知风险（C3）：非 Claude 节点会话始终走旧路径，没有宿主策略调用点。
+        logger.warn(
+          `[legacy-node-no-approval] session=${sessionId}: adapter=${adapter.name} 有节点但无宿主审批钩子；保持既有行为（未保护）`,
+        )
+        return undefined
+      }
       if (!this.isThreadBoundSession(sessionId)) {
         logger.warn(
           `[internal-no-approval] session=${sessionId}: adapter=${adapter.name} 无宿主审批钩子；内部会话保持既有行为`,
