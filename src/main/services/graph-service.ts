@@ -400,6 +400,17 @@ export class GraphService {
         // TOCTOU 兜底（§2.2.2 S1-d）：check() 的读取不持事务,并发导入同 root 在
         // 指纹 UNIQUE(root_path) 上落败 → 整事务回滚（无半行）并转结构化 REJECT。
         if (fingerprintPlan && isRootPathConflict(err)) {
+          // 拒绝路径必须零新增（I5）：thread 在事务之前创建（生成期间要实时写进度），
+          // 事务回滚不会带走它，必须在这里显式删除，否则留下孤儿 chat_thread。
+          if (threadId && this.chatService) {
+            try {
+              await this.chatService.deleteThread(threadId)
+            } catch (cleanupErr) {
+              logger.warn('Failed to delete chat thread after import rejection:', cleanupErr)
+            }
+            // 外层 catch 的 writeError 随之跳过（不往已删除的 thread 写消息）
+            threadId = undefined
+          }
           throw new ImportRejectedError({
             action: 'reject',
             step: '1',
