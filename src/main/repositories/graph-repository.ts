@@ -164,9 +164,27 @@ export class GraphRepository {
     }
   }
 
+  /**
+   * 删除图（S3 前置校验,§2.4）：存在 running work_run 或未完成 work_item → 拒绝。
+   * 允许时硬删,并把该图相关 node_links 标 orphan、该图节点证据标 stale
+   * （不物理删除证据）。巡检类表未建（极老库/最小夹具）时跳过对应校验/处置。
+   */
   delete(id: string): void {
+    this.assertGraphDeletable(id)
     const deleteGraph = this.db.transaction(() => {
       this.db.prepare('DELETE FROM edges WHERE graph_id = ?').run(id)
+      // S3：该图相关链接标 orphan（不删除,关系历史保留）
+      if (this.hasTable('node_links')) {
+        this.db
+          .prepare("UPDATE node_links SET status = 'orphan', updated_at = ? WHERE status = 'active' AND (from_graph_id = ? OR to_graph_id = ?)")
+          .run(new Date().toISOString(), id, id)
+      }
+      // S3：该图节点证据标 stale（不物理删除）
+      if (this.hasTable('node_evidence')) {
+        this.db
+          .prepare("UPDATE node_evidence SET freshness = 'stale', stale_at = ? WHERE graph_id = ? AND freshness = 'fresh' AND revoked_at IS NULL")
+          .run(new Date().toISOString(), id)
+      }
       // writeback_items 按 graph_id 显式删除（FK CASCADE 本可兜住，但这样与事务内
       // 其它表的显式删除模式一致，即使 FK pragma 被关也不会漏）
       this.db.prepare('DELETE FROM writeback_items WHERE graph_id = ?').run(id)
@@ -177,6 +195,38 @@ export class GraphRepository {
       this.db.prepare('DELETE FROM graphs WHERE id = ?').run(id)
     })
     deleteGraph()
+  }
+
+  private hasTable(name: string): boolean {
+    return this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+      .get(name) != null
+  }
+
+  /** S3 前置校验：running run 或未完成 work_item 存在 → 拒绝删图（§2.4）。 */
+  private assertGraphDeletable(id: string): void {
+    if (!this.hasTable('work_items')) return
+    const unfinished = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM work_items
+          WHERE graph_id = ? AND is_current = 1
+            AND status NOT IN ('done','failed','cancelled','superseded')`,
+      )
+      .get(id) as { c: number }
+    if (unfinished.c > 0) {
+      throw new Error(`图 ${id} 存在 ${unfinished.c} 个未完成 work_item,删除被拒（§2.4 图删除前置校验）`)
+    }
+    if (!this.hasTable('work_runs')) return
+    const running = this.db
+      .prepare(
+        `SELECT COUNT(*) AS c FROM work_runs r
+          JOIN work_items wi ON wi.id = r.work_item_id
+         WHERE wi.graph_id = ? AND r.status IN ('queued','running','awaiting_approval')`,
+      )
+      .get(id) as { c: number }
+    if (running.c > 0) {
+      throw new Error(`图 ${id} 存在 ${running.c} 个未完结 work_run,删除被拒（§2.4 图删除前置校验）`)
+    }
   }
 
   /**

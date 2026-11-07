@@ -345,7 +345,28 @@ export class NodeRepository {
     return this.rowToNode(row)
   }
 
+  /**
+   * 删除节点（S3 归档语义,session-map 蓝图 §2.4）：
+   *  - 有历史（node_links / work_items 锚定 / node_evidence / node_session_links
+   *    任一存在）→ **降级为归档**：lifecycle_state='archived'，行与边全部保留
+   *    （叠加层后续默认隐藏；链接保持 active 仍可解析）；
+   *  - 无依赖 → 允许硬删（子节点置根 + FK 级联 edges/bug_nodes；
+   *    遗留 node_links 由 S2 巡检标 orphan）。
+   * 表未建（极老库/最小夹具）时视为无依赖，保持旧硬删行为。
+   */
   delete(id: string): void {
+    if (this.nodeHasHistory(id)) {
+      this.archive(id)
+      return
+    }
+    this.hardDelete(id)
+  }
+
+  /**
+   * 无条件硬删（内部清理专用:writeback 回滚等「必须真删」的程序性路径;
+   * 用户删除一律走 delete() 的归档语义,§2.4）。
+   */
+  hardDelete(id: string): void {
     const deleteNode = this.db.transaction(() => {
       // 删父节点 → 子节点变成**根节点**（spec §4.8 / plan §问题 4）。
       // 不是「子节点被删掉」，也不是「留成孤儿」——孤儿的 parent_id 仍指着
@@ -355,6 +376,42 @@ export class NodeRepository {
       this.db.prepare('DELETE FROM nodes WHERE id = ?').run(id)
     })
     deleteNode()
+  }
+
+  /** 归档（§2.4：有历史的节点不硬删）。幂等：已归档再删保持 archived。 */
+  archive(id: string): void {
+    this.db
+      .prepare("UPDATE nodes SET lifecycle_state = 'archived', updated_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), id)
+  }
+
+  private nodeHasHistory(id: string): boolean {
+    // 生命周期状态本身即历史：archived/merged/split 是刻意保留的节点,
+    // 再次「删除」不得静默转硬删（§2.4 有历史的节点不硬删）。
+    try {
+      const lifecycle = this.db
+        .prepare('SELECT lifecycle_state FROM nodes WHERE id = ?')
+        .get(id) as { lifecycle_state: string } | undefined
+      if (lifecycle && lifecycle.lifecycle_state !== 'active') return true
+    } catch {
+      // 极老夹具无该列 → 视为 active,交给下方依赖探针
+    }
+
+    const probes: Array<{ table: string; sql: string; params: string[] }> = [
+      { table: 'node_links', sql: 'SELECT 1 FROM node_links WHERE from_node_id = ? OR to_node_id = ? LIMIT 1', params: [id, id] },
+      { table: 'work_items', sql: 'SELECT 1 FROM work_items WHERE anchor_node_id = ? LIMIT 1', params: [id] },
+      { table: 'node_evidence', sql: 'SELECT 1 FROM node_evidence WHERE node_id = ? LIMIT 1', params: [id] },
+      { table: 'node_session_links', sql: 'SELECT 1 FROM node_session_links WHERE node_id = ? LIMIT 1', params: [id] },
+    ]
+    for (const probe of probes) {
+      const exists = this.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name=?")
+        .get(probe.table)
+      if (!exists) continue // 表未建（极老库/最小夹具）→ 该维度视为无依赖
+      const row = this.db.prepare(probe.sql).get(...probe.params)
+      if (row) return true
+    }
+    return false
   }
 
   /** 查询节点当前状态（用于状态转换校验） */

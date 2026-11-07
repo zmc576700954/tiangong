@@ -456,8 +456,11 @@ export function rebuildTableIfNeeded(
  *      work_steps 12 值一次建齐（D2,§8.7 不得留 ALTER/重建）。
  * v29：S6a 新增 node_evidence（E3/E4 字段级 CHECK 硬约束）+ node_execution_state
  *      （派生缓存,可整表重建）+ 索引/部分唯一索引（§7.2 逐字）。
+ * v30：S3 归档语义 —— graphs/nodes 增加 lifecycle_state（NOT NULL DEFAULT 'active'
+ *      + CHECK）。CHECK 变化会触发两表重建（restoreFromBackup 共有列恢复,
+ *      旧行安全落默认值,§8.5「重建可安全补默认值」）。
  */
-const CURRENT_SCHEMA_VERSION = 29
+const CURRENT_SCHEMA_VERSION = 30
 
 interface TableSchema {
   name: string
@@ -473,6 +476,9 @@ const TABLE_SCHEMAS: TableSchema[] = [
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         type TEXT NOT NULL CHECK(type IN ('online', 'dev')),
+        -- S3（§8.5）：图级生命周期（归档语义;值域与 nodes 对齐）。
+        lifecycle_state TEXT NOT NULL DEFAULT 'active'
+          CHECK(lifecycle_state IN ('active','archived','merged','split')),
         project_path TEXT,
         -- 必须留在 createSql 里：该列由 runIncrementalMigrations 补出，
         -- 不在 createSql 会导致表重建时 restoreFromBackup 丢掉该值，
@@ -482,7 +488,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         updated_at TEXT NOT NULL
       )
     `,
-    requiredColumns: ['id', 'name', 'type', 'created_at', 'updated_at'],
+    requiredColumns: ['id', 'name', 'type', 'lifecycle_state', 'created_at', 'updated_at'],
   },
   {
     name: 'nodes',
@@ -502,6 +508,10 @@ const TABLE_SCHEMAS: TableSchema[] = [
         -- 必须留在 createSql（而非只靠 addColumnSafe）：任何一次 nodes 重建
         -- 都会把该列值静默丢弃。
         entity_key TEXT,
+        -- S3（§2.4/§8.5）：生命周期。进 createSql 且 CHECK 变化 → 老库重建
+        -- （restoreFromBackup 共有列恢复，新列旧行安全落 DEFAULT 'active'）。
+        lifecycle_state TEXT NOT NULL DEFAULT 'active'
+          CHECK(lifecycle_state IN ('active','archived','merged','split')),
         parent_id TEXT,
         sort_index INTEGER,
         collapsed INTEGER NOT NULL DEFAULT 0,
@@ -521,7 +531,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         updated_at TEXT NOT NULL
       )
     `,
-    requiredColumns: ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'position_x', 'position_y', 'created_at', 'updated_at', 'wiki_content', 'wiki_meta'],
+    requiredColumns: ['id', 'type', 'status', 'title', 'graph_id', 'graph_type', 'lifecycle_state', 'position_x', 'position_y', 'created_at', 'updated_at', 'wiki_content', 'wiki_meta'],
   },
   {
     name: 'edges',

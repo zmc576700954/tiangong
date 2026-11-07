@@ -356,7 +356,8 @@ export class WritebackService {
       })
     }
 
-    this.deps!.nodeRepo.delete(pageId)
+    // S3:回滚是内部清理,必须真删(不走归档语义)——nodeRepo.hardDelete
+    this.deps!.nodeRepo.hardDelete(pageId)
     undone.push({
       kind: 'deleted-page',
       description: `已删除页面：${item.title}`,
