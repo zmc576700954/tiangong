@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
-import { WorkItemService } from './work-item-service'
+import type { WorkItemService } from './work-item-service'
 import type { WorkRunRow } from './work-run-service'
 
 const logger = createLogger('PlanDerivation')

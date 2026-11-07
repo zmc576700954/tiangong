@@ -200,7 +200,7 @@ describe('PlanDeviationRepository(§5.7)', () => {
   let db: BetterSqlite3.Database
   let repo: PlanDeviationRepository
   let workItems: WorkItemService
-  let runSvc: import('../map/work-run-service').WorkRunService
+  let runSvc: WorkRunService
 
   beforeEach(() => {
     db = setupDb()
