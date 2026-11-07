@@ -119,7 +119,7 @@ describe('useSubagentStore', () => {
   })
 
   it('getResult returns result from IPC', async () => {
-    const result = { invocationId: 'i1', resultText: 'done', resultFiles: [], tokensUsed: 0, durationMs: 0 }
+    const result = { invocationId: 'i1', status: 'completed' as const, resultText: 'done', resultFiles: [], tokensUsed: 0, durationMs: 0 }
     vi.mocked(window.electronAPI['subagent:getResult']).mockResolvedValueOnce(result)
     const got = await useSubagentStore.getState().getResult('i1')
     expect(got).toEqual(result)

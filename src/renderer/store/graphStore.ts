@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { Graph, GraphNode, GraphEdge, BugNode, NodeStatus, EdgeType, EdgeContent } from '@shared/types'
+import type { Graph, GraphNode, GraphEdge, BugNode, EdgeType, EdgeContent } from '@shared/types'
 import type { IngestResult, IngestMode, LintReport, LintFixAction, LintFixResult, ComputeResult, WritebackItem, RollbackResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
@@ -10,7 +10,6 @@ import { canTransition } from '@shared/state-machine'
 // ============================================
 
 /** Agent 状态变更事件取消订阅函数 */
-let _unsubAgentStatus: (() => void) | null = null
 
 function buildNodeMap(nodes: GraphNode[]): Map<string, GraphNode> {
   return new Map(nodes.map((n) => [n.id, n]))
@@ -154,10 +153,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
     })
   }
 
-  // 监听 Agent 状态变更事件（解耦 agentStore → graphStore 的直接引用）
-  _unsubAgentStatus = eventBus.on(Events.AGENT_STATUS_CHANGE, (nodeId, status) => {
-    get().updateNode(nodeId, { status: status as NodeStatus })
-  })
+  // S6a 双轨收敛（session-map 蓝图 §3.1/§9.5-5）:此处原有的 AGENT_STATUS_CHANGE →
+  // updateNode({status}) 订阅已删除——Agent 状态事件不再写 nodes.status（该写入经
+  // node:update 持久化,属双轨违规）。节点完成度由派生态（node_execution_state,
+  // 后续经 map 通道下发）展示;人写状态只由用户在编辑路径显式修改。
 
   return {
   // ─────────────── State ───────────────
@@ -635,8 +634,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   })),
 
   destroy: () => {
-    _unsubAgentStatus?.()
-    _unsubAgentStatus = null
+    // S6a:AGENT_STATUS_CHANGE 订阅已移除(双轨收敛),无悬挂退订
   },
 
   ensureSpecialWikiPages: async () => {
@@ -765,8 +763,4 @@ useGraphStore.setState = function overrideGraphSetState(
   return _originalGraphSetState(update, replace as false | undefined)
 } as typeof useGraphStore.setState
 
-// HMR cleanup: unsubscribe from previous module's event bus listener
-const _hot = (import.meta as { hot?: { dispose: (cb: () => void) => void } }).hot
-if (_hot) {
-  _hot.dispose(() => { _unsubAgentStatus?.() })
-}
+

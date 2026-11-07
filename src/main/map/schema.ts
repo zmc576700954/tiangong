@@ -206,6 +206,110 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
   },
 ]
 
+// ============================================================
+// S6a（v29,session-map 蓝图 §3.2/§3.5/§3.7 + §7.2 逐字）
+// ============================================================
+
+export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    // 证据表：E3/E4 的字段级硬约束写进 CHECK——缺任一条件在库层即被拒。
+    // E3 只认 version_binding='commit'（git 代码 hash）;E4 必须 'none' 且无 code hash。
+    name: 'node_evidence',
+    createSql: `
+      CREATE TABLE node_evidence (
+        id               TEXT PRIMARY KEY,
+        project_path     TEXT,
+        graph_id         TEXT NOT NULL,
+        graph_type       TEXT NOT NULL CHECK(graph_type IN ('online','dev','test')),
+        node_entity_key  TEXT NOT NULL,
+        node_id          TEXT,
+        evidence_level   TEXT NOT NULL CHECK(evidence_level IN ('E1','E2','E3','E4')),
+        evidence_type    TEXT NOT NULL CHECK(evidence_type IN (
+          'changed_files','commit','test_run','session_turn',
+          'artifact','human_confirm','runtime_observation')),
+        ref_json         TEXT NOT NULL,
+        summary          TEXT,
+        version_binding  TEXT NOT NULL DEFAULT 'commit'
+                         CHECK(version_binding IN ('commit','content_hash','snapshot','none')),
+        code_version     TEXT,
+        code_dirty       INTEGER,
+        base_hash        TEXT,
+        current_hash     TEXT,
+        freshness        TEXT NOT NULL DEFAULT 'fresh'
+                         CHECK(freshness IN ('fresh','stale','unknown')),
+        produced_by      TEXT NOT NULL
+                         CHECK(produced_by IN ('human','agent','test_executor','system')),
+        work_item_id     TEXT,
+        work_run_id      TEXT,
+        session_id       TEXT,
+        turn_id          TEXT,
+        created_at       TEXT NOT NULL,
+        verified_at      TEXT,
+        stale_at         TEXT,
+        signed_by               TEXT,
+        signed_by_display_name  TEXT,
+        signed_at               TEXT,
+        coverage_json           TEXT,
+        basis_ref_json          TEXT,
+        reproducible            INTEGER,
+        expires_at       TEXT,
+        renewed_from_evidence_id TEXT,
+        revoked_at       TEXT,
+        revoked_by       TEXT,
+        revoke_reason    TEXT,
+        CHECK (evidence_level <> 'E3' OR (
+          version_binding = 'commit'
+          AND code_version IS NOT NULL
+          AND code_dirty = 0
+          AND reproducible = 1
+        )),
+        CHECK (evidence_level <> 'E4' OR (
+          version_binding = 'none'
+          AND code_version IS NULL
+          AND reproducible = 0
+          AND signed_by IS NOT NULL
+          AND signed_at IS NOT NULL
+          AND coverage_json IS NOT NULL
+        ))
+      )
+    `,
+    requiredColumns: ['id', 'graph_id', 'graph_type', 'node_entity_key', 'evidence_level', 'evidence_type', 'ref_json', 'produced_by', 'created_at'],
+  },
+  {
+    // 派生缓存（可整表重建）：nodes.status 永不参与派生、也不被回写（§3.1 双轨）。
+    name: 'node_execution_state',
+    createSql: `
+      CREATE TABLE node_execution_state (
+        graph_id           TEXT NOT NULL,
+        node_entity_key    TEXT NOT NULL,
+        execution_state    TEXT NOT NULL CHECK(execution_state IN (
+          'untouched','planned','in_progress','implemented',
+          'verified','signed_off','failed','blocked','stale')),
+        evidence_level     TEXT NOT NULL CHECK(evidence_level IN ('E0','E1','E2','E3','E4')),
+        is_reproducible    INTEGER NOT NULL DEFAULT 0,
+        evidence_count     INTEGER NOT NULL DEFAULT 0,
+        stale_count        INTEGER NOT NULL DEFAULT 0,
+        derivation_version INTEGER NOT NULL DEFAULT 1,
+        inputs_hash        TEXT,
+        computed_at        INTEGER NOT NULL,
+        PRIMARY KEY (graph_id, node_entity_key)
+      )
+    `,
+    requiredColumns: ['graph_id', 'node_entity_key', 'execution_state', 'evidence_level', 'computed_at'],
+  },
+]
+
+export const MAP_S6A_INDEX_SQLS: string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_node_evidence_node ON node_evidence(graph_id, node_entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_evidence_level ON node_evidence(evidence_level, freshness)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_evidence_run ON node_evidence(work_run_id)`,
+  // 同一 run 对同一节点产出的同类证据只落一条（重试幂等）;E4 人工签收不在此约束内
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_node_evidence_run_type
+     ON node_evidence(work_run_id, evidence_type, node_entity_key)
+     WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3')`,
+  `CREATE INDEX IF NOT EXISTS idx_node_execution_state_value ON node_execution_state(execution_state)`,
+]
+
 /** S5a 索引（§7.2）。 */
 export const MAP_S5A_INDEX_SQLS: string[] = [
   // ux_work_items_current 是部分唯一索引：同一 lineage 只允许一行 is_current=1。

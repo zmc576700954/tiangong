@@ -214,8 +214,7 @@ export interface StartSessionResult {
  *   setScopeGuard / setContextResolver / setSymbolIndex /
  *   setAdapterPreferencesLoader / setWaterline / setCompactHistoryRepo /
  *   setChatRepo / setSubagentManager / setStatusChangeCallback /
- *   setSessionStartedCallback / setNodeStatusChangeCallback /
- *   setOnSessionComplete
+ *   setSessionStartedCallback / setOnSessionComplete
  *
  * Test-accessible internals (read via `(manager as any).xxx`):
  *   sessionStates / sessionOutputBuffers / sessionRecovery /
@@ -231,6 +230,10 @@ export class AgentManager {
   private runtime: AgentRuntime | undefined
   /** F3-A：到期 turn 的收割器（随 setRuntime 启动；stopDeadlineReaper 可停） */
   private deadlineReaper: DeadlineReaper | null = null
+  /** main 侧保留:NODE_STATUS_CHANGE 广播回调(发射点已随双轨收敛删除,休眠) */
+  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
+  /** F1 契约 4（P-F1）：会话收尾监听器（onSessionCleanedUp 时触发） */
+  private sessionEndedListeners: Array<(sessionId: string, outcome: string) => void> = []
 
   // ----- Helpers (composition root) -----
   private lifecycle: SessionLifecycleManager
@@ -474,7 +477,6 @@ export class AgentManager {
   // ----- Callbacks injected by IPC handlers / tests -----
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
   private sessionStartedCallback?: (threadId: string, sessionId: string) => void
-  private nodeStatusChangeCallback?: (nodeId: string, oldStatus: string, newStatus: string) => void
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
 
   constructor(
@@ -851,23 +853,10 @@ export class AgentManager {
             this.statusChangeCallback?.(session.id, candidateConfig.nodeId, 'developing')
           }
 
-          // placeholder → developing auto-advance (per-node-type validated via NodeRepository)
-          if (candidateConfig.nodeId && candidateConfig.commandType === 'implement') {
-            try {
-              const db = getClient()
-              const { NodeRepository } = await import('../repositories/node-repository')
-              const nodeRepo = new NodeRepository(db)
-              const current = nodeRepo.findById(candidateConfig.nodeId)
-              if (current && current.status === 'placeholder') {
-                const updated = nodeRepo.update(candidateConfig.nodeId, { status: 'developing' })
-                if (updated.status === 'developing') {
-                  this.nodeStatusChangeCallback?.(candidateConfig.nodeId, 'placeholder', 'developing')
-                }
-              }
-            } catch (err) {
-              logger.warn(`Failed to auto-advance placeholder node ${candidateConfig.nodeId}:`, err)
-            }
-          }
+          // S6a 双轨收敛（session-map 蓝图 §3.1/§9.5-2）:此处原有的
+          // placeholder→developing 自动推进已删除——Agent 会话禁写 nodes.status,
+          // 节点完成度由 node_execution_state 派生（人写状态与派生态并列展示,
+          // 不互写）。会话活动提示走 statusChangeCallback（仅渲染层提示,不落库）。
 
           // Emit session-started event for renderer IPC
           if (this.sessionStartedCallback && candidateConfig.threadId) {
@@ -1672,6 +1661,19 @@ export class AgentManager {
 
   setNodeStatusChangeCallback(cb: (nodeId: string, oldStatus: string, newStatus: string) => void): void {
     this.nodeStatusChangeCallback = cb
+  }
+
+  /**
+   * F1 契约 4（P-F1）：注册会话收尾监听器。任何会话完成清理（onSessionCleanedUp，
+   * 含 abnormal/cancelled 收尾）都会触发，监听器异常不影响清理链。
+   * 返回退订函数。（并集:setter 的唯一发射点已随双轨收敛删除,回调休眠,
+   * API 面维持 main 现状。）
+   */
+  onSessionEnded(cb: (sessionId: string, outcome: string) => void): () => void {
+    this.sessionEndedListeners.push(cb)
+    return () => {
+      this.sessionEndedListeners = this.sessionEndedListeners.filter((l) => l !== cb)
+    }
   }
 
   setOnSessionComplete(

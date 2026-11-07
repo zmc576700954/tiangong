@@ -175,9 +175,9 @@ agentManager.setSessionStartedCallback((threadId, sessionId) => {
   broadcastToWindows('agent:onSessionStarted', threadId, sessionId)
 })
 
-agentManager.setNodeStatusChangeCallback((nodeId, oldStatus, newStatus) => {
-  broadcastToWindows('event:NODE_STATUS_CHANGE', nodeId, oldStatus, newStatus)
-})
+// S6a 双轨收敛（§9.5-1）:原 NODE_STATUS_CHANGE 广播的唯一发射点
+// （placeholder→developing 自动推进）已删除——节点完成度由派生态承载,
+// 该事件链休眠保留（渲染层仅作提示,无任何 nodes.status 写入方）。
 
 // Agent 日志持久化回调（延迟注册，需要 db client）
 let agentLogRepo: AgentLogRepository | null = null
