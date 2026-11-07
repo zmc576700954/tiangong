@@ -260,8 +260,22 @@ export interface IpcApi {
   /** 节点会话时间线（§9.5-3:替代单线程映射,UI 保留 threadIds 全集） */
   'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<Array<Record<string, unknown>>>
   'map:node:evidence:list': (query: { graphId: string; nodeEntityKey: string }) => Promise<Array<Record<string, unknown>>>
-  'workitem:get': (id: string) => Promise<{ item: Record<string, unknown>; steps: Array<Record<string, unknown>> } | null>
-  'workitem:list': (query: { graphId: string; anchorEntityKey?: string; includeHistory?: boolean }) => Promise<Array<Record<string, unknown>>>
+  /** item 下钻：item + 当前 revision 的 steps + 该 item 全部 runs */
+  'workitem:get': (id: string) => Promise<{ item: Record<string, unknown>; steps: Array<Record<string, unknown>>; runs: Array<Record<string, unknown>> } | null>
+  'workitem:list': (query: { graphId: string; anchorEntityKey?: string; includeHistory?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>
+  /** step 只读列表（工作项下钻；含 v34 skip_reason / failure_class） */
+  'workitem:steps:list': (query: { workItemId: string; revision?: number; limit?: number }) => Promise<Array<Record<string, unknown>>>
+  /** 证据只读列表（按 work_item 下钻；节点维度走 map:node:evidence:list） */
+  'workitem:evidence:list': (query: { workItemId: string; limit?: number }) => Promise<Array<Record<string, unknown>>>
+  /** run 只读列表：workItemId / stepId / graphId 至少给一个，limit 1..500 */
+  'map:run:list': (query: {
+    workItemId?: string
+    stepId?: string
+    graphId?: string
+    status?: string
+    limit?: number
+  }) => Promise<Array<Record<string, unknown>>>
+  'map:run:get': (id: string) => Promise<Record<string, unknown> | null>
   'workitem:create': (data: {
     projectPath?: string
     graphId: string
@@ -412,3 +426,22 @@ export interface IpcEventMap {
   /** A2A server lifecycle change (start/stop/restart). Carries the same payload as `a2a:getServerStatus`. */
   'a2a:serverStatusChange': (status: A2AServerStatus) => void
 }
+
+/**
+ * session-map 只读通道白名单（preload 暴露 + 测试断言共用唯一来源）。
+ *
+ * 约束：只允许 `SELECT`/派生缓存读。不得加入任何写操作或执行触发
+ * （enqueue / claim / start / cancel / approve / create / revise / plan 确认等）。
+ */
+export const MAP_READ_ONLY_CHANNELS = [
+  'map:overlay:get',
+  'map:link:list',
+  'map:node:timeline',
+  'map:node:evidence:list',
+  'workitem:get',
+  'workitem:list',
+  'workitem:steps:list',
+  'workitem:evidence:list',
+  'map:run:list',
+  'map:run:get',
+] as const satisfies readonly (keyof IpcApi)[]

@@ -118,6 +118,13 @@ export class EvidenceService {
       .all(graphId, nodeEntityKey) as NodeEvidenceRow[]
   }
 
+  /** 只读：按 work_item 取证据（UI 从任务下钻时用；含已撤销/过期行,由前端按 revoked_at/freshness 展示）。 */
+  listForWorkItem(workItemId: string, limit = 200): NodeEvidenceRow[] {
+    return this.db
+      .prepare('SELECT * FROM node_evidence WHERE work_item_id = ? ORDER BY created_at DESC, id ASC LIMIT ?')
+      .all(workItemId, limit) as NodeEvidenceRow[]
+  }
+
   /** 写入（§3.7.1）。重复的 run 内 E2/E3 返回既有行。提交后调度派生重算。 */
   create(input: CreateEvidenceInput): { row: NodeEvidenceRow; reused: boolean } {
     const actor = input.actor ?? input.producedBy ?? 'system'

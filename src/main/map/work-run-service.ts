@@ -34,6 +34,13 @@ export type WorkRunStatus =
   | 'completed' | 'failed' | 'cancelled' | 'superseded'
   | 'interrupted' | 'timed_out'
 
+/** 状态全集（IPC 只读查询的参数校验用）。 */
+export const WORK_RUN_STATUSES: readonly WorkRunStatus[] = [
+  'queued', 'running', 'awaiting_approval', 'blocked',
+  'completed', 'failed', 'cancelled', 'superseded',
+  'interrupted', 'timed_out',
+]
+
 export type FailureClass =
   | 'infra' | 'busy' | 'turn_fail' | 'verify_fail' | 'test_fail'
   | 'env_fail' | 'timeout' | 'cancel' | 'denied'
@@ -133,6 +140,43 @@ export class WorkRunService {
 
   get(id: string): WorkRunRow | undefined {
     return this.db.prepare('SELECT * FROM work_runs WHERE id = ?').get(id) as WorkRunRow | undefined
+  }
+
+  /**
+   * 只读列表（IPC 查询用）：按 item / step / graph / status 过滤，run_seq 升序。
+   * 不改任何状态、不触发派生重算。选择器至少给一个由调用方保证；limit 由 IPC 层夹取。
+   */
+  list(filter: {
+    workItemId?: string
+    stepId?: string
+    graphId?: string
+    status?: WorkRunStatus
+    limit?: number
+  }): WorkRunRow[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filter.workItemId) {
+      where.push('r.work_item_id = ?')
+      params.push(filter.workItemId)
+    }
+    if (filter.stepId) {
+      where.push('r.step_id = ?')
+      params.push(filter.stepId)
+    }
+    if (filter.graphId) {
+      where.push('i.graph_id = ?')
+      params.push(filter.graphId)
+    }
+    if (filter.status) {
+      where.push('r.status = ?')
+      params.push(filter.status)
+    }
+    const sql = `SELECT r.* FROM work_runs r
+                   JOIN work_items i ON i.id = r.work_item_id
+                  ${where.length > 0 ? `WHERE ${where.join(' AND ')}` : ''}
+                  ORDER BY r.run_seq ASC LIMIT ?`
+    params.push(filter.limit ?? 100)
+    return this.db.prepare(sql).all(...params) as WorkRunRow[]
   }
 
   /**

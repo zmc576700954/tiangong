@@ -10,6 +10,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { IpcApi, AgentOutput, ContextState, SubagentPartialSummary } from '@shared/types'
+import { MAP_READ_ONLY_CHANNELS } from '@shared/types/ipc'
 import type { ConflictReport } from '@shared/types/conflict'
 import type { RecipeRunProgressEvent } from '@shared/types/recipe'
 import { decodeIpcError, type IpcErrorPayload, type IpcErrorResult } from '@shared/ipc-error'
@@ -222,6 +223,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   // Realtime conflict resolution (D10d)
   'conflict:getRecentReports',
   'conflict:clearReports',
+
+  // session-map 只读查询（run / step / work_item / 证据 / 派生状态）。
+  // 白名单见 @shared/types/ipc 的 MAP_READ_ONLY_CHANNELS：不得含任何写操作或执行触发。
+  ...MAP_READ_ONLY_CHANNELS,
 ]
 
 // Build IPC API object

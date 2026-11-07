@@ -4,16 +4,27 @@
  * L1 通道面：叠加层批量查询（禁止按节点轮询）、链接只读列表、节点会话时间线
  * （替代 threadStore 单线程映射,§9.5-3）、节点证据列表、work item 生命周期。
  * L2 通道（plan 系列、test 系列、evidence:suggestion 系列）随对应批次交付,此处不注册。
+ *
+ * 只读查询段（run / step / work_item / 证据 / 派生状态）：本文件里的只读通道
+ * 全部只 SELECT；派生状态沿用 `map:overlay:get` 的刷新语义（读缓存前先
+ * `flushPendingRecomputes` + 按图惰性刷新 `derivation_version < 2`），不另造一套。
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
 import { LinkService, LinkValidationError } from '../map-migration/link-service'
 import { runLinkIntegrityCheck } from '../map-migration/link-backfill'
 import { WorkItemService } from '../map/work-item-service'
+import { WorkRunService, WORK_RUN_STATUSES, type WorkRunStatus } from '../map/work-run-service'
 import { EvidenceService } from '../map/evidence-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import type { TypedHandle } from './utils'
+
+/** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
+function limitOf(value: unknown, fallback: number, max = 500): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+  return Math.min(Math.max(Math.trunc(value), 1), max)
+}
 
 export function registerMapHandlers(
   typedHandle: TypedHandle,
@@ -22,6 +33,7 @@ export function registerMapHandlers(
 ): void {
   const links = new LinkService(db)
   const workItems = new WorkItemService(db)
+  const workRuns = new WorkRunService(db)
   const evidence = new EvidenceService(db)
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
@@ -116,31 +128,94 @@ export function registerMapHandlers(
   })
 
   // ---- work item 生命周期（§9.2:workitem:*）----
+  /**
+   * item 下钻的最小闭包：item 本体 + 当前 revision 的 steps + 该 item 的全部 runs。
+   * 叠加层里的派生状态是单值折叠,明细必须从 steps/runs 取（§5.9 执行事实在 work_runs）。
+   * 只读：不 flush 派生缓存（steps/runs 不读 `node_execution_state`）。
+   */
   typedHandle('workitem:get', async (_, id: unknown) => {
     if (typeof id !== 'string') throw new Error('id is required')
     const row = workItems.get(id)
     if (!row) return null
-    return { item: row, steps: workItems.listSteps(row.id, row.revision) }
+    return {
+      item: row,
+      steps: workItems.listStepsForRead(row.id, row.revision, 500),
+      runs: workRuns.list({ workItemId: row.id, limit: 500 }),
+    }
   })
 
   typedHandle('workitem:list', async (_, query: unknown) => {
-    const q = (query ?? {}) as { graphId?: string; anchorEntityKey?: string; includeHistory?: boolean }
+    const q = (query ?? {}) as { graphId?: string; anchorEntityKey?: string; includeHistory?: boolean; limit?: unknown }
     if (typeof q.graphId !== 'string') throw new Error('graphId is required')
     const currentOnly = q.includeHistory !== true
+    const limit = limitOf(q.limit, 200)
+    const filter = `${currentOnly ? 'AND is_current = 1' : ''}`
     if (q.anchorEntityKey) {
       return db
         .prepare(
-          `SELECT * FROM work_items WHERE graph_id = ? AND anchor_entity_key = ? ${currentOnly ? 'AND is_current = 1' : ''}
-           ORDER BY updated_at DESC LIMIT 200`,
+          `SELECT * FROM work_items WHERE graph_id = ? AND anchor_entity_key = ? ${filter}
+           ORDER BY updated_at DESC LIMIT ?`,
         )
-        .all(q.graphId, q.anchorEntityKey)
+        .all(q.graphId, q.anchorEntityKey, limit)
     }
     return db
       .prepare(
-        `SELECT * FROM work_items WHERE graph_id = ? ${currentOnly ? 'AND is_current = 1' : ''}
-         ORDER BY updated_at DESC LIMIT 200`,
+        `SELECT * FROM work_items WHERE graph_id = ? ${filter}
+         ORDER BY updated_at DESC LIMIT ?`,
       )
-      .all(q.graphId)
+      .all(q.graphId, limit)
+  })
+
+  // ---- step 只读列表（item 下钻；含 v34 的 skip_reason / failure_class）----
+  typedHandle('workitem:steps:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as { workItemId?: unknown; revision?: unknown; limit?: unknown }
+    if (typeof q.workItemId !== 'string' || q.workItemId === '') {
+      throw new Error('workItemId is required')
+    }
+    const item = workItems.get(q.workItemId)
+    if (!item) return []
+    const revision = typeof q.revision === 'number' && Number.isInteger(q.revision) ? q.revision : item.revision
+    return workItems.listStepsForRead(item.id, revision, limitOf(q.limit, 200))
+  })
+
+  // ---- run 只读查询（work_runs 是执行事实;只 SELECT,不 enqueue/不触发重算）----
+  typedHandle('map:run:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as {
+      workItemId?: unknown; stepId?: unknown; graphId?: unknown; status?: unknown; limit?: unknown
+    }
+    const selectors = [q.workItemId, q.stepId, q.graphId].filter((v) => typeof v === 'string' && v !== '')
+    if (selectors.length === 0) throw new Error('workItemId, stepId or graphId is required')
+    for (const [label, value] of [['workItemId', q.workItemId], ['stepId', q.stepId], ['graphId', q.graphId]] as const) {
+      if (value !== undefined && typeof value !== 'string') throw new Error(`${label} must be a string`)
+    }
+    let status: WorkRunStatus | undefined
+    if (q.status !== undefined) {
+      if (typeof q.status !== 'string' || !WORK_RUN_STATUSES.includes(q.status as WorkRunStatus)) {
+        throw new Error(`status must be one of ${WORK_RUN_STATUSES.join(',')}`)
+      }
+      status = q.status as WorkRunStatus
+    }
+    return workRuns.list({
+      workItemId: typeof q.workItemId === 'string' && q.workItemId !== '' ? q.workItemId : undefined,
+      stepId: typeof q.stepId === 'string' && q.stepId !== '' ? q.stepId : undefined,
+      graphId: typeof q.graphId === 'string' && q.graphId !== '' ? q.graphId : undefined,
+      status,
+      limit: limitOf(q.limit, 100),
+    })
+  })
+
+  typedHandle('map:run:get', async (_, id: unknown) => {
+    if (typeof id !== 'string' || id === '') throw new Error('id is required')
+    return workRuns.get(id) ?? null
+  })
+
+  // ---- 证据只读（item 下钻;节点维度仍走 map:node:evidence:list）----
+  typedHandle('workitem:evidence:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as { workItemId?: unknown; limit?: unknown }
+    if (typeof q.workItemId !== 'string' || q.workItemId === '') {
+      throw new Error('workItemId is required')
+    }
+    return evidence.listForWorkItem(q.workItemId, limitOf(q.limit, 200))
   })
 
   typedHandle('workitem:create', async (_, data) => {

@@ -165,6 +165,24 @@ export class WorkItemService {
       .all(workItemId, revision) as WorkStepRow[]
   }
 
+  /**
+   * IPC 只读视图：显式列名，避免将来给 work_steps 加列时无声漏进渲染进程。
+   * 列集合变更须与本文件 WorkStepRow 同步（测试会锁定字段集合）。
+   */
+  listStepsForRead(workItemId: string, revision: number, limit: number): WorkStepRow[] {
+    return this.db
+      .prepare(
+        `SELECT id, work_item_id, work_item_revision, seq, title, step_kind,
+                scope_files_json, depends_on_step_ids_json, output_schema_json, consults_json,
+                checker_work_item_id, deadline_at, attempt, invocation_id, input_request_json,
+                status, skip_reason, failure_class, started_at, ended_at, created_at, updated_at
+           FROM work_steps
+          WHERE work_item_id = ? AND work_item_revision = ?
+          ORDER BY seq ASC LIMIT ?`,
+      )
+      .all(workItemId, revision, limit) as WorkStepRow[]
+  }
+
   // ---------------------------------------------------------
   // 创建 / gate
   // ---------------------------------------------------------
