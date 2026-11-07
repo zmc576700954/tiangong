@@ -3553,14 +3553,15 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ---
 
-## 14. G1–G6 准入 gate 规格（引擎已实施；D1–D14 待决）
+## 14. G1–G6 准入 gate 规格（引擎已实施；D1/D7 已批准已实施；其余待决）
 
 > **状态（按 §0 三态口径，逐项区分，不合并表述）：**
 > - **已实施（`b6f3735`）**：G1–G6 评估引擎 `src/main/map/gate-engine.ts`；生产装配在 `work-execution-runtime.ts` 以 `GateRecheck` 注入，受 `BIZGRAPH_MAP_EXECUTION` 开关控制（默认关闭，关闭时写通道仍显式拒绝）。引擎单元测试 53 例、执行触发测试 12 例，已随 `b6f3735` 落地。
-> - **待决（未批准、未实施）**：§14.8 的 D1–D14 产品裁决。其中 D1（acceptance 结构化格式与迁移）与 D7（预估行数来源）未落地前，常规生产任务仍按 fail-closed 默认判 `incomplete`，**真实执行不可达**；这是规格内默认，不是引擎缺陷。
+> - **已批准已实施（`e4398e7`，D1/D7）**：D1 acceptance 冻结为 `{id,type,expected,text?}`，系统边界强制结构化；**存量 `[{id,text}]` 不自动迁移**，人工重新确认计划前任务保持 `blocked`（显式代价）。D7 G4 预估行数采用「Σ scope 文件行数」的**过渡代理指标，不是变更行数**：已存在文件计实际行数，新建文件计 0，目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800）。该代理只用于准入规模守卫，不得当作"预计变更行数"的验收事实；真实改动行数属执行后 evidence 对比。
+> - **待决（未批准、未实施）**：§14.8 其余项（D2–D6、D8–D14）。裁决前引擎按 fail-closed 保守默认，不豁免、不扩展。
 > - **仅建议（本节未实施）**：依赖 D2/D5/D6/D9/D10 裁决的扩展条款（expected 语义、跨图写判定、G5/G6 可豁免性、G6 比较范围）。
 >
-> 本节正文仍是规格定义来源；实际行为以 `gate-engine.ts` 与 §M5 实施记录为准。本节不替产品补 D1–D14 的值，也不改 §M5 或其他小节。
+> 本节正文仍是规格定义来源；实际行为以 `gate-engine.ts` 与 `work-execution-runtime.ts` 为准，完整实施记录见 §M5.7 / §M5.8。本节不改 §M5 或其他小节。
 
 ### 14.1 适用范围与调用时机
 
@@ -3608,7 +3609,7 @@ GateRecheckInput {
 | 图节点与链接 | `nodes`、`node_links`、同图 `edges` | G3 跨图写判定 | §1.2、§2.3、§5.4 G3 |
 | 运行中任务集合 | `work_items WHERE status='running' AND is_current=1` | G6 写冲突预检 | §5.4 G6 |
 | 项目根 | `work_items.project_path`（realpath） | G1/G6 路径规范化边界 | §5.4.1 |
-| 规模阈值 | 配置（来源待决，见 D7） | G4 | §5.4 G4 |
+| 规模阈值 | 配置（D7 已实施：env 阈值 + Σ scope 行数代理） | G4 | §5.4 G4 |
 | 证据 | `node_evidence` / `execution_state` | **不参与 G1–G6 判定** | §5.4；见 §14.3 末条 |
 
 - `scope_files`、`acceptance_json`、`depends_on_json` 都是 TEXT 存 JSON。解析失败一律 fail-closed，不得当作空数组"看起来通过"。
@@ -3669,8 +3670,8 @@ GateRecheckInput {
 - **pass**：两项都在阈值内。
 - **incomplete 代码（建议）**：`scope_file_count_exceeded:<n>/<max>`、`estimated_lines_exceeded:<n>/<max>`、`line_estimate_unavailable`、`gate_policy_missing`。
 - **可豁免**：否（§5.4）。
-- **不确定即失败**：拿不到预估行数时默认不能 pass（见 D7）；阈值缺失也不得回落到"无上限"。
-- **现状差距**：`work_items` / `work_steps` / `plan_drafts` 均无"预估行数"字段，`scope_files` 只有路径。预估来源、算法、配置键都是空白（D7）。若产品允许"无预估即视为 0"，会与 fail-closed 原则冲突，必须显式裁决。
+- **不确定即失败**：拿不到预估行数时不能 pass（D7 已实施：目录/读取失败 → `line_estimate_unavailable`）；阈值非法回退默认并告警，不得回落到"无上限"。
+- **现状（D7 已实施，`e4398e7`）**：`work_items` / `work_steps` / `plan_drafts` 仍无"预估行数"字段；生产来源是 `work-execution-runtime` 的 Σ scope 文件行数**过渡代理指标，不是变更行数**——已存在文件按实际行数，新建文件计 0（规模由 G4 文件数上限约束），目录/读取失败 fail-closed。阈值由 env 配置（默认 20/800，非法回退默认）。该代理只用于准入规模守卫，不能当作"预计变更行数"的验收事实。
 
 #### G5 · 依赖闭包无未完成前置
 
@@ -3742,17 +3743,17 @@ GateRecheckResult {
 - `unblock`：目前只保证"不是 incomplete"，不保证"刚刚重跑过"；规格要求 blocked → queued 必须触发一次真实评估（§4.7.2）。
 - `work_items.gate_missing_json` 已是字符串数组，保持形状兼容，避免为了 gate 规格改表。
 
-### 14.8 待决项（需产品/架构拍板，本节不填值）
+### 14.8 待决项（D1/D7 已裁决并实施；其余需产品/架构拍板）
 
 | 编号 | 待决问题 | 为什么不能自行决定 | 关联 |
 |---|---|---|---|
-| D1 | `acceptance_json` 的结构化格式与迁移：是升级现有条目为 `{id,type,expected,...}`，还是新增列/新 plan 输出格式？存量 `[{id,text}]` 如何判定（视为无结构 → incomplete，还是迁移补齐）？ | 现有写入/提示词/测试都按 `[{id,text}]`；G2 原文要求 `type/expected`，两者不兼容 | §5.4 G2、`agent-step-runner`、`ipc/map.ts` |
+| D1 | **已批准已实施（`e4398e7`）**：acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）。**存量 `[{id,text}]` 不自动迁移**：G2 仍判 `acceptance_item_not_structured`，任务保持 `blocked`，必须人工重新确认计划——这是已批准方案的显式代价。 | 现有存量数据与 G2 结构化要求不兼容，代价已由裁决接受 | §5.4 G2、`agent-step-runner`、`work-item-service` |
 | D2 | 三类 `expected` 的判定语义：`command` 看退出码还是输出匹配？`file_check` 校验存在/内容/哈希？`manual` 的 expected 是什么形态？ | §5.4 只列类型名，未定义 expected 语义 | §5.4 G2 |
 | D3 | G2 豁免粒度：整条任务豁免还是逐验收项豁免？混合 `manual + command` 时 command 失败能否用 manual 豁免覆盖？ | §5.4 只说"G2 的 manual 允许豁免"，未说粒度 | §5.4、§4.7.3 |
 | D4 | `project_path` 为空时 G1 的处理：直接 fail-closed（本草案默认），还是允许从图/项目根兜底解析？ | schema 允许 NULL，但 G1 必须有根才能证明"根内" | §5.4.1、§7.2 |
 | D5 | "跨图写"的可操作定义（锚点/引用节点/链接三选一或组合），以及只读链接（`relates_to`/`verifies`）是否允许 | §5.4 G3 只有一句话，现有字段支持多种解释 | §1.2、§2.3、§5.4 G3 |
 | D6 | G3 对 `test` 图的处理：一律拒绝写，还是允许 test 图锚点只读派生？ | 原文只要求 dev 图，未提 test 图任务 | §5.4 G3、`GraphType` |
-| D7 | G4 的"预估行数"来源、算法、配置键与默认值；无法预估时是否 fail-closed | 现有表无该字段，蓝图只写"可配置" | §5.4 G4、§7.2 |
+| D7 | **已批准已实施（`e4398e7`）**：预估行数来源 = Σ scope 文件行数的**过渡代理指标，不是变更行数**；已存在文件按实际行数、新建文件计 0、目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800，非法回退）。真实改动行数不在准入内，属执行后 evidence 对比。 | 现有表无预估行数字段，代理指标是已批准的过渡口径 | §5.4 G4、§7.2 |
 | D8 | G5 是否纳入隐式依赖；上游 `superseded` 是否按当前 revision 代替；`cancelled` 上游是否算未完成；"显式标 blocked 并给出依赖 id"的准确语义 | 原文与 §5.5.1 的隐式依赖规则可能冲突，需统一 | §5.4 G5、§5.5.1 |
 | D9 | G5/G6 是否允许人工豁免；若允许，豁免字段与审计要求 | §5.4 只点名 G2，未说 G5/G6 | §5.4 |
 | D10 | G6 是否排除同 lineage 父/子任务、是否把 `queued` 纳入、是否跨项目比较 | 原文只说"其它 running 任务" | §5.4 G6、§5.9 |
