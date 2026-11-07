@@ -8,6 +8,19 @@ export interface LegacyApprovalHooksInput {
   cwd: string
 }
 
+/** 能在宿主侧拦截工具调用的适配器（目前只有 claude-code 的 SDK 钩子）。 */
+export interface HostApprovalCapableAdapter {
+  setTurnApprovalHooks(sessionId: string, hooks: ClaudeTurnApprovalHooks | null): void
+}
+
+export function supportsHostApproval(adapter: unknown): adapter is HostApprovalCapableAdapter {
+  return (
+    typeof adapter === 'object' &&
+    adapter !== null &&
+    typeof (adapter as { setTurnApprovalHooks?: unknown }).setTurnApprovalHooks === 'function'
+  )
+}
+
 /**
  * 旧路径（非 kernel）的审批钩子：复用适配器内已有的 PreToolUse 写类强制 ask
  * 与 Bash 两档策略，最终放行统一回到 `ApprovalGateway.request`（与 kernel 同一套

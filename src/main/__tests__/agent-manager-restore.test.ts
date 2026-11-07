@@ -24,18 +24,28 @@ import { ApprovalGateway } from '../agent/runtime/approval/gateway'
 import { SessionRestoreError } from '../errors'
 import type { AgentRuntime } from '../agent/runtime/runtime'
 import type { AgentSessionRow, AgentTurnRow } from '../agent/runtime/db/repository'
+import type { ClaudeTurnApprovalHooks } from '../adapters/claude-code'
 import type { AgentCommand, AgentSession, AgentSessionConfig } from '@shared/types'
 
 class RestoreAdapter extends BaseAdapter {
   readonly name: string
   readonly version = '1.0.0'
   lastPrompts: string[] = []
+  /** 记录审批钩子的注入/清除（只有 claude-code 实例具备宿主审批能力）。 */
+  approvalHookCalls: Array<[string, ClaudeTurnApprovalHooks | null]> = []
+  setTurnApprovalHooks?: (sessionId: string, hooks: ClaudeTurnApprovalHooks | null) => void
   private readonly native: boolean
 
   constructor(name = 'claude-code', native = true) {
     super()
     this.name = name
     this.native = native
+    // 真机上只有 claude-code 适配器能把钩子注入 SDK；其余后端（codex 等）没有宿主拦截点。
+    if (name === 'claude-code') {
+      this.setTurnApprovalHooks = (sessionId, hooks) => {
+        this.approvalHookCalls.push([sessionId, hooks])
+      }
+    }
   }
 
   async checkInstalled(): Promise<boolean> {
@@ -488,7 +498,7 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
     expect(adapter.getSessionConfig('sess-missing')).toBeUndefined()
   })
 
-  it('KERNEL=0 + 只有 chat_thread 记录（旧路径自建会话）：明确告知不可续接并提示新建', async () => {
+  it('KERNEL=0 + 自由聊天重启后不可续接：chat_thread 历史仍在，按既有恢复失败流程提示新建', async () => {
     const adapter = new RestoreAdapter('codex', true)
     manager.registerAdapter(adapter)
     const chatRepo = {
@@ -525,11 +535,13 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
     await expect(promise).rejects.toThrow(/原会话不可续接/)
     await expect(promise).rejects.toThrow(/新建会话可继续/)
     expect(chatRepo.getThreadBySessionId).toHaveBeenCalledWith('sess-legacy')
+    // 历史仍在（线程行可读），但没有把历史当成可续接的后端会话，也没有投递 prompt。
+    expect(adapter.lastPrompts).toHaveLength(0)
     expect(adapter.getSessionConfig('sess-legacy')).toBeUndefined()
     expect(router.getAdapterName('sess-legacy')).toBeUndefined()
   })
 
-  it('KERNEL=0 + 同进程内仅路由条目丢失：从内存态重新绑定，不重放、不新建', async () => {
+  it('KERNEL=0 + 有节点归属的会话仅路由条目丢失：从内存态重新绑定，不重放、不新建', async () => {
     const adapter = new RestoreAdapter('claude-code', true)
     manager.registerAdapter(adapter)
     const started = await manager.startSession('claude-code', {
@@ -541,10 +553,6 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
       downstreamContext: '',
       nodeTitle: 'Legacy Node',
       acceptanceCriteria: [],
-      threadId: 'th-legacy',
-      // D8 fail-closed（§4.5）：未挂载节点的自由聊天在无宿主审批钩子的后端上
-      // 会被阻断——本测试验证的是「仅路由条目丢失 → 从内存态重绑」，故挂载
-      // 节点以通过 prepareLegacyApproval 守卫,不改变被测的恢复路径。
       nodeId: 'n-legacy',
     })
     router.unbind(started.sessionId)
@@ -557,7 +565,40 @@ describe('AgentManager — BIZGRAPH_AGENT_KERNEL=0 旧路径的会话恢复', ()
 
     expect(router.getAdapterName(started.sessionId)).toBe('claude-code')
     expect(adapter.lastPrompts.join(' | ')).toContain('same-process continue')
+    // 有节点归属：走旧路径但不需要旧路径审批钩子（节点会话由 kernel 覆盖）。
+    expect(adapter.approvalHookCalls).toHaveLength(0)
     // 没有新建会话（旧路径自建会话不写 agent_sessions）。
+    expect(repo.sessions.size).toBe(0)
+  })
+
+  it('KERNEL=0 + 自由聊天（无节点）同进程路由丢失：可重新绑定，但必须装写前审批钩子', async () => {
+    const adapter = new RestoreAdapter('claude-code', true)
+    manager.registerAdapter(adapter)
+    const started = await manager.startSession('claude-code', {
+      workingDirectory: '/project',
+      allowedFiles: [],
+      forbiddenFiles: [],
+      invariantRules: [],
+      upstreamContext: '',
+      downstreamContext: '',
+      nodeTitle: 'Free Chat',
+      acceptanceCriteria: [],
+      threadId: 'th-free',
+    })
+    router.unbind(started.sessionId)
+
+    await manager.sendCommand(started.sessionId, {
+      type: 'implement',
+      description: 'free chat continue',
+      targetNodeId: '',
+    })
+
+    expect(router.getAdapterName(started.sessionId)).toBe('claude-code')
+    expect(adapter.lastPrompts.join(' | ')).toContain('free chat continue')
+    // D8 后自由聊天不进 kernel：必须由旧路径注入同一套审批钩子，不能落到 acceptEdits。
+    expect(adapter.approvalHookCalls).toHaveLength(2)
+    expect(adapter.approvalHookCalls[0][1]).toMatchObject({ canUseTool: expect.any(Function) })
+    expect(adapter.approvalHookCalls[1][1]).toBeNull()
     expect(repo.sessions.size).toBe(0)
   })
 })

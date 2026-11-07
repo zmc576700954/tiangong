@@ -15,6 +15,10 @@ function createMockAgentManager() {
     sendCommand: vi.fn().mockResolvedValue(undefined),
     terminateSession: vi.fn().mockResolvedValue(undefined),
     broadcastToSession: vi.fn(),
+    // 只有 claude-code 具备宿主审批能力（与真实适配器一致）。
+    getAdapter: vi.fn((name: string) =>
+      name === 'claude-code' ? { setTurnApprovalHooks: vi.fn() } : undefined,
+    ),
     addSessionOutputListener: vi.fn((sessionId: string, handler: (o: AgentOutput) => void) => {
       const arr = listeners.get(sessionId) ?? []
       arr.push(handler)
@@ -137,6 +141,77 @@ describe('SubagentManager', () => {
     })
     expect(result.resultText).toContain('subagent done')
     expect(result.invocationId).toMatch(/^inv-/)
+  })
+
+  it('P0-3：无 allowed_files 的写类子代理降级为只读工具（禁写类与 Bash）', async () => {
+    const parentState = {
+      config: {
+        workingDirectory: '/tmp',
+        allowedFiles: [],
+        forbiddenFiles: [],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: '',
+        acceptanceCriteria: [],
+      },
+      broadcastName: 'mock',
+      adapterName: 'claude-code',
+      startTime: Date.now(),
+    }
+    mockManager.getSessionState.mockReturnValue(parentState)
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(
+        () =>
+          mockManager._emitOutput('child-1', { type: 'complete', data: 'done', timestamp: 0 }),
+        0,
+      )
+    })
+
+    await mgr.invoke({
+      parentSessionId: 'p1',
+      agentType: 'general',
+      description: 'no scope',
+      prompt: 'do something',
+    })
+
+    const childConfig = mockManager.startSession.mock.calls[0][1] as {
+      subagentAllowedTools: string[] | '*'
+    }
+    expect(childConfig.subagentAllowedTools).toEqual(['Read', 'Glob', 'Grep', 'WebFetch'])
+  })
+
+  it('P0-3：禁止从有宿主审批的后端降级到无审批后端', async () => {
+    const parentState = {
+      config: {
+        workingDirectory: '/tmp',
+        allowedFiles: ['src/a.ts'],
+        forbiddenFiles: [],
+        invariantRules: [],
+        upstreamContext: '',
+        downstreamContext: '',
+        nodeTitle: '',
+        acceptanceCriteria: [],
+      },
+      broadcastName: 'mock',
+      adapterName: 'claude-code',
+      startTime: Date.now(),
+    }
+    mockManager.getSessionState.mockImplementation((id: string) =>
+      id === 'child-1' ? { ...parentState, adapterName: 'codex' } : parentState,
+    )
+
+    await expect(
+      mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'general',
+        description: 'downgrade',
+        prompt: 'do something',
+        adapterName: 'codex',
+        allowedFiles: ['src/a.ts'],
+      }),
+    ).rejects.toThrow(/降级/)
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'error')
   })
 
   it('rejects subset strategy when child files not subset of parent', async () => {

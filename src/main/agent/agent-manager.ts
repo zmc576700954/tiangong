@@ -50,8 +50,7 @@ import { UsageLedger } from './runtime/cost/ledger'
 import { SessionBusyError } from './runtime/errors'
 import { ROOT_LOCK_CONTEXT, sessionLockKey } from './runtime/locks/session-lock'
 import { getKernelBackendPolicy } from './runtime/feature-flags'
-import { buildLegacyApprovalHooks } from './runtime/approval/legacy-hooks'
-import type { ClaudeTurnApprovalHooks } from '../adapters/claude-code'
+import { buildLegacyApprovalHooks, supportsHostApproval } from './runtime/approval/legacy-hooks'
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, SessionRestoreError, ErrorCode } from '../errors'
@@ -370,13 +369,16 @@ export class AgentManager {
   }
 
   /**
-   * 旧路径审批：自由聊天（无节点、线程绑定）也必须经过同一审批网关。
+   * 旧路径审批：所有非 kernel 会话（自由聊天与无 threadId 的内部会话）共用同一网关。
    *
    * - 支持审批钩子的适配器（claude-code）：注册钩子；写类工具在适配器 PreToolUse
    *   强制 ask，再由 canUseTool 调 `ApprovalGateway.request`（与 kernel 同一套策略、
-   *   会话授权与 `agent_approvals` 落库）。
-   * - 其余适配器无法在宿主侧拦截工具调用：fail-closed，避免零审批写入。
-   * - 有节点会话与非线程绑定的内部会话不在本函数范围（行为保持不变）。
+   *   会话授权与 `agent_approvals` 落库）。子代理子会话与 sendAndWait 一次性会话
+   *   同样走这里，不能落到 `acceptEdits`。
+   * - 无法在宿主侧拦截工具调用的适配器：用户可见的自由聊天 fail-closed；
+   *   内部会话（subagent / mindmap / sendAndWait）保持既有行为（其写权限由后端
+   *   自身或 ScopeGuard 约束，不能一刀切阻断内部链路）。
+   * - 有节点会话仍优先走 kernel，不在本函数范围。
    */
   private prepareLegacyApproval(
     sessionId: string,
@@ -386,12 +388,14 @@ export class AgentManager {
     const approvals = this.runtime?.approvals
     if (!approvals) return undefined
     if (this.resolveKernelNodeId(sessionId, command)) return undefined
-    if (!this.isThreadBoundSession(sessionId)) return undefined
 
-    const hooksCapable = adapter as AgentAdapter & {
-      setTurnApprovalHooks?: (sessionId: string, hooks: ClaudeTurnApprovalHooks | null) => void
-    }
-    if (typeof hooksCapable.setTurnApprovalHooks !== 'function') {
+    if (!supportsHostApproval(adapter)) {
+      if (!this.isThreadBoundSession(sessionId)) {
+        logger.warn(
+          `[internal-no-approval] session=${sessionId}: adapter=${adapter.name} 无宿主审批钩子；内部会话保持既有行为`,
+        )
+        return undefined
+      }
       logger.error(
         `[free-chat-no-approval] session=${sessionId}: adapter=${adapter.name} 无法在宿主侧拦截写类工具，已 fail-closed`,
       )
@@ -403,14 +407,11 @@ export class AgentManager {
     }
 
     const cwd = this.sessionStates.get(sessionId)?.config.workingDirectory ?? ''
-    hooksCapable.setTurnApprovalHooks(
-      sessionId,
-      buildLegacyApprovalHooks({ approvals, sessionId, cwd }),
-    )
+    adapter.setTurnApprovalHooks(sessionId, buildLegacyApprovalHooks({ approvals, sessionId, cwd }))
     logger.info(
       `[legacy-approval] session=${sessionId}: 旧路径已启用写前审批（adapter=${adapter.name}）`,
     )
-    return () => hooksCapable.setTurnApprovalHooks?.(sessionId, null)
+    return () => adapter.setTurnApprovalHooks(sessionId, null)
   }
 
   /** 用户可见的线程会话（自由聊天）；无 chat_threads 归属的内部工具会话不在此列。 */

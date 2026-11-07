@@ -1152,6 +1152,34 @@ describe('AgentManager', () => {
       expect(adapter.lastPrompts).toHaveLength(0)
     })
 
+    it('P0-3：无 threadId 的内部会话（子代理/sendAndWait）同样装写前审批钩子', async () => {
+      class HookCapableAdapter extends TestAdapter {
+        readonly installHooks = vi.fn((_sessionId: string, _hooks: unknown) => undefined)
+        setTurnApprovalHooks(sessionId: string, hooks: unknown): void {
+          this.installHooks(sessionId, hooks)
+        }
+      }
+
+      const adapter = new HookCapableAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      manager.setRuntime({
+        locks: new SessionLockRegistry(),
+        approvals: { request: vi.fn() },
+      } as unknown as AgentRuntime)
+
+      // 没有 threadId：模拟 subagent 子会话 / sendAndWait 一次性会话。
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'internal write approval',
+        targetNodeId: '',
+      })
+
+      expect(adapter.installHooks).toHaveBeenCalledTimes(2)
+      expect(adapter.installHooks.mock.calls[0][1]).toMatchObject({ canUseTool: expect.any(Function) })
+      expect(adapter.installHooks.mock.calls[1][1]).toBeNull()
+    })
+
     it('resets recovery retry counter when a recovered session completes successfully', async () => {
       const adapter = new TestAdapter('mcp')
       manager.registerAdapter(adapter)

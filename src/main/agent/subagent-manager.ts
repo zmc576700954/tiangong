@@ -37,6 +37,7 @@ import type {
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
 import { MAX_OUTPUT_ENTRY_SIZE } from '../adapters/base'
 import { AgentError, ErrorCode } from '../errors'
+import { supportsHostApproval } from './runtime/approval/legacy-hooks'
 import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
 import { withSpan } from '../telemetry'
@@ -50,6 +51,23 @@ type SessionState = NonNullable<ReturnType<AgentManager['getSessionState']>>
 
 const DEFAULT_MAX_CONCURRENT = 5
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+
+/**
+ * 无 scope（allowed_files 为空）时子代理只允许使用这些只读工具。
+ * 与内置 explore 的 allowedTools 对齐；这是「空 scope 禁写」的落点（P0-3）。
+ */
+const READ_ONLY_SUBAGENT_TOOLS = ['Read', 'Glob', 'Grep', 'WebFetch']
+
+/** 会改文件或可借 shell 改文件的工具名；命中即视为需要写 scope 或审批。 */
+const WRITE_OR_SHELL_TOOLS = new Set([
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Bash',
+  'BashOutput',
+  'KillShell',
+])
 
 export interface SubagentProgressEvent {
   invocationId: string
@@ -551,6 +569,23 @@ export class SubagentManager extends EventEmitter {
     const parentConfig = parentState.config
     const childAdapterName = args.adapterName ?? def.defaultAdapter ?? parentState.adapterName
 
+    const hasWriteScope = childAllowedFiles.length > 0
+    const wantsWriteTools =
+      def.allowedTools === '*' || def.allowedTools.some((tool) => WRITE_OR_SHELL_TOOLS.has(tool))
+    // 空 scope 与写类工具不能共存（P0-3）：没有 allowed_files 时禁掉写类工具与 Bash，
+    // 保留只读工具。选择降级而非强制 allowed_files，是因为 dispatch_subagent 的
+    // allowed_files 是可选的，强制必填会让现有只读用法全部失败；降级仍能安全探索。
+    const effectiveAllowedTools = !hasWriteScope && wantsWriteTools
+      ? def.allowedTools === '*'
+        ? [...READ_ONLY_SUBAGENT_TOOLS]
+        : def.allowedTools.filter((tool) => !WRITE_OR_SHELL_TOOLS.has(tool))
+      : def.allowedTools
+    if (!hasWriteScope && wantsWriteTools) {
+      logger.warn(
+        `[subagent-no-scope] ${invocationId}: ${def.name} 未提供 allowed_files，子代理已降级为只读工具（禁写类与 Bash）`,
+      )
+    }
+
     const childConfig: AgentSessionConfig = {
       ...parentConfig,
       allowedFiles: childAllowedFiles,
@@ -561,7 +596,7 @@ export class SubagentManager extends EventEmitter {
       contextSummary: undefined, // child starts fresh
       resumeSessionId: undefined,
       // Phase 4: tool restriction for the child session
-      subagentAllowedTools: def.allowedTools,
+      subagentAllowedTools: effectiveAllowedTools,
       // Phase D5b: 透传 delegate 白名单（仅当父调用显式声明时才暴露 delegate_recipe 工具）
       allowedDelegates: args.allowedDelegates && args.allowedDelegates.length > 0
         ? args.allowedDelegates
@@ -599,6 +634,34 @@ export class SubagentManager extends EventEmitter {
       throw new AgentError(
         `Subagent invocation ${invocationId} cancelled before start`,
         ErrorCode.AGENT_SESSION_NOT_FOUND,
+      )
+    }
+
+    // P0-3：子代理不能成为零审批写入面。
+    // 1) 禁止从支持宿主审批的后端降级到裸 spawn 后端（adapter_name 由模型可填）；
+    // 2) 空 scope 且需要写类工具时，后端必须能在宿主侧禁用写工具（claude 钩子/
+    //    tools 白名单），否则 fail-closed，而不是让子代理带着全部工具裸跑。
+    const actualChildAdapterName =
+      this.agentManager.getSessionState(childSessionId)?.adapterName ?? childAdapterName
+    // 测试替身可能没有注册表访问；真实 AgentManager 一定有。能力未知时按「不可审批」处理。
+    const childAdapter = this.agentManager.getAdapter?.(actualChildAdapterName)
+    const parentAdapter = this.agentManager.getAdapter?.(parentState.adapterName)
+    const downgraded =
+      supportsHostApproval(parentAdapter) && !supportsHostApproval(childAdapter)
+    const unscopedWrite =
+      !hasWriteScope && wantsWriteTools && !supportsHostApproval(childAdapter)
+    if (downgraded || unscopedWrite) {
+      try {
+        await this.agentManager.terminateSession(childSessionId, 'error')
+      } catch {
+        /* best-effort */
+      }
+      const reason = downgraded
+        ? `不能从有宿主审批的后端（${parentState.adapterName}）降级到无审批的 ${actualChildAdapterName}`
+        : `未提供 allowed_files，且后端 ${actualChildAdapterName} 无法在宿主侧禁用写类工具与 Bash`
+      throw new AgentError(
+        `子代理派发已阻断：${reason}。请提供 allowed_files，或改用支持写前审批的后端。`,
+        ErrorCode.AGENT_ADAPTER_ERROR,
       )
     }
 
