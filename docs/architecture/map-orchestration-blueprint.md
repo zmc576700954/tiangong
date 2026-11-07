@@ -330,3 +330,68 @@ checker 经 `checker_work_item_id` 挂接；verdict=FIX → 主 item 新 attempt
 | mediated blackboard 五通道/模式库 | 本文 §4.1（L3） | 本文独有 |
 | 进化三层 / 语义归属建议 | 本文 §4.2（L3） | 本文独有 |
 | F1/F2/F3、D1-D8、R5-R10 | 本文内部编号 | 仅本文 |
+
+
+---
+
+## 9. 实施状态总账（2026-11-07,v1 = L1+L2 已合入 main @ `71518ed`）
+
+> 三态纪律:**已实施**(代码在 main,附提交/版本)/ **计划未做**(蓝图细则齐备,挂 L3 批次)/ **仅建议或待裁决**。
+> 整合方式:rebase --onto main + 两轮冲突解(setter 并集;legacySessionIdOf 与 subject 可空共存——空串非 legacy 前缀→undefined)。
+
+### 9.1 已实施
+
+**迁移链(v25→v33,九次演进,迁移状态机全程 fail-closed 护航)**
+
+| 版本 | 内容 | 批次 |
+|---|---|---|
+| v25 | F3 部分索引 idx_agent_turns_deadline | 前置 F3-A(main `e921977`) |
+| v26 | S1 身份层:nodes.entity_key+查重三表+map_migration_reports+唯一索引 | L1-S1 |
+| v27 | S2 node_links+索引 5 条 | L1-S2 |
+| v28 | S5a 六表(work_items 13 值/work_steps 12 值/runs/session_links/change_sets/routing) | L1-S5a |
+| v29 | S6a node_evidence(E3/E4 CHECK)+node_execution_state | L1-S6a |
+| v30 | S3 lifecycle_state(graphs/nodes) | L2-S3 |
+| v31 | S7 推导/草稿/偏差三表 | L2-S7 |
+| v32 | S8 前置 test_* 五表+agent_approvals subject | L2-S8 前置 |
+| v33 | S4 CHECK 值域(test 图,**不可逆已执行**,用户书面确认) | L2-S4 |
+
+**L1 功能(身份可信+任务可跑+证据展示)**
+
+- S1:导入查重(§2.6 判定全表+TOCTOU 兜底+preview 通道)/entity_key 回填(结构签名)/I4 写键三处/90 天保留/S1.6 历史 lineage 报告
+- S2:LinkService(L1-L6 不变量)/derives_from 回填/巡检(启动+每日+手动)/map:link:create(仅 relates_to)
+- S5a:WorkItemService(13 值状态机+修订+gate)/WorkRunService(幂等键/终态 CAS/partial)/NodeSessionLinkService(挂载+时间线)/ChangeSetService(base/head/失败不写空行)/RoutingDecisionRepository
+- S6a:EvidenceService(写入方矩阵/E3 dirty 拒产/E4 三件套+30 天/撤销/续签)/派生引擎(九级+U1+inputs_hash+500ms 合并)
+- 双轨缺口 1-5 全关;NodeMapPanel(M1)+画布派生徽标+时间线切换;IPC 面(§9.2 L1 全通道)
+- 会话挂载接线(thread:create→attach;thread:delete→ended_at)
+
+**L2 功能(拆解+测试闭环+归档)**
+
+- S3:删除归档语义(四类依赖探针∪lifecycle≠active→archive;hardDelete 分流内部清理)/图删除前置校验/links→orphan+证据→stale
+- S7:BoundaryDerivationService(§5.2 六步确定性)/PlanDraftService(C1 环检测+Kahn 层序+confirm 生成 work_items)/PlanDeviationRepository(NULL 口径)
+- S8 前置:TestPlanService(hash/审批/执行回写/E3 资格)+agent_approvals subject 扩展(D6,审批链 nullable 全收)
+- S8 完成:TestExecutor(受控 worktree/策略门逐条[critical+gitdir=硬 deny]/E3-E2 回写[verifies 目标]/bug 闭环[§6.6 三件套]/WORKTREE_FAILED env_fail 不建 bug)
+- 前置 F1-F3:main 版为准(拒绝路径收尾/失败保留/ DeadlineReaper+到期收口)+整合移植(P-F1 级联/P-F2 计时起点/64KB 可配/kernel 默认值纠正)
+- 对方线并行落地(合入):审批等待期候选 A 冻结(`7e6e63f`)/DEADLINE_EXPIRED_ON_RESTART/D8(`5938001`)/1236 默认不监听(`987c226`)/自由聊天+子代理审批(legacy-ids,`be71122`/`a8b5dac`/`3a05ae7`/`be71122`)
+- 双裁决:F3 默认值=配置键 `agent.timeouts.turnMs`(kernel 不设默认,已纠正);审批期=候选 A
+
+### 9.2 计划未做(细则齐备,挂 L3 批次)
+
+| 批次 | 内容 | 依据 |
+|---|---|---|
+| **L3-a**(S8 深水区) | flow 最小版(框选→拓扑→verify+shell→test_report);定向重测 targeted 流;published 软阻断徽标(has_pass_evidence/waiver_json) | §6.5.1.1/§6.6-4/§6.5.2 |
+| **L3-b**(处置) | RequestQueue 死代码删除;Yjs 拆除 runbook 执行(§2.8 九类);失败现场 worktree 清理任务 | §4.5/§2.8 |
+| **L3-c**(UI/提案) | 画布任务卡深度集成;提案机制(生成时机/冲突串行/降权);C1-C4 确认点渲染层 | §2.7/§5.6/§9.4 |
+| **L3-d**(编排) | DAG 并行 WaveExecutor;多 Agent 交互全案(mediated blackboard);WorkStepService 完整步状态机驱动(§4.7.4 执行器侧) | §4.1/§5.9 |
+| **L3-e**(进化/Tier2) | 进化三层(记忆/派发精度/技能沉淀);codex Tier2 升格 | §4.2/§4.4 |
+| **L3-f**(放宽/补全) | agent_turns.node_id 放宽;G1-G6 gate 引擎;evidence_suggestions(S6b);v_plan_deviations_file_domain 视图;E4 覆盖变化每日扫描任务;dirty worktree 应用 diff 增强 | §4.5/§5.4/§3.4/§5.7/§6.2 |
+| 离线校准 | 每 20 run/2 周阈值回顾(§5.7 三用途) | §5.7 |
+
+### 9.3 仅建议或待裁决
+
+- D1 计划确认强度 / D4 流程节点折叠(对方保持现状)
+- 「可复现 dirty 证据」另立 tree-hash 等级(§6.2.1 后备,不采纳为主路径)
+
+### 9.4 既有红线(非本线引入,已上报)
+
+- `agent-manager-restore.test.ts`"有节点归属重绑":3a05ae7 的重绑路径写 agent_sessions,违背其自家"不新建"断言(纯 main 即红)
+- `pipeline.test.ts` tracks duration:setTimeout(10) 断言 ≥10ms,定时器合并必偶发
