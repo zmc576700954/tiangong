@@ -981,7 +981,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - **claim**：`UPDATE work_runs SET status='running', started_at=? WHERE id=? AND status='queued'`；`changes=0` → 已被取消/其他 worker claim，直接返回。
 - **终态**：`UPDATE ... SET status=?, ended_at=?, failure_class=?, ... WHERE id=? AND status='running'`；取消先行成功时，完成更新 `changes=0`，保留 `cancelled` 与 partial 输出。
 - `run_seq` 按 `work_item_id` 单调递增；并发由 `BEGIN IMMEDIATE` + `UNIQUE(work_item_id, run_seq)` 兜底。
-- `partial_output_ref` 统一 JSON：`{stdout_tail, stderr_tail, file_changes[], errors[], artifact_refs[], captured_at, truncated}`；单字段上限由配置（默认 16KB/字段，总计 64KB），超限截断并置 `truncated=true`。F2 的 subagent partial 直接映射到此结构。
+- `partial_output_ref` 统一 JSON：`{stdout_tail, stderr_tail, file_changes[], errors[], artifact_refs[], captured_at, truncated}`；上限为**代码常量**（非配置项）：`PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`），超限截断并置 `truncated=true`。F2 的 subagent partial 直接映射到此结构；子代理侧另有常量 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 单条截断（`base.ts:40`），两层值不一致，是否统一见 §12.5 第 4 项。
 - `failure_class` 取值至少 `agent_error / timeout / cancelled / infra / approval_denied / upstream_cancelled`；`failed` 与 `cancelled` 不得混写。
 - 重启对账：启动时把所有 `running` 且无存活进程的 run 置 `interrupted`，保留 partial；不自动重跑。
 
@@ -2874,13 +2874,13 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 8.15 F1–F3 前置修复（B1）
 
-> **状态：已实施（2026-11-07，提交 `9ce519c`/`f73abd8`/`260df58`/`fb19e07`，分支 `worktree-blueprint-f1-f3`）。** 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置（该处置已实施，见 §2.2.1）。
+> **状态：已实施（2026-11-07，main）：F1 `231c724`、F2 `2425f0c`、F3-A `e921977`、审批冻结 `7e6e63f`；以上提交均经 `git merge-base --is-ancestor <commit> main` 核实。** 这三项是 S5a / S6a 的前置源码修复，不属于本文档的施工范围；此处只写行为契约、判据与验收，供后续实现与评审对照。**F1 与 F2 先于 F3**；三项都不得改动 Yjs 的只读处置（该处置已实施，见 §2.2.1）。
 
 #### F1 子代理拒绝路径未终止会话
 
-**已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts`）**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
+**修复前现状（缺陷；2026-11-07 复核 `subagent-manager.ts`）**：不是"仅成功路径杀会话"。成功路径、`cancel()`、`sendCommand` 失败路径都会 terminate；真正的洞是 **timeout、子 agent error、取消 abort 三条 settle 拒绝分支**跳过 `terminateSession`（`subagent-manager.ts` 约 L580–590 / L546–551 / L564–574，跳过 L623–642）。
 
-**修复契约（已实施：`9ce519c` + `fb19e07` 契约补齐）**
+**修复契约（已实施：`231c724`；P-F1 级联/计时起点随 `71518ed` 整合）**
 
 1. 只在**拒绝路径**补 terminate，不改成功路径与既有 `cancel()` 行为。
 2. **先存输出，再 terminate**：在调用 `terminateSession` 前，把当前 `outputBuffer` / `fileChanges` / tokens 写入 invocation（见 F2），确保 terminate 触发的回调不会清空待保存数据。
@@ -2894,14 +2894,14 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 #### F2 失败路径丢失部分产出与 token
 
-**已实施现状（缺陷；2026-11-07 复核 `subagent-manager.ts` / `src/shared/types/subagent.ts`）**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
+**修复前现状（缺陷；2026-11-07 复核 `subagent-manager.ts` / `src/shared/types/subagent.ts`）**：失败时 `outputBuffer` / `fileChanges` 是局部变量，异常即丢；`tokensUsed` 也只在失败路径才读取、同时丢。仅修 `repo.fail(error)` 不够。
 
-**修复契约（已实施：`f73abd8` + `fb19e07` 契约补齐）**
+**修复契约（已实施：`2425f0c`；P-F2 计时起点随 `71518ed` 整合）**
 
 1. `SubagentResult` 增加 `status: 'completed'|'failed'|'cancelled'`、`error?`、`partial?`；`partial` 至少含 `resultText` / `resultFiles` / `tokensUsed` / `fileChanges`。
 2. **同步 IPC 消费方**：renderer / 主进程所有读取 `SubagentResult` 的地方必须处理 `failed/cancelled`，不得把 `partial` 当完整结果。
 3. 失败也落 `subagent_invocations`：写 `status`、`error`、`result_text`、`result_files`、`tokens_used`；不新增表。
-4. 截断与大小上限：`result_text` / `result_files` 按配置上限截断并标 `truncated`；不得因超限再次抛错。
+4. 截断与大小上限（**代码事实，2026-11-07 复核**）：子代理侧按 `MAX_OUTPUT_ENTRY_SIZE = 10_000`（`base.ts:40`）单条截断并标 `truncated`（`subagent-manager.ts:220-229`）；地图侧 partial 用常量 `PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`）。**两套值不一致，且均非配置项**；是否统一、统一到哪个值列为待定（§12.5 第 4 项），当前不擅自统一。
 5. 明确区分 `failed` 与 `cancelled`：用户取消写 `cancelled`，执行错误写 `failed`；两者都保留 partial，但不得混写。
 6. 失败路径必须计 token；`tokensUsed` 在异常包装时一并带出，不能只在成功分支读取。
 7. `repo.fail(error, partial?)`：增加可选 `partial` 参数，落 `result_text` / `result_files`；不新增表。
@@ -2911,23 +2911,30 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 #### F3 turn 截止时间没有执行者
 
-**已实施现状（缺陷；2026-11-07 复核 `runtime.ts` / `repository.ts`）**：代码中不存在 `agentTurnTimeoutScanner`，也没有每分钟扫描器；"现有 scan 每分钟跑并 0 命中"是错误描述。另有五处事实：
+**修复前现状（缺陷；2026-11-07 复核 `runtime.ts` / `repository.ts`）**：修复前代码中不存在 `agentTurnTimeoutScanner`，也没有每分钟扫描器；"现有 scan 每分钟跑并 0 命中"是对旧代码的错误描述。修复前有五处事实（现均已按 F3-A 处理）：
 
-- `agent_turns.status` 的 CHECK **没有 `timed_out`**；
-- `attempt` 恒为 1，退避没有意义；
-- `deadline_at` 没有索引；
-- 重启时已过期 deadline 的处置未定义；
-- 超时值有三套：subagent `timeoutMs` / send-and-wait 300s / 文档 10min + 60min。
+- `agent_turns.status` 的 CHECK **没有 `timed_out`**（仍如此；F3-A 以 `failed` + `failure_type='timeout'` 映射，不重建表）；
+- `attempt` 恒为 1，退避没有意义（仍不实现 turn 级退避，见下）；
+- `deadline_at` 没有索引 → 已补部分索引 `idx_agent_turns_deadline`（`schema.ts:298`）；
+- 重启时已过期 deadline 的处置未定义 → 已实现 `DEADLINE_EXPIRED_ON_RESTART`（`runtime.ts:997-1010`）；
+- 超时值有三套：subagent `timeoutMs` / send-and-wait 300s / 文档 10min + 60min（subagent 仍为 5 分钟独立常量，见下文代码事实）。
 
-**统一来源（已定口径）**
+**统一来源（设计口径 + 代码事实，2026-11-07 复核）**
 
-| 超时 | 配置键 | 默认 | 适用 |
+| 超时 | 设计键名（**当前未实现**） | 设计默认 | 适用 |
 |---|---|---|---|
 | turn 执行截止 | `agent.timeouts.turnMs` | 10 分钟 | 单个 `agent_turn`，从 `startSession` 开始计时 |
 | step 执行截止 | `agent.timeouts.stepMs` | 10 分钟 | `work_steps.deadline_at`，覆盖整个 step |
 | task 总墙钟 | `agent.timeouts.taskMs` | 60 分钟 | `work_items` 的总时长，排队时间不计入 |
 | send-and-wait 客户端等待 | `agent.timeouts.sendWaitMs` | `turnMs + 30s` | 只是 IPC 等待，不得早于 turn deadline 触发 |
-| subagent 超时 | 不再独立配置 | — | 继承 step/turn 预算，避免第三套值 |
+
+**代码事实（HEAD 复核）**：`git grep "agent.timeouts" -- src` **无命中**，上表四个键**均未实现**，只是设计键名，不是现有配置面。
+
+- **turn**：唯一生效值是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs = 10 分钟`（`src/shared/types/agent-runtime.ts:368-369`），由 `agent-manager.ts:1337` 以 `command.deadlineMs ?? DEFAULT_AGENT_TIMEOUTS.turnMs` 消费；`deadlineMs=0`/缺省表示不启用。
+- **step / task**：常量已声明 `stepMs = 10 分钟` / `taskMs = 60 分钟`（同文件 `:370-371`），但**无消费点**（`git grep "stepMs|taskMs" -- src` 仅命中定义处）；L2 编排层尚未实现。
+- **send-and-wait**：未实现，无 `sendWaitMs` 常量。
+- **subagent**：**仍独立配置**，`SubagentManager` 常量 `DEFAULT_TIMEOUT_MS = 5 分钟`（`subagent-manager.ts:53`），构造参数可覆盖（`:128`），`ipc-handlers.ts:504` 实例化时未传值。"不再独立配置、继承 step/turn 预算"**未实施**。
+- 是否引入 `agent.timeouts.turnMs` 配置键属**产品选择**，当前未实现，列 §12.5 第 3 项待定。
 
 - `attempt` 恒为 1：**不实现 turn 级退避**；重试只发生在 `work_steps.attempt` / 新 `work_run`，避免"退避但永不递增"的假机制。
 - `agent_turns.status` 无 `timed_out`：**采用 F3-A（已定；与 `Zcode v1.2.1，302 行` 一致）** —— 映射 `status='failed'` + `failure_type='timeout'` + `error_code='DEADLINE_EXCEEDED'`；**不重建 `agent_turns`**。理由：重建表是 S4 级不可逆操作，为一个状态值不值得；UI 需要区分时在展示层由 `failure_type` 派生（"超时失败"徽标与筛选），不新增库内状态。
@@ -2939,8 +2946,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
   3. 单次终态 CAS：`UPDATE agent_turns SET status='failed', failure_class='timeout', error_code='DEADLINE_EXCEEDED' WHERE id=? AND status='running'`（列名按代码实况为 `failure_class`，无 CHECK 约束，扩展无需迁移放宽）；
   4. `changes=0` → 已被完成/取消抢先，读取实际终态并保留，不覆盖；
   5. 不调用 `cancelTurn` 的终态分支，不先写 `cancelled`。
-- **已裁决（2026-11-07）**：超时默认值放配置键 `agent.timeouts.turnMs`（单一来源）；单步 10min / 测试 60min 由 L2 编排层消费该键给出，kernel 层不设默认值（已按此实施，`260df58`）。
-- **已裁决（2026-11-07）：候选 A（冻结重算）**——审批等待期不计入超时：进入 `waiting_approval` 时记录 `paused_at`，批准恢复时 `deadline_at += (now - paused_at)`；扫描跳过 `waiting_approval` 已随 `260df58` 实施，冻结重算的恢复侧代码随 L2 编排层实现（L1 无人写入 deadline，先行无影响）。
+- **已裁决方向、当前未实现配置面（2026-11-07）**：超时默认值**目前是代码常量** `DEFAULT_AGENT_TIMEOUTS.turnMs`（10 分钟，`src/shared/types/agent-runtime.ts:368`；消费点 `agent-manager.ts:1337`），**不存在 `agent.timeouts.*` 配置键**。"默认值放配置键、kernel 层不设默认值"是产品选择方向，当前未实现；`260df58` 不在 main（`git merge-base --is-ancestor 260df58 main` 为否），不作为证据。是否引入该配置键列 §12.5 第 3 项待定。
+- **已裁决并已实施（2026-11-07，`7e6e63f`）：候选 A（冻结重算）**——审批等待期不计入超时。实现为**运行时内存**：`runtime.ts:844-882` 的 `freezeDeadlineForApproval` / `resumeDeadlineAfterApproval` 维护 `approvalWaitDepth` 与 `approvalFrozenRemaining`，恢复时 `deadline_at = now + remaining`；配合 `repository.ts:630-652` 的 `freezeTurnForApproval` / `resumeTurnFromApproval` 条件更新。**`agent_turns` 没有 `paused_at` 列**（`git grep "paused_at" -- src` 无命中）；扫描器跳过 `waiting_approval` 已随 `e921977` 实施（`deadline-reaper.ts:16-17`）。
 - 重启：扫描 `status='running' AND deadline_at <= now`，无存活进程 → 写 `failed` + `failure_type='timeout'` + `error_code='DEADLINE_EXPIRED_ON_RESTART'`；**不自动重跑**。不把过期 deadline 留在 `running`。
 - 与 F1 的边界：F3 只负责"到期杀"; 取消/错误仍走 F1 的拒绝路径 terminate。
 
@@ -3202,8 +3209,8 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 1. **D1 计划确认强度**：简单单步内联 mini-C1 vs 全量 C1 对话框。
 2. **D4 流程折叠**：suite/case + `test_specs.kind='flow'`；折叠层级与默认展开方式。
-3. **F3 超时默认值来源**：配置键 `agent.timeouts.turnMs` vs 代码常量；两者都要求单一来源。
-4. **审批等待期如何暂停 deadline**：候选 A（置 NULL + 冻结原值，恢复时重算）vs 候选 B（不置 NULL，到期检查跳过 `waiting_approval`）；都要求等待时间不计入超时。
+3. **F3 超时默认值来源**：是否引入配置键 `agent.timeouts.turnMs`（**产品选择，当前未实现**；现状是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs`，单一来源已满足）。
+4. **两层 partial 截断是否统一**：地图侧常量 `PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`）vs 子代理侧常量 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 单条（`base.ts:40`）。**当前两套值不一致且均非配置项**；要不要统一、统一到哪个值，待用户裁决，本文不擅自统一。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -3271,7 +3278,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3442 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3451 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -3286,7 +3293,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | Yjs 单向只读（写回删除、WS 写消息 1008、1236 默认不监听） | **已实施**（`cc749ce` + `987c226`） | §2.2.1、§8.11 |
 | F3-A：`failed` + `failure_type='timeout'`，不碰 `cancelTurn` | **已实施**（`e921977`） | §8.15 |
 | D1 计划确认强度、D4 流程折叠 | **仅建议**（待用户裁决） | §12.5 |
-| F3 默认值来源、审批期 deadline 暂停机制 | **已裁决并实施**：默认值=配置键单一来源(kernel 层不设默认,L2 消费);审批期=候选 A 冻结重算（`7e6e63f`） | §8.15、§12.5 |
+| F3 默认值来源、审批期 deadline 暂停机制 | **默认值=代码常量**（`DEFAULT_AGENT_TIMEOUTS.turnMs`，无配置键；是否引入配置键待定）；**审批期=候选 A 冻结重算，已实施**（`7e6e63f`） | §8.15、§12.5 |
 
 ### 12.13 勘误清单（供 Zcode 按 R9 逐条修正）
 
@@ -3297,9 +3304,9 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | # | 对方位置（v1.2，364 行） | 原句 | 我方证据 | 判定 |
 |---|---|---|---|---|
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
-| A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:90`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
+| A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **3442 行**（2026-11-07 `wc -l`） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **3451 行**（2026-11-07 `wc -l`） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -3309,9 +3316,9 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3442 行**（2026-11-07 `wc -l`） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3451 行**（2026-11-07 `wc -l`） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3442 行** | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3451 行** | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**
@@ -3422,7 +3429,7 @@ CREATE TABLE <t>_backup AS SELECT * FROM <t>
 | §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
 | §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
 | §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
-| §8.15 F1–F3 | 有框架缺细节 | **已实施**（2026-11-07，`9ce519c`/`f73abd8`/`260df58`/`fb19e07`，含契约补齐 P-F1/P-F2 与 F2 契约 1/5/8；分支 `worktree-blueprint-f1-f3` 待合 main） | B1 |
+| §8.15 F1–F3 | 有框架缺细节 | **已实施**（2026-11-07，main：F1 `231c724`、F2 `2425f0c`、F3-A `e921977`、审批冻结 `7e6e63f`，均经 `git merge-base --is-ancestor` 核实；P-F1/P-F2 随 `71518ed` 整合）。剩余失真已按代码对齐：超时默认值是常量、无配置键；partial 两层常量不一致（§12.5 待定） | B1 |
 | §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
 | §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
 | §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
