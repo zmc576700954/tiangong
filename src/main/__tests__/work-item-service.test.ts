@@ -19,6 +19,7 @@ import {
 } from '../map/work-item-service'
 import {
   WorkRunService,
+  WorkRunConflictError,
   NodeSessionLinkService,
   ChangeSetService,
   RoutingDecisionRepository,
@@ -255,6 +256,23 @@ describe('WorkRunService(§4.7.5)', () => {
     runs.claim(r2.id)
     runs.fail(r2.id, { failureClass: 'infra' })
     expect(runs.markInterrupted(r2.id)).toBeUndefined()
+  })
+
+  it('入队守卫:被替代 revision/终态 item/旧 revision step 都不得起 run', () => {
+    const current = items.revise(itemId, { title: '任务 v2' })
+    // 旧 revision 已 superseded
+    expect(() => runs.enqueue({ workItemId: itemId, executorKind: 'agent' })).toThrow(WorkRunConflictError)
+    // 终态 item（done / cancelled）
+    for (const terminal of ['done', 'cancelled']) {
+      db.prepare('UPDATE work_items SET status = ? WHERE id = ?').run(terminal, current.id)
+      expect(() => runs.enqueue({ workItemId: current.id, executorKind: 'agent' })).toThrow(/已终态/)
+    }
+    // 旧 revision 的 step 不能挂到新 revision（幂等键会错位）
+    db.prepare("UPDATE work_items SET status = 'draft' WHERE id = ?").run(current.id)
+    expect(() => runs.enqueue({ workItemId: current.id, stepId, executorKind: 'agent' })).toThrow(/当前 revision/)
+    // 新 revision 自己的 step 正常入队
+    const newStep = items.listSteps(current.id, current.revision)[0].id
+    expect(runs.enqueue({ workItemId: current.id, stepId: newStep, executorKind: 'agent' }).run.status).toBe('queued')
   })
 })
 

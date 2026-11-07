@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
 import { WorkStepService, isTerminalStepStatus } from './work-step-service'
+import { scheduleRecomputeForWorkItem } from './execution-state'
 
 const logger = createLogger('WorkItemService')
 
@@ -183,7 +184,9 @@ export class WorkItemService {
       this.insertSteps(id, 1, steps, Date.now())
       return this.get(id)!
     })
-    return insert()
+    const row = insert()
+    scheduleRecomputeForWorkItem(this.db, row.id)
+    return row
   }
 
   private insertSteps(
@@ -231,11 +234,13 @@ export class WorkItemService {
              gate_waive_reason = ?, gate_missing_json = NULL, updated_at = ? WHERE id = ?`,
         )
         .run(opts.waivedBy, Date.now(), opts.waiveReason, now, id)
+      scheduleRecomputeForWorkItem(this.db, id)
       return
     }
     this.db
       .prepare('UPDATE work_items SET gate_status = ?, gate_missing_json = ?, gate_waived_by = NULL, gate_waived_at = NULL, gate_waive_reason = NULL, updated_at = ? WHERE id = ?')
       .run(result, result === 'incomplete' ? JSON.stringify(opts?.missing ?? []) : null, now, id)
+    scheduleRecomputeForWorkItem(this.db, id)
   }
 
   // ---------------------------------------------------------
@@ -255,6 +260,8 @@ export class WorkItemService {
     }
     const row = this.get(id)!
     logger.info(`work_item ${id}: → ${to}`)
+    // 状态变化影响自身锚定节点与直接依赖者；schedule 在事务内排队，500ms 后执行。
+    scheduleRecomputeForWorkItem(this.db, id)
     return row
   }
 
@@ -367,6 +374,7 @@ export class WorkItemService {
       logger.info(`work_item ${id}: 部分取消 → cancelled（reason=partial_cancel，无列可落）`)
     }
     logger.info(`work_item ${id}: 全部步终态 → ${target}`)
+    scheduleRecomputeForWorkItem(this.db, id)
     return this.get(id)
   }
 
@@ -525,6 +533,9 @@ export class WorkItemService {
       }
       return this.get(newId)!
     })
-    return txn()
+    const row = txn()
+    // 当前 revision 切换：旧行 superseded、新行 draft；按新行触发锚定节点重算。
+    scheduleRecomputeForWorkItem(this.db, row.id)
+    return row
   }
 }

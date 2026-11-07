@@ -2,7 +2,8 @@
  * 派生引擎（S6a,session-map 蓝图 §3.3/§3.7.4/§3.7.5）
  *
  * 判定顺序（自顶向下命中即止,tie-break 确定性）：
- *  1. test_fail=true → failed（L1 无 test_* 表,恒 false;S8 后接入）
+ *  1. test_fail=true → failed（生产来源：该 item 最近一次 run 终态为 failed 且
+ *     failure_class='test_fail';重试开始或新 run 成功即解除）
  *  2. 存在 running work_run → in_progress
  *  3. 当前 revision work_item gate_status='incomplete' 或依赖未满足 → blocked
  *  4. E3 fresh 未撤销 → verified
@@ -17,8 +18,11 @@
  * running_run_ids, test_fail}))——哈希未变跳过写入。工作区无证据且无任务时不写
  * untouched 假行（宁缺勿伪造）。nodes.status 永不参与、也不被回写。
  *
- * 重算触发（§3.7.5）：证据插入/撤销、work_item/work_run 状态变更 → 500ms 内按
- * 节点合并;失败保留上一行与原 computed_at,另写报告;无上一行宁可不写。
+ * 重算触发（§3.7.5）：证据插入/撤销、work_item/work_run 状态变更 →
+ * `scheduleRecomputeForWorkItem` 只重算「该 item 锚定的节点 + 把它列为直接依赖的
+ * 节点」（不扫全图、不全量重算）,500ms 内按节点合并;读缓存前
+ * `flushPendingRecomputes` 立即兑现挂起重算。失败保留上一行与原 computed_at,
+ * 另写报告;无上一行宁可不写。
  */
 
 import { createHash } from 'node:crypto'
@@ -161,6 +165,18 @@ export function deriveFromInputs(inputs: {
   }
 }
 
+/**
+ * test_fail 的生产来源：该 item 最近一次 run 终态为 failed 且 failure_class='test_fail'。
+ * 只看最近一次 run（run_seq 单调）——重试已入队/正在跑时最近一条不是失败；新 run
+ * 成功也不再算失败。这样不需要调用方把瞬态 flag 传进 500ms 去抖队列（会被合并丢失）。
+ */
+function latestRunIsTestFail(db: BetterSqlite3.Database, workItemId: string): boolean {
+  const row = db
+    .prepare('SELECT status, failure_class FROM work_runs WHERE work_item_id = ? ORDER BY run_seq DESC LIMIT 1')
+    .get(workItemId) as { status: string; failure_class: string | null } | undefined
+  return row?.status === 'failed' && row.failure_class === 'test_fail'
+}
+
 /** 从库中收集派生输入并执行判定 + 落库（hash 未变跳过）。 */
 export function recomputeExecutionState(
   db: BetterSqlite3.Database,
@@ -210,7 +226,8 @@ export function recomputeExecutionState(
     workItem: item ? { id: item.id, status: item.status, gateStatus: item.gate_status, dependsOn: [] } : null,
     dependencyStates,
     runningRunIds,
-    testFail: options?.testFail ?? false,
+    // options.testFail 仅供纯关联/测试覆盖;生产从 work_runs 推导。
+    testFail: options?.testFail ?? (item ? latestRunIsTestFail(db, item.id) : false),
   })
 
   const existing = db
@@ -275,6 +292,9 @@ export function recomputeExecutionState(
 
 interface PendingRecompute {
   timer: ReturnType<typeof setTimeout>
+  db: BetterSqlite3.Database
+  graphId: string
+  nodeEntityKey: string
 }
 
 const pendingRecomputes = new Map<string, PendingRecompute>()
@@ -295,7 +315,64 @@ export function scheduleExecutionRecompute(db: BetterSqlite3.Database, graphId: 
     }
   }, 500)
   timer.unref?.()
-  pendingRecomputes.set(key, { timer })
+  pendingRecomputes.set(key, { timer, db, graphId, nodeEntityKey })
+}
+
+/**
+ * work_item 状态/gate/revision 变更后触发重算。范围只含两类节点：
+ *  1. 该 item 锚定的节点（`anchor_entity_key`）；
+ *  2. 当前 revision 中把该 item 列为直接依赖的节点（这些节点的 `blocked` 判定
+ *     依赖本 item 状态）。
+ * 不做全图扫描，也不在每次变更时全量重算;每个节点仍走 500ms 合并 + inputs_hash
+ * 未变跳过。依赖只影响直接上游/下游，无需递归传播。
+ */
+export function scheduleRecomputeForWorkItem(db: BetterSqlite3.Database, workItemId: string): void {
+  const item = db
+    .prepare('SELECT graph_id, anchor_entity_key FROM work_items WHERE id = ?')
+    .get(workItemId) as { graph_id: string; anchor_entity_key: string | null } | undefined
+  if (!item) return
+  const targets = new Set<string>()
+  if (item.anchor_entity_key) targets.add(item.anchor_entity_key)
+  const dependents = db
+    .prepare(
+      `SELECT anchor_entity_key, depends_on_json FROM work_items
+        WHERE graph_id = ? AND is_current = 1 AND anchor_entity_key IS NOT NULL
+          AND depends_on_json LIKE ?`,
+    )
+    .all(item.graph_id, `%"${workItemId}"%`) as Array<{ anchor_entity_key: string; depends_on_json: string }>
+  for (const d of dependents) {
+    try {
+      const ids = JSON.parse(d.depends_on_json) as unknown
+      if (Array.isArray(ids) && ids.includes(workItemId)) targets.add(d.anchor_entity_key)
+    } catch {
+      // 脏 depends_on_json 只影响它自己的节点，不阻断其他目标重算。
+    }
+  }
+  for (const key of targets) scheduleExecutionRecompute(db, item.graph_id, key)
+}
+
+/**
+ * 立即兑现挂起的重算（可按 db/graph 限定）。`map:overlay:get` 读
+ * `node_execution_state` 缓存前必须先调它，否则 500ms 去抖窗口内会读到旧状态
+ * （状态刚变、缓存还没重算）。
+ */
+export function flushPendingRecomputes(db: BetterSqlite3.Database, graphId?: string): void {
+  const due: Array<[string, PendingRecompute]> = []
+  for (const entry of pendingRecomputes) {
+    const [key, p] = entry
+    if (p.db !== db) continue
+    if (graphId && p.graphId !== graphId) continue
+    due.push([key, p])
+  }
+  for (const [key, p] of due) {
+    clearTimeout(p.timer)
+    pendingRecomputes.delete(key)
+    try {
+      recomputeExecutionState(p.db, p.graphId, p.nodeEntityKey)
+    } catch (err) {
+      logger.warn('flushed recompute failed:', err)
+    }
+  }
 }
 
 /** 供测试/退出前清空挂起的重算。 */

@@ -10,6 +10,8 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
+import { WORK_ITEM_TERMINAL, type WorkItemStatus } from './work-item-service'
+import { scheduleRecomputeForWorkItem } from './execution-state'
 
 const logger = createLogger('WorkRunService')
 
@@ -135,17 +137,29 @@ export class WorkRunService {
     deadlineAt?: number
   }): { run: WorkRunRow; reused: boolean } {
     const item = this.db.prepare('SELECT * FROM work_items WHERE id = ?').get(input.workItemId) as
-      | { lineage_id: string; revision: number }
+      | { lineage_id: string; revision: number; is_current: number; status: WorkItemStatus }
       | undefined
     if (!item) throw new Error(`work_item ${input.workItemId} 不存在`)
+    // 入队守卫：被修订/替代的 revision、以及终态 item 都不得再起 run。
+    // 这些状态在 L1 只有测试可达，L2 接线后会变成活路径，必须在入口拦住。
+    if (item.is_current !== 1) {
+      throw new WorkRunConflictError(`work_item ${input.workItemId} 不是当前 revision（已被修订/替代），不得入队`)
+    }
+    if (WORK_ITEM_TERMINAL.includes(item.status)) {
+      throw new WorkRunConflictError(`work_item ${input.workItemId} 已终态（${item.status}），不得入队`)
+    }
 
     let attempt = 1
     let stepSeq = 0
     if (input.stepId) {
-      const step = this.db.prepare('SELECT seq, attempt FROM work_steps WHERE id = ?').get(input.stepId) as
-        | { seq: number; attempt: number }
+      const step = this.db.prepare('SELECT work_item_id, work_item_revision, seq, attempt FROM work_steps WHERE id = ?').get(input.stepId) as
+        | { work_item_id: string; work_item_revision: number; seq: number; attempt: number }
         | undefined
       if (!step) throw new Error(`work_step ${input.stepId} 不存在`)
+      // 旧 revision 的 step 不能被新 revision 复用（幂等键会错位）。
+      if (step.work_item_id !== input.workItemId || step.work_item_revision !== item.revision) {
+        throw new WorkRunConflictError(`work_step ${input.stepId} 不属于 work_item ${input.workItemId} 的当前 revision`)
+      }
       stepSeq = step.seq
       attempt = step.attempt
     }
@@ -182,7 +196,15 @@ export class WorkRunService {
         throw err
       }
     })
-    return txn()
+    const result = txn()
+    // queued/running run 存在 → 派生 in_progress;每次入队都排一次（同节点合并）。
+    scheduleRecomputeForWorkItem(this.db, input.workItemId)
+    return result
+  }
+
+  /** run 状态变化后按锚定节点排重算（debounce + inputs_hash 未变跳过）。 */
+  private scheduleForRun(run: WorkRunRow | undefined): void {
+    if (run) scheduleRecomputeForWorkItem(this.db, run.work_item_id)
   }
 
   /**
@@ -216,7 +238,9 @@ export class WorkRunService {
     const result = this.db
       .prepare("UPDATE work_runs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'")
       .run(Date.now(), id)
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /** running → completed（条件更新;取消先行时 changes=0 返回 undefined,保留 cancelled）。 */
@@ -235,7 +259,9 @@ export class WorkRunService {
         data?.outputExtraKeys ? JSON.stringify(data.outputExtraKeys) : null,
         id,
       )
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /** running → failed（failure_class 必填;partial 先落库——§4.2 失败不等于丢弃）。 */
@@ -248,7 +274,9 @@ export class WorkRunService {
          WHERE id = ? AND status = 'running'`,
       )
       .run(Date.now(), data.failureClass, partial, data.resultSummary ?? null, id)
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /** running → timed_out（超时控制器;partial 先落库）。 */
@@ -261,7 +289,9 @@ export class WorkRunService {
          WHERE id = ? AND status = 'running'`,
       )
       .run(Date.now(), partialJson, id)
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /**
@@ -276,7 +306,9 @@ export class WorkRunService {
          WHERE id = ? AND status IN ('queued','running')`,
       )
       .run(Date.now(), Date.now(), reason, id)
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /** 启动对账：running → interrupted（保留 partial;不自动重跑）。 */
@@ -284,7 +316,9 @@ export class WorkRunService {
     const result = this.db
       .prepare("UPDATE work_runs SET status = 'interrupted' WHERE id = ? AND status = 'running'")
       .run(id)
-    return result.changes === 1 ? this.get(id) : undefined
+    const row = result.changes === 1 ? this.get(id) : undefined
+    this.scheduleForRun(row)
+    return row
   }
 
   /** 重启对账扫描：所有 running 的 run（§4.7.5 重启对账）。 */

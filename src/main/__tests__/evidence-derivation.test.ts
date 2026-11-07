@@ -16,7 +16,11 @@ import {
   recomputeExecutionState,
   deriveFromInputs,
   cancelPendingRecomputes,
+  scheduleRecomputeForWorkItem,
+  flushPendingRecomputes,
 } from '../map/execution-state'
+import { WorkItemService } from '../map/work-item-service'
+import { WorkRunService } from '../map/work-run-service'
 
 function setupDb(): BetterSqlite3.Database {
   const db = new Database(':memory:') as unknown as BetterSqlite3.Database
@@ -345,5 +349,82 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     expect(r.state).toBe('planned') // E1 → planned
     expect(r.evidenceCount).toBe(1)
     expect(svc.get(e1.id)).toBeTruthy()
+  })
+})
+
+describe('状态变更触发派生（§3.7.5）', () => {
+  let db: BetterSqlite3.Database
+  let svc: EvidenceService
+  let items: WorkItemService
+  let runs: WorkRunService
+
+  beforeEach(() => {
+    db = setupDb()
+    svc = new EvidenceService(db)
+    items = new WorkItemService(db)
+    runs = new WorkRunService(db)
+    cancelPendingRecomputes()
+  })
+
+  afterEach(() => cancelPendingRecomputes())
+
+  function state(key = 'key-1'): Record<string, unknown> | undefined {
+    return db.prepare('SELECT * FROM node_execution_state WHERE graph_id = ? AND node_entity_key = ?').get('g1', key) as Record<string, unknown> | undefined
+  }
+
+  it('work_item/work_run 状态变更自动派生:planned → in_progress → failed → planned', () => {
+    const wi = items.createDraft({ graphId: 'g1', anchorEntityKey: 'key-1', title: '实现登录', origin: 'derived_plan' })
+    flushPendingRecomputes(db, 'g1')
+    expect(state()!.execution_state).toBe('planned')
+
+    const { run } = runs.enqueue({ workItemId: wi.id, executorKind: 'agent' })
+    flushPendingRecomputes(db, 'g1')
+    expect(state()!.execution_state).toBe('in_progress')
+
+    runs.claim(run.id)
+    runs.fail(run.id, { failureClass: 'test_fail' })
+    flushPendingRecomputes(db, 'g1')
+    // 生产可达:最近一次 run 是 test_fail → failed（不再永远 false）
+    expect(state()!.execution_state).toBe('failed')
+
+    // 更新的 run 成功收尾 → 解除 test_fail（draft item 回到 planned）
+    db.prepare(
+      `INSERT INTO work_runs (id, work_item_id, work_item_lineage_id, work_item_revision, run_seq, attempt,
+         idempotency_key, executor_kind, status, created_at, ended_at)
+       VALUES ('wr-retry', ?, ?, 1, 2, 1, 'k-retry', 'agent', 'completed', 0, 0)`,
+    ).run(wi.id, wi.lineage_id)
+    scheduleRecomputeForWorkItem(db, wi.id)
+    flushPendingRecomputes(db, 'g1')
+    expect(state()!.execution_state).toBe('planned')
+  })
+
+  it('上游变更只重算直接依赖者,不产生无关节点的假行', () => {
+    const up = 'wi_up'
+    const dep = 'wi_dep'
+    db.prepare(
+      `INSERT INTO work_items (id, lineage_id, revision, is_current, graph_id, anchor_entity_key, title,
+         status, gate_status, depends_on_json, origin, created_at, updated_at)
+       VALUES (?, 'wl_up', 1, 1, 'g1', 'key-up', '上游', 'queued', 'pass', '[]', 'human', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+    ).run(up)
+    db.prepare(
+      `INSERT INTO work_items (id, lineage_id, revision, is_current, graph_id, anchor_entity_key, title,
+         status, gate_status, depends_on_json, origin, created_at, updated_at)
+       VALUES (?, 'wl_dep', 1, 1, 'g1', 'key-dep', '下游', 'queued', 'pass', ?, 'human', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+    ).run(dep, JSON.stringify([up]))
+    // 下游节点需可解析（证据写入校验端点）
+    db.prepare(
+      `INSERT INTO nodes (id, type, title, graph_id, graph_type, entity_key, created_at, updated_at)
+       VALUES ('n-dep', 'module', '下游模块', 'g1', 'dev', 'key-dep', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+    ).run()
+    // 下游有 E2;上游未 done → blocked
+    svc.create({ level: 'E2', graphId: 'g1', nodeEntityKey: 'key-dep', evidenceType: 'changed_files', ref: { files: ['a.ts'] }, actor: 'human' })
+    expect(recomputeExecutionState(db, 'g1', 'key-dep').state).toBe('blocked')
+
+    db.prepare("UPDATE work_items SET status = 'done' WHERE id = ?").run(up)
+    scheduleRecomputeForWorkItem(db, up)
+    flushPendingRecomputes(db)
+    expect(state('key-dep')!.execution_state).toBe('implemented')
+    // 无关节点不被顺手重算
+    expect(state('key-other')).toBeUndefined()
   })
 })

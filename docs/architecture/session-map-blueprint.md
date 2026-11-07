@@ -772,13 +772,16 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | 触发 | 时机 | 合并策略 |
 |---|---|---|
 | 证据插入/撤销/失效 | 事务提交后 | 按节点去重，500ms 内合并 |
-| `work_item` / `work_step` / `work_run` 状态变更 | 事务提交后 | 按节点去重 |
+| `work_item` / `work_run` 状态、gate、revision 变更 | 事务提交后 | 按节点去重；范围仅限「该 item 锚定节点 + 直接依赖它的当前节点」 |
 | 节点 `scope_files` / `acceptance_json` 变更 | 保存后 | 立即重算 |
 | E3 stale 扫描 | 启动后 + 每小时 | 批量按 `project_path` |
 | E4 到期扫描 | 启动后 + 每日 | 已实施：批量置 `freshness='stale'` 并派生 `stale`，落 `kind='derivation', stage='e4_expiry'` |
 | E4 覆盖变化扫描 | — | **已批准未实施**：缺逐文件内容哈希基线，见 §3.7.3 |
 | 手动 `admin:map:recompute` | 用户触发 | 可全量或单节点 |
 
+- **触发范围（已实施）**：`work_item` 的 `createDraft/transition/setGateResult/convergeIfTerminal/revise` 与 `work_run` 的 `enqueue/claim/complete/fail/timeout/cancel/markInterrupted` 都会调 `scheduleRecomputeForWorkItem`，只重算该 item 锚定节点 + 当前 revision 中把该 item 列为直接依赖的节点；不做全图扫描、不全量重算。`work_step` 本身不改变派生输入，不单独触发（步终态经 `convergeIfTerminal` 落到 item 状态后触发）。每节点仍 500ms 合并 + `inputs_hash` 未变跳过。
+- **`test_fail` 的生产来源**：该 item 最近一次 `work_runs`（按 `run_seq`）为 `failed` 且 `failure_class='test_fail'`；重试已入队/正在跑或新 run 成功即解除。由派生时从库读取，不依赖调用方传瞬态 flag（避免 500ms 合并丢失）。
+- **读缓存一致性**：`map:overlay:get` 返回 `node_execution_state` 前调用 `flushPendingRecomputes(db, graphId)`，立即兑现挂起重算，避免状态刚变、500ms 去抖窗口内读到旧缓存。
 - 重算失败：保留上一行 `node_execution_state` 与原 `computed_at`，另写 `map_migration_reports(kind='derivation', stage='recompute')` 记失败；UI 显示"派生可能过期"。无上一行时宁可不写，不伪造 `untouched`。
 - 重建：`DELETE FROM node_execution_state` 后按项目批量重算；重算结果必须与增量结果一致（同一 `inputs_hash` 同一状态）。
 - 验收：E0–E4 样本各一条；同一输入两次重算状态一致；证据撤销后 `verified` 消失；E3 换 HEAD 后 `stale`；E4 过期后派生 `stale`（不得出现 `implemented`）；工作区无证据时不写 `untouched` 假行。
@@ -990,6 +993,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 #### 4.7.5 `work_runs` 生命周期与幂等
 
 - **入队**：`BEGIN IMMEDIATE` → `SELECT COALESCE(MAX(run_seq),0)+1` → 插入 `status='queued'`，`idempotency_key = lineage:revision:step_seq:attempt`。唯一冲突 → 返回既有 run（幂等），不新建。
+- **入队守卫（入口必查）**：`is_current=1`（被修订/替代的 revision 拒绝，`REVISION_SUPERSEDED`）；状态非终态（`done/failed/cancelled/superseded` 拒绝）；带 `stepId` 时该 step 必须属于该 item 的**当前 revision**（防止旧 revision 的 step 复用错位幂等键）。违反抛 `WorkRunConflictError`，不得静默入队。
 - **claim**：`UPDATE work_runs SET status='running', started_at=? WHERE id=? AND status='queued'`；`changes=0` → 已被取消/其他 worker claim，直接返回。
 - **终态**：`UPDATE ... SET status=?, ended_at=?, failure_class=?, ... WHERE id=? AND status='running'`；取消先行成功时，完成更新 `changes=0`，保留 `cancelled` 与 partial 输出。
 - `run_seq` 按 `work_item_id` 单调递增；并发由 `BEGIN IMMEDIATE` + `UNIQUE(work_item_id, run_seq)` 兜底。
