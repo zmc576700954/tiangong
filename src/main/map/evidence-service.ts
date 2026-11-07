@@ -343,3 +343,49 @@ export function scanStaleE3All(db: BetterSqlite3.Database): { graphs: number; st
   }
   return { graphs: graphs.length, staled }
 }
+
+/**
+ * §3.7.5 E4 到期扫描（启动后 + 每日一次,全库批量）。
+ * 只处理 E4（version_binding='none'、code_version NULL）:expires_at <= now 的
+ * fresh E4 → stale,与 E3 的 HEAD 比对无关,不共用判定。扫描结果落
+ * map_migration_reports(kind='derivation', stage='e4_expiry'),可按 stage 查询。
+ */
+export function scanExpiredE4All(
+  db: BetterSqlite3.Database,
+  now: Date = new Date(),
+): { scanned: number; staled: number; reportId: string } {
+  const nowIso = now.toISOString()
+  const reportId = `mig_e4expiry_${randomUUID().slice(0, 8)}`
+  const expired = db
+    .prepare(
+      `SELECT id, graph_id, node_entity_key FROM node_evidence
+        WHERE evidence_level = 'E4' AND revoked_at IS NULL AND freshness = 'fresh'
+          AND version_binding = 'none' AND code_version IS NULL
+          AND expires_at IS NOT NULL AND expires_at <= ?`,
+    )
+    .all(nowIso) as Array<{ id: string; graph_id: string; node_entity_key: string }>
+
+  const targets = new Map<string, { graphId: string; entityKey: string }>()
+  let staled = 0
+  db.transaction(() => {
+    for (const row of expired) {
+      const res = db
+        .prepare("UPDATE node_evidence SET freshness = 'stale', stale_at = ? WHERE id = ? AND freshness = 'fresh'")
+        .run(nowIso, row.id)
+      if (res.changes > 0) {
+        staled += 1
+        targets.set(`${row.graph_id}::${row.node_entity_key}`, {
+          graphId: row.graph_id,
+          entityKey: row.node_entity_key,
+        })
+      }
+    }
+    db.prepare(
+      `INSERT INTO map_migration_reports (id, kind, stage, started_at, finished_at, status, stats_json)
+       VALUES (?, 'derivation', 'e4_expiry', ?, ?, 'ok', ?)`,
+    ).run(reportId, nowIso, nowIso, JSON.stringify({ scanned: expired.length, staled, checkedAt: nowIso }))
+  })()
+
+  for (const t of targets.values()) scheduleExecutionRecompute(db, t.graphId, t.entityKey)
+  return { scanned: expired.length, staled, reportId }
+}

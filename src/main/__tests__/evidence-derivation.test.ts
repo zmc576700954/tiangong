@@ -11,7 +11,7 @@ import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { applyMapS5aSchema } from '../map/schema'
-import { EvidenceService, EvidenceValidationError, E4_EXPIRY_DAYS } from '../map/evidence-service'
+import { EvidenceService, EvidenceValidationError, E4_EXPIRY_DAYS, scanExpiredE4All } from '../map/evidence-service'
 import {
   recomputeExecutionState,
   deriveFromInputs,
@@ -274,6 +274,62 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     expect(r.state).toBe('stale')
     expect(r.staleCount).toBe(1)
     expect(state()!.execution_state).toBe('stale')
+  })
+
+  it('E4 到期扫描:到期转 stale,扫描记录可查询(§3.7.5)', () => {
+    svc.create({
+      level: 'E4', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm',
+      ref: {}, actor: 'human', signedBy: 'u1', coverage: [{ acceptance_ids: ['a1'] }],
+      expiresAt: '2020-01-01T00:00:00Z',
+    })
+    const now = new Date('2026-01-01T00:00:00Z')
+    const res = scanExpiredE4All(db, now)
+    expect(res).toMatchObject({ scanned: 1, staled: 1 })
+
+    const ev = db.prepare("SELECT freshness, stale_at FROM node_evidence WHERE evidence_level = 'E4'").get() as Record<string, unknown>
+    expect(ev.freshness).toBe('stale')
+    expect(ev.stale_at).toBe(now.toISOString())
+
+    // 扫描落库：kind=derivation / stage=e4_expiry，stats 可解析查询
+    const report = db
+      .prepare("SELECT status, stats_json FROM map_migration_reports WHERE kind = 'derivation' AND stage = 'e4_expiry'")
+      .get() as { status: string; stats_json: string }
+    expect(report.status).toBe('ok')
+    expect(JSON.parse(report.stats_json)).toMatchObject({ scanned: 1, staled: 1 })
+
+    // 到期证据被扫后,派生状态应为 stale,不再长期挂 signed_off
+    cancelPendingRecomputes()
+    const r = recomputeExecutionState(db, 'g1', 'key-1')
+    expect(r.state).toBe('stale')
+    expect(state()!.execution_state).toBe('stale')
+  })
+
+  it('E4 到期扫描:未到期/已撤销不动', () => {
+    svc.create({
+      level: 'E4', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm',
+      ref: {}, actor: 'human', signedBy: 'u1', coverage: [{ acceptance_ids: ['a1'] }],
+      expiresAt: '2030-01-01T00:00:00Z', // 未到期
+    })
+    const revoked = svc.create({
+      level: 'E4', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm',
+      ref: {}, actor: 'human', signedBy: 'u1', coverage: [{ acceptance_ids: ['a1'] }],
+      expiresAt: '2020-01-01T00:00:00Z', // 已过期但已撤销
+    })
+    svc.revoke(revoked.row.id, 'u1', '重新签收')
+
+    const res = scanExpiredE4All(db, new Date('2026-01-01T00:00:00Z'))
+    expect(res).toMatchObject({ scanned: 0, staled: 0 })
+
+    // 未到期:保持 fresh（已撤销的过期行也不动）
+    const rows = db.prepare("SELECT freshness, stale_at, revoked_at FROM node_evidence WHERE evidence_level = 'E4' ORDER BY expires_at DESC").all() as Array<Record<string, unknown>>
+    const notExpired = rows.find((r) => r.revoked_at === null)!
+    expect(notExpired.freshness).toBe('fresh')
+    expect(notExpired.stale_at).toBeNull()
+    // 扫描仍落一条记录（可查询审计）
+    const report = db
+      .prepare("SELECT stats_json FROM map_migration_reports WHERE kind = 'derivation' AND stage = 'e4_expiry'")
+      .get() as { stats_json: string }
+    expect(JSON.parse(report.stats_json)).toMatchObject({ scanned: 0, staled: 0 })
   })
 
   it('E2→implemented;撤销 → verified 消失回 implemented/untouched', () => {

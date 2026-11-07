@@ -15,7 +15,7 @@ import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
-import { scanStaleE3All } from './map/evidence-service'
+import { scanStaleE3All, scanExpiredE4All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
 import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
@@ -105,6 +105,13 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('E3 stale scan failed:', err)
   }
+  // E4 到期扫描（§3.7.5:启动后 + 每日一次）。E4 是人工签收（code_version NULL），
+  // 到期后置 stale,避免节点长期挂着 signed_off。
+  try {
+    scanExpiredE4All(db)
+  } catch (err) {
+    logger.warn('E4 expiry scan failed:', err)
+  }
   const e3ScanTimer = setInterval(() => {
     if (!db) return
     try {
@@ -120,6 +127,8 @@ export function initDatabase(): BetterSqlite3.Database {
     try {
       runLinkIntegrityCheck(db)
       new ImportDedupService(db).runRetention()
+      // §3.7.5：E4 到期每日扫描一次（到期置 stale 并派生 stale）
+      scanExpiredE4All(db)
     } catch (err) {
       logger.warn('daily map integrity/retention task failed:', err)
     }
