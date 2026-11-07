@@ -177,7 +177,7 @@ describe('PlanDraftService(§5.5/§5.6)', () => {
     expect((db.prepare('SELECT COUNT(*) AS c FROM work_items').get() as { c: number }).c).toBe(0)
   })
 
-  it('修订:draft 修订保持 draft;confirmed 修订 → 新 revision 回 awaiting_confirm(§5.5)', () => {
+  it('修订:draft 修订保持 draft;confirmed 后拒绝 revise 与重复 confirm(§5.5)', () => {
     // draft 上修订:状态保持 draft(§5.5 状态机 revise 箭头回落 draft)
     const draft = svc.createDraft({ graphId: 'g1', items })
     const revised = svc.revise(draft.id, [...items, { key: 't3', title: '新增子任务' }])
@@ -187,12 +187,26 @@ describe('PlanDraftService(§5.5/§5.6)', () => {
     expect((db.prepare('SELECT status FROM plan_drafts WHERE id = ?').get(draft.id) as { status: string }).status).toBe('superseded')
     expect(() => svc.revise(draft.id, items)).toThrow(/CONFLICT|修订/)
 
-    // confirmed 后修订:新 revision 回 awaiting_confirm(重新走 C1)
+    // 确认后计划行作为确认事实只读：不得 revise 回 awaiting_confirm 再造一套 work_items
     svc.submit(revised.id)
-    svc.confirm(revised.id, { confirmedBy: 'u1' })
-    const revised2 = svc.revise(revised.id, items)
-    expect(revised2.status).toBe('awaiting_confirm')
-    expect(revised2.revision).toBe(3)
+    const confirmed = svc.confirm(revised.id, { confirmedBy: 'u1' })
+    expect(confirmed.draft.status).toBe('confirmed')
+    expect(() => svc.revise(revised.id, items)).toThrow(/已确认/)
+    expect((db.prepare('SELECT COUNT(*) AS c FROM work_items').get() as { c: number }).c).toBe(4)
+
+    // 旧版本可能留下 confirmed + awaiting_confirm 共存的 lineage：confirm 须兜底拒绝
+    const legacyId = 'pd_legacy'
+    db.prepare('UPDATE plan_drafts SET is_current = 0 WHERE id = ?').run(revised.id)
+    db.prepare(
+      `INSERT INTO plan_drafts (
+         id, lineage_id, revision, supersedes_id, is_current, project_path, graph_id,
+         anchor_entity_key, anchor_node_id, derivation_run_id, items_json, status, created_at, updated_at
+       ) SELECT ?, lineage_id, revision + 1, id, 1, project_path, graph_id,
+         anchor_entity_key, anchor_node_id, derivation_run_id, items_json, 'awaiting_confirm', ?, ?
+       FROM plan_drafts WHERE id = ?`,
+    ).run(legacyId, 'now', 'now', revised.id)
+    expect(() => svc.confirm(legacyId)).toThrow(/已有已确认 revision/)
+    expect((db.prepare('SELECT COUNT(*) AS c FROM work_items').get() as { c: number }).c).toBe(4)
   })
 })
 

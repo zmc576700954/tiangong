@@ -551,6 +551,18 @@ export class PlanDraftService {
 
     const now = new Date().toISOString()
     const txn = this.db.transaction((): { draft: PlanDraftRow; workItemIds: string[]; parentId: string } => {
+      // 同一 lineage 只要已有 confirmed revision,就不再允许 confirm：否则会生成
+      // 第二套 parent+children,而旧的一套仍是 draft。已确认计划在 work_item 层
+      // 修订（WorkItemService.revise 自带 running-run 守卫 + supersede + 继承），
+      // 计划行本身作为"当时确认了什么"的事实保持只读。
+      const confirmedSibling = this.db
+        .prepare("SELECT id FROM plan_drafts WHERE lineage_id = ? AND id <> ? AND status = 'confirmed' LIMIT 1")
+        .get(draft.lineage_id, id) as { id: string } | undefined
+      if (confirmedSibling) {
+        throw new PlanDraftConflictError(
+          `plan_draft ${id}: lineage ${draft.lineage_id} 已有已确认 revision ${confirmedSibling.id}，不得再次 confirm（会生成第二套 work_items）`,
+        )
+      }
       const demote = this.db
         .prepare("UPDATE plan_drafts SET status = 'confirmed', is_current = 1, confirmed_by = ?, confirmed_at = ?, updated_at = ? WHERE id = ? AND status = 'awaiting_confirm' AND is_current = 1")
         .run(opts?.confirmedBy ?? null, now, now, id)
@@ -599,7 +611,12 @@ export class PlanDraftService {
     return result
   }
 
-  /** 修订（§5.5):新 revision;旧行 superseded。 */
+  /**
+   * 修订（§5.5):新 revision;旧行 superseded。
+   * 已确认计划不可修订：confirm 已按其 items 生成 work_items,再修订会得到两套
+   * 任务且旧一套仍是 draft。确认后的调整走 work_item 层修订（有 running-run
+   * 守卫与 supersede/继承语义），或新建计划草稿（新 lineage）。
+   */
   revise(id: string, items: PlanItem[]): PlanDraftRow {
     const now = new Date().toISOString()
     const keys = itemKeys(items)
@@ -612,6 +629,11 @@ export class PlanDraftService {
       const old = this.get(id)
       if (!old) throw new PlanDraftConflictError(`plan_draft ${id} 不存在`)
       if (old.is_current !== 1) throw new PlanDraftConflictError('只能修订当前 revision')
+      if (old.status === 'confirmed') {
+        throw new PlanDraftConflictError(
+          `plan_draft ${id} 已确认（已生成 work_items），不可再修订；请在 work_item 层修订或新建计划草稿`,
+        )
+      }
       const nextStatus = old.status === 'draft' ? 'draft' : 'awaiting_confirm'
       const demote = this.db
         .prepare("UPDATE plan_drafts SET is_current = 0, status = 'superseded', updated_at = ? WHERE id = ? AND is_current = 1")

@@ -666,6 +666,17 @@ revoke_reason           TEXT
 - 内容哈希按文件独立记录（不是整树 Merkle），能精确回答"哪个文件变了"，也避免一次全量扫描。
 - 撤销/过期不删除证据行：保留 `revoked_at` / `freshness` 作为历史；派生状态只采信未撤销、未过期的 E4。
 
+**实施状态（2026-11-07）**：
+
+- **时间过期扫描——已实施**：`scanExpiredE4All` 在启动后与每日各跑一次，把到期 E4 置
+  `freshness='stale'` 并落 `map_migration_reports(kind='derivation', stage='e4_expiry')`；判定只认
+  `expires_at`，与 E3 的 HEAD/`code_version` 判定完全分离。
+- **覆盖文件内容变化 / 覆盖范围变化扫描——已批准未实施**。理由：现有 `coverage_json` 只存覆盖范围
+  （`files` / `acceptance_ids`），没有逐文件内容哈希基线，也没有可比较的 `base_hash`/`current_hash`
+  字段；要检测"覆盖文件变了"必须先定义签收时的哈希基线、存储字段与重算口径，属于另一个 schema
+  设计改动，不能在扫描实现里顺手猜测。未实施期间 E4 的失效判据只有"时间过期"和"人工撤销"，**不检测
+  覆盖内容变化**——这是已知缺口，不是已完成能力。
+
 #### E3 与 E4 的关系（按可复现性分组）
 
 | 维度 | E3（可复现） | E4（不可复现） |
@@ -764,7 +775,8 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | `work_item` / `work_step` / `work_run` 状态变更 | 事务提交后 | 按节点去重 |
 | 节点 `scope_files` / `acceptance_json` 变更 | 保存后 | 立即重算 |
 | E3 stale 扫描 | 启动后 + 每小时 | 批量按 `project_path` |
-| E4 过期/覆盖变化扫描 | 启动后 + 每日 | 批量；过期置 `freshness='stale'` 并派生 `stale`；覆盖变化按 §3.5 |
+| E4 到期扫描 | 启动后 + 每日 | 已实施：批量置 `freshness='stale'` 并派生 `stale`，落 `kind='derivation', stage='e4_expiry'` |
+| E4 覆盖变化扫描 | — | **已批准未实施**：缺逐文件内容哈希基线，见 §3.7.3 |
 | 手动 `admin:map:recompute` | 用户触发 | 可全量或单节点 |
 
 - 重算失败：保留上一行 `node_execution_state` 与原 `computed_at`，另写 `map_migration_reports(kind='derivation', stage='recompute')` 记失败；UI 显示"派生可能过期"。无上一行时宁可不写，不伪造 `untouched`。
@@ -1172,11 +1184,10 @@ Windows 路径规则不在本期验证范围（A9）；遇到非 POSIX 根 fail-
 状态机：
 
 ```
-draft ──► awaiting_confirm ──► confirmed ──► (生成 work_items, 进队列)
+draft ──► awaiting_confirm ──► confirmed ──► (生成 work_items, 计划行只读)
    ▲              │
    └──── revise ◄─┘
-confirmed ──► revised(revision+1) ──► awaiting_confirm ...
-任意状态 ──► superseded（被新 revision 取代，只读）
+任意状态 ──► superseded（被新 revision 取代,只读）
 任意状态 ──► rejected
 ```
 
@@ -1184,6 +1195,7 @@ confirmed ──► revised(revision+1) ──► awaiting_confirm ...
 
 - `revision` 单调递增；`lineage_id` 不变；`supersedes_id` 指向上一行。
 - 只有 `is_current=1` 的行参与执行、统计、UI 默认展示。
+- **`confirmed` 是计划草稿的终态**：确认后不可 `revise`；同一 lineage 也只允许一次 `confirm`。理由：`confirm` 已按 items 生成 work_items，再修订会把计划行退回 `awaiting_confirm` 并再次确认，产生第二套 parent+children，而旧一套仍是 `draft`（既不 supersede 也不继承）。若确认后要调整，走 work_item 层修订（`WorkItemService.revise`：running-run 守卫 + 旧行 `superseded` + 新 revision 继承/复制 steps），或新建计划草稿（新 lineage）。旧计划行保持 `confirmed`/`is_current=1` 作为"当时确认了什么"的事实；已生成的 work_items 不因计划层操作被 supersede。
 - 执行中修订：新 revision 继承未完成项；已完成项默认不重跑，除非显式 `rework`（此时新增 run，旧 run 证据保留并标 `superseded_by_revision`）。
 - 旧 revision 的 evidence 不迁移，`plan_deviations` 仍按旧 revision 统计，避免"改计划后看起来偏差变小"。
 
@@ -1512,6 +1524,23 @@ interface StepResult {
 - `outputs` 不得塞文件清单；文件一律走 `change_sets`，避免同一事实两套口径。
 - `usage` 缺失写 NULL 并可计费告警，不得用 0 冒充"未消耗"。
 - `status='failed'` 必须带 `failureClass`，缺失即 `INVALID_FAILURE_CLASS`；`status='cancelled'` 必须带 `cancel_reason`。
+
+**M3 实施状态（2026-11-07）**
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| 驱动真实 Agent turn 并落 run/step 终态（`completed` / `failed` / `cancelled` / `timeout`） | 已实施 | `src/main/map/agent-step-runner.ts`；终态写入在会话 terminate 之后、同一事务内条件更新 |
+| `failureClass → work_runs.failure_class` | 已实施 | `agent_turns.failure_class` 经 `TurnOutcome.failureClass` 透出；`work_steps` 不加列，本轮不适用步级分类 |
+| deadline 路径 | 已实施 | `work_runs.deadline_at`（绝对）→ `AgentCommand.deadlineMs`（相对）；开跑前已过期直接 `timed_out`，不启动会话 |
+| `needs_input` 回写 | **未实施** | `TurnOutcome` 无该信号，且明确不解析 `finalText` 中的 `INPUT_REQUIRED`；`work_steps.input_request_json` 保持 NULL，待结构化输出契约落地 |
+| `outputs` / `outputParse` / `partial` / `usage` / 文件变更 | **未实施** | 属证据与结构化输出里程碑，本轮不写，不伪造空对象 |
+| §5.9.10 Tier 能力探测与完整路由 | **明确偏离** | 仅 pinned adapter + `policy='manual_override'` 写 `routing_decisions`；Tier 探测推迟 |
+| IPC / 外部触发入口 | 未接 | 执行器无可达入口，保持不可达 |
+| kernel-only 发送契约 | 已实施 | `AgentManager.sendCommandKernelOnly`：runtime 缺失/执行器不在白名单/节点未挂载/driver 缺失一律抛错，不回落 legacy |
+| item 级终态聚合（当前 revision 的步级） | 已实施 | `WorkItemService.convergeIfTerminal` + `WorkScheduler.claimNext`：无就绪步且全部步终态时收敛；仍有非终态步则等待。≥1 failed/timed_out → failed；否则有 cancelled → cancelled；全 succeeded/skipped → done |
+| 子 work_item（`parent_work_item_id`）聚合 | **未实施** | 仅聚合单个 item 的 steps，不跨父子 item；多级聚合留待后续里程碑 |
+| `partial_cancel` 取消原因落库 | **未实施** | `work_items` 无 reason 列；混合成功/取消收敛为 cancelled，原因只记日志，不加 v34 |
+
 
 ---
 

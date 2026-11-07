@@ -8,6 +8,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { applyMapS5aSchema, applyMapS7Schema, applyMapS8Schema, applyMapS6aSchema } from '../map/schema'
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { TestPlanService } from '../map/test-plan-service'
@@ -307,5 +311,39 @@ describe('GitWorktreeManager(受控 git,§6.4)', () => {
   it('非 git 目录 status 返回 null(不抛)', () => {
     const mgr = new GitWorktreeManager()
     expect(mgr.status('/tmp')).toBeNull()
+  })
+
+  it('worktree 建在项目外;遗留 .bizgraph-worktrees 不判 dirty;真实改动仍判 dirty', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-wt-'))
+    const mgr = new GitWorktreeManager()
+    let worktreePath: string | undefined
+    try {
+      execFileSync('git', ['-C', project, 'init', '-q'])
+      execFileSync('git', ['-C', project, 'config', 'user.email', 'test@local'])
+      execFileSync('git', ['-C', project, 'config', 'user.name', 'test'])
+      fs.writeFileSync(path.join(project, 'a.txt'), 'x')
+      execFileSync('git', ['-C', project, 'add', '.'])
+      execFileSync('git', ['-C', project, 'commit', '-qm', 'init'])
+      const head = execFileSync('git', ['-C', project, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim()
+      expect(mgr.status(project)!.dirty).toBe(false)
+
+      worktreePath = mgr.create(project, head).path
+      // 失败现场不落在项目里：新建 worktree 不污染主仓 status
+      expect(worktreePath.startsWith(`${project}${path.sep}`)).toBe(false)
+      expect(fs.existsSync(worktreePath)).toBe(true)
+      expect(mgr.status(project)!.dirty).toBe(false)
+
+      // 旧版本遗留的 in-project worktree 目录：不再让项目永久 dirty（无需人工删目录）
+      fs.mkdirSync(path.join(project, '.bizgraph-worktrees', 'wt-legacy'), { recursive: true })
+      fs.writeFileSync(path.join(project, '.bizgraph-worktrees', 'wt-legacy', 'leftover.txt'), 'x')
+      expect(mgr.status(project)!.dirty).toBe(false)
+
+      // 用户真实改动仍然判 dirty（E3 依旧只认干净工作区）
+      fs.writeFileSync(path.join(project, 'a.txt'), 'y')
+      expect(mgr.status(project)!.dirty).toBe(true)
+    } finally {
+      if (worktreePath) mgr.remove(worktreePath)
+      fs.rmSync(project, { recursive: true, force: true })
+    }
   })
 })

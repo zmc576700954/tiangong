@@ -13,13 +13,14 @@
  *     E2（dirty 事实,version_binding='content_hash',current_hash=dirty_tree_hash）;
  *     失败（非 env_fail）→ 自动建 bug 节点 + bug_nodes + 修复 work_item
  *     （draft 走 C2,§6.6-3）;bug 行可反查 test_run→plan_item（§6.6-6）
- *  5. 清理:全过删 worktree;失败保留现场（test_plans.worktree_path,清理随运维）
+ *  5. 清理:全过删 worktree;失败现场保留在项目外(tmps)最多 7 天,下次 create 惰性回收
  */
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
@@ -57,6 +58,26 @@ export function deriveBugEntityKey(
   return createHash('sha256').update(`bug|${project}|${testItem}|${failure}`).digest('hex')
 }
 
+/**
+ * worktree 根目录：放在系统临时目录而不是项目内。原因见 §6.4：建在
+ * `<project>/.bizgraph-worktrees` 时,失败现场会成为项目里永久未跟踪目录,
+ * 而下一次执行的 dirty 判定先于 worktree 清理 → 该项目 E3 永久不可用。
+ * 按项目路径哈希分目录,避免多项目互相清理;失败现场保留 7 天后惰性回收。
+ */
+const WORKTREE_ROOT_DIR = 'bizgraph-worktrees'
+const LEGACY_WORKTREE_DIR = '.bizgraph-worktrees'
+const WORKTREE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
+function worktreeRootDir(projectPath: string): string {
+  const key = createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 12)
+  return path.join(os.tmpdir(), WORKTREE_ROOT_DIR, key)
+}
+
+/** 旧版本落在项目内的 worktree 目录;只用于 status 过滤,不参与 dirty 判定。 */
+function isLegacyWorktreePath(file: string): boolean {
+  return file === LEGACY_WORKTREE_DIR || file.startsWith(`${LEGACY_WORKTREE_DIR}/`)
+}
+
 /** worktree 管理器（主进程受控 git 能力;测试可注入 fake）。 */
 export interface WorktreeManagerLike {
   /** 从 base_commit 创建 detach worktree,返回路径;失败抛 WorktreeFailedError。 */
@@ -68,10 +89,19 @@ export interface WorktreeManagerLike {
 
 export class GitWorktreeManager implements WorktreeManagerLike {
   create(projectPath: string, baseCommit: string): { path: string } {
-    const wtPath = path.join(projectPath, '.bizgraph-worktrees', `wt-${Date.now()}-${randomUUID().slice(0, 6)}`)
+    const root = worktreeRootDir(projectPath)
     try {
-      fs.mkdirSync(path.dirname(wtPath), { recursive: true })
-      execFileSync('git', ['-C', projectPath, 'worktree', 'add', '--detach', wtPath, baseCommit], { stdio: 'pipe' })
+      // base_commit 先解析成真实 commit sha：既保证 worktree 锚点确定,也避免
+      // 调用方传入以 `-` 开头的字符串被 git 当成选项（本路径没有 Bash 审批兜底）。
+      const commit = execFileSync(
+        'git',
+        ['-C', projectPath, 'rev-parse', '--verify', '--end-of-options', `${baseCommit}^{commit}`],
+        { encoding: 'utf-8' },
+      ).trim()
+      fs.mkdirSync(root, { recursive: true })
+      this.reclaimExpired(projectPath, root)
+      const wtPath = path.join(root, `wt-${Date.now()}-${randomUUID().slice(0, 6)}`)
+      execFileSync('git', ['-C', projectPath, 'worktree', 'add', '--detach', wtPath, commit], { stdio: 'pipe' })
       return { path: wtPath }
     } catch (err) {
       throw new WorktreeFailedError(
@@ -84,8 +114,16 @@ export class GitWorktreeManager implements WorktreeManagerLike {
     try {
       const root = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim()
       execFileSync('git', ['-C', root, 'worktree', 'remove', '--force', worktreePath], { stdio: 'pipe' })
+      return
     } catch (err) {
       logger.warn(`worktree remove failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
+    }
+    // git 元数据损坏/目录已不在：直接删目录兜底,残留的 admin 元数据由下次
+    // worktree prune 清掉。失败现场不能再永久占住路径。
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true })
+    } catch (err) {
+      logger.warn(`worktree force remove failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -93,10 +131,41 @@ export class GitWorktreeManager implements WorktreeManagerLike {
     try {
       const head = execFileSync('git', ['-C', projectPath, 'rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim()
       const porcelain = execFileSync('git', ['-C', projectPath, 'status', '--porcelain'], { encoding: 'utf-8' })
-      const dirtyFiles = porcelain.split('\n').map((l) => l.slice(3).trim()).filter(Boolean)
+      const dirtyFiles = porcelain
+        .split('\n')
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean)
+        // 旧版本遗留在项目内的 worktree 不计入 dirty：否则首次失败后该项目
+        // 永远无法再判干净,且用户没有清理入口。
+        .filter((f) => !isLegacyWorktreePath(f))
       return { head, dirty: dirtyFiles.length > 0, dirtyFiles }
     } catch {
       return null // 非 git 项目（§3.5:到不了 E3,只能 E4 人工签收）
+    }
+  }
+
+  /** 惰性回收超过保留期的失败现场（尽力而为,不影响本次 create）。 */
+  private reclaimExpired(projectPath: string, root: string): void {
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true })
+    } catch {
+      return
+    }
+    let removed = false
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith('wt-')) continue
+      const createdMs = Number(entry.name.split('-')[1])
+      if (!Number.isFinite(createdMs) || Date.now() - createdMs < WORKTREE_RETENTION_MS) continue
+      this.remove(path.join(root, entry.name))
+      removed = true
+    }
+    if (removed) {
+      try {
+        execFileSync('git', ['-C', projectPath, 'worktree', 'prune'], { stdio: 'pipe' })
+      } catch (err) {
+        logger.warn(`worktree prune failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
   }
 }
@@ -106,7 +175,7 @@ export interface TestExecutorDeps {
   workItems?: WorkItemService
   /** §6.6:失败自动建 bug+修复 work_item（draft 走 C2）;默认开;env_fail 不建。 */
   autoBug?: boolean
-  /** 全过后删 worktree（默认 true）;失败现场始终保留（清理随运维）。 */
+  /** 全过后删 worktree（默认 true）;失败现场保留在 tmps 最多 7 天,由下次 create 惰性回收。 */
   cleanupOnPass?: boolean
 }
 
