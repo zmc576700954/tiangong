@@ -11,6 +11,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { applyMapS5aSchema, applyMapS7Schema, applyMapS8Schema, applyMapS6aSchema } from '../map/schema'
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { TestPlanService } from '../map/test-plan-service'
+import type { TestCommandRunner } from '../map/test-plan-service'
 import { TestExecutor, GitWorktreeManager, WorktreeFailedError } from '../map/test-executor'
 import type { WorktreeManagerLike } from '../map/test-executor'
 import { EvidenceService } from '../map/evidence-service'
@@ -73,7 +74,7 @@ function fakeWorktrees(overrides: Partial<WorktreeManagerLike> = {}): WorktreeMa
   } as never
 }
 
-function fakeRunner(exitCodes: number[]): import('../map/test-plan-service').TestCommandRunner {
+function fakeRunner(exitCodes: number[]): TestCommandRunner {
   let i = 0
   return {
     async runCommand() {
