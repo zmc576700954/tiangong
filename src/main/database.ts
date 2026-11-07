@@ -18,6 +18,7 @@ import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
+import { MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS } from './map/schema'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -459,8 +460,10 @@ export function rebuildTableIfNeeded(
  * v30：S3 归档语义 —— graphs/nodes 增加 lifecycle_state（NOT NULL DEFAULT 'active'
  *      + CHECK）。CHECK 变化会触发两表重建（restoreFromBackup 共有列恢复,
  *      旧行安全落默认值,§8.5「重建可安全补默认值」）。
+ * v31：S7 新增 boundary_candidates / plan_drafts / plan_deviations（§7.2 逐字）
+ *      + 索引（含 ux_plan_drafts_current 部分唯一）。
  */
-const CURRENT_SCHEMA_VERSION = 30
+const CURRENT_SCHEMA_VERSION = 31
 
 interface TableSchema {
   name: string
@@ -931,6 +934,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_S5A_TABLE_SCHEMAS,
   // v29 / S6a 双表(node_evidence 含 E3/E4 字段级 CHECK / node_execution_state 派生缓存)。
   ...MAP_S6A_TABLE_SCHEMAS,
+  // v31 / S7 三表(boundary_candidates/plan_drafts/plan_deviations,§7.2 逐字)。
+  ...MAP_S7_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -989,6 +994,7 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_node_links_to_node ON node_links(to_node_id)`,
   ...MAP_S5A_INDEX_SQLS,
   ...MAP_S6A_INDEX_SQLS,
+  ...MAP_S7_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]

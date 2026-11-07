@@ -11,6 +11,7 @@ import { LinkService, LinkValidationError } from '../map-migration/link-service'
 import { runLinkIntegrityCheck } from '../map-migration/link-backfill'
 import { WorkItemService } from '../map/work-item-service'
 import { EvidenceService } from '../map/evidence-service'
+import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import type { TypedHandle } from './utils'
 
 export function registerMapHandlers(
@@ -21,6 +22,8 @@ export function registerMapHandlers(
   const links = new LinkService(db)
   const workItems = new WorkItemService(db)
   const evidence = new EvidenceService(db)
+  const derivation = new BoundaryDerivationService(db)
+  const planDrafts = new PlanDraftService(db, workItems)
 
   // ---- 叠加层（§9.2:必须批量）----
   typedHandle('map:overlay:get', async (_, graphId: unknown) => {
@@ -205,6 +208,59 @@ export function registerMapHandlers(
     const row = workItems.cancel(id)
     broadcast?.('event:work-item-changed', { lineageId: row.lineage_id, revision: row.revision, status: row.status })
     return row
+  })
+
+  // ---- S7 计划推导/草稿（§9.2 plan:*）----
+  typedHandle('plan:derive-candidates', async (_, data) => {
+    const d = (data ?? {}) as { graphId?: unknown; anchorNodeId?: unknown; changeFiles?: unknown }
+    if (typeof d.graphId !== 'string') throw new Error('graphId is required')
+    return derivation.derive(d.graphId, {
+      anchorNodeId: typeof d.anchorNodeId === 'string' ? d.anchorNodeId : undefined,
+      changeFiles: Array.isArray(d.changeFiles) ? (d.changeFiles as string[]) : undefined,
+    })
+  })
+
+  typedHandle('plan:draft:create', async (_, data) => {
+    const d = (data ?? {}) as Record<string, unknown>
+    if (typeof d.graphId !== 'string' || !Array.isArray(d.items)) throw new Error('graphId and items are required')
+    return planDrafts.createDraft({
+      projectPath: typeof d.projectPath === 'string' ? d.projectPath : undefined,
+      graphId: d.graphId,
+      anchorEntityKey: typeof d.anchorEntityKey === 'string' ? d.anchorEntityKey : undefined,
+      anchorNodeId: typeof d.anchorNodeId === 'string' ? d.anchorNodeId : undefined,
+      derivationRunId: typeof d.derivationRunId === 'string' ? d.derivationRunId : undefined,
+      items: d.items as never,
+    })
+  })
+
+  typedHandle('plan:draft:get', async (_, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('id is required')
+    return planDrafts.get(id) ?? null
+  })
+
+  typedHandle('plan:draft:revise', async (_, data) => {
+    const d = (data ?? {}) as { id?: unknown; items?: unknown }
+    if (typeof d.id !== 'string' || !Array.isArray(d.items)) throw new Error('id and items are required')
+    return planDrafts.revise(d.id, d.items as never)
+  })
+
+  typedHandle('plan:draft:confirm', async (_, data) => {
+    const d = (data ?? {}) as { id?: unknown; confirmedBy?: unknown }
+    if (typeof d.id !== 'string') throw new Error('id is required')
+    try {
+      return planDrafts.confirm(d.id, { confirmedBy: typeof d.confirmedBy === 'string' ? d.confirmedBy : undefined })
+    } catch (err) {
+      // 环检测拒绝带结构化环路径(渲染层 C1 展示)
+      if (err instanceof PlanDraftCycleError) {
+        throw new Error(`${err.message}|cycle=${JSON.stringify(err.cycle)}`)
+      }
+      throw err
+    }
+  })
+
+  typedHandle('plan:draft:reject', async (_, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('id is required')
+    return planDrafts.reject(id)
   })
 
   // ---- 巡检手动触发（§2.3.1：启动 + 每日 + 手动）----

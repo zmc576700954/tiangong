@@ -299,6 +299,108 @@ export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
   },
 ]
 
+// ============================================================
+// S7(v31,session-map 蓝图 §5.2/§5.5/§5.7 + §7.2 逐字)
+// ============================================================
+
+export const MAP_S7_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    // 候选边界：一次推导 = 一个 derivation_run_id 批次;node_keys 存键不存 id。
+    name: 'boundary_candidates',
+    createSql: `
+      CREATE TABLE boundary_candidates (
+        id                 TEXT PRIMARY KEY,
+        derivation_run_id  TEXT NOT NULL,
+        derivation_version TEXT NOT NULL,
+        project_path       TEXT,
+        graph_id           TEXT NOT NULL,
+        anchor_entity_key  TEXT,
+        anchor_node_id     TEXT,
+        node_keys_json     TEXT NOT NULL,
+        files_json         TEXT NOT NULL,
+        signals_json       TEXT,
+        score              REAL NOT NULL,
+        confidence         REAL,
+        reason             TEXT,
+        status             TEXT NOT NULL DEFAULT 'proposed'
+                           CHECK(status IN ('proposed','chosen','rejected','merged')),
+        created_at         TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'derivation_run_id', 'derivation_version', 'graph_id', 'node_keys_json', 'files_json', 'score', 'status', 'created_at'],
+  },
+  {
+    // 计划草稿:revision/lineage 与 work_items 同构;confirm 时生成 work_items(C1 强制)。
+    name: 'plan_drafts',
+    createSql: `
+      CREATE TABLE plan_drafts (
+        id                     TEXT PRIMARY KEY,
+        lineage_id             TEXT NOT NULL,
+        revision               INTEGER NOT NULL DEFAULT 1,
+        supersedes_id          TEXT,
+        is_current             INTEGER NOT NULL DEFAULT 1,
+        project_path           TEXT,
+        graph_id               TEXT NOT NULL,
+        anchor_entity_key      TEXT,
+        anchor_node_id         TEXT,
+        derivation_run_id      TEXT,
+        items_json             TEXT NOT NULL,
+        model_choice_json      TEXT,
+        rejected_boundaries_json TEXT,
+        status                 TEXT NOT NULL DEFAULT 'draft' CHECK(status IN (
+          'draft','awaiting_confirm','confirmed','rejected','superseded')),
+        confirmed_by           TEXT,
+        confirmed_at           TEXT,
+        created_at             TEXT NOT NULL,
+        updated_at             TEXT NOT NULL,
+        UNIQUE(lineage_id, revision)
+      )
+    `,
+    requiredColumns: ['id', 'lineage_id', 'revision', 'graph_id', 'items_json', 'status', 'created_at', 'updated_at'],
+  },
+  {
+    // 偏差度量:一次 work_run 终态写一行;归因=derivation_version+observed_rule_version
+    // +task_type/agent_type(§5.7 已定口径);file_domain 由视图展开不存单值。
+    name: 'plan_deviations',
+    createSql: `
+      CREATE TABLE plan_deviations (
+        id                    TEXT PRIMARY KEY,
+        work_item_id          TEXT,
+        work_item_lineage_id  TEXT,
+        work_item_revision    INTEGER,
+        work_run_id           TEXT,
+        derivation_version    TEXT NOT NULL,
+        observed_rule_version TEXT NOT NULL,
+        task_type             TEXT NOT NULL,
+        agent_type            TEXT,
+        planned_file_count    INTEGER,
+        actual_file_count     INTEGER,
+        planned_subtask_count INTEGER,
+        actual_subtask_count  INTEGER,
+        turns_used            INTEGER,
+        tool_calls            INTEGER,
+        rework_count          INTEGER NOT NULL DEFAULT 0,
+        test_failures         INTEGER NOT NULL DEFAULT 0,
+        replan_count          INTEGER NOT NULL DEFAULT 0,
+        scope_violation       INTEGER NOT NULL DEFAULT 0,
+        boundary_changed      INTEGER NOT NULL DEFAULT 0,
+        duration_ms           INTEGER,
+        computed_at           INTEGER NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'derivation_version', 'observed_rule_version', 'task_type', 'computed_at'],
+  },
+]
+
+export const MAP_S7_INDEX_SQLS: string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_boundary_candidates_run ON boundary_candidates(derivation_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_boundary_candidates_anchor ON boundary_candidates(graph_id, anchor_entity_key)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_plan_drafts_current ON plan_drafts(lineage_id) WHERE is_current = 1`,
+  `CREATE INDEX IF NOT EXISTS idx_plan_drafts_anchor ON plan_drafts(graph_id, anchor_entity_key, is_current)`,
+  `CREATE INDEX IF NOT EXISTS idx_plan_deviations_rule ON plan_deviations(derivation_version, observed_rule_version)`,
+  `CREATE INDEX IF NOT EXISTS idx_plan_deviations_item ON plan_deviations(work_item_lineage_id)`,
+]
+
 export const MAP_S6A_INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_node_evidence_node ON node_evidence(graph_id, node_entity_key)`,
   `CREATE INDEX IF NOT EXISTS idx_node_evidence_level ON node_evidence(evidence_level, freshness)`,
@@ -338,6 +440,15 @@ export const MAP_S5A_INDEX_SQLS: string[] = [
 ]
 
 /** 真库测试建表助手（DDL 与生产同源）。 */
+export function applyMapS7Schema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_S7_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_S7_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}
+
 export function applyMapS5aSchema(db: { exec(sql: string): unknown }): void {
   for (const schema of MAP_S5A_TABLE_SCHEMAS) {
     db.exec(schema.createSql)

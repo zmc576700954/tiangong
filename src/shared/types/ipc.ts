@@ -279,6 +279,18 @@ export interface IpcApi {
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
   'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
 
+  // S7 计划推导/草稿（§9.2 plan:*;C1 环检测拒绝带 |cycle=[...] 后缀）
+  'plan:derive-candidates': (data: { graphId: string; anchorNodeId?: string; changeFiles?: string[] }) => Promise<{
+    runId: string
+    degraded: false | string
+    candidates: Array<Record<string, unknown>>
+  }>
+  'plan:draft:create': (data: { projectPath?: string; graphId: string; anchorEntityKey?: string; anchorNodeId?: string; derivationRunId?: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
+  'plan:draft:get': (id: string) => Promise<Record<string, unknown> | null>
+  'plan:draft:revise': (data: { id: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
+  'plan:draft:confirm': (data: { id: string; confirmedBy?: string }) => Promise<{ draft: Record<string, unknown>; workItemIds: string[]; parentId: string }>
+  'plan:draft:reject': (id: string) => Promise<Record<string, unknown>>
+
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
   // 只提交需要变更的字段即可；主进程与当前设置做顶层合并后再落盘。
