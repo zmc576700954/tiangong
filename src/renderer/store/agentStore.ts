@@ -61,7 +61,7 @@ interface AgentState {
   updateToolCallAccepted: (threadId: string, messageIndex: number, toolCallIndex: number, accepted: boolean) => void
   updateAllToolCallsAccepted: (threadId: string, accepted: boolean) => void
   getOutputs: (threadId: string) => AgentOutput[]
-  createThread: (adapterName: string, nodeBound?: string) => string
+  createThread: (adapterName: string, nodeBound?: string, graphId?: string) => string
   sendMessage: (threadId: string, content: string, contextRefs?: ContextRef[], sessionConfig?: AgentSessionConfig) => Promise<void>
   appendChatMessage: (threadId: string, message: ChatMessage) => void
   renameThread: (threadId: string, title: string) => void
@@ -206,8 +206,8 @@ export const useAgentStore = create<AgentState>(() => ({
     return useAgentOutputStore.getState().getOutputs(threadId)
   },
 
-  createThread: (adapterName, nodeBound) => {
-    return useThreadStore.getState().createThread(adapterName, nodeBound)
+  createThread: (adapterName, nodeBound, graphId) => {
+    return useThreadStore.getState().createThread(adapterName, nodeBound, graphId)
   },
 
   sendMessage: (threadId, content, contextRefs, sessionConfig) => {

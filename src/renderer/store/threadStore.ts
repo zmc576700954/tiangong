@@ -11,7 +11,7 @@ export interface ThreadState {
   /** Resolvers for frontend thread IDs that are being swapped to DB IDs */
   threadIdResolvers: Map<string, { promise: Promise<string>; resolve: (id: string) => void }>
 
-  createThread: (adapterName: string, nodeBound?: string) => string
+  createThread: (adapterName: string, nodeBound?: string, graphId?: string) => string
   deleteThread: (threadId: string) => Promise<void>
   selectThread: (id: string | null) => void
   renameThread: (threadId: string, title: string) => void
@@ -35,7 +35,7 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
   nodeThreadMap: new Map<string, AgentThread>(),
   threadIdResolvers: new Map<string, { promise: Promise<string>; resolve: (id: string) => void }>(),
 
-  createThread: (adapterName, nodeBound) => {
+  createThread: (adapterName, nodeBound, graphId) => {
     const id = generateId('thread')
     const thread: AgentThread = {
       id,
@@ -77,7 +77,9 @@ export const useThreadStore = create<ThreadState>((set, get) => ({
     }
 
     // Persist to DB — use returned DB ID if available
-    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound }).then((dbThread) => {
+    // S1 缺口 4（§9.5-4）:graphId 必须随建线程落库——kernel 路径 lookupThread 取
+    // graphId 组装 runNode,缺了会落 ''（地图绑定/时间线/审批归图全部降级）。
+    window.electronAPI['thread:create']({ adapterName, nodeId: nodeBound, graphId }).then((dbThread) => {
       if (dbThread?.id && dbThread.id !== id) {
         // Replace frontend ID with DB ID for consistency
         set((state) => {

@@ -16,6 +16,7 @@ import { ApprovalRequestDialog } from './ApprovalRequestDialog'
 import { ContextBar } from './ContextBar'
 import { ChatMessageList } from './ChatMessageList'
 import { ChatInput } from './ChatInput'
+import { NodeMapPanel } from '../map/NodeMapPanel'
 import { TerminalView } from './TerminalView'
 import { FileChangeEvidenceCard } from './FileChangeEvidenceCard'
 import { ThreadListSidebar } from './ThreadListSidebar'
@@ -285,7 +286,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     })
 
     if (!currentThreadId && selectedAdapter) {
-      createThread(selectedAdapter, selectedNode?.id)
+      createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     }
 
     setPendingContextRef(null)
@@ -311,13 +312,13 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     pendingPromptRef.current = pendingPrompt
     setPendingPrompt(null)
     if (!currentThreadId && selectedAdapter) {
-      createThread(selectedAdapter, selectedNode?.id)
+      createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     }
   }, [pendingPrompt, setPendingPrompt, currentThreadId, selectedAdapter, createThread, selectedNode])
 
   const handleNewThread = () => {
     if (!selectedAdapter) return
-    createThread(selectedAdapter, selectedNode?.id)
+    createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     if (selectedNode) {
       setAttachedContexts([
         { type: 'node', id: selectedNode.id, label: selectedNode.title },
@@ -328,7 +329,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const handleSend = async (content: string, contextRefs: ContextRef[]) => {
     let threadId = currentThreadId
     if (!threadId) {
-      threadId = createThread(selectedAdapter, selectedNode?.id)
+      threadId = createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     }
 
     const sessionConfig: AgentSessionConfig = {
@@ -392,7 +393,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
       return [...prev, ref]
     })
     if (!currentThreadId && selectedAdapter) {
-      createThread(selectedAdapter, selectedNode?.id)
+      createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     }
   }
 
@@ -751,6 +752,14 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
     </div>
 
     <HistorySidebar visible={showHistory} onClose={() => setShowHistory(false)} />
+
+      {selectedNode && (
+        <NodeMapPanel
+          graphId={currentGraphId ?? null}
+          nodeEntityKey={selectedNode.entityKey ?? null}
+          nodeId={selectedNode.id}
+        />
+      )}
 
       <SubagentInvocationsPanel
         open={showSubagentPanel}

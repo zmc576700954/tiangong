@@ -75,6 +75,7 @@ export class NodeRepository {
       acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, [], isStringArray),
       graphId: row.graph_id as string,
       graphType: assertGraphType(row.graph_type as string, 'graphType'),
+      entityKey: (row.entity_key as string | null) ?? undefined,
       parentId: row.parent_id as string | undefined,
       // sort_index 是**可空**列：根节点是 NULL → 映射成 undefined（不是 null）。
       // `as` 只是类型断言，NULL 在运行时仍然是 null —— 必须用 ?? undefined 真转换。
@@ -147,7 +148,7 @@ export class NodeRepository {
     return withPersistedDefaults(
       // 返回对象也要带归一后的 parentId —— 它必须等于「把刚写入的那一行读回来
       // 会得到什么」（渲染端用 parentId 派生层级线，字符串/数字对不上就画不出线）
-      { ...data, parentId: parentId ?? data.parentId, id, createdAt: now, updatedAt: now },
+      { ...data, parentId: parentId ?? data.parentId, id, entityKey, createdAt: now, updatedAt: now },
       sortIndex,
     )
   }
@@ -179,9 +180,10 @@ export class NodeRepository {
         const sortIndex = sortIndexes[i]
         // 归一后的 parentId —— 落库与返回值必须用同一个值
         const parentId = normalizeParentId(data.parentId)
+        const entityKey = randomUUID()
         created.push(
           withPersistedDefaults(
-            { ...data, parentId: parentId ?? data.parentId, id, createdAt: now, updatedAt: now },
+            { ...data, parentId: parentId ?? data.parentId, id, entityKey, createdAt: now, updatedAt: now },
             sortIndex,
           ),
         )
@@ -209,7 +211,7 @@ export class NodeRepository {
           data.wikiContent ?? null,
           data.wikiMeta ? JSON.stringify(data.wikiMeta) : null,
           // S1 I4：新节点必须写 entity_key（UUID v4）
-          randomUUID(),
+          entityKey,
           now,
           now,
         )

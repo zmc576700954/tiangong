@@ -484,7 +484,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService, chatService, db)
-  registerMapHandlers(typedHandle, db)
+  registerMapHandlers(typedHandle, db, broadcastToWindows)
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager, new NodeRepository(db), new EdgeRepository(db), new GraphRepository(db))

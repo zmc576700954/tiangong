@@ -123,6 +123,10 @@ export interface GraphNode {
   /** 所属图 */
   graphId: string
   graphType: GraphType
+  /**
+   * S1 项目内稳定身份（§2.1）：跨图对应/时间线/证据的锚点。旧数据回填前可为空。
+   */
+  entityKey?: string
   /** 父节点 ID（层级结构：模块 -> 流程 -> 功能点/BUG） */
   parentId?: string
   /** 同父节点下的兄弟顺序（升序）；根节点为 undefined */

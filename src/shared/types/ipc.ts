@@ -241,6 +241,32 @@ export interface IpcApi {
   }) => Promise<{ outcome: 'created' | 'reused' | 'revived'; row: Record<string, unknown> }>
   'admin:map:integrity-check': () => Promise<{ checked: number; orphans: number; staled: number }>
 
+  // S5a/S6a L1 通道（§9.2）
+  /** 叠加层批量查询：一次返回全图派生态+当前任务摘要（禁止按节点轮询） */
+  'map:overlay:get': (graphId: string) => Promise<{ executionStates: Array<Record<string, unknown>>; workItems: Array<Record<string, unknown>> }>
+  'map:link:list': (query: { projectPath: string; entityKey?: string }) => Promise<Array<Record<string, unknown>>>
+  /** 节点会话时间线（§9.5-3:替代单线程映射,UI 保留 threadIds 全集） */
+  'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<Array<Record<string, unknown>>>
+  'map:node:evidence:list': (query: { graphId: string; nodeEntityKey: string }) => Promise<Array<Record<string, unknown>>>
+  'workitem:get': (id: string) => Promise<{ item: Record<string, unknown>; steps: Array<Record<string, unknown>> } | null>
+  'workitem:list': (query: { graphId: string; anchorEntityKey?: string; includeHistory?: boolean }) => Promise<Array<Record<string, unknown>>>
+  'workitem:create': (data: {
+    projectPath?: string
+    graphId: string
+    anchorEntityKey?: string
+    anchorNodeId?: string
+    title: string
+    goal?: string
+    scopeFiles?: string[]
+    acceptance?: Array<Record<string, unknown>>
+    steps?: Array<{ title: string; stepKind?: 'agent' | 'test' | 'human' }>
+    createdBy?: string
+  }) => Promise<Record<string, unknown>>
+  'workitem:revise': (data: { id: string; title?: string; goal?: string; scopeFiles?: string[]; acceptance?: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
+  /** run:start 前必须 gate=pass/waived（§9.2）;编排执行随 L2 §5.9 */
+  'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
+  'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
+
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
   // 只提交需要变更的字段即可；主进程与当前设置做顶层合并后再落盘。
