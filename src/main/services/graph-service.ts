@@ -15,7 +15,7 @@ import { ProjectAnalyzer, type ProjectGraphResult } from '../project-analyzer'
 import { generateId } from '../shared/env'
 import { isDescendant } from '../shared/hierarchy-utils'
 import { NodeRepository } from '../repositories/node-repository'
-import { ImportDedupService, ImportRejectedError } from '../map-migration/import-dedup'
+import { ImportDedupService, ImportRejectedError, isRootPathConflict } from '../map-migration/import-dedup'
 import { WikiIndexService } from './wiki-index-service'
 import { MindMapAgent } from '../mindmap-agent'
 import { collectContext } from '../mindmap-agent/context-collector'
@@ -357,26 +357,48 @@ export class GraphService {
       const devGraphId = generateId('graph-dev')
 
       // better-sqlite3 transaction: auto-commit on normal return, auto-rollback on exception
-      this.db.transaction(() => {
-        // I6（§2.6）：指纹行与图创建同一事务——事务失败则指纹不落库,下次可重试
-        fingerprintPlan?.commitFingerprint(this.db, [onlineGraphId, devGraphId])
+      try {
+        this.db.transaction(() => {
+          // I6（§2.6）：指纹行与图创建同一事务——事务失败则指纹不落库,下次可重试
+          fingerprintPlan?.commitFingerprint(this.db, [onlineGraphId, devGraphId])
 
-        // I4：online/dev 按 tempId 共享 entity_key（同一实体一张键）
-        const tempKeyMap = new Map<string, string>()
+          // I4：online/dev 按 tempId 共享 entity_key（同一实体一张键）
+          const tempKeyMap = new Map<string, string>()
 
-        // 创建 online 图（产品蓝图）
-        this.db.prepare(
-          'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now)
+          // 创建 online 图（产品蓝图）
+          this.db.prepare(
+            'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(onlineGraphId, `${projectName} - 产品蓝图`, 'online', projectPath, now, now)
 
-        // 创建 dev 图（开发场景）
-        this.db.prepare(
-          'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
+          // 创建 dev 图（开发场景）
+          this.db.prepare(
+            'INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+          ).run(devGraphId, `${projectName} - 开发场景`, 'dev', projectPath, now, now)
 
-        this.createNodes(onlineGraphId, 'online', graphResult, now, this.db, tempKeyMap)
-        this.createNodes(devGraphId, 'dev', graphResult, now, this.db, tempKeyMap)
-      })()
+          this.createNodes(onlineGraphId, 'online', graphResult, now, this.db, tempKeyMap)
+          this.createNodes(devGraphId, 'dev', graphResult, now, this.db, tempKeyMap)
+        })()
+      } catch (err) {
+        // TOCTOU 兜底（§2.2.2 S1-d）：check() 的读取不持事务,并发导入同 root 在
+        // 指纹 UNIQUE(root_path) 上落败 → 整事务回滚（无半行）并转结构化 REJECT。
+        if (fingerprintPlan && isRootPathConflict(err)) {
+          throw new ImportRejectedError({
+            action: 'reject',
+            step: '1',
+            signals: {
+              dir_name_same: true,
+              name_same: null,
+              similarity: null,
+              sample_count: 0,
+              mtime_used: false,
+              decision_step: '1-concurrent',
+            },
+            matchedFingerprintId: fingerprintPlan.matchedFingerprintId,
+            reason: '同一工作区已被并发导入（project_fingerprints.root_path 唯一冲突,事务已回滚,无半行）',
+          })
+        }
+        throw err
+      }
 
       this.invalidateProjectPathsCache()
 

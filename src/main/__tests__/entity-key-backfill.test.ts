@@ -264,4 +264,29 @@ describe('runEntityKeyBackfill 阶段集成', () => {
     expect(stats2.null_before).toBe(0)
     expect(keysOf(db, online)).toEqual(first)
   })
+
+  it('S1-f 判据 4：中途崩溃后续跑——已提交项目键不变,未提交项目补齐', () => {
+    // 项目 A：模拟崩溃前已提交（直接调 backfillProject 落键）
+    const aOnline = insertGraph(db, { type: 'online', projectPath: '/a' })
+    const aDev = insertGraph(db, { type: 'dev', projectPath: '/a' })
+    insertNode(db, { graphId: aOnline, type: 'project', title: 'A根' })
+    insertNode(db, { graphId: aDev, type: 'project', title: 'A根' })
+    backfillProject(db, { project_path: '/a', online: aOnline, dev: aDev, duplicate_graphs: [] })
+    const aKeysBefore = keysOf(db, aOnline)
+
+    // 项目 B：崩溃时未处理
+    const bOnline = insertGraph(db, { type: 'online', projectPath: '/b' })
+    const bDev = insertGraph(db, { type: 'dev', projectPath: '/b' })
+    const bO = insertNode(db, { graphId: bOnline, type: 'project', title: 'B根' })
+    const bD = insertNode(db, { graphId: bDev, type: 'project', title: 'B根' })
+
+    // 重启续跑：整体回填
+    const stats = runEntityKeyBackfill(db, 26)
+    expect(stats.projects_total).toBe(2)
+    expect(stats.projects_ok).toBe(2)
+
+    // A 的键不变（I3 已有键永不改写）；B 补齐且两侧共享
+    expect(keysOf(db, aOnline)).toEqual(aKeysBefore)
+    expect(keysOf(db, bOnline).get(bO)).toEqual(keysOf(db, bDev).get(bD))
+  })
 })

@@ -14,6 +14,7 @@ import { createLogger } from './shared/logger'
 import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
+import { ImportDedupService } from './map-migration/import-dedup'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -69,6 +70,17 @@ export function initDatabase(): BetterSqlite3.Database {
   // S1.3（§2.2.2 S1-c）：entity_key 回填。幂等（只写 NULL 行）；项目级失败 →
   // 阶段 failed → 本次启动失败、下次预检阻断（已提交项目保留，可续跑）。
   runEntityKeyBackfill(db, CURRENT_SCHEMA_VERSION)
+
+  // S1.5 尾项 + S1.6（§8.3 第 6/7 步）：导入决策 90 天保留（启动期一次;每日调度
+  // 随 L1 交付）+ 历史 lineage 报告（只报告不删不并）。卫生任务失败只告警,
+  // 不阻断启动（与结构迁移的 fail-closed 不同层）。
+  try {
+    const dedup = new ImportDedupService(db)
+    dedup.runRetention()
+    dedup.reportHistoricalDuplicateLineages()
+  } catch (err) {
+    logger.warn('import dedup post-migration tasks failed:', err)
+  }
 
   // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
   keepaliveTimer = setInterval(() => {

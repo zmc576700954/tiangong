@@ -11,6 +11,7 @@ import {
   contentSimilarity,
   normalizeDirName,
   ImportDedupService,
+  isRootPathConflict,
   IMPORT_DEDUP_DEFAULTS,
 } from '../map-migration/import-dedup'
 import type { ProjectFingerprint, StoredFingerprint, FingerprintSample } from '../map-migration/import-dedup'
@@ -271,4 +272,41 @@ describe('ImportDedupService（DB 面）', () => {
     expect(d.action).toBe('reject')
     expect(db.prepare('SELECT COUNT(*) AS c FROM graphs').get()).toMatchObject({ c: 0 })
   })
+
+  it('isRootPathConflict 识别 UNIQUE(root_path) 冲突（TOCTOU 兜底）', () => {
+    expect(isRootPathConflict(new Error('UNIQUE constraint failed: project_fingerprints.root_path'))).toBe(true)
+    expect(isRootPathConflict(new Error('UNIQUE constraint failed: graphs.id'))).toBe(false)
+    expect(isRootPathConflict('plain string')).toBe(false)
+  })
+
+  it('S1.6：历史重复 lineage → 报告行（只报告不删不并）；无重复 → 不写行', () => {
+    const ins = db.prepare('INSERT INTO graphs (id, name, type, project_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    // /dup 有两张 online（历史并行 lineage）
+    ins.run('g1', 'dup 在线一', 'online', '/dup', '2025-01-01T00:00:00Z', now0())
+    ins.run('g2', 'dup 在线二', 'online', '/dup', '2025-06-01T00:00:00Z', now0())
+    // /clean 只有一套
+    ins.run('g3', 'clean', 'dev', '/clean', '2025-01-01T00:00:00Z', now0())
+
+    const { duplicate_groups } = service.reportHistoricalDuplicateLineages()
+    expect(duplicate_groups).toBe(1)
+    const report = db
+      .prepare("SELECT * FROM map_migration_reports WHERE kind='import_dedup' AND stage='historical_lineage'")
+      .get() as Record<string, unknown>
+    expect(report.status).toBe('ok')
+    const details = JSON.parse(report.details_json as string) as Array<{ project_path: string; count: number }>
+    expect(details).toHaveLength(1)
+    expect(details[0]).toMatchObject({ project_path: '/dup', count: 2 })
+    // 只报告：图行未动
+    expect((db.prepare('SELECT COUNT(*) AS c FROM graphs').get() as { c: number }).c).toBe(3)
+
+    // 无重复时再跑 → 不追加报告行
+    db.prepare('DELETE FROM graphs WHERE id = ?').run('g2')
+    const second = service.reportHistoricalDuplicateLineages()
+    expect(second.duplicate_groups).toBe(0)
+    expect((db.prepare("SELECT COUNT(*) AS c FROM map_migration_reports WHERE stage='historical_lineage'").get() as { c: number }).c).toBe(1)
+  })
 })
+
+function now0(): string {
+  return '2026-01-01T00:00:00Z'
+}

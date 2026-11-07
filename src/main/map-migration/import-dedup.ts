@@ -359,6 +359,13 @@ export class ImportRejectedError extends Error {
   }
 }
 
+/** UNIQUE(root_path) 并发冲突判定（§2.2.2 S1-d TOCTOU 兜底）。 */
+export function isRootPathConflict(err: unknown): boolean {
+  return /UNIQUE constraint failed: project_fingerprints\.root_path/.test(
+    err instanceof Error ? err.message : String(err),
+  )
+}
+
 export interface FingerprintPlan {
   action: ImportDecision['action']
   matchedFingerprintId: string | null
@@ -556,5 +563,50 @@ export class ImportDedupService {
         JSON.stringify({ deleted, by_decision: aggregate, retention_days: IMPORT_DEDUP_DEFAULTS.rejectionRetentionDays }),
       )
     return { deleted }
+  }
+
+  /**
+   * S1.6（§8.3 第 7 步）：为 S1 之前已产生的重复导入（同 project_path 下多张同类型图）
+   * 写历史 lineage 报告——**只报告，不自动删除、不自动合并**，由用户决定保留哪一套。
+   * 无重复时不写行（避免报告行噪音）。
+   */
+  reportHistoricalDuplicateLineages(now = new Date()): { duplicate_groups: number } {
+    const groups = this.db
+      .prepare(
+        `SELECT project_path, type, COUNT(*) AS c
+           FROM graphs
+          WHERE project_path IS NOT NULL AND project_path != ''
+          GROUP BY project_path, type
+         HAVING c > 1`,
+      )
+      .all() as Array<{ project_path: string; type: string; c: number }>
+    if (groups.length === 0) return { duplicate_groups: 0 }
+
+    const details: Array<Record<string, unknown>> = []
+    for (const g of groups) {
+      const graphs = this.db
+        .prepare(
+          'SELECT id, name, type, created_at FROM graphs WHERE project_path = ? AND type = ? ORDER BY created_at ASC, id ASC',
+        )
+        .all(g.project_path, g.type)
+      details.push({ project_path: g.project_path, graph_type: g.type, count: g.c, graphs })
+    }
+    const nowIso = now.toISOString()
+    this.db
+      .prepare(
+        `INSERT INTO map_migration_reports
+           (id, kind, stage, schema_version, started_at, finished_at, owner_pid, status, stats_json, details_json)
+         VALUES (?, 'import_dedup', 'historical_lineage', NULL, ?, ?, ?, 'ok', ?, ?)`,
+      )
+      .run(
+        `ir_hist_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        nowIso,
+        nowIso,
+        process.pid,
+        JSON.stringify({ duplicate_groups: groups.length, action: 'report_only' }),
+        JSON.stringify(details),
+      )
+    logger.warn(`historical duplicate lineages found: ${groups.length} group(s) — report only, no merge/delete`)
+    return { duplicate_groups: groups.length }
   }
 }
