@@ -16,6 +16,7 @@ import { MapMigrationStore, preflightStartup } from './map-migration/migration-s
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
+import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS } from './map/schema'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -432,8 +433,11 @@ export function rebuildTableIfNeeded(
  *      回填与导入查重逻辑见 map-migration/ 模块（§8.14.1 / §2.2.2 / §2.6）。
  * v27：S2 新增 node_links（跨图对应，§2.3/§7.2）+ 索引 5 条。不建到 nodes 的
  *      外键（L6）。
+ * v28：S5a 新增六表 work_items/work_steps/work_runs/node_session_links/
+ *      change_sets/routing_decisions（§7.2 逐字）+ 索引。work_items 13 值与
+ *      work_steps 12 值一次建齐（D2,§8.7 不得留 ALTER/重建）。
  */
-const CURRENT_SCHEMA_VERSION = 27
+const CURRENT_SCHEMA_VERSION = 28
 
 interface TableSchema {
   name: string
@@ -892,6 +896,9 @@ const TABLE_SCHEMAS: TableSchema[] = [
       'origin', 'status', 'created_at', 'updated_at',
     ],
   },
+  // v28 / S5a 六表(work_items/work_steps/work_runs/node_session_links/change_sets/
+  // routing_decisions)。DDL 单一权威在 map/schema.ts(§7.2 逐字;状态值域一次建齐 D2)。
+  ...MAP_S5A_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -948,6 +955,7 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_node_links_project ON node_links(project_path, status)`,
   `CREATE INDEX IF NOT EXISTS idx_node_links_from_node ON node_links(from_node_id)`,
   `CREATE INDEX IF NOT EXISTS idx_node_links_to_node ON node_links(to_node_id)`,
+  ...MAP_S5A_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]
