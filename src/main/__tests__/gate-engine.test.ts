@@ -465,7 +465,7 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
       expect(result.missing).toContain('scope_file_count_exceeded:21_20')
     })
 
-    it('G5 失败 + 豁免 → 仍 incomplete（D9 裁决前 G5 不可豁免）', () => {
+    it('G5 失败 + 豁免 → 仍 incomplete（D9 已裁决：G5 永久不可豁免）', () => {
       const root = makeProjectRoot()
       insertItem(db, { id: 'wi-up', project_path: root, status: 'queued' })
       const result = runWaived({ project_path: root, depends_on_json: JSON.stringify(['wi-up']) })
@@ -473,7 +473,25 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
       expect(result.missing).toContain('dep_not_done:wi-up:queued')
     })
 
-    it('command 条目失败 + 豁免 → 仍 incomplete（manual 豁免不覆盖 command，D3）', () => {
+    it('G6 写冲突 + 豁免 → 仍 incomplete（D9 已裁决：G6 永久不可豁免）', () => {
+      const root = makeProjectRoot()
+      insertItem(db, { id: 'wi_run', project_path: root, status: 'running', scope_files: JSON.stringify(['src/a.ts']) })
+      const id = insertItem(db, {
+        project_path: root,
+        acceptance_json: manualOnlyAcceptance,
+        scope_files: JSON.stringify(['src/a.ts']),
+      })
+      db.prepare(
+        'UPDATE work_items SET gate_waived_by = ?, gate_waived_at = ?, gate_waive_reason = ? WHERE id = ?',
+      ).run('alice', 1700000000000, '人工确认', id)
+      const engine = makeEngine(db, fullPassOptions())
+      const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
+      const result = engine.recheck(row)
+      expect(result.ok).toBe(false)
+      expect(result.missing.some((m) => m.startsWith('scope_conflict:wi_run:'))).toBe(true)
+    })
+
+    it('command 条目失败 + 豁免 → 仍 incomplete（D3 已裁决：manual 豁免不覆盖 command）', () => {
       const result = runWaived(
         {},
         JSON.stringify([{ type: 'command', expected: '' }]),

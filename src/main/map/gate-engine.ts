@@ -11,17 +11,23 @@
  * - fail-closed（§14.5）：输入解析失败 / 数据缺失 / 查询异常 / 配置缺失一律
  *   判不通过并给出具体缺失码；不允许"跳过坏项继续判 pass"。
  *
- * 豁免规则（§14.4 G2 / §14.6 / D3 的保守读法）：
+ * 豁免规则（§14.4 G2 / §14.6；粒度与范围已裁决，2026-11-07，见 §M5.9）：
  * - 仅当**全部**缺失码都来自 G2、且每个失败的验收条目 type 都是 'manual' 时，
  *   有效的三字段豁免才把结论改判为 waived（视同通过）。
- * - 混入任何非 G2 缺失码（G1/G3/G4 明确不可豁免；G5/G6 在 D9 裁决前同样
- *   不可豁免）、或失败条目是 command/file_check/非结构化，豁免一律不生效
- *   （fail-closed，不替产品拍板 D3 的覆盖粒度）。
+ * - 混入任何非 G2 缺失码（G1/G3/G4 明确不可豁免；G5/G6 经 D9 裁决**永久
+ *   不可豁免**——G5 放行即乱序执行，G6 放行即准入时放过已知写冲突，重叠
+ *   执行的正确路径是先 cancel running 任务）、或失败条目是 command/file_check/
+ *   非结构化，豁免一律不生效（D3 已裁决：任务级粒度，不引入逐条目豁免；
+ *   混合场景的正确路径是 revise 补全/改标失败条目）。
  * - 三字段缺任一（by/at/reason 为空或类型不符）→ 豁免不成立，维持 incomplete。
  *
- * 待决项的 fail-closed 默认（§14.8，未替产品拍板，只落默认值）：
- * - D1：acceptance 须含 {type ∈ command|manual|file_check, expected} 结构化条目；
- *   存量 [{id,text}] 会被判 acceptance_item_not_structured（§14.4 G2 现状差距）。
+ * 已裁决并实施的默认（行为不变，状态词更新）：
+ * - D1（2026-11-07）：acceptance 须含 {type ∈ command|manual|file_check, expected}
+ *   结构化条目（createDraft/revise 边界强制）；存量 [{id,text}] 仍会被判
+ *   acceptance_item_not_structured（不自动迁移）。
+ * - D3/D9（2026-11-07，见 §M5.9）：豁免为任务级粒度；G5/G6 永久不可豁免。
+ *
+ * 仍待决的 fail-closed 默认（§14.8，未替产品拍板，只落默认值）：
  * - D4：project_path 为空 → project_path_missing，不从图/项目兜底。
  * - D5/D6：「跨图写」在现有 schema 上无输入可表达（写入面只有 scope_files，
  *   已被 G1 限定在单一项目根内），故本引擎只强制 §5.4 原文可判定的部分：
