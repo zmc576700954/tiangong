@@ -482,6 +482,28 @@ export function rebuildTableIfNeeded(
 }
 
 /**
+ * node_execution_state.is_reproducible 的规范值域是 E3=1 / E4=0 / E0–E2=NULL（§3.7.4）。
+ * 旧 DDL 为 `NOT NULL DEFAULT 0`，无法写入 NULL，且 rebuildTableIfNeeded 只比较
+ * 列集合/类型/CHECK，不会因 NOT NULL 变化触发重建。该表是可整表重建的派生缓存
+ * （§7.2），检测到旧约束时直接按当前 createSql 重建；不升 schema 版本、
+ * 不触碰任何用户数据，缓存行由 overlay:get 惰性重算。
+ */
+function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
+  const schema = MAP_S6A_TABLE_SCHEMAS.find((s) => s.name === 'node_execution_state')
+  if (!schema) return
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='node_execution_state'")
+    .get() as { sql: string } | undefined
+  if (!row) return
+  if (!/is_reproducible\s+INTEGER\s+NOT\s+NULL/i.test(row.sql)) return
+
+  logger.info('node_execution_state.is_reproducible 旧约束为 NOT NULL，重建派生缓存…')
+  db.exec('DROP TABLE node_execution_state')
+  db.exec(schema.createSql)
+  // 缓存行随表清空，下次 node_execution_state 读取时按新值域重算
+}
+
+/**
  * 当前 Schema 版本号，每次迁移时递增。
  * v21：agent_usage 成本账本扩展（M1）。
  * v22：agent_events 增加 step_id（按步骤 join 策略/审批事件；历史行留 NULL）。
@@ -1171,6 +1193,10 @@ function migrate(): void {
     for (const schema of TABLE_SCHEMAS) {
       rebuildTableIfNeeded(db, schema.name, schema.createSql, schema.requiredColumns)
     }
+
+    // 派生缓存列约束（NOT NULL → 可空）不在 rebuildTableIfNeeded 的比对范围，
+    // 单独按当前 createSql 重建；纯缓存表，无数据损失。
+    rebuildNullableReproducibleCache(db)
 
     // S4 重建后校验——紧跟重建循环,先于增量迁移（失配抛错 → SAVEPOINT 整体回滚 → 启动阻断）
     if (s4Baseline) {

@@ -101,11 +101,6 @@ export interface CreateLinkInput {
   origin: LinkOrigin
   reason?: string
   metadata?: Record<string, unknown>
-  /**
-   * §8.4 上线边界：L1 期间人工创建仅允许 relates_to（分支持/副本的已确认关联）。
-   * 系统回填/派生路径显式 bypass。
-   */
-  bypassHumanRestriction?: boolean
 }
 
 function normalizeProjectPath(p: string): string {

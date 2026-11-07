@@ -306,12 +306,12 @@ function runProjectTxn(
   }
 
   // ---- 落库：只写 NULL 行（I3：已有非空键永不改写）----
-  const now = new Date().toISOString()
-  const update = db.prepare('UPDATE nodes SET entity_key = ?, updated_at = ? WHERE id = ? AND entity_key IS NULL')
+  // 回填是元数据补齐，不是用户编辑：不改 updated_at，否则首次升级会让所有节点显示"刚更新"
+  const update = db.prepare('UPDATE nodes SET entity_key = ? WHERE id = ? AND entity_key IS NULL')
   const nullCount = db.prepare('SELECT COUNT(*) AS c FROM nodes WHERE graph_id IN (?, ?) AND entity_key IS NULL')
   stats.null_before = (nullCount.get(pairing.online, pairing.dev) as { c: number }).c
   for (const [nodeId, key] of assign) {
-    const result = update.run(key, now, nodeId)
+    const result = update.run(key, nodeId)
     if (result.changes === 0) {
       // 被并发写入抢先（该行已有键）——按 S1-c 7 回滚整个项目并重试一次
       throw new ConcurrentWriteError(`node ${nodeId} already has entity_key (concurrent write)`)

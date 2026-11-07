@@ -109,7 +109,7 @@ function setupDb(): BetterSqlite3.Database {
         'untouched','planned','in_progress','implemented',
         'verified','signed_off','failed','blocked','stale')),
       evidence_level     TEXT NOT NULL CHECK(evidence_level IN ('E0','E1','E2','E3','E4')),
-      is_reproducible    INTEGER NOT NULL DEFAULT 0,
+      is_reproducible    INTEGER,
       evidence_count     INTEGER NOT NULL DEFAULT 0,
       stale_count        INTEGER NOT NULL DEFAULT 0,
       derivation_version INTEGER NOT NULL DEFAULT 1,
@@ -274,6 +274,21 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     expect(deriveFromInputs({ ...base, testFail: true, workItems: [wi('a', 'done'), wi('b', 'failed')] }).state).toBe('failed')
     // 全部终态时回退到最新一条（调用方保证 newest-first）
     expect(deriveFromInputs({ ...base, workItems: [wi('newest', 'done'), wi('older', 'failed')] }).state).toBe('untouched')
+  })
+
+  it('is_reproducible 值域:E3=1 / E4=0 / E0-E2=NULL（§3.7.4）', () => {
+    const mk = (level: 'E1' | 'E2' | 'E3' | 'E4' | null) =>
+      deriveFromInputs({
+        evidence: level ? [{ id: 'e1', level, freshness: 'fresh', revoked: false, expired: false }] : [],
+        workItems: [],
+        runningRunIds: [],
+        testFail: false,
+      }).isReproducible
+    expect(mk(null)).toBeNull()
+    expect(mk('E1')).toBeNull()
+    expect(mk('E2')).toBeNull()
+    expect(mk('E3')).toBe(1)
+    expect(mk('E4')).toBe(0)
   })
 
   it('落库:多 lineage 并存时最新一条不再吞掉其他 lineage 的 running/blocked', () => {

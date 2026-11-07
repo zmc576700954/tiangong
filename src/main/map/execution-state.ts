@@ -74,7 +74,7 @@ export interface NodeExecutionStateRow {
   node_entity_key: string
   execution_state: ExecutionState
   evidence_level: 'E0' | 'E1' | 'E2' | 'E3' | 'E4'
-  is_reproducible: number
+  is_reproducible: number | null
   evidence_count: number
   stale_count: number
   derivation_version: number
@@ -85,7 +85,7 @@ export interface NodeExecutionStateRow {
 export interface DerivationResult {
   state: ExecutionState
   evidenceLevel: 'E0' | 'E1' | 'E2' | 'E3' | 'E4'
-  isReproducible: number
+  isReproducible: number | null
   evidenceCount: number
   staleCount: number
   inputsHash: string
@@ -154,7 +154,8 @@ export function deriveFromInputs(inputs: {
   for (const e of active) {
     if (LEVEL_RANK[e.level] > LEVEL_RANK[maxLevel]) maxLevel = e.level
   }
-  const isReproducible = maxLevel === 'E3' ? 1 : maxLevel === 'E4' ? 0 : 0
+  // §3.7.4：E3=1、E4=0，E0/E1/E2 未进入可复现证据域，写 NULL（不写 0，避免被当作"不可复现"统计）
+  const isReproducible = maxLevel === 'E3' ? 1 : maxLevel === 'E4' ? 0 : null
 
   const inputsHash = createHash('sha256')
     .update(canonicalJson({

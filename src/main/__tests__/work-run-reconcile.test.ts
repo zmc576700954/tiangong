@@ -63,7 +63,7 @@ function setupDb(): BetterSqlite3.Database {
         'untouched','planned','in_progress','implemented',
         'verified','signed_off','failed','blocked','stale')),
       evidence_level     TEXT NOT NULL CHECK(evidence_level IN ('E0','E1','E2','E3','E4')),
-      is_reproducible    INTEGER NOT NULL DEFAULT 0,
+      is_reproducible    INTEGER,
       evidence_count     INTEGER NOT NULL DEFAULT 0,
       stale_count        INTEGER NOT NULL DEFAULT 0,
       derivation_version INTEGER NOT NULL DEFAULT 1,

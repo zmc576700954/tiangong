@@ -2041,7 +2041,7 @@ CREATE TABLE node_execution_state (
     'untouched','planned','in_progress','implemented',
     'verified','signed_off','failed','blocked','stale')),
   evidence_level     TEXT NOT NULL CHECK(evidence_level IN ('E0','E1','E2','E3','E4')),
-  is_reproducible    INTEGER NOT NULL DEFAULT 0,  -- 分组统计：verified/E3=1；signed_off/E4=0
+  is_reproducible    INTEGER,  -- E3=1；E4=0；E0/E1/E2=NULL（不写 0，§3.7.4）
   evidence_count     INTEGER NOT NULL DEFAULT 0,
   stale_count        INTEGER NOT NULL DEFAULT 0,
   derivation_version INTEGER NOT NULL DEFAULT 1,
