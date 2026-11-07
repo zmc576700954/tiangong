@@ -440,6 +440,161 @@ export const MAP_S5A_INDEX_SQLS: string[] = [
 ]
 
 /** 真库测试建表助手（DDL 与生产同源）。 */
+// ============================================================
+// S8 前置(v32,session-map 蓝图 §6/§7.2 逐字;S4 的 CHECK 值域扩展未含在此)
+// ============================================================
+
+export const MAP_S8_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    // 测试资产绑定:kind='flow' 时 steps_json 承载有序步骤(§6.5.1)。
+    name: 'test_specs',
+    createSql: `
+      CREATE TABLE test_specs (
+        id                 TEXT PRIMARY KEY,
+        project_path       TEXT NOT NULL,
+        graph_id           TEXT,
+        test_node_entity_key TEXT NOT NULL,
+        test_node_id       TEXT,
+        name               TEXT NOT NULL,
+        kind               TEXT NOT NULL CHECK(kind IN ('unit','integration','e2e','flow')),
+        command            TEXT NOT NULL,
+        cwd                TEXT,
+        env_json           TEXT,
+        timeout_ms         INTEGER NOT NULL DEFAULT 300000,
+        runner             TEXT,
+        file_globs_json    TEXT,
+        steps_json         TEXT,
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'project_path', 'test_node_entity_key', 'name', 'kind', 'command', 'timeout_ms', 'created_at', 'updated_at'],
+  },
+  {
+    name: 'test_plans',
+    createSql: `
+      CREATE TABLE test_plans (
+        id               TEXT PRIMARY KEY,
+        project_path     TEXT NOT NULL,
+        graph_id         TEXT,
+        work_item_id     TEXT,
+        work_run_id      TEXT,
+        node_keys_json   TEXT NOT NULL,
+        base_commit      TEXT,
+        worktree_path    TEXT,
+        plan_hash        TEXT NOT NULL,
+        approval_id      TEXT,
+        status           TEXT NOT NULL CHECK(status IN (
+          'draft','awaiting_approval','approved','running',
+          'completed','failed','cancelled','expired')),
+        created_by       TEXT,
+        created_at       INTEGER NOT NULL,
+        approved_at      INTEGER,
+        started_at       INTEGER,
+        ended_at         INTEGER
+      )
+    `,
+    requiredColumns: ['id', 'project_path', 'node_keys_json', 'plan_hash', 'status', 'created_at'],
+  },
+  {
+    name: 'test_plan_items',
+    createSql: `
+      CREATE TABLE test_plan_items (
+        id                TEXT PRIMARY KEY,
+        plan_id           TEXT NOT NULL REFERENCES test_plans(id) ON DELETE CASCADE,
+        spec_id           TEXT,
+        seq               INTEGER NOT NULL,
+        command           TEXT NOT NULL,
+        cwd               TEXT,
+        selected_by       TEXT NOT NULL DEFAULT 'plan'
+                          CHECK(selected_by IN ('plan','targeted','rerun')),
+        targeted_reason   TEXT,
+        policy_decision   TEXT CHECK(policy_decision IN ('allow','deny','ask')),
+        status            TEXT NOT NULL CHECK(status IN (
+          'pending','running','passed','failed','skipped','error','timed_out')),
+        exit_code         INTEGER,
+        duration_ms       INTEGER,
+        output_ref        TEXT,
+        started_at        INTEGER,
+        ended_at          INTEGER,
+        UNIQUE(plan_id, seq)
+      )
+    `,
+    requiredColumns: ['id', 'plan_id', 'seq', 'command', 'status'],
+  },
+  {
+    name: 'test_runs',
+    createSql: `
+      CREATE TABLE test_runs (
+        id               TEXT PRIMARY KEY,
+        plan_id          TEXT NOT NULL,
+        project_path     TEXT NOT NULL,
+        graph_id         TEXT,
+        work_item_id     TEXT,
+        work_run_id      TEXT,
+        base_commit      TEXT,
+        head_commit      TEXT,
+        worktree_commit  TEXT,
+        dirty            INTEGER NOT NULL DEFAULT 0,
+        dirty_tree_hash  TEXT,
+        status           TEXT NOT NULL CHECK(status IN (
+          'pending','running','passed','failed','error','cancelled','stale')),
+        total            INTEGER NOT NULL DEFAULT 0,
+        passed           INTEGER NOT NULL DEFAULT 0,
+        failed           INTEGER NOT NULL DEFAULT 0,
+        skipped          INTEGER NOT NULL DEFAULT 0,
+        report_ref       TEXT,
+        started_at       INTEGER,
+        ended_at         INTEGER,
+        created_at       INTEGER NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'plan_id', 'project_path', 'status', 'created_at'],
+  },
+  {
+    name: 'test_results',
+    createSql: `
+      CREATE TABLE test_results (
+        id                     TEXT PRIMARY KEY,
+        test_run_id            TEXT NOT NULL,
+        plan_item_id           TEXT,
+        spec_id                TEXT,
+        test_node_entity_key   TEXT,
+        target_node_entity_key TEXT,
+        status                 TEXT NOT NULL CHECK(status IN (
+          'passed','failed','skipped','error','timed_out')),
+        exit_code              INTEGER,
+        duration_ms            INTEGER,
+        failure_summary        TEXT,
+        failure_class          TEXT CHECK(failure_class IN (
+          'assertion','timeout','env_fail','infra','cancelled')),
+        output_ref             TEXT,
+        created_at             INTEGER NOT NULL
+      )
+    `,
+    requiredColumns: ['id', 'test_run_id', 'status', 'created_at'],
+  },
+]
+
+export const MAP_S8_INDEX_SQLS: string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_test_specs_node ON test_specs(graph_id, test_node_entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_plans_status ON test_plans(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_plans_item ON test_plans(work_item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_runs_plan ON test_runs(plan_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_runs_item ON test_runs(work_item_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_results_run ON test_results(test_run_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_test_results_target ON test_results(target_node_entity_key, status)`,
+]
+
+export function applyMapS8Schema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_S8_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_S8_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}
+
 export function applyMapS7Schema(db: { exec(sql: string): unknown }): void {
   for (const schema of MAP_S7_TABLE_SCHEMAS) {
     db.exec(schema.createSql)

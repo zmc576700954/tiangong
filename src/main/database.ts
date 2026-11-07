@@ -19,6 +19,7 @@ import { scanStaleE3All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
 import { MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS } from './map/schema'
+import { MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS } from './map/schema'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -462,8 +463,11 @@ export function rebuildTableIfNeeded(
  *      旧行安全落默认值,§8.5「重建可安全补默认值」）。
  * v31：S7 新增 boundary_candidates / plan_drafts / plan_deviations（§7.2 逐字）
  *      + 索引（含 ux_plan_drafts_current 部分唯一）。
+ * v32：S8 前置 —— test_* 五表（§7.2 逐字）+ agent_approvals subject 扩展
+ *      （run_id/turn_id 放宽可空 + subject_type/subject_id,D6 不建 test_approvals;
+ *      回填 UPDATE subject_id=turn_id 见 runIncrementalMigrations）。
  */
-const CURRENT_SCHEMA_VERSION = 31
+const CURRENT_SCHEMA_VERSION = 32
 
 interface TableSchema {
   name: string
@@ -936,6 +940,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_S6A_TABLE_SCHEMAS,
   // v31 / S7 三表(boundary_candidates/plan_drafts/plan_deviations,§7.2 逐字)。
   ...MAP_S7_TABLE_SCHEMAS,
+  // v32 / S8 前置五表(test_specs/test_plans/test_plan_items/test_runs/test_results)。
+  ...MAP_S8_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -995,6 +1001,7 @@ const INDEX_SQLS: string[] = [
   ...MAP_S5A_INDEX_SQLS,
   ...MAP_S6A_INDEX_SQLS,
   ...MAP_S7_INDEX_SQLS,
+  ...MAP_S8_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]
@@ -1183,6 +1190,19 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // （新建库/重建路径）；这里为存量库兜底补列——必须在 ux_nodes_graph_entity_key
   // 索引创建之前执行（migrate() 的顺序保证：先增量补列，后建索引）。
   addColumnSafe('nodes', 'entity_key', 'TEXT')
+
+  // v32 / S8（§7.1）：agent_approvals 审批主体回填——历史行的 subject_id
+  // 取 turn_id（subject_type 默认 'agent_turn'）。表不存在（极老夹具）则跳过。
+  try {
+    const hasApprovals = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_approvals'")
+      .get()
+    if (hasApprovals) {
+      db.prepare("UPDATE agent_approvals SET subject_id = turn_id WHERE subject_id IS NULL AND turn_id IS NOT NULL").run()
+    }
+  } catch (err) {
+    logger.warn('agent_approvals subject backfill failed:', err)
+  }
 
   if (currentVersion < 3) {
     addColumnSafe('memory_items', 'version', 'INTEGER', '1')

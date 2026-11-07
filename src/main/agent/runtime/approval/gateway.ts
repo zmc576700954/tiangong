@@ -193,6 +193,8 @@ export class ApprovalGateway {
         id,
         runId: input.runId,
         turnId: input.turnId,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
         stepId: input.stepId,
         toolName: input.toolName,
         argsJson: JSON.stringify(input.args),
@@ -228,6 +230,8 @@ export class ApprovalGateway {
         id,
         runId: input.runId,
         turnId: input.turnId,
+        subjectType: input.subjectType,
+        subjectId: input.subjectId,
         stepId: input.stepId,
         toolName: input.toolName,
         argsJson: JSON.stringify(input.args),
@@ -271,8 +275,8 @@ export class ApprovalGateway {
 
     const payload: ApprovalRequestPayload = {
       approvalId: row.id,
-      runId: row.run_id,
-      turnId: row.turn_id,
+      runId: row.run_id ?? null,
+      turnId: row.turn_id ?? null,
       sessionId: input.sessionId,
       stepId: row.step_id ?? undefined,
       toolName: row.tool_name,
@@ -366,8 +370,11 @@ export class ApprovalGateway {
       updated.status === 'allowed' &&
       isWriteScopedTool(updated.tool_name)
     ) {
-      const turn = this.repo.getTurn(updated.turn_id)
-      const sessionId = turn?.session_id ?? legacySessionIdOf(updated.run_id, updated.turn_id)
+      // S8/D6:subject 非 agent_turn(测试计划/任务级)没有 turn,不进会话级授权;
+      // 旧路径自由聊天的合成 run/turn(legacy-* 前缀)仍走 legacySessionIdOf 反解
+      const turn = updated.turn_id ? this.repo.getTurn(updated.turn_id) : undefined
+      const sessionId =
+        turn?.session_id ?? legacySessionIdOf(updated.run_id ?? '', updated.turn_id ?? '')
       if (sessionId && updated.cwd) {
         this.sessionGrants.set(sessionId, {
           sessionId,
@@ -407,6 +414,8 @@ export class ApprovalGateway {
       )
     }
     if (input.sessionId !== undefined) {
+      // S8/D6:subject 审批(test_plan/work_item)无 turn——归属由 subject_id 本体承担
+      if (!row.turn_id) return
       const turn = this.repo.getTurn(row.turn_id)
       // 旧路径没有 turn 行，归属从 run/turn 标识反解；反解失败则 fail-closed。
       const ownerSessionId = turn?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id)
@@ -502,12 +511,14 @@ export class ApprovalGateway {
     // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件。
     if (legacySessionIdOf(input.runId, input.turnId) !== undefined) return
     try {
-      const seq = this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
+      const anchorTurn = input.turnId ?? input.subjectId ?? input.runId ?? 'no-turn'
+      const seq = this.repo.listTurnEvents(anchorTurn).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
       this.repo.appendEvents([
         {
-          eventId: eventIdFor(input.turnId, seq),
-          runId: input.runId,
-          turnId: input.turnId,
+          eventId: eventIdFor(anchorTurn, seq),
+          // S8/D6:subject 审批无 run/turn,事件锚定到 subject(runId 同锚点)
+          runId: input.runId ?? anchorTurn,
+          turnId: input.turnId ?? anchorTurn,
           seq,
           type: 'approval.grant_miss',
           source: 'kernel',
@@ -541,12 +552,14 @@ export class ApprovalGateway {
       return
     }
     try {
-      const seq = this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
+      const anchorTurn = input.turnId ?? input.subjectId ?? input.runId ?? 'no-turn'
+      const seq = this.repo.listTurnEvents(anchorTurn).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
       this.repo.appendEvents([
         {
-          eventId: eventIdFor(input.turnId, seq),
-          runId: input.runId,
-          turnId: input.turnId,
+          eventId: eventIdFor(anchorTurn, seq),
+          // S8/D6:subject 审批无 run/turn,事件锚定到 subject(runId 同锚点)
+          runId: input.runId ?? anchorTurn,
+          turnId: input.turnId ?? anchorTurn,
           seq,
           type: 'approval.policy_blocked',
           source: 'kernel',
@@ -619,6 +632,8 @@ export class ApprovalGateway {
 
   /** 该 pending 是否还有可能被兑现（所属 turn 仍是活 turn；旧路径则要求本进程仍在等待）。 */
   private isFulfillable(row: AgentApprovalRow): boolean {
+    // S8/D6:subject 审批(test_plan/work_item)无 turn——可兑现性只看过期时间
+    if (!row.turn_id) return row.expires_at > this.now()
     const turn = this.repo.getTurn(row.turn_id)
     if (turn) return LIVE_TURN_STATUSES.has(turn.status)
     // 旧路径没有 turn 行：只有本进程仍挂着 waiter 时才可能兑现。
@@ -638,9 +653,12 @@ export class ApprovalGateway {
       : bashPolicyFields(row.tool_name, parseArgsJson(row.args_json), row.cwd ?? undefined)
     const payload: ApprovalRequestPayload = {
       approvalId: row.id,
-      runId: row.run_id,
-      turnId: row.turn_id,
-      sessionId: this.repo.getTurn(row.turn_id)?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id),
+      runId: row.run_id ?? null,
+      turnId: row.turn_id ?? null,
+      sessionId:
+        row.turn_id
+          ? this.repo.getTurn(row.turn_id)?.session_id
+          : legacySessionIdOf(row.run_id ?? '', row.turn_id ?? ''),
       stepId: row.step_id ?? undefined,
       toolName: row.tool_name,
       // 重启重放：DB 里只有脱敏后的 args_json，无法还原原文（也不提供还原）。
@@ -674,7 +692,10 @@ export class ApprovalGateway {
         approvalId: row.id,
         runId: row.run_id,
         turnId: row.turn_id,
-        sessionId: this.repo.getTurn(row.turn_id)?.session_id ?? legacySessionIdOf(row.run_id, row.turn_id),
+        sessionId:
+          row.turn_id
+            ? this.repo.getTurn(row.turn_id)?.session_id
+            : legacySessionIdOf(row.run_id ?? '', row.turn_id ?? ''),
         stepId: row.step_id ?? undefined,
         toolName: row.tool_name,
         argsJson: row.args_json,
@@ -778,8 +799,8 @@ export class ApprovalGateway {
     const grantSourceApprovalId = row.grant_source ?? (granted ? row.id : undefined)
     return {
       approvalId: row.id,
-      runId: row.run_id,
-      turnId: row.turn_id,
+      runId: row.run_id ?? null,
+      turnId: row.turn_id ?? null,
       decision: row.status === 'allowed' ? 'allow' : 'deny',
       decidedBy: row.decided_by ?? 'system',
       argsHash: row.args_hash,

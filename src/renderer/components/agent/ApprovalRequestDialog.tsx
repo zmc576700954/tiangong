@@ -107,7 +107,8 @@ export function ApprovalRequestDialog() {
           argsHash: payload.argsHash,
           // 归属校验：主进程据此确认审批确实属于该会话/轮次，而不是只在同名 hash 上放行。
           sessionId: payload.sessionId,
-          turnId: payload.turnId,
+          // S8/D6:subject 审批(test_plan)无 turn——归属由 approvalId 本体承担
+          turnId: payload.turnId ?? undefined,
           ...(decision === 'allow' ? { scope } : {}),
         }),
       )

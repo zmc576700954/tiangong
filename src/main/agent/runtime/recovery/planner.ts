@@ -94,6 +94,9 @@ export function planRecovery(repo: AgentRepository, options: RecoveryPlannerOpti
 
   const pendingApprovals = repo.listPendingApprovals()
   for (const approval of pendingApprovals) {
+    // S8/D6:subject 审批(test_plan/work_item)无 run/turn——保留为待决计划的
+    // 审计锚点(runId/turnId 取锚点串;重启对账不重放它们,见 reason)。
+    if (!approval.run_id || !approval.turn_id) continue
     plans.push({
       runId: approval.run_id,
       turnId: approval.turn_id,

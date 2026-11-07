@@ -105,14 +105,19 @@ export type DecidedBy = 'user' | 'policy' | 'timeout' | 'system' | 'startup'
 export type ApprovalMode = 'interactive' | 'unattended'
 
 export interface ApprovalRequestInput {
-  runId: string
-  turnId: string
+  /** S8/D6:测试计划/任务级审批无 run/turn——与 subject_type 联合可空(§7.1) */
+  runId?: string
+  turnId?: string
   stepId?: string
   toolName: string
   args: Record<string, unknown>
   risk?: RiskLevel
   policyDecision?: PolicyDecision
   mode?: ApprovalMode
+  /** S8/D6:审批主体类型(agent_turn 默认;test_plan/work_item 复用本表,§6.3) */
+  subjectType?: 'agent_turn' | 'test_plan' | 'work_item'
+  /** 审批主体 id(test_plan 时=plan_id;run/turn 缺省时必填) */
+  subjectId?: string
   /** 所属 agent_sessions.id（会话级授权的作用域键） */
   sessionId?: string
   /** 会话工作目录；会话级授权只覆盖该目录下的写路径 */
@@ -131,8 +136,9 @@ export interface ApprovalRequestInput {
 
 export interface ApprovalRequestPayload {
   approvalId: string
-  runId: string
-  turnId: string
+  /** S8/D6:测试计划/任务级审批为 null */
+  runId: string | null
+  turnId: string | null
   /** 所属 agent_sessions.id；决议时回传用于归属校验 */
   sessionId?: string
   stepId?: string
@@ -168,8 +174,9 @@ export interface ApprovalRequestPayload {
 
 export interface ApprovalResolutionPayload {
   approvalId: string
-  runId: string
-  turnId: string
+  /** S8/D6:测试计划/任务级审批为 null */
+  runId: string | null
+  turnId: string | null
   decision: 'allow' | 'deny'
   decidedBy: DecidedBy
   argsHash: string

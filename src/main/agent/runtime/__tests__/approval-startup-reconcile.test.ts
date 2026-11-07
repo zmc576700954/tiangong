@@ -64,6 +64,8 @@ class FakeApprovalRepo {
       status: input.status,
       decided_by: null,
       decided_at: null,
+      subject_type: 'agent_turn' as const,
+      subject_id: null,
       decision_note: null,
       expires_at: input.expiresAt,
       mode: input.mode,
@@ -104,6 +106,8 @@ class FakeApprovalRepo {
 function approvalRow(overrides: Partial<AgentApprovalRow> = {}): AgentApprovalRow {
   return {
     id: 'appr-1',
+    subject_type: 'agent_turn',
+    subject_id: null,
     run_id: 'run-1',
     turn_id: 'turn-1',
     step_id: null,

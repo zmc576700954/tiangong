@@ -166,14 +166,20 @@ export const AGENT_TABLE_SCHEMAS: AgentTableSchema[] = [
     createSql: `
       CREATE TABLE agent_approvals (
         id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
+        -- S8/D6（§7.1）：run_id/turn_id 放宽为可空——测试计划审批复用本表
+        -- （subject_type='test_plan'），不建 test_approvals（D6，两套审批事实分裂）。
+        run_id TEXT,
+        turn_id TEXT,
         step_id TEXT,
         tool_name TEXT NOT NULL,
         args_json TEXT NOT NULL,
         args_hash TEXT NOT NULL,
         risk TEXT NOT NULL CHECK(risk IN ('low','medium','high','critical')),
         policy_decision TEXT NOT NULL CHECK(policy_decision IN ('allow','deny','ask')),
+        -- S8/D6：审批主体扩展（agent_turn 默认,测试计划/任务级复用本表）
+        subject_type TEXT NOT NULL DEFAULT 'agent_turn'
+          CHECK(subject_type IN ('agent_turn','test_plan','work_item')),
+        subject_id TEXT,
         status TEXT NOT NULL CHECK(status IN ('pending','allowed','denied','superseded')),
         decided_by TEXT CHECK(decided_by IN ('user','policy','timeout','system','startup')),
         decided_at INTEGER,
@@ -186,7 +192,7 @@ export const AGENT_TABLE_SCHEMAS: AgentTableSchema[] = [
         created_at INTEGER NOT NULL
       )
     `,
-    requiredColumns: ['id', 'run_id', 'turn_id', 'tool_name', 'args_json', 'args_hash', 'risk', 'policy_decision', 'status', 'expires_at', 'created_at', 'cwd', 'grant_source', 'decision_note'],
+    requiredColumns: ['id', 'run_id', 'turn_id', 'tool_name', 'args_json', 'args_hash', 'risk', 'policy_decision', 'subject_type', 'status', 'expires_at', 'created_at', 'cwd', 'grant_source', 'decision_note'],
   },
   {
     name: 'agent_artifacts',

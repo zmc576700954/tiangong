@@ -131,8 +131,9 @@ export interface AgentStepRow {
 
 export interface AgentApprovalRow {
   id: string
-  run_id: string
-  turn_id: string
+  /** S8/D6:测试计划/任务级审批可空(§7.1 列已放宽) */
+  run_id: string | null
+  turn_id: string | null
   step_id: string | null
   tool_name: string
   args_json: string
@@ -151,6 +152,9 @@ export interface AgentApprovalRow {
   cwd: string | null
   /** 本次允许来自会话级授权时的来源 approval id */
   grant_source: string | null
+  /** S8/D6:审批主体类型/id(§6.3;历史行回填 subject_id=turn_id) */
+  subject_type: 'agent_turn' | 'test_plan' | 'work_item'
+  subject_id: string | null
   created_at: number
 }
 
@@ -173,8 +177,9 @@ export interface InsertTurnInput {
 
 export interface InsertApprovalInput {
   id?: string
-  runId: string
-  turnId: string
+  /** S8/D6:测试计划/任务级审批可空(§7.1 列已放宽) */
+  runId?: string
+  turnId?: string
   stepId?: string
   toolName: string
   argsJson: string
@@ -190,6 +195,9 @@ export interface InsertApprovalInput {
   grantSource?: string
   /** 宿主策略直接否决时的可读原因（写入 decision_note，供工具 deny 消息与审计） */
   note?: string
+  /** S8/D6:审批主体类型/id(§6.3 subject 扩展) */
+  subjectType?: 'agent_turn' | 'test_plan' | 'work_item'
+  subjectId?: string
 }
 
 // ---------------------------------------------------------
@@ -956,19 +964,22 @@ export class AgentRepository {
       .prepare(
         `INSERT INTO agent_approvals
            (id, run_id, turn_id, step_id, tool_name, args_json, args_hash, risk, policy_decision,
+            subject_type, subject_id,
             status, decided_by, decided_at, decision_note, expires_at, mode, timeout_ms, cwd, grant_source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
-        input.runId,
-        input.turnId,
+        input.runId ?? null,
+        input.turnId ?? null,
         input.stepId ?? null,
         input.toolName,
         redactArgsJson(input.argsJson),
         input.argsHash,
         input.risk,
         input.policyDecision ?? 'ask',
+        input.subjectType ?? 'agent_turn',
+        input.subjectId ?? null,
         input.status ?? 'pending',
         input.policyDecision === 'allow' ? 'policy' : input.policyDecision === 'deny' ? 'policy' : null,
         input.policyDecision === 'allow' || input.policyDecision === 'deny' ? now : null,
