@@ -40,6 +40,8 @@ export const edgeTypeConfig: Record<EdgeType, { color: string }> = {
   'co-change': { color: '#f97316' },
   'wiki-link': { color: '#8b5cf6' },
   hierarchical: { color: '#94a3b8' },
+  verifies: { color: '#14b8a6' },
+  covers: { color: '#06b6d4' },
 }
 
 /** 算一条边该长什么样的全部输入 */

@@ -44,12 +44,16 @@ export type NodeType =
   | 'feature'      // 功能点（仅开发场景）
   | 'bug'          // BUG点（仅开发场景）
   | 'wiki-page'    // Wiki 页面（可包含 markdown 内容、YAML frontmatter、wikilink）
+  | 'test-suite'   // S4:测试套件（仅测试图）
+  | 'test-case'    // S4:测试用例（仅测试图）
 
-/** 图类型：每个项目只有两张图 */
-export type GraphType = 'online' | 'dev'
+/** 图类型：S4 起含 test 图（每个项目 online/dev 两张 + 可选 test） */
+export type GraphType = 'online' | 'dev' | 'test'
 
 /** 边类型 */
 export type EdgeType = 'default' | 'success' | 'failure' | 'condition' | 'business-flow' | 'semantic' | 'dependency' | 'co-change' | 'wiki-link' | 'hierarchical'
+  | 'verifies'   // S4:用例验证开发节点(test→dev)
+  | 'covers'     // S4:用例覆盖业务流程(test→online)
 
 /** 业务规则（作为流程节点的属性） */
 export interface BusinessRule {
@@ -396,9 +400,9 @@ export interface ProjectMemory {
 // ============================================
 
 export const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
-export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page'] as const
-export const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
-export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical'] as const
+export const NODE_TYPE_VALUES = ['project', 'module', 'process', 'feature', 'bug', 'wiki-page', 'test-suite', 'test-case'] as const
+export const GRAPH_TYPE_VALUES = ['online', 'dev', 'test'] as const
+export const EDGE_TYPE_VALUES = ['default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical', 'verifies', 'covers'] as const
 export const BUG_SEVERITY_VALUES = ['low', 'medium', 'high', 'critical'] as const
 export const BUG_STATUS_VALUES = ['open', 'fixed', 'verified'] as const
 
@@ -510,7 +514,15 @@ export const NODE_STATUS_TRANSITIONS: Record<NodeType, NodeStatusTransition[]> =
     { from: 'published', to: 'placeholder' },
     { from: 'placeholder', to: 'draft' },
     { from: 'placeholder', to: 'confirmed' },
+  ],  'test-suite': [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'published' },
   ],
+  'test-case': [
+    { from: 'draft', to: 'confirmed' },
+    { from: 'confirmed', to: 'published' },
+  ],
+
 }
 
 // ============================================

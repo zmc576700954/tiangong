@@ -1,6 +1,7 @@
 export const graphZh = {
   'graph.type.online': '已上线场景',
   'graph.type.dev': '开发场景',
+  'graph.type.test': '测试场景',
   'graph.nameSuffix.online': '产品蓝图',
   'graph.nameSuffix.dev': '开发场景',
   'graph.tab.new': '新建图',
@@ -16,6 +17,7 @@ export const graphZh = {
 export const graphEn: Record<keyof typeof graphZh, string> = {
   'graph.type.online': 'Online Scenario',
   'graph.type.dev': 'Dev Scenario',
+  'graph.type.test': 'Test Scenario',
   'graph.nameSuffix.online': 'Product Blueprint',
   'graph.nameSuffix.dev': 'Dev Scenario',
   'graph.tab.new': 'New Graph',

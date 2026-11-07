@@ -165,6 +165,8 @@ export const NODE_FIELD_RULES: NodeFieldRuleTable = {
     ...COMMON_NODE_LAMPORT,
     ...COMMON_NODE_LWW,
   ],
+  'test-suite': [],
+  'test-case': [],
 }
 
 // ============================================================

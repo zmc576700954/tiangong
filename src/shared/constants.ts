@@ -38,6 +38,8 @@ export const NODE_TYPE_COLORS: Record<NodeType, string> = {
   module: '#3b82f6',
   process: '#8b5cf6',
   feature: '#22c55e',
+  'test-suite': '#14b8a6',
+  'test-case': '#06b6d4',
   bug: '#ef4444',
   'wiki-page': '#f59e0b',
 }

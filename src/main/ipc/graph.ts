@@ -40,7 +40,8 @@ const logger = createLogger('GraphIPC')
 const MAX_WIKI_CONTENT_LEN = 512 * 1024
 
 const NODE_STATUS_VALUES = ['draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder'] as const
-const GRAPH_TYPE_VALUES = ['online', 'dev'] as const
+// S4:与 @shared/types 的 GRAPH_TYPE_VALUES 对齐(test 图值域开放)
+const GRAPH_TYPE_VALUES = ['online', 'dev', 'test'] as const
 const MAX_TITLE_LEN = 200
 const MAX_DESCRIPTION_LEN = 2000
 

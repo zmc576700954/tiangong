@@ -17,6 +17,7 @@ import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
+import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
 import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
 import { MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS } from './map/schema'
 import { MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS } from './map/schema'
@@ -466,8 +467,12 @@ export function rebuildTableIfNeeded(
  * v32：S8 前置 —— test_* 五表（§7.2 逐字）+ agent_approvals subject 扩展
  *      （run_id/turn_id 放宽可空 + subject_type/subject_id,D6 不建 test_approvals;
  *      回填 UPDATE subject_id=turn_id 见 runIncrementalMigrations）。
+ * v33：S4 不可逆 —— CHECK 值域扩展（test 图）：graphs.type / nodes.type /
+ *      nodes.graph_type / edges.edge_type。三表重建
+ *      （graphs→edges→nodes 顺序由 TABLE_SCHEMAS 决定）+ S4 基线/校验
+ *      （captureS4Baseline/verifyS4PostRebuild,失败整体回滚启动阻断,§8.6）。
  */
-const CURRENT_SCHEMA_VERSION = 32
+const CURRENT_SCHEMA_VERSION = 33
 
 interface TableSchema {
   name: string
@@ -482,7 +487,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
       CREATE TABLE graphs (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('online', 'dev')),
+        type TEXT NOT NULL CHECK(type IN ('online', 'dev', 'test')),
         -- S3（§8.5）：图级生命周期（归档语义;值域与 nodes 对齐）。
         lifecycle_state TEXT NOT NULL DEFAULT 'active'
           CHECK(lifecycle_state IN ('active','archived','merged','split')),
@@ -502,13 +507,13 @@ const TABLE_SCHEMAS: TableSchema[] = [
     createSql: `
       CREATE TABLE nodes (
         id TEXT PRIMARY KEY,
-        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug', 'wiki-page')),
+        type TEXT NOT NULL CHECK(type IN ('project', 'module', 'process', 'feature', 'bug', 'wiki-page', 'test-suite', 'test-case')),
         status TEXT NOT NULL CHECK(status IN ('draft', 'confirmed', 'developing', 'testing', 'review', 'published', 'placeholder')),
         title TEXT NOT NULL,
         description TEXT,
         acceptance_criteria TEXT,
         graph_id TEXT NOT NULL,
-        graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
+        graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev', 'test')),
         -- S1（session-map 蓝图 §2.1/§7.1）：项目内稳定身份。必须可空、**不进**
         -- requiredColumns（I1）：旧库迁移走「建列 → 回填 → 建唯一索引」，写 NOT NULL
         -- 或进 requiredColumns 都会迫使 rebuildTableIfNeeded 走重建路径。
@@ -548,7 +553,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         source TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         target TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
         label TEXT,
-        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical')),
+        edge_type TEXT CHECK(edge_type IN ('default', 'success', 'failure', 'condition', 'business-flow', 'semantic', 'dependency', 'co-change', 'wiki-link', 'hierarchical', 'verifies', 'covers')),
         graph_id TEXT NOT NULL,
         content TEXT,
         description TEXT,
@@ -1077,6 +1082,11 @@ function migrate(): void {
 
   db.exec('SAVEPOINT migrate_sp')
   try {
+    // S4（§8.6）：v32→33 的 CHECK 值域扩展会重建 graphs/edges/nodes——
+    // 重建前拍基线（行数/entity_key/writeback_disabled/共有列内容哈希）,
+    // 重建后逐项校验,失配即整体回滚+启动阻断。
+    const s4Baseline = currentVersion < 33 ? captureS4Baseline(db) : null
+
     // 慢路径（版本落后 **或** checksum 失配）一律尝试重建。
     // 只按版本号门禁会让「改了 createSql 但忘了 bump CURRENT_SCHEMA_VERSION」的
     // schema 变更静默失效：checksum 已经失配，却因为版本号没变而跳过重建。
@@ -1093,6 +1103,11 @@ function migrate(): void {
     // Create indexes idempotently (cheap even when up-to-date).
     for (const sql of INDEX_SQLS) {
       db.exec(sql)
+    }
+
+    // S4 重建后校验（§8.6 逐项）——失配抛错 → SAVEPOINT 整体回滚 → 启动阻断
+    if (s4Baseline) {
+      verifyS4PostRebuild(db, s4Baseline)
     }
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)

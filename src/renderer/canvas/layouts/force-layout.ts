@@ -30,6 +30,8 @@ export const NODE_SIZES: Record<NodeType, { width: number; height: number }> = {
   feature: { width: 160, height: 60 },
   bug:     { width: 160, height: 60 },
   'wiki-page': { width: 180, height: 70 },
+  'test-suite': { width: 160, height: 60 },
+  'test-case': { width: 160, height: 60 },
 }
 
 /** 仿真节点 datum —— 在 d3-force 内部流动的位置对象 */

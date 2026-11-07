@@ -58,6 +58,12 @@ export class GraphService {
   }
 
   async createGraph(data: { name: string; type: GraphType }): Promise<Graph> {
+    // S4 上线边界（§8.6）：先发版、测试图功能关闭;BIZGRAPH_TEST_GRAPH=1 显式开启
+    if (data.type === 'test' && process.env.BIZGRAPH_TEST_GRAPH !== '1') {
+      throw new Error(
+        '测试图功能未开启：设置 BIZGRAPH_TEST_GRAPH=1 显式开启（S4 上线边界,§8.6——值域已扩,功能灰度）',
+      )
+    }
     const result = this.graphRepo.create(data)
     await WikiIndexService.createSpecialPages(result.id, data.type, new NodeRepository(this.db))
     this.invalidateProjectPathsCache()

@@ -29,6 +29,9 @@ const NODE_SIZES: Record<NodeType, { width: number; height: number }> = {
   feature: { width: 160, height: 60 },
   bug:     { width: 160, height: 60 },
   'wiki-page': { width: 180, height: 70 },
+  // S4:测试图节点尺寸(feature 同档,布局兼容)
+  'test-suite': { width: 160, height: 60 },
+  'test-case': { width: 160, height: 60 },
 }
 
 // ============================================

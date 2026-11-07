@@ -92,6 +92,8 @@ const NODE_TYPE_KEYS: Record<NodeType, TranslationKey> = {
   feature: 'nodeType.feature',
   bug: 'nodeType.bug',
   'wiki-page': 'nodeType.wikiPage',
+  'test-suite': 'nodeType.testSuite',
+  'test-case': 'nodeType.testCase',
 }
 
 const NODE_STATUS_KEYS: Record<NodeStatus, TranslationKey> = {
@@ -135,6 +137,7 @@ const BUG_STATUS_KEYS: Record<BugStatus, TranslationKey> = {
 const GRAPH_TYPE_KEYS: Record<GraphType, TranslationKey> = {
   online: 'graph.type.online',
   dev: 'graph.type.dev',
+  test: 'graph.type.test',
 }
 
 /**
@@ -142,7 +145,7 @@ const GRAPH_TYPE_KEYS: Record<GraphType, TranslationKey> = {
  * 'wiki-link' 由 WikiLinkService 自动落边，'hierarchical' 是 parent_id 的存储层镜像，
  * 两者都不出现在手建边选项里。
  */
-type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical'>
+type HandBuiltEdgeType = Exclude<EdgeType, 'wiki-link' | 'hierarchical' | 'verifies' | 'covers'>
 
 const EDGE_TYPE_KEYS: Record<HandBuiltEdgeType, TranslationKey> = {
   default: 'edge.default.label',
@@ -215,6 +218,8 @@ export function edgeTypeOptions(locale: Locale = getLocale()): { type: EdgeType;
 export function edgeTypeLabel(type: EdgeType, locale: Locale = getLocale()): string {
   if (type === 'wiki-link') return tIn(locale, 'edge.wikiLink.label')
   if (type === 'hierarchical') return tIn(locale, 'edge.hierarchical.label')
+  // S4:verifies/covers 由测试资产创建流程落边,不在手建边选项——标签直用类型名
+  if (type === 'verifies' || type === 'covers') return type
   const key = EDGE_TYPE_KEYS[type]
   return key ? tIn(locale, key) : type
 }
