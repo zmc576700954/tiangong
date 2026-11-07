@@ -13,7 +13,8 @@
  * - 路由只写 pinned adapter（policy='manual_override'），不补 Tier 能力探测——这是对
  *   §5.9.10 的明确偏离，不得在文档里记为"已实现"。
  * - 不接 IPC：本文件不注册任何外部入口，只提供可被后续里程碑装配的执行器。
- * - `work_steps` 无 failure_class / skip_reason 列：失败分类一律写 `work_runs.failure_class`。
+ * - v34：失败分类同时写 `work_runs.failure_class` 与 `work_steps.failure_class`（同值域）；
+ *   step 级失败不再只能跨表查最近 run。
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
@@ -310,7 +311,7 @@ export class AgentStepRunner {
       status: 'failed',
       failureClass,
       run: (id) => this.runs.fail(id, { failureClass, resultSummary: outcome.errorCode }),
-      step: (id) => this.steps.fail(id, { status: 'failed' }),
+      step: (id) => this.steps.fail(id, { status: 'failed', failureClass }),
       sessionId,
       turnStatus: outcome.status,
     })
@@ -327,7 +328,7 @@ export class AgentStepRunner {
       failureClass: 'timeout',
       reason,
       run: (id) => this.runs.timeout(id),
-      step: (id) => this.steps.fail(id, { status: 'timed_out' }),
+      step: (id) => this.steps.fail(id, { status: 'timed_out', failureClass: 'timeout' }),
       sessionId,
       turnStatus,
     })
@@ -344,7 +345,7 @@ export class AgentStepRunner {
       failureClass,
       reason,
       run: (id) => this.runs.fail(id, { failureClass, resultSummary: reason }),
-      step: (id) => this.steps.fail(id, { status: 'failed' }),
+      step: (id) => this.steps.fail(id, { status: 'failed', failureClass }),
       sessionId,
     })
   }

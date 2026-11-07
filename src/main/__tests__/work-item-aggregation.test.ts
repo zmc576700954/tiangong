@@ -68,7 +68,7 @@ describe('work_item 终态聚合（M4）', () => {
   }
 
   function fail(c: ClaimedStep, status: 'failed' | 'timed_out' = 'failed'): void {
-    steps.fail(c.step.id, { status })
+    steps.fail(c.step.id, { status, failureClass: status === 'timed_out' ? 'timeout' : 'turn_fail' })
     if (status === 'timed_out') runs.timeout(c.run.id)
     else runs.fail(c.run.id, { failureClass: 'turn_fail' })
   }
@@ -98,7 +98,7 @@ describe('work_item 终态聚合（M4）', () => {
     const itemId = confirmedItem({ steps: [{ title: 'a' }] })
     const [a] = steps.listByItem(itemId, 1)
     expect(items.get(itemId)!.status).toBe('queued')
-    steps.skip(a.id)
+    steps.skip(a.id, 'optional_not_required')
 
     expect(scheduler.claimNext({ projectPath: '/p/a' })).toBeNull()
     expect(items.get(itemId)!.status).toBe('done')
@@ -131,13 +131,14 @@ describe('work_item 终态聚合（M4）', () => {
     expect(items.get(itemId)!.status).toBe('cancelled')
   })
 
-  it('成功 + 取消混合（无失败）→ item cancelled（§5.5.1 partial_cancel 口径）', () => {
+  it('成功 + 取消混合（无失败）→ item cancelled 且 cancel_reason=partial_cancel（§5.5.1）', () => {
     const itemId = confirmedItem()
     succeed(claim())
     cancel(claim())
 
     expect(scheduler.claimNext({ projectPath: '/p/a' })).toBeNull()
     expect(items.get(itemId)!.status).toBe('cancelled')
+    expect(items.get(itemId)!.cancel_reason).toBe('partial_cancel')
   })
 
   it('失败 + 取消混合 → item failed（失败优先于取消）', () => {
@@ -158,6 +159,8 @@ describe('work_item 终态聚合（M4）', () => {
     expect(scheduler.claimNext({ projectPath: '/p/a' })).toBeNull()
     const list = steps.listByItem(itemId, 1)
     expect(list[1].status).toBe('failed')
+    // 被上游连带判负：failure_class 标出阻断来源（人工跳过走 skip_reason，互不混淆）。
+    expect(list[1].failure_class).toBe('blocked_by_dependency')
     expect(items.get(itemId)!.status).toBe('failed')
   })
 
@@ -172,6 +175,8 @@ describe('work_item 终态聚合（M4）', () => {
     const list = steps.listByItem(itemId, 1)
     expect(list[1].status).toBe('failed')
     expect(list[2].status).toBe('failed')
+    expect(list[1].failure_class).toBe('blocked_by_dependency')
+    expect(list[2].failure_class).toBe('blocked_by_dependency')
     expect(items.get(itemId)!.status).toBe('failed')
   })
 
@@ -207,7 +212,7 @@ describe('work_item 终态聚合（M4）', () => {
     const allTerminal = confirmedItem({ title: 'old', steps: [{ title: 'old-a' }] })
     db.prepare('UPDATE work_items SET created_at = ? WHERE id = ?').run(Date.now() - 10_000, allTerminal)
     const oldStep = steps.listByItem(allTerminal, 1)[0]
-    steps.skip(oldStep.id)
+    steps.skip(oldStep.id, 'human')
 
     const runnable = confirmedItem({ title: 'new', steps: [{ title: 'new-a' }] })
 

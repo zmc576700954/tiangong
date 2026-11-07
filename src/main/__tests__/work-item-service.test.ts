@@ -130,7 +130,9 @@ describe('WorkItemService（§4.7.2 状态机）', () => {
   })
 
   it('取消:draft 且无 running run 可取消;draft+running run 拒绝(守卫)', () => {
-    expect(svc.cancel(itemId).status).toBe('cancelled')
+    const cancelled = svc.cancel(itemId)
+    expect(cancelled.status).toBe('cancelled')
+    expect(cancelled.cancel_reason).toBe('user')
   })
 
   it('修订(§4.7.3):新 revision 复制 steps 为 pending,旧行 superseded;running run 拒绝修订', () => {

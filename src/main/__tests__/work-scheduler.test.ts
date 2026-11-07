@@ -92,7 +92,7 @@ describe('WorkScheduler（claimNext + startStep）', () => {
       JSON.stringify([a.id]),
       b.id,
     )
-    steps.skip(a.id)
+    steps.skip(a.id, 'optional_not_required')
     expect(scheduler.claimNext({ projectPath: '/p/a' })!.step.id).toBe(b.id)
 
     const other = confirmedItem({ steps: [{ title: 'c' }, { title: 'd' }] })
@@ -102,7 +102,7 @@ describe('WorkScheduler（claimNext + startStep）', () => {
       d.id,
     )
     steps.start(c.id)
-    steps.fail(c.id, { status: 'failed' })
+    steps.fail(c.id, { status: 'failed', failureClass: 'turn_fail' })
     expect(scheduler.claimNext({ projectPath: '/p/a' })).toBeNull()
   })
 

@@ -5,11 +5,14 @@
  * - 只写 work_steps 一行，不驱动 Agent、不建 run（run 由 WorkRunService 负责）；
  * - 所有迁移一律条件更新；终态不可回退，重试是新 attempt；
  * - 步终态的写入时机由执行器保证（会话 terminate 之后），本服务不做时序假设；
- * - work_steps 无 failure_class 列，失败分类落在 work_runs.failure_class。
+ * - v34 起 work_steps 有失败/跳过归因列：失败分类本服务与 work_runs 同值域写入，
+ *   级联阻断另立 `blocked_by_dependency`，与人工跳过（skip_reason）可区分。
  */
 
 import type BetterSqlite3 from 'better-sqlite3'
-import type { WorkStepRow } from './work-item-service'
+import type { StepFailureClass, StepSkipReason, WorkStepRow } from './work-item-service'
+
+export type { StepFailureClass, StepSkipReason } from './work-item-service'
 
 export type WorkStepStatus = WorkStepRow['status']
 
@@ -150,35 +153,45 @@ export class WorkStepService {
     return txn()
   }
 
-  /** running → failed | timed_out（§4.7.4 第 11/13 行）。失败分类写 work_runs。 */
-  fail(stepId: string, outcome: { status: 'failed' | 'timed_out' }): WorkStepRow {
+  /**
+   * running → failed | timed_out（§4.7.4 第 11/13 行）。
+   * v34：失败分类同时写本行 failure_class（run 级仍由 WorkRunService 写 work_runs），
+   * 这样「步为什么失败」不必再跨表 join 最近一次 run。
+   */
+  fail(
+    stepId: string,
+    outcome: { status: 'failed' | 'timed_out'; failureClass: StepFailureClass },
+  ): WorkStepRow {
     const now = Date.now()
     const result = this.db
       .prepare(
-        `UPDATE work_steps SET status = ?, ended_at = ?, updated_at = ?
+        `UPDATE work_steps SET status = ?, failure_class = ?, ended_at = ?, updated_at = ?
           WHERE id = ? AND status = 'running'`,
       )
-      .run(outcome.status, now, now, stepId)
+      .run(outcome.status, outcome.failureClass, now, now, stepId)
     return this.confirmed(stepId, result.changes, `running → ${outcome.status}`)
   }
 
   /**
-   * 依赖阻断：未开始的步（planning/pending）→ failed。
+   * 依赖阻断：未开始的步（planning/pending）→ failed + failure_class='blocked_by_dependency'。
    *
-   * 为什么不是 skipped：M2 的依赖语义是 `DEP_SATISFIED = {succeeded, skipped}`，
-   * skipped 会被下游当成"依赖已满足"，级联无法沿依赖链继续传递；且 schema 无
-   * skip_reason 列，无法区分人工跳过与阻断跳过。failed 既能传递阻断，也能让 §5.5.1
-   * 聚合把 item 落到 failed（被连带判负）。
+   * v34 之后仍不改成 skipped：虽然 skip_reason / failure_class 已能区分「人工跳过」
+   * 与「被上游连带判负」，但 M2 的依赖语义是 `DEP_SATISFIED = {succeeded, skipped}`，
+   * skipped 会被下游当成"依赖已满足"，级联无法沿依赖链继续传递；§5.5.1 聚合还会把
+   * 全 skipped 的 item 收敛为 done，掩盖上游失败。改回 skipped 需要同时改依赖放行
+   * 与聚合两处语义，属于行为变更；本轮只加归因列，用 failure_class 表达阻断来源，
+   * 状态仍保持 failed（fail-closed）。
    *
-   * 本方法不建 work_run，也不写 failure_class（列只在 work_runs 上）——只表达
-   * "该步从未执行、因上游失败而不可达"。条件更新只命中 planning|pending：
-   * running / waiting_approval / review / needs_input / paused 视为已开始，绝不异地改。
+   * 本方法不建 work_run——只表达"该步从未执行、因上游失败而不可达"。
+   * 条件更新只命中 planning|pending：running / waiting_approval / review /
+   * needs_input / paused 视为已开始，绝不异地改。
    */
   failUnstarted(stepId: string): WorkStepRow | undefined {
     const now = Date.now()
     const result = this.db
       .prepare(
-        `UPDATE work_steps SET status = 'failed', ended_at = ?, updated_at = ?
+        `UPDATE work_steps SET status = 'failed', failure_class = 'blocked_by_dependency',
+           ended_at = ?, updated_at = ?
           WHERE id = ? AND status IN ('planning','pending')`,
       )
       .run(now, now, stepId)
@@ -223,14 +236,17 @@ export class WorkStepService {
   }
 
   /**
-   * pending → skipped（可选步条件不满足）。schema 无 skip_reason 列，
-   * 原因由调用方事件承载；不得写 succeeded 伪装（§4.7.4 第 18 行）。
+   * pending → skipped（可选步条件不满足 / 人工跳过）。不得写 succeeded 伪装
+   * （§4.7.4 第 18 行）。v34：原因落 skip_reason，与级联阻断的 failure_class 区分。
    */
-  skip(stepId: string): WorkStepRow {
+  skip(stepId: string, reason: StepSkipReason): WorkStepRow {
     const now = Date.now()
     const result = this.db
-      .prepare("UPDATE work_steps SET status = 'skipped', ended_at = ?, updated_at = ? WHERE id = ? AND status = 'pending'")
-      .run(now, now, stepId)
+      .prepare(
+        `UPDATE work_steps SET status = 'skipped', skip_reason = ?, ended_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'pending'`,
+      )
+      .run(reason, now, now, stepId)
     return this.confirmed(stepId, result.changes, "pending → skipped")
   }
 

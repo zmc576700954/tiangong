@@ -14,6 +14,7 @@ import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
 import { WorkStepService, isTerminalStepStatus } from './work-step-service'
+import type { FailureClass } from './work-run-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
 
 const logger = createLogger('WorkItemService')
@@ -24,6 +25,13 @@ export type WorkItemStatus =
   | 'done' | 'failed' | 'cancelled' | 'superseded'
 
 export const WORK_ITEM_TERMINAL: readonly WorkItemStatus[] = ['done', 'failed', 'cancelled', 'superseded']
+
+/**
+ * work_items.cancel_reason（v34）：cancelled 的归因。
+ * - `user`：人工取消（UI cancel / needs_human 裁决 cancel）；
+ * - `partial_cancel`：终态聚合出的取消——无失败、至少一步被取消（§5.5.1）。
+ */
+export type WorkItemCancelReason = 'user' | 'partial_cancel'
 
 /** 可被用户取消/被 superseded 的非终态集合（§4.7.2 取消与完成竞态）。 */
 const CANCELLABLE: readonly WorkItemStatus[] = ['queued', 'running', 'needs_input', 'needs_human', 'paused', 'interrupted']
@@ -49,6 +57,7 @@ export interface WorkItemRow {
   acceptance_json: string
   verification_hint: string | null
   status: WorkItemStatus
+  cancel_reason: WorkItemCancelReason | null
   gate_status: GateStatus
   gate_missing_json: string | null
   gate_waived_by: string | null
@@ -63,6 +72,13 @@ export interface WorkItemRow {
   updated_at: string
   archived_at: string | null
 }
+
+/**
+ * work_steps.failure_class（v34）：与 work_runs 同值域，另加「被上游连带判负」。
+ * work_steps.skip_reason（v34）：人工跳过与条件不满足必须可区分。
+ */
+export type StepFailureClass = FailureClass | 'blocked_by_dependency'
+export type StepSkipReason = 'condition_unmet' | 'optional_not_required' | 'human'
 
 export interface WorkStepRow {
   id: string
@@ -84,6 +100,8 @@ export interface WorkStepRow {
     | 'planning' | 'pending' | 'waiting_approval' | 'running' | 'review'
     | 'needs_input' | 'paused' | 'succeeded' | 'failed' | 'timed_out'
     | 'cancelled' | 'skipped'
+  skip_reason: StepSkipReason | null
+  failure_class: StepFailureClass | null
   started_at: number | null
   ended_at: number | null
   created_at: number
@@ -247,13 +265,19 @@ export class WorkItemService {
   // 状态迁移（条件更新,changes!==1 → CONFLICT）
   // ---------------------------------------------------------
 
-  private transition(id: string, from: readonly WorkItemStatus[], to: WorkItemStatus): WorkItemRow {
+  private transition(
+    id: string,
+    from: readonly WorkItemStatus[],
+    to: WorkItemStatus,
+    cancelReason: WorkItemCancelReason | null = null,
+  ): WorkItemRow {
     const placeholders = from.map(() => '?').join(',')
     const result = this.db
       .prepare(
-        `UPDATE work_items SET status = ?, updated_at = ? WHERE id = ? AND status IN (${placeholders})`,
+        `UPDATE work_items SET status = ?, cancel_reason = ?, updated_at = ?
+          WHERE id = ? AND status IN (${placeholders})`,
       )
-      .run(to, this.now(), id, ...from)
+      .run(to, cancelReason, this.now(), id, ...from)
     if (result.changes !== 1) {
       const current = this.get(id)?.status ?? '<missing>'
       throw new WorkItemConflictError(`work_item ${id}: ${current} → ${to} 不合法（条件更新未命中,CONFLICT）`)
@@ -344,8 +368,8 @@ export class WorkItemService {
    * - 无失败且有 cancelled → cancelled
    * - 全部 succeeded/skipped → done
    *
-   * 注意：`work_items` 没有 reason 列，§5.5.1 的 `partial_cancel` 只能记日志，
-   * 不能落库；本轮不加列（不加 v34）。
+   * v34：收敛为 cancelled 时写 `cancel_reason='partial_cancel'`（无失败、至少一步被
+   * 取消），与人工 cancel() 写入的 `user` 区分；失败/完成路径写 NULL。
    */
   convergeIfTerminal(id: string): WorkItemRow | undefined {
     const item = this.get(id)
@@ -359,19 +383,21 @@ export class WorkItemService {
     const hasFailure = steps.some((s) => s.status === 'failed' || s.status === 'timed_out')
     const hasCancelled = steps.some((s) => s.status === 'cancelled')
     const target: WorkItemStatus = hasFailure ? 'failed' : hasCancelled ? 'cancelled' : 'done'
+    // target=cancelled 当且仅当「无失败且有取消」——即 §5.5.1 的 partial_cancel。
+    const cancelReason: WorkItemCancelReason | null = target === 'cancelled' ? 'partial_cancel' : null
 
     const result = this.db
       .prepare(
-        `UPDATE work_items SET status = ?, updated_at = ?
+        `UPDATE work_items SET status = ?, cancel_reason = ?, updated_at = ?
           WHERE id = ? AND is_current = 1 AND status IN ('queued','running')`,
       )
-      .run(target, this.now(), id)
+      .run(target, cancelReason, this.now(), id)
     if (result.changes !== 1) return undefined
 
     if (hasFailure && hasCancelled) {
       logger.info(`work_item ${id}: 混合失败与取消 → failed（§5.5.1 失败优先）`)
     } else if (hasCancelled) {
-      logger.info(`work_item ${id}: 部分取消 → cancelled（reason=partial_cancel，无列可落）`)
+      logger.info(`work_item ${id}: 部分取消 → cancelled（cancel_reason=partial_cancel）`)
     }
     logger.info(`work_item ${id}: 全部步终态 → ${target}`)
     scheduleRecomputeForWorkItem(this.db, id)
@@ -407,7 +433,7 @@ export class WorkItemService {
   resolveHuman(id: string, decision: 'release' | 'cancel'): WorkItemRow {
     return decision === 'release'
       ? this.transition(id, ['needs_human'], 'queued')
-      : this.transition(id, ['needs_human'], 'cancelled')
+      : this.transition(id, ['needs_human'], 'cancelled', 'user')
   }
 
   /** running → paused（基础设施暂停;原因由调用方事件/日志承载,§4.7.2）。 */
@@ -440,7 +466,7 @@ export class WorkItemService {
         throw new WorkItemGuardError('存在 running run,取消被拒（§4.7.2 取消守卫）')
       }
     }
-    return this.transition(id, [...CANCELLABLE, 'draft', 'awaiting_confirm', 'blocked'], 'cancelled')
+    return this.transition(id, [...CANCELLABLE, 'draft', 'awaiting_confirm', 'blocked'], 'cancelled', 'user')
   }
 
   // ---------------------------------------------------------

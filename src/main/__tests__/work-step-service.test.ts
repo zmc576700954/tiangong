@@ -130,13 +130,16 @@ describe('WorkStepService（§4.7.4 状态迁移）', () => {
       items.setGateResult(id, 'pass')
       items.confirm(id)
       steps.start(sid)
-      expect(steps.fail(sid, { status: target }).status).toBe(target)
+      const failureClass = target === 'timed_out' ? 'timeout' : 'turn_fail'
+      expect(steps.fail(sid, { status: target, failureClass }).status).toBe(target)
+      expect(steps.get(sid)!.failure_class).toBe(failureClass)
     }
   })
 
   it('pending → skipped；任一非终态 → cancelled；终态取消返回 CONFLICT', () => {
     confirmItem()
-    expect(steps.skip(stepId).status).toBe('skipped')
+    expect(steps.skip(stepId, 'human').status).toBe('skipped')
+    expect(steps.get(stepId)!.skip_reason).toBe('human')
     expect(() => steps.cancel(stepId)).toThrow(WorkStepConflictError)
 
     const other = items.createDraft({ graphId: 'g1', title: '可取消任务' }).id

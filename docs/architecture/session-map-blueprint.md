@@ -1546,7 +1546,7 @@ interface StepResult {
 | 项 | 状态 | 说明 |
 |---|---|---|
 | 驱动真实 Agent turn 并落 run/step 终态（`completed` / `failed` / `cancelled` / `timeout`） | 已实施 | `src/main/map/agent-step-runner.ts`；终态写入在会话 terminate 之后、同一事务内条件更新 |
-| `failureClass → work_runs.failure_class` | 已实施 | `agent_turns.failure_class` 经 `TurnOutcome.failureClass` 透出；`work_steps` 不加列，本轮不适用步级分类 |
+| `failureClass → work_runs.failure_class` | 已实施 | `agent_turns.failure_class` 经 `TurnOutcome.failureClass` 透出；v34 起同步写 `work_steps.failure_class`（同值域），步级失败不再只能 join 最近 run |
 | deadline 路径 | 已实施 | `work_runs.deadline_at`（绝对）→ `AgentCommand.deadlineMs`（相对）；开跑前已过期直接 `timed_out`，不启动会话 |
 | `needs_input` 回写 | **未实施** | `TurnOutcome` 无该信号，且明确不解析 `finalText` 中的 `INPUT_REQUIRED`；`work_steps.input_request_json` 保持 NULL，待结构化输出契约落地 |
 | `outputs` / `outputParse` / `partial` / `usage` / 文件变更 | **未实施** | 属证据与结构化输出里程碑，本轮不写，不伪造空对象 |
@@ -1554,9 +1554,9 @@ interface StepResult {
 | IPC / 外部触发入口 | 未接 | 执行器无可达入口，保持不可达 |
 | kernel-only 发送契约 | 已实施 | `AgentManager.sendCommandKernelOnly`：runtime 缺失/执行器不在白名单/节点未挂载/driver 缺失一律抛错，不回落 legacy |
 | item 级终态聚合（当前 revision 的步级） | 已实施 | `WorkItemService.convergeIfTerminal` + `WorkScheduler.claimNext`：无就绪步且全部步终态时收敛；仍有非终态步则等待。≥1 failed/timed_out → failed；否则有 cancelled → cancelled；全 succeeded/skipped → done |
-| 依赖阻断级联 | 已实施 | `WorkStepService.blockUnstartedDependents`：上游 failed/timed_out/cancelled → 下游未开始步（仅 planning/pending）置 **failed**，沿依赖链 fixpoint 传递。选 failed 而非 skipped：M2 依赖语义 `DEP_SATISFIED={succeeded,skipped}` 会把 skipped 当满足，级联无法传递；且无 `skip_reason` 列无法区分人工跳过。running/waiting_approval/review/needs_input/paused 一律不改 |
+| 依赖阻断级联 | 已实施 | `WorkStepService.blockUnstartedDependents`：上游 failed/timed_out/cancelled → 下游未开始步（仅 planning/pending）置 **failed + failure_class='blocked_by_dependency'**，沿依赖链 fixpoint 传递。v34 后已能区分人工跳过（`skip_reason`）与连带判负（`failure_class`），但仍不改回 skipped：`DEP_SATISFIED={succeeded,skipped}` 会把 skipped 当满足、聚合还会把全 skipped 收敛为 done，两处语义都得改才算等价。running/waiting_approval/review/needs_input/paused 一律不改 |
 | 子 work_item（`parent_work_item_id`）聚合 | **未实施** | 仅聚合单个 item 的 steps，不跨父子 item；多级聚合留待后续里程碑 |
-| `partial_cancel` 取消原因落库 | **未实施** | `work_items` 无 reason 列；混合成功/取消收敛为 cancelled，原因只记日志，不加 v34 |
+| `partial_cancel` 取消原因落库 | 已实施（v34） | `work_items.cancel_reason`：聚合收敛为 cancelled 时写 `partial_cancel`；人工 `cancel()` / `resolveHuman(cancel)` 写 `user` |
 
 
 ---
@@ -2082,6 +2082,7 @@ CREATE TABLE work_items (
     'draft','awaiting_confirm','queued','running','blocked',
     'needs_input','needs_human','paused','interrupted',
     'done','failed','cancelled','superseded')),
+  cancel_reason        TEXT,                          -- v34: user | partial_cancel
   gate_status          TEXT NOT NULL DEFAULT 'incomplete'
                        CHECK(gate_status IN ('incomplete','pass','waived')),
   gate_missing_json    TEXT,
@@ -2128,6 +2129,8 @@ CREATE TABLE work_steps (
     'planning','pending','waiting_approval','running','review',
     'needs_input','paused','succeeded','failed','timed_out',
     'cancelled','skipped')),
+  skip_reason          TEXT,              -- v34: condition_unmet | optional_not_required | human
+  failure_class        TEXT,              -- v34: work_runs 同值域 + blocked_by_dependency
   started_at           INTEGER,
   ended_at             INTEGER,
   created_at           INTEGER NOT NULL,
@@ -2141,6 +2144,7 @@ CREATE INDEX idx_work_steps_status ON work_steps(status);
 
 - 编排步专属字段只在此表；`work_items` 不复制这些列。
 - S5 建表时一次写死全部 `status` 值，避免后续重建。
+- v34 的 `skip_reason` / `failure_class` / `cancel_reason` 是**纯加列**：写在 `createSql` 但不进 `requiredColumns`，存量库由 `runIncrementalMigrations` 用 `ALTER TABLE ADD COLUMN` 补齐，不触发表重建。
 
 #### `work_runs`
 
@@ -2599,7 +2603,7 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 
 **状态：已实施（`database.ts` `migrate()`，2026-11-07 复核 HEAD）。**
 
-- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 33）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
+- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 34）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
 - 动机：旧代码的慢路径会用当前版本的 `createSql` 重建表，`restoreFromBackup` 只恢复**共有列**，新版本写入的列/约束会被静默丢弃，随后 `schema_version` 被回写成更低版本——不可逆退化。v33 的 CHECK 曾因 `test` 行恢复失败偶然挡住，不能作为防线。
 - 不做启动期自动"降级"：降级不是默认行为；如确需把更高版本的库交给旧版本使用，必须人工恢复备份并留下可查询记录（本版本不提供降级入口）。
 - 结构检测维度（2026-11-07，`rebuildTableIfNeeded` + `reconcileSchemaIndexes`）：慢路径重建判定比较列集合/类型/CHECK/**内联 UNIQUE**；独立 `CREATE UNIQUE INDEX` 定义由索引对账比对，变化时先 `DROP INDEX` 再建。两类 UNIQUE 都进入 `schema-checksum`（内联随 `createSql`、独立随 `INDEX_SQLS`），因此**不升 `CURRENT_SCHEMA_VERSION` 也不会漏掉已有库**——任一 DDL 变化都会让 checksum 失配并强制走慢路径。
@@ -2607,6 +2611,7 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 - `node_links` 去重约束已带两端图：`UNIQUE(from_graph_id, to_graph_id, from_entity_key, to_entity_key, link_type)`（§7.2）；`entity_key` 跨图共享，旧的三列约束会让不同图组合的链接互相复用端点图信息。
 - 版本标记边界：`schema_version` 表是唯一权威的库结构版本；`PRAGMA user_version`（memory FTS 触发器版本，`memory-store.ts`）与 `yjs_snapshots.schema_version`（单图快照写入规则版本，`snapshot-store.ts`）是独立域，不参与本守卫，也不会被 `migrate()` 回写。
 - `schema-checksum.json` 是同一版本域的缓存标记：其记录版本高于代码上限时同样触发 `DB_SCHEMA_TOO_NEW`（否则快路径失配会进入按旧 `createSql` 重建的慢路径）。库 `schema_version` 表仍是权威判定；处理不可信缓存属于显式动作。
+- v34 取证边界：v34 只对 `work_items` / `work_steps` 做 `ALTER TABLE ADD COLUMN`，**不重建任何表**，因此不进入 S4（`graphs/nodes/edges` 重建前后基线）的取证范围；S4 基线也只在 `currentVersion < 33` 时拍摄。v34 的「新列存在 + 旧行不丢 + 无 `work_*_backup` 残留」由 `database-migration.test.ts` 的 v33→v34 用例直接断言。
 
 ### 8.3 S1：身份（`entity_key` + 导入期查重）
 
