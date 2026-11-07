@@ -54,7 +54,7 @@ import { buildLegacyApprovalHooks, supportsHostApproval } from './runtime/approv
 import { type OutputBroadcaster } from './output-broadcaster'
 import { AdapterHealthMonitor, type AdapterHealthScore } from './adapter-health-monitor'
 import { AdapterError, AgentError, SessionNotFoundError, SessionRestoreError, ErrorCode } from '../errors'
-import { getClient } from '../database'
+import { getClient, isDatabaseOpen } from '../database'
 import { getSessionRecoveryManager } from './session-recovery'
 import type { SessionRecoveryManager } from './session-recovery'
 import type { ContextResolver } from '../context-resolver'
@@ -729,6 +729,7 @@ export class AgentManager {
       // P1-2：cancelling 收敛（driver.cancel 卡住超过 cancelTimeoutMs）
       listOverdueCancellingTurns: (now) => this.runtime!.listOverdueCancellingTurns(now),
       convergeCancellingTurn: (turnId) => this.runtime!.convergeCancellingTurn(turnId),
+      isStorageOpen: isDatabaseOpen,
     })
     reaper.start()
     this.deadlineReaper = reaper
@@ -1724,6 +1725,10 @@ export class AgentManager {
   }
 
   destroy(): void {
+    // 先停 DeadlineReaper：它每秒级扫库，必须在 closeDatabase 之前停掉，
+    // 否则 quit 清理阶段的残留 tick 会触达已关闭连接（database connection is not open）。
+    this.stopDeadlineReaper()
+
     // Stop health check + cleanup timers
     this.housekeeper.stop()
 

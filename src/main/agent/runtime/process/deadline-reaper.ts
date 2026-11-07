@@ -50,6 +50,11 @@ export interface DeadlineReaperDeps {
    * 返回 false 表示已被原取消路径/终态抢先，不重复写。
    */
   convergeCancellingTurn: (turnId: string) => Promise<boolean>
+  /**
+   * 关闭期兜底：DB 已关闭时返回 false。定时器在 quit 清理阶段可能仍会触发一轮，
+   * 此时不得再触达已关闭的连接（否则报 "database connection is not open"）。
+   */
+  isStorageOpen?: () => boolean
 }
 
 export class DeadlineReaper {
@@ -87,6 +92,8 @@ export class DeadlineReaper {
    * turn id 列表；被抢先/去重跳过的不在其中。公开以便单测直接驱动。
    */
   async sweep(now = Date.now()): Promise<string[]> {
+    // 关闭期兜底：quit 清理已 closeDatabase 后,残留 tick 不得再触达已关连接。
+    if (this.deps.isStorageOpen?.() === false) return []
     // 重入保护：上一轮 sweep 尚未结束时，本轮 tick 直接跳过（in-flight turn
     // 已被去重集合覆盖，这里防的是 sweep 级别的堆叠）。
     if (this.sweeping) return []

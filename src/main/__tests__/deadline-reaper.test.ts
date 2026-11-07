@@ -199,4 +199,25 @@ describe('DeadlineReaper', () => {
     expect(deps.listExpiredRunningTurns).toHaveBeenCalledTimes(1)
     reaper.stop()
   })
+
+  it('存储已关闭时 sweep 直接跳过，不触达 repo（关闭期兜底）', async () => {
+    const { deps, setExpired } = createDeps()
+    deps.isStorageOpen = vi.fn(() => false)
+    setExpired([{ id: 't1', session_id: 's1' }])
+    const reaper = new DeadlineReaper(deps, 5000)
+
+    expect(await reaper.sweep(1_700_000_000_000)).toEqual([])
+    expect(deps.listExpiredRunningTurns).not.toHaveBeenCalled()
+    expect(deps.listOverdueCancellingTurns).not.toHaveBeenCalled()
+  })
+
+  it('stop 后定时器不再触发 sweep', async () => {
+    const { deps } = createDeps()
+    const reaper = new DeadlineReaper(deps, 5000)
+    reaper.start()
+    reaper.stop()
+
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(deps.listExpiredRunningTurns).not.toHaveBeenCalled()
+  })
 })

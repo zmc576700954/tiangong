@@ -170,6 +170,11 @@ export function getClient(): BetterSqlite3.Database {
   return db
 }
 
+/** 关闭期兜底：DB 已 close 后,定时任务不得再触达连接。 */
+export function isDatabaseOpen(): boolean {
+  return db?.open === true
+}
+
 /**
  * Restore data from a backup table, handling enum value migrations
  */
@@ -1085,6 +1090,8 @@ function migrate(): void {
     // S4（§8.6）：v32→33 的 CHECK 值域扩展会重建 graphs/edges/nodes——
     // 重建前拍基线（行数/entity_key/writeback_disabled/共有列内容哈希）,
     // 重建后逐项校验,失配即整体回滚+启动阻断。
+    // 取证边界必须止于「重建」本身：后续 runIncrementalMigrations 会**合法改写/新增**
+    // 数据（如 v16→v17 插入层级边、default 改 hierarchical）,纳入比对标尺会误报。
     const s4Baseline = currentVersion < 33 ? captureS4Baseline(db) : null
 
     // 慢路径（版本落后 **或** checksum 失配）一律尝试重建。
@@ -1096,6 +1103,11 @@ function migrate(): void {
       rebuildTableIfNeeded(db, schema.name, schema.createSql, schema.requiredColumns)
     }
 
+    // S4 重建后校验——紧跟重建循环,先于增量迁移（失配抛错 → SAVEPOINT 整体回滚 → 启动阻断）
+    if (s4Baseline) {
+      verifyS4PostRebuild(db, s4Baseline)
+    }
+
     // 增量补列必须先于索引创建：Phase D9 的表达式索引依赖
     // chat_threads.metadata（由 addColumnSafe 补齐），老库上先建索引会因列不存在而失败。
     runIncrementalMigrations(db, currentVersion)
@@ -1103,11 +1115,6 @@ function migrate(): void {
     // Create indexes idempotently (cheap even when up-to-date).
     for (const sql of INDEX_SQLS) {
       db.exec(sql)
-    }
-
-    // S4 重建后校验（§8.6 逐项）——失配抛错 → SAVEPOINT 整体回滚 → 启动阻断
-    if (s4Baseline) {
-      verifyS4PostRebuild(db, s4Baseline)
     }
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
