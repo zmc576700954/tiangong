@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
-import { WorkStepService } from './work-step-service'
+import { WorkStepService, isTerminalStepStatus } from './work-step-service'
 
 const logger = createLogger('WorkItemService')
 
@@ -325,6 +325,49 @@ export class WorkItemService {
   /** running → failed（≥1 叶子失败且全部叶子终态）。 */
   fail(id: string): WorkItemRow {
     return this.transition(id, ['running'], 'failed')
+  }
+
+  /**
+   * 父任务终态聚合（§5.5.1 / §4.7.2 行 923-924）。
+   *
+   * 只在**当前 revision 的所有步都进入终态**时收敛；返回 undefined 表示"还该等"
+   * （存在 pending/running/waiting_approval/planning/review/needs_input/paused 等非终态步），
+   * 或者并发下已被别人收敛/置终态。规则：
+   * - ≥1 failed/timed_out → failed（优先级最高，混合 succeeded+cancelled 也落 failed）
+   * - 无失败且有 cancelled → cancelled
+   * - 全部 succeeded/skipped → done
+   *
+   * 注意：`work_items` 没有 reason 列，§5.5.1 的 `partial_cancel` 只能记日志，
+   * 不能落库；本轮不加列（不加 v34）。
+   */
+  convergeIfTerminal(id: string): WorkItemRow | undefined {
+    const item = this.get(id)
+    if (!item || item.is_current !== 1) return undefined
+    if (item.status !== 'queued' && item.status !== 'running') return undefined
+    const steps = this.listSteps(id, item.revision)
+    // 零步任务无法证明"完成"：保持等待，不伪造 done。
+    if (steps.length === 0) return undefined
+    if (steps.some((s) => !isTerminalStepStatus(s.status))) return undefined
+
+    const hasFailure = steps.some((s) => s.status === 'failed' || s.status === 'timed_out')
+    const hasCancelled = steps.some((s) => s.status === 'cancelled')
+    const target: WorkItemStatus = hasFailure ? 'failed' : hasCancelled ? 'cancelled' : 'done'
+
+    const result = this.db
+      .prepare(
+        `UPDATE work_items SET status = ?, updated_at = ?
+          WHERE id = ? AND is_current = 1 AND status IN ('queued','running')`,
+      )
+      .run(target, this.now(), id)
+    if (result.changes !== 1) return undefined
+
+    if (hasFailure && hasCancelled) {
+      logger.info(`work_item ${id}: 混合失败与取消 → failed（§5.5.1 失败优先）`)
+    } else if (hasCancelled) {
+      logger.info(`work_item ${id}: 部分取消 → cancelled（reason=partial_cancel，无列可落）`)
+    }
+    logger.info(`work_item ${id}: 全部步终态 → ${target}`)
+    return this.get(id)
   }
 
   /** running → needs_input（写 work_steps.input_request_json 同事务,§4.7.2）。 */

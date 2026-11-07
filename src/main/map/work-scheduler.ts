@@ -57,7 +57,12 @@ export class WorkScheduler {
   }
 
   /**
-   * 领取下一个可运行步；没有可领的步时返回 null。
+   * 领取下一个可运行步。没有可领的步时按 §5.5.1 收敛 item，再返回 null。
+   *
+   * 两种"没有就绪步"必须区分：
+   * - 还有非终态步（依赖未满足 / 正在跑 / 等审批）：**等**，不改 item；
+   * - 当前 revision 所有步都已终态：聚合 item（≥1 failed→failed；有 cancelled→cancelled；
+   *   全 succeeded/skipped→done），并由 `WorkItemService.convergeIfTerminal` 做条件更新。
    *
    * 候选顺序：queued 优先于 running → item.created_at → seq。
    */
@@ -74,6 +79,9 @@ export class WorkScheduler {
       .all(opts.projectPath ?? null, opts.projectPath ?? null, opts.graphId ?? null, opts.graphId ?? null) as WorkItemRow[]
 
     for (const item of rows) {
+      // 上游失败/超时/取消后，先把依赖链上未开始的步级联置 failed（running 不受影响），
+      // 否则 item 会因下游永久 pending 而卡在 running、永不收敛。
+      this.steps.blockUnstartedDependents(item.id, item.revision)
       for (const step of this.steps.listByItem(item.id, item.revision)) {
         if (!this.isReady(item, step)) continue
         try {
@@ -84,6 +92,8 @@ export class WorkScheduler {
           throw error
         }
       }
+      // 该 item 没有就绪步：只有"全部步终态"才收敛；还有非终态步说明在等，保持不动。
+      this.items.convergeIfTerminal(item.id)
     }
     return null
   }

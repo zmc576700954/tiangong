@@ -163,6 +163,66 @@ export class WorkStepService {
   }
 
   /**
+   * 依赖阻断：未开始的步（planning/pending）→ failed。
+   *
+   * 为什么不是 skipped：M2 的依赖语义是 `DEP_SATISFIED = {succeeded, skipped}`，
+   * skipped 会被下游当成"依赖已满足"，级联无法沿依赖链继续传递；且 schema 无
+   * skip_reason 列，无法区分人工跳过与阻断跳过。failed 既能传递阻断，也能让 §5.5.1
+   * 聚合把 item 落到 failed（被连带判负）。
+   *
+   * 本方法不建 work_run，也不写 failure_class（列只在 work_runs 上）——只表达
+   * "该步从未执行、因上游失败而不可达"。条件更新只命中 planning|pending：
+   * running / waiting_approval / review / needs_input / paused 视为已开始，绝不异地改。
+   */
+  failUnstarted(stepId: string): WorkStepRow | undefined {
+    const now = Date.now()
+    const result = this.db
+      .prepare(
+        `UPDATE work_steps SET status = 'failed', ended_at = ?, updated_at = ?
+          WHERE id = ? AND status IN ('planning','pending')`,
+      )
+      .run(now, now, stepId)
+    if (result.changes !== 1) return undefined
+    return this.get(stepId)
+  }
+
+  /**
+   * 沿依赖链级联阻断：上游进入 failed/timed_out/cancelled 后，下游所有**未开始**的步
+   * 置 failed（fixpoint，多级传递）。已 running 的步不在条件更新范围内，不会被改写。
+   *
+   * 返回本轮实际阻断的 step id；空数组表示无可级联项。
+   */
+  blockUnstartedDependents(workItemId: string, revision: number): string[] {
+    const BLOCKING: ReadonlySet<WorkStepStatus> = new Set(['failed', 'timed_out', 'cancelled'])
+    const blocked: string[] = []
+    for (;;) {
+      const list = this.listByItem(workItemId, revision)
+      const byId = new Map(list.map((s) => [s.id, s]))
+      const candidates = list.filter((s) => s.status === 'planning' || s.status === 'pending')
+      const newly = candidates.filter((s) => {
+        let deps: string[]
+        try {
+          const parsed = JSON.parse(s.depends_on_step_ids_json ?? '[]') as unknown
+          deps = Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+        } catch {
+          // 依赖列损坏交给 startStep 的 DEPS_INVALID 守卫，不在级联里猜。
+          return false
+        }
+        return deps.some((id) => {
+          const dep = byId.get(id)
+          return dep !== undefined && BLOCKING.has(dep.status)
+        })
+      })
+      if (newly.length === 0) break
+      for (const s of newly) {
+        // 并发下已被启动 → 更新未命中，绝不改写 running。
+        if (this.failUnstarted(s.id)) blocked.push(s.id)
+      }
+    }
+    return blocked
+  }
+
+  /**
    * pending → skipped（可选步条件不满足）。schema 无 skip_reason 列，
    * 原因由调用方事件承载；不得写 succeeded 伪装（§4.7.4 第 18 行）。
    */

@@ -1538,6 +1538,7 @@ interface StepResult {
 | IPC / 外部触发入口 | 未接 | 执行器无可达入口，保持不可达 |
 | kernel-only 发送契约 | 已实施 | `AgentManager.sendCommandKernelOnly`：runtime 缺失/执行器不在白名单/节点未挂载/driver 缺失一律抛错，不回落 legacy |
 | item 级终态聚合（当前 revision 的步级） | 已实施 | `WorkItemService.convergeIfTerminal` + `WorkScheduler.claimNext`：无就绪步且全部步终态时收敛；仍有非终态步则等待。≥1 failed/timed_out → failed；否则有 cancelled → cancelled；全 succeeded/skipped → done |
+| 依赖阻断级联 | 已实施 | `WorkStepService.blockUnstartedDependents`：上游 failed/timed_out/cancelled → 下游未开始步（仅 planning/pending）置 **failed**，沿依赖链 fixpoint 传递。选 failed 而非 skipped：M2 依赖语义 `DEP_SATISFIED={succeeded,skipped}` 会把 skipped 当满足，级联无法传递；且无 `skip_reason` 列无法区分人工跳过。running/waiting_approval/review/needs_input/paused 一律不改 |
 | 子 work_item（`parent_work_item_id`）聚合 | **未实施** | 仅聚合单个 item 的 steps，不跨父子 item；多级聚合留待后续里程碑 |
 | `partial_cancel` 取消原因落库 | **未实施** | `work_items` 无 reason 列；混合成功/取消收敛为 cancelled，原因只记日志，不加 v34 |
 
