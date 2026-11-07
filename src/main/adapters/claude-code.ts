@@ -318,8 +318,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
                   this.spawnClaudeProcess(session.id, spawnOptions),
               }
             : {}),
-          // Kernel 路径注入审批钩子时必须用 'default'，否则 SDK 直接按 acceptEdits 写文件，
-          // canUseTool 根本不会被调用（真机已验证）。旧路径无钩子，保持 acceptEdits 不变。
+          // 注入审批钩子时（kernel 或自由聊天旧路径）必须用 'default'，否则 SDK 直接按
+          // acceptEdits 写文件，canUseTool 根本不会被调用（真机已验证）。
+          // 未注入钩子的内部/有节点旧会话保持 acceptEdits（不在自由聊天审批范围）。
           permissionMode: approvalHooks?.canUseTool ? 'default' : transparent ? 'default' : 'acceptEdits',
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
           // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
