@@ -13,6 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
+import { WorkStepService } from './work-step-service'
 
 const logger = createLogger('WorkItemService')
 
@@ -282,7 +283,15 @@ export class WorkItemService {
         throw new WorkItemGuardError('父 work_item 不存在或非当前 revision')
       }
     }
-    return this.transition(id, ['awaiting_confirm'], 'queued')
+    // awaiting_confirm → queued，并在同事务内激活步（§4.7.4 第 1 行：planning → pending）。
+    // 否则确认后的任务没有任何可被调度器 claim 的步。
+    const nowMs = Date.now()
+    const txn = this.db.transaction((): WorkItemRow => {
+      const row = this.transition(id, ['awaiting_confirm'], 'queued')
+      new WorkStepService(this.db).activatePlanningSteps(id, row.revision, nowMs)
+      return row
+    })
+    return txn()
   }
 
   /** queued → running（调度器 claim）。 */
