@@ -10,10 +10,24 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
-import { WORK_ITEM_TERMINAL, type WorkItemStatus } from './work-item-service'
+import { WORK_ITEM_TERMINAL, WorkItemService, type WorkItemStatus } from './work-item-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
 
 const logger = createLogger('WorkRunService')
+
+/**
+ * 陈旧 queued run 的启动兜底阈值（24h）。依据：L1/L2 单进程串行执行，队列在进程内
+ * 即排即取；单用户场景不存在 24h 仍合法的排队等待。结构性僵尸（item 已被
+ * supersede/终态/不存在）不依赖该阈值，启动时立即取消。
+ */
+export const QUEUED_STALE_MS = 24 * 60 * 60 * 1000
+
+export interface RunReconcileReport {
+  interruptedRunning: number
+  cancelledStaleQueued: number
+  interruptedItems: number
+  queuedStaleMs: number
+}
 
 export type WorkRunStatus =
   | 'queued' | 'running' | 'awaiting_approval' | 'blocked'
@@ -324,6 +338,96 @@ export class WorkRunService {
   /** 重启对账扫描：所有 running 的 run（§4.7.5 重启对账）。 */
   listRunning(): WorkRunRow[] {
     return this.db.prepare("SELECT * FROM work_runs WHERE status = 'running'").all() as WorkRunRow[]
+  }
+
+  /**
+   * 启动对账（§4.7.5）：清偿进程崩溃/重启留下的僵尸 run，避免派生把节点永久钉在
+   * `in_progress`（`in_progress` 只看 work_runs 的 queued/running）。
+   *
+   * 判定：
+   * 1. `running` → `interrupted`：本进程不可能创建这些 run，重启后必为僵尸；保留 partial，
+   *    不自动重跑（与 agent runtime 的 reconcile 语义一致）。
+   * 2. `queued` 结构性僵尸 → 立即 `cancelled(shutdown)`：item 不存在 / 已非当前 revision
+   *    （被 supersede）/ item 已终态——这些 run 永远不会再被合法 claim。
+   * 3. `queued` 时间性兜底 → `cancelled(shutdown)`：`created_at < now - QUEUED_STALE_MS`。
+   *    阈值取 24h：L1/L2 单进程串行执行，队列在进程内即排即取；单用户场景不存在
+   *    24h 仍合法的排队等待，超过即视为遗弃。结构性判定优先，阈值只做兜底，
+   *    避免对合法积压（重启后仍会被调度器 claim）造成误杀。
+   * 4. item 收敛：受影响 item 若仍为 `running` 且已无 queued/running run → `interrupted`。
+   *
+   * 全程条件更新、幂等，可重复执行；结果写 `map_migration_reports(kind='cleanup',
+   * stage='work_runs_reconcile')` 以便查询。
+   */
+  reconcileOnStartup(options?: { now?: number; queuedStaleMs?: number }): RunReconcileReport {
+    const now = options?.now ?? Date.now()
+    const queuedStaleMs = options?.queuedStaleMs ?? QUEUED_STALE_MS
+    const cutoff = now - queuedStaleMs
+    const affectedItemIds = new Set<string>()
+
+    let interruptedRunning = 0
+    for (const run of this.listRunning()) {
+      if (this.markInterrupted(run.id)) {
+        interruptedRunning++
+        affectedItemIds.add(run.work_item_id)
+      }
+    }
+
+    const staleQueued = this.db
+      .prepare(
+        `SELECT r.id, r.work_item_id FROM work_runs r
+           LEFT JOIN work_items i ON i.id = r.work_item_id
+          WHERE r.status = 'queued'
+            AND (i.id IS NULL OR i.is_current = 0
+                 OR i.status IN ('done','failed','cancelled','superseded')
+                 OR r.created_at < ?)`,
+      )
+      .all(cutoff) as Array<{ id: string; work_item_id: string }>
+
+    let cancelledStaleQueued = 0
+    for (const run of staleQueued) {
+      if (this.cancel(run.id, 'shutdown')) {
+        cancelledStaleQueued++
+        affectedItemIds.add(run.work_item_id)
+      }
+    }
+
+    const itemSvc = new WorkItemService(this.db)
+    let interruptedItems = 0
+    for (const itemId of affectedItemIds) {
+      const remaining = this.db
+        .prepare("SELECT COUNT(*) AS c FROM work_runs WHERE work_item_id = ? AND status IN ('queued','running')")
+        .get(itemId) as { c: number }
+      if (remaining.c > 0) continue
+      const item = this.db.prepare('SELECT status FROM work_items WHERE id = ?').get(itemId) as { status: string } | undefined
+      if (item?.status === 'running') {
+        itemSvc.markInterrupted(itemId)
+        interruptedItems++
+      }
+    }
+
+    const report: RunReconcileReport = { interruptedRunning, cancelledStaleQueued, interruptedItems, queuedStaleMs }
+    this.recordReconcileReport(report, now)
+    logger.info('work_runs startup reconciliation:', report)
+    return report
+  }
+
+  private recordReconcileReport(report: RunReconcileReport, now: number): void {
+    try {
+      const exists = this.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='map_migration_reports'")
+        .get()
+      if (!exists) return
+      const ts = new Date(now).toISOString()
+      this.db
+        .prepare(
+          `INSERT INTO map_migration_reports
+             (id, kind, stage, schema_version, started_at, finished_at, owner_pid, status, stats_json)
+           VALUES (?, 'cleanup', 'work_runs_reconcile', NULL, ?, ?, ?, 'ok', ?)`,
+        )
+        .run(`mmr_${now}_reconcile`, ts, ts, process.pid, JSON.stringify(report))
+    } catch (err) {
+      logger.warn('failed to record work_runs reconciliation report:', err)
+    }
   }
 }
 

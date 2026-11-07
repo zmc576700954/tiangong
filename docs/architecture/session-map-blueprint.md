@@ -1000,7 +1000,13 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 - `run_seq` 按 `work_item_id` 单调递增；并发由 `BEGIN IMMEDIATE` + `UNIQUE(work_item_id, run_seq)` 兜底。
 - `partial_output_ref` 统一 JSON：`{stdout_tail, stderr_tail, file_changes[], errors[], artifact_refs[], captured_at, truncated}`；上限为**代码常量**（非配置项）：`PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`），超限截断并置 `truncated=true`。F2 的 subagent partial 直接映射到此结构；子代理侧另有常量 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 单条截断（`base.ts:40`），两层值不一致，是否统一见 §12.5 第 4 项。
 - `failure_class` 取值至少 `agent_error / timeout / cancelled / infra / approval_denied / upstream_cancelled`；`failed` 与 `cancelled` 不得混写。
-- 重启对账：启动时把所有 `running` 且无存活进程的 run 置 `interrupted`，保留 partial；不自动重跑。
+- 重启对账（**已实施**，`WorkRunService.reconcileOnStartup`，启动时机在 `ipc-handlers.ts`）：
+  - `running` → `interrupted`：重启后这些 run 必为僵尸，保留 partial，不自动重跑；
+  - 结构性僵尸 `queued` → `cancelled(shutdown)`：item 不存在 / `is_current=0`（已被修订替代）/ item 已终态——永远不会再被合法 claim；
+  - 时间性兜底 `queued` → `cancelled(shutdown)`：`created_at < now - 24h`（`QUEUED_STALE_MS`）。L1/L2 单进程串行、队列即排即取，单用户场景不存在 24h 仍合法的排队等待；结构性判定优先，阈值只兜底合法积压；
+  - item 收敛：受影响 item 仍为 `running` 且已无 `queued/running` run → `interrupted`；
+  - 每次启动写一行 `map_migration_reports(kind='cleanup', stage='work_runs_reconcile')`（stats: interruptedRunning / cancelledStaleQueued / interruptedItems / queuedStaleMs）。
+  - 目的：`in_progress` 只由 `queued/running` run 触发；没有对账时任何僵尸 run 都会把节点永久钉在 `in_progress`（多 lineage 并存会放大该风险）。
 
 #### 4.7.6 `node_session_links` 与会话时间线
 

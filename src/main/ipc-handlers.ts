@@ -92,6 +92,7 @@ import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
 import { registerMapHandlers } from './ipc/map'
 import { setExecutionStateNotifier } from './map/execution-state'
+import { WorkRunService } from './map/work-run-service'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
@@ -341,6 +342,14 @@ export async function registerIpcHandlers(): Promise<void> {
       }
     })
 
+
+  // map 层僵尸 run 启动对账（§4.7.5）：running → interrupted；结构性/陈旧 queued → cancelled。
+  // 失败只告警，不阻断启动（与结构迁移的 fail-closed 不同层）。
+  try {
+    new WorkRunService(db).reconcileOnStartup()
+  } catch (err) {
+    logger.warn('Map work_runs startup reconciliation failed:', err)
+  }
 
   // ---------- Y.Doc realtime (D10a + D10c) ----------
   // 老 nodes/edges 表 → yjs_snapshots 一次性迁移；为每张图加载 Y.Doc；
