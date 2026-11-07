@@ -493,7 +493,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager, new NodeRepository(db), new EdgeRepository(db), new GraphRepository(db))
-  registerChatHandlers(chatService, typedHandle)
+  registerChatHandlers(chatService, typedHandle, db)
   const compactHistoryRepo = new CompactHistoryRepository(db)
   // Phase 3 Task 3: wire repos into AgentManager so compactContext can persist
   agentManager.setCompactHistoryRepo(compactHistoryRepo)

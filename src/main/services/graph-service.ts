@@ -99,6 +99,13 @@ export class GraphService {
     this.invalidateProjectPathsCache()
   }
 
+  /** §9.2 project:import:confirm：用户显式勾选的导入选项（每次导入前由 IPC 层设置）。 */
+  private importOptions: { interactive?: boolean; rememberAllowance?: boolean } = {}
+
+  setImportOptions(opts: { interactive?: boolean; rememberAllowance?: boolean }): void {
+    this.importOptions = opts
+  }
+
   async initFromProject(data: { projectPath: string; projectName: string }): Promise<InitFromProjectResult> {
     const { projectPath, projectName } = data
     const now = new Date().toISOString()
@@ -108,7 +115,12 @@ export class GraphService {
     // （该表不属于 I5 的三张零行表），返回结构化决策供渲染层展示"哪几项对上了"。
     // 允许时指纹计划随图事务落库（I6：指纹与 graphs/nodes 同事务提交）。
     const dedup = new ImportDedupService(this.db)
-    const check = await dedup.check({ projectRoot: projectPath, projectName, interactive: false })
+    const check = await dedup.check({
+      projectRoot: projectPath,
+      projectName,
+      interactive: this.importOptions.interactive ?? false,
+      rememberAllowance: this.importOptions.rememberAllowance,
+    })
     if (check.decision.action === 'reject') {
       throw new ImportRejectedError(check.decision)
     }

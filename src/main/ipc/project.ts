@@ -26,7 +26,29 @@ export function registerProjectHandlers(
   typedHandle('graph:initFromProject', async (_, data) => {
     // 校验 projectPath
     const validatedPath = validateProjectPath(data.projectPath)
+    // §9.2 project:import:confirm：allowed_branch 与 remember_for_fingerprint
+    // 由用户显式勾选传入；自动导入（未勾选）在判定层 3a-auto 一律拒绝（§2.6 规则 5）。
+    graphService.setImportOptions({
+      interactive: data.allowBranchVariant === true,
+      rememberAllowance: data.rememberForFingerprint === true,
+    })
     return graphService.initFromProject({ ...data, projectPath: validatedPath })
+  })
+
+  // §9.2 project:import:preview：导入前返回指纹命中证据（不写库,供确认框展示）
+  typedHandle('project:import:preview', async (_, data) => {
+    const d = (data ?? {}) as { projectPath?: unknown; projectName?: unknown }
+    if (typeof d.projectPath !== 'string') throw new Error('projectPath is required')
+    const validatedPath = validateProjectPath(d.projectPath)
+    if (!db) throw new Error('db unavailable')
+    const dedup = new ImportDedupService(db)
+    const { decision, fingerprint } = await dedup.check({
+      projectRoot: validatedPath,
+      projectName: typeof d.projectName === 'string' ? d.projectName : undefined,
+      interactive: true,
+      preview: true,
+    })
+    return { decision, signals: decision.signals, reason: decision.reason, dirName: fingerprint.dirName }
   })
 
   // ---- S1：记住的分支/副本放行规则（可查看、可撤销；§2.6 规则 7）----

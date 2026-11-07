@@ -217,12 +217,24 @@ export interface IpcApi {
   // 项目扫描
   'project:scan': (projectPath: string) => Promise<ProjectScanResult>
 
-  // 从项目初始化图
-  'graph:initFromProject': (data: { projectPath: string; projectName: string }) => Promise<{
+  // 从项目初始化图（§9.2 confirm：allowed_branch/remember_for_fingerprint 由用户显式勾选）
+  'graph:initFromProject': (data: {
+    projectPath: string
+    projectName: string
+    allowBranchVariant?: boolean
+    rememberForFingerprint?: boolean
+  }) => Promise<{
     onlineGraph: Graph
     devGraph: Graph
     modules: ScanModule[]
     threadId?: string
+  }>
+
+  // §9.2 导入预览：返回指纹命中证据（相似度/判定/是否命中记住规则），不写库
+  'project:import:preview': (data: { projectPath: string; projectName?: string }) => Promise<{
+    decision: { action: string; step: string; reason: string }
+    signals: Record<string, unknown>
+    dirName: string
   }>
 
   // S1 导入查重：记住的分支/副本放行规则（§2.6 规则 7,可查看/可撤销）

@@ -399,6 +399,8 @@ export class ImportDedupService {
     projectName?: string
     interactive?: boolean
     rememberAllowance?: boolean
+    /** §9.2 project:import:preview:只判定不落任何行(决策记录/放行规则都不写)。 */
+    preview?: boolean
   }): Promise<ImportCheckResult> {
     const fingerprint = await collectFingerprint(input.projectRoot, input.projectName)
     const stored = this.readStored()
@@ -412,6 +414,10 @@ export class ImportDedupService {
         this.db.prepare('SELECT 1 FROM graphs WHERE id = ?').get(graphId) != null,
     })
 
+    if (input.preview) {
+      // 预览模式（§9.2）：只返回判定与命中证据,不写任何行。
+      return { decision, fingerprint }
+    }
     if (decision.action === 'reject' || decision.action === 'allow_with_warning' || decision.action === 'allow_branch_variant') {
       // 决策留痕：拒绝 + 两类放行（allowed_branch / allowed_with_warning,§2.6 表注）。
       // reject 无任何图行（I5）；放行继续走指纹计划。

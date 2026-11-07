@@ -11,6 +11,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { useMapStore } from '../../store/mapStore'
+import { useAgentStore } from '../../store/agentStore'
 import type { ExecutionStateValue, WorkItemSummary } from '../../store/mapStore'
 
 /** 派生态徽标配色（verified 与 signed_off 按可复现性分色,禁止混同 §3.5）。 */
@@ -58,6 +59,7 @@ export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath }: Pr
   const createWorkItem = useMapStore((s) => s.createWorkItem)
   const startWorkItem = useMapStore((s) => s.startWorkItem)
   const cancelWorkItem = useMapStore((s) => s.cancelWorkItem)
+  const selectThread = useAgentStore((s) => s.selectThread)
 
   const [expanded, setExpanded] = useState(false)
   const [newTitle, setNewTitle] = useState('')
@@ -168,6 +170,12 @@ export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath }: Pr
                   <Badge variant="secondary" className="text-[10px]">{t.link_role}</Badge>
                   <span className="flex-1" />
                   <span className="text-[10px] opacity-50">{t.ended_at ? '已结束' : '活跃'} · {t.thread_adapter ?? '-'}</span>
+                  {/* §9.5-3 收尾:时间线成为多会话的切换入口(单线程映射的展示源已换) */}
+                  <Button size="sm" variant="ghost" className="h-5 px-1.5 text-[10px]"
+                    data-testid={`timeline-switch-${t.thread_id}`}
+                    onClick={() => selectThread(t.thread_id)}>
+                    切换
+                  </Button>
                 </div>
               ))}
               {timeline.length === 0 && <div className="px-2 text-[11px] opacity-50">暂无会话</div>}
