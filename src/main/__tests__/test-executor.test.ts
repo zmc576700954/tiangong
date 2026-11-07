@@ -208,8 +208,8 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
       items: [{ command: 'rm -rf .git' }, { command: 'npm t 1' }, { command: 'npm t 2' }],
     })
     plans.approve(plan.id, 'u1')
-    // gitdir guard 对 push 类写 .git 操作 block → deny
-    const result = await executor.executeTestPlan(plan.id)
+    // gitdir guard 对 .git 写类命令 block → deny(rm -rf .git 为 critical 零审批写)
+    await executor.executeTestPlan(plan.id)
 
     const items = db.prepare('SELECT seq, status, policy_decision FROM test_plan_items WHERE plan_id = ? ORDER BY seq').all(plan.id) as Array<{ seq: number; status: string; policy_decision: string | null }>
     expect(items[0]).toMatchObject({ status: 'skipped', policy_decision: 'deny' })
