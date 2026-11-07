@@ -12,8 +12,11 @@ import type { DeadlineReaperDeps, ExpiredTurnRef } from '../agent/runtime/proces
 
 function createDeps() {
   let expired: ExpiredTurnRef[] = []
+  let overdueCancelling: ExpiredTurnRef[] = []
   const expireResults = new Map<string, boolean>()
   const expireCalls: string[] = []
+  const convergeResults = new Map<string, boolean>()
+  const convergeCalls: string[] = []
   const terminated: Array<{ sessionId: string; reason: string }> = []
   const deps: DeadlineReaperDeps = {
     listExpiredRunningTurns: vi.fn((now: number) => {
@@ -27,14 +30,27 @@ function createDeps() {
     terminateSession: vi.fn(async (sessionId: string, reason: string) => {
       terminated.push({ sessionId, reason })
     }),
+    listOverdueCancellingTurns: vi.fn((now: number) => {
+      void now
+      return overdueCancelling
+    }),
+    convergeCancellingTurn: vi.fn(async (turnId: string) => {
+      convergeCalls.push(turnId)
+      return convergeResults.get(turnId) ?? false
+    }),
   }
   return {
     deps,
     setExpired: (v: ExpiredTurnRef[]) => {
       expired = v
     },
+    setOverdueCancelling: (v: ExpiredTurnRef[]) => {
+      overdueCancelling = v
+    },
     expireResults,
     expireCalls,
+    convergeResults,
+    convergeCalls,
     terminated,
   }
 }
@@ -122,6 +138,55 @@ describe('DeadlineReaper', () => {
     reaper.stop()
     await vi.advanceTimersByTimeAsync(15_000)
     expect(deps.listExpiredRunningTurns).toHaveBeenCalledTimes(2)
+  })
+
+  it('P1-2：cancelling 超时收敛计入 reaped，且不 terminate 会话', async () => {
+    const { deps, setOverdueCancelling, convergeResults, convergeCalls, terminated } = createDeps()
+    const reaper = new DeadlineReaper(deps, 5000)
+    setOverdueCancelling([{ id: 'c1', session_id: 's1' }])
+    convergeResults.set('c1', true)
+
+    const reaped = await reaper.sweep(1_700_000_000_000)
+
+    expect(reaped).toEqual(['c1'])
+    expect(convergeCalls).toEqual(['c1'])
+    // 取消 turn 不等于结束会话：收敛路径不得 terminate
+    expect(terminated).toEqual([])
+  })
+
+  it('P1-2：原取消路径先写入终态（converge 返回 false）时不计入 reaped', async () => {
+    const { deps, setOverdueCancelling, convergeCalls } = createDeps()
+    const reaper = new DeadlineReaper(deps, 5000)
+    setOverdueCancelling([{ id: 'c1', session_id: 's1' }])
+
+    const reaped = await reaper.sweep(1_700_000_000_000)
+
+    expect(reaped).toEqual([])
+    expect(convergeCalls).toEqual(['c1'])
+  })
+
+  it('P1-2：cancelling 与 running 共用 in-flight 去重，同一 turn 不并发收口', async () => {
+    const { deps, setOverdueCancelling, convergeResults } = createDeps()
+    setOverdueCancelling([{ id: 'c1', session_id: 's1' }])
+    let releaseConverge!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseConverge = resolve
+    })
+    ;(deps.convergeCancellingTurn as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => gate.then(() => true),
+    )
+    convergeResults.set('c1', true)
+    const reaper = new DeadlineReaper(deps, 5000)
+
+    const first = reaper.sweep(1_700_000_000_000)
+    // 第一轮仍在收口 c1 时，第二轮必须跳过同一 turn
+    const second = await reaper.sweep(1_700_000_000_001)
+    expect(second).toEqual([])
+    releaseConverge()
+    expect(await first).toEqual(['c1'])
+    expect(
+      (deps.convergeCancellingTurn as ReturnType<typeof vi.fn>).mock.calls.filter((c) => c[0] === 'c1'),
+    ).toHaveLength(1)
   })
 
   it('start 幂等：重复调用不叠加定时器', async () => {

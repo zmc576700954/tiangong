@@ -615,6 +615,34 @@ export class AgentRepository {
     }
   }
 
+  /**
+   * P1-1：审批等待冻结——只有仍处于 running 的 turn 才能进入 waiting_approval。
+   * CAS 避免把已完成/已取消的 turn 改回等待态。
+   */
+  freezeTurnForApproval(turnId: string): boolean {
+    const result = this.db
+      .prepare(`UPDATE agent_turns SET status = 'waiting_approval' WHERE id = ? AND status = 'running'`)
+      .run(turnId)
+    return result.changes > 0
+  }
+
+  /**
+   * P1-1：审批结束恢复——只有仍处于 waiting_approval 才回到 running；
+   * deadlineAt 为按剩余时限重算后的绝对时间，null 表示保持原值（无 deadline）。
+   * 终态已被写入时 CAS 返回 false，不覆写终态。
+   */
+  resumeTurnFromApproval(turnId: string, deadlineAt: number | null): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE agent_turns
+            SET status = 'running',
+                deadline_at = COALESCE(?, deadline_at)
+          WHERE id = ? AND status = 'waiting_approval'`,
+      )
+      .run(deadlineAt, turnId)
+    return result.changes > 0
+  }
+
   listActiveTurns(): AgentTurnRow[] {
     return this.db
       .prepare(`SELECT * FROM agent_turns WHERE status IN ('running','waiting_approval','cancelling') ORDER BY created_at ASC`)

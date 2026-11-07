@@ -93,6 +93,8 @@ const LIVE_SESSION_STATUSES: ReadonlySet<string> = new Set(['starting', 'active'
 interface PendingWaiter {
   resolve: (outcome: ApprovalOutcome) => void
   reject: (error: Error) => void
+  /** P1-1：等待结束回调（settle/reject 时各调用一次，异常不外泄）。 */
+  onSettled?: () => void
 }
 
 export interface ApprovalGatewayOptions {
@@ -290,10 +292,17 @@ export class ApprovalGateway {
     }
     this.notifier?.onRequest(payload)
     this.armTimer(row.id, row.expires_at)
+    // P1-1：审批已真实进入 pending，先让 runtime 冻结 turn deadline，再开始等待。
+    // 回调异常不得阻塞审批本身（冻结失败最坏退化为原 F3-A 语义）。
+    try {
+      input.onPending?.()
+    } catch (error) {
+      logger.warn(`approval onPending hook failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
 
     return new Promise<ApprovalOutcome>((resolve, reject) => {
       const list = this.waiters.get(row.id) ?? []
-      list.push({ resolve, reject })
+      list.push({ resolve, reject, onSettled: input.onSettled })
       this.waiters.set(row.id, list)
     })
   }
@@ -693,6 +702,7 @@ export class ApprovalGateway {
     this.timers.clear()
     for (const list of this.waiters.values()) {
       for (const waiter of list) {
+        this.invokeOnSettled(waiter)
         waiter.reject(new AgentRuntimeError('APPROVAL_NOT_FOUND', 'Approval gateway disposed'))
       }
     }
@@ -733,7 +743,19 @@ export class ApprovalGateway {
     const waiters = this.waiters.get(row.id) ?? []
     this.waiters.delete(row.id)
     const outcome = this.outcomeFromRow(row)
-    for (const waiter of waiters) waiter.resolve(outcome)
+    for (const waiter of waiters) {
+      this.invokeOnSettled(waiter)
+      waiter.resolve(outcome)
+    }
+  }
+
+  /** P1-1：等待结束回调异常不得改变审批结果。 */
+  private invokeOnSettled(waiter: PendingWaiter): void {
+    try {
+      waiter.onSettled?.()
+    } catch (error) {
+      logger.warn(`approval onSettled hook failed: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   private outcomeFromRow(row: AgentApprovalRow, autoGranted = false): ApprovalOutcome {

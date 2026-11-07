@@ -117,6 +117,16 @@ export interface ApprovalRequestInput {
   sessionId?: string
   /** 会话工作目录；会话级授权只覆盖该目录下的写路径 */
   cwd?: string
+  /**
+   * P1-1：审批行真实落为 pending（即将进入等待）时回调。
+   * runtime 用它把 turn 置为 waiting_approval 并冻结 deadline。异常不影响审批。
+   */
+  onPending?: () => void
+  /**
+   * P1-1：等待结束（allow/deny/timeout/dispose）时回调一次。
+   * runtime 用它恢复 running 并按剩余时限重算 deadline。
+   */
+  onSettled?: () => void
 }
 
 export interface ApprovalRequestPayload {
@@ -352,6 +362,11 @@ export const DEFAULT_AGENT_TIMEOUTS = {
   turnMs: 10 * 60 * 1000,
   stepMs: 10 * 60 * 1000,
   taskMs: 60 * 60 * 1000,
+  /**
+   * P1-2：`driver.cancel` 的时限。取消前进程组已被回收，SDK 侧 cancel 正常在
+   * 秒级返回；30s 足够覆盖慢后端，同时远小于 turn/step 时限，卡住不会拖住收口。
+   */
+  cancelMs: 30 * 1000,
 } as const
 
 export interface TurnOutcome {

@@ -24,6 +24,7 @@ import type {
   TurnOutcome,
   TurnStatus,
 } from '@shared/types/agent-runtime'
+import { DEFAULT_AGENT_TIMEOUTS } from '@shared/types/agent-runtime'
 import {
   AgentRepository,
   DEFAULT_EVENT_RETENTION,
@@ -61,6 +62,8 @@ export interface AgentRuntimeOptions {
   /** 事件实时旁路（渲染层/IPC）；持久化永远先发生 */
   onEvent?: (event: NormalizedEventEnvelope) => void
   now?: () => number
+  /** P1-2：driver.cancel 时限（默认 DEFAULT_AGENT_TIMEOUTS.cancelMs）；单测注入用 */
+  cancelTimeoutMs?: number
 }
 
 interface TurnInputSnapshot {
@@ -112,6 +115,8 @@ export class AgentRuntime {
   private readonly drivers = new Map<string, BackendDriver>()
   private readonly onEvent: ((event: NormalizedEventEnvelope) => void) | undefined
   private readonly now: () => number
+  /** P1-2：driver.cancel 的时限（<=0 表示不设限，仅测试/诊断用）。 */
+  private readonly cancelTimeoutMs: number
   private readonly logger = createLogger('AgentRuntime')
   private readonly retentionPolicy: EventRetentionPolicy
   private readonly retentionEnabled: boolean
@@ -131,6 +136,7 @@ export class AgentRuntime {
       })
     this.onEvent = options.onEvent
     this.now = options.now ?? Date.now
+    this.cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_AGENT_TIMEOUTS.cancelMs
     this.retentionEnabled = options.retention?.enabled !== false
     this.retentionPolicy = AgentRuntime.normalizeRetention(options.retention)
     // rates（settings.agentRuntime.costRates）作为最高优先级的配置层；
@@ -420,14 +426,24 @@ export class AgentRuntime {
         const context = {
           record,
           approvals: {
-            request: (input: Omit<Parameters<ApprovalGateway['request']>[0], 'runId' | 'turnId'>) =>
-              this.approvals.request({
+            request: (input: Omit<Parameters<ApprovalGateway['request']>[0], 'runId' | 'turnId'>) => {
+              // P1-1：审批真正进入 pending 时把 turn 冻结为 waiting_approval 并停表；
+              // 审批结束（allow/deny/timeout/dispose）后恢复 running 并按剩余时限重算。
+              let frozen = false
+              return this.approvals.request({
                 ...input,
                 sessionId: session.id,
                 ...(input.stepId ? { stepId: scopeStepId(turn.id, input.stepId) } : {}),
                 runId: run.id,
                 turnId: turn.id,
-              }),
+                onPending: () => {
+                  frozen = this.freezeDeadlineForApproval(turn.id)
+                },
+                onSettled: () => {
+                  if (frozen) this.resumeDeadlineAfterApproval(turn.id)
+                },
+              })
+            },
             peek: (input: Omit<Parameters<ApprovalGateway['request']>[0], 'runId' | 'turnId'>) =>
               this.approvals.peekSessionGrant({
                 sessionId: session.id,
@@ -633,6 +649,19 @@ export class AgentRuntime {
   private readonly abortControllers = new Map<string, AbortController>()
   /** 取消时已执行的回收报告与耗时，交给 runNode 的 finally 统一落库/审计，避免重复判定覆盖。 */
   private readonly turnReapReports = new Map<string, { report: ReapReport; durationMs: number }>()
+  /**
+   * P1-1：审批等待的嵌套深度（同一 turn 可能同时挂多个审批）。
+   * 仅进程内存：重启后所有非终态 turn 由启动对账统一 orphaned，pending 审批由
+   * startup reconcile 置 denied，不存在需要继续等待的审批，因此无需持久化。
+   */
+  private readonly approvalWaitDepth = new Map<string, number>()
+  /** P1-1：冻结时刻的剩余时限（null = 该 turn 原本就没有 deadline）。 */
+  private readonly approvalFrozenRemaining = new Map<string, number | null>()
+  /**
+   * P1-2：进入 cancelling 的时间（仅进程内存）。用于让 Reaper 收敛卡住的取消；
+   * 重启后 map 为空，残留 cancelling 由启动对账 orphaned，不会双写。
+   */
+  private readonly cancellingSince = new Map<string, number>()
 
   private turnMarker(turnId: string): string {
     return `bizgraph-turn:${turnId}`
@@ -742,8 +771,11 @@ export class AgentRuntime {
   async cancelTurn(turnId: string, reason = 'user'): Promise<boolean> {
     const turn = this.repo.getTurn(turnId)
     if (!turn || TERMINAL.includes(turn.status)) return false
-    this.repo.updateTurnStatus(turnId, 'cancelling', undefined, this.now())
-    this.repo.projectRunStatus(turn.run_id, this.now())
+    const cancellingAt = this.now()
+    this.repo.updateTurnStatus(turnId, 'cancelling', undefined, cancellingAt)
+    // P1-2：记录进入 cancelling 的时刻，供 Reaper 收敛「driver.cancel 卡住」的 turn。
+    this.cancellingSince.set(turnId, cancellingAt)
+    this.repo.projectRunStatus(turn.run_id, cancellingAt)
 
     // 只回收**本轮内存中真实登记**且归属可证明的句柄，再 abort SDK。
     // 绝不读取落库的裸 pid/pgid：那是上一轮/上一条生命周期的证据，PID 复用时会误杀无关进程。
@@ -754,23 +786,153 @@ export class AgentRuntime {
     this.abortControllers.get(turnId)?.abort()
 
     const driver = this.drivers.get(this.executorFromSnapshot(turn))
+    let driverCancelTimedOut = false
     if (driver) {
-      try {
-        await driver.cancel(this.requestFromTurn(turn))
-      } catch {
-        // Driver 取消失败不阻塞状态收口
-      }
+      driverCancelTimedOut = await this.cancelDriverWithinLimit(driver, this.requestFromTurn(turn))
     }
     this.repo.abortOpenSteps(turnId, this.now())
     // 终态 CAS：若 driver 已在慢取消期间完成并写入 completed，不得把状态与真实最终文本覆盖成 cancelled。
+    // driver.cancel 超时仍按用户取消收口，但 failure_class 明确记为 cancel_timeout，便于区分「取消没被后端确认」。
     this.repo.finalizeTurnStatus(
       turnId,
       'cancelled',
-      { endedAt: this.now(), failureClass: 'aborted', output: { reason } },
+      {
+        endedAt: this.now(),
+        failureClass: driverCancelTimedOut ? 'cancel_timeout' : 'aborted',
+        ...(driverCancelTimedOut ? { errorCode: 'CANCEL_TIMEOUT' } : {}),
+        output: { reason },
+      },
       this.now(),
     )
+    this.cancellingSince.delete(turnId)
     this.repo.projectRunStatus(turn.run_id, this.now())
     return true
+  }
+
+  /**
+   * P1-2：`driver.cancel` 必须有界——返回 true 表示已超过 cancelTimeoutMs。
+   * 超时只影响 failure_class，不阻塞终态收口（进程组已在本轮 reap 中处理）。
+   */
+  private async cancelDriverWithinLimit(
+    driver: BackendDriver,
+    request: DriverExecuteRequest,
+  ): Promise<boolean> {
+    if (this.cancelTimeoutMs <= 0) {
+      await driver.cancel(request).catch(() => undefined)
+      return false
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(true), this.cancelTimeoutMs)
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([driver.cancel(request).then(() => false), timeout])
+    } catch {
+      // Driver 取消失败不阻塞状态收口，也不标记为超时。
+      return false
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
+
+  /**
+   * P1-1：进入审批等待——真实写入 waiting_approval 并冻结剩余 deadline。
+   * 同一 turn 并发多个审批时只冻结一次（depth 计数）；返回 false 表示 turn 已不在
+   * running（被完成/取消抢先），调用方不应在结束时恢复。
+   */
+  private freezeDeadlineForApproval(turnId: string): boolean {
+    const depth = this.approvalWaitDepth.get(turnId) ?? 0
+    if (depth > 0) {
+      this.approvalWaitDepth.set(turnId, depth + 1)
+      return true
+    }
+    const turn = this.repo.getTurn(turnId)
+    if (!turn || turn.status !== 'running') return false
+    const deadlineAt = turn.deadline_at && turn.deadline_at > 0 ? turn.deadline_at : null
+    const remaining = deadlineAt === null ? null : Math.max(0, deadlineAt - this.now())
+    // CAS：只有仍 running 才能进入 waiting_approval；终态已写时失败，不冻结。
+    if (!this.repo.freezeTurnForApproval(turnId)) return false
+    this.approvalWaitDepth.set(turnId, 1)
+    this.approvalFrozenRemaining.set(turnId, remaining)
+    this.repo.projectRunStatus(turn.run_id, this.now())
+    return true
+  }
+
+  /**
+   * P1-1：审批结束——恢复 running 并按冻结的剩余时限重算 deadline（等待时间不计入）。
+   * depth 归零才恢复；turn 已被终态抢先时 CAS 返回 false，不覆写终态。
+   */
+  private resumeDeadlineAfterApproval(turnId: string): void {
+    const depth = this.approvalWaitDepth.get(turnId) ?? 0
+    if (depth <= 0) return
+    if (depth > 1) {
+      this.approvalWaitDepth.set(turnId, depth - 1)
+      return
+    }
+    this.approvalWaitDepth.delete(turnId)
+    const remaining = this.approvalFrozenRemaining.get(turnId)
+    this.approvalFrozenRemaining.delete(turnId)
+    const turn = this.repo.getTurn(turnId)
+    if (!turn) return
+    // remaining 为 null（原 turn 没有 deadline）时保持 deadline_at 原值（NULL）。
+    const deadlineAt = remaining === undefined || remaining === null ? null : this.now() + remaining
+    const resumed = this.repo.resumeTurnFromApproval(turnId, deadlineAt)
+    if (resumed) this.repo.projectRunStatus(turn.run_id, this.now())
+  }
+
+  /**
+   * P1-2：Reaper 扫描——本进程内进入 cancelling 且已超过 cancelTimeoutMs 的 turn。
+   * 只读内存 + 当前行状态：status 已不是 cancelling（被先到者收口）就顺手清理，不返回。
+   */
+  listOverdueCancellingTurns(now: number): Array<{ id: string; session_id: string }> {
+    // <=0 表示不设取消时限（与 cancelDriverWithinLimit 的语义一致），不参与收敛扫描。
+    if (this.cancelTimeoutMs <= 0) return []
+    const overdue: Array<{ id: string; session_id: string }> = []
+    for (const [turnId, since] of [...this.cancellingSince]) {
+      if (now - since < this.cancelTimeoutMs) continue
+      const turn = this.repo.getTurn(turnId)
+      if (!turn || turn.status !== 'cancelling') {
+        this.cancellingSince.delete(turnId)
+        continue
+      }
+      overdue.push({ id: turn.id, session_id: turn.session_id })
+    }
+    return overdue
+  }
+
+  /**
+   * P1-2：取消路径收敛——driver.cancel 卡住超过时限时按 cancelled + cancel_timeout 收口。
+   * 复用单次终态 CAS：原 cancelTurn 若稍后也 CAS，先到者胜出，不双写。
+   */
+  async convergeCancellingTurn(turnId: string): Promise<boolean> {
+    const turn = this.repo.getTurn(turnId)
+    if (!turn || turn.status !== 'cancelling') {
+      this.cancellingSince.delete(turnId)
+      return false
+    }
+    const startedReap = this.now()
+    const report = this.reaper.reap(turnId, this.registryIdentity(turnId))
+    this.turnReapReports.set(turnId, { report, durationMs: Math.max(0, this.now() - startedReap) })
+    this.abortControllers.get(turnId)?.abort()
+    this.repo.abortOpenSteps(turnId, this.now())
+    const applied = this.repo.finalizeTurnStatus(
+      turnId,
+      'cancelled',
+      {
+        endedAt: this.now(),
+        failureClass: 'cancel_timeout',
+        errorCode: 'CANCEL_TIMEOUT',
+        output: { reason: 'cancel_timeout' },
+      },
+      this.now(),
+    )
+    this.cancellingSince.delete(turnId)
+    if (applied) {
+      this.repo.projectRunStatus(turn.run_id, this.now())
+      this.logger.warn(`turn ${turnId}: driver.cancel exceeded ${this.cancelTimeoutMs}ms, converged as cancelled/cancel_timeout`)
+    }
+    return applied
   }
 
   /**

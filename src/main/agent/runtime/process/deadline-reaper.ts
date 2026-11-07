@@ -13,7 +13,13 @@
  *  2. runtime 侧终态 CAS（WHERE status NOT IN terminal）——即便并发穿透，
  *     第二次收口也会因终态已写而返回 false，不做会话 terminate。
  *
- * waiting_approval 的 turn 不会被扫描（status 过滤），等待审批不触发超时。
+ * waiting_approval 的 turn 不会被扫描（status 过滤）：P1-1 审批等待时 turn 真实写入
+ * waiting_approval 并冻结 deadline，审批结束回到 running 后按剩余时限重算。
+ *
+ * P1-2：cancelling 也必须收敛。取消路径已给 driver.cancel 设时限；本 Reaper 再按
+ * runtime 内存中的 cancelling 起点扫描超过 cancelTimeoutMs 的 turn，按
+ * cancelled + cancel_timeout 收口。与 running 扫描共用 in-flight 去重与 sweep
+ * 重入保护，终态 CAS 保证同一个 turn 只被收口一次。
  */
 
 import type { TerminationReason } from '@shared/types'
@@ -37,6 +43,13 @@ export interface DeadlineReaperDeps {
   expireTurn: (turnId: string) => Promise<boolean>
   /** agentManager.terminateSession —— 会话级收尾（沙箱钩子等）。 */
   terminateSession: (sessionId: string, reason: TerminationReason) => Promise<void>
+  /** P1-2：本进程内进入 cancelling 且已超过取消时限的 turn。 */
+  listOverdueCancellingTurns: (now: number) => ExpiredTurnRef[]
+  /**
+   * P1-2：runtime.convergeCancellingTurn —— 按 cancelled + cancel_timeout 收口。
+   * 返回 false 表示已被原取消路径/终态抢先，不重复写。
+   */
+  convergeCancellingTurn: (turnId: string) => Promise<boolean>
 }
 
 export class DeadlineReaper {
@@ -95,6 +108,21 @@ export class DeadlineReaper {
               `turn ${turn.id}: post-expire terminateSession(${turn.session_id}) failed: ${err instanceof Error ? err.message : String(err)}`,
             )
           }
+          reaped.push(turn.id)
+        } finally {
+          this.inFlight.delete(turn.id)
+        }
+      }
+
+      // P1-2：取消路径卡住（driver.cancel 超过时限）→ cancelled/cancel_timeout。
+      // 不 terminate 会话：取消 turn 不等于结束会话；会话收尾仍由调用方决定。
+      const overdueCancelling = this.deps.listOverdueCancellingTurns(now)
+      for (const turn of overdueCancelling) {
+        if (this.inFlight.has(turn.id)) continue
+        this.inFlight.add(turn.id)
+        try {
+          const converged = await this.deps.convergeCancellingTurn(turn.id)
+          if (!converged) continue
           reaped.push(turn.id)
         } finally {
           this.inFlight.delete(turn.id)

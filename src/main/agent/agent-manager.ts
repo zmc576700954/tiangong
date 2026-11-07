@@ -681,7 +681,9 @@ export class AgentManager {
   /**
    * F3-A：DeadlineReaper 每 5s 扫描 status='running' 且 deadline_at>0 且已过期的
    * turn，逐个收口（杀进程组 + 终态 CAS failed/'timeout' + terminate 会话）。
-   * waiting_approval 不触发；deadline_at 空/0 的 turn 不参与。
+   * waiting_approval 不触发（P1-1 审批等待冻结 deadline）；deadline_at 空/0 的 turn 不参与。
+   * P1-2：同一轮 sweep 也收敛超过 cancelTimeoutMs 的 cancelling turn
+   * （cancelled/cancel_timeout，不 terminate 会话）。
    */
   private startDeadlineReaper(): void {
     // 只在 runtime 持有持久化 repo 时启动（测试用 mock runtime 无 repo，不启动）。
@@ -690,6 +692,9 @@ export class AgentManager {
       listExpiredRunningTurns: (now) => this.runtime!.repo.listExpiredRunningTurns(now),
       expireTurn: (turnId) => this.runtime!.expireTimedOutTurn(turnId),
       terminateSession: (sessionId, reason) => this.terminateSession(sessionId, reason),
+      // P1-2：cancelling 收敛（driver.cancel 卡住超过 cancelTimeoutMs）
+      listOverdueCancellingTurns: (now) => this.runtime!.listOverdueCancellingTurns(now),
+      convergeCancellingTurn: (turnId) => this.runtime!.convergeCancellingTurn(turnId),
     })
     reaper.start()
     this.deadlineReaper = reaper

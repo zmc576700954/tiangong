@@ -235,6 +235,8 @@ function allReclaimAudits(db: ReturnType<typeof openTestDb>) {
 
 function setup(driver: BackendDriver, options?: {
   rates?: { currency?: string; inputPerMillion: number; outputPerMillion: number }
+  now?: () => number
+  cancelTimeoutMs?: number
 }) {
   const db = openTestDb()
   const repo = new AgentRepository(db)
@@ -242,6 +244,8 @@ function setup(driver: BackendDriver, options?: {
     db,
     repo,
     rates: options?.rates,
+    now: options?.now,
+    cancelTimeoutMs: options?.cancelTimeoutMs,
   })
   runtime.registerDriver('claude-code', driver)
   return { db, repo, runtime }
@@ -542,6 +546,165 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     const final = repo.getTurn(turn.id)
     expect(final?.status).toBe('completed')
     expect(final?.output_json).toContain('real final')
+    runtime.dispose()
+  })
+
+  it('P1-1：审批等待写 waiting_approval 并冻结 deadline，放行后按剩余时限重算', async () => {
+    let clock = 1_700_000_000_000
+    let context: DriverExecuteContext | undefined
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, ctx) {
+        context = ctx
+        ctx.record([
+          event(request, 1, 'tool.requested', { toolName: 'Write', args: { path: 'a.txt' } }, 'step-1'),
+        ])
+        await ctx.approvals.request({
+          stepId: 'step-1',
+          toolName: 'Write',
+          args: { path: 'a.txt' },
+          cwd: process.cwd(),
+        })
+        return { status: 'completed', finalText: 'approved-done', completionSignal: 'backend-turn-completed' }
+      },
+      async cancel() {
+        /* no-op */
+      },
+    }
+    const { repo, runtime } = setup(driver, { now: () => clock })
+
+    const pending = runtime.runNode(
+      request({
+        nodeId: 'n-approval',
+        agentSessionId: 'sess-approval',
+        idempotencyKey: 'k-approval',
+        deadlineMs: 60_000,
+      }),
+    )
+    await waitFor(() => runtime.approvals.listPendingPayloads().length === 1 && Boolean(context))
+    const turn = repo.findTurnByIdempotencyKey('sess-approval:k-approval')!
+
+    // 审批真实处于 pending 时：turn 必须是 waiting_approval，deadline 保持原值未被推移
+    const waiting = repo.getTurn(turn.id)!
+    expect(waiting.status).toBe('waiting_approval')
+    expect(waiting.deadline_at).toBe(clock + 60_000)
+    // 即使把时钟拨到原 deadline 之后，Reaper 扫描（只看 running）也不得把它判超时
+    expect(repo.listExpiredRunningTurns(clock + 120_000)).toHaveLength(0)
+
+    // 审批等待 30s 后放行：恢复 running，deadline = 放行时刻 + 冻结的剩余时限（等待时间不计入）
+    clock += 30_000
+    const payload = runtime.approvals.listPendingPayloads()[0]
+    runtime.approvals.decide({ approvalId: payload.approvalId, decision: 'allow', argsHash: payload.argsHash })
+
+    const resumed = repo.getTurn(turn.id)!
+    expect(resumed.status).toBe('running')
+    expect(resumed.deadline_at).toBe(clock + 60_000)
+
+    await expect(pending).resolves.toMatchObject({ status: 'completed' })
+    expect(repo.getTurn(turn.id)?.status).toBe('completed')
+    runtime.dispose()
+  })
+
+  it('P1-1：审批等待期间被取消，恢复不覆写终态', async () => {
+    let context: DriverExecuteContext | undefined
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, ctx) {
+        context = ctx
+        ctx.record([
+          event(request, 1, 'tool.requested', { toolName: 'Write', args: { path: 'a.txt' } }, 'step-1'),
+        ])
+        await ctx.approvals.request({ stepId: 'step-1', toolName: 'Write', args: { path: 'a.txt' } })
+        return { status: 'completed', finalText: 'late', completionSignal: 'backend-turn-completed' }
+      },
+      async cancel() {
+        /* no-op */
+      },
+    }
+    const { repo, runtime } = setup(driver)
+
+    const pending = runtime.runNode(
+      request({ nodeId: 'n-approval-cancel', agentSessionId: 'sess-approval-cancel', idempotencyKey: 'k-approval-cancel' }),
+    )
+    await waitFor(() => runtime.approvals.listPendingPayloads().length === 1 && Boolean(context))
+    const turn = repo.findTurnByIdempotencyKey('sess-approval-cancel:k-approval-cancel')!
+    expect(repo.getTurn(turn.id)?.status).toBe('waiting_approval')
+
+    await runtime.cancelTurn(turn.id)
+    expect(repo.getTurn(turn.id)?.status).toBe('cancelled')
+    // 取消后由 gateway 的 dispose 结束等待（onSettled 触发恢复）；终态已写，恢复 CAS 必须失败
+    runtime.dispose()
+    await expect(pending).resolves.toMatchObject({ status: 'cancelled' })
+    expect(repo.getTurn(turn.id)?.status).toBe('cancelled')
+  })
+
+  it('P1-2：driver.cancel 卡住超过时限仍按 cancelled + cancel_timeout 收口', async () => {
+    let context: DriverExecuteContext | undefined
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, ctx) {
+        context = ctx
+        ctx.record([
+          event(request, 1, 'tool.requested', { toolName: 'Bash', args: { command: 'sleep 300' } }, 'step-1'),
+        ])
+        // SDK 侧也卡死：abort 不结束 execute，模拟 driver.cancel 一直不返回
+        return new Promise<DriverExecuteResult>(() => {})
+      },
+      async cancel() {
+        return new Promise<void>(() => {})
+      },
+    }
+    const { repo, runtime } = setup(driver, { cancelTimeoutMs: 50 })
+
+    runtime.runNode(
+      request({ nodeId: 'n-cancel-timeout', agentSessionId: 'sess-cancel-timeout', idempotencyKey: 'k-cancel-timeout' }),
+    )
+    await waitFor(() => Boolean(context))
+    const turn = repo.findTurnByIdempotencyKey('sess-cancel-timeout:k-cancel-timeout')!
+
+    const started = Date.now()
+    await expect(runtime.cancelTurn(turn.id)).resolves.toBe(true)
+    // 取消路径必须有界：不能无限等待 driver.cancel
+    expect(Date.now() - started).toBeLessThan(2000)
+
+    const final = repo.getTurn(turn.id)
+    expect(final?.status).toBe('cancelled')
+    expect(final?.failure_class).toBe('cancel_timeout')
+    expect(final?.error_code).toBe('CANCEL_TIMEOUT')
+    expect(repo.listOpenSteps(turn.id)).toHaveLength(0)
+    runtime.dispose()
+  })
+
+  it('P1-2：Reaper 扫描把超时的 cancelling turn 收敛为 cancelled + cancel_timeout', async () => {
+    const driver = makeBlockingDriver()
+    const { repo, runtime } = setup(driver, { cancelTimeoutMs: 60_000 })
+
+    const pending = runtime.runNode(
+      request({ nodeId: 'n-converge', agentSessionId: 'sess-converge', idempotencyKey: 'k-converge' }),
+    )
+    await waitFor(() => driver.contexts.size === 1)
+    const turn = repo.findTurnByIdempotencyKey('sess-converge:k-converge')!
+
+    // 模拟 cancelTurn 已写 cancelling 但卡在 driver.cancel：直接落状态并注入取消起点
+    repo.updateTurnStatus(turn.id, 'cancelling')
+    ;(runtime as unknown as { cancellingSince: Map<string, number> }).cancellingSince.set(turn.id, 0)
+
+    expect(runtime.listOverdueCancellingTurns(60_000)).toEqual([
+      { id: turn.id, session_id: 'sess-converge' },
+    ])
+    await expect(runtime.convergeCancellingTurn(turn.id)).resolves.toBe(true)
+
+    const final = repo.getTurn(turn.id)
+    expect(final?.status).toBe('cancelled')
+    expect(final?.failure_class).toBe('cancel_timeout')
+    expect(final?.error_code).toBe('CANCEL_TIMEOUT')
+    // 同一个 turn 再次收敛必须返回 false（终态 CAS，不双写）
+    await expect(runtime.convergeCancellingTurn(turn.id)).resolves.toBe(false)
+    expect(repo.getTurn(turn.id)?.failure_class).toBe('cancel_timeout')
+    await pending
     runtime.dispose()
   })
 
