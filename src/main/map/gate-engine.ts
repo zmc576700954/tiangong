@@ -26,8 +26,11 @@
  * - D5/D6：「跨图写」在现有 schema 上无输入可表达（写入面只有 scope_files，
  *   已被 G1 限定在单一项目根内），故本引擎只强制 §5.4 原文可判定的部分：
  *   锚点存在 + graph_type='dev' + graph_id 一致；链接矩阵待 D5 裁决后扩展。
- * - D7：预估行数默认无来源 → line_estimate_unavailable；调用方可注入
- *   estimateLines 提供来源，裁决前不得把"无预估"当 0 放行。
+ * - D7（已裁决，2026-11-07）：预估行数来源 = Σ scope 文件行数的确定性代理——
+ *   已存在文件按实际行数计，不存在的文件（将新建）计 0（新建规模由 G4 文件数
+ *   上限约束）。生产来源由 runtime 装配注入（work-execution-runtime）；引擎
+ *   默认仍无来源 → line_estimate_unavailable。真实改动行数属执行后 evidence
+ *   对比（超限是执行后审计），不归准入判定。
  * - D10：G6 默认只比较同 project_path 的 running 任务；lineage 亲属不排除。
  *
  * 快照一致性：recheck 全程同步（better-sqlite3 同步 API + 单线程），一次调用
@@ -53,10 +56,11 @@ export interface GateEngineOptions {
   /** G4 预估行数上限（§5.4：默认 800）。 */
   g4MaxLines?: number
   /**
-   * G4 预估行数来源（D7）。默认无来源 → 一律 line_estimate_unavailable。
-   * 返回 null 表示该项无法预估 → 同样 fail-closed。
+   * G4 预估行数来源（D7 已裁决：Σ scope 文件行数代理，见文件头）。
+   * 返回 null 表示无法预估（如文件不可读）→ fail-closed line_estimate_unavailable。
+   * 未注入时同样 line_estimate_unavailable。
    */
-  estimateLines?: (files: string[]) => number | null
+  estimateLines?: (files: string[], projectPath: string | null) => number | null
 }
 
 /** 只读快照查询失败（§14.5-2）：表缺失/查询异常等，fail-closed。 */
@@ -223,8 +227,12 @@ function checkAcceptance(item: WorkItemRow): AcceptanceCheck {
   return { missing: bad, manualWaivable: manualOnly }
 }
 
-/** G4：规模上限（§5.4 G4）。预估行数默认无来源（D7）→ fail-closed。 */
-function checkScale(validFiles: string[], options: Required<Pick<GateEngineOptions, 'g4MaxFiles' | 'g4MaxLines'>> & Pick<GateEngineOptions, 'estimateLines'>): string[] {
+/** G4：规模上限（§5.4 G4）。预估行数来源由调用方注入（D7 已裁决的 Σ 行数代理）。 */
+function checkScale(
+  validFiles: string[],
+  projectPath: string | null,
+  options: Required<Pick<GateEngineOptions, 'g4MaxFiles' | 'g4MaxLines'>> & Pick<GateEngineOptions, 'estimateLines'>,
+): string[] {
   const missing: string[] = []
   if (!Number.isFinite(options.g4MaxFiles) || options.g4MaxFiles <= 0 || !Number.isFinite(options.g4MaxLines) || options.g4MaxLines <= 0) {
     return ['gate_policy_missing']
@@ -235,7 +243,7 @@ function checkScale(validFiles: string[], options: Required<Pick<GateEngineOptio
   if (!options.estimateLines) {
     missing.push('line_estimate_unavailable')
   } else {
-    const estimated = options.estimateLines(validFiles)
+    const estimated = options.estimateLines(validFiles, projectPath)
     if (estimated === null) {
       missing.push('line_estimate_unavailable')
     } else if (estimated > options.g4MaxLines) {
@@ -408,7 +416,7 @@ export function createGateEngine(db: BetterSqlite3.Database, options: GateEngine
       const scope = checkScope(item)
       const acceptance = checkAcceptance(item)
       const anchor = checkAnchor(db, item)
-      const scale = checkScale(scope.validFiles, policy)
+      const scale = checkScale(scope.validFiles, item.project_path, policy)
       const deps = checkDependencies(db, item)
       const conflicts = checkWriteConflicts(db, item, new Set(scope.keys))
       const missing: string[] = [

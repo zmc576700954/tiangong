@@ -95,7 +95,7 @@ describe('AgentStepRunner（M3）', () => {
       title: '任务标题',
       goal: '目标说明',
       scopeFiles: ['src/a.ts'],
-      acceptance: [{ id: 'acc1', text: '必须通过' }],
+      acceptance: [{ id: 'acc1', type: 'command', expected: 'npm test', text: '必须通过' }],
       steps: [{ title: '第一步', stepKind: opts.stepKind ?? 'agent', scopeFiles: ['src/a.ts'] }],
     }).id
     items.submitForConfirm(id)
@@ -137,9 +137,12 @@ describe('AgentStepRunner（M3）', () => {
       workingDirectory: '/p/a',
       nodeId: 'node-1',
       allowedFiles: ['src/a.ts'],
+      // D1：结构化 acceptance 渲染为 `[type] expected`（D1 裁决）。
+      acceptance: ['[command] npm test（必须通过）'],
     })
     expect(turns.runs[0].prompt).toContain('任务标题')
     expect(turns.runs[0].prompt).toContain('第一步')
+    expect(turns.runs[0].prompt).toContain('[command] npm test（必须通过）')
 
     const routing = db
       .prepare('SELECT * FROM routing_decisions WHERE work_run_id = ?')

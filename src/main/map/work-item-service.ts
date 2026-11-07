@@ -108,6 +108,57 @@ export interface WorkStepRow {
   updated_at: number
 }
 
+/** D1 裁决（2026-11-07）：acceptance 条目冻结为结构化形状，判定只看 type+expected。 */
+export const ACCEPTANCE_TYPES = ['command', 'manual', 'file_check'] as const
+export type AcceptanceType = (typeof ACCEPTANCE_TYPES)[number]
+
+export interface StructuredAcceptanceEntry {
+  id: string
+  type: AcceptanceType
+  /** 非空：command=命令、manual=人工核对要点、file_check=文件判据。 */
+  expected: string
+  /** 可选人读补充描述，不参与判定。 */
+  text?: string
+}
+
+/**
+ * 系统边界的 acceptance 校验（D1 裁决）：缺 type/expected、类型不认识一律
+ * 拒绝（fail-closed），不静默降级，也不自动把自由文本升格为可判定条目——
+ * 存量 [{id,text}] 由人工重新确认计划时结构化。
+ */
+export function normalizeAcceptanceInput(
+  raw: Array<Record<string, unknown>> | undefined,
+): StructuredAcceptanceEntry[] {
+  return (raw ?? []).map((entry, i) => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      throw new WorkItemGuardError(`acceptance[${i}] 必须是结构化条目 {type, expected}（D1）`)
+    }
+    const type = entry['type']
+    if (typeof type !== 'string' || !(ACCEPTANCE_TYPES as readonly string[]).includes(type)) {
+      throw new WorkItemGuardError(`acceptance[${i}].type 必须是 command|manual|file_check（D1）`)
+    }
+    const expected = entry['expected']
+    if (typeof expected !== 'string' || expected.trim() === '') {
+      throw new WorkItemGuardError(`acceptance[${i}].expected 必须是非空字符串（D1）`)
+    }
+    const id = typeof entry['id'] === 'string' && entry['id'].trim() !== '' ? entry['id'] : `acc_${i + 1}`
+    const text = typeof entry['text'] === 'string' ? entry['text'] : undefined
+    return { id, type: type as AcceptanceType, expected, ...(text !== undefined ? { text } : {}) }
+  })
+}
+
+/** revise 路径：acceptance_json 是预序列化字符串，解析后走同一校验（不合法即抛）。 */
+export function normalizeAcceptanceJson(raw: string): string {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new WorkItemGuardError('acceptance_json 不是合法 JSON（D1）')
+  }
+  if (!Array.isArray(parsed)) throw new WorkItemGuardError('acceptance_json 必须是数组（D1）')
+  return JSON.stringify(normalizeAcceptanceInput(parsed as Array<Record<string, unknown>>))
+}
+
 export interface CreateWorkItemInput {
   projectPath?: string
   graphId: string
@@ -195,6 +246,8 @@ export class WorkItemService {
     const id = `wi_${Date.now()}_${randomUUID().slice(0, 8)}`
     const lineageId = `wl_${Date.now()}_${randomUUID().slice(0, 8)}`
     const depth = input.parentWorkItemId ? (this.get(input.parentWorkItemId)?.depth ?? 0) + 1 : 0
+    // D1：入队前在系统边界强制结构化（缺 type/expected 直接拒绝）。
+    const acceptance = normalizeAcceptanceInput(input.acceptance)
 
     const insert = this.db.transaction((): WorkItemRow => {
       this.db
@@ -211,7 +264,7 @@ export class WorkItemService {
           input.anchorEntityKey ?? null, input.anchorNodeId ?? null, input.parentWorkItemId ?? null, depth,
           input.title.trim(), input.goal ?? null,
           JSON.stringify(input.scopeFiles ?? []),
-          JSON.stringify(input.acceptance ?? []),
+          JSON.stringify(acceptance),
           input.verificationHint ?? null,
           JSON.stringify(input.dependsOn ?? []),
           input.origin ?? 'human', input.createdBy ?? null, now, now,
@@ -503,6 +556,10 @@ export class WorkItemService {
       steps?: NonNullable<CreateWorkItemInput['steps']>
     },
   ): WorkItemRow {
+    // D1：修订改写 acceptance 也必须过结构化校验（不合法即抛，不落新 revision）。
+    if (changes.acceptance_json !== undefined) {
+      changes = { ...changes, acceptance_json: normalizeAcceptanceJson(changes.acceptance_json) }
+    }
     const now = this.now()
     const nowMs = Date.now()
     const txn = this.db.transaction((): WorkItemRow => {

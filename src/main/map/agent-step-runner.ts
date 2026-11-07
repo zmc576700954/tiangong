@@ -130,9 +130,35 @@ function parseStringArray(raw: string | null | undefined): string[] {
   }
 }
 
+/**
+ * 结构化验收渲染（D1 裁决）：acceptance 条目为 {type, expected}，按
+ * `- [command] npm test` 形式注入提示词/会话。新写入路径只产生结构化条目
+ * （work-item-service 边界校验）；防御性跳过无法识别的形状，不猜语义。
+ */
+function renderAcceptance(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const lines: string[] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const { type, expected } = record
+    if (typeof type !== 'string' || typeof expected !== 'string' || expected.trim() === '') continue
+    const text = typeof record['text'] === 'string' && record['text'].trim() !== '' ? `（${record['text']}）` : ''
+    lines.push(`[${type}] ${expected}${text}`)
+  }
+  return lines
+}
+
 /** 步骤提示词：只带本步目标/范围/验收，不注入兄弟分支产物或全图。 */
 function buildStepPrompt(item: WorkItemRow, step: WorkStepRow): string {
-  const acceptance = parseStringArray(item.acceptance_json)
+  const acceptance = renderAcceptance(item.acceptance_json)
   const scope = parseStringArray(step.scope_files_json)
   const parts = [
     `任务：${item.title}`,
@@ -212,7 +238,7 @@ export class AgentStepRunner {
         nodeId: item.anchor_node_id,
         threadId: options.threadId,
         allowedFiles: parseStringArray(item.scope_files),
-        acceptance: parseStringArray(item.acceptance_json),
+        acceptance: renderAcceptance(item.acceptance_json),
       })
       // 适配器回退 = pinned 结论失效：立刻终止该会话并按 infra 失败。
       if (session.adapterUsed !== options.adapterName) {

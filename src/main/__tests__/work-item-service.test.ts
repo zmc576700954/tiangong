@@ -173,6 +173,74 @@ describe('WorkItemService（§4.7.2 状态机）', () => {
   })
 })
 
+describe('D1 裁决：acceptance 结构化校验（系统边界 fail-closed）', () => {
+  let db: BetterSqlite3.Database
+  let svc: WorkItemService
+
+  beforeEach(() => {
+    db = setupDb()
+    svc = new WorkItemService(db)
+  })
+
+  it('结构化条目通过：规范化落库（缺 id 自动补 acc_N，text 保留）', () => {
+    const id = svc
+      .createDraft({
+        graphId: 'g1',
+        title: '任务',
+        acceptance: [
+          { type: 'command', expected: 'npm test' },
+          { id: 'acc-manual', type: 'manual', expected: '人工核对', text: '备注' },
+        ],
+      })
+      .id
+    const parsed = JSON.parse(svc.get(id)!.acceptance_json) as Array<Record<string, unknown>>
+    expect(parsed).toEqual([
+      { id: 'acc_1', type: 'command', expected: 'npm test' },
+      { id: 'acc-manual', type: 'manual', expected: '人工核对', text: '备注' },
+    ])
+  })
+
+  it('存量 [{id,text}] 自由文本 → 拒绝（不自动升格，D1 裁决）', () => {
+    expect(() =>
+      svc.createDraft({
+        graphId: 'g1',
+        title: '任务',
+        acceptance: [{ id: 'acc1', text: '必须通过' }],
+      }),
+    ).toThrow(/type 必须是/)
+  })
+
+  it('缺 expected / expected 空串 / 未知 type → 拒绝', () => {
+    expect(() => svc.createDraft({ graphId: 'g1', title: '任务', acceptance: [{ type: 'command' }] })).toThrow(
+      /expected/,
+    )
+    expect(() =>
+      svc.createDraft({ graphId: 'g1', title: '任务', acceptance: [{ type: 'command', expected: '  ' }] }),
+    ).toThrow(/expected/)
+    expect(() =>
+      svc.createDraft({ graphId: 'g1', title: '任务', acceptance: [{ type: 'poem', expected: 'x' }] }),
+    ).toThrow(/type 必须是/)
+  })
+
+  it('revise 改写 acceptance 走同一校验：不合法即抛且不落新 revision', () => {
+    const id = svc
+      .createDraft({ graphId: 'g1', title: '任务', acceptance: [{ type: 'command', expected: 'npm test' }] })
+      .id
+    expect(() => svc.revise(id, { acceptance_json: JSON.stringify([{ id: 'a', text: '旧格式' }]) })).toThrow(
+      /type 必须是/,
+    )
+    const after = svc.get(id)!
+    expect(after.revision).toBe(1)
+    expect(after.is_current).toBe(1)
+    // 合法修订正常落新 revision。
+    const revised = svc.revise(id, {
+      acceptance_json: JSON.stringify([{ type: 'file_check', expected: 'dist/index.html 存在' }]),
+    })
+    expect(revised.revision).toBe(2)
+    expect(JSON.parse(revised.acceptance_json)).toEqual([{ id: 'acc_1', type: 'file_check', expected: 'dist/index.html 存在' }])
+  })
+})
+
 describe('WorkRunService(§4.7.5)', () => {
   let db: BetterSqlite3.Database
   let items: WorkItemService
