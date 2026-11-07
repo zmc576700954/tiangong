@@ -3553,13 +3553,13 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ---
 
-## 14. G1–G6 准入 gate 规格（引擎已实施；D1/D7 已批准已实施；其余待决）
+## 14. G1–G6 准入 gate 规格（引擎已实施；D1–D14 已全部裁决）
 
 > **状态（按 §0 三态口径，逐项区分，不合并表述）：**
 > - **已实施（`b6f3735`）**：G1–G6 评估引擎 `src/main/map/gate-engine.ts`；生产装配在 `work-execution-runtime.ts` 以 `GateRecheck` 注入，受 `BIZGRAPH_MAP_EXECUTION` 开关控制（默认关闭，关闭时写通道仍显式拒绝）。引擎单元测试 53 例、执行触发测试 12 例，已随 `b6f3735` 落地。
 > - **已批准已实施（`e4398e7`，D1/D7）**：D1 acceptance 冻结为 `{id,type,expected,text?}`，系统边界强制结构化；**存量 `[{id,text}]` 不自动迁移**，人工重新确认计划前任务保持 `blocked`（显式代价）。D7 G4 预估行数采用「Σ scope 文件行数」的**过渡代理指标，不是变更行数**：已存在文件计实际行数，新建文件计 0，目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800）。该代理只用于准入规模守卫，不得当作"预计变更行数"的验收事实；真实改动行数属执行后 evidence 对比。
-> - **待决（未批准、未实施）**：§14.8 其余项（D2–D6、D8–D14）。裁决前引擎按 fail-closed 保守默认，不豁免、不扩展。
-> - **仅建议（本节未实施）**：依赖 D2/D5/D6/D9/D10 裁决的扩展条款（expected 语义、跨图写判定、G5/G6 可豁免性、G6 比较范围）。
+> - **已全部裁决（2026-11-07，整批采纳推荐值表）**：D2–D6、D8–D14 逐条裁决见 §14.8。其中 D3/D4/D5/D6/D8/D9/D10/D11/D13/D14 与现有引擎保守默认一致（零代码改动，`b6f3735` 即实现）；**D2 为契约冻结、已批准未实施**（确定性验收执行器属后续段落，本期验收 = 结构化渲染 + 人工确认）；**D12 裁决为本期不做**。
+> - **仅建议（本节未实施）**：依赖未来能力出现的扩展条款——跨图写入面出现时的 G3 链接矩阵、异步评估器的时限预算、评估器版本精确归因的 schema 变更。对应能力出现前不实施。
 >
 > 本节正文仍是规格定义来源；实际行为以 `gate-engine.ts` 与 `work-execution-runtime.ts` 为准，完整实施记录见 §M5.7 / §M5.8。本节不改 §M5 或其他小节。
 
@@ -3626,13 +3626,13 @@ GateRecheckInput {
 | `incomplete` | `gate_status='incomplete'`，`gate_missing_json=JSON(missing[])` | 不 claim、不建 run；tick 内 `queued → blocked` 并写缺失项（§4.7.2） | `missing` 至少 1 条；无缺失项时写 `gate_missing_unclassified` |
 | `waived` | `gate_status='waived'` 且 `gate_waived_by / gate_waived_at / gate_waive_reason` 三者齐全 | 视同通过（§4.7.2） | 缺任一字段 → 回落 `incomplete`（§4.7.3，现有 `setGateResult` 已是该行为） |
 
-- 只有 **G2 的 `manual` 类型**允许豁免；G1/G3/G4 明确不允许（§5.4）。G5/G6 是否可豁免，蓝图未写，列入 D9。
+- 只有 **G2 的 `manual` 类型**允许豁免；G1/G3/G4 明确不允许（§5.4）。G5/G6 已裁决**不可豁免**（D9，§14.8）。
 - 评估器不写库；调度器一次写入 `gate_status + gate_missing_json`（以及 waived 三字段），写入失败按 tick 失败处理，不能保留旧 `pass` 放行。
-- **证据不参与准入**：G1–G6 是执行前条件，`node_evidence` / `execution_state` 是执行后事实（§3、§5.4）。用 stale/缺失证据阻断执行属于另一条策略；若产品需要，应新增 gate 或独立策略，不得塞进 G1–G6（见 D13）。
+- **证据不参与准入**：G1–G6 是执行前条件，`node_evidence` / `execution_state` 是执行后事实（§3、§5.4）。用 stale/缺失证据阻断执行属于另一条策略；若产品需要，应新增 gate 或独立策略，不得塞进 G1–G6（D13 已裁决：不参与，§14.8）。
 
 ### 14.4 逐条 gate 规格
 
-每条给出：判定、输入、`pass` 条件、`incomplete` 代码（建议命名，见 D11）、可豁免性与不确定时行为。依据均指向 §5.4 与相关章节。
+每条给出：判定、输入、`pass` 条件、`incomplete` 代码（命名已冻结，见 D11）、可豁免性与不确定时行为。依据均指向 §5.4 与相关章节。
 
 #### G1 · scope 非空且都在项目根内
 
@@ -3649,19 +3649,19 @@ GateRecheckInput {
 - **输入**：`work_items.acceptance_json`。
 - **pass**：存在上述结构化条目；其余条目可以是非结构化补充，但不得让判定变成"有文字就行"。
 - **incomplete 代码（建议）**：`acceptance_json_empty`、`acceptance_json_invalid`、`acceptance_item_not_structured:<index>`、`acceptance_type_unknown:<index>`、`acceptance_expected_missing:<index>`。
-- **可豁免**：仅 `manual` 类型可人工豁免，且必须三字段齐全（§5.4、§4.7.3）；"混合了 command 项但只有 manual 项可豁免"时如何判定，见 D1/D3。
+- **可豁免**：仅 `manual` 类型可人工豁免，且必须三字段齐全（§5.4、§4.7.3）；manual 豁免为**整条任务粒度**，不得覆盖 command/file_check 失败（D3 已裁决，§14.8）。
 - **不确定即失败**：类型不认识、`expected` 为空/无法解释、数组解析失败 → `incomplete`。
-- **现状差距（必须在实施前解决）**：现有写入与执行路径把 `acceptance_json` 当作 `[{ id, text }]` 使用——IPC 入参是 `Array<Record<string, unknown>>`（`src/main/ipc/map.ts`），步骤提示词按字符串数组拼接（`src/main/map/agent-step-runner.ts`），测试样本也是 `[{ id: 'acc1', text: '必须通过' }]`。也就是说，**现有写入路径不会产生 `type` / `expected` 结构化条目**；除非有人绕过接口手工写库，否则存量任务都会在 G2 被判 `incomplete`。格式与迁移方案列入 D1。
+- **历史差距（D1 已解决，`e4398e7`）**：现有写入与执行路径曾把 `acceptance_json` 当作 `[{ id, text }]` 使用——IPC 入参是 `Array<Record<string, unknown>>`（`src/main/ipc/map.ts`），步骤提示词按字符串数组拼接（`src/main/map/agent-step-runner.ts`）。已裁决（D1）：系统边界强制结构化，存量不自动迁移（保持 `blocked` 待人工重新确认）。
 
 #### G3 · 目标节点在 dev 图、无跨图写
 
 - **判定**：`anchor_node_id` 可解析到 `nodes` 中的真实行；该节点 `graph_type='dev'`；本任务不包含跨图写（§5.4 G3）。
 - **输入**：`work_items.anchor_node_id`、`work_items.graph_id`、`nodes(id, graph_id, graph_type, lifecycle_state)`、`node_links`（及同图 `edges`）。
-- **pass**：锚点存在、其 `graph_type='dev'`、`graph_id` 一致；且按 D5 冻结的"跨图写"判定口径未命中。
-- **incomplete 代码（建议）**：`anchor_node_missing`、`anchor_node_graph_mismatch`、`anchor_node_not_dev:<graph_type>`、`cross_graph_write:<link_id|entity_key>`。
+- **pass**：锚点存在、其 `graph_type='dev'`、`graph_id` 一致；且按 D5 裁决口径未命中跨图写（本期仅锚点判定，见 §14.8）。
+- **incomplete 代码（建议）**：`anchor_node_missing`、`anchor_node_graph_mismatch`、`anchor_node_not_dev:<graph_type>`、`cross_graph_write:<link_id|entity_key>`（最后这个本期不产出，D5）。
 - **可豁免**：否（§5.4）。
 - **不确定即失败**：锚点为空、解析到多行/零行、节点生命周期不可用、链接解析失败 → `incomplete`。
-- **口径待决**：**"跨图写"在现有字段上没有唯一定义**。候选口径（D5）：a) 任务引用的所有节点必须在同一 dev 图；b) 允许只读链接（`relates_to` / `verifies`）指向 test/online，但禁止通过链接把写入范围扩到非 dev 图；c) 仅看锚点，不看链接。三种都不可从 §5.4 原文唯一推出，不自行选。
+- **口径已裁决（D5）**：采纳收敛口径 c)——本期仅看锚点（存在 + dev + `graph_id` 一致）；a/b 候选与 `node_links` 链接矩阵不入本期准入，理由与未来约束见 §14.8。
 
 #### G4 · 规模上限
 
@@ -3679,21 +3679,21 @@ GateRecheckInput {
 - **输入**：`work_items.depends_on_json`、闭包内 `work_items(id, lineage_id, revision, is_current, status, supersedes_id)`。
 - **pass**：闭包完整可解析、无环、所有上游 `done`。
 - **incomplete 代码（建议）**：`dep_missing:<id>`、`dep_not_done:<id>:<status>`、`dep_cycle:<id>`、`dep_revision_stale:<id>`、`dep_cross_project:<id>`。
-- **可豁免**：蓝图未写（D9）。
-- **"或显式标 blocked 并给出依赖 id"的含义**：本草案按**失败分支**解释——依赖未完成时不放行，把依赖 id 写入 `gate_missing_json` 并转 `blocked`（§4.7.2 `queued → blocked`），而不是"标了 blocked 就算满足"。若原意是允许某种显式豁免，需产品澄清（D8）。
+- **可豁免**：不可（D9 已裁决，§14.8）。
+- **"或显式标 blocked 并给出依赖 id"的含义**：已裁决为**失败分支**（D8）——依赖未完成时不放行，把依赖 id 写入 `gate_missing_json` 并转 `blocked`（§4.7.2 `queued → blocked`），"标了 blocked"不视为满足。
 - **不确定即失败**：依赖 id 不存在、指向非当前 revision、存在环、上游为 `failed/cancelled/superseded/blocked` 等非 `done` 终态 → `incomplete`。
-- **待决**：隐式依赖（共享 `scope_files` / `verifies` / 同锚点，§5.5.1 的依赖优先级）是否进入 G5 闭包；本草案默认只看 `depends_on_json` 显式声明，若要纳入隐式依赖，应由计划确认阶段把它们落进 `depends_on_json`（D8）。
+- **已裁决（D8）**：只看 `depends_on_json` 显式声明，隐式依赖（共享 `scope_files` / `verifies` / 同锚点）不入 G5 闭包，应由计划确认阶段落成显式声明；上游 `superseded` 按非当前 revision 判 `dep_revision_stale`，不自动代替。
 
 #### G6 · 与 running 任务 scope 无交集
 
-- **判定**：本任务规范化后的 `scope_files` 与所有 `status='running' AND is_current=1` 任务的 `scope_files` 逐条求交集；为空才通过（§5.4 G6）。本草案默认只比较同一 `project_path` 下的任务，跨项目是否也要比较列入 D10。
+- **判定**：本任务规范化后的 `scope_files` 与所有 `status='running' AND is_current=1` 任务的 `scope_files` 逐条求交集；为空才通过（§5.4 G6）。只比较同一 `project_path` 下的任务，跨项目不比较（D10 已裁决）。
 - **输入**：本任务 `scope_files`；running 集合的 `id / lineage_id / project_path / scope_files`。
 - **pass**：无任何规范化后路径相同。
 - **incomplete 代码（建议）**：`scope_conflict:<work_item_id>:<path>`、`scope_invalid:<index>`。
-- **可豁免**：蓝图未写（D9）。
+- **可豁免**：不可（D9 已裁决，§14.8）。
 - **不确定即失败**：任一 running 行 scope 解析失败、或本任务路径无法规范化 → `incomplete`（不能"跳过坏行"当作无冲突）。
 - **必须说明的边界**：G6 是**准入快照**，不是写锁；真正的互斥仍由 tick 第 5 步的写闸保证（§5.9「调度 tick」第 5 步）。G6 通过不代表运行期不会冲突，运行期冲突由调度与 ScopeGuard 处理（§6）。
-- **待决**：是否排除同一 lineage 的父/子任务、是否把 `queued` 也纳入冲突面（本草案只按 §5.4 原文取 `running`）（D10）。
+- **已裁决（D10）**：不排除同 lineage 父/子任务（本期单 turn 串行 + 写闸在先，父子同时 `running` 的窗口极小；未来放开并行编排必须重裁）；`queued` 不纳入冲突面；跨项目不比较。
 
 ### 14.5 fail-closed 通则（适用于全部 gate）
 
@@ -3743,24 +3743,26 @@ GateRecheckResult {
 - `unblock`：目前只保证"不是 incomplete"，不保证"刚刚重跑过"；规格要求 blocked → queued 必须触发一次真实评估（§4.7.2）。
 - `work_items.gate_missing_json` 已是字符串数组，保持形状兼容，避免为了 gate 规格改表。
 
-### 14.8 待决项（D1/D7 已裁决并实施；其余需产品/架构拍板）
+### 14.8 裁决记录（D1–D14 已全部裁决，2026-11-07）
 
-| 编号 | 待决问题 | 为什么不能自行决定 | 关联 |
+> 裁决来源：D1–D14 推荐值表于 2026-11-07 获用户**整批采纳**（「按此方案推进」）。状态词按 §0 三态口径：裁决与现有引擎行为一致且代码已存在 → **已批准已实施**；裁决定义契约但执行侧组件尚未存在 → **已批准未实施**；裁决为「不做」→ 终态裁决。
+
+| 编号 | 裁决 | 状态 | 关联 |
 |---|---|---|---|
-| D1 | **已批准已实施（`e4398e7`）**：acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）。**存量 `[{id,text}]` 不自动迁移**：G2 仍判 `acceptance_item_not_structured`，任务保持 `blocked`，必须人工重新确认计划——这是已批准方案的显式代价。 | 现有存量数据与 G2 结构化要求不兼容，代价已由裁决接受 | §5.4 G2、`agent-step-runner`、`work-item-service` |
-| D2 | 三类 `expected` 的判定语义：`command` 看退出码还是输出匹配？`file_check` 校验存在/内容/哈希？`manual` 的 expected 是什么形态？ | §5.4 只列类型名，未定义 expected 语义 | §5.4 G2 |
-| D3 | G2 豁免粒度：整条任务豁免还是逐验收项豁免？混合 `manual + command` 时 command 失败能否用 manual 豁免覆盖？ | §5.4 只说"G2 的 manual 允许豁免"，未说粒度 | §5.4、§4.7.3 |
-| D4 | `project_path` 为空时 G1 的处理：直接 fail-closed（本草案默认），还是允许从图/项目根兜底解析？ | schema 允许 NULL，但 G1 必须有根才能证明"根内" | §5.4.1、§7.2 |
-| D5 | "跨图写"的可操作定义（锚点/引用节点/链接三选一或组合），以及只读链接（`relates_to`/`verifies`）是否允许 | §5.4 G3 只有一句话，现有字段支持多种解释 | §1.2、§2.3、§5.4 G3 |
-| D6 | G3 对 `test` 图的处理：一律拒绝写，还是允许 test 图锚点只读派生？ | 原文只要求 dev 图，未提 test 图任务 | §5.4 G3、`GraphType` |
-| D7 | **已批准已实施（`e4398e7`）**：预估行数来源 = Σ scope 文件行数的**过渡代理指标，不是变更行数**；已存在文件按实际行数、新建文件计 0、目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800，非法回退）。真实改动行数不在准入内，属执行后 evidence 对比。 | 现有表无预估行数字段，代理指标是已批准的过渡口径 | §5.4 G4、§7.2 |
-| D8 | G5 是否纳入隐式依赖；上游 `superseded` 是否按当前 revision 代替；`cancelled` 上游是否算未完成；"显式标 blocked 并给出依赖 id"的准确语义 | 原文与 §5.5.1 的隐式依赖规则可能冲突，需统一 | §5.4 G5、§5.5.1 |
-| D9 | G5/G6 是否允许人工豁免；若允许，豁免字段与审计要求 | §5.4 只点名 G2，未说 G5/G6 | §5.4 |
-| D10 | G6 是否排除同 lineage 父/子任务、是否把 `queued` 纳入、是否跨项目比较 | 原文只说"其它 running 任务" | §5.4 G6、§5.9 |
-| D11 | `gate_missing_json` 条目命名是否需要冻结为稳定错误码（本节的 `g1_*` 等是建议）；是否需要携带结构化 detail | 该字段会进 IPC/UI，改名有兼容成本；现为字符串数组 | §4.7.3、`setGateResult` |
-| D12 | `evaluatorVersion` 与 G4 阈值等配置快照是否要落库/进事件，用于归因 | 蓝图有 `observed_rule_version` 思路，但 gate 侧未规定 | §5.7、§5.4 G4 |
-| D13 | 是否允许"证据 stale/缺失"影响准入（本草案明确不允许） | 会把完成度与准入门禁耦合，违背 §3/§5.4 分层 | §3、§5.4 |
-| D14 | `GateRecheck` 的时限预算与超时处置（本草案默认按不可用 fail-closed） | 蓝图未给 tick 单步预算 | §5.9 |
+| D1 | acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）；**存量不自动迁移**，人工重新确认计划前保持 `blocked` | 已批准已实施（`e4398e7`） | §5.4 G2、`work-item-service` |
+| D2 | `expected` 判定语义：`command` = 退出码 0（输出匹配不作本期判定依据）；`file_check` = 相对 `project_path` 的路径存在性（内容/哈希匹配后续）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器（真正跑 command/file_check 的组件）本期不存在**：本期验收 = 结构化渲染进提示词（`e4398e7`）+ 人工确认；契约自本裁决冻结，实现属验收阶段，届时不得偏离本语义 | 已批准未实施（契约冻结） | §5.4 G2、`agent-step-runner` |
+| D3 | G2 豁免为**整条任务粒度**：仅当全部缺失码来自 G2 且失败条目全为 `manual` 时三字段豁免成立；manual 豁免不得覆盖 command/file_check 失败 | 已批准已实施（`b6f3735`） | §5.4、§4.7.3 |
+| D4 | `project_path` 为空 → 直接 fail-closed（`project_path_missing`），不从图/项目根兜底 | 已批准已实施（`b6f3735`） | §5.4.1 |
+| D5 | 「跨图写」采纳收敛口径：本期准入只判锚点存在 + `graph_type='dev'` + `graph_id` 一致；`node_links` 链接矩阵不入本期准入——写入面仅 `scope_files` 且已被 G1 限定在单一项目根内，跨图写在现有字段上不可表达。**若未来出现跨图写入面（如允许改 test 图资产），必须新增 gate 或扩展 G3 并重新裁决，不得静默放宽** | 已批准已实施（`b6f3735`） | §1.2、§2.3、§5.4 G3 |
+| D6 | 准入一律要求 dev 锚点；test 图锚点任务不设准入特例（fail-closed `anchor_node_not_dev`）；test 只读派生留待未来能力出现时再议 | 已批准已实施（`b6f3735`） | §5.4 G3 |
+| D7 | G4 预估行数 = Σ scope 文件行数的**过渡代理指标，不是变更行数**：已存在文件按实际行数、新建文件计 0、目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800，非法回退） | 已批准已实施（`e4398e7`） | §5.4 G4、§7.2 |
+| D8 | G5 只看 `depends_on_json` 显式声明，隐式依赖不入闭包（由计划确认阶段落成显式）；上游 `superseded` 按非当前 revision 判 `dep_revision_stale`（不自动代替）；`cancelled/failed/blocked` 等非 `done` → `dep_not_done`；「显式标 blocked 并给出依赖 id」= 失败分支（不放行、写缺失码、转 `blocked`） | 已批准已实施（`b6f3735`） | §5.4 G5、§5.5.1 |
+| D9 | G5/G6 **不允许**人工豁免（本期）；失败只能修数据（依赖完成 / scope 调整）后重跑评估 | 已批准已实施（`b6f3735`） | §5.4 |
+| D10 | G6 只比较同 `project_path` 且 `status='running' AND is_current=1` 的任务；不排除同 lineage 父/子（单 turn 串行 + 写闸在先，窗口极小；**放开并行编排必须重裁**）；`queued` 不纳入冲突面；跨项目不比较 | 已批准已实施（`b6f3735`） | §5.4 G6、§5.9 |
+| D11 | `gate_missing_json` 冻结为当前引擎产出的稳定码集，形状保持字符串数组；**新增码只追加、不得改名**；UI 对未知码按「未知原因」兜底展示 | 已批准已实施（`b6f3735`，契约冻结） | §4.7.3、`setGateResult` |
+| D12 | 评估器版本 / G4 阈值快照**本期不落库**；归因靠引擎所在 git commit + 现有事件日志。未来需要精确归因再走 schema 变更流程（蓝图 `observed_rule_version` 思路保留为候选） | 已裁决：本期不做 | §5.7 |
+| D13 | 证据 stale/缺失**不参与**准入（维持 §3 / §5.4 分层）；产品如需该策略，新增独立 gate 或策略，不塞进 G1–G6 | 已批准已实施（负向口径，`b6f3735`） | §3、§5.4 |
+| D14 | `GateRecheck` 本期**不设时限预算**：引擎全同步（better-sqlite3 同步 API），无异步超时面；评估器抛异常由 tick 按 `gate_engine_unavailable` fail-closed 收口（已实现）。**未来引入异步评估器必须带预算 + 超时 fail-closed** | 已批准已实施（含未来约束，`b6f3735`） | §5.9 |
 
 ### 14.9 建议的验收断言（实施时使用）
 
@@ -3770,7 +3772,7 @@ GateRecheckResult {
 2. G1/G6 各补一组符号链接与 NFC/大小写样本（§5.4.1 第 1–4 条），断言使用点重新规范化后比较。
 3. G2 补 `manual` 豁免：三字段齐全 → `waived`；缺任一 → `incomplete`；G1/G3/G4 即使人工豁免也仍 `incomplete`。
 4. G3 补锚点缺失、锚点非 dev、跨图链接三种反例。
-5. G5 补依赖缺失、依赖非 `done`、环三种反例；`superseded` 与隐式依赖按 D8 裁决后补样本。
+5. G5 补依赖缺失、依赖非 `done`、环三种反例；`superseded` 判 `dep_revision_stale`（D8 已裁决）；隐式依赖不入闭包（D8，无需样本）。
 6. G6 补同路径冲突与"路径写法不同但规范化后相同"两种冲突样本，断言只作为准入快照、不写写闸状态。
 7. 注入生产默认 `GateRecheck`：所有任务均为 `incomplete + ['gate_engine_unavailable']`，tick 不 claim、不建 run。
 8. 注入抛异常/超时的评估器：结果与第 7 条一致（fail-closed）。
@@ -3799,7 +3801,7 @@ GateRecheckResult {
 ### M5.1 状态总览
 
 - **已实施**：主进程单实例异步 tick（§5.9.9 六步骨架）、`GateRecheck` 可插拔端口、G1–G6 准入 gate 评估引擎（§14 草案的实现子集 + §14.8 各待决项的 fail-closed 默认，见 M5.7）、孤儿回收（`running → queued`，不计 `attempt`）、`workitem:step:run`（只入队）与 `workitem:run:cancel`（条件更新 + 执行器真结束会话）。
-- **已批准未实施**：§14.8 其余待决项（D2–D6、D8–D14）；D3/D9 裁决前引擎按保守默认不豁免。
+- **已批准未实施**：§14.8 其余待决项（D2、D4–D6、D8、D10–D14）。
 - **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）。
 
 **重要事实（M5.8 后更新）**：D1/D7 已裁决并实施——acceptance 结构化条目 + scope 指向已存在文件的任务，G1–G6 可全绿并真实进入执行；存量自由文本 acceptance 任务仍被 G2 挡在 `blocked`（D1 不自动迁移的显式代价），直到人工重新确认计划。
@@ -3861,7 +3863,7 @@ GateRecheckResult {
 
 **与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；评估器版本归因属 D12，未裁决前不落库。
 
-**依赖产品裁决才能改变的行为**：D5/D6（G3 跨图写矩阵）、D3/D9（豁免粒度与 G5/G6 可豁免性）仍维持 fail-closed 默认。**D1/D7 已裁决并实施（2026-11-07，本段）**，见 M5.8。
+**依赖产品裁决才能改变的行为**：D5/D6（G3 跨图写矩阵）仍维持 fail-closed 默认。**D1/D7 已裁决并实施（2026-11-07，本段）**，见 M5.8；**D3/D9 已裁决并实施（2026-11-07）**，见 M5.9。
 
 ### M5.8 D1/D7 裁决实施记录（2026-11-07，已批准已实施）
 
@@ -3879,3 +3881,13 @@ GateRecheckResult {
 **裁决后的可达性事实**：结构化 acceptance + scope 指向已存在文件的任务，G1–G6 可全绿并通过 tick claim 进入 kernel-only 执行；存量自由文本任务与 scope 指向目录的任务仍按上表 fail-closed。
 
 **测试**：`work-item-service.test.ts` +4（结构化落库/旧格式拒绝/缺 expected/revise 校验）、`work-execution-runtime.test.ts` 新增（env 阈值、Σ 行数、目录 fail-closed、缓存）、`agent-step-runner.test.ts` 断言结构化渲染。
+
+### M5.9 D3/D9 裁决实施记录（2026-11-07，已批准已实施）
+
+**D3（G2 豁免粒度）**：裁决为**任务级粒度**——豁免即现有三字段（`gate_waived_by/at/reason`），作用于整条任务，不引入逐条目豁免（逐条目需新增豁免字段，与「不加 schema 版本」硬约束冲突，明确排除）。生效条件维持「全部缺失码来自 G2、且每个失败条目 type 均为 manual」；**混合 manual+command 时豁免不生效**——command 条目缺 `expected` 属于该补的判定标准，正确路径是人工 `revise` 补全（补全后 G2 自然通过）或改标 manual，豁免只留给「只能人判」的任务形态。
+
+**D9（G5/G6 可豁免性）**：裁决为**永久不可豁免**，三字段豁免对这两道 gate 永不生效，也不为其增加豁免审计字段（不存在合法豁免路径）。理由：G5 放行即允许乱序执行，与 §1.6「未过准入不得入队」及串行语义冲突（正常路径：等上游 done / cancel 上游 / revise 改 `depends_on`）；G6 放行等于在准入时放过已知写冲突，真互斥在 tick 第 5 步写闸，放行只是把冲突推迟到运行期（正常路径：先 `workitem:run:cancel` running 任务，自带 run 级审计）。
+
+**行为变化**：无——两项裁决均确认引擎现状行为，本次仅更新状态词与断言：`gate-engine.ts` 文件头措辞从「D9 裁决前/D3 保守读法」改为「已裁决」；`gate-engine.test.ts` 测试名对齐并**新增 G6+豁免 → incomplete 断言**（此前只有 G5+豁免，G6 无豁免反向断言）。
+
+**边界**：§14.8 表中 D3/D9 行的状态词更新归另一条线（§14 维护权不在本段）。
