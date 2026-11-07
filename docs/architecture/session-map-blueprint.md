@@ -3787,3 +3787,58 @@ GateRecheckResult {
 - §1.2 / §2.3（`entity_key` 与 `node_links`；跨图只走链接、不建跨图 edge）
 - §3、§3.7（证据等级与写入权；用于说明证据为何不作为准入输入）
 - 现有代码：`src/main/map/work-item-service.ts`（`setGateResult` / `markBlocked` / `unblock`）、`src/main/map/work-scheduler.ts`（tick gate 复核现状）、`src/main/ipc/map.ts`、`src/main/map/agent-step-runner.ts`（acceptance 现有用法）
+
+## §M5 执行触发段实施记录
+
+> 本小节只记录 L2「执行触发」段的实施事实与已知偏离；其他章节的规格含义未改动。
+> 状态词严格区分「已实施 / 已批准未实施 / 仅建议」。
+
+### M5.1 状态总览
+
+- **已实施**：主进程单实例异步 tick（§5.9.9 六步骨架）、`GateRecheck` 可插拔端口与生产默认 fail-closed 实现、孤儿回收（`running → queued`，不计 `attempt`）、`workitem:step:run`（只入队）与 `workitem:run:cancel`（条件更新 + 执行器真结束会话）。
+- **已批准未实施**：G1–G6 gate 引擎。按裁决 A 走可插拔端口，生产默认返回 `incomplete + ['gate_engine_unavailable']`，不伪造 pass。
+- **仅建议（本段未实施）**：Tier 1 自动路由探测（当前只接受 pinned adapter）、跨进程项目写闸（当前只有进程内单 turn 守卫）、renderer 执行入口 UI（归另一条线）。
+
+**重要事实**：G1–G6 落地前，生产默认 gate 一律不通过，所有 `queued` item 会被 tick 挡在 `blocked`，**真实执行不可达**。本段交付的是骨架、端口、守卫与测试链路，不得描述为「已可用」。
+
+### M5.2 tick 六步映射
+
+1. **取候选**：`work_items.status IN ('queued','running')`，`queued` 优先，`created_at ASC`；`work_items` 无 `priority` 列，故未实现蓝图中的 `priority DESC`（已知偏离）。
+2. **重跑 gate**：每轮调用 `GateRecheck.recheck(item)`，不读取/不信任 `work_items.gate_status`；不通过时 `queued → blocked` 并写 `gate_missing_json`，running item 仅落 gate 失效（不改状态机）。重跑通过但库中仍是 `incomplete` 时，把重跑结论落为 `pass`。
+3. **依赖校验**：先 `blockUnstartedDependents`，再用 `peekNextReadyStep`（只读）选第一个就绪步；无就绪步且全部终态时触发 item 收敛。
+4. **路由**：只接受 pinned adapter（`BIZGRAPH_MAP_EXECUTION_ADAPTER` 或写入时传入），并做 kernel/审批/驱动三项探测；不满足时保持 `queued`、发 `routing_failed` 事件、不建 run。
+5. **写闸**：进程内 `inflightRunId` 守卫，同一时刻只允许一个 turn；busy 时本轮跳过，不写 run、不加 attempt。跨进程写闸属「仅建议」。
+6. **claim → 执行**：`startStep`（幂等复用 queued run）→ `AgentStepRunner.run` → 终态 → `blockUnstartedDependents` + `convergeIfTerminal`。执行器异常且 run 未落终态时按 `infra` 兜底收口，确保 tick 内不留 `running` 孤儿。
+
+每轮 tick 开始前执行孤儿回收：`work_runs.status='running' AND work_steps.status='pending'` → `running → queued`（条件更新，`attempt` 不变）。
+
+### M5.3 写通道与开关
+
+- 开关：`BIZGRAPH_MAP_EXECUTION`（显式 truthy 才开启，默认关闭）。关闭时 `workitem:step:run` / `workitem:run:cancel` 仍然存在，但 `WorkExecutionError('EXECUTION_DISABLED')` 明确拒绝，不静默降级。
+- `workitem:step:run`：只做 `scheduler.enqueueStep`（建/复用 `queued` run），**不在 IPC handler 内联跑 turn**。
+- `workitem:run:cancel`：`work_runs.cancel` 条件更新；若该 run 正在本进程执行，先 `terminateSession` 结束会话（真取消），再由 tick 按终态收敛；完成与取消竞态时失败方保留既有事实。下游未开始的依赖步落 `cancelled`（非 blocked），item 按 §5.5.1 收敛。
+- 只读白名单：两个写通道均不在 `MAP_READ_ONLY_CHANNELS` 中；`map-read-ipc.test.ts` 同时断言「白名单不含写通道」与「写通道不在白名单」两个方向。
+
+### M5.4 硬约束落实情况
+
+| 约束 | 落实 |
+| --- | --- |
+| 只走 kernel-only 发送 | `AgentManagerTurnRunner` 仅调用 `sendCommandKernelOnly`；执行服务不持有 legacy 发送入口 |
+| 审批经网关、不可用即 fail-closed | 开跑前探测 `kernel`/`runtime`/`driver`，任一不满足拒绝；`degraded`（UNSAFE 免审）视为不可编排 |
+| 写通道默认关闭 | `BIZGRAPH_MAP_EXECUTION` 未开启时明确拒绝 |
+| 写通道与只读白名单互斥 | 双向断言（见 M5.3） |
+| 单进程串行、不加 schema 版本 | 无新迁移；沿用 v34；tick 为单实例串行 |
+
+### M5.5 验证
+
+- 新增 `src/main/__tests__/work-execution.test.ts`：10 个用例，覆盖 gate 重跑、默认 fail-closed、正常链路、孤儿回收、五类写通道拒绝、只入队、in-flight/queued 取消收敛、kernel-only 结构断言。
+- `map-read-ipc.test.ts` 扩展写通道清单。
+- 全量：`309` 个测试文件、`3760` 通过、`3` 跳过、`0` 失败。
+- 已知环境事实：本机 `node_modules/better-sqlite3` 默认按 Electron ABI 构建；跑 vitest 需临时按 Node 20 重建绑定，验证后已恢复为 Electron 绑定（sha256 校验一致）。
+
+### M5.6 遗留风险
+
+1. 生产默认 gate 不可用 → 执行链路在生产不可达（裁决 A 的显式代价）。
+2. 路由未实现 Tier 1 探测；pinned adapter 缺失时 run 不会被 claim。
+3. 跨进程项目写闸未实现，只有进程内单 turn 守卫。
+4. renderer 执行入口与运行态展示未接入（面板归另一条线）。
