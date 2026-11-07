@@ -39,6 +39,7 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
           'draft','awaiting_confirm','queued','running','blocked',
           'needs_input','needs_human','paused','interrupted',
           'done','failed','cancelled','superseded')),
+        cancel_reason        TEXT,
         gate_status          TEXT NOT NULL DEFAULT 'incomplete'
                              CHECK(gate_status IN ('incomplete','pass','waived')),
         gate_missing_json    TEXT,
@@ -82,6 +83,8 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
           'planning','pending','waiting_approval','running','review',
           'needs_input','paused','succeeded','failed','timed_out',
           'cancelled','skipped')),
+        skip_reason          TEXT,
+        failure_class        TEXT,
         started_at           INTEGER,
         ended_at             INTEGER,
         created_at           INTEGER NOT NULL,

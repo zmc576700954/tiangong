@@ -727,8 +727,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      nodes.graph_type / edges.edge_type。三表重建
  *      （graphs→edges→nodes 顺序由 TABLE_SCHEMAS 决定）+ S4 基线/校验
  *      （captureS4Baseline/verifyS4PostRebuild,失败整体回滚启动阻断,§8.6）。
+ * v34：失败/跳过归因 —— work_steps 增加 skip_reason / failure_class,
+ *      work_items 增加 cancel_reason。**纯加列,不重建表**：三列都写进 createSql
+ *      （新库/重建路径）但**不进** requiredColumns（否则旧库缺列会触发重建）;
+ *      存量库由 runIncrementalMigrations 走 ALTER TABLE 补列。版本递增同时封住
+ *      「旧二进制按同版本 createSql 回退 DDL」：旧二进制读到 v34 会被
+ *      DB_SCHEMA_TOO_NEW 拦住，而不是静默重建。
  */
-const CURRENT_SCHEMA_VERSION = 33
+const CURRENT_SCHEMA_VERSION = 34
 
 interface TableSchema {
   name: string
@@ -1490,6 +1496,16 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // 加进去会让 rebuildTableIfNeeded 走 DROP TABLE 重建 nodes，风险远大于收益。
   addColumnSafe('nodes', 'sort_index', 'INTEGER')
   addColumnSafe('nodes', 'collapsed', 'INTEGER', '0')
+
+  // v34：失败/跳过归因列（§4.7.4 / §5.5.1）。纯加列，不重建表：
+  // 三列已同步写进 map/schema.ts 的 createSql（新库/重建路径），但**不进**
+  // requiredColumns——requiredColumns 缺列会让 rebuildTableIfNeeded 走 DROP TABLE
+  // 重建，违背「纯增量」；存量库在这里用 ALTER TABLE 补列。
+  if (currentVersion < 34) {
+    addColumnSafe('work_steps', 'skip_reason', 'TEXT')
+    addColumnSafe('work_steps', 'failure_class', 'TEXT')
+    addColumnSafe('work_items', 'cancel_reason', 'TEXT')
+  }
 
   // v26 / S1.2（session-map 蓝图 §2.2.2）：nodes.entity_key 身份列。createSql 已含该列
   // （新建库/重建路径）；这里为存量库兜底补列——必须在 ux_nodes_graph_entity_key
