@@ -7,6 +7,7 @@ import { useI18n } from '../i18n/useI18n'
 import type { GraphNode, AgentOutput } from '@shared/types'
 import { Bug, Loader2, AlertTriangle, Check, BookOpen, ChevronDown, ChevronRight } from 'lucide-react'
 import { useAgentOutputStore } from '../store/agentOutputStore'
+import { useMapStore } from '../store/mapStore'
 import { useGraphStore } from '../store/graphStore'
 import { ChangeSummaryBadge } from './ChangeSummaryBadge'
 import { REPARENT_REASON_I18N_KEY } from './hooks/useReparentDrag'
@@ -135,6 +136,14 @@ export const BizNodeComponent = memo(function BizNodeComponent({
     if (!agentThreadId) return EMPTY_OUTPUTS as AgentOutput[]
     return s.threadOutputs[agentThreadId] ?? EMPTY_OUTPUTS as AgentOutput[]
   })
+
+  // S6a 叠加徽标:派生态(与 nodes.status 并列,§3.1 不互写)——hook 订阅保证
+  // event:node-execution-state 推送/叠加层刷新后徽标响应式更新
+  const execState = useMapStore((s) =>
+    data.entityKey
+      ? s.overlayByGraph.get(data.graphId)?.executionStates.find((e) => e.node_entity_key === data.entityKey)
+      : undefined,
+  )
 
   /**
    * 拖拽重挂落点高亮。
@@ -307,6 +316,15 @@ export const BizNodeComponent = memo(function BizNodeComponent({
       )}
       <div className="flex items-center justify-between mt-1.5">
         <span className="text-[10px] text-muted-foreground">{nodeStatusLabel(data.status, locale)}</span>
+        {execState && execState.execution_state !== 'untouched' && (
+          <span
+            className="rounded border border-current px-1 text-[9px] leading-none opacity-80"
+            data-testid={`canvas-exec-${data.id}`}
+            title={`派生: ${execState.execution_state} · 证据 ${execState.evidence_level}`}
+          >
+            {execState.execution_state}
+          </span>
+        )}
         {isWikiPage && (
           <BookOpen className="w-3 h-3 text-amber-500" />
         )}

@@ -29,6 +29,27 @@ const logger = createLogger('ExecutionState')
 
 export const DERIVATION_VERSION = 1
 
+/** 派生态变更通知载荷（§9.3 event:node-execution-state）。 */
+export interface ExecutionStateChangePayload {
+  graphId: string
+  nodeEntityKey: string
+  executionState: ExecutionState
+  evidenceLevel: string
+  staleCount: number
+}
+
+type ExecutionStateNotifier = (payload: ExecutionStateChangePayload) => void
+
+let executionStateNotifier: ExecutionStateNotifier | undefined
+
+/**
+ * 注入派生态变更广播器（§9.3）。由 ipc-handlers 在装配期注入
+ * broadcastToWindows——map 模块不反向依赖 IPC 层（layering）。
+ */
+export function setExecutionStateNotifier(cb: ExecutionStateNotifier | undefined): void {
+  executionStateNotifier = cb
+}
+
 export type ExecutionState =
   | 'untouched' | 'planned' | 'in_progress' | 'implemented'
   | 'verified' | 'signed_off' | 'failed' | 'blocked' | 'stale'
@@ -237,6 +258,14 @@ export function recomputeExecutionState(
     )
     return { ...result, changed: false }
   }
+  // 状态变更 → 广播（§9.3 event:node-execution-state;渲染层叠加层据此增量更新）
+  executionStateNotifier?.({
+    graphId,
+    nodeEntityKey,
+    executionState: result.state,
+    evidenceLevel: result.evidenceLevel,
+    staleCount: result.staleCount,
+  })
   return { ...result, changed: true }
 }
 

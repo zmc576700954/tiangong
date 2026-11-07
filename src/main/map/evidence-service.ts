@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import type BetterSqlite3 from 'better-sqlite3'
 import { scheduleExecutionRecompute } from './execution-state'
 
@@ -299,4 +300,44 @@ export class EvidenceService {
     if (n > 0) scheduleExecutionRecompute(this.db, graphId, nodeEntityKey)
     return n
   }
+}
+
+/**
+ * §3.7.5 E3 stale 扫描（启动后 + 每小时,全图批量）：按图取项目 HEAD,凡
+ * code_version !== HEAD 的 fresh E3 → stale。git 不可用/失败跳过该图（只告警,
+ * 不误标）。L1 无 TestExecutor → 无 E3 行,早退休眠（S8 接入后生效）。
+ */
+export function scanStaleE3All(db: BetterSqlite3.Database): { graphs: number; staled: number } {
+  const graphs = db
+    .prepare(
+      `SELECT DISTINCT e.graph_id AS graph_id, g.project_path AS project_path
+         FROM node_evidence e
+         JOIN graphs g ON g.id = e.graph_id
+        WHERE e.evidence_level = 'E3' AND e.revoked_at IS NULL AND e.freshness = 'fresh'
+          AND g.project_path IS NOT NULL AND g.project_path != ''`,
+    )
+    .all() as Array<{ graph_id: string; project_path: string }>
+  if (graphs.length === 0) return { graphs: 0, staled: 0 }
+
+  const svc = new EvidenceService(db)
+  let staled = 0
+  for (const g of graphs) {
+    let head: string
+    try {
+      head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: g.project_path, encoding: 'utf-8' }).trim()
+    } catch (err) {
+      console.warn(`E3 stale scan: git HEAD failed for ${g.project_path}: ${err instanceof Error ? err.message : String(err)}`)
+      continue
+    }
+    const nodes = db
+      .prepare(
+        `SELECT DISTINCT node_entity_key FROM node_evidence
+          WHERE graph_id = ? AND evidence_level = 'E3' AND revoked_at IS NULL AND freshness = 'fresh'`,
+      )
+      .all(g.graph_id) as Array<{ node_entity_key: string }>
+    for (const r of nodes) {
+      staled += svc.markStaleE3(g.graph_id, r.node_entity_key, head)
+    }
+  }
+  return { graphs: graphs.length, staled }
 }

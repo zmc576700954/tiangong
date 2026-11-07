@@ -75,6 +75,8 @@ interface MapState {
   loadingNode: boolean
 
   fetchOverlay: (graphId: string) => Promise<void>
+  /** §9.3 event:node-execution-state 增量更新（preload 订阅驱动） */
+  applyExecutionState: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void
   fetchNodeData: (graphId: string, nodeEntityKey: string) => Promise<void>
   clearNodeData: () => void
   createWorkItem: (input: { graphId: string; anchorEntityKey?: string; anchorNodeId?: string; title: string; goal?: string; projectPath?: string }) => Promise<WorkItemSummary>
@@ -87,6 +89,29 @@ export const useMapStore = create<MapState>((set, get) => ({
   nodeTimeline: [],
   nodeEvidence: [],
   loadingNode: false,
+
+  applyExecutionState: (payload) => {
+    set((state) => {
+      const cur = state.overlayByGraph.get(payload.graphId)
+      if (!cur) return state // 图未拉过叠加层 → 忽略(下次 fetchOverlay 全量取)
+      const others = cur.executionStates.filter((e) => e.node_entity_key !== payload.nodeEntityKey)
+      return {
+        overlayByGraph: new Map(state.overlayByGraph).set(payload.graphId, {
+          ...cur,
+          executionStates: [
+            ...others,
+            {
+              node_entity_key: payload.nodeEntityKey,
+              execution_state: payload.executionState as ExecutionStateValue,
+              evidence_level: payload.evidenceLevel,
+              stale_count: payload.staleCount,
+              computed_at: Date.now(),
+            },
+          ],
+        }),
+      }
+    })
+  },
 
   fetchOverlay: async (graphId) => {
     const result = await window.electronAPI['map:overlay:get'](graphId)
@@ -185,3 +210,14 @@ export const useMapStore = create<MapState>((set, get) => ({
     })
   },
 }))
+
+// §9.3:派生态事件订阅(模块级一次;HMR 重复执行时先退订旧监听)。
+// 用 holder 对象而非裸 let——TS 会把「初始化为 null 且中间无赋值」的模块变量
+// 窄化成 never,导致后续 ?.() 报错。
+const _execStateSub: { unsub: (() => void) | null } = { unsub: null }
+if (typeof window !== 'undefined' && window.electronAPI?.onNodeExecutionState) {
+  _execStateSub.unsub?.()
+  _execStateSub.unsub = window.electronAPI.onNodeExecutionState((payload) => {
+    useMapStore.getState().applyExecutionState(payload)
+  })
+}

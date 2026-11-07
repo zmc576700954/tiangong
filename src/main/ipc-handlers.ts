@@ -91,6 +91,7 @@ import { registerFsHandlers } from './ipc/fs'
 import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
 import { registerMapHandlers } from './ipc/map'
+import { setExecutionStateNotifier } from './map/execution-state'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
@@ -484,6 +485,10 @@ export async function registerIpcHandlers(): Promise<void> {
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService, chatService, db)
+  // S6a 派生态广播钩子（§9.3）:map 模块经 notifier 上报,不反向依赖 IPC 层
+  setExecutionStateNotifier((payload) => {
+    broadcastToWindows('event:node-execution-state', payload)
+  })
   registerMapHandlers(typedHandle, db, broadcastToWindows)
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)

@@ -308,6 +308,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => { ipcRenderer.off('agent:onStatusChange', handler) }
   },
 
+  // S6a 派生态变更（§9.3 event:node-execution-state）——叠加层/徽标增量更新
+  onNodeExecutionState: (callback: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) =>
+      callback(payload)
+    ipcRenderer.on('event:node-execution-state', handler)
+    return () => { ipcRenderer.off('event:node-execution-state', handler) }
+  },
+
   // Node status change event listener (placeholder→developing transitions)
   onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, nodeId: string, oldStatus: string, newStatus: string) =>
@@ -417,6 +425,7 @@ declare global {
       onAgentEvent: (callback: (event: unknown) => void) => () => void
       onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => () => void
       onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => () => void
+      onNodeExecutionState: (callback: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void) => () => void
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void

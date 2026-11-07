@@ -15,6 +15,7 @@ import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
+import { scanStaleE3All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
@@ -94,6 +95,23 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('link integrity check failed:', err)
   }
+
+  // S6a E3 stale 扫描（§3.7.5:启动后 + 每小时）。L1 无 E3 行 → 早退休眠。
+  try {
+    scanStaleE3All(db)
+  } catch (err) {
+    logger.warn('E3 stale scan failed:', err)
+  }
+  const e3ScanTimer = setInterval(() => {
+    if (!db) return
+    try {
+      scanStaleE3All(db)
+    } catch (err) {
+      logger.warn('hourly E3 stale scan failed:', err)
+    }
+  }, 60 * 60 * 1000)
+  if (e3ScanTimer.unref) e3ScanTimer.unref()
+
   const linkCheckTimer = setInterval(() => {
     if (!db) return
     try {

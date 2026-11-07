@@ -25,6 +25,7 @@ import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { useGraphRuntimeStore } from '../store/graphRuntimeStore'
 import { useThreadStore } from '../store/threadStore'
+import { useMapStore } from '../store/mapStore'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeTypeLabel } from '@shared/i18n'
 import { useI18n } from '../i18n/useI18n'
@@ -218,6 +219,17 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
   const projectPath = currentGraph?.projectPath
   /** 图是否已装载完 —— 布局模式的持久化要等它才有意义（见下方 effect） */
   const currentGraphId = currentGraph?.id
+  // S6a 叠加层:批量拉取派生态(§9.2 禁止按节点轮询;换图重拉+30s 批刷新,
+  // 增量走 event:node-execution-state 推送)
+  const fetchOverlay = useMapStore((s) => s.fetchOverlay)
+  useEffect(() => {
+    if (!currentGraphId) return
+    void fetchOverlay(currentGraphId)
+    const timer = setInterval(() => {
+      void fetchOverlay(currentGraphId)
+    }, 30_000)
+    return () => clearInterval(timer)
+  }, [currentGraphId, fetchOverlay])
 
   const { screenToFlowPosition, setCenter } = useReactFlow()
   /** ReactFlow 内部 store —— 用来在「节点进 store 的那一刻」重试恢复力导向 */
