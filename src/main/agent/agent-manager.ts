@@ -135,6 +135,11 @@ export function isMemoryInsufficientForNewSession(
   return sample.freemem < threshold
 }
 
+/** D8：历史伪节点前缀。`agent_turns.node_id` 仍是 NOT NULL，但不得用这些前缀兜底。 */
+function isPseudoNodeId(nodeId: string): boolean {
+  return nodeId.startsWith('thread:') || nodeId.startsWith('session:')
+}
+
 function parseTurnSnapshot(raw: string): RestoreTurnSnapshot | undefined {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>
@@ -320,6 +325,41 @@ export class AgentManager {
       })
     } catch (err) {
       logger.warn('recordAdapterUsage failed (ledger write skipped):', err)
+    }
+  }
+
+  /**
+   * D8：Kernel turn 必须有真实节点归属。
+   *
+   * 未挂载节点的自由聊天保持纯 thread（只写 `chat_threads` / `chat_messages`），
+   * 不进 kernel turn 路径；历史遗留的 `thread:` / `session:` 伪 ID 也不再作为
+   * `node_id` 使用（列约束未放宽前不得回退到伪节点方案）。
+   */
+  private resolveKernelNodeId(sessionId: string, command: AgentCommand): string | undefined {
+    const candidates = [
+      command.targetNodeId,
+      this.sessionStates.get(sessionId)?.config.nodeId,
+      this.lookupThread(sessionId)?.nodeId,
+      this.persistedNodeBinding(sessionId),
+    ]
+    for (const raw of candidates) {
+      const value = typeof raw === 'string' ? raw.trim() : ''
+      if (value !== '' && !isPseudoNodeId(value)) return value
+    }
+    return undefined
+  }
+
+  /** 重启后内存态为空时，只读复原节点归属：agent_sessions 行 → 最近一条 turn。 */
+  private persistedNodeBinding(sessionId: string): string | undefined {
+    const repo = this.runtime?.repo
+    if (!repo) return undefined
+    try {
+      const row = repo.getSession(sessionId)
+      if (row?.node_id) return row.node_id
+      const turns = repo.listTurnsBySession(sessionId)
+      return turns.length > 0 ? turns[turns.length - 1].node_id : undefined
+    } catch {
+      return undefined
     }
   }
 
@@ -1021,11 +1061,18 @@ export class AgentManager {
       const bound = this.tryResolveAdapter(sessionId)
       const executorName = bound?.name ?? this.persistedExecutorFor(sessionId)
       if (executorName && this.canUseKernelFor(executorName)) {
-        // 重启后 SessionRouter 为空 —— 先从持久化状态重建句柄，再走 Kernel。
-        const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
-        this.warnIfKernelDegraded(adapter.name, sessionId)
-        if (this.runtime.getDriver(adapter.name)) {
-          return this.sendCommandThroughKernel(sessionId, command, adapter, options)
+        // D8：kernel turn 缺真实节点归属时保持纯 thread，不回退到 thread:<id> 伪节点。
+        if (!this.resolveKernelNodeId(sessionId, command)) {
+          logger.info(
+            `[kernel-skip] session=${sessionId}: 未挂载节点（D8），保持纯 thread 会话，不写 agent_turns`,
+          )
+        } else {
+          // 重启后 SessionRouter 为空 —— 先从持久化状态重建句柄，再走 Kernel。
+          const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
+          this.warnIfKernelDegraded(adapter.name, sessionId)
+          if (this.runtime.getDriver(adapter.name)) {
+            return this.sendCommandThroughKernel(sessionId, command, adapter, options)
+          }
         }
       }
     }
@@ -1114,6 +1161,18 @@ export class AgentManager {
     adapter: AgentAdapter,
     options?: { contextAssembled?: boolean },
   ): Promise<void> {
+    // D8 fail-closed：node_id 列本期仍是 NOT NULL，且禁止用 thread:/session: 伪 ID 兜底。
+    const nodeId = this.resolveKernelNodeId(sessionId, command)
+    if (!nodeId) {
+      logger.error(
+        `[kernel-node-missing] session=${sessionId}: kernel turn 需要真实节点归属（D8）；` +
+          '未挂载节点的会话必须保持纯 thread 路径',
+      )
+      throw new AgentError(
+        `kernel turn 需要真实节点归属：session=${sessionId} 未挂载任何节点（D8 禁止伪 node id）`,
+        ErrorCode.AGENT_PROCESS_ERROR,
+      )
+    }
     if (!options?.contextAssembled) {
       await this.ensurePromptContext(sessionId, command, adapter)
     }
@@ -1135,10 +1194,7 @@ export class AgentManager {
         this.lifecycle.recordLastCommand(sessionId, command, commandType)
 
         try {
-          const nodeId =
-            command.targetNodeId ||
-            state?.config.nodeId ||
-            (state?.threadId ? `thread:${state.threadId}` : `session:${sessionId}`)
+          // D8：nodeId 已在进入 kernel 前解析校验（真实节点 ID，非 thread:/session: 伪 ID）。
           // 幂等键：每次派发必须是新的 turn。此前缺 runId/graphId/attempt，
           // 键退化为 `new:<node>:<branch>:1:<promptHash>`，同会话同 prompt 的第二次
           // 发送会命中上一条已终态 turn 并被静默复用。
@@ -1181,7 +1237,11 @@ export class AgentManager {
     // 同样受后端白名单门控：未具备写前审批的后端保持旧路径。
     const bound = this.tryResolveAdapter(sessionId)
     const executorName = bound?.name ?? this.persistedExecutorFor(sessionId)
-    const useKernel = executorName ? this.canUseKernelFor(executorName) : false
+    // D8：未挂载节点时不进入 kernel（纯 thread），避免解析成 kernel 会话后又被迫回退。
+    const useKernel =
+      executorName !== undefined &&
+      this.canUseKernelFor(executorName) &&
+      this.resolveKernelNodeId(sessionId, command as AgentCommand) !== undefined
     const adapter = useKernel
       ? bound ?? (await this.resolveKernelAdapter(sessionId))
       : await this.resolveLegacyAdapter(sessionId)

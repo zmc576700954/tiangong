@@ -1018,6 +1018,59 @@ describe('AgentManager', () => {
       }
     })
 
+    it('D8：未挂载节点的会话保持纯 thread，不进 kernel，也不生成 thread:/session: 伪 node id', async () => {
+      const previous = process.env[AGENT_KERNEL_ENV]
+      delete process.env[AGENT_KERNEL_ENV]
+      try {
+        const adapter = new TestAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig({ threadId: 'thread-free' }))
+        const command: AgentCommand = {
+          type: 'implement',
+          description: 'free thread no node',
+          targetNodeId: '',
+        }
+        await manager.sendCommand(sessionId, command)
+
+        expect(runNode).not.toHaveBeenCalled()
+        expect(adapter.lastPrompts.at(-1)).toContain('free thread no node')
+        const state = (manager as any).sessionStates.get(sessionId)
+        expect(state?.config.nodeId).toBeUndefined()
+        expect(state?.threadId).toBeDefined()
+        // 关键回归：不得再出现 thread:<id> / session:<id> 形式的伪 node id。
+        expect(String(state?.config.nodeId ?? '')).not.toMatch(/^thread:|^session:/)
+      } finally {
+        if (previous === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = previous
+      }
+    })
+
+    it('D8：绕过门控直接进入 kernel 派发且缺节点时 fail-closed（不落伪 ID）', async () => {
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+      const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+      manager.setRuntime({
+        locks: new SessionLockRegistry(),
+        getDriver: () => ({}),
+        runNode,
+      } as unknown as AgentRuntime)
+
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+      const command: AgentCommand = { type: 'implement', description: 'bypass', targetNodeId: '' }
+
+      await expect(
+        (manager as any).sendCommandThroughKernel(sessionId, command, adapter),
+      ).rejects.toThrow(/真实节点归属/)
+      expect(runNode).not.toHaveBeenCalled()
+    })
+
     it('resets recovery retry counter when a recovered session completes successfully', async () => {
       const adapter = new TestAdapter('mcp')
       manager.registerAdapter(adapter)
