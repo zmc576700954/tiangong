@@ -78,6 +78,10 @@ function createMockRepo() {
         r.finishedAt = finishedAt
       }
     }),
+    mergePartialResult: vi.fn(async (id: string, data: any) => {
+      const r = rows.get(id)
+      if (r) Object.assign(r, data)
+    }),
     listByParent: vi.fn(),
     get: vi.fn(),
   }
@@ -457,10 +461,15 @@ describe('SubagentManager', () => {
   })
 
   it('F1：子代理 error 拒绝路径收尾子会话', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f1a',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
     mockManager.sendCommand.mockImplementation(async () => {
       setTimeout(
         () =>
-          mockManager._emitOutput('child-1', {
+          mockManager._emitOutput('child-f1a', {
             type: 'error',
             data: 'boom',
             timestamp: 0,
@@ -473,24 +482,34 @@ describe('SubagentManager', () => {
       mgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
     ).rejects.toThrow(/boom/)
 
-    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'error')
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-f1a', 'error')
     const row = Array.from(mockRepo.rows.values())[0]
     expect(row.status).toBe('failed')
   })
 
   it('F1：超时拒绝路径收尾子会话', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f1b',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
     const timeoutMgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 50)
 
     await expect(
       timeoutMgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
     ).rejects.toThrow(/timeout/i)
 
-    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'error')
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-f1b', 'error')
     const row = Array.from(mockRepo.rows.values())[0]
     expect(row.status).toBe('failed')
   })
 
   it('F1：cancel 已收尾时不重复 terminate', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f1c',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
     const promise = mgr
       .invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' })
       .catch(() => undefined)
@@ -501,15 +520,20 @@ describe('SubagentManager', () => {
     await promise
 
     expect(mockManager.terminateSession).toHaveBeenCalledTimes(1)
-    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-1', 'user')
+    expect(mockManager.terminateSession).toHaveBeenCalledWith('child-f1c', 'user')
   })
 
   it('F1：terminate 失败只告警，不覆写 failed 终态', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f1d',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
     mockManager.terminateSession.mockRejectedValue(new Error('scope guard rollback'))
     mockManager.sendCommand.mockImplementation(async () => {
       setTimeout(
         () =>
-          mockManager._emitOutput('child-1', {
+          mockManager._emitOutput('child-f1d', {
             type: 'error',
             data: 'child crashed',
             timestamp: 0,
@@ -525,6 +549,107 @@ describe('SubagentManager', () => {
     const row = Array.from(mockRepo.rows.values())[0]
     expect(row.status).toBe('failed')
     expect(row.error).toContain('child crashed')
+  })
+
+  it('F2：失败路径持久化部分输出与用量，事件携带 partialSummary', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f2a',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
+    const baseState = mockManager.getSessionState()
+    mockManager.getSessionState.mockReturnValue({ ...baseState, tokensUsed: 77 })
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(() => {
+        mockManager._emitOutput('child-f2a', { type: 'stdout', data: 'half work', timestamp: 0 })
+        mockManager._emitOutput('child-f2a', {
+          type: 'file_change',
+          data: '',
+          filePath: 'src/a.ts',
+          timestamp: 0,
+        })
+        mockManager._emitOutput('child-f2a', { type: 'error', data: 'boom', timestamp: 0 })
+      }, 0)
+    })
+
+    const events: any[] = []
+    mgr.onProgress((e) => events.push(e))
+
+    await expect(
+      mgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
+    ).rejects.toThrow(/boom/)
+
+    expect(mockRepo.fail).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        error: 'boom',
+        resultText: 'half work',
+        resultFiles: ['src/a.ts'],
+        tokensUsed: 77,
+      }),
+    )
+    const failedEvent = events.find((e) => e.status === 'failed')
+    expect(failedEvent.partialSummary).toEqual({
+      resultTextChars: 'half work'.length,
+      resultFilesCount: 1,
+      truncated: false,
+    })
+  })
+
+  it('F2：部分结果按 MAX_OUTPUT_ENTRY_SIZE 截断，不扩展到 1MB', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f2b',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
+    const longOutput = 'x'.repeat(10_050)
+    mockManager.sendCommand.mockImplementation(async () => {
+      setTimeout(() => {
+        mockManager._emitOutput('child-f2b', { type: 'stdout', data: longOutput, timestamp: 0 })
+        mockManager._emitOutput('child-f2b', { type: 'error', data: 'boom', timestamp: 0 })
+      }, 0)
+    })
+
+    const events: any[] = []
+    mgr.onProgress((e) => events.push(e))
+    await expect(
+      mgr.invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' }),
+    ).rejects.toThrow(/boom/)
+
+    const failData = (mockRepo.fail as ReturnType<typeof vi.fn>).mock.calls[0][1]
+    expect(failData.resultText.length).toBeLessThanOrEqual(10_000 + '\n...[truncated]'.length)
+    expect(failData.resultText).toContain('...[truncated]')
+    const failedEvent = events.find((e) => e.status === 'failed')
+    expect(failedEvent.partialSummary).toEqual({
+      resultTextChars: longOutput.length,
+      resultFilesCount: 0,
+      truncated: true,
+    })
+  })
+
+  it('F2：取消路径保留部分结果但不改 cancelled 终态', async () => {
+    mockManager.startSession.mockResolvedValue({
+      sessionId: 'child-f2c',
+      adapterUsed: 'mock',
+      fallbackHistory: [],
+    })
+    mockManager.sendCommand.mockImplementation(async () => {
+      mockManager._emitOutput('child-f2c', { type: 'stdout', data: 'work in progress', timestamp: 0 })
+    })
+
+    const promise = mgr
+      .invoke({ parentSessionId: 'p1', agentType: 'explore', description: 'd', prompt: 'p' })
+      .catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 10))
+
+    const invocationId = Array.from(mockRepo.rows.keys())[0]
+    await mgr.cancel(invocationId!)
+    await promise
+
+    const row = mockRepo.rows.get(invocationId!)
+    expect(row.status).toBe('cancelled')
+    expect(row.resultText).toBe('work in progress')
+    expect(mockRepo.mergePartialResult).toHaveBeenCalled()
   })
 
   it('onProgress fires for status transitions', async () => {

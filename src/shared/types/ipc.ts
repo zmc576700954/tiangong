@@ -20,6 +20,7 @@ import type {
 import type {
   AgentTypeDefinition,
   SubagentInvocation,
+  SubagentPartialSummary,
   SubagentResult,
 } from './subagent'
 import type {
@@ -338,7 +339,7 @@ export interface IpcEventMap {
   'session:recovered': (sessionId: string, newSessionId: string) => void
   'session:recoveryFailed': (sessionId: string, reason: string) => void
   'waterline:change': (state: ContextState) => void
-  'subagent:progress': (data: { invocationId: string; status: string; error?: string }) => void
+  'subagent:progress': (data: { invocationId: string; status: string; error?: string; partialSummary?: SubagentPartialSummary }) => void
   'recipe:run:progress': (data: RecipeRunProgressEvent) => void
   'menu:openProject': (projectPath: string) => void
   'conflict:onReported': (report: ConflictReport) => void

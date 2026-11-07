@@ -28,12 +28,14 @@ import type { SubagentInvocationRepository } from '../repositories/subagent-invo
 import type {
   AgentTypeDefinition,
   SubagentInvokeArgs,
+  SubagentPartialSummary,
   SubagentResult,
   AgentSessionConfig,
   AgentCommand,
   AgentOutput,
 } from '@shared/types'
 import { BUILT_IN_AGENT_TYPES } from '@shared/types'
+import { MAX_OUTPUT_ENTRY_SIZE } from '../adapters/base'
 import { AgentError, ErrorCode } from '../errors'
 import { generateId } from '../shared/env'
 import { createLogger } from '../shared/logger'
@@ -53,6 +55,8 @@ export interface SubagentProgressEvent {
   invocationId: string
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   error?: string
+  /** F2：失败/取消时携带部分结果摘要（已收字符数、已改文件数、是否截断）。 */
+  partialSummary?: SubagentPartialSummary
 }
 
 interface ActiveInvocation {
@@ -85,8 +89,10 @@ interface ActiveInvocation {
   /**
    * F1：拒绝路径在 terminate 之前抓拍的部分输出与用量。terminate 会清空
    * 子会话状态，先抓拍才能让上层持久化/后续阶段拿到已完成的内容。
+   * F2：resultText 按 MAX_OUTPUT_ENTRY_SIZE 截断；partialSummary 供事件载荷。
    */
   partial?: { resultText: string; resultFiles: string[]; tokensUsed: number }
+  partialSummary?: SubagentPartialSummary
 }
 
 export class SubagentManager extends EventEmitter {
@@ -189,11 +195,20 @@ export class SubagentManager extends EventEmitter {
     fileChanges: string[],
   ): void {
     if (!entry) return
+    const rawText = outputBuffer.join('\n').trim()
     const childState = this.agentManager.getSessionState(sessionId)
     entry.partial = {
-      resultText: outputBuffer.join('\n').trim(),
+      // F2：与 BaseAdapter 的单条输出上限一致（10_000 字符），不使用 1MB。
+      resultText: rawText.length > MAX_OUTPUT_ENTRY_SIZE
+        ? rawText.slice(0, MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
+        : rawText,
       resultFiles: [...fileChanges],
       tokensUsed: childState?.tokensUsed ?? 0,
+    }
+    entry.partialSummary = {
+      resultTextChars: rawText.length,
+      resultFilesCount: fileChanges.length,
+      truncated: rawText.length > MAX_OUTPUT_ENTRY_SIZE,
     }
   }
 
@@ -457,6 +472,8 @@ export class SubagentManager extends EventEmitter {
           resultFiles: partial.resultFiles,
           tokensUsed: partial.tokensUsed,
           durationMs: finishedAt - startedAt,
+          status: 'completed',
+          partial: false,
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
@@ -482,11 +499,32 @@ export class SubagentManager extends EventEmitter {
         }
         if (!cancelledByAbort) {
           try {
-            await this.repo.fail(invocationId, { error: errorMsg, finishedAt: Date.now() })
+            // F2：失败也落部分输出与用量，避免成本账本漏账。
+            await this.repo.fail(invocationId, {
+              error: errorMsg,
+              finishedAt: Date.now(),
+              resultText: active?.partial?.resultText,
+              resultFiles: active?.partial?.resultFiles,
+              tokensUsed: active?.partial?.tokensUsed,
+            })
           } catch {
             /* repo error already logged elsewhere */
           }
-          this.emitProgress({ invocationId, status: 'failed', error: errorMsg })
+          this.emitProgress({
+            invocationId,
+            status: 'failed',
+            error: errorMsg,
+            partialSummary: active?.partialSummary,
+          })
+        } else {
+          // 取消路径：cancel() 已写 cancelled 终态，这里只补合并部分结果（幂等）。
+          if (active?.partial) {
+            try {
+              await this.repo.mergePartialResult(invocationId, active.partial)
+            } catch {
+              /* best-effort */
+            }
+          }
         }
         throw err
       } finally {
@@ -755,7 +793,19 @@ export class SubagentManager extends EventEmitter {
       }
     }
     await this.repo.cancel(invocationId, Date.now())
-    this.emitProgress({ invocationId, status: 'cancelled' })
+    // F2：取消也保留已产生的部分结果（先写 cancelled 终态再合并，避免被终态覆盖）。
+    if (active?.partial) {
+      try {
+        await this.repo.mergePartialResult(invocationId, active.partial)
+      } catch (err) {
+        logger.warn(`Subagent ${invocationId}: mergePartialResult on cancel failed:`, err)
+      }
+    }
+    this.emitProgress({
+      invocationId,
+      status: 'cancelled',
+      partialSummary: active?.partialSummary,
+    })
   }
 
   onProgress(handler: (event: SubagentProgressEvent) => void): () => void {

@@ -87,7 +87,39 @@ describe('registerSubagentHandlers', () => {
       resultFiles: ['file.ts'],
       tokensUsed: 100,
       durationMs: 1000,
+      status: 'completed',
+      error: undefined,
+      partial: false,
     })
+  })
+
+  it('F2：getResult 返回 failed 的部分结果与 error', async () => {
+    vi.mocked(repo.get).mockResolvedValue({
+      id: 'inv-1',
+      parentSessionId: 's1',
+      parentMessageId: null,
+      graphId: null,
+      agentType: 'explore',
+      description: 'test',
+      prompt: 'go',
+      adapterName: null,
+      nodeId: null,
+      allowedFiles: null,
+      status: 'failed',
+      resultText: 'partial output',
+      resultFiles: ['half.ts'],
+      tokensUsed: 42,
+      startedAt: 1000,
+      finishedAt: 2000,
+      error: 'child crashed',
+    })
+
+    const result = (await handlers['subagent:getResult']({}, 'inv-1')) as Record<string, unknown>
+    expect(result.status).toBe('failed')
+    expect(result.error).toBe('child crashed')
+    expect(result.partial).toBe(true)
+    expect(result.resultText).toBe('partial output')
+    expect(result.tokensUsed).toBe(42)
   })
 
   it('getResult returns null for non-completed invocation', async () => {

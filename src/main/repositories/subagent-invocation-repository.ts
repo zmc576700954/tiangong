@@ -34,6 +34,10 @@ export interface SubagentInvocationComplete {
 export interface SubagentInvocationFail {
   error: string
   finishedAt: number
+  /** F2：失败时保留下来的部分输出与用量。 */
+  resultText?: string
+  resultFiles?: string[]
+  tokensUsed?: number
 }
 
 function parseStringArray(raw: unknown): string[] | null {
@@ -125,13 +129,51 @@ export class SubagentInvocationRepository {
     )
   }
 
-  /** Mark a row as failed and write the error message. */
+  /**
+   * Mark a row as failed and write the error message.
+   * F2：有部分结果时一并落库（COALESCE 保留未提供的原值），用量不再漏账。
+   */
   fail(id: string, data: SubagentInvocationFail): void {
     this.db.prepare(
       `UPDATE subagent_invocations
-            SET status = ?, error = ?, finished_at = ?
+            SET status = ?,
+                error = ?,
+                finished_at = ?,
+                result_text = COALESCE(?, result_text),
+                result_files = COALESCE(?, result_files),
+                tokens_used = COALESCE(?, tokens_used)
             WHERE id = ?`
-    ).run('failed', data.error, data.finishedAt, id)
+    ).run(
+      'failed',
+      data.error,
+      data.finishedAt,
+      data.resultText ?? null,
+      data.resultFiles ? JSON.stringify(data.resultFiles) : null,
+      data.tokensUsed ?? null,
+      id,
+    )
+  }
+
+  /**
+   * F2：失败/取消路径的部分结果合并（不改 status / error / finished_at）。
+   * 与 cancel()/fail() 并发时幂等：先写终态再合并或反之都不会丢内容。
+   */
+  mergePartialResult(
+    id: string,
+    data: { resultText?: string; resultFiles?: string[]; tokensUsed?: number },
+  ): void {
+    this.db.prepare(
+      `UPDATE subagent_invocations
+            SET result_text = COALESCE(?, result_text),
+                result_files = COALESCE(?, result_files),
+                tokens_used = COALESCE(?, tokens_used)
+            WHERE id = ?`
+    ).run(
+      data.resultText ?? null,
+      data.resultFiles ? JSON.stringify(data.resultFiles) : null,
+      data.tokensUsed ?? null,
+      id,
+    )
   }
 
   /** Mark a row as cancelled. */

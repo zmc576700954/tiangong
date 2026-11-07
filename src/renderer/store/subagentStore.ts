@@ -14,6 +14,7 @@
 import { create } from 'zustand'
 import type {
   SubagentInvocation,
+  SubagentPartialSummary,
   SubagentResult,
   AgentTypeDefinition,
   AgentOutput,
@@ -27,7 +28,7 @@ interface SubagentState {
   loadInvocations: (parentSessionId: string) => Promise<void>
   loadTypes: () => Promise<void>
   appendOutput: (invocationId: string, output: AgentOutput) => void
-  applyProgress: (data: { invocationId: string; status: string; error?: string }) => void
+  applyProgress: (data: { invocationId: string; status: string; error?: string; partialSummary?: SubagentPartialSummary }) => void
   cancelInvocation: (invocationId: string) => Promise<void>
   getResult: (invocationId: string) => Promise<SubagentResult | null>
   reset: () => void

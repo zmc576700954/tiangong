@@ -94,6 +94,19 @@ export interface SubagentInvocation {
   error: string | null
 }
 
+/**
+ * F2：失败/取消路径的部分结果摘要。用于进度事件携带「已收多少字符、
+ * 已改多少文件」而不必把完整正文塞进事件载荷。
+ */
+export interface SubagentPartialSummary {
+  /** 已收集的输出字符数（截断前）。 */
+  resultTextChars: number
+  /** 已收集的文件变更数。 */
+  resultFilesCount: number
+  /** resultText 是否因 MAX_OUTPUT_ENTRY_SIZE 被截断。 */
+  truncated: boolean
+}
+
 /** Final result returned by SubagentManager.invoke(). */
 export interface SubagentResult {
   invocationId: string
@@ -101,6 +114,12 @@ export interface SubagentResult {
   resultFiles: string[]
   tokensUsed: number
   durationMs: number
+  /** F2：终态。失败/取消结果通过 getResult 也能拿到，不再只有 completed。 */
+  status?: 'completed' | 'failed' | 'cancelled'
+  /** F2：失败原因（status='failed' 时有值）。 */
+  error?: string
+  /** F2：true 表示 resultText/resultFiles 是失败或取消时保留下来的部分结果。 */
+  partial?: boolean
 }
 
 /** Built-in agent types — registry seed. */

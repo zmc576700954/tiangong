@@ -9,7 +9,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
-import type { IpcApi, AgentOutput, ContextState } from '@shared/types'
+import type { IpcApi, AgentOutput, ContextState, SubagentPartialSummary } from '@shared/types'
 import type { ConflictReport } from '@shared/types/conflict'
 import type { RecipeRunProgressEvent } from '@shared/types/recipe'
 import { decodeIpcError, type IpcErrorPayload, type IpcErrorResult } from '@shared/ipc-error'
@@ -353,8 +353,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // Subagent progress event listener (Phase 4)
-  onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string }) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, data: { invocationId: string; status: string; error?: string }) => callback(data)
+  onSubagentProgress: (callback: (data: { invocationId: string; status: string; error?: string; partialSummary?: SubagentPartialSummary }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { invocationId: string; status: string; error?: string; partialSummary?: SubagentPartialSummary }) => callback(data)
     ipcRenderer.on('subagent:progress', handler)
     return () => { ipcRenderer.removeListener('subagent:progress', handler) }
   },

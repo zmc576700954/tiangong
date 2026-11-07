@@ -106,6 +106,41 @@ describe('SubagentInvocationRepository', () => {
       expect(callArgs).toContain('failed')
       expect(callArgs).toContain('boom')
     })
+
+    it('F2：失败时保留部分输出与用量（COALESCE 不覆盖已有值）', () => {
+      repo.fail('inv-xx', {
+        error: 'boom',
+        finishedAt: 1,
+        resultText: 'partial',
+        resultFiles: ['src/a.ts'],
+        tokensUsed: 42,
+      })
+      const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(sql).toContain('result_text = COALESCE(?, result_text)')
+      expect(sql).toContain('result_files = COALESCE(?, result_files)')
+      expect(sql).toContain('tokens_used = COALESCE(?, tokens_used)')
+      const callArgs = stmt.run.mock.calls[0] as unknown[]
+      expect(callArgs).toContain('partial')
+      expect(callArgs).toContain(JSON.stringify(['src/a.ts']))
+      expect(callArgs).toContain(42)
+    })
+  })
+
+  describe('mergePartialResult', () => {
+    it('F2：只合并部分结果，不改 status/error/finished_at', () => {
+      repo.mergePartialResult('inv-xx', {
+        resultText: 'partial',
+        resultFiles: ['src/a.ts'],
+        tokensUsed: 7,
+      })
+      const sql = (db.prepare as ReturnType<typeof vi.fn>).mock.calls[0][0]
+      expect(sql).toContain('result_text = COALESCE(?, result_text)')
+      expect(sql).not.toContain('status = ?')
+      expect(sql).not.toContain('error = ?')
+      expect(sql).not.toContain('finished_at = ?')
+      const callArgs = stmt.run.mock.calls[0] as unknown[]
+      expect(callArgs[callArgs.length - 1]).toBe('inv-xx')
+    })
   })
 
   describe('listByParent', () => {

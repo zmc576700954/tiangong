@@ -33,13 +33,19 @@ export function registerSubagentHandlers(
   typedHandle('subagent:getResult', async (_, invocationId: unknown): Promise<SubagentResult | null> => {
     const id = ensureString('invocationId', invocationId)
     const inv = await repo.get(id)
-    if (!inv || inv.status !== 'completed') return null
+    // F2：completed / failed / cancelled 都返回结果；失败与取消携带部分输出，
+    // 用结构化 status/partial 字段区分，不靠 resultText 字符串前缀。
+    if (!inv || inv.status === 'queued' || inv.status === 'running') return null
+    const isPartial = inv.status !== 'completed'
     return {
       invocationId: inv.id,
       resultText: inv.resultText ?? '',
       resultFiles: inv.resultFiles ?? [],
       tokensUsed: inv.tokensUsed,
       durationMs: inv.finishedAt ? inv.finishedAt - inv.startedAt : 0,
+      status: inv.status,
+      error: inv.status === 'failed' ? (inv.error ?? undefined) : undefined,
+      partial: isPartial && inv.resultText !== null,
     }
   })
 

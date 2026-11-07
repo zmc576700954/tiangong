@@ -36,6 +36,9 @@ import {
 } from '../agent/runtime/evidence/workspace-snapshot'
 import os from 'node:os'
 
+/** 单条输出最大字符数，超长截断防止内存溢出（子代理部分结果复用同一上限） */
+export const MAX_OUTPUT_ENTRY_SIZE = 10_000
+
 /**
  * Agent 适配器抽象基类
  *
@@ -86,8 +89,6 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       return 200
     }
   }
-  /** 单条输出最大字符数，超长截断防止内存溢出 */
-  private static readonly MAX_OUTPUT_ENTRY_SIZE = 10_000
   /** 错误关键词列表（与 MemoryExtractor 保持一致） */
   private static readonly ERROR_KEYWORDS = [
     'error', '失败', 'exception', 'panic', 'fatal', 'crash',
@@ -652,8 +653,8 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
       buffer = []
       this.sessionOutputBuffers.set(sessionId, buffer)
     }
-    buffer.push(output.data.length > BaseAdapter.MAX_OUTPUT_ENTRY_SIZE
-      ? output.data.slice(0, BaseAdapter.MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
+    buffer.push(output.data.length > MAX_OUTPUT_ENTRY_SIZE
+      ? output.data.slice(0, MAX_OUTPUT_ENTRY_SIZE) + '\n...[truncated]'
       : output.data)
     const cap = BaseAdapter.getMaxOutputBufferSize()
     if (buffer.length > cap) {
