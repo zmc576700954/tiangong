@@ -229,6 +229,18 @@ export interface IpcApi {
   'project:import:allowance:list': () => Promise<Array<Record<string, unknown>>>
   'project:import:allowance:revoke': (id: string, revokedBy?: string) => Promise<void>
 
+  // S2 跨图链接：人工创建（L1 仅 relates_to,§8.4）+ 巡检手动触发（§2.3.1）
+  'map:link:create': (data: {
+    projectPath: string
+    fromEntityKey: string
+    fromGraphId: string
+    toEntityKey: string
+    toGraphId: string
+    linkType?: string
+    reason?: string
+  }) => Promise<{ outcome: 'created' | 'reused' | 'revived'; row: Record<string, unknown> }>
+  'admin:map:integrity-check': () => Promise<{ checked: number; orphans: number; staled: number }>
+
   // 配置管理
   'settings:read': () => Promise<BizGraphSettings>
   // 只提交需要变更的字段即可；主进程与当前设置做顶层合并后再落盘。

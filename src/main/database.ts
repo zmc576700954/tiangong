@@ -15,6 +15,7 @@ import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
+import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -81,6 +82,27 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('import dedup post-migration tasks failed:', err)
   }
+
+  // S2 回填（§2.3.1）：dev→online 按 entity_key 建 derives_from（迁移阶段,fail-closed）。
+  runLinkBackfill(db, CURRENT_SCHEMA_VERSION)
+
+  // S2 巡检（§2.3.1）：启动后一次 + 每日一次（unref 不阻止退出）；手动触发随
+  // admin IPC 交付。巡检只报告不删除,失败不阻断启动。
+  try {
+    runLinkIntegrityCheck(db)
+  } catch (err) {
+    logger.warn('link integrity check failed:', err)
+  }
+  const linkCheckTimer = setInterval(() => {
+    if (!db) return
+    try {
+      runLinkIntegrityCheck(db)
+      new ImportDedupService(db).runRetention()
+    } catch (err) {
+      logger.warn('daily map integrity/retention task failed:', err)
+    }
+  }, 24 * 60 * 60 * 1000)
+  if (linkCheckTimer.unref) linkCheckTimer.unref()
 
   // 定期 WAL checkpoint，防止 WAL 文件膨胀（每 5 分钟）
   keepaliveTimer = setInterval(() => {
@@ -408,8 +430,10 @@ export function rebuildTableIfNeeded(
  *      project_fingerprints / import_rejections / import_allowances + 迁移
  *      状态机表 map_migration_reports；③索引 ux_nodes_graph_entity_key 等 5 条。
  *      回填与导入查重逻辑见 map-migration/ 模块（§8.14.1 / §2.2.2 / §2.6）。
+ * v27：S2 新增 node_links（跨图对应，§2.3/§7.2）+ 索引 5 条。不建到 nodes 的
+ *      外键（L6）。
  */
-const CURRENT_SCHEMA_VERSION = 26
+const CURRENT_SCHEMA_VERSION = 27
 
 interface TableSchema {
   name: string
@@ -829,6 +853,45 @@ const TABLE_SCHEMAS: TableSchema[] = [
     `,
     requiredColumns: ['id', 'kind', 'started_at', 'status'],
   },
+  {
+    // v27 / S2（session-map 蓝图 §2.3 + §7.2 DDL 逐字对齐）：跨图对应关系。
+    // 存 entity_key 不存 node id 为主键语义（id 会变键不变）；**不建到 nodes 的外键**
+    // （L6：节点/图删除不得级联删链接，损坏表现为 status='orphan' 而非静默消失）。
+    name: 'node_links',
+    createSql: `
+      CREATE TABLE node_links (
+        id              TEXT PRIMARY KEY,
+        project_path    TEXT NOT NULL,
+        from_entity_key TEXT NOT NULL,
+        from_graph_id   TEXT NOT NULL,
+        from_graph_type TEXT NOT NULL CHECK(from_graph_type IN ('online','dev','test')),
+        from_node_id    TEXT,
+        to_entity_key   TEXT NOT NULL,
+        to_graph_id     TEXT NOT NULL,
+        to_graph_type   TEXT NOT NULL CHECK(to_graph_type IN ('online','dev','test')),
+        to_node_id      TEXT,
+        link_type       TEXT NOT NULL CHECK(link_type IN (
+          'derives_from','implements','verifies','covers','depends_on',
+          'split_from','merged_into','supersedes','relates_to')),
+        direction       TEXT NOT NULL DEFAULT 'directed'
+                        CHECK(direction IN ('directed','symmetric')),
+        confidence      REAL NOT NULL DEFAULT 1.0,
+        origin          TEXT NOT NULL CHECK(origin IN ('human','derived','import')),
+        status          TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','stale','orphan')),
+        reason          TEXT,
+        metadata        TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        UNIQUE(from_entity_key, to_entity_key, link_type)
+      )
+    `,
+    requiredColumns: [
+      'id', 'project_path', 'from_entity_key', 'from_graph_id', 'from_graph_type',
+      'to_entity_key', 'to_graph_id', 'to_graph_type', 'link_type', 'direction',
+      'origin', 'status', 'created_at', 'updated_at',
+    ],
+  },
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -879,6 +942,12 @@ const INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_project_fingerprints_dir ON project_fingerprints(dir_name)`,
   `CREATE INDEX IF NOT EXISTS idx_import_rejections_time ON import_rejections(created_at)`,
   `CREATE INDEX IF NOT EXISTS idx_import_allowances_fp ON import_allowances(fingerprint_id)`,
+  // v27 / S2：node_links 查询索引（§7.2）
+  `CREATE INDEX IF NOT EXISTS idx_node_links_from ON node_links(from_entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_links_to ON node_links(to_entity_key)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_links_project ON node_links(project_path, status)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_links_from_node ON node_links(from_node_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_node_links_to_node ON node_links(to_node_id)`,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]

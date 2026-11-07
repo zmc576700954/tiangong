@@ -90,6 +90,7 @@ import { AdapterBackendDriver } from './agent/runtime/executors/adapter-driver'
 import { registerFsHandlers } from './ipc/fs'
 import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
+import { registerMapHandlers } from './ipc/map'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
 import { registerMindmapHandlers } from './ipc/mindmap'
@@ -483,6 +484,7 @@ export async function registerIpcHandlers(): Promise<void> {
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
   registerProjectHandlers(typedHandle, graphService, chatService, db)
+  registerMapHandlers(typedHandle, db)
   registerSettingsHandlers(typedHandle, contextWaterline)
   registerDialogHandlers(typedHandle)
   registerMindmapHandlers(typedHandle, agentManager, new NodeRepository(db), new EdgeRepository(db), new GraphRepository(db))
