@@ -157,9 +157,12 @@ const IGNORED_PATTERNS = [
  * @note 使用 safeRealpathSync 解析符号链接，防止工作目录内的 symlink 指向外部
  */
 function sanitizeAllowedFiles(allowedFiles: string[], workingDir: string): string[] {
+  // 统一规范化口径：白名单与工作目录都用同一套 realpath 解析，
+  // 避免 macOS `/tmp` → `/private/tmp` 这类符号链接在路径比较时两侧不一致。
+  const resolvedWorkingDir = safeRealpathSync(path.resolve(workingDir))
   return allowedFiles.map((file) => {
-    const resolved = safeRealpathSync(path.resolve(workingDir, file))
-    const relative = path.relative(workingDir, resolved)
+    const resolved = safeRealpathSync(path.resolve(resolvedWorkingDir, file))
+    const relative = path.relative(resolvedWorkingDir, resolved)
     const isTraversal = isRelativeTraversal(relative) || path.isAbsolute(relative)
     if (isTraversal) {
       throw new ScopeGuardError(
@@ -280,11 +283,14 @@ export class ScopeGuard {
     await fs.mkdir(backupDir, { recursive: true })
 
     // TG-007: 消毒 allowedFiles，防止路径遍历
-    const sanitizedFiles = sanitizeAllowedFiles(allowedFiles, workingDir)
+    // 工作目录先规范化：后续备份相对路径、监控目录、沙箱记录都用同一口径，
+    // 否则 `/tmp` 与 `/private/tmp` 混用会让相对路径出现假的 `../`。
+    const resolvedWorkingDir = safeRealpathSync(path.resolve(workingDir))
+    const sanitizedFiles = sanitizeAllowedFiles(allowedFiles, resolvedWorkingDir)
 
     // 备份允许修改的文件
     for (const srcPath of sanitizedFiles) {
-      const relativePath = path.relative(workingDir, srcPath)
+      const relativePath = path.relative(resolvedWorkingDir, srcPath)
       const backupPath = path.join(backupDir, relativePath)
       await fs.mkdir(path.dirname(backupPath), { recursive: true })
       try {
@@ -304,7 +310,7 @@ export class ScopeGuard {
       watchDirs.add(path.dirname(filePath))
     }
     // 始终纳入工作目录，确保项目范围内所有文件变更可被检测
-    watchDirs.add(workingDir)
+    watchDirs.add(resolvedWorkingDir)
     const initialSnapshot = await this.captureFileSnapshot(watchDirs)
     this.initialSnapshots.set(sandboxId, initialSnapshot)
     this.totalSnapshotEntries += initialSnapshot.size
@@ -316,9 +322,9 @@ export class ScopeGuard {
     const watchedDirs = new Set<string>()
 
     // 始终监控工作目录本身，覆盖白名单目录之外的项目文件
-    if (!watchedDirs.has(workingDir)) {
-      watchedDirs.add(workingDir)
-      watchPaths.push(workingDir)
+    if (!watchedDirs.has(resolvedWorkingDir)) {
+      watchedDirs.add(resolvedWorkingDir)
+      watchPaths.push(resolvedWorkingDir)
     }
 
     for (const filePath of sanitizedFiles) {
@@ -334,7 +340,7 @@ export class ScopeGuard {
     // P2-7A: WSL/网络 FS 检测，自动启用 usePolling
     const provider = getPlatformProvider()
     const isWsl = provider.isWsl
-    const isNetworkFs = workingDir.startsWith('\\') || workingDir.startsWith('//')
+    const isNetworkFs = resolvedWorkingDir.startsWith('\\') || resolvedWorkingDir.startsWith('//')
 
     const providerWatcherOpts = provider.getWatcherOptions()
     const watcher = chokidar.watch(watcherPaths, {
@@ -373,11 +379,11 @@ export class ScopeGuard {
     watcher.on('add', onFileEvent)
 
     // 启动定时主动扫描（第二层：补充 chokidar 延迟）
-    this.startActiveScanning(sandboxId, allowedSet, workingDir)
+    this.startActiveScanning(sandboxId, allowedSet, resolvedWorkingDir)
 
     const sandbox: Sandbox = {
       id: sandboxId,
-      workingDir,
+      workingDir: resolvedWorkingDir,
       backupDir,
       allowedFiles: sanitizedFiles,
     }

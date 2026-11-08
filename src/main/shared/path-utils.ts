@@ -73,7 +73,27 @@ async function resolveNearestExistingAncestor(p: string): Promise<string | null>
   for (let depth = 0; depth < 32; depth++) {
     try {
       const realAncestor = await fs.realpath(current)
-      return path.join(realAncestor, ...missingParts.reverse())
+      // missingParts 是从上到下累积的（每层 unshift），此处不能再翻转顺序。
+      return path.join(realAncestor, ...missingParts)
+    } catch (ancestorErr) {
+      if (!isMissingError(ancestorErr)) return null
+      missingParts.unshift(path.basename(current))
+      const parent = path.dirname(current)
+      if (parent === current) return null
+      current = parent
+    }
+  }
+  return null
+}
+
+/** `resolveNearestExistingAncestor` 的同步版本；全部失败返回 null */
+function resolveNearestExistingAncestorSync(p: string): string | null {
+  let current = path.dirname(p)
+  const missingParts: string[] = [path.basename(p)]
+  for (let depth = 0; depth < 32; depth++) {
+    try {
+      const realAncestor = fsSync.realpathSync(current)
+      return path.join(realAncestor, ...missingParts)
     } catch (ancestorErr) {
       if (!isMissingError(ancestorErr)) return null
       missingParts.unshift(path.basename(current))
@@ -88,8 +108,10 @@ async function resolveNearestExistingAncestor(p: string): Promise<string | null>
 /**
  * Synchronous variant of `safeRealpath`.
  *
- * - On ENOENT/ENAMETOOLONG, falls back to `path.resolve` for not-yet-created
- *   paths.
+ * - On ENOENT/ENAMETOOLONG, resolves the nearest existing ancestor first (same
+ *   as the async variant) so paths under symlinked directories such as macOS
+ *   `/tmp` → `/private/tmp` canonicalise identically whether or not the leaf
+ *   exists yet. Falls back to `path.resolve` only when no ancestor resolves.
  * - If the path is a symlink, resolves the link target manually so symlink
  *   escapes are still detected.
  * - For any other error on a non-symlink path, falls back to `path.resolve`
@@ -100,6 +122,8 @@ export function safeRealpathSync(p: string): string {
     return fsSync.realpathSync(p)
   } catch (err) {
     if (isMissingError(err)) {
+      const resolved = resolveNearestExistingAncestorSync(p)
+      if (resolved !== null) return resolved
       return path.resolve(p)
     }
     const target = readLinkTargetSync(p)

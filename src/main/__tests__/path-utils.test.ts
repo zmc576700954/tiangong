@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { isPathWithin, isPathWithinSync } from '../shared/path-utils'
+import { isPathWithin, isPathWithinSync, safeRealpathSync } from '../shared/path-utils'
 
 describe('path-utils', () => {
   let tmpDir: string
@@ -91,6 +91,15 @@ describe('path-utils', () => {
         await fs.unlink(linkPath)
       }
     })
+
+    it('resolves not-yet-created paths under a symlinked ancestor consistently (macOS /tmp)', async () => {
+      const realTmp = fsSync.realpathSync('/tmp')
+      if (realTmp === '/tmp') return
+
+      const uniqueName = `path-utils-async-ancestor-${process.pid}-${Date.now()}`
+      const viaTmp = path.join('/tmp', uniqueName, 'artifacts', 'ok.txt')
+      expect(await isPathWithin(realTmp, viaTmp)).toBe(true)
+    })
   })
 
   describe('isPathWithinSync', () => {
@@ -130,6 +139,59 @@ describe('path-utils', () => {
         expect(isPathWithinSync(projectDir, linkPath)).toBe(true)
       } finally {
         fsSync.unlinkSync(linkPath)
+      }
+    })
+
+    it('resolves a not-yet-created path through the nearest symlinked ancestor (macOS /tmp)', () => {
+      // macOS 上 /tmp 是指向 /private/tmp 的符号链接；白名单在文件尚未创建时
+      // 解析，若退化为 path.resolve 就会留下 /tmp/...，与创建后 realpath 的
+      // /private/tmp/... 对不上，导致 ScopeGuard 误判越界。
+      const realTmp = fsSync.realpathSync('/tmp')
+      if (realTmp === '/tmp') {
+        // 非符号链接平台无此差异，跳过（不影响其余断言）。
+        return
+      }
+
+      const uniqueName = `path-utils-symlink-ancestor-${process.pid}-${Date.now()}`
+      const viaTmp = path.join('/tmp', uniqueName, 'artifacts', 'ok.txt')
+      const expected = path.join(realTmp, uniqueName, 'artifacts', 'ok.txt')
+
+      expect(safeRealpathSync(viaTmp)).toBe(expected)
+
+      // 创建后两侧口径必须仍然一致（这正是演练断点所缺的等价性）。
+      try {
+        fsSync.mkdirSync(path.dirname(path.join('/tmp', uniqueName)), { recursive: true })
+        fsSync.mkdirSync(path.dirname(viaTmp), { recursive: true })
+        fsSync.writeFileSync(viaTmp, 'ok')
+        expect(fsSync.realpathSync(viaTmp)).toBe(expected)
+        expect(safeRealpathSync(viaTmp)).toBe(expected)
+      } finally {
+        fsSync.rmSync(path.join('/tmp', uniqueName), { recursive: true, force: true })
+      }
+    })
+
+    it('still rejects a not-yet-created path that escapes through a symlink', () => {
+      // 反向往例（安全边界）：不因「最近已存在祖先」改动把不存在路径当成放行。
+      // 工作目录内的符号链接指向外部，其下尚未创建的文件也不能落进白名单。
+      const outsideDir = path.join(tmpDir, 'outside-dir')
+      fsSync.mkdirSync(outsideDir, { recursive: true })
+      const escapeLink = path.join(projectDir, 'escape-link-hypothetical')
+      try {
+        fsSync.symlinkSync(outsideDir, escapeLink, 'dir')
+      } catch {
+        return
+      }
+
+      try {
+        const hypothetical = path.join(escapeLink, 'new.txt')
+        expect(fsSync.existsSync(hypothetical)).toBe(false)
+        expect(isPathWithinSync(projectDir, hypothetical)).toBe(false)
+        // 文件真的出现后仍然必须判越界。
+        fsSync.writeFileSync(hypothetical, 'escaped')
+        expect(isPathWithinSync(projectDir, hypothetical)).toBe(false)
+      } finally {
+        fsSync.rmSync(escapeLink, { recursive: true, force: true })
+        fsSync.rmSync(outsideDir, { recursive: true, force: true })
       }
     })
   })
