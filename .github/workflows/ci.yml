@@ -19,6 +19,25 @@ jobs:
       - run: npm run lint
       - run: npx tsc --noEmit
 
+  # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
+  # 理由：本地全量稳定（316 files / 3892 passed / 3 skipped，约 16s），但这是本套
+  # 单测首次进 CI：better-sqlite3 原生模块 ABI、真实 git 探针、策略延迟预算、
+  # P2 重建耗时阈值等都依赖 runner 环境，尚未在 ubuntu-latest 验证过。
+  # 观测一轮全绿后，删除 continue-on-error 正式作为门禁。
+  unit:
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Run unit tests (vitest, includes tests/migration P1–P9 / G4-6)
+        run: npx vitest run --reporter=default
+
   build:
     needs: lint
     runs-on: ${{ matrix.os }}

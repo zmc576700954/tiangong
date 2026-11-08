@@ -5,7 +5,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    // tests/migration：§8.11 P1–P9 迁移前置验证脚本（G4-7/G4-8）
+    include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'tests/migration/**/*.test.ts'],
     setupFiles: ['./vitest.setup.js'],
     coverage: {
       provider: 'v8',
