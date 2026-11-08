@@ -25,6 +25,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
 import {
   AgentStepRunner,
+  type AcceptanceVerifier,
   type AgentTurnRunner,
   type StepRunResult,
   type StepRunStatus,
@@ -102,6 +103,11 @@ export interface WorkExecutionOptions {
    * 生产由 work-execution-runtime 装配 G1–G6 引擎（gate-engine.ts）。
    */
   gateRecheck?: GateRecheck
+  /**
+   * D2 确定性验收执行器。生产由 runtime 装配；缺省时保持 M3 既有语义，
+   * 但生产执行路径必须注入，否则等于跳过验收（fail-open）。
+   */
+  verifyAcceptance?: AcceptanceVerifier
   /** 事件出口（生产接 renderer 广播；测试可断言）。 */
   onEvent?: (event: WorkExecutionEvent) => void
 }
@@ -385,7 +391,10 @@ export class WorkExecutionService {
       report.runId = claim.run.id
       let outcome: StepRunResult
       try {
-        outcome = await this.runner.run(claim, { adapterName: adapterName! })
+        outcome = await this.runner.run(claim, {
+          adapterName: adapterName!,
+          verifyAcceptance: this.options.verifyAcceptance,
+        })
       } catch (error) {
         // 取消与完成竞态：run 已被条件更新置终态时，以终态为事实，不覆盖。
         const latest = this.runs.get(claim.run.id)

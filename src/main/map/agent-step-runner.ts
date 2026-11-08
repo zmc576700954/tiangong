@@ -13,6 +13,8 @@
  * - 路由只写 pinned adapter（policy='manual_override'），不补 Tier 能力探测——这是对
  *   §5.9.10 的明确偏离，不得在文档里记为"已实现"。
  * - 不接 IPC：本文件不注册任何外部入口，只提供可被后续里程碑装配的执行器。
+ * - D2 验收（2026-11-08）：completed 后若注入 `verifyAcceptance`，必须机器判定通过
+ *   才落 succeeded；判定不出/抛异常一律 `verify_fail`（fail-closed，不默认通过）。
  * - v34：失败分类同时写 `work_runs.failure_class` 与 `work_steps.failure_class`（同值域）；
  *   step 级失败不再只能跨表查最近 run。
  */
@@ -21,6 +23,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { AgentCommand, AgentSessionConfig, TerminationReason } from '@shared/types'
 import type { TurnOutcome } from '@shared/types/agent-runtime'
 import { createLogger } from '../shared/logger'
+import type { AcceptanceVerdict } from './acceptance-executor'
 import type { WorkItemRow, WorkStepRow } from './work-item-service'
 import { WorkRunService, RoutingDecisionRepository, type FailureClass, type WorkRunRow } from './work-run-service'
 import { WorkStepService } from './work-step-service'
@@ -92,10 +95,24 @@ export interface StepRunResult {
   turnStatus?: TurnOutcome['status']
 }
 
+/**
+ * D2 确定性验收端口。turn 报 completed 只代表 agent 自称完成；
+ * 注入后必须再过一遍机器判定，`ok=false`（含 manual 待确认）一律不得通过。
+ */
+export type AcceptanceVerifier = (input: {
+  acceptanceJson: string | null | undefined
+  projectPath: string | null | undefined
+}) => Promise<AcceptanceVerdict>
+
 export interface AgentStepRunnerOptions {
   /** pinned adapter（必填）：没有它就没有路由结论，不得猜一个执行器。 */
   adapterName: string
   threadId?: string
+  /**
+   * 确定性验收执行器（生产由 work-execution-runtime 装配）。
+   * 未注入时保持 M3 既有语义；生产路径必须注入，否则等于跳过验收。
+   */
+  verifyAcceptance?: AcceptanceVerifier
 }
 
 const AGENT_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set<FailureClass>([
@@ -265,6 +282,10 @@ export class AgentStepRunner {
       })
       // §5.9.8.1：终态写入必须在 session terminate 之后。
       await this.safeTerminate(session.sessionId, terminationReasonFor(outcome.status))
+      if (outcome.status === 'completed') {
+        // D2：agent 自称完成 ≠ 验收通过；注入执行器时以机器判定为准（fail-closed）。
+        return await this.finalizeVerified(claim, outcome, session.sessionId, options)
+      }
       return this.finalizeOutcome(claim, outcome, session.sessionId)
     } catch (error) {
       if (session) await this.safeTerminate(session.sessionId, 'error')
@@ -301,6 +322,45 @@ export class AgentStepRunner {
       throw new AgentStepRunnerError('RUN_NOT_ATTACHABLE', `work_run ${run.id} 不能挂载路由决策（已终态）`)
     }
     return decision.id
+  }
+
+  /**
+   * D2：completed 后的确定性验收。判定不通过、判定不出（含 manual 待确认）、
+   * 执行器抛异常，一律按 verify_fail 失败——不把「agent 说完成了」当验收通过。
+   */
+  private async finalizeVerified(
+    claim: ClaimedStep,
+    outcome: AgentTurnSignal,
+    sessionId: string,
+    options: AgentStepRunnerOptions,
+  ): Promise<StepRunResult> {
+    if (!options.verifyAcceptance) {
+      return this.finalizeOutcome(claim, outcome, sessionId)
+    }
+    let verdict: AcceptanceVerdict
+    try {
+      verdict = await options.verifyAcceptance({
+        acceptanceJson: claim.item.acceptance_json,
+        projectPath: claim.item.project_path,
+      })
+    } catch (error) {
+      logger.warn(
+        `[verify] step=${claim.step.id} 验收执行器异常，按 verify_fail 收口：` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+      return this.finalizeFailure(claim, 'verify_fail', 'ACCEPTANCE_VERIFIER_ERROR', sessionId, outcome.status)
+    }
+    if (!verdict.ok) {
+      const codes = [...verdict.missing, ...verdict.pending]
+      return this.finalizeFailure(
+        claim,
+        'verify_fail',
+        `ACCEPTANCE_VERIFY_FAILED:${codes.join(',')}`.slice(0, 200),
+        sessionId,
+        outcome.status,
+      )
+    }
+    return this.finalizeOutcome(claim, outcome, sessionId)
   }
 
   private finalizeOutcome(
@@ -365,6 +425,7 @@ export class AgentStepRunner {
     failureClass: FailureClass,
     reason: string,
     sessionId?: string,
+    turnStatus?: TurnOutcome['status'],
   ): StepRunResult {
     return this.finalize(claim, {
       status: 'failed',
@@ -373,6 +434,7 @@ export class AgentStepRunner {
       run: (id) => this.runs.fail(id, { failureClass, resultSummary: reason }),
       step: (id) => this.steps.fail(id, { status: 'failed', failureClass }),
       sessionId,
+      turnStatus,
     })
   }
 

@@ -3556,9 +3556,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 ## 14. G1–G6 准入 gate 规格（引擎已实施；D1–D14 已全部裁决）
 
 > **状态（按 §0 三态口径，逐项区分，不合并表述）：**
-> - **已实施（`b6f3735`）**：G1–G6 评估引擎 `src/main/map/gate-engine.ts`；生产装配在 `work-execution-runtime.ts` 以 `GateRecheck` 注入，受 `BIZGRAPH_MAP_EXECUTION` 开关控制（默认关闭，关闭时写通道仍显式拒绝）。引擎单元测试 53 例、执行触发测试 12 例，已随 `b6f3735` 落地。
+> - **已实施（`b6f3735`）**：G1–G6 评估引擎 `src/main/map/gate-engine.ts`；生产装配在 `work-execution-runtime.ts` 以 `GateRecheck` 注入，受 `BIZGRAPH_MAP_EXECUTION` 开关控制（默认关闭，关闭时写通道仍显式拒绝）。引擎单元测试 56 例、执行触发测试 12 例，已随 `b6f3735` 落地。
 > - **已批准已实施（`e4398e7`，D1/D7）**：D1 acceptance 冻结为 `{id,type,expected,text?}`，系统边界强制结构化；**存量 `[{id,text}]` 不自动迁移**，人工重新确认计划前任务保持 `blocked`（显式代价）。D7 G4 预估行数采用「Σ scope 文件行数」的**过渡代理指标，不是变更行数**：已存在文件计实际行数，新建文件计 0，目录/读取失败 fail-closed；阈值 env `BIZGRAPH_MAP_EXECUTION_G4_MAX_FILES` / `_LINES`（默认 20/800）。该代理只用于准入规模守卫，不得当作"预计变更行数"的验收事实；真实改动行数属执行后 evidence 对比。
-> - **已全部裁决（2026-11-07，整批采纳推荐值表）**：D2–D6、D8–D14 逐条裁决见 §14.8。其中 D3/D4/D5/D6/D8/D9/D10/D11/D13/D14 与现有引擎保守默认一致（零代码改动，`b6f3735` 即实现）；**D2 为契约冻结、已批准未实施**（确定性验收执行器属后续段落，本期验收 = 结构化渲染 + 人工确认）；**D12 裁决为本期不做**。
+> - **已全部裁决（2026-11-07，整批采纳推荐值表）**：D2–D6、D8–D14 逐条裁决见 §14.8。其中 D3/D4/D5/D6/D8/D9/D10/D11/D13/D14 与现有引擎保守默认一致（零代码改动，`b6f3735` 即实现）；**D2 已于 2026-11-08 实施**（`acceptance-executor.ts` + `agent-step-runner` 接线，最小闭环：`command` 退出码 / `file_check` 存在性，可选 `stdout_contains`、`content_contains`、`timeout_ms`；判定不出含 manual 待确认一律 `verify_fail`）；**D12 裁决为本期不做**。
 > - **仅建议（本节未实施）**：依赖未来能力出现的扩展条款——跨图写入面出现时的 G3 链接矩阵、异步评估器的时限预算、评估器版本精确归因的 schema 变更。对应能力出现前不实施。
 >
 > 本节正文仍是规格定义来源；实际行为以 `gate-engine.ts` 与 `work-execution-runtime.ts` 为准，完整实施记录见 §M5.7 / §M5.8。本节不改 §M5 或其他小节。
@@ -3750,7 +3750,7 @@ GateRecheckResult {
 | 编号 | 裁决 | 状态 | 关联 |
 |---|---|---|---|
 | D1 | acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）；**存量不自动迁移**，人工重新确认计划前保持 `blocked` | 已批准已实施（`e4398e7`） | §5.4 G2、`work-item-service` |
-| D2 | `expected` 判定语义：`command` = 退出码 0（输出匹配不作本期判定依据）；`file_check` = 相对 `project_path` 的路径存在性（内容/哈希匹配后续）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器（真正跑 command/file_check 的组件）本期不存在**：本期验收 = 结构化渲染进提示词（`e4398e7`）+ 人工确认；契约自本裁决冻结，实现属验收阶段，届时不得偏离本语义 | 已批准未实施（契约冻结） | §5.4 G2、`agent-step-runner` |
+| D2 | `expected` 判定语义：`command` = 退出码 0（可选用 `stdout_contains` 匹配标准输出、`timeout_ms` 限制超时）；`file_check` = 相对 `project_path` 的路径存在性（可选用 `content_contains` 匹配文件内容）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器已实施（2026-11-08）**：`acceptance-executor.ts` 只读评估，`agent-step-runner` 在 turn `completed` 后、terminate 之后调用；判定不通过/判定不出（含 manual 待确认）/执行器异常一律 `verify_fail`（fail-closed，不默认通过）。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。内容哈希匹配仍属后续 | 已批准已实施（`acceptance-executor.ts`，2026-11-08） | §5.4 G2、`agent-step-runner` |
 | D3 | G2 豁免为**整条任务粒度**：仅当全部缺失码来自 G2 且失败条目全为 `manual` 时三字段豁免成立；manual 豁免不得覆盖 command/file_check 失败 | 已批准已实施（`b6f3735`） | §5.4、§4.7.3 |
 | D4 | `project_path` 为空 → 直接 fail-closed（`project_path_missing`），不从图/项目根兜底 | 已批准已实施（`b6f3735`） | §5.4.1 |
 | D5 | 「跨图写」采纳收敛口径：本期准入只判锚点存在 + `graph_type='dev'` + `graph_id` 一致；`node_links` 链接矩阵不入本期准入——写入面仅 `scope_files` 且已被 G1 限定在单一项目根内，跨图写在现有字段上不可表达。**若未来出现跨图写入面（如允许改 test 图资产），必须新增 gate 或扩展 G3 并重新裁决，不得静默放宽** | 已批准已实施（`b6f3735`） | §1.2、§2.3、§5.4 G3 |
@@ -3892,6 +3892,21 @@ GateRecheckResult {
 
 **边界**：§14.8 表中 D3/D9 行的状态词已在 2026-11-08 单轨收口时更新（文件所有权合并，见文末「单轨分工与文件所有权」）。
 
+### M5.10 D2 裁决实施记录（2026-11-08，已批准已实施）
+
+**范围（最小闭环）**：`src/main/map/acceptance-executor.ts` 只读评估结构化 acceptance。
+
+- `command`：成功判退出码 0；可选 `stdout_contains`（标准输出包含）与 `timeout_ms`（默认 120s，上限 600s）；超时、非 0 退出、启动失败均不通过。
+- `file_check`：`expected` 必须是相对路径且经 `isPathInside` 校验落在 `project_path` 内；存在且为普通文件才通过；可选 `content_contains`（UTF-8 内容包含）。
+- `manual`：不自动通过，只产出 `acceptance_manual_pending:<i>`；**`ok=false`**（判定不出，不得默认通过）。
+- 非法/空 JSON、存量 `[{id,text}]`、未知 type、`expected` 缺失、`project_path` 缺失/不可解析/非目录，一律 `ok=false` 并带具体缺失码。
+
+**接线**：`AgentStepRunner.run` 在 turn `completed` 且 session terminate 之后调用 `verifyAcceptance`；`ok=false` 或执行器抛异常 → `run/step` 落 `failed(verify_fail)`（异常 reason `ACCEPTANCE_VERIFIER_ERROR`），`turnStatus` 仍记 `completed`。`WorkExecutionService` 透传，`work-execution-runtime` 装配 `evaluateAcceptance`。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。
+
+**测试**：`acceptance-executor.test.ts` 18 例（退出码/stdout/超时/启动失败/路径存在与内容/绝对路径与逃逸/目录/不可读/非法 JSON/存量形状/manual/混合）；`agent-step-runner.test.ts` +5（通过、不通过、manual 待确认、执行器异常、非 completed 不触发）。相关 5 个测试文件 109 例全绿，`tsc --noEmit` 0 error。
+
+**边界**：内容哈希匹配、异步评估时限预算（D14 未来约束）不在本期；`manual` 的人工确认入口尚未实现，因此 manual 条目当前只能得到 `verify_fail`，不会被自动放行。
+
 ## 单轨分工与文件所有权（2026-11-08）
 
 > 用户裁决：只保留**蓝图/编排线**单轨继续；其余三条线冻结。状态词按 §0 三态口径。
@@ -3902,7 +3917,7 @@ GateRecheckResult {
 |---|---|---|
 | L2 审查修复 | **已实施，冻结** | P0 3/3（`2ce268b`）；P1 8/8 有对应修复提交（`88ab019`/`6e472de`/`c7a04a9`/`f65935d`/`9493fde`/`d8ace71`/`b53b82c`/`13321fc`）；P2 8 项中 4 项可核对（`1fd91fe`/`ed22fd8`/`f2f2882`/`dcf5af2`），其余 4 项需取回原始审查清单、按复现决定，本轮不改代码 |
 | 启动与退出诊断 | **已实施，冻结** | `9b220ab`/`6e472de`/`4eb95b5`/`c7a04a9`/`13321fc`/`d8ace71`；无已知挂账 |
-| L2 执行触发 | **已实施，冻结** | `7d9ef7e`（tick/写通道）、`b6f3735`（G1–G6）、`e4398e7`（D1/D7）、`94125bd`（D3/D9）；D2 为**已批准未实施**，转本单轨继续 |
+| L2 执行触发 | **已实施，冻结** | `7d9ef7e`（tick/写通道）、`b6f3735`（G1–G6）、`e4398e7`（D1/D7）、`94125bd`（D3/D9）；D2 原为已批准未实施，2026-11-08 由本单轨实施（`acceptance-executor.ts`） |
 
 ### 文件所有权（自 2026-11-08 起统一）
 
@@ -3910,6 +3925,6 @@ GateRecheckResult {
 
 ### 三态总账
 
-- **已实施**：S1–S8、L1、M1–M5、G1–G6、D1/D3/D4/D5/D6/D7/D8/D9/D10/D11/D13/D14。
-- **已批准未实施**：D2（`command`/`file_check` 确定性验收执行器；本单轨续作）。
+- **已实施**：S1–S8、L1、M1–M5、G1–G6、D1/D2/D3/D4/D5/D6/D7/D8/D9/D10/D11/D13/D14。
+- **已批准未实施**：无。
 - **仅建议**：未来跨图写入面出现时的 G3 扩展、异步评估器的时限预算与版本精确归因（D12 已裁决本期不做）。

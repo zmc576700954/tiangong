@@ -12,6 +12,7 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { getKernelBackendPolicy } from '../agent/runtime/feature-flags'
 import { createLogger } from '../shared/logger'
 import { AgentManagerTurnRunner, type KernelOnlyTurnHost } from './agent-step-runner'
+import { evaluateAcceptance } from './acceptance-executor'
 import { createGateEngine, type GateEngineOptions } from './gate-engine'
 import { isMapExecutionEnabled, mapExecutionAdapter } from './execution-flags'
 import { setWorkExecutionService } from './work-execution-registry'
@@ -142,6 +143,10 @@ export function startWorkExecutionRuntime(options: StartWorkExecutionOptions): v
       estimateLines: buildEstimateLines(),
     }),
     probeKernel: buildProbe(options.hasAdapter),
+    // D2：completed 后跑确定性验收（command 退出码 / file_check 存在性），
+    // 判定不出即 verify_fail，不默认通过（§14.8）。
+    verifyAcceptance: ({ acceptanceJson, projectPath }) =>
+      evaluateAcceptance({ acceptanceJson, projectPath }),
     onEvent: (event) => {
       void broadcastEvent(event)
     },

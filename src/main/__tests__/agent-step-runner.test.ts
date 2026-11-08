@@ -310,4 +310,107 @@ describe('AgentStepRunner（M3）', () => {
     expect(steps.get(c.step.id)?.status).toBe('running')
     expect(turns.starts).toHaveLength(0)
   })
+
+  // ---- D2 确定性验收接线（2026-11-08） ----
+
+  it('D2：验收通过 → succeeded；验收发生在 terminate 之后', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+    const inputs: Array<{ acceptanceJson?: string | null; projectPath?: string | null }> = []
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async (input) => {
+        inputs.push(input)
+        return { ok: true, missing: [], pending: [], checked: 1 }
+      },
+    })
+
+    expect(result.status).toBe('succeeded')
+    expect(runs.get(c.run.id)?.status).toBe('completed')
+    expect(inputs).toHaveLength(1)
+    expect(inputs[0].projectPath).toBe('/p/a')
+    expect(inputs[0].acceptanceJson).toContain('npm test')
+    expect(turns.events).toEqual(['start', 'turn', 'terminate'])
+  })
+
+  it('D2：验收不通过 → run/step failed(verify_fail)，不落 succeeded', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => ({
+        ok: false,
+        missing: ['acceptance_command_exit:0:1'],
+        pending: [],
+        checked: 1,
+      }),
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.failureClass).toBe('verify_fail')
+    expect(result.reason).toContain('acceptance_command_exit:0:1')
+    expect(result.turnStatus).toBe('completed')
+    expect(runs.get(c.run.id)?.status).toBe('failed')
+    expect(runs.get(c.run.id)?.failure_class).toBe('verify_fail')
+    expect(steps.get(c.step.id)?.status).toBe('failed')
+    expect(steps.get(c.step.id)?.failure_class).toBe('verify_fail')
+  })
+
+  it('D2：manual 待确认 → verify_fail（不默认通过）', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => ({
+        ok: false,
+        missing: [],
+        pending: ['acceptance_manual_pending:0'],
+        checked: 0,
+      }),
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.failureClass).toBe('verify_fail')
+    expect(result.reason).toContain('acceptance_manual_pending:0')
+    expect(runs.get(c.run.id)?.status).toBe('failed')
+  })
+
+  it('D2：验收执行器抛异常 → verify_fail（fail-closed）', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => {
+        throw new Error('verifier boom')
+      },
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result.failureClass).toBe('verify_fail')
+    expect(result.reason).toBe('ACCEPTANCE_VERIFIER_ERROR')
+    expect(runs.get(c.run.id)?.failure_class).toBe('verify_fail')
+  })
+
+  it('D2：turn 非 completed 不触发验收（cancelled 保持原语义）', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+    turns.runResult = async () => ({ status: 'cancelled', failureClass: 'aborted' })
+    let calls = 0
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => {
+        calls += 1
+        return { ok: true, missing: [], pending: [], checked: 0 }
+      },
+    })
+
+    expect(result.status).toBe('cancelled')
+    expect(calls).toBe(0)
+    expect(runs.get(c.run.id)?.status).toBe('cancelled')
+  })
 })
