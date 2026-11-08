@@ -12,6 +12,7 @@ export type RuntimeErrorCode =
   | 'TURN_NOT_FOUND'
   | 'EXECUTOR_CONFIG_INVALID'
   | 'RECOVERY_FAILED'
+  | 'WORKSPACE_BUSY'
 
 export class AgentRuntimeError extends Error {
   readonly code: RuntimeErrorCode

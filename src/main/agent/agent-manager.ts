@@ -743,6 +743,14 @@ export class AgentManager {
   }
 
   /**
+   * W5-A 退出路径：强制 flush 事件批写缓冲、停止定时器并释放 workspace lease。
+   * 必须在关闭 SQLite 之前调用，否则未落盘的 delta 事件会丢失。
+   */
+  shutdownRuntime(): void {
+    this.runtime?.shutdown()
+  }
+
+  /**
    * F3-A：DeadlineReaper 每 5s 扫描 status='running' 且 deadline_at>0 且已过期的
    * turn，逐个收口（杀进程组 + 终态 CAS failed/'timeout' + terminate 会话）。
    * waiting_approval 不触发（P1-1 审批等待冻结 deadline）；deadline_at 空/0 的 turn 不参与。

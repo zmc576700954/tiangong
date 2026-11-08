@@ -210,4 +210,90 @@ describe('RecoveryPlan (D5)', () => {
     const { repo } = seedCrashState()
     expect(() => assertNoDangling(repo)).toThrow(/RECOVERY_FAILED/)
   })
+
+  it('enumerates every aborted step in stepOutcomes and persists its disposition', () => {
+    const db = openTestDb()
+    const repo = new AgentRepository(db)
+    repo.insertSession({ id: 'sess-aborted', executor: 'claude-code', status: 'active' })
+    const run = repo.insertRun({ threadId: 't1', nodeId: 'n-aborted', graphId: 'g1', executor: 'claude-code' })
+    const turn = repo.insertTurn({
+      runId: run.id,
+      sessionId: 'sess-aborted',
+      nodeId: 'n-aborted',
+      resumeMode: 'native',
+      idempotencyKey: 'k-aborted',
+      input: {},
+    })
+    repo.upsertStep({ id: 's-run', turnId: turn.id, kind: 'tool', toolName: 'Bash', status: 'running', fidelity: 'turn' })
+    repo.upsertStep({ id: 's-aborted', turnId: turn.id, kind: 'tool', toolName: 'Write', status: 'aborted', fidelity: 'turn' })
+    repo.upsertStep({ id: 's-done', turnId: turn.id, kind: 'tool', toolName: 'Read', status: 'done', fidelity: 'turn' })
+
+    const plan = planRecovery(repo)
+    const turnPlan = plan.plans.find((p) => p.action === 'abort_turn' && p.turnId === turn.id)!
+    expect(turnPlan.stepOutcomes?.map((outcome) => outcome.stepId).sort()).toEqual(['s-aborted', 's-done', 's-run'])
+    // aborted 不是成功声明：仍必须得到三选一处置
+    expect(turnPlan.stepOutcomes?.find((outcome) => outcome.stepId === 's-aborted')?.disposition)
+      .toMatch(/^(completed|unknown-needs-rerun|needs-human)$/)
+
+    applyRecoveryPlan(repo, plan)
+    const steps = repo.listSteps(turn.id)
+    for (const step of steps) {
+      expect(step.test_disposition).toMatch(/^(completed|unknown-needs-rerun|needs-human)$/)
+    }
+    expect(steps.find((step) => step.id === 's-aborted')?.status).toBe('aborted')
+    db.close()
+  })
+
+  it('turn-level: cancelling converges to cancelled while queued/waiting keep crash semantics', () => {
+    const db = openTestDb()
+    const repo = new AgentRepository(db)
+    repo.insertSession({ id: 'sess-phase', executor: 'claude-code', status: 'active' })
+
+    const makeTurn = (suffix: string, status: 'queued' | 'waiting_approval' | 'cancelling') => {
+      const run = repo.insertRun({ threadId: 't1', nodeId: `n-${suffix}`, graphId: 'g1', executor: 'claude-code' })
+      return repo.insertTurn({
+        runId: run.id,
+        sessionId: 'sess-phase',
+        nodeId: `n-${suffix}`,
+        status,
+        resumeMode: 'native',
+        idempotencyKey: `k-${suffix}`,
+        input: {},
+      })
+    }
+    const queued = makeTurn('queued', 'queued')
+    const waiting = makeTurn('waiting', 'waiting_approval')
+    const cancelling = makeTurn('cancelling', 'cancelling')
+    repo.upsertStep({ id: 's-cancel', turnId: cancelling.id, kind: 'tool', toolName: 'Bash', status: 'running', fidelity: 'turn' })
+
+    const plan = planRecovery(repo)
+    const byTurn = (id: string) => plan.plans.find((p) => p.action === 'abort_turn' && p.turnId === id)!
+    expect(byTurn(queued.id).reason).toContain('queued')
+    expect(byTurn(waiting.id).reason).toContain('waiting approval')
+    expect(byTurn(cancelling.id).reason).toContain('cancelling')
+    expect(byTurn(cancelling.id).terminalStatus).toBe('cancelled')
+    expect(byTurn(queued.id).terminalStatus).toBe('orphaned')
+
+    applyRecoveryPlan(repo, plan)
+    expect(repo.getTurn(queued.id)?.status).toBe('orphaned')
+    expect(repo.getTurn(waiting.id)?.status).toBe('orphaned')
+    expect(repo.getTurn(cancelling.id)?.status).toBe('cancelled')
+    expect(repo.getTurn(cancelling.id)?.failure_class).toBe('aborted')
+    expect(repo.listSteps(cancelling.id)[0].status).toBe('aborted')
+    expect(repo.listSteps(cancelling.id)[0].test_disposition).toBeTruthy()
+    db.close()
+  })
+
+  it('recovery never writes snapshots (turn-start snapshot is read-only)', () => {
+    const { db, repo, run } = seedCrashState()
+    repo.saveSnapshot(run.id, { phase: 'turn-start', turnId: 'turn-seed' }, 1)
+    const before = db.prepare('SELECT run_id, seq, state_json, created_at FROM agent_snapshots').all()
+
+    const plan = planRecovery(repo)
+    applyRecoveryPlan(repo, plan)
+
+    const after = db.prepare('SELECT run_id, seq, state_json, created_at FROM agent_snapshots').all()
+    expect(after).toEqual(before)
+    db.close()
+  })
 })

@@ -1334,7 +1334,7 @@ export class AgentRepository {
   // ---------------------------------------------------------
   applyRecoveryPlan(plan: RecoveryPlan, now = Date.now()): void {
     switch (plan.action) {
-      case 'abort_turn':
+      case 'abort_turn': {
         if (!plan.turnId) return
         this.abortOpenSteps(plan.turnId, now)
         // P0-2：step 级处置必须真正落库，而不是只出现在报告里
@@ -1344,9 +1344,26 @@ export class AgentRepository {
             this.updateStepStatus(outcome.stepId, 'done', { endedAt: now, resultRef: 'recovery:snapshot-match' }, now)
           }
         }
-        this.updateTurnStatus(plan.turnId, 'orphaned', { endedAt: now, failureClass: 'crash' }, now)
+        // 兜底：任何 aborted step 都必须有确定处置，不能因规划遗漏留下 NULL。
+        this.db
+          .prepare(
+            `UPDATE agent_steps SET test_disposition = 'unknown-needs-rerun'
+              WHERE turn_id = ? AND status = 'aborted' AND test_disposition IS NULL`,
+          )
+          .run(plan.turnId)
+        const terminalStatus = plan.terminalStatus ?? 'orphaned'
+        this.updateTurnStatus(
+          plan.turnId,
+          terminalStatus,
+          {
+            endedAt: now,
+            failureClass: terminalStatus === 'cancelled' ? 'aborted' : 'crash',
+          },
+          now,
+        )
         this.projectRunStatus(plan.runId, now)
         break
+      }
       case 'mark_session_orphaned':
         if (plan.sessionId) this.updateSessionStatus(plan.sessionId, 'orphaned', now)
         break

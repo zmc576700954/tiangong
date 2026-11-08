@@ -467,6 +467,82 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
+  it('三阶段：等待审批不写 executing_at，允许后才写 approved_at，进入执行才写 executing_at', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const driver: BackendDriver = {
+      name: 'claude',
+      capabilities: CAPABILITIES,
+      async execute(request, context) {
+        context.step.ensure('step-write', { kind: 'tool', toolName: 'Write', fidelity: 'turn', status: 'requested' })
+        context.step.ensure('step-deny', { kind: 'tool', toolName: 'Bash', fidelity: 'turn', status: 'requested' })
+        context.record([event(request, 1, 'approval.required', { toolName: 'Write' }, 'step-write')])
+        await gate
+        context.record([
+          event(request, 2, 'approval.resolved', { decision: 'allow' }, 'step-write'),
+          event(request, 3, 'tool.requested', { toolName: 'Write' }, 'step-write'),
+          event(request, 4, 'tool.result', { ok: true }, 'step-write'),
+          event(request, 5, 'approval.required', { toolName: 'Bash' }, 'step-deny'),
+          event(request, 6, 'approval.resolved', { decision: 'deny' }, 'step-deny'),
+        ])
+        return { status: 'completed', completionSignal: 'backend-turn-completed' }
+      },
+      async cancel() {
+        /* no-op */
+      },
+    }
+    const { repo, runtime } = setup(driver)
+
+    const pending = runtime.runNode(
+      request({ nodeId: 'n-stage', agentSessionId: 'sess-stage', idempotencyKey: 'k-stage' }),
+    )
+    await waitFor(() => {
+      const turn = repo.findTurnByIdempotencyKey('sess-stage:k-stage')
+      return Boolean(turn) && repo.listSteps(turn!.id).some((step) => step.id.endsWith(':step-write'))
+    })
+
+    const turn = repo.findTurnByIdempotencyKey('sess-stage:k-stage')!
+    const waiting = repo.listSteps(turn.id).find((step) => step.id.endsWith(':step-write'))!
+    // 等待阶段：只有 awaiting_approval，approved_at/executing_at 都必须为空
+    expect(waiting.status).toBe('awaiting_approval')
+    expect(waiting.approved_at).toBeNull()
+    expect(waiting.executing_at).toBeNull()
+
+    release()
+    await expect(pending).resolves.toMatchObject({ status: 'completed' })
+
+    const done = repo.listSteps(turn.id).find((step) => step.id.endsWith(':step-write'))!
+    expect(done.status).toBe('done')
+    expect(done.approved_at).not.toBeNull()
+    expect(done.executing_at).not.toBeNull()
+    expect(done.executing_at!).toBeGreaterThanOrEqual(done.approved_at!)
+
+    // 被拒绝的工具：没有批准，也没有执行
+    const denied = repo.listSteps(turn.id).find((step) => step.id.endsWith(':step-deny'))!
+    expect(denied.status).toBe('denied')
+    expect(denied.approved_at).toBeNull()
+    expect(denied.executing_at).toBeNull()
+    runtime.dispose()
+  })
+
+  it('turn 起始快照在执行前落库，且只含元数据与 promptHash', async () => {
+    const driver = makeInstantDriver()
+    const { repo, runtime } = setup(driver)
+
+    const outcome = await runtime.runNode(
+      request({ nodeId: 'n-snap', agentSessionId: 'sess-snap', idempotencyKey: 'k-snap' }),
+    )
+    const snapshot = repo.latestSnapshot(outcome.runId)
+    expect(snapshot).not.toBeNull()
+    expect(snapshot!.state).toMatchObject({ phase: 'turn-start', turnId: outcome.turnId, nodeId: 'n-snap' })
+    expect(typeof snapshot!.state.promptHash).toBe('string')
+    // 不落 prompt 原文
+    expect(JSON.stringify(snapshot!.state)).not.toContain('do the thing')
+    runtime.dispose()
+  })
+
   it('阻断 B3：用户取消后 driver 迟到完成，不得把终态改回 completed', async () => {
     let context: DriverExecuteContext | undefined
     let resolveExecution: ((result: DriverExecuteResult) => void) | undefined
@@ -764,6 +840,8 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     // OpenCode 类真实句柄：取消后 2s 内残留=0，且 residual_risk 为 none
     await waitFor(() => !alive(bPid), 2000)
     expect(repo.getSession('sess-b1')?.residual_risk).toBe('none')
+    // 真实句柄回收必须真的发生过（不是因为在 2s 内自己退出）
+    expect(repo.getSession('sess-b1')?.recovery_kills).toBeGreaterThanOrEqual(1)
     runtime.dispose()
   })
 

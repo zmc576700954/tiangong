@@ -27,14 +27,14 @@ function tryConstructor(modulePath: string): DatabaseConstructor | null {
   }
 }
 
-export function openTestDb(applySchema = true): BetterSqlite3.Database {
+export function openTestDb(applySchema = true, filename = ':memory:'): BetterSqlite3.Database {
   const direct = tryConstructor('better-sqlite3')
   const fallback = path.resolve(process.cwd(), 'spikes/agent-core/node_modules/better-sqlite3')
   const candidates = [direct, tryConstructor(fallback)].filter((item): item is DatabaseConstructor => item !== null)
 
   for (const Ctor of candidates) {
     try {
-      const db = new Ctor(':memory:')
+      const db = new Ctor(filename)
       db.pragma('foreign_keys = ON')
       if (applySchema) applyAgentSchema(db)
       return db

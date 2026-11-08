@@ -48,6 +48,8 @@ export type NormalizedEventType =
   | 'process.reclaimed'
   /** P0-2：事件保留策略每次执行的留痕（无对应 turn 行，因此自身永不被清理） */
   | 'retention.cleanup'
+  /** W5-A：启动恢复报告（回收/规划/审批结果汇总，系统事件） */
+  | 'startup.reconcile'
   | 'error'
 
 /** 归一化事件信封（落库前 seq 由 EventSink 分配；落库时 run 级 seq 可能被重排） */
@@ -437,6 +439,11 @@ export interface RecoveryPlan {
     | 'mark_run_interrupted'
     | 'keep_pending_approval'
   reason: string
+  /**
+   * abort_turn 的终态：默认 orphaned（崩溃遗留）；cancelling turn 在取消过程中
+   * 崩溃时收敛为 cancelled（用户意图已明确），但步骤仍按 stepOutcomes 对账。
+   */
+  terminalStatus?: 'orphaned' | 'cancelled'
   /** abort_turn 时逐 step 的确定处置，并写入 agent_steps.test_disposition */
   stepOutcomes?: StepOutcome[]
 }

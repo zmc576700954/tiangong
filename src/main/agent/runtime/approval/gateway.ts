@@ -19,6 +19,7 @@ import type {
   ApprovalRequestInput,
   ApprovalRequestPayload,
   ApprovalResolutionPayload,
+  NormalizedEventEnvelope,
   RiskLevel,
   SessionGrantInfo,
 } from '@shared/types/agent-runtime'
@@ -104,6 +105,16 @@ export interface ApprovalGatewayOptions {
   unattendedTimeoutMs?: number
   notifier?: ApprovalNotifier
   now?: () => number
+  /**
+   * W5-A：审计事件写入通道。Runtime 注入事件批写器，保证审批事件
+   * 与同一 run 的高频事件共享同一写入顺序（审批事件本身仍同步落库）。
+   */
+  eventSink?: (events: NormalizedEventEnvelope[]) => void
+  /**
+   * 计算 turn_seq 前先 flush 批写缓冲，避免「审计用 DB max+1」与
+   * 尚未落盘的高频事件 seq 撞车（UNIQUE(turn_id, turn_seq)）。
+   */
+  beforeAudit?: () => void
 }
 
 /** 保守的工具风险分类：只用于 UI 提示，不替代用户决定。 */
@@ -150,6 +161,8 @@ export class ApprovalGateway {
    */
   private readonly legacySessions = new Set<string>()
   private notifier: ApprovalNotifier | undefined
+  private readonly eventSink: ((events: NormalizedEventEnvelope[]) => void) | undefined
+  private readonly beforeAudit: (() => void) | undefined
   private disposed = false
 
   constructor(options: ApprovalGatewayOptions) {
@@ -158,6 +171,8 @@ export class ApprovalGateway {
     this.unattendedTimeoutMs = options.unattendedTimeoutMs ?? UNATTENDED_TIMEOUT_MS
     this.now = options.now ?? Date.now
     this.notifier = options.notifier
+    this.eventSink = options.eventSink
+    this.beforeAudit = options.beforeAudit
   }
 
   setNotifier(notifier: ApprovalNotifier | undefined): void {
@@ -506,6 +521,15 @@ export class ApprovalGateway {
     }
   }
 
+  /** 审计事件优先走 Runtime 注入的批写器；未注入时保持原有直接落库。 */
+  private writeAuditEvents(events: NormalizedEventEnvelope[]): void {
+    if (this.eventSink) {
+      this.eventSink(events)
+      return
+    }
+    this.repo.appendEvents(events)
+  }
+
   /**
    * 授权未命中的审计事件：只记录本次调用的工具类别、原因与目标路径，
    * 不落原始参数（避免把文件内容写进事件库）。失败不阻塞审批流程。
@@ -517,9 +541,11 @@ export class ApprovalGateway {
     // 旧路径没有 turn，不往 agent_events 写无归属的孤儿事件。
     if (legacySessionIdOf(input.runId ?? '', input.turnId ?? '') !== undefined) return
     try {
+      // 先落盘缓冲中的高频事件，再按 DB max+1 计算 turn_seq。
+      this.beforeAudit?.()
       const anchorTurn = input.turnId ?? input.subjectId ?? input.runId ?? 'no-turn'
       const seq = this.repo.listTurnEvents(anchorTurn).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
-      this.repo.appendEvents([
+      this.writeAuditEvents([
         {
           eventId: eventIdFor(anchorTurn, seq),
           // S8/D6:subject 审批无 run/turn,事件锚定到 subject(runId 同锚点)
@@ -558,9 +584,11 @@ export class ApprovalGateway {
       return
     }
     try {
+      // 先落盘缓冲中的高频事件，再按 DB max+1 计算 turn_seq。
+      this.beforeAudit?.()
       const anchorTurn = input.turnId ?? input.subjectId ?? input.runId ?? 'no-turn'
       const seq = this.repo.listTurnEvents(anchorTurn).reduce((max, event) => Math.max(max, event.turn_seq), 0) + 1
-      this.repo.appendEvents([
+      this.writeAuditEvents([
         {
           eventId: eventIdFor(anchorTurn, seq),
           // S8/D6:subject 审批无 run/turn,事件锚定到 subject(runId 同锚点)

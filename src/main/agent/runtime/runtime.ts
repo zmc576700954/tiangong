@@ -18,7 +18,6 @@ import type {
   Fidelity,
   NormalizedEventEnvelope,
   RecoveryReport,
-  ResidualRisk,
   RunNodeRequest,
   StepStatus,
   TurnOutcome,
@@ -38,14 +37,15 @@ import { loadPricing, costRatesToEntries } from './cost/pricing'
 import { ApprovalGateway, type ApprovalNotifier } from './approval/gateway'
 import { SessionBusyError, NodeBusyError, AgentRuntimeError } from './errors'
 import { nodeLockKey, ROOT_LOCK_CONTEXT, SessionLockRegistry, sessionLockKey } from './locks/session-lock'
+import { WorkspaceLeaseRegistry, type WorkspaceLease } from './locks/workspace-lease'
 import { attestProcIdentity, ProcessReaper, type ProcIdentity, type ReapReport } from './process/reaper'
 import {
-  listProcRegistryRecords,
   readProcRegistryRecord,
   removeProcRegistryRecord,
   verifyProcRegistryFile,
 } from '../../shared/process-supervisor'
-import { applyRecoveryPlan, assertNoDangling, planRecovery } from './recovery/planner'
+import { EventBatchWriter } from './event-batch-writer'
+import { StartupReconciler, classifyResidual } from './startup-reconciler'
 import { hashArgs, eventIdFor } from './util'
 import { createLogger } from '../../shared/logger'
 
@@ -64,6 +64,14 @@ export interface AgentRuntimeOptions {
   now?: () => number
   /** P1-2：driver.cancel 时限（默认 DEFAULT_AGENT_TIMEOUTS.cancelMs）；单测注入用 */
   cancelTimeoutMs?: number
+  /** W5-A：事件分级批写（enabled=false 回到全同步模式） */
+  eventBatch?: {
+    enabled?: boolean
+    flushIntervalMs?: number
+    maxBatchEvents?: number
+  }
+  /** W5-A：workspace lease（默认关闭；显式注入/开启才生效） */
+  lease?: WorkspaceLeaseRegistry
 }
 
 interface TurnInputSnapshot {
@@ -89,27 +97,16 @@ function hasReportedUsage(usage: DriverUsage): boolean {
   )
 }
 
-/**
- * residual_risk 判定（§6.5 / 验收口径）：
- * - unconfirmed：有 pid/marker 线索，但归属证据不足，拒绝回收；
- * - possible：归属已证明，但 SIGKILL 后仍存活（未能确认退出）；
- * - none：已证明并确认不存在，或完全没有线索。
- */
-function classifyResidual(report: ReapReport | null, hadMarker: boolean): ResidualRisk {
-  if (report) {
-    if (report.unresolved.length > 0) return 'unconfirmed'
-    if (report.stillAlive.length > 0) return 'possible'
-  }
-  // 完全没有任何可核对句柄（SDK 隐式子进程）时，marker 只是线索，不能宣称残留为 0
-  if (hadMarker && (!report || report.discovered === 0)) return 'unconfirmed'
-  return 'none'
-}
-
 export class AgentRuntime {
   readonly repo: AgentRepository
   readonly locks: SessionLockRegistry
   readonly approvals: ApprovalGateway
   readonly reaper: ProcessReaper
+  /** W5-A：分级事件写入（关键事件同步 / delta 批写） */
+  readonly eventWriter: EventBatchWriter
+  /** W5-A：workspace lease（默认关闭） */
+  readonly lease: WorkspaceLeaseRegistry
+  private readonly startupReconciler: StartupReconciler
   /** M1 成本账本：usage 落库 + 图日汇总/turn 明细只读查询 */
   readonly usageLedger: UsageLedger
   private readonly drivers = new Map<string, BackendDriver>()
@@ -126,16 +123,39 @@ export class AgentRuntime {
     this.repo = options.repo ?? new AgentRepository(options.db)
     this.locks = options.locks ?? new SessionLockRegistry()
     this.reaper = options.reaper ?? new ProcessReaper()
+    this.onEvent = options.onEvent
+    this.now = options.now ?? Date.now
+    // 事件批写器必须先于审批通道创建：审批审计事件也要走同一写入序列。
+    this.eventWriter = new EventBatchWriter({
+      repo: this.repo,
+      enabled: options.eventBatch?.enabled,
+      flushIntervalMs: options.eventBatch?.flushIntervalMs,
+      maxBatchEvents: options.eventBatch?.maxBatchEvents,
+      onWritten: (events, assigned) => {
+        events.forEach((event, index) => {
+          this.syncStepFromEvent(event)
+          this.onEvent?.({ ...event, seq: assigned[index] })
+        })
+      },
+    })
     this.approvals =
       options.approvals ??
       new ApprovalGateway({
         db: options.db,
         repo: this.repo,
         notifier: options.approvalNotifier,
-        now: options.now,
+        now: this.now,
+        eventSink: (events) => this.eventWriter.write(events),
+        beforeAudit: () => this.eventWriter.flush(),
       })
-    this.onEvent = options.onEvent
-    this.now = options.now ?? Date.now
+    this.lease = options.lease ?? new WorkspaceLeaseRegistry()
+    this.startupReconciler = new StartupReconciler({
+      repo: this.repo,
+      reaper: this.reaper,
+      eventSink: (events) => this.eventWriter.write(events),
+      beforePlan: () => this.expireOverdueTurnsOnStartup(),
+      now: this.now,
+    })
     this.cancelTimeoutMs = options.cancelTimeoutMs ?? DEFAULT_AGENT_TIMEOUTS.cancelMs
     this.retentionEnabled = options.retention?.enabled !== false
     this.retentionPolicy = AgentRuntime.normalizeRetention(options.retention)
@@ -193,7 +213,7 @@ export class AgentRuntime {
     try {
       const at = this.now()
       const runId = `system:retention:${at}`
-      this.repo.appendEvents([
+      this.eventWriter.write([
         {
           eventId: eventIdFor(runId, 1),
           runId,
@@ -345,6 +365,20 @@ export class AgentRuntime {
           throw new NodeBusyError(request.nodeId, branchKey)
         }
 
+        // W5-A：workspace lease（默认关闭时 acquire 返回 noop）。
+        // 在创建会话/turn 之前判定，拒绝时不会留下悬空 running。
+        const workspaceLease: WorkspaceLease = this.lease.acquire(request.workingDirectory, {
+          workspacePath: request.workingDirectory,
+          envMarker: `bizgraph-session:${request.agentSessionId}`,
+        })
+        if (!workspaceLease.acquired) {
+          throw new AgentRuntimeError(
+            'WORKSPACE_BUSY',
+            `WORKSPACE_BUSY: workspace leased by pid ${workspaceLease.holder?.pid ?? 'unknown'} (key=${workspaceLease.workspaceKey})`,
+          )
+        }
+        try {
+
         const session =
           preExistingSession ??
           this.repo.insertSession({
@@ -359,6 +393,9 @@ export class AgentRuntime {
           })
 
         const turn = this.insertTurn(run.id, session.id, request, branchKey, attempt, resumeMode, idempotencyKey, snapshot)
+        // turn 起始快照：执行开始前落一份只含元数据的基线（prompt 只存 hash）。
+        // 恢复期只读取这份快照做对账，绝不在 recovery 路径里追加新快照。
+        this.writeTurnStartSnapshot(run.id, turn, request, branchKey, attempt, resumeMode)
         this.repo.updateSessionStatus(session.id, 'active', this.now())
         this.repo.touchSessionTurn(session.id, turn.id, this.now())
         this.repo.updateRunStatus(run.id, 'running', this.now())
@@ -388,13 +425,9 @@ export class AgentRuntime {
               turnId: turn.id,
             }
           })
-          const assigned = this.repo.appendEvents(normalized)
-          normalized.forEach((event, index) => {
-            this.syncStepFromEvent(event)
-            if (this.onEvent) {
-              this.onEvent({ ...event, seq: assigned[index] })
-            }
-          })
+          // W5-A：关键事件同步落库；message.delta 类高频事件按 50ms/单批封顶批写。
+          // syncStepFromEvent 与 onEvent 由 writer 的 onWritten 在落库后按序回调。
+          this.eventWriter.write(normalized)
         }
 
         record([
@@ -534,7 +567,7 @@ export class AgentRuntime {
           finalText = result.finalText
           if (result.errorCode || result.errorMessage) {
             seq += 1
-            this.repo.appendEvents([
+            this.eventWriter.write([
               {
                 eventId: eventIdFor(turn.id, seq),
                 runId: run.id,
@@ -556,7 +589,7 @@ export class AgentRuntime {
         } catch (err) {
           finalStatus = controller.signal.aborted ? 'cancelled' : 'failed'
           seq += 1
-          this.repo.appendEvents([
+          this.eventWriter.write([
             {
               eventId: eventIdFor(turn.id, seq),
               runId: run.id,
@@ -642,6 +675,9 @@ export class AgentRuntime {
 
         const updated = this.repo.getTurn(turn.id)!
         return this.outcomeFromTurn(updated, false)
+        } finally {
+          workspaceLease.release()
+        }
       })
     })
   }
@@ -684,14 +720,6 @@ export class AgentRuntime {
     return [{ ...fields, attestation: attestProcIdentity(fields) }]
   }
 
-  /** marker 必须能映射到 DB 中已知的会话/轮次，否则不参与回收（C12 要求 3）。 */
-  private isKnownMarker(marker: string, known: ReadonlySet<string>): boolean {
-    if (known.has(marker)) return true
-    const prefix = 'bizgraph-turn:'
-    if (!marker.startsWith(prefix)) return false
-    return Boolean(this.repo.getTurn(marker.slice(prefix.length)))
-  }
-
   /**
    * 独立审计：缓存到既有 append-only `agent_events`（`process.reclaimed`），
    * 与 residualRisk 无关。payload 只含 id/pid/pgid/枚举/计数，**不含命令行、
@@ -719,6 +747,9 @@ export class AgentRuntime {
     const pgids = report?.killedGroups ?? []
     const method = pgids.length > 0 ? 'pgid' : pids.length > 0 ? 'pid-tree' : 'none'
     const success = unresolved.length === 0 && (report?.stillAlive.length ?? 0) === 0
+    // 先 flush 缓冲中的高频事件：下一步用 DB max+1 分配 turn_seq，
+    // 否则会与尚未落盘的 delta seq 撞 UNIQUE(turn_id, turn_seq)。
+    this.eventWriter.flush()
     const payload = {
       sessionId: input.sessionId,
       turnId: input.turnId,
@@ -734,7 +765,7 @@ export class AgentRuntime {
     try {
       const seq =
         this.repo.listTurnEvents(input.turnId).reduce((max, event) => Math.max(max, event.seq), 0) + 1
-      this.repo.appendEvents([
+      this.eventWriter.write([
         {
           eventId: eventIdFor(input.turnId, seq),
           runId: input.runId,
@@ -1024,167 +1055,12 @@ export class AgentRuntime {
     return applied
   }
 
-  /** 启动对账：按落库的 marker/pid/pgid 回收残留 → 对账 → 断言无悬空 → 重推 pending 审批。 */
+  /** 启动对账：残留回收（仅可证明归属者）→ 过期 turn 收口 → planRecovery → 断言无悬空 → 审批重放。 */
   async reconcileOnStartup(): Promise<RecoveryReport> {
-    let reactiveKills = 0
-    const reclaimedSessions: RecoveryReport['reclaimedSessions'] = []
-    const candidates = [
-      ...this.repo.listSessionsByStatus('orphaned'),
-      ...this.repo.listSessionsByStatus('active'),
-      ...this.repo.listSessionsByStatus('starting'),
-    ]
-    const knownMarkers = new Set(
-      candidates.map((session) => session.executor_env_marker).filter((value): value is string => Boolean(value)),
-    )
-    const markerSessions = new Map<string, (typeof candidates)[number]>()
-    for (const session of candidates) {
-      if (session.executor_env_marker) markerSessions.set(session.executor_env_marker, session)
-    }
-    const seen = new Set<string>()
-    for (const session of candidates) {
-      if (seen.has(session.id)) continue
-      seen.add(session.id)
-      const marker = session.executor_env_marker
-      // 跨重启只认「带归属证据」的句柄：pid 必须配 started_at + cmd 才能证明。
-      // 裸 pid（老数据/证据缺失）一律不杀，只告警（§6.5 c）。
-      const expected: ProcIdentity[] = session.executor_pid
-        ? [
-            (() => {
-              const fields = {
-                pid: session.executor_pid!,
-                pgid: session.executor_pgid ?? undefined,
-                command: session.executor_cmd ?? undefined,
-                startedAt: session.executor_started_at ?? undefined,
-              }
-              // DB 行是可信来源：铸造签名，避免把跨重启的合法身份误判为伪造。
-              let attestation: string | undefined
-              try {
-                attestation = attestProcIdentity(fields)
-              } catch {
-                attestation = undefined
-              }
-              return { ...fields, attestation }
-            })(),
-          ]
-        : []
-      const startedReap = this.now()
-      const report = expected.length > 0 ? this.reaper.killRegistered(expected, { marker: marker ?? undefined }) : null
-      const reapDurationMs = Math.max(0, this.now() - startedReap)
-      const killedPids = report?.killedPids ?? []
-      const kills = killedPids.length
-      reactiveKills += kills
-      const residualRisk = classifyResidual(report, Boolean(marker))
-      const unresolved = (report?.unresolved ?? []).map(
-        (proof) => `${proof.pid}:${proof.matched.join('+') || 'none'}:${proof.reason}`,
-      )
-      // 注意：residual_risk 是会话级可见状态，不是 turn 状态；turn 状态机不受此影响。
-      const note = `startup reclaim: marker=${marker ?? 'none'} pids=${killedPids.join(',') || '-'} groups=${(report?.killedGroups ?? []).join(',') || '-'} missing=${(report?.missing ?? []).join(',') || '-'} unresolved=${unresolved.join(',') || '-'} residualRisk=${residualRisk}`
-      this.repo.recordSessionRecovery(session.id, { kills, note, clearProc: true, residualRisk }, this.now())
-      if (residualRisk === 'none') this.logger.info(note)
-      else this.logger.warn(note)
-      // 要求 1/2：启动清扫的每次实际处置（含「证明不足未回收」）都独立留痕。
-      if (report && (kills > 0 || report.unresolved.length > 0)) {
-        const knownTurn = session.last_turn_id ? this.repo.getTurn(session.last_turn_id) : undefined
-        const auditTurnId = knownTurn?.id ?? `startup:${session.id}:${this.now()}`
-        this.emitReclaimAudit({
-          sessionId: session.id,
-          turnId: auditTurnId,
-          runId: knownTurn?.run_id ?? auditTurnId,
-          reason: 'startup-reclaim',
-          report,
-          durationMs: reapDurationMs,
-        })
-      }
-      reclaimedSessions.push({
-        sessionId: session.id,
-        marker,
-        killed: kills,
-        killedPids,
-        killedGroups: report?.killedGroups ?? [],
-        residualRisk,
-        note,
-      })
-    }
+    // 回收 + 规划 + apply + assert 全部在 startup-reconciler 内完成；
+    // kill 调用数通过 result.killCalls 暴露，供「无法证明时 kill=0」验收断言。
+    const result = this.startupReconciler.reconcile()
 
-    // D5 兜底：进程自注册文件（Codex 监督 shim 写的 pid/pgid/startedAt/command）。
-    // 即使主进程在落库前被 kill -9，这里仍能凭 ≥2 项归属证据回收自有进程组。
-    let registryKills = 0
-    for (const record of listProcRegistryRecords()) {
-      // 要求 3：只处理能映射到 DB 中已知会话/轮次的 marker；其余仅告警。
-      if (!this.isKnownMarker(record.marker, knownMarkers)) {
-        this.logger.warn(`ignore unknown registry record: marker=${record.marker} pid=${record.pid}`)
-        continue
-      }
-      // 要求 2：验签 + 文件属主/权限校验；伪造/篡改记录一律不杀。
-      if (!verifyProcRegistryFile(record)) {
-        this.logger.warn(`ignore unverifiable registry record: marker=${record.marker} pid=${record.pid}`)
-        const session = markerSessions.get(record.marker)
-        const markerTurnId = record.marker.startsWith('bizgraph-turn:')
-          ? record.marker.slice('bizgraph-turn:'.length)
-          : undefined
-        const markerTurn = markerTurnId ? this.repo.getTurn(markerTurnId) : undefined
-        const knownTurn =
-          markerTurn ?? (session?.last_turn_id ? this.repo.getTurn(session.last_turn_id) : undefined)
-        const auditTurnId = knownTurn?.id ?? `startup:${record.marker}:${this.now()}`
-        this.emitReclaimAudit({
-          sessionId: knownTurn?.session_id ?? session?.id ?? 'unknown',
-          turnId: auditTurnId,
-          runId: knownTurn?.run_id ?? auditTurnId,
-          reason: 'startup-reclaim',
-          report: null,
-          durationMs: 0,
-          extraUnresolved: [{ pid: record.pid, reason: 'unverifiable-record', matched: [] }],
-        })
-        continue
-      }
-      const fields = {
-        pid: record.pid,
-        pgid: record.pgid,
-        startedAt: record.startedAt,
-        startedAtHiRes: record.startedAtHiRes,
-        command: record.command,
-      }
-      const startedReap = this.now()
-      const report = this.reaper.killRegistered(
-        [{ ...fields, attestation: attestProcIdentity(fields) }],
-        { marker: record.marker },
-      )
-      const reapDurationMs = Math.max(0, this.now() - startedReap)
-      if (report.killedPids.length > 0 || report.unresolved.length > 0) {
-        const session = markerSessions.get(record.marker)
-        const markerTurnId = record.marker.startsWith('bizgraph-turn:')
-          ? record.marker.slice('bizgraph-turn:'.length)
-          : undefined
-        const markerTurn = markerTurnId ? this.repo.getTurn(markerTurnId) : undefined
-        const knownTurn =
-          markerTurn ?? (session?.last_turn_id ? this.repo.getTurn(session.last_turn_id) : undefined)
-        const auditTurnId = knownTurn?.id ?? `startup:${record.marker}:${this.now()}`
-        this.emitReclaimAudit({
-          sessionId: knownTurn?.session_id ?? session?.id ?? 'unknown',
-          turnId: auditTurnId,
-          runId: knownTurn?.run_id ?? auditTurnId,
-          reason: 'startup-reclaim',
-          report,
-          durationMs: reapDurationMs,
-        })
-      }
-      registryKills += report.killedPids.length
-      reactiveKills += report.killedPids.length
-      const note = `startup registry reclaim: marker=${record.marker} pids=${report.killedPids.join(',') || '-'} groups=${report.killedGroups.join(',') || '-'} missing=${report.missing.join(',') || '-'} unresolved=${report.unresolved.length}`
-      if (report.killedPids.length > 0) this.logger.info(note)
-      else this.logger.debug(note)
-      // 要求 4：已处理（回收成功或进程已消失）的记录立即失效，防止重放。
-      if (report.killedPids.length > 0 || report.missing.length > 0) {
-        removeProcRegistryRecord(record.marker)
-      }
-    }
-
-    // F3-A：启动对账时已过期的 deadline 不续跑。
-    this.expireOverdueTurnsOnStartup()
-
-    const planned = planRecovery(this.repo)
-    applyRecoveryPlan(this.repo, planned)
-    assertNoDangling(this.repo)
     // 先扫一遍已过期的 pending（decided_by=timeout），避免它们被 startup 重放刷新有效期
     // ——这是 sweepExpired 的生产调用点，定时器只覆盖本进程内创建的审批。
     const sweptExpired = this.approvals.sweepExpired()
@@ -1195,18 +1071,32 @@ export class AgentRuntime {
     // 且不再推 UI；只有所属 turn 仍存活的审批才会重推。
     const reconciled = this.approvals.reconcileStartup()
 
-    return {
-      plans: planned.plans,
-      interruptedRuns: planned.interruptedRuns,
-      abortedTurns: planned.abortedTurns,
-      orphanedSessions: planned.orphanedSessions,
+    const report: RecoveryReport = {
+      plans: result.plans,
+      interruptedRuns: result.interruptedRuns,
+      abortedTurns: result.abortedTurns,
+      orphanedSessions: result.orphanedSessions,
       pendingApprovals: reconciled.replayed.length,
       deniedStaleApprovals: reconciled.denied,
-      reactiveKills,
-      registryKills,
-      reclaimedSessions,
-      residualRiskSessions: reclaimedSessions.filter((session) => session.residualRisk !== 'none').length,
+      reactiveKills: result.reactiveKills,
+      registryKills: result.registryKills,
+      reclaimedSessions: result.reclaimedSessions,
+      residualRiskSessions: result.residualRiskSessions,
     }
+    // 启动报告落库：`startup.reconcile` 系统事件（无对应 turn 行，不会被保留策略清理）。
+    this.startupReconciler.persistReport({ ...report, killCalls: result.killCalls })
+    return report
+  }
+
+  /** 退出路径：强制落盘所有缓存事件（不停止后续写入）。 */
+  flushPendingEvents(): void {
+    this.eventWriter.flush()
+  }
+
+  /** 退出路径：flush + 停批写定时器 + 释放 workspace lease。 */
+  shutdown(): void {
+    this.eventWriter.shutdown()
+    this.lease.stop()
   }
 
   dispose(): void {
@@ -1216,6 +1106,8 @@ export class AgentRuntime {
       clearInterval(this.retentionTimer)
       this.retentionTimer = null
     }
+    this.eventWriter.shutdown()
+    this.lease.stop()
     this.approvals.dispose()
   }
 
@@ -1256,6 +1148,46 @@ export class AgentRuntime {
     }
   }
 
+  /**
+   * turn 起始快照：写入方落在 runNode 的执行入口（driver.execute 之前）。
+   * 只存元数据与 prompt hash，不存 prompt 原文/文件内容；失败不影响 turn。
+   * 恢复期（planRecovery/startup reconcile）只读 `latestSnapshot`，不得调用本方法。
+   */
+  private writeTurnStartSnapshot(
+    runId: string,
+    turn: AgentTurnRow,
+    request: RunNodeRequest,
+    branchKey: string,
+    attempt: number,
+    resumeMode: 'native' | 'replay' | 'fresh',
+  ): void {
+    try {
+      this.repo.saveSnapshot(
+        runId,
+        {
+          version: 1,
+          phase: 'turn-start',
+          turnId: turn.id,
+          sessionId: turn.session_id,
+          nodeId: turn.node_id,
+          graphId: turn.graph_id,
+          executor: request.executor,
+          branchKey,
+          attempt,
+          resumeMode,
+          promptHash: hashArgs('prompt', { prompt: request.prompt }),
+          workingDirectory: request.workingDirectory,
+          deadlineAt: turn.deadline_at,
+        },
+        this.now(),
+      )
+    } catch (error) {
+      this.logger.warn(
+        `turn start snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
+
   private recordUsage(
     turn: AgentTurnRow,
     sessionId: string,
@@ -1290,7 +1222,17 @@ export class AgentRuntime {
     switch (event.type) {
       case 'tool.requested': {
         const toolName = typeof event.payload.toolName === 'string' ? event.payload.toolName : undefined
-        this.repo.upsertStep({ ...common, toolName, status: 'running', startedAt: this.now() })
+        const now = this.now()
+        // 三阶段：进入执行前写 executing_at（写前标记）。归一化事件里的
+        // tool.requested 是后端进入工具执行的信号（Codex 为 item.started），
+        // 因此这里就是「排队/等待 → 执行」的分界；审批/排队阶段不得写该列。
+        this.repo.upsertStep({
+          ...common,
+          toolName,
+          status: 'running',
+          startedAt: now,
+          executingAt: now,
+        })
         break
       }
       case 'tool.result':
@@ -1314,11 +1256,18 @@ export class AgentRuntime {
         break
       }
       case 'approval.required':
+        // 等待阶段：只进入 awaiting_approval，绝不能提前写 approved_at/executing_at。
         this.repo.updateStepStatus(event.stepId, 'awaiting_approval', undefined, this.now())
         break
       case 'approval.resolved': {
         const decision = event.payload.decision
-        this.repo.updateStepStatus(event.stepId, decision === 'allow' ? 'approved' : 'denied', undefined, this.now())
+        const now = this.now()
+        if (decision === 'allow') {
+          // 三阶段第一段：批准时刻。executing_at 留到 tool.requested 再写。
+          this.repo.updateStepStatus(event.stepId, 'approved', { approvedAt: now }, now)
+        } else {
+          this.repo.updateStepStatus(event.stepId, 'denied', undefined, now)
+        }
         break
       }
       default:

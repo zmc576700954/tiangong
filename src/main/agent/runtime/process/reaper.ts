@@ -213,7 +213,7 @@ function commandMatches(expected: string, current: string): boolean {
  * Linux 高精度启动标识：`/proc/<pid>/stat` 第 22 字段 starttime（自 boot 的 ticks）。
  * macOS 无公开等价 API（`ps -o lstart` 只有秒级），Windows 未实现 → 返回 undefined。
  */
-function captureHiResStart(pid: number): string | undefined {
+export function captureHiResStart(pid: number): string | undefined {
   if (process.platform !== 'linux') return undefined
   try {
     const raw = fs.readFileSync(`/proc/${pid}/stat`, 'utf-8')

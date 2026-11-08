@@ -222,6 +222,13 @@ app.on('before-quit', async (event) => {
       } catch (err) {
         logger.error('Failed to terminate sessions:', err)
       }
+      // W5-A：关闭 DB 前强制 flush 事件批写缓冲并释放 workspace lease。
+      // 即使 terminate 失败也必须执行，否则退出会丢未落盘的 delta 事件。
+      try {
+        agentManager.shutdownRuntime()
+      } catch (err) {
+        logger.error('Failed to flush runtime events:', err)
+      }
       agentManager.destroy()
       // Phase B: 显式释放 MCP 连接池 + 清理定时器。
       // 之前完全依赖 child_process 退出时的 OS 级回收，连接池中的客户端可能

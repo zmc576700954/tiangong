@@ -42,15 +42,25 @@ export function planRecovery(repo: AgentRepository, options: RecoveryPlannerOpti
     sessionIds.add(turn.session_id)
     const steps = repo.listSteps(turn.id)
     const artifactState = compareArtifacts(repo.listArtifacts(turn.id), readCurrentHash)
+    // turn 级判定：非终态 turn 一律不自动重放，但终态语义按崩溃前阶段收敛。
+    // - queued：从未启动，没有可执行的工具；
+    // - running：执行中崩溃 → orphaned/crash；
+    // - waiting_approval：等待审批时崩溃，审批决定未落定 → orphaned/crash；
+    // - cancelling：取消过程中崩溃，用户意图已明确 → cancelled/aborted。
+    const terminalStatus = turn.status === 'cancelling' ? 'cancelled' : 'orphaned'
+    const phase = describeTurnPhase(turn.status)
+    // 每条 step 都必须出现在 stepOutcomes（含 aborted / open / 已终态），
+    // 因此这里对 listSteps 全量映射，而不是只挑 open step。
     const stepOutcomes = steps.map((step) => evaluateStepDisposition(step, artifactState))
     plans.push({
       runId: turn.run_id,
       turnId: turn.id,
       sessionId: turn.session_id,
       action: 'abort_turn',
+      terminalStatus,
       reason: steps.length > 0
-        ? `crash with ${steps.length} step(s): reconciled by stepOutcomes (no automatic replay)`
-        : 'crash with no step evidence: turn cannot be resumed',
+        ? `${phase} with ${steps.length} step(s): reconciled by stepOutcomes (no automatic replay)`
+        : `${phase} with no step evidence: turn cannot be resumed`,
       stepOutcomes,
     })
   }
@@ -114,9 +124,28 @@ export function planRecovery(repo: AgentRepository, options: RecoveryPlannerOpti
   }
 }
 
+/** turn 崩溃前所处阶段的可读描述（只用于规划 reason，不改变动作）。 */
+function describeTurnPhase(status: string): string {
+  switch (status) {
+    case 'queued':
+      return 'crash while queued (never started)'
+    case 'waiting_approval':
+      return 'crash while waiting approval'
+    case 'cancelling':
+      return 'crash while cancelling'
+    case 'running':
+      return 'crash while running'
+    default:
+      return `crash with turn status ${status}`
+  }
+}
+
 /**
  * §5.5 五行判定（逐 step）。
  * 已终态的 step 不重跑；未终态的严格落三选一。
+ *
+ * `aborted`/`unknown` 不是成功声明：仍按 approved_at/executing_at 与快照证据
+ * 走下面的 2×2 + 行 4/5 判定，不能因为「已标 aborted」就跳过处置。
  */
 export function evaluateStepDisposition(step: AgentStepRow, artifactState: SnapshotState): StepOutcome {
   switch (step.status) {
