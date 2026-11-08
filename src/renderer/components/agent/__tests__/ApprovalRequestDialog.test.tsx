@@ -6,6 +6,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ApprovalRequestDialog } from '../ApprovalRequestDialog'
+import { useApprovalStore } from '../../../store/approvalStore'
 import type { ApprovalRequestPayload } from '@shared/types/agent-runtime'
 
 const payload: ApprovalRequestPayload = {
@@ -37,6 +38,8 @@ function installApi(resolveApproval: ReturnType<typeof vi.fn>, request: Approval
 
 afterEach(() => {
   delete (window as unknown as { electronAPI?: unknown }).electronAPI
+  // 全局队列是跨用例共享的单例，必须逐例清空（含失败横幅）。
+  useApprovalStore.setState({ pending: [], busy: {}, error: null })
 })
 
 describe('ApprovalRequestDialog 错误可见性', () => {

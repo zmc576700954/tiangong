@@ -165,6 +165,13 @@ export const agentZh = {
   'agent.approval.risk.high': '高',
   'agent.approval.risk.critical': '严重',
 
+  // —— 方案一：全局审批入口（不依赖聊天线程）——
+  'agent.approval.inbox.title': '待审批',
+  'agent.approval.inbox.dismiss': '关闭',
+  'agent.approval.inbox.sourceTask': '任务',
+  'agent.approval.inbox.sourceStep': '步骤',
+  'agent.approval.inbox.sourceSession': '会话',
+
   // —— 会话级授权（A2）——
   'agent.sessionGrant.badge': '本次会话已授权（写操作）',
   'agent.sessionGrant.revoke': '撤销授权',
@@ -431,6 +438,12 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.approval.risk.medium': 'Medium',
   'agent.approval.risk.high': 'High',
   'agent.approval.risk.critical': 'Critical',
+
+  'agent.approval.inbox.title': 'Pending approvals',
+  'agent.approval.inbox.dismiss': 'Dismiss',
+  'agent.approval.inbox.sourceTask': 'Task',
+  'agent.approval.inbox.sourceStep': 'Step',
+  'agent.approval.inbox.sourceSession': 'Session',
 
   'agent.sessionGrant.badge': 'Write actions authorized for this session',
   'agent.sessionGrant.revoke': 'Revoke authorization',

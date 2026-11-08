@@ -1020,6 +1020,18 @@ export class AgentRepository {
     return this.getApproval(approvalId)
   }
 
+  /** 审批卡片展示用：由编排步反查所属任务（只读、缺表/无行即 undefined）。 */
+  getWorkItemIdByStep(stepId: string): string | undefined {
+    try {
+      const row = this.db.prepare('SELECT work_item_id FROM work_steps WHERE id = ?').get(stepId) as
+        | { work_item_id: string }
+        | undefined
+      return row?.work_item_id
+    } catch {
+      return undefined
+    }
+  }
+
   listPendingApprovals(): AgentApprovalRow[] {
     return this.db
       .prepare(`SELECT * FROM agent_approvals WHERE status = 'pending' ORDER BY created_at ASC`)

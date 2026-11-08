@@ -3955,6 +3955,20 @@ GateRecheckResult {
 
 **测试**：迁移用例覆盖新表建成、旧行迁入且 `legacy_approval_id` 可追溯、信息不全行保留、非验收审批行原样保留、无 `_backup` 残留、`version=35`；确认用例断言 `agent_approvals` 不再出现验收行。
 
+### M5.13 全局审批入口（方案一，2026-11-08，已实施）
+
+**动机**：`ApprovalRequestDialog` 只挂在 `AgentChatPanel` 的「`currentThread` 存在」分支。编排 runtime 的 kernel turn 由主进程发起，不在 renderer 建线程，审批请求虽已广播到 renderer（`pending=1`），却没有任何组件挂载，最终 120s 交互超时 fail-closed 落 `denied`。真机演练据此断在「工具调用审批真的弹了」这一环。
+
+**形态**：应用级 `ApprovalInbox`（固定于窗口右上、任何页面可见，可折叠，显示条数徽标）。展开后逐条展示：工具名、风险等级、命令/参数原文、来源三元组（任务 `workItemId` / 步骤 `stepId` / 会话 `sessionId`）、剩余秒数，并提供 allow(once) / deny。
+
+**单一事实源**：新增渲染端 `approvalStore`，由 `attachApprovalListener()`（`App` 启动时挂一次）负责 `hydrate`（`agent:getPendingApprovals`）+ `onApprovalRequest` 增量 + `onApprovalResolved` 移除。聊天内弹窗改为投影同一 store，不再自持队列；聊天场景行为（倒计时、陈旧审批 `APPROVAL_STALE` 横幅、会话授权按钮、脱敏提示）保持不变。
+
+**不重复网关语义**：120s 交互超时、deadline 冻结、归属校验（`sessionId/turnId`）、`argsHash` 防 TOCTOU 全部仍在主进程 `ApprovalGateway`；队列里的倒计时只是展示，决议仍走 `agent:resolveApproval`。
+
+**来源字段**：`ApprovalRequestPayload` 新增可选 `workItemId`（由 `agent_approvals.step_id` 反查 `work_steps.work_item_id`，只读、查不到即不展示），仅用于展示，不参与判定。
+
+**测试**：`ApprovalInbox.test.tsx` 3 例（无 pending 不渲染、编排 turn 审批可见工具名/命令/来源、允许后队列即时减少且归属字段回传）；`ApprovalRequestDialog.test.tsx` 8 例保持全绿。
+
 ## 单轨分工与文件所有权（2026-11-08）
 
 > 用户裁决：只保留**蓝图/编排线**单轨继续；其余三条线冻结。状态词按 §0 三态口径。

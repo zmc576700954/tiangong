@@ -283,6 +283,7 @@ export class ApprovalGateway {
       turnId: row.turn_id ?? null,
       sessionId: input.sessionId,
       stepId: row.step_id ?? undefined,
+      workItemId: this.workItemIdOf(row.step_id),
       toolName: row.tool_name,
       // 待审批期间展示用内存原文：DB 里的 args_json 已脱敏，卡片不能读它。
       argsJson: JSON.stringify(input.args),
@@ -665,6 +666,7 @@ export class ApprovalGateway {
           ? this.repo.getTurn(row.turn_id)?.session_id
           : legacySessionIdOf(row.run_id ?? '', row.turn_id ?? ''),
       stepId: row.step_id ?? undefined,
+      workItemId: this.workItemIdOf(row.step_id),
       toolName: row.tool_name,
       // 重启重放：DB 里只有脱敏后的 args_json，无法还原原文（也不提供还原）。
       argsJson: row.args_json,
@@ -733,6 +735,12 @@ export class ApprovalGateway {
       }
     }
     this.waiters.clear()
+  }
+
+  /** 只读展示辅助：编排步 → 所属任务（查不到即不展示，绝不影响审批判定）。 */
+  private workItemIdOf(stepId: string | null | undefined): string | undefined {
+    if (!stepId) return undefined
+    return this.repo.getWorkItemIdByStep(stepId)
   }
 
   private timeoutFor(mode: ApprovalMode): number {

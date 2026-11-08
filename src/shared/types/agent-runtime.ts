@@ -142,6 +142,11 @@ export interface ApprovalRequestPayload {
   /** 所属 agent_sessions.id；决议时回传用于归属校验 */
   sessionId?: string
   stepId?: string
+  /**
+   * 来源任务（编排步所属 work_items.id）。仅用于界面展示「这条审批是哪个任务/哪一步」，
+   * 不参与归属校验——归属仍由 sessionId/turnId/runId + argsHash 决定。
+   */
+  workItemId?: string
   toolName: string
   argsJson: string
   argsHash: string

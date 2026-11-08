@@ -9,6 +9,8 @@ import { useResizablePanel } from './hooks/useResizablePanel'
 import { ToastContainer } from './lib/toast'
 import { useI18n } from './i18n/useI18n'
 import { attachConflictListener } from './store/conflictStore'
+import { attachApprovalListener } from './store/approvalStore'
+import { ApprovalInbox } from './components/agent/ApprovalInbox'
 import { PanelLeftOpen, PanelRightOpen } from 'lucide-react'
 
 const RightPanel = lazy(() => import('./panels/RightPanel').then(m => ({ default: m.RightPanel })))
@@ -57,6 +59,11 @@ function App() {
   // D10d: 挂全局 conflict:onReported 监听 → conflictStore → toast
   useEffect(() => {
     return attachConflictListener()
+  }, [])
+
+  // 方案一：全局审批队列监听（与聊天线程无关，编排 turn 的审批同样进入队列）
+  useEffect(() => {
+    return attachApprovalListener()
   }, [])
 
   // Keyboard shortcuts for panel toggling
@@ -118,6 +125,8 @@ function App() {
   return (
     <ErrorBoundary>
       <ToastContainer />
+      {/* 方案一：全局审批入口——任何页面/面板状态都能看到并决议待审批 */}
+      <ApprovalInbox />
       <div className="flex h-screen w-screen bg-background overflow-hidden">
         {/* Left directory tree */}
         {!leftCollapsed && (
