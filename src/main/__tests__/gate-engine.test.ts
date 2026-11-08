@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterAll } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
 import { applyMapS5aSchema } from '../map/schema'
-import { createGateEngine, type GateEngineOptions } from '../map/gate-engine'
+import { createGateEngine, GATE_EVALUATOR_VERSION, type GateEngineOptions } from '../map/gate-engine'
 
 const TMP_ROOTS: string[] = []
 function makeProjectRoot(): string {
@@ -93,7 +93,12 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
     const id = insertItem(db, { project_path: makeProjectRoot() })
     const engine = makeEngine(db, fullPassOptions())
     const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
-    expect(engine.recheck(row)).toEqual({ ok: true, missing: [] })
+    const result = engine.recheck(row)
+    expect(result.ok).toBe(true)
+    expect(result.missing).toEqual([])
+    expect(result.waived).toBeUndefined()
+    // 诊断是附加信息，不改变准入语义
+    expect(result.diagnostics?.gates.every((gate) => gate.ok)).toBe(true)
   })
 
   it('D7 默认：无预估来源 → 仅 line_estimate_unavailable，不伪造 pass', () => {
@@ -132,6 +137,56 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
     const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
     engine.recheck(row)
     expect(snapshot()).toBe(before)
+  })
+
+  it('逐道诊断（D12 修订）：六道都留结果，失败道可定位到具体缺失码', () => {
+    const id = insertItem(db, { project_path: makeProjectRoot(), anchor_node_id: 'n_missing' })
+    const engine = makeEngine(db, fullPassOptions())
+    const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
+    const result = engine.recheck(row)
+
+    expect(result.ok).toBe(false)
+    // 诊断不改变准入结论
+    expect(result.missing).toEqual(['anchor_node_missing'])
+    expect(result.diagnostics?.evaluatorVersion).toBe(GATE_EVALUATOR_VERSION)
+    expect(result.diagnostics?.thresholds).toEqual({ g4MaxFiles: 20, g4MaxLines: 800 })
+    expect(result.diagnostics?.gates.map((gate) => gate.gate)).toEqual(['G1', 'G2', 'G3', 'G4', 'G5', 'G6'])
+    expect(result.diagnostics?.gates.find((gate) => gate.gate === 'G3')).toEqual({
+      gate: 'G3',
+      ok: false,
+      missing: ['anchor_node_missing'],
+    })
+    expect(result.diagnostics?.gates.filter((gate) => gate.ok).map((gate) => gate.gate)).toEqual([
+      'G1', 'G2', 'G4', 'G5', 'G6',
+    ])
+  })
+
+  it('逐道诊断：阈值可复算（G4 传入非默认值）', () => {
+    const id = insertItem(db, { project_path: makeProjectRoot() })
+    const engine = makeEngine(db, { ...fullPassOptions(), g4MaxFiles: 5, g4MaxLines: 100 })
+    const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
+    expect(engine.recheck(row).diagnostics?.thresholds).toEqual({ g4MaxFiles: 5, g4MaxLines: 100 })
+  })
+
+  it('逐道诊断：豁免通过时仍保留 G2 失败现场（ok:true + G2 ok:false）', () => {
+    const id = insertItem(db, {
+      project_path: makeProjectRoot(),
+      acceptance_json: JSON.stringify([{ type: 'manual', expected: '' }]),
+    })
+    db.prepare(
+      'UPDATE work_items SET gate_waived_by = ?, gate_waived_at = ?, gate_waive_reason = ? WHERE id = ?',
+    ).run('alice', 1700000000000, '人工确认无需机器判定', id)
+    const engine = makeEngine(db, fullPassOptions())
+    const row = db.prepare('SELECT * FROM work_items WHERE id = ?').get(id) as never
+    const result = engine.recheck(row)
+
+    expect(result.ok).toBe(true)
+    expect(result.waived).toBeTruthy()
+    expect(result.diagnostics?.gates.find((gate) => gate.gate === 'G2')).toEqual({
+      gate: 'G2',
+      ok: false,
+      missing: ['acceptance_expected_missing:0'],
+    })
   })
 
   describe('G1 · scope 非空且在项目根内（§5.4.1）', () => {
@@ -511,7 +566,9 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
         {},
         JSON.stringify([{ type: 'command', expected: 'npm test' }]),
       )
-      expect(result).toEqual({ ok: true, missing: [] })
+      expect(result.ok).toBe(true)
+      expect(result.missing).toEqual([])
+      expect(result.waived).toBeUndefined()
     })
   })
 })

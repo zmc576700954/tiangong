@@ -207,6 +207,103 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(runs.list({ workItemId: itemId })).toHaveLength(0)
   })
 
+  /**
+   * 诊断载体复用 `map_migration_reports`（生产由 database.ts 建表）；测试库只需补齐该表
+   * 以验证 tick 真的写入、且写入内容可回答「第几道没过」。
+   */
+  function addDiagnosticsTable(): void {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS map_migration_reports (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        schema_version INTEGER,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        heartbeat_at TEXT,
+        owner_pid INTEGER,
+        status TEXT NOT NULL,
+        stats_json TEXT NOT NULL DEFAULT '{}',
+        details_json TEXT NOT NULL DEFAULT '{}'
+      )
+    `)
+  }
+
+  function diagnosticsRows(): Array<{ stage: string; status: string; stats_json: string; details_json: string }> {
+    return db
+      .prepare("SELECT stage, status, stats_json, details_json FROM map_migration_reports WHERE kind = 'integrity_check'")
+      .all() as Array<{ stage: string; status: string; stats_json: string; details_json: string }>
+  }
+
+  it('逐道诊断落库：blocked 时六道结果 + 阈值快照可查（D12 修订）', async () => {
+    addDiagnosticsTable()
+    const itemId = confirmedItem()
+    const exec = service({
+      gateRecheck: {
+        recheck: () => ({
+          ok: false,
+          missing: ['anchor_node_missing'],
+          diagnostics: {
+            evaluatorVersion: 'gate-engine@1',
+            thresholds: { g4MaxFiles: 20, g4MaxLines: 800 },
+            gates: [
+              { gate: 'G1', ok: true, missing: [] },
+              { gate: 'G2', ok: true, missing: [] },
+              { gate: 'G3', ok: false, missing: ['anchor_node_missing'] },
+              { gate: 'G4', ok: true, missing: [] },
+              { gate: 'G5', ok: true, missing: [] },
+              { gate: 'G6', ok: true, missing: [] },
+            ],
+          },
+        }),
+      },
+    })
+
+    const report = await exec.tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(false)
+    const rows = diagnosticsRows()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].stage).toBe(`gate_eval:${itemId}`)
+    expect(rows[0].status).toBe('ok')
+    const stats = JSON.parse(rows[0].stats_json)
+    expect(stats.verdict).toBe('incomplete')
+    expect(stats.evaluator_version).toBe('gate-engine@1')
+    expect(stats.thresholds).toEqual({ g4MaxFiles: 20, g4MaxLines: 800 })
+    const details = JSON.parse(rows[0].details_json)
+    expect(details.gate_status_before).toBe('pass')
+    expect(details.gates).toHaveLength(6)
+    expect(details.gates.find((gate: { gate: string }) => gate.gate === 'G3')).toMatchObject({
+      ok: false,
+      missing: ['anchor_node_missing'],
+    })
+    // 诊断是旁路：用户可见状态照旧由判定写入
+    expect(items.get(itemId)!.gate_status).toBe('incomplete')
+  })
+
+  it('逐道诊断落库：引擎异常也留行并标注 engine_error（判定仍 fail-closed）', async () => {
+    addDiagnosticsTable()
+    const itemId = confirmedItem()
+    const exec = service({
+      gateRecheck: {
+        recheck: () => {
+          throw new Error('engine boom')
+        },
+      },
+    })
+
+    await exec.tick({ adapterName: 'claude-code' })
+
+    const rows = diagnosticsRows()
+    expect(rows).toHaveLength(1)
+    expect(items.get(itemId)!.status).toBe('blocked')
+    const stats = JSON.parse(rows[0].stats_json)
+    expect(stats.verdict).toBe('incomplete')
+    expect(stats.evaluator_version).toBe('gate_engine_unavailable')
+    expect(String(stats.engine_error)).toContain('engine boom')
+    expect(JSON.parse(rows[0].details_json).gates).toEqual([])
+  })
+
   it('豁免视同通过：结果带 waived 时照常执行，且库内 waived 三字段不被改写', async () => {
     const id = items.createDraft({
       graphId: 'g1',

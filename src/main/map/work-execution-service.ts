@@ -31,6 +31,7 @@ import {
   type StepRunStatus,
 } from './agent-step-runner'
 import { isMapExecutionEnabled, MAP_EXECUTION_DISABLED_REASON } from './execution-flags'
+import { recordGateEvaluation } from './gate-diagnostics'
 import {
   GATE_ENGINE_UNAVAILABLE,
   unavailableGateRecheck,
@@ -317,12 +318,23 @@ export class WorkExecutionService {
       // 第 2 步：重跑 gate（不信任库里的 gate_status）。评估器抛异常按
       // §14.6 与引擎不可用同路径：incomplete + gate_engine_unavailable（fail-closed）。
       let rechecked: GateRecheckResult
+      let engineError: string | undefined
       try {
         rechecked = this.gateRecheck.recheck(item)
       } catch (error) {
-        logger.warn(`[tick] gate 引擎异常 item=${item.id}，按不可用收口：${String(error)}`)
+        engineError = String(error)
+        logger.warn(`[tick] gate 引擎异常 item=${item.id}，按不可用收口：${engineError}`)
         rechecked = { ok: false, missing: [GATE_ENGINE_UNAVAILABLE] }
       }
+      // 逐道诊断（D12 修订）：每次评估都留 G1–G6 结果，写失败不影响准入判定。
+      recordGateEvaluation(this.db, {
+        itemId: item.id,
+        lineageId: item.lineage_id,
+        revision: item.revision,
+        gateStatusBefore: item.gate_status,
+        result: rechecked,
+        engineError,
+      })
       if (!rechecked.ok) {
         this.applyGateFailure(item, rechecked.missing)
         report.gateBlockedItemIds.push(item.id)

@@ -3762,7 +3762,7 @@ GateRecheckResult {
 | D9 | G5/G6 **不允许**人工豁免（本期）；失败只能修数据（依赖完成 / scope 调整）后重跑评估 | 已批准已实施（`b6f3735`） | §5.4 |
 | D10 | G6 只比较同 `project_path` 且 `status='running' AND is_current=1` 的任务；不排除同 lineage 父/子（单 turn 串行 + 写闸在先，窗口极小；**放开并行编排必须重裁**）；`queued` 不纳入冲突面；跨项目不比较 | 已批准已实施（`b6f3735`） | §5.4 G6、§5.9 |
 | D11 | `gate_missing_json` 冻结为当前引擎产出的稳定码集，形状保持字符串数组；**新增码只追加、不得改名**；UI 对未知码按「未知原因」兜底展示 | 已批准已实施（`b6f3735`，契约冻结） | §4.7.3、`setGateResult` |
-| D12 | 评估器版本 / G4 阈值快照**本期不落库**；归因靠引擎所在 git commit + 现有事件日志。未来需要精确归因再走 schema 变更流程（蓝图 `observed_rule_version` 思路保留为候选） | 已裁决：本期不做 | §5.7 |
+| D12 | 评估器版本 / G4 阈值快照**本期不落库**；归因靠引擎所在 git commit + 现有事件日志。未来需要精确归因再走 schema 变更流程（蓝图 `observed_rule_version` 思路保留为候选） | **2026-11-08 修订为已实施**：改为每次评估落逐道诊断（复用 `map_migration_reports`，无 schema 变更，见 M5.14） | §5.7 |
 | D13 | 证据 stale/缺失**不参与**准入（维持 §3 / §5.4 分层）；产品如需该策略，新增独立 gate 或策略，不塞进 G1–G6 | 已批准已实施（负向口径，`b6f3735`） | §3、§5.4 |
 | D14 | `GateRecheck` 本期**不设时限预算**：引擎全同步（better-sqlite3 同步 API），无异步超时面；评估器抛异常由 tick 按 `gate_engine_unavailable` fail-closed 收口（已实现）。**未来引入异步评估器必须带预算 + 超时 fail-closed** | 已批准已实施（含未来约束，`b6f3735`） | §5.9 |
 
@@ -3863,7 +3863,7 @@ GateRecheckResult {
 
 **采纳说明**：引擎最初来自另一条线留下的未跟踪实现；本次经逐条对照 §14 复核后采纳，并修正/补齐三处——G2 的 pass 语义（有结构化条目即通过，坏补充条目不再判 incomplete）、G4 按去重后文件数计数（§5.4）、豁免判定与 tick 的异常/waived 处理。
 
-**与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；D12 已裁决本期不落库（评估器归因靠引擎所在提交 hash）。
+**与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；D12 已裁决本期不落库（评估器归因靠引擎所在提交 hash）。→ **2026-11-08 修订**：D12 改为落可查诊断（见 M5.14），`GateRecheckResult` 追加可选 `diagnostics`（逐道 + 评估器版本 + 阈值快照），准入字段不变。
 
 **已裁决并实施的行为**：D5/D6（G3 跨图写）已裁决为收敛口径——本期只判锚点存在 + `graph_type='dev'` + `graph_id` 一致，跨图写矩阵不建模（§14.8）；D1/D7 见 M5.8；D3/D9 见 M5.9。
 
@@ -3968,6 +3968,34 @@ GateRecheckResult {
 **来源字段**：`ApprovalRequestPayload` 新增可选 `workItemId`（由 `agent_approvals.step_id` 反查 `work_steps.work_item_id`，只读、查不到即不展示），仅用于展示，不参与判定。
 
 **测试**：`ApprovalInbox.test.tsx` 3 例（无 pending 不渲染、编排 turn 审批可见工具名/命令/来源、允许后队列即时减少且归属字段回传）；`ApprovalRequestDialog.test.tsx` 8 例保持全绿。
+
+### M5.14 gate 逐道诊断（D12 修订，2026-11-08，已实施）
+
+**动机**：tick 第 2 步每次都会重跑 G1–G6，但库里只留最终 `gate_status` + 聚合 `gate_missing_json`。排查者无法回答「gates 第 3 道为什么没过」——尤其 G2 豁免通过时（整体 ok 但 G2 实际失败）现场完全丢失。
+
+**职责边界**：`gate-engine.ts` 保持**只读纯引擎**（仍不写任何表，零写入测试不变），只把逐道结果作为返回值附加：`GateRecheckResult.diagnostics = { evaluatorVersion, thresholds, gates[] }`，`gates` 恒为 G1..G6 六项，每项 `{ gate, ok, missing[] }`。落库由 tick 调用方完成。
+
+**载体（无 schema 变更）**：复用既有报告表 `map_migration_reports`（§8.14.1 本身即「所有阶段记录复用本表」）：
+- `kind='integrity_check'`（G1–G6 是准入完整性判定，取语义最近的既有枚举值）；
+- `stage='gate_eval:<workItemId>'`：按任务分组，保留最近 20 次评估；启动预检只关心 `failed/running/partial`，本模块只写 `status='ok'` 且为单条插入，不产生 running 行，因此不影响迁移与 preflight；
+- `stats_json`：`verdict`（pass / waived / incomplete）、`missing_count`、`evaluator_version`（`gate-engine@1`，语义变化须同步更新）、`thresholds`（G4 实际取值）、`engine_error`；
+- `details_json`：`gate_status_before`、逐道 `gates`、聚合 `missing`、`waived`。
+
+**纯诊断**：不写 `work_items/work_steps/work_runs/node_evidence`，不进入用户可见状态；写失败仅 `logger.warn`，绝不阻断 tick（`recordGateEvaluation` 内部兜底，表缺失即跳过）。
+
+**排查查法**：
+
+```sql
+SELECT started_at, stats_json, details_json
+FROM map_migration_reports
+WHERE kind = 'integrity_check' AND stage = 'gate_eval:<workItemId>'
+ORDER BY started_at DESC, id DESC
+LIMIT 1;
+```
+
+`details_json.gates` 里找 `gate='G3'` 的 `ok/missing` 即可定位；`stats_json.evaluator_version` + `thresholds` 用于复算归因。
+
+**测试**：`gate-engine.test.ts` 新增 3 例（六道齐全 + 失败道定位、阈值快照随参数、豁免时保留 G2 失败现场）；`work-execution.test.ts` 新增 2 例（blocked 时六道写入且用户可见状态不受影响、引擎异常留行并标注 `engine_error`）。两文件 73 例全绿。
 
 ## 单轨分工与文件所有权（2026-11-08）
 

@@ -25,8 +25,9 @@
  * - D1（已实施）：acceptance 须含 {type ∈ command|manual|file_check, expected}
  *   结构化条目（createDraft/revise 边界强制）；存量 [{id,text}] 不自动迁移，
  *   仍判 acceptance_item_not_structured。
- * - D2（已批准未实施）：expected 语义冻结为 command=退出码 0、file_check=路径存在、
- *   manual=人工判定描述；确定性验收执行器不在本引擎内（属执行后验收）。
+ * - D2（已实施，见 §M5.10）：expected 语义冻结为 command=退出码 0、file_check=路径存在、
+ *   manual=人工判定描述；确定性验收执行器不在本引擎内（属执行后验收，
+ *   `acceptance-executor.ts`）。
  * - D3/D9（已实施，见 §M5.9）：豁免为任务级粒度；G5/G6 永久不可豁免。
  * - D4（已实施）：project_path 为空 → project_path_missing，不从图/项目兜底。
  * - D5/D6（已实施）：跨图写本期不建模——写入面只有 scope_files，且已被 G1 限定
@@ -42,7 +43,9 @@
  * - D10（已实施）：G6 只比较同 project_path 的 running 任务；lineage 亲属不排除。
  * - D11/D13/D14（已实施）：缺失码只追加不改名；证据不参与准入；评估全同步、
  *   不设时限预算，异常由调用方按 gate_engine_unavailable 收口。
- * - D12（已裁决不做）：评估器版本/阈值快照不落库，归因靠引擎所在提交 hash。
+ * - D12（2026-11-08 修订，原「不落库」作废）：评估器版本与阈值快照随逐道诊断
+ *   落可查载体（`gate-diagnostics.ts`），供事后回答「第 N 道为什么没过」。
+ *   属纯诊断，不写进 work_items 的用户可见状态。
  *
  * 快照一致性：recheck 全程同步（better-sqlite3 同步 API + 单线程），一次调用
  * 内的多次读库之间不可能交错写入，等价于同一时点快照。
@@ -52,7 +55,10 @@ import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
 import { comparablePath, resolveRealPath } from '../agent/runtime/approval/write-paths'
 import type { WorkItemRow } from './work-item-service'
-import type { GateRecheck, GateRecheckResult, GateWaiverInfo } from './gate-recheck'
+import type { GateRecheck, GateRecheckResult, GateWaiverInfo, GateDiagnostics, GateDiagnosticGate } from './gate-recheck'
+
+/** 逐道诊断里的评估器版本标识；引擎判定语义变化时必须同步更新（便于事后归因）。 */
+export const GATE_EVALUATOR_VERSION = 'gate-engine@1'
 
 /** §5.4 G4 默认阈值；配置键由 runtime 按 D7 从 env 读取，引擎只接收参数。 */
 const DEFAULT_G4_MAX_FILES = 20
@@ -438,7 +444,21 @@ export function createGateEngine(db: BetterSqlite3.Database, options: GateEngine
         ...deps, // G5
         ...conflicts, // G6
       ]
-      if (missing.length === 0) return { ok: true, missing: [] }
+      // 逐道诊断（D12 修订）：每道都留结果，即使整体不通过也能定位是哪一道。
+      const gates: GateDiagnosticGate[] = [
+        { gate: 'G1', ok: scope.missing.length === 0, missing: [...scope.missing] },
+        { gate: 'G2', ok: acceptance.missing.length === 0, missing: [...acceptance.missing] },
+        { gate: 'G3', ok: anchor.missing.length === 0, missing: [...anchor.missing] },
+        { gate: 'G4', ok: scale.length === 0, missing: [...scale] },
+        { gate: 'G5', ok: deps.length === 0, missing: [...deps] },
+        { gate: 'G6', ok: conflicts.length === 0, missing: [...conflicts] },
+      ]
+      const diagnostics: GateDiagnostics = {
+        evaluatorVersion: GATE_EVALUATOR_VERSION,
+        thresholds: { g4MaxFiles: policy.g4MaxFiles, g4MaxLines: policy.g4MaxLines },
+        gates,
+      }
+      if (missing.length === 0) return { ok: true, missing: [], diagnostics }
 
       // 豁免（§14.6）：仅当全部缺失码都来自 G2 的 manual 失败条目，且三字段
       // 齐全时，人工豁免视同通过；任何其他 gate 的缺失码都使豁免不生效。
@@ -450,9 +470,9 @@ export function createGateEngine(db: BetterSqlite3.Database, options: GateEngine
         conflicts.length
       if (otherThanG2 === 0 && acceptance.manualWaivable) {
         const waiver = readValidWaiver(item)
-        if (waiver) return { ok: true, missing: [], waived: waiver }
+        if (waiver) return { ok: true, missing: [], waived: waiver, diagnostics }
       }
-      return { ok: false, missing }
+      return { ok: false, missing, diagnostics }
     },
   }
 }
