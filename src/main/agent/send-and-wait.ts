@@ -10,8 +10,28 @@ import type { TerminationReason } from '@shared/types/agent'
 import type { AgentManager } from './agent-manager'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
+import { resolveAgentTimeouts } from './timeout-config'
 
 const logger = createLogger('sendPromptViaAgent')
+
+/**
+ * v36 / G3-8：等待上限的生效值。
+ * 显式 options.timeoutMs 优先（测试/特殊调用）；否则读 settings 的
+ * `agentRuntime.timeouts.sendWaitMs`（未配置 = 历史 300s，且 clamp ≥ turnMs+30s）。
+ * 读配置失败（如无 Electron app 的单测环境）时回落默认，不影响生成链路。
+ */
+async function resolveSendWaitMs(explicit?: number): Promise<number> {
+  if (typeof explicit === 'number' && Number.isFinite(explicit) && explicit > 0) {
+    return Math.floor(explicit)
+  }
+  try {
+    const { readSettings } = await import('../settings')
+    const settings = await readSettings()
+    return resolveAgentTimeouts(settings.agentRuntime?.timeouts).sendWaitMs
+  } catch {
+    return resolveAgentTimeouts().sendWaitMs
+  }
+}
 
 export interface CreateAgentSessionOptions {
   nodeTitle?: string
@@ -89,14 +109,14 @@ export async function sendPromptViaAgent(
 
   const adapterName = options?.adapterName ?? 'claude-code'
   const { sessionId } = await agentManager.startSession(adapterName, config)
+  const timeoutMs = await resolveSendWaitMs(options?.timeoutMs)
 
   return new Promise((resolve, reject) => {
     const chunks: string[] = []
     let settled = false
     const startTime = Date.now()
 
-    // 超时保护
-    const timeoutMs = options?.timeoutMs ?? 300_000
+    // 超时保护（生效值已在上面解析，v36 / G3-8）
     const timeoutId = setTimeout(() => {
       if (!settled) {
         settled = true

@@ -55,6 +55,8 @@ export interface WorkItemRow {
   scope_files: string
   out_of_scope_files: string | null
   acceptance_json: string
+  /** v36 / G3-4：调度优先级；NULL = 未设置（排在所有有值项之后）。 */
+  priority: number | null
   verification_hint: string | null
   status: WorkItemStatus
   cancel_reason: WorkItemCancelReason | null

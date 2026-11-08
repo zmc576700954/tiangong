@@ -292,6 +292,8 @@ export async function registerIpcHandlers(): Promise<void> {
   } catch (err) {
     logger.warn('Failed to read agentRuntime cost rates (usage will be unpriced):', err)
   }
+  // v36 / G3-6～G3-9：turn 超时预算注入（未配置 = DEFAULT_AGENT_TIMEOUTS，行为不变）。
+  agentManager.setAgentTimeouts(runtimeSettings?.agentRuntime?.timeouts)
   const agentRuntime = new AgentRuntime({
     db,
     rates: runtimeSettings?.agentRuntime?.costRates,
@@ -520,6 +522,8 @@ export async function registerIpcHandlers(): Promise<void> {
   // Phase 4 Task 3: SubagentManager — adapters get wired via setSubagentManager in their own tasks.
   const subagentInvocationRepo = new SubagentInvocationRepository(db)
   const subagentManager = new SubagentManager(agentManager, subagentInvocationRepo)
+  // v36 / G3-9：subagent 预算跟随 stepMs（未配置保持 5min 默认）。
+  subagentManager.setTimeoutMs(runtimeSettings?.agentRuntime?.timeouts?.stepMs)
   agentManager.setSubagentManager(subagentManager)
   // Phase 5 Task 8: register user-defined subagent types from settings.json
   try {

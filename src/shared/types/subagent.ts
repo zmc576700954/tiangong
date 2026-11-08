@@ -71,6 +71,11 @@ export interface SubagentInvokeArgs {
    * 仅当此字段非空时，子 session adapter 才暴露 delegate_recipe 工具。
    */
   allowedDelegates?: string[]
+  /**
+   * v36 / G3-9：父 turn 的绝对 deadline（epoch ms）。缺省时 SubagentManager
+   * 从 AgentManager 当前 running turn 读取；子代理预算取 min(step 预算, 父剩余)。
+   */
+  parentDeadlineAt?: number
 }
 
 /** Persisted subagent_invocations row (renderer-facing shape). */

@@ -34,6 +34,9 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
         scope_files          TEXT NOT NULL DEFAULT '[]',
         out_of_scope_files   TEXT,
         acceptance_json      TEXT NOT NULL DEFAULT '[]',
+        -- v36 / W3 G3-4：调度优先级。可空、**不进 requiredColumns**（存量库用
+        -- ALTER TABLE 补列，不能触发 DROP TABLE 重建）；NULL 视为最低（最后调度）。
+        priority             INTEGER,
         verification_hint    TEXT,
         status               TEXT NOT NULL DEFAULT 'draft' CHECK(status IN (
           'draft','awaiting_confirm','queued','running','blocked',
@@ -643,6 +646,52 @@ export const MAP_ACCEPTANCE_INDEX_SQLS: string[] = [
      ON acceptance_confirmations(step_id, decided_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_acceptance_confirmations_item
      ON acceptance_confirmations(work_item_id, decided_at DESC)`,
+]
+
+// ============================================================
+// v36 / W3 G3-5：存量自由文本 acceptance 迁移的原文存档（可回滚凭据）
+// ============================================================
+
+/**
+ * 迁移（Option B）前把**每一行**的 `acceptance_json` 原文完整留存，按
+ * `work_item_id`（即精确 revision 行 id）一行。设计取舍：
+ *
+ *  - 不写进 `work_items` 新列：迁移后 UI/查询仍只看到唯一的 acceptance_json，
+ *    不会出现「两份事实」；存档表只被迁移与回滚路径读取。
+ *  - 表名**不以 `_backup` 结尾**：`scanOrphanBackupTables`（§8.14.1）会把
+ *    `*_backup` 全部视为待判定的孤儿现场，本表是**有意的长期凭据**，
+ *    不能被那种启发式当成半迁移残留（否则每次启动都产生一条歧义报告）。
+ *  - 回滚（仅限迁移后未发生 revise 的行；revise 会新建 revision 行，旧行
+ *    id 不变，所以按 id 回写不会覆盖后续人工修订）：
+ *
+ *    UPDATE work_items
+ *       SET acceptance_json = (
+ *         SELECT a.original_acceptance_json
+ *           FROM map_acceptance_migration_archive a
+ *          WHERE a.work_item_id = work_items.id)
+ *     WHERE id IN (SELECT work_item_id FROM map_acceptance_migration_archive);
+ *    DELETE FROM map_acceptance_migration_archive WHERE schema_version = 36;
+ */
+export const MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS: MapTableSchema[] = [
+  {
+    name: 'map_acceptance_migration_archive',
+    createSql: `
+      CREATE TABLE map_acceptance_migration_archive (
+        work_item_id             TEXT PRIMARY KEY,
+        lineage_id               TEXT NOT NULL,
+        revision                 INTEGER NOT NULL,
+        original_acceptance_json TEXT NOT NULL,
+        migrated_acceptance_json TEXT NOT NULL,
+        item_count               INTEGER NOT NULL,
+        schema_version           INTEGER NOT NULL,
+        migrated_at              TEXT NOT NULL
+      )
+    `,
+    requiredColumns: [
+      'work_item_id', 'lineage_id', 'revision', 'original_acceptance_json',
+      'migrated_acceptance_json', 'item_count', 'schema_version', 'migrated_at',
+    ],
+  },
 ]
 
 export function applyMapAcceptanceSchema(db: { exec(sql: string): unknown }): void {

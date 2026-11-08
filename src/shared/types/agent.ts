@@ -6,6 +6,7 @@
 import type { ContextRef, BugSeverity } from './graph'
 import type { AgentTypeDefinition } from './subagent'
 import type { A2AServerConfig, A2ARemoteAgent } from './a2a'
+import type { AgentRuntimeTimeouts } from './agent-runtime'
 
 // ============================================
 // Agent 适配器类型（核心扩展点）
@@ -712,6 +713,11 @@ export interface BizGraphSettings {
       retentionDays?: number
       batchSize?: number
     }
+    /**
+     * v36 / G3-6～G3-9：执行超时预算。未配置的键回落 DEFAULT_AGENT_TIMEOUTS，
+     * 行为与升级前一致；每个键都有真实消费点（turn/step/task/sendWait）。
+     */
+    timeouts?: AgentRuntimeTimeouts
   }
   /** Phase D9: A2A 远程 Agent 列表（注册为 `a2a:<name>` 子代理类型） */
   a2a?: {

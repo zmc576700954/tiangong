@@ -74,7 +74,13 @@ export class WorkScheduler {
           WHERE is_current = 1 AND archived_at IS NULL AND status IN ('queued','running')
             AND (? IS NULL OR project_path = ?)
             AND (? IS NULL OR graph_id = ?)
-          ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at ASC, revision ASC
+          ORDER BY
+            CASE status WHEN 'queued' THEN 0 ELSE 1 END,
+            -- v36 / G3-4：priority DESC NULLS LAST。用 CASE 而非 NULLS LAST，
+            -- 兼容 SQLite < 3.30；NULL（未设置）排在所有有值项之后。
+            CASE WHEN priority IS NULL THEN 1 ELSE 0 END,
+            priority DESC,
+            created_at ASC, revision ASC
           LIMIT 50`,
       )
       .all(opts.projectPath ?? null, opts.projectPath ?? null, opts.graphId ?? null, opts.graphId ?? null) as WorkItemRow[]

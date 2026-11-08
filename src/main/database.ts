@@ -23,7 +23,9 @@ import {
   MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS,
   MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS,
   LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_ACCEPTANCE_TABLE_SCHEMAS, MAP_ACCEPTANCE_INDEX_SQLS,
+  MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
 } from './map/schema'
+import { migrateLegacyAcceptance } from './map-migration/legacy-acceptance'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -742,8 +744,18 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      工具调用审批。存量库若有 tool_name='acceptance_manual_confirm' 的行，
  *      由 runIncrementalMigrations 搬入新表（保留 legacy_approval_id 可追溯），
  *      不静默删除。
+ * v36：W3 执行守卫 —— ①`work_items.priority` 可空列（不进 requiredColumns，
+ *      存量库 ALTER TABLE 补列；候选排序 `priority DESC NULLS LAST, created_at`）；
+ *      ②存量自由文本 acceptance（`[{id,text}]`）自动迁移为
+ *      `{type:'manual', expected, provenance:'legacy_free_text'}`，迁移前原文
+ *      逐行存入 `map_acceptance_migration_archive`，并写一行
+ *      `map_migration_reports(kind='derivation', stage='legacy_acceptance')` 审计。
+ *      两件事同版本的理由：它们同属 W3「让存量任务可调度」的同一事务边界——
+ *      加列与数据迁移在同一次启动迁移里完成，要么都成立、要么整体回滚；
+ *      拆成两个版本会让「列已加、数据未迁」的中间态成为可启动状态。
+ *      纯加列 + 数据迁移，**不重建表**。
  */
-const CURRENT_SCHEMA_VERSION = 35
+const CURRENT_SCHEMA_VERSION = 36
 
 interface TableSchema {
   name: string
@@ -1222,6 +1234,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_S8_TABLE_SCHEMAS,
   // v35 / manual 验收确认事实（替代 agent_approvals 复用，§M5.11）。
   ...MAP_ACCEPTANCE_TABLE_SCHEMAS,
+  // v36 / W3 G3-5：存量 acceptance 迁移的原文存档（回滚凭据，非运行期依赖）。
+  ...MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -1635,6 +1649,17 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // 新表已由 TABLE_SCHEMAS 建好；这里只搬数据（解析不了的旧行保留并告警）。
   if (currentVersion < 35) {
     migrateLegacyAcceptanceConfirmations(db)
+  }
+
+  // v36：W3 G3-4 优先级列（纯加列，不重建表；不进 requiredColumns）。
+  if (currentVersion < 36) {
+    addColumnSafe('work_items', 'priority', 'INTEGER')
+  }
+
+  // v36：W3 G3-5 存量自由文本 acceptance → manual。非结构化行以外的行一律不动；
+  // 单事务内完成（本函数已在 migrate 的 SAVEPOINT 里）；存档表由 TABLE_SCHEMAS 建好。
+  if (currentVersion < 36) {
+    migrateLegacyAcceptance(db, CURRENT_SCHEMA_VERSION)
   }
 
   // v26 / S1.2（session-map 蓝图 §2.2.2）：nodes.entity_key 身份列。createSql 已含该列

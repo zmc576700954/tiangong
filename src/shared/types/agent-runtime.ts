@@ -366,14 +366,35 @@ export interface RunNodeRequest {
 }
 
 /**
+ * v36 / G3-6～G3-9：用户可配置的执行超时预算（settings.json
+ * `agentRuntime.timeouts`）。全部可选；未配置的键回落到 DEFAULT_AGENT_TIMEOUTS。
+ */
+export interface AgentRuntimeTimeouts {
+  /** 单 turn（含 subagent turn）超时；0 = 显式关闭。 */
+  turnMs?: number
+  /** 单步执行超时：写入 work_runs.deadline_at 并驱动 tick 超时扫描。 */
+  stepMs?: number
+  /** 单任务总预算：从该任务最早一次 work_runs.started_at 起算（队列等待不计）。 */
+  taskMs?: number
+  /** sendCommandAndWait 的等待上限；运行时下限为 turnMs + 30s。 */
+  sendWaitMs?: number
+}
+
+/**
  * F3-A：执行超时默认值（蓝图已给口径：turn 10min / step 10min / task 60min）。
- * 当前唯一消费点是 AgentManager.sendCommandThroughKernel 的 turnMs；step/task
- * 尚无对应执行者，先集中在这里，后续改配置键时只替换此处的读取即可。
+ * v36 起每个键都有真实消费点：
+ *  - turnMs   → AgentManager.sendCommandThroughKernel（无显式 deadline 时）
+ *  - stepMs   → WorkExecutionService 写 work_runs.deadline_at + tick 超时扫描
+ *  - taskMs   → WorkExecutionService 的 task 级 deadline 扫描（不含排队时间）
+ *  - sendWaitMs → send-and-wait 的默认等待（并 clamp ≥ turnMs + 30s）
+ * 修改配置键时只需替换这里的读取。
  */
 export const DEFAULT_AGENT_TIMEOUTS = {
   turnMs: 10 * 60 * 1000,
   stepMs: 10 * 60 * 1000,
   taskMs: 60 * 60 * 1000,
+  /** sendCommandAndWait 历史常量 300_000ms（5min）。 */
+  sendWaitMs: 5 * 60 * 1000,
   /**
    * P1-2：`driver.cancel` 的时限。取消前进程组已被回收，SDK 侧 cancel 正常在
    * 秒级返回；30s 足够覆盖慢后端，同时远小于 turn/step 时限，卡住不会拖住收口。

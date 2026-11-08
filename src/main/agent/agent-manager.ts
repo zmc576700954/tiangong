@@ -39,13 +39,14 @@ import type {
   Sandbox,
   TerminationReason,
 } from '@shared/types'
+import type { AgentRuntimeTimeouts } from '@shared/types/agent-runtime'
 import { isInternalAgentSessionId, isTrustedNativeSessionId } from '@shared/native-session-id'
 import { type AdapterRegistry } from './adapter-registry'
 import { type SessionRouter } from './session-router'
 import type { AgentRuntime } from './runtime/runtime'
+import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from './timeout-config'
 import { DeadlineReaper } from './runtime/process/deadline-reaper'
 import type { AgentSessionRow } from './runtime/db/repository'
-import { DEFAULT_AGENT_TIMEOUTS } from '@shared/types/agent-runtime'
 import { UsageLedger } from './runtime/cost/ledger'
 import { SessionBusyError } from './runtime/errors'
 import { ROOT_LOCK_CONTEXT, sessionLockKey } from './runtime/locks/session-lock'
@@ -251,6 +252,17 @@ export class AgentManager {
    * writes through lifecycle.start / lifecycle.terminate paths.
    */
   private sessionStates = new Map<string, SessionState>()
+  /**
+   * v36 / G3-9：当前 running turn 的绝对 deadline（仅内存，turn 结束即删）。
+   * 供 SubagentManager 继承父 deadline（`getSessionTurnDeadline`），避免子代理
+   * 比父代理活得更久。
+   */
+  private turnDeadlines = new Map<string, number>()
+  /**
+   * v36 / G3-6～G3-8：生效中的超时预算。默认值唯一落点仍是
+   * DEFAULT_AGENT_TIMEOUTS；由 IPC 组装层用 `agentRuntime.timeouts` 覆盖。
+   */
+  private agentTimeouts: ResolvedAgentTimeouts = resolveAgentTimeouts()
   /** Per-session output buffer (also owned by lifecycle; mirror here). */
   private sessionOutputBuffers = new Map<string, AgentOutput[]>()
   /** SessionRecovery singleton (test-visible via getter). */
@@ -447,6 +459,24 @@ export class AgentManager {
       `[legacy-approval] session=${sessionId}: 旧路径已启用写前审批（adapter=${adapter.name}）`,
     )
     return () => adapter.setTurnApprovalHooks(sessionId, null)
+  }
+
+  /**
+   * v36 / G3-9：父 turn 的绝对 deadline（无 running turn 时 undefined）。
+   * SubagentManager 用它把子代理预算 clamp 到父剩余时间。
+   */
+  getSessionTurnDeadline(sessionId: string): number | undefined {
+    return this.turnDeadlines.get(sessionId)
+  }
+
+  /** v36 / G3-6～G3-9：组装层注入 settings.agentRuntime.timeouts 的生效值。 */
+  setAgentTimeouts(timeouts: AgentRuntimeTimeouts | undefined): void {
+    this.agentTimeouts = resolveAgentTimeouts(timeouts)
+  }
+
+  /** 只读投影（测试/诊断用）。 */
+  getAgentTimeouts(): ResolvedAgentTimeouts {
+    return this.agentTimeouts
   }
 
   /** 用户可见的线程会话（自由聊天）；无 chat_threads 归属的内部工具会话不在此列。 */
@@ -1360,6 +1390,14 @@ export class AgentManager {
         }
         this.lifecycle.recordLastCommand(sessionId, command, commandType)
 
+        // v36 / G3-6：turn 超时预算来自配置（未配置 = 现有 10min 默认，行为不变）。
+        const turnDeadlineMs = command.deadlineMs ?? this.agentTimeouts.turnMs
+        if (turnDeadlineMs > 0) {
+          this.turnDeadlines.set(sessionId, Date.now() + turnDeadlineMs)
+        } else {
+          this.turnDeadlines.delete(sessionId)
+        }
+
         try {
           // D8：nodeId 已在进入 kernel 前解析校验（真实节点 ID，非 thread:/session: 伪 ID）。
           // 幂等键：每次派发必须是新的 turn。此前缺 runId/graphId/attempt，
@@ -1381,15 +1419,18 @@ export class AgentManager {
             attempt: 1,
             idempotencyKey: `kernel:${sessionId}:${dispatchId}`,
             threadId: state?.threadId,
-            // F3-A：调用方未显式给出 deadline 时使用默认 turn 超时（10min）。
-            // 0 表示显式关闭；默认值唯一落点是 DEFAULT_AGENT_TIMEOUTS.turnMs。
-            deadlineMs: command.deadlineMs ?? DEFAULT_AGENT_TIMEOUTS.turnMs,
+            // F3-A：调用方未显式给出 deadline 时使用生效配置的 turn 超时。
+            // 0 表示显式关闭；默认值唯一落点是 DEFAULT_AGENT_TIMEOUTS.turnMs，
+            // 可由 agentRuntime.timeouts.turnMs 覆盖（v36 / G3-6）。
+            deadlineMs: turnDeadlineMs,
           })
         } catch (err) {
           if (state && state.lastCommandType === commandType) {
             state.lastCommandType = prevCommandType
           }
           throw err
+        } finally {
+          this.turnDeadlines.delete(sessionId)
         }
       },
       { kind: SpanKind.INTERNAL },

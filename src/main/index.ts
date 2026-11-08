@@ -170,6 +170,9 @@ app.whenReady().then(async () => {
     db,
     host: agentManager,
     hasAdapter: (adapterName) => agentManager.getAdapter(adapterName) !== undefined,
+    // v36 / G3-7/G3-8：step/task 预算在同一份 settings 快照里注入；
+    // 运行时改动需重启应用才生效（tick 装配期读取一次）。
+    timeouts: settings.agentRuntime?.timeouts,
   })
 
   // Set locale before building the menu — otherwise the first-frame menu is English

@@ -145,6 +145,21 @@ export class SubagentManager extends EventEmitter {
     this.a2aClients.set(name, client)
   }
 
+  /**
+   * v36 / G3-9：由组装层注入 `agentRuntime.timeouts.stepMs`。
+   * 未配置/非法值保持构造时的默认（5min）——升级后行为不变。
+   */
+  setTimeoutMs(timeoutMs: number | undefined | null): void {
+    if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      this.timeoutMs = Math.floor(timeoutMs)
+    }
+  }
+
+  /** 只读投影（测试/诊断用）。 */
+  getTimeoutMs(): number {
+    return this.timeoutMs
+  }
+
   /** Destroy all injected A2AClients (hot-reload: release sockets before re-registering). */
   clearA2AClients(): void {
     for (const client of this.a2aClients.values()) {
@@ -726,25 +741,35 @@ export class SubagentManager extends EventEmitter {
     // Attach listener BEFORE sending the command so we don't miss early completions.
     this.agentManager.addSessionOutputListener(childSessionId, outputHandler)
 
+    // v36 / G3-9：子代理继承父 deadline —— 取 min(step 预算, 父 turn 剩余时间)。
+    // 显式 parentDeadlineAt 优先；否则读父会话当前 running turn 的 deadline。
+    const parentDeadlineAt =
+      args.parentDeadlineAt ?? this.agentManager.getSessionTurnDeadline?.(args.parentSessionId)
+    const childTimeoutMs =
+      typeof parentDeadlineAt === 'number' && Number.isFinite(parentDeadlineAt) && parentDeadlineAt > 0
+        ? Math.max(1, Math.min(this.timeoutMs, parentDeadlineAt - Date.now()))
+        : this.timeoutMs
     const timeoutHandle: ReturnType<typeof setTimeout> = setTimeout(() => {
       if (!settled) {
         settled = true
         completeReject?.(
           new AgentError(
-            `Subagent timeout after ${this.timeoutMs}ms`,
+            `Subagent timeout after ${childTimeoutMs}ms`,
             ErrorCode.AGENT_ADAPTER_ERROR,
           ),
         )
       }
-    }, this.timeoutMs)
+    }, childTimeoutMs)
 
     // The AgentCommand carries the task prompt via `description`. The adapter consumes
     // command.description as the user prompt (see BaseAdapter.doSendCommand). For Phase 4
     // we route systemPromptAddon + raw prompt through this field.
+    // deadlineMs 把同一预算下发给 kernel turn，避免「外层定时器已到、内层 turn 还活着」。
     const command: AgentCommand = {
       type: 'implement',
       description: taskPrompt,
       targetNodeId: args.nodeId ?? '',
+      deadlineMs: childTimeoutMs,
     }
 
     try {

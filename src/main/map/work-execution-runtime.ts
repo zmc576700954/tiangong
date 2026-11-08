@@ -21,6 +21,7 @@ import {
   type KernelCapabilityProbe,
   type WorkExecutionEvent,
 } from './work-execution-service'
+import type { AgentRuntimeTimeouts } from '@shared/types/agent-runtime'
 
 const logger = createLogger('MapExecutionRuntime')
 
@@ -93,6 +94,8 @@ export interface StartWorkExecutionOptions {
   /** adapter 是否已注册（driver 探测）；缺省视为存在，由 sendCommandKernelOnly 兜底拒绝。 */
   hasAdapter?: (adapterName: string) => boolean
   intervalMs?: number
+  /** v36 / G3-7/G3-8：`agentRuntime.timeouts`（未配置回落实常量）。 */
+  timeouts?: AgentRuntimeTimeouts
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -150,6 +153,7 @@ export function startWorkExecutionRuntime(options: StartWorkExecutionOptions): v
     onEvent: (event) => {
       void broadcastEvent(event)
     },
+    timeouts: options.timeouts,
   })
   setWorkExecutionService(service)
 

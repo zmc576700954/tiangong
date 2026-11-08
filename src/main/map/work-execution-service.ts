@@ -46,6 +46,7 @@ import {
 import { WorkRunService, type WorkRunRow, type WorkRunStatus } from './work-run-service'
 import { WorkScheduler, type ClaimedStep } from './work-scheduler'
 import { WorkStepService, isTerminalStepStatus, type WorkStepStatus } from './work-step-service'
+import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from '../agent/timeout-config'
 
 const logger = createLogger('WorkExecutionService')
 
@@ -111,6 +112,11 @@ export interface WorkExecutionOptions {
   verifyAcceptance?: AcceptanceVerifier
   /** 事件出口（生产接 renderer 广播；测试可断言）。 */
   onEvent?: (event: WorkExecutionEvent) => void
+  /**
+   * v36 / G3-7/G3-8：执行超时预算（`agentRuntime.timeouts` 的 stepMs/taskMs）。
+   * 未配置时回落 DEFAULT_AGENT_TIMEOUTS（=升级前常量，行为不变）。
+   */
+  timeouts?: { stepMs?: number; taskMs?: number }
 }
 
 export interface EnqueueStepInput {
@@ -144,6 +150,8 @@ export interface WorkTickReport {
   itemStatus?: WorkItemStatus
   outcome?: StepRunResult
   requeuedRunIds: string[]
+  /** v36 / G3-7/G3-8：本轮被 deadline 扫描收口为 timed_out 的 run。 */
+  timedOutRunIds: string[]
   gateBlockedItemIds: string[]
   routingFailedItemIds: string[]
   skippedStepIds: string[]
@@ -173,6 +181,8 @@ export class WorkExecutionService {
   private readonly runner: AgentStepRunner
   private readonly isEnabled: () => boolean
   private readonly gateRecheck: GateRecheck
+  /** v36 / G3-7/G3-8：生效的超时预算（stepMs 写 deadline、taskMs 任务总预算）。 */
+  private readonly agentTimeouts: ResolvedAgentTimeouts
   /** 单进程串行：同一时刻只允许一个 turn（§5.9.9 写闸）。 */
   private inflightRunId: string | null = null
 
@@ -188,6 +198,7 @@ export class WorkExecutionService {
     this.runner = new AgentStepRunner(db, turns)
     this.isEnabled = options.isEnabled ?? isMapExecutionEnabled
     this.gateRecheck = options.gateRecheck ?? unavailableGateRecheck
+    this.agentTimeouts = resolveAgentTimeouts(options.timeouts)
   }
 
   // ---------------------------------------------------------
@@ -300,6 +311,7 @@ export class WorkExecutionService {
       ran: false,
       busy: false,
       requeuedRunIds: [],
+      timedOutRunIds: [],
       gateBlockedItemIds: [],
       routingFailedItemIds: [],
       skippedStepIds: [],
@@ -312,6 +324,9 @@ export class WorkExecutionService {
 
     // 第 6 步的前置清理：上一轮遗留的「已 claim、未启动」孤儿。
     report.requeuedRunIds = this.recoverOrphanedClaims()
+    // v36 / G3-7/G3-8：先按 deadline 收口超时 run（step 预算 + task 总预算），
+    // 再选候选——否则超时 run 会一直被当成 in-flight。
+    report.timedOutRunIds = this.sweepDeadlines()
 
     const candidates = this.selectCandidates(options)
     for (const item of candidates) {
@@ -394,7 +409,8 @@ export class WorkExecutionService {
       // 第 5 步已由 inflight 守卫在入口完成；第 6 步：claim → run。
       const claim = this.scheduler.startStep(step.id, {
         adapterName,
-        deadlineAt: options.deadlineAt ?? undefined,
+        // v36 / G3-7/G3-8：显式 deadline 优先；否则 stepMs，并 clamp 到 task 总预算。
+        deadlineAt: this.resolveRunDeadline(item.id, options.deadlineAt),
       })
       this.inflightRunId = claim.run.id
       report.ran = true
@@ -442,6 +458,93 @@ export class WorkExecutionService {
   /** 供外部（tick 循环/测试）观察是否有一个 turn 正在跑。 */
   isBusy(): boolean {
     return this.inflightRunId !== null
+  }
+
+  /**
+   * v36 / G3-8：任务总预算的绝对 deadline。
+   * 起点 = 该任务**最早一次 run 的 started_at**（队列等待不计；不新增列）。
+   * 无 started_at / taskMs 非法 → undefined（不启用 task 预算）。
+   */
+  private taskDeadlineAt(workItemId: string): number | undefined {
+    if (this.agentTimeouts.taskMs <= 0) return undefined
+    const row = this.db
+      .prepare(
+        `SELECT MIN(started_at) AS startedAt FROM work_runs
+          WHERE work_item_id = ? AND started_at IS NOT NULL`,
+      )
+      .get(workItemId) as { startedAt: number | null } | undefined
+    const startedAt = row?.startedAt
+    return typeof startedAt === 'number' && startedAt > 0
+      ? startedAt + this.agentTimeouts.taskMs
+      : undefined
+  }
+
+  /** 新 run 的 deadline：显式 > stepMs；两者都受 task 总预算上限约束。 */
+  private resolveRunDeadline(
+    workItemId: string,
+    explicit?: number | null,
+  ): number | undefined {
+    const now = Date.now()
+    const stepDeadline =
+      typeof explicit === 'number' && explicit > 0
+        ? explicit
+        : now + this.agentTimeouts.stepMs
+    const taskDeadline = this.taskDeadlineAt(workItemId)
+    if (!taskDeadline) return stepDeadline
+    return Math.min(stepDeadline, taskDeadline)
+  }
+
+  /**
+   * v36 / G3-7/G3-8：tick 前置 deadline 扫描（只处理 running run）：
+   *  - run.deadline_at 到期（step 预算）或 task 预算耗尽 → run → timed_out，
+   *    对应步 running → timed_out，再收敛 item；
+   *  - task 预算耗尽时，同一 item 的 queued run 一并按 cancel_reason='deadline'
+   *    取消，避免下一轮继续开跑。
+   * 不做抢占式中断线程：本 tick 与 runner 串行（inflight 守卫），到期的 run 一定
+   * 不在本进程内跑，直接落终态是安全的（与现有 work-run-service.timeout 条件更新一致）。
+   */
+  private sweepDeadlines(): string[] {
+    const now = Date.now()
+    const timedOut: string[] = []
+    for (const run of this.runs.listRunning()) {
+      const stepExpired =
+        typeof run.deadline_at === 'number' && run.deadline_at > 0 && run.deadline_at <= now
+      const taskDeadline = this.taskDeadlineAt(run.work_item_id)
+      const taskExpired = taskDeadline !== undefined && taskDeadline <= now
+      if (!stepExpired && !taskExpired) continue
+      const settled = this.runs.timeout(run.id)
+      if (!settled) continue
+      timedOut.push(run.id)
+      const step = run.step_id ? this.steps.get(run.step_id) : undefined
+      if (step && !isTerminalStepStatus(step.status)) {
+        try {
+          this.steps.fail(step.id, { status: 'timed_out', failureClass: 'timeout' })
+        } catch (error) {
+          // 并发下已被执行器置终态：保留既有事实（与 cancelRun 同口径）。
+          logger.warn(`[tick] run=${run.id} 超时落步失败（保留既有终态）：${String(error)}`)
+        }
+      }
+      if (taskExpired) {
+        for (const queued of this.runs.list({
+          workItemId: run.work_item_id,
+          status: 'queued',
+          limit: 100,
+        })) {
+          this.runs.cancel(queued.id, 'deadline')
+        }
+      }
+      this.items.convergeIfTerminal(run.work_item_id)
+      const item = this.items.get(run.work_item_id)
+      this.emit({
+        type: 'work_item_changed',
+        workItemId: run.work_item_id,
+        lineageId: run.work_item_lineage_id,
+        revision: run.work_item_revision,
+        status: item?.status ?? 'failed',
+        reason: taskExpired ? 'task_deadline_exceeded' : 'step_deadline_exceeded',
+      })
+    }
+    return timedOut
   }
 
   // ---------------------------------------------------------
@@ -518,7 +621,12 @@ export class WorkExecutionService {
           WHERE is_current = 1 AND archived_at IS NULL AND status IN ('queued','running')
             AND (? IS NULL OR project_path = ?)
             AND (? IS NULL OR graph_id = ?)
-          ORDER BY CASE status WHEN 'queued' THEN 0 ELSE 1 END, created_at ASC, revision ASC
+          ORDER BY
+            CASE status WHEN 'queued' THEN 0 ELSE 1 END,
+            -- v36 / G3-4：priority DESC NULLS LAST（CASE 兼容旧 SQLite）。
+            CASE WHEN priority IS NULL THEN 1 ELSE 0 END,
+            priority DESC,
+            created_at ASC, revision ASC
           LIMIT 50`,
       )
       .all(

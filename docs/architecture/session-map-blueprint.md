@@ -206,13 +206,16 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **与设计的两处差异（按代码事实记录）**：① §3.7.1 要求 agent 候选经 `evidence_suggestions` 接受后转 `node_evidence`，但该表尚未建且代码矩阵拒绝 `actor='agent'` 直写 E2——本批暂由编排层以 `actor='system'` 写 E2，`ref_json` 保留 `sessionId/turnId/adapter` 溯源，待 suggestions 表落地后改回“建议→接受”；② 本文档所称“E4 禁止代码 hash”在代码里仅指 `code_version`，`current_hash` 不在 E4 的禁止列内，故 E4 写产物哈希不违反约束。覆盖条目 G3-10/G5-3 **仍为「已批准未实施」**（E1 写通道、建议与复扫均未建，不按整体升格）。
 
 ### W3 执行守卫与入口
-- 覆盖条目：G3-4 `[批准]` `priority DESC`、G3-5 `[批准]` 存量自由文本 acceptance、G3-6～G3-9 `[批准]` 超时预算、G3-1/2/3 `[建议]` Tier1/跨进程写闸/renderer 入口。
+- 覆盖条目：G3-4 `[已实施]` `priority DESC`、G3-5 `[已实施]` 存量自由文本 acceptance、G3-6～G3-9 `[已实施]` 超时预算、G3-1/2/3 `[建议]` Tier1/跨进程写闸/renderer 入口（**本期不做**，仅保留设计状态）。
 - 目标：调度有优先级；跨进程不双写；预算键可配置且被消费。
-- 涉及文件与数据/接口变更：`src/main/map/work-execution-service.ts`、`src/main/map/work-item-service.ts`、`src/main/agent/agent-manager.ts`、`src/shared/types/agent-runtime.ts`；`work_items` 加 `priority`（可空、不进 requiredColumns）；`agent.timeouts` 增加 `stepMs/taskMs/sendWaitMs`。
-- 实施步骤：① 迁移加列并按 `priority DESC, created_at` 排序；② 迁移存量 acceptance 为结构化 `items_json`；③ 预算键接入 `work-execution-service` 与 subagent；④ 跨进程写闸用项目级锁文件；⑤ renderer 入口单独立项。
-- 验收标准：优先级排序用例通过；预算到期产生 `timeout` 终态；跨进程第二个写请求被拒；存量 acceptance 不再出现“不可执行”。
+- 涉及文件与数据/接口变更：`src/main/map/work-execution-service.ts`、`src/main/map/work-scheduler.ts`、`src/main/map/work-item-service.ts`、`src/main/map-migration/legacy-acceptance.ts`（新增）、`src/main/agent/agent-manager.ts`、`src/main/agent/subagent-manager.ts`、`src/main/agent/send-and-wait.ts`、`src/main/agent/timeout-config.ts`（新增）、`src/shared/types/agent-runtime.ts`；`work_items` 加 `priority`（可空、不进 requiredColumns）；`map_acceptance_migration_archive`（新增，迁移原文存档）；`agentRuntime.timeouts` 增加 `turnMs/stepMs/taskMs/sendWaitMs`。
+- 实施步骤：① 迁移加列并按 `priority DESC NULLS LAST, created_at` 排序；② 迁移存量 acceptance 为结构化 `acceptance_json`（**不是** `items_json`：`items_json` 属于 `plan_drafts`）；③ 预算键接入 `work-execution-service`、`agent-manager`、subagent 与 send-and-wait；④ 跨进程写闸用项目级锁文件（仅建议、本期不做）；⑤ renderer 入口单独立项（仅建议、本期不做）。
+- 验收标准：优先级排序用例通过；预算到期产生 `timed_out` 终态；存量 acceptance 迁移后可过 gate 且 manual 仍需人工确认；跨进程写闸与 renderer 入口不在本期验收。
 - 依赖与建议顺序：W3 可在 W1 之后独立推进；Tier1/跨进程/入口建议放到 L3。
-- 风险与回滚：改排序影响现有队列 → 加索引后灰度；加列不重建表。
+- 风险与回滚：改排序影响现有队列 → 先保持 `queued` 优先、`priority` 可空，NULL 行为等价旧序；加列不重建表。存量 acceptance 迁移可回滚（原文逐行存 `map_acceptance_migration_archive`，回滚 SQL 见该表建表注释与审计行）。
+- **施工注记（2026-11-08，W3 完成，schema v36）**：G3-4 加 `work_items.priority INTEGER`（可空、不进 `requiredColumns`；存量库 `addColumnSafe` 纯加列，不重建表）。两处候选查询（`work-scheduler.ts` 预选、`work-execution-service.ts` tick 选候选）统一为 `CASE status WHEN 'queued' THEN 0 ELSE 1 END, CASE WHEN priority IS NULL THEN 1 ELSE 0 END, priority DESC, created_at ASC`：`queued` 优先不变，未设优先级的行仍按创建时间，等价旧序；因此现有队列不会被重排。回滚 = `priority` 全置 NULL（等价旧序）或保持列不用，无需重建表。
+  G3-5 按 **方案 B** 自动迁移存量自由文本 acceptance（`[{id,text}]` / 纯字符串）：逐行判定，**非结构化行以外一律不动**；已是结构化（任一 entry 带 `type`）、非法 JSON、空数组、终态（`done/failed/cancelled/superseded`）、已归档、混合行（部分有 `type`）均不迁移。迁移条目为 `{id, type:'manual', expected:<原文>, text:<原文>, provenance:'legacy_free_text'}`；id 保留原值、缺失用 `acc_<序号>`、重复加 `_2/_3` 后缀；纯空白 text 丢弃，全部为空则该行不动。原文逐行写 `map_acceptance_migration_archive`（按 `work_item_id`+revision 精确定位，非 `*_backup` 命名以免被孤儿备份启发式误判）；迁移行数与各类跳过数、版本、时间、判定依据写入 `map_migration_reports(kind='derivation', stage='legacy_acceptance')`。全程在 v36 迁移的同一事务内完成（加列与数据迁移同版本：避免「列已加、数据未迁」成为可启动的中间态）。
+  G3-6～G3-9 在 `settings.agentRuntime.timeouts` 增设四键，统一由 `timeout-config.ts` 解析（未配置 = `DEFAULT_AGENT_TIMEOUTS`，行为不变）：`turnMs` 消费于 `AgentManager.sendCommandThroughKernel`（无显式 deadline 时）；`stepMs` 写 `work_runs.deadline_at` 并由 tick 前置 `sweepDeadlines()` 收口为 `timed_out`；`taskMs` 以该任务最早一次 `work_runs.started_at` 起算（排队时间不计、不新增列），到期同样扫描收口并取消同 item 的 queued run；`sendWaitMs` 消费于 `send-and-wait.ts` 的等待上限，并 clamp ≥ `turnMs + 30s`。subagent 继承：`SubagentManager` 取 `min(stepMs, 父 turn 剩余)`，父 deadline 由 `AgentManager.getSessionTurnDeadline()` 提供（`AgentCommand.deadlineMs` 同步下发给子 turn）。配置在启动装配期读取，运行中修改需重启生效。G3-1/2/3 **维持仅建议、本期不改代码**。
 
 ### W4 测试体系补全
 - 覆盖条目：G4-6 `[批准]` allow-list harness、G4-7 `[批准]` P1–P9 脚本、G4-8 `[批准]` P6 并行验证、G4-9 `[批准]` CI vitest、G2-11/12/13 `[建议]` 流程测试最小版/定向重测/published 软阻断。
