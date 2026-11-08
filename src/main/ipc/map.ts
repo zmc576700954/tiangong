@@ -19,6 +19,7 @@ import { EvidenceService } from '../map/evidence-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import { WorkExecutionError } from '../map/work-execution-service'
+import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import type { TypedHandle } from './utils'
 
@@ -39,6 +40,7 @@ export function registerMapHandlers(
   const evidence = new EvidenceService(db)
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
+  const acceptanceConfirm = new AcceptanceConfirmationService(db)
 
   // ---- 叠加层（§9.2:必须批量）----
   typedHandle('map:overlay:get', async (_, graphId: unknown) => {
@@ -343,6 +345,50 @@ export function registerMapHandlers(
       cancelled: result.cancelled,
       alreadyTerminal: result.alreadyTerminal,
       itemStatus: result.itemStatus,
+    }
+  })
+
+  /**
+   * D2 manual 验收人工确认（写通道）：只记录确认事实并重算验收，不触发 turn。
+   * 部分确认允许；重算仍有硬失败 → verify_fail，仍有未确认 manual → 继续等待。
+   */
+  typedHandle('workitem:acceptance:confirm', async (_, data) => {
+    const d = (data ?? {}) as {
+      stepId?: unknown
+      workItemId?: unknown
+      entryIds?: unknown
+      note?: unknown
+      confirmedBy?: unknown
+    }
+    if (typeof d.stepId !== 'string' && typeof d.workItemId !== 'string') {
+      throw new AcceptanceConfirmationError('CONFIRM_INPUT_REQUIRED', 'stepId 或 workItemId 必填')
+    }
+    const entryIds = Array.isArray(d.entryIds)
+      ? d.entryIds.filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+      : []
+    if (entryIds.length === 0) {
+      throw new AcceptanceConfirmationError('CONFIRM_INPUT_REQUIRED', 'entryIds 不能为空')
+    }
+    const result = await acceptanceConfirm.confirm({
+      stepId: typeof d.stepId === 'string' ? d.stepId : undefined,
+      workItemId: typeof d.workItemId === 'string' ? d.workItemId : undefined,
+      entryIds,
+      note: typeof d.note === 'string' ? d.note : undefined,
+      confirmedBy: typeof d.confirmedBy === 'string' ? d.confirmedBy : undefined,
+    })
+    broadcast?.('event:work-item-changed', {
+      lineageId: result.lineageId,
+      revision: result.revision,
+      status: result.itemStatus,
+      reason: result.stepStatus === 'needs_input' ? 'acceptance_partial_confirmed' : 'acceptance_confirmed',
+    })
+    return {
+      stepId: result.stepId,
+      workItemId: result.workItemId,
+      stepStatus: result.stepStatus,
+      itemStatus: result.itemStatus,
+      remainingEntryIds: result.remainingEntryIds,
+      approvalId: result.approvalId,
     }
   })
 

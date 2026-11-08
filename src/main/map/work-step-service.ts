@@ -297,6 +297,42 @@ export class WorkStepService {
     return this.confirmed(stepId, result.changes, "needs_input|paused → pending(attempt+1)")
   }
 
+  /**
+   * manual 验收确认后的收口：needs_input → succeeded，或 needs_input → failed(verify_fail)。
+   *
+   * 与 `resume`（needs_input → pending，attempt+1）的区别：工作已由原 turn 完成，
+   * 人工确认只重算验收，不重跑 agent，因此不新开 attempt、不复用旧 run。
+   */
+  settleNeedsInput(
+    stepId: string,
+    outcome: { status: 'succeeded' } | { status: 'failed'; failureClass: StepFailureClass },
+  ): WorkStepRow {
+    const now = Date.now()
+    const failureClass = outcome.status === 'failed' ? outcome.failureClass : null
+    const result = this.db
+      .prepare(
+        `UPDATE work_steps SET status = ?, failure_class = ?, ended_at = ?, updated_at = ?
+          WHERE id = ? AND status = 'needs_input'`,
+      )
+      .run(outcome.status, failureClass, now, now, stepId)
+    return this.confirmed(stepId, result.changes, `needs_input → ${outcome.status}`)
+  }
+
+  /** 部分确认后仍在等待：needs_input → needs_input，只更新待确认条目。 */
+  updateInputRequest(stepId: string, inputRequestJson: string): WorkStepRow {
+    if (!inputRequestJson.trim()) {
+      throw new WorkStepGuardError('input_request_json 不得为空')
+    }
+    const now = Date.now()
+    const result = this.db
+      .prepare(
+        `UPDATE work_steps SET input_request_json = ?, updated_at = ?
+          WHERE id = ? AND status = 'needs_input'`,
+      )
+      .run(inputRequestJson, now, stepId)
+    return this.confirmed(stepId, result.changes, 'needs_input input_request_json update')
+  }
+
   private confirmed(stepId: string, changes: number, transition: string): WorkStepRow {
     if (changes !== 1) {
       const current = this.get(stepId)

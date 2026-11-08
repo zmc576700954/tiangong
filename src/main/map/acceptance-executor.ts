@@ -55,7 +55,7 @@ export interface AcceptanceVerdict {
   pending: string[]
   /** manual 条目的结构化明细（写入 work_steps.input_request_json）。 */
   pendingItems: AcceptancePendingItem[]
-  /** 实际执行过的 command/file_check 条目数。 */
+  /** 已判定条目数（command/file_check 实际执行 + 已人工确认的 manual）。 */
   checked: number
 }
 
@@ -63,6 +63,11 @@ export interface EvaluateAcceptanceInput {
   acceptanceJson: string | null | undefined
   projectPath: string | null | undefined
   defaultTimeoutMs?: number
+  /**
+   * 已人工确认的 manual 条目 id：重算时视为通过。
+   * 只由人工确认入口传入，执行器自身绝不自动确认任何 manual。
+   */
+  confirmedManualEntryIds?: string[]
   /** 测试注入；生产缺省用 shell 执行。 */
   runCommand?: AcceptanceCommandRunner
   /** 测试注入；生产缺省用 fs 读 UTF-8。 */
@@ -131,6 +136,7 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
   const missing: string[] = []
   const pending: string[] = []
   const pendingItems: AcceptancePendingItem[] = []
+  const confirmedManualIds = new Set(input.confirmedManualEntryIds ?? [])
   let checked = 0
 
   const projectPath = input.projectPath?.trim()
@@ -187,6 +193,11 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
         continue
       }
       const text = typeof record['text'] === 'string' ? record['text'] : undefined
+      if (confirmedManualIds.has(id)) {
+        // 人工已确认：本次重算视为通过；不再进入 pending。
+        checked += 1
+        continue
+      }
       pending.push(`acceptance_manual_pending:${i}`)
       pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
       continue

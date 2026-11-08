@@ -4,16 +4,41 @@
  * 选中节点的只读详情：派生状态徽标 + 锚定该节点的 work item + 每个 item 的
  * 步骤/最近 runs + 会话时间线（threadIds 全集,§9.5-3）+ 证据级别与新鲜度。
  *
- * 纯展示：不含任何写操作按钮或执行触发；只调用 c88de35 暴露的只读通道
- * （map:overlay:get / map:node:timeline / map:node:evidence:list / workitem:get）。
+ * 唯一写操作：manual 验收确认按钮（workitem:acceptance:confirm）。确认只记录
+ * 人工事实并重算验收，不触发 turn；其余仍为只读。
  * 空数据如实显示"无"，不生成占位内容。
  */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { Badge } from '../ui/badge'
 import { useMapStore } from '../../store/mapStore'
 import type { ExecutionStateValue, WorkItemSummary } from '../../store/mapStore'
+
+interface PendingAcceptanceEntry {
+  id: string
+  expected: string
+  text?: string
+}
+
+/** 解析 `input_request_json`（kind=acceptance_manual_confirm）；非法/空返回 null。 */
+function parseAcceptanceRequest(json: string | null): PendingAcceptanceEntry[] | null {
+  if (!json) return null
+  try {
+    const parsed = JSON.parse(json) as { kind?: unknown; entries?: unknown }
+    if (parsed?.kind !== 'acceptance_manual_confirm' || !Array.isArray(parsed.entries)) return null
+    const entries = parsed.entries.filter(
+      (entry): entry is PendingAcceptanceEntry =>
+        !!entry &&
+        typeof entry === 'object' &&
+        typeof (entry as PendingAcceptanceEntry).id === 'string' &&
+        typeof (entry as PendingAcceptanceEntry).expected === 'string',
+    )
+    return entries.length > 0 ? entries : null
+  } catch {
+    return null
+  }
+}
 
 /** 派生态徽标配色（verified 与 signed_off 按可复现性分色,禁止混同 §3.5）。 */
 const STATE_STYLE: Record<ExecutionStateValue, string> = {
@@ -74,6 +99,23 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const fetchOverlay = useMapStore((s) => s.fetchOverlay)
   const fetchNodeData = useMapStore((s) => s.fetchNodeData)
   const fetchWorkItemDetail = useMapStore((s) => s.fetchWorkItemDetail)
+  const confirmAcceptance = useMapStore((s) => s.confirmAcceptance)
+  const [confirmingKey, setConfirmingKey] = useState<string | null>(null)
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  async function handleConfirm(itemId: string, stepId: string, entryId: string): Promise<void> {
+    if (!graphId) return
+    const key = `${stepId}:${entryId}`
+    setConfirmingKey(key)
+    setConfirmError(null)
+    try {
+      await confirmAcceptance({ graphId, workItemId: itemId, stepId, entryIds: [entryId] })
+    } catch (error) {
+      setConfirmError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setConfirmingKey(null)
+    }
+  }
 
   useEffect(() => {
     if (!graphId) return
@@ -139,18 +181,51 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                     {(detail?.steps ?? []).length === 0 && (
                       <div className="text-[11px] opacity-50">无（该任务没有步骤）</div>
                     )}
-                    {(detail?.steps ?? []).map((s) => (
-                      <div key={s.id} className="flex items-center gap-2 text-[11px]" data-testid={`step-${s.id}`}>
-                        <span className="w-5 text-right opacity-50">{s.seq}</span>
-                        <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[s.status] ?? ''}`}>{s.status}</Badge>
-                        <span className="flex-1 truncate">{s.title}</span>
-                        <span className="text-[10px] opacity-50">
-                          {s.step_kind} · #{s.attempt}
-                          {s.skip_reason ? ` · skip=${s.skip_reason}` : ''}
-                          {s.failure_class ? ` · ${s.failure_class}` : ''}
-                        </span>
-                      </div>
-                    ))}
+                    {(detail?.steps ?? []).map((s) => {
+                      const pending = s.status === 'needs_input' ? parseAcceptanceRequest(s.input_request_json) : null
+                      return (
+                        <div key={s.id} data-testid={`step-${s.id}`}>
+                          <div className="flex items-center gap-2 text-[11px]">
+                            <span className="w-5 text-right opacity-50">{s.seq}</span>
+                            <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[s.status] ?? ''}`}>{s.status}</Badge>
+                            <span className="flex-1 truncate">{s.title}</span>
+                            <span className="text-[10px] opacity-50">
+                              {s.step_kind} · #{s.attempt}
+                              {s.skip_reason ? ` · skip=${s.skip_reason}` : ''}
+                              {s.failure_class ? ` · ${s.failure_class}` : ''}
+                            </span>
+                          </div>
+                          {pending && (
+                            <div
+                              className="ml-7 mt-1 space-y-1 rounded border border-purple-500/30 bg-purple-500/5 p-1.5"
+                              data-testid={`acceptance-pending-${s.id}`}
+                            >
+                              <div className="text-[10px] opacity-60">待人工确认（确认后自动重算验收）</div>
+                              {pending.map((entry) => {
+                                const key = `${s.id}:${entry.id}`
+                                return (
+                                  <div key={entry.id} className="flex items-center gap-2 text-[11px]">
+                                    <span className="flex-1">
+                                      {entry.expected}
+                                      {entry.text ? <span className="opacity-60"> · {entry.text}</span> : null}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="rounded border border-purple-500/40 px-1.5 py-0.5 text-[10px] hover:bg-purple-500/10 disabled:opacity-50"
+                                      disabled={confirmingKey === key}
+                                      onClick={() => void handleConfirm(t.id, s.id, entry.id)}
+                                    >
+                                      {confirmingKey === key ? '确认中…' : '确认'}
+                                    </button>
+                                  </div>
+                                )
+                              })}
+                              {confirmError && <div className="text-[10px] text-red-600">{confirmError}</div>}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
 
                   <div className="mt-1 pl-2" data-testid={`task-${t.id}-runs`}>

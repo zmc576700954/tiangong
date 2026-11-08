@@ -3750,7 +3750,7 @@ GateRecheckResult {
 | 编号 | 裁决 | 状态 | 关联 |
 |---|---|---|---|
 | D1 | acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）；**存量不自动迁移**，人工重新确认计划前保持 `blocked` | 已批准已实施（`e4398e7`） | §5.4 G2、`work-item-service` |
-| D2 | `expected` 判定语义：`command` = 退出码 0（可选用 `stdout_contains` 匹配标准输出、`timeout_ms` 限制超时）；`file_check` = 相对 `project_path` 的路径存在性（可选用 `content_contains` 匹配文件内容）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器已实施（2026-11-08）**：`acceptance-executor.ts` 只读评估，`agent-step-runner` 在 turn `completed` 后、terminate 之后调用；**非 manual 硬失败或执行器异常 → `verify_fail`（fail-closed）；仅 manual 待确认 → 步/item `needs_input`、run `completed`，待确认条目写入 `input_request_json`**。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。人工确认入口与内容哈希匹配仍属后续 | 已批准已实施（`acceptance-executor.ts`，2026-11-08） | §5.4 G2、`agent-step-runner` |
+| D2 | `expected` 判定语义：`command` = 退出码 0（可选用 `stdout_contains` 匹配标准输出、`timeout_ms` 限制超时）；`file_check` = 相对 `project_path` 的路径存在性（可选用 `content_contains` 匹配文件内容）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器已实施（2026-11-08）**：`acceptance-executor.ts` 只读评估，`agent-step-runner` 在 turn `completed` 后、terminate 之后调用；**非 manual 硬失败或执行器异常 → `verify_fail`（fail-closed）；仅 manual 待确认 → 步/item `needs_input`、run `completed`，待确认条目写入 `input_request_json`**。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。人工确认入口见 §M5.11；内容哈希匹配仍属后续 | 已批准已实施（`acceptance-executor.ts`，2026-11-08） | §5.4 G2、`agent-step-runner` |
 | D3 | G2 豁免为**整条任务粒度**：仅当全部缺失码来自 G2 且失败条目全为 `manual` 时三字段豁免成立；manual 豁免不得覆盖 command/file_check 失败 | 已批准已实施（`b6f3735`） | §5.4、§4.7.3 |
 | D4 | `project_path` 为空 → 直接 fail-closed（`project_path_missing`），不从图/项目根兜底 | 已批准已实施（`b6f3735`） | §5.4.1 |
 | D5 | 「跨图写」采纳收敛口径：本期准入只判锚点存在 + `graph_type='dev'` + `graph_id` 一致；`node_links` 链接矩阵不入本期准入——写入面仅 `scope_files` 且已被 G1 限定在单一项目根内，跨图写在现有字段上不可表达。**若未来出现跨图写入面（如允许改 test 图资产），必须新增 gate 或扩展 G3 并重新裁决，不得静默放宽** | 已批准已实施（`b6f3735`） | §1.2、§2.3、§5.4 G3 |
@@ -3903,9 +3903,27 @@ GateRecheckResult {
 
 **接线**：`AgentStepRunner.run` 在 turn `completed` 且 session terminate 之后调用 `verifyAcceptance`：存在非 manual 硬失败 → `run/step failed(verify_fail)`（异常 reason `ACCEPTANCE_VERIFIER_ERROR`）；仅 manual 待确认 → step/item `needs_input`、run `completed`；全部通过 → `succeeded`。`turnStatus` 始终记 `completed`。`WorkExecutionService` 透传，`work-execution-runtime` 装配 `evaluateAcceptance`。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。
 
-**测试**：`acceptance-executor.test.ts` 19 例（退出码/stdout/超时/启动失败/路径存在与内容/绝对路径与逃逸/目录/不可读/非法 JSON/存量形状/manual 待确认与缺 id/混合）；`agent-step-runner.test.ts` 19 例（含通过、硬失败、manual 等待、等待不掩盖硬失败、执行器异常、非 completed 不触发）。相关 4 个主测试文件 106 例全绿，`tsc --noEmit` 0 error。
+**测试**：`acceptance-executor.test.ts` 20 例（退出码/stdout/超时/启动失败/路径存在与内容/绝对路径与逃逸/目录/不可读/非法 JSON/存量形状/manual 待确认与缺 id/已确认视为通过/混合）；`agent-step-runner.test.ts` 19 例（含通过、硬失败、manual 等待、等待不掩盖硬失败、执行器异常、非 completed 不触发）。相关主测试文件 112 例全绿（含 §M5.11 的 5 例），`tsc --noEmit` 0 error。
 
-**边界**：内容哈希匹配、异步评估时限预算（D14 未来约束）不在本期；`manual` 的人工确认入口尚未实现（第二步进行中），因此 manual 条目目前只停在 `needs_input`，不会被自动放行。
+**边界**：内容哈希匹配、异步评估时限预算（D14 未来约束）不在本期；`manual` 的人工确认入口已由 §M5.11 补齐。
+
+### M5.11 manual 验收人工确认入口（2026-11-08，已实施）
+
+**写通道**：`workitem:acceptance:confirm`（`ipc/map.ts` → preload 白名单 → `IpcApi` → 面板按钮）。入参 `stepId` 或 `workItemId`（至少一个）+ `entryIds[]`，支持部分确认。
+
+**确认事实存储**：复用 `agent_approvals`（`subject_type='work_item'`、`step_id`、`tool_name='acceptance_manual_confirm'`、`args_json={stepId,entryIds}`、`status='allowed'`、`decided_by='user'`、`decided_at`、`decision_note`）。不新增表、不做 v35；`decided_at` 即“什么时候”，`entryIds` 即“哪些条目”。
+
+**重算与收口**：`AcceptanceConfirmationService.confirm` 读 `input_request_json` 校验条目归属，把历史 + 本次确认的 manual id 传给 `evaluateAcceptance` 视为通过：
+
+- 存在非 manual 硬失败 → item `needs_input` → `queued`，step `failed(verify_fail)`，再收敛 item；
+- 仍有未确认 manual → 仅更新 `input_request_json`，step/item 保持 `needs_input`；
+- 全部通过 → step `succeeded`，item 收敛（全部步终态则 done）。
+
+**显式偏差**（§4.7.4）：manual 确认不新开 attempt、不重跑 agent——原 turn 已完成，人工只补验收事实；“补充信息后重跑”的原 needs_input→pending 路径仍保留，二者不混用。并发确认由 `input_request_json` 版本比对守卫（`STEP_STATE_CHANGED`），重复确认只允许一次。
+
+**面板**：`NodeMapPanel` 在 `needs_input` 步下渲染待确认条目与“确认”按钮（`workitem:acceptance:confirm`），这是面板的唯一写操作；其余仍只读。
+
+**测试**：`acceptance-confirmation.test.ts` 5 例（确认通过、部分确认继续等待、确认后硬失败、仅 itemId 定位、未知条目/重复确认）。
 
 ## 单轨分工与文件所有权（2026-11-08）
 

@@ -80,6 +80,8 @@ export interface WorkStepEntry {
   depends_on_step_ids_json: string | null
   skip_reason: string | null
   failure_class: string | null
+  /** manual 验收待确认请求（kind=acceptance_manual_confirm）；needs_input 时非空。 */
+  input_request_json: string | null
   started_at: number | null
   ended_at: number | null
 }
@@ -126,6 +128,13 @@ interface MapState {
   createWorkItem: (input: { graphId: string; anchorEntityKey?: string; anchorNodeId?: string; title: string; goal?: string; projectPath?: string }) => Promise<WorkItemSummary>
   startWorkItem: (id: string) => Promise<void>
   cancelWorkItem: (id: string) => Promise<void>
+  confirmAcceptance: (input: {
+    graphId: string
+    workItemId: string
+    stepId: string
+    entryIds: string[]
+    note?: string
+  }) => Promise<void>
 }
 
 export const useMapStore = create<MapState>((set, get) => ({
@@ -272,6 +281,18 @@ export const useMapStore = create<MapState>((set, get) => ({
       }
       return { overlayByGraph: next }
     })
+  },
+
+  /** manual 验收确认：写确认事实 + 重算验收；随后刷新 item 详情与叠加层状态。 */
+  confirmAcceptance: async (input) => {
+    await window.electronAPI['workitem:acceptance:confirm']({
+      stepId: input.stepId,
+      workItemId: input.workItemId,
+      entryIds: input.entryIds,
+      note: input.note,
+    })
+    await get().fetchWorkItemDetail(input.workItemId)
+    await get().fetchOverlay(input.graphId)
   },
 }))
 

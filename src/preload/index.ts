@@ -232,6 +232,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   // 不会静默降级。只入队/条件更新取消，turn 由主进程 tick 异步驱动。
   'workitem:step:run',
   'workitem:run:cancel',
+  // D2 manual 验收人工确认（写通道）：只记录确认事实并重算验收，不触发 turn。
+  'workitem:acceptance:confirm',
 ]
 
 // Build IPC API object
@@ -256,6 +258,7 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   // 不允许 renderer 只能看到一句模糊失败。
   'workitem:step:run',
   'workitem:run:cancel',
+  'workitem:acceptance:confirm',
 ])
 
 function toIpcError(err: unknown): IpcErrorPayload {

@@ -308,6 +308,24 @@ export interface IpcApi {
     alreadyTerminal: boolean
     itemStatus?: string
   }>
+  /**
+   * manual 验收人工确认：记录确认事实并重算验收。
+   * 部分确认允许（entryIds 子集）；全部通过则步/item 收口。
+   */
+  'workitem:acceptance:confirm': (data: {
+    stepId?: string
+    workItemId?: string
+    entryIds: string[]
+    note?: string
+    confirmedBy?: string
+  }) => Promise<{
+    stepId: string
+    workItemId: string
+    stepStatus: string
+    itemStatus: string
+    remainingEntryIds: string[]
+    approvalId: string
+  }>
 
   // S7 计划推导/草稿（§9.2 plan:*;C1 环检测拒绝带 |cycle=[...] 后缀）
   'plan:derive-candidates': (data: { graphId: string; anchorNodeId?: string; changeFiles?: string[] }) => Promise<{

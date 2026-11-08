@@ -313,6 +313,23 @@ describe('evaluateAcceptance · 输入与 fail-closed', () => {
     expect(verdict.pendingItems).toEqual([])
   })
 
+  it('已确认 manual 视为通过（仅供确认入口重算），不再 pending', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(
+        commandEntry('true'),
+        { id: 'm1', type: 'manual', expected: '人工确认' },
+      ),
+      projectPath: root,
+      confirmedManualEntryIds: ['m1'],
+      runCommand: okRunner,
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.pending).toEqual([])
+    expect(verdict.pendingItems).toEqual([])
+    expect(verdict.checked).toBe(2)
+  })
+
   it('混合：机器条目通过但仍有 manual → 整体不通过', async () => {
     const root = makeRoot()
     const verdict = await evaluateAcceptance({
