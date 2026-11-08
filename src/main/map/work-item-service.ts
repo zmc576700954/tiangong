@@ -357,6 +357,10 @@ export class WorkItemService {
     logger.info(`work_item ${id}: → ${to}`)
     // 状态变化影响自身锚定节点与直接依赖者；schedule 在事务内排队，500ms 后执行。
     scheduleRecomputeForWorkItem(this.db, id)
+    // G1-8：子项进入终态后向父链上推（幂等；父链防环）。
+    if (to === 'done' || to === 'failed' || to === 'cancelled') {
+      this.convergeParentChain(id)
+    }
     return row
   }
 
@@ -472,7 +476,81 @@ export class WorkItemService {
     }
     logger.info(`work_item ${id}: 全部步终态 → ${target}`)
     scheduleRecomputeForWorkItem(this.db, id)
+    // G1-8：本 item 收口后，若它是某父项的唯一/最后一个未终态子项，父链继续上推。
+    this.convergeParentChain(id)
     return this.get(id)
+  }
+
+  /**
+   * G1-8：子 work_item 终态聚合（§5.5.1）。
+   *
+   * 与 convergeIfTerminal（按本 item 的 steps 收敛）不同，本方法按
+   * `parent_work_item_id` 的子项集合收敛，且**忽略父项自己的 steps**——派生计划里
+   * 父项可能只是计划卡片，真正的执行叶是子项。
+   *
+   * 聚合口径：任一子项 failed → failed；否则任一 cancelled → cancelled
+   * （cancel_reason=partial_cancel）；否则 done。
+   *
+   * 方案 B（2026-11-08 拍板）：父项处于 draft/awaiting_confirm/queued/running 都可被
+   * 子项全终态带入终态；needs_human/blocked/needs_input/paused/interrupted 不覆盖，
+   * 因为这些状态表示父项自身仍需人处理。**绕过父项 gate 是有意行为**：子项已全部
+   * 终态时 gate 的「是否可开工」语义已失效，不是 bug。
+   *
+   * 幂等：条件更新 WHERE status IN (...)；并发下 changes=0 直接返回 undefined。
+   */
+  convergeChildrenIfTerminal(parentId: string): WorkItemRow | undefined {
+    const parent = this.get(parentId)
+    if (!parent || parent.is_current !== 1) return undefined
+    const AGGREGATABLE: readonly WorkItemStatus[] = ['draft', 'awaiting_confirm', 'queued', 'running']
+    if (!AGGREGATABLE.includes(parent.status)) return undefined
+
+    const children = this.db
+      .prepare('SELECT status FROM work_items WHERE parent_work_item_id = ? AND is_current = 1')
+      .all(parentId) as Array<Pick<WorkItemRow, 'status'>>
+    // 无子项不聚合：父项自己的生命周期由 steps/gate 决定。
+    if (children.length === 0) return undefined
+    if (children.some((child) => !WORK_ITEM_TERMINAL.includes(child.status))) return undefined
+
+    // is_current=1 时 superseded 不应出现；若历史数据异常，按取消处理，不吞掉。
+    const hasFailed = children.some((child) => child.status === 'failed')
+    const hasCancelled = children.some((child) => child.status === 'cancelled' || child.status === 'superseded')
+    const target: WorkItemStatus = hasFailed ? 'failed' : hasCancelled ? 'cancelled' : 'done'
+    const cancelReason: WorkItemCancelReason | null = target === 'cancelled' ? 'partial_cancel' : null
+
+    const result = this.db
+      .prepare(
+        `UPDATE work_items SET status = ?, cancel_reason = ?, updated_at = ?
+          WHERE id = ? AND is_current = 1 AND status IN ('draft','awaiting_confirm','queued','running')`,
+      )
+      .run(target, cancelReason, this.now(), parentId)
+    if (result.changes !== 1) return undefined
+
+    logger.info(
+      `work_item ${parentId}: 子项全部终态 → ${target}` +
+        `${hasFailed ? '（失败优先）' : hasCancelled ? '（部分取消）' : ''}`,
+    )
+    scheduleRecomputeForWorkItem(this.db, parentId)
+    return this.get(parentId)
+  }
+
+  /**
+   * G1-8：沿 parent_work_item_id 单向向上聚合；已收敛便继续上推，遇到非可聚合
+   * 状态/无子项/并发冲突即停。防环：seen 记录已访问 id，出现环只告警不递归。
+   */
+  private convergeParentChain(itemId: string): void {
+    const seen = new Set<string>([itemId])
+    let current = this.get(itemId)
+    while (current?.parent_work_item_id) {
+      const parentId = current.parent_work_item_id
+      if (seen.has(parentId)) {
+        logger.warn(`work_item ${itemId}: 父链出现环（${[...seen].join(' -> ')} -> ${parentId}），停止聚合`)
+        return
+      }
+      seen.add(parentId)
+      const parent = this.convergeChildrenIfTerminal(parentId)
+      if (!parent) return
+      current = parent
+    }
   }
 
   /** running → needs_input（写 work_steps.input_request_json 同事务,§4.7.2）。 */

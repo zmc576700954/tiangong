@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
-import { applyMapS5aSchema } from '../map/schema'
+import { applyMapS5aSchema, applyMapS6aSchema } from '../map/schema'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkStepService } from '../map/work-step-service'
 import { WorkRunService } from '../map/work-run-service'
@@ -460,5 +460,262 @@ describe('AgentStepRunner（M3）', () => {
     expect(result.status).toBe('cancelled')
     expect(calls).toBe(0)
     expect(runs.get(c.run.id)?.status).toBe('cancelled')
+  })
+
+  it('G1-7：有 output_schema 且 finalText 合法 → outputs_json + output_parse=ok', async () => {
+    const itemId = createItem({ anchorNodeId: 'node-1' })
+    const stepId = items.listSteps(itemId, 1)[0].id
+    db.prepare('UPDATE work_steps SET output_schema_json = ? WHERE id = ?').run(
+      JSON.stringify({ summary: 'string' }),
+      stepId,
+    )
+    const c = claim()
+    turns.runResult = async () => ({ status: 'completed', finalText: '{"summary":"done"}' })
+
+    const result = await runner.run(c, { adapterName: 'claude-code', executedContent: () => null })
+
+    expect(result.status).toBe('succeeded')
+    const run = runs.get(c.run.id)!
+    expect(run.output_parse).toBe('ok')
+    expect(JSON.parse(run.outputs_json!)).toEqual({ summary: 'done' })
+  })
+
+  it('G1-7：有 schema 但 finalText 不是合法结构化输出 → output_parse=fallback，不伪造 outputs', async () => {
+    const itemId = createItem({ anchorNodeId: 'node-1' })
+    const stepId = items.listSteps(itemId, 1)[0].id
+    db.prepare('UPDATE work_steps SET output_schema_json = ? WHERE id = ?').run(
+      JSON.stringify({ summary: 'string' }),
+      stepId,
+    )
+    const c = claim()
+    turns.runResult = async () => ({ status: 'completed', finalText: '普通文本，不是 JSON' })
+
+    const result = await runner.run(c, { adapterName: 'claude-code', executedContent: () => null })
+
+    expect(result.status).toBe('succeeded')
+    const run = runs.get(c.run.id)!
+    expect(run.output_parse).toBe('fallback')
+    expect(run.outputs_json).toBeNull()
+  })
+
+  it('G1-7：failed → partial_output_ref 写 stdout_tail/file_changes/errors（D-16 截断由服务统一）', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+    turns.runResult = async () => ({
+      status: 'failed',
+      failureClass: 'turn_fail',
+      finalText: '做到一半就失败了',
+      errorCode: 'E_TURN',
+    })
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      executedContent: () => ({ treeHash: 'tree-1', dirtyFiles: ['src/a.ts'], contentHash: 'hash-1' }),
+    })
+
+    expect(result.status).toBe('failed')
+    const run = runs.get(c.run.id)!
+    const partial = JSON.parse(run.partial_output_ref!) as Record<string, unknown>
+    expect(partial['stdout_tail']).toContain('做到一半')
+    expect(partial['file_changes']).toEqual(['src/a.ts'])
+    expect(partial['errors']).toEqual(['E_TURN'])
+  })
+
+  it('G1-7：change_sets 接上生产调用方（base→head，文件/行数落库）', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+    const fakeGit = {
+      revParseHEAD: () => 'base-1',
+      statusPorcelain: () => [] as string[],
+    }
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      changeSetGit: fakeGit,
+      workspaceChanges: () => ({
+        headCommit: 'base-1',
+        dirty: true,
+        files: [{ path: 'src/a.ts', change: 'modified', additions: 3, deletions: 1 }],
+      }),
+      executedContent: () => null,
+    })
+
+    expect(result.status).toBe('succeeded')
+    const row = db.prepare('SELECT * FROM change_sets WHERE work_run_id = ?').get(c.run.id) as
+      | Record<string, unknown>
+      | undefined
+    expect(row).toBeDefined()
+    expect(row!['base_commit']).toBe('base-1')
+    expect(row!['head_commit']).toBe('base-1')
+    expect(row!['file_count']).toBe(1)
+    expect(row!['line_additions']).toBe(3)
+    expect(row!['line_deletions']).toBe(1)
+    expect(JSON.parse(row!['files_json'] as string)).toEqual([
+      { path: 'src/a.ts', change: 'modified', additions: 3, deletions: 1 },
+    ])
+  })
+})
+
+describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
+  let db: BetterSqlite3.Database
+  let items: WorkItemService
+  let steps: WorkStepService
+  let scheduler: WorkScheduler
+  let turns: FakeTurns
+  let runner: AgentStepRunner
+
+  const PASS_VERDICT = {
+    ok: true,
+    missing: [] as string[],
+    pending: [] as string[],
+    items: [],
+    pendingItems: [] as Array<{ id: string; expected: string }>,
+    checked: 1,
+  }
+
+  beforeEach(() => {
+    db = new Database(':memory:') as unknown as BetterSqlite3.Database
+    applyMapS5aSchema(db)
+    applyMapS6aSchema(db)
+    db.exec(`
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL,
+        graph_id TEXT NOT NULL, graph_type TEXT NOT NULL, entity_key TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE map_migration_reports (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, stage TEXT, schema_version INTEGER,
+        started_at TEXT NOT NULL, finished_at TEXT, heartbeat_at TEXT, owner_pid INTEGER,
+        status TEXT NOT NULL, stats_json TEXT, details_json TEXT, error_json TEXT
+      );
+    `)
+    db.prepare(
+      "INSERT INTO nodes (id, type, title, graph_id, graph_type, entity_key, created_at, updated_at) VALUES ('node-1', 'feature', '节点', 'g1', 'dev', 'key-1', 'x', 'x')",
+    ).run()
+    items = new WorkItemService(db)
+    steps = new WorkStepService(db)
+    scheduler = new WorkScheduler(db)
+    turns = new FakeTurns()
+    runner = new AgentStepRunner(db, turns)
+  })
+
+  function createAnchoredItem(anchorEntityKey = 'key-1', acceptance: Array<Record<string, unknown>> = [
+    { id: 'c1', type: 'command', expected: 'npm test' },
+  ]): string {
+    const id = items.createDraft({
+      graphId: 'g1',
+      projectPath: '/p/a',
+      anchorNodeId: 'node-1',
+      anchorEntityKey,
+      title: '任务标题',
+      goal: '目标说明',
+      scopeFiles: ['src/a.ts'],
+      acceptance,
+      steps: [{ title: '第一步', stepKind: 'agent', scopeFiles: ['src/a.ts'] }],
+    }).id
+    items.submitForConfirm(id)
+    items.setGateResult(id, 'pass')
+    items.confirm(id)
+    return id
+  }
+
+  function claim() {
+    const claimed = scheduler.claimNext({ projectPath: '/p/a', adapterName: 'claude-code' })
+    expect(claimed).not.toBeNull()
+    return claimed!
+  }
+
+  it('回合完成+验收通过 → E2 session_turn，current_hash=执行内容指纹（system 写方）', async () => {
+    createAnchoredItem()
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => PASS_VERDICT,
+      executedContent: () => ({ treeHash: 'tree-1', dirtyFiles: ['src/a.ts'], contentHash: 'hash-abc' }),
+    })
+
+    expect(result.status).toBe('succeeded')
+    const rows = db.prepare('SELECT * FROM node_evidence').all() as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+    const ev = rows[0]
+    expect(ev['evidence_level']).toBe('E2')
+    expect(ev['evidence_type']).toBe('session_turn')
+    expect(ev['version_binding']).toBe('content_hash')
+    expect(ev['current_hash']).toBe('hash-abc')
+    expect(ev['produced_by']).toBe('system')
+    expect(ev['graph_id']).toBe('g1')
+    expect(ev['node_entity_key']).toBe('key-1')
+    expect(ev['work_run_id']).toBe(c.run.id)
+    expect(ev['work_item_id']).toBe(c.item.id)
+    expect(ev['session_id']).toBe('sess-1')
+    const ref = JSON.parse(ev['ref_json'] as string) as Record<string, unknown>
+    expect(ref['sessionId']).toBe('sess-1')
+    expect(ref['runId']).toBe(c.run.id)
+    expect(ref['executionWorkspace']).toBe('project_worktree')
+    expect(ref['executedContentHash']).toBe('hash-abc')
+  })
+
+  it('仅 manual 待确认 → 也写 E2（run 已 completed，等人工签收）', async () => {
+    createAnchoredItem('key-1', [{ id: 'm1', type: 'manual', expected: '人工确认' }])
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => ({
+        ...PASS_VERDICT,
+        ok: false,
+        pending: ['acceptance_manual_pending:0'],
+        pendingItems: [{ id: 'm1', expected: '人工确认' }],
+      }),
+      executedContent: () => ({ treeHash: 'tree-2', dirtyFiles: [], contentHash: 'hash-def' }),
+    })
+
+    expect(result.status).toBe('needs_input')
+    const rows = db.prepare('SELECT current_hash, ref_json FROM node_evidence').all() as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+    expect(rows[0]['current_hash']).toBe('hash-def')
+    expect((JSON.parse(rows[0]['ref_json'] as string) as Record<string, unknown>)['acceptanceOutcome']).toBe(
+      'needs_input',
+    )
+  })
+
+  it('取不到执行内容 → 不写证据，只留诊断；step 仍成功', async () => {
+    createAnchoredItem()
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => PASS_VERDICT,
+      executedContent: () => null,
+    })
+
+    expect(result.status).toBe('succeeded')
+    expect(steps.get(c.step.id)?.status).toBe('succeeded')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
+    const diag = db
+      .prepare('SELECT stats_json FROM map_migration_reports WHERE stage = ?')
+      .all(`evidence_write:${c.step.id}`) as Array<{ stats_json: string }>
+    expect(diag).toHaveLength(1)
+    expect((JSON.parse(diag[0].stats_json) as Record<string, unknown>)['error']).toBe('EXECUTED_CONTENT_UNAVAILABLE')
+  })
+
+  it('证据写入失败（端点不可解析）→ 不回退 step，留下可查诊断', async () => {
+    createAnchoredItem('key-missing')
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => PASS_VERDICT,
+      executedContent: () => ({ treeHash: 'tree-3', dirtyFiles: [], contentHash: 'hash-ghi' }),
+    })
+
+    expect(result.status).toBe('succeeded')
+    expect(steps.get(c.step.id)?.status).toBe('succeeded')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
+    const diag = db
+      .prepare('SELECT stats_json FROM map_migration_reports WHERE stage = ?')
+      .all(`evidence_write:${c.step.id}`) as Array<{ stats_json: string }>
+    expect(diag).toHaveLength(1)
+    expect((JSON.parse(diag[0].stats_json) as Record<string, unknown>)['error']).toContain('端点不可解析')
   })
 })

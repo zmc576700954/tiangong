@@ -1,9 +1,10 @@
 # BizGraph 三图与任务编排蓝图 v1.2.3（R10 勘误版）
 
+> **2026-11-08 归档声明（定稿 v2.2 生效）**：本文已并入 `docs/architecture/session-map-blueprint.md` 的 Part I（状态总账 / 已实施清单 / 未实施实施方案 / 待裁决）与 Part II（仅建议项施工级设计）及相关设计章节。**本文冻结为 v1.2.3 历史快照，不再作为权威**；后续只读本文 §2 收敛史、§6 勘误与 §7 L3 保留区。用户上传的 ZCode 快照与本文**逐字节相同**（397 行，sha256 `e203b41b…d89a9`）。
 > **状态**：v1.2.3 = v1.2.2 + **R10 勘误**（对方 §12.13 全清单 8A+4B+4C 收到并逐条复核，见 §6 R10：**A3 行数 / A5 测试计数为新增修正**——R9-4 本侧改的"130"亦无口径，一并再勘误；其余 6A/4C 均已在 R9/v1.2.2 修正，4B 行号偏移更新）。
-> v1.2.2 = v1.2.1 + **F1-F3 已实施**（四提交：`9ce519c` F1 / `f73abd8` F2 / `260df58` F3-A / `fb19e07` 契约补齐，分支 `worktree-blueprint-f1-f3`，2026-11-07）+ F3 超时默认值裁决（配置键 `agent.timeouts.turnMs`）+ 审批期 deadline 裁决（候选 A 冻结重算）。
+> v1.2.2 = v1.2.1 + **F1-F3 已实施**（四提交：`9ce519c` F1 / `f73abd8` F2 / `260df58` F3-A / `fb19e07` 契约补齐，分支 `worktree-blueprint-f1-f3`，2026-11-07）+ F3 超时默认值裁决（配置键 `agent.timeouts.turnMs`）+ 审批期 deadline 裁决（候选 A 冻结重算）。**合并后 main 提交以 `session-map-blueprint.md` §8.15 为准**（F1 `231c724` / F2 `2425f0c` / F3-A `e921977` / 审批冻结 `7e6e63f`）。
 > **本文角色**：① 双向收敛记录（R5-R10）；② L3 设计保留区；③ 前置实施记录与裁决档案。
-> **L1/L2 实现以 `session-map-blueprint.md` 为唯一权威**（**当前 3441 行** @ `f411837`，2026-11-07 `wc -l` 实测；本侧 §8.15 状态同步后行数不变，含逐章覆盖审计表）。两文冲突时：L1/L2 以对方为准，L3 以本文为准，收敛史与勘误以本文 §2/§6 为准。
+> **L1/L2 实现以 `session-map-blueprint.md` v2.2 为唯一权威**（定稿行数以 `wc -l` 实测为准，本版为 4895 行 @ 2026-11-08；随定稿继续变化）。两文冲突时：L1/L2 与状态一律以对方为准；本文只保留 L3 设计与收敛史。
 > **可信度声明**：v1.2 曾把"已批准"误写为"已实施"、数字未复核。R9 起，本文状态词严格三态：**已实施 / 已批准未实施 / 仅建议**；一切数字与行号引用必须经 grep 复核后才可写入。
 
 ---
@@ -19,7 +20,7 @@
 | 文档 | 权威范围 | 备注 |
 |---|---|---|
 | `agent-architecture.md` | turn 级执行面（审批网关/Bash 策略/会话恢复/能力矩阵/账本） | 不变 |
-| `session-map-blueprint.md`（当前 3441 行 @ `f411837`） | **L1/L2 单一权威**：三真图、entity_key/node_links、状态双轨与证据 E0-E4、work_items/work_steps/work_runs、结构推导拆解、执行编排机制（§5.9，含 §5.9.8 needs_input）、TestExecutor、迁移 S0-S8、**逐章覆盖审计表**（可施工/缺细节判定） | a60355a 后提交：`71eade8`/`5b26715`（D1-D8 落定）/`b898358`+`cc749ce`（Yjs 单向只读，**代码级**）/`5836262`（B1 施工细则+覆盖审计）/`5db986e`（五条裁决落定）/`f411837`（**§12.13 勘误清单**，R10 已处理） |
+| `session-map-blueprint.md`（v2.2 定稿，4895 行 @ 2026-11-08） | **唯一权威**：三真图、entity_key/node_links、状态双轨与证据 E0-E4、work_items/work_steps/work_runs、结构推导拆解、执行编排机制（§5.9，含 §5.9.8 needs_input）、TestExecutor、迁移 S0-S8、**状态总账/已实施/未实施方案/待裁决（Part I）**、**仅建议项施工级设计（Part II）**、逐章覆盖审计表 | 定稿已吸收本文 L3 与勘误；本文冻结为历史快照 |
 | **本文** | 收敛记录（§2）+ 主计划（§3）+ L3 设计保留区（§4）+ 前置授权与修复方案（§3.1）+ 勘误（§6 R9） | P0-P4 已退役 |
 
 ---
@@ -268,7 +269,7 @@ checker 经 `checker_work_item_id` 挂接；verdict=FIX → 主 item 新 attempt
 |---|---|---|---|
 | 1 | WS 缓解"已上" | `BIZGRAPH_YJS_WS` 全库不存在；`disableWebSocket ?? false` 默认启动（`yjs-realtime.ts:70,107`）；`new YjsRealtime(db)` 无 options（`ipc-handlers.ts:348`） | §3.1 改"从未实施"；且被 `cc749ce` 单向只读取代，缓解项关闭 |
 | 2 | "1MB 与现有一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:90`）；1MB 属 recipe-runner（`:189,196`） | F2 改两层限制：单条 10KB 既有 + partial 总量 64KB 新设 |
-| 3 | "通读 1809 行"作为现况 | 当前 3441 行（@ `f411837`，2026-11-07 实测） | R5 加快照标注；§7 增复审项 |
+| 3 | "通读 1809 行"作为现况 | R10 时点 3441 行（@ `f411837`）；定稿 v2.2 现为 4895 行 | R5 加快照标注；§7 增复审项 |
 | 4 | Yjs 专测 86 个 | `src/main/realtime` 实测 130 个 it/test（**R10 再勘误：130 亦无口径**，正确口径见 R10-A5） | 全文改 130（→R10 改 112/119 并附命令） |
 | 5 | F3 cancelTurn→finalize(failed) 逻辑不成立 | `cancelTurn` 内部终态 CAS 写 `cancelled`/aborted（`runtime.ts:766-771`），二次 CAS 返回 false | 采用 F3-A（与对方 5db986e 一致）：专用超时路径单次 CAS failed+failure_type='timeout' |
 | 6 | 超时"事件流监控点"未定义 | — | 补 DeadlineReaper 规格（归属/周期/去重/CAS） |

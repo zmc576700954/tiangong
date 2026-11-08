@@ -447,3 +447,94 @@ describe('RoutingDecisionRepository(§4.7.8)', () => {
     expect(() => repo.record({ workRunId: 'wr-2', chosenAdapter: '', candidates: [], policy: 'fallback' })).toThrow(/不写半条行/)
   })
 })
+
+describe('G1-8 子 work_item 聚合（W1）', () => {
+  let db: BetterSqlite3.Database
+  let svc: WorkItemService
+  let parentId: string
+
+  beforeEach(() => {
+    db = setupDb()
+    svc = new WorkItemService(db)
+    parentId = svc.createDraft({ graphId: 'g1', title: '父任务' }).id
+  })
+
+  function queuedChild(): string {
+    const id = svc.createDraft({
+      graphId: 'g1',
+      title: '子任务',
+      parentWorkItemId: parentId,
+      steps: [{ title: '子步骤', stepKind: 'agent' }],
+    }).id
+    svc.submitForConfirm(id)
+    svc.setGateResult(id, 'pass')
+    svc.confirm(id)
+    return id
+  }
+
+  function finish(id: string): void {
+    svc.claim(id)
+    svc.complete(id)
+  }
+
+  it('父任务可处于 draft：全部子项 done 后才 done', () => {
+    const a = queuedChild()
+    const b = queuedChild()
+    finish(a)
+    expect(svc.get(parentId)!.status).toBe('draft')
+    finish(b)
+    expect(svc.get(parentId)!.status).toBe('done')
+  })
+
+  it('聚合口径 failed > cancelled > done（混合 cancelled+done 不判 failed）', () => {
+    const a = queuedChild()
+    const b = queuedChild()
+    finish(a)
+    svc.claim(b)
+    svc.cancel(b)
+    expect(svc.get(parentId)!.status).toBe('cancelled')
+    expect(svc.get(parentId)!.cancel_reason).toBe('partial_cancel')
+
+    const c = queuedChild()
+    svc.claim(c)
+    svc.fail(c)
+    // 父已终态，不再回退/重写。
+    expect(svc.get(parentId)!.status).toBe('cancelled')
+  })
+
+  it('任一子项 failed → 父 failed（优先于 cancelled/done）', () => {
+    const a = queuedChild()
+    const b = queuedChild()
+    const c = queuedChild()
+    finish(a)
+    svc.claim(b)
+    svc.cancel(b)
+    svc.claim(c)
+    svc.fail(c)
+    expect(svc.get(parentId)!.status).toBe('failed')
+  })
+
+  it('父项 needs_human 不被子项聚合覆盖；父链出现环只告警不递归', () => {
+    const a = queuedChild()
+    const b = queuedChild()
+    svc.submitForConfirm(parentId)
+    svc.setGateResult(parentId, 'pass')
+    svc.confirm(parentId)
+    svc.claim(parentId)
+    svc.needsHuman(parentId)
+    finish(a)
+    finish(b)
+    expect(svc.get(parentId)!.status).toBe('needs_human')
+
+    // 环：把父项挂到它自己的子项下面；聚合 C→P 时遇到已访问节点即停止。
+    const anchor = svc.createDraft({ graphId: 'g1', title: '环任务' }).id
+    const child = svc.createDraft({ graphId: 'g1', title: '环子任务', parentWorkItemId: anchor }).id
+    db.prepare('UPDATE work_items SET parent_work_item_id = ? WHERE id = ?').run(child, anchor)
+    svc.submitForConfirm(child)
+    svc.setGateResult(child, 'pass')
+    svc.confirm(child)
+    finish(child)
+    expect(svc.get(anchor)!.status).toBe('done')
+    expect(svc.get(child)!.status).toBe('done')
+  })
+})

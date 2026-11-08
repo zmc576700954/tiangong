@@ -6,13 +6,14 @@
  * 只给 itemId 定位等待步；未知条目拒绝；重复确认拒绝。
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
-import { applyMapS5aSchema, applyMapAcceptanceSchema, LEGACY_ACCEPTANCE_APPROVAL_TOOL } from '../map/schema'
+import { applyMapS5aSchema, applyMapAcceptanceSchema, applyMapS6aSchema, LEGACY_ACCEPTANCE_APPROVAL_TOOL } from '../map/schema'
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkStepService } from '../map/work-step-service'
@@ -49,7 +50,19 @@ describe('AcceptanceConfirmationService', () => {
     db = new Database(':memory:') as unknown as BetterSqlite3.Database
     applyMapS5aSchema(db)
     applyMapAcceptanceSchema(db)
+    applyMapS6aSchema(db)
     applyAgentSchema(db)
+    // 证据端点解析依赖 nodes；建最小表并插入锚点节点。
+    db.exec(`
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT NOT NULL,
+        graph_id TEXT NOT NULL, graph_type TEXT NOT NULL, entity_key TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+    `)
+    db.prepare(
+      "INSERT INTO nodes (id, type, title, graph_id, graph_type, entity_key, created_at, updated_at) VALUES ('node-1', 'feature', '节点', 'g1', 'dev', 'key-1', 'x', 'x')",
+    ).run()
     // 验收诊断复用该报告表；建表以便断言落库行为（缺表时模块应静默跳过）。
     db.exec(`
       CREATE TABLE map_migration_reports (
@@ -77,11 +90,16 @@ describe('AcceptanceConfirmationService', () => {
     return dir
   }
 
-  function createItem(projectPath: string, acceptance: Array<Record<string, unknown>>): string {
+  function createItem(
+    projectPath: string,
+    acceptance: Array<Record<string, unknown>>,
+    anchorEntityKey?: string,
+  ): string {
     const id = items.createDraft({
       graphId: 'g1',
       projectPath,
       anchorNodeId: 'node-1',
+      anchorEntityKey,
       title: '验收任务',
       goal: '目标',
       scopeFiles: ['src/a.ts'],
@@ -244,5 +262,78 @@ describe('AcceptanceConfirmationService', () => {
     // 重复确认不得多写事实。
     expect(confirmationsFor(claimed.step.id)).toHaveLength(1)
     expect(legacyApprovalRows()).toHaveLength(0)
+  })
+
+  it('收口 → E4 human_confirm，current_hash 与产物文件实际 sha256 一致', async () => {
+    const root = makeRoot()
+    mkdirSync(path.join(root, 'out'))
+    const artifact = 'artifact-v1'
+    writeFileSync(path.join(root, 'out', 'result.txt'), artifact)
+    createItem(
+      root,
+      [
+        { id: 'm1', type: 'manual', expected: '人工确认样式' },
+        { type: 'file_check', expected: 'out/result.txt' },
+      ],
+      'key-1',
+    )
+    const claimed = await runToWaiting(root)
+
+    const result = await confirmService.confirm({
+      stepId: claimed.step.id,
+      entryIds: ['m1'],
+      confirmedBy: 'alice',
+    })
+    expect(result.stepStatus).toBe('succeeded')
+
+    const rows = db.prepare('SELECT * FROM node_evidence').all() as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+    const ev = rows[0]
+    expect(ev['evidence_level']).toBe('E4')
+    expect(ev['evidence_type']).toBe('human_confirm')
+    expect(ev['version_binding']).toBe('none')
+    expect(ev['code_version']).toBeNull()
+    expect(ev['reproducible']).toBe(0)
+    expect(ev['signed_by']).toBe('alice')
+    expect(ev['signed_at']).toBeTypeOf('string')
+    expect(ev['graph_id']).toBe('g1')
+    expect(ev['node_entity_key']).toBe('key-1')
+    expect(ev['work_run_id']).toBe(claimed.run.id)
+    // 产物单文件：current_hash 必须直接等于该文件内容 sha256。
+    const expectedHash = createHash('sha256').update(artifact).digest('hex')
+    expect(ev['current_hash']).toBe(expectedHash)
+    const coverage = JSON.parse(ev['coverage_json'] as string) as Array<{ acceptance_ids: string[]; files: string[] }>
+    expect(coverage[0].acceptance_ids).toEqual(['m1'])
+    expect(coverage[0].files).toEqual(['out/result.txt'])
+    const basis = JSON.parse(ev['basis_ref_json'] as string) as Array<{ kind: string; ref: string; hash?: string }>
+    expect(basis.find((r) => r.kind === 'file')).toEqual({
+      kind: 'file',
+      ref: 'out/result.txt',
+      hash: expectedHash,
+    })
+  })
+
+  it('部分确认不写 E4；最后一条收口才写一条覆盖全部条目的 E4', async () => {
+    const root = makeRoot()
+    createItem(
+      root,
+      [
+        { id: 'm1', type: 'manual', expected: '确认 A' },
+        { id: 'm2', type: 'manual', expected: '确认 B' },
+      ],
+      'key-1',
+    )
+    const claimed = await runToWaiting(root)
+
+    const partial = await confirmService.confirm({ stepId: claimed.step.id, entryIds: ['m1'] })
+    expect(partial.stepStatus).toBe('needs_input')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
+
+    await confirmService.confirm({ stepId: claimed.step.id, entryIds: ['m2'], confirmedBy: 'bob' })
+    const rows = db.prepare('SELECT * FROM node_evidence').all() as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+    const coverage = JSON.parse(rows[0]['coverage_json'] as string) as Array<{ acceptance_ids: string[] }>
+    expect(coverage[0].acceptance_ids).toEqual(['m1', 'm2'])
+    expect(rows[0]['signed_by']).toBe('bob')
   })
 })

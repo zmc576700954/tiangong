@@ -24,8 +24,19 @@ import type { TurnOutcome } from '@shared/types/agent-runtime'
 import { createLogger } from '../shared/logger'
 import type { AcceptancePendingItem, AcceptanceVerdict } from './acceptance-executor'
 import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
+import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
+import { EvidenceService } from './evidence-service'
+import { GitWorktreeManager, type ExecutedContent } from './test-executor'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
-import { WorkRunService, RoutingDecisionRepository, type FailureClass, type WorkRunRow } from './work-run-service'
+import {
+  ChangeSetService,
+  RoutingDecisionRepository,
+  WorkRunService,
+  type FailureClass,
+  type GitRunner,
+  type WorkRunRow,
+} from './work-run-service'
+import { GitWorkspaceChangeRunner, collectWorkspaceChanges, type WorkspaceChangeSnapshot } from './workspace-change-stats'
 import { WorkStepService } from './work-step-service'
 import type { ClaimedStep } from './work-scheduler'
 
@@ -113,6 +124,94 @@ export interface AgentStepRunnerOptions {
    * 未注入时保持 M3 既有语义；生产路径必须注入，否则等于跳过验收。
    */
   verifyAcceptance?: AcceptanceVerifier
+  /**
+   * 执行后工作区内容指纹（E2 content_hash 来源）；缺省用受控 git 采集。
+   * 取不到（非 git/异常）时调用方必须放弃写证据，不得用 null 或别处哈希顶替。
+   */
+  executedContent?: (projectPath: string) => ExecutedContent | null
+  /**
+   * change_sets 的 git 能力（测试注入）；缺省用受控 git（GitWorkspaceChangeRunner）。
+   */
+  changeSetGit?: GitRunner
+  /**
+   * 文件变更采集（测试注入）；缺省按 base_commit 采集项目工作区 diff。
+   */
+  workspaceChanges?: (projectPath: string, baseCommit: string | null) => WorkspaceChangeSnapshot | null
+}
+
+/** 受控 git 采集器（无状态，仅复用 executedContent 的 tree+dirty 内容绑定）。 */
+const worktreeManager = new GitWorktreeManager()
+
+/** G1-7：work_runs.outputs_json / output_parse 的生产端解析结果。 */
+interface StepOutputParse {
+  outputs?: Record<string, unknown>
+  outputParse?: 'ok' | 'fallback'
+}
+
+/** G1-7：partial 输入（字段/总量截断由 WorkRunService.normalizePartial 统一处理，D-16）。 */
+type PartialInput = {
+  stdout_tail?: string
+  stderr_tail?: string
+  file_changes?: string[]
+  errors?: string[]
+  artifact_refs?: string[]
+  captured_at?: number
+}
+
+/** G1-7：turn 结束后同一次采集的执行事实（输出解析 / partial / 文件变更共用）。 */
+interface FinalizeContext {
+  executed: ExecutedContent | null
+  parsed: StepOutputParse
+  partial?: PartialInput
+}
+
+/**
+ * 按 step.output_schema_json 解析 turn 的 finalText。
+ *
+ * - 无 schema：不伪造 outputs，也不写 output_parse（当前生产步骤通常没有 schema）；
+ * - 有 schema：finalText 必须是 JSON 对象且包含 schema 要求的键 → ok，否则 fallback；
+ * - schema 本身不合法：fallback（fail-closed，不把原始文本当结构化结果）。
+ */
+function parseStepOutputs(step: WorkStepRow, outcome: AgentTurnSignal): StepOutputParse {
+  const schemaRaw = step.output_schema_json?.trim()
+  if (!schemaRaw) return {}
+  const text = outcome.finalText?.trim()
+  if (!text) return { outputParse: 'fallback' }
+  let required: string[]
+  try {
+    const schema = JSON.parse(schemaRaw) as unknown
+    if (Array.isArray(schema)) {
+      required = schema.filter((key): key is string => typeof key === 'string')
+    } else if (typeof schema === 'object' && schema !== null) {
+      required = Object.keys(schema as Record<string, unknown>)
+    } else {
+      return { outputParse: 'fallback' }
+    }
+  } catch {
+    return { outputParse: 'fallback' }
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { outputParse: 'fallback' }
+    }
+    const record = parsed as Record<string, unknown>
+    if (required.some((key) => !(key in record))) return { outputParse: 'fallback' }
+    return { outputs: record, outputParse: 'ok' }
+  } catch {
+    return { outputParse: 'fallback' }
+  }
+}
+
+/** 只把实际解析到的字段传给 WorkRunService.complete，避免 undefined 覆盖既有列。 */
+function runOutputData(
+  ctx: FinalizeContext | undefined,
+): { outputs?: Record<string, unknown>; outputParse?: 'ok' | 'fallback' } | undefined {
+  if (!ctx) return undefined
+  const data: { outputs?: Record<string, unknown>; outputParse?: 'ok' | 'fallback' } = {}
+  if (ctx.parsed.outputs !== undefined) data.outputs = ctx.parsed.outputs
+  if (ctx.parsed.outputParse !== undefined) data.outputParse = ctx.parsed.outputParse
+  return Object.keys(data).length > 0 ? data : undefined
 }
 
 const AGENT_FAILURE_CLASSES: ReadonlySet<FailureClass> = new Set<FailureClass>([
@@ -198,6 +297,8 @@ export class AgentStepRunner {
   private readonly steps: WorkStepService
   private readonly items: WorkItemService
   private readonly routing: RoutingDecisionRepository
+  private readonly evidence: EvidenceService
+  private readonly changeSets: ChangeSetService
 
   constructor(
     private readonly db: BetterSqlite3.Database,
@@ -207,6 +308,13 @@ export class AgentStepRunner {
     this.steps = new WorkStepService(db)
     this.items = new WorkItemService(db)
     this.routing = new RoutingDecisionRepository(db)
+    this.evidence = new EvidenceService(db)
+    this.changeSets = new ChangeSetService(db, new GitWorkspaceChangeRunner())
+  }
+
+  /** 测试可注入独立 git 能力；生产固定用受控 git 实现。 */
+  private changeSetsFor(options: AgentStepRunnerOptions): ChangeSetService {
+    return options.changeSetGit ? new ChangeSetService(this.db, options.changeSetGit) : this.changeSets
   }
 
   async run(claim: ClaimedStep, options: AgentStepRunnerOptions): Promise<StepRunResult> {
@@ -250,6 +358,7 @@ export class AgentStepRunner {
         : undefined
 
     let session: AgentTurnSessionHandle | undefined
+    let changeSetBase: string | null | undefined
     try {
       session = await this.turns.startSession({
         adapterName: options.adapterName,
@@ -276,6 +385,9 @@ export class AgentStepRunner {
         throw new AgentStepRunnerError('RUN_NOT_ATTACHABLE', `work_run ${run.id} 已终态，拒绝继续执行`)
       }
 
+      // G1-7：文件变更基线必须在 turn 开始前采集；失败不影响执行。
+      changeSetBase = this.captureChangeBase(claim, session.sessionId, options)
+
       const outcome = await this.turns.runTurn({
         sessionId: session.sessionId,
         prompt: buildStepPrompt(item, step),
@@ -284,14 +396,86 @@ export class AgentStepRunner {
       })
       // §5.9.8.1：终态写入必须在 session terminate 之后。
       await this.safeTerminate(session.sessionId, terminationReasonFor(outcome.status))
-      if (outcome.status === 'completed') {
-        // D2：agent 自称完成 ≠ 验收通过；注入执行器时以机器判定为准（fail-closed）。
-        return await this.finalizeVerified(claim, outcome, session.sessionId, options)
-      }
-      return this.finalizeOutcome(claim, outcome, session.sessionId)
+      // G1-7：执行后内容指纹只采集一次，输出解析/partial/文件变更共用。
+      const executed = this.collectExecuted(item, options)
+      const parsed = parseStepOutputs(step, outcome)
+      const partial = this.buildPartial(outcome, executed)
+      const result =
+        outcome.status === 'completed'
+          ? // D2：agent 自称完成 ≠ 验收通过；注入执行器时以机器判定为准（fail-closed）。
+            await this.finalizeVerified(claim, outcome, session.sessionId, options, { executed, parsed, partial })
+          : this.finalizeOutcome(claim, outcome, session.sessionId, { executed, parsed, partial })
+      // 终态已提交后再写证据/文件变更：写失败只留诊断，绝不把已完成的 step 改回失败。
+      this.recordTurnEvidence(claim, result, session.sessionId, options)
+      if (changeSetBase !== undefined) this.recordChangeHead(claim, changeSetBase, options)
+      return result
     } catch (error) {
       if (session) await this.safeTerminate(session.sessionId, 'error')
-      return this.finalizeThrown(claim, error, session?.sessionId)
+      const result = this.finalizeThrown(claim, error, session?.sessionId)
+      if (session && changeSetBase !== undefined) this.recordChangeHead(claim, changeSetBase, options)
+      return result
+    }
+  }
+
+  /** G1-7：记录 change_sets 基线；非 git/写失败只告警，不影响 turn。 */
+  private captureChangeBase(
+    claim: ClaimedStep,
+    sessionId: string,
+    options: AgentStepRunnerOptions,
+  ): string | null | undefined {
+    const projectPath = claim.item.project_path
+    if (!projectPath) return undefined
+    try {
+      const base = this.changeSetsFor(options).captureBase({
+        projectPath,
+        graphId: claim.item.graph_id,
+        workRunId: claim.run.id,
+        sessionId,
+      })
+      return base ? base.base_commit : null
+    } catch (error) {
+      logger.warn(`[change-base] run=${claim.run.id} 基线采集失败（不影响执行）：${String(error)}`)
+      return undefined
+    }
+  }
+
+  /** G1-7：记录 change_sets 收口；失败只告警，终态已提交。 */
+  private recordChangeHead(
+    claim: ClaimedStep,
+    baseCommit: string | null,
+    options: AgentStepRunnerOptions,
+  ): void {
+    const projectPath = claim.item.project_path
+    if (!projectPath) return
+    try {
+      const collect = options.workspaceChanges ?? collectWorkspaceChanges
+      const snapshot = collect(projectPath, baseCommit)
+      if (!snapshot) return
+      this.changeSetsFor(options).captureHead(claim.run.id, snapshot)
+    } catch (error) {
+      logger.warn(`[change-head] run=${claim.run.id} 文件变更采集失败（不影响终态）：${String(error)}`)
+    }
+  }
+
+  /** G1-7：执行后工作区内容指纹；失败返回 null（不伪造哈希）。 */
+  private collectExecuted(item: WorkItemRow, options: AgentStepRunnerOptions): ExecutedContent | null {
+    if (!item.project_path) return null
+    try {
+      return (options.executedContent ?? worktreeManager.executedContent)(item.project_path)
+    } catch {
+      return null
+    }
+  }
+
+  /** G1-7：失败/超时 partial；字段缺失即不写，截断交给 WorkRunService（D-16）。 */
+  private buildPartial(outcome: AgentTurnSignal, executed: ExecutedContent | null): PartialInput | undefined {
+    const tail = outcome.finalText?.trim()
+    const files = executed?.dirtyFiles ?? []
+    if (!tail && files.length === 0 && !outcome.errorCode) return undefined
+    return {
+      ...(tail ? { stdout_tail: tail } : {}),
+      ...(files.length > 0 ? { file_changes: files } : {}),
+      ...(outcome.errorCode ? { errors: [outcome.errorCode] } : {}),
     }
   }
 
@@ -327,6 +511,114 @@ export class AgentStepRunner {
   }
 
   /**
+   * E2 session_turn：回合完成（机器验收通过，或仅剩 manual 待确认）后记录本次执行
+   * 实际产出的内容绑定。只写 content_hash，不冒充 E3（无提交/测试事实）。
+   *
+   * 写方：编排层以 system 身份写——代码矩阵禁止 actor='agent' 直写 E2，agent 候选
+   * 须走尚未建成的 evidence_suggestions（蓝图 §3.7.1）；ref 保留 session/turn/adapter
+   * 溯源，suggestions 表落地后改走“建议→接受”。
+   *
+   * 写入发生在 step/run 终态事务提交之后：失败只留诊断，不回滚、不改写 step 状态。
+   */
+  private recordTurnEvidence(
+    claim: ClaimedStep,
+    result: StepRunResult,
+    sessionId: string,
+    options: AgentStepRunnerOptions,
+  ): void {
+    // 没有机器验收就没有“完成事实”，不写证据（避免 agent 自称完成直接变 implemented）。
+    if (!options.verifyAcceptance) return
+    if (result.status !== 'succeeded' && result.status !== 'needs_input') return
+    const { item, step, run } = claim
+    if (!item.anchor_entity_key) {
+      logger.warn(`[evidence] step=${step.id} 缺 anchor_entity_key，跳过 E2（不伪造节点）`)
+      return
+    }
+    if (!item.project_path) {
+      logger.warn(`[evidence] step=${step.id} 缺 project_path，跳过 E2`)
+      return
+    }
+
+    let executed: ExecutedContent | null
+    try {
+      executed = (options.executedContent ?? worktreeManager.executedContent)(item.project_path)
+    } catch (error) {
+      logger.warn(
+        `[evidence] step=${step.id} 内容指纹采集失败：` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      )
+      executed = null
+    }
+    // 取不到执行后指纹（非 git / git 异常）→ 宁缺勿假：不写 null，也不拿别处内容顶替。
+    if (!executed) {
+      logger.warn(`[evidence] step=${step.id} 取不到执行后工作区指纹，跳过 E2`)
+      recordEvidenceWriteFailure(this.db, {
+        source: 'agent_turn',
+        level: 'E2',
+        evidenceType: 'session_turn',
+        workItemId: item.id,
+        stepId: step.id,
+        workRunId: run.id,
+        nodeEntityKey: item.anchor_entity_key,
+        error: 'EXECUTED_CONTENT_UNAVAILABLE',
+      })
+      return
+    }
+
+    const turnId = latestTurnId(this.db, sessionId)
+    try {
+      const { row, reused } = this.evidence.create({
+        level: 'E2',
+        graphId: item.graph_id,
+        nodeEntityKey: item.anchor_entity_key,
+        nodeId: item.anchor_node_id ?? undefined,
+        projectPath: item.project_path,
+        evidenceType: 'session_turn',
+        ref: {
+          kind: 'agent_turn',
+          sessionId,
+          turnId,
+          runId: run.id,
+          stepId: step.id,
+          adapterName: options.adapterName,
+          turnStatus: result.turnStatus ?? null,
+          acceptanceOutcome: result.status,
+          // agent 直接写在这个项目工作区，指纹即本次执行面（非 TestExecutor 的独立 worktree）。
+          executionWorkspace: 'project_worktree',
+          workspaceChangesIncluded: true,
+          worktreeTree: executed.treeHash,
+          dirtyFiles: executed.dirtyFiles,
+          executedContentHash: executed.contentHash,
+        },
+        summary:
+          `agent 回合完成(session_turn@${executed.contentHash.slice(0, 12)}` +
+          `${executed.dirtyFiles.length > 0 ? `;${executed.dirtyFiles.length} 个未提交文件计入内容绑定` : ';工作区干净'})`,
+        actor: 'system',
+        producedBy: 'system',
+        currentHash: executed.contentHash,
+        workRunId: run.id,
+        workItemId: item.id,
+        sessionId,
+        turnId: turnId ?? undefined,
+      })
+      logger.info(`[evidence] step=${step.id} E2 session_turn ${reused ? 'reused' : 'created'} id=${row.id}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn(`[evidence] step=${step.id} E2 写入失败（不改变已完成终态）：${message}`)
+      recordEvidenceWriteFailure(this.db, {
+        source: 'agent_turn',
+        level: 'E2',
+        evidenceType: 'session_turn',
+        workItemId: item.id,
+        stepId: step.id,
+        workRunId: run.id,
+        nodeEntityKey: item.anchor_entity_key,
+        error: message,
+      })
+    }
+  }
+
+  /**
    * D2：completed 后的确定性验收。判定不通过、判定不出（含 manual 待确认）、
    * 执行器抛异常，一律按 verify_fail 失败——不把「agent 说完成了」当验收通过。
    */
@@ -335,9 +627,10 @@ export class AgentStepRunner {
     outcome: AgentTurnSignal,
     sessionId: string,
     options: AgentStepRunnerOptions,
+    ctx: FinalizeContext,
   ): Promise<StepRunResult> {
     if (!options.verifyAcceptance) {
-      return this.finalizeOutcome(claim, outcome, sessionId)
+      return this.finalizeOutcome(claim, outcome, sessionId, ctx)
     }
     let verdict: AcceptanceVerdict
     const verifyStartedAt = Date.now()
@@ -360,7 +653,7 @@ export class AgentStepRunner {
         durationMs: Date.now() - verifyStartedAt,
         verifierError: message,
       })
-      return this.finalizeFailure(claim, 'verify_fail', 'ACCEPTANCE_VERIFIER_ERROR', sessionId, outcome.status)
+      return this.finalizeFailure(claim, 'verify_fail', 'ACCEPTANCE_VERIFIER_ERROR', sessionId, outcome.status, ctx.partial)
     }
     // 每次验收都留逐条结果；写失败不影响准入判定（record 内部只告警）。
     recordAcceptanceEvaluation(this.db, {
@@ -379,13 +672,14 @@ export class AgentStepRunner {
         `ACCEPTANCE_VERIFY_FAILED:${codes.join(',')}`.slice(0, 200),
         sessionId,
         outcome.status,
+        ctx.partial,
       )
     }
     // 仅 manual 待确认：步落 needs_input（run 仍 completed），等待人工确认入口。
     if (verdict.pendingItems.length > 0) {
-      return this.finalizeNeedsInput(claim, verdict.pendingItems, sessionId, outcome.status)
+      return this.finalizeNeedsInput(claim, verdict.pendingItems, sessionId, outcome.status, ctx)
     }
-    return this.finalizeOutcome(claim, outcome, sessionId)
+    return this.finalizeOutcome(claim, outcome, sessionId, ctx)
   }
 
   /**
@@ -397,6 +691,7 @@ export class AgentStepRunner {
     pendingItems: AcceptancePendingItem[],
     sessionId?: string,
     turnStatus?: TurnOutcome['status'],
+    ctx?: FinalizeContext,
   ): StepRunResult {
     const requestJson = JSON.stringify({
       kind: 'acceptance_manual_confirm',
@@ -410,7 +705,7 @@ export class AgentStepRunner {
       })),
     })
     const txn = this.db.transaction((): StepRunResult => {
-      if (!this.runs.complete(claim.run.id)) {
+      if (!this.runs.complete(claim.run.id, runOutputData(ctx))) {
         throw new AgentStepRunnerError(
           'TERMINAL_CONFLICT',
           `work_run ${claim.run.id} 已被并发置终态，拒绝覆盖`,
@@ -433,18 +728,19 @@ export class AgentStepRunner {
     claim: ClaimedStep,
     outcome: AgentTurnSignal,
     sessionId: string,
+    ctx: FinalizeContext,
   ): StepRunResult {
     if (outcome.status === 'completed') {
       return this.finalize(claim, {
         status: 'succeeded',
-        run: (id) => this.runs.complete(id),
+        run: (id) => this.runs.complete(id, runOutputData(ctx)),
         step: (id) => this.steps.complete(id, { status: 'succeeded' }),
         sessionId,
         turnStatus: outcome.status,
       })
     }
     if (isTimeout(outcome)) {
-      return this.finalizeTimeOut(claim, 'turn_timeout', sessionId, outcome.status)
+      return this.finalizeTimeOut(claim, 'turn_timeout', sessionId, outcome.status, ctx.partial)
     }
     if (outcome.status === 'cancelled') {
       const failureClass = mapTurnFailureClass(outcome.failureClass)
@@ -462,7 +758,12 @@ export class AgentStepRunner {
     return this.finalize(claim, {
       status: 'failed',
       failureClass,
-      run: (id) => this.runs.fail(id, { failureClass, resultSummary: outcome.errorCode }),
+      run: (id) =>
+        this.runs.fail(id, {
+          failureClass,
+          resultSummary: outcome.errorCode,
+          ...(ctx.partial ? { partial: ctx.partial } : {}),
+        }),
       step: (id) => this.steps.fail(id, { status: 'failed', failureClass }),
       sessionId,
       turnStatus: outcome.status,
@@ -474,12 +775,13 @@ export class AgentStepRunner {
     reason: string,
     sessionId?: string,
     turnStatus?: TurnOutcome['status'],
+    partial?: PartialInput,
   ): StepRunResult {
     return this.finalize(claim, {
       status: 'timed_out',
       failureClass: 'timeout',
       reason,
-      run: (id) => this.runs.timeout(id),
+      run: (id) => this.runs.timeout(id, partial),
       step: (id) => this.steps.fail(id, { status: 'timed_out', failureClass: 'timeout' }),
       sessionId,
       turnStatus,
@@ -492,12 +794,18 @@ export class AgentStepRunner {
     reason: string,
     sessionId?: string,
     turnStatus?: TurnOutcome['status'],
+    partial?: PartialInput,
   ): StepRunResult {
     return this.finalize(claim, {
       status: 'failed',
       failureClass,
       reason,
-      run: (id) => this.runs.fail(id, { failureClass, resultSummary: reason }),
+      run: (id) =>
+        this.runs.fail(id, {
+          failureClass,
+          resultSummary: reason,
+          ...(partial ? { partial } : {}),
+        }),
       step: (id) => this.steps.fail(id, { status: 'failed', failureClass }),
       sessionId,
       turnStatus,
@@ -509,7 +817,9 @@ export class AgentStepRunner {
     const failureClass: FailureClass = name === 'SessionBusyError' || name === 'NodeBusyError' ? 'busy' : 'infra'
     const message = error instanceof Error ? error.message : String(error)
     logger.error(`[step-exec] step=${claim.step.id} 执行异常（${failureClass}）：${message}`)
-    return this.finalizeFailure(claim, failureClass, message.slice(0, 200), sessionId)
+    return this.finalizeFailure(claim, failureClass, message.slice(0, 200), sessionId, undefined, {
+      errors: [message.slice(0, 400)],
+    })
   }
 
   private finalize(
@@ -560,6 +870,18 @@ export class AgentStepRunner {
 
 function isTimeout(outcome: AgentTurnSignal): boolean {
   return outcome.failureClass === 'timeout' || outcome.errorCode === 'DEADLINE_EXCEEDED'
+}
+
+/** 会话最近一次 turn id（证据溯源用）；agent_turns 未建/无行时留空，不猜。 */
+function latestTurnId(db: BetterSqlite3.Database, sessionId: string): string | null {
+  try {
+    const row = db
+      .prepare('SELECT id FROM agent_turns WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(sessionId) as { id?: string } | undefined
+    return typeof row?.id === 'string' && row.id !== '' ? row.id : null
+  } catch {
+    return null
+  }
 }
 
 function terminationReasonFor(status: TurnOutcome['status']): TerminationReason {

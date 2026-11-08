@@ -12,16 +12,24 @@
  * 原 turn 已完成，确认只重算验收并直接收口。原因见文档 §M5.11。
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
+import { isPathInside } from '../agent/runtime/approval/write-paths'
+import { createLogger } from '../shared/logger'
 import {
   evaluateAcceptance,
   type AcceptancePendingItem,
   type AcceptanceVerdict,
 } from './acceptance-executor'
 import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
+import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
+import { EvidenceService } from './evidence-service'
 import { WorkItemService, type WorkItemRow, type WorkItemStatus, type WorkStepRow } from './work-item-service'
 import { WorkStepService, type WorkStepStatus } from './work-step-service'
+
+const logger = createLogger('AcceptanceConfirmation')
 
 /** input_request_json 的契约形状（kind + 待确认条目）。 */
 export interface AcceptanceInputRequest {
@@ -110,10 +118,12 @@ function serializeRequest(base: AcceptanceInputRequest, entries: AcceptancePendi
 export class AcceptanceConfirmationService {
   private readonly items: WorkItemService
   private readonly steps: WorkStepService
+  private readonly evidence: EvidenceService
 
   constructor(private readonly db: BetterSqlite3.Database) {
     this.items = new WorkItemService(db)
     this.steps = new WorkStepService(db)
+    this.evidence = new EvidenceService(db)
   }
 
   async confirm(input: ConfirmAcceptanceInput): Promise<ConfirmAcceptanceResult> {
@@ -219,7 +229,106 @@ export class AcceptanceConfirmationService {
         revision: finalItem.revision,
       }
     })
-    return txn()
+    const settled = txn()
+    // 终态已提交后再写 E4：写失败只留诊断，不回滚确认、不改写 step/item 状态。
+    this.recordManualAcceptanceEvidence(item, step, settled, verdict, confirmedIds, decidedBy)
+    return settled
+  }
+
+  /**
+   * E4 human_confirm：全部待确认条目收口后，记录“谁在何时签收了哪些验收条目”。
+   * version_binding='none'、不写 code_version（E4 禁止代码版本），但写入产物文件的
+   * 内容哈希——单文件时 current_hash 即该文件 sha256；多文件时为逐文件哈希清单的
+   * 聚合值，逐文件 sha256 同时落在 basis_ref_json 里，保证每个产物都能对上。
+   * 部分确认（仍有 pending）不写，避免半覆盖签收。
+   */
+  private recordManualAcceptanceEvidence(
+    item: WorkItemRow,
+    step: WorkStepRow,
+    settled: ConfirmAcceptanceResult,
+    verdict: AcceptanceVerdict,
+    confirmedIds: string[],
+    signedBy: string,
+  ): void {
+    if (settled.stepStatus !== 'succeeded') return
+    if (!item.anchor_entity_key) {
+      logger.warn(`[evidence] step=${step.id} 缺 anchor_entity_key，跳过 E4（不伪造节点）`)
+      return
+    }
+
+    const artifacts = hashAcceptanceArtifacts(item.acceptance_json, item.project_path)
+    const hashMode: 'none' | 'single_file' | 'multi_file_manifest' =
+      artifacts.length === 0 ? 'none' : artifacts.length === 1 ? 'single_file' : 'multi_file_manifest'
+    const currentHash =
+      artifacts.length === 0
+        ? null
+        : artifacts.length === 1
+          ? artifacts[0].sha256
+          : createHash('sha256')
+              .update(artifacts.map((a) => `${a.path}:${a.sha256}`).join('\n'))
+              .digest('hex')
+
+    const coverage = [
+      {
+        node_entity_key: item.anchor_entity_key,
+        files: artifacts.map((a) => a.path),
+        acceptance_ids: confirmedIds,
+      },
+    ]
+    const basisRefs = [
+      { kind: 'acceptance_confirmation', ref: settled.confirmationBatchId },
+      ...artifacts.map((a) => ({ kind: 'file', ref: a.path, hash: a.sha256 })),
+    ]
+
+    const runId = latestRunIdForStep(this.db, step.id)
+    try {
+      const { row, reused } = this.evidence.create({
+        level: 'E4',
+        graphId: item.graph_id,
+        nodeEntityKey: item.anchor_entity_key,
+        nodeId: item.anchor_node_id ?? undefined,
+        projectPath: item.project_path ?? undefined,
+        evidenceType: 'human_confirm',
+        ref: {
+          kind: 'manual_acceptance',
+          workItemId: item.id,
+          stepId: step.id,
+          batchId: settled.confirmationBatchId,
+          confirmationIds: settled.confirmationIds,
+          acceptedEntryIds: confirmedIds,
+          remainingEntryIds: settled.remainingEntryIds,
+          files: artifacts,
+          hashMode,
+          evaluator: 'acceptance-executor@1',
+          verdict: { missing: verdict.missing, pending: verdict.pending },
+        },
+        summary:
+          `人工验收签收(${confirmedIds.length} 条已确认` +
+          `${artifacts.length > 0 ? `;${artifacts.length} 个产物文件计入内容绑定` : ';无产物文件声明'})`,
+        actor: 'human',
+        producedBy: 'human',
+        signedBy,
+        coverage,
+        basisRefs,
+        currentHash: currentHash ?? undefined,
+        workRunId: runId ?? undefined,
+        workItemId: item.id,
+      })
+      logger.info(`[evidence] step=${step.id} E4 human_confirm ${reused ? 'reused' : 'created'} id=${row.id}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      logger.warn(`[evidence] step=${step.id} E4 写入失败（不改变已收口结果）：${message}`)
+      recordEvidenceWriteFailure(this.db, {
+        source: 'acceptance_confirmation',
+        level: 'E4',
+        evidenceType: 'human_confirm',
+        workItemId: item.id,
+        stepId: step.id,
+        workRunId: runId,
+        nodeEntityKey: item.anchor_entity_key,
+        error: message,
+      })
+    }
   }
 
   /** 写入确认事实（每条目一行，batch_id 分组）；重复条目按唯一索引幂等。 */
@@ -334,5 +443,69 @@ export class AcceptanceConfirmationService {
     this.steps.settleNeedsInput(step.id, { status: 'succeeded' })
     this.items.convergeIfTerminal(item.id)
     return { stepStatus: 'succeeded', remainingEntryIds: [] }
+  }
+}
+
+export interface AcceptanceArtifactHash {
+  path: string
+  sha256: string
+}
+
+/**
+ * 只对 acceptance 里声明且真实存在的 `file_check` 产物计算 sha256。
+ * 路径安全与验收执行器同源（非绝对路径 + 必须在项目根内）；读不到的文件跳过，
+ * 不猜内容——收口时 verdict 已保证这些条目实际通过。
+ */
+export function hashAcceptanceArtifacts(
+  acceptanceJson: string | null | undefined,
+  projectPath: string | null | undefined,
+): AcceptanceArtifactHash[] {
+  const root = projectPath?.trim()
+  if (!acceptanceJson || !root) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(acceptanceJson)
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+
+  const out: AcceptanceArtifactHash[] = []
+  for (const entry of parsed) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    if (record['type'] !== 'file_check') continue
+    const expected = record['expected']
+    if (typeof expected !== 'string' || expected.trim() === '' || path.isAbsolute(expected)) continue
+    let inside = false
+    try {
+      inside = isPathInside(root, expected)
+    } catch {
+      inside = false
+    }
+    if (!inside) continue
+    const abs = path.resolve(root, expected)
+    try {
+      if (!fs.statSync(abs).isFile()) continue
+      out.push({
+        path: expected,
+        sha256: createHash('sha256').update(fs.readFileSync(abs)).digest('hex'),
+      })
+    } catch {
+      continue
+    }
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** 该 step 最近一次 run（证据溯源用）；work_runs 未建/无行时留空，不猜。 */
+function latestRunIdForStep(db: BetterSqlite3.Database, stepId: string): string | null {
+  try {
+    const row = db
+      .prepare('SELECT id FROM work_runs WHERE step_id = ? ORDER BY run_seq DESC LIMIT 1')
+      .get(stepId) as { id?: string } | undefined
+    return typeof row?.id === 'string' && row.id !== '' ? row.id : null
+  } catch {
+    return null
   }
 }

@@ -1,8 +1,879 @@
-# 会话地图与任务编排蓝图（Session Map Blueprint）
+# 会话地图与任务编排蓝图（Session Map Blueprint）— 定稿 v2.2
 
-> 状态：设计定稿（产品方已拍板）
-> 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单
-> 非范围：审批网关内部实现、Agent 内核/驱动协议、上下文水位线、成本账本 —— 见 `agent-architecture.md`
+> 版本：**v2.2（定稿 + 裁决结果回写）**
+> 生成时间：**2026-11-08 21:35（Asia/Shanghai）**
+> 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；**v2.2 把 D-01…D-17 的裁决结果回写为「已裁决（采纳 X）」并解除 13 条阻塞**。严格区分：裁决只定方向，**不产生施工授权**——34 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
+> 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，397 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
+> ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` **逐字节相同**（397 行，sha256 `e203b41b…d89a9`），即同一份 v1.2.3（R10 勘误版），不是更新版。
+> 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
+> 非范围：审批网关内部实现、Agent 内核/驱动协议、上下文水位线、成本账本 —— 见 `agent-architecture.md`。
+> 状态词（严格四类，全文一致）：
+> - **已实施**：必须带 `文件:行` 或提交号；复核不到不得使用。
+> - **已批准未实施**：有裁决/定稿，但无对应代码。
+> - **仅建议**：提案、候选、未决，不得进入验收口径。
+> - **待裁决**：需要产品/架构选择；给出选项与建议。
+> 数字纪律：行数、表数、版本号均须 `wc -l` / `git grep` / 源码复核；引用外部快照必须带版本与行数。
+
+---
+
+# Part I 状态总账与施工计划
+
+> 本部分为定稿新增，回答“现在有什么、还缺什么、怎么施工、哪些要拍板”。原有 §0–§14 为设计规格，继续有效；两者冲突时，**状态以 Part I 为准，设计细节以原章节为准**。
+
+## I.1 一页状态总账
+
+**计数口径**：明细共 **152 条**，其中 **16 条为跨组重复**（已标注出处），去重后 **136 条独立项**。按去重口径：
+
+| 类别 | 条数 | 说明 |
+|---|---|---|
+| 已实施 | **45** | 见 I.2，每条带代码证据 |
+| 已批准未实施 | **40** | 见 I.3，均有可施工方案（W 包） |
+| 仅建议 | **34** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 13 条已解除裁决阻塞 |
+| 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
+| **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
+
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 45+40+34+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+
+> 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（agent 证据写入）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
+
+### I.1.1 已实施（45）
+
+- **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
+- **编排执行**：G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
+- **测试体系**：G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
+- **证据体系**：G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记。
+- **Agent 运行时**：G6-6 重启 pending 按实际降级（统一 deny）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
+- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
+- **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`。
+- **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-12 报告裁剪。
+- **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正；G11-7 成本只记账；G11-9 D12 本期不做。
+
+### I.1.2 已批准未实施（40）
+
+- **会话地图本体**：G1-9 E4 覆盖扫描、G1-10 `evidence_suggestions`。
+- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6 超时键、G3-7 `stepMs/taskMs` 消费、G3-8 `sendWaitMs`、G3-9 subagent 继承预算、G3-10 agent 证据写入面。
+- **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest。
+- **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-4 建议转证据（=G1-10）、G5-5 E4 扫描（=G1-9）、G5-8 §3.4 事务/去重、G5-9 §3.2 组合校验。
+- **Agent 运行时**：G6-1 M2 六项、G6-2 50ms 批写、G6-3 快照无写入、G6-4 三未建文件、G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9、G6-12 R3、G6-13 打包、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异、G6-18 C13b。
+- **审批与沙箱**：G7-1 写前审批覆盖边界、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-10 旧路径时间线。
+- **迁移与运维**：G9-11 schema 版本漂移、G9-13 Windows 路径。
+- **文档与验证**：G10-1 §13 审计表（102 行，原 66 节标“有框架缺细节”，已更正为 16 已实施 + 50 缺细节）、G10-2 A1/A2/A9 用例、G10-3 A3/A4 边界、G10-11 CI（=G4-9）。
+
+### I.1.3 仅建议（34）
+
+- **会话地图本体**：G1-11 `node_id` 放宽、G1-14 提案机制（§2.7）。
+- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-13 published 软阻断、G2-14 `v_plan_deviations_file_domain`、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
+- **编排执行**：G3-1 Tier1 探测、G3-2 跨进程写闸、G3-3 renderer 执行入口。
+- **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）、G4-3 published 软阻断（=G2-13）。
+- **证据体系**：G5-10 §3.6 项目进度。
+- **Agent 运行时**：G6-17 同 uid 不在防御范围。
+- **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
+- **界面与交互**：G8-3 C1–C4、G8-4 提案 UI、G8-5 任务卡深度、G8-6 renderer 入口（=G3-3）。
+- **迁移与运维**：G9-8 RequestQueue、G9-10 worktree 清理。
+- **待裁决清单**：G11-10 tree-hash 等级。
+
+> **索引（v2.1 补齐，v2.2 解阻塞）**：以上 34 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+
+> **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
+
+### I.1.4 已裁决（方向；17 条，仍未授权施工）
+
+G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 WorkScheduler 文档滞后、G4-4 bug 闭环边界、G4-5 手工 E4 入口、G6-8 排队 `queueDepth`、G6-9 Codex `runStreamed`、G6-10 长尾 CLI 工具事件、G8-8 手工 E4 入口（=G4-5）、G9-9 Yjs 拆除（=G1-12）、G10-5 L2 审查 P2 四项、G10-6 Zcode 两项、G10-10 agent §13 产品决策、G11-1 D1、G11-2 D4、G11-3 `turnMs` 配置键、G11-4 partial 截断、G11-5 排队（=G6-8）、G11-6 `runStreamed`（=G6-9）、G11-8 长尾（=G6-10）、G11-11 Yjs（=G1-12）、G11-12 Tier2。
+
+> 全部 17 条已于 **2026-11-08** 裁决（`D-01…D-17`，见 I.4）；**方向已定、施工未授权**，不计入「已批准未实施」。
+
+> 注：I.1.4 列 23 个编号，去重后 17 条；重复关系见上方清单。
+
+## I.2 已实施清单（45 条，按主题）
+
+> 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
+
+### I.2.1 会话地图本体（10）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G1-1 | `nodes.entity_key` 列、唯一索引、一次性回填、克隆复制源键 | `database.ts:711-713`、`database.ts:1092-1150`、`entity-key-backfill.ts:329` |
+| G1-2 | `nodes/graphs.lifecycle_state`（active/archived/merged/split） | `database.ts:721-724`、`node-repository.ts:384` |
+| G1-3 | `node_links` key-based 关系表 + 服务 + 回填 | `database.ts:714,1177-1205`、`link-service.ts:216` |
+| G1-4 | 导入查重三表、判定顺序、拒绝留痕、90 天保留 | `database.ts:716-718`、`import-dedup.ts:442,491,517,548`、`graph-service.ts:120` |
+| G1-5 | 两条自动写 `nodes.status` 路径关闭；只剩人工写 | `agent-manager.ts:851-858`（仅状态回调，不写库）、`ipc-handlers.ts:173-183`（只广播）、`execution-state.ts:24`（派生态不落库）；人工入口 `ipc/graph.ts` node:update、`useNodeOperations.ts:141`、`GraphCanvas.tsx:1517` |
+| G1-6 | `needs_input` 回写 + 人工确认恢复，不新开 attempt | `agent-step-runner.ts:689`（`finalizeNeedsInput`）、`work-item-service.ts:556,571`（`markNeedsInput`/`settleNeedsInput`）、`work-step-service.ts:306`（`settleNeedsInput`）、`acceptance-confirmation.ts:421-446` |
+| G1-7 | `outputs/output_parse/partial` 落 `work_runs`；文件变更落 `change_sets`；usage 仍由 runtime 写 `agent_usage` | `agent-step-runner.ts:175,207,389-471`、`workspace-change-stats.ts:33,132`、`work-run-service.ts:305-353,629-...`、`runtime.ts:515-532` |
+| G1-8 | 子 work_item 全终态后父链聚合（failed > cancelled > done），防环幂等 | `work-item-service.ts:501-558`（`convergeChildrenIfTerminal` / `convergeParentChain`）；触发点 `work-item-service.ts:362,480` |
+| G1-13 | 新建图在 WS 连接时按需进 doc 池；不存在的图不造孤儿 doc | `yjs-realtime.ts:123-126,145-158`（WS `getDoc` → `getOrLoadDoc` + `graphExists`） |
+| G1-16 | 快照恢复不写 SQLite、不重算 `entity_key` | `cc749ce`；`docs/architecture/session-map-blueprint.md` §2.2.1 |
+
+### I.2.2 编排执行（3）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G3-12 | `GateRecheck` 接入；引擎不可用时 `incomplete + gate_engine_unavailable` | `work-execution-service.ts:463`、`b6f3735` |
+| G3-14 | D2 验收执行器 command / file_check / manual，逐条结果落 `map_migration_reports` | `acceptance-executor.ts`、`c03ee87`/`4010` |
+| G3-15 | D1 计划确认、D3 按步骤调度、D7 重启对账、D9 人工确认 | `e4398e7`、`94125bd`、`work-execution-service.ts:177,308` |
+
+### I.2.3 测试体系（2）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G4-10 | S8 前置五表（`test_specs/plans/items/runs/results`） | `database.ts:1221` |
+| G4-11 | TestExecutor 逐条执行 + `evidence.create` E2/E3 | `test-executor.ts:389,406`、`test-plan-service.test.ts` |
+
+### I.2.4 证据体系（4）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G5-1 | E1–E4 写方矩阵、端点校验、唯一性、E4 `coverage_json` | `evidence-service.ts:150-260` |
+| G5-2 | TestExecutor 是唯一 E2/E3 写方 | `test-executor.ts:389,406` |
+| G5-6 | E4 过期（默认 30 天）自动转 `stale` | `evidence-service.ts:192-202`、U1 |
+| G5-7 | 非 git E4 `reproducible=0`、`version_binding='none'` | `database.ts:673-691` |
+
+### I.2.5 Agent 运行时（3）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G6-6 | 重启后陈旧审批统一 deny（不再承诺重推 + replay） | `startup-reconcile` 路径；`agent-architecture.md` §7.4 |
+| G6-19 | “五通道/模式库/进化/提案”归属校正在 Part I（不在 agent 文档） | `map-orchestration-blueprint.md:330-331` |
+| G6-20 | 12 适配器能力矩阵；Claude 写前审批 | `agent-architecture.md` §10/§17.1；`claude-code.ts:237-268` |
+
+### I.2.6 审批与沙箱（4）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G7-4 | legacy Claude 审批钩子接线 | `2026-11-07` 修复；`agent-architecture.md` §17.5 |
+| G7-11 | 会话级授权仅覆盖写类工具（设计边界） | `agent-architecture.md` §7.6 |
+| G7-13 | 交互审批 120s fail-closed | `ApprovalGateway`；`agent-architecture.md` §7.4 |
+| G7-14 | 重启陈旧审批 deny | `agent-architecture.md` §7.4 |
+
+### I.2.7 界面与交互（5）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G8-1 | `NodeMapPanel` 待确认块 + 确认按钮 + 终态收敛 | 演练 `out-run4`：`NODE_MAP_PANEL_VISIBLE → CONFIRM_BUTTON_CLICKED → item=done step=succeeded run=completed` |
+| G8-2 | 画布派生徽标 + 时间线切换 | `docs/architecture/map-orchestration-blueprint.md` L1 清单 |
+| G8-7 | 按能力位的降级文案 | `agent-architecture.md` §7.5 |
+| G8-9 | 证据空态“该节点没有关联证据” | 演练 `out-run4/11-panel-settled.png` |
+| G8-10 | 全局 `ApprovalInbox`；15 条审批全部可见可决议 | 演练 `out-run4/01..015-inbox-approval.png` |
+
+### I.2.8 迁移与运维（8）
+
+| 编号 | 能力 | 代码证据 |
+|---|---|---|
+| G9-1 | S1/S2/S5a/S6a：v26–v29 | `database.ts:711-719` |
+| G9-2 | S3 归档：v30 | `database.ts:721` |
+| G9-3 | S7 推导/草稿/偏差：v31 | `database.ts:724-725`、`plan-derivation.ts:513` |
+| G9-4 | S8 前置五表：v32 | `database.ts:1221` |
+| G9-5 | S4 CHECK 值域重建：v33 | `s4-verify.ts:212` |
+| G9-6 | S4 不可逆，已接受；回退仅恢复备份 | `session-map-blueprint.md` §8.6 |
+| G9-7 | 半迁移续跑 `--resume-migration` | `migration-state.ts:283` |
+| G9-12 | 报告裁剪与 `import_rejections` 90 天保留 | `database.ts:91-96`、`import-dedup.ts:548` |
+
+### I.2.9 文档与裁决落地（6）
+
+| 编号 | 能力 | 代码/文档证据 |
+|---|---|---|
+| G10-7 | 修正总账“已批准未实施=无” | 本轮 Part I + 原 §12.13 |
+| G10-8 | 修正行数快照 | `wc -l` 复核；本轮写入 |
+| G10-9 | 修正 `entity_key/lifecycle_state` 仅建议表述 | 本轮 §2.2.1 更正 |
+| G10-12 | 修正 §8.15 自相矛盾 | 本轮 §8.15 更正 |
+| G11-7 | 成本只记账、不做自动熔断 | `agent-architecture.md` §13 |
+| G11-9 | D12 异步评估时限预算本期不做 | `session-map-blueprint.md` §14.5 |
+
+---
+
+## I.3 未实施清单与可施工方案（74 条 → 12 个 W 包）
+
+> 口径：**条目本身不合并**，每条保留 G 编号；下发施工时按 W 包排期，包内条目逐条验收。标记 `[批准]` 的进入本期/近期计划，标记 `[建议]` 的属 L3，不进入本期验收。
+
+### W1 地图对象与状态回写
+- 覆盖条目：G1-5 `[已实施]` 双轨自动写路径关闭（本包复核，仅改文档）、G1-6 `[已实施]` `needs_input` 回写（本包复核，仅改文档）、G1-7 `[已实施]` `outputs/parse/partial/文件变更`、G1-8 `[已实施]` 子 work_item 聚合、G1-13 `[已实施]` 新建图进 doc 池、G1-11 `[建议]` `agent_turns.node_id` 放宽（评估无伪节点证据，维持仅建议、不改 schema）。
+- 目标：让 `work_steps/work_runs` 的观测字段与真实 turn 完全对齐；`nodes.status` 只由人写；Yjs doc 池与新建图一致。
+- 涉及文件与数据/接口变更：`src/main/map/work-execution-service.ts`、`src/main/map/agent-step-runner.ts`、`src/main/map/work-item-service.ts`、`src/main/agent/runtime/db/schema.ts`、`src/main/realtime/yjs-realtime.ts`。新增 `needs_input` 信号到 `TurnOutcome`；`output_json` 增加 parse/partial/usage/fileChanges 四段；`parent_work_item_id` 聚合查询。
+- 实施步骤：① 在 turn 完成回调写入 `needs_input`（`input_request_json`）；② 解析输出并写 `output_parse/partial/usage`；③ 文件变更从 ScopeGuard 结果落 `change_sets`；④ 子任务终态聚合到父任务；⑤ 关闭两条自动写 `nodes.status` 路径；⑥ 新建图时加入 doc 池。
+- 验收标准：`needs_input` 在 turn 结束前可见且人工确认后可恢复；`output_parse` 三态齐全；父任务在全部子任务终态后才终态；`git grep "UPDATE nodes SET status"` 只剩人工路径；新建图在 WS 开启时可同步。
+- 依赖与建议顺序：W1 → W2 → W3；`node_id` 放宽最后做（需先确认无伪节点）。
+- 风险与回滚：新增写回可能与旧 `output_json` 消费者冲突 → 加字段不删字段；`node_id` 放宽会削弱约束 → 先加 D8 迁移脚本与回滚备份。
+- **施工注记（2026-11-08，W1 完成）**：G1-5/G1-6 经代码复核**确已实施**，本包只纠正状态词、未改代码。G1-7 按 §5.9.7 **分散落点**接线：`outputs → work_runs.outputs_json`、`outputParse → work_runs.output_parse`、`partial → work_runs.partial_output_ref`、文件变更 → `change_sets.files_json`、`usage` 仍由 runtime 写 `agent_usage`；**不改** `agent_turns.output_json`，**不重复写** usage。生产端接在 `agent-step-runner.ts` 的 `complete/fail/timeout` 透传（`parseStepOutputs` L175、`runOutputData` L207、`buildPartial` L471、`recordChangeHead` L443），取基/取头经新增 `workspace-change-stats.ts`；无 schema 时不伪造 outputs、不写空对象。G1-8 采**方案 B**：父任务处于 `draft/awaiting_confirm/queued/running` 时可被子任务全终态带进终态，`needs_human/blocked/needs_input/paused/interrupted` 不覆盖；聚合口径 `failed > cancelled > done`（`superseded` 按 cancelled 计）；触发点为 `transition()` 终态后与 `convergeIfTerminal()` 收口后，均调用 `convergeParentChain` 向父链上推（`seen` 防环、条件 UPDATE 幂等）。**父任务 gate 被绕过是方案 B 的有意行为，不是缺陷**；G1-13 在 WS `getDoc` 走 `getOrLoadDoc`，装载前先校验 `graphs` 行存在，避免为不存在的图造孤儿 doc。G1-11 维持**仅建议**：真实库 `agent_turns` 0 行、历史证据库各自指存在节点，无伪节点证据，故不动 `node_id` 约束。本包**不升 schema**（`CURRENT_SCHEMA_VERSION` 仍为 35），**不提交 git**。
+
+### W2 证据闭环
+- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[批准]` `evidence_suggestions`、G3-10 `[批准]` agent 证据写入面、G5-8 `[批准]` 建议转证据事务/去重、G5-9 `[批准]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
+- 目标：agent 回合产生的候选证据可被建议、可被人工接受、可复扫失效；E1/E4 有 IPC 写通道。
+- 涉及文件与数据/接口变更：`src/main/map/evidence-service.ts`、`src/main/ipc/map.ts`、`src/main/map/evidence-derivation.ts`；新增 `evidence_suggestions` 表与迁移；新增 `evidence:suggest` / `evidence:accept` / `evidence:scan` 通道。
+- 实施步骤：① 建 `evidence_suggestions` 表 + CHECK；② 建议写入去重键（node+kind+source_ref）；③ 接受时事务内转 `node_evidence` 并写审计；④ E4 增加内容哈希 `content_hash` 与复扫任务；⑤ IPC 补写通道与参数校验。
+- 验收标准：同一建议重复写入不产生第二行；接受后证据可见且 E4 覆盖变化触发 `stale`；IPC 未授权调用失败并留痕。
+- 依赖与建议顺序：依赖 W1 的 turn 输出；E4 扫描建议最后做（需要哈希基线字段）。
+- 风险与回滚：E4 自动降级误伤人工签收 → 扫描只标 `stale` 不自动删除；新表迁移可安全保留。
+- **施工注记（2026-11-08，W2 首批：`node_evidence` 写入面）**：已落两条写方——① agent 回合完成（机器验收通过或仅剩 manual 待确认）写 E2 `session_turn`，`current_hash` 取**执行后项目工作区**的 `HEAD^{tree}` + 未提交文件 sha256 聚合值，取不到指纹则不写（不写 null、不挪用别处哈希）；② 人工验收全部收口时写 E4 `human_confirm`，`current_hash` 对得上产物文件实际 sha256（单文件直接取该文件哈希；多文件取逐文件哈希清单的聚合值，逐文件 sha256 另落 `basis_ref_json`）。两条路径仍只经 `EvidenceService.create`；写入在 step/run 终态事务提交之后，失败只落 `map_migration_reports`（`kind='integrity_check'`、`stage='evidence_write:<stepId>'`）诊断，不回退已完成的 step，因此**不新增表/列/索引，`CURRENT_SCHEMA_VERSION` 仍为 35**。
+- **与设计的两处差异（按代码事实记录）**：① §3.7.1 要求 agent 候选经 `evidence_suggestions` 接受后转 `node_evidence`，但该表尚未建且代码矩阵拒绝 `actor='agent'` 直写 E2——本批暂由编排层以 `actor='system'` 写 E2，`ref_json` 保留 `sessionId/turnId/adapter` 溯源，待 suggestions 表落地后改回“建议→接受”；② 本文档所称“E4 禁止代码 hash”在代码里仅指 `code_version`，`current_hash` 不在 E4 的禁止列内，故 E4 写产物哈希不违反约束。覆盖条目 G3-10/G5-3 **仍为「已批准未实施」**（E1 写通道、建议与复扫均未建，不按整体升格）。
+
+### W3 执行守卫与入口
+- 覆盖条目：G3-4 `[批准]` `priority DESC`、G3-5 `[批准]` 存量自由文本 acceptance、G3-6～G3-9 `[批准]` 超时预算、G3-1/2/3 `[建议]` Tier1/跨进程写闸/renderer 入口。
+- 目标：调度有优先级；跨进程不双写；预算键可配置且被消费。
+- 涉及文件与数据/接口变更：`src/main/map/work-execution-service.ts`、`src/main/map/work-item-service.ts`、`src/main/agent/agent-manager.ts`、`src/shared/types/agent-runtime.ts`；`work_items` 加 `priority`（可空、不进 requiredColumns）；`agent.timeouts` 增加 `stepMs/taskMs/sendWaitMs`。
+- 实施步骤：① 迁移加列并按 `priority DESC, created_at` 排序；② 迁移存量 acceptance 为结构化 `items_json`；③ 预算键接入 `work-execution-service` 与 subagent；④ 跨进程写闸用项目级锁文件；⑤ renderer 入口单独立项。
+- 验收标准：优先级排序用例通过；预算到期产生 `timeout` 终态；跨进程第二个写请求被拒；存量 acceptance 不再出现“不可执行”。
+- 依赖与建议顺序：W3 可在 W1 之后独立推进；Tier1/跨进程/入口建议放到 L3。
+- 风险与回滚：改排序影响现有队列 → 加索引后灰度；加列不重建表。
+
+### W4 测试体系补全
+- 覆盖条目：G4-6 `[批准]` allow-list harness、G4-7 `[批准]` P1–P9 脚本、G4-8 `[批准]` P6 并行验证、G4-9 `[批准]` CI vitest、G2-11/12/13 `[建议]` 流程测试最小版/定向重测/published 软阻断。
+- 目标：测试资产从“单节点可执行”升级到“流程可验证”，迁移验收可自动跑。
+- 涉及文件与数据/接口变更：`src/main/map/test-executor.ts`、`src/main/map/test-plan-service.ts`、`src/main/map/flow-test-service.ts`（新增）、`tests/migration/*`、`.github/workflows/ci.yml`。
+- 实施步骤：① P1–P9 逐条脚本化并接入 CI；② 补 `vitest` job；③ 流程测试最小版：框选→拓扑→verify+shell→`test_report`；④ 定向重测按失败用例集合重跑；⑤ published 软阻断读取 `has_pass_evidence`。
+- 验收标准：CI 上 P1–P9 全绿；流程测试能产出 `test_report`；定向重测只跑受影响用例；无通过证据的 published 节点出现阻断徽标。
+- 依赖与建议顺序：P1–P9/CI 先做；流程测试与定向重测属 L3-a，本期只做设计确认。
+- 风险与回滚：CI 增加单测可能暴露存量失败 → 先以 `continue-on-error` 观测一周再卡门。
+
+### W5 Agent M2 核心
+- 覆盖条目：G6-1 `[批准]` M2 六项、G6-2 `[批准]` 50ms 批写、G6-3 `[批准]` 快照写入、G6-4 `[批准]` 三未建文件、G6-11～G6-16 `[批准]` U1–U9/R3/打包/token/OpenCode/Codex、G6-18 `[批准]` C13b。
+- 目标：把 runtime 从“可用”推到“可恢复、可观测、可打包”。
+- 涉及文件与数据/接口变更：`src/main/agent/runtime/` 下新增 `executors/acp-executor.ts`、`startup-reconciler.ts`、`locks/workspace-lease.ts`；删除 `request-queue.ts`；事件写入批处理；`agent_snapshots` 增加生产写入方。
+- 实施步骤：① 先补 startup-reconciler 与 lease；② 事件写 50ms 批处理并加 flush-on-exit；③ 快照写入/读取；④ chat 路径迁入 runtime；⑤ 删 RequestQueue；⑥ 评测 harness；⑦ 打包与 Codex/OpenCode 真机矩阵。
+- 验收标准：崩溃恢复只依赖事件回放且可验证；批写不丢事件；快照可恢复一个 turn；打包后三后端可启动；U1–U9 有实测记录。
+- 依赖与建议顺序：W5 与 W1 独立，建议在 W8 审批覆盖之前做。
+- 风险与回滚：批写引入丢失窗口 → 保留同步 flush；删 RequestQueue 前先 grep 引用。
+
+### W6 Agent 恢复与旧路径
+- 覆盖条目：G6-5 `[批准]` unattended 无调用方、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[批准]` 旧路径无 turn 时间线。
+- 目标：无人值守分支可达；残留进程风险可解释；旧路径审计不断链。
+- 涉及文件与数据/接口变更：`src/main/agent/agent-manager.ts`、`src/main/adapters/*`、`src/main/agent/runtime/approval/*`；`residual_risk` 展示字段。
+- 实施步骤：① 为 unattended 增加真实调用方或明确删除分支；② Codex 旧路径记录 pid/pgid/startedAt；③ 接线 `onBashPolicy`；④ 旧路径补 turn 开始/结束事件。
+- 验收标准：unattended 路径有入口测试；Codex 残留会话 `residual_risk` 与 UI 一致；legacy 工具调用有审批记录；旧路径时间线可查。
+- 依赖与建议顺序：依赖 W5 的 runtime 事件模型。
+- 风险与回滚：删除 unattended 分支可能影响未来需求 → 先标“未启用”并加 TODO 链接。
+
+### W7 审批覆盖扩展
+- 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[批准]` MCP 写工具、G7-6 `[批准]` 未知键 ask。
+- 目标：所有写路径在“执行前”被拦截；无法拦截的后端显式降级。
+- 涉及文件与数据/接口变更：`src/main/agent/runtime/approval/`、`src/main/adapters/codex.ts`、`opencode.ts`、`src/main/agent/mcp/*`；能力位 `approval` 与 UI 文案。
+- 实施步骤：① MCP 写工具登记 D1；② Codex/OpenCode 接入 gateway；③ 未知配置键 ask；④ 覆盖矩阵测试。
+- 验收标准：三后端写工具都产生 `agent_approvals`；无审批后端 UI 显示“不支持写前拦截”；未知键不静默放行。
+- 依赖与建议顺序：依赖 W5 的 runtime；工作量 3–5 人日（Codex）+2–4 人日（OpenCode）。
+- 风险与回滚：接入 gateway 可能改变现有行为 → 用能力位开关，默认保持现状。
+
+### W8 沙箱 C3（仅建议，暂不施工）
+- 覆盖条目：G7-7 `[建议]` C3 exec 面未收敛、G7-8 `[建议]` 非 Claude 裸 spawn、G6-17 `[建议]` 同 uid 不在防御范围。
+- 目标：把“已知风险 + 暂不处理”固化为可检索的风险登记，不伪装成已解决。
+- 涉及文件与数据/接口变更：无代码变更；`docs/architecture/agent-architecture.md` §17.6 风险条目。
+- 实施步骤：保持现状，发布前检查单引用。
+- 验收标准：文档与 UI 均不声称“沙箱已收敛”。
+- 依赖与建议顺序：待产品决定是否投入。
+- 风险与回滚：不改代码即无回滚风险。
+
+### W9 DAG 并行与确认点（L3）
+- 覆盖条目：G2-8 `[建议]` WaveExecutor、G2-9 `[建议]` 黑板/fanout、G2-10 `[建议]` C1–C4、G2-17 `[建议]` 多 Agent、G2-18 `[建议]` 完整步状态机、G8-3 `[建议]` C1–C4 渲染、G8-5 `[建议]` 任务卡深度。
+- 目标：从串行多步升级为受控并行。
+- 涉及文件与数据/接口变更：新增 `wave-executor.ts`、`mediated-blackboard.ts`；`work_steps` 状态机扩展；渲染层新增确认点组件。
+- 实施步骤：① DAG 环检测；② Wave 调度；③ 黑板读写契约；④ 确认点 UI；⑤ 多 Agent 路由。
+- 验收标准：并行写同一节点被拒；fanout 结果可聚合；确认点可退回。
+- 依赖与建议顺序：必须在 W7 审批覆盖完成后。
+- 风险与回滚：并行引入竞态 → 默认关闭，按项目开启。
+
+### W10 进化三层 / 提案 / Tier2（L3）
+- 覆盖条目：G1-14 `[建议]` 提案机制、G2-1 `[建议]` 五通道/模式库、G2-2 `[建议]` Layer1、G2-3 `[建议]` `memory_hits`、G2-4 `[建议]` Layer2、G2-5 `[建议]` Layer3、G2-6 `[建议]` 提案细节、G2-7 `[建议]` Tier2、G2-16 `[建议]` 离线校准、G2-19 `[建议]` 提案 UI、G8-4 `[建议]` 提案 UI、G11-10 `[建议]` tree-hash。
+- 目标：把“编排能力随项目进化”做成可审计的三层机制。
+- 涉及文件与数据/接口变更：`memory_hits`、`task_embedding` 表；ContextBundle；提案表与 UI；Tier2 路由。
+- 实施步骤：① 记录层先落 `memory_hits`；② 归因层接 `node_session_links`；③ 策略层做 embedding + 相似度；④ 提案生成/采纳/撤销；⑤ Tier2 升格；⑥ 每 20 run/2 周离线校准。
+- 验收标准：每条建议可追溯来源；提案不直接改图；Tier2 只在能力探测通过后启用。
+- 依赖与建议顺序：逐层上线，Layer1 可先做；Tier2 需先解决前置冲突。
+- 风险与回滚：embedding 成本与误召回 → 默认关闭，按项目开启。
+
+### W11 迁移与运维
+- 覆盖条目：G9-8 `[建议]` RequestQueue 删除、G9-10 `[建议]` worktree 清理、G9-11 `[批准]` schema 版本漂移、G9-13 `[批准]` Windows 路径、G2-14 `[建议]` `v_plan_deviations_file_domain`、G2-15 `[建议]` dirty diff。
+- 目标：清理死代码、补齐运维任务、修正文档版本口径。
+- 涉及文件与数据/接口变更：删除 `request-queue.ts`；新增 worktree 清理任务；`database.ts` 版本注释；视图 `v_plan_deviations_file_domain`。
+- 实施步骤：① 文档版本改 35；② 删死代码；③ 建视图；④ 加清理任务；⑤ Windows 仅登记不实现。
+- 验收标准：`git grep request-queue` 无生产引用；视图可查；清理任务有单测。
+- 依赖与建议顺序：先做文档修正与死代码清理；视图/dirty diff 属 L3。
+- 风险与回滚：删代码前确认无外部引用。
+
+### W12 文档与验收补全
+- 覆盖条目：G10-1 `[批准]` §13 审计表收尾（102 行 / 50 节缺细节）、G10-2 `[批准]` A1/A2/A9 用例、G10-3 `[批准]` A3/A4 边界。
+- 目标：把“有框架缺细节”的章节逐条补齐到可施工/可验收。
+- 涉及文件与数据/接口变更：仅文档与测试用例；`docs/architecture/session-map-blueprint.md` 各节。
+- 实施步骤：① 按 §13 表逐节补行为契约；② A1/A2/A9 转验收用例；③ A3/A4 落超时边界测试。
+- 验收标准：§13 的 102 行（含更正后 50 节“有框架缺细节”）每行有“可施工/已实施/仅建议”终态；A1–A9 均有对应用例或明确不适用。
+- 依赖与建议顺序：与 W4 的 P1–P9 联动。
+- 风险与回滚：纯文档，无代码风险。
+
+> **施工顺序建议**：W11（迁移/死代码/版本口径）+ W12（文档与验收）→ W4（P1–P9/CI）→ W1 → W2 → W3 → W5 → W6 → W7 → W11 视图项；L3 的 W9/W10 在 W7（审批覆盖）完成后另立里程碑。
+
+## I.4 裁决记录（17 条，全部已裁决）
+
+> **编号说明**：本表 `D-01…D-17`，与 §14.8 的 gate 裁决 `D1–D14` **不是同一体系**，引用时须带连字符。
+> **裁决时间**：2026-11-08（Asia/Shanghai）。**依据**：本次会话用户明确批准 D-01…D-17 全部按「建议与理由」逐条通过，未改动任何选项。
+> **状态口径**：17 条一律为 **已裁决（采纳 X）**；裁决只定方向，**不构成施工授权**——施工状态仍为「未授权」，不得据此改成「已批准未实施」。原选项与代价全部保留，供以后回看“为什么这么定”。
+> **速览表**（“建议选项”列即最终裁决；详细论证见下方 D-01…D-17）：
+
+| 决策号 | 原编号 | 议题 | 裁决结果（2026-11-08） | 采纳代价（估算） |
+|---|---|---|---|---|
+| D-01 | G1-12 / G9-9 / G11-11 | Yjs 是否移除 | **B** 保持只读 + 默认不启动（C 留 L3） | 0 人日（现期） |
+| D-02 | G1-15 | S1 是否有 `preview` 通道 | **先核实；无则 B 不做** | 0–4 人日 |
+| D-03 | G3-11 | L2 通道（plan/test/evidence:suggestion） | **A** 本期注册，排 W4 之后 | 2–3 人日 |
+| D-04 | G3-13 | WorkScheduler 文档与代码不一致 | **A** 改文档 | 0.5 人日 |
+| D-05 | G4-4 | Bug 闭环边界 | **B** 仅建 bug + 链接 | 2–3 人日 |
+| D-06 | G4-5 / G8-8 | 手工 E4 签收入口 | **A** 复用验收确认 UI | 2 人日 |
+| D-07 | G6-8 / G11-5 | 排队 `queueDepth=1` | **A** 维持 fail-fast | 0 人日 |
+| D-08 | G6-9 / G11-6 | Codex 默认 `runStreamed` | **A** 仅 Codex 默认流式 | 2–3 人日 |
+| D-09 | G6-10 / G11-8 | 长尾 CLI 工具事件 | **B** 不投入 | 0 人日 |
+| D-10 | G10-5 | L2 审查 P2 四项 | **B** 重新审查 | 3–5 人日 |
+| D-11 | G10-6 | Zcode 两项待裁决 | **逐项拍板，不打包** | 0–2 人日 |
+| D-12 | G10-10 | agent §13 五项产品决策 | **批量收口**（成本只记账、长尾不投入） | 0–3 人日 |
+| D-13 | G11-1 | D1 计划确认强度 | **C** 仅高风险步确认 | 3–4 人日 |
+| D-14 | G11-2 | D4 流程节点折叠 | **A** 折叠 | 2–3 人日 |
+| D-15 | G11-3 | `agent.timeouts.turnMs` 配置键 | **A** 设键 | 1–2 人日 |
+| D-16 | G11-4 | 两层 partial 截断是否统一 | **A** 统一 16KB | 0.5 人日 |
+| D-17 | G11-12 | Tier2 升格前置冲突 | **A** 先解冲突再升格 | 5–8 人日 |
+
+### I.4.1 D-01 · Yjs 是否移除（G1-12 / G9-9 / G11-11）— **已裁决（采纳 B）**
+
+- **问题重述**：`cc749ce` 已把 Yjs 改成单向只读、`987c226` 已默认不监听 1236，写回危险已在代码层消除；但 doc 池、冲突子系统、依赖与 9 个测试文件仍在维护，既有"双写"误解与死代码成本，而彻底拆除又牵动快照数据与 P6 验收。
+- **选项与代价**：A 立即拆除——8–12 人日（估算），改 9 个测试文件/119 个 `it(`、重做 P6、lockfile 与打包基线，风险高、返工面大；B 保持"只读 + 默认不启动"——0 人日，风险低，但保留死代码与依赖；C 冻结到 L3 再拆——现期 0 人日，后续一次性 8–12 人日。
+- **与现有代码/设计的兼容性**：B 与当前代码完全一致（readonly-sync 测试即其验收）；A 必须同步改 §2.8 九类清单、§8.11 P6 与 `agent-architecture.md`；C 保留 §2.8 runbook 不动。
+- **建议与理由**：**选 B**。拆除收益（少量依赖与死代码）低于风险（快照处置、测试重写、P6 验收重做）；C 作为 L3 的正式入口，待快照迁移方案齐备再启动。
+- **不裁决会怎样**：§2.8 的九类清单与 runbook 无执行授权，L3 无法排期；但本期 L1/L2 不受影响。
+
+### I.4.2 D-02 · S1 是否有 `preview` 通道（G1-15）— **已裁决（先核实；无则 B）**
+
+- **问题重述**：导入前是否需要"只读预览（将导入多少节点/命中哪些查重）"的独立通道；现有代码未见独立 preview 入口，若已由导入流程覆盖则是伪需求。
+- **选项与代价**：A 补只读预览——3–4 人日（估算），需新增 IPC + 只读汇总查询 + UI 空态；B 不做——0 人日，用户只能"导入后看结果"，失败需回滚。
+- **与现有代码/设计的兼容性**：A 复用 `import-dedup.ts` 的判定顺序（三表、N=12 抽样）即可，不改写查重逻辑；B 与现流程完全一致。
+- **建议与理由**：**先核实再定**：grep 确认无独立 preview 后选 B。查重结果已在导入报告里可见，独立预览属体验优化而非验收必需。
+- **不裁决会怎样**：S1 验收清单少一项"导入前可预知"的判据，验收时会出现口径分歧。
+
+### I.4.3 D-03 · L2 通道未注册（G3-11）— **已裁决（采纳 A，排 W4 之后）**
+
+- **问题重述**：`src/main/ipc/map.ts:6-7` 只注册只读通道，`plan/test/evidence:suggestion` 写通道未注册，导致 TestExecutor 与建议机制无法从 renderer 验收。
+- **选项与代价**：A 本期注册——2–3 人日（估算），含归属校验、错误码、幂等键；B 维持只读——0 人日，但 W2/W4 的验收只能走内部调用。
+- **与现有代码/设计的兼容性**：A 必须与 `ApprovalGateway`、`subject ownership` 过滤同批落地（§6.8），否则重开跨项目越权面；B 不影响既有只读 UI。
+- **建议与理由**：**选 A，但排在 W4（测试体系）之后**。没有写通道，测试计划与建议采纳无法形成端到端闭环，验收只能靠单测。
+- **不裁决会怎样**：W2（证据闭环）与 W4（测试体系）长期停在"服务层可用、界面不可用"，验收口径分裂。
+
+### I.4.4 D-04 · WorkScheduler 文档滞后（G3-13）— **已裁决（采纳 A）**
+
+- **问题重述**：文档仍描述"无 GateRecheck"，而 `b6f3735` 已把 `GateRecheck` 注入执行装配；是文档滞后还是设计未落地，影响后续读者判断。
+- **选项与代价**：A 改文档——0.5 人日（估算），零风险；B 改代码回退 GateRecheck——3–5 人日且引入执行回归，不可取。
+- **与现有代码/设计的兼容性**：A 与代码事实一致（`work-execution-service.ts:463`）；B 与 §14 已实施结论冲突。
+- **建议与理由**：**选 A**。属文档滞后，改文档即可，不应为迁就旧描述回退已实施能力。
+- **不裁决会怎样**：后续施工会按旧文档重复实现 gate，产生第二套判定。
+
+### I.4.5 D-05 · Bug 闭环边界（G4-4）— **已裁决（采纳 B）**
+
+- **问题重述**：测试失败后是否自动"建 bug → 链接 → 修复 → 定向重测"全链；全链涉及测试资产、worktree 与 E3 回写，本期做会拉长 L2。
+- **选项与代价**：A 全自动全链——5–8 人日（估算），测试与证据链路全动，返工风险高；B 仅建 bug 节点与链接——2–3 人日，定向重测留 L3。
+- **与现有代码/设计的兼容性**：B 只需扩展 `test_results → bug_nodes` 映射与 `metadata`，不动 TestExecutor；A 需改 `test_plan_items.selected_by='targeted'` 与 worktree 清理。
+- **建议与理由**：**选 B**。先让失败可见、可追溯；定向重测依赖并行与排队口径（D-07/D-17），不是本期能定的事。
+- **不裁决会怎样**：**阻塞 Part II 的 II-13（G2-11）、II-14（G2-12）**，流程级测试与定向重测无法定稿；bug 闭环在"只记失败"处停住。
+
+### I.4.6 D-06 · 手工 E4 签收入口（G4-5 / G8-8）— **已裁决（采纳 A）**
+
+- **问题重述**：人工验收型测试需要 E4 签收，但当前只有验收确认 UI；再建独立表单会产生两套"确认"语义与两处状态写方。
+- **选项与代价**：A 复用验收确认 UI——2 人日（估算），扩字段即可；B 独立 E4 表单——4–6 人日，双入口双维护。
+- **与现有代码/设计的兼容性**：A 与 `acceptance-executor` / `NodeMapPanel` 的确认块兼容，签名与理由字段可复用；B 需新增审批 subject 与权限。
+- **建议与理由**：**选 A**。确认语义必须单一写方，否则 C4 与 E4 会出现"同一事实两种签收"。
+- **不裁决会怎样**：手工用例只能停在 `manual`，E4 证据无法从 UI 产生，W2 证据闭环缺一环。
+
+### I.4.7 D-07 · 排队 `queueDepth=1`（G6-8 / G11-5）— **已裁决（采纳 A：维持 fail-fast）**
+
+- **问题重述**：并发 turn 目前 fail-fast（`SESSION_BUSY`/`NODE_BUSY`）；是否引入队列把第二个 turn 排住，决定长 turn 期间的体验与可观测性。
+- **选项与代价**：A 维持 fail-fast——0 人日；B 引入 `queueDepth=1`——4–6 人日（估算），会掩盖长 turn 占用，死锁与孤儿风险上升。
+- **与现有代码/设计的兼容性**：A 与 `agent-architecture.md` §0.7 一致；B 需改 `AgentManager` 门面、IPC 与 UI 排队态，且与 §5.9.3 写闸叠加重叠。
+- **建议与理由**：**选 A**。排队的收益是"不报错"，代价是"看不出卡住"；当前更需要可观测而非静默等待。
+- **不裁决会怎样**：**阻塞 II-10（G2-8 WaveExecutor）、II-19（G2-17 多 Agent）、II-32（G9-8 RequestQueue 删除）**；并发策略与死代码去留都悬空。
+
+### I.4.8 D-08 · Codex 默认 `runStreamed`（G6-9 / G11-6）— **已裁决（采纳 A）**
+
+- **问题重述**：Codex SDK 支持流式与阻塞两种模式；默认值决定取消粒度与事件可见性，也影响"完成后 ~10s 关机开销"的处理。
+- **选项与代价**：A 默认流式（仅 Codex）——2–3 人日（估算）+ 真机回归；B 默认阻塞——0 人日，取消与观测弱，且需等流结束。
+- **与现有代码/设计的兼容性**：A 与 `agent-architecture.md` §0.9"完成信号以 `turn.completed` 为准"一致；B 与既有适配器默认一致，但违背观测目标。
+- **建议与理由**：**选 A（仅 Codex，保留阻塞开关）**。流式是取消与审计的前提，阻塞只作为兼容开关保留。
+- **不裁决会怎样**：Codex 路径的取消行为与事件粒度无定论，W6 的恢复与打包验收无法给出口径。
+
+### I.4.9 D-09 · 长尾 CLI 工具事件（G6-10 / G11-8）— **已裁决（采纳 B）**
+
+- **问题重述**：是否为使用频率极低的 CLI 适配器补齐工具级事件；补齐后可观测性提升，但维护面与适配器矩阵同步扩大。
+- **选项与代价**：A 投入——6–10 人日（估算），每个适配器单独回归；B 不投入——0 人日，显式声明 `toolEvents='none'`。
+- **与现有代码/设计的兼容性**：B 与能力矩阵（G6-20）兼容，只需在矩阵标注；A 需扩 `AgentCapabilities` 与事件归一化。
+- **建议与理由**：**选 B**。长尾适配器的工具事件收益低、维护成本高；用显式能力位说真话，比补齐更稳。
+- **不裁决会怎样**：能力矩阵留空档，UI 无法判断"没有事件"还是"不支持"。
+
+### I.4.10 D-10 · L2 审查 P2 四项（G10-5）— **已裁决（采纳 B）**
+
+- **问题重述**：上一轮 L2 审查的 P2 四项原文清单已不可得，只剩结论；要么找回原始清单，要么重新审查，否则这四项永远无法核对。
+- **选项与代价**：A 找回原始清单——依赖旧会话/附件，可能不可得，成本不确定；B 重新审查——3–5 人日（估算），结论可能与前次不一致。
+- **与现有代码/设计的兼容性**：B 只读复核，不动设计；A 若找回，需逐条比对当前代码。
+- **建议与理由**：**选 B**。旧清单已不可得，重新审查虽可能得出不同结论，但可复核、可留痕，优于引用不可验证的旧结论。
+- **不裁决会怎样**：§13 审计表中 4 行永久标"不可核对"，定稿的可信度打折。
+
+### I.4.11 D-11 · Zcode 两项（G10-6）— **已裁决（逐项拍板，不打包）**
+
+- **问题重述**：外部 Zcode v1.2 遗留两项（§12.5 第 6、7 项）需产品逐项拍板；打包默认会掩盖分歧。
+- **选项与代价**：按 §12.5 逐项拍板——每项 0–2 人日（估算）；或整体不裁决——0 人日，但两项长期悬空。
+- **与现有代码/设计的兼容性**：两项均为设计层选择，不涉及已实施代码。
+- **建议与理由**：**逐项拍板，不打包**。两项性质不同，打包会让其中一项被另一项的结论带走。
+- **不裁决会怎样**：L3 保留区两处标注长期为"待定"，无法进入施工排期。
+
+### I.4.12 D-12 · agent §13 五项产品决策（G10-10）— **已裁决（批量收口）**
+
+- **问题重述**：`agent-architecture.md` §13 的五项（排队、审批超时时长、Codex `runStreamed`、成本上限口径、长尾 CLI）长期未拍板，其中三项已被 D-07/D-08/D-09 覆盖。
+- **选项与代价**：批量拍板——0–3 人日（估算），前三项沿用本表建议；成本上限建议"只记账、不自动熔断"；或逐项再议——0 人日但周期拉长。
+- **与现有代码/设计的兼容性**：与 `agent-architecture.md` §13 完全对齐；成本只记账已有 G11-7 支撑。
+- **建议与理由**：**批量拍板**，但明确"成本只记账"与"长尾不投入"两句为最终口径，避免以后再开。
+- **不裁决会怎样**：**阻塞 II-07（G2-5 Layer3 embedding）**——embedding 是否引入外部成本取决于成本口径；同时 §13 的开放项无法关闭。
+
+### I.4.13 D-13 · D1 计划确认强度（G11-1）— **已裁决（采纳 C）**
+
+- **问题重述**：计划确认是"每计划一次"（现状）、"每步确认"还是"仅高风险步确认"，决定 C1–C4 的交互密度与误操作面。
+- **选项与代价**：A 每计划一次——0 人日，风险最高（错误计划一次放行多步）；B 每步确认——6–8 人日（估算），吞吐显著下降；C 仅高风险步确认——3–4 人日，需定义"高风险"判据（G4 规模/写域/不可逆）。
+- **与现有代码/设计的兼容性**：A 即当前实现；C 需在 `work_steps` 增 `risk_level` 派生（不改表结构，可由 gate 结果计算）。
+- **建议与理由**：**选 C**。在安全与吞吐之间取中间值；"高风险"有现成判据（G4 阈值、跨图、不可逆迁移），不需要新概念。
+- **不裁决会怎样**：**阻塞 II-12（G2-10 C1–C4）与 II-29（G8-3 C1–C4 渲染）**；确认 UI 无法定交互密度。
+
+### I.4.14 D-14 · D4 流程节点折叠（G11-2）— **已裁决（采纳 A）**
+
+- **问题重述**：流程节点在画布上是否折叠为聚合块，决定大图可读性与任务卡层级展示。
+- **选项与代价**：A 折叠——2–3 人日（估算），需聚合视图与展开态；B 不折叠——0 人日，大图拥挤、任务卡平铺。
+- **与现有代码/设计的兼容性**：A 只改渲染层派生，不动 `nodes` 表；与 `NodeMapPanel` 兼容。
+- **建议与理由**：**选 A**。折叠是纯展示派生，不改数据；大图可读性收益明确。
+- **不裁决会怎样**：**阻塞 II-31（G8-5 任务卡深度）**；任务卡与画布的层级口径无法统一。
+
+### I.4.15 D-15 · `agent.timeouts.turnMs` 配置键（G11-3）— **已裁决（采纳 A）**
+
+- **问题重述**：上一轮裁决曾定"配置键"，但代码事实是常量且无配置面；是补配置键，还是维持常量。
+- **选项与代价**：A 设键——1–2 人日（估算），与 `stepMs/taskMs/sendWaitMs` 统一口径；B 保持常量——0 人日，分层默认无法按项目调整。
+- **与现有代码/设计的兼容性**：A 需新增配置读取与默认值合并，不改变 `deadlineMs=0` 语义；B 与现状一致。
+- **建议与理由**：**选 A**。三个预算键已规划，`turnMs` 单独留常量会造成第二套口径。
+- **不裁决会怎样**：W3 的超时预算实现只能硬编码，`stepMs/taskMs/sendWaitMs` 的消费点也无统一来源。
+
+### I.4.16 D-16 · 两层 partial 截断（G11-4）— **已裁决（采纳 A）**
+
+- **问题重述**：F2 契约层 64KB 与 adapter 层 10KB 单条截断并存，是否统一。
+- **选项与代价**：A 统一 16KB——0.5 人日（估算），与既有块上限一致；B 统一 64KB——0.5 人日，单条会被放大；C 保持两层——0 人日，行为契约留两套数。
+- **与现有代码/设计的兼容性**：A 与 `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000` 接近，改动小；B 需同步 adapter 常量。
+- **建议与理由**：**选 A**。16KB 与块上限同量级，减少"单条与总量"两套口径。
+- **不裁决会怎样**：§8.15 的行文与实现继续分叉，验收时无法给唯一阈值。
+
+### I.4.17 D-17 · Tier2 升格前置冲突（G11-12）— **已裁决（采纳 A）**
+
+- **问题重述**：Codex 等 Tier2 后端缺少 `approval_callback`，若要升格参与写编排，必须先解决"无写前审批"与路由冲突；直接升格等于开审批后门。
+- **选项与代价**：A 先解冲突再升格——5–8 人日（估算），需补审批桥与降级路径；B 直接升格——2–3 人日，安全性倒退、返工风险高。
+- **与现有代码/设计的兼容性**：A 与 §5.9.5/§5.9.10"写路径仅 Tier 1"一致；B 与该纪律直接冲突。
+- **建议与理由**：**选 A**。审批是硬约束，不能为能力覆盖让步；先补桥再接升格。
+- **不裁决会怎样**：**阻塞 II-09（G2-7 Tier2）与 II-22（G3-1 Tier1 探测）**；能力探测矩阵无法定版。
+
+
+## I.5 ZCode（v1.2.3）设计吸收清单
+
+> 说明：上传件与仓库件逐字节相同，故“吸收”即把 v1.2.3 中比本文更细、可施工的部分落到本文编号体系。**不整段搬运**，只落接口/算法/状态机/验收口径。
+
+| 来源（map-orchestration v1.2.3） | 内容 | 落点 | 判定 |
+|---|---|---|---|
+| §3.1 R9-6 DeadlineReaper 规格 | 5s 扫描、部分索引、waiting_approval 跳过、CAS 防重复杀 | 本文 §8.15 / §12.9 | **采纳**：已有 F1–F3 实施记录，补为施工口径 |
+| §3.1 R9-10 迁移完整性 | `CURRENT_SCHEMA_VERSION` 递增 + checksum 再生 | 本文 §8.2 / I.3 W11 | **采纳**：列为发布检查单 |
+| §4.1 五通道/ContextBundle | `类型 × 执行器 × 作用域 × ContextBundle × IO 契约` | 本文 §5.9.8（L3） | **采纳为 L3 设计**：不进入本期 |
+| §4.1 黑板/Phase B/fanout | 黑板数据结构与 Phase B 接口 | 本文 §5.9.8.1 | **采纳为 L3 设计** |
+| §4.2 进化三层 | `memory_hits`、`node_session_links` 归因、`task_embedding` | 本文 §4.2（L3） | **采纳为 L3 设计**：表随层动工 |
+| §4.3 提案机制 | 生成/冲突串行/降权 | 本文 §2.7（L3） | **采纳为 L3 设计** |
+| §4.4 Tier2 估算 | codex 升格前置与成本 | 本文 §5.9.5（L3） | **采纳估算，不采纳先升格** |
+| §4.5 Yjs 拆除 runbook | 备份/快照/表清单/回滚 | 本文 §2.8 | **采纳为 runbook**；**D-01 已裁决：保持只读 + 默认不启动，不执行拆除** |
+| §7 L3-a～L3-g 保留区 | 流程测试、DAG、UI、证据面等 | Part I I.1.3 | **采纳为“仅建议”总表** |
+| §6 勘误/行号校正 | 行数、版本、总账 | Part I I.1/I.2 | **采纳**：本轮已改 |
+| “可复现 dirty tree-hash” | 另立等级 | — | **不采纳为主路径**：成本高、与 E3 现有 commit+dirty 重叠 |
+| 立即 Yjs 拆除 | — | — | **不采纳**：见 G1-12 |
+| 立即引入排队 | — | — | **不采纳**：见 G6-8 |
+
+## I.6 定稿自检
+
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4895**（2026-11-08 W1 收口后实测；本次改动后以复核值为准）。
+- schema 复核：`src/main/database.ts:746` `CURRENT_SCHEMA_VERSION = 35`。
+- “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**45 已实施 / 40 已批准未实施 / 34 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口时 G1-5/6/7/8/13 由后者转入前者）。
+- v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**34 条状态词未变（仍为「仅建议」），17 条未升格为「已批准未实施」**。
+- 本次 v2.2 文档修订未改产品代码；W1（2026-11-08）改动产品代码但**未提交 git**。
+
+## I.7 裁决后建议施工顺序（按 W 包）
+
+> 口径：W 包对应 I.3 的 **40 条「已批准未实施」**，与 34 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1 已完成（2026-11-08），其 5 条已转入 I.2 已实施。
+
+| W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
+|---|---|---|---|---|
+| W1 地图对象与状态回写 | G1-5/6/7/8/13、G1-11 | **已完成（2026-11-08）** | 无 | 5 条已转入 I.2；G1-11 维持仅建议 |
+| W3 执行守卫 | G3-4…G3-10 | **可立即开工** | 无（超时预算按 D-15 设键） | D-15 已裁决设配置键，配置层可先落 |
+| W4 测试体系 | G4-6…G4-9 | **可立即开工** | 无 | harness/CI 是 W2 与 W9 的验收前提 |
+| W12 文档验收 | G10-1/2/3/11 | **可立即开工** | 可与 W1 并行 | 纯文档与用例，D-10 已裁决重新审查 |
+| W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **部分开工** | 写通道依赖 D-03（排 W4 后） | 服务层可先做，`evidence:suggest/accept` 通道等 W4；2026-11-08 已落 E2 `session_turn` + E4 `human_confirm` 两条写方，suggestions/复扫/E1 通道未建 |
+| W5 Agent M2 | G6-1…G6-4 | **可开工** | 无 | M2 六项与 D-12 无关，独立推进 |
+| W6 Agent 恢复/旧路径 | G6-5/7/11…G6-16 | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上 |
+| W7 审批覆盖 | G7-1…G7-10 | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
+| W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |
+| W10 进化/提案/Tier2 | G1-14、G2-2…G2-7 | 依赖 W2 | W2；Tier2 按 D-17 先补审批桥；embedding 按 D-12 | 进化与提案都消费证据，Tier2 需桥 |
+| W11 迁移运维 | G9-11/13、G9-8 | 依赖 W1 | W1；RequestQueue 按 D-07 直接删 | 迁移漂移与清理建立在 W1 的稳定写回 |
+| W8 沙箱 C3 | G7-7/8（仅建议） | **不开工** | 待单独授权 | 属「仅建议」，本期无施工授权 |
+
+**建议顺序**：`W1 ∥ W3 ∥ W4 ∥ W12` → `W2`（通道等 W4）→ `W5` → `W6 ∥ W7` → `W9` → `W10` → `W11`。W8 及 34 条仅建议维持不动，除非另行授权。
+
+# Part II 仅建议项施工级设计（34 条）
+
+> **口径**：本部分把 I.1.3 的 34 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——34 条仍为仅建议。
+> **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
+
+| II | G | 主题 | 落点章节 | 阻塞 |
+|---|---|---|---|---|
+| II-01 | G1-11 | `agent_turns.node_id` 放宽 | §4.5 / §7.2 | — |
+| II-02 | G1-14 | 提案机制 | §2.7 | — |
+| II-03 | G2-1 | 五通道 / 模式库 | §5.9.8 | — |
+| II-04 | G2-2 | 进化 Layer1（记录） | §4.2 | — |
+| II-05 | G2-3 | `memory_hits` 表 | §4.2 | — |
+| II-06 | G2-4 | Layer2 归因 | §4.2 | — |
+| II-07 | G2-5 | Layer3 embedding | §4.2 | 已解除（D-12） |
+| II-08 | G2-6 | 提案细节 | §2.7 | — |
+| II-09 | G2-7 | Tier2 升格 | §5.9.5 | 已解除（D-17） |
+| II-10 | G2-8 | WaveExecutor | §5.5 | 已解除（D-07） |
+| II-11 | G2-9 | 黑板 / fanout | §5.9.8.1 | — |
+| II-12 | G2-10 | C1–C4 确认点 | §5.6 | 已解除（D-13） |
+| II-13 | G2-11 | 流程级测试最小版 | §6.6 | 已解除（D-05） |
+| II-14 | G2-12 | 定向重测 | §6.6 | 已解除（D-05：留 L3） |
+| II-15 | G2-13 | published 软阻断 | §6.6 / §14 | — |
+| II-16 | G2-14 | `v_plan_deviations_file_domain` | §5.7 | — |
+| II-17 | G2-15 | dirty diff | §4.6 | — |
+| II-18 | G2-16 | 离线校准 | §5.7 | — |
+| II-19 | G2-17 | 多 Agent 交互 | §5.9.8.1 | 已解除（D-07） |
+| II-20 | G2-18 | 完整步状态机 | §5.9.8 | — |
+| II-21 | G2-19 | 提案 UI | §9.4 | — |
+| II-22 | G3-1 | Tier1 探测 | §5.9.10 | 已解除（D-17） |
+| II-23 | G3-2 | 跨进程写闸 | §5.9.3 | — |
+| II-24 | G3-3 | renderer 执行入口 | §9.2 | 已解除（D-03） |
+| II-25 | G5-10 | 项目进度查询 | §3.6 | 已解除（D-03） |
+| II-26 | G6-17 | 同 uid 防御边界 | §6.5 / §10 | — |
+| II-27 | G7-7 | C3 exec 面 | §6.4 / §10 | — |
+| II-28 | G7-8 | 非 Claude 裸 spawn | §5.9.5 / §10 | — |
+| II-29 | G8-3 | C1–C4 渲染 | §9.4 | 已解除（D-13） |
+| II-30 | G8-4 | 提案 UI（渲染） | §9.4 | — |
+| II-31 | G8-5 | 任务卡深度 | §9.4 | 已解除（D-14） |
+| II-32 | G9-8 | RequestQueue 删除 | §4.5 | 已解除（D-07） |
+| II-33 | G9-10 | worktree 清理 | §8.10 | — |
+| II-34 | G11-10 | tree-hash 等级 | §3.2 | — |
+
+## II.1 地图本体与提案
+
+### II-01 · G1-11 `agent_turns.node_id` 放宽｜**仅建议**
+- **目标与不做后果**：允许"不挂节点"的 turn（自由会话、工具回合）正常落账，不为记账伪造伪节点；不做则每条 turn 必须造节点或干脆不记，污染图与时间线。
+- **数据/接口**：`agent_turns.node_id` 由 `NOT NULL` 改为可空（`schema.ts:90`），SQLite 重建表（v36，需 `_backup`）；新增部分索引 `idx_agent_turns_node ON agent_turns(node_id) WHERE node_id IS NOT NULL`；`node_session_links` 不改为可空。
+- **流程/状态机**：写入时只在 turn 绑定节点时填 `node_id`；解绑或自由会话写 `NULL`；恢复规划遇到 `NULL` 跳过节点级聚合，仅按会话回放。
+- **边界**：空串与 `NULL` 不等价，禁止写 `''`；所有节点聚合查询必须显式 `node_id IS NOT NULL`；D8 已取消伪节点，不新增映射表。
+- **验收**：无 `node_id` 的 turn 可插入并完成；节点时间线、`work_steps` 关联与崩溃恢复测试不变；迁移重入两次结果一致；`PRAGMA foreign_key_check` 为空。
+- **前置依赖与顺序**：依赖 W1 的 turn 写回稳定；在 W1 之后、W5 之前做。无裁决阻塞。
+- **成本**：≈1.5 人日（估算），主要是重建表与回归。
+
+### II-02 · G1-14 提案机制｜**仅建议**
+- **目标与不做后果**：产品图（online）变更以提案留痕、人工采纳，不让实现细节自动污染产品事实；不做则 dev→online 只能靠口头约定。
+- **数据/接口**：复用 `work_items`，新增 `metadata.proposal = {before, after, reason, evidence_refs, base_revision}`；新增只读视图 `v_online_proposals`；**不新增表**。
+- **流程/状态机**：`draft → awaiting_confirm → accepted(人编辑 online 后 done) / rejected(cancelled+理由)`；同一实体只允许一个 open 提案（部分唯一索引 `WHERE status IN ('awaiting_confirm','queued')`）；采纳幂等键 `lineage_id + revision`。
+- **边界**：提案不得自动应用、不得批量静默采纳、不做自动回滚（撤销=人工反向编辑）；`before/after` 超过 200KB 截断并标 `truncated`；`base_revision` 与 online 当前不一致 → 标 `stale`，需重提。
+- **验收**：提案全程不触发 online 图写；同实体第二个 open 提案被拒；驳回必带理由；`v_online_proposals` 只读。
+- **前置依赖与顺序**：II-08（提案细节）与 II-21/II-30（UI）在后；本身可先落服务层。
+- **成本**：≈3 人日（估算）。
+
+## II.2 多图编排、进化与计划
+
+### II-03 · G2-1 五通道 / 模式库｜**仅建议**
+- **目标与不做后果**：把"任务类型 × 执行器 × 作用域 × ContextBundle × IO 契约"固化成可路由的通道定义；不做则每次靠人拍脑袋选执行器，无法审计与复现。
+- **数据/接口**：模式定义放在代码常量 `mode-registry.ts`（不建表）；`routing_decisions` 增加 `mode_id`（可空列，不进 `requiredColumns`）；读取接口 `listModes()` 只读。
+- **流程/状态机**：任务 → 确定性规则匹配模式 → 能力票校验（II-22）→ 命中即写 `routing_decisions(mode_id, policy)`；无匹配 → `TIER_UNSUPPORTED`，不静默降级。
+- **边界**：模式上限 32 条；未知/非法 `mode_id` fail-closed；运行期不可改模式定义（改则重启生效）；模式不得包含写步骤以外的隐式动作。
+- **验收**：每条 run 的 `routing_decisions` 均有 `mode_id`；删除某模式后历史行仍可读；未知模式请求返回结构化错误而非默认 Tier1。
+- **前置依赖与顺序**：与 II-22 能力探测同批；先常量后落库。
+- **成本**：≈4 人日（估算）。
+
+### II-04 · G2-2 进化 Layer1（记录层）｜**仅建议**
+- **目标与不做后果**：记录"哪类任务/上下文/步骤组合有效"，为归因与策略层提供数据；不做则 Layer2/3 无输入，进化机制空转。
+- **数据/接口**：写 `memory_hits`（见 II-05）；触发点挂在 `recomputeAfterRun(runId)` 之后，只写引用不写全文。
+- **流程/状态机**：run 终态 → 采集（step 结果、证据等级、偏差）→ 幂等写；采集失败只写 `map_migration_reports(kind='memory')`，不回滚 run。
+- **边界**：每 run 最多 50 条 hit；不跨项目聚合；保留 180 天；不写用户原文与密钥。
+- **验收**：同一 run 重算两次不重复写；任意 hit 可回溯到 `run/step/evidence`；失败不改变 run 终态。
+- **前置依赖与顺序**：II-05 建表先行；Layer1 可独立上线，不依赖裁决。
+- **成本**：≈2 人日（估算）。
+
+### II-05 · G2-3 `memory_hits` 表｜**仅建议**
+- **目标与不做后果**：给记录层一个稳定、可查询、可裁剪的落地表；不做则命中记录散落日志，无法归因。
+- **数据/接口**：`memory_hits(id, project_path, graph_id, node_id, work_item_id, run_id, step_id, hit_kind, source_ref, score, created_at)`；索引 `(project_path, created_at)`、`(run_id, hit_kind, source_ref)` 唯一。
+- **流程/状态机**：只插入不改写；`hit_kind ∈ ('context','step','evidence','deviation')`；去重键即唯一索引。
+- **边界**：`score` 0–1；`source_ref` 必填且为稳定键（表:id）；单项目上限 20 万行，超限按最旧滚动删除；保留 180 天。
+- **验收**：唯一索引拒绝重复；滚动删除不越界；查询 P95 < 50ms（10 万行本地库）。
+- **前置依赖与顺序**：迁移一次建表 + 索引；先于 II-04/II-06。
+- **成本**：≈1.5 人日（估算）。
+
+### II-06 · G2-4 Layer2 归因｜**仅建议**
+- **目标与不做后果**：解释"为什么某类任务成功/失败"，把命中与 `node_session_links`、`work_steps` 关联；不做则只有原始记录没有结论。
+- **数据/接口**：只读视图 `v_memory_attribution(run_id, step_id, adapter, tier, outcome, hit_count, evidence_level)`；不新增写表。
+- **流程/状态机**：定时（每日）或按需重算；只读派生，可随时重建；不做增量写。
+- **边界**：跨图不聚合；样本 < 20 不出结论（标 `insufficient_sample`）；不把相关性写成因果。
+- **验收**：同一数据重建两次结果一致；样本不足显式标注；视图查询不影响 run 表。
+- **前置依赖与顺序**：II-04/II-05 之后；II-07 之前。
+- **成本**：≈2 人日（估算）。
+
+### II-07 · G2-5 Layer3 embedding｜**仅建议**（原阻塞 D-12 已解除）
+- **目标与不做后果**：用向量检索相似任务/证据，支撑候选复用；不做则只能关键词匹配，召回低。
+- **数据/接口**：`task_embedding(entity_key, model, dim, vector_blob, updated_at)`，主键 `(entity_key, model)`；检索接口 `similarTasks(queryVec, k=5)`。
+- **流程/状态机**：离线批算（增量按 `updated_at`）→ 写 blob → 检索；模型不可用降级 `getRecent(3)`，不阻断编排。
+- **边界**：维度上限 1024；单条向量 ≤ 4KB；外部调用成本按 **D-12 已裁决**「只记账、不自动熔断」处理；失败只降级不改任务状态。
+- **验收**：top-k=5 返回且附相似度；模型缺失时走降级并留痕；重建索引可重入。
+- **前置依赖与顺序**：II-04/II-06 之后；**D-12 已裁决**（成本只记账、长尾不投入），可直接动工。
+- **成本**：≈5 人日（估算，不含外部模型费用）。
+
+### II-08 · G2-6 提案细节｜**仅建议**
+- **目标与不做后果**：把提案的冲突、降权、撤销规则定死；不做则多人同时提案会互相覆盖。
+- **数据/接口**：沿用 `metadata.proposal`，增加 `conflict_group`、`weight`（0–1）；冲突串行队列由服务层内存 + `work_items` 状态保证。
+- **流程/状态机**：同 `conflict_group` 串行（后者 `blocked` 等前者终态）；被降权提案在 UI 标 `low_weight`；撤销 = `cancelled` + 反向编辑记录。
+- **边界**：同实体并发提案上限 3；降权不改 `status`；串行等待超 24h 自动 `cancelled` 并留理由。
+- **验收**：并发提案按串行顺序产生；超时自动取消有记录；降权仅影响展示排序。
+- **前置依赖与顺序**：II-02 之后；II-21/II-30 之前。
+- **成本**：≈2 人日（估算）。
+
+### II-09 · G2-7 Tier2 升格｜**仅建议**（原阻塞 D-17 已解除）
+- **目标与不做后果**：让 Tier2 后端在"只读 / 排队人工"之外有受控的升格路径；不做则 Codex 类后端永远不能参与写编排。
+- **数据/接口**：`routing_decisions.policy` 增 `tier2_bridged`；能力票增加 `approval_bridge` 位；不新增表。
+- **流程/状态机**：Tier2 → 只读；若 `approval_bridge=1` 且写前审批可拦截 → 可写；拦截缺失则拒绝升格。
+- **边界**：升格必须 fail-closed；不得"先跑后补审批"；单次升格仅限单步，不跨任务。
+- **验收**：无桥的 Tier2 写请求被拒并落 `routing_failed`；有桥的写步骤审批事件齐全。
+- **前置依赖与顺序**：先做 II-22（探测）；**D-17 已裁决「先解冲突再升格」**，顺序为「审批桥 → 探测 → 升格」，未补桥不得动工升格。
+- **成本**：≈3 人日（估算，含桥接）。
+
+### II-10 · G2-8 WaveExecutor｜**仅建议**（原阻塞 D-07 已解除）
+- **目标与不做后果**：按 Kahn 层并行执行同层任务，压缩总时长；不做则永远串行，层信息只用于排序。
+- **数据/接口**：复用 `work_items.depends_on_json` 与层号；新增内存调度器 `WaveExecutor`，不新增表；并发上限读配置。
+- **流程/状态机**：确认 → 分层 → 逐层 claim → 层内并发（受写闸与全局上限）→ 全部终态后进下一层；层内失败按 §5.5.1 聚合。
+- **边界**：并发上限默认 1（即退化为串行）；同项目写闸互斥；不保证兄弟步互见（§5.9.8.1）。
+- **验收**：并发上限=1 时行为与串行一致；上限=2 时两任务不共享写闸；层间顺序不可越过。
+- **前置依赖与顺序**：II-20 状态机与 II-23 写闸先行；**D-07 已裁决维持 fail-fast**，并发上限固定为 1，本项落地形态为「分层串行调度」（保留层结构与并行开关，不启用真并发）。
+- **成本**：≈5 人日（估算）。
+
+### II-11 · G2-9 黑板 / fanout｜**仅建议**
+- **目标与不做后果**：为 L3 并行提供受约束的共享记忆；不做则并行后无跨步上下文，或被"记忆时序"绑架正确性。
+- **数据/接口**：黑板键空间 `blackboard(project, task, key)`，存于内存 + 可选落 `work_runs.outputs_json` 引用；Phase B 接口 `extractAfterSession(sessionId)`。
+- **流程/状态机**：步终态写入必须在 session terminate 与 Phase B 之后（§5.9.8.1）；Phase B 失败只影响可见性。
+- **边界**：TTL 24h；单键 ≤ 8KB；不注入兄弟分支产物；检索预算 top-k=5；超限先裁片段再裁摘要。
+- **验收**：Phase B 失败时 step 仍可终态；重启后黑板不承诺恢复（显式丢弃）；不出现"依赖黑板时序"的用例。
+- **前置依赖与顺序**：II-10 之前或同批；不依赖裁决。
+- **成本**：≈6 人日（估算）。
+
+### II-12 · G2-10 C1–C4 确认点｜**仅建议**（原阻塞 D-13 已解除）
+- **目标与不做后果**：把四个人工确认点做成结构化契约（展示项、必填项、拒绝分支）；不做则确认退化为"是否同意"按钮。
+- **数据/接口**：确认结果落 `agent_approvals`（subject 扩展）；C1/C2 的展示数据由只读接口组装；不新增表。
+- **流程/状态机**：C1 强制 → 生成 `work_items`；C2 强制 → 新 revision；C3 强制 → 测试计划哈希绑定；C4 强制 → 人工写 `nodes.status` 前。
+- **边界**：C1/C2 不得合并；C3 不得"记住本次选择"永久授权；C4 不得默认勾选"已完成"；任一项缺失展示字段即拒绝确认。
+- **验收**：每个确认点有独立 UI 与拒绝记录；缺字段的确认被服务层拒绝；审批到期 fail-closed。
+- **前置依赖与顺序**：**D-13 已裁决「仅高风险步确认」**，按此定 C1/C2 的触发粒度；II-29 渲染同批。
+- **成本**：≈4 人日（估算）。
+
+### II-13 · G2-11 流程级测试最小版｜**仅建议**（原阻塞 D-05 已解除）
+- **目标与不做后果**：用最小流程用例证明"计划→执行→测试→证据"整链可跑；不做则只有单测，端到端无人验证。
+- **数据/接口**：`test_specs.scope='flow'` + `test_plan_items.selected_by='flow'`；产出 E3 证据（命令 + commit + 代码 hash）。
+- **流程/状态机**：确认测试计划 → worktree 执行 → 写 `test_results` → 汇总 `test_runs` → 回写证据；失败按 §6.6 处理。
+- **边界**：流程用例数上限 10；单条超时 60 分钟；`env_fail` 不建 bug；不覆盖 manual。
+- **验收**：一条流程用例从计划到 E3 全链留痕；失败可定位到 `test_result`；重复执行幂等。
+- **前置依赖与顺序**：依赖 W4 harness；**D-05 已裁决「仅建 bug + 链接」**，流程级测试只覆盖执行与证据链，不接自动定向重测闭环；排在 W4 之后。
+- **成本**：≈3 人日（估算）。
+
+### II-14 · G2-12 定向重测｜**仅建议**（原阻塞 D-05 已解除；裁决为留 L3）
+- **目标与不做后果**：修复后只重跑失败用例与同 suite 相关用例；不做则每次全量重跑，慢且噪声大。
+- **数据/接口**：`test_plan_items.selected_by='targeted'`，来源 `test_result` 失败集合；新增只读查询 `targetedCases(testRunId)`。
+- **流程/状态机**：bug 修复 run 完成 → 生成定向计划 → C3 审批 → 执行 → 通过则新 E3 + `bug_nodes.retested_at`。
+- **边界**：选取上限 20 条；找不到关联用例则回退全量并标注；不由系统自动关闭 bug。
+- **验收**：定向计划只含失败+相关用例；通过后 bug 行可反查 `test_result`；全量重跑需人触发。
+- **前置依赖与顺序**：**D-05 已裁决「B 仅建 bug + 链接」**，定向重测明确留 L3；本期仅保留设计，不排期。
+- **成本**：≈2.5 人日（估算）。
+
+### II-15 · G2-13 published 软阻断｜**仅建议**
+- **目标与不做后果**：对已发布节点的新改动做"软阻断"（提示+需确认），避免静默改线上语义；不做则发布后改动无提示。
+- **数据/接口**：`nodes.metadata.published_at`（不新增列）；派生 `is_published` 供 gate 读取；不新增表。
+- **流程/状态机**：命中已发布节点 → gate 结果 `incomplete(published_requires_confirm)` → 人确认后 `waived`（仅此场景）；确认记录落 `agent_approvals`。
+- **边界**：软阻断不是硬拒绝，`waive` 需理由；G1/G3/G4 不因此放宽；不改变 `nodes.status`。
+- **验收**：已发布节点任务默认进 `blocked`；确认后可执行且留痕；未发布节点无额外提示。
+- **前置依赖与顺序**：依赖 II-12 确认链路；可与 II-13 并行。
+- **成本**：≈1.5 人日（估算）。
+
+### II-16 · G2-14 `v_plan_deviations_file_domain`｜**仅建议**
+- **目标与不做后果**：把偏差按"文件域"聚合，回答"哪类文件最容易估错"；不做则偏差只有单 run 维度。
+- **数据/接口**：只读视图 `v_plan_deviations_file_domain(project_path, file_domain, runs, avg_planned, avg_actual, rework_rate)`；`file_domain` 由路径前缀/扩展名派生。
+- **流程/状态机**：纯派生，按需重建；不写表。
+- **边界**：域数上限 32；样本 < 10 标 `insufficient`；不跨项目合并。
+- **验收**：视图可重建且结果稳定；样本不足显式标注；不阻塞主查询。
+- **前置依赖与顺序**：`plan_deviations` 数据积累后启用。
+- **成本**：≈1 人日（估算）。
+
+### II-17 · G2-15 dirty diff｜**仅建议**
+- **目标与不做后果**：把"未提交改动"纳入 `change_sets`，避免证据只覆盖 commit；不做则 E3 与真实工作区不一致。
+- **数据/接口**：`change_sets` 增 `dirty_hash`、`dirty_files_count`（可空列）；采集在 run 结束时执行。
+- **流程/状态机**：采集 → 去重（同 hash 不重复写）→ 与 commit 维度并列；采集失败写"未采集"标记，不编造空集。
+- **边界**：文件数 > 200 只记计数与前 200 路径；二进制/超大文件只记 hash；不把 dirty 当 E3 代码 hash。
+- **验收**：有未提交改动时 `change_sets` 含 dirty 字段；采集失败显式标"未采集"；同 run 重算幂等。
+- **前置依赖与顺序**：II-34（tree-hash 等级）讨论后统一口径。
+- **成本**：≈2 人日（估算）。
+
+### II-18 · G2-16 离线校准｜**仅建议**
+- **目标与不做后果**：每 20 run / 2 周用偏差数据回看推导规则，输出报告而非自动改权重；不做则规则永远拍脑袋。
+- **数据/接口**：读 `plan_deviations` + `v_plan_deviations_file_domain`，产出 `map_migration_reports(kind='calibration')`；不写权重表。
+- **流程/状态机**：定时任务 → 汇总 → 生成建议报告 → 人工确认后才改常量（无自动写）。
+- **边界**：样本 < 20 run 不出报告；报告保留 1 年；不自动调整任何阈值。
+- **验收**：报告可复算；不产生自动写；触发条件可观测。
+- **前置依赖与顺序**：II-16/II-17 之后。
+- **成本**：≈1.5 人日（估算）。
+
+### II-19 · G2-17 多 Agent 交互｜**仅建议**（原阻塞 D-07 已解除）
+- **目标与不做后果**：定义多会话协作的边界（谁能读谁、产物怎么合并）；不做则只能单 Agent 串行。
+- **数据/接口**：复用 `node_session_links` 多对多 + `work_runs` 归属；新增 `collab_scope` 元数据；不新增表。
+- **流程/状态机**：fanout → 子任务各自 run → 合并只认 `work_runs`/证据，不认黑板时序；冲突走 II-11 约束。
+- **边界**：**D-07 已裁决维持 fail-fast**，多 Agent 并发上限=1（串行推进）；兄弟步不互见；跨项目禁止；合并冲突 fail-closed 转人工。
+- **验收**：两个会话产物合并可追溯；冲突不静默覆盖；上限=1 时退化为串行。
+- **前置依赖与顺序**：II-10/II-11 之后；**D-07 已裁决**，按「串行多会话」口径实现，不引入排队。
+- **成本**：≈7 人日（估算）。
+
+### II-20 · G2-18 完整步状态机｜**仅建议**
+- **目标与不做后果**：把 `work_steps` 的迁移表落成可执行约束（含非法迁移拒绝）；不做则状态靠约定，竞态下会写错终态。
+- **数据/接口**：`work_steps.status` 13 值 CHECK 已定；新增迁移函数 `transition(stepId, from, to)` 以条件更新实现 CAS；事件 `event:work-step-changed`。
+- **流程/状态机**：严格按 §5.9.8 表迁移；终态不可逆；`needs_input → pending` 必须 `attempt+1`。
+- **边界**：非法迁移返回 `INVALID_TRANSITION` 且不写库；终态写入前要求 session terminate；并发两个终态只有 CAS 胜者落库。
+- **验收**：穷举合法/非法迁移用例；并发终态唯一；事件与库一致。
+- **前置依赖与顺序**：W1/W3 共用；先于 II-10。
+- **成本**：≈3 人日（估算）。
+
+### II-21 · G2-19 提案 UI｜**仅建议**
+- **目标与不做后果**：让提案可看、可比、可采纳/驳回；不做则提案只能靠命令行或数据库操作。
+- **数据/接口**：只读通道 `proposal:list` / `proposal:diff`；采纳走既有确认通道；不新增写通道。
+- **流程/状态机**：列表 → diff（before/after）→ 采纳（跳 online 人工编辑）/驳回（填理由）。
+- **边界**：只读展示；不提供批量采纳；diff 超 200KB 折叠加载。
+- **验收**：提案可见且 diff 正确；采纳后状态为 `done` 且有 E2 证据；无批量入口。
+- **前置依赖与顺序**：II-02/II-08 之后；与 II-30 合并实现。
+- **成本**：≈2 人日（估算）。
+
+## II.3 编排执行
+
+### II-22 · G3-1 Tier1 探测｜**仅建议**（原阻塞 D-17 已解除）
+- **目标与不做后果**：把"哪些后端可参与写编排"变成可复核的探测结果；不做则按模型名硬编码，升级即失效。
+- **数据/接口**：探测输出 `{tier, resume, approval_callback, structured_output, cancel, probe_error}`；进程内按 `(adapter, adapterVersion)` 缓存。
+- **流程/状态机**：启动/升级时探测 → 四项齐全 Tier1 → 缺审批 Tier2 → 其余 Tier3；探测失败 Tier3（fail-closed）。
+- **边界**：禁止默认 Tier1；缓存仅在进程内；探测超时 5s。
+- **验收**：四种后端各有探测用例；缺项后端不被编排写路径选中；失败落 `routing_failed`。
+- **前置依赖与顺序**：**D-17 已裁决「先解冲突再升格」**：探测（本项）先做；升格（II-09）待审批桥完成后。
+- **成本**：≈3 人日（估算）。
+
+### II-23 · G3-2 跨进程写闸｜**仅建议**
+- **目标与不做后果**：多进程/多窗口下同项目写任务互斥；不做则两个进程同时改同一工作区。
+- **数据/接口**：`project_locks(project_path PK, owner_pid, lease_until, updated_at)`；租约 30s，心跳 10s。
+- **流程/状态机**：`acquire` 用条件更新 CAS；拿不到 → `BUSY`（不消耗 attempt）；进程崩溃靠租约过期回收。
+- **边界**：租约上限 60s；同 pid 重入允许；路径按 §5.4.1 规范化后比对；回收需记录 `stale_lock_reclaimed`。
+- **验收**：两进程并发只有一个获得；杀进程后 30s 内可重获；不产生永久锁。
+- **前置依赖与顺序**：II-10 并行前必须完成。
+- **成本**：≈3 人日（估算）。
+
+### II-24 · G3-3 renderer 执行入口｜**仅建议**（原阻塞 D-03 已解除）
+- **目标与不做后果**：让界面能发起/停止编排动作；不做则只能用内部调用，功能无法交付给用户。
+- **数据/接口**：IPC `map:exec:start|stop|resume`，入参含 `workItemId/revision`，出参结构化错误码；幂等键 `workItemId+revision`。
+- **流程/状态机**：renderer 只发命令 → 主进程校验归属与权限 → 服务层执行；审批仍走 `ApprovalGateway`。
+- **边界**：不得绕过 gate；不得直接写库；通道必须带项目归属校验；未知命令 fail-closed。
+- **验收**：界面发起可在 UI 看到 run/step 变化；越权项目被拒；重复点击幂等。
+- **前置依赖与顺序**：**D-03 已裁决「本期注册，排 W4 之后」**；II-12 后接 UI。
+- **成本**：≈2 人日（估算）。
+
+## II.4 证据与测试
+
+### II-25 · G5-10 项目进度查询｜**仅建议**（原阻塞 D-03 已解除）
+- **目标与不做后果**：只读汇总"项目内节点/任务/证据完成度"；不做则进度只能人工数。
+- **数据/接口**：只读视图 `v_project_progress(project_path, nodes_total, nodes_verified, items_done, items_failed, evidence_by_level)`；IPC 只读通道。
+- **流程/状态机**：纯派生，按需重建；不写表。
+- **边界**：按项目隔离；大项目分页；派生失败返回空并标注，不阻塞任务查询。
+- **验收**：数字与明细一致（可对账）；跨项目不串数据；P95 < 100ms。
+- **前置依赖与顺序**：**D-03 已裁决本期注册**：视图可先做，通道排 W4 之后。
+- **成本**：≈1.5 人日（估算）。
+
+## II.5 Agent 与安全边界
+
+### II-26 · G6-17 同 uid 防御边界｜**仅建议**
+- **目标与不做后果**：明确"同 uid 恶意进程不在防御范围"的边界并给出检测告警；不做则用户误以为系统能防本机同用户攻击。
+- **数据/接口**：文档声明 + 启动时检测可疑环境标记（只告警）；无新增表/通道。
+- **流程/状态机**：启动检查 → 发现异常 marker 冲突 → 写告警日志与 UI 提示；不自动 kill。
+- **边界**：只承诺"其他本地 uid 不可伪造/重放"；检测失败不阻断启动。
+- **验收**：文档与 UI 均写明边界；告警可复现；不引入误杀。
+- **前置依赖与顺序**：无；与 §6.5/§10 同步。
+- **成本**：≈0.5 人日（估算，文档为主）。
+
+### II-27 · G7-7 C3 exec 面｜**仅建议**
+- **目标与不做后果**：把测试命令的沙箱 profile（可执行面、cwd、环境白名单）收敛成显式策略；不做则 `ask/deny` 判定靠散落代码。
+- **数据/接口**：策略配置 `test_exec_profile`（代码常量）；`evaluateBashPolicy` 读该 profile；不新增表。
+- **流程/状态机**：命令 → profile 匹配 → allow/ask/deny → 审批 → 执行；deny 即停。
+- **边界**：profile 不得放宽 `.git` 写拒绝；环境变量白名单外一律 deny；profile 变更需测试断言。
+- **验收**：三类命令各有判定用例；白名单外变量被拒；profile 变更触发测试失败。
+- **前置依赖与顺序**：II-28 之前；与 §6.8 网关同批。
+- **成本**：≈3 人日（估算）。
+
+### II-28 · G7-8 非 Claude 裸 spawn｜**仅建议**
+- **目标与不做后果**：明确没有审批回调的后端只能"裸 spawn（只读或排队人工）"；不做则会被误接进写路径。
+- **数据/接口**：能力票 `approval_callback=0` 即禁止写；`startStep` 返回 `APPROVAL_REQUIRED` 或 `TIER_UNSUPPORTED`。
+- **流程/状态机**：写步骤路由 → 无审批能力 → 拒绝；只读步骤允许裸 spawn 并标注 `unattended`。
+- **边界**：不得用"事后审计"替代写前审批；裸 spawn 的输出必须标 `source=synthetic|backend`。
+- **验收**：非 Claude 写步骤被拒并有错误码；只读裸 spawn 可完成且事件标注正确。
+- **前置依赖与顺序**：II-22 之后。
+- **成本**：≈2 人日（估算）。
+
+## II.6 界面
+
+### II-29 · G8-3 C1–C4 渲染｜**仅建议**（原阻塞 D-13 已解除）
+- **目标与不做后果**：四个确认点在 UI 上各有独立展示与拒绝入口；不做则用户只能盲点"同意"。
+- **数据/接口**：复用只读投影接口；组件 `ConfirmPointPanel`；不新增写通道（走 II-24）。
+- **流程/状态机**：C1 展示 9 项 → 确认/退回；C2 diff 视图；C3 命令与策略逐条；C4 证据与 stale 清单。
+- **边界**：缺字段不可提交；不得合并 C1/C2；不得默认勾选完成。
+- **验收**：四个确认点各有用例与截图；缺字段提交被拒。
+- **前置依赖与顺序**：**D-13 已裁决「仅高风险步确认」**：非高风险步不弹确认；与 II-12 同批。
+- **成本**：≈5 人日（估算）。
+
+### II-30 · G8-4 提案 UI（渲染）｜**仅建议**
+- **目标与不做后果**：提案的列表与 diff 可视化；不做则提案不可读。
+- **数据/接口**：`proposal:list` / `proposal:diff` 只读；组件复用 `NodeMapPanel` 弹层。
+- **流程/状态机**：列表 → 详情 → 采纳跳转 online 编辑 / 驳回填理由。
+- **边界**：只读；不做批量；diff 大文件折叠。
+- **验收**：diff 与 `metadata.proposal` 一致；采纳后状态正确；无批量入口。
+- **前置依赖与顺序**：II-21 之后（可合并交付）。
+- **成本**：≈2 人日（估算）。
+
+### II-31 · G8-5 任务卡深度｜**仅建议**（原阻塞 D-14 已解除）
+- **目标与不做后果**：任务卡按"任务→步→run→证据"分层展开；不做则信息平铺，深层证据找不到。
+- **数据/接口**：只读投影增加层级字段；组件 `TaskCardTree`；不新增表。
+- **流程/状态机**：默认折叠到任务级 → 展开到步 → 展开到 run/证据；状态变化增量刷新。
+- **边界**：层级深度上限 4；大列表虚拟滚动；折叠状态不落库。
+- **验收**：四层可展开且数据一致；100 条任务下滚动流畅；折叠状态刷新后恢复默认。
+- **前置依赖与顺序**：**D-14 已裁决「折叠」**：默认折叠到任务级；与 II-29 共享组件。
+- **成本**：≈3 人日（估算）。
+
+## II.7 迁移与运维
+
+### II-32 · G9-8 RequestQueue 删除｜**仅建议**（原阻塞 D-07 已解除）
+- **目标与不做后果**：清理已被废弃的 `RequestQueue`（仅测试引用），避免误接回写路径；不做则死代码长期存在。
+- **数据/接口**：删除 `request-queue.ts` 与相关导入；无表变更。
+- **流程/状态机**：确认无生产引用 → 删代码 → 删测试或改为"不存在"断言 → 类型检查。
+- **边界**：**D-07 已裁决维持 fail-fast、不引入队列**，故本项可执行（改为复用队列的备选已排除）；删除前必须 `git grep` 零生产引用。
+- **验收**：`git grep RequestQueue` 仅剩历史文档；类型检查与测试通过。
+- **前置依赖与顺序**：**D-07 已裁决**（维持 fail-fast）；与 W11 同批。
+- **成本**：≈0.5 人日（估算）。
+
+### II-33 · G9-10 worktree 清理｜**仅建议**
+- **目标与不做后果**：测试 worktree 用完即清，异常退出也能回收；不做则磁盘膨胀、后续复用脏基线。
+- **数据/接口**：`test_runs.worktree_path` + 清理任务；启动扫描 TTL 24h 的残留目录。
+- **流程/状态机**：创建 → 使用 → 结束清理（成功/失败/取消都清）→ 残留扫描回收；清理失败记报告。
+- **边界**：只清本应用创建的路径（带标记文件）；不删用户目录；回收上限每轮 50 个。
+- **验收**：三类终态都清理；模拟崩溃后重启可回收；不误删非托管目录。
+- **前置依赖与顺序**：II-13/II-14 之后。
+- **成本**：≈2 人日（估算）。
+
+## II.8 证据等级
+
+### II-34 · G11-10 tree-hash 等级｜**仅建议**
+- **目标与不做后果**：为"可复现工作区快照"提供可选的 tree-hash 绑定，而不新增 E 等级；不做则 dirty 工作区的证据只能靠 commit 说明。
+- **数据/接口**：`node_evidence` 增可空列 `tree_hash`（不扩枚举）；计算用 git tree 对象哈希，不含未跟踪文件时显式标注。
+- **流程/状态机**：写 E3 时可选带 `tree_hash`；无 git 或计算失败 → 留空并标 `version_binding='none'`。
+- **边界**：不改变 E3/E4 语义与 gate 判定；不把 tree-hash 当 E4；单次计算超时 10s 即留空。
+- **验收**：带 tree-hash 的 E3 可复现到同一树；无 git 项目不报错；gate 行为不变。
+- **前置依赖与顺序**：II-17（dirty diff）口径统一后；不依赖裁决。
+- **成本**：≈2 人日（估算）。
 
 ---
 
@@ -194,12 +1065,12 @@ CREATE INDEX idx_nodes_entity_key ON nodes(entity_key);
 - **WS 写消息拒绝：已实施（`cc749ce`）**：客户端发 `sync update` / `sync step2` / 其他 sync 子类型 → `ws.close(1008, …)` 且不应用（`ws-server.ts:168`、`:189`、`:193`）；step1 只返回缺失增量，服务端直接下发 step2。
 - **1236 默认不启动：已实施（`987c226`）**：`yjs-realtime.ts` 的 `disableWebSocket` 默认值改为按 `BIZGRAPH_YJS_WS` 判定（仅 `1` / `true` / `yes` / `on` 视为显式开启）；`ipc-handlers.ts:348` 仍为 `new YjsRealtime(db)`，未传 options，故默认不再监听 `127.0.0.1:1236`；显式开启后才启动 WS。
 - `graphs` 无写回路径；doc 变更只更新 `yjs_snapshots`，不改 `nodes`/`edges`。
-- `nodes.entity_key` / `lifecycle_state` **仅建议**（本文规划，代码中不存在；`git grep` 无命中）。
+- `nodes.entity_key` / `lifecycle_state` **已实施**：`entity_key` 见 `database.ts:711-713`（v26）与 `entity-key-backfill.ts:329`；`lifecycle_state` 见 `database.ts:721-724`（v30）与 `node-repository.ts:384`。
 - 已知缺陷（未修）：启动后新建图不进 doc 池（显式开启 WS 时连 `1236` 会被 `1008` 拒绝）；`node_id` 放宽仍是长期待办。
 
 **验收口径（P6）**：默认启动下 `1236` 不监听；显式开启后写消息被拒；doc 变更后 `nodes`/`edges` 无新增/改写；旧快照可读；`entity_key` 不因恢复而重算。
 
-**已批准未实施**：完全移除 Yjs（L3，§2.8）；删依赖/表、改 schema 版本不在本期。外部"拆除"方案本文不背书也不反驳。
+**待裁决（L3）**：是否完全移除 Yjs（§2.8）；删依赖/表、改 schema 版本不在本期。外部"拆除"方案本文不背书也不反驳。
 
 #### 旧库回填算法（一次性，幂等）
 
@@ -1548,14 +2419,14 @@ interface StepResult {
 | 驱动真实 Agent turn 并落 run/step 终态（`completed` / `failed` / `cancelled` / `timeout`） | 已实施 | `src/main/map/agent-step-runner.ts`；终态写入在会话 terminate 之后、同一事务内条件更新 |
 | `failureClass → work_runs.failure_class` | 已实施 | `agent_turns.failure_class` 经 `TurnOutcome.failureClass` 透出；v34 起同步写 `work_steps.failure_class`（同值域），步级失败不再只能 join 最近 run |
 | deadline 路径 | 已实施 | `work_runs.deadline_at`（绝对）→ `AgentCommand.deadlineMs`（相对）；开跑前已过期直接 `timed_out`，不启动会话 |
-| `needs_input` 回写 | **未实施** | `TurnOutcome` 无该信号，且明确不解析 `finalText` 中的 `INPUT_REQUIRED`；`work_steps.input_request_json` 保持 NULL，待结构化输出契约落地 |
-| `outputs` / `outputParse` / `partial` / `usage` / 文件变更 | **未实施** | 属证据与结构化输出里程碑，本轮不写，不伪造空对象 |
+| `needs_input` 回写 | 已实施 | `TurnOutcome` 已带 `needs_input` 信号；`agent-step-runner.ts:689` `finalizeNeedsInput` 写 `work_steps.input_request_json`，`work-item-service.ts:556` `markNeedsInput` / `:571` `settleNeedsInput` 与 `work-step-service.ts:306` `settleNeedsInput` 配合，人工确认后恢复。**更正（2026-11-08，W1）**：原标「未实施」属文档滞后 |
+| `outputs` / `outputParse` / `partial` / `usage` / 文件变更 | 已实施 | 按 §5.9.7 分散落：`outputs→work_runs.outputs_json`、`outputParse→work_runs.output_parse`、`partial→work_runs.partial_output_ref`、文件变更→`change_sets.files_json`、`usage` 仍由 runtime 写 `agent_usage`（不重复写）。生产端 `agent-step-runner.ts` 的 `complete/fail/timeout` 透传（`parseStepOutputs:175`、`runOutputData:207`、`recordChangeHead:443`）；**未改** `agent_turns.output_json`；无 schema 不伪造空对象 |
 | §5.9.10 Tier 能力探测与完整路由 | **明确偏离** | 仅 pinned adapter + `policy='manual_override'` 写 `routing_decisions`；Tier 探测推迟 |
 | IPC / 外部触发入口 | 未接 | 执行器无可达入口，保持不可达 |
 | kernel-only 发送契约 | 已实施 | `AgentManager.sendCommandKernelOnly`：runtime 缺失/执行器不在白名单/节点未挂载/driver 缺失一律抛错，不回落 legacy |
 | item 级终态聚合（当前 revision 的步级） | 已实施 | `WorkItemService.convergeIfTerminal` + `WorkScheduler.claimNext`：无就绪步且全部步终态时收敛；仍有非终态步则等待。≥1 failed/timed_out → failed；否则有 cancelled → cancelled；全 succeeded/skipped → done |
 | 依赖阻断级联 | 已实施 | `WorkStepService.blockUnstartedDependents`：上游 failed/timed_out/cancelled → 下游未开始步（仅 planning/pending）置 **failed + failure_class='blocked_by_dependency'**，沿依赖链 fixpoint 传递。v34 后已能区分人工跳过（`skip_reason`）与连带判负（`failure_class`），但仍不改回 skipped：`DEP_SATISFIED={succeeded,skipped}` 会把 skipped 当满足、聚合还会把全 skipped 收敛为 done，两处语义都得改才算等价。running/waiting_approval/review/needs_input/paused 一律不改 |
-| 子 work_item（`parent_work_item_id`）聚合 | **未实施** | 仅聚合单个 item 的 steps，不跨父子 item；多级聚合留待后续里程碑 |
+| 子 work_item（`parent_work_item_id`）聚合 | 已实施 | `work-item-service.ts:501` `convergeChildrenIfTerminal` + `:540` `convergeParentChain`：父任务在 `draft/awaiting_confirm/queued/running` 时可被子任务全终态带入终态，`needs_human/blocked/needs_input/paused/interrupted` 不覆盖；`failed > cancelled > done`（`superseded` 按 cancelled）；触发点 `transition:362` 与 `convergeIfTerminal:480`，`seen` 防环 + 条件 UPDATE 幂等。**绕过父任务 gate 为有意行为** |
 | `partial_cancel` 取消原因落库 | 已实施（v34） | `work_items.cancel_reason`：聚合收敛为 cancelled 时写 `partial_cancel`；人工 `cancel()` / `resolveHuman(cancel)` 写 `user` |
 
 
@@ -2605,7 +3476,7 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 
 **状态：已实施（`database.ts` `migrate()`，2026-11-07 复核 HEAD）。**
 
-- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 34）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
+- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 35，`database.ts:746`）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
 - 动机：旧代码的慢路径会用当前版本的 `createSql` 重建表，`restoreFromBackup` 只恢复**共有列**，新版本写入的列/约束会被静默丢弃，随后 `schema_version` 被回写成更低版本——不可逆退化。v33 的 CHECK 曾因 `test` 行恢复失败偶然挡住，不能作为防线。
 - 不做启动期自动"降级"：降级不是默认行为；如确需把更高版本的库交给旧版本使用，必须人工恢复备份并留下可查询记录（本版本不提供降级入口）。
 - 结构检测维度（2026-11-07，`rebuildTableIfNeeded` + `reconcileSchemaIndexes`）：慢路径重建判定比较列集合/类型/CHECK/**内联 UNIQUE**；独立 `CREATE UNIQUE INDEX` 定义由索引对账比对，变化时先 `DROP INDEX` 再建。两类 UNIQUE 都进入 `schema-checksum`（内联随 `createSql`、独立随 `INDEX_SQLS`），因此**不升 `CURRENT_SCHEMA_VERSION` 也不会漏掉已有库**——任一 DDL 变化都会让 checksum 失配并强制走慢路径。
@@ -3031,9 +3902,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | task 总墙钟 | `agent.timeouts.taskMs` | 60 分钟 | `work_items` 的总时长，排队时间不计入 |
 | send-and-wait 客户端等待 | `agent.timeouts.sendWaitMs` | `turnMs + 30s` | 只是 IPC 等待，不得早于 turn deadline 触发 |
 
-**代码事实（HEAD 复核）**：`git grep "agent.timeouts" -- src` **无命中**，上表四个键**均未实现**，只是设计键名，不是现有配置面。
+**代码事实（HEAD 复核）**：`git grep "agent.timeouts" -- src` **无命中**（无配置面）；`turnMs` 现为代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs` 且已被消费（`agent-runtime.ts:374`、`agent-manager.ts:1386`）；`stepMs/taskMs` 有常量但无消费点；`sendWaitMs` 无实现。
 
-- **turn**：唯一生效值是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs = 10 分钟`（`src/shared/types/agent-runtime.ts:368-369`），由 `agent-manager.ts:1337` 以 `command.deadlineMs ?? DEFAULT_AGENT_TIMEOUTS.turnMs` 消费；`deadlineMs=0`/缺省表示不启用。
+- **turn**：唯一生效值是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs = 10 分钟`（`src/shared/types/agent-runtime.ts:368-369`），由 `agent-manager.ts:1386` 以 `command.deadlineMs ?? DEFAULT_AGENT_TIMEOUTS.turnMs` 消费；`deadlineMs=0`/缺省表示不启用。
 - **step / task**：常量已声明 `stepMs = 10 分钟` / `taskMs = 60 分钟`（同文件 `:370-371`），但**无消费点**（`git grep "stepMs|taskMs" -- src` 仅命中定义处）；L2 编排层尚未实现。
 - **send-and-wait**：未实现，无 `sendWaitMs` 常量。
 - **subagent**：**仍独立配置**，`SubagentManager` 常量 `DEFAULT_TIMEOUT_MS = 5 分钟`（`subagent-manager.ts:53`），构造参数可覆盖（`:128`），`ipc-handlers.ts:504` 实例化时未传值。"不再独立配置、继承 step/turn 预算"**未实施**。
@@ -3306,14 +4177,14 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 **结论：本次交叉验证未改写任何一条已定口径，不需要重新审批。**
 
-### 12.5 仍需用户拍板
+### 12.5 原待拍板项（现已全部裁决）
 
-> 五条裁决（U1、F3、`plan_deviations` 归因、`work_items.status`、Tier1/`published`/流程级测试）已落入正文。R7 覆盖项（F1–F3 修复授权、发布进度仅内部展示、dev→online 提案 UI 留 L3）已拍板，从待定移除；E4 过期不延后也已定。Yjs 单向只读已由 `cc749ce` 在代码层实施。
+> 五条裁决（U1、F3、`plan_deviations` 归因、`work_items.status`、Tier1/`published`/流程级测试）已落入正文。R7 覆盖项（F1–F3 修复授权、发布进度仅内部展示、dev→online 提案 UI 留 L3）已拍板，从待定移除；E4 过期不延后也已定。Yjs 单向只读已由 `cc749ce` 在代码层实施。**本节四条于 2026-11-08 由 D-13…D-16 裁决；方向已定，施工仍未授权。**
 
-1. **D1 计划确认强度**：简单单步内联 mini-C1 vs 全量 C1 对话框。
-2. **D4 流程折叠**：suite/case + `test_specs.kind='flow'`；折叠层级与默认展开方式。
-3. **F3 超时默认值来源**：是否引入配置键 `agent.timeouts.turnMs`（**产品选择，当前未实现**；现状是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs`，单一来源已满足）。
-4. **两层 partial 截断是否统一**：地图侧常量 `PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`）vs 子代理侧常量 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 单条（`base.ts:40`）。**当前两套值不一致且均非配置项**；要不要统一、统一到哪个值，待用户裁决，本文不擅自统一。
+1. **D1 计划确认强度**：简单单步内联 mini-C1 vs 全量 C1 对话框。**D-13 已裁决：C 仅高风险步确认**（方向已定，未授权施工）。
+2. **D4 流程折叠**：suite/case + `test_specs.kind='flow'`；折叠层级与默认展开方式。**D-14 已裁决：A 折叠**（方向已定，未授权施工）。
+3. **F3 超时默认值来源**：是否引入配置键 `agent.timeouts.turnMs`（现状是代码常量 `DEFAULT_AGENT_TIMEOUTS.turnMs`）。**D-15 已裁决：A 设配置键**（方向已定，未授权施工）。
+4. **两层 partial 截断是否统一**：地图侧常量 `PARTIAL_FIELD_MAX_BYTES = 16KB` / `PARTIAL_TOTAL_MAX_BYTES = 64KB`（`work-run-service.ts:66-67`）vs 子代理侧常量 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 单条（`base.ts:40`）。**D-16 已裁决：A 统一 16KB**；两套值仍待施工改造（方向已定，未授权施工）。
 
 ### 12.6 第二轮独立审查：六项必须改的改法
 
@@ -3381,7 +4252,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文当前 **3451 行**（2026-11-07 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.1 当前 **4887 行**（2026-11-08 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -3391,12 +4262,12 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | 事项 | 状态 | 落点 |
 |---|---|---|
-| D2/D3/D5/D6/D8 在对方侧已落定：`work_steps` 独立表、伪节点取消（D8）、`work_items.status` 13 值含 `needs_input` | **全部已实施**：D8（`5938001`）；D2/D5a（`work_steps` 表）/D6（subject 扩展）/D3（推导冷启动权重）随 **v28/v31/v32 批次落地**（Zcode L1/L2，见其蓝图 §9 总账）；D1/D4 仍待我方拍板 | §4.1.1、§4.5、§4.7、§12.5 |
+| D2/D3/D5/D6/D8 在对方侧已落定：`work_steps` 独立表、伪节点取消（D8）、`work_items.status` 13 值含 `needs_input` | **全部已实施**：D8（`5938001`）；D2/D5a（`work_steps` 表）/D6（subject 扩展）/D3（推导冷启动权重）随 **v28/v31/v32 批次落地**（Zcode L1/L2，见其蓝图 §9 总账）；D1/D4 已裁决（D-13/D-14），但施工未授权 | §4.1.1、§4.5、§4.7、§12.5 |
 | U1：过期 E4 → `stale` | **已实施**（v29 派生引擎,Zcode L1 S6a 批次） | §3.5、§3.7.3 |
 | Yjs 单向只读（写回删除、WS 写消息 1008、1236 默认不监听） | **已实施**（`cc749ce` + `987c226`） | §2.2.1、§8.11 |
 | F3-A：`failed` + `failure_type='timeout'`，不碰 `cancelTurn` | **已实施**（`e921977`） | §8.15 |
-| D1 计划确认强度、D4 流程折叠 | **仅建议**（待用户裁决） | §12.5 |
-| F3 默认值来源、审批期 deadline 暂停机制 | **默认值=代码常量**（`DEFAULT_AGENT_TIMEOUTS.turnMs`，无配置键；是否引入配置键待定）；**审批期=候选 A 冻结重算，已实施**（`7e6e63f`） | §8.15、§12.5 |
+| D1 计划确认强度、D4 流程折叠 | **已裁决（方向）**：D-13 → C 仅高风险步确认；D-14 → A 折叠；**仍未授权施工** | §12.5、I.4 |
+| F3 默认值来源、审批期 deadline 暂停机制 | **F3 默认值：D-15 已裁决 A 设配置键**（`agent.timeouts.turnMs`，仍未授权施工）；**审批期=候选 A 冻结重算，已实施**（`7e6e63f`） | §8.15、§12.5 |
 
 ### 12.13 勘误清单（供 Zcode 按 R9 逐条修正）
 
@@ -3409,7 +4280,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
 | A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **3451 行**（2026-11-07 `wc -l`） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **4887 行**（2026-11-08 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -3419,9 +4290,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **3451 行**（2026-11-07 `wc -l`） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **4887 行**（2026-11-08 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **3451 行** | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **4887 行**（2026-11-08 复核） | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**
@@ -3437,7 +4308,10 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 > 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§5.7、§5.9.x、§6.5.x、§6.8.x、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1/B2 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
 
-**汇总**：共 102 行；可施工 13 节；有框架缺细节 66 节；只有结论 23 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；B2 已落到 §5.7、§5.9.x、§6.5.x、§6.8.x；五条裁决已定案，相关行不再标待定。
+**汇总**：共 102 行；可施工 13 节；**已实施 16 节（2026-11-08 按代码更正，见下方状态列更正）**；有框架缺细节 **50 节**；只有结论 23 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；B2 已落到 §5.7、§5.9.x、§6.5.x、§6.8.x；五条裁决已定案，相关行不再标待定。
+
+> **状态列更正（2026-11-08，以代码为准）**：以下 15 行原标“有框架缺细节”，与代码事实不符，现按 **已实施（DDL/服务级）** 读；其行为验收/边界用例转入 Part I I.3（W2/W4/W12）。
+> §1.1（`NodeType` CHECK `database.ts:781`；跨图拒绝 `hierarchy-service.ts:90-96`）、§1.2（v26）、§1.3（v27）、§2.1、§2.2（生成/回填两行）、§2.3（`link-service.ts:216`）、§5.4（`b6f3735`）、§7.1（v26–v35）、§7.2（B1 表）、§8.3（S1）、§8.4（S2）、§8.7（S5）、§8.8（S6）、§8.15（F1–F3）。另 §7.3 值域 CHECK 已落地（`database.ts:1184-1190`），一并更正；合计 16 行。
 
 | 章节 | 现有内容形态 | 缺什么 | 属于哪一批 |
 |---|---|---|---|
@@ -3490,7 +4364,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | §5.1 总览 | 只有结论 | 无 | — |
 | §5.2 候选推导 | 有框架缺细节 | 候选存储、算法伪代码、权重配置、边界失败 | B2 |
 | §5.3 模型只选择 | 有框架缺细节 | 输出 schema、越界剔除、修复 1 轮的验收 | B2 |
-| §5.4 准入 gate | 有框架缺细节 | G1–G6 实现、失败分支、gate 结果落库 | B2 |
+| §5.4 准入 gate | **已实施**（`b6f3735`；G1–G6 引擎 + 逐道诊断落库） | 仅剩 G3 跨图扩展、异步时限预算、版本精确归因（L3） | B2 |
 | §5.4.1 路径规范化 | 有框架缺细节 | POSIX 边界、`realpath` 失败、NFC/大小写折叠实现 | B2 |
 | §5.5 可修订计划 | 有框架缺细节 | revision 状态、DAG 环检测、父子聚合的实现 | B2 |
 | §5.5.1 DAG 正确性 | 有框架缺细节 | Kahn 伪代码、依赖优先级冲突、终态聚合验收 | B2 |
@@ -3532,7 +4406,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | §8.13 v24 修复记录 | 只有结论 | 无；已完成记录 | — |
 | §8.14 迁移状态机 | 有框架缺细节 | 阶段目录、心跳/owner_pid、孤儿 `_backup` 判定、续跑边界 | B1 |
 | §8.14.1 B1 迁移细则 | 可施工 | 无；状态映射、预检、回滚、故障注入已齐 | B1 |
-| §8.15 F1–F3 | 有框架缺细节 | **已实施**（2026-11-07，main：F1 `231c724`、F2 `2425f0c`、F3-A `e921977`、审批冻结 `7e6e63f`，均经 `git merge-base --is-ancestor` 核实；P-F1/P-F2 随 `71518ed` 整合）。剩余失真已按代码对齐：超时默认值是常量、无配置键；partial 两层常量不一致（§12.5 待定） | B1 |
+| §8.15 F1–F3 | **已实施** | **已实施**（2026-11-07，main：F1 `231c724`、F2 `2425f0c`、F3-A `e921977`、审批冻结 `7e6e63f`，均经 `git merge-base --is-ancestor` 核实；P-F1/P-F2 随 `71518ed` 整合）。剩余失真已按代码对齐：超时默认值是常量、无配置键；partial 两层常量不一致（§12.5 待定） | B1 |
 | §9.1 主进程服务 | 只有结论 | 服务接口签名、依赖注入、错误类型 | B1 / B2 |
 | §9.2 IPC 通道 | 有框架缺细节 | 入参/出参 schema、错误码、幂等键 | B1 / B2 |
 | §9.3 事件通道 | 有框架缺细节 | payload schema、版本、去重 | B2 |
@@ -4016,5 +4890,6 @@ LIMIT 1;
 ### 三态总账
 
 - **已实施**：S1–S8、L1、M1–M5、G1–G6、D1/D2/D3/D4/D5/D6/D7/D8/D9/D10/D11/D13/D14。
-- **已批准未实施**：无。
-- **仅建议**：未来跨图写入面出现时的 G3 扩展、异步评估器的时限预算与版本精确归因（D12 已裁决本期不做）。
+- **已批准未实施**：① §3.7.3 E4 覆盖内容/范围变化扫描；② §M5.6 四条（存量自由文本 acceptance、Tier1 探测、跨进程写闸、renderer 执行入口）；③ §12.9 的 `stepMs`/`taskMs`/`sendWaitMs`（`turnMs` 已实施）。
+- **仅建议**：未来跨图写入面出现时的 G3 扩展、异步评估器的时限预算与版本精确归因（D12 已裁决本期不做）；L3 全部条目见 Part I I.1.3。
+- **待裁决**：Yjs 是否完全移除（§2.8）；以及 Part I I.4 的 17 项。

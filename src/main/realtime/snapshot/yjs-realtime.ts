@@ -121,8 +121,9 @@ export class YjsRealtime {
         this.wsServer = createYjsWsServer({
           port: this.options.wsPort,
           getDoc: (graphId) => {
-            const doc = this.docs.get(graphId)
-            return doc?.getYDoc()
+            // G1-13：新建图不在启动时的 doc 池里，连接时按需装载；
+            // getOrLoadDoc 内部校验 graphs 行，避免为不存在的图造孤儿 doc。
+            return this.getOrLoadDoc(graphId)?.getYDoc()
           },
         })
         await this.wsServer.start()
@@ -140,10 +141,20 @@ export class YjsRealtime {
     }
   }
 
-  /** 获取或按需加载一张图的 Y.Doc。 */
+  /** 获取或按需加载一张图的 Y.Doc（不存在的图返回 undefined，不造孤儿 doc）。 */
   getOrLoadDoc(graphId: string): YjsDocument | undefined {
     if (this.docs.has(graphId)) return this.docs.get(graphId)
+    if (!this.graphExists(graphId)) return undefined
     return this.loadDoc(graphId)
+  }
+
+  private graphExists(graphId: string): boolean {
+    try {
+      return this.db.prepare('SELECT 1 FROM graphs WHERE id = ?').get(graphId) !== undefined
+    } catch (error) {
+      logger.warn(`graph existence check failed for ${graphId}:`, error)
+      return false
+    }
   }
 
   /** 关闭 realtime：flush 所有快照 + 关闭 WS server + 销毁所有 Y.Doc。 */
