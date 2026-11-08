@@ -3,8 +3,8 @@
  *
  * 职责：
  * - 接收 step（或 item 下的等待步）+ 待确认条目 id；
- * - 用现有 `agent_approvals`（subject_type='work_item'）记录「谁在何时确认了哪些条目」，
- *   不新增表、不做 v35；
+ * - 把「谁在何时确认了哪些条目」写入独立的 `acceptance_confirmations`（v35）；
+ *   `agent_approvals` 只承载工具调用审批，不再混入人工验收事实（`9852b77` 做法已废止）；
  * - 确认后重算确定性验收：仍有非 manual 失败 → verify_fail；仍有未确认 manual → 继续等待；
  *   全部通过 → 步/任务终态收敛。
  *
@@ -12,9 +12,8 @@
  * 原 turn 已完成，确认只重算验收并直接收口。原因见文档 §M5.11。
  */
 
-import { createHash } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
-import { AgentRepository } from '../agent/runtime/db/repository'
 import {
   evaluateAcceptance,
   type AcceptancePendingItem,
@@ -22,8 +21,6 @@ import {
 } from './acceptance-executor'
 import { WorkItemService, type WorkItemRow, type WorkItemStatus, type WorkStepRow } from './work-item-service'
 import { WorkStepService, type WorkStepStatus } from './work-step-service'
-
-export const ACCEPTANCE_CONFIRM_TOOL = 'acceptance_manual_confirm'
 
 /** input_request_json 的契约形状（kind + 待确认条目）。 */
 export interface AcceptanceInputRequest {
@@ -73,8 +70,10 @@ export interface ConfirmAcceptanceResult {
   itemStatus: WorkItemStatus
   /** 仍待确认的条目（空数组表示已收口）。 */
   remainingEntryIds: string[]
-  /** 本次确认事实 id（agent_approvals.id）。 */
-  approvalId: string
+  /** 本次确认事实批次 id（acceptance_confirmations.batch_id）。 */
+  confirmationBatchId: string
+  /** 本次实际写入的确认事实行 id（每个条目一行）。 */
+  confirmationIds: string[]
   lineageId: string
   revision: number
 }
@@ -110,12 +109,10 @@ function serializeRequest(base: AcceptanceInputRequest, entries: AcceptancePendi
 export class AcceptanceConfirmationService {
   private readonly items: WorkItemService
   private readonly steps: WorkStepService
-  private readonly approvals: AgentRepository
 
   constructor(private readonly db: BetterSqlite3.Database) {
     this.items = new WorkItemService(db)
     this.steps = new WorkStepService(db)
-    this.approvals = new AgentRepository(db)
   }
 
   async confirm(input: ConfirmAcceptanceInput): Promise<ConfirmAcceptanceResult> {
@@ -158,18 +155,9 @@ export class AcceptanceConfirmationService {
       confirmedManualEntryIds: confirmedIds,
     })
 
-    const approvalArgs = JSON.stringify({
-      kind: ACCEPTANCE_CONFIRM_TOOL,
-      stepId: step.id,
-      entryIds,
-    })
     const decidedAt = Date.now()
-    const note = [
-      input.confirmedBy ? `confirmed_by=${input.confirmedBy}` : '',
-      input.note ?? '',
-    ]
-      .filter(Boolean)
-      .join(' | ')
+    const decidedBy = input.confirmedBy ?? 'user'
+    const note = input.note?.trim() ? input.note.trim() : null
 
     const txn = this.db.transaction((): ConfirmAcceptanceResult => {
       // 并发守卫：确认期间 input_request_json 被其他确认改过，则不覆盖，要求调用方重试。
@@ -181,20 +169,16 @@ export class AcceptanceConfirmationService {
         )
       }
 
-      const approval = this.approvals.insertApproval({
+      const batchId = `acb_${Date.now()}_${randomUUID().slice(0, 8)}`
+      const confirmationIds = this.insertConfirmations({
+        batchId,
+        workItemId: item.id,
         stepId: step.id,
-        toolName: ACCEPTANCE_CONFIRM_TOOL,
-        argsJson: approvalArgs,
-        argsHash: createHash('sha256').update(approvalArgs).digest('hex'),
-        risk: 'low',
-        policyDecision: 'ask',
-        subjectType: 'work_item',
-        subjectId: item.id,
-        expiresAt: decidedAt + 24 * 60 * 60 * 1000,
-        mode: 'interactive',
-        timeoutMs: 0,
+        entryIds,
+        decidedBy,
+        decidedAt,
+        note,
       })
-      this.approvals.decideApproval(approval.id, 'allow', 'user', decidedAt, note || undefined)
 
       const settled = this.applyVerdict(item, step, request, verdict)
       const finalItem = this.items.get(item.id)!
@@ -204,12 +188,48 @@ export class AcceptanceConfirmationService {
         stepStatus: settled.stepStatus,
         itemStatus: finalItem.status,
         remainingEntryIds: settled.remainingEntryIds,
-        approvalId: approval.id,
+        confirmationBatchId: batchId,
+        confirmationIds,
         lineageId: finalItem.lineage_id,
         revision: finalItem.revision,
       }
     })
     return txn()
+  }
+
+  /** 写入确认事实（每条目一行，batch_id 分组）；重复条目按唯一索引幂等。 */
+  private insertConfirmations(input: {
+    batchId: string
+    workItemId: string
+    stepId: string
+    entryIds: string[]
+    decidedBy: string
+    decidedAt: number
+    note: string | null
+  }): string[] {
+    const stmt = this.db.prepare(
+      `INSERT OR IGNORE INTO acceptance_confirmations
+         (id, batch_id, work_item_id, step_id, entry_id, decided_by, decided_at,
+          decision_note, source, legacy_approval_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', NULL, ?)`,
+    )
+    const ids: string[] = []
+    for (const entryId of input.entryIds) {
+      const id = `ac_${Date.now()}_${randomUUID().slice(0, 8)}`
+      const result = stmt.run(
+        id,
+        input.batchId,
+        input.workItemId,
+        input.stepId,
+        entryId,
+        input.decidedBy,
+        input.decidedAt,
+        input.note,
+        input.decidedAt,
+      )
+      if (result.changes > 0) ids.push(id)
+    }
+    return ids
   }
 
   private resolveStep(input: ConfirmAcceptanceInput, entryIds: string[]): WorkStepRow {
@@ -257,25 +277,9 @@ export class AcceptanceConfirmationService {
 
   private listConfirmedEntryIds(stepId: string): string[] {
     const rows = this.db
-      .prepare(
-        `SELECT args_json FROM agent_approvals
-          WHERE step_id = ? AND tool_name = ? AND status = 'allowed'`,
-      )
-      .all(stepId, ACCEPTANCE_CONFIRM_TOOL) as Array<{ args_json: string }>
-    const ids: string[] = []
-    for (const row of rows) {
-      try {
-        const parsed = JSON.parse(row.args_json) as { entryIds?: unknown }
-        if (Array.isArray(parsed.entryIds)) {
-          for (const id of parsed.entryIds) {
-            if (typeof id === 'string' && id.trim() !== '') ids.push(id)
-          }
-        }
-      } catch {
-        // 历史行不可解析不影响本次确认；按未确认处理（fail-closed 仍在 pending 分支）。
-      }
-    }
-    return [...new Set(ids)]
+      .prepare('SELECT entry_id FROM acceptance_confirmations WHERE step_id = ?')
+      .all(stepId) as Array<{ entry_id: string }>
+    return [...new Set(rows.map((row) => row.entry_id).filter((id) => id.trim() !== ''))]
   }
 
   /**

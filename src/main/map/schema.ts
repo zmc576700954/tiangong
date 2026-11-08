@@ -593,6 +593,67 @@ export const MAP_S8_INDEX_SQLS: string[] = [
   `CREATE INDEX IF NOT EXISTS idx_test_results_target ON test_results(target_node_entity_key, status)`,
 ]
 
+// ============================================================
+// v35：manual 验收人工确认事实（M5.11；替代 agent_approvals 复用）
+// ============================================================
+
+/**
+ * `9852b77` 曾把人工验收确认写成 `agent_approvals` 行
+ * （tool_name='acceptance_manual_confirm'、status='allowed'）。该做法已废止：
+ * agent_approvals 只承载**工具调用审批**，不能出现从未调用过工具的放行记录。
+ * 迁移（v34→v35）按此值识别历史行并搬入 acceptance_confirmations。
+ */
+export const LEGACY_ACCEPTANCE_APPROVAL_TOOL = 'acceptance_manual_confirm'
+
+export const MAP_ACCEPTANCE_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    // 一次确认调用可能覆盖多个条目：batch_id 分组，每行一个被确认条目。
+    // source='legacy_agent_approval' 表示由 v34 历史行迁移而来，legacy_approval_id
+    // 保留原 agent_approvals.id，确保可追溯（迁移不静默删除）。
+    name: 'acceptance_confirmations',
+    createSql: `
+      CREATE TABLE acceptance_confirmations (
+        id                  TEXT PRIMARY KEY,
+        batch_id            TEXT NOT NULL,
+        work_item_id        TEXT NOT NULL,
+        step_id             TEXT NOT NULL,
+        entry_id            TEXT NOT NULL,
+        decided_by          TEXT NOT NULL,
+        decided_at          INTEGER NOT NULL,
+        decision_note       TEXT,
+        source              TEXT NOT NULL DEFAULT 'user'
+                            CHECK(source IN ('user','legacy_agent_approval')),
+        legacy_approval_id  TEXT,
+        created_at          INTEGER NOT NULL,
+        UNIQUE(batch_id, entry_id)
+      )
+    `,
+    requiredColumns: [
+      'id', 'batch_id', 'work_item_id', 'step_id', 'entry_id',
+      'decided_by', 'decided_at', 'source', 'created_at',
+    ],
+  },
+]
+
+export const MAP_ACCEPTANCE_INDEX_SQLS: string[] = [
+  // 同一步同一验收条目只允许确认一次（部分确认重试由 STEP_NOT_WAITING 挡住）。
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_acceptance_confirmations_entry
+     ON acceptance_confirmations(work_item_id, step_id, entry_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_acceptance_confirmations_step
+     ON acceptance_confirmations(step_id, decided_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_acceptance_confirmations_item
+     ON acceptance_confirmations(work_item_id, decided_at DESC)`,
+]
+
+export function applyMapAcceptanceSchema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_ACCEPTANCE_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_ACCEPTANCE_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}
+
 export function applyMapS8Schema(db: { exec(sql: string): unknown }): void {
   for (const schema of MAP_S8_TABLE_SCHEMAS) {
     db.exec(schema.createSql)

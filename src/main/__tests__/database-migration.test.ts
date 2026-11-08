@@ -34,7 +34,8 @@ vi.mock('electron', () => ({
 }))
 
 import { initDatabase, closeDatabase, getClient } from '../database'
-import { MAP_S5A_TABLE_SCHEMAS } from '../map/schema'
+import { LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_S5A_TABLE_SCHEMAS } from '../map/schema'
+import { AGENT_TABLE_SCHEMAS } from '../agent/runtime/db/schema'
 import { ErrorCode } from '../errors'
 import * as databaseModule from '../database'
 
@@ -528,7 +529,8 @@ describe('Database Migration', () => {
         .toEqual({ title: '旧步', skip_reason: null, failure_class: null })
       // 纯加列：没有走重建路径（否则会留下 work_*_backup）。
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('work_items_backup','work_steps_backup')").all()).toEqual([])
-      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 34 })
+      // 迁移链继续走到当前版本（v35 新增 acceptance_confirmations）。
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 35 })
     } finally {
       closeDatabase()
       electronPaths.userData = previousUserData
@@ -542,11 +544,11 @@ describe('Database Migration', () => {
     const newerDbPath = path.join(newerUserData, 'data', 'bizgraph.db')
     fs.mkdirSync(path.dirname(newerDbPath), { recursive: true })
 
-    // 造一个「被更高版本写过」的库：版本号 35（高于当前上限 34）+ 一表只有新版本认识。
+    // 造一个「被更高版本写过」的库：版本号 36（高于当前上限 35）+ 一表只有新版本认识。
     const newerDb = new BetterSqlite3(newerDbPath)
     newerDb.exec(`
       CREATE TABLE schema_version (version INTEGER NOT NULL);
-      INSERT INTO schema_version VALUES (35);
+      INSERT INTO schema_version VALUES (36);
       CREATE TABLE future_only_marker (id TEXT PRIMARY KEY, value TEXT);
       INSERT INTO future_only_marker VALUES ('sentinel', 'kept');
     `)
@@ -571,13 +573,13 @@ describe('Database Migration', () => {
 
     expect(caught).not.toBeNull()
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
+    expect((caught as Error).message).toMatch(/v36/)
     expect((caught as Error).message).toMatch(/v35/)
-    expect((caught as Error).message).toMatch(/v34/)
 
-    // 拒绝打开必须是零写入的：版本仍是 35，新版本专属的表/行仍在。
+    // 拒绝打开必须是零写入的：版本仍是 36，新版本专属的表/行仍在。
     const reopened = new BetterSqlite3(newerDbPath)
     const version = reopened.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
-    expect(Number(version.version)).toBe(35)
+    expect(Number(version.version)).toBe(36)
     expect(reopened.prepare("SELECT value FROM future_only_marker WHERE id='sentinel'").get()).toEqual({ value: 'kept' })
     reopened.close()
 
@@ -592,7 +594,7 @@ describe('Database Migration', () => {
       version: number
       createdAt: string
     }
-    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 35 }))
+    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 36 }))
 
     let caught: unknown
     try {
@@ -601,12 +603,104 @@ describe('Database Migration', () => {
       caught = err
     }
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
-    expect((caught as Error).message).toMatch(/v35/)
+    expect((caught as Error).message).toMatch(/v36/)
 
     // 显式处理不可信缓存后，库本身仍可正常打开
     fs.rmSync(schemaChecksumPath, { force: true })
     initDatabase()
     const version = getClient().prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
-    expect(Number(version.version)).toBeGreaterThanOrEqual(34)
+    expect(Number(version.version)).toBeGreaterThanOrEqual(35)
+  })
+
+  it('v34 → v35：新建 acceptance_confirmations，历史人工确认行迁入且可追溯、无 _backup 残留', () => {
+    const workUserData = path.join(os.tmpdir(), 'bizgraph-v35-acceptance-' + process.pid)
+    fs.rmSync(workUserData, { recursive: true, force: true })
+    const workDbPath = path.join(workUserData, 'data', 'bizgraph.db')
+    fs.mkdirSync(path.dirname(workDbPath), { recursive: true })
+
+    const approvalsDdl = AGENT_TABLE_SCHEMAS.find((s) => s.name === 'agent_approvals')!.createSql
+
+    const legacy = new BetterSqlite3(workDbPath)
+    legacy.exec(`
+      CREATE TABLE schema_version (version INTEGER NOT NULL);
+      INSERT INTO schema_version VALUES (34);
+      ${approvalsDdl};
+      INSERT INTO agent_approvals
+        (id, run_id, turn_id, step_id, tool_name, args_json, args_hash, risk,
+         policy_decision, subject_type, subject_id, status, decided_by, decided_at,
+         decision_note, expires_at, mode, timeout_ms, created_at)
+      VALUES
+        ('ap_legacy_1', NULL, NULL, 'ws_1', '${LEGACY_ACCEPTANCE_APPROVAL_TOOL}',
+         '{"kind":"acceptance_manual_confirm","stepId":"ws_1","entryIds":["m1","m2"]}',
+         'hash1', 'low', 'ask', 'work_item', 'wi_1', 'allowed', 'user', 111,
+         '旧备注', 999, 'interactive', 0, 111),
+        ('ap_legacy_2', NULL, NULL, NULL, '${LEGACY_ACCEPTANCE_APPROVAL_TOOL}',
+         '{"entryIds":["m3"]}', 'hash2', 'low', 'ask', 'work_item', NULL, 'allowed', 'user', 222,
+         NULL, 999, 'interactive', 0, 222),
+        ('ap_tool', NULL, NULL, 'ws_1', 'Bash', '{"command":"ls"}', 'hash3', 'low', 'allow',
+         'agent_turn', NULL, 'allowed', 'policy', 333, NULL, 999, 'interactive', 0, 333);
+    `)
+    legacy.close()
+
+    const previousUserData = electronPaths.userData
+    closeDatabase()
+    electronPaths.userData = workUserData
+    try {
+      initDatabase()
+      const db = getClient()
+
+      // 1. 新表建成
+      const table = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='acceptance_confirmations'")
+        .get() as { name: string } | undefined
+      expect(table?.name).toBe('acceptance_confirmations')
+
+      // 2. 历史行迁入：可解析的一条（2 条目）搬走；信息不全的一条保留并告警（不静默删）
+      const migrated = db
+        .prepare('SELECT * FROM acceptance_confirmations ORDER BY entry_id')
+        .all() as Array<{
+        batch_id: string
+        work_item_id: string
+        step_id: string
+        entry_id: string
+        decided_by: string
+        decided_at: number
+        decision_note: string | null
+        source: string
+        legacy_approval_id: string
+      }>
+      expect(migrated.map((r) => r.entry_id)).toEqual(['m1', 'm2'])
+      expect(migrated[0]).toMatchObject({
+        batch_id: 'legacy:ap_legacy_1',
+        work_item_id: 'wi_1',
+        step_id: 'ws_1',
+        decided_by: 'user',
+        decided_at: 111,
+        decision_note: '旧备注',
+        source: 'legacy_agent_approval',
+        legacy_approval_id: 'ap_legacy_1',
+      })
+
+      // 3. 可迁移的旧行已从 agent_approvals 移除；非验收行原样保留
+      const remaining = db
+        .prepare('SELECT id, tool_name FROM agent_approvals ORDER BY id')
+        .all() as Array<{ id: string; tool_name: string }>
+      expect(remaining).toEqual([
+        { id: 'ap_legacy_2', tool_name: LEGACY_ACCEPTANCE_APPROVAL_TOOL },
+        { id: 'ap_tool', tool_name: 'Bash' },
+      ])
+
+      // 4. 无 _backup 残留（新表走 CREATE，不触发重建）
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_backup'").all(),
+      ).toEqual([])
+
+      // 5. 版本递增
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 35 })
+    } finally {
+      closeDatabase()
+      electronPaths.userData = previousUserData
+      initDatabase()
+    }
   })
 })

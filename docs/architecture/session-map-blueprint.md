@@ -871,7 +871,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 | `agent_runs` / `agent_sessions` | 是 | 通过 `work_runs.agent_run_id` / `session_id` 挂到任务 |
 | `agent_turns` | 是 | `node_session_links.turn_id` 可选指向首轮 |
 | `agent_artifacts` | 是 | 本期不作为测试结果载体；测试输出走 `test_results.output_ref` |
-| `agent_approvals` | 是 | 扩展 subject（测试计划级审批），见 §6.3 |
+| `agent_approvals` | 是 | 扩展 subject（测试计划级审批），见 §6.3；v35 起只放工具调用审批，人工验收确认另见 `acceptance_confirmations`（§M5.12） |
 | `chat_threads` / `chat_messages` | 是 | 时间线读取来源 |
 
 已知限制与修订（D8）：
@@ -1832,6 +1832,8 @@ subject_id TEXT
 ```
 
 **不新增 `test_approvals` 表（D6）**：测试计划审批复用本表的 `subject_type='test_plan'`；独立审批表会造成两套审批事实与审计分裂，理由见 §6.3。
+
+**语义边界（v35）**：本表只承载**工具的调用审批**（一次 `tool_name` + `args_json` 的放行/拒绝），不得写入“人工验收确认”这类非工具事实。后者落 `acceptance_confirmations`（§M5.12）；`9852b77` 的 `tool_name='acceptance_manual_confirm'` 写法已废止，存量行由 v35 迁移搬走。
 
 ### 7.2 新增表
 
@@ -3911,7 +3913,7 @@ GateRecheckResult {
 
 **写通道**：`workitem:acceptance:confirm`（`ipc/map.ts` → preload 白名单 → `IpcApi` → 面板按钮）。入参 `stepId` 或 `workItemId`（至少一个）+ `entryIds[]`，支持部分确认。
 
-**确认事实存储**：复用 `agent_approvals`（`subject_type='work_item'`、`step_id`、`tool_name='acceptance_manual_confirm'`、`args_json={stepId,entryIds}`、`status='allowed'`、`decided_by='user'`、`decided_at`、`decision_note`）。不新增表、不做 v35；`decided_at` 即“什么时候”，`entryIds` 即“哪些条目”。
+**确认事实存储**：v35 起写入独立表 `acceptance_confirmations`（每条目一行，`batch_id` 分组；字段见 §M5.12）。`9852b77` 曾复用 `agent_approvals`（`tool_name='acceptance_manual_confirm'`）的做法**已废止**——`agent_approvals` 只承载工具调用审批，不得出现从未调用过工具的放行记录。
 
 **重算与收口**：`AcceptanceConfirmationService.confirm` 读 `input_request_json` 校验条目归属，把历史 + 本次确认的 manual id 传给 `evaluateAcceptance` 视为通过：
 
@@ -3924,6 +3926,34 @@ GateRecheckResult {
 **面板**：`NodeMapPanel` 在 `needs_input` 步下渲染待确认条目与“确认”按钮（`workitem:acceptance:confirm`），这是面板的唯一写操作；其余仍只读。
 
 **测试**：`acceptance-confirmation.test.ts` 5 例（确认通过、部分确认继续等待、确认后硬失败、仅 itemId 定位、未知条目/重复确认）。
+
+### M5.12 验收确认事实独立建表（v35，2026-11-08，已实施）
+
+**动机**：`9852b77` 把人工验收确认写成 `agent_approvals` 行（`tool_name='acceptance_manual_confirm'`、直接 `status='allowed'`），绕过了 `ApprovalGateway`。后果是“哪些工具调用被放行”的审计里出现从未调用过工具的记录，语义被混。
+
+**语义边界**：`agent_approvals` 只承载**一次工具调用的审批**（`subject_type='agent_turn'|'test_plan'`，`tool_name` 必须对应真实工具）。人工验收确认不是工具审批，不得写入该表。
+
+**新表** `acceptance_confirmations`（schema v35）：
+
+| 列 | 含义 |
+|---|---|
+| `id` | 事实行 id |
+| `batch_id` | 一次确认调用分组（`acb_*`；历史迁移为 `legacy:<approvalId>`） |
+| `work_item_id` / `step_id` | 所属任务与等待步 |
+| `entry_id` | 被确认的验收条目 id（每行一个） |
+| `decided_by` / `decided_at` | 谁在什么时候确认 |
+| `decision_note` | 可选备注 |
+| `source` | `user`（新写入）或 `legacy_agent_approval`（迁移来源） |
+| `legacy_approval_id` | 迁移前 `agent_approvals.id`（可追溯，迁移不静默删） |
+| `created_at` | 写入时间 |
+
+唯一索引 `ux_acceptance_confirmations_entry(work_item_id, step_id, entry_id)` 保证同一步同一入口只确认一次；部分确认重试仍由 `STEP_NOT_WAITING` 挡住。
+
+**迁移（v34→v35）**：新建表；`runIncrementalMigrations` 扫描 `agent_approvals.tool_name='acceptance_manual_confirm'` 的行，按 `args_json.entryIds` 逐条搬入新表后删除旧行。解析不了（缺 `step_id`/`subject_id`/`entryIds`）的历史行**保留并告警**，不静默丢失。实库核查（2026-11-08）：历史行 **0 条**。
+
+**读取路径**：`listConfirmedEntryIds(stepId)` 改为查 `acceptance_confirmations.entry_id`；重复确认、批次确认、半批确认行为不变。
+
+**测试**：迁移用例覆盖新表建成、旧行迁入且 `legacy_approval_id` 可追溯、信息不全行保留、非验收审批行原样保留、无 `_backup` 残留、`version=35`；确认用例断言 `agent_approvals` 不再出现验收行。
 
 ## 单轨分工与文件所有权（2026-11-08）
 

@@ -388,7 +388,8 @@ export function registerMapHandlers(
       stepStatus: result.stepStatus,
       itemStatus: result.itemStatus,
       remainingEntryIds: result.remainingEntryIds,
-      approvalId: result.approvalId,
+      confirmationBatchId: result.confirmationBatchId,
+      confirmationIds: result.confirmationIds,
     }
   })
 

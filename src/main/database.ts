@@ -18,9 +18,12 @@ import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All, scanExpiredE4All } from './map/evidence-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
-import { MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS } from './map/schema'
-import { MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS } from './map/schema'
-import { MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS } from './map/schema'
+import {
+  MAP_S5A_TABLE_SCHEMAS, MAP_S5A_INDEX_SQLS, MAP_S6A_TABLE_SCHEMAS, MAP_S6A_INDEX_SQLS,
+  MAP_S7_TABLE_SCHEMAS, MAP_S7_INDEX_SQLS,
+  MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS,
+  LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_ACCEPTANCE_TABLE_SCHEMAS, MAP_ACCEPTANCE_INDEX_SQLS,
+} from './map/schema'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
 
 const logger = createLogger('Database')
@@ -733,8 +736,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      存量库由 runIncrementalMigrations 走 ALTER TABLE 补列。版本递增同时封住
  *      「旧二进制按同版本 createSql 回退 DDL」：旧二进制读到 v34 会被
  *      DB_SCHEMA_TOO_NEW 拦住，而不是静默重建。
+ * v35：manual 验收确认事实独立建表 —— 新建 acceptance_confirmations
+ *      （一次确认一行/条目，batch_id 分组，source 标记迁移来源）。`9852b77`
+ *      复用 agent_approvals 记录人工验收的做法废止：agent_approvals 只承载
+ *      工具调用审批。存量库若有 tool_name='acceptance_manual_confirm' 的行，
+ *      由 runIncrementalMigrations 搬入新表（保留 legacy_approval_id 可追溯），
+ *      不静默删除。
  */
-const CURRENT_SCHEMA_VERSION = 34
+const CURRENT_SCHEMA_VERSION = 35
 
 interface TableSchema {
   name: string
@@ -1211,6 +1220,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_S7_TABLE_SCHEMAS,
   // v32 / S8 前置五表(test_specs/test_plans/test_plan_items/test_runs/test_results)。
   ...MAP_S8_TABLE_SCHEMAS,
+  // v35 / manual 验收确认事实（替代 agent_approvals 复用，§M5.11）。
+  ...MAP_ACCEPTANCE_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -1271,6 +1282,7 @@ const INDEX_SQLS: string[] = [
   ...MAP_S6A_INDEX_SQLS,
   ...MAP_S7_INDEX_SQLS,
   ...MAP_S8_INDEX_SQLS,
+  ...MAP_ACCEPTANCE_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]
@@ -1456,6 +1468,118 @@ function validateDefaultValue(value: string): string {
 }
 
 /**
+ * v35（§M5.11）：把 `9852b77` 写入 agent_approvals 的人工验收确认事实搬进
+ * acceptance_confirmations。逐行保留 legacy_approval_id 以可追溯；解析不了的
+ * 历史行不删、只告警（不静默丢失）。迁移后 agent_approvals 不再有
+ * tool_name='acceptance_manual_confirm' 的非工具审批行。
+ */
+function migrateLegacyAcceptanceConfirmations(db: BetterSqlite3.Database): void {
+  const hasTarget = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='acceptance_confirmations'")
+    .get()
+  const hasSource = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_approvals'")
+    .get()
+  if (!hasTarget || !hasSource) {
+    logger.info('acceptance_confirmations 或 agent_approvals 不存在，跳过历史人工确认迁移')
+    return
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT id, subject_id, step_id, decided_by, decided_at, decision_note, args_json, created_at
+         FROM agent_approvals WHERE tool_name = ?`,
+    )
+    .all(LEGACY_ACCEPTANCE_APPROVAL_TOOL) as Array<{
+    id: string
+    subject_id: string | null
+    step_id: string | null
+    decided_by: string | null
+    decided_at: number | null
+    decision_note: string | null
+    args_json: string
+    created_at: number
+  }>
+
+  if (rows.length === 0) {
+    logger.info('历史人工验收确认行 0 条（agent_approvals 无需迁移）')
+    return
+  }
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO acceptance_confirmations
+       (id, batch_id, work_item_id, step_id, entry_id, decided_by, decided_at,
+        decision_note, source, legacy_approval_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'legacy_agent_approval', ?, ?)`,
+  )
+  const remove = db.prepare('DELETE FROM agent_approvals WHERE id = ? AND tool_name = ?')
+
+  let migratedRows = 0
+  let migratedEntries = 0
+  let keptRows = 0
+
+  const txn = db.transaction(() => {
+    for (const row of rows) {
+      let entryIds: string[] = []
+      let argsStepId = ''
+      try {
+        const parsed = JSON.parse(row.args_json) as { entryIds?: unknown; stepId?: unknown }
+        if (Array.isArray(parsed.entryIds)) {
+          entryIds = parsed.entryIds.filter(
+            (id): id is string => typeof id === 'string' && id.trim() !== '',
+          )
+        }
+        if (typeof parsed.stepId === 'string') argsStepId = parsed.stepId
+      } catch {
+        // 历史 args_json 损坏：保留原行并告警，不当成已迁移。
+      }
+
+      const stepId = row.step_id ?? (argsStepId || null)
+      const workItemId = row.subject_id
+      if (!stepId || !workItemId || entryIds.length === 0) {
+        keptRows += 1
+        logger.warn(
+          `历史人工验收确认行无法迁移，已保留原行 id=${row.id}（step=${stepId ?? 'NULL'}, item=${workItemId ?? 'NULL'}, entries=${entryIds.length}）`,
+        )
+        continue
+      }
+
+      const batchId = `legacy:${row.id}`
+      const decidedAt = row.decided_at ?? row.created_at
+      const decidedBy = row.decided_by ?? 'user'
+      let insertedAll = true
+      for (const entryId of entryIds) {
+        const result = insert.run(
+          `ac_${crypto.randomUUID()}`,
+          batchId,
+          workItemId,
+          stepId,
+          entryId,
+          decidedBy,
+          decidedAt,
+          row.decision_note,
+          row.id,
+          row.created_at,
+        )
+        if (result.changes > 0) migratedEntries += 1
+        else insertedAll = false // 新表已有同条目确认：仍然搬走，避免旧语义残留
+      }
+      remove.run(row.id, LEGACY_ACCEPTANCE_APPROVAL_TOOL)
+      migratedRows += 1
+      if (!insertedAll) {
+        logger.info(`历史确认行 id=${row.id} 部分条目已存在于新表，按幂等跳过重复行`)
+      }
+    }
+  })
+  txn()
+
+  logger.info(
+    `历史人工验收确认迁移完成：${migratedRows} 行/${migratedEntries} 条目迁入 acceptance_confirmations，` +
+      `${keptRows} 行因信息不全保留在 agent_approvals`,
+  )
+}
+
+/**
  * 增量迁移：安全添加新列（幂等操作，可重复执行）
  */
 function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0): void {
@@ -1505,6 +1629,12 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
     addColumnSafe('work_steps', 'skip_reason', 'TEXT')
     addColumnSafe('work_steps', 'failure_class', 'TEXT')
     addColumnSafe('work_items', 'cancel_reason', 'TEXT')
+  }
+
+  // v35：历史人工验收确认从 agent_approvals 搬到 acceptance_confirmations。
+  // 新表已由 TABLE_SCHEMAS 建好；这里只搬数据（解析不了的旧行保留并告警）。
+  if (currentVersion < 35) {
+    migrateLegacyAcceptanceConfirmations(db)
   }
 
   // v26 / S1.2（session-map 蓝图 §2.2.2）：nodes.entity_key 身份列。createSql 已含该列

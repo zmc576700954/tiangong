@@ -324,7 +324,10 @@ export interface IpcApi {
     stepStatus: string
     itemStatus: string
     remainingEntryIds: string[]
-    approvalId: string
+    /** 本次确认事实批次 id（acceptance_confirmations.batch_id）。 */
+    confirmationBatchId: string
+    /** 本次写入的确认事实行 id（每个条目一行）。 */
+    confirmationIds: string[]
   }>
 
   // S7 计划推导/草稿（§9.2 plan:*;C1 环检测拒绝带 |cycle=[...] 后缀）

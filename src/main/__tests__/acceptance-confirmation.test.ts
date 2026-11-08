@@ -1,5 +1,6 @@
 /**
- * manual 验收人工确认（§M5.11）：确认事实落 agent_approvals + 重算验收 + 状态收口。
+ * manual 验收人工确认（§M5.11 / v35）：确认事实落 acceptance_confirmations
+ * + 重算验收 + 状态收口；agent_approvals 不再出现非工具审批行。
  *
  * 覆盖：manual-only 确认通过；部分确认继续等待；确认后硬失败落 verify_fail；
  * 只给 itemId 定位等待步；未知条目拒绝；重复确认拒绝。
@@ -11,7 +12,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
-import { applyMapS5aSchema } from '../map/schema'
+import { applyMapS5aSchema, applyMapAcceptanceSchema, LEGACY_ACCEPTANCE_APPROVAL_TOOL } from '../map/schema'
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkStepService } from '../map/work-step-service'
@@ -20,7 +21,6 @@ import { WorkScheduler } from '../map/work-scheduler'
 import { AgentStepRunner, type AgentTurnRunner, type AgentTurnSignal } from '../map/agent-step-runner'
 import { evaluateAcceptance } from '../map/acceptance-executor'
 import {
-  ACCEPTANCE_CONFIRM_TOOL,
   type AcceptanceConfirmationError,
   AcceptanceConfirmationService,
 } from '../map/acceptance-confirmation'
@@ -48,6 +48,7 @@ describe('AcceptanceConfirmationService', () => {
   beforeEach(() => {
     db = new Database(':memory:') as unknown as BetterSqlite3.Database
     applyMapS5aSchema(db)
+    applyMapAcceptanceSchema(db)
     applyAgentSchema(db)
     items = new WorkItemService(db)
     steps = new WorkStepService(db)
@@ -97,20 +98,27 @@ describe('AcceptanceConfirmationService', () => {
     return claimed!
   }
 
-  function approvalsFor(stepId: string) {
+  function confirmationsFor(stepId: string) {
     return db
-      .prepare('SELECT * FROM agent_approvals WHERE step_id = ? ORDER BY created_at ASC')
+      .prepare('SELECT * FROM acceptance_confirmations WHERE step_id = ? ORDER BY created_at ASC, entry_id ASC')
       .all(stepId) as Array<{
       id: string
-      subject_type: string
-      subject_id: string
-      tool_name: string
-      status: string
-      decided_by: string | null
-      decided_at: number | null
-      args_json: string
+      batch_id: string
+      work_item_id: string
+      step_id: string
+      entry_id: string
+      decided_by: string
+      decided_at: number
       decision_note: string | null
+      source: string
+      legacy_approval_id: string | null
     }>
+  }
+
+  function legacyApprovalRows() {
+    return db
+      .prepare('SELECT id FROM agent_approvals WHERE tool_name = ?')
+      .all(LEGACY_ACCEPTANCE_APPROVAL_TOOL) as Array<{ id: string }>
   }
 
   it('manual-only：确认后步 succeeded、item done，并记录确认事实', async () => {
@@ -129,16 +137,19 @@ describe('AcceptanceConfirmationService', () => {
     expect(items.get(itemId)?.status).toBe('done')
     expect(runs.get(claimed.run.id)?.status).toBe('completed')
 
-    const rows = approvalsFor(claimed.step.id)
+    const rows = confirmationsFor(claimed.step.id)
     expect(rows).toHaveLength(1)
-    expect(rows[0].subject_type).toBe('work_item')
-    expect(rows[0].subject_id).toBe(itemId)
-    expect(rows[0].tool_name).toBe(ACCEPTANCE_CONFIRM_TOOL)
-    expect(rows[0].status).toBe('allowed')
+    expect(rows[0].batch_id).toBe(result.confirmationBatchId)
+    expect(rows[0].work_item_id).toBe(itemId)
+    expect(rows[0].entry_id).toBe('m1')
     expect(rows[0].decided_by).toBe('user')
     expect(rows[0].decided_at).toBeTypeOf('number')
-    expect(rows[0].args_json).toContain('m1')
+    expect(rows[0].source).toBe('user')
+    expect(rows[0].legacy_approval_id).toBeNull()
     expect(rows[0].decision_note).toContain('看过截图')
+    expect(result.confirmationIds).toEqual([rows[0].id])
+    // agent_approvals 只承载工具审批：人工验收不得再写入非工具审批行。
+    expect(legacyApprovalRows()).toHaveLength(0)
   })
 
   it('两个 manual：部分确认继续等待，剩余条目写回 input_request_json', async () => {
@@ -162,7 +173,8 @@ describe('AcceptanceConfirmationService', () => {
     const done = await confirmService.confirm({ stepId: claimed.step.id, entryIds: ['m2'] })
     expect(done.stepStatus).toBe('succeeded')
     expect(done.itemStatus).toBe('done')
-    expect(approvalsFor(claimed.step.id)).toHaveLength(2)
+    expect(confirmationsFor(claimed.step.id)).toHaveLength(2)
+    expect(legacyApprovalRows()).toHaveLength(0)
   })
 
   it('确认后重算仍有非 manual 硬失败 → verify_fail', async () => {
@@ -212,6 +224,7 @@ describe('AcceptanceConfirmationService', () => {
       confirmService.confirm({ stepId: claimed.step.id, entryIds: ['m1'] }),
     ).rejects.toMatchObject({ code: 'STEP_NOT_WAITING' } satisfies Partial<AcceptanceConfirmationError>)
     // 重复确认不得多写事实。
-    expect(approvalsFor(claimed.step.id)).toHaveLength(1)
+    expect(confirmationsFor(claimed.step.id)).toHaveLength(1)
+    expect(legacyApprovalRows()).toHaveLength(0)
   })
 })
