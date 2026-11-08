@@ -1,10 +1,10 @@
 /**
- * G1–G6 准入 gate 评估引擎（session-map 蓝图 §5.4 / §5.4.1 / §14 规格草案）。
+ * G1–G6 准入 gate 评估引擎（session-map 蓝图 §5.4 / §5.4.1 / §14 规格；D1–D14 裁决见 §14.8）。
  *
  * 职责边界：
  * - 只读：不写 work_items / work_steps / work_runs / node_evidence 任何一行；
  *   结果落库与状态迁移由调用方（work-execution-service 的 tick / WorkItemService）完成。
- * - 实现 §14 草案发布的 GateRecheck 端口（gate-recheck.ts）；**不读取也不信任**
+ * - 实现 §14 定义并已裁决的 GateRecheck 端口（gate-recheck.ts）；**不读取也不信任**
  *   `work_items.gate_status`（§5.9「重跑不信任旧结果」）。唯一例外是人工豁免
  *   三字段（gate_waived_by/at/reason）：那是人工事实输入而非被重跑的缓存结论
  *   （§14.2 waiver 输入位），仅用于 G2 manual 条目的豁免判定（见下）。
@@ -21,23 +21,28 @@
  *   混合场景的正确路径是 revise 补全/改标失败条目）。
  * - 三字段缺任一（by/at/reason 为空或类型不符）→ 豁免不成立，维持 incomplete。
  *
- * 已裁决并实施的默认（行为不变，状态词更新）：
- * - D1（2026-11-07）：acceptance 须含 {type ∈ command|manual|file_check, expected}
- *   结构化条目（createDraft/revise 边界强制）；存量 [{id,text}] 仍会被判
- *   acceptance_item_not_structured（不自动迁移）。
- * - D3/D9（2026-11-07，见 §M5.9）：豁免为任务级粒度；G5/G6 永久不可豁免。
- *
- * 仍待决的 fail-closed 默认（§14.8，未替产品拍板，只落默认值）：
- * - D4：project_path 为空 → project_path_missing，不从图/项目兜底。
- * - D5/D6：「跨图写」在现有 schema 上无输入可表达（写入面只有 scope_files，
- *   已被 G1 限定在单一项目根内），故本引擎只强制 §5.4 原文可判定的部分：
- *   锚点存在 + graph_type='dev' + graph_id 一致；链接矩阵待 D5 裁决后扩展。
- * - D7（已裁决，2026-11-07）：预估行数来源 = Σ scope 文件行数的确定性代理——
- *   已存在文件按实际行数计，不存在的文件（将新建）计 0（新建规模由 G4 文件数
- *   上限约束）。生产来源由 runtime 装配注入（work-execution-runtime）；引擎
- *   默认仍无来源 → line_estimate_unavailable。真实改动行数属执行后 evidence
- *   对比（超限是执行后审计），不归准入判定。
- * - D10：G6 默认只比较同 project_path 的 running 任务；lineage 亲属不排除。
+ * 已裁决的输入缺口与默认（§14.8，2026-11-07 整批裁决；下列行为均为现状）：
+ * - D1（已实施）：acceptance 须含 {type ∈ command|manual|file_check, expected}
+ *   结构化条目（createDraft/revise 边界强制）；存量 [{id,text}] 不自动迁移，
+ *   仍判 acceptance_item_not_structured。
+ * - D2（已批准未实施）：expected 语义冻结为 command=退出码 0、file_check=路径存在、
+ *   manual=人工判定描述；确定性验收执行器不在本引擎内（属执行后验收）。
+ * - D3/D9（已实施，见 §M5.9）：豁免为任务级粒度；G5/G6 永久不可豁免。
+ * - D4（已实施）：project_path 为空 → project_path_missing，不从图/项目兜底。
+ * - D5/D6（已实施）：跨图写本期不建模——写入面只有 scope_files，且已被 G1 限定
+ *   在单一项目根内；G3 只强制锚点存在 + graph_type='dev' + graph_id 一致。
+ *   未来出现跨图写入面须新增 gate 或扩展 G3 并重新裁决。
+ * - D7（已实施）：预估行数来源 = Σ scope 文件行数的确定性代理——已存在文件按
+ *   实际行数计，不存在的文件（将新建）计 0（新建规模由 G4 文件数上限约束）。
+ *   生产来源由 runtime 装配注入（work-execution-runtime）；引擎默认仍无来源 →
+ *   line_estimate_unavailable。这是**准入代理指标，不是变更行数**；真实改动行数
+ *   属执行后 evidence 对比（超限是执行后审计），不归准入判定。
+ * - D8（已实施）：G5 只看 depends_on_json 显式声明；上游 superseded →
+ *   dep_revision_stale，不自动代替。
+ * - D10（已实施）：G6 只比较同 project_path 的 running 任务；lineage 亲属不排除。
+ * - D11/D13/D14（已实施）：缺失码只追加不改名；证据不参与准入；评估全同步、
+ *   不设时限预算，异常由调用方按 gate_engine_unavailable 收口。
+ * - D12（已裁决不做）：评估器版本/阈值快照不落库，归因靠引擎所在提交 hash。
  *
  * 快照一致性：recheck 全程同步（better-sqlite3 同步 API + 单线程），一次调用
  * 内的多次读库之间不可能交错写入，等价于同一时点快照。
@@ -49,7 +54,7 @@ import { comparablePath, resolveRealPath } from '../agent/runtime/approval/write
 import type { WorkItemRow } from './work-item-service'
 import type { GateRecheck, GateRecheckResult, GateWaiverInfo } from './gate-recheck'
 
-/** §5.4 G4 默认阈值；真实配置键待 D7 裁决，当前仅引擎参数。 */
+/** §5.4 G4 默认阈值；配置键由 runtime 按 D7 从 env 读取，引擎只接收参数。 */
 const DEFAULT_G4_MAX_FILES = 20
 const DEFAULT_G4_MAX_LINES = 800
 
@@ -175,7 +180,7 @@ function checkScope(item: WorkItemRow): ScopeCheck {
 /**
  * G2：acceptance_json 至少 1 条结构化可判定项
  * （type ∈ command/manual/file_check 且带非空 expected，§5.4 G2）。
- * 存量 [{id,text}] 条目 → acceptance_item_not_structured（D1 未裁决前即此判定）。
+ * 存量 [{id,text}] 条目 → acceptance_item_not_structured（D1 已裁决：不自动迁移）。
  *
  * manualWaivable：全部失败条目均为 type='manual'（缺 expected 的 manual 项）时
  * 才可能被三字段人工豁免（§14.4 G2、§14.9-3）；JSON 不可解析/空数组/混入
@@ -406,7 +411,7 @@ function readValidWaiver(item: WorkItemRow): GateWaiverInfo | null {
 }
 
 /**
- * 构造 G1–G6 评估器（对齐 §14 规格草案与 gate-recheck.ts 的 GateRecheck 端口）。
+ * 构造 G1–G6 评估器（对齐 §14 已裁决规格与 gate-recheck.ts 的 GateRecheck 端口）。
  * 生产接线见 work-execution-runtime.ts（gateRecheck 选项）。
  */
 export function createGateEngine(db: BetterSqlite3.Database, options: GateEngineOptions = {}): GateRecheck {

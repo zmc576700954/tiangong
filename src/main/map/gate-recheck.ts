@@ -1,7 +1,7 @@
 /**
  * tick 第 2 步的 gate 重跑端口（session-map 蓝图 §5.9.9）。
  *
- * 边界（裁决 A + §14 规格草案落地）：
+ * 边界（§14 已裁决规格的落地端口）：
  * - fail-closed：评估不可用（未注入 / 抛异常 / 返回不合规）时一律
  *   `incomplete + ['gate_engine_unavailable']`，**不伪造 pass**。
  * - 生产默认实现是 G1–G6 引擎（gate-engine.ts）；`unavailableGateRecheck`
@@ -42,7 +42,7 @@ export interface GateRecheck {
   recheck(item: WorkItemRow): GateRecheckResult
 }
 
-/** 生产默认：gate 引擎未实施，一律不通过（fail-closed）。 */
+/** 兜底实现：引擎未装配 / 装配失败时一律不通过（生产已注入 createGateEngine）。 */
 export const unavailableGateRecheck: GateRecheck = {
   recheck: () => ({ ok: false, missing: [GATE_ENGINE_UNAVAILABLE] }),
 }

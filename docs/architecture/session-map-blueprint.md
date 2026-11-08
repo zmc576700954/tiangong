@@ -3854,16 +3854,16 @@ GateRecheckResult {
 **已实施**（`src/main/map/gate-engine.ts` + `src/main/map/gate-recheck.ts` 端口扩展；生产装配在 `work-execution-runtime.ts`）：
 
 - 判定范围：G1（scope 非空且经 §5.4.1 realpath/NFC/大小折叠管线校验在项目根内）、G2（≥1 条 `{type ∈ command|manual|file_check, expected 非空}` 结构化条目）、G3 可判定子集（锚点存在 + `graph_type='dev'` + `graph_id` 一致）、G4（去重后文件数与预估行数上限，默认 20/800）、G5（`depends_on_json` 传递闭包全 `done` + 当前 revision + 无环）、G6（与 `running AND is_current` 任务 scope 规范化后无交集）。
-- 豁免（§14.6/§14.9-3）：仅当全部缺失码来自 G2 且失败条目均为 `manual` 类型、三字段（`gate_waived_by/at/reason`）齐全时判 `waived` 视同通过；G1/G3/G4 不可豁免（§5.4），G5/G6 在 D9 裁决前不可豁免；manual 豁免不覆盖 command/file_check 失败（D3 保守读法）。tick 对 waived 结论保留库内三字段，不改写为 `pass`。
+- 豁免（§14.6/§14.9-3）：仅当全部缺失码来自 G2 且失败条目均为 `manual` 类型、三字段（`gate_waived_by/at/reason`）齐全时判 `waived` 视同通过；G1/G3/G4 不可豁免（§5.4），G5/G6 不可豁免（D9 已裁决）；manual 豁免不覆盖 command/file_check 失败（D3 已裁决：任务级粒度）。tick 对 waived 结论保留库内三字段，不改写为 `pass`。
 - fail-closed（§14.5）：JSON 解析失败/查询异常/非 POSIX 根/阈值非法/预估来源缺失一律 `incomplete` + 具体缺失码；评估器抛异常由 tick 按 `gate_engine_unavailable` 同路径收口。
 - 只读与幂等：recheck 全程同步读（better-sqlite3 单线程，一次调用等价同一时点快照），不写四张表（测试做前后快照对比）；同输入两次评估结果一致。
-- 测试：`gate-engine.test.ts` 53 用例 + `work-execution.test.ts` 12 用例，覆盖 §14.9 断言 1–10 的实现子集（含 symlink 逃逸、NFC、darwin 大小写折叠、`./` 前缀规范化等价、零写入、幂等、生产默认注入、抛异常注入）。
+- 测试：`gate-engine.test.ts` 全量用例（含 `94125bd` 新增的 G6+豁免反向断言）+ `work-execution.test.ts` 12 用例，覆盖 §14.9 断言 1–10 的实现子集（含 symlink 逃逸、NFC、darwin 大小写折叠、`./` 前缀规范化等价、零写入、幂等、生产默认注入、抛异常注入）。
 
 **采纳说明**：引擎最初来自另一条线留下的未跟踪实现；本次经逐条对照 §14 复核后采纳，并修正/补齐三处——G2 的 pass 语义（有结构化条目即通过，坏补充条目不再判 incomplete）、G4 按去重后文件数计数（§5.4）、豁免判定与 tick 的异常/waived 处理。
 
-**与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；评估器版本归因属 D12，未裁决前不落库。
+**与 §14.6 建议形状的已知偏离**：`GateRecheckResult` 沿用 M5 已落地的 `{ ok, missing, waived? }`，未采用草案建议的 `gateStatus/evaluatorVersion/evaluatedAt` 完整形状；D12 已裁决本期不落库（评估器归因靠引擎所在提交 hash）。
 
-**依赖产品裁决才能改变的行为**：D5/D6（G3 跨图写矩阵）仍维持 fail-closed 默认。**D1/D7 已裁决并实施（2026-11-07，本段）**，见 M5.8；**D3/D9 已裁决并实施（2026-11-07）**，见 M5.9。
+**已裁决并实施的行为**：D5/D6（G3 跨图写）已裁决为收敛口径——本期只判锚点存在 + `graph_type='dev'` + `graph_id` 一致，跨图写矩阵不建模（§14.8）；D1/D7 见 M5.8；D3/D9 见 M5.9。
 
 ### M5.8 D1/D7 裁决实施记录（2026-11-07，已批准已实施）
 
@@ -3890,4 +3890,26 @@ GateRecheckResult {
 
 **行为变化**：无——两项裁决均确认引擎现状行为，本次仅更新状态词与断言：`gate-engine.ts` 文件头措辞从「D9 裁决前/D3 保守读法」改为「已裁决」；`gate-engine.test.ts` 测试名对齐并**新增 G6+豁免 → incomplete 断言**（此前只有 G5+豁免，G6 无豁免反向断言）。
 
-**边界**：§14.8 表中 D3/D9 行的状态词更新归另一条线（§14 维护权不在本段）。
+**边界**：§14.8 表中 D3/D9 行的状态词已在 2026-11-08 单轨收口时更新（文件所有权合并，见文末「单轨分工与文件所有权」）。
+
+## 单轨分工与文件所有权（2026-11-08）
+
+> 用户裁决：只保留**蓝图/编排线**单轨继续；其余三条线冻结。状态词按 §0 三态口径。
+
+### 冻结线
+
+| 线 | 状态 | 依据与收尾 |
+|---|---|---|
+| L2 审查修复 | **已实施，冻结** | P0 3/3（`2ce268b`）；P1 8/8 有对应修复提交（`88ab019`/`6e472de`/`c7a04a9`/`f65935d`/`9493fde`/`d8ace71`/`b53b82c`/`13321fc`）；P2 8 项中 4 项可核对（`1fd91fe`/`ed22fd8`/`f2f2882`/`dcf5af2`），其余 4 项需取回原始审查清单、按复现决定，本轮不改代码 |
+| 启动与退出诊断 | **已实施，冻结** | `9b220ab`/`6e472de`/`4eb95b5`/`c7a04a9`/`13321fc`/`d8ace71`；无已知挂账 |
+| L2 执行触发 | **已实施，冻结** | `7d9ef7e`（tick/写通道）、`b6f3735`（G1–G6）、`e4398e7`（D1/D7）、`94125bd`（D3/D9）；D2 为**已批准未实施**，转本单轨继续 |
+
+### 文件所有权（自 2026-11-08 起统一）
+
+`src/main/map/gate-engine.ts`、`gate-recheck.ts`、`work-execution-service.ts`、`work-execution-runtime.ts`、`work-scheduler.ts`、`agent-step-runner.ts`、`execution-flags.ts`、`src/main/ipc/map.ts` 及对应测试，归蓝图/编排线。冻结线不再修改这些文件；发现并行改动时先停下报告。
+
+### 三态总账
+
+- **已实施**：S1–S8、L1、M1–M5、G1–G6、D1/D3/D4/D5/D6/D7/D8/D9/D10/D11/D13/D14。
+- **已批准未实施**：D2（`command`/`file_check` 确定性验收执行器；本单轨续作）。
+- **仅建议**：未来跨图写入面出现时的 G3 扩展、异步评估器的时限预算与版本精确归因（D12 已裁决本期不做）。

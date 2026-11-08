@@ -6,8 +6,8 @@
  * 边界（M2/M5）：
  * - 本文件不驱动 Agent、不接 IPC、不写证据；
  * - `startStep`/`enqueueStep` 只复核**已持久化**的 gate_status；真正的「重跑 gate」
- *   由 tick 第 2 步在调用前完成（G1-G6 引擎未实现，见蓝图 L3-f 与 gate-recheck.ts）；
- * - 写闸/路由未实现，候选按 item 创建顺序串行，不并行；
+ *   由 tick 第 2 步在调用前完成（G1–G6 引擎已实施，见 gate-engine.ts 与 gate-recheck.ts）；
+ * - 写闸/路由由 WorkExecutionService 负责（本文件不实现），候选按 item 创建顺序串行，不并行；
  * - 幂等键由 WorkRunService 生成（lineage:revision:stepSeq:attempt），重放复用既有 run。
  */
 
