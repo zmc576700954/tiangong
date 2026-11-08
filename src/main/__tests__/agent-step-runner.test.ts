@@ -87,6 +87,7 @@ describe('AgentStepRunner（M3）', () => {
     anchorNodeId?: string
     projectPath?: string
     stepKind?: 'agent' | 'test' | 'human'
+    acceptance?: Array<Record<string, unknown>>
   } = {}): string {
     const id = items.createDraft({
       graphId: 'g1',
@@ -95,7 +96,7 @@ describe('AgentStepRunner（M3）', () => {
       title: '任务标题',
       goal: '目标说明',
       scopeFiles: ['src/a.ts'],
-      acceptance: [{ id: 'acc1', type: 'command', expected: 'npm test', text: '必须通过' }],
+      acceptance: opts.acceptance ?? [{ id: 'acc1', type: 'command', expected: 'npm test', text: '必须通过' }],
       steps: [{ title: '第一步', stepKind: opts.stepKind ?? 'agent', scopeFiles: ['src/a.ts'] }],
     }).id
     items.submitForConfirm(id)
@@ -322,7 +323,7 @@ describe('AgentStepRunner（M3）', () => {
       adapterName: 'claude-code',
       verifyAcceptance: async (input) => {
         inputs.push(input)
-        return { ok: true, missing: [], pending: [], checked: 1 }
+        return { ok: true, missing: [], pending: [], pendingItems: [], checked: 1 }
       },
     })
 
@@ -344,6 +345,7 @@ describe('AgentStepRunner（M3）', () => {
         ok: false,
         missing: ['acceptance_command_exit:0:1'],
         pending: [],
+        pendingItems: [],
         checked: 1,
       }),
     })
@@ -358,8 +360,11 @@ describe('AgentStepRunner（M3）', () => {
     expect(steps.get(c.step.id)?.failure_class).toBe('verify_fail')
   })
 
-  it('D2：manual 待确认 → verify_fail（不默认通过）', async () => {
-    createItem({ anchorNodeId: 'node-1' })
+  it('D2：仅 manual 待确认 → step/item needs_input，run 仍 completed（不判负）', async () => {
+    createItem({
+      anchorNodeId: 'node-1',
+      acceptance: [{ id: 'm1', type: 'manual', expected: '人工确认样式正确', text: '请人工核对' }],
+    })
     const c = claim()
 
     const result = await runner.run(c, {
@@ -368,14 +373,51 @@ describe('AgentStepRunner（M3）', () => {
         ok: false,
         missing: [],
         pending: ['acceptance_manual_pending:0'],
+        pendingItems: [{ id: 'm1', expected: '人工确认样式正确', text: '请人工核对' }],
         checked: 0,
+      }),
+    })
+
+    expect(result.status).toBe('needs_input')
+    expect(result.reason).toBe('ACCEPTANCE_MANUAL_PENDING')
+    expect(result.failureClass).toBeUndefined()
+    expect(runs.get(c.run.id)?.status).toBe('completed')
+    expect(runs.get(c.run.id)?.failure_class).toBeNull()
+    const step = steps.get(c.step.id)
+    expect(step?.status).toBe('needs_input')
+    expect(step?.failure_class).toBeNull()
+    expect(step?.input_request_json).toContain('acceptance_manual_confirm')
+    expect(step?.input_request_json).toContain('"id":"m1"')
+    expect(step?.input_request_json).toContain('人工确认样式正确')
+    expect(items.get(c.item.id)?.status).toBe('needs_input')
+  })
+
+  it('D2：manual 与硬失败并存 → 仍 verify_fail（等待不能掩盖失败）', async () => {
+    createItem({
+      anchorNodeId: 'node-1',
+      acceptance: [
+        { id: 'c1', type: 'command', expected: 'npm test' },
+        { id: 'm1', type: 'manual', expected: '人工确认' },
+      ],
+    })
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => ({
+        ok: false,
+        missing: ['acceptance_command_exit:0:1'],
+        pending: ['acceptance_manual_pending:1'],
+        pendingItems: [{ id: 'm1', expected: '人工确认' }],
+        checked: 1,
       }),
     })
 
     expect(result.status).toBe('failed')
     expect(result.failureClass).toBe('verify_fail')
-    expect(result.reason).toContain('acceptance_manual_pending:0')
-    expect(runs.get(c.run.id)?.status).toBe('failed')
+    expect(result.reason).toContain('acceptance_command_exit:0:1')
+    expect(steps.get(c.step.id)?.status).toBe('failed')
+    expect(items.get(c.item.id)?.status).not.toBe('needs_input')
   })
 
   it('D2：验收执行器抛异常 → verify_fail（fail-closed）', async () => {
@@ -405,7 +447,7 @@ describe('AgentStepRunner（M3）', () => {
       adapterName: 'claude-code',
       verifyAcceptance: async () => {
         calls += 1
-        return { ok: true, missing: [], pending: [], checked: 0 }
+        return { ok: true, missing: [], pending: [], pendingItems: [], checked: 0 }
       },
     })
 

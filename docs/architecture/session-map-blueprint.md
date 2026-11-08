@@ -3750,7 +3750,7 @@ GateRecheckResult {
 | 编号 | 裁决 | 状态 | 关联 |
 |---|---|---|---|
 | D1 | acceptance 冻结为 `{id,type,expected,text?}`；`createDraft` / `revise` 在系统边界强制结构化（缺 type/expected 或未知 type 拒绝，不静默降级）；**存量不自动迁移**，人工重新确认计划前保持 `blocked` | 已批准已实施（`e4398e7`） | §5.4 G2、`work-item-service` |
-| D2 | `expected` 判定语义：`command` = 退出码 0（可选用 `stdout_contains` 匹配标准输出、`timeout_ms` 限制超时）；`file_check` = 相对 `project_path` 的路径存在性（可选用 `content_contains` 匹配文件内容）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器已实施（2026-11-08）**：`acceptance-executor.ts` 只读评估，`agent-step-runner` 在 turn `completed` 后、terminate 之后调用；判定不通过/判定不出（含 manual 待确认）/执行器异常一律 `verify_fail`（fail-closed，不默认通过）。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。内容哈希匹配仍属后续 | 已批准已实施（`acceptance-executor.ts`，2026-11-08） | §5.4 G2、`agent-step-runner` |
+| D2 | `expected` 判定语义：`command` = 退出码 0（可选用 `stdout_contains` 匹配标准输出、`timeout_ms` 限制超时）；`file_check` = 相对 `project_path` 的路径存在性（可选用 `content_contains` 匹配文件内容）；`manual` = `expected` 为人工判定描述（非空字符串），由人确认。**确定性验收执行器已实施（2026-11-08）**：`acceptance-executor.ts` 只读评估，`agent-step-runner` 在 turn `completed` 后、terminate 之后调用；**非 manual 硬失败或执行器异常 → `verify_fail`（fail-closed）；仅 manual 待确认 → 步/item `needs_input`、run `completed`，待确认条目写入 `input_request_json`**。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。人工确认入口与内容哈希匹配仍属后续 | 已批准已实施（`acceptance-executor.ts`，2026-11-08） | §5.4 G2、`agent-step-runner` |
 | D3 | G2 豁免为**整条任务粒度**：仅当全部缺失码来自 G2 且失败条目全为 `manual` 时三字段豁免成立；manual 豁免不得覆盖 command/file_check 失败 | 已批准已实施（`b6f3735`） | §5.4、§4.7.3 |
 | D4 | `project_path` 为空 → 直接 fail-closed（`project_path_missing`），不从图/项目根兜底 | 已批准已实施（`b6f3735`） | §5.4.1 |
 | D5 | 「跨图写」采纳收敛口径：本期准入只判锚点存在 + `graph_type='dev'` + `graph_id` 一致；`node_links` 链接矩阵不入本期准入——写入面仅 `scope_files` 且已被 G1 限定在单一项目根内，跨图写在现有字段上不可表达。**若未来出现跨图写入面（如允许改 test 图资产），必须新增 gate 或扩展 G3 并重新裁决，不得静默放宽** | 已批准已实施（`b6f3735`） | §1.2、§2.3、§5.4 G3 |
@@ -3898,14 +3898,14 @@ GateRecheckResult {
 
 - `command`：成功判退出码 0；可选 `stdout_contains`（标准输出包含）与 `timeout_ms`（默认 120s，上限 600s）；超时、非 0 退出、启动失败均不通过。
 - `file_check`：`expected` 必须是相对路径且经 `isPathInside` 校验落在 `project_path` 内；存在且为普通文件才通过；可选 `content_contains`（UTF-8 内容包含）。
-- `manual`：不自动通过，只产出 `acceptance_manual_pending:<i>`；**`ok=false`**（判定不出，不得默认通过）。
-- 非法/空 JSON、存量 `[{id,text}]`、未知 type、`expected` 缺失、`project_path` 缺失/不可解析/非目录，一律 `ok=false` 并带具体缺失码。
+- `manual`：不自动通过，只产出 `acceptance_manual_pending:<i>`；**仅 manual 待确认（其余条目全部通过）时，步落 `needs_input`，run 仍 `completed`，不判负**。待确认条目 id/expected/text 写入 `work_steps.input_request_json`（`kind='acceptance_manual_confirm'`），item 同事务迁到 `needs_input`。
+- 非法/空 JSON、存量 `[{id,text}]`、未知 type、`expected` 缺失、manual 缺 id、`project_path` 缺失/不可解析/非目录，一律 `ok=false` 并带具体缺失码。
 
-**接线**：`AgentStepRunner.run` 在 turn `completed` 且 session terminate 之后调用 `verifyAcceptance`；`ok=false` 或执行器抛异常 → `run/step` 落 `failed(verify_fail)`（异常 reason `ACCEPTANCE_VERIFIER_ERROR`），`turnStatus` 仍记 `completed`。`WorkExecutionService` 透传，`work-execution-runtime` 装配 `evaluateAcceptance`。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。
+**接线**：`AgentStepRunner.run` 在 turn `completed` 且 session terminate 之后调用 `verifyAcceptance`：存在非 manual 硬失败 → `run/step failed(verify_fail)`（异常 reason `ACCEPTANCE_VERIFIER_ERROR`）；仅 manual 待确认 → step/item `needs_input`、run `completed`；全部通过 → `succeeded`。`turnStatus` 始终记 `completed`。`WorkExecutionService` 透传，`work-execution-runtime` 装配 `evaluateAcceptance`。`BIZGRAPH_MAP_EXECUTION` 仍默认关闭。
 
-**测试**：`acceptance-executor.test.ts` 18 例（退出码/stdout/超时/启动失败/路径存在与内容/绝对路径与逃逸/目录/不可读/非法 JSON/存量形状/manual/混合）；`agent-step-runner.test.ts` +5（通过、不通过、manual 待确认、执行器异常、非 completed 不触发）。相关 5 个测试文件 109 例全绿，`tsc --noEmit` 0 error。
+**测试**：`acceptance-executor.test.ts` 19 例（退出码/stdout/超时/启动失败/路径存在与内容/绝对路径与逃逸/目录/不可读/非法 JSON/存量形状/manual 待确认与缺 id/混合）；`agent-step-runner.test.ts` 19 例（含通过、硬失败、manual 等待、等待不掩盖硬失败、执行器异常、非 completed 不触发）。相关 4 个主测试文件 106 例全绿，`tsc --noEmit` 0 error。
 
-**边界**：内容哈希匹配、异步评估时限预算（D14 未来约束）不在本期；`manual` 的人工确认入口尚未实现，因此 manual 条目当前只能得到 `verify_fail`，不会被自动放行。
+**边界**：内容哈希匹配、异步评估时限预算（D14 未来约束）不在本期；`manual` 的人工确认入口尚未实现（第二步进行中），因此 manual 条目目前只停在 `needs_input`，不会被自动放行。
 
 ## 单轨分工与文件所有权（2026-11-08）
 

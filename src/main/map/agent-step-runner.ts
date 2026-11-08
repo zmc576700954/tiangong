@@ -7,14 +7,13 @@
  * deadline），本层只调用 kernel-only 发送入口，不做任何"本地置位即批准"。
  *
  * 本轮边界（与拍板一致）：
- * - needs_input **未实施**：TurnOutcome 无该信号，且明确不解析 finalText 中的
- *   INPUT_REQUIRED。判不了一律按失败处理（fail-closed）；`work_steps.input_request_json`
- *   保持 NULL，待结构化输出契约落地后再写。
+ * - needs_input：仅由结构化 acceptance 的 manual 待确认触发（2026-11-08）。
+ *   仍不解析 finalText 中的 INPUT_REQUIRED；非 manual 的判定不出按失败处理（fail-closed）。
  * - 路由只写 pinned adapter（policy='manual_override'），不补 Tier 能力探测——这是对
  *   §5.9.10 的明确偏离，不得在文档里记为"已实现"。
  * - 不接 IPC：本文件不注册任何外部入口，只提供可被后续里程碑装配的执行器。
- * - D2 验收（2026-11-08）：completed 后若注入 `verifyAcceptance`，必须机器判定通过
- *   才落 succeeded；判定不出/抛异常一律 `verify_fail`（fail-closed，不默认通过）。
+ * - D2 验收（2026-11-08）：completed 后若注入 `verifyAcceptance`，硬失败落 `verify_fail`；
+ *   仅 manual 待确认落 `needs_input`（run 仍 completed，等待人工确认）；其余判通过才 succeeded。
  * - v34：失败分类同时写 `work_runs.failure_class` 与 `work_steps.failure_class`（同值域）；
  *   step 级失败不再只能跨表查最近 run。
  */
@@ -23,8 +22,8 @@ import type BetterSqlite3 from 'better-sqlite3'
 import type { AgentCommand, AgentSessionConfig, TerminationReason } from '@shared/types'
 import type { TurnOutcome } from '@shared/types/agent-runtime'
 import { createLogger } from '../shared/logger'
-import type { AcceptanceVerdict } from './acceptance-executor'
-import type { WorkItemRow, WorkStepRow } from './work-item-service'
+import type { AcceptancePendingItem, AcceptanceVerdict } from './acceptance-executor'
+import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import { WorkRunService, RoutingDecisionRepository, type FailureClass, type WorkRunRow } from './work-run-service'
 import { WorkStepService } from './work-step-service'
 import type { ClaimedStep } from './work-scheduler'
@@ -83,7 +82,7 @@ export interface AgentTurnRunner {
   terminateSession(sessionId: string, reason: TerminationReason): Promise<void>
 }
 
-export type StepRunStatus = 'succeeded' | 'failed' | 'timed_out' | 'cancelled'
+export type StepRunStatus = 'succeeded' | 'failed' | 'timed_out' | 'cancelled' | 'needs_input'
 
 export interface StepRunResult {
   status: StepRunStatus
@@ -196,6 +195,7 @@ function buildStepPrompt(item: WorkItemRow, step: WorkStepRow): string {
 export class AgentStepRunner {
   private readonly runs: WorkRunService
   private readonly steps: WorkStepService
+  private readonly items: WorkItemService
   private readonly routing: RoutingDecisionRepository
 
   constructor(
@@ -204,6 +204,7 @@ export class AgentStepRunner {
   ) {
     this.runs = new WorkRunService(db)
     this.steps = new WorkStepService(db)
+    this.items = new WorkItemService(db)
     this.routing = new RoutingDecisionRepository(db)
   }
 
@@ -350,7 +351,8 @@ export class AgentStepRunner {
       )
       return this.finalizeFailure(claim, 'verify_fail', 'ACCEPTANCE_VERIFIER_ERROR', sessionId, outcome.status)
     }
-    if (!verdict.ok) {
+    // 硬失败优先：只要存在非 manual 的失败条目，就不得因 manual 待确认而变成"等待"。
+    if (verdict.missing.length > 0) {
       const codes = [...verdict.missing, ...verdict.pending]
       return this.finalizeFailure(
         claim,
@@ -360,7 +362,52 @@ export class AgentStepRunner {
         outcome.status,
       )
     }
+    // 仅 manual 待确认：步落 needs_input（run 仍 completed），等待人工确认入口。
+    if (verdict.pendingItems.length > 0) {
+      return this.finalizeNeedsInput(claim, verdict.pendingItems, sessionId, outcome.status)
+    }
     return this.finalizeOutcome(claim, outcome, sessionId)
+  }
+
+  /**
+   * 步落 needs_input：run 记为 completed（turn 已正常结束，不是失败），
+   * 步与 item 同事务迁到 needs_input，并把待确认条目写进 input_request_json。
+   */
+  private finalizeNeedsInput(
+    claim: ClaimedStep,
+    pendingItems: AcceptancePendingItem[],
+    sessionId?: string,
+    turnStatus?: TurnOutcome['status'],
+  ): StepRunResult {
+    const requestJson = JSON.stringify({
+      kind: 'acceptance_manual_confirm',
+      work_item_id: claim.item.id,
+      step_id: claim.step.id,
+      requested_at: Date.now(),
+      entries: pendingItems.map((entry) => ({
+        id: entry.id,
+        expected: entry.expected,
+        ...(entry.text !== undefined ? { text: entry.text } : {}),
+      })),
+    })
+    const txn = this.db.transaction((): StepRunResult => {
+      if (!this.runs.complete(claim.run.id)) {
+        throw new AgentStepRunnerError(
+          'TERMINAL_CONFLICT',
+          `work_run ${claim.run.id} 已被并发置终态，拒绝覆盖`,
+        )
+      }
+      this.items.needsInput(claim.item.id, claim.step.id, requestJson)
+      return {
+        status: 'needs_input',
+        reason: 'ACCEPTANCE_MANUAL_PENDING',
+        runId: claim.run.id,
+        stepId: claim.step.id,
+        sessionId,
+        turnStatus,
+      }
+    })
+    return txn()
   }
 
   private finalizeOutcome(

@@ -287,16 +287,30 @@ describe('evaluateAcceptance · 输入与 fail-closed', () => {
     expect(noExpected.missing).toEqual(['acceptance_expected_missing:0'])
   })
 
-  it('仅 manual → ok=false + pending（待人工，但本执行器不判 pass）', async () => {
+  it('仅 manual → ok=false + pending（待人工，不判 pass），并带可确认明细', async () => {
     const root = makeRoot()
     const verdict = await evaluateAcceptance({
-      acceptanceJson: acceptance({ id: 'm', type: 'manual', expected: '人工确认样式正确' }),
+      acceptanceJson: acceptance({ id: 'm', type: 'manual', expected: '人工确认样式正确', text: '请看截图' }),
       projectPath: root,
     })
     expect(verdict.ok).toBe(false)
     expect(verdict.missing).toEqual([])
     expect(verdict.pending).toEqual(['acceptance_manual_pending:0'])
+    expect(verdict.pendingItems).toEqual([
+      { id: 'm', expected: '人工确认样式正确', text: '请看截图' },
+    ])
     expect(verdict.checked).toBe(0)
+  })
+
+  it('manual 缺 id → 无法关联确认事实，按缺失收口', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance({ type: 'manual', expected: '人工确认' }),
+      projectPath: root,
+    })
+    expect(verdict.ok).toBe(false)
+    expect(verdict.missing).toEqual(['acceptance_manual_id_missing:0'])
+    expect(verdict.pendingItems).toEqual([])
   })
 
   it('混合：机器条目通过但仍有 manual → 整体不通过', async () => {
@@ -309,6 +323,7 @@ describe('evaluateAcceptance · 输入与 fail-closed', () => {
     expect(verdict.ok).toBe(false)
     expect(verdict.missing).toEqual([])
     expect(verdict.pending).toEqual(['acceptance_manual_pending:1'])
+    expect(verdict.pendingItems).toEqual([{ id: 'm', expected: '人工确认' }])
     expect(verdict.checked).toBe(1)
   })
 })

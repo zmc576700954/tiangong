@@ -36,6 +36,13 @@ export type AcceptanceCommandRunner = (
   options: { cwd: string; timeoutMs: number },
 ) => Promise<AcceptanceCommandOutcome>
 
+/** manual 待确认条目：id 用于确认事实关联，expected/text 用于人工阅读。 */
+export interface AcceptancePendingItem {
+  id: string
+  expected: string
+  text?: string
+}
+
 export interface AcceptanceVerdict {
   /**
    * 全部条目均已判定且通过。manual 待确认也属于「判定不出来」：
@@ -46,6 +53,8 @@ export interface AcceptanceVerdict {
   missing: string[]
   /** manual 条目：不自动通过，等待人工确认。 */
   pending: string[]
+  /** manual 条目的结构化明细（写入 work_steps.input_request_json）。 */
+  pendingItems: AcceptancePendingItem[]
   /** 实际执行过的 command/file_check 条目数。 */
   checked: number
 }
@@ -121,29 +130,30 @@ function optionalTimeout(record: Record<string, unknown>, fallback: number): num
 export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promise<AcceptanceVerdict> {
   const missing: string[] = []
   const pending: string[] = []
+  const pendingItems: AcceptancePendingItem[] = []
   let checked = 0
 
   const projectPath = input.projectPath?.trim()
   if (!projectPath) {
-    return { ok: false, missing: ['project_path_missing'], pending, checked }
+    return { ok: false, missing: ['project_path_missing'], pending, pendingItems, checked }
   }
 
   const entries = parseEntries(input.acceptanceJson)
   if (entries === null) {
-    return { ok: false, missing: ['acceptance_json_invalid'], pending, checked }
+    return { ok: false, missing: ['acceptance_json_invalid'], pending, pendingItems, checked }
   }
   if (entries.length === 0) {
-    return { ok: false, missing: ['acceptance_json_empty'], pending, checked }
+    return { ok: false, missing: ['acceptance_json_empty'], pending, pendingItems, checked }
   }
 
   let projectStat: fs.Stats
   try {
     projectStat = fs.statSync(projectPath)
   } catch {
-    return { ok: false, missing: ['project_path_unresolvable'], pending, checked }
+    return { ok: false, missing: ['project_path_unresolvable'], pending, pendingItems, checked }
   }
   if (!projectStat.isDirectory()) {
-    return { ok: false, missing: ['project_path_not_directory'], pending, checked }
+    return { ok: false, missing: ['project_path_not_directory'], pending, pendingItems, checked }
   }
 
   const runCommand = input.runCommand ?? defaultAcceptanceCommandRunner
@@ -170,7 +180,15 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
 
     if (type === 'manual') {
       // 人工判定：不自动通过，也不阻塞；由人工确认路径处理。
+      // 确认入口需要稳定 id 关联事实：缺 id 时无法记录「确认了哪一条」，按缺失收口。
+      const id = record['id']
+      if (typeof id !== 'string' || id.trim().length === 0) {
+        missing.push(`acceptance_manual_id_missing:${i}`)
+        continue
+      }
+      const text = typeof record['text'] === 'string' ? record['text'] : undefined
       pending.push(`acceptance_manual_pending:${i}`)
+      pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
       continue
     }
 
@@ -258,5 +276,5 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
     missing.push(`acceptance_type_unknown:${i}`)
   }
 
-  return { ok: missing.length === 0 && pending.length === 0, missing, pending, checked }
+  return { ok: missing.length === 0 && pending.length === 0, missing, pending, pendingItems, checked }
 }
