@@ -323,7 +323,7 @@ describe('AgentStepRunner（M3）', () => {
       adapterName: 'claude-code',
       verifyAcceptance: async (input) => {
         inputs.push(input)
-        return { ok: true, missing: [], pending: [], pendingItems: [], checked: 1 }
+        return { ok: true, missing: [], pending: [], items: [], pendingItems: [], checked: 1 }
       },
     })
 
@@ -345,6 +345,7 @@ describe('AgentStepRunner（M3）', () => {
         ok: false,
         missing: ['acceptance_command_exit:0:1'],
         pending: [],
+        items: [],
         pendingItems: [],
         checked: 1,
       }),
@@ -373,6 +374,7 @@ describe('AgentStepRunner（M3）', () => {
         ok: false,
         missing: [],
         pending: ['acceptance_manual_pending:0'],
+        items: [{ index: 0, id: 'm1', type: 'manual', outcome: 'pending', codes: ['acceptance_manual_pending:0'] }],
         pendingItems: [{ id: 'm1', expected: '人工确认样式正确', text: '请人工核对' }],
         checked: 0,
       }),
@@ -408,6 +410,10 @@ describe('AgentStepRunner（M3）', () => {
         ok: false,
         missing: ['acceptance_command_exit:0:1'],
         pending: ['acceptance_manual_pending:1'],
+        items: [
+          { index: 0, type: 'command', outcome: 'fail', codes: ['acceptance_command_exit:0:1'] },
+          { index: 1, id: 'm1', type: 'manual', outcome: 'pending', codes: ['acceptance_manual_pending:1'] },
+        ],
         pendingItems: [{ id: 'm1', expected: '人工确认' }],
         checked: 1,
       }),
@@ -447,7 +453,7 @@ describe('AgentStepRunner（M3）', () => {
       adapterName: 'claude-code',
       verifyAcceptance: async () => {
         calls += 1
-        return { ok: true, missing: [], pending: [], pendingItems: [], checked: 0 }
+        return { ok: true, missing: [], pending: [], items: [], pendingItems: [], checked: 0 }
       },
     })
 

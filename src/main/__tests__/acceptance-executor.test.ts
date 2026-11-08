@@ -344,3 +344,26 @@ describe('evaluateAcceptance · 输入与 fail-closed', () => {
     expect(verdict.checked).toBe(1)
   })
 })
+
+describe('evaluateAcceptance · 逐条结果（诊断用）', () => {
+  it('command / file_check / manual 各自 outcome 与 codes', async () => {
+    const root = makeRoot()
+    writeFileSync(path.join(root, 'ok.txt'), 'ok')
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(
+        commandEntry('true'),
+        fileEntry('missing.txt'),
+        { id: 'm1', type: 'manual', expected: '人工确认' },
+        fileEntry('ok.txt', { content_contains: 'ok' }),
+      ),
+      projectPath: root,
+      runCommand: okRunner,
+    })
+    expect(verdict.items).toEqual([
+      { index: 0, type: 'command', outcome: 'pass', codes: [] },
+      { index: 1, type: 'file_check', outcome: 'fail', codes: ['acceptance_file_missing:1'] },
+      { index: 2, id: 'm1', type: 'manual', outcome: 'pending', codes: ['acceptance_manual_pending:2'] },
+      { index: 3, type: 'file_check', outcome: 'pass', codes: [] },
+    ])
+  })
+})

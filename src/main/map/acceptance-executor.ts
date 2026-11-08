@@ -43,6 +43,19 @@ export interface AcceptancePendingItem {
   text?: string
 }
 
+/**
+ * 单条验收结果（逐条诊断用）。
+ * - `type` 非法形状时为 null；`id` 仅 manual 条目且声明了 id 时才存在。
+ * - `codes` 是本条产生的缺失码/待确认码，未产生任何码即视为通过。
+ */
+export interface AcceptanceItemResult {
+  index: number
+  id?: string
+  type: string | null
+  outcome: 'pass' | 'fail' | 'pending'
+  codes: string[]
+}
+
 export interface AcceptanceVerdict {
   /**
    * 全部条目均已判定且通过。manual 待确认也属于「判定不出来」：
@@ -53,6 +66,8 @@ export interface AcceptanceVerdict {
   missing: string[]
   /** manual 条目：不自动通过，等待人工确认。 */
   pending: string[]
+  /** 逐条结果（供调用处写可查诊断；本执行器自身不落库）。 */
+  items: AcceptanceItemResult[]
   /** manual 条目的结构化明细（写入 work_steps.input_request_json）。 */
   pendingItems: AcceptancePendingItem[]
   /** 已判定条目数（command/file_check 实际执行 + 已人工确认的 manual）。 */
@@ -136,30 +151,31 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
   const missing: string[] = []
   const pending: string[] = []
   const pendingItems: AcceptancePendingItem[] = []
+  const items: AcceptanceItemResult[] = []
   const confirmedManualIds = new Set(input.confirmedManualEntryIds ?? [])
   let checked = 0
 
   const projectPath = input.projectPath?.trim()
   if (!projectPath) {
-    return { ok: false, missing: ['project_path_missing'], pending, pendingItems, checked }
+    return { ok: false, missing: ['project_path_missing'], pending, items, pendingItems, checked }
   }
 
   const entries = parseEntries(input.acceptanceJson)
   if (entries === null) {
-    return { ok: false, missing: ['acceptance_json_invalid'], pending, pendingItems, checked }
+    return { ok: false, missing: ['acceptance_json_invalid'], pending, items, pendingItems, checked }
   }
   if (entries.length === 0) {
-    return { ok: false, missing: ['acceptance_json_empty'], pending, pendingItems, checked }
+    return { ok: false, missing: ['acceptance_json_empty'], pending, items, pendingItems, checked }
   }
 
   let projectStat: fs.Stats
   try {
     projectStat = fs.statSync(projectPath)
   } catch {
-    return { ok: false, missing: ['project_path_unresolvable'], pending, pendingItems, checked }
+    return { ok: false, missing: ['project_path_unresolvable'], pending, items, pendingItems, checked }
   }
   if (!projectStat.isDirectory()) {
-    return { ok: false, missing: ['project_path_not_directory'], pending, pendingItems, checked }
+    return { ok: false, missing: ['project_path_not_directory'], pending, items, pendingItems, checked }
   }
 
   const runCommand = input.runCommand ?? defaultAcceptanceCommandRunner
@@ -167,125 +183,151 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
   const fallbackTimeout = input.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS
 
   for (let i = 0; i < entries.length; i += 1) {
-    const entry = entries[i]
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      missing.push(`acceptance_item_not_structured:${i}`)
-      continue
+    const entryCodes: string[] = []
+    let entryType: string | null = null
+    let entryId: string | undefined
+    let isPending = false
+    const fail = (code: string): void => {
+      entryCodes.push(code)
+      missing.push(code)
     }
-    const record = entry as Record<string, unknown>
-    const type = record['type']
-    if (typeof type !== 'string' || type.trim().length === 0) {
-      missing.push(`acceptance_item_not_structured:${i}`)
-      continue
+    const wait = (code: string): void => {
+      entryCodes.push(code)
+      pending.push(code)
+      isPending = true
     }
-    const expected = record['expected']
-    if (typeof expected !== 'string' || expected.trim().length === 0) {
-      missing.push(`acceptance_expected_missing:${i}`)
-      continue
-    }
+    // finally 保证每条（含所有 continue 分支）都留下逐条结果，供调用处落诊断。
+    try {
+      const entry = entries[i]
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        fail(`acceptance_item_not_structured:${i}`)
+        continue
+      }
+      const record = entry as Record<string, unknown>
+      const type = record['type']
+      if (typeof type !== 'string' || type.trim().length === 0) {
+        fail(`acceptance_item_not_structured:${i}`)
+        continue
+      }
+      entryType = type
+      const expected = record['expected']
+      if (typeof expected !== 'string' || expected.trim().length === 0) {
+        fail(`acceptance_expected_missing:${i}`)
+        continue
+      }
 
-    if (type === 'manual') {
-      // 人工判定：不自动通过，也不阻塞；由人工确认路径处理。
-      // 确认入口需要稳定 id 关联事实：缺 id 时无法记录「确认了哪一条」，按缺失收口。
-      const id = record['id']
-      if (typeof id !== 'string' || id.trim().length === 0) {
-        missing.push(`acceptance_manual_id_missing:${i}`)
-        continue
-      }
-      const text = typeof record['text'] === 'string' ? record['text'] : undefined
-      if (confirmedManualIds.has(id)) {
-        // 人工已确认：本次重算视为通过；不再进入 pending。
-        checked += 1
-        continue
-      }
-      pending.push(`acceptance_manual_pending:${i}`)
-      pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
-      continue
-    }
-
-    if (type === 'command') {
-      const timeoutMs = optionalTimeout(record, fallbackTimeout)
-      if (timeoutMs === null) {
-        missing.push(`acceptance_command_timeout_invalid:${i}`)
-        continue
-      }
-      const stdoutContains = optionalString(record, 'stdout_contains')
-      if (stdoutContains === 'invalid') {
-        missing.push(`acceptance_command_option_invalid:${i}`)
-        continue
-      }
-      checked += 1
-      let outcome: AcceptanceCommandOutcome
-      try {
-        outcome = await runCommand(expected, { cwd: projectPath, timeoutMs })
-      } catch {
-        missing.push(`acceptance_command_spawn_failed:${i}`)
-        continue
-      }
-      if (outcome.timedOut) {
-        missing.push(`acceptance_command_timeout:${i}`)
-        continue
-      }
-      if (outcome.exitCode !== 0) {
-        missing.push(`acceptance_command_exit:${i}:${outcome.exitCode}`)
-        continue
-      }
-      if (stdoutContains !== null && !outcome.stdout.includes(stdoutContains)) {
-        missing.push(`acceptance_command_stdout_mismatch:${i}`)
-      }
-      continue
-    }
-
-    if (type === 'file_check') {
-      const contentContains = optionalString(record, 'content_contains')
-      if (contentContains === 'invalid') {
-        missing.push(`acceptance_file_option_invalid:${i}`)
-        continue
-      }
-      if (path.isAbsolute(expected)) {
-        missing.push(`acceptance_file_not_relative:${i}`)
-        continue
-      }
-      let inside = false
-      try {
-        inside = isPathInside(projectPath, expected)
-      } catch {
-        inside = false
-      }
-      if (!inside) {
-        missing.push(`acceptance_file_outside_root:${i}`)
-        continue
-      }
-      const abs = path.resolve(projectPath, expected)
-      checked += 1
-      let stat: fs.Stats
-      try {
-        stat = fs.statSync(abs)
-      } catch {
-        missing.push(`acceptance_file_missing:${i}`)
-        continue
-      }
-      if (!stat.isFile()) {
-        missing.push(`acceptance_file_not_file:${i}`)
-        continue
-      }
-      if (contentContains !== null) {
-        let content: string
-        try {
-          content = readFile(abs)
-        } catch {
-          missing.push(`acceptance_file_unreadable:${i}`)
+      if (type === 'manual') {
+        // 人工判定：不自动通过，也不阻塞；由人工确认路径处理。
+        // 确认入口需要稳定 id 关联事实：缺 id 时无法记录「确认了哪一条」，按缺失收口。
+        const id = record['id']
+        if (typeof id !== 'string' || id.trim().length === 0) {
+          fail(`acceptance_manual_id_missing:${i}`)
           continue
         }
-        if (!content.includes(contentContains)) {
-          missing.push(`acceptance_file_content_mismatch:${i}`)
+        entryId = id
+        const text = typeof record['text'] === 'string' ? record['text'] : undefined
+        if (confirmedManualIds.has(id)) {
+          // 人工已确认：本次重算视为通过；不再进入 pending。
+          checked += 1
+          continue
         }
+        wait(`acceptance_manual_pending:${i}`)
+        pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
+        continue
       }
-      continue
-    }
 
-    missing.push(`acceptance_type_unknown:${i}`)
+      if (type === 'command') {
+        const timeoutMs = optionalTimeout(record, fallbackTimeout)
+        if (timeoutMs === null) {
+          fail(`acceptance_command_timeout_invalid:${i}`)
+          continue
+        }
+        const stdoutContains = optionalString(record, 'stdout_contains')
+        if (stdoutContains === 'invalid') {
+          fail(`acceptance_command_option_invalid:${i}`)
+          continue
+        }
+        checked += 1
+        let outcome: AcceptanceCommandOutcome
+        try {
+          outcome = await runCommand(expected, { cwd: projectPath, timeoutMs })
+        } catch {
+          fail(`acceptance_command_spawn_failed:${i}`)
+          continue
+        }
+        if (outcome.timedOut) {
+          fail(`acceptance_command_timeout:${i}`)
+          continue
+        }
+        if (outcome.exitCode !== 0) {
+          fail(`acceptance_command_exit:${i}:${outcome.exitCode}`)
+          continue
+        }
+        if (stdoutContains !== null && !outcome.stdout.includes(stdoutContains)) {
+          fail(`acceptance_command_stdout_mismatch:${i}`)
+        }
+        continue
+      }
+
+      if (type === 'file_check') {
+        const contentContains = optionalString(record, 'content_contains')
+        if (contentContains === 'invalid') {
+          fail(`acceptance_file_option_invalid:${i}`)
+          continue
+        }
+        if (path.isAbsolute(expected)) {
+          fail(`acceptance_file_not_relative:${i}`)
+          continue
+        }
+        let inside = false
+        try {
+          inside = isPathInside(projectPath, expected)
+        } catch {
+          inside = false
+        }
+        if (!inside) {
+          fail(`acceptance_file_outside_root:${i}`)
+          continue
+        }
+        const abs = path.resolve(projectPath, expected)
+        checked += 1
+        let stat: fs.Stats
+        try {
+          stat = fs.statSync(abs)
+        } catch {
+          fail(`acceptance_file_missing:${i}`)
+          continue
+        }
+        if (!stat.isFile()) {
+          fail(`acceptance_file_not_file:${i}`)
+          continue
+        }
+        if (contentContains !== null) {
+          let content: string
+          try {
+            content = readFile(abs)
+          } catch {
+            fail(`acceptance_file_unreadable:${i}`)
+            continue
+          }
+          if (!content.includes(contentContains)) {
+            fail(`acceptance_file_content_mismatch:${i}`)
+          }
+        }
+        continue
+      }
+
+      fail(`acceptance_type_unknown:${i}`)
+    } finally {
+      items.push({
+        index: i,
+        ...(entryId !== undefined ? { id: entryId } : {}),
+        type: entryType,
+        outcome: isPending ? 'pending' : entryCodes.length > 0 ? 'fail' : 'pass',
+        codes: entryCodes,
+      })
+    }
   }
 
-  return { ok: missing.length === 0 && pending.length === 0, missing, pending, pendingItems, checked }
+  return { ok: missing.length === 0 && pending.length === 0, missing, pending, items, pendingItems, checked }
 }

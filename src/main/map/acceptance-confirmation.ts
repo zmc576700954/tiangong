@@ -19,6 +19,7 @@ import {
   type AcceptancePendingItem,
   type AcceptanceVerdict,
 } from './acceptance-executor'
+import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
 import { WorkItemService, type WorkItemRow, type WorkItemStatus, type WorkStepRow } from './work-item-service'
 import { WorkStepService, type WorkStepStatus } from './work-step-service'
 
@@ -149,10 +150,34 @@ export class AcceptanceConfirmationService {
     const previouslyConfirmed = this.listConfirmedEntryIds(step.id)
     const confirmedIds = [...new Set([...previouslyConfirmed, ...entryIds])]
 
-    const verdict = await evaluateAcceptance({
-      acceptanceJson: item.acceptance_json,
-      projectPath: item.project_path,
-      confirmedManualEntryIds: confirmedIds,
+    const verdictStartedAt = Date.now()
+    let verdict: AcceptanceVerdict
+    try {
+      verdict = await evaluateAcceptance({
+        acceptanceJson: item.acceptance_json,
+        projectPath: item.project_path,
+        confirmedManualEntryIds: confirmedIds,
+      })
+    } catch (error) {
+      // 人工确认后的重算同属一次验收评估：异常也留一条可查诊断，再按原有错误语义抛出。
+      recordAcceptanceEvaluation(this.db, {
+        workItemId: item.id,
+        stepId: step.id,
+        source: 'verifier_error',
+        durationMs: Date.now() - verdictStartedAt,
+        confirmedEntryIds: entryIds,
+        verifierError: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
+    // 每次确认都会重算验收，逐条留档（纯诊断；写失败只告警）。
+    recordAcceptanceEvaluation(this.db, {
+      workItemId: item.id,
+      stepId: step.id,
+      source: 'manual_confirmation',
+      durationMs: Date.now() - verdictStartedAt,
+      confirmedEntryIds: entryIds,
+      verdict,
     })
 
     const decidedAt = Date.now()

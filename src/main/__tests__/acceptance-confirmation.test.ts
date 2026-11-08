@@ -50,6 +50,14 @@ describe('AcceptanceConfirmationService', () => {
     applyMapS5aSchema(db)
     applyMapAcceptanceSchema(db)
     applyAgentSchema(db)
+    // 验收诊断复用该报告表；建表以便断言落库行为（缺表时模块应静默跳过）。
+    db.exec(`
+      CREATE TABLE map_migration_reports (
+        id TEXT PRIMARY KEY, kind TEXT NOT NULL, stage TEXT, schema_version INTEGER,
+        started_at TEXT NOT NULL, finished_at TEXT, heartbeat_at TEXT, owner_pid INTEGER,
+        status TEXT NOT NULL, stats_json TEXT, details_json TEXT, error_json TEXT
+      );
+    `)
     items = new WorkItemService(db)
     steps = new WorkStepService(db)
     runs = new WorkRunService(db)
@@ -150,6 +158,16 @@ describe('AcceptanceConfirmationService', () => {
     expect(result.confirmationIds).toEqual([rows[0].id])
     // agent_approvals 只承载工具审批：人工验收不得再写入非工具审批行。
     expect(legacyApprovalRows()).toHaveLength(0)
+
+    // 验收诊断：turn 完成时一条 + 人工确认重算一条，逐条结果与来源可查。
+    const evals = db
+      .prepare('SELECT stats_json, details_json FROM map_migration_reports WHERE stage = ? ORDER BY id ASC')
+      .all(`acceptance_eval:${claimed.step.id}`) as Array<{ stats_json: string; details_json: string }>
+    expect(evals).toHaveLength(2)
+    const sources = evals.map((row) => (JSON.parse(row.stats_json) as { source: string }).source)
+    expect(sources).toEqual(['turn_completed', 'manual_confirmation'])
+    const manualDetails = JSON.parse(evals[1].details_json) as { items: Array<{ id?: string; outcome: string }> }
+    expect(manualDetails.items).toEqual([{ index: 0, id: 'm1', type: 'manual', outcome: 'pass', codes: [] }])
   })
 
   it('两个 manual：部分确认继续等待，剩余条目写回 input_request_json', async () => {

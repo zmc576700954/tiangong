@@ -23,6 +23,7 @@ import type { AgentCommand, AgentSessionConfig, TerminationReason } from '@share
 import type { TurnOutcome } from '@shared/types/agent-runtime'
 import { createLogger } from '../shared/logger'
 import type { AcceptancePendingItem, AcceptanceVerdict } from './acceptance-executor'
+import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import { WorkRunService, RoutingDecisionRepository, type FailureClass, type WorkRunRow } from './work-run-service'
 import { WorkStepService } from './work-step-service'
@@ -339,18 +340,36 @@ export class AgentStepRunner {
       return this.finalizeOutcome(claim, outcome, sessionId)
     }
     let verdict: AcceptanceVerdict
+    const verifyStartedAt = Date.now()
     try {
       verdict = await options.verifyAcceptance({
         acceptanceJson: claim.item.acceptance_json,
         projectPath: claim.item.project_path,
       })
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
       logger.warn(
         `[verify] step=${claim.step.id} 验收执行器异常，按 verify_fail 收口：` +
-          `${error instanceof Error ? error.message : String(error)}`,
+          `${message}`,
       )
+      // 逐条诊断（纯诊断）：执行器抛异常也留一条，便于区分「引擎坏了」与「确实没过」。
+      recordAcceptanceEvaluation(this.db, {
+        workItemId: claim.item.id,
+        stepId: claim.step.id,
+        source: 'verifier_error',
+        durationMs: Date.now() - verifyStartedAt,
+        verifierError: message,
+      })
       return this.finalizeFailure(claim, 'verify_fail', 'ACCEPTANCE_VERIFIER_ERROR', sessionId, outcome.status)
     }
+    // 每次验收都留逐条结果；写失败不影响准入判定（record 内部只告警）。
+    recordAcceptanceEvaluation(this.db, {
+      workItemId: claim.item.id,
+      stepId: claim.step.id,
+      source: 'turn_completed',
+      durationMs: Date.now() - verifyStartedAt,
+      verdict,
+    })
     // 硬失败优先：只要存在非 manual 的失败条目，就不得因 manual 待确认而变成"等待"。
     if (verdict.missing.length > 0) {
       const codes = [...verdict.missing, ...verdict.pending]
