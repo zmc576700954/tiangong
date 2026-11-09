@@ -15,7 +15,7 @@ import { LinkService, LinkValidationError } from '../map-migration/link-service'
 import { runLinkIntegrityCheck } from '../map-migration/link-backfill'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkRunService, WORK_RUN_STATUSES, type WorkRunStatus } from '../map/work-run-service'
-import { EvidenceService } from '../map/evidence-service'
+import { EvidenceService, EvidenceSuggestionService, type SuggestionStatus } from '../map/evidence-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import { WorkExecutionError } from '../map/work-execution-service'
@@ -38,6 +38,7 @@ export function registerMapHandlers(
   const workItems = new WorkItemService(db)
   const workRuns = new WorkRunService(db)
   const evidence = new EvidenceService(db)
+  const evidenceSuggestions = new EvidenceSuggestionService(db)
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
   const acceptanceConfirm = new AcceptanceConfirmationService(db)
@@ -129,6 +130,69 @@ export function registerMapHandlers(
       throw new Error('graphId and nodeEntityKey are required')
     }
     return evidence.listForNode(q.graphId, q.nodeEntityKey)
+  })
+
+  // ---- 证据建议（只读列表）----
+  typedHandle('map:evidence:suggestions:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as { graphId?: unknown; nodeEntityKey?: unknown; status?: unknown; limit?: unknown }
+    if (typeof q.graphId !== 'string' || q.graphId === '') throw new Error('graphId is required')
+    if (q.nodeEntityKey !== undefined && typeof q.nodeEntityKey !== 'string') {
+      throw new Error('nodeEntityKey must be a string')
+    }
+    const status = q.status
+    if (status !== undefined && status !== 'pending' && status !== 'accepted' && status !== 'dismissed') {
+      throw new Error('status must be pending, accepted or dismissed')
+    }
+    const limit = limitOf(q.limit, 200)
+    return typeof q.nodeEntityKey === 'string'
+      ? evidenceSuggestions.listForNode(q.graphId, q.nodeEntityKey, status as SuggestionStatus | undefined, limit)
+      : evidenceSuggestions.list(q.graphId, (status as SuggestionStatus | undefined) ?? 'pending', limit)
+  })
+
+  /**
+   * 建议接受（写通道）：同一事务内改建议状态 + 写 node_evidence（§3.4/§3.7.1）。
+   *
+   * 幂等键：建议 id。已接受再次调用返回既有证据（按 ref_json.suggestionId 定位），
+   * 不产生第二条证据；不存在/已驳回/并发修改一律拒绝，不做静默降级。
+   * 权限边界：仅 preload 白名单内的本地 renderer 可调用；必须提供 resolvedBy 作为
+   * 审计主体，主进程不代填默认用户，也不接受远端调用。
+   */
+  typedHandle('map:evidence:suggestion:accept', async (_, data: unknown) => {
+    const d = (data ?? {}) as { id?: unknown; resolvedBy?: unknown }
+    if (typeof d.id !== 'string' || d.id === '') throw new Error('id is required')
+    if (typeof d.resolvedBy !== 'string' || d.resolvedBy.trim() === '') {
+      throw new Error('resolvedBy is required')
+    }
+    const result = evidenceSuggestions.accept(d.id, d.resolvedBy)
+    broadcast?.('event:evidence-suggestion-changed', {
+      graphId: result.suggestion.graph_id,
+      nodeEntityKey: result.suggestion.node_entity_key,
+      suggestionId: result.suggestion.id,
+      status: result.suggestion.status,
+      evidenceId: result.evidence.id,
+    })
+    return {
+      suggestion: result.suggestion,
+      evidenceId: result.evidence.id,
+      reused: result.reused,
+    }
+  })
+
+  /** 建议驳回（写通道）：只改状态、不写证据；幂等键同 accept（建议 id）。 */
+  typedHandle('map:evidence:suggestion:dismiss', async (_, data: unknown) => {
+    const d = (data ?? {}) as { id?: unknown; resolvedBy?: unknown }
+    if (typeof d.id !== 'string' || d.id === '') throw new Error('id is required')
+    if (typeof d.resolvedBy !== 'string' || d.resolvedBy.trim() === '') {
+      throw new Error('resolvedBy is required')
+    }
+    const row = evidenceSuggestions.dismiss(d.id, d.resolvedBy)
+    broadcast?.('event:evidence-suggestion-changed', {
+      graphId: row.graph_id,
+      nodeEntityKey: row.node_entity_key,
+      suggestionId: row.id,
+      status: row.status,
+    })
+    return row
   })
 
   // ---- work item 生命周期（§9.2:workitem:*）----

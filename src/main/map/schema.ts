@@ -282,6 +282,36 @@ export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
     requiredColumns: ['id', 'graph_id', 'graph_type', 'node_entity_key', 'evidence_level', 'evidence_type', 'ref_json', 'produced_by', 'created_at'],
   },
   {
+    // 证据建议（§3.4/§7.2 逐字）：系统/Agent 推断只写本表，接受后才转 node_evidence。
+    // 状态域一次建齐 pending/accepted/dismissed；ref_json 保留候选来源，接受时
+    // 由服务层在同一事务内转写证据并在 ref_json 追加 suggestionId（可追溯）。
+    name: 'evidence_suggestions',
+    createSql: `
+      CREATE TABLE evidence_suggestions (
+        id               TEXT PRIMARY KEY,
+        project_path     TEXT,
+        graph_id         TEXT NOT NULL,
+        node_entity_key  TEXT NOT NULL,
+        node_id          TEXT,
+        suggested_level  TEXT NOT NULL CHECK(suggested_level IN ('E1','E2','E3','E4')),
+        evidence_type    TEXT NOT NULL,
+        ref_json         TEXT NOT NULL,
+        rationale        TEXT NOT NULL,
+        confidence       REAL NOT NULL DEFAULT 0.5,
+        status           TEXT NOT NULL DEFAULT 'pending'
+                         CHECK(status IN ('pending','accepted','dismissed')),
+        produced_by_run_id TEXT,
+        created_at       TEXT NOT NULL,
+        resolved_at      TEXT,
+        resolved_by      TEXT
+      )
+    `,
+    requiredColumns: [
+      'id', 'graph_id', 'node_entity_key', 'suggested_level', 'evidence_type',
+      'ref_json', 'rationale', 'confidence', 'status', 'created_at',
+    ],
+  },
+  {
     // 派生缓存（可整表重建）：nodes.status 永不参与派生、也不被回写（§3.1 双轨）。
     name: 'node_execution_state',
     createSql: `
@@ -420,6 +450,7 @@ export const MAP_S6A_INDEX_SQLS: string[] = [
      ON node_evidence(graph_id, work_run_id, evidence_type, node_entity_key)
      WHERE work_run_id IS NOT NULL AND evidence_level IN ('E2','E3')`,
   `CREATE INDEX IF NOT EXISTS idx_node_execution_state_value ON node_execution_state(execution_state)`,
+  `CREATE INDEX IF NOT EXISTS idx_evidence_suggestions_status ON evidence_suggestions(graph_id, status)`,
 ]
 
 /** S5a 索引（§7.2）。 */

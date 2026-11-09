@@ -754,8 +754,12 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      加列与数据迁移在同一次启动迁移里完成，要么都成立、要么整体回滚；
  *      拆成两个版本会让「列已加、数据未迁」的中间态成为可启动状态。
  *      纯加列 + 数据迁移，**不重建表**。
+ * v37：W2 G1-10/G5-8 —— 新建 `evidence_suggestions`（session-map 蓝图 §7.2 逐字）。
+ *      Agent/系统推断只写建议；接受时在**同一事务**内转写 `node_evidence` 并回填
+ *      `status='accepted' / resolved_at / resolved_by`。纯建表 + 建索引，无数据迁移、
+ *      不改既有列；旧库启动时由 `rebuildTableIfNeeded` 的「表不存在即建」路径补齐。
  */
-const CURRENT_SCHEMA_VERSION = 36
+const CURRENT_SCHEMA_VERSION = 37
 
 interface TableSchema {
   name: string

@@ -260,6 +260,21 @@ export interface IpcApi {
   /** 节点会话时间线（§9.5-3:替代单线程映射,UI 保留 threadIds 全集） */
   'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<Array<Record<string, unknown>>>
   'map:node:evidence:list': (query: { graphId: string; nodeEntityKey: string }) => Promise<Array<Record<string, unknown>>>
+  /** 证据建议只读列表（§3.4）：可按节点/状态过滤，默认只看 pending。 */
+  'map:evidence:suggestions:list': (query: {
+    graphId: string
+    nodeEntityKey?: string
+    status?: 'pending' | 'accepted' | 'dismissed'
+    limit?: number
+  }) => Promise<Array<Record<string, unknown>>>
+  /** 接受建议（写通道）：同一事务内转写 node_evidence。幂等键 = 建议 id。 */
+  'map:evidence:suggestion:accept': (data: { id: string; resolvedBy: string }) => Promise<{
+    suggestion: Record<string, unknown>
+    evidenceId: string
+    reused: boolean
+  }>
+  /** 驳回建议（写通道）：只改状态、不写证据。幂等键 = 建议 id。 */
+  'map:evidence:suggestion:dismiss': (data: { id: string; resolvedBy: string }) => Promise<Record<string, unknown>>
   /** item 下钻：item + 当前 revision 的 steps + 该 item 全部 runs */
   'workitem:get': (id: string) => Promise<{ item: Record<string, unknown>; steps: Array<Record<string, unknown>>; runs: Array<Record<string, unknown>> } | null>
   'workitem:list': (query: { graphId: string; anchorEntityKey?: string; includeHistory?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>
@@ -475,6 +490,7 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:link:list',
   'map:node:timeline',
   'map:node:evidence:list',
+  'map:evidence:suggestions:list',
   'workitem:get',
   'workitem:list',
   'workitem:steps:list',

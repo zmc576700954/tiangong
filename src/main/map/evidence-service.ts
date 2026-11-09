@@ -335,6 +335,313 @@ export class EvidenceService {
 }
 
 /**
+ * `evidence_suggestions` 服务（§3.4/§3.7.1）：系统/Agent 推断只能写建议，
+ * 接受时在同一事务内转 `node_evidence`；拒绝只改状态、不写证据。
+ *
+ * 去重口径（§I.3 W2 步骤②「node+kind+source_ref」）：同一节点 + 同一证据类型 +
+ * 同一来源（优先 `produced_by_run_id`；无 run 时用 `ref_json`）只保留一条 `pending`。
+ * 接受/驳回都是条件更新（`WHERE status='pending'`），重复调用按既有状态返回，
+ * 不产生第二条证据。
+ */
+export type SuggestionStatus = 'pending' | 'accepted' | 'dismissed'
+
+export interface EvidenceSuggestionRow {
+  id: string
+  project_path: string | null
+  graph_id: string
+  node_entity_key: string
+  node_id: string | null
+  suggested_level: EvidenceLevel
+  evidence_type: NodeEvidenceRow['evidence_type']
+  ref_json: string
+  rationale: string
+  confidence: number
+  status: SuggestionStatus
+  produced_by_run_id: string | null
+  created_at: string
+  resolved_at: string | null
+  resolved_by: string | null
+}
+
+export interface SuggestEvidenceInput {
+  graphId: string
+  nodeEntityKey: string
+  nodeId?: string
+  projectPath?: string
+  level: EvidenceLevel
+  evidenceType: NodeEvidenceRow['evidence_type']
+  ref: unknown
+  /** 给人看的推断理由（必填，接受后作为证据 summary）。 */
+  rationale: string
+  confidence?: number
+  producedByRunId?: string
+}
+
+const SUGGESTION_LEVELS: EvidenceLevel[] = ['E1', 'E2', 'E3', 'E4']
+const EVIDENCE_TYPES: NodeEvidenceRow['evidence_type'][] = [
+  'changed_files', 'commit', 'test_run', 'session_turn',
+  'artifact', 'human_confirm', 'runtime_observation',
+]
+
+export class EvidenceSuggestionService {
+  private readonly evidence: EvidenceService
+
+  constructor(private readonly db: BetterSqlite3.Database) {
+    this.evidence = new EvidenceService(db)
+  }
+
+  get(id: string): EvidenceSuggestionRow | undefined {
+    return this.db.prepare('SELECT * FROM evidence_suggestions WHERE id = ?').get(id) as
+      | EvidenceSuggestionRow
+      | undefined
+  }
+
+  listForNode(
+    graphId: string,
+    nodeEntityKey: string,
+    status?: SuggestionStatus,
+    limit = 200,
+  ): EvidenceSuggestionRow[] {
+    if (status) {
+      return this.db
+        .prepare(
+          `SELECT * FROM evidence_suggestions
+            WHERE graph_id = ? AND node_entity_key = ? AND status = ?
+            ORDER BY created_at DESC, id ASC LIMIT ?`,
+        )
+        .all(graphId, nodeEntityKey, status, limit) as EvidenceSuggestionRow[]
+    }
+    return this.db
+      .prepare(
+        `SELECT * FROM evidence_suggestions
+          WHERE graph_id = ? AND node_entity_key = ?
+          ORDER BY created_at DESC, id ASC LIMIT ?`,
+      )
+      .all(graphId, nodeEntityKey, limit) as EvidenceSuggestionRow[]
+  }
+
+  list(graphId: string, status: SuggestionStatus = 'pending', limit = 200): EvidenceSuggestionRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM evidence_suggestions
+          WHERE graph_id = ? AND status = ?
+          ORDER BY created_at DESC, id ASC LIMIT ?`,
+      )
+      .all(graphId, status, limit) as EvidenceSuggestionRow[]
+  }
+
+  /** 写入建议（重复的来源只返回既有 pending 行）。 */
+  suggest(input: SuggestEvidenceInput): { row: EvidenceSuggestionRow; reused: boolean } {
+    if (!SUGGESTION_LEVELS.includes(input.level)) {
+      throw new EvidenceValidationError(`建议等级非法:${String(input.level)}`)
+    }
+    if (!EVIDENCE_TYPES.includes(input.evidenceType)) {
+      throw new EvidenceValidationError(`证据类型非法:${String(input.evidenceType)}`)
+    }
+    if (input.ref === undefined || input.ref === null) {
+      throw new EvidenceValidationError('建议缺 ref_json（§3.4）')
+    }
+    if (!input.rationale || input.rationale.trim() === '') {
+      throw new EvidenceValidationError('建议缺 rationale（§3.4：必须说明推断理由）')
+    }
+    const confidence = input.confidence ?? 0.5
+    if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      throw new EvidenceValidationError('建议 confidence 必须在 [0,1]')
+    }
+    const node = this.db
+      .prepare('SELECT id FROM nodes WHERE graph_id = ? AND entity_key = ?')
+      .get(input.graphId, input.nodeEntityKey) as { id: string } | undefined
+    if (!node) {
+      throw new EvidenceValidationError(
+        `建议端点不可解析:graph=${input.graphId} key=${input.nodeEntityKey.slice(0, 8)}…`,
+      )
+    }
+
+    const refJson = JSON.stringify(input.ref)
+    const now = new Date().toISOString()
+    const txn = this.db.transaction((): { row: EvidenceSuggestionRow; reused: boolean } => {
+      const existing = (
+        input.producedByRunId
+          ? this.db
+              .prepare(
+                `SELECT * FROM evidence_suggestions
+                  WHERE graph_id = ? AND node_entity_key = ? AND evidence_type = ?
+                    AND status = 'pending' AND produced_by_run_id = ?`,
+              )
+              .get(input.graphId, input.nodeEntityKey, input.evidenceType, input.producedByRunId)
+          : this.db
+              .prepare(
+                `SELECT * FROM evidence_suggestions
+                  WHERE graph_id = ? AND node_entity_key = ? AND evidence_type = ?
+                    AND status = 'pending' AND produced_by_run_id IS NULL AND ref_json = ?`,
+              )
+              .get(input.graphId, input.nodeEntityKey, input.evidenceType, refJson)
+      ) as EvidenceSuggestionRow | undefined
+      if (existing) return { row: existing, reused: true }
+
+      const id = `es_${Date.now()}_${randomUUID().slice(0, 8)}`
+      this.db
+        .prepare(
+          `INSERT INTO evidence_suggestions (
+             id, project_path, graph_id, node_entity_key, node_id,
+             suggested_level, evidence_type, ref_json, rationale, confidence,
+             status, produced_by_run_id, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        )
+        .run(
+          id, input.projectPath ?? null, input.graphId, input.nodeEntityKey, input.nodeId ?? node.id,
+          input.level, input.evidenceType, refJson, input.rationale.trim(), confidence,
+          input.producedByRunId ?? null, now,
+        )
+      return { row: this.get(id)!, reused: false }
+    })
+    return txn()
+  }
+
+  /**
+   * 接受建议：**同一事务**内 ① 条件更新建议状态 ② 写 node_evidence。
+   * 已接受再次调用返回既有证据（按 ref_json.suggestionId 定位），不重复写。
+   */
+  accept(
+    id: string,
+    resolvedBy: string,
+  ): { suggestion: EvidenceSuggestionRow; evidence: NodeEvidenceRow; reused: boolean } {
+    if (!resolvedBy || resolvedBy.trim() === '') {
+      throw new EvidenceValidationError('接受建议必须提供 resolvedBy（审计要求）')
+    }
+    const txn = this.db.transaction(
+      (): { suggestion: EvidenceSuggestionRow; evidence: NodeEvidenceRow; reused: boolean } => {
+        const suggestion = this.get(id)
+        if (!suggestion) throw new EvidenceValidationError(`建议 ${id} 不存在`)
+        const existingEvidence = this.findEvidenceBySuggestion(id)
+        if (suggestion.status === 'accepted') {
+          if (!existingEvidence) {
+            throw new EvidenceValidationError(`建议 ${id} 已接受但找不到对应证据（状态不一致，需人工核查）`)
+          }
+          return { suggestion, evidence: existingEvidence, reused: true }
+        }
+        if (suggestion.status === 'dismissed') {
+          throw new EvidenceValidationError(`建议 ${id} 已驳回，不能接受`)
+        }
+        // §3.7.1：E3 只能由 TestExecutor 写入，建议不得把人工点击洗成可复现证据。
+        if (suggestion.suggested_level === 'E3') {
+          throw new EvidenceValidationError('E3 只能由 TestExecutor 写入（§3.7.1），建议不允许代为升级')
+        }
+
+        const now = new Date().toISOString()
+        const updated = this.db
+          .prepare(
+            `UPDATE evidence_suggestions
+                SET status = 'accepted', resolved_at = ?, resolved_by = ?
+              WHERE id = ? AND status = 'pending'`,
+          )
+          .run(now, resolvedBy.trim(), id)
+        if (updated.changes !== 1) {
+          throw new EvidenceValidationError(`建议 ${id} 状态已被并发修改，拒绝重复接受`)
+        }
+
+        const ref = safeJsonObject(suggestion.ref_json)
+        const { row: evidence } = this.evidence.create(this.toEvidenceInput(suggestion, ref, resolvedBy))
+        return { suggestion: this.get(id)!, evidence, reused: false }
+      },
+    )
+    return txn()
+  }
+
+  /** 驳回建议：只改状态，不写证据；重复驳回返回既有状态。 */
+  dismiss(id: string, resolvedBy: string): EvidenceSuggestionRow {
+    if (!resolvedBy || resolvedBy.trim() === '') {
+      throw new EvidenceValidationError('驳回建议必须提供 resolvedBy（审计要求）')
+    }
+    const txn = this.db.transaction((): EvidenceSuggestionRow => {
+      const suggestion = this.get(id)
+      if (!suggestion) throw new EvidenceValidationError(`建议 ${id} 不存在`)
+      if (suggestion.status === 'dismissed') return suggestion
+      if (suggestion.status === 'accepted') {
+        throw new EvidenceValidationError(`建议 ${id} 已接受，不能驳回`)
+      }
+      const updated = this.db
+        .prepare(
+          `UPDATE evidence_suggestions
+              SET status = 'dismissed', resolved_at = ?, resolved_by = ?
+            WHERE id = ? AND status = 'pending'`,
+        )
+        .run(new Date().toISOString(), resolvedBy.trim(), id)
+      if (updated.changes !== 1) {
+        throw new EvidenceValidationError(`建议 ${id} 状态已被并发修改，拒绝重复驳回`)
+      }
+      return this.get(id)!
+    })
+    return txn()
+  }
+
+  private findEvidenceBySuggestion(suggestionId: string): NodeEvidenceRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT * FROM node_evidence
+          WHERE json_extract(ref_json, '$.suggestionId') = ?
+          ORDER BY created_at DESC, id ASC LIMIT 1`,
+      )
+      .get(suggestionId) as NodeEvidenceRow | undefined
+  }
+
+  /** 建议 → 证据：来源字段从 ref_json 结构化回填，`suggestionId` 追加进 ref_json 供追溯。 */
+  private toEvidenceInput(
+    suggestion: EvidenceSuggestionRow,
+    ref: Record<string, unknown>,
+    resolvedBy: string,
+  ): CreateEvidenceInput {
+    const str = (value: unknown): string | undefined =>
+      typeof value === 'string' && value !== '' ? value : undefined
+    const level = suggestion.suggested_level
+    const producedBy: Actor =
+      level === 'E1' || level === 'E4'
+        ? 'human'
+        : suggestion.produced_by_run_id
+          ? 'agent'
+          : 'system'
+
+    const input: CreateEvidenceInput = {
+      level,
+      graphId: suggestion.graph_id,
+      nodeEntityKey: suggestion.node_entity_key,
+      nodeId: suggestion.node_id ?? undefined,
+      projectPath: suggestion.project_path ?? undefined,
+      evidenceType: suggestion.evidence_type,
+      ref: { ...ref, suggestionId: suggestion.id },
+      summary: suggestion.rationale,
+      actor: 'human',
+      producedBy,
+      workRunId: suggestion.produced_by_run_id ?? str(ref.runId),
+      workItemId: str(ref.workItemId),
+      sessionId: str(ref.sessionId),
+      turnId: str(ref.turnId),
+      currentHash: str(ref.executedContentHash),
+    }
+
+    if (level === 'E4') {
+      // 人工点击接受 = 人工签收：签名人必须是接受者本人，覆盖范围取自建议。
+      input.signedBy = resolvedBy.trim()
+      input.coverage = Array.isArray(ref.coverage)
+        ? (ref.coverage as Array<{ node_entity_key?: string; files?: string[]; acceptance_ids?: string[] }>)
+        : undefined
+    }
+    return input
+  }
+}
+
+function safeJsonObject(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
  * §3.7.5 E3 stale 扫描（启动后 + 每小时,全图批量）：按图取项目 HEAD,凡
  * code_version !== HEAD 的 fresh E3 → stale。git 不可用/失败跳过该图（只告警,
  * 不误标）。L1 无 TestExecutor → 无 E3 行,早退休眠（S8 接入后生效）。

@@ -25,7 +25,7 @@ import { createLogger } from '../shared/logger'
 import type { AcceptancePendingItem, AcceptanceVerdict } from './acceptance-executor'
 import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
 import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
-import { EvidenceService } from './evidence-service'
+import { EvidenceService, EvidenceSuggestionService } from './evidence-service'
 import { GitWorktreeManager, type ExecutedContent } from './test-executor'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import {
@@ -104,6 +104,8 @@ export interface StepRunResult {
   stepId: string
   sessionId?: string
   turnStatus?: TurnOutcome['status']
+  /** 本回合验收逐条结果（仅在注入 verifyAcceptance 且走到通过/待确认时有值）。 */
+  acceptance?: AcceptanceVerdict
 }
 
 /**
@@ -298,6 +300,7 @@ export class AgentStepRunner {
   private readonly items: WorkItemService
   private readonly routing: RoutingDecisionRepository
   private readonly evidence: EvidenceService
+  private readonly evidenceSuggestions: EvidenceSuggestionService
   private readonly changeSets: ChangeSetService
 
   constructor(
@@ -309,6 +312,7 @@ export class AgentStepRunner {
     this.items = new WorkItemService(db)
     this.routing = new RoutingDecisionRepository(db)
     this.evidence = new EvidenceService(db)
+    this.evidenceSuggestions = new EvidenceSuggestionService(db)
     this.changeSets = new ChangeSetService(db, new GitWorkspaceChangeRunner())
   }
 
@@ -511,12 +515,15 @@ export class AgentStepRunner {
   }
 
   /**
-   * E2 session_turn：回合完成（机器验收通过，或仅剩 manual 待确认）后记录本次执行
-   * 实际产出的内容绑定。只写 content_hash，不冒充 E3（无提交/测试事实）。
+   * E2 session_turn 收口（C 口径，2026-11-09）：
    *
-   * 写方：编排层以 system 身份写——代码矩阵禁止 actor='agent' 直写 E2，agent 候选
-   * 须走尚未建成的 evidence_suggestions（蓝图 §3.7.1）；ref 保留 session/turn/adapter
-   * 溯源，suggestions 表落地后改走“建议→接受”。
+   * ① `succeeded` 且本回合验收**全部条目机器可判定且通过**（command 退出码 0 /
+   *    file_check 命中；manual 条目数为 0）→ **直接写 `node_evidence`**。
+   *    `produced_by='system'`：证据由机器验收驱动，不是 agent 自称；ref_json 记录
+   *    逐条验收结果与执行内容指纹。
+   * ② 存在 manual 待确认（`needs_input`）→ 只写 `pending` 建议，人工接受才转证据。
+   * ③ 验收失败、未注入验收、缺 `anchor_entity_key`/`project_path`、取不到执行指纹
+   *    → 什么都不写（保留告警/诊断）。
    *
    * 写入发生在 step/run 终态事务提交之后：失败只留诊断，不回滚、不改写 step 状态。
    */
@@ -526,9 +533,16 @@ export class AgentStepRunner {
     sessionId: string,
     options: AgentStepRunnerOptions,
   ): void {
-    // 没有机器验收就没有“完成事实”，不写证据（避免 agent 自称完成直接变 implemented）。
+    // 没有机器验收就没有“完成事实”，什么都不写（避免 agent 自称完成直接变 implemented）。
     if (!options.verifyAcceptance) return
     if (result.status !== 'succeeded' && result.status !== 'needs_input') return
+    const verdict = result.acceptance
+    if (!verdict) return
+    const machineAllPass = result.status === 'succeeded' && isMachineAllPass(verdict)
+    const manualPending = result.status === 'needs_input' && verdict.pendingItems.length > 0
+    // succeeded 但验收结果不满足“全机器可判定且通过”→ fail-closed，不落证据。
+    if (!machineAllPass && !manualPending) return
+
     const { item, step, run } = claim
     if (!item.anchor_entity_key) {
       logger.warn(`[evidence] step=${step.id} 缺 anchor_entity_key，跳过 E2（不伪造节点）`)
@@ -566,42 +580,81 @@ export class AgentStepRunner {
     }
 
     const turnId = latestTurnId(this.db, sessionId)
+    const ref = {
+      kind: 'agent_turn',
+      sessionId,
+      turnId,
+      runId: run.id,
+      workItemId: item.id,
+      stepId: step.id,
+      adapterName: options.adapterName,
+      turnStatus: result.turnStatus ?? null,
+      acceptanceOutcome: result.status,
+      // 逐条验收事实：直落证据与建议共用，接受后可复核“凭什么通过/待确认”。
+      acceptance: {
+        ok: verdict.ok,
+        checked: verdict.checked,
+        items: verdict.items,
+        missing: verdict.missing,
+        pending: verdict.pending,
+        manualEntryCount: verdict.pendingItems.length,
+        pendingItems: verdict.pendingItems,
+      },
+      // agent 直接写在这个项目工作区，指纹即本次执行面（非 TestExecutor 的独立 worktree）。
+      executionWorkspace: 'project_worktree',
+      workspaceChangesIncluded: true,
+      worktreeTree: executed.treeHash,
+      dirtyFiles: executed.dirtyFiles,
+      executedContentHash: executed.contentHash,
+    }
+
     try {
-      const { row, reused } = this.evidence.create({
-        level: 'E2',
+      if (machineAllPass) {
+        const { row, reused } = this.evidence.create({
+          level: 'E2',
+          graphId: item.graph_id,
+          nodeEntityKey: item.anchor_entity_key,
+          nodeId: item.anchor_node_id ?? undefined,
+          projectPath: item.project_path,
+          evidenceType: 'session_turn',
+          ref,
+          summary:
+            `agent 回合完成（机器验收通过：${verdict.checked}/${verdict.items.length} 条全过，manual 0 条）` +
+            `(session_turn@${executed.contentHash.slice(0, 12)}` +
+            `${executed.dirtyFiles.length > 0 ? `;${executed.dirtyFiles.length} 个未提交文件计入内容绑定` : ';工作区干净'})`,
+          actor: 'system',
+          producedBy: 'system',
+          currentHash: executed.contentHash,
+          workRunId: run.id,
+          workItemId: item.id,
+          sessionId,
+          turnId: turnId ?? undefined,
+        })
+        logger.info(
+          `[evidence] step=${step.id} E2 session_turn evidence ${reused ? 'reused' : 'created'} id=${row.id}`,
+        )
+        return
+      }
+
+      const { row, reused } = this.evidenceSuggestions.suggest({
         graphId: item.graph_id,
         nodeEntityKey: item.anchor_entity_key,
         nodeId: item.anchor_node_id ?? undefined,
         projectPath: item.project_path,
+        level: 'E2',
         evidenceType: 'session_turn',
-        ref: {
-          kind: 'agent_turn',
-          sessionId,
-          turnId,
-          runId: run.id,
-          stepId: step.id,
-          adapterName: options.adapterName,
-          turnStatus: result.turnStatus ?? null,
-          acceptanceOutcome: result.status,
-          // agent 直接写在这个项目工作区，指纹即本次执行面（非 TestExecutor 的独立 worktree）。
-          executionWorkspace: 'project_worktree',
-          workspaceChangesIncluded: true,
-          worktreeTree: executed.treeHash,
-          dirtyFiles: executed.dirtyFiles,
-          executedContentHash: executed.contentHash,
-        },
-        summary:
-          `agent 回合完成(session_turn@${executed.contentHash.slice(0, 12)}` +
+        ref,
+        rationale:
+          `agent 回合完成（仅剩 ${verdict.pendingItems.length} 条 manual 待确认）` +
+          `(session_turn@${executed.contentHash.slice(0, 12)}` +
           `${executed.dirtyFiles.length > 0 ? `;${executed.dirtyFiles.length} 个未提交文件计入内容绑定` : ';工作区干净'})`,
-        actor: 'system',
-        producedBy: 'system',
-        currentHash: executed.contentHash,
-        workRunId: run.id,
-        workItemId: item.id,
-        sessionId,
-        turnId: turnId ?? undefined,
+        // 仅剩人工待确认的候选不替人做结论。
+        confidence: 0.6,
+        producedByRunId: run.id,
       })
-      logger.info(`[evidence] step=${step.id} E2 session_turn ${reused ? 'reused' : 'created'} id=${row.id}`)
+      logger.info(
+        `[evidence] step=${step.id} E2 session_turn suggestion ${reused ? 'reused' : 'created'} id=${row.id}`,
+      )
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       logger.warn(`[evidence] step=${step.id} E2 写入失败（不改变已完成终态）：${message}`)
@@ -677,9 +730,12 @@ export class AgentStepRunner {
     }
     // 仅 manual 待确认：步落 needs_input（run 仍 completed），等待人工确认入口。
     if (verdict.pendingItems.length > 0) {
-      return this.finalizeNeedsInput(claim, verdict.pendingItems, sessionId, outcome.status, ctx)
+      const result = this.finalizeNeedsInput(claim, verdict.pendingItems, sessionId, outcome.status, ctx)
+      return { ...result, acceptance: verdict }
     }
-    return this.finalizeOutcome(claim, outcome, sessionId, ctx)
+    const result = this.finalizeOutcome(claim, outcome, sessionId, ctx)
+    // 全部条目均为机器可判定且通过（manual 数为 0）→ 可直落 E2（C 口径）。
+    return { ...result, acceptance: verdict }
   }
 
   /**
@@ -870,6 +926,24 @@ export class AgentStepRunner {
 
 function isTimeout(outcome: AgentTurnSignal): boolean {
   return outcome.failureClass === 'timeout' || outcome.errorCode === 'DEADLINE_EXCEEDED'
+}
+
+/**
+ * C 口径：本回合验收是否「全部条目机器可判定且通过」。
+ * 要求至少一条条目、无 missing/pending、无 manual 待确认，且每条都是
+ * command/file_check 且 outcome='pass'——任一不满足都不得直落 E2。
+ */
+function isMachineAllPass(verdict: AcceptanceVerdict): boolean {
+  return (
+    verdict.ok &&
+    verdict.missing.length === 0 &&
+    verdict.pending.length === 0 &&
+    verdict.pendingItems.length === 0 &&
+    verdict.items.length > 0 &&
+    verdict.items.every(
+      (item) => (item.type === 'command' || item.type === 'file_check') && item.outcome === 'pass',
+    )
+  )
 }
 
 /** 会话最近一次 turn id（证据溯源用）；agent_turns 未建/无行时留空，不猜。 */

@@ -567,7 +567,7 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     ok: true,
     missing: [] as string[],
     pending: [] as string[],
-    items: [],
+    items: [{ index: 0, type: 'command', outcome: 'pass' as const, codes: [] }],
     pendingItems: [] as Array<{ id: string; expected: string }>,
     checked: 1,
   }
@@ -624,7 +624,7 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     return claimed!
   }
 
-  it('回合完成+验收通过 → E2 session_turn，current_hash=执行内容指纹（system 写方）', async () => {
+  it('机器验收全过 → 直接写 E2 session_turn 证据（produced_by=system，无建议）', async () => {
     createAnchoredItem()
     const c = claim()
 
@@ -635,6 +635,8 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     })
 
     expect(result.status).toBe('succeeded')
+    // C 口径：全机器可判定且通过 → 直落证据，不走建议。
+    expect(db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get()).toEqual({ n: 0 })
     const rows = db.prepare('SELECT * FROM node_evidence').all() as Array<Record<string, unknown>>
     expect(rows).toHaveLength(1)
     const ev = rows[0]
@@ -642,6 +644,7 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     expect(ev['evidence_type']).toBe('session_turn')
     expect(ev['version_binding']).toBe('content_hash')
     expect(ev['current_hash']).toBe('hash-abc')
+    // 机器验收驱动，不是 agent 自称。
     expect(ev['produced_by']).toBe('system')
     expect(ev['graph_id']).toBe('g1')
     expect(ev['node_entity_key']).toBe('key-1')
@@ -651,11 +654,15 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     const ref = JSON.parse(ev['ref_json'] as string) as Record<string, unknown>
     expect(ref['sessionId']).toBe('sess-1')
     expect(ref['runId']).toBe(c.run.id)
+    expect(ref['workItemId']).toBe(c.item.id)
     expect(ref['executionWorkspace']).toBe('project_worktree')
     expect(ref['executedContentHash']).toBe('hash-abc')
+    const acceptance = ref['acceptance'] as Record<string, unknown>
+    expect(acceptance['manualEntryCount']).toBe(0)
+    expect((acceptance['items'] as Array<Record<string, unknown>>)[0]['outcome']).toBe('pass')
   })
 
-  it('仅 manual 待确认 → 也写 E2（run 已 completed，等人工签收）', async () => {
+  it('含 manual 待确认 → 只写 pending 建议，node_evidence 为 0', async () => {
     createAnchoredItem('key-1', [{ id: 'm1', type: 'manual', expected: '人工确认' }])
     const c = claim()
 
@@ -671,15 +678,67 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
     })
 
     expect(result.status).toBe('needs_input')
-    const rows = db.prepare('SELECT current_hash, ref_json FROM node_evidence').all() as Array<Record<string, unknown>>
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
+    const rows = db.prepare('SELECT * FROM evidence_suggestions').all() as Array<Record<string, unknown>>
     expect(rows).toHaveLength(1)
-    expect(rows[0]['current_hash']).toBe('hash-def')
-    expect((JSON.parse(rows[0]['ref_json'] as string) as Record<string, unknown>)['acceptanceOutcome']).toBe(
-      'needs_input',
-    )
+    expect(rows[0]['status']).toBe('pending')
+    expect(rows[0]['confidence']).toBe(0.6)
+    expect(rows[0]['rationale']).toContain('仅剩 1 条 manual 待确认')
+    expect(rows[0]['produced_by_run_id']).toBe(c.run.id)
+    const ref = JSON.parse(rows[0]['ref_json'] as string) as Record<string, unknown>
+    expect(ref['acceptanceOutcome']).toBe('needs_input')
+    expect(ref['executedContentHash']).toBe('hash-def')
+    const acceptance = ref['acceptance'] as Record<string, unknown>
+    expect(acceptance['manualEntryCount']).toBe(1)
+    expect((acceptance['pendingItems'] as Array<Record<string, unknown>>)[0]['id']).toBe('m1')
   })
 
-  it('取不到执行内容 → 不写证据，只留诊断；step 仍成功', async () => {
+  it('验收失败 → 证据与建议都为 0', async () => {
+    createAnchoredItem('key-1', [{ type: 'command', command: 'npm test', expected: '测试通过' }])
+    const c = claim()
+
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => ({
+        ...PASS_VERDICT,
+        ok: false,
+        missing: ['acceptance_command_failed:0'],
+        items: [{ index: 0, type: 'command', outcome: 'fail' as const, codes: ['acceptance_command_failed:0'] }],
+      }),
+      executedContent: () => ({ treeHash: 'tree-fail', dirtyFiles: [], contentHash: 'hash-fail' }),
+    })
+
+    expect(result.status).toBe('failed')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get()).toEqual({ n: 0 })
+  })
+
+  it('同一 run 重复收口不重复写证据', async () => {
+    createAnchoredItem()
+    const c = claim()
+    const options = {
+      adapterName: 'claude-code',
+      verifyAcceptance: async () => PASS_VERDICT,
+      executedContent: () => ({ treeHash: 'tree-1', dirtyFiles: [], contentHash: 'hash-abc' }),
+    }
+
+    const result = await runner.run(c, options)
+    expect(result.status).toBe('succeeded')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 1 })
+
+    // 模拟终态已提交后重复收口：同 work_run_id 的唯一键返回既有行，不新增。
+    type RunClaim = Parameters<AgentStepRunner['run']>[0]
+    type RunResult = Awaited<ReturnType<AgentStepRunner['run']>>
+    type RunOptions = Parameters<AgentStepRunner['run']>[1]
+    ;(runner as unknown as {
+      recordTurnEvidence: (c: RunClaim, r: RunResult, s: string, o: RunOptions) => void
+    }).recordTurnEvidence(c, result, 'sess-1', options)
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 1 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get()).toEqual({ n: 0 })
+  })
+
+  it('取不到执行内容 → 什么都不写，只留诊断；step 仍成功', async () => {
     createAnchoredItem()
     const c = claim()
 
@@ -691,6 +750,7 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
 
     expect(result.status).toBe('succeeded')
     expect(steps.get(c.step.id)?.status).toBe('succeeded')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get()).toEqual({ n: 0 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
     const diag = db
       .prepare('SELECT stats_json FROM map_migration_reports WHERE stage = ?')
@@ -711,6 +771,7 @@ describe('AgentStepRunner 证据写入（E2 session_turn）', () => {
 
     expect(result.status).toBe('succeeded')
     expect(steps.get(c.step.id)?.status).toBe('succeeded')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get()).toEqual({ n: 0 })
     expect(db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get()).toEqual({ n: 0 })
     const diag = db
       .prepare('SELECT stats_json FROM map_migration_reports WHERE stage = ?')
