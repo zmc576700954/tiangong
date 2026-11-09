@@ -16,6 +16,22 @@
 
 ---
 
+## 阅读指引（第一次打开从这里进）
+
+**按目的选入口**
+
+| 你想知道 | 先看 | 再看 |
+|---|---|---|
+| **只想知道进度** | I.1 一页状态总账 | I.2 已实施清单（逐条代码证据）、I.3 未实施清单（W 包与可施工方案） |
+| **要评估风险** | I.1.2 未实施、I.1.3 仅建议（重点看「不做会怎样」） | I.6 定稿自检；§4.5.1a（G7-10 已知限制）；Part II 对应条目的「边界 / 失败后果 / 验收」 |
+| **要开工** | I.1.2 / I.3 定位条目 → I.7 施工顺序 | 条目正文的施工细则（§4.5.1、§5.9.8、§7.x、§8.x 等）；仅建议项读 Part II |
+
+**Part I 各部分作用**：**I.1** 是唯一状态总账（计数与归类）；**I.2** 只列能从代码复核的已实施能力；**I.3** 是未实施项与按 12 个 W 包组织的可施工方案；**I.4** 是裁决记录；**I.5** 是 ZCode v1.2.3 设计吸收清单；**I.6** 是定稿自检（行数、计数、矛盾）；**I.7** 是建议施工顺序。**Part II** 是「仅建议」项的施工级设计（II-01…II-34，其中 II-32 已实施后保留为设计存档）；补设计不等于批准，状态仍以 I.1 为准。
+
+**四类状态词口径（严格）**：**已实施** = 有 `文件:行` 或提交号且复核得到；**已批准未实施** = 有裁决/定稿但无代码；**仅建议** = 提案/候选，不进入验收；**待裁决** = 需要产品/架构选择。**已裁决（方向）** 与 **已裁决（不做）** 只是修饰，不新增类别，也不产生施工授权。计数：明细 152 条、跨组重复 16 条、去重 136 条独立项；四类施工状态 + 裁决修饰相加仍为 136（见 I.1 表）。
+
+---
+
 # Part I 状态总账与施工计划
 
 > 本部分为定稿新增，回答“现在有什么、还缺什么、怎么施工、哪些要拍板”。原有 §0–§14 为设计规格，继续有效；两者冲突时，**状态以 Part I 为准，设计细节以原章节为准**。
@@ -26,34 +42,34 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **73** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界） |
-| 已批准未实施 | **13** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **74** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`） |
+| 已批准未实施 | **11** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **33** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 12 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
-| **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
+| **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 73+13+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 74+11+33+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
-> 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
+> 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（73）
+### I.1.1 已实施（74）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重。
-- **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
+- **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-5 删除 unattended 30s 分支与仅供其存在的配置/UI/测试桩（`approval/gateway.ts:37,183`，统一交互 120s）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
 - **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（13）
+### I.1.2 已批准未实施（11）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描。
 - **证据体系**：G5-5 E4 扫描（=G1-9）。
-- **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
-- **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-10 旧路径时间线。
+- **Agent 运行时**：G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
+- **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具。G7-10 旧路径时间线**已裁决不做**（设计边界，见 §4.5.1a），不在此列。
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
@@ -74,13 +90,13 @@
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
-### I.1.4 已裁决（方向；17 条，仍未授权施工）
+### I.1.4 已裁决（方向 17 条 + 不做 1 条；仍未授权施工）
 
-G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 WorkScheduler 文档滞后、G4-4 bug 闭环边界、G4-5 手工 E4 入口、G6-8 排队 `queueDepth`、G6-9 Codex `runStreamed`、G6-10 长尾 CLI 工具事件、G8-8 手工 E4 入口（=G4-5）、G9-9 Yjs 拆除（=G1-12）、G10-5 L2 审查 P2 四项、G10-6 Zcode 两项、G10-10 agent §13 产品决策、G11-1 D1、G11-2 D4、G11-3 `turnMs` 配置键、G11-4 partial 截断、G11-5 排队（=G6-8）、G11-6 `runStreamed`（=G6-9）、G11-8 长尾（=G6-10）、G11-11 Yjs（=G1-12）、G11-12 Tier2。
+G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 WorkScheduler 文档滞后、G4-4 bug 闭环边界、G4-5 手工 E4 入口、G6-8 排队 `queueDepth`、G6-9 Codex `runStreamed`、G6-10 长尾 CLI 工具事件、G8-8 手工 E4 入口（=G4-5）、G9-9 Yjs 拆除（=G1-12）、G10-5 L2 审查 P2 四项、G10-6 Zcode 两项、G10-10 agent §13 产品决策、G11-1 D1、G11-2 D4、G11-3 `turnMs` 配置键、G11-4 partial 截断、G11-5 排队（=G6-8）、G11-6 `runStreamed`（=G6-9）、G11-8 长尾（=G6-10）、G11-11 Yjs（=G1-12）、G11-12 Tier2；**G7-10 旧路径无 turn 时间线（已裁决不做，设计边界见 §4.5.1a）**。
 
-> 全部 17 条已于 **2026-11-08** 裁决（`D-01…D-17`，见 I.4）；**方向已定、施工未授权**，不计入「已批准未实施」。
+> 17 条方向裁决已于 **2026-11-08** 定案（`D-01…D-17`，见 I.4）；G7-10 于 **2026-11-09** 裁决不做并登记为设计边界。两者均**不产生施工授权**，不计入「已批准未实施」。
 
-> 注：I.1.4 列 23 个编号，去重后 17 条；重复关系见上方清单。
+> 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
 ## I.2 已实施清单（71 条，按主题）
 
@@ -270,13 +286,13 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **施工注记（2026-11-09，阶段 D：评测 harness / 打包 / 后端矩阵）**：① **评测 harness 已就位**：`tests/eval/agent-eval.test.ts` + `harness.ts`，`npm run test:eval`，U1–U9 与 R3 各自判 PASS/FAIL/SKIP 并落 `test-results/agent-eval-report.json`。实测 **R3/U3 PASS**：先确认 root `better-sqlite3` 在 Node ABI 115 下可加载（Electron ABI 130 已切回，不把绑定错误当性能结论），WAL 文件库回放 10,000 条 `message.delta` → 全部落库、seq 连续，**maxLag=2ms、p95 写入≈0ms、总时长=70ms**（阈值 500ms / 20s）；**U8 PASS**：真实子进程取到 pid + startedAt + 命令行，`proveOwnership` 命中 `startedAt+command`（范围 macOS 非打包）；**U4 PASS**（见②）。**U1/U2/U5/U9 SKIP**：分别缺 Codex 官方 provider key、`opencode` CLI、Anthropic 付费凭据/成本授权、root 第二 uid；**U6 SKIP**：RequestQueue 已删，不适用；**U7 SKIP**：非 macOS/打包环境取消用例未接。② **打包验证（G6-13）**：`npx tsc && npx vite build && npx electron-builder --mac dir --arm64` 真实产出 `release/mac-arm64/BizGraph.app`（Electron 33.4.11，未签名）。**解包已改为显式声明**：`package.json` 的 `build.asar.smartUnpack=false` + `build.asarUnpack` 最小路径集（`claude-agent-sdk/sdk.mjs`、`claude-agent-sdk-darwin-*`、`codex-sdk/dist/index.js`、`codex/package.json`、`codex/bin/**`、`codex-darwin-*`、`better-sqlite3/build/Release/better_sqlite3.node`、`onnxruntime-node/bin/**`）；此前依赖 electron-builder `smartUnpack` 的「二进制/原生文件命中即整包解包」规则，自动解出 82 个文件 / 504MB（含 better-sqlite3 全量与 onnxruntime 全平台）。复验：`app.asar` 内 `sdk.mjs` / `codex-sdk/dist/index.js` / `codex.js` 入口仍在，`app.asar.unpacked` 的 `claude 2.1.286` / `codex-cli 0.135.0` 均可执行 `--version`；解包面 504→485MB、asar 935→959MB（总量持平），解包文件 82→23（新增 4 个显式项，减少 63 个冗余文件）；`ELECTRON_RUN_AS_NODE` 经 `app.asar` 加载 better-sqlite3（ABI 130）可查询。**限制：只验 arm64 dir；x64/Windows 未验。** 新增 SDK/CLI 时在 `build.asarUnpack` 补其源路径（匹配源树路径；平台包在打包后才被安置到嵌套 `node_modules`）。**构建后校验已脚本化并接入流水线**：`scripts/verify-packaged-agent-runtime.mjs`（`npm run verify:packaged`）自动发现 `release/*/BizGraph.app`，断言 ① `app.asar` 内 `sdk.mjs` / `codex-sdk/dist/index.js` 条目存在；② `app.asar.unpacked` 内 `claude` / `codex` 可执行且 `--version` 含期望版本（期望值优先取源码树同款二进制的输出，取不到才退回常量，避免 SDK 升级后误报）；③ `better_sqlite3.node` 与当前平台/架构的 `onnxruntime_binding.node` 存在；失败逐条打印「检查项 / 期望 / 实际」并 exit 1。落点选择：本地由 `npm run build:mac` 末尾自动串联（macOS 专属构建脚本，不会漏跑）；CI 挂在 `build` job 的 `npm run build` 之后，用 `if: runner.os == 'macOS'` 限定——该 job 是跨 OS 矩阵，通用 `npm run build` 在 Linux/Windows 上不产 mac 产物，条件步避免误跑。**该检查仅覆盖 macOS 构建；Windows/Linux 产物未覆盖。** 正例 8/8 PASS（2026-11-09 对 `release/mac-arm64` 实测），负例（`--app /tmp/nope/BizGraph.app`）按「产物目录 / 期望 / 实际」输出并 exit 1。 ③ **D-08 落地（Codex 默认流式）**：`CodexAdapter.defaultRawStreamMode()` 默认 true，新增回退开关 `BIZGRAPH_CODEX_STREAMING=0|false|no|off` 回到阻塞 `thread.run()`；`codex.test.ts` 14/14 覆盖默认流式与回退。④ **矩阵结论**：G6-14（Claude token）**未验证**——`src/` 无 `includePartialMessages` 开关，且未授权付费回合；G6-15（OpenCode 轨迹）**未验证**——PATH 无 `opencode`，适配器仍为 `-q` 纯文本单次执行；G6-16（Codex provider 差异）**未验证**——缺官方 provider 凭据，不把第三方 provider 的 `item.updated=0` 当结论。⑤ **G6-18（C13b）已验证**：`registry-hardening.test.ts` 12/12，含 4 条 symlink / 普通文件 / 只读目录用例。
 
 ### W6 Agent 恢复与旧路径
-- 覆盖条目：G6-5 `[批准]` unattended 无调用方、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[批准]` 旧路径无 turn 时间线。
-- 目标：无人值守分支可达；残留进程风险可解释；旧路径审计不断链。
+- 覆盖条目：G6-5 `[已实施]` unattended 分支已删除、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[已裁决不做]` 旧路径无 turn 时间线（§4.5.1a）。
+- 目标：残留进程风险可解释；旧路径审计不断链（无人值守分支已删除，不再作为施工目标）。
 - 涉及文件与数据/接口变更：`src/main/agent/agent-manager.ts`、`src/main/adapters/*`、`src/main/agent/runtime/approval/*`；`residual_risk` 展示字段。
-- 实施步骤：① 为 unattended 增加真实调用方或明确删除分支；② Codex 旧路径记录 pid/pgid/startedAt；③ 接线 `onBashPolicy`；④ 旧路径补 turn 开始/结束事件。
-- 验收标准：unattended 路径有入口测试；Codex 残留会话 `residual_risk` 与 UI 一致；legacy 工具调用有审批记录；旧路径时间线可查。
+- 实施步骤：① 已完成：删除 unattended 分支及仅供其存在的 30s 配置/UI/测试桩（G6-5）；② Codex 旧路径记录 pid/pgid/startedAt；③ 接线 `onBashPolicy`；④ 旧路径补 turn 开始/结束事件——**G7-10 已裁决不做，④ 不施工**。
+- 验收标准：Codex 残留会话 `residual_risk` 与 UI 一致；legacy 工具调用有审批记录；旧路径**不要求** turn 时间线（G7-10 已知限制）。
 - 依赖与建议顺序：依赖 W5 的 runtime 事件模型。
-- 风险与回滚：删除 unattended 分支可能影响未来需求 → 先标“未启用”并加 TODO 链接。
+- 风险与回滚：无人值守审批当前无实现；将来需要时重新设计并单独裁决，不从旧分支恢复。
 
 ### W7 审批覆盖扩展
 - 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[批准]` MCP 写工具、G7-6 `[已实施]` 未知键 ask、G7-9 `[已实施]` legacy `onBashPolicy`。
@@ -335,11 +351,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > **施工顺序建议**：W11（迁移/死代码/版本口径）+ W12（文档与验收）→ W4（P1–P9/CI）→ W1 → W2 → W3 → W5 → W6 → W7 → W11 视图项；L3 的 W9/W10 在 W7（审批覆盖）完成后另立里程碑。
 
-## I.4 裁决记录（17 条，全部已裁决）
+## I.4 裁决记录（18 条：D-01…D-17 + G7-10 不做）
 
-> **编号说明**：本表 `D-01…D-17`，与 §14.8 的 gate 裁决 `D1–D14` **不是同一体系**，引用时须带连字符。
-> **裁决时间**：2026-11-08（Asia/Shanghai）。**依据**：本次会话用户明确批准 D-01…D-17 全部按「建议与理由」逐条通过，未改动任何选项。
-> **状态口径**：17 条一律为 **已裁决（采纳 X）**；裁决只定方向，**不构成施工授权**——施工状态仍为「未授权」，不得据此改成「已批准未实施」。原选项与代价全部保留，供以后回看“为什么这么定”。
+> **编号说明**：本表 `D-01…D-17`，与 §14.8 的 gate 裁决 `D1–D14` **不是同一体系**，引用时须带连字符。G7-10 不是 D 编号，单列在 I.4.18。
+> **裁决时间**：D-01…D-17 为 2026-11-08；G7-10 为 2026-11-09（Asia/Shanghai）。**依据**：用户明确批准 D-01…D-17 全部按「建议与理由」逐条通过，未改动任何选项；G7-10 明确裁决不做并登记为设计边界。
+> **状态口径**：D-01…D-17 为 **已裁决（采纳 X）**；G7-10 为 **已裁决（不做）**。裁决只定方向/边界，**不构成施工授权**——施工状态仍为「未授权」，不得据此改成「已批准未实施」。原选项与代价全部保留，供以后回看“为什么这么定”。
 > **速览表**（“建议选项”列即最终裁决；详细论证见下方 D-01…D-17）：
 
 | 决策号 | 原编号 | 议题 | 裁决结果（2026-11-08） | 采纳代价（估算） |
@@ -499,6 +515,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **建议与理由**：**选 A**。审批是硬约束，不能为能力覆盖让步；先补桥再接升格。
 - **不裁决会怎样**：**阻塞 II-09（G2-7 Tier2）与 II-22（G3-1 Tier1 探测）**；能力探测矩阵无法定版。
 
+### I.4.18 G7-10 · 旧路径无 turn 时间线 — **已裁决（不做；登记为设计边界）**
+
+- **问题重述**：非 kernel 旧路径（Codex/OpenCode 等未进 kernel 的后端、自由聊天）有审批记录但没有 `agent_turns` 行，因此没有 turn 起止、turn 内事件 seq 与按 turn 的快照/成本归属。
+- **裁决**：**不做**。不新增伪 turn、不伪造 `agent_turns` 行、不为此放宽 `agent_turns.node_id NOT NULL`。
+- **依据与冲突**：与 §4.5 D8「纯 thread 不进 kernel、取消 `thread:<id>` 伪节点」直接冲突——补齐 turn 时间线只能二选一：伪造 turn（违反 D8）或放宽 `node_id`（长期待办，未授权）。详见 §4.5.1a。
+- **影响范围**：`KERNEL_APPROVAL_CAPABLE_BACKENDS = ['claude','acp']` 之外的后端（Codex/OpenCode/未注册 driver）、`BIZGRAPH_AGENT_KERNEL=0` 回旧路径、以及未挂节点的自由聊天。
+- **重新评估条件**：见 §4.5.1a「触发重新评估的条件」；任一条件成立须重新裁决，不在本蓝图内自动开工。
+
 
 ## I.5 ZCode（v1.2.3）设计吸收清单
 
@@ -522,18 +546,18 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5516**（2026-11-09 G10-1 D/E/B3 组补全后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5574**（2026-11-09 阅读指引 + G6-5 删除 + G7-10 边界登记后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts` `CURRENT_SCHEMA_VERSION = 37`（v37 由 W2 G1-10 `evidence_suggestions` 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**73 已实施 / 13 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9 与 G3-10/G5-3；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
-- v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **5516**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 73 + 13 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**74 已实施 / 11 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 18 已裁决（17 方向 + 1 不做，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9 与 G3-10/G5-3；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施；G6-5 删除 unattended 分支转入已实施；G7-10 由已批准未实施转为已裁决不做）。
+- v2.2 复核：I.4 的 D 条目恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」），另 I.4.18 为 G7-10 已裁决不做；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **5574**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 74 + 11 + 33 + 0 = 118，加 18 条裁决（17 方向 + 1 不做）= 136。
 - 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；W5-D 的 **R3/U8/C13b 已实测、arm64 打包产物已验**；Codex/OpenCode 真机矩阵因缺官方凭据/CLI 未做（G6-14/G6-15/G6-16 仍为「已批准未实施」）。
 - 本次 v2.3 文档修订未改地图产品代码；W5-D 仅按 D-08 改 Codex 默认流式（保留 `BIZGRAPH_CODEX_STREAMING=0` 回退）。W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），W5-D 改动随本轮「打包解包显式化 + 构建后校验 + W5-D 收口」提交，**未 push**。
 
 ## I.7 裁决后建议施工顺序（按 W 包）
 
-> 口径：W 包对应 I.3 的 **13 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W2（G5-9 与 G3-10，2026-11-09）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）、W7 核账（G7-6/G7-9，2026-11-09）已完成，其条目已转入 I.2 已实施。
+> 口径：W 包对应 I.3 的 **11 条「已批准未实施」**，与 33 条「仅建议」不同批；G7-10 已裁决不做，不占 W 包名额。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W2（G5-9 与 G3-10，2026-11-09）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）、W7 核账（G7-6/G7-9，2026-11-09）已完成，其条目已转入 I.2 已实施。
 
 | W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
 |---|---|---|---|---|
@@ -543,8 +567,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W12 文档验收 | G10-1/2/3/11 | **进行中（G10-2/3 已收口）** | 可与 W1 并行 | 纯文档与用例；A1–A4 已登记，剩 G10-1 |
 | W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **主体完成（G1-10/G5-8/G5-9/G3-10）** | 剩余写通道依赖 D-03 | `evidence_suggestions` + 接受同事务 + E1 人工直写已落；G1-9 E4 复扫未做 |
 | W5 Agent M2 | G6-1…G6-4、G6-12/13/18 | **已完成（`dc51b48` / `80075e7` + W5-D），Codex/OpenCode 真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由 + R3/打包/C13b 已闭环；G6-11/14/15/16 待环境（CLI/凭据/平台） |
-| W6 Agent 恢复/旧路径 | G6-5/7/11…G6-16 | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上 |
-| W7 审批覆盖 | G7-1…G7-10 | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
+| W6 Agent 恢复/旧路径 | G6-5（已实施删除）/7/11…G6-16；G7-10（不做） | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上；G7-10 已登记为设计边界（§4.5.1a） |
+| W7 审批覆盖 | G7-1…G7-6、G7-9（G7-10 不做） | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
 | W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |
 | W10 进化/提案/Tier2 | G1-14、G2-2…G2-7 | 依赖 W2 | W2；Tier2 按 D-17 先补审批桥；embedding 按 D-12 | 进化与提案都消费证据，Tier2 需桥 |
 | W11 迁移运维 | G9-11/13、G9-8（均已实施/已删除） | **部分完成（`80075e7` + v2.3）** | W1 | `RequestQueue` 已删、版本号已对齐（v37）；worktree 清理、视图与 Windows 项未做 |
@@ -2010,6 +2034,40 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 2. 已挂载会话发送 → `agent_turns.node_id` 等于真实 `nodes.id`；`node_session_links` 仅一行。
 3. 构造只含伪节点/空串的解析链 → `NODE_REQUIRED_FOR_TURN`，零 turn 行。
 4. 重启后自由聊天发送 → 新建 CLI 会话成功或按既有失败流程报错；不产生 `agent_sessions` 伪记录。
+
+#### 4.5.1a G7-10：旧路径无 turn 时间线（已裁决不做，登记为已知限制）
+
+**状态**：**已裁决（不做）**，2026-11-09。不是「已批准未实施」——不排期、不设验收；若条件变化必须重新裁决后再施工。
+
+**限制内容**：非 kernel 后端与未挂节点的自由聊天走 legacy 路径，审批有 `agent_approvals` 行（`legacy-run-*` / `legacy-turn-*` 可反解标识），但没有 `agent_turns` 行，因此：
+
+- 没有 turn 的开始/结束时间、`turn_seq`、turn 内工具/文件变更的完整序列；
+- 不能用 turn 级快照做恢复/回放，不能按 turn 归集 token 与成本；
+- UI 只能看到 `chat_messages` 时间线与逐条审批，无法回答「这一轮跑了多久、用了哪些工具、改了哪些文件」。
+
+**与 D8 冲突的具体点**（§4.5）：
+
+1. D8 要求未挂载会话保持纯 `chat_threads` / `chat_messages`，**不产生 `agent_turns` 行**；G7-10 要时间线，最低要求是 turn 起止记录。
+2. D8 取消 `thread:<id>` / `session:<id>` 伪节点，kernel 入口对伪节点 fail-closed；用伪节点补 turn 时间线会被现有守卫直接拒绝。
+3. `agent_turns.node_id` 仍为 `NOT NULL`（本期保留，长期放宽属未授权待办）；无节点的自由聊天无法合法落 turn。
+
+结论：在 D8 不变的前提下，G7-10 只能靠伪造 turn 或放宽 `node_id` 实现，二者都越界，故不做。
+
+**影响范围**：
+
+- **非 kernel 后端**：`KERNEL_APPROVAL_CAPABLE_BACKENDS = ['claude','acp']` 之外的后端（当前默认 `codex`、`opencode`、未注册 driver 的适配器）只要走旧路径，就没有 turn 时间线。**注意**：`claude` 在未挂节点自由聊天 / `BIZGRAPH_AGENT_KERNEL=0` 时同样走旧路径，也不产生 turn。
+- **`BIZGRAPH_AGENT_KERNEL=0`**：全局回旧路径，所有后端都没有 turn 时间线。
+- **无 turn 时间线意味着什么**：审批与消息仍可审计（`agent_approvals` + `chat_messages`），但无法做 turn 级恢复、成本归集、工具序列回放与延迟度量；这些能力只对 kernel 路径成立。
+- **可接受的原因**：旧路径定位是兜底与兼容，不是编排主路径；D8 已明确其边界（§4.5）。
+
+**触发重新评估的条件**（任一成立即重新裁决，不在本蓝图内自动开工）：
+
+1. `agent_turns.node_id` 长期放宽方案获批（允许无节点 turn）；或
+2. 某非 kernel 后端补齐 kernel driver 与写前审批能力并迁入 kernel（届时它自然获得时间线，G7-10 对其失效）；或
+3. 产品要求对自由聊天/旧路径提供 turn 级成本或审计（需先给出不违反 D8 的存储方案，例如独立 sidecar 时间线表，而非复用 `agent_turns`）；或
+4. `node_session_links` 的项目级引用（`node_entity_key=NULL`）被允许承载 turn（需先改 D8 与列约束）。
+
+**不做的验收口径**：`agent_turns` 中不出现 `thread:*` / `session:*`；自由聊天发送后 `agent_turns` 新增 0 行；审批仍落 `agent_approvals` 且 `legacy-run-*` / `legacy-turn-*` 可反解。
 
 ### 4.6 节点活动流与 ExecutionRecord（采纳为派生视图，不新增表）
 
@@ -4873,7 +4931,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5516 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5574 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -4901,7 +4959,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
 | A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5516 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5574 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -4911,9 +4969,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5516 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5574 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5516 行**（2026-11-09 复核） | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5574 行**（2026-11-09 复核） | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**
