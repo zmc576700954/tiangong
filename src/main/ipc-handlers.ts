@@ -87,6 +87,7 @@ import { registerGraphHandlers } from './ipc/graph'
 import { registerAgentHandlers } from './ipc/agent'
 import { AgentRuntime } from './agent/runtime/runtime'
 import { AdapterBackendDriver } from './agent/runtime/executors/adapter-driver'
+import { createAcpDriverFromEnv } from './agent/runtime/executors/acp-executor'
 import { registerFsHandlers } from './ipc/fs'
 import { registerGitHandlers } from './ipc/git'
 import { registerProjectHandlers } from './ipc/project'
@@ -325,6 +326,13 @@ export async function registerIpcHandlers(): Promise<void> {
     } else {
       logger.info(`[kernel] ${executor}: 旧路径（该后端尚未启用写前审批）`)
     }
+  }
+  // W5-C1：ACP 执行器只在显式配置 BIZGRAPH_ACP_COMMAND 时注册；未配置不改变默认路径。
+  const acpDriver = createAcpDriverFromEnv()
+  if (acpDriver) {
+    agentRuntime.registerDriver('acp', acpDriver)
+    const policy = getKernelBackendPolicy('acp')
+    logger.info(`[kernel] acp: ACP executor 已注册（session/request_permission → 写前强制审批；${policy.reason}）`)
   }
   logger.info(
     `[kernel] 总开关=${isAgentKernelEnabled() ? 'on' : 'off'} 白名单=[${getKernelBackends().join(',')}]` +

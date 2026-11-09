@@ -40,6 +40,20 @@ const OPENCODE_CAPABILITIES: DriverCapabilities = {
   completion: 'iterator-end',
 }
 
+/**
+ * W5-C1：ACP 协议自带 session/request_permission，属于执行前审批；
+ * session/update 的 tool_call* 给出完整工具生命周期。
+ */
+export const ACP_CAPABILITIES: DriverCapabilities = {
+  toolEvents: 'exact',
+  toolArgs: 'raw',
+  toolLifecycle: 'exact',
+  approval: 'pre-exec',
+  fileChanges: 'none',
+  usage: 'none',
+  completion: 'backend-turn-completed',
+}
+
 const LONG_TAIL_CAPABILITIES: DriverCapabilities = {
   toolEvents: 'none',
   toolArgs: 'none',
@@ -79,6 +93,8 @@ export function getExecutorCapabilities(executor: string): DriverCapabilities {
       return CODEX_CAPABILITIES
     case 'opencode':
       return OPENCODE_CAPABILITIES
+    case 'acp':
+      return ACP_CAPABILITIES
     default:
       return LONG_TAIL_CLI_BACKENDS.has(executor) ? LONG_TAIL_CLI_CAPABILITIES : LONG_TAIL_CAPABILITIES
   }

@@ -2,7 +2,7 @@
  * Kernel 路径开关与后端白名单。
  *
  * 默认状态（2026-11-05 起）：**开启**，但只对「已具备写前强制审批」的后端生效
- * （当前白名单 = claude）。其余后端（codex / opencode / …）继续走旧路径，
+ * （当前能力集 = claude / acp）。其余后端（codex / opencode / …）继续走旧路径，
  * 启动日志会明确打印「该后端尚未启用写前审批」。
  *
  * 环境变量：
@@ -17,8 +17,12 @@ export const AGENT_KERNEL_ENV = 'BIZGRAPH_AGENT_KERNEL'
 export const AGENT_KERNEL_BACKENDS_ENV = 'BIZGRAPH_AGENT_KERNEL_BACKENDS'
 export const AGENT_KERNEL_UNSAFE_ENV = 'BIZGRAPH_AGENT_KERNEL_UNSAFE'
 
-/** 已具备「写前强制审批」的后端（PreToolUse 强制 ask → canUseTool）。 */
-export const KERNEL_APPROVAL_CAPABLE_BACKENDS: readonly string[] = ['claude']
+/**
+ * 已具备「写前强制审批」的后端：
+ * - claude：PreToolUse 强制 ask → canUseTool；
+ * - acp：session/request_permission 在工具执行前由 ApprovalGateway 决议。
+ */
+export const KERNEL_APPROVAL_CAPABLE_BACKENDS: readonly string[] = ['claude', 'acp']
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on'])
 const FALSY = new Set(['0', 'false', 'no', 'off'])

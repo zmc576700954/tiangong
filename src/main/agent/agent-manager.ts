@@ -1206,27 +1206,40 @@ export class AgentManager {
     command: AgentCommand,
     options?: { contextAssembled?: boolean },
   ): Promise<void> {
-    // 后端能力门控：只有白名单后端（当前 claude）默认走 kernel；
+    // 后端能力门控：只有白名单后端（claude / acp）默认走 kernel；
     // BIZGRAPH_AGENT_KERNEL=0 时全部回旧路径；UNSAFE 强制时打降级日志。
+    // C1：每一次回退都必须有明确日志，禁止「静默降级」。
     if (this.runtime) {
       const bound = this.tryResolveAdapter(sessionId)
       const executorName = bound?.name ?? this.persistedExecutorFor(sessionId)
-      if (executorName && this.canUseKernelFor(executorName)) {
+      if (!executorName) {
+        logger.warn(
+          `[kernel-skip] session=${sessionId}: 无法解析后端（adapter 未绑定且无持久化记录）→ 旧路径`,
+        )
+      } else if (!this.canUseKernelFor(executorName)) {
+        const policy = getKernelBackendPolicy(executorName)
+        logger.info(
+          `[kernel-skip] session=${sessionId} adapter=${executorName}: 不在 kernel 审批白名单（${policy.reason}）→ 旧路径`,
+        )
+      } else if (!this.resolveKernelNodeId(sessionId, command)) {
         // D8：kernel turn 缺真实节点归属时保持纯 thread，不回退到 thread:<id> 伪节点。
-        if (!this.resolveKernelNodeId(sessionId, command)) {
-          logger.info(
-            `[kernel-skip] session=${sessionId}: 未挂载节点（D8），保持纯 thread 会话，不写 agent_turns`,
-          )
-        } else {
-          // 重启后 SessionRouter 为空 —— 先从持久化状态重建句柄，再走 Kernel。
-          const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
-          this.warnIfKernelDegraded(adapter.name, sessionId)
-          if (this.runtime.getDriver(adapter.name)) {
-            await this.sendCommandThroughKernel(sessionId, command, adapter, options)
-            return
-          }
+        logger.info(
+          `[kernel-skip] session=${sessionId} adapter=${executorName}: 未挂载节点（D8），保持纯 thread 会话，不写 agent_turns → 旧路径`,
+        )
+      } else {
+        // 重启后 SessionRouter 为空 —— 先从持久化状态重建句柄，再走 Kernel。
+        const adapter = bound ?? (await this.resolveKernelAdapter(sessionId))
+        this.warnIfKernelDegraded(adapter.name, sessionId)
+        if (this.runtime.getDriver(adapter.name)) {
+          await this.sendCommandThroughKernel(sessionId, command, adapter, options)
+          return
         }
+        logger.warn(
+          `[kernel-skip] session=${sessionId} adapter=${adapter.name}: kernel 白名单内但 driver 未注册 → 旧路径`,
+        )
       }
+    } else {
+      logger.info(`[kernel-skip] session=${sessionId}: AgentRuntime 未装配 → 旧路径`)
     }
 
     // D2：M0 per-session 串行锁（fail-fast，不排队）。

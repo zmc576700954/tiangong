@@ -30,11 +30,12 @@ afterEach(() => {
 })
 
 describe('Kernel 默认开启与后端能力门控', () => {
-  it('默认：总开关 on，claude 走 kernel；codex / opencode 留在旧路径', () => {
+  it('默认：总开关 on，claude / acp 走 kernel；codex / opencode 留在旧路径', () => {
     expect(isAgentKernelEnabled()).toBe(true)
-    expect(getKernelBackends()).toEqual(['claude'])
+    expect(getKernelBackends()).toEqual(['claude', 'acp'])
 
     expect(getKernelBackendPolicy('claude-code')).toMatchObject({ kernel: true, degraded: false, reasonKind: 'enabled' })
+    expect(getKernelBackendPolicy('acp')).toMatchObject({ kernel: true, degraded: false, reasonKind: 'enabled' })
     expect(getKernelBackendPolicy('codex')).toMatchObject({
       kernel: false,
       degraded: false,

@@ -5,7 +5,7 @@
  * 权威设计见 docs/architecture/agent-architecture.md §3–§5。
  */
 
-export type ExecutorVendor = 'claude' | 'codex' | 'opencode'
+export type ExecutorVendor = 'claude' | 'codex' | 'opencode' | 'acp'
 
 export type EventSource = 'backend' | 'kernel' | 'synthetic'
 export type Fidelity = 'token' | 'turn' | 'session'

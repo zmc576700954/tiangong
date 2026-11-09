@@ -1046,6 +1046,123 @@ describe('AgentManager', () => {
       }
     })
 
+    it('C1：清单外后端（codex）显式日志回旧路径，不静默降级', async () => {
+      const prevKernel = process.env[AGENT_KERNEL_ENV]
+      const prevBackends = process.env[AGENT_KERNEL_BACKENDS_ENV]
+      delete process.env[AGENT_KERNEL_ENV]
+      delete process.env[AGENT_KERNEL_BACKENDS_ENV]
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+      try {
+        const adapter = new TestAdapter('codex')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('codex', mockConfig())
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'codex explicit skip',
+          targetNodeId: 'n1',
+        })
+
+        expect(runNode).not.toHaveBeenCalled()
+        expect(adapter.lastPrompts.at(-1)).toContain('codex explicit skip')
+        const logged = infoSpy.mock.calls.map((call) => String(call[1] ?? call[0]))
+        expect(logged.some((line) => line.includes('[kernel-skip]') && line.includes('不在 kernel 审批白名单'))).toBe(true)
+        expect(logged.some((line) => line.includes('codex') && line.includes('→ 旧路径'))).toBe(true)
+      } finally {
+        if (prevKernel === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = prevKernel
+        if (prevBackends === undefined) delete process.env[AGENT_KERNEL_BACKENDS_ENV]
+        else process.env[AGENT_KERNEL_BACKENDS_ENV] = prevBackends
+      }
+    })
+
+    it('C1：acp 在默认白名单内 → 走 kernel（runNode 被调用，适配器不被直接投递）', async () => {
+      const prevKernel = process.env[AGENT_KERNEL_ENV]
+      const prevBackends = process.env[AGENT_KERNEL_BACKENDS_ENV]
+      delete process.env[AGENT_KERNEL_ENV]
+      delete process.env[AGENT_KERNEL_BACKENDS_ENV]
+      try {
+        const adapter = new TestAdapter('acp')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => ({}),
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('acp', mockConfig())
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'acp kernel',
+          targetNodeId: 'n1',
+        })
+
+        expect(runNode).toHaveBeenCalledTimes(1)
+        expect(runNode).toHaveBeenCalledWith(expect.objectContaining({ executor: 'acp', prompt: 'acp kernel' }))
+        expect(adapter.lastPrompts).toHaveLength(0)
+      } finally {
+        if (prevKernel === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = prevKernel
+        if (prevBackends === undefined) delete process.env[AGENT_KERNEL_BACKENDS_ENV]
+        else process.env[AGENT_KERNEL_BACKENDS_ENV] = prevBackends
+      }
+    })
+
+    it('C1：白名单内但 driver 未注册 → 警告日志并回旧路径', async () => {
+      const prevKernel = process.env[AGENT_KERNEL_ENV]
+      delete process.env[AGENT_KERNEL_ENV]
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        const adapter = new TestAdapter('claude-code')
+        manager.registerAdapter(adapter)
+        const runNode = vi.fn(async () => ({ status: 'completed' as const }))
+        manager.setRuntime({
+          locks: new SessionLockRegistry(),
+          getDriver: () => undefined,
+          runNode,
+        } as unknown as AgentRuntime)
+
+        const { sessionId } = await manager.startSession('claude-code', mockConfig())
+        await manager.sendCommand(sessionId, {
+          type: 'implement',
+          description: 'driver missing',
+          targetNodeId: 'n1',
+        })
+
+        expect(runNode).not.toHaveBeenCalled()
+        expect(adapter.lastPrompts.at(-1)).toContain('driver missing')
+        const logged = warnSpy.mock.calls.map((call) => String(call[1] ?? call[0]))
+        expect(logged.some((line) => line.includes('[kernel-skip]') && line.includes('driver 未注册'))).toBe(true)
+      } finally {
+        if (prevKernel === undefined) delete process.env[AGENT_KERNEL_ENV]
+        else process.env[AGENT_KERNEL_ENV] = prevKernel
+      }
+    })
+
+    it('C1：AgentRuntime 未装配 → 明确日志回旧路径', async () => {
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+      const adapter = new TestAdapter('claude-code')
+      manager.registerAdapter(adapter)
+
+      const { sessionId } = await manager.startSession('claude-code', mockConfig())
+      await manager.sendCommand(sessionId, {
+        type: 'implement',
+        description: 'no runtime',
+        targetNodeId: 'n1',
+      })
+
+      expect(adapter.lastPrompts.at(-1)).toContain('no runtime')
+      const logged = infoSpy.mock.calls.map((call) => String(call[1] ?? call[0]))
+      expect(logged.some((line) => line.includes('[kernel-skip]') && line.includes('AgentRuntime 未装配'))).toBe(true)
+    })
+
     it('A1：Kernel 开关打开时，sendCommand 改走 runNode（适配器不再被 manager 直接调用）', async () => {
       const previous = process.env[AGENT_KERNEL_ENV]
       process.env[AGENT_KERNEL_ENV] = '1'
