@@ -261,6 +261,67 @@ describe('TestPlanService(§6.2/§6.3)', () => {
     db.prepare("UPDATE agent_approvals SET status = 'denied' WHERE id = ?").run(approved3.approval_id!)
     await expect(svc.execute(p3.id, { headCommit: 'abc', codeDirty: false })).rejects.toThrow(/审批事实无效/)
   })
+
+  // A3：本期测试命令本地串行，不并行、不跨机。
+  // 并发请求同一计划时只允许一个进入 running；命令之间不得重叠执行。
+  it('A3：同一计划并发执行只放行一个，命令仍按序串行', async () => {
+    let active = 0
+    let maxActive = 0
+    const order: string[] = []
+    const serialRunner: TestCommandRunner = {
+      async runCommand(input) {
+        active += 1
+        maxActive = Math.max(maxActive, active)
+        order.push(input.command)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        active -= 1
+        return { exitCode: 0, durationMs: 5 }
+      },
+    }
+    const svcRun = new TestPlanService(db, serialRunner, autoGateway(db))
+    const plan = svcRun.createPlan({
+      projectPath: '/p',
+      worktreePath: '/wt',
+      items: [{ command: 't1' }, { command: 't2' }],
+    })
+    await svcRun.approve(plan.id, 'u1')
+
+    const results = await Promise.allSettled([
+      svcRun.execute(plan.id, { headCommit: 'abc', codeDirty: false }),
+      svcRun.execute(plan.id, { headCommit: 'abc', codeDirty: false }),
+    ])
+    const fulfilled = results.filter((r) => r.status === 'fulfilled')
+    const rejected = results.filter((r) => r.status === 'rejected')
+    expect(fulfilled).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    // 第二个请求在 status='running' 处被拒，不得再执行任何命令。
+    expect(String((rejected[0] as PromiseRejectedResult).reason)).toMatch(/未批准/)
+    expect(maxActive).toBe(1)
+    expect(order).toEqual(['t1', 't2'])
+    expect((db.prepare('SELECT COUNT(*) AS c FROM test_runs WHERE plan_id = ?').get(plan.id) as { c: number }).c).toBe(1)
+  })
+
+  // A4：TestExecutor 不支持交互式/长驻命令——超时即收口为 timed_out，
+  // 不得把「进程还在跑」当成通过，也不得产出 E3。
+  it('A4：命令超时 → item timed_out、run failed、E3 不 eligible', async () => {
+    const runner = fakeRunner([{ exitCode: 124, timedOut: true }])
+    const svcRun = new TestPlanService(db, runner, autoGateway(db))
+    const plan = svcRun.createPlan({
+      projectPath: '/p',
+      worktreePath: '/wt',
+      items: [{ command: 'sleep 999' }],
+    })
+    await svcRun.approve(plan.id, 'u1')
+
+    const result = await svcRun.execute(plan.id, { headCommit: 'abc', codeDirty: false })
+    expect(result.run.status).toBe('failed')
+    expect(result.e3.eligible).toBe(false)
+    expect(runner.calls[0].timeoutMs).toBe(300_000)
+    const item = db.prepare('SELECT status, exit_code FROM test_plan_items WHERE plan_id = ?').get(plan.id)
+    expect(item).toMatchObject({ status: 'timed_out', exit_code: 124 })
+    const tr = db.prepare('SELECT status, failure_class FROM test_results WHERE test_run_id = ?').get(result.run.id)
+    expect(tr).toMatchObject({ status: 'timed_out', failure_class: 'timeout' })
+  })
 })
 
 describe('agent_approvals subject 扩展(§7.1/D6)', () => {
