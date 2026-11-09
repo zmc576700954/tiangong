@@ -195,6 +195,7 @@ describe('G1–G6 gate 引擎（§5.4 / §14）', () => {
       ['非法 JSON', { scope_files: '{' }, 'scope_files_invalid_json'],
       ['project_path 为空（D4 默认 fail-closed）', { project_path: null }, 'project_path_missing'],
       ['Windows 根（A9）', { project_path: 'C:\\repo' }, 'project_path_non_posix'],
+      ['含反斜杠的根（A9，无盘符）', { project_path: '/tmp/repo\\sub' }, 'project_path_non_posix'],
     ])('%s → 缺失码', (_name, over, code) => {
       const id = insertItem(db, { project_path: makeProjectRoot(), ...over })
       const engine = makeEngine(db, fullPassOptions())

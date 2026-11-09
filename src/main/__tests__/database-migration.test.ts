@@ -710,4 +710,28 @@ describe('Database Migration', () => {
       initDatabase()
     }
   })
+
+  // A1：同仓库不同分支/副本允许并行导入，各自的 entity_key 命名空间独立。
+  // 落点验证 ux_nodes_graph_entity_key 的唯一维度必须是 (graph_id, entity_key)，
+  // 而不是全局 entity_key——否则第二份副本导入会被唯一索引误拒。
+  it('A1：entity_key 唯一性按 graph 隔离（不同图同键可共存，同图重复被拒）', () => {
+    const db = getClient()
+    const now = new Date().toISOString()
+    db.prepare("INSERT INTO graphs (id, name, type, created_at, updated_at) VALUES ('a1-g1', '副本A', 'online', ?, ?)").run(now, now)
+    db.prepare("INSERT INTO graphs (id, name, type, created_at, updated_at) VALUES ('a1-g2', '副本B', 'online', ?, ?)").run(now, now)
+    const insertNode = db.prepare(
+      `INSERT INTO nodes (id, type, status, title, graph_id, graph_type, entity_key, position_x, position_y, created_at, updated_at)
+       VALUES (?, 'module', 'draft', '同源节点', ?, 'online', ?, 0, 0, ?, ?)`,
+    )
+    try {
+      insertNode.run('a1-n1', 'a1-g1', 'ek-shared', now, now)
+      // 不同图同键：允许（A1 例外，各自独立命名空间）
+      expect(() => insertNode.run('a1-n2', 'a1-g2', 'ek-shared', now, now)).not.toThrow()
+      // 同图同键：唯一索引拒绝
+      expect(() => insertNode.run('a1-n3', 'a1-g1', 'ek-shared', now, now)).toThrow(/UNIQUE/)
+    } finally {
+      db.prepare("DELETE FROM nodes WHERE id LIKE 'a1-n%'").run()
+      db.prepare("DELETE FROM graphs WHERE id LIKE 'a1-g%'").run()
+    }
+  })
 })
