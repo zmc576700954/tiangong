@@ -228,6 +228,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   // 白名单见 @shared/types/ipc 的 MAP_READ_ONLY_CHANNELS：不得含任何写操作或执行触发。
   ...MAP_READ_ONLY_CHANNELS,
 
+  // 任务级入队/取消（既有 handler，本包补齐暴露；G3-3/G8-6）。
+  // run:start 只做 confirm 入队，不内联执行；cancel 不终止进程（run 级取消另用下面的通道）。
+  'workitem:run:start',
+  'workitem:cancel',
   // L2 执行触发（写通道）：默认关闭，关闭时 handler 明确拒绝（EXECUTION_DISABLED），
   // 不会静默降级。只入队/条件更新取消，turn 由主进程 tick 异步驱动。
   'workitem:step:run',
@@ -261,6 +265,8 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   'agent:resolveApproval',
   // 执行触发写通道：reason 必须可结构化区分（关闭 / 无 kernel / 无审批），
   // 不允许 renderer 只能看到一句模糊失败。
+  'workitem:run:start',
+  'workitem:cancel',
   'workitem:step:run',
   'workitem:run:cancel',
   'workitem:acceptance:confirm',
@@ -341,6 +347,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       callback(payload)
     ipcRenderer.on('event:node-execution-state', handler)
     return () => { ipcRenderer.off('event:node-execution-state', handler) }
+  },
+
+  // work item 状态变更（G3-3/G8-6）：面板据此刷新 item/steps/runs，不轮询。
+  onWorkItemChanged: (callback: (payload: { lineageId: string; revision: number; status: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { lineageId: string; revision: number; status: string }) =>
+      callback(payload)
+    ipcRenderer.on('event:work-item-changed', handler)
+    return () => { ipcRenderer.off('event:work-item-changed', handler) }
   },
 
   // Node status change event listener (placeholder→developing transitions)
@@ -453,6 +467,7 @@ declare global {
       onAgentStatusChange: (callback: (sessionId: string, nodeId: string, status: string) => void) => () => void
       onNodeStatusChange: (callback: (nodeId: string, oldStatus: string, newStatus: string) => void) => () => void
       onNodeExecutionState: (callback: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void) => () => void
+      onWorkItemChanged: (callback: (payload: { lineageId: string; revision: number; status: string }) => void) => () => void
       onSessionStarted: (callback: (threadId: string, sessionId: string) => void) => () => void
       onSessionRecovered: (callback: (sessionId: string, newSessionId: string) => void) => () => void
       onSessionRecoveryFailed: (callback: (sessionId: string, reason: string) => void) => () => void

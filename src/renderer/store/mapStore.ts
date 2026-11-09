@@ -17,6 +17,9 @@ interface WorkItemRowLike {
   title: string
   status: string
   gate_status: string
+  /** gate 未通过时缺的检查项（JSON string[]）；用于禁用执行入口并说明原因。 */
+  gate_missing_json?: string | null
+  cancel_reason?: string | null
   updated_at: string
 }
 
@@ -40,6 +43,8 @@ export interface WorkItemSummary {
   title: string
   status: string
   gate_status: string
+  gate_missing_json?: string | null
+  cancel_reason?: string | null
   updated_at: string
 }
 
@@ -98,9 +103,22 @@ export interface WorkRunEntry {
   executor_kind: string
   status: string
   failure_class: string | null
+  /** 失败/完成摘要（work_runs.result_summary，运行时已返回，类型此前漏声明）。 */
+  result_summary?: string | null
+  /** 取消归因（work_runs.cancel_reason）。 */
+  cancel_reason?: string | null
+  /** 实际路由到的执行器（work_runs.adapter_name）。 */
+  adapter_name?: string | null
   created_at: number
   started_at: number | null
   ended_at: number | null
+}
+
+/** 执行开关只读状态（map:execution:status），用于禁用入口并解释原因。 */
+export interface ExecutionStatus {
+  enabled: boolean
+  adapterName: string | null
+  disabledReason: string | null
 }
 
 /** workitem:get 的下钻闭包：item + steps + runs。 */
@@ -117,8 +135,16 @@ interface MapState {
   nodeEvidence: EvidenceEntry[]
   /** item 下钻明细缓存（workitem:get；只读,按 item id 索引） */
   workItemDetails: Record<string, WorkItemDetail>
+  /** 下钻读取失败（按 item id）；与「无数据」区分，避免空列表被当成正常空态。 */
+  workItemErrors: Record<string, string>
+  /** 节点级读取失败（overlay / 时间线 / 证据）。 */
+  nodeError: string | null
+  /** 动作失败/状态提示（按 task/step/run id）。 */
+  actionErrors: Record<string, string>
+  executionStatus: ExecutionStatus | null
   loadingNode: boolean
 
+  fetchExecutionStatus: () => Promise<void>
   fetchOverlay: (graphId: string) => Promise<void>
   /** §9.3 event:node-execution-state 增量更新（preload 订阅驱动） */
   applyExecutionState: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void
@@ -128,6 +154,13 @@ interface MapState {
   createWorkItem: (input: { graphId: string; anchorEntityKey?: string; anchorNodeId?: string; title: string; goal?: string; projectPath?: string }) => Promise<WorkItemSummary>
   startWorkItem: (id: string) => Promise<void>
   cancelWorkItem: (id: string) => Promise<void>
+  /** 入队单个步骤（tick 异步驱动 turn；不是同步执行）。 */
+  enqueueStep: (input: { graphId: string; workItemId: string; stepId: string }) => Promise<void>
+  /** run 级取消（会尝试终止在跑进程；任务级取消不会）。 */
+  cancelRun: (input: { graphId: string; workItemId: string; runId: string }) => Promise<void>
+  setActionError: (key: string, message: string) => void
+  /** event:work-item-changed 去抖后按 lineage 刷新已缓存明细与叠加层。 */
+  applyWorkItemChanged: (payload: { lineageId: string }) => Promise<void>
   confirmAcceptance: (input: {
     graphId: string
     workItemId: string
@@ -137,12 +170,64 @@ interface MapState {
   }) => Promise<void>
 }
 
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 结构化错误通道（preload STRUCTURED_ERROR_CHANNELS）成功返回原值，
+ * 失败返回 `{ok:false,error:{code,message}}` 而不是 throw；统一解包成 Error。
+ */
+function unwrapIpc<T>(value: unknown): T {
+  const envelope = value as { ok?: unknown; error?: { code?: unknown; message?: unknown } } | null
+  if (envelope && envelope.ok === false) {
+    const code = typeof envelope.error?.code === 'string' ? envelope.error.code : 'IPC_ERROR'
+    const message = typeof envelope.error?.message === 'string' ? envelope.error.message : '未知错误'
+    throw new Error(`${code}: ${message}`)
+  }
+  return value as T
+}
+
+/** 按 item id 就地更新所有已缓存图的叠加层（避免为此重拉整图）。 */
+function patchOverlayItem(state: MapState, id: string, patch: Partial<WorkItemSummary>): Partial<MapState> {
+  const next = new Map(state.overlayByGraph)
+  for (const [graphId, overlay] of next) {
+    const idx = overlay.workItems.findIndex((w) => w.id === id)
+    if (idx >= 0) {
+      const items = [...overlay.workItems]
+      items[idx] = { ...items[idx], ...patch }
+      next.set(graphId, { ...overlay, workItems: items })
+      break
+    }
+  }
+  return { overlayByGraph: next }
+}
+
 export const useMapStore = create<MapState>((set, get) => ({
   overlayByGraph: new Map(),
   nodeTimeline: [],
   nodeEvidence: [],
   workItemDetails: {},
+  workItemErrors: {},
+  nodeError: null,
+  actionErrors: {},
+  executionStatus: null,
   loadingNode: false,
+
+  fetchExecutionStatus: async () => {
+    try {
+      const status = await window.electronAPI['map:execution:status']()
+      set({ executionStatus: status })
+    } catch (error) {
+      set({
+        executionStatus: {
+          enabled: false,
+          adapterName: null,
+          disabledReason: `读取执行状态失败：${errorText(error)}`,
+        },
+      })
+    }
+  },
 
   applyExecutionState: (payload) => {
     set((state) => {
@@ -168,16 +253,23 @@ export const useMapStore = create<MapState>((set, get) => ({
   },
 
   fetchOverlay: async (graphId) => {
-    const result = await window.electronAPI['map:overlay:get'](graphId)
-    const overlay = {
-      executionStates: (result.executionStates ?? []) as unknown as ExecutionStateEntry[],
-      workItems: (result.workItems ?? []) as unknown as WorkItemSummary[],
+    try {
+      const result = await window.electronAPI['map:overlay:get'](graphId)
+      const overlay = {
+        executionStates: (result.executionStates ?? []) as unknown as ExecutionStateEntry[],
+        workItems: (result.workItems ?? []) as unknown as WorkItemSummary[],
+      }
+      set((state) => ({
+        overlayByGraph: new Map(state.overlayByGraph).set(graphId, overlay),
+        nodeError: null,
+      }))
+    } catch (error) {
+      set({ nodeError: `读取叠加层失败：${errorText(error)}` })
     }
-    set((state) => ({ overlayByGraph: new Map(state.overlayByGraph).set(graphId, overlay) }))
   },
 
   fetchNodeData: async (graphId, nodeEntityKey) => {
-    set({ loadingNode: true })
+    set({ loadingNode: true, nodeError: null })
     try {
       const [timeline, evidence, items] = await Promise.all([
         window.electronAPI['map:node:timeline']({ graphId, nodeEntityKey }),
@@ -197,6 +289,8 @@ export const useMapStore = create<MapState>((set, get) => ({
           })
         })(),
       })
+    } catch (error) {
+      set({ nodeError: `读取节点数据失败：${errorText(error)}` })
     } finally {
       set({ loadingNode: false })
     }
@@ -207,18 +301,34 @@ export const useMapStore = create<MapState>((set, get) => ({
    * 只读；空结果(null)不写入缓存，避免用占位内容伪造"有任务"。
    */
   fetchWorkItemDetail: async (id) => {
-    const result = await window.electronAPI['workitem:get'](id)
-    if (!result) return
-    set((state) => ({
-      workItemDetails: {
-        ...state.workItemDetails,
-        [id]: {
-          item: result.item as unknown as WorkItemSummary,
-          steps: (result.steps ?? []) as unknown as WorkStepEntry[],
-          runs: (result.runs ?? []) as unknown as WorkRunEntry[],
-        },
-      },
-    }))
+    try {
+      const result = await window.electronAPI['workitem:get'](id)
+      if (!result) {
+        set((state) => ({
+          workItemErrors: { ...state.workItemErrors, [id]: '任务不存在或已被删除（workitem:get 返回空）' },
+        }))
+        return
+      }
+      set((state) => {
+        const nextErrors = { ...state.workItemErrors }
+        delete nextErrors[id]
+        return {
+          workItemDetails: {
+            ...state.workItemDetails,
+            [id]: {
+              item: result.item as unknown as WorkItemSummary,
+              steps: (result.steps ?? []) as unknown as WorkStepEntry[],
+              runs: (result.runs ?? []) as unknown as WorkRunEntry[],
+            },
+          },
+          workItemErrors: nextErrors,
+        }
+      })
+    } catch (error) {
+      set((state) => ({
+        workItemErrors: { ...state.workItemErrors, [id]: `读取失败：${errorText(error)}` },
+      }))
+    }
   },
 
   clearNodeData: () => set({ nodeTimeline: [], nodeEvidence: [] }),
@@ -249,50 +359,120 @@ export const useMapStore = create<MapState>((set, get) => ({
     return summary
   },
 
+  /**
+   * 任务级入队：只做 confirm（draft → awaiting_confirm → queued），不写 gate。
+   * gate 必须已 pass/waived；不传 gateResult，避免前端伪造放行。
+   */
   startWorkItem: async (id) => {
-    const row = (await window.electronAPI['workitem:run:start']({ id, gateResult: 'pass' })) as unknown as WorkItemRowLike
+    try {
+      const row = unwrapIpc<WorkItemRowLike>(await window.electronAPI['workitem:run:start']({ id }))
+      set((state) =>
+        patchOverlayItem(state, id, {
+          status: row.status,
+          gate_status: row.gate_status,
+          revision: row.revision,
+          gate_missing_json: row.gate_missing_json ?? null,
+        }),
+      )
+      get().setActionError(id, '')
+      await get().fetchWorkItemDetail(id)
+    } catch (error) {
+      get().setActionError(id, errorText(error))
+    }
+  },
+
+  /** 任务级取消：不终止进程；有活跃 run 时 UI 必须先走 run 级取消。 */
+  cancelWorkItem: async (id) => {
+    try {
+      const row = unwrapIpc<WorkItemRowLike>(await window.electronAPI['workitem:cancel'](id))
+      set((state) => patchOverlayItem(state, id, { status: row.status, cancel_reason: row.cancel_reason ?? null }))
+      get().setActionError(id, '')
+      await get().fetchWorkItemDetail(id)
+    } catch (error) {
+      get().setActionError(id, errorText(error))
+    }
+  },
+
+  enqueueStep: async ({ graphId, workItemId, stepId }) => {
+    const execution = get().executionStatus
+    if (!execution?.enabled) {
+      get().setActionError(stepId, execution?.disabledReason ?? '执行触发未开启')
+      return
+    }
+    if (!execution.adapterName) {
+      get().setActionError(stepId, '未配置执行器（adapterName 缺失）')
+      return
+    }
+    try {
+      unwrapIpc(
+        await window.electronAPI['workitem:step:run']({
+          stepId,
+          workItemId,
+          adapterName: execution.adapterName,
+        }),
+      )
+      get().setActionError(stepId, '')
+      await Promise.all([get().fetchWorkItemDetail(workItemId), get().fetchOverlay(graphId)])
+    } catch (error) {
+      get().setActionError(stepId, errorText(error))
+    }
+  },
+
+  cancelRun: async ({ graphId, workItemId, runId }) => {
+    try {
+      const result = unwrapIpc<{ cancelled?: boolean; alreadyTerminal?: boolean; status?: string }>(
+        await window.electronAPI['workitem:run:cancel'](runId),
+      )
+      get().setActionError(
+        runId,
+        result.alreadyTerminal ? `运行已结束（${result.status ?? '终态'}），未取消` : '',
+      )
+      await Promise.all([get().fetchWorkItemDetail(workItemId), get().fetchOverlay(graphId)])
+    } catch (error) {
+      get().setActionError(runId, errorText(error))
+    }
+  },
+
+  setActionError: (key, message) => {
     set((state) => {
-      const next = new Map(state.overlayByGraph)
-      for (const [graphId, overlay] of next) {
-        const idx = overlay.workItems.findIndex((w) => w.id === id)
-        if (idx >= 0) {
-          const items = [...overlay.workItems]
-          items[idx] = { ...items[idx], status: row.status, gate_status: row.gate_status, revision: row.revision }
-          next.set(graphId, { ...overlay, workItems: items })
-          break
-        }
-      }
-      return { overlayByGraph: next }
+      const next = { ...state.actionErrors }
+      if (message) next[key] = message
+      else delete next[key]
+      return { actionErrors: next }
     })
   },
 
-  cancelWorkItem: async (id) => {
-    const row = (await window.electronAPI['workitem:cancel'](id)) as unknown as WorkItemRowLike
-    set((state) => {
-      const next = new Map(state.overlayByGraph)
-      for (const [graphId, overlay] of next) {
-        const idx = overlay.workItems.findIndex((w) => w.id === id)
-        if (idx >= 0) {
-          const items = [...overlay.workItems]
-          items[idx] = { ...items[idx], status: row.status }
-          next.set(graphId, { ...overlay, workItems: items })
-          break
-        }
-      }
-      return { overlayByGraph: next }
-    })
+  applyWorkItemChanged: async ({ lineageId }) => {
+    const itemIds = Object.values(get().workItemDetails)
+      .filter((detail) => detail.item.lineage_id === lineageId)
+      .map((detail) => detail.item.id)
+    const graphIds: string[] = []
+    for (const [graphId, overlay] of get().overlayByGraph) {
+      if (overlay.workItems.some((item) => item.lineage_id === lineageId)) graphIds.push(graphId)
+    }
+    await Promise.all([
+      ...itemIds.map((id) => get().fetchWorkItemDetail(id)),
+      ...graphIds.map((graphId) => get().fetchOverlay(graphId)),
+    ])
   },
 
   /** manual 验收确认：写确认事实 + 重算验收；随后刷新 item 详情与叠加层状态。 */
   confirmAcceptance: async (input) => {
-    await window.electronAPI['workitem:acceptance:confirm']({
-      stepId: input.stepId,
-      workItemId: input.workItemId,
-      entryIds: input.entryIds,
-      note: input.note,
-    })
-    await get().fetchWorkItemDetail(input.workItemId)
-    await get().fetchOverlay(input.graphId)
+    try {
+      unwrapIpc(
+        await window.electronAPI['workitem:acceptance:confirm']({
+          stepId: input.stepId,
+          workItemId: input.workItemId,
+          entryIds: input.entryIds,
+          note: input.note,
+        }),
+      )
+      await get().fetchWorkItemDetail(input.workItemId)
+      await get().fetchOverlay(input.graphId)
+    } catch (error) {
+      await get().fetchWorkItemDetail(input.workItemId)
+      throw error instanceof Error ? error : new Error(String(error))
+    }
   },
 }))
 
@@ -304,5 +484,27 @@ if (typeof window !== 'undefined' && window.electronAPI?.onNodeExecutionState) {
   _execStateSub.unsub?.()
   _execStateSub.unsub = window.electronAPI.onNodeExecutionState((payload) => {
     useMapStore.getState().applyExecutionState(payload)
+  })
+}
+
+// G3-3/G8-6:work item 状态变更订阅（模块级一次；按 lineage 去抖 200ms 后重拉明细）。
+const _workItemSub: { unsub: (() => void) | null } = { unsub: null }
+const _workItemPending: { timer: ReturnType<typeof setTimeout> | null; lineages: Set<string> } = {
+  timer: null,
+  lineages: new Set(),
+}
+if (typeof window !== 'undefined' && window.electronAPI?.onWorkItemChanged) {
+  _workItemSub.unsub?.()
+  _workItemSub.unsub = window.electronAPI.onWorkItemChanged((payload) => {
+    _workItemPending.lineages.add(payload.lineageId)
+    if (_workItemPending.timer) clearTimeout(_workItemPending.timer)
+    _workItemPending.timer = setTimeout(() => {
+      const lineages = [..._workItemPending.lineages]
+      _workItemPending.lineages.clear()
+      _workItemPending.timer = null
+      for (const lineageId of lineages) {
+        void useMapStore.getState().applyWorkItemChanged({ lineageId })
+      }
+    }, 200)
   })
 }

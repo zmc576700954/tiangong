@@ -305,6 +305,15 @@ export interface IpcApi {
     limit?: number
   }) => Promise<Array<Record<string, unknown>>>
   'map:run:get': (id: string) => Promise<Record<string, unknown> | null>
+  /**
+   * L2 执行开关只读状态：renderer 据此禁用执行入口并解释「为什么入队后不会跑」。
+   * 不触发任何执行，也不落库。
+   */
+  'map:execution:status': () => Promise<{
+    enabled: boolean
+    adapterName: string | null
+    disabledReason: string | null
+  }>
   'workitem:create': (data: {
     projectPath?: string
     graphId: string
@@ -511,4 +520,5 @@ export const MAP_READ_ONLY_CHANNELS = [
   'workitem:evidence:list',
   'map:run:list',
   'map:run:get',
+  'map:execution:status',
 ] as const satisfies readonly (keyof IpcApi)[]

@@ -176,6 +176,7 @@ describe('session-map 只读 IPC 通道', () => {
     await call('workitem:evidence:list', { workItemId: 'wi1' })
     await call('map:run:list', { graphId: 'g1' })
     await call('map:run:get', 'wr1')
+    await call('map:execution:status')
     expect(snapshot(db)).toEqual(before)
   })
 })

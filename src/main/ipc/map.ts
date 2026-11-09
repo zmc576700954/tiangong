@@ -21,6 +21,12 @@ import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from
 import { WorkExecutionError } from '../map/work-execution-service'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
 import { getWorkExecutionService } from '../map/work-execution-registry'
+import {
+  MAP_EXECUTION_ADAPTER_ENV,
+  MAP_EXECUTION_DISABLED_REASON,
+  isMapExecutionEnabled,
+  mapExecutionAdapter,
+} from '../map/execution-flags'
 import type { TypedHandle } from './utils'
 
 /** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
@@ -317,6 +323,21 @@ export function registerMapHandlers(
   typedHandle('map:run:get', async (_, id: unknown) => {
     if (typeof id !== 'string' || id === '') throw new Error('id is required')
     return workRuns.get(id) ?? null
+  })
+
+  // 执行开关只读状态：只读环境变量，不落库、不触发执行。
+  typedHandle('map:execution:status', async () => {
+    const enabled = isMapExecutionEnabled()
+    const adapterName = mapExecutionAdapter() ?? null
+    return {
+      enabled,
+      adapterName,
+      disabledReason: enabled
+        ? adapterName
+          ? null
+          : `未配置 ${MAP_EXECUTION_ADAPTER_ENV}：无法确定执行器`
+        : MAP_EXECUTION_DISABLED_REASON,
+    }
   })
 
   // ---- 证据只读（item 下钻;节点维度仍走 map:node:evidence:list）----
