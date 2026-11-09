@@ -1,6 +1,6 @@
 # BizGraph Agent 体系设计方案（可落地版）
 
-> 已被 [docs/architecture/agent-architecture.md](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md) 取代（保留追溯）
+> **本文已被 [docs/architecture/agent-architecture.md](file:///Users/zhumingchen/tiangong/docs/architecture/agent-architecture.md) 取代，仅作历史保留，正文不再维护。**
 
 - 仓库：`/Users/zhumingchen/tiangong`（包名 `bizgraph`，版本 `0.1.0`）
 - 日期：2026-11-04

@@ -24,7 +24,7 @@
 5. **事件归属由显式 `correlation` 决定，禁止用栈顶推断。** 现状 `outputSessionStack` 取栈顶 `[代码：base.ts L53-L55、L459-L461]`，且每个 adapter 名全进程单实例 `[代码：ipc-handlers.ts L116-L131]`。
 6. **恢复边界 = 最后一个已持久化事件 + `stepOutcomes` 对账。** 不承诺「恢复到任意步骤」（B §0.4 的该承诺已被 spike 否定）。
 7. **并发以 fail-fast 为准。** 第二个并发 turn 立即 `SESSION_BUSY`；同节点第二个非终态 turn 立即 `NODE_BUSY`。排队不是既定行为。
-8. **共存 + 绞杀，不重写。** `AgentManager` 保留门面；12 个适配器保留，由 `AdapterBackendDriver` 包装（`LegacyAdapterExecutor` 仍是计划抽象，未建文件）；`RequestQueue` 废弃。
+8. **共存 + 绞杀，不重写。** `AgentManager` 保留门面；12 个适配器保留，由 `AdapterBackendDriver` 包装（`LegacyAdapterExecutor` 仍是计划抽象，未建文件）；`RequestQueue` **已删除**（`80075e7`；按 adapterName 分组、per-session 串行由 `SessionLockRegistry` 承担）。
 9. **完成信号以后端 `turn.completed` 为准，不以迭代器结束为准。** Codex 实测在最后一条事件后仍有 ~10s 关机开销（阻塞式同样存在）；等流结束会白等 10 秒。
 
 ---
@@ -78,7 +78,7 @@ L0 持久化（src/main/agent/runtime/db）  append-only 事件日志是审计�
 | `AgentManager` | 保留门面；`sendCommand` 前置 `tryAcquire`，再走 shim |
 | `BaseAdapter` + 12 适配器 | 保留；当前由 `AdapterBackendDriver` 包装（`LegacyAdapterExecutor` 为计划） |
 | `AdapterRegistry` | 只扩 `AgentCapabilities` |
-| `RequestQueue` | **废弃**（按 adapterName 分组，且仅测试引用 `[代码：request-queue.ts L143-L150]`） |
+| `RequestQueue` | **已删除**（`80075e7`；原按 adapterName 分组且仅测试引用，per-session 串行已由 `SessionLockRegistry` 承担） |
 | `send-and-wait` 旁路 | 必须走 `TurnRequest` 并保留 `transparentForward` `[代码：send-and-wait.ts L27-L61；agent.ts L59-L64]` |
 
 ---
@@ -991,6 +991,8 @@ COMMIT
 
 `approval === 'native' | 'hook'` 且 `interception='pre'` 的后端**必须**调用 `onBeforeToolExecute`，未调用即拒绝执行该工具。`interception='post'` 的后端禁止写 `executing_at`（恒为 `NULL`）。
 
+**已实现（`dc51b48`）**：三阶段落在 Runtime 归一化事件写入点——`approval.resolved allow` 写 `approved_at`，`tool.requested`（ACP 为 `tool_call_update status=in_progress`）写 `executing_at`，终态写 `ended_at`；**等待审批阶段不写 `executing_at`**。证据口径：模块级已验证，端到端待真机。
+
 ### 5.5 崩溃窗口判定（spike V2 已实测）
 
 turn 开始时对 `scope.allowedFiles` 生成 `file_snapshot`，把 hash 记入 `agent_artifacts.base_hash`。重启后按下表判定，**hash 不一致一律不自动重跑**：
@@ -1005,6 +1007,8 @@ turn 开始时对 `scope.allowedFiles` 生成 `file_snapshot`，把 hash 记入 
 
 第一行是 spike 实测新增的一行：**审批 allow 但写未落地**必须能被识别为可安全重跑，否则会永远卡在「已批准」。
 `stepOutcomes` 逐 step 记录 `completed | unknown-needs-rerun | needs-human` 与 `reason`，直接落 `agent_steps.test_disposition`，并作为 `RecoveryPlan` 的输入与 UI 展示依据。
+
+**已实现（`dc51b48`）**：`applyRecoveryPlan` 按 `stepOutcomes` 落 `test_disposition`；`aborted` step 全部进入 `stepOutcomes` 并回填 `unknown-needs-rerun`；planner 补 turn 级 `queued / waiting_approval / running / cancelling` 判定并保持只读。证据口径：模块级已验证，端到端待真机。
 
 **「执行了但钩子未触发」的唯一检测机制**是「turn 起始快照 hash ≠ 当前磁盘 hash 且无对应 `artifact.changed`」；没有起始快照就无法判定，这是 `agent_artifacts` 必须进 M0 的原因。
 
@@ -1251,7 +1255,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 ### 8.3 断号
 
 - `seq` 跨 turn 全序，用于恢复回放；`turn_seq` 只在 turn 内连续，用于幂等与断号校验。
-- **当前逐条写入**：每条事件在写事务内同步分配并提交 `seq`。**50ms 批写未实现**，属性能优化（M2），不得据此承诺「崩溃最多丢尾部」。
+- **事件写入（`dc51b48` 已实现）**：`EventBatchWriter` 关键事件同步写、`message.delta` 50 ms 批写、单批封顶、shutdown flush，灰度键 `BIZGRAPH_EVENT_BATCH_WRITER`。因此「崩溃最多丢尾部 50ms delta」仍是未承诺项，但批写不再只是计划。证据口径：模块级已验证，端到端待真机。
 - 归档会把 `message.delta` 合并为 `message.completed`，此时允许 `turn_seq` 有洞；读取侧用 `(turn_id, turn_seq)` 唯一键 + 归档表补齐。因此「不断号」只承诺给未归档 turn。
 
 ---
@@ -1259,7 +1263,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 ## 9. 恢复
 
 1. **恢复只依赖事件回放**：读取该 run 最后一个已持久化事件（`seq ≤ orphan.lastSeq`），配合 `stepOutcomes` 对账重建宿主已知状态；
-2. `agent_snapshots` 表已在 schema 中，但**当前没有生产写入路径**（`saveSnapshot` 仅仓储方法与单测调用），恢复**不读取快照**；快照压缩/加速列为 **M2 计划**，不是 M0 已实现能力；
+2. `agent_snapshots` 表**已有生产写入路径**（`runNode` → `writeTurnStartSnapshot`，`dc51b48`；仅写元数据 + `promptHash`，不写业务正文），恢复流程对该表**只读、不写库**；快照驱动的恢复加速仍未接入；
 3. replay 只重建宿主已知状态，不重建厂商进程内的未上报中间态；
 4. 策略由 `stepOutcomes` 决定（§5.5），`hash` 不一致一律 `needs-human → abandon`；
 5. 对外只承诺「恢复到最后一个已持久化事件 + step 级对账」，**不承诺恢复到任意步骤**；
@@ -1305,7 +1309,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 
 ## 11. 落地改动
 
-**M0/M1 已落地**（均在 `src/main/agent/runtime/` 下）：`db/{schema,repository}.ts`、`runtime.ts`、`locks/session-lock.ts`、`normalize/{claude,codex,opencode,sink}.ts`、`executors/{adapter-driver,codex-health}.ts`、`approval/{gateway,bash-readonly}.ts`、`process/reaper.ts`、`recovery/planner.ts`、`cost/{ledger,pricing}.ts`、`evidence/workspace-snapshot.ts`、`capabilities.ts`、`feature-flags.ts`；类型在 `src/shared/types/agent-runtime.ts`。**仍为计划、尚未建文件**：`startup-reconciler.ts`（当前对账由 `AgentManager` 启动路径调用仓储实现）、`locks/workspace-lease.ts`、`executors/legacy-adapter-executor.ts`。**注意**：`src/main/repositories/agent-*.ts` 只存在既有 `agent-log-repository.ts`，新仓储在 `runtime/db/repository.ts`。
+**M0/M1/M2 已落地**（均在 `src/main/agent/runtime/` 下）：`db/{schema,repository}.ts`、`runtime.ts`、`locks/session-lock.ts`、`normalize/{claude,codex,opencode,sink}.ts`、`executors/{adapter-driver,codex-health,acp-executor}.ts`、`approval/{gateway,bash-readonly}.ts`、`process/reaper.ts`、`recovery/planner.ts`、`cost/{ledger,pricing}.ts`、`evidence/workspace-snapshot.ts`、`capabilities.ts`、`feature-flags.ts`、`event-batch-writer.ts`、`startup-reconciler.ts`、`locks/workspace-lease.ts`；类型在 `src/shared/types/agent-runtime.ts`。**仍为计划、尚未建文件**：`executors/legacy-adapter-executor.ts`。**注意**：`src/main/repositories/agent-*.ts` 只存在既有 `agent-log-repository.ts`，新仓储在 `runtime/db/repository.ts`。
 
 **修改（点对点）**：
 
@@ -1317,7 +1321,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 | `src/main/ipc/agent.ts` | 注册 handler；构造 `sessionId` |
 | `src/main/agent/agent-manager.ts` | `sendCommand` 前置 `tryAcquire`；构造 correlation |
 | `src/main/adapters/base.ts` | 可选 `correlation` 参数；统一走 `emitOutputForSession` |
-| `src/main/index.ts` | 启动跑启动对账（当前由 `AgentManager` 启动路径调用仓储实现，无独立 `startup-reconciler.ts`）；窗口销毁批量 deny |
+| `src/main/index.ts` | 启动跑启动对账（`startup-reconciler.ts`，`dc51b48`）；窗口销毁批量 deny |
 
 **spike 迁移**：`spikes/agent-core/src/types.ts` 直接搬到 `src/shared/types/agent-runtime.ts` 并加 §3.2 补丁；spike 里已验证的逻辑（审批幂等、`executing_at`、部分唯一索引、崩溃对账）不改写。
 
@@ -1348,11 +1352,13 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 | 排队（`queueDepth`） | 产品未定调；M0/M1 维持 `NODE_BUSY` fail-fast，行为可解释 |
 | 额度熔断 / 预算三级 | 产品已定「只记账，不熔断」（§4.4.1）；无真实成本分布，阈值会定错 |
 | 长尾 CLI 逐 CLI parser | 各 CLI 没有稳定的结构化工具事件，逐家硬解析会把噪声当事实；当前只保留 `file_change_evidence` 合成通道：只有文件级变更、无工具名、`source=synthetic`、`postHoc`，扫描截断会如实标注；precision/recall 未实测 |
-| `RecoveryPlanner` 完整策略、`WorkspaceLease` worktree、策略编辑器 | M1 剩余项，不影响账本与迁移结论 |
+| `RecoveryPlanner` 完整策略、`WorkspaceLease`（本机锁） | **已落地（`dc51b48`）**：planner 补 turn/step 级判定且保持只读；lease 以 `wx` + rename 原子抢占、TTL/stale、同进程重入（灰度键 `BIZGRAPH_WORKSPACE_LEASE`）。worktree 隔离与策略编辑器仍未做 |
 
 ### M2
 
-`AcpExecutor`、聊天路径迁入 runtime、`RequestQueue` 删除、多 turn（`group_id`）与分支（`branch_key` + worktree）、评测 harness、归档策略。
+**已落地（2026-11-09，`80075e7`）**：`AcpExecutor`（`executors/acp-executor.ts`，实现 `BackendDriver` 契约，`session/request_permission` → 写前强制审批）、聊天路径迁入 kernel（`claude` / `acp` 白名单走 kernel 并带写前审批，清单外显式 `[kernel-skip]` 日志回旧路径）、`RequestQueue` 删除（无兼容壳）。**事实**：仓库没有名为 `acp` 的 `AgentAdapter`，ACP driver 仅在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效，可证的 chat kernel 路径仍是 `claude`。证据口径：模块级已验证，端到端待真机。
+
+**仍未做**：多 turn（`group_id`）与分支（`branch_key` + worktree）、评测 harness、归档策略。
 
 ---
 
@@ -1375,7 +1381,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 | **R0（一级）** | **进程回收误杀 / 漏杀 / 伪造**：裸 pid kill 会误杀；env marker 跨重启不可见；同 uid 可读密钥伪造记录 | §6.5 三层承诺：同进程按真实句柄、跨重启仅可证明归属（≥2 项含内容证据）、禁止裸 pid；同 uid **不承诺**防伪造（C14）；C13b 修复中；无法确认 → `residual_risk='unconfirmed'` + 告警 |
 | R1 | Claude `canUseTool` 运行时行为与文档不符 | 已加 `PreToolUse` 写类强制 `ask` 防 `permissions.allow` 短路（真机 r9 验证）；若 CLI 版本导致 hook 语义变化，降级 `policy-only` + 只读/allowlist，UI 改文案 |
 | R2 | 共享 adapter 实例归属串台 | M0 并发 1 + 显式 correlation；M1 per-session 实例 |
-| R3 | `better-sqlite3` 阻塞主进程 | WAL 已启用；**50ms 批量写未实现**（当前逐条写），高事件量阻塞未实测 |
+| R3 | `better-sqlite3` 阻塞主进程 | WAL 已启用；50ms 批量写已实现（`EventBatchWriter`，`dc51b48`，灰度键 `BIZGRAPH_EVENT_BATCH_WRITER`），高事件量主进程阻塞仍**未实测** |
 | R4 | 崩溃窗口误判 | §5.5 五行判定；hash 不一致一律 `needs-human` |
 | R5 | 迁移漏 bump 版本 | §4.1 五步 + 旧库副本验证 |
 | R6 | 打包缺 SDK/CLI 二进制 | `asarUnpack` + 打包 smoke |

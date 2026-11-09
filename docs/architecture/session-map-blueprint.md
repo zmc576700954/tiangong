@@ -1,10 +1,10 @@
-# 会话地图与任务编排蓝图（Session Map Blueprint）— 定稿 v2.2
+# 会话地图与任务编排蓝图（Session Map Blueprint）— 定稿 v2.3
 
-> 版本：**v2.2（定稿 + 裁决结果回写）**
-> 生成时间：**2026-11-08 21:35（Asia/Shanghai）**
-> 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；**v2.2 把 D-01…D-17 的裁决结果回写为「已裁决（采纳 X）」并解除 13 条阻塞**。严格区分：裁决只定方向，**不产生施工授权**——34 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
-> 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，397 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
-> ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` **逐字节相同**（397 行，sha256 `e203b41b…d89a9`），即同一份 v1.2.3（R10 勘误版），不是更新版。
+> 版本：**v2.3（定稿 + W5 阶段 A/B/C 成果回写）**
+> 生成时间：**2026-11-09（Asia/Shanghai）**
+> 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（45 → 61 条已实施，34 → 33 条仅建议），并记录 `RequestQueue` 已删除**。严格区分：裁决只定方向，**不产生施工授权**——33 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
+> 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
+> ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
 > 非范围：审批网关内部实现、Agent 内核/驱动协议、上下文水位线、成本账本 —— 见 `agent-architecture.md`。
 > 状态词（严格四类，全文一致）：
@@ -26,40 +26,39 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **45** | 见 I.2，每条带代码证据 |
-| 已批准未实施 | **40** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **34** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 13 条已解除裁决阻塞 |
+| 已实施 | **61** | 见 I.2，每条带代码证据 |
+| 已批准未实施 | **25** | 见 I.3，均有可施工方案（W 包） |
+| 仅建议 | **33** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 12 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 45+40+34+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 61+25+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（agent 证据写入）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（45）
+### I.1.1 已实施（61）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
-- **编排执行**：G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
-- **测试体系**：G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
+- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
+- **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记。
-- **Agent 运行时**：G6-6 重启 pending 按实际降级（统一 deny）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
+- **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
 - **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`。
-- **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-12 报告裁剪。
+- **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（40）
+### I.1.2 已批准未实施（25）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描、G1-10 `evidence_suggestions`。
-- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6 超时键、G3-7 `stepMs/taskMs` 消费、G3-8 `sendWaitMs`、G3-9 subagent 继承预算、G3-10 agent 证据写入面。
-- **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest。
+- **编排执行**：G3-10 agent 证据写入面。
 - **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-4 建议转证据（=G1-10）、G5-5 E4 扫描（=G1-9）、G5-8 §3.4 事务/去重、G5-9 §3.2 组合校验。
-- **Agent 运行时**：G6-1 M2 六项、G6-2 50ms 批写、G6-3 快照无写入、G6-4 三未建文件、G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9、G6-12 R3、G6-13 打包、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异、G6-18 C13b。
+- **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9、G6-12 R3、G6-13 打包、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异、G6-18 C13b。
 - **审批与沙箱**：G7-1 写前审批覆盖边界、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-10 旧路径时间线。
-- **迁移与运维**：G9-11 schema 版本漂移、G9-13 Windows 路径。
+- **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行，原 66 节标“有框架缺细节”，已更正为 16 已实施 + 50 缺细节）、G10-2 A1/A2/A9 用例、G10-3 A3/A4 边界、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（34）
+### I.1.3 仅建议（33）
 
 - **会话地图本体**：G1-11 `node_id` 放宽、G1-14 提案机制（§2.7）。
 - **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-13 published 软阻断、G2-14 `v_plan_deviations_file_domain`、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
@@ -69,10 +68,10 @@
 - **Agent 运行时**：G6-17 同 uid 不在防御范围。
 - **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
 - **界面与交互**：G8-3 C1–C4、G8-4 提案 UI、G8-5 任务卡深度、G8-6 renderer 入口（=G3-3）。
-- **迁移与运维**：G9-8 RequestQueue、G9-10 worktree 清理。
+- **迁移与运维**：G9-10 worktree 清理。
 - **待裁决清单**：G11-10 tree-hash 等级。
 
-> **索引（v2.1 补齐，v2.2 解阻塞）**：以上 34 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 33 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-32 已于 2026-11-09 实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -84,7 +83,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 23 个编号，去重后 17 条；重复关系见上方清单。
 
-## I.2 已实施清单（45 条，按主题）
+## I.2 已实施清单（61 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -103,18 +102,28 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G1-13 | 新建图在 WS 连接时按需进 doc 池；不存在的图不造孤儿 doc | `yjs-realtime.ts:123-126,145-158`（WS `getDoc` → `getOrLoadDoc` + `graphExists`） |
 | G1-16 | 快照恢复不写 SQLite、不重算 `entity_key` | `cc749ce`；`docs/architecture/session-map-blueprint.md` §2.2.1 |
 
-### I.2.2 编排执行（3）
+### I.2.2 编排执行（9）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
+| G3-4 | `work_items.priority` 加列 + 两处候选查询统一为 `queued` 优先、`priority DESC`、`created_at` 兜底 | `0df2234`、`database.ts`（v36 `addColumnSafe`）、`work-scheduler.ts`、`work-execution-service.ts` |
+| G3-5 | 存量自由文本 acceptance 迁移为结构化 `acceptance_json`，原文逐行存 `map_acceptance_migration_archive` | `0df2234`、`legacy-acceptance.ts` |
+| G3-6 | `agentRuntime.timeouts.turnMs` 生效于 kernel 派发 | `0df2234`、`timeout-config.ts` |
+| G3-7 | `stepMs` 写 `work_runs.deadline_at` 并由 tick 收口 `timed_out`；`taskMs` 按最早 run 起算 | `0df2234`、`work-execution-service.ts` |
+| G3-8 | `sendWaitMs` 生效且 clamp ≥ `turnMs + 30s` | `0df2234`、`send-and-wait.ts` |
+| G3-9 | subagent 继承 `min(stepMs, 父 turn 剩余)` | `0df2234`、`subagent-manager.ts`、`agent-manager.ts` |
 | G3-12 | `GateRecheck` 接入；引擎不可用时 `incomplete + gate_engine_unavailable` | `work-execution-service.ts:463`、`b6f3735` |
 | G3-14 | D2 验收执行器 command / file_check / manual，逐条结果落 `map_migration_reports` | `acceptance-executor.ts`、`c03ee87`/`4010` |
 | G3-15 | D1 计划确认、D3 按步骤调度、D7 重启对账、D9 人工确认 | `e4398e7`、`94125bd`、`work-execution-service.ts:177,308` |
 
-### I.2.3 测试体系（2）
+### I.2.3 测试体系（6）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
+| G4-6 | allow-list harness（manifest + 测试） | `217fbbc`、`tests/migration/allow-list-harness.test.ts`、`allow-list.manifest.ts` |
+| G4-7 | P1–P9 迁移验证脚本 | `217fbbc`、`tests/migration/p1-entity-key.test.ts` … `p9-evidence-separation.test.ts`（9 个） |
+| G4-8 | P6 Yjs/SQLite 镜像并行验证 | `217fbbc`、`tests/migration/p6-yjs-sqlite-mirror.test.ts` |
+| G4-9 | CI vitest job（含 P1–P9 与 G4-6；先 `continue-on-error` 观测） | `217fbbc`、`.github/workflows/ci.yml:22,38` |
 | G4-10 | S8 前置五表（`test_specs/plans/items/runs/results`） | `database.ts:1221` |
 | G4-11 | TestExecutor 逐条执行 + `evidence.create` E2/E3 | `test-executor.ts:389,406`、`test-plan-service.test.ts` |
 
@@ -127,13 +136,20 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G5-6 | E4 过期（默认 30 天）自动转 `stale` | `evidence-service.ts:192-202`、U1 |
 | G5-7 | 非 git E4 `reproducible=0`、`version_binding='none'` | `database.ts:673-691` |
 
-### I.2.5 Agent 运行时（3）
+### I.2.5 Agent 运行时（7）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
+| G6-1 | M2 六项：`executing_at` 三阶段（`approved_at → executing_at → ended_at`）、turn 起始快照、`stepOutcomes` 落库（含 aborted 兜底）、分层进程回收、planner 完整策略、事件批写 | `dc51b48`、`runtime.ts`、`event-batch-writer.ts`、`recovery/planner.ts`、`db/repository.ts` |
+| G6-2 | 事件 50ms 批写 + shutdown flush + `BIZGRAPH_EVENT_BATCH_WRITER` 灰度 | `dc51b48`、`event-batch-writer.ts`（含真实进程测试） |
+| G6-3 | `runNode` 生产写入 `agent_snapshots`（仅元数据 + promptHash）；恢复期只读、不写库 | `dc51b48`、`runtime.ts`（`writeTurnStartSnapshot`） |
+| G6-4 | 三文件落地（原「未建」）：`startup-reconciler.ts`、`locks/workspace-lease.ts`、`executors/acp-executor.ts` | `dc51b48`、`80075e7` |
 | G6-6 | 重启后陈旧审批统一 deny（不再承诺重推 + replay） | `startup-reconcile` 路径；`agent-architecture.md` §7.4 |
 | G6-19 | “五通道/模式库/进化/提案”归属校正在 Part I（不在 agent 文档） | `map-orchestration-blueprint.md:330-331` |
 | G6-20 | 12 适配器能力矩阵；Claude 写前审批 | `agent-architecture.md` §10/§17.1；`claude-code.ts:237-268` |
+
+> **证据口径（2026-11-09）**：G6-1～G6-4 为**模块级已验证**（真实子进程/临时库单测 + 全量 vitest 绿 + `tsc --noEmit`），**端到端待真机**——「chat 走 kernel 且有写前审批」目前只在 `AgentManager.sendCommand` 路由与 `runNode` 单测层面验证，尚未在打包后的 Electron app 中跑通完整链路。写入 `agent_events` / `agent_steps` 的三阶段时间戳同理，均为单测断言，不是真机会话回放。
+> **事实记录**：当前仓库**没有名为 `acp` 的 `AgentAdapter`**；ACP driver 仅在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效，因此今天可证的 chat kernel 路径仍是 `claude`（`claude-code`）。
 
 ### I.2.6 审批与沙箱（4）
 
@@ -154,7 +170,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G8-9 | 证据空态“该节点没有关联证据” | 演练 `out-run4/11-panel-settled.png` |
 | G8-10 | 全局 `ApprovalInbox`；15 条审批全部可见可决议 | 演练 `out-run4/01..015-inbox-approval.png` |
 
-### I.2.8 迁移与运维（8）
+### I.2.8 迁移与运维（10）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -165,6 +181,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G9-5 | S4 CHECK 值域重建：v33 | `s4-verify.ts:212` |
 | G9-6 | S4 不可逆，已接受；回退仅恢复备份 | `session-map-blueprint.md` §8.6 |
 | G9-7 | 半迁移续跑 `--resume-migration` | `migration-state.ts:283` |
+| G9-8 | `RequestQueue` 已删除（`request-queue.ts` 与测试一并移除，无兼容壳） | `80075e7`；`git grep -rn RequestQueue -- 'src/**'` 为空 |
+| G9-11 | schema 版本号对齐：`CURRENT_SCHEMA_VERSION = 36`，§8.2.1 与 §8 说明同步 | `database.ts:758`、本文 §8.2.1（2026-11-09 v2.3） |
 | G9-12 | 报告裁剪与 `import_rejections` 90 天保留 | `database.ts:91-96`、`import-dedup.ts:548` |
 
 ### I.2.9 文档与裁决落地（6）
@@ -180,7 +198,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ---
 
-## I.3 未实施清单与可施工方案（74 条 → 12 个 W 包）
+## I.3 未实施清单与可施工方案（58 条 → 12 个 W 包）
 
 > 口径：**条目本身不合并**，每条保留 G 编号；下发施工时按 W 包排期，包内条目逐条验收。标记 `[批准]` 的进入本期/近期计划，标记 `[建议]` 的属 L3，不进入本期验收。
 
@@ -218,7 +236,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
   G3-6～G3-9 在 `settings.agentRuntime.timeouts` 增设四键，统一由 `timeout-config.ts` 解析（未配置 = `DEFAULT_AGENT_TIMEOUTS`，行为不变）：`turnMs` 消费于 `AgentManager.sendCommandThroughKernel`（无显式 deadline 时）；`stepMs` 写 `work_runs.deadline_at` 并由 tick 前置 `sweepDeadlines()` 收口为 `timed_out`；`taskMs` 以该任务最早一次 `work_runs.started_at` 起算（排队时间不计、不新增列），到期同样扫描收口并取消同 item 的 queued run；`sendWaitMs` 消费于 `send-and-wait.ts` 的等待上限，并 clamp ≥ `turnMs + 30s`。subagent 继承：`SubagentManager` 取 `min(stepMs, 父 turn 剩余)`，父 deadline 由 `AgentManager.getSessionTurnDeadline()` 提供（`AgentCommand.deadlineMs` 同步下发给子 turn）。配置在启动装配期读取，运行中修改需重启生效。G3-1/2/3 **维持仅建议、本期不改代码**。
 
 ### W4 测试体系补全
-- 覆盖条目：G4-6 `[批准]` allow-list harness、G4-7 `[批准]` P1–P9 脚本、G4-8 `[批准]` P6 并行验证、G4-9 `[批准]` CI vitest、G2-11/12/13 `[建议]` 流程测试最小版/定向重测/published 软阻断。
+- 覆盖条目：G4-6 `[已实施]` allow-list harness、G4-7 `[已实施]` P1–P9 脚本、G4-8 `[已实施]` P6 并行验证、G4-9 `[已实施]` CI vitest（`217fbbc`，2026-11-08）、G2-11/12/13 `[建议]` 流程测试最小版/定向重测/published 软阻断。
 - 目标：测试资产从“单节点可执行”升级到“流程可验证”，迁移验收可自动跑。
 - 涉及文件与数据/接口变更：`src/main/map/test-executor.ts`、`src/main/map/test-plan-service.ts`、`src/main/map/flow-test-service.ts`（新增）、`tests/migration/*`、`.github/workflows/ci.yml`。
 - 实施步骤：① P1–P9 逐条脚本化并接入 CI；② 补 `vitest` job；③ 流程测试最小版：框选→拓扑→verify+shell→`test_report`；④ 定向重测按失败用例集合重跑；⑤ published 软阻断读取 `has_pass_evidence`。
@@ -227,13 +245,15 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：CI 增加单测可能暴露存量失败 → 先以 `continue-on-error` 观测一周再卡门。
 
 ### W5 Agent M2 核心
-- 覆盖条目：G6-1 `[批准]` M2 六项、G6-2 `[批准]` 50ms 批写、G6-3 `[批准]` 快照写入、G6-4 `[批准]` 三未建文件、G6-11～G6-16 `[批准]` U1–U9/R3/打包/token/OpenCode/Codex、G6-18 `[批准]` C13b。
+- 覆盖条目：G6-1 `[已实施]` M2 六项、G6-2 `[已实施]` 50ms 批写、G6-3 `[已实施]` 快照写入、G6-4 `[已实施]` 三文件落地（`dc51b48` / `80075e7`）、G6-11～G6-16 `[批准]` U1–U9/R3/打包/token/OpenCode/Codex、G6-18 `[批准]` C13b。
 - 目标：把 runtime 从“可用”推到“可恢复、可观测、可打包”。
-- 涉及文件与数据/接口变更：`src/main/agent/runtime/` 下新增 `executors/acp-executor.ts`、`startup-reconciler.ts`、`locks/workspace-lease.ts`；删除 `request-queue.ts`；事件写入批处理；`agent_snapshots` 增加生产写入方。
-- 实施步骤：① 先补 startup-reconciler 与 lease；② 事件写 50ms 批处理并加 flush-on-exit；③ 快照写入/读取；④ chat 路径迁入 runtime；⑤ 删 RequestQueue；⑥ 评测 harness；⑦ 打包与 Codex/OpenCode 真机矩阵。
+- 涉及文件与数据/接口变更：`src/main/agent/runtime/` 下新增 `executors/acp-executor.ts`、`startup-reconciler.ts`、`locks/workspace-lease.ts`（**均已落地**）；`request-queue.ts` **已删除**；事件写入批处理；`agent_snapshots` 增加生产写入方。
+- 实施步骤：① 先补 startup-reconciler 与 lease（已完成）；② 事件写 50ms 批处理并加 flush-on-exit（已完成）；③ 快照写入/读取（已完成）；④ chat 路径迁入 runtime（已完成，模块级验证）；⑤ 删 RequestQueue（已完成，`80075e7`）；⑥ 评测 harness；⑦ 打包与 Codex/OpenCode 真机矩阵（未做）。
 - 验收标准：崩溃恢复只依赖事件回放且可验证；批写不丢事件；快照可恢复一个 turn；打包后三后端可启动；U1–U9 有实测记录。
 - 依赖与建议顺序：W5 与 W1 独立，建议在 W8 审批覆盖之前做。
-- 风险与回滚：批写引入丢失窗口 → 保留同步 flush；删 RequestQueue 前先 grep 引用。
+- 风险与回滚：批写引入丢失窗口 → 保留同步 flush；`RequestQueue` 已于 2026-11-09 删除，无回滚对象（见下方 C2 注记）。
+- **施工注记（2026-11-08，阶段 A+B，提交 `dc51b48`，19 文件 +2356/−220）**：① `startup-reconciler.ts` 增加 `proveOwnership` 预检——不可证明归属时 `killCalls=0`，并把 Codex 旧路径 / 已跑 turn 但无句柄无 marker 的 session 标 `residual_risk='unconfirmed'`；② `locks/workspace-lease.ts` 以 `wx` + rename 原子抢占、TTL/stale、同进程重入，灰度键 `BIZGRAPH_WORKSPACE_LEASE`；③ `event-batch-writer.ts` 关键事件同步、delta 50ms 批写、shutdown flush，灰度键 `BIZGRAPH_EVENT_BATCH_WRITER`；④ `executing_at` 三阶段落在归一化事件写入点（`tool.requested` 写 `executing_at`、`approval.resolved allow` 写 `approved_at`，等待审批阶段不写）；⑤ `runNode` 生产写 `agent_snapshots`（仅元数据 + `promptHash`），恢复期只读；⑥ `applyRecoveryPlan` 支持 `terminalStatus`，`aborted` step 全部进 `stepOutcomes` 并回填 `unknown-needs-rerun`；planner 补 turn 级 `queued/waiting_approval/running/cancelling` 判定，保持只读。**证据口径：模块级已验证，端到端待真机。**
+- **施工注记（2026-11-09，阶段 C，提交 `80075e7`，11 文件 +1201/−330）**：① 新增 `runtime/executors/acp-executor.ts`，实现与 `adapter-driver.ts` 相同的 `BackendDriver` 契约（`initialize` / `session/new` / `session/prompt` / `session/cancel`），把 `session/update` 映射为归一化 `agent_events`，`session/request_permission` 交 `ApprovalGateway` 做写前强制审批；子进程同样 `context.registerProcess`，复用同一套回收链路，**没有第二套执行路径**。② chat 发送路径按能力集门控：`claude` / `acp` 走 kernel 并带写前审批；清单外后端、driver 未注册、Runtime 未装配、未挂载节点（D8 纯 thread）各自打显式 `[kernel-skip]` 日志回旧路径，**不静默降级**。③ 能力集 `KERNEL_APPROVAL_CAPABLE_BACKENDS = ['claude','acp']`。④ 删除 `request-queue.ts` 及其测试（D-07 fail-fast，无兼容壳）。**事实记录：当前仓库没有名为 `acp` 的 `AgentAdapter`，ACP driver 只在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效；因此今天可证的 chat kernel 路径仍是 `claude`。** 证据口径：模块级已验证（真实子进程假 ACP agent + `AgentManager.sendCommand` 路由单测），**端到端待真机**。
 
 ### W6 Agent 恢复与旧路径
 - 覆盖条目：G6-5 `[批准]` unattended 无调用方、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[批准]` 旧路径无 turn 时间线。
@@ -281,11 +301,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：embedding 成本与误召回 → 默认关闭，按项目开启。
 
 ### W11 迁移与运维
-- 覆盖条目：G9-8 `[建议]` RequestQueue 删除、G9-10 `[建议]` worktree 清理、G9-11 `[批准]` schema 版本漂移、G9-13 `[批准]` Windows 路径、G2-14 `[建议]` `v_plan_deviations_file_domain`、G2-15 `[建议]` dirty diff。
+- 覆盖条目：G9-8 `[已实施]` `RequestQueue` 删除、G9-11 `[已实施]` schema 版本号对齐（均 `80075e7` / 本文 v2.3）、G9-10 `[建议]` worktree 清理、G9-13 `[批准]` Windows 路径、G2-14 `[建议]` `v_plan_deviations_file_domain`、G2-15 `[建议]` dirty diff。
 - 目标：清理死代码、补齐运维任务、修正文档版本口径。
-- 涉及文件与数据/接口变更：删除 `request-queue.ts`；新增 worktree 清理任务；`database.ts` 版本注释；视图 `v_plan_deviations_file_domain`。
-- 实施步骤：① 文档版本改 35；② 删死代码；③ 建视图；④ 加清理任务；⑤ Windows 仅登记不实现。
-- 验收标准：`git grep request-queue` 无生产引用；视图可查；清理任务有单测。
+- 涉及文件与数据/接口变更：`request-queue.ts` **已删除**（`80075e7`，无兼容壳）；新增 worktree 清理任务；`database.ts` 版本注释；视图 `v_plan_deviations_file_domain`。
+- 实施步骤：① 文档版本改 36（已完成）；② 删死代码（`RequestQueue` 已完成）；③ 建视图；④ 加清理任务；⑤ Windows 仅登记不实现。
+- 验收标准：`git grep -rn RequestQueue -- 'src/**'` 为空（已满足）；视图可查；清理任务有单测。
 - 依赖与建议顺序：先做文档修正与死代码清理；视图/dirty diff 属 L3。
 - 风险与回滚：删代码前确认无外部引用。
 
@@ -486,37 +506,39 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4895**（2026-11-08 W1 收口后实测；本次改动后以复核值为准）。
-- schema 复核：`src/main/database.ts:746` `CURRENT_SCHEMA_VERSION = 35`。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4920**（2026-11-09 v2.3 修订后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- schema 复核：`src/main/database.ts:758` `CURRENT_SCHEMA_VERSION = 36`（v36 由 W3 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**45 已实施 / 40 已批准未实施 / 34 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口时 G1-5/6/7/8/13 由后者转入前者）。
-- v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**34 条状态词未变（仍为「仅建议」），17 条未升格为「已批准未实施」**。
-- 本次 v2.2 文档修订未改产品代码；W1（2026-11-08）改动产品代码但**未提交 git**。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**61 已实施 / 25 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
+- v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **4920**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 61 + 25 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；打包与 Codex/OpenCode 真机矩阵未做（G6-11～G6-16 仍为「已批准未实施」）。
+- 本次 v2.3 文档修订未改产品代码；W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），**未 push**。
 
 ## I.7 裁决后建议施工顺序（按 W 包）
 
-> 口径：W 包对应 I.3 的 **40 条「已批准未实施」**，与 34 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1 已完成（2026-11-08），其 5 条已转入 I.2 已实施。
+> 口径：W 包对应 I.3 的 **26 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）已完成，其条目已转入 I.2 已实施。
 
 | W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
 |---|---|---|---|---|
 | W1 地图对象与状态回写 | G1-5/6/7/8/13、G1-11 | **已完成（2026-11-08）** | 无 | 5 条已转入 I.2；G1-11 维持仅建议 |
-| W3 执行守卫 | G3-4…G3-10 | **可立即开工** | 无（超时预算按 D-15 设键） | D-15 已裁决设配置键，配置层可先落 |
-| W4 测试体系 | G4-6…G4-9 | **可立即开工** | 无 | harness/CI 是 W2 与 W9 的验收前提 |
+| W3 执行守卫 | G3-4…G3-9（已实施）、G3-10 | **已完成主体（`0df2234`）** | 无 | 6 条已转入 I.2；G3-10 归 W2 证据写入面 |
+| W4 测试体系 | G4-6…G4-9 | **已完成（`217fbbc`）** | 无 | 4 条已转入 I.2；流程测试三项仍为仅建议 |
 | W12 文档验收 | G10-1/2/3/11 | **可立即开工** | 可与 W1 并行 | 纯文档与用例，D-10 已裁决重新审查 |
 | W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **部分开工** | 写通道依赖 D-03（排 W4 后） | 服务层可先做，`evidence:suggest/accept` 通道等 W4；2026-11-08 已落 E2 `session_turn` + E4 `human_confirm` 两条写方，suggestions/复扫/E1 通道未建 |
-| W5 Agent M2 | G6-1…G6-4 | **可开工** | 无 | M2 六项与 D-12 无关，独立推进 |
+| W5 Agent M2 | G6-1…G6-4 | **已完成（`dc51b48` / `80075e7`），打包与真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由已落；G6-11～G6-16 仍在 W6/W7 |
 | W6 Agent 恢复/旧路径 | G6-5/7/11…G6-16 | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上 |
 | W7 审批覆盖 | G7-1…G7-10 | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
 | W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |
 | W10 进化/提案/Tier2 | G1-14、G2-2…G2-7 | 依赖 W2 | W2；Tier2 按 D-17 先补审批桥；embedding 按 D-12 | 进化与提案都消费证据，Tier2 需桥 |
-| W11 迁移运维 | G9-11/13、G9-8 | 依赖 W1 | W1；RequestQueue 按 D-07 直接删 | 迁移漂移与清理建立在 W1 的稳定写回 |
+| W11 迁移运维 | G9-11/13、G9-8（均已实施/已删除） | **部分完成（`80075e7` + v2.3）** | W1 | `RequestQueue` 已删、版本号已对齐 36；worktree 清理、视图与 Windows 项未做 |
 | W8 沙箱 C3 | G7-7/8（仅建议） | **不开工** | 待单独授权 | 属「仅建议」，本期无施工授权 |
 
-**建议顺序**：`W1 ∥ W3 ∥ W4 ∥ W12` → `W2`（通道等 W4）→ `W5` → `W6 ∥ W7` → `W9` → `W10` → `W11`。W8 及 34 条仅建议维持不动，除非另行授权。
+**建议顺序**：`W1 ∥ W3 ∥ W4 ∥ W12` → `W2`（通道等 W4）→ `W5` → `W6 ∥ W7` → `W9` → `W10` → `W11`。W8 及 33 条仅建议维持不动，除非另行授权。
 
-# Part II 仅建议项施工级设计（34 条）
+# Part II 仅建议项施工级设计（33 条有效 + II-32 已实施存档）
 
-> **口径**：本部分把 I.1.3 的 34 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——34 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 33 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-32（G9-8 `RequestQueue` 删除）已于 2026-11-09 随 `80075e7` 实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 33 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -552,7 +574,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | II-29 | G8-3 | C1–C4 渲染 | §9.4 | 已解除（D-13） |
 | II-30 | G8-4 | 提案 UI（渲染） | §9.4 | — |
 | II-31 | G8-5 | 任务卡深度 | §9.4 | 已解除（D-14） |
-| II-32 | G9-8 | RequestQueue 删除 | §4.5 | 已解除（D-07） |
+| II-32 | G9-8 | RequestQueue 删除 | §4.5 | 已实施（`80075e7`） |
 | II-33 | G9-10 | worktree 清理 | §8.10 | — |
 | II-34 | G11-10 | tree-hash 等级 | §3.2 | — |
 
@@ -849,14 +871,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## II.7 迁移与运维
 
-### II-32 · G9-8 RequestQueue 删除｜**仅建议**（原阻塞 D-07 已解除）
+### II-32 · G9-8 RequestQueue 删除｜**已实施（2026-11-09，`80075e7`）**（原阻塞 D-07 已解除）
 - **目标与不做后果**：清理已被废弃的 `RequestQueue`（仅测试引用），避免误接回写路径；不做则死代码长期存在。
-- **数据/接口**：删除 `request-queue.ts` 与相关导入；无表变更。
-- **流程/状态机**：确认无生产引用 → 删代码 → 删测试或改为"不存在"断言 → 类型检查。
-- **边界**：**D-07 已裁决维持 fail-fast、不引入队列**，故本项可执行（改为复用队列的备选已排除）；删除前必须 `git grep` 零生产引用。
-- **验收**：`git grep RequestQueue` 仅剩历史文档；类型检查与测试通过。
+- **数据/接口**：`request-queue.ts` 与其测试已删除，无表变更，无兼容壳/再导出。
+- **流程/状态机**：已确认无生产引用 → 删代码 → 删测试 → 类型检查与全量测试通过。
+- **边界**：**D-07 已裁决维持 fail-fast、不引入队列**；删除前 `git grep` 零生产引用已核。
+- **验收**：`git grep -rn RequestQueue -- 'src/**'` 为空（已满足）；`tsc --noEmit` 与全量 vitest 通过（已满足）。
 - **前置依赖与顺序**：**D-07 已裁决**（维持 fail-fast）；与 W11 同批。
-- **成本**：≈0.5 人日（估算）。
+- **成本**：≈0.5 人日（估算）；实际约 30 分钟。
 
 ### II-33 · G9-10 worktree 清理｜**仅建议**
 - **目标与不做后果**：测试 worktree 用完即清，异常退出也能回收；不做则磁盘膨胀、后续复用脏基线。
@@ -3430,7 +3452,7 @@ CREATE TABLE map_migration_reports (
 
 ## 8. 迁移与实施顺序
 
-> 当前 `CURRENT_SCHEMA_VERSION = 24`。**v24 是既有缺陷修复**（把增量列正式写进 `createSql`，见 §8.13），不属于蓝图增量。
+> 本节写就时 `CURRENT_SCHEMA_VERSION = 24`（当前为 **36**，见 §8.2.1）。**v24 是既有缺陷修复**（把增量列正式写进 `createSql`，见 §8.13），不属于蓝图增量。
 > 下列 S1–S8 对应 v25–v32。
 > **通用前置**：S0 备份完成且校验通过；迁移默认在启动期单事务内执行；`foreign_key_check` 必须为 0。
 >
@@ -3479,7 +3501,7 @@ S 编号是**迁移批次编号**，不是发布顺序。交付顺序按下列�
 
 **状态：已实施（`database.ts` `migrate()`，2026-11-07 复核 HEAD）。**
 
-- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 35，`database.ts:746`）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
+- 判定：`schema_version` 表记录值 `> CURRENT_SCHEMA_VERSION`（当前 **36**，`database.ts:758`）时，在**任何重建/增量迁移之前**抛 `DB_SCHEMA_TOO_NEW`，消息包含记录版本、支持上限、库文件路径与处置建议；连接随关闭，不进入预检/回填。
 - 动机：旧代码的慢路径会用当前版本的 `createSql` 重建表，`restoreFromBackup` 只恢复**共有列**，新版本写入的列/约束会被静默丢弃，随后 `schema_version` 被回写成更低版本——不可逆退化。v33 的 CHECK 曾因 `test` 行恢复失败偶然挡住，不能作为防线。
 - 不做启动期自动"降级"：降级不是默认行为；如确需把更高版本的库交给旧版本使用，必须人工恢复备份并留下可查询记录（本版本不提供降级入口）。
 - 结构检测维度（2026-11-07，`rebuildTableIfNeeded` + `reconcileSchemaIndexes`）：慢路径重建判定比较列集合/类型/CHECK/**内联 UNIQUE**；独立 `CREATE UNIQUE INDEX` 定义由索引对账比对，变化时先 `DROP INDEX` 再建。两类 UNIQUE 都进入 `schema-checksum`（内联随 `createSql`、独立随 `INDEX_SQLS`），因此**不升 `CURRENT_SCHEMA_VERSION` 也不会漏掉已有库**——任一 DDL 变化都会让 checksum 失配并强制走慢路径。
@@ -4161,7 +4183,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | 新增 `test-flow` 节点类型 | 与现有 `test-suite` 语义重叠，且会再次触发 `nodes.type` CHECK 重建；用 suite 表达 flow |
 | MVP 不做 worktree | 与 TestExecutor 隔离执行原则冲突；只在 agent 编排阶段采纳共享工作区 + 写闸 |
 | review gate 直接计入"已验证" | LLM 验收 + 人工确认不能等价于"测试通过 + 代码 hash"；按 §6.7 降级映射到 E2/E4 |
-| 以"已拆除 Yjs"为前提裁剪 P6 / 改 RequestQueue | **Yjs 已实施单向只读（`cc749ce`）**：写回已断开、WS 写消息 1008 拒绝、doc 变更不落库；SQLite 权威列不变（§2.2.1）。完全移除不在本期。P6 验收改为"默认启动下写消息被拒、doc 变更不落库"，SQLite 镜像验证并行。外部拆除方案本文不背书也不反驳。RequestQueue 由 `WorkItemService` 队列取代（§12.7） |
+| 以"已拆除 Yjs"为前提裁剪 P6 / 改 RequestQueue | **Yjs 已实施单向只读（`cc749ce`）**：写回已断开、WS 写消息 1008 拒绝、doc 变更不落库；SQLite 权威列不变（§2.2.1）。完全移除不在本期。P6 验收改为"默认启动下写消息被拒、doc 变更不落库"，SQLite 镜像验证并行。外部拆除方案本文不背书也不反驳。`RequestQueue` 已删除（`80075e7`），派发由 `WorkItemService` 队列承担（§12.7） |
 | Tier 2 降级执行写步骤 | 无写前审批回调就无法满足"不绕过审批网关"；Tier 2 只能只读或排队等人工会话，`degraded` 只用于手动会话（§5.9.5） |
 | 运行记录只放 artifacts、不进图 | 我们本就没有把 run 做成图节点（`test_runs`/`test_results` 是表），方向一致，无需改 |
 
@@ -4218,7 +4240,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | 项 | 结论 | 说明 |
 |---|---|---|
 | Yjs | 依赖/表/schema **不删不改**；单向只读 | **已实施（`cc749ce` + `987c226`）**：写回模块删除、WS 写消息 1008 拒绝、doc 变更只落 `yjs_snapshots`；**1236 默认不监听已实施（`987c226`）**（`yjs-realtime.ts` 按 `BIZGRAPH_YJS_WS` 判定，`ipc-handlers.ts:348` 无 options，§2.2.1）。完全移除不在本期；P6 验收＝"默认启动下 `1236` 不监听、doc 变更不落库"，SQLite 镜像并行 |
-| RequestQueue 删除 | 记录不改；由 `WorkItemService` 队列取代 | 删除动作随 **L3** 落地（P2 = L2，不得写成随 P2 删除），不在本文改源码 |
+| RequestQueue 删除 | 记录不改；由 `WorkItemService` 队列取代 | **已删除**（2026-11-09，`80075e7`）；D-07 维持 fail-fast，不引入队列 |
 | 进化三层与 `review_queue` | L3+ 非本期 | 不写入 L1/L2 范围 |
 | `ContextBundle` 与尾块协议 | 不在本文定义 | 交叉引用 `agent-architecture.md`（§0.1） |
 | planner 主路径 | 保持现有路径 | 但明确：模型做候选选择时输出仍需 schema 校验 + 修复 1 轮（§5.3） |
