@@ -2,8 +2,8 @@
  * EvidenceService（S6a,session-map 蓝图 §3.2/§3.5/§3.7.1 施工细则）
  *
  * 唯一合法写入方矩阵（违反即拒绝）：
- *  - E1 人（节点编辑/备注）——Agent 只能写 evidence_suggestions（L1 未建,即 Agent
- *    在 L1 不产任何证据）
+ *  - E1 人（节点/证据面板手写判断）——Agent 不得起草 E1（判断走文本,不进证据）;
+ *    人工直写经 `createHumanJudgment`,固定 `actor/produced_by='human'`
  *  - E2 产物/变更清单（L1：human/test_executor/system;agent 直写拒绝——候选经接受
  *    的转换属 S6b evidence_suggestions 流程）
  *  - E3 TestExecutor 独占：commit 绑定 + code_dirty=0 + work_run_id + ref 内
@@ -105,6 +105,23 @@ export interface CreateEvidenceInput {
   renewedFromEvidenceId?: string
 }
 
+/**
+ * E1 人工判断直写入参（G3-10）。
+ *
+ * 只收「谁在看哪个对象、写了什么判断」：等级固定 E1、写入方固定 human，
+ * 不接受调用方自报 actor/producedBy。`ref_json` 指向被判断对象（节点/证据/任务等）；
+ * 可选 `idempotencyKey` 落到 `ref_json.idempotencyKey`，同一判断重复提交返回既有行。
+ */
+export interface CreateHumanJudgmentInput {
+  graphId: string
+  nodeEntityKey: string
+  nodeId?: string
+  projectPath?: string
+  summary: string
+  ref: unknown
+  idempotencyKey?: string
+}
+
 export class EvidenceService {
   constructor(private readonly db: BetterSqlite3.Database) {}
 
@@ -139,7 +156,7 @@ export class EvidenceService {
 
     // ---- 写入方矩阵（§3.7.1）----
     if (input.level === 'E1' && actor !== 'human') {
-      throw new EvidenceValidationError('E1 只能由人写入;Agent 走 evidence_suggestions（S6b）')
+      throw new EvidenceValidationError('E1 只能由人写入;agent 不得起草 E1（判断走文本,不进证据）')
     }
     if (input.level === 'E2' && actor === 'agent') {
       throw new EvidenceValidationError('E2 的 agent 产物须先经 evidence_suggestions 接受（S6b）,L1 内 agent 不得直写')
@@ -269,6 +286,54 @@ export class EvidenceService {
     return result
   }
 
+  /**
+   * E1 人工判断直写（G3-10）。
+   *
+   * 与 `create()` 的区别：等级/写入方由服务端固定，调用方不能自报 actor；
+   * 校验沿用 E1 既有口径（`ref_json` 非空、`summary` 必填），不新增列。
+   * 幂等键放 `ref_json.idempotencyKey`，同图同节点同键重复提交返回既有行，
+   * 不产生第二条 E1（E1 没有部分唯一索引，靠服务层 + json_extract 收口）。
+   */
+  createHumanJudgment(input: CreateHumanJudgmentInput): { row: NodeEvidenceRow; reused: boolean } {
+    if (!input.summary || input.summary.trim() === '') {
+      throw new EvidenceValidationError('E1 缺 summary（§3.7.1：人工备注必填）')
+    }
+    if (input.ref === undefined || input.ref === null) {
+      throw new EvidenceValidationError('证据缺 ref_json（§3.7.1）')
+    }
+    const key = input.idempotencyKey?.trim()
+    let ref = input.ref
+    if (key) {
+      const refObject =
+        typeof input.ref === 'object' && !Array.isArray(input.ref)
+          ? (input.ref as Record<string, unknown>)
+          : { ref: input.ref }
+      ref = { ...refObject, idempotencyKey: key }
+      const existing = this.db
+        .prepare(
+          `SELECT * FROM node_evidence
+            WHERE graph_id = ? AND node_entity_key = ? AND evidence_level = 'E1'
+              AND json_extract(ref_json, '$.idempotencyKey') = ?
+            ORDER BY created_at DESC, id ASC LIMIT 1`,
+        )
+        .get(input.graphId, input.nodeEntityKey, key) as NodeEvidenceRow | undefined
+      if (existing) return { row: existing, reused: true }
+    }
+
+    return this.create({
+      level: 'E1',
+      graphId: input.graphId,
+      nodeEntityKey: input.nodeEntityKey,
+      nodeId: input.nodeId,
+      projectPath: input.projectPath,
+      evidenceType: 'human_confirm',
+      ref,
+      summary: input.summary.trim(),
+      actor: 'human',
+      producedBy: 'human',
+    })
+  }
+
   /** 撤销（必填 reason;不删行）。撤销后调度重算（verified 消失）。 */
   revoke(id: string, revokedBy: string, revokeReason: string): NodeEvidenceRow {
     if (!revokeReason || revokeReason.trim() === '') {
@@ -377,7 +442,14 @@ export interface SuggestEvidenceInput {
   producedByRunId?: string
 }
 
-const SUGGESTION_LEVELS: EvidenceLevel[] = ['E1', 'E2', 'E3', 'E4']
+/**
+ * 建议可提议的等级：**不含 E1**。
+ *
+ * E1 是人的判断信号，只能由人工经 `EvidenceService.createHumanJudgment` 直写；
+ * agent 想表达判断走文本，不进入证据/建议流。库层 CHECK 仍保留 E1 只为兼容
+ * 历史行（不为删值做 v38 迁移），写入侧由服务层收口。
+ */
+const SUGGESTION_LEVELS: EvidenceLevel[] = ['E2', 'E3', 'E4']
 const EVIDENCE_TYPES: NodeEvidenceRow['evidence_type'][] = [
   'changed_files', 'commit', 'test_run', 'session_turn',
   'artifact', 'human_confirm', 'runtime_observation',
@@ -527,6 +599,11 @@ export class EvidenceSuggestionService {
         if (suggestion.suggested_level === 'E3') {
           throw new EvidenceValidationError('E3 只能由 TestExecutor 写入（§3.7.1），建议不允许代为升级')
         }
+        // G3-10：E1 只能由人工直写（`createHumanJudgment`）。历史库可能残留 E1 建议，
+        // 接受会把「agent 推断」洗成「人的判断」，故在此显式拒绝。
+        if (suggestion.suggested_level === 'E1') {
+          throw new EvidenceValidationError('E1 只能由人工判断直写（G3-10），建议不得代为升级')
+        }
 
         const now = new Date().toISOString()
         const updated = this.db
@@ -594,8 +671,9 @@ export class EvidenceSuggestionService {
     const str = (value: unknown): string | undefined =>
       typeof value === 'string' && value !== '' ? value : undefined
     const level = suggestion.suggested_level
+    // E1 已被 `SUGGESTION_LEVELS` 与 `accept()` 双重拦住，只剩 E4 由人工签收。
     const producedBy: Actor =
-      level === 'E1' || level === 'E4'
+      level === 'E4'
         ? 'human'
         : suggestion.produced_by_run_id
           ? 'agent'

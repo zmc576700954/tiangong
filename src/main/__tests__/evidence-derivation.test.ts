@@ -136,7 +136,7 @@ describe('EvidenceService 写入方矩阵（§3.7.1）', () => {
 
   afterEach(() => cancelPendingRecomputes())
 
-  it('E1 人写 ok;agent 写拒绝（走 evidence_suggestions,S6b）', () => {
+  it('E1 人写 ok;agent 不得起草 E1（判断走文本,不进证据）', () => {
     const row = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: { note: '计划备注' }, summary: '计划备注', actor: 'human', producedBy: 'human' }).row
     expect(row.evidence_level).toBe('E1')
     expect(() => svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: {}, summary: 'x', actor: 'agent' })).toThrow(EvidenceValidationError)

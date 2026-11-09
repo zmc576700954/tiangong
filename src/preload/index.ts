@@ -237,6 +237,8 @@ const exposedChannels: (keyof IpcApi)[] = [
   // G1-10 证据建议接受/驳回（写通道）：本地 renderer 人工裁决，必须带 resolvedBy。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',
+  // G3-10 E1 人工判断直写（写通道）：等级/写入方由主进程固定，renderer 入口归 G8。
+  'map:evidence:e1:create',
 ]
 
 // Build IPC API object
@@ -265,6 +267,8 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   // 证据建议裁决：不存在/已驳回/已接受需要结构化区分，不能让 renderer 只看到模糊失败。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',
+  // E1 人工判断直写：缺 summary/ref、端点不可解析需要结构化区分。
+  'map:evidence:e1:create',
 ])
 
 function toIpcError(err: unknown): IpcErrorPayload {

@@ -195,6 +195,48 @@ export function registerMapHandlers(
     return row
   })
 
+  /**
+   * E1 人工判断直写（写通道，G3-10）。
+   *
+   * 只接受「节点 + 判断文本 + 被判断对象引用」，等级与写入方由服务端固定为
+   * E1/human；不接收 `actor`/`producedBy`，避免 renderer 自报身份。可选
+   * `idempotencyKey` 保证同一次判断重复提交不产生第二条证据。renderer 入口归 G8。
+   */
+  typedHandle('map:evidence:e1:create', async (_, data: unknown) => {
+    const d = (data ?? {}) as {
+      graphId?: unknown
+      nodeEntityKey?: unknown
+      nodeId?: unknown
+      projectPath?: unknown
+      summary?: unknown
+      ref?: unknown
+      idempotencyKey?: unknown
+    }
+    if (typeof d.graphId !== 'string' || d.graphId === '') throw new Error('graphId is required')
+    if (typeof d.nodeEntityKey !== 'string' || d.nodeEntityKey === '') {
+      throw new Error('nodeEntityKey is required')
+    }
+    if (typeof d.summary !== 'string' || d.summary.trim() === '') throw new Error('summary is required')
+    if (d.ref === undefined || d.ref === null) throw new Error('ref is required')
+    if (d.nodeId !== undefined && typeof d.nodeId !== 'string') throw new Error('nodeId must be a string')
+    if (d.projectPath !== undefined && typeof d.projectPath !== 'string') {
+      throw new Error('projectPath must be a string')
+    }
+    if (d.idempotencyKey !== undefined && typeof d.idempotencyKey !== 'string') {
+      throw new Error('idempotencyKey must be a string')
+    }
+    const result = evidence.createHumanJudgment({
+      graphId: d.graphId,
+      nodeEntityKey: d.nodeEntityKey,
+      nodeId: d.nodeId,
+      projectPath: d.projectPath,
+      summary: d.summary,
+      ref: d.ref,
+      idempotencyKey: d.idempotencyKey,
+    })
+    return { evidenceId: result.row.id, reused: result.reused, row: result.row }
+  })
+
   // ---- work item 生命周期（§9.2:workitem:*）----
   /**
    * item 下钻的最小闭包：item 本体 + 当前 revision 的 steps + 该 item 的全部 runs。

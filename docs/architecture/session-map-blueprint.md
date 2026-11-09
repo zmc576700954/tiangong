@@ -26,20 +26,20 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **72** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8，W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界） |
-| 已批准未实施 | **14** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **73** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界） |
+| 已批准未实施 | **13** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **33** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 12 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 72+14+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 73+13+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
 
-> 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（agent 证据写入）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
+> 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（72）
+### I.1.1 已实施（73）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
-- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
+- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
@@ -48,11 +48,10 @@
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（14）
+### I.1.2 已批准未实施（13）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描。
-- **编排执行**：G3-10 agent 证据写入面。
-- **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-5 E4 扫描（=G1-9）。
+- **证据体系**：G5-5 E4 扫描（=G1-9）。
 - **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
 - **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-10 旧路径时间线。
 - **迁移与运维**：G9-13 Windows 路径。
@@ -67,7 +66,7 @@
 - **证据体系**：G5-10 §3.6 项目进度。
 - **Agent 运行时**：G6-17 同 uid 不在防御范围。
 - **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
-- **界面与交互**：G8-3 C1–C4、G8-4 提案 UI、G8-5 任务卡深度、G8-6 renderer 入口（=G3-3）。
+- **界面与交互**：G8-3 C1–C4、G8-4 提案 UI、G8-5 任务卡深度、G8-6 renderer 入口（=G3-3）；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：G9-10 worktree 清理。
 - **待裁决清单**：G11-10 tree-hash 等级。
 
@@ -83,7 +82,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 23 个编号，去重后 17 条；重复关系见上方清单。
 
-## I.2 已实施清单（70 条，按主题）
+## I.2 已实施清单（71 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -103,7 +102,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G1-16 | 快照恢复不写 SQLite、不重算 `entity_key` | `cc749ce`；`docs/architecture/session-map-blueprint.md` §2.2.1 |
 | G1-10 | `evidence_suggestions` 建表（v37）；建议写入去重；接受与 `node_evidence` 同事务转写，重复接受幂等 | `schema.ts`（`MAP_S6A_TABLE_SCHEMAS`）、`evidence-service.ts`（`EvidenceSuggestionService`）、`evidence-suggestions.test.ts` |
 
-### I.2.2 编排执行（9）
+### I.2.2 编排执行（10）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -116,6 +115,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G3-12 | `GateRecheck` 接入；引擎不可用时 `incomplete + gate_engine_unavailable` | `work-execution-service.ts:463`、`b6f3735` |
 | G3-14 | D2 验收执行器 command / file_check / manual，逐条结果落 `map_migration_reports` | `acceptance-executor.ts`、`c03ee87`/`4010` |
 | G3-15 | D1 计划确认、D3 按步骤调度、D7 重启对账、D9 人工确认 | `e4398e7`、`94125bd`、`work-execution-service.ts:177,308` |
+| G3-10 / G5-3 | E1 人工判断直写：`createHumanJudgment` 固定 E1/human，`map:evidence:e1:create` IPC 写通道，`idempotencyKey` 落 `ref_json` 幂等；建议等级移除 E1、历史 E1 建议拒绝接受；renderer 入口归 G8 | `evidence-service.ts`（`createHumanJudgment`、`SUGGESTION_LEVELS`）、`ipc/map.ts`、`evidence-suggestions.test.ts` |
 
 ### I.2.3 测试体系（6）
 
@@ -222,16 +222,17 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **施工注记（2026-11-08，W1 完成）**：G1-5/G1-6 经代码复核**确已实施**，本包只纠正状态词、未改代码。G1-7 按 §5.9.7 **分散落点**接线：`outputs → work_runs.outputs_json`、`outputParse → work_runs.output_parse`、`partial → work_runs.partial_output_ref`、文件变更 → `change_sets.files_json`、`usage` 仍由 runtime 写 `agent_usage`；**不改** `agent_turns.output_json`，**不重复写** usage。生产端接在 `agent-step-runner.ts` 的 `complete/fail/timeout` 透传（`parseStepOutputs` L175、`runOutputData` L207、`buildPartial` L471、`recordChangeHead` L443），取基/取头经新增 `workspace-change-stats.ts`；无 schema 时不伪造 outputs、不写空对象。G1-8 采**方案 B**：父任务处于 `draft/awaiting_confirm/queued/running` 时可被子任务全终态带进终态，`needs_human/blocked/needs_input/paused/interrupted` 不覆盖；聚合口径 `failed > cancelled > done`（`superseded` 按 cancelled 计）；触发点为 `transition()` 终态后与 `convergeIfTerminal()` 收口后，均调用 `convergeParentChain` 向父链上推（`seen` 防环、条件 UPDATE 幂等）。**父任务 gate 被绕过是方案 B 的有意行为，不是缺陷**；G1-13 在 WS `getDoc` 走 `getOrLoadDoc`，装载前先校验 `graphs` 行存在，避免为不存在的图造孤儿 doc。G1-11 维持**仅建议**：真实库 `agent_turns` 0 行、历史证据库各自指存在节点，无伪节点证据，故不动 `node_id` 约束。本包**不升 schema**（`CURRENT_SCHEMA_VERSION` 仍为 35），**不提交 git**。
 
 ### W2 证据闭环
-- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[已实施]` `evidence_suggestions`、G3-10 `[批准]` agent 证据写入面、G5-8 `[已实施]` 建议转证据事务/去重、G5-9 `[已实施]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
-- 目标：agent 回合产生的候选证据可被建议、可被人工接受、可复扫失效；E1/E4 有 IPC 写通道。
+- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[已实施]` `evidence_suggestions`、G3-10/G5-3 `[已实施]` E1 人工判断直写通道、G5-8 `[已实施]` 建议转证据事务/去重、G5-9 `[已实施]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
+- 目标：agent 回合产生的候选证据可被建议、可被人工接受、可复扫失效；E1 由人工直写、E4 有 IPC 写通道。
 - 涉及文件与数据/接口变更：`src/main/map/evidence-service.ts`、`src/main/ipc/map.ts`、`src/main/map/evidence-derivation.ts`；新增 `evidence_suggestions` 表与迁移；新增 `evidence:suggest` / `evidence:accept` / `evidence:scan` 通道。
 - 实施步骤：① 建 `evidence_suggestions` 表 + CHECK；② 建议写入去重键（node+kind+source_ref）；③ 接受时事务内转 `node_evidence` 并写审计；④ E4 增加内容哈希 `content_hash` 与复扫任务；⑤ IPC 补写通道与参数校验。
 - 验收标准：同一建议重复写入不产生第二行；接受后证据可见且 E4 覆盖变化触发 `stale`；IPC 未授权调用失败并留痕。
 - 依赖与建议顺序：依赖 W1 的 turn 输出；E4 扫描建议最后做（需要哈希基线字段）。
 - 风险与回滚：E4 自动降级误伤人工签收 → 扫描只标 `stale` 不自动删除；新表迁移可安全保留。
 - **施工注记（2026-11-08，W2 首批：`node_evidence` 写入面）**：已落两条写方——① agent 回合完成（机器验收通过或仅剩 manual 待确认）写 E2 `session_turn`，`current_hash` 取**执行后项目工作区**的 `HEAD^{tree}` + 未提交文件 sha256 聚合值，取不到指纹则不写（不写 null、不挪用别处哈希）；② 人工验收全部收口时写 E4 `human_confirm`，`current_hash` 对得上产物文件实际 sha256（单文件直接取该文件哈希；多文件取逐文件哈希清单的聚合值，逐文件 sha256 另落 `basis_ref_json`）。两条路径仍只经 `EvidenceService.create`；写入在 step/run 终态事务提交之后，失败只落 `map_migration_reports`（`kind='integrity_check'`、`stage='evidence_write:<stepId>'`）诊断，不回退已完成的 step，（2026-11-09 起按 C 口径分流：机器全过直写、manual 待确认走建议，见下条）因此**不新增表/列/索引，`CURRENT_SCHEMA_VERSION` 仍为 35**。
-- **与设计的两处差异（按代码事实记录）**：①（**已按 C 口径收口，2026-11-09**）§3.7.1 曾要求 agent 候选一律经 `evidence_suggestions` 接受后转 `node_evidence`；现行口径按验收性质分流——**全部条目机器可判定且通过**（command/file_check，manual 0 条）时直接写 E2、`produced_by='system'`，因为此时结论来自机器实际执行而非 agent 自称，`ref_json.acceptance` 记录逐条结果可复核；**存在 manual 待确认**时只写建议，人工接受才转证据；② 本文档所称“E4 禁止代码 hash”在代码里仅指 `code_version`，`current_hash` 不在 E4 的禁止列内，故 E4 写产物哈希不违反约束。覆盖条目 G3-10/G5-3 **仍为「已批准未实施」**（E1 写通道、建议与复扫均未建，不按整体升格）。
-- **施工注记（2026-11-09，G1-10/G5-4/G5-8 收口，schema v37）**：`evidence_suggestions` 按 §7.2 DDL **逐字**建表（`suggested_level` E1–E4 CHECK、`status` pending/accepted/dismissed CHECK、`confidence` DEFAULT 0.5），索引 `idx_evidence_suggestions_status(graph_id,status)`；状态域与列不增不减。服务层新增 `EvidenceSuggestionService`：① **去重**按「节点 + evidence_type + 来源」——有 run 用 `produced_by_run_id`，无 run 用 `ref_json`，只保留一条 `pending`（不新增蓝图外唯一索引）；② **接受**在 `db.transaction` 内先条件更新建议（`WHERE status='pending'`）再调用 `EvidenceService.create`，任一步失败整体回滚；证据 `produced_by='agent'`（来源是 agent 回合）、`actor='human'`（裁决人），`ref_json` 追加 `suggestionId`，重复接受按该字段反查既有证据返回 `reused=true`，不写第二行；③ **驳回**只改状态，重复驳回幂等；④ **E3 建议拒绝接受**（只能 TestExecutor 写，禁止人工点击洗成可复现证据）。Agent 回合按 **C 口径分流**（`agent-step-runner.ts` 的 `recordTurnEvidence`）：**机器全过**（`succeeded` 且每条均为 command/file_check、outcome=pass、manual 0 条）→ 直写 E2 `node_evidence`（`produced_by='system'`，`ref_json.acceptance` 记录逐条验收结果与执行指纹）；**含 manual 待确认**（`needs_input`）→ 只写 `pending` 建议，人工接受才转证据；**验收失败/未注入验收/缺节点或项目/取不到执行指纹** → 什么都不写。IPC 只开必要通道：只读 `map:evidence:suggestions:list`，写 `map:evidence:suggestion:accept` / `:dismiss`；幂等键均为建议 id，`resolvedBy` 必填作为审计主体，仅 preload 白名单内的本地 renderer 可调用；蓝图原列的 `evidence:suggest` 无真实调用方（唯一来源是 agent 回合内直写服务）、`evidence:scan` 归 G1-9 未实施，故**不开空壳通道**。迁移为纯建表（`CURRENT_SCHEMA_VERSION` 36 → 37，无数据迁移），由 `database-migration.test.ts` 的 v33 升链用例断言表/索引存在、版本为 37；链路证据见 `evidence-suggestions.test.ts` 与 `agent-step-runner.test.ts`。G3-10/G5-3 仍为「已批准未实施」（E1 写通道、E4 复扫未建），不按整体升格。
+- **与设计的两处差异（按代码事实记录）**：①（**已按 C 口径收口，2026-11-09**）§3.7.1 曾要求 agent 候选一律经 `evidence_suggestions` 接受后转 `node_evidence`；现行口径按验收性质分流——**全部条目机器可判定且通过**（command/file_check，manual 0 条）时直接写 E2、`produced_by='system'`，因为此时结论来自机器实际执行而非 agent 自称，`ref_json.acceptance` 记录逐条结果可复核；**存在 manual 待确认**时只写建议，人工接受才转证据；② 本文档所称“E4 禁止代码 hash”在代码里仅指 `code_version`，`current_hash` 不在 E4 的禁止列内，故 E4 写产物哈希不违反约束。覆盖条目 G3-10/G5-3 已于 2026-11-09 按 E1 口径收口（见下条注记）。
+- **施工注记（2026-11-09，G1-10/G5-4/G5-8 收口，schema v37）**：`evidence_suggestions` 按 §7.2 DDL **逐字**建表（`suggested_level` E1–E4 CHECK、`status` pending/accepted/dismissed CHECK、`confidence` DEFAULT 0.5），索引 `idx_evidence_suggestions_status(graph_id,status)`；状态域与列不增不减。服务层新增 `EvidenceSuggestionService`：① **去重**按「节点 + evidence_type + 来源」——有 run 用 `produced_by_run_id`，无 run 用 `ref_json`，只保留一条 `pending`（不新增蓝图外唯一索引）；② **接受**在 `db.transaction` 内先条件更新建议（`WHERE status='pending'`）再调用 `EvidenceService.create`，任一步失败整体回滚；证据 `produced_by='agent'`（来源是 agent 回合）、`actor='human'`（裁决人），`ref_json` 追加 `suggestionId`，重复接受按该字段反查既有证据返回 `reused=true`，不写第二行；③ **驳回**只改状态，重复驳回幂等；④ **E3 建议拒绝接受**（只能 TestExecutor 写，禁止人工点击洗成可复现证据）。Agent 回合按 **C 口径分流**（`agent-step-runner.ts` 的 `recordTurnEvidence`）：**机器全过**（`succeeded` 且每条均为 command/file_check、outcome=pass、manual 0 条）→ 直写 E2 `node_evidence`（`produced_by='system'`，`ref_json.acceptance` 记录逐条验收结果与执行指纹）；**含 manual 待确认**（`needs_input`）→ 只写 `pending` 建议，人工接受才转证据；**验收失败/未注入验收/缺节点或项目/取不到执行指纹** → 什么都不写。IPC 只开必要通道：只读 `map:evidence:suggestions:list`，写 `map:evidence:suggestion:accept` / `:dismiss`；幂等键均为建议 id，`resolvedBy` 必填作为审计主体，仅 preload 白名单内的本地 renderer 可调用；蓝图原列的 `evidence:suggest` 无真实调用方（唯一来源是 agent 回合内直写服务）、`evidence:scan` 归 G1-9 未实施，故**不开空壳通道**。迁移为纯建表（`CURRENT_SCHEMA_VERSION` 36 → 37，无数据迁移），由 `database-migration.test.ts` 的 v33 升链用例断言表/索引存在、版本为 37；链路证据见 `evidence-suggestions.test.ts` 与 `agent-step-runner.test.ts`。G3-10/G5-3 的 E1 口径见下条注记（2026-11-09 收口）。
+- **施工注记（2026-11-09，G3-10/G5-3 收口，E1 口径裁决）**：用户裁决 E1 只能来自人，agent 不得起草 E1（判断走文本，不进证据/建议）。落地：① `SUGGESTION_LEVELS` 移除 E1，agent 路径只产 E2 建议（`agent-step-runner.ts` 本就只建议 E2）；② `accept()` 显式拒绝历史 E1 建议，避免人工点击把 agent 推断洗成 E1；`toEvidenceInput` 的 `produced_by='human'` 分支只保留 E4；③ 新增 `EvidenceService.createHumanJudgment`：等级固定 E1、`actor/produced_by='human'`，沿用既有校验（`ref_json` 非空、`summary` 必填），`ref_json` 指向被判断对象，不新增列；可选 `idempotencyKey` 存 `ref_json.idempotencyKey`，按 `json_extract` 反查同图同节点既有 E1 返回 `reused=true`；④ IPC 新增写通道 `map:evidence:e1:create`（`ipc/map.ts` + `shared/types/ipc.ts` + preload 白名单 + 结构化错误），只收 `graphId/nodeEntityKey/nodeId?/projectPath?/summary/ref/idempotencyKey?`，不接收 `actor/producedBy`，仅本地 renderer 可调；⑤ **renderer 入口（节点/证据面板手写 E1）归 G8**，本包不做，数据/服务侧已就绪；⑥ 库层 `suggested_level` CHECK 仍含 E1，仅用于兼容历史行，写入侧由服务层收口，不做 v38 迁移。测试：`evidence-suggestions.test.ts` 新增 4 例（拒绝建议 E1、历史 E1 建议拒绝接受、人工直写字段固定与必填、idempotencyKey 幂等）。G3-10/G5-3 状态改为「已实施」，计数 73/13。
 - **施工注记（2026-11-09，G5-9 收口）**：`EvidenceService.create` 在库层 CHECK 之外补齐应用层组合校验：`ref_json` 缺失（含显式 `null`）拒绝；E1 必填 `summary`；E1/E2 拒绝混入 `code_version/code_dirty/signed_by/coverage`；E3 拒绝 `signed_by/coverage`；E4 拒绝 `code_version/code_dirty`（`current_hash` 仍作产物内容绑定放行，与 `acceptance-confirmation.ts:313` 一致）。**未做**：§3.7.1 的「ref_json 每个引用可解析」（文件/提交/测试存在性）与 E4 `acceptance_ids` 是否真实存在于 work_item acceptance——这两项需跨表解析口径，仍留在 W2 后续。G5-9 状态由「已批准未实施」改为「已实施」，计数 65/21。
 
 ### W3 执行守卫与入口
@@ -521,18 +522,18 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5209**（2026-11-09 G10-1 A/B/C 组补全后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5211**（2026-11-09 G3-10 收口后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts` `CURRENT_SCHEMA_VERSION = 37`（v37 由 W2 G1-10 `evidence_suggestions` 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**72 已实施 / 14 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**73 已实施 / 13 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9 与 G3-10/G5-3；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
 - v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **5209**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 72 + 14 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **5211**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 73 + 13 + 33 + 0 = 119，加 17 条方向裁决 = 136。
 - 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；W5-D 的 **R3/U8/C13b 已实测、arm64 打包产物已验**；Codex/OpenCode 真机矩阵因缺官方凭据/CLI 未做（G6-14/G6-15/G6-16 仍为「已批准未实施」）。
 - 本次 v2.3 文档修订未改地图产品代码；W5-D 仅按 D-08 改 Codex 默认流式（保留 `BIZGRAPH_CODEX_STREAMING=0` 回退）。W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），W5-D 改动随本轮「打包解包显式化 + 构建后校验 + W5-D 收口」提交，**未 push**。
 
 ## I.7 裁决后建议施工顺序（按 W 包）
 
-> 口径：W 包对应 I.3 的 **19 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W2（G5-9，2026-11-09）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）、W7 核账（G7-6/G7-9，2026-11-09）已完成，其条目已转入 I.2 已实施。
+> 口径：W 包对应 I.3 的 **13 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W2（G5-9 与 G3-10，2026-11-09）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）、W7 核账（G7-6/G7-9，2026-11-09）已完成，其条目已转入 I.2 已实施。
 
 | W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
 |---|---|---|---|---|
@@ -540,7 +541,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W3 执行守卫 | G3-4…G3-9（已实施）、G3-10 | **已完成主体（`0df2234`）** | 无 | 6 条已转入 I.2；G3-10 归 W2 证据写入面 |
 | W4 测试体系 | G4-6…G4-9 | **已完成（`217fbbc`）** | 无 | 4 条已转入 I.2；流程测试三项仍为仅建议 |
 | W12 文档验收 | G10-1/2/3/11 | **进行中（G10-2/3 已收口）** | 可与 W1 并行 | 纯文档与用例；A1–A4 已登记，剩 G10-1 |
-| W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **主体完成（G1-10/G5-8/G5-9）** | 剩余写通道依赖 D-03 | `evidence_suggestions` + 接受同事务已落；G1-9 E4 复扫、G3-10 E1 写通道未做 |
+| W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **主体完成（G1-10/G5-8/G5-9/G3-10）** | 剩余写通道依赖 D-03 | `evidence_suggestions` + 接受同事务 + E1 人工直写已落；G1-9 E4 复扫未做 |
 | W5 Agent M2 | G6-1…G6-4、G6-12/13/18 | **已完成（`dc51b48` / `80075e7` + W5-D），Codex/OpenCode 真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由 + R3/打包/C13b 已闭环；G6-11/14/15/16 待环境（CLI/凭据/平台） |
 | W6 Agent 恢复/旧路径 | G6-5/7/11…G6-16 | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上 |
 | W7 审批覆盖 | G7-1…G7-10 | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
@@ -1739,7 +1740,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 
 | 等级 | 唯一合法写入方 | 必填字段 | 禁止 |
 |---|---|---|---|
-| E1 | 人（节点编辑/备注）；Agent 只能写 `evidence_suggestions` | `ref_json`、`summary` | Agent 直接写 `node_evidence` |
+| E1 | 人（节点/证据面板手写判断）；**agent 不得起草 E1**（判断走文本，不进证据） | `ref_json`、`summary` | Agent 写 E1 / 建议 E1 |
 | E2 | Agent（产物/变更清单候选，经接受）；TestExecutor（无 hash 测试事实）；编排层（本回合验收**全部条目机器可判定且通过**时直写，`produced_by='system'`） | `ref_json`、`evidence_type` | 冒充 E3；把无 hash 测试通过写成 E3 |
 | E3 | TestExecutor | `code_version`、`code_dirty=0`、`version_binding='commit'`、`reproducible=1`、`work_run_id`、`test_run_id` | 工作区 dirty 时产出 E3；无 `test_run_id` |
 | E4 | 本地用户 | `signed_by`、`signed_at`、`coverage_json`（非空且含 acceptance）、`version_binding='none'`、`code_version=NULL`、`reproducible=0` | Agent/后台任务代签；无覆盖范围；带代码 hash |
@@ -4285,7 +4286,8 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | `project:import:allowance:list` / `revoke` | 查看/撤销"记住的分支/副本放行"规则 | 必须可查看、可撤销；撤销留 `revoked_at` |
 | `map:node:timeline` | 节点会话时间线（分页） | 替代 `threadStore.nodeThreadMap` |
 | `map:node:evidence:list` | 节点证据列表（可点开引用） | 只读 |
-| `evidence:suggestion:list` / `accept` / `dismiss` | 证据建议处理 | `accept` 才写 `node_evidence` |
+| `evidence:suggestion:list` / `accept` / `dismiss` | 证据建议处理 | `accept` 才写 `node_evidence`；实际通道名见 `map:evidence:suggestions:list` / `map:evidence:suggestion:accept` / `:dismiss` |
+| `map:evidence:e1:create` | E1 人工判断直写（G3-10） | 等级/写入方由主进程固定 E1/human；`summary`/`ref` 必填；`idempotencyKey` 幂等；renderer 入口归 G8 |
 | `workitem:list` / `get` | 任务与 revision 查询 | 默认只返回 `is_current=1` |
 | `workitem:create` | 人工建任务（含单任务模式） | 走 gate 校验 |
 | `workitem:revise` | 执行中修订（增删合并拆分） | 强制产生新 revision |
@@ -4566,7 +4568,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5209 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5211 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -4594,7 +4596,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
 | A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5209 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5211 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -4604,9 +4606,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5209 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5211 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5209 行**（2026-11-09 复核） | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5211 行**（2026-11-09 复核） | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**

@@ -14,6 +14,7 @@ import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
 import { applyMapS5aSchema, applyMapS6aSchema } from '../map/schema'
 import {
+  EvidenceService,
   EvidenceSuggestionService,
   EvidenceValidationError,
   type EvidenceSuggestionRow,
@@ -22,6 +23,7 @@ import {
 describe('EvidenceSuggestionService（G1-10/G5-8）', () => {
   let db: BetterSqlite3.Database
   let service: EvidenceSuggestionService
+  let evidence: EvidenceService
 
   const RUN_ID = 'run-1'
   const REF = {
@@ -51,6 +53,7 @@ describe('EvidenceSuggestionService（G1-10/G5-8）', () => {
       "INSERT INTO nodes (id, type, title, graph_id, graph_type, entity_key, created_at, updated_at) VALUES ('node-1', 'feature', '节点', 'g1', 'dev', 'key-1', 'x', 'x')",
     ).run()
     service = new EvidenceSuggestionService(db)
+    evidence = new EvidenceService(db)
   })
 
   function suggestE2(overrides: Partial<Parameters<EvidenceSuggestionService['suggest']>[0]> = {}) {
@@ -159,5 +162,72 @@ describe('EvidenceSuggestionService（G1-10/G5-8）', () => {
     expect(() => suggestE2({ rationale: '  ' })).toThrow(/缺 rationale/)
     expect(() => suggestE2({ confidence: 1.5 })).toThrow(/confidence/)
     expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get() as { n: number }).n).toBe(0)
+  })
+
+  it('G3-10：agent 不得起草 E1 建议（服务层拒绝，不落行）', () => {
+    expect(() =>
+      service.suggest({
+        graphId: 'g1',
+        nodeEntityKey: 'key-1',
+        level: 'E1',
+        evidenceType: 'human_confirm',
+        ref: { note: 'agent 的判断' },
+        rationale: 'agent 认为已完成',
+        producedByRunId: RUN_ID,
+      }),
+    ).toThrow(/建议等级非法/)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_suggestions').get() as { n: number }).n).toBe(0)
+  })
+
+  it('G3-10：历史 E1 建议不得接受（防止把 agent 推断洗成人的判断）', () => {
+    db.prepare(
+      `INSERT INTO evidence_suggestions
+         (id, graph_id, node_entity_key, node_id, suggested_level, evidence_type,
+          ref_json, rationale, confidence, status, produced_by_run_id, created_at)
+       VALUES ('legacy-e1', 'g1', 'key-1', 'node-1', 'E1', 'human_confirm',
+               '{"note":"历史行"}', '历史 E1 建议', 0.5, 'pending', ?, 'x')`,
+    ).run(RUN_ID)
+    expect(() => service.accept('legacy-e1', 'local-user')).toThrow(/E1 只能由人工判断直写/)
+    expect(service.get('legacy-e1')?.status).toBe('pending')
+    expect((db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get() as { n: number }).n).toBe(0)
+  })
+
+  it('G3-10：人工直写 E1 固定 human 写入方、summary/ref 必填', () => {
+    const { row, reused } = evidence.createHumanJudgment({
+      graphId: 'g1',
+      nodeEntityKey: 'key-1',
+      summary: '  我认为这个节点已完成  ',
+      ref: { nodeId: 'node-1' },
+    })
+    expect(reused).toBe(false)
+    expect(row.evidence_level).toBe('E1')
+    expect(row.evidence_type).toBe('human_confirm')
+    expect(row.produced_by).toBe('human')
+    expect(row.summary).toBe('我认为这个节点已完成')
+    expect(JSON.parse(row.ref_json)).toEqual({ nodeId: 'node-1' })
+
+    expect(() => evidence.createHumanJudgment({ graphId: 'g1', nodeEntityKey: 'key-1', summary: '  ', ref: {} })).toThrow(/summary/)
+    expect(() =>
+      evidence.createHumanJudgment({ graphId: 'g1', nodeEntityKey: 'key-1', summary: 'x', ref: null }),
+    ).toThrow(/ref_json/)
+  })
+
+  it('G3-10：同一 idempotencyKey 重复直写返回既有 E1，不产生第二行', () => {
+    const input = {
+      graphId: 'g1',
+      nodeEntityKey: 'key-1',
+      summary: '同一次判断',
+      ref: { nodeId: 'node-1' },
+      idempotencyKey: 'judge-1',
+    }
+    const first = evidence.createHumanJudgment(input)
+    const second = evidence.createHumanJudgment(input)
+    expect(second.reused).toBe(true)
+    expect(second.row.id).toBe(first.row.id)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get() as { n: number }).n).toBe(1)
+
+    const other = evidence.createHumanJudgment({ ...input, idempotencyKey: 'judge-2' })
+    expect(other.reused).toBe(false)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM node_evidence').get() as { n: number }).n).toBe(2)
   })
 })

@@ -275,6 +275,20 @@ export interface IpcApi {
   }>
   /** 驳回建议（写通道）：只改状态、不写证据。幂等键 = 建议 id。 */
   'map:evidence:suggestion:dismiss': (data: { id: string; resolvedBy: string }) => Promise<Record<string, unknown>>
+  /**
+   * E1 人工判断直写（写通道，G3-10）：等级/写入方由主进程固定为 E1/human，
+   * 不接受调用方自报 `actor`/`producedBy`。`ref` 指向被判断对象；可选
+   * `idempotencyKey` 保证重复提交返回既有证据（`reused=true`）。renderer 入口归 G8。
+   */
+  'map:evidence:e1:create': (data: {
+    graphId: string
+    nodeEntityKey: string
+    nodeId?: string
+    projectPath?: string
+    summary: string
+    ref: unknown
+    idempotencyKey?: string
+  }) => Promise<{ evidenceId: string; reused: boolean; row: Record<string, unknown> }>
   /** item 下钻：item + 当前 revision 的 steps + 该 item 全部 runs */
   'workitem:get': (id: string) => Promise<{ item: Record<string, unknown>; steps: Array<Record<string, unknown>>; runs: Array<Record<string, unknown>> } | null>
   'workitem:list': (query: { graphId: string; anchorEntityKey?: string; includeHistory?: boolean; limit?: number }) => Promise<Array<Record<string, unknown>>>
