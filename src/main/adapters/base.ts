@@ -361,9 +361,17 @@ export abstract class BaseAdapter extends EventEmitter implements AgentAdapter {
     else this.rawStreamSessions.delete(sessionId)
   }
 
+  /**
+   * 子类默认模式（D-08）：未显式 set 时是否走流式原始事件。
+   * 默认返回 false；Codex 覆盖为「默认流式」，保留阻塞回退开关。
+   */
+  protected defaultRawStreamMode(_sessionId: string): boolean {
+    return false
+  }
+
   /** 子类据此选择双路径（旧 AgentOutput vs 新 Runtime 流式）。 */
   protected isRawStreamMode(sessionId: string): boolean {
-    return this.rawStreamSessions.has(sessionId)
+    return this.rawStreamSessions.has(sessionId) || this.defaultRawStreamMode(sessionId)
   }
 
   /** D5：受控 spawn 模式。开启后子类必须用自有进程组拉起 CLI 并上报真实 pid。 */

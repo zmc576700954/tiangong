@@ -13,12 +13,14 @@
     "dev": "vite",
     "build": "tsc && vite build && electron-builder",
     "build:win": "tsc && vite build && electron-builder --win",
-    "build:mac": "tsc && vite build && electron-builder --mac",
+    "build:mac": "tsc && vite build && electron-builder --mac && npm run verify:packaged",
     "build:linux": "tsc && vite build && electron-builder --linux",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:eval": "vitest run tests/eval",
+    "verify:packaged": "node scripts/verify-packaged-agent-runtime.mjs",
     "test:e2e": "playwright test -c tests/e2e/playwright.browser.config.ts",
     "test:e2e:electron": "playwright test -c tests/e2e/playwright.electron.config.ts",
     "build:win:appx": "electron-builder --win appx",
@@ -121,6 +123,19 @@
           "**/*"
         ]
       }
+    ],
+    "asar": {
+      "smartUnpack": false
+    },
+    "asarUnpack": [
+      "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+      "node_modules/@anthropic-ai/claude-agent-sdk-darwin-*/**",
+      "node_modules/@openai/codex-sdk/dist/index.js",
+      "node_modules/@openai/codex/package.json",
+      "node_modules/@openai/codex/bin/**",
+      "node_modules/@openai/codex-darwin-*/**",
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
+      "node_modules/onnxruntime-node/bin/**"
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

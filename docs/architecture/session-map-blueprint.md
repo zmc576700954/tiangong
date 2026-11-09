@@ -1,8 +1,8 @@
 # 会话地图与任务编排蓝图（Session Map Blueprint）— 定稿 v2.3
 
-> 版本：**v2.3（定稿 + W5 阶段 A/B/C 成果回写）**
+> 版本：**v2.3（定稿 + W5 阶段 A/B/C/D 成果回写）**
 > 生成时间：**2026-11-09（Asia/Shanghai）**
-> 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（45 → 61 条已实施，34 → 33 条仅建议），并记录 `RequestQueue` 已删除**。严格区分：裁决只定方向，**不产生施工授权**——33 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
+> 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（61 → 64 条已实施，25 → 22 条已批准未实施），并记录 `RequestQueue` 已删除、W5-D 评测 harness 与打包验证落地**。严格区分：裁决只定方向，**不产生施工授权**——33 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -26,34 +26,34 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **61** | 见 I.2，每条带代码证据 |
-| 已批准未实施 | **25** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **64** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18 |
+| 已批准未实施 | **22** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **33** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 12 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 61+25+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 64+22+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（agent 证据写入）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（61）
+### I.1.1 已实施（64）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记。
-- **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
+- **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
 - **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（25）
+### I.1.2 已批准未实施（22）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描、G1-10 `evidence_suggestions`。
 - **编排执行**：G3-10 agent 证据写入面。
 - **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-4 建议转证据（=G1-10）、G5-5 E4 扫描（=G1-9）、G5-8 §3.4 事务/去重、G5-9 §3.2 组合校验。
-- **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9、G6-12 R3、G6-13 打包、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异、G6-18 C13b。
+- **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
 - **审批与沙箱**：G7-1 写前审批覆盖边界、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-10 旧路径时间线。
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行，原 66 节标“有框架缺细节”，已更正为 16 已实施 + 50 缺细节）、G10-2 A1/A2/A9 用例、G10-3 A3/A4 边界、G10-11 CI（=G4-9）。
@@ -144,6 +144,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G6-2 | 事件 50ms 批写 + shutdown flush + `BIZGRAPH_EVENT_BATCH_WRITER` 灰度 | `dc51b48`、`event-batch-writer.ts`（含真实进程测试） |
 | G6-3 | `runNode` 生产写入 `agent_snapshots`（仅元数据 + promptHash）；恢复期只读、不写库 | `dc51b48`、`runtime.ts`（`writeTurnStartSnapshot`） |
 | G6-4 | 三文件落地（原「未建」）：`startup-reconciler.ts`、`locks/workspace-lease.ts`、`executors/acp-executor.ts` | `dc51b48`、`80075e7` |
+| G6-12 | R3 高事件量回放：10k `message.delta` 走 `EventBatchWriter` + WAL 文件库，断言全部落库、seq 连续、主进程阻塞有上限 | `tests/eval/agent-eval.test.ts`（2026-11-09 实测 PASS） |
+| G6-13 | 打包后 SDK/CLI 可用：asar 内 SDK 入口齐备，asar.unpacked 的 `claude` / `codex` 二进制可执行 | `tests/eval/agent-eval.test.ts`（U4，arm64 dir 产物实测） |
+| G6-18 | C13b：同名前缀 symlink 不跟随写入，已有普通文件不覆盖，只读目录拒绝 | `registry-hardening.test.ts`（4 条 C13b 用例，2026-11-09 12/12） |
 | G6-6 | 重启后陈旧审批统一 deny（不再承诺重推 + replay） | `startup-reconcile` 路径；`agent-architecture.md` §7.4 |
 | G6-19 | “五通道/模式库/进化/提案”归属校正在 Part I（不在 agent 文档） | `map-orchestration-blueprint.md:330-331` |
 | G6-20 | 12 适配器能力矩阵；Claude 写前审批 | `agent-architecture.md` §10/§17.1；`claude-code.ts:237-268` |
@@ -245,16 +248,17 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：CI 增加单测可能暴露存量失败 → 先以 `continue-on-error` 观测一周再卡门。
 
 ### W5 Agent M2 核心
-- 覆盖条目：G6-1 `[已实施]` M2 六项、G6-2 `[已实施]` 50ms 批写、G6-3 `[已实施]` 快照写入、G6-4 `[已实施]` 三文件落地（`dc51b48` / `80075e7`）、G6-11～G6-16 `[批准]` U1–U9/R3/打包/token/OpenCode/Codex、G6-18 `[批准]` C13b。
+- 覆盖条目：G6-1 `[已实施]` M2 六项、G6-2 `[已实施]` 50ms 批写、G6-3 `[已实施]` 快照写入、G6-4 `[已实施]` 三文件落地（`dc51b48` / `80075e7`）、G6-11 `[批准]` U1–U9（harness 已就位）、G6-12/G6-13 `[已实施]` R3/打包、G6-14～G6-16 `[批准]` token/OpenCode/Codex provider、G6-18 `[已实施]` C13b。
 - 目标：把 runtime 从“可用”推到“可恢复、可观测、可打包”。
 - 涉及文件与数据/接口变更：`src/main/agent/runtime/` 下新增 `executors/acp-executor.ts`、`startup-reconciler.ts`、`locks/workspace-lease.ts`（**均已落地**）；`request-queue.ts` **已删除**；事件写入批处理；`agent_snapshots` 增加生产写入方。
-- 实施步骤：① 先补 startup-reconciler 与 lease（已完成）；② 事件写 50ms 批处理并加 flush-on-exit（已完成）；③ 快照写入/读取（已完成）；④ chat 路径迁入 runtime（已完成，模块级验证）；⑤ 删 RequestQueue（已完成，`80075e7`）；⑥ 评测 harness；⑦ 打包与 Codex/OpenCode 真机矩阵（未做）。
+- 实施步骤：① 先补 startup-reconciler 与 lease（已完成）；② 事件写 50ms 批处理并加 flush-on-exit（已完成）；③ 快照写入/读取（已完成）；④ chat 路径迁入 runtime（已完成，模块级验证）；⑤ 删 RequestQueue（已完成，`80075e7`）；⑥ 评测 harness（已完成，`tests/eval`）；⑦ 打包验证（arm64 已完成）与 Codex/OpenCode 真机矩阵（缺 CLI/凭据，未做）。
 - 验收标准：崩溃恢复只依赖事件回放且可验证；批写不丢事件；快照可恢复一个 turn；打包后三后端可启动；U1–U9 有实测记录。
 - 依赖与建议顺序：W5 与 W1 独立，建议在 W8 审批覆盖之前做。
 - 风险与回滚：批写引入丢失窗口 → 保留同步 flush；`RequestQueue` 已于 2026-11-09 删除，无回滚对象（见下方 C2 注记）。
 - **施工注记（2026-11-08，阶段 A+B，提交 `dc51b48`，19 文件 +2356/−220）**：① `startup-reconciler.ts` 增加 `proveOwnership` 预检——不可证明归属时 `killCalls=0`，并把 Codex 旧路径 / 已跑 turn 但无句柄无 marker 的 session 标 `residual_risk='unconfirmed'`；② `locks/workspace-lease.ts` 以 `wx` + rename 原子抢占、TTL/stale、同进程重入，灰度键 `BIZGRAPH_WORKSPACE_LEASE`；③ `event-batch-writer.ts` 关键事件同步、delta 50ms 批写、shutdown flush，灰度键 `BIZGRAPH_EVENT_BATCH_WRITER`；④ `executing_at` 三阶段落在归一化事件写入点（`tool.requested` 写 `executing_at`、`approval.resolved allow` 写 `approved_at`，等待审批阶段不写）；⑤ `runNode` 生产写 `agent_snapshots`（仅元数据 + `promptHash`），恢复期只读；⑥ `applyRecoveryPlan` 支持 `terminalStatus`，`aborted` step 全部进 `stepOutcomes` 并回填 `unknown-needs-rerun`；planner 补 turn 级 `queued/waiting_approval/running/cancelling` 判定，保持只读。**证据口径：模块级已验证，端到端待真机。**
 - **施工注记（2026-11-09，阶段 C，提交 `80075e7`，11 文件 +1201/−330）**：① 新增 `runtime/executors/acp-executor.ts`，实现与 `adapter-driver.ts` 相同的 `BackendDriver` 契约（`initialize` / `session/new` / `session/prompt` / `session/cancel`），把 `session/update` 映射为归一化 `agent_events`，`session/request_permission` 交 `ApprovalGateway` 做写前强制审批；子进程同样 `context.registerProcess`，复用同一套回收链路，**没有第二套执行路径**。② chat 发送路径按能力集门控：`claude` / `acp` 走 kernel 并带写前审批；清单外后端、driver 未注册、Runtime 未装配、未挂载节点（D8 纯 thread）各自打显式 `[kernel-skip]` 日志回旧路径，**不静默降级**。③ 能力集 `KERNEL_APPROVAL_CAPABLE_BACKENDS = ['claude','acp']`。④ 删除 `request-queue.ts` 及其测试（D-07 fail-fast，无兼容壳）。**事实记录：当前仓库没有名为 `acp` 的 `AgentAdapter`，ACP driver 只在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效；因此今天可证的 chat kernel 路径仍是 `claude`。** 证据口径：模块级已验证（真实子进程假 ACP agent + `AgentManager.sendCommand` 路由单测），**端到端待真机**。
 - **修复注记（2026-11-09，阶段 C 真机演练收口，与本轮修复同一提交）**：① `AgentRuntime.markSessionClosed()` 在会话正常终止后把 `agent_sessions.status` 落为 `closed`（恢复账本无该会话行时 no-op，不凭空建行），由 `AgentManager.mirrorEnd` 统一调用，覆盖正常收尾/异常退出/批量终止；否则正常退出遗留的 `active` 行会被下一次启动 planner 兜底误判为 `orphaned`。② `planRecovery()` 的 `orphanedSessions` 改为按全部 `mark_session_orphaned` 计划去重计数，与 `applyRecoveryPlan` 实际落库数量一致；此前只统计「有非终态 turn 的会话」，漏计两个兜底循环标记的无 turn `active/starting` 会话。定向测试见 `src/main/agent/runtime/__tests__/recovery.test.ts`。**证据口径：模块级已验证 + 真机演练 C 复跑通过**（S1 退出前 `active` → 退出后 `closed`，下次启动不再判 orphaned；注入无 turn 的残留 `active` 会话 → `orphaned`；payload `orphanedSessions=1` / `reclaimedSessions.length=1` / `killCalls=0` / `residualRiskSessions=1`；事件 seq 无断裂、UNIQUE 错误 0；真实库 mtime/sha256 未变）。
+- **施工注记（2026-11-09，阶段 D：评测 harness / 打包 / 后端矩阵）**：① **评测 harness 已就位**：`tests/eval/agent-eval.test.ts` + `harness.ts`，`npm run test:eval`，U1–U9 与 R3 各自判 PASS/FAIL/SKIP 并落 `test-results/agent-eval-report.json`。实测 **R3/U3 PASS**：先确认 root `better-sqlite3` 在 Node ABI 115 下可加载（Electron ABI 130 已切回，不把绑定错误当性能结论），WAL 文件库回放 10,000 条 `message.delta` → 全部落库、seq 连续，**maxLag=2ms、p95 写入≈0ms、总时长=70ms**（阈值 500ms / 20s）；**U8 PASS**：真实子进程取到 pid + startedAt + 命令行，`proveOwnership` 命中 `startedAt+command`（范围 macOS 非打包）；**U4 PASS**（见②）。**U1/U2/U5/U9 SKIP**：分别缺 Codex 官方 provider key、`opencode` CLI、Anthropic 付费凭据/成本授权、root 第二 uid；**U6 SKIP**：RequestQueue 已删，不适用；**U7 SKIP**：非 macOS/打包环境取消用例未接。② **打包验证（G6-13）**：`npx tsc && npx vite build && npx electron-builder --mac dir --arm64` 真实产出 `release/mac-arm64/BizGraph.app`（Electron 33.4.11，未签名）。**解包已改为显式声明**：`package.json` 的 `build.asar.smartUnpack=false` + `build.asarUnpack` 最小路径集（`claude-agent-sdk/sdk.mjs`、`claude-agent-sdk-darwin-*`、`codex-sdk/dist/index.js`、`codex/package.json`、`codex/bin/**`、`codex-darwin-*`、`better-sqlite3/build/Release/better_sqlite3.node`、`onnxruntime-node/bin/**`）；此前依赖 electron-builder `smartUnpack` 的「二进制/原生文件命中即整包解包」规则，自动解出 82 个文件 / 504MB（含 better-sqlite3 全量与 onnxruntime 全平台）。复验：`app.asar` 内 `sdk.mjs` / `codex-sdk/dist/index.js` / `codex.js` 入口仍在，`app.asar.unpacked` 的 `claude 2.1.286` / `codex-cli 0.135.0` 均可执行 `--version`；解包面 504→485MB、asar 935→959MB（总量持平），解包文件 82→23（新增 4 个显式项，减少 63 个冗余文件）；`ELECTRON_RUN_AS_NODE` 经 `app.asar` 加载 better-sqlite3（ABI 130）可查询。**限制：只验 arm64 dir；x64/Windows 未验。** 新增 SDK/CLI 时在 `build.asarUnpack` 补其源路径（匹配源树路径；平台包在打包后才被安置到嵌套 `node_modules`）。**构建后校验已脚本化并接入流水线**：`scripts/verify-packaged-agent-runtime.mjs`（`npm run verify:packaged`）自动发现 `release/*/BizGraph.app`，断言 ① `app.asar` 内 `sdk.mjs` / `codex-sdk/dist/index.js` 条目存在；② `app.asar.unpacked` 内 `claude` / `codex` 可执行且 `--version` 含期望版本（期望值优先取源码树同款二进制的输出，取不到才退回常量，避免 SDK 升级后误报）；③ `better_sqlite3.node` 与当前平台/架构的 `onnxruntime_binding.node` 存在；失败逐条打印「检查项 / 期望 / 实际」并 exit 1。落点选择：本地由 `npm run build:mac` 末尾自动串联（macOS 专属构建脚本，不会漏跑）；CI 挂在 `build` job 的 `npm run build` 之后，用 `if: runner.os == 'macOS'` 限定——该 job 是跨 OS 矩阵，通用 `npm run build` 在 Linux/Windows 上不产 mac 产物，条件步避免误跑。**该检查仅覆盖 macOS 构建；Windows/Linux 产物未覆盖。** 正例 8/8 PASS（2026-11-09 对 `release/mac-arm64` 实测），负例（`--app /tmp/nope/BizGraph.app`）按「产物目录 / 期望 / 实际」输出并 exit 1。 ③ **D-08 落地（Codex 默认流式）**：`CodexAdapter.defaultRawStreamMode()` 默认 true，新增回退开关 `BIZGRAPH_CODEX_STREAMING=0|false|no|off` 回到阻塞 `thread.run()`；`codex.test.ts` 14/14 覆盖默认流式与回退。④ **矩阵结论**：G6-14（Claude token）**未验证**——`src/` 无 `includePartialMessages` 开关，且未授权付费回合；G6-15（OpenCode 轨迹）**未验证**——PATH 无 `opencode`，适配器仍为 `-q` 纯文本单次执行；G6-16（Codex provider 差异）**未验证**——缺官方 provider 凭据，不把第三方 provider 的 `item.updated=0` 当结论。⑤ **G6-18（C13b）已验证**：`registry-hardening.test.ts` 12/12，含 4 条 symlink / 普通文件 / 只读目录用例。
 
 ### W6 Agent 恢复与旧路径
 - 覆盖条目：G6-5 `[批准]` unattended 无调用方、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[批准]` 旧路径无 turn 时间线。
@@ -411,6 +415,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **与现有代码/设计的兼容性**：A 与 `agent-architecture.md` §0.9"完成信号以 `turn.completed` 为准"一致；B 与既有适配器默认一致，但违背观测目标。
 - **建议与理由**：**选 A（仅 Codex，保留阻塞开关）**。流式是取消与审计的前提，阻塞只作为兼容开关保留。
 - **不裁决会怎样**：Codex 路径的取消行为与事件粒度无定论，W6 的恢复与打包验收无法给出口径。
+- **落地记录（2026-11-09）**：`CodexAdapter` 未显式设置时默认 `runStreamed()`；`BIZGRAPH_CODEX_STREAMING=0|false|no|off` 回退阻塞 `thread.run()`（保留 `finalResponse` 语义）。单测 `src/main/__tests__/codex.test.ts` 覆盖默认与回退；**真实 Codex 官方 provider 未验**（缺官方凭据，见 W5-D 注记）。
 
 ### I.4.9 D-09 · 长尾 CLI 工具事件（G6-10 / G11-8）— **已裁决（采纳 B）**
 
@@ -507,18 +512,18 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4921**（2026-11-09 W5 阶段 C 修复注记补录后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4926**（2026-11-09 W5-D 回写后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts:758` `CURRENT_SCHEMA_VERSION = 36`（v36 由 W3 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**61 已实施 / 25 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。本轮 W5 阶段 C 修复（会话正常退出落终态 + `orphanedSessions` 与落库口径对齐）不新增条目，计数不变。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**64 已实施 / 22 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。本轮 W5 阶段 C 修复不新增条目，计数不变。
 - v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **4921**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 61 + 25 + 33 + 0 = 119，加 17 条方向裁决 = 136。
-- 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；打包与 Codex/OpenCode 真机矩阵未做（G6-11～G6-16 仍为「已批准未实施」）。
-- 本次 v2.3 文档修订未改产品代码；W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），**未 push**。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **4926**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 64 + 22 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；W5-D 的 **R3/U8/C13b 已实测、arm64 打包产物已验**；Codex/OpenCode 真机矩阵因缺官方凭据/CLI 未做（G6-14/G6-15/G6-16 仍为「已批准未实施」）。
+- 本次 v2.3 文档修订未改地图产品代码；W5-D 仅按 D-08 改 Codex 默认流式（保留 `BIZGRAPH_CODEX_STREAMING=0` 回退）。W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），W5-D 改动随本轮「打包解包显式化 + 构建后校验 + W5-D 收口」提交，**未 push**。
 
 ## I.7 裁决后建议施工顺序（按 W 包）
 
-> 口径：W 包对应 I.3 的 **26 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）已完成，其条目已转入 I.2 已实施。
+> 口径：W 包对应 I.3 的 **22 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）已完成，其条目已转入 I.2 已实施。
 
 | W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
 |---|---|---|---|---|
@@ -527,7 +532,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W4 测试体系 | G4-6…G4-9 | **已完成（`217fbbc`）** | 无 | 4 条已转入 I.2；流程测试三项仍为仅建议 |
 | W12 文档验收 | G10-1/2/3/11 | **可立即开工** | 可与 W1 并行 | 纯文档与用例，D-10 已裁决重新审查 |
 | W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **部分开工** | 写通道依赖 D-03（排 W4 后） | 服务层可先做，`evidence:suggest/accept` 通道等 W4；2026-11-08 已落 E2 `session_turn` + E4 `human_confirm` 两条写方，suggestions/复扫/E1 通道未建 |
-| W5 Agent M2 | G6-1…G6-4 | **已完成（`dc51b48` / `80075e7`），打包与真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由已落；G6-11～G6-16 仍在 W6/W7 |
+| W5 Agent M2 | G6-1…G6-4、G6-12/13/18 | **已完成（`dc51b48` / `80075e7` + W5-D），Codex/OpenCode 真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由 + R3/打包/C13b 已闭环；G6-11/14/15/16 待环境（CLI/凭据/平台） |
 | W6 Agent 恢复/旧路径 | G6-5/7/11…G6-16 | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上 |
 | W7 审批覆盖 | G7-1…G7-10 | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
 | W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |

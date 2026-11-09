@@ -67,6 +67,9 @@ jobs:
       - run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify packaged agent runtime (macOS)
+        if: runner.os == 'macOS'
+        run: npm run verify:packaged
       - uses: actions/upload-artifact@v4
         with:
           name: BizGraph-${{ matrix.os }}-${{ matrix.arch }}

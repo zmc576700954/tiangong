@@ -4,10 +4,10 @@
  * 使用 @openai/codex-sdk 替代 spawn('codex') 子进程调用。
  * SDK 提供线程模型（startThread/resumeThread）和结构化结果。
  *
- * P1-B：双路径
- * - 旧 `AgentOutput` 路径：保持原有阻塞 `thread.run()` 语义（含 `finalResponse` 广播）；
- * - 新 Runtime/Kernel 路径（`setRawStreamMode(true)`）：走 `thread.runStreamed()`，
- *   以 `turn.completed` 判完成，raw 事件供 Driver 归一化。
+ * P1-B / D-08：双路径
+ * - 默认走 `thread.runStreamed()`，以 `turn.completed` 判完成，raw 事件供 Driver 归一化；
+ * - 兼容回退：`BIZGRAPH_CODEX_STREAMING=0`（或 false/no/off）时回到阻塞 `thread.run()`，
+ *   保留旧 `finalResponse` 语义。Runtime/Kernel 路径仍显式开启流式。
  */
 
 import { BaseAdapter } from './base'
@@ -37,6 +37,15 @@ import { sandboxProfileText } from '../shared/sandbox'
 
 type CodexConstructor = typeof Codex
 
+export const CODEX_STREAMING_ENV = 'BIZGRAPH_CODEX_STREAMING'
+const STREAMING_FALSY = new Set(['0', 'false', 'no', 'off'])
+
+/** D-08：Codex 默认流式；显式关闭值回退阻塞 `thread.run()`。 */
+export function isCodexStreamingDefaultEnabled(raw = process.env[CODEX_STREAMING_ENV]): boolean {
+  if (raw === undefined || raw.trim() === '') return true
+  return !STREAMING_FALSY.has(raw.trim().toLowerCase())
+}
+
 /** runStreamed 事件的最小结构（SDK 的联合类型在运行时才有完整形状）。 */
 interface CodexStreamedEvent {
   type: string
@@ -62,6 +71,11 @@ export class CodexAdapter extends BaseAdapter {
    */
   protected get autoManageIdleReaper(): boolean {
     return true
+  }
+
+  /** D-08：未显式指定时默认流式；`BIZGRAPH_CODEX_STREAMING=0` 回退阻塞。 */
+  protected override defaultRawStreamMode(): boolean {
+    return isCodexStreamingDefaultEnabled()
   }
 
   private CodexClass: CodexConstructor | null = null
