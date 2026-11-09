@@ -115,11 +115,20 @@ export function planRecovery(repo: AgentRepository, options: RecoveryPlannerOpti
     })
   }
 
+  // 计数必须与真正落库的 mark_session_orphaned 计划一致：
+  // 除「有非终态 turn 的会话」外，两个兜底循环也会把无 in-flight turn 的
+  // active/starting 会话标成 orphaned，漏计会让启动报告看起来「零误伤」。
+  const orphanedSessionIds = new Set(
+    plans
+      .filter((plan) => plan.action === 'mark_session_orphaned' && plan.sessionId)
+      .map((plan) => plan.sessionId as string),
+  )
+
   return {
     plans,
     interruptedRuns: runs.size,
     abortedTurns: activeTurns.length,
-    orphanedSessions: sessionIds.size,
+    orphanedSessions: orphanedSessionIds.size,
     pendingApprovals: pendingApprovals.length,
   }
 }

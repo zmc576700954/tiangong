@@ -254,6 +254,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：批写引入丢失窗口 → 保留同步 flush；`RequestQueue` 已于 2026-11-09 删除，无回滚对象（见下方 C2 注记）。
 - **施工注记（2026-11-08，阶段 A+B，提交 `dc51b48`，19 文件 +2356/−220）**：① `startup-reconciler.ts` 增加 `proveOwnership` 预检——不可证明归属时 `killCalls=0`，并把 Codex 旧路径 / 已跑 turn 但无句柄无 marker 的 session 标 `residual_risk='unconfirmed'`；② `locks/workspace-lease.ts` 以 `wx` + rename 原子抢占、TTL/stale、同进程重入，灰度键 `BIZGRAPH_WORKSPACE_LEASE`；③ `event-batch-writer.ts` 关键事件同步、delta 50ms 批写、shutdown flush，灰度键 `BIZGRAPH_EVENT_BATCH_WRITER`；④ `executing_at` 三阶段落在归一化事件写入点（`tool.requested` 写 `executing_at`、`approval.resolved allow` 写 `approved_at`，等待审批阶段不写）；⑤ `runNode` 生产写 `agent_snapshots`（仅元数据 + `promptHash`），恢复期只读；⑥ `applyRecoveryPlan` 支持 `terminalStatus`，`aborted` step 全部进 `stepOutcomes` 并回填 `unknown-needs-rerun`；planner 补 turn 级 `queued/waiting_approval/running/cancelling` 判定，保持只读。**证据口径：模块级已验证，端到端待真机。**
 - **施工注记（2026-11-09，阶段 C，提交 `80075e7`，11 文件 +1201/−330）**：① 新增 `runtime/executors/acp-executor.ts`，实现与 `adapter-driver.ts` 相同的 `BackendDriver` 契约（`initialize` / `session/new` / `session/prompt` / `session/cancel`），把 `session/update` 映射为归一化 `agent_events`，`session/request_permission` 交 `ApprovalGateway` 做写前强制审批；子进程同样 `context.registerProcess`，复用同一套回收链路，**没有第二套执行路径**。② chat 发送路径按能力集门控：`claude` / `acp` 走 kernel 并带写前审批；清单外后端、driver 未注册、Runtime 未装配、未挂载节点（D8 纯 thread）各自打显式 `[kernel-skip]` 日志回旧路径，**不静默降级**。③ 能力集 `KERNEL_APPROVAL_CAPABLE_BACKENDS = ['claude','acp']`。④ 删除 `request-queue.ts` 及其测试（D-07 fail-fast，无兼容壳）。**事实记录：当前仓库没有名为 `acp` 的 `AgentAdapter`，ACP driver 只在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效；因此今天可证的 chat kernel 路径仍是 `claude`。** 证据口径：模块级已验证（真实子进程假 ACP agent + `AgentManager.sendCommand` 路由单测），**端到端待真机**。
+- **修复注记（2026-11-09，阶段 C 真机演练收口，与本轮修复同一提交）**：① `AgentRuntime.markSessionClosed()` 在会话正常终止后把 `agent_sessions.status` 落为 `closed`（恢复账本无该会话行时 no-op，不凭空建行），由 `AgentManager.mirrorEnd` 统一调用，覆盖正常收尾/异常退出/批量终止；否则正常退出遗留的 `active` 行会被下一次启动 planner 兜底误判为 `orphaned`。② `planRecovery()` 的 `orphanedSessions` 改为按全部 `mark_session_orphaned` 计划去重计数，与 `applyRecoveryPlan` 实际落库数量一致；此前只统计「有非终态 turn 的会话」，漏计两个兜底循环标记的无 turn `active/starting` 会话。定向测试见 `src/main/agent/runtime/__tests__/recovery.test.ts`。**证据口径：模块级已验证 + 真机演练 C 复跑通过**（S1 退出前 `active` → 退出后 `closed`，下次启动不再判 orphaned；注入无 turn 的残留 `active` 会话 → `orphaned`；payload `orphanedSessions=1` / `reclaimedSessions.length=1` / `killCalls=0` / `residualRiskSessions=1`；事件 seq 无断裂、UNIQUE 错误 0；真实库 mtime/sha256 未变）。
 
 ### W6 Agent 恢复与旧路径
 - 覆盖条目：G6-5 `[批准]` unattended 无调用方、G6-7 `[批准]` Codex 无句柄、G7-9 `[批准]` legacy `onBashPolicy`、G7-10 `[批准]` 旧路径无 turn 时间线。
@@ -506,12 +507,12 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4920**（2026-11-09 v2.3 修订后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4921**（2026-11-09 W5 阶段 C 修复注记补录后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts:758` `CURRENT_SCHEMA_VERSION = 36`（v36 由 W3 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**61 已实施 / 25 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**61 已实施 / 25 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。本轮 W5 阶段 C 修复（会话正常退出落终态 + `orphanedSessions` 与落库口径对齐）不新增条目，计数不变。
 - v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **4920**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 61 + 25 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **4921**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 61 + 25 + 33 + 0 = 119，加 17 条方向裁决 = 136。
 - 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；打包与 Codex/OpenCode 真机矩阵未做（G6-11～G6-16 仍为「已批准未实施」）。
 - 本次 v2.3 文档修订未改产品代码；W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），**未 push**。
 
@@ -4277,7 +4278,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.1 当前 **4887 行**（2026-11-08 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **4921 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -4305,7 +4306,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
 | A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **4887 行**（2026-11-08 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **4921 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -4315,9 +4316,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **4887 行**（2026-11-08 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **4921 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **4887 行**（2026-11-08 复核） | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **4921 行**（2026-11-09 复核） | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**

@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentRepository } from '../db/repository'
 import { applyRecoveryPlan, assertNoDangling, planRecovery } from '../recovery/planner'
+import { AgentRuntime } from '../runtime'
 import { openTestDb } from './helpers/test-db'
 
 function seedCrashState() {
@@ -174,6 +175,46 @@ describe('RecoveryPlan (D5)', () => {
     expect(() => assertNoDangling(repo)).not.toThrow()
     expect(repo.getSession('sess-starting')?.status).toBe('orphaned')
     expect(repo.getSession('sess-active')?.status).toBe('orphaned')
+  })
+
+  it('正常退出把会话落为 closed，下一次启动不再把它误判 orphaned', () => {
+    const db = openTestDb()
+    const repo = new AgentRepository(db)
+    repo.insertSession({ id: 'sess-normal', executor: 'claude-code', status: 'active', nodeId: 'n1', graphId: 'g1' })
+    const runtime = new AgentRuntime({ db, repo, retention: { enabled: false } })
+
+    // 旧路径会话没有 agent_sessions 行：不得凭空建行，也不得抛错
+    runtime.markSessionClosed('legacy-no-row')
+    expect(repo.getSession('legacy-no-row')).toBeNull()
+
+    runtime.markSessionClosed('sess-normal')
+    expect(repo.getSession('sess-normal')?.status).toBe('closed')
+
+    const plan = planRecovery(repo)
+    expect(plan.orphanedSessions).toBe(0)
+    expect(plan.plans.some((p) => p.action === 'mark_session_orphaned' && p.sessionId === 'sess-normal')).toBe(false)
+
+    applyRecoveryPlan(repo, plan)
+    expect(repo.getSession('sess-normal')?.status).toBe('closed')
+    db.close()
+  })
+
+  it('无 in-flight turn 的残留 active 会话也计入 orphanedSessions，与落库数量一致', () => {
+    const db = openTestDb()
+    const repo = new AgentRepository(db)
+    repo.insertSession({ id: 'sess-active-no-turn', executor: 'codex', status: 'active' })
+    repo.insertSession({ id: 'sess-closed', executor: 'codex', status: 'closed' })
+
+    const plan = planRecovery(repo)
+    const orphanPlans = plan.plans.filter((p) => p.action === 'mark_session_orphaned')
+    expect(orphanPlans.map((p) => p.sessionId)).toEqual(['sess-active-no-turn'])
+    expect(plan.orphanedSessions).toBe(orphanPlans.length)
+
+    applyRecoveryPlan(repo, plan)
+    expect(repo.getSession('sess-active-no-turn')?.status).toBe('orphaned')
+    expect(repo.getSession('sess-closed')?.status).toBe('closed')
+    expect(() => assertNoDangling(repo)).not.toThrow()
+    db.close()
   })
 
   it('is idempotent: second pass plans nothing and can be re-applied', () => {

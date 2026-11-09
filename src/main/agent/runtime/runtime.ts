@@ -799,6 +799,17 @@ export class AgentRuntime {
     return this.approvals.endSession(sessionId)
   }
 
+  /**
+   * 会话正常终止后落终态。
+   *
+   * 只在恢复账本里确有该会话行时生效（旧路径会话没有 agent_sessions 行）；
+   * 否则正常退出遗留的 active 行会被下一次启动误判为 orphaned。
+   */
+  markSessionClosed(sessionId: string): void {
+    if (!this.repo.getSession(sessionId)) return
+    this.repo.updateSessionStatus(sessionId, 'closed', this.now())
+  }
+
   async cancelTurn(turnId: string, reason = 'user'): Promise<boolean> {
     const turn = this.repo.getTurn(turnId)
     if (!turn || TERMINAL.includes(turn.status)) return false

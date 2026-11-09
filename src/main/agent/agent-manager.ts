@@ -653,6 +653,7 @@ export class AgentManager {
     // 所有终止路径（正常收尾 / 异常退出 / 批量终止）都会走到这里：
     // 旧路径审批没有 agent_sessions 行，会话级授权与存活判定只能靠进程内登记，必须在此失效。
     this.runtime?.endSession(sessionId)
+    this.runtime?.markSessionClosed(sessionId)
     this.sessionStates.delete(sessionId)
     this.sessionOutputBuffers.delete(sessionId)
   }
