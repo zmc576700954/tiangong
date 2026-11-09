@@ -26,35 +26,35 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **64** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18 |
-| 已批准未实施 | **22** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **67** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9，W7 核账 G7-6/G7-9 |
+| 已批准未实施 | **19** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **33** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 12 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向）** | **17** | 「已裁决 17 / 仍未授权施工」：仅确定方向，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 64+22+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；17 条施工状态仍为**未授权**。四类施工状态加总 67+19+33+0 = **119**，加 17 条方向裁决 = **136**，与去重总数一致（17 条不新增类别，仅把原「待裁决」改写为「已裁决（方向）」）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（agent 证据写入）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（64）
+### I.1.1 已实施（67）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
-- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
+- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（22）
+### I.1.2 已批准未实施（19）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描、G1-10 `evidence_suggestions`。
 - **编排执行**：G3-10 agent 证据写入面。
-- **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-4 建议转证据（=G1-10）、G5-5 E4 扫描（=G1-9）、G5-8 §3.4 事务/去重、G5-9 §3.2 组合校验。
+- **证据体系**：G5-3 agent 无证据写入（=G3-10）、G5-4 建议转证据（=G1-10）、G5-5 E4 扫描（=G1-9）、G5-8 §3.4 事务/去重。
 - **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
-- **审批与沙箱**：G7-1 写前审批覆盖边界、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-10 旧路径时间线。
+- **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-10 旧路径时间线。
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行，原 66 节标“有框架缺细节”，已更正为 16 已实施 + 50 缺细节）、G10-2 A1/A2/A9 用例、G10-3 A3/A4 边界、G10-11 CI（=G4-9）。
 
@@ -83,7 +83,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 23 个编号，去重后 17 条；重复关系见上方清单。
 
-## I.2 已实施清单（61 条，按主题）
+## I.2 已实施清单（67 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -127,7 +127,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G4-10 | S8 前置五表（`test_specs/plans/items/runs/results`） | `database.ts:1221` |
 | G4-11 | TestExecutor 逐条执行 + `evidence.create` E2/E3 | `test-executor.ts:389,406`、`test-plan-service.test.ts` |
 
-### I.2.4 证据体系（4）
+### I.2.4 证据体系（5）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -135,8 +135,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G5-2 | TestExecutor 是唯一 E2/E3 写方 | `test-executor.ts:389,406` |
 | G5-6 | E4 过期（默认 30 天）自动转 `stale` | `evidence-service.ts:192-202`、U1 |
 | G5-7 | 非 git E4 `reproducible=0`、`version_binding='none'` | `database.ts:673-691` |
+| G5-9 | 等级字段组合校验：ref_json 必填、E1 必填 summary、E1/E2 拒 E3/E4 专属字段、E3 拒签收字段、E4 拒 code_version/code_dirty（`current_hash` 按代码事实作产物内容绑定放行） | `evidence-service.ts:129-230`、`evidence-derivation.test.ts`（G5-9 用例） |
 
-### I.2.5 Agent 运行时（7）
+### I.2.5 Agent 运行时（10）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -154,11 +155,13 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 > **证据口径（2026-11-09）**：G6-1～G6-4 为**模块级已验证**（真实子进程/临时库单测 + 全量 vitest 绿 + `tsc --noEmit`），**端到端待真机**——「chat 走 kernel 且有写前审批」目前只在 `AgentManager.sendCommand` 路由与 `runNode` 单测层面验证，尚未在打包后的 Electron app 中跑通完整链路。写入 `agent_events` / `agent_steps` 的三阶段时间戳同理，均为单测断言，不是真机会话回放。
 > **事实记录**：当前仓库**没有名为 `acp` 的 `AgentAdapter`**；ACP driver 仅在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效，因此今天可证的 chat kernel 路径仍是 `claude`（`claude-code`）。
 
-### I.2.6 审批与沙箱（4）
+### I.2.6 审批与沙箱（6）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
 | G7-4 | legacy Claude 审批钩子接线 | `2026-11-07` 修复；`agent-architecture.md` §17.5 |
+| G7-6 | 未知 git 配置键默认 ask（安全键族白名单外一律 `git-unknown-config-key`；`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 可回退，探针失败仍 fail-closed） | `bash-readonly.test.ts:2398,2520,2531`、`agent-architecture.md` §7.3 B |
+| G7-9 | legacy `onBashPolicy` 已接线：Bash 决策回调 Runtime 审计（命中规则/危险模式） | `claude-code.ts:84,371`、`claude-code.test.ts:260-314` |
 | G7-11 | 会话级授权仅覆盖写类工具（设计边界） | `agent-architecture.md` §7.6 |
 | G7-13 | 交互审批 120s fail-closed | `ApprovalGateway`；`agent-architecture.md` §7.4 |
 | G7-14 | 重启陈旧审批 deny | `agent-architecture.md` §7.4 |
@@ -201,7 +204,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ---
 
-## I.3 未实施清单与可施工方案（58 条 → 12 个 W 包）
+## I.3 未实施清单与可施工方案（55 条 → 12 个 W 包）
 
 > 口径：**条目本身不合并**，每条保留 G 编号；下发施工时按 W 包排期，包内条目逐条验收。标记 `[批准]` 的进入本期/近期计划，标记 `[建议]` 的属 L3，不进入本期验收。
 
@@ -216,7 +219,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **施工注记（2026-11-08，W1 完成）**：G1-5/G1-6 经代码复核**确已实施**，本包只纠正状态词、未改代码。G1-7 按 §5.9.7 **分散落点**接线：`outputs → work_runs.outputs_json`、`outputParse → work_runs.output_parse`、`partial → work_runs.partial_output_ref`、文件变更 → `change_sets.files_json`、`usage` 仍由 runtime 写 `agent_usage`；**不改** `agent_turns.output_json`，**不重复写** usage。生产端接在 `agent-step-runner.ts` 的 `complete/fail/timeout` 透传（`parseStepOutputs` L175、`runOutputData` L207、`buildPartial` L471、`recordChangeHead` L443），取基/取头经新增 `workspace-change-stats.ts`；无 schema 时不伪造 outputs、不写空对象。G1-8 采**方案 B**：父任务处于 `draft/awaiting_confirm/queued/running` 时可被子任务全终态带进终态，`needs_human/blocked/needs_input/paused/interrupted` 不覆盖；聚合口径 `failed > cancelled > done`（`superseded` 按 cancelled 计）；触发点为 `transition()` 终态后与 `convergeIfTerminal()` 收口后，均调用 `convergeParentChain` 向父链上推（`seen` 防环、条件 UPDATE 幂等）。**父任务 gate 被绕过是方案 B 的有意行为，不是缺陷**；G1-13 在 WS `getDoc` 走 `getOrLoadDoc`，装载前先校验 `graphs` 行存在，避免为不存在的图造孤儿 doc。G1-11 维持**仅建议**：真实库 `agent_turns` 0 行、历史证据库各自指存在节点，无伪节点证据，故不动 `node_id` 约束。本包**不升 schema**（`CURRENT_SCHEMA_VERSION` 仍为 35），**不提交 git**。
 
 ### W2 证据闭环
-- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[批准]` `evidence_suggestions`、G3-10 `[批准]` agent 证据写入面、G5-8 `[批准]` 建议转证据事务/去重、G5-9 `[批准]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
+- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[批准]` `evidence_suggestions`、G3-10 `[批准]` agent 证据写入面、G5-8 `[批准]` 建议转证据事务/去重、G5-9 `[已实施]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
 - 目标：agent 回合产生的候选证据可被建议、可被人工接受、可复扫失效；E1/E4 有 IPC 写通道。
 - 涉及文件与数据/接口变更：`src/main/map/evidence-service.ts`、`src/main/ipc/map.ts`、`src/main/map/evidence-derivation.ts`；新增 `evidence_suggestions` 表与迁移；新增 `evidence:suggest` / `evidence:accept` / `evidence:scan` 通道。
 - 实施步骤：① 建 `evidence_suggestions` 表 + CHECK；② 建议写入去重键（node+kind+source_ref）；③ 接受时事务内转 `node_evidence` 并写审计；④ E4 增加内容哈希 `content_hash` 与复扫任务；⑤ IPC 补写通道与参数校验。
@@ -225,6 +228,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：E4 自动降级误伤人工签收 → 扫描只标 `stale` 不自动删除；新表迁移可安全保留。
 - **施工注记（2026-11-08，W2 首批：`node_evidence` 写入面）**：已落两条写方——① agent 回合完成（机器验收通过或仅剩 manual 待确认）写 E2 `session_turn`，`current_hash` 取**执行后项目工作区**的 `HEAD^{tree}` + 未提交文件 sha256 聚合值，取不到指纹则不写（不写 null、不挪用别处哈希）；② 人工验收全部收口时写 E4 `human_confirm`，`current_hash` 对得上产物文件实际 sha256（单文件直接取该文件哈希；多文件取逐文件哈希清单的聚合值，逐文件 sha256 另落 `basis_ref_json`）。两条路径仍只经 `EvidenceService.create`；写入在 step/run 终态事务提交之后，失败只落 `map_migration_reports`（`kind='integrity_check'`、`stage='evidence_write:<stepId>'`）诊断，不回退已完成的 step，因此**不新增表/列/索引，`CURRENT_SCHEMA_VERSION` 仍为 35**。
 - **与设计的两处差异（按代码事实记录）**：① §3.7.1 要求 agent 候选经 `evidence_suggestions` 接受后转 `node_evidence`，但该表尚未建且代码矩阵拒绝 `actor='agent'` 直写 E2——本批暂由编排层以 `actor='system'` 写 E2，`ref_json` 保留 `sessionId/turnId/adapter` 溯源，待 suggestions 表落地后改回“建议→接受”；② 本文档所称“E4 禁止代码 hash”在代码里仅指 `code_version`，`current_hash` 不在 E4 的禁止列内，故 E4 写产物哈希不违反约束。覆盖条目 G3-10/G5-3 **仍为「已批准未实施」**（E1 写通道、建议与复扫均未建，不按整体升格）。
+- **施工注记（2026-11-09，G5-9 收口）**：`EvidenceService.create` 在库层 CHECK 之外补齐应用层组合校验：`ref_json` 缺失（含显式 `null`）拒绝；E1 必填 `summary`；E1/E2 拒绝混入 `code_version/code_dirty/signed_by/coverage`；E3 拒绝 `signed_by/coverage`；E4 拒绝 `code_version/code_dirty`（`current_hash` 仍作产物内容绑定放行，与 `acceptance-confirmation.ts:313` 一致）。**未做**：§3.7.1 的「ref_json 每个引用可解析」（文件/提交/测试存在性）与 E4 `acceptance_ids` 是否真实存在于 work_item acceptance——这两项需跨表解析口径，仍留在 W2 后续。G5-9 状态由「已批准未实施」改为「已实施」，计数 65/21。
 
 ### W3 执行守卫与入口
 - 覆盖条目：G3-4 `[已实施]` `priority DESC`、G3-5 `[已实施]` 存量自由文本 acceptance、G3-6～G3-9 `[已实施]` 超时预算、G3-1/2/3 `[建议]` Tier1/跨进程写闸/renderer 入口（**本期不做**，仅保留设计状态）。
@@ -270,13 +274,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：删除 unattended 分支可能影响未来需求 → 先标“未启用”并加 TODO 链接。
 
 ### W7 审批覆盖扩展
-- 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[批准]` MCP 写工具、G7-6 `[批准]` 未知键 ask。
+- 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[批准]` MCP 写工具、G7-6 `[已实施]` 未知键 ask、G7-9 `[已实施]` legacy `onBashPolicy`。
 - 目标：所有写路径在“执行前”被拦截；无法拦截的后端显式降级。
 - 涉及文件与数据/接口变更：`src/main/agent/runtime/approval/`、`src/main/adapters/codex.ts`、`opencode.ts`、`src/main/agent/mcp/*`；能力位 `approval` 与 UI 文案。
 - 实施步骤：① MCP 写工具登记 D1；② Codex/OpenCode 接入 gateway；③ 未知配置键 ask；④ 覆盖矩阵测试。
 - 验收标准：三后端写工具都产生 `agent_approvals`；无审批后端 UI 显示“不支持写前拦截”；未知键不静默放行。
 - 依赖与建议顺序：依赖 W5 的 runtime；工作量 3–5 人日（Codex）+2–4 人日（OpenCode）。
 - 风险与回滚：接入 gateway 可能改变现有行为 → 用能力位开关，默认保持现状。
+- **核账注记（2026-11-09）**：G7-6 已在 `bash-readonly` 落地（白名单外 git 配置键一律 `git-unknown-config-key`，探针失败 fail-closed），G7-9 已在 legacy Claude 路径接线（`onBashPolicy` → Runtime 审计），两者由 `bash-readonly.test.ts` / `claude-code.test.ts` 覆盖，状态转「已实施」。**G7-1 仍开放**：Claude 侧网关边界（写类工具/路径作用域/会话授权）已具备，但三后端矩阵缺 Codex/OpenCode/MCP，不能按整体收口；G7-2/G7-3/G7-5 继续留在「已批准未实施」。W7 计数 67/19。
 
 ### W8 沙箱 C3（仅建议，暂不施工）
 - 覆盖条目：G7-7 `[建议]` C3 exec 面未收敛、G7-8 `[建议]` 非 Claude 裸 spawn、G6-17 `[建议]` 同 uid 不在防御范围。
@@ -512,18 +517,18 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4926**（2026-11-09 W5-D 回写后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **4931**（2026-11-09 W2/W7 收口后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts:758` `CURRENT_SCHEMA_VERSION = 36`（v36 由 W3 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
-- 计数复核：152 原始条目 / 16 重复 / 136 独立；**64 已实施 / 22 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。本轮 W5 阶段 C 修复不新增条目，计数不变。
+- 计数复核：152 原始条目 / 16 重复 / 136 独立；**67 已实施 / 19 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G5-9；W7 核账收 G7-6/G7-9；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
 - v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **4926**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 64 + 22 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **4931**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 67 + 19 + 33 + 0 = 119，加 17 条方向裁决 = 136。
 - 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；W5-D 的 **R3/U8/C13b 已实测、arm64 打包产物已验**；Codex/OpenCode 真机矩阵因缺官方凭据/CLI 未做（G6-14/G6-15/G6-16 仍为「已批准未实施」）。
 - 本次 v2.3 文档修订未改地图产品代码；W5-D 仅按 D-08 改 Codex 默认流式（保留 `BIZGRAPH_CODEX_STREAMING=0` 回退）。W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），W5-D 改动随本轮「打包解包显式化 + 构建后校验 + W5-D 收口」提交，**未 push**。
 
 ## I.7 裁决后建议施工顺序（按 W 包）
 
-> 口径：W 包对应 I.3 的 **22 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）已完成，其条目已转入 I.2 已实施。
+> 口径：W 包对应 I.3 的 **19 条「已批准未实施」**，与 33 条「仅建议」不同批。D-01…D-17 只影响其中的实现口径，不新增开工授权。W1（2026-11-08）、W2（G5-9，2026-11-09）、W3（`0df2234`）、W4（`217fbbc`）、W5（`dc51b48` / `80075e7`）、W7 核账（G7-6/G7-9，2026-11-09）已完成，其条目已转入 I.2 已实施。
 
 | W 包 | 覆盖 | 可否开工 | 依赖 | 一句话理由 |
 |---|---|---|---|---|

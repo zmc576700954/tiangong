@@ -129,7 +129,13 @@ export class EvidenceService {
   create(input: CreateEvidenceInput): { row: NodeEvidenceRow; reused: boolean } {
     const actor = input.actor ?? input.producedBy ?? 'system'
     const producedBy = input.producedBy ?? actor
-    const refJson = JSON.stringify(input.ref ?? null)
+
+    // §3.7.1：ref_json 必填。列是 NOT NULL，但 `null` 序列化后同样是合法文本，
+    // 因此应用层必须显式拒绝，避免写入一条「不可溯源」的空证据。
+    if (input.ref === undefined || input.ref === null) {
+      throw new EvidenceValidationError('证据缺 ref_json（§3.7.1）')
+    }
+    const refJson = JSON.stringify(input.ref)
 
     // ---- 写入方矩阵（§3.7.1）----
     if (input.level === 'E1' && actor !== 'human') {
@@ -167,6 +173,10 @@ export class EvidenceService {
     const now = new Date()
 
     if (input.level === 'E3') {
+      // §3.7.1 禁止项：E3 是测试事实，不接受人工签收字段（否则会被静默丢弃）。
+      if (input.signedBy != null || input.coverage != null) {
+        throw new EvidenceValidationError('E3 不得携带人工签收字段（signed_by/coverage）')
+      }
       if (input.codeVersion == null || input.codeVersion === '') {
         throw new EvidenceValidationError('E3 缺 code_version（commit 绑定,§3.7.2）')
       }
@@ -186,7 +196,13 @@ export class EvidenceService {
       codeDirty = 0
       reproducible = 1
     } else if (input.level === 'E4') {
-      if (!input.signedBy || !input.signedBy) {
+      // §3.5/§3.7.1 禁止项：E4 必须 version_binding='none'，不得携带 **代码** hash。
+      // 注意 `current_hash` 在 E4 上是「产物文件内容绑定」（见 acceptance-confirmation），
+      // 不是代码锚点，按代码事实放行；这里只拦 code_version/code_dirty。
+      if (input.codeVersion != null || input.codeDirty != null) {
+        throw new EvidenceValidationError('E4 不得携带代码 hash（code_version/code_dirty）')
+      }
+      if (!input.signedBy || input.signedBy.trim() === '') {
         throw new EvidenceValidationError('E4 缺 signed_by（§3.5）')
       }
       const coverage = input.coverage ?? []
@@ -203,7 +219,14 @@ export class EvidenceService {
       basisJson = input.basisRefs ? JSON.stringify(input.basisRefs) : null
       expiresAt = input.expiresAt ?? new Date(now.getTime() + E4_EXPIRY_DAYS * 24 * 3600 * 1000).toISOString()
     } else {
-      // E1/E2：ref 必填由 NOT NULL 兜底;version_binding 按内容形态默认
+      // E1/E2：上面已统一校验 ref 非空；这里再拦「等级专属字段混入」，
+      // 避免调用方以为传了 signed_by/coverage（E1/E2 没有这些语义）却被静默丢弃。
+      if (input.codeVersion != null || input.codeDirty != null || input.signedBy != null || input.coverage != null) {
+        throw new EvidenceValidationError(`${input.level} 不得携带 E3/E4 专属字段（code_version/code_dirty/signed_by/coverage）`)
+      }
+      if (input.level === 'E1' && (!input.summary || input.summary.trim() === '')) {
+        throw new EvidenceValidationError('E1 缺 summary（§3.7.1：人工备注必填）')
+      }
       versionBinding = input.level === 'E2' ? 'content_hash' : 'commit'
     }
 

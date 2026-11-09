@@ -137,9 +137,27 @@ describe('EvidenceService 写入方矩阵（§3.7.1）', () => {
   afterEach(() => cancelPendingRecomputes())
 
   it('E1 人写 ok;agent 写拒绝（走 evidence_suggestions,S6b）', () => {
-    const row = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: { note: '计划备注' }, actor: 'human', producedBy: 'human' }).row
+    const row = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: { note: '计划备注' }, summary: '计划备注', actor: 'human', producedBy: 'human' }).row
     expect(row.evidence_level).toBe('E1')
-    expect(() => svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: {}, actor: 'agent' })).toThrow(EvidenceValidationError)
+    expect(() => svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn', ref: {}, summary: 'x', actor: 'agent' })).toThrow(EvidenceValidationError)
+  })
+
+  it('G5-9:ref 缺失 / E1 缺 summary / 跨级字段混入 一律拒绝', () => {
+    const e1 = { level: 'E1' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'session_turn' as const, actor: 'human' as const, producedBy: 'human' as const }
+    expect(() => svc.create({ ...e1, ref: null, summary: 'x' })).toThrow(/ref_json/)
+    expect(() => svc.create({ ...e1, ref: { note: 'x' } })).toThrow(/summary/)
+    expect(() => svc.create({ ...e1, ref: { note: 'x' }, summary: 'x', signedBy: 'u1' })).toThrow(/E3\/E4/)
+
+    const e2 = { level: 'E2' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'changed_files' as const, actor: 'human' as const }
+    expect(() => svc.create({ ...e2, ref: { files: [] }, coverage: [{ acceptance_ids: ['a1'] }] })).toThrow(/E3\/E4/)
+
+    const e3 = { level: 'E3' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'test_run' as const, actor: 'test_executor' as const, codeVersion: 'abc', codeDirty: 0, workRunId: 'wr-1' }
+    expect(() => svc.create({ ...e3, ref: { testRunId: 'tr-1' }, signedBy: 'u1' })).toThrow(/人工签收/)
+
+    const e4 = { level: 'E4' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm' as const, actor: 'human' as const, signedBy: 'u1', coverage: [{ acceptance_ids: ['a1'] }] }
+    expect(() => svc.create({ ...e4, ref: {}, codeVersion: 'abc' })).toThrow(/代码 hash/)
+    // current_hash 是产物内容绑定（非代码锚点），E4 允许
+    expect(svc.create({ ...e4, ref: {}, currentHash: 'artifact-h1' }).row.current_hash).toBe('artifact-h1')
   })
 
   it('E2 agent 直写拒绝;E3 非 test_executor 拒绝', () => {
@@ -200,7 +218,7 @@ describe('EvidenceService 写入方矩阵（§3.7.1）', () => {
 
   it('端点不可解析拒绝;撤销必填 reason;撤销后重算触发', () => {
     expect(() => svc.create({ level: 'E2', graphId: 'g1', nodeEntityKey: 'ghost', evidenceType: 'artifact', ref: {}, actor: 'human' })).toThrow(/端点不可解析/)
-    const row = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm', ref: {}, actor: 'human' }).row
+    const row = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm', ref: {}, summary: '人工确认', actor: 'human' }).row
     expect(() => svc.revoke(row.id, 'u1', '')).toThrow(/revoke_reason/)
     svc.revoke(row.id, 'u1', '验收撤回')
     expect(svc.get(row.id)!.revoked_at).toBeTruthy()
@@ -432,7 +450,7 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     const e2 = svc.create({ level: 'E2', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'changed_files', ref: { files: [] }, actor: 'human' }).row
     expect(recomputeExecutionState(db, 'g1', 'key-1').state).toBe('implemented')
 
-    const e1 = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm', ref: {}, actor: 'human' }).row
+    const e1 = svc.create({ level: 'E1', graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm', ref: {}, summary: '人工确认', actor: 'human' }).row
     // E1 存在时仍 implemented(E2 优先)
     expect(recomputeExecutionState(db, 'g1', 'key-1').state).toBe('implemented')
 
