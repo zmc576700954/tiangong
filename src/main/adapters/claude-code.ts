@@ -11,7 +11,7 @@
  */
 
 import { z } from 'zod'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
@@ -94,6 +94,26 @@ function bashCommandOf(toolInput: Record<string, unknown>): unknown {
   return toolInput.command
 }
 
+/** 进程级终止宽限期：SIGTERM 后等这么久仍存活才升级 SIGKILL。 */
+const TERMINATE_TERM_GRACE_MS = 1500
+const TERMINATE_KILL_GRACE_MS = 2000
+
+/** 等待子进程真实退出；超时返回 false（调用方据此升级信号并记录残留风险）。 */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit)
+      resolve(false)
+    }, timeoutMs)
+    child.once('exit', onExit)
+  })
+}
+
 function isAssistantMessage(msg: unknown): msg is {
   content?: Array<{ type: string; text?: string }>
 } {
@@ -138,6 +158,13 @@ export class ClaudeCodeAdapter extends BaseAdapter {
   private sdkCreateMcpServer: CreateSdkMcpServerFn | null = null
   private sdkLoadAttempted = false
   private activeQueries = new Map<string, { abort: () => void }>()
+  /**
+   * SDK 由本适配器 spawn 时保存真实子进程句柄。`terminateSession` 的
+   * 进程级终止必须拿到它；基类的 `processes` 只覆盖非 SDK spawn 路径。
+   */
+  private activeChildren = new Map<string, { child: ChildProcess; supervised: boolean }>()
+  /** 取消时已请求 abort、但没有子进程句柄的会话：terminate 时必须显式记残留风险。 */
+  private abortWithoutHandle = new Set<string>()
   /** Sessions flagged for auto-compaction on the next query() call */
   private autoCompactEnabledFor = new Set<string>()
   /** M1：每个 session 最近一条 assistant 消息的 model（result 消息不带 model，计价用） */
@@ -303,6 +330,9 @@ export class ClaudeCodeAdapter extends BaseAdapter {
         // 用户请求只出现一次 —— 它不进 stable 段。
         prompt: [turnContext, commandPrompt].filter((s) => !!s && s.length > 0).join('\n\n'),
         options: {
+          // 必须把本地 controller 交给 SDK：否则 abort() 只是改了一个没人监听的信号，
+          // SDK 不会走 stdin EOF → 宽限 → spawn signal 的关闭路径，CLI 子进程会一直存活。
+          abortController,
           // 透明转发：不下发 BizGraph 的 scope / memory / 项目上下文。
           ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),
           cwd: session.config.workingDirectory,
@@ -540,9 +570,60 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     if (active) {
       active.abort()
       this.activeQueries.delete(sessionId)
+      // 没有 pid 就做不到进程级终止：标记下来，由 doTerminate 显式记录残留风险，
+      // 不允许静默当作已杀掉。
+      if (!this.activeChildren.has(sessionId)) this.abortWithoutHandle.add(sessionId)
     }
     // Clear the auto-compact flag when the session ends; a new session must opt in again
     this.autoCompactEnabledFor.delete(sessionId)
+  }
+
+  /**
+   * 进程级终止：先 SIGTERM（受控 spawn 时杀整个进程组），宽限后 SIGKILL，
+   * 并等待子进程真实退出。SDK 的 abort 只保证「协议层收尾」，不能替代这一步。
+   */
+  protected async doTerminate(session: AgentSession, proc?: ChildProcess): Promise<void> {
+    const tracked = this.activeChildren.get(session.id)
+    const child = tracked?.child ?? proc
+    const abortedWithoutHandle = this.abortWithoutHandle.delete(session.id)
+    this.activeChildren.delete(session.id)
+    if (!child) {
+      if (abortedWithoutHandle) {
+        this.logger.warn(
+          `[terminate] session=${session.id} 取消时没有可用的子进程句柄：` +
+            '只能依赖 SDK 的协议级关闭，存在进程残留风险（已显式记录）',
+        )
+      }
+      return
+    }
+    const pid = child.pid
+    if (!pid || child.exitCode !== null || child.signalCode !== null) return
+    const supervised = tracked?.supervised === true
+    const send = (signal: NodeJS.Signals): void => {
+      try {
+        // supervised：pgid === pid，整组回收（含 CLI 派生的工具子进程）。
+        if (supervised) process.kill(-pid, signal)
+        else child.kill(signal)
+      } catch {
+        // 组不存在 / 进程已退出：退回单进程 kill，失败则交给下一轮信号或退出监听。
+        try {
+          child.kill(signal)
+        } catch {
+          // 已退出
+        }
+      }
+    }
+
+    send('SIGTERM')
+    if (await waitForChildExit(child, TERMINATE_TERM_GRACE_MS)) return
+    this.logger.warn(
+      `[terminate] session=${session.id} pid=${pid} SIGTERM 后 ${TERMINATE_TERM_GRACE_MS}ms 未退出，改发 SIGKILL`,
+    )
+    send('SIGKILL')
+    if (await waitForChildExit(child, TERMINATE_KILL_GRACE_MS)) return
+    this.logger.error(
+      `[terminate] session=${session.id} pid=${pid} SIGKILL 后仍未退出：进程残留风险（已显式记录）`,
+    )
   }
 
   /**
@@ -583,6 +664,14 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     child.stderr?.on('data', (chunk: Buffer) => {
       this.logger.debug(`claude stderr: ${chunk.toString('utf-8').slice(0, 300)}`)
     })
+    // 保存真实句柄：terminateSession 的进程级终止只能靠它，基类 processes 不覆盖 SDK 路径。
+    this.activeChildren.set(sessionId, { child, supervised })
+    const forget = (): void => {
+      const current = this.activeChildren.get(sessionId)
+      if (current?.child === child) this.activeChildren.delete(sessionId)
+    }
+    child.once('exit', forget)
+    child.once('error', forget)
     if (supervised && child.pid) {
       this.emitProcessSpawn(sessionId, { pid: child.pid, pgid: child.pid })
     }

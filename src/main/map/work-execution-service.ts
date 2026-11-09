@@ -230,13 +230,17 @@ export class WorkExecutionService {
       adapterName: input.adapterName,
       deadlineAt: input.deadlineAt ?? undefined,
     })
+    // 入队也是一次界面可见的状态跃迁（多出 queued run）：其它窗口不能只靠调用方刷新。
+    const item = this.items.get(run.work_item_id)
+    if (item) this.emitItemChanged(item, 'run_enqueued', run.step_id ?? undefined)
     return { run, reused }
   }
 
   /**
    * run 取消：条件更新（queued/running → cancelled，完成竞态失败方保留）。
-   * 若该 run 正在本进程执行，先结束会话（真杀进程），再落库；下游未开始步落
-   * cancelled，item 收敛（§5.9.7）。
+   * 先落库（条件更新 queued/running → cancelled），再结束会话（真杀进程）。
+   * 顺序不能反：杀进程会让执行器以 infra/failed 收尾，若等它先落库，条件取消
+   * 就会输给失败态，用户点了取消却得到 failed。落库在前可保证取消事实不被覆盖。
    */
   async cancelRun(runId: string): Promise<CancelRunResult> {
     this.assertEnabled()
@@ -251,22 +255,13 @@ export class WorkExecutionService {
       }
     }
 
-    // 真取消：本进程正在跑的 run 必须先结束会话，否则进程会继续写工作区。
-    if (this.inflightRunId === runId && run.session_id) {
-      try {
-        await this.turns.terminateSession(run.session_id, 'user')
-      } catch (error) {
-        logger.warn(
-          `[cancel] session=${run.session_id} terminate 失败（继续按条件更新收口）：` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
-
     this.runs.cancel(runId, 'user')
     const finalRun = this.runs.get(runId)!
     const cancelledNow = finalRun.status === 'cancelled'
+
     if (cancelledNow) {
+      // step 必须先收敛：terminate 期间执行器会以 failed 收尾，条件更新会抢先写 step，
+      // 导致 run=cancelled 而 step=failed。先置 cancelled 后，执行器的条件写会落空。
       const step = run.step_id ? this.steps.get(run.step_id) : undefined
       if (step && !isTerminalStepStatus(step.status)) {
         try {
@@ -280,6 +275,18 @@ export class WorkExecutionService {
         // §5.9.7：下游未执行项落 cancelled（不是 blocked）；无关分支继续。
         this.cancelUnstartedDependents(item)
         this.items.convergeIfTerminal(item.id)
+      }
+      // 只有真的把 run 取消成功，才需要结束会话；竞态输了说明它已自行收尾。
+      if (this.inflightRunId === runId && finalRun.session_id) {
+        try {
+          // 必须 await：返回前进程要在可观测时间内真实退出（适配器内部 SIGTERM→SIGKILL）。
+          await this.turns.terminateSession(finalRun.session_id, 'user')
+        } catch (error) {
+          logger.warn(
+            `[cancel] session=${finalRun.session_id} terminate 失败（取消已落库，进程残留风险）：` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
       }
     } else {
       // 取消输给完成/失败的竞态：不改写既有终态，只做 item 收敛。
@@ -324,6 +331,12 @@ export class WorkExecutionService {
 
     // 第 6 步的前置清理：上一轮遗留的「已 claim、未启动」孤儿。
     report.requeuedRunIds = this.recoverOrphanedClaims()
+    // 孤儿回收把 run 从 running 退回 queued，同样是界面可见跃迁，不能静默。
+    for (const runId of report.requeuedRunIds) {
+      const run = this.runs.get(runId)
+      const item = run ? this.items.get(run.work_item_id) : undefined
+      if (run && item) this.emitItemChanged(item, 'run_requeued', run.step_id ?? undefined)
+    }
     // v36 / G3-7/G3-8：先按 deadline 收口超时 run（step 预算 + task 总预算），
     // 再选候选——否则超时 run 会一直被当成 in-flight。
     report.timedOutRunIds = this.sweepDeadlines()
@@ -353,6 +366,9 @@ export class WorkExecutionService {
       if (!rechecked.ok) {
         this.applyGateFailure(item, rechecked.missing)
         report.gateBlockedItemIds.push(item.id)
+        // queued → blocked / gate 置 incomplete 是可见跃迁，必须广播。
+        const blocked = this.items.get(item.id) ?? item
+        this.emitItemChanged(blocked, 'gate_blocked')
         continue
       }
       if (rechecked.waived) {
@@ -376,11 +392,19 @@ export class WorkExecutionService {
       }
 
       // 第 3 步：依赖校验 + 级联阻断。
-      this.steps.blockUnstartedDependents(item.id, item.revision)
+      const dependencyBlocked = this.steps.blockUnstartedDependents(item.id, item.revision)
+      if (dependencyBlocked.length > 0) {
+        const fresh = this.items.get(item.id) ?? item
+        this.emitItemChanged(fresh, 'step_blocked_by_dependency', dependencyBlocked[0])
+      }
       const step = this.scheduler.peekNextReadyStep(item.id)
       if (!step) {
         // 还有非终态步 = 在等；全部终态才收敛。
-        this.items.convergeIfTerminal(item.id)
+        const before = item.status
+        const converged = this.items.convergeIfTerminal(item.id)
+        if (converged && converged.status !== before) {
+          this.emitItemChanged(converged, 'item_converged')
+        }
         continue
       }
       if (step.step_kind !== 'agent') {
@@ -417,6 +441,13 @@ export class WorkExecutionService {
       report.itemId = claim.item.id
       report.stepId = claim.step.id
       report.runId = claim.run.id
+      // claim/start 阶段必须立刻广播：renderer 在 run:start 返回后拉取详情时 tick
+      // 通常还没 claim；没有这条事件，界面会一直停在 queued、看不到取消入口。
+      this.emitItemChanged(
+        this.items.get(claim.item.id) ?? claim.item,
+        'run_started',
+        claim.step.id,
+      )
       let outcome: StepRunResult
       try {
         outcome = await this.runner.run(claim, {
@@ -429,6 +460,12 @@ export class WorkExecutionService {
         if (!latest || !RUN_TERMINAL.has(latest.status)) {
           // §5.9.9：tick 内不得留下 running 孤儿。执行器未落终态的异常按 infra 收口。
           this.abandonClaim(claim, error)
+          // 兜底收口同样改变了 item/run/step，必须广播后再抛。
+          this.emitItemChanged(
+            this.items.get(claim.item.id) ?? claim.item,
+            'run_failed_infra',
+            claim.step.id,
+          )
           throw error
         }
         outcome = {
@@ -662,6 +699,19 @@ export class WorkExecutionService {
   private settle(claim: ClaimedStep): WorkItemRow | undefined {
     this.steps.blockUnstartedDependents(claim.item.id, claim.item.revision)
     return this.items.convergeIfTerminal(claim.item.id)
+  }
+
+  /** 广播一次 item 级状态变更（renderer 收到后按 lineage 去抖重拉详情+叠加层）。 */
+  private emitItemChanged(item: WorkItemRow, reason: string, stepId?: string): void {
+    this.emit({
+      type: 'work_item_changed',
+      workItemId: item.id,
+      ...(stepId ? { stepId } : {}),
+      lineageId: item.lineage_id,
+      revision: item.revision,
+      status: item.status,
+      reason,
+    })
   }
 
   /** 执行器异常兜底：run/step 仍非终态时按 infra 收口，绝不留 running 孤儿。 */

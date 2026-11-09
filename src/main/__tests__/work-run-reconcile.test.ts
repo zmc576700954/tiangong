@@ -76,6 +76,16 @@ function setupDb(): BetterSqlite3.Database {
   return db
 }
 
+function insertStep(db: BetterSqlite3.Database, itemId: string, status: string): string {
+  const id = `ws_${randomUUID().slice(0, 8)}`
+  const now = Date.now()
+  db.prepare(
+    `INSERT INTO work_steps (id, work_item_id, work_item_revision, seq, title, step_kind, status, created_at, updated_at)
+     VALUES (?, ?, 1, 1, '步', 'agent', ?, ?, ?)`,
+  ).run(id, itemId, status, now, now)
+  return id
+}
+
 function insertItem(db: BetterSqlite3.Database, status: string, gateStatus: string): string {
   const id = `wi_${randomUUID().slice(0, 8)}`
   const now = '2026-01-01T00:00:00Z'
@@ -108,15 +118,20 @@ describe('work_runs 启动对账（僵尸 run 清偿）', () => {
     return (db.prepare('SELECT status FROM work_items WHERE id = ?').get(id) as { status: string }).status
   }
 
+  function stepStatus(id: string): string {
+    return (db.prepare('SELECT status FROM work_steps WHERE id = ?').get(id) as { status: string }).status
+  }
+
   function state(): Record<string, unknown> | undefined {
     return db.prepare("SELECT * FROM node_execution_state WHERE graph_id='g1' AND node_entity_key='key-1'").get() as
       | Record<string, unknown>
       | undefined
   }
 
-  it('running run 重启后置 interrupted，节点不再永久 in_progress', () => {
+  it('running run 重启后置 interrupted，step 同步收敛（run/step/item 三者一致）', () => {
     const itemId = insertItem(db, 'running', 'pass')
-    const { run } = runs.enqueue({ workItemId: itemId, executorKind: 'agent' })
+    const stepId = insertStep(db, itemId, 'running')
+    const { run } = runs.enqueue({ workItemId: itemId, stepId, executorKind: 'agent' })
     runs.claim(run.id)
 
     recomputeExecutionState(db, 'g1', 'key-1')
@@ -124,43 +139,54 @@ describe('work_runs 启动对账（僵尸 run 清偿）', () => {
 
     const report = runs.reconcileOnStartup()
     expect(report.interruptedRunning).toBe(1)
+    expect(report.interruptedSteps).toBe(1)
     expect(report.interruptedItems).toBe(1)
     expect(runStatus(run.id)).toBe('interrupted')
+    expect(stepStatus(stepId)).toBe('cancelled')
     expect(itemStatus(itemId)).toBe('interrupted')
 
     recomputeExecutionState(db, 'g1', 'key-1')
     expect(state()?.execution_state).not.toBe('in_progress')
   })
 
-  it('结构性僵尸：queued run 的 item 已非当前 revision 时立即取消', () => {
+  it('结构性僵尸：queued run 的 item 已非当前 revision 时立即取消，step 一并收敛', () => {
     const itemId = insertItem(db, 'running', 'pass')
-    const { run } = runs.enqueue({ workItemId: itemId, executorKind: 'agent' })
+    const stepId = insertStep(db, itemId, 'pending')
+    const { run } = runs.enqueue({ workItemId: itemId, stepId, executorKind: 'agent' })
     db.prepare("UPDATE work_items SET is_current = 0, status = 'superseded' WHERE id = ?").run(itemId)
 
     const report = runs.reconcileOnStartup()
     expect(report.cancelledStaleQueued).toBe(1)
+    expect(report.cancelledSteps).toBe(1)
     expect(runStatus(run.id)).toBe('cancelled')
+    expect(stepStatus(stepId)).toBe('cancelled')
   })
 
   it('未到阈值的 queued run 不被误杀（重启后仍可由调度器 claim）', () => {
     const itemId = insertItem(db, 'queued', 'pass')
-    const { run } = runs.enqueue({ workItemId: itemId, executorKind: 'agent' })
+    const stepId = insertStep(db, itemId, 'pending')
+    const { run } = runs.enqueue({ workItemId: itemId, stepId, executorKind: 'agent' })
 
     const report = runs.reconcileOnStartup()
     expect(report.cancelledStaleQueued).toBe(0)
+    expect(report.cancelledSteps).toBe(0)
     expect(runStatus(run.id)).toBe('queued')
+    expect(stepStatus(stepId)).toBe('pending')
   })
 
   it('超过阈值的 queued run 作为时间性兜底取消，并写入可查询报告', () => {
     const itemId = insertItem(db, 'queued', 'pass')
-    const { run } = runs.enqueue({ workItemId: itemId, executorKind: 'agent' })
+    const stepId = insertStep(db, itemId, 'pending')
+    const { run } = runs.enqueue({ workItemId: itemId, stepId, executorKind: 'agent' })
     const now = Date.now()
     db.prepare('UPDATE work_runs SET created_at = ? WHERE id = ?').run(now - QUEUED_STALE_MS - 60_000, run.id)
 
     const report = runs.reconcileOnStartup({ now })
     expect(report.cancelledStaleQueued).toBe(1)
+    expect(report.cancelledSteps).toBe(1)
     expect(report.queuedStaleMs).toBe(QUEUED_STALE_MS)
     expect(runStatus(run.id)).toBe('cancelled')
+    expect(stepStatus(stepId)).toBe('cancelled')
 
     const row = db
       .prepare("SELECT status, stats_json FROM map_migration_reports WHERE stage='work_runs_reconcile'")

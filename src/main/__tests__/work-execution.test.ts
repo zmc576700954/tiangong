@@ -33,6 +33,7 @@ import {
   WorkExecutionService,
   WorkExecutionError,
   type KernelCapabilityProbe,
+  type WorkExecutionEvent,
   type WorkExecutionOptions,
 } from '../map/work-execution-service'
 import type { GateRecheck } from '../map/gate-recheck'
@@ -46,6 +47,11 @@ class FakeTurns implements AgentTurnRunner {
   readonly starts: AgentTurnStartInput[] = []
   readonly commands: AgentTurnRunInput[] = []
   readonly terminated: Array<{ sessionId: string; reason: string }> = []
+  /**
+   * terminateSession 令挂起的 runTurn 以什么收尾。真机杀进程时 SDK 迭代器会异常退出，
+   * 执行器通常以 infra/failed 收尾——用它验证这不会覆盖先落库的 cancelled。
+   */
+  terminateSignal: AgentTurnSignal = { status: 'cancelled', failureClass: 'cancel' }
   /** 'deferred'：runTurn 挂起，直到 terminateSession 被调用（模拟真杀进程）。 */
   constructor(private readonly mode: 'immediate' | 'deferred' = 'immediate') {}
 
@@ -66,7 +72,7 @@ class FakeTurns implements AgentTurnRunner {
 
   async terminateSession(sessionId: string, reason: TerminationReason): Promise<void> {
     this.terminated.push({ sessionId, reason })
-    this.pending?.({ status: 'cancelled', failureClass: 'cancel' })
+    this.pending?.(this.terminateSignal)
     this.pending = null
   }
 }
@@ -155,10 +161,37 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(items.get(itemId)?.status).toBe('done')
   })
 
+  it('claim/start 阶段立即广播 running（界面不重载也能拿到取消入口）', async () => {
+    const deferred = new FakeTurns('deferred')
+    turns = deferred
+    const itemId = confirmedItem()
+    const stepId = steps.listByItem(itemId, 1)[0].id
+    const events: WorkExecutionEvent[] = []
+    const exec = service({ onEvent: (event) => events.push(event) })
+
+    const ticking = exec.tick({ adapterName: 'claude-code' })
+    await waitFor(() => events.some((e) => e.reason === 'run_started'))
+
+    const started = events.find((e) => e.reason === 'run_started')!
+    expect(started.workItemId).toBe(itemId)
+    expect(started.stepId).toBe(stepId)
+    expect(started.status).toBe('running')
+    // 事件必须在结算前发出：此时 run 在库里就是 running，ended_at 仍为空。
+    const [running] = runs.list({ workItemId: itemId })
+    expect(running.status).toBe('running')
+    expect(running.ended_at).toBeNull()
+    expect(deferred.commands).toHaveLength(1)
+
+    await exec.cancelRun(running.id)
+    await ticking
+  })
+
   it('tick 第 2 步真的重跑 gate：库里 pass、stub 不通过 → blocked 且不建 run', async () => {
     const itemId = confirmedItem()
+    const events: WorkExecutionEvent[] = []
     const exec = service({
       gateRecheck: { recheck: () => ({ ok: false, missing: ['stub_missing'] }) },
+      onEvent: (event) => events.push(event),
     })
 
     const report = await exec.tick({ adapterName: 'claude-code' })
@@ -170,6 +203,9 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(JSON.parse(item.gate_missing_json ?? '[]')).toEqual(['stub_missing'])
     expect(runs.list({ workItemId: itemId })).toHaveLength(0)
     expect(turns.commands).toHaveLength(0)
+    // gate 失败也是可见跃迁：必须广播 blocked，否则界面仍显示 queued。
+    const blockedEvent = events.find((e) => e.reason === 'gate_blocked')
+    expect(blockedEvent?.status).toBe('blocked')
   })
 
   it('生产默认 GateRecheck：fail-closed，不伪造 pass', async () => {
@@ -340,7 +376,8 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     // 模拟 claim 与 startStep 之间崩溃：step 退回 pending，run 仍 running。
     db.prepare("UPDATE work_steps SET status='pending', started_at=NULL WHERE id=?").run(stepId)
 
-    const exec = service()
+    const events: WorkExecutionEvent[] = []
+    const exec = service({ onEvent: (event) => events.push(event) })
     const report = await exec.tick({ adapterName: 'claude-code' })
 
     expect(report.requeuedRunIds).toEqual([claimed.run.id])
@@ -348,6 +385,8 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(report.outcome?.status).toBe('succeeded')
     expect(runs.get(claimed.run.id)?.attempt).toBe(1)
     expect(items.get(itemId)?.status).toBe('done')
+    // running → queued 的回收同样是可见跃迁，不能等下一次 UI 手工刷新。
+    expect(events.some((e) => e.reason === 'run_requeued')).toBe(true)
   })
 
   it('写通道闸：开关关闭 / 无 kernel / 无审批 / 无 driver / 无 adapter 全部拒绝', () => {
@@ -432,6 +471,26 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(steps.get(b.id)?.status).toBe('cancelled')
     expect(items.get(itemId)?.status).toBe('cancelled')
     expect(items.get(itemId)?.cancel_reason).toBe('partial_cancel')
+  })
+
+  it('取消先落库再杀进程：执行器以 infra 失败收尾也不覆盖 cancelled', async () => {
+    const deferred = new FakeTurns('deferred')
+    deferred.terminateSignal = { status: 'failed', failureClass: 'infra', errorCode: 'ABORTED' }
+    turns = deferred
+    const itemId = confirmedItem()
+    const stepId = steps.listByItem(itemId, 1)[0].id
+    const exec = service()
+    const ticking = exec.tick({ adapterName: 'claude-code' })
+    await waitFor(() => deferred.commands.length === 1)
+
+    const running = runs.list({ workItemId: itemId })[0]
+    const result = await exec.cancelRun(running.id)
+    await ticking
+
+    expect(result.cancelled).toBe(true)
+    expect(runs.get(running.id)?.status).toBe('cancelled')
+    expect(steps.get(stepId)?.status).toBe('cancelled')
+    expect(items.get(itemId)?.status).toBe('cancelled')
   })
 
   it('取消 queued run：条件更新为 cancelled，不触达会话，item 收敛', async () => {

@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
 import { WORK_ITEM_TERMINAL, WorkItemService, type WorkItemStatus } from './work-item-service'
+import { WorkStepService, isTerminalStepStatus } from './work-step-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
 
 const logger = createLogger('WorkRunService')
@@ -24,7 +25,11 @@ export const QUEUED_STALE_MS = 24 * 60 * 60 * 1000
 
 export interface RunReconcileReport {
   interruptedRunning: number
+  /** 因 run interrupted 而一并收敛为终态的 step 数（保证 run/step/item 三者一致）。 */
+  interruptedSteps: number
   cancelledStaleQueued: number
+  /** 因 stale queued run 被取消而一并收敛的 step 数。 */
+  cancelledSteps: number
   interruptedItems: number
   queuedStaleMs: number
 }
@@ -431,7 +436,9 @@ export class WorkRunService {
    *    阈值取 24h：L1/L2 单进程串行执行，队列在进程内即排即取；单用户场景不存在
    *    24h 仍合法的排队等待，超过即视为遗弃。结构性判定优先，阈值只做兜底，
    *    避免对合法积压（重启后仍会被调度器 claim）造成误杀。
-   * 4. item 收敛：受影响 item 若仍为 `running` 且已无 queued/running run → `interrupted`。
+   * 4. step 收敛：run 落 interrupted/cancelled 时，其 `step_id` 若仍是非终态 → `cancelled`。
+   *    只收敛上层会让 step 永久停在 running，与 run/item 不一致。
+   * 5. item 收敛：受影响 item 若仍为 `running` 且已无 queued/running run → `interrupted`。
    *
    * 全程条件更新、幂等，可重复执行；结果写 `map_migration_reports(kind='cleanup',
    * stage='work_runs_reconcile')` 以便查询。
@@ -441,32 +448,53 @@ export class WorkRunService {
     const queuedStaleMs = options?.queuedStaleMs ?? QUEUED_STALE_MS
     const cutoff = now - queuedStaleMs
     const affectedItemIds = new Set<string>()
+    // 上下层必须一起收敛：run 置 interrupted / cancelled 后，它的 step 若仍停在
+    // running 等非终态，就会留下「run/item 已收敛、step 永远 running」的孤儿。
+    const stepSvc = new WorkStepService(this.db)
 
     let interruptedRunning = 0
+    let interruptedSteps = 0
     for (const run of this.listRunning()) {
       if (this.markInterrupted(run.id)) {
         interruptedRunning++
+        if (this.convergeStepOnReconcile(stepSvc, run.step_id)) interruptedSteps++
         affectedItemIds.add(run.work_item_id)
       }
     }
 
     const staleQueued = this.db
       .prepare(
-        `SELECT r.id, r.work_item_id FROM work_runs r
+        `SELECT r.id, r.work_item_id, r.step_id FROM work_runs r
            LEFT JOIN work_items i ON i.id = r.work_item_id
           WHERE r.status = 'queued'
             AND (i.id IS NULL OR i.is_current = 0
                  OR i.status IN ('done','failed','cancelled','superseded')
                  OR r.created_at < ?)`,
       )
-      .all(cutoff) as Array<{ id: string; work_item_id: string }>
+      .all(cutoff) as Array<{ id: string; work_item_id: string; step_id: string | null }>
 
     let cancelledStaleQueued = 0
+    let cancelledSteps = 0
     for (const run of staleQueued) {
       if (this.cancel(run.id, 'shutdown')) {
         cancelledStaleQueued++
+        if (this.convergeStepOnReconcile(stepSvc, run.step_id)) cancelledSteps++
         affectedItemIds.add(run.work_item_id)
       }
+    }
+
+    // 存量修复：旧版本只收敛了 run/item，已 interrupted 的 run 可能仍挂着非终态 step。
+    // 该 step 既无 queued/running run 可再驱动，就永远不会自行收敛，这里一并补齐。
+    const orphanInterruptedSteps = this.db
+      .prepare(
+        `SELECT s.id FROM work_steps s
+          WHERE s.status NOT IN ('succeeded','failed','timed_out','cancelled','skipped')
+            AND EXISTS (SELECT 1 FROM work_runs r WHERE r.step_id = s.id AND r.status = 'interrupted')
+            AND NOT EXISTS (SELECT 1 FROM work_runs r WHERE r.step_id = s.id AND r.status IN ('queued','running'))`,
+      )
+      .all() as Array<{ id: string }>
+    for (const row of orphanInterruptedSteps) {
+      if (this.convergeStepOnReconcile(stepSvc, row.id)) interruptedSteps++
     }
 
     const itemSvc = new WorkItemService(this.db)
@@ -483,10 +511,31 @@ export class WorkRunService {
       }
     }
 
-    const report: RunReconcileReport = { interruptedRunning, cancelledStaleQueued, interruptedItems, queuedStaleMs }
+    const report: RunReconcileReport = {
+      interruptedRunning,
+      interruptedSteps,
+      cancelledStaleQueued,
+      cancelledSteps,
+      interruptedItems,
+      queuedStaleMs,
+    }
     this.recordReconcileReport(report, now)
     logger.info('work_runs startup reconciliation:', report)
     return report
+  }
+
+  /** 启动对账时把 run 对应的非终态 step 收敛为 cancelled；终态不动。 */
+  private convergeStepOnReconcile(stepSvc: WorkStepService, stepId: string | null): boolean {
+    if (!stepId) return false
+    const step = stepSvc.get(stepId)
+    if (!step || isTerminalStepStatus(step.status)) return false
+    try {
+      stepSvc.cancel(stepId)
+      return true
+    } catch {
+      // 并发下已被其它路径置终态：保留既有事实。
+      return false
+    }
   }
 
   private recordReconcileReport(report: RunReconcileReport, now: number): void {

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { ChildProcess } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -489,5 +490,56 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     const sendPromise = adapter.sendCommand(session.id, command)
     await adapter.terminateSession(session.id)
     await sendPromise.catch(() => {})
+  })
+
+  it('把本地 AbortController 交给 SDK：否则 abort 触达不到 transport', async () => {
+    const session = await adapter.startSession(makeConfig())
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    mockQuery.mockReturnValue(
+      (async function* () {
+        await gate
+        yield { type: 'result', subtype: 'success', result: 'Done', is_error: false }
+      })(),
+    )
+
+    const sending = adapter.sendCommand(session.id, command)
+    await vi.waitFor(() => expect(mockQuery).toHaveBeenCalled())
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.abortController).toBeInstanceOf(AbortController)
+
+    release()
+    await sending
+  })
+
+  it('terminateSession 进程级终止：真实子进程在可观测时间内退出', async () => {
+    const session = await adapter.startSession(makeConfig())
+    type SpawnFn = (id: string, options: Record<string, unknown>) => ChildProcess
+    const spawner = adapter as unknown as { spawnClaudeProcess: SpawnFn }
+    // 用真实长驻进程模拟 SDK 拉起的 CLI：只有真的 kill 才会退出。
+    const child = spawner.spawnClaudeProcess(session.id, {
+      command: process.execPath,
+      args: ['-e', 'setInterval(() => {}, 1000)'],
+      cwd: testWorkspace,
+      env: process.env,
+      signal: new AbortController().signal,
+    })
+    const pid = child.pid
+    expect(typeof pid).toBe('number')
+    const alive = (): boolean => {
+      try {
+        process.kill(pid!, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    expect(alive()).toBe(true)
+
+    await adapter.terminateSession(session.id, 'user')
+
+    expect(alive()).toBe(false)
   })
 })
