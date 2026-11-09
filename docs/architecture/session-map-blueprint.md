@@ -56,7 +56,7 @@
 - **Agent 运行时**：G6-5 unattended 无调用方、G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
 - **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具、G7-10 旧路径时间线。
 - **迁移与运维**：G9-13 Windows 路径。
-- **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B 组已收至 **32 节**）、G10-11 CI（=G4-9）。
+- **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 **25 节**）、G10-11 CI（=G4-9）。
 
 ### I.1.3 仅建议（33）
 
@@ -324,11 +324,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：删代码前确认无外部引用。
 
 ### W12 文档与验收补全
-- 覆盖条目：G10-1 `[批准]` §13 审计表收尾（102 行 / 当前 32 节缺细节）、G10-2 `[实施]` A1/A2/A9 用例（§0.3.1）、G10-3 `[实施]` A3/A4 边界（§0.3.2）。
+- 覆盖条目：G10-1 `[批准]` §13 审计表收尾（102 行 / 当前 25 节缺细节）、G10-2 `[实施]` A1/A2/A9 用例（§0.3.1）、G10-3 `[实施]` A3/A4 边界（§0.3.2）。
 - 目标：把“有框架缺细节”的章节逐条补齐到可施工/可验收。
 - 涉及文件与数据/接口变更：仅文档与测试用例；`docs/architecture/session-map-blueprint.md` 各节。
 - 实施步骤：① 按 §13 表逐节补行为契约；② A1/A2/A9 转验收用例；③ A3/A4 落超时边界测试。
-- 验收标准：§13 的 102 行（当前剩 32 节“有框架缺细节”）每行有“可施工/已实施/仅建议”终态；A1–A9 均有对应用例或明确不适用。
+- 验收标准：§13 的 102 行（当前剩 25 节“有框架缺细节”）每行有“可施工/已实施/仅建议”终态；A1–A9 均有对应用例或明确不适用。
 - 依赖与建议顺序：与 W4 的 P1–P9 联动。
 - 风险与回滚：纯文档，无代码风险。
 
@@ -521,12 +521,12 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5089**（2026-11-09 G10-1 A/B 组补全后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5209**（2026-11-09 G10-1 A/B/C 组补全后实测）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**。
 - schema 复核：`src/main/database.ts` `CURRENT_SCHEMA_VERSION = 37`（v37 由 W2 G1-10 `evidence_suggestions` 引入）。
 - “已实施”证据复核：I.2 全部为 `文件:行` 或提交号；无代码证据的一律在 I.3/I.4。
 - 计数复核：152 原始条目 / 16 重复 / 136 独立；**72 已实施 / 14 已批准未实施 / 33 仅建议 / 0 待用户裁决 / 17 已裁决（方向，未授权施工）**（W1 收口 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施）。
 - v2.2 复核：I.4 恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」）；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-32（G9-8）已于 2026-11-09 实施外，其余 33 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
-- v2.3 复核（2026-11-09）：`wc -l` 实测 **5089**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 72 + 14 + 33 + 0 = 119，加 17 条方向裁决 = 136。
+- v2.3 复核（2026-11-09）：`wc -l` 实测 **5209**（本文）/ **398**（`map-orchestration-blueprint.md`）；`git grep -rn RequestQueue -- 'src/**'` 为空；四类计数 72 + 14 + 33 + 0 = 119，加 17 条方向裁决 = 136。
 - 端到端口径：W5 的 chat kernel 路由、三阶段 `executing_at`、`agent_snapshots` 生产写入均为**模块级已验证，端到端待真机**；W5-D 的 **R3/U8/C13b 已实测、arm64 打包产物已验**；Codex/OpenCode 真机矩阵因缺官方凭据/CLI 未做（G6-14/G6-15/G6-16 仍为「已批准未实施」）。
 - 本次 v2.3 文档修订未改地图产品代码；W5-D 仅按 D-08 改 Codex 默认流式（保留 `BIZGRAPH_CODEX_STREAMING=0` 回退）。W1–W5 的产品代码已分别提交（`0df2234` / `217fbbc` / `dc51b48` / `80075e7`），W5-D 改动随本轮「打包解包显式化 + 构建后校验 + W5-D 收口」提交，**未 push**。
 
@@ -2229,6 +2229,49 @@ Step 6 约束
 
 模型失败或输出不合规 → 保留候选集，进入**纯人工确认**路径（候选卡片直接给用户选），不阻塞流程。
 
+#### 5.3.1 施工细则（G10-1）：模型输出 schema 与校验
+
+**数据（输出 JSON，强制）**
+
+```json
+{
+  "selected_candidate_ids": ["bc_..."],
+  "items": [
+    {
+      "client_item_id": "it_1",
+      "title": "string",
+      "goal": "string",
+      "parent_client_item_id": null,
+      "scope_files": ["src/a.ts"],
+      "acceptance": [
+        { "id": "ac_1", "type": "command", "expected": "exit=0", "command": "npm test -- a" },
+        { "id": "ac_2", "type": "file_check", "expected": "contains", "path": "src/a.ts" }
+      ],
+      "depends_on": []
+    }
+  ]
+}
+```
+
+**校验规则（顺序执行，全部通过才进入候选确认）**
+
+1. `selected_candidate_ids` 必须是本次 `derivation_run_id` 候选的子集，且非空。
+2. 每个 `scope_files` 非空、已按 §5.4.1 规范化，且是 `selected_candidate_ids` 文件并集的子集；不得扩到候选并集之外。
+3. `items.length ≤ maxCandidates`；`client_item_id` 唯一；`parent_client_item_id` / `depends_on` 只能引用已定义 id；`depends_on` 无自引用、无环。
+4. 每条 `acceptance` 必须含 `id`/`type`/`expected`；`type='command'` 必带 `command`，`type='file_check'` 必带 `path`；至少 1 条；不得删除或弱化锚点已确认的验收条件。
+5. 越界节点/文件、超限子任务 → 从结果中剔除，原样写入 `plan_drafts.rejected_boundaries_json`（含 `reason`），不静默丢弃。
+
+**失败分支**
+
+- 首次校验失败 → 附逐条错误修复 1 轮；修复后仍失败 → D7 纯人工路径。
+- 模型输出非 JSON / 超时 → 不重试第二次，直接 D7；候选集保留。
+
+**验收**
+
+1. 模型给出候选外文件 → 该项被剔除、`rejected_boundaries_json` 有记录、计划可继续确认。
+2. `scope_files` 为空或越界 → 修复 1 轮内可改；仍错 → 进入 D7，不产生 `work_items`。
+3. 合法输出 → 生成 `plan_drafts` 一行，`status='awaiting_confirm'`，C1 可展示全部子任务。
+
 ### 5.4 准入条件（gate）
 
 子任务进入执行队列前必须全部满足：
@@ -2299,6 +2342,38 @@ draft ──► awaiting_confirm ──► confirmed ──► (生成 work_item
 
 父任务不得因为"部分子任务完成"而提前标 `done`；聚合只在叶子全部终态时计算一次并落库。
 
+#### 5.5.2 施工细则（G10-1）：Kahn 分层与聚合验收
+
+**算法（确认时执行一次，结果落 `plan_drafts.layers_json`）**
+
+```
+indeg[v] = |{u : u depends_on v 的显式边}|   // 去重后的显式依赖
+ready = [v : indeg[v] == 0]（按数组顺序稳定排序）
+layers = []
+while ready 非空:
+  layers.push(ready)
+  next = []
+  for v in ready:
+    for w in successors(v):
+      indeg[w] -= 1
+      if indeg[w] == 0: next.push(w)（按数组顺序）
+  ready = next
+if 处理数 < 节点数: 存在环 → 拒绝确认
+```
+
+**依赖优先级冲突**
+
+- 同一对节点既有显式 `depends_on` 又有隐式推断 → 只保留显式边，`dependency_source='explicit'`；隐式边不重复计数。
+- 自依赖、重复依赖、引用不存在 id → 视为非法计划，拒绝确认。
+- 完全无依赖时按数组顺序兜底，`dependency_source='order'`。
+
+**验收**
+
+1. 三层 DAG → `layers_json` 为 3 层且层内顺序稳定；重复确认结果一致。
+2. 含环计划 → 拒绝确认（错误含环上的节点 id），`work_items` 新增 0 行。
+3. 父任务 3 个叶子：2 done + 1 running → 父保持 `running`；全部终态后才按 §5.5.1 表落终态。
+4. 聚合函数重复调用 → 父状态与 `updated_at` 不变（幂等）。
+
 ### 5.6 人工确认点
 
 | 编号 | 时机 | 是否强制 | 必须展示 |
@@ -2309,6 +2384,37 @@ draft ──► awaiting_confirm ──► confirmed ──► (生成 work_item
 | C4 | 完成认定（人工写 `nodes.status` 前） | 强制 | ①当前 `execution_state` 与证据列表（可点开）；②stale 证据清单与原因；③未满足的验收条件；④建议（若有）及其来源；⑤与上次人工状态的差异 |
 
 反例（明确禁止）：只显示"是否同意？"的确认按钮；把 C1/C2 合并成一次；把 C3 的审批做成"记住本次选择"的永久授权；C4 用模态框默认勾选"已完成"。
+
+#### 5.6.1 施工细则（G10-1）：确认接口与状态
+
+**接口（全部人工发起；agent 不得调用）**
+
+| 确认点 | 通道 | 入参 | 出参 / 错误 |
+|---|---|---|---|
+| C1 | `map:plan:draft:confirm` | `{ planDraftId, revision, viewedItems[] }` | `{ planId, workItemIds[] }`；`C1_GATE_INCOMPLETE { missing[] }` / `C1_STALE_REVISION` |
+| C2 | `map:plan:revise` | `{ lineageId, baseRevision, items[] }` | `{ newRevision, gate: {missing[]} }`；`C2_CONFIRM_ONCE` |
+| C3 | `map:test-plan:approve` | `{ planId, planHash }` | `{ approvalId, runId }`；`PLAN_HASH_MISMATCH` / `APPROVAL_DENIED` |
+| C4 | `map:node:complete` | `{ graphId, entityKey, status, evidenceIds[], note }` | `{ nodeId, status }`；`C4_EVIDENCE_MISSING` / `C4_STALE_EVIDENCE` |
+
+**状态迁移**
+
+- C1：`plan_drafts.awaiting_confirm → confirmed`；退回走 `revise` 生成新 revision，旧行 `superseded`；`rejected` 为终态。
+- C2：`running → awaiting_confirm(new revision) → confirmed | superseded`；执行中禁止直接改已确认计划行。
+- C3：`test_plans.draft → approved | denied`；`approved` 绑定 `plan_hash` + `approval_id`，执行时二次校验。
+- C4：`nodes.status` 只在人工确认后写；写前必须展示证据与 stale 清单，缺证据拒绝。
+
+**幂等与边界**
+
+- C1 以 `(lineage_id, revision)` 幂等：重复确认返回同一批 `workItemIds`，不重复建任务。
+- C3 重复审批同一 `plan_hash` 返回既有 `approvalId`；`plan_hash` 变化必须重新审批。
+- 四个确认点均不得被 agent、定时任务或后台重试自动触发；缺任一确认点即停在对应非终态。
+
+**验收**
+
+1. C1 未确认 → `work_items` 0 行；确认一次 → 任务集与 items 一一对应；再次确认 → 行数不变。
+2. C2 在 `confirmed` 后直接修订 → `C2_CONFIRM_ONCE`；走 `revise` 则旧 revision `superseded`。
+3. C3 `plan_hash` 不符 → `PLAN_HASH_MISMATCH`，0 执行。
+4. C4 无证据或仅 stale 证据 → 拒绝写 `nodes.status`，节点状态不变。
 
 ### 5.7 偏差度量
 
@@ -2360,6 +2466,20 @@ draft ──► awaiting_confirm ──► confirmed ──► (生成 work_item
 | D7 | 模型不可用/输出不合规 | 候选卡片直接人工选择；所有 C1 展示项改为纯数据展示 |
 
 兜底优先级：结构推导 → 候选人工选择 → 单任务模式 → 纯人工拆解。**任何一级兜底都不产出"未经人确认的执行计划"。**
+
+#### 5.8.1 施工细则（G10-1）：退化落点与验收
+
+| 编号 | 执行落点 | 写入 | 验收 |
+|---|---|---|---|
+| D1 | `deriveCandidates` 返回 `{mode:'single_task'}` | `plan_drafts.reason='D1'`；`scope_files` 留空待 C1 | 无文件信号 → 1 个任务、0 自动拆分；C1 框选为空 → G1 不过 |
+| D2 | 权重表把 `change_surface` 置 0 后归一化 | `derivation_reports.signals_json.change_surface=0` | 权重和 = 1；C1 强制展开候选 |
+| D3 | 跳过依赖闭包，目录前缀替代 | `confidence = min(score, 0.7)` | `confidence ≤ 0.7`，无依赖边时仍可出候选 |
+| D4 | 截断到模块层 | `plan_drafts.truncated_at_depth=3` | 子任务不含文件级叶子；C1 提示人工细分 |
+| D5 | 不调模型 | `plan_drafts.mode='manual_only'` | `wiki-page`/`project` 锚点 → 0 自动候选，仅人工新建入口 |
+| D6 | 合并候选 | `candidates[].conflict=true` | 重叠 > 0.8 → 单候选；C1 展示强耦合提示 |
+| D7 | 跳过模型 | `plan_drafts.reason='D7'` | 模型失败/二次修复失败 → 仅人工卡片，`work_items` 0 行直到 C1 |
+
+通用：每次退化都在 `map_migration_reports(kind='derivation', stage='Dx')` 留一行（含输入摘要与耗时）；退化不得跳过 C1。
 
 ---
 
@@ -4446,7 +4566,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 ### 12.11 Zcode v1.2.1（302 行）的事实性提醒
 
-- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5089 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
+- **引用口径**：`Zcode v1.2`（被审附件，**364 行**）与本地 `Zcode v1.2.1`（勘误版，**302 行**）是两个不同版本；`1809` / `2051` / `3209` 分别是对本文 R5 / R6 / v1.2 写作时的**不同时点**行数，不混用。本文 v2.3 当前 **5209 行**（2026-11-09 `wc -l` 复核；随改动继续变化）。凡与本文冲突处，以本文当前版本为准。
 - 其关于 Yjs WS 缓解、输出上限的具体数字**不采用**；Yjs 事实只以 §2.2.1 的 `cc749ce` 复核结论为准，测试范围只以 §2.8 的 **9 个测试文件 / 119 个 `it(`**（2026-11-07 复核）为准。
 - 该版本把 "E4 在有真实测试时由 E3 替代" 写进方案，与我们"可复现 / 不可复现分离、不互相替代"冲突，不采纳（§3 / §6.7）。
 
@@ -4474,7 +4594,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | A1 | L280（另 L56、L125） | "WS server（1236）…前置缓解已上" | 复核时（2026-11-07）`BIZGRAPH_YJS_WS` 全库无命中；`yjs-realtime.ts:70` 为 `disableWebSocket ?? false`；`:107` 未禁用即启动；`ipc-handlers.ts:348` `new YjsRealtime(db)` 无 options（现已在 `987c226` 实施默认不监听） | 事实错误：该缓解从未实施；`cc749ce` 已以单向只读取代，`987c226` 补上默认关闭 |
 | A2 | L107 | "截断上限 1MB，与现有输出上限一致" | `BaseAdapter.MAX_OUTPUT_ENTRY_SIZE=10_000`（`base.ts:40`，单条 10KB）；1MB 属 `recipe-runner.ts:189,196` 的 shell stdout/stderr | 事实错误：现有 subagent 截断不是 1MB |
 | A3 | L285 | "`realtime/snapshot/`（约 1070 行）" | `git ls-files 'src/main/realtime/snapshot/**' \| grep -v __tests__ \| xargs wc -l` → **1208 行**（5 个非测试文件：`snapshot-persistence.ts` 93、`snapshot-store.ts` 209、`ws-server.ts` 263、`yjs-document.ts` 414、`yjs-realtime.ts` 229） | 事实错误：少报 138 行 |
-| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5089 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
+| A4 | L29 | "通读 1809 行" | 1809 是 `a60355a` 之前时点；本文当前 **5209 行**（2026-11-09 `wc -l` 复核） | 事实错误：R5 结论建立在过期快照上，须按现文本复审 |
 | A5 | L288 | "约 86 个 Yjs 专测" | `rg -c "\bit\("`：**9 文件 / 119 个 `it(` 声明**（`src/main/realtime` 8 文件 = 112 + `services/__tests__/conflict-reporter.test.ts` 7）；`git grep -c "it("` 子串法 8 个 realtime 文件为 116（含 4 行非声明匹配） | 事实错误：86 无对应口径 |
 | A6 | L360 | "`needs_input` 未入 status 值域（delta，待确认）" | 本文 §7.2 / §5.9.8：`work_items.status` **13 值**已含 `needs_input`（D2 一次建齐） | 事实错误：已入值域 |
 | A7 | L348 | 术语映射 "tasks / task_steps → work_items / work_runs" | D2：步专属字段落 **`work_steps`**；`work_runs` 是执行记录 | 事实错误：错误映射 |
@@ -4484,9 +4604,9 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 | # | 对方位置（v1.2.1 行） | 原句 | 我方事实 | 判定 |
 |---|---|---|---|---|
-| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5089 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
+| B1 | L30 | "通读 1809 行"作为现况 | 1809 是 `a60355a` 之前时点；本文当前 **5209 行**（2026-11-09 `wc -l` 复核） | 仅快照过期（同 A4；A4 按事实错误判定，B1 只记行号面） |
 | B2 | L279 | "基于 1809/2051 行时点快照" | `1809` / `2051` / `3209` 是不同时点，不混用 | 仅行号偏移 |
-| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5089 行**（2026-11-09 复核） | 仅行号偏移 |
+| B3 | L5、L21 | "当前 3209 行" | 3209 是 v1.2 写作时点；本文当前 **5209 行**（2026-11-09 复核） | 仅行号偏移 |
 | B4 | L279 | 章节号引用（§12.2 / §12.3 等） | 章节内容未变，行号随增删移动 | 仅行号偏移；引用应以章节标题定位 |
 
 **C. 属"不采纳 / 不可执行"，非事实错误（仅供其内部修订参考）**
@@ -4502,7 +4622,7 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 
 > 审计基线：本文件 B1 补齐前的 2045 行版本；本轮新增/改写的 §2.2.2、§2.3.1、§2.8、§3.7、§4.7、§5.7、§5.9.x、§6.5.x、§6.8.x、§8.14.1、§8.15 按补齐后形态一并列出。逐节复核后按"可施工 / 有框架缺细节 / 只有结论 / 空挂"四类判定。判定标准从严格：**只有能回答"每个字段类型、约束、谁写、何时写、写失败怎么办、怎么验收"才算可施工**。B1/B2 补丁已把大部分"有框架缺细节"推进到可施工；本表同时标注缺口归属。
 
-**汇总**：共 102 行；可施工 24 节；**已实施 23 节（2026-11-08 按代码更正，2026-11-09 G10-1 A/B 组落表）**；有框架缺细节 **32 节**；只有结论 23 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；B2 已落到 §5.7、§5.9.x、§6.5.x、§6.8.x；五条裁决已定案，相关行不再标待定。
+**汇总**：共 102 行；可施工 31 节；**已实施 23 节（2026-11-08 按代码更正，2026-11-09 G10-1 A/B/C 组落表）**；有框架缺细节 **25 节**；只有结论 23 节；空挂 0 节。B1 相关缺口已落到 §2.2.2、§2.3.1、§3.7、§4.7、§8.14.1、§8.15；B2 已落到 §5.7、§5.9.x、§6.5.x、§6.8.x；五条裁决已定案，相关行不再标待定。
 
 > **状态列更正（2026-11-08，以代码为准）**：以下 15 行原标“有框架缺细节”，与代码事实不符，现按 **已实施（DDL/服务级）** 读；其行为验收/边界用例转入 Part I I.3（W2/W4/W12）。**2026-11-09 G10-1 A 组已把 §1.1/§1.2/§1.3/§2.1/§2.2 两行/§2.3 的状态列直接改写**，其余待各主题组落表。
 > §1.1（`NodeType` CHECK `database.ts:781`；跨图拒绝 `hierarchy-service.ts:90-96`）、§1.2（v26）、§1.3（v27）、§2.1、§2.2（生成/回填两行）、§2.3（`link-service.ts:216`）、§5.4（`b6f3735`）、§7.1（v26–v35）、§7.2（B1 表）、§8.3（S1）、§8.4（S2）、§8.7（S5）、§8.8（S6）、§8.15（F1–F3）。另 §7.3 值域 CHECK 已落地（`database.ts:1184-1190`），一并更正；合计 16 行。
@@ -4556,15 +4676,15 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | §4.6 活动流 | 可施工（§4.6 + §4.7.7） | 无；`change_sets` 字段/采集、未采集展示、多 thread 聚合已给 | B1 |
 | §4.7 S5a 施工细则 | 可施工 | 无；写入权、13 个任务状态、12 个步状态、幂等与验收已齐 | B1 |
 | §5.1 总览 | 只有结论 | 无 | — |
-| §5.2 候选推导 | 有框架缺细节 | 候选存储、算法伪代码、权重配置、边界失败 | B2 |
-| §5.3 模型只选择 | 有框架缺细节 | 输出 schema、越界剔除、修复 1 轮的验收 | B2 |
+| §5.2 候选推导 | 可施工 | 候选存储、算法伪代码、权重默认值、边界失败已给（§5.2） | B2 |
+| §5.3 模型只选择 | 可施工（§5.3.1） | 输出 schema、越界剔除、修复 1 轮与 D7 兜底已给 | B2 |
 | §5.4 准入 gate | **已实施**（`b6f3735`；G1–G6 引擎 + 逐道诊断落库） | 仅剩 G3 跨图扩展、异步时限预算、版本精确归因（L3） | B2 |
-| §5.4.1 路径规范化 | 有框架缺细节 | POSIX 边界、`realpath` 失败、NFC/大小写折叠实现 | B2 |
-| §5.5 可修订计划 | 有框架缺细节 | revision 状态、DAG 环检测、父子聚合的实现 | B2 |
-| §5.5.1 DAG 正确性 | 有框架缺细节 | Kahn 伪代码、依赖优先级冲突、终态聚合验收 | B2 |
-| §5.6 确认点 | 有框架缺细节 | C1–C4 接口、计划快照、确认/退回状态 | B2 |
+| §5.4.1 路径规范化 | 可施工 | POSIX 边界、`realpath` 失败回退、NFC/大小写折叠已给 | B2 |
+| §5.5 可修订计划 | 可施工（§5.5.2） | revision 状态、DAG 环检测、父子聚合的实现已给 | B2 |
+| §5.5.1 DAG 正确性 | 可施工（§5.5.2） | Kahn 伪代码、依赖优先级冲突、终态聚合验收已给 | B2 |
+| §5.6 确认点 | 可施工（§5.6.1） | C1–C4 接口、计划快照、确认/退回状态已给 | B2 |
 | §5.7 偏差度量 | 可施工 | 归因口径、单一聚合窗口、字段/视图与采集时点已齐 | B2 |
-| §5.8 退化兜底 | 有框架缺细节 | D1–D7 触发判据、执行落点、验收 | B2 |
+| §5.8 退化兜底 | 可施工（§5.8.1） | D1–D7 触发判据、执行落点、报告写入与验收已给 | B2 |
 | §5.9 执行编排 | 可施工 | 调度 tick、接口输入输出、错误码与失败分支已齐（§5.9.9） | B2 |
 | §5.9.1–5.9.8 子节 | 可施工 | 单步/多步、失败分类、忙重排、deadline、Tier 票、取消竞态、步状态迁移已齐 | B2 |
 | §5.9.8.1 黑板/Phase B/fanout | 有框架缺细节 | 上下文最小化、检索预算与水位线已补；黑板数据结构与 Phase B 接口仍属 B3 | B3 |
