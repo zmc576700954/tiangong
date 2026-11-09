@@ -87,7 +87,7 @@
 | IPC 三通道 main 侧接线 | `resolveApproval/getPendingApprovals` 用 `typedHandle`；两个事件通道通过 `broadcastToWindows('agent:onApprovalRequest'/'agent:onApprovalResolved')` 接线 | [ipc/agent.ts](file:///Users/zhumingchen/tiangong/src/main/ipc/agent.ts#L38-L42)、[ipc-handlers.ts](file:///Users/zhumingchen/tiangong/src/main/ipc-handlers.ts#L288-L289) | 成立 [代码] |
 | 三通道进 preload 白名单 | invoke 通道在 `exposedChannels`；两个事件通道有 `onApprovalRequest` / `onApprovalResolved` 包装 | [preload/index.ts](file:///Users/zhumingchen/tiangong/src/preload/index.ts) | 成立 [代码] |
 | `argsHash` 参与匹配 | 请求时 `hashArgs(toolName,args)` 写库，决策时 `input.argsHash !== row.args_hash` 直接拒绝 | [gateway.ts](file:///Users/zhumingchen/tiangong/src/main/agent/runtime/approval/gateway.ts#L88-L146) | 成立 [代码] |
-| 超时 | 交互 120s / 无人值守 30s，超时即 deny | `INTERACTIVE_TIMEOUT_MS/UNATTENDED_TIMEOUT_MS` | 成立 [代码 + 单测] |
+| 超时 | 统一交互 120s，超时即 deny（无人值守 30s 分支已按 G6-5 删除：无生产调用方） | `INTERACTIVE_TIMEOUT_MS` | 成立 [代码 + 单测] |
 | 幂等 | 已决行再决直接返回既有结果 | gateway `decide` | 成立 [代码 + 单测] |
 | 重启重放 fail-closed | 重启后重新推送并重新计时，超时仍 deny | `replayPending` | 成立 [代码 + 单测] |
 | Renderer 无审批 UI | `src/renderer` 对 `onApprovalRequest/resolveApproval/getPendingApprovals` **零引用** | 我的 grep [实测] | 成立 [实测] |

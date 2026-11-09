@@ -41,7 +41,6 @@ export function buildLegacyApprovalHooks(input: LegacyApprovalHooksInput): Claud
         toolName,
         args,
         cwd: input.cwd,
-        mode: 'interactive',
       })
       if (outcome.decision === 'deny') {
         const detail = outcome.reason ? `：${outcome.reason}` : ''

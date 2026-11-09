@@ -187,7 +187,8 @@ describe('ACP executor（真实子进程）', () => {
     ])
     expect(events.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5])
     expect(approvals).toHaveBeenCalledTimes(1)
-    expect(approvals.mock.calls[0][0]).toMatchObject({ toolName: 'Write', mode: 'interactive' })
+    expect(approvals.mock.calls[0][0]).toMatchObject({ toolName: 'Write' })
+    expect(approvals.mock.calls[0][0]).not.toHaveProperty('mode')
 
     // 三阶段：awaiting_approval → approved(approvedAt) → running(executingAt) → done
     expect(steps).toContainEqual(expect.objectContaining({ id: 'step-tc-1', status: 'awaiting_approval' }))

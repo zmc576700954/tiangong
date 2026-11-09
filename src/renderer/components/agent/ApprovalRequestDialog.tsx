@@ -69,8 +69,6 @@ export function ApprovalRequestDialog() {
                 <p className="text-xs text-orange-700 dark:text-orange-300 mt-1">{t('agent.approval.blocked')}</p>
                 <p className="text-xs text-orange-600 dark:text-orange-400 mt-1">
                   {t('agent.approval.risk')}: {t(`agent.approval.risk.${payload.risk}`)} ·{' '}
-                  {t('agent.approval.mode')}:{' '}
-                  {payload.mode === 'unattended' ? t('agent.approval.mode.unattended') : t('agent.approval.mode.interactive')} ·{' '}
                   {t('agent.approval.expiresIn').replace('{seconds}', String(remaining))}
                 </p>
                 {payload.policyRule && (

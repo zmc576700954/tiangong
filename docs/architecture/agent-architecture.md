@@ -1182,7 +1182,7 @@ c) **威胁模型（跨用户 / 同 uid）**：对**其他本地 uid** 承诺不
 
 ### 7.4 生命周期：pending 保留 + 启动即 deny + 超时拒绝
 
-- 超时：交互 **120s**；`mode='unattended'` 的 **30s** 分支已实现，但**当前没有生产调用方传入 `unattended`**（默认恒为 `interactive`），因此 30s 在生产不可达；spike 用 30ms 验证时序。写 `denied` + `decided_by='timeout'`，且**迟到的 allow 不执行**（V7 已实测）。
+- 超时：统一交互 **120s**。`mode='unattended'` 的 **30s** 分支已于 2026-11-09 按 G6-5 **删除**（无生产调用方，保留会误导为支持无人值守审批）；`agent_approvals.mode` 的 CHECK 与读侧类型仍保留该值，仅为兼容历史行。spike 用 30ms 验证时序。超时写 `denied` + `decided_by='timeout'`，且**迟到的 allow 不执行**（V7 已实测）。
 - 重启（**实际行为**）：启动先扫描过期的 `pending` 并写 `denied/decided_by='timeout'`，再把剩余 `pending` 统一 `deny`、`decided_by='startup'`；**不重推 UI，也不进入 replay**——这是**生产启动序列级**语义，不是 `reconcileStartup` 函数恒为 0。函数自身的分支是：所属 turn 仍存活（`running/waiting_approval/cancelling`）时 `replayed=1 / pushed=1`（重推并重计时）；turn 已是终态/`orphaned` 时 `replayed=0 / denied=1 / pushed=0`。生产启动序列先 `applyRecoveryPlan` 把在途 turn 全部标 `orphaned`，再 `reconcileStartup`，所以实际命中的都是终态/orphaned turn：`RecoveryReport.pendingApprovals`（取 `reconcileStartup().replayed.length`，即重推数）为 0，被 `denied` 的陈旧审批数记 `RecoveryReport.deniedStaleApprovals`。此前文档承诺的「重推审批 + 批准后 replay」**并未实现**，本版以实际行为为准（改的是承诺，不是代码）。
 - 重复决定：幂等，只执行 1 次（V7 已实测）。
 - 决定与 `approval.resolved` 事件**同一事务**写入（V7 已实测）。
@@ -1367,7 +1367,7 @@ run.started → turn.started → (message.completed)* → turn.completed → run
 | # | 决策 | 现状 | 影响 |
 |---|---|---|---|
 | 1 | 是否需要排队（`queueDepth=1`） | M0 为 `NODE_BUSY` fail-fast；排队未验证 | 若要排队，启用 §4.3 第二条部分唯一索引 + 晋升事务 |
-| 2 | 审批超时时长 | 已定：交互 120s / 无人值守 30s（`mode` 决定）；spike 用 30ms 验证时序 | 太长会占锁；太短会误拒 |
+| 2 | 审批超时时长 | 已定：统一交互 120s（无人值守 30s 分支已按 G6-5 删除）；spike 用 30ms 验证时序 | 太长会占锁；太短会误拒 |
 | 3 | Codex 是否默认 `runStreamed()` | **已实测支持默认开启**（`spikes/codex-stream/`）；条件是完成判定用 `turn.completed`、自己杀进程组、不承诺 token 打字机、file_change 不承诺 diff | 需产品确认首版是否默认开启；开启后 Codex 可进工具时间线（无 argv/diff） |
 | 4 | 成本上限口径 | **已定：M1 只记账、不熔断**（§4.4.1）；阈值触发条件以 N 天 / X 金额占位，等真实分布回填 | 成本准入分支已删除（2026-11-05），任何配置都不会拒单；重新评估前需先满足 §4.4.1 的触发条件 |
 | 5 | 长尾 CLI 是否投入工具事件 | 现为 `none` | 决定 7 个适配器的 UI 能力 |

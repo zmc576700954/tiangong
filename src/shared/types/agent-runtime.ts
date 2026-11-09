@@ -104,6 +104,12 @@ export type ApprovalStatus = 'pending' | 'allowed' | 'denied' | 'superseded'
 export type RiskLevel = 'low' | 'medium' | 'high' | 'critical'
 export type PolicyDecision = 'allow' | 'deny' | 'ask'
 export type DecidedBy = 'user' | 'policy' | 'timeout' | 'system' | 'startup'
+/**
+ * G6-5：审批模式只剩交互式。
+ *
+ * `unattended` 仅保留在类型里描述历史数据（DB CHECK 与旧行仍可能是该值），
+ * 审批通道不再产出该模式；将来若要做无人值守审批，需重新设计并单独裁决。
+ */
 export type ApprovalMode = 'interactive' | 'unattended'
 
 export interface ApprovalRequestInput {
@@ -115,7 +121,6 @@ export interface ApprovalRequestInput {
   args: Record<string, unknown>
   risk?: RiskLevel
   policyDecision?: PolicyDecision
-  mode?: ApprovalMode
   /** S8/D6:审批主体类型(agent_turn 默认;test_plan/work_item 复用本表,§6.3) */
   subjectType?: 'agent_turn' | 'test_plan' | 'work_item'
   /** 审批主体 id(test_plan 时=plan_id;run/turn 缺省时必填) */
@@ -362,7 +367,6 @@ export interface RunNodeRequest {
   attempt?: number
   idempotencyKey?: string
   resumeMode?: 'native' | 'replay' | 'fresh'
-  mode?: ApprovalMode
   /** F3-A：本轮 deadline（毫秒）；0/undefined = 不启用。落库 deadline_at = now + deadlineMs。 */
   deadlineMs?: number
 }

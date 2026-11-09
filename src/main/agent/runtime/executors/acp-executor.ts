@@ -707,7 +707,6 @@ export class AcpBackendDriver implements BackendDriver {
         toolName,
         args,
         stepId,
-        mode: 'interactive',
         cwd: request.workingDirectory,
       })
     } catch (error) {

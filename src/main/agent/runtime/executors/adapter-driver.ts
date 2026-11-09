@@ -269,7 +269,6 @@ export class AdapterBackendDriver implements BackendDriver {
           toolName,
           args: input,
           stepId,
-          mode: 'interactive',
           cwd: request.workingDirectory,
         })
         emitAudit(

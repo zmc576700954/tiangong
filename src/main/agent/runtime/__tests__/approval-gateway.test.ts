@@ -7,13 +7,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ApprovalGateway, INTERACTIVE_TIMEOUT_MS, UNATTENDED_TIMEOUT_MS, classifyToolRisk, isPathInside } from '../approval/gateway'
+import { ApprovalGateway, INTERACTIVE_TIMEOUT_MS, classifyToolRisk, isPathInside } from '../approval/gateway'
 import { AgentRepository } from '../db/repository'
 import { AgentRuntimeError } from '../errors'
 import { openTestDb } from './helpers/test-db'
 import type { ApprovalRequestPayload, ApprovalResolutionPayload } from '@shared/types/agent-runtime'
 
-function setup(options?: { interactive?: number; unattended?: number }) {
+function setup(options?: { interactive?: number }) {
   const db = openTestDb()
   const repo = new AgentRepository(db)
   const run = repo.insertRun({ threadId: 't', nodeId: 'n', graphId: 'g', executor: 'claude-code' })
@@ -32,7 +32,6 @@ function setup(options?: { interactive?: number; unattended?: number }) {
     db,
     repo,
     interactiveTimeoutMs: options?.interactive,
-    unattendedTimeoutMs: options?.unattended,
     notifier: {
       onRequest: (payload) => requests.push(payload),
       onResolved: (payload) => resolved.push(payload),
@@ -42,9 +41,8 @@ function setup(options?: { interactive?: number; unattended?: number }) {
 }
 
 describe('ApprovalGateway (D4)', () => {
-  it('exposes the fixed timeouts (interactive 120s / unattended 30s)', () => {
+  it('exposes the fixed timeout (interactive 120s; G6-5 已删除 unattended 30s)', () => {
     expect(INTERACTIVE_TIMEOUT_MS).toBe(120_000)
-    expect(UNATTENDED_TIMEOUT_MS).toBe(30_000)
   })
 
   it('blocks the caller until an allow decision, then resolves', async () => {
@@ -185,8 +183,8 @@ describe('ApprovalGateway (D4)', () => {
       risk: 'high',
       policyDecision: 'ask',
       expiresAt: Date.now() - 10,
-      mode: 'unattended',
-      timeoutMs: 30_000,
+      mode: 'interactive',
+      timeoutMs: 120_000,
     })
     expect(gateway.sweepExpired()).toBe(1)
     const rows = repo.listApprovalsByTurn(turn.id)

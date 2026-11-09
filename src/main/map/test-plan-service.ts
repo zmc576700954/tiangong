@@ -213,7 +213,6 @@ export class TestPlanService {
       subjectId: planId,
       risk: 'medium',
       policyDecision: 'ask',
-      mode: 'interactive',
       cwd: plan.project_path,
     })
     if (outcome.decision !== 'allow') {
@@ -255,7 +254,6 @@ export class TestPlanService {
       subjectId: planId,
       risk: 'medium',
       policyDecision: 'ask',
-      mode: 'interactive',
       cwd: plan.project_path,
     })
     if (outcome.decision !== 'allow') {
@@ -355,7 +353,6 @@ export class TestPlanService {
             subjectId: planId,
             risk: 'medium',
             policyDecision: 'ask',
-            mode: 'interactive',
             cwd: opts?.cwdOverride,
           })
           if (outcome.decision === 'allow') {

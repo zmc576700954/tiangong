@@ -146,6 +146,7 @@ export interface AgentApprovalRow {
   /** 决策原因（如启动对账将陈旧 pending 置为 denied 的说明） */
   decision_note: string | null
   expires_at: number
+  /** 读侧保留联合：历史行可能是 unattended（G6-5 只停写，不改旧数据）。 */
   mode: 'interactive' | 'unattended'
   timeout_ms: number
   /** 请求时的会话工作目录（会话级授权的路径作用域根） */
@@ -188,7 +189,8 @@ export interface InsertApprovalInput {
   policyDecision?: 'allow' | 'deny' | 'ask'
   status?: ApprovalStatus
   expiresAt: number
-  mode: 'interactive' | 'unattended'
+  /** G6-5：审批通道只产交互式；库表 CHECK 仍允许 unattended 仅为兼容历史行。 */
+  mode: 'interactive'
   timeoutMs: number
   cwd?: string
   /** 会话级授权的来源 approval id（自动放行时写入，供审计） */

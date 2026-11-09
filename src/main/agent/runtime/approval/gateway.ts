@@ -2,7 +2,8 @@
  * D4：审批通道。
  *
  * 约束（agent-decisions.md D-B）：
- * - 交互 120s / 无人值守 30s；
+ * - 统一交互 120s（原「无人值守 30s」分支已按 G6-5 删除：无生产调用方，
+ *   保留会误导为支持无人值守审批）；
  * - pending 保留；启动对账只重推所属 turn 仍存活的审批（生产上在途 turn 已被
  *   orphaned，实际是统一 deny + decided_by='startup'，不推 UI、不重计时）；
  * - 超时写 denied + decided_by='timeout'；
@@ -14,7 +15,6 @@ import { hasRedactionMeta } from '../../../shared/redaction'
 import type BetterSqlite3 from 'better-sqlite3'
 import type {
   ApprovalDecisionInput,
-  ApprovalMode,
   ApprovalOutcome,
   ApprovalRequestInput,
   ApprovalRequestPayload,
@@ -35,7 +35,6 @@ import { legacySessionIdOf } from './legacy-ids'
 const logger = createLogger('ApprovalGateway')
 
 export const INTERACTIVE_TIMEOUT_MS = 120_000
-export const UNATTENDED_TIMEOUT_MS = 30_000
 
 /**
  * 「活 turn」判据：这些状态下 turn 仍在等待工具结果，审批才可能被兑现。
@@ -102,7 +101,6 @@ export interface ApprovalGatewayOptions {
   db: BetterSqlite3.Database
   repo?: AgentRepository
   interactiveTimeoutMs?: number
-  unattendedTimeoutMs?: number
   notifier?: ApprovalNotifier
   now?: () => number
   /**
@@ -139,7 +137,6 @@ export { isPathInside, isWriteScopedTool, targetPathsOf }
 export class ApprovalGateway {
   private readonly repo: AgentRepository
   private readonly interactiveTimeoutMs: number
-  private readonly unattendedTimeoutMs: number
   private readonly now: () => number
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly waiters = new Map<string, PendingWaiter[]>()
@@ -168,7 +165,6 @@ export class ApprovalGateway {
   constructor(options: ApprovalGatewayOptions) {
     this.repo = options.repo ?? new AgentRepository(options.db)
     this.interactiveTimeoutMs = options.interactiveTimeoutMs ?? INTERACTIVE_TIMEOUT_MS
-    this.unattendedTimeoutMs = options.unattendedTimeoutMs ?? UNATTENDED_TIMEOUT_MS
     this.now = options.now ?? Date.now
     this.notifier = options.notifier
     this.eventSink = options.eventSink
@@ -184,8 +180,7 @@ export class ApprovalGateway {
    * policyDecision='allow'/'deny' 时由宿主策略直接落定；否则挂起等待用户。
    */
   async request(input: ApprovalRequestInput): Promise<ApprovalOutcome> {
-    const mode: ApprovalMode = input.mode ?? 'interactive'
-    const timeoutMs = this.timeoutFor(mode)
+    const timeoutMs = Math.max(1, this.interactiveTimeoutMs)
     const argsHash = hashArgs(input.toolName, input.args)
     // 旧路径（无 turn）审批：登记活跃会话，供会话级授权的存活校验使用。
     // 启动对账时该集合为空，残留 pending 一律不可兑现 → deny（与 turn 判据一致）。
@@ -218,7 +213,7 @@ export class ApprovalGateway {
         policyDecision: 'deny',
         status: 'denied',
         expiresAt: createdAt + timeoutMs,
-        mode,
+        mode: 'interactive',
         timeoutMs,
         cwd: input.cwd,
         note: gitGuard.reason,
@@ -255,7 +250,7 @@ export class ApprovalGateway {
         policyDecision: 'allow',
         status: 'allowed',
         expiresAt: createdAt + timeoutMs,
-        mode,
+        mode: 'interactive',
         timeoutMs,
         cwd: input.cwd,
         grantSource: match.grant.approvalId,
@@ -281,7 +276,7 @@ export class ApprovalGateway {
       policyDecision,
       status: policyDecision === 'allow' ? 'allowed' : policyDecision === 'deny' ? 'denied' : 'pending',
       expiresAt: createdAt + timeoutMs,
-      mode,
+      mode: 'interactive',
       timeoutMs,
       cwd: input.cwd,
     })
@@ -769,11 +764,6 @@ export class ApprovalGateway {
   private workItemIdOf(stepId: string | null | undefined): string | undefined {
     if (!stepId) return undefined
     return this.repo.getWorkItemIdByStep(stepId)
-  }
-
-  private timeoutFor(mode: ApprovalMode): number {
-    const configured = mode === 'unattended' ? this.unattendedTimeoutMs : this.interactiveTimeoutMs
-    return Math.max(1, configured)
   }
 
   private armTimer(approvalId: string, expiresAt: number): void {
