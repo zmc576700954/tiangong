@@ -16,8 +16,29 @@ import path from 'node:path'
 const WRITE_TOOL_PATTERN =
   /^(write|edit|multiedit|notebookedit|create|delete|remove|move|rename|patch|apply_patch|str_replace|str_replace_editor)$/i
 
+/**
+ * G7-5：MCP 工具没有统一 schema，只能按**工具名清单**判定写语义（已登记 I.9.3 妥协）。
+ * 覆盖 Claude 的 `mcp__server__tool`、常见的 `server.tool` / `server_tool`、
+ * 以及裸工具名（`create_issue` / `delete_file`）——命中任一写动词即视为写类，
+ * 宁可多问一次审批，也不能把未知 MCP 写工具静默放行。
+ *
+ * 局限：读工具名里含写动词（如 `get_or_create`）会误判为写类；反之，
+ * 语义是写但名字不含这些动词的未知工具仍会被漏判（无法只靠名字解决）。
+ */
+const MCP_WRITE_TOOL_PATTERN =
+  /(?:^|__|[.:])(write|edit|create|delete|remove|move|rename|patch|apply|update|insert|upsert|set|add|upload|publish|post|put|merge|execute|run|send|import|install|uninstall|push|commit)(?:$|_|[.:])/i
+
+/** 是否为 MCP 命名风格（`mcp__x__y` / `mcp.x.y`）。 */
+export function isMcpToolName(toolName: string): boolean {
+  return /^mcp(__|[.:])/i.test(toolName.trim())
+}
+
 export function isWriteScopedTool(toolName: string): boolean {
-  return WRITE_TOOL_PATTERN.test(toolName.trim())
+  const name = toolName.trim()
+  if (WRITE_TOOL_PATTERN.test(name)) return true
+  if (isMcpToolName(name)) return MCP_WRITE_TOOL_PATTERN.test(name)
+  // 裸 MCP 工具名（部分 server 直接暴露 create_issue 这类名字）。
+  return /^(write|edit|create|delete|remove|move|rename|patch|apply|update|insert|upsert|set|add|upload|publish|post|put|merge|execute|run|send|import|install|uninstall|push|commit)[_.-]/i.test(name)
 }
 
 /** 单个路径字段（Claude 用 file_path；其他适配器可能用 path/notebook_path）。 */

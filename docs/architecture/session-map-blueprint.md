@@ -43,17 +43,17 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **83** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41） |
-| 已批准未实施 | **11** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **84** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway） |
+| 已批准未实施 | **10** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **24** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 83+11+24+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 84+10+24+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（83）
+### I.1.1 已实施（84）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
@@ -63,17 +63,17 @@
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-5 删除 unattended 30s 分支与仅供其存在的配置/UI/测试桩（`approval/gateway.ts:37,183`，统一交互 120s）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
-- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
+- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-5 MCP 写工具写前审批（同一 gateway）、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`、G3-3/G8-6 renderer 执行入口（`NodeMapPanel` 接 `workitem:run:start` / `workitem:cancel` / `workitem:step:run` / `workitem:run:cancel`，只读 `map:execution:status`，gate 未通过只禁用不放行）。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-10 worktree 定时清理（标记文件 + 启动/每 6h，`test-executor.ts`）、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（11）
+### I.1.2 已批准未实施（10）
 
 - **会话地图本体**：G1-9 E4 覆盖扫描。
 - **证据体系**：G5-5 E4 扫描（=G1-9）。
 - **Agent 运行时**：G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
-- **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode、G7-5 MCP 写工具。G7-10 旧路径时间线**已裁决不做**（设计边界，见 §4.5.1a），不在此列。
+- **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode。G7-10 旧路径时间线**已裁决不做**（设计边界，见 §4.5.1a），不在此列。
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
@@ -102,7 +102,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（77 条，按主题）
+## I.2 已实施清单（78 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -179,16 +179,19 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 > **证据口径（2026-11-09）**：G6-1～G6-4 为**模块级已验证**（真实子进程/临时库单测 + 全量 vitest 绿 + `tsc --noEmit`），**端到端待真机**——「chat 走 kernel 且有写前审批」目前只在 `AgentManager.sendCommand` 路由与 `runNode` 单测层面验证，尚未在打包后的 Electron app 中跑通完整链路。写入 `agent_events` / `agent_steps` 的三阶段时间戳同理，均为单测断言，不是真机会话回放。
 > **事实记录**：当前仓库**没有名为 `acp` 的 `AgentAdapter`**；ACP driver 仅在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效，因此今天可证的 chat kernel 路径仍是 `claude`（`claude-code`）。
 
-### I.2.6 审批与沙箱（6）
+### I.2.6 审批与沙箱（7）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
 | G7-4 | legacy Claude 审批钩子接线 | `2026-11-07` 修复；`agent-architecture.md` §17.5 |
+| G7-5 | MCP 写工具纳入写前审批：`McpAdapter.setTurnApprovalHooks` 由 Runtime Driver 注入，与 CLI 写工具走同一 gateway；写类判定按工具名清单 | `mcp-adapter.ts`、`write-paths.ts`、`approval-mcp-write.test.ts` |
 | G7-6 | 未知 git 配置键默认 ask（安全键族白名单外一律 `git-unknown-config-key`；`BIZGRAPH_GIT_CONFIG_STRICT_KEYS=off` 可回退，探针失败仍 fail-closed） | `bash-readonly.test.ts:2398,2520,2531`、`agent-architecture.md` §7.3 B |
 | G7-9 | legacy `onBashPolicy` 已接线：Bash 决策回调 Runtime 审计（命中规则/危险模式） | `claude-code.ts:84,371`、`claude-code.test.ts:260-314` |
 | G7-11 | 会话级授权仅覆盖写类工具（设计边界） | `agent-architecture.md` §7.6 |
 | G7-13 | 交互审批 120s fail-closed | `ApprovalGateway`；`agent-architecture.md` §7.4 |
 | G7-14 | 重启陈旧审批 deny | `agent-architecture.md` §7.4 |
+
+> **G7-5 做了什么 / 妥协在哪**：做了什么——MCP 适配器补 `setTurnApprovalHooks`（与 Claude 同形），Driver 自动注入后，写类 MCP 工具在执行前走同一 `ApprovalGateway`（PreToolUse 审计 + canUseTool 决策 + 会话级授权），被拒即不调用 `client.callTool`；`isWriteScopedTool` 扩展 MCP 命名（`mcp__server__tool` / `server.tool` / 裸 `create_issue`）。妥协在哪——只能按**工具名动词清单**判定写语义，无法识别名字不含写动词、但语义为写的未知 MCP 工具；名字含写动词的读工具会被保守误判为写类（多弹一次审批）；MCP 无路径参数时无法命中会话级授权，每次都要重新审批。
 
 ### I.2.7 界面与交互（5）
 
@@ -315,7 +318,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：无人值守审批当前无实现；将来需要时重新设计并单独裁决，不从旧分支恢复。
 
 ### W7 审批覆盖扩展
-- 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[批准]` MCP 写工具、G7-6 `[已实施]` 未知键 ask、G7-9 `[已实施]` legacy `onBashPolicy`。
+- 覆盖条目：G7-1 `[批准]` 写前审批覆盖边界、G7-2 `[批准]` Codex gateway、G7-3 `[批准]` OpenCode、G7-5 `[已实施]` MCP 写工具（同一 gateway）、G7-6 `[已实施]` 未知键 ask、G7-9 `[已实施]` legacy `onBashPolicy`。
 - 目标：所有写路径在“执行前”被拦截；无法拦截的后端显式降级。
 - 涉及文件与数据/接口变更：`src/main/agent/runtime/approval/`、`src/main/adapters/codex.ts`、`opencode.ts`、`src/main/agent/mcp/*`；能力位 `approval` 与 UI 文案。
 - 实施步骤：① MCP 写工具登记 D1；② Codex/OpenCode 接入 gateway；③ 未知配置键 ask；④ 覆盖矩阵测试。
@@ -702,7 +705,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 |---|---|---|---|---|
 | G1-14 / G2-6 / G2-19 / G8-4 **（妥协）** | 提案机制的验收口径与交互完整度 | 服务层 + 只读视图 + 面板三层已落地；提案不写 online 图 | **妥协**：①采纳没有 E2 证据、无“已改 online”校验（仅 `acceptedBy`）；②`base_revision` 用节点 `updated_at`，同值重写不判 stale；③“降权”只排序未做 `low_weight` 徽标；④超时扫描依赖每日巡检，最坏晚约 24h；⑤无提案创建图形入口、图面不高亮被提案节点。后果：提案可审阅但采纳合规性仍靠人自觉 | 补 E2 采纳证据 + 内容 hash 基线 + 图面高亮后重新评估 |
 | G2-1 / II-03 **（妥协）** | 执行模式可解释、可复盘 | 代码常量注册表 + `routing_decisions.mode_id` + `mode:list` 只读；无匹配 `TIER_UNSUPPORTED` | **妥协**：①模式不驱动参数/提示词/ContextBundle 装配，仅路由标签；②无模式库存储与可视化编辑，改模式须发版；③匹配键只有执行器 + policy + adapter 非空；④历史决策 `mode_id` 为 NULL 未回填。后果：能回答“这次走了哪个模式”，但不能“按模式调参” | 需要按模式调参/运营配置模式时重新评估 |
-| （待 G7-5 实施追加） | | | | |
+| G7-5 / II-审批 **（妥协）** | MCP 写工具不得绕过写前审批 | `McpAdapter.setTurnApprovalHooks` 接入 Driver，写类 MCP 工具执行前走同一 gateway；被拒不执行 | **妥协**：①只能按工具名动词清单判定写语义，名字不含写动词的未知写工具会漏判；②名字含写动词的读工具会被保守误判（多问一次）；③MCP 无路径参数时无法命中会话级授权，每次重新审批；④未覆盖 Codex/OpenCode 的 MCP 工具路径（G7-1/G7-2/G7-3 仍待办）。后果：已知写工具被兜住，未知写语义仍可能漏 | 拿到 MCP server 的 tools/list 注解或 schema 后按语义判定 |
 | （待 G11-10 实施追加） | | | | |
 
 # Part II 仅建议项施工级设计（27 条有效 + II-24/II-32 已实施存档）

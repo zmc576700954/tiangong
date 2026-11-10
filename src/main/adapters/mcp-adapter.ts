@@ -16,6 +16,7 @@ import {
   buildDelegateRecipeToolSchema,
 } from './base'
 import { McpClient } from '../mcp/client'
+import { isWriteScopedTool } from '../agent/runtime/approval/gateway'
 import { generateId } from '../shared/env'
 import type { ChildProcess } from 'node:child_process'
 import type {
@@ -54,6 +55,24 @@ interface ToolResult {
   toolCallId: string
   content: string
   isError?: boolean
+}
+
+/**
+ * G7-5：与 Claude 适配器同形的轮次审批钩子。由 Runtime Driver 注入
+ * （`adapter-driver.installClaudeApprovalHooks` 只要求存在 `setTurnApprovalHooks`），
+ * 因此 MCP 写工具与 CLI 写工具走**同一 gateway**、同一会话级授权与审计链路。
+ */
+interface McpTurnApprovalHooks {
+  canUseTool?: (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { signal: AbortSignal; toolUseID: string },
+  ) => Promise<{ behavior: 'allow' } | { behavior: 'deny'; message?: string }>
+  onPreToolUse?: (
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    toolUseId?: string,
+  ) => void | Promise<void>
 }
 
 /** 支持 Tool Use 的 LLM 消息格式 */
@@ -490,6 +509,39 @@ export class McpAdapter extends BaseAdapter {
   private static readonly POOL_IDLE_TIMEOUT_MS = 10 * 60 * 1000 // 10 分钟空闲超时
   /** 连接池定期清理定时器 */
   private poolCleanupTimer?: ReturnType<typeof setInterval>
+  /** G7-5：轮次级审批钩子（由 Runtime Driver 注入；未设置时行为不变）。 */
+  private turnApprovalHooks = new Map<string, McpTurnApprovalHooks>()
+
+  setTurnApprovalHooks(sessionId: string, hooks: McpTurnApprovalHooks | null): void {
+    if (hooks) this.turnApprovalHooks.set(sessionId, hooks)
+    else this.turnApprovalHooks.delete(sessionId)
+  }
+
+  /**
+   * 写类 MCP 工具执行前走同一审批网关：先记 PreToolUse 审计，再对写类工具
+   * 请求 canUseTool 决策。读类工具只记审计、不弹审批。
+   */
+  private async authorizeMcpToolCall(
+    session: AgentSession,
+    toolCall: UnifiedToolCall,
+  ): Promise<ToolResult | null> {
+    const hooks = this.turnApprovalHooks.get(session.id)
+    if (!hooks) return null
+    await hooks.onPreToolUse?.(toolCall.name, toolCall.arguments, toolCall.id)
+    if (!isWriteScopedTool(toolCall.name) || !hooks.canUseTool) return null
+    const outcome = await hooks.canUseTool(toolCall.name, toolCall.arguments, {
+      signal: new AbortController().signal,
+      toolUseID: toolCall.id,
+    })
+    if (outcome.behavior === 'deny') {
+      return {
+        toolCallId: toolCall.id,
+        content: outcome.message ?? `Tool ${toolCall.name} denied by approval gateway`,
+        isError: true,
+      }
+    }
+    return null
+  }
 
   async checkInstalled(): Promise<boolean> {
     // MCP adapter is "installed" if at least one API key is configured
@@ -1160,6 +1212,10 @@ export class McpAdapter extends BaseAdapter {
         }
       }
     }
+
+    // G7-5：写类 MCP 工具先过审批网关；被拒时不执行真实调用。
+    const denied = await this.authorizeMcpToolCall(session, toolCall)
+    if (denied) return denied
 
     const result = await this.executeMcpTool(clients, toolCall)
 
