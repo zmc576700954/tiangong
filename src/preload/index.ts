@@ -228,6 +228,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   // 白名单见 @shared/types/ipc 的 MAP_READ_ONLY_CHANNELS：不得含任何写操作或执行触发。
   ...MAP_READ_ONLY_CHANNELS,
 
+  // 任务创建（写通道）：renderer 的 mapStore.createWorkItem 依赖它；handler 已注册。
+  // 错误按 reject 语义直传（非结构化信封），与 mapStore 的调用方式一致。
+  'workitem:create',
   // 任务级入队/取消（既有 handler，本包补齐暴露；G3-3/G8-6）。
   // run:start 只做 confirm 入队，不内联执行；cancel 不终止进程（run 级取消另用下面的通道）。
   'workitem:run:start',

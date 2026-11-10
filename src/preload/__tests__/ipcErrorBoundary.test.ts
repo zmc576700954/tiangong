@@ -72,4 +72,29 @@ describe('preload 边界：结构化错误穿透（P1-2）', () => {
     mocks.invoke.mockRejectedValueOnce(new Error('nope'))
     await expect(exposedApi()['agent:getPendingApprovals']()).rejects.toThrow('nope')
   })
+
+  it('地图执行入口与变更事件均在 preload 暴露面（G3-3/G8-6）', () => {
+    const api = exposedApi() as Record<string, unknown>
+    // 写入/执行触发通道：handler 已注册，renderer 有调用点，必须暴露，
+    // 否则运行时会得到 “window.electronAPI[...] is not a function”。
+    for (const channel of [
+      'workitem:create',
+      'workitem:run:start',
+      'workitem:cancel',
+      'workitem:step:run',
+      'workitem:run:cancel',
+      'workitem:acceptance:confirm',
+    ]) {
+      expect(typeof api[channel], channel).toBe('function')
+    }
+    // 只读的执行开关经 MAP_READ_ONLY_CHANNELS 暴露。
+    expect(typeof api['map:execution:status']).toBe('function')
+
+    // 状态变更订阅：必须存在且真的监听 event:work-item-changed。
+    const onWorkItemChanged = api.onWorkItemChanged as ((cb: (p: unknown) => void) => () => void) | undefined
+    expect(typeof onWorkItemChanged).toBe('function')
+    mocks.on.mockClear()
+    onWorkItemChanged!(() => {})
+    expect(mocks.on.mock.calls.some((call) => call[0] === 'event:work-item-changed')).toBe(true)
+  })
 })
