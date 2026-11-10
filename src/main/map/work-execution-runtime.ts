@@ -162,6 +162,8 @@ export function startWorkExecutionRuntime(options: StartWorkExecutionOptions): v
     },
     timeouts: options.timeouts,
     lease: options.lease,
+    // G2-10：步级确认闸复用与 G4 同一个行数代理。
+    estimateLines: buildEstimateLines(),
   })
   setWorkExecutionService(service)
 

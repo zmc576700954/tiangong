@@ -24,6 +24,9 @@ import { getProjectProgress } from '../map/project-progress'
 import { ProposalService } from '../map/proposal-service'
 import { listModes } from '../map/mode-registry'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
+import { StepConfirmationError, StepConfirmationService } from '../map/step-confirmation-service'
+import { assertConfirmationDisplay } from '../map/confirmation-points'
+import { buildEstimateLines } from '../map/work-execution-runtime'
 import type { WorkStepServiceOptions } from '../map/work-step-service'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import {
@@ -39,6 +42,12 @@ import type { TypedHandle } from './utils'
 function limitOf(value: unknown, fallback: number, max = 500): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
   return Math.min(Math.max(Math.trunc(value), 1), max)
+}
+
+/** 确认点必填展示项入参（renderer 组装的展示数据；非对象一律按缺失处理）。 */
+function displayOf(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
 }
 
 export function registerMapHandlers(
@@ -69,6 +78,12 @@ export function registerMapHandlers(
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
   const acceptanceConfirm = new AcceptanceConfirmationService(db, stepOptions)
+  // G2-10：C3/C4 步级确认。行数代理与 tick 闸共用同一个 estimator，避免同一
+  // 步在「执行侧判定 high」而「确认视图判定 low」的两套结论。
+  const stepConfirm = new StepConfirmationService(db, {
+    ...stepOptions,
+    estimateLines: buildEstimateLines(),
+  })
   const proposals = new ProposalService(db)
 
   // ---- 叠加层（§9.2:必须批量）----
@@ -437,8 +452,18 @@ export function registerMapHandlers(
   })
 
   typedHandle('workitem:revise', async (_, data) => {
-    const d = data as { id: string; title?: string; goal?: string; scopeFiles?: string[]; acceptance?: Array<Record<string, unknown>> }
+    const d = data as {
+      id: string
+      title?: string
+      goal?: string
+      scopeFiles?: string[]
+      acceptance?: Array<Record<string, unknown>>
+      display?: unknown
+    }
     if (typeof d.id !== 'string') throw new Error('id is required')
+    // G2-10 C2：修订会置旧 revision superseded，必填展示项（diff/影响/原因/gate 结论）
+    // 缺任一项即拒绝，不生成新 revision。
+    assertConfirmationDisplay('C2', displayOf(d.display))
     const row = workItems.revise(d.id, {
       title: d.title,
       goal: d.goal,
@@ -574,6 +599,62 @@ export function registerMapHandlers(
       confirmationBatchId: result.confirmationBatchId,
       confirmationIds: result.confirmationIds,
     }
+  })
+
+  // ---- G2-10 C3/C4 步级确认（只读视图 + 决策写通道）----
+  // 只对 test/human 步；agent 步不建计划期确认点（I.4 D-18），继续走 runtime
+  // 的逐工具审批。风险等级由服务端派生，renderer 只读展示、不得复算（G8-3）。
+  typedHandle('map:confirmation:status', async (_, query: unknown) => {
+    const q = (query ?? {}) as { stepId?: unknown; workItemId?: unknown; revision?: unknown }
+    if (typeof q.stepId === 'string' && q.stepId !== '') {
+      return stepConfirm.inspect(q.stepId)
+    }
+    if (typeof q.workItemId === 'string' && q.workItemId !== '') {
+      if (q.revision !== undefined && (typeof q.revision !== 'number' || !Number.isInteger(q.revision))) {
+        throw new Error('revision must be an integer')
+      }
+      const workItem = workItems.get(q.workItemId)
+      if (!workItem) return []
+      const revision = typeof q.revision === 'number' ? q.revision : workItem.revision
+      return stepConfirm.listForItem(q.workItemId, revision)
+    }
+    throw new Error('stepId or workItemId is required')
+  })
+
+  typedHandle('map:confirmation:decide', async (_, data: unknown) => {
+    const d = (data ?? {}) as {
+      stepId?: unknown
+      decision?: unknown
+      display?: unknown
+      note?: unknown
+      decidedBy?: unknown
+    }
+    if (typeof d.stepId !== 'string' || d.stepId === '') throw new Error('stepId is required')
+    if (d.decision !== 'approve' && d.decision !== 'reject') {
+      throw new Error("decision 必须为 'approve' 或 'reject'")
+    }
+    if (!d.display || typeof d.display !== 'object' || Array.isArray(d.display)) {
+      // 必填展示项缺失时不允许「什么都没看就点确认」。
+      throw new StepConfirmationError('CONFIRMATION_DISPLAY_MISSING', 'display 必填')
+    }
+    const view = stepConfirm.decide({
+      stepId: d.stepId,
+      decision: d.decision,
+      display: d.display as Record<string, unknown>,
+      note: typeof d.note === 'string' ? d.note : undefined,
+      decidedBy: typeof d.decidedBy === 'string' ? d.decidedBy : undefined,
+    })
+    const item = workItems.get(view.workItemId)
+    if (item) {
+      broadcast?.('event:work-item-changed', {
+        stepId: view.stepId,
+        lineageId: item.lineage_id,
+        revision: item.revision,
+        status: item.status,
+        reason: d.decision === 'approve' ? 'step_confirmation_approved' : 'step_confirmation_rejected',
+      })
+    }
+    return view
   })
 
   // ---- G2-1 执行模式（只读；模式库是代码常量，不提供写通道）----
@@ -713,8 +794,10 @@ export function registerMapHandlers(
   })
 
   typedHandle('plan:draft:confirm', async (_, data) => {
-    const d = (data ?? {}) as { id?: unknown; confirmedBy?: unknown }
+    const d = (data ?? {}) as { id?: unknown; confirmedBy?: unknown; display?: unknown }
     if (typeof d.id !== 'string') throw new Error('id is required')
+    // G2-10 C1：确认即生成 work_items 且不可原地回退，必填展示项缺任一项即拒绝。
+    assertConfirmationDisplay('C1', displayOf(d.display))
     try {
       return planDrafts.confirm(d.id, { confirmedBy: typeof d.confirmedBy === 'string' ? d.confirmedBy : undefined })
     } catch (err) {

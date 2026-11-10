@@ -367,7 +367,18 @@ export interface IpcApi {
     steps?: Array<{ title: string; stepKind?: 'agent' | 'test' | 'human' }>
     createdBy?: string
   }) => Promise<Record<string, unknown>>
-  'workitem:revise': (data: { id: string; title?: string; goal?: string; scopeFiles?: string[]; acceptance?: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
+  /**
+   * G2-10 C2 执行中修订：`display` 为必填展示项（diff / impact / reason / gateResult），
+   * 缺任一项服务层拒绝，不生成新 revision。
+   */
+  'workitem:revise': (data: {
+    id: string
+    title?: string
+    goal?: string
+    scopeFiles?: string[]
+    acceptance?: Array<Record<string, unknown>>
+    display: Record<string, unknown>
+  }) => Promise<Record<string, unknown>>
   /** run:start 前必须 gate=pass/waived（§9.2）;编排执行随 L2 §5.9 */
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
   'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
@@ -444,6 +455,27 @@ export interface IpcApi {
     confirmationIds: string[]
   }>
 
+  /**
+   * G2-10 只读：C3/C4 步级确认视图。只覆盖 `test` / `human` 步（`point` 为 null 表非确认步）；
+   * 风险等级与原因由主进程派生，渲染层只展示、不得复算（G8-3）。
+   * 按 `stepId` 查单步，或按 `workItemId`（可选 `revision`，缺省取当前 revision）查整组。
+   */
+  'map:confirmation:status': (query:
+    | { stepId: string }
+    | { workItemId: string; revision?: number }
+  ) => Promise<unknown>
+  /**
+   * G2-10 写通道：记录 C3/C4 确认决策。`display` 缺必填展示项即拒绝。
+   * approve → 步回 pending；reject → C3 cancelled / C4 返工回 pending。
+   */
+  'map:confirmation:decide': (data: {
+    stepId: string
+    decision: 'approve' | 'reject'
+    display: Record<string, unknown>
+    note?: string
+    decidedBy?: string
+  }) => Promise<unknown>
+
   // S7 计划推导/草稿（§9.2 plan:*;C1 环检测拒绝带 |cycle=[...] 后缀）
   'plan:derive-candidates': (data: { graphId: string; anchorNodeId?: string; changeFiles?: string[] }) => Promise<{
     runId: string
@@ -453,7 +485,11 @@ export interface IpcApi {
   'plan:draft:create': (data: { projectPath?: string; graphId: string; anchorEntityKey?: string; anchorNodeId?: string; derivationRunId?: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
   'plan:draft:get': (id: string) => Promise<Record<string, unknown> | null>
   'plan:draft:revise': (data: { id: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
-  'plan:draft:confirm': (data: { id: string; confirmedBy?: string }) => Promise<{ draft: Record<string, unknown>; workItemIds: string[]; parentId: string }>
+  /**
+   * G2-10 C1 计划确认：`display` 为必填展示项（子任务/写域/验收/依赖/候选分/gate 缺项等），
+   * 缺任一项服务层拒绝，不生成 work_items。
+   */
+  'plan:draft:confirm': (data: { id: string; confirmedBy?: string; display: Record<string, unknown> }) => Promise<{ draft: Record<string, unknown>; workItemIds: string[]; parentId: string }>
   'plan:draft:reject': (id: string) => Promise<Record<string, unknown>>
 
   // 配置管理
@@ -599,6 +635,7 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:execution:status',
   'map:published:status',
   'map:project:progress',
+  'map:confirmation:status',
   'mode:list',
   'proposal:list',
   'proposal:diff',

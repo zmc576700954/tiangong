@@ -176,7 +176,7 @@ describe('WorkStepService（§4.7.4 状态迁移）', () => {
       expect(WORK_STEP_TRANSITIONS).toEqual({
         planning: ['pending', 'failed', 'cancelled'],
         pending: ['waiting_approval', 'running', 'skipped', 'failed', 'cancelled', 'paused'],
-        waiting_approval: ['running', 'timed_out', 'cancelled'],
+        waiting_approval: ['running', 'timed_out', 'cancelled', 'pending'],
         running: ['review', 'succeeded', 'failed', 'timed_out', 'needs_input', 'paused', 'cancelled'],
         review: ['succeeded', 'needs_input', 'paused', 'cancelled'],
         needs_input: ['pending', 'succeeded', 'failed', 'cancelled'],
@@ -213,6 +213,23 @@ describe('WorkStepService（§4.7.4 状态迁移）', () => {
         WorkStepConflictError,
       )
       expect(steps.get(otherStep)!.status).toBe('waiting_approval')
+    })
+
+    it('G2-10：确认通过/驳回返工走 waiting_approval → pending，确认契约写入 input_request_json', () => {
+      confirmItem()
+      const request = JSON.stringify({ kind: 'step_confirmation', point: 'C4' })
+      expect(steps.awaitApproval(stepId, request).input_request_json).toBe(request)
+
+      // 通过：清空确认契约
+      expect(steps.returnToPending(stepId, null).status).toBe('pending')
+      expect(steps.get(stepId)!.input_request_json).toBeNull()
+
+      // 驳回返工：保留返工标记
+      steps.awaitApproval(stepId, request)
+      const rejection = JSON.stringify({ kind: 'step_confirmation', decision: 'reject' })
+      const pending = steps.returnToPending(stepId, rejection)
+      expect(pending.status).toBe('pending')
+      expect(pending.input_request_json).toBe(rejection)
     })
 
     it('review → failed 未声明（当前无生产写入方，不为死状态加迁移）', () => {

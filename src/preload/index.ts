@@ -241,6 +241,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   'workitem:run:cancel',
   // D2 manual 验收人工确认（写通道）：只记录确认事实并重算验收，不触发 turn。
   'workitem:acceptance:confirm',
+  // G2-10 C3/C4 步级确认决策（写通道）：只改步状态与确认事实，不触发执行。
+  // 只读的状态通道在 MAP_READ_ONLY_CHANNELS 里（map:confirmation:status）。
+  'map:confirmation:decide',
   // G1-10 证据建议接受/驳回（写通道）：本地 renderer 人工裁决，必须带 resolvedBy。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',
@@ -278,6 +281,8 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   'workitem:step:run',
   'workitem:run:cancel',
   'workitem:acceptance:confirm',
+  // G2-10 步级确认决策：缺展示项 / 非确认步 / 步不在闸上必须可结构化区分。
+  'map:confirmation:decide',
   // 证据建议裁决：不存在/已驳回/已接受需要结构化区分，不能让 renderer 只看到模糊失败。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',

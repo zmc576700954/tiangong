@@ -64,6 +64,13 @@ export const GATE_EVALUATOR_VERSION = 'gate-engine@1'
 const DEFAULT_G4_MAX_FILES = 20
 const DEFAULT_G4_MAX_LINES = 800
 
+/**
+ * G4 高风险线（G2-10 复用同一对常量，不另造档位）。
+ * 步级确认闸只判「达到/超过这两条线」，不引入第三档或新阈值。
+ */
+export const G4_HIGH_RISK_FILES = DEFAULT_G4_MAX_FILES
+export const G4_HIGH_RISK_LINES = DEFAULT_G4_MAX_LINES
+
 /** §5.4 G2 结构化验收条目的合法 type。 */
 const ACCEPTANCE_TYPES = ['command', 'manual', 'file_check'] as const
 

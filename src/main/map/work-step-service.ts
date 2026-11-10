@@ -54,8 +54,8 @@ export const WORK_STEP_TRANSITIONS: Readonly<Record<WorkStepStatus, readonly Wor
   planning: ['pending', 'failed', 'cancelled'],
   // awaitApproval / start / skip / failUnstarted / cancel / pause
   pending: ['waiting_approval', 'running', 'skipped', 'failed', 'cancelled', 'paused'],
-  // start / fail(timed_out) / cancel
-  waiting_approval: ['running', 'timed_out', 'cancelled'],
+  // start / fail(timed_out) / cancel；G2-10：确认通过/驳回返工时回 pending
+  waiting_approval: ['running', 'timed_out', 'cancelled', 'pending'],
   // complete / fail / cancel / pause
   running: ['review', 'succeeded', 'failed', 'timed_out', 'needs_input', 'paused', 'cancelled'],
   // complete / cancel / pause（无生产写入方进入 review，保留出边以便将来接 checker）
@@ -137,6 +137,7 @@ const SRC_SKIP = ['pending'] as const
 const SRC_PAUSE = ['pending', 'running', 'review'] as const
 const SRC_RESUME = ['needs_input', 'paused'] as const
 const SRC_SETTLE = ['needs_input'] as const
+const SRC_RETURN = ['waiting_approval'] as const
 
 export class WorkStepService {
   constructor(
@@ -226,17 +227,37 @@ export class WorkStepService {
     return this.confirmed(stepId, result.changes, "pending|waiting_approval → running")
   }
 
-  /** pending → waiting_approval（§4.7.4 第 5 行；审批记录须已先落 agent_approvals）。 */
-  awaitApproval(stepId: string): WorkStepRow {
+  /**
+   * pending → waiting_approval（§4.7.4 第 5 行；审批记录须已先落 agent_approvals）。
+   * G2-10：步级确认闸复用同一状态，把确认点契约写进 `input_request_json`。
+   */
+  awaitApproval(stepId: string, inputRequestJson?: string): WorkStepRow {
     this.assertDeclared(SRC_AWAIT, 'waiting_approval')
     const now = Date.now()
     const result = this.db
       .prepare(
-        `UPDATE work_steps SET status = 'waiting_approval', updated_at = ?
+        `UPDATE work_steps SET status = 'waiting_approval',
+           input_request_json = COALESCE(?, input_request_json), updated_at = ?
           WHERE id = ? AND status IN (${this.inList(SRC_AWAIT)})`,
       )
-      .run(now, stepId, ...SRC_AWAIT)
+      .run(inputRequestJson ?? null, now, stepId, ...SRC_AWAIT)
     return this.confirmed(stepId, result.changes, "pending → waiting_approval")
+  }
+
+  /**
+   * waiting_approval → pending（G2-10 确认通过/C4 驳回返工）。
+   * `inputRequestJson` 显式覆盖：通过传 null 清空，驳回保留返工标记。
+   */
+  returnToPending(stepId: string, inputRequestJson: string | null = null): WorkStepRow {
+    this.assertDeclared(SRC_RETURN, 'pending')
+    const now = Date.now()
+    const result = this.db
+      .prepare(
+        `UPDATE work_steps SET status = 'pending', input_request_json = ?, updated_at = ?
+          WHERE id = ? AND status IN (${this.inList(SRC_RETURN)})`,
+      )
+      .run(inputRequestJson, now, stepId, ...SRC_RETURN)
+    return this.confirmed(stepId, result.changes, "waiting_approval → pending")
   }
 
   /**

@@ -52,6 +52,7 @@ import {
   type WorkStepServiceOptions,
   type WorkStepStatus,
 } from './work-step-service'
+import { StepConfirmationService } from './step-confirmation-service'
 import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from '../agent/timeout-config'
 import type { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
 import {
@@ -141,6 +142,11 @@ export interface WorkExecutionOptions {
    * 租约是否生效仍由 `BIZGRAPH_WORKSPACE_LEASE` 决定，关闭时 acquire 返回 noop。
    */
   lease?: WorkspaceLeaseRegistry
+  /**
+   * G2-10：G4 行数代理（与 gate 引擎同一个 estimator）。缺省 = 行数不可预估，
+   * 步级确认闸只按写域文件数判定。
+   */
+  estimateLines?: (files: string[], projectPath: string | null) => number | null
 }
 
 export interface EnqueueStepInput {
@@ -181,6 +187,8 @@ export interface WorkTickReport {
   skippedStepIds: string[]
   /** G3-2：项目写闸被其他进程持有而跳过的 item（不 claim、不消耗 attempt）。 */
   projectBusyItemIds: string[]
+  /** G2-10：本轮被步级确认闸挂到 waiting_approval 的步（test/human 高风险）。 */
+  confirmationGatedStepIds: string[]
 }
 
 export interface WorkTickOptions {
@@ -205,6 +213,8 @@ export class WorkExecutionService {
   private readonly runs: WorkRunService
   private readonly scheduler: WorkScheduler
   private readonly runner: AgentStepRunner
+  /** G2-10：C3/C4 步级确认闸（只对 test/human 步生效）。 */
+  private readonly confirmations: StepConfirmationService
   private readonly isEnabled: () => boolean
   private readonly gateRecheck: GateRecheck
   /** v36 / G3-7/G3-8：生效的超时预算（stepMs 写 deadline、taskMs 任务总预算）。 */
@@ -227,6 +237,10 @@ export class WorkExecutionService {
     this.runs = new WorkRunService(db)
     this.scheduler = new WorkScheduler(db, stepOptions)
     this.runner = new AgentStepRunner(db, turns, stepOptions)
+    this.confirmations = new StepConfirmationService(db, {
+      onChanged: (event) => this.emitStepChanged(event),
+      estimateLines: options.estimateLines,
+    })
     this.isEnabled = options.isEnabled ?? isMapExecutionEnabled
     this.gateRecheck = options.gateRecheck ?? unavailableGateRecheck
     this.agentTimeouts = resolveAgentTimeouts(options.timeouts)
@@ -354,6 +368,7 @@ export class WorkExecutionService {
       routingFailedItemIds: [],
       skippedStepIds: [],
       projectBusyItemIds: [],
+      confirmationGatedStepIds: [],
     }
     if (!this.isEnabled()) return report
     if (this.inflightRunId !== null) {
@@ -437,6 +452,12 @@ export class WorkExecutionService {
         if (converged && converged.status !== before) {
           this.emitItemChanged(converged, 'item_converged')
         }
+        continue
+      }
+      // G2-10：高风险 test/human 步先过确认闸。agent 步不建计划期确认点
+      // （D-18：控制在 runtime 的逐工具审批层，不在错误的层重复造）。
+      if (step.step_kind !== 'agent' && this.confirmations.maybeGate(step.id)) {
+        report.confirmationGatedStepIds.push(step.id)
         continue
       }
       if (step.step_kind !== 'agent') {
