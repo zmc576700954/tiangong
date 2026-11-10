@@ -46,6 +46,8 @@ export interface NodeEvidenceRow {
   code_dirty: number | null
   base_hash: string | null
   current_hash: string | null
+  /** v42/G11-10：E3 执行树的 git tree 哈希（可空，不参与 gate）。 */
+  tree_hash: string | null
   freshness: 'fresh' | 'stale' | 'unknown'
   produced_by: Actor
   work_item_id: string | null
@@ -92,6 +94,8 @@ export interface CreateEvidenceInput {
   codeDirty?: number
   /** E2 content_hash 绑定(测试事实:current_hash=执行后 worktree 内容指纹,§6.2.1) */
   currentHash?: string
+  /** E3 可选树绑定（G11-10）：执行树的 git tree 哈希;只记录,不参与等级/gate 判定。 */
+  treeHash?: string
   workRunId?: string
   workItemId?: string
   sessionId?: string
@@ -187,7 +191,13 @@ export class EvidenceService {
     let coverageJson: string | null = null
     let basisJson: string | null = null
     let expiresAt: string | null = null
+    let treeHash: string | null = null
     const now = new Date()
+
+    // G11-10：tree_hash 只表达「E3 那次执行对应的 git 树」，不扩展到其他等级。
+    if (input.level !== 'E3' && input.treeHash != null) {
+      throw new EvidenceValidationError('tree_hash 只用于 E3（G11-10）')
+    }
 
     if (input.level === 'E3') {
       // §3.7.1 禁止项：E3 是测试事实，不接受人工签收字段（否则会被静默丢弃）。
@@ -212,6 +222,7 @@ export class EvidenceService {
       codeVersion = input.codeVersion
       codeDirty = 0
       reproducible = 1
+      treeHash = input.treeHash ?? null
     } else if (input.level === 'E4') {
       // §3.5/§3.7.1 禁止项：E4 必须 version_binding='none'，不得携带 **代码** hash。
       // 注意 `current_hash` 在 E4 上是「产物文件内容绑定」（见 acceptance-confirmation），
@@ -263,16 +274,16 @@ export class EvidenceService {
           `INSERT INTO node_evidence (
              id, project_path, graph_id, graph_type, node_entity_key, node_id,
              evidence_level, evidence_type, ref_json, summary,
-             version_binding, code_version, code_dirty, current_hash, freshness, produced_by,
+             version_binding, code_version, code_dirty, current_hash, tree_hash, freshness, produced_by,
              work_item_id, work_run_id, session_id, turn_id,
              created_at, verified_at, signed_by, signed_by_display_name, signed_at,
              coverage_json, basis_ref_json, reproducible, expires_at, renewed_from_evidence_id
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id, input.projectPath ?? null, input.graphId, node.graph_type, input.nodeEntityKey,
           input.nodeId ?? node.id, input.level, input.evidenceType, refJson, input.summary ?? null,
-          versionBinding, codeVersion, codeDirty, input.currentHash ?? null, producedBy,
+          versionBinding, codeVersion, codeDirty, input.currentHash ?? null, treeHash, producedBy,
           input.workItemId ?? null, input.workRunId ?? null, input.sessionId ?? null, input.turnId ?? null,
           now.toISOString(), input.level === 'E3' ? now.toISOString() : null,
           signedBy, signedByDisplay, signedAt, coverageJson, basisJson, reproducible, expiresAt,

@@ -784,8 +784,11 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  * v41：G2-1 五通道/模式库 —— `routing_decisions.mode_id`（可空 TEXT，仅 ALTER 补列，
  *      不进 requiredColumns；NULL = 历史决策）。模式定义在代码常量
  *      `src/main/map/mode-registry.ts`，**不建表**。回滚：列可保留不读。
+ * v42：G11-10 tree-hash 等级 —— `node_evidence.tree_hash`（可空 TEXT，仅 ALTER 补列，
+ *      不进 requiredColumns）。只记录 E3 执行树，**不改 E3/E4 的 CHECK 语义与
+ *      gate 判定**；回滚：列可保留不读（历史行全 NULL）。
  */
-const CURRENT_SCHEMA_VERSION = 41
+const CURRENT_SCHEMA_VERSION = 42
 
 interface TableSchema {
   name: string
@@ -1776,6 +1779,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // v41：G2-1 执行模式 id，纯加列；不进 requiredColumns（NULL = 历史决策）。
   if (currentVersion < 41) {
     addColumnSafe('routing_decisions', 'mode_id', 'TEXT')
+  }
+
+  // v42：G11-10 E3 执行树绑定，纯加列；不进 requiredColumns（NULL = 未采集/历史证据）。
+  if (currentVersion < 42) {
+    addColumnSafe('node_evidence', 'tree_hash', 'TEXT')
   }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。

@@ -151,8 +151,8 @@ describe('TestExecutor 编排(§6.2/§6.5/§6.6/§6.8)', () => {
     expect(result.e3.eligible).toBe(true)
     // E3 落在 verifies 目标(无 verifies 链 → 退化 work_item 锚 ek-dev)
     expect(result.evidenceWritten).toEqual([{ nodeEntityKey: 'ek-dev', level: 'E3' }])
-    const ev = db.prepare("SELECT evidence_level, code_version, code_dirty, reproducible FROM node_evidence").get() as Record<string, unknown>
-    expect(ev).toMatchObject({ evidence_level: 'E3', code_version: 'headabc123', code_dirty: 0, reproducible: 1 })
+    const ev = db.prepare("SELECT evidence_level, code_version, code_dirty, reproducible, tree_hash FROM node_evidence").get() as Record<string, unknown>
+    expect(ev).toMatchObject({ evidence_level: 'E3', code_version: 'headabc123', code_dirty: 0, reproducible: 1, tree_hash: 'treeabc123' })
     // 全过 → worktree 清理
     expect(worktrees.removed).toHaveLength(1)
     // 全过无失败 → 无 bug

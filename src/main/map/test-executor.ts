@@ -598,6 +598,8 @@ export class TestExecutor {
             codeVersion: e3.codeVersion ?? baseCommit ?? undefined,
             codeDirty: 0,
             currentHash: undefined,
+            // G11-10：记录这次 E3 对应的执行树（worktree 干净时即 HEAD tree）。
+            treeHash: executed.treeHash,
             workRunId: plan.work_run_id ?? undefined,
             workItemId: plan.work_item_id ?? undefined,
             summary: `测试通过(worktree@${(e3.codeVersion ?? '').slice(0, 8)} 干净提交树)`,

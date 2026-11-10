@@ -226,6 +226,8 @@ export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
   {
     // 证据表：E3/E4 的字段级硬约束写进 CHECK——缺任一条件在库层即被拒。
     // E3 只认 version_binding='commit'（git 代码 hash）;E4 必须 'none' 且无 code hash。
+    // v42 / G11-10：`tree_hash` 是 E3 的可选树绑定，可空；**不参与任何 CHECK 与 gate 判定**，
+    // 存量库靠 ALTER 补列（不进 requiredColumns，不触发表重建）。
     name: 'node_evidence',
     createSql: `
       CREATE TABLE node_evidence (
@@ -247,6 +249,7 @@ export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
         code_dirty       INTEGER,
         base_hash        TEXT,
         current_hash     TEXT,
+        tree_hash        TEXT,
         freshness        TEXT NOT NULL DEFAULT 'fresh'
                          CHECK(freshness IN ('fresh','stale','unknown')),
         produced_by      TEXT NOT NULL

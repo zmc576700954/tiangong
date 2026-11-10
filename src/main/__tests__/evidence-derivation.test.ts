@@ -62,6 +62,7 @@ function setupDb(): BetterSqlite3.Database {
       code_dirty       INTEGER,
       base_hash        TEXT,
       current_hash     TEXT,
+      tree_hash        TEXT,
       freshness        TEXT NOT NULL DEFAULT 'fresh'
                        CHECK(freshness IN ('fresh','stale','unknown')),
       produced_by      TEXT NOT NULL
@@ -174,6 +175,22 @@ describe('EvidenceService 写入方矩阵（§3.7.1）', () => {
     expect(() => svc.create({ ...base, ref: {}, codeVersion: 'abc', codeDirty: 0, workRunId: 'wr-1' })).toThrow(/testRunId/)
     const { row } = svc.create({ ...base, ref: { testRunId: 'tr-1' }, codeVersion: 'abc', codeDirty: 0, workRunId: 'wr-1' })
     expect(row).toMatchObject({ version_binding: 'commit', code_version: 'abc', code_dirty: 0, reproducible: 1, freshness: 'fresh' })
+  })
+
+  it('G11-10 tree_hash:仅 E3 可带;缺省为 NULL;不改变等级判定', () => {
+    const base = { level: 'E3' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'test_run' as const, actor: 'test_executor' as const, producedBy: 'test_executor' as const }
+    const withoutTree = svc.create({ ...base, ref: { testRunId: 'tr-1' }, codeVersion: 'abc', codeDirty: 0, workRunId: 'wr-1' }).row
+    expect(withoutTree.tree_hash).toBeNull()
+    const withTree = svc.create({
+      ...base, ref: { testRunId: 'tr-2' }, codeVersion: 'def', codeDirty: 0, workRunId: 'wr-2',
+      treeHash: 'tree-abc',
+    }).row
+    expect(withTree).toMatchObject({ tree_hash: 'tree-abc', evidence_level: 'E3', version_binding: 'commit', reproducible: 1 })
+    // tree_hash 不是 E3/E4 之外的字段：E2 携带直接拒绝（不静默丢弃）。
+    expect(() => svc.create({
+      level: 'E2' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'changed_files' as const,
+      ref: { files: [] }, actor: 'human' as const, treeHash: 'tree-abc',
+    })).toThrow(/只用于 E3/)
   })
 
   it('E4:非人拒绝;coverage 空/无 acceptance 拒绝;合法签收含 30 天过期', () => {
