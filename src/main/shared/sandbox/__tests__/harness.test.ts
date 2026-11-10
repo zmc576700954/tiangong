@@ -18,6 +18,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -178,6 +179,13 @@ describe.skipIf(!available)('C3 Harness（macOS sandbox-exec）', () => {
     const fixture = initFixture()
     poisonHooksPath(fixture)
     const profile = buildSandboxProfile({ target: 'claude', workspaceDir: fixture.repo }).text
+
+    // `post-index-change` 只在 git 需要重写 index 时才触发；而 `describe --dirty`
+    // 是否重写取决于 index 条目是否 racy / stat-dirty。刚建好的仓库这两点都看建仓
+    // 耗时（并行负载下 writeFileSync → add/commit 会跨秒），赌它必触发会偶发失败。
+    // 这里只改 mtime（内容不变）让 index 必然 stat-dirty，对照组才稳定触发 hook；
+    // 对照组跑完 index 已刷新，后面的沙箱组仍是「干净 index + 只读命令」。
+    utimesSync(join(fixture.repo, 'a.txt'), new Date(2000, 0, 1), new Date(2000, 0, 1))
 
     rmSync(fixture.hookMarker, { force: true })
     rmSync(fixture.hookInsideMarker, { force: true })
