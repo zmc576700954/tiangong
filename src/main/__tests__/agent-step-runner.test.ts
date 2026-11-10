@@ -147,10 +147,12 @@ describe('AgentStepRunner（M3）', () => {
 
     const routing = db
       .prepare('SELECT * FROM routing_decisions WHERE work_run_id = ?')
-      .get(c.run.id) as { id: string; policy: string; chosen_adapter: string } | undefined
+      .get(c.run.id) as { id: string; policy: string; chosen_adapter: string; mode_id: string | null } | undefined
     expect(routing).toBeDefined()
     expect(routing!.policy).toBe('manual_override')
     expect(routing!.chosen_adapter).toBe('claude-code')
+    // G2-1：agent + pinned adapter → agent.implement
+    expect(routing!.mode_id).toBe('agent.implement')
     expect(runs.get(c.run.id)?.route_decision_id).toBe(routing!.id)
     expect(itemId).toBe(c.item.id)
   })

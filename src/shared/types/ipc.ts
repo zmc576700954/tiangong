@@ -352,6 +352,8 @@ export interface IpcApi {
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
   'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
 
+  /** G2-1 执行模式（只读）：返回代码常量 mode-registry 的副本。 */
+  'mode:list': () => Promise<Array<Record<string, unknown>>>
   /**
    * G1-14 提案（只读）：默认排除 done/cancelled/superseded；weight 仅影响展示排序。
    * 提案存放在 work_items，本通道只 SELECT `v_online_proposals`。
@@ -576,6 +578,7 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:run:get',
   'map:execution:status',
   'map:published:status',
+  'mode:list',
   'proposal:list',
   'proposal:diff',
 ] as const satisfies readonly (keyof IpcApi)[]

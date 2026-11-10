@@ -207,6 +207,9 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
         candidate_json    TEXT NOT NULL,
         reason            TEXT,
         policy            TEXT NOT NULL CHECK(policy IN ('single_agent','manual_override','fallback')),
+        -- v41 / G2-1：命中的执行模式（代码常量 mode-registry，不建表）。
+        -- 可空、**不进 requiredColumns**（存量库 ALTER 补列）；NULL = v41 前的历史决策。
+        mode_id           TEXT,
         confidence        REAL,
         created_at        INTEGER NOT NULL
       )

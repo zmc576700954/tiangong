@@ -21,6 +21,7 @@ import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from
 import { WorkExecutionError } from '../map/work-execution-service'
 import { getPublishedStatus } from '../map/published-guard'
 import { ProposalService } from '../map/proposal-service'
+import { listModes } from '../map/mode-registry'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import {
@@ -529,6 +530,9 @@ export function registerMapHandlers(
       confirmationIds: result.confirmationIds,
     }
   })
+
+  // ---- G2-1 执行模式（只读；模式库是代码常量，不提供写通道）----
+  typedHandle('mode:list', async () => listModes())
 
   // ---- G1-14 提案（§2.7 / II-02 / II-08 / II-21）----
   // 提案 = 对 online 事实的待采纳变更：读写都只落在 work_items / 只读视图，

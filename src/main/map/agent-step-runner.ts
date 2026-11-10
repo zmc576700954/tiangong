@@ -27,6 +27,7 @@ import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
 import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
 import { EvidenceService, EvidenceSuggestionService } from './evidence-service'
 import { GitWorktreeManager, type ExecutedContent } from './test-executor'
+import { matchMode } from './mode-registry'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import {
   ChangeSetService,
@@ -489,6 +490,18 @@ export class AgentStepRunner {
    */
   private ensureRouting(item: WorkItemRow, run: WorkRunRow, options: AgentStepRunnerOptions): string {
     if (run.route_decision_id) return run.route_decision_id
+    // G2-1：执行器 + policy 规则匹配模式；无命中 fail-closed，不静默降级。
+    const mode = matchMode({
+      executorKind: run.executor_kind,
+      policy: 'manual_override',
+      adapterName: options.adapterName,
+    })
+    if (!mode) {
+      throw new AgentStepRunnerError(
+        'TIER_UNSUPPORTED',
+        `未匹配到执行模式（executor=${run.executor_kind} adapter=${options.adapterName || '空'}）；不静默降级`,
+      )
+    }
     const decision = this.routing.record({
       workItemId: item.id,
       workRunId: run.id,
@@ -501,8 +514,9 @@ export class AgentStepRunner {
           gaps: ['tier_probe_deferred'],
         },
       ],
-      policy: 'manual_override',
-      reason: 'pinned adapter；Tier 能力探测推迟（§5.9.10 明确偏离）',
+      policy: mode.policy,
+      modeId: mode.id,
+      reason: `mode=${mode.id}；pinned adapter；Tier 能力探测推迟（§5.9.10 明确偏离）`,
     })
     const attached = this.runs.attachExecution(run.id, {
       routeDecisionId: decision.id,

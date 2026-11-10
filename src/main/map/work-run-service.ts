@@ -13,6 +13,7 @@ import { createLogger } from '../shared/logger'
 import { WORK_ITEM_TERMINAL, WorkItemService, type WorkItemStatus } from './work-item-service'
 import { WorkStepService, isTerminalStepStatus } from './work-step-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
+import { assertKnownMode } from './mode-registry'
 
 const logger = createLogger('WorkRunService')
 
@@ -759,6 +760,8 @@ export interface RoutingDecisionRow {
   candidate_json: string
   reason: string | null
   policy: 'single_agent' | 'manual_override' | 'fallback'
+  /** v41 / G2-1：命中的执行模式（NULL = v41 前的历史决策）。 */
+  mode_id: string | null
   confidence: number | null
   created_at: number
 }
@@ -776,23 +779,27 @@ export class RoutingDecisionRepository {
     chosenAdapter: string
     candidates: Array<{ adapter: string; score: number; capabilities?: string[]; gaps?: string[] }>
     policy: RoutingDecisionRow['policy']
+    /** G2-1：模式 id；未知值 fail-closed（mode-registry）。 */
+    modeId?: string
     confidence?: number
     reason?: string
   }): RoutingDecisionRow {
     if (!input.chosenAdapter || input.chosenAdapter.trim() === '') {
       throw new Error('routing_decisions.chosen_adapter 不允许空串（路由失败不写半条行,§4.7.8）')
     }
+    // 未知 mode_id 直接拒绝，避免半条行落库后无法解释路由来源。
+    if (input.modeId !== undefined) assertKnownMode(input.modeId)
     const id = `rd_${Date.now()}_${randomUUID().slice(0, 8)}`
     this.db
       .prepare(
         `INSERT INTO routing_decisions (
-           id, work_item_id, work_run_id, chosen_adapter, candidate_json, reason, policy, confidence, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           id, work_item_id, work_run_id, chosen_adapter, candidate_json, reason, policy, mode_id, confidence, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id, input.workItemId ?? null, input.workRunId ?? null, input.chosenAdapter,
         JSON.stringify(input.candidates), input.reason ?? null, input.policy,
-        input.confidence ?? null, Date.now(),
+        input.modeId ?? null, input.confidence ?? null, Date.now(),
       )
     return this.db.prepare('SELECT * FROM routing_decisions WHERE id = ?').get(id) as RoutingDecisionRow
   }
