@@ -584,17 +584,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 > **复核基线**：HEAD `9bb94e8`，工作区干净；G9-10 `571cbf4`、G2-14 `ad99c1f`、G2-13 `9bb94e8` 三条均已提交，未 push。本节把 I.1.2（11 条已批准未实施）与 I.1.3（29 条仅建议）共 **40 条**按卡点类型重排，状态词与授权仍以 I.1 为准，本节只回答「卡在哪、用户做什么能解、大概多少活」。
 > **计数说明**：I.1.2 里 G10-11（=G4-9，已实施）与 G10-1（§13 审计当前剩 0 节缺细节）是账面遗留，不计入 40；I.1.3 的 E1 人工入口并入 G8 组，不单列。工作量均为**估算**，非承诺。
 
-### A. 需用户提供凭据或密钥（5 条）
+### A. 需用户提供凭据或密钥（重排后 2 条；G6-14→D、G7-2→B、G6-16→I.9.2）
 
 | 编号 | 名称 | 卡点（一句话） | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
-| G6-11 | U1–U9 真机矩阵 | U1/U2 缺 Codex 官方 provider key、U5 缺 Anthropic 付费凭据与成本授权、U9 缺 root 第二 uid | 提供 Codex provider key、Anthropic 付费 key 并授权付费回合；另备一个第二系统用户 | 3–5 人日（多为实测） |
-| G6-14 | Claude token 统计 | 需 Anthropic 付费凭据与付费回合授权；`src/` 尚无 `includePartialMessages` 开关 | 提供一个 Anthropic 付费 key，并明确允许跑 1 次付费回合 | 0.5 人日 + 费用 |
-| G6-16 | Codex provider 差异 | 缺 Codex 官方 provider 凭据，第三方 provider 的 `item.updated=0` 不能当结论 | 提供 Codex 官方 provider key | 1 人日 |
-| G7-2 | Codex gateway | 需真实 Codex CLI + 官方 key 才能验写前审批回调 | 提供 Codex CLI 与官方 provider key | 3–5 人日 |
+| G6-11 | U1–U9 真机矩阵 | **重判后仅剩官方口径三条**：U1/U2 Codex 官方 provider、U5 Anthropic 付费回合；U9 第二 uid、U3/U4/U6/U7/U8 已 PASS/SKIP | 若要补齐 U1/U2/U5：提供官方 OpenAI provider key 与 Anthropic 付费额度；否则转 I.9.2 | 3–5 人日（多为实测） |
 | G2-5 | Layer3 embedding | 需 embedding 模型来源（外部 API 或本地 onnx）与成本授权（D-12 只记账不熔断） | 指定模型来源，并确认是否允许外部调用与计费 | 5 人日 + 模型费 |
 
-### B. 需用户提供环境（机器 / 系统 / CLI，5 条）
+### B. 需用户提供环境（机器 / 系统 / CLI，6 条）
 
 | 编号 | 名称 | 卡点（一句话） | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
@@ -603,6 +600,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-1 | 写前审批覆盖边界 | 三后端矩阵缺 Codex/OpenCode/MCP（Claude 侧已具备） | 提供 Codex CLI + `opencode` CLI 用于矩阵实测 | 3 人日 |
 | G7-3 | OpenCode 审批 | 需 `opencode` CLI 才能把写前审批接进 gateway | 安装 `opencode` CLI | 2–4 人日 |
 | G9-13 | Windows 路径 | 需真实 Windows 机验证路径规范化与打包 | 提供一台 Windows 机器（或允许 Windows CI） | 1 人日 |
+| G7-2 | Codex gateway | **重判：审批拦截是客户端能力、与 provider 无关**；只差 Codex CLI 入口 | 用 ChatGPT.app 内置 Codex CLI（`.../CodexCLI.app/Contents/MacOS/codex`）或安装 `codex`，对现有 MiniMax 端点验证 | 3–5 人日 |
 
 ### C. 需用户做产品裁决（4 条，可直接回「全部按建议」）
 
@@ -613,11 +611,12 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-5 | MCP 写工具 | MCP 写工具是否纳入写前审批 | 建议：纳入，走同一 gateway | 2 人日 |
 | G11-10 | tree-hash 等级 | 是否为 E3 增加可选 `tree_hash` 绑定 | 建议：加可空列、不改 E3/E4 语义与 gate | 2 人日 |
 
-### D. 什么都不需要、可直接开工（24 条，按建议施工顺序）
+### D. 什么都不需要、可直接开工（25 条，按建议施工顺序）
 
 | 编号 | 名称 | 卡点 | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
 | G1-9 | E4 覆盖扫描 | 无外部依赖，只差 `content_hash` 基线 + 复扫 | 授权开工即可 | 1.5–2 人日 |
+| G6-14 | Claude token 统计 | **重判：改口径可验**——用现有 cc-switch GLM 代理跑一轮，验 token/usage 是否落库；不验官方计费（见 I.9.2） | 授权开工即可（先用 GLM 代理） | 0.5 人日 |
 | G2-3 | `memory_hits` 表 | 无 | 授权开工即可 | 1.5 人日 |
 | G2-2 | 进化 Layer1 | 依赖 G2-3 建表 | 授权开工即可 | 2 人日 |
 | G2-4 | Layer2 归因 | 依赖 G2-2/G2-3 | 授权开工即可 | 2 人日 |
@@ -656,6 +655,38 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 1. **G5-10 项目进度查询（D，1.5 人日）**：零卡点，只需一句「开工」，当天可交付可见成果。
 2. **G6-14 Claude token（A，0.5 人日）**：只差一个 Anthropic 付费 key + 一次付费回合授权，拿到即验收。
 3. **G9-13 Windows 路径（B，1 人日）**：只差一台 Windows 机，代码量小、边界清晰。
+
+## I.9 暂不开发队列（2026-11-10）
+
+> **口径**：本节记录「用户指示暂不开发 / 当前环境无法验证 / 实施中的暂时妥协」。入队**不等于取消，也不改 I.1 状态词**。每条四项：**目的（想解决什么）/ 当前实现（做到哪）/ 差距（少了什么、后果是什么）/ 解除条件（什么情况下重新评估）**。任何暂时妥协必须在条目正文显式标注「**妥协**」，不得被读成已完成。
+> **本机事实基线（2026-11-10 只读排查）**：Claude 走 cc-switch 代理 `http://127.0.0.1:15721`（`ANTHROPIC_AUTH_TOKEN=PROXY_MANAGED`），模型映射为 `glm-5.3 / glm-5.3-flash / glm-5.1`（智谱），无 Anthropic 官方 token；Codex 配置 `model_provider="custom"` → `https://api.minimaxi.com/v1`（`wire_api="responses"`，`MiniMax-M3.1-Flash-Preview`），无官方 OpenAI 凭据；`codex` / `opencode` CLI 不在 PATH。
+
+### I.9.1 用户指示暂不开发
+
+| 编号 | 目的 | 当前实现 | 差距与后果 | 解除条件 |
+|---|---|---|---|---|
+| G6-15 | 验证 OpenCode 后端能否产出完整 turn 轨迹（工具事件） | 适配器仍为 `-q` 纯文本单次执行，无工具事件解析 | PATH 无 `opencode` CLI，无法采集轨迹；后果是 OpenCode 只能当纯文本执行器，不能进入可审计编排 | 安装 `opencode` CLI 且确认其事件输出格式后重新评估 |
+| G7-3 | OpenCode 写步骤走写前审批 | 未接 gateway | 缺 `opencode` CLI 与审批回调协议验证；后果是 OpenCode 写步骤无法被拦截，只能只读/排队人工 | G6-15 解除且确认 OpenCode 暴露审批回调/工具事件 |
+| G7-1（OpenCode 部分） | 三后端写前审批覆盖矩阵 | Claude 侧已具备；Codex/MCP 见其他条；OpenCode 未验 | OpenCode 缺失导致矩阵不完整，G7-1 不能整体收口 | G7-3 完成后补测矩阵 |
+
+### I.9.2 当前环境无法验证（凭据 / 官方协议）
+
+| 编号 | 目的 | 当前实现 | 差距与后果 | 解除条件 |
+|---|---|---|---|---|
+| G6-16（官方侧） | 比较官方 OpenAI provider 与第三方 provider 的事件差异 | 本机 Codex 仅配置第三方 MiniMax provider | 缺官方 provider 样本，第三方 `item.updated=0` 不能代表官方行为；后果是无法给出 provider 差异结论 | 提供官方 OpenAI provider key，或明确不需要该结论 |
+| G6-11（U1/U2/U5） | U1/U2 Codex 官方 provider、U5 Anthropic 付费回合的实测 | harness 已就位，R3/U3/U8/U4 已 PASS，U6/U7 SKIP | U1/U2/U5 依赖官方协议/计费，本机全为国内模型；后果是这三项无实测记录 | 提供 Anthropic 付费额度与官方 OpenAI provider key 后补测 |
+| G6-14（官方计费口径） | 验证 Anthropic 官方付费回合下的 token 计费 | 可用 cc-switch 代理跑 GLM 回合验证 `usage` 落库（改口径后从「卡凭据」移出） | **妥协**：只能验证 token 统计链路，不验证 Anthropic 官方计费口径与价格 | 提供 Anthropic 付费额度后补官方口径 |
+
+### I.9.3 实施中的暂时妥协
+
+> 随「按建议」条目落地逐条追加；每条必须写明妥协点与后果。
+
+| 编号 | 目的 | 当前实现 | 差距与后果 | 解除条件 |
+|---|---|---|---|---|
+| （待 G1-14 实施追加） | | | | |
+| （待 G2-1 实施追加） | | | | |
+| （待 G7-5 实施追加） | | | | |
+| （待 G11-10 实施追加） | | | | |
 
 # Part II 仅建议项施工级设计（32 条有效 + II-24/II-32 已实施存档）
 
