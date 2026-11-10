@@ -762,8 +762,11 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  * v38：G2-14 只读视图 `v_plan_deviations_file_domain`（§7.2 明细展开）。
  *      视图不存数据，CREATE/DROP 幂等；纳入 checksum 并在快/慢路径都对账。
  *      回滚：`DROP VIEW IF EXISTS v_plan_deviations_file_domain`，无表/数据变更。
+ * v39：G2-13 published 软阻断 —— `nodes.published_waiver_json`（可空 TEXT）。
+ *      仅 ALTER 补列，不重建表；回滚：`ALTER TABLE nodes DROP COLUMN`（SQLite ≥3.35），
+ *      或保留空列不读（历史节点该列为 NULL）。
  */
-const CURRENT_SCHEMA_VERSION = 38
+const CURRENT_SCHEMA_VERSION = 39
 
 interface TableSchema {
   name: string
@@ -830,6 +833,9 @@ const TABLE_SCHEMAS: TableSchema[] = [
         context_refs TEXT,
         wiki_content TEXT,
         wiki_meta TEXT,
+        -- v39 / G2-13：test-case 无通过记录发布时的人工豁免（JSON）。
+        -- 可空、**不进 requiredColumns**：存量库用 ALTER TABLE 补列，不能触发重建。
+        published_waiver_json TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
       )
@@ -1737,6 +1743,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // 没有它，撤回只能按标题找同名 wiki-page —— 会把同名但并非本项创建的
   // 页面一起删掉（数据丢失）。
   addColumnSafe('writeback_items', 'created_node_id', 'TEXT')
+
+  // v39：G2-13 published 软阻断 —— 发布豁免 JSON，可空，仅 ALTER 补列。
+  if (currentVersion < 39) {
+    addColumnSafe('nodes', 'published_waiver_json', 'TEXT')
+  }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。
   // 必须排在上面 addColumnSafe 之后 —— 迁移要回填 sort_index，列不存在会直接报错。

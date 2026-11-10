@@ -314,6 +314,27 @@ export interface IpcApi {
     adapterName: string | null
     disabledReason: string | null
   }>
+  /**
+   * G2-13 只读：test 图 test-case 的发布徽标与统计。
+   * 只读查询，不改变发布状态；徽标不替代人工发布确认。
+   */
+  'map:published:status': (graphId: string) => Promise<{
+    graphId: string
+    total: number
+    published: number
+    verified: number
+    publishedWithoutEvidence: number
+    nodes: Array<{
+      id: string
+      entityKey: string | null
+      title: string
+      status: string
+      hasPassEvidence: boolean
+      badge: 'verified' | 'unverified' | null
+      lastTestStatus: string | null
+      lastTestFailed: boolean
+    }>
+  }>
   'workitem:create': (data: {
     projectPath?: string
     graphId: string
@@ -521,4 +542,5 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:run:list',
   'map:run:get',
   'map:execution:status',
+  'map:published:status',
 ] as const satisfies readonly (keyof IpcApi)[]

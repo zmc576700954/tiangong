@@ -3,7 +3,7 @@
 > 版本：**v2.3（定稿 + W5 阶段 A/B/C/D 成果回写）**
 > 生成时间：**2026-11-09（Asia/Shanghai）**
 > 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（61 → 64 条已实施，25 → 22 条已批准未实施），并记录 `RequestQueue` 已删除、W5-D 评测 harness 与打包验证落地**。严格区分：裁决只定方向，**不产生施工授权**——32 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
-> v2.4（2026-11-10）：G9-10 worktree 定时清理、G2-14 明细视图落地；已实施 75 → 77，仅建议 32 → 30。
+> v2.4（2026-11-10）：G9-10 worktree 定时清理、G2-14 明细视图、G2-13 published 软阻断三条仅建议项落地；已实施 75 → 78，仅建议 32 → 29。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -43,20 +43,20 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **77** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38） |
+| 已实施 | **78** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39） |
 | 已批准未实施 | **11** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **30** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 10 条已解除裁决阻塞 |
+| 仅建议 | **29** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 77+11+30+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 78+11+29+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（77）
+### I.1.1 已实施（78）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
-- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）。
+- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重。
@@ -75,12 +75,12 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（30）
+### I.1.3 仅建议（29）
 
 - **会话地图本体**：G1-11 `node_id` 放宽、G1-14 提案机制（§2.7）。
-- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-13 published 软阻断、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
+- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
 - **编排执行**：G3-1 Tier1 探测、G3-2 跨进程写闸。
-- **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）、G4-3 published 软阻断（=G2-13）。
+- **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：G5-10 §3.6 项目进度。
 - **Agent 运行时**：G6-17 同 uid 不在防御范围。
 - **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
@@ -88,7 +88,7 @@
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 - **待裁决清单**：G11-10 tree-hash 等级。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 30 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-24、II-32、II-33、II-16 已实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 29 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-24、II-32、II-33 已实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -267,7 +267,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
   G3-6～G3-9 在 `settings.agentRuntime.timeouts` 增设四键，统一由 `timeout-config.ts` 解析（未配置 = `DEFAULT_AGENT_TIMEOUTS`，行为不变）：`turnMs` 消费于 `AgentManager.sendCommandThroughKernel`（无显式 deadline 时）；`stepMs` 写 `work_runs.deadline_at` 并由 tick 前置 `sweepDeadlines()` 收口为 `timed_out`；`taskMs` 以该任务最早一次 `work_runs.started_at` 起算（排队时间不计、不新增列），到期同样扫描收口并取消同 item 的 queued run；`sendWaitMs` 消费于 `send-and-wait.ts` 的等待上限，并 clamp ≥ `turnMs + 30s`。subagent 继承：`SubagentManager` 取 `min(stepMs, 父 turn 剩余)`，父 deadline 由 `AgentManager.getSessionTurnDeadline()` 提供（`AgentCommand.deadlineMs` 同步下发给子 turn）。配置在启动装配期读取，运行中修改需重启生效。G3-1/2/3 **维持仅建议、本期不改代码**。
 
 ### W4 测试体系补全
-- 覆盖条目：G4-6 `[已实施]` allow-list harness、G4-7 `[已实施]` P1–P9 脚本、G4-8 `[已实施]` P6 并行验证、G4-9 `[已实施]` CI vitest（`217fbbc`，2026-11-08）、G2-11/12/13 `[建议]` 流程测试最小版/定向重测/published 软阻断。
+- 覆盖条目：G4-6 `[已实施]` allow-list harness、G4-7 `[已实施]` P1–P9 脚本、G4-8 `[已实施]` P6 并行验证、G4-9 `[已实施]` CI vitest（`217fbbc`，2026-11-08）、G2-11/12 `[建议]` 流程测试最小版/定向重测、G2-13 `[已实施]` published 软阻断（v39，`published-guard.ts`）。
 - 目标：测试资产从“单节点可执行”升级到“流程可验证”，迁移验收可自动跑。
 - 涉及文件与数据/接口变更：`src/main/map/test-executor.ts`、`src/main/map/test-plan-service.ts`、`src/main/map/flow-test-service.ts`（新增）、`tests/migration/*`、`.github/workflows/ci.yml`。
 - 实施步骤：① P1–P9 逐条脚本化并接入 CI；② 补 `vitest` job；③ 流程测试最小版：框选→拓扑→verify+shell→`test_report`；④ 定向重测按失败用例集合重跑；⑤ published 软阻断读取 `has_pass_evidence`。
@@ -751,13 +751,16 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：**D-05 已裁决「B 仅建 bug + 链接」**，定向重测明确留 L3；本期仅保留设计，不排期。
 - **成本**：≈2.5 人日（估算）。
 
-### II-15 · G2-13 published 软阻断｜**仅建议**
-- **目标与不做后果**：对已发布节点的新改动做"软阻断"（提示+需确认），避免静默改线上语义；不做则发布后改动无提示。
-- **数据/接口**：`nodes.metadata.published_at`（不新增列）；派生 `is_published` 供 gate 读取；不新增表。
-- **流程/状态机**：命中已发布节点 → gate 结果 `incomplete(published_requires_confirm)` → 人确认后 `waived`（仅此场景）；确认记录落 `agent_approvals`。
-- **边界**：软阻断不是硬拒绝，`waive` 需理由；G1/G3/G4 不因此放宽；不改变 `nodes.status`。
-- **验收**：已发布节点任务默认进 `blocked`；确认后可执行且留痕；未发布节点无额外提示。
-- **前置依赖与顺序**：依赖 II-12 确认链路；可与 II-13 并行。
+### II-15 · G2-13 published 软阻断｜**已实施（采用 §6.5.2.1）**
+- **口径裁决（2026-11-10）**：**作废**本节旧稿的「gate → `incomplete(published_requires_confirm)` → `waived` + `agent_approvals`」路线。published 软阻断统一按 §6.5.2.1「徽标 + 统计 + 发布豁免」实现，两套事实不得混用：
+  - **G2 gate waiver**：`work_items.gate_status='waived'` + `gate_waived_by/at/reason`，管任务执行前的 gate；
+  - **published waiver**：`nodes.published_waiver_json`，管测试资产发布，只影响徽标/统计，不写 `gate_status`、不阻断任务执行。
+- **数据/接口**：`nodes.published_waiver_json`（v39 新增可空列）；`has_pass_evidence` 经 `test_specs.test_node_entity_key` → 执行记录（`test_results`/`test_runs`）→ 未撤销 E3；**不直接查 test-case 节点自身证据**；不新增表。
+- **流程/状态机**：`node:update` 把节点置为 `published` 时检查；test 图 + `test-case` + 无通过记录 → 必须带完整 `{by, at, reason, missing[]}`，否则返回 `PUBLISHED_WAIVER_REQUIRED`；有通过记录直接放行。
+- **边界**：只作用于 test 图 + `test-case` 节点；不改变 `gate_status`；不新增发布入口；UI 不做，只提供只读 `map:published:status`。
+- **验收**：`published-guard.test.ts` 覆盖豁免解析、通过记录口径、E3 撤销/非 fresh、拦截与徽标统计；`database-migration.test.ts` 覆盖 v39 加列；`graph-node-update.test.ts` 覆盖 `publishedWaiverJson` 入参校验。
+- **代码证据**：`src/main/map/published-guard.ts`、`src/main/ipc/graph.ts`（`node:update` 拦截）、`src/main/ipc/map.ts`（只读 `map:published:status`）、`src/main/database.ts`（v39）。
+- **前置依赖与顺序**：已随 v39 落地。
 - **成本**：≈1.5 人日（估算）。
 
 ### II-16 · G2-14 `v_plan_deviations_file_domain`｜**已实施**
@@ -3085,15 +3088,18 @@ subject_id   TEXT
 test 图节点允许 `draft → confirmed → published`。`published` 增加一条**软阻断**：
 
 - 没有任何通过记录（E3 或至少一条 `test_runs.status='passed'`）时，默认按钮不得是"发布"；
-- 用户仍可显式确认发布，但必须填写理由并落库（`published_waiver_json`：`{by, at, reason, missing}`）；
+- 用户仍可显式确认发布，但必须填写理由并落库（`nodes.published_waiver_json`，v39 可空列：`{by, at, reason, missing}`）；
 - 这是**软阻断，不是硬拒绝**：不阻止人工标记 `published`，只影响徽标与统计口径 —— 无通过记录的发布在叠加层显示"未验证发布"徽标，并计入 `published_without_evidence`（单列，不计入"已验证资产"）；不采用强制测试或二次确认。
+
+**与 G2 gate waiver 的区别（不得混用）**：本节的发布豁免只写 `nodes.published_waiver_json`，不写 `work_items.gate_status/gate_waived_*`，也不改变任务 gate 判定；gate waiver 仍由 `agent_approvals` 与 `work_items` 侧独立管理。II-15 旧稿的 gate 软阻断路线已作废。
 
 ##### 6.5.2.1 `published` 判定、徽标与回滚（B2）
 
-- `has_pass_evidence`：该 test-case 节点存在未撤销 E3，或至少一条 `test_runs.status='passed'`。
+- `has_pass_evidence`：test-case 节点经 `test_specs.test_node_entity_key` 关联执行记录（`test_results`/`test_runs`），存在未撤销 E3 或至少一条 passed；**不能直接查 test-case 节点自身证据**。
 - `published` 且 `has_pass_evidence=0` → `published_without_evidence` 计数 +1，叠加层显示"未验证发布"；不计入"已验证资产"。
-- 人工发布必须写 `published_waiver_json={by, at, reason, missing[]}`；缺任一字段 → 拒绝写入。
+- 人工发布必须写 `published_waiver_json={by, at, reason, missing[]}`；缺任一字段 → `node:update` 拒绝写入并返回 `PUBLISHED_WAIVER_REQUIRED`。
 - 不做强制测试、不做二次确认；默认按钮可以是"先测试"，但**不得隐藏"仍然发布"入口**。
+- 已实施（v39）：`src/main/map/published-guard.ts`；只读统计 `map:published:status`。
 - 回滚：`published → confirmed` 只改 `nodes.status` 与徽标；**不删除** `test_results` / 证据行。再次发布重新计算 `has_pass_evidence`。
 - 发布后测试失败：`nodes.status` 保持 `published`（人工状态不被自动改写），徽标追加"最近测试失败"；`published_without_evidence` 按当前证据重算。
 
@@ -3194,6 +3200,7 @@ graph_type TEXT NOT NULL CHECK(graph_type IN ('online','dev','test'))
 entity_key TEXT                      -- 可空；不进 requiredColumns
 lifecycle_state TEXT NOT NULL DEFAULT 'active'
   CHECK(lifecycle_state IN ('active','archived','merged','split'))
+published_waiver_json TEXT           -- v39 / G2-13：测试资产发布豁免；可空，不进 requiredColumns
 ```
 
 #### `edges`

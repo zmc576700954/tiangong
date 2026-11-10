@@ -147,6 +147,11 @@ export interface GraphNode {
   wikiContent?: string
   /** Wiki 页面 YAML frontmatter 元数据（LLM-Wiki） */
   wikiMeta?: Record<string, unknown>
+  /**
+   * G2-13 发布豁免（仅 test 图 test-case）：无通过记录仍发布时的人工确认事实，
+   * JSON `{by, at, reason, missing[]}`；与 work_items 的 gate waiver 是两套事实。
+   */
+  publishedWaiverJson?: string | null
   /** 预计算的社区摘要 */
   communitySummary?: string
   /** 所属社区 ID（Louvain 计算写回） */

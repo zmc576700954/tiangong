@@ -87,6 +87,8 @@ export class NodeRepository {
       contextRefs: safeJsonParse<GraphNode['contextRefs']>(row.context_refs as string | null, undefined, isContextRefArray),
       wikiContent: typeof row.wiki_content === 'string' ? row.wiki_content : undefined,
       wikiMeta: safeJsonParse<GraphNode['wikiMeta']>(row.wiki_meta as string | null, undefined, isRecord),
+      publishedWaiverJson:
+        typeof row.published_waiver_json === 'string' ? row.published_waiver_json : undefined,
       ownerRole: row.owner_role as GraphNode['ownerRole'],
       position: { x: row.position_x as number, y: row.position_y as number },
       content: safeJsonParse<GraphNode['content']>(row.content as string | null, undefined, isNodeContent),
@@ -323,6 +325,10 @@ export class NodeRepository {
     if (data.contextRefs !== undefined) { updates.push('context_refs = ?'); args.push(JSON.stringify(data.contextRefs)) }
     if (data.wikiContent !== undefined) { updates.push('wiki_content = ?'); args.push(data.wikiContent) }
     if (data.wikiMeta !== undefined) { updates.push('wiki_meta = ?'); args.push(JSON.stringify(data.wikiMeta)) }
+    if (data.publishedWaiverJson !== undefined) {
+      updates.push('published_waiver_json = ?')
+      args.push(data.publishedWaiverJson)
+    }
     if (data.ownerRole !== undefined) { updates.push('owner_role = ?'); args.push(data.ownerRole) }
     if (data.position !== undefined) { updates.push('position_x = ?, position_y = ?'); args.push(data.position.x, data.position.y) }
     if (data.content !== undefined) { updates.push('content = ?'); args.push(JSON.stringify(data.content)) }

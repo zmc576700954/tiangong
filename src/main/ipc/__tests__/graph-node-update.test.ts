@@ -67,4 +67,15 @@ describe('validateNodeUpdate', () => {
       expect((caught as { code?: string }).code).toBe(ErrorCode.IPC_INVALID_ARGUMENT)
     }
   })
+
+  it('accepts publishedWaiverJson as a JSON string or null（G2-13 发布豁免）', () => {
+    expect(() => validateNodeUpdate('n1', { publishedWaiverJson: '{"by":"alice"}' })).not.toThrow()
+    expect(() => validateNodeUpdate('n1', { publishedWaiverJson: null })).not.toThrow()
+  })
+
+  it('rejects a non-string publishedWaiverJson', () => {
+    expect(() =>
+      validateNodeUpdate('n1', { publishedWaiverJson: { by: 'alice' } as unknown as string }),
+    ).toThrow(/publishedWaiverJson/)
+  })
 })

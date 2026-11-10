@@ -19,6 +19,7 @@ import { EvidenceService, EvidenceSuggestionService, type SuggestionStatus } fro
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import { WorkExecutionError } from '../map/work-execution-service'
+import { getPublishedStatus } from '../map/published-guard'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import {
@@ -338,6 +339,13 @@ export function registerMapHandlers(
           : `未配置 ${MAP_EXECUTION_ADAPTER_ENV}：无法确定执行器`
         : MAP_EXECUTION_DISABLED_REASON,
     }
+  })
+
+  // G2-13 只读：test 图 test-case 的发布徽标与统计（UI 不做，仅查询层）。
+  // 只 SELECT；与 published 写路径共用同一 has_pass_evidence 判定。
+  typedHandle('map:published:status', async (_, graphId: unknown) => {
+    if (typeof graphId !== 'string' || graphId === '') throw new Error('graphId is required')
+    return getPublishedStatus(db, graphId)
   })
 
   // ---- 证据只读（item 下钻;节点维度仍走 map:node:evidence:list）----

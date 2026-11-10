@@ -54,6 +54,10 @@ export const ErrorCode = {
   // 状态机
   STATE_TRANSITION_INVALID: 'STATE_TRANSITION_INVALID',
 
+  // 测试资产发布（G2-13 软阻断）
+  /** 无通过记录发布 test-case，且未提供完整 published_waiver_json。 */
+  PUBLISHED_WAIVER_REQUIRED: 'PUBLISHED_WAIVER_REQUIRED',
+
   // 层级结构（父子关系）
   HIERARCHY_CYCLE: 'HIERARCHY_CYCLE',
   HIERARCHY_TYPE_INVALID: 'HIERARCHY_TYPE_INVALID',

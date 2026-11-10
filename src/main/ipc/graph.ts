@@ -31,6 +31,7 @@ import { validateNodeMetadata } from '../memory/node-schema-registry'
 import { VALID_NODE_TYPES } from '../services/graph-service'
 import { nodeTypeRegistry } from '../shared/node-type-registry'
 import { IpcError, ErrorCode } from '../errors'
+import { assertPublishedUpdateAllowed } from '../map/published-guard'
 import { createLogger } from '../shared/logger'
 import { ensureString, ensureOptionalNumber, validateProjectPath, MAX_ID_LEN } from './utils'
 
@@ -115,6 +116,11 @@ export function validateNodeUpdate(id: string, data: unknown): void {
   if (node.wikiMeta !== undefined) {
     if (node.wikiMeta !== null && (typeof node.wikiMeta !== 'object' || Array.isArray(node.wikiMeta))) {
       throw new IpcError('wikiMeta must be an object or null', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
+  }
+  if (node.publishedWaiverJson !== undefined) {
+    if (node.publishedWaiverJson !== null && typeof node.publishedWaiverJson !== 'string') {
+      throw new IpcError('publishedWaiverJson must be a JSON string or null', ErrorCode.IPC_INVALID_ARGUMENT)
     }
   }
   if (node.title !== undefined) ensureString('title', node.title, MAX_TITLE_LEN)
@@ -276,6 +282,12 @@ export function registerGraphHandlers(
 
   typedHandle('node:update', async (_, id: string, data: Partial<GraphNode>) => {
     validateNodeUpdate(id, data)
+    // G2-13：发布 test-case 前检查通过记录；无记录必须带完整 published_waiver_json。
+    // 只作用于 test 图 + test-case 节点；与 work_items 的 gate waiver 无关。
+    if (data.status === 'published') {
+      const current = nodeRepo.findById(id)
+      if (current) assertPublishedUpdateAllowed(db, current, data)
+    }
     // 状态机 per-NodeType 校验由 NodeRepository.update() 内部统一执行
     // （调 validateNodeTypeTransition）。此处不再重复校验，避免双重源。
     let warnings: string[] = []
