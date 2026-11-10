@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
-import { WorkStepService, isTerminalStepStatus } from './work-step-service'
+import { WorkStepService, isTerminalStepStatus, type WorkStepServiceOptions } from './work-step-service'
 import type { FailureClass } from './work-run-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
 
@@ -196,7 +196,11 @@ export class WorkItemGuardError extends Error {
 }
 
 export class WorkItemService {
-  constructor(private readonly db: BetterSqlite3.Database) {}
+  constructor(
+    private readonly db: BetterSqlite3.Database,
+    /** G2-18：透传给 confirm 内联构造的 WorkStepService（planning → pending 事件）。 */
+    private readonly stepOptions: WorkStepServiceOptions = {},
+  ) {}
 
   private now(): string {
     return new Date().toISOString()
@@ -396,7 +400,7 @@ export class WorkItemService {
     const nowMs = Date.now()
     const txn = this.db.transaction((): WorkItemRow => {
       const row = this.transition(id, ['awaiting_confirm'], 'queued')
-      new WorkStepService(this.db).activatePlanningSteps(id, row.revision, nowMs)
+      new WorkStepService(this.db, this.stepOptions).activatePlanningSteps(id, row.revision, nowMs)
       return row
     })
     return txn()

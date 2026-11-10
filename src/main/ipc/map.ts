@@ -23,6 +23,7 @@ import { getPublishedStatus } from '../map/published-guard'
 import { ProposalService } from '../map/proposal-service'
 import { listModes } from '../map/mode-registry'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
+import type { WorkStepServiceOptions } from '../map/work-step-service'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import {
   MAP_EXECUTION_ADAPTER_ENV,
@@ -44,13 +45,28 @@ export function registerMapHandlers(
   broadcast?: (channel: string, ...args: unknown[]) => void,
 ): void {
   const links = new LinkService(db)
-  const workItems = new WorkItemService(db)
+  // G2-18：步级迁移事件统一走现有 item 变更通道（renderer 按 lineage 去抖重拉）。
+  let workItems: WorkItemService
+  const stepOptions: WorkStepServiceOptions = {
+    onChanged: (event) => {
+      const item = workItems.get(event.workItemId)
+      if (!item) return
+      broadcast?.('event:work-item-changed', {
+        stepId: event.stepId,
+        lineageId: item.lineage_id,
+        revision: item.revision,
+        status: event.status,
+        reason: event.transition,
+      })
+    },
+  }
+  workItems = new WorkItemService(db, stepOptions)
   const workRuns = new WorkRunService(db)
   const evidence = new EvidenceService(db)
   const evidenceSuggestions = new EvidenceSuggestionService(db)
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
-  const acceptanceConfirm = new AcceptanceConfirmationService(db)
+  const acceptanceConfirm = new AcceptanceConfirmationService(db, stepOptions)
   const proposals = new ProposalService(db)
 
   // ---- 叠加层（§9.2:必须批量）----

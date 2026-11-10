@@ -17,6 +17,11 @@ import {
   WorkStepService,
   WorkStepConflictError,
   WorkStepGuardError,
+  WORK_STEP_STATUSES,
+  WORK_STEP_TERMINAL,
+  WORK_STEP_TRANSITIONS,
+  canTransitionStepStatus,
+  type WorkStepChangeEvent,
 } from '../map/work-step-service'
 
 function setupDb(): BetterSqlite3.Database {
@@ -149,5 +154,133 @@ describe('WorkStepService（§4.7.4 状态迁移）', () => {
     items.confirm(other)
     steps.start(otherStep)
     expect(steps.cancel(otherStep).status).toBe('cancelled')
+  })
+
+  describe('G2-18 声明式迁移表（12 值）', () => {
+    it('状态集合与迁移表键精确一致；终态零出边', () => {
+      expect(WORK_STEP_STATUSES).toHaveLength(12)
+      expect(Object.keys(WORK_STEP_TRANSITIONS).sort()).toEqual([...WORK_STEP_STATUSES].sort())
+      for (const status of WORK_STEP_STATUSES) {
+        const declared = WORK_STEP_TRANSITIONS[status]
+        if (WORK_STEP_TERMINAL.includes(status)) {
+          expect(declared, `${status} 是终态`).toEqual([])
+        } else {
+          expect(declared.length, `${status} 必须有出边`).toBeGreaterThan(0)
+        }
+        // 出边只能指向声明过的状态，禁止拼写/幽灵状态。
+        for (const to of declared) expect(WORK_STEP_STATUSES).toContain(to)
+      }
+    })
+
+    it('迁移表快照：改表必须撞测试', () => {
+      expect(WORK_STEP_TRANSITIONS).toEqual({
+        planning: ['pending', 'failed', 'cancelled'],
+        pending: ['waiting_approval', 'running', 'skipped', 'failed', 'cancelled', 'paused'],
+        waiting_approval: ['running', 'timed_out', 'cancelled'],
+        running: ['review', 'succeeded', 'failed', 'timed_out', 'needs_input', 'paused', 'cancelled'],
+        review: ['succeeded', 'needs_input', 'paused', 'cancelled'],
+        needs_input: ['pending', 'succeeded', 'failed', 'cancelled'],
+        paused: ['pending', 'cancelled'],
+        succeeded: [],
+        failed: [],
+        timed_out: [],
+        cancelled: [],
+        skipped: [],
+      })
+    })
+
+    it('canTransitionStepStatus 与表一致（非法迁移一律 false）', () => {
+      expect(canTransitionStepStatus('pending', 'running')).toBe(true)
+      expect(canTransitionStepStatus('waiting_approval', 'timed_out')).toBe(true)
+      expect(canTransitionStepStatus('review', 'failed')).toBe(false)
+      expect(canTransitionStepStatus('succeeded', 'pending')).toBe(false)
+    })
+
+    it('waiting_approval → timed_out 已补齐；waiting_approval 不接 failed', () => {
+      confirmItem()
+      steps.awaitApproval(stepId)
+      expect(steps.fail(stepId, { status: 'timed_out', failureClass: 'timeout' }).status).toBe(
+        'timed_out',
+      )
+
+      const other = items.createDraft({ graphId: 'g1', title: '审批等待任务' }).id
+      const otherStep = steps.listByItem(other, 1)[0].id
+      items.submitForConfirm(other)
+      items.setGateResult(other, 'pass')
+      items.confirm(other)
+      steps.awaitApproval(otherStep)
+      expect(() => steps.fail(otherStep, { status: 'failed', failureClass: 'infra' })).toThrow(
+        WorkStepConflictError,
+      )
+      expect(steps.get(otherStep)!.status).toBe('waiting_approval')
+    })
+
+    it('review → failed 未声明（当前无生产写入方，不为死状态加迁移）', () => {
+      confirmItem()
+      steps.start(stepId)
+      steps.complete(stepId, { status: 'review' })
+      expect(() => steps.fail(stepId, { status: 'failed', failureClass: 'turn_fail' })).toThrow(
+        WorkStepConflictError,
+      )
+      expect(steps.get(stepId)!.status).toBe('review')
+    })
+  })
+
+  describe('G2-18 步级迁移事件', () => {
+    it('每次成功迁移回调一次，status 与库内一致；失败迁移不回调', () => {
+      confirmItem()
+      const events: Array<WorkStepChangeEvent & { rowStatus: string }> = []
+      const svc = new WorkStepService(db, {
+        onChanged: (event) => {
+          events.push({ ...event, rowStatus: svc.get(event.stepId)!.status })
+        },
+      })
+
+      svc.start(stepId)
+      svc.complete(stepId, { status: 'succeeded' })
+      expect(() => svc.start(stepId)).toThrow(WorkStepConflictError)
+
+      expect(events.map((e) => e.status)).toEqual(['running', 'succeeded'])
+      expect(events.every((e) => e.stepId === stepId && e.workItemId === itemId && e.revision === 1)).toBe(
+        true,
+      )
+      expect(events.every((e) => e.status === e.rowStatus)).toBe(true)
+      // 失败迁移（终态回退）不得产生事件。
+      expect(events).toHaveLength(2)
+    })
+
+    it('blocked_by_dependency 与 settleNeedsInput 也走同一事件出口', () => {
+      confirmItem()
+      const events: WorkStepChangeEvent[] = []
+      const svc = new WorkStepService(db, { onChanged: (event) => events.push(event) })
+
+      const blocked = svc.failUnstarted(stepId)
+      expect(blocked?.failure_class).toBe('blocked_by_dependency')
+      expect(events.at(-1)).toMatchObject({ status: 'failed', stepId })
+
+      const other = items.createDraft({ graphId: 'g1', title: '验收收口任务' }).id
+      const otherStep = svc.listByItem(other, 1)[0].id
+      items.submitForConfirm(other)
+      items.setGateResult(other, 'pass')
+      items.confirm(other)
+      svc.start(otherStep)
+      svc.complete(otherStep, {
+        status: 'needs_input',
+        inputRequestJson: JSON.stringify({ kind: 'acceptance_manual_confirm', entries: [] }),
+      })
+      svc.settleNeedsInput(otherStep, { status: 'succeeded' })
+      expect(events.at(-1)).toMatchObject({ status: 'succeeded', stepId: otherStep })
+    })
+
+    it('回调抛错不影响已落库的迁移', () => {
+      confirmItem()
+      const svc = new WorkStepService(db, {
+        onChanged: () => {
+          throw new Error('listener boom')
+        },
+      })
+      expect(svc.start(stepId).status).toBe('running')
+      expect(svc.get(stepId)!.status).toBe('running')
+    })
   })
 })

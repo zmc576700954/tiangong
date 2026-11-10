@@ -12,6 +12,7 @@
 > v3.0（2026-11-10）：G3-2 run 级跨进程项目写闸落地——复用 `AgentRuntime` 同一个 workspace lease registry（不新建 `project_locks` 表），claim 前抢占、settle 后释放、抢不到 fail-fast；逐 turn 互斥此前已存在。已实施 90，仅建议 19。
 > v3.1（2026-11-10）：G7-7 C3 exec 面收敛——`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 改为 literal 级放行（shell/env/xcrun/arch + 白名单命令 + node/npm/npx + git 安装根），网络类命令排除，名单快照纳入测试；明确「审批放行 ≠ 沙箱可执行」。已实施 91，仅建议 18。
 > v3.2（2026-11-10）：G6-17 同 uid 防御边界落地（**文档级**）——`agent-architecture.md` §6.5.1 成段写明跨 uid 承诺、同 uid 不承诺、攻击者门槛、不构成提权；不做运行时检测。已实施 92，仅建议 17。
+> v3.3（2026-11-10）：G2-18 完整步状态机落地——`work_steps` **12 值**声明式迁移表（`WORK_STEP_TRANSITIONS` + 写库前 `assertDeclared`）、补 `waiting_approval → timed_out`、`review` 标注无生产写入方、步级 `work_step_changed` 事件在 5 处构造点全接；改正本文「13 值」笔误。已实施 93，仅建议 16。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -51,23 +52,23 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **92** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级） |
+| 已实施 | **93** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级），G2-18 12 值声明式步状态机 + 迁移事件 |
 | 已批准未实施 | **9** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **17** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
+| 仅建议 | **16** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 92+9+17+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 93+9+16+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（92）
+### I.1.1 已实施（93）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
 - **模式库（v41）**：G2-1 `mode-registry.ts` 代码常量（4 个模式，上限 32）+ `routing_decisions.mode_id` + `mode:list` 只读；执行前规则匹配，无匹配 `TIER_UNSUPPORTED` 不静默降级。
 - **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）；G2-3 `memory_hits` 记录表（v44，幂等唯一索引 + 180 天/单项目 20 万保留治理）；G2-2 Layer1 采集（v45，五个 run 终态同步采集 step/evidence/deviation 引用 + `source_outcome`）；G2-4 `v_memory_attribution` 归因视图（v46，强制经 `node_session_links.session_origin='map_task'`，跨图不聚合、样本 <20 标 `insufficient_sample`）。
-- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9、G3-2 run 级跨进程项目写闸（复用 runtime 同一 lease registry，fail-fast 跳过）。
+- **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9、G3-2 run 级跨进程项目写闸（复用 runtime 同一 lease registry，fail-fast 跳过）、G2-18 12 值声明式步状态机（`WORK_STEP_TRANSITIONS` + `assertDeclared`，补 `waiting_approval → timed_out`，`work_step_changed` 5 处构造点全接）。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-9/G5-5 E4 覆盖变化扫描（v43：签收基线 + 独立扫描，变化置 stale 并区分 `stale_reason`）、G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-5 删除 unattended 30s 分支与仅供其存在的配置/UI/测试桩（`approval/gateway.ts:37,183`，统一交互 120s）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
@@ -83,10 +84,10 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（17）
+### I.1.3 仅建议（16）
 
 - **会话地图本体**：G1-11 `node_id` 放宽。
-- **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机。
+- **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互。
 - **编排执行**：G3-1 Tier1 探测。
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：G5-10 §3.6 项目进度。
@@ -95,7 +96,7 @@
 - **界面与交互**：G8-3 C1–C4、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0/v3.1/v3.2 再核减）**：以上 17 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-23、II-24、II-26、II-27、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0/v3.1/v3.2/v3.3 再核减）**：以上 16 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-20、II-23、II-24、II-26、II-27、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -357,7 +358,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：不改代码即无回滚风险。
 
 ### W9 DAG 并行与确认点（L3）
-- 覆盖条目：G2-8 `[建议]` WaveExecutor、G2-9 `[建议]` 黑板/fanout、G2-10 `[建议]` C1–C4、G2-17 `[建议]` 多 Agent、G2-18 `[建议]` 完整步状态机、G8-3 `[建议]` C1–C4 渲染、G8-5 `[建议]` 任务卡深度。
+- 覆盖条目：G2-8 `[建议]` WaveExecutor、G2-9 `[建议]` 黑板/fanout、G2-10 `[建议]` C1–C4、G2-17 `[建议]` 多 Agent、G8-3 `[建议]` C1–C4 渲染、G8-5 `[建议]` 任务卡深度。
 - 目标：从串行多步升级为受控并行。
 - 涉及文件与数据/接口变更：新增 `wave-executor.ts`、`mediated-blackboard.ts`；`work_steps` 状态机扩展；渲染层新增确认点组件。
 - 实施步骤：① DAG 环检测；② Wave 调度；③ 黑板读写契约；④ 确认点 UI；⑤ 多 Agent 路由。
@@ -662,7 +663,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G2-4 | Layer2 归因（**已实施，v46，口径见 I.9.3**） | 依赖 G2-2/G2-3 | 已完成：只读视图 + 强制 map_task 归因 + 样本阈值 | — |
 | G2-16 | 离线校准 | 依赖 G2-14（已实施）/G2-15 | 授权开工即可 | 1.5 人日 |
 | G2-15 | dirty diff | 无，口径与 G11-10 对齐 | 授权开工即可 | 2 人日 |
-| G2-18 | 完整步状态机 | 无 | 授权开工即可 | 3 人日 |
+| G2-18 | 完整步状态机 | 无 | **已实施**（12 值声明式迁移表 + `waiting_approval → timed_out` + `work_step_changed`，口径见 I.9.3） | 3 人日 |
 | G3-2 | 跨进程写闸 | 无 | **已实施**（复用 workspace lease，run 级 + fail-fast） | 3 人日 |
 | G2-8 | WaveExecutor | D-07 已定：并发上限固定 1，落「分层串行」 | 授权开工即可 | 5 人日 |
 | G2-9 | 黑板 / fanout | 无，L3 | 授权开工即可 | 6 人日 |
@@ -734,10 +735,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G3-2 / II-23 **（妥协）** | 多进程/多窗口下同项目写任务互斥 | 复用 `WorkspaceLeaseRegistry`（文件租约）；`WorkExecutionService.tick` claim 前以 `item.project_path` 抢占，settle 后 `finally` 释放；抢不到 fail-fast 跳过（`project_busy`），不 claim/不消耗 attempt；默认关闭即 noop | **妥协**：①**无 `project_locks` 表**，状态落在 lease 文件（探测/排障是读文件不是查表）；②**无 `stale_lock_reclaimed` 事件**，过期回收只在下次 acquire 时静默发生；③TTL 默认 30s 可配，无 60s 上限钳制；④key 是 `project_path` 原串（trim），等价但拼写不同的路径不算同一项目；⑤**测试执行器未纳入**（临时 worktree 路径）；⑥**无 IPC/UI 状态**，`projectBusyItemIds` 只在 tick 返回与事件里可见。后果：单机多进程写互斥可用，但可观测性与路径归一化弱于原设计 | 需要审计锁历史/多窗口可视化，或测试执行器也要互斥时，再评估落表与事件 |
 | G7-7 / II-27 **（妥协）** | 收敛沙箱可执行面，避免系统目录整目录放行 | `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 从 subpath 改为 literal；固定放行 shell/env/arch/xcrun + 白名单命令解析路径 + node/npm/npx + git 安装根；`/System/Library` 仍是唯一目录级放行；网络类命令显式排除；名单快照进测试 | **妥协**：①**env 白名单与 cwd 未收敛**（本轮只做 exec 粒度）；②**`/System/Library` 仍整目录放行**（SIP 保护、不可枚举）；③未实现 `test_exec_profile` 常量，`evaluateBashPolicy` 未改；④**未枚举的写命令会失败**，只能得到内核 `EPERM`（`Operation not permitted`）由 CLI 转述，无法注入自定义可读文案；⑤审批与沙箱会故意互相打回，用户可能看到“已批准但执行失败”；⑥产品必需命令按 PATH 解析，PATH 变化会改变实际名单。后果：exec 面显著收窄、网络命令被挡，但可用命令集变小且失败文案依赖 CLI | 需要 env/cwd 收敛、自定义拒绝文案或更细的按命令策略时再评估 |
 | G6-17 / II-26 **（妥协）** | 让用户/审计清楚“同 uid 不在防御范围” | 只写文档：`agent-architecture.md` §6.5.1 成段列跨 uid 承诺、同 uid 不承诺、攻击者门槛、不构成提权；本文 §10 增一致性行 | **妥协**：①**无运行时启动检测**，不扫描异常 marker、不校验密钥/目录属主权限、不对 symlink 条目告警；②异常只能靠 C13b 硬化与人工排障发现；③没有 UI 提示，用户需读文档才知道边界；④“已实施”仅指文档级，无代码证据。后果：边界可检索、可审计，但无法主动发现同 uid 攻击 | 需要启动自检/告警或 UI 边界提示时，再补代码并重估状态词 |
+| G2-18 / II-20 **（妥协）** | 步状态迁移由声明式表约束、非法迁移可拒绝、迁移可观测 | `WORK_STEP_TRANSITIONS` 12 值 + `assertDeclared`（未声明抛 `INVALID_TRANSITION`）+ 5 处构造点 `onChanged` 发 `work_step_changed` | **妥协**：①**不新开 `event:work-step-changed` IPC 通道**，沿用 `event:work-item-changed`（payload 增 `stepId`），renderer 只能按 lineage 去抖重拉，无步级增量订阅；②`review` **当前无生产写入方**，`review → failed` 不实现（不为死状态加迁移）；③`work-run-service` 启动对账构造点未接 sink；④事件同步回调，`confirm` / `startStep` 事务内触发，不保证消费方在提交后收到；⑤`updateInputRequest` 不是状态迁移，事件按 `needs_input` 上报。后果：状态机可执行、可测试，但步级事件不是独立契约，`review` 分支仍无生产链路 | 需要步级订阅/独立通道，或接入 checker 生产写入方时，再补 IPC 与迁移 |
 
-# Part II 仅建议项施工级设计（17 条有效 + 已实施项保留为设计存档）
+# Part II 仅建议项施工级设计（16 条有效 + 已实施项保留为设计存档）
 
-> **口径**：本部分把 I.1.3 的 17 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/23/24/26/27/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 17 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 16 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/20/23/24/26/27/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 16 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -761,7 +763,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | II-17 | G2-15 | dirty diff | §4.6 | — |
 | II-18 | G2-16 | 离线校准 | §5.7 | — |
 | II-19 | G2-17 | 多 Agent 交互 | §5.9.8.1 | 已解除（D-07） |
-| II-20 | G2-18 | 完整步状态机 | §5.9.8 | — |
+| II-20 | G2-18 | 完整步状态机 | §5.9.8 | 已实施（12 值迁移表） |
 | II-21 | G2-19 | 提案 UI | §9.4 | 已实施（v40） |
 | II-22 | G3-1 | Tier1 探测 | §5.9.10 | 已解除（D-17） |
 | II-23 | G3-2 | 跨进程写闸 | §5.9.3 | 已实施 |
@@ -969,12 +971,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：II-10/II-11 之后；**D-07 已裁决**，按「串行多会话」口径实现，不引入排队。
 - **成本**：≈7 人日（估算）。
 
-### II-20 · G2-18 完整步状态机｜**仅建议**
+### II-20 · G2-18 完整步状态机｜**已实施（本包，保留为设计存档）**
+> **做了什么**：`work-step-service.ts` 新增 **12 值**声明式迁移表 `WORK_STEP_TRANSITIONS`（终态零出边）与 `canTransitionStepStatus`；所有迁移方法写库前用 `assertDeclared` 复核来源集合，未声明即抛 `WorkStepConflictError('INVALID_TRANSITION: …')`，SQL 的 `WHERE status IN (...)` 由同一来源集合生成。补齐 `waiting_approval → timed_out`（审批等待同样受 run deadline 约束）；`blocked_by_dependency`（`failUnstarted`，来源于 `blockUnstartedDependents`）与 `settleNeedsInput`（`needs_input → succeeded/failed`，人工确认收口）两条已实现扩展写进表并注明写入方；`review` 当前无生产写入方，不为死状态补 `review → failed`。`WorkStepService` 新增可选 `onChanged`，5 处构造点（`work-scheduler` / `work-execution-service` / `acceptance-confirmation` / `agent-step-runner` / `work-item-service`）全接，发 `work_step_changed`。
+> **妥协在哪**：①**不新开 `event:work-step-changed` IPC 通道**，`work_step_changed` 沿用既有 `event:work-item-changed` 下发（payload 增 `stepId`），renderer 仍按 lineage 去抖重拉，不做步级增量渲染；②`review` 无生产写入方（仓库内无调用方传 `status:'review'`），本轮只保留已实现出边，不为死状态加迁移；③`updateInputRequest` 只改 `input_request_json`、不是状态迁移，事件按当前 `needs_input` 上报；④事件在迁移成功后同步回调（消费方异常被吞、不影响已落库迁移），部分路径（`confirm` / `startStep` 事务内）在提交前触发，消费方不得依赖提交时序；⑤`work-run-service.ts` 的启动对账构造点未接 sink（不在裁决的 5 处名单内），该路径的步级变化不产事件。
 - **目标与不做后果**：把 `work_steps` 的迁移表落成可执行约束（含非法迁移拒绝）；不做则状态靠约定，竞态下会写错终态。
-- **数据/接口**：`work_steps.status` 13 值 CHECK 已定；新增迁移函数 `transition(stepId, from, to)` 以条件更新实现 CAS；事件 `event:work-step-changed`。
-- **流程/状态机**：严格按 §5.9.8 表迁移；终态不可逆；`needs_input → pending` 必须 `attempt+1`。
+- **数据/接口**：`work_steps.status` **12 值** CHECK 已定（`schema.ts`，无需迁移）；迁移表 `WORK_STEP_TRANSITIONS` + `assertDeclared` 在 `work-step-service.ts`；事件类型 `work_step_changed`（`{stepId, workItemId, revision, status, transition}`）。
+- **流程/状态机**：严格按 §5.9.8 的 12 值表迁移；终态不可逆；`needs_input → pending` 必须 `attempt+1`；`planning` / `pending` 的级联阻断写 `failed + failure_class='blocked_by_dependency'`。
 - **边界**：非法迁移返回 `INVALID_TRANSITION` 且不写库；终态写入前要求 session terminate；并发两个终态只有 CAS 胜者落库。
-- **验收**：穷举合法/非法迁移用例；并发终态唯一；事件与库一致。
+- **验收**：迁移表快照 + 12 值集合/终态零出边用例；合法/非法迁移用例（含 `waiting_approval → timed_out` 与 `review → failed` 拒绝）；并发终态唯一；事件与库一致（`work-step-service.test.ts`、`work-execution.test.ts`）。
 - **前置依赖与顺序**：W1/W3 共用；先于 II-10。
 - **成本**：≈3 人日（估算）。
 
@@ -2879,20 +2883,22 @@ if 处理数 < 节点数: 存在环 → 拒绝确认
 
 #### 5.9.8 步级状态机与 `needs_input`
 
-`work_steps.status` 取值与迁移：
+`work_steps.status` 取值与迁移（**12 值**；括号内为写入方，与 `WORK_STEP_TRANSITIONS` 一一对应）：
 
-| 状态 | 含义 | 允许的下一步 |
+| 状态 | 含义 | 允许的下一步（写入方） |
 |---|---|---|
-| `planning` | 计划生成中 | `pending` / `cancelled` |
-| `pending` | 已就绪待调度 | `waiting_approval` / `running` / `cancelled` |
-| `waiting_approval` | 等待审批 | `running` / `cancelled` / `timed_out` |
-| `running` | 执行中 | `review` / `succeeded` / `failed` / `timed_out` / `needs_input` / `paused` / `cancelled` |
-| `review` | 产出待评审/checker | `succeeded` / `failed` / `needs_input` / `cancelled` |
-| `needs_input` | 等待用户回答 | `pending`（新 attempt） / `cancelled` |
-| `paused` | `infra` 等原因暂停 | `pending` / `cancelled` |
+| `planning` | 计划生成中 | `pending`（`activatePlanningSteps`）/ `failed`（`failUnstarted` → `blocked_by_dependency`）/ `cancelled`（`cancel`） |
+| `pending` | 已就绪待调度 | `waiting_approval`（`awaitApproval`）/ `running`（`start`）/ `skipped`（`skip`）/ `failed`（`blockUnstartedDependents` → `failUnstarted`）/ `paused`（`pause`）/ `cancelled`（`cancel`） |
+| `waiting_approval` | 等待审批 | `running`（`start`）/ `timed_out`（`fail`，deadline 扫描）/ `cancelled`（`cancel`） |
+| `running` | 执行中 | `review` / `succeeded` / `needs_input`（`complete`）/ `failed` / `timed_out`（`fail`）/ `paused`（`pause`）/ `cancelled`（`cancel`） |
+| `review` | 产出待评审/checker（**当前无生产写入方**） | `succeeded` / `needs_input`（`complete`）/ `paused`（`pause`）/ `cancelled`（`cancel`）；`failed` 未实现（无写入方，不为死状态加迁移） |
+| `needs_input` | 等待用户回答 | `pending`（`resume`，`attempt+1`）/ `succeeded` / `failed`（`settleNeedsInput` 人工确认收口）/ `cancelled`（`cancel`） |
+| `paused` | `infra` 等原因暂停 | `pending`（`resume`，`attempt+1`）/ `cancelled`（`cancel`） |
 | `succeeded` / `failed` / `timed_out` / `cancelled` / `skipped` | 终态 | — |
 
-- **状态变更即落库**：每次迁移立即 `UPDATE work_steps` 并发出 `event:work-step-changed`；禁止只在内存中维护状态、结束才写库。
+> `blocked_by_dependency` 是 `failure_class` 归因值，不是第 13 个状态；`settleNeedsInput` 是已实现扩展（`needs_input` 直接收口到终态，不新开 attempt）。
+
+- **状态变更即落库**：每次迁移立即 `UPDATE work_steps`，并通过 `WorkStepService` 的 `onChanged` 发出 `work_step_changed`；主进程沿用 `event:work-item-changed` 通道下发（不新开 `event:work-step-changed`，payload 增 `stepId`），renderer 按 lineage 去抖重拉。5 处构造点（`work-scheduler` / `work-execution-service` / `acceptance-confirmation` / `agent-step-runner` / `work-item-service`）全接；禁止只在内存中维护状态、结束才写库。
 - **`needs_input` 问题卡**：写 `input_request_json`（问题、可选项、默认值、影响范围、阻塞的后续步）；同步把 `work_items.status` 置 `needs_input`。
 - **回答后开新 attempt**：用户回答 → `attempt+1` → 状态回 `pending`；上一个 run 的产出与 `partial_output_ref` 保留，**不把等待时间计入失败**，也不消耗重试上限之外的额外次数。
 - `review` 与 `checker_work_item_id` 绑定：checker 不通过时**不得**直接 `succeeded`，按下条 maker-checker 规则处理。
@@ -4812,8 +4818,8 @@ online/dev 图 id 与错误；应用照常启动，下次启动自动对 NULL �
 | 事件 | 触发 | 载荷 |
 |---|---|---|
 | `event:node-execution-state` | 派生状态变化 | `{graphId, nodeEntityKey, executionState, evidenceLevel, staleCount}` |
-| `event:work-item-changed` | revision / status 变化 | `{lineageId, revision, status}` |
-| `event:work-step-changed` | 步级状态迁移 | `{workItemId, stepId, status, attempt}` |
+| `event:work-item-changed` | revision / status 变化；**步级迁移（G2-18）也复用本通道** | `{lineageId, revision, status, stepId?, reason?}` |
+| `event:work-step-changed` | **G2-18 未新开**：`work_step_changed` 事件类型复用 `event:work-item-changed` 下发（见 I.9.3） | — |
 | `event:work-step-partial` | 失败/取消时已收 partial | `{workStepId, attempt, resultTextChars, resultFilesCount, truncated}`（结构化，不用 `[partial]` 文本前缀） |
 | `event:test-run-updated` | 测试计划/运行变化 | `{planId, runId, status, passed, failed}` |
 | `event:map-link-changed` | 链接增删/孤儿化 | `{graphId, fromEntityKey, toEntityKey, linkType, status}` |

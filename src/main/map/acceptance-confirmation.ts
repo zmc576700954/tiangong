@@ -27,7 +27,7 @@ import { recordAcceptanceEvaluation } from './acceptance-diagnostics'
 import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
 import { EvidenceService } from './evidence-service'
 import { WorkItemService, type WorkItemRow, type WorkItemStatus, type WorkStepRow } from './work-item-service'
-import { WorkStepService, type WorkStepStatus } from './work-step-service'
+import { WorkStepService, type WorkStepServiceOptions, type WorkStepStatus } from './work-step-service'
 
 const logger = createLogger('AcceptanceConfirmation')
 
@@ -120,9 +120,13 @@ export class AcceptanceConfirmationService {
   private readonly steps: WorkStepService
   private readonly evidence: EvidenceService
 
-  constructor(private readonly db: BetterSqlite3.Database) {
+  constructor(
+    private readonly db: BetterSqlite3.Database,
+    /** G2-18：步级迁移事件（needs_input → succeeded/failed 收口）。 */
+    stepOptions: WorkStepServiceOptions = {},
+  ) {
     this.items = new WorkItemService(db)
-    this.steps = new WorkStepService(db)
+    this.steps = new WorkStepService(db, stepOptions)
     this.evidence = new EvidenceService(db)
   }
 

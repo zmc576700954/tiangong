@@ -129,6 +129,7 @@ async function broadcastEvent(event: WorkExecutionEvent): Promise<void> {
   try {
     const { BrowserWindow } = await import('electron')
     const payload = {
+      ...(event.stepId ? { stepId: event.stepId } : {}),
       lineageId: event.lineageId,
       revision: event.revision,
       status: event.status,

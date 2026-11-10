@@ -14,7 +14,7 @@
 import type BetterSqlite3 from 'better-sqlite3'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import { WorkRunService, type WorkRunRow } from './work-run-service'
-import { WorkStepService, WorkStepConflictError } from './work-step-service'
+import { WorkStepService, WorkStepConflictError, type WorkStepServiceOptions } from './work-step-service'
 
 export class WorkSchedulerGuardError extends Error {
   constructor(
@@ -51,9 +51,13 @@ export class WorkScheduler {
   private readonly steps: WorkStepService
   private readonly runs: WorkRunService
 
-  constructor(private readonly db: BetterSqlite3.Database) {
+  constructor(
+    private readonly db: BetterSqlite3.Database,
+    /** G2-18：步级迁移事件（claim 时 pending → running）。 */
+    stepOptions: WorkStepServiceOptions = {},
+  ) {
     this.items = new WorkItemService(db)
-    this.steps = new WorkStepService(db)
+    this.steps = new WorkStepService(db, stepOptions)
     this.runs = new WorkRunService(db)
   }
 

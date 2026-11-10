@@ -45,7 +45,13 @@ import {
 } from './work-item-service'
 import { WorkRunService, type WorkRunRow, type WorkRunStatus } from './work-run-service'
 import { WorkScheduler, type ClaimedStep } from './work-scheduler'
-import { WorkStepService, isTerminalStepStatus, type WorkStepStatus } from './work-step-service'
+import {
+  WorkStepService,
+  isTerminalStepStatus,
+  type WorkStepChangeEvent,
+  type WorkStepServiceOptions,
+  type WorkStepStatus,
+} from './work-step-service'
 import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from '../agent/timeout-config'
 import type { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
 
@@ -200,11 +206,16 @@ export class WorkExecutionService {
     private readonly turns: AgentTurnRunner,
     private readonly options: WorkExecutionOptions = {},
   ) {
-    this.items = new WorkItemService(db)
-    this.steps = new WorkStepService(db)
+    // G2-18：五处 WorkStepService 构造点共用同一事件出口，步级迁移不再只靠
+    // 调用方记得广播。items 先装配，emitStepChanged 依赖它补 lineageId。
+    const stepOptions: WorkStepServiceOptions = {
+      onChanged: (event) => this.emitStepChanged(event),
+    }
+    this.items = new WorkItemService(db, stepOptions)
+    this.steps = new WorkStepService(db, stepOptions)
     this.runs = new WorkRunService(db)
-    this.scheduler = new WorkScheduler(db)
-    this.runner = new AgentStepRunner(db, turns)
+    this.scheduler = new WorkScheduler(db, stepOptions)
+    this.runner = new AgentStepRunner(db, turns, stepOptions)
     this.isEnabled = options.isEnabled ?? isMapExecutionEnabled
     this.gateRecheck = options.gateRecheck ?? unavailableGateRecheck
     this.agentTimeouts = resolveAgentTimeouts(options.timeouts)
@@ -801,6 +812,21 @@ export class WorkExecutionService {
       }
     }
     return cancelled
+  }
+
+  /** G2-18：步级迁移 → work_step_changed（lineageId 由 item 补齐）。 */
+  private emitStepChanged(event: WorkStepChangeEvent): void {
+    const item = this.items.get(event.workItemId)
+    if (!item) return
+    this.emit({
+      type: 'work_step_changed',
+      workItemId: event.workItemId,
+      stepId: event.stepId,
+      lineageId: item.lineage_id,
+      revision: item.revision,
+      status: event.status,
+      reason: event.transition,
+    })
   }
 
   private emit(event: WorkExecutionEvent): void {

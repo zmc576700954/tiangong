@@ -190,6 +190,25 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     await ticking
   })
 
+  it('G2-18：tick 内步级迁移发 work_step_changed（含 stepId，与库一致）', async () => {
+    const itemId = confirmedItem()
+    const stepId = steps.listByItem(itemId, 1)[0].id
+    const events: WorkExecutionEvent[] = []
+    const exec = service({ onEvent: (event) => events.push(event) })
+
+    await exec.tick({ adapterName: 'claude-code' })
+
+    const stepEvents = events.filter((e) => e.type === 'work_step_changed')
+    expect(stepEvents.map((e) => e.status)).toEqual(['running', 'succeeded'])
+    for (const event of stepEvents) {
+      expect(event.stepId).toBe(stepId)
+      expect(event.workItemId).toBe(itemId)
+      expect(event.lineageId).toBe(items.get(itemId)!.lineage_id)
+    }
+    // 事件出口与库内最终状态一致。
+    expect(stepEvents.at(-1)?.status).toBe(steps.get(stepId)!.status)
+  })
+
   it('tick 第 2 步真的重跑 gate：库里 pass、stub 不通过 → blocked 且不建 run', async () => {
     const itemId = confirmedItem()
     const events: WorkExecutionEvent[] = []

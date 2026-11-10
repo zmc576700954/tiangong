@@ -38,7 +38,7 @@ import {
   type WorkRunRow,
 } from './work-run-service'
 import { GitWorkspaceChangeRunner, collectWorkspaceChanges, type WorkspaceChangeSnapshot } from './workspace-change-stats'
-import { WorkStepService } from './work-step-service'
+import { WorkStepService, type WorkStepServiceOptions } from './work-step-service'
 import type { ClaimedStep } from './work-scheduler'
 
 const logger = createLogger('AgentStepRunner')
@@ -307,9 +307,11 @@ export class AgentStepRunner {
   constructor(
     private readonly db: BetterSqlite3.Database,
     private readonly turns: AgentTurnRunner,
+    /** G2-18：步级迁移事件（turn 结束后的终态写入）。 */
+    stepOptions: WorkStepServiceOptions = {},
   ) {
     this.runs = new WorkRunService(db)
-    this.steps = new WorkStepService(db)
+    this.steps = new WorkStepService(db, stepOptions)
     this.items = new WorkItemService(db)
     this.routing = new RoutingDecisionRepository(db)
     this.evidence = new EvidenceService(db)
