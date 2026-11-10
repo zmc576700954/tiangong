@@ -21,6 +21,7 @@ import { Badge } from '../ui/badge'
 import { useMapStore } from '../../store/mapStore'
 import type { ExecutionStateValue, WorkItemSummary, WorkStepEntry } from '../../store/mapStore'
 import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
+import { StepConfirmationPanel, hasPendingConfirmation } from './StepConfirmationPanel'
 
 interface PendingAcceptanceEntry {
   id: string
@@ -124,6 +125,8 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const timeline = useMapStore((s) => s.nodeTimeline)
   const evidence = useMapStore((s) => s.nodeEvidence)
   const details = useMapStore((s) => s.workItemDetails)
+  // G8-3：步级确认视图（后端派生，renderer 只展示）
+  const confirmationsByItem = useMapStore((s) => s.confirmationsByItem)
   const workItemErrors = useMapStore((s) => s.workItemErrors)
   const nodeError = useMapStore((s) => s.nodeError)
   const actionErrors = useMapStore((s) => s.actionErrors)
@@ -278,6 +281,9 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
               const steps = detail?.steps ?? []
               // G8-5：证据只按归属任务预过滤；run 归属由 TaskCardTree 按 work_run_id 分组。
               const taskEvidence = evidence.filter((e) => e.work_item_id === t.id)
+              // G8-3：按 stepId 索引确认视图；低风险步不渲染面板。
+              const taskConfirmations = confirmationsByItem[t.id] ?? []
+              const confirmationByStep = new Map(taskConfirmations.map((view) => [view.stepId, view]))
               const taskOpen = expanded.has(`task:${t.id}`)
               const activeRuns = runs.filter((r) => RUN_ACTIVE.has(r.status))
               const hasActiveRun = activeRuns.length > 0
@@ -297,6 +303,15 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                   <div className="flex items-center gap-2">
                     <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[t.status] ?? ''}`}>{t.status}</Badge>
                     <span className="flex-1 truncate text-xs">{t.title}</span>
+                    {hasPendingConfirmation(taskConfirmations) && (
+                      <Badge
+                        variant="secondary"
+                        className="text-[10px] border bg-amber-500/10 text-amber-700 border-amber-500/30"
+                        data-testid={`task-${t.id}-confirmation-pending`}
+                      >
+                        待确认
+                      </Badge>
+                    )}
                     <span className="text-[10px] opacity-50">r{t.revision} · gate={t.gate_status}</span>
                   </div>
 
@@ -425,8 +440,14 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                                 const acceptance = s.status === 'needs_input' ? parseAcceptanceRequest(s.input_request_json) : null
                                 const unknownInput = s.status === 'needs_input' && !acceptance
                                 const stepActionError = actionErrors[s.id]
+                                const confirmation = confirmationByStep.get(s.id)
                                 return (
                                   <>
+                                    {confirmation && (
+                                      <div className="ml-7">
+                                        <StepConfirmationPanel view={confirmation} />
+                                      </div>
+                                    )}
                                     {stepActionError && (
                                       <div className="ml-7 text-[10px] text-red-600" data-testid={`step-${s.id}-action-error`}>
                                         {stepActionError}

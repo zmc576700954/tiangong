@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NodeMapPanel } from '../NodeMapPanel'
 import { useMapStore } from '../../../store/mapStore'
-import type { EvidenceEntry, WorkItemDetail, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
+import type { EvidenceEntry, StepConfirmationView, WorkItemDetail, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
 
 function makeItem(overrides: Partial<WorkItemSummary> = {}): WorkItemSummary {
   return {
@@ -65,6 +65,7 @@ function setup(opts: {
   items?: WorkItemSummary[]
   details?: Record<string, WorkItemDetail>
   evidence?: EvidenceEntry[]
+  confirmationsByItem?: Record<string, StepConfirmationView[]>
   workItemErrors?: Record<string, string>
   executionStatus?: { enabled: boolean; adapterName: string | null; disabledReason: string | null } | null
   actionErrors?: Record<string, string>
@@ -78,6 +79,7 @@ function setup(opts: {
     nodeTimeline: [],
     nodeEvidence: opts.evidence ?? [],
     workItemDetails: opts.details ?? { 'wi-1': makeDetail(items[0]) },
+    confirmationsByItem: opts.confirmationsByItem ?? {},
     workItemErrors: opts.workItemErrors ?? {},
     nodeError: null,
     actionErrors: opts.actionErrors ?? {},
@@ -458,5 +460,147 @@ describe('G8-5 任务卡深度', () => {
 
     expect(screen.getAllByTestId(/^task-wi-\d+$/).length).toBe(100)
     expect(screen.queryByTestId('step-step-1')).toBeNull()
+  })
+})
+
+function makeConfirmation(overrides: Partial<StepConfirmationView> = {}): StepConfirmationView {
+  return {
+    stepId: 'step-1',
+    workItemId: 'wi-1',
+    workItemRevision: 1,
+    stepKind: 'test',
+    point: 'C3',
+    status: 'waiting_approval',
+    required: true,
+    waiting: true,
+    risk: {
+      level: 'high',
+      files: 20,
+      estimatedLines: 900,
+      reasons: ['写域 20 个文件，达到 G4 高风险线 20'],
+    },
+    requiredDisplay: ['commands', 'worktree', 'affectedFiles', 'policies', 'planHash', 'durationLimit'],
+    trigger: '测试执行前确认命令、工作区与计划哈希',
+    rejectPath: 'waiting_approval → cancelled',
+    decision: null,
+    request: null,
+    ...overrides,
+  }
+}
+
+describe('G8-3 确认点渲染', () => {
+  it('高风险待确认 test 步：展示为什么确认 + 后端风险原因，并给任务级待确认角标', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'waiting_approval' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: { 'wi-1': [makeConfirmation()] },
+    })
+    renderPanel()
+
+    expect(screen.getByTestId('task-wi-1-confirmation-pending').textContent).toContain('待确认')
+    await expandTask()
+
+    const panel = screen.getByTestId('step-step-1-confirmation')
+    expect(panel.textContent).toContain('C3')
+    expect(screen.getByTestId('step-step-1-why').textContent).toContain('测试执行前确认')
+    expect(screen.getByTestId('step-step-1-risk').textContent).toContain('高')
+    expect(screen.getByTestId('step-step-1-reasons').textContent).toContain('G4 高风险线')
+    expect(panel.textContent).toContain('planHash')
+    expect(panel.textContent).toContain('驳回后')
+  })
+
+  it('低风险且无决策：不渲染面板、不出现待确认角标', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'pending' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: {
+        'wi-1': [
+          makeConfirmation({
+            status: 'pending',
+            required: false,
+            waiting: false,
+            risk: {
+              level: 'low',
+              files: 1,
+              estimatedLines: 10,
+              reasons: ['写域 1 个文件，未达 G4 高风险线 20'],
+            },
+          }),
+        ],
+      },
+    })
+    renderPanel()
+
+    expect(screen.queryByTestId('task-wi-1-confirmation-pending')).toBeNull()
+    await expandTask()
+    expect(screen.queryByTestId('step-step-1-confirmation')).toBeNull()
+  })
+
+  it('已决策：展示通过状态、决策人与备注', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'pending' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: {
+        'wi-1': [
+          makeConfirmation({
+            status: 'pending',
+            required: false,
+            waiting: false,
+            decision: {
+              decision: 'approve',
+              decidedBy: 'alice',
+              decidedAt: 1,
+              note: '命令已核对',
+              risk: 'high',
+              reasons: ['写域 20 个文件，达到 G4 高风险线 20'],
+            },
+          }),
+        ],
+      },
+    })
+    renderPanel()
+    await expandTask()
+
+    const panel = screen.getByTestId('step-step-1-confirmation')
+    expect(panel.textContent).toContain('已通过')
+    expect(screen.getByTestId('step-step-1-decision').textContent).toContain('alice')
+    expect(screen.getByTestId('step-step-1-decision').textContent).toContain('命令已核对')
+  })
+
+  it('C4 人工步展示完成认定与返工拒绝路径', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'human', status: 'waiting_approval' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: {
+        'wi-1': [
+          makeConfirmation({
+            point: 'C4',
+            stepKind: 'human',
+            requiredDisplay: ['executionState', 'evidence', 'staleEvidence', 'unmetAcceptance', 'suggestions', 'statusDiff'],
+            trigger: '完成认定前核对执行状态与未满足验收',
+            rejectPath: 'waiting_approval → pending（返工）',
+          }),
+        ],
+      },
+    })
+    renderPanel()
+    await expandTask()
+
+    const panel = screen.getByTestId('step-step-1-confirmation')
+    expect(panel.textContent).toContain('C4 完成认定')
+    expect(panel.textContent).toContain('完成认定前核对')
+    expect(panel.textContent).toContain('返工')
   })
 })

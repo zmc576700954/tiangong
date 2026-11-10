@@ -180,6 +180,34 @@ export interface WorkItemDetail {
   runs: WorkRunEntry[]
 }
 
+/**
+ * G8-3：步级确认视图（`map:confirmation:status` 原样投影）。
+ * 只做展示：`risk.level` 与 `reasons` 由主进程派生，renderer **不得复算**。
+ */
+export interface StepConfirmationView {
+  stepId: string
+  workItemId: string
+  workItemRevision: number
+  stepKind: string
+  point: 'C3' | 'C4' | null
+  status: string
+  required: boolean
+  waiting: boolean
+  risk: { level: 'low' | 'high'; files: number; estimatedLines: number | null; reasons: string[] } | null
+  requiredDisplay: string[]
+  trigger: string | null
+  rejectPath: string | null
+  decision: {
+    decision: 'approve' | 'reject'
+    decidedBy: string
+    decidedAt: number
+    note: string | null
+    risk: 'low' | 'high'
+    reasons: string[]
+  } | null
+  request: { point: 'C3' | 'C4'; risk: 'low' | 'high'; reasons: string[]; requested_at: number } | null
+}
+
 interface MapState {
   /** 叠加层：按图缓存（map:overlay:get 批量,禁止按节点轮询） */
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
@@ -187,6 +215,8 @@ interface MapState {
   nodeEvidence: EvidenceEntry[]
   /** item 下钻明细缓存（workitem:get；只读,按 item id 索引） */
   workItemDetails: Record<string, WorkItemDetail>
+  /** G8-3：步级确认视图缓存（map:confirmation:status；只读展示，风险由后端派生） */
+  confirmationsByItem: Record<string, StepConfirmationView[]>
   /** 下钻读取失败（按 item id）；与「无数据」区分，避免空列表被当成正常空态。 */
   workItemErrors: Record<string, string>
   /** 节点级读取失败（overlay / 时间线 / 证据）。 */
@@ -274,6 +304,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   nodeTimeline: [],
   nodeEvidence: [],
   workItemDetails: {},
+  confirmationsByItem: {},
   workItemErrors: {},
   nodeError: null,
   actionErrors: {},
@@ -434,10 +465,22 @@ export const useMapStore = create<MapState>((set, get) => ({
   /**
    * item 下钻（workitem:get）：item + 当前 revision 的 steps + 全部 runs。
    * 只读；空结果(null)不写入缓存，避免用占位内容伪造"有任务"。
+   * G8-3：同一轮拉取步级确认视图（只读），不另起轮询。
    */
   fetchWorkItemDetail: async (id) => {
+    // 确认视图是纯展示附加项：通道缺失/失败不得连累明细读取。
+    const confirmationsPromise = (async () => {
+      try {
+        return await window.electronAPI['map:confirmation:status']({ workItemId: id })
+      } catch {
+        return null
+      }
+    })()
     try {
-      const result = await window.electronAPI['workitem:get'](id)
+      const [result, confirmations] = await Promise.all([
+        window.electronAPI['workitem:get'](id),
+        confirmationsPromise,
+      ])
       if (!result) {
         set((state) => ({
           workItemErrors: { ...state.workItemErrors, [id]: '任务不存在或已被删除（workitem:get 返回空）' },
@@ -456,6 +499,15 @@ export const useMapStore = create<MapState>((set, get) => ({
               runs: (result.runs ?? []) as unknown as WorkRunEntry[],
             },
           },
+          // 确认视图读取失败不影响明细：保留上一次缓存，不用占位内容覆盖。
+          ...(confirmations
+            ? {
+                confirmationsByItem: {
+                  ...state.confirmationsByItem,
+                  [id]: confirmations as StepConfirmationView[],
+                },
+              }
+            : {}),
           workItemErrors: nextErrors,
         }
       })
