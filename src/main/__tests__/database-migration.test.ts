@@ -529,8 +529,8 @@ describe('Database Migration', () => {
         .toEqual({ title: '旧步', skip_reason: null, failure_class: null })
       // 纯加列：没有走重建路径（否则会留下 work_*_backup）。
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('work_items_backup','work_steps_backup')").all()).toEqual([])
-      // 迁移链继续走到当前版本（v37：evidence_suggestions 建表）。
-      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 37 })
+      // 迁移链继续走到当前版本（v38：视图纳入 schema 校验）。
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 38 })
       // v37 纯建表：旧库启动时由 schema 汇总自动补齐，无数据迁移、无 _backup。
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='evidence_suggestions'").get(),
@@ -538,6 +538,10 @@ describe('Database Migration', () => {
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_evidence_suggestions_status'").get(),
       ).toEqual({ name: 'idx_evidence_suggestions_status' })
+      // v38：只读视图由启动对账补齐。
+      expect(
+        db.prepare("SELECT name FROM sqlite_master WHERE type='view' AND name='v_plan_deviations_file_domain'").get(),
+      ).toEqual({ name: 'v_plan_deviations_file_domain' })
     } finally {
       closeDatabase()
       electronPaths.userData = previousUserData
@@ -551,11 +555,11 @@ describe('Database Migration', () => {
     const newerDbPath = path.join(newerUserData, 'data', 'bizgraph.db')
     fs.mkdirSync(path.dirname(newerDbPath), { recursive: true })
 
-    // 造一个「被更高版本写过」的库：版本号 38（高于当前上限 37）+ 一表只有新版本认识。
+    // 造一个「被更高版本写过」的库：版本号 39（高于当前上限 38）+ 一表只有新版本认识。
     const newerDb = new BetterSqlite3(newerDbPath)
     newerDb.exec(`
       CREATE TABLE schema_version (version INTEGER NOT NULL);
-      INSERT INTO schema_version VALUES (38);
+      INSERT INTO schema_version VALUES (39);
       CREATE TABLE future_only_marker (id TEXT PRIMARY KEY, value TEXT);
       INSERT INTO future_only_marker VALUES ('sentinel', 'kept');
     `)
@@ -580,13 +584,13 @@ describe('Database Migration', () => {
 
     expect(caught).not.toBeNull()
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
+    expect((caught as Error).message).toMatch(/v39/)
     expect((caught as Error).message).toMatch(/v38/)
-    expect((caught as Error).message).toMatch(/v37/)
 
-    // 拒绝打开必须是零写入的：版本仍是 38，新版本专属的表/行仍在。
+    // 拒绝打开必须是零写入的：版本仍是 39，新版本专属的表/行仍在。
     const reopened = new BetterSqlite3(newerDbPath)
     const version = reopened.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
-    expect(Number(version.version)).toBe(38)
+    expect(Number(version.version)).toBe(39)
     expect(reopened.prepare("SELECT value FROM future_only_marker WHERE id='sentinel'").get()).toEqual({ value: 'kept' })
     reopened.close()
 
@@ -601,7 +605,7 @@ describe('Database Migration', () => {
       version: number
       createdAt: string
     }
-    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 38 }))
+    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 39 }))
 
     let caught: unknown
     try {
@@ -610,13 +614,13 @@ describe('Database Migration', () => {
       caught = err
     }
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
-    expect((caught as Error).message).toMatch(/v38/)
+    expect((caught as Error).message).toMatch(/v39/)
 
     // 显式处理不可信缓存后，库本身仍可正常打开
     fs.rmSync(schemaChecksumPath, { force: true })
     initDatabase()
     const version = getClient().prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
-    expect(Number(version.version)).toBeGreaterThanOrEqual(37)
+    expect(Number(version.version)).toBeGreaterThanOrEqual(38)
   })
 
   it('v34 → v35：新建 acceptance_confirmations，历史人工确认行迁入且可追溯、无 _backup 残留', () => {
@@ -703,7 +707,7 @@ describe('Database Migration', () => {
       ).toEqual([])
 
       // 5. 版本递增
-      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 37 })
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 38 })
     } finally {
       closeDatabase()
       electronPaths.userData = previousUserData

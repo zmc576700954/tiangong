@@ -3,7 +3,7 @@
 > 版本：**v2.3（定稿 + W5 阶段 A/B/C/D 成果回写）**
 > 生成时间：**2026-11-09（Asia/Shanghai）**
 > 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（61 → 64 条已实施，25 → 22 条已批准未实施），并记录 `RequestQueue` 已删除、W5-D 评测 harness 与打包验证落地**。严格区分：裁决只定方向，**不产生施工授权**——32 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
-> v2.4（2026-11-10）：G9-10 worktree 定时清理落地；已实施 75 → 76，仅建议 32 → 31。
+> v2.4（2026-11-10）：G9-10 worktree 定时清理、G2-14 明细视图落地；已实施 75 → 77，仅建议 32 → 30。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -43,19 +43,20 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **76** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`） |
+| 已实施 | **77** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38） |
 | 已批准未实施 | **11** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **31** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 11 条已解除裁决阻塞 |
+| 仅建议 | **30** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 10 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 76+11+31+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 77+11+30+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（76）
+### I.1.1 已实施（77）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
+- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重。
@@ -74,10 +75,10 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（31）
+### I.1.3 仅建议（30）
 
 - **会话地图本体**：G1-11 `node_id` 放宽、G1-14 提案机制（§2.7）。
-- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-13 published 软阻断、G2-14 `v_plan_deviations_file_domain`、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
+- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-13 published 软阻断、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
 - **编排执行**：G3-1 Tier1 探测、G3-2 跨进程写闸。
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）、G4-3 published 软阻断（=G2-13）。
 - **证据体系**：G5-10 §3.6 项目进度。
@@ -87,7 +88,7 @@
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 - **待裁决清单**：G11-10 tree-hash 等级。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 31 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-24、II-32、II-33 已实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 30 条（去重后；G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-24、II-32、II-33、II-16 已实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -334,7 +335,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：embedding 成本与误召回 → 默认关闭，按项目开启。
 
 ### W11 迁移与运维
-- 覆盖条目：G9-8 `[已实施]` `RequestQueue` 删除、G9-11 `[已实施]` schema 版本号对齐（均 `80075e7` / 本文 v2.3）、G9-10 `[已实施]` worktree 定时清理、G9-13 `[批准]` Windows 路径、G2-14 `[建议]` `v_plan_deviations_file_domain`、G2-15 `[建议]` dirty diff。
+- 覆盖条目：G9-8 `[已实施]` `RequestQueue` 删除、G9-11 `[已实施]` schema 版本号对齐（均 `80075e7` / 本文 v2.3）、G9-10 `[已实施]` worktree 定时清理、G9-13 `[批准]` Windows 路径、G2-14 `[已实施]` `v_plan_deviations_file_domain`、G2-15 `[建议]` dirty diff。
 - 目标：清理死代码、补齐运维任务、修正文档版本口径。
 - 涉及文件与数据/接口变更：`request-queue.ts` **已删除**（`80075e7`，无兼容壳）；新增 worktree 清理任务；`database.ts` 版本注释；视图 `v_plan_deviations_file_domain`。
 - 实施步骤：① 文档版本改 36（已完成）；② 删死代码（`RequestQueue` 已完成）；③ 建视图；④ 加清理任务；⑤ Windows 仅登记不实现。
@@ -759,12 +760,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：依赖 II-12 确认链路；可与 II-13 并行。
 - **成本**：≈1.5 人日（估算）。
 
-### II-16 · G2-14 `v_plan_deviations_file_domain`｜**仅建议**
-- **目标与不做后果**：把偏差按"文件域"聚合，回答"哪类文件最容易估错"；不做则偏差只有单 run 维度。
-- **数据/接口**：只读视图 `v_plan_deviations_file_domain(project_path, file_domain, runs, avg_planned, avg_actual, rework_rate)`；`file_domain` 由路径前缀/扩展名派生。
-- **流程/状态机**：纯派生，按需重建；不写表。
-- **边界**：域数上限 32；样本 < 10 标 `insufficient`；不跨项目合并。
-- **验收**：视图可重建且结果稳定；样本不足显式标注；不阻塞主查询。
+### II-16 · G2-14 `v_plan_deviations_file_domain`｜**已实施**
+- **目标与不做后果**：把偏差按"文件域"展开，作为回答"哪类文件最容易估错"的明细底座；不做则偏差只有单 run 维度、无法按目录定位。
+- **数据/接口**：只读视图 `v_plan_deviations_file_domain(deviation_id, work_run_id, derivation_version, observed_rule_version, task_type, agent_type, file_path, file_domain)`，逐偏差/逐文件展开；`file_domain` 取路径第一个 `/` 之前的目录前缀（含尾斜杠）。
+- **流程/状态机**：纯派生；启动时 `DROP VIEW IF EXISTS` + `CREATE VIEW` 对账；不写表、不改数据。
+- **边界（本期口径）**：**只做 §7.2 明细视图**。不带 `project_path`；不做 `runs / avg_planned / avg_actual / rework_rate` 聚合列；不做域数上限 32、不做 `insufficient` 标注、不截断。上述聚合降级为"在明细视图之上按需聚合"，确有报表需求时再加，不在本视图内实现。
+- **验收**：`plan-derivation.test.ts` 覆盖跨目录一行一域、无斜杠路径空域、无 change_set 占位行、8 列口径、重复对账幂等；`database-migration.test.ts` 覆盖 v38 启动补齐视图。
+- **代码证据**：`src/main/map/schema.ts:788-817`（`MAP_VIEW_SCHEMAS` / `applyMapViews`）、`src/main/database.ts:766`（v38）、`src/main/database.ts:1324-1352`（checksum 含 views，快/慢路径对账）。
+- **说明**：v38 将视图定义纳入 schema checksum；现有校验原先只管表与索引，本次补上 view 清单。回滚 `DROP VIEW IF EXISTS v_plan_deviations_file_domain`，无表/数据变更。
 - **前置依赖与顺序**：`plan_deviations` 数据积累后启用。
 - **成本**：≈1 人日（估算）。
 
@@ -2558,7 +2561,7 @@ if 处理数 < 节点数: 存在环 → 拒绝确认
 | `task_type` | 记录时快照（锚点类型 / 任务来源分类） | **归因维度** |
 | `agent_type` | 记录时快照（实际执行 adapter） | **归因维度**；Tier 1 下通常为单值 |
 
-- `file_domain`（目录前缀）**不存单值**：一次 run 可跨多个目录，由视图 `v_plan_deviations_file_domain` 从 `change_sets.files_json` 展开（§7.2）；路径先按 §5.4.1 规范化再取前缀。
+- `file_domain`（目录前缀）**不存单值**：一次 run 可跨多个目录，由视图 `v_plan_deviations_file_domain` 从 `change_sets.files_json` 展开（§7.2）；路径先按 §5.4.1 规范化再取前缀。v38 已实施明细视图（不带 `project_path`）；聚合一期不做，需要时在明细之上按需聚合。
 - `observed_rule_version` 保留：阈值/权重允许人工在 run 之间修改，记录时哈希才能对齐配置。若后续锁定"一批内配置不可变"，则删除该列。
 
 用途（三条，不超过这三条）：
@@ -3747,6 +3750,8 @@ CREATE INDEX idx_plan_deviations_rule ON plan_deviations(derivation_version, obs
 CREATE INDEX idx_plan_deviations_item ON plan_deviations(work_item_lineage_id);
 
 -- 目录前缀维度：一次 run 可跨多个目录，展开为一行一域；不把 file_domain 存成单值
+-- v38 已实施（G2-14）：只做明细展开，不带 project_path；聚合列（runs/avg_*/rework_rate）、
+-- insufficient 与 32 域上限在明细之上按需做，不进入本视图。
 CREATE VIEW v_plan_deviations_file_domain AS
 SELECT d.id AS deviation_id,
        d.work_run_id,

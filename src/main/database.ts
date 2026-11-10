@@ -24,6 +24,7 @@ import {
   MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS,
   LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_ACCEPTANCE_TABLE_SCHEMAS, MAP_ACCEPTANCE_INDEX_SQLS,
   MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
+  MAP_VIEW_SCHEMAS, applyMapViews,
 } from './map/schema'
 import { migrateLegacyAcceptance } from './map-migration/legacy-acceptance'
 import { AGENT_INDEX_SQLS, AGENT_TABLE_SCHEMAS, type AgentTableSchema } from './agent/runtime/db/schema'
@@ -758,8 +759,11 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      Agent/系统推断只写建议；接受时在**同一事务**内转写 `node_evidence` 并回填
  *      `status='accepted' / resolved_at / resolved_by`。纯建表 + 建索引，无数据迁移、
  *      不改既有列；旧库启动时由 `rebuildTableIfNeeded` 的「表不存在即建」路径补齐。
+ * v38：G2-14 只读视图 `v_plan_deviations_file_domain`（§7.2 明细展开）。
+ *      视图不存数据，CREATE/DROP 幂等；纳入 checksum 并在快/慢路径都对账。
+ *      回滚：`DROP VIEW IF EXISTS v_plan_deviations_file_domain`，无表/数据变更。
  */
-const CURRENT_SCHEMA_VERSION = 37
+const CURRENT_SCHEMA_VERSION = 38
 
 interface TableSchema {
   name: string
@@ -1315,10 +1319,12 @@ function getSchemaChecksumPath(): string {
 function computeSchemaChecksum(): string {
   // 内联 UNIQUE 随 createSql 进入 tables，独立 UNIQUE 索引随 INDEX_SQLS 进入 indexes；
   // 两类 UNIQUE 定义的任何变化都会让 checksum 失配 → 走慢路径，不会漏掉已有库。
+  // v38 起 view 定义也纳入 checksum：视图增删/改口径同样触发慢路径对账。
   const payload = JSON.stringify({
     version: CURRENT_SCHEMA_VERSION,
     tables: TABLE_SCHEMAS.map((s) => s.createSql.trim()),
     indexes: INDEX_SQLS,
+    views: MAP_VIEW_SCHEMAS.map((v) => v.createSql.trim()),
   })
   return crypto.createHash('sha256').update(payload).digest('hex')
 }
@@ -1389,6 +1395,8 @@ function migrate(): void {
   // Fast path: schema version and checksum are both current — skip expensive rebuild/index checks.
   if (currentVersion >= CURRENT_SCHEMA_VERSION && checksumCache?.version === CURRENT_SCHEMA_VERSION && checksumCache?.checksum === checksum) {
     runIncrementalMigrations(db, currentVersion)
+    // 视图是派生对象，快路径也做一次对账：手工 DROP/定义漂移不会留到下次慢路径。
+    applyMapViews(db)
     return
   }
 
@@ -1435,6 +1443,9 @@ function migrate(): void {
     // 索引对账：新增/改定义的索引先 DROP 再建（IF NOT EXISTS 不替换旧定义）；
     // 唯一索引重建前做重复键体检（fail-closed）。
     reconcileSchemaIndexes(db)
+
+    // v38：只读视图对账（G2-14）。DROP+CREATE，失败随 SAVEPOINT 整体回滚。
+    applyMapViews(db)
 
     db.prepare('INSERT OR REPLACE INTO schema_version (rowid, version) VALUES (1, ?)').run(CURRENT_SCHEMA_VERSION)
 

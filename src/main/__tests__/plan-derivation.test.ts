@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
-import { applyMapS5aSchema, applyMapS7Schema } from '../map/schema'
+import { applyMapS5aSchema, applyMapS7Schema, applyMapViews } from '../map/schema'
 import {
   BoundaryDerivationService,
   PlanDraftService,
@@ -271,5 +271,78 @@ describe('PlanDeviationRepository(§5.7)', () => {
     })
     expect(row.actual_file_count).toBe(1)
     expect(row.boundary_changed).toBe(1) // 实际变更不在计划范围内
+  })
+})
+
+describe('v_plan_deviations_file_domain(G2-14 §7.2 明细展开)', () => {
+  let db: BetterSqlite3.Database
+
+  beforeEach(() => {
+    db = setupDb()
+    applyMapViews(db)
+  })
+
+  function insertDeviation(id: string, workRunId: string | null): void {
+    db.prepare(
+      `INSERT INTO plan_deviations
+         (id, work_run_id, derivation_version, observed_rule_version, task_type, agent_type, computed_at)
+       VALUES (?, ?, 'd1', 'r1', 'feature.dev', 'claude', 1)`,
+    ).run(id, workRunId)
+  }
+
+  function insertChangeSet(workRunId: string, files: Array<{ path: string }>): void {
+    db.prepare(
+      `INSERT INTO change_sets (id, project_path, work_run_id, base_commit, files_json, file_count, captured_at)
+       VALUES (?, '/p', ?, 'base', ?, ?, 1)`,
+    ).run(`cs_${workRunId}`, workRunId, JSON.stringify(files), files.length)
+  }
+
+  it('一次 run 跨目录 → 展开为一行一域；无斜杠路径域为空串', () => {
+    insertDeviation('d1', 'run1')
+    insertChangeSet('run1', [{ path: 'src/main/a.ts' }, { path: 'src/db/b.ts' }, { path: 'README.md' }])
+
+    const rows = db
+      .prepare('SELECT deviation_id, work_run_id, file_path, file_domain FROM v_plan_deviations_file_domain ORDER BY file_path')
+      .all() as Array<{ deviation_id: string; work_run_id: string; file_path: string; file_domain: string }>
+
+    expect(rows).toEqual([
+      { deviation_id: 'd1', work_run_id: 'run1', file_path: 'README.md', file_domain: '' },
+      { deviation_id: 'd1', work_run_id: 'run1', file_path: 'src/db/b.ts', file_domain: 'src/' },
+      { deviation_id: 'd1', work_run_id: 'run1', file_path: 'src/main/a.ts', file_domain: 'src/' },
+    ])
+  })
+
+  it('字段口径与 §7.2 一致（8 列，不含 project_path / 聚合列）', () => {
+    insertDeviation('d1', 'run1')
+    insertChangeSet('run1', [{ path: 'src/a.ts' }])
+    const row = db.prepare('SELECT * FROM v_plan_deviations_file_domain LIMIT 1').get() as Record<string, unknown>
+    expect(Object.keys(row)).toEqual([
+      'deviation_id', 'work_run_id', 'derivation_version', 'observed_rule_version',
+      'task_type', 'agent_type', 'file_path', 'file_domain',
+    ])
+  })
+
+  it('无 change_set 的偏差保留为 file_path=NULL 的占位行（LEFT JOIN 语义）', () => {
+    insertDeviation('d_no_cs', 'run_missing')
+    insertDeviation('d_null_run', null)
+
+    const rows = db
+      .prepare('SELECT deviation_id, file_path, file_domain FROM v_plan_deviations_file_domain ORDER BY deviation_id')
+      .all()
+    expect(rows).toEqual([
+      { deviation_id: 'd_no_cs', file_path: null, file_domain: '' },
+      { deviation_id: 'd_null_run', file_path: null, file_domain: '' },
+    ])
+  })
+
+  it('视图可重复对账（DROP+CREATE 幂等），且不改变底层行数', () => {
+    insertDeviation('d1', 'run1')
+    insertChangeSet('run1', [{ path: 'src/a.ts' }])
+    expect(db.prepare('SELECT COUNT(*) AS c FROM plan_deviations').get()).toEqual({ c: 1 })
+
+    applyMapViews(db)
+    applyMapViews(db)
+    expect(db.prepare('SELECT COUNT(*) AS c FROM plan_deviations').get()).toEqual({ c: 1 })
+    expect(db.prepare('SELECT COUNT(*) AS c FROM v_plan_deviations_file_domain').get()).toEqual({ c: 1 })
   })
 })

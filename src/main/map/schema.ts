@@ -769,3 +769,50 @@ export function applyMapS5aSchema(db: { exec(sql: string): unknown }): void {
     db.exec(sql)
   }
 }
+
+// ============================================================
+// G2-14 只读视图（v38，session-map 蓝图 §7.2 明细展开口径）
+// ============================================================
+
+export interface MapViewSchema {
+  name: string
+  createSql: string
+}
+
+/**
+ * 明细展开视图：一次 run 可跨多个目录，按 `change_sets.files_json` 展开成
+ * 「一行一域」。本期只做 §7.2 明细口径；II-16 的聚合（runs / avg_planned /
+ * avg_actual / rework_rate、insufficient、32 域上限）降级为「在明细之上按需聚合」，
+ * 不在此视图内截断或标注。
+ */
+export const MAP_VIEW_SCHEMAS: MapViewSchema[] = [
+  {
+    name: 'v_plan_deviations_file_domain',
+    createSql: `
+      CREATE VIEW v_plan_deviations_file_domain AS
+      SELECT d.id AS deviation_id,
+             d.work_run_id,
+             d.derivation_version,
+             d.observed_rule_version,
+             d.task_type,
+             d.agent_type,
+             json_extract(je.value, '$.path') AS file_path,
+             CASE
+               WHEN instr(json_extract(je.value, '$.path'), '/') > 0
+                 THEN substr(json_extract(je.value, '$.path'), 1, instr(json_extract(je.value, '$.path'), '/'))
+               ELSE ''
+             END AS file_domain
+      FROM plan_deviations d
+      LEFT JOIN change_sets cs ON cs.work_run_id = d.work_run_id
+      LEFT JOIN json_each(cs.files_json) je
+    `,
+  },
+]
+
+/** 视图对账：先 DROP 再建，定义变更在快/慢路径都能生效。 */
+export function applyMapViews(db: { exec(sql: string): unknown }): void {
+  for (const view of MAP_VIEW_SCHEMAS) {
+    db.exec(`DROP VIEW IF EXISTS ${view.name}`)
+    db.exec(view.createSql)
+  }
+}
