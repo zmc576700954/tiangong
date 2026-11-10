@@ -8,6 +8,7 @@
 > v2.6（2026-11-10）：G1-9 E4 覆盖变化扫描（v43）落地；已实施 86，已批准未实施 9。E4 的「到期」与「覆盖变化」保持两条独立判据，变化统一 stale 并用 `stale_reason` 区分内容/范围。
 > v2.7（2026-11-10）：G2-3 `memory_hits` 记录表（v44）落地（表 + 幂等唯一索引 + 180 天/单项目 20 万保留治理）；已实施 87，仅建议 22。写入方（Layer1）仍归 G2-2。
 > v2.8（2026-11-10）：G2-2 进化 Layer1（v45）落地——五个 run 终态采集 step/evidence/deviation 引用并记录 `source_outcome`；已实施 88，仅建议 21。`context` 暂不产（I.9.3 妥协）。
+> v2.9（2026-11-10）：G2-4 Layer2 派发精度归因（v46）落地——只读视图 `v_memory_attribution` 强制经 `node_session_links.session_origin='map_task'` 归因；已实施 89，仅建议 20。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -47,22 +48,22 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **88** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45） |
+| 已实施 | **89** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46） |
 | 已批准未实施 | **9** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **21** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
+| 仅建议 | **20** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 88+9+21+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 89+9+20+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（88）
+### I.1.1 已实施（89）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
 - **模式库（v41）**：G2-1 `mode-registry.ts` 代码常量（4 个模式，上限 32）+ `routing_decisions.mode_id` + `mode:list` 只读；执行前规则匹配，无匹配 `TIER_UNSUPPORTED` 不静默降级。
-- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）；G2-3 `memory_hits` 记录表（v44，幂等唯一索引 + 180 天/单项目 20 万保留治理）；G2-2 Layer1 采集（v45，五个 run 终态同步采集 step/evidence/deviation 引用 + `source_outcome`）。
+- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）；G2-3 `memory_hits` 记录表（v44，幂等唯一索引 + 180 天/单项目 20 万保留治理）；G2-2 Layer1 采集（v45，五个 run 终态同步采集 step/evidence/deviation 引用 + `source_outcome`）；G2-4 `v_memory_attribution` 归因视图（v46，强制经 `node_session_links.session_origin='map_task'`，跨图不聚合、样本 <20 标 `insufficient_sample`）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-9/G5-5 E4 覆盖变化扫描（v43：签收基线 + 独立扫描，变化置 stale 并区分 `stale_reason`）、G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
@@ -79,10 +80,10 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（21）
+### I.1.3 仅建议（20）
 
 - **会话地图本体**：G1-11 `node_id` 放宽。
-- **多图编排**：G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机。
+- **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机。
 - **编排执行**：G3-1 Tier1 探测、G3-2 跨进程写闸。
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：G5-10 §3.6 项目进度。
@@ -91,7 +92,7 @@
 - **界面与交互**：G8-3 C1–C4、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8 再核减）**：以上 21 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-24、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9 再核减）**：以上 20 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-24、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -103,7 +104,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（82 条，按主题）
+## I.2 已实施清单（83 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -247,10 +248,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 |---|---|---|
 | G2-1 | 模式库为代码常量（4 个模式、上限 32、id 唯一校验），`routing_decisions.mode_id` 落库，执行前按执行器 + policy 匹配，无匹配 `TIER_UNSUPPORTED`；`mode:list` 只读 | `src/main/map/mode-registry.ts`、`work-run-service.ts`（`record`）、`agent-step-runner.ts`（`ensureRouting`）、`schema.ts`（v41） |
 
-### I.2.12 进化记录层（2）
+### I.2.12 进化记录层（3）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
+| G2-4 | Layer2 派发精度归因（v46）：只读视图 `v_memory_attribution`，强制经 `node_session_links.session_origin='map_task'`；输出 adapter/mode_id/outcome/hit_count/evidence_level，按 `(graph_id, adapter, mode_id)` 算 `sample_size`，<20 标 `insufficient_sample` | `src/main/map/schema.ts`（`MAP_VIEW_SCHEMAS` / v46） |
 | G2-2 | Layer1 采集（v45）：五个 run 终态（completed/failed/timed_out/cancelled/interrupted）同步采集 step/evidence/deviation 引用，写 `source_outcome`；每 run ≤50 条、幂等；失败写 `map_migration_reports(kind='integrity_check', stage='memory:<runId>')` 且不回滚 run | `src/main/map/memory-evolution.ts`、`work-run-service.ts`（`recordMemoryForRun` + 五个终态调用）、`memory-hit-service.ts`（`source_outcome`）、`schema.ts`（v45） |
 | G2-3 | `memory_hits` 记录表（v44）：只存引用不存全文；幂等唯一索引 `(run_id, hit_kind, source_ref)`；`hit_kind` 四值 CHECK、`score` 0–1 CHECK；保留治理 180 天 / 单项目 20 万（启动 + 每日 `pruneMemoryHits`） | `src/main/map/schema.ts`（`MAP_MEMORY_TABLE_SCHEMAS` / `MAP_MEMORY_INDEX_SQLS`）、`src/main/map/memory-hit-service.ts`、`src/main/database.ts`（v44 + 启动/每日 prune） |
 
@@ -358,7 +360,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：并行引入竞态 → 默认关闭，按项目开启。
 
 ### W10 进化三层 / 提案 / Tier2（L3）
-- 覆盖条目：G1-14 `[已实施]` 提案机制、G2-1 `[已实施]` 五通道/模式库、G2-2 `[已实施（v45）]` Layer1、G2-3 `[已实施（v44）]` `memory_hits`、G2-4 `[建议]` Layer2、G2-5 `[建议]` Layer3、G2-6 `[已实施]` 提案细节、G2-7 `[建议]` Tier2、G2-16 `[建议]` 离线校准、G2-19 `[已实施]` 提案 UI、G8-4 `[已实施]` 提案 UI、G11-10 `[已实施]` tree-hash。
+- 覆盖条目：G1-14 `[已实施]` 提案机制、G2-1 `[已实施]` 五通道/模式库、G2-2 `[已实施（v45）]` Layer1、G2-3 `[已实施（v44）]` `memory_hits`、G2-4 `[已实施（v46）]` Layer2、G2-5 `[建议]` Layer3、G2-6 `[已实施]` 提案细节、G2-7 `[建议]` Tier2、G2-16 `[建议]` 离线校准、G2-19 `[已实施]` 提案 UI、G8-4 `[已实施]` 提案 UI、G11-10 `[已实施]` tree-hash。
 - 目标：把“编排能力随项目进化”做成可审计的三层机制。
 - 涉及文件与数据/接口变更：`memory_hits`、`task_embedding` 表；ContextBundle；提案表与 UI；Tier2 路由。
 - 实施步骤：① 记录层先落 `memory_hits`；② 归因层接 `node_session_links`；③ 策略层做 embedding + 相似度；④ 提案生成/采纳/撤销；⑤ Tier2 升格；⑥ 每 20 run/2 周离线校准。
@@ -651,7 +653,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G6-14 | Claude token 统计 | **重判：改口径可验**——用现有 cc-switch GLM 代理跑一轮，验 token/usage 是否落库；不验官方计费（见 I.9.2） | 授权开工即可（先用 GLM 代理） | 0.5 人日 |
 | G2-3 | `memory_hits` 表（**已实施，v44，口径见 I.9.3**） | 无 | 已完成：建表 + 幂等索引 + 180 天/单项目 20 万治理 | — |
 | G2-2 | 进化 Layer1（**已实施，v45，口径见 I.9.3**） | 依赖 G2-3 建表 | 已完成：五终态同步采集 + `source_outcome` + 失败留痕 | — |
-| G2-4 | Layer2 归因 | 依赖 G2-2/G2-3 | 授权开工即可 | 2 人日 |
+| G2-4 | Layer2 归因（**已实施，v46，口径见 I.9.3**） | 依赖 G2-2/G2-3 | 已完成：只读视图 + 强制 map_task 归因 + 样本阈值 | — |
 | G2-16 | 离线校准 | 依赖 G2-14（已实施）/G2-15 | 授权开工即可 | 1.5 人日 |
 | G2-15 | dirty diff | 无，口径与 G11-10 对齐 | 授权开工即可 | 2 人日 |
 | G2-18 | 完整步状态机 | 无 | 授权开工即可 | 3 人日 |
@@ -720,12 +722,13 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-5 / II-审批 **（妥协）** | MCP 写工具不得绕过写前审批 | `McpAdapter.setTurnApprovalHooks` 接入 Driver，写类 MCP 工具执行前走同一 gateway；被拒不执行 | **妥协**：①只能按工具名动词清单判定写语义，名字不含写动词的未知写工具会漏判；②名字含写动词的读工具会被保守误判（多问一次）；③MCP 无路径参数时无法命中会话级授权，每次重新审批；④未覆盖 Codex/OpenCode 的 MCP 工具路径（G7-1/G7-2/G7-3 仍待办）。后果：已知写工具被兜住，未知写语义仍可能漏 | 拿到 MCP server 的 tools/list 注解或 schema 后按语义判定 |
 | G11-10 / II-34 **（妥协）** | 为 E3 附上可复现的工作区树绑定 | `node_evidence.tree_hash`（v42 可空列）+ `EvidenceService` 仅 E3 接收 + TestExecutor 回填执行树 | **妥协**：①不参与 gate/完成度判定，仅可追溯；②不做 tree 级 diff、不能按 tree 回放历史现场；③E2 只写 `current_hash`/`ref_json.worktreeTree`，不写该列；④历史 E3 不回溯补值。后果：能比对“这次测试跑在哪棵树上”，不能据此改变验收结论 | 需要 tree 级 diff 或按树回放时（与 G2-15 合并）重新评估 |
 | G1-9 / G5-5 **（妥协）** | E4 签收后覆盖内容/范围变化能被发现并降级 | `coverage_baseline_json` 基线（v43）+ `scanCoverageChangedE4All` 独立扫描（启动+每日、≤500/轮、幂等），变化置 stale 并区分 `stale_reason` | **妥协**：①**文件数 >200 / 无 `project_path` / 采集异常时只记 `skipped`，该签收不会因覆盖变化转 stale，只剩时间过期兜底**（已裁决，不阻断签收、不进 unknown）；②基线只覆盖签收时声明的文件，**签收后新增文件不会被发现**；③范围比对只比 `scope_files` 与 acceptance 条目 id，不比 revision 号、不比条目正文；④历史 E4 无基线不回溯；⑤扫描读盘成本随文件数线性增长（≤200/条、≤500 条/轮）。后果：能发现“签收过的文件被改/删”与“范围被改”，不能发现“新增文件”与超大覆盖集的变化 | 需要全量覆盖对账（含新增文件）或 >200 文件场景时，改增量快照（如 per-root tree hash）再评估 |
-| G2-3 / II-05 **（妥协）** | 进化记录层有稳定、可裁剪、可幂等的落地表 | `memory_hits`（v44）+ `MemoryHitService`（幂等 record/list）+ `pruneMemoryHits`（180 天 / 单项目 20 万，启动 + 每日） | **妥协**：①写入方已随 G2-2（v45）接入，不再是空表；②无 IPC/UI 读取入口，无 G2-4 归因视图；③保留治理是每日批处理，单项目可短暂超 20 万；④时间裁剪按 ISO 字符串比较，外部直写库的非常规时间格式不受保护；⑤`source_ref` 只校验非空，未强制 `表:id` 格式。后果：记录层可查询可裁剪，但尚无归因结论 | G2-4 建只读视图后重新评估 |
+| G2-3 / II-05 **（妥协）** | 进化记录层有稳定、可裁剪、可幂等的落地表 | `memory_hits`（v44）+ `MemoryHitService`（幂等 record/list）+ `pruneMemoryHits`（180 天 / 单项目 20 万，启动 + 每日） | **妥协**：①写入方已随 G2-2（v45）接入，不再是空表；②归因视图已随 G2-4（v46）建好，但仍无 IPC/UI 读取入口；③保留治理是每日批处理，单项目可短暂超 20 万；④时间裁剪按 ISO 字符串比较，外部直写库的非常规时间格式不受保护；⑤`source_ref` 只校验非空，未强制 `表:id` 格式。后果：记录层可查询可裁剪，但界面不可见 | 需要在界面查看记录层时补只读 IPC 后重新评估 |
 | G2-2 / II-04 **（妥协）** | run 终态后把有效任务/步骤/证据/偏差沉淀为可归因记录 | `collectMemoryHitsForRun` 在 `WorkRunService` 五终态同步采集 step/evidence/deviation 引用；`source_outcome` 五值；每 run ≤50、幂等；失败写 `kind='integrity_check', stage='memory:<runId>'` 且不回滚 | **妥协**：①**`hit_kind='context'` 不产**（L1 无稳定上下文来源）；②证据 `score` 是固定等级权重（E1 0.6 / E2 0.8 / E3·E4 1），不是经验统计；③超 50 条静默截断（step→evidence→deviation），不额外留痕；④无 `project_path` 的 run 跳过，不产 hit；⑤采集与终态同线程同步执行，增加少量终态耗时；⑥记忆失败复用 `kind='integrity_check'`，需按 `stage='memory:*'` 区分。后果：Layer2 有数据可用，但 context 信号缺失、大 run 的尾部命中被丢 | **G2-4 / ContextBundle 有稳定上下文来源时补 `context`**；有证据表明 50 条上限丢关键命中时再评估 |
+| G2-4 / II-06 **（妥协）** | 解释某类派发组合为何成功/失败，为策略层提供可复核数据 | 只读视图 `v_memory_attribution`（v46）：强制经 `node_session_links.session_origin='map_task'`，输出 adapter/mode_id/outcome/hit_count/evidence_level/sample_size/conclusion；跨图不聚合 | **妥协**：①**`tier` 维度不落库**，用 `mode_id` 代替，无法区分 Tier1/Tier2；②**无 IPC/UI 入口**，只能直接读库；③`sample_size` 按 `(graph_id, adapter, mode_id)` 分区，未按 `step_kind` 细分；④`conclusion` 只有 `ok`/`insufficient_sample`，不算命中率数值、不给因果结论；⑤无命中的 run 也入视图（`hit_count=0`）；⑥视图每次查询实时算，无物化/缓存。后果：有可复核的样本量与终态分布，但没有“哪条派发更好”的结论、也无法在界面查看 | 需要在界面看归因或需要 Tier 维度时，补 `tier` 列与只读 IPC 后重新评估 |
 
-# Part II 仅建议项施工级设计（21 条有效 + 已实施项保留为设计存档）
+# Part II 仅建议项施工级设计（20 条有效 + 已实施项保留为设计存档）
 
-> **口径**：本部分把 I.1.3 的 21 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/24/32/33 与 II-02/03/04/05/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 21 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 20 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/24/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 20 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -735,7 +738,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | II-03 | G2-1 | 五通道 / 模式库 | §5.9.8 | 已实施（v41） |
 | II-04 | G2-2 | 进化 Layer1 记录 | §5.9 | 已实施（v45） |
 | II-05 | G2-3 | `memory_hits` 表 | §4.2 | 已实施（v44） |
-| II-06 | G2-4 | Layer2 归因 | §4.2 | — |
+| II-06 | G2-4 | Layer2 归因 | §5.9 | 已实施（v46） |
 | II-07 | G2-5 | Layer3 embedding | §4.2 | 已解除（D-12） |
 | II-08 | G2-6 | 提案细节 | §2.7 | 已实施（v40） |
 | II-09 | G2-7 | Tier2 升格 | §5.9.5 | 已解除（D-17） |
@@ -822,12 +825,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：迁移一次建表 + 索引；先于 II-04/II-06。
 - **成本**：≈1.5 人日（估算）。
 
-### II-06 · G2-4 Layer2 归因｜**仅建议**
+### II-06 · G2-4 Layer2 归因｜**已实施（v46，2026-11-10）**
+> **做了什么**：新增只读视图 `v_memory_attribution`（`schema.ts` / v46），列 `run_id, step_id, graph_id, adapter, mode_id, outcome, hit_count, evidence_level, sample_size, conclusion`。归因入口**强制** `JOIN node_session_links l ON l.work_run_id = r.id AND l.session_origin='map_task'`——手工面板/子代理/测试 run 即使有 hit 也不入视图；`outcome` 优先取 `memory_hits.source_outcome`、无命中时按 run 终态映射；`sample_size` 用窗口函数按 `(graph_id, adapter, mode_id)` 分区，<20 标 `insufficient_sample`；同 run 多条链接用 `SELECT DISTINCT` 收口。
+> **妥协在哪**：①**`tier` 维度不存在**——`routing_decisions` 只有 `mode_id`（G2-1），视图用 `mode_id` 代替 `tier`，无法区分 Tier1/Tier2；②**没有 IPC / UI 入口**，只有库层视图，查询需直接读库；③`sample_size` 按 `(graph_id, adapter, mode_id)` 分区，未按 `step_kind` 细分，不同步骤类型混在同一分区；④`conclusion` 只有 `ok` / `insufficient_sample` 两值，**不计算命中率数值、不产出因果结论**；⑤无命中的 run 仍入视图（`hit_count=0`），依赖 `outcome` 区分成败；⑥无定时重算——视图是纯派生，每次查询实时计算。
 - **目标与不做后果**：解释"为什么某类任务成功/失败"，把命中与 `node_session_links`、`work_steps` 关联；不做则只有原始记录没有结论。
-- **数据/接口**：只读视图 `v_memory_attribution(run_id, step_id, adapter, tier, outcome, hit_count, evidence_level)`；不新增写表。
-- **流程/状态机**：定时（每日）或按需重算；只读派生，可随时重建；不做增量写。
-- **边界**：跨图不聚合；样本 < 20 不出结论（标 `insufficient_sample`）；不把相关性写成因果。
-- **验收**：同一数据重建两次结果一致；样本不足显式标注；视图查询不影响 run 表。
+- **数据/接口**：只读视图 `v_memory_attribution(run_id, step_id, graph_id, adapter, mode_id, outcome, hit_count, evidence_level, sample_size, conclusion)`；不新增写表。
+- **流程/状态机**：视图按查询实时派生，可随时 `DROP/CREATE` 重建；不做增量写。
+- **边界**：跨图不聚合；样本 < 20 标 `insufficient_sample`；不把相关性写成因果；必须经 `session_origin='map_task'` 归因，不绕过链接。
+- **验收**：同一数据重建两次结果一致；样本不足显式标注；视图查询不影响 run 表；manual_panel / 无链接 run 不入视图；同 run 多链接不重复。
 - **前置依赖与顺序**：II-04/II-05 之后；II-07 之前。
 - **成本**：≈2 人日（估算）。
 

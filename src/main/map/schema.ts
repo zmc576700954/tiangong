@@ -933,6 +933,86 @@ export const MAP_VIEW_SCHEMAS: MapViewSchema[] = [
         AND w.is_current = 1
     `,
   },
+  {
+    /**
+     * v46 / G2-4：派发精度归因只读视图（II-06）。
+     *
+     * 归因入口**强制**走 `node_session_links` 且 `session_origin='map_task'`——
+     * 手工面板/子代理/测试产生的 run 即使有命中也不入视图，避免把非派发样本
+     * 算进命中率。跨图不聚合：`sample_size` 按 `(graph_id, adapter, mode_id)` 分区。
+     * 样本 < 20 标 `insufficient_sample`，只提示不删行；视图可随时重建，无写表。
+     *
+     * `tier` 在 `routing_decisions` 无对应列（G2-1 落的是 `mode_id`），故用
+     * `mode_id` 代替 tier 维度（妥协见 I.9.3）。`outcome` 优先取
+     * `memory_hits.source_outcome`，无命中时按 run 终态映射。
+     */
+    name: 'v_memory_attribution',
+    createSql: `
+      CREATE VIEW v_memory_attribution AS
+      WITH attributed AS (
+        SELECT DISTINCT
+               r.id AS run_id,
+               r.step_id AS step_id,
+               w.graph_id AS graph_id,
+               rd.chosen_adapter AS adapter,
+               rd.mode_id AS mode_id,
+               CASE r.status
+                 WHEN 'completed' THEN 'completed'
+                 WHEN 'failed' THEN 'failed'
+                 WHEN 'timed_out' THEN 'timeout'
+                 WHEN 'cancelled' THEN 'cancelled'
+                 WHEN 'interrupted' THEN 'interrupted'
+               END AS run_outcome
+          FROM work_runs r
+          JOIN work_items w ON w.id = r.work_item_id
+          JOIN node_session_links l
+            ON l.work_run_id = r.id AND l.session_origin = 'map_task'
+          LEFT JOIN routing_decisions rd ON rd.work_run_id = r.id
+      ),
+      hit AS (
+        SELECT run_id,
+               COUNT(*) AS hit_count,
+               MAX(source_outcome) AS hit_outcome
+          FROM memory_hits
+         GROUP BY run_id
+      ),
+      evidence AS (
+        SELECT work_run_id,
+               MAX(evidence_level) AS evidence_level
+          FROM node_evidence
+         WHERE work_run_id IS NOT NULL AND revoked_at IS NULL
+         GROUP BY work_run_id
+      ),
+      base AS (
+        SELECT a.run_id,
+               a.step_id,
+               a.graph_id,
+               a.adapter,
+               a.mode_id,
+               COALESCE(h.hit_outcome, a.run_outcome) AS outcome,
+               COALESCE(h.hit_count, 0) AS hit_count,
+               e.evidence_level AS evidence_level
+          FROM attributed a
+          LEFT JOIN hit h ON h.run_id = a.run_id
+          LEFT JOIN evidence e ON e.work_run_id = a.run_id
+      )
+      SELECT b.run_id,
+             b.step_id,
+             b.graph_id,
+             b.adapter,
+             b.mode_id,
+             b.outcome,
+             b.hit_count,
+             b.evidence_level,
+             COUNT(*) OVER (PARTITION BY b.graph_id, b.adapter, b.mode_id) AS sample_size,
+             CASE
+               WHEN COUNT(*) OVER (PARTITION BY b.graph_id, b.adapter, b.mode_id) >= 20
+                 THEN 'ok'
+               ELSE 'insufficient_sample'
+             END AS conclusion
+        FROM base b
+    `,
+  },
 ]
 
 /** 视图对账：先 DROP 再建，定义变更在快/慢路径都能生效。 */

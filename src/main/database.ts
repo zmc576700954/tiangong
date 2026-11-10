@@ -820,8 +820,13 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      `WorkRunService` 五个终态方法，采集失败写 `map_migration_reports(kind='integrity_check',
  *      stage='memory:<runId>')`，不回滚 run。
  *      回滚：列可保留不读；停用 `collectMemoryHitsForRun` 调用即停止产生新记录。
+ * v46：G2-4 Layer2 归因 —— 新增只读视图 `v_memory_attribution`（经
+ *      `node_session_links.session_origin='map_task'` 强制归因；跨图不聚合；
+ *      样本 <20 标 `insufficient_sample`）。纯视图，无写表、无数据迁移；
+ *      由 `applyMapViews` 的 DROP+CREATE 对账补齐。
+ *      回滚：`DROP VIEW IF EXISTS v_memory_attribution`。
  */
-const CURRENT_SCHEMA_VERSION = 45
+const CURRENT_SCHEMA_VERSION = 46
 
 interface TableSchema {
   name: string
