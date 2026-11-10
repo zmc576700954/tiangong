@@ -75,6 +75,11 @@ export type WorkExecutionErrorCode =
   | 'STEP_KIND_UNSUPPORTED'
   | 'TICK_BUSY'
 
+/** G7-8：路由检查结果；失败时若已算出能力票则一并返回（供 UI 说明 Tier）。 */
+export type RoutingInspection =
+  | { ok: true; tier: TierProbeResult }
+  | { ok: false; code: string; reason: string; tier?: TierProbeResult }
+
 export class WorkExecutionError extends Error {
   constructor(
     readonly code: WorkExecutionErrorCode,
@@ -700,9 +705,15 @@ export class WorkExecutionService {
     })
   }
 
-  private checkRouting(
-    adapterName: string | undefined,
-  ): { ok: true; tier: TierProbeResult } | { ok: false; code: string; reason: string } {
+  /**
+   * G7-8：只读检查某个 adapter 能否进入编排写路径（不改状态、不落库）。
+   * renderer 的 `map:execution:status` 用它把“为什么入队后不会跑”说清楚。
+   */
+  inspectRouting(adapterName: string | undefined): RoutingInspection {
+    return this.checkRouting(adapterName)
+  }
+
+  private checkRouting(adapterName: string | undefined): RoutingInspection {
     if (!adapterName || adapterName.trim() === '') {
       return {
         ok: false,
@@ -728,6 +739,7 @@ export class WorkExecutionService {
         ok: false,
         code: 'TIER_UNSUPPORTED',
         reason: `adapter ${adapterName} 能力票 Tier ${tier.tier}，编排写路径仅接受 Tier 1（缺项：${missingTierCapabilities(tier).join(',') || '无'}）`,
+        tier,
       }
     }
     return { ok: true, tier }

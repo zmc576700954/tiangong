@@ -313,6 +313,13 @@ export interface IpcApi {
     enabled: boolean
     adapterName: string | null
     disabledReason: string | null
+    /**
+     * G7-8：pinned adapter 的能力票（Tier 1 才允许写编排）。
+     * 未探测（执行未开启 / 无服务）时为 null。
+     */
+    tier?: 1 | 2 | 3 | null
+    /** 能力票缺项（例如 `resume`、`probe_error:DRIVER_MISSING`），用于 UI 解释。 */
+    tierMissing?: string[]
   }>
   /**
    * G2-13 只读：test 图 test-case 的发布徽标与统计。

@@ -31,6 +31,7 @@ import {
   isMapExecutionEnabled,
   mapExecutionAdapter,
 } from '../map/execution-flags'
+import { missingTierCapabilities } from '../map/tier-probe'
 import type { TypedHandle } from './utils'
 
 /** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
@@ -345,18 +346,28 @@ export function registerMapHandlers(
     return workRuns.get(id) ?? null
   })
 
-  // 执行开关只读状态：只读环境变量，不落库、不触发执行。
+  // 执行开关只读状态：只读环境变量 + 能力票，不落库、不触发执行。
   typedHandle('map:execution:status', async () => {
     const enabled = isMapExecutionEnabled()
     const adapterName = mapExecutionAdapter() ?? null
+    // G7-8：非 Tier 1（无写前审批）后端只能裸 spawn（只读或人工排期）；
+    // 这里提前把结论告诉 UI，避免用户入队后才发现写步骤被拒。
+    const inspection =
+      enabled && adapterName ? getWorkExecutionService()?.inspectRouting(adapterName) ?? null : null
+    const tier = inspection?.tier?.tier ?? null
+    const tierMissing = inspection?.tier ? missingTierCapabilities(inspection.tier) : []
+    let disabledReason: string | null
+    if (!enabled) disabledReason = MAP_EXECUTION_DISABLED_REASON
+    else if (!adapterName) disabledReason = `未配置 ${MAP_EXECUTION_ADAPTER_ENV}：无法确定执行器`
+    else if (inspection && !inspection.ok) {
+      disabledReason = `${inspection.reason}；该后端只能裸 spawn（只读或人工排期），写步骤会被拒绝`
+    } else disabledReason = null
     return {
-      enabled,
+      enabled: enabled && (inspection ? inspection.ok : true),
       adapterName,
-      disabledReason: enabled
-        ? adapterName
-          ? null
-          : `未配置 ${MAP_EXECUTION_ADAPTER_ENV}：无法确定执行器`
-        : MAP_EXECUTION_DISABLED_REASON,
+      disabledReason,
+      tier,
+      tierMissing,
     }
   })
 

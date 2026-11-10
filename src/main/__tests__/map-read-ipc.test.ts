@@ -15,6 +15,8 @@ import type BetterSqlite3 from 'better-sqlite3'
 import { applyMapS5aSchema, applyMapS6aSchema } from '../map/schema'
 import { registerMapHandlers } from '../ipc/map'
 import type { TypedHandle } from '../ipc/utils'
+import type { WorkExecutionService } from '../map/work-execution-service'
+import { setWorkExecutionService } from '../map/work-execution-registry'
 import { MAP_READ_ONLY_CHANNELS } from '@shared/types/ipc'
 
 type Handler = (event: unknown, ...args: unknown[]) => Promise<unknown>
@@ -162,6 +164,50 @@ describe('session-map 只读 IPC 通道', () => {
     const rows = (await call('workitem:evidence:list', { workItemId: 'wi1' })) as Array<Record<string, unknown>>
     expect(rows.map((r) => r.id)).toEqual(['ne1'])
     expect(rows[0].work_run_id).toBe('wr2')
+  })
+
+  it('G7-8：pinned adapter 非 Tier 1 时执行状态禁用并说明「只能裸 spawn」', async () => {
+    const prevEnabled = process.env.BIZGRAPH_MAP_EXECUTION
+    const prevAdapter = process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER
+    process.env.BIZGRAPH_MAP_EXECUTION = '1'
+    process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER = 'codex'
+    setWorkExecutionService({
+      inspectRouting: () => ({
+        ok: false,
+        code: 'TIER_UNSUPPORTED',
+        reason: 'adapter codex 能力票 Tier 2，编排写路径仅接受 Tier 1（缺项：approval_callback）',
+        tier: {
+          adapter: 'codex',
+          adapterVersion: null,
+          tier: 2,
+          resume: true,
+          approval_callback: false,
+          structured_output: true,
+          cancel: true,
+        },
+      }),
+    } as unknown as WorkExecutionService)
+    try {
+      const status = (await call('map:execution:status')) as {
+        enabled: boolean
+        adapterName: string | null
+        disabledReason: string | null
+        tier?: number | null
+        tierMissing?: string[]
+      }
+      expect(status.enabled).toBe(false)
+      expect(status.adapterName).toBe('codex')
+      expect(status.tier).toBe(2)
+      expect(status.tierMissing).toEqual(['approval_callback'])
+      expect(status.disabledReason).toContain('裸 spawn')
+      expect(status.disabledReason).toContain('Tier 2')
+    } finally {
+      setWorkExecutionService(null)
+      if (prevEnabled === undefined) delete process.env.BIZGRAPH_MAP_EXECUTION
+      else process.env.BIZGRAPH_MAP_EXECUTION = prevEnabled
+      if (prevAdapter === undefined) delete process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER
+      else process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER = prevAdapter
+    }
   })
 
   it('只读证明：调用全部只读通道后五张表逐行不变', async () => {

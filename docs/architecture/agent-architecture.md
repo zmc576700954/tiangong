@@ -1543,6 +1543,8 @@ Kernel 路径自第六轮起**默认开启**，但不是一刀切：只有「已
 
 A2A 入口固定 `startSession('claude-code', …)`（`src/main/a2a/wiring.ts`），因此矩阵里没有「非 Claude · A2A」一行。`sendAndWait` 与子代理的「有审批」仅指 Claude；非 Claude 对应行为是既有 SDK/CLI 策略，不能按矩阵读成受保护。
 
+> 矩阵只描述**会话链路**。会话地图的**编排写路径**自 G3-1/G7-8 起额外按能力票拦截：非 Tier 1 后端（无写前审批）不会被选中执行写步骤，`map:execution:status` 会说明原因；这不改变上表里普通节点会话的裸 spawn 行为。
+
 **节点解析校验失败时的行为（2026-11-07 补齐）**：`resolveKernelNodeId()` 会按 `command.targetNodeId → 会话配置 nodeId → chat_threads.node_id → agent_sessions/最近 turn` 顺序取候选，每个候选都必须存在于 `nodes` 表；已知 `chat_threads.graph_id` 时还要求 `nodes.graph_id` 与之一致。校验失败的候选被丢弃并打印 `[kernel-node-invalid]` warn，**不会**写进 `agent_turns.node_id`（该列无 FK，数据库不会替我们拒绝）。如果所有候选都无效：
 
 - `sendCommand` → 不进 kernel，回旧路径；Claude 仍装 legacy 审批钩子，非 Claude 节点会话保持 §17.6 的未保护行为；
@@ -1562,6 +1564,8 @@ A2A 入口固定 `startSession('claude-code', …)`（`src/main/a2a/wiring.ts`�
    （`src/main/shared/sandbox/profile.ts`）因此 `/bin/sh`、`/usr/bin/env`、系统自带的 `curl`、`python3` 都在沙箱内可执行。实测：工作区 `.git/config` 写入 `core.fsmonitor='/bin/sh -c "<payload>"'` 后，沙箱内执行一条普通 `git status` 就会拉起任意 shell 并写出 marker；`curl` 可把内容外传。结论：**「沙箱在位即放开 `fsmonitor` / `hooksPath` / `alternateRefsCommand` 存在性 ask」只收敛了写面，exec 面没有收敛**，不得表述为「安全」或「已隔离」。本轮按用户决定不回收这批放宽。
 
 2. **非 Claude 节点会话没有宿主审批**。cline / cursor / qwen / qoder / kilo / kimi / codebuddy 等适配器是裸 `spawn`，没有 `setTurnApprovalHooks`，也不走 kernel；`evaluateBashPolicy` 的「沙箱不可用 → allow 退回 ask」降级对它们**不成立**，因为宿主根本没有调用点。它们在节点会话里仍可写文件、跑 Bash，审计只有后端自身输出。本轮只标注，不改行为、不阻断使用。
+
+   **编排写路径的例外（G3-1 / G7-8，2026-11-10）**：会话地图的编排写路径**不再接受**这类后端——`tier-probe.ts` 要求 `approval_callback` 等四项齐全（Tier 1），否则 `checkRouting` / `assertKernelReady` 直接拒绝（`TIER_UNSUPPORTED`），`map:execution:status` 会提前把「该后端只能裸 spawn（只读或人工排期）」告诉 UI。**但普通节点会话 / 自由聊天 / 子代理链路仍保持上述裸 spawn 行为**：要真正给它们加审批，需要为每个后端搭完整的审批桥（量级等同 G7-2），本轮不做。
 
 **结论措辞**：当前状态是「已知风险 + 用户决定暂不处理 + 暂不对外发布」。不得写成「可发布」「已收敛」「全部链路受保护」。
 

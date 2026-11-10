@@ -269,7 +269,8 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
         data-testid="map-exec-status"
       >
         {executionStatus === null && '读取执行状态…'}
-        {executionStatus !== null && execEnabled && execAdapter && `执行已开启 · adapter=${execAdapter}`}
+        {executionStatus !== null && execEnabled && execAdapter &&
+          `执行已开启 · adapter=${execAdapter}${executionStatus.tier ? `（Tier ${executionStatus.tier}）` : ''}`}
         {executionStatus !== null && (!execEnabled || !execAdapter) &&
           `执行未开启：${executionStatus.disabledReason ?? '未配置执行器'}（入队后不会自动运行）`}
       </div>

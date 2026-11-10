@@ -164,6 +164,9 @@ export interface ExecutionStatus {
   enabled: boolean
   adapterName: string | null
   disabledReason: string | null
+  /** G7-8：pinned adapter 能力票；null/缺省 = 未探测。 */
+  tier?: 1 | 2 | 3 | null
+  tierMissing?: string[]
 }
 
 /** workitem:get 的下钻闭包：item + steps + runs。 */

@@ -468,6 +468,21 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(turns.starts).toHaveLength(0)
   })
 
+  it('G7-8：inspectRouting 只读返回能力票（Tier 1 通过 / 非 Tier 1 带缺项）', () => {
+    const exec = service()
+    const ok = exec.inspectRouting('claude-code')
+    expect(ok.ok).toBe(true)
+    if (ok.ok) expect(ok.tier.tier).toBe(1)
+
+    const denied = exec.inspectRouting('acp')
+    expect(denied.ok).toBe(false)
+    if (!denied.ok) {
+      expect(denied.code).toBe('TIER_UNSUPPORTED')
+      expect(denied.tier?.tier).toBe(3)
+      expect(denied.reason).toContain('Tier 3')
+    }
+  })
+
   it('入队只建 queued run（不跑 turn）；随后的 tick 复用该 run 执行', async () => {
     const itemId = confirmedItem()
     const stepId = steps.listByItem(itemId, 1)[0].id
