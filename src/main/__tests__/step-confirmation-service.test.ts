@@ -13,6 +13,7 @@ import {
   applyMapAcceptanceSchema,
   applyMapS5aSchema,
   applyMapS6aSchema,
+  applyMapS8Schema,
 } from '../map/schema'
 import { WorkItemService } from '../map/work-item-service'
 import { StepConfirmationError, StepConfirmationService } from '../map/step-confirmation-service'
@@ -39,6 +40,7 @@ describe('StepConfirmationService（G2-10 C3/C4）', () => {
     applyMapS5aSchema(db)
     applyMapAcceptanceSchema(db)
     applyMapS6aSchema(db)
+    applyMapS8Schema(db)
     items = new WorkItemService(db)
     service = new StepConfirmationService(db)
   })
@@ -239,5 +241,116 @@ describe('StepConfirmationService（G2-10 C3/C4）', () => {
 
     expect(service.inspect('missing')).toBeNull()
     expect(service.listForItem('missing', 1)).toEqual([])
+  })
+
+  it('C3 展示投影：命令/cwd、worktree、策略、计划哈希与时长上限都来自真实计划', () => {
+    const { itemId, stepIds } = confirmedItem([
+      { title: '跑测试', stepKind: 'test', scopeFiles: files(20) },
+    ])
+    db.prepare(
+      `INSERT INTO test_plans (id, project_path, graph_id, work_item_id, node_keys_json,
+         base_commit, worktree_path, plan_hash, status, created_at)
+       VALUES ('tp1', '/p', 'g1', ?, '[]', 'base-1', '/p/.wt/1', 'hash-1', 'approved', 1)`,
+    ).run(itemId)
+    db.prepare(
+      `INSERT INTO test_specs (id, project_path, test_node_entity_key, name, kind, command,
+         timeout_ms, created_at, updated_at)
+       VALUES ('ts1', '/p', 'node-1', '单测', 'unit', 'npx vitest run', 120000, 't', 't')`,
+    ).run()
+    db.prepare(
+      `INSERT INTO test_plan_items (id, plan_id, spec_id, seq, command, cwd,
+         policy_decision, status)
+       VALUES ('i1', 'tp1', 'ts1', 1, 'npx vitest run', '.', 'allow', 'pending')`,
+    ).run()
+
+    service.maybeGate(stepIds[0])
+    const display = service.inspect(stepIds[0])!.display
+
+    expect(display.commands).toEqual([{ seq: 1, command: 'npx vitest run', cwd: '.' }])
+    expect(display.worktree).toEqual({ path: '/p/.wt/1', baseCommit: 'base-1' })
+    expect(display.policies).toEqual([{ seq: 1, decision: 'allow' }])
+    expect(display.planHash).toBe('hash-1')
+    expect(display.durationLimit).toEqual({ totalMs: 120000 })
+    expect(display.affectedFiles).toEqual(files(20))
+  })
+
+  it('C3 没有测试计划时只投影影响文件，其余键缺失（渲染层据此禁用确认）', () => {
+    const { stepIds } = confirmedItem([
+      { title: '跑测试', stepKind: 'test', scopeFiles: files(20) },
+    ])
+    service.maybeGate(stepIds[0])
+    const display = service.inspect(stepIds[0])!.display
+
+    expect(display.affectedFiles).toEqual(files(20))
+    expect(display.commands).toBeUndefined()
+    expect(display.planHash).toBeUndefined()
+  })
+
+  it('C4 展示投影：执行状态、证据、stale、未满足验收、建议与人工状态差异', () => {
+    const { itemId, stepIds } = confirmedItem([
+      { title: '人工认定', stepKind: 'human', scopeFiles: files(20) },
+    ])
+    db.prepare(`UPDATE work_items SET anchor_entity_key = 'node-1' WHERE id = ?`).run(itemId)
+    db.prepare(`UPDATE work_items SET acceptance_json = ? WHERE id = ?`).run(
+      JSON.stringify([
+        { id: 'a1', type: 'tests_pass', expected: '测试全绿' },
+        { id: 'a2', type: 'manual', expected: '人工看过 diff' },
+      ]),
+      itemId,
+    )
+    db.prepare(
+      `INSERT INTO node_execution_state (graph_id, node_entity_key, execution_state,
+         evidence_level, evidence_count, stale_count, computed_at)
+       VALUES ('g1', 'node-1', 'verified', 'E2', 2, 1, 1)`,
+    ).run()
+    db.prepare(
+      `INSERT INTO node_evidence (id, graph_id, graph_type, node_entity_key, evidence_level,
+         evidence_type, ref_json, summary, freshness, produced_by, work_item_id, created_at)
+       VALUES ('ev1', 'g1', 'test', 'node-1', 'E2', 'test_run', '{}', '全绿', 'fresh', 'system', ?, 't')`,
+    ).run(itemId)
+    db.prepare(
+      `INSERT INTO node_evidence (id, graph_id, graph_type, node_entity_key, evidence_level,
+         evidence_type, ref_json, summary, freshness, produced_by, work_item_id, created_at)
+       VALUES ('ev2', 'g1', 'test', 'node-1', 'E2', 'test_run', '{}', '旧结果', 'stale', 'system', ?, 't')`,
+    ).run(itemId)
+    db.prepare(
+      `INSERT INTO acceptance_confirmations (id, work_item_id, step_id, entry_id, source,
+         decision_note, decided_by, decided_at, batch_id, created_at)
+       VALUES ('cf1', ?, ?, 'a1', 'user', null, 'alice', 1, 'b1', 't')`,
+    ).run(itemId, stepIds[0])
+    db.prepare(
+      `INSERT INTO evidence_suggestions (id, graph_id, node_entity_key, suggested_level,
+         evidence_type, ref_json, rationale, confidence, status, created_at)
+       VALUES ('s1', 'g1', 'node-1', 'E3', 'commit', '{}', '建议补一次可复现运行', 0.8, 'pending', 't')`,
+    ).run()
+
+    service.maybeGate(stepIds[0])
+    const display = service.inspect(stepIds[0])!.display
+
+    expect(display.executionState).toEqual({
+      state: 'verified',
+      evidenceLevel: 'E2',
+      evidenceCount: 2,
+      staleCount: 1,
+    })
+    expect(display.evidence).toHaveLength(2)
+    expect(display.staleEvidence).toEqual({ count: 1, items: [{ id: 'ev2', reason: '已过期' }] })
+    expect(display.unmetAcceptance).toEqual({
+      total: 2,
+      items: [{ id: 'a2', type: 'manual', expected: '人工看过 diff' }],
+    })
+    expect(display.suggestions).toEqual({
+      count: 1,
+      items: [
+        {
+          id: 's1',
+          level: 'E3',
+          type: 'commit',
+          rationale: '建议补一次可复现运行',
+          confidence: 0.8,
+        },
+      ],
+    })
+    expect(display.statusDiff).toEqual({ humanStatus: null, derivedState: 'verified' })
   })
 })

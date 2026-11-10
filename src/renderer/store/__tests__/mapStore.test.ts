@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useMapStore } from '../mapStore'
+import { describeConfirmationError, useMapStore } from '../mapStore'
 
 function item(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -47,6 +47,7 @@ function installApi(overrides: Record<string, unknown> = {}): Record<string, Ret
     })),
     'workitem:get': vi.fn(async () => detail()),
     'workitem:acceptance:confirm': vi.fn(async () => ({ stepId: 'step-1', workItemId: 'wi-1' })),
+    'map:confirmation:decide': vi.fn(async () => ({ stepId: 'step-1', decision: 'approve' })),
     'map:execution:status': vi.fn(async () => ({ enabled: true, adapterName: 'claude', disabledReason: null })),
     'map:overlay:get': vi.fn(async () => ({ executionStates: [], workItems: [] })),
     ...overrides,
@@ -202,5 +203,60 @@ describe('mapStore 执行入口', () => {
 
     // 首轮 fetchWorkItemDetail + 事件刷新各一次
     expect(api['workitem:get']).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('步级确认决策（C3/C4）', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('decideStepConfirmation 把 display 原样发给主进程，不本地改确认状态', async () => {
+    const api = installApi()
+    useMapStore.setState({ confirmationsByItem: { 'wi-1': [{ stepId: 'step-1' } as never] } })
+    const display = { planHash: 'hash-1', affectedFiles: ['src/a.ts'] }
+
+    await useMapStore.getState().decideStepConfirmation({
+      stepId: 'step-1',
+      decision: 'approve',
+      display,
+      note: '已核对',
+    })
+
+    expect(api['map:confirmation:decide']).toHaveBeenCalledWith({
+      stepId: 'step-1',
+      decision: 'approve',
+      display,
+      note: '已核对',
+    })
+    // 成功路径不猜状态：仍等 broadcast → applyWorkItemChanged 重拉
+    expect(useMapStore.getState().confirmationsByItem['wi-1']).toHaveLength(1)
+    expect(useMapStore.getState().actionErrors['step-1']).toBeUndefined()
+  })
+
+  it('四种错误码都翻成中文可读提示，不把码抛给用户', async () => {
+    const cases: Array<[string, string, string]> = [
+      ['STEP_NOT_WAITING', '该步当前不在确认状态', '该步当前不在确认状态（可能已被处理），请刷新后重试'],
+      ['NOT_STEP_CONFIRMATION', '只有 test / human 步需要计划期确认', '只有 test / human 步需要计划期确认；agent 步走逐工具审批'],
+      ['ALREADY_DECIDED', '不能重复确认', '该步已有决策，不能重复确认'],
+      ['CONFIRMATION_DISPLAY_MISSING', '必填展示项未齐', '必填展示项未齐，无法确认'],
+    ]
+    for (const [code, fragment, expected] of cases) {
+      const text = describeConfirmationError(new Error(`${code}: 原始信息`))
+      expect(text).toBe(expected)
+      expect(text).not.toContain(code)
+      expect(text).toContain(fragment)
+    }
+  })
+
+  it('展示项缺失时把缺的键名附在中文提示后', () => {
+    const text = describeConfirmationError(
+      new Error('CONFIRMATION_DISPLAY_MISSING: 缺少必填展示项：commands, planHash'),
+    )
+    expect(text).toBe('必填展示项未齐，无法确认：commands, planHash')
+  })
+
+  it('未知错误保留原文，不吞掉信息', () => {
+    expect(describeConfirmationError(new Error('ENOENT: 磁盘不可读'))).toBe('ENOENT: 磁盘不可读')
   })
 })

@@ -140,6 +140,7 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const enqueueStep = useMapStore((s) => s.enqueueStep)
   const cancelRun = useMapStore((s) => s.cancelRun)
   const confirmAcceptance = useMapStore((s) => s.confirmAcceptance)
+  const decideStepConfirmation = useMapStore((s) => s.decideStepConfirmation)
   const proposals = useMapStore((s) => s.proposals)
   const proposalDiffs = useMapStore((s) => s.proposalDiffs)
   const proposalErrors = useMapStore((s) => s.proposalErrors)
@@ -445,10 +446,19 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                                   <>
                                     {confirmation && (
                                       <div className="ml-7">
-                                        <StepConfirmationPanel view={confirmation} />
+                                        <StepConfirmationPanel
+                                          view={confirmation}
+                                          error={actionErrors[confirmation.stepId]}
+                                          busy={busyKey === `confirmation:${s.id}`}
+                                          onDecide={(input) =>
+                                            void handleAction(`confirmation:${s.id}`, () =>
+                                              decideStepConfirmation({ stepId: s.id, ...input }),
+                                            )
+                                          }
+                                        />
                                       </div>
                                     )}
-                                    {stepActionError && (
+                                    {stepActionError && !confirmation && (
                                       <div className="ml-7 text-[10px] text-red-600" data-testid={`step-${s.id}-action-error`}>
                                         {stepActionError}
                                       </div>

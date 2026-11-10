@@ -105,6 +105,7 @@ function setup(opts: {
     enqueueStep: vi.fn(async () => {}),
     cancelRun: vi.fn(async () => {}),
     confirmAcceptance: vi.fn(async () => {}),
+    decideStepConfirmation: vi.fn(async () => {}),
   })
 }
 
@@ -484,6 +485,20 @@ function makeConfirmation(overrides: Partial<StepConfirmationView> = {}): StepCo
     rejectPath: 'waiting_approval → cancelled',
     decision: null,
     request: null,
+    display: {
+      commands: [{ seq: 1, command: 'npx vitest run', cwd: '.' }],
+      worktree: { path: '/tmp/wt', baseCommit: 'abc123' },
+      affectedFiles: ['src/a.ts'],
+      policies: [{ seq: 1, decision: 'allow' }],
+      planHash: 'hash-1',
+      durationLimit: { totalMs: 60000 },
+      executionState: { state: 'verified', evidenceLevel: 'test', evidenceCount: 1, staleCount: 0 },
+      evidence: [{ id: 'ev-1', level: 'test', type: 'command', summary: 'npx vitest run 全绿' }],
+      staleEvidence: { count: 0, items: [] },
+      unmetAcceptance: { total: 0, items: [] },
+      suggestions: { count: 0, items: [] },
+      statusDiff: { humanStatus: 'implemented', derivedState: 'verified' },
+    },
     ...overrides,
   }
 }
@@ -508,7 +523,7 @@ describe('G8-3 确认点渲染', () => {
     expect(screen.getByTestId('step-step-1-why').textContent).toContain('测试执行前确认')
     expect(screen.getByTestId('step-step-1-risk').textContent).toContain('高')
     expect(screen.getByTestId('step-step-1-reasons').textContent).toContain('G4 高风险线')
-    expect(panel.textContent).toContain('planHash')
+    expect(panel.textContent).toContain('计划哈希')
     expect(panel.textContent).toContain('驳回后')
   })
 
@@ -602,5 +617,113 @@ describe('G8-3 确认点渲染', () => {
     expect(panel.textContent).toContain('C4 完成认定')
     expect(panel.textContent).toContain('完成认定前核对')
     expect(panel.textContent).toContain('返工')
+  })
+
+  it('待确认步展示必填展示项的实际内容，通过时原样回传 display', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'waiting_approval' }
+    const confirmation = makeConfirmation()
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: { 'wi-1': [confirmation] },
+    })
+    renderPanel()
+    await expandTask()
+
+    const commands = screen.getByTestId('step-step-1-display-commands')
+    expect(commands.textContent).toContain('npx vitest run')
+    expect(screen.getByTestId('step-step-1-display-planHash').textContent).toContain('hash-1')
+
+    const approve = screen.getByTestId('step-step-1-confirmation-approve') as HTMLButtonElement
+    expect(approve.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(approve)
+    })
+    expect(useMapStore.getState().decideStepConfirmation).toHaveBeenCalledWith({
+      stepId: 'step-1',
+      decision: 'approve',
+      display: confirmation.display,
+    })
+  })
+
+  it('驳回时把备注一并带上', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'human', status: 'waiting_approval' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: {
+        'wi-1': [
+          makeConfirmation({
+            point: 'C4',
+            stepKind: 'human',
+            requiredDisplay: ['executionState', 'evidence', 'staleEvidence', 'unmetAcceptance', 'suggestions', 'statusDiff'],
+          }),
+        ],
+      },
+    })
+    renderPanel()
+    await expandTask()
+
+    fireEvent.change(screen.getByTestId('step-step-1-confirmation-note'), {
+      target: { value: '验收条件未覆盖' },
+    })
+    const reject = screen.getByTestId('step-step-1-confirmation-reject') as HTMLButtonElement
+    expect(reject.disabled).toBe(false)
+    await act(async () => {
+      fireEvent.click(reject)
+    })
+    expect(useMapStore.getState().decideStepConfirmation).toHaveBeenCalledWith({
+      stepId: 'step-1',
+      decision: 'reject',
+      display: makeConfirmation().display,
+      note: '验收条件未覆盖',
+    })
+  })
+
+  it('缺必填展示项时禁用通过/驳回并说明缺哪几项', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'waiting_approval' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: {
+        'wi-1': [makeConfirmation({ display: { affectedFiles: ['src/a.ts'] } })],
+      },
+    })
+    renderPanel()
+    await expandTask()
+
+    expect(screen.getByTestId('step-step-1-confirmation-missing').textContent).toContain('命令清单')
+    expect(screen.getByTestId('step-step-1-confirmation-missing').textContent).toContain('计划哈希')
+    expect((screen.getByTestId('step-step-1-confirmation-approve') as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByTestId('step-step-1-confirmation-reject') as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('step-step-1-confirmation-approve'))
+    })
+    expect(useMapStore.getState().decideStepConfirmation).not.toHaveBeenCalled()
+  })
+
+  it('决策失败展示中文提示，不回显错误码', async () => {
+    const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
+    const detail = makeDetail(item)
+    detail.steps[0] = { ...detail.steps[0], step_kind: 'test', status: 'waiting_approval' }
+    setup({
+      items: [item],
+      details: { 'wi-1': detail },
+      confirmationsByItem: { 'wi-1': [makeConfirmation()] },
+      actionErrors: { 'step-1': '该步当前不在确认状态（可能已被处理），请刷新后重试' },
+    })
+    renderPanel()
+    await expandTask()
+
+    const error = screen.getByTestId('step-step-1-confirmation-error')
+    expect(error.textContent).toContain('该步当前不在确认状态')
+    expect(error.textContent).not.toContain('STEP_NOT_WAITING')
+    expect(screen.queryByTestId('step-step-1-action-error')).toBeNull()
   })
 })

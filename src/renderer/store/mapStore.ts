@@ -206,6 +206,8 @@ export interface StepConfirmationView {
     reasons: string[]
   } | null
   request: { point: 'C3' | 'C4'; risk: 'low' | 'high'; reasons: string[]; requested_at: number } | null
+  /** §5.6 必填展示项的内容（服务端投影，renderer 原样展示并原样回传） */
+  display: Record<string, unknown>
 }
 
 interface MapState {
@@ -264,6 +266,13 @@ interface MapState {
     entryIds: string[]
     note?: string
   }) => Promise<void>
+  /** 步级确认决策（C3/C4）；成功后不本地猜状态，等主进程 broadcast 重拉。 */
+  decideStepConfirmation: (input: {
+    stepId: string
+    decision: 'approve' | 'reject'
+    display: Record<string, unknown>
+    note?: string
+  }) => Promise<void>
 }
 
 function errorText(error: unknown): string {
@@ -282,6 +291,28 @@ function unwrapIpc<T>(value: unknown): T {
     throw new Error(`${code}: ${message}`)
   }
   return value as T
+}
+
+/** 步级确认决策失败时的中文提示（不把错误码直接抛给用户）。 */
+const CONFIRMATION_ERROR_TEXT: Record<string, string> = {
+  STEP_NOT_WAITING: '该步当前不在确认状态（可能已被处理），请刷新后重试',
+  NOT_STEP_CONFIRMATION: '只有 test / human 步需要计划期确认；agent 步走逐工具审批',
+  ALREADY_DECIDED: '该步已有决策，不能重复确认',
+  CONFIRMATION_DISPLAY_MISSING: '必填展示项未齐，无法确认',
+  STEP_NOT_FOUND: '找不到该步（可能已被删除）',
+  ITEM_NOT_FOUND: '找不到该步所属任务',
+}
+
+export function describeConfirmationError(error: unknown): string {
+  const raw = errorText(error)
+  const sep = raw.indexOf(':')
+  const code = sep > 0 ? raw.slice(0, sep).trim() : ''
+  const detail = sep > 0 ? raw.slice(sep + 1).trim() : ''
+  const mapped = CONFIRMATION_ERROR_TEXT[code]
+  if (!mapped) return raw
+  if (!detail) return mapped
+  const stripped = detail.replace(/^缺少必填展示项[:：]/, '')
+  return stripped && stripped !== detail ? `${mapped}：${stripped}` : mapped
 }
 
 /** 按 item id 就地更新所有已缓存图的叠加层（避免为此重拉整图）。 */
@@ -659,6 +690,26 @@ export const useMapStore = create<MapState>((set, get) => ({
     } catch (error) {
       await get().fetchWorkItemDetail(input.workItemId)
       throw error instanceof Error ? error : new Error(String(error))
+    }
+  },
+
+  /**
+   * 步级确认决策：只发写请求；状态变化交给主进程 broadcast → applyWorkItemChanged。
+   * 失败把结构化错误码翻成中文写到该步的 action error 上，不抛给调用方。
+   */
+  decideStepConfirmation: async (input) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['map:confirmation:decide']({
+          stepId: input.stepId,
+          decision: input.decision,
+          display: input.display,
+          note: input.note,
+        }),
+      )
+      get().setActionError(input.stepId, '')
+    } catch (error) {
+      get().setActionError(input.stepId, describeConfirmationError(error))
     }
   },
 }))

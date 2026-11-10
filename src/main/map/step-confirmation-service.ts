@@ -59,6 +59,11 @@ export interface StepConfirmationView {
   rejectPath: string | null
   decision: ConfirmationDecision | null
   request: StepConfirmationInputRequest | null
+  /**
+   * §5.6 必填展示项的实际内容（服务端投影，渲染层原样展示并原样回传）。
+   * 键缺失 = 该项当前无内容，渲染层不得放行确认。
+   */
+  display: Record<string, unknown>
 }
 
 export interface StepConfirmationDecideInput {
@@ -97,6 +102,36 @@ function parseStringArray(json: string | null | undefined): string[] {
   try {
     const parsed = JSON.parse(json) as unknown
     return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+/** 验收条目（只取展示需要的 id / type / expected；非法条目跳过）。 */
+interface AcceptanceEntryView {
+  id: string
+  type: string | null
+  expected: string | null
+}
+
+function parseAcceptanceEntries(json: string | null | undefined): AcceptanceEntryView[] {
+  if (!json) return []
+  try {
+    const parsed = JSON.parse(json) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.flatMap((entry) => {
+      if (typeof entry !== 'object' || entry === null) return []
+      const record = entry as Record<string, unknown>
+      const id = record['id']
+      if (typeof id !== 'string' || id.trim() === '') return []
+      return [
+        {
+          id: id.trim(),
+          type: typeof record['type'] === 'string' ? record['type'] : null,
+          expected: typeof record['expected'] === 'string' ? record['expected'] : null,
+        },
+      ]
+    })
   } catch {
     return []
   }
@@ -291,6 +326,7 @@ export class StepConfirmationService {
         rejectPath: null,
         decision: null,
         request: null,
+        display: {},
       }
     }
 
@@ -316,6 +352,194 @@ export class StepConfirmationService {
       rejectPath: spec.rejectPath,
       decision,
       request,
+      display: this.buildDisplay(point, step, item, scopeFiles),
+    }
+  }
+
+  /**
+   * §5.6 必填展示项投影（只读）。
+   * 键在 = 该项已展示；键缺 = 渲染层不放行确认（写通道仍以 assertConfirmationDisplay 为准）。
+   * 投影只做读、失败按「无内容」处理：不让展示投影的异常改变化确认闸本身的判定。
+   */
+  private buildDisplay(
+    point: StepConfirmationPoint,
+    step: { id: string; work_item_id: string },
+    item: WorkItemRow | undefined,
+    scopeFiles: string[],
+  ): Record<string, unknown> {
+    try {
+      return point === 'C3'
+        ? this.buildC3Display(step, scopeFiles)
+        : this.buildC4Display(step, item)
+    } catch {
+      return {}
+    }
+  }
+
+  private buildC3Display(
+    step: { work_item_id: string },
+    scopeFiles: string[],
+  ): Record<string, unknown> {
+    const display: Record<string, unknown> = {}
+    if (scopeFiles.length > 0) display.affectedFiles = scopeFiles
+    const plan = this.db
+      .prepare(
+        `SELECT id, worktree_path, base_commit, plan_hash FROM test_plans
+          WHERE work_item_id = ? ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(step.work_item_id) as
+      | { id: string; worktree_path: string | null; base_commit: string | null; plan_hash: string }
+      | undefined
+    if (!plan) return display
+    const rows = this.db
+      .prepare(
+        `SELECT i.seq, i.command, i.cwd, i.policy_decision, s.timeout_ms
+           FROM test_plan_items i
+           LEFT JOIN test_specs s ON s.id = i.spec_id
+          WHERE i.plan_id = ? ORDER BY i.seq ASC`,
+      )
+      .all(plan.id) as Array<{
+      seq: number
+      command: string
+      cwd: string | null
+      timeout_ms: number | null
+      policy_decision: string | null
+    }>
+    if (rows.length > 0) {
+      display.commands = rows.map((row) => ({ seq: row.seq, command: row.command, cwd: row.cwd }))
+      display.policies = rows.map((row) => ({ seq: row.seq, decision: row.policy_decision ?? 'unknown' }))
+      const timeouts = rows
+        .map((row) => row.timeout_ms)
+        .filter((value): value is number => typeof value === 'number')
+      if (timeouts.length > 0) {
+        display.durationLimit = { totalMs: timeouts.reduce((sum, value) => sum + value, 0) }
+      }
+    }
+    if (plan.worktree_path || plan.base_commit) {
+      display.worktree = { path: plan.worktree_path, baseCommit: plan.base_commit }
+    }
+    if (plan.plan_hash) display.planHash = plan.plan_hash
+    return display
+  }
+
+  private buildC4Display(
+    step: { id: string; work_item_id: string },
+    item: WorkItemRow | undefined,
+  ): Record<string, unknown> {
+    const display: Record<string, unknown> = {}
+    const nodeKey = item?.anchor_entity_key
+    const exec =
+      nodeKey && item
+        ? (this.db
+            .prepare(
+              `SELECT execution_state, evidence_level, evidence_count, stale_count
+                 FROM node_execution_state WHERE graph_id = ? AND node_entity_key = ?`,
+            )
+            .get(item.graph_id, nodeKey) as
+            | {
+                execution_state: string
+                evidence_level: string
+                evidence_count: number
+                stale_count: number
+              }
+            | undefined)
+        : undefined
+    if (exec) {
+      display.executionState = {
+        state: exec.execution_state,
+        evidenceLevel: exec.evidence_level,
+        evidenceCount: exec.evidence_count,
+        staleCount: exec.stale_count,
+      }
+    }
+    const evidence = this.db
+      .prepare(
+        `SELECT id, evidence_level, evidence_type, summary, freshness, revoked_at
+           FROM node_evidence WHERE work_item_id = ?
+          ORDER BY created_at DESC LIMIT 50`,
+      )
+      .all(step.work_item_id) as Array<{
+      id: string
+      evidence_level: string
+      evidence_type: string
+      summary: string | null
+      freshness: string
+      revoked_at: string | null
+    }>
+    if (evidence.length > 0) {
+      display.evidence = evidence.map((row) => ({
+        id: row.id,
+        level: row.evidence_level,
+        type: row.evidence_type,
+        summary: row.summary,
+      }))
+    }
+    const stale = evidence.filter((row) => row.freshness === 'stale' || row.revoked_at !== null)
+    display.staleEvidence = {
+      count: stale.length,
+      items: stale.map((row) => ({ id: row.id, reason: row.revoked_at ? '已撤销' : '已过期' })),
+    }
+
+    const acceptance = parseAcceptanceEntries(item?.acceptance_json)
+    const confirmed = new Set(
+      (
+        this.db
+          .prepare(
+            `SELECT entry_id FROM acceptance_confirmations WHERE work_item_id = ? AND step_id = ?`,
+          )
+          .all(step.work_item_id, step.id) as Array<{ entry_id: string }>
+      ).map((row) => row.entry_id),
+    )
+    const unmet = acceptance.filter((entry) => !confirmed.has(entry.id))
+    display.unmetAcceptance = { total: acceptance.length, items: unmet }
+
+    const suggestions =
+      nodeKey && item
+        ? (this.db
+            .prepare(
+              `SELECT id, suggested_level, evidence_type, rationale, confidence
+                 FROM evidence_suggestions WHERE node_entity_key = ? AND status = 'pending'
+                ORDER BY created_at DESC LIMIT 20`,
+            )
+            .all(nodeKey) as Array<{
+            id: string
+            suggested_level: string
+            evidence_type: string
+            rationale: string
+            confidence: number
+          }>)
+        : []
+    display.suggestions = {
+      count: suggestions.length,
+      items: suggestions.map((row) => ({
+        id: row.id,
+        level: row.suggested_level,
+        type: row.evidence_type,
+        rationale: row.rationale,
+        confidence: row.confidence,
+      })),
+    }
+
+    display.statusDiff = {
+      humanStatus: this.readHumanNodeStatus(item, nodeKey),
+      derivedState: exec?.execution_state ?? null,
+    }
+    return display
+  }
+
+  /** 人工状态（`nodes.status`）；缺图/缺表按未认定处理，不影响其余展示项。 */
+  private readHumanNodeStatus(
+    item: WorkItemRow | undefined,
+    nodeKey: string | null | undefined,
+  ): string | null {
+    if (!item || !nodeKey) return null
+    try {
+      const row = this.db
+        .prepare(`SELECT status FROM nodes WHERE graph_id = ? AND entity_key = ?`)
+        .get(item.graph_id, nodeKey) as { status: string } | undefined
+      return row?.status ?? null
+    } catch {
+      return null
     }
   }
 
