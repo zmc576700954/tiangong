@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NodeMapPanel } from '../NodeMapPanel'
 import { useMapStore } from '../../../store/mapStore'
-import type { WorkItemDetail, WorkItemSummary } from '../../../store/mapStore'
+import type { EvidenceEntry, WorkItemDetail, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
 
 function makeItem(overrides: Partial<WorkItemSummary> = {}): WorkItemSummary {
   return {
@@ -64,6 +64,7 @@ function makeDetail(
 function setup(opts: {
   items?: WorkItemSummary[]
   details?: Record<string, WorkItemDetail>
+  evidence?: EvidenceEntry[]
   workItemErrors?: Record<string, string>
   executionStatus?: { enabled: boolean; adapterName: string | null; disabledReason: string | null } | null
   actionErrors?: Record<string, string>
@@ -75,7 +76,7 @@ function setup(opts: {
   useMapStore.setState({
     overlayByGraph: new Map([['g-1', { executionStates: [], workItems: items }]]),
     nodeTimeline: [],
-    nodeEvidence: [],
+    nodeEvidence: opts.evidence ?? [],
     workItemDetails: opts.details ?? { 'wi-1': makeDetail(items[0]) },
     workItemErrors: opts.workItemErrors ?? {},
     nodeError: null,
@@ -107,6 +108,19 @@ function setup(opts: {
 
 function renderPanel(): void {
   render(<NodeMapPanel graphId="g-1" nodeEntityKey="node-1" nodeId="n-1" />)
+}
+
+/** G8-5：任务卡默认折叠到任务级，测试按需逐层展开。 */
+async function expandTask(taskId = 'wi-1'): Promise<void> {
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(`task-${taskId}-toggle`))
+  })
+}
+
+async function expandStep(stepId = 'step-1'): Promise<void> {
+  await act(async () => {
+    fireEvent.click(screen.getByTestId(`step-${stepId}-toggle`))
+  })
 }
 
 describe('NodeMapPanel 执行入口', () => {
@@ -152,6 +166,7 @@ describe('NodeMapPanel 执行入口', () => {
     const item = makeItem({ status: 'queued', gate_status: 'pass', gate_missing_json: null })
     setup({ items: [item] })
     renderPanel()
+    await expandTask()
 
     const enqueueButton = screen.getByTestId('step-step-1-enqueue') as HTMLButtonElement
     expect(enqueueButton.disabled).toBe(false)
@@ -165,7 +180,7 @@ describe('NodeMapPanel 执行入口', () => {
     })
   })
 
-  it('有活跃 run 时隐藏任务级取消，提示先取消 run', () => {
+  it('有活跃 run 时隐藏任务级取消，提示先取消 run', async () => {
     const item = makeItem({ status: 'running', gate_status: 'pass', gate_missing_json: null })
     setup({
       items: [item],
@@ -192,13 +207,15 @@ describe('NodeMapPanel 执行入口', () => {
       },
     })
     renderPanel()
+    await expandTask()
+    await expandStep()
 
     expect(screen.queryByTestId('task-wi-1-cancel')).toBeNull()
     expect(screen.getByTestId('task-wi-1-active-run-hint').textContent).toContain('先取消运行中的 run')
     expect(screen.getByTestId('run-run-1-cancel')).toBeTruthy()
   })
 
-  it('展示 run 结果摘要、取消归因与执行器', () => {
+  it('展示 run 结果摘要、取消归因与执行器', async () => {
     const item = makeItem({ status: 'done', gate_status: 'pass', gate_missing_json: null })
     setup({
       items: [item],
@@ -228,13 +245,15 @@ describe('NodeMapPanel 执行入口', () => {
       },
     })
     renderPanel()
+    await expandTask()
+    await expandStep()
 
     expect(screen.getByTestId('run-run-2-result').textContent).toContain('完成一半')
     expect(screen.getByTestId('run-run-2-cancel-reason').textContent).toContain('user')
     expect(screen.getByTestId('run-run-2').textContent).toContain('claude')
   })
 
-  it('未知 needs_input kind 兜底展示原始 JSON', () => {
+  it('未知 needs_input kind 兜底展示原始 JSON', async () => {
     const item = makeItem({ status: 'needs_input', gate_status: 'pass', gate_missing_json: null })
     const detail = makeDetail(item)
     detail.steps[0] = {
@@ -244,6 +263,7 @@ describe('NodeMapPanel 执行入口', () => {
     }
     setup({ items: [item], details: { 'wi-1': detail } })
     renderPanel()
+    await expandTask()
 
     const fallback = screen.getByTestId('step-step-1-needs-input-unknown')
     expect(fallback.textContent).toContain('future_kind')
@@ -340,5 +360,103 @@ describe('NodeMapPanel 执行入口', () => {
       nodeEntityKey: 'node-1',
       id: 'p-1',
     })
+  })
+})
+
+function makeRun(overrides: Partial<WorkRunEntry> = {}): WorkRunEntry {
+  return {
+    id: 'run-1',
+    work_item_id: 'wi-1',
+    work_item_lineage_id: 'lin-1',
+    work_item_revision: 1,
+    step_id: 'step-1',
+    run_seq: 1,
+    attempt: 1,
+    executor_kind: 'agent',
+    status: 'completed',
+    failure_class: null,
+    created_at: 1,
+    started_at: 1,
+    ended_at: 2,
+    ...overrides,
+  }
+}
+
+function makeEvidence(overrides: Partial<EvidenceEntry> = {}): EvidenceEntry {
+  return {
+    id: 'ev-1',
+    evidence_level: 'E3',
+    evidence_type: 'test',
+    freshness: 'fresh',
+    produced_by: 'test_executor',
+    summary: '用例通过',
+    created_at: '2026-01-01',
+    revoked_at: null,
+    work_item_id: 'wi-1',
+    work_run_id: null,
+    ...overrides,
+  }
+}
+
+describe('G8-5 任务卡深度', () => {
+  it('默认折叠到任务级，逐层展开后才渲染步 / run / 证据', async () => {
+    const item = makeItem({ status: 'done', gate_status: 'pass', gate_missing_json: null })
+    setup({
+      items: [item],
+      details: { 'wi-1': makeDetail(item, { runs: [makeRun()] }) },
+      evidence: [makeEvidence({ id: 'ev-1', work_run_id: 'run-1' })],
+    })
+    renderPanel()
+
+    expect(screen.queryByTestId('step-step-1')).toBeNull()
+    await expandTask()
+    expect(screen.getByTestId('step-step-1')).toBeTruthy()
+    expect(screen.queryByTestId('run-run-1')).toBeNull()
+    await expandStep()
+    expect(screen.getByTestId('run-run-1')).toBeTruthy()
+    expect(screen.queryByTestId('run-evidence-ev-1')).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('run-run-1-toggle'))
+    })
+    expect(screen.getByTestId('run-evidence-ev-1').textContent).toContain('E3')
+  })
+
+  it('证据按 work_run_id 归到 run；无 run 归属的留在任务级，其他任务证据不混入', async () => {
+    const item = makeItem({ status: 'done', gate_status: 'pass', gate_missing_json: null })
+    setup({
+      items: [item],
+      details: { 'wi-1': makeDetail(item, { runs: [makeRun()] }) },
+      evidence: [
+        makeEvidence({ id: 'ev-run', work_item_id: 'wi-1', work_run_id: 'run-1' }),
+        makeEvidence({ id: 'ev-free', work_item_id: 'wi-1', work_run_id: null }),
+        makeEvidence({ id: 'ev-other', work_item_id: 'wi-2', work_run_id: null }),
+      ],
+    })
+    renderPanel()
+    await expandTask()
+
+    const unattached = screen.getByTestId('task-unattached-evidence')
+    expect(unattached.textContent).toContain('未绑定运行的证据')
+    expect(screen.getByTestId('task-evidence-ev-free')).toBeTruthy()
+    expect(screen.queryByTestId('task-evidence-ev-other')).toBeNull()
+
+    await expandStep()
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('run-run-1-toggle'))
+    })
+    expect(screen.getByTestId('run-evidence-ev-run')).toBeTruthy()
+  })
+
+  it('100 条任务默认折叠时只渲染任务头，不铺开步骤', () => {
+    const items = Array.from({ length: 100 }, (_, i) =>
+      makeItem({ id: `wi-${i}`, lineage_id: `lin-${i}`, title: `任务${i}` }),
+    )
+    const details = Object.fromEntries(items.map((it) => [it.id, makeDetail(it)]))
+    setup({ items, details })
+    renderPanel()
+
+    expect(screen.getAllByTestId(/^task-wi-\d+$/).length).toBe(100)
+    expect(screen.queryByTestId('step-step-1')).toBeNull()
   })
 })

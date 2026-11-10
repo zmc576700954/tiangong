@@ -70,6 +70,10 @@ export interface EvidenceEntry {
   summary: string | null
   created_at: string
   revoked_at: string | null
+  /** G8-5：归属任务（node_evidence.work_item_id；主进程 SELECT * 已返回，渲染层只读）。 */
+  work_item_id?: string | null
+  /** G8-5：归属运行（node_evidence.work_run_id）；用于「步 → run → 证据」分层。 */
+  work_run_id?: string | null
 }
 
 /** work_steps 只读出参（workitem:get / workitem:steps:list 的显式列集合子集）。 */

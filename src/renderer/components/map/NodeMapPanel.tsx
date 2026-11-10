@@ -20,6 +20,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { Badge } from '../ui/badge'
 import { useMapStore } from '../../store/mapStore'
 import type { ExecutionStateValue, WorkItemSummary, WorkStepEntry } from '../../store/mapStore'
+import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
 
 interface PendingAcceptanceEntry {
   id: string
@@ -109,38 +110,6 @@ const STATE_STYLE: Record<ExecutionStateValue, string> = {
   stale: 'bg-yellow-500/10 text-yellow-700 border-yellow-500/30',
 }
 
-/** item / step / run 状态共用配色（缺省值回落中性灰）。 */
-const STATUS_STYLE: Record<string, string> = {
-  draft: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  planning: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  pending: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  awaiting_confirm: 'bg-blue-500/10 text-blue-600 border-blue-500/30',
-  queued: 'bg-indigo-500/10 text-indigo-600 border-indigo-500/30',
-  running: 'bg-amber-500/10 text-amber-600 border-amber-500/30',
-  waiting_approval: 'bg-purple-500/10 text-purple-600 border-purple-500/30',
-  review: 'bg-blue-500/10 text-blue-600 border-blue-500/30',
-  blocked: 'bg-orange-500/10 text-orange-600 border-orange-500/30',
-  needs_input: 'bg-purple-500/10 text-purple-600 border-purple-500/30',
-  needs_human: 'bg-purple-500/10 text-purple-600 border-purple-500/30',
-  paused: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  interrupted: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  succeeded: 'bg-green-500/10 text-green-600 border-green-500/30',
-  completed: 'bg-green-500/10 text-green-600 border-green-500/30',
-  done: 'bg-green-500/10 text-green-600 border-green-500/30',
-  failed: 'bg-red-500/10 text-red-600 border-red-500/30',
-  timed_out: 'bg-orange-500/10 text-orange-600 border-orange-500/30',
-  cancelled: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  skipped: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
-  superseded: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
-}
-
-function formatTs(ts: number | null | undefined): string {
-  if (!ts) return '-'
-  const d = new Date(ts)
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
 const ACTION_BUTTON_CLASS =
   'rounded border px-1.5 py-0.5 text-[10px] hover:bg-gray-500/10 disabled:cursor-not-allowed disabled:opacity-40'
 
@@ -180,6 +149,20 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [openDiffId, setOpenDiffId] = useState<string | null>(null)
   const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({})
+  /**
+   * G8-5：任务/步/run 的展开集合（key 前缀 `task:` / `step:` / `run:`）。
+   * 只存内存、不落库；重新挂载即恢复默认（折叠到任务级）。
+   */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+
+  function toggleExpanded(key: string): void {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
 
   const execEnabled = executionStatus?.enabled === true
   const execAdapter = executionStatus?.adapterName ?? null
@@ -285,14 +268,17 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
         {/* 锚定该节点的 work item（含执行入口 / steps / 最近 runs） */}
         <section data-testid="node-map-tasks">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">任务</div>
-          <div className="space-y-2">
+          {/* G8-5：任务多时在容器内滚动（默认折叠到任务级，100 条任务也只渲染卡片头）。 */}
+          <div className="max-h-[60vh] space-y-2 overflow-y-auto">
             {tasks.map((t) => {
               const detail = details[t.id]
               const loadError = workItemErrors[t.id]
               const taskActionError = actionErrors[t.id]
               const runs = detail?.runs ?? []
               const steps = detail?.steps ?? []
-              const recentRuns = runs.slice(-5).reverse()
+              // G8-5：证据只按归属任务预过滤；run 归属由 TaskCardTree 按 work_run_id 分组。
+              const taskEvidence = evidence.filter((e) => e.work_item_id === t.id)
+              const taskOpen = expanded.has(`task:${t.id}`)
               const activeRuns = runs.filter((r) => RUN_ACTIVE.has(r.status))
               const hasActiveRun = activeRuns.length > 0
               const gateOk = t.gate_status === 'pass' || t.gate_status === 'waived'
@@ -377,32 +363,40 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                     </div>
                   ) : (
                     <>
-                      <div className="mt-1 pl-2" data-testid={`task-${t.id}-steps`}>
-                        <div className="text-[10px] opacity-50">步骤</div>
-                        {!detail && <div className="text-[11px] opacity-50">读取中…</div>}
-                        {detail && steps.length === 0 && (
-                          <div className="text-[11px] opacity-50">无（该任务没有步骤）</div>
-                        )}
-                        {steps.map((s) => {
-                          const acceptance = s.status === 'needs_input' ? parseAcceptanceRequest(s.input_request_json) : null
-                          const unknownInput = s.status === 'needs_input' && !acceptance
-                          const itemRunnable = t.status === 'queued' || t.status === 'running'
-                          const showEnqueue = s.step_kind === 'agent' && s.status === 'pending' && itemRunnable
-                          const depsOk = depsSatisfied(s, steps)
-                          const enqueueReady = gateOk && execEnabled && !!execAdapter && depsOk
-                          const stepActionError = actionErrors[s.id]
-                          return (
-                            <div key={s.id} data-testid={`step-${s.id}`}>
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <span className="w-5 text-right opacity-50">{s.seq}</span>
-                                <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[s.status] ?? ''}`}>{s.status}</Badge>
-                                <span className="flex-1 truncate">{s.title}</span>
-                                <span className="text-[10px] opacity-50">
-                                  {s.step_kind} · #{s.attempt}
-                                  {s.skip_reason ? ` · skip=${s.skip_reason}` : ''}
-                                  {s.failure_class ? ` · ${s.failure_class}` : ''}
-                                </span>
-                                {showEnqueue && (
+                      {!detail && (
+                        <div className="mt-1 pl-2 text-[11px] opacity-50" data-testid={`task-${t.id}-steps`}>
+                          读取中…
+                        </div>
+                      )}
+                      {detail && (
+                        <>
+                          <div className="mt-1 pl-2">
+                            <button
+                              type="button"
+                              className={ACTION_BUTTON_CLASS}
+                              data-testid={`task-${t.id}-toggle`}
+                              aria-expanded={taskOpen}
+                              onClick={() => toggleExpanded(`task:${t.id}`)}
+                            >
+                              {taskOpen
+                                ? '收起层级'
+                                : `展开层级（步骤 ${steps.length} · 运行 ${runs.length} · 证据 ${taskEvidence.length}）`}
+                            </button>
+                          </div>
+                          {taskOpen && (
+                            <TaskCardTree
+                              steps={steps}
+                              runs={runs}
+                              evidence={taskEvidence}
+                              expanded={expanded}
+                              onToggle={toggleExpanded}
+                              renderStepActions={(s) => {
+                                const itemRunnable = t.status === 'queued' || t.status === 'running'
+                                const showEnqueue = s.step_kind === 'agent' && s.status === 'pending' && itemRunnable
+                                if (!showEnqueue) return null
+                                const depsOk = depsSatisfied(s, steps)
+                                const enqueueReady = gateOk && execEnabled && !!execAdapter && depsOk
+                                return (
                                   <button
                                     type="button"
                                     className={ACTION_BUTTON_CLASS}
@@ -425,83 +419,71 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                                   >
                                     {busyKey === `enqueue:${s.id}` ? '入队中…' : '入队这一步'}
                                   </button>
-                                )}
-                              </div>
-                              {stepActionError && (
-                                <div className="ml-7 text-[10px] text-red-600" data-testid={`step-${s.id}-action-error`}>
-                                  {stepActionError}
-                                </div>
-                              )}
-                              {acceptance && (
-                                <div
-                                  className="ml-7 mt-1 space-y-1 rounded border border-purple-500/30 bg-purple-500/5 p-1.5"
-                                  data-testid={`acceptance-pending-${s.id}`}
-                                >
-                                  <div className="text-[10px] opacity-60">待人工确认（确认后自动重算验收）</div>
-                                  {acceptance.map((entry) => {
-                                    const key = `${s.id}:${entry.id}`
-                                    return (
-                                      <div key={entry.id} className="flex items-center gap-2 text-[11px]">
-                                        <span className="flex-1">
-                                          {entry.expected}
-                                          {entry.text ? <span className="opacity-60"> · {entry.text}</span> : null}
-                                        </span>
-                                        <button
-                                          type="button"
-                                          className={`${ACTION_BUTTON_CLASS} border-purple-500/40`}
-                                          disabled={confirmingKey === key}
-                                          onClick={() => void handleConfirm(t.id, s.id, entry.id)}
-                                        >
-                                          {confirmingKey === key ? '确认中…' : '确认'}
-                                        </button>
+                                )
+                              }}
+                              renderStepBody={(s) => {
+                                const acceptance = s.status === 'needs_input' ? parseAcceptanceRequest(s.input_request_json) : null
+                                const unknownInput = s.status === 'needs_input' && !acceptance
+                                const stepActionError = actionErrors[s.id]
+                                return (
+                                  <>
+                                    {stepActionError && (
+                                      <div className="ml-7 text-[10px] text-red-600" data-testid={`step-${s.id}-action-error`}>
+                                        {stepActionError}
                                       </div>
-                                    )
-                                  })}
-                                  {confirmError && <div className="text-[10px] text-red-600">{confirmError}</div>}
-                                </div>
-                              )}
-                              {unknownInput && (
-                                <div
-                                  className="ml-7 mt-1 rounded border border-amber-500/30 bg-amber-500/5 p-1.5 text-[10px] text-amber-700"
-                                  data-testid={`step-${s.id}-needs-input-unknown`}
-                                >
-                                  <div>
-                                    无法识别的待处理输入（kind=
-                                    {parseInputKind(s.input_request_json) ?? 'unknown'}），请在主进程处理。
-                                  </div>
-                                  {s.input_request_json && (
-                                    <details className="mt-1">
-                                      <summary className="cursor-pointer opacity-70">原始请求 JSON</summary>
-                                      <pre className="mt-1 overflow-auto whitespace-pre-wrap break-all opacity-70">
-                                        {s.input_request_json}
-                                      </pre>
-                                    </details>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-
-                      <div className="mt-1 pl-2" data-testid={`task-${t.id}-runs`}>
-                        <div className="text-[10px] opacity-50">最近运行</div>
-                        {!detail && <div className="text-[11px] opacity-50">读取中…</div>}
-                        {detail && recentRuns.length === 0 && <div className="text-[11px] opacity-50">无（尚无运行记录）</div>}
-                        {recentRuns.map((r) => {
-                          const runActionError = actionErrors[r.id]
-                          return (
-                            <div key={r.id} data-testid={`run-${r.id}`}>
-                              <div className="flex items-center gap-2 text-[11px]">
-                                <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[r.status] ?? ''}`}>{r.status}</Badge>
-                                <span className="truncate">step {r.step_id ?? '-'}</span>
-                                <span className="flex-1" />
-                                <span className="text-[10px] opacity-50">
-                                  seq #{r.run_seq} · #{r.attempt}
-                                  {r.adapter_name ? ` · ${r.adapter_name}` : ''}
-                                  {r.failure_class ? ` · ${r.failure_class}` : ''} · {formatTs(r.created_at)}
-                                </span>
-                                {RUN_ACTIVE.has(r.status) && (
+                                    )}
+                                    {acceptance && (
+                                      <div
+                                        className="ml-7 mt-1 space-y-1 rounded border border-purple-500/30 bg-purple-500/5 p-1.5"
+                                        data-testid={`acceptance-pending-${s.id}`}
+                                      >
+                                        <div className="text-[10px] opacity-60">待人工确认（确认后自动重算验收）</div>
+                                        {acceptance.map((entry) => {
+                                          const key = `${s.id}:${entry.id}`
+                                          return (
+                                            <div key={entry.id} className="flex items-center gap-2 text-[11px]">
+                                              <span className="flex-1">
+                                                {entry.expected}
+                                                {entry.text ? <span className="opacity-60"> · {entry.text}</span> : null}
+                                              </span>
+                                              <button
+                                                type="button"
+                                                className={`${ACTION_BUTTON_CLASS} border-purple-500/40`}
+                                                disabled={confirmingKey === key}
+                                                onClick={() => void handleConfirm(t.id, s.id, entry.id)}
+                                              >
+                                                {confirmingKey === key ? '确认中…' : '确认'}
+                                              </button>
+                                            </div>
+                                          )
+                                        })}
+                                        {confirmError && <div className="text-[10px] text-red-600">{confirmError}</div>}
+                                      </div>
+                                    )}
+                                    {unknownInput && (
+                                      <div
+                                        className="ml-7 mt-1 rounded border border-amber-500/30 bg-amber-500/5 p-1.5 text-[10px] text-amber-700"
+                                        data-testid={`step-${s.id}-needs-input-unknown`}
+                                      >
+                                        <div>
+                                          无法识别的待处理输入（kind=
+                                          {parseInputKind(s.input_request_json) ?? 'unknown'}），请在主进程处理。
+                                        </div>
+                                        {s.input_request_json && (
+                                          <details className="mt-1">
+                                            <summary className="cursor-pointer opacity-70">原始请求 JSON</summary>
+                                            <pre className="mt-1 overflow-auto whitespace-pre-wrap break-all opacity-70">
+                                              {s.input_request_json}
+                                            </pre>
+                                          </details>
+                                        )}
+                                      </div>
+                                    )}
+                                  </>
+                                )
+                              }}
+                              renderRunActions={(r) =>
+                                RUN_ACTIVE.has(r.status) ? (
                                   <button
                                     type="button"
                                     className={`${ACTION_BUTTON_CLASS} border-red-500/40`}
@@ -516,27 +498,35 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                                   >
                                     {busyKey === `run-cancel:${r.id}` ? '取消中…' : '取消运行'}
                                   </button>
-                                )}
-                              </div>
-                              {r.result_summary && (
-                                <div className="ml-2 text-[10px] opacity-60" data-testid={`run-${r.id}-result`}>
-                                  结果：{r.result_summary}
-                                </div>
-                              )}
-                              {r.cancel_reason && (
-                                <div className="ml-2 text-[10px] opacity-60" data-testid={`run-${r.id}-cancel-reason`}>
-                                  取消归因：{r.cancel_reason}
-                                </div>
-                              )}
-                              {runActionError && (
-                                <div className="ml-2 text-[10px] text-red-600" data-testid={`run-${r.id}-action-error`}>
-                                  {runActionError}
-                                </div>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
+                                ) : null
+                              }
+                              renderRunBody={(r) => {
+                                const runActionError = actionErrors[r.id]
+                                return (
+                                  <>
+                                    {r.result_summary && (
+                                      <div className="ml-2 text-[10px] opacity-60" data-testid={`run-${r.id}-result`}>
+                                        结果：{r.result_summary}
+                                      </div>
+                                    )}
+                                    {r.cancel_reason && (
+                                      <div className="ml-2 text-[10px] opacity-60" data-testid={`run-${r.id}-cancel-reason`}>
+                                        取消归因：{r.cancel_reason}
+                                      </div>
+                                    )}
+                                    {runActionError && (
+                                      <div className="ml-2 text-[10px] text-red-600" data-testid={`run-${r.id}-action-error`}>
+                                        {runActionError}
+                                      </div>
+                                    )}
+                                  </>
+                                )
+                              }}
+                            />
+                          )}
+                        </>
+                      )}
+
                     </>
                   )}
                 </div>
