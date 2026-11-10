@@ -2,7 +2,7 @@
  * PipelineRunner 单元测试
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { PipelineRunner } from '../pipeline'
 import type { PipelineStage, PipelineContext } from '../pipeline'
 
@@ -180,19 +180,28 @@ describe('PipelineRunner', () => {
   })
 
   it('tracks duration', async () => {
-    const stages: PipelineStage[] = [
-      {
-        name: 'slow',
-        process: async (ctx) => {
-          await new Promise((r) => setTimeout(r, 10))
-          return ctx
+    // 假时钟：同时接管 setTimeout 与 performance，避免 setTimeout(10) 实际早于
+    // 10ms 触发导致墙钟断言 flake（曾出现两次）。
+    vi.useFakeTimers({ toFake: ['setTimeout', 'performance'] })
+    try {
+      const stages: PipelineStage[] = [
+        {
+          name: 'slow',
+          process: async (ctx) => {
+            await new Promise((r) => setTimeout(r, 10))
+            return ctx
+          },
         },
-      },
-    ]
+      ]
 
-    const runner = new PipelineRunner(stages)
-    const result = await runner.run(makeCtx())
+      const runner = new PipelineRunner(stages)
+      const pending = runner.run(makeCtx())
+      await vi.advanceTimersByTimeAsync(10)
+      const result = await pending
 
-    expect(result.durationMs).toBeGreaterThanOrEqual(10)
+      expect(result.durationMs).toBeGreaterThanOrEqual(10)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
