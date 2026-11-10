@@ -342,6 +342,19 @@ export interface IpcApi {
       lastTestFailed: boolean
     }>
   }>
+  /**
+   * G5-10 只读：项目进度聚合（节点总数 / 已验证节点 / 任务完成与失败 / 证据分级）。
+   * 项目无数据时返回 `available=false` 与零值，不报错、不阻塞任务查询。
+   */
+  'map:project:progress': (projectPath: string) => Promise<{
+    projectPath: string
+    available: boolean
+    nodesTotal: number
+    nodesVerified: number
+    itemsDone: number
+    itemsFailed: number
+    evidenceByLevel: Record<string, number>
+  }>
   'workitem:create': (data: {
     projectPath?: string
     graphId: string
@@ -585,6 +598,7 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:run:get',
   'map:execution:status',
   'map:published:status',
+  'map:project:progress',
   'mode:list',
   'proposal:list',
   'proposal:diff',

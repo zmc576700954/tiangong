@@ -825,8 +825,12 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      样本 <20 标 `insufficient_sample`）。纯视图，无写表、无数据迁移；
  *      由 `applyMapViews` 的 DROP+CREATE 对账补齐。
  *      回滚：`DROP VIEW IF EXISTS v_memory_attribution`。
+ * v47：G5-10 项目进度 —— 新增只读视图 `v_project_progress`（按项目聚合约一
+ *      节点总数/已验证节点/任务完成与失败/证据分级）。纯视图，无写表、无数据迁移；
+ *      由 `applyMapViews` 的 DROP+CREATE 对账补齐。
+ *      回滚：`DROP VIEW IF EXISTS v_project_progress`。
  */
-const CURRENT_SCHEMA_VERSION = 46
+const CURRENT_SCHEMA_VERSION = 47
 
 interface TableSchema {
   name: string

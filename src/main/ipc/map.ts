@@ -20,6 +20,7 @@ import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import { WorkExecutionError } from '../map/work-execution-service'
 import { getPublishedStatus } from '../map/published-guard'
+import { getProjectProgress } from '../map/project-progress'
 import { ProposalService } from '../map/proposal-service'
 import { listModes } from '../map/mode-registry'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
@@ -368,6 +369,23 @@ export function registerMapHandlers(
       disabledReason,
       tier,
       tierMissing,
+    }
+  })
+
+  // G5-10 只读：项目进度聚合（节点/任务/证据分级）。项目无数据时返回空态并标注。
+  typedHandle('map:project:progress', async (_, projectPath: unknown) => {
+    if (typeof projectPath !== 'string' || projectPath === '') {
+      throw new Error('projectPath is required')
+    }
+    const progress = getProjectProgress(db, projectPath)
+    return {
+      projectPath,
+      available: progress !== null,
+      nodesTotal: progress?.nodesTotal ?? 0,
+      nodesVerified: progress?.nodesVerified ?? 0,
+      itemsDone: progress?.itemsDone ?? 0,
+      itemsFailed: progress?.itemsFailed ?? 0,
+      evidenceByLevel: progress?.evidenceByLevel ?? {},
     }
   })
 

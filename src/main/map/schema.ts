@@ -1013,6 +1013,61 @@ export const MAP_VIEW_SCHEMAS: MapViewSchema[] = [
         FROM base b
     `,
   },
+  {
+    /**
+     * v47 / G5-10：项目进度只读视图（II-25）。
+     *
+     * 项目归属按 `graphs.project_path` / `work_items.project_path` /
+     * `node_evidence.project_path` 三处并集；任务与证据缺项目路径时回退到图。
+     * `nodes_verified` 只认派生缓存的 E2/E3/E4（E1 单点不算已验证）。
+     * 全部为标量子查询，单项目一行；不做分页（调用方按 project_path 精确取）。
+     * 纯视图，无写表、无数据迁移。
+     */
+    name: 'v_project_progress',
+    createSql: `
+      CREATE VIEW v_project_progress AS
+      WITH projects AS (
+        SELECT project_path FROM graphs
+         WHERE project_path IS NOT NULL AND project_path <> ''
+        UNION
+        SELECT project_path FROM work_items
+         WHERE project_path IS NOT NULL AND project_path <> ''
+        UNION
+        SELECT project_path FROM node_evidence
+         WHERE project_path IS NOT NULL AND project_path <> ''
+      )
+      SELECT p.project_path,
+             (SELECT COUNT(*)
+                FROM nodes n
+                JOIN graphs g ON g.id = n.graph_id
+               WHERE g.project_path = p.project_path) AS nodes_total,
+             (SELECT COUNT(*)
+                FROM node_execution_state s
+                JOIN graphs g ON g.id = s.graph_id
+               WHERE g.project_path = p.project_path
+                 AND s.evidence_level IN ('E2', 'E3', 'E4')) AS nodes_verified,
+             (SELECT COUNT(*)
+                FROM work_items w
+                LEFT JOIN graphs g ON g.id = w.graph_id
+               WHERE COALESCE(w.project_path, g.project_path) = p.project_path
+                 AND w.is_current = 1
+                 AND w.status = 'done') AS items_done,
+             (SELECT COUNT(*)
+                FROM work_items w
+                LEFT JOIN graphs g ON g.id = w.graph_id
+               WHERE COALESCE(w.project_path, g.project_path) = p.project_path
+                 AND w.is_current = 1
+                 AND w.status = 'failed') AS items_failed,
+             (SELECT json_group_object(evidence_level, cnt)
+                FROM (SELECT e.evidence_level AS evidence_level, COUNT(*) AS cnt
+                        FROM node_evidence e
+                        LEFT JOIN graphs g ON g.id = e.graph_id
+                       WHERE COALESCE(e.project_path, g.project_path) = p.project_path
+                         AND e.revoked_at IS NULL
+                       GROUP BY e.evidence_level)) AS evidence_by_level_json
+        FROM projects p
+    `,
+  },
 ]
 
 /** 视图对账：先 DROP 再建，定义变更在快/慢路径都能生效。 */
