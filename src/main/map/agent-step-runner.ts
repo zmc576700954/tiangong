@@ -9,8 +9,8 @@
  * 本轮边界（与拍板一致）：
  * - needs_input：仅由结构化 acceptance 的 manual 待确认触发（2026-11-08）。
  *   仍不解析 finalText 中的 INPUT_REQUIRED；非 manual 的判定不出按失败处理（fail-closed）。
- * - 路由只写 pinned adapter（policy='manual_override'），不补 Tier 能力探测——这是对
- *   §5.9.10 的明确偏离，不得在文档里记为"已实现"。
+ * - 路由只写 pinned adapter（policy='manual_override'）；G3-1 起能力票由 Tier 探测给出，
+ *   写路径只接受 Tier 1（探测本身在 WorkExecutionService.checkRouting 完成）。
  * - 不接 IPC：本文件不注册任何外部入口，只提供可被后续里程碑装配的执行器。
  * - D2 验收（2026-11-08）：completed 后若注入 `verifyAcceptance`，硬失败落 `verify_fail`；
  *   仅 manual 待确认落 `needs_input`（run 仍 completed，等待人工确认）；其余判通过才 succeeded。
@@ -28,6 +28,7 @@ import { recordEvidenceWriteFailure } from './evidence-write-diagnostics'
 import { EvidenceService, EvidenceSuggestionService } from './evidence-service'
 import { GitWorktreeManager, type ExecutedContent } from './test-executor'
 import { matchMode } from './mode-registry'
+import { missingTierCapabilities, type TierProbeResult } from './tier-probe'
 import { WorkItemService, type WorkItemRow, type WorkStepRow } from './work-item-service'
 import {
   ChangeSetService,
@@ -140,6 +141,11 @@ export interface AgentStepRunnerOptions {
    * 文件变更采集（测试注入）；缺省按 base_commit 采集项目工作区 diff。
    */
   workspaceChanges?: (projectPath: string, baseCommit: string | null) => WorkspaceChangeSnapshot | null
+  /**
+   * G3-1：本次路由的能力票（由 WorkExecutionService 探测后透传）。
+   * 缺省时路由行只记 pinned adapter 与模式，不伪造 Tier。
+   */
+  tierProbe?: TierProbeResult
 }
 
 /** 受控 git 采集器（无状态，仅复用 executedContent 的 tree+dirty 内容绑定）。 */
@@ -488,7 +494,8 @@ export class AgentStepRunner {
 
   /**
    * 路由决策：崩溃重放时复用既有 route_decision_id，不重复写行。
-   * 只支持 pinned adapter（manual_override）；Tier 探测推迟（§5.9.10 偏离）。
+   * 只支持 pinned adapter（manual_override）；G3-1 的能力票由调用方探测后透传，
+   * 本层只负责把它如实写进 routing_decisions。
    */
   private ensureRouting(item: WorkItemRow, run: WorkRunRow, options: AgentStepRunnerOptions): string {
     if (run.route_decision_id) return run.route_decision_id
@@ -504,6 +511,15 @@ export class AgentStepRunner {
         `未匹配到执行模式（executor=${run.executor_kind} adapter=${options.adapterName || '空'}）；不静默降级`,
       )
     }
+    const tier = options.tierProbe
+    const capabilities: string[] = []
+    if (tier) {
+      capabilities.push(`tier${tier.tier}`)
+      if (tier.approval_callback) capabilities.push('approval_callback')
+      if (tier.resume) capabilities.push('resume')
+      if (tier.structured_output) capabilities.push('structured_output')
+      if (tier.cancel) capabilities.push('cancel')
+    }
     const decision = this.routing.record({
       workItemId: item.id,
       workRunId: run.id,
@@ -512,13 +528,15 @@ export class AgentStepRunner {
         {
           adapter: options.adapterName,
           score: 1,
-          capabilities: [],
-          gaps: ['tier_probe_deferred'],
+          capabilities,
+          gaps: tier ? missingTierCapabilities(tier) : [],
         },
       ],
       policy: mode.policy,
       modeId: mode.id,
-      reason: `mode=${mode.id}；pinned adapter；Tier 能力探测推迟（§5.9.10 明确偏离）`,
+      reason: tier
+        ? `mode=${mode.id}；pinned adapter；Tier ${tier.tier}（G3-1 探测）`
+        : `mode=${mode.id}；pinned adapter；未注入能力票（调用方未探测）`,
     })
     const attached = this.runs.attachExecution(run.id, {
       routeDecisionId: decision.id,

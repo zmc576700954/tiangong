@@ -54,6 +54,11 @@ import {
 } from './work-step-service'
 import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from '../agent/timeout-config'
 import type { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
+import {
+  missingTierCapabilities,
+  probeAdapterTierCached,
+  type TierProbeResult,
+} from './tier-probe'
 
 const logger = createLogger('WorkExecutionService')
 
@@ -63,6 +68,7 @@ export type WorkExecutionErrorCode =
   | 'KERNEL_UNAVAILABLE'
   | 'APPROVAL_UNAVAILABLE'
   | 'ADAPTER_DRIVER_MISSING'
+  | 'TIER_UNSUPPORTED'
   | 'RUN_NOT_FOUND'
   | 'ITEM_NOT_FOUND'
   | 'STEP_NOT_FOUND'
@@ -498,6 +504,8 @@ export class WorkExecutionService {
           outcome = await this.runner.run(claim, {
             adapterName: adapterName!,
             verifyAcceptance: this.options.verifyAcceptance,
+            // G3-1：把本次路由的能力票带进 routing_decisions，便于事后复核。
+            tierProbe: routing.tier,
           })
         } catch (error) {
           // 取消与完成竞态：run 已被条件更新置终态时，以终态为事实，不覆盖。
@@ -642,7 +650,7 @@ export class WorkExecutionService {
     }
   }
 
-  /** 写通道开跑前的能力闸：kernel → 审批网关（runtime）→ driver，任一不满足 fail-closed。 */
+  /** 写通道开跑前的能力闸：kernel → 审批网关（runtime）→ driver → Tier，任一不满足 fail-closed。 */
   private assertKernelReady(adapterName: string): void {
     const adapter = (adapterName ?? '').trim()
     if (!adapter) {
@@ -673,11 +681,28 @@ export class WorkExecutionService {
         `adapter ${adapter} 的 kernel driver 未注册，拒绝执行`,
       )
     }
+    const tier = this.probeTier(adapter, probe)
+    if (tier.tier !== 1) {
+      throw new WorkExecutionError(
+        'TIER_UNSUPPORTED',
+        `adapter ${adapter} 能力票 Tier ${tier.tier}，编排写路径仅接受 Tier 1（缺项：${missingTierCapabilities(tier).join(',') || '无'}）`,
+      )
+    }
+  }
+
+  /** G3-1：Tier 探测走进程内缓存，key = (adapter, adapterVersion)。 */
+  private probeTier(adapterName: string, probe: KernelCapabilityProbe): TierProbeResult {
+    return probeAdapterTierCached({
+      adapterName,
+      kernelReady: probe.kernel,
+      runtimeReady: probe.runtime,
+      driverRegistered: probe.driver,
+    })
   }
 
   private checkRouting(
     adapterName: string | undefined,
-  ): { ok: true } | { ok: false; code: string; reason: string } {
+  ): { ok: true; tier: TierProbeResult } | { ok: false; code: string; reason: string } {
     if (!adapterName || adapterName.trim() === '') {
       return {
         ok: false,
@@ -696,7 +721,16 @@ export class WorkExecutionService {
         reason: `adapter ${adapterName} 不具备 Tier 1 写前审批/运行时：${probe.reason ?? 'capability missing'}`,
       }
     }
-    return { ok: true }
+    // G3-1：能力票由探测结果决定，禁止默认 Tier 1；非 Tier 1 不进入编排写路径。
+    const tier = this.probeTier(adapterName, probe)
+    if (tier.tier !== 1) {
+      return {
+        ok: false,
+        code: 'TIER_UNSUPPORTED',
+        reason: `adapter ${adapterName} 能力票 Tier ${tier.tier}，编排写路径仅接受 Tier 1（缺项：${missingTierCapabilities(tier).join(',') || '无'}）`,
+      }
+    }
+    return { ok: true, tier }
   }
 
   private selectCandidates(options: WorkTickOptions): WorkItemRow[] {

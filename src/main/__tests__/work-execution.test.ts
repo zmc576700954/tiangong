@@ -42,6 +42,7 @@ import {
 } from '../map/work-execution-service'
 import type { GateRecheck } from '../map/gate-recheck'
 import { GATE_ENGINE_UNAVAILABLE } from '../map/gate-recheck'
+import { resetTierProbeCacheForTests } from '../map/tier-probe'
 import type { TerminationReason } from '@shared/types'
 import { registerMapHandlers } from '../ipc/map'
 import { setWorkExecutionService } from '../map/work-execution-registry'
@@ -119,6 +120,7 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     runs = new WorkRunService(db)
     scheduler = new WorkScheduler(db)
     turns = new FakeTurns()
+    resetTierProbeCacheForTests()
   })
 
   function confirmedItem(opts: { steps?: Array<{ title: string }> } = {}): string {
@@ -448,6 +450,22 @@ describe('WorkExecutionService（M5 执行触发）', () => {
 
     expect(runs.list({ workItemId: itemId })).toHaveLength(0)
     expect(new WorkExecutionError('EXECUTION_DISABLED', 'x').code).toBe('EXECUTION_DISABLED')
+  })
+
+  it('G3-1：非 Tier 1 后端（acp 缺续跑）不进入编排写路径', async () => {
+    const itemId = confirmedItem()
+    const stepId = steps.listByItem(itemId, 1)[0].id
+    const exec = service()
+
+    expect(() => exec.enqueueStep({ stepId, adapterName: 'acp' })).toThrowError(
+      expect.objectContaining({ code: 'TIER_UNSUPPORTED' }),
+    )
+
+    const report = await exec.tick({ adapterName: 'acp' })
+    expect(report.ran).toBe(false)
+    expect(report.routingFailedItemIds).toEqual([itemId])
+    expect(runs.list({ workItemId: itemId })).toHaveLength(0)
+    expect(turns.starts).toHaveLength(0)
   })
 
   it('入队只建 queued run（不跑 turn）；随后的 tick 复用该 run 执行', async () => {
