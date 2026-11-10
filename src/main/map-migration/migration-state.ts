@@ -52,6 +52,7 @@ export type MapMigrationKind =
   | 'import_dedup'
   | 'derivation'
   | 'cleanup'
+  | 'calibration'
 
 export interface MapMigrationReportRow {
   id: string

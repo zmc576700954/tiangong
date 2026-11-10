@@ -18,6 +18,7 @@ import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All, scanExpiredE4All, scanCoverageChangedE4All } from './map/evidence-service'
 import { ProposalService } from './map/proposal-service'
 import { pruneMemoryHits } from './map/memory-hit-service'
+import { maybeRunCalibration } from './map/plan-calibration'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
 import {
@@ -171,6 +172,12 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('memory_hits prune failed:', err)
   }
+  // G2-16：离线校准（每 20 run 或 2 周，取先到者）。只写报告行，不改阈值/权重。
+  try {
+    maybeRunCalibration(db)
+  } catch (err) {
+    logger.warn('plan calibration failed:', err)
+  }
   const e3ScanTimer = setInterval(() => {
     if (!db) return
     try {
@@ -194,6 +201,8 @@ export function initDatabase(): BetterSqlite3.Database {
       new ProposalService(db).expireStale()
       // G2-3：memory_hits 保留治理（180 天 / 单项目 20 万）。
       pruneMemoryHits(db)
+      // G2-16：离线校准（每日检查触发条件；不足样本时只记日志）。
+      maybeRunCalibration(db)
     } catch (err) {
       logger.warn('daily map integrity/retention task failed:', err)
     }
@@ -833,8 +842,12 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      仅 ALTER 补列；NULL = 无未提交改动/未采集，-1 = 采集失败）。`dirty_tree_hash`
  *      复用 v17 已有列，存储 `sha256(head + porcelain)`，同 hash 不再重复更新。
  *      回滚：`ALTER TABLE change_sets DROP COLUMN dirty_files_count`（SQLite ≥3.35）。
+ * v49：G2-16 离线校准 —— `map_migration_reports.kind` CHECK 增加 `'calibration'`，
+ *      供 `maybeRunCalibration` 写入聚合报告（只写报告行，不改阈值/权重）。
+ *      CHECK 值域变化由 `rebuildTableIfNeeded` 重建该表（行数据经 backup 表恢复）。
+ *      回滚：重建前的旧 CHECK 不接受新值，需先删除 `kind='calibration'` 行再回退代码。
  */
-const CURRENT_SCHEMA_VERSION = 48
+const CURRENT_SCHEMA_VERSION = 49
 
 interface TableSchema {
   name: string
@@ -1249,7 +1262,7 @@ const TABLE_SCHEMAS: TableSchema[] = [
         id            TEXT PRIMARY KEY,
         kind          TEXT NOT NULL CHECK(kind IN (
           'entity_key_backfill','link_backfill','integrity_check','import_dedup',
-          'derivation','cleanup')),
+          'derivation','cleanup','calibration')),
         stage         TEXT,
         schema_version INTEGER,
         started_at    TEXT NOT NULL,

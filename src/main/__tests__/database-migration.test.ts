@@ -529,8 +529,8 @@ describe('Database Migration', () => {
         .toEqual({ title: '旧步', skip_reason: null, failure_class: null })
       // 纯加列：没有走重建路径（否则会留下 work_*_backup）。
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('work_items_backup','work_steps_backup')").all()).toEqual([])
-      // 迁移链继续走到当前版本（v48：未提交改动文件数）。
-      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 48 })
+      // 迁移链继续走到当前版本（v49：校准报告 kind 值域扩展）。
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 49 })
       // v37 纯建表：旧库启动时由 schema 汇总自动补齐，无数据迁移、无 _backup。
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='evidence_suggestions'").get(),
@@ -587,11 +587,11 @@ describe('Database Migration', () => {
     const newerDbPath = path.join(newerUserData, 'data', 'bizgraph.db')
     fs.mkdirSync(path.dirname(newerDbPath), { recursive: true })
 
-    // 造一个「被更高版本写过」的库：版本号 49（高于当前上限 48）+ 一表只有新版本认识。
+    // 造一个「被更高版本写过」的库：版本号 50（高于当前上限 49）+ 一表只有新版本认识。
     const newerDb = new BetterSqlite3(newerDbPath)
     newerDb.exec(`
       CREATE TABLE schema_version (version INTEGER NOT NULL);
-      INSERT INTO schema_version VALUES (49);
+      INSERT INTO schema_version VALUES (50);
       CREATE TABLE future_only_marker (id TEXT PRIMARY KEY, value TEXT);
       INSERT INTO future_only_marker VALUES ('sentinel', 'kept');
     `)
@@ -616,13 +616,13 @@ describe('Database Migration', () => {
 
     expect(caught).not.toBeNull()
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
+    expect((caught as Error).message).toMatch(/v50/)
     expect((caught as Error).message).toMatch(/v49/)
-    expect((caught as Error).message).toMatch(/v48/)
 
-    // 拒绝打开必须是零写入的：版本仍是 49，新版本专属的表/行仍在。
+    // 拒绝打开必须是零写入的：版本仍是 50，新版本专属的表/行仍在。
     const reopened = new BetterSqlite3(newerDbPath)
     const version = reopened.prepare('SELECT version FROM schema_version LIMIT 1').get() as { version: number }
-    expect(Number(version.version)).toBe(49)
+    expect(Number(version.version)).toBe(50)
     expect(reopened.prepare("SELECT value FROM future_only_marker WHERE id='sentinel'").get()).toEqual({ value: 'kept' })
     reopened.close()
 
@@ -637,7 +637,7 @@ describe('Database Migration', () => {
       version: number
       createdAt: string
     }
-    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 49 }))
+    fs.writeFileSync(schemaChecksumPath, JSON.stringify({ ...cached, version: 50 }))
 
     let caught: unknown
     try {
@@ -646,7 +646,7 @@ describe('Database Migration', () => {
       caught = err
     }
     expect((caught as { code?: string }).code).toBe(ErrorCode.DB_SCHEMA_TOO_NEW)
-    expect((caught as Error).message).toMatch(/v49/)
+    expect((caught as Error).message).toMatch(/v50/)
 
     // 显式处理不可信缓存后，库本身仍可正常打开
     fs.rmSync(schemaChecksumPath, { force: true })
@@ -739,7 +739,7 @@ describe('Database Migration', () => {
       ).toEqual([])
 
       // 5. 版本递增
-      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 48 })
+      expect(db.prepare('SELECT version FROM schema_version LIMIT 1').get()).toEqual({ version: 49 })
     } finally {
       closeDatabase()
       electronPaths.userData = previousUserData

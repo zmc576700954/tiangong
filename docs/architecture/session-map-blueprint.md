@@ -18,6 +18,7 @@
 > v3.6（2026-11-10）：G7-8 非 Claude 裸 spawn 落地「显式声明 + 能力位降级 + UI 说真话」——`map:execution:status` 返回 pinned adapter 的 Tier/缺项，非 Tier 1 直接置 `enabled=false` 并说明「只能裸 spawn（只读或人工排期）」；`agent-architecture.md` §17.5/§17.6 明确编排写路径与普通节点会话的边界。已实施 95，仅建议 12。
 > v3.7（2026-11-10）：G5-10 项目进度查询落地——只读视图 `v_project_progress`（schema v47）+ `map:project:progress` 只读通道；按项目聚合节点/任务/证据分级，未知项目返回 `available=false`。已实施 96，仅建议 11。
 > v3.8（2026-11-10）：G2-15 dirty diff 落地——`change_sets` 增 `dirty_files_count`（v48，`NULL`=无未提交改动或未采集、`-1`=采集失败），采集时算 `dirty_tree_hash` 指纹并去重；采集失败显式标 `-1`，不再把失败读成 0。已实施 97，仅建议 10。
+> v3.9（2026-11-10）：G2-16 离线校准落地——`maybeRunCalibration` 按「新增 ≥20 run 或满 2 周」出 `map_migration_reports(kind='calibration')` 聚合报告（v49 扩 CHECK），样本 <20 不出报告；只写报告行，不改阈值/权重。已实施 98，仅建议 9。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -57,22 +58,22 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **97** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级），G2-18 12 值声明式步状态机 + 迁移事件，G3-1 Tier 探测（`tier-probe.ts`，写路径仅 Tier 1），G7-8 非 Tier 1 后端降级声明 + 执行状态说真话（UI/文档级），G5-10 项目进度只读视图（v47），G2-15 dirty diff 采集（v48，`dirty_files_count` + `dirty_tree_hash`） |
+| 已实施 | **98** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级），G2-18 12 值声明式步状态机 + 迁移事件，G3-1 Tier 探测（`tier-probe.ts`，写路径仅 Tier 1），G7-8 非 Tier 1 后端降级声明 + 执行状态说真话（UI/文档级），G5-10 项目进度只读视图（v47），G2-15 dirty diff 采集（v48，`dirty_files_count` + `dirty_tree_hash`），G2-16 离线校准报告（v49，`kind='calibration'`） |
 | 已批准未实施 | **9** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **10** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 7 条已解除裁决阻塞 |
+| 仅建议 | **9** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 7 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **20** | 方向 17 条 + 不做 3 条（G7-10、G2-8、G2-17）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 / G2-8 / G2-17 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 97+9+10+0 = **116**，加 20 条裁决（17 方向 + 3 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 / G2-8 / G2-17 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 98+9+9+0 = **116**，加 20 条裁决（17 方向 + 3 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（97）
+### I.1.1 已实施（98）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
 - **模式库（v41）**：G2-1 `mode-registry.ts` 代码常量（4 个模式，上限 32）+ `routing_decisions.mode_id` + `mode:list` 只读；执行前规则匹配，无匹配 `TIER_UNSUPPORTED` 不静默降级。
-- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）；G2-3 `memory_hits` 记录表（v44，幂等唯一索引 + 180 天/单项目 20 万保留治理）；G2-2 Layer1 采集（v45，五个 run 终态同步采集 step/evidence/deviation 引用 + `source_outcome`）；G2-4 `v_memory_attribution` 归因视图（v46，强制经 `node_session_links.session_origin='map_task'`，跨图不聚合、样本 <20 标 `insufficient_sample`）；G2-15 dirty diff 采集（v48，`change_sets.dirty_files_count` + `dirty_tree_hash`，采集失败显式 `-1`）。
+- **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）；G2-3 `memory_hits` 记录表（v44，幂等唯一索引 + 180 天/单项目 20 万保留治理）；G2-2 Layer1 采集（v45，五个 run 终态同步采集 step/evidence/deviation 引用 + `source_outcome`）；G2-4 `v_memory_attribution` 归因视图（v46，强制经 `node_session_links.session_origin='map_task'`，跨图不聚合、样本 <20 标 `insufficient_sample`）；G2-15 dirty diff 采集（v48，`change_sets.dirty_files_count` + `dirty_tree_hash`，采集失败显式 `-1`）；G2-16 离线校准报告（v49，`maybeRunCalibration` 按 20 run / 2 周触发，`kind='calibration'` 只写聚合报告）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9、G3-2 run 级跨进程项目写闸（复用 runtime 同一 lease registry，fail-fast 跳过）、G3-1 Tier 探测（`tier-probe.ts`，四项能力位 + 进程内缓存；非 Tier 1 拒绝写入编排并在 `routing_decisions` 记能力票）、G2-18 12 值声明式步状态机（`WORK_STEP_TRANSITIONS` + `assertDeclared`，补 `waiting_approval → timed_out`，`work_step_changed` 5 处构造点全接）。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-9/G5-5 E4 覆盖变化扫描（v43：签收基线 + 独立扫描，变化置 stale 并区分 `stale_reason`）、G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
@@ -89,10 +90,10 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（10）
+### I.1.3 仅建议（9）
 
 - **会话地图本体**：G1-11 `node_id` 放宽。
-- **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-9 黑板/fanout（**暂不投**：检索面与 `memory_hits` 重叠，串行下 fanout 语义消失）、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-16 离线校准。
+- **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-9 黑板/fanout（**暂不投**：检索面与 `memory_hits` 重叠，串行下 fanout 语义消失）、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测。
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：无（G5-10 项目进度查询已实施，见 v3.7）。
 - **Agent 运行时**：无（G6-17 已转文档级实施）。
@@ -100,7 +101,7 @@
 - **界面与交互**：G8-3 C1–C4、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0/v3.1/v3.2/v3.3/v3.4/v3.5/v3.6/v3.7/v3.8 再核减）**：以上 10 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-17、II-20、II-22、II-23、II-24、II-25、II-26、II-27、II-28、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地；II-10、II-19 已裁决不做，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0/v3.1/v3.2/v3.3/v3.4/v3.5/v3.6/v3.7/v3.8/v3.9 再核减）**：以上 9 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-17、II-18、II-20、II-22、II-23、II-24、II-25、II-26、II-27、II-28、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地；II-10、II-19 已裁决不做，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -112,7 +113,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 26 个编号，去重后 20 条（17 方向 + 3 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（97 条，按主题）
+## I.2 已实施清单（98 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -263,10 +264,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 |---|---|---|
 | G2-1 | 模式库为代码常量（4 个模式、上限 32、id 唯一校验），`routing_decisions.mode_id` 落库，执行前按执行器 + policy 匹配，无匹配 `TIER_UNSUPPORTED`；`mode:list` 只读 | `src/main/map/mode-registry.ts`、`work-run-service.ts`（`record`）、`agent-step-runner.ts`（`ensureRouting`）、`schema.ts`（v41） |
 
-### I.2.12 进化记录层（3）
+### I.2.12 进化记录层（4）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
+| G2-16 | 离线校准报告（v49）：`maybeRunCalibration` 按「距上次报告新增 ≥20 run 或满 2 周」触发，样本 <20 不出报告；按 `(derivation_version, observed_rule_version, task_type, agent_type)` 聚合实际/计划文件数与子任务数、replan 中位数、返工/测试失败/越界/边界变化；只写 `map_migration_reports(kind='calibration')` 一行，不改阈值/权重；启动 + 每日检查；报告可复算（纯聚合） | `src/main/map/plan-calibration.ts`（`aggregateCalibration` / `maybeRunCalibration`）、`src/main/database.ts`（v49 CHECK + 启动/每日调用）、`migration-state.ts`（`MapMigrationKind`）、`plan-calibration.test.ts` |
 | G2-4 | Layer2 派发精度归因（v46）：只读视图 `v_memory_attribution`，强制经 `node_session_links.session_origin='map_task'`；输出 adapter/mode_id/outcome/hit_count/evidence_level，按 `(graph_id, adapter, mode_id)` 算 `sample_size`，<20 标 `insufficient_sample` | `src/main/map/schema.ts`（`MAP_VIEW_SCHEMAS` / v46） |
 | G2-2 | Layer1 采集（v45）：五个 run 终态（completed/failed/timed_out/cancelled/interrupted）同步采集 step/evidence/deviation 引用，写 `source_outcome`；每 run ≤50 条、幂等；失败写 `map_migration_reports(kind='integrity_check', stage='memory:<runId>')` 且不回滚 run | `src/main/map/memory-evolution.ts`、`work-run-service.ts`（`recordMemoryForRun` + 五个终态调用）、`memory-hit-service.ts`（`source_outcome`）、`schema.ts`（v45） |
 | G2-3 | `memory_hits` 记录表（v44）：只存引用不存全文；幂等唯一索引 `(run_id, hit_kind, source_ref)`；`hit_kind` 四值 CHECK、`score` 0–1 CHECK；保留治理 180 天 / 单项目 20 万（启动 + 每日 `pruneMemoryHits`） | `src/main/map/schema.ts`（`MAP_MEMORY_TABLE_SCHEMAS` / `MAP_MEMORY_INDEX_SQLS`）、`src/main/map/memory-hit-service.ts`、`src/main/database.ts`（v44 + 启动/每日 prune） |
@@ -669,7 +671,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G2-3 | `memory_hits` 表（**已实施，v44，口径见 I.9.3**） | 无 | 已完成：建表 + 幂等索引 + 180 天/单项目 20 万治理 | — |
 | G2-2 | 进化 Layer1（**已实施，v45，口径见 I.9.3**） | 依赖 G2-3 建表 | 已完成：五终态同步采集 + `source_outcome` + 失败留痕 | — |
 | G2-4 | Layer2 归因（**已实施，v46，口径见 I.9.3**） | 依赖 G2-2/G2-3 | 已完成：只读视图 + 强制 map_task 归因 + 样本阈值 | — |
-| G2-16 | 离线校准 | 依赖 G2-14（已实施）/G2-15（已实施） | 授权开工即可 | 1.5 人日 |
+| G2-16 | 离线校准 | 依赖 G2-14（已实施）/G2-15（已实施） | **已实施**（`maybeRunCalibration`：20 run / 2 周触发，`kind='calibration'` 只写报告；口径见 I.9.3） | 1.5 人日 |
 | G2-15 | dirty diff | 无，口径与 G11-10 对齐 | **已实施**（`change_sets.dirty_files_count` v48 + `dirty_tree_hash` 指纹；失败显式 `-1`，口径见 I.9.3） | 2 人日 |
 | G2-18 | 完整步状态机 | 无 | **已实施**（12 值声明式迁移表 + `waiting_approval → timed_out` + `work_step_changed`，口径见 I.9.3） | 3 人日 |
 | G3-2 | 跨进程写闸 | 无 | **已实施**（复用 workspace lease，run 级 + fail-fast） | 3 人日 |
@@ -748,10 +750,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-8 / II-28 **（妥协）** | 非 Claude（无审批回调）后端不得被误接进编排写路径，且 UI 要提前说清楚 | 复用 G3-1 能力票：Tier≠1 拒绝写入（`TIER_UNSUPPORTED`）；`map:execution:status` 返回 `tier`/`tierMissing`，非 Tier 1 置 `enabled=false` 并说明「只能裸 spawn」；`agent-architecture.md` §17.5/§17.6 写明边界 | **妥协**：①**没有搭审批桥**——普通节点会话 / 自由聊天 / 子代理仍裸 spawn、零宿主写前审批，完整修复量级等同 G7-2（≈5 人日，未授权）；②**没有只读裸 spawn 通道**，也没有 `unattended` 标注（G6-5 已删该分支，本轮不复活）；③**没有 `source=synthetic|backend` 输出标注**；④只覆盖编排写路径，不覆盖非编排链路；⑤`map:execution:status` 的 Tier 依赖运行期服务，服务缺失时只能退回环境变量口径。后果：编排侧被正确拦截并向用户解释，但非编排侧的安全洞原样保留 | 需要给非 Claude 后端补审批回调/网关（G7-2 级）时，才可能关闭“零审批”本身 |
 | G5-10 / II-25 **（妥协）** | 项目进度可对账，但不想为只读聚合引入物化表/定时重算 | 只读视图 `v_project_progress`（v47）+ `map:project:progress` 通道；纯 SELECT，不写表、不触发派生 | **妥协**：①**`nodes_verified` 依赖派生缓存 `node_execution_state`**，缓存未算时数字偏低且不补算；②**无分页**（单项目一行）；③**未做 P95 < 100ms 基准**；④`evidence_by_level` 是 JSON 字符串，前端需自行解析（当前只暴露给调用方）；⑤项目归属靠 `project_path` 字符串精确匹配，不做路径归一（`/repo/a` 与 `/repo/a/` 视为两个项目）。后果：查询轻、无写放大，但数字可能滞后且路径口径需调用方自洽 | 派生缓存覆盖不全或项目数上千时，再评估物化/索引与基准 |
 | G2-15 / II-17 **（妥协）** | 未提交改动进入 `change_sets`，避免证据只覆盖 commit | `change_sets.dirty_files_count`（v48）+ `dirty_tree_hash`；采集算 `sha256(HEAD + 排序 porcelain)`，同 `(head, hash, count)` 去重；失败写 `-1` | **妥协**：①**无独立 `dirty_capture_status` 列**，`-1` sentinel 兼表「未采集」，读方必须显式判负；②**指纹是 porcelain 文本 hash，不是真实 tree 对象 hash**，不跨机比较；③**文件路径与行数受 200 条截断**，超出只留计数；④二进制/超大文件按 0 行或读取失败计，无内容 hash；⑤**历史 `change_sets` 不回填**（v48 前为 `NULL`）；⑥dirty 与 commit **并列记录，不合并**，也不当 E3 代码 hash。后果：能回答「这个 run 有没有未提交改动、几个文件」，但不能当作可复现的树绑定 | 需要真实 tree 级 diff 或跨机比对时（与 G11-10 合并）再评估 |
+| G2-16 / II-18 **（妥协）** | 用偏差数据回看推导规则，但不想引入自动调参 | `maybeRunCalibration`：20 run / 2 周触发，按四维归因聚合，写 `map_migration_reports(kind='calibration')`；不改阈值/权重 | **妥协**：①**按 `plan_deviations` 行数当 run 数**（假设 1 run 1 行）；②**不做 `file_domain` 分组**（II-16 视图 + `change_sets` 聚合成本未评估）；③**§5.7「连续 3 批 > 1.5」未做批次连续性**，只给单窗口信号；④**触发粒度为启动/每日检查**，不是第 20 个 run 落库瞬间；⑤**保留走每 `(kind,stage)` 20 行裁剪**，不是 1 年时间保留；⑥**无 IPC/UI 入口**，只能读库或看日志；⑦窗口上限 5000 行，超出截断不额外留痕；⑧`kind` CHECK 扩容（v49）会让 `map_migration_reports` 启动时重建一次。后果：有可复算的聚合报告，但离「自动校准」还差人工判断 | 需要自动调参、按 `file_domain` 归因或界面查看报告时再评估 |
 
-# Part II 仅建议项施工级设计（10 条有效 + 已实施/不做项保留为设计存档）
+# Part II 仅建议项施工级设计（9 条有效 + 已实施/不做项保留为设计存档）
 
-> **口径**：本部分把 I.1.3 的 10 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/17/20/22/23/24/25/26/27/28/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施；II-10、II-19 已裁决·不做——均保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 10 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 9 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/17/18/20/22/23/24/25/26/27/28/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施；II-10、II-19 已裁决·不做——均保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 9 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -773,7 +776,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | II-15 | G2-13 | published 软阻断 | §6.6 / §14 | — |
 | II-16 | G2-14 | `v_plan_deviations_file_domain` | §5.7 | — |
 | II-17 | G2-15 | dirty diff | §4.6 | 已实施（v3.8） |
-| II-18 | G2-16 | 离线校准 | §5.7 | — |
+| II-18 | G2-16 | 离线校准 | §5.7 | 已实施（v3.9） |
 | II-19 | G2-17 | 多 Agent 交互 | §5.9.8.1 | **已裁决·不做**（D-07） |
 | II-20 | G2-18 | 完整步状态机 | §5.9.8 | 已实施（12 值迁移表） |
 | II-21 | G2-19 | 提案 UI | §9.4 | 已实施（v40） |
@@ -971,13 +974,15 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：与 G11-10（tree-hash 等级）同口径；G2-16 离线校准可在此基础上做。
 - **成本**：≈2 人日（估算）。
 
-### II-18 · G2-16 离线校准｜**仅建议**
+### II-18 · G2-16 离线校准｜**已实施（v3.9）**
+> **做了什么**：`map/plan-calibration.ts` 新增 `aggregateCalibration`（纯聚合）与 `maybeRunCalibration`（触发 + 写报告）。触发条件：距上次 `kind='calibration'` 报告新增 ≥20 个 `plan_deviations` 行，或距上次报告满 14 天（取先到者）；**样本 <20 run 一律不出报告**（2 周分支也只记日志）。报告按 `(derivation_version, observed_rule_version, task_type, agent_type)` 分组，输出实际/计划文件数与子任务数比值、`replan` 中位数、返工/测试失败计数、越界率、边界变化率，以及 §5.7 的两个单窗口信号（`file_growth_gt_1_5`、`replan_median_gt_2`），写入 `map_migration_reports(kind='calibration', stage='periodic')` 一行 `stats_json`。`map_migration_reports.kind` CHECK 扩为含 `'calibration'`（v49，由 `rebuildTableIfNeeded` 重建）；启动 + 每日各检查一次。全程**不改任何阈值/权重、不改 `plan_deviations`、不触发其他写路径**。
+> **妥协在哪**：①**按偏差行数当 run 数**（假设 1 run 1 行），若未来一 run 多行会高估样本；②**不做 `file_domain` 分组**（II-16 视图依赖 `change_sets`，聚合成本未评估）；③**§5.7 的「连续 3 批 > 1.5」未做批次连续性判定**，只给单窗口信号；④**触发粒度是启动/每日检查**，不是「第 20 个 run 落库那一刻」；⑤**保留按 `pruneMapMigrationReports` 的每 `(kind,stage)` 20 行**，不是设计写的 1 年时间保留；⑥**无 IPC/UI 入口**，报告只能直接读库或看日志；⑦窗口上限 5000 行（`CALIBRATION_MAX_WINDOW_ROWS`），超出截断且不额外留痕。
 - **目标与不做后果**：每 20 run / 2 周用偏差数据回看推导规则，输出报告而非自动改权重；不做则规则永远拍脑袋。
-- **数据/接口**：读 `plan_deviations` + `v_plan_deviations_file_domain`，产出 `map_migration_reports(kind='calibration')`；不写权重表。
-- **流程/状态机**：定时任务 → 汇总 → 生成建议报告 → 人工确认后才改常量（无自动写）。
-- **边界**：样本 < 20 run 不出报告；报告保留 1 年；不自动调整任何阈值。
-- **验收**：报告可复算；不产生自动写；触发条件可观测。
-- **前置依赖与顺序**：II-16/II-17 之后。
+- **数据/接口**：读 `plan_deviations`，产出 `map_migration_reports(kind='calibration')`；不写权重表。
+- **流程/状态机**：启动/每日检查 → 汇总 → 写报告行 → 人工确认后才改常量（无自动写）。
+- **边界**：样本 < 20 run 不出报告；不自动调整任何阈值；报告保留走现有 20 行/组裁剪（不是 1 年）。
+- **验收**：报告可复算（`aggregateCalibration` 幂等）；不产生自动写；触发条件可观测（日志 + 报告行）。
+- **前置依赖与顺序**：II-16/II-17 之后（二者均已实施）。
 - **成本**：≈1.5 人日（估算）。
 
 ### II-19 · G2-17 多 Agent 交互｜**已裁决·不做**（2026-11-10；保留为设计存档）
