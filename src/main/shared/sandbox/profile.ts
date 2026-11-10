@@ -8,8 +8,13 @@
  *   CLI 自身状态目录（Claude/Codex/OpenCode 必须写自己的会话文件），以及 MCP 的缓存目录。
  * - **`.git` 敏感写面**：`config` / `config.lock` / `config.worktree` / `hooks/**` /
  *   `info/exclude` 以及当前配置里的 include 目标，在工作区整体可写之上单独 deny。
- * - **exec 只放行必要项**：系统工具目录（/bin、/usr/bin、/usr/sbin、/usr/libexec、
- *   /System/Library）+ git 安装根 + 运行时解析到的白名单命令 + 调用方显式传入的入口。
+ * - **exec 只放行必要项**：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再整目录
+ *   放行，改为 literal 级（shell、`env`、`xcrun` 等 + 白名单命令解析路径 + node/npm/npx）
+ *   + git 安装根（git-core / CLT 根）+ 调用方显式传入的入口；`/System/Library` 是
+ *   唯一保留的目录级放行（SIP 保护、不可枚举）。网络类命令（ssh/scp/curl/wget/nc）
+ *   刻意不放入名单——**审批放行不等于沙箱可执行**，二者会互相打回。
+ *   未枚举的可执行文件由内核以 EPERM 拒绝（表现为 `Operation not permitted`），
+ *   不是静默丢弃；具体文案由 CLI 转述到工具结果。
  *   工作区内脚本（fsmonitor/hook 常放这里）不在白名单 → 读类命令拉不起它们。
  * - **路径 realpath 归一**：`/tmp` 与 `/private/tmp` 不一致会让 `subpath` 误拒/误放，
  *   所有写规则与目标比较都先 `resolveRealPath`。
@@ -47,8 +52,37 @@ export interface SandboxProfile {
   notes: string[]
 }
 
-/** 系统工具目录：macOS 自带，不含 Homebrew 的 gpg 等第三方程序。 */
-const SYSTEM_EXEC_SUBPATHS = ['/bin', '/usr/bin', '/usr/sbin', '/usr/libexec', '/System/Library']
+/**
+ * G7-7：系统目录里必须保留的可执行文件（literal 级）。
+ *
+ * 整目录放行会让 `/bin`、`/usr/bin` 里任何被投放或未来新增的二进制都获得执行权；
+ * 收敛后只列明确依赖。改动这份名单必须同步更新 `profile.test.ts` 的快照断言——
+ * 它是安全边界，不是普通配置。
+ */
+export const SYSTEM_EXEC_LITERALS = [
+  // shell：CLI 用 `sh -c` / `bash -c` / `zsh -c` 跑工具
+  '/bin/sh',
+  '/bin/bash',
+  '/bin/zsh',
+  // shebang 解析（`#!/usr/bin/env node`）
+  '/usr/bin/env',
+  // 架构探测（部分 CLI 启动时调用）
+  '/usr/bin/arch',
+  // macOS git 通过 xcrun 定位 CLT 工具链
+  '/usr/bin/xcrun',
+] as const
+
+/**
+ * 仅剩的目录级 exec 放行：SIP 保护的系统库（dyld / 框架 helper 不可枚举）。
+ * `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 均已收紧为 literal。
+ */
+export const SYSTEM_EXEC_SUBPATHS = ['/System/Library'] as const
+
+/** 产品自身必需的可执行文件（按 PATH 解析后逐文件放行，不放开整个 bin 目录）。 */
+const PRODUCT_EXEC_COMMANDS = ['node', 'npm', 'npx'] as const
+
+/** 网络类命令：即使策略/人工放行，也不进沙箱 exec 名单。 */
+export const NETWORK_EXEC_COMMANDS = ['ssh', 'scp', 'curl', 'wget', 'nc'] as const
 
 /** 白名单命令：策略允许在 Bash 里跑的命令，profile 只放行它们解析后的真实路径。 */
 const TOOL_COMMANDS = [
@@ -337,22 +371,37 @@ export function buildSandboxProfile(input: SandboxProfileInput): SandboxProfile 
   }
 
   if (input.target !== 'mcp') {
-    // exec 白名单：系统工具 + git 安装根 + 策略白名单命令的真实路径 + 显式入口。
-    const execPaths = unique([
-      ...SYSTEM_EXEC_SUBPATHS,
-      ...(layout.execPath ? [layout.execPath] : []),
-      ...(layout.execRoot ? [layout.execRoot] : []),
-      ...TOOL_COMMANDS.map((command) => whichSync(command)).filter((value): value is string => !!value),
+    // exec 白名单（G7-7 收敛）：literal 是默认；只有真正不可枚举的目录才用 subpath。
+    const execLiterals = unique([
+      ...SYSTEM_EXEC_LITERALS.filter((execPath) => existsSync(execPath)),
+      ...TOOL_COMMANDS.map((command) => whichSync(command)).filter(
+        (value): value is string => !!value,
+      ),
+      ...PRODUCT_EXEC_COMMANDS.map((command) => whichSync(command)).filter(
+        (value): value is string => !!value,
+      ),
       ...(input.extraExecutables ?? [])
         .map(resolveExecutablePath)
         .filter((value): value is string => !!value),
     ])
+    const execSubpaths = unique([
+      ...SYSTEM_EXEC_SUBPATHS.filter((dir) => existsSync(dir)),
+      ...(layout.execPath ? [layout.execPath] : []),
+      ...(layout.execRoot ? [layout.execRoot] : []),
+    ])
     lines.push('')
-    lines.push('; exec 只放行必要项：工作区脚本不在白名单')
+    lines.push('; exec 只放行必要项（literal 级；工作区脚本与未枚举写命令不在名单）')
     lines.push('(deny process-exec)')
     lines.push(
-      `(allow process-exec ${execPaths.map((execPath) => `(subpath ${sbplString(execPath)})`).join(' ')})`,
+      `(allow process-exec ${[
+        ...execLiterals.map((execPath) => `(literal ${sbplString(execPath)})`),
+        ...execSubpaths.map((dir) => `(subpath ${sbplString(dir)})`),
+      ].join(' ')})`,
     )
+    notes.push(
+      'exec 名单为 literal 级：未枚举的可执行文件被内核以 EPERM 拒绝（表现为 Operation not permitted），审批放行不等于沙箱可执行',
+    )
+    notes.push('网络类命令（ssh/scp/curl/wget/nc）刻意不放入 exec 名单')
   } else {
     notes.push('MCP server 未做 exec 收敛：需要执行自身 runtime/子进程，只收敛写入面')
   }

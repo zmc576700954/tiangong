@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { buildSandboxProfile, discoverIncludeTargets } from '../profile'
+import { buildSandboxProfile, discoverIncludeTargets, NETWORK_EXEC_COMMANDS, SYSTEM_EXEC_LITERALS, SYSTEM_EXEC_SUBPATHS } from '../profile'
 
 function makeRepo(): { root: string; repo: string } {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'bizgraph-sbx-profile-')))
@@ -62,16 +62,47 @@ describe('sandbox profile', () => {
     expect(targets).toContain(join(realpathSync(repo), 'inc.inc'))
   })
 
-  it('exec 白名单只放系统工具与 git 安装根，不含工作区', () => {
+  it('exec 收敛为 literal：不再整目录放行 /bin、/usr/bin，网络命令不在名单', () => {
     const { repo } = makeRepo()
     const profile = buildSandboxProfile({ target: 'claude', workspaceDir: repo })
     expect(profile.text).toContain('(deny process-exec)')
     const execSection = profile.text.split('(deny process-exec)')[1] ?? ''
-    expect(execSection).toContain('(subpath "/usr/bin")')
-    expect(execSection).not.toContain(`(subpath "${profile.workspace}")`)
-    // 外部程序（例如 Homebrew gpg）不在白名单；只允许具体解析出的工具文件。
+
+    // 目录级只剩 /System/Library；四个命令目录一律不再以 subpath 出现。
+    for (const dir of ['/bin', '/usr/bin', '/usr/sbin', '/usr/libexec']) {
+      expect(execSection).not.toContain(`(subpath "${dir}")`)
+    }
+    if (process.platform === 'darwin') {
+      expect(execSection).toContain('(subpath "/System/Library")')
+    }
+
+    // 产品必需与白名单命令按 literal 放行。
+    expect(execSection).toContain('(literal "/bin/sh")')
+    expect(execSection).toContain('(literal "/usr/bin/env")')
+    expect(execSection).toMatch(/\(literal "[^"]*\/git"\)/)
+    expect(execSection).not.toContain(`(literal "${profile.workspace}")`)
     expect(execSection).not.toContain('(subpath "/opt/homebrew/bin")')
     expect(execSection).not.toContain('(subpath "/usr/local/bin")')
+
+    // 网络类命令即使被审批放行，也不得进入沙箱 exec 名单。
+    for (const command of NETWORK_EXEC_COMMANDS) {
+      expect(execSection).not.toMatch(new RegExp(`\\(literal "[^"]*/${command}"\\)`))
+    }
+    // 拒绝不是静默的：notes 必须写明 EPERM 失败表现。
+    expect(profile.notes.join(' ')).toContain('Operation not permitted')
+  })
+
+  it('exec 名单快照：安全边界改动必须撞测试', () => {
+    expect(SYSTEM_EXEC_LITERALS).toEqual([
+      '/bin/sh',
+      '/bin/bash',
+      '/bin/zsh',
+      '/usr/bin/env',
+      '/usr/bin/arch',
+      '/usr/bin/xcrun',
+    ])
+    expect(SYSTEM_EXEC_SUBPATHS).toEqual(['/System/Library'])
+    expect(NETWORK_EXEC_COMMANDS).toEqual(['ssh', 'scp', 'curl', 'wget', 'nc'])
   })
 
   it('MCP profile 只收敛写入面，不做 exec 收敛', () => {

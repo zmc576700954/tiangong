@@ -10,6 +10,7 @@
 > v2.8（2026-11-10）：G2-2 进化 Layer1（v45）落地——五个 run 终态采集 step/evidence/deviation 引用并记录 `source_outcome`；已实施 88，仅建议 21。`context` 暂不产（I.9.3 妥协）。
 > v2.9（2026-11-10）：G2-4 Layer2 派发精度归因（v46）落地——只读视图 `v_memory_attribution` 强制经 `node_session_links.session_origin='map_task'` 归因；已实施 89，仅建议 20。
 > v3.0（2026-11-10）：G3-2 run 级跨进程项目写闸落地——复用 `AgentRuntime` 同一个 workspace lease registry（不新建 `project_locks` 表），claim 前抢占、settle 后释放、抢不到 fail-fast；逐 turn 互斥此前已存在。已实施 90，仅建议 19。
+> v3.1（2026-11-10）：G7-7 C3 exec 面收敛——`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 改为 literal 级放行（shell/env/xcrun/arch + 白名单命令 + node/npm/npx + git 安装根），网络类命令排除，名单快照纳入测试；明确「审批放行 ≠ 沙箱可执行」。已实施 91，仅建议 18。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -49,17 +50,17 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **90** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease） |
+| 已实施 | **91** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛 |
 | 已批准未实施 | **9** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **19** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
+| 仅建议 | **18** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 90+9+19+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 91+9+18+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（90）
+### I.1.1 已实施（91）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
@@ -69,7 +70,7 @@
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
 - **证据体系**：G1-9/G5-5 E4 覆盖变化扫描（v43：签收基线 + 独立扫描，变化置 stale 并区分 `stale_reason`）、G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-5 删除 unattended 30s 分支与仅供其存在的配置/UI/测试桩（`approval/gateway.ts:37,183`，统一交互 120s）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
-- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-5 MCP 写工具写前审批（同一 gateway）、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
+- **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-5 MCP 写工具写前审批（同一 gateway）、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny、G7-7 C3 exec 面 literal 收敛（`/bin`、`/usr/bin` 不再整目录放行，网络类不进名单）。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`、G3-3/G8-6 renderer 执行入口（`NodeMapPanel` 接 `workitem:run:start` / `workitem:cancel` / `workitem:step:run` / `workitem:run:cancel`，只读 `map:execution:status`，gate 未通过只禁用不放行）。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-10 worktree 定时清理（标记文件 + 启动/每 6h，`test-executor.ts`）、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
@@ -81,7 +82,7 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（19）
+### I.1.3 仅建议（18）
 
 - **会话地图本体**：G1-11 `node_id` 放宽。
 - **多图编排**：G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机。
@@ -89,11 +90,11 @@
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：G5-10 §3.6 项目进度。
 - **Agent 运行时**：G6-17 同 uid 不在防御范围。
-- **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
+- **审批与沙箱**：G7-8 非 Claude 裸 spawn。
 - **界面与交互**：G8-3 C1–C4、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0 再核减）**：以上 19 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-23、II-24、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减，v2.5/v2.7/v2.8/v2.9/v3.0/v3.1 再核减）**：以上 18 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-23、II-24、II-27、II-32、II-33 已实施，保留为设计存档；II-02/03/04/05/06/08/21/30/34 于 2026-11-10 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -105,7 +106,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（84 条，按主题）
+## I.2 已实施清单（85 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -185,7 +186,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 > **证据口径（2026-11-09）**：G6-1～G6-4 为**模块级已验证**（真实子进程/临时库单测 + 全量 vitest 绿 + `tsc --noEmit`），**端到端待真机**——「chat 走 kernel 且有写前审批」目前只在 `AgentManager.sendCommand` 路由与 `runNode` 单测层面验证，尚未在打包后的 Electron app 中跑通完整链路。写入 `agent_events` / `agent_steps` 的三阶段时间戳同理，均为单测断言，不是真机会话回放。
 > **事实记录**：当前仓库**没有名为 `acp` 的 `AgentAdapter`**；ACP driver 仅在设置 `BIZGRAPH_ACP_COMMAND` 时注册生效，因此今天可证的 chat kernel 路径仍是 `claude`（`claude-code`）。
 
-### I.2.6 审批与沙箱（7）
+### I.2.6 审批与沙箱（8）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -196,6 +197,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-11 | 会话级授权仅覆盖写类工具（设计边界） | `agent-architecture.md` §7.6 |
 | G7-13 | 交互审批 120s fail-closed | `ApprovalGateway`；`agent-architecture.md` §7.4 |
 | G7-14 | 重启陈旧审批 deny | `agent-architecture.md` §7.4 |
+| G7-7 | C3 exec 面收敛为 literal：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再整目录放行，只放行 shell/env/xcrun/arch + 白名单命令 + node/npm/npx + git 安装根；`/System/Library` 是唯一保留的目录级放行；ssh/scp/curl/wget/nc 刻意排除。审批放行 ≠ 沙箱可执行，未枚举命令以 EPERM（`Operation not permitted`）失败而非静默 | `profile.ts`（`SYSTEM_EXEC_LITERALS`/`SYSTEM_EXEC_SUBPATHS`/`NETWORK_EXEC_COMMANDS`）、`profile.test.ts`（收敛断言 + 名单快照） |
 
 > **G7-5 做了什么 / 妥协在哪**：做了什么——MCP 适配器补 `setTurnApprovalHooks`（与 Claude 同形），Driver 自动注入后，写类 MCP 工具在执行前走同一 `ApprovalGateway`（PreToolUse 审计 + canUseTool 决策 + 会话级授权），被拒即不调用 `client.callTool`；`isWriteScopedTool` 扩展 MCP 命名（`mcp__server__tool` / `server.tool` / 裸 `create_issue`）。妥协在哪——只能按**工具名动词清单**判定写语义，无法识别名字不含写动词、但语义为写的未知 MCP 工具；名字含写动词的读工具会被保守误判为写类（多弹一次审批）；MCP 无路径参数时无法命中会话级授权，每次都要重新审批。
 
@@ -343,8 +345,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：接入 gateway 可能改变现有行为 → 用能力位开关，默认保持现状。
 - **核账注记（2026-11-09）**：G7-6 已在 `bash-readonly` 落地（白名单外 git 配置键一律 `git-unknown-config-key`，探针失败 fail-closed），G7-9 已在 legacy Claude 路径接线（`onBashPolicy` → Runtime 审计），两者由 `bash-readonly.test.ts` / `claude-code.test.ts` 覆盖，状态转「已实施」。**G7-1 仍开放**：Claude 侧网关边界（写类工具/路径作用域/会话授权）已具备，但三后端矩阵缺 Codex/OpenCode/MCP，不能按整体收口；G7-2/G7-3/G7-5 继续留在「已批准未实施」。W7 计数 67/19。
 
-### W8 沙箱 C3（仅建议，暂不施工）
-- 覆盖条目：G7-7 `[建议]` C3 exec 面未收敛、G7-8 `[建议]` 非 Claude 裸 spawn、G6-17 `[建议]` 同 uid 不在防御范围。
+### W8 沙箱 C3（G7-7 已实施；G7-8 仅建议）
+- 覆盖条目：G7-7 `[已实施]` C3 exec 面已收敛为 literal（见 II-27）、G7-8 `[建议]` 非 Claude 裸 spawn、G6-17 `[建议]` 同 uid 不在防御范围。
 - 目标：把“已知风险 + 暂不处理”固化为可检索的风险登记，不伪装成已解决。
 - 涉及文件与数据/接口变更：无代码变更；`docs/architecture/agent-architecture.md` §17.6 风险条目。
 - 实施步骤：保持现状，发布前检查单引用。
@@ -611,7 +613,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |
 | W10 进化/提案/Tier2 | G1-14、G2-2…G2-7 | 依赖 W2 | W2；Tier2 按 D-17 先补审批桥；embedding 按 D-12 | 进化与提案都消费证据，Tier2 需桥 |
 | W11 迁移运维 | G9-11/13、G9-8（均已实施/已删除） | **部分完成（`80075e7` + v2.3）** | W1 | `RequestQueue` 已删、版本号已对齐（v37）；worktree 清理、视图与 Windows 项未做 |
-| W8 沙箱 C3 | G7-7/8（仅建议） | **不开工** | 待单独授权 | 属「仅建议」，本期无施工授权 |
+| W8 沙箱 C3 | G7-7（已实施）/ G7-8（仅建议）/ G6-17（文档） | G7-8 不开工 | G7-8 待单独授权 | G7-7 exec 已收敛；G7-8 仍属仅建议 |
 
 **建议顺序**：`W1 ∥ W3 ∥ W4 ∥ W12` → `W2`（通道等 W4）→ `W5` → `W6 ∥ W7` → `W9` → `W10` → `W11`。W8 及 32 条仅建议维持不动，除非另行授权。
 
@@ -668,7 +670,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G2-11 | 流程级测试最小版 | 依赖 W4 harness（已就位） | 授权开工即可 | 3 人日 |
 | G5-10 | 项目进度查询 | 无（D-03 已登记本期注册） | 授权开工即可 | 1.5 人日 |
 | G6-17 | 同 uid 防御边界 | 无，文档为主 | 授权开工即可 | 0.5 人日 |
-| G7-7 | C3 exec 面 | 无 | 授权开工即可 | 3 人日 |
+| G7-7 | C3 exec 面 | 无 | **已实施**（literal 收敛 + 名单快照；env/cwd 不在本轮） | 3 人日 |
 | G7-8 | 非 Claude 裸 spawn | 依赖 G3-1 探测 | 授权开工即可 | 2 人日 |
 | G2-10 | C1–C4 确认点 | 无（D-13 已定仅高风险步） | 授权开工即可 | 4 人日 |
 | G2-6 | 提案细节 | 依赖 G1-14 裁决 | 授权开工即可（前置完成后再做） | 2 人日 |
@@ -728,10 +730,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G2-2 / II-04 **（妥协）** | run 终态后把有效任务/步骤/证据/偏差沉淀为可归因记录 | `collectMemoryHitsForRun` 在 `WorkRunService` 五终态同步采集 step/evidence/deviation 引用；`source_outcome` 五值；每 run ≤50、幂等；失败写 `kind='integrity_check', stage='memory:<runId>'` 且不回滚 | **妥协**：①**`hit_kind='context'` 不产**（L1 无稳定上下文来源）；②证据 `score` 是固定等级权重（E1 0.6 / E2 0.8 / E3·E4 1），不是经验统计；③超 50 条静默截断（step→evidence→deviation），不额外留痕；④无 `project_path` 的 run 跳过，不产 hit；⑤采集与终态同线程同步执行，增加少量终态耗时；⑥记忆失败复用 `kind='integrity_check'`，需按 `stage='memory:*'` 区分。后果：Layer2 有数据可用，但 context 信号缺失、大 run 的尾部命中被丢 | **G2-4 / ContextBundle 有稳定上下文来源时补 `context`**；有证据表明 50 条上限丢关键命中时再评估 |
 | G2-4 / II-06 **（妥协）** | 解释某类派发组合为何成功/失败，为策略层提供可复核数据 | 只读视图 `v_memory_attribution`（v46）：强制经 `node_session_links.session_origin='map_task'`，输出 adapter/mode_id/outcome/hit_count/evidence_level/sample_size/conclusion；跨图不聚合 | **妥协**：①**`tier` 维度不落库**，用 `mode_id` 代替，无法区分 Tier1/Tier2；②**无 IPC/UI 入口**，只能直接读库；③`sample_size` 按 `(graph_id, adapter, mode_id)` 分区，未按 `step_kind` 细分；④`conclusion` 只有 `ok`/`insufficient_sample`，不算命中率数值、不给因果结论；⑤无命中的 run 也入视图（`hit_count=0`）；⑥视图每次查询实时算，无物化/缓存。后果：有可复核的样本量与终态分布，但没有“哪条派发更好”的结论、也无法在界面查看 | 需要在界面看归因或需要 Tier 维度时，补 `tier` 列与只读 IPC 后重新评估 |
 | G3-2 / II-23 **（妥协）** | 多进程/多窗口下同项目写任务互斥 | 复用 `WorkspaceLeaseRegistry`（文件租约）；`WorkExecutionService.tick` claim 前以 `item.project_path` 抢占，settle 后 `finally` 释放；抢不到 fail-fast 跳过（`project_busy`），不 claim/不消耗 attempt；默认关闭即 noop | **妥协**：①**无 `project_locks` 表**，状态落在 lease 文件（探测/排障是读文件不是查表）；②**无 `stale_lock_reclaimed` 事件**，过期回收只在下次 acquire 时静默发生；③TTL 默认 30s 可配，无 60s 上限钳制；④key 是 `project_path` 原串（trim），等价但拼写不同的路径不算同一项目；⑤**测试执行器未纳入**（临时 worktree 路径）；⑥**无 IPC/UI 状态**，`projectBusyItemIds` 只在 tick 返回与事件里可见。后果：单机多进程写互斥可用，但可观测性与路径归一化弱于原设计 | 需要审计锁历史/多窗口可视化，或测试执行器也要互斥时，再评估落表与事件 |
+| G7-7 / II-27 **（妥协）** | 收敛沙箱可执行面，避免系统目录整目录放行 | `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 从 subpath 改为 literal；固定放行 shell/env/arch/xcrun + 白名单命令解析路径 + node/npm/npx + git 安装根；`/System/Library` 仍是唯一目录级放行；网络类命令显式排除；名单快照进测试 | **妥协**：①**env 白名单与 cwd 未收敛**（本轮只做 exec 粒度）；②**`/System/Library` 仍整目录放行**（SIP 保护、不可枚举）；③未实现 `test_exec_profile` 常量，`evaluateBashPolicy` 未改；④**未枚举的写命令会失败**，只能得到内核 `EPERM`（`Operation not permitted`）由 CLI 转述，无法注入自定义可读文案；⑤审批与沙箱会故意互相打回，用户可能看到“已批准但执行失败”；⑥产品必需命令按 PATH 解析，PATH 变化会改变实际名单。后果：exec 面显著收窄、网络命令被挡，但可用命令集变小且失败文案依赖 CLI | 需要 env/cwd 收敛、自定义拒绝文案或更细的按命令策略时再评估 |
 
-# Part II 仅建议项施工级设计（19 条有效 + 已实施项保留为设计存档）
+# Part II 仅建议项施工级设计（18 条有效 + 已实施项保留为设计存档）
 
-> **口径**：本部分把 I.1.3 的 19 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/23/24/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 19 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 18 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-15/16/23/24/27/32/33 与 II-02/03/04/05/06/08/21/30/34 已实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 18 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -762,7 +765,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | II-24 | G3-3 | renderer 执行入口 | §9.2 | 已实施（本包） |
 | II-25 | G5-10 | 项目进度查询 | §3.6 | 已解除（D-03） |
 | II-26 | G6-17 | 同 uid 防御边界 | §6.5 / §10 | — |
-| II-27 | G7-7 | C3 exec 面 | §6.4 / §10 | — |
+| II-27 | G7-7 | C3 exec 面 | §6.4 / §10 | 已实施 |
 | II-28 | G7-8 | 非 Claude 裸 spawn | §5.9.5 / §10 | — |
 | II-29 | G8-3 | C1–C4 渲染 | §9.4 | 已解除（D-13） |
 | II-30 | G8-4 | 提案 UI（渲染） | §9.4 | 已实施（v40） |
@@ -1032,14 +1035,15 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：无；与 §6.5/§10 同步。
 - **成本**：≈0.5 人日（估算，文档为主）。
 
-### II-27 · G7-7 C3 exec 面｜**仅建议**
-- **目标与不做后果**：把测试命令的沙箱 profile（可执行面、cwd、环境白名单）收敛成显式策略；不做则 `ask/deny` 判定靠散落代码。
-- **数据/接口**：策略配置 `test_exec_profile`（代码常量）；`evaluateBashPolicy` 读该 profile；不新增表。
-- **流程/状态机**：命令 → profile 匹配 → allow/ask/deny → 审批 → 执行；deny 即停。
-- **边界**：profile 不得放宽 `.git` 写拒绝；环境变量白名单外一律 deny；profile 变更需测试断言。
-- **验收**：三类命令各有判定用例；白名单外变量被拒；profile 变更触发测试失败。
-- **前置依赖与顺序**：II-28 之前；与 §6.8 网关同批。
-- **成本**：≈3 人日（估算）。
+### II-27 · G7-7 C3 exec 面｜**已实施**（本包，保留为设计存档）
+
+- **目标与不做后果**：收敛沙箱 profile 的可执行面，避免 `/bin`、`/usr/bin` 整目录放行导致任意投放/新增二进制获得执行权；不做则 exec 白名单形同虚设。
+- **实施说明**：**只收敛 exec 粒度**（env/cwd 不在本轮）。`SYSTEM_EXEC_SUBPATHS` 从 5 个目录缩为 `/System/Library`（SIP 保护、不可枚举）；新增 `SYSTEM_EXEC_LITERALS` 固定放行 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/arch`、`/usr/bin/xcrun`；`TOOL_COMMANDS` 解析路径、`node/npm/npx`、`extraExecutables` 一律 `(literal)`；git 的 `execPath/execRoot` 仍按 `(subpath)`（产品必需）。`NETWORK_EXEC_COMMANDS`（`ssh/scp/curl/wget/nc`）显式声明为**排除**，并有断言防止误入。`evaluateBashPolicy` 未改动，不新增 `test_exec_profile` 常量。
+- **代码证据**：`src/main/shared/sandbox/profile.ts`（`SYSTEM_EXEC_LITERALS` / `SYSTEM_EXEC_SUBPATHS` / `NETWORK_EXEC_COMMANDS` 与 exec 行生成）、`src/main/shared/sandbox/__tests__/profile.test.ts`（收敛断言 + 名单快照 + notes 断言）。
+- **边界（重要）**：**审批放行 ≠ 沙箱可执行**。策略层回答“允不允许”，profile 回答“能不能落”；未枚举的写命令会在 exec 时被内核以 EPERM 拒绝（`Operation not permitted`，由 CLI 转述到工具结果），这是有意的互相打回，不是缺陷。网络类命令即使被人工批准也不会放行。工作区脚本（fsmonitor/hook）仍不在名单。名单是安全边界：改动必撞 `profile.test.ts` 快照。
+- **验收**：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再以 subpath 出现；shell/env/白名单命令以 literal 出现；网络命令不在名单；`notes` 含 EPERM 说明；名单快照精确相等。
+- **前置依赖与顺序**：与 §6.8 网关同批；env 白名单与 cwd 收敛留待后续。
+- **成本**：≈3 人日（估算），本轮已投入。
 
 ### II-28 · G7-8 非 Claude 裸 spawn｜**仅建议**
 - **目标与不做后果**：明确没有审批回调的后端只能"裸 spawn（只读或排队人工）"；不做则会被误接进写路径。

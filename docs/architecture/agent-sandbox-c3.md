@@ -250,6 +250,14 @@ C3 之后仍然存在、且**不应**被“上了沙箱”掩盖的风险：
 7. **资源耗尽/DoS**：macOS/Linux 首版不做 CPU/内存/进程数限制；Windows job object 可补，但不属于 C3 安全面。
 8. **远端/HTTP 后端**：若未来出现，不在本机沙箱覆盖范围。
 
+### 8.1 exec 面收敛（G7-7）与「审批 ≠ 可执行」
+
+- `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` **不再整目录放行**。exec 名单改为 literal 级：`/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/arch`、`/usr/bin/xcrun` + 只读白名单命令的解析路径 + `node/npm/npx` + 调用方显式传入的入口；git 的 `execPath/execRoot` 仍按目录放行（产品必需）。`/System/Library` 是唯一保留的目录级放行（SIP 保护、不可枚举）。
+- **网络类命令（`ssh`、`scp`、`curl`、`wget`、`nc`）刻意不在名单**：即使策略层或人工审批放行，也不会获得执行权。
+- **审批放行不等于必然可执行**。策略层回答“允不允许”，沙箱 profile 回答“能不能落”。未枚举的写命令会在 exec 时被内核以 `EPERM` 拒绝（表现为 `Operation not permitted`，由 CLI 转述到工具结果，不是静默丢弃）。二者会**有意地互相打回**：这是设计，不是缺陷；用户可能看到“已批准但执行失败”。
+- 名单是安全边界：`profile.test.ts` 对 `SYSTEM_EXEC_LITERALS`、`SYSTEM_EXEC_SUBPATHS`、`NETWORK_EXEC_COMMANDS` 做精确快照，改动必须撞测试。
+- 本轮**未收敛** env 白名单与 cwd；`evaluateBashPolicy` 未改。
+
 ---
 
 ## 9. 决策清单（建议按此拍板）
