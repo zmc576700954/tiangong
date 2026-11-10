@@ -780,6 +780,10 @@ export const MAP_MEMORY_TABLE_SCHEMAS: MapTableSchema[] = [
         run_id       TEXT NOT NULL,
         step_id      TEXT,
         hit_kind     TEXT NOT NULL CHECK(hit_kind IN ('context','step','evidence','deviation')),
+        -- v45 / G2-2：该命中来自 run 的哪种终态（取消/中断不是学习信号，G2-4 需剔除）。
+        -- 可空、**不进 requiredColumns**：v44 存量库由 ALTER 补列。
+        source_outcome TEXT CHECK(source_outcome IN (
+          'completed','failed','timeout','cancelled','interrupted')),
         source_ref   TEXT NOT NULL,
         score        REAL NOT NULL DEFAULT 1.0 CHECK(score >= 0 AND score <= 1),
         created_at   TEXT NOT NULL

@@ -14,6 +14,7 @@ import { WORK_ITEM_TERMINAL, WorkItemService, type WorkItemStatus } from './work
 import { WorkStepService, isTerminalStepStatus } from './work-step-service'
 import { scheduleRecomputeForWorkItem } from './execution-state'
 import { assertKnownMode } from './mode-registry'
+import { collectMemoryHitsForRun } from './memory-evolution'
 
 const logger = createLogger('WorkRunService')
 
@@ -272,6 +273,40 @@ export class WorkRunService {
   }
 
   /**
+   * G2-2：run 终态后采集记忆命中（Layer1）。
+   *
+   * 采集失败只写 `map_migration_reports(kind='integrity_check', stage='memory:<runId>')`，
+   * **不改变 run 终态、不抛出**——记录层不能反过来影响任务结果。
+   */
+  private recordMemoryForRun(run: WorkRunRow | undefined): void {
+    if (!run) return
+    try {
+      collectMemoryHitsForRun(this.db, run.id)
+    } catch (err) {
+      logger.warn(`memory hits collection failed (run=${run.id}):`, err)
+      try {
+        const nowIso = new Date().toISOString()
+        this.db
+          .prepare(
+            `INSERT INTO map_migration_reports
+               (id, kind, stage, started_at, finished_at, status, stats_json, error_json)
+             VALUES (?, 'integrity_check', ?, ?, ?, 'failed', ?, ?)`,
+          )
+          .run(
+            randomUUID(),
+            `memory:${run.id}`,
+            nowIso,
+            nowIso,
+            JSON.stringify({ runId: run.id, workItemId: run.work_item_id }),
+            JSON.stringify({ message: err instanceof Error ? err.message : String(err) }),
+          )
+      } catch (reportErr) {
+        logger.warn('memory hits failure report failed:', reportErr)
+      }
+    }
+  }
+
+  /**
    * 执行期回填：route_decision_id / session_id / thread_id。
    * 只对未终态 run 生效；COALESCE 保留先写值（崩溃重放的第二次调用幂等）。
    * 返回 undefined 表示 run 已终态（调用方不得继续执行）。
@@ -325,6 +360,7 @@ export class WorkRunService {
       )
     const row = result.changes === 1 ? this.get(id) : undefined
     this.scheduleForRun(row)
+    this.recordMemoryForRun(row)
     return row
   }
 
@@ -340,6 +376,7 @@ export class WorkRunService {
       .run(Date.now(), data.failureClass, partial, data.resultSummary ?? null, id)
     const row = result.changes === 1 ? this.get(id) : undefined
     this.scheduleForRun(row)
+    this.recordMemoryForRun(row)
     return row
   }
 
@@ -355,6 +392,7 @@ export class WorkRunService {
       .run(Date.now(), partialJson, id)
     const row = result.changes === 1 ? this.get(id) : undefined
     this.scheduleForRun(row)
+    this.recordMemoryForRun(row)
     return row
   }
 
@@ -372,6 +410,7 @@ export class WorkRunService {
       .run(Date.now(), Date.now(), reason, id)
     const row = result.changes === 1 ? this.get(id) : undefined
     this.scheduleForRun(row)
+    this.recordMemoryForRun(row)
     return row
   }
 
@@ -382,6 +421,7 @@ export class WorkRunService {
       .run(id)
     const row = result.changes === 1 ? this.get(id) : undefined
     this.scheduleForRun(row)
+    this.recordMemoryForRun(row)
     return row
   }
 

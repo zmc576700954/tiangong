@@ -815,8 +815,13 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      的「表不存在即建」路径补齐。保留治理（180 天 / 单项目 20 万）由
  *      `pruneMemoryHits` 在启动与每日任务执行。
  *      回滚：`DROP TABLE IF EXISTS memory_hits`（记录层可丢，不影响任务/证据）。
+ * v45：G2-2 进化 Layer1 —— `memory_hits.source_outcome` 可空列（completed/failed/
+ *      timeout/cancelled/interrupted），仅 ALTER 补列、不重建；写入方为
+ *      `WorkRunService` 五个终态方法，采集失败写 `map_migration_reports(kind='integrity_check',
+ *      stage='memory:<runId>')`，不回滚 run。
+ *      回滚：列可保留不读；停用 `collectMemoryHitsForRun` 调用即停止产生新记录。
  */
-const CURRENT_SCHEMA_VERSION = 44
+const CURRENT_SCHEMA_VERSION = 45
 
 interface TableSchema {
   name: string
@@ -1821,6 +1826,12 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   if (currentVersion < 43) {
     addColumnSafe('node_evidence', 'coverage_baseline_json', 'TEXT')
     addColumnSafe('node_evidence', 'stale_reason', 'TEXT')
+  }
+
+  // v45：G2-2 Layer1 记忆命中记录 run 终态来源，纯加列；不进 requiredColumns
+  // （NULL = v44 空表或来源未采集）。
+  if (currentVersion < 45) {
+    addColumnSafe('memory_hits', 'source_outcome', 'TEXT')
   }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。

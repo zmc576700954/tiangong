@@ -27,6 +27,7 @@ function makeInput(overrides: Partial<Parameters<MemoryHitService['record']>[0]>
     graphId: 'g1',
     runId: 'run_1',
     hitKind: 'context' as const,
+    sourceOutcome: 'completed' as const,
     sourceRef: 'work_step:ws_1',
     ...overrides,
   }
@@ -68,6 +69,7 @@ describe('memory_hits（G2-3）', () => {
 
   it('hit_kind 与 score 值域在服务层拒绝，库层 CHECK 兜底', () => {
     expect(() => service.record(makeInput({ hitKind: 'unknown' as never }))).toThrow(MemoryHitValidationError)
+    expect(() => service.record(makeInput({ sourceOutcome: 'unknown' as never }))).toThrow(MemoryHitValidationError)
     expect(() => service.record(makeInput({ score: 1.2 }))).toThrow(MemoryHitValidationError)
     expect(() => service.record(makeInput({ score: -0.1 }))).toThrow(MemoryHitValidationError)
     expect(() => service.record(makeInput({ projectPath: '  ' }))).toThrow(MemoryHitValidationError)

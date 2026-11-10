@@ -21,6 +21,8 @@ export const MEMORY_HIT_PER_PROJECT_LIMIT = 200_000
 export const MEMORY_HIT_PER_RUN_LIMIT = 50
 
 export type MemoryHitKind = 'context' | 'step' | 'evidence' | 'deviation'
+/** G2-2：命中来自哪种 run 终态；取消/中断不是学习信号。 */
+export type SourceOutcome = 'completed' | 'failed' | 'timeout' | 'cancelled' | 'interrupted'
 
 export interface MemoryHitRow {
   id: string
@@ -31,6 +33,7 @@ export interface MemoryHitRow {
   run_id: string
   step_id: string | null
   hit_kind: MemoryHitKind
+  source_outcome: SourceOutcome | null
   source_ref: string
   score: number
   created_at: string
@@ -44,6 +47,8 @@ export interface RecordMemoryHitInput {
   runId: string
   stepId?: string | null
   hitKind: MemoryHitKind
+  /** run 终态来源（G2-2）：五值，必填。 */
+  sourceOutcome: SourceOutcome
   /** 稳定键 `表:id`（如 `node_evidence:ev_123`），必填。 */
   sourceRef: string
   /** 0–1，缺省 1.0。 */
@@ -52,6 +57,7 @@ export interface RecordMemoryHitInput {
 }
 
 const HIT_KINDS: ReadonlySet<string> = new Set(['context', 'step', 'evidence', 'deviation'])
+const SOURCE_OUTCOMES: ReadonlySet<string> = new Set(['completed', 'failed', 'timeout', 'cancelled', 'interrupted'])
 
 export class MemoryHitValidationError extends Error {
   constructor(message: string) {
@@ -95,6 +101,9 @@ export class MemoryHitService {
     if (!HIT_KINDS.has(input.hitKind)) {
       throw new MemoryHitValidationError(`memory_hits 未知 hit_kind: ${String(input.hitKind)}`)
     }
+    if (!SOURCE_OUTCOMES.has(input.sourceOutcome)) {
+      throw new MemoryHitValidationError(`memory_hits 未知 source_outcome: ${String(input.sourceOutcome)}`)
+    }
     const score = input.score ?? 1
     if (!Number.isFinite(score) || score < 0 || score > 1) {
       throw new MemoryHitValidationError(`memory_hits score 必须落在 0–1：${String(input.score)}`)
@@ -111,8 +120,8 @@ export class MemoryHitService {
       .prepare(
         `INSERT INTO memory_hits
            (id, project_path, graph_id, node_id, work_item_id, run_id, step_id,
-            hit_kind, source_ref, score, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            hit_kind, source_outcome, source_ref, score, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(run_id, hit_kind, source_ref) DO NOTHING`,
       )
       .run(
@@ -124,6 +133,7 @@ export class MemoryHitService {
         runId,
         input.stepId ?? null,
         input.hitKind,
+        input.sourceOutcome,
         sourceRef,
         score,
         createdAt,
