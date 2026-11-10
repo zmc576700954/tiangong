@@ -252,9 +252,12 @@ C3 之后仍然存在、且**不应**被“上了沙箱”掩盖的风险：
 
 ### 8.1 exec 面收敛（G7-7）与「审批 ≠ 可执行」
 
-- `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` **不再整目录放行**。exec 名单改为 literal 级：`/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/arch`、`/usr/bin/xcrun` + 只读白名单命令的解析路径 + `node/npm/npx` + 调用方显式传入的入口；git 的 `execPath/execRoot` 仍按目录放行（产品必需）。`/System/Library` 是唯一保留的目录级放行（SIP 保护、不可枚举）。
+- `/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` **不再整目录放行**。exec 名单改为 literal 级：`/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/xcrun` + 只读白名单命令的解析路径 + `node/npm/npx` 的规范路径 + 调用方显式传入的入口。`/usr/bin/arch` 已删除（2026-11-10）：找不到具体调用方，将来出现真实调用方再加回。
+- **git 只放两个路径**：git 自己的 exec 目录（`.../usr/libexec/git-core`，`subpath`）与同版本的 git 本体（`.../usr/bin/git`，`literal`）；**不再整根放行** `/Library/Developer/CommandLineTools`（那会顺带放行 clang/make 等）。验收不是看名单，而是真实执行：同一 profile 下 18 条只读 git 子命令 `exit 0`、stdout 与不开沙箱逐字节一致、`.git/config` 哈希不变（`harness.test.ts`）。
+- **`npm` / `npx` 的 `*-cli.js` literal 是它们的规范身份，不是额外授权**。`bin/npm`、`bin/npx` 是指向 `lib/node_modules/npm/bin/{npm,npx}-cli.js` 的 symlink，Seatbelt 的 process-exec 匹配 vnode 规范路径，所以被检查的就是这两个 JS 文件。2026-11-10 实测：保留 → `npm/npx --version` 正常；删掉 → `rc=126`、`/usr/bin/env: bad interpreter: Operation not permitted`；改为放行 symlink 入口路径 → 同样 `126`。**删掉等于禁用 npm/npx，不是去掉冗余**；请勿再"优化"。
+- `/System/Library` 是唯一保留的目录级放行（SIP 保护、不可枚举）。
 - **网络类命令（`ssh`、`scp`、`curl`、`wget`、`nc`）刻意不在名单**：即使策略层或人工审批放行，也不会获得执行权。
-- **审批放行不等于必然可执行**。策略层回答“允不允许”，沙箱 profile 回答“能不能落”。未枚举的写命令会在 exec 时被内核以 `EPERM` 拒绝（表现为 `Operation not permitted`，由 CLI 转述到工具结果，不是静默丢弃）。二者会**有意地互相打回**：这是设计，不是缺陷；用户可能看到“已批准但执行失败”。
+- **审批放行不等于必然可执行**。策略层回答“允不允许”，沙箱 profile 回答“能不能落”。未枚举的写命令会在 exec 时被内核以 `EPERM` 拒绝，由 CLI 转述为工具结果里的可读错误（`Operation not permitted`；脚本场景形如 `bad interpreter: Operation not permitted`），不是静默丢弃、也不是超时。二者会**有意地互相打回**：这是设计，不是缺陷；用户点了允许仍可能看到命令失败，失败原因必须指向沙箱而不是"命令不存在/网络错误"。
 - 名单是安全边界：`profile.test.ts` 对 `SYSTEM_EXEC_LITERALS`、`SYSTEM_EXEC_SUBPATHS`、`NETWORK_EXEC_COMMANDS` 做精确快照，改动必须撞测试。
 - 本轮**未收敛** env 白名单与 cwd；`evaluateBashPolicy` 未改。
 

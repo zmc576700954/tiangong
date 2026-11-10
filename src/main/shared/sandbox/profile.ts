@@ -9,10 +9,12 @@
  * - **`.git` 敏感写面**：`config` / `config.lock` / `config.worktree` / `hooks/**` /
  *   `info/exclude` 以及当前配置里的 include 目标，在工作区整体可写之上单独 deny。
  * - **exec 只放行必要项**：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再整目录
- *   放行，改为 literal 级（shell、`env`、`xcrun` 等 + 白名单命令解析路径 + node/npm/npx）
- *   + git 安装根（git-core / CLT 根）+ 调用方显式传入的入口；`/System/Library` 是
- *   唯一保留的目录级放行（SIP 保护、不可枚举）。网络类命令（ssh/scp/curl/wget/nc）
- *   刻意不放入名单——**审批放行不等于沙箱可执行**，二者会互相打回。
+ *   放行，改为 literal 级（shell、`env`、`xcrun` 等 + 白名单命令解析路径 + node/npm/npx
+ *   的规范路径）+ 调用方显式传入的入口。git 只放两个东西：git 自己的 exec 目录
+ *   （`.../usr/libexec/git-core`，subpath）与同版本的 git 本体（literal）；**不再整根
+ *   放行 `/Library/Developer/CommandLineTools`**（那会顺带放行 clang/make 等）。
+ *   `/System/Library` 是唯一保留的目录级放行（SIP 保护、不可枚举）。网络类命令
+ *   （ssh/scp/curl/wget/nc）刻意不放入名单——**审批放行不等于沙箱可执行**，二者会互相打回。
  *   未枚举的可执行文件由内核以 EPERM 拒绝（表现为 `Operation not permitted`），
  *   不是静默丢弃；具体文案由 CLI 转述到工具结果。
  *   工作区内脚本（fsmonitor/hook 常放这里）不在白名单 → 读类命令拉不起它们。
@@ -58,6 +60,10 @@ export interface SandboxProfile {
  * 整目录放行会让 `/bin`、`/usr/bin` 里任何被投放或未来新增的二进制都获得执行权；
  * 收敛后只列明确依赖。改动这份名单必须同步更新 `profile.test.ts` 的快照断言——
  * 它是安全边界，不是普通配置。
+ *
+ * 已删除 `/usr/bin/arch`（2026-11-10）：找不到具体调用方；将来出现真实调用方再加回。
+ * `npm` / `npx` 也不在此列，但它们**必须**在名单里——按 PATH 解析后的规范路径是
+ * `*-cli.js`，见 `PRODUCT_EXEC_COMMANDS`（删掉等于禁用 npm）。
  */
 export const SYSTEM_EXEC_LITERALS = [
   // shell：CLI 用 `sh -c` / `bash -c` / `zsh -c` 跑工具
@@ -66,8 +72,6 @@ export const SYSTEM_EXEC_LITERALS = [
   '/bin/zsh',
   // shebang 解析（`#!/usr/bin/env node`）
   '/usr/bin/env',
-  // 架构探测（部分 CLI 启动时调用）
-  '/usr/bin/arch',
   // macOS git 通过 xcrun 定位 CLT 工具链
   '/usr/bin/xcrun',
 ] as const
@@ -78,9 +82,6 @@ export const SYSTEM_EXEC_LITERALS = [
  */
 export const SYSTEM_EXEC_SUBPATHS = ['/System/Library'] as const
 
-/** 产品自身必需的可执行文件（按 PATH 解析后逐文件放行，不放开整个 bin 目录）。 */
-const PRODUCT_EXEC_COMMANDS = ['node', 'npm', 'npx'] as const
-
 /** 网络类命令：即使策略/人工放行，也不进沙箱 exec 名单。 */
 export const NETWORK_EXEC_COMMANDS = ['ssh', 'scp', 'curl', 'wget', 'nc'] as const
 
@@ -89,6 +90,22 @@ const TOOL_COMMANDS = [
   'git', 'node', 'rg', 'ls', 'cat', 'grep', 'find', 'file', 'du', 'df',
   'stat', 'head', 'tail', 'wc', 'which', 'whoami', 'uname', 'date', 'pwd',
 ]
+
+/**
+ * 产品自身必需、但不属于只读白名单的入口：按 PATH 解析后的规范路径放行。
+ *
+ * `bin/npm`、`bin/npx` 是指向 `lib/node_modules/npm/bin/{npm,npx}-cli.js` 的 symlink，
+ * 所以这两条 `*-cli.js` literal **就是 npm/npx 的规范身份**，不是额外授权；删掉等于
+ * 禁用 npm/npx。2026-11-10 实测（`sandbox-exec` + 同一 profile）：
+ *
+ * - 保留两条 literal：`npm --version` / `npx --version` → 10.8.2，rc=0；
+ * - 删掉两条 literal：rc=126，`/usr/bin/env: bad interpreter: Operation not permitted`；
+ * - 改放行 symlink 入口路径（`.../bin/npm`）代替规范路径：同样 rc=126。
+ *
+ * 第三条证明 Seatbelt 的 process-exec 匹配的是 vnode 规范路径而非调用路径，所以
+ * 「改放行入口 symlink」不是可用的替代方案——别再"优化"一次。
+ */
+const PRODUCT_EXEC_COMMANDS = ['node', 'npm', 'npx'] as const
 
 function sbplString(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
@@ -138,12 +155,15 @@ function runGit(workspace: string, args: string[]): string | undefined {
 interface GitLayout {
   gitDirs: string[]
   execPath?: string
-  /** git 安装根（含 bin/git 与 libexec），用于 exec 白名单；不是整个家目录。 */
-  execRoot?: string
+  /**
+   * 与 git-core 同版本的 git 本体（CLT 下 `.../usr/bin/git`，Homebrew 下
+   * `.../Cellar/git/<ver>/bin/git`）。只放行这一个文件，不放整个 bin 目录。
+   */
+  execBin?: string
 }
 
 /**
- * 发现 gitdir（含 linked worktree / `.git` 文件 / `.git` symlink），并解析 git 安装根。
+ * 发现 gitdir（含 linked worktree / `.git` 文件 / `.git` symlink），并解析 git 可执行布局。
  * 探测失败不是错误：非 git 工作区是常态，此时 profile 只有工作区写规则。
  */
 export function discoverGitLayout(workspace: string): GitLayout {
@@ -177,7 +197,7 @@ export function discoverGitLayout(workspace: string): GitLayout {
   }
 
   let execPath: string | undefined
-  let execRoot: string | undefined
+  let execBin: string | undefined
   try {
     const env = buildSafeEnv()
     const raw = execFileSync('git', ['--exec-path'], {
@@ -188,13 +208,14 @@ export function discoverGitLayout(workspace: string): GitLayout {
     }).trim()
     if (raw) {
       execPath = realPath(raw)
-      // git-core → libexec → usr → 安装根（CLT / Homebrew Cellar / 其它）
-      execRoot = realPath(path.join(execPath, '..', '..', '..'))
+      // git-core → libexec → usr → bin/git（CLT / Homebrew Cellar / Xcode 同构）
+      const candidate = realPath(path.join(execPath, '..', '..', 'bin', 'git'))
+      if (existsSync(candidate)) execBin = candidate
     }
   } catch {
     /* git 不可用 */
   }
-  return { gitDirs: unique(gitDirs), execPath, execRoot }
+  return { gitDirs: unique(gitDirs), execPath, execBin }
 }
 
 function unique(values: readonly string[]): string[] {
@@ -372,6 +393,7 @@ export function buildSandboxProfile(input: SandboxProfileInput): SandboxProfile 
 
   if (input.target !== 'mcp') {
     // exec 白名单（G7-7 收敛）：literal 是默认；只有真正不可枚举的目录才用 subpath。
+    // 白名单命令与产品入口（node/npm/npx）都按 PATH 解析后的规范路径放行。
     const execLiterals = unique([
       ...SYSTEM_EXEC_LITERALS.filter((execPath) => existsSync(execPath)),
       ...TOOL_COMMANDS.map((command) => whichSync(command)).filter(
@@ -380,14 +402,16 @@ export function buildSandboxProfile(input: SandboxProfileInput): SandboxProfile 
       ...PRODUCT_EXEC_COMMANDS.map((command) => whichSync(command)).filter(
         (value): value is string => !!value,
       ),
+      ...(layout.execBin ? [layout.execBin] : []),
       ...(input.extraExecutables ?? [])
         .map(resolveExecutablePath)
         .filter((value): value is string => !!value),
     ])
+    // git 子命令目录（git-core）；不再整根放行 /Library/Developer/CommandLineTools
+    // （那会顺带放行 clang/make 等）。git 本体走上面的 literal。
     const execSubpaths = unique([
       ...SYSTEM_EXEC_SUBPATHS.filter((dir) => existsSync(dir)),
       ...(layout.execPath ? [layout.execPath] : []),
-      ...(layout.execRoot ? [layout.execRoot] : []),
     ])
     lines.push('')
     lines.push('; exec 只放行必要项（literal 级；工作区脚本与未枚举写命令不在名单）')

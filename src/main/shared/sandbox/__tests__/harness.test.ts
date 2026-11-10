@@ -295,4 +295,21 @@ describe.skipIf(!available)('C3 Harness（macOS sandbox-exec）', () => {
       expect(guarded.stdout, `${args.join(' ')} stdout 一致`).toBe(plain.stdout)
     }
   })
+
+  it('G7-7 收口：node/npm/npx 可用，curl/ssh/nc 被 EPERM 拒绝', () => {
+    const fixture = initFixture()
+    const profile = buildSandboxProfile({ target: 'claude', workspaceDir: fixture.repo }).text
+
+    for (const command of ['node --version', 'npm --version', 'npx --version']) {
+      const result = sandboxedShell(profile, command, fixture.repo, fixture.env)
+      expect(result.status, `${command} 应可执行`).toBe(0)
+      expect(result.stdout.trim().length, `${command} 应有版本输出`).toBeGreaterThan(0)
+    }
+    // 「审批放行 ≠ 必然可执行」：网络命令即使策略层允许，exec 时也被内核拒绝。
+    for (const command of ['curl --version', 'ssh -V', 'nc -h']) {
+      const result = sandboxedShell(profile, command, fixture.repo, fixture.env)
+      expect(result.status, `${command} 不应执行成功`).not.toBe(0)
+      expect(`${result.stderr}${result.stdout}`).toMatch(/not permitted|denied/i)
+    }
+  })
 })

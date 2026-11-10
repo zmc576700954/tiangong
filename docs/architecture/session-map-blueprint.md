@@ -10,7 +10,7 @@
 > v2.8（2026-11-10）：G2-2 进化 Layer1（v45）落地——五个 run 终态采集 step/evidence/deviation 引用并记录 `source_outcome`；已实施 88，仅建议 21。`context` 暂不产（I.9.3 妥协）。
 > v2.9（2026-11-10）：G2-4 Layer2 派发精度归因（v46）落地——只读视图 `v_memory_attribution` 强制经 `node_session_links.session_origin='map_task'` 归因；已实施 89，仅建议 20。
 > v3.0（2026-11-10）：G3-2 run 级跨进程项目写闸落地——复用 `AgentRuntime` 同一个 workspace lease registry（不新建 `project_locks` 表），claim 前抢占、settle 后释放、抢不到 fail-fast；逐 turn 互斥此前已存在。已实施 90，仅建议 19。
-> v3.1（2026-11-10）：G7-7 C3 exec 面收敛——`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 改为 literal 级放行（shell/env/xcrun/arch + 白名单命令 + node/npm/npx + git 安装根），网络类命令排除，名单快照纳入测试；明确「审批放行 ≠ 沙箱可执行」。已实施 91，仅建议 18。
+> v3.1（2026-11-10）：G7-7 C3 exec 面收敛——`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 改为 literal 级放行（shell/env/xcrun + 白名单命令 + node/npm/npx 的规范路径）；git 从「整根 CLT」收敛为 git-core（subpath）+ git 本体（literal）；删除无调用方的 `/usr/bin/arch`；网络类命令排除，名单快照与真实 harness 纳入测试；明确「审批放行 ≠ 沙箱可执行」。已实施 91，仅建议 18。
 > v3.2（2026-11-10）：G6-17 同 uid 防御边界落地（**文档级**）——`agent-architecture.md` §6.5.1 成段写明跨 uid 承诺、同 uid 不承诺、攻击者门槛、不构成提权；不做运行时检测。已实施 92，仅建议 17。
 > v3.3（2026-11-10）：G2-18 完整步状态机落地——`work_steps` **12 值**声明式迁移表（`WORK_STEP_TRANSITIONS` + 写库前 `assertDeclared`）、补 `waiting_approval → timed_out`、`review` 标注无生产写入方、步级 `work_step_changed` 事件在 5 处构造点全接；改正本文「13 值」笔误。已实施 93，仅建议 16。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
@@ -200,7 +200,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-11 | 会话级授权仅覆盖写类工具（设计边界） | `agent-architecture.md` §7.6 |
 | G7-13 | 交互审批 120s fail-closed | `ApprovalGateway`；`agent-architecture.md` §7.4 |
 | G7-14 | 重启陈旧审批 deny | `agent-architecture.md` §7.4 |
-| G7-7 | C3 exec 面收敛为 literal：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再整目录放行，只放行 shell/env/xcrun/arch + 白名单命令 + node/npm/npx + git 安装根；`/System/Library` 是唯一保留的目录级放行；ssh/scp/curl/wget/nc 刻意排除。审批放行 ≠ 沙箱可执行，未枚举命令以 EPERM（`Operation not permitted`）失败而非静默 | `profile.ts`（`SYSTEM_EXEC_LITERALS`/`SYSTEM_EXEC_SUBPATHS`/`NETWORK_EXEC_COMMANDS`）、`profile.test.ts`（收敛断言 + 名单快照） |
+| G7-7 | C3 exec 面收敛为 literal：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再整目录放行，只放 shell/env/xcrun + 白名单命令 + node/npm/npx 规范路径；git 只放 git-core（subpath）+ git 本体（literal），不再整根放行 CLT；`/usr/bin/arch` 已删（无调用方）；`/System/Library` 是唯一目录级放行；ssh/scp/curl/wget/nc 刻意排除。审批放行 ≠ 沙箱可执行，未枚举命令以 EPERM（`Operation not permitted`）失败而非静默 | `profile.ts`（`SYSTEM_EXEC_LITERALS`/`SYSTEM_EXEC_SUBPATHS`/`NETWORK_EXEC_COMMANDS`/`PRODUCT_EXEC_COMMANDS`）、`profile.test.ts`（收敛断言 + 名单快照）、`harness.test.ts`（真实 git 18 子命令 + node/npm/npx 可用 + curl/ssh/nc 被拒） |
 
 > **G7-5 做了什么 / 妥协在哪**：做了什么——MCP 适配器补 `setTurnApprovalHooks`（与 Claude 同形），Driver 自动注入后，写类 MCP 工具在执行前走同一 `ApprovalGateway`（PreToolUse 审计 + canUseTool 决策 + 会话级授权），被拒即不调用 `client.callTool`；`isWriteScopedTool` 扩展 MCP 命名（`mcp__server__tool` / `server.tool` / 裸 `create_issue`）。妥协在哪——只能按**工具名动词清单**判定写语义，无法识别名字不含写动词、但语义为写的未知 MCP 工具；名字含写动词的读工具会被保守误判为写类（多弹一次审批）；MCP 无路径参数时无法命中会话级授权，每次都要重新审批。
 
@@ -1046,10 +1046,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 ### II-27 · G7-7 C3 exec 面｜**已实施**（本包，保留为设计存档）
 
 - **目标与不做后果**：收敛沙箱 profile 的可执行面，避免 `/bin`、`/usr/bin` 整目录放行导致任意投放/新增二进制获得执行权；不做则 exec 白名单形同虚设。
-- **实施说明**：**只收敛 exec 粒度**（env/cwd 不在本轮）。`SYSTEM_EXEC_SUBPATHS` 从 5 个目录缩为 `/System/Library`（SIP 保护、不可枚举）；新增 `SYSTEM_EXEC_LITERALS` 固定放行 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/arch`、`/usr/bin/xcrun`；`TOOL_COMMANDS` 解析路径、`node/npm/npx`、`extraExecutables` 一律 `(literal)`；git 的 `execPath/execRoot` 仍按 `(subpath)`（产品必需）。`NETWORK_EXEC_COMMANDS`（`ssh/scp/curl/wget/nc`）显式声明为**排除**，并有断言防止误入。`evaluateBashPolicy` 未改动，不新增 `test_exec_profile` 常量。
-- **代码证据**：`src/main/shared/sandbox/profile.ts`（`SYSTEM_EXEC_LITERALS` / `SYSTEM_EXEC_SUBPATHS` / `NETWORK_EXEC_COMMANDS` 与 exec 行生成）、`src/main/shared/sandbox/__tests__/profile.test.ts`（收敛断言 + 名单快照 + notes 断言）。
-- **边界（重要）**：**审批放行 ≠ 沙箱可执行**。策略层回答“允不允许”，profile 回答“能不能落”；未枚举的写命令会在 exec 时被内核以 EPERM 拒绝（`Operation not permitted`，由 CLI 转述到工具结果），这是有意的互相打回，不是缺陷。网络类命令即使被人工批准也不会放行。工作区脚本（fsmonitor/hook）仍不在名单。名单是安全边界：改动必撞 `profile.test.ts` 快照。
-- **验收**：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再以 subpath 出现；shell/env/白名单命令以 literal 出现；网络命令不在名单；`notes` 含 EPERM 说明；名单快照精确相等。
+- **实施说明**：**只收敛 exec 粒度**（env/cwd 不在本轮）。`SYSTEM_EXEC_SUBPATHS` 从 5 个目录缩为 `/System/Library`（SIP 保护、不可枚举）；`SYSTEM_EXEC_LITERALS` 固定放行 `/bin/sh`、`/bin/bash`、`/bin/zsh`、`/usr/bin/env`、`/usr/bin/xcrun`（`/usr/bin/arch` 因无调用方于 2026-11-10 删除，将来出现真实调用方再加回）；`TOOL_COMMANDS` 与 `node/npm/npx` 一律按 PATH 解析后的规范路径 `(literal)`；git 由「整根放行安装根」改为「git 的 exec 目录 `(subpath)` + 同版本 git 本体 `(literal)`」，不再放行 `/Library/Developer/CommandLineTools` 根。`NETWORK_EXEC_COMMANDS`（`ssh/scp/curl/wget/nc`）显式声明为**排除**，并有断言防止误入。`evaluateBashPolicy` 未改动，不新增 `test_exec_profile` 常量。
+- **代码证据**：`src/main/shared/sandbox/profile.ts`（`SYSTEM_EXEC_LITERALS` / `SYSTEM_EXEC_SUBPATHS` / `NETWORK_EXEC_COMMANDS` / `PRODUCT_EXEC_COMMANDS` 与 exec 行生成）、`src/main/shared/sandbox/__tests__/profile.test.ts`（收敛断言 + 名单快照 + notes 断言）、`src/main/shared/sandbox/__tests__/harness.test.ts`（真实执行验收）。
+- **边界（重要）**：**审批放行 ≠ 沙箱可执行**。策略层回答“允不允许”，profile 回答“能不能落”；未枚举的写命令会在 exec 时被内核以 EPERM 拒绝，由 CLI 转述为工具结果里的可读错误（`Operation not permitted`；脚本场景形如 `bad interpreter: Operation not permitted`），不是静默丢弃、也不是超时。这是有意的互相打回，不是缺陷：用户点了允许仍可能看到命令失败，失败原因必须指向沙箱。网络类命令即使被人工批准也不会放行。工作区脚本（fsmonitor/hook）仍不在名单。名单是安全边界：改动必撞 `profile.test.ts` 快照。
+- **npm/npx 的口径（防回归）**：`bin/npm`、`bin/npx` 是指向 `lib/node_modules/npm/bin/{npm,npx}-cli.js` 的 symlink，这两条 `*-cli.js` literal **就是 npm/npx 的规范身份**，不是额外授权。2026-11-10 实测：删掉 → `npm --version` `rc=126` + `bad interpreter: Operation not permitted`；改放行 symlink 入口路径 → 同样 `126`（Seatbelt 匹配 vnode 规范路径而非调用路径）。**删掉等于禁用 npm/npx**，不是去掉冗余。
+- **验收**：`/bin`、`/usr/bin`、`/usr/sbin`、`/usr/libexec` 不再以 subpath 出现；shell/env/白名单命令以 literal 出现；网络命令不在名单；`notes` 含 EPERM 说明；名单快照精确相等。真实执行（harness）：同一 profile 下 18 条只读 git 子命令 `exit 0`、工作区内外 marker 均不生成、`.git/config` 哈希不变、良性仓库 stdout 与不开沙箱逐字节一致；`node/npm/npx --version` 均 `rc=0`；`curl/ssh/nc` 非 0 且输出含 `not permitted|denied`。
 - **前置依赖与顺序**：与 §6.8 网关同批；env 白名单与 cwd 收敛留待后续。
 - **成本**：≈3 人日（估算），本轮已投入。
 

@@ -84,6 +84,19 @@ describe('sandbox profile', () => {
     expect(execSection).not.toContain('(subpath "/opt/homebrew/bin")')
     expect(execSection).not.toContain('(subpath "/usr/local/bin")')
 
+    // G7-7 收口：arch 无调用方已删除。
+    expect(execSection).not.toContain('(literal "/usr/bin/arch")')
+    // npm/npx 是 symlink，exec 检查落在 realpath（*-cli.js）；删除会让 npm 126，必须保留。
+    expect(execSection).toMatch(/-cli\.js"/)
+
+    // git 只放行 git-core（subpath）与 git 本体（literal），不再整根放行安装根。
+    const gitCore = realpathSync(execFileSync('git', ['--exec-path'], { encoding: 'utf-8' }).trim())
+    const installRoot = realpathSync(join(gitCore, '..', '..', '..'))
+    const gitBin = realpathSync(join(gitCore, '..', '..', 'bin', 'git'))
+    expect(execSection).toContain(`(subpath "${gitCore}")`)
+    expect(execSection).toContain(`(literal "${gitBin}")`)
+    expect(execSection).not.toContain(`(subpath "${installRoot}")`)
+
     // 网络类命令即使被审批放行，也不得进入沙箱 exec 名单。
     for (const command of NETWORK_EXEC_COMMANDS) {
       expect(execSection).not.toMatch(new RegExp(`\\(literal "[^"]*/${command}"\\)`))
@@ -98,7 +111,6 @@ describe('sandbox profile', () => {
       '/bin/bash',
       '/bin/zsh',
       '/usr/bin/env',
-      '/usr/bin/arch',
       '/usr/bin/xcrun',
     ])
     expect(SYSTEM_EXEC_SUBPATHS).toEqual(['/System/Library'])
