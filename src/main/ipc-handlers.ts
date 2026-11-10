@@ -94,6 +94,7 @@ import { registerProjectHandlers } from './ipc/project'
 import { registerMapHandlers } from './ipc/map'
 import { setExecutionStateNotifier } from './map/execution-state'
 import { WorkRunService } from './map/work-run-service'
+import { startWorktreeRetentionSweep } from './map/test-executor'
 import { reconcileOrphanImportThreads } from './services/chat-thread-reconcile'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
@@ -360,6 +361,14 @@ export async function registerIpcHandlers(): Promise<void> {
     new WorkRunService(db).reconcileOnStartup()
   } catch (err) {
     logger.warn('Map work_runs startup reconciliation failed:', err)
+  }
+
+  // G9-10：worktree 残留清理——启动后一次 + 每 6h 一次；只回收本应用创建的
+  // 过期现场（7 天），排除 running/approved 引用的活跃目录，单轮上限 50。
+  try {
+    startWorktreeRetentionSweep(db)
+  } catch (err) {
+    logger.warn('Worktree retention sweep failed to start:', err)
   }
 
   // 导入 thread 孤儿清扫：崩溃在"建 thread 后、图事务前"会留下无图的 running thread。

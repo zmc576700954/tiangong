@@ -15,7 +15,8 @@
  *     （全 deny/全 skip/infra error）或取不到执行内容 → 不写任何证据（宁缺勿假）。
  *     失败（非 env_fail）→ 自动建 bug 节点 + bug_nodes + 修复 work_item
  *     （draft 走 C2,§6.6-3）;bug 行可反查 test_run→plan_item（§6.6-6）
- *  5. 清理:全过删 worktree;失败现场保留在项目外(tmps)最多 7 天,下次 create 惰性回收
+ *  5. 清理:全过删 worktree;失败现场保留在项目外(tmps)最多 7 天,由「创建时惰性回收 +
+ *     启动后/每 6h 定时清理」两条路径共同回收（G9-10）
  */
 
 import { execFileSync } from 'node:child_process'
@@ -68,11 +69,23 @@ export function deriveBugEntityKey(
  */
 const WORKTREE_ROOT_DIR = 'bizgraph-worktrees'
 const LEGACY_WORKTREE_DIR = '.bizgraph-worktrees'
-const WORKTREE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+export const WORKTREE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+/** 定时清理周期（G9-10 口径：启动后一次 + 每 6 小时一次）。 */
+export const WORKTREE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** 单轮回收上限（II-33 边界）。 */
+export const WORKTREE_SWEEP_MAX_PER_ROUND = 50
+/** 标记文件后缀：与 worktree 目录同级，不写进工作树（否则会把 E3 判脏）。 */
+const WORKTREE_MARKER_SUFFIX = '.marker'
+/** 严格命名：wt-<13 位毫秒时间戳>-<6 位小写十六进制>。 */
+const WORKTREE_NAME_RE = /^wt-\d{13}-[0-9a-f]{6}$/
 
-function worktreeRootDir(projectPath: string): string {
+export function resolveWorktreeRoot(projectPath: string): string {
   const key = createHash('sha256').update(path.resolve(projectPath)).digest('hex').slice(0, 12)
   return path.join(os.tmpdir(), WORKTREE_ROOT_DIR, key)
+}
+
+function worktreeRootDir(projectPath: string): string {
+  return resolveWorktreeRoot(projectPath)
 }
 
 /** 旧版本落在项目内的 worktree 目录;只用于 status 过滤,不参与 dirty 判定。 */
@@ -116,6 +129,7 @@ export class GitWorktreeManager implements WorktreeManagerLike {
       this.reclaimExpired(projectPath, root)
       const wtPath = path.join(root, `wt-${Date.now()}-${randomUUID().slice(0, 6)}`)
       execFileSync('git', ['-C', projectPath, 'worktree', 'add', '--detach', wtPath, commit], { stdio: 'pipe' })
+      this.writeMarker(wtPath, projectPath, commit)
       return { path: wtPath }
     } catch (err) {
       throw new WorktreeFailedError(
@@ -128,6 +142,7 @@ export class GitWorktreeManager implements WorktreeManagerLike {
     try {
       const root = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--show-toplevel'], { encoding: 'utf-8' }).trim()
       execFileSync('git', ['-C', root, 'worktree', 'remove', '--force', worktreePath], { stdio: 'pipe' })
+      this.removeMarker(worktreePath)
       return
     } catch (err) {
       logger.warn(`worktree remove failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
@@ -138,6 +153,30 @@ export class GitWorktreeManager implements WorktreeManagerLike {
       fs.rmSync(worktreePath, { recursive: true, force: true })
     } catch (err) {
       logger.warn(`worktree force remove failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
+    }
+    this.removeMarker(worktreePath)
+  }
+
+  /**
+   * 归属标记写在 worktree 目录**同级**，不写进工作树：写进目录会让
+   * `status --porcelain` 判脏，从而把 E3 永久挡掉（§6.5 内容绑定）。
+   */
+  private writeMarker(worktreePath: string, projectPath: string, baseCommit: string): void {
+    try {
+      fs.writeFileSync(
+        `${worktreePath}${WORKTREE_MARKER_SUFFIX}`,
+        JSON.stringify({ v: 1, projectPath: path.resolve(projectPath), baseCommit, createdAt: Date.now() }),
+      )
+    } catch (err) {
+      logger.warn(`worktree marker write failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  private removeMarker(worktreePath: string): void {
+    try {
+      fs.rmSync(`${worktreePath}${WORKTREE_MARKER_SUFFIX}`, { force: true })
+    } catch (err) {
+      logger.warn(`worktree marker remove failed (${worktreePath}): ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -213,12 +252,174 @@ export class GitWorktreeManager implements WorktreeManagerLike {
   }
 }
 
+export interface WorktreeSweepOptions {
+  now?: number
+  maxPerRound?: number
+  retentionMs?: number
+  /** 测试注入：替换真实 git 删除（默认走 GitWorktreeManager.remove）。 */
+  remove?: (worktreePath: string) => void
+}
+
+export interface WorktreeSweepReport {
+  projects: number
+  removed: number
+  skippedActive: number
+  skippedYoung: number
+  skippedUnowned: number
+  clearedPaths: number
+  capped: boolean
+}
+
+/**
+ * 定时清理（G9-10）：按 `test_plans.worktree_path` 反查项目根，逐目录判定。
+ *
+ * 选择条件：
+ *  - 严格命名 `wt-<13 位 ms>-<6 位 hex>`，且位于本应用根目录/<已知 project-hash> 下；
+ *  - 超过 7 天保留期；
+ *  - 不被 `test_plans.status IN ('running','approved')` 引用（活跃 worktree 绝不删）。
+ * 归属：新建 worktree 带同级 `.marker`；无标记的历史目录按严格命名放行一次并记日志。
+ * 幂等：目录删除后自然不再命中；`worktree_path` 指向已不存在目录的行顺手清空。
+ * 上限：单轮最多回收 50 个，超出留到下一轮。
+ */
+export function sweepStaleWorktrees(
+  db: BetterSqlite3.Database,
+  opts: WorktreeSweepOptions = {},
+): WorktreeSweepReport {
+  const now = opts.now ?? Date.now()
+  const maxPerRound = opts.maxPerRound ?? WORKTREE_SWEEP_MAX_PER_ROUND
+  const retentionMs = opts.retentionMs ?? WORKTREE_RETENTION_MS
+  const manager = opts.remove ? null : new GitWorktreeManager()
+  const remove = opts.remove ?? ((p: string) => manager!.remove(p))
+
+  const rows = db
+    .prepare('SELECT id, project_path, status, worktree_path FROM test_plans WHERE worktree_path IS NOT NULL')
+    .all() as Array<{ id: string; project_path: string; status: string; worktree_path: string }>
+
+  const active = new Set<string>()
+  const projects = new Set<string>()
+  for (const row of rows) {
+    projects.add(row.project_path)
+    if (row.status === 'running' || row.status === 'approved') {
+      active.add(path.resolve(row.worktree_path))
+    }
+  }
+
+  const report: WorktreeSweepReport = {
+    projects: projects.size,
+    removed: 0,
+    skippedActive: 0,
+    skippedYoung: 0,
+    skippedUnowned: 0,
+    clearedPaths: 0,
+    capped: false,
+  }
+
+  scan: for (const projectPath of projects) {
+    const root = resolveWorktreeRoot(projectPath)
+    let entries: fs.Dirent[]
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    let projectRemoved = false
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      if (!WORKTREE_NAME_RE.test(entry.name)) {
+        report.skippedUnowned++
+        continue
+      }
+      const full = path.join(root, entry.name)
+      if (active.has(path.resolve(full))) {
+        report.skippedActive++
+        continue
+      }
+      const createdMs = Number(entry.name.split('-')[1])
+      if (!Number.isFinite(createdMs) || now - createdMs < retentionMs) {
+        report.skippedYoung++
+        continue
+      }
+      if (report.removed >= maxPerRound) {
+        report.capped = true
+        break scan
+      }
+      if (!fs.existsSync(`${full}${WORKTREE_MARKER_SUFFIX}`)) {
+        logger.info(`worktree sweep: 无标记历史目录按严格命名放行回收 ${full}`)
+      }
+      remove(full)
+      try {
+        fs.rmSync(`${full}${WORKTREE_MARKER_SUFFIX}`, { force: true })
+      } catch (err) {
+        logger.warn(`worktree marker sweep remove failed (${full}): ${err instanceof Error ? err.message : String(err)}`)
+      }
+      if (fs.existsSync(full)) {
+        logger.warn(`worktree sweep: 回收失败，留待下一轮 ${full}`)
+      } else {
+        report.removed++
+        projectRemoved = true
+      }
+    }
+    if (projectRemoved && fs.existsSync(path.join(projectPath, '.git'))) {
+      try {
+        execFileSync('git', ['-C', projectPath, 'worktree', 'prune'], { stdio: 'pipe' })
+      } catch (err) {
+        logger.warn(`worktree sweep prune failed (${projectPath}): ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  }
+
+  // 已删除/被外部删除的现场不再保留陈旧路径；幂等：下一轮不会重复计数。
+  const remaining = db
+    .prepare('SELECT id, worktree_path FROM test_plans WHERE worktree_path IS NOT NULL')
+    .all() as Array<{ id: string; worktree_path: string }>
+  const clearPath = db.prepare('UPDATE test_plans SET worktree_path = NULL WHERE id = ? AND worktree_path = ?')
+  for (const row of remaining) {
+    if (fs.existsSync(row.worktree_path)) continue
+    clearPath.run(row.id, row.worktree_path)
+    report.clearedPaths++
+  }
+
+  return report
+}
+
+/**
+ * 启动后一次 + 每 6 小时一次。返回停止函数（测试/退出时清理计时器）。
+ * 失败只告警，不阻断主进程。
+ */
+export function startWorktreeRetentionSweep(
+  db: BetterSqlite3.Database,
+  opts: { intervalMs?: number; initialDelayMs?: number } = {},
+): () => void {
+  const run = (phase: string): void => {
+    try {
+      const report = sweepStaleWorktrees(db)
+      if (report.removed > 0 || report.clearedPaths > 0) {
+        logger.info(
+          `worktree ${phase} sweep: removed=${report.removed} clearedPaths=${report.clearedPaths}` +
+            ` skippedActive=${report.skippedActive} skippedYoung=${report.skippedYoung}` +
+            ` skippedUnowned=${report.skippedUnowned} capped=${report.capped}`,
+        )
+      }
+    } catch (err) {
+      logger.warn(`worktree ${phase} sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+  const initial = setTimeout(() => run('startup'), opts.initialDelayMs ?? 5000)
+  initial.unref()
+  const timer = setInterval(() => run('scheduled'), opts.intervalMs ?? WORKTREE_SWEEP_INTERVAL_MS)
+  timer.unref()
+  return () => {
+    clearTimeout(initial)
+    clearInterval(timer)
+  }
+}
+
 export interface TestExecutorDeps {
   evidence?: EvidenceService
   workItems?: WorkItemService
   /** §6.6:失败自动建 bug+修复 work_item（draft 走 C2）;默认开;env_fail 不建。 */
   autoBug?: boolean
-  /** 全过后删 worktree（默认 true）;失败现场保留在 tmps 最多 7 天,由下次 create 惰性回收。 */
+  /** 全过后删 worktree（默认 true）;失败现场保留在 tmps 最多 7 天,由惰性回收 + 定时清理共同回收。 */
   cleanupOnPass?: boolean
 }
 

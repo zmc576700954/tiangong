@@ -5,7 +5,7 @@
  * WORKTREE_FAILED → env_fail 不建 bug;策略门 deny → skipped+后续停止。
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
 import { execFileSync } from 'node:child_process'
@@ -16,7 +16,7 @@ import { applyMapS5aSchema, applyMapS7Schema, applyMapS8Schema, applyMapS6aSchem
 import { applyAgentSchema } from '../agent/runtime/db/schema'
 import { TestPlanService } from '../map/test-plan-service'
 import type { TestCommandRunner } from '../map/test-plan-service'
-import { TestExecutor, GitWorktreeManager, WorktreeFailedError, deriveBugEntityKey } from '../map/test-executor'
+import { TestExecutor, GitWorktreeManager, WorktreeFailedError, deriveBugEntityKey, sweepStaleWorktrees, resolveWorktreeRoot } from '../map/test-executor'
 import type { WorktreeManagerLike } from '../map/test-executor'
 import { EvidenceService } from '../map/evidence-service'
 import { WorkItemService } from '../map/work-item-service'
@@ -402,9 +402,125 @@ describe('GitWorktreeManager(受控 git,§6.4)', () => {
       // 用户真实改动仍然判 dirty（E3 依旧只认干净工作区）
       fs.writeFileSync(path.join(project, 'a.txt'), 'y')
       expect(mgr.status(project)!.dirty).toBe(true)
+
+      // G9-10 归属标记：与 worktree 同级，不写进工作树（否则会把 E3 判脏）
+      expect(fs.existsSync(`${worktreePath}.marker`)).toBe(true)
+      mgr.remove(worktreePath)
+      expect(fs.existsSync(worktreePath)).toBe(false)
+      expect(fs.existsSync(`${worktreePath}.marker`)).toBe(false)
+      worktreePath = undefined
     } finally {
       if (worktreePath) mgr.remove(worktreePath)
       fs.rmSync(project, { recursive: true, force: true })
     }
+  })
+})
+
+describe('sweepStaleWorktrees(G9-10 定时清理)', () => {
+  const DAY = 24 * 60 * 60 * 1000
+  const NOW = 1_700_000_000_000
+  let db: BetterSqlite3.Database
+  let project: string
+  let root: string
+
+  beforeEach(() => {
+    db = setupDb()
+    project = fs.mkdtempSync(path.join(os.tmpdir(), 'bg-sweep-'))
+    root = resolveWorktreeRoot(project)
+    fs.mkdirSync(root, { recursive: true })
+  })
+
+  afterEach(() => {
+    fs.rmSync(project, { recursive: true, force: true })
+    fs.rmSync(root, { recursive: true, force: true })
+    db.close()
+  })
+
+  function insertPlan(id: string, status: string, worktreePath: string | null): void {
+    db.prepare(
+      `INSERT INTO test_plans (id, project_path, node_keys_json, plan_hash, status, created_at, worktree_path)
+       VALUES (?, ?, '[]', 'h', ?, ?, ?)`,
+    ).run(id, project, status, NOW, worktreePath)
+  }
+
+  function makeDir(name: string, marker = true): string {
+    const p = path.join(root, name)
+    fs.mkdirSync(p)
+    if (marker) fs.writeFileSync(`${p}.marker`, '{}')
+    return p
+  }
+
+  const remove = (p: string): void => fs.rmSync(p, { recursive: true, force: true })
+
+  it('只回收过期 + 严格命名 + 非活跃目录；新鲜/非托管目录保留，标记一并删除', () => {
+    const expired = makeDir(`wt-${NOW - 8 * DAY}-abcdef`)
+    const fresh = makeDir(`wt-${NOW - 60_000}-123abc`)
+    const foreign = makeDir('user-data')
+    insertPlan('p1', 'completed', expired)
+
+    const report = sweepStaleWorktrees(db, { now: NOW, remove })
+
+    expect(report).toMatchObject({ removed: 1, skippedYoung: 1, skippedUnowned: 1, capped: false })
+    expect(fs.existsSync(expired)).toBe(false)
+    expect(fs.existsSync(`${expired}.marker`)).toBe(false)
+    expect(fs.existsSync(fresh)).toBe(true)
+    expect(fs.existsSync(foreign)).toBe(true)
+  })
+
+  it('running / approved 引用的活跃 worktree 绝不删除', () => {
+    const running = makeDir(`wt-${NOW - 9 * DAY}-aaaaaa`)
+    const approved = makeDir(`wt-${NOW - 9 * DAY}-bbbbbb`)
+    const done = makeDir(`wt-${NOW - 9 * DAY}-cccccc`)
+    insertPlan('p1', 'running', running)
+    insertPlan('p2', 'approved', approved)
+    insertPlan('p3', 'completed', done)
+
+    const report = sweepStaleWorktrees(db, { now: NOW, remove })
+
+    expect(report.removed).toBe(1)
+    expect(report.skippedActive).toBe(2)
+    expect(fs.existsSync(running)).toBe(true)
+    expect(fs.existsSync(approved)).toBe(true)
+    expect(fs.existsSync(done)).toBe(false)
+  })
+
+  it('无标记的历史目录按严格命名放行回收一次', () => {
+    const legacy = makeDir(`wt-${NOW - 9 * DAY}-dddddd`, false)
+    insertPlan('p1', 'failed', legacy)
+
+    const report = sweepStaleWorktrees(db, { now: NOW, remove })
+
+    expect(report.removed).toBe(1)
+    expect(fs.existsSync(legacy)).toBe(false)
+  })
+
+  it('单轮上限 50（可用 maxPerRound 收缩），剩余留到下一轮', () => {
+    const dirs = [0, 1, 2].map((i) => makeDir(`wt-${NOW - 9 * DAY}-00000${i}`))
+    for (const [i, dir] of dirs.entries()) insertPlan(`p${i}`, 'completed', dir)
+
+    const first = sweepStaleWorktrees(db, { now: NOW, remove, maxPerRound: 2 })
+    expect(first.removed).toBe(2)
+    expect(first.capped).toBe(true)
+    expect(dirs.filter((d) => fs.existsSync(d))).toHaveLength(1)
+
+    const second = sweepStaleWorktrees(db, { now: NOW, remove })
+    expect(second.removed).toBe(1)
+    expect(second.capped).toBe(false)
+    expect(dirs.every((d) => !fs.existsSync(d))).toBe(true)
+  })
+
+  it('worktree_path 指向已不存在目录时清空该列，且重复执行幂等', () => {
+    const missing = path.join(root, `wt-${NOW - 9 * DAY}-eeeeee`)
+    insertPlan('p1', 'completed', missing)
+
+    const first = sweepStaleWorktrees(db, { now: NOW, remove })
+    expect(first.clearedPaths).toBe(1)
+    expect(
+      (db.prepare("SELECT worktree_path FROM test_plans WHERE id = 'p1'").get() as { worktree_path: string | null })
+        .worktree_path,
+    ).toBeNull()
+
+    const second = sweepStaleWorktrees(db, { now: NOW, remove })
+    expect(second.clearedPaths).toBe(0)
   })
 })
