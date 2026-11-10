@@ -755,6 +755,60 @@ export function applyMapAcceptanceSchema(db: { exec(sql: string): unknown }): vo
   }
 }
 
+// ============================================================
+// v44 / G2-3：进化 Layer1 的记录表 memory_hits
+// ============================================================
+
+/**
+ * `memory_hits` 只记录「哪条上下文/步骤/证据/偏差在哪个 run 里被命中」，
+ * **只存引用不存全文**（II-05）。幂等键是 `(run_id, hit_kind, source_ref)` 的
+ * 唯一索引——同一 run 重算两次不会重复写。
+ *
+ * `created_at` 用 TEXT ISO 串（与 `node_evidence.created_at` 同口径），
+ * 滚动删除按字符串比较即可（ISO-8601 字典序 = 时间序）。
+ */
+export const MAP_MEMORY_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    name: 'memory_hits',
+    createSql: `
+      CREATE TABLE memory_hits (
+        id           TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        graph_id     TEXT NOT NULL,
+        node_id      TEXT,
+        work_item_id TEXT,
+        run_id       TEXT NOT NULL,
+        step_id      TEXT,
+        hit_kind     TEXT NOT NULL CHECK(hit_kind IN ('context','step','evidence','deviation')),
+        source_ref   TEXT NOT NULL,
+        score        REAL NOT NULL DEFAULT 1.0 CHECK(score >= 0 AND score <= 1),
+        created_at   TEXT NOT NULL
+      )
+    `,
+    requiredColumns: [
+      'id', 'project_path', 'graph_id', 'run_id', 'hit_kind', 'source_ref', 'score', 'created_at',
+    ],
+  },
+]
+
+export const MAP_MEMORY_INDEX_SQLS: string[] = [
+  // 单项目按时间倒序翻页（II-05 指定）。
+  `CREATE INDEX IF NOT EXISTS idx_memory_hits_project_created
+     ON memory_hits(project_path, created_at DESC)`,
+  // 幂等键：同一 run 的同一类命中 + 同一个来源只允许一条。
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_memory_hits_run_kind_ref
+     ON memory_hits(run_id, hit_kind, source_ref)`,
+]
+
+export function applyMemorySchema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_MEMORY_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_MEMORY_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}
+
 export function applyMapS8Schema(db: { exec(sql: string): unknown }): void {
   for (const schema of MAP_S8_TABLE_SCHEMAS) {
     db.exec(schema.createSql)

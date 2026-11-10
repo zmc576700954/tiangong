@@ -17,6 +17,7 @@ import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All, scanExpiredE4All, scanCoverageChangedE4All } from './map/evidence-service'
 import { ProposalService } from './map/proposal-service'
+import { pruneMemoryHits } from './map/memory-hit-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
 import {
@@ -25,6 +26,7 @@ import {
   MAP_S8_TABLE_SCHEMAS, MAP_S8_INDEX_SQLS,
   LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_ACCEPTANCE_TABLE_SCHEMAS, MAP_ACCEPTANCE_INDEX_SQLS,
   MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
+  MAP_MEMORY_TABLE_SCHEMAS, MAP_MEMORY_INDEX_SQLS,
   MAP_VIEW_SCHEMAS, applyMapViews,
 } from './map/schema'
 import { migrateLegacyAcceptance } from './map-migration/legacy-acceptance'
@@ -163,6 +165,12 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('proposal expiry sweep failed:', err)
   }
+  // G2-3：memory_hits 保留治理（180 天 / 单项目 20 万），启动后一次 + 每日。
+  try {
+    pruneMemoryHits(db)
+  } catch (err) {
+    logger.warn('memory_hits prune failed:', err)
+  }
   const e3ScanTimer = setInterval(() => {
     if (!db) return
     try {
@@ -184,6 +192,8 @@ export function initDatabase(): BetterSqlite3.Database {
       scanCoverageChangedE4All(db)
       // G1-14：阻塞提案 24h 超时取消（与 E4 到期同频）。
       new ProposalService(db).expireStale()
+      // G2-3：memory_hits 保留治理（180 天 / 单项目 20 万）。
+      pruneMemoryHits(db)
     } catch (err) {
       logger.warn('daily map integrity/retention task failed:', err)
     }
@@ -799,8 +809,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  * v43：G1-9 E4 覆盖变化扫描 —— `node_evidence.coverage_baseline_json`（签收基线）与
  *      `stale_reason`（过期原因），均可空、仅 ALTER 补列、不进 requiredColumns。
  *      回滚：列可保留不读；扫描入口摘除即回到「只有时间过期」判据。
+ * v44：G2-3 进化 Layer1 记录表 —— 新建 `memory_hits`（只存引用不存全文）+ 索引
+ *      `idx_memory_hits_project_created` / 唯一 `ux_memory_hits_run_kind_ref`。
+ *      纯建表 + 建索引，无数据迁移、不改既有列；旧库启动时由 `rebuildTableIfNeeded`
+ *      的「表不存在即建」路径补齐。保留治理（180 天 / 单项目 20 万）由
+ *      `pruneMemoryHits` 在启动与每日任务执行。
+ *      回滚：`DROP TABLE IF EXISTS memory_hits`（记录层可丢，不影响任务/证据）。
  */
-const CURRENT_SCHEMA_VERSION = 43
+const CURRENT_SCHEMA_VERSION = 44
 
 interface TableSchema {
   name: string
@@ -1284,6 +1300,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_ACCEPTANCE_TABLE_SCHEMAS,
   // v36 / W3 G3-5：存量 acceptance 迁移的原文存档（回滚凭据，非运行期依赖）。
   ...MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
+  // v44 / G2-3：进化 Layer1 记录表 memory_hits。
+  ...MAP_MEMORY_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
 ]
@@ -1345,6 +1363,7 @@ const INDEX_SQLS: string[] = [
   ...MAP_S7_INDEX_SQLS,
   ...MAP_S8_INDEX_SQLS,
   ...MAP_ACCEPTANCE_INDEX_SQLS,
+  ...MAP_MEMORY_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]
