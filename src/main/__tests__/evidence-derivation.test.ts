@@ -9,9 +9,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { applyMapS5aSchema } from '../map/schema'
-import { EvidenceService, EvidenceValidationError, E4_EXPIRY_DAYS, scanExpiredE4All } from '../map/evidence-service'
+import {
+  EvidenceService,
+  EvidenceValidationError,
+  E4_EXPIRY_DAYS,
+  E4_COVERAGE_MAX_FILES,
+  scanExpiredE4All,
+  scanCoverageChangedE4All,
+} from '../map/evidence-service'
 import {
   recomputeExecutionState,
   deriveFromInputs,
@@ -78,6 +88,8 @@ function setupDb(): BetterSqlite3.Database {
       signed_by_display_name  TEXT,
       signed_at               TEXT,
       coverage_json           TEXT,
+      coverage_baseline_json  TEXT,
+      stale_reason            TEXT,
       basis_ref_json          TEXT,
       reproducible            INTEGER,
       expires_at       TEXT,
@@ -417,9 +429,10 @@ describe('派生引擎（§3.7.4 九级 + U1）', () => {
     const res = scanExpiredE4All(db, now)
     expect(res).toMatchObject({ scanned: 1, staled: 1 })
 
-    const ev = db.prepare("SELECT freshness, stale_at FROM node_evidence WHERE evidence_level = 'E4'").get() as Record<string, unknown>
+    const ev = db.prepare("SELECT freshness, stale_at, stale_reason FROM node_evidence WHERE evidence_level = 'E4'").get() as Record<string, unknown>
     expect(ev.freshness).toBe('stale')
     expect(ev.stale_at).toBe(now.toISOString())
+    expect(ev.stale_reason).toBe('expires_at')
 
     // 扫描落库：kind=derivation / stage=e4_expiry，stats 可解析查询
     const report = db
@@ -553,5 +566,101 @@ describe('状态变更触发派生（§3.7.5）', () => {
     expect(state('key-dep')!.execution_state).toBe('implemented')
     // 无关节点不被顺手重算
     expect(state('key-other')).toBeUndefined()
+  })
+})
+
+describe('G1-9 E4 覆盖变化扫描（§3.5）', () => {
+  let db: BetterSqlite3.Database
+  let svc: EvidenceService
+  let root: string
+
+  const base = {
+    level: 'E4' as const, graphId: 'g1', nodeEntityKey: 'key-1', evidenceType: 'human_confirm' as const,
+  }
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex')
+
+  beforeEach(() => {
+    db = setupDb()
+    svc = new EvidenceService(db)
+    cancelPendingRecomputes()
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'cov-e4-'))
+    fs.mkdirSync(path.join(root, 'out'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'out', 'result.txt'), 'v1')
+    db.prepare(
+      `INSERT INTO work_items (id, lineage_id, revision, is_current, graph_id, anchor_entity_key, title,
+         scope_files, acceptance_json, status, gate_status, depends_on_json, origin, created_at, updated_at)
+       VALUES ('wi1', 'wl1', 1, 1, 'g1', 'key-1', '登录', '["src/a.ts"]', '[{"id":"a1"}]',
+               'queued', 'pass', '[]', 'human', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+    ).run()
+  })
+
+  afterEach(() => {
+    cancelPendingRecomputes()
+    fs.rmSync(root, { recursive: true, force: true })
+    db.close()
+  })
+
+  function sign(extra: Record<string, unknown> = {}) {
+    return svc.create({
+      ...base, ref: {}, actor: 'human', signedBy: 'u1', projectPath: root, workItemId: 'wi1',
+      coverage: [{ node_entity_key: 'key-1', files: ['out/result.txt'], acceptance_ids: ['a1'] }],
+      ...extra,
+    }).row
+  }
+
+  it('签收即采集基线：逐文件 sha256 + 范围快照，与到期扫描互不共用', () => {
+    const row = sign()
+    const baseline = JSON.parse(row.coverage_baseline_json!) as {
+      files: Array<{ path: string; sha256: string }>
+      scope: { scope_files: string[]; acceptance_ids: string[] }
+      captured_at: string
+    }
+    expect(baseline.files).toEqual([{ path: 'out/result.txt', sha256: sha('v1') }])
+    expect(baseline.scope).toEqual({ scope_files: ['src/a.ts'], acceptance_ids: ['a1'] })
+    expect(baseline.captured_at).toBe(row.signed_at)
+    // 基线不改变 E4 既有语义
+    expect(row).toMatchObject({ freshness: 'fresh', version_binding: 'none', code_version: null })
+    expect(row.stale_reason).toBeNull()
+  })
+
+  it('内容变化 → stale + coverage_content_changed；重复扫描幂等', () => {
+    const row = sign()
+    fs.writeFileSync(path.join(root, 'out', 'result.txt'), 'v2')
+    const res = scanCoverageChangedE4All(db, new Date('2026-01-02T00:00:00Z'))
+    expect(res).toMatchObject({ scanned: 1, staled: 1, contentChanged: 1, scopeChanged: 0 })
+    const after = svc.get(row.id)!
+    expect(after.freshness).toBe('stale')
+    expect(after.stale_reason).toBe('coverage_content_changed')
+    expect(after.stale_at).toBe('2026-01-02T00:00:00.000Z')
+    // 幂等：第二次不再选中（已非 fresh）
+    expect(scanCoverageChangedE4All(db)).toMatchObject({ scanned: 0, staled: 0 })
+  })
+
+  it('范围变化 → stale + coverage_scope_changed；不自动撤销', () => {
+    const row = sign()
+    db.prepare("UPDATE work_items SET scope_files = ? WHERE id = 'wi1'").run(JSON.stringify(['src/b.ts']))
+    const res = scanCoverageChangedE4All(db)
+    expect(res).toMatchObject({ scanned: 1, staled: 1, contentChanged: 0, scopeChanged: 1 })
+    const after = svc.get(row.id)!
+    expect(after).toMatchObject({ freshness: 'stale', stale_reason: 'coverage_scope_changed', revoked_at: null })
+  })
+
+  it(`超过 ${E4_COVERAGE_MAX_FILES} 文件只记 skipped：不阻断签收，也检测不到内容变化（I.9.3 妥协）`, () => {
+    const many = Array.from({ length: E4_COVERAGE_MAX_FILES + 1 }, (_, i) => `out/f${i}.txt`)
+    const row = sign({ coverage: [{ node_entity_key: 'key-1', files: many, acceptance_ids: ['a1'] }] })
+    const baseline = JSON.parse(row.coverage_baseline_json!) as { files: unknown[]; skipped?: string }
+    expect(baseline.files).toEqual([])
+    expect(baseline.skipped).toBe('too_many_files')
+
+    const res = scanCoverageChangedE4All(db)
+    expect(res).toMatchObject({ scanned: 1, staled: 0, inconclusive: 1 })
+    expect(svc.get(row.id)!.freshness).toBe('fresh')
+  })
+
+  it('无基线的历史 E4 不参与扫描', () => {
+    svc.create({ ...base, ref: {}, actor: 'human', signedBy: 'u1', coverage: [{ acceptance_ids: ['a1'] }] })
+    const rows = db.prepare("SELECT coverage_baseline_json FROM node_evidence WHERE evidence_level = 'E4'").all() as Array<{ coverage_baseline_json: string | null }>
+    expect(rows[0].coverage_baseline_json).toBeNull()
+    expect(scanCoverageChangedE4All(db)).toMatchObject({ scanned: 0, staled: 0 })
   })
 })

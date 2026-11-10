@@ -5,6 +5,7 @@
 > 状态：设计定稿。v2.1 补齐 34 条「仅建议」施工级设计与 17 条待裁决细则；v2.2 回写 D-01…D-17 裁决并解除 13 条阻塞；**v2.3 把已落地的 W1–W5 成果同步进状态词（61 → 64 条已实施，25 → 22 条已批准未实施），并记录 `RequestQueue` 已删除、W5-D 评测 harness 与打包验证落地**。严格区分：裁决只定方向，**不产生施工授权**——32 条仍为「仅建议」，17 条仍为「未授权施工」，均不升格。
 > v2.4（2026-11-10）：G9-10 worktree 定时清理、G2-14 明细视图、G2-13 published 软阻断三条仅建议项落地；已实施 75 → 78，仅建议 32 → 29。
 > v2.5（2026-11-10）：G1-14 提案机制三层（含 G2-6/G2-19/G8-4）、G2-1 模式库 + `mode_id`、G7-5 MCP 写前审批、G11-10 `tree_hash` 落地；已实施 78 → 85，仅建议 29 → 23。实施中的暂时妥协登记在 I.9.3。
+> v2.6（2026-11-10）：G1-9 E4 覆盖变化扫描（v43）落地；已实施 86，已批准未实施 9。E4 的「到期」与「覆盖变化」保持两条独立判据，变化统一 stale 并用 `stale_reason` 区分内容/范围。
 > 权威声明：**本文是会话地图 / 多图编排 / 任务执行的唯一权威**。`docs/architecture/map-orchestration-blueprint.md`（v1.2.3，398 行）已并入本文 Part I 与 §2/§3/§5/§6，保留为历史快照，不再单独作为权威。
 > ZCode 快照对应：用户上传件与仓库内 `map-orchestration-blueprint.md` 为同一份 v1.2.3（R10 勘误版），不是更新版；该文件当前实测 **398 行**（`wc -l`，2026-11-09 复核）。
 > 范围：地图信息架构、字段级表结构、迁移顺序与回退、任务拆解机制、TestExecutor、IPC/渲染改动清单、状态与施工计划。
@@ -44,17 +45,17 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **85** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42） |
-| 已批准未实施 | **10** | 见 I.3，均有可施工方案（W 包） |
+| 已实施 | **86** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43） |
+| 已批准未实施 | **9** | 见 I.3，均有可施工方案（W 包） |
 | 仅建议 | **23** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 85+10+23+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 86+9+23+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（85）
+### I.1.1 已实施（86）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
@@ -62,17 +63,15 @@
 - **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
-- **证据体系**：G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
+- **证据体系**：G1-9/G5-5 E4 覆盖变化扫描（v43：签收基线 + 独立扫描，变化置 stale 并区分 `stale_reason`）、G1-10/G5-4 `evidence_suggestions`（建表 + 接受同事务转证据）、G5-1 E1–E4 写方矩阵、G5-2 TestExecutor 写方、G5-6 E4 过期转 `stale`、G5-7 非 git E4 标记、G5-8 §3.4 事务/去重、G11-10 `node_evidence.tree_hash`（v42，E3 可选树绑定）。
 - **Agent 运行时**：G6-1 M2 六项、G6-2 事件 50ms 批写、G6-3 turn 起始快照（恢复期不写库）、G6-4 三文件落地（`startup-reconciler` / `locks/workspace-lease` / `executors/acp-executor`，原「未建」）、G6-5 删除 unattended 30s 分支与仅供其存在的配置/UI/测试桩（`approval/gateway.ts:37,183`，统一交互 120s）、G6-6 重启 pending 按实际降级（统一 deny）、G6-12 R3 高事件量回放（`tests/eval/agent-eval.test.ts`）、G6-13 打包后 SDK/CLI 可用（arm64 实测）、G6-18 C13b 同名前缀 symlink 不跟随（`registry-hardening.test.ts`）、G6-19 五通道位置校正、G6-20 12 适配器能力矩阵。
 - **审批与沙箱**：G7-4 legacy Claude 审批钩子、G7-5 MCP 写工具写前审批（同一 gateway）、G7-6 未知键 ask、G7-9 legacy `onBashPolicy`、G7-11 会话级授权边界、G7-13 交互审批 120s fail-closed、G7-14 重启陈旧审批 deny。
 - **界面与交互**：G8-1 `NodeMapPanel`、G8-2 画布徽标/时间线、G8-7 降级文案、G8-9 证据空态、G8-10 `ApprovalInbox`、G3-3/G8-6 renderer 执行入口（`NodeMapPanel` 接 `workitem:run:start` / `workitem:cancel` / `workitem:step:run` / `workitem:run:cancel`，只读 `map:execution:status`，gate 未通过只禁用不放行）。
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-10 worktree 定时清理（标记文件 + 启动/每 6h，`test-executor.ts`）、G9-11 schema 版本号对齐 36、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（10）
+### I.1.2 已批准未实施（9）
 
-- **会话地图本体**：G1-9 E4 覆盖扫描。
-- **证据体系**：G5-5 E4 扫描（=G1-9）。
 - **Agent 运行时**：G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U5/U7/U9 待环境）、G6-14 Claude token、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
 - **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode。G7-10 旧路径时间线**已裁决不做**（设计边界，见 §4.5.1a），不在此列。
 - **迁移与运维**：G9-13 Windows 路径。
@@ -102,7 +101,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（79 条，按主题）
+## I.2 已实施清单（80 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -149,7 +148,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G4-10 | S8 前置五表（`test_specs/plans/items/runs/results`） | `database.ts:1221` |
 | G4-11 | TestExecutor 逐条执行 + `evidence.create` E2/E3 | `test-executor.ts:389,406`、`test-plan-service.test.ts` |
 
-### I.2.4 证据体系（8）
+### I.2.4 证据体系（9）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -161,6 +160,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G5-4 | 建议转证据：`evidence_suggestions` → 人工接受 → `node_evidence`（`produced_by='agent'`、ref 追加 `suggestionId`）；机器全过则不经建议直写 E2（`produced_by='system'`） | `evidence-suggestions.test.ts`、`agent-step-runner.ts`（`recordTurnEvidence`） |
 | G5-8 | §3.4 事务/去重：接受与证据写入同事务；同 node+kind+source_ref 只留一条 pending；驳回只改状态 | `evidence-service.ts`（`suggest/accept/dismiss`）、`evidence-suggestions.test.ts` |
 | G11-10 | E3 可选树绑定：`node_evidence.tree_hash`（v42，可空、仅 E3 可写、不进 CHECK 与 gate）；TestExecutor 写 E3 时回填执行树 | `schema.ts`（`node_evidence`）、`database.ts`（v42 `addColumnSafe`）、`evidence-service.ts`（`treeHash`）、`test-executor.ts`（`treeHash: executed.treeHash`）、`evidence-derivation.test.ts`（G11-10 用例） |
+| G1-9/G5-5 | E4 覆盖变化扫描（v43）：签收时 `captureCoverageBaseline` 记逐文件 `sha256` + 范围快照；`scanCoverageChangedE4All` 与到期扫描独立（`stage='e4_coverage'`、启动+每日、单轮 ≤500、只更新 fresh），变化置 stale 并用 `stale_reason` 区分内容/范围；不自动撤销 | `schema.ts`（`coverage_baseline_json`/`stale_reason`）、`database.ts`（v43 + 调用点）、`evidence-service.ts`（`captureCoverageBaseline`/`scanCoverageChangedE4All`）、`evidence-derivation.test.ts`（G1-9 用例） |
 
 ### I.2.5 Agent 运行时（10）
 
@@ -262,7 +262,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **施工注记（2026-11-08，W1 完成）**：G1-5/G1-6 经代码复核**确已实施**，本包只纠正状态词、未改代码。G1-7 按 §5.9.7 **分散落点**接线：`outputs → work_runs.outputs_json`、`outputParse → work_runs.output_parse`、`partial → work_runs.partial_output_ref`、文件变更 → `change_sets.files_json`、`usage` 仍由 runtime 写 `agent_usage`；**不改** `agent_turns.output_json`，**不重复写** usage。生产端接在 `agent-step-runner.ts` 的 `complete/fail/timeout` 透传（`parseStepOutputs` L175、`runOutputData` L207、`buildPartial` L471、`recordChangeHead` L443），取基/取头经新增 `workspace-change-stats.ts`；无 schema 时不伪造 outputs、不写空对象。G1-8 采**方案 B**：父任务处于 `draft/awaiting_confirm/queued/running` 时可被子任务全终态带进终态，`needs_human/blocked/needs_input/paused/interrupted` 不覆盖；聚合口径 `failed > cancelled > done`（`superseded` 按 cancelled 计）；触发点为 `transition()` 终态后与 `convergeIfTerminal()` 收口后，均调用 `convergeParentChain` 向父链上推（`seen` 防环、条件 UPDATE 幂等）。**父任务 gate 被绕过是方案 B 的有意行为，不是缺陷**；G1-13 在 WS `getDoc` 走 `getOrLoadDoc`，装载前先校验 `graphs` 行存在，避免为不存在的图造孤儿 doc。G1-11 维持**仅建议**：真实库 `agent_turns` 0 行、历史证据库各自指存在节点，无伪节点证据，故不动 `node_id` 约束。本包**不升 schema**（`CURRENT_SCHEMA_VERSION` 仍为 35），**不提交 git**。
 
 ### W2 证据闭环
-- 覆盖条目：G1-9 `[批准]` E4 覆盖扫描、G1-10 `[已实施]` `evidence_suggestions`、G3-10/G5-3 `[已实施]` E1 人工判断直写通道、G5-8 `[已实施]` 建议转证据事务/去重、G5-9 `[已实施]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
+- 覆盖条目：G1-9 `[已实施（v43）]` E4 覆盖变化扫描、G1-10 `[已实施]` `evidence_suggestions`、G3-10/G5-3 `[已实施]` E1 人工判断直写通道、G5-8 `[已实施]` 建议转证据事务/去重、G5-9 `[已实施]` 等级字段组合校验、G5-10 `[建议]` 项目进度只读查询。
 - 目标：agent 回合产生的候选证据可被建议、可被人工接受、可复扫失效；E1 由人工直写、E4 有 IPC 写通道。
 - 涉及文件与数据/接口变更：`src/main/map/evidence-service.ts`、`src/main/ipc/map.ts`、`src/main/map/evidence-derivation.ts`；新增 `evidence_suggestions` 表与迁移；新增 `evidence:suggest` / `evidence:accept` / `evidence:scan` 通道。
 - 实施步骤：① 建 `evidence_suggestions` 表 + CHECK；② 建议写入去重键（node+kind+source_ref）；③ 接受时事务内转 `node_evidence` 并写审计；④ E4 增加内容哈希 `content_hash` 与复扫任务；⑤ IPC 补写通道与参数校验。
@@ -274,6 +274,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **施工注记（2026-11-09，G1-10/G5-4/G5-8 收口，schema v37）**：`evidence_suggestions` 按 §7.2 DDL **逐字**建表（`suggested_level` E1–E4 CHECK、`status` pending/accepted/dismissed CHECK、`confidence` DEFAULT 0.5），索引 `idx_evidence_suggestions_status(graph_id,status)`；状态域与列不增不减。服务层新增 `EvidenceSuggestionService`：① **去重**按「节点 + evidence_type + 来源」——有 run 用 `produced_by_run_id`，无 run 用 `ref_json`，只保留一条 `pending`（不新增蓝图外唯一索引）；② **接受**在 `db.transaction` 内先条件更新建议（`WHERE status='pending'`）再调用 `EvidenceService.create`，任一步失败整体回滚；证据 `produced_by='agent'`（来源是 agent 回合）、`actor='human'`（裁决人），`ref_json` 追加 `suggestionId`，重复接受按该字段反查既有证据返回 `reused=true`，不写第二行；③ **驳回**只改状态，重复驳回幂等；④ **E3 建议拒绝接受**（只能 TestExecutor 写，禁止人工点击洗成可复现证据）。Agent 回合按 **C 口径分流**（`agent-step-runner.ts` 的 `recordTurnEvidence`）：**机器全过**（`succeeded` 且每条均为 command/file_check、outcome=pass、manual 0 条）→ 直写 E2 `node_evidence`（`produced_by='system'`，`ref_json.acceptance` 记录逐条验收结果与执行指纹）；**含 manual 待确认**（`needs_input`）→ 只写 `pending` 建议，人工接受才转证据；**验收失败/未注入验收/缺节点或项目/取不到执行指纹** → 什么都不写。IPC 只开必要通道：只读 `map:evidence:suggestions:list`，写 `map:evidence:suggestion:accept` / `:dismiss`；幂等键均为建议 id，`resolvedBy` 必填作为审计主体，仅 preload 白名单内的本地 renderer 可调用；蓝图原列的 `evidence:suggest` 无真实调用方（唯一来源是 agent 回合内直写服务）、`evidence:scan` 归 G1-9 未实施，故**不开空壳通道**。迁移为纯建表（`CURRENT_SCHEMA_VERSION` 36 → 37，无数据迁移），由 `database-migration.test.ts` 的 v33 升链用例断言表/索引存在、版本为 37；链路证据见 `evidence-suggestions.test.ts` 与 `agent-step-runner.test.ts`。G3-10/G5-3 的 E1 口径见下条注记（2026-11-09 收口）。
 - **施工注记（2026-11-09，G3-10/G5-3 收口，E1 口径裁决）**：用户裁决 E1 只能来自人，agent 不得起草 E1（判断走文本，不进证据/建议）。落地：① `SUGGESTION_LEVELS` 移除 E1，agent 路径只产 E2 建议（`agent-step-runner.ts` 本就只建议 E2）；② `accept()` 显式拒绝历史 E1 建议，避免人工点击把 agent 推断洗成 E1；`toEvidenceInput` 的 `produced_by='human'` 分支只保留 E4；③ 新增 `EvidenceService.createHumanJudgment`：等级固定 E1、`actor/produced_by='human'`，沿用既有校验（`ref_json` 非空、`summary` 必填），`ref_json` 指向被判断对象，不新增列；可选 `idempotencyKey` 存 `ref_json.idempotencyKey`，按 `json_extract` 反查同图同节点既有 E1 返回 `reused=true`；④ IPC 新增写通道 `map:evidence:e1:create`（`ipc/map.ts` + `shared/types/ipc.ts` + preload 白名单 + 结构化错误），只收 `graphId/nodeEntityKey/nodeId?/projectPath?/summary/ref/idempotencyKey?`，不接收 `actor/producedBy`，仅本地 renderer 可调；⑤ **renderer 入口（节点/证据面板手写 E1）归 G8**，本包不做，数据/服务侧已就绪；⑥ 库层 `suggested_level` CHECK 仍含 E1，仅用于兼容历史行，写入侧由服务层收口，不做 v38 迁移。测试：`evidence-suggestions.test.ts` 新增 4 例（拒绝建议 E1、历史 E1 建议拒绝接受、人工直写字段固定与必填、idempotencyKey 幂等）。G3-10/G5-3 状态改为「已实施」，计数 73/13。
 - **施工注记（2026-11-09，G5-9 收口）**：`EvidenceService.create` 在库层 CHECK 之外补齐应用层组合校验：`ref_json` 缺失（含显式 `null`）拒绝；E1 必填 `summary`；E1/E2 拒绝混入 `code_version/code_dirty/signed_by/coverage`；E3 拒绝 `signed_by/coverage`；E4 拒绝 `code_version/code_dirty`（`current_hash` 仍作产物内容绑定放行，与 `acceptance-confirmation.ts:313` 一致）。**未做**：§3.7.1 的「ref_json 每个引用可解析」（文件/提交/测试存在性）与 E4 `acceptance_ids` 是否真实存在于 work_item acceptance——这两项需跨表解析口径，仍留在 W2 后续。G5-9 状态由「已批准未实施」改为「已实施」，计数 65/21。
+
+- **施工注记（2026-11-10，G1-9 收口，schema v43）**：新增 `node_evidence.coverage_baseline_json` 与 `stale_reason`（均可空、仅 `addColumnSafe` 补列、不进 `requiredColumns`）。① **基线**：`captureCoverageBaseline` 在 `EvidenceService.create` 的 E4 分支内采集——对 `coverage[].files` 逐文件算 `sha256`（相对 `project_path`、只收仓库内普通文件、按 §3.5 不做整树 Merkle），并从锚定 `work_item` 抄 `scope_files` 与 `acceptance_json` 条目 id 作范围快照；既无文件也无范围时不写基线（NULL = 历史行，扫描跳过）。② **扫描**：`scanCoverageChangedE4All` 与 `scanExpiredE4All` **并列且独立**（独立 SQL、独立入口、`stage='e4_coverage'`，互不引用），启动后 + 每日一次，单轮 `LIMIT 500`，只更新 `freshness='fresh'` 行（幂等）；内容不一致或文件缺失 → `coverage_content_changed`，范围快照不一致 → `coverage_scope_changed`，内容优先；**统一置 stale，不自动撤销**（裁决：范围比对是启发式的，撤销几乎不可逆）。③ `current_hash` 只作预筛思路、不作基线（聚合值无法回答哪个文件变了，且手工 E4 无值）；`tree_hash` 只对 E3 开放、E4 不可复用。④ 到期扫描同步补写 `stale_reason='expires_at'`，两条判据从此都能从同一列区分。**已知妥协**：>200 文件 / 无 `project_path` / 采集异常只记 `skipped`，不改 `freshness`（I.9.3）；范围比对不比 revision 号（避免"仅换 revision"误报），也不会检测"文件被新增"（基线只覆盖签收时声明的文件）。回滚：列保留不读、扫描调用点摘除即回到只有时间过期。
 
 ### W3 执行守卫与入口
 - 覆盖条目：G3-4 `[已实施]` `priority DESC`、G3-5 `[已实施]` 存量自由文本 acceptance、G3-6～G3-9 `[已实施]` 超时预算、G3-1/2/3 `[建议]` Tier1/跨进程写闸/renderer 入口（**本期不做**，仅保留设计状态）。
@@ -589,7 +591,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W3 执行守卫 | G3-4…G3-9（已实施）、G3-10 | **已完成主体（`0df2234`）** | 无 | 6 条已转入 I.2；G3-10 归 W2 证据写入面 |
 | W4 测试体系 | G4-6…G4-9 | **已完成（`217fbbc`）** | 无 | 4 条已转入 I.2；流程测试三项仍为仅建议 |
 | W12 文档验收 | G10-1/2/3/11 | **进行中（G10-2/3 已收口）** | 可与 W1 并行 | 纯文档与用例；A1–A4 已登记，剩 G10-1 |
-| W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **主体完成（G1-10/G5-8/G5-9/G3-10）** | 剩余写通道依赖 D-03 | `evidence_suggestions` + 接受同事务 + E1 人工直写已落；G1-9 E4 复扫未做 |
+| W2 证据闭环 | G1-9/10、G3-10、G5-8/9 | **完成** | 无（G5-10 归 W12 后续） | `evidence_suggestions` + 接受同事务 + E1 人工直写 + E4 覆盖变化扫描（v43）均已落 |
 | W5 Agent M2 | G6-1…G6-4、G6-12/13/18 | **已完成（`dc51b48` / `80075e7` + W5-D），Codex/OpenCode 真机矩阵未做** | 无 | M2 六项 + ACP/chat 路由 + R3/打包/C13b 已闭环；G6-11/14/15/16 待环境（CLI/凭据/平台） |
 | W6 Agent 恢复/旧路径 | G6-5（已实施删除）/7/11…G6-16；G7-10（不做） | 依赖 W5 | W5；Codex 口径按 D-08 | 恢复与旧路径建立在 M2 的持久化之上；G7-10 已登记为设计边界（§4.5.1a） |
 | W7 审批覆盖 | G7-1…G7-6、G7-9（G7-10 不做） | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
@@ -632,11 +634,11 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G7-5 | MCP 写工具（**已实施，同一 gateway，口径见 I.9.3**） | MCP 写工具是否纳入写前审批 | 建议：纳入，走同一 gateway | 2 人日 |
 | G11-10 | tree-hash 等级（**已实施，v42，口径见 I.9.3**） | 是否为 E3 增加可选 `tree_hash` 绑定 | 建议：加可空列、不改 E3/E4 语义与 gate | 2 人日 |
 
-### D. 什么都不需要、可直接开工（25 条，按建议施工顺序）
+### D. 什么都不需要、可直接开工（24 条，按建议施工顺序）
 
 | 编号 | 名称 | 卡点 | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
-| G1-9 | E4 覆盖扫描 | 无外部依赖，只差 `content_hash` 基线 + 复扫 | 授权开工即可 | 1.5–2 人日 |
+| G1-9 | E4 覆盖扫描（**已实施，v43，口径见 I.9.3**） | 无外部依赖，只差 `content_hash` 基线 + 复扫 | 已完成：签收基线 + 独立扫描（≤500/轮） | — |
 | G6-14 | Claude token 统计 | **重判：改口径可验**——用现有 cc-switch GLM 代理跑一轮，验 token/usage 是否落库；不验官方计费（见 I.9.2） | 授权开工即可（先用 GLM 代理） | 0.5 人日 |
 | G2-3 | `memory_hits` 表 | 无 | 授权开工即可 | 1.5 人日 |
 | G2-2 | 进化 Layer1 | 依赖 G2-3 建表 | 授权开工即可 | 2 人日 |
@@ -708,6 +710,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G2-1 / II-03 **（妥协）** | 执行模式可解释、可复盘 | 代码常量注册表 + `routing_decisions.mode_id` + `mode:list` 只读；无匹配 `TIER_UNSUPPORTED` | **妥协**：①模式不驱动参数/提示词/ContextBundle 装配，仅路由标签；②无模式库存储与可视化编辑，改模式须发版；③匹配键只有执行器 + policy + adapter 非空；④历史决策 `mode_id` 为 NULL 未回填。后果：能回答“这次走了哪个模式”，但不能“按模式调参” | 需要按模式调参/运营配置模式时重新评估 |
 | G7-5 / II-审批 **（妥协）** | MCP 写工具不得绕过写前审批 | `McpAdapter.setTurnApprovalHooks` 接入 Driver，写类 MCP 工具执行前走同一 gateway；被拒不执行 | **妥协**：①只能按工具名动词清单判定写语义，名字不含写动词的未知写工具会漏判；②名字含写动词的读工具会被保守误判（多问一次）；③MCP 无路径参数时无法命中会话级授权，每次重新审批；④未覆盖 Codex/OpenCode 的 MCP 工具路径（G7-1/G7-2/G7-3 仍待办）。后果：已知写工具被兜住，未知写语义仍可能漏 | 拿到 MCP server 的 tools/list 注解或 schema 后按语义判定 |
 | G11-10 / II-34 **（妥协）** | 为 E3 附上可复现的工作区树绑定 | `node_evidence.tree_hash`（v42 可空列）+ `EvidenceService` 仅 E3 接收 + TestExecutor 回填执行树 | **妥协**：①不参与 gate/完成度判定，仅可追溯；②不做 tree 级 diff、不能按 tree 回放历史现场；③E2 只写 `current_hash`/`ref_json.worktreeTree`，不写该列；④历史 E3 不回溯补值。后果：能比对“这次测试跑在哪棵树上”，不能据此改变验收结论 | 需要 tree 级 diff 或按树回放时（与 G2-15 合并）重新评估 |
+| G1-9 / G5-5 **（妥协）** | E4 签收后覆盖内容/范围变化能被发现并降级 | `coverage_baseline_json` 基线（v43）+ `scanCoverageChangedE4All` 独立扫描（启动+每日、≤500/轮、幂等），变化置 stale 并区分 `stale_reason` | **妥协**：①**文件数 >200 / 无 `project_path` / 采集异常时只记 `skipped`，该签收不会因覆盖变化转 stale，只剩时间过期兜底**（已裁决，不阻断签收、不进 unknown）；②基线只覆盖签收时声明的文件，**签收后新增文件不会被发现**；③范围比对只比 `scope_files` 与 acceptance 条目 id，不比 revision 号、不比条目正文；④历史 E4 无基线不回溯；⑤扫描读盘成本随文件数线性增长（≤200/条、≤500 条/轮）。后果：能发现“签收过的文件被改/删”与“范围被改”，不能发现“新增文件”与超大覆盖集的变化 | 需要全量覆盖对账（含新增文件）或 >200 文件场景时，改增量快照（如 per-root tree hash）再评估 |
 
 # Part II 仅建议项施工级设计（23 条有效 + 已实施项保留为设计存档）
 
@@ -1910,26 +1913,31 @@ revoke_reason           TEXT
 
 | 判据 | 触发 | 结果 |
 |---|---|---|
-| 覆盖文件内容变化 | 签收时对 `coverage_json.files` 逐文件记录 `sha256`；请求状态时重算，任一不一致 | `freshness='stale'`，状态从 `signed_off` 降为 `stale` |
-| 覆盖范围变化 | 节点 `scope_files` / `acceptance_json` 变更，或所属 `work_item` 产生新 revision | 自动撤销（`revoked_at`），状态降为 `implemented` |
-| 时间过期 | `expires_at` 到期（**统一 30 天，可配置**；不按项目风险/类型区分，留作后续可选扩展，不进 L1） | 视为过期（`freshness='stale'`），派生状态为 **`stale`**，不降为 `implemented`。理由：过期签收是"曾经可信、现在不可信"，`implemented` 只能由新签收或新证据产生；**提供"一键续签"方向**：以原 `coverage_json` 为默认值生成新签收记录，并引用原证据（`renewed_from_evidence_id`），减少重复填写；但签收人与覆盖范围仍须显式确认，不允许静默续期 |
+| 覆盖文件内容变化 | 签收时对 `coverage_json.files` 逐文件记录 `sha256`；请求状态时重算，任一不一致（文件缺失也算变化） | `freshness='stale'`、`stale_reason='coverage_content_changed'`，状态从 `signed_off` 降为 `stale` |
+| 覆盖范围变化 | 锚定 `work_item` 的 `scope_files` / `acceptance_json` 条目 id 与签收基线不一致 | `freshness='stale'`、`stale_reason='coverage_scope_changed'`，状态降为 `stale`。**不自动撤销**（已裁决 2026-11-10：范围比对是启发式的，正常拆分/新增子节点也会变，自动撤销一次误判即不可逆；stale 可恢复） |
+| 时间过期 | `expires_at` 到期（**统一 30 天，可配置**；不按项目风险/类型区分，留作后续可选扩展，不进 L1） | 视为过期（`freshness='stale'`、`stale_reason='expires_at'`），派生状态为 **`stale`**，不降为 `implemented`。理由：过期签收是"曾经可信、现在不可信"，`implemented` 只能由新签收或新证据产生；**提供"一键续签"方向**：以原 `coverage_json` 为默认值生成新签收记录，并引用原证据（`renewed_from_evidence_id`），减少重复填写；但签收人与覆盖范围仍须显式确认，不允许静默续期 |
 | 人工撤销 | 用户显式撤销，必填 `revoke_reason` | 状态降为 `implemented` |
-| 无法计算内容哈希 | 文件不可读 / 超过阈值（默认 200 个文件） | `freshness='unknown'`，UI 显示"无法校验，请人工复核"；**不自动撤销** |
+| 无法计算内容哈希 | 文件不可读 / 超过阈值（默认 200 个文件） | **已裁决 2026-11-10**：只在 `coverage_baseline_json.skipped` 记原因（`too_many_files` / `no_project_path` / `capture_failed`），**不改 `freshness`、不进 `unknown`、不阻断签收**；这类签收只剩时间过期兜底（I.9.3 妥协） |
 
 - **不允许"完全不检测"**：至少要有"覆盖文件内容哈希"或"时间过期"之一。两者都不可用时，E4 只能保留 30 天并要求人工续签。
 - 内容哈希按文件独立记录（不是整树 Merkle），能精确回答"哪个文件变了"，也避免一次全量扫描。
 - 撤销/过期不删除证据行：保留 `revoked_at` / `freshness` 作为历史；派生状态只采信未撤销、未过期的 E4。
 
-**实施状态（2026-11-07）**：
+**实施状态（2026-11-10 更新）**：
 
 - **时间过期扫描——已实施**：`scanExpiredE4All` 在启动后与每日各跑一次，把到期 E4 置
-  `freshness='stale'` 并落 `map_migration_reports(kind='derivation', stage='e4_expiry')`；判定只认
-  `expires_at`，与 E3 的 HEAD/`code_version` 判定完全分离。
-- **覆盖文件内容变化 / 覆盖范围变化扫描——已批准未实施**。理由：现有 `coverage_json` 只存覆盖范围
-  （`files` / `acceptance_ids`），没有逐文件内容哈希基线，也没有可比较的 `base_hash`/`current_hash`
-  字段；要检测"覆盖文件变了"必须先定义签收时的哈希基线、存储字段与重算口径，属于另一个 schema
-  设计改动，不能在扫描实现里顺手猜测。未实施期间 E4 的失效判据只有"时间过期"和"人工撤销"，**不检测
-  覆盖内容变化**——这是已知缺口，不是已完成能力。
+  `freshness='stale'` + `stale_reason='expires_at'`，落
+  `map_migration_reports(kind='derivation', stage='e4_expiry')`；判定只认 `expires_at`，与 E3 的
+  HEAD/`code_version` 判定完全分离。
+- **覆盖变化扫描——已实施（v43，G1-9）**：`scanCoverageChangedE4All` 与到期扫描**并列但独立**
+  （独立 SQL、独立入口、独立 `stage='e4_coverage'`，互不引用）。签收时 `captureCoverageBaseline`
+  把逐文件 `sha256` 与范围快照写入 `node_evidence.coverage_baseline_json`（可空、不进
+  `requiredColumns`）；扫描每轮 ≤500 条，只更新 `freshness='fresh'` 行（幂等），变化置 stale 并用
+  `stale_reason` 区分内容/范围。`current_hash` 只作预筛思路、**不作基线**（聚合值无法回答哪个文件变了，
+  且手工 E4 无值）；`tree_hash` 只对 E3 开放，E4 不可复用。历史行无基线 → 不扫描（NULL）。
+- **已知妥协**：>200 文件 / 无 `project_path` / 采集异常时基线只记 `skipped`，该签收**不会被覆盖
+  变化转为 stale**，只剩时间过期兜底；范围比对未比较 `work_item` revision 号，只比 `scope_files` 与
+  acceptance 条目 id（减少"仅换 revision"的误报）。见 I.9.3。
 
 #### E3 与 E4 的关系（按可复现性分组）
 
@@ -1954,9 +1962,9 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 
 **过期扫描**：任务 `e4_expiry_scan` 启动后跑一次 + 每日一次；`UPDATE ... WHERE expires_at < now AND revoked_at IS NULL AND freshness <> 'stale'`（批量 ≤500），落 `map_migration_reports(kind='derivation', stage='e4_expiry')`；重复执行结果一致（幂等），只改 `freshness='stale'`，不删行、不改等级。
 
-**覆盖变化任务**（已批准未实施，本包不写代码）：签收时在 `coverage_json.files[]` 逐文件记 `sha256`；请求状态时重算，任一不一致 → `stale`；文件数 >200 或不可读 → `freshness='unknown'`，不自动撤销。
+**覆盖变化任务（已实施，v43 / G1-9）**：签收时 `captureCoverageBaseline` 把逐文件 `sha256` 与范围快照写入 `node_evidence.coverage_baseline_json`；`scanCoverageChangedE4All` 启动后 + 每日一次独立扫描（批量 ≤500，只更新 `freshness='fresh'`，幂等），任一文件内容不一致或缺失 → `stale` + `stale_reason='coverage_content_changed'`；范围快照不一致 → `stale` + `stale_reason='coverage_scope_changed'`；**不自动撤销**。文件数 >200 / 无 `project_path` / 采集异常 → 基线只记 `skipped`，不改 `freshness`（I.9.3 妥协）。
 
-**续签**：以 `renewed_from_evidence_id` 指向原 E4 生成**新行**，原行不修改；`renewed_from_evidence_id + signed_by` 作为幂等键，重复提交返回既有续签行；覆盖范围与签收人必须显式确认，禁止静默延期。验收：过期→`stale` 非 `implemented`；续签产生新行且原行保留；重复续签不增行；覆盖范围变化→自动撤销。
+**续签**：以 `renewed_from_evidence_id` 指向原 E4 生成**新行**，原行不修改；`renewed_from_evidence_id + signed_by` 作为幂等键，重复提交返回既有续签行；覆盖范围与签收人必须显式确认，禁止静默延期。验收：过期→`stale` 非 `implemented`；续签产生新行且原行保留；重复续签不增行；覆盖内容/范围变化→`stale` 且 `stale_reason` 可区分（不自动撤销）。
 
 ### 3.6 项目进度：派生视图，不落库（采纳，但更严格）
 
@@ -2001,9 +2009,10 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 |---|---|
 | `expires_at` 到期、未撤销的 E4 | `stale`；UI 显示"签收已过期，需续签" |
 | 未过期、未撤销的 E4 | `signed_off` |
-| 已撤销 / 覆盖范围变化的 E4 | 不参与 `signed_off`，按 §3.5 落回 `implemented` |
+| 已撤销的 E4 | 不参与 `signed_off`，按 §3.5 落回 `implemented` |
+| 覆盖内容/范围变化（未撤销）的 E4 | `stale`，`stale_reason` 区分 `coverage_content_changed` / `coverage_scope_changed`；**不自动撤销**（见 §3.5 裁决） |
 
-理由：过期签收是"曾经可信、现在不可信"，与 `stale` 的"曾验证但当前锚点失效"语义一致。对**过期**这一情形，`implemented` 只能由新签收或新证据产生，不能因为时间流逝自动变成"已实现"；撤销与覆盖范围变化是主动结果，仍按 §3.5 落回 `implemented`。§3.5 原"时间过期降为 `implemented`"的表述按本条裁决修正为 `stale`。`30 天` 口径不变；"一键续签 + `renewed_from_evidence_id`"只作为减轻操作负担的方向，不改变过期判据。
+理由：过期签收是"曾经可信、现在不可信"，与 `stale` 的"曾验证但当前锚点失效"语义一致。对**过期**这一情形，`implemented` 只能由新签收或新证据产生，不能因为时间流逝自动变成"已实现"；**人工撤销**是主动结果，仍按 §3.5 落回 `implemented`；**覆盖变化**是启发式判定（正常拆分/新增子节点也会让 scope 变），统一置 `stale` 并用 `stale_reason` 留痕，保留可恢复性且不撤销人工签收。§3.5 原"时间过期降为 `implemented`"的表述按本条裁决修正为 `stale`。`30 天` 口径不变；"一键续签 + `renewed_from_evidence_id`"只作为减轻操作负担的方向，不改变过期判据。
 
 #### 3.7.4 派生算法（可执行定义）
 
@@ -2021,7 +2030,7 @@ E3 的"代码 hash"指 git commit sha；非 git 项目没有。`content_hash`（
 3. 活跃集中任一 item 为在途状态且 `gate_status='incomplete'` 或依赖未满足 → `blocked`。
 4. 存在 `evidence_level='E3' AND freshness='fresh' AND revoked_at IS NULL` → `verified`；多条取 `verified_at DESC, id ASC` 第一条。
 5. 存在 `evidence_level='E4' AND freshness='fresh' AND revoked_at IS NULL` → `signed_off`；多条取 `signed_at DESC, id ASC` 第一条。
-6. 存在 `E3 freshness='stale'` → `stale`；存在已过期（`expires_at` 到期）且未撤销的 E4 → `stale`（U1 裁决）。已撤销 / 覆盖范围变化的 E4 不参与 `signed_off`，按 §3.5 落回 `implemented`。
+6. 存在 `E3 freshness='stale'` → `stale`；存在已过期（`expires_at` 到期）或覆盖内容/范围变化且未撤销的 E4 → `stale`（U1 + G1-9 裁决），`stale_reason` 区分 `expires_at` / `coverage_content_changed` / `coverage_scope_changed`。**已撤销**的 E4 不参与规则 5（`signed_off`），按 §3.5 落回 `implemented`；覆盖变化**不自动撤销**。
 7. 存在 `E2`（未撤销）→ `implemented`。
 8. 存在 `E1` 或活跃集中任一 item 为 `draft/queued` → `planned`。
 9. 否则 → `untouched`。

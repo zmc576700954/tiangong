@@ -252,6 +252,12 @@ export const MAP_S6A_TABLE_SCHEMAS: MapTableSchema[] = [
         tree_hash        TEXT,
         freshness        TEXT NOT NULL DEFAULT 'fresh'
                          CHECK(freshness IN ('fresh','stale','unknown')),
+        -- v43 / G1-9：E4 覆盖基线（签收时的逐文件 sha256 + 范围快照）。
+        -- 可空、**不进 requiredColumns**；NULL = 无基线（历史行不回溯，扫描跳过）。
+        coverage_baseline_json TEXT,
+        -- v43 / G1-9：stale 原因（expires_at / coverage_content_changed / coverage_scope_changed）。
+        -- 与 coverage_baseline_json 一起可回答「为什么过期」，不参与任何 CHECK。
+        stale_reason     TEXT,
         produced_by      TEXT NOT NULL
                          CHECK(produced_by IN ('human','agent','test_executor','system')),
         work_item_id     TEXT,

@@ -15,7 +15,7 @@ import { runHierarchyMigration } from './repositories/hierarchy-migration'
 import { MapMigrationStore, preflightStartup, pruneMapMigrationReports } from './map-migration/migration-state'
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
-import { scanStaleE3All, scanExpiredE4All } from './map/evidence-service'
+import { scanStaleE3All, scanExpiredE4All, scanCoverageChangedE4All } from './map/evidence-service'
 import { ProposalService } from './map/proposal-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
@@ -149,6 +149,13 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('E4 expiry scan failed:', err)
   }
+  // G1-9：E4 覆盖变化扫描（启动后 + 每日一次）。与到期扫描是两条独立判据：
+  // 这里比对签收基线（逐文件 sha256 + 范围快照），变化置 stale 并区分 stale_reason。
+  try {
+    scanCoverageChangedE4All(db)
+  } catch (err) {
+    logger.warn('E4 coverage scan failed:', err)
+  }
   // G1-14：阻塞提案等待超 24h 自动取消（启动后一次 + 每日随巡检执行）。
   // 只改 work_items 里的提案状态，不触碰 online 图。
   try {
@@ -173,6 +180,8 @@ export function initDatabase(): BetterSqlite3.Database {
       new ImportDedupService(db).runRetention()
       // §3.7.5：E4 到期每日扫描一次（到期置 stale 并派生 stale）
       scanExpiredE4All(db)
+      // G1-9：E4 覆盖变化每日扫描（独立判据，失败不影响到期扫描）
+      scanCoverageChangedE4All(db)
       // G1-14：阻塞提案 24h 超时取消（与 E4 到期同频）。
       new ProposalService(db).expireStale()
     } catch (err) {
@@ -787,8 +796,11 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  * v42：G11-10 tree-hash 等级 —— `node_evidence.tree_hash`（可空 TEXT，仅 ALTER 补列，
  *      不进 requiredColumns）。只记录 E3 执行树，**不改 E3/E4 的 CHECK 语义与
  *      gate 判定**；回滚：列可保留不读（历史行全 NULL）。
+ * v43：G1-9 E4 覆盖变化扫描 —— `node_evidence.coverage_baseline_json`（签收基线）与
+ *      `stale_reason`（过期原因），均可空、仅 ALTER 补列、不进 requiredColumns。
+ *      回滚：列可保留不读；扫描入口摘除即回到「只有时间过期」判据。
  */
-const CURRENT_SCHEMA_VERSION = 42
+const CURRENT_SCHEMA_VERSION = 43
 
 interface TableSchema {
   name: string
@@ -1784,6 +1796,12 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // v42：G11-10 E3 执行树绑定，纯加列；不进 requiredColumns（NULL = 未采集/历史证据）。
   if (currentVersion < 42) {
     addColumnSafe('node_evidence', 'tree_hash', 'TEXT')
+  }
+
+  // v43：G1-9 E4 覆盖基线 + stale 原因，纯加列；不进 requiredColumns（NULL = 无基线）。
+  if (currentVersion < 43) {
+    addColumnSafe('node_evidence', 'coverage_baseline_json', 'TEXT')
+    addColumnSafe('node_evidence', 'stale_reason', 'TEXT')
   }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。

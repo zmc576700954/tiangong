@@ -17,13 +17,35 @@
  *  - 撤销必填 revoke_reason;撤销/过期不删行
  */
 
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
+import { isPathInside } from '../agent/runtime/approval/write-paths'
 import { scheduleExecutionRecompute } from './execution-state'
 
 /** E4 过期天数（§3.5：统一 30 天,可配置）。 */
 export const E4_EXPIRY_DAYS = 30
+
+/** G1-9：单条 E4 覆盖基线最多逐文件哈希 200 个（§3.5 阈值）。 */
+export const E4_COVERAGE_MAX_FILES = 200
+/** G1-9：覆盖变化扫描单轮上限（§3.5.1 批量 ≤500）。 */
+export const E4_COVERAGE_SCAN_LIMIT = 500
+
+export type StaleReason = 'expires_at' | 'coverage_content_changed' | 'coverage_scope_changed'
+
+/** E4 签收时的覆盖基线：逐文件内容哈希 + 范围快照（节点锚定 work_item）。 */
+export interface CoverageBaseline {
+  version: 1
+  captured_at: string
+  files: Array<{ path: string; sha256: string }>
+  /** 签收时的范围快照；无 work_item 时不写（只做内容比对）。 */
+  scope?: { scope_files: string[]; acceptance_ids: string[] }
+  /** 采集失败/超限时记录原因；此时只跳过内容比对，范围比对仍可用。 */
+  skipped?: 'too_many_files' | 'no_project_path' | 'capture_failed'
+}
+
 
 export type EvidenceLevel = 'E1' | 'E2' | 'E3' | 'E4'
 export type Actor = 'human' | 'agent' | 'test_executor' | 'system'
@@ -49,6 +71,10 @@ export interface NodeEvidenceRow {
   /** v42/G11-10：E3 执行树的 git tree 哈希（可空，不参与 gate）。 */
   tree_hash: string | null
   freshness: 'fresh' | 'stale' | 'unknown'
+  /** v43/G1-9：E4 签收基线（可空；NULL = 历史行无基线，扫描跳过）。 */
+  coverage_baseline_json: string | null
+  /** v43/G1-9：stale 原因；与到期扫描/覆盖扫描一一对应。 */
+  stale_reason: StaleReason | null
   produced_by: Actor
   work_item_id: string | null
   work_run_id: string | null
@@ -76,6 +102,108 @@ export class EvidenceValidationError extends Error {
     this.name = 'EvidenceValidationError'
   }
 }
+
+/** 解析 TEXT 列里的字符串数组（去重、排序、忽略脏值）。 */
+function parseJsonStringArray(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const out = parsed.filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim())
+    return [...new Set(out)].sort()
+  } catch {
+    return []
+  }
+}
+
+/** 从 `acceptance_json` 取条目 id（与 acceptance-confirmation 的 `entry.id` 同一口径）。 */
+function acceptanceIdsOf(raw: string | null | undefined): string[] {
+  if (!raw) return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    const out = parsed
+      .map((entry) => (typeof entry === 'object' && entry !== null ? (entry as Record<string, unknown>)['id'] : undefined))
+      .filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+      .map((id) => id.trim())
+    return [...new Set(out)].sort()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * G1-9：签收时采集 E4 覆盖基线——逐文件 sha256（按 §3.5「按文件独立记录，不做整树
+ * Merkle」）+ 范围快照（锚定 work_item 的 `scope_files` / `acceptance_json` 条目 id）。
+ *
+ * 失败口径（已裁决）：超过 200 文件 / 无 project_path / 采集异常**只记 `skipped`**，
+ * 不写 `freshness='unknown'`、不阻断签收；这类签收只剩时间过期兜底（见 I.9.3）。
+ */
+export function captureCoverageBaseline(
+  db: BetterSqlite3.Database,
+  args: {
+    coverage: Array<{ files?: string[]; acceptance_ids?: string[] }>
+    projectPath?: string | null
+    workItemId?: string | null
+    now?: Date
+  },
+): string | null {
+  const now = args.now ?? new Date()
+  const declaredFiles = [...new Set(args.coverage.flatMap((c) => c.files ?? []).map((f) => f.trim()).filter(Boolean))]
+  const root = args.projectPath?.trim() ?? ''
+
+  let files: Array<{ path: string; sha256: string }> = []
+  let skipped: CoverageBaseline['skipped']
+  if (declaredFiles.length > E4_COVERAGE_MAX_FILES) {
+    skipped = 'too_many_files'
+  } else if (declaredFiles.length > 0 && root === '') {
+    skipped = 'no_project_path'
+  } else if (declaredFiles.length > 0) {
+    try {
+      for (const rel of declaredFiles) {
+        if (path.isAbsolute(rel)) continue
+        if (!isPathInside(root, rel)) continue
+        const abs = path.resolve(root, rel)
+        if (!fs.statSync(abs).isFile()) continue
+        files.push({ path: rel, sha256: createHash('sha256').update(fs.readFileSync(abs)).digest('hex') })
+      }
+      files = files.sort((a, b) => a.path.localeCompare(b.path))
+    } catch {
+      files = []
+      skipped = 'capture_failed'
+    }
+  }
+
+  let scope: CoverageBaseline['scope']
+  if (args.workItemId) {
+    try {
+      const item = db
+        .prepare('SELECT scope_files, acceptance_json FROM work_items WHERE id = ?')
+        .get(args.workItemId) as { scope_files?: string | null; acceptance_json?: string | null } | undefined
+      if (item) {
+        scope = {
+          scope_files: parseJsonStringArray(item.scope_files),
+          acceptance_ids: acceptanceIdsOf(item.acceptance_json),
+        }
+      }
+    } catch {
+      scope = undefined
+    }
+  }
+
+  // 既无可比对文件、也无范围快照 → 不写基线（扫描会跳过，等价于历史行）。
+  if (files.length === 0 && scope === undefined) return null
+
+  const baseline: CoverageBaseline = {
+    version: 1,
+    captured_at: now.toISOString(),
+    files,
+    ...(scope ? { scope } : {}),
+    ...(skipped ? { skipped } : {}),
+  }
+  return JSON.stringify(baseline)
+}
+
 
 export interface CreateEvidenceInput {
   level: EvidenceLevel
@@ -189,6 +317,7 @@ export class EvidenceService {
     let signedByDisplay: string | null = null
     let signedAt: string | null = null
     let coverageJson: string | null = null
+    let coverageBaselineJson: string | null = null
     let basisJson: string | null = null
     let expiresAt: string | null = null
     let treeHash: string | null = null
@@ -244,6 +373,13 @@ export class EvidenceService {
       signedByDisplay = input.signedByDisplayName ?? null
       signedAt = now.toISOString()
       coverageJson = JSON.stringify(coverage)
+      // G1-9：签收即采集覆盖基线；采集异常不阻断签收（只记 skipped）。
+      coverageBaselineJson = captureCoverageBaseline(this.db, {
+        coverage,
+        projectPath: input.projectPath,
+        workItemId: input.workItemId,
+        now,
+      })
       basisJson = input.basisRefs ? JSON.stringify(input.basisRefs) : null
       expiresAt = input.expiresAt ?? new Date(now.getTime() + E4_EXPIRY_DAYS * 24 * 3600 * 1000).toISOString()
     } else {
@@ -277,8 +413,8 @@ export class EvidenceService {
              version_binding, code_version, code_dirty, current_hash, tree_hash, freshness, produced_by,
              work_item_id, work_run_id, session_id, turn_id,
              created_at, verified_at, signed_by, signed_by_display_name, signed_at,
-             coverage_json, basis_ref_json, reproducible, expires_at, renewed_from_evidence_id
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             coverage_json, coverage_baseline_json, basis_ref_json, reproducible, expires_at, renewed_from_evidence_id
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fresh', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id, input.projectPath ?? null, input.graphId, node.graph_type, input.nodeEntityKey,
@@ -286,7 +422,7 @@ export class EvidenceService {
           versionBinding, codeVersion, codeDirty, input.currentHash ?? null, treeHash, producedBy,
           input.workItemId ?? null, input.workRunId ?? null, input.sessionId ?? null, input.turnId ?? null,
           now.toISOString(), input.level === 'E3' ? now.toISOString() : null,
-          signedBy, signedByDisplay, signedAt, coverageJson, basisJson, reproducible, expiresAt,
+          signedBy, signedByDisplay, signedAt, coverageJson, coverageBaselineJson, basisJson, reproducible, expiresAt,
           input.renewedFromEvidenceId ?? null,
         )
       return { row: this.get(id)!, reused: false }
@@ -796,7 +932,9 @@ export function scanExpiredE4All(
   db.transaction(() => {
     for (const row of expired) {
       const res = db
-        .prepare("UPDATE node_evidence SET freshness = 'stale', stale_at = ? WHERE id = ? AND freshness = 'fresh'")
+        .prepare(
+          "UPDATE node_evidence SET freshness = 'stale', stale_at = ?, stale_reason = 'expires_at' WHERE id = ? AND freshness = 'fresh'",
+        )
         .run(nowIso, row.id)
       if (res.changes > 0) {
         staled += 1
@@ -814,4 +952,144 @@ export function scanExpiredE4All(
 
   for (const t of targets.values()) scheduleExecutionRecompute(db, t.graphId, t.entityKey)
   return { scanned: expired.length, staled, reportId }
+}
+
+/** 内容比对：true=变化；false=未变；null=无法判断（缺 project_path / 超限 / 不可读）。 */
+function coverageContentChanged(projectPath: string | null, baseline: CoverageBaseline): boolean | null {
+  if (!projectPath || baseline.skipped || baseline.files.length === 0) return null
+  let inconclusive = false
+  for (const f of baseline.files) {
+    if (path.isAbsolute(f.path) || !isPathInside(projectPath, f.path)) {
+      inconclusive = true
+      continue
+    }
+    const abs = path.resolve(projectPath, f.path)
+    let buf: Buffer
+    try {
+      buf = fs.readFileSync(abs)
+    } catch (err) {
+      // 签收时存在的文件现在不存在 = 覆盖内容变化；其余读错误只算无法判断。
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true
+      inconclusive = true
+      continue
+    }
+    if (createHash('sha256').update(buf).digest('hex') !== f.sha256) return true
+  }
+  return inconclusive ? null : false
+}
+
+/** 范围比对：true=范围变化；false=未变；null=基线无范围快照/当前无 work_item。 */
+function coverageScopeChanged(
+  db: BetterSqlite3.Database,
+  graphId: string,
+  entityKey: string,
+  baseline: CoverageBaseline,
+): boolean | null {
+  if (!baseline.scope) return null
+  const item = db
+    .prepare(
+      `SELECT scope_files, acceptance_json FROM work_items
+        WHERE graph_id = ? AND anchor_entity_key = ? AND is_current = 1
+        ORDER BY created_at DESC, id ASC LIMIT 1`,
+    )
+    .get(graphId, entityKey) as { scope_files?: string | null; acceptance_json?: string | null } | undefined
+  if (!item) return null
+  const scopeFiles = parseJsonStringArray(item.scope_files)
+  const acceptanceIds = acceptanceIdsOf(item.acceptance_json)
+  return (
+    JSON.stringify(scopeFiles) !== JSON.stringify(baseline.scope.scope_files) ||
+    JSON.stringify(acceptanceIds) !== JSON.stringify(baseline.scope.acceptance_ids)
+  )
+}
+
+/**
+ * G1-9：E4 覆盖变化扫描（启动后 + 每日一次,全库批量）。
+ *
+ * 与 `scanExpiredE4All` 是**两条独立判据**：到期看 `expires_at`，这里看签收基线
+ * （逐文件 sha256 + 范围快照）。变化统一置 `freshness='stale'`，用 `stale_reason`
+ * 区分 `coverage_content_changed` / `coverage_scope_changed`；**不自动 revoke**（已裁决：
+ * 范围比对是启发式的，撤销几乎不可逆，stale 可恢复）。无基线（NULL）的历史行不参与；
+ * 单轮 ≤500；只更新 fresh 行，重复执行幂等。结果落
+ * `map_migration_reports(kind='derivation', stage='e4_coverage')`。
+ */
+export function scanCoverageChangedE4All(
+  db: BetterSqlite3.Database,
+  now: Date = new Date(),
+): {
+  scanned: number
+  staled: number
+  contentChanged: number
+  scopeChanged: number
+  inconclusive: number
+  reportId: string
+} {
+  const nowIso = now.toISOString()
+  const reportId = `mig_e4coverage_${randomUUID().slice(0, 8)}`
+  const rows = db
+    .prepare(
+      `SELECT id, graph_id, node_entity_key, project_path, coverage_baseline_json FROM node_evidence
+        WHERE evidence_level = 'E4' AND revoked_at IS NULL AND freshness = 'fresh'
+          AND coverage_baseline_json IS NOT NULL
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?`,
+    )
+    .all(E4_COVERAGE_SCAN_LIMIT) as Array<{
+    id: string
+    graph_id: string
+    node_entity_key: string
+    project_path: string | null
+    coverage_baseline_json: string
+  }>
+
+  const targets = new Map<string, { graphId: string; entityKey: string }>()
+  let staled = 0
+  let contentChanged = 0
+  let scopeChanged = 0
+  let inconclusive = 0
+
+  db.transaction(() => {
+    for (const row of rows) {
+      let baseline: CoverageBaseline
+      try {
+        baseline = JSON.parse(row.coverage_baseline_json) as CoverageBaseline
+      } catch {
+        inconclusive += 1
+        continue
+      }
+      const content = coverageContentChanged(row.project_path, baseline)
+      const scope = coverageScopeChanged(db, row.graph_id, row.node_entity_key, baseline)
+      const reason: StaleReason | null =
+        content === true ? 'coverage_content_changed' : scope === true ? 'coverage_scope_changed' : null
+      if (reason === null) {
+        if (content === null || scope === null) inconclusive += 1
+        continue
+      }
+      const res = db
+        .prepare(
+          "UPDATE node_evidence SET freshness = 'stale', stale_at = ?, stale_reason = ? WHERE id = ? AND freshness = 'fresh'",
+        )
+        .run(nowIso, reason, row.id)
+      if (res.changes > 0) {
+        staled += 1
+        if (reason === 'coverage_content_changed') contentChanged += 1
+        else scopeChanged += 1
+        targets.set(`${row.graph_id}::${row.node_entity_key}`, {
+          graphId: row.graph_id,
+          entityKey: row.node_entity_key,
+        })
+      }
+    }
+    db.prepare(
+      `INSERT INTO map_migration_reports (id, kind, stage, started_at, finished_at, status, stats_json)
+       VALUES (?, 'derivation', 'e4_coverage', ?, ?, 'ok', ?)`,
+    ).run(
+      reportId,
+      nowIso,
+      nowIso,
+      JSON.stringify({ scanned: rows.length, staled, contentChanged, scopeChanged, inconclusive, checkedAt: nowIso }),
+    )
+  })()
+
+  for (const t of targets.values()) scheduleExecutionRecompute(db, t.graphId, t.entityKey)
+  return { scanned: rows.length, staled, contentChanged, scopeChanged, inconclusive, reportId }
 }
