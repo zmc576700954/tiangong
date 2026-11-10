@@ -22,6 +22,7 @@ import {
   type WorkExecutionEvent,
 } from './work-execution-service'
 import type { AgentRuntimeTimeouts } from '@shared/types/agent-runtime'
+import type { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
 
 const logger = createLogger('MapExecutionRuntime')
 
@@ -96,6 +97,11 @@ export interface StartWorkExecutionOptions {
   intervalMs?: number
   /** v36 / G3-7/G3-8：`agentRuntime.timeouts`（未配置回落实常量）。 */
   timeouts?: AgentRuntimeTimeouts
+  /**
+   * G3-2：跨进程项目写闸。生产必须传 `AgentManager.getWorkspaceLease()` 的
+   * 同一个 registry（与 runtime.runNode 共用）；缺省 = 无闸。
+   */
+  lease?: WorkspaceLeaseRegistry
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -154,6 +160,7 @@ export function startWorkExecutionRuntime(options: StartWorkExecutionOptions): v
       void broadcastEvent(event)
     },
     timeouts: options.timeouts,
+    lease: options.lease,
   })
   setWorkExecutionService(service)
 

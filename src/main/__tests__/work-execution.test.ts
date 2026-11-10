@@ -13,10 +13,14 @@
  * 全部使用 fake AgentTurnRunner；不启动真实 Agent、不接 Electron。
  */
 
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import Database from 'better-sqlite3'
 import type BetterSqlite3 from 'better-sqlite3'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { applyMapS5aSchema } from '../map/schema'
+import { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkStepService } from '../map/work-step-service'
 import { WorkRunService } from '../map/work-run-service'
@@ -527,6 +531,127 @@ describe('WorkExecutionService（M5 执行触发）', () => {
     expect(typeof runner.runTurn).toBe('function')
     // 运行时对象上不存在 sendCommand/legacy 方法，编排层无从回落。
     expect('sendCommand' in runner).toBe(false)
+  })
+})
+
+describe('G3-2 跨进程项目写闸', () => {
+  let db: BetterSqlite3.Database
+  let items: WorkItemService
+  let steps: WorkStepService
+  let runs: WorkRunService
+  let turns: FakeTurns
+  let leaseDir: string
+
+  beforeEach(() => {
+    db = setupDb()
+    items = new WorkItemService(db)
+    steps = new WorkStepService(db)
+    runs = new WorkRunService(db)
+    turns = new FakeTurns()
+    leaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lease-g32-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(leaseDir, { recursive: true, force: true })
+  })
+
+  function confirmedItem(): string {
+    const id = items.createDraft({
+      graphId: 'g1',
+      projectPath: '/p/a',
+      anchorNodeId: 'node-1',
+      title: '任务',
+      steps: [{ title: '步一' }],
+    }).id
+    items.submitForConfirm(id)
+    items.setGateResult(id, 'pass')
+    items.confirm(id)
+    return id
+  }
+
+  function service(lease: WorkspaceLeaseRegistry): WorkExecutionService {
+    return new WorkExecutionService(db, turns, {
+      isEnabled: () => true,
+      probeKernel: () => capableProbe,
+      gateRecheck: okGate,
+      lease,
+    })
+  }
+
+  it('另一进程持有项目租约：fail-fast 跳过，不 claim、不消耗 attempt、发 project_busy', async () => {
+    const itemId = confirmedItem()
+    // 第二个 registry = 另一个进程视角（同 pid 但不同 token，互不重入）。
+    const other = new WorkspaceLeaseRegistry({ enabled: true, dir: leaseDir, ttlMs: 60_000 })
+    expect(other.acquire('/p/a').acquired).toBe(true)
+
+    const events: WorkExecutionEvent[] = []
+    const exec = new WorkExecutionService(db, turns, {
+      isEnabled: () => true,
+      probeKernel: () => capableProbe,
+      gateRecheck: okGate,
+      lease: new WorkspaceLeaseRegistry({ enabled: true, dir: leaseDir, ttlMs: 60_000 }),
+      onEvent: (event) => events.push(event),
+    })
+
+    const report = await exec.tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(false)
+    expect(report.busy).toBe(false)
+    expect(report.projectBusyItemIds).toEqual([itemId])
+    expect(runs.list({ workItemId: itemId })).toHaveLength(0)
+    expect(turns.commands).toHaveLength(0)
+    const step = steps.listByItem(itemId, 1)[0]
+    expect(step.status).toBe('pending')
+    expect(step.attempt).toBe(1)
+    expect(events.find((e) => e.reason?.startsWith('project_busy:'))?.status).toBe('queued')
+
+    // 持有者释放后，同一 service 下一轮即可正常开跑。
+    other.stop()
+    const next = await exec.tick({ adapterName: 'claude-code' })
+    expect(next.ran).toBe(true)
+    expect(next.projectBusyItemIds).toEqual([])
+  })
+
+  it('同 registry 重入：runtime.runNode 已持有同一 key 时不阻塞 tick', async () => {
+    confirmedItem()
+    const lease = new WorkspaceLeaseRegistry({ enabled: true, dir: leaseDir, ttlMs: 60_000 })
+    // 模拟 runtime 已按 workingDirectory 持有一层（同 registry 重入计数）。
+    const runtimeLayer = lease.acquire('/p/a')
+    expect(runtimeLayer.acquired).toBe(true)
+
+    const report = await service(lease).tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(true)
+    // tick 只释放自己那一层，runtime 的租约仍在。
+    expect(lease.inspect('/p/a')).not.toBeNull()
+    runtimeLayer.release()
+    expect(lease.inspect('/p/a')).toBeNull()
+  })
+
+  it('run 级持有：执行中租约在，settle 后释放', async () => {
+    const itemId = confirmedItem()
+    const deferred = new FakeTurns('deferred')
+    turns = deferred
+    const lease = new WorkspaceLeaseRegistry({ enabled: true, dir: leaseDir, ttlMs: 60_000 })
+    const exec = service(lease)
+
+    const ticking = exec.tick({ adapterName: 'claude-code' })
+    await waitFor(() => deferred.commands.length > 0)
+    expect(lease.inspect('/p/a')).not.toBeNull()
+
+    const [running] = runs.list({ workItemId: itemId })
+    await exec.cancelRun(running.id)
+    await ticking
+    expect(lease.inspect('/p/a')).toBeNull()
+  })
+
+  it('默认关闭（未开启 env）：noop，不落任何 lease 文件，行为不变', async () => {
+    confirmedItem()
+    const lease = new WorkspaceLeaseRegistry({ enabled: false, dir: leaseDir })
+    const report = await service(lease).tick({ adapterName: 'claude-code' })
+
+    expect(report.ran).toBe(true)
+    expect(fs.readdirSync(leaseDir)).toHaveLength(0)
   })
 })
 

@@ -44,6 +44,7 @@ import { isInternalAgentSessionId, isTrustedNativeSessionId } from '@shared/nati
 import { type AdapterRegistry } from './adapter-registry'
 import { type SessionRouter } from './session-router'
 import type { AgentRuntime } from './runtime/runtime'
+import type { WorkspaceLeaseRegistry } from './runtime/locks/workspace-lease'
 import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from './timeout-config'
 import { DeadlineReaper } from './runtime/process/deadline-reaper'
 import type { AgentSessionRow } from './runtime/db/repository'
@@ -741,6 +742,17 @@ export class AgentManager {
     // F3-A：DeadlineReaper 随 runtime 装配启动（当前无 runtime 卸载路径；
     // timer unref，不阻止进程退出）。重复调用不叠加。
     this.startDeadlineReaper()
+  }
+
+  /**
+   * G3-2：只读暴露 runtime 的 workspace lease registry。
+   *
+   * 地图执行器必须复用**同一个** registry——另建实例会把自己进程刚抢到的 lease
+   * 判成 held（同 pid 但不同 token），从而死锁。未装配 runtime（旧路径/测试）
+   * 时返回 undefined，调用方按「无闸」处理。
+   */
+  getWorkspaceLease(): WorkspaceLeaseRegistry | undefined {
+    return this.runtime?.lease
   }
 
   /**

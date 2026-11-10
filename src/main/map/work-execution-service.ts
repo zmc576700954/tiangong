@@ -47,6 +47,7 @@ import { WorkRunService, type WorkRunRow, type WorkRunStatus } from './work-run-
 import { WorkScheduler, type ClaimedStep } from './work-scheduler'
 import { WorkStepService, isTerminalStepStatus, type WorkStepStatus } from './work-step-service'
 import { resolveAgentTimeouts, type ResolvedAgentTimeouts } from '../agent/timeout-config'
+import type { WorkspaceLeaseRegistry } from '../agent/runtime/locks/workspace-lease'
 
 const logger = createLogger('WorkExecutionService')
 
@@ -117,6 +118,12 @@ export interface WorkExecutionOptions {
    * 未配置时回落 DEFAULT_AGENT_TIMEOUTS（=升级前常量，行为不变）。
    */
   timeouts?: { stepMs?: number; taskMs?: number }
+  /**
+   * G3-2：跨进程项目写闸。必须传入 AgentRuntime 的**同一个** registry
+   * （`AgentManager.getWorkspaceLease()`）；缺省 = 无闸（测试/旧路径）。
+   * 租约是否生效仍由 `BIZGRAPH_WORKSPACE_LEASE` 决定，关闭时 acquire 返回 noop。
+   */
+  lease?: WorkspaceLeaseRegistry
 }
 
 export interface EnqueueStepInput {
@@ -155,6 +162,8 @@ export interface WorkTickReport {
   gateBlockedItemIds: string[]
   routingFailedItemIds: string[]
   skippedStepIds: string[]
+  /** G3-2：项目写闸被其他进程持有而跳过的 item（不 claim、不消耗 attempt）。 */
+  projectBusyItemIds: string[]
 }
 
 export interface WorkTickOptions {
@@ -322,6 +331,7 @@ export class WorkExecutionService {
       gateBlockedItemIds: [],
       routingFailedItemIds: [],
       skippedStepIds: [],
+      projectBusyItemIds: [],
     }
     if (!this.isEnabled()) return report
     if (this.inflightRunId !== null) {
@@ -430,64 +440,91 @@ export class WorkExecutionService {
         continue
       }
 
-      // 第 5 步已由 inflight 守卫在入口完成；第 6 步：claim → run。
-      const claim = this.scheduler.startStep(step.id, {
-        adapterName,
-        // v36 / G3-7/G3-8：显式 deadline 优先；否则 stepMs，并 clamp 到 task 总预算。
-        deadlineAt: this.resolveRunDeadline(item.id, options.deadlineAt),
-      })
-      this.inflightRunId = claim.run.id
-      report.ran = true
-      report.itemId = claim.item.id
-      report.stepId = claim.step.id
-      report.runId = claim.run.id
-      // claim/start 阶段必须立刻广播：renderer 在 run:start 返回后拉取详情时 tick
-      // 通常还没 claim；没有这条事件，界面会一直停在 queued、看不到取消入口。
-      this.emitItemChanged(
-        this.items.get(claim.item.id) ?? claim.item,
-        'run_started',
-        claim.step.id,
-      )
-      let outcome: StepRunResult
-      try {
-        outcome = await this.runner.run(claim, {
-          adapterName: adapterName!,
-          verifyAcceptance: this.options.verifyAcceptance,
+      // 第 5 步已由 inflight 守卫在入口完成。G3-2：跨进程项目写闸——
+      // 与 runtime.runNode 共用同一 registry、同一 key（item.project_path），
+      // run 级持有到 settle 之后。D-07 裁决不排队：抢不到 fail-fast 跳过，
+      // 不 claim、不消耗 attempt。
+      const projectKey = item.project_path?.trim()
+      const projectLease = projectKey ? this.options.lease?.acquire(projectKey) : undefined
+      if (projectLease && !projectLease.acquired) {
+        report.projectBusyItemIds.push(item.id)
+        this.emit({
+          type: 'work_item_changed',
+          workItemId: item.id,
+          lineageId: item.lineage_id,
+          revision: item.revision,
+          status: item.status,
+          reason: `project_busy:${projectLease.holder?.pid ?? 'unknown'}`,
         })
-      } catch (error) {
-        // 取消与完成竞态：run 已被条件更新置终态时，以终态为事实，不覆盖。
-        const latest = this.runs.get(claim.run.id)
-        if (!latest || !RUN_TERMINAL.has(latest.status)) {
-          // §5.9.9：tick 内不得留下 running 孤儿。执行器未落终态的异常按 infra 收口。
-          this.abandonClaim(claim, error)
-          // 兜底收口同样改变了 item/run/step，必须广播后再抛。
-          this.emitItemChanged(
-            this.items.get(claim.item.id) ?? claim.item,
-            'run_failed_infra',
-            claim.step.id,
-          )
-          throw error
-        }
-        outcome = {
-          status: stepStatusOfRun(latest.status),
-          runId: claim.run.id,
-          stepId: claim.step.id,
-        }
-      } finally {
-        this.inflightRunId = null
+        logger.warn(
+          `[tick] item=${item.id} 项目写闸被进程 ${projectLease.holder?.pid ?? 'unknown'} 持有，本轮跳过`,
+        )
+        continue
       }
-      const converged = this.settle(claim)
-      report.outcome = outcome
-      report.itemStatus = converged?.status ?? this.items.get(claim.item.id)?.status
-      this.emit({
-        type: 'work_item_changed',
-        workItemId: claim.item.id,
-        lineageId: claim.item.lineage_id,
-        revision: claim.item.revision,
-        status: report.itemStatus ?? claim.item.status,
-        reason: `run_${outcome.status}`,
-      })
-      return report
+
+      // 第 6 步：claim → run。finally 必须覆盖到 settle——租约在 run 真正收敛后
+      // 才释放，异常路径同样释放，避免同 registry 的 reentrant 计数泄漏。
+      try {
+        const claim = this.scheduler.startStep(step.id, {
+          adapterName,
+          // v36 / G3-7/G3-8：显式 deadline 优先；否则 stepMs，并 clamp 到 task 总预算。
+          deadlineAt: this.resolveRunDeadline(item.id, options.deadlineAt),
+        })
+        this.inflightRunId = claim.run.id
+        report.ran = true
+        report.itemId = claim.item.id
+        report.stepId = claim.step.id
+        report.runId = claim.run.id
+        // claim/start 阶段必须立刻广播：renderer 在 run:start 返回后拉取详情时 tick
+        // 通常还没 claim；没有这条事件，界面会一直停在 queued、看不到取消入口。
+        this.emitItemChanged(
+          this.items.get(claim.item.id) ?? claim.item,
+          'run_started',
+          claim.step.id,
+        )
+        let outcome: StepRunResult
+        try {
+          outcome = await this.runner.run(claim, {
+            adapterName: adapterName!,
+            verifyAcceptance: this.options.verifyAcceptance,
+          })
+        } catch (error) {
+          // 取消与完成竞态：run 已被条件更新置终态时，以终态为事实，不覆盖。
+          const latest = this.runs.get(claim.run.id)
+          if (!latest || !RUN_TERMINAL.has(latest.status)) {
+            // §5.9.9：tick 内不得留下 running 孤儿。执行器未落终态的异常按 infra 收口。
+            this.abandonClaim(claim, error)
+            // 兜底收口同样改变了 item/run/step，必须广播后再抛。
+            this.emitItemChanged(
+              this.items.get(claim.item.id) ?? claim.item,
+              'run_failed_infra',
+              claim.step.id,
+            )
+            throw error
+          }
+          outcome = {
+            status: stepStatusOfRun(latest.status),
+            runId: claim.run.id,
+            stepId: claim.step.id,
+          }
+        } finally {
+          this.inflightRunId = null
+        }
+        const converged = this.settle(claim)
+        report.outcome = outcome
+        report.itemStatus = converged?.status ?? this.items.get(claim.item.id)?.status
+        this.emit({
+          type: 'work_item_changed',
+          workItemId: claim.item.id,
+          lineageId: claim.item.lineage_id,
+          revision: claim.item.revision,
+          status: report.itemStatus ?? claim.item.status,
+          reason: `run_${outcome.status}`,
+        })
+        return report
+      } finally {
+        projectLease?.release()
+      }
     }
     return report
   }
