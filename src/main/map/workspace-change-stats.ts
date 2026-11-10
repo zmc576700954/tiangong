@@ -7,14 +7,31 @@
  */
 
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChangeFileEntry, GitRunner } from './work-run-service'
+
+/** G2-15：单条 change_set 最多记录的文件路径数（超出只留计数与前 N 条）。 */
+export const MAX_RECORDED_FILES = 200
 
 export interface WorkspaceChangeSnapshot {
   headCommit: string | null
   files: ChangeFileEntry[]
   dirty: boolean
+  /** G2-15：未提交改动指纹；无未提交改动时为 null。 */
+  dirtyTreeHash: string | null
+  /** G2-15：未提交改动文件数（全量，不受 MAX_RECORDED_FILES 截断）。 */
+  dirtyFileCount: number
+}
+
+/**
+ * G2-15：未提交改动指纹 = `sha256(headCommit + "\n" + 排序后的 porcelain 行)`。
+ * 只派生，不写库；同一快照重复采集得到同一值（幂等/去重用）。
+ */
+export function dirtyFingerprint(headCommit: string | null, porcelain: string[]): string {
+  const payload = [headCommit ?? '', ...porcelain.slice().sort()].join('\n')
+  return createHash('sha256').update(payload).digest('hex')
 }
 
 function git(cwd: string, args: string[]): string | null {
@@ -181,5 +198,13 @@ export function collectWorkspaceChanges(
   }
 
   const dirty = porcelain.length > 0 || (baseCommit !== null && headCommit !== null && baseCommit !== headCommit)
-  return { headCommit, files: [...files.values()], dirty }
+  const recorded = [...files.values()]
+  return {
+    headCommit,
+    // G2-15：超 200 只记前 200 条路径；真实改动的文件数另记 dirtyFileCount。
+    files: recorded.slice(0, MAX_RECORDED_FILES),
+    dirty,
+    dirtyTreeHash: porcelain.length > 0 ? dirtyFingerprint(headCommit, porcelain) : null,
+    dirtyFileCount: porcelain.length,
+  }
 }

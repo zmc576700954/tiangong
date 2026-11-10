@@ -536,6 +536,8 @@ describe('AgentStepRunner（M3）', () => {
       workspaceChanges: () => ({
         headCommit: 'base-1',
         dirty: true,
+        dirtyTreeHash: 'tree-hash-1',
+        dirtyFileCount: 1,
         files: [{ path: 'src/a.ts', change: 'modified', additions: 3, deletions: 1 }],
       }),
       executedContent: () => null,
@@ -554,6 +556,32 @@ describe('AgentStepRunner（M3）', () => {
     expect(JSON.parse(row!['files_json'] as string)).toEqual([
       { path: 'src/a.ts', change: 'modified', additions: 3, deletions: 1 },
     ])
+    // G2-15：未提交改动指纹与文件数落到 change_sets。
+    expect(row!['dirty_tree_hash']).toBe('tree-hash-1')
+    expect(row!['dirty_files_count']).toBe(1)
+  })
+
+  it('G2-15：文件变更采集失败写「未采集」标记（-1），不伪造成 0 变更', async () => {
+    createItem({ anchorNodeId: 'node-1' })
+    const c = claim()
+    const fakeGit = {
+      revParseHEAD: () => 'base-1',
+      statusPorcelain: () => [] as string[],
+    }
+    const result = await runner.run(c, {
+      adapterName: 'claude-code',
+      changeSetGit: fakeGit,
+      workspaceChanges: () => null,
+      executedContent: () => null,
+    })
+
+    expect(result.status).toBe('succeeded')
+    const row = db.prepare('SELECT * FROM change_sets WHERE work_run_id = ?').get(c.run.id) as
+      | Record<string, unknown>
+      | undefined
+    expect(row).toBeDefined()
+    expect(row!['dirty_files_count']).toBe(-1)
+    expect(row!['dirty_tree_hash']).toBeNull()
   })
 })
 

@@ -186,6 +186,9 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
         head_commit     TEXT,
         dirty           INTEGER NOT NULL DEFAULT 0,
         dirty_tree_hash TEXT,
+        -- v48 / G2-15：未提交改动的文件数。NULL = 无未提交改动或未采集；
+        -- -1 = 采集失败（显式「未采集」标记，不得读成 0）。
+        dirty_files_count INTEGER,
         files_json      TEXT NOT NULL,
         file_count      INTEGER NOT NULL DEFAULT 0,
         line_additions  INTEGER NOT NULL DEFAULT 0,

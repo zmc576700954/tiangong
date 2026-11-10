@@ -829,8 +829,12 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      节点总数/已验证节点/任务完成与失败/证据分级）。纯视图，无写表、无数据迁移；
  *      由 `applyMapViews` 的 DROP+CREATE 对账补齐。
  *      回滚：`DROP VIEW IF EXISTS v_project_progress`。
+ * v48：G2-15 未提交改动指纹 —— `change_sets.dirty_files_count`（可空 INTEGER，
+ *      仅 ALTER 补列；NULL = 无未提交改动/未采集，-1 = 采集失败）。`dirty_tree_hash`
+ *      复用 v17 已有列，存储 `sha256(head + porcelain)`，同 hash 不再重复更新。
+ *      回滚：`ALTER TABLE change_sets DROP COLUMN dirty_files_count`（SQLite ≥3.35）。
  */
-const CURRENT_SCHEMA_VERSION = 47
+const CURRENT_SCHEMA_VERSION = 48
 
 interface TableSchema {
   name: string
@@ -1841,6 +1845,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // （NULL = v44 空表或来源未采集）。
   if (currentVersion < 45) {
     addColumnSafe('memory_hits', 'source_outcome', 'TEXT')
+  }
+
+  // v48：G2-15 未提交改动文件数，纯加列；不进 requiredColumns（NULL = 无/未采集）。
+  if (currentVersion < 48) {
+    addColumnSafe('change_sets', 'dirty_files_count', 'INTEGER')
   }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。

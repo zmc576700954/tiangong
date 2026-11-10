@@ -703,6 +703,8 @@ export interface ChangeSetRow {
   head_commit: string | null
   dirty: number
   dirty_tree_hash: string | null
+  /** G2-15：未提交改动文件数；NULL = 无/未采集，-1 = 采集失败。 */
+  dirty_files_count: number | null
   files_json: string
   file_count: number
   line_additions: number
@@ -753,15 +755,32 @@ export class ChangeSetService {
     return this.get(id)
   }
 
-  /** run 终态时采集 head：head commit + 文件面 + dirty_tree_hash。 */
+  /** run 终态时采集 head：head commit + 文件面 + dirty 指纹/文件数。 */
   captureHead(
     workRunId: string,
-    data: { headCommit: string | null; files: ChangeFileEntry[]; dirtyTreeHash?: string | null; dirty?: boolean },
+    data: {
+      headCommit: string | null
+      files: ChangeFileEntry[]
+      dirtyTreeHash?: string | null
+      dirty?: boolean
+      /** G2-15：未提交改动文件数（全量；缺省按 files.length 近似）。 */
+      dirtyFileCount?: number
+    },
   ): ChangeSetRow | undefined {
     const row = this.getByWorkRun(workRunId)
     if (!row) {
       logger.warn(`change_set head capture: no base row for run ${workRunId} — skip（不写无 base 的孤儿行）`)
       return undefined
+    }
+    const dirtyFileCount = data.dirtyFileCount ?? data.files.length
+    // G2-15：同一 run 的同一快照重复采集（重试/重放）不再重写。
+    if (
+      data.dirtyTreeHash &&
+      row.dirty_tree_hash === data.dirtyTreeHash &&
+      row.dirty_files_count === dirtyFileCount &&
+      row.head_commit === data.headCommit
+    ) {
+      return row
     }
     const additions = data.files.reduce((s, f) => s + f.additions, 0)
     const deletions = data.files.reduce((s, f) => s + f.deletions, 0)
@@ -769,14 +788,28 @@ export class ChangeSetService {
       .prepare(
         `UPDATE change_sets SET head_commit = ?, files_json = ?, file_count = ?,
            line_additions = ?, line_deletions = ?, dirty_tree_hash = COALESCE(?, dirty_tree_hash),
-           dirty = CASE WHEN ? THEN 1 ELSE dirty END
+           dirty_files_count = ?, dirty = CASE WHEN ? THEN 1 ELSE dirty END
          WHERE id = ?`,
       )
       .run(
         data.headCommit, JSON.stringify(data.files), data.files.length,
-        additions, deletions, data.dirtyTreeHash ?? null, data.dirty ? 1 : 0, row.id,
+        additions, deletions, data.dirtyTreeHash ?? null, dirtyFileCount, data.dirty ? 1 : 0, row.id,
       )
     return this.get(row.id)
+  }
+
+  /**
+   * G2-15：采集失败写「未采集」标记（`dirty_files_count = -1`），
+   * 不伪造成 0 变更；无 base 行时静默跳过（与 captureHead 同口径）。
+   */
+  markDirtyCaptureFailed(workRunId: string): void {
+    this.db
+      .prepare(
+        `UPDATE change_sets
+            SET dirty_files_count = -1, dirty_tree_hash = NULL
+          WHERE work_run_id = ?`,
+      )
+      .run(workRunId)
   }
 
   get(id: string): ChangeSetRow | undefined {

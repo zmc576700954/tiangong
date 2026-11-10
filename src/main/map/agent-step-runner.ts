@@ -463,9 +463,19 @@ export class AgentStepRunner {
     try {
       const collect = options.workspaceChanges ?? collectWorkspaceChanges
       const snapshot = collect(projectPath, baseCommit)
-      if (!snapshot) return
+      if (!snapshot) {
+        // G2-15：采集失败写显式「未采集」标记（-1），不伪造成 0 变更。
+        this.changeSetsFor(options).markDirtyCaptureFailed(claim.run.id)
+        return
+      }
       this.changeSetsFor(options).captureHead(claim.run.id, snapshot)
     } catch (error) {
+      // G2-15：采集抛错同样标记「未采集」，不让下游把空 files_json 读成 0 变更。
+      try {
+        this.changeSetsFor(options).markDirtyCaptureFailed(claim.run.id)
+      } catch {
+        /* 标记失败不覆盖原始告警 */
+      }
       logger.warn(`[change-head] run=${claim.run.id} 文件变更采集失败（不影响终态）：${String(error)}`)
     }
   }
