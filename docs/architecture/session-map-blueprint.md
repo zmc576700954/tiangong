@@ -43,19 +43,20 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **78** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39） |
+| 已实施 | **82** | 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40） |
 | 已批准未实施 | **11** | 见 I.3，均有可施工方案（W 包） |
-| 仅建议 | **29** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
+| 仅建议 | **25** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 9 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **18** | 方向 17 条 + 不做 1 条（G7-10，见 §4.5.1a）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 78+11+29+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
+> **口径说明**：D-01…D-17 的裁决只回答“走哪条路”，不产生施工授权；G7-10 的「不做」是设计边界登记，同样不产生施工授权。四类施工状态加总 82+11+25+0 = **118**，加 18 条裁决（17 方向 + 1 不做）= **136**，与去重总数一致（裁决只在四类之间平移，不新增类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（78）
+### I.1.1 已实施（82）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
+- **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
 - **多图编排/归因**：G2-14 `v_plan_deviations_file_domain` 明细视图（v38，schema checksum 含 view）；G2-13 `published` 软阻断（v39，`nodes.published_waiver_json` + 只读徽标/统计）。
 - **编排执行**：G3-4 `priority DESC`、G3-5 存量自由文本 acceptance、G3-6～G3-9 超时预算四键、G3-10/G5-3 E1 人工判断直写通道（服务 + IPC 写通道 + 幂等；renderer 入口归 G8）、G3-12 `GateRecheck`（含降级兜底）、G3-14 D2 验收执行器、G3-15 D1/D3/D7/D9。
 - **测试体系**：G4-6 allow-list harness、G4-7 P1–P9 脚本、G4-8 P6 并行验证、G4-9 CI vitest、G4-10 S8 前置五表、G4-11 TestExecutor E2/E3 回写。
@@ -75,20 +76,20 @@
 - **迁移与运维**：G9-13 Windows 路径。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-### I.1.3 仅建议（29）
+### I.1.3 仅建议（25）
 
-- **会话地图本体**：G1-11 `node_id` 放宽、G1-14 提案机制（§2.7）。
-- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-6 提案细节、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机、G2-19 提案 UI。
+- **会话地图本体**：G1-11 `node_id` 放宽。
+- **多图编排**：G2-1 五通道/模式库、G2-2 进化 Layer1、G2-3 `memory_hits`、G2-4 Layer2 归因、G2-5 Layer3 embedding、G2-7 Tier2、G2-8 WaveExecutor、G2-9 黑板/fanout、G2-10 C1–C4、G2-11 流程级测试最小版、G2-12 定向重测、G2-15 dirty diff、G2-16 离线校准、G2-17 多 Agent 交互、G2-18 完整步状态机。
 - **编排执行**：G3-1 Tier1 探测、G3-2 跨进程写闸。
 - **测试体系**：G4-1 流程级最小版（=G2-11）、G4-2 定向重测（=G2-12）。
 - **证据体系**：G5-10 §3.6 项目进度。
 - **Agent 运行时**：G6-17 同 uid 不在防御范围。
 - **审批与沙箱**：G7-7 C3 exec 面、G7-8 非 Claude 裸 spawn。
-- **界面与交互**：G8-3 C1–C4、G8-4 提案 UI、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
+- **界面与交互**：G8-3 C1–C4、G8-5 任务卡深度；**E1 人工判断入口**（节点/证据面板手写判断）归 G8，数据侧 G3-10 已就绪，UI 未做。
 - **迁移与运维**：无（G9-10 worktree 清理已实施）。
 - **待裁决清单**：G11-10 tree-hash 等级。
 
-> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 29 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-24、II-32、II-33 已实施，保留为设计存档）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
+> **索引（v2.1 补齐，v2.2 解阻塞，v2.3 核减）**：以上 25 条（去重后；G4-1/2 分别等同 G2-11/12，G8-6 等同 G3-3）的施工级设计——目标与不做后果、数据/接口、流程与状态机、边界、验收、依赖顺序、成本估算——见 **Part II**，逐条编号 II-01…II-34（其中 II-15、II-16、II-24、II-32、II-33 已实施，保留为设计存档；II-02/08/21/30 于 2026-11-10 随 G1-14 落地）。状态保持「仅建议」，补设计不等于批准；原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决解除，**解除阻塞不等于授权施工**。
 
 > **G1-11 评估结论（2026-11-08，W1 盘点）**：真实库 `agent_turns` 为 **0 行**；历史证据库各 1 行，`node_id` 均指向存在的节点，未发现伪节点残留。结论：**维持「仅建议」**，不修改 `agent_turns.node_id TEXT NOT NULL`、不升 schema；D8 伪节点守卫（`isPseudoNodeId` + kernel 入口拒绝）继续有效。
 
@@ -100,7 +101,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 24 个编号，去重后 18 条（17 方向 + 1 不做）；重复关系见上方清单。
 
-## I.2 已实施清单（72 条，按主题）
+## I.2 已实施清单（76 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 
@@ -223,6 +224,15 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G10-12 | 修正 §8.15 自相矛盾 | 本轮 §8.15 更正 |
 | G11-7 | 成本只记账、不做自动熔断 | `agent-architecture.md` §13 |
 | G11-9 | D12 异步评估时限预算本期不做 | `session-map-blueprint.md` §14.5 |
+
+### I.2.10 提案机制（4）
+
+| 编号 | 能力 | 代码/文档证据 |
+|---|---|---|
+| G1-14 | 提案服务 + 只读视图 + UI 三层：`ProposalService`（create/list/diff/accept/reject/expireStale）、`v_online_proposals`、`NodeMapPanel` 提案区；提案全程不写 online 图 | `src/main/map/proposal-service.ts`、`schema.ts`（v40）、`ipc/map.ts`、`NodeMapPanel.tsx` |
+| G2-6 | 提案细节：`conflict_group` 串行（后者 blocked，前序终态后提升）、`weight` 0–1 仅影响展示排序、同实体并发上限 3、blocked 超 24h 自动取消 | `proposal-service.ts`、`database.ts`（启动 + 每日 `expireStale`） |
+| G2-19 | 只读通道 `proposal:list` / `proposal:diff`；采纳/驳回写通道，驳回理由必填；列表 → diff → 采纳/驳回，不批量 | `shared/types/ipc.ts`（`MAP_READ_ONLY_CHANNELS`）、`preload/index.ts` |
+| G8-4 | 复用 `NodeMapPanel` 弹层做提案列表与 diff 可视化（只读、不批量；采纳/驳回为人工确认动作） | `NodeMapPanel.tsx`、`mapStore.ts` |
 
 ---
 
@@ -683,14 +693,14 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 | 编号 | 目的 | 当前实现 | 差距与后果 | 解除条件 |
 |---|---|---|---|---|
-| （待 G1-14 实施追加） | | | | |
+| G1-14 / G2-6 / G2-19 / G8-4 **（妥协）** | 提案机制的验收口径与交互完整度 | 服务层 + 只读视图 + 面板三层已落地；提案不写 online 图 | **妥协**：①采纳没有 E2 证据、无“已改 online”校验（仅 `acceptedBy`）；②`base_revision` 用节点 `updated_at`，同值重写不判 stale；③“降权”只排序未做 `low_weight` 徽标；④超时扫描依赖每日巡检，最坏晚约 24h；⑤无提案创建图形入口、图面不高亮被提案节点。后果：提案可审阅但采纳合规性仍靠人自觉 | 补 E2 采纳证据 + 内容 hash 基线 + 图面高亮后重新评估 |
 | （待 G2-1 实施追加） | | | | |
 | （待 G7-5 实施追加） | | | | |
 | （待 G11-10 实施追加） | | | | |
 
-# Part II 仅建议项施工级设计（32 条有效 + II-24/II-32 已实施存档）
+# Part II 仅建议项施工级设计（28 条有效 + II-24/II-32 已实施存档）
 
-> **口径**：本部分把 I.1.3 的 32 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-24（G3-3/G8-6 renderer 执行入口）与 II-32（G9-8 `RequestQueue` 删除）已分别实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 32 条仍为仅建议。
+> **口径**：本部分把 I.1.3 的 28 条**仅建议**补到可施工级别；状态词一律保持 **仅建议**，补设计不等于批准，不进入本期验收。**II-24（G3-3/G8-6 renderer 执行入口）与 II-32（G9-8 `RequestQueue` 删除）已分别实施，保留为设计存档、不再计入「仅建议」**。每条给 7 项：目标与不做后果 / 数据与接口 / 流程与状态机 / 边界与约束 / 验收 / 前置依赖与顺序 / 成本（均为**估算**，非承诺）。原 13 条「阻塞于 D-xx」已于 **2026-11-08** 随 I.4 全部裁决而解除，相关留空处已按裁决结果补成定稿；**解除阻塞只代表方向可定，不代表获得施工授权**——其余 28 条仍为仅建议。
 > **索引**（G4-1/2/3 分别等同 G2-11/12/13，G8-6 等同 G3-3，不重复设计）：
 
 | II | G | 主题 | 落点章节 | 阻塞 |
@@ -741,7 +751,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：依赖 W1 的 turn 写回稳定；在 W1 之后、W5 之前做。无裁决阻塞。
 - **成本**：≈1.5 人日（估算），主要是重建表与回归。
 
-### II-02 · G1-14 提案机制｜**仅建议**
+### II-02 · G1-14 提案机制｜**已实施（v40，2026-11-10）**
+> **做了什么**：`ProposalService`（create/list/diff/accept/reject/expireStale）复用 `work_items.metadata.proposal`（before/after 以 JSON 字符串存储，服务端可自动快照 before），只读视图 `v_online_proposals` 计算 `stale`，部分唯一索引 `ux_work_items_open_proposal` 保证同实体一个 open；提案不创建 steps、不进入执行调度、**任何路径都不写 nodes/edges**。v40 迁移：`metadata` 可空列 + 视图 + 索引。
+> **妥协在哪**：①验收口径中的 “accepted” 用既有 `work_items.status='done'` 表达，没有新增枚举值；②采纳不产生 E2 证据，也没有独立的“采纳人已改 online”校验（只有 `acceptedBy` 审计字段）；③`base_revision` 取锚定节点 `updated_at`，不是节点内容 hash，节点被同值重写时不会判 stale；④提案区只提供列表/diff/采纳/驳回，不提供图形化创建表单（创建走 `proposal:create` 通道）。
 - **目标与不做后果**：产品图（online）变更以提案留痕、人工采纳，不让实现细节自动污染产品事实；不做则 dev→online 只能靠口头约定。
 - **数据/接口**：复用 `work_items`，新增 `metadata.proposal = {before, after, reason, evidence_refs, base_revision}`；新增只读视图 `v_online_proposals`；**不新增表**。
 - **流程/状态机**：`draft → awaiting_confirm → accepted(人编辑 online 后 done) / rejected(cancelled+理由)`；同一实体只允许一个 open 提案（部分唯一索引 `WHERE status IN ('awaiting_confirm','queued')`）；采纳幂等键 `lineage_id + revision`。
@@ -797,7 +809,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：II-04/II-06 之后；**D-12 已裁决**（成本只记账、长尾不投入），可直接动工。
 - **成本**：≈5 人日（估算，不含外部模型费用）。
 
-### II-08 · G2-6 提案细节｜**仅建议**
+### II-08 · G2-6 提案细节｜**已实施（v40，随 II-02）**
+> **做了什么**：`conflict_group` 同组串行（后者 `blocked`，前序 accept/reject 后自动提升为 `awaiting_confirm`）；`weight` 0–1 仅影响列表排序并在 UI 展示；同实体非终态上限 3；blocked 等待超 24h 由启动 + 每日 `expireStale` 自动 `cancelled`（`reject_reason='waiting_timeout'`）。
+> **妥协在哪**：①冲突串行只按 `conflict_group` 单键，不检测同实体不同组的并发冲突；②“降权”只做展示排序，未实现 `low_weight` 徽标（UI 显示 `w=0.xx` 数值）；③超时扫描依赖每日巡检节奏，最坏晚约 24h 才收口，不是精确计时器。
 - **目标与不做后果**：把提案的冲突、降权、撤销规则定死；不做则多人同时提案会互相覆盖。
 - **数据/接口**：沿用 `metadata.proposal`，增加 `conflict_group`、`weight`（0–1）；冲突串行队列由服务层内存 + `work_items` 状态保证。
 - **流程/状态机**：同 `conflict_group` 串行（后者 `blocked` 等前者终态）；被降权提案在 UI 标 `low_weight`；撤销 = `cancelled` + 反向编辑记录。
@@ -919,7 +933,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：W1/W3 共用；先于 II-10。
 - **成本**：≈3 人日（估算）。
 
-### II-21 · G2-19 提案 UI｜**仅建议**
+### II-21 · G2-19 提案 UI｜**已实施（v40，随 II-02）**
+> **做了什么**：只读通道 `proposal:list` / `proposal:diff` 进入 `MAP_READ_ONLY_CHANNELS`；新增写通道 `proposal:create` / `proposal:accept` / `proposal:reject`（驳回理由必填）；采纳/驳回只改提案自身状态。UI 侧列表 → diff → 采纳/驳回，不提供批量入口。
+> **妥协在哪**：①验收要求“采纳后有 E2 证据”未实现——采纳没有写 `node_evidence`；②“采纳跳 online 人工编辑”是提示文案，不发生跳转/导航；③diff 超 200KB 时主进程已截断，UI 不再做二次折叠加载。
 - **目标与不做后果**：让提案可看、可比、可采纳/驳回；不做则提案只能靠命令行或数据库操作。
 - **数据/接口**：只读通道 `proposal:list` / `proposal:diff`；采纳走既有确认通道；不新增写通道。
 - **流程/状态机**：列表 → diff（before/after）→ 采纳（跳 online 人工编辑）/驳回（填理由）。
@@ -1006,7 +1022,9 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **前置依赖与顺序**：**D-13 已裁决「仅高风险步确认」**：非高风险步不弹确认；与 II-12 同批。
 - **成本**：≈5 人日（估算）。
 
-### II-30 · G8-4 提案 UI（渲染）｜**仅建议**
+### II-30 · G8-4 提案 UI（渲染）｜**已实施（v40，随 II-02）**
+> **做了什么**：`NodeMapPanel` 新增提案区（`data-testid="node-map-proposals"`）：状态/`stale`/`weight`/截断徽标、按需 diff（before/after 原文展示）、采纳与带理由驳回；`mapStore` 提供 `fetchProposals` / `fetchProposalDiff` / `acceptProposal` / `rejectProposal`。
+> **妥协在哪**：①只读展示 + 人工采纳/驳回，没有批量勾选（与设计一致）；②不在图面上高亮“被提案节点”，仅面板内按 `anchorEntityKey` 拉取；③提案创建没有图形入口。
 - **目标与不做后果**：提案的列表与 diff 可视化；不做则提案不可读。
 - **数据/接口**：`proposal:list` / `proposal:diff` 只读；组件复用 `NodeMapPanel` 弹层。
 - **流程/状态机**：列表 → 详情 → 采纳跳转 online 编辑 / 驳回填理由。

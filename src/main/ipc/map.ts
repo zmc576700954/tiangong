@@ -20,6 +20,7 @@ import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
 import { WorkExecutionError } from '../map/work-execution-service'
 import { getPublishedStatus } from '../map/published-guard'
+import { ProposalService } from '../map/proposal-service'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
 import { getWorkExecutionService } from '../map/work-execution-registry'
 import {
@@ -49,6 +50,7 @@ export function registerMapHandlers(
   const derivation = new BoundaryDerivationService(db)
   const planDrafts = new PlanDraftService(db, workItems)
   const acceptanceConfirm = new AcceptanceConfirmationService(db)
+  const proposals = new ProposalService(db)
 
   // ---- 叠加层（§9.2:必须批量）----
   typedHandle('map:overlay:get', async (_, graphId: unknown) => {
@@ -526,6 +528,105 @@ export function registerMapHandlers(
       confirmationBatchId: result.confirmationBatchId,
       confirmationIds: result.confirmationIds,
     }
+  })
+
+  // ---- G1-14 提案（§2.7 / II-02 / II-08 / II-21）----
+  // 提案 = 对 online 事实的待采纳变更：读写都只落在 work_items / 只读视图，
+  // handler 不调用任何 nodes/edges 写接口。采纳需要人工先在 online 图完成编辑，
+  // 这里只收口提案状态并留审计主体。
+  typedHandle('proposal:create', async (_, data) => {
+    const d = (data ?? {}) as Record<string, unknown>
+    if (typeof d.graphId !== 'string' || d.graphId === '') throw new Error('graphId is required')
+    if (typeof d.anchorEntityKey !== 'string' || d.anchorEntityKey === '') {
+      throw new Error('anchorEntityKey is required')
+    }
+    if (typeof d.title !== 'string' || d.title.trim() === '') throw new Error('title is required')
+    if (typeof d.reason !== 'string' || d.reason.trim() === '') throw new Error('reason is required')
+    if (d.after === undefined) throw new Error('after is required')
+    if (d.weight !== undefined && typeof d.weight !== 'number') throw new Error('weight must be a number')
+    if (d.evidenceRefs !== undefined && !Array.isArray(d.evidenceRefs)) {
+      throw new Error('evidenceRefs must be an array of strings')
+    }
+    const result = proposals.create({
+      projectPath: typeof d.projectPath === 'string' ? d.projectPath : undefined,
+      graphId: d.graphId,
+      anchorEntityKey: d.anchorEntityKey,
+      anchorNodeId: typeof d.anchorNodeId === 'string' ? d.anchorNodeId : undefined,
+      title: d.title,
+      reason: d.reason,
+      before: d.before,
+      after: d.after,
+      evidenceRefs: (d.evidenceRefs as unknown[] | undefined)?.filter((v): v is string => typeof v === 'string'),
+      baseRevision: typeof d.baseRevision === 'string' ? d.baseRevision : undefined,
+      conflictGroup: typeof d.conflictGroup === 'string' ? d.conflictGroup : undefined,
+      weight: typeof d.weight === 'number' ? d.weight : undefined,
+      createdBy: typeof d.createdBy === 'string' ? d.createdBy : undefined,
+    })
+    broadcast?.('event:proposal-changed', {
+      graphId: d.graphId,
+      nodeEntityKey: d.anchorEntityKey,
+      proposalId: String(result.row.id),
+      status: String(result.row.status),
+    })
+    return result.row
+  })
+
+  typedHandle('proposal:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as { graphId?: unknown; anchorEntityKey?: unknown; includeResolved?: unknown; limit?: unknown }
+    if (q.graphId !== undefined && typeof q.graphId !== 'string') throw new Error('graphId must be a string')
+    if (q.anchorEntityKey !== undefined && typeof q.anchorEntityKey !== 'string') {
+      throw new Error('anchorEntityKey must be a string')
+    }
+    if (typeof q.graphId !== 'string' && typeof q.anchorEntityKey !== 'string') {
+      throw new Error('graphId or anchorEntityKey is required')
+    }
+    return proposals.list({
+      graphId: typeof q.graphId === 'string' && q.graphId !== '' ? q.graphId : undefined,
+      anchorEntityKey: typeof q.anchorEntityKey === 'string' && q.anchorEntityKey !== '' ? q.anchorEntityKey : undefined,
+      includeResolved: q.includeResolved === true,
+      limit: limitOf(q.limit, 100, 200),
+    })
+  })
+
+  typedHandle('proposal:diff', async (_, id: unknown) => {
+    if (typeof id !== 'string' || id === '') throw new Error('id is required')
+    return proposals.diff(id)
+  })
+
+  typedHandle('proposal:accept', async (_, data) => {
+    const d = (data ?? {}) as { id?: unknown; acceptedBy?: unknown }
+    if (typeof d.id !== 'string' || d.id === '') throw new Error('id is required')
+    if (typeof d.acceptedBy !== 'string' || d.acceptedBy.trim() === '') {
+      throw new Error('acceptedBy is required')
+    }
+    const result = proposals.accept(d.id, { acceptedBy: d.acceptedBy })
+    broadcast?.('event:proposal-changed', {
+      graphId: String(result.row.graph_id),
+      nodeEntityKey: String(result.row.anchor_entity_key),
+      proposalId: d.id,
+      status: String(result.row.status),
+    })
+    return { proposal: result.row, reused: result.reused }
+  })
+
+  typedHandle('proposal:reject', async (_, data) => {
+    const d = (data ?? {}) as { id?: unknown; reason?: unknown; rejectedBy?: unknown }
+    if (typeof d.id !== 'string' || d.id === '') throw new Error('id is required')
+    if (typeof d.reason !== 'string' || d.reason.trim() === '') throw new Error('reason is required')
+    if (d.rejectedBy !== undefined && typeof d.rejectedBy !== 'string') {
+      throw new Error('rejectedBy must be a string')
+    }
+    const result = proposals.reject(d.id, {
+      reason: d.reason,
+      rejectedBy: typeof d.rejectedBy === 'string' ? d.rejectedBy : undefined,
+    })
+    broadcast?.('event:proposal-changed', {
+      graphId: String(result.row.graph_id),
+      nodeEntityKey: String(result.row.anchor_entity_key),
+      proposalId: d.id,
+      status: String(result.row.status),
+    })
+    return { proposal: result.row, reused: result.reused }
   })
 
   // ---- S7 计划推导/草稿（§9.2 plan:*）----

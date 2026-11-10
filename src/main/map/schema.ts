@@ -38,6 +38,9 @@ export const MAP_S5A_TABLE_SCHEMAS: MapTableSchema[] = [
         -- ALTER TABLE 补列，不能触发 DROP TABLE 重建）；NULL 视为最低（最后调度）。
         priority             INTEGER,
         verification_hint    TEXT,
+        -- v40 / G1-14：提案载荷（metadata.proposal = {before, after, reason, ...}）。
+        -- 可空、**不进 requiredColumns**：存量库用 ALTER TABLE 补列，不能触发重建。
+        metadata             TEXT,
         status               TEXT NOT NULL DEFAULT 'draft' CHECK(status IN (
           'draft','awaiting_confirm','queued','running','blocked',
           'needs_input','needs_human','paused','interrupted',
@@ -457,6 +460,12 @@ export const MAP_S6A_INDEX_SQLS: string[] = [
 export const MAP_S5A_INDEX_SQLS: string[] = [
   // ux_work_items_current 是部分唯一索引：同一 lineage 只允许一行 is_current=1。
   `CREATE UNIQUE INDEX IF NOT EXISTS ux_work_items_current ON work_items(lineage_id) WHERE is_current = 1`,
+  // v40 / G1-14：同一 online 实体只允许一个 open 提案。只约束带 proposal 载荷的行，
+  // 普通 work item 的并发不受影响；json_extract 是确定性函数，可用于部分索引谓词。
+  `CREATE UNIQUE INDEX IF NOT EXISTS ux_work_items_open_proposal
+     ON work_items(graph_id, anchor_entity_key)
+     WHERE json_extract(metadata, '$.proposal') IS NOT NULL
+       AND status IN ('awaiting_confirm','queued')`,
   `CREATE INDEX IF NOT EXISTS idx_work_items_graph ON work_items(graph_id, status)`,
   `CREATE INDEX IF NOT EXISTS idx_work_items_anchor ON work_items(graph_id, anchor_entity_key)`,
   `CREATE INDEX IF NOT EXISTS idx_work_items_parent ON work_items(parent_work_item_id)`,
@@ -805,6 +814,53 @@ export const MAP_VIEW_SCHEMAS: MapViewSchema[] = [
       FROM plan_deviations d
       LEFT JOIN change_sets cs ON cs.work_run_id = d.work_run_id
       LEFT JOIN json_each(cs.files_json) je
+    `,
+  },
+  {
+    /**
+     * v40 / G1-14：online 提案只读视图。提案本体存 work_items（metadata.proposal），
+     * 不新增表；视图只 SELECT，不提供任何写路径。
+     *
+     * `stale` 口径：提案创建时记录锚定节点的 `updated_at` 作为 `base_revision`，
+     * 与当前节点 `updated_at` 不一致即视为过期（需重提）。提案被采纳后**不会**
+     * 自动回写 online 图——采纳由人编辑 online 后自行确认。
+     */
+    name: 'v_online_proposals',
+    createSql: `
+      CREATE VIEW v_online_proposals AS
+      SELECT w.id,
+             w.lineage_id,
+             w.revision,
+             w.project_path,
+             w.graph_id,
+             w.anchor_entity_key,
+             w.title,
+             w.status,
+             w.cancel_reason,
+             w.created_by,
+             w.created_at,
+             w.updated_at,
+             json_extract(w.metadata, '$.proposal.before') AS before_json,
+             json_extract(w.metadata, '$.proposal.after') AS after_json,
+             json_extract(w.metadata, '$.proposal.reason') AS reason,
+             json_extract(w.metadata, '$.proposal.evidence_refs') AS evidence_refs_json,
+             json_extract(w.metadata, '$.proposal.base_revision') AS base_revision,
+             json_extract(w.metadata, '$.proposal.conflict_group') AS conflict_group,
+             json_extract(w.metadata, '$.proposal.weight') AS weight,
+             json_extract(w.metadata, '$.proposal.truncated') AS truncated,
+             json_extract(w.metadata, '$.proposal.reject_reason') AS reject_reason,
+             n.updated_at AS online_updated_at,
+             CASE
+               WHEN n.updated_at IS NOT NULL
+                AND json_extract(w.metadata, '$.proposal.base_revision') IS NOT NULL
+                AND n.updated_at <> json_extract(w.metadata, '$.proposal.base_revision')
+                 THEN 1
+               ELSE 0
+             END AS stale
+      FROM work_items w
+      LEFT JOIN nodes n ON n.graph_id = w.graph_id AND n.entity_key = w.anchor_entity_key
+      WHERE json_extract(w.metadata, '$.proposal') IS NOT NULL
+        AND w.is_current = 1
     `,
   },
 ]

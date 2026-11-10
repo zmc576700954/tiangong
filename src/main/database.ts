@@ -16,6 +16,7 @@ import { MapMigrationStore, preflightStartup, pruneMapMigrationReports } from '.
 import { runEntityKeyBackfill } from './map-migration/entity-key-backfill'
 import { ImportDedupService } from './map-migration/import-dedup'
 import { scanStaleE3All, scanExpiredE4All } from './map/evidence-service'
+import { ProposalService } from './map/proposal-service'
 import { runLinkBackfill, runLinkIntegrityCheck } from './map-migration/link-backfill'
 import { captureS4Baseline, verifyS4PostRebuild } from './map-migration/s4-verify'
 import {
@@ -148,6 +149,13 @@ export function initDatabase(): BetterSqlite3.Database {
   } catch (err) {
     logger.warn('E4 expiry scan failed:', err)
   }
+  // G1-14：阻塞提案等待超 24h 自动取消（启动后一次 + 每日随巡检执行）。
+  // 只改 work_items 里的提案状态，不触碰 online 图。
+  try {
+    new ProposalService(db).expireStale()
+  } catch (err) {
+    logger.warn('proposal expiry sweep failed:', err)
+  }
   const e3ScanTimer = setInterval(() => {
     if (!db) return
     try {
@@ -165,6 +173,8 @@ export function initDatabase(): BetterSqlite3.Database {
       new ImportDedupService(db).runRetention()
       // §3.7.5：E4 到期每日扫描一次（到期置 stale 并派生 stale）
       scanExpiredE4All(db)
+      // G1-14：阻塞提案 24h 超时取消（与 E4 到期同频）。
+      new ProposalService(db).expireStale()
     } catch (err) {
       logger.warn('daily map integrity/retention task failed:', err)
     }
@@ -765,8 +775,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  * v39：G2-13 published 软阻断 —— `nodes.published_waiver_json`（可空 TEXT）。
  *      仅 ALTER 补列，不重建表；回滚：`ALTER TABLE nodes DROP COLUMN`（SQLite ≥3.35），
  *      或保留空列不读（历史节点该列为 NULL）。
+ * v40：G1-14 提案机制 —— ①`work_items.metadata`（可空 TEXT，仅 ALTER 补列，
+ *      不进 requiredColumns）；②部分唯一索引 `ux_work_items_open_proposal`
+ *      （只约束带 proposal 载荷的行，同实体仅一个 open）；③只读视图
+ *      `v_online_proposals`（含 stale 判定）。不新增表、不改既有列语义。
+ *      回滚：`DROP VIEW IF EXISTS v_online_proposals` + `DROP INDEX IF EXISTS
+ *      ux_work_items_open_proposal`；`metadata` 列可保留不读（历史行全 NULL）。
  */
-const CURRENT_SCHEMA_VERSION = 39
+const CURRENT_SCHEMA_VERSION = 40
 
 interface TableSchema {
   name: string
@@ -1747,6 +1763,11 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   // v39：G2-13 published 软阻断 —— 发布豁免 JSON，可空，仅 ALTER 补列。
   if (currentVersion < 39) {
     addColumnSafe('nodes', 'published_waiver_json', 'TEXT')
+  }
+
+  // v40：G1-14 提案载荷（metadata.proposal），纯加列；不进 requiredColumns。
+  if (currentVersion < 40) {
+    addColumnSafe('work_items', 'metadata', 'TEXT')
   }
 
   // v17：层级结构数据迁移（清孤儿 → 回填 sort_index → default 边改写 → 补齐层级边）。

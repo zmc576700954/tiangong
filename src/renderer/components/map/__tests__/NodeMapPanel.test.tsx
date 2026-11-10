@@ -67,6 +67,9 @@ function setup(opts: {
   workItemErrors?: Record<string, string>
   executionStatus?: { enabled: boolean; adapterName: string | null; disabledReason: string | null } | null
   actionErrors?: Record<string, string>
+  proposals?: Array<Record<string, unknown>>
+  proposalDiffs?: Record<string, Record<string, unknown>>
+  proposalErrors?: Record<string, string>
 } = {}): void {
   const items = opts.items ?? [makeItem()]
   useMapStore.setState({
@@ -82,10 +85,17 @@ function setup(opts: {
         ? { enabled: true, adapterName: 'claude', disabledReason: null }
         : opts.executionStatus,
     loadingNode: false,
+    proposals: (opts.proposals ?? []) as never,
+    proposalDiffs: (opts.proposalDiffs ?? {}) as never,
+    proposalErrors: opts.proposalErrors ?? {},
     // 效果与动作在组件测试里不需要真实 IPC
     fetchExecutionStatus: vi.fn(async () => {}),
     fetchOverlay: vi.fn(async () => {}),
     fetchNodeData: vi.fn(async () => {}),
+    fetchProposals: vi.fn(async () => {}),
+    fetchProposalDiff: vi.fn(async () => {}),
+    acceptProposal: vi.fn(async () => {}),
+    rejectProposal: vi.fn(async () => {}),
     fetchWorkItemDetail: vi.fn(async () => {}),
     startWorkItem: vi.fn(async () => {}),
     cancelWorkItem: vi.fn(async () => {}),
@@ -257,5 +267,78 @@ describe('NodeMapPanel 执行入口', () => {
     renderPanel()
 
     expect(screen.getByTestId('task-wi-1-action-error').textContent).toContain('GATE_NOT_PASSED')
+  })
+
+  it('提案区展示列表、stale 与 diff，驳回未填理由时禁用', async () => {
+    setup({
+      proposals: [
+        {
+          id: 'p-1',
+          lineage_id: 'pl-1',
+          revision: 1,
+          project_path: null,
+          graph_id: 'g-1',
+          anchor_entity_key: 'node-1',
+          title: '补状态字段',
+          status: 'awaiting_confirm',
+          cancel_reason: null,
+          created_by: 'alice',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+          base_revision: 'r1',
+          conflict_group: null,
+          weight: 0.5,
+          truncated: 0,
+          reject_reason: null,
+          online_updated_at: 'r2',
+          stale: 1,
+        },
+      ],
+      proposalDiffs: {
+        'p-1': {
+          id: 'p-1',
+          graphId: 'g-1',
+          nodeEntityKey: 'node-1',
+          status: 'awaiting_confirm',
+          title: '补状态字段',
+          reason: '对账口径',
+          evidenceRefs: [],
+          baseRevision: 'r1',
+          onlineUpdatedAt: 'r2',
+          conflictGroup: null,
+          weight: 0.5,
+          truncated: false,
+          stale: true,
+          rejectReason: null,
+          before: { title: '旧' },
+          after: { title: '新' },
+          beforeText: '{"title":"旧"}',
+          afterText: '{"title":"新"}',
+        },
+      },
+    })
+    renderPanel()
+
+    const row = screen.getByTestId('proposal-p-1')
+    expect(row.textContent).toContain('补状态字段')
+    expect(row.textContent).toContain('stale')
+
+    const rejectButton = screen.getByTestId('proposal-p-1-reject') as HTMLButtonElement
+    expect(rejectButton.disabled).toBe(true)
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('proposal-p-1-diff'))
+    })
+    expect(screen.getByTestId('proposal-p-1-diff-body').textContent).toContain('对账口径')
+    expect(screen.getByTestId('proposal-p-1-diff-body').textContent).toContain('已过期')
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('proposal-p-1-accept'))
+    })
+    expect(useMapStore.getState().acceptProposal).toHaveBeenCalledWith({
+      graphId: 'g-1',
+      nodeEntityKey: 'node-1',
+      id: 'p-1',
+    })
   })
 })

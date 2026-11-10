@@ -168,9 +168,18 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const enqueueStep = useMapStore((s) => s.enqueueStep)
   const cancelRun = useMapStore((s) => s.cancelRun)
   const confirmAcceptance = useMapStore((s) => s.confirmAcceptance)
+  const proposals = useMapStore((s) => s.proposals)
+  const proposalDiffs = useMapStore((s) => s.proposalDiffs)
+  const proposalErrors = useMapStore((s) => s.proposalErrors)
+  const fetchProposals = useMapStore((s) => s.fetchProposals)
+  const fetchProposalDiff = useMapStore((s) => s.fetchProposalDiff)
+  const acceptProposal = useMapStore((s) => s.acceptProposal)
+  const rejectProposal = useMapStore((s) => s.rejectProposal)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [confirmingKey, setConfirmingKey] = useState<string | null>(null)
   const [confirmError, setConfirmError] = useState<string | null>(null)
+  const [openDiffId, setOpenDiffId] = useState<string | null>(null)
+  const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({})
 
   const execEnabled = executionStatus?.enabled === true
   const execAdapter = executionStatus?.adapterName ?? null
@@ -211,6 +220,11 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
     if (!graphId || !nodeEntityKey) return
     void fetchNodeData(graphId, nodeEntityKey)
   }, [graphId, nodeEntityKey, fetchNodeData])
+
+  useEffect(() => {
+    if (!graphId || !nodeEntityKey) return
+    void fetchProposals(graphId, nodeEntityKey)
+  }, [graphId, nodeEntityKey, fetchProposals])
 
   const tasks: WorkItemSummary[] = (overlay?.workItems ?? []).filter((w) => w.anchor_entity_key === nodeEntityKey)
   const taskIds = tasks.map((t) => t.id).join(',')
@@ -528,6 +542,136 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
               )
             })}
             {tasks.length === 0 && <div className="px-2 text-[11px] opacity-50">无（该节点未被任何 work item 锚定）</div>}
+          </div>
+        </section>
+
+        {/* G1-14 线上提案：只读列表 + 按需 diff；采纳/驳回只收口提案状态，
+            不会自动改 online 图（人工先在图里改，再回来采纳）。 */}
+        <section data-testid="node-map-proposals">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">线上提案</div>
+          <div className="space-y-1">
+            {proposalErrors['__list__'] && (
+              <div className="px-2 text-[11px] text-red-600" data-testid="proposal-list-error">
+                {proposalErrors['__list__']}
+              </div>
+            )}
+            {proposals.map((p) => {
+              const open = p.status === 'awaiting_confirm' || p.status === 'queued'
+              const diff = proposalDiffs[p.id]
+              const error = proposalErrors[p.id]
+              const rejectDraft = rejectDrafts[p.id] ?? ''
+              return (
+                <div key={p.id} className="rounded px-2 py-1" data-testid={`proposal-${p.id}`}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge variant="secondary" className={`text-[10px] border ${STATUS_STYLE[p.status] ?? ''}`}>
+                      {p.status}
+                    </Badge>
+                    <span className="truncate">{p.title}</span>
+                    {p.stale === 1 && (
+                      <Badge variant="secondary" className="text-[10px] border bg-yellow-500/10 text-yellow-700 border-yellow-500/30">
+                        stale
+                      </Badge>
+                    )}
+                    {p.weight !== null && (
+                      <Badge variant="secondary" className="text-[10px] border bg-gray-500/10 text-gray-600 border-gray-500/30">
+                        w={p.weight.toFixed(2)}
+                      </Badge>
+                    )}
+                    {p.truncated === 1 && <span className="text-[10px] text-amber-700">已截断</span>}
+                    <span className="flex-1" />
+                    <span className="text-[10px] opacity-50">
+                      {p.created_by ?? '-'} · {p.created_at}
+                      {p.conflict_group ? ` · ${p.conflict_group}` : ''}
+                    </span>
+                  </div>
+                  {p.status === 'blocked' && (
+                    <div className="mt-1 text-[10px] text-amber-700" data-testid={`proposal-${p.id}-blocked`}>
+                      等待前序提案结束（conflict_group 串行；超 24h 自动取消）
+                    </div>
+                  )}
+                  {p.reject_reason && (
+                    <div className="mt-1 text-[10px] opacity-60" data-testid={`proposal-${p.id}-reject-reason`}>
+                      驳回理由：{p.reject_reason}
+                    </div>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      className={ACTION_BUTTON_CLASS}
+                      data-testid={`proposal-${p.id}-diff`}
+                      onClick={() => {
+                        const next = openDiffId === p.id ? null : p.id
+                        setOpenDiffId(next)
+                        if (next && !proposalDiffs[p.id]) void fetchProposalDiff(p.id)
+                      }}
+                    >
+                      {openDiffId === p.id ? '收起 diff' : '查看 diff'}
+                    </button>
+                    {open && (
+                      <>
+                        <button
+                          type="button"
+                          className={`${ACTION_BUTTON_CLASS} border-green-500/40`}
+                          data-testid={`proposal-${p.id}-accept`}
+                          disabled={busyKey === `proposal-accept:${p.id}`}
+                          title="仅收口提案状态；需先在 online 图完成编辑"
+                          onClick={() => {
+                            if (!graphId || !nodeEntityKey) return
+                            void handleAction(`proposal-accept:${p.id}`, () =>
+                              acceptProposal({ graphId, nodeEntityKey, id: p.id }),
+                            )
+                          }}
+                        >
+                          {busyKey === `proposal-accept:${p.id}` ? '采纳中…' : '采纳'}
+                        </button>
+                        <input
+                          className="w-32 rounded border border-gray-300 bg-transparent px-1 py-0.5 text-[10px] dark:border-gray-600"
+                          placeholder="驳回理由（必填）"
+                          data-testid={`proposal-${p.id}-reject-input`}
+                          value={rejectDraft}
+                          onChange={(e) => setRejectDrafts({ ...rejectDrafts, [p.id]: e.target.value })}
+                        />
+                        <button
+                          type="button"
+                          className={`${ACTION_BUTTON_CLASS} border-red-500/40`}
+                          data-testid={`proposal-${p.id}-reject`}
+                          disabled={busyKey === `proposal-reject:${p.id}` || rejectDraft.trim() === ''}
+                          onClick={() => {
+                            if (!graphId || !nodeEntityKey) return
+                            void handleAction(`proposal-reject:${p.id}`, async () => {
+                              await rejectProposal({ graphId, nodeEntityKey, id: p.id, reason: rejectDraft })
+                              setRejectDrafts({ ...rejectDrafts, [p.id]: '' })
+                            })
+                          }}
+                        >
+                          {busyKey === `proposal-reject:${p.id}` ? '驳回中…' : '驳回'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  {error && <div className="mt-1 text-[10px] text-red-600" data-testid={`proposal-${p.id}-error`}>{error}</div>}
+                  {openDiffId === p.id && diff && (
+                    <div className="mt-1 space-y-1 rounded border border-gray-200 p-1.5 text-[10px] dark:border-gray-700" data-testid={`proposal-${p.id}-diff-body`}>
+                      {diff.reason && <div className="opacity-70">理由：{diff.reason}</div>}
+                      {diff.evidenceRefs.length > 0 && <div className="opacity-60">证据：{diff.evidenceRefs.join('、')}</div>}
+                      {diff.stale && <div className="text-amber-700">已过期：online 节点在提案后又被修改</div>}
+                      {diff.truncated && <div className="text-amber-700">内容超过 200KB，已截断显示</div>}
+                      <div>
+                        <div className="opacity-50">before</div>
+                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all opacity-80">{diff.beforeText}</pre>
+                      </div>
+                      <div>
+                        <div className="opacity-50">after</div>
+                        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all opacity-80">{diff.afterText}</pre>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {proposals.length === 0 && !proposalErrors['__list__'] && (
+              <div className="px-2 text-[11px] opacity-50">无（该节点没有待处理提案）</div>
+            )}
           </div>
         </section>
 

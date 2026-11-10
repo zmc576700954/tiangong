@@ -352,6 +352,39 @@ export interface IpcApi {
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
   'workitem:cancel': (id: string) => Promise<Record<string, unknown>>
 
+  /**
+   * G1-14 提案（只读）：默认排除 done/cancelled/superseded；weight 仅影响展示排序。
+   * 提案存放在 work_items，本通道只 SELECT `v_online_proposals`。
+   */
+  'proposal:list': (query: {
+    graphId?: string
+    anchorEntityKey?: string
+    includeResolved?: boolean
+    limit?: number
+  }) => Promise<Array<Record<string, unknown>>>
+  /** G1-14 提案 diff（只读）：返回解析后的 before/after 与 stale 判定。 */
+  'proposal:diff': (id: string) => Promise<Record<string, unknown> | null>
+  /** G1-14 提案创建（写通道）：只写 work_items，不写 online 图。 */
+  'proposal:create': (data: {
+    projectPath?: string
+    graphId: string
+    anchorEntityKey: string
+    anchorNodeId?: string
+    title: string
+    reason: string
+    before?: unknown
+    after: unknown
+    evidenceRefs?: string[]
+    baseRevision?: string
+    conflictGroup?: string
+    weight?: number
+    createdBy?: string
+  }) => Promise<Record<string, unknown>>
+  /** G1-14 提案采纳（写通道）：只收口提案状态；online 图由人工先行编辑。 */
+  'proposal:accept': (data: { id: string; acceptedBy: string }) => Promise<{ proposal: Record<string, unknown>; reused: boolean }>
+  /** G1-14 提案驳回（写通道）：理由必填。 */
+  'proposal:reject': (data: { id: string; reason: string; rejectedBy?: string }) => Promise<{ proposal: Record<string, unknown>; reused: boolean }>
+
   /** L2 执行触发（写通道；默认关闭，需 BIZGRAPH_MAP_EXECUTION=1）。只入队，不内联跑 turn。 */
   'workitem:step:run': (data: {
     stepId: string
@@ -543,4 +576,6 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:run:get',
   'map:execution:status',
   'map:published:status',
+  'proposal:list',
+  'proposal:diff',
 ] as const satisfies readonly (keyof IpcApi)[]

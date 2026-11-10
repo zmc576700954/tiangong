@@ -244,6 +244,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   // G1-10 证据建议接受/驳回（写通道）：本地 renderer 人工裁决，必须带 resolvedBy。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',
+  // G1-14 提案写入面（写通道）：只写 work_items / 提案状态，不写 online 图。
+  // 只读的 proposal:list / proposal:diff 已随 MAP_READ_ONLY_CHANNELS 暴露。
+  'proposal:create',
+  'proposal:accept',
+  'proposal:reject',
   // G3-10 E1 人工判断直写（写通道）：等级/写入方由主进程固定，renderer 入口归 G8。
   'map:evidence:e1:create',
 ]

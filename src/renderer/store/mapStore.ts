@@ -114,6 +114,51 @@ export interface WorkRunEntry {
   ended_at: number | null
 }
 
+/** G1-14：online 提案列表行（来自只读视图 v_online_proposals）。 */
+export interface ProposalEntry {
+  id: string
+  lineage_id: string
+  revision: number
+  project_path: string | null
+  graph_id: string
+  anchor_entity_key: string
+  title: string
+  status: string
+  cancel_reason: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
+  base_revision: string | null
+  conflict_group: string | null
+  weight: number | null
+  truncated: number | null
+  reject_reason: string | null
+  online_updated_at: string | null
+  stale: number
+}
+
+/** G1-14：提案 diff（proposal:diff）；before/after 已在主进程解析/截断。 */
+export interface ProposalDiffView {
+  id: string
+  graphId: string
+  nodeEntityKey: string
+  status: string
+  title: string
+  reason: string | null
+  evidenceRefs: string[]
+  baseRevision: string | null
+  onlineUpdatedAt: string | null
+  conflictGroup: string | null
+  weight: number | null
+  truncated: boolean
+  stale: boolean
+  rejectReason: string | null
+  before: unknown
+  after: unknown
+  beforeText: string
+  afterText: string
+}
+
 /** 执行开关只读状态（map:execution:status），用于禁用入口并解释原因。 */
 export interface ExecutionStatus {
   enabled: boolean
@@ -143,9 +188,23 @@ interface MapState {
   actionErrors: Record<string, string>
   executionStatus: ExecutionStatus | null
   loadingNode: boolean
+  /** G1-14：当前节点提案列表（只读视图；不含 done/cancelled 的终态）。 */
+  proposals: ProposalEntry[]
+  /** G1-14：按提案 id 缓存的 diff（按需拉取，超 200KB 由主进程截断并标记）。 */
+  proposalDiffs: Record<string, ProposalDiffView>
+  /** G1-14：提案读取/动作失败（按提案 id；`__list__` 表示列表级错误）。 */
+  proposalErrors: Record<string, string>
 
   fetchExecutionStatus: () => Promise<void>
   fetchOverlay: (graphId: string) => Promise<void>
+  /** G1-14：拉取锚定节点的提案列表（只读）。 */
+  fetchProposals: (graphId: string, nodeEntityKey: string) => Promise<void>
+  /** G1-14：按需拉取单个提案 diff（只读）。 */
+  fetchProposalDiff: (id: string) => Promise<void>
+  /** G1-14：采纳提案（只收口提案状态；须人工先改 online 图）。 */
+  acceptProposal: (input: { graphId: string; nodeEntityKey: string; id: string }) => Promise<void>
+  /** G1-14：驳回提案（理由必填）。 */
+  rejectProposal: (input: { graphId: string; nodeEntityKey: string; id: string; reason: string }) => Promise<void>
   /** §9.3 event:node-execution-state 增量更新（preload 订阅驱动） */
   applyExecutionState: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void
   fetchNodeData: (graphId: string, nodeEntityKey: string) => Promise<void>
@@ -213,6 +272,75 @@ export const useMapStore = create<MapState>((set, get) => ({
   actionErrors: {},
   executionStatus: null,
   loadingNode: false,
+  proposals: [],
+  proposalDiffs: {},
+  proposalErrors: {},
+
+  fetchProposals: async (graphId, nodeEntityKey) => {
+    try {
+      const rows = await window.electronAPI['proposal:list']({ graphId, anchorEntityKey: nodeEntityKey })
+      set((state) => {
+        const nextErrors = { ...state.proposalErrors }
+        delete nextErrors['__list__']
+        return { proposals: (rows ?? []) as unknown as ProposalEntry[], proposalErrors: nextErrors }
+      })
+    } catch (error) {
+      set((state) => ({
+        proposals: [],
+        proposalErrors: { ...state.proposalErrors, __list__: `读取提案失败：${errorText(error)}` },
+      }))
+    }
+  },
+
+  fetchProposalDiff: async (id) => {
+    try {
+      const diff = await window.electronAPI['proposal:diff'](id)
+      if (!diff) {
+        set((state) => ({
+          proposalErrors: { ...state.proposalErrors, [id]: '提案不存在或已被删除（proposal:diff 返回空）' },
+        }))
+        return
+      }
+      set((state) => {
+        const nextErrors = { ...state.proposalErrors }
+        delete nextErrors[id]
+        return {
+          proposalDiffs: { ...state.proposalDiffs, [id]: diff as unknown as ProposalDiffView },
+          proposalErrors: nextErrors,
+        }
+      })
+    } catch (error) {
+      set((state) => ({
+        proposalErrors: { ...state.proposalErrors, [id]: `读取 diff 失败：${errorText(error)}` },
+      }))
+    }
+  },
+
+  acceptProposal: async (input) => {
+    try {
+      await window.electronAPI['proposal:accept']({ id: input.id, acceptedBy: 'local-user' })
+      await get().fetchProposals(input.graphId, input.nodeEntityKey)
+    } catch (error) {
+      set((state) => ({
+        proposalErrors: { ...state.proposalErrors, [input.id]: errorText(error) },
+      }))
+    }
+  },
+
+  rejectProposal: async (input) => {
+    try {
+      await window.electronAPI['proposal:reject']({
+        id: input.id,
+        reason: input.reason,
+        rejectedBy: 'local-user',
+      })
+      await get().fetchProposals(input.graphId, input.nodeEntityKey)
+    } catch (error) {
+      set((state) => ({
+        proposalErrors: { ...state.proposalErrors, [input.id]: errorText(error) },
+      }))
+    }
+  },
 
   fetchExecutionStatus: async () => {
     try {
