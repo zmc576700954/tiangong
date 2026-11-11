@@ -48,6 +48,17 @@ function installApi(overrides: Record<string, unknown> = {}): Record<string, Ret
     'workitem:get': vi.fn(async () => detail()),
     'workitem:acceptance:confirm': vi.fn(async () => ({ stepId: 'step-1', workItemId: 'wi-1' })),
     'map:confirmation:decide': vi.fn(async () => ({ stepId: 'step-1', decision: 'approve' })),
+    'plan:draft:list': vi.fn(async () => ({
+      drafts: [
+        {
+          draft: { id: 'pd-1', lineage_id: 'pl-1', revision: 1, graph_id: 'g-1', status: 'draft', updated_at: 't' },
+          display: { gateMissing: { count: 0, items: [] } },
+        },
+      ],
+    })),
+    'plan:draft:submit': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'awaiting_confirm' } })),
+    'plan:draft:confirm': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'confirmed' }, workItemIds: ['wi-9'] })),
+    'plan:draft:reject': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'rejected' } })),
     'map:execution:status': vi.fn(async () => ({ enabled: true, adapterName: 'claude', disabledReason: null })),
     'map:overlay:get': vi.fn(async () => ({ executionStates: [], workItems: [] })),
     ...overrides,
@@ -69,6 +80,7 @@ function resetStore(): void {
     actionErrors: {},
     executionStatus: null,
     loadingNode: false,
+    planDraftsByGraph: {},
   })
 }
 
@@ -258,5 +270,87 @@ describe('步级确认决策（C3/C4）', () => {
 
   it('未知错误保留原文，不吞掉信息', () => {
     expect(describeConfirmationError(new Error('ENOENT: 磁盘不可读'))).toBe('ENOENT: 磁盘不可读')
+  })
+})
+
+describe('C1 计划草稿（I.8.F P1）', () => {
+  beforeEach(() => {
+    installApi()
+    resetStore()
+  })
+
+  it('fetchPlanDrafts 缓存服务端投影；成功后清掉图级错误', async () => {
+    useMapStore.setState({ actionErrors: { 'plan-drafts:g-1': '旧错误' } })
+    await useMapStore.getState().fetchPlanDrafts('g-1')
+
+    const cached = useMapStore.getState().planDraftsByGraph['g-1']
+    expect(cached).toHaveLength(1)
+    expect(cached[0].draft.id).toBe('pd-1')
+    expect(cached[0].display).toEqual({ gateMissing: { count: 0, items: [] } })
+    expect(useMapStore.getState().actionErrors['plan-drafts:g-1']).toBeUndefined()
+  })
+
+  it('confirmPlanDraft 原样回传 display，并在成功后重拉列表（不本地猜状态）', async () => {
+    const api = installApi()
+    await useMapStore.getState().confirmPlanDraft({
+      graphId: 'g-1',
+      id: 'pd-1',
+      display: { gateMissing: { count: 0, items: [] } },
+    })
+
+    expect(api['plan:draft:confirm']).toHaveBeenCalledWith({
+      id: 'pd-1',
+      display: { gateMissing: { count: 0, items: [] } },
+    })
+    expect(api['plan:draft:list']).toHaveBeenCalledWith('g-1')
+    expect(useMapStore.getState().actionErrors['plan-draft:pd-1']).toBeUndefined()
+  })
+
+  it('submitPlanDraft 走提交通道并重拉列表', async () => {
+    const api = installApi()
+    await useMapStore.getState().submitPlanDraft({ graphId: 'g-1', id: 'pd-1' })
+
+    expect(api['plan:draft:submit']).toHaveBeenCalledWith('pd-1')
+    expect(api['plan:draft:list']).toHaveBeenCalledWith('g-1')
+    expect(api['plan:draft:confirm']).not.toHaveBeenCalled()
+  })
+
+  it('rejectPlanDraft 走驳回通道并重拉列表', async () => {
+    const api = installApi()
+    await useMapStore.getState().rejectPlanDraft({ graphId: 'g-1', id: 'pd-1' })
+
+    expect(api['plan:draft:reject']).toHaveBeenCalledWith('pd-1')
+    expect(api['plan:draft:confirm']).not.toHaveBeenCalled()
+    expect(api['plan:draft:list']).toHaveBeenCalledWith('g-1')
+  })
+
+  it('失败时把错误码翻成中文（含环），不把码抛给用户', async () => {
+    installApi({
+      'plan:draft:confirm': vi.fn(async () => {
+        throw new Error('计划依赖存在环:item-1 → item-2 → item-1|cycle=["item-1","item-2"]')
+      }),
+    })
+    await useMapStore.getState().confirmPlanDraft({
+      graphId: 'g-1',
+      id: 'pd-1',
+      display: { gateMissing: { count: 0, items: [] } },
+    })
+    const text = useMapStore.getState().actionErrors['plan-draft:pd-1']
+    expect(text).toBe('计划依赖存在环，无法确认（请先调整子任务依赖）')
+    expect(text).not.toContain('cycle=')
+
+    installApi({
+      'plan:draft:confirm': vi.fn(async () => {
+        throw new Error('CONFIRMATION_DISPLAY_MISSING: 缺少必填展示项：subtasks')
+      }),
+    })
+    await useMapStore.getState().confirmPlanDraft({
+      graphId: 'g-1',
+      id: 'pd-1',
+      display: {},
+    })
+    const displayError = useMapStore.getState().actionErrors['plan-draft:pd-1']
+    expect(displayError).toContain('必填展示项未齐')
+    expect(displayError).not.toContain('CONFIRMATION_DISPLAY_MISSING')
   })
 })

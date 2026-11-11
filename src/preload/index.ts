@@ -244,6 +244,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   // G2-10 C3/C4 步级确认决策（写通道）：只改步状态与确认事实，不触发执行。
   // 只读的状态通道在 MAP_READ_ONLY_CHANNELS 里（map:confirmation:status）。
   'map:confirmation:decide',
+  // G2-10 C1 计划确认/驳回/提交（写通道）：confirm 生成 work_items，reject 不改任务。
+  // 只读的 plan:draft:preview / plan:draft:list 已随 MAP_READ_ONLY_CHANNELS 暴露。
+  'plan:draft:submit',
+  'plan:draft:confirm',
+  'plan:draft:reject',
   // G1-10 证据建议接受/驳回（写通道）：本地 renderer 人工裁决，必须带 resolvedBy。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',

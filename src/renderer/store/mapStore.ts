@@ -210,6 +210,22 @@ export interface StepConfirmationView {
   display: Record<string, unknown>
 }
 
+/**
+ * I.8.F P1：C1 计划草稿视图（`plan:draft:list` / `plan:draft:preview` 原样投影）。
+ * 8 个必填展示项由服务端组装（`gateMissing` 复用生产 gate 引擎），renderer 不复算。
+ */
+export interface PlanDraftView {
+  draft: {
+    id: string
+    lineage_id: string
+    revision: number
+    graph_id: string
+    status: string
+    updated_at: string
+  }
+  display: Record<string, unknown>
+}
+
 interface MapState {
   /** 叠加层：按图缓存（map:overlay:get 批量,禁止按节点轮询） */
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
@@ -219,6 +235,8 @@ interface MapState {
   workItemDetails: Record<string, WorkItemDetail>
   /** G8-3：步级确认视图缓存（map:confirmation:status；只读展示，风险由后端派生） */
   confirmationsByItem: Record<string, StepConfirmationView[]>
+  /** I.8.F P1：按图缓存的计划草稿（plan:draft:list；含服务端 C1 投影） */
+  planDraftsByGraph: Record<string, PlanDraftView[]>
   /** 下钻读取失败（按 item id）；与「无数据」区分，避免空列表被当成正常空态。 */
   workItemErrors: Record<string, string>
   /** 节点级读取失败（overlay / 时间线 / 证据）。 */
@@ -273,6 +291,14 @@ interface MapState {
     display: Record<string, unknown>
     note?: string
   }) => Promise<void>
+  /** I.8.F P1：拉取当前图的未确认草稿（只读）。 */
+  fetchPlanDrafts: (graphId: string) => Promise<void>
+  /** C1 提交确认：draft → awaiting_confirm，之后 confirm 才可用；成功后重拉列表。 */
+  submitPlanDraft: (input: { graphId: string; id: string }) => Promise<void>
+  /** C1 确认：display 原样回传；成功后重拉列表（不本地猜状态）。 */
+  confirmPlanDraft: (input: { graphId: string; id: string; display: Record<string, unknown>; confirmedBy?: string }) => Promise<void>
+  /** C1 驳回：不改 work_items；成功后重拉列表。 */
+  rejectPlanDraft: (input: { graphId: string; id: string }) => Promise<void>
 }
 
 function errorText(error: unknown): string {
@@ -315,6 +341,25 @@ export function describeConfirmationError(error: unknown): string {
   return stripped && stripped !== detail ? `${mapped}：${stripped}` : mapped
 }
 
+/** C1 计划草稿动作失败的中文提示（不把错误码直接抛给用户）。 */
+const PLAN_DRAFT_ERROR_TEXT: Record<string, string> = {
+  CONFIRMATION_DISPLAY_MISSING: '必填展示项未齐，无法确认',
+}
+
+export function describePlanDraftError(error: unknown): string {
+  const raw = errorText(error)
+  // 环检测拒绝的消息形如 `计划依赖存在环:...|cycle=[...]`，不把环路径 JSON 抛给人。
+  if (raw.includes('|cycle=')) return '计划依赖存在环，无法确认（请先调整子任务依赖）'
+  const sep = raw.indexOf(':')
+  const code = sep > 0 ? raw.slice(0, sep).trim() : ''
+  const detail = sep > 0 ? raw.slice(sep + 1).trim() : ''
+  const mapped = PLAN_DRAFT_ERROR_TEXT[code]
+  if (!mapped) return raw
+  if (!detail) return mapped
+  const stripped = detail.replace(/^缺少必填展示项[:：]/, '')
+  return stripped && stripped !== detail ? `${mapped}：${stripped}` : mapped
+}
+
 /** 按 item id 就地更新所有已缓存图的叠加层（避免为此重拉整图）。 */
 function patchOverlayItem(state: MapState, id: string, patch: Partial<WorkItemSummary>): Partial<MapState> {
   const next = new Map(state.overlayByGraph)
@@ -336,6 +381,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   nodeEvidence: [],
   workItemDetails: {},
   confirmationsByItem: {},
+  planDraftsByGraph: {},
   workItemErrors: {},
   nodeError: null,
   actionErrors: {},
@@ -710,6 +756,62 @@ export const useMapStore = create<MapState>((set, get) => ({
       get().setActionError(input.stepId, '')
     } catch (error) {
       get().setActionError(input.stepId, describeConfirmationError(error))
+    }
+  },
+
+  /** C1 草稿列表：只读；读取失败写图级错误，不把空列表当正常空态。 */
+  fetchPlanDrafts: async (graphId) => {
+    try {
+      const result = unwrapIpc<{ drafts: PlanDraftView[] }>(
+        await window.electronAPI['plan:draft:list'](graphId),
+      )
+      set((state) => ({
+        planDraftsByGraph: { ...state.planDraftsByGraph, [graphId]: result.drafts ?? [] },
+      }))
+      get().setActionError(`plan-drafts:${graphId}`, '')
+    } catch (error) {
+      set((state) => ({
+        actionErrors: { ...state.actionErrors, [`plan-drafts:${graphId}`]: describePlanDraftError(error) },
+      }))
+    }
+  },
+
+  /** C1 提交确认：draft → awaiting_confirm，成功后重拉列表。 */
+  submitPlanDraft: async (input) => {
+    try {
+      unwrapIpc(await window.electronAPI['plan:draft:submit'](input.id))
+      get().setActionError(`plan-draft:${input.id}`, '')
+      await get().fetchPlanDrafts(input.graphId)
+    } catch (error) {
+      get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
+    }
+  },
+
+  /** C1 确认：`display` 原样回传；成功后重拉列表，不在本地猜草稿状态。 */
+  confirmPlanDraft: async (input) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['plan:draft:confirm']({
+          id: input.id,
+          display: input.display,
+          ...(input.confirmedBy ? { confirmedBy: input.confirmedBy } : {}),
+        }),
+      )
+      get().setActionError(`plan-draft:${input.id}`, '')
+      await get().fetchPlanDrafts(input.graphId)
+    } catch (error) {
+      get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
+    }
+  },
+
+  /** C1 驳回：不生成 work_items；成功后重拉列表。 */
+  rejectPlanDraft: async (input) => {
+    try {
+      unwrapIpc(await window.electronAPI['plan:draft:reject'](input.id))
+      get().setActionError(`plan-draft:${input.id}`, '')
+      await get().fetchPlanDrafts(input.graphId)
+    } catch (error) {
+      get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
     }
   },
 }))

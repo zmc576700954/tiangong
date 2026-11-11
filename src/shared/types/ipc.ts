@@ -484,6 +484,15 @@ export interface IpcApi {
   }>
   'plan:draft:create': (data: { projectPath?: string; graphId: string; anchorEntityKey?: string; anchorNodeId?: string; derivationRunId?: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
   'plan:draft:get': (id: string) => Promise<Record<string, unknown> | null>
+  /** draft → awaiting_confirm。createDraft 落 draft，confirm 只接受 awaiting_confirm。 */
+  'plan:draft:submit': (id: string) => Promise<Record<string, unknown>>
+  /**
+   * I.8.F P1：C1 草稿级预检投影（只读）。`display` 的 8 个必填展示项由服务端
+   * 组装（gate 缺失码复用生产 gate 引擎），renderer 只展示、不复算。
+   */
+  'plan:draft:preview': (id: string) => Promise<PlanDraftPreview | null>
+  /** 按图列当前未确认草稿（draft / awaiting_confirm），每条带同一份 C1 投影。 */
+  'plan:draft:list': (graphId: string) => Promise<{ drafts: PlanDraftPreview[] }>
   'plan:draft:revise': (data: { id: string; items: Array<Record<string, unknown>> }) => Promise<Record<string, unknown>>
   /**
    * G2-10 C1 计划确认：`display` 为必填展示项（子任务/写域/验收/依赖/候选分/gate 缺项等），
@@ -614,6 +623,19 @@ export interface IpcEventMap {
   'a2a:serverStatusChange': (status: A2AServerStatus) => void
 }
 
+/** I.8.F P1：C1 草稿视图（草稿元数据 + 服务端预检投影）。 */
+export interface PlanDraftPreview {
+  draft: {
+    id: string
+    lineage_id: string
+    revision: number
+    graph_id: string
+    status: string
+    updated_at: string
+  }
+  display: Record<string, unknown>
+}
+
 /**
  * session-map 只读通道白名单（preload 暴露 + 测试断言共用唯一来源）。
  *
@@ -636,6 +658,9 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:published:status',
   'map:project:progress',
   'map:confirmation:status',
+  // I.8.F P1：C1 草稿预检与列表（纯 SELECT，展示项由服务端投影）。
+  'plan:draft:preview',
+  'plan:draft:list',
   'mode:list',
   'proposal:list',
   'proposal:diff',

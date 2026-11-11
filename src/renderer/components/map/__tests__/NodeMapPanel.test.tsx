@@ -72,6 +72,7 @@ function setup(opts: {
   proposals?: Array<Record<string, unknown>>
   proposalDiffs?: Record<string, Record<string, unknown>>
   proposalErrors?: Record<string, string>
+  planDraftsByGraph?: Record<string, Array<Record<string, unknown>>>
 } = {}): void {
   const items = opts.items ?? [makeItem()]
   useMapStore.setState({
@@ -91,6 +92,7 @@ function setup(opts: {
     proposals: (opts.proposals ?? []) as never,
     proposalDiffs: (opts.proposalDiffs ?? {}) as never,
     proposalErrors: opts.proposalErrors ?? {},
+    planDraftsByGraph: (opts.planDraftsByGraph ?? {}) as never,
     // 效果与动作在组件测试里不需要真实 IPC
     fetchExecutionStatus: vi.fn(async () => {}),
     fetchOverlay: vi.fn(async () => {}),
@@ -106,6 +108,10 @@ function setup(opts: {
     cancelRun: vi.fn(async () => {}),
     confirmAcceptance: vi.fn(async () => {}),
     decideStepConfirmation: vi.fn(async () => {}),
+    fetchPlanDrafts: vi.fn(async () => {}),
+    submitPlanDraft: vi.fn(async () => {}),
+    confirmPlanDraft: vi.fn(async () => {}),
+    rejectPlanDraft: vi.fn(async () => {}),
   })
 }
 
@@ -725,5 +731,84 @@ describe('G8-3 确认点渲染', () => {
     expect(error.textContent).toContain('该步当前不在确认状态')
     expect(error.textContent).not.toContain('STEP_NOT_WAITING')
     expect(screen.queryByTestId('step-step-1-action-error')).toBeNull()
+  })
+
+  // I.8.F P1：C1 计划草稿确认（服务端投影原样展示、原样回传）
+  function makePlanDraft(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      draft: {
+        id: 'pd-1',
+        lineage_id: 'pl-1',
+        revision: 1,
+        graph_id: 'g-1',
+        status: 'awaiting_confirm',
+        updated_at: '2026-01-01T00:00:00Z',
+      },
+      display: {
+        subtasks: { count: 1, items: [{ key: 'item-1', title: '改一处', goal: null, dependsOn: [] }] },
+        scopeFiles: { count: 1, items: ['src/a.ts'] },
+        acceptance: { count: 1, items: [{ key: 'item-1', entries: [{ type: 'manual', expected: 'OK' }] }] },
+        dependencies: { count: 0, items: [] },
+        candidateScore: { count: 0, items: [], derivationRunId: null },
+        gateMissing: { count: 0, items: [], skippedGates: [{ gate: 'G5', reason: '草稿阶段未判定' }] },
+        excludedItems: { count: 0, items: [], unparsed: 0 },
+        anchorStates: { count: 0, items: [], missing: [] },
+      },
+      ...overrides,
+    }
+  }
+
+  it('C1 草稿：八项展示按服务端投影渲染，确认时 display 原样回传', async () => {
+    setup({ planDraftsByGraph: { 'g-1': [makePlanDraft()] } })
+    renderPanel()
+
+    expect(screen.getByTestId('node-map-plan-drafts')).toBeTruthy()
+    expect(screen.getByTestId('plan-draft-pd-1-display-subtasks').textContent).toContain('1 项')
+    expect(screen.getByTestId('plan-draft-pd-1-display-gateMissing').textContent).toContain('0 项')
+    expect(screen.getByTestId('plan-draft-pd-1-skipped').textContent).toContain('G5')
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-pd-1-approve'))
+    })
+    expect(useMapStore.getState().confirmPlanDraft).toHaveBeenCalledWith({
+      graphId: 'g-1',
+      id: 'pd-1',
+      display: (makePlanDraft().display as Record<string, unknown>),
+    })
+  })
+
+  it('C1 草稿：驳回走独立通道，不带 display、不带备注', async () => {
+    setup({ planDraftsByGraph: { 'g-1': [makePlanDraft()] } })
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-pd-1-reject'))
+    })
+    expect(useMapStore.getState().rejectPlanDraft).toHaveBeenCalledWith({ graphId: 'g-1', id: 'pd-1' })
+    expect(useMapStore.getState().confirmPlanDraft).not.toHaveBeenCalled()
+  })
+
+  it('C1 草稿：draft 状态只给「提交确认」，不越过状态机直接 confirm', async () => {
+    const draft = makePlanDraft({
+      draft: { id: 'pd-1', lineage_id: 'pl-1', revision: 1, graph_id: 'g-1', status: 'draft', updated_at: 't' },
+    })
+    setup({ planDraftsByGraph: { 'g-1': [draft] } })
+    renderPanel()
+
+    expect(screen.getByTestId('plan-draft-pd-1-submit')).toBeTruthy()
+    expect(screen.queryByTestId('plan-draft-pd-1-approve')).toBeNull()
+    expect(screen.queryByTestId('plan-draft-pd-1-reject')).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-pd-1-submit'))
+    })
+    expect(useMapStore.getState().submitPlanDraft).toHaveBeenCalledWith({ graphId: 'g-1', id: 'pd-1' })
+    expect(useMapStore.getState().confirmPlanDraft).not.toHaveBeenCalled()
+  })
+
+  it('C1 草稿：无草稿时不渲染区块，也不伪造空卡片', () => {
+    setup()
+    renderPanel()
+    expect(screen.queryByTestId('node-map-plan-drafts')).toBeNull()
   })
 })

@@ -22,6 +22,7 @@ import { useMapStore } from '../../store/mapStore'
 import type { ExecutionStateValue, WorkItemSummary, WorkStepEntry } from '../../store/mapStore'
 import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
 import { StepConfirmationPanel, hasPendingConfirmation } from './StepConfirmationPanel'
+import { PlanDraftPanel } from './PlanDraftPanel'
 
 interface PendingAcceptanceEntry {
   id: string
@@ -141,6 +142,11 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const cancelRun = useMapStore((s) => s.cancelRun)
   const confirmAcceptance = useMapStore((s) => s.confirmAcceptance)
   const decideStepConfirmation = useMapStore((s) => s.decideStepConfirmation)
+  const planDraftsByGraph = useMapStore((s) => s.planDraftsByGraph)
+  const fetchPlanDrafts = useMapStore((s) => s.fetchPlanDrafts)
+  const submitPlanDraft = useMapStore((s) => s.submitPlanDraft)
+  const confirmPlanDraft = useMapStore((s) => s.confirmPlanDraft)
+  const rejectPlanDraft = useMapStore((s) => s.rejectPlanDraft)
   const proposals = useMapStore((s) => s.proposals)
   const proposalDiffs = useMapStore((s) => s.proposalDiffs)
   const proposalErrors = useMapStore((s) => s.proposalErrors)
@@ -213,6 +219,12 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
     void fetchProposals(graphId, nodeEntityKey)
   }, [graphId, nodeEntityKey, fetchProposals])
 
+  // C1：当前图未确认的计划草稿（含服务端预检投影）；读失败由 store 记在 actionErrors。
+  useEffect(() => {
+    if (!graphId) return
+    void fetchPlanDrafts(graphId)
+  }, [graphId, fetchPlanDrafts])
+
   const tasks: WorkItemSummary[] = (overlay?.workItems ?? []).filter((w) => w.anchor_entity_key === nodeEntityKey)
   const taskIds = tasks.map((t) => t.id).join(',')
 
@@ -269,6 +281,36 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
       )}
 
       <div className="mt-2 space-y-3 border-t border-gray-200 pt-2 dark:border-gray-700">
+        {/* I.8.F P1：C1 计划草稿（未确认的才列出）；展示项全部来自服务端投影 */}
+        {(planDraftsByGraph[graphId] ?? []).length > 0 && (
+          <section data-testid="node-map-plan-drafts">
+            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">计划草稿</div>
+            <div className="max-h-[40vh] space-y-2 overflow-y-auto">
+              {(planDraftsByGraph[graphId] ?? []).map((view) => (
+                <PlanDraftPanel
+                  key={view.draft.id}
+                  view={view}
+                  error={actionErrors[`plan-draft:${view.draft.id}`]}
+                  busy={busyKey === `plan-draft:${view.draft.id}`}
+                  onDecide={(decision) =>
+                    void handleAction(`plan-draft:${view.draft.id}`, () => {
+                      if (decision === 'submit') return submitPlanDraft({ graphId, id: view.draft.id })
+                      if (decision === 'approve')
+                        return confirmPlanDraft({ graphId, id: view.draft.id, display: view.display })
+                      return rejectPlanDraft({ graphId, id: view.draft.id })
+                    })
+                  }
+                />
+              ))}
+            </div>
+            {actionErrors[`plan-drafts:${graphId}`] && (
+              <p className="mt-1 text-[10px] text-red-600" data-testid="plan-drafts-error">
+                读取计划草稿失败：{actionErrors[`plan-drafts:${graphId}`]}
+              </p>
+            )}
+          </section>
+        )}
+
         {/* 锚定该节点的 work item（含执行入口 / steps / 最近 runs） */}
         <section data-testid="node-map-tasks">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">任务</div>

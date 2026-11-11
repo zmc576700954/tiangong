@@ -17,7 +17,10 @@ import { WorkItemService } from '../map/work-item-service'
 import { WorkRunService, WORK_RUN_STATUSES, type WorkRunStatus } from '../map/work-run-service'
 import { EvidenceService, EvidenceSuggestionService, type SuggestionStatus } from '../map/evidence-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
-import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError } from '../map/plan-derivation'
+import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError, itemKeys, type PlanItem } from '../map/plan-derivation'
+import { buildC1Display, precheckDraftItems } from '../map/plan-draft-precheck'
+import { createGateEngine } from '../map/gate-engine'
+import { readG4Config } from '../map/work-execution-runtime'
 import { WorkExecutionError } from '../map/work-execution-service'
 import { getPublishedStatus } from '../map/published-guard'
 import { getProjectProgress } from '../map/project-progress'
@@ -37,6 +40,7 @@ import {
 } from '../map/execution-flags'
 import { missingTierCapabilities } from '../map/tier-probe'
 import type { TypedHandle } from './utils'
+import type { PlanDraftPreview } from '../../shared/types/ipc'
 
 /** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
 function limitOf(value: unknown, fallback: number, max = 500): number {
@@ -85,6 +89,27 @@ export function registerMapHandlers(
     estimateLines: buildEstimateLines(),
   })
   const proposals = new ProposalService(db)
+  // I.8.F P1：C1 草稿级预检复用生产 gate 引擎（同一工厂、同一份 G4 配置与行数代理）。
+  const draftGate = createGateEngine(db, { ...readG4Config(), estimateLines: buildEstimateLines() })
+  /** 草稿 + C1 必填展示项投影；草稿不存在返回 null。 */
+  const previewDraft = (id: string): PlanDraftPreview | null => {
+    const draft = planDrafts.get(id)
+    if (!draft) return null
+    const items = JSON.parse(draft.items_json) as PlanItem[]
+    const keys = itemKeys(items)
+    const precheck = precheckDraftItems(draft, items, keys, draftGate)
+    return {
+      draft: {
+        id: draft.id,
+        lineage_id: draft.lineage_id,
+        revision: draft.revision,
+        graph_id: draft.graph_id,
+        status: draft.status,
+        updated_at: draft.updated_at,
+      },
+      display: buildC1Display(db, draft, items, keys, precheck),
+    }
+  }
 
   // ---- 叠加层（§9.2:必须批量）----
   typedHandle('map:overlay:get', async (_, graphId: unknown) => {
@@ -787,6 +812,35 @@ export function registerMapHandlers(
     return planDrafts.get(id) ?? null
   })
 
+  // C1 必经一步：createDraft 落 draft，confirm 只接受 awaiting_confirm；
+  // 此前没有任何 submit 通道，导致新草稿永远确认不了。这里补最小写通道。
+  typedHandle('plan:draft:submit', async (_, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('id is required')
+    return planDrafts.submit(id)
+  })
+
+  // I.8.F P1：C1 读通道。展示项由服务端投影，renderer 只显示、不复算 gate。
+  typedHandle('plan:draft:preview', async (_, id: unknown) => {
+    if (typeof id !== 'string' || id === '') throw new Error('id is required')
+    return previewDraft(id)
+  })
+
+  typedHandle('plan:draft:list', async (_, graphId: unknown) => {
+    if (typeof graphId !== 'string' || graphId === '') throw new Error('graphId is required')
+    const rows = db
+      .prepare(
+        `SELECT id FROM plan_drafts
+          WHERE graph_id = ? AND is_current = 1 AND status IN ('draft','awaiting_confirm')
+          ORDER BY updated_at DESC`,
+      )
+      .all(graphId) as Array<{ id: string }>
+    return {
+      drafts: rows
+        .map((row) => previewDraft(row.id))
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    }
+  })
+
   typedHandle('plan:draft:revise', async (_, data) => {
     const d = (data ?? {}) as { id?: unknown; items?: unknown }
     if (typeof d.id !== 'string' || !Array.isArray(d.items)) throw new Error('id and items are required')
@@ -799,7 +853,20 @@ export function registerMapHandlers(
     // G2-10 C1：确认即生成 work_items 且不可原地回退，必填展示项缺任一项即拒绝。
     assertConfirmationDisplay('C1', displayOf(d.display))
     try {
-      return planDrafts.confirm(d.id, { confirmedBy: typeof d.confirmedBy === 'string' ? d.confirmedBy : undefined })
+      const result = planDrafts.confirm(d.id, {
+        confirmedBy: typeof d.confirmedBy === 'string' ? d.confirmedBy : undefined,
+      })
+      // 确认生成 work_items：按既有语义逐个广播，renderer 按 lineage 去抖重拉。
+      for (const workItemId of result.workItemIds) {
+        const item = workItems.get(workItemId)
+        if (!item) continue
+        broadcast?.('event:work-item-changed', {
+          lineageId: item.lineage_id,
+          revision: item.revision,
+          status: item.status,
+        })
+      }
+      return result
     } catch (err) {
       // 环检测拒绝带结构化环路径(渲染层 C1 展示)
       if (err instanceof PlanDraftCycleError) {
