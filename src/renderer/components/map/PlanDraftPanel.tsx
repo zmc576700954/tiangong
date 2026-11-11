@@ -57,7 +57,8 @@ interface Props {
   /** 该草稿动作失败的中文提示（由 store 把错误码翻好）。 */
   error?: string | null
   busy?: boolean
-  onDecide?: (decision: 'submit' | 'approve' | 'reject') => void
+  /** revise（v3.22）：打开起草编辑器预填该草稿条目原文（draft / awaiting_confirm 可修订）。 */
+  onDecide?: (decision: 'submit' | 'approve' | 'reject' | 'revise') => void
 }
 
 export function PlanDraftPanel({ view, error, busy, onDecide }: Props) {
@@ -65,6 +66,8 @@ export function PlanDraftPanel({ view, error, busy, onDecide }: Props) {
   // draft 先要 submit 才能 confirm（服务层状态机如此）；awaiting_confirm 才给确认/驳回。
   const submittable = draft.status === 'draft'
   const decidable = draft.status === 'awaiting_confirm'
+  // S7 修订：draft / awaiting_confirm 都可修订（新 revision，旧行 superseded；confirmed 拒绝）。
+  const revisable = submittable || decidable
 
   return (
     <div
@@ -124,6 +127,21 @@ export function PlanDraftPanel({ view, error, busy, onDecide }: Props) {
           </ul>
         )
       })()}
+
+      {revisable && (
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            className={`${ACTION_BUTTON_CLASS} border-blue-500/40 text-blue-700`}
+            disabled={busy}
+            title="打开编辑器修改条目：产生新 revision，当前行转 superseded"
+            onClick={() => onDecide?.('revise')}
+            data-testid={`plan-draft-${draft.id}-revise`}
+          >
+            修订条目
+          </button>
+        </div>
+      )}
 
       {submittable ? (
         <div className="flex flex-wrap items-center gap-1">

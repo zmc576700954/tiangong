@@ -252,6 +252,11 @@ const exposedChannels: (keyof IpcApi)[] = [
   'plan:draft:submit',
   'plan:draft:confirm',
   'plan:draft:reject',
+  // S7 起草入口（写通道，v3.22）：手工多子任务计划 → plan_drafts（C1 数据源）。
+  // create 只落 draft 状态；revise 产生新 revision 并置旧行 superseded（confirmed 不可修订）。
+  // 环检测/结构化 acceptance 在主进程 PlanDraftService 内校验，renderer 不复算。
+  'plan:draft:create',
+  'plan:draft:revise',
   // G1-10 证据建议接受/驳回（写通道）：本地 renderer 人工裁决，必须带 resolvedBy。
   'map:evidence:suggestion:accept',
   'map:evidence:suggestion:dismiss',

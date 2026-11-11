@@ -718,6 +718,9 @@ export const MAP_READ_ONLY_CHANNELS = [
   // I.8.F P1：C1 草稿预检与列表（纯 SELECT，展示项由服务端投影）。
   'plan:draft:preview',
   'plan:draft:list',
+  // S7 起草入口（v3.22）：修订编辑器需要 items_json 原文来预填，preview 只投影
+  // display（scopeFiles 跨条目合并，无法逐条还原）。纯 SELECT，只读。
+  'plan:draft:get',
   'mode:list',
   'proposal:list',
   'proposal:diff',

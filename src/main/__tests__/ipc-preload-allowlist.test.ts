@@ -36,8 +36,6 @@ const RENDERER_DIR = path.join(ROOT, 'src/renderer')
  * 只允许放只读通道；写通道请放下面那张表。
  */
 const INTENTIONALLY_UNEXPOSED_READ: Record<string, string> = {
-  'plan:draft:get':
-    '按 id 读单条草稿原文。renderer 走 plan:draft:preview / plan:draft:list 拿服务端投影后的展示项，不用原文 get。',
   'project:import:preview':
     '导入前只读预判指纹命中（preview: true，不写库）。导入确认框尚未接线，没有 renderer 调用方。',
   'project:import:allowance:list':
@@ -55,11 +53,7 @@ const KNOWN_WRITE_WITHOUT_RENDERER_ENTRY: Record<string, string> = {
   'admin:map:integrity-check':
     '写：巡检手动触发，会把 node_links 置 orphan/stale 并写 map_migration_reports。管理动作，无 renderer 入口。',
   'plan:derive-candidates':
-    '写：落派生 run / candidates。C1 走 plan:draft:*，没有直接调用派生候选的 renderer 入口。',
-  'plan:draft:create':
-    '写：创建计划草稿。renderer 目前只读/提交/确认既有草稿，没有「新建草稿」入口。',
-  'plan:draft:revise':
-    '写：修改草稿条目。renderer 未接线；注意它与 C2 的 work_item 修订不是同一条路径。',
+    '写：落派生 run / candidates。S7 起草入口走 plan:draft:create 手工起草（v3.22 已暴露）；候选推导是 agent 辅助路径，按 D1/D3 护栏延后到有真实消费方再开。',
   'project:import:allowance:revoke':
     '写：撤销导入放行规则。放行规则管理界面尚未接线。',
 }

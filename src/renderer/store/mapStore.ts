@@ -308,6 +308,22 @@ export interface ProposedRevisionInput {
   verificationHint?: string | null
 }
 
+/**
+ * S7 起草入口的子任务条目（与主进程 `PlanItem` 同形）。
+ * acceptance 必须是 D1 结构化条目 `{type: command|manual|file_check, expected}`，
+ * 主进程 `normalizeAcceptanceInput` 会拒绝其他形状。
+ * 索引签名：IPC 通道签名的线形是 `Array<Record<string, unknown>>`，两者必须可直接互传。
+ */
+export interface PlanItemInput {
+  [field: string]: unknown
+  key?: string
+  title: string
+  goal?: string
+  scopeFiles?: string[]
+  acceptance?: Array<Record<string, unknown>>
+  dependsOn?: string[]
+}
+
 interface MapState {
   /** 叠加层：按图缓存（map:overlay:get 批量,禁止按节点轮询） */
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
@@ -414,6 +430,18 @@ interface MapState {
   confirmPlanDraft: (input: { graphId: string; id: string; display: Record<string, unknown>; confirmedBy?: string }) => Promise<void>
   /** C1 驳回：不改 work_items；成功后重拉列表。 */
   rejectPlanDraft: (input: { graphId: string; id: string }) => Promise<void>
+  /** S7 起草入口（v3.22）：手工多子任务计划 → plan_drafts（draft 状态）；C1 的唯一数据源。 */
+  createPlanDraft: (input: {
+    graphId: string
+    projectPath?: string | null
+    anchorEntityKey?: string | null
+    anchorNodeId?: string | null
+    items: PlanItemInput[]
+  }) => Promise<boolean>
+  /** S7 修订：产生新 revision 并置旧行 superseded；confirmed 不可修订（主进程拒绝）。 */
+  revisePlanDraft: (input: { graphId: string; id: string; items: PlanItemInput[] }) => Promise<boolean>
+  /** 修订编辑器预填：读草稿 items_json 原文（只读）；失败写草稿级错误并返回 null。 */
+  getPlanDraftItems: (id: string) => Promise<PlanItemInput[] | null>
   /** I.8.F P2：按 lineage 拉全部 revision（含已 superseded 的旧行）。 */
   fetchWorkItemHistory: (lineageId: string) => Promise<WorkItemRevisionEntry[]>
   /** I.8.F P2：服务端算字段级 diff + impact；`to` 对比历史，`proposed` 预检拟修订。 */
@@ -1085,6 +1113,66 @@ export const useMapStore = create<MapState>((set, get) => ({
       await get().fetchPlanDrafts(input.graphId)
     } catch (error) {
       get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
+    }
+  },
+
+  /** S7 起草入口：落 draft 状态草稿；主进程校验非空/环，renderer 不复算。 */
+  createPlanDraft: async (input) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['plan:draft:create']({
+          graphId: input.graphId,
+          ...(input.projectPath ? { projectPath: input.projectPath } : {}),
+          ...(input.anchorEntityKey ? { anchorEntityKey: input.anchorEntityKey } : {}),
+          ...(input.anchorNodeId ? { anchorNodeId: input.anchorNodeId } : {}),
+          items: input.items,
+        }),
+      )
+      get().setActionError(`plan-draft-compose:${input.graphId}`, '')
+      await get().fetchPlanDrafts(input.graphId)
+      return true
+    } catch (error) {
+      get().setActionError(`plan-draft-compose:${input.graphId}`, describePlanDraftError(error))
+      return false
+    }
+  },
+
+  /** S7 修订：新 revision + 旧行 superseded；成功后重拉列表（新 id 由服务端生成）。 */
+  revisePlanDraft: async (input) => {
+    try {
+      unwrapIpc(await window.electronAPI['plan:draft:revise']({ id: input.id, items: input.items }))
+      get().setActionError(`plan-draft:${input.id}`, '')
+      await get().fetchPlanDrafts(input.graphId)
+      return true
+    } catch (error) {
+      get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
+      return false
+    }
+  },
+
+  /** 修订预填：items_json 原文按最小形状过滤（title 必须是非空字符串，其余原样保留）。 */
+  getPlanDraftItems: async (id) => {
+    try {
+      const row = unwrapIpc<{ items_json?: unknown } | null>(
+        await window.electronAPI['plan:draft:get'](id),
+      )
+      if (!row || typeof row.items_json !== 'string') {
+        get().setActionError(`plan-draft:${id}`, '草稿不存在或没有条目原文（plan:draft:get 返回空）')
+        return null
+      }
+      const parsed = JSON.parse(row.items_json) as unknown
+      if (!Array.isArray(parsed)) {
+        get().setActionError(`plan-draft:${id}`, '草稿条目原文不是数组，无法预填')
+        return null
+      }
+      get().setActionError(`plan-draft:${id}`, '')
+      return parsed.filter(
+        (item): item is PlanItemInput =>
+          !!item && typeof item === 'object' && typeof (item as PlanItemInput).title === 'string',
+      )
+    } catch (error) {
+      get().setActionError(`plan-draft:${id}`, describePlanDraftError(error))
+      return null
     }
   },
 

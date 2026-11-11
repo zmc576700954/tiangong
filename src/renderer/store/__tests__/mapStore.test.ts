@@ -59,6 +59,13 @@ function installApi(overrides: Record<string, unknown> = {}): Record<string, Ret
     'plan:draft:submit': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'awaiting_confirm' } })),
     'plan:draft:confirm': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'confirmed' }, workItemIds: ['wi-9'] })),
     'plan:draft:reject': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'rejected' } })),
+    // S7 起草入口（v3.22）
+    'plan:draft:create': vi.fn(async () => ({ id: 'pd-2', status: 'draft' })),
+    'plan:draft:revise': vi.fn(async () => ({ id: 'pd-3', status: 'draft', revision: 2 })),
+    'plan:draft:get': vi.fn(async () => ({
+      id: 'pd-1',
+      items_json: JSON.stringify([{ key: 'item-1', title: '旧标题', dependsOn: [] }]),
+    })),
     'workitem:history': vi.fn(async () => [
       {
         id: 'wi-1',
@@ -378,6 +385,84 @@ describe('C1 计划草稿（I.8.F P1）', () => {
     const displayError = useMapStore.getState().actionErrors['plan-draft:pd-1']
     expect(displayError).toContain('必填展示项未齐')
     expect(displayError).not.toContain('CONFIRMATION_DISPLAY_MISSING')
+  })
+
+  it('S7 createPlanDraft：锚点/项目路径齐时全量传参，成功后重拉列表', async () => {
+    const api = installApi()
+    const ok = await useMapStore.getState().createPlanDraft({
+      graphId: 'g-1',
+      projectPath: '/p/a',
+      anchorEntityKey: 'node-1',
+      anchorNodeId: 'n-1',
+      items: [{ key: 'item-1', title: '任务A' }],
+    })
+
+    expect(ok).toBe(true)
+    expect(api['plan:draft:create']).toHaveBeenCalledWith({
+      graphId: 'g-1',
+      projectPath: '/p/a',
+      anchorEntityKey: 'node-1',
+      anchorNodeId: 'n-1',
+      items: [{ key: 'item-1', title: '任务A' }],
+    })
+    expect(api['plan:draft:list']).toHaveBeenCalledWith('g-1')
+  })
+
+  it('S7 createPlanDraft：项目路径/锚点缺省不传空串，失败写起草级错误', async () => {
+    const api = installApi()
+    const ok = await useMapStore.getState().createPlanDraft({
+      graphId: 'g-1',
+      items: [{ title: '任务A' }],
+    })
+
+    expect(ok).toBe(true)
+    expect(api['plan:draft:create']).toHaveBeenCalledWith({ graphId: 'g-1', items: [{ title: '任务A' }] })
+
+    installApi({
+      'plan:draft:create': vi.fn(async () => {
+        throw new Error('计划依赖存在环:item-1 → item-1')
+      }),
+    })
+    const failed = await useMapStore.getState().createPlanDraft({
+      graphId: 'g-1',
+      items: [{ key: 'item-1', title: 'A', dependsOn: ['item-1'] }],
+    })
+    expect(failed).toBe(false)
+    expect(useMapStore.getState().actionErrors['plan-draft-compose:g-1']).toContain('计划依赖存在环')
+  })
+
+  it('S7 revisePlanDraft：id + items 直传，成功后重拉列表', async () => {
+    const api = installApi()
+    const ok = await useMapStore.getState().revisePlanDraft({
+      graphId: 'g-1',
+      id: 'pd-1',
+      items: [{ key: 'item-1', title: '改后' }],
+    })
+
+    expect(ok).toBe(true)
+    expect(api['plan:draft:revise']).toHaveBeenCalledWith({ id: 'pd-1', items: [{ key: 'item-1', title: '改后' }] })
+    expect(api['plan:draft:list']).toHaveBeenCalledWith('g-1')
+  })
+
+  it('S7 getPlanDraftItems：解析 items_json 并按最小形状过滤；读不到写草稿级错误', async () => {
+    const api = installApi()
+    const items = await useMapStore.getState().getPlanDraftItems('pd-1')
+    expect(api['plan:draft:get']).toHaveBeenCalledWith('pd-1')
+    expect(items).toEqual([{ key: 'item-1', title: '旧标题', dependsOn: [] }])
+
+    installApi({
+      'plan:draft:get': vi.fn(async () => ({
+        id: 'pd-1',
+        items_json: JSON.stringify([{ title: '有标题' }, { goal: '没有标题的脏条目' }, '不是对象']),
+      })),
+    })
+    const filtered = await useMapStore.getState().getPlanDraftItems('pd-1')
+    expect(filtered).toEqual([{ title: '有标题' }])
+
+    installApi({ 'plan:draft:get': vi.fn(async () => null) })
+    const missing = await useMapStore.getState().getPlanDraftItems('pd-1')
+    expect(missing).toBeNull()
+    expect(useMapStore.getState().actionErrors['plan-draft:pd-1']).toContain('草稿不存在')
   })
 })
 

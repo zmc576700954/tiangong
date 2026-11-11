@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { NodeMapPanel } from '../NodeMapPanel'
 import { useMapStore } from '../../../store/mapStore'
 import { useAgentStore } from '../../../store/agentStore'
@@ -136,6 +136,10 @@ function setup(opts: {
     submitPlanDraft: vi.fn(async () => {}),
     confirmPlanDraft: vi.fn(async () => {}),
     rejectPlanDraft: vi.fn(async () => {}),
+    // S7 起草入口（v3.22）：create / revise / 原文预填
+    createPlanDraft: vi.fn(async () => true),
+    revisePlanDraft: vi.fn(async () => true),
+    getPlanDraftItems: vi.fn(async () => []),
     fetchWorkItemHistory: vi.fn(async () => [
       {
         id: 'wi-1',
@@ -877,10 +881,17 @@ describe('G8-3 确认点渲染', () => {
     expect(useMapStore.getState().confirmPlanDraft).not.toHaveBeenCalled()
   })
 
-  it('C1 草稿：无草稿时不渲染区块，也不伪造空卡片', () => {
+  it('C1 草稿：无草稿时区块常显但只给空态（v3.22 起区块承载起草入口，不再整体隐藏）', () => {
     setup()
     renderPanel()
-    expect(screen.queryByTestId('node-map-plan-drafts')).toBeNull()
+    // 区块必须存在：起草入口（S7 数据源）在这里，藏起来等于回到「面板恒空」。
+    expect(screen.getByTestId('node-map-plan-drafts')).toBeTruthy()
+    expect(screen.getByTestId('plan-draft-compose-open')).toBeTruthy()
+    // 但不伪造卡片：空态明说「没有未确认草稿」。
+    expect(screen.queryByTestId('plan-draft-pd-1')).toBeNull()
+    expect(screen.getByTestId('node-map-plan-drafts').textContent).toContain(
+      '无（该图没有未确认的计划草稿',
+    )
   })
 })
 
@@ -1177,5 +1188,216 @@ describe('NodeMapPanel 证据建议 / E1 / 连边', () => {
       fromEntityKey: 'node-1',
       toEntityKey: 'node-2',
     })
+  })
+})
+
+/**
+ * S7 起草入口（v3.22，I.0 第 1 条闭环）：C1 的唯一数据源。
+ *
+ * 断言的是用户路径而非通道存在性：起草计划 → 落 plan_drafts（draft 状态）；
+ * 修订 → 预填条目原文后产生新 revision。gate 缺失不在客户端复算——创建后
+ * 由服务端 previewDraft 投影展示，这正是 C1 契约。
+ */
+describe('NodeMapPanel S7 起草入口', () => {
+  beforeEach(() => {
+    useMapStore.setState({ actionErrors: {} })
+  })
+
+  function makeDraftView(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      draft: {
+        id: 'pd-1',
+        lineage_id: 'pl-1',
+        revision: 1,
+        graph_id: 'g-1',
+        status: 'draft',
+        updated_at: '2026-01-01',
+        ...(overrides.draft as Record<string, unknown> | undefined),
+      },
+      display: {
+        subtasks: { count: 0, items: [] },
+        scopeFiles: { count: 0, items: [] },
+        acceptance: { count: 0, items: [] },
+        dependencies: { count: 0, items: [] },
+        candidateScore: { count: 0, items: [] },
+        gateMissing: { count: 0, items: [] },
+        excludedItems: { count: 0, items: [] },
+        anchorStates: { count: 0, items: [] },
+        ...(overrides.display as Record<string, unknown> | undefined),
+      },
+    }
+  }
+
+  it('无草稿时给空态与起草入口（不再是恒空的面板）', () => {
+    setup()
+    renderPanel()
+
+    expect(screen.getByTestId('plan-draft-compose-open')).toBeTruthy()
+    expect(screen.getByTestId('node-map-plan-drafts').textContent).toContain(
+      '无（该图没有未确认的计划草稿',
+    )
+  })
+
+  it('起草：填子任务与结构化验收后提交，落 plan_drafts 并收起编辑器', async () => {
+    setup()
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-compose-open'))
+    })
+    expect(screen.getByTestId('plan-draft-composer-create')).toBeTruthy()
+
+    const title = screen.getByTestId('composer-item-0-title') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(title, { target: { value: '补齐时间线 DTO 测试' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('composer-item-0-acc-add'))
+    })
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-0-acc-0-expected'), {
+        target: { value: 'npx vitest run src/main/__tests__/map-read-ipc.test.ts' },
+      })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('composer-submit'))
+    })
+
+    const create = useMapStore.getState().createPlanDraft as unknown as ReturnType<typeof vi.fn>
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        graphId: 'g-1',
+        anchorEntityKey: 'node-1',
+        anchorNodeId: 'n-1',
+        items: [
+          expect.objectContaining({
+            key: 'item-1',
+            title: '补齐时间线 DTO 测试',
+            acceptance: [expect.objectContaining({ type: 'manual', expected: 'npx vitest run src/main/__tests__/map-read-ipc.test.ts' })],
+          }),
+        ],
+      }),
+    )
+    await waitFor(() => {
+      expect(screen.queryByTestId('plan-draft-composer-create')).toBeNull()
+    })
+  })
+
+  it('起草校验：空标题禁用提交；依赖未知键逐条列出（gate 不在客户端复算）', async () => {
+    setup()
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-compose-open'))
+    })
+    // 空标题：提交禁用并给出问题清单
+    expect((screen.getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('composer-problems').textContent).toContain('缺标题')
+
+    const title = screen.getByTestId('composer-item-0-title') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(title, { target: { value: '任务A' } })
+    })
+    const deps = screen.getByTestId('composer-item-0-depends') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(deps, { target: { value: 'item-9' } })
+    })
+    expect((screen.getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('composer-problems').textContent).toContain('依赖了不存在的键：item-9')
+  })
+
+  it('修订：预填条目原文（plan:draft:get），改后经 plan:draft:revise 产生新 revision', async () => {
+    setup({
+      planDraftsByGraph: { 'g-1': [makeDraftView({ draft: { status: 'awaiting_confirm' } })] },
+    })
+    useMapStore.setState({
+      getPlanDraftItems: vi.fn(async () => [
+        {
+          key: 'item-1',
+          title: '旧标题',
+          goal: '原目标',
+          scopeFiles: ['src/a.ts'],
+          acceptance: [{ id: 'acc_1', type: 'command', expected: 'npm test' }],
+          dependsOn: [],
+        },
+      ]),
+    })
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-pd-1-revise'))
+    })
+    await waitFor(() => {
+      expect(screen.getByTestId('plan-draft-composer-revise')).toBeTruthy()
+    })
+
+    // 预填的是服务端原文，不是 display 投影（scopeFiles 逐条还原）
+    expect((screen.getByTestId('composer-item-0-title') as HTMLInputElement).value).toBe('旧标题')
+    expect((screen.getByTestId('composer-item-0-scope') as HTMLTextAreaElement).value).toContain('src/a.ts')
+    expect((screen.getByTestId('composer-item-0-acc-0-expected') as HTMLInputElement).value).toBe('npm test')
+    expect((screen.getByTestId('composer-item-0-acc-0-type') as HTMLSelectElement).value).toBe('command')
+
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-0-title'), { target: { value: '新标题' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('composer-submit'))
+    })
+
+    const revise = useMapStore.getState().revisePlanDraft as unknown as ReturnType<typeof vi.fn>
+    expect(revise).toHaveBeenCalledWith({
+      graphId: 'g-1',
+      id: 'pd-1',
+      items: [
+        expect.objectContaining({
+          key: 'item-1',
+          title: '新标题',
+          scopeFiles: ['src/a.ts'],
+          acceptance: [expect.objectContaining({ type: 'command', expected: 'npm test' })],
+        }),
+      ],
+    })
+  })
+
+  it('修订预填失败（草稿原文读不到）不打开编辑器，也不吞错误', async () => {
+    setup({
+      planDraftsByGraph: { 'g-1': [makeDraftView()] },
+      actionErrors: { 'plan-draft:pd-1': '草稿不存在或没有条目原文（plan:draft:get 返回空）' },
+    })
+    useMapStore.setState({ getPlanDraftItems: vi.fn(async () => null) })
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-pd-1-revise'))
+    })
+    await act(async () => {})
+    expect(screen.queryByTestId('plan-draft-composer-revise')).toBeNull()
+  })
+
+  it('依赖成环在客户端预检即被拦下（环检测主进程还有一道，双保险）', async () => {
+    setup()
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('plan-draft-compose-open'))
+    })
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-0-title'), { target: { value: 'A' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('composer-add-item'))
+    })
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-1-title'), { target: { value: 'B' } })
+    })
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-0-depends'), { target: { value: 'item-2' } })
+    })
+    await act(async () => {
+      fireEvent.change(screen.getByTestId('composer-item-1-depends'), { target: { value: 'item-1' } })
+    })
+
+    expect((screen.getByTestId('composer-submit') as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByTestId('composer-problems').textContent).toContain('依赖存在环')
   })
 })

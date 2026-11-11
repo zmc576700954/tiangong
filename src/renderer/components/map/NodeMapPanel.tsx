@@ -27,7 +27,9 @@ import { useThreadStore } from '../../store/threadStore'
 import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
 import { StepConfirmationPanel, hasPendingConfirmation } from './StepConfirmationPanel'
 import { PlanDraftPanel } from './PlanDraftPanel'
+import { PlanDraftComposer } from './PlanDraftComposer'
 import { WorkItemRevisionPanel } from './WorkItemRevisionPanel'
+import type { PlanItemInput } from '../../store/mapStore'
 
 interface PendingAcceptanceEntry {
   id: string
@@ -171,6 +173,10 @@ export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath = nul
   const submitPlanDraft = useMapStore((s) => s.submitPlanDraft)
   const confirmPlanDraft = useMapStore((s) => s.confirmPlanDraft)
   const rejectPlanDraft = useMapStore((s) => s.rejectPlanDraft)
+  // S7 起草入口（v3.22）：C1 的唯一数据源——手工多子任务计划 → plan_drafts。
+  const createPlanDraft = useMapStore((s) => s.createPlanDraft)
+  const revisePlanDraft = useMapStore((s) => s.revisePlanDraft)
+  const getPlanDraftItems = useMapStore((s) => s.getPlanDraftItems)
   const proposals = useMapStore((s) => s.proposals)
   const proposalDiffs = useMapStore((s) => s.proposalDiffs)
   const proposalErrors = useMapStore((s) => s.proposalErrors)
@@ -194,6 +200,47 @@ export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath = nul
   const [e1Summary, setE1Summary] = useState('')
   // §8.4：新建连边的目标节点（entity_key；空串=未选）。
   const [linkTarget, setLinkTarget] = useState('')
+  /**
+   * S7 起草编辑器状态：null=收起；create=新建草稿；revise=修改既有草稿
+   * （items 为 plan:draft:get 读到的原文，供编辑器预填）。
+   */
+  const [composer, setComposer] = useState<
+    { mode: 'create' } | { mode: 'revise'; id: string; revision: number; items: PlanItemInput[] } | null
+  >(null)
+
+  /**
+   * 打开修订编辑器：先读条目原文（plan:draft:get 只读），读不到就不打开——
+   * 没有原文的修订等于让用户凭空重写，那不是「修订」。
+   */
+  async function openReviseComposer(id: string, revision: number): Promise<void> {
+    await handleAction(`plan-draft-items:${id}`, async () => {
+      const items = await getPlanDraftItems(id)
+      if (items) setComposer({ mode: 'revise', id, revision, items })
+    })
+  }
+
+  /** 起草/修订提交：store 负责调 IPC 与重拉列表；成功才收起编辑器。 */
+  async function submitComposer(items: PlanItemInput[]): Promise<void> {
+    if (!graphId) return
+    if (composer?.mode === 'revise') {
+      const id = composer.id
+      await handleAction(`plan-draft:${id}`, async () => {
+        const ok = await revisePlanDraft({ graphId, id, items })
+        if (ok) setComposer(null)
+      })
+      return
+    }
+    await handleAction(`plan-draft-compose:${graphId}`, async () => {
+      const ok = await createPlanDraft({
+        graphId,
+        projectPath,
+        anchorEntityKey: nodeEntityKey,
+        anchorNodeId: nodeId,
+        items,
+      })
+      if (ok) setComposer(null)
+    })
+  }
 
   function toggleExpanded(key: string): void {
     setExpanded((prev) => {
@@ -334,36 +381,74 @@ export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath = nul
       )}
 
       <div className="mt-2 space-y-3 border-t border-gray-200 pt-2 dark:border-gray-700">
-        {/* I.8.F P1：C1 计划草稿（未确认的才列出）；展示项全部来自服务端投影 */}
-        {(planDraftsByGraph[graphId] ?? []).length > 0 && (
-          <section data-testid="node-map-plan-drafts">
-            <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">计划草稿</div>
-            <div className="max-h-[40vh] space-y-2 overflow-y-auto">
-              {(planDraftsByGraph[graphId] ?? []).map((view) => (
-                <PlanDraftPanel
-                  key={view.draft.id}
-                  view={view}
-                  error={actionErrors[`plan-draft:${view.draft.id}`]}
-                  busy={busyKey === `plan-draft:${view.draft.id}`}
-                  onDecide={(decision) =>
-                    void handleAction(`plan-draft:${view.draft.id}`, () => {
-                      if (decision === 'submit') return submitPlanDraft({ graphId, id: view.draft.id })
-                      if (decision === 'approve') {
-                        return confirmPlanDraft({ graphId, id: view.draft.id, display: view.display })
-                      }
-                      return rejectPlanDraft({ graphId, id: view.draft.id })
-                    })
+        {/* I.8.F P1 + S7 起草入口（v3.22）：C1 计划草稿区常显（未确认的才列出）。
+            展示项全部来自服务端投影；「起草计划」是 C1 的唯一数据来源
+            （agent 路径不写 plan_drafts），没有它面板永远恒空。 */}
+        <section data-testid="node-map-plan-drafts">
+          <div className="mb-1 flex items-center gap-2">
+            <span className="text-[10px] font-medium uppercase tracking-wide opacity-50">计划草稿</span>
+            <button
+              type="button"
+              className={`${ACTION_BUTTON_CLASS} border-blue-500/40 text-blue-700`}
+              data-testid="plan-draft-compose-open"
+              disabled={composer !== null}
+              title="手工起草多子任务计划（落 plan_drafts，C1 确认后生成任务）"
+              onClick={() => setComposer({ mode: 'create' })}
+            >
+              起草计划
+            </button>
+          </div>
+          {composer && (
+            <PlanDraftComposer
+              mode={composer.mode}
+              reviseOf={composer.mode === 'revise' ? { id: composer.id, revision: composer.revision } : null}
+              initialItems={composer.mode === 'revise' ? composer.items : undefined}
+              busy={
+                composer.mode === 'revise'
+                  ? busyKey === `plan-draft:${composer.id}`
+                  : busyKey === `plan-draft-compose:${graphId}`
+              }
+              error={
+                composer.mode === 'revise'
+                  ? actionErrors[`plan-draft:${composer.id}`]
+                  : actionErrors[`plan-draft-compose:${graphId}`]
+              }
+              onSubmit={(items) => { void submitComposer(items) }}
+              onCancel={() => setComposer(null)}
+            />
+          )}
+          <div className="max-h-[40vh] space-y-2 overflow-y-auto">
+            {(planDraftsByGraph[graphId] ?? []).map((view) => (
+              <PlanDraftPanel
+                key={view.draft.id}
+                view={view}
+                error={actionErrors[`plan-draft:${view.draft.id}`]}
+                busy={busyKey === `plan-draft:${view.draft.id}`}
+                onDecide={(decision) => {
+                  if (decision === 'revise') {
+                    void openReviseComposer(view.draft.id, view.draft.revision)
+                    return
                   }
-                />
-              ))}
-            </div>
-            {actionErrors[`plan-drafts:${graphId}`] && (
-              <p className="mt-1 text-[10px] text-red-600" data-testid="plan-drafts-error">
-                读取计划草稿失败：{actionErrors[`plan-drafts:${graphId}`]}
-              </p>
+                  void handleAction(`plan-draft:${view.draft.id}`, () => {
+                    if (decision === 'submit') return submitPlanDraft({ graphId, id: view.draft.id })
+                    if (decision === 'approve') {
+                      return confirmPlanDraft({ graphId, id: view.draft.id, display: view.display })
+                    }
+                    return rejectPlanDraft({ graphId, id: view.draft.id })
+                  })
+                }}
+              />
+            ))}
+            {(planDraftsByGraph[graphId] ?? []).length === 0 && (
+              <div className="px-2 text-[11px] opacity-50">无（该图没有未确认的计划草稿，点「起草计划」新建）</div>
             )}
-          </section>
-        )}
+          </div>
+          {actionErrors[`plan-drafts:${graphId}`] && (
+            <p className="mt-1 text-[10px] text-red-600" data-testid="plan-drafts-error">
+              读取计划草稿失败：{actionErrors[`plan-drafts:${graphId}`]}
+            </p>
+          )}
+        </section>
 
         {/* 锚定该节点的 work item（含执行入口 / steps / 最近 runs） */}
         <section data-testid="node-map-tasks">
