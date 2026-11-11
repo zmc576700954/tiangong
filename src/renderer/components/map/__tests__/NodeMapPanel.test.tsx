@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NodeMapPanel } from '../NodeMapPanel'
 import { useMapStore } from '../../../store/mapStore'
-import type { EvidenceEntry, StepConfirmationView, WorkItemDetail, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
+import type { EvidenceEntry, StepConfirmationView, WorkItemDetail, WorkItemDiffView, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
 
 function makeItem(overrides: Partial<WorkItemSummary> = {}): WorkItemSummary {
   return {
@@ -112,7 +112,54 @@ function setup(opts: {
     submitPlanDraft: vi.fn(async () => {}),
     confirmPlanDraft: vi.fn(async () => {}),
     rejectPlanDraft: vi.fn(async () => {}),
+    fetchWorkItemHistory: vi.fn(async () => [
+      {
+        id: 'wi-1',
+        revision: 1,
+        is_current: true,
+        supersedes_id: null,
+        status: 'draft',
+        gate_status: 'incomplete',
+        title: '任务一',
+        created_at: 't',
+        updated_at: 't',
+      },
+    ]),
+    fetchWorkItemDiff: vi.fn(async () => makeRevisionDiff()),
+    reviseWorkItem: vi.fn(async () => ({ traced: false, sink: null, note: '未留痕' })),
   })
+}
+
+/** I.8.F P2：C2 预检投影（服务端真实计算，这里只作为组件输入）。 */
+function makeRevisionDiff(): WorkItemDiffView {
+  return {
+    lineageId: 'lin-1',
+    from: { id: 'wi-1', revision: 1 },
+    to: { id: null, revision: 2, stored: false },
+    fields: [
+      { field: 'title', before: '任务一', after: '任务一', changed: false },
+      { field: 'scope_files', before: ['a.ts'], after: ['a.ts', 'b.ts'], changed: true },
+    ],
+    impact: [
+      {
+        kind: 'writeScope',
+        status: 'derived',
+        detail: { added: ['b.ts'], removed: [], unchanged: ['a.ts'] },
+        missing: ['filesActuallyChanged'],
+        note: '文件是否真会被改动需 run 产出 change_set，当前无数据来源',
+      },
+      { kind: 'acceptance', status: 'derived', detail: { added: [], removed: [], modified: [] }, missing: [], note: '' },
+      {
+        kind: 'dependency',
+        status: 'derived',
+        detail: { added: [], removed: [] },
+        missing: ['invalidatedRuns', 'staleEvidence'],
+        note: '哪些 run 会失效、哪些证据会 stale 无数据来源',
+      },
+    ],
+    gateResult: { status: 'precheck', gateStatus: 'pass', missing: [] },
+    reasonTrace: { sink: null, note: '审计表 kind 值域不含 workitem_revise，修订原因未留痕（未做 schema 变更）' },
+  }
 }
 
 function renderPanel(): void {
@@ -810,5 +857,57 @@ describe('G8-3 确认点渲染', () => {
     setup()
     renderPanel()
     expect(screen.queryByTestId('node-map-plan-drafts')).toBeNull()
+  })
+})
+
+describe('I.8.F P2 C2 修订入口', () => {
+  it('点「修订（C2）」展开面板；预检后 missing 与「未留痕」都在界面上可见', async () => {
+    setup()
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('task-wi-1-revise'))
+      await Promise.resolve()
+    })
+    expect(screen.getByTestId('workitem-revision-wi-1')).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workitem-revision-wi-1-preview'))
+    })
+    expect(screen.getByTestId('workitem-revision-wi-1-diff')).toBeTruthy()
+    expect(screen.getByTestId('workitem-revision-wi-1-missing-writeScope').textContent).toContain('文件是否真会被改动')
+    expect(screen.getByTestId('workitem-revision-wi-1-missing-dependency').textContent).toContain('哪些 run 会失效')
+    expect(screen.getByTestId('workitem-revision-wi-1-reason-trace').textContent).toContain('未留痕')
+  })
+
+  it('未填原因时提交禁用；填原因后把服务端 diff/impact/gateResult 原样放进 display', async () => {
+    setup()
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('task-wi-1-revise'))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('workitem-revision-wi-1-preview'))
+    })
+
+    const submit = screen.getByTestId('workitem-revision-wi-1-submit') as HTMLButtonElement
+    expect(submit.disabled).toBe(true)
+
+    fireEvent.change(screen.getByTestId('workitem-revision-wi-1-reason'), { target: { value: '补验收' } })
+    await act(async () => {
+      fireEvent.click(submit)
+    })
+
+    const expected = makeRevisionDiff()
+    expect(useMapStore.getState().reviseWorkItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        graphId: 'g-1',
+        id: 'wi-1',
+        reason: '补验收',
+        display: { diff: expected.fields, impact: expected.impact, reason: '补验收', gateResult: expected.gateResult },
+      }),
+    )
   })
 })

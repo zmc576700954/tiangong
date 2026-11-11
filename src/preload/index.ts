@@ -231,6 +231,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   // 任务创建（写通道）：renderer 的 mapStore.createWorkItem 依赖它；handler 已注册。
   // 错误按 reject 语义直传（非结构化信封），与 mapStore 的调用方式一致。
   'workitem:create',
+  // G2-10 C2 执行中修订（写通道）：只产生新 revision 并置旧 revision superseded。
+  // 必填展示项由主进程校验；只读的 workitem:history / workitem:diff 在 MAP_READ_ONLY_CHANNELS。
+  'workitem:revise',
   // 任务级入队/取消（既有 handler，本包补齐暴露；G3-3/G8-6）。
   // run:start 只做 confirm 入队，不内联执行；cancel 不终止进程（run 级取消另用下面的通道）。
   'workitem:run:start',

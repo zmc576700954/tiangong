@@ -23,6 +23,7 @@ import type { ExecutionStateValue, WorkItemSummary, WorkStepEntry } from '../../
 import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
 import { StepConfirmationPanel, hasPendingConfirmation } from './StepConfirmationPanel'
 import { PlanDraftPanel } from './PlanDraftPanel'
+import { WorkItemRevisionPanel } from './WorkItemRevisionPanel'
 
 interface PendingAcceptanceEntry {
   id: string
@@ -164,6 +165,8 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
    * 只存内存、不落库；重新挂载即恢复默认（折叠到任务级）。
    */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
+  // I.8.F P2：C2 修订面板同时只展开一个任务，避免多份 diff 请求打满界面。
+  const [revisionOpenId, setRevisionOpenId] = useState<string | null>(null)
 
   function toggleExpanded(key: string): void {
     setExpanded((prev) => {
@@ -399,12 +402,30 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                         cancel={t.cancel_reason}
                       </span>
                     )}
+                    {/* I.8.F P2：C2 修订入口（写路径仍是 workitem:revise） */}
+                    <button
+                      type="button"
+                      className={`${ACTION_BUTTON_CLASS} border-purple-500/40`}
+                      data-testid={`task-${t.id}-revise`}
+                      onClick={() => setRevisionOpenId((prev) => (prev === t.id ? null : t.id))}
+                    >
+                      {revisionOpenId === t.id ? '收起修订' : '修订（C2）'}
+                    </button>
                   </div>
 
                   {taskActionError && (
                     <div className="mt-1 pl-2 text-[10px] text-red-600" data-testid={`task-${t.id}-action-error`}>
                       {taskActionError}
                     </div>
+                  )}
+
+                  {revisionOpenId === t.id && (
+                    <WorkItemRevisionPanel
+                      graphId={graphId}
+                      item={t}
+                      error={actionErrors[`revision:${t.id}`]}
+                      onClose={() => setRevisionOpenId(null)}
+                    />
                   )}
 
                   {loadError ? (

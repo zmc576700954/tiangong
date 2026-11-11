@@ -19,6 +19,7 @@ import { EvidenceService, EvidenceSuggestionService, type SuggestionStatus } fro
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError, itemKeys, type PlanItem } from '../map/plan-derivation'
 import { buildC1Display, precheckDraftItems } from '../map/plan-draft-precheck'
+import { buildWorkItemDiff, listWorkItemRevisions, recordReviseReason, type ProposedRevision } from '../map/work-item-revision'
 import { createGateEngine } from '../map/gate-engine'
 import { readG4Config } from '../map/work-execution-runtime'
 import { WorkExecutionError } from '../map/work-execution-service'
@@ -483,20 +484,62 @@ export function registerMapHandlers(
       goal?: string
       scopeFiles?: string[]
       acceptance?: Array<Record<string, unknown>>
+      dependsOn?: string[]
+      reason?: string
       display?: unknown
     }
     if (typeof d.id !== 'string') throw new Error('id is required')
     // G2-10 C2：修订会置旧 revision superseded，必填展示项（diff/影响/原因/gate 结论）
     // 缺任一项即拒绝，不生成新 revision。
-    assertConfirmationDisplay('C2', displayOf(d.display))
+    const display = displayOf(d.display)
+    assertConfirmationDisplay('C2', display)
+    const before = workItems.get(d.id)
+    if (!before) throw new Error('work item not found')
     const row = workItems.revise(d.id, {
       title: d.title,
       goal: d.goal,
       scope_files: d.scopeFiles ? JSON.stringify(d.scopeFiles) : undefined,
       acceptance_json: d.acceptance ? JSON.stringify(d.acceptance) : undefined,
+      depends_on_json: d.dependsOn ? JSON.stringify(d.dependsOn) : undefined,
+    })
+    const reason =
+      typeof d.reason === 'string' ? d.reason : typeof display?.reason === 'string' ? display.reason : ''
+    // I.8.F P2：修订原因只在既有审计通道可写时留痕；不可写则返回 traced=false，
+    // 由界面如实显示「未留痕」，不为此开 schema 变更。
+    const audit = recordReviseReason(db, {
+      lineageId: row.lineage_id,
+      from: before.revision,
+      to: row.revision,
+      reason,
     })
     broadcast?.('event:work-item-changed', { lineageId: row.lineage_id, revision: row.revision, status: row.status })
-    return row
+    return { item: row, audit }
+  })
+
+  // I.8.F P2：C2 历史读通道（只 SELECT）。旧 revision 行本就在库，此前只有
+  // `is_current = 1` 的读路径；这里按 lineage + revision 读，不改 is_current 语义。
+  typedHandle('workitem:history', async (_, lineageId: unknown) => {
+    if (typeof lineageId !== 'string' || lineageId === '') throw new Error('lineageId is required')
+    return listWorkItemRevisions(db, lineageId)
+  })
+
+  // I.8.F P2：服务端字段级 diff + impact。`to` 对比历史两版；`proposed` 预检拟修订。
+  typedHandle('workitem:diff', async (_, query: unknown) => {
+    const q = (query ?? {}) as { lineageId?: unknown; from?: unknown; to?: unknown; proposed?: unknown }
+    if (typeof q.lineageId !== 'string' || q.lineageId === '') throw new Error('lineageId is required')
+    if (typeof q.from !== 'number' || !Number.isInteger(q.from)) throw new Error('from revision is required')
+    if (q.to !== undefined && (typeof q.to !== 'number' || !Number.isInteger(q.to))) {
+      throw new Error('to revision must be an integer')
+    }
+    if (q.proposed !== undefined && (!q.proposed || typeof q.proposed !== 'object' || Array.isArray(q.proposed))) {
+      throw new Error('proposed must be an object')
+    }
+    return buildWorkItemDiff(db, draftGate, {
+      lineageId: q.lineageId,
+      from: q.from,
+      to: q.to as number | undefined,
+      proposed: q.proposed as ProposedRevision | undefined,
+    })
   })
 
   /**

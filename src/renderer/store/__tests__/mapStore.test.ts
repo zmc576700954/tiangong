@@ -59,6 +59,32 @@ function installApi(overrides: Record<string, unknown> = {}): Record<string, Ret
     'plan:draft:submit': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'awaiting_confirm' } })),
     'plan:draft:confirm': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'confirmed' }, workItemIds: ['wi-9'] })),
     'plan:draft:reject': vi.fn(async () => ({ draft: { id: 'pd-1', status: 'rejected' } })),
+    'workitem:history': vi.fn(async () => [
+      {
+        id: 'wi-1',
+        revision: 1,
+        is_current: true,
+        supersedes_id: null,
+        status: 'draft',
+        gate_status: 'incomplete',
+        title: '任务一',
+        created_at: 't',
+        updated_at: 't',
+      },
+    ]),
+    'workitem:diff': vi.fn(async () => ({
+      lineageId: 'lin-1',
+      from: { id: 'wi-1', revision: 1 },
+      to: { id: null, revision: 2, stored: false },
+      fields: [],
+      impact: [],
+      gateResult: { status: 'precheck', gateStatus: 'pass', missing: [] },
+      reasonTrace: { sink: null, note: '未留痕' },
+    })),
+    'workitem:revise': vi.fn(async () => ({
+      item: item({ id: 'wi-2', revision: 2 }),
+      audit: { traced: false, sink: null, note: '未留痕' },
+    })),
     'map:execution:status': vi.fn(async () => ({ enabled: true, adapterName: 'claude', disabledReason: null })),
     'map:overlay:get': vi.fn(async () => ({ executionStates: [], workItems: [] })),
     ...overrides,
@@ -352,5 +378,66 @@ describe('C1 计划草稿（I.8.F P1）', () => {
     const displayError = useMapStore.getState().actionErrors['plan-draft:pd-1']
     expect(displayError).toContain('必填展示项未齐')
     expect(displayError).not.toContain('CONFIRMATION_DISPLAY_MISSING')
+  })
+})
+
+describe('I.8.F P2 C2 修订', () => {
+  beforeEach(() => {
+    resetStore()
+  })
+
+  it('fetchWorkItemHistory 原样返回 lineage 下的 revision 列表', async () => {
+    installApi()
+    const rows = await useMapStore.getState().fetchWorkItemHistory('lin-1')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ id: 'wi-1', revision: 1, is_current: true })
+  })
+
+  it('fetchWorkItemDiff 只解包服务端结果，不本地改口径', async () => {
+    installApi()
+    const diff = await useMapStore.getState().fetchWorkItemDiff({ lineageId: 'lin-1', from: 1, proposed: {} })
+    expect(diff.to).toEqual({ id: null, revision: 2, stored: false })
+    expect(diff.reasonTrace).toEqual({ sink: null, note: '未留痕' })
+  })
+
+  it('reviseWorkItem 原样回传 display，成功后刷新明细与叠加层', async () => {
+    const api = installApi()
+    const display = {
+      diff: [{ field: 'title', before: 'a', after: 'b', changed: true }],
+      impact: [],
+      reason: '补验收',
+      gateResult: { status: 'precheck', gateStatus: 'pass', missing: [] },
+    }
+    const audit = await useMapStore.getState().reviseWorkItem({
+      graphId: 'g-1',
+      id: 'wi-1',
+      reason: '补验收',
+      display,
+    })
+
+    expect(api['workitem:revise']).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'wi-1', reason: '补验收', display }),
+    )
+    expect(api['workitem:get']).toHaveBeenCalledWith('wi-1')
+    expect(api['map:overlay:get']).toHaveBeenCalledWith('g-1')
+    expect(audit).toEqual({ traced: false, sink: null, note: '未留痕' })
+  })
+
+  it('必填展示项缺失时把错误码翻成中文', async () => {
+    installApi({
+      'workitem:revise': vi.fn(async () => {
+        throw new Error('CONFIRMATION_DISPLAY_MISSING: 缺少必填展示项：reason')
+      }),
+    })
+    const audit = await useMapStore.getState().reviseWorkItem({
+      graphId: 'g-1',
+      id: 'wi-1',
+      reason: '',
+      display: {},
+    })
+    expect(audit).toBeNull()
+    const text = useMapStore.getState().actionErrors['revision:wi-1']
+    expect(text).toContain('必填展示项未齐')
+    expect(text).not.toContain('CONFIRMATION_DISPLAY_MISSING')
   })
 })

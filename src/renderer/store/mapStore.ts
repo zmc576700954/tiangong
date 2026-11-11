@@ -226,6 +226,57 @@ export interface PlanDraftView {
   display: Record<string, unknown>
 }
 
+/**
+ * I.8.F P2：C2 修订历史与 diff（`workitem:history` / `workitem:diff` 原样投影）。
+ * 字段级差异、impact 三项与 gate 结论全部由服务端计算，renderer 不复算。
+ */
+export interface WorkItemRevisionEntry {
+  id: string
+  revision: number
+  is_current: boolean
+  supersedes_id: string | null
+  status: string
+  gate_status: string
+  title: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WorkItemFieldDiff {
+  field: string
+  before: unknown
+  after: unknown
+  changed: boolean
+}
+
+export interface WorkItemImpact {
+  kind: 'writeScope' | 'acceptance' | 'dependency'
+  status: 'derived' | 'missing'
+  detail: Record<string, unknown>
+  /** 该影响面里推不出的具体事实；即使 status=derived 也可能非空。 */
+  missing: string[]
+  note: string
+}
+
+export interface WorkItemDiffView {
+  lineageId: string
+  from: { id: string; revision: number }
+  to: { id: string | null; revision: number; stored: boolean }
+  fields: WorkItemFieldDiff[]
+  impact: WorkItemImpact[]
+  gateResult: { status: 'stored' | 'precheck'; gateStatus: string; missing: string[] }
+  reasonTrace: { sink: string | null; note: string }
+}
+
+export interface ProposedRevisionInput {
+  title?: string
+  goal?: string | null
+  scopeFiles?: string[]
+  acceptance?: Array<Record<string, unknown>>
+  dependsOn?: string[]
+  verificationHint?: string | null
+}
+
 interface MapState {
   /** 叠加层：按图缓存（map:overlay:get 批量,禁止按节点轮询） */
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
@@ -299,6 +350,27 @@ interface MapState {
   confirmPlanDraft: (input: { graphId: string; id: string; display: Record<string, unknown>; confirmedBy?: string }) => Promise<void>
   /** C1 驳回：不改 work_items；成功后重拉列表。 */
   rejectPlanDraft: (input: { graphId: string; id: string }) => Promise<void>
+  /** I.8.F P2：按 lineage 拉全部 revision（含已 superseded 的旧行）。 */
+  fetchWorkItemHistory: (lineageId: string) => Promise<WorkItemRevisionEntry[]>
+  /** I.8.F P2：服务端算字段级 diff + impact；`to` 对比历史，`proposed` 预检拟修订。 */
+  fetchWorkItemDiff: (query: {
+    lineageId: string
+    from: number
+    to?: number
+    proposed?: ProposedRevisionInput
+  }) => Promise<WorkItemDiffView>
+  /** C2 提交修订：`display` 原样回传；成功后刷新明细与叠加层。 */
+  reviseWorkItem: (input: {
+    graphId: string
+    id: string
+    title?: string
+    goal?: string | null
+    scopeFiles?: string[]
+    acceptance?: Array<Record<string, unknown>>
+    dependsOn?: string[]
+    reason: string
+    display: Record<string, unknown>
+  }) => Promise<{ traced: boolean; sink: string | null; note: string } | null>
 }
 
 function errorText(error: unknown): string {
@@ -358,6 +430,16 @@ export function describePlanDraftError(error: unknown): string {
   if (!detail) return mapped
   const stripped = detail.replace(/^缺少必填展示项[:：]/, '')
   return stripped && stripped !== detail ? `${mapped}：${stripped}` : mapped
+}
+
+/** C2 修订失败提示：与 C1 同源校验，但动作是「提交修订」而非「确认计划」。 */
+export function describeRevisionError(error: unknown): string {
+  const raw = errorText(error)
+  if (raw.startsWith('CONFIRMATION_DISPLAY_MISSING')) {
+    const detail = raw.slice('CONFIRMATION_DISPLAY_MISSING:'.length).trim()
+    return detail ? `必填展示项未齐，无法提交修订：${detail}` : '必填展示项未齐，无法提交修订'
+  }
+  return raw
 }
 
 /** 按 item id 就地更新所有已缓存图的叠加层（避免为此重拉整图）。 */
@@ -812,6 +894,41 @@ export const useMapStore = create<MapState>((set, get) => ({
       await get().fetchPlanDrafts(input.graphId)
     } catch (error) {
       get().setActionError(`plan-draft:${input.id}`, describePlanDraftError(error))
+    }
+  },
+
+  /** I.8.F P2：按 lineage 读全部 revision；失败时抛给调用方（面板就地显示），不静默空列表。 */
+  fetchWorkItemHistory: async (lineageId) => {
+    const rows = unwrapIpc<WorkItemRevisionEntry[]>(await window.electronAPI['workitem:history'](lineageId))
+    return Array.isArray(rows) ? rows : []
+  },
+
+  /** I.8.F P2：diff 完全由服务端计算；这里只解包，不做任何字段比较。 */
+  fetchWorkItemDiff: async (query) => {
+    return unwrapIpc<WorkItemDiffView>(await window.electronAPI['workitem:diff'](query))
+  },
+
+  /** C2 提交修订：display 原样回传；成功后刷新明细与叠加层（不本地猜新 revision）。 */
+  reviseWorkItem: async (input) => {
+    try {
+      const result = unwrapIpc<{ item: Record<string, unknown>; audit: { traced: boolean; sink: string | null; note: string } }>(
+        await window.electronAPI['workitem:revise']({
+          id: input.id,
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.goal !== undefined && input.goal !== null ? { goal: input.goal } : {}),
+          ...(input.scopeFiles !== undefined ? { scopeFiles: input.scopeFiles } : {}),
+          ...(input.acceptance !== undefined ? { acceptance: input.acceptance } : {}),
+          ...(input.dependsOn !== undefined ? { dependsOn: input.dependsOn } : {}),
+          reason: input.reason,
+          display: input.display,
+        }),
+      )
+      get().setActionError(`revision:${input.id}`, '')
+      await Promise.all([get().fetchWorkItemDetail(input.id), get().fetchOverlay(input.graphId)])
+      return result.audit ?? null
+    } catch (error) {
+      get().setActionError(`revision:${input.id}`, describeRevisionError(error))
+      return null
     }
   },
 }))

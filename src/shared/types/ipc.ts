@@ -377,7 +377,29 @@ export interface IpcApi {
     goal?: string
     scopeFiles?: string[]
     acceptance?: Array<Record<string, unknown>>
+    dependsOn?: string[]
+    reason?: string
     display: Record<string, unknown>
+  }) => Promise<{
+    item: Record<string, unknown>
+    /** I.8.F P2：修订原因是否留痕；审计表值域不接受时 traced=false，界面显示「未留痕」。 */
+    audit: { traced: boolean; sink: string | null; note: string }
+  }>
+  /** I.8.F P2：C2 历史读通道（按 lineage 读全部 revision，含已 superseded 的旧行）。 */
+  'workitem:history': (lineageId: string) => Promise<Array<Record<string, unknown>>>
+  /** I.8.F P2：服务端字段级 diff + impact；`to` 对比历史，`proposed` 预检拟修订。 */
+  'workitem:diff': (query: {
+    lineageId: string
+    from: number
+    to?: number
+    proposed?: {
+      title?: string
+      goal?: string | null
+      scopeFiles?: string[]
+      acceptance?: Array<Record<string, unknown>>
+      dependsOn?: string[]
+      verificationHint?: string | null
+    }
   }) => Promise<Record<string, unknown>>
   /** run:start 前必须 gate=pass/waived（§9.2）;编排执行随 L2 §5.9 */
   'workitem:run:start': (data: { id: string; gateResult?: 'pass' | 'waived'; waivedBy?: string; waiveReason?: string }) => Promise<Record<string, unknown>>
@@ -652,6 +674,9 @@ export const MAP_READ_ONLY_CHANNELS = [
   'workitem:list',
   'workitem:steps:list',
   'workitem:evidence:list',
+  // I.8.F P2：C2 历史读通道（纯 SELECT；不改 is_current 语义）。
+  'workitem:history',
+  'workitem:diff',
   'map:run:list',
   'map:run:get',
   'map:execution:status',

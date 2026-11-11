@@ -1256,6 +1256,12 @@ const TABLE_SCHEMAS: TableSchema[] = [
   {
     // S1 迁移状态机（§8.14.1）：阶段记录 running/ok/partial/failed + 心跳 + owner_pid；
     // 每个阶段独立一行，重跑新建行不覆盖历史。不新增表，所有阶段记录复用本表。
+    //
+    // 兼作**操作审计**通道（I.8.F P2）：gate/证据写入诊断、验收评估、离线校准已复用本表
+    // 以 kind 区分；读本表时不要默认它是「迁移专用」。
+    // 已知缺口：`workitem_revise`（C2 修订原因）目前**不在** kind 的 CHECK 值域内，
+    // 所以 P2 修订原因暂不落库，界面如实显示「未留痕」；未为此扩 CHECK / 开 v50。
+    // 若将来确有消费方并授权扩值域，`work-item-revision.ts` 的探测会自动开始写入本表。
     name: 'map_migration_reports',
     createSql: `
       CREATE TABLE map_migration_reports (
