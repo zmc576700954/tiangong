@@ -251,6 +251,17 @@ export interface IpcApi {
     linkType?: string
     reason?: string
   }) => Promise<{ outcome: 'created' | 'reused' | 'revived'; row: Record<string, unknown> }>
+  /**
+   * 撤销人工创建的关系边（L1 人工入口的删除路径）。
+   *
+   * 只删 `origin='human'` 的行：派生/导入链接由系统路径回填，删掉会被重建，
+   * 因此主进程显式拒绝（`not_human_origin`）而不是静默忽略。删除是硬删，
+   * 行没了才算真的撤销；删除事实写主进程日志。
+   */
+  'map:link:delete': (data: { id: string; projectPath: string; reason?: string }) => Promise<{
+    deleted: boolean
+    row: Record<string, unknown>
+  }>
   'admin:map:integrity-check': () => Promise<{ checked: number; orphans: number; staled: number }>
 
   // S5a/S6a L1 通道（§9.2）
@@ -258,7 +269,7 @@ export interface IpcApi {
   'map:overlay:get': (graphId: string) => Promise<{ executionStates: Array<Record<string, unknown>>; workItems: Array<Record<string, unknown>> }>
   'map:link:list': (query: { projectPath: string; entityKey?: string }) => Promise<Array<Record<string, unknown>>>
   /** 节点会话时间线（§9.5-3:替代单线程映射,UI 保留 threadIds 全集） */
-  'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<Array<Record<string, unknown>>>
+  'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<TimelineEntryDTO[]>
   'map:node:evidence:list': (query: { graphId: string; nodeEntityKey: string }) => Promise<Array<Record<string, unknown>>>
   /** 证据建议只读列表（§3.4）：可按节点/状态过滤，默认只看 pending。 */
   'map:evidence:suggestions:list': (query: {
@@ -643,6 +654,27 @@ export interface IpcEventMap {
   'conflict:onReported': (report: ConflictReport) => void
   /** A2A server lifecycle change (start/stop/restart). Carries the same payload as `a2a:getServerStatus`. */
   'a2a:serverStatusChange': (status: A2AServerStatus) => void
+}
+
+/**
+ * 节点会话时间线出参（`map:node:timeline`）。
+ *
+ * 显式列而非 `SELECT *` 直出：`node_session_links` 增列/改名时，主进程 map
+ * 阶段会编译报错，renderer 侧也不会静默读到 `undefined`。新增字段必须同时改
+ * 这里、`src/main/ipc/map.ts` 的 SELECT 与映射。
+ */
+export interface TimelineEntryDTO {
+  id: string
+  thread_id: string
+  /** LEFT JOIN chat_threads：线程不存在时为 null（链接行仍保留）。 */
+  thread_title: string | null
+  thread_status: string | null
+  thread_adapter: string | null
+  link_role: string
+  session_origin: string
+  started_at: number | null
+  ended_at: number | null
+  created_at: number
 }
 
 /** I.8.F P1：C1 草稿视图（草稿元数据 + 服务端预检投影）。 */

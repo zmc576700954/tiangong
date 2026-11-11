@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
+import type * as SharedSandbox from '../shared/sandbox'
 
 // Mock the SDK module before importing adapter
 const mockQuery = vi.fn()
@@ -21,6 +22,27 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 vi.mock('../settings', () => ({
   readSettings: vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] }),
 }))
+
+/**
+ * 沙箱能力探测要跑真实 canary（`sandbox-exec` + 三条命令），结论随宿主而变：
+ * 容器 / CI / 受限 IDE 里探不到就是 false，而 false 会让只读 allow 整体退回 ask
+ * （C3 的 fail-closed）。如果测试按宿主默认值跑，同一份代码在开发机上绿、在 CI 上红。
+ *
+ * 所以这里把探测结果固定在「可用」，让本文件只验证策略本身；
+ * 「不可用时退回 ask」由下一条用例显式翻成 false 来验证，两种情形都覆盖。
+ */
+vi.mock('../shared/sandbox', async (importOriginal) => {
+  const actual = await importOriginal<typeof SharedSandbox>()
+  return {
+    ...actual,
+    getSandboxCapability: vi.fn(() => ({
+      platform: 'darwin' as const,
+      available: true,
+      reason: 'ok',
+      probedAt: 0,
+    })),
+  }
+})
 
 import { ClaudeCodeAdapter } from '../adapters/claude-code'
 
@@ -325,6 +347,57 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     })) as HookResult
     expect(readResult).toEqual({})
     expect(onPreToolUse).toHaveBeenCalledTimes(1)
+  })
+
+  it('沙箱不可用时只读命令退回 ask（C3 fail-closed），理由写明原因', async () => {
+    const sandbox = await import('../shared/sandbox')
+    vi.mocked(sandbox.getSandboxCapability).mockReturnValue({
+      platform: 'darwin',
+      available: false,
+      reason: 'binary-missing',
+      probedAt: 0,
+    })
+
+    try {
+      const config = makeConfig()
+      const session = await adapter.startSession(config)
+      const onBashPolicy = vi.fn()
+      adapter.setTurnApprovalHooks(session.id, {
+        canUseTool: async (_toolName, input) => ({ behavior: 'allow', updatedInput: input }),
+        onBashPolicy,
+      })
+
+      mockQuery.mockReturnValue(mockMessages([
+        { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+      ]))
+      await adapter.sendCommand(session.id, command)
+
+      const callArgs = mockQuery.mock.calls[0][0] as {
+        options: { hooks: { PreToolUse: Array<{ hooks: Array<(input: Record<string, unknown>) => unknown> }> } }
+      }
+      const hook = callArgs.options.hooks.PreToolUse[0].hooks[0] as (input: Record<string, unknown>) => Promise<{
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string }
+      }>
+
+      // `git status` 本身命中只读白名单，但沙箱不可用时不能免审
+      const result = await hook({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      })
+      expect(result.hookSpecificOutput?.permissionDecision).toBe('ask')
+      expect(result.hookSpecificOutput?.permissionDecisionReason).toContain('sandbox-unavailable')
+      expect(result.hookSpecificOutput?.permissionDecisionReason).toContain('binary-missing')
+      // 审计仍记录原始判定（allow → 被降级），不能把降级藏起来
+      expect((onBashPolicy.mock.calls[0][0] as { rule: string }).rule).toBe('sandbox-unavailable')
+    } finally {
+      vi.mocked(sandbox.getSandboxCapability).mockReturnValue({
+        platform: 'darwin',
+        available: true,
+        reason: 'ok',
+        probedAt: 0,
+      })
+    }
   })
 
   it('doSendCommand emits assistant text as stdout', async () => {

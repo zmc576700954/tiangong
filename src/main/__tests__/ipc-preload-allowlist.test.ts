@@ -54,8 +54,6 @@ const INTENTIONALLY_UNEXPOSED_READ: Record<string, string> = {
 const KNOWN_WRITE_WITHOUT_RENDERER_ENTRY: Record<string, string> = {
   'admin:map:integrity-check':
     '写：巡检手动触发，会把 node_links 置 orphan/stale 并写 map_migration_reports。管理动作，无 renderer 入口。',
-  'map:link:create':
-    '写：创建 node_links 行。renderer 目前只有 map:link:list 只读列表，没有建链入口。',
   'plan:derive-candidates':
     '写：落派生 run / candidates。C1 走 plan:draft:*，没有直接调用派生候选的 renderer 入口。',
   'plan:draft:create':
@@ -283,7 +281,10 @@ function describeChannels(entries: Array<{ channel: string; detail: string }>): 
   return entries.map((entry) => `  - ${entry.channel}（${entry.detail}）`).join('\n')
 }
 
-describe('preload 白名单一致性护栏', () => {
+// 这组用例要同步遍历整个 src/main 与 src/renderer（数百个文件、逐个 stripComments），
+// 单跑约 1–2s，但在全量并行时会被 CPU 挤到 5s 默认超时之上——那是负载，不是回归。
+// 给足 30s：护栏的价值是「断言对」，不是「跑得快」；宁可变慢，也不能在满载时假红。
+describe('preload 白名单一致性护栏', { timeout: 30_000 }, () => {
   it('typedHandle 通道名必须是字符串字面量（否则静态断言失效）', () => {
     const { unparsable } = collectRegisteredChannels()
     expect(

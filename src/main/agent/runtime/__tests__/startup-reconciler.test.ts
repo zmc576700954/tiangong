@@ -26,6 +26,7 @@ import {
   waitForStdout,
 } from './helpers/cross-process'
 import { openTestDb } from './helpers/test-db'
+import { canReadProcessTable } from '../../../__tests__/helpers/host-probe'
 
 const SCHEMA_MODULE = path.resolve(process.cwd(), 'src/main/agent/runtime/db/schema.ts')
 const REPOSITORY_MODULE = path.resolve(process.cwd(), 'src/main/agent/runtime/db/repository.ts')
@@ -322,7 +323,8 @@ setInterval(() => {}, 1000)
     fs.rmSync(workDir, { recursive: true, force: true })
   })
 
-  it('leaves no dangling running turn after a real SIGKILL restart', async () => {
+  // 真实 SIGKILL 后重启要读进程表判定归属；宿主 `ps` 不可读时这条没有可信判据。
+  it.skipIf(!canReadProcessTable())('leaves no dangling running turn after a real SIGKILL restart', async () => {
     const child = spawn(process.execPath, [childEntry], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {

@@ -74,3 +74,6 @@ coverage/
 
 # 嵌套复制产生的 sabotage 日志残留（不删除，仅不入库；不要放宽成 spikes/）
 spikes/spikes/
+
+# WorkBuddy 本地工作区（个人记忆/技能/会话缓存，不入库）
+.workbuddy/

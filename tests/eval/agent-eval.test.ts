@@ -24,6 +24,7 @@ import {
   type ProcIdentity,
 } from '../../src/main/agent/runtime/process/reaper'
 import { itEval, writeEvalReport, type EvalResult } from './harness'
+import { canReadProcessTable } from '../../src/main/__tests__/helpers/host-probe'
 
 const requireRoot = createRequire(import.meta.url)
 
@@ -311,6 +312,13 @@ describe('W5-D agent eval harness', () => {
 
   // U8：跨重启「可证明归属」证据
   itEval('U8', '跨重启回收的归属证据（pid + 启动时间 + 命令行）能否稳定取到', async () => {
+    // 宿主 `ps` 不可读（受限 CI / 容器 EPERM）时这是「缺条件」，不是「取不到证据」的结论。
+    if (!canReadProcessTable()) {
+      return {
+        status: 'SKIP',
+        detail: '宿主 `ps` 不可读（EPERM），无法取 pid/pgid/startedAt/command；属宿主限制，不下结论',
+      }
+    }
     const marker = `bizgraph-eval-${process.pid}-${Date.now()}`
     const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', marker], { stdio: 'ignore' })
     try {

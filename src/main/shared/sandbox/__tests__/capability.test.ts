@@ -9,6 +9,7 @@ import {
   probeSandboxCapability,
   resetSandboxCapabilityForTests,
 } from '../capability'
+import { canApplySandboxProfile } from '../../../__tests__/helpers/host-probe'
 
 describe('sandbox capability', () => {
   it('非 macOS 明确判为不可用（本轮只做 macOS）', () => {
@@ -28,12 +29,20 @@ describe('sandbox capability', () => {
     },
   )
 
-  it.skipIf(process.platform !== 'darwin')('真实 canary：可用且多次读取一致', () => {
+  // 宿主是否允许 `sandbox_apply` 由系统决定（容器/受限 CI 会 EPERM）。这里不断言
+  // 「一定可用」，而是断言「探测不撒谎」：宿主能套限制性 profile 时必须判可用且
+  // reason=ok；宿主拒绝时必须判不可用且 reason≠ok（谎报可用会让 allow 集裸跑）。
+  it.skipIf(process.platform !== 'darwin')('真实 canary：结论与宿主能力一致，且单例只探测一次', () => {
     resetSandboxCapabilityForTests()
     const first = getSandboxCapability()
     const second = getSandboxCapability()
-    expect(first.available).toBe(true)
-    expect(first.reason).toBe('ok')
+    if (canApplySandboxProfile()) {
+      expect(first.available).toBe(true)
+      expect(first.reason).toBe('ok')
+    } else {
+      expect(first.available).toBe(false)
+      expect(first.reason).not.toBe('ok')
+    }
     // 同一个单例对象：启动期探测与 spawn 前读取不会分叉。
     expect(second).toBe(first)
   })

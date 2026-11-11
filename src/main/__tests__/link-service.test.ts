@@ -79,6 +79,72 @@ function insertNode(db: BetterSqlite3.Database, opts: { graphId: string; title: 
   return id
 }
 
+describe('LinkService.delete（§8.4 人工撤销）', () => {
+  let db: BetterSqlite3.Database
+  let service: LinkService
+  let online: string
+  let dev: string
+  const PROJECT = '/proj'
+
+  beforeEach(() => {
+    db = setupDb()
+    seq = 0
+    service = new LinkService(db)
+    online = insertGraph(db, { type: 'online', projectPath: PROJECT })
+    dev = insertGraph(db, { type: 'dev', projectPath: PROJECT })
+    insertNode(db, { graphId: dev, title: 'd1', entityKey: 'k-dev-1' })
+    insertNode(db, { graphId: online, title: 'o1', entityKey: 'k-online-1' })
+  })
+
+  async function createLink(origin: 'human' | 'derived' | 'import' = 'human') {
+    return service.create({
+      projectPath: PROJECT,
+      linkType: 'derives_from',
+      fromEntityKey: 'k-dev-1',
+      fromGraphId: dev,
+      toEntityKey: 'k-online-1',
+      toGraphId: online,
+      origin,
+    })
+  }
+
+  it('删除人工连边：硬删该行并返回被删行（行没了才算撤销）', async () => {
+    const { row } = await createLink('human')
+    const removed = await service.delete({ id: row.id, projectPath: PROJECT })
+    expect(removed.id).toBe(row.id)
+    expect(removed.from_entity_key).toBe('k-dev-1')
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_links').get() as { c: number }).c).toBe(0)
+  })
+
+  it('派生/导入链接拒绝删（会被巡检重建，删了只会「删了又出现」）', async () => {
+    const { row } = await createLink('derived')
+    await expect(service.delete({ id: row.id, projectPath: PROJECT })).rejects.toMatchObject({
+      code: 'not_human_origin',
+    })
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_links').get() as { c: number }).c).toBe(1)
+  })
+
+  it('跨项目删除拒绝（L1：链接按项目隔离）', async () => {
+    const { row } = await createLink('human')
+    await expect(service.delete({ id: row.id, projectPath: '/other' })).rejects.toMatchObject({
+      code: 'project_mismatch',
+    })
+    expect((db.prepare('SELECT COUNT(*) AS c FROM node_links').get() as { c: number }).c).toBe(1)
+  })
+
+  it('不存在的 id 与空参一律拒绝，不做静默成功', async () => {
+    await expect(service.delete({ id: 'nl_missing', projectPath: PROJECT })).rejects.toMatchObject({
+      code: 'link_not_found',
+    })
+    await expect(service.delete({ id: '', projectPath: PROJECT })).rejects.toMatchObject({
+      code: 'link_not_found',
+    })
+    await expect(service.delete({ id: 'x', projectPath: '  ' })).rejects.toMatchObject({
+      code: 'project_required',
+    })
+  })
+})
+
 describe('isLinkTypeAllowed 方向矩阵（L5）', () => {
   it('derives_from/implements/verifies/covers 方向受限,其余任意', () => {
     expect(isLinkTypeAllowed('derives_from', 'dev', 'online')).toBe(true)

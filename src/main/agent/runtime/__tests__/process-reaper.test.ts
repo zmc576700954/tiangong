@@ -10,6 +10,13 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
 import { attestProcIdentity, listProcesses, ProcessReaper, type ProcIdentity } from '../process/reaper'
+import { canReadProcessTable } from '../../../__tests__/helpers/host-probe'
+
+/**
+ * 宿主 `ps` 不可读（容器/受限 CI 上 EPERM）时，依赖真实进程表的用例跳过。
+ * 只 skip 具体用例：同文件里不碰进程表的断言仍然要跑。
+ */
+const psAvailable = canReadProcessTable()
 
 const spawned: ChildProcess[] = []
 
@@ -54,7 +61,7 @@ afterEach(() => {
 })
 
 describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
-  it('reaps only the registered process tree after proving ownership (same-process)', async () => {
+  it.skipIf(!psAvailable)('reaps only the registered process tree after proving ownership (same-process)', async () => {
     const reaper = new ProcessReaper()
     const child = spawnChild()
     expect(child.pid).toBeGreaterThan(0)
@@ -70,7 +77,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     await waitFor(() => !alive(child.pid!))
   }, 15_000)
 
-  it('refuses to kill an unrelated process that occupies a previously recorded pid (PID reuse)', async () => {
+  it.skipIf(!psAvailable)('refuses to kill an unrelated process that occupies a previously recorded pid (PID reuse)', async () => {
     const bystander = spawnChild()
     expect(bystander.pid).toBeGreaterThan(0)
     await waitFor(() => listProcesses().some((proc) => proc.pid === bystander.pid))
@@ -89,7 +96,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(alive(bystander.pid!), 'PID 复用的无关进程必须存活').toBe(true)
   }, 15_000)
 
-  it('refuses to kill a bare persisted pid that has no ownership evidence', async () => {
+  it.skipIf(!psAvailable)('refuses to kill a bare persisted pid that has no ownership evidence', async () => {
     const bystander = spawnChild()
     expect(bystander.pid).toBeGreaterThan(0)
     await waitFor(() => listProcesses().some((proc) => proc.pid === bystander.pid))
@@ -101,7 +108,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(alive(bystander.pid!)).toBe(true)
   }, 15_000)
 
-  it('marker visible only in the command line is not enough to claim a process', async () => {
+  it.skipIf(!psAvailable)('marker visible only in the command line is not enough to claim a process', async () => {
     const marker = `bg-marker-only-${process.pid}-${Date.now()}`
     const bystander = spawnChild([marker])
     expect(bystander.pid).toBeGreaterThan(0)
@@ -117,7 +124,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(alive(bystander.pid!)).toBe(true)
   }, 15_000)
 
-  it('cross-restart reclaim succeeds only when started_at and command both match', async () => {
+  it.skipIf(!psAvailable)('cross-restart reclaim succeeds only when started_at and command both match', async () => {
     const child = spawnChild()
     expect(child.pid).toBeGreaterThan(0)
     await waitFor(() => listProcesses().some((proc) => proc.pid === child.pid))
@@ -145,7 +152,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(alive(bystander.pid!)).toBe(true)
   }, 15_000)
 
-  it('C4b: PID reuse + same-second start + same executable name must not be claimed', async () => {
+  it.skipIf(!psAvailable)('C4b: PID reuse + same-second start + same executable name must not be claimed', async () => {
     // 真实进程 + 真实 ps：canary 是被复用的 pid 持有者。
     const canary = spawnChild()
     expect(canary.pid).toBeGreaterThan(0)
@@ -170,7 +177,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(alive(canary.pid!), 'C4b：同秒 + 同可执行名不得凑成两项证据').toBe(true)
   }, 15_000)
 
-  it('C4b control: a genuine residual with exact command is still reclaimed', async () => {
+  it.skipIf(!psAvailable)('C4b control: a genuine residual with exact command is still reclaimed', async () => {
     const child = spawnChild()
     expect(child.pid).toBeGreaterThan(0)
     await waitFor(() => listProcesses().some((proc) => proc.pid === child.pid))
@@ -188,7 +195,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     await waitFor(() => !alive(child.pid!))
   }, 15_000)
 
-  it('C5b: a host-shared process group must never be reclaimed as our own group', async () => {
+  it.skipIf(!psAvailable)('C5b: a host-shared process group must never be reclaimed as our own group', async () => {
     // 非 detached：子进程与测试进程共享宿主组，pgid 必然不等于子进程 pid。
     const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300000)'], {
       stdio: 'ignore',
@@ -268,7 +275,7 @@ describe('ProcessReaper (D5 / P0-A / P0-2)', () => {
     expect(report.killedPids).toHaveLength(0)
   })
 
-  it('two concurrent turns of the same vendor: reaping A must not touch B', async () => {
+  it.skipIf(!psAvailable)('two concurrent turns of the same vendor: reaping A must not touch B', async () => {
     const childA = spawnChild()
     const childB = spawnChild()
     expect(childA.pid).toBeGreaterThan(0)

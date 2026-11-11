@@ -262,6 +262,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   'proposal:reject',
   // G3-10 E1 人工判断直写（写通道）：等级/写入方由主进程固定，renderer 入口归 G8。
   'map:evidence:e1:create',
+  // §8.4 人工连边（写通道）：create 只开 relates_to，delete 只删 origin='human'。
+  'map:link:create',
+  'map:link:delete',
 ]
 
 // Build IPC API object
@@ -296,6 +299,8 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   'map:evidence:suggestion:dismiss',
   // E1 人工判断直写：缺 summary/ref、端点不可解析需要结构化区分。
   'map:evidence:e1:create',
+  // 连边撤销：不存在 / 不属于当前项目 / 非人工来源必须可结构化区分。
+  'map:link:delete',
 ])
 
 function toIpcError(err: unknown): IpcErrorPayload {

@@ -14,7 +14,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import { NodeMapPanel } from '../NodeMapPanel'
 import { useMapStore } from '../../../store/mapStore'
-import type { EvidenceEntry, StepConfirmationView, WorkItemDetail, WorkItemDiffView, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
+import { useAgentStore } from '../../../store/agentStore'
+import { useAppStore } from '../../../store/appStore'
+import { useGraphStore } from '../../../store/graphStore'
+import { useThreadStore } from '../../../store/threadStore'
+import type { EvidenceEntry, EvidenceSuggestionEntry, NodeLinkEntry, StepConfirmationView, TimelineEntry, WorkItemDetail, WorkItemDiffView, WorkItemSummary, WorkRunEntry } from '../../../store/mapStore'
 
 function makeItem(overrides: Partial<WorkItemSummary> = {}): WorkItemSummary {
   return {
@@ -73,12 +77,24 @@ function setup(opts: {
   proposalDiffs?: Record<string, Record<string, unknown>>
   proposalErrors?: Record<string, string>
   planDraftsByGraph?: Record<string, Array<Record<string, unknown>>>
+  timeline?: TimelineEntry[]
+  suggestions?: EvidenceSuggestionEntry[]
+  links?: NodeLinkEntry[]
 } = {}): void {
   const items = opts.items ?? [makeItem()]
+  // G8-2 时间线切换：会话侧动作不触碰真实 IPC / 真实会话加载
+  useThreadStore.setState({ currentThreadId: null })
+  useAgentStore.setState({
+    loadMessages: vi.fn(async () => {}),
+    selectThread: vi.fn(),
+  })
+  useAppStore.setState({ setActiveRightPanel: vi.fn() })
   useMapStore.setState({
     overlayByGraph: new Map([['g-1', { executionStates: [], workItems: items }]]),
-    nodeTimeline: [],
+    nodeTimeline: opts.timeline ?? [],
     nodeEvidence: opts.evidence ?? [],
+    nodeSuggestions: opts.suggestions ?? [],
+    nodeLinks: opts.links ?? [],
     workItemDetails: opts.details ?? { 'wi-1': makeDetail(items[0]) },
     confirmationsByItem: opts.confirmationsByItem ?? {},
     workItemErrors: opts.workItemErrors ?? {},
@@ -97,6 +113,14 @@ function setup(opts: {
     fetchExecutionStatus: vi.fn(async () => {}),
     fetchOverlay: vi.fn(async () => {}),
     fetchNodeData: vi.fn(async () => {}),
+    fetchEvidenceSuggestions: vi.fn(async () => {}),
+    acceptEvidenceSuggestion: vi.fn(async () => {}),
+    dismissEvidenceSuggestion: vi.fn(async () => {}),
+    createHumanJudgment: vi.fn(async () => true),
+    fetchNodeLinks: vi.fn(async () => {}),
+    deleteNodeLink: vi.fn(async () => {}),
+    createNodeLink: vi.fn(async () => {}),
+    clearNodeData: vi.fn(),
     fetchProposals: vi.fn(async () => {}),
     fetchProposalDiff: vi.fn(async () => {}),
     acceptProposal: vi.fn(async () => {}),
@@ -162,8 +186,8 @@ function makeRevisionDiff(): WorkItemDiffView {
   }
 }
 
-function renderPanel(): void {
-  render(<NodeMapPanel graphId="g-1" nodeEntityKey="node-1" nodeId="n-1" />)
+function renderPanel(projectPath: string | null = null): void {
+  render(<NodeMapPanel graphId="g-1" nodeEntityKey="node-1" nodeId="n-1" projectPath={projectPath} />)
 }
 
 /** G8-5：任务卡默认折叠到任务级，测试按需逐层展开。 */
@@ -909,5 +933,249 @@ describe('I.8.F P2 C2 修订入口', () => {
         display: { diff: expected.fields, impact: expected.impact, reason: '补验收', gateResult: expected.gateResult },
       }),
     )
+  })
+})
+
+/**
+ * G8-2 时间线切换：面板展示 threadIds 全集，点一条即切换当前会话。
+ *
+ * 契约（与 HistorySidebar 一致）：先 loadMessages → 再 selectThread → 再把右侧
+ * 面板切到 agent。已结束会话允许切换（只读历史），不拦截。
+ */
+describe('NodeMapPanel 会话时间线切换（G8-2）', () => {
+  const entries: TimelineEntry[] = [
+    {
+      id: 'l-1',
+      thread_id: 'th-1',
+      thread_title: '会话一',
+      thread_status: 'idle',
+      thread_adapter: 'claude',
+      link_role: 'primary',
+      session_origin: 'map_task',
+      started_at: 1,
+      ended_at: null,
+      created_at: 100,
+    },
+    {
+      id: 'l-2',
+      thread_id: 'th-2',
+      thread_title: '会话二',
+      thread_status: 'idle',
+      thread_adapter: 'codex',
+      link_role: 'related',
+      session_origin: 'map_task',
+      started_at: 2,
+      ended_at: 3,
+      created_at: 200,
+    },
+  ]
+
+  it('展示 threadIds 全集，当前会话按钮禁用且标「当前」', () => {
+    setup({ timeline: entries })
+    // setup 会把 currentThreadId 重置为 null，当前会话要在其后设置
+    useThreadStore.setState({ currentThreadId: 'th-1' })
+    renderPanel()
+
+    expect(screen.getByTestId('timeline-l-1')).toBeTruthy()
+    expect(screen.getByTestId('timeline-l-2')).toBeTruthy()
+
+    const current = screen.getByTestId('timeline-select-l-1') as HTMLButtonElement
+    expect(current.disabled).toBe(true)
+    expect(current.textContent).toBe('当前')
+
+    const other = screen.getByTestId('timeline-select-l-2') as HTMLButtonElement
+    expect(other.disabled).toBe(false)
+    expect(other.textContent).toBe('切换')
+  })
+
+  it('点「切换」先载入消息、再切指针、最后切到 agent 面板', async () => {
+    setup({ timeline: entries })
+    renderPanel()
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('timeline-select-l-2'))
+    })
+
+    const loadMessages = useAgentStore.getState().loadMessages as unknown as ReturnType<typeof vi.fn>
+    const selectThread = useAgentStore.getState().selectThread as unknown as ReturnType<typeof vi.fn>
+    const setActiveRightPanel = useAppStore.getState().setActiveRightPanel as unknown as ReturnType<typeof vi.fn>
+
+    expect(loadMessages).toHaveBeenCalledWith('th-2')
+    expect(selectThread).toHaveBeenCalledWith('th-2')
+    expect(setActiveRightPanel).toHaveBeenCalledWith('agent')
+    // 顺序：消息先到位，指针后切 —— 避免「指针已切、消息还是上一条」的中间态
+    expect(loadMessages.mock.invocationCallOrder[0]).toBeLessThan(selectThread.mock.invocationCallOrder[0])
+  })
+
+  it('已结束会话同样可切换（只读历史），不额外拦截', async () => {
+    setup({ timeline: entries })
+    renderPanel()
+
+    expect(screen.getByTestId('timeline-l-2').textContent).toContain('已结束')
+    const ended = screen.getByTestId('timeline-select-l-2') as HTMLButtonElement
+    expect(ended.disabled).toBe(false)
+  })
+
+  it('无关联会话时只给空态，不渲染切换按钮', () => {
+    setup({ timeline: [] })
+    renderPanel()
+
+    expect(screen.getByTestId('node-map-timeline').textContent).toContain('无（该节点没有关联会话）')
+    expect(screen.queryByTestId('timeline-select-l-1')).toBeNull()
+  })
+})
+
+/**
+ * §3.4 证据建议裁决 + G3-10 E1 直写 + §8.4 人工连边。
+ *
+ * 这组覆盖的正是此前「通道已暴露、renderer 零调用」的三条写通道：断言的是
+ * 面板真的把用户动作发到对应 IPC（不是只渲染列表），并且删除入口只对
+ * `origin='human'` 出现（派生/导入链接主进程会拒绝）。
+ */
+describe('NodeMapPanel 证据建议 / E1 / 连边', () => {
+  function makeSuggestion(overrides: Partial<EvidenceSuggestionEntry> = {}): EvidenceSuggestionEntry {
+    return {
+      id: 'sg-1',
+      graph_id: 'g-1',
+      node_entity_key: 'node-1',
+      suggested_level: 'E3',
+      evidence_type: 'test_run',
+      rationale: '测试通过但未绑定提交',
+      confidence: 0.6,
+      status: 'pending',
+      produced_by_run_id: null,
+      created_at: '2026-01-01',
+      ...overrides,
+    }
+  }
+
+  function makeLink(overrides: Partial<NodeLinkEntry> = {}): NodeLinkEntry {
+    return {
+      id: 'nl-1',
+      project_path: '/p',
+      from_entity_key: 'node-1',
+      to_entity_key: 'node-2',
+      link_type: 'relates_to',
+      origin: 'human',
+      status: 'active',
+      reason: null,
+      created_at: '2026-01-01',
+      ...overrides,
+    }
+  }
+
+  it('待裁决建议：接受/驳回分别调用对应写通道', async () => {
+    setup({ suggestions: [makeSuggestion()] })
+    renderPanel()
+
+    expect(screen.getByTestId('suggestion-sg-1').textContent).toContain('测试通过但未绑定提交')
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('suggestion-sg-1-accept'))
+    })
+    const accept = useMapStore.getState().acceptEvidenceSuggestion as unknown as ReturnType<typeof vi.fn>
+    expect(accept).toHaveBeenCalledWith({ graphId: 'g-1', nodeEntityKey: 'node-1', id: 'sg-1' })
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('suggestion-sg-1-dismiss'))
+    })
+    const dismiss = useMapStore.getState().dismissEvidenceSuggestion as unknown as ReturnType<typeof vi.fn>
+    expect(dismiss).toHaveBeenCalledWith({ graphId: 'g-1', nodeEntityKey: 'node-1', id: 'sg-1' })
+  })
+
+  it('无待裁决建议时给空态，不留「读取失败」字样', () => {
+    setup({ suggestions: [] })
+    renderPanel()
+    expect(screen.getByTestId('node-map-suggestions').textContent).toContain('无（该节点没有待裁决建议）')
+  })
+
+  it('E1 人工判断：ref 指向当前节点，写入成功后清空输入', async () => {
+    setup()
+    renderPanel()
+
+    const input = screen.getByTestId('e1-summary') as HTMLInputElement
+    await act(async () => {
+      fireEvent.change(input, { target: { value: '我确认这段逻辑已被人工复核' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('e1-submit'))
+    })
+
+    const create = useMapStore.getState().createHumanJudgment as unknown as ReturnType<typeof vi.fn>
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        graphId: 'g-1',
+        nodeEntityKey: 'node-1',
+        nodeId: 'n-1',
+        summary: '我确认这段逻辑已被人工复核',
+        ref: { kind: 'node', graphId: 'g-1', nodeEntityKey: 'node-1' },
+      }),
+    )
+    expect((screen.getByTestId('e1-summary') as HTMLInputElement).value).toBe('')
+  })
+
+  it('连边：human 来源给删除入口，且删除调用带 projectPath + 当前节点', async () => {
+    setup({ links: [makeLink()] })
+    renderPanel('/p')
+
+    expect(screen.getByTestId('link-nl-1').textContent).toContain('node-2')
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('link-nl-1-delete'))
+    })
+    const del = useMapStore.getState().deleteNodeLink as unknown as ReturnType<typeof vi.fn>
+    expect(del).toHaveBeenCalledWith({ id: 'nl-1', projectPath: '/p', entityKey: 'node-1' })
+  })
+
+  it('derived 来源不显示删除入口（删了会被巡检重建，主进程也会拒绝）', () => {
+    setup({ links: [makeLink({ id: 'nl-2', origin: 'derived' })] })
+    renderPanel('/p')
+
+    expect(screen.getByTestId('link-nl-2')).toBeTruthy()
+    expect(screen.queryByTestId('link-nl-2-delete')).toBeNull()
+  })
+
+  it('没有项目路径时连边区只解释原因，不给新建/删除入口', () => {
+    setup({ links: [] })
+    renderPanel(null)
+
+    expect(screen.getByTestId('links-no-project')).toBeTruthy()
+    expect(screen.queryByTestId('link-create')).toBeNull()
+  })
+
+  it('新建关联：选中同图节点后调用 map:link:create（relates_to）', async () => {
+    setup({ links: [] })
+    useGraphStore.setState({
+      nodes: [
+        {
+          id: 'n-2',
+          type: 'module',
+          status: 'active',
+          title: '节点二',
+          graphId: 'g-1',
+          graphType: 'online',
+          entityKey: 'node-2',
+          createdAt: 't',
+          updatedAt: 't',
+        } as never,
+      ],
+    })
+    renderPanel('/p')
+
+    const select = screen.getByTestId('link-target') as HTMLSelectElement
+    await act(async () => {
+      fireEvent.change(select, { target: { value: 'node-2' } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('link-create'))
+    })
+
+    const create = useMapStore.getState().createNodeLink as unknown as ReturnType<typeof vi.fn>
+    expect(create).toHaveBeenCalledWith({
+      graphId: 'g-1',
+      projectPath: '/p',
+      entityKey: 'node-1',
+      fromEntityKey: 'node-1',
+      toEntityKey: 'node-2',
+    })
   })
 })

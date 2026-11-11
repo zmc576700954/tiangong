@@ -12,7 +12,12 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
-describe('Telemetry module', () => {
+/**
+ * 本文件会真的 `import('@opentelemetry/sdk-node')` 并初始化 SDK：全量并行时
+ * 这条 import 链会被 CPU 挤到 15s 以上（单跑 <1s）。放宽到 60s 只吸收排队与
+ * 模块解析时间；断言不变，也不 mock SDK——测的就是「真初始化不抛」。
+ */
+describe('Telemetry module', { timeout: 60_000 }, () => {
   beforeEach(async () => {
     // 重置模块内部状态：每个测试前调用 shutdown
     const mod = await import('../index')

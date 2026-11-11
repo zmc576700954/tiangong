@@ -81,6 +81,10 @@ describe('session-map 只读 IPC 通道', () => {
     }
     const WRITE_CHANNELS = [
       'map:link:create',
+      'map:link:delete',
+      'map:evidence:suggestion:accept',
+      'map:evidence:suggestion:dismiss',
+      'map:evidence:e1:create',
       'workitem:create',
       'workitem:revise',
       'workitem:run:start',
@@ -208,6 +212,56 @@ describe('session-map 只读 IPC 通道', () => {
       if (prevAdapter === undefined) delete process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER
       else process.env.BIZGRAPH_MAP_EXECUTION_ADAPTER = prevAdapter
     }
+  })
+
+  it('map:node:timeline 出参只含 DTO 列（加列/改名时两端都能编译期发现）', async () => {
+    db.prepare(
+      `INSERT INTO node_session_links (
+         id, project_path, graph_id, node_entity_key, thread_id, link_role, session_origin,
+         started_at, ended_at, created_at
+       ) VALUES ('l1', '/p/a', 'g1', 'k1', 'th1', 'primary', 'manual_panel', 1, 2, 3)`,
+    ).run()
+    const rows = (await call('map:node:timeline', {
+      graphId: 'g1',
+      nodeEntityKey: 'k1',
+    })) as Array<Record<string, unknown>>
+    expect(rows).toHaveLength(1)
+    expect(Object.keys(rows[0]).sort()).toEqual([
+      'created_at', 'ended_at', 'id', 'link_role', 'session_origin',
+      'started_at', 'thread_adapter', 'thread_id', 'thread_status', 'thread_title',
+    ])
+    // 左连接不到线程时字段仍是 null，而不是整个键消失。
+    expect(rows[0].thread_title).toBeNull()
+  })
+
+  it('map:link:delete：只删 origin=human，派生链接拒绝且行保留', async () => {
+    const insert = db.prepare(
+      `INSERT INTO node_links (
+         id, project_path, from_entity_key, from_graph_id, from_graph_type, from_node_id,
+         to_entity_key, to_graph_id, to_graph_type, to_node_id,
+         link_type, direction, confidence, origin, status, reason, metadata, created_at, updated_at
+       ) VALUES (?, '/p/a', 'k1', 'g1', 'dev', NULL, 'k2', 'g1', 'dev', NULL,
+                 'relates_to', 'symmetric', 1.0, ?, 'active', NULL, NULL, ?, ?)`,
+    )
+    insert.run('nl-human', 'human', 't', 't')
+    insert.run('nl-derived', 'derived', 't', 't')
+
+    const deleted = (await call('map:link:delete', {
+      id: 'nl-human',
+      projectPath: '/p/a',
+    })) as { deleted: boolean; row: Record<string, unknown> }
+    expect(deleted.deleted).toBe(true)
+    expect(deleted.row.id).toBe('nl-human')
+    expect(db.prepare('SELECT COUNT(*) AS c FROM node_links WHERE id = ?').get('nl-human')).toEqual({ c: 0 })
+
+    await expect(call('map:link:delete', { id: 'nl-derived', projectPath: '/p/a' })).rejects.toMatchObject({
+      code: 'not_human_origin',
+    })
+    expect(db.prepare('SELECT COUNT(*) AS c FROM node_links WHERE id = ?').get('nl-derived')).toEqual({ c: 1 })
+
+    await expect(call('map:link:delete', { id: 'nl-missing', projectPath: '/p/a' })).rejects.toMatchObject({
+      code: 'link_not_found',
+    })
   })
 
   it('只读证明：调用全部只读通道后五张表逐行不变', async () => {

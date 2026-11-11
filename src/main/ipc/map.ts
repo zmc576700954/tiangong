@@ -41,7 +41,7 @@ import {
 } from '../map/execution-flags'
 import { missingTierCapabilities } from '../map/tier-probe'
 import type { TypedHandle } from './utils'
-import type { PlanDraftPreview } from '../../shared/types/ipc'
+import type { PlanDraftPreview, TimelineEntryDTO } from '../../shared/types/ipc'
 
 /** 分页上限（与 `map:node:timeline` 一致：1..500，非法值落回默认）。 */
 function limitOf(value: unknown, fallback: number, max = 500): number {
@@ -172,8 +172,22 @@ export function registerMapHandlers(
     })
   })
 
+  // ---- 人工连边撤销（§8.4：L1 人工入口的删除路径）----
+  // 只删 origin='human'（派生/导入链接会被系统路径重建，删了只会造成「删了又出现」）。
+  // 硬删：行没了才算撤销；`orphan` 语义是「端点不可解析」，不能当墓碑复用。
+  typedHandle('map:link:delete', async (_, data) => {
+    const d = (data ?? {}) as { id?: unknown; projectPath?: unknown; reason?: unknown }
+    if (typeof d.id !== 'string' || d.id === '') throw new Error('id is required')
+    if (typeof d.projectPath !== 'string' || d.projectPath === '') throw new Error('projectPath is required')
+    if (d.reason !== undefined && typeof d.reason !== 'string') throw new Error('reason must be a string')
+    const row = await links.delete({ id: d.id, projectPath: d.projectPath, reason: d.reason })
+    return { deleted: true, row }
+  })
+
   // ---- 节点会话时间线（§9.5-3:替代单线程映射;UI 保留 threadIds 全集）----
-  typedHandle('map:node:timeline', async (_, query: unknown) => {
+  // 显式列 + 显式映射：表增列/改名时这里编译报错，不再靠 `SELECT l.*` 直出
+  // （DTO 见 `src/shared/types/ipc.ts` 的 TimelineEntryDTO）。
+  typedHandle('map:node:timeline', async (_, query: unknown): Promise<TimelineEntryDTO[]> => {
     const q = (query ?? {}) as { graphId?: string; nodeEntityKey?: string; limit?: number }
     if (typeof q.graphId !== 'string' || typeof q.nodeEntityKey !== 'string') {
       throw new Error('graphId and nodeEntityKey are required')
@@ -181,15 +195,35 @@ export function registerMapHandlers(
     const limit = Math.min(Math.max(q.limit ?? 100, 1), 500)
     const rows = db
       .prepare(
-        `SELECT l.*, t.title AS thread_title, t.status AS thread_status, t.adapter_name AS thread_adapter
+        `SELECT l.id              AS id,
+                l.thread_id       AS thread_id,
+                t.title           AS thread_title,
+                t.status          AS thread_status,
+                t.adapter_name    AS thread_adapter,
+                l.link_role       AS link_role,
+                l.session_origin  AS session_origin,
+                l.started_at      AS started_at,
+                l.ended_at        AS ended_at,
+                l.created_at      AS created_at
            FROM node_session_links l
            LEFT JOIN chat_threads t ON t.id = l.thread_id
           WHERE l.graph_id = ? AND l.node_entity_key = ?
           ORDER BY l.created_at DESC
           LIMIT ?`,
       )
-      .all(q.graphId, q.nodeEntityKey, limit)
-    return rows
+      .all(q.graphId, q.nodeEntityKey, limit) as TimelineEntryDTO[]
+    return rows.map((row) => ({
+      id: row.id,
+      thread_id: row.thread_id,
+      thread_title: row.thread_title ?? null,
+      thread_status: row.thread_status ?? null,
+      thread_adapter: row.thread_adapter ?? null,
+      link_role: row.link_role,
+      session_origin: row.session_origin,
+      started_at: row.started_at ?? null,
+      ended_at: row.ended_at ?? null,
+      created_at: row.created_at,
+    }))
   })
 
   // ---- 节点证据列表（只读）----

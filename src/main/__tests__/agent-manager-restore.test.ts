@@ -26,6 +26,24 @@ import type { AgentRuntime } from '../agent/runtime/runtime'
 import type { AgentSessionRow, AgentTurnRow } from '../agent/runtime/db/repository'
 import type { ClaudeTurnApprovalHooks } from '../adapters/claude-code'
 import type { AgentCommand, AgentSession, AgentSessionConfig } from '@shared/types'
+import os from 'node:os'
+
+/**
+ * 建会话前有内存护栏：darwin 下空闲内存 < 64MB 就直接拒绝
+ * （`isMemoryInsufficientForNewSession`，见 `src/main/agent/agent-manager.ts`）。
+ * 整套测试并行跑时会把空闲内存压到阈值以下，本文件就会随机红在
+ * `Insufficient free memory to start a new agent session`——那是宿主负载，不是恢复逻辑坏了。
+ * 这里只钉住「空闲内存」这一个外部输入；护栏本身仍由 `agent-manager.test.ts` 注入样本单测覆盖。
+ */
+let freememSpy: ReturnType<typeof vi.spyOn>
+
+beforeEach(() => {
+  freememSpy = vi.spyOn(os, 'freemem').mockReturnValue(1024 * 1024 * 1024)
+})
+
+afterEach(() => {
+  freememSpy.mockRestore()
+})
 
 class RestoreAdapter extends BaseAdapter {
   readonly name: string

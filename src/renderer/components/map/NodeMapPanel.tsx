@@ -20,6 +20,10 @@ import { useShallow } from 'zustand/react/shallow'
 import { Badge } from '../ui/badge'
 import { useMapStore } from '../../store/mapStore'
 import type { ExecutionStateValue, WorkItemSummary, WorkStepEntry } from '../../store/mapStore'
+import { useAgentStore } from '../../store/agentStore'
+import { useAppStore } from '../../store/appStore'
+import { useGraphStore } from '../../store/graphStore'
+import { useThreadStore } from '../../store/threadStore'
 import { STATUS_STYLE, TaskCardTree } from './TaskCardTree'
 import { StepConfirmationPanel, hasPendingConfirmation } from './StepConfirmationPanel'
 import { PlanDraftPanel } from './PlanDraftPanel'
@@ -120,12 +124,31 @@ interface Props {
   graphId: string | null
   nodeEntityKey: string | null
   nodeId: string | null
+  /** 连边按项目隔离（node_links.project_path）；缺项目时连边区只显示「未定位项目」。 */
+  projectPath?: string | null
 }
 
-export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
+export function NodeMapPanel({ graphId, nodeEntityKey, nodeId, projectPath = null }: Props) {
   const overlay = useMapStore(useShallow((s) => (graphId ? s.overlayByGraph.get(graphId) : undefined)))
   const timeline = useMapStore((s) => s.nodeTimeline)
+  // 时间线切换（G8-2/§9.5-3）：面板展示 threadIds 全集，点一条即把该会话切为当前会话。
+  const currentThreadId = useThreadStore((s) => s.currentThreadId)
+  const selectThread = useAgentStore((s) => s.selectThread)
+  const loadMessages = useAgentStore((s) => s.loadMessages)
+  const setActiveRightPanel = useAppStore((s) => s.setActiveRightPanel)
   const evidence = useMapStore((s) => s.nodeEvidence)
+  // §3.4 证据建议（待裁决）与 §8.4 人工连边：写入口在面板内，不留「通道有、界面无」。
+  const suggestions = useMapStore((s) => s.nodeSuggestions)
+  const nodeLinks = useMapStore((s) => s.nodeLinks)
+  const fetchEvidenceSuggestions = useMapStore((s) => s.fetchEvidenceSuggestions)
+  const acceptEvidenceSuggestion = useMapStore((s) => s.acceptEvidenceSuggestion)
+  const dismissEvidenceSuggestion = useMapStore((s) => s.dismissEvidenceSuggestion)
+  const createHumanJudgment = useMapStore((s) => s.createHumanJudgment)
+  const fetchNodeLinks = useMapStore((s) => s.fetchNodeLinks)
+  const deleteNodeLink = useMapStore((s) => s.deleteNodeLink)
+  const createNodeLink = useMapStore((s) => s.createNodeLink)
+  // 新建连边的候选集合来自当前图节点（带 entity_key 的才可作为端点）。
+  const graphNodes = useGraphStore((s) => s.nodes)
   const details = useMapStore((s) => s.workItemDetails)
   // G8-3：步级确认视图（后端派生，renderer 只展示）
   const confirmationsByItem = useMapStore((s) => s.confirmationsByItem)
@@ -167,6 +190,10 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   // I.8.F P2：C2 修订面板同时只展开一个任务，避免多份 diff 请求打满界面。
   const [revisionOpenId, setRevisionOpenId] = useState<string | null>(null)
+  // G3-10：E1 人工判断的输入草稿（只存内存；写入成功才清空）。
+  const [e1Summary, setE1Summary] = useState('')
+  // §8.4：新建连边的目标节点（entity_key；空串=未选）。
+  const [linkTarget, setLinkTarget] = useState('')
 
   function toggleExpanded(key: string): void {
     setExpanded((prev) => {
@@ -187,6 +214,22 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
     } finally {
       setBusyKey(null)
     }
+  }
+
+  /**
+   * G8-2 时间线切换：把时间线上的一条会话切为当前会话。
+   *
+   * 顺序固定为「先载入消息 → 再切指针 → 最后把右侧面板切到 agent」，与
+   * `HistorySidebar` 的切换路径一致；反过来会出现「指针已切、消息还是上一条」
+   * 的中间态。已结束会话同样允许切过去（只读历史），不在此处拦截。
+   */
+  async function switchTimelineThread(threadId: string): Promise<void> {
+    if (!threadId || threadId === currentThreadId) return
+    await handleAction(`timeline:${threadId}`, async () => {
+      await loadMessages(threadId)
+      selectThread(threadId)
+      setActiveRightPanel('agent')
+    })
   }
 
   async function handleConfirm(itemId: string, stepId: string, entryId: string): Promise<void> {
@@ -215,7 +258,14 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
   useEffect(() => {
     if (!graphId || !nodeEntityKey) return
     void fetchNodeData(graphId, nodeEntityKey)
-  }, [graphId, nodeEntityKey, fetchNodeData])
+    void fetchEvidenceSuggestions(graphId, nodeEntityKey)
+  }, [graphId, nodeEntityKey, fetchNodeData, fetchEvidenceSuggestions])
+
+  // 连边只在拿到项目路径时拉：node_links 按 project_path 隔离，没有项目就无从定位。
+  useEffect(() => {
+    if (!projectPath || !nodeEntityKey) return
+    void fetchNodeLinks(projectPath, nodeEntityKey)
+  }, [projectPath, nodeEntityKey, fetchNodeLinks])
 
   useEffect(() => {
     if (!graphId || !nodeEntityKey) return
@@ -298,8 +348,9 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
                   onDecide={(decision) =>
                     void handleAction(`plan-draft:${view.draft.id}`, () => {
                       if (decision === 'submit') return submitPlanDraft({ graphId, id: view.draft.id })
-                      if (decision === 'approve')
+                      if (decision === 'approve') {
                         return confirmPlanDraft({ graphId, id: view.draft.id, display: view.display })
+                      }
                       return rejectPlanDraft({ graphId, id: view.draft.id })
                     })
                   }
@@ -760,19 +811,152 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
           </div>
         </section>
 
-        {/* 会话时间线（threadIds 全集,§9.5-3；只读展示,不提供切换操作） */}
+        {/* 会话时间线（threadIds 全集,§9.5-3）：展示全集并可切换当前会话（G8-2） */}
         <section data-testid="node-map-timeline">
           <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">会话时间线</div>
           <div className="space-y-1">
-            {timeline.map((t) => (
-              <div key={t.id} className="flex items-center gap-2 px-2 text-xs" data-testid={`timeline-${t.id}`}>
-                <span className="truncate">{t.thread_title ?? t.thread_id}</span>
-                <Badge variant="secondary" className="text-[10px]">{t.link_role}</Badge>
-                <span className="flex-1" />
-                <span className="text-[10px] opacity-50">{t.ended_at ? '已结束' : '活跃'} · {t.thread_adapter ?? '-'}</span>
-              </div>
-            ))}
+            {timeline.map((t) => {
+              const isCurrent = t.thread_id === currentThreadId
+              const busy = busyKey === `timeline:${t.thread_id}`
+              return (
+                <div
+                  key={t.id}
+                  className={`flex items-center gap-2 rounded px-2 text-xs ${isCurrent ? 'bg-muted/60' : ''}`}
+                  data-testid={`timeline-${t.id}`}
+                >
+                  <span className="truncate">{t.thread_title ?? t.thread_id}</span>
+                  <Badge variant="secondary" className="text-[10px]">{t.link_role}</Badge>
+                  <span className="flex-1" />
+                  <span
+                    className="text-[10px] opacity-50"
+                    title={t.ended_at ? '该会话已结束，切换后只能查看历史' : '该会话仍活跃'}
+                  >
+                    {t.ended_at ? '已结束' : '活跃'} · {t.thread_adapter ?? '-'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { void switchTimelineThread(t.thread_id) }}
+                    disabled={isCurrent || busy}
+                    className={`${ACTION_BUTTON_CLASS} shrink-0`}
+                    data-testid={`timeline-select-${t.id}`}
+                    title={isCurrent ? '当前会话' : '切换为该会话'}
+                  >
+                    {isCurrent ? '当前' : busy ? '切换中' : '切换'}
+                  </button>
+                </div>
+              )
+            })}
             {timeline.length === 0 && <div className="px-2 text-[11px] opacity-50">无（该节点没有关联会话）</div>}
+          </div>
+        </section>
+
+        {/* §3.4 证据建议：agent 提建议 → 人工接受/驳回。接受在同一事务内转写
+            node_evidence；驳回只改状态。入口在此，避免「通道有、界面无」。 */}
+        <section data-testid="node-map-suggestions">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">
+            证据建议（待裁决）
+          </div>
+          <div className="space-y-1">
+            {actionErrors.suggestions && (
+              <div className="px-2 text-[11px] text-red-600" data-testid="suggestions-error">
+                {actionErrors.suggestions}
+              </div>
+            )}
+            {suggestions.map((s) => {
+              const busy = busyKey === `suggestion:${s.id}`
+              return (
+                <div key={s.id} className="rounded px-2 py-1" data-testid={`suggestion-${s.id}`}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <Badge variant="secondary" className="text-[10px]">{s.suggested_level}</Badge>
+                    <span className="text-[10px] opacity-60">{s.evidence_type}</span>
+                    <span className="flex-1 truncate" title={s.rationale}>{s.rationale}</span>
+                    <span className="text-[10px] opacity-50">conf={s.confidence.toFixed(2)}</span>
+                  </div>
+                  <div className="mt-1 flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      className={`${ACTION_BUTTON_CLASS} border-green-500/40`}
+                      data-testid={`suggestion-${s.id}-accept`}
+                      disabled={busy}
+                      title="接受后写入一条证据（同事务，幂等键=建议 id）"
+                      onClick={() => {
+                        if (!graphId || !nodeEntityKey) return
+                        void handleAction(`suggestion:${s.id}`, () =>
+                          acceptEvidenceSuggestion({ graphId, nodeEntityKey, id: s.id }),
+                        )
+                      }}
+                    >
+                      {busy ? '处理中…' : '接受'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`${ACTION_BUTTON_CLASS} border-red-500/40`}
+                      data-testid={`suggestion-${s.id}-dismiss`}
+                      disabled={busy}
+                      title="驳回只改建议状态，不写证据"
+                      onClick={() => {
+                        if (!graphId || !nodeEntityKey) return
+                        void handleAction(`suggestion:${s.id}`, () =>
+                          dismissEvidenceSuggestion({ graphId, nodeEntityKey, id: s.id }),
+                        )
+                      }}
+                    >
+                      驳回
+                    </button>
+                  </div>
+                  {actionErrors[`suggestion:${s.id}`] && (
+                    <div className="mt-1 text-[10px] text-red-600" data-testid={`suggestion-${s.id}-error`}>
+                      {actionErrors[`suggestion:${s.id}`]}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            {suggestions.length === 0 && !actionErrors.suggestions && (
+              <div className="px-2 text-[11px] opacity-50">无（该节点没有待裁决建议）</div>
+            )}
+
+            {/* G3-10：E1 人工判断直写。等级/写入方由主进程固定，界面不让用户选。 */}
+            <div
+              className="mt-1 flex items-center gap-1.5 rounded border border-purple-500/30 bg-purple-500/5 px-2 py-1"
+              data-testid="e1-create"
+            >
+              <input
+                className="min-w-0 flex-1 rounded border border-gray-300 bg-transparent px-1 py-0.5 text-[11px] dark:border-gray-600"
+                placeholder="人工判断（E1）：写下你确认的事实"
+                data-testid="e1-summary"
+                value={e1Summary}
+                onChange={(e) => setE1Summary(e.target.value)}
+              />
+              <button
+                type="button"
+                className={`${ACTION_BUTTON_CLASS} border-purple-500/40`}
+                data-testid="e1-submit"
+                disabled={e1Summary.trim() === '' || busyKey === 'e1'}
+                title="写入一条 E1 人工证据（ref 指向当前节点）"
+                onClick={() => {
+                  if (!graphId || !nodeEntityKey) return
+                  void handleAction('e1', async () => {
+                    const ok = await createHumanJudgment({
+                      graphId,
+                      nodeEntityKey,
+                      nodeId,
+                      projectPath,
+                      summary: e1Summary,
+                      ref: { kind: 'node', graphId, nodeEntityKey },
+                    })
+                    if (ok) setE1Summary('')
+                  })
+                }}
+              >
+                {busyKey === 'e1' ? '写入中…' : '写入判断（E1）'}
+              </button>
+            </div>
+            {actionErrors.e1 && (
+              <div className="px-2 text-[10px] text-red-600" data-testid="e1-error">
+                {actionErrors.e1}
+              </div>
+            )}
           </div>
         </section>
 
@@ -791,6 +975,106 @@ export function NodeMapPanel({ graphId, nodeEntityKey }: Props) {
               </div>
             ))}
             {evidence.length === 0 && <div className="px-2 text-[11px] opacity-50">无（该节点没有证据）</div>}
+          </div>
+        </section>
+
+        {/* §8.4 人工连边：列表 + 撤销。只对 origin='human' 给删除入口——派生/导入
+            链接由系统路径回填，删了会被重建，主进程也会显式拒绝。 */}
+        <section data-testid="node-map-links">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide opacity-50">关联连边</div>
+          <div className="space-y-1">
+            {!projectPath && (
+              <div className="px-2 text-[11px] opacity-50" data-testid="links-no-project">
+                未定位项目（连边按项目隔离，需要项目路径才能列出）
+              </div>
+            )}
+            {actionErrors.links && (
+              <div className="px-2 text-[11px] text-red-600" data-testid="links-error">
+                {actionErrors.links}
+              </div>
+            )}
+            {/* 新建人工连边：L1 只开 relates_to（链类型由主进程固定），端点限定同图。 */}
+            {projectPath && (
+              <div className="flex items-center gap-1.5 px-2">
+                <select
+                  className="min-w-0 flex-1 rounded border border-gray-300 bg-transparent px-1 py-0.5 text-[10px] dark:border-gray-600"
+                  data-testid="link-target"
+                  value={linkTarget}
+                  onChange={(e) => setLinkTarget(e.target.value)}
+                >
+                  <option value="">选择同图节点…</option>
+                  {graphNodes
+                    .filter((n) => n.graphId === graphId && !!n.entityKey && n.entityKey !== nodeEntityKey)
+                    .map((n) => (
+                      <option key={n.id} value={n.entityKey}>
+                        {n.title}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  type="button"
+                  className={`${ACTION_BUTTON_CLASS} shrink-0 border-blue-500/40`}
+                  data-testid="link-create"
+                  disabled={linkTarget === '' || busyKey === `link-create:${linkTarget}`}
+                  title="建立 relates_to 关联（origin=human，可撤销）"
+                  onClick={() => {
+                    void handleAction(`link-create:${linkTarget}`, async () => {
+                      await createNodeLink({
+                        graphId,
+                        projectPath,
+                        entityKey: nodeEntityKey,
+                        fromEntityKey: nodeEntityKey,
+                        toEntityKey: linkTarget,
+                      })
+                      setLinkTarget('')
+                    })
+                  }}
+                >
+                  {busyKey === `link-create:${linkTarget}` ? '建立中…' : '建立关联'}
+                </button>
+              </div>
+            )}
+            {projectPath && nodeLinks.map((l) => {
+              const outgoing = l.from_entity_key === nodeEntityKey
+              const other = outgoing ? l.to_entity_key : l.from_entity_key
+              const busy = busyKey === `link-delete:${l.id}`
+              return (
+                <div key={l.id} className="flex items-center gap-2 px-2 text-xs" data-testid={`link-${l.id}`}>
+                  <Badge variant="secondary" className="text-[10px]">{l.link_type}</Badge>
+                  <span className="text-[10px] opacity-50">{outgoing ? '→' : '←'}</span>
+                  <span className="truncate">{other}</span>
+                  <Badge variant="secondary" className="text-[10px] border bg-gray-500/10 text-gray-600 border-gray-500/30">
+                    {l.origin}
+                  </Badge>
+                  <span className="flex-1" />
+                  {l.origin === 'human' && (
+                    <button
+                      type="button"
+                      className={`${ACTION_BUTTON_CLASS} border-red-500/40`}
+                      data-testid={`link-${l.id}-delete`}
+                      disabled={busy}
+                      title="撤销这条人工连边（硬删；派生/导入链接不可删）"
+                      onClick={() => {
+                        if (!projectPath || !nodeEntityKey) return
+                        void handleAction(`link-delete:${l.id}`, () =>
+                          deleteNodeLink({ id: l.id, projectPath, entityKey: nodeEntityKey }),
+                        )
+                      }}
+                    >
+                      {busy ? '删除中…' : '删除'}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+            {projectPath && nodeLinks.length === 0 && !actionErrors.links && (
+              <div className="px-2 text-[11px] opacity-50">无（该节点没有关联连边）</div>
+            )}
+            {projectPath && nodeLinks.some((l) => actionErrors[`link:${l.id}`]) && (
+              <div className="px-2 text-[10px] text-red-600" data-testid="link-delete-error">
+                {nodeLinks.map((l) => actionErrors[`link:${l.id}`]).filter(Boolean).join('；')}
+              </div>
+            )}
           </div>
         </section>
       </div>

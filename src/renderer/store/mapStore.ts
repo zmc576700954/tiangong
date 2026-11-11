@@ -76,8 +76,39 @@ export interface EvidenceEntry {
   work_run_id?: string | null
 }
 
-/** work_steps 只读出参（workitem:get / workitem:steps:list 的显式列集合子集）。 */
-export interface WorkStepEntry {
+/** §3.4 证据建议行（evidence_suggestions）：列表只读，接受/驳回是人工裁决写通道。 */
+export interface EvidenceSuggestionEntry {
+  id: string
+  graph_id: string
+  node_entity_key: string
+  suggested_level: string
+  evidence_type: string
+  rationale: string
+  confidence: number
+  status: string
+  produced_by_run_id: string | null
+  created_at: string
+}
+
+/**
+ * node_links 只读行（人工连边列表）。
+ *
+ * 只有 `origin='human'` 的行可删：派生/导入链接由系统路径回填，删了会被重建，
+ * 主进程因此显式拒绝（UI 侧据 origin 决定是否显示删除入口）。
+ */
+export interface NodeLinkEntry {
+  id: string
+  project_path: string
+  from_entity_key: string
+  to_entity_key: string
+  link_type: string
+  origin: string
+  status: string
+  reason: string | null
+  created_at: string
+}
+
+/** work_steps 只读出参（workitem:get / workitem:steps:list 的显式列集合子集）。 */export interface WorkStepEntry {
   id: string
   work_item_id: string
   work_item_revision: number
@@ -282,6 +313,10 @@ interface MapState {
   overlayByGraph: Map<string, { executionStates: ExecutionStateEntry[]; workItems: WorkItemSummary[] }>
   nodeTimeline: TimelineEntry[]
   nodeEvidence: EvidenceEntry[]
+  /** §3.4 该节点的待裁决证据建议（默认只看 pending；裁决后重拉）。 */
+  nodeSuggestions: EvidenceSuggestionEntry[]
+  /** §8.4 该节点的人工连边（只读列表；删除只对 origin='human' 生效）。 */
+  nodeLinks: NodeLinkEntry[]
   /** item 下钻明细缓存（workitem:get；只读,按 item id 索引） */
   workItemDetails: Record<string, WorkItemDetail>
   /** G8-3：步级确认视图缓存（map:confirmation:status；只读展示，风险由后端派生） */
@@ -316,6 +351,35 @@ interface MapState {
   /** §9.3 event:node-execution-state 增量更新（preload 订阅驱动） */
   applyExecutionState: (payload: { graphId: string; nodeEntityKey: string; executionState: string; evidenceLevel: string; staleCount: number }) => void
   fetchNodeData: (graphId: string, nodeEntityKey: string) => Promise<void>
+  /** §3.4 证据建议列表（只读；默认 pending）。 */
+  fetchEvidenceSuggestions: (graphId: string, nodeEntityKey: string) => Promise<void>
+  /** §3.4 接受建议：同一事务内转写 node_evidence；成功后重拉列表明细。 */
+  acceptEvidenceSuggestion: (input: { graphId: string; nodeEntityKey: string; id: string }) => Promise<void>
+  /** §3.4 驳回建议：只改状态、不写证据。 */
+  dismissEvidenceSuggestion: (input: { graphId: string; nodeEntityKey: string; id: string }) => Promise<void>
+  /** G3-10 E1 人工判断直写：等级/写入方由主进程固定为 E1/human。 */
+  createHumanJudgment: (input: {
+    graphId: string
+    nodeEntityKey: string
+    nodeId?: string | null
+    projectPath?: string | null
+    summary: string
+    ref: unknown
+  }) => Promise<boolean>
+  /** §8.4 节点连边列表（只读；需要 projectPath 才能定位同项目链接）。 */
+  fetchNodeLinks: (projectPath: string, entityKey: string) => Promise<void>
+  /** §8.4 撤销人工连边：只删 origin='human'，成功后重拉列表。 */
+  deleteNodeLink: (input: { id: string; projectPath: string; entityKey: string }) => Promise<void>
+  /** §8.4 新建人工连边（同图 relates_to）：成功后重拉列表。 */
+  createNodeLink: (input: {
+    graphId: string
+    projectPath: string
+    /** 当前节点（列表按它重拉）。 */
+    entityKey: string
+    fromEntityKey: string
+    toEntityKey: string
+    reason?: string
+  }) => Promise<void>
   fetchWorkItemDetail: (id: string) => Promise<void>
   clearNodeData: () => void
   createWorkItem: (input: { graphId: string; anchorEntityKey?: string; anchorNodeId?: string; title: string; goal?: string; projectPath?: string }) => Promise<WorkItemSummary>
@@ -461,6 +525,8 @@ export const useMapStore = create<MapState>((set, get) => ({
   overlayByGraph: new Map(),
   nodeTimeline: [],
   nodeEvidence: [],
+  nodeSuggestions: [],
+  nodeLinks: [],
   workItemDetails: {},
   confirmationsByItem: {},
   planDraftsByGraph: {},
@@ -677,7 +743,132 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
   },
 
-  clearNodeData: () => set({ nodeTimeline: [], nodeEvidence: [] }),
+  /**
+   * §3.4 待裁决证据建议（只读）。
+   *
+   * 读取失败只记错误、保留上一次列表：空数组会被界面读成「没有建议」，那是在
+   * 用失败伪装空态。
+   */
+  fetchEvidenceSuggestions: async (graphId, nodeEntityKey) => {
+    try {
+      const rows = unwrapIpc<EvidenceSuggestionEntry[]>(
+        await window.electronAPI['map:evidence:suggestions:list']({
+          graphId,
+          nodeEntityKey,
+          status: 'pending',
+        }),
+      )
+      set({ nodeSuggestions: Array.isArray(rows) ? rows : [] })
+      get().setActionError('suggestions', '')
+    } catch (error) {
+      get().setActionError('suggestions', `读取证据建议失败：${errorText(error)}`)
+    }
+  },
+
+  /** 接受建议：主进程在同事务里写 node_evidence，这里刷新建议与证据两处缓存。 */
+  acceptEvidenceSuggestion: async ({ graphId, nodeEntityKey, id }) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['map:evidence:suggestion:accept']({ id, resolvedBy: 'local-user' }),
+      )
+      get().setActionError(`suggestion:${id}`, '')
+      await Promise.all([
+        get().fetchEvidenceSuggestions(graphId, nodeEntityKey),
+        get().fetchNodeData(graphId, nodeEntityKey),
+      ])
+    } catch (error) {
+      get().setActionError(`suggestion:${id}`, `接受建议失败：${errorText(error)}`)
+    }
+  },
+
+  /** 驳回建议：只改状态，不产生证据。 */
+  dismissEvidenceSuggestion: async ({ graphId, nodeEntityKey, id }) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['map:evidence:suggestion:dismiss']({ id, resolvedBy: 'local-user' }),
+      )
+      get().setActionError(`suggestion:${id}`, '')
+      await get().fetchEvidenceSuggestions(graphId, nodeEntityKey)
+    } catch (error) {
+      get().setActionError(`suggestion:${id}`, `驳回建议失败：${errorText(error)}`)
+    }
+  },
+
+  /**
+   * G3-10 E1 人工判断直写：`actor`/`producedBy` 由主进程固定，renderer 不自报。
+   * 返回是否成功——成功才清空输入框，避免失败后把用户写的判断丢掉。
+   */
+  createHumanJudgment: async (input) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['map:evidence:e1:create']({
+          graphId: input.graphId,
+          nodeEntityKey: input.nodeEntityKey,
+          ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+          ...(input.projectPath ? { projectPath: input.projectPath } : {}),
+          summary: input.summary,
+          ref: input.ref,
+        }),
+      )
+      get().setActionError('e1', '')
+      await get().fetchNodeData(input.graphId, input.nodeEntityKey)
+      return true
+    } catch (error) {
+      get().setActionError('e1', `写入人工判断失败：${errorText(error)}`)
+      return false
+    }
+  },
+
+  /** §8.4 节点连边（只读）。projectPath 必需：链接按项目隔离，跨项目不能混列。 */
+  fetchNodeLinks: async (projectPath, entityKey) => {
+    try {
+      const rows = unwrapIpc<NodeLinkEntry[]>(
+        await window.electronAPI['map:link:list']({ projectPath, entityKey }),
+      )
+      set({ nodeLinks: Array.isArray(rows) ? rows : [] })
+      get().setActionError('links', '')
+    } catch (error) {
+      get().setActionError('links', `读取连边失败：${errorText(error)}`)
+    }
+  },
+
+  /** §8.4 撤销人工连边：只对 origin='human' 生效（主进程拒绝其余来源）。 */  deleteNodeLink: async ({ id, projectPath, entityKey }) => {
+    try {
+      unwrapIpc(await window.electronAPI['map:link:delete']({ id, projectPath }))
+      get().setActionError(`link:${id}`, '')
+      await get().fetchNodeLinks(projectPath, entityKey)
+    } catch (error) {
+      get().setActionError(`link:${id}`, `删除连边失败：${errorText(error)}`)
+    }
+  },
+
+  /**
+   * §8.4 新建人工连边。
+   *
+   * 只开 `relates_to`（L1 人工入口的唯一类型，主进程也会拒绝其他类型）；
+   * `origin` 由主进程固定为 human——界面不自报来源，避免「人工连边」被伪造。
+   */
+  createNodeLink: async ({ graphId, projectPath, entityKey, fromEntityKey, toEntityKey, reason }) => {
+    try {
+      unwrapIpc(
+        await window.electronAPI['map:link:create']({
+          projectPath,
+          fromEntityKey,
+          fromGraphId: graphId,
+          toEntityKey,
+          toGraphId: graphId,
+          linkType: 'relates_to',
+          ...(reason ? { reason } : {}),
+        }),
+      )
+      get().setActionError('links', '')
+      await get().fetchNodeLinks(projectPath, entityKey)
+    } catch (error) {
+      get().setActionError('links', `新建连边失败：${errorText(error)}`)
+    }
+  },
+
+  clearNodeData: () => set({ nodeTimeline: [], nodeEvidence: [], nodeSuggestions: [], nodeLinks: [] }),
 
   createWorkItem: async (input) => {
     const row = (await window.electronAPI['workitem:create']({

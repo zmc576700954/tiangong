@@ -758,6 +758,7 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           graphId={currentGraphId ?? null}
           nodeEntityKey={selectedNode.entityKey ?? null}
           nodeId={selectedNode.id}
+          projectPath={projectPath ?? null}
         />
       )}
 

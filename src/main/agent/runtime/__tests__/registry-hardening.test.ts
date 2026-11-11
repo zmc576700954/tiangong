@@ -16,6 +16,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { attestProcIdentity, listProcesses, ProcessReaper } from '../process/reaper'
+import { canReadProcessTable } from '../../../__tests__/helpers/host-probe'
 import {
   CODEX_SUPERVISOR_FILE,
   ensureCodexSupervisorScript,
@@ -35,6 +36,12 @@ import {
 } from '../../../shared/process-supervisor'
 
 const cleanup: Array<() => void> = []
+
+/**
+ * 「伪造记录 / 篡改记录 / 重放」三条要真的读 `ps` 才谈得上「字段与真进程一致」。
+ * 宿主不可读进程表时只跳过这三条；权限位与目录校验（不依赖 ps）照常跑。
+ */
+const psAvailable = canReadProcessTable()
 
 afterEach(() => {
   for (const fn of cleanup.splice(0)) {
@@ -146,7 +153,7 @@ function signedRecord(
 }
 
 describe('registry trust boundary (C12/C13)', () => {
-  it('C12: a forged record with real ps fields but no nonce/signature must not kill', async () => {
+  it.skipIf(!psAvailable)('C12: a forged record with real ps fields but no nonce/signature must not kill', async () => {
     const canary = spawnDetached()
     await waitFor(() => listProcesses().some((proc) => proc.pid === canary.pid))
     const live = listProcesses().find((proc) => proc.pid === canary.pid)!
@@ -317,7 +324,7 @@ describe('registry trust boundary (C12/C13)', () => {
     expect(fs.lstatSync(recordPath).isSymbolicLink(), '记录路径仍是攻击者的 symlink').toBe(true)
   })
 
-  it('a tampered signed record fails verification and never kills', async () => {
+  it.skipIf(!psAvailable)('a tampered signed record fails verification and never kills', async () => {
     const canary = spawnDetached()
     await waitFor(() => listProcesses().some((proc) => proc.pid === canary.pid))
     const identity = new ProcessReaper().registerProcess('seed', { pid: canary.pid })!
@@ -336,7 +343,7 @@ describe('registry trust boundary (C12/C13)', () => {
     expect(alive(canary.pid)).toBe(true)
   })
 
-  it('replaying an already reclaimed identity produces no second kill', async () => {
+  it.skipIf(!psAvailable)('replaying an already reclaimed identity produces no second kill', async () => {
     // 正向对照：真实 shim 写下的签名记录仍能被回收
     const dir = tmpDir()
     const realCodex = writeFakeCodex(dir)

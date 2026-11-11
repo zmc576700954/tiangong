@@ -21,6 +21,7 @@
     "test:watch": "vitest",
     "test:eval": "vitest run tests/eval",
     "verify:packaged": "node scripts/verify-packaged-agent-runtime.mjs",
+    "verify:blueprint": "node scripts/verify-session-map-blueprint.mjs",
     "test:e2e": "playwright test -c tests/e2e/playwright.browser.config.ts",
     "test:e2e:electron": "playwright test -c tests/e2e/playwright.electron.config.ts",
     "build:win:appx": "electron-builder --win appx",

@@ -13,6 +13,13 @@ import { AgentRepository } from '../db/repository'
 import { NodeBusyError, SessionBusyError } from '../errors'
 import { openTestDb } from './helpers/test-db'
 import { listProcesses, ProcessReaper } from '../process/reaper'
+import { canReadProcessTable } from '../../../__tests__/helpers/host-probe'
+
+/**
+ * 回收/归属相关用例依赖真实进程表（pid/pgid/startedAt/command）。宿主 `ps` 不可读
+ * 时只跳过这几条；其余 runNode 行为断言照常执行。
+ */
+const psAvailable = canReadProcessTable()
 import {
   PROC_REGISTRY_DIR_ENV,
   registryRecordPath,
@@ -804,7 +811,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
-  it('A completing normally must not reap B (same vendor, concurrent sessions) (P0-1)', async () => {
+  it.skipIf(!psAvailable)('A completing normally must not reap B (same vendor, concurrent sessions) (P0-1)', async () => {
     const driver = makeProcessDriver()
     const { repo, runtime } = setup(driver)
 
@@ -845,7 +852,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
-  it('reclaims this turn\u2019s registered handle when the driver throws (abnormal exit)', async () => {
+  it.skipIf(!psAvailable)('reclaims this turn\u2019s registered handle when the driver throws (abnormal exit)', async () => {
     const driver = makeProcessDriver()
     const { repo, runtime } = setup(driver)
 
@@ -917,7 +924,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
-  it('startup reclaim kills a residual whose persisted identity is provable (P0-2)', async () => {
+  it.skipIf(!psAvailable)('startup reclaim kills a residual whose persisted identity is provable (P0-2)', async () => {
     const driver = makeInstantDriver()
     const { db, repo, runtime } = setup(driver)
 
@@ -956,7 +963,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
-  it('startup reclaim refuses to kill an unrelated process occupying a persisted pid (P0-A)', async () => {
+  it.skipIf(!psAvailable)('startup reclaim refuses to kill an unrelated process occupying a persisted pid (P0-A)', async () => {
     const driver = makeInstantDriver()
     const { db, repo, runtime } = setup(driver)
 
@@ -1069,7 +1076,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     runtime.dispose()
   })
 
-  it('startup sweep reclaims a residual group from the process self-registry (D5)', async () => {
+  it.skipIf(!psAvailable)('startup sweep reclaims a residual group from the process self-registry (D5)', async () => {
     const driver = makeInstantDriver()
     const { runtime, repo } = setup(driver)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-registry-'))
@@ -1098,7 +1105,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     }
   })
 
-  it('startup sweep ignores registry records whose marker is unknown to the DB (C12)', async () => {
+  it.skipIf(!psAvailable)('startup sweep ignores registry records whose marker is unknown to the DB (C12)', async () => {
     const driver = makeInstantDriver()
     const { runtime } = setup(driver)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-registry-unknown-'))
@@ -1123,7 +1130,7 @@ describe('AgentRuntime.runNode (D2/D5)', () => {
     }
   })
 
-  it('cancel reclaims a group recorded only in the self-registry (no in-memory handle)', async () => {
+  it.skipIf(!psAvailable)('cancel reclaims a group recorded only in the self-registry (no in-memory handle)', async () => {
     const driver: BackendDriver = {
       name: 'codex',
       capabilities: CAPABILITIES,

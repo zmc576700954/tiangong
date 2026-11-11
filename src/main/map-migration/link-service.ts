@@ -83,7 +83,10 @@ export class LinkValidationError extends Error {
       | 'empty_key'
       | 'self_link'
       | 'end_unresolvable'
-      | 'matrix_violation',
+      | 'matrix_violation'
+      | 'link_not_found'
+      | 'project_mismatch'
+      | 'not_human_origin',
     message: string,
   ) {
     super(message)
@@ -101,6 +104,13 @@ export interface CreateLinkInput {
   origin: LinkOrigin
   reason?: string
   metadata?: Record<string, unknown>
+}
+
+export interface DeleteLinkInput {
+  id: string
+  projectPath: string
+  /** 删除原因（只进日志，不落库——行本身已删，没有可写回的列）。 */
+  reason?: string
 }
 
 function normalizeProjectPath(p: string): string {
@@ -244,5 +254,55 @@ export class LinkService {
             AND (from_entity_key = ? OR to_entity_key = ?)`,
       )
       .all(projectPath, entityKey, entityKey) as NodeLinkRow[]
+  }
+
+  /**
+   * 删除人工创建的链接（§8.4：L1 人工入口的撤销路径）。
+   *
+   * 只删 `origin='human'` 的行：派生/导入链接由系统路径回填或巡检重建，人工删掉
+   * 只会造成「删了又出现」的假象，所以显式拒绝而不是静默忽略。删除是硬删（行没了
+   * 才是真的撤销），删除事实写日志，不写 node_links 状态列——`orphan` 语义是
+   * 「端点不可解析」，不能拿来当墓碑。
+   */
+  async delete(input: DeleteLinkInput): Promise<NodeLinkRow> {
+    if (!input.id || input.id.trim() === '') {
+      throw new LinkValidationError('link_not_found', 'id 不能为空（删除必须指名道姓）')
+    }
+    if (!input.projectPath || input.projectPath.trim() === '') {
+      throw new LinkValidationError('project_required', 'node_links 必须携带 project_path（L1）')
+    }
+    const projectPath = await fs
+      .realpath(normalizeProjectPath(input.projectPath))
+      .catch(() => normalizeProjectPath(input.projectPath))
+
+    const removed = this.db.transaction((): NodeLinkRow => {
+      const row = this.db.prepare('SELECT * FROM node_links WHERE id = ?').get(input.id) as
+        | NodeLinkRow
+        | undefined
+      if (!row) {
+        throw new LinkValidationError('link_not_found', `链接 ${input.id} 不存在`)
+      }
+      if (row.project_path !== projectPath) {
+        throw new LinkValidationError(
+          'project_mismatch',
+          `链接 ${input.id} 属于 ${row.project_path}，不属于当前项目（L1）`,
+        )
+      }
+      if (row.origin !== 'human') {
+        throw new LinkValidationError(
+          'not_human_origin',
+          `链接 ${input.id} 由 ${row.origin} 路径产生，人工不可撤销（派生链接会被巡检重建）`,
+        )
+      }
+      this.db.prepare('DELETE FROM node_links WHERE id = ?').run(input.id)
+      return row
+    })
+
+    const row = removed()
+    logger.info(
+      `link deleted: ${row.id} ${row.link_type} ${row.from_entity_key.slice(0, 8)}…→${row.to_entity_key.slice(0, 8)}…` +
+        (input.reason ? `（${input.reason}）` : ''),
+    )
+    return row
   }
 }

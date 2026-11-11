@@ -8,6 +8,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { listProcesses, ProcessReaper } from '../process/reaper'
+import { canReadProcessTable } from '../../../__tests__/helpers/host-probe'
 import {
   ensureCodexSupervisorScript,
   PROC_REGISTRY_DIR_ENV,
@@ -91,7 +92,11 @@ function writeFakeCodex(dir: string): string {
   return target
 }
 
-describe('D5 supervised process group', () => {
+/**
+ * 本组用例全部依赖真实进程表（判 pgid / startedAt / command）。宿主 `ps` 不可读时
+ * 整组跳过——这组没有一条能在无进程表的机器上给出可信结论。
+ */
+describe.skipIf(!canReadProcessTable())('D5 supervised process group', () => {
   it('spawnInOwnGroup makes the child a process-group leader (pgid === pid)', async () => {
     const child = spawnInOwnGroup(process.execPath, ['-e', 'setInterval(() => {}, 1000)'])
     cleanup.push(() => killIfAlive(child.pid))
