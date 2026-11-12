@@ -190,6 +190,31 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
        * - 普通（树形）拖拽的防抖持久化只写**被拖的那一个**节点。
        */
       positionUpdates: [] as Array<Array<{ id: string; x: number; y: number }>>,
+      /**
+       * 设置面板的落库面。
+       *
+       * 以前这里只有 `{ defaultModel: 'sonnet' }`：设置面板从没被 e2e 打开过，
+       * 于是「形状不对会让面板崩」这件事一直没暴露（面板里直接
+       * `for (const k of data.apiKeys)`，`apiKeys` 缺失就是 TypeError）。
+       * 现在按面板真正读到的字段给全，写回照主进程的**浅合并**语义做 ——
+       * 只有照抄语义，「保存会不会把别的档位清空」才验得出来。
+       */
+      settings: {
+        defaultModel: 'sonnet',
+        defaultModels: {} as Record<string, string>,
+        apiKeys: [] as Array<{ provider: string; key: string; baseUrl?: string }>,
+        // 面板里是 `settings?.mcpServers.map(...)` —— 可选链只保护 settings 本身，
+        // 字段缺失照样 TypeError。少这个字段的后果是**整个项目面板被错误边界接走**。
+        mcpServers: [] as unknown[],
+        cliTools: [] as unknown[],
+        customAgentTypes: [] as unknown[],
+        adapterPreferences: {
+          defaultAdapter: 'claude-code',
+          fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
+        },
+      },
+      /** 每次 `settings:write` 的完整载荷（按调用顺序），断言键有没有少就靠它 */
+      settingsWrites: [] as Array<Record<string, unknown>>,
     }
 
     // Expose mutable state and emit helper for test scripts
@@ -398,12 +423,17 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
       'realtime:getConnectionInfo': async () => ({ wsUrl: '', port: 0, started: false }),
 
       // Settings
-      'settings:read': async () => ({ defaultModel: 'sonnet' }),
-      'settings:getAdapterPreferences': async () => ({
-        defaultAdapter: 'claude-code',
-        fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
-      }),
-      'settings:setAdapterPreferences': async () => undefined,
+      'settings:read': async () => mockState.settings,
+      'settings:write': async (incoming: Record<string, unknown>) => {
+        mockState.settingsWrites.push(incoming)
+        // 主进程这里是**浅合并**（见 src/main/ipc/settings.ts）：少发一个键
+        // 就是把那一档清空，所以 e2e 必须能看见「发了哪些键」。
+        Object.assign(mockState.settings, incoming)
+      },
+      'settings:getAdapterPreferences': async () => mockState.settings.adapterPreferences,
+      'settings:setAdapterPreferences': async (prefs: typeof mockState.settings.adapterPreferences) => {
+        mockState.settings.adapterPreferences = prefs
+      },
 
       // 项目级默认（范围记忆）—— 没有它，Agent 面板的范围编辑器会降级成
       // 「没有项目级默认」，e2e 就测不到只读/可写两态了

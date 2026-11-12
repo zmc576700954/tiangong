@@ -243,4 +243,59 @@ describe('OpenCodeAdapter', () => {
 
     expect(outputs.some((output) => output.type === 'error')).toBe(true)
   })
+
+  /**
+   * G7-3 的路由：**装了审批钩子就必须走 serve**。
+   *
+   * 这条断言守的不是「有没有新功能」，而是「拦截不能被悄悄绕开」：如果哪天
+   * 有人把分支改回 run，`run` 模式照样能跑通、单测也多半照绿，但工具会由 CLI
+   * 自己按规则拒/放，宿主连「要跑什么」都看不到。
+   */
+  it('装了审批钩子时改走 serve（不再 spawn run）', async () => {
+    const session = await adapter.startSession(makeConfig())
+    // serve 起不来：让 fake 进程立刻退出，用最少的等待逼近「确实走了 serve」这一事实
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdout: { on: vi.fn(), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn(),
+      once: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') setTimeout(() => cb(3), 0)
+      }),
+      off: vi.fn(),
+      kill: vi.fn(),
+    }))
+
+    adapter.setTurnApprovalHooks(session.id, { canUseTool: async () => ({ behavior: 'allow' }) })
+    await expect(adapter.sendCommand(session.id, command)).rejects.toThrow(/启动即退出/)
+
+    const [, args] = mockSpawn.mock.calls.at(-1) as unknown as [string, string[]]
+    expect(args[0]).toBe('serve')
+    // `--port 0` 在 1.19 会退回 4096，适配器要求客户端换成真的空闲端口
+    expect(args[args.indexOf('--port') + 1]).not.toBe('0')
+    expect(args).not.toContain('--format')
+  })
+
+  it('卸掉钩子后回到 run 模式', async () => {
+    const session = await adapter.startSession(makeConfig())
+    adapter.setTurnApprovalHooks(session.id, { canUseTool: async () => ({ behavior: 'allow' }) })
+    adapter.setTurnApprovalHooks(session.id, null)
+
+    mockSpawn.mockImplementationOnce(() => ({
+      ...mockProc,
+      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') cb(Buffer.from('done'))
+      }), off: vi.fn() },
+      stderr: { on: vi.fn(), off: vi.fn() },
+      on: vi.fn((event: string, cb: (code: number) => void) => {
+        if (event === 'exit') cb(0)
+      }),
+      once: vi.fn(),
+      off: vi.fn(),
+    }))
+
+    await adapter.sendCommand(session.id, command)
+    const [, args] = mockSpawn.mock.calls.at(-1) as unknown as [string, string[]]
+    expect(args.slice(0, 2)).toEqual(['run', '--format'])
+  })
 })
