@@ -25,7 +25,7 @@ import { getSandboxCapability } from '../../../shared/sandbox'
 import { getExecutorCapabilities } from '../capabilities'
 import { normalizeClaude } from '../normalize/claude'
 import { CodexStreamNormalizer } from '../normalize/codex'
-import { normalizeOpenCode } from '../normalize/opencode'
+import { normalizeOpenCode, OpenCodeStreamNormalizer, type OpenCodeEvent } from '../normalize/opencode'
 import { CodexHealthChecker } from './codex-health'
 import { hashArgs } from '../util'
 import { waitForProcRegistryRecord } from '../../../shared/process-supervisor'
@@ -168,13 +168,33 @@ export class AdapterBackendDriver implements BackendDriver {
       for (const event of rawEvents) normalizer.feed(event.payload as never)
       normalized = normalizer.finish()
     } else if (this.executor === 'opencode') {
-      const text = rawEvents
-        .map((event) => {
-          const payload = event.payload as { kind?: string; text?: string }
-          return payload.kind === 'stdout' ? payload.text ?? '' : ''
-        })
-        .join('')
-      normalized = normalizeOpenCode(text, meta)
+      // 优先结构化流：`opencode run --format json` 的每条事件带工具轨迹。
+      // 只有拿不到 JSON（CLI 版本太老 / 降级路径）时才回落到文本解析 ——
+      // 那条文本协议是基线自己假设出来的，真实 CLI 从不输出。
+      const jsonEvents: OpenCodeEvent[] = []
+      let exitCode: number | null | undefined
+      for (const event of rawEvents) {
+        const payload = event.payload as { kind?: string; event?: unknown; exitCode?: number | null }
+        if (payload.kind === 'json' && payload.event) {
+          jsonEvents.push(payload.event as OpenCodeEvent)
+        } else if (payload.kind === 'stdout' && payload.exitCode !== undefined) {
+          exitCode = payload.exitCode
+        }
+      }
+
+      if (jsonEvents.length > 0) {
+        const normalizer = new OpenCodeStreamNormalizer(meta)
+        for (const event of jsonEvents) normalizer.feed(event)
+        normalized = normalizer.finish(exitCode ?? 0)
+      } else {
+        const text = rawEvents
+          .map((event) => {
+            const payload = event.payload as { kind?: string; text?: string }
+            return payload.kind === 'stdout' ? payload.text ?? '' : ''
+          })
+          .join('')
+        normalized = normalizeOpenCode(text, meta)
+      }
     } else {
       normalized = synthesizeFromOutputs(outputs, meta)
     }

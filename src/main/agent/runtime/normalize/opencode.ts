@@ -1,9 +1,15 @@
 /**
- * OpenCode one-shot 归一化（V1 基线移植）。
+ * OpenCode 归一化。两个入口，按「CLI 到底吐了什么」分流：
  *
- * - fidelity: session（stdout 到进程退出才整体可读）
- * - [tool]/[tool-result] 只是人读轨迹 → source: synthetic
- * - 真实 CLI 不输出轨迹时，工具检查点不存在（不伪造）
+ * 1. `normalizeOpenCodeStream`（v3.30 新增，**默认路径**）
+ *    `opencode run --format json` 的 JSONL 事件流。真实 CLI 1.19.x 只认这个：
+ *    每条 `tool_use` 带 `part.state.{status,input,output,error}`，`step_finish`
+ *    带真实 token 与 cost。工具轨迹来自 CLI 自己，不是从人读文本里猜的。
+ *
+ * 2. `normalizeOpenCode`（V1 基线，**仅作回退**）
+ *    解析 `[tool] name {json}` 这类文本行。这条协议**真实 CLI 从不输出**，
+ *    是早期基线自己对 stdout 的假设；保留只为兼容旧夹具与降级路径，
+ *    不要再用它判断「有没有轨迹」。
  */
 
 import type { NormalizedEventEnvelope } from '@shared/types/agent-runtime'
@@ -139,4 +145,321 @@ function splitToolLine(body: string): [string, string] {
   const idx = body.indexOf(' ')
   if (idx === -1) return [body, '']
   return [body.slice(0, idx), body.slice(idx + 1).trim()]
+}
+
+// ============================================================
+// 结构化流（`opencode run --format json`）
+// ============================================================
+
+/**
+ * CLI 一行 JSON 的形状。字段名照抄实机输出（1.19.5），不做猜测：
+ *
+ * ```json
+ * {"type":"tool_use","part":{"type":"tool","tool":"write","callID":"…",
+ *   "state":{"status":"completed","input":{…},"output":"…","error":"…"}}}
+ * ```
+ *
+ * 事件类型只有 `step_start` / `text` / `tool_use` / `step_finish` / `error`
+ * 这几种（见 v3.30 实机抓包），未知类型静默忽略 —— CLI 加字段不该让回合失败。
+ */
+export interface OpenCodeEvent {
+  type?: string
+  sessionID?: string
+  timestamp?: number
+  part?: OpenCodePart
+  error?: { message?: string } | string
+}
+
+interface OpenCodePart {
+  id?: string
+  type?: string
+  text?: string
+  /** 实机字段：同一条消息的多个 part 共享它，这里只做形状记录 */
+  messageID?: string
+  sessionID?: string
+  tool?: string
+  callID?: string
+  reason?: string
+  cost?: number
+  tokens?: { input?: number; output?: number; reasoning?: number; total?: number }
+  state?: {
+    status?: string
+    input?: unknown
+    output?: unknown
+    error?: unknown
+    title?: string
+    metadata?: Record<string, unknown>
+  }
+}
+
+/** 写类工具要给 runtime 一个不高于 medium 的风险档，读类给 low。 */
+const WRITE_TOOLS = new Set(['write', 'edit', 'patch', 'multiedit', 'apply_patch'])
+const EXEC_TOOLS = new Set(['bash', 'shell', 'terminal'])
+
+/**
+ * 一条轨迹对应一个 step：`tool.requested` 与 `tool.result` 必须共用 stepId，
+ * 否则 runtime 里工具检查点会对不上（approval / 审计都按 stepId 归并）。
+ */
+export class OpenCodeStreamNormalizer {
+  private readonly sink: EventSink
+  /** callID → 已开过的 step；重复上报同一 callID 时不重复开 step */
+  private readonly steps = new Map<string, string>()
+  /** 已进入终态（result/failed）的 callID，防止 state 更新刷出第二条结果 */
+  private readonly settled = new Set<string>()
+  private started = false
+  private failed = false
+  private messageCount = 0
+  private lastText = ''
+  private inputTokens = 0
+  private outputTokens = 0
+  private cost = 0
+
+  constructor(meta: NormalizeMeta) {
+    this.sink = new EventSink(meta)
+  }
+
+  feed(event: OpenCodeEvent): void {
+    if (!event || typeof event !== 'object') return
+    this.ensureStarted()
+
+    switch (event.type) {
+      case 'text':
+        this.onText(event.part)
+        break
+      case 'tool_use':
+        this.onTool(event.part)
+        break
+      case 'step_finish':
+        this.onStepFinish(event.part)
+        break
+      case 'error':
+        this.failed = true
+        this.sink.emit({
+          type: 'error',
+          fidelity: 'turn',
+          source: 'backend',
+          payload: { message: errorTextOf(event.error) ?? 'opencode 报告了一个错误' },
+        })
+        break
+      default:
+        // step_start 与未知类型：起始事件已在 ensureStarted 里补过
+        break
+    }
+  }
+
+  /**
+   * 进程退出后调用。
+   *
+   * 只有 `exitCode === 0` 才算跑完。`null` 表示被信号杀掉（超时/取消/崩溃），
+   * 同一时刻还没有任何 `error` 事件 —— 这种情况**不能**读成成功，
+   * 否则界面会把一个被杀掉的回合显示为「已完成」。
+   */
+  finish(exitCode: number | null = 0): NormalizedEventEnvelope[] {
+    this.ensureStarted()
+
+    const usage = {
+      inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
+    }
+
+    if (this.failed || exitCode !== 0) {
+      this.sink.emit({ type: 'usage.updated', fidelity: 'turn', source: 'backend', payload: usage })
+      this.sink.emit({
+        type: 'run.failed',
+        fidelity: 'turn',
+        source: 'backend',
+        payload: {
+          status: 'failed',
+          summary: `opencode exited with code ${exitCode ?? 'unknown'}`,
+          failure: { class: 'permanent', code: 'OPENCODE_RUN_FAILED' },
+          usage,
+        },
+      })
+      return this.sink.snapshot()
+    }
+
+    this.sink.emit({ type: 'usage.updated', fidelity: 'turn', source: 'backend', payload: usage })
+    this.sink.emit({
+      type: 'run.completed',
+      fidelity: 'turn',
+      source: 'backend',
+      payload: { status: 'completed', summary: this.lastText || 'done', usage },
+    })
+    return this.sink.snapshot()
+  }
+
+  private ensureStarted(): void {
+    if (this.started) return
+    this.started = true
+    this.sink.emit({
+      type: 'run.started',
+      fidelity: 'turn',
+      source: 'backend',
+      payload: { attempt: 1, resumeMode: 'fresh' },
+    })
+    this.sink.emit({ type: 'turn.started', fidelity: 'turn', source: 'backend', payload: {} })
+  }
+
+  private onText(part: OpenCodePart | undefined): void {
+    const text = part?.text
+    if (!text) return
+    this.lastText = text
+    this.sink.emit({
+      type: this.messageCount === 0 ? 'message.completed' : 'message.delta',
+      fidelity: 'turn',
+      source: 'backend',
+      payload: { role: 'assistant', text, mode: 'block' },
+    })
+    this.messageCount += 1
+  }
+
+  private onTool(part: OpenCodePart | undefined): void {
+    if (!part) return
+    const callId = part.callID ?? part.id
+    if (!callId) return
+
+    const name = part.tool ?? 'unknown'
+    const state = part.state ?? {}
+    const stepId = this.ensureStep(callId, name, state.input)
+
+    if (this.settled.has(callId)) return
+
+    const status = state.status ?? 'completed'
+    if (status === 'pending') {
+      // 无头 run 模式下 CLI 会直接 auto-reject（stderr 有 `auto-rejecting`），
+      // 这里的 pending 只在有交互通道时出现；如实标记，不假装已执行。
+      this.sink.emit({
+        type: 'approval.required',
+        fidelity: 'turn',
+        source: 'backend',
+        stepId,
+        payload: { toolCallId: callId, toolName: name, input: state.input ?? {} },
+      })
+      return
+    }
+
+    if (status === 'running') {
+      this.sink.emit({
+        type: 'tool.executing',
+        fidelity: 'turn',
+        source: 'backend',
+        stepId,
+        payload: { toolCallId: callId, toolName: name },
+      })
+      return
+    }
+
+    this.settled.add(callId)
+    if (status === 'error') {
+      this.sink.emit({
+        type: 'tool.failed',
+        fidelity: 'turn',
+        source: 'synthetic',
+        stepId,
+        payload: {
+          toolCallId: callId,
+          toolName: name,
+          ok: false,
+          output: errorTextOf(state.error) ?? 'opencode 工具调用失败（未给出原因）',
+        },
+      })
+      return
+    }
+
+    this.sink.emit({
+      type: 'tool.result',
+      fidelity: 'turn',
+      source: 'synthetic',
+      stepId,
+      payload: {
+        toolCallId: callId,
+        toolName: name,
+        ok: true,
+        output: outputText(state.output),
+      },
+    })
+
+    // 写类工具补一条 file.change：界面与证据链都靠它显示「改了哪个文件」。
+    if (WRITE_TOOLS.has(name)) {
+      const filePath = pickPath(state.input)
+      if (filePath) {
+        this.sink.emit({
+          type: 'file.change',
+          fidelity: 'turn',
+          source: 'synthetic',
+          stepId,
+          payload: { path: filePath, changeType: 'modify', diffUnavailable: true },
+        })
+      }
+    }
+  }
+
+  private ensureStep(callId: string, name: string, input: unknown): string {
+    const existing = this.steps.get(callId)
+    if (existing) return existing
+
+    const stepId = `step-oc-${this.steps.size + 1}`
+    this.steps.set(callId, stepId)
+    this.sink.emit({
+      type: 'tool.requested',
+      fidelity: 'turn',
+      source: 'synthetic',
+      stepId,
+      payload: {
+        toolCallId: callId,
+        toolName: name,
+        input: (input ?? {}) as Record<string, unknown>,
+        risk: WRITE_TOOLS.has(name) ? 'medium' : EXEC_TOOLS.has(name) ? 'high' : 'low',
+        blocking: false,
+        diffUnavailable: WRITE_TOOLS.has(name),
+      },
+    })
+    return stepId
+  }
+
+  private onStepFinish(part: OpenCodePart | undefined): void {
+    if (!part) return
+    // 多步回合里 input 只在第一步是「提示词规模」，后续步的 input 是增量；
+    // 累加 output、取首个非零 input，避免把缓存命中的重复计数读成真实增长。
+    const input = part.tokens?.input ?? 0
+    if (this.inputTokens === 0 && input > 0) this.inputTokens = input
+    this.outputTokens += part.tokens?.output ?? 0
+    this.cost += part.cost ?? 0
+  }
+}
+
+function outputText(output: unknown): string {
+  if (typeof output === 'string') return output
+  if (output == null) return ''
+  try {
+    return JSON.stringify(output)
+  } catch {
+    return String(output)
+  }
+}
+
+function errorTextOf(error: unknown): string | undefined {
+  if (!error) return undefined
+  if (typeof error === 'string') return error
+  if (typeof error === 'object') {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message) return message
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return undefined
+    }
+  }
+  return String(error)
+}
+
+/** `write` 的 `filePath`、`edit` 的 `filePath` / `path`，取到一个就够。 */
+function pickPath(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') return undefined
+  const record = input as Record<string, unknown>
+  for (const key of ['filePath', 'file_path', 'path', 'file']) {
+    const value = record[key]
+    if (typeof value === 'string' && value) return value
+  }
+  return undefined
 }

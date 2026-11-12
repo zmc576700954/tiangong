@@ -325,6 +325,41 @@ const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
     parseResponse: parseOpenAiResponse,
   },
+  // 国内三家：都是 OpenAI 兼容端点，差异只有 baseURL 与默认模型名。
+  moonshot: {
+    defaultModel: 'kimi-k2-0905-preview',
+    supportsTools: true,
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://api.moonshot.cn/v1/chat/completions',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    }),
+    buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
+    parseResponse: parseOpenAiResponse,
+  },
+  zhipu: {
+    defaultModel: 'glm-4.6',
+    supportsTools: true,
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    }),
+    buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
+    parseResponse: parseOpenAiResponse,
+  },
+  qwen: {
+    defaultModel: 'qwen3-coder-plus',
+    supportsTools: true,
+    // DashScope 的 OpenAI 兼容模式与原生模式是两个地址，别混用
+    buildUrl: (baseUrl) => baseUrl ? `${baseUrl}/chat/completions` : 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    buildHeaders: (key) => ({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${key}`,
+    }),
+    buildBody: (messages, model, tools) => PROVIDER_CONFIGS.openai.buildBody(messages, model, tools),
+    parseResponse: parseOpenAiResponse,
+  },
   gemini: {
     defaultModel: DEFAULT_MODELS.gemini,
     supportsTools: false,
@@ -422,6 +457,9 @@ const PROVIDER_MODEL_MATCHERS: Array<{ provider: string; test: (m: string) => bo
   { provider: 'anthropic', test: (m) => m.startsWith('claude') },
   { provider: 'openai', test: (m) => m.startsWith('gpt') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4') },
   { provider: 'deepseek', test: (m) => m.startsWith('deepseek') },
+  { provider: 'moonshot', test: (m) => m.startsWith('kimi') || m.startsWith('moonshot') },
+  { provider: 'zhipu', test: (m) => m.startsWith('glm') },
+  { provider: 'qwen', test: (m) => m.startsWith('qwen') || m.startsWith('qwq') },
   { provider: 'gemini', test: (m) => m.startsWith('gemini') },
 ]
 

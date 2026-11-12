@@ -659,7 +659,12 @@ export interface CliToolConfig {
 }
 
 export interface ApiKeyConfig {
-  provider: 'anthropic' | 'openai' | 'deepseek' | 'gemini'
+  /**
+   * 除 `anthropic` / `openai` / `gemini` 外，其余都是**国内常见**的
+   * OpenAI 兼容端点：用户往往没有官方订阅，手上只有厂商自己的 key，
+   * 甚至只是自建网关。凡是能通过 `baseUrl` 指过去的，都按同一套方式接。
+   */
+  provider: 'anthropic' | 'openai' | 'deepseek' | 'gemini' | 'moonshot' | 'zhipu' | 'qwen'
   key: string
   baseUrl?: string
 }
@@ -701,6 +706,12 @@ export interface BizGraphSettings {
     codex?: string
     /** MCP 适配器的模型；缺档时由 provider 默认决定（**不回落到 defaultModel**） */
     mcp?: string
+    /**
+     * opencode 适配器的模型，格式 `provider/model`（如 `deepseek/deepseek-chat`）。
+     * 缺档时不传 `--model`，由 opencode 自己的配置决定 —— 国内用户常见的是
+     * `opencode auth login` 里的国产厂商，或本地 Ollama，宿主不该替他选模型。
+     */
+    opencode?: string
   }
   mcpServers: McpServerConfig[]
   adapterPreferences?: AdapterPreferences

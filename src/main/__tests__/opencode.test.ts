@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, AgentOutput } from '@shared/types'
 import type { SubagentManager } from '../agent/subagent-manager'
 
 const mockExecFile = vi.fn()
@@ -99,10 +99,12 @@ describe('OpenCodeAdapter', () => {
 
     await adapter.sendCommand(session.id, command)
 
+    // 1.0 的 `-q` 在 1.19 上会被当未知参数、打帮助页并 exit 0 —— 宿主于是把
+    // 帮助文本当模型输出。契约改为 `run --format json`，prompt 走位置参数。
     expect(mockSpawn).toHaveBeenCalledWith(
       'opencode',
-      ['-q'],
-      expect.objectContaining({ cwd: '/my/project' }),
+      ['run', '--format', 'json', expect.stringContaining('Fix crash on save')],
+      expect.objectContaining({ cwd: '/my/project', stdio: ['ignore', 'pipe', 'pipe'] }),
     )
   })
 
@@ -120,24 +122,21 @@ describe('OpenCodeAdapter', () => {
     })
 
     let capturedPrompt = ''
-    const mockStdin = {
-      write: vi.fn((data: string, _cb?: (err?: Error) => void) => { capturedPrompt = data }),
-      end: vi.fn(),
-      on: vi.fn(),
-    }
-    mockSpawn.mockImplementationOnce(() => ({
-      ...mockProc,
-      stdin: mockStdin,
-      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-        if (event === 'data') cb(Buffer.from('ok'))
-      }), off: vi.fn() },
-      stderr: { on: vi.fn(), off: vi.fn() },
-      on: vi.fn((event: string, cb: (code: number) => void) => {
-        if (event === 'exit') cb(0)
-      }),
-      once: vi.fn(),
-      off: vi.fn(),
-    }))
+    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
+      capturedPrompt = args[args.length - 1] ?? ''
+      return {
+        ...mockProc,
+        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+          if (event === 'data') cb(Buffer.from('ok'))
+        }), off: vi.fn() },
+        stderr: { on: vi.fn(), off: vi.fn() },
+        on: vi.fn((event: string, cb: (code: number) => void) => {
+          if (event === 'exit') cb(0)
+        }),
+        once: vi.fn(),
+        off: vi.fn(),
+      }
+    })
 
     await adapter.sendCommand(session.id, command)
 
@@ -154,24 +153,21 @@ describe('OpenCodeAdapter', () => {
     const session = await adapter.startSession(config)
 
     let capturedPrompt = ''
-    const mockStdin = {
-      write: vi.fn((data: string, _cb?: (err?: Error) => void) => { capturedPrompt = data }),
-      end: vi.fn(),
-      on: vi.fn(),
-    }
-    mockSpawn.mockImplementationOnce(() => ({
-      ...mockProc,
-      stdin: mockStdin,
-      stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-        if (event === 'data') cb(Buffer.from('ok'))
-      }), off: vi.fn() },
-      stderr: { on: vi.fn(), off: vi.fn() },
-      on: vi.fn((event: string, cb: (code: number) => void) => {
-        if (event === 'exit') cb(0)
-      }),
-      once: vi.fn(),
-      off: vi.fn(),
-    }))
+    mockSpawn.mockImplementationOnce((_cmd: string, args: readonly string[]) => {
+      capturedPrompt = args[args.length - 1] ?? ''
+      return {
+        ...mockProc,
+        stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
+          if (event === 'data') cb(Buffer.from('ok'))
+        }), off: vi.fn() },
+        stderr: { on: vi.fn(), off: vi.fn() },
+        on: vi.fn((event: string, cb: (code: number) => void) => {
+          if (event === 'exit') cb(0)
+        }),
+        once: vi.fn(),
+        off: vi.fn(),
+      }
+    })
 
     await adapter.sendCommand(session.id, command)
 
@@ -184,21 +180,19 @@ describe('OpenCodeAdapter', () => {
     await adapter.terminateSession(session.id)
   })
 
-  it('attaches stdin error handler before writing', async () => {
+  it('把 JSONL 事件逐条投到 rawEvent（kind=json），供 Driver 结构化归一化', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
 
-    const mockStdin = {
-      write: vi.fn(),
-      end: vi.fn(),
-      on: vi.fn(),
-      writableEnded: false,
-    }
+    const stdout = [
+      '{"type":"step_start","part":{"type":"step-start"}}',
+      '{"type":"text","part":{"type":"text","text":"hello"}}',
+    ].join('\n')
+
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
-      stdin: mockStdin,
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-        if (event === 'data') cb(Buffer.from('ok'))
+        if (event === 'data') cb(Buffer.from(stdout))
       }), off: vi.fn() },
       stderr: { on: vi.fn(), off: vi.fn() },
       on: vi.fn((event: string, cb: (code: number) => void) => {
@@ -208,42 +202,45 @@ describe('OpenCodeAdapter', () => {
       off: vi.fn(),
     }))
 
+    const raw: Array<{ kind?: string; event?: { type?: string } }> = []
+    adapter.onRawEvent((event) => raw.push(event.payload as { kind?: string }))
+
     await adapter.sendCommand(session.id, command)
 
-    const errorHandlerCall = mockStdin.on.mock.calls.find((call: unknown[]) => call[0] === 'error')
-    expect(errorHandlerCall).toBeDefined()
-    expect(mockStdin.write).toHaveBeenCalled()
-    expect(mockStdin.end).toHaveBeenCalled()
+    const jsonEvents = raw.filter((payload) => payload.kind === 'json')
+    expect(jsonEvents.map((payload) => payload.event?.type)).toEqual(['step_start', 'text'])
+    // 文本旁路仍然保留（排障 / 旧路径），但结构化消费方只认 kind:'json'
+    expect(raw.some((payload) => payload.kind === 'stdout')).toBe(true)
   })
 
-  it('does not write to stdin when it has already ended', async () => {
+  it('参数被拒打出帮助页时报错，不把帮助文本当模型输出', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
 
-    const mockStdin = {
-      write: vi.fn(),
-      end: vi.fn(),
-      on: vi.fn(),
-      writableEnded: true,
-    }
+    const helpPage = [
+      'Commands:',
+      '  opencode run [message..]     run opencode with a message',
+      '  opencode [project]           start opencode tui',
+    ].join('\n')
+
     mockSpawn.mockImplementationOnce(() => ({
       ...mockProc,
-      stdin: mockStdin,
       stdout: { on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-        if (event === 'data') cb(Buffer.from('ok'))
+        if (event === 'data') cb(Buffer.from(helpPage))
       }), off: vi.fn() },
       stderr: { on: vi.fn(), off: vi.fn() },
       on: vi.fn((event: string, cb: (code: number) => void) => {
-        if (event === 'exit') cb(0)
+        if (event === 'exit') cb(0) // 注意：CLI 这里是 exit 0
       }),
       once: vi.fn(),
       off: vi.fn(),
     }))
 
+    const outputs: AgentOutput[] = []
+    adapter.onOutput((output) => outputs.push(output))
+
     await adapter.sendCommand(session.id, command)
 
-    expect(mockStdin.on).not.toHaveBeenCalled()
-    expect(mockStdin.write).not.toHaveBeenCalled()
-    expect(mockStdin.end).not.toHaveBeenCalled()
+    expect(outputs.some((output) => output.type === 'error')).toBe(true)
   })
 })

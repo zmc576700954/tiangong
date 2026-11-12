@@ -23,4 +23,14 @@ export const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
 }
 
 /** 允许写入 API Key 的 provider 白名单。 */
-export const ALLOWED_API_PROVIDERS: readonly ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']
+export const ALLOWED_API_PROVIDERS: readonly ApiKeyConfig['provider'][] = [
+  'anthropic',
+  'openai',
+  'deepseek',
+  // 国内用户大多没有官方订阅，手上是厂商自己的 key —— 这三家覆盖了
+  // 编码场景的主要选择（Kimi K2 / GLM / 通义千问）。都走 OpenAI 兼容端点。
+  'moonshot',
+  'zhipu',
+  'qwen',
+  'gemini',
+]

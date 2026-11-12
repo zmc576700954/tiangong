@@ -15,13 +15,14 @@
 import type { BizGraphSettings } from '@shared/types'
 
 /** 支持独立默认模型档位的适配器。 */
-export type ModelSelectionAdapter = 'claude-code' | 'codex' | 'mcp'
+export type ModelSelectionAdapter = 'claude-code' | 'codex' | 'mcp' | 'opencode'
 
 /** 适配器 → 设置里的档位字段名。 */
 const TIER_KEY: Record<ModelSelectionAdapter, keyof NonNullable<BizGraphSettings['defaultModels']>> = {
   'claude-code': 'claudeCode',
   codex: 'codex',
   mcp: 'mcp',
+  opencode: 'opencode',
 }
 
 /**

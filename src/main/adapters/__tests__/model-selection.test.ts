@@ -48,4 +48,11 @@ describe('resolveModelForAdapter', () => {
     expect(resolveModelForAdapter(s, 'codex')).toBeUndefined()
     expect(resolveModelForAdapter(s, 'mcp')).toBeUndefined()
   })
+
+  it('opencode 档位：有值就用，为空也不回落到 defaultModel（那通常是 claude 模型名）', () => {
+    expect(
+      resolveModelForAdapter({ defaultModels: { opencode: 'deepseek/deepseek-chat' } }, 'opencode'),
+    ).toBe('deepseek/deepseek-chat')
+    expect(resolveModelForAdapter({ defaultModel: 'claude-3-7-sonnet-20250219' }, 'opencode')).toBeUndefined()
+  })
 })
