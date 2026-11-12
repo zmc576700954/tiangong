@@ -93,6 +93,10 @@ export const settingsZh = {
   'settings.defaults.model.codex': 'Codex',
   'settings.defaults.model.codex.hint': '用于 codex 适配器；留空则由 Codex SDK 自选默认模型。',
   'settings.defaults.model.codex.placeholder': '如 gpt-5',
+  'settings.defaults.model.opencode': 'OpenCode',
+  'settings.defaults.model.opencode.hint':
+    '必须写成 provider/model。留空时：配了国内厂商的 Key 就用那家的默认模型，什么都没配则用 OpenCode 自带的免费模型。',
+  'settings.defaults.model.opencode.placeholder': '如 opencode/deepseek-v4.1-flash-free',
   'settings.defaults.model.mcp': 'MCP 兜底',
   'settings.defaults.model.mcp.hint': '用于 MCP 兜底适配器；留空则由 API provider 决定。',
   'settings.defaults.model.mcp.placeholder': '如 gpt-4o',
@@ -290,6 +294,10 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.defaults.model.codex.hint':
     'Used by the codex adapter; the Codex SDK picks its own default when empty.',
   'settings.defaults.model.codex.placeholder': 'e.g. gpt-5',
+  'settings.defaults.model.opencode': 'OpenCode',
+  'settings.defaults.model.opencode.hint':
+    'Must be written as provider/model. When empty: a configured provider key selects that provider’s default model, otherwise OpenCode’s bundled free models are used.',
+  'settings.defaults.model.opencode.placeholder': 'e.g. opencode/deepseek-v4.1-flash-free',
   'settings.defaults.model.mcp': 'MCP Fallback',
   'settings.defaults.model.mcp.hint':
     'Used by the MCP fallback adapter; the API provider decides when empty.',

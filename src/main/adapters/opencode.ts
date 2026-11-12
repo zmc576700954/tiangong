@@ -15,6 +15,7 @@ import { generateId } from '../shared/env'
 import { sandboxLaunch } from '../shared/sandbox'
 import { resolveModelForAdapter } from './model-selection'
 import { buildOpencodeConfigContent, resolveDefaultOpencodeModel } from './opencode-providers'
+import { errorTextOf } from '../agent/runtime/normalize/opencode'
 import type { AgentSession, AgentSessionConfig, AgentCommand, ApiKeyConfig, BizGraphSettings } from '@shared/types'
 import { createLogger } from '../shared/logger'
 import { probeCliInstalled } from './cli-probe'
@@ -103,10 +104,25 @@ export class OpenCodeAdapter extends BaseAdapter {
             })
           }
 
+          // 非零退出时把 CLI 给的那句话抬到输出流。退出码本身不解释原因，
+          // 而实机错误体（`error.data.message` + `ref`）只有这里读得到 ——
+          // 不抬上去，用户就只能看到「exit code 1」加一句「查 server 日志」。
+          if (code !== null && code !== 0) {
+            const reason = events
+              .filter((event) => event.type === 'error')
+              .map((event) => errorTextOf(event.error))
+              .filter((text): text is string => Boolean(text))
+              .at(-1)
+            this.emitOutput({
+              type: 'error',
+              data: formatRunFailure(reason ?? `opencode 以退出码 ${code} 结束`, model),
+              timestamp: Date.now(),
+            })
+          }
+
           for (const event of events) {
             this.emitRawEvent(session.id, 'opencode', { kind: 'json', event })
-          }
-          // D3：one-shot stdout 整体透传（只读旁路）。结构化消费方取 kind:'json'，
+          }          // D3：one-shot stdout 整体透传（只读旁路）。结构化消费方取 kind:'json'，
           // 这条只给旧路径与排障用。
           this.emitRawEvent(session.id, 'opencode', { kind: 'stdout', text: stdout, exitCode: code })
           resolve(events.map(assistantTextOf).filter(Boolean).join('\n') || stdout)
@@ -218,6 +234,23 @@ export function parseEventStream(stdout: string): Array<Record<string, unknown> 
 /** 参数被拒时 CLI 打的是帮助页：有 Commands: 段、但没有一行事件。 */
 export function looksLikeHelpPage(stdout: string): boolean {
   return /^\s*Commands:/m.test(stdout) && /opencode\s+(run|\[project\])/m.test(stdout)
+}
+
+/**
+ * 失败文案：CLI 原文 + 「只在确实传了 --model 时」给模型 id 的格式提示。
+ *
+ * 为什么不直接下结论说「模型名错了」：实机里同一条 `Unexpected server error`
+ * 既可能是模型名不存在（必须先有 `provider/` 前缀 —— 裸写 `deepseek-v4.1-flash-free`
+ * 会被判成 `…/.` 而失败），也可能是那家 provider 的 key 无效。提示到格式与
+ * 排查入口为止，把判断留给用户。
+ */
+export function formatRunFailure(reason: string, model?: string): string {
+  if (!model || !reason.trim()) return reason
+  return [
+    reason,
+    `若原因是模型不可用：--model 必须是 provider/model 形式（如 opencode/deepseek-v4.1-flash-free），` +
+      `当前为 ${model}；可用 \`opencode models\` 列出全部可用 id。`,
+  ].join('\n')
 }
 
 function assistantTextOf(event: { type?: string; part?: unknown }): string {

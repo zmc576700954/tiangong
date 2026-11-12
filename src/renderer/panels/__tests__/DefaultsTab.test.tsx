@@ -90,12 +90,12 @@ describe('DefaultsTab', () => {
     expect(patch.adapterPreferences?.defaultAdapter).toBe('claude-code')
   })
 
-  it('改默认模型后保存，patch 含 defaultModels 三个档位（其余档位不能被清空）', async () => {
+  it('改默认模型后保存，patch 含 defaultModels 四个档位（其余档位不能被清空）', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     renderWithToast(
       <DefaultsTab
         settings={makeSettings({
-          defaultModels: { claudeCode: '', codex: 'gpt-5', mcp: '' },
+          defaultModels: { claudeCode: '', codex: 'gpt-5', mcp: '', opencode: 'opencode/glm-5.3-flash-free' },
         })}
         installedAdapters={['claude-code']}
         onSave={onSave}
@@ -109,8 +109,15 @@ describe('DefaultsTab', () => {
     const patch = onSave.mock.calls[0][0] as Partial<BizGraphSettings>
     expect(patch.defaultModels?.claudeCode).toBe('xxx')
     expect(patch.defaultModels?.codex).toBe('gpt-5')
+    // opencode 这一档曾经没有界面：用户点一次保存就把它抹掉了
+    expect(patch.defaultModels?.opencode).toBe('opencode/glm-5.3-flash-free')
     // 键不能少：settings:write 是浅合并，少一个键就等于把那一档清空
-    expect(Object.keys(patch.defaultModels ?? {}).sort()).toEqual(['claudeCode', 'codex', 'mcp'])
+    expect(Object.keys(patch.defaultModels ?? {}).sort()).toEqual([
+      'claudeCode',
+      'codex',
+      'mcp',
+      'opencode',
+    ])
   })
 
   it('保存压缩模型，patch 含 compactModel', async () => {

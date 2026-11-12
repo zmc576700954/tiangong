@@ -167,7 +167,17 @@ export interface OpenCodeEvent {
   sessionID?: string
   timestamp?: number
   part?: OpenCodePart
-  error?: { message?: string } | string
+  /**
+   * 实机形状（1.19.5）不是 `{message}`，而是被包了一层：
+   *
+   * ```json
+   * {"name":"UnknownError","data":{"message":"Unexpected server error…","ref":"err_…"}}
+   * ```
+   *
+   * 只认 `message` 会把这唯一一句原因丢掉，界面就只能显示「exit code 1」。
+   * `ref` 是官方要你拿去查 server 日志的凭据，也一并保留。
+   */
+  error?: { name?: string; message?: string; data?: { message?: string; ref?: string } } | string
 }
 
 interface OpenCodePart {
@@ -208,6 +218,8 @@ export class OpenCodeStreamNormalizer {
   private readonly settled = new Set<string>()
   private started = false
   private failed = false
+  /** CLI 给出的最后一条错误文本（含 ref），`run.failed` 的 summary 直接用它 */
+  private lastError: string | undefined
   private messageCount = 0
   private lastText = ''
   private inputTokens = 0
@@ -234,11 +246,12 @@ export class OpenCodeStreamNormalizer {
         break
       case 'error':
         this.failed = true
+        this.lastError = errorTextOf(event.error) ?? 'opencode 报告了一个错误'
         this.sink.emit({
           type: 'error',
           fidelity: 'turn',
           source: 'backend',
-          payload: { message: errorTextOf(event.error) ?? 'opencode 报告了一个错误' },
+          payload: { message: this.lastError },
         })
         break
       default:
@@ -263,6 +276,10 @@ export class OpenCodeStreamNormalizer {
     }
 
     if (this.failed || exitCode !== 0) {
+      // 原因必须进 summary：CLI 的 `error` 事件与退出码是两条独立信息，
+      // 只报「exit code 1」会让用户对着一个能自解释的错误（模型名不存在、
+      // 凭据无效）无从下手，也和之前 Codex「假成功」是同一类信息丢失。
+      const summary = this.lastError ?? `opencode exited with code ${exitCode ?? 'unknown'}`
       this.sink.emit({ type: 'usage.updated', fidelity: 'turn', source: 'backend', payload: usage })
       this.sink.emit({
         type: 'run.failed',
@@ -270,8 +287,12 @@ export class OpenCodeStreamNormalizer {
         source: 'backend',
         payload: {
           status: 'failed',
-          summary: `opencode exited with code ${exitCode ?? 'unknown'}`,
-          failure: { class: 'permanent', code: 'OPENCODE_RUN_FAILED' },
+          summary,
+          failure: {
+            class: 'permanent',
+            code: 'OPENCODE_RUN_FAILED',
+            ...(this.lastError ? { message: this.lastError } : {}),
+          },
           usage,
         },
       })
@@ -438,16 +459,32 @@ function outputText(output: unknown): string {
   }
 }
 
-function errorTextOf(error: unknown): string | undefined {
+/**
+ * 从错误体里取一句可读的话。
+ *
+ * 实机（1.19.5）把真原因放在 `data.message`，顶层只有 `name`；`data.ref`
+ * 是官方让你去查 server 日志的定位串，丢了就等于没了排障入口，所以拼在括号里。
+ * 导出给适配器用：`emitOutput` 的排障文本要和人看到的一致，不要各写一套。
+ */
+export function errorTextOf(error: unknown): string | undefined {
   if (!error) return undefined
   if (typeof error === 'string') return error
   if (typeof error === 'object') {
-    const message = (error as { message?: unknown }).message
-    if (typeof message === 'string' && message) return message
+    const record = error as { message?: unknown; name?: unknown; data?: { message?: unknown; ref?: unknown } }
+    const inner = record.data
+    const message =
+      typeof inner?.message === 'string' && inner.message
+        ? inner.message
+        : typeof record.message === 'string' && record.message
+          ? record.message
+          : undefined
+    const ref = typeof inner?.ref === 'string' && inner.ref ? inner.ref : undefined
+    if (message) return ref ? `${message} (ref=${ref})` : message
+    // 没有可读 message 时退回序列化整块，至少别把原因彻底吞掉
     try {
       return JSON.stringify(error)
     } catch {
-      return undefined
+      return typeof record.name === 'string' ? record.name : undefined
     }
   }
   return String(error)

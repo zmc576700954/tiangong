@@ -58,8 +58,14 @@ export interface DefaultsTabProps {
  */
 export type AdapterDetection = 'pending' | 'ready' | 'unavailable'
 
-/** `defaultModels` 的三个档位。键名与 `BizGraphSettings['defaultModels']` 一一对应。 */
-type ModelTier = 'claudeCode' | 'codex' | 'mcp'
+/**
+ * `defaultModels` 的档位。键名与 `BizGraphSettings['defaultModels']` 一一对应。
+ *
+ * 加档位时**必须**同时改这里、`models` 初值与保存时的对象字面量：保存是整体替换
+ * （`settings:write` 是浅合并），漏一个键就等于把那一档清空。opencode 这一档
+ * 正是这么被漏过一次 —— 界面上没有它，用户点一次保存就把配好的模型抹掉了。
+ */
+type ModelTier = 'claudeCode' | 'codex' | 'mcp' | 'opencode'
 
 interface ModelTierSpec {
   tier: ModelTier
@@ -80,6 +86,12 @@ const MODEL_TIERS: ModelTierSpec[] = [
     labelKey: 'settings.defaults.model.codex',
     hintKey: 'settings.defaults.model.codex.hint',
     placeholderKey: 'settings.defaults.model.codex.placeholder',
+  },
+  {
+    tier: 'opencode',
+    labelKey: 'settings.defaults.model.opencode',
+    hintKey: 'settings.defaults.model.opencode.hint',
+    placeholderKey: 'settings.defaults.model.opencode.placeholder',
   },
   {
     tier: 'mcp',
@@ -105,6 +117,7 @@ export function DefaultsTab({
     claudeCode: settings.defaultModels?.claudeCode ?? '',
     codex: settings.defaultModels?.codex ?? '',
     mcp: settings.defaultModels?.mcp ?? '',
+    opencode: settings.defaultModels?.opencode ?? '',
   }))
   const [compactModel, setCompactModel] = useState(settings.compactModel ?? '')
   const [pendingAdd, setPendingAdd] = useState('')
@@ -382,12 +395,13 @@ export function DefaultsTab({
             data-testid="defaults-models-save"
             disabled={saving !== null}
             onClick={() => void runSave('models', {
-              // 三个档位必须**一起**发：settings:write 是浅合并，
+              // 四个档位必须**一起**发：settings:write 是浅合并，
               // defaultModels 会被整体替换，少发一个键等于把那一档清空。
               defaultModels: {
                 claudeCode: models.claudeCode,
                 codex: models.codex,
                 mcp: models.mcp,
+                opencode: models.opencode,
               },
             })}
           >

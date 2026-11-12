@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { looksLikeHelpPage, parseEventStream } from '../opencode'
+import { formatRunFailure, looksLikeHelpPage, parseEventStream } from '../opencode'
 
 const HELP_PAGE = `⠀
 █▀▀█ █▀▀█ █▀▀█
@@ -48,5 +48,33 @@ describe('parseEventStream', () => {
 
   it('空输出得到空数组', () => {
     expect(parseEventStream('')).toEqual([])
+  })
+})
+
+/**
+ * 失败文案。
+ *
+ * 实机里 `--model` 写错时 CLI 只回一条被包了两层的错误，退出码 1；模型 id
+ * 必须是 `provider/model`，裸写会被判成 `…/.`。这段文案是用户唯一能看到的线索，
+ * 所以既要保留 CLI 原文，又不能把「模型名错了」写成结论（同一个错误也可能是
+ * 那家 provider 的 key 无效）。
+ */
+describe('formatRunFailure', () => {
+  it('没传模型时原样返回，不硬塞提示', () => {
+    expect(formatRunFailure('Unexpected server error. (ref=err_1)')).toBe(
+      'Unexpected server error. (ref=err_1)',
+    )
+  })
+
+  it('传了模型时补 provider/model 格式与排查入口', () => {
+    const text = formatRunFailure('Unexpected server error. (ref=err_1)', 'opencode/no-such-model')
+    expect(text).toContain('Unexpected server error. (ref=err_1)')
+    expect(text).toContain('provider/model')
+    expect(text).toContain('opencode/no-such-model')
+    expect(text).toContain('opencode models')
+  })
+
+  it('空原因时不拼出一段只有提示的文案', () => {
+    expect(formatRunFailure('   ', 'opencode/x')).toBe('   ')
   })
 })

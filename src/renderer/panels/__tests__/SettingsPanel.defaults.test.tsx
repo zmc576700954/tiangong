@@ -29,7 +29,7 @@ const mockElectronAPI = {
     ],
     apiKeys: [],
     mcpServers: [],
-    defaultModels: { claudeCode: '', codex: 'gpt-5', mcp: '' },
+    defaultModels: { claudeCode: '', codex: 'gpt-5', mcp: '', opencode: 'opencode/glm-5.3-flash-free' },
     compactModel: 'haiku',
   }),
   'settings:write': writeSettings,
@@ -101,7 +101,7 @@ describe('SettingsPanel 默认值页签', () => {
     expect(panel?.hasAttribute('hidden')).toBe(false)
   })
 
-  it('保存默认模型时 settings:write 收到全部三个档位（浅合并的最后一环）', async () => {
+  it('保存默认模型时 settings:write 收到全部四个档位（浅合并的最后一环）', async () => {
     await openDefaultsTab()
     fireEvent.change(screen.getByTestId('defaults-model-claudeCode'), {
       target: { value: 'sonnet-4-5' },
@@ -111,10 +111,16 @@ describe('SettingsPanel 默认值页签', () => {
     const written = writeSettings.mock.calls[0][0] as {
       defaultModels?: Record<string, string>
     }
-    expect(Object.keys(written.defaultModels ?? {}).sort()).toEqual(['claudeCode', 'codex', 'mcp'])
+    expect(Object.keys(written.defaultModels ?? {}).sort()).toEqual([
+      'claudeCode',
+      'codex',
+      'mcp',
+      'opencode',
+    ])
     expect(written.defaultModels?.claudeCode).toBe('sonnet-4-5')
     // 另一个档位不能被清空
     expect(written.defaultModels?.codex).toBe('gpt-5')
+    expect(written.defaultModels?.opencode).toBe('opencode/glm-5.3-flash-free')
   })
 
   it('保存一个区块不会清空另一个区块未保存的输入', async () => {
