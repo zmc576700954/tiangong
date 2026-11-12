@@ -66,6 +66,54 @@ export interface RealtimeConnectionInfo {
 // IPC 通信类型
 // ============================================
 
+/**
+ * 导入查重预览（S1 §2.6 / §9.2）。
+ *
+ * `preview` 只判定、不落任何行（决策记录与放行规则都不写），用于在真正导入前
+ * 把「哪几项对上了」摆给用户看。字段一律驼峰化：主进程的 `MatchedSignals`
+ * 是下划线形态，直接透出会让 renderer 读 `signals.dir_name_same` 这种落库口径，
+ * 底层改名时两端都不报错。
+ */
+export interface ImportPreviewSignals {
+  dirNameSame: boolean
+  nameSame: boolean | null
+  /** 内容抽样相似度（0–1）；采样失败为 null。 */
+  similarity: number | null
+  sampleCount: number
+}
+
+export type ImportPreviewAction =
+  | 'allow'
+  | 'allow_rebuild'
+  | 'allow_with_warning'
+  | 'allow_branch_variant'
+  | 'reject'
+
+export interface ImportPreviewResult {
+  action: ImportPreviewAction
+  /** 判定步骤：1 / 1-rebuild / 2a / 2b / 3a / 3b / 3c / 4a / 4b。 */
+  step: string
+  reason: string
+  /** 本次导入的目录名（与既有指纹比对用的规范化前原值）。 */
+  dirName: string
+  signals: ImportPreviewSignals
+  /** 命中来自「记住的放行规则」（step=3a-remembered），无需再确认。 */
+  remembered: boolean
+}
+
+/** S1 §2.6 规则 7：记住的分支/副本放行规则（可查看、可撤销）。 */
+export interface ImportAllowanceRow {
+  id: string
+  fingerprintId: string
+  /** 被放行的目录名（规则粒度是 fingerprint_id + dir_name）。 */
+  dirName: string
+  /** 被放行项目的名字与路径，用于让用户看懂这条规则在放行谁。 */
+  projectName: string | null
+  rootPath: string | null
+  grantedBy: string | null
+  grantedAt: string | null
+}
+
 export interface IpcApi {
   // 图操作
   'graph:create': (data: { name: string; type: GraphType }) => Promise<Graph>
@@ -231,14 +279,11 @@ export interface IpcApi {
   }>
 
   // §9.2 导入预览：返回指纹命中证据（相似度/判定/是否命中记住规则），不写库
-  'project:import:preview': (data: { projectPath: string; projectName?: string }) => Promise<{
-    decision: { action: string; step: string; reason: string }
-    signals: Record<string, unknown>
-    dirName: string
-  }>
+  'project:import:preview': (data: { projectPath: string; projectName?: string }) => Promise<ImportPreviewResult>
 
   // S1 导入查重：记住的分支/副本放行规则（§2.6 规则 7,可查看/可撤销）
-  'project:import:allowance:list': () => Promise<Array<Record<string, unknown>>>
+  // 只返回生效中的规则（revoked_at IS NULL）；撤销是软删（置 revoked_at），不物理删行。
+  'project:import:allowance:list': () => Promise<ImportAllowanceRow[]>
   'project:import:allowance:revoke': (id: string, revokedBy?: string) => Promise<void>
 
   // S2 跨图链接：人工创建（L1 仅 relates_to,§8.4）+ 巡检手动触发（§2.3.1）

@@ -19,6 +19,10 @@ import { FileTreeContextMenu } from './FileTreeContextMenu'
 import { SettingsPanel } from './SettingsPanel'
 import { useI18n } from '../i18n/useI18n'
 import { FloatingPanel } from '../components/ui/FloatingPanel'
+import { ImportDedupDialog, type ImportConfirmOptions } from './ImportDedupDialog'
+import { readIpcError } from '../lib/ipc-error'
+import { decideImportGate } from '../lib/import-gate'
+import type { ImportPreviewResult } from '@shared/types/ipc'
 
 const ipc = typeof window !== 'undefined' && window.electronAPI
   ? window.electronAPI
@@ -38,6 +42,12 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
   const [isDragOver, setIsDragOver] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [scanningId, setScanningId] = useState<string | null>(null)
+  /** 导入查重命中时的确认框载荷（project + 主进程判定证据）。 */
+  const [importPrompt, setImportPrompt] = useState<{
+    project: { id: string; name: string; path: string }
+    preview: ImportPreviewResult
+  } | null>(null)
+  const [importBusy, setImportBusy] = useState(false)
   const panelRef = useRef<HTMLDivElement>(null)
 
   // 跨面板通信：Agent 面板请求打开设置
@@ -107,16 +117,26 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
     }
   }, [projects, addProject])
 
-  const handleScanProject = useCallback(async (projectId: string) => {
-    if (!ipc) return
-    const project = projects.find((p) => p.id === projectId)
-    if (!project) return
+  const showToast = useCallback((message: string, type: 'success' | 'error' = 'error') => {
+    // 复用文件树的 toast 条（已有 3s 自动消失），不再另造一套提示。
+    useFileTreeStore.setState({ toast: { message, type } })
+  }, [])
 
-    setScanningId(projectId)
+  /**
+   * 真正发起导入。`importOptions` 只在本次调用生效——传 true 表示用户刚刚
+   * 在确认框里显式同意「按分支/副本导入」，不是永久开关。
+   */
+  const runImport = useCallback(async (
+    project: { id: string; name: string; path: string },
+    importOptions: { allowBranchVariant?: boolean; rememberForFingerprint?: boolean } = {},
+  ) => {
+    if (!ipc) return
+    setScanningId(project.id)
     try {
       const result = await ipc['graph:initFromProject']({
         projectPath: project.path,
         projectName: project.name,
+        ...importOptions,
       })
 
       const { setCurrentGraph } = useGraphStore.getState()
@@ -127,12 +147,60 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
         useAgentStore.getState().selectThread(result.threadId)
         useAppStore.getState().setActiveRightPanel('agent')
       }
-    } catch {
-      // 由 store 统一处理
+    } catch (err) {
+      // 不再静默：IPC 错误里带 marker + JSON，先还原成人话再上屏。
+      showToast(readIpcError(err).message, 'error')
+      throw err
     } finally {
       setScanningId(null)
     }
-  }, [projects, loadGraphs])
+  }, [loadGraphs, showToast])
+
+  const handleScanProject = useCallback(async (projectId: string) => {
+    if (!ipc) return
+    const project = projects.find((p) => p.id === projectId)
+    if (!project) return
+
+    setScanningId(projectId)
+    try {
+      // 先做只读预判（不写库）：命中既有指纹时把证据摆给用户，而不是让导入
+      // 在服务端硬失败、界面上一句解释都没有。放行由用户显式勾选后随下一次
+      // initFromProject 传入（§9.2 confirm）。
+      const preview = await ipc['project:import:preview']({
+        projectPath: project.path,
+        projectName: project.name,
+      })
+      if (decideImportGate(preview) === 'proceed') {
+        await runImport(project)
+        return
+      }
+      setImportPrompt({
+        project: { id: project.id, name: project.name, path: project.path },
+        preview,
+      })
+    } catch (err) {
+      showToast(readIpcError(err).message, 'error')
+    } finally {
+      setScanningId(null)
+    }
+  }, [projects, runImport, showToast])
+
+  const handleImportConfirm = useCallback(async (options: ImportConfirmOptions) => {
+    const pending = importPrompt
+    if (!pending) return
+    setImportBusy(true)
+    try {
+      await runImport(pending.project, {
+        allowBranchVariant: options.allowBranchVariant,
+        rememberForFingerprint: options.rememberForFingerprint,
+      })
+    } catch {
+      // 错误已由 runImport 还原并上屏；这里只负责关框，不重复报一次。
+    } finally {
+      setImportBusy(false)
+      setImportPrompt(null)
+    }
+  }, [importPrompt, runImport])
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault()
@@ -295,6 +363,16 @@ export function LeftPanel({ onCollapse }: { onCollapse?: () => void }) {
           })}
         </div>
       )}
+
+      {/* 导入查重确认（S1 §2.6 / §9.2）：命中既有指纹时先摆证据再决定 */}
+      <ImportDedupDialog
+        open={importPrompt != null}
+        projectName={importPrompt?.project.name ?? ''}
+        preview={importPrompt?.preview ?? null}
+        busy={importBusy}
+        onCancel={() => setImportPrompt(null)}
+        onConfirm={(options) => { void handleImportConfirm(options) }}
+      />
 
       {/* 右键菜单（在 portal 层渲染） */}
       <FileTreeContextMenu />

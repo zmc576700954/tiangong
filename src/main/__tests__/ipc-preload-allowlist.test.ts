@@ -36,10 +36,8 @@ const RENDERER_DIR = path.join(ROOT, 'src/renderer')
  * 只允许放只读通道；写通道请放下面那张表。
  */
 const INTENTIONALLY_UNEXPOSED_READ: Record<string, string> = {
-  'project:import:preview':
-    '导入前只读预判指纹命中（preview: true，不写库）。导入确认框尚未接线，没有 renderer 调用方。',
-  'project:import:allowance:list':
-    '查看已记住的导入放行规则（只读）。放行规则管理界面尚未接线。',
+  // v3.24 起 project:import:preview / allowance:list 已暴露（导入确认框 + 放行规则管理），
+  // 不再需要豁免；此处保留空表是为了让后来者看到「这张表当前没有条目」是事实而非遗漏。
 }
 
 /**
@@ -54,8 +52,7 @@ const KNOWN_WRITE_WITHOUT_RENDERER_ENTRY: Record<string, string> = {
     '写：巡检手动触发，会把 node_links 置 orphan/stale 并写 map_migration_reports。管理动作，无 renderer 入口。',
   'plan:derive-candidates':
     '写：落派生 run / candidates。S7 起草入口走 plan:draft:create 手工起草（v3.22 已暴露）；候选推导是 agent 辅助路径，按 D1/D3 护栏延后到有真实消费方再开。',
-  'project:import:allowance:revoke':
-    '写：撤销导入放行规则。放行规则管理界面尚未接线。',
+  // v3.24 起 project:import:allowance:revoke 已接线（导入确认框内的放行规则管理），不再豁免。
 }
 
 interface RegisteredChannel {

@@ -214,6 +214,11 @@ const exposedChannels: (keyof IpcApi)[] = [
 
   // 项目扫描
   'project:scan',
+  // S1 导入查重（v3.24）：preview 只判定不写库、allowance:list 纯 SELECT。
+  // 这两条**不进 MAP_READ_ONLY_CHANNELS**——那张表是「会话地图只读查询」的集合，
+  // 有一条测试逐条断言其中每个通道都由 map 域注册，导入查重不在那个域。
+  'project:import:preview',
+  'project:import:allowance:list',
 
   // Git 操作
   'git:status',
@@ -270,6 +275,9 @@ const exposedChannels: (keyof IpcApi)[] = [
   // §8.4 人工连边（写通道）：create 只开 relates_to，delete 只删 origin='human'。
   'map:link:create',
   'map:link:delete',
+  // S1 导入查重（v3.24）：撤销「记住的放行规则」是写操作（软删置 revoked_at）。
+  // 只读的 preview / allowance:list 已在 MAP_READ_ONLY_CHANNELS 里。
+  'project:import:allowance:revoke',
 ]
 
 // Build IPC API object
@@ -306,6 +314,8 @@ const STRUCTURED_ERROR_CHANNELS = new Set<string>([
   'map:evidence:e1:create',
   // 连边撤销：不存在 / 不属于当前项目 / 非人工来源必须可结构化区分。
   'map:link:delete',
+  // 撤销导入放行规则：id 缺失/规则不存在要能区分，不能让 renderer 只看到模糊失败。
+  'project:import:allowance:revoke',
 ])
 
 function toIpcError(err: unknown): IpcErrorPayload {

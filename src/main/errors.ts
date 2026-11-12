@@ -58,6 +58,14 @@ export const ErrorCode = {
   /** 无通过记录发布 test-case，且未提供完整 published_waiver_json。 */
   PUBLISHED_WAIVER_REQUIRED: 'PUBLISHED_WAIVER_REQUIRED',
 
+  // 项目导入查重（S1 §2.6）
+  /**
+   * 指纹命中且不可放行（或未获得用户显式确认）。`details.decision` 带
+   * action/step/reason/signals，renderer 据此展示「哪几项对上了」，
+   * 不允许在 IPC 边界退化成一句模糊失败。
+   */
+  IMPORT_REJECTED: 'IMPORT_REJECTED',
+
   // 层级结构（父子关系）
   HIERARCHY_CYCLE: 'HIERARCHY_CYCLE',
   HIERARCHY_TYPE_INVALID: 'HIERARCHY_TYPE_INVALID',

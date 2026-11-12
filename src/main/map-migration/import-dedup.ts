@@ -15,6 +15,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type BetterSqlite3 from 'better-sqlite3'
 import { createLogger } from '../shared/logger'
+import { BizGraphError, ErrorCode } from '../errors'
 
 const logger = createLogger('ImportDedup')
 
@@ -352,10 +353,33 @@ export interface ImportCheckResult {
 }
 
 /** 导入被查重拒绝——message 面向用户,decision 供渲染层展示命中项明细。 */
-export class ImportRejectedError extends Error {
+export class ImportRejectedError extends BizGraphError {
   constructor(public readonly decision: Extract<ImportDecision, { action: 'reject' }>) {
-    super(`导入被拒绝：${decision.reason}（判定步骤 ${decision.step}，相似度 ${decision.signals.similarity ?? 'n/a'}）`)
+    super(
+      `导入被拒绝：${decision.reason}（判定步骤 ${decision.step}，相似度 ${decision.signals.similarity ?? 'n/a'}）`,
+      ErrorCode.IMPORT_REJECTED,
+    )
     this.name = 'ImportRejectedError'
+    Object.setPrototypeOf(this, ImportRejectedError.prototype)
+  }
+
+  /**
+   * `decision` 必须整块过 IPC：renderer 要显示「目录名/项目名/相似度/判定步」，
+   * 只给一句 message 等于让用户拿不到拒绝理由。`createTypedHandle` 只透传
+   * `BizGraphError.toJSON()`，所以结构化字段只能挂在这里。
+   */
+  override toJSON(): Record<string, unknown> {
+    return {
+      ...super.toJSON(),
+      details: {
+        decision: {
+          action: this.decision.action,
+          step: this.decision.step,
+          reason: this.decision.reason,
+          signals: this.decision.signals,
+        },
+      },
+    }
   }
 }
 

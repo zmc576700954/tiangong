@@ -11,9 +11,11 @@ import {
   contentSimilarity,
   normalizeDirName,
   ImportDedupService,
+  ImportRejectedError,
   isRootPathConflict,
   IMPORT_DEDUP_DEFAULTS,
 } from '../map-migration/import-dedup'
+import { BizGraphError } from '../errors'
 import type { ProjectFingerprint, StoredFingerprint, FingerprintSample } from '../map-migration/import-dedup'
 
 function makeSamples(shared: number, own: number, tag: string): FingerprintSample[] {
@@ -310,3 +312,48 @@ describe('ImportDedupService（DB 面）', () => {
 function now0(): string {
   return '2026-01-01T00:00:00Z'
 }
+
+/**
+ * 拒绝必须在 IPC 边界保住 `decision`。
+ *
+ * 在此之前 `ImportRejectedError` 是裸 `Error`：`createTypedHandle` 只能包成
+ * `IPC_HANDLER_ERROR`，renderer 拿到的就是一句 message——"哪几项对上了"
+ * （目录名/项目名/相似度/判定步）全部丢失，界面除了报错什么都做不了。
+ */
+describe('ImportRejectedError 载荷', () => {
+  const decision = {
+    action: 'reject' as const,
+    step: '2a' as const,
+    signals: {
+      dir_name_same: true,
+      name_same: true,
+      similarity: 0.92,
+      sample_count: 12,
+      mtime_used: false as const,
+      decision_step: '2a',
+    },
+    matchedFingerprintId: 'pf-1',
+    reason: '同一项目重导（同名目录且内容相似度 0.92 ≥ 0.6）',
+  }
+
+  it('toJSON 带 code 与 details.decision，可被结构化透传', () => {
+    const err = new ImportRejectedError(decision)
+    const json = err.toJSON()
+
+    expect(err).toBeInstanceOf(BizGraphError)
+    expect(json.code).toBe('IMPORT_REJECTED')
+    expect(json.name).toBe('ImportRejectedError')
+    expect(json.details).toEqual({
+      decision: {
+        action: 'reject',
+        step: '2a',
+        reason: decision.reason,
+        signals: decision.signals,
+      },
+    })
+  })
+
+  it('message 仍是人话（renderer 不必解析 details 才能显示）', () => {
+    expect(new ImportRejectedError(decision).message).toContain('导入被拒绝')
+  })
+})

@@ -105,14 +105,17 @@ export class GraphService {
     this.invalidateProjectPathsCache()
   }
 
-  /** §9.2 project:import:confirm：用户显式勾选的导入选项（每次导入前由 IPC 层设置）。 */
-  private importOptions: { interactive?: boolean; rememberAllowance?: boolean } = {}
-
-  setImportOptions(opts: { interactive?: boolean; rememberAllowance?: boolean }): void {
-    this.importOptions = opts
-  }
-
-  async initFromProject(data: { projectPath: string; projectName: string }): Promise<InitFromProjectResult> {
+  /**
+   * §9.2 project:import:confirm：用户显式勾选的导入选项**随调用传入**。
+   *
+   * 早前是 `setImportOptions()` 写在服务上再读的粘性状态：一次勾选「允许分支变体」
+   * 会污染该进程后续所有导入（下一次普通扫描也带 interactive=true），
+   * 等于把一次性确认变成永久开关。改为参数后，选项生命周期与这次导入相同。
+   */
+  async initFromProject(
+    data: { projectPath: string; projectName: string },
+    importOptions: { interactive?: boolean; rememberAllowance?: boolean } = {},
+  ): Promise<InitFromProjectResult> {
     const { projectPath, projectName } = data
     const now = new Date().toISOString()
 
@@ -124,8 +127,8 @@ export class GraphService {
     const check = await dedup.check({
       projectRoot: projectPath,
       projectName,
-      interactive: this.importOptions.interactive ?? false,
-      rememberAllowance: this.importOptions.rememberAllowance,
+      interactive: importOptions.interactive ?? false,
+      rememberAllowance: importOptions.rememberAllowance,
     })
     if (check.decision.action === 'reject') {
       throw new ImportRejectedError(check.decision)
