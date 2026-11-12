@@ -28,6 +28,13 @@ export default defineConfig({
     url: 'http://127.0.0.1:5173',
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
+    // ⚠️ 浏览器 e2e 只要渲染层。不带这个标记，`npm run dev` 会经
+    // `vite-plugin-electron` 起一个 Electron 子进程，而插件里写着
+    // `process.electronApp.once("exit", process.exit)` —— 子进程一崩，
+    // **dev server 跟着退出**，后续用例全部 `ERR_CONNECTION_REFUSED`。
+    // CI 上崩是因为没下 Electron 二进制，本机崩是因为继承了
+    // `ELECTRON_RUN_AS_NODE=1`；两者都只影响 e2e，不影响 `npm run dev` 本身。
+    env: { BIZGRAPH_BROWSER_E2E: '1' },
   },
   projects: [
     {

@@ -5,10 +5,38 @@ import type { Page } from '@playwright/test'
  *
  * 使用 dispatchEvent 触发 contextmenu 事件，避免被 MiniMap 等覆盖层遮挡
  * 导致真实点击失败。
+ *
+ * ⚠️ **必须带 `clientX` / `clientY`，而且必须自己在页面里 new MouseEvent**。
+ * `NodeContextMenu` 的位置直接取自 `event.clientX/clientY`（GraphCanvas.tsx:900），
+ * 再交给 `useMenuPosition` 按视口裁剪。缺了这两个值 → `left/top` 为 `undefined` →
+ * React 连 style 都不写 → 浮层退回文档流，整块落在视口下方（实测 top=720、删除项 y=1113）。
+ * Playwright 于是报 `element is outside of the viewport` 并重试 55 次，
+ * 看起来像「菜单没渲染」，其实是渲染到了点不到的地方。
+ *
+ * 注意 `locator.dispatchEvent(type, init)` 不足以传入坐标（构造出来的事件里
+ * `clientX` 仍是 0/undefined），所以这里用 `page.evaluate` 手工构造 MouseEvent。
  */
 export async function openNodeMenu(page: Page, nodeId: string): Promise<void> {
   const node = page.locator(`[data-id="${nodeId}"]`)
-  await node.dispatchEvent('contextmenu')
+  const box = await node.boundingBox()
+  if (!box) throw new Error(`openNodeMenu: 节点 ${nodeId} 没有布局盒，无法计算右键坐标`)
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  await page.evaluate(
+    ({ id, x, y }) => {
+      const el = document.querySelector(`[data-id="${id}"]`)
+      if (!el) throw new Error(`openNodeMenu: 页面上找不到节点 ${id}`)
+      el.dispatchEvent(
+        new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+        }),
+      )
+    },
+    { id: nodeId, ...point },
+  )
 }
 
 /**

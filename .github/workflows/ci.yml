@@ -184,8 +184,13 @@ jobs:
       # #90 的 Linux e2e 只跑了 1 秒就红，原因就是 `npx xvfb-run …` —— npx 会去 npm 上
       # 找一个同名的包，而 xvfb-run 是系统程序，必然失败。
       #
+      # #90 的 24/26 失败也**不是**平台差异：`npm run dev` 会经 vite-plugin-electron
+      # 起一个 Electron 子进程，插件里 `process.electronApp.once("exit", process.exit)`
+      # 会在子进程退出时把 dev server 一起带走（CI 上必然退出：--ignore-scripts 没下
+      # Electron 二进制）。所以 playwright 配置用 webServer.env 注入
+      # BIZGRAPH_BROWSER_E2E=1，让 vite.config.ts 跳过 electron 插件。
+      #
       # 失败清单走 json reporter + 注解（Actions 日志 API 需 admin，注解匿名可读）。
-      # #90 的实测：Linux 与 Windows 都失败同 26 例中的 24 例，说明不是平台差异。
       - name: Run E2E tests
         env:
           PLAYWRIGHT_JSON_OUTPUT_NAME: /tmp/e2e.json

@@ -285,13 +285,21 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
       'edge:delete': async () => true,
 
       // Thread
+      //
+      // ⚠️ 形状必须与 `AgentThread`（src/shared/types/agent.ts:273）一致：
+      // `messages` / `contextRefs` 是**必填数组**，`status` 的枚举里没有 `active`。
+      // 之前这里少了 `messages` → `ThreadListSidebar.getLastUpdatedAt` 读
+      // `undefined.length` → ErrorBoundary 接住 → 整个 Agent 面板变错误页 →
+      // 面板里的 `chat-header-subagents-btn` 永远不出现（子代理那两条用例因此超时）。
       'thread:list': async () => [
         {
           id: 'thread_e2e_001',
           adapterName: 'claude-code',
           sessionId: 'session_e2e_001',
           title: 'E2E Thread',
-          status: 'active',
+          messages: [],
+          contextRefs: [],
+          status: 'idle',
           createdAt: Date.now(),
           updatedAt: Date.now(),
         },
@@ -301,11 +309,34 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
         adapterName,
         sessionId: 'session_e2e_001',
         title: 'E2E Thread',
-        status: 'active',
+        messages: [],
+        contextRefs: [],
+        status: 'idle',
         createdAt: Date.now(),
         updatedAt: Date.now(),
       }),
       'message:list': async () => [],
+
+      // Agent 面板挂载期会碰到的通道 —— 少一个就同步抛 TypeError，
+      // 被 ErrorBoundary 接住后整个面板变错误页，面板里的按钮全部消失。
+      // 返回形状对齐主进程：`getSessionRecovery` 无恢复记录时就是 null。
+      'agent:getSessionRecovery': async () => null,
+      'thread:search': async () => [],
+      'fs:searchFiles': async () => [],
+      // 以下只在用户动作里调用（压缩 / 验证 / 提交范围 / 安装 CLI），
+      // e2e 不触发，但缺了就是「点一下炸一次」，一并补成无副作用实现。
+      'context:compactNow': async () => null,
+      'agent:verify': async () => null,
+      'scopeGuard:commitSession': async () => undefined,
+      'scopeGuard:rollbackSession': async () => undefined,
+      'scopeGuard:rollbackFile': async () => undefined,
+      'settings:installCli': async () => null,
+
+      // Wiki writeback —— GraphCanvas 挂载时必调（graphStore.ts:731/755）。
+      // 缺通道时 `window.electronAPI['wiki:listWriteback']` 是 undefined，
+      // 调用同步抛 TypeError，画布的 writeback 刷新直接失败（日志里每次进图都刷一条）。
+      'wiki:listWriteback': async () => [],
+      'wiki:listWritebackHistory': async () => [],
 
       // Agent
       'agent:startSession': async () => ({ sessionId: 'session_e2e_001' }),
@@ -409,10 +440,44 @@ export async function setupMockIpc(page: Page, options?: MockIpcOptions) {
         }
       },
       onMenuOpenProject: () => () => {},
+      // 这几个是**点号访问**的（`window.electronAPI?.onConflictReported`、
+      // `window.electronAPI.locale`），不是 `api['x:y']` 形式 —— 差集脚本按通道名
+      // 正则扫不出来，但缺了同样致命：`locale` 在首屏被 i18n 读，抛错就是整页白屏。
+      // preload 里 `locale` 是同步初值（zh-CN / en-US 二选一），这里照样给字符串常量。
+      locale: 'zh-CN',
+      onLocaleChanged: () => () => {},
+      onConflictReported: () => () => {},
+      onNodeExecutionState: () => () => {},
+      onWorkItemChanged: () => () => {},
+      onApprovalRequest: () => () => {},
       platform: 'win32',
     }
 
-    window.electronAPI = mockApi as Window['electronAPI']
+    /**
+     * 缺失通道要**自己报出名字**，但**不能抛**。
+     *
+     * 裸 TypeError（`Cannot read properties of undefined (reading 'xxx')`）会让人以为
+     * 是组件 bug，实际是 preload/main 新增了通道、mock 没跟上 —— 这条链上已经栽过三次
+     * （`realtime:*` 白屏、`wiki:listWriteback` 刷错误、`agent:getSessionRecovery`
+     * 让整个 Agent 面板变错误页）。
+     *
+     * 但也不能 throw：应用里有一批**特性探测**式用法
+     * （`window.electronAPI?.onApprovalRequest`、`?.onConflictReported`、`?.onNodeExecutionState`），
+     * 它们本来就允许「没有这个监听器」并静默降级；一抛就把整棵树掀了（App 白屏，
+     * 所有等图列表的用例超时）。所以这里只记一条**带通道名**的 error，再返回 undefined，
+     * 保持与真实 preload 缺该字段时一致的行为。
+     */
+    const guardedApi = new Proxy(mockApi, {
+      get(target, prop, receiver) {
+        if (typeof prop === 'string' && !(prop in target)) {
+          console.error(`[mock-ipc] 未实现的通道：${prop} —— preload/main 有，e2e 的 mock 没跟上`)
+          return undefined
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    })
+
+    window.electronAPI = guardedApi as Window['electronAPI']
   }, {
     initialStatus: options?.initialStatus ?? 'queued',
     graphs: mockGraphs,

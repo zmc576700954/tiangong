@@ -8,11 +8,33 @@ import renderer from 'vite-plugin-electron-renderer'
 const DEV_SERVER_HOST = '127.0.0.1'
 const DEV_SERVER_PORT = 5173
 
+/**
+ * 浏览器版 e2e（`tests/e2e/playwright.browser.config.ts`）只验渲染层，**不需要
+ * Electron 主进程**，而 `vite-plugin-electron` 默认会在 dev server 起来后编译并
+ * `spawn` 一个 Electron 子进程。
+ *
+ * 这条链路是 e2e 大面积假红的根因：插件里有一行
+ * `process.electronApp.once("exit", process.exit)` —— 子进程一退出，**父进程（也就是
+ * vite dev server）跟着退出**。而子进程在两种环境下必然退出：
+ *   - CI：`npm ci --ignore-scripts` 没有下载 Electron 二进制，
+ *     `require('electron')` 直接抛 "Electron failed to install correctly"；
+ *   - 本机：环境里带 `ELECTRON_RUN_AS_NODE=1`（Electron 宿主进程会注入），
+ *     子进程以纯 Node 运行 → `require('electron')` 得到的是**路径字符串** →
+ *     主进程代码里 `electron.app.commandLine` 立刻 TypeError。
+ *
+ * 后果是「前几个用例通过、之后全部 `page.goto: net::ERR_CONNECTION_REFUSED`」：
+ * 能过几个纯属和编译抢跑，不是平台差异（Windows 24 失败、macOS 本地 22 失败，
+ * 差的只是编译耗时）。
+ *
+ * 因此 e2e 下不挂这个插件：既不起子进程，也省掉 main/preload 那两次 rollup 构建。
+ */
+const BROWSER_E2E = process.env.BIZGRAPH_BROWSER_E2E === '1'
+
 export default defineConfig(async () => ({
   plugins: [
     react(),
     tailwindcss(),
-    electron([
+    ...(BROWSER_E2E ? [] : [electron([
       {
         entry: 'src/main/index.ts',
         onstart(options) {
@@ -72,7 +94,7 @@ export default defineConfig(async () => ({
           },
         },
       },
-    ]),
+    ])]),
     renderer(),
     ...(process.env.BUILD_ANALYZE === 'true'
       ? [

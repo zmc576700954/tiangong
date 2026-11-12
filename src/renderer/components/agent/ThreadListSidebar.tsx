@@ -17,7 +17,12 @@ interface ThreadListSidebarProps {
 }
 
 function getLastUpdatedAt(thread: AgentThread): number {
-  const lastMessage = thread.messages[thread.messages.length - 1]
+  // `messages` 是 IPC 边界上的数据，类型说必有、运行时不一定有：
+  // 少一条 `messages` 就会让这里读 undefined.length，抛出后由 ErrorBoundary 接住，
+  // 整个 Agent 面板变成「Agent 面板发生错误」——**一条坏记录废掉整个列表**。
+  // 缺字段只该退化成「用 createdAt 排序」，不该炸。
+  const messages = thread.messages ?? []
+  const lastMessage = messages[messages.length - 1]
   return lastMessage?.timestamp ?? thread.createdAt
 }
 
