@@ -12,6 +12,7 @@ import { getLocale, resolveLocale, setLocale } from '@shared/i18n'
 import type { Locale } from '@shared/i18n/types'
 import type { BizGraphSettings } from '@shared/types/agent'
 import type { A2ARemoteAgent } from '@shared/types/a2a'
+import { validateNpmPackageName } from '../shared/npm-package'
 
 const logger = createLogger('SettingsIPC')
 
@@ -150,6 +151,23 @@ export function registerSettingsHandlers(
           throw new IpcError('Each cliTool must have a string name', ErrorCode.IPC_INVALID_ARGUMENT)
         }
         assertSafeCommand(tool.command, `cliTool '${tool.name}'`)
+        // 探测参数：渲染进程送来的参数不能是能执行内联代码的参数
+        // （-c / -e / --eval …）。这里只校验「安不安全」——
+        // 「必须等于注册表的值」是主进程归一化（writeSettings）的职责，
+        // 否则渲染进程回显自己送来的值时会被自己的校验挡回去。
+        if (tool.detectArgs !== undefined) {
+          if (!Array.isArray(tool.detectArgs) || tool.detectArgs.some((a: unknown) => typeof a !== 'string')) {
+            throw new IpcError(`cliTool '${tool.name}': detectArgs must be an array of strings`, ErrorCode.IPC_INVALID_ARGUMENT)
+          }
+          assertSafeArgs(tool.detectArgs as string[], `cliTool '${tool.name}' detectArgs`)
+        }
+        // npm 包名：渲染进程送来的包名会进 `npm install -g <pkg>`。
+        // 空串是合法的（cursor 没有 npm 包 —— 渲染进程回显时会带上它）。
+        if (tool.npmPackage !== undefined && tool.npmPackage !== '') {
+          if (typeof tool.npmPackage !== 'string' || !validateNpmPackageName(tool.npmPackage)) {
+            throw new IpcError(`cliTool '${tool.name}': invalid npm package name`, ErrorCode.IPC_INVALID_ARGUMENT)
+          }
+        }
       }
     }
     // 校验 MCP server 命令与参数：command 必须安全、args 必须全为字符串
@@ -261,9 +279,12 @@ export function registerSettingsHandlers(
 
   typedHandle('settings:setApiKey', async (_, provider, key, baseUrl) => {
     const { setApiKey, readSettings } = await import('../settings')
+    if (typeof key !== 'string') {
+      throw new IpcError('key must be a string', ErrorCode.IPC_INVALID_ARGUMENT)
+    }
     // 渲染进程只持有遮蔽后的 key（settings:read 返回的形式）。若把遮蔽值原样写回，
     // 会用 mask 字符串覆盖真实 key。检测到遮蔽值时保留现有真实 key（与 settings:write 一致）。
-    if (typeof key === 'string' && MASKED_KEY_PATTERN.test(key)) {
+    if (MASKED_KEY_PATTERN.test(key)) {
       const current = await readSettings()
       const existing = current.apiKeys.find((k) => k.provider === provider)
       if (existing && existing.key) {
@@ -278,6 +299,7 @@ export function registerSettingsHandlers(
       // 无现有真实 key 可保留：拒绝写入遮蔽值，避免污染存储
       throw new IpcError('Cannot set a masked API key value', ErrorCode.IPC_INVALID_ARGUMENT)
     }
+    // 空串 = 删除该 provider 的 key（setApiKey 里移除条目，不写入空 key）
     await setApiKey(provider, key, baseUrl ?? undefined)
   })
 

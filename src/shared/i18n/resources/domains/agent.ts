@@ -10,6 +10,7 @@ export const agentZh = {
   'agent.adapter.select': '选择 Agent',
   'agent.adapter.default': '默认',
   'agent.adapter.notInstalled': '未安装',
+  'agent.adapter.installMore': '安装更多适配器…',
   'agent.adapter.ready': '就绪',
   'agent.adapter.recovered': '✓ 适配器已恢复',
 
@@ -72,6 +73,27 @@ export const agentZh = {
   'agent.details.hide': '隐藏详情',
   'agent.error.showRaw': '查看原始错误',
   'agent.error.hideRaw': '隐藏原始错误',
+
+  // —— 会话启动失败 ——
+  'agent.session.noAdapter': '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。',
+  'agent.session.startFailed': '无法启动 Agent 会话，请检查适配器是否可用。',
+  'agent.session.readonlyUnsupported':
+    '当前适配器无法保证只读，会话未启动。请换一个保证只读的适配器，或给会话指定可修改的文件范围。',
+
+  // —— 会话的文件范围 ——
+  'agent.scope.readonlyHint': '本次只读：不能改文件，但可读代码、联网检索',
+  'agent.scope.writableHint': '可修改 {count} 个文件',
+  'agent.scope.openScope': '放开范围',
+  'agent.scope.addFile': '添加文件',
+  'agent.scope.clearAll': '清空全部',
+  'agent.scope.addPlaceholder': '相对项目根的路径，如 src/app.ts',
+  'agent.scope.addConfirm': '添加',
+  'agent.scope.removeFile': '移出范围',
+  'agent.scope.adapterUnsupported':
+    '当前适配器无法保证只读：范围为空时，会话将拒绝启动。请换一个保证只读的适配器（如 claude-code / codex），或在下方圈定可修改的文件。',
+  'agent.scope.invalidPath': '路径必须位于项目目录之内（相对项目根，如 src/app.ts）',
+  'agent.scope.saveFailed': '保存文件范围失败',
+  'agent.scope.frozenHint': '本会话的范围在启动时已确定；改动对下一次会话生效。',
 
   // —— 上下文 ——
   'agent.context.label': '上下文',
@@ -295,6 +317,7 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.adapter.select': 'Select Agent',
   'agent.adapter.default': 'default',
   'agent.adapter.notInstalled': 'not installed',
+  'agent.adapter.installMore': 'Install more adapters…',
   'agent.adapter.ready': 'Ready',
   'agent.adapter.recovered': '✓ Adapter recovered',
 
@@ -352,7 +375,27 @@ export const agentEn: Record<keyof typeof agentZh, string> = {
   'agent.error.showRaw': 'Show raw error',
   'agent.error.hideRaw': 'Hide raw error',
 
+  'agent.session.noAdapter': 'No Agent tool is available. Install or configure an adapter in Settings first.',
+  'agent.session.startFailed': 'Could not start the Agent session. Check whether the adapter is available.',
+  'agent.session.readonlyUnsupported':
+    'This adapter cannot guarantee read-only, so the session was not started. Switch to a read-only-capable adapter, or give the session an explicit file scope.',
+
   'agent.context.label': 'Context',
+  'agent.scope.readonlyHint': 'Read-only — no file edits, but the agent can read code and search the web',
+  'agent.scope.writableHint': 'Can modify {count} file(s)',
+  'agent.scope.openScope': 'Open scope',
+  'agent.scope.addFile': 'Add file',
+  'agent.scope.clearAll': 'Clear all',
+  'agent.scope.addPlaceholder': 'Path relative to the project root, e.g. src/app.ts',
+  'agent.scope.addConfirm': 'Add',
+  'agent.scope.removeFile': 'Remove from scope',
+  'agent.scope.invalidPath':
+    'The path must be inside the project directory (relative to the project root, e.g. src/app.ts)',
+  'agent.scope.saveFailed': 'Failed to save the file scope',
+  'agent.scope.frozenHint':
+    'This session\'s scope was fixed when it started; changes apply to the next session.',
+  'agent.scope.adapterUnsupported':
+    'This adapter cannot guarantee read-only — with an empty scope, the session will refuse to start. Switch to a read-only-capable adapter (e.g. claude-code / codex), or pick the files to modify below.',
   'agent.context.injected': 'Context injected',
   'agent.context.tokens': '~{count} tokens',
   'agent.contextBar.label': 'Context:',

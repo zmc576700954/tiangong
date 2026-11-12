@@ -20,6 +20,7 @@ import { AgentLogRepository } from './repositories/agent-log-repository'
 import { NodeRepository } from './repositories/node-repository'
 import { EdgeRepository } from './repositories/edge-repository'
 import { GraphRepository } from './repositories/graph-repository'
+import { ProjectSettingsRepository } from './repositories/project-settings-repository'
 import { SnapshotRepository } from './repositories/snapshot-repository'
 import { createLogger } from './shared/logger'
 import {
@@ -521,7 +522,7 @@ export async function registerIpcHandlers(): Promise<void> {
   })
   registerFsHandlers(validateFsPath, typedHandle)
   registerGitHandlers(gitAgent, typedHandle)
-  registerProjectHandlers(typedHandle, graphService, chatService, db)
+  registerProjectHandlers(typedHandle, graphService, chatService, db, new ProjectSettingsRepository(db))
   // S6a 派生态广播钩子（§9.3）:map 模块经 notifier 上报,不反向依赖 IPC 层
   setExecutionStateNotifier((payload) => {
     broadcastToWindows('event:node-execution-state', payload)

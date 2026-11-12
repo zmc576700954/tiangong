@@ -3,6 +3,7 @@ export const settingsZh = {
   'settings.tab.subagents': '子代理类型',
   'settings.tab.waterline': '上下文水位',
   'settings.tab.health': '健康度',
+  'settings.tab.defaults': '默认值',
 
   'settings.cliTools': 'CLI 工具',
   'settings.refreshStatus': '刷新状态',
@@ -15,6 +16,13 @@ export const settingsZh = {
   'settings.currentKey': '当前：****',
   'settings.enterApiKey': '输入 API 密钥…',
   'settings.save': '保存',
+  'settings.apiKeys.emptyKey': '请输入 API 密钥后再保存',
+  'settings.apiKeys.saveFailed': 'API 密钥保存失败：{error}',
+  'settings.apiKeys.delete': '删除',
+  'settings.apiKeys.confirmDelete': '确定删除 {provider} 的 API 密钥？',
+  'settings.apiKeys.deleted': '{provider} 的 API 密钥已删除',
+  'settings.apiKeys.deleteFailed': 'API 密钥删除失败：{error}',
+  'settings.cliTools.manualInstall': '需手动安装',
   'settings.apiKeysHint':
     'API 密钥保存在本地 settings.json。当 CLI 工具不可用时作为兜底使用。',
   'settings.mcpServers': 'MCP 服务',
@@ -26,6 +34,11 @@ export const settingsZh = {
   'settings.language.enUS': 'English',
   'settings.language.saved': '语言已保存',
   'settings.language.saveFailed': '语言保存失败，已恢复原设置',
+
+  // 设置读不出来时的降级渲染（不能停在 spinner 上）
+  'settings.loadFailed': '读取设置失败，无法显示设置面板。请重启应用后重试。',
+  'settings.requiresElectron':
+    '设置面板需要在桌面应用里使用：直接用浏览器打开开发服务器时无法读写本地配置。',
 
   'settings.subagents.title': '子代理类型',
   'settings.subagents.new': '+ 新建自定义类型',
@@ -54,7 +67,46 @@ export const settingsZh = {
   'settings.waterline.seconds': '秒',
   'settings.waterline.saved': '✓ 已保存',
   'settings.waterline.save': '保存',
+
+  // ---- 默认值（适配器偏好 / 按适配器分开的默认模型 / 压缩模型） ----
+  'settings.defaults.defaultAdapter': '默认适配器',
+  'settings.defaults.defaultAdapter.hint': '默认适配器失败时，按「回退顺序」依次尝试其它适配器。',
+  'settings.defaults.defaultAdapter.none':
+    '未检测到已安装的 CLI 工具。请先在「基础设置」里安装一个，再回到这里选择默认适配器。',
+  'settings.defaults.defaultAdapter.detecting': '正在检测已安装的 CLI 工具…',
+  'settings.defaults.defaultAdapter.detectFailed':
+    '安装检测失败或超时，暂时无法确认已安装的 CLI 工具。点下面的「重新检测」再试一次。',
+  'settings.defaults.defaultAdapter.retry': '重新检测',
+  'settings.defaults.defaultAdapter.uninstalled': '当前默认适配器「{name}」未安装。',
+  'settings.defaults.fallbackOrder': '回退顺序',
+  'settings.defaults.fallbackOrder.hint': '默认适配器失败后，按此顺序依次尝试。',
+  'settings.defaults.fallbackOrder.empty': '回退顺序为空。',
+  'settings.defaults.fallbackOrder.moveUp': '上移',
+  'settings.defaults.fallbackOrder.moveDown': '下移',
+  'settings.defaults.fallbackOrder.remove': '移出回退顺序',
+  'settings.defaults.fallbackOrder.add': '加入回退顺序',
+  'settings.defaults.fallbackOrder.addPlaceholder': '选择要加入的适配器…',
+  'settings.defaults.defaultModels': '按适配器分开的默认模型',
+  'settings.defaults.model.claudeCode': 'Claude Code',
+  'settings.defaults.model.claudeCode.hint': '用于 claude-code 适配器；留空则回落到旧的全局默认模型。',
+  'settings.defaults.model.claudeCode.placeholder': '如 sonnet-4-5',
+  'settings.defaults.model.codex': 'Codex',
+  'settings.defaults.model.codex.hint': '用于 codex 适配器；留空则由 Codex SDK 自选默认模型。',
+  'settings.defaults.model.codex.placeholder': '如 gpt-5',
+  'settings.defaults.model.mcp': 'MCP 兜底',
+  'settings.defaults.model.mcp.hint': '用于 MCP 兜底适配器；留空则由 API provider 决定。',
+  'settings.defaults.model.mcp.placeholder': '如 gpt-4o',
+  'settings.defaults.model.mcp.gateway':
+    '自建网关（自定义 baseUrl）必须在这里填网关自己的模型 id，否则网关会收到错误的模型名。',
+  'settings.defaults.compactModel': '压缩模型',
+  'settings.defaults.compactModel.hint':
+    '仅对 MCP 兜底适配器生效；Claude Code 走 SDK 自身的压缩机制，不读这一档。压缩请求的 provider 按模型名前缀推断 —— 填一个像某家厂商的模型名，压缩就会打到那家厂商去。',
+  'settings.defaults.compactModel.placeholder': '留空则回落到 MCP 档位的默认模型',
+  'settings.defaults.action.save': '保存',
+  'settings.defaults.saved': '默认值已保存',
+  'settings.defaults.saveFailed': '保存失败：{error}',
   'settings.install.unknownTool': '未知工具：{name}',
+  'settings.install.manualOnly': '「{name}」没有 npm 包，只能手动安装',
   'settings.install.invalidPackage': '非法的包名：{package}',
   'settings.install.npmMissing': '未安装 npm 或 npm 不在 PATH 中。请先安装 Node.js：https://nodejs.org/',
   'settings.install.permissionDenied': '权限不足。尝试：sudo npm install -g {package}（macOS/Linux）或以管理员身份运行（Windows）',
@@ -145,6 +197,7 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.tab.subagents': 'Subagent Types',
   'settings.tab.waterline': 'Context Waterline',
   'settings.tab.health': 'Health',
+  'settings.tab.defaults': 'Defaults',
 
   'settings.cliTools': 'CLI Tools',
   'settings.refreshStatus': 'Refresh status',
@@ -157,6 +210,13 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.currentKey': 'Current: ****',
   'settings.enterApiKey': 'Enter API key…',
   'settings.save': 'Save',
+  'settings.apiKeys.emptyKey': 'Enter an API key before saving',
+  'settings.apiKeys.saveFailed': 'Failed to save the API key: {error}',
+  'settings.apiKeys.delete': 'Delete',
+  'settings.apiKeys.confirmDelete': 'Delete the API key for {provider}?',
+  'settings.apiKeys.deleted': 'API key for {provider} deleted',
+  'settings.apiKeys.deleteFailed': 'Failed to delete the API key: {error}',
+  'settings.cliTools.manualInstall': 'Manual install required',
   'settings.apiKeysHint':
     'API keys are stored locally in settings.json. They are used as fallback when CLI tools are unavailable.',
   'settings.mcpServers': 'MCP Servers',
@@ -168,6 +228,11 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.language.enUS': 'English',
   'settings.language.saved': 'Language saved',
   'settings.language.saveFailed': 'Failed to save language, previous setting restored',
+
+  // Degraded render when the settings cannot be read (must never spin forever)
+  'settings.loadFailed': 'Failed to load the settings, so the panel cannot be shown. Restart the app and try again.',
+  'settings.requiresElectron':
+    'The settings panel needs the desktop app: opening the dev server in a plain browser cannot read or write the local configuration.',
 
   'settings.subagents.title': 'Subagent Types',
   'settings.subagents.new': '+ New Custom Type',
@@ -196,7 +261,50 @@ export const settingsEn: Record<keyof typeof settingsZh, string> = {
   'settings.waterline.seconds': 'seconds',
   'settings.waterline.saved': '✓ Saved',
   'settings.waterline.save': 'Save',
+
+  // ---- Defaults (adapter preferences / per-adapter default models / compaction model) ----
+  'settings.defaults.defaultAdapter': 'Default Adapter',
+  'settings.defaults.defaultAdapter.hint':
+    'When the default adapter fails, other adapters are tried in the fallback order below.',
+  'settings.defaults.defaultAdapter.none':
+    'No installed CLI tool detected. Install one in General settings, then come back to pick a default adapter.',
+  'settings.defaults.defaultAdapter.detecting': 'Detecting installed CLI tools…',
+  'settings.defaults.defaultAdapter.detectFailed':
+    'The installation check failed or timed out, so the installed CLI tools cannot be confirmed. Click "Re-check" below to try again.',
+  'settings.defaults.defaultAdapter.retry': 'Re-check',
+  'settings.defaults.defaultAdapter.uninstalled': 'The current default adapter "{name}" is not installed.',
+  'settings.defaults.fallbackOrder': 'Fallback Order',
+  'settings.defaults.fallbackOrder.hint': 'Tried in this order after the default adapter fails.',
+  'settings.defaults.fallbackOrder.empty': 'The fallback order is empty.',
+  'settings.defaults.fallbackOrder.moveUp': 'Move up',
+  'settings.defaults.fallbackOrder.moveDown': 'Move down',
+  'settings.defaults.fallbackOrder.remove': 'Remove from fallback order',
+  'settings.defaults.fallbackOrder.add': 'Add to fallback order',
+  'settings.defaults.fallbackOrder.addPlaceholder': 'Pick an adapter to add…',
+  'settings.defaults.defaultModels': 'Default Model per Adapter',
+  'settings.defaults.model.claudeCode': 'Claude Code',
+  'settings.defaults.model.claudeCode.hint':
+    'Used by the claude-code adapter; falls back to the legacy global default model when empty.',
+  'settings.defaults.model.claudeCode.placeholder': 'e.g. sonnet-4-5',
+  'settings.defaults.model.codex': 'Codex',
+  'settings.defaults.model.codex.hint':
+    'Used by the codex adapter; the Codex SDK picks its own default when empty.',
+  'settings.defaults.model.codex.placeholder': 'e.g. gpt-5',
+  'settings.defaults.model.mcp': 'MCP Fallback',
+  'settings.defaults.model.mcp.hint':
+    'Used by the MCP fallback adapter; the API provider decides when empty.',
+  'settings.defaults.model.mcp.placeholder': 'e.g. gpt-4o',
+  'settings.defaults.model.mcp.gateway':
+    'A self-hosted gateway (custom baseUrl) requires its own model id here — otherwise the gateway receives a wrong model name.',
+  'settings.defaults.compactModel': 'Compaction Model',
+  'settings.defaults.compactModel.hint':
+    'Only applies to the MCP fallback adapter; Claude Code uses the SDK\'s own compaction and ignores this field. The provider of the compaction request is inferred from the model-name prefix — a name that looks like another vendor\'s sends the compaction call to that vendor.',
+  'settings.defaults.compactModel.placeholder': 'Empty falls back to the MCP default model',
+  'settings.defaults.action.save': 'Save',
+  'settings.defaults.saved': 'Defaults saved',
+  'settings.defaults.saveFailed': 'Save failed: {error}',
   'settings.install.unknownTool': 'Unknown tool: {name}',
+  'settings.install.manualOnly': '"{name}" has no npm package — install it manually',
   'settings.install.invalidPackage': 'Invalid package name: {package}',
   'settings.install.npmMissing': 'npm is not installed or not in PATH. Please install Node.js first: https://nodejs.org/',
   'settings.install.permissionDenied': 'Permission denied. Try: sudo npm install -g {package} (macOS/Linux) or run as Administrator (Windows)',

@@ -73,7 +73,7 @@ describe('ClineAdapter', () => {
   it('checkInstalled returns true when cline --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('cline', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('cline', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when cline not found', async () => {
@@ -118,7 +118,7 @@ describe('CodeBuddyAdapter', () => {
   it('checkInstalled returns true when codebuddy --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('codebuddy', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('codebuddy', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled tries alternate cbc command', async () => {
@@ -126,7 +126,7 @@ describe('CodeBuddyAdapter', () => {
       .mockRejectedValueOnce(new Error('not found'))
       .mockResolvedValueOnce({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('cbc', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('cbc', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when neither codebuddy nor cbc found', async () => {
@@ -171,7 +171,7 @@ describe('KiloCodeAdapter', () => {
   it('checkInstalled returns true when kilo --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('kilo', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('kilo', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when kilo not found', async () => {
@@ -216,7 +216,7 @@ describe('KimiCodeAdapter', () => {
   it('checkInstalled returns true when kimi --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('kimi', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('kimi', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when kimi not found', async () => {
@@ -261,7 +261,7 @@ describe('QoderAdapter', () => {
   it('checkInstalled returns true when qodercli --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('qodercli', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('qodercli', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when qodercli not found', async () => {
@@ -306,7 +306,7 @@ describe('QwenCodeAdapter', () => {
   it('checkInstalled returns true when qwen --version succeeds', async () => {
     mockExecFile.mockResolvedValue({ stdout: '1.0.0\n', stderr: '' })
     expect(await adapter.checkInstalled()).toBe(true)
-    expect(mockExecFile).toHaveBeenCalledWith('qwen', ['--version'])
+    expect(mockExecFile).toHaveBeenCalledWith('qwen', ['--version'], expect.objectContaining({ timeout: expect.any(Number) }))
   })
 
   it('checkInstalled returns false when qwen not found', async () => {

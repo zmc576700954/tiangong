@@ -5,14 +5,12 @@
  * npm: @tencent-ai/codebuddy-code, CLI 命令: codebuddy / cbc
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class CodeBuddyAdapter extends BaseAdapter {
   readonly name = 'codebuddy'
@@ -21,19 +19,11 @@ export class CodeBuddyAdapter extends BaseAdapter {
   protected logger = createLogger('CodeBuddyAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('codebuddy', ['--version'])
-      return true
-    } catch {
-      // Try alternate command 'cbc'
-      try {
-        await execFileAsync('cbc', ['--version'])
-        return true
-      } catch {
-        this.logger.warn('codebuddy/cbc CLI not found')
-        return false
-      }
-    }
+    if (await probeCliInstalled('codebuddy', ['--version'])) return true
+    // 备用命令
+    if (await probeCliInstalled('cbc', ['--version'])) return true
+    this.logger.warn('codebuddy/cbc CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

@@ -220,6 +220,10 @@ const exposedChannels: (keyof IpcApi)[] = [
   'project:import:preview',
   'project:import:allowance:list',
 
+  // 项目级默认（范围记忆）—— 渲染层靠这两个通道读写
+  'project:getDefaults',
+  'project:setDefaults',
+
   // Git 操作
   'git:status',
   'git:diff',

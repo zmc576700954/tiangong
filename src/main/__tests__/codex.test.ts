@@ -42,6 +42,13 @@ vi.mock('@openai/codex-sdk', () => ({
   Codex: MockCodex,
 }))
 
+// codex 适配器读取自己的默认模型档位（settings.defaultModels.codex）。
+const mockReadSettings = vi.fn()
+
+vi.mock('../settings', () => ({
+  readSettings: (...args: unknown[]) => mockReadSettings(...args),
+}))
+
 import { CodexAdapter } from '../adapters/codex'
 
 function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig {
@@ -66,6 +73,11 @@ describe('CodexAdapter (SDK)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'claude-3-7-sonnet-20250219',
+      apiKeys: [],
+      defaultModels: {},
+    })
     outputs.length = 0
     delete process.env.BIZGRAPH_CODEX_STREAMING
     adapter = new CodexAdapter()
@@ -213,6 +225,74 @@ describe('CodexAdapter (SDK)', () => {
 
     expect(mockResumeThread).toHaveBeenCalledWith('thread-existing', expect.anything())
     expect(mockStartThread).not.toHaveBeenCalled()
+  })
+
+  it('doSendCommand 把 codex 档位的模型传给 startThread', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'claude-3-7-sonnet-20250219',
+      apiKeys: [],
+      defaultModels: { codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig())
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ model: 'gpt-5' }),
+    )
+  })
+
+  it('doSendCommand 把 codex 档位的模型传给 resumeThread', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'claude-3-7-sonnet-20250219',
+      apiKeys: [],
+      defaultModels: { codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig({ resumeSessionId: 'thread-existing' }))
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockResumeThread).toHaveBeenCalledWith(
+      'thread-existing',
+      expect.objectContaining({ model: 'gpt-5' }),
+    )
+  })
+
+  it('只读会话 → sandboxMode 传 read-only（startThread 与 resumeThread 两条路）', async () => {
+    const session = await adapter.startSession(makeConfig({ readOnly: true }))
+    await adapter.sendCommand(session.id, command)
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxMode: 'read-only' }),
+    )
+
+    vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+    const resumeSession = await adapter.startSession(
+      makeConfig({ readOnly: true, resumeSessionId: 'thread-existing' }),
+    )
+    await adapter.sendCommand(resumeSession.id, command)
+    expect(mockResumeThread).toHaveBeenCalledWith(
+      'thread-existing',
+      expect.objectContaining({ sandboxMode: 'read-only' }),
+    )
+  })
+
+  it('非只读会话仍是 workspace-write', async () => {
+    const session = await adapter.startSession(makeConfig())
+    await adapter.sendCommand(session.id, command)
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ sandboxMode: 'workspace-write' }),
+    )
+  })
+
+  it('codex 档位为空时不传模型（由 SDK 自己决定），且不回落到旧的 defaultModel', async () => {
+    const session = await adapter.startSession(makeConfig())
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockStartThread).toHaveBeenCalledWith(
+      expect.objectContaining({ model: undefined }),
+    )
   })
 
   it('doSendCommand emits error on SDK failure', async () => {

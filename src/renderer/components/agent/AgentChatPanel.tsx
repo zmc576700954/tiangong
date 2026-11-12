@@ -5,6 +5,11 @@ import { useAgentOutputStore } from '../../store/agentOutputStore'
 import { useGraphStore } from '../../store/graphStore'
 import { useAppStore } from '../../store/appStore'
 import { useSessionStore } from '../../store/sessionStore'
+import { useAdapterStore } from '../../store/adapterStore'
+import { getReadonlySupport, isReadonlyOptOutAdapter } from '@shared/readonly-support'
+import { fromRelative, toSafeRelative } from '../../lib/project-paths'
+import { computeScope } from '../../lib/scope'
+import { ScopeEditor } from './ScopeEditor'
 import { useSubagentStore } from '../../store/subagentStore'
 import { useAgentOutputListener } from '../../hooks/useAgentOutputListener'
 import { useVerificationFlow } from '../../hooks/useVerificationFlow'
@@ -28,6 +33,8 @@ import { UsagePanel } from './UsagePanel'
 import { eventBus, Events } from '../../store/eventBus'
 import { threadTitle as localizeThreadTitle } from '@shared/i18n'
 import { useI18n } from '../../i18n/useI18n'
+import { toastError } from '../../lib/toast'
+import { errorText } from '../../lib/error-text'
 import type { ContextRef, AgentSessionConfig } from '@shared/types'
 import type { NormalizedEventEnvelope, SessionGrantInfo, SessionRecoveryInfo } from '@shared/types/agent-runtime'
 import { shouldRefreshSessionState } from './sessionRefresh'
@@ -164,6 +171,115 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   const requestStatuses = useSessionStore((s) => s.requestStatuses)
   const queuedCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'queued').length, [requestStatuses])
   const executingCount = useMemo(() => Array.from(requestStatuses.values()).filter((r) => r.status === 'executing').length, [requestStatuses])
+
+  // —— 文件范围（只读默认）——
+  const projectDefaults = useSessionStore((s) => s.projectDefaults)
+  const loadProjectDefaults = useSessionStore((s) => s.loadProjectDefaults)
+  const saveProjectDefaults = useSessionStore((s) => s.saveProjectDefaults)
+  /** 本次会话显式加的范围 —— **相对项目根的相对路径**（规范形态） */
+  const [sessionScope, setSessionScope] = useState<string[]>([])
+  // 'auto' 实际指向默认适配器 —— 别硬编码 claude-code（用户可以在设置里改默认）
+  const adapterPreferences = useAdapterStore((s) => s.adapterPreferences)
+
+  // 切项目 / 切图 → 重载项目级默认
+  useEffect(() => {
+    void loadProjectDefaults(projectPath ?? '')
+  }, [projectPath, loadProjectDefaults])
+
+  // 切项目 → 本次会话的范围要重置（否则 A 项目加过的文件会串到 B 项目）
+  useEffect(() => {
+    setSessionScope([])
+  }, [projectPath])
+
+  /**
+   * 本次会话实际用哪个适配器 —— **项目级覆盖 > 全局默认**。
+   *
+   * 'auto' 之前由主进程解析成全局默认适配器；项目级默认存了却没人读 ——
+   * 用户设了，什么都没发生（正是本工作流要消灭的那类静默失效）。
+   * 现在渲染层就把项目级覆盖解析出来，**显式**传下去。
+   */
+  const effectiveAdapter = useMemo(() => {
+    if (selectedAdapter !== 'auto') return selectedAdapter
+    return projectDefaults?.defaultAdapter ?? adapterPreferences.defaultAdapter
+  }, [selectedAdapter, projectDefaults, adapterPreferences.defaultAdapter])
+
+  /**
+   * 生效范围 —— **相对路径**（规范形态）。
+   *
+   * 显示与发送**必须是同一个集合**（`computeScope` 算一次，两处都用）。
+   * 之前显示集合与发送集合各算各的（sessionScope 只显示不发送、@ 引用只发送
+   * 不显示）→ 面板可能显示「本次只读」而会话实际可写。
+   */
+  const scope = useMemo(
+    () =>
+      computeScope({
+        projectPath: projectPath ?? '',
+        projectDefaults,
+        sessionScope,
+        referencedFiles: attachedContexts.filter((r) => r.type === 'file').map((r) => r.id),
+        optOutAdapter: isReadonlyOptOutAdapter(effectiveAdapter),
+      }),
+    [projectDefaults, sessionScope, attachedContexts, projectPath, effectiveAdapter],
+  )
+  const scopeRelativeFiles = scope.relativeFiles
+
+  /**
+   * 这个线程**是否已有在跑的会话**。
+   *
+   * 有的话，主进程在 startSession 时就把范围**冻结**了 —— 复用会话时新算出来的
+   * config 会被丢弃（只留 resumeSessionId）。所以此时：
+   * - 面板必须显示**会话启动时**的范围（否则会「面板说只读、会话仍可写」）
+   * - 范围编辑必须禁用（改了对在跑的会话不生效）
+   */
+  const activeSession = useSessionStore((s) =>
+    currentThread?.sessionId ? s.activeSessions.get(currentThread.sessionId) : undefined,
+  )
+  const sessionIsRunning = !!activeSession && activeSession.status === 'active'
+
+  // 在跑会话 → 显示它启动时的范围（冻结的那一份）；否则显示当前算出来的
+  const displayedRelativeFiles = sessionIsRunning
+    ? activeSession.allowedFiles
+    : scopeRelativeFiles
+  const displayedReadonly = sessionIsRunning
+    ? activeSession.allowedFiles.length === 0
+    : scope.readonly
+
+  // 显示/编辑态的只读判定见 displayedReadonly —— 它在会话运行中取**冻结**的范围
+
+  const scopeAdapterSupportsReadonly =
+    getReadonlySupport(effectiveAdapter) === 'enforced'
+
+  const handleScopeAddFile = (input: string) => {
+    // 入库前规范化 + 拦下越界路径 —— 一条坏路径会让**整个项目的所有会话**
+    // 都启动失败（主进程 ScopeGuard 拒绝对每个候选适配器都失败）
+    const rel = toSafeRelative(projectPath ?? '', input)
+    if (!rel) {
+      toastError(t('agent.scope.invalidPath'))
+      return
+    }
+    setSessionScope((prev) => [...new Set([...prev, rel])])
+    // 同时写进项目级默认 → 下次自动带上（用户不必每次重选）
+    void saveProjectDefaults({
+      ...projectDefaults,
+      allowedFiles: [...new Set([...(projectDefaults?.allowedFiles ?? []), rel])],
+    })
+  }
+
+  const handleScopeRemoveFile = (rel: string) => {
+    // 按**规范形态**比对 —— 之前拿绝对路径去反推相对路径，非规范写法删不掉，
+    // 于是「我关了它，它又自己开了」
+    setSessionScope((prev) => prev.filter((f) => f !== rel))
+    void saveProjectDefaults({
+      ...projectDefaults,
+      allowedFiles: (projectDefaults?.allowedFiles ?? []).filter((f) => f !== rel),
+    })
+  }
+
+  const handleScopeClearAll = () => {
+    setSessionScope([])
+    // 清掉项目级默认 → 下一次会话回到只读（否则用户会以为「我明明关了它又开了」）
+    void saveProjectDefaults({ ...projectDefaults, allowedFiles: [] })
+  }
 
   const rawOutputs = useMemo(
     () => (currentThread ? (threadOutputs[currentThread.id] ?? []) : []),
@@ -327,14 +443,29 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
   }
 
   const handleSend = async (content: string, contextRefs: ContextRef[]) => {
+    // 用户选了不保证只读的适配器 + 范围为空 → 主进程会**直接拒绝启动**
+    // （agent-manager：空范围一律只读，非 enforced 适配器不能跑只读会话）。
+    // 不做「二次确认后照发」——那是一条死路：确认了也起不来。
+    // 警告条（ScopeEditor 里）已说明原因与出路：换只读型适配器，或圈定范围。
+
     let threadId = currentThreadId
     if (!threadId) {
       threadId = createThread(selectedAdapter, selectedNode?.id, selectedNode?.graphId)
     }
 
+    const projectPath = currentGraph?.projectPath ?? ''
+    // 发送的范围 = **与面板显示的完全同一个集合**（scopeRelativeFiles）。
+    // 之前显示集合与发送集合各算各的（sessionScope 只显示不发送、@ 引用只发送
+    // 不显示）→ 面板可能显示「本次只读」而会话实际可写。
+    const allowedFiles = scopeRelativeFiles.map((rel) => fromRelative(projectPath, rel))
+
     const sessionConfig: AgentSessionConfig = {
-      workingDirectory: currentGraph?.projectPath ?? '',
-      allowedFiles: contextRefs.filter((r) => r.type === 'file').map((r) => r.id),
+      workingDirectory: projectPath,
+      allowedFiles,
+      // 项目级默认里的适配器 / 模型 —— 之前**只写不读**（存了但没人用）。
+      // 优先级：项目级覆盖 > 全局默认 > 用户本次手动选的。
+      adapterName: effectiveAdapter,
+      ...(projectDefaults?.defaultModel ? { model: projectDefaults.defaultModel } : {}),
       forbiddenFiles: [],
       invariantRules: selectedNode?.rules?.map((r) => r.title) ?? [],
       upstreamContext: '',
@@ -701,7 +832,12 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
                 }}
                 onMarkComplete={() => {
                   if (selectedNode) {
-                    useGraphStore.getState().updateNode(selectedNode.id, { status: 'review' })
+                    // 状态推进失败要说出来 —— 否则界面回到「编辑中」，用户以为没生效
+                    void useGraphStore.getState()
+                      .updateNode(selectedNode.id, { status: 'review' })
+                      .catch((err: unknown) => {
+                        toastError(t('node.toast.updateFailed'), errorText(err))
+                      })
                   }
                   resetVerification()
                   setRetryCount(0)
@@ -732,6 +868,16 @@ export function AgentChatPanel({ expanded, onToggleExpand }: AgentChatPanelProps
           {executingCount > 0 && <span className="flex items-center gap-1"><Loader2 size={10} className="animate-spin" />{t('agent.queue.executing', { count: executingCount })}</span>}
         </div>
       )}
+
+      <ScopeEditor
+        effectiveFiles={displayedRelativeFiles}
+        readonly={displayedReadonly}
+        adapterSupportsReadonly={scopeAdapterSupportsReadonly}
+        frozen={sessionIsRunning}
+        onAddFile={handleScopeAddFile}
+        onRemoveFile={handleScopeRemoveFile}
+        onClearAll={handleScopeClearAll}
+      />
 
       <ChatInput
         onSend={handleSend}

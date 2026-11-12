@@ -42,6 +42,8 @@ import type {
 import type { AgentRuntimeTimeouts } from '@shared/types/agent-runtime'
 import { isInternalAgentSessionId, isTrustedNativeSessionId } from '@shared/native-session-id'
 import { type AdapterRegistry } from './adapter-registry'
+import { getReadonlySupport, listReadonlyCapableAdapters, isReadonlyOptOutAdapter } from '@shared/readonly-support'
+import { resolveReadonly } from '@shared/readonly'
 import { type SessionRouter } from './session-router'
 import type { AgentRuntime } from './runtime/runtime'
 import type { WorkspaceLeaseRegistry } from './runtime/locks/workspace-lease'
@@ -68,6 +70,7 @@ import type { CompactHistoryRepository } from '../repositories/compact-history-r
 import type { ChatRepository } from '../repositories/chat-repository'
 import type { SubagentManager } from './subagent-manager'
 import type { BaseAdapter } from '../adapters/base'
+import { INTERNAL_ADAPTER_NAMES } from '../adapters/registry'
 import { createLogger } from '../shared/logger'
 import { withSpan } from '../telemetry'
 import { SpanKind, type Span } from '@opentelemetry/api'
@@ -729,7 +732,9 @@ export class AgentManager {
   }
 
   async listAdapters(): Promise<{ name: string; version: string; installed: boolean }[]> {
-    return this.registry.checkAllInstalled()
+    // 内部适配器（mindmap-internal）不对用户暴露
+    const all = await this.registry.checkAllInstalled()
+    return all.filter((a) => !INTERNAL_ADAPTER_NAMES.has(a.name))
   }
 
   getAdapter(name: string): AgentAdapter | undefined {
@@ -830,11 +835,46 @@ export class AgentManager {
     // 确定回退链：首选适配器 + 回退顺序（去重 + 健康度优先重排）
     const preferences = await this.loadAdapterPreferences()
     const primary = adapterName ?? preferences.defaultAdapter
-    const uniqueChain = this.fallbackRouter.buildChain(
+
+    // 只读推导 —— **由主进程决定，不信渲染层传来的字段**。
+    //
+    // 规则见 @shared/readonly 的 resolveReadonly（渲染层用同一份）：
+    // - 空 allowedFiles ⇒ 只读（即使调用方带 readOnly:false —— 那样会拿到
+    //   一个**没有沙箱**的可写会话）
+    // - 例外（由主进程按适配器名/机制判定，不接受渲染层指定）：
+    //   · mindmap-internal —— 写保护靠 CLI 的 --disallowedTools
+    //   · verifyOnly —— 写保护靠空名单 ScopeGuard 沙箱
+    //   verifyOnly 退出推导很重要：agent:verify 挑的是「第一个已装的适配器」，
+    //   可能不是只读型的；若被推成只读，节点验证会对既有功能造成回归。
+    const readOnly = resolveReadonly({
+      allowedFiles: config.allowedFiles,
+      readOnly: config.readOnly,
+      optOut: config.verifyOnly === true || isReadonlyOptOutAdapter(primary),
+    })
+    const effectiveConfig: AgentSessionConfig = { ...config, readOnly }
+
+    let uniqueChain = this.fallbackRouter.buildChain(
       primary,
       preferences.fallbackOrder,
       preferences.forceAdapter,
     )
+
+    // 只读会话：回退链只保留**保证只读**的适配器。
+    // 原因：fallback-router 给链上每个候选者传**同一份** config（只改 timeout），
+    // 回退到能写的适配器 = 把写权限在用户不知情的情况下交出去。
+    if (readOnly) {
+      // 首选适配器自己必须支持只读 —— **不自动换适配器**（决定 D3）：
+      // 换过去虽然保住了只读保证，却用掉了用户选的适配器，用户未必知道。
+      if (getReadonlySupport(primary) !== 'enforced') {
+        throw new AdapterError(
+          `Adapter ${primary} does not support read-only sessions. ` +
+          `Choose an adapter that guarantees read-only, or give the session an explicit file scope.`,
+          primary,
+          ErrorCode.ADAPTER_READONLY_UNSUPPORTED,
+        )
+      }
+      uniqueChain = listReadonlyCapableAdapters(uniqueChain)
+    }
 
     if (isMemoryInsufficientForNewSession()) {
       logger.error('Insufficient free memory for a new session (platform-aware threshold), refusing to create session')
@@ -857,7 +897,7 @@ export class AgentManager {
 
     let resolved: ResolvedAdapterSession
     try {
-      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, config, {
+      resolved = await this.fallbackRouter.resolveSession(primary, uniqueChain, effectiveConfig, {
         onSessionStarted: async (candidate, candidateConfig, session) => {
           const adapter = this.registry.get(candidate)
           if (!adapter) {

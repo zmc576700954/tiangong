@@ -55,8 +55,33 @@ export interface AgentSessionConfig {
   threadId?: string
   /** Phase 4: subagent tool restriction (consumed by adapters in Claude Code / MCP). */
   subagentAllowedTools?: string[] | '*'
+  /**
+   * 本次会话要用的模型 —— 覆盖适配器从全局设置解析出来的模型。
+   *
+   * 项目级默认里的模型由渲染层解析后放进这里（项目级覆盖 > 全局默认）。
+   * 不设就用适配器自己从 settings 解析的那个。
+   */
+  model?: string
+  /**
+   * 本次会话要用的适配器 —— 覆盖「auto → 主进程用全局默认适配器」的路径。
+   *
+   * 渲染层解析（含项目级覆盖）后放进这里。不设就按原来的规则走。
+   */
+  adapterName?: string
   /** When true, create a sandbox with an empty allow-list so any write is flagged as out-of-bounds. */
   verifyOnly?: boolean
+  /**
+   * 只读会话：Agent **物理上**写不了文件。
+   *
+   * 由 `resolveReadonly()` 推导（未显式指定时 = `allowedFiles` 为空）。
+   * 「用户没圈定可改范围」不会被解读成「可以随便改」。
+   *
+   * 注意：只读由**适配器层**保证（禁掉写工具），**不建 ScopeGuard 沙箱** ——
+   * 空白名单沙箱的 watcher 监听整棵项目树，分不清「Agent 写的」和「用户写的」，
+   * 在真实项目目录上会把用户自己改的文件判为越界并回滚删除
+   * （见 src/main/agent/send-and-wait.ts 的注释）。
+   */
+  readOnly?: boolean
   /**
    * 透明转发会话（A2A 入站）：**不**注入 BizGraph 内部 scope / memory / 项目上下文，
    * prompt 原文下发（CLAUDE.md Boundaries §3 —— 远端 LLM 视角下 BizGraph 是透明转发方）。
@@ -621,6 +646,13 @@ export interface CliToolConfig {
   name: string
   npmPackage: string
   command: string
+  /**
+   * 探测命令的参数。缺省为 `['--version']`。
+   *
+   * cursor 是例外：它要 `cursor agent --version`（`cursor --version` 探测不到）——
+   * 写错就会在设置页显示一个假的「未安装」。
+   */
+  detectArgs?: string[]
   installed: boolean
   version?: string
   path?: string
@@ -652,8 +684,24 @@ export interface BizGraphSettings {
   cliTools: CliToolConfig[]
   apiKeys: ApiKeyConfig[]
   defaultModel?: string
-  /** Model used for context compaction summaries; falls back to defaultModel if unset */
+  /**
+   * Model used for context compaction summaries.
+   *
+   * 只对 MCP 适配器生效；未设置时回落到 **MCP 自己的模型档位**
+   * （`defaultModels.mcp`），**不是**全局的 `defaultModel` —— 后者可能是
+   * claude 模型名，会让 resolveApiKey 按前缀误判 provider。
+   * Claude Code 走 SDK 自身的压缩机制，不读这个字段。
+   */
   compactModel?: string
+  /** 按适配器分开的默认模型；缺档时各自回落（见 resolveModelForAdapter） */
+  defaultModels?: {
+    /** claude-code 适配器的模型；缺档时回落到旧的 defaultModel */
+    claudeCode?: string
+    /** codex 适配器的模型；缺档时由 codex SDK 自己决定 */
+    codex?: string
+    /** MCP 适配器的模型；缺档时由 provider 默认决定（**不回落到 defaultModel**） */
+    mcp?: string
+  }
   mcpServers: McpServerConfig[]
   adapterPreferences?: AdapterPreferences
   /** Phase 5: user-defined subagent types persisted in settings.json. */
@@ -750,6 +798,25 @@ export interface AdapterPreferences {
   fallbackOrder: string[]
   /** 强制使用指定适配器，不进行健康度重排序 */
   forceAdapter?: boolean
+}
+
+/**
+ * 项目级默认 —— 覆盖全局默认。
+ *
+ * 作用域优先级：**节点临时值 > 项目级覆盖 > 全局默认**。
+ */
+export interface ProjectDefaults {
+  /** 该项目默认用哪个适配器 */
+  defaultAdapter?: string
+  /** 该项目默认用哪个模型 */
+  defaultModel?: string
+  /**
+   * 该项目默认可改哪些文件 —— **相对项目根的相对路径**。
+   *
+   * 存相对路径而非绝对路径：项目搬家/改名后绝对路径会失效。
+   * 空数组 = 只读（没有圈定范围就是只读）。
+   */
+  allowedFiles?: string[]
 }
 
 /**

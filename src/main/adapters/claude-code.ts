@@ -13,6 +13,8 @@
 import { z } from 'zod'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { BaseAdapter, DISPATCH_SUBAGENT_TOOL_NAME } from './base'
+import { resolveModelForAdapter } from './model-selection'
+import { READONLY_TOOLS } from '@shared/readonly-tools'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
 import { isWriteScopedTool } from '../agent/runtime/approval/gateway'
@@ -226,6 +228,21 @@ export class ClaudeCodeAdapter extends BaseAdapter {
     // 透明转发会话（A2A 入站）：远端调用方不应能借本机 CLI 读文件、跑 shell，
     // 或派生本地 subagent。下文据此关闭 MCP server、内置工具与文件级 settings。
     const transparent = session.config.transparentForward === true
+    // 只读会话：同样要关掉外部 MCP 与文件级 settings。
+    //
+    // SDK 的 `tools` 白名单**只管内置工具**，管不到 MCP 工具（sdk.d.ts:1630-1641）：
+    // 用户配的 filesystem MCP、项目 .mcp.json、或设置里的 command hook
+    // （sdk.d.ts:6923-6946，能独立执行 shell）都能在只读会话里写文件。
+    // 所以只读会话必须：
+    // - strictMcpConfig: true → 只用 mcpServers 选项里显式传入的 server
+    //   （= BizGraph 自己的 dispatch_subagent），忽略项目 .mcp.json / 用户设置 / 插件；
+    // - settingSources: [] → 不加载 user/project/local 的 settings.json（无 hook）。
+    //
+    // 注意：strictMcpConfig **不影响** mcpServers 选项里的 server（sdk.d.ts:2293-2299），
+    // 所以 dispatch_subagent 仍然可用 —— 它是 BizGraph 自己的 in-process MCP server，
+    // 不是「外部配置的 MCP」。子会话的只读保证由父会话的 readOnly 继承保证
+    // （子会话展开 parentConfig，见 subagent-manager.ts 的 _runInvocation）。
+    const readOnly = session.config.readOnly === true
 
     const abortController = new AbortController()
     this.activeQueries.set(session.id, { abort: () => abortController.abort() })
@@ -315,12 +332,25 @@ export class ClaudeCodeAdapter extends BaseAdapter {
       // to the agent type's allowed set.
       let toolsOption: string[] | undefined
       const allowedTools = session.config.subagentAllowedTools
-      if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
-        toolsOption = allowedTools
-      } else if (transparent) {
+      if (transparent) {
         // SDK 语义：tools: [] = 禁用全部内置工具（Read / Write / Edit / Bash …）。
         // 透明转发的远端调用方只应拿到模型回答，拿不到本机文件与 shell。
+        //
+        // **必须排在 readOnly 之前**：A2A 入站会话也是空的 allowedFiles → 会被推导
+        // 成只读；若先命中只读分支，远端调用方就多拿到了本机 Read/Glob/Grep 与
+        // **WebFetch（出网）** —— 那违反了 CLAUDE.md Boundaries §3 的透明转发边界。
         toolsOption = []
+      } else if (session.config.readOnly) {
+        // 只读会话：只放行读与查，**拿不到任何能改文件或执行命令的工具**。
+        // 若同时是子代理（有自己的 allowedTools），取两者交集 ——
+        // 否则子代理被允许的 Edit/Write 会破坏父会话的只读保证。
+        const readonly = [...READONLY_TOOLS]
+        toolsOption =
+          allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)
+            ? readonly.filter((t) => allowedTools.includes(t))
+            : readonly
+      } else if (allowedTools && allowedTools !== '*' && Array.isArray(allowedTools)) {
+        toolsOption = allowedTools
       }
 
       const approvalHooks = this.turnApprovalHooks.get(session.id)
@@ -336,7 +366,8 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           // 透明转发：不下发 BizGraph 的 scope / memory / 项目上下文。
           ...(scopePrompt ? { systemPrompt: scopePrompt } : {}),
           cwd: session.config.workingDirectory,
-          model: settings.defaultModel || 'sonnet',
+          // 模型优先级：会话显式指定 > 按适配器拆分的默认（项目级/全局）> 兜底 sonnet。
+          model: session.config.model ?? resolveModelForAdapter(settings, 'claude-code') ?? (settings.defaultModel || 'sonnet'),
           env: this.buildSessionEnv(session.id),
           // D5：Runtime 路径由我们 spawn，CLI 进入自有进程组（pgid = pid），
           // pid/pgid 当场可知并落库，跨重启回收不再依赖推断。
@@ -351,10 +382,17 @@ export class ClaudeCodeAdapter extends BaseAdapter {
           // 注入审批钩子时（kernel 或自由聊天旧路径）必须用 'default'，否则 SDK 直接按
           // acceptEdits 写文件，canUseTool 根本不会被调用（真机已验证）。
           // 未注入钩子的内部/有节点旧会话保持 acceptEdits（不在自由聊天审批范围）。
-          permissionMode: approvalHooks?.canUseTool ? 'default' : transparent ? 'default' : 'acceptEdits',
+          // 只读会话同样必须是 'default'：acceptEdits 意味着无需确认即可写。
+          permissionMode:
+            approvalHooks?.canUseTool || transparent || session.config.readOnly ? 'default' : 'acceptEdits',
           // 透明转发：SDK isolation mode —— 不加载 ~/.claude 与项目的 settings.json，
           // 避免把用户侧的 hooks / MCP server / 权限规则带进远端可控的会话。
           ...(transparent ? { settingSources: [] } : {}),
+          // 只读会话：同上，且额外忽略**外部**配置的 MCP server
+          // （项目 .mcp.json / 用户设置 / 插件）—— strictMcpConfig 只保留
+          // mcpServers 选项里显式传入的 server（即 BizGraph 自己的 dispatch_subagent）。
+          // 没有这两项，用户配的 filesystem MCP 或设置里的 hook 就能在只读会话里写文件。
+          ...(readOnly ? { settingSources: [], strictMcpConfig: true } : {}),
           ...(isTrustedNativeSessionId(session.config.resumeSessionId) ? { resume: session.config.resumeSessionId } : {}),
           ...(this.autoCompactEnabledFor.has(session.id) ? { autoCompactEnabled: true } : {}),
           ...(mcpServers ? { mcpServers } : {}),

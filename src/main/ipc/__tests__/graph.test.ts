@@ -146,6 +146,28 @@ describe('registerGraphHandlers', () => {
     registerGraphHandlers(db, makeTypedHandle(handlers), graphService, snapshotRepo, agentManager)
   })
 
+  describe('graph:create', () => {
+    it('把 projectPath 透传给 service（新建图必须绑定项目）', async () => {
+      await handlers['graph:create']({}, { name: 'G', type: 'dev', projectPath: '/work/beta' })
+      expect(graphService.createGraph).toHaveBeenCalledWith({
+        name: 'G',
+        type: 'dev',
+        projectPath: '/work/beta',
+      })
+    })
+
+    it('拒绝非字符串的 projectPath', async () => {
+      await expect(handlers['graph:create']({}, { name: 'G', type: 'dev', projectPath: 123 }))
+        .rejects.toThrow(IpcError)
+    })
+
+    it('拒绝系统目录的 projectPath（project_path 会进 IPC 路径白名单）', async () => {
+      const systemDir = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/etc'
+      await expect(handlers['graph:create']({}, { name: 'G', type: 'dev', projectPath: systemDir }))
+        .rejects.toThrow(IpcError)
+    })
+  })
+
   describe('node:create', () => {
     it('rejects node without required fields', async () => {
       await expect(handlers['node:create']({}, { type: 'module' }))

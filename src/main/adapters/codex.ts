@@ -11,12 +11,13 @@
  */
 
 import { BaseAdapter } from './base'
+import { resolveModelForAdapter } from './model-selection'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
 import { humanizeAgentErrorText } from '@shared/agent-error-text'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { AdapterError } from '../errors'
-import type { Codex } from '@openai/codex-sdk'
+import type { Codex, ThreadOptions } from '@openai/codex-sdk'
 import type { ChildProcess } from 'node:child_process'
 import crypto from 'node:crypto'
 import { createLogger } from '../shared/logger'
@@ -192,16 +193,20 @@ export class CodexAdapter extends BaseAdapter {
       let thread = supervised ? null : this.threads.get(session.id)
 
       if (!thread) {
+        // codex 档位为空时传 undefined —— SDK 用它自己的默认模型。
+        const { readSettings } = await import('../settings')
+        const settings = await readSettings()
+        const model = session.config.model ?? resolveModelForAdapter(settings, 'codex')
+        const threadOptions: ThreadOptions = {
+          workingDirectory: session.config.workingDirectory,
+          // 只读会话 → SDK 的 'read-only' 档位（'read-only' | 'workspace-write' | 'danger-full-access'）
+          sandboxMode: session.config.readOnly ? 'read-only' : 'workspace-write',
+          model,
+        }
         if (isResume && isTrustedNativeSessionId(session.config.resumeSessionId)) {
-          thread = codex.resumeThread(session.config.resumeSessionId, {
-            workingDirectory: session.config.workingDirectory,
-            sandboxMode: 'workspace-write',
-          })
+          thread = codex.resumeThread(session.config.resumeSessionId, threadOptions)
         } else {
-          thread = codex.startThread({
-            workingDirectory: session.config.workingDirectory,
-            sandboxMode: 'workspace-write',
-          })
+          thread = codex.startThread(threadOptions)
         }
         if (!supervised) this.threads.set(session.id, thread)
       }

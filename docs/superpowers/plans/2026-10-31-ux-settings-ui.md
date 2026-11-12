@@ -19,7 +19,7 @@
 - **TypeScript strict，全局禁止 `any`**：`@typescript-eslint/no-explicit-any` 在 `src/shared/**` 是 `error`、其余目录是 `warn`，而 `npm run lint` 带 `--max-warnings 0`——**实际全局禁止 `any`**，测试代码里的类型标注同样算。
 - **Toast 唯一实现**在 `src/renderer/lib/toast.tsx`，导出 `pushToast` / `toastSuccess` / `toastError` / `toastInfo` / `ToastContainer` / `useToastStore`。**不要**新建 `src/renderer/lib/toast.ts` 或 `src/renderer/components/ui/ToastContainer.tsx`——同路径下 `.ts` 会先于 `.tsx` 被解析并遮蔽实现。
 - **所有新文案走 `t()`**，i18n 资源加在 `src/shared/i18n/resources/domains/` 下对应域文件（settings / canvas / agent 等），中英两份都要加。查表用 `Record<NodeType, TranslationKey>` 静态映射，**禁止模板拼接 key**。
-- **`BizGraphSettings` 新增字段必须同时登记到 `src/main/settings.ts` 的 `mergeSettings`**，否则被静默丢弃（见 Task 1）。
+- **`BizGraphSettings` 新增字段会被自动保留**——Task 1 起 `src/main/settings.ts` 的 `mergeSettings` 改为**通用合并**（不再逐字段列举），所以新字段**不需要**再到 `mergeSettings` 里登记。但仍必须：① 在 `BizGraphSettings` 类型里声明；② 在 `DEFAULT_SETTINGS` 里给出默认值。
 - **节点状态变更必须走 `NodeRepository.update()`**（内部强制 `validateNodeTypeTransition`）；**不要**在别处直接 `UPDATE nodes SET status = ...`。
 - **不改 `graph_type` 语义**（`2026-10-27` spec §4.4.1 已定：`graph_type` = 节点语义类别，不是图归属）。不要加 `graphType === graphs.type` 的校验，不要迁移存量 `graph_type`。
 - **不改 Agent CLI 行为、不改适配器协议**（CLAUDE.md《与 Agent CLI 的边界》）。
@@ -59,6 +59,7 @@
 | `src/renderer/panels/DefaultsTab.tsx` | 「默认值」设置页签的全部 UI：默认适配器、回退顺序、按适配器分开的默认模型、压缩模型 |
 | `src/renderer/panels/__tests__/DefaultsTab.test.tsx` | 上述组件的渲染层测试 |
 | `src/shared/adapter-defaults.ts` | 跨进程共享的适配器相关常量：`DEFAULT_ADAPTER_PREFERENCES` 的唯一副本、`ALLOWED_PROVIDERS` 的唯一副本、只读支持的适配器名单 |
+| `src/main/adapters/cli-probe.ts` | CLI 安装探测的共享 helper（带超时上界），供 8 个 CLI 适配器复用（Task 12 新增） |
 
 **修改：**
 
@@ -98,20 +99,22 @@
 
 - [ ] **Step 1: 写失败的测试**
 
-在 `src/main/__tests__/settings.test.ts` 追加：
+在 `src/main/__tests__/settings.test.ts` 追加。**注意本文件既有的 mock 约定**：`readSettings()` / `writeSettings(settings)` **都不接受路径参数**——文件顶部已经 mock 了 `electron` 的 `app.getPath('userData')`（返回 `/tmp/bizgraph-test`）与 `node:fs/promises`，直接照既有用例的写法调用即可，**不要传路径参数**：
 
 ```ts
 it('mergeSettings 保留 saved 里未登记到 defaults 的字段（compactModel 不再被丢弃）', async () => {
   const { writeSettings, readSettings } = await import('../settings')
-  const settingsPath = join(tmpDir, 'settings.json')
-  await writeSettings({ compactModel: 'claude-haiku-4-5' } as never, settingsPath)
-  const loaded = await readSettings(settingsPath)
+  await writeSettings({
+    version: 1, cliTools: [], apiKeys: [], defaultModel: 'x', mcpServers: [],
+    compactModel: 'claude-haiku-4-5',
+  } as unknown as BizGraphSettings)
+  const loaded = await readSettings()
   expect(loaded.compactModel).toBe('claude-haiku-4-5')
 })
 
 it('contextWaterline 未保存过时也有默认值', async () => {
   const { readSettings } = await import('../settings')
-  const loaded = await readSettings(join(tmpDir, 'settings.json'))
+  const loaded = await readSettings()
   expect(loaded.contextWaterline).toEqual({
     autoCompactEnabled: true,
     autoCompactThreshold: 0.75,
@@ -119,8 +122,6 @@ it('contextWaterline 未保存过时也有默认值', async () => {
   })
 })
 ```
-
-（`writeSettings` / `readSettings` 的路径参数与测试文件里既有调用方式保持一致——先读该文件确认现有签名再写。）
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -369,28 +370,44 @@ git commit -m "feat(settings): 新增「默认值」页签，接上适配器/回
 - Test: `src/renderer/components/agent/__tests__/ChatHeader.test.tsx`（新建）
 
 **Interfaces:**
-- Consumes: `ChatHeader` 现有的 adapters props（先读该文件确认 props 形状）。
-- Produces: `ChatHeader` 在 `installed` 数量为 0 / 1 / ≥2 时分别渲染三种形态，**不新增导出**。
+- Consumes: `ChatHeader` 现有的 props（已核实，**不要改 props 形状**）：
+  ```ts
+  interface ChatHeaderProps {
+    adapterName: string
+    adapters: { name: string; installed: boolean }[]
+    noAdaptersInstalled?: boolean
+    onSelectAdapter: (name: string) => void
+    onOpenSettings?: () => void
+    // …其余与本任务无关
+  }
+  ```
+  `installed` 信息**已经在 props 里**，本任务不需要新增任何 prop 或 IPC。
+- Produces: `ChatHeader` 在已安装数量为 0 / 1 / ≥2 时分别渲染三种形态，**不新增导出**。
 
 - [ ] **Step 1: 写失败的测试**
 
 新建 `src/renderer/components/agent/__tests__/ChatHeader.test.tsx`（文件头 `// @vitest-environment jsdom`）。三条用例：
-1. 传入两个已安装适配器 → 渲染出下拉，**下拉里没有**未安装的那个（断言 `screen.queryByText('cline')` 为 `null`）。
-2. 传入**一个**已安装适配器 → **不渲染下拉**，只渲染一个静态标签显示该适配器名（断言 `screen.queryByRole('combobox')` 为 `null`，且适配器名可见）。
-3. 传入零个已安装适配器 → 渲染现有的 `AdapterSetupGuide` 空态入口（`AgentChatPanel.tsx:409-427` 那一套，或本组件内既有的空态）。
+
+1. 传入两个已安装适配器 → **点开下拉后**，菜单里**没有**未安装的那个（断言 `screen.queryByText('cline')` 为 `null`）。
+2. 传入**一个**已安装适配器 → **不渲染下拉触发按钮**，只渲染一个静态标签显示该适配器名。
+3. 传入零个已安装适配器 → 保留现有的空态引导（`noAdaptersInstalled` 为 true 时那个 `AlertCircle` 形态）。
+
+> **断言不要用 `queryByRole('combobox')`** —— 这个组件的下拉是**自定义的**（一个 `<button>` + 一个浮层 div，见 `ChatHeader.tsx:65-80` 与 `:81-123`），**不是 `<select>`**，也就不是 `combobox` 角色。那样断言会**假绿**（下拉还在，但断言照样通过）。要断言的是**下拉触发按钮本身不存在** —— 例如给触发按钮加一个 `data-testid`（如 `data-testid="adapter-menu-trigger"`），然后断言 `screen.queryByTestId('adapter-menu-trigger')` 为 `null`；用例 1 则断言该 testid **存在**、点击后菜单里没有未安装项。
 
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `npx vitest run src/renderer/components/agent/__tests__/ChatHeader.test.tsx`
-Expected: FAIL —— 现在三个用例都不满足（未安装项仍在列表里；单个已装时仍有下拉）。
+Expected: FAIL —— 现在未安装项仍在菜单里；单个已装时仍有下拉触发按钮。
 
 - [ ] **Step 3: 实现三种形态**
 
 在 `ChatHeader.tsx` 里：
 - 过滤出 `installed = adapters.filter(a => a.installed)`。
-- `installed.length === 0` → 保留现有行为（引导去设置页）。
-- `installed.length === 1` → 用一个不可点的 `<span>`/badge 展示该适配器名，**不渲染 `<select>`**。
-- `installed.length >= 2` → 渲染 `<select>`，选项只有已安装的；列表底部加一项「安装更多适配器…」，点击走现有跳设置页的路径（`ChatHeader.tsx:100-103` 那条）。
+- `installed.length === 0` → **保留现有行为**（`noAdaptersInstalled` 时的 `AlertCircle` 形态 + 引导去设置页）。
+- `installed.length === 1` → 用一个**不可点**的静态标签展示该适配器名，**不渲染下拉触发按钮**（那个带 `ChevronDown` 的 `<button>` 和浮层菜单都不渲染）。
+- `installed.length >= 2` → 渲染现有的**自定义下拉**（沿用 `ChatHeader.tsx:65-123` 的结构，不要换成 `<select>`），菜单里只列已安装的适配器；列表底部加一项「安装更多适配器…」，点击走现有的 `onOpenSettings?.()` 路径（`ChatHeader.tsx:100-103` 现在就是未安装项点击时走的这条）。
+- 「auto」项保留（`:84-94`）—— 它就是"用默认适配器"，语义清晰。**下拉整体只在「已装 0 个」与「已装 ≥2 个」两种情况下出现**：0 个时保留现有下拉（因为「去设置页安装」的引导路径就在那个菜单里，去掉菜单用户就没有入口了）；1 个时整个下拉消失（用户根本没得选）。
+- 给下拉触发按钮加 `data-testid="adapter-menu-trigger"`（测试用）。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -420,12 +437,12 @@ git commit -m "feat(agent): 适配器下拉只列已安装项，只装一个时�
 
 - [ ] **Step 1: 写失败的测试（主进程侧）**
 
-在 `src/main/__tests__/settings.test.ts` 追加：
+在 `src/main/__tests__/settings.test.ts` 追加（同样**不传路径参数**——沿用该文件既有的 electron / fs mock）：
 
 ```ts
 it('DEFAULT_SETTINGS.cliTools 覆盖全部真 CLI 适配器', async () => {
   const { readSettings } = await import('../settings')
-  const s = await readSettings(join(tmpDir, 'settings.json'))
+  const s = await readSettings()
   const names = s.cliTools.map(c => c.name)
   for (const n of ['claude-code','codex','opencode','cline','kilo-code','kimi-code','codebuddy','qoder','qwen-code','cursor']) {
     expect(names).toContain(n)
@@ -435,8 +452,9 @@ it('DEFAULT_SETTINGS.cliTools 覆盖全部真 CLI 适配器', async () => {
 })
 
 it('mergeCliTools 保留 defaults 里没有但用户装过的条目', async () => {
-  const { mergeCliToolsForTest } = await import('../settings')  // 若未导出，改为通过 readSettings 间接验证
-  // ...
+  // 通过 writeSettings + readSettings 间接验证：
+  // 写入一个 defaults 里没有的条目（如 { name: 'some-cli', command: 'some-cli' }），
+  // readSettings() 读回后该条目仍在。
 })
 ```
 
@@ -573,7 +591,7 @@ git commit -m "feat(graph): 新建图收敛为工作图并绑定 project_path，
     to: NodeStatus,
   ): boolean
   ```
-  语义：按 `NODE_STATUS_TRANSITIONS[nodeType]` 判定，与主进程 `validateNodeTypeTransition(type, from, to)` **同源同义**。
+  语义：与 `validateNodeTypeTransition(type, from, to)` **同源同义**——`NODE_STATUS_TRANSITIONS[type]` 的元素形状是 `{ from, to }` **配对数组**（不是目标状态集合），判定写作 `allowed.some(t => t.from === from && t.to === to)`；`from === to` 直接返回 `true`（与 `validateNodeTypeTransition` 一致）；未知 NodeType 返回 `false`（保守拒绝）。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -581,15 +599,15 @@ git commit -m "feat(graph): 新建图收敛为工作图并绑定 project_path，
 
 ```ts
 it('canTransitionForType 按节点类型判定，而非只看状态', () => {
-  // module 节点的合法迁移以 NODE_STATUS_TRANSITIONS.module 为准
-  expect(canTransitionForType('module', 'draft', 'developing')).toBe(
-    NODE_STATUS_TRANSITIONS.module.includes('developing')
+  const moduleAllows = NODE_STATUS_TRANSITIONS.module.some(
+    t => t.from === 'draft' && t.to === 'developing',
   )
+  expect(canTransitionForType('module', 'draft', 'developing')).toBe(moduleAllows)
   expect(canTransitionForType('feature', 'draft', 'developing')).toBe(true)
 })
 ```
 
-再加一条**对照主进程**的一致性断言：对每种 `NodeType` × 每对状态，`canTransitionForType` 的结果必须等于 `validateNodeTypeTransition` 的结果（后者可能抛异常，用 try/catch 转成 false）。这条断言是本任务的核心价值——它把两张表钉在一起。
+再加一条**对照主进程**的一致性断言：对每种 `NodeType` × 每对状态，`canTransitionForType(type, from, to)` 的结果必须等于「`validateNodeTypeTransition(type, from, to)` 不抛异常」（后者抛异常时视为 false）。这条断言是本任务的核心价值——它把两张表钉在一起。
 
 - [ ] **Step 2: 跑测试确认失败**
 
@@ -624,12 +642,24 @@ git commit -m "fix(graph): 状态转换判定与主进程对齐为 per-type 矩�
 ## Task 8: 静默失败归零（一）——节点编辑器
 
 **Files:**
-- Modify: `src/renderer/panels/NodeEditor.tsx:37-42`（标题）、`:207-208`（业务规则）、`:454-455`（验收标准）、`:427-433`（API/服务/实体）、`:544-546` + `src/renderer/panels/RightPanel.tsx:111`（状态更新）
-- Test: `src/renderer/panels/__tests__/NodeEditor.test.tsx`（Task 7 已新建）
+- Modify: `src/renderer/panels/NodeEditor.tsx` —— 四处静默点，**按函数名定位（行号会随 Task 7 的修复再移，不要按行号找）**：
+  - `EditableTitle.handleSave` —— `if (value.trim()) { onSave(...) }` 之后**无条件 `setIsEditing(false)`** → 清空标题点 ✓ 会**静默丢弃输入**并退出编辑态
+  - 业务规则区块的 `handleAdd` —— `if (!newTitle.trim()) return`
+  - 验收标准区块的 `handleAdd` —— `if (!newValue.trim()) return`
+  - `AddItemInput` —— 空输入时 `if (value.trim())` 静默不做事（该组件被 API / 服务 / 实体三处复用）
+- Modify: `src/renderer/panels/RightPanel.tsx` —— `onUpdate={(data) => updateNode(selectedNode.id, data)}`：**返回的 promise 没有 catch**，而 `graphStore.updateNode` 对非法转换是 `throw` → **unhandled rejection**
+- Modify: `src/shared/i18n/resources/domains/node.ts` —— 新增提示文案
+- Test: `src/renderer/panels/__tests__/NodeEditor.test.tsx`（**Task 7 已新建，往里追加，不要新建同名文件**）
 
 **Interfaces:**
 - Consumes: Task 7 的 `canTransitionForType`。
 - Produces: 无新导出。
+
+**已核实的事实**：
+- `src/renderer/panels/NodeEditor.tsx` 目前 **"toast" 出现 0 次** —— 四处静默确认无疑，实现者需要自己加 `import { toastError } from '../lib/toast'`。
+- toast 的唯一实现是 `src/renderer/lib/toast.tsx`（既有先例：`DefaultsTab.tsx:19`、`AdapterHealthPanel.tsx:15`、`A2ASettingsTab.tsx:26` 都是这个 import 路径）。
+- `src/shared/i18n/resources/domains/node.ts` 目前**没有任何 toast / error 类 key**，要新开一组（zh + en 各一份；en 侧类型由 zh 侧派生，只加一边 `tsc` 会报错）。
+- `status.terminalHint`（zh `:15` / en `:61`）**已存在**，带 `{status}` 插值 —— 那是终态提示，本任务要的是另一组文案（"标题不能为空"之类），**不要复用它**。
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -671,40 +701,73 @@ git commit -m "fix(node): 节点编辑器的静默失败改为明确提示"
 ## Task 9: 静默失败归零（二）——建图 / 建节点 / 建边 / 状态更新
 
 **Files:**
-- Modify: `src/renderer/components/GraphTabs.tsx`（建图空名）、`src/renderer/canvas/hooks/useNodeOperations.ts:48-53,64-66`（建节点/建边）、`src/renderer/canvas/GraphCanvas.tsx:1503-1511`（右键菜单改状态）
-- Test: `src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建）、`src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在）
+- Modify: `src/renderer/canvas/hooks/useNodeOperations.ts` —— 建节点失败（约 `:51`）与建层级边失败（约 `:65`）两处 `console.error`
+- Modify: `src/renderer/canvas/GraphCanvas.tsx` —— `handleNodeStatusChange`（约 `:1503-1510`）：`catch { console.error(...) }` 之后**无条件 `setNodeContextMenu(null)`**
+- Modify: `src/renderer/panels/RightPanel.tsx` —— **同类缺口**：`EdgeEditor` 的 `onUpdate={(data) => updateEdge(selectedEdge.id, data)}` 与 `onDelete` 同样**返回未接住的 promise**，而 `updateEdge` 会回滚并重新抛错（`graphStore.ts:438-451`）
+- Create: `src/renderer/lib/error-text.ts` —— 共享的错误文本提取（见下方"Ruling 36"）
+- **不改** `src/renderer/components/GraphTabs.tsx` —— 建图空名的 toast **已由 Task 6 实现**，Task 9 只在自己的测试里断言该行为（见 Ruling 1）
+- Test: `src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts`（已存在，追加）、`src/renderer/components/__tests__/GraphTabs.test.tsx`（Task 6 已新建，只追加断言）、`src/renderer/panels/__tests__/RightPanel.test.tsx`（**新建**）
 
 **Interfaces:**
-- Consumes: 无新依赖。
-- Produces: 无新导出。
+- Consumes: Task 8 的 `node.toast.*` 文案组与 `RightPanel` 的 catch 模式。
+- Produces:
+  ```ts
+  // src/renderer/lib/error-text.ts
+  /**
+   * 把任意抛出物转成可读文本。
+   *
+   * 主进程把 BizGraphError / InvalidStateTransitionError 以 `toJSON()` 的
+   * **plain object** 抛过 IPC（src/main/ipc/utils.ts:227-230），preload 原样透传 ——
+   * 所以 renderer 端拿到的往往不是 Error 实例，而是带 `message` 字段的普通对象。
+   * 只处理 Error 实例会让这类错误的提示渲染成 "[object Object]"。
+   */
+  export function errorText(err: unknown): string
+  ```
+
+**已核实的事实**：
+- `useNodeOperations.ts` 里**还有三处** `console.error`（generateChildren / enrichNode / startDev）—— **不在本任务范围**，别顺手改。
+- 建节点失败时**不建边**是正确逻辑（拿不到 `created.id` 去建边会造出指向不存在节点的边）—— **保住它**，只加提示。
+- toast 走 `src/renderer/lib/toast.tsx` 的 `toastError`。
 
 - [ ] **Step 1: 写失败的测试**
 
 - `useNodeOperations.test.ts` 追加：`createNode` reject → 断言 toast 出现 error，且 `createEdge` **没有被调用**（现有逻辑是对的：建节点失败就不建边，测试要把这条钉住）。
 - `GraphTabs.test.tsx` 追加：新建图空名点保存 → error toast + 面板不关（Task 6 已加过则不重复加）。
+- **新建** `src/renderer/panels/__tests__/RightPanel.test.tsx`：`EdgeEditor` 的更新/删除失败 → error toast。
+- **新建** `src/renderer/lib/__tests__/error-text.test.ts`：`errorText` 对三种形状都给出可读文本 —— `Error` 实例、普通对象带 `message`、以及无 `message` 的对象。
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx`
-Expected: FAIL —— 建节点失败只 `console.error`。
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx src/renderer/panels/__tests__/RightPanel.test.tsx src/renderer/lib/__tests__/error-text.test.ts`
+Expected: FAIL —— 建节点失败只 `console.error`；`errorText` 模块不存在。
 
 - [ ] **Step 3: 补 toast**
 
-- `useNodeOperations.ts:48-53`：`console.error` 之后补 `toastError`（保留 `return`，不建边）。
-- `useNodeOperations.ts:64-66`：建层级边失败 → `toastError`（节点已建成、边没建成，用户要知道图上少了一根线）。
-- `GraphCanvas.tsx:1503-1511`：右键菜单改状态失败 → 从 `console.error` 改为 `toastError`（菜单关闭行为不变）。
+- `useNodeOperations.ts` 建节点失败：`console.error` 之后补 `toastError`（保留 `return`，不建边）。
+- `useNodeOperations.ts` 建层级边失败 → `toastError`（节点已建成、边没建成，用户要知道图上少了一根线）。
+- `GraphCanvas.tsx` 的 `handleNodeStatusChange`：从 `console.error` 改为 `toastError`（菜单关闭行为不变）。
+- `RightPanel.tsx` 的 `EdgeEditor` 分支：`updateEdge` / `deleteEdge` 的 promise 接住 → `toastError`（与 Task 8 对 `NodeEditor` 的处理同模式）。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [ ] **Step 4: 提取共享的 `errorText`**
 
-Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx`
+新建 `src/renderer/lib/error-text.ts`（接口见上），然后把**已存在的重复副本**改为 import 它：
+`DefaultsTab.tsx:92`、`A2ASettingsTab.tsx:54`、`SettingsPanel.tsx:77`、`AdapterHealthPanel.tsx:81`、`RightPanel.tsx:19`、`GraphTabs.tsx:118`。
+**不要**动 `RecipesPanel.tsx` / `RecipeRunProgress.tsx` 里的内联变体（形状可能不同，超出本任务范围）。
+
+**关键**：新实现必须**也读非 Error 对象的 `.message`** —— 主进程把 `BizGraphError` / `InvalidStateTransitionError` 以 `err.toJSON()` 的 **plain object** 抛过 IPC（`src/main/ipc/utils.ts:227-230`），preload 原样透传（`src/preload/index.ts:215-219`），所以 renderer 端拿到的**不是 Error 实例**。`toJSON()` 里带 `message`（`src/main/errors.ts:91-99`），但只处理 `instanceof Error` 会让它渲染成 `"[object Object]"`。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: `npx vitest run src/renderer/canvas/hooks/__tests__/useNodeOperations.test.ts src/renderer/components/__tests__/GraphTabs.test.tsx src/renderer/panels/__tests__/RightPanel.test.tsx src/renderer/lib/__tests__/error-text.test.ts`
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 6: 提交**
 
 ```bash
 npx tsc --noEmit
-git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/GraphCanvas.tsx
-git commit -m "fix(canvas): 建节点/建边/改状态失败改为明确提示"
+npm run lint
+git add src/renderer/canvas/hooks/useNodeOperations.ts src/renderer/canvas/GraphCanvas.tsx src/renderer/panels/RightPanel.tsx src/renderer/lib/error-text.ts src/renderer/panels/DefaultsTab.tsx src/renderer/panels/A2ASettingsTab.tsx src/renderer/panels/SettingsPanel.tsx src/renderer/components/agent/AdapterHealthPanel.tsx src/renderer/components/GraphTabs.tsx
+git commit -m "fix(canvas): 建节点/建边/改状态/改连线失败改为明确提示，并统一错误文本提取"
 ```
 
 ---
@@ -787,6 +850,109 @@ Expected: PASS。
 npx tsc --noEmit
 git add src/renderer/panels/SubagentTypesTab.tsx src/renderer/panels/__tests__/SubagentTypesTab.test.tsx
 git commit -m "feat(subagent): scope 策略默认选中 subset"
+```
+
+---
+
+## Task 12: 给 CLI 适配器的安装探测加超时上界
+
+> **这个任务是执行过程中补进来的**（Task 3 的审查发现），不在初始计划里。补它的原因见下方"为什么补"。
+
+**Files:**
+- Create: `src/main/adapters/cli-probe.ts`
+- Modify: `src/main/adapters/cline.ts:16,26`、`cursor.ts:15,25`、`qoder.ts:15,25`、`kilo-code.ts:16,26`、`kimi-code.ts:16,26`、`codebuddy.ts:15,25,30`、`opencode.ts:15,25`、`qwen-code.ts:16,26`
+- Test: `src/main/adapters/__tests__/cli-probe.test.ts`（新建）
+
+**Interfaces:**
+- Consumes: 无。
+- Produces: `src/main/adapters/cli-probe.ts` 新增导出：
+  ```ts
+  /**
+   * 探测一个 CLI 是否已安装。带超时上界 —— 超时视为「未安装 / 无法确认」，
+   * 并由 execFile 的 timeout 选项终止子进程（避免泄漏挂住的子进程）。
+   */
+  export async function probeCliInstalled(
+    command: string,
+    args?: string[],
+  ): Promise<boolean>
+  ```
+
+**为什么补这个任务** — Task 3 把设置面板首屏改为依赖 `agent:getAdapterMarketplace` 的实时检测，而 `checkAllInstalled`（`src/main/agent/adapter-registry.ts:31-51`）用 `Promise.allSettled` 包着各适配器的 `checkInstalled()`。那 8 个适配器各自的探测是 `promisify(execFile)` 且**没有超时**，一个在 `--version` 上挂住的 CLI（首次运行等交互输入、安装损坏、往满管道写）会让整个探测永不 settle。Task 3 的第 2 轮修复只在**渲染层**加了 5 秒上界，主进程里的挂住子进程仍会泄漏、marketplace 路径仍会被卡住 —— 根因在这里。
+
+**同一层里已有先例**：`src/main/adapters/mindmap-adapter.ts:36` 的 `execFileSync('claude', ['--version'], { timeout: 5000, ... })` **已经**设了 5000 毫秒。本任务与之对齐。
+
+**为什么用共享 helper 而不是给 8 处各加一个 timeout 选项** — 8 个适配器逐字复制了 `const execFileAsync = promisify(execFile)` 与探测调用（最终审查会把这种逐字重复判为 Important）。共享 helper 让超时值**只存在一处**，第 9 个适配器也不会漏掉。
+
+- [ ] **Step 1: 写失败的测试**
+
+新建 `src/main/adapters/__tests__/cli-probe.test.ts`：
+
+```ts
+it('命令不存在时返回 false', async () => {
+  expect(await probeCliInstalled('definitely-not-a-real-cli-xyz')).toBe(false)
+})
+
+it('命令挂住时在超时上界内返回 false，不无限等待', async () => {
+  // 用一个会挂住的命令（例如 sh -c 'sleep 30'）验证它不会一直等
+  const started = Date.now()
+  expect(await probeCliInstalled('sh', ['-c', 'sleep 30'])).toBe(false)
+  expect(Date.now() - started).toBeLessThan(10_000)
+})
+```
+
+（超时上界取 5000 毫秒，因此断言用 10 秒作为上界。）
+
+- [ ] **Step 2: 跑测试确认失败**
+
+Run: `npx vitest run src/main/adapters/__tests__/cli-probe.test.ts`
+Expected: FAIL —— 模块不存在。
+
+- [ ] **Step 3: 实现 `probeCliInstalled`**
+
+新建 `src/main/adapters/cli-probe.ts`：
+
+```ts
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
+
+/** 探测超时上界 —— 与 mindmap-adapter.ts 的 execFileSync timeout 对齐 */
+export const CLI_PROBE_TIMEOUT_MS = 5000
+
+export async function probeCliInstalled(command: string, args: string[] = ['--version']): Promise<boolean> {
+  try {
+    await execFileAsync(command, args, { timeout: CLI_PROBE_TIMEOUT_MS })
+    return true
+  } catch {
+    return false
+  }
+}
+```
+
+`execFile` 的 `timeout` 选项到期会终止子进程 —— 这同时解决了**挂住的子进程泄漏**，不只是等待时间。
+
+- [ ] **Step 4: 八个适配器改用共享 helper**
+
+逐个改 `cline.ts` / `cursor.ts` / `qoder.ts` / `kilo-code.ts` / `kimi-code.ts` / `codebuddy.ts` / `opencode.ts` / `qwen-code.ts`：
+- 删掉本文件里的 `const execFileAsync = promisify(execFile)` 与对应的 `import { execFile } from 'node:child_process'` / `import { promisify } from 'node:util'`（若该 import 只用于这一处）。
+- `checkInstalled()` 改为调用 `probeCliInstalled(...)`。
+- **保留各自原有的 logger 警告** —— 例如 `cline.ts:29` 的 `this.logger.warn('cline CLI not found')`。helper 吞掉错误，所以适配器层要自己记日志，否则会丢掉现有的诊断信息。
+- `codebuddy.ts` 有两级回退（先试 `codebuddy`，再试 `cbc`），两级都要走 helper。
+
+- [ ] **Step 5: 跑测试确认通过**
+
+Run: `npx vitest run src/main/adapters/__tests__/cli-probe.test.ts src/main/__tests__/adapter.test.ts`
+Expected: PASS。
+
+- [ ] **Step 6: 全量测试 + 类型检查 + 提交**
+
+```bash
+npx tsc --noEmit
+npm run lint
+npm run test
+git add src/main/adapters/cli-probe.ts src/main/adapters/cline.ts src/main/adapters/cursor.ts src/main/adapters/qoder.ts src/main/adapters/kilo-code.ts src/main/adapters/kimi-code.ts src/main/adapters/codebuddy.ts src/main/adapters/opencode.ts src/main/adapters/qwen-code.ts src/main/adapters/__tests__/cli-probe.test.ts
+git commit -m "fix(adapters): CLI 安装探测加超时上界，挂住的子进程不再泄漏"
 ```
 
 ---

@@ -13,6 +13,8 @@ export const projectsZh = {
   'projects.emptyTitle': '还没有项目',
   'projects.emptyHint': '点击 + 打开目录',
   'projects.generateMindMap': '生成思维导图',
+  'projects.scanHint': '扫描项目，生成产品蓝图与开发场景两张图',
+  'projects.scanFailed': '扫描项目失败',
   'projects.remove': '移除',
 
   // ---- 树视图筛选与排序 ----
@@ -110,6 +112,9 @@ export const projectsZh = {
   'edge.editor.descPlaceholder': '简要说明（可选）',
   'edge.editor.addAssociation': '+ 添加关联',
   'edge.editor.add': '添加',
+  /** 连接线编辑器的失败提示（静默失败归零）—— 与 node.toast.* 同构 */
+  'edge.toast.updateFailed': '连线更新失败',
+  'edge.toast.deleteFailed': '连线删除失败',
 
   // ---- 右侧面板 ----
   'right.tab.node': '节点',
@@ -128,6 +133,8 @@ export const projectsEn: Record<keyof typeof projectsZh, string> = {
   'projects.emptyTitle': 'No projects yet',
   'projects.emptyHint': 'Click + to open a directory',
   'projects.generateMindMap': 'Generate mind map',
+  'projects.scanHint': 'Scan the project to generate the blueprint and dev graphs',
+  'projects.scanFailed': 'Failed to scan project',
   'projects.remove': 'Remove',
 
   'projects.tree.filterAllStatus': 'All Status',
@@ -221,6 +228,8 @@ export const projectsEn: Record<keyof typeof projectsZh, string> = {
   'edge.editor.descPlaceholder': 'Brief description (optional)',
   'edge.editor.addAssociation': '+ Add association',
   'edge.editor.add': 'Add',
+  'edge.toast.updateFailed': 'Failed to update connection',
+  'edge.toast.deleteFailed': 'Failed to delete connection',
 
   'right.tab.node': 'Node',
   'right.tab.agent': 'Agent',

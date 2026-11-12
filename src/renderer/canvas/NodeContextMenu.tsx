@@ -1,7 +1,9 @@
 import { useRef, useEffect } from 'react'
 import { cn } from '../lib/utils'
+import { isTerminalStatus } from '../lib/node-status'
 import { NODE_TYPE_COLORS } from '@shared/constants'
 import { nodeStatusLabel, nodeTypeLabel } from '@shared/i18n'
+import { canTransitionForType } from '@shared/state-machine'
 import { useI18n } from '../i18n/useI18n'
 import { isNodeType } from '@shared/type-guards'
 import type { GraphNode, NodeType, NodeStatus } from '@shared/types'
@@ -74,6 +76,13 @@ export function NodeContextMenu({
 
   // 规则表给的是类型名（不是 label）——用共享的 isNodeType 窄化，未知类型直接忽略
   const childTypeOptions = allowedChildTypes.filter(isNodeType)
+
+  // 状态格子按 per-type 矩阵过滤 —— 主进程 NodeRepository.update() 走同一张表，
+  // 放出不可达的格子只会让用户点了没反应（主进程抛 IpcError 被 renderer 吞掉）。
+  const reachableStatuses = statusOptions.filter((opt) =>
+    canTransitionForType(node.type, node.status, opt.value),
+  )
+  const isTerminal = isTerminalStatus(node.status, reachableStatuses.map((opt) => opt.value))
 
   return (
     <ViewportMenu
@@ -187,10 +196,11 @@ export function NodeContextMenu({
         <div className="border-t mt-1 pt-1">
           <div className="px-3 py-1 text-[10px] text-muted-foreground uppercase tracking-wider">{t('canvas.contextMenu.status')}</div>
           <div className="px-2 pb-1 grid grid-cols-3 gap-1">
-            {statusOptions.map((opt) => (
+            {reachableStatuses.map((opt) => (
               <button
                 key={opt.value}
                 onClick={() => onStatusChange(nodeId, opt.value)}
+                data-testid={`node-menu-status-${opt.value}`}
                 className={cn(
                   'px-1.5 py-1 text-[10px] rounded border transition-colors',
                   node.status === opt.value
@@ -203,6 +213,14 @@ export function NodeContextMenu({
               </button>
             ))}
           </div>
+          {isTerminal && (
+            <p
+              className="px-3 pb-1 text-[10px] text-muted-foreground"
+              data-testid="node-menu-terminal-hint"
+            >
+              {t('status.terminalHint', { status: nodeStatusLabel(node.status, locale) })}
+            </p>
+          )}
         </div>
       )}
 

@@ -857,6 +857,82 @@ describe('SubagentManager recipe:<id> dispatch', () => {
     ).rejects.toThrow(/Recipe runner is not configured/)
   })
 
+  /**
+   * 只读父会话**不得**执行 recipe。
+   *
+   * 背景：recipe 的 shell 步直接 spawn 子进程（recipe-runner.ts 的 runShellStep），
+   * 完全在适配器层之外 —— claude-code 的 tools 白名单与 strictMcpConfig 都管不到它。
+   * 所以只读会话能被诱导去 dispatch 一个 recipe，然后由 recipe 在真实项目目录里写盘。
+   */
+  describe('只读父会话不得执行 recipe', () => {
+    it('父会话 readOnly → 拒绝执行 recipe，且错误说明了原因', async () => {
+      const mockManager = createMockAgentManager()
+      // 父会话是只读的
+      mockManager.getSessionState.mockReturnValue({
+        config: {
+          workingDirectory: '/tmp',
+          allowedFiles: [],
+          readOnly: true,
+          forbiddenFiles: [],
+          invariantRules: [],
+          upstreamContext: '',
+          downstreamContext: '',
+          nodeTitle: '',
+          acceptanceCriteria: [],
+        },
+        broadcastName: 'mock',
+        adapterName: 'mock',
+        startTime: Date.now(),
+      })
+
+      const mockRepo = createMockRepo()
+      const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+
+      const run = vi.fn().mockResolvedValue({ id: 'r1' })
+      mgr.setRecipeRunner({ run } as any)
+
+      await expect(
+        mgr.invoke({
+          parentSessionId: 'p1',
+          agentType: 'recipe:demo',
+          description: 'Run demo recipe',
+          prompt: 'override prompt',
+        }),
+      ).rejects.toThrow(/read-only/)
+
+      // 关键：recipe 根本没被执行 —— shell 步没有机会 spawn
+      expect(run).not.toHaveBeenCalled()
+    })
+
+    it('父会话可写 → recipe 照常执行（守卫不误伤）', async () => {
+      const mockManager = createMockAgentManager()
+      // 默认 mock 的 config 没有 readOnly → 可写
+      const mockRepo = createMockRepo()
+      const mgr = new SubagentManager(mockManager as any, mockRepo as any, 5, 5000)
+
+      const run = vi.fn().mockResolvedValue({
+        id: 'r1',
+        status: 'succeeded',
+        steps: [],
+        outputs: {},
+        error: null,
+        started_at: Date.now(),
+        finished_at: Date.now(),
+      })
+      mgr.setRecipeRunner({ run } as any)
+
+      // 不抛错即可 —— 守卫不该拦住可写会话
+      await mgr.invoke({
+        parentSessionId: 'p1',
+        agentType: 'recipe:demo',
+        description: 'Run demo recipe',
+        prompt: 'override prompt',
+      })
+
+      expect(run).toHaveBeenCalled()
+    })
+  })
+
   it('returns failed run when recipe id is unknown', async () => {
     const mockManager = createMockAgentManager()
     const mockRepo = createMockRepo()

@@ -6,14 +6,12 @@
  * 非交互模式: cline "prompt"  |  cline --json "prompt"
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class ClineAdapter extends BaseAdapter {
   readonly name = 'cline'
@@ -22,13 +20,9 @@ export class ClineAdapter extends BaseAdapter {
   protected logger = createLogger('ClineAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('cline', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('cline CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('cline', ['--version'])) return true
+    this.logger.warn('cline CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

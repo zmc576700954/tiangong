@@ -3,7 +3,7 @@ import type { Graph, GraphNode, GraphEdge, BugNode, EdgeType, EdgeContent } from
 import type { IngestResult, IngestMode, LintReport, LintFixAction, LintFixResult, ComputeResult, WritebackItem, RollbackResult } from '@shared/types/wiki'
 import { generateId } from '../lib/utils'
 import { eventBus, Events } from './eventBus'
-import { canTransition } from '@shared/state-machine'
+import { canTransitionForType } from '@shared/state-machine'
 
 // ============================================
 // Store 定义
@@ -48,7 +48,19 @@ interface GraphState {
   loadGraphs: () => Promise<void>
   loadGraph: (graphId: string) => Promise<void>
 
-  createGraph: (name: string, type: 'online' | 'dev', sourceGraphId?: string) => Promise<Graph>
+  /**
+   * 新建图。
+   *
+   * `type` **只接受 `'dev'`**：online 蓝图由项目导入自动建（图与图一一对应），
+   * 手工建 online 图等于造一张重复的废图 —— 类型收窄到 'dev' 让这个回归编不出来。
+   * （IPC 层的 `graph:create` 仍是通用的 `GraphType`，它是 API 契约，不该被 UI 的决定绑住。）
+   *
+   * `projectPath` = 图所属项目的根目录。给了 `sourceGraphId`（从蓝图派生）时
+   * 走 `graph:derive` —— 派生图**继承源图的 projectPath**，这里的 projectPath 不用；
+   * 否则走 `graph:create`，必须把 projectPath 带上：它决定 Agent 会话的
+   * workingDirectory、项目级默认值归属和 IPC 路径白名单（spec §四.B2）。
+   */
+  createGraph: (name: string, type: 'dev', sourceGraphId?: string, projectPath?: string) => Promise<Graph>
   deleteGraph: (id: string) => Promise<void>
   setCurrentGraph: (id: string | null) => void
 
@@ -196,13 +208,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     }
   },
 
-  createGraph: async (name, type, sourceGraphId) => {
+  createGraph: async (name, type, sourceGraphId, projectPath) => {
     if (sourceGraphId) {
       const graph = await window.electronAPI['graph:derive'](sourceGraphId, name)
       set((state) => ({ graphs: [graph, ...state.graphs] }))
       return graph
     }
-    const graph = await window.electronAPI['graph:create']({ name, type })
+    const graph = await window.electronAPI['graph:create']({ name, type, projectPath })
     set((state) => ({ graphs: [graph, ...state.graphs] }))
     return graph
   },
@@ -275,8 +287,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!prevNode) return
 
     // 状态机校验：如果更新包含 status，验证转换是否合法
+    // 用 per-type 矩阵 —— 主进程 NodeRepository.update() 走的是同一张表，
+    // 这里放宽就会变成"渲染端放行、主进程抛错"。
     if (data.status && data.status !== prevNode.status) {
-      if (!canTransition(prevNode.status, data.status)) {
+      if (!canTransitionForType(prevNode.type, prevNode.status, data.status)) {
         const err = new Error(
           `非法状态转换: "${prevNode.status}" → "${data.status}" 不被允许`,
         )

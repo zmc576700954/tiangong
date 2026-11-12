@@ -18,9 +18,11 @@ import type {
   AdapterPreferences,
 } from '@shared/types'
 import type { A2AServerConfig, A2ARemoteAgent } from '@shared/types/a2a'
+import { DEFAULT_ADAPTER_PREFERENCES, ALLOWED_API_PROVIDERS } from '@shared/adapter-defaults'
 import { BizGraphError, IpcError, ErrorCode } from './errors'
 import { t } from '@shared/i18n'
 import { getPlatformProvider } from './platform'
+import { validateNpmPackageName } from './shared/npm-package'
 import { createLogger } from './shared/logger'
 import { resolveLocale } from '@shared/i18n'
 
@@ -50,11 +52,6 @@ function restrictFileAcl(filePath: string): void {
 // Re-export types for backward compatibility
 export type { CliToolConfig, ApiKeyConfig, McpServerConfig, BizGraphSettings, AdapterPreferences, A2AServerConfig, A2ARemoteAgent }
 
-const DEFAULT_ADAPTER_PREFERENCES: AdapterPreferences = {
-  defaultAdapter: 'claude-code',
-  fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'],
-}
-
 /** Known adapter names registered in the adapter registry.
  *  Kept in sync with src/main/adapters/registry.ts ADAPTER_REGISTRY.
  */
@@ -65,6 +62,22 @@ const KNOWN_ADAPTER_NAMES = new Set([
 
 const DEFAULT_SETTINGS: BizGraphSettings = {
   version: 1,
+  // 全部 10 个真 CLI 适配器。command / npmPackage 来自 ADAPTER_REGISTRY
+  // （src/main/adapters/registry.ts）—— 少了任何一个，用户装了也检测不到、
+  // 也没法从设置页安装。mcp（API 兜底）与 mindmap-internal（内置）不是 CLI
+  // 工具，不在这里。
+  //
+  // detectArgs 只在**与默认值不同**时写出来（目前只有 cursor）：
+  // 默认就是 ['--version']，把 8 条一模一样的值抄一遍只会多一份会悄悄过期的
+  // 副本。注册表改了任何一个适配器的探测参数，settings.test.ts 里的
+  // 「与适配器注册表一致」那条用例会红。
+  //
+  // ⚠️ 这份清单同时是**主进程的事实源**：探测（detectCliTool）与安装
+  // （installCliTool）用的 command / detectArgs / npmPackage 一律只认这里，
+  // **绝不**从 settings.json 里取 —— settings.json 是渲染进程能写的数据，
+  // 拿它来 spawn 等于把「主进程执行什么命令」的决定权交给渲染进程。
+  // 它是模块级常量，渲染进程写不进去；与 ADAPTER_REGISTRY 的一致性由
+  // settings.test.ts 的注册表一致性用例守着。
   cliTools: [
     {
       name: 'claude-code',
@@ -80,13 +93,63 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
     },
     {
       name: 'opencode',
-      npmPackage: 'opencode',
+      npmPackage: 'opencode-ai',
       command: 'opencode',
+      installed: false,
+    },
+    {
+      name: 'cline',
+      npmPackage: 'cline',
+      command: 'cline',
+      installed: false,
+    },
+    {
+      name: 'kilo-code',
+      npmPackage: '@kilocode/cli',
+      command: 'kilo',
+      installed: false,
+    },
+    {
+      name: 'kimi-code',
+      npmPackage: '@moonshot-ai/kimi-code',
+      command: 'kimi',
+      installed: false,
+    },
+    {
+      name: 'codebuddy',
+      npmPackage: '@tencent-ai/codebuddy-code',
+      command: 'codebuddy',
+      installed: false,
+    },
+    {
+      name: 'qoder',
+      npmPackage: '@qoder-ai/qodercli',
+      command: 'qodercli',
+      installed: false,
+    },
+    {
+      name: 'qwen-code',
+      npmPackage: '@qwen-code/qwen-code',
+      command: 'qwen',
+      installed: false,
+    },
+    {
+      // cursor 只有官网下载这一种安装方式，没有 npm 包 ——
+      // 空包名让界面不渲染「安装」按钮（点了必然失败）。
+      // 探测参数也不是默认的 --version：注册表用的是 `cursor agent --version`
+      // （`cursor --version` 探不到，会显示一个假的「未安装」）。
+      name: 'cursor',
+      npmPackage: '',
+      command: 'cursor',
+      detectArgs: ['agent', '--version'],
       installed: false,
     },
   ],
   apiKeys: [],
   defaultModel: 'claude-3-7-sonnet-20250219',
+  // 按适配器分开的默认模型。空对象 = 全部走各自回落（见 adapters/model-selection.ts）：
+  // claude-code 回落到旧的 defaultModel，codex / mcp 用各自的默认模型。
+  defaultModels: {},
   mcpServers: [
     {
       name: 'filesystem',
@@ -103,6 +166,13 @@ const DEFAULT_SETTINGS: BizGraphSettings = {
   ],
   adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   writeback: { enabled: true },
+  // 上下文水位（自动压缩）默认值 —— 与 ContextWaterlineTab 的兜底值保持一致，
+  // 避免「界面显示已开启、主进程却是关闭的」这种两边不一致。
+  contextWaterline: {
+    autoCompactEnabled: true,
+    autoCompactThreshold: 0.75,
+    minCompactInterval: 60_000,
+  },
   locale: 'zh-CN',
   realtime: { enabled: false, port: 1234, host: '127.0.0.1' },
   // D10b: userIdentity 不在默认配置里初始化 — 由 realtime IPC 的
@@ -494,6 +564,38 @@ function validateSettingsShape(data: unknown): data is Partial<BizGraphSettings>
 // 配置读写
 // ============================================
 
+/**
+ * 拿一份**独立**的默认配置。
+ *
+ * `{ ...DEFAULT_SETTINGS }` 只是浅拷贝 —— 它的 cliTools / apiKeys / mcpServers
+ * 仍然是常量里的同一个数组。调用方一旦就地改这些数组（installCliTool 的
+ * `settings.cliTools[idx] = ...`、setApiKey 的 `settings.apiKeys.push(...)`），
+ * 就会把**事实源**改掉：探测命令、npm 包名、甚至 API Key 都被污染了。
+ * 这里必须复制一层。
+ *
+ * cliTools 的 detectArgs 要复制**两层**：它恰恰是决定主进程执行什么的那个字段，
+ * 一旦与常量共享同一个数组，将来任何一句 `tool.detectArgs.push(...)` 就会
+ * 悄悄改变要 spawn 的东西。
+ *
+ * defaultModels / writeback / contextWaterline / realtime / adapterPreferences
+ * 这些**非数组**字段目前是按引用共享的 —— 今天没有就地改写点（唯一的写是整对象
+ * 替换），所以是纯潜伏。若将来出现就地改写，必须改成深拷贝。
+ */
+function freshDefaults(): BizGraphSettings {
+  return {
+    ...DEFAULT_SETTINGS,
+    cliTools: DEFAULT_SETTINGS.cliTools.map((tool) => ({
+      ...tool,
+      detectArgs: tool.detectArgs ? [...tool.detectArgs] : undefined,
+    })),
+    apiKeys: DEFAULT_SETTINGS.apiKeys.map((key) => ({ ...key })),
+    mcpServers: DEFAULT_SETTINGS.mcpServers.map((server) => ({
+      ...server,
+      args: [...server.args],
+    })),
+  }
+}
+
 export async function getSettingsPath(): Promise<string> {
   const userDataPath = app.getPath('userData')
   return path.join(userDataPath, SETTINGS_FILENAME)
@@ -508,7 +610,7 @@ export async function readSettings(): Promise<BizGraphSettings> {
     // 验证 JSON 结构合法性，防止恶意或损坏的配置导致运行时异常
     if (!validateSettingsShape(parsed)) {
       logger.warn('Settings file has invalid structure, using defaults')
-      cachedSettings = { ...DEFAULT_SETTINGS }
+      cachedSettings = freshDefaults()
       cachedAt = Date.now()
       return cachedSettings
     }
@@ -521,12 +623,12 @@ export async function readSettings(): Promise<BizGraphSettings> {
     if (isEnoent) {
       // 首次启动：写入默认配置，后续读取不再触发 ENOENT
       logger.info('Settings file not found, creating with defaults')
-      const defaults = { ...DEFAULT_SETTINGS }
+      const defaults = freshDefaults()
       try { await writeSettings(defaults) } catch (e) { logger.warn('Failed to write initial default settings:', e) }
       cachedSettings = defaults
     } else {
       logger.warn('Failed to read settings file, using defaults:', err)
-      cachedSettings = { ...DEFAULT_SETTINGS }
+      cachedSettings = freshDefaults()
     }
     cachedAt = Date.now()
     return cachedSettings
@@ -540,48 +642,69 @@ export async function writeSettings(settings: BizGraphSettings): Promise<void> {
   if (!validateSettingsShape(settings)) {
     throw new BizGraphError('Invalid settings shape', ErrorCode.SETTINGS_INVALID_FORMAT)
   }
+  // 归一化：cliTools 里的 command / npmPackage / detectArgs 是**事实源的事实**，
+  // 不能由渲染进程决定。settings:write 能把任意裸命令名和任意参数写进来 ——
+  // 写进文件之前先按事实源纠正，文件和 30 秒内存缓存里就都只剩事实源的值。
+  // 用户态字段（installed / version / path）照旧保留。
+  const normalized: BizGraphSettings = {
+    ...settings,
+    cliTools: mergeCliTools(DEFAULT_SETTINGS.cliTools, settings.cliTools ?? []),
+  }
   const settingsPath = await getSettingsPath()
   const prev = cachedSettings
-  const encrypted = await encryptSettings(settings)
+  const encrypted = await encryptSettings(normalized)
   await fs.writeFile(settingsPath, JSON.stringify(encrypted, null, 2), { encoding: 'utf-8', mode: 0o600 })
   // Windows 忽略 0o600，用 ACL 限制为仅当前用户可访问（best-effort）。
   // settings.json 可能含 fbk: 回退加密的 API Key，回退方案本身仅为混淆，
   // 收紧 ACL 可在 safeStorage 不可用时降低本地同主机其他用户读取的风险。
   restrictFileAcl(settingsPath)
-  cachedSettings = settings
+  cachedSettings = normalized
   // Phase D9: settings.onChange 热重载。prev 可能为 null（首次写入）。
-  fireChange(prev ?? settings, settings)
+  fireChange(prev ?? normalized, normalized)
 }
 
+/**
+ * 合并「默认值」与「磁盘上读到的配置」。
+ *
+ * 通用合并：saved 里出现的字段一律保留。**不要**再逐字段列举 —— 之前那种写法
+ * 会把没被列举到的字段在每次 readSettings() 时悄悄丢掉（用户以为保存成功，
+ * 重启后改动却没了，且没有任何报错）。以后新增设置字段不需要在这里登记。
+ */
 function mergeSettings(
   defaults: BizGraphSettings,
   saved: Partial<BizGraphSettings>,
 ): BizGraphSettings {
-  return {
-    version: saved.version ?? defaults.version,
-    cliTools: mergeCliTools(defaults.cliTools, saved.cliTools ?? []),
-    apiKeys: saved.apiKeys ?? defaults.apiKeys,
-    defaultModel: saved.defaultModel ?? defaults.defaultModel,
-    mcpServers: saved.mcpServers ?? defaults.mcpServers,
-    adapterPreferences: saved.adapterPreferences ?? defaults.adapterPreferences,
-    customAgentTypes: saved.customAgentTypes ?? defaults.customAgentTypes,
-    contextWaterline: saved.contextWaterline ?? defaults.contextWaterline,
-    writeback: saved.writeback ?? defaults.writeback,
-    locale: resolveLocale(saved.locale ?? defaults.locale),
-    realtime: saved.realtime ?? defaults.realtime,
-    // D10b: userIdentity 不在默认值里（避免重装复用旧 userId），
-    // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
-    userIdentity: saved.userIdentity,
-    telemetry: saved.telemetry ?? defaults.telemetry,
-    // Phase D9: a2aServer / a2a 整体替换（不深合并）；未在 saved 中保留 undefined 以便后续 null 检查
-    a2aServer: saved.a2aServer ?? defaults.a2aServer,
-    a2a: saved.a2a ?? defaults.a2a,
-    // M1: agentRuntime 必须真的透传，否则 settings 里的 costRates 永远到不了
-    // AgentRuntime（价格只会走内置表）。缺省时保持 undefined，不注入空对象。
-    agentRuntime: saved.agentRuntime ?? defaults.agentRuntime,
-  }
+  // 先剔除 saved 里显式的 undefined：直接展开会用 undefined 盖掉 defaults 里的真实默认值。
+  const defined = Object.fromEntries(
+    Object.entries(saved).filter(([, v]) => v !== undefined),
+  ) as Partial<BizGraphSettings>
+  const merged: BizGraphSettings = { ...defaults, ...defined }
+  // cliTools 是「按名字合并」的数组（saved 覆盖同名项，defaults 补全缺失项），
+  // 不走整体替换 —— 用户装过的 CLI 条目不能被默认清单吞掉。
+  merged.cliTools = mergeCliTools(defaults.cliTools, defined.cliTools ?? [])
+  // 三个刻意例外，不能被通用合并覆盖：
+  // userIdentity 不在默认值里（见 DEFAULT_SETTINGS 注释，避免重装复用旧 userId），
+  // merge 时仅在 saved 显式提供时透传。真实生成由 loadOrCreateIdentity() 完成。
+  merged.userIdentity = saved.userIdentity
+  // a2aServer / a2a 整体替换（不深合并）
+  merged.a2aServer = saved.a2aServer ?? defaults.a2aServer
+  merged.a2a = saved.a2a ?? defaults.a2a
+  // locale 必须过 resolveLocale 归一化（未知值回落 zh-CN）
+  merged.locale = resolveLocale(saved.locale ?? defaults.locale)
+  return merged
 }
 
+/**
+ * 按名字合并 CLI 工具清单。
+ *
+ * - defaults 里有的：名字对齐，**command / npmPackage / detectArgs 取 defaults 的值** ——
+ *   这三个字段是适配器注册表的事实（ADAPTER_REGISTRY），不是用户状态。
+ *   存档里的旧值（例如 opencode 的 npmPackage 曾误写成 'opencode'）必须被
+ *   注册表纠正，否则老用户永远装错包。installed / version / path 保留存档里的
+ *   值 —— 那是用户机器上的真实状态，不能被默认值抹掉。
+ * - defaults 里没有的：原样追加 —— 用户装的 marketplace CLI 不能被吞掉
+ *   （旧实现只遍历 defaults，保存一次就丢一批条目）。
+ */
 function mergeCliTools(
   defaults: CliToolConfig[],
   saved: CliToolConfig[],
@@ -589,7 +712,32 @@ function mergeCliTools(
   const result: CliToolConfig[] = []
   for (const def of defaults) {
     const found = saved.find((s) => s.name === def.name)
-    result.push(found ? { ...def, ...found } : { ...def })
+    result.push(
+      found
+        ? {
+            ...def,
+            ...found,
+            // installed 在类型上是必填的，但存档里可能缺这一项 ——
+            // 展开合并会留下 installed: undefined（序列化成缺失的键）
+            installed: found.installed ?? def.installed,
+            command: def.command,
+            npmPackage: def.npmPackage,
+            // detectArgs 复制两层：它决定主进程执行什么，不能与事实源共享引用
+            detectArgs: def.detectArgs ? [...def.detectArgs] : undefined,
+          }
+        : {
+            ...def,
+            detectArgs: def.detectArgs ? [...def.detectArgs] : undefined,
+          },
+    )
+  }
+  for (const s of saved) {
+    if (defaults.some((d) => d.name === s.name)) continue
+    // ⚠️ s 来自磁盘 —— 是渲染进程能写的数据。detectArgs 可能是「真值但不可迭代」
+    // （比如 5），展开会抛 TypeError；而这个抛错发生在 readSettings 的 try 里，
+    // 会让整份配置回落成默认值 —— 用户存的 API key 当场丢失，
+    // 下一次写入还会把默认值盖回真实文件。所以必须用 Array.isArray 守卫。
+    result.push({ ...s, detectArgs: Array.isArray(s.detectArgs) ? [...s.detectArgs] : undefined })
   }
   return result
 }
@@ -598,16 +746,30 @@ function mergeCliTools(
 // CLI 工具检测
 // ============================================
 
+/**
+ * 探测 CLI 工具时的默认参数。
+ *
+ * 绝大多数 CLI 都是 `<command> --version`；cursor 是例外（`agent --version`），
+ * 走 CliToolConfig.detectArgs。写死 ['--version'] 会让装了 Cursor 的用户在
+ * 设置页看到假的「未安装」，而「默认值」页签的实时检测（走注册表的 detectArgs）
+ * 又说它装了 —— 同一个应用里自相矛盾。
+ */
+const DEFAULT_DETECT_ARGS = ['--version']
+
 export async function detectCliTool(name: string): Promise<{
   installed: boolean
   version?: string
   path?: string
 }> {
-  const settings = await readSettings()
-  const tool = settings.cliTools.find((t) => t.name === name)
+  // ⚠️ 探测用的 command / args **只认主进程常量** DEFAULT_SETTINGS.cliTools。
+  // settings.json 里的同名字段是渲染进程能写的数据（settings:write 能写
+  // 任意裸命令名 + 任意参数），拿它来 spawn 等于让渲染进程决定主进程执行
+  // 什么命令 —— `sh -c '…'` 就能变成任意命令执行。
+  // 事实源里没有的名字一律不 spawn。
+  const tool = DEFAULT_SETTINGS.cliTools.find((t) => t.name === name)
   if (!tool) return { installed: false }
   try {
-    const result = spawnSync(tool.command, ['--version'], {
+    const result = spawnSync(tool.command, tool.detectArgs ?? DEFAULT_DETECT_ARGS, {
       encoding: 'utf-8',
       timeout: 5000,
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -635,6 +797,9 @@ export async function refreshAllCliStatus(): Promise<CliToolConfig[]> {
   const settings = await readSettings()
   const updated = await Promise.all(
     settings.cliTools.map(async (tool) => {
+      // 只探测事实源里有的工具：名字不在事实源里 → 我们不知道它的探测命令，
+      // 既不 spawn，也不谎称「未安装」—— 保留存档里的状态不动。
+      if (!DEFAULT_SETTINGS.cliTools.some((t) => t.name === tool.name)) return { ...tool }
       const detected = await detectCliTool(tool.name)
       return { ...tool, ...detected }
     }),
@@ -642,11 +807,6 @@ export async function refreshAllCliStatus(): Promise<CliToolConfig[]> {
   settings.cliTools = updated
   await writeSettings(settings)
   return updated
-}
-
-function validateNpmPackageName(pkg: string): boolean {
-  // npm 包名格式验证：防命令注入
-  return /^(@[\w~-][\w.~-]*\/)?[\w~-][\w.~-]*$/.test(pkg)
 }
 
 /** Resolve the absolute path to the npm executable without relying on shell resolution.
@@ -675,8 +835,16 @@ export async function installCliTool(name: string): Promise<{
   message: string
 }> {
   const settings = await readSettings()
-  const tool = settings.cliTools.find((t) => t.name === name)
+  // ⚠️ 装哪个 npm 包**只认主进程常量** DEFAULT_SETTINGS.cliTools。
+  // settings.json 里的条目是渲染进程能写的数据 —— 拿它来 `npm install -g <pkg>`
+  // 等于让渲染进程往用户的全局 npm 里塞任意包。
+  const tool = DEFAULT_SETTINGS.cliTools.find((t) => t.name === name)
   if (!tool) return { success: false, message: t('settings.install.unknownTool', { name }) }
+
+  // 有些工具没有 npm 包（cursor 只能从官网下载）—— 说清楚，别报「非法的包名」
+  if (!tool.npmPackage) {
+    return { success: false, message: t('settings.install.manualOnly', { name }) }
+  }
 
   if (!validateNpmPackageName(tool.npmPackage)) {
     return { success: false, message: t('settings.install.invalidPackage', { package: tool.npmPackage }) }
@@ -744,7 +912,11 @@ export async function installCliTool(name: string): Promise<{
       try {
         const detected = await detectCliTool(name)
         const idx = settings.cliTools.findIndex((t) => t.name === name)
-        settings.cliTools[idx] = { ...tool, ...detected }
+        if (idx >= 0) {
+          settings.cliTools[idx] = { ...settings.cliTools[idx], ...detected }
+        } else {
+          settings.cliTools.push({ ...tool, ...detected })
+        }
         await writeSettings(settings)
         resolve({
           success: detected.installed,
@@ -775,8 +947,17 @@ export async function getApiKey(provider: string): Promise<string | undefined> {
   return settings.apiKeys.find((k) => k.provider === provider)?.key
 }
 
-const ALLOWED_PROVIDERS: ApiKeyConfig['provider'][] = ['anthropic', 'openai', 'deepseek', 'gemini']
+/** provider 白名单 —— 单一真相源在 @shared/adapter-defaults（渲染层也要用同一份）。 */
+const ALLOWED_PROVIDERS = ALLOWED_API_PROVIDERS
 
+/**
+ * 写入某个 provider 的 API Key。
+ *
+ * `key` 为空串 = **删除**该 provider 的条目，而不是写入一个空 key。
+ * 写入空 key 会留下一个「看起来存在、实际不可用」的凭据：
+ * 界面把它当成已配置（占位符显示「当前：****」），
+ * 而真正取 key 的地方（resolveApiKey）会跳过空 key —— 两边对不上。
+ */
 export async function setApiKey(
   provider: string,
   key: string,
@@ -787,6 +968,12 @@ export async function setApiKey(
   }
   const settings = await readSettings()
   const idx = settings.apiKeys.findIndex((k) => k.provider === provider)
+  if (key === '') {
+    if (idx < 0) return
+    settings.apiKeys.splice(idx, 1)
+    await writeSettings(settings)
+    return
+  }
   if (idx >= 0) {
     settings.apiKeys[idx] = { provider: provider as ApiKeyConfig['provider'], key, baseUrl }
   } else {

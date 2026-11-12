@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Activity, AlertTriangle, RefreshCw } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { toastError } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import { useI18n } from '../i18n/useI18n'
 import type { TranslationKey } from '@shared/i18n'
 import type { AdapterHealthScore } from '@shared/types'
@@ -78,7 +79,7 @@ export function AdapterHealthPanel({ api, autoRefreshMs = 30000 }: AdapterHealth
       setState({ kind: 'data', scores })
       setUpdatedAt(Date.now())
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = errorText(err)
       // 手动刷新失败弹 toast；auto 失败只在 banner 上提示，避免被淹没
       if (mode === 'manual') {
         toastError(t('agent.health.toast.refreshFailed'), msg)

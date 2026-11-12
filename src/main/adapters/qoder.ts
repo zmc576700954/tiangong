@@ -5,14 +5,12 @@
  * npm: @qoder-ai/qodercli, CLI 命令: qodercli
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class QoderAdapter extends BaseAdapter {
   readonly name = 'qoder'
@@ -21,13 +19,9 @@ export class QoderAdapter extends BaseAdapter {
   protected logger = createLogger('QoderAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('qodercli', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('qodercli CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('qodercli', ['--version'])) return true
+    this.logger.warn('qodercli CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

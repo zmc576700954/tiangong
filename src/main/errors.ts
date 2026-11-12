@@ -30,6 +30,13 @@ export const ErrorCode = {
   AGENT_SESSION_LIMIT: 'AGENT_SESSION_LIMIT',
   AGENT_RESOURCE_EXHAUSTED: 'AGENT_RESOURCE_EXHAUSTED',
   AGENT_COMPACT_FAILED: 'AGENT_COMPACT_FAILED',
+  /**
+   * 只读会话选中的适配器无法保证只读。
+   *
+   * 只读会话**不自动换适配器**（决定 D3）—— 回退到能写的适配器等于把写权限
+   * 在用户不知情的情况下交出去。
+   */
+  ADAPTER_READONLY_UNSUPPORTED: 'ADAPTER_READONLY_UNSUPPORTED',
 
   // 范围守卫
   SCOPE_PATH_TRAVERSAL: 'SCOPE_PATH_TRAVERSAL',
@@ -50,6 +57,13 @@ export const ErrorCode = {
   RECIPE_NOT_FOUND: 'RECIPE_NOT_FOUND',
   RECIPE_INVALID_STEP: 'RECIPE_INVALID_STEP',
   RECIPE_RUN_FAILED: 'RECIPE_RUN_FAILED',
+  /**
+   * 只读父会话试图执行 recipe。
+   *
+   * recipe 的 shell 步直接在真实项目目录里 spawn 子进程 —— 绕开了适配器层的
+   * 只读保证（tools 白名单 / MCP 隔离都管不到它），所以整个 recipe 被拒绝。
+   */
+  RECIPE_READONLY_REFUSED: 'RECIPE_READONLY_REFUSED',
 
   // 状态机
   STATE_TRANSITION_INVALID: 'STATE_TRANSITION_INVALID',

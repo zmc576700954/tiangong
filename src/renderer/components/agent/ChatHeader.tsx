@@ -65,6 +65,13 @@ export function ChatHeader({
   const { t } = useI18n()
   const [showAdapterMenu, setShowAdapterMenu] = useState(false)
 
+  // 已安装的适配器——props 里的 installed 来自 adapterStore 的实时检测（agent:listAdapters）
+  const installedAdapters = adapters.filter((a) => a.installed)
+
+  // 一个都没装：菜单保留完整列表（未安装项点击引导去设置页），维持原有行为
+  // 装了 ≥2 个：菜单只列已装的，底部补一项「安装更多适配器…」
+  const menuAdapters = installedAdapters.length === 0 ? adapters : installedAdapters
+
   // 回退指示器：显示从哪个适配器回退到了哪个
   const fallbackInfo = fallbackHistory && fallbackHistory.length > 1
     ? fallbackHistory.filter((f) => !f.success).map((f) => f.adapter).join(' → ') +
@@ -76,67 +83,92 @@ export function ChatHeader({
     <div className="shrink-0 border-b border-border bg-muted/30">
       <div className="flex items-center justify-between px-2.5 py-1.5">
       <div className="flex items-center gap-2 min-w-0">
-        <div className="relative">
-          <button
-            onClick={() => setShowAdapterMenu(!showAdapterMenu)}
-            className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md hover:bg-muted transition-colors"
+        {installedAdapters.length === 1 ? (
+          // 只装了一个适配器：没得选，直接显示名字，不给下拉
+          <div
+            className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium"
+            data-testid="adapter-static-label"
           >
-            {adapterName === 'auto' ? (
-              noAdaptersInstalled ? (
-                <AlertCircle className="w-3 h-3 text-red-400" />
+            <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+            <span className="truncate max-w-[80px]">{installedAdapters[0].name}</span>
+          </div>
+        ) : (
+          <div className="relative">
+            <button
+              onClick={() => setShowAdapterMenu(!showAdapterMenu)}
+              data-testid="adapter-menu-trigger"
+              className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded-md hover:bg-muted transition-colors"
+            >
+              {adapterName === 'auto' ? (
+                noAdaptersInstalled ? (
+                  <AlertCircle className="w-3 h-3 text-red-400" />
+                ) : (
+                  <Zap className="w-3 h-3 text-amber-400" />
+                )
               ) : (
-                <Zap className="w-3 h-3 text-amber-400" />
-              )
-            ) : (
-              <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-            )}
-            <span className="truncate max-w-[80px]">{adapterName === 'auto' ? t('agent.adapter.auto') : adapterName || t('agent.adapter.select')}</span>
-            <ChevronDown className="w-3 h-3 text-muted-foreground" />
-          </button>
-          {showAdapterMenu && (
-            <div className="absolute top-full left-0 mt-1 bg-background border border-border rounded-lg shadow-lg z-50 overflow-hidden min-w-[140px]">
-              {/* Auto 选项 */}
-              <button
-                onClick={() => { onSelectAdapter('auto'); setShowAdapterMenu(false) }}
-                className={cn(
-                  'w-full flex items-center gap-2 px-2.5 py-2 text-xs hover:bg-muted transition-colors text-left',
-                  adapterName === 'auto' && 'bg-muted',
-                )}
+                <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+              )}
+              <span className="truncate max-w-[80px]">{adapterName === 'auto' ? t('agent.adapter.auto') : adapterName || t('agent.adapter.select')}</span>
+              <ChevronDown className="w-3 h-3 text-muted-foreground" />
+            </button>
+            {showAdapterMenu && (
+              <div
+                className="absolute top-full left-0 mt-1 bg-background border border-border rounded-lg shadow-lg z-50 overflow-hidden min-w-[140px]"
+                data-testid="adapter-menu"
               >
-                <Zap className="w-3 h-3 text-amber-400" />
-                {t('agent.adapter.auto')}
-                <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.default')}</span>
-              </button>
-              {adapters.map((a) => (
+                {/* Auto 选项 */}
                 <button
-                  key={a.name}
-                  onClick={() => {
-                    if (a.installed) {
-                      onSelectAdapter(a.name)
-                    } else {
-                      onOpenSettings?.()
-                    }
-                    setShowAdapterMenu(false)
-                  }}
+                  onClick={() => { onSelectAdapter('auto'); setShowAdapterMenu(false) }}
                   className={cn(
                     'w-full flex items-center gap-2 px-2.5 py-2 text-xs hover:bg-muted transition-colors text-left',
-                    adapterName === a.name && 'bg-muted',
-                    !a.installed && 'opacity-50',
+                    adapterName === 'auto' && 'bg-muted',
                   )}
                 >
-                  <div className={cn(
-                    'w-1.5 h-1.5 rounded-full',
-                    a.installed ? 'bg-green-400' : 'bg-muted-foreground/30',
-                  )} />
-                  {a.name}
-                  {!a.installed && (
-                    <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.notInstalled')}</span>
-                  )}
+                  <Zap className="w-3 h-3 text-amber-400" />
+                  {t('agent.adapter.auto')}
+                  <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.default')}</span>
                 </button>
-              ))}
-            </div>
-          )}
-        </div>
+                {menuAdapters.map((a) => (
+                  <button
+                    key={a.name}
+                    onClick={() => {
+                      if (a.installed) {
+                        onSelectAdapter(a.name)
+                      } else {
+                        onOpenSettings?.()
+                      }
+                      setShowAdapterMenu(false)
+                    }}
+                    className={cn(
+                      'w-full flex items-center gap-2 px-2.5 py-2 text-xs hover:bg-muted transition-colors text-left',
+                      adapterName === a.name && 'bg-muted',
+                      !a.installed && 'opacity-50',
+                    )}
+                  >
+                    <div className={cn(
+                      'w-1.5 h-1.5 rounded-full',
+                      a.installed ? 'bg-green-400' : 'bg-muted-foreground/30',
+                    )} />
+                    {a.name}
+                    {!a.installed && (
+                      <span className="text-[10px] text-muted-foreground ml-auto">{t('agent.adapter.notInstalled')}</span>
+                    )}
+                  </button>
+                ))}
+                {installedAdapters.length >= 2 && (
+                  <button
+                    onClick={() => { onOpenSettings?.(); setShowAdapterMenu(false) }}
+                    data-testid="adapter-menu-install-more"
+                    className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-muted-foreground hover:bg-muted transition-colors text-left border-t border-border"
+                  >
+                    <Plus className="w-3 h-3" />
+                    {t('agent.adapter.installMore')}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        )}
         {/* 回退指示器 */}
         {fallbackInfo && (
           <span className="text-[10px] text-amber-500 bg-amber-500/10 px-1.5 py-0.5 rounded" title={fallbackInfo}>

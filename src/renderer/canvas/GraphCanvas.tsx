@@ -72,6 +72,7 @@ import { RecipesPanel, type ActiveRecipeRun } from '../panels/RecipesPanel'
 import { RecipeRunProgress } from '../panels/RecipeRunProgress'
 import { FloatingPanel } from '../components/ui/FloatingPanel'
 import { toastSuccess, toastError, toastInfo } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import {
   useAwarenessConnection,
   useBroadcastLocalCursor,
@@ -1516,10 +1517,12 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
     try {
       await updateNode(nodeId, { status })
     } catch (err) {
-      console.error('[GraphCanvas] Failed to change node status:', err)
+      // 状态迁移失败（非法转换 / IPC 拒绝）不再只打日志 —— 用户点了菜单里的状态
+      // 却没变，必须给一句解释（Task 8 的模式）。菜单照常关闭。
+      toastError(t('node.toast.updateFailed'), errorText(err))
     }
     setNodeContextMenu(null)
-  }, [updateNode])
+  }, [updateNode, t])
 
   const handleNodeDelete = useCallback(async (nodeId: string) => {
     const node = graphNodes.find((n) => n.id === nodeId)
@@ -1528,10 +1531,11 @@ function GraphCanvasInner({ graphId }: GraphCanvasProps) {
       await deleteNode(nodeId)
     } catch (err) {
       console.error('[GraphCanvas] Failed to delete node:', err)
+      toastError(t('canvas.node.deleteFailed'), errorText(err))
     }
     selectNode(null)
     setNodeContextMenu(null)
-  }, [graphNodes, deleteNode, selectNode])
+  }, [graphNodes, deleteNode, selectNode, t])
 
   return (
     <div className="w-full h-full relative" data-testid="graph-canvas" role="application" aria-label={t('canvas.ariaLabel')}>

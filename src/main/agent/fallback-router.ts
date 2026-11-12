@@ -15,6 +15,7 @@
 
 import type { AgentSession, AgentSessionConfig, AdapterFallbackAttempt } from '@shared/types'
 import { AdapterError } from '../errors'
+import { getReadonlySupport } from '@shared/readonly-support'
 import type { AdapterHealthMonitor } from './adapter-health-monitor'
 import type { AdapterRegistry } from './adapter-registry'
 import { createLogger } from '../shared/logger'
@@ -110,6 +111,19 @@ export class FallbackRouter {
     const fallbackHistory: AdapterFallbackAttempt[] = []
 
     for (const candidate of chain) {
+      // 只读会话的兜底闸门：候选适配器必须保证只读。
+      // 上游（AgentManager）已经裁过链，这一道是**防御性**的 ——
+      // 万一将来有别的调用方绕过裁剪，只读会话也不会回退到能写的适配器。
+      if (initialConfig.readOnly && getReadonlySupport(candidate) !== 'enforced') {
+        fallbackHistory.push({
+          adapter: candidate,
+          reason: `${candidate} does not support read-only sessions, skipping`,
+          success: false,
+        })
+        logger.warn(`Adapter ${candidate} cannot guarantee read-only, skipping...`)
+        continue
+      }
+
       const adapter = this.registry.get(candidate)
       if (!adapter) {
         fallbackHistory.push({

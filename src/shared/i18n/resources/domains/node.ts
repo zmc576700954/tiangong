@@ -14,6 +14,7 @@ export const nodeZh = {
   'status.review': '待验收',
   'status.published': '已发布',
   'status.placeholder': '占位',
+  'status.terminalHint': '{status}是终态，不能再迁移',
   'bug.severity.low': '低',
   'bug.severity.medium': '中',
   'bug.severity.high': '高',
@@ -45,6 +46,13 @@ export const nodeZh = {
   'command.fixBug': '修复 Bug',
   'command.refactor': '重构',
   'command.addTest': '添加测试',
+  // 节点编辑器的失败提示：动作被触发却什么都没发生时，界面必须给一句说明
+  'node.toast.titleRequired': '标题不能为空',
+  'node.toast.ruleTitleRequired': '规则名称不能为空',
+  'node.toast.criterionRequired': '验收标准不能为空',
+  'node.toast.itemRequired': '名称不能为空',
+  'node.toast.updateFailed': '节点更新失败',
+  'node.toast.deleteFailed': '节点删除失败',
 } as const
 
 export const nodeEn: Record<keyof typeof nodeZh, string> = {
@@ -63,6 +71,7 @@ export const nodeEn: Record<keyof typeof nodeZh, string> = {
   'status.review': 'Review',
   'status.published': 'Published',
   'status.placeholder': 'Placeholder',
+  'status.terminalHint': '{status} is a terminal state and cannot transition further',
   'bug.severity.low': 'Low',
   'bug.severity.medium': 'Medium',
   'bug.severity.high': 'High',
@@ -94,4 +103,10 @@ export const nodeEn: Record<keyof typeof nodeZh, string> = {
   'command.fixBug': 'Fix Bug',
   'command.refactor': 'Refactor',
   'command.addTest': 'Add Test',
+  'node.toast.titleRequired': 'Title cannot be empty',
+  'node.toast.ruleTitleRequired': 'Rule name cannot be empty',
+  'node.toast.criterionRequired': 'Acceptance criterion cannot be empty',
+  'node.toast.itemRequired': 'Name cannot be empty',
+  'node.toast.updateFailed': 'Failed to update node',
+  'node.toast.deleteFailed': 'Failed to delete node',
 }

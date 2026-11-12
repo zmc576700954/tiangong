@@ -6,14 +6,12 @@
  * 非交互模式: qwen -p "prompt"
  */
 
-import { spawn, execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { spawn } from 'node:child_process'
 import { BaseAdapter } from './base'
 import { generateId } from '../shared/env'
 import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
 import { createLogger } from '../shared/logger'
-
-const execFileAsync = promisify(execFile)
+import { probeCliInstalled } from './cli-probe'
 
 export class QwenCodeAdapter extends BaseAdapter {
   readonly name = 'qwen-code'
@@ -22,13 +20,9 @@ export class QwenCodeAdapter extends BaseAdapter {
   protected logger = createLogger('QwenCodeAdapter')
 
   async checkInstalled(): Promise<boolean> {
-    try {
-      await execFileAsync('qwen', ['--version'])
-      return true
-    } catch {
-      this.logger.warn('qwen CLI not found')
-      return false
-    }
+    if (await probeCliInstalled('qwen', ['--version'])) return true
+    this.logger.warn('qwen CLI not found')
+    return false
   }
 
   async startSession(config: AgentSessionConfig): Promise<AgentSession> {

@@ -1,7 +1,10 @@
 import { create } from 'zustand'
-import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage } from '@shared/types'
+import type { AgentSessionConfig, AgentCommand, NodeStatus, AdapterFallbackAttempt, ContextRef, ChatMessage, ProjectDefaults } from '@shared/types'
 import { DEFAULT_THREAD_TITLE } from '@shared/constants'
+import { t } from '@shared/i18n'
 import { generateId } from '../lib/utils'
+import { errorText } from '../lib/error-text'
+import { toastError } from '../lib/toast'
 import { useGraphStore } from './graphStore'
 import { useAgentOutputStore } from './agentOutputStore'
 import { useAdapterStore } from './adapterStore'
@@ -21,6 +24,13 @@ interface SessionInfo {
   adapterName: string
   startTime: number
   status: 'starting' | 'active' | 'terminated' | 'crashed'
+  /**
+   * 这个会话**启动时**的范围 —— 主进程在 startSession 时就把它冻结了。
+   *
+   * 复用会话时新算出来的 config 会被丢弃（只留 resumeSessionId），所以面板
+   * 必须显示**这一份**才准确 —— 否则会出现「面板显示只读、会话仍可写」。
+   */
+  allowedFiles: string[]
 }
 
 interface RequestStatusEntry {
@@ -61,6 +71,12 @@ interface SessionState {
   updateRequestStatus: (requestId: string, status: 'queued' | 'executing' | 'done') => void
   /** Remove a tracked request */
   removeRequestStatus: (requestId: string) => void
+  /** 项目级默认（适配器 / 模型 / 可改文件范围）—— 覆盖全局默认 */
+  projectDefaults: ProjectDefaults | null
+  /** 载入项目级默认；projectPath 为空时不调（图没绑定项目就没有项目级默认） */
+  loadProjectDefaults: (projectPath: string) => Promise<void>
+  /** 写回项目级默认；写失败时**不改本地状态**并提示，返回是否成功 */
+  saveProjectDefaults: (defaults: ProjectDefaults) => Promise<boolean>
 }
 
 export const useSessionStore = create<SessionState>((set, get) => ({
@@ -68,9 +84,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessionSnapshots: new Map(),
   requestStatuses: new Map(),
   sendingThreads: new Set(),
+  projectDefaults: null,
+
+  loadProjectDefaults: async (projectPath) => {
+    // 图没绑定项目就没有项目级默认 —— 不调 IPC
+    if (!projectPath) {
+      set({ projectDefaults: null })
+      return
+    }
+    try {
+      const defaults = await window.electronAPI['project:getDefaults'](projectPath)
+      set({ projectDefaults: defaults ?? null })
+    } catch {
+      // 读不到就用「没有项目级默认」——会话退回只读（安全方向）
+      set({ projectDefaults: null })
+    }
+  },
+
+  saveProjectDefaults: async (defaults) => {
+    const projectPath = useGraphStore.getState().graphs.find(
+      (g) => g.id === useGraphStore.getState().currentGraphId,
+    )?.projectPath
+    if (!projectPath) return false
+    try {
+      await window.electronAPI['project:setDefaults'](projectPath, defaults)
+    } catch (err) {
+      // 写失败**不改本地状态** —— 否则 DB 里是旧值、界面显示新值，
+      // 下次读回旧值就变成「我关了它，它又自己开了」。
+      // （这正是本特性要修的那个投诉本身。）
+      toastError(t('agent.scope.saveFailed'), errorText(err))
+      return false
+    }
+    set({ projectDefaults: defaults })
+    return true
+  },
 
   startSession: async (adapterName, config) => {
-    const effectiveAdapterName = adapterName === 'auto' ? null : adapterName
+    // config.adapterName 是渲染层解析好的**实际**适配器（含项目级覆盖）——
+    // 它优先于「auto → 主进程用全局默认」的路径。
+    const explicit = config.adapterName
+    const effectiveAdapterName =
+      explicit ?? (adapterName === 'auto' ? null : adapterName)
     const result = unwrapIpcResult<{
       sessionId: string
       adapterUsed?: string
@@ -91,6 +145,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         adapterName: result.adapterUsed ?? adapterName,
         startTime: Date.now(),
         status: 'active',
+        allowedFiles: [...(config.allowedFiles ?? [])],
       })
       return { activeSessions: next }
     })
@@ -107,6 +162,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         adapterName: '',
         startTime: Date.now(),
         status: 'active',
+        allowedFiles: [],
       })
       return { activeSessions: next }
     })
@@ -288,8 +344,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Reuse existing session
         sessionId = existingSessionId
       } else {
-        // First send: create a session. Use null for 'auto' to trigger fallback chain.
-        const effectiveAdapterName = thread.adapterName === 'auto' ? null : thread.adapterName
+        // First send: create a session.
+        // 用 null 触发回退链；**但** config.adapterName 是渲染层解析好的实际
+        // 适配器（含项目级覆盖）—— 它优先，'auto' 才交给主进程用全局默认。
+        const explicitAdapter = config.adapterName
+        const effectiveAdapterName =
+          explicitAdapter ?? (thread.adapterName === 'auto' ? null : thread.adapterName)
         const result = unwrapIpcResult<{
           sessionId: string
           adapterUsed?: string
@@ -322,6 +382,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             adapterName: result.adapterUsed ?? thread.adapterName,
             startTime: Date.now(),
             status: 'active',
+            allowedFiles: [...(config.allowedFiles ?? [])],
           })
           return { activeSessions: next }
         })
@@ -355,16 +416,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       // 错误链：main 抛 Error(encoded) → preload 解码为 plain object → unwrapIpcResult
-      // 还原成同 realm 的 IpcCallError。这里能同时拿到 code 与可读 message。
+      // 还原成同 realm 的 IpcCallError。这里能同时拿到 code 与可读 message；
+      // 若拿到的是无 message 的普通对象，errorText 兜住 "[object Object]"。
       const structured = (typeof err === 'object' && err !== null ? err : {}) as {
         code?: unknown
         message?: unknown
       }
-      const errMsg = typeof structured.message === 'string' ? structured.message : String(err)
+      const errMsg = typeof structured.message === 'string' ? structured.message : errorText(err)
       const isNoAdapter =
         structured.code === 'AGENT_ADAPTER_NOT_FOUND' || errMsg.includes('No adapter available')
       const isRestoreFailed =
         structured.code === 'AGENT_SESSION_RESTORE_FAILED' || errMsg.includes('新建会话可继续')
+      const isReadonlyUnsupported = structured.code === 'ADAPTER_READONLY_UNSUPPORTED'
       if (isRestoreFailed) {
         // 原会话不可续接：解除绑定，下一次发送即走新建会话（与错误文案一致）。
         useThreadStore.setState((state) => ({
@@ -384,12 +447,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             ? 'NO_ADAPTER_AVAILABLE'
             : isRestoreFailed
               ? 'SESSION_RESTORE_FAILED'
-              : 'SESSION_START_FAILED',
+              : isReadonlyUnsupported ? 'READONLY_UNSUPPORTED' : 'SESSION_START_FAILED',
           message: isNoAdapter
-            ? '没有可用的 Agent 工具，请先在设置中安装或配置一个适配器。'
+            ? t('agent.session.noAdapter')
             : isRestoreFailed
               ? errMsg
-              : '无法启动 Agent 会话，请检查适配器是否可用。',
+              : isReadonlyUnsupported
+                ? t('agent.session.readonlyUnsupported')
+                : t('agent.session.startFailed'),
           raw: errMsg,
         },
       })

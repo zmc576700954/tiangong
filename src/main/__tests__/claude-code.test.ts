@@ -19,8 +19,10 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }))
 
 // Mock settings to provide defaultModel
+const mockReadSettings = vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+
 vi.mock('../settings', () => ({
-  readSettings: vi.fn().mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] }),
+  readSettings: (...args: unknown[]) => mockReadSettings(...args),
 }))
 
 /**
@@ -84,6 +86,7 @@ describe('ClaudeCodeAdapter (SDK)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
     outputs.length = 0
     adapter = new ClaudeCodeAdapter()
     adapter.onOutput((o) => outputs.push(o))
@@ -202,6 +205,26 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect(callArgs.prompt).not.toContain('STABLE-TEXT')
     expect(callArgs.prompt).not.toContain('TURN-TEXT')
     expect(callArgs.prompt).toContain('USER-REQ-UNIQUE')
+  })
+
+  it('透明转发会话拿不到任何内置工具（A2A 入站的边界）', async () => {
+    // A2A 入站会话也是空的 allowedFiles → 会被推导成只读。若只读分支排在
+    // transparent 之前，远端调用方就多拿到了本机 Read/Glob/Grep 与 **WebFetch
+    // （出网）** —— 违反 CLAUDE.md Boundaries §3 的透明转发边界。
+    const session = await adapter.startSession(
+      makeConfig({ transparentForward: true, readOnly: true }),
+    )
+    adapter.setPromptContext(session.id, { stable: '', turn: '' })
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, { type: 'implement', description: 'X', targetNodeId: 'n1' })
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    // tools: [] = 禁用全部内置工具
+    expect(callArgs.options.tools).toEqual([])
   })
 
   it('doSendCommand captures SDK session ID for resume', async () => {
@@ -551,6 +574,42 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     expect((hooks.PostToolUse[0] as { matcher: string }).matcher).toBe('Edit|Write')
   })
 
+  it('doSendCommand 用 claudeCode 档位的模型（不读其它适配器的档位）', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'legacy-model',
+      apiKeys: [],
+      defaultModels: { claudeCode: 'opus-4-1', codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig())
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.model).toBe('opus-4-1')
+  })
+
+  it('doSendCommand 在 claudeCode 档位为空时回落到旧的 defaultModel', async () => {
+    mockReadSettings.mockResolvedValue({
+      defaultModel: 'legacy-model',
+      apiKeys: [],
+      defaultModels: { codex: 'gpt-5' },
+    })
+    const session = await adapter.startSession(makeConfig())
+
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+
+    await adapter.sendCommand(session.id, command)
+
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    expect(callArgs.options.model).toBe('legacy-model')
+  })
+
   it('terminateSession aborts active query', async () => {
     const config = makeConfig()
     const session = await adapter.startSession(config)
@@ -614,5 +673,92 @@ describe('ClaudeCodeAdapter (SDK)', () => {
     await adapter.terminateSession(session.id, 'user')
 
     expect(alive()).toBe(false)
+  })
+})
+
+/**
+ * 只读会话：Agent **物理上**拿不到写工具。
+ *
+ * 只读不能靠 ScopeGuard 的空白名单沙箱实现 —— 那条路的 watcher 监听整棵项目树，
+ * 分不清「Agent 写的」和「用户写的」，在真实项目目录上会把用户自己改的文件
+ * 判为越界并回滚删除。所以只读做在适配器层：SDK 的 `tools` 白名单。
+ */
+describe('ClaudeCodeAdapter — 只读会话', () => {
+  let adapter: ClaudeCodeAdapter
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mockReadSettings.mockResolvedValue({ defaultModel: 'sonnet', apiKeys: [] })
+    adapter = new ClaudeCodeAdapter()
+  })
+
+  afterEach(() => {
+    adapter.removeAllListeners('output')
+  })
+
+  async function sendWith(config: AgentSessionConfig): Promise<Record<string, unknown>> {
+    const session = await adapter.startSession(config)
+    adapter.setPromptContext(session.id, { stable: 'S', turn: '' })
+    mockQuery.mockReturnValue(mockMessages([
+      { type: 'result', subtype: 'success', result: 'Done', is_error: false },
+    ]))
+    await adapter.sendCommand(session.id, command)
+    const callArgs = mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }
+    return callArgs.options
+  }
+
+  it('只读会话的 tools 白名单里没有任何写工具或命令执行', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+
+    const tools = options.tools as string[]
+    expect(Array.isArray(tools)).toBe(true)
+    expect(tools.length).toBeGreaterThan(0)
+    // 关键断言：白名单里**不能**出现能改文件或跑命令的工具
+    for (const forbidden of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash', 'BashOutput']) {
+      expect(tools).not.toContain(forbidden)
+    }
+    // 但读与查必须在 —— 否则 Agent 连代码都看不了
+    expect(tools).toContain('Read')
+  })
+
+  it('只读会话隔离外部 MCP 配置与文件级 settings（否则外部 MCP / hook 能写盘）', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+
+    // strictMcpConfig：只用 mcpServers 选项里显式传入的 server，
+    // 忽略项目 .mcp.json / 用户设置 / 插件里的 MCP
+    expect(options.strictMcpConfig).toBe(true)
+    // settingSources: [] —— 不加载 user/project/local 的 settings.json（无 hook）
+    expect(options.settingSources).toEqual([])
+  })
+
+  it('非只读会话不改变 MCP 与 settings 的加载方式', async () => {
+    const options = await sendWith(makeConfig())
+    // 可写会话保持既有行为 —— 不能因为加了只读分支就收紧普通会话
+    expect(options.strictMcpConfig).toBeUndefined()
+    expect(options.settingSources).toBeUndefined()
+  })
+
+  it('只读会话的 permissionMode 是 default（不是 acceptEdits）', async () => {
+    const options = await sendWith(makeConfig({ readOnly: true }))
+    expect(options.permissionMode).toBe('default')
+  })
+
+  it('非只读会话不受影响：tools 不设、permissionMode 仍是 acceptEdits', async () => {
+    const options = await sendWith(makeConfig())
+    expect(options.tools).toBeUndefined()
+    expect(options.permissionMode).toBe('acceptEdits')
+  })
+
+  it('只读会话同时是子代理时，tools 取白名单与子代理 allowedTools 的交集', async () => {
+    // 子代理被允许 Edit —— 若不取交集，父会话的只读保证就被破坏了
+    const options = await sendWith(makeConfig({
+      readOnly: true,
+      subagentAllowedTools: ['Read', 'Edit', 'Bash'],
+    }))
+
+    const tools = options.tools as string[]
+    expect(tools).toContain('Read')
+    expect(tools).not.toContain('Edit')
+    expect(tools).not.toContain('Bash')
   })
 })

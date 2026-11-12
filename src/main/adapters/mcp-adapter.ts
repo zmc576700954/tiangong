@@ -28,6 +28,7 @@ import type {
   CompactTrigger,
 } from '@shared/types'
 import { readSettings } from '../settings'
+import { resolveModelForAdapter } from './model-selection'
 import { AdapterError, ErrorCode } from '../errors'
 import { estimateTokens } from '../shared/token-utils'
 import { adapterHealthMonitor } from '../agent/adapter-health-monitor'
@@ -562,7 +563,12 @@ export class McpAdapter extends BaseAdapter {
     // 远端调用方用不到它们，却让每个入站请求都启动一批本地进程（其中可能有带
     // 项目读写权限的 filesystem server），与「远端不得触达本地」的边界相悖。
     const transparent = config.transparentForward === true
-    const enabledServers = transparent ? [] : settings.mcpServers.filter((s) => s.enabled)
+    // 只读会话同样不接 MCP server：MCP 工具没有「只读」标记可筛，默认的
+    // filesystem server 是能写的 —— 只读会话连它都不该拉起来。
+    const readOnly = config.readOnly === true
+    const enabledServers = transparent || readOnly
+      ? []
+      : settings.mcpServers.filter((s) => s.enabled)
     const sessionClients: McpClient[] = []
 
     // 清理连接池中的空闲超时连接
@@ -697,8 +703,11 @@ export class McpAdapter extends BaseAdapter {
     // 那里的 finally，因此无需在每个分支手动 restore。
     const settings = await readSettings()
 
-    // W4-FIX: 根据 session config 或 settings.defaultModel 匹配 provider 的 API Key
-    const apiKey = resolveApiKey(settings.apiKeys, settings.defaultModel)
+    // W4-FIX: 按 MCP 自己的模型档位匹配 provider 的 API Key。
+    // 注意这里**不能**用 settings.defaultModel —— 那是全局旧字段，可能是 claude
+    // 模型名，会让 resolveApiKey 按前缀误判 provider（见 adapters/model-selection.ts）。
+    const mcpModel = session.config.model ?? resolveModelForAdapter(settings, 'mcp')
+    const apiKey = resolveApiKey(settings.apiKeys, mcpModel)
 
     if (!apiKey) {
       this.emitOutputForSession(sessionId, {
@@ -732,10 +741,13 @@ export class McpAdapter extends BaseAdapter {
 
     // Gather MCP tools
     const clients = this.mcpClients.get(session.id) ?? []
-    const mcpTools = transparent ? [] : clients.flatMap((c) => c.getTools())
+    // 只读会话：不给任何 MCP 工具（MCP 工具无法按只读筛），也不允许派生
+    // subagent —— 子代理可能带着写权限。
+    const readOnly = session.config.readOnly === true
+    const mcpTools = transparent || readOnly ? [] : clients.flatMap((c) => c.getTools())
     const providerConfig = PROVIDER_CONFIGS[apiKey.provider]
     const supportsTools = providerConfig?.supportsTools ?? false
-    const canDispatchSubagent = !transparent && this.subagentManager !== undefined
+    const canDispatchSubagent = !transparent && !readOnly && this.subagentManager !== undefined
 
     // Call LLM API via unified provider config
     try {
@@ -783,7 +795,7 @@ export class McpAdapter extends BaseAdapter {
           messages,
           tools,
           clients,
-          settings.defaultModel,
+          mcpModel,
         )
       } else {
         // 纯文本模式（Gemini 或不支持 tools 时）
@@ -816,7 +828,7 @@ export class McpAdapter extends BaseAdapter {
           apiKey.key,
           apiKey.baseUrl,
           plainMessages,
-          settings.defaultModel,
+          mcpModel,
           session.id,
         )
 
@@ -1013,7 +1025,7 @@ export class McpAdapter extends BaseAdapter {
     baseUrl: string | undefined,
     messages: RichLlmMessage[],
     tools?: UnifiedTool[],
-    defaultModel?: string,
+    model?: string,
     sessionId?: string,
   ): Promise<LlmResponse> {
     const config = PROVIDER_CONFIGS[provider]
@@ -1022,10 +1034,10 @@ export class McpAdapter extends BaseAdapter {
     }
 
     // baseUrl 非空 = 用户配的是自建网关/代理端点，模型名由网关决定，不能替换
-    const model = resolveModel(provider, defaultModel, Boolean(baseUrl))
-    const url = config.buildUrl(baseUrl, key, model)
+    const resolved = resolveModel(provider, model, Boolean(baseUrl))
+    const url = config.buildUrl(baseUrl, key, resolved)
     const headers = config.buildHeaders(key, baseUrl)
-    const body = config.buildBody(messages, model, tools)
+    const body = config.buildBody(messages, resolved, tools)
 
     const res = await this.fetchBodyWithTimeout(url, {
       method: 'POST',
@@ -1072,11 +1084,11 @@ export class McpAdapter extends BaseAdapter {
     key: string,
     baseUrl: string | undefined,
     messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
-    defaultModel?: string,
+    model?: string,
     sessionId?: string,
   ): Promise<string> {
     const richMessages: RichLlmMessage[] = messages.map((m) => ({ ...m }))
-    const response = await this.callLlmWithToolSupport(provider, key, baseUrl, richMessages, undefined, defaultModel, sessionId)
+    const response = await this.callLlmWithToolSupport(provider, key, baseUrl, richMessages, undefined, model, sessionId)
     return response.text
   }
 
@@ -1094,7 +1106,7 @@ export class McpAdapter extends BaseAdapter {
     messages: RichLlmMessage[],
     tools: UnifiedTool[],
     clients: McpClient[],
-    defaultModel?: string,
+    model?: string,
   ): Promise<string> {
     const MAX_TOOL_ITERATIONS = 10
     let iterations = 0
@@ -1124,7 +1136,7 @@ export class McpAdapter extends BaseAdapter {
         apiKey.baseUrl,
         messages,
         tools,
-        defaultModel,
+        model,
         session.id,
       )
       lastText = response.text
@@ -1344,11 +1356,13 @@ Output: a clean text summary. No preamble, no markdown.`
 
     const settings = await readSettings()
     // Use compactModel if configured (cheaper model for summarisation),
-    // otherwise fall back to defaultModel
-    const compactModel = settings.compactModel || settings.defaultModel
-    // Key 要按「实际要用的模型」来选：用 defaultModel 选 key、再拿 compactModel
-    // 去请求，会出现 key 属于 A 家、模型属于 B 家的组合，结果是 compactModel
-    // 被静默换回 provider 默认模型 —— 压缩照样按大模型计费。
+    // otherwise fall back to the MCP adapter's own model tier.
+    // 这里**不能**回落到旧的 settings.defaultModel —— 那是全局旧字段，可能是
+    // claude 模型名，会让下面的 resolveApiKey 按前缀误判 provider。
+    const compactModel = settings.compactModel || resolveModelForAdapter(settings, 'mcp')
+    // Key 要按「实际要用的模型」来选：用模型名选 key、再拿同一个模型名去请求，
+    // 会出现 key 属于 A 家、模型属于 B 家的组合，结果是模型被静默换回 provider
+    // 默认模型 —— 压缩照样按大模型计费。
     const apiKey = resolveApiKey(settings.apiKeys, compactModel)
     if (!apiKey) {
       throw new AdapterError('No API key configured for LLM summarisation', this.name)

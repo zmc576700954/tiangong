@@ -9,6 +9,8 @@ import { useGraphStore } from '../store/graphStore'
 import { useAppStore } from '../store/appStore'
 import { eventBus, Events } from '../store/eventBus'
 import { cn } from '../lib/utils'
+import { toastError } from '../lib/toast'
+import { errorText } from '../lib/error-text'
 import { AgentChatPanel } from '../components/agent/AgentChatPanel'
 import { NodeEditor } from './NodeEditor'
 import { EdgeEditor } from './EdgeEditor'
@@ -108,9 +110,17 @@ export function RightPanel({
             {selectedNode ? (
               <NodeEditor
                 node={selectedNode}
-                onUpdate={(data) => updateNode(selectedNode.id, data)}
+                onUpdate={(data) => {
+                  // updateNode 会在非法状态转换 / IPC 失败时 reject —— 不接住就是
+                  // unhandled rejection，用户只看到"点了没反应"。接住并给出提示。
+                  void updateNode(selectedNode.id, data).catch((err: unknown) => {
+                    toastError(t('node.toast.updateFailed'), errorText(err))
+                  })
+                }}
                 onDelete={() => {
-                  deleteNode(selectedNode.id)
+                  void deleteNode(selectedNode.id).catch((err: unknown) => {
+                    toastError(t('node.toast.deleteFailed'), errorText(err))
+                  })
                   selectNode(null)
                 }}
                 onStartAgent={() => setActiveTab('agent')}
@@ -120,9 +130,17 @@ export function RightPanel({
               <EdgeEditor
                 edge={selectedEdge}
                 nodes={nodes}
-                onUpdate={(data) => updateEdge(selectedEdge.id, data)}
+                onUpdate={(data) => {
+                  // updateEdge 失败会回滚并重新抛错（graphStore）—— 不接住就是
+                  // unhandled rejection，用户只看到「点了没反应」。与 NodeEditor 分支同模式。
+                  void updateEdge(selectedEdge.id, data).catch((err: unknown) => {
+                    toastError(t('edge.toast.updateFailed'), errorText(err))
+                  })
+                }}
                 onDelete={() => {
-                  deleteEdge(selectedEdge.id)
+                  void deleteEdge(selectedEdge.id).catch((err: unknown) => {
+                    toastError(t('edge.toast.deleteFailed'), errorText(err))
+                  })
                   selectEdge(null)
                 }}
               />

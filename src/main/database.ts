@@ -846,8 +846,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      供 `maybeRunCalibration` 写入聚合报告（只写报告行，不改阈值/权重）。
  *      CHECK 值域变化由 `rebuildTableIfNeeded` 重建该表（行数据经 backup 表恢复）。
  *      回滚：重建前的旧 CHECK 不接受新值，需先删除 `kind='calibration'` 行再回退代码。
+ * v50：项目级默认（worktree-ux-defaults 分支并入）—— 新建 `project_settings`
+ *      （按 project_path 存 defaults_json：适配器 / 模型 / 可改文件范围）。
+ *      按项目而非按图存：一个项目有 online + dev 两张图，放 graphs 上会重复两份。
+ *      纯新增表，经 TABLE_DEFINITIONS 的 CREATE TABLE IF NOT EXISTS 补齐，
+ *      不重建任何既有表；回滚：`DROP TABLE IF EXISTS project_settings`（偏好可丢，
+ *      渲染层回落全局默认）。
  */
-const CURRENT_SCHEMA_VERSION = 49
+const CURRENT_SCHEMA_VERSION = 50
 
 interface TableSchema {
   name: string
@@ -1341,6 +1347,19 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_MEMORY_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
+  // 项目级默认（适配器 / 模型 / 可改文件范围）。
+  // 按 project_path 存 —— 一个项目有 online + dev 两张图，放 graphs 上会重复两份。
+  {
+    name: 'project_settings',
+    createSql: `
+      CREATE TABLE project_settings (
+        project_path TEXT PRIMARY KEY,
+        defaults_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `,
+    requiredColumns: ['project_path', 'defaults_json', 'updated_at'],
+  },
 ]
 
 const INDEX_SQLS: string[] = [

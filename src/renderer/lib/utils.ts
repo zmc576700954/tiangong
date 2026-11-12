@@ -1,11 +1,40 @@
 import { type ClassValue, clsx } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { normalizeProjectPath } from '@shared/project-path'
 
 /**
  * 合并 Tailwind CSS 类名
  */
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
+}
+
+/**
+ * 解析路径片段：去掉空片段与 `.`，并按词法消掉 `..`。
+ * （与 node 的 `path.resolve` 一样是**词法**解析，不碰符号链接。）
+ */
+
+/**
+ * 归一化项目路径 —— **只用来比较/去重**，不用来改写真正存库的路径。
+ *
+ * 实现放在 `@shared/project-path` —— **主进程与渲染层必须用同一份**。
+ * 曾经两边各有一份同名函数而语义不同（渲染层把 `\` 换成 `/`、主进程不换），
+ * 于是在 POSIX 上 `/work/my\dir` 与 `/work/my/dir` 落到同一行 → A 项目的范围
+ * 默认值出现在 B 项目上。
+ *
+ * 为什么它**不能**被拿去改写要发出去的路径：它不可能和 `path.resolve` 完全等价，
+ * 而「归一化错了」的后果是**图绑到一个错的目录**（Agent 在错误的目录里干活），
+ * 比「同一个目录列两次」严重得多。真正发出去的路径始终是**原始路径**，
+ * 由主进程的 `path.resolve` 还原。
+ */
+export { normalizeProjectPath } from '@shared/project-path'
+
+/**
+ * 从路径取项目名（末段）。项目已从侧边栏移除时的兜底显示名。
+ */
+export function projectNameFromPath(projectPath: string): string {
+  const segments = normalizeProjectPath(projectPath).split(/[/\\]/).filter(Boolean)
+  return segments[segments.length - 1] ?? projectPath
 }
 
 /**

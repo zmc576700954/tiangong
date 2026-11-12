@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 
 const writeSettings = vi.fn().mockResolvedValue(undefined)
 
@@ -21,6 +21,8 @@ const mockElectronAPI = {
     minCompactInterval: 60_000,
   }),
   'settings:setContextWaterlineConfig': vi.fn().mockResolvedValue(undefined),
+  // 「默认值」页签的默认适配器下拉靠它做实时安装检测
+  'agent:getAdapterMarketplace': vi.fn().mockResolvedValue([]),
   locale: 'zh-CN',
   onLocaleChanged: () => () => {},
 }
@@ -33,7 +35,11 @@ beforeEach(() => {
 // SettingsPanel 在模块加载时抓取 window.electronAPI——必须在 mock 就位之后再 import
 async function mountSettingsPanel() {
   const { SettingsPanel } = await import('../SettingsPanel')
-  return render(<SettingsPanel />)
+  const result = render(<SettingsPanel />)
+  // settings:read 是异步的：它 resolve 时的 setState 不在 act() 里，
+  // React 会打「not wrapped in act(...)」的警告。
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+  return result
 }
 
 describe('SettingsPanel language dropdown', () => {

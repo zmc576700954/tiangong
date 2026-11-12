@@ -18,7 +18,7 @@ import type {
   AgentSessionConfig, AgentCommand, AgentOutput, AgentLog, AgentThread,
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
-  SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences,
+  SymbolKind, ValidationResult, AdapterFallbackAttempt, AdapterPreferences, ProjectDefaults,
   AgentMode, AgentModeConfig, AdapterMarketplaceItem, MemoryItem, MemoryKind,
   CompactHistoryEntry, ContextState, CompactResult, CompactStrategy,   // Phase 2/3 additions
   AdapterHealthScore,                                                    // D4 健康度面板
@@ -122,7 +122,7 @@ export interface ImportAllowanceRow {
 
 export interface IpcApi {
   // 图操作
-  'graph:create': (data: { name: string; type: GraphType }) => Promise<Graph>
+  'graph:create': (data: { name: string; type: GraphType; projectPath?: string }) => Promise<Graph>
   'graph:list': () => Promise<Graph[]>
   'graph:get': (id: string, options?: GraphFetchOptions) => Promise<{ graph: Graph; nodes: GraphNode[]; edges: GraphEdge[]; bugs: BugNode[] } | null>
   'graph:delete': (id: string) => Promise<boolean>
@@ -270,6 +270,10 @@ export interface IpcApi {
 
   // 项目扫描
   'project:scan': (projectPath: string) => Promise<ProjectScanResult>
+
+  // 项目级默认（覆盖全局默认）
+  'project:getDefaults': (projectPath: string) => Promise<ProjectDefaults | null>
+  'project:setDefaults': (projectPath: string, defaults: ProjectDefaults) => Promise<void>
 
   // 从项目初始化图（§9.2 confirm：allowed_branch/remember_for_fingerprint 由用户显式勾选）
   'graph:initFromProject': (data: {

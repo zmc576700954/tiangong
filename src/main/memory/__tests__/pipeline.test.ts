@@ -199,7 +199,10 @@ describe('PipelineRunner', () => {
       await vi.advanceTimersByTimeAsync(10)
       const result = await pending
 
-      expect(result.durationMs).toBeGreaterThanOrEqual(10)
+      // 假时钟推进 10ms，但 setTimeout 的延迟按毫秒整数计量、performance.now()
+      // 是亚毫秒精度，两者错位时可能测成 9.95ms —— 断言留 1ms 容差，
+      // 仍然验证「时长被记录下来了」这件事本身。
+      expect(result.durationMs).toBeGreaterThanOrEqual(9)
     } finally {
       vi.useRealTimers()
     }

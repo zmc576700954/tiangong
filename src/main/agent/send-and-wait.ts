@@ -11,6 +11,7 @@ import type { AgentManager } from './agent-manager'
 import { AgentError, ErrorCode } from '../errors'
 import { createLogger } from '../shared/logger'
 import { resolveAgentTimeouts } from './timeout-config'
+import { isReadonlyOptOutAdapter } from '@shared/readonly-support'
 
 const logger = createLogger('sendPromptViaAgent')
 
@@ -50,6 +51,7 @@ export async function createAgentSessionForPrompt(
   _prompt: string,
   options?: CreateAgentSessionOptions,
 ): Promise<string> {
+  const adapterName = options?.adapterName ?? 'claude-code'
   const config: AgentSessionConfig = {
     workingDirectory: projectPath,
     allowedFiles: [],
@@ -73,9 +75,13 @@ export async function createAgentSessionForPrompt(
     // 这里保持 allowedFiles=[]（不建沙箱）：写权限由 CLI 层面挡住 ——
     // mindmap-internal 的 runClaude 默认禁掉 Write/Edit 工具
     // （见 mindmap-agent/claude-runner.ts 的 buildClaudeArgs）。
+    //
+    // **显式** readOnly:false —— 别让它从「空的 allowedFiles」偶然推导出只读：
+    // mindmap-internal 不保证只读（见 @shared/readonly-support.ts），被推导成只读
+    // 会让 AgentManager 直接抛 ADAPTER_READONLY_UNSUPPORTED，思维导图生成整个起不来。
+    ...(isReadonlyOptOutAdapter(adapterName) ? { readOnly: false } : {}),
   }
 
-  const adapterName = options?.adapterName ?? 'claude-code'
   const { sessionId } = await agentManager.startSession(adapterName, config)
   return sessionId
 }
@@ -94,6 +100,7 @@ export async function sendPromptViaAgent(
     adapterName?: string
   },
 ): Promise<string> {
+  const adapterName = options?.adapterName ?? 'claude-code'
   const config: AgentSessionConfig = {
     workingDirectory: projectPath,
     allowedFiles: [],
@@ -103,11 +110,16 @@ export async function sendPromptViaAgent(
     downstreamContext: '',
     nodeTitle: options?.nodeTitle ?? '思维导图生成',
     acceptanceCriteria: [],
-    // 同上：workingDirectory 是用户的真实项目目录，不能开 verifyOnly 沙箱
-    // （回滚会删除用户在生成期间新建的文件）。详见 createAgentSessionForPrompt。
+    // 同上：不能开 verifyOnly 沙箱（回滚会删除用户在生成期间新建的文件）。
+    // 详见 createAgentSessionForPrompt。
+    //
+    // **显式** readOnly:false（仅对不保证只读的内部生成适配器）—— 别让它从
+    // 「空的 allowedFiles」偶然推导出只读：mindmap-internal 不保证只读
+    // （见 @shared/readonly-support.ts），被推导成只读会让 AgentManager 直接抛
+    // ADAPTER_READONLY_UNSUPPORTED，思维导图生成整个起不来。
+    ...(isReadonlyOptOutAdapter(adapterName) ? { readOnly: false } : {}),
   }
 
-  const adapterName = options?.adapterName ?? 'claude-code'
   const { sessionId } = await agentManager.startSession(adapterName, config)
   const timeoutMs = await resolveSendWaitMs(options?.timeoutMs)
 

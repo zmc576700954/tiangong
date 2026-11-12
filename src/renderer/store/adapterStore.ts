@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { AdapterPreferences, AdapterFallbackAttempt, AdapterMarketplaceItem } from '@shared/types'
+import { DEFAULT_ADAPTER_PREFERENCES } from '@shared/adapter-defaults'
 
 export interface AdapterState {
   adapters: { name: string; version: string; installed: boolean }[]
@@ -20,7 +21,9 @@ export interface AdapterState {
 
 export const useAdapterStore = create<AdapterState>((set) => ({
   adapters: [],
-  adapterPreferences: { defaultAdapter: 'claude-code', fallbackOrder: ['codex', 'opencode', 'cline', 'kilo-code', 'kimi-code', 'qwen-code', 'codebuddy', 'qoder', 'cursor', 'mcp'] },
+  // 初始占位：真值由 loadAdapterPreferences() 从主进程灌进来。
+  // 之前这里硬编码了一份字面量，把用户的设置挡在了外面。
+  adapterPreferences: DEFAULT_ADAPTER_PREFERENCES,
   lastFallbackHistory: [],
   marketplaceItems: [],
   openSettingsPanel: false,

@@ -107,9 +107,18 @@ describe('graphStore', () => {
     })
 
     it('createGraph adds graph to state', async () => {
-      const graph = await useGraphStore.getState().createGraph('Test Graph', 'online')
+      const graph = await useGraphStore.getState().createGraph('Test Graph', 'dev')
       expect(graph.id).toBe('graph-server-id')
       expect(useGraphStore.getState().graphs).toHaveLength(1)
+    })
+
+    it('createGraph 把 projectPath 交给 graph:create（新建图必须绑定项目）', async () => {
+      await useGraphStore.getState().createGraph('Bound Graph', 'dev', undefined, '/work/beta')
+      expect(window.electronAPI['graph:create']).toHaveBeenCalledWith({
+        name: 'Bound Graph',
+        type: 'dev',
+        projectPath: '/work/beta',
+      })
     })
 
     it('createGraph with sourceGraphId calls derive', async () => {
@@ -119,7 +128,7 @@ describe('graphStore', () => {
     })
 
     it('deleteGraph removes graph and clears currentGraphId if matching', async () => {
-      await useGraphStore.getState().createGraph('To Delete', 'online')
+      await useGraphStore.getState().createGraph('To Delete', 'dev')
       useGraphStore.setState({ currentGraphId: 'graph-server-id' })
       await useGraphStore.getState().deleteGraph('graph-server-id')
       expect(useGraphStore.getState().graphs).toHaveLength(0)
@@ -390,6 +399,33 @@ describe('graphStore', () => {
       })
       await useGraphStore.getState().updateNode('n1', { status: 'confirmed' })
       expect(useGraphStore.getState().nodes[0].status).toBe('confirmed')
+    })
+
+    // 每个类型至少覆盖一个「loose 表放行、per-type 矩阵拒绝」的原始 bug 场景。
+    // 必须在 renderer 本地拒绝，不能发 IPC 后让主进程拒绝而表现为「点了没反应」。
+    it.each([
+      { type: 'project', from: 'draft', to: 'developing' },
+      { type: 'module', from: 'draft', to: 'developing' },
+      { type: 'process', from: 'draft', to: 'developing' },
+      { type: 'feature', from: 'confirmed', to: 'published' },
+      { type: 'bug', from: 'placeholder', to: 'draft' },
+      { type: 'wiki-page', from: 'developing', to: 'testing' },
+    ] as const)('updateNode 拒绝 $type 的 $from→$to（loose 放行、per-type 拒绝）', async ({ type, from, to }) => {
+      useGraphStore.setState({
+        nodes: [{ id: 'n1', title: 'N1', type, status: from, graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+      })
+
+      await expect(useGraphStore.getState().updateNode('n1', { status: to })).rejects.toThrow('非法状态转换')
+      expect(useGraphStore.getState().nodes[0].status).toBe(from)
+      expect(window.electronAPI['node:update']).not.toHaveBeenCalled()
+    })
+
+    it('updateNode 允许该节点类型独有的迁移（feature 的 placeholder→developing）', async () => {
+      useGraphStore.setState({
+        nodes: [{ id: 'n1', title: 'N1', type: 'feature', status: 'placeholder', graphId: 'g1', graphType: 'online', position: { x: 0, y: 0 }, createdAt: '', updatedAt: '' }],
+      })
+      await useGraphStore.getState().updateNode('n1', { status: 'developing' })
+      expect(useGraphStore.getState().nodes[0].status).toBe('developing')
     })
   })
 
