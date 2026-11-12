@@ -70,15 +70,24 @@ jobs:
         run: npm rebuild better-sqlite3
       # --maxWorkers=4 与本地已验证的跑法一致：默认并发在本机会因 worker 起不来
       # 静默丢测试文件（342 vs 384），显式限并发才能拿到可信的「全量」。
-      # 失败时把尾部送进注解：Actions 的日志 API 需要 admin 权限，注解是匿名可读的，
-      # 否则 Linux 上到底挂在哪一步只能靠猜（#88 就只跑了 68s 就失败，明显是早崩）。
+      # #89 在 Linux 上是「真跑完但有失败」（[4/39]…），而 Actions 的 job 日志要
+      # admin 权限（403），注解是匿名唯一可读的通道，且每步上限 10 个 error 注解——
+      # 所以这里把失败用例按文件去重后逐条写进注解，附一条含末段日志的汇总。
       - name: Run unit tests (vitest, includes tests/migration P1–P9 / G4-6)
         shell: bash
         run: |
           set -o pipefail
           npx vitest run --reporter=default --maxWorkers=4 2>&1 | tee /tmp/vitest.log || {
-            TAIL=$(tail -60 /tmp/vitest.log | tr '\n' '|' | cut -c1-900)
-            echo "::error file=tests/vitest::vitest failed: ${TAIL}"
+            FAILS=$(grep -aE '^ *FAIL ' /tmp/vitest.log | sed -E 's/^ *FAIL +//' || true)
+            COUNT=$(printf '%s\n' "$FAILS" | grep -c . || true)
+            printf '%s\n' "$FAILS" | awk '!seen[$0]++' | head -8 | while IFS= read -r line; do
+              [ -z "$line" ] && continue
+              f=${line%% *}
+              case "$f" in *.test.*) : ;; *) f=tests/vitest ;; esac
+              echo "::error file=${f}::${line}"
+            done
+            TAIL=$(tail -25 /tmp/vitest.log | tr '\n' '|' | cut -c1-700)
+            echo "::error file=tests/vitest::vitest 失败 ${COUNT} 条（文件去重后见上），尾部：${TAIL}"
             exit 1
           }
 
@@ -125,6 +134,14 @@ jobs:
       - name: 按 Electron ABI 重建原生模块
         shell: bash
         run: |
+          # #89 实测：install-app-deps 在这四行之前就崩了——
+          #   ⨯ ENOENT: no such file or directory, stat '.../node_modules/sharp'
+          # `sharp` 是 @xenova/transformers 自带的桩包（name=sharp-stub）。锁文件把它记成
+          # `node_modules/sharp → node_modules/@xenova/transformers/stubs/sharp` 的软链；
+          # npm ci 下这个链会缺失/悬空，而 @electron/rebuild 会逐个 stat `node_modules/*`
+          # 找原生模块，stat 一个不存在的路径直接整步失败。先清掉悬空链（`-e` 会跟随符号
+          # 链接：悬空时为假），再重建。注意这不是「删依赖」——真 sharp 从未安装过。
+          if [ ! -e node_modules/sharp ]; then rm -rf node_modules/sharp; echo "removed dangling node_modules/sharp link"; fi
           set -o pipefail
           npx electron-builder install-app-deps 2>&1 | tee /tmp/app-deps.log || {
             TAIL=$(tail -40 /tmp/app-deps.log | tr '\n' '|' | cut -c1-900)
@@ -169,9 +186,31 @@ jobs:
           }
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+      # #89：装依赖已不再是瓶颈（本步真的跑起来了），失败在用例本身，同样看不到日志。
+      # 把 Playwright 列出的失败用例名与日志尾部写进注解（每步 error 注解上限 10 条）。
       - name: Run E2E tests (Linux)
         if: runner.os == 'Linux'
-        run: npx xvfb-run npm run test:e2e
+        shell: bash
+        run: |
+          set -o pipefail
+          npx xvfb-run npm run test:e2e 2>&1 | tee /tmp/e2e.log || {
+            grep -aE '^[[:space:]]*[0-9]+\) ' /tmp/e2e.log | head -6 | while IFS= read -r line; do
+              echo "::error file=tests/e2e::${line}"
+            done
+            TAIL=$(tail -30 /tmp/e2e.log | tr '\n' '|' | cut -c1-800)
+            echo "::error file=tests/e2e::e2e failed，尾部：${TAIL}"
+            exit 1
+          }
       - name: Run E2E tests (macOS/Windows)
         if: runner.os != 'Linux'
-        run: npm run test:e2e
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee /tmp/e2e.log || {
+            grep -aE '^[[:space:]]*[0-9]+\) ' /tmp/e2e.log | head -6 | while IFS= read -r line; do
+              echo "::error file=tests/e2e::${line}"
+            done
+            TAIL=$(tail -30 /tmp/e2e.log | tr '\n' '|' | cut -c1-800)
+            echo "::error file=tests/e2e::e2e failed，尾部：${TAIL}"
+            exit 1
+          }
