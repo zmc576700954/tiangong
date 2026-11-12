@@ -11,9 +11,9 @@ import BetterSqlite3 from 'better-sqlite3'
 import { applyMapS5aSchema, applyMapViews } from '../map/schema'
 import {
   ProposalService,
-  ProposalError,
   PROPOSAL_FIELD_MAX_BYTES,
 } from '../map/proposal-service'
+import type { ProposalError } from '../map/proposal-service'
 
 const NODES_DDL = `
   CREATE TABLE nodes (

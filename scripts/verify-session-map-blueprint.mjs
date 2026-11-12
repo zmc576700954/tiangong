@@ -190,7 +190,10 @@ const expand = (s) => {
 // ── 6. 文档声明的行数与实测一致 ──────────────────────────────────────────
 {
   const selfLines = lines.length - (lines[lines.length - 1] === '' ? 1 : 0)
-  const claims = [...text.matchAll(/= \*\*(\d+)\*\*（2026-11-11/g)].map((m) => Number(m[1]))
+  // 只校验「本文声明的行数 = 实测」，日期不参与判定（此前写死 2026-11-11，
+  // 文档每升一版就要改脚本，属于断言比事实更硬）。必须锚定本文文件名，
+  // 否则会把被引快照 map-orchestration-blueprint.md 的 398 也吃进来。
+  const claims = [...text.matchAll(/wc -l docs\/architecture\/session-map-blueprint\.md` = \*\*(\d+)\*\*/g)].map((m) => Number(m[1]))
   const ok = claims.length > 0 && claims.every((c) => c === selfLines)
   record(
     'LINES',

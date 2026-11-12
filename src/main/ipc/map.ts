@@ -62,6 +62,9 @@ export function registerMapHandlers(
 ): void {
   const links = new LinkService(db)
   // G2-18：步级迁移事件统一走现有 item 变更通道（renderer 按 lineage 去抖重拉）。
+  // onChanged 闭包必须先于实例创建存在（构造入参），只能「先声明、后赋值」；
+  // 不能合并成 const 初始化，否则闭包内引用落在 TDZ。
+  // eslint-disable-next-line prefer-const
   let workItems: WorkItemService
   const stepOptions: WorkStepServiceOptions = {
     onChanged: (event) => {

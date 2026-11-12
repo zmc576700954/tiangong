@@ -37,6 +37,7 @@ const ACTION_BUTTON_CLASS =
   'rounded border px-2 py-0.5 text-[10px] hover:bg-gray-500/10 disabled:cursor-not-allowed disabled:opacity-40'
 
 /** 该步是否需要用户注意（任务级角标用）。 */
+// eslint-disable-next-line react-refresh/only-export-components -- 纯函数与组件同源（角标判据由本文件的渲染规则决定），拆文件会割裂语义；仅损失热更新粒度
 export function hasPendingConfirmation(views: readonly StepConfirmationView[]): boolean {
   return views.some((view) => view.point !== null && (view.required || view.waiting))
 }

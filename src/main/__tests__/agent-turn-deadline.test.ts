@@ -16,6 +16,20 @@ import { openTestDb } from '../agent/runtime/__tests__/helpers/test-db'
 
 const NOW = 1_700_000_000_000
 
+/**
+ * 被测私有方法的最小面：`insertTurn` / `expireOverdueTurnsOnStartup` 在
+ * AgentRuntime 上是 private，单测要直接驱动内部路径。用最小面断言代替
+ * `as any`——lint 仍能约束，签名写错时也有类型提示而不是静默放过。
+ */
+type RuntimeInternals = {
+  insertTurn: (...args: unknown[]) => void
+  expireOverdueTurnsOnStartup: () => number
+}
+
+function internalsOf(runtime: AgentRuntime): RuntimeInternals {
+  return runtime as unknown as RuntimeInternals
+}
+
 function createRuntime() {
   const repo = {
     insertTurn: vi.fn((input: Record<string, unknown>) => ({ id: 'turn-1', ...input })),
@@ -59,7 +73,7 @@ describe('F3-A：deadline 写入方', () => {
   it('insertTurn 落 deadline_at = now + deadlineMs', () => {
     const { runtime, repo } = createRuntime()
 
-    ;(runtime as any).insertTurn(
+    internalsOf(runtime).insertTurn(
       'run-1',
       'sess-1',
       { prompt: 'p', deadlineMs: 60_000 } as never,
@@ -78,7 +92,7 @@ describe('F3-A：deadline 写入方', () => {
   it('deadlineMs undefined / 0 不启用（落 NULL）', () => {
     const { runtime, repo } = createRuntime()
 
-    ;(runtime as any).insertTurn(
+    internalsOf(runtime).insertTurn(
       'run-1',
       'sess-1',
       { prompt: 'p' } as never,
@@ -88,7 +102,7 @@ describe('F3-A：deadline 写入方', () => {
       'key',
       {} as never,
     )
-    ;(runtime as any).insertTurn(
+    internalsOf(runtime).insertTurn(
       'run-1',
       'sess-1',
       { prompt: 'p', deadlineMs: 0 } as never,
@@ -225,7 +239,7 @@ describe('F3-A：启动对账处置已过期 deadline', () => {
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(false)
 
-    const applied = (runtime as any).expireOverdueTurnsOnStartup() as number
+    const applied = internalsOf(runtime).expireOverdueTurnsOnStartup()
 
     expect(applied).toBe(1)
     expect(repo.finalizeTurnStatus).toHaveBeenNthCalledWith(

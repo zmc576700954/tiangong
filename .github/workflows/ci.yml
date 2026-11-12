@@ -18,16 +18,22 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npx tsc --noEmit
+      # 蓝图的机械断言（I.2 行数/编号闭合、计数三等式、文件与提交号可解析、
+      # 行数声明=实测）。纯 node 脚本、秒级，防止文档口径随代码漂移。
+      - run: npm run verify:blueprint
 
   # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
-  # 理由：本地全量稳定（316 files / 3892 passed / 3 skipped，约 16s），但这是本套
-  # 单测首次进 CI：better-sqlite3 原生模块 ABI、真实 git 探针、策略延迟预算、
-  # P2 重建耗时阈值等都依赖 runner 环境，尚未在 ubuntu-latest 验证过。
+  # 现状（2026-11-12，本地 Node 22 / macOS）：352 文件 / 4244 例，
+  # 4198 通过 / 46 跳过（宿主能力缺失，逐条带原因）/ 0 失败，耗时约 3'40"。
+  # 仍未在 ubuntu-latest 验证过的点：
+  #   - better-sqlite3 预编译 ABI 与 setup-node 20 是否匹配（npm ci 时决定）；
+  #   - 进程归属类用例在 Linux 上会**首次真跑**（本机 ps 被拒 → 一直是 skip）；
+  #   - runner 只有 2 核，全量耗时可能翻数倍，故超时放到 30 分钟（不是放宽断言）。
   # 观测一轮全绿后，删除 continue-on-error 正式作为门禁。
   unit:
     needs: lint
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4

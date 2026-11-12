@@ -19,6 +19,7 @@ import type { EvidenceEntry, WorkRunEntry, WorkStepEntry } from '../../store/map
 export const TASK_TREE_MAX_DEPTH = 4
 
 /** item / step / run 状态共用配色（缺省值回落中性灰）。 */
+// eslint-disable-next-line react-refresh/only-export-components -- 配色表与渲染同源，拆文件需反向导入；仅损失热更新粒度
 export const STATUS_STYLE: Record<string, string> = {
   draft: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
   planning: 'bg-gray-500/10 text-gray-600 border-gray-500/30',
@@ -43,6 +44,7 @@ export const STATUS_STYLE: Record<string, string> = {
   superseded: 'bg-gray-500/10 text-gray-400 border-gray-500/30',
 }
 
+// eslint-disable-next-line react-refresh/only-export-components -- 时间格式化为本文件渲染服务的纯函数，抽走反而增加跨文件跳转；仅损失热更新粒度
 export function formatTs(ts: number | null | undefined): string {
   if (!ts) return '-'
   const d = new Date(ts)
