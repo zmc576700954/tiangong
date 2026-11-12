@@ -43,12 +43,14 @@ jobs:
       - run: npm run verify:blueprint
 
   # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
-  # 现状（2026-11-12，本地 Node 22 / macOS）：352 文件 / 4244 例，
-  # 4198 通过 / 46 跳过（宿主能力缺失，逐条带原因）/ 0 失败，耗时约 3'40"。
-  # 仍未在 ubuntu-latest 验证过的点：
-  #   - better-sqlite3 预编译 ABI 与 setup-node 20 是否匹配（npm ci 时决定）；
-  #   - 进程归属类用例在 Linux 上会**首次真跑**（本机 ps 被拒 → 一直是 skip）；
-  #   - runner 只有 2 核，全量耗时可能翻数倍，故超时放到 30 分钟（不是放宽断言）。
+  # 现状（2026-11-12，本地 Node 22 / macOS，--maxWorkers=4 实测）：
+  #   384 文件（379 通过 / 5 整文件 skip）；4563 例（4517 通过 / 46 skip / 0 失败）；
+  #   单次耗时约 5'20"（transform 54s，import 286s）。
+  # ubuntu-latest 上的已知情况（#88 首次真跑到这一层）：
+  #   - better-sqlite3 按 Node ABI 重建成功（66s），原生依赖不是问题；
+  #   - vitest 只跑了 68s 就失败——不是「全量跑完有失败」，是早崩（收集/启动阶段），
+  #     日志需 admin 权限才能读，故本步失败时把尾部写进注解，下一轮据此定位；
+  #   - 进程归属类用例在 Linux 上会**首次真跑**（本机 ps 被拒 → 一直是 skip）。
   # 观测一轮全绿后，删除 continue-on-error 正式作为门禁。
   unit:
     needs: lint
@@ -68,8 +70,17 @@ jobs:
         run: npm rebuild better-sqlite3
       # --maxWorkers=4 与本地已验证的跑法一致：默认并发在本机会因 worker 起不来
       # 静默丢测试文件（342 vs 384），显式限并发才能拿到可信的「全量」。
+      # 失败时把尾部送进注解：Actions 的日志 API 需要 admin 权限，注解是匿名可读的，
+      # 否则 Linux 上到底挂在哪一步只能靠猜（#88 就只跑了 68s 就失败，明显是早崩）。
       - name: Run unit tests (vitest, includes tests/migration P1–P9 / G4-6)
-        run: npx vitest run --reporter=default --maxWorkers=4
+        shell: bash
+        run: |
+          set -o pipefail
+          npx vitest run --reporter=default --maxWorkers=4 2>&1 | tee /tmp/vitest.log || {
+            TAIL=$(tail -60 /tmp/vitest.log | tr '\n' '|' | cut -c1-900)
+            echo "::error file=tests/vitest::vitest failed: ${TAIL}"
+            exit 1
+          }
 
   build:
     needs: lint
@@ -96,7 +107,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      # #88 的实测把「npm ci 挂」定位到安装脚本这一段：同一个 lockfile 下
+      # `npm ci --ignore-scripts` 在 ubuntu 上 64s 成功，带脚本的 `npm ci` 在
+      # ubuntu/win/mac **六个矩阵项全部**在约 2 分钟失败。这里把两段拆开：
+      #   ① 装依赖（不跑脚本）——纯 registry 下载；
+      #   ② 显式 `install-app-deps`——按 Electron ABI 重编原生模块（要 headers）。
+      # 哪一段红一目了然，也避免一次失败把两个原因混在一起。
+      - name: npm ci（不跑安装脚本）
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci --ignore-scripts 2>&1 | tee /tmp/npm-ci.log || {
+            TAIL=$(tail -40 /tmp/npm-ci.log | tr '\n' '|' | cut -c1-900)
+            echo "::error file=package-lock.json::npm ci failed: ${TAIL}"
+            exit 1
+          }
+      - name: 按 Electron ABI 重建原生模块
+        shell: bash
+        run: |
+          set -o pipefail
+          npx electron-builder install-app-deps 2>&1 | tee /tmp/app-deps.log || {
+            TAIL=$(tail -40 /tmp/app-deps.log | tr '\n' '|' | cut -c1-900)
+            echo "::error file=package.json::install-app-deps failed: ${TAIL}"
+            exit 1
+          }
       - run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -121,7 +155,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      # e2e 跑的是浏览器版 Playwright（`playwright.browser.config.ts` 用 vite dev
+      # server + 页面内 mock IPC），不需要 Electron 二进制、也不加载原生模块，
+      # 所以同样跳过安装脚本——#88 三个平台的 `npm ci` 都是在脚本阶段挂的。
+      - name: npm ci（e2e 不需要安装脚本）
+        shell: bash
+        run: |
+          set -o pipefail
+          npm ci --ignore-scripts 2>&1 | tee /tmp/npm-ci.log || {
+            TAIL=$(tail -40 /tmp/npm-ci.log | tr '\n' '|' | cut -c1-900)
+            echo "::error file=package-lock.json::npm ci failed: ${TAIL}"
+            exit 1
+          }
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
       - name: Run E2E tests (Linux)
