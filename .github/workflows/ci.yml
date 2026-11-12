@@ -15,7 +15,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      # lint 只跑 eslint/tsc/蓝图断言，不启动 Electron 应用——跳过二进制下载，
+      # 省 ~110MB 流量并移除一个纯网络性失败点（electron postinstall 走 github release）。
+      - name: npm ci
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 'true'
+      # Actions 的日志 API 需要鉴权，但 check-run 注解可匿名读——
+      # 失败时把 npm 调试日志的 error 尾部送进注解，诊断不用再猜。
+      - name: npm ci 失败时上报 npm error 尾部
+        if: failure()
+        run: |
+          LOG=$(ls -t /home/runner/.npm/_logs/*-debug-0.log 2>/dev/null | head -1)
+          if [ -n "$LOG" ]; then
+            TAIL=$(grep 'npm error' "$LOG" | tail -20 | paste -sd ' | ' - | cut -c1-900)
+            echo "::error file=package-lock.json::npm ci failed: ${TAIL:-（日志中无 npm error 行，查看 debug log $LOG）}"
+          else
+            echo "::error file=package-lock.json::npm ci failed 且未找到 npm 调试日志"
+          fi
       - run: npm run lint
       - run: npx tsc --noEmit
       # 蓝图的机械断言（I.2 行数/编号闭合、计数三等式、文件与提交号可解析、
