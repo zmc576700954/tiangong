@@ -19,6 +19,13 @@ interface CodexItem {
   command?: string
   output?: string
   changes?: Array<{ path: string; kind: 'add' | 'modify' | 'delete' }>
+  /** `mcp_tool_call` 带 server/tool/arguments；`status` 为 `completed` | `failed` | … */
+  server?: string
+  tool?: string
+  arguments?: unknown
+  result?: unknown
+  status?: string
+  error?: { message?: string } | string
 }
 
 interface CodexResult {
@@ -41,6 +48,45 @@ interface OpenItem {
   stepId: string
   toolCallId: string
   itemType: string
+}
+
+/**
+ * `item` 是否失败。
+ *
+ * 实机证据（codex-cli 0.162.0-alpha.17.2，`codex exec --json`）：
+ *
+ * ```json
+ * {"type":"item.completed","item":{"id":"item_12","type":"mcp_tool_call",
+ *  "server":"xcodebuildmcp","tool":"debug_lldb_command",
+ *  "error":{"message":"MCP tool call requires approval, but approval policy is never"},
+ *  "status":"failed"}}
+ * ```
+ *
+ * 这类 item 此前被当成 `tool.result{ok:true}`、output 写 `observed mcp_tool_call`：
+ * 审批把工具拒了，事件流却报成功 —— 界面看到「完成」，审计也看不到被拒。
+ * 三条通道（step 状态 / disposition / 证据）全靠这个 ok 位，所以必须按
+ * `status` / `error` 判失败，不能只看事件类型。
+ */
+function itemFailed(item: CodexItem): boolean {
+  if (item.status === 'failed' || item.status === 'error') return true
+  return item.error !== undefined && item.error !== null
+}
+
+function itemErrorText(item: CodexItem): string {
+  if (typeof item.error === 'string') return item.error
+  if (item.error?.message) return item.error.message
+  return `codex item failed: ${item.type}`
+}
+
+/**
+ * 工具名。MCP 调用必须带 server/tool —— 否则审计里所有 MCP 工具都叫
+ * `mcp_tool_call`，既看不出被拒的是哪个工具，也看不出它属于哪个 server。
+ */
+function toolNameOf(item: CodexItem): string {
+  if (item.type === 'mcp_tool_call') {
+    return `mcp:${item.server ?? 'unknown-server'}/${item.tool ?? 'unknown-tool'}`
+  }
+  return item.type
 }
 
 /** 阻塞 run() 的结果（保留供旧夹具与兼容路径使用）。 */
@@ -72,11 +118,11 @@ export function normalizeCodexResult(raw: unknown, meta: NormalizeMeta): Normali
       continue
     }
 
-    if (item.type === 'file_change' || item.type === 'command_execution') {
+    if (item.type === 'file_change' || item.type === 'command_execution' || item.type === 'mcp_tool_call') {
       toolIndex += 1
       const stepId = `step-codex-${toolIndex}`
       const toolCallId = `call-codex-${toolIndex}`
-      const input = item.type === 'file_change' ? { path: item.path, change: item.change } : { command: item.command }
+      const ok = !itemFailed(item)
       sink.emit({
         type: 'tool.requested',
         fidelity: 'turn',
@@ -84,22 +130,23 @@ export function normalizeCodexResult(raw: unknown, meta: NormalizeMeta): Normali
         stepId,
         payload: {
           toolCallId,
-          toolName: item.type,
-          input,
+          toolName: toolNameOf(item),
+          input: itemInput(item),
           risk: item.type === 'file_change' ? 'medium' : 'low',
           blocking: false,
           diffUnavailable: item.type === 'file_change',
         },
       })
       sink.emit({
-        type: 'tool.result',
+        type: ok ? 'tool.result' : 'tool.failed',
         fidelity: 'turn',
         source: 'synthetic',
         stepId,
         payload: {
           toolCallId,
-          ok: true,
-          output: item.output ?? `observed ${item.type}`,
+          toolName: toolNameOf(item),
+          ok,
+          output: ok ? (item.output ?? `observed ${item.type}`) : itemErrorText(item),
           diffUnavailable: item.type === 'file_change',
         },
       })
@@ -253,7 +300,7 @@ export class CodexStreamNormalizer {
       stepId,
       payload: {
         toolCallId,
-        toolName: item.type,
+        toolName: toolNameOf(item),
         input: itemInput(item),
         risk: item.type === 'file_change' ? 'medium' : 'low',
         blocking: false,
@@ -284,15 +331,17 @@ export class CodexStreamNormalizer {
     }
     if (!open) return
     this.openItems.delete(identity)
+    const ok = !itemFailed(item)
     this.sink.emit({
-      type: 'tool.result',
+      type: ok ? 'tool.result' : 'tool.failed',
       fidelity: 'turn',
       source: 'synthetic',
       stepId: open.stepId,
       payload: {
         toolCallId: open.toolCallId,
-        ok: true,
-        output: item.output ?? `observed ${item.type}`,
+        toolName: toolNameOf(item),
+        ok,
+        output: ok ? (item.output ?? `observed ${item.type}`) : itemErrorText(item),
         diffUnavailable: item.type === 'file_change',
       },
     })
@@ -330,6 +379,9 @@ export class CodexStreamNormalizer {
 function itemInput(item: CodexItem): Record<string, unknown> {
   if (item.type === 'file_change') return { path: item.path, change: item.change }
   if (item.type === 'command_execution') return { command: item.command }
+  if (item.type === 'mcp_tool_call') {
+    return { server: item.server, tool: item.tool, arguments: item.arguments }
+  }
   return { itemType: item.type }
 }
 

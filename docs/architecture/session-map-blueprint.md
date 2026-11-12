@@ -43,6 +43,7 @@
 > v3.23（2026-11-12）：**CI 的第一道门修绿——`npm run lint` 此前是红的，一 push 会在 `lint` job 就断，`unit`/`build`/`e2e` 因 `needs: lint` 全都不会跑**。基线实测 **36 error / 8 warning**，分两类：①**28 个 `Parsing error` 是 eslint 配置缺口**——flat config 只在各 `files` 作用域里挂 typescript-eslint parser，`spikes/**` 与 `tests/eval/**` 落回默认 espree，于是把 TS 语法报成解析错（`spikes/` 本就自带 `package.json`/`node_modules`/`vitest.config`，且不在根 `tsconfig` 的 `include` 里；`tests/**` 在 `tsconfig` 内，但 eslint 只列了 `tests/migration`）；②**9 处真问题**——1 个 `prefer-const`、4 个 `no-explicit-any`、1 个 `consistent-type-imports`、3 个 `react-refresh/only-export-components`。修法：`spikes/**` 进 `ignores` 并写明原因；`tests/**` 整体纳入 TS 规则；`tests/eval` 单独关闭 `no-console`（该 harness 的产出方式就是往 stdout 打评测摘要）；`map.ts` 的 `let workItems` 保留并加 `prefer-const` 豁免（`onChanged` 闭包必须先于实例创建存在，合并成 `const` 会让闭包内引用落在 TDZ）；测试里的 `(runtime as any)` 换成最小面断言 `internalsOf()`（lint 仍有约束、签名写错仍有提示）；3 处 `react-refresh` 逐条豁免并写明只损失热更新粒度。结果：`eslint .` **0 error / 0 warning**（`--max-warnings 0` 下 exit 0）、`tsc --noEmit` 0，全量测试无变化。**计数不变**：条目侧 116；裁决侧 23；去重 139。
 > v3.24（2026-11-12）：**S1 导入查重的用户出口落地——「重复导入」不再静默失败**。原状：`LeftPanel` 的「生成思维导图」只调 `graph:initFromProject`，从不传 `allowBranchVariant`，于是判定层 `3a-auto` 对分支/副本一律拒绝；`ImportRejectedError` 是裸 `Error`，`createTypedHandle` 只能包成 `IPC_HANDLER_ERROR`，命中证据（目录名/项目名/相似度/判定步）在 IPC 边界全丢；`catch {}` 空着，用户点完只看到转圈结束。三处一起修：①**结构化拒绝**——`ImportRejectedError` 改继承 `BizGraphError`，新增错误码 `IMPORT_REJECTED`，`toJSON().details.decision` 带 action/step/reason/signals；②**通道**——`project:import:preview`、`project:import:allowance:list` 进 preload 只读白名单（**不进 `MAP_READ_ONLY_CHANNELS`**：那张表是会话地图只读查询的集合，`map-read-ipc.test.ts` 逐条断言其中每个通道都由 map 域注册，导入查重不在那个域），`project:import:allowance:revoke` 进写白名单与结构化错误集合；preview 出口改为驼峰 DTO（`ImportPreviewResult`，含 `remembered`），不再把落库口径 `dir_name_same` 透给 renderer；③**界面**——新增 `ImportDedupDialog.tsx`（`reject` 只解释且不提供"强行导入" / `allow_with_warning` 可继续 / `allow_branch_variant` 必须勾选"这是分支或副本"才放行、可同时记住放行规则；框内含**放行规则列表与撤销**），`LeftPanel` 扫描前先 preview，判定收敛到 `decideImportGate`（`src/renderer/lib/import-gate.ts`）三分：proceed / confirm / blocked；失败不再静默，`readIpcError`（`src/renderer/lib/ipc-error.ts`）把 marker 里的结构化错误还原成人话再上屏。④**顺手修一处状态泄漏**：`GraphService.setImportOptions()` 是服务上的粘性状态，一次勾选「允许分支」会污染该进程后续所有导入（普通扫描也带 `interactive=true`），改为 `initFromProject(data, options)` 随调用传入。测试：对话框 6 例 + `decideImportGate` 7 例 + `ImportRejectedError` 载荷 2 例。**已知缺口 5 → 2**（只剩 `plan:derive-candidates` 延后、`admin:map:integrity-check` 刻意不暴露）。**计数不变**：条目侧 102+9+5+0=116；裁决侧 23；去重 139（本次是既有条目 G1-4 的交付修正，不新增 G 条目）。
 > v3.25（2026-11-12）：**G6-14 从「批准未实施」转为实测通过，进化层三张表有了只读出口**。① **G6-14 改口径实测**（`tests/eval/agent-eval.test.ts` 的 U5）：默认 SKIP，显式 `BIZGRAPH_EVAL_REAL_CLAUDE=1` 才跑；本轮用 cc-switch GLM 代理（`ANTHROPIC_BASE_URL=http://127.0.0.1:15721`，`PROXY_MANAGED` 鉴权）跑**真实回合**，链路走产品代码四段——`claude -p --output-format stream-json` → `normalizeClaude` → `extractUsage`（本次导出，与跑 run 同一函数）→ `UsageLedger.record`；结果 **PASS**：`agent_usage` 落 `source=provider`、`tokens_reported=1`、input=9672 / output=30 / cacheRead=7168，`model=kimi-for-coding`（代理透传的上游真实名），`cost_status=missing_price`、`cost_micros=NULL`（价格表无该模型，**不编造金额**），重复上报 dedupe 后仍 1 行。**边界**：只验 token 统计链路，**不验 Anthropic 官方计费口径与价格**（仍缺付费额度，见 I.9.2）。② **进化层只读可见**（I.9.3 三条妥协的解除条件）：新增 `src/main/map/evolution-read.ts`（纯 SELECT）+ 三条通道 `map:memory:hits:list` / `map:memory:attribution:list` / `map:calibration:report:list` 进 `MAP_READ_ONLY_CHANNELS`（preload 自动暴露），新增 `EvolutionTab.tsx` 挂在设置页（命中明细 / 派发归因 / 校准报告三块），三种空态分开显示：**表不存在（迁移未跑）/ 表在但无数据 / 读取失败**。`memory_hits` / `v_memory_attribution` 缺失时返回 `available:false` 而不是抛错或伪装成空列表。③ **实测发现一处缺口**：`chat_messages.token_count` 全仓**没有生产写入方**（`ChatRepository.saveMessage` 支持 `tokenCount`，但没有任何调用点传值），该列恒为 0；权威 token 口径在 `agent_usage`。已登记 I.8.2，不为它造写入方。**计数**：条目侧 102+9+5 → **103+8+5 = 116**（G6-14 从「已批准未实施」移入「已实施」，总量不变）；裁决侧 23；去重 139。校验：`evolution-read` 8 例 + `EvolutionTab` 5 例，`verify:blueprint` 全绿。
+> v3.29（2026-11-12）：**G9-13 收口 + Codex 侧两条实机结论**。① Windows 路径不再等机器：新增 CI `platform-paths` job（`windows-latest`，先断言宿主是 win32 再跑，防止整块 Windows 用例 skip 造成假绿），覆盖真实 NTFS 语义 —— 盘符前缀旁路（`C:\project-evil` 以 `C:\project` 开头）、大小写不敏感、跨盘 `path.relative` 返回绝对路径、`\` 归一；新增 `path-windows.test.ts`（POSIX 上 10 例 skip），并修掉 `path-utils.test.ts` 里两处 `fsSync.realpathSync('/tmp')` 无保护的平台假设（Windows 上 `/tmp` 不存在会直接抛 ENOENT，整文件红）。② 用 ChatGPT 内置 `codex-cli 0.162.0-alpha.17.2` 跑真实 `codex exec --json` 回合，**否掉 G7-2 的「只差 CLI 入口」**：随包 0.135.0 与 0.162 的 `exec` 都没有 `-a/--ask-for-approval`，唯一审批开关只能关（`--dangerously-bypass-approvals-and-sandbox`）；`approval_policy="on-request"` 下 MCP 调用仍被拒（`MCP tool call requires approval, but approval policy is never`）。要真拦截须改走 `codex app-server`，口径由「接线」改为「换协议」。③ 同时修掉该回合暴露的**假成功**：被拒的 `mcp_tool_call` 原本归一化成 `tool.result{ok:true}`（step 记 done、disposition 记 completed），现按 `status/error` 发 `tool.failed`，工具名带 `mcp:<server>/<tool>`；阻塞 `run()` 路径同改。
 > v3.28（2026-11-12）：**e2e 的 24/26 失败不是平台差异，是 dev server 被 Electron 子进程带走**。root cause：`npm run dev` 经 `vite-plugin-electron` 在 dev server 起来后编译并 `spawn` 一个 Electron 子进程，而插件里写着 `process.electronApp.once("exit", process.exit)` —— 子进程一退出，**父进程（vite）跟着退出**。子进程在两种环境下必然退出：CI 用 `npm ci --ignore-scripts` 没下 Electron 二进制（`require('electron')` 直接抛），本机环境带 `ELECTRON_RUN_AS_NODE=1`（子进程以纯 Node 跑，`electron.app` 为 undefined → 主进程 `electron.app.commandLine` 即 TypeError）。表现是「前 2–4 例通过、之后全部 `page.goto: net::ERR_CONNECTION_REFUSED`」，通过数只取决于编译与启动的赛跑先后（Windows 2 例、macOS 本地 4 例）。修法：`vite.config.ts` 增加 `BIZGRAPH_BROWSER_E2E=1` 分支——浏览器 e2e 不挂 electron 插件（既不起子进程，也省掉 main/preload 两次 rollup 构建），由 `playwright.browser.config.ts` 的 `webServer.env` 注入。**另暴露三处被假红掩盖的真问题**：① `ThreadListSidebar.getLastUpdatedAt` 对 `thread.messages` 无保护，一条缺字段的记录就 `undefined.length` → ErrorBoundary 把整个 Agent 面板变错误页（现在缺字段退化为用 `createdAt` 排序）；② mock 只实现 37/177 个通道，`agent:getSessionRecovery` / `wiki:listWriteback*` / `locale` / 若干 `onXxx` 监听器缺失，前者让面板直接崩、后者在画布挂载期刷错；给 mock 加 Proxy 让缺失通道**自报名字**（只记 error 不抛，保留应用对可选监听器的 `?.` 探测语义）；③ `openNodeMenu` 用裸 `dispatchEvent('contextmenu')` 没有 `clientX/clientY`，菜单 `left/top` 为 `undefined`、浮层退回文档流落到视口下方（实测 `top=720`、删除项 `y=1113`），Playwright 报 `element is outside of the viewport`；改为在页面内手工构造 `MouseEvent` 带真实坐标。结果：本地 `CI=1` 全量 **26 例全过 / 34s**（修前 22 失败 / 2.2min，`--retries=0` 与默认重试各跑一次均绿）。
 > v3.27（2026-11-12）：**CI 从「装不上依赖」推到「真跑出失败」，并修掉三类环境性误红**。① **锁文件里的 sharp 才是根因**：`overrides.sharp = file:./stubs/sharp` 让 npm 生成 `node_modules/sharp → node_modules/@xenova/transformers/stubs/sharp` 这种 `npm ci` 不会创建的链接（本地存在是早先 `npm install` 顺手建过），于是 build 的 `install-app-deps` 逐个 stat `node_modules/*` 时崩、unit 里 15 个文件整文件收集失败（`Cannot find package 'sharp'`）。改为普通直接依赖 `"sharp": "file:stubs/sharp"`，桩包名/版本对齐成 `sharp@0.32.0`，链接指向仓库内真实目录，`npm ci` 后即可解析。② **macOS runner 标签过期**：`macos-14` 已于 2026-11-02 退役（注解原文 `The configuration 'macos-14-arm64-us-default' is not supported`），`macos-13` 更早已下线（job 永远 queued），改用 `macos-15` / `macos-15-intel`。③ **e2e 的 Linux 步写的是 `npx xvfb-run …`**——xvfb-run 是系统程序，npx 会去 registry 找同名包，1 秒即红；headless chromium 不需要 X server，直接跑。④ **可观测性**：新增 `scripts/ci-annotate-failures.mjs`，把 vitest / playwright 的 json 报告按文件去重压成 ≤8 条注解 + 一条计数汇总（Actions 的 job 日志 API 需 admin，注解是匿名唯一可读通道）。⑤ **unit job 补 `node node_modules/electron/install.js`**：大量用例直接 import electron，`--ignore-scripts` 下没有 dist/ 会抛 `Electron failed to install correctly`。⑥ **测试侧两处环境依赖**：`NODE_SQLITE_FALLBACK` 在 CI 上指向不存在的 `spikes/agent-core/node_modules`（未纳入版本控制），退回根依赖并注明原因；`bash-readonly` 的「执行面」断言按**命令**分类探测——同一份伪造 gpgsig 仓库上，git 2.50 对 log/shortlog/rev-list/for-each-ref/branch 都会 spawn `gpg.program`，git 2.39/2.43 只有 log 会，因此「有没有执行」按宿主能力断言（不把版本差异当回归），而策略面（含 `%G` / `%(signature)` → ask）无条件断言。**计数不变**：条目侧 116；裁决侧 23；去重 139。
 > v3.26（2026-11-12）：**`worktree-ux-defaults-2026-10-31` 合并入 main，schema 由 v49 升至 v50**。分支带来两组能力：①**只读会话**（`readOnly` 标志 + 只读推导唯一实现 `@shared/readonly-support`；claude-code 只读会话不下发任何写工具并 `strictMcpConfig`，codex 走 SDK `read-only` 档位，回退链只保留保证只读的适配器）；②**项目级默认（范围记忆）**——新表 `project_settings`（按 `project_path` 存 `defaults_json`，一个项目 online+dev 两张图不重复两份）+ `project:getDefaults` / `project:setDefaults` 两条通道 + 设置页「默认值」标签。**合并决策**（15 个冲突文件逐处合成，不简单选边）：`database.ts` 保留 main 的 v21–v49 迁移账本并追加 v50（分支的 `project_settings` 建表定义并入 `TABLE_SCHEMAS` 尾部）；`settings.ts` 取分支的**通用合并**（`{...defaults, ...defined}` 剔除显式 undefined，替代 main 的逐字段列举——后者会在每次 `readSettings()` 时悄悄丢掉未列举的新字段）；`graph-service.createGraph` 同时保留 main 的 S4 测试图闸门与分支的 `projectPath` 参数；`agent-manager` 同时保留 main 的平台感知内存闸门与分支的只读回退链裁剪；`claude-code` 的 options 合成：模型优先级「会话显式 > 适配器默认 > 全局默认 > sonnet」，env 用 main 的 `buildSessionEnv`（沙箱/进程组），`permissionMode` 在审批钩子或只读会话时均为 `default`；`codex` 取分支的 `threadOptions`（含 model 与只读 sandboxMode）但保留 main 的 `isTrustedNativeSessionId` 恢复守卫；`sessionStore` 合成「显式适配器优先 + `unwrapIpcResult` 结构化错误」，错误文案走 i18n 键且保留 `isRestoreFailed` 的原文透出。**验证**：`tsc`（main + renderer）0 错、`npm run lint` 0/0、`verify:blueprint` 13/13、全量 vitest **379 文件通过 / 5 跳过、4517 例通过 / 46 跳过 / 0 失败**（另修 4 处合并后口径漂移：迁移测试的版本字面量 49→50、节点指纹补 `test-suite`/`test-case` 两类、preload 暴露护栏补解析 `MAP_READ_ONLY_CHANNELS` 展开、LeftPanel 扫描失败用例补 `project:import:preview` mock 并把 toast 收敛为单点上报）。**边界**：分支的迁移是「schema v18」，与 main 的 v49 是同一文件的两个不同世代；合并后统一在 v50，分支侧若有按 v18 判断的老库假设，以 v50 账本为准。
@@ -102,17 +103,17 @@
 
 | 类别 | 条数 | 说明 |
 |---|---|---|
-| 已实施 | **103** | 见 I.2，每条带代码证据（G6-14 于 v3.25 由「已批准未实施」移入） 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级），G2-18 12 值声明式步状态机 + 迁移事件，G3-1 Tier 探测（`tier-probe.ts`，写路径仅 Tier 1），G7-8 非 Tier 1 后端降级声明 + 执行状态说真话（UI/文档级），G5-10 项目进度只读视图（v47），G2-15 dirty diff 采集（v48，`dirty_files_count` + `dirty_tree_hash`），G2-16 离线校准报告（v49，`kind='calibration'`），G2-11 flow 集成测试（测试-only，`flow-test-integration.test.ts`），G8-5 任务卡四层折叠（`TaskCardTree.tsx`，纯渲染派生），G2-10 C1–C4 确认点（`confirmation-points.ts` + `step-confirmation-service.ts`：test/human 步逐点确认闸 + 必填展示项服务层校验），G8-3 确认点渲染与出口（`StepConfirmationPanel.tsx`：C3/C4 展示 why/风险原因/必填展示项/决策记录，只读后端判定；v3.14 起面板内可直接通过/驳回并按 `display` 契约回传） |
-| 已批准未实施 | **8** | 见 I.3，均有可施工方案（W 包）；G6-14 已于 v3.25 实测通过，移入「已实施」 |
+| 已实施 | **104** | 见 I.2，每条带代码证据（G6-14 于 v3.25 由「已批准未实施」移入，G9-13 于 v3.29 移入） 见 I.2，每条带代码证据；W5-D 转入 G6-12/G6-13/G6-18，W2 补 G5-9、G1-10/G5-4/G5-8、G3-10/G5-3（E1 人工直写），W7 核账 G7-6/G7-9，W12 收 G10-2（A1/A2/A9 用例）与 G10-3（A3/A4 边界），G6-5 删除 unattended 分支（`gateway.ts`），G3-3/G8-6 renderer 执行入口落地（`NodeMapPanel` + `map:execution:status`），G9-10 worktree 定时清理落地（`test-executor.ts`），G2-14 明细视图落地（`schema.ts` v38），G2-13 published 软阻断落地（`published-guard.ts` v39），G1-14/G2-6/G2-19/G8-4 提案机制三层落地（v40），G2-1 模式库 + `routing_decisions.mode_id`（v41），G7-5 MCP 写工具写前审批（同一 gateway），G11-10 `node_evidence.tree_hash`（v42），G1-9 E4 覆盖变化扫描（v43），G2-3 `memory_hits` 记录表（v44），G2-2 Layer1 采集 + `source_outcome`（v45），G2-4 `v_memory_attribution` 归因视图（v46），G3-2 run 级跨进程项目写闸（复用 runtime workspace lease），G7-7 C3 exec 面 literal 收敛，G6-17 同 uid 边界（文档级），G2-18 12 值声明式步状态机 + 迁移事件，G3-1 Tier 探测（`tier-probe.ts`，写路径仅 Tier 1），G7-8 非 Tier 1 后端降级声明 + 执行状态说真话（UI/文档级），G5-10 项目进度只读视图（v47），G2-15 dirty diff 采集（v48，`dirty_files_count` + `dirty_tree_hash`），G2-16 离线校准报告（v49，`kind='calibration'`），G2-11 flow 集成测试（测试-only，`flow-test-integration.test.ts`），G8-5 任务卡四层折叠（`TaskCardTree.tsx`，纯渲染派生），G2-10 C1–C4 确认点（`confirmation-points.ts` + `step-confirmation-service.ts`：test/human 步逐点确认闸 + 必填展示项服务层校验），G8-3 确认点渲染与出口（`StepConfirmationPanel.tsx`：C3/C4 展示 why/风险原因/必填展示项/决策记录，只读后端判定；v3.14 起面板内可直接通过/驳回并按 `display` 契约回传） |
+| 已批准未实施 | **7** | 见 I.3，均有可施工方案（W 包）；G6-14 已于 v3.25 实测通过、G9-13 已于 v3.29 用 Windows CI 收口，均移入「已实施」 |
 | 仅建议 | **5** | 见 I.3 与 Part II，L3/未来能力，不进入本期验收；其中 3 条已解除裁决阻塞 |
 | 待用户裁决 | **0** | 原 17 条已全部裁决，见 I.4 |
 | **已裁决（方向/不做）** | **23** | 方向 20 条（D-01…D-20，其中 D-18/D-19/D-20 为 D-13 的施工级补充）+ 不做 3 条（G7-10、G2-8、G2-17）：仅定方向/边界，**不升格为已批准未实施**，也不进入验收 |
 
-> **口径说明**：D-01…D-20 的裁决只回答“走哪条路”，不产生施工授权；G7-10 / G2-8 / G2-17 的「不做」是设计边界登记，同样不产生施工授权。D-18/D-19/D-20 是对 D-13 的**补充**（确认点落在哪类步、用什么风险线、事实存哪），不推翻 D-13 本体。四类施工状态加总 103 + 8 + 5 + 0 = **116（条目侧）**；**裁决侧**共 **23** 条（D-01…D-20 共 20 条 + G7-10 / G2-8 / G2-17 三条「不做」边界）；**去重总量** 116 + 23 = **139**，与 155 − 16 的去重结果一致（裁决只在四类之间平移，不新增施工类别）。
+> **口径说明**：D-01…D-20 的裁决只回答“走哪条路”，不产生施工授权；G7-10 / G2-8 / G2-17 的「不做」是设计边界登记，同样不产生施工授权。D-18/D-19/D-20 是对 D-13 的**补充**（确认点落在哪类步、用什么风险线、事实存哪），不推翻 D-13 本体。四类施工状态加总 104 + 7 + 5 + 0 = **116（条目侧）**；**裁决侧**共 **23** 条（D-01…D-20 共 20 条 + G7-10 / G2-8 / G2-17 三条「不做」边界）；**去重总量** 116 + 23 = **139**，与 155 − 16 的去重结果一致（裁决只在四类之间平移，不新增施工类别）。
 
 > 另有 16 条重复项：G1-9=G5-5（E4 扫描）、G1-10=G5-4（`evidence_suggestions`）、G1-12=G9-9=G11-11（Yjs，2 条重复）、G3-3=G8-6（renderer 入口）、G3-10=G5-3（E1 人工直写）、G4-5=G8-8（手工 E4 入口）、G4-7=G10-4（P1–P9）、G4-9=G10-11（CI）、G6-5=G7-12（unattended，G6-5 已删除分支）、G6-8=G11-5（排队）、G6-9=G11-6（runStreamed）、G6-10=G11-8（长尾 CLI）、G2-11=G4-1、G2-12=G4-2、G2-13=G4-3（流程测试三项）。
 
-### I.1.1 已实施（102）
+### I.1.1 已实施（104）
 
 - **会话地图本体**：G1-1 `entity_key`、G1-2 `lifecycle_state`、G1-3 `node_links`、G1-4 导入查重、G1-5 双轨自动写关闭、G1-6 `needs_input` 回写、G1-7 输出/partial/文件变更回填、G1-8 子 work_item 聚合、G1-10 `evidence_suggestions`、G1-13 新建图 doc 池、G1-16 快照恢复不重算。
 - **提案机制（v40）**：G1-14 提案服务 + 只读视图 `v_online_proposals` + `NodeMapPanel` 提案区（服务层/只读视图/UI 三层）；G2-6 冲突组串行、`weight` 展示降权、并发上限 3、24h 超时取消；G2-19 `proposal:list` / `proposal:diff` 只读通道与采纳/驳回；G8-4 复用 `NodeMapPanel` 做列表与 diff 可视化（只读、不批量）。
@@ -127,14 +128,14 @@
 - **迁移与运维**：G9-1 S1/S2/S5a/S6a、G9-2 S3、G9-3 S7、G9-4 S8 前置表、G9-5 S4、G9-6 S4 不可逆（已接受）、G9-7 迁移续跑、G9-8 `RequestQueue` 删除、G9-10 worktree 定时清理（标记文件 + 启动/每 6h，`test-executor.ts`）、G9-11 schema 版本号对齐 **49**、G9-12 报告裁剪。
 - **文档与验证**：G10-7/G10-8/G10-9/G10-12 本轮状态词/行数/矛盾校正、G10-2 A1/A2/A9 用例登记（§0.3.1，新增 A1 唯一性用例）、G10-3 A3/A4 边界（§0.3.2，新增并发串行与超时用例）；G11-7 成本只记账；G11-9 D12 本期不做。
 
-### I.1.2 已批准未实施（8）
+### I.1.2 已批准未实施（7）
 
 - **Agent 运行时**：G6-7 Codex 无句柄、G6-11 U1–U9（harness 已就位，U1/U2/U7/U9 待环境；U5 已按重判口径于 v3.25 实测通过，见 I.8.1）、G6-15 OpenCode 轨迹、G6-16 Codex provider 差异。
 - **审批与沙箱**：G7-1 写前审批覆盖边界（三后端矩阵未齐）、G7-2 Codex gateway、G7-3 OpenCode。G7-10 旧路径时间线**已裁决不做**（设计边界，见 §4.5.1a），不在此列。
-- **迁移与运维**：G9-13 Windows 路径。
+- **迁移与运维**：~~G9-13 Windows 路径~~ **已于 v3.29 实施**（`platform-paths` job 在 windows-latest 上真跑路径语义；见 I.2.8）。
 - **文档与验证**：G10-1 §13 审计表（102 行；原 66 节标“有框架缺细节”，截至 2026-11-09 A/B/C 组已收至 32 节、D 组再收 17 节、E 组再收 13 节、B3 再收 2 节至 **0 节**）、G10-11 CI（=G4-9）。
 
-> **为什么本节列 10 个编号却标 8 条**（v3.19 补说明，v3.25 随 G6-14 移出再减 1）：`G10-11` 就是 `G4-9`，CI vitest 早已实施，按去重规则不重复计数；`G10-1` 的 §13 审计已收至「0 节缺细节」，无剩余施工，属账面遗留。10 − 2 = **8**。这两条保留在节内只为留痕，不构成待办。
+> **为什么本节列 10 个编号却标 7 条**（v3.19 补说明，v3.25 随 G6-14 移出再减 1，v3.29 随 G9-13 移出再减 1）：`G10-11` 就是 `G4-9`，CI vitest 早已实施，按去重规则不重复计数；`G10-1` 的 §13 审计已收至「0 节缺细节」，无剩余施工，属账面遗留。10 − 3 = **7**。这两条保留在节内只为留痕，不构成待办。
 
 ### I.1.3 仅建议（5）
 
@@ -159,7 +160,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 > 注：I.1.4 列 26 个编号，去重后 20 条（17 方向 + 3 不做）；重复关系见上方清单。另有 D-18/D-19/D-20 三条**施工级补充裁决**（对应 G2-10，不新增 G 条目编号，故不计入上述 20 条），见 I.4.19–I.4.21。
 
-## I.2 已实施清单（103 条，按主题）
+## I.2 已实施清单（104 条，按主题）
 
 > 复核口径：以下每条只写能从代码复核到的能力；文档声明但代码未复核的，一律降级到 I.3。
 >
@@ -282,7 +283,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G8-9 | 证据区空态：文案为「无（该节点没有证据）」（**注意：不是**早期演练稿写的「该节点没有关联证据」，以代码为准）；会话时间线、提案区各有同形空态，读取失败与"无数据"分开显示，不生成占位内容 | `NodeMapPanel.tsx`（`node-map-evidence` section 空态分支；同文件 `node-map-timeline` / 提案区空态）、`NodeMapPanel.test.tsx`（空态断言） |
 | G8-10 | 全局 `ApprovalInbox`：App 根部挂载，折叠态显示待决议条数，展开逐条给来源与「允许 / 拒绝」，决议后条目移除、失败显示错误且不假装成功。**原文「15 条审批全部可见可决议」来自 `out-run4` 演练截图，该目录全仓不存在、git 历史中也从未提交，数字不可复核**——此处只保留可复核的能力，删掉不可复核的计数 | `components/agent/ApprovalInbox.tsx`（`approval-inbox` / `-toggle` / `-item` / `-source` / `-allow` / `-deny` / `-error`）、`App.tsx`（挂载点）、`ApprovalInbox.test.tsx` |
 
-### I.2.8 迁移与运维（11）
+### I.2.8 迁移与运维（12）
 
 | 编号 | 能力 | 代码证据 |
 |---|---|---|
@@ -297,6 +298,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G9-11 | schema 版本号对齐到 **v50**（`CURRENT_SCHEMA_VERSION = 50`），v38–v49 十二项迁移与 §8.2 说明逐条一致；**v50 为合并带入**（`worktree-ux-defaults-2026-10-31` 的 `project_settings`，纯新增表、不重建既有表） | `src/main/database.ts`（`CURRENT_SCHEMA_VERSION` + v38–v50 迁移块）、本文 §8.2 |
 | G9-10 | worktree 定时清理：保留标记文件 + 启动时扫一次 + 每 6h 扫一次，清理受控 worktree；不误删活跃 run 的目录 | `test-executor.ts`（`startWorktreeRetentionSweep`，6h 周期）、`test-executor.test.ts` |
 | G9-12 | 报告裁剪与 `import_rejections` 90 天保留 | `database.ts`、`import-dedup.ts` |
+| G9-13 | Windows 路径语义在真实 NTFS 上验证：盘符前缀旁路、大小写不敏感、跨盘 `path.relative` 返回绝对路径、`\` 归一，由 CI 的 `platform-paths` job 覆盖（`windows-latest` + 断言宿主是 win32，防止整块 Windows 用例 skip 造成假绿） | `.github/workflows/ci.yml`（`platform-paths`）、`src/main/__tests__/path-windows.test.ts`、`path-utils.test.ts`、`project-path.test.ts`、`project-paths.test.ts` |
 
 ### I.2.9 文档与裁决落地（8）
 
@@ -450,7 +452,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - 风险与回滚：embedding 成本与误召回 → 默认关闭，按项目开启。
 
 ### W11 迁移与运维
-- 覆盖条目：G9-8 `[已实施]` `RequestQueue` 删除、G9-11 `[已实施]` schema 版本号对齐到 **v50**（`CURRENT_SCHEMA_VERSION`，v50 = 合并带入的 `project_settings`）、G9-10 `[已实施]` worktree 定时清理、G9-13 `[批准]` Windows 路径、G2-14 `[已实施]` `v_plan_deviations_file_domain`、G2-15 `[已实施（v48）]` dirty diff。
+- 覆盖条目：G9-8 `[已实施]` `RequestQueue` 删除、G9-11 `[已实施]` schema 版本号对齐到 **v50**（`CURRENT_SCHEMA_VERSION`，v50 = 合并带入的 `project_settings`）、G9-10 `[已实施]` worktree 定时清理、G9-13 `[已实施]` Windows 路径（`platform-paths` job）、G2-14 `[已实施]` `v_plan_deviations_file_domain`、G2-15 `[已实施（v48）]` dirty diff。
 - 目标：清理死代码、补齐运维任务、修正文档版本口径。
 - 涉及文件与数据/接口变更：`request-queue.ts` **已删除**（`80075e7`，无兼容壳）；新增 worktree 清理任务；`database.ts` 版本注释；视图 `v_plan_deviations_file_domain`。
 - 实施步骤：① 文档版本改 36（已完成）；② 删死代码（`RequestQueue` 已完成）；③ 建视图；④ 加清理任务；⑤ Windows 仅登记不实现。
@@ -690,10 +692,10 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 
 ## I.6 定稿自检
 
-- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5981**（2026-11-12 v3.28 定稿实测；`npm run verify:blueprint` 每次都会重算，数字不再靠人记）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**（2026-11-09 起未变，仍是历史快照）。
+- 行数复核：`wc -l docs/architecture/session-map-blueprint.md` = **5984**（2026-11-12 v3.29 定稿实测；`npm run verify:blueprint` 每次都会重算，数字不再靠人记）；`wc -l docs/architecture/map-orchestration-blueprint.md` = **398**（2026-11-09 起未变，仍是历史快照）。
 - schema 复核：`src/main/database.ts` `CURRENT_SCHEMA_VERSION = 49`（v38–v49 依次为 G2-14/G2-13/G1-14/G2-1/G11-10/G1-9/G2-3/G2-2/G2-4/G5-10/G2-15/G2-16 引入；v50 未做）。
 - “已实施”证据复核：I.2 自 v3.19 起统一为「完整相对路径 + 符号/函数名」，不再标行号（行号是最先腐烂的证据，见 I.2 头部的证据格式说明）；无代码证据的一律在 I.3/I.4 或标「文档级」。
-- 计数复核（当前自检，v3.14 起生效；v3.25 更新）：**条目侧** 103 已实施 + 8 已批准未实施 + 5 仅建议 + 0 待裁决 = **116**；**裁决侧** 20 条方向裁决（D-01…D-20）+ 3 条「不做」边界（G7-10 / G2-8 / G2-17）= **23**；**对账** 116 + 23 = **139**，且 原始明细 155（152 + 3 条施工级补充裁决 D-18/D-19/D-20）− 16 条跨组重复 = **139**。两式必须同时成立。
+- 计数复核（当前自检，v3.14 起生效；v3.29 更新）：**条目侧** 104 已实施 + 7 已批准未实施 + 5 仅建议 + 0 待裁决 = **116**；**裁决侧** 20 条方向裁决（D-01…D-20）+ 3 条「不做」边界（G7-10 / G2-8 / G2-17）= **23**；**对账** 116 + 23 = **139**，且 原始明细 155（152 + 3 条施工级补充裁决 D-18/D-19/D-20）− 16 条跨组重复 = **139**。两式必须同时成立。
 - 计数增长规则：新增 G 条目 → 条目侧 +1（总数 +1）；把某 G 条目改判为「不做」→ 条目侧 −1、裁决侧 +1（**总数不变**）；新写一条**无对应 G 条目**的 D 裁决记录 → 裁决侧 +1（总数 +1）。旧稿的「去重总数恒为 136」只是 v2.3 时点的快照，**不是不变量，已废止**，不得再作为自检口径。
 - v2.3 历史快照（2026-11-09，**非当前自检，仅存档**）：152 原始条目 / 16 重复 / 136 独立；75 已实施 / 11 已批准未实施 / 32 仅建议 / 0 待用户裁决 / 18 已裁决（17 方向 + 1 不做，未授权施工）。（当时点的收口记录：W1 收 G1-5/6/7/8/13；W3 `0df2234` 收 G3-4～G3-9；W4 `217fbbc` 收 G4-6～G4-9；W5 A/B `dc51b48` 与 C `80075e7` 收 G6-1～G6-4；W5-D 收 G6-12/G6-13/G6-18；W2 收 G1-10/G5-4/G5-8/G5-9 与 G3-10/G5-3；W7 核账收 G7-6/G7-9；W12 收 G10-2/G10-3；G9-8 由仅建议转入、G9-11 由已批准转入已实施；G6-5 删除 unattended 分支转入已实施；G3-3/G8-6 renderer 执行入口转入已实施；G7-10 由已批准未实施转为已裁决不做。）
 - v2.2 复核：I.4 的 D 条目恰 17 条（D-01…D-17，全部「已裁决（采纳 X）」），另 I.4.18 为 G7-10 已裁决不做；Part II 恰 34 条（II-01…II-34，13 条阻塞已解除）；**除 II-24（G3-3/G8-6）与 II-32（G9-8）已于 2026-11-09 实施外，其余 32 条状态词仍为「仅建议」，17 条未升格为「已批准未实施」**。
@@ -741,7 +743,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | W7 审批覆盖 | G7-1…G7-6、G7-9（G7-10 不做） | 依赖 W5 | W5；手工 E4 按 D-06 复用确认 UI | 审批覆盖需要 M2 的会话/审批表先行 |
 | W9 DAG/确认点 | G3-12（已实施）+ C1–C4 | 依赖 W3 | W3；确认强度 D-13、折叠 D-14 | 分层调度要有写闸与状态机才会安全 |
 | W10 进化/提案/Tier2 | G1-14、G2-2…G2-7 | 依赖 W2 | W2；Tier2 按 D-17 先补审批桥；embedding 按 D-12 | 进化与提案都消费证据，Tier2 需桥 |
-| W11 迁移运维 | G9-11/13、G9-8、G9-10 | **基本完成（`80075e7` + v49）** | W1 | `RequestQueue` 已删、版本号已对齐 **v49**、worktree 定时清理已落地；仅剩 G9-13 Windows 路径 |
+| W11 迁移运维 | G9-11/13、G9-8、G9-10 | **已完成（`80075e7` + v49 + v3.29）** | W1 | `RequestQueue` 已删、版本号已对齐 **v49**、worktree 定时清理已落地、G9-13 Windows 路径改由 `platform-paths` job 在 windows-latest 上验证 |
 | W8 沙箱 C3 | G7-7（已实施）/ G7-8（已实施：声明 + 降级 + UI 说真话）/ G6-17（文档级） | **已完成** | 无 | exec 面已收敛；非 Tier 1 后端不再进编排写路径；完整审批桥仍不做（设计边界） |
 
 **建议顺序**：`W1 ∥ W3 ∥ W4 ∥ W12` → `W2`（通道等 W4）→ `W5` → `W6 ∥ W7` → `W9` → `W10` → `W11`。W8 已收口；5 条仅建议维持不动，除非另行授权。
@@ -749,8 +751,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 ## I.8 剩余卡点（按「用户需做什么」重排，2026-11-10）
 
 > **复核基线**：HEAD `007f9d2`（2026-11-11 v3.19 核验时的实际 HEAD；原写 `9bb94e8`，已落后 30 个提交）。工作区干净，`origin/main` 落后 **183 个提交**（从未 push）。
-> **计数（v3.25 更新）**：本节的来源是 I.1.2（**8 条**已批准未实施）与 I.1.3（**5 条**仅建议），合计 **14 条**——原写「11 + 29 = 40」是旧快照。状态词与授权仍以 I.1 为准，本节只回答「卡在哪、用户做什么能解、大概多少活」。
-> **计数说明**：I.1.2 里 G10-11（=G4-9，已实施）与 G10-1（§13 审计已收至 0 节缺细节）是账面遗留，不计入 14；I.1.3 的 E1 人工入口并入 G8 组，不单列。工作量均为**估算**，非承诺。
+> **计数（v3.29 更新）**：本节的来源是 I.1.2（**7 条**已批准未实施）与 I.1.3（**5 条**仅建议），合计 **12 条**——原写「11 + 29 = 40」是旧快照，v3.25 前写「8 + 5 = 14」也把已移出的 G6-14 算在内。状态词与授权仍以 I.1 为准，本节只回答「卡在哪、用户做什么能解、大概多少活」。
+> **计数说明**：I.1.2 里 G10-11（=G4-9，已实施）与 G10-1（§13 审计已收至 0 节缺细节）是账面遗留，不计入 12；I.1.3 的 E1 人工入口并入 G8 组，不单列。工作量均为**估算**，非承诺。
 > **D 组的读法（v3.19 补）**：D 组是「已实施复核记录 + 少数可开工项」的混排表，**不是待办清单**。凡行内标「已实施」的，只作复核留痕；只有标「授权开工即可」的才是真待办。照旧把整张 D 表排期，会把已做完的事重做一遍。
 
 ### A. 需用户提供凭据或密钥（2 条；G6-14 已于 v3.25 实测移出、G7-2→B、G6-16→I.9.2）
@@ -760,16 +762,15 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G6-11 | U1–U9 真机矩阵 | **重判后仅剩官方口径三条**：U1/U2 Codex 官方 provider、U5 Anthropic 付费回合；U9 第二 uid、U3/U4/U6/U7/U8 已 PASS/SKIP | 若要补齐 U1/U2/U5：提供官方 OpenAI provider key 与 Anthropic 付费额度；否则转 I.9.2 | 3–5 人日（多为实测） |
 | G2-5 | Layer3 embedding | 需 embedding 模型来源（外部 API 或本地 onnx）与成本授权（D-12 只记账不熔断） | 指定模型来源，并确认是否允许外部调用与计费 | 5 人日 + 模型费 |
 
-### B. 需用户提供环境（机器 / 系统 / CLI，6 条）　← 这 6 条 + A 的 G6-11 + I.9.2 的 G6-16 = I.1.2 的 **8** 条（G6-14 已于 v3.25 实测移出）
+### B. 需用户提供环境（机器 / 系统 / CLI，5 条）　← 这 5 条 + A 的 G6-11 + I.9.2 的 G6-16 = I.1.2 的 **7** 条（G6-14 已于 v3.25 实测移出、G9-13 已于 v3.29 用 Windows CI 收口）
 
 | 编号 | 名称 | 卡点（一句话） | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
-| G6-7 | Codex 无句柄 | 需真实 Codex CLI 复现残留会话，才能验 `residual_risk` 与 UI 一致 | 在工作机安装 Codex CLI | 1 人日 |
+| G6-7 | Codex 无句柄 | **CLI 已找到**（`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`，0.162.0-alpha.17.2）；只差一次「跑起来后杀死进程、重启看 `residual_risk` 与 UI 是否一致」的真机演练 | 无需再装 CLI；需允许跑一次真实 Codex 回合（耗模型额度） | 1 人日 |
 | G6-15 | OpenCode 轨迹 | PATH 无 `opencode` CLI，适配器仍是 `-q` 纯文本单次执行 | 安装 `opencode` CLI | 2 人日 |
-| G7-1 | 写前审批覆盖边界 | 三后端矩阵缺 Codex/OpenCode/MCP（Claude 侧已具备） | 提供 Codex CLI + `opencode` CLI 用于矩阵实测 | 3 人日 |
+| G7-1 | 写前审批覆盖边界 | 三后端矩阵缺 Codex/OpenCode/MCP（Claude 侧已具备）；Codex 侧的本轮实测结论见 I.9.2 | 提供 `opencode` CLI；Codex 已可实测 | 3 人日 |
 | G7-3 | OpenCode 审批 | 需 `opencode` CLI 才能把写前审批接进 gateway | 安装 `opencode` CLI | 2–4 人日 |
-| G9-13 | Windows 路径 | 需真实 Windows 机验证路径规范化与打包 | 提供一台 Windows 机器（或允许 Windows CI） | 1 人日 |
-| G7-2 | Codex gateway | **重判：审批拦截是客户端能力、与 provider 无关**；只差 Codex CLI 入口 | 用 ChatGPT.app 内置 Codex CLI（`.../CodexCLI.app/Contents/MacOS/codex`）或安装 `codex`，对现有 MiniMax 端点验证 | 3–5 人日 |
+| G7-2 | Codex gateway | **v3.29 实机否掉「只差 CLI 入口」**：随包 `codex-cli 0.135.0` 与 ChatGPT 内置 `0.162.0-alpha.17.2` 的 `codex exec` 都**没有** `-a/--ask-for-approval`（唯一审批开关是 `--dangerously-bypass-approvals-and-sandbox`，只能关不能开）；`-c approval_policy="on-request"` 下真实回合仍报 `MCP tool call requires approval, but approval policy is never`（0.162 实测，事件带 `status:"failed"`）。SDK 走的就是 exec，故 exec 路径**没有**审批通道。要真拦截必须换 `codex app-server` JSON-RPC（服务端→客户端审批请求） | 无需凭据；这是**协议级改造**（驱动重写），需授权 | 3–5 人日（口径由「接线」改为「换协议」） |
 
 ### C. 曾需产品裁决、现已全部实施（4 条；保留裁决留痕，**不是待办**）
 
@@ -810,20 +811,20 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G8-4 | 提案 UI（渲染） | 依赖 G2-19 | **已实施**（`NodeMapPanel` 列表 + diff 可视化，只读、不批量） | — |
 | G8-5 | 任务卡深度 | 无（D-14 已定默认折叠） | **已实施**（`TaskCardTree.tsx` 四层折叠 + 证据按 `work_run_id` 归属；纯渲染派生，口径见 I.9.3） | 3 人日 |
 
-### E. 建议不做 / 已登记不施工（2 条，另有 2 条账面遗留不计入 14）
+### E. 建议不做 / 已登记不施工（2 条，另有 2 条账面遗留不计入 12）
 
 | 编号 | 名称 | 卡点（一句话） | 用户需要做什么才能解 | 预估 |
 |---|---|---|---|---|
 | G1-11 | `agent_turns.node_id` 放宽 | 真实库 `agent_turns` 0 行、历史证据无伪节点，没有证据驱动改约束 | **建议不做**；除非出现伪节点污染证据再启动 | 1.5 人日 |
 | G2-12 | 定向重测 | D-05 已裁决「只建 bug + 链接」，定向重测明确留 L3 | **建议不做**；保留设计，不排期 | 2.5 人日 |
 
-> 账面遗留（不计入 14）：**G10-1** §13 审计表已收至 0 节缺细节（无剩余施工）；**G10-11** = G4-9，已实施，仅为重复引用。
+> 账面遗留（不计入 12）：**G10-1** §13 审计表已收至 0 节缺细节（无剩余施工）；**G10-11** = G4-9，已实施，仅为重复引用。
 
 ### I.8.1 建议先解的三条（按用户解决难易度）
 
 1. ~~**手工连边收尾（D，1–1.5 人日）**：补 `map:link:delete` handler + `map:link:create` 的 UI 入口 + 列表消费（I.0 第 2 条）。~~ **已于 v3.21 完成**：`LinkService.delete`（只删 `origin='human'`）+ 面板「关联连边」区（列表 / 新建 / 删除）+ 9 条测试（4 服务层 + 1 IPC + 4 面板）。「建错能撤」这条路径闭合。（原文此处推荐 G5-10，但它已于 v47 实施，属过期建议。）
 2. ~~**G6-14 Claude token（A，0.5 人日）**~~ **已于 v3.25 完成**：U5 改为真实回合（`BIZGRAPH_EVAL_REAL_CLAUDE=1` 显式开关，默认 SKIP），走 cc-switch GLM 代理跑通 `claude -p` → `normalizeClaude` → `extractUsage` → `UsageLedger.record` → `agent_usage`，实测 PASS。**仍未解**：Anthropic 官方计费口径（缺付费额度，见 I.9.2），不影响本期验收。
-3. **G9-13 Windows 路径（B，1 人日）**：只差一台 Windows 机，代码量小、边界清晰。
+3. ~~**G9-13 Windows 路径（B，1 人日）**~~ **已于 v3.29 完成**：没有等 Windows 机器，改用 CI 的 `platform-paths` job（`windows-latest`）跑真实 NTFS 语义——盘符前缀旁路、大小写不敏感、跨盘 `path.relative` 返回绝对路径、`\` 归一；并补了一条「断言宿主是 win32」的守卫，防止整块 Windows 用例 skip 后 job 假绿。打包侧原本就由 build 矩阵的 windows x64 / arm64 两项覆盖。
 
 ### I.8.2 已知缺口（如实登记，不构成待办、不造写入方）
 
@@ -835,6 +836,8 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 - **证据建议的「接受 / 驳回」在界面上无入口（v3.21 已闭环，保留为留痕）**：三条通道（`accept` / `dismiss` / `e1:create`）此前 renderer 零调用。v3.21 在 `NodeMapPanel` 增加「证据建议（待裁决）」区：pending 列表 + 接受/驳回 + E1 手动输入（`ref` 指向当前节点，等级/写入方由主进程固定）。I.2 的 G1-10 / G3-10 已从「用户可见价值 = 0」改为 **= 1**。
 - **preload 白名单 2 条已知缺口（v3.17 护栏登记，v3.21 / v3.22 / v3.24 逐批收紧）**：**1 条 S7 延后**——`plan:derive-candidates`（候选推导是 agent 辅助路径，无 renderer 消费方不扩写面；`plan:draft:create` / `plan:draft:revise` 已于 v3.22 暴露，`plan:draft:get` 同批进只读白名单供修订预填）；**1 条刻意不暴露且能力已被覆盖**——`admin:map:integrity-check`（启动 + 每日定时自动跑 `runLinkIntegrityCheck`）。**v3.24 已把 `project:import:preview` / `allowance:list` / `allowance:revoke` 三条接线并暴露**（导入确认框 + 放行规则管理；前两条是显式只读白名单条目、没进 `MAP_READ_ONLY_CHANNELS`，写通道 `allowance:revoke` 进结构化错误集合）；护栏豁免表里这三条已删除。**2 条当前无 renderer 调用方，故不存在活断头**，不是线上故障。补白名单 / 补 handler / 造写入方均需逐条裁决，本条目不构成授权。
   > **v3.24 订正一句旧判断**：上一版把这三条写成「判定逻辑已在 `graph:initFromProject` 内执行，缺导入前展示」，读起来像"只差一个展示"。实际后果更重：界面从不传 `allowBranchVariant`，判定层 `3a-auto` 对分支/副本**一律拒绝**，而拒绝路径的命中证据又在 IPC 边界被吞成 `IPC_HANDLER_ERROR`，且 `LeftPanel` 的 `catch` 是空的——用户点「生成思维导图」后**没有任何反馈**。这三条不是"锦上添花的展示"，是一条死掉的用户路径。
+- **Codex 后端的工具调用没有宿主写前审批（v3.29 实机确认，不是推断）**：`codex exec` 的审批策略只能是 never —— 随包 `codex-cli 0.135.0` 与 ChatGPT 内置 `0.162.0-alpha.17.2` 的 `exec --help` 里，唯一与审批有关的开关是 `--dangerously-bypass-approvals-and-sandbox`（只能关、不能开），且 `-a/--ask-for-approval` 只存在于交互式顶层命令；`-c approval_policy="on-request"` 下真实回合的 MCP 调用仍返回 `MCP tool call requires approval, but approval policy is never`。SDK 的 `runStreamed` 又只透传 item 事件、没有审批回传通道，因此 Codex 会话里的写命令与 MCP 工具调用**都不经过 gateway**，只有 `workspace-write` 沙箱兜底；MCP server 由 CLI 按 `~/.codex/config.toml` 自行拉起，宿主既看不到也拦不住。**v3.29 只修掉了「假成功」**（见下条），真拦截仍待 I.8.B 的 G7-2 换协议。
+- **被拒的 Codex 工具调用曾经报成功（v3.29 已修）**：`item.completed{type:'mcp_tool_call', status:'failed', error:{message:'… requires approval …'}}` 原先被归一化成 `tool.result{ok:true}`、output 写 `observed mcp_tool_call` —— 界面显示完成、step 记 `done`、disposition 记 `completed`，审计里完全看不到「被审批拒了」。现按 `status`/`error` 发 `tool.failed`（`ok:false`、output 为原始拒绝原因），工具名从 `mcp_tool_call` 改成 `mcp:<server>/<tool>`；阻塞 `run()` 路径同改，夹具取自真实 `codex exec --json` 输出。
 
 ## I.9 暂不开发队列（2026-11-10）
 

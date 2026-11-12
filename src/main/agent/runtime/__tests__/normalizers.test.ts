@@ -128,6 +128,69 @@ describe('Codex normalizer (D3, C1–C7)', () => {
     expectContinuous(events)
     expect(events.at(-1)?.type).toBe('run.completed')
   })
+
+  /**
+   * 夹具来自实机：codex-cli 0.162.0-alpha.17.2 跑
+   * `codex exec --json -s workspace-write -c approval_policy="on-request"` 的真实输出。
+   * 该 CLI 在 exec（非交互）下把审批策略钉成 never，MCP 工具调用因此被拒；
+   * 事件里 `status:"failed"` + `error.message`，而旧实现按类型一律 `ok:true`。
+   */
+  const REAL_MCP_DENIED_ITEM = {
+    id: 'item_12',
+    type: 'mcp_tool_call',
+    server: 'xcodebuildmcp',
+    tool: 'debug_lldb_command',
+    arguments: { command: 'version' },
+    result: null,
+    error: { message: 'MCP tool call requires approval, but approval policy is never' },
+    status: 'failed',
+  }
+
+  it('MCP 调用被判失败时必须发 tool.failed，不能报 observed 成功', () => {
+    const normalizer = new CodexStreamNormalizer(META)
+    normalizer.feed({ type: 'item.started', item: { ...REAL_MCP_DENIED_ITEM, status: undefined, error: undefined } })
+    normalizer.feed({ type: 'item.completed', item: REAL_MCP_DENIED_ITEM })
+    normalizer.feed({ type: 'turn.completed' })
+    const events = normalizer.finish()
+    expectContinuous(events)
+
+    expect(events.some((event) => event.type === 'tool.result')).toBe(false)
+    const failed = events.find((event) => event.type === 'tool.failed')
+    expect(failed).toBeDefined()
+    expect(failed?.payload.ok).toBe(false)
+    expect(String(failed?.payload.output)).toContain('requires approval')
+    // MCP 工具名带 server/tool，否则审计里所有 MCP 调用都叫 mcp_tool_call
+    expect(failed?.payload.toolName).toBe('mcp:xcodebuildmcp/debug_lldb_command')
+  })
+
+  it('MCP 调用成功时仍发 tool.result，并保留 server/tool 身份', () => {
+    const normalizer = new CodexStreamNormalizer(META)
+    normalizer.feed({
+      type: 'item.completed',
+      item: { id: 'item_3', type: 'mcp_tool_call', server: 'node_repl', tool: 'js', status: 'completed' },
+    })
+    normalizer.feed({ type: 'turn.completed' })
+    const events = normalizer.finish()
+    const result = events.find((event) => event.type === 'tool.result')
+    expect(result?.payload.ok).toBe(true)
+    expect(result?.payload.toolName).toBe('mcp:node_repl/js')
+    const requested = events.find((event) => event.type === 'tool.requested')
+    expect(requested?.payload.input).toMatchObject({ server: 'node_repl', tool: 'js' })
+  })
+
+  it('阻塞 run() 路径同样不把失败的 MCP 调用记成成功', () => {
+    const events = normalizeCodexResult(
+      {
+        thread_id: 't',
+        items: [REAL_MCP_DENIED_ITEM],
+        final_response: 'done',
+      },
+      META,
+    )
+    expectContinuous(events)
+    expect(events.some((event) => event.type === 'tool.result')).toBe(false)
+    expect(events.find((event) => event.type === 'tool.failed')?.payload.ok).toBe(false)
+  })
 })
 
 describe('OpenCode normalizer (D3)', () => {

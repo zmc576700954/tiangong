@@ -84,6 +84,44 @@ jobs:
         if: failure()
         run: node scripts/ci-annotate-failures.mjs vitest /tmp/vitest.json
 
+  # G9-13：Windows 路径语义必须在**真实 NTFS** 上验。纯函数用例（显式传
+  # `windows=true`）只证明「给定 Windows 形状的字符串算得对」，证明不了
+  # `fs.realpathSync` 返回的规范大小写、跨盘时 `path.relative` 返回绝对路径、
+  # 盘符前缀旁路（`C:\project-evil` 以 `C:\project` 开头）这些宿主行为。
+  #
+  # 单独成 job 而不是并进 unit：unit 跑在 ubuntu 上，Windows 语义在那里没有宿主可验。
+  # 也不重建 better-sqlite3 —— 这组测试不碰原生模块，而 Windows 上那一步要 MSVC
+  # 工具链，纯属额外失败面。需要真实建库的 `graph-service-project-path.test.ts`
+  # 因此不在本 job 内（它验的是 project_path 落库，不是 Windows 路径语义）。
+  platform-paths:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: npm ci（只需要运行时依赖）
+        run: npm ci --ignore-scripts
+      # 若宿主不是 Windows，整块 Windows 用例会 skip 而 job 变绿 —— 那是假绿。
+      # 显式断言一次，让「跑错平台」直接红。
+      - name: 断言宿主是 Windows
+        shell: bash
+        run: |
+          node -e "if (process.platform !== 'win32') { console.log('::error::platform-paths 必须跑在 Windows 上，实际 ' + process.platform); process.exit(1) }"
+      - name: Windows 路径语义
+        run: >-
+          npx vitest run
+          src/main/__tests__/path-windows.test.ts
+          src/main/__tests__/path-utils.test.ts
+          src/shared/__tests__/project-path.test.ts
+          src/renderer/lib/__tests__/project-paths.test.ts
+          --reporter=default --reporter=json
+          --outputFile.json=${{ runner.temp }}/vitest-paths.json
+      - name: 失败清单 → 注解
+        if: failure()
+        run: node scripts/ci-annotate-failures.mjs vitest "${{ runner.temp }}/vitest-paths.json"
+
   build:
     needs: lint
     runs-on: ${{ matrix.os }}

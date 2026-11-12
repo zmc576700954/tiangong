@@ -5,6 +5,25 @@ import path from 'node:path'
 import os from 'node:os'
 import { isPathWithin, isPathWithinSync, safeRealpathSync } from '../shared/path-utils'
 
+/**
+ * `/tmp` 是否存在且是指向别处的符号链接。
+ *
+ * 这两条用例验的是「路径还没创建时，先 realpath 最近的存在祖先」—— 只在 macOS
+ * 这种 `/tmp → /private/tmp` 的宿主上才有意义。Windows 上 `/tmp` 会被解析成
+ * `C:\tmp`、通常不存在，`realpathSync` 直接抛 ENOENT；原先没有 try/catch，
+ * 于是「跑在 Windows 上」本身就变成一条失败（G9-13 接 Windows CI 时暴露）。
+ *
+ * @returns 真实目录；不存在、或本身不是符号链接（无该差异）时返回 null
+ */
+function realTmpIfSymlinked(): string | null {
+  try {
+    const real = fsSync.realpathSync('/tmp')
+    return real === '/tmp' ? null : real
+  } catch {
+    return null
+  }
+}
+
 describe('path-utils', () => {
   let tmpDir: string
   let projectDir: string
@@ -93,8 +112,8 @@ describe('path-utils', () => {
     })
 
     it('resolves not-yet-created paths under a symlinked ancestor consistently (macOS /tmp)', async () => {
-      const realTmp = fsSync.realpathSync('/tmp')
-      if (realTmp === '/tmp') return
+      const realTmp = realTmpIfSymlinked()
+      if (realTmp === null) return
 
       const uniqueName = `path-utils-async-ancestor-${process.pid}-${Date.now()}`
       const viaTmp = path.join('/tmp', uniqueName, 'artifacts', 'ok.txt')
@@ -146,9 +165,9 @@ describe('path-utils', () => {
       // macOS 上 /tmp 是指向 /private/tmp 的符号链接；白名单在文件尚未创建时
       // 解析，若退化为 path.resolve 就会留下 /tmp/...，与创建后 realpath 的
       // /private/tmp/... 对不上，导致 ScopeGuard 误判越界。
-      const realTmp = fsSync.realpathSync('/tmp')
-      if (realTmp === '/tmp') {
-        // 非符号链接平台无此差异，跳过（不影响其余断言）。
+      const realTmp = realTmpIfSymlinked()
+      if (realTmp === null) {
+        // 非符号链接平台（Windows / Linux）无此差异，跳过（不影响其余断言）。
         return
       }
 
