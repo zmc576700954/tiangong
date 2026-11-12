@@ -11,28 +11,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # verify:blueprint 会用 `git cat-file -e <sha>` 核对蓝图里引用的历史提交号，
+      # 而 actions/checkout 默认 shallow（depth=1）只带当前提交，历史 sha 一律解析失败
+      # → 该断言在 CI 上必然误红。这里拉全量历史（本仓 .git 仅 ~60MB）。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # lint 只跑 eslint/tsc/蓝图断言，不启动 Electron 应用——跳过二进制下载，
-      # 省 ~110MB 流量并移除一个纯网络性失败点（electron postinstall 走 github release）。
-      - name: npm ci
-        run: npm ci
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 'true'
-      # Actions 的日志 API 需要鉴权，但 check-run 注解可匿名读——
-      # 失败时把 npm 调试日志的 error 尾部送进注解，诊断不用再猜。
-      - name: npm ci 失败时上报 npm error 尾部
-        if: failure()
+      # lint 只跑 eslint/tsc/蓝图断言：不启动 Electron、也不加载原生模块，
+      # 因此跳过全部安装脚本（--ignore-scripts）。这一步同时关掉两个纯网络性失败点：
+      #   ① electron 二进制下载（走 github release，~110MB）；
+      #   ② 根 postinstall = `electron-builder install-app-deps`，会用 node-gyp 按
+      #      Electron ABI 重编 better-sqlite3，还得额外拉 headers。
+      # 失败时把 npm 的真实输出尾部送进注解：npm 的 `_logs/*-debug-0.log` 里并不含
+      # `npm error` 行（那是 CLI 的 stderr 格式），此前按它 grep 只会抓到空。
+      - name: npm ci（lint 不需要安装脚本与原生构建）
+        shell: bash
         run: |
-          LOG=$(ls -t /home/runner/.npm/_logs/*-debug-0.log 2>/dev/null | head -1)
-          if [ -n "$LOG" ]; then
-            TAIL=$(grep 'npm error' "$LOG" | tail -20 | paste -sd ' | ' - | cut -c1-900)
-            echo "::error file=package-lock.json::npm ci failed: ${TAIL:-（日志中无 npm error 行，查看 debug log $LOG）}"
-          else
-            echo "::error file=package-lock.json::npm ci failed 且未找到 npm 调试日志"
-          fi
+          set -o pipefail
+          npm ci --ignore-scripts 2>&1 | tee /tmp/npm-ci.log || {
+            TAIL=$(tail -40 /tmp/npm-ci.log | tr '\n' '|' | cut -c1-900)
+            echo "::error file=package-lock.json::npm ci failed: ${TAIL}"
+            exit 1
+          }
       - run: npm run lint
       - run: npx tsc --noEmit
       # 蓝图的机械断言（I.2 行数/编号闭合、计数三等式、文件与提交号可解析、
@@ -57,9 +60,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: npm ci
+      # 同 lint：跳过安装脚本，避免根 postinstall 按 Electron ABI 重编原生模块；
+      # 但单测跑在 Node 20 上、真的要用 better-sqlite3，故按 Node ABI 单独重建这一个。
+      - name: npm ci（跳过安装脚本）
+        run: npm ci --ignore-scripts
+      - name: 按 Node ABI 重建 better-sqlite3
+        run: npm rebuild better-sqlite3
+      # --maxWorkers=4 与本地已验证的跑法一致：默认并发在本机会因 worker 起不来
+      # 静默丢测试文件（342 vs 384），显式限并发才能拿到可信的「全量」。
       - name: Run unit tests (vitest, includes tests/migration P1–P9 / G4-6)
-        run: npx vitest run --reporter=default
+        run: npx vitest run --reporter=default --maxWorkers=4
 
   build:
     needs: lint

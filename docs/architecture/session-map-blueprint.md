@@ -209,7 +209,7 @@ G1-12 Yjs 移除、G1-15 S1 `preview` 通道、G3-11 L2 通道未注册、G3-13 
 | G4-6 | allow-list harness（manifest + 测试） | `217fbbc`、`tests/migration/allow-list-harness.test.ts`、`allow-list.manifest.ts` |
 | G4-7 | P1–P9 迁移验证脚本 | `217fbbc`、`tests/migration/p1-entity-key.test.ts` … `p9-evidence-separation.test.ts`（9 个） |
 | G4-8 | P6 Yjs/SQLite 镜像并行验证 | `217fbbc`、`tests/migration/p6-yjs-sqlite-mirror.test.ts` |
-| G4-9 | CI vitest job（含 P1–P9 与 G4-6；先 `continue-on-error` 观测） | `217fbbc`、`.github/workflows/ci.yml` |
+| G4-9 | CI vitest job（含 P1–P9 与 G4-6；先 `continue-on-error` 观测） | `217fbbc`、`.github/workflows/ci.yml`；2026-11-12 修 CI 首次真跑暴露的三处：lint/unit 的 `npm ci` 改 `--ignore-scripts`（根 postinstall 按 Electron ABI 重编 `better-sqlite3` 要额外拉 headers，是纯网络性失败点）、lint job 加 `fetch-depth: 0`（`verify:blueprint` 用 `git cat-file` 核对历史提交号，浅克隆必红）、校验脚本把 `test-results/` 按运行期产物处理（`.gitignore` 已忽略，干净克隆里必然不存在） |
 | G4-10 | S8 前置五表（`test_specs/plans/items/runs/results`） | `database.ts` |
 | G4-11 | TestExecutor 逐条执行 + `evidence.create` E2/E3 | `test-executor.ts`、`test-plan-service.test.ts` |
 | G2-11 | 流程级集成测试（测试-only）：flow spec（`kind='flow'` + `steps_json`）两步骤全过/一步失败两条全链；断言 `test_results`/`test_runs` 聚合、E3/E2 回写、失败建 bug + 元数据回链、worktree 清理/保留 | `src/main/__tests__/flow-test-integration.test.ts` |

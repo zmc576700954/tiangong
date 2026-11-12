@@ -237,8 +237,11 @@ const expand = (s) => {
   const excusedRefs = []
   // 第三方包内路径（asarUnpack 清单）不在本仓，按外部产物处理
   const EXTERNAL = /^(claude-agent-sdk|claude-agent-sdk-darwin|codex-sdk|codex-darwin|codex|better-sqlite3)\//;
-  // 运行期生成物，不在仓内
+  // 运行期生成物，不在仓内：schema-checksum.json 由数据库自检产出；
+  // test-results/ 是 npm run test:eval（及 vitest）的输出目录，已被 .gitignore 忽略，
+  // 因此在干净克隆（CI）里必然不存在——按产物执行，不当作失效引用。
   const RUNTIME_ARTIFACT = new Set(['schema-checksum.json'])
+  const isRuntimeArtifact = (r) => RUNTIME_ARTIFACT.has(r) || r.startsWith('test-results/')
   // 已删除 / 从未创建的文件，只要文中写明就不算失效引用
   const REMOVED = /已删除|删除|未创建|从未|不存在|不成立|现已/
   const resolve = (r) => {
@@ -249,7 +252,7 @@ const expand = (s) => {
     return { kind: 'missing' }
   }
   for (const [r, at] of refLines) {
-    if (EXTERNAL.test(r) || RUNTIME_ARTIFACT.has(r) || ['sdk.mjs', 'codex.js'].includes(r)) continue
+    if (EXTERNAL.test(r) || isRuntimeArtifact(r) || ['sdk.mjs', 'codex.js'].includes(r)) continue
     const hit = at.some((n) => REMOVED.test(lines[n - 1]))
     if (!r.includes('/')) {
       if (byBasename.has(r)) continue
