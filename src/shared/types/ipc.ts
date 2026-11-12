@@ -9,6 +9,12 @@ import type {
   ProjectScanResult, ScanModule, NodeEnrichment, NodeType,
 } from './graph'
 import type {
+  AttributionListResult,
+  CalibrationReportListResult,
+  EvolutionQuery,
+  MemoryHitListResult,
+} from './evolution'
+import type {
   AgentSessionConfig, AgentCommand, AgentOutput, AgentLog, AgentThread,
   ChatMessage, FileSearchResult, CliToolConfig, BizGraphSettings,
   VerificationReport, CodeIntelExecutionPlan, SymbolQueryResult,
@@ -411,6 +417,13 @@ export interface IpcApi {
     itemsFailed: number
     evidenceByLevel: Record<string, number>
   }>
+  /**
+   * v3.25 进化层只读（G2-3 / G2-4 / G2-16 的读出口）：三块数据此前只在库里，
+   * 界面无从查看。表/视图不存在时返回 `available=false`，与「有表但无数据」区分。
+   */
+  'map:memory:hits:list': (query?: EvolutionQuery) => Promise<MemoryHitListResult>
+  'map:memory:attribution:list': (query?: EvolutionQuery) => Promise<AttributionListResult>
+  'map:calibration:report:list': (limit?: number) => Promise<CalibrationReportListResult>
   'workitem:create': (data: {
     projectPath?: string
     graphId: string
@@ -769,4 +782,9 @@ export const MAP_READ_ONLY_CHANNELS = [
   'mode:list',
   'proposal:list',
   'proposal:diff',
+  // v3.25 进化层只读（memory_hits / v_memory_attribution / 校准报告）。纯 SELECT，
+  // 表/视图缺失时由 handler 返回 available=false，不写库、不触发校准计算。
+  'map:memory:hits:list',
+  'map:memory:attribution:list',
+  'map:calibration:report:list',
 ] as const satisfies readonly (keyof IpcApi)[]

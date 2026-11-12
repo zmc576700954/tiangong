@@ -359,7 +359,13 @@ function hasTerminalSuccess(events: NormalizedEventEnvelope[]): boolean {
   return events.some((event) => event.type === 'run.completed')
 }
 
-function extractUsage(rawEvents: AdapterRawEvent[], executor: string): DriverUsage | undefined {
+/**
+ * 从原始事件里取后端报告的用量（token / model）。
+ *
+ * 导出给评测用：G6-14 要验「真实回合的 usage 能不能落账本」，如果测试自己另写
+ * 一份解析，验的就是测试而不是产品。这里与跑 run 时走的是同一函数。
+ */
+export function extractUsage(rawEvents: AdapterRawEvent[], executor: string): DriverUsage | undefined {
   if (executor === 'claude-code' || executor === 'claude') {
     const payloads = rawEvents.map((event) => event.payload as Record<string, unknown>)
     const result = payloads

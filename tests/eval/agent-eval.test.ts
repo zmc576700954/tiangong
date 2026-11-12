@@ -25,6 +25,18 @@ import {
 } from '../../src/main/agent/runtime/process/reaper'
 import { itEval, writeEvalReport, type EvalResult } from './harness'
 import { canReadProcessTable } from '../../src/main/__tests__/helpers/host-probe'
+import { normalizeClaude } from '../../src/main/agent/runtime/normalize/claude'
+import { extractUsage } from '../../src/main/agent/runtime/executors/adapter-driver'
+import { UsageLedger } from '../../src/main/agent/runtime/cost/ledger'
+import { localDayKey } from '../../src/main/agent/runtime/util'
+import type { AdapterRawEvent } from '@shared/types/agent'
+
+/** G6-14：真实 Claude 回合的显式开关（默认关，避免默认套件依赖网络）。 */
+const CLAUDE_ROUND_ENV = 'BIZGRAPH_EVAL_REAL_CLAUDE'
+/** 单轮真实回合上限（含代理转发）。 */
+const CLAUDE_TURN_TIMEOUT_MS = 90_000
+/** 走哪条线路由 settings.json / 环境决定；这里只给缺省模型别名。 */
+const CLAUDE_MODEL = process.env.BIZGRAPH_EVAL_CLAUDE_MODEL ?? 'claude-haiku-5-5'
 
 const requireRoot = createRequire(import.meta.url)
 
@@ -196,6 +208,245 @@ async function runHighVolume(): Promise<EvalResult> {
   }
 }
 
+/**
+ * 读 `~/.claude/settings.json` 的 env 段（CLI 自己也会读，这里只为了**探测**线路，
+ * 不改环境、不覆盖用户配置）。
+ */
+function readClaudeSettingsEnv(): Record<string, string> {
+  const file = path.join(os.homedir(), '.claude', 'settings.json')
+  if (!fs.existsSync(file)) return {}
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { env?: unknown }
+    const env = parsed.env
+    if (typeof env !== 'object' || env === null) return {}
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(env as Record<string, unknown>)) {
+      if (typeof value === 'string') out[key] = value
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/** 代理/网关可达性：任何 HTTP 响应都算「线路在」，只有网络错误才算不可达。 */
+async function probeClaudeEndpoint(baseUrl: string): Promise<{ ok: boolean; detail: string }> {
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/v1/models`, {
+      signal: AbortSignal.timeout(2_000),
+    })
+    return { ok: true, detail: `HTTP ${response.status}` }
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+interface ClaudeTurnResult {
+  raws: unknown[]
+  stderr: string
+  code: number | null
+  durationMs: number
+}
+
+/** 跑一轮真实 `claude -p`（stream-json），返回原始消息数组。 */
+function runClaudeTurn(prompt: string): Promise<ClaudeTurnResult> {
+  return new Promise((resolve) => {
+    const startedAt = Date.now()
+    const args = [
+      '-p',
+      prompt,
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--model',
+      CLAUDE_MODEL,
+    ]
+    const child = spawn('claude', args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env })
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (code: number | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const raws: unknown[] = []
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim()
+        if (trimmed === '') continue
+        try {
+          raws.push(JSON.parse(trimmed))
+        } catch {
+          // 非 JSON 行（部分 CLI 会打印进度）忽略，不喂给归一化器
+        }
+      }
+      resolve({ raws, stderr, code, durationMs: Date.now() - startedAt })
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish(null)
+    }, CLAUDE_TURN_TIMEOUT_MS)
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString('utf8')
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8')
+    })
+    child.on('error', (error) => {
+      stderr += `\nspawn error: ${error.message}`
+      finish(null)
+    })
+    child.on('close', (code) => finish(code))
+  })
+}
+
+/**
+ * G6-14（重判口径）：真跑一轮，把 usage 走**产品代码**落进 `agent_usage`。
+ *
+ * 链路：`claude -p` → 原始消息 → `normalizeClaude` → `extractUsage` → `UsageLedger.record`。
+ * 这四个函数与跑 run 时是同一份实现，所以这条用例通过就等于「token 统计链路通」。
+ *
+ * 明确不验：Anthropic 官方计费口径与价格（缺付费额度，见蓝图 I.9.2）。代理线路下
+ * 上游回的是真实模型名（如 `kimi-for-coding`），价格表查不到 → `cost_status=missing_price`、
+ * `cost_micros=NULL`，这是**预期**结果，不是缺陷。
+ */
+async function verifyClaudeTokenRound(): Promise<EvalResult> {
+  if (process.env[CLAUDE_ROUND_ENV] !== '1') {
+    return {
+      status: 'SKIP',
+      detail: `需显式开启 ${CLAUDE_ROUND_ENV}=1 才发起真实网络回合（默认套件不依赖外部线路）`,
+    }
+  }
+  if (!hasCommand('claude')) {
+    return { status: 'SKIP', detail: 'PATH 无 claude CLI，无法发起真实回合' }
+  }
+  const settingsEnv = readClaudeSettingsEnv()
+  const baseUrl =
+    process.env.ANTHROPIC_BASE_URL ?? settingsEnv.ANTHROPIC_BASE_URL ?? null
+  const hasApiKey = Boolean(process.env.ANTHROPIC_API_KEY ?? settingsEnv.ANTHROPIC_API_KEY)
+  const proxyManaged = (process.env.ANTHROPIC_AUTH_TOKEN ?? settingsEnv.ANTHROPIC_AUTH_TOKEN) === 'PROXY_MANAGED'
+
+  let routeDetail = '直连（无自定义 base URL）'
+  if (baseUrl) {
+    const probe = await probeClaudeEndpoint(baseUrl)
+    if (!probe.ok && !hasApiKey) {
+      return {
+        status: 'SKIP',
+        detail: `base URL ${baseUrl} 不可达（${probe.detail}）且无 ANTHROPIC_API_KEY，无法发起回合`,
+      }
+    }
+    routeDetail = `base URL=${baseUrl}（${probe.ok ? probe.detail : `探测失败 ${probe.detail}，但有 key`}${proxyManaged ? '，PROXY_MANAGED 鉴权' : ''}）`
+  } else if (!hasApiKey) {
+    return { status: 'SKIP', detail: '既无 ANTHROPIC_BASE_URL 也无 ANTHROPIC_API_KEY，无法发起回合' }
+  }
+
+  const turn = await runClaudeTurn('reply with exactly: OK')
+  if (turn.code !== 0 || turn.raws.length === 0) {
+    return {
+      status: 'FAIL',
+      detail: `回合未正常结束：exit=${String(turn.code)}、消息 ${turn.raws.length} 条、耗时 ${turn.durationMs}ms、stderr=${turn.stderr.trim().slice(0, 300) || '（空）'}`,
+    }
+  }
+
+  const meta = { runId: 'eval_u5_run', turnId: 'eval_u5_turn', sessionId: 'eval_u5_session' }
+  const normalized = normalizeClaude(turn.raws, meta)
+  const started = normalized.find((event) => event.type === 'run.started')
+  const completed = normalized.find((event) => event.type === 'run.completed')
+  if (!started || !completed) {
+    return {
+      status: 'FAIL',
+      detail: `归一化后缺终态事件：run.started=${Boolean(started)}、run.completed=${Boolean(completed)}（共 ${normalized.length} 条事件）`,
+    }
+  }
+
+  const usage = extractUsage(
+    turn.raws.map((payload) => ({ payload }) as AdapterRawEvent),
+    'claude-code',
+  )
+  if (!usage) {
+    return { status: 'FAIL', detail: 'result 消息里取不到 usage（extractUsage 返回 undefined）' }
+  }
+  if (!usage.inputTokens || !usage.outputTokens) {
+    return {
+      status: 'FAIL',
+      detail: `usage 缺 token：input=${String(usage.inputTokens)}、output=${String(usage.outputTokens)}`,
+    }
+  }
+
+  const db = openTestDb()
+  try {
+    const ledger = new UsageLedger(db)
+    const row = ledger.record({
+      turnId: meta.turnId,
+      sessionId: meta.sessionId,
+      executor: 'claude-code',
+      model: usage.model ?? null,
+      source: 'provider',
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      dedupeKey: `turn:${meta.turnId}`,
+    })
+
+    const problems: string[] = []
+    if (row.source !== 'provider') problems.push(`source=${row.source}（期望 provider）`)
+    if (row.tokens_reported !== 1) problems.push(`tokens_reported=${String(row.tokens_reported)}（期望 1）`)
+    if ((row.input_tokens ?? 0) <= 0) problems.push(`input_tokens=${String(row.input_tokens)}`)
+    if ((row.output_tokens ?? 0) <= 0) problems.push(`output_tokens=${String(row.output_tokens)}`)
+    if (row.model === null) problems.push('model 为空（计价维度缺失）')
+    if (row.day_key !== localDayKey()) problems.push(`day_key=${row.day_key}（期望 ${localDayKey()}）`)
+    if (row.cost_status !== 'priced' && row.cost_status !== 'missing_price') {
+      problems.push(`cost_status=${String(row.cost_status)}（期望 priced / missing_price）`)
+    }
+    if (row.cost_status === 'missing_price' && row.cost_micros !== null) {
+      problems.push('缺价行却写了金额')
+    }
+
+    // 幂等：同一 dedupe_key 再记一次不该产生第二行
+    ledger.record({
+      turnId: meta.turnId,
+      sessionId: meta.sessionId,
+      executor: 'claude-code',
+      model: usage.model ?? null,
+      source: 'provider',
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      dedupeKey: `turn:${meta.turnId}`,
+    })
+    const rowCount = db.prepare('SELECT COUNT(*) AS n FROM agent_usage').get() as { n: number }
+    if (rowCount.n !== 1) problems.push(`重复上报后行数=${rowCount.n}（期望 1，dedupe 失效）`)
+
+    const metrics: Record<string, number | string> = {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cachedInputTokens: usage.cachedInputTokens ?? 0,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens ?? 0,
+      model: usage.model ?? '(none)',
+      costStatus: String(row.cost_status),
+      costMicros: row.cost_micros ?? 'NULL',
+      normalizedEvents: normalized.length,
+      roundTripMs: turn.durationMs,
+      route: routeDetail,
+    }
+
+    if (problems.length > 0) {
+      return { status: 'FAIL', detail: `落库断言失败：${problems.join('；')}`, metrics }
+    }
+
+    return {
+      status: 'PASS',
+      detail:
+        `真实回合落库成功：input=${usage.inputTokens}、output=${usage.outputTokens}、cacheRead=${usage.cachedInputTokens ?? 0}、` +
+        `model=${usage.model ?? '(none)'}、cost_status=${String(row.cost_status)}（${row.cost_micros === null ? '价格未知，未编造金额' : `cost=${row.cost_micros} micros`}）；` +
+        `线路：${routeDetail}；${normalized.length} 条归一化事件、耗时 ${turn.durationMs}ms。` +
+        `注意：chat_messages.token_count 目前没有生产写入方（saveMessage 从未传 tokenCount），本轮实测仍为 0，已在蓝图记为缺口`,
+      metrics,
+    }
+  } finally {
+    db.close()
+  }
+}
+
 describe('W5-D agent eval harness', () => {
   // U1：Codex 官方 provider 的事件差异
   itEval('U1', 'Codex 官方 provider 是否出现 item.updated / reasoning', () => {
@@ -283,12 +534,14 @@ describe('W5-D agent eval harness', () => {
     }
   })
 
-  // U5：Claude token 级增量
-  itEval('U5', 'Claude includePartialMessages 是否稳定给出 token 级增量', () => {
-    return {
-      status: 'SKIP',
-      detail: `需真实 Anthropic 凭据与成本授权；claude CLI=${hasCommand('claude') ? '有' : '无'}，本轮不发起付费回合（G6-14 未验证）`,
-    }
+  // U5：Claude token 级增量 + G6-14 真实 token 落库
+  //
+  // G6-14 改口径后验的是「真回合的 usage 能不能进 agent_usage」，不验 Anthropic
+  // 官方计费（那条仍缺付费额度）。默认不跑：一次真实网络回合既慢又依赖外部状态，
+  // 放进默认套件会让 `npx vitest run` 的结论随网络抖。要跑就显式开
+  // `BIZGRAPH_EVAL_REAL_CLAUDE=1`。
+  itEval('U5', 'Claude 真实回合：usage 是否落 agent_usage（G6-14）', async () => {
+    return await verifyClaudeTokenRound()
   })
 
   // U6：排队晋升事务（已随 RequestQueue 删除而失效）

@@ -89,12 +89,15 @@ for (const f of allFiles) {
     const total = groups.reduce((a, g) => a + g.rows, 0)
     const sumDeclared = groups.reduce((a, g) => a + g.declared, 0)
     const bad = groups.filter((g) => g.rows !== g.declared)
-    const ok = titleNum === 102 && total === 102 && sumDeclared === 102 && bad.length === 0
+    // 期望值从 I.1 总账表的「已实施」行读，不写字面量——数字变了但脚本忘了改，
+    // 会表现为「校验失败」，而不是「校验通过但数字错了」。
+    const declaredTotal = Number(/\| 已实施 \| \*\*(\d+)\*\* \|/.exec(text)?.[1] ?? NaN)
+    const ok = Number.isFinite(declaredTotal) && titleNum === declaredTotal && total === declaredTotal && sumDeclared === declaredTotal && bad.length === 0
     const detail = ok
       ? `标题 ${titleNum}，表行 ${total}，分组括注和 ${sumDeclared}，${groups.length} 个分组逐个闭合`
-      : `标题 ${titleNum}，表行 ${total}，分组括注和 ${sumDeclared}` +
+      : `I.1 声明 ${declaredTotal}；标题 ${titleNum}，表行 ${total}，分组括注和 ${sumDeclared}` +
         (bad.length ? `；不闭合：${bad.map((g) => `${g.id} 声明${g.declared}实有${g.rows}`).join('、')}` : '')
-    record('I2_COUNT', 'I.2 表行数与分组计数闭合（应 102）', ok, detail)
+    record('I2_COUNT', `I.2 表行数与分组计数闭合（应 ${Number.isFinite(declaredTotal) ? declaredTotal : 'I.1 声明值'}）`, ok, detail)
     globalThis.__i2Groups = groups
   }
 }
@@ -135,15 +138,15 @@ const expand = (s) => {
 
 // ── 3. 三条计数等式 ────────────────────────────────────────────────────
 {
-  const must = ['102 + 9 + 5 + 0 = **116', '116 + 23 = **139', '155 − 16']
+  const must = ['103 + 8 + 5 + 0 = **116', '116 + 23 = **139', '155 − 16']
   const missing = must.filter((m) => !text.includes(m))
-  const table = /\| 已实施 \| \*\*102\*\* \|/.test(text) && /\| 已批准未实施 \| \*\*9\*\* \|/.test(text) && /\| 仅建议 \| \*\*5\*\* \|/.test(text)
+  const table = /\| 已实施 \| \*\*103\*\* \|/.test(text) && /\| 已批准未实施 \| \*\*8\*\* \|/.test(text) && /\| 仅建议 \| \*\*5\*\* \|/.test(text)
   const ok = missing.length === 0 && table
   record(
     'EQUATIONS',
     '三条计数等式与 I.1 总账表一致（116 / 23 / 139）',
     ok,
-    ok ? '等式 102+9+5+0=116、116+23=139、155−16 均在文中；I.1 表四类数字一致' : `缺：${missing.join(' / ') || '（无）'}${table ? '' : '；I.1 表数字与 102/9/5 不符'}`,
+    ok ? '等式 103+8+5+0=116、116+23=139、155−16 均在文中；I.1 表四类数字一致' : `缺：${missing.join(' / ') || '（无）'}${table ? '' : '；I.1 表数字与 103/8/5 不符'}`,
   )
 }
 

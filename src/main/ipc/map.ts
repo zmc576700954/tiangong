@@ -25,6 +25,8 @@ import { readG4Config } from '../map/work-execution-runtime'
 import { WorkExecutionError } from '../map/work-execution-service'
 import { getPublishedStatus } from '../map/published-guard'
 import { getProjectProgress } from '../map/project-progress'
+import { listAttribution, listCalibrationReports, listMemoryHits } from '../map/evolution-read'
+import type { EvolutionQuery } from '@shared/types/evolution'
 import { ProposalService } from '../map/proposal-service'
 import { listModes } from '../map/mode-registry'
 import { AcceptanceConfirmationError, AcceptanceConfirmationService } from '../map/acceptance-confirmation'
@@ -961,8 +963,54 @@ export function registerMapHandlers(
     return planDrafts.reject(id)
   })
 
+  // ---- 进化层只读（v3.25）：数据一直在写，此前界面读不到 ----
+  // 三块都是纯 SELECT：命中明细、归因视图、校准报告快照。
+  // 表/视图不存在时返回 `available:false`（老库 v44/v46 未迁移），不抛错——
+  // 抛错会让界面把「这个库还没这功能」显示成「读取失败」。
+  typedHandle('map:memory:hits:list', async (_, query: unknown) => {
+    return listMemoryHits(db, normalizeEvolutionQuery(query))
+  })
+
+  typedHandle('map:memory:attribution:list', async (_, query: unknown) => {
+    return listAttribution(db, normalizeEvolutionQuery(query))
+  })
+
+  typedHandle('map:calibration:report:list', async (_, limit: unknown) => {
+    if (limit !== undefined && limit !== null && typeof limit !== 'number') {
+      throw new Error('limit must be a number')
+    }
+    return listCalibrationReports(db, typeof limit === 'number' ? limit : undefined)
+  })
+
   // ---- 巡检手动触发（§2.3.1：启动 + 每日 + 手动）----
   typedHandle('admin:map:integrity-check', async () => {
     return runLinkIntegrityCheck(db)
   })
+}
+
+/**
+ * 只读查询参数收敛：非对象 → 空查询；字符串字段逐个白名单校验后透传。
+ *
+ * 不在这里做「猜意图」的默认值——`limit` 的缺省/上限由进化层模块统一夹紧，
+ * 两处各写一套会让上限随调用点漂移。
+ */
+function normalizeEvolutionQuery(raw: unknown): EvolutionQuery {
+  if (typeof raw !== 'object' || raw === null) return {}
+  const input = raw as Record<string, unknown>
+  const pick = (key: string): string | undefined => {
+    const value = input[key]
+    return typeof value === 'string' && value !== '' ? value : undefined
+  }
+  const hitKind = pick('hitKind')
+  const query: EvolutionQuery = {
+    projectPath: pick('projectPath'),
+    graphId: pick('graphId'),
+    runId: pick('runId'),
+    adapter: pick('adapter'),
+    limit: typeof input.limit === 'number' ? input.limit : undefined,
+  }
+  if (hitKind === 'context' || hitKind === 'step' || hitKind === 'evidence' || hitKind === 'deviation') {
+    query.hitKind = hitKind
+  }
+  return query
 }
