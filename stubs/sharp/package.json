@@ -1,6 +1,7 @@
 {
-  "name": "sharp-stub",
-  "version": "0.0.0",
+  "name": "sharp",
+  "version": "0.32.0",
+  "description": "空实现，用于顶替 @xenova/transformers 的 sharp 依赖（本项目只做文本嵌入，不需要原生图像库）。名字与版本必须与依赖声明一致，否则 npm 会把链接生成到 node_modules/@xenova/transformers/stubs/sharp 这个 npm ci 不会创建的位置。",
   "main": "index.js",
   "private": true
 }

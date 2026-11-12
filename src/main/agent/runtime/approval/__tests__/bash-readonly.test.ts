@@ -14,6 +14,7 @@ import {
   readFileSync,
   realpathSync,
   renameSync,
+  rmSync,
   unlinkSync,
   utimesSync,
   writeFileSync,
@@ -39,6 +40,112 @@ function decide(
   options?: Parameters<typeof evaluateBashPolicy>[1],
 ) {
   return evaluateBashPolicy(command, options)
+}
+
+/**
+ * 宿主 git 对 `%G` / `%(signature)` 是否真的执行 `gpg.program`——按命令分别探测。
+ *
+ * 同一份「伪造 gpgsig 头」的仓库，实测两版 git 走的是不同代码路径：
+ *
+ *   | 命令                                   | git 2.50（macOS） | git 2.39（Debian/CI） |
+ *   | log/show/whatchanged --format=%G?      | 执行              | 执行                  |
+ *   | shortlog --format=%G?                  | 执行              | 不执行                |
+ *   | rev-list --format=%G?                  | 执行              | 不执行                |
+ *   | for-each-ref/branch --format=%(signature) | 执行           | 不执行                |
+ *
+ * 所以「执行面」断言不能只探一条命令（先用 `log --format=%GS` 探，结果在 CI 上
+ * 与 shortlog 的实际表现相反，白红一轮）。这里用一份临时仓库把五类命令各跑一次，
+ * 按宿主真实能力解释「有没有执行」：不把版本差异伪装成回归，也不因此放松策略断言——
+ * 参数里出现 `%G` / `%(signature)` 就必须 ask，这一条与 git 版本无关，始终无条件断言。
+ */
+type GpgExecCapability = {
+  log: boolean
+  shortlog: boolean
+  revList: boolean
+  refFilter: boolean
+  branch: boolean
+}
+
+const GPG_EXEC = detectGpgExecution()
+
+function detectGpgExecution(): GpgExecCapability {
+  const none: GpgExecCapability = {
+    log: false,
+    shortlog: false,
+    revList: false,
+    refFilter: false,
+    branch: false,
+  }
+  const root = mkdtempSync(join(tmpdir(), 'bizgraph-gpg-cap-'))
+  try {
+    const repo = join(root, 'repo')
+    const marker = join(root, 'marker.log')
+    const script = join(root, 'gpg.sh')
+    writeFileSync(script, `#!/bin/sh\necho "$@" >> '${marker}'\nexit 0\n`)
+    chmodSync(script, 0o755)
+    mkdirSync(repo, { recursive: true })
+    const git = (args: string[], input?: string) =>
+      execFileSync('git', ['-C', repo, ...args], {
+        stdio: input === undefined ? 'ignore' : ['pipe', 'pipe', 'ignore'],
+        input,
+        encoding: 'utf8',
+      })
+    git(['init', '-q'])
+    writeFileSync(join(repo, 'a.txt'), 'a\n')
+    git(['add', 'a.txt'])
+    git(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'c1'])
+    const base = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+    const raw = execFileSync('git', ['-C', repo, 'cat-file', '-p', base], { encoding: 'utf8' })
+    const signedText = `${raw
+      .split('\n')
+      .flatMap((line) =>
+        line.startsWith('committer ')
+          ? [line, 'gpgsig -----BEGIN PGP SIGNATURE-----', ' ', ' fake', ' -----END PGP SIGNATURE-----']
+          : [line],
+      )
+      .join('\n')}\n`
+    const signed = execFileSync('git', ['-C', repo, 'hash-object', '-t', 'commit', '-w', '--stdin'], {
+      input: signedText,
+      encoding: 'utf8',
+    }).trim()
+    const branch = execFileSync('git', ['-C', repo, 'symbolic-ref', '--short', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim()
+    git(['update-ref', `refs/heads/${branch}`, signed])
+    git(['config', 'gpg.program', script])
+
+    const ran = (args: string[]): boolean => {
+      rmSync(marker, { force: true })
+      try {
+        git(args)
+      } catch {
+        /* 伪造签名让 git 退出码非 0 属正常，只关心 gpg.program 有没有被调 */
+      }
+      return existsSync(marker)
+    }
+    return {
+      log: ran(['log', '-1', '--format=%G?']),
+      shortlog: ran(['shortlog', '--format=%G?', 'HEAD']),
+      revList: ran(['rev-list', '-n', '1', '--format=%G?', 'HEAD']),
+      refFilter: ran(['for-each-ref', '--format=%(signature)', 'refs/heads']),
+      branch: ran(['branch', '--format=%(signature)']),
+    }
+  } catch {
+    return none
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+/** 断言「这一次 git 调用真的执行了 gpg.program」；该命令在本宿主不执行时反向断言没留痕。 */
+function expectGpgExecuted(marker: string, kind: keyof GpgExecCapability, label = ''): void {
+  const hint = label ? ` (${label})` : ''
+  if (GPG_EXEC[kind]) {
+    expect(existsSync(marker), `gpg.program 应被执行${hint}`).toBe(true)
+    return
+  }
+  // 该 git 版本对此命令短路：marker 不该出现（或仍为空）。
+  expect(existsSync(marker) ? readFileSync(marker, 'utf8') : '', `不应执行 gpg.program${hint}`).toBe('')
 }
 
 /** 用临时 HOME/GIT_CONFIG_GLOBAL 跑一段判定，避免读取开发机真实全局配置。 */
@@ -1720,8 +1827,7 @@ describe('H7-Ⅱ 命令 → format 参数消费关系（错项防复发）', () 
 
     // 修复前：策略 allow / git:shortlog，真实 git 却执行了 gpg.program（marker 生成）。
     runGit(repo, ['shortlog', '--format=%G?', 'HEAD'])
-    expect(existsSync(marker)).toBe(true)
-    expect(readFileSync(marker, 'utf8')).not.toBe('')
+    expectGpgExecuted(marker, 'shortlog', 'shortlog --format=%G?')
 
     // 修复后：参数面命中 → ask / git-gpg-format。
     expect(decide("git shortlog '--format=%G?' HEAD", { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
@@ -1733,18 +1839,23 @@ describe('H7-Ⅱ 命令 → format 参数消费关系（错项防复发）', () 
 
   it('普查：log/show/whatchanged/rev-list/shortlog 的 --format/--pretty %G 均真实执行且均 ask', () => {
     const { repo, marker } = makeSignedRepo('bizgraph-h7b-survey-')
-    const cases: Array<{ args: string[]; command: string }> = [
-      { args: ['log', '-1', '--format=%G?'], command: "git log -1 '--format=%G?'" },
-      { args: ['show', '-s', '--format=%G?'], command: "git show -s '--format=%G?'" },
-      { args: ['whatchanged', '-1', '--format=%G?'], command: "git whatchanged -1 '--format=%G?'" },
-      { args: ['rev-list', '-n', '1', '--format=%G?', 'HEAD'], command: "git rev-list -n 1 '--format=%G?' HEAD" },
-      { args: ['shortlog', '--format=%G?', 'HEAD'], command: "git shortlog '--format=%G?' HEAD" },
-      { args: ['shortlog', '--pretty=%G?', 'HEAD'], command: "git shortlog '--pretty=%G?' HEAD" },
+    // kind 决定「执行面」按哪种命令的能力断言：show/whatchanged 与 log 走同一条 format 路径。
+    const cases: Array<{ args: string[]; command: string; kind: keyof GpgExecCapability }> = [
+      { args: ['log', '-1', '--format=%G?'], command: "git log -1 '--format=%G?'", kind: 'log' },
+      { args: ['show', '-s', '--format=%G?'], command: "git show -s '--format=%G?'", kind: 'log' },
+      { args: ['whatchanged', '-1', '--format=%G?'], command: "git whatchanged -1 '--format=%G?'", kind: 'log' },
+      {
+        args: ['rev-list', '-n', '1', '--format=%G?', 'HEAD'],
+        command: "git rev-list -n 1 '--format=%G?' HEAD",
+        kind: 'revList',
+      },
+      { args: ['shortlog', '--format=%G?', 'HEAD'], command: "git shortlog '--format=%G?' HEAD", kind: 'shortlog' },
+      { args: ['shortlog', '--pretty=%G?', 'HEAD'], command: "git shortlog '--pretty=%G?' HEAD", kind: 'shortlog' },
     ]
     for (const item of cases) {
       if (existsSync(marker)) unlinkSync(marker)
       runGit(repo, item.args)
-      expect(existsSync(marker), `真实 git 执行: ${item.command}`).toBe(true)
+      expectGpgExecuted(marker, item.kind, item.command)
       expect(decide(item.command, { cwd: repo, includeGlobalGitConfig: false }), item.command).toMatchObject({
         decision: 'ask',
         rule: 'git-gpg-format',
@@ -1775,7 +1886,7 @@ describe('H7-Ⅱ 命令 → format 参数消费关系（错项防复发）', () 
     expect(existsSync(marker)).toBe(false)
 
     runGit(repo, ['for-each-ref', '--format=%(signature)'])
-    expect(existsSync(marker)).toBe(true)
+    expectGpgExecuted(marker, 'refFilter', 'for-each-ref %(signature)')
     expect(
       decide("git for-each-ref '--format=%(signature)'", { cwd: repo, includeGlobalGitConfig: false }),
     ).toMatchObject({ decision: 'ask', rule: 'git-signature-atom', risk: 'high' })
@@ -2037,7 +2148,11 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
         )
         .join('\n')}\n`
     const signed = gitCapture(repo, ['hash-object', '-t', 'commit', '-w', '--stdin'], signedText)
-    runRealGit(repo, ['update-ref', 'refs/heads/main', signed])
+    // 分支名不能写死成 main：`git init` 的默认分支取决于 init.defaultBranch
+    // （开发机常见 main，容器/CI 是 master）。写死会让 HEAD 仍指向未签名提交，
+    // `git log -1` 根本走不到签名验证——本轮在 Linux 上就是这样误红的。
+    const headBranch = gitCapture(repo, ['symbolic-ref', '--short', 'HEAD'])
+    runRealGit(repo, ['update-ref', `refs/heads/${headBranch}`, signed])
     runRealGit(repo, ['config', 'gpg.program', script])
 
     // 无 %G 的普通 log 不执行 gpg。
@@ -2045,7 +2160,7 @@ describe('H1 fsck/fsmonitor · H2 子模块 diff · H3 gpg %G', () => {
     expect(existsSync(marker)).toBe(false)
     // %G 占位符才会验证签名并执行 gpg.program。
     runRealGit(repo, ['log', '-1', '--format=%GS'])
-    expect(existsSync(marker)).toBe(true)
+    expectGpgExecuted(marker, 'log', 'git log --format=%GS')
     // 策略侧：gpg.program 单独存在但未请求签名展示 → allow（收敛，不再每命令弹窗）；
     // 请求 %G 时由参数面拦截。
     expect(decide('git log -1', { cwd: repo, includeGlobalGitConfig: false })).toMatchObject({
@@ -2220,11 +2335,15 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
       )
       .join('\n')}\n`
     const signed = gitCapture(repo, ['hash-object', '-t', 'commit', '-w', '--stdin'], signedText)
-    runRealGit(repo, ['update-ref', 'refs/heads/main', signed])
+    // 分支名不能写死成 main：`git init` 的默认分支取决于 init.defaultBranch
+    // （开发机常见 main，容器/CI 是 master）。写死会让 HEAD 仍指向未签名提交，
+    // `git log -1` 根本走不到签名验证——本轮在 Linux 上就是这样误红的。
+    const headBranch = gitCapture(repo, ['symbolic-ref', '--short', 'HEAD'])
+    runRealGit(repo, ['update-ref', `refs/heads/${headBranch}`, signed])
     runRealGit(repo, ['config', 'gpg.program', script])
 
     runRealGit(repo, ['for-each-ref', '--format=%(signature)', 'refs/heads'])
-    expect(readFileSync(marker, 'utf8')).not.toBe('')
+    expectGpgExecuted(marker, 'refFilter', 'for-each-ref %(signature)')
 
     // 无害 atom 不执行 gpg。
     writeFileSync(marker, '')
@@ -2234,7 +2353,7 @@ describe('H4 signature atom · H5 diff/hooksPath · H6 外部 gitdir 嵌套 · �
     // branch 的 --format 同样会验证签名。
     writeFileSync(marker, '')
     runRealGit(repo, ['branch', '--format=%(signature)'])
-    expect(readFileSync(marker, 'utf8')).not.toBe('')
+    expectGpgExecuted(marker, 'branch', 'git branch --format=%(signature)')
 
     expect(
       decide("git for-each-ref --format='%(signature)' refs/heads", {

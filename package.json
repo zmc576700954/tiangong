@@ -59,6 +59,7 @@
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "remark-gfm": "^4.0.1",
+    "sharp": "file:stubs/sharp",
     "simple-git": "^3.27.0",
     "tailwind-merge": "^3.0.0",
     "ws": "^8.18.0",
@@ -100,9 +101,6 @@
     "vite-plugin-electron": "^0.29.0",
     "vite-plugin-electron-renderer": "^0.14.0",
     "vitest": "^4.1.7"
-  },
-  "overrides": {
-    "sharp": "file:./stubs/sharp"
   },
   "build": {
     "appId": "com.bizgraph.app",

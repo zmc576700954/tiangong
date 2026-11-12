@@ -44,13 +44,14 @@ jobs:
 
   # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
   # 现状（2026-11-12，本地 Node 22 / macOS，--maxWorkers=4 实测）：
-  #   384 文件（379 通过 / 5 整文件 skip）；4563 例（4517 通过 / 46 skip / 0 失败）；
-  #   单次耗时约 5'20"（transform 54s，import 286s）。
-  # ubuntu-latest 上的已知情况（#88 首次真跑到这一层）：
-  #   - better-sqlite3 按 Node ABI 重建成功（66s），原生依赖不是问题；
-  #   - vitest 只跑了 68s 就失败——不是「全量跑完有失败」，是早崩（收集/启动阶段），
-  #     日志需 admin 权限才能读，故本步失败时把尾部写进注解，下一轮据此定位；
-  #   - 进程归属类用例在 Linux 上会**首次真跑**（本机 ps 被拒 → 一直是 skip）。
+  #   384 文件（379 通过 / 5 整文件 skip）；4563 例（4517 通过 / 46 skip / 0 失败）。
+  # #90 在 Linux 上的实测结论（容器内复现，非猜测）：
+  #   - 15 个文件整文件收集失败，报 `Cannot find package 'sharp'`：锁文件把 sharp 记成
+  #     `node_modules/sharp → node_modules/@xenova/transformers/stubs/sharp`，而 npm ci
+  #     不会创建那个目标（本地有是因为早先 npm install 顺手建过）。已改为普通
+  #     `file:stubs/sharp` 直接依赖，npm ci 后链接指向 `../stubs/sharp`，可解析。
+  #   - 另有一批 `Electron failed to install correctly`：--ignore-scripts 下没有 dist/，
+  #     故下面显式补一次二进制下载。
   # 观测一轮全绿后，删除 continue-on-error 正式作为门禁。
   unit:
     needs: lint
@@ -68,28 +69,20 @@ jobs:
         run: npm ci --ignore-scripts
       - name: 按 Node ABI 重建 better-sqlite3
         run: npm rebuild better-sqlite3
+      # 大量用例直接 import electron（app.getPath 等）。--ignore-scripts 下 electron 包
+      # 没有 dist/，require 会抛 "Electron failed to install correctly"，整个文件收集失败。
+      # 只补二进制下载（~110MB），不跑 electron-builder、不重编原生模块。
+      - name: 补 Electron 二进制
+        run: node node_modules/electron/install.js
       # --maxWorkers=4 与本地已验证的跑法一致：默认并发在本机会因 worker 起不来
       # 静默丢测试文件（342 vs 384），显式限并发才能拿到可信的「全量」。
-      # #89 在 Linux 上是「真跑完但有失败」（[4/39]…），而 Actions 的 job 日志要
-      # admin 权限（403），注解是匿名唯一可读的通道，且每步上限 10 个 error 注解——
-      # 所以这里把失败用例按文件去重后逐条写进注解，附一条含末段日志的汇总。
       - name: Run unit tests (vitest, includes tests/migration P1–P9 / G4-6)
-        shell: bash
-        run: |
-          set -o pipefail
-          npx vitest run --reporter=default --maxWorkers=4 2>&1 | tee /tmp/vitest.log || {
-            FAILS=$(grep -aE '^ *FAIL ' /tmp/vitest.log | sed -E 's/^ *FAIL +//' || true)
-            COUNT=$(printf '%s\n' "$FAILS" | grep -c . || true)
-            printf '%s\n' "$FAILS" | awk '!seen[$0]++' | head -8 | while IFS= read -r line; do
-              [ -z "$line" ] && continue
-              f=${line%% *}
-              case "$f" in *.test.*) : ;; *) f=tests/vitest ;; esac
-              echo "::error file=${f}::${line}"
-            done
-            TAIL=$(tail -25 /tmp/vitest.log | tr '\n' '|' | cut -c1-700)
-            echo "::error file=tests/vitest::vitest 失败 ${COUNT} 条（文件去重后见上），尾部：${TAIL}"
-            exit 1
-          }
+        run: npx vitest run --reporter=default --reporter=json --outputFile.json=/tmp/vitest.json --maxWorkers=4
+      # Actions 的 job 日志 API 要 admin（403），注解是匿名唯一可读的通道，且每步上限
+      # 10 条 error 注解 —— 由脚本按文件去重压到 8 条，再补一条计数汇总。
+      - name: 单测失败清单 → 注解
+        if: failure()
+        run: node scripts/ci-annotate-failures.mjs vitest /tmp/vitest.json
 
   build:
     needs: lint
@@ -99,9 +92,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macOS 14 镜像已于 2026-11-02 全面退役，macos-13 更早下线：用这两个标签的
+          # job 要么被立刻取消（注解原文 `The configuration 'macos-14-arm64-us-default'
+          # is not supported`），要么永远 queued。现行标签是 macos-15 / macos-15-intel。
+          - os: macos-15
             arch: arm64
-          - os: macos-13
+          - os: macos-15-intel
             arch: x64
           - os: windows-latest
             arch: x64
@@ -134,14 +130,11 @@ jobs:
       - name: 按 Electron ABI 重建原生模块
         shell: bash
         run: |
-          # #89 实测：install-app-deps 在这四行之前就崩了——
-          #   ⨯ ENOENT: no such file or directory, stat '.../node_modules/sharp'
-          # `sharp` 是 @xenova/transformers 自带的桩包（name=sharp-stub）。锁文件把它记成
-          # `node_modules/sharp → node_modules/@xenova/transformers/stubs/sharp` 的软链；
-          # npm ci 下这个链会缺失/悬空，而 @electron/rebuild 会逐个 stat `node_modules/*`
-          # 找原生模块，stat 一个不存在的路径直接整步失败。先清掉悬空链（`-e` 会跟随符号
-          # 链接：悬空时为假），再重建。注意这不是「删依赖」——真 sharp 从未安装过。
-          if [ ! -e node_modules/sharp ]; then rm -rf node_modules/sharp; echo "removed dangling node_modules/sharp link"; fi
+          # #89 时这一步死在 `⨯ ENOENT: stat '.../node_modules/sharp'`：锁文件把 sharp
+          # 记成指向 `@xenova/transformers/stubs/sharp` 的软链，npm ci 不创建该目标，
+          # 而 @electron/rebuild 会逐个 stat `node_modules/*`。根因已在 package.json /
+          # lockfile 里修掉（改成 `file:stubs/sharp` 直接依赖，链接指向仓库内真实目录），
+          # 这里不再需要额外的清理动作。
           set -o pipefail
           npx electron-builder install-app-deps 2>&1 | tee /tmp/app-deps.log || {
             TAIL=$(tail -40 /tmp/app-deps.log | tr '\n' '|' | cut -c1-900)
@@ -166,7 +159,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-13]
+        # macos-13 已下线（job 永远 queued），改用现行的 x64 标签 macos-15-intel。
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -186,31 +180,16 @@ jobs:
           }
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
-      # #89：装依赖已不再是瓶颈（本步真的跑起来了），失败在用例本身，同样看不到日志。
-      # 把 Playwright 列出的失败用例名与日志尾部写进注解（每步 error 注解上限 10 条）。
-      - name: Run E2E tests (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -o pipefail
-          npx xvfb-run npm run test:e2e 2>&1 | tee /tmp/e2e.log || {
-            grep -aE '^[[:space:]]*[0-9]+\) ' /tmp/e2e.log | head -6 | while IFS= read -r line; do
-              echo "::error file=tests/e2e::${line}"
-            done
-            TAIL=$(tail -30 /tmp/e2e.log | tr '\n' '|' | cut -c1-800)
-            echo "::error file=tests/e2e::e2e failed，尾部：${TAIL}"
-            exit 1
-          }
-      - name: Run E2E tests (macOS/Windows)
-        if: runner.os != 'Linux'
-        shell: bash
-        run: |
-          set -o pipefail
-          npm run test:e2e 2>&1 | tee /tmp/e2e.log || {
-            grep -aE '^[[:space:]]*[0-9]+\) ' /tmp/e2e.log | head -6 | while IFS= read -r line; do
-              echo "::error file=tests/e2e::${line}"
-            done
-            TAIL=$(tail -30 /tmp/e2e.log | tr '\n' '|' | cut -c1-800)
-            echo "::error file=tests/e2e::e2e failed，尾部：${TAIL}"
-            exit 1
-          }
+      # 不用 xvfb：Playwright 的 chromium 默认 headless（且默认关沙箱），不需要 X server。
+      # #90 的 Linux e2e 只跑了 1 秒就红，原因就是 `npx xvfb-run …` —— npx 会去 npm 上
+      # 找一个同名的包，而 xvfb-run 是系统程序，必然失败。
+      #
+      # 失败清单走 json reporter + 注解（Actions 日志 API 需 admin，注解匿名可读）。
+      # #90 的实测：Linux 与 Windows 都失败同 26 例中的 24 例，说明不是平台差异。
+      - name: Run E2E tests
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: /tmp/e2e.json
+        run: npx playwright test -c tests/e2e/playwright.browser.config.ts --reporter=line --reporter=json
+      - name: e2e 失败清单 → 注解
+        if: failure()
+        run: node scripts/ci-annotate-failures.mjs playwright /tmp/e2e.json
