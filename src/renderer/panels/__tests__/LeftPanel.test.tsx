@@ -65,6 +65,15 @@ vi.mock('../SettingsPanel', () => ({ SettingsPanel: () => null }))
  */
 const { api } = vi.hoisted(() => {
   const api = {
+    // 扫描前先做只读预判（v3.24 起）：默认放行，让测试聚焦「导入失败如何提示」。
+    'project:import:preview': vi.fn(async () => ({
+      action: 'allow',
+      step: '1-fresh',
+      reason: '未命中既有指纹',
+      dirName: 'demo',
+      signals: { dirNameSame: false, nameSame: false, similarity: 0, sampleCount: 0 },
+      remembered: false,
+    })),
     'graph:initFromProject': vi.fn(),
     'graph:list': vi.fn(),
     'fs:registerProjectPaths': vi.fn(),

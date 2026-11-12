@@ -34,7 +34,8 @@ import type { NodeType } from '../types'
  * 每种节点类型允许的转换矩阵（字面量）。
  *
  * 格式：`from→to`。行序与 src/shared/types/graph.ts 中的定义一致，便于逐行比对。
- * 行数：project 12 / module 12 / process 12 / feature 17 / bug 14 / wiki-page 10。
+ * 行数：project 12 / module 12 / process 12 / feature 17 / bug 14 / wiki-page 10 /
+ * test-suite 2 / test-case 2（S4 测试图两类节点，值域仅 draft→confirmed→published）。
  */
 const EXPECTED_TRANSITIONS: Record<NodeType, readonly string[]> = {
   project: [
@@ -126,6 +127,9 @@ const EXPECTED_TRANSITIONS: Record<NodeType, readonly string[]> = {
     'placeholder→draft',
     'placeholder→confirmed',
   ],
+  // S4 测试图节点：只允许 draft → confirmed → published 直链。
+  'test-suite': ['draft→confirmed', 'confirmed→published'],
+  'test-case': ['draft→confirmed', 'confirmed→published'],
 }
 
 /** 矩阵某一类型的实际单元格（`from→to` 字符串） */
@@ -174,7 +178,7 @@ describe('NODE_STATUS_TRANSITIONS 字面量指纹', () => {
     expect(Object.keys(EXPECTED_TRANSITIONS).sort()).toEqual([...NODE_TYPE_VALUES].sort())
     // 指纹里某类型的行被删掉 → 这里红（顺序与 NODE_TYPE_VALUES 一致）
     expect(NODE_TYPE_VALUES.map((type) => EXPECTED_TRANSITIONS[type].length)).toEqual([
-      12, 12, 12, 17, 14, 10,
+      12, 12, 12, 17, 14, 10, 2, 2,
     ])
   })
 

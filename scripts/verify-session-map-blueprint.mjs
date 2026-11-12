@@ -179,14 +179,18 @@ const expand = (s) => {
 {
   const db = fs.readFileSync(path.join(ROOT, 'src/main/database.ts'), 'utf8')
   const real = Number(/CURRENT_SCHEMA_VERSION\s*=\s*(\d+)/.exec(db)?.[1] ?? NaN)
-  const docSays49 = text.includes('CURRENT_SCHEMA_VERSION = 49') || text.includes('`CURRENT_SCHEMA_VERSION` = 49') || text.includes('版本号对齐 **49**')
-  const v50NotDone = text.includes('v50') && /v50[^\n]{0,40}未做|未做[^\n]{0,20}v50/.test(text)
-  const ok = real === 49 && docSays49
+  // 期望值从源码读、再回文档里找同一个数字——不写死字面量，
+  // 否则每次合并升版都会表现为「校验失败」而不是「文档没跟上」。
+  const docSaysSame =
+    text.includes(`CURRENT_SCHEMA_VERSION = ${real}`) ||
+    text.includes('`CURRENT_SCHEMA_VERSION` = ' + real) ||
+    text.includes(`版本号对齐 **${real}**`)
+  const ok = Number.isFinite(real) && docSaysSame
   record(
     'SCHEMA',
-    'schema 版本号：文档声明的 49 与 database.ts 一致',
+    `schema 版本号：文档声明的 ${Number.isFinite(real) ? real : '（读不到）'} 与 database.ts 一致`,
     ok,
-    `database.ts CURRENT_SCHEMA_VERSION=${real}；文档声明 49：${docSays49 ? '是' : '否'}；v50 标「未做」：${v50NotDone ? '是' : '否'}`,
+    `database.ts CURRENT_SCHEMA_VERSION=${real}；文档写出同一数字：${docSaysSame ? '是' : '否'}`,
   )
 }
 

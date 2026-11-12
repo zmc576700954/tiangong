@@ -49,6 +49,17 @@ describe('preload 的通道暴露', () => {
     (arrayMatch?.[1] ?? '').match(/'([^']+)'/g)?.map((s) => s.slice(1, -1)) ?? [],
   )
 
+  // `...MAP_READ_ONLY_CHANNELS` 是 spread，字面量解析不到 —— 单独把那张表读出来。
+  // 那张表本身由 src/main/__tests__/map-read-ipc.test.ts 逐条断言 handler 归属，
+  // 这里只关心「renderer 能调到」，不重复校验归属。
+  const sharedIpcSrc = readFileSync(path.join(REPO_ROOT, 'src/shared/types/ipc.ts'), 'utf8')
+  const readOnlyBlock = sharedIpcSrc.match(
+    /export const MAP_READ_ONLY_CHANNELS = \[([\s\S]*?)\n\] as const/,
+  )?.[1] ?? ''
+  for (const literal of readOnlyBlock.match(/'([^']+)'/g) ?? []) {
+    exposedChannels.add(literal.slice(1, -1))
+  }
+
   // contextBridge.exposeInMainWorld 块里手动暴露的键（on* 监听器等）
   const manualBlock = preloadSrc.match(/exposeInMainWorld\('electronAPI',\s*\{([\s\S]*?)\n\}/)?.[1] ?? ''
   const manualKeys = new Set<string>(
