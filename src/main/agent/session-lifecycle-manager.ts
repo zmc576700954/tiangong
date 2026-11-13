@@ -89,6 +89,8 @@ export class SessionLifecycleManager {
   private callbacks: LifecycleCallbacks = {}
   /** 标记在 attachAdapter 中是否已绑定 ScopeGuard 越界处理 */
   private scopeViolationBound = false
+  /** SG-1：发生过越界的 sandbox（回滚收尾时只对这些上报处置结果）。 */
+  private violatedSandboxes = new Set<string>()
 
   constructor(
     private registry: AdapterRegistry,
@@ -156,6 +158,24 @@ export class SessionLifecycleManager {
       if (!sessionId) {
         logger.warn(`No session found for sandbox ${sandboxId}, skipping termination`)
         return
+      }
+      // SG-1：先记账再终止——终止会清空 sessionStates，之后就拿不到 nodeId 了。
+      // 回调实现方内部兜住异常；这里再包一层，确保记账失败不影响越界处置。
+      const state = this.sessionStates.get(sessionId)
+      if (state) {
+        // SG-1：标记该 sandbox 发生过越界，供回滚收尾时回填处置状态。
+        this.violatedSandboxes.add(sandboxId)
+        try {
+          this.callbacks.onScopeViolation?.({
+            sandboxId,
+            sessionId,
+            nodeId: state.config.nodeId,
+            violations,
+            workingDirectory: state.config.workingDirectory,
+          })
+        } catch (err) {
+          logger.warn('onScopeViolation hook failed (violation handling continues):', err)
+        }
       }
       try {
         await this.terminate(sessionId, 'error', undefined)
@@ -683,6 +703,7 @@ export class SessionLifecycleManager {
         if (attempt > 0) {
           logger.info(`Sandbox rollback succeeded on retry ${attempt} for session ${sessionId}`)
         }
+        this.emitScopeRollback(sessionId, sandbox.id, true)
         return
       } catch (err: unknown) {
         lastError = err
@@ -695,7 +716,21 @@ export class SessionLifecycleManager {
         }
       }
     }
+    this.emitScopeRollback(sessionId, sandbox.id, false)
     throw lastError
+  }
+
+  /**
+   * SG-1：只在「该 sandbox 确实发生过越界」时上报回滚结果——普通会话收尾的回滚
+   * 不会产生多余的记账写入。回调实现方内部兜异常，此处再包一层。
+   */
+  private emitScopeRollback(sessionId: string, sandboxId: string, success: boolean): void {
+    if (!this.violatedSandboxes.delete(sandboxId)) return
+    try {
+      this.callbacks.onScopeRollback?.({ sessionId, sandboxId, success })
+    } catch (err) {
+      logger.warn('onScopeRollback hook failed:', err)
+    }
   }
 
   // ----- State accessors -----

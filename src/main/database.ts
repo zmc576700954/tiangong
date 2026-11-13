@@ -28,6 +28,7 @@ import {
   LEGACY_ACCEPTANCE_APPROVAL_TOOL, MAP_ACCEPTANCE_TABLE_SCHEMAS, MAP_ACCEPTANCE_INDEX_SQLS,
   MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
   MAP_MEMORY_TABLE_SCHEMAS, MAP_MEMORY_INDEX_SQLS,
+  MAP_VIOLATION_TABLE_SCHEMAS, MAP_VIOLATION_INDEX_SQLS,
   MAP_VIEW_SCHEMAS, applyMapViews,
 } from './map/schema'
 import { migrateLegacyAcceptance } from './map-migration/legacy-acceptance'
@@ -852,8 +853,14 @@ function rebuildNullableReproducibleCache(db: BetterSqlite3.Database): void {
  *      纯新增表，经 TABLE_DEFINITIONS 的 CREATE TABLE IF NOT EXISTS 补齐，
  *      不重建任何既有表；回滚：`DROP TABLE IF EXISTS project_settings`（偏好可丢，
  *      渲染层回落全局默认）。
+ * v51：SG-1 越界记录 —— 新建 `node_scope_violations`（ScopeGuard 拦截事实：路径、
+ *      sandbox/session、处置状态）。**不复用 `node_evidence`**：其 `evidence_type`
+ *      CHECK 无 `scope_violation`（扩值域要重建表），且任何 E2 都会被
+ *      `deriveFromInputs` 读成 `state='implemented'`——越界记录写成证据会把
+ *      「越界」读成「已交付」。纯新增表 + 两个索引，不参与派生/gate 判定；
+ *      回滚：`DROP TABLE IF EXISTS node_scope_violations`（唯一消费方是证据面板）。
  */
-const CURRENT_SCHEMA_VERSION = 50
+const CURRENT_SCHEMA_VERSION = 51
 
 interface TableSchema {
   name: string
@@ -1350,6 +1357,8 @@ const TABLE_SCHEMAS: TableSchema[] = [
   ...MAP_ACCEPTANCE_MIGRATION_ARCHIVE_SCHEMAS,
   // v44 / G2-3：进化 Layer1 记录表 memory_hits。
   ...MAP_MEMORY_TABLE_SCHEMAS,
+  // v51 / SG-1：ScopeGuard 越界拦截的持久化记录（纯新增表，不参与派生/gate 判定）。
+  ...MAP_VIOLATION_TABLE_SCHEMAS,
   // v18：Agent Runtime 9 张表（D1）。DDL 单一权威在 agent/runtime/db/schema.ts。
   ...(AGENT_TABLE_SCHEMAS as AgentTableSchema[]),
   // 项目级默认（适配器 / 模型 / 可改文件范围）。
@@ -1425,6 +1434,8 @@ const INDEX_SQLS: string[] = [
   ...MAP_S8_INDEX_SQLS,
   ...MAP_ACCEPTANCE_INDEX_SQLS,
   ...MAP_MEMORY_INDEX_SQLS,
+  // v51 / SG-1：越界记录表的按节点/按 sandbox 索引。
+  ...MAP_VIOLATION_INDEX_SQLS,
   // v18: Agent Runtime（含 ux_turns_active 节点互斥部分唯一索引）
   ...AGENT_INDEX_SQLS,
 ]

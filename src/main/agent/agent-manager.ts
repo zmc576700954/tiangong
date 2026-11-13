@@ -84,7 +84,7 @@ import { PhaseBHandler } from './phase-b-handler'
 import { FallbackRouter, type ResolvedAdapterSession } from './fallback-router'
 import { RecoveryOrchestrator } from './recovery-orchestrator'
 import { PromptFormatter } from './prompt-formatter'
-import type { SessionState } from './types'
+import type { SessionState, ScopeViolationSink } from './types'
 import type { SessionUsageView, GraphUsageView, UsageSummary, TurnOutcome } from '@shared/types/agent-runtime'
 import { MemoryStore } from '../memory'
 
@@ -510,6 +510,8 @@ export class AgentManager {
   private statusChangeCallback?: (sessionId: string, nodeId: string, status: string) => void
   private sessionStartedCallback?: (threadId: string, sessionId: string) => void
   private adapterPreferencesLoader?: () => Promise<AdapterPreferences>
+  /** SG-1：越界记账 sink（map 层注入；缺省时越界事件不落库，行为与 v3.35 一致）。 */
+  private scopeViolationSink?: ScopeViolationSink
 
   constructor(
     private registry: AdapterRegistry,
@@ -603,6 +605,21 @@ export class AgentManager {
       },
       onAdapterUsage: (adapterName, data) => {
         this.recordAdapterUsage(adapterName, data)
+      },
+      // SG-1：越界记账交给 map 层实现（IPC 注册时注入）；未注入时静默不记。
+      onScopeViolation: (event) => {
+        try {
+          this.scopeViolationSink?.onViolation?.(event)
+        } catch (err) {
+          logger.warn('scope violation sink failed (violation handling continues):', err)
+        }
+      },
+      onScopeRollback: (event) => {
+        try {
+          this.scopeViolationSink?.onRollback?.(event)
+        } catch (err) {
+          logger.warn('scope rollback sink failed:', err)
+        }
       },
     })
 
@@ -1815,6 +1832,14 @@ export class AgentManager {
 
   setStatusChangeCallback(cb: (sessionId: string, nodeId: string, status: string) => void): void {
     this.statusChangeCallback = cb
+  }
+
+  /**
+   * SG-1：注入越界记账 sink。AgentManager 不持有 DB，记账由 map 层实现后注入；
+   * 未注入时越界事件照旧只终止会话（与 v3.35 行为一致，不阻塞任何路径）。
+   */
+  setScopeViolationSink(sink: ScopeViolationSink): void {
+    this.scopeViolationSink = sink
   }
 
   setSessionStartedCallback(cb: (threadId: string, sessionId: string) => void): void {

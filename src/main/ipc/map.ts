@@ -16,6 +16,7 @@ import { runLinkIntegrityCheck } from '../map-migration/link-backfill'
 import { WorkItemService } from '../map/work-item-service'
 import { WorkRunService, WORK_RUN_STATUSES, type WorkRunStatus } from '../map/work-run-service'
 import { EvidenceService, EvidenceSuggestionService, type SuggestionStatus } from '../map/evidence-service'
+import { listScopeViolations } from '../map/scope-violation-service'
 import { flushPendingRecomputes, refreshStaleDerivationsForGraph } from '../map/execution-state'
 import { BoundaryDerivationService, PlanDraftService, PlanDraftCycleError, itemKeys, type PlanItem } from '../map/plan-derivation'
 import { buildC1Display, precheckDraftItems } from '../map/plan-draft-precheck'
@@ -49,6 +50,17 @@ import type { PlanDraftPreview, TimelineEntryDTO } from '../../shared/types/ipc'
 function limitOf(value: unknown, fallback: number, max = 500): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
   return Math.min(Math.max(Math.trunc(value), 1), max)
+}
+
+/** 越界条目反序列化：坏数据退化为空数组（不把渲染层弄崩，也不伪造条目）。 */
+function safeParseViolations(raw: string | null): string[] {
+  if (typeof raw !== 'string' || raw === '') return []
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 /** 确认点必填展示项入参（renderer 组装的展示数据；非对象一律按缺失处理）。 */
@@ -238,6 +250,22 @@ export function registerMapHandlers(
       throw new Error('graphId and nodeEntityKey are required')
     }
     return evidence.listForNode(q.graphId, q.nodeEntityKey)
+  })
+
+  // ---- SG-1：节点越界拦截记录（只读）----
+  // 独立于 node_evidence：越界是「没交付成」的事实，不能进证据链（见 map/schema.ts
+  // node_scope_violations 的注释）。证据面板「越界没有」一问读这条通道。
+  typedHandle('map:node:violations:list', async (_, query: unknown) => {
+    const q = (query ?? {}) as { graphId?: unknown; nodeEntityKey?: unknown; limit?: unknown }
+    if (typeof q.graphId !== 'string' || q.graphId === '') throw new Error('graphId is required')
+    if (typeof q.nodeEntityKey !== 'string' || q.nodeEntityKey === '') {
+      throw new Error('nodeEntityKey is required')
+    }
+    const limit = limitOf(q.limit, 50)
+    return listScopeViolations(db, q.graphId, q.nodeEntityKey, limit).map((row) => ({
+      ...row,
+      violations: safeParseViolations(row.violations_json),
+    }))
   })
 
   // ---- 证据建议（只读列表）----

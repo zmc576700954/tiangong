@@ -114,6 +114,33 @@ export type LifecycleSessionCleanedUpCallback = (
 ) => void
 
 /**
+ * SG-1：一次 ScopeGuard 越界拦截（sandbox → session 已解析完成）。
+ * 记录方（map 层）据此落 `node_scope_violations`；`nodeId` 来自会话配置，
+ * 为空表示该会话未绑定节点（记录方应跳过而非造伪行）。
+ */
+export interface ScopeViolationEvent {
+  sandboxId: string
+  sessionId: string
+  nodeId?: string
+  violations: string[]
+  workingDirectory: string
+}
+
+/** SG-1：越界拦截后 sandbox 回滚的结果（用于回填处置状态）。 */
+export interface ScopeRollbackEvent {
+  sandboxId: string
+  sessionId: string
+  /** 仅 true 时回填 `rolled_back`；false 表示仍 `pending`（面板显示「未处置」）。 */
+  success: boolean
+}
+
+/** SG-1：越界记账 sink（由 map 层实现并注入；两个钩子都必须吞掉自身异常）。 */
+export interface ScopeViolationSink {
+  onViolation?: (event: ScopeViolationEvent) => void
+  onRollback?: (event: ScopeRollbackEvent) => void
+}
+
+/**
  * LifecycleCallbacks — set of optional hooks AgentManager provides so the
  * lifecycle manager can stay free of fallback/recovery logic. Lifecycle
  * always degrades safely when callbacks are absent (no recovery, no reset).
@@ -143,4 +170,14 @@ export interface LifecycleCallbacks {
    * lifecycle 合成）。AgentManager 负责归属 chat_threads 并写入 UsageLedger。
    */
   onAdapterUsage?: (adapterName: string, data: AdapterUsageReport) => void
+  /**
+   * SG-1：越界拦截发生时调用（在 terminate 之前）。实现方负责落库，**不得抛**——
+   * lifecycle 的越界处置不能被记账失败拖住。
+   */
+  onScopeViolation?: (event: ScopeViolationEvent) => void
+  /**
+   * SG-1：越界后的 sandbox 回滚收尾。`success=false` 时记录应留在 pending，
+   * 不得回填成「已回滚」。
+   */
+  onScopeRollback?: (event: ScopeRollbackEvent) => void
 }

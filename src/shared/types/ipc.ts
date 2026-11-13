@@ -326,6 +326,23 @@ export interface IpcApi {
   /** 节点会话时间线（§9.5-3:替代单线程映射,UI 保留 threadIds 全集） */
   'map:node:timeline': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<TimelineEntryDTO[]>
   'map:node:evidence:list': (query: { graphId: string; nodeEntityKey: string }) => Promise<Array<Record<string, unknown>>>
+  /**
+   * SG-1：节点越界拦截记录（只读）。与 `node_evidence` 分开——越界是「没交付成」的
+   * 事实，进证据链会被派生引擎读成已实现。`disposition` 表示处置结果：
+   * `pending` = 未处置、`rolled_back` = 已回滚、`released` = 已放行。
+   */
+  'map:node:violations:list': (query: { graphId: string; nodeEntityKey: string; limit?: number }) => Promise<Array<{
+    id: string
+    graph_id: string
+    node_entity_key: string
+    session_id: string | null
+    sandbox_id: string
+    violations: string[]
+    working_dir: string | null
+    disposition: 'pending' | 'rolled_back' | 'released'
+    created_at: string
+    disposed_at: string | null
+  }>>
   /** 证据建议只读列表（§3.4）：可按节点/状态过滤，默认只看 pending。 */
   'map:evidence:suggestions:list': (query: {
     graphId: string
@@ -763,6 +780,8 @@ export const MAP_READ_ONLY_CHANNELS = [
   'map:link:list',
   'map:node:timeline',
   'map:node:evidence:list',
+  // SG-1：越界拦截记录（纯 SELECT；写入方只有 ScopeGuard 越界回调）。
+  'map:node:violations:list',
   'map:evidence:suggestions:list',
   'workitem:get',
   'workitem:list',

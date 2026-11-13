@@ -1080,3 +1080,70 @@ export function applyMapViews(db: { exec(sql: string): unknown }): void {
     db.exec(view.createSql)
   }
 }
+
+// ============================================================
+// v51 / SG-1：ScopeGuard 越界拦截的持久化记录
+// ============================================================
+
+/**
+ * 为什么**不复用 `node_evidence`**（与 FR-S1-03 需求卡原方案的分歧，此处为最终口径）：
+ *
+ * ① 值域不允许：`node_evidence.evidence_type` 的 CHECK 只有
+ *    `changed_files/commit/test_run/session_turn/artifact/human_confirm/runtime_observation`，
+ *    没有 `scope_violation`；扩值域要重建表，且 §8.7 明确「状态值域一次建齐，不得留 ALTER/重建」。
+ * ② 语义会反噬：`execution-state.ts` 的 `deriveFromInputs` 里 `has('E2') → state='implemented'`，
+ *    任何一条 E2 都会把节点推成「已实现」。越界记录若写成 E2，会把「越界」读成「已交付」——
+ *    这是与事实相反的误导，比不记录更糟。
+ *
+ * 因此单独建表：**只记录事实，不参与任何派生/gate 判定**，读取方仅证据面板。
+ * 处置状态（disposition）与「是否已回滚」对齐：越界被拦截 → 会话以 error 终止 →
+ * sandbox 回滚；回滚成功才写 `rolled_back`，否则留在 `pending`（面板显示「未处置」）。
+ */
+export const MAP_VIOLATION_TABLE_SCHEMAS: MapTableSchema[] = [
+  {
+    name: 'node_scope_violations',
+    createSql: `
+      CREATE TABLE node_scope_violations (
+        id               TEXT PRIMARY KEY,
+        project_path     TEXT,
+        graph_id         TEXT NOT NULL,
+        graph_type       TEXT NOT NULL CHECK(graph_type IN ('online','dev','test')),
+        node_entity_key  TEXT NOT NULL,
+        node_id          TEXT,
+        session_id       TEXT,
+        sandbox_id       TEXT NOT NULL,
+        -- ScopeGuard 给出的越界项（相对工作目录的路径或描述），原样 JSON 数组。
+        violations_json  TEXT NOT NULL,
+        working_dir      TEXT,
+        -- pending：已拦截、处置结果未回填；rolled_back：沙箱回滚成功；
+        -- released：人工确认放行（当前无写入方，值域先建齐，见 §8.7）。
+        disposition      TEXT NOT NULL DEFAULT 'pending'
+                         CHECK(disposition IN ('pending','rolled_back','released')),
+        created_at       TEXT NOT NULL,
+        disposed_at      TEXT
+      )
+    `,
+    requiredColumns: [
+      'id', 'graph_id', 'graph_type', 'node_entity_key', 'sandbox_id',
+      'violations_json', 'disposition', 'created_at',
+    ],
+  },
+]
+
+export const MAP_VIOLATION_INDEX_SQLS: string[] = [
+  // 证据面板按节点取「最近一次 run 的越界」：节点 + 时间倒序。
+  `CREATE INDEX IF NOT EXISTS idx_node_scope_violations_node
+     ON node_scope_violations(graph_id, node_entity_key, created_at DESC)`,
+  // 回滚完成后按 sandbox 回填处置状态（含 pending 过滤）。
+  `CREATE INDEX IF NOT EXISTS idx_node_scope_violations_sandbox
+     ON node_scope_violations(sandbox_id, disposition)`,
+]
+
+export function applyMapViolationSchema(db: { exec(sql: string): unknown }): void {
+  for (const schema of MAP_VIOLATION_TABLE_SCHEMAS) {
+    db.exec(schema.createSql)
+  }
+  for (const sql of MAP_VIOLATION_INDEX_SQLS) {
+    db.exec(sql)
+  }
+}

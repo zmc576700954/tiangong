@@ -96,6 +96,10 @@ import { registerMapHandlers } from './ipc/map'
 import { setExecutionStateNotifier } from './map/execution-state'
 import { WorkRunService } from './map/work-run-service'
 import { startWorktreeRetentionSweep } from './map/test-executor'
+import {
+  recordScopeViolation,
+  markScopeViolationsRolledBack,
+} from './map/scope-violation-service'
 import { reconcileOrphanImportThreads } from './services/chat-thread-reconcile'
 import { registerSettingsHandlers } from './ipc/settings'
 import { registerDialogHandlers } from './ipc/dialog'
@@ -286,6 +290,25 @@ export async function registerIpcHandlers(): Promise<void> {
   const chatService = new ChatService(chatRepo, contextWaterline)
   const graphService = new GraphService(db, agentManager, chatService)
   setupAgentLogPersistence()
+
+  // ---------- SG-1：越界拦截落库（证据面板「越界没有」的数据源） ----------
+  // AgentManager 不持有 DB，记账以 sink 注入；两个钩子都只告警不抛，
+  // 不改变越界处置（拦截 → 终止会话 → sandbox 回滚）的既有行为。
+  agentManager.setScopeViolationSink({
+    onViolation: (event) => {
+      recordScopeViolation(db, {
+        nodeId: event.nodeId ?? null,
+        sessionId: event.sessionId,
+        sandboxId: event.sandboxId,
+        violations: event.violations,
+        workingDirectory: event.workingDirectory,
+      })
+    },
+    onRollback: (event) => {
+      // 只有回滚成功才回填 rolled_back；失败留在 pending（面板如实显示「未处置」）。
+      if (event.success) markScopeViolationsRolledBack(db, event.sandboxId)
+    },
+  })
 
   // ---------- M0 Agent Runtime（D1–D5） ----------
   let runtimeSettings: BizGraphSettings | undefined

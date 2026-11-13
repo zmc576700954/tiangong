@@ -154,7 +154,7 @@ type AcceptanceItem = {
 | R5 | 越界区块显示：拦截次数、路径、处置（已回滚 / 已放行 / 未处置） |
 | R6 | 「没覆盖什么」= 验收条目中无对应证据的 required 项，逐条列出 |
 
-**新增依赖 SG-1（阻塞）**：ScopeGuard 拦截记录持久化——在 `notifyViolation` 处追加写入 `node_evidence`（`evidence_type='scope_violation'`，`ref_json` 含路径与处置结果）。无此依赖则 R5 无法实现，R2 空态维持「未采集」。
+**新增依赖 SG-1（已就绪，2026-11-13）**：ScopeGuard 拦截记录持久化 → 新建表 `node_scope_violations`（schema v51）。**原方案「写 `node_evidence`（`evidence_type='scope_violation'`）」已证伪并弃用**：① 该表 `evidence_type` 的 CHECK 值域没有这个值，扩值域要重建表；② 更关键，`execution-state.ts` 的 `deriveFromInputs` 里 `has('E2') → state='implemented'`，越界记录落成 E2 会把「越界」读成「已交付」。现方案：独立表只记事实、不参与派生/gate，读取通道 `map:node:violations:list` 返回 `violations[]`（路径列表）+ `disposition`（`pending`/`rolled_back`/`released`）+ `created_at`，R5 的「拦截次数/路径/处置」三项齐备。
 
 **验收标准（GWT）**
 
@@ -271,7 +271,7 @@ type AcceptanceItem = {
 |---|---|---|---|---|---|
 | workitem/evidence/acceptance IPC | map 层 | 已就绪 | — | — | — |
 | acceptance-executor 三类判定 | map 层 | 已就绪 | — | — | — |
-| **SG-1 越界记录落库** | ScopeGuard | **未就绪** | **阻塞（仅 FR-03 R5）** | D5 | 缺失时越界区块降级「未采集」，FR-03 其余部分可先上 |
+| **SG-1 越界记录落库** | ScopeGuard | **已就绪（2026-11-13，schema v51）** | 已解除（FR-03 R5 可直接施工） | D5 | 回退：`DROP TABLE node_scope_violations` + 面板降级「未采集」 |
 | registry 能力字段 | adapters | 未就绪（改动小） | 并行 | D7 | 可先用静态 JSON 表兜底，但 R2 不满足 |
 | CI 远端运行权限 | GitHub | 可用 | 并行 | D9 | 不可用则 Stage 1 退出条件 E3 无法达成，需改为本地全量绿 + 下一阶段补 |
 
@@ -283,7 +283,7 @@ type AcceptanceItem = {
 |---|---|---|
 | D1 | FR-02 数据结构与迁移（先做，因 01/03/04 都依赖） | types + repo + migration 单测 |
 | D2–D3 | FR-01 派发接线 + 失败回滚 | hook 单测 + e2e |
-| D3–D4 | SG-1 越界落库 | evidence 写入 + 单测 |
+| D3–D4 | ~~SG-1 越界落库~~（已完成 2026-11-13） | 独立表 `node_scope_violations` + 生命周期钩子 + IPC 只读通道 + 13 例单测 |
 | D4–D6 | FR-03 证据面板四问 | 组件测试 + 空态四例 |
 | D6–D8 | FR-04 判定与失败节点 | 判定口径单测 + 幂等测试 |
 | D8 | FR-05 能力矩阵 + 校验脚本 | README 同步 |

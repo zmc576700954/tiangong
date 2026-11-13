@@ -618,3 +618,98 @@ describe('SessionLifecycleManager', () => {
     })
   })
 })
+/**
+ * SG-1：越界拦截的记账钩子。
+ *
+ * 关键顺序：越界 → 先上报（此时还能读到 config.nodeId）→ 再 terminate。
+ * terminate 会清空 sessionStates，若顺序反了，记录就永远拿不到节点归属。
+ */
+describe('SG-1 越界记账钩子', () => {
+  function build() {
+    const adapter = makeAdapter('claude-code')
+    const registry = makeRegistry([adapter])
+    const router = makeRouter({ 'claude-code-sess-1': adapter })
+    const scopeGuard = makeScopeGuard()
+    const lifecycle = new SessionLifecycleManager(registry, router, makeBroadcaster(), scopeGuard)
+    lifecycle.initialize()
+    return { adapter, lifecycle, scopeGuard }
+  }
+
+  async function startWithNode(
+    lifecycle: SessionLifecycleManager,
+    adapter: AgentAdapter,
+    sessionId: string,
+  ): Promise<string> {
+    await lifecycle.start({
+      candidate: 'claude-code',
+      adapter,
+      session: { id: sessionId, startTime: Date.now() },
+      config: makeConfig({ allowedFiles: ['src/foo.ts'], nodeId: 'node-1' }),
+      isFallback: false,
+      primaryAdapter: 'claude-code',
+    })
+    const sandboxId = lifecycle.getSessionState(sessionId)?.sandbox?.id
+    expect(sandboxId).toBeTruthy()
+    return sandboxId as string
+  }
+
+  it('越界时在终止前上报 nodeId 与越界条目，回滚成功后回填 success=true', async () => {
+    const { adapter, lifecycle, scopeGuard } = build()
+    const onScopeViolation = vi.fn()
+    const onScopeRollback = vi.fn()
+    lifecycle.setCallbacks({ onScopeViolation, onScopeRollback })
+
+    const sessionId = 'sess-V1'
+    const sandboxId = await startWithNode(lifecycle, adapter, sessionId)
+
+    const handler = vi.mocked(scopeGuard.onViolation).mock.calls[0][0] as (
+      sandboxId: string,
+      violations: string[],
+    ) => Promise<void>
+    await handler(sandboxId, ['src/config/secret.ts'])
+
+    expect(onScopeViolation).toHaveBeenCalledTimes(1)
+    expect(onScopeViolation.mock.calls[0][0]).toMatchObject({
+      sandboxId,
+      sessionId,
+      nodeId: 'node-1',
+      violations: ['src/config/secret.ts'],
+      workingDirectory: '/tmp/proj',
+    })
+    expect(onScopeRollback).toHaveBeenCalledWith({ sandboxId, sessionId, success: true })
+    // 会话确实被终止了（越界处置行为不变）。
+    expect(lifecycle.getSessionState(sessionId)).toBeUndefined()
+  })
+
+  it('回滚失败时上报 success=false（记录应留在未处置）', async () => {
+    const { adapter, lifecycle, scopeGuard } = build()
+    const onScopeRollback = vi.fn()
+    lifecycle.setCallbacks({ onScopeRollback })
+    scopeGuard.rollback = vi.fn(async () => {
+      throw new Error('rollback boom')
+    }) as unknown as typeof scopeGuard.rollback
+
+    const sessionId = 'sess-V2'
+    const sandboxId = await startWithNode(lifecycle, adapter, sessionId)
+
+    const handler = vi.mocked(scopeGuard.onViolation).mock.calls[0][0] as (
+      sandboxId: string,
+      violations: string[],
+    ) => Promise<void>
+    await handler(sandboxId, ['src/a.ts'])
+
+    expect(onScopeRollback).toHaveBeenCalledWith({ sandboxId, sessionId, success: false })
+  }, 20000)
+
+  it('普通会话收尾不触发回滚上报（不产生无意义的记账写入）', async () => {
+    const { adapter, lifecycle } = build()
+    const onScopeRollback = vi.fn()
+    lifecycle.setCallbacks({ onScopeRollback })
+
+    const sessionId = 'sess-V3'
+    await startWithNode(lifecycle, adapter, sessionId)
+    await lifecycle.terminate(sessionId, 'user')
+
+    expect(onScopeRollback).not.toHaveBeenCalled()
+  })
+})
