@@ -2,12 +2,14 @@
  * W5-D 评测 harness：U1–U9 / R3 脚本化。
  *
  * 每条用例独立判 PASS / FAIL / SKIP：
- * - 能自动验证的（R3、U8、U4）真跑；
- * - 需要外部资源/平台的（U1/U2/U5/U7/U9）记 SKIP 并写明缺什么；
+ * - 能自动验证的（R3、U8、U4、U2-①serve 探测）真跑；
+ * - 真实网络回合走显式开关：U5（BIZGRAPH_EVAL_REAL_CLAUDE）、U2-②（BIZGRAPH_EVAL_REAL_OPENCODE，免费档零凭据）；
+ * - 需要外部资源/平台的（U1/U7/U9）记 SKIP 并写明缺什么；
  * - U6 因 D-07 删除排队而不再适用。
  */
 
 import fs from 'node:fs'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
@@ -26,6 +28,7 @@ import {
 import { itEval, writeEvalReport, type EvalResult } from './harness'
 import { canReadProcessTable } from '../../src/main/__tests__/helpers/host-probe'
 import { normalizeClaude } from '../../src/main/agent/runtime/normalize/claude'
+import { OpenCodeStreamNormalizer, type OpenCodeEvent } from '../../src/main/agent/runtime/normalize/opencode'
 import { extractUsage } from '../../src/main/agent/runtime/executors/adapter-driver'
 import { UsageLedger } from '../../src/main/agent/runtime/cost/ledger'
 import { localDayKey } from '../../src/main/agent/runtime/util'
@@ -37,6 +40,13 @@ const CLAUDE_ROUND_ENV = 'BIZGRAPH_EVAL_REAL_CLAUDE'
 const CLAUDE_TURN_TIMEOUT_MS = 90_000
 /** 走哪条线路由 settings.json / 环境决定；这里只给缺省模型别名。 */
 const CLAUDE_MODEL = process.env.BIZGRAPH_EVAL_CLAUDE_MODEL ?? 'claude-haiku-5-5'
+
+/** G6-11/U2：真实 OpenCode 回合的显式开关（默认关，避免默认套件依赖网络）。 */
+const OPENCODE_ROUND_ENV = 'BIZGRAPH_EVAL_REAL_OPENCODE'
+/** 免费档零凭据组合（v3.30 实测 12 个模型全在 opencode/ 前缀下；裸写 model id 会被判成 `…/.`）。 */
+const OPENCODE_MODEL = process.env.BIZGRAPH_EVAL_OPENCODE_MODEL ?? 'opencode/deepseek-v4.1-flash-free'
+/** 单轮真实回合上限。 */
+const OPENCODE_TURN_TIMEOUT_MS = 90_000
 
 const requireRoot = createRequire(import.meta.url)
 
@@ -447,6 +457,236 @@ async function verifyClaudeTokenRound(): Promise<EvalResult> {
   }
 }
 
+// ─────────────────────────── U2：OpenCode ───────────────────────────
+
+/** 自挑空闲端口：`--port 0` 在 opencode 1.19.5 会退回 4096（与手工实例撞，v3.32 实测）。 */
+function pickFreeTcpPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer()
+    server.listen(0, '127.0.0.1', () => {
+      const port = (server.address() as net.AddressInfo).port
+      server.close(() => resolve(port))
+    })
+    server.on('error', reject)
+  })
+}
+
+/**
+ * U2-①：serve OpenAPI 探测（本地、免网络、免凭据）。
+ * 证明权限协议真的存在：`/doc` 里必须有 permission reply 端点，
+ * 这是「问了再放行」的协议面（完整往返由 opencode-serve-real.test.ts 真机覆盖）。
+ */
+async function probeOpenCodeServeDoc(): Promise<{
+  ok: boolean
+  detail: string
+  pathCount: number
+  permissionReplyPath: string | null
+}> {
+  const port = await pickFreeTcpPort()
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-eval-oc-serve-'))
+  const child = spawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
+    cwd,
+    // 清宿主注入的 NODE_OPTIONS 沙箱 shim：CLI 子进程经文件 broker 代理会间歇 ECONNREFUSED
+    env: { ...process.env, NODE_OPTIONS: '' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let out = ''
+  child.stdout?.on('data', (chunk: Buffer) => {
+    out += chunk.toString('utf-8')
+  })
+  const ready = new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error(`serve 15s 内未就绪（stdout 片段：${out.slice(0, 200) || '（空）'}）`)),
+      15_000,
+    )
+    const poll = setInterval(() => {
+      if (out.includes('listening on')) {
+        clearTimeout(timeout)
+        clearInterval(poll)
+        resolve()
+      }
+    }, 200)
+    child.on('exit', (code) => {
+      clearTimeout(timeout)
+      clearInterval(poll)
+      reject(new Error(`serve 提前退出（code=${String(code)}）`))
+    })
+  })
+  try {
+    await ready
+    const response = await fetch(`http://127.0.0.1:${port}/doc?directory=${encodeURIComponent(cwd)}`)
+    const doc = (await response.json()) as { paths?: Record<string, unknown> }
+    const paths = Object.keys(doc.paths ?? {})
+    const permissionReplyPath =
+      paths.find((p) => /permission\/\{[^}]+\}\/reply/.test(p)) ?? null
+    if (response.status !== 200) {
+      return { ok: false, detail: `GET /doc 返回 ${response.status}`, pathCount: paths.length, permissionReplyPath }
+    }
+    if (!permissionReplyPath) {
+      return {
+        ok: false,
+        detail: `OpenAPI ${paths.length} 路径中没有任何 permission reply 端点（权限协议缺失）`,
+        pathCount: paths.length,
+        permissionReplyPath,
+      }
+    }
+    return {
+      ok: true,
+      detail: `OpenAPI ${paths.length} 路径，permission reply 端点 = ${permissionReplyPath}`,
+      pathCount: paths.length,
+      permissionReplyPath,
+    }
+  } finally {
+    child.kill('SIGTERM')
+    setTimeout(() => child.kill('SIGKILL'), 2_000).unref()
+  }
+}
+
+/**
+ * U2-②：真实 OpenCode 回合（免费档零凭据，`run --format json` 结构化事件流）。
+ *
+ * 注意回合设计：**不能**「宿主先写文件、让 CLI 读回来」——评测进程跑在宿主沙箱
+ * shim 里（NODE_OPTIONS=--require broker），写文件落在 broker 的私有视图；CLI
+ * 子进程为避免 shim 间歇故障带 `NODE_OPTIONS:''` 起动，读的是真实文件系统，
+ * 两个视图互不可见（实测表现为 CLI 报 No such file or directory）。
+ * 因此 marker 由 CLI 自己的 bash 工具产生、断言也只看 CLI 自己的输出，
+ * 全程不跨文件系统边界。
+ */
+async function runOpenCodeTurn(): Promise<{
+  exit: number | null
+  stdout: string
+  stderr: string
+  durationMs: number
+}> {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'bizgraph-eval-oc-round-'))
+  const startedAt = performance.now()
+  const child = spawn(
+    'opencode',
+    [
+      'run',
+      '--format',
+      'json',
+      // 与 v3.30 夹具采集条件一致：--auto 让工具在 run 模式直接放行（run 没有审批往返）
+      '--auto',
+      '--model',
+      OPENCODE_MODEL,
+      'Run the shell command `echo EVAL-U2-MARKER-7c3d` using your bash tool and reply with its exact output.',
+    ],
+    {
+      cwd,
+      env: { ...process.env, NODE_OPTIONS: '' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  )
+  const chunks: Buffer[] = []
+  let stderr = ''
+  child.stdout?.on('data', (chunk: Buffer) => chunks.push(chunk))
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf-8')
+  })
+  const timeout = setTimeout(() => child.kill('SIGKILL'), OPENCODE_TURN_TIMEOUT_MS)
+  const exit = await new Promise<number | null>((resolve) => {
+    child.on('exit', (code) => resolve(code))
+    child.on('error', () => resolve(null))
+  })
+  clearTimeout(timeout)
+  return {
+    exit,
+    stdout: Buffer.concat(chunks).toString('utf-8'),
+    stderr,
+    durationMs: Math.round(performance.now() - startedAt),
+  }
+}
+
+function parseOpenCodeJsonl(stdout: string): OpenCodeEvent[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as OpenCodeEvent)
+}
+
+/** U2 主判定：① 权限协议存在性（免网络）；② 结构化事件（显式开关真回合）。 */
+async function verifyOpenCodeEval(): Promise<EvalResult> {
+  const problems: string[] = []
+  const notes: string[] = []
+  const metrics: Record<string, number> = {}
+
+  // ① 权限协议存在性 —— CLI 在即跑，不需要网络
+  const probe = await probeOpenCodeServeDoc()
+  metrics.servePaths = probe.pathCount
+  if (!probe.ok) {
+    problems.push(`serve 探测：${probe.detail}`)
+  } else {
+    notes.push(`① 权限协议存在：${probe.detail}`)
+  }
+
+  // ② 结构化事件 —— 真实回合，显式开关（默认套件不依赖网络）
+  if (process.env[OPENCODE_ROUND_ENV] !== '1') {
+    if (problems.length > 0) {
+      return { status: 'FAIL', detail: problems.join('；'), metrics }
+    }
+    return {
+      status: 'PASS',
+      detail: `${notes[0]}；② 结构化事件真回合未开启（需 ${OPENCODE_ROUND_ENV}=1；免费档零凭据，无成本，但走网络故默认关）——协议存在性已由 ① 回答`,
+      metrics,
+    }
+  }
+
+  const turn = await runOpenCodeTurn()
+  metrics.roundMs = turn.durationMs
+  if (turn.exit !== 0) {
+    problems.push(`回合 exit=${String(turn.exit)}、stderr=${turn.stderr.trim().slice(0, 200) || '（空）'}`)
+    return { status: 'FAIL', detail: problems.join('；'), metrics }
+  }
+
+  const meta = { runId: 'eval_u2_run', turnId: 'eval_u2_turn', sessionId: 'eval_u2_session', baseTimestamp: Date.now() }
+  const normalizer = new OpenCodeStreamNormalizer(meta)
+  const rawEvents = parseOpenCodeJsonl(turn.stdout)
+  for (const event of rawEvents) normalizer.feed(event)
+  const events = normalizer.finish(0)
+  metrics.rawEvents = rawEvents.length
+  metrics.normalizedEvents = events.length
+
+  const types = events.map((event) => event.type)
+  if (!types.includes('run.started') || !types.includes('run.completed')) {
+    problems.push(`缺终态事件：run.started=${types.includes('run.started')}、run.completed=${types.includes('run.completed')}`)
+  }
+  const toolRequested = events.find((event) => event.type === 'tool.requested')
+  const toolResults = events.filter((event) => event.type === 'tool.result')
+  if (!toolRequested || toolResults.length === 0) {
+    problems.push(`缺结构化工具事件：tool.requested=${Boolean(toolRequested)}、tool.result 条数=${toolResults.length}`)
+  } else {
+    const toolNames = [
+      ...events.filter((event) => event.type === 'tool.requested').map((event) => (event.payload as { toolName?: string }).toolName),
+      ...toolResults.map((event) => (event.payload as { toolName?: string }).toolName),
+    ]
+    notes.push(`② 工具事件：${[...new Set(toolNames)].join('/')}`)
+    // marker 由 CLI 自己的 bash 产生 —— 断言只看 CLI 自己的输出（不跨文件系统边界）
+    const outputs = toolResults.map((event) => (event.payload as { output?: string }).output ?? '')
+    if (!outputs.some((output) => output.includes('EVAL-U2-MARKER-7c3d'))) {
+      problems.push(`没有任何 tool.result 的输出含 marker（收到 ${outputs.length} 条：${outputs.map((o) => o.slice(0, 60).replace(/\n/g, ' ')).join(' | ').slice(0, 200)}）`)
+    }
+  }
+  const usage = events.find((event) => event.type === 'usage.updated')?.payload as
+    | { inputTokens?: number; outputTokens?: number }
+    | undefined
+  metrics.inputTokens = usage?.inputTokens ?? 0
+  metrics.outputTokens = usage?.outputTokens ?? 0
+  if (!usage || !(usage.inputTokens || usage.outputTokens)) {
+    problems.push('usage.updated 缺 token（免费档也应上报 token，v3.30 实测如此）')
+  }
+
+  if (problems.length > 0) {
+    return { status: 'FAIL', detail: problems.join('；'), metrics }
+  }
+  return {
+    status: 'PASS',
+    detail: `${notes.join('；')}；归一化 ${events.length} 条事件（原始 ${rawEvents.length} 行 JSONL）、回合耗时 ${turn.durationMs}ms、token in/out=${metrics.inputTokens}/${metrics.outputTokens}（模型 ${OPENCODE_MODEL}，零凭据免费档）`,
+    metrics,
+  }
+}
+
 describe('W5-D agent eval harness', () => {
   // U1：Codex 官方 provider 的事件差异
   itEval('U1', 'Codex 官方 provider 是否出现 item.updated / reasoning', () => {
@@ -464,15 +704,14 @@ describe('W5-D agent eval harness', () => {
     }
   })
 
-  // U2：OpenCode 工具事件/权限协议
-  itEval('U2', 'OpenCode CLI 是否存在结构化工具事件或权限协议', () => {
+  // U2：OpenCode 工具事件/权限协议 —— 两段式（v3.34 起真跑）：
+  // ① 权限协议存在性：本地起 `opencode serve` 查 OpenAPI（免网络、免凭据，CLI 在即跑）；
+  // ② 结构化事件：显式开关门控的真实回合（免费档零凭据，走 `run --format json`）。
+  itEval('U2', 'OpenCode CLI 是否存在结构化工具事件或权限协议', async () => {
     if (!hasCommand('opencode')) {
       return { status: 'SKIP', detail: 'PATH 无 opencode CLI（which opencode 未命中），无法验证工具事件/权限协议' }
     }
-    return {
-      status: 'SKIP',
-      detail: 'opencode CLI 已安装，但结构化事件需要真实回合与权限交互录制，本轮未执行',
-    }
+    return await verifyOpenCodeEval()
   })
 
   // U3：高事件量主进程阻塞（与 R3 同一测量）
