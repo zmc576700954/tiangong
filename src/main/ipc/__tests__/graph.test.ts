@@ -755,6 +755,7 @@ function makeWritebackDb() {
       title TEXT NOT NULL,
       description TEXT,
       acceptance_criteria TEXT,
+      acceptance_items TEXT,
       graph_id TEXT NOT NULL,
       graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev')),
       parent_id TEXT,

@@ -519,11 +519,11 @@ export class GraphService {
     const tempIdMap = new Map<string, string>()
 
     const insertNodeStmt = executor.prepare(`INSERT INTO nodes (
-      id, type, status, title, description, acceptance_criteria,
+      id, type, status, title, description, acceptance_criteria, acceptance_items,
       graph_id, graph_type, parent_id, rules, metadata, owner_role,
       position_x, position_y, content, community_summary, community_level,
       wiki_content, wiki_meta, entity_key, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 
     const updateParentStmt = executor.prepare('UPDATE nodes SET parent_id = ?, sort_index = ? WHERE id = ?')
 
@@ -558,6 +558,7 @@ export class GraphService {
         nodeData.title,
         nodeData.description ?? null,
         nodeData.acceptanceCriteria ? JSON.stringify(nodeData.acceptanceCriteria) : null,
+        nodeData.acceptanceItems ? JSON.stringify(nodeData.acceptanceItems) : null,
         graphId,
         graphType,
         null, // parent_id 第二轮更新

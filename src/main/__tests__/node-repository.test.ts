@@ -64,13 +64,14 @@ describe('NodeRepository', () => {
     expect(node.communityLevel).toBe(1)
 
     const callArgs = stmt.run.mock.calls[0]
-    // 列序：…parent_id=8, sort_index=9, rules=10, metadata=11, owner_role=12,
-    //      position_x=13, position_y=14, content=15, community_summary=16,
-    //      community_level=17, community_id=18, context_refs=19, wiki_content=20, wiki_meta=21
-    expect(callArgs[15]).toBe(JSON.stringify(content)) // content=15
-    expect(callArgs[16]).toBe('summary') // community_summary=16
-    expect(callArgs[17]).toBe(1) // community_level=17
-    expect(callArgs[18]).toBeNull() // community_id=18
+    // 列序：acceptance_items=6 起整体后移一位。
+    //      parent_id=9, sort_index=10, rules=11, metadata=12, owner_role=13,
+    //      position_x=14, position_y=15, content=16, community_summary=17,
+    //      community_level=18, community_id=19, context_refs=20, wiki_content=21, wiki_meta=22
+    expect(callArgs[16]).toBe(JSON.stringify(content)) // content=16
+    expect(callArgs[17]).toBe('summary') // community_summary=17
+    expect(callArgs[18]).toBe(1) // community_level=18
+    expect(callArgs[19]).toBeNull() // community_id=19
   })
 
   it('create persists wikiContent and wikiMeta', () => {
@@ -80,19 +81,21 @@ describe('NodeRepository', () => {
     expect(node.wikiMeta).toEqual(wikiMeta)
 
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[20]).toBe('# Hello') // wiki_content=20
-    expect(callArgs[21]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=21
+    // FR-S1-02 起 INSERT 多了 acceptance_items（索引 6），其后所有下标 +1。
+    expect(callArgs[21]).toBe('# Hello') // wiki_content=21
+    expect(callArgs[22]).toBe(JSON.stringify(wikiMeta)) // wiki_meta=22
   })
 
   it('create stores optional fields as null when omitted', () => {
     repo.create(makeNodeData())
     const callArgs = stmt.run.mock.calls[0]
-    expect(callArgs[15]).toBeNull() // content
-    expect(callArgs[16]).toBeNull() // community_summary
-    expect(callArgs[17]).toBeNull() // community_level
-    expect(callArgs[18]).toBeNull() // community_id
-    expect(callArgs[20]).toBeNull() // wiki_content
-    expect(callArgs[21]).toBeNull() // wiki_meta
+    expect(callArgs[6]).toBeNull() // acceptance_items
+    expect(callArgs[16]).toBeNull() // content
+    expect(callArgs[17]).toBeNull() // community_summary
+    expect(callArgs[18]).toBeNull() // community_level
+    expect(callArgs[19]).toBeNull() // community_id
+    expect(callArgs[21]).toBeNull() // wiki_content
+    expect(callArgs[22]).toBeNull() // wiki_meta
   })
 
   it('createBatch returns empty for empty input', () => {
@@ -309,6 +312,7 @@ describe('NodeRepository with real in-memory database', () => {
         title TEXT NOT NULL,
         description TEXT,
         acceptance_criteria TEXT,
+        acceptance_items TEXT,
         graph_id TEXT NOT NULL,
         graph_type TEXT NOT NULL,
         parent_id TEXT,

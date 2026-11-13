@@ -54,12 +54,18 @@ function decide(
  *   | for-each-ref/branch --format=%(signature) | 执行           | 不执行                |
  *
  * 所以「执行面」断言不能只探一条命令（先用 `log --format=%GS` 探，结果在 CI 上
- * 与 shortlog 的实际表现相反，白红一轮）。这里用一份临时仓库把五类命令各跑一次，
+ * 与 shortlog 的实际表现相反，白红一轮）。这里用一份临时仓库把各类命令各跑一次，
  * 按宿主真实能力解释「有没有执行」：不把版本差异伪装成回归，也不因此放松策略断言——
  * 参数里出现 `%G` / `%(signature)` 就必须 ask，这一条与 git 版本无关，始终无条件断言。
+ *
+ * 2026-11-13 补：`whatchanged` 也**不能**借用 log 的能力。ubuntu-latest 的 git 对
+ * `whatchanged -1 --format=%G?` 不触发 gpg（同期 log/show 会触发），按 log 断言会
+ * 每逢 CI 必红。现在 show / whatchanged 各自探测。
  */
 type GpgExecCapability = {
   log: boolean
+  show: boolean
+  whatchanged: boolean
   shortlog: boolean
   revList: boolean
   refFilter: boolean
@@ -71,6 +77,8 @@ const GPG_EXEC = detectGpgExecution()
 function detectGpgExecution(): GpgExecCapability {
   const none: GpgExecCapability = {
     log: false,
+    show: false,
+    whatchanged: false,
     shortlog: false,
     revList: false,
     refFilter: false,
@@ -125,6 +133,11 @@ function detectGpgExecution(): GpgExecCapability {
     }
     return {
       log: ran(['log', '-1', '--format=%G?']),
+      // show / whatchanged 必须各自探测：曾按「与 log 同一条 format 路径」复用
+      // log 的能力，结果在 ubuntu-latest 上 whatchanged 根本不触发 gpg（2026-11-13
+      // CI 实测），把版本差异报成了回归。探测面本身就该覆盖真正要断言的命令。
+      show: ran(['show', '-s', '--format=%G?']),
+      whatchanged: ran(['whatchanged', '-1', '--format=%G?']),
       shortlog: ran(['shortlog', '--format=%G?', 'HEAD']),
       revList: ran(['rev-list', '-n', '1', '--format=%G?', 'HEAD']),
       refFilter: ran(['for-each-ref', '--format=%(signature)', 'refs/heads']),
@@ -1839,11 +1852,15 @@ describe('H7-Ⅱ 命令 → format 参数消费关系（错项防复发）', () 
 
   it('普查：log/show/whatchanged/rev-list/shortlog 的 --format/--pretty %G 均真实执行且均 ask', () => {
     const { repo, marker } = makeSignedRepo('bizgraph-h7b-survey-')
-    // kind 决定「执行面」按哪种命令的能力断言：show/whatchanged 与 log 走同一条 format 路径。
+    // kind 决定「执行面」按哪种命令的能力断言：**逐命令探测**，不互相借用。
     const cases: Array<{ args: string[]; command: string; kind: keyof GpgExecCapability }> = [
       { args: ['log', '-1', '--format=%G?'], command: "git log -1 '--format=%G?'", kind: 'log' },
-      { args: ['show', '-s', '--format=%G?'], command: "git show -s '--format=%G?'", kind: 'log' },
-      { args: ['whatchanged', '-1', '--format=%G?'], command: "git whatchanged -1 '--format=%G?'", kind: 'log' },
+      { args: ['show', '-s', '--format=%G?'], command: "git show -s '--format=%G?'", kind: 'show' },
+      {
+        args: ['whatchanged', '-1', '--format=%G?'],
+        command: "git whatchanged -1 '--format=%G?'",
+        kind: 'whatchanged',
+      },
       {
         args: ['rev-list', '-n', '1', '--format=%G?', 'HEAD'],
         command: "git rev-list -n 1 '--format=%G?' HEAD",

@@ -12,6 +12,7 @@ import type {
   AgentCommand, AgentOutput, ContextRef, ToolCallBlock, MessageError,
   BusinessRule, NodeMetadata, NodeContent, EdgeContent,
 } from './types'
+import { isAcceptanceItem, type AcceptanceItem } from './acceptance'
 
 function makeGuard<T extends string>(values: readonly T[]) {
   const set = new Set<string>(values)
@@ -71,6 +72,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 /** 字符串数组 */
 export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string')
+}
+
+/**
+ * 结构化验收项数组（FR-S1-02）。
+ * 供 `safeJsonParse` 当 validator：任何一条形状不对就整体退回 undefined，
+ * 由调用方回落到 `acceptanceCriteria` 归一化，而不是拿半坏的数组去判定。
+ */
+export function isAcceptanceItemArray(value: unknown): value is AcceptanceItem[] {
+  return Array.isArray(value) && value.every((v) => isAcceptanceItem(v))
 }
 
 /**

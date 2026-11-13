@@ -28,6 +28,7 @@ function makeDb() {
       title TEXT NOT NULL,
       description TEXT,
       acceptance_criteria TEXT,
+      acceptance_items TEXT,
       graph_id TEXT NOT NULL,
       graph_type TEXT NOT NULL,
       parent_id TEXT,

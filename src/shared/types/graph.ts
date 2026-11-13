@@ -3,6 +3,9 @@
  * 包含节点、边、图、快照、Bug、项目扫描、MindMap Agent 相关类型
  */
 
+// 结构化验收项（FR-S1-02）：仅类型依赖，acceptance.ts 不反向引用本文件，无环。
+import type { AcceptanceItem } from '../acceptance'
+
 // ============================================
 // 上下文引用类型
 // ============================================
@@ -122,8 +125,16 @@ export interface GraphNode {
   status: NodeStatus
   title: string
   description?: string
-  /** 验收标准 */
+  /** 验收标准（人读摘要；结构化条目见 acceptanceItems） */
   acceptanceCriteria?: string[]
+  /**
+   * FR-S1-02：结构化验收项（机器可判定）。
+   * - 与 acceptanceCriteria **并存**：本字段是判定依据，acceptanceCriteria 是由
+   *   `deriveAcceptanceTexts` 派生的人读投影，供提示词拼装/画布/导出继续消费。
+   * - 未结构化时缺省 → 由 `normalizeAcceptanceItems(acceptanceCriteria)` 现场归一化
+   *   为 manual 条目，不落库。
+   */
+  acceptanceItems?: AcceptanceItem[]
   /** 所属图 */
   graphId: string
   graphType: GraphType

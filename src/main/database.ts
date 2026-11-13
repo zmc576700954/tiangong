@@ -893,6 +893,11 @@ const TABLE_SCHEMAS: TableSchema[] = [
         title TEXT NOT NULL,
         description TEXT,
         acceptance_criteria TEXT,
+        -- FR-S1-02：结构化验收项（JSON 数组，见 src/shared/acceptance.ts）。
+        -- 与 acceptance_criteria 并存而非替换：后者是 string[]，被 isStringArray 守卫
+        -- （type-guards.ts）约束，写入对象会让 safeJsonParse 整体退回 []。
+        -- 可空、**不进 requiredColumns**：存量库用 ALTER TABLE 补列，不触发重建。
+        acceptance_items TEXT,
         graph_id TEXT NOT NULL,
         graph_type TEXT NOT NULL CHECK(graph_type IN ('online', 'dev', 'test')),
         -- S1（session-map 蓝图 §2.1/§7.1）：项目内稳定身份。必须可空、**不进**
@@ -1752,6 +1757,8 @@ function runIncrementalMigrations(db: BetterSqlite3.Database, currentVersion = 0
   addColumnSafe('nodes', 'community_summary', 'TEXT')
   addColumnSafe('nodes', 'community_level', 'INTEGER')
   addColumnSafe('nodes', 'community_id', 'TEXT')
+  // FR-S1-02：结构化验收项。存量库补列（旧行 NULL），不进 requiredColumns。
+  addColumnSafe('nodes', 'acceptance_items', 'TEXT')
   addColumnSafe('edges', 'content', 'TEXT')
   addColumnSafe('edges', 'description', 'TEXT')
   addColumnSafe('edges', 'data_flow', 'TEXT')

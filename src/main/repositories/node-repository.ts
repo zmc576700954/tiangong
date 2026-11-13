@@ -9,7 +9,7 @@ import type { NodeStatus } from '@shared/types'
 import {
   assertNodeType, assertNodeStatus, assertGraphType,
   isStringArray, isBusinessRuleArray, isNodeMetadata, isNodeContent,
-  isContextRefArray, isRecord,
+  isContextRefArray, isRecord, isAcceptanceItemArray,
 } from '@shared/type-guards'
 import { validateNodeTypeTransition } from '@shared/state-machine'
 import { randomUUID } from 'node:crypto'
@@ -73,6 +73,9 @@ export class NodeRepository {
       title: row.title as string,
       description: row.description as string | undefined,
       acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(row.acceptance_criteria as string | null, [], isStringArray),
+      // FR-S1-02：结构化验收项。校验不过整批退回 undefined（不拿半坏数据去判定），
+      // 调用方回落到 acceptanceCriteria 归一化。
+      acceptanceItems: safeJsonParse<GraphNode['acceptanceItems']>(row.acceptance_items as string | null, undefined, isAcceptanceItemArray),
       graphId: row.graph_id as string,
       graphType: assertGraphType(row.graph_type as string, 'graphType'),
       entityKey: (row.entity_key as string | null) ?? undefined,
@@ -114,11 +117,11 @@ export class NodeRepository {
 
     this.db.prepare(
       `INSERT INTO nodes (
-        id, type, status, title, description, acceptance_criteria,
+        id, type, status, title, description, acceptance_criteria, acceptance_items,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       data.type,
@@ -126,6 +129,7 @@ export class NodeRepository {
       data.title,
       data.description ?? null,
       data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
+      data.acceptanceItems ? JSON.stringify(data.acceptanceItems) : null,
       data.graphId,
       data.graphType,
       parentId,
@@ -168,11 +172,11 @@ export class NodeRepository {
 
     const stmt = this.db.prepare(
       `INSERT INTO nodes (
-        id, type, status, title, description, acceptance_criteria,
+        id, type, status, title, description, acceptance_criteria, acceptance_items,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, owner_role,
         position_x, position_y, content, community_summary, community_level, community_id,
         context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
 
     const insertMany = this.db.transaction((items: Omit<GraphNode, 'id' | 'createdAt' | 'updatedAt'>[]) => {
@@ -196,6 +200,7 @@ export class NodeRepository {
           data.title,
           data.description ?? null,
           data.acceptanceCriteria ? JSON.stringify(data.acceptanceCriteria) : null,
+      data.acceptanceItems ? JSON.stringify(data.acceptanceItems) : null,
           data.graphId,
           data.graphType,
           parentId,
@@ -282,6 +287,12 @@ export class NodeRepository {
     if (data.title !== undefined) { updates.push('title = ?'); args.push(data.title) }
     if (data.description !== undefined) { updates.push('description = ?'); args.push(data.description) }
     if (data.acceptanceCriteria !== undefined) { updates.push('acceptance_criteria = ?'); args.push(JSON.stringify(data.acceptanceCriteria)) }
+    // FR-S1-02：结构化条目独立列。清空用 `[]`（读回仍是合法空数组），不用 null：
+    // undefined 表示「本次不改动」，两者语义必须可区分。
+    if (data.acceptanceItems !== undefined) {
+      updates.push('acceptance_items = ?')
+      args.push(JSON.stringify(data.acceptanceItems))
+    }
     if (data.parentId !== undefined) {
       // 防环：远端 peer 可以任意指定 parentId（spec §4.4.2）。
       // 本地 graph:reparent 已收敛到 hierarchy-service.ts 的单一入口，

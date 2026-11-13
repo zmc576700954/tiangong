@@ -8,7 +8,7 @@ import type { Graph, GraphNode, GraphEdge, BugNode, GraphType, GraphFetchOptions
 import {
   assertGraphType, assertNodeType, assertNodeStatus, assertEdgeType, assertBugSeverity, assertBugStatus,
   isStringArray, isBusinessRuleArray, isNodeMetadata, isNodeContent, isEdgeContent,
-  isContextRefArray, isRecord,
+  isContextRefArray, isRecord, isAcceptanceItemArray,
 } from '@shared/type-guards'
 import { generateId } from '../shared/env'
 import { safeJsonParse } from '../shared/db-utils'
@@ -114,6 +114,8 @@ export class GraphRepository {
         title: rowStr(row, 'title'),
         description: rowOptStr(row, 'description'),
         acceptanceCriteria: safeJsonParse<GraphNode['acceptanceCriteria']>(rowOptStr(row, 'acceptance_criteria'), [], isStringArray),
+        // FR-S1-02：结构化验收项（与 node-repository.rowToNode 同口径）。
+        acceptanceItems: safeJsonParse<GraphNode['acceptanceItems']>(rowOptStr(row, 'acceptance_items'), undefined, isAcceptanceItemArray),
         graphId: rowStr(row, 'graph_id'),
         graphType: assertGraphType(rowStr(row, 'graph_type'), 'graphType'),
         // S1 稳定实体身份：map 面板/画布派生徽标都按 entity_key 关联叠加层，
@@ -278,10 +280,10 @@ export class GraphRepository {
 
     const insertNodeStmt = this.db.prepare(
       `INSERT INTO nodes (
-        id, type, status, title, description, acceptance_criteria,
+        id, type, status, title, description, acceptance_criteria, acceptance_items,
         graph_id, graph_type, parent_id, sort_index, rules, metadata, content, owner_role,
         position_x, position_y, context_refs, wiki_content, wiki_meta, entity_key, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     const parentUpdateStmt = this.db.prepare('UPDATE nodes SET parent_id = ? WHERE id = ?')
     const insertEdgeStmt = this.db.prepare(
@@ -316,6 +318,8 @@ export class GraphRepository {
           newId, nodeType, status, rowStr(row, 'title'),
           rowOptStr(row, 'description') ?? null,
           row['acceptance_criteria'],
+          // 克隆图必须一起带走结构化条目，否则 dev 图会丢掉机器可判定的验收口径。
+          row['acceptance_items'],
           targetGraphId, assertGraphType(targetGraphType),
           row['parent_id'] || null,
           row['sort_index'],
