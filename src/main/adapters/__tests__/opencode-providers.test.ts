@@ -58,6 +58,31 @@ describe('buildOpencodeConfigContent', () => {
     )
     expect(Object.keys(parsed.provider).sort()).toEqual(['deepseek', 'moonshot', 'qwen'])
   })
+
+  // G7-1：MCP server 也走同一条 OPENCODE_CONFIG_CONTENT（v3.35 实测形状）
+  it('MCP server 翻成 local + command 数组 + environment', () => {
+    const parsed = JSON.parse(
+      buildOpencodeConfigContent([], undefined, [
+        { name: 'marker', command: 'node', args: ['srv.mjs'], enabled: true, env: { K: 'V' } },
+      ])!,
+    )
+    expect(parsed.mcp.marker).toEqual({
+      type: 'local',
+      command: ['node', 'srv.mjs'],
+      environment: { K: 'V' },
+      enabled: true,
+    })
+    // 没有 key 也不该带一个空的 provider 段（opencode 对空对象同样敏感）
+    expect(parsed.provider).toBeUndefined()
+  })
+
+  it('未启用的 MCP server 不注入；全空仍然返回 undefined', () => {
+    expect(
+      buildOpencodeConfigContent([], undefined, [
+        { name: 'off', command: 'node', args: [], enabled: false },
+      ]),
+    ).toBeUndefined()
+  })
 })
 
 describe('resolveDefaultOpencodeModel', () => {

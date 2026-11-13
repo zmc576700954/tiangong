@@ -16,7 +16,7 @@
  * 用户在那里配过就能直接用。
  */
 
-import type { ApiKeyConfig } from '@shared/types'
+import type { ApiKeyConfig, McpServerConfig } from '@shared/types'
 
 export interface OpencodeProviderPreset {
   /** opencode 里的 provider id，同时也是 `--model` 的前半段 */
@@ -78,6 +78,7 @@ const INCOMPATIBLE_PROVIDERS = new Set(['anthropic', 'gemini'])
 export function buildOpencodeConfigContent(
   apiKeys: ApiKeyConfig[],
   resolvedModel?: string,
+  mcpServers?: McpServerConfig[],
 ): string | undefined {
   const providers: Record<string, unknown> = {}
   const [modelProvider, modelId] = splitModel(resolvedModel)
@@ -107,10 +108,27 @@ export function buildOpencodeConfigContent(
     }
   }
 
-  if (Object.keys(providers).length === 0) return undefined
-  return JSON.stringify({ $schema: 'https://opencode.ai/config.json', provider: providers })
-}
+  // G7-1：把设置里的 MCP server 一并注入。opencode 的 local server 形状是
+  // `{type:'local', command:[cmd, ...args], environment, enabled}`（v3.35 实测），
+  // 工具名会以 `<server>_<tool>` 出现，审批侧由 catch-all 规则兜住。
+  const mcp: Record<string, unknown> = {}
+  for (const server of mcpServers ?? []) {
+    if (!server?.enabled || !server.name || !server.command) continue
+    mcp[server.name] = {
+      type: 'local',
+      command: [server.command, ...(server.args ?? [])],
+      ...(server.env && Object.keys(server.env).length > 0 ? { environment: server.env } : {}),
+      enabled: true,
+    }
+  }
 
+  if (Object.keys(providers).length === 0 && Object.keys(mcp).length === 0) return undefined
+  return JSON.stringify({
+    $schema: 'https://opencode.ai/config.json',
+    ...(Object.keys(providers).length > 0 ? { provider: providers } : {}),
+    ...(Object.keys(mcp).length > 0 ? { mcp } : {}),
+  })
+}
 function splitModel(model?: string): [string | undefined, string | undefined] {
   if (typeof model !== 'string' || !model.includes('/')) return [undefined, undefined]
   const idx = model.indexOf('/')

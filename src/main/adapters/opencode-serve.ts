@@ -123,21 +123,26 @@ export async function pickFreePort(): Promise<number> {
 const DEFAULT_STARTUP_TIMEOUT_MS = 20_000
 
 /**
- * 权限规则集：读类放行，写类与执行类一律 ask。
+ * 权限规则集：**catch-all ask 兜底**，读类再白名单放行。
  *
- * 不含 `*` 兜底 —— 未知工具默认走 opencode 自身的策略（多数是 ask），
- * 这里只显式表达我们**确定**的意图：读文件不该弹审批，跑命令必须过宿主。
- * 实测 `permission` 的取值就是工具名（`bash` / `edit` / `read` …）。
+ * v3.32 最初不含 `*`，注释写的是「未知工具默认走 opencode 自身的策略（多数是 ask）」。
+ * v3.35 实测把这句话否掉了：配了 MCP server 后，MCP 工具（名为 `<server>_<tool>`）
+ * 不在名单里就**直接执行、零审批事件** —— 规则集看起来有审批，对 MCP 整层失效。
+ * 改为「兜底 ask + 白名单 allow」，未知工具一律进网关（fail-closed）。
+ * 实测 `permission` 的取值就是工具名（`bash` / `read` / `marker_write_marker` …）。
  */
 const READ_ONLY_PERMISSIONS = ['read', 'glob', 'grep', 'list', 'ls', 'todoread']
 const GATED_PERMISSIONS = ['bash', 'edit', 'write', 'patch', 'webfetch', 'task']
 
 export function buildServePermissionRules(): ServePermissionRule[] {
-  const rules: ServePermissionRule[] = GATED_PERMISSIONS.map((permission) => ({
-    permission,
-    pattern: '*',
-    action: 'ask' as const,
-  }))
+  // G7-1：**先放一条 catch-all ask 兜底**，再放只读白名单。
+  // 只列内置工具名时，MCP 工具（名为 `<server>_<tool>`）不在名单里，
+  // 实测（v3.35）会被直接放行 —— 规则集看起来有审批，实际对 MCP 整层失效。
+  // 顺序有意义：后面的规则覆盖前面的，所以 read/glob/… 仍然不打扰。
+  const rules: ServePermissionRule[] = [{ permission: '*', pattern: '*', action: 'ask' }]
+  for (const permission of GATED_PERMISSIONS) {
+    rules.push({ permission, pattern: '*', action: 'ask' })
+  }
   for (const permission of READ_ONLY_PERMISSIONS) {
     rules.push({ permission, pattern: '*', action: 'allow' })
   }

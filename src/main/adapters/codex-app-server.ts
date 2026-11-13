@@ -46,6 +46,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import readline from 'node:readline'
 import type { CodexStreamEvent } from '../agent/runtime/normalize/codex'
+import type { McpServerConfig } from '@shared/types'
 
 /** 服务端会反向请求的三种审批（v1 的 ExecCommand/ApplyPatch 不再使用）。 */
 export type CodexApprovalMethod =
@@ -68,6 +69,21 @@ export interface CodexApprovalRequest {
   changes?: Array<{ path: string; kind?: string }>
   /** 服务端认可的决定项；拒绝时**只能**从这里挑 */
   availableDecisions?: unknown[]
+  /**
+   * MCP 工具审批（`mcpServer/elicitation/request` 且
+   * `_meta.codex_approval_kind='mcp_tool_call'`）。
+   *
+   * 实测（0.162）：这条通道不是 `*requestApproval`，回执也不是 `decision`，
+   * 而是 `{action:'accept'|'decline'|'cancel'}`；回空对象会被判成拒绝
+   * （`"user rejected MCP tool call"`）。
+   */
+  mcp?: {
+    server: string
+    tool: string
+    description?: string
+    arguments?: Record<string, unknown>
+    message?: string
+  }
   /** 原始 params，避免为每个变体都建一套类型 */
   raw: Record<string, unknown>
 }
@@ -226,6 +242,20 @@ export function approvalToToolCall(request: CodexApprovalRequest): {
   toolName: string
   input: Record<string, unknown>
 } {
+  if (request.mcp) {
+    // 与 claude-code 的 MCP 工具名同形（`mcp__server__tool`），
+    // 下游策略对非 bash 名字走交互审批，审批卡上也能看出是哪个 server 的哪个工具。
+    return {
+      toolName: `mcp__${request.mcp.server}__${request.mcp.tool}`,
+      input: {
+        server: request.mcp.server,
+        tool: request.mcp.tool,
+        arguments: request.mcp.arguments ?? {},
+        description: request.mcp.description,
+        message: request.mcp.message,
+      },
+    }
+  }
   if (request.method === 'item/commandExecution/requestApproval') {
     return {
       toolName: 'bash',
@@ -265,6 +295,10 @@ export function buildApprovalReply(
   behavior: 'allow' | 'deny',
   request: CodexApprovalRequest,
 ): Record<string, unknown> {
+  // MCP 工具走 elicitation，回执是 MCP 的 action，不是 codex 的 decision
+  if (request.mcp) {
+    return { action: behavior === 'allow' ? 'accept' : 'decline', content: {} }
+  }
   const available = request.availableDecisions
   if (request.method === 'item/permissions/requestApproval') {
     // 权限审批的回执不是 decision，而是「给多少权限」；拒绝给空集 + 本回合生效
@@ -290,6 +324,47 @@ export function buildApprovalReply(
   return { decision: 'cancel' }
 }
 
+/** TOML 基本字符串：JSON 的转义规则是它的子集（`\"`、`\\`、`\n`、`\uXXXX` 都合法）。 */
+function tomlString(value: string): string {
+  return JSON.stringify(value)
+}
+
+/** 一组 server → `mcp_servers` 表的 TOML 值（名字一律加引号，带点/空格的也安全）。 */
+function tomlMcpTable(servers: McpServerConfig[]): string {
+  const entries = servers.map((server) => {
+    const envPairs = Object.entries(server.env ?? {})
+      .filter(([key]) => Boolean(key))
+      .map(([key, value]) => `${tomlString(key)}=${tomlString(value)}`)
+    const parts = [
+      `command=${tomlString(server.command)}`,
+      ...(server.args?.length ? [`args=[${server.args.map(tomlString).join(', ')}]`] : []),
+      ...(envPairs.length > 0 ? [`env={${envPairs.join(', ')}}`] : []),
+    ]
+    return `${tomlString(server.name)}={${parts.join(', ')}}`
+  })
+  return `{${entries.join(', ')}}`
+}
+
+/**
+ * 把设置里的 MCP server 翻成 `codex app-server -c` 覆写参数（G7-1）。
+ *
+ * 为什么不写 `~/.codex/config.toml`：那是用户自己的东西，宿主改它等于偷偷改
+ * 别人其它终端的配置；`-c` 是**进程级**覆盖，随进程消失。
+ *
+ * ⚠️ 已知边界：`codex app-server` 仍会整份加载用户的 `~/.codex/config.toml`，
+ * 用户自己配的 MCP server 在 BizGraph 会话里**也可见**（它们的工具调用同样会被
+ * elicitation 挡住，不会绕过审批）。要彻底隔离得换 `CODEX_HOME`，但那会连带
+ * 丢掉用户的登录态，暂不做。
+ */
+export function mcpServerOverrideArgs(servers: McpServerConfig[] | undefined): string[] {
+  const usable = (servers ?? []).filter((server) => server?.enabled && server.name && server.command)
+  if (usable.length === 0) return []
+  // 一次覆写整张表，而不是逐 server 拼点路径：`-c` 的 key 是**点路径不是 TOML 文本**，
+  // `mcp_servers."my.server".command` 会把引号当成名字的一部分（v3.35 实测不注册）。
+  // 整表作为 TOML 值再解析时，带引号的键才生效。
+  return ['-c', `mcp_servers=${tomlMcpTable(usable)}`]
+}
+
 /**
  * `codex app-server` 客户端。一个客户端 = 一个常驻进程 = 一个会话。
  *
@@ -308,6 +383,8 @@ export class CodexAppServerClient {
   /** 线程累计 token 快照：回合用量 = 结束 - 开始（服务端只给 total/last） */
   private usageBaseline = { input: 0, output: 0 }
   private lastUsage = { input: 0, output: 0 }
+  /** 最近一条 `item/started{mcpToolCall}`：MCP 审批请求里没有 tool 字段，要靠它反查 */
+  private lastMcpToolCall: { server: string; tool: string } | null = null
 
   private constructor(
     child: ChildProcess | null,
@@ -402,6 +479,14 @@ export class CodexAppServerClient {
   private handleNotification(frame: JsonRpcFrame): void {
     const notification: ServerNotification = { method: frame.method as string, params: frame.params ?? {} }
 
+    // MCP 审批请求里没有 tool 字段，靠 `item/started{mcpToolCall}` 反查 —— 记最近一条
+    if (notification.method === 'item/started') {
+      const item = (notification.params.item ?? {}) as Record<string, unknown>
+      if (item.type === 'mcpToolCall' && typeof item.server === 'string' && typeof item.tool === 'string') {
+        this.lastMcpToolCall = { server: item.server, tool: item.tool }
+      }
+    }
+
     // token 用量是**线程累计值**，要拿它算回合用量，所以先记账、不往下发
     if (notification.method === 'thread/tokenUsage/updated') {
       const usage = notification.params.tokenUsage as
@@ -430,6 +515,10 @@ export class CodexAppServerClient {
   private handleServerRequest(frame: JsonRpcFrame): void {
     const method = frame.method as string
     const params = frame.params ?? {}
+    if (method === 'mcpServer/elicitation/request') {
+      this.handleElicitation(frame.id as string | number, params)
+      return
+    }
     if (method.endsWith('requestApproval')) {
       const request: CodexApprovalRequest = {
         requestId: frame.id as string | number,
@@ -449,10 +538,70 @@ export class CodexAppServerClient {
       this.approvalHandler(request)
       return
     }
-    // 其余反向请求（动态工具、用户输入、elicitation）本轮不接管：
+    // 其余反向请求（动态工具、用户输入）本轮不接管：
     // 回一个空结果会让模型以为「问了但没人答」，比直接拒更危险。
     this.log(`[codex app-server] 未处理的服务器请求：${method}`)
     this.write({ jsonrpc: '2.0', id: frame.id, error: { code: -32601, message: `unsupported: ${method}` } })
+  }
+
+  /**
+   * MCP 工具的审批通道：`mcpServer/elicitation/request`。
+   *
+   * 实测形状（0.162）：
+   * ```
+   * { serverName, mode:'form', message:'Allow the marker MCP server to run tool "write_marker"?',
+   *   requestedSchema:{type:'object',properties:{}},
+   *   _meta:{ codex_approval_kind:'mcp_tool_call', tool_description, tool_params,
+   *           tool_params_display, persist:['session','always'] } }
+   * ```
+   * 回 `{action:'accept', content:{}}` 后工具**真的执行**；`{action:'decline'}`
+   * 或任何非 accept 回执（含 `{}`、`-32601`）都会把这次调用判成失败。
+   *
+   * 不是 `mcp_tool_call` 的 elicitation 是真表单（MCP server 找用户要输入），
+   * 我们不渲染表单，统一回 `cancel` —— 明确「没答」，而不是空对象冒充答案。
+   */
+  private handleElicitation(requestId: string | number, params: Record<string, unknown>): void {
+    const meta = (params._meta ?? {}) as Record<string, unknown>
+    const approvalKind = meta.codex_approval_kind
+    if (approvalKind !== 'mcp_tool_call') {
+      this.log(`[codex app-server] 非审批 elicitation（${String(approvalKind ?? '无 kind')}），回 cancel`)
+      this.write({ jsonrpc: '2.0', id: requestId, result: { action: 'cancel' } })
+      return
+    }
+    const serverName = typeof params.serverName === 'string' ? params.serverName : undefined
+    const message = typeof params.message === 'string' ? params.message : undefined
+    // 协议里**没有**独立 tool 字段：工具名只在 message 的引号里
+    // （`Allow the marker MCP server to run tool "write_marker"?`），
+    // 或可从紧挨着的 `item/started{mcpToolCall}` 反查。两路都保留，优先 message。
+    const fromMessage = message?.match(/run tool\s+"([^"]+)"/)?.[1]
+    const fromItem =
+      this.lastMcpToolCall && (!serverName || this.lastMcpToolCall.server === serverName)
+        ? this.lastMcpToolCall.tool
+        : undefined
+    const tool = fromMessage ?? fromItem
+    if (!serverName || !tool) {
+      // 缺字段等于「不知道在批什么」，不能猜一个放行
+      this.log('[codex app-server] MCP 审批缺少 server/tool，按拒绝处理')
+      this.write({ jsonrpc: '2.0', id: requestId, result: { action: 'decline' } })
+      return
+    }
+    this.approvalHandler({
+      requestId,
+      method: 'mcpServer/elicitation/request',
+      threadId: typeof params.threadId === 'string' ? params.threadId : undefined,
+      turnId: typeof params.turnId === 'string' ? params.turnId : undefined,
+      mcp: {
+        server: serverName,
+        tool,
+        description: typeof meta.tool_description === 'string' ? meta.tool_description : undefined,
+        arguments:
+          typeof meta.tool_params === 'object' && meta.tool_params !== null
+            ? (meta.tool_params as Record<string, unknown>)
+            : undefined,
+        message,
+      },
+      raw: params,
+    })
   }
 
   private write(frame: Record<string, unknown>): void {

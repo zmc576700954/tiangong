@@ -12,11 +12,16 @@
 
 import { BaseAdapter } from './base'
 import { resolveModelForAdapter } from './model-selection'
-import { CodexAppServerClient, approvalToToolCall, buildApprovalReply } from './codex-app-server'
+import {
+  CodexAppServerClient,
+  approvalToToolCall,
+  buildApprovalReply,
+  mcpServerOverrideArgs,
+} from './codex-app-server'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
 import { humanizeAgentErrorText } from '@shared/agent-error-text'
-import type { AgentSession, AgentSessionConfig, AgentCommand } from '@shared/types'
+import type { AgentSession, AgentSessionConfig, AgentCommand, McpServerConfig } from '@shared/types'
 import { AdapterError } from '../errors'
 import type { Codex, ThreadOptions } from '@openai/codex-sdk'
 import type { ChildProcess } from 'node:child_process'
@@ -179,7 +184,7 @@ export class CodexAdapter extends BaseAdapter {
         const { readSettings } = await import('../settings')
         const settings = await readSettings()
         const appServerModel = session.config.model ?? resolveModelForAdapter(settings, 'codex')
-        await this.runAppServerTurn(session, fullPrompt, appServerModel, hooks.canUseTool)
+        await this.runAppServerTurn(session, fullPrompt, appServerModel, hooks.canUseTool, settings.mcpServers)
         return
       }
 
@@ -471,6 +476,7 @@ export class CodexAdapter extends BaseAdapter {
     prompt: string,
     model: string | undefined,
     decide: NonNullable<CodexApprovalHooks['canUseTool']>,
+    mcpServers?: McpServerConfig[],
   ): Promise<void> {
     const sessionId = session.id
     const cwd = session.config.workingDirectory
@@ -483,6 +489,9 @@ export class CodexAdapter extends BaseAdapter {
       ),
     )
     const plan = resolveAppServerPlan()
+    // G7-1：把设置的 MCP server 以 `-c` 覆写注入（不改用户的 config.toml）；
+    // 它们的工具调用走 elicitation，与本会话的其它审批同一条网关。
+    const planArgs = [...plan.args, ...mcpServerOverrideArgs(mcpServers)]
 
     const pendingDecisions: Promise<void>[] = []
     let client: CodexAppServerClient | null = null
@@ -492,7 +501,7 @@ export class CodexAdapter extends BaseAdapter {
 
     try {
       client = await CodexAppServerClient.start({
-        plan: { command: plan.command, args: plan.args, cwd, env },
+        plan: { command: plan.command, args: planArgs, cwd, env },
         log: (message) => this.logger.info(message),
         onApproval: (request) => {
           const { toolName, input } = approvalToToolCall(request)

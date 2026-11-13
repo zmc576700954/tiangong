@@ -16,6 +16,7 @@ import {
   approvalToToolCall,
   buildApprovalReply,
   mapItem,
+  mcpServerOverrideArgs,
   toCodexStreamEvent,
   type CodexApprovalRequest,
   type SpawnLike,
@@ -209,6 +210,38 @@ describe('approvalToToolCall / buildApprovalReply', () => {
     expect(buildApprovalReply('allow', permissions)).toEqual({ permissions: {}, scope: 'turn' })
     expect(buildApprovalReply('deny', permissions)).toMatchObject({ scope: 'turn' })
   })
+
+  // G7-1：MCP 工具走 elicitation，回执是 MCP 的 action（v3.35 实机确认）
+  const mcpRequest: CodexApprovalRequest = {
+    requestId: 7,
+    method: 'mcpServer/elicitation/request',
+    mcp: {
+      server: 'marker',
+      tool: 'write_marker',
+      arguments: { text: 'hi' },
+      description: 'Write a marker file',
+      message: 'Allow the marker MCP server to run tool "write_marker"?',
+    },
+    raw: {},
+  }
+
+  it('MCP 工具映射成 mcp__server__tool（与 claude-code 同形，非 bash 走交互审批）', () => {
+    expect(approvalToToolCall(mcpRequest)).toEqual({
+      toolName: 'mcp__marker__write_marker',
+      input: {
+        server: 'marker',
+        tool: 'write_marker',
+        arguments: { text: 'hi' },
+        description: 'Write a marker file',
+        message: 'Allow the marker MCP server to run tool "write_marker"?',
+      },
+    })
+  })
+
+  it('MCP 审批回执是 {action}，不是 {decision} —— 回错形状会被判成拒绝', () => {
+    expect(buildApprovalReply('allow', mcpRequest)).toEqual({ action: 'accept', content: {} })
+    expect(buildApprovalReply('deny', mcpRequest)).toEqual({ action: 'decline', content: {} })
+  })
 })
 
 describe('CodexAppServerClient', () => {
@@ -334,5 +367,110 @@ describe('CodexAppServerClient', () => {
     const spy = vi.spyOn(child, 'kill')
     await client.dispose()
     expect(spy).toHaveBeenCalledWith('SIGTERM')
+  })
+
+  // G7-1：MCP 工具的审批请求是 elicitation，此前一律回 -32601 → 等于永远拒绝
+  it('elicitation(mcp_tool_call) 会转成审批请求，工具名从 message 里解析', async () => {
+    const { client, child, approvals } = await startClient()
+    child.push({
+      id: 0,
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: 'th_1',
+        turnId: 'tu_1',
+        serverName: 'marker',
+        mode: 'form',
+        message: 'Allow the marker MCP server to run tool "write_marker"?',
+        requestedSchema: { type: 'object', properties: {} },
+        _meta: {
+          codex_approval_kind: 'mcp_tool_call',
+          tool_description: 'Write a marker file',
+          tool_params: { text: 'hi' },
+        },
+      },
+    })
+    await Promise.resolve()
+
+    expect(approvals).toHaveLength(1)
+    expect(approvals[0].method).toBe('mcpServer/elicitation/request')
+    expect(approvals[0].mcp).toMatchObject({
+      server: 'marker',
+      tool: 'write_marker',
+      description: 'Write a marker file',
+      arguments: { text: 'hi' },
+    })
+    await client.dispose()
+  })
+
+  it('message 里拿不到工具名时，用最近的 item/started{mcpToolCall} 反查', async () => {
+    const { client, child, approvals } = await startClient()
+    // 先来一条工具开始通知（实机顺序：item/started 在 elicitation 之前）
+    child.push({
+      method: 'item/started',
+      params: {
+        item: { type: 'mcpToolCall', id: 'call_1', server: 'marker', tool: 'write_marker', status: 'inProgress' },
+        threadId: 'th_1',
+      },
+    })
+    child.push({
+      id: 0,
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: 'th_1',
+        serverName: 'marker',
+        mode: 'form',
+        message: 'Approve this MCP call?',
+        _meta: { codex_approval_kind: 'mcp_tool_call' },
+      },
+    })
+    await Promise.resolve()
+
+    expect(approvals[0].mcp?.tool).toBe('write_marker')
+    await client.dispose()
+  })
+
+  it('非审批 elicitation 回 cancel（明确「没答」，不用空对象冒充答案）', async () => {
+    const { client, child, approvals } = await startClient()
+    child.push({
+      id: 0,
+      method: 'mcpServer/elicitation/request',
+      params: { serverName: 'form-server', mode: 'form', message: 'Your name?', _meta: {} },
+    })
+    await Promise.resolve()
+
+    expect(approvals).toHaveLength(0)
+    const reply = child.written.at(-1) as { id: number; result?: { action?: string } }
+    expect(reply).toMatchObject({ id: 0, result: { action: 'cancel' } })
+    await client.dispose()
+  })
+})
+
+describe('mcpServerOverrideArgs：MCP 配置注入', () => {
+  it('把启用的 server 一次翻成整表 -c（名字加引号，带点也安全）', () => {
+    // 为什么不是逐 key 的点路径：`-c` 的 key 是点路径而不是 TOML 文本，
+    // `mcp_servers."my.server".command=…` 会把引号当成名字的一部分（实测不注册）。
+    const args = mcpServerOverrideArgs([
+      {
+        name: 'my.server',
+        command: '/usr/local/bin/node',
+        args: ['srv.mjs', '--flag'],
+        env: { MCP_MARKER_PATH: '/tmp/m' },
+        enabled: true,
+      },
+    ])
+    expect(args).toHaveLength(2)
+    expect(args[0]).toBe('-c')
+    expect(args[1]).toBe(
+      'mcp_servers={"my.server"={command="/usr/local/bin/node", args=["srv.mjs", "--flag"], env={"MCP_MARKER_PATH"="/tmp/m"}}}',
+    )
+  })
+
+  it('未启用 / 缺字段的 server 不注入', () => {
+    expect(
+      mcpServerOverrideArgs([
+        { name: 'off', command: 'node', args: [], enabled: false },
+        { name: '', command: 'node', args: [], enabled: true },
+      ]),
+    ).toEqual([])
   })
 })

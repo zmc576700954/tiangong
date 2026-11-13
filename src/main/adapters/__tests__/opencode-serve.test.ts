@@ -108,8 +108,16 @@ describe('buildServePermissionRules', () => {
     expect(rules.find((rule) => rule.permission === 'read')?.action).toBe('allow')
   })
 
-  it('不用 `*` 兜底：未知工具交给 opencode 自己的策略，不在这里猜', () => {
-    expect(rules.some((rule) => rule.permission === '*')).toBe(false)
+  it('catch-all ask 兜底在最前：MCP 工具名不在白名单里时也要进网关', () => {
+    // v3.35 实测反例：只列内置工具名时，`marker_write_marker` 直接执行、零审批。
+    // 顺序也有意义（后面的覆盖前面的），所以兜底必须排在最前面。
+    expect(rules[0]).toEqual({ permission: '*', pattern: '*', action: 'ask' })
+  })
+
+  it('读类白名单排在兜底之后，仍然不弹审批', () => {
+    const readIndex = rules.findIndex((rule) => rule.permission === 'read')
+    expect(readIndex).toBeGreaterThan(0)
+    expect(rules[readIndex].action).toBe('allow')
   })
 })
 

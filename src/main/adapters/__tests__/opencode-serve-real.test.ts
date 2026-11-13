@@ -14,9 +14,14 @@
  * 「被 CLI 自己拒掉」。
  */
 
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { AdapterRawEvent, AgentCommand, AgentOutput, AgentSessionConfig } from '@shared/types'
 import { OpenCodeAdapter } from '../opencode'
+import { OpencodeServeClient, buildServePermissionRules } from '../opencode-serve'
+import { buildOpencodeConfigContent } from '../opencode-providers'
 
 const REAL = process.env.BIZGRAPH_OPENCODE_REAL === '1'
 const WORKDIR = process.env.BIZGRAPH_OPENCODE_WORKDIR ?? '/tmp'
@@ -151,5 +156,100 @@ describe.skipIf(!REAL)('OpenCode serve 真机（G7-3）', () => {
       // 没有输出 = 命令确实没跑（有 output 就说明「拒了但还是执行了」）
       expect(state.output).toBeUndefined()
     }
+  }, 240_000)
+})
+
+// ───────────── G7-1：MCP 工具也要进同一条审批网关 ─────────────
+
+const MARKER_SERVER = path.resolve('tests/fixtures/mcp-marker-server.mjs')
+
+/**
+ * 配一个本地 MCP server（走真实的 `buildOpencodeConfigContent`），跑一轮
+ * 「调用 write_marker」，按 decision 回执。
+ *
+ * 为什么直接用 `OpencodeServeClient` 而不是适配器：适配器的 settings 从磁盘读，
+ * 真机测试不该改用户设置。这条用例要验的是「配置注入 + 规则集 + 审批往返」，
+ * 前两者正好是被测函数本身。
+ */
+async function runMcpTurn(decision: 'allow' | 'deny') {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'opencode-mcp-'))
+  const markerPath = path.join(cwd, 'mcp-marker.txt')
+  const configContent = buildOpencodeConfigContent([], MODEL, [
+    { name: 'marker', command: process.execPath, args: [MARKER_SERVER], env: { MCP_MARKER_PATH: markerPath }, enabled: true },
+  ])
+  expect(configContent, 'MCP 配置没有被注入').toBeTruthy()
+
+  const client = await OpencodeServeClient.start({
+    plan: {
+      command: 'opencode',
+      args: ['serve', '--port', '0', '--hostname', '127.0.0.1'],
+      cwd,
+      env: { ...process.env, NODE_OPTIONS: '', OPENCODE_CONFIG_CONTENT: configContent as string },
+    },
+    startupTimeoutMs: 20_000,
+  })
+
+  const asked: Array<{ permission: string; patterns: string[] }> = []
+  const toolEvents: Array<{ tool?: string; status?: string; output?: unknown }> = []
+  let unsubscribe: () => void = () => {}
+  try {
+    const session = await client.createSession({
+      directory: cwd,
+      model: MODEL,
+      rules: buildServePermissionRules(),
+    })
+    unsubscribe = client.subscribe((event) => {
+      if (event.type === 'permission.asked') {
+        const properties = event.properties as never as { id: string; permission: string; patterns: string[] }
+        asked.push({ permission: properties.permission, patterns: properties.patterns })
+        void client.replyPermission(properties.id, decision === 'allow' ? 'once' : 'reject', '不在授权范围')
+      }
+      if (event.type === 'message.part.updated') {
+        const part = (event.properties as never as { part?: { type?: string; tool?: string; state?: { status?: string; output?: unknown } } }).part
+        if (part?.type === 'tool') {
+          toolEvents.push({ tool: part.tool, status: part.state?.status, output: part.state?.output })
+        }
+      }
+    })
+    await client.prompt(session.id, 'Call the write_marker tool with text "oc-mcp-ok" and reply with its result.', MODEL)
+
+    // 等回合收尾：completed 与 error 都是终结态（拒绝时只会出现后者，
+    // 只认 completed 会让拒绝用例干等满 120s）
+    const deadline = Date.now() + 120_000
+    while (Date.now() < deadline) {
+      const done = toolEvents.some(
+        (event) => event.tool === 'marker_write_marker' && (event.status === 'completed' || event.status === 'error'),
+      )
+      if (done) break
+      await new Promise((resolve) => setTimeout(resolve, 300))
+    }
+    return { cwd, markerPath, asked, toolEvents }
+  } finally {
+    unsubscribe()
+    await client.dispose()
+    setTimeout(() => rmSync(cwd, { recursive: true, force: true }), 0)
+  }
+}
+
+describe.skipIf(!REAL)('OpenCode serve 真机：MCP 工具审批（G7-1）', () => {
+  it('放行：MCP 工具进 permission.asked，once 后真的执行、marker 落盘', async () => {
+    const { markerPath, asked, toolEvents } = await runMcpTurn('allow')
+
+    // 兜底规则真的把 MCP 工具拦进来了（工具名是 `<server>_<tool>`）
+    expect(asked.map((entry) => entry.permission)).toContain('marker_write_marker')
+    const completed = toolEvents.find((event) => event.tool === 'marker_write_marker' && event.status === 'completed')
+    expect(completed, '放行后没有 completed 的 MCP 工具事件').toBeTruthy()
+    expect(String(completed?.output)).toContain('wrote')
+    expect(existsSync(markerPath)).toBe(true)
+    expect(readFileSync(markerPath, 'utf-8')).toContain('oc-mcp-ok')
+  }, 240_000)
+
+  it('拒绝：MCP 工具不执行，marker 不存在', async () => {
+    const { markerPath, asked, toolEvents } = await runMcpTurn('deny')
+
+    expect(asked.map((entry) => entry.permission)).toContain('marker_write_marker')
+    const completed = toolEvents.find((event) => event.tool === 'marker_write_marker' && event.status === 'completed')
+    expect(completed).toBeUndefined()
+    expect(existsSync(markerPath)).toBe(false)
   }, 240_000)
 })

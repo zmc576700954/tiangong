@@ -21,7 +21,12 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CodexAppServerClient, buildApprovalReply, type CodexApprovalRequest } from '../codex-app-server'
+import {
+  CodexAppServerClient,
+  buildApprovalReply,
+  mcpServerOverrideArgs,
+  type CodexApprovalRequest,
+} from '../codex-app-server'
 
 const REAL = process.env.BIZGRAPH_CODEX_REAL === '1'
 const BIN = process.env.BIZGRAPH_CODEX_APP_SERVER_BIN
@@ -113,5 +118,94 @@ describeReal('codex app-server 真机：审批往返', () => {
     expect(failed?.error?.message).toBeTruthy()
     // 无论怎么收尾，命令都不能真的跑过
     expect(existsSync(path.join(cwd, 'marker.txt'))).toBe(false)
+  }, 300_000)
+})
+
+// ───────────── G7-1：MCP 工具也走同一条审批网关（elicitation） ─────────────
+
+const MARKER_SERVER = path.resolve('tests/fixtures/mcp-marker-server.mjs')
+
+/** 配一个本地 MCP server，跑一轮「调用 write_marker」，按 decision 回执。 */
+async function runMcpTurn(decision: 'accept' | 'deny') {
+  const cwd = mkdtempSync(path.join(tmpdir(), 'codex-mcp-'))
+  dirs.push(cwd)
+  const markerPath = path.join(cwd, 'mcp-marker.txt')
+  const approvals: CodexApprovalRequest[] = []
+  const events: Array<{ type: string }> = []
+
+  const plan = makePlan(cwd)
+  const client = await CodexAppServerClient.start({
+    plan: {
+      ...plan,
+      args: [
+        ...plan.args,
+        ...mcpServerOverrideArgs([
+          {
+            name: 'marker',
+            command: process.execPath,
+            args: [MARKER_SERVER],
+            env: { MCP_MARKER_PATH: markerPath },
+            enabled: true,
+          },
+        ]),
+      ],
+    },
+    spawnImpl: spawn as never,
+    onApproval: (request) => {
+      approvals.push(request)
+      if (request.mcp) {
+        client.replyApproval(request.requestId, buildApprovalReply(decision === 'deny' ? 'deny' : 'allow', request))
+      }
+    },
+  })
+
+  try {
+    client.onEvent((event) => events.push(event as { type: string }))
+    // MCP 工具不受 shell 沙箱约束，read-only 反而能证明「拦住它的是审批而不是沙箱」
+    const thread = await client.startThread({ cwd, sandbox: 'read-only', approvalPolicy: 'on-request' })
+    await client.startTurn({
+      threadId: thread.threadId,
+      text: 'Call the MCP tool named marker/write_marker with text "codex-mcp-ok". Then report the tool result.',
+    })
+
+    const completed = await new Promise<{ type: string }>((resolve) => {
+      const timer = setTimeout(() => resolve({ type: 'timeout' }), 240_000)
+      const check = () => {
+        const terminal = events.find((e) => e.type === 'turn.completed' || e.type === 'turn.failed')
+        if (terminal) {
+          clearTimeout(timer)
+          resolve(terminal)
+        } else {
+          setTimeout(check, 200)
+        }
+      }
+      check()
+    })
+    return { markerPath, approvals, completed }
+  } finally {
+    await client.dispose()
+  }
+}
+
+describeReal('codex app-server 真机：MCP 工具审批（G7-1）', () => {
+  it('放行：elicitation 回 accept 后 MCP 工具真的执行，marker 落盘', async () => {
+    const { markerPath, approvals, completed } = await runMcpTurn('accept')
+
+    const mcpApprovals = approvals.filter((request) => request.mcp?.server === 'marker')
+    expect(mcpApprovals.length).toBeGreaterThanOrEqual(1)
+    expect(mcpApprovals[0].mcp?.tool).toBe('write_marker')
+    expect(completed.type).toBe('turn.completed')
+
+    expect(existsSync(markerPath)).toBe(true)
+    expect(readFileSync(markerPath, 'utf-8')).toContain('codex-mcp-ok')
+  }, 300_000)
+
+  it('拒绝：elicitation 回 decline 后工具不执行，marker 不存在，回合仍能正常收尾', async () => {
+    const { markerPath, approvals, completed } = await runMcpTurn('deny')
+
+    expect(approvals.filter((request) => request.mcp?.server === 'marker').length).toBeGreaterThanOrEqual(1)
+    // 与命令审批的 cancel 不同，MCP 的 decline 只拒这次调用，不中断整轮
+    expect(completed.type).toBe('turn.completed')
+    expect(existsSync(markerPath)).toBe(false)
   }, 300_000)
 })

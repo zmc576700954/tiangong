@@ -181,10 +181,11 @@ export class OpenCodeAdapter extends BaseAdapter {
         defaultModels: settings.defaultModels,
         defaultModel: settings.defaultModel,
         apiKeys: settings.apiKeys ?? [],
+        mcpServers: settings.mcpServers ?? [],
       }
     } catch (error) {
       this.logger.warn(`readSettings unavailable, falling back to opencode defaults: ${(error as Error).message}`)
-      return { apiKeys: [] }
+      return { apiKeys: [], mcpServers: [] }
     }
   }
 
@@ -214,7 +215,7 @@ export class OpenCodeAdapter extends BaseAdapter {
     model: string | undefined,
   ): NodeJS.ProcessEnv {
     const env = this.buildSessionEnv(session.id)
-    const content = buildOpencodeConfigContent(settings.apiKeys, model)
+    const content = buildOpencodeConfigContent(settings.apiKeys, model, settings.mcpServers)
     if (!content) return env
     return { ...env, OPENCODE_CONFIG_CONTENT: content }
   }
@@ -363,7 +364,7 @@ export class OpenCodeAdapter extends BaseAdapter {
 /**
  * 适配器真正用到的那几个设置字段。读不到设置时也能构造一个空壳。
  */
-type OpencodeSettingsView = Pick<BizGraphSettings, 'defaultModels' | 'defaultModel'> & {
+type OpencodeSettingsView = Pick<BizGraphSettings, 'defaultModels' | 'defaultModel' | 'mcpServers'> & {
   apiKeys: ApiKeyConfig[]
 }
 
