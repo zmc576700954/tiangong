@@ -49,6 +49,53 @@ vi.mock('../settings', () => ({
   readSettings: (...args: unknown[]) => mockReadSettings(...args),
 }))
 
+/**
+ * G7-2 路由：装了审批钩子就不该碰 SDK。
+ *
+ * 真实 app-server 要 spawn 一个 CLI（CI 上没有），所以这里只替换
+ * `CodexAppServerClient.start`，协议胶水由 `codex-app-server.test.ts` 覆盖。
+ * 假客户端把「回合已完成」直接推给订阅者，方便断言路径与收尾。
+ */
+const mockAppServerStart = vi.fn()
+const mockAppServerReply = vi.fn()
+const mockAppServerDispose = vi.fn(async () => {})
+/** 每次 start 的订阅者，用来在 startTurn 后推事件 */
+let appServerListeners: Array<(event: unknown) => void> = []
+
+function makeFakeAppServerClient() {
+  return {
+    // pid 留空：跳过进程登记（那是真实进程才有的语义）
+    pid: undefined,
+    startThread: vi.fn(async () => ({ threadId: 'th-app-server' })),
+    resumeThread: vi.fn(async () => ({ threadId: 'th-app-server-resumed' })),
+    startTurn: vi.fn(async () => {
+      for (const listener of appServerListeners) {
+        listener({ type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'app-server 跑完了' } })
+        listener({ type: 'turn.completed', usage: { input_tokens: 12, output_tokens: 3 } })
+      }
+      return { turnId: 'tu-1' }
+    }),
+    onEvent: (listener: (event: unknown) => void) => {
+      appServerListeners.push(listener)
+      return () => {
+        appServerListeners = appServerListeners.filter((item) => item !== listener)
+      }
+    },
+    replyApproval: mockAppServerReply,
+    dispose: mockAppServerDispose,
+  }
+}
+
+vi.mock('../adapters/codex-app-server', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>()
+  return {
+    ...actual,
+    CodexAppServerClient: {
+      start: (...args: unknown[]) => mockAppServerStart(...args),
+    },
+  }
+})
+
 import { CodexAdapter } from '../adapters/codex'
 
 function makeConfig(overrides?: Partial<AgentSessionConfig>): AgentSessionConfig {
@@ -324,5 +371,91 @@ describe('CodexAdapter (SDK)', () => {
     const session = await adapter.startSession(config)
     await adapter.sendCommand(session.id, command)
     await adapter.terminateSession(session.id)
+  })
+
+  it('装了审批钩子就改走 app-server，不再碰 SDK', async () => {
+    appServerListeners = []
+    mockAppServerStart.mockResolvedValue(makeFakeAppServerClient())
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: vi.fn(async () => ({ behavior: 'allow' as const })),
+    })
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockAppServerStart).toHaveBeenCalledTimes(1)
+    expect(mockStartThread).not.toHaveBeenCalled()
+    expect(mockRunStreamed).not.toHaveBeenCalled()
+
+    // 线程参数：on-request 是「问了再放行」的开关
+    const client = (await mockAppServerStart.mock.results[0].value) as ReturnType<typeof makeFakeAppServerClient>
+    expect(client.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: '/project', approvalPolicy: 'on-request', sandbox: 'workspace-write' }),
+    )
+    // 事件照 SDK 方言发出去，归一化器零改动
+    expect(outputs.some((o) => o.type === 'stdout' && o.data.includes('app-server 跑完了'))).toBe(true)
+    expect(outputs.some((o) => o.type === 'complete')).toBe(true)
+    expect(mockAppServerDispose).toHaveBeenCalled()
+  })
+
+  it('有可信的 resumeSessionId 时用 thread/resume 续接，而不是新开线程', async () => {
+    appServerListeners = []
+    mockAppServerStart.mockResolvedValue(makeFakeAppServerClient())
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    // 形如 UUIDv7 的原生 id 才允许续接
+    session.config.resumeSessionId = '01a1d30b-28a7-79c0-bd83-1007b218befb'
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: vi.fn(async () => ({ behavior: 'allow' as const })),
+    })
+
+    await adapter.sendCommand(session.id, command)
+
+    const client = (await mockAppServerStart.mock.results[0].value) as ReturnType<typeof makeFakeAppServerClient>
+    expect(client.resumeThread).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '01a1d30b-28a7-79c0-bd83-1007b218befb' }),
+    )
+    expect(client.startThread).not.toHaveBeenCalled()
+  })
+
+  it('卸掉钩子后回到 SDK 的 exec 路径', async () => {
+    appServerListeners = []
+    mockAppServerStart.mockResolvedValue(makeFakeAppServerClient())
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: vi.fn(async () => ({ behavior: 'allow' as const })),
+    })
+    adapter.setTurnApprovalHooks(session.id, null)
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockAppServerStart).not.toHaveBeenCalled()
+    expect(mockRunStreamed).toHaveBeenCalledTimes(1)
+  })
+
+  it('app-server 起不来时直接失败，绝不退回没人看的 exec 路径', async () => {
+    appServerListeners = []
+    mockAppServerStart.mockRejectedValue(
+      new Error('failed to load configuration: unknown variant `max`'),
+    )
+
+    const config = makeConfig()
+    const session = await adapter.startSession(config)
+    adapter.setTurnApprovalHooks(session.id, {
+      canUseTool: vi.fn(async () => ({ behavior: 'allow' as const })),
+    })
+
+    await adapter.sendCommand(session.id, command)
+
+    expect(mockRunStreamed).not.toHaveBeenCalled()
+    expect(mockStartThread).not.toHaveBeenCalled()
+    const errorOutputs = outputs.filter((o) => o.type === 'error')
+    expect(errorOutputs.length).toBe(1)
+    expect(errorOutputs[0].data).toContain('unknown variant `max`')
   })
 })

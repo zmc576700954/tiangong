@@ -34,7 +34,21 @@ export default defineConfig({
     // **dev server 跟着退出**，后续用例全部 `ERR_CONNECTION_REFUSED`。
     // CI 上崩是因为没下 Electron 二进制，本机崩是因为继承了
     // `ELECTRON_RUN_AS_NODE=1`；两者都只影响 e2e，不影响 `npm run dev` 本身。
-    env: { BIZGRAPH_BROWSER_E2E: '1' },
+    env: {
+      BIZGRAPH_BROWSER_E2E: '1',
+      // ⚠️ 从 WorkBuddy/CodeBuddy 宿主里跑 e2e 时，宿主会往**所有子进程**注入
+      // 沙箱 shim：`NODE_OPTIONS=--require .../node-language-shim.cjs`，
+      // 文件操作经 `TOYBOX_SANDBOX_SOCK`（/var/folders/.../cbb-*/broker.sock）
+      // 代理。broker 会话一过期间歇 `ECONNREFUSED` → vite Internal server error →
+      // 页面只渲染错误浮层 → 整批用例假红（`page.click('text=E2E Test Graph')`
+      // 等到超时，或在 PlaywrightTest 里显示为 0ms 的「没跑起来」）。
+      // dev server 服务的是用户自己的项目，等价于在用户终端里 `npm run dev`，
+      // 不需要也不该依赖宿主沙箱 —— 清掉注入（env 是合并语义，空串即覆盖）。
+      // BASH_ENV 同理：npm script 经 /bin/sh（bash POSIX 模式）拉起 vite，
+      // 不清的话 shim 会经它再次注入孙进程。
+      NODE_OPTIONS: '',
+      BASH_ENV: '',
+    },
   },
   projects: [
     {

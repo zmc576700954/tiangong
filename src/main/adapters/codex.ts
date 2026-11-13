@@ -12,6 +12,7 @@
 
 import { BaseAdapter } from './base'
 import { resolveModelForAdapter } from './model-selection'
+import { CodexAppServerClient, approvalToToolCall, buildApprovalReply } from './codex-app-server'
 import { generateId } from '../shared/env'
 import { isTrustedNativeSessionId } from '@shared/native-session-id'
 import { humanizeAgentErrorText } from '@shared/agent-error-text'
@@ -46,6 +47,27 @@ export function isCodexStreamingDefaultEnabled(raw = process.env[CODEX_STREAMING
   if (raw === undefined || raw.trim() === '') return true
   return !STREAMING_FALSY.has(raw.trim().toLowerCase())
 }
+
+/**
+ * 执行器装进来的审批钩子，与 claude-code / opencode 的 `setTurnApprovalHooks`
+ * 同形 —— `adapter-driver` 只认方法名，不认适配器类型。
+ *
+ * 它同时是 G7-2 的**开关**：装上 → 走 `app-server`（工具调用先问宿主）；
+ * 没有 → 回到 SDK 的 `exec` 路径（工具由 CLI 自己按策略拒/放，宿主拦不住）。
+ */
+export interface CodexApprovalHooks {
+  canUseTool?: (
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { signal: AbortSignal; toolUseID: string },
+  ) => Promise<{ behavior: 'allow' } | { behavior: 'deny'; message?: string }>
+}
+
+/** 显式指定 app-server 用的 CLI；不设时用 SDK 随包的那份（与 exec 同一份）。 */
+export const CODEX_APP_SERVER_BIN_ENV = 'BIZGRAPH_CODEX_APP_SERVER_BIN'
+
+/** 一轮 app-server 回合的上限：服务端不会自己超时，宿主必须兜住。 */
+const CODEX_APP_SERVER_TURN_TIMEOUT_MS = 30 * 60_000
 
 /** runStreamed 事件的最小结构（SDK 的联合类型在运行时才有完整形状）。 */
 interface CodexStreamedEvent {
@@ -87,6 +109,20 @@ export class CodexAdapter extends BaseAdapter {
   private codexInstances = new Map<string, InstanceType<CodexConstructor>>()
   /** D-C：可取消的流式轮次（terminateSession 会 abort） */
   private abortControllers = new Map<string, AbortController>()
+  /** G7-2：宿主安装的审批钩子（按会话）。存在即走 `app-server`。 */
+  private readonly approvalHooks = new Map<string, CodexApprovalHooks>()
+
+  /**
+   * 装/卸本回合的审批钩子。执行器按会话调用，回合结束传 `null`。
+   *
+   * 存在性本身就是开关：装上 → `app-server`（服务端反向请求审批）；
+   * 卸掉 → 回 SDK 的 `exec` 路径。**不做静默降级**：装了钩子却起不来
+   * app-server 时回合直接失败，绝不悄悄退回「没人看」的那条路。
+   */
+  setTurnApprovalHooks(sessionId: string, hooks: CodexApprovalHooks | null): void {
+    if (hooks?.canUseTool) this.approvalHooks.set(sessionId, hooks)
+    else this.approvalHooks.delete(sessionId)
+  }
 
   private async loadSdk(): Promise<CodexConstructor | null> {
     if (this.sdkLoadAttempted) return this.CodexClass
@@ -135,6 +171,18 @@ export class CodexAdapter extends BaseAdapter {
     const fullPrompt = this.buildFullPrompt(session, command)
 
     try {
+      // G7-2：有审批钩子就走 app-server —— `exec` 路径没有审批通道
+      // （v3.29 实机：唯一开关是 --dangerously-bypass-approvals-and-sandbox，
+      // 只能关不能开），所以「问了再放行」只能在这条路径上成立。
+      const hooks = this.approvalHooks.get(session.id)
+      if (hooks?.canUseTool) {
+        const { readSettings } = await import('../settings')
+        const settings = await readSettings()
+        const appServerModel = session.config.model ?? resolveModelForAdapter(settings, 'codex')
+        await this.runAppServerTurn(session, fullPrompt, appServerModel, hooks.canUseTool)
+        return
+      }
+
       // D5：受控 spawn 模式每轮重建 Codex 实例/线程，保证 marker 与 shim 路径都是本轮的；
       // 旧 AgentOutput 路径仍沿用会话级缓存，行为不变。
       const supervised = this.isProcessSupervised(sessionId) && process.platform !== 'win32'
@@ -402,6 +450,193 @@ export class CodexAdapter extends BaseAdapter {
     // codex 缓存 thread/instance 以支持多轮续接，单命令成功不应销毁会话（参考 claude-code）。
   }
 
+  /**
+   * G7-2：`app-server` 回合 —— 唯一能「问了再放行」的 Codex 路径。
+   *
+   * 与 `exec` 的差别不是实现细节，而是能力：`exec` 把审批策略写死成 never，
+   * 宿主既看不到「要跑什么」，也无处回答；`app-server` 会**反向请求**客户端
+   * （`item/commandExecution/requestApproval`），回 `accept` 后命令真的执行
+   * （v3.33 实机：`echo` 的 marker 进了 `aggregatedOutput`，exit 0）。
+   *
+   * 三个刻意的选择：
+   * - **事件照 SDK 方言发**：客户端已把 v2 通知翻成 `item.completed` 那一套，
+   *   所以 `emitRawEvent` 出去的东西和 `runStreamed` 完全同形，归一化器零改动。
+   * - **审批失败一律按拒绝**：钩子抛错、回合被取消、没有决策人，都不能读成
+   *   「用户同意」。
+   * - **不重试、不降级**：app-server 起不来就直接让回合失败。退回 `exec`
+   *   等于把「有审批」悄悄换成「没审批」。
+   */
+  private async runAppServerTurn(
+    session: AgentSession,
+    prompt: string,
+    model: string | undefined,
+    decide: NonNullable<CodexApprovalHooks['canUseTool']>,
+  ): Promise<void> {
+    const sessionId = session.id
+    const cwd = session.config.workingDirectory
+    const controller = new AbortController()
+    this.abortControllers.set(sessionId, controller)
+
+    const env = Object.fromEntries(
+      Object.entries(this.buildSessionEnv(sessionId)).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    )
+    const plan = resolveAppServerPlan()
+
+    const pendingDecisions: Promise<void>[] = []
+    let client: CodexAppServerClient | null = null
+    let unsubscribe: () => void = () => {}
+    /** 本轮是否被宿主明确拒过 —— 拒绝会让服务端把回合判成 failed，得区分于真崩 */
+    let deniedByHost = false
+
+    try {
+      client = await CodexAppServerClient.start({
+        plan: { command: plan.command, args: plan.args, cwd, env },
+        log: (message) => this.logger.info(message),
+        onApproval: (request) => {
+          const { toolName, input } = approvalToToolCall(request)
+          this.emitOutputForSession(sessionId, {
+            type: 'stderr',
+            data: `[codex] 请求审批：${request.command ?? toolName}${request.reason ? ` —— ${request.reason}` : ''}`,
+            timestamp: Date.now(),
+          })
+          // 决策不能阻塞事件读取：钩子内部要等用户点按钮，可能几十秒
+          pendingDecisions.push(
+            (async () => {
+              let reply: Record<string, unknown>
+              try {
+                const outcome = await decide(toolName, input, {
+                  signal: controller.signal,
+                  toolUseID: request.itemId ?? String(request.requestId),
+                })
+                reply = buildApprovalReply(outcome.behavior === 'allow' ? 'allow' : 'deny', request)
+                if (outcome.behavior === 'deny') {
+                  deniedByHost = true
+                  if (outcome.message) this.logger.info(`[codex] 用户拒绝：${outcome.message}`)
+                }
+              } catch (error) {
+                // 审批链路故障不能读成「同意」
+                this.logger.warn(`approval hook failed: ${(error as Error).message}`)
+                reply = buildApprovalReply('deny', request)
+              }
+              client?.replyApproval(request.requestId, reply)
+            })(),
+          )
+        },
+      })
+      if (client.pid) {
+        this.processes.set(sessionId, client.childRef)
+        this.emitProcessSpawn(sessionId, { pid: client.pid })
+      }
+
+      const resumeId = session.config.resumeSessionId
+      const threadOptions = {
+        cwd,
+        model,
+        sandbox: session.config.readOnly ? ('read-only' as const) : ('workspace-write' as const),
+        approvalPolicy: 'on-request' as const,
+      }
+      // 原生续接：不可信的 id（可能被塞了奇怪字符）一律当新线程，不拿去拼请求
+      const thread =
+        resumeId && isTrustedNativeSessionId(resumeId)
+          ? await client.resumeThread({ threadId: resumeId, ...threadOptions })
+          : await client.startThread(threadOptions)
+      // thread id 就是 Codex 的会话 id
+      session.config.resumeSessionId = thread.threadId
+
+      let settle: (outcome: { ok: boolean; message?: string }) => void = () => {}
+      const finished = new Promise<{ ok: boolean; message?: string }>((resolve) => {
+        settle = resolve
+      })
+
+      unsubscribe = client.onEvent((event) => {
+        // 与 runStreamed 同一条出口：归一化器与执行器不需要第二套实现
+        this.emitRawEvent(sessionId, 'codex', event)
+
+        if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item.text) {
+          this.emitOutputForSession(sessionId, {
+            type: 'stdout',
+            data: event.item.text,
+            timestamp: Date.now(),
+          })
+          return
+        }
+        if (event.type === 'turn.completed') {
+          if (event.usage) {
+            const inputTokens = event.usage.input_tokens ?? 0
+            if (inputTokens > 0) {
+              this.reportUsage(sessionId, inputTokens, 128_000, {
+                outputTokens: event.usage.output_tokens ?? 0,
+                source: 'provider',
+              })
+            }
+          }
+          settle({ ok: true })
+          return
+        }
+        if (event.type === 'turn.failed') {
+          settle({ ok: false, message: errorMessageOf(event) })
+        }
+      })
+
+      const timer = setTimeout(
+        () => settle({ ok: false, message: `codex app-server 回合超过 ${CODEX_APP_SERVER_TURN_TIMEOUT_MS / 60_000} 分钟仍未结束` }),
+        CODEX_APP_SERVER_TURN_TIMEOUT_MS,
+      )
+      const onAbort = () => settle({ ok: false, message: 'Codex turn aborted' })
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+
+      try {
+        await client.startTurn({ threadId: thread.threadId, text: prompt })
+        const outcome = await finished
+        if (!outcome.ok) {
+          // 拒绝在本协议里只能回 cancel，服务端因此把回合判成 failed。
+          // 那不是崩溃，也不该记成 AGENT_CRASH —— 界面上要能看出「是被拒了」。
+          const errorCode = controller.signal.aborted
+            ? 'AGENT_ABORTED'
+            : deniedByHost
+              ? 'AGENT_DENIED'
+              : 'AGENT_CRASH'
+          this.emitOutputForSession(sessionId, {
+            type: 'error',
+            data: humanizeAgentErrorText(`Codex error: ${outcome.message ?? 'turn failed'}`),
+            timestamp: Date.now(),
+            errorCode,
+          })
+          // 被拒时模型没有出错，只是这一轮没继续；仍报 error 以触发会话恢复/清理
+          if (!controller.signal.aborted) this.emit('sessionEnded', session.id, 'error', null)
+          return
+        }
+        this.emitOutputForSession(sessionId, {
+          type: 'complete',
+          data: 'Codex session completed',
+          timestamp: Date.now(),
+        })
+      } finally {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', onAbort)
+        unsubscribe()
+        // 收尾还没回完的审批：宁可多等一会儿，也不要留下「问了但没答」的悬挂请求
+        await Promise.allSettled(pendingDecisions)
+      }
+    } catch (error) {
+      // fail-closed：不换路径重试，把原因原样抬给用户
+      const message = error instanceof Error ? error.message : String(error)
+      this.emitOutputForSession(sessionId, {
+        type: 'error',
+        data: humanizeAgentErrorText(`Codex app-server 启动失败：${message}`),
+        timestamp: Date.now(),
+        errorCode: 'AGENT_CRASH',
+      })
+      this.emit('sessionEnded', session.id, 'error', null)
+    } finally {
+      this.abortControllers.delete(sessionId)
+      this.processes.delete(sessionId)
+      await client?.dispose()
+    }
+  }
+
   protected doCloseQuery(sessionId: string): void {
     this.abortControllers.get(sessionId)?.abort()
     this.abortControllers.delete(sessionId)
@@ -414,4 +649,37 @@ export class CodexAdapter extends BaseAdapter {
     this.doCloseQuery(_session.id)
     await super.doTerminate(_session, _proc)
   }
+}
+
+/**
+ * app-server 用哪个 CLI。
+ *
+ * 默认用 SDK 随包的 `@openai/codex/bin/codex.js`（与 `exec` 是同一个二进制，
+ * 行为与版本一致）；`BIZGRAPH_CODEX_APP_SERVER_BIN` 可覆盖 —— 实机发现
+ * 0.135 遇到 `model_reasoning_effort = "max"` 会整份配置加载失败（用户全局
+ * config 是给 0.162 写的），此时需要一个更新的 CLI 才能起来。
+ *
+ * 不猜 PATH：Electron 打包后 PATH 里通常没有 codex，猜了只会变成
+ * 「有时能跑、有时 ENOENT」。
+ */
+function resolveAppServerPlan(): { command: string; args: string[] } {
+  const override = process.env[CODEX_APP_SERVER_BIN_ENV]?.trim()
+  if (override) return { command: override, args: ['app-server'] }
+
+  const realCodex = resolveRealCodexPath()
+  if (!realCodex) {
+    throw new AdapterError(
+      `找不到 Codex CLI（@openai/codex/bin/codex.js）。审批路径需要它，可用 ${CODEX_APP_SERVER_BIN_ENV} 指定`,
+      'codex',
+    )
+  }
+  // codex.js 是 node 脚本，直接 spawn 在 Windows 上不可靠，统一用当前 node 起
+  return { command: process.execPath, args: [realCodex, 'app-server'] }
+}
+
+/** `turn.failed` 事件里的人类可读原因。 */
+function errorMessageOf(event: { error?: { message?: string } | string; message?: string }): string {
+  if (typeof event.error === 'string') return event.error
+  if (event.error?.message) return event.error.message
+  return event.message ?? 'codex turn failed'
 }
