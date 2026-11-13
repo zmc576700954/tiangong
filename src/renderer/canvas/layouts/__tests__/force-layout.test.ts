@@ -245,7 +245,7 @@ describe('createForceSimulation (interactive mode)', () => {
 })
 
 describe('performance', () => {
-  it('500 nodes converge in < 1s', () => {
+  it('500 nodes converge in < 3s（量级门，不是微基准）', () => {
     const N = 500
     const nodes: Node[] = Array.from({ length: N }, (_, i) =>
       makeNode(`n${i}`, 'feature', `Feature ${i}`, { x: 0, y: 0 }),
@@ -265,7 +265,12 @@ describe('performance', () => {
     const elapsed = performance.now() - t0
 
     expect(result).toHaveLength(N)
-    expect(elapsed).toBeLessThan(1000)
+    // 阈值为什么是 3000 而不是 1000（2026-11-13 实测）：
+    // ubuntu-latest 上本用例实测 1003.57ms —— 原 1000ms 阈值**零余量**，等于按
+    // runner 当时的负载抛硬币（超阈 0.36% 就红）。它真正该守的是「布局退化成
+    // O(n²) 或死循环」这类量级问题，而不是共享 runner 上的微基准。
+    // 本地（M 系列 macOS）约 0.6–0.7s，3s 仍能捕获 4 倍以上的真实劣化。
+    expect(elapsed).toBeLessThan(3000)
   })
 
   it('200 ticks yields stable positions (second run only refines, no large jumps)', () => {
