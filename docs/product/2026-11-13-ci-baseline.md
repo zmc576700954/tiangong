@@ -130,3 +130,21 @@ env -u NODE_OPTIONS -u BASH_ENV npx vitest run --maxWorkers=4 \
 ### 7.5 本地复测（含 FR-S1-02 改动后）
 
 396 文件（389 通过 / 7 skip）、4709 例（4646 通过 / 63 skip / **0 失败**）、26.24s、退出码 0。相比原基线 +3 文件 / +35 例，全部来自本次新增测试。
+
+### 7.6 远端首轮全绿（run `43404874196`，HEAD `3da760c`）
+
+| job | 结果 |
+|---|---|
+| `lint` / `platform-paths` / `e2e (ubuntu-latest)` | success |
+| **`unit`** | **success —— 390 通过 / 6 整文件 skip（共 396）/ 0 失败 / 78.45s** |
+
+这是 `unit` 在 Linux runner 上**第一次真正全绿**。达成路径共两处改动：
+
+1. `bash-readonly.test.ts`：`show` / `whatchanged` 改为逐命令探测 gpg 执行面（ubuntu-latest 上 `whatchanged --format=%G?` 不触发 gpg）。
+2. `force-layout.test.ts`：「500 节点 < 1s」→「< 3s」。**原阈值零余量**（实测 1003.57ms，超阈 0.36%），是负载红而非回归；3s 仍能捕获 4 倍以上真实劣化。
+
+**平台 note**：Linux 跳过 6 个文件、macOS 跳过 7 个（有 1 个文件只在 macOS skip）。因此**不要用「skip 数」做跨平台比对**，否则会把平台门控误判成回归。
+
+### 7.7 FR-06 的当前位置
+
+前置条件已满足（远端 unit 全绿 + 链接在手），**但 `continue-on-error: true` 尚未删除**——这是治理性变更（删掉后 main 变红会真正阻断），需明确授权后执行。删除时应一并附上 run `43404874196` 作为证据。

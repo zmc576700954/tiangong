@@ -45,7 +45,9 @@ jobs:
   # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
   # 现状（2026-11-13，本地 Node 22 / macOS，--maxWorkers=4 实测，含 FR-S1-02 新增测试）：
   #   396 文件（389 通过 / 7 整文件 skip）；4709 例（4646 通过 / 63 skip / 0 失败）。
-  #   Linux runner 同日实测：393 文件（386 通过 / 6 skip / 1 失败），见下。
+  #   Linux runner 同日实测（run 43404874196，全绿）：
+  #   396 文件（390 通过 / 6 整文件 skip）/ 0 失败 / 78.45s。
+  #   ⚠️ 两个平台的 skip 集合不同（有 1 个文件只在 macOS skip），别按「跳过数」比对。
   # #90 在 Linux 上的实测结论（容器内复现，非猜测）：
   #   - 15 个文件整文件收集失败，报 `Cannot find package 'sharp'`：锁文件把 sharp 记成
   #     `node_modules/sharp → node_modules/@xenova/transformers/stubs/sharp`，而 npm ci
