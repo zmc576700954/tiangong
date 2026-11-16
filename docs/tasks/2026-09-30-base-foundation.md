@@ -140,3 +140,28 @@
 - worktree 的 `node_modules` 已符号链接到主仓库（`ln -s /d/tiangong/node_modules ./node_modules`）
 - 主仓库已装 zod，无需再装（基座版 zod 仅 Recipe 模块使用）
 - recipes 资源通过 `package.json.build.files` 加 `src/main/resources/**` 保留目录结构
+
+
+---
+
+## 变更同步（2026-11-12）
+
+1. **`src/main/__tests__/agent-manager.test.ts`**：新增了对“清单外后端（如 codex）显式日志回旧路径”的测试用例，表明系统已不再静默降级，而是显式记录日志。同时，删除了 `RequestQueue` 相关逻辑及其测试用例，说明原文档中若提及“RequestQueue 用于派发请求”或“RequestQueue 串行化请求”等描述已失效。
+
+2. **`src/main/adapters/base.ts`**：
+   - 新增 `MAX_OUTPUT_ENTRY_SIZE = 10_000` 常量，用于控制单条输出最大字符数，防止内存溢出；
+   - `defaultRawStreamMode` 方法被引入，Codex 适配器已覆盖为默认流式模式，且新增 `BIZGRAPH_CODEX_STREAMING=0` 作为回退开关；
+   - `isRawStreamMode` 逻辑已从仅依赖 `rawStreamSessions.has` 改为支持 `defaultRawStreamMode`，若文档中引用了“仅通过 session 存在判断流式模式”等描述，已不准确。
+
+3. **`src/main/ipc/__tests__/graph.test.ts`**：
+   - 新增 `entity_key` 字段到图数据库表结构中，用于支持查重门禁与写键操作；
+   - `graph:create` 现在必须传入 `projectPath` 并进行校验，原文档中若描述“项目路径可为空”或“项目路径仅用于提示”等行为已过时；
+   - 新增对 `project_path` 落库与 `UNIQUE(root_path)` 冲突处理的逻辑，若文档中涉及“项目路径未落库”或“项目路径可为空”等描述需更新。
+
+**文档需更新内容**：
+- 文档第 1280 行引用 `src/main/adapters/base.ts` 中的 `isRawStreamMode` 行为描述，已变更，原“仅通过 session 存在判断流式”说法不成立，应更新为“基于 session 与默认模式双判断”；
+- 文档中若提及“RequestQueue 用于请求派发”或“RequestQueue 串行化”等行为，已删除，需移除或替换为“流式请求由 SessionLockRegistry 与子进程上下文统一管理”；
+- 若文档中涉及“项目路径未落库”或“项目路径可为空”等描述，需更新为“项目路径必须传入并校验，且落库至图数据库”；
+- 若文档中引用了 `MAX_OUTPUT_ENTRY_SIZE` 或 `defaultRawStreamMode` 等符号，需确认是否已引入，否则存在引用错误。
+
+**建议**：文档中涉及“RequestQueue”、“流式请求派发逻辑”、“项目路径空值”、“rawStreamSessions 为唯一判断依据”等描述需人工核对并更新，因部分行为变更未在文档中明确体现，存在引用风险。

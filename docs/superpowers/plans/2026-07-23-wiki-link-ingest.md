@@ -1892,3 +1892,24 @@ git commit -m "docs(wiki): T5 收尾 — CLAUDE.md 补充 Wiki System 说明，�
 - **已知简化**（已在对应步骤中注明，非占位符）：预览页签采用「GFM 渲染 + [[link]] 代码样式占位 + 独立链接交互区」方案，而非在 markdown AST 内联替换 wikilink——避免 ReactMarkdown 自定义组件与行内语法混排时的文本切碎问题；`wiki:resolveLink` 兼容通道行为不变
 - **类型一致性**：`WikiLinkResolution` / `ParsedWikiContent` / `DanglingLink` / `IngestResult` 在 Task 3 Step 1 统一定义于 `@shared/types/wiki`，main 与 renderer 共用；`SyncLinksResult` 仅在 main 使用，留在 wiki-link-service
 - **方法签名一致性**：`IngestService.ingestFiles` 的 `nodes` 顺序即 `filePaths` 顺序（失败项跳过不位移），测试「标题优先级」用 sort 后比较因此稳定；`gridPosition(index)` 使用文件下标 `i`，失败文件会留下位置空洞——可接受，不做紧凑重排
+
+
+---
+
+## 变更同步（2026-11-13）
+
+以下变更影响文档中关于 `EdgeType`、`wiki-link` 服务及 IPC 交互的描述，需同步更新：
+
+1. **`src/main/ipc/graph.ts`**：新增对 `node.publishedWaiverJson` 的类型校验（需为 JSON 字符串或 null），并新增 `assertPublishedUpdateAllowed` 钩子，仅在 `status === 'published'` 且节点为测试图时触发。此变更表明 `publishedWaiverJson` 字段已作为校验字段引入，原文档中未提及该字段的校验逻辑，且其存在与行为已从“可空”变为“必须为 JSON 字符串或 null”。
+
+2. **`src/main/ipc/__tests__/graph.test.ts`**：在 `graph:create` 表结构中新增 `entity_key` 字段（原文档中未提及此字段），且 `graph:create` 逻辑已要求透传 `projectPath` 并进行校验。文档中“项目路径落库”相关描述（如“project_path 走 validateProjectPath”）已生效，但原文档未体现此字段在测试中被使用。
+
+3. **`src/preload/index.ts`**：新增 `project:import:preview` 与 `project:import:allowance:list` 通道，且明确说明这两条通道**不进入 `MAP_READ_ONLY_CHANNELS`**。文档中若引用“导入查重通道”或“import:preview”相关行为，需更新为“该通道为显式可读、不计入只读通道”的事实。
+
+4. **文档中过时或需修正的引用**：
+   - 原文“`src/main/ipc/graph.ts` 第 278 行”引用的 `node:update` 钩子逻辑，已因新增 `assertPublishedUpdateAllowed` 而被扩展，**该行逻辑已变更，原描述“仅校验 title/description”不准确**。
+   - 原文“EdgeType 联合类型”中新增 `wiki-link` 类型，虽在 `src/shared/types/graph.ts` 中已添加，但**该类型未在 `EDGE_TYPE_VALUES` 中被明确使用于测试或 IPC 逻辑中**，文档中“wiki-link 边落库”描述需确认是否与 `syncNodeLinks` 服务行为一致（当前测试中仅验证了 wiki-link 创建，未验证其在 IPC 事务中的持久性）。
+
+> **建议**：文档中涉及 `node:update` 的钩子、`project:import:preview` 通道、`publishedWaiverJson` 字段、`entity_key` 字段的描述，均需更新或补充。若文档中引用了 `project:import:allowance:list` 或 `project:import:preview` 的行为，应确认其是否为“只读查询”且“不进入 MAP_READ_ONLY_CHANNELS”；若引用 `node.publishedWaiverJson` 的校验逻辑，应明确其作用于测试图节点的 `published` 更新。
+
+> **需人工核对**：文档中关于 `wiki-link` 边是否在 `node:update` 或 `node:create` 钩子中被显式处理，以及 `syncNodeLinks` 是否在所有场景下被调用，目前无直接证据支持其在 IPC 事务中被完整落库，建议由开发团队确认。

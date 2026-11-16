@@ -319,3 +319,61 @@ project_settings (
 - `project_path` 的规范化规则（E3）
 
 实现者**必须**回来问的：无。D3 / D4 已由用户拍板（见 §三）。若实施中发现某个 CLI 适配器根本无法表达"只读"，按 D3 的降级规则处理（拒绝发送 + 说明原因），不必再问。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+以下变更基于近期代码提交（合并提交 `f2f2069d`）更新文档内容：
+
+### 1. 关键变更说明（行为层面）
+
+- **Claude 适配器**：新增 `waitForChildExit` 与 `activeChildren` 映射，实现子进程终止的进程级控制，支持 `SIGTERM` 后 1.5s 宽限期，超时未退出则升级为 `SIGKILL`。此改动提升进程终止可靠性，避免因子进程残留导致资源泄漏或状态异常。
+- **Codex 适配器**：默认启用流式模式（`thread.runStreamed()`），除非环境变量 `BIZGRAPH_CODEX_STREAMING=0` 或 `false` 等值存在时回退为阻塞模式（`thread.run()`）。该行为已作为默认值生效，**不再依赖用户配置**，影响所有新会话的流式行为。
+- **MCP 适配器**：新增 `setTurnApprovalHooks` 与 `turnApprovalHooks` 机制，支持写类工具在执行前走统一审批网关（与 Claude 一致），实现**会话级写操作授权控制**，提升安全性与审计可追溯性。
+- **send-and-wait 逻辑**：新增 `resolveAgentTimeouts` 机制，明确 `sendWait` 超时由 `settings.agentRuntime.timeouts.sendWaitMs` 配置控制，未配置时默认为 300s 且不低于 `turnMs+30s`，**超时逻辑已从“隐式”转为“显式可读”**。
+
+### 2. 文档中可能过时或需修正的描述
+
+- **文档第 209 行**：原引用 `claude-code.ts:11` 为“入口事件”相关逻辑，**已失效**。当前适配器已取消入口事件依赖，改为通过 `abortController` 与 `childProcess` 管理生命周期，该行应更新为“入口事件已移除，由 `abortController` 与 `waitForChildExit` 替代”。
+- **文档第 678 行**：原描述 `mcp-adapter.ts` 中“写工具无审批”为事实，**已过时**。现新增 `setTurnApprovalHooks` 与 `onPreToolUse` 机制，所有写类工具需走统一审批链路，应更新为“写类工具执行前需通过会话级审批网关”。
+- **文档第 44 行**：原描述 `send-and-wait` 无超时配置，**不准确**。现明确超时由 `agentRuntime.timeouts.sendWaitMs` 控制，且有默认值 300s，应更新为“超时由配置或默认值控制，未配置时为 300s 且不低于 turn 超时+30s”。
+- **文档第 53 行**（`defaultModel`）与 **第 558 行**（`compactModel`）：因 `settings.ts` 中 `mergeSettings` 仍显式列举字段，**`compactModel` 仍被丢弃**，原“压缩模型控件是空操作”的结论成立，但需注意：若用户通过 `settings:write` 手动写入，仍可保留，**但不会在下次读取中生效**，建议文档中明确“`compactModel` 仅在 `settings:write` 时保留，否则被主进程丢弃”。
+
+> ⚠️ **需人工核对**：  
+> - `BIZGRAPH_CODEX_STREAMING` 环境变量是否在所有客户端环境一致（如 CI/CD、本地）  
+> - `turnApprovalHooks` 在多会话场景下的性能与延迟影响  
+> - `sendWait` 超时逻辑在无 Electron 环境下的默认值是否仍为 300s（文档未明确说明）  
+
+建议在下一次 UX 验证中，重点验证写工具审批链路、流式默认行为与超时控制的稳定性。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/renderer/panels/LeftPanel.tsx`**：新增 `ImportDedupDialog` 组件及 `decideImportGate` 函数，原“扫描项目生成脑图”按钮逻辑已改为预览导入规则后决策，不再静默失败。文档中第 262 行引用的“扫描按钮常显”描述仍成立，但**原“扫描前无引导态”描述已过时**，现需以“扫描前显示引导态（含‘扫描项目生成脑图’按钮+副文案）”为准。
+- **`src/renderer/panels/SettingsPanel.tsx`**：新增 `EvolutionTab` 组件，挂载于设置页，用于展示进化层三类只读数据（memory hits、attribution、calibration report）。文档中第 219 行引用的“设置页无进化层入口”描述**已失效**，需更新为“进化层数据通过 `EvolutionTab` 可读”。
+- **`src/shared/types/ipc.ts`**：新增 `EvolutionQuery`、`MemoryHitListResult`、`AttributionListResult`、`CalibrationReportListResult` 等 IPC 通道类型，用于支持进化层三张表的只读查询。文档中第 190、196 行引用的 `MAP_READ_ONLY_CHANNELS` 相关描述**需更新为包含新增的三条通道**（`map:memory:hits:list` 等），否则将遗漏新功能入口。
+
+> ⚠️ 以上变更涉及多个新接口与组件引入，**文档中若仍引用旧路径或未提及的 IPC 通道（如 `map:memory:hits:list`）将导致信息不全**。建议在涉及“导入”“设置”“IPC 通道”等模块的描述中同步更新。若无明确上下文，**需人工核对是否涉及具体功能调用或错误码映射**。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/main/adapters/mcp-adapter.ts`**：新增国产模型默认配置（`moonshot`, `zhipu`, `qwen`），其 `defaultModel` 从 `defaultModel` 字段中明确指定（如 `moonshot: { defaultModel: 'kimi-k2-0905-preview' }`），且**取消了 `defaultModel` 空档回落机制**，即当未配置具体模型时不再回退至 `claude` 系列模型，避免启动错误。
+- **`src/renderer/panels/LeftPanel.tsx`**：新增 `ImportDedupDialog` 组件与 `decideImportGate` 逻辑，导入流程中对分支/副本的判定从“静默失败”改为**结构化拦截与用户确认**，并支持记录放行规则。
+- **`src/renderer/panels/SettingsPanel.tsx`**：新增 `EvolutionTab` 组件，用于展示进化层三类只读数据（memory hits、attribution、calibration report），并加入**空态分类显示**（表不存在、无数据、读取失败）。
+- **`src/shared/types/agent.ts`**：未新增或修改字段，但其引用的 `PROVIDER_CONFIGS` 与 `defaultModels` 逻辑已由 `mcp-adapter.ts` 实现，**文档中关于“defaultModel”默认值的描述需更新为“按适配器分模型配置，国产模型有明确默认值”**。
+
+> **文档过时点**：
+> - 原文第 678 行引用 `mcp-adapter.ts:325` 的 `defaultModel` 逻辑，**已失效**：该行原指“不回落 defaultModel”，但新实现中 `defaultModel` 仅在适配器内生效，且**不再全局回退**，需更新为“国产适配器默认模型为 `kimi-k2-0905-preview` 等，不回退至 `claude`”。
+> - 原文第 219 行引用 `SettingsPanel.tsx` 的“UI 硬编码 3 个 API provider”描述**不准确**：现新增 `moonshot`、`zhipu`、`qwen` 为可配置项，且支持动态加载，**应更新为“支持 OpenAI 兼容端点的国产模型配置”**。
+> - 原文第 190 行引用 `ipc.ts:190` 的 `settings:write` 通道，**仍有效**，因新逻辑仍复用该通道写入 `defaultModels.opencode`。
+> - 原文第 196 行引用 `ipc.ts:196` 的 `setContextWaterlineConfig`，**未变更**，仍有效。
+
+> **需人工核对**：
+> - 文档中关于“`defaultModel` 作为全局默认值”的描述（如“空档不回落”）是否已全面覆盖所有适配器场景，**建议由 UX 团队与后端验证**，因 `defaultModel` 在不同适配器中行为差异较大。

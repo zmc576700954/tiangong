@@ -392,3 +392,75 @@ JSX 文本节点与 `placeholder` / `title` / `aria-label` / `label` 属性里�
 - **只报告不阻断**起步，等残留清零后再考虑接入 CI 阻断
 - 白名单至少包含：本设计「保留英文的术语清单」全部条目、纯数字/符号串、`kebab-case` 的 CSS 类名
 - 需覆盖 `.ts` 文件（31 个）——`.tsx` 之外的 `store/` / `lib/` / `components/ui/` 里有零散英文
+
+
+---
+
+## 变更同步（2026-11-10）
+
+### 1. 核心变更说明（行为层面）
+
+- **`src/main/index.ts`**：  
+  引入 `agentManager.getWorkspaceLease()` 作为主进程初始化时的写闸控制，用于跨进程项目写入的锁管理。新增 `agentManager.shutdownRuntime()` 在应用退出前强制刷新事件批写缓冲并释放工作区锁，确保事件不丢失，即使退出失败也执行。
+
+- **`src/main/services/graph-service.ts`**：  
+  `initFromProject` 方法中移除 `importOptions` 的粘性状态，改为每次调用时**将用户勾选的导入选项（如 `interactive`, `rememberAllowance`）作为参数传入**，实现导入行为的即时性与可复现性，避免状态污染。
+
+- **`src/main/settings.ts`**：  
+  修复 `detectArgs` 的类型安全问题，新增 `Array.isArray(s.detectArgs)` 守卫，防止非数组值（如数字）在读取配置时抛出 `TypeError` 导致配置回退；同时强化 `detectArgs` 与 `npmPackage` 的 IPC 边界校验，禁止危险参数（如 `-c`, `-e`）和非法包名，提升安全边界。
+
+- **`src/preload/index.ts`**：  
+  新增 `project:import:preview` 与 `allowance:list` 通道，支持导入预览与放行规则读取，且明确为只读条目，避免误写。同时，导入判定流程从“静默失败”改为“显式弹窗决策”，用户可主动选择是否放行分支或副本。
+
+---
+
+### 2. 文档中可能过时或需更新的描述
+
+- **文档第 211 行**：  
+  原文提及 `sessionStore.ts` 中的 `importOptions` 状态为“粘性”，**已失效**。当前 `importOptions` 已被移除，改为每次调用 `initFromProject` 时传入，**需更新为“导入选项随调用传入，无持久状态”**。
+
+- **文档第 264 行**：  
+  原文引用 `src/preload/index.ts` 中的 `project:import:preview` 通道，**该通道已新增并暴露为只读条目**，建议更新为“`project:import:preview` 为显式只读通道，用于预览导入结果”。
+
+- **文档“共享常量的迁移”部分**：  
+  未提及 `importOptions` 的变更，但若文档中仍描述“导入选项在进程内持久化”，**需同步修正为“导入选项为每次调用传入，无持久状态”**。
+
+- **文档“locale 变更时序”**：  
+  未受影响，但主进程写盘与 `setLocale` 逻辑仍依赖 `ipc['settings:write']`，**若文档中涉及 locale 与设置写入的时序关系，需确认 `settings:write` 写入时机是否仍为写盘前同步**（当前无变更）。
+
+---
+
+### 3. 需人工核对项
+
+- `src/shared/constants.ts` 的删除与 `NODE_TYPE_LABELS` 等表迁移是否已完全完成，**需人工确认是否所有渲染模块已更新为 `t('nodeType.feature')` 调用**。
+- `agentManager.getWorkspaceLease()` 的实际调用行为是否在所有窗口生命周期中被正确触发，**建议在多窗口场景下验证写闸逻辑是否生效**。
+
+> 建议维护者在下一次迭代中检查 `importOptions` 相关模块的调用逻辑，确保无残留粘性状态。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/main/services/graph-service.ts`**：移除 `importOptions` 粘性状态字段，改为每次导入时通过 `initFromProject(data, options)` 传入选项，意味着导入行为的用户勾选（如是否记住放行规则）不再保持进程级记忆，需在调用方显式传递参数。
+- **`src/preload/index.ts`**：新增 `project:import:preview` 和 `project:import:allowance:list` 两个通道，且明确说明**不纳入 `MAP_READ_ONLY_CHANNELS`**，表明导入查重相关功能已脱离“只读通道”管理，需在前端逻辑中按新通道处理，且其数据结构为 `ImportPreviewResult`（含 `remembered` 字段）。
+- **`src/renderer/panels/LeftPanel.tsx`**：新增 `ImportDedupDialog` 组件及 `decideImportGate` 逻辑，界面流程中导入前需先执行 `preview` 并通过 `decideImportGate` 判定，原“生成思维导图”流程已升级为**预览-判定-执行**三段式，不再直接跳转。
+- **文档过时风险**：
+  - 文档第 264 行引用 `src/preload/index.ts` 中的 `MAP_READ_ONLY_CHANNELS` 相关描述，**已失效**，因新增通道明确**不进该集合**，且原逻辑“只读通道”已变更。
+  - 文档中若仍描述“导入查重仅通过只读通道”或“导入选项持久化”等行为，**需人工核对**，当前行为已改为每次调用传参、无粘性状态。
+- **建议**：请检查文档中关于“导入查重流程”“导入选项持久性”“项目扫描预览”等描述，特别是涉及 `importOptions`、`preview`、`allowance:list` 的流程说明，需同步更新为“每次导入显式传参，预览后判定，无粘性状态”。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/main/services/graph-service.ts`**：移除 `importOptions` 粘性状态，改为每次 `initFromProject` 调用时**将导入选项作为参数传入**，不再依赖内部缓存。此变更影响导入流程的可预测性与状态管理逻辑。
+
+- **`src/preload/index.ts`**：新增 `project:import:preview` 与 `project:import:allowance:list` 两个通道，且**明确排除于 `MAP_READ_ONLY_CHANNELS` 外**，说明导入查重相关操作已独立为可读写通道，需在文档中更新对“导入查重”相关 IPC 通道的描述。
+
+- **文档过时风险**：  
+  原文档第 264 行引用 `src/preload/index.ts` 中的 `MAP_READ_ONLY_CHANNELS` 表述，**已失效**，因新增通道被明确排除，且原表逻辑已变更。  
+  若文档中提及“导入查重通道属于只读通道”或“该通道在 MAP_READ_ONLY_CHANNELS 中”等描述，**需人工核对并更新**。
+
+> 注：文档中关于“共享常量迁移”与“保留英文术语清单”的内容未受影响，当前变更未涉及常量表或术语定义。

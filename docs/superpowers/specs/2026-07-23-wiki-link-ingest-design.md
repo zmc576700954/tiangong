@@ -216,3 +216,25 @@ wiki:resolveLink   （内部改调 WikiLinkService）
 - **Graph Lint**：`findDanglingLinks()` 直接可用
 - **Review Queue**：导入的 draft 节点进入确认流程
 - **LLM Ingest**：规则式管线的节点创建/落边路径可直接复用，仅替换"解析"环节
+
+
+---
+
+## 变更同步（2026-11-15）
+
+1. **`src/shared/types/graph.ts`**：  
+   - 新增 `publishedWaiverJson` 字段（类型为 `string | null`），用于测试图中记录发布豁免的人工确认事实，仅在测试场景下生效（如 `BIZGRAPH_TEST_GRAPH=1` 时启用）；  
+   - 扩展 `EdgeType` 类型，新增 `'verifies'` 和 `'covers'` 两类边类型，用于测试资产流程中的验证与覆盖关系，**原文档中引用的 `'wiki-link'` 仍存在，但新增的 `'verifies'`/`'covers'` 未被提及**。
+
+2. **`src/shared/types/ipc.ts`**：  
+   - 新增多个与“进化层”相关的 IPC 通道类型，包括 `EvolutionQuery`、`MemoryHitListResult`、`AttributionListResult`、`CalibrationReportListResult`，用于支持进化层数据的只读查询与状态读取，**文档中未涉及这些新类型，若引用 IPC 通道或相关结构需更新**。
+
+3. **文档中可能过时或需修正的描述**：  
+   - 原文引用 `src/shared/types/graph.ts:52` 的 `'wiki-link'` 新增行为，**该行在最新提交中未被修改，仍存在**，但 `graph.ts` 文件中新增的 `publishedWaiverJson` 和 `edge_type` 扩展（如 `'verifies'`）**未在文档中体现**，可能导致对边类型管理的理解偏差。  
+   - 原文“**无表结构变更**”仍成立，但需注意：`edge_type` 现已支持更多值（如 `'verifies'`, `'covers'`），若依赖旧版 `edge_type` 列表进行判断，可能遗漏新边类型。  
+   - 原文“`GraphEdge.edgeType` 字段已存在”正确，但**未提及 `edge_type` 的值域扩展**，若在代码中按原值域判断边类型，可能误判或遗漏新边。
+
+4. **需人工核对**：  
+   - 文档中关于“WikiLinkService”接口的 `SyncResult` 和 `ParsedWikiContent` 结构是否与新 `ipc` 通道或 `evolution` 读取逻辑联动，**无直接证据支持**，建议在实现中验证是否需新增 `dangling` 处理与 `evolution` 读取的交互逻辑。
+
+> 建议更新文档中“WikiLinkService”部分，明确 `edge_type` 的完整值域，并在“悬空链接策略”中补充对 `verifies`/`covers` 类边的解析逻辑说明。

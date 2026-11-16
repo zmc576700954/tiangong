@@ -567,3 +567,55 @@ npm run test
 7. 在项目目录里手动新建一个文件，同时跑一个只读会话 → **那个文件不会被 BizGraph 删除**（回归 §二.E 引用的那个坑）。
 
 > 本计划**不含**：设置面板的「默认值」页签、状态菜单 per-type 过滤、静默失败 toast 归零。它们在 `docs/superpowers/plans/2026-10-31-ux-settings-ui.md`。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+以下变更基于近期提交（`f2f2069d` 与 `edc04861`）更新文档内容：
+
+1. **`src/main/adapters/claude-code.ts`**：新增 `permissionMode: 'default'` 且在只读场景下禁用所有写工具，原行为改为**不下发任何写工具**，并由 `permissionMode` 统一控制沙箱权限。文档中第 209 行引用的“只读工具白名单”已失效，现为**默认禁止写工具**，需更新为“通过 `permissionMode: 'default'` 实现写工具禁用”。
+
+2. **`src/main/adapters/codex.ts`**：`sandboxMode` 从默认 `workspace-write` 改为**显式流式模式**（`runStreamed` 路径），且在 `BIZGRAPH_CODEX_STREAMING=0` 时回退为阻塞 `run()` 模式。文档中 Task 4 与 Task 5 所述“Codex 会话默认可写”已过时，**当前默认为流式写入，且可被显式关闭为阻塞模式**，需更新为“默认流式，通过环境变量控制是否阻塞”。
+
+3. **`src/main/adapters/mcp-adapter.ts`**：在只读会话中明确设置 `mcpTools = []`，不再挂载任何工具。文档中第 678 行引用的“mcp 会挂载带 filesystem server 的全部工具”已**不成立**，现为**只读时完全禁用 MCP 工具**，需更新为“只读时禁用所有 MCP 工具”。
+
+4. **`src/main/agent/agent-manager.ts`**：新增对“只读回退链”的裁剪逻辑，**只保留只读适配器**，不再回退到 `mcp`。文档中第 417 行引用的“回退到 mcp 会挂载写工具”已**错误**，现为**只读回退链被严格裁剪，不进入可写路径**。
+
+5. **`src/main/database.ts`**：新增 `project_settings` 表，`CURRENT_SCHEMA_VERSION` 从 17 升级至 18，且迁移逻辑中明确**按 `project_path` 存储相对路径的默认值**。文档中“`project_settings` 表”相关描述仍有效，但需注意**旧版本无此表，需确保数据库升级脚本已部署**。
+
+6. **`src/main/__tests__/agent-manager.test.ts`、`claude-code.test.ts`、`codex.test.ts`**：新增对“清单外后端（如 codex）显式日志回旧路径”和“沙箱能力探测”测试，表明**只读策略在非支持适配器上将显式拒绝发送并记录日志**，而非静默降级。文档中 Task 4 所述“不静默降级”已确认，**需强调：所有不支持只读的适配器将直接拒绝发送并提示原因**。
+
+7. **文档过时点**：
+   - 原文“`src/main/agent/send-and-wait.ts:44-56`”中提到的“ScopeGuard 沙箱误伤用户文件”**已不成立**，因该文件已被移出只读路径，**该段代码已无实际作用**，应删除或注释。
+   - 原文“只读会话回退到 mcp”描述**错误**，当前逻辑为**只读回退链被裁剪，不进入 mcp**，需替换为“只读回退链仅保留只读适配器”。
+   - 原文“Codex 默认走阻塞路径”错误，现为**默认流式**，需更新为“默认流式，环境变量可关闭”。
+
+> **建议**：文档中涉及 `claude-code.ts`、`codex.ts`、`mcp-adapter.ts`、`agent-manager.ts` 的具体行为描述（如第 209、417、678 行）需**人工核对**，以确认实际实现是否与测试用例一致，特别是 `sandboxMode` 与 `permissionMode` 的行为边界。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+以下变更影响文档中关于“只读会话”和“项目级默认范围”的描述，需同步更新：
+
+1. **`src/main/adapters/mcp-adapter.ts`**：新增了对 `moonshot`、`zhipu`、`qwen` 三家国产模型的配置支持，且在只读场景下明确设置 `mcpTools = []`（原文档第678行引用）。**变更说明**：原文档中“只读时 `mcpTools = []`”的描述仍成立，但新增了模型默认配置逻辑，表明“国内模型默认走本地兼容端点”已落地，**需确认文档中是否仍以 `mcp` 为只读回退链唯一选项**。
+
+2. **`src/main/errors.ts`**：新增错误码 `IMPORT_REJECTED`，并要求其继承 `BizGraphError` 且 `toJSON()` 返回结构化决策字段。**变更说明**：文档中“IPC 错误必须继承 `BizGraphError` 并 override `toJSON()`”的规则已落地，但新增错误码 `IMPORT_REJECTED` 用于项目导入查重场景，**若文档中提及“导入失败”或“查重拒绝”场景，需更新为使用此错误码及结构化决策字段**。
+
+3. **`src/main/ipc/project.ts`**：新增 `project:getDefaults` / `project:setDefaults` 通道，用于项目级默认范围读写。**变更说明**：文档中“项目级默认范围”相关描述（如“通过 `project:getDefaults` 读取”）仍有效，但**原文档第18行引用 `AgentSessionConfig` 类型变更**，现已新增 `projectDefaults` 字段，**需确认文档中是否仍引用旧字段名或未更新类型定义**。
+
+4. **`src/main/__tests__/database-migration.test.ts`**：迁移版本从 `v49` 更新至 `v50`，新增 `project_settings` 表，且 `CURRENT_SCHEMA_VERSION` 从 17 → 18。**变更说明**：文档中“schema v18”相关描述仍有效，但**原文档中“schema v18”仅作为范围记忆表的版本，需确认是否仍作为唯一版本引用**，若文档中涉及数据库版本判断，应以 `v50` 为当前基准。
+
+5. **文档中可能过时的引用**：
+   - 原文“`mcp` 会挂载带 `filesystem` server 的全部工具”——**已失效**，因新变更中明确“只读时 `mcpTools = []`”，且 `mcp` 不再提供写能力。
+   - 原文“`project:getDefaults` / `project:setDefaults` 通道”——**已存在，但未在文档中体现**，需在“项目级默认”部分补充说明。
+   - 原文“`session-lifecycle-manager.ts:302` 的 `config.allowedFiles.length > 0 || config.verifyOnly`”——**仍有效**，但需注意“只读会话”下 `verifyOnly` 为真，**不建议将此条件作为“是否只读”的判断依据**，因逻辑已由 `resolveReadonly()` 统一管理。
+
+> **建议操作**：  
+> - 更新“只读回退链”部分，明确 `mcp` 仅在无其他只读适配器时才作为回退，且不提供写能力。  
+> - 在“项目级默认”部分补充 `project:getDefaults` / `project:setDefaults` 通道的使用说明。  
+> - 若文档中引用了 `project_settings` 表的字段或版本，应更新为 `v50` 且字段为 `defaults_json`（非 `projectDefaults`）。  
+> - **需人工核对**：文档中是否仍存在对 `MAP_READ_ONLY_CHANNELS` 的引用（如“未进 MAP_READ_ONLY_CHANNELS”），因该表已归入 `project_settings`，且原逻辑中“只读”与“工具白名单”分离，**需确认是否所有“只读”场景均正确归入 `project_settings` 而非 `MAP_READ_ONLY_CHANNELS`**。

@@ -3076,3 +3076,40 @@ R-38 禁止力导向模式下重挂。模式未知（`null`）的那一小段时
 | 内联改名、快捷键体系 | 不在本次范围（spec §一非目标） |
 | 框选批量操作 | 不在本次范围 |
 | 层级边的「点击选中 / 删除」入口 | 派生层级边没有存储边对象：右侧面板找不到、删除命中 0 行。层级结构的改法是 reparent（Task 9/10）或删父节点（Task 11）。本期把派生层级边挡在选中路径外（Task 4 Step 2） |
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/main/database.ts`**：新增 `map_migration_reports` 表用于操作审计，其 `kind` 字段当前不包含 `workitem_revise`，故该值域缺口仍存在，未触发写入。文档中若引用“`workitem_revise` 被记录”或“`map_migration_reports` 用于记录 C2 修订原因”等内容，已过时。
+- **`src/main/errors.ts`**：新增错误码 `IMPORT_REJECTED`（错误码 `'IMPORT_REJECTED'`），用于项目导入查重场景，要求错误对象必须包含 `details.decision` 字段以结构化透传判定依据。文档中若提及“`ImportRejectedError` 为裸 Error”或“导入失败仅显示转圈”等描述，已不准确，需更新为“错误继承 `BizGraphError` 且含结构化决策字段”。
+- **`src/main/ipc-handlers.ts`**：新增 `startWorktreeRetentionSweep(db)` 调用，启动周期性工作树残留清理（每6小时一次，7天保留期）。文档中若涉及“工作树清理机制”或“工作树生命周期管理”等描述，需确认是否包含此周期性调度逻辑，否则可能遗漏。
+- **`src/main/__tests__/database-migration.test.ts`**：测试中 `SELECT version FROM schema_version` 从 `49` 更新为 `50`，表明数据库版本已升级至 v50，文档中若仍引用“v49 迁移链”或“版本 49 为当前版本”等表述，已失效。
+
+> **建议**：文档中涉及以下内容需人工核对：
+> - 第 381 行引用 `database.ts` 的版本逻辑（是否仍为 v49）；
+> - 第 260 行引用 `ipc/graph.ts` 的 IPC 错误处理流程（新错误码 `IMPORT_REJECTED` 未覆盖）；
+> - 第 164 行引用 `node-repository.ts` 的 `delete()` 行为（新版本中是否仍存在孤儿节点排序悬空问题，需结合新 `worktree` 清理逻辑验证）。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+以下变更基于近期合并提交（`worktree-ux-defaults-2026-10-31`）同步更新：
+
+1. **错误处理机制增强**：新增 `IMPORT_REJECTED` 错误码，用于导入查重场景。原 `ImportRejectedError` 已改为继承 `BizGraphError`，并支持在 `toJSON()` 中透传 `details.decision`（含 action/step/reason/signals），实现错误信息结构化传递，避免原“裸 Error”在 IPC 边界被丢弃的问题。
+
+2. **导入流程与状态管理变更**：
+   - `GraphService.setImportOptions` 方法已移除，其功能被改为**随调用传入**，即每次 `initFromProject` 调用时需显式传入 `interactive` 和 `rememberAllowance` 选项，不再保持进程级粘性状态。
+   - `preload/index.ts` 新增暴露 `project:import:preview` 与 `allowance:list` 接口，且明确排除于 `MAP_READ_ONLY_CHANNELS`，需在调用时注意权限边界。
+
+3. **文档中可能过时或需更新的描述**：
+   - 文档第 17 行及第 43 行引用了 `tests/e2e/helpers/node-helpers.ts`，该文件在本次变更中未被修改，**仍可使用**。
+   - 文档中关于“导入查重失败静默处理”的描述（如“ImportRejectedError 是裸 Error”）**已失效**，需替换为“错误将结构化透传，包含决策链路与具体拒绝原因”。
+   - 原“`setImportOptions` 保持粘性状态”等描述**已不成立**，应更新为“导入选项随每次调用传入，无进程间残留”。
+
+> ⚠️ 说明：`src/main/errors.ts` 中新增的 `IMPORT_REJECTED` 错误码及 `graph-service.ts` 中的逻辑变更，**未涉及结构编辑核心流程（如 `parent_id` 操作、拖拽重挂）**，但若文档中涉及“导入失败处理”或“错误信息透传”等场景，需以新错误机制为准。其他部分（如 `database-migration.test.ts` 中 v50 迁移）不影响本计划，但若涉及旧图迁移验证，需确认 `version: 49 → 50` 的兼容性。  
+
+**建议**：若文档中涉及导入流程、错误处理或 IPC 透传逻辑，需人工核对具体实现细节，确保与新错误结构和调用模式匹配。

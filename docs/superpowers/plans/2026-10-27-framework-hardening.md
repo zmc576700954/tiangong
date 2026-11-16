@@ -1146,3 +1146,45 @@ git log --oneline main..HEAD
 ```
 
 更新 `docs/base/ROADMAP.md` 的 Phase D 表格，新增一行记录本轮修复；并在 `docs/tasks/2026-10-27-framework-hardening.md` 写落地记录（含每项修复前后的行为对比）。
+
+
+---
+
+## 变更同步（2026-11-13）
+
+1. **`src/main/adapters/claude-code.ts`**：系统消息改走 `stable` 流程，用户消息改走 `turn+command` 机制，且 SDK 错误时主动发射 `sessionEnded` 事件，强化了会话中断的可观测性。
+
+2. **`src/main/adapters/mcp-adapter.ts`**：系统消息走 `stable`，用户消息走 `turn+userPrompt`，与原文档第 620 行引用的“system 消息走 stable”一致，但**用户消息路径已变更**，文档中若仍描述为“用户消息走 turn+command”则**过时**。
+
+3. **`src/main/agent/session-recovery.ts`**：Claude-code 会话恢复策略由原逻辑改为以 `resumeSessionId` 判定是否恢复，**文档中若仍依赖旧的恢复条件判断逻辑将失效**。
+
+4. **`src/main/database.ts`**：`chat_messages` 表的 CHECK 约束已扩容，JSON 列统一引入 `safeJsonParse` 与运行时守卫校验，**文档中若仍依赖“盲转 JSON”或“脏数据直接写入”等描述已不准确**。
+
+5. **`src/main/services/chat-service.ts`、`src/main/repositories/agent-log-repository.ts`、`src/main/repositories/graph-repository.ts`**：JSON 列解析处已统一注入 `validator` 逻辑，**文档中若仍描述为“无校验”或“直接解析”将不成立**。
+
+6. **`src/main/adapters/scope-prompt-builder.ts`**：删去 `buildScopePrompt` 函数的 `codeContext` 形参，**文档中若引用该参数或其调用链将失效**，且新增 `SCOPE_SECTION_HEADINGS` 常量表，**文档中若仍使用“中文段标题”作为动态生成逻辑将与新规范冲突**。
+
+7. **`src/main/__tests__/agent-log-repository.test.ts`、`src/main/__tests__/chat-service.test.ts`**：新增对命令与输出中密钥的脱敏写入验证，**文档中若涉及“日志写入原始密钥”或“未脱敏”场景描述已不成立**。
+
+8. **`src/main/adapters/base.ts`**：文档第 1155 行、第 620 行、第 615 行引用的适配器行为已变更，**若文档中仍描述为“适配器直通”或“无审批网关”将严重过时**。
+
+> **需人工核对**：`src/main/adapters/mcp-adapter.ts` 中 `turn+userPrompt` 与 `turn+command` 的具体行为边界，以及 `scope-prompt-builder` 中 `buildScopePrompt` 调用点是否已全面更新至新签名。文档中涉及具体函数调用、参数名、返回值的描述需重新验证。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`turnContext` 构建与拼接逻辑变更**：在 `claude-code` 适配器中，`turnContext` 现已通过 `filter((s) => !!s && s.length > 0)` 过滤空值或空字符串，避免在拼接时产生多余的 `\n\n---\n\n`。原文档中“`turnContext` 为空时不得留下多余的 `\n\n---\n\n`”的描述已符合新实现，但原代码中直接拼接 `turnContext` 且未过滤的行为已失效，需确保在实际调用中对 `turnContext` 做空值判断和长度校验。
+
+- **`scopePrompt` 与 `command.description` 拼接逻辑更新**：原逻辑中 `scopePrompt` 为可选，当存在时前置，后接 `turnContext` 和 `command.description`。新实现中，`turnContext` 仅在非空时参与拼接，且整体拼接逻辑已改为 `filter` 后的 `join`，因此若 `turnContext` 为空，将不会出现在最终 prompt 中，避免了冗余分隔符。
+
+- **文档中可能过时的引用**：
+  - 文档第 620 行引用 `mcp-adapter.ts` 中的 `systemPrompt: scopePrompt`，但该文件中已新增 `moonshot`、`zhipu`、`qwen` 等国产模型支持，且 `provider` 字段范围已从 `'anthropic' | 'openai' | 'deepseek' | 'gemini'` 扩展为包含 `moonshot`、`zhipu`、`qwen`，若文档中涉及模型配置或适配器选择逻辑，需更新为支持国产模型的 `provider` 列表。
+  - 原文“模型默认按适配器拆分”可能不准确，现模型默认已按“国内现实”走，且 `defaultModels.opencode` 为独立档位，**不回落 `defaultModel`（如 claude）**，若文档中提及默认模型回退逻辑，需修正。
+
+- **需人工核对**：
+  - 文档中未明确提及 `turnContext` 为空时的处理逻辑是否已覆盖所有边界情况（如 `turnContext` 为 `""` 或 `null`），建议在实际场景中验证。
+  - `mcp-adapter.ts` 中新增的 `moonshot`、`zhipu`、`qwen` 适配器配置是否在文档中被引用，若涉及模型选择或权限控制，需确认是否需更新模型配置说明。
+
+> 建议更新文档中所有涉及 `turnContext` 拼接、`scopePrompt` 使用、模型默认值的描述，并检查是否引用了已删除或改名的字段（如 `defaultModel` 在 opencode 中已不回落）。

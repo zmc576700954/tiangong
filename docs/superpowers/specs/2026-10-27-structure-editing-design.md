@@ -621,3 +621,27 @@ React Flow v12 内置能力核实结论（已核对 `node_modules/@xyflow/react@
 - 折叠徽标显示子节点总数还是仅显示"已折叠"
 - 重挂后的子树是放在目标父节点末尾，还是插入到指定兄弟位置（本期默认末尾）
 - 删除父节点时，其子节点是**置为根节点**（保留）还是**一并删除**（级联）——本期设计为置为根节点（保守，不丢数据）
+
+
+---
+
+## 变更同步（2026-11-12）
+
+以下变更影响文档中关于“结构编辑”和“节点操作”的描述，需同步更新：
+
+1. **`src/main/errors.ts`**：新增错误码 `IMPORT_REJECTED`（原为 `HIERARCHY_CYCLE` 等），用于项目导入查重场景。文档中若引用“导入失败”或“查重拒绝”等行为，其错误处理逻辑已从“裸 Error”升级为结构化错误，包含 `action/step/reason/signals` 信息，**原描述“导入失败仅显示转圈”已过时**。
+
+2. **`src/main/ipc/graph.ts`**：新增对 `node.publishedWaiverJson` 的类型校验与 `assertPublishedUpdateAllowed` 的调用，**在节点更新为 `published` 状态时强制校验发布豁免**。文档中若涉及“节点发布”或“发布状态变更”的流程描述，需更新为“发布前需验证豁免记录”，原描述“发布无额外校验”已失效。
+
+3. **`src/main/repositories/graph-repository.ts`**：  
+   - 新增字段 `entityKey` 用于节点实体身份映射，**原文档第 225 行引用“graph:get 返回节点字段”已不完整**，因未包含 `entityKey`，可能导致画布与面板无法正确关联派生态。  
+   - 新增 `lifecycle_state` 字段（值：`active`/`archived`/`merged`/`split`），并引入 `nodeHasHistory` 逻辑判断归档规则。**文档中若提及“节点删除”或“生命周期管理”行为，原描述“删除即硬删”不准确**，现为“有历史依赖则归档保留，无依赖则硬删”。
+
+4. **`src/main/services/writeback-service.ts`**：  
+   - `nodeRepo.delete` 替换为 `nodeRepo.hardDelete`，**文档第 346 行引用“删除节点”操作的实现逻辑已变更**，原描述“删除操作触发级联删除”需更新为“删除操作在无历史时触发真删，有历史则归档保留”。
+
+> **需人工核对**：  
+> - 文档中未明确提及的“节点发布”“归档”“实体键”等流程是否已覆盖；  
+> - `hierarchical` edge_type 与 `parent_id` 派生关系的实现细节是否与新错误码、生命周期字段联动，目前无直接证据。  
+
+建议在文档评审阶段重点核对“节点发布”“删除”“导入查重”等流程的错误处理与状态流转逻辑。

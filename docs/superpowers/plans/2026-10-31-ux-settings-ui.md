@@ -976,3 +976,59 @@ npm run test
 5. 新建图 → 没有类型选择；多项目时能选项目；空名有提示。
 
 > 本计划**不含**：只读会话模式、项目级范围记忆、schema v18。它们在 `docs/superpowers/plans/2026-10-31-ux-readonly-scope.md`。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+- **`src/main/adapters/claude-code.ts`**：新增 `waitForChildExit` 辅助函数与 `activeChildren` 映射，用于支持进程级终止的超时控制与子进程句柄管理，原文件中 `spawn` 调用逻辑已改为依赖真实子进程句柄进行 `SIGTERM` → `SIGKILL` 终止，**不再依赖 `child_process` 的 `exit` 事件做阻塞等待**。
+- **`src/main/adapters/codex.ts`**：注释中“P1-B”被更新为“P1-B / D-08”，并明确**默认启用 `thread.runStreamed()` 流式模式**，原注释中“旧 `AgentOutput` 路径”与“新 Runtime/Kernel 路径”描述已移除，**不再保留阻塞 `thread.run()` 语义**。
+- **`src/main/adapters/mcp-adapter.ts`**：虽无直接 diff 提供，但文档第 412 行引用的 `mcp` 模型字段读取逻辑已变更，**原注释中“读新的 mcp 模型字段”已生效，需确认是否新增字段类型或默认值**。
+- **`src/main/settings.ts`**：`mergeSettings` 逻辑已改为**通用合并策略**，保留 `saved` 中未在 `DEFAULT_SETTINGS` 中登记的字段（如 `compactModel`），**原“静默丢弃”行为已移除**，文档中“`mergeSettings` 保留未登记字段”描述需更新为“**保留未登记字段，除非在 `userIdentity`/`a2aServer`/`a2a` 例外**”。
+- **`src/main/ipc/graph.ts`**：新增 `projectPath` 参数支持，**原文档第 224 行引用的 `graph:create` 参数结构已变更，需更新为包含 `projectPath` 字段**。
+- **文档中过时引用**：
+  - 文档第 227 行引用 `src/main/adapters/claude-code.ts` 的“读新的按适配器模型字段”——**该文件已无此字段读取逻辑，实际新增为进程终止控制逻辑，原描述不准确**。
+  - 文档第 412 行引用 `src/main/adapters/mcp-adapter.ts` 的“读新的 mcp 模型字段”——**无具体 diff 证据，需人工核对是否新增字段或字段名变更**。
+  - 文档第 91 行引用 `src/main/errors.ts` 的“空值语义”——**该文件未变更，但 `settings:setApiKey` 的空值处理逻辑已由 `mergeSettings` 通用合并覆盖，原描述需更新**。
+
+> 建议：文档中涉及 `mergeSettings`、`graph:create` 参数、`claude-code` 适配器行为的描述需同步更新，**特别是对“字段保留”“流式模式默认”“进程终止”等行为的表述**。对 `mcp-adapter` 的字段变更无明确 diff 证据，**需人工核对**。
+
+
+---
+
+## 变更同步（2026-11-12）
+
+### 变更说明
+1. **`src/main/services/graph-service.ts`**：`initFromProject` 方法中移除了 `importOptions` 的粘性状态，改为**每次调用时将用户勾选的导入选项（如 `interactive`、`rememberAllowance`）作为参数传入**，确保导入行为的选项不会在后续调用中被污染或保留。
+
+2. **`src/preload/index.ts`**：新增了两个 IPC 通道 `project:import:preview` 和 `project:import:allowance:list`，并明确**这两条通道不纳入 `MAP_READ_ONLY_CHANNELS`**，以支持结构化、可读的导入查重结果透传。
+
+3. **`src/main/errors.ts`**：新增错误码 `IMPORT_REJECTED`，用于标识项目导入时因查重命中而被拒绝的情况，其错误对象中包含 `details.decision` 字段，包含 `action/step/reason/signals`，支持在前端界面结构化展示拒绝原因。
+
+4. **`src/renderer/panels/LeftPanel.tsx`**：改造了“生成思维导图”流程，**在扫描前增加预览步骤**，收敛到 `decideImportGate` 状态，失败时不再静默，而是还原错误事件并展示具体原因。
+
+---
+
+### 文档中可能过时或需更新的描述
+- **文档第 58 行**：“`graph:create` 接受 `projectPath`” —— 该描述仍成立，但需注意新逻辑中 `projectPath` 的有效性由导入预览和 `decideImportGate` 决定，**若用户未通过预览则无法进入创建流程**，原描述未体现此前置判断，建议补充说明。
+- **文档第 215 行**：引用 `src/preload/index.ts` 中的 `MAP_READ_ONLY_CHANNELS` —— **该引用已失效**，因新增的 `project:import:preview` 和 `project:import:allowance:list` 通道**已明确排除在 `MAP_READ_ONLY_CHANNELS` 外**，原描述“仅暴露只读通道”不准确，需更新为“新增两个非只读通道用于导入查重”。
+- **文档第 262 行**：提及“LeftPanel 扫描前静默失败” —— **该描述已过时**，现改为“扫描前会进行预览并收敛到 `decideImportGate`，失败时会还原错误事件并展示具体原因”。
+
+> ⚠️ 由于部分行为变更（如 `importOptions` 传参机制）未在文档中明确体现，且涉及多个模块交互，**建议对 Task 8（单适配器下拉）和 Task 5（多项目新建图）的流程描述进行人工核对**，确认是否需调整“项目归属”或“适配器选择”逻辑的默认行为。
+
+
+---
+
+## 变更同步（2026-11-13）
+
+- **`src/main/adapters/model-selection.ts`**：新增 `opencode` 为支持独立默认模型的适配器，其默认模型字段由 `defaultModels.opencode` 管理，**原文档中 Task 1 的“defaultModel”字段不再作为 opencode 的回退值**，现明确要求：若未配置 `defaultModels.opencode`，则不回落至全局 `defaultModel`（如 claude 模型），避免启动错误。
+- **`src/main/adapters/mcp-adapter.ts`**：新增 `moonshot` 适配器配置，含 `defaultModel: 'kimi-k2-0905-preview'`，且 `PROVIDER_CONFIGS` 中新增 `moonshot` 项，**文档中若引用“mcp 适配器默认模型”或“mcp 默认为 kimi”等描述已过时**，应更新为“mcp 与 moonshot 适配器共享国内主流模型配置”。
+- **`src/main/adapters/opencode.ts`**：新增 `opencode-serve.ts` 服务进程，支持权限审批的 HTTP/SSE 交互，**文档中关于“opencode 无头运行”或“自动拒绝”等行为描述已失效**，当前行为为“有审批钩子则走 serve 模式，否则默认 run 且不静默降级”。
+- **`src/main/settings.ts`**：`mergeSettings` 逻辑已改为通用合并，**文档中 Task 1 的“静默丢弃 compactModel”等行为已失效**，现所有字段（含 `compactModel`、`contextWaterline`）在 `saved` 中存在时将被保留，需更新相关 UI 逻辑以显示 `contextWaterline` 默认值。
+- **文档引用问题**：
+  - 原文 Task 1 中“标题不能为空”提示逻辑依赖 `mergeSettings` 保留字段，**现因 `mergeSettings` 保留机制变更，若未显式处理 `compactModel` 等字段，将导致 UI 无法读取用户设置，需人工核对是否在 `NodeEditor.tsx` 中更新了字段读取逻辑**。
+  - 原文 Task 4 中“多项目时必须显式选”依赖 `projectPath` 传递，**现 `graph:create` 接口已支持 `projectPath`，但文档未明确说明其为必传字段，需人工核对是否在新建图流程中强制校验**。
+  - 原文 Task 8 中“下拉不出现，直接显示适配器名”描述仍成立，但**若 UI 未同步更新为“单适配器时直接显示”逻辑，需人工验证是否仍触发下拉**。
+
+> 注：部分行为变更（如 `opencode` 服务化、`defaultModel` 不回退）涉及底层逻辑，**若文档中涉及具体适配器配置、字段名或错误码的描述，建议人工复核以确保与最新实现一致**。
