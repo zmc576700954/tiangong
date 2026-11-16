@@ -641,6 +641,7 @@ export class AgentStepRunner {
         items: verdict.items,
         missing: verdict.missing,
         pending: verdict.pending,
+        optionalFailures: verdict.optionalFailures,
         manualEntryCount: verdict.pendingItems.length,
         pendingItems: verdict.pendingItems,
       },

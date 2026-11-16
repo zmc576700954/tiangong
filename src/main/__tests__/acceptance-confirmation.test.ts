@@ -185,7 +185,7 @@ describe('AcceptanceConfirmationService', () => {
     const sources = evals.map((row) => (JSON.parse(row.stats_json) as { source: string }).source)
     expect(sources).toEqual(['turn_completed', 'manual_confirmation'])
     const manualDetails = JSON.parse(evals[1].details_json) as { items: Array<{ id?: string; outcome: string }> }
-    expect(manualDetails.items).toEqual([{ index: 0, id: 'm1', type: 'manual', outcome: 'pass', codes: [] }])
+    expect(manualDetails.items).toEqual([{ index: 0, id: 'm1', type: 'manual', required: true, outcome: 'pass', codes: [] }])
   })
 
   it('两个 manual：部分确认继续等待，剩余条目写回 input_request_json', async () => {

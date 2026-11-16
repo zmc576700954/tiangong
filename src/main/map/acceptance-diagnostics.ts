@@ -48,6 +48,8 @@ export interface AcceptanceEvaluationRecord {
   verdict: 'pass' | 'incomplete' | 'pending' | 'error'
   missing: string[]
   pending: string[]
+  /** 可选条目（required:false）的失败/待确认码：不阻塞，仅展示。 */
+  optionalFailures: string[]
   durationMs: number
 }
 
@@ -76,6 +78,7 @@ export function recordAcceptanceEvaluation(
     verdict: verdictOf(input.verdict, input.verifierError),
     missing: input.verdict?.missing ?? [],
     pending: input.verdict?.pending ?? [],
+    optionalFailures: input.verdict?.optionalFailures ?? [],
     durationMs: input.durationMs,
   }
 
@@ -97,6 +100,7 @@ export function recordAcceptanceEvaluation(
       verdict: record.verdict,
       missing_count: record.missing.length,
       pending_count: record.pending.length,
+      optional_failure_count: record.optionalFailures.length,
       item_count: input.verdict?.items?.length ?? 0,
       checked: input.verdict?.checked ?? 0,
       duration_ms: Math.max(0, Math.round(input.durationMs)),
@@ -111,6 +115,7 @@ export function recordAcceptanceEvaluation(
       items: input.verdict?.items ?? [],
       missing: record.missing,
       pending: record.pending,
+      optional_failures: record.optionalFailures,
       pending_items: input.verdict?.pendingItems ?? [],
     }
 

@@ -31,9 +31,10 @@ const pendingVerdict: AcceptanceVerdict = {
   ok: false,
   missing: [],
   pending: ['acceptance_manual_pending:1'],
+  optionalFailures: [],
   items: [
-    { index: 0, type: 'command', outcome: 'pass', codes: [] },
-    { index: 1, id: 'm1', type: 'manual', outcome: 'pending', codes: ['acceptance_manual_pending:1'] },
+    { index: 0, type: 'command', required: true, outcome: 'pass', codes: [] },
+    { index: 1, id: 'm1', type: 'manual', required: true, outcome: 'pending', codes: ['acceptance_manual_pending:1'] },
   ],
   pendingItems: [{ id: 'm1', expected: '人工确认' }],
   checked: 1,
@@ -86,7 +87,7 @@ describe('recordAcceptanceEvaluation', () => {
         ...pendingVerdict,
         ok: true,
         pending: [],
-        items: [{ index: 0, id: 'm1', type: 'manual', outcome: 'pass', codes: [] }],
+        items: [{ index: 0, id: 'm1', type: 'manual', required: true, outcome: 'pass', codes: [] }],
         pendingItems: [],
       },
     })
@@ -141,7 +142,7 @@ describe('verdictOf', () => {
   it('pass / pending / incomplete / error 归一', () => {
     expect(verdictOf({ ...pendingVerdict, ok: true, pending: [], items: [] })).toBe('pass')
     expect(verdictOf(pendingVerdict)).toBe('pending')
-    expect(verdictOf({ ...pendingVerdict, pending: [], items: [{ index: 0, type: 'command', outcome: 'fail', codes: ['x'] }] })).toBe('incomplete')
+    expect(verdictOf({ ...pendingVerdict, pending: [], items: [{ index: 0, type: 'command', required: true, outcome: 'fail', codes: ['x'] }] })).toBe('incomplete')
     expect(verdictOf(undefined)).toBe('error')
     expect(verdictOf(pendingVerdict, 'boom')).toBe('error')
   })

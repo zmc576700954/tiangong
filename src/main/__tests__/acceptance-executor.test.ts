@@ -360,10 +360,134 @@ describe('evaluateAcceptance · 逐条结果（诊断用）', () => {
       runCommand: okRunner,
     })
     expect(verdict.items).toEqual([
-      { index: 0, type: 'command', outcome: 'pass', codes: [] },
-      { index: 1, type: 'file_check', outcome: 'fail', codes: ['acceptance_file_missing:1'] },
-      { index: 2, id: 'm1', type: 'manual', outcome: 'pending', codes: ['acceptance_manual_pending:2'] },
-      { index: 3, type: 'file_check', outcome: 'pass', codes: [] },
+      { index: 0, type: 'command', required: true, outcome: 'pass', codes: [] },
+      { index: 1, type: 'file_check', required: true, outcome: 'fail', codes: ['acceptance_file_missing:1'] },
+      { index: 2, id: 'm1', type: 'manual', required: true, outcome: 'pending', codes: ['acceptance_manual_pending:2'] },
+      { index: 3, type: 'file_check', required: true, outcome: 'pass', codes: [] },
     ])
+  })
+})
+
+describe('evaluateAcceptance · required:false（可选条目）', () => {
+  it('可选 command 失败 → 不阻塞 ok，码进 optionalFailures', async () => {
+    const root = makeRoot()
+    const runCommand: AcceptanceCommandRunner = async () => ({ exitCode: 2, stdout: '', timedOut: false })
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(commandEntry('npm test', { required: false })),
+      projectPath: root,
+      runCommand,
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.missing).toEqual([])
+    expect(verdict.optionalFailures).toEqual(['acceptance_command_exit:0:2'])
+    expect(verdict.checked).toBe(1)
+    expect(verdict.items).toEqual([
+      { index: 0, type: 'command', required: false, outcome: 'fail', codes: ['acceptance_command_exit:0:2'] },
+    ])
+  })
+
+  it('可选 manual 未确认 → 不触发 pending/needs_input，只进 optionalFailures', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance({ id: 'opt1', type: 'manual', expected: '顺手看一下日志', required: false }),
+      projectPath: root,
+      runCommand: okRunner,
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.pending).toEqual([])
+    expect(verdict.pendingItems).toEqual([])
+    expect(verdict.optionalFailures).toEqual(['acceptance_manual_pending:0'])
+    expect(verdict.items[0]).toEqual({
+      index: 0, id: 'opt1', type: 'manual', required: false,
+      outcome: 'pending', codes: ['acceptance_manual_pending:0'],
+    })
+  })
+
+  it('可选 file_check 缺失 → 不阻塞 ok', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(fileEntry('missing.txt', { required: false })),
+      projectPath: root,
+      runCommand: okRunner,
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.missing).toEqual([])
+    expect(verdict.optionalFailures).toEqual(['acceptance_file_missing:0'])
+  })
+
+  it('混合：required 失败阻塞、optional 失败分流，两桶不串', async () => {
+    const root = makeRoot()
+    writeFileSync(path.join(root, 'ok.txt'), 'ok')
+    const runCommand: AcceptanceCommandRunner = async () => ({ exitCode: 1, stdout: '', timedOut: false })
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(
+        commandEntry('required-cmd'),                       // 0: required，退出码 1 → missing
+        commandEntry('optional-cmd', { required: false }),  // 1: optional，退出码 1 → optionalFailures
+        fileEntry('ok.txt'),                                // 2: required，通过
+      ),
+      projectPath: root,
+      runCommand,
+    })
+    expect(verdict.ok).toBe(false)
+    expect(verdict.missing).toEqual(['acceptance_command_exit:0:1'])
+    expect(verdict.optionalFailures).toEqual(['acceptance_command_exit:1:1'])
+    expect(verdict.items.map((item) => item.outcome)).toEqual(['fail', 'fail', 'pass'])
+    expect(verdict.items.map((item) => item.required)).toEqual([true, false, true])
+  })
+
+  it('required 非布尔 → acceptance_required_invalid，按 authoring 错误阻塞', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(commandEntry('npm test', { required: 'yes' })),
+      projectPath: root,
+      runCommand: okRunner,
+    })
+    expect(verdict.ok).toBe(false)
+    expect(verdict.missing).toEqual(['acceptance_required_invalid:0'])
+    expect(verdict.optionalFailures).toEqual([])
+  })
+
+  it('形状错误不因 optional 放宽：expected 缺失仍阻塞', async () => {
+    const root = makeRoot()
+    const runCommand = vi.fn(okRunner)
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance({ type: 'command', expected: '', required: false }),
+      projectPath: root,
+      runCommand,
+    })
+    expect(verdict.ok).toBe(false)
+    expect(verdict.missing).toEqual(['acceptance_expected_missing:0'])
+    expect(verdict.optionalFailures).toEqual([])
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+
+  it('可选 manual 已确认 → 通过且不进 optionalFailures', async () => {
+    const root = makeRoot()
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance({ id: 'opt1', type: 'manual', expected: '人工看过', required: false }),
+      projectPath: root,
+      runCommand: okRunner,
+      confirmedManualEntryIds: ['opt1'],
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.optionalFailures).toEqual([])
+    expect(verdict.checked).toBe(1)
+  })
+
+  it('required 全过 + optional 失败 → ok=true 但 optionalFailures 可见', async () => {
+    const root = makeRoot()
+    writeFileSync(path.join(root, 'ok.txt'), 'ok')
+    const runCommand: AcceptanceCommandRunner = async () => ({ exitCode: 1, stdout: '', timedOut: false })
+    const verdict = await evaluateAcceptance({
+      acceptanceJson: acceptance(
+        fileEntry('ok.txt'),
+        commandEntry('optional-cmd', { required: false }),
+      ),
+      projectPath: root,
+      runCommand,
+    })
+    expect(verdict.ok).toBe(true)
+    expect(verdict.missing).toEqual([])
+    expect(verdict.optionalFailures).toEqual(['acceptance_command_exit:1:1'])
   })
 })

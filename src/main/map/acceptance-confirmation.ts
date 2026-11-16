@@ -304,7 +304,7 @@ export class AcceptanceConfirmationService {
           files: artifacts,
           hashMode,
           evaluator: 'acceptance-executor@1',
-          verdict: { missing: verdict.missing, pending: verdict.pending },
+          verdict: { missing: verdict.missing, pending: verdict.pending, optionalFailures: verdict.optionalFailures },
         },
         summary:
           `人工验收签收(${confirmedIds.length} 条已确认` +

@@ -42,8 +42,10 @@ jobs:
       # 行数声明=实测）。纯 node 脚本、秒级，防止文档口径随代码漂移。
       - run: npm run verify:blueprint
 
-  # G4-9：vitest 单测。先以 continue-on-error 观测，不直接卡门。
-  # 现状（2026-11-13，本地 Node 22 / macOS，--maxWorkers=4 实测，含 FR-S1-02 新增测试）：
+  # G4-9：vitest 单测。**硬门禁**（2026-11-13 起，FR-S1-06）：此前 continue-on-error 观测期
+  # 曾把 unit 失败吞成绿灯（实证 run 43239843441）；远端两轮全绿基线（run 43404874196 /
+  # 43408847538）确认后按 R4 删除 continue-on-error，单测红即 PR 不可合并（R5）。
+  # 基线口径（本地 Node 22 / macOS，--maxWorkers=4 实测，含 FR-S1-02 新增测试）：
   #   396 文件（389 通过 / 7 整文件 skip）；4709 例（4646 通过 / 63 skip / 0 失败）。
   #   Linux runner 同日实测（run 43404874196，全绿）：
   #   396 文件（390 通过 / 6 整文件 skip）/ 0 失败 / 78.45s。
@@ -55,12 +57,10 @@ jobs:
   #     `file:stubs/sharp` 直接依赖，npm ci 后链接指向 `../stubs/sharp`，可解析。
   #   - 另有一批 `Electron failed to install correctly`：--ignore-scripts 下没有 dist/，
   #     故下面显式补一次二进制下载。
-  # 观测一轮全绿后，删除 continue-on-error 正式作为门禁。
   unit:
     needs: lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

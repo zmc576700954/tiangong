@@ -248,7 +248,8 @@ export function validateAcceptanceItems(items: unknown): AcceptanceValidation {
 /**
  * 序列化为执行器消费的 JSON（R5）。
  * 只保留执行器认识的键，且 `required === false` 的条目不在此处消失——
- * 是否必过由调用方（gate/verdict 汇总）决定，不由序列化决定。
+ * 执行器（acceptance-executor）认得该字段：可选条目的运行失败/待确认只进
+ * `optionalFailures`，不阻塞 `ok`、不触发 needs_input；形状非法不受豁免。
  */
 export function serializeAcceptanceItems(items: ReadonlyArray<AcceptanceItem>): string {
   return JSON.stringify(items.map(toExecutorEntry))

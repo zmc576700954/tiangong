@@ -6,9 +6,14 @@
  *   `file_check` 判项目根内路径存在（可选 `content_contains`）。
  * - `manual` 条目**不自动通过**：只记 `acceptance_manual_pending:<i>`，等待人工确认；
  *   本执行器不把人工描述转成 pass。
+ * - `required:false`（可选条目，2026-11-13 补充）：只放宽**检查运行结果**（命令退出/
+ *   超时/输出不符、文件缺失/内容不符）与 **manual 待确认**——这些进 `optionalFailures`，
+ *   不阻塞 `ok`、不触发 needs_input；**不放宽条目形状**（非结构化 / expected 缺失 /
+ *   type 未知 / required 非布尔 / 选项非法 / 路径越界 / manual 缺 id 仍一律阻塞），
+ *    authoring 错误不允许借「可选」蒙混（fail-closed 纪律不变）。
  * - fail-closed：JSON 非法/空、条目非结构化、type 未知、expected 缺失、命令超时或
- *   启动失败、路径逃逸根目录、文件不可读、内容不匹配 → 一律 `ok=false` 并给出
- *   具体缺失码；不得"跳过坏项当作通过"。
+ *   启动失败、路径逃逸根目录、文件不可读、内容不匹配 → 一律按上述归属记入
+ *   `missing`（required）或 `optionalFailures`（可选），不得"跳过坏项当作通过"。
  * - 路径判定复用审批/write-paths 的 realpath + NFC + 平台折叠管线（与 G1 同源）。
  * - 缺失码一旦发布只追加不改名（与 D11 同纪律）。
  *
@@ -52,23 +57,31 @@ export interface AcceptanceItemResult {
   index: number
   id?: string
   type: string | null
+  /** 缺省 true；false 时本条运行失败/待确认只进 optionalFailures，不阻塞 ok。 */
+  required: boolean
   outcome: 'pass' | 'fail' | 'pending'
   codes: string[]
 }
 
 export interface AcceptanceVerdict {
   /**
-   * 全部条目均已判定且通过。manual 待确认也属于「判定不出来」：
+   * 全部 **required** 条目均已判定且通过。manual 待确认也属于「判定不出来」：
    * `pending` 非空时 ok 必为 false，绝不把人工条目当自动通过。
+   * 可选条目（required:false）的失败/待确认不影响 ok，见 `optionalFailures`。
    */
   ok: boolean
-  /** 失败/判定不出的具体缺失码（写入终态摘要 / 事件，供人排查）。 */
+  /** required 条目失败/判定不出的具体缺失码（写入终态摘要 / 事件，供人排查）。 */
   missing: string[]
-  /** manual 条目：不自动通过，等待人工确认。 */
+  /** required manual 条目：不自动通过，等待人工确认。 */
   pending: string[]
+  /**
+   * 可选条目（required:false）产生的失败/待确认码：不阻塞 ok、不触发 needs_input，
+   * 供证据面板展示「哪些建议项没过」。形状非法的条目不受 required 豁免，仍进 missing。
+   */
+  optionalFailures: string[]
   /** 逐条结果（供调用处写可查诊断；本执行器自身不落库）。 */
   items: AcceptanceItemResult[]
-  /** manual 条目的结构化明细（写入 work_steps.input_request_json）。 */
+  /** required manual 条目的结构化明细（写入 work_steps.input_request_json）。 */
   pendingItems: AcceptancePendingItem[]
   /** 已判定条目数（command/file_check 实际执行 + 已人工确认的 manual）。 */
   checked: number
@@ -150,6 +163,7 @@ function optionalTimeout(record: Record<string, unknown>, fallback: number): num
 export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promise<AcceptanceVerdict> {
   const missing: string[] = []
   const pending: string[] = []
+  const optionalFailures: string[] = []
   const pendingItems: AcceptancePendingItem[] = []
   const items: AcceptanceItemResult[] = []
   const confirmedManualIds = new Set(input.confirmedManualEntryIds ?? [])
@@ -157,25 +171,25 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
 
   const projectPath = input.projectPath?.trim()
   if (!projectPath) {
-    return { ok: false, missing: ['project_path_missing'], pending, items, pendingItems, checked }
+    return { ok: false, missing: ['project_path_missing'], pending, optionalFailures, items, pendingItems, checked }
   }
 
   const entries = parseEntries(input.acceptanceJson)
   if (entries === null) {
-    return { ok: false, missing: ['acceptance_json_invalid'], pending, items, pendingItems, checked }
+    return { ok: false, missing: ['acceptance_json_invalid'], pending, optionalFailures, items, pendingItems, checked }
   }
   if (entries.length === 0) {
-    return { ok: false, missing: ['acceptance_json_empty'], pending, items, pendingItems, checked }
+    return { ok: false, missing: ['acceptance_json_empty'], pending, optionalFailures, items, pendingItems, checked }
   }
 
   let projectStat: fs.Stats
   try {
     projectStat = fs.statSync(projectPath)
   } catch {
-    return { ok: false, missing: ['project_path_unresolvable'], pending, items, pendingItems, checked }
+    return { ok: false, missing: ['project_path_unresolvable'], pending, optionalFailures, items, pendingItems, checked }
   }
   if (!projectStat.isDirectory()) {
-    return { ok: false, missing: ['project_path_not_directory'], pending, items, pendingItems, checked }
+    return { ok: false, missing: ['project_path_not_directory'], pending, optionalFailures, items, pendingItems, checked }
   }
 
   const runCommand = input.runCommand ?? defaultAcceptanceCommandRunner
@@ -186,14 +200,25 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
     const entryCodes: string[] = []
     let entryType: string | null = null
     let entryId: string | undefined
+    // 缺省必过（fail-closed）；形状非法的条目来不及读到 required 也按必过处理。
+    let entryRequired = true
     let isPending = false
+    // 形状/安全性错误：不受 required 豁免，一律阻塞。
     const fail = (code: string): void => {
       entryCodes.push(code)
       missing.push(code)
     }
+    // 运行结果失败：required 进 missing 阻塞；可选条目只进 optionalFailures。
+    const report = (code: string): void => {
+      entryCodes.push(code)
+      if (entryRequired) missing.push(code)
+      else optionalFailures.push(code)
+    }
+    // manual 待确认：required 进 pending（触发 needs_input）；可选只进 optionalFailures。
     const wait = (code: string): void => {
       entryCodes.push(code)
-      pending.push(code)
+      if (entryRequired) pending.push(code)
+      else optionalFailures.push(code)
       isPending = true
     }
     // finally 保证每条（含所有 continue 分支）都留下逐条结果，供调用处落诊断。
@@ -204,6 +229,16 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
         continue
       }
       const record = entry as Record<string, unknown>
+      // required 先解析：非法即阻塞（authoring 错误不得借「可选」蒙混）；
+      // 合法时后续运行失败按 entryRequired 分流。
+      const requiredRaw = record['required']
+      if (requiredRaw !== undefined && requiredRaw !== null) {
+        if (typeof requiredRaw !== 'boolean') {
+          fail(`acceptance_required_invalid:${i}`)
+          continue
+        }
+        entryRequired = requiredRaw
+      }
       const type = record['type']
       if (typeof type !== 'string' || type.trim().length === 0) {
         fail(`acceptance_item_not_structured:${i}`)
@@ -232,7 +267,10 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
           continue
         }
         wait(`acceptance_manual_pending:${i}`)
-        pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
+        // 仅 required manual 进入待确认明细：可选条目不触发 needs_input 等待。
+        if (entryRequired) {
+          pendingItems.push({ id, expected, ...(text !== undefined ? { text } : {}) })
+        }
         continue
       }
 
@@ -252,19 +290,19 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
         try {
           outcome = await runCommand(expected, { cwd: projectPath, timeoutMs })
         } catch {
-          fail(`acceptance_command_spawn_failed:${i}`)
+          report(`acceptance_command_spawn_failed:${i}`)
           continue
         }
         if (outcome.timedOut) {
-          fail(`acceptance_command_timeout:${i}`)
+          report(`acceptance_command_timeout:${i}`)
           continue
         }
         if (outcome.exitCode !== 0) {
-          fail(`acceptance_command_exit:${i}:${outcome.exitCode}`)
+          report(`acceptance_command_exit:${i}:${outcome.exitCode}`)
           continue
         }
         if (stdoutContains !== null && !outcome.stdout.includes(stdoutContains)) {
-          fail(`acceptance_command_stdout_mismatch:${i}`)
+          report(`acceptance_command_stdout_mismatch:${i}`)
         }
         continue
       }
@@ -295,11 +333,11 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
         try {
           stat = fs.statSync(abs)
         } catch {
-          fail(`acceptance_file_missing:${i}`)
+          report(`acceptance_file_missing:${i}`)
           continue
         }
         if (!stat.isFile()) {
-          fail(`acceptance_file_not_file:${i}`)
+          report(`acceptance_file_not_file:${i}`)
           continue
         }
         if (contentContains !== null) {
@@ -307,11 +345,11 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
           try {
             content = readFile(abs)
           } catch {
-            fail(`acceptance_file_unreadable:${i}`)
+            report(`acceptance_file_unreadable:${i}`)
             continue
           }
           if (!content.includes(contentContains)) {
-            fail(`acceptance_file_content_mismatch:${i}`)
+            report(`acceptance_file_content_mismatch:${i}`)
           }
         }
         continue
@@ -323,11 +361,12 @@ export async function evaluateAcceptance(input: EvaluateAcceptanceInput): Promis
         index: i,
         ...(entryId !== undefined ? { id: entryId } : {}),
         type: entryType,
+        required: entryRequired,
         outcome: isPending ? 'pending' : entryCodes.length > 0 ? 'fail' : 'pass',
         codes: entryCodes,
       })
     }
   }
 
-  return { ok: missing.length === 0 && pending.length === 0, missing, pending, items, pendingItems, checked }
+  return { ok: missing.length === 0 && pending.length === 0, missing, pending, optionalFailures, items, pendingItems, checked }
 }
